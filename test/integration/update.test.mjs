@@ -100,7 +100,7 @@ test('updates a running install from a bumped lockfile', async (t) => {
     assert.equal(text.trim(), 'updated @ai-ecoverse/wasm-bash 5.3.0-6 → 5.3.0-7Reload');
     assert.equal(await version(page), '5.3.0-7');
     assert.equal(
-      await read(page, 'pnpm-lock.yaml'),
+      await read(page, 'var/lib/slicc/pnpm-lock.yaml'),
       await readFile(new URL('../../src/packages/pnpm-lock.yaml', import.meta.url), 'utf8')
     );
     assert.deepEqual(

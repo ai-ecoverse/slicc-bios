@@ -91,10 +91,13 @@ async function linked() {
   }
 }
 
-async function current(path, { version, integrity }, pnpm) {
-  await read(`${path}/package.json`);
+async function current(path, { resolved, version, integrity }, pnpm) {
+  const installed = JSON.parse(await (await read(`${path}/package.json`)).text());
   const name = path.slice(path.lastIndexOf('node_modules/') + 'node_modules/'.length);
-  if (pnpm[`${name}@${version}`]?.includes(path)) return true;
+  if (installed.version === version && pnpm[`${name}@${version}`]?.includes(path)) {
+    await save(`var/lib/bios/${path}.json`, JSON.stringify({ resolved, integrity }));
+    return true;
+  }
   const receipt = JSON.parse(await (await read(`var/lib/bios/${path}.json`)).text());
   return receipt.integrity === integrity;
 }
@@ -146,7 +149,9 @@ async function replay(from, progress) {
     }
   };
   await Promise.all(Array.from({ length: 4 }, worker));
-  await install({ from: new URL('./', from), files: ['package.json', 'pnpm-lock.yaml'] }, () => {});
+  const deployed = new URL('./', from);
+  await install({ from: deployed, files: ['package.json', 'pnpm-lock.yaml'] }, () => {});
+  await install({ from: deployed, to: 'var/lib/slicc/', files: ['pnpm-lock.yaml'] }, () => {});
   return { packages: total, downloaded, removed, bytes };
 }
 
