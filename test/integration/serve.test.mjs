@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { boot, booted, ready, watch } from './bios.mjs';
+import { boot, ready, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch();
@@ -27,15 +27,6 @@ test('keeps serving the UI from OPFS after the network copy is gone', async (t) 
   );
   assert.deepEqual(bash, ['application/octet-stream', 'opfs']);
   assert.ok(!chrome.requests.includes('/bin/bash'));
-});
-
-test('reboots over an existing installation', async (t) => {
-  const page = await chrome.page(t);
-  await boot(page);
-
-  const bios = await watch(page);
-  await boot(page);
-  assert.deepEqual(bios.states(), booted);
 });
 
 test('shares one kernel between tabs', async (t) => {

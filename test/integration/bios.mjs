@@ -39,7 +39,7 @@ export async function ready(page) {
   await page.until(
     () =>
       location.pathname === '/os/' &&
-      document.querySelectorAll('#files li').length === 5 &&
+      document.querySelectorAll('#files li').length === 6 &&
       /^bash\.wasm compiled from OPFS: \d+ exports$/.test(
         document.getElementById('bash').textContent
       )

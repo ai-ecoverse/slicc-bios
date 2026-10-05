@@ -129,7 +129,7 @@ export async function launch() {
   const cdp = await connect(url);
   const sessions = new Map();
   const tabs = new Map();
-  const cdn = { status: 0 };
+  const cdn = { status: 0, requests: [] };
   let run = null;
 
   async function checkpoint() {
@@ -191,6 +191,7 @@ export async function launch() {
   }
 
   async function intercept({ requestId, request }) {
+    cdn.requests.push(request.url);
     const failure = { requestId, responseCode: cdn.status, responseHeaders: cors };
     if (cdn.status) return cdp.send('Fetch.fulfillRequest', failure);
     const body = await download(request.url).catch(() => null);
@@ -242,6 +243,7 @@ export async function launch() {
     for (const opened of pages) opened.dispose();
     run = null;
     cdn.status = 0;
+    cdn.requests.length = 0;
     await cdp.send('Target.disposeBrowserContext', { browserContextId });
   }
 

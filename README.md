@@ -6,7 +6,7 @@ The page shows six boot steps as they run:
 
 1. **Acquire OPFS** – open the origin private file system and ask for persistent storage.
 2. **Create shared worker** – start `kernel.js`, which does all OPFS writes and is shared by every tab.
-3. **Download wasm bash into OPFS** – the kernel streams `bin/bash` and `bin/bash.wasm` from [`@ai-ecoverse/wasm-bash`](https://www.npmjs.com/package/@ai-ecoverse/wasm-bash) on npm (through jsDelivr) into OPFS.
+3. **Download wasm bash into OPFS** – the kernel streams `bin/bash` and `bin/bash.wasm` from [`@ai-ecoverse/wasm-bash`](https://www.npmjs.com/package/@ai-ecoverse/wasm-bash) on npm (through jsDelivr) into OPFS and records the source and size in `var/lib/bios/wasm-bash.json`. Later boots skip the download when that receipt names the same version and the files in OPFS still add up to the recorded size.
 4. **Add UI page to OPFS** – the kernel copies `src/seed/` to `os/` in OPFS. This is a stand-in until the UI ships as a downloadable asset.
 5. **Intercept same-origin requests** – `sw.js` answers any in-scope request whose path exists in OPFS and passes everything else to the network.
 6. **Serve UI from OPFS** – navigate to `os/` with a cross-document view transition. That page lists OPFS through the kernel and compiles `bash.wasm` straight from OPFS.
