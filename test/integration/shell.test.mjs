@@ -41,6 +41,24 @@ test('boots into bash -i in the terminal and keeps what it writes in OPFS', asyn
   assert.deepEqual(page.errors, []);
 });
 
+test('reaches npm over HTTPS with curl and the everyday tools', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await run(
+    page,
+    "curl -sS https://registry.npmjs.org/@ai-ecoverse/wasm-bash/5.3.0-7 | jq -r '.name | ascii_upcase'"
+  );
+  await shows(page, '@AI-ECOVERSE/WASM-BASH');
+  await run(
+    page,
+    'echo \'{"tool":"jq"}\' | jq -r .tool | grep -c jq | awk \'{ print "found " $1 }\''
+  );
+  await shows(page, 'found 1');
+  await run(page, 'find /usr/bin -name "less" | head -1');
+  await shows(page, '/usr/bin/less');
+  assert.deepEqual(page.errors, []);
+});
+
 test('waits for an updated service worker before opening the shell', async (t) => {
   const page = await chrome.page(t);
   const current = await readFile(new URL('../../src/sw.js', import.meta.url), 'utf8');

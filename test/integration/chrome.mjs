@@ -8,7 +8,7 @@ const options = {
   intercept: ['https://cdn.jsdelivr.net/', 'https://registry.npmjs.org/'],
 };
 
-export const launch = () => start(options);
+export const launch = (overrides) => start({ ...options, ...overrides });
 
 if (argv[1] === fileURLToPath(import.meta.url)) {
   const { url } = await serve({ ...options, port: Number(env.PORT ?? 8080) });

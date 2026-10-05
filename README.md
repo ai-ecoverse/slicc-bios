@@ -6,10 +6,10 @@ The page shows six boot steps as they run:
 
 1. **Acquire OPFS** – open the origin private file system and ask for persistent storage.
 2. **Create installer worker** – start `installer.js`, a shared worker that does all of the BIOS's OPFS writes and is shared by every tab.
-3. **Install packages from npm into OPFS** – the installer reads [`src/packages/package-lock.json`](src/packages/package-lock.json), the lockfile the BIOS ships with. For every locked package it downloads the tarball from `registry.npmjs.org` and checks its `integrity`, then unpacks it with the built-in `DecompressionStream` and [`modern-tar`](https://github.com/ayuhito/modern-tar) into OPFS at its lockfile path (`node_modules/…`). It records a receipt in `var/lib/bios/`. Packages whose receipt matches the lockfile's integrity and whose files are still there are not downloaded again, so pinning a new version replaces just that package. Replacing a package keeps its nested `node_modules`, and packages the lockfile no longer lists are deleted along with their receipts.
+3. **Install packages from npm into OPFS** – the installer reads [`src/packages/package-lock.json`](src/packages/package-lock.json), the lockfile the BIOS ships with. For every locked package it downloads the tarball from `registry.npmjs.org` and checks its `integrity`, then unpacks it with the built-in `DecompressionStream` and [`modern-tar`](https://github.com/ayuhito/modern-tar) into OPFS at its lockfile path (`node_modules/…`). It records a receipt in `var/lib/bios/`. Packages whose receipt matches the lockfile's integrity and whose files are still there are not downloaded again, so pinning a new version replaces just that package. Replacing a package keeps its nested `node_modules`, and packages the lockfile no longer lists are deleted along with their receipts. A package that pnpm already installed at the locked version (by `node_modules/.modules.yaml` and its own `package.json`) counts as current too, and gets a receipt so it can be pruned later. Last, the installer copies the deployment's `package.json` and `pnpm-lock.yaml` to the OPFS root for pnpm, and the lockfile once more to `var/lib/slicc/pnpm-lock.yaml`, which records what is installed (see [Updates](#updates)).
 4. **Add UI page to OPFS** – the installer copies `src/seed/` to `os/` in OPFS. This is a stand-in until the UI ships as a downloadable asset.
 5. **Intercept same-origin requests** – `sw.js` answers any in-scope request whose path exists in OPFS and passes everything else to the network. Everything it serves from OPFS carries `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy: require-corp` and `Cross-Origin-Resource-Policy: same-origin`, so the UI page and the workers it starts are cross-origin isolated.
-6. **Serve UI from OPFS** – navigate to `os/` (keeping the URL fragment) with a cross-document view transition. That page imports [`@ai-ecoverse/slicc-kernel`](https://github.com/ai-ecoverse/slicc-kernel) and [`@ai-ecoverse/slicc-spectrum`](https://github.com/ai-ecoverse/slicc-spectrum) from `node_modules/` in OPFS through an import map, starts the kernel on the OPFS root and runs `bash -i` in a `<slicc-terminal>`. Commands come from the installed packages (`wasm-bash` and `wasm-coreutils`), the shell starts in `/home`, and whatever it writes stays in OPFS across reloads.
+6. **Serve UI from OPFS** – navigate to `os/` (keeping the URL fragment) with a cross-document view transition. That page imports [`@ai-ecoverse/slicc-kernel`](https://github.com/ai-ecoverse/slicc-kernel) and [`@ai-ecoverse/slicc-spectrum`](https://github.com/ai-ecoverse/slicc-spectrum) from `node_modules/` in OPFS through an import map, starts the kernel on the OPFS root and runs `bash -i` in a `<slicc-terminal>`. Commands come from the installed packages: `bash`, coreutils, `grep`, `sed`, findutils, `gawk`, `jq`, `less`, `curl` and `pnpm`. The shell starts in `/home`, and whatever it writes stays in OPFS across reloads. The kernel terminates HTTPS with `wasm-tls-engine`, so `curl https://…` works over whichever transport is picked (see [Network](#network)). `wasm-git` is left out for its size (53 MB); it can come later through pnpm.
 
 ## Network
 
@@ -21,6 +21,30 @@ Before the kernel starts, `os/transport.js` picks how programs reach the network
 
 The choice is in `document.documentElement.dataset.transport`: `local-proxy`, `extension` or `page`.
 
+## Updates
+
+A running install updates itself from the deployment it was booted from, package by package, without a reload:
+
+1. **Notice.** `os/update.js` fetches `packages/pnpm-lock.yaml` from the deployment when the UI starts, whenever the tab becomes visible again, and every 15 minutes. If it differs from `var/lib/slicc/pnpm-lock.yaml` in OPFS, there is an update.
+2. **Install.** It writes the deployment's `package.json` and `pnpm-lock.yaml` to the OPFS root and runs `pnpm install --frozen-lockfile --trust-lockfile` there in the page's kernel. [`@ai-ecoverse/wasi-pnpm`](https://www.npmjs.com/package/@ai-ecoverse/wasi-pnpm) is one of the bootstrap packages, so pnpm is always installed. pnpm's hoisted, copying layout keeps `node_modules/` exactly where the BIOS puts it, and it only rewrites packages whose locked version changed. Its store lives in OPFS under `/home/.local/share/pnpm/`. Only when pnpm succeeds does the updater write the lockfile to `var/lib/slicc/pnpm-lock.yaml`, so an update that fails or is cut short by closing the tab is tried again by the next check.
+3. **Switch over.** Packages are updated in place. A program reads its wasm and glue when it starts, so running processes, the interactive `bash` included, keep the code they started with, and every process started afterwards gets the new version. The page itself keeps the kernel and terminal it loaded. A line under the terminal lists what changed and offers **Reload**, which navigates to the BIOS with a view transition. The BIOS then picks up a new `sw.js` and seed, finds every package current (its receipt, or pnpm's `.modules.yaml` and the installed version, match), and goes back to `os/`. Files in OPFS, `/home` included, are not touched.
+
+Both the BIOS installer and the updater take the Web Lock `slicc-packages`, so tabs never install at the same time.
+
+Decisions, from [#11](https://github.com/ai-ecoverse/slicc-bios/issues/11):
+
+- **The newest lockfile comes from the BIOS deployment, not from npm.** Every deploy already publishes `src/packages/` next to the BIOS, `sw.js` and the seed, and CI tested that exact combination. A branch host updates from its own branch, the host's `cache-control: no-cache` and ETag keep polling cheap, and nothing extra has to be published. Taking the lockfile from npm would need a release package that sits outside this repo's CI, and the deployed BIOS and seed could drift away from the packages it pins.
+- **Two lockfiles from one `package.json`.** `package-lock.json` stays for the bootstrap: it carries each tarball URL and its hoisted path, so the installer needs neither a YAML parser nor a hoisting algorithm. `pnpm-lock.yaml` drives every update after that, and a test keeps both pinned to the same versions and integrity. Once pnpm has run, the BIOS trusts pnpm's record of what it installed, so a reload does not download a package pnpm already updated.
+- **In place, not versioned directories.** OPFS has no hard links, so a versioned directory would copy every file of every package for every update, which is the slow part (the kernel's per-file OPFS writes). In place, pnpm copies only the packages that changed, and the kernel re-reads its command catalog on every run.
+
+Limits:
+
+- The first update after a bootstrap has no pnpm state yet, so pnpm downloads every package once into its store and copies all of them. Later updates touch only what changed.
+- Between an in-place update of `slicc-kernel` and the reload, the old kernel worker starts new processes with the new `process-worker.js`. The two are built together, so this works as long as their protocol doesn't change; a kernel that loads its process worker once would remove the gap.
+- Packages added to `/package.json` by hand are removed by the next update. Projects of your own belong in `/home`.
+- Emscripten programs see only the directories at `/`, so `ls /` and `cat /pnpm-lock.yaml` don't find the two files; WASI programs such as `pnpm` (`cd / && pnpm install`) do.
+- An update of the seed (`os/`) or `sw.js` alone has no lockfile change, so it arrives with the next boot through the BIOS.
+
 ## Develop
 
 ```sh
@@ -30,7 +54,7 @@ npm test
 npm run lint
 ```
 
-`npm start` serves `src/` on <http://127.0.0.1:8080/>. There is no build step. To change what the BIOS installs, edit `src/packages/package.json` and refresh the lockfile with `npm install --package-lock-only` in that directory; npm resolves the dependency tree, the BIOS only replays it. `npm install` also installs the [lefthook](https://lefthook.dev) pre-commit hook, which runs Biome, the no-comment check, the no-unit-tests-in-git guard, and the diff-coverage check described below.
+`npm start` serves `src/` on <http://127.0.0.1:8080/>. There is no build step. To change what the BIOS installs, edit `src/packages/package.json` and refresh both lockfiles in that directory with `npm install --package-lock-only` and `npx pnpm@12 install --lockfile-only`; npm and pnpm resolve the dependency tree, the BIOS and the updater only replay it. A test fails when the two lockfiles pin different packages. `npm install` also installs the [lefthook](https://lefthook.dev) pre-commit hook, which runs Biome, the no-comment check, the no-unit-tests-in-git guard, and the diff-coverage check described below.
 
 `npm test` runs the integration tests with `node --test` against Chromium (fetched by `playwright-core`), driven directly over the DevTools protocol by the [harness from slicc-shared-web](https://github.com/ai-ecoverse/slicc-shared-web#integration-test-harness); `test/integration/chrome.mjs` only says what to serve and which CDN requests to intercept. Every run leaves behind:
 

@@ -78,7 +78,7 @@ await step('packages', async (report) => {
 });
 
 await step('seed', async () => {
-  const files = ['index.html', 'os.css', 'os.js', 'transport.js'];
+  const files = ['index.html', 'os.css', 'os.js', 'transport.js', 'update.js'];
   const from = new URL('seed/', import.meta.url).href;
   const { bytes } = await installer('install', { from, to: 'os/', files });
   return `os/{${files.join(',')}} ${size(bytes)}`;
