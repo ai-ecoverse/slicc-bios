@@ -57,10 +57,11 @@ await step('kernel', async () => {
 
 await step('packages', async (report) => {
   const from = new URL('packages/package-lock.json', import.meta.url).href;
-  const { packages, downloaded, bytes } = await kernel('packages', { from }, (progress) =>
+  const { packages, downloaded, removed, bytes } = await kernel('packages', { from }, (progress) =>
     report(`${progress.done}/${progress.total} ${progress.path}`)
   );
-  return `${downloaded}/${packages} downloaded from npm, ${size(bytes)}`;
+  const pruned = removed ? `, ${removed} removed` : '';
+  return `${downloaded}/${packages} downloaded from npm, ${size(bytes)}${pruned}`;
 });
 
 await step('seed', async () => {

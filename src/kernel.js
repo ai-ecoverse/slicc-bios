@@ -32,6 +32,15 @@ async function remove(path) {
   await (await directory(names)).removeEntry(name, { recursive: true }).catch(() => {});
 }
 
+async function clear(path) {
+  const dir = await directory(path.split('/'));
+  const names = [];
+  for await (const name of dir.keys()) names.push(name);
+  for (const name of names.filter((entry) => entry !== 'node_modules')) {
+    await dir.removeEntry(name, { recursive: true });
+  }
+}
+
 async function get(url) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`${response.status} ${response.url}`);
@@ -68,15 +77,28 @@ async function add([path, { resolved, integrity }]) {
   if (await current(path, integrity).catch(() => false)) return 0;
   const bytes = await (await get(resolved)).arrayBuffer();
   await verify(bytes, integrity, path);
-  await remove(path);
+  await clear(path);
   await unpack(bytes, path);
   await save(`var/lib/bios/${path}.json`, JSON.stringify({ resolved, integrity }));
   return bytes.byteLength;
 }
 
+async function prune(locked) {
+  const receipts = await list(await directory(['var', 'lib', 'bios']), '');
+  const stale = receipts
+    .map((receipt) => receipt.path.replace(/\.json$/, ''))
+    .filter((path) => !locked.has(path));
+  for (const path of stale) {
+    await remove(path);
+    await remove(`var/lib/bios/${path}.json`);
+  }
+  return stale.length;
+}
+
 async function packages({ from }, progress) {
   const lock = await (await get(from)).json();
   const queue = Object.entries(lock.packages).filter(([path, entry]) => path && entry.resolved);
+  const removed = await prune(new Set(queue.map(([path]) => path)));
   const total = queue.length;
   let done = 0;
   let downloaded = 0;
@@ -92,7 +114,7 @@ async function packages({ from }, progress) {
     }
   };
   await Promise.all(Array.from({ length: 4 }, worker));
-  return { packages: total, downloaded, bytes };
+  return { packages: total, downloaded, removed, bytes };
 }
 
 async function install({ from, to = '', files }, progress) {

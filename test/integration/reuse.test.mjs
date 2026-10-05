@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { boot, booted, watch } from './bios.mjs';
+import { boot, booted, eventually, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch();
@@ -49,11 +49,16 @@ const lit = {
   },
 };
 
+async function arrive(page) {
+  await page.goto('/');
+  await page.until(() => location.pathname === '/os/');
+}
+
 async function reboot(page) {
   chrome.cdn.requests.length = 0;
   const bios = await watch(page);
-  await boot(page);
-  assert.deepEqual(bios.states(), booted);
+  await arrive(page);
+  await eventually(() => assert.deepEqual(bios.states(), booted));
   return bios.texts('packages').at(-1);
 }
 
@@ -129,8 +134,7 @@ test('follows a lockfile through every dependency it lists', async (t) => {
   const page = await chrome.page(t);
   chrome.overrides.set('/packages/package-lock.json', lockfile(lit));
   const bios = await watch(page);
-  await page.goto('/');
-  await page.until(() => location.pathname === '/os/');
+  await arrive(page);
 
   assert.match(bios.texts('packages').at(-1), /^6\/6 downloaded from npm, [\d.]+kB$/);
   for (const [path, { version }] of Object.entries(lit).filter(([path]) => path)) {
@@ -138,4 +142,56 @@ test('follows a lockfile through every dependency it lists', async (t) => {
   }
   const element = await opfs(page, 'node_modules/lit-element/lit-element.js');
   assert.match(element, /lit-html/);
+});
+
+test('keeps a nested package when only its parent changes version', async (t) => {
+  const page = await chrome.page(t);
+  const parent = 'node_modules/lit-html';
+  const nested = `${parent}/node_modules/@lit-labs/ssr-dom-shim`;
+  const tree = (version, resolved, integrity) =>
+    lockfile({
+      '': { name: 'slicc-bios-packages' },
+      [parent]: { version, resolved, integrity },
+      [nested]: lit['node_modules/@lit-labs/ssr-dom-shim'],
+    });
+  const current = lit[parent];
+  chrome.overrides.set(
+    '/packages/package-lock.json',
+    tree(current.version, current.resolved, current.integrity)
+  );
+  await arrive(page);
+  chrome.overrides.set(
+    '/packages/package-lock.json',
+    tree(
+      '3.3.2',
+      'https://registry.npmjs.org/lit-html/-/lit-html-3.3.2.tgz',
+      'sha512-Qy9hU88zcmaxBXcc10ZpdK7cOLXvXpRoBxERdtqV9QOrfpMZZ6pSYP91LhpPtap3sFMUiL7Tw2RImbe0Al2/kw=='
+    )
+  );
+
+  assert.match(await reboot(page), /^1\/2 downloaded from npm, [\d.]+kB$/);
+  assert.deepEqual(downloads(), ['https://registry.npmjs.org/lit-html/-/lit-html-3.3.2.tgz']);
+  assert.equal(JSON.parse(await opfs(page, `${parent}/package.json`)).version, '3.3.2');
+  assert.equal(JSON.parse(await opfs(page, `${nested}/package.json`)).version, '1.6.0');
+});
+
+test('removes packages the lockfile no longer lists', async (t) => {
+  const page = await chrome.page(t);
+  chrome.overrides.set('/packages/package-lock.json', lockfile(lit));
+  await arrive(page);
+  chrome.overrides.delete('/packages/package-lock.json');
+
+  assert.match(await reboot(page), /^1\/1 downloaded from npm, [\d.]+MB, 6 removed$/);
+  const left = await page.evaluate(async () => {
+    const paths = [];
+    const walk = async (dir, prefix) => {
+      for await (const [name, handle] of dir.entries()) {
+        if (handle.kind === 'directory') await walk(handle, `${prefix}${name}/`);
+        else paths.push(`${prefix}${name}`);
+      }
+    };
+    await walk(await navigator.storage.getDirectory(), '');
+    return paths.filter((path) => /lit/.test(path));
+  });
+  assert.deepEqual(left, []);
 });
