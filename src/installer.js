@@ -1,19 +1,33 @@
 const TAR = 'https://cdn.jsdelivr.net/npm/modern-tar@0.8.5/dist/web/index.js';
 const root = navigator.storage.getDirectory();
 let connections = 0;
+let handles = new Map();
 
-async function directory(names) {
-  let dir = await root;
-  for (const part of names) dir = await dir.getDirectoryHandle(part, { create: true });
-  return dir;
+function directory(names, create = true) {
+  const key = names.join('/');
+  if (!handles.has(key)) {
+    const parent = names.length ? directory(names.slice(0, -1), create) : root;
+    const dir = names.length
+      ? parent.then((handle) => handle.getDirectoryHandle(names.at(-1), { create }))
+      : root;
+    handles.set(key, dir);
+    dir.catch(() => {
+      if (handles.get(key) === dir) handles.delete(key);
+    });
+  }
+  return handles.get(key);
+}
+
+function forget(path) {
+  for (const key of handles.keys()) {
+    if (key === path || key.startsWith(`${path}/`)) handles.delete(key);
+  }
 }
 
 async function open(path, create = false) {
   const names = path.split('/');
   const name = names.pop();
-  let dir = await root;
-  for (const part of names) dir = await dir.getDirectoryHandle(part, { create });
-  return dir.getFileHandle(name, { create });
+  return (await directory(names, create)).getFileHandle(name, { create });
 }
 
 async function read(path) {
@@ -30,6 +44,7 @@ async function remove(path) {
   const names = path.split('/');
   const name = names.pop();
   await (await directory(names)).removeEntry(name, { recursive: true }).catch(() => {});
+  forget(path);
 }
 
 async function clear(path) {
@@ -38,6 +53,7 @@ async function clear(path) {
   for await (const name of dir.keys()) names.push(name);
   for (const name of names.filter((entry) => entry !== 'node_modules')) {
     await dir.removeEntry(name, { recursive: true });
+    forget(`${path}/${name}`);
   }
 }
 
@@ -154,6 +170,7 @@ const ops = {
 self.onconnect = ({ ports: [port] }) => {
   connections += 1;
   port.onmessage = async ({ data: { id, op, args } }) => {
+    handles = new Map();
     try {
       const result = await ops[op](args, (progress) => port.postMessage({ id, progress }));
       port.postMessage({ id, result });

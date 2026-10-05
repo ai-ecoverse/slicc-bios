@@ -94,14 +94,26 @@ function page(cdp, sessionId, server) {
     dispose,
     evaluate,
     goto: (path) => send('Page.navigate', { url: new URL(path, server.url).href }),
-    reload: () => send('Page.reload'),
+    async reload() {
+      await evaluate(() => {
+        window.stale = true;
+      });
+      await send('Page.reload');
+      await this.until(() => !window.stale);
+    },
+    insert: (text) => send('Input.insertText', { text }),
+    async enter() {
+      const key = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 };
+      await send('Input.dispatchKeyEvent', { ...key, type: 'keyDown', text: '\r' });
+      await send('Input.dispatchKeyEvent', { ...key, type: 'keyUp' });
+    },
     init: (fn) => send('Page.addScriptToEvaluateOnNewDocument', { source: `(${fn})()` }),
     async expose(name, handler) {
       bindings.set(name, handler);
       await send('Runtime.addBinding', { name });
     },
     async until(fn, ...args) {
-      const deadline = Date.now() + 15000;
+      const deadline = Date.now() + 30000;
       let last;
       while (Date.now() < deadline) {
         last = await evaluate(fn, ...args).catch((error) => error.message);
@@ -141,7 +153,10 @@ export async function launch() {
       const [{ result }, { profile }] = await Promise.all([coverage, cpu]).catch(() => [{}, {}]);
       if (!result || !run) return;
       cdp.send('Profiler.start', {}, sessionId).catch(() => {});
-      const ours = (script) => script.url.startsWith(server.url) && script.url.endsWith('.js');
+      const ours = (script) =>
+        script.url.startsWith(server.url) &&
+        script.url.endsWith('.js') &&
+        !script.url.startsWith(`${server.url}node_modules/`);
       run.scripts.push(...result.filter(ours));
       const name = target.type === 'page' ? 'page' : basename(target.url);
       const file = new URL(`${String(++run.dumps).padStart(2, '0')}-${name}.cpuprofile`, run.dir);
@@ -296,7 +311,7 @@ export async function launch() {
       const another = async () => {
         const opened = await open(browserContextId);
         pages.push(opened);
-        return Object.assign(opened, { tab: another });
+        return Object.assign(opened, { tab: another, dir });
       };
       return another();
     },

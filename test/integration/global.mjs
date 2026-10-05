@@ -28,7 +28,7 @@ async function hotspots() {
     const frames = new Map(nodes.map((node) => [node.id, node.callFrame]));
     samples.forEach((id, i) => {
       const { url, functionName, lineNumber, columnNumber } = frames.get(id);
-      if (!url.startsWith('http://127.0.0.1:')) return;
+      if (!/^http:\/\/127\.0\.0\.1:\d+\/(?!node_modules\/)/.test(url)) return;
       const top = lineNumber === 0 && columnNumber === 0 ? '(top level)' : '(anonymous)';
       const key = `${relative(cwd(), source(url))}:${lineNumber + 1} ${functionName || top}`;
       self.set(key, (self.get(key) ?? 0) + (timeDeltas[i + 1] ?? 0));

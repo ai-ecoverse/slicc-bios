@@ -1,10 +1,8 @@
 :root {
   color-scheme: dark;
-  --ink: #ececec;
-  --dim: #7c7c84;
   --accent: #ff6b2c;
   background: #0c0c0f;
-  color: var(--ink);
+  color: #ececec;
   font:
     15px / 1.6 ui-monospace,
     "SF Mono",
@@ -21,34 +19,21 @@ body {
 }
 
 main {
-  width: min(42rem, 100% - 2rem);
+  width: min(64rem, 100% - 2rem);
 }
 
 .brand {
   view-transition-name: brand;
   width: fit-content;
   margin: 0 0 1.5rem;
-  font-size: 4rem;
+  font-size: 2.5rem;
   letter-spacing: 0.4em;
   color: var(--accent);
 }
 
-h2 {
-  font-size: 1em;
-  color: var(--dim);
-}
-
-ul {
-  padding: 0;
-  list-style: none;
-}
-
-li {
-  display: flex;
-  justify-content: space-between;
-  border-bottom: 1px solid #1f1f25;
-}
-
-li span {
-  color: var(--dim);
+slicc-terminal {
+  display: block;
+  --slicc-terminal-background: #121216;
+  --slicc-terminal-height: min(32rem, 100vh - 12rem);
+  --slicc-terminal-font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }

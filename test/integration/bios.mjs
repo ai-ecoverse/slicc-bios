@@ -1,4 +1,4 @@
-export const steps = ['opfs', 'kernel', 'packages', 'seed', 'intercept', 'navigate'];
+export const steps = ['opfs', 'installer', 'packages', 'seed', 'intercept', 'navigate'];
 export const booted = steps.flatMap((step) => [`${step}:active`, `${step}:done`]);
 
 export async function watch(page) {
@@ -16,17 +16,19 @@ export async function watch(page) {
       }
     });
     observer.observe(document, { subtree: true, childList: true, attributeFilter: ['data-state'] });
-    addEventListener('pagereveal', () => {
+    addEventListener('pagereveal', ({ viewTransition }) => {
       const rules = [...document.styleSheets].flatMap((sheet) => [...sheet.cssRules]);
       const optIn = rules.some((rule) => rule.navigation === 'auto');
-      window.bios(JSON.stringify({ type: 'reveal', path: location.pathname, optIn }));
+      const transition = Boolean(viewTransition);
+      window.bios(JSON.stringify({ type: 'reveal', path: location.pathname, optIn, transition }));
     });
   });
   return {
     states: () => events.filter((e) => e.type === 'attributes').map((e) => `${e.step}:${e.state}`),
     texts: (step) =>
       events.filter((e) => e.type === 'childList' && e.step === step).map((e) => e.text),
-    reveals: () => events.filter((e) => e.type === 'reveal').map((e) => `${e.path}:${e.optIn}`),
+    reveals: () =>
+      events.filter((e) => e.type === 'reveal').map((e) => `${e.path}:${e.optIn}:${e.transition}`),
   };
 }
 
@@ -35,15 +37,42 @@ export async function boot(page) {
   await ready(page);
 }
 
+export const prompt = 'slicc:~$ ';
+
 export async function ready(page) {
   await page.until(
-    () =>
+    (prompt) =>
       location.pathname === '/os/' &&
-      document.querySelectorAll('#files li').length >= 9 &&
-      /^bash\.wasm compiled from OPFS: \d+ exports$/.test(
-        document.getElementById('bash').textContent
-      )
+      document.querySelector('slicc-terminal .term-grid')?.textContent.includes(prompt),
+    prompt
   );
+}
+
+export async function shows(page, text) {
+  await page.until(
+    (needle) => document.querySelector('slicc-terminal .term-grid').textContent.includes(needle),
+    text
+  );
+}
+
+export async function run(page, command) {
+  await page.evaluate(() => document.querySelector('slicc-terminal').focus());
+  await page.insert(command);
+  await page.enter();
+}
+
+export async function opfs(page) {
+  return page.evaluate(async () => {
+    const paths = [];
+    const walk = async (dir, prefix) => {
+      for await (const [name, handle] of dir.entries()) {
+        if (handle.kind === 'directory') await walk(handle, `${prefix}${name}/`);
+        else paths.push(`${prefix}${name}`);
+      }
+    };
+    await walk(await navigator.storage.getDirectory(), '');
+    return paths.sort();
+  });
 }
 
 export async function eventually(check) {

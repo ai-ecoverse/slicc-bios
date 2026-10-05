@@ -22,7 +22,7 @@ export async function serve(port = 0) {
     requests.push(pathname);
     if (overrides.has(pathname)) {
       return response
-        .writeHead(200, { 'content-type': types['.json'] })
+        .writeHead(200, { 'content-type': types[extname(pathname)] ?? types['.json'] })
         .end(overrides.get(pathname));
     }
     const file = join(root, normalize(pathname).replace(/\/$/, '/index.html'));
