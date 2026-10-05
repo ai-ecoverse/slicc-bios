@@ -20,7 +20,7 @@ npm test
 npm run lint
 ```
 
-`npm start` serves `src/` on <http://127.0.0.1:8080/>. There is no build step. `npm install` also installs the [lefthook](https://lefthook.dev) git hooks: lint, the no-comment check, and the no-unit-test guard run before every commit, and the integration tests before every push.
+`npm start` serves `src/` on <http://127.0.0.1:8080/>. There is no build step. `npm install` also installs the [lefthook](https://lefthook.dev) pre-commit hook, which runs Biome, the no-comment check, the no-unit-tests-in-git guard, and the diff-coverage check described below.
 
 `npm test` runs the integration tests with `node --test` against Chromium (fetched by `playwright-core`), driven directly over the DevTools protocol. Every run leaves behind:
 
@@ -33,5 +33,6 @@ The profiles are recorded with coverage switched on, so absolute timings run hig
 ## Rules
 
 - **No comments.** `npm run lint:comments` runs the [slicc no-comment checker](https://github.com/ai-ecoverse/slicc/tree/main/packages/dev-tools/no-comment) over the tree.
-- **No unit tests.** All tests are integration tests in `test/integration/` that drive a real browser. `npm run lint:no-unit-tests` rejects test files anywhere else.
-- **Changed code must be covered.** The test harness attaches to every page, shared worker, and service worker before their first line runs. On pull requests, CI runs `diff-cover --fail-under 100` against the resulting `lcov.info`, so every changed line in `src/` has to be executed by an integration test.
+- **Unit tests stay out of git.** Write them in `test/unit/`, which is gitignored, and run them with `npm run test:unit`. `npm run lint:no-unit-tests` fails if a unit test gets committed anyway.
+- **Changed code must be covered.** When a commit touches JavaScript in `src/`, lefthook runs the local unit tests with coverage and [`diff-cover`](https://github.com/Bachmann1234/diff_cover) requires every staged line to be executed. Files that no unit test loads count as 0%. This needs [uv](https://docs.astral.sh/uv/) for `uvx`.
+- **Integration tests run in CI.** `test/integration/` is committed and runs on every push and pull request; run it locally with `npm test`. Pull requests also have to execute every changed line in `src/` through the integration tests.

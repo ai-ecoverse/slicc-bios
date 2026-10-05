@@ -6,10 +6,8 @@ pre-commit:
       run: npx biome check --no-errors-on-unmatched --files-ignore-unknown=true {staged_files}
     - name: no comments
       run: npm run --silent lint:comments
-    - name: no unit tests
+    - name: no unit tests in git
       run: npm run --silent lint:no-unit-tests
-
-pre-push:
-  jobs:
-    - name: integration tests
-      run: npm test
+    - name: diff coverage
+      glob: "src/**.js"
+      run: npm run --silent coverage:staged
