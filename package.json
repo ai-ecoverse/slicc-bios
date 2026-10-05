@@ -14,15 +14,15 @@
   },
   "scripts": {
     "prepare": "lefthook install",
-    "start": "node test/integration/server.mjs",
+    "start": "node test/integration/chrome.mjs",
     "pretest": "playwright-core install --no-shell chromium",
-    "test": "node --test --test-global-setup=test/integration/global.mjs test/integration/*.test.mjs",
+    "test": "node --test --test-global-setup=node_modules/@ai-ecoverse/slicc-shared-web/harness/global.mjs test/integration/*.test.mjs",
     "test:unit": "mcr -c node_modules/@ai-ecoverse/slicc-shared-web/mcr.config.mjs node --test 'test/unit/**/*.test.mjs'",
     "lint": "slicc-lint",
     "format": "biome check --write ."
   },
   "devDependencies": {
-    "@ai-ecoverse/slicc-shared-web": "1.1.0",
+    "@ai-ecoverse/slicc-shared-web": "1.3.0",
     "@biomejs/biome": "2.5.15",
     "lefthook": "2.1.16",
     "modern-tar": "0.8.5",
