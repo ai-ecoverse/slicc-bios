@@ -9,6 +9,7 @@ export async function watch(page) {
       for (const { type, target } of records) {
         if (type === 'attributes' || target.localName === 'output') {
           const item = target.closest('[data-step]');
+          if (!item) continue;
           const { step, state } = item.dataset;
           const text = item.querySelector('output').value;
           window.bios(JSON.stringify({ type, step, state, text }));

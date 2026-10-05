@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 
-export async function fakeProxy({ origin, key }) {
+export async function fakeProxy({ origin, key, port = 0 }) {
   const probes = [];
   const cors = { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' };
   const server = createServer((req, res) => {
@@ -29,7 +29,7 @@ export async function fakeProxy({ origin, key }) {
       JSON.stringify({ rawFetch: 1, requestBodyStreaming: false, maxRequestBodyBytes: 1024 })
     );
   });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
   return {
     url: `http://127.0.0.1:${server.address().port}`,
     probes,

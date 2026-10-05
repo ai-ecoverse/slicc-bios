@@ -1,10 +1,13 @@
 import { createKernel } from '@ai-ecoverse/slicc-kernel';
 import { kernelBackend } from '@ai-ecoverse/slicc-spectrum';
+import { showNetwork } from './network.js';
 import { pickTransport } from './transport.js';
 import { update } from './update.js';
 
-const { kind, transport } = await pickTransport();
+const network = await pickTransport();
+const { kind, transport } = network;
 document.documentElement.dataset.transport = kind;
+showNetwork(document.querySelector('.network'), network);
 const kernel = await createKernel({
   root: await navigator.storage.getDirectory(),
   network: { transport },
