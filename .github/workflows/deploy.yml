@@ -26,8 +26,6 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - if: github.ref_name == 'main'
-        run: npx --no-install wrangler deploy --config edge/wrangler.json
       - run: node edge/publish.mjs publish "$GITHUB_REF_NAME" >> "$GITHUB_STEP_SUMMARY"
 
   remove:

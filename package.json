@@ -25,7 +25,6 @@
     "@ai-ecoverse/slicc-shared-web": "1.1.0",
     "@biomejs/biome": "2.5.15",
     "lefthook": "2.1.16",
-    "miniflare": "4.20260730.0",
     "modern-tar": "0.8.5",
     "monocart-coverage-reports": "2.13.0",
     "playwright-core": "1.63.0",

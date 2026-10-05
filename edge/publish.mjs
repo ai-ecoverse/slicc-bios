@@ -1,11 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { argv, stdout } from 'node:process';
+import { argv, env, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+const account = '155ec15a52a18a14801e04b019da5e5a';
 const bucket = 'slicc-bios';
-const config = fileURLToPath(new URL('wrangler.json', import.meta.url));
 const root = fileURLToPath(new URL('../src/', import.meta.url));
 const reserved = new Set(['seven', 'www']);
 
@@ -21,11 +21,11 @@ export function label(branch) {
 }
 
 function wrangler(args, input) {
-  return execFileSync(
-    'npx',
-    ['--no-install', 'wrangler', 'r2', 'object', ...args, '--remote', '--config', config],
-    { input, stdio: 'pipe' }
-  );
+  return execFileSync('npx', ['--no-install', 'wrangler', 'r2', 'object', ...args, '--remote'], {
+    input,
+    stdio: 'pipe',
+    env: { ...env, CLOUDFLARE_ACCOUNT_ID: account },
+  });
 }
 
 function files() {
@@ -50,7 +50,7 @@ export function publish(branch) {
   const name = label(branch);
   const { branch: owner = branch, files: before } = previous(name);
   if (owner !== branch)
-    throw new Error(`${name}.sliccy.com already serves ${owner}, rename ${branch}`);
+    throw new Error(`${name}.sliccy.ai already serves ${owner}, rename ${branch}`);
   const current = files();
   for (const file of current) {
     wrangler(['put', `${bucket}/${name}/${file}`, '--file', join(root, file)]);
@@ -59,16 +59,16 @@ export function publish(branch) {
     wrangler(['delete', `${bucket}/${name}/${file}`]);
   }
   wrangler(['put', `${bucket}/${name}.json`, '--pipe'], JSON.stringify({ branch, files: current }));
-  return `https://${name}.sliccy.com/`;
+  return `https://${name}.sliccy.ai/`;
 }
 
 export function remove(branch) {
   const name = label(branch);
   const { branch: owner, files: before } = previous(name);
-  if (owner !== branch) return `https://${name}.sliccy.com/ is not ${branch}, left in place`;
+  if (owner !== branch) return `https://${name}.sliccy.ai/ is not ${branch}, left in place`;
   for (const file of before) wrangler(['delete', `${bucket}/${name}/${file}`]);
   wrangler(['delete', `${bucket}/${name}.json`]);
-  return `https://${name}.sliccy.com/`;
+  return `https://${name}.sliccy.ai/`;
 }
 
 if (argv[1] === fileURLToPath(import.meta.url)) {
