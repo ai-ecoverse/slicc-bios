@@ -23,6 +23,7 @@ test('boots through every step into the page bash wrote into OPFS', async (t) =>
 
   const written = await page.evaluate(() => ({
     title: document.title,
+    kernel: document.getElementById('kernel').textContent,
     stamp: document.getElementById('written').textContent,
     seen: [...document.querySelectorAll('#seen li')].map((item) => item.textContent),
     link: document.querySelector('a').getAttribute('href'),
@@ -32,7 +33,8 @@ test('boots through every step into the page bash wrote into OPFS', async (t) =>
     written.stamp,
     /^Written by boot\.sh in the shared worker at \d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/
   );
-  assert.deepEqual(written.seen, ['index.html', 'os.css', 'os.js']);
+  assert.deepEqual(written.seen, ['connect.js', 'index.html', 'os.css', 'os.js']);
+  assert.equal(written.kernel, 'Connected to the kernel (connection 2)');
   assert.equal(written.link, './');
 });
 
@@ -46,9 +48,9 @@ test('reports each step and the download as it happens', async (t) => {
   assert.deepEqual(bios.texts('kernel'), ['connection #1']);
   assert.ok(bios.texts('bash').some((text) => /^bin\/bash\.wasm [\d.]+MB$/.test(text)));
   assert.match(bios.texts('bash').at(-1), /^bin\/bash, bin\/bash\.wasm 5\.\dMB$/);
-  assert.match(bios.texts('seed')[0], /^os\/\{index\.html,os\.css,os\.js\} [\d.]+kB$/);
+  assert.match(bios.texts('seed')[0], /^os\/\{index\.html,os\.css,os\.js,connect\.js\} [\d.]+kB$/);
   const origin = await page.evaluate(() => new URL('/', location).href);
-  assert.deepEqual(bios.texts('script'), ['wrote os/bash.html after seeing 3 files in os/']);
+  assert.deepEqual(bios.texts('script'), ['wrote os/bash.html after seeing 4 files in os/']);
   assert.deepEqual(bios.texts('intercept'), [origin]);
   assert.deepEqual(bios.texts('navigate'), ['/os/bash.html']);
 });

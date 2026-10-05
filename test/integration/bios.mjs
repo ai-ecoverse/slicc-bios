@@ -39,7 +39,12 @@ export async function landed(page) {
   await page.until(
     () =>
       location.pathname === '/os/bash.html' &&
-      /^Hello from bash 5\.3\.\d+\(1\)-release$/.test(document.getElementById('shell')?.textContent)
+      /^Hello from bash 5\.3\.\d+\(1\)-release$/.test(
+        document.getElementById('shell')?.textContent
+      ) &&
+      /^Connected to the kernel \(connection \d+\)$/.test(
+        document.getElementById('kernel')?.textContent
+      )
   );
 }
 
@@ -48,7 +53,7 @@ export async function ui(page) {
   await page.until(
     () =>
       location.pathname === '/os/' &&
-      document.querySelectorAll('#files li').length === 7 &&
+      document.querySelectorAll('#files li').length === 8 &&
       /^bash\.wasm compiled from OPFS: \d+ exports$/.test(
         document.getElementById('bash').textContent
       )

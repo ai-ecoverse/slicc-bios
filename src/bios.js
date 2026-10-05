@@ -7,7 +7,10 @@ function size(bytes) {
 }
 
 function connect() {
-  const { port } = new SharedWorker(new URL('kernel.js', import.meta.url), 'slicc-kernel');
+  const { port } = new SharedWorker(new URL('kernel.js', import.meta.url), {
+    name: 'slicc-kernel',
+    extendedLifetime: true,
+  });
   const calls = new Map();
   let id = 0;
   port.onmessage = ({ data }) => {
@@ -66,7 +69,7 @@ await step('bash', async (report) => {
 });
 
 await step('seed', async () => {
-  const files = ['index.html', 'os.css', 'os.js'];
+  const files = ['index.html', 'os.css', 'os.js', 'connect.js'];
   const from = new URL('seed/', import.meta.url).href;
   const { bytes } = await kernel('install', { from, to: 'os/', files });
   return `os/{${files.join(',')}} ${size(bytes)}`;
@@ -74,8 +77,8 @@ await step('seed', async () => {
 
 await step('script', async () => {
   const from = new URL('boot.sh', import.meta.url).href;
-  const { output } = await kernel('bash', { from, cwd: 'os' });
-  return output.at(-1);
+  const { output, warm } = await kernel('bash', { from, cwd: 'os' });
+  return `${output.at(-1)}${warm ? ', bash already compiled' : ''}`;
 });
 
 await step('intercept', async () => {

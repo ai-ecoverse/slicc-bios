@@ -1,4 +1,5 @@
 const root = navigator.storage.getDirectory();
+const cache = new Map();
 let connections = 0;
 
 async function open(path, create = false) {
@@ -17,6 +18,14 @@ async function directory(path) {
 
 async function read(path) {
   return (await open(path)).getFile();
+}
+
+async function cached(path, load) {
+  const file = await read(path);
+  const stamp = `${file.size}:${file.lastModified}`;
+  const hit = cache.get(path)?.stamp === stamp;
+  if (!hit) cache.set(path, { stamp, value: load(file) });
+  return { hit, value: await cache.get(path).value };
 }
 
 async function save(handle, data) {
@@ -81,20 +90,20 @@ async function persist(fs, path, dir) {
 
 async function bash({ from, cwd }) {
   const [glue, wasm, script] = await Promise.all([
-    read('bin/bash').then((file) => file.text()),
-    read('bin/bash.wasm').then((file) => file.arrayBuffer()),
+    cached('bin/bash', async (file) => {
+      const glue = (await file.text()).replace(/^#!.*\n/, '');
+      return new Function('Module', `${glue}\nreturn Module;`);
+    }),
+    cached('bin/bash.wasm', async (file) => WebAssembly.compile(await file.arrayBuffer())),
     get(from).then((response) => response.text()),
   ]);
   const output = [];
   const ready = Promise.withResolvers();
-  const shell = new Function('Module', `${glue.replace(/^#!.*\n/, '')}\nreturn Module;`)({
+  const shell = glue.value({
     noInitialRun: true,
     thisProgram: 'bash',
     instantiateWasm: (imports, receive) => {
-      WebAssembly.instantiate(wasm, imports).then(
-        ({ instance }) => receive(instance),
-        ready.reject
-      );
+      WebAssembly.instantiate(wasm.value, imports).then(receive, ready.reject);
     },
     print: (line) => output.push(line),
     printErr: (line) => output.push(line),
@@ -108,7 +117,7 @@ async function bash({ from, cwd }) {
   const status = await shell.sliccRunMain(['-c', script]);
   await persist(shell.FS, `/${cwd}`, dir);
   if (status !== 0) throw new Error(`bash exited with ${status}: ${output.at(-1)}`);
-  return { status, output };
+  return { status, output, warm: wasm.hit };
 }
 
 async function list(dir, prefix) {

@@ -41,6 +41,7 @@ test('lists everything in OPFS in the seed UI next to the page bash wrote', asyn
     /^bin\/bash[\d.]+kB$/,
     /^bin\/bash\.wasm[\d.]+MB$/,
     /^os\/bash\.html[\d.]+k?B$/,
+    /^os\/connect\.js[\d.]+k?B$/,
     /^os\/index\.html[\d.]+k?B$/,
     /^os\/os\.css[\d.]+k?B$/,
     /^os\/os\.js[\d.]+k?B$/,
@@ -51,10 +52,9 @@ test('lists everything in OPFS in the seed UI next to the page bash wrote', asyn
   assert.deepEqual(page.errors, []);
 });
 
-test('shares one kernel between a tab on the UI and a tab booting', async (t) => {
+test('shares one kernel between the page bash wrote and a tab booting', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
-  await ui(page);
 
   const second = await page.tab();
   const bios = await watch(second);

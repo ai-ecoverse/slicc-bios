@@ -5,12 +5,12 @@ A slim loader for [SLICC](https://github.com/ai-ecoverse/slicc), from the boot-p
 The page shows seven boot steps as they run:
 
 1. **Acquire OPFS** – open the origin private file system and ask for persistent storage.
-2. **Create shared worker** – start `kernel.js`, which does all OPFS writes and is shared by every tab.
+2. **Create shared worker** – start `kernel.js`, which does all OPFS writes and is shared by every tab. It is created with `extendedLifetime`, so it survives the navigation from the BIOS to the UI.
 3. **Download wasm bash into OPFS** – the kernel streams `bin/bash` and `bin/bash.wasm` from [`@ai-ecoverse/wasm-bash`](https://www.npmjs.com/package/@ai-ecoverse/wasm-bash) on npm (through jsDelivr) into OPFS and records the source and size in `var/lib/bios/wasm-bash.json`. Later boots skip the download when that receipt names the same version and the files in OPFS still add up to the recorded size.
 4. **Add UI page to OPFS** – the kernel copies `src/seed/` to `os/` in OPFS. This is a stand-in until the UI ships as a downloadable asset.
-5. **Run bash in the shared worker** – the kernel loads the bash glue and `bash.wasm` straight from OPFS, copies OPFS `os/` into the shell's in-memory file system, runs [`src/boot.sh`](src/boot.sh) there, and writes the results back to OPFS. The script generates `os/bash.html`. A non-zero exit halts the boot with bash's last line of output.
+5. **Run bash in the shared worker** – the kernel loads the bash glue and `bash.wasm` straight from OPFS and keeps the evaluated glue and the compiled module until those files change. It copies OPFS `os/` into the shell's in-memory file system, runs [`src/boot.sh`](src/boot.sh) there, and writes the results back to OPFS. The script generates `os/bash.html`. A non-zero exit halts the boot with bash's last line of output.
 6. **Intercept same-origin requests** – `sw.js` answers any in-scope request whose path exists in OPFS and passes everything else to the network.
-7. **Open the page bash wrote** – navigate to `os/bash.html` with a cross-document view transition. It links to the seed UI in `os/`, which lists OPFS through the kernel and compiles `bash.wasm` straight from OPFS.
+7. **Open the page bash wrote** – navigate to `os/bash.html` with a cross-document view transition. The page connects to the same kernel through `os/connect.js` and links to the seed UI in `os/`, which lists OPFS through the kernel and compiles `bash.wasm` straight from OPFS.
 
 ## Develop
 

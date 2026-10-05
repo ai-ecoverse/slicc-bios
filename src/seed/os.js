@@ -1,4 +1,5 @@
-const { port } = new SharedWorker(new URL('../kernel.js', import.meta.url), 'slicc-kernel');
+import { kernel } from './connect.js';
+
 const units = ['B', 'kB', 'MB', 'GB'];
 
 function size(bytes) {
@@ -6,8 +7,8 @@ function size(bytes) {
   return `${Number((bytes / 1000 ** exponent).toFixed(1))}${units[exponent]}`;
 }
 
-port.onmessage = ({ data: { result } }) => {
-  const items = result.map((file) => {
+kernel('list').then((files) => {
+  const items = files.map((file) => {
     const item = document.createElement('li');
     const bytes = document.createElement('span');
     bytes.textContent = size(file.size);
@@ -15,8 +16,7 @@ port.onmessage = ({ data: { result } }) => {
     return item;
   });
   document.getElementById('files').replaceChildren(...items);
-};
-port.postMessage({ id: 1, op: 'list' });
+});
 
 const bash = await WebAssembly.compileStreaming(fetch('../bin/bash.wasm'));
 const exports = WebAssembly.Module.exports(bash).length;

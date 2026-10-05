@@ -8,12 +8,14 @@ after(() => chrome.close());
 
 const downloaded = /^bin\/bash, bin\/bash\.wasm 5\.\dMB$/;
 
-async function reboot(page) {
+const ran = 'wrote os/bash.html after seeing 5 files in os/';
+
+async function reboot(page, script) {
   chrome.cdn.requests.length = 0;
   const bios = await watch(page);
   await boot(page);
   assert.deepEqual(bios.states(), booted);
-  assert.deepEqual(bios.texts('script'), ['wrote os/bash.html after seeing 4 files in os/']);
+  assert.deepEqual(bios.texts('script'), [script]);
   return bios.texts('bash').at(-1);
 }
 
@@ -22,7 +24,8 @@ test('reuses the bash already in OPFS on reboot', async (t) => {
   await boot(page);
   assert.equal(chrome.cdn.requests.length, 2);
 
-  assert.match(await reboot(page), /^bin\/bash, bin\/bash\.wasm 5\.\dMB, already in OPFS$/);
+  const bash = await reboot(page, `${ran}, bash already compiled`);
+  assert.match(bash, /^bin\/bash, bin\/bash\.wasm 5\.\dMB, already in OPFS$/);
   assert.deepEqual(chrome.cdn.requests, []);
 });
 
@@ -34,7 +37,7 @@ test('downloads bash again when a file in OPFS is missing', async (t) => {
     await bin.removeEntry('bash.wasm');
   });
 
-  assert.match(await reboot(page), downloaded);
+  assert.match(await reboot(page, ran), downloaded);
   assert.equal(chrome.cdn.requests.length, 2);
 });
 
@@ -50,6 +53,6 @@ test('downloads bash again when the receipt is for another version', async (t) =
     await receipt.close();
   });
 
-  assert.match(await reboot(page), downloaded);
+  assert.match(await reboot(page, ran), downloaded);
   assert.equal(chrome.cdn.requests.length, 2);
 });

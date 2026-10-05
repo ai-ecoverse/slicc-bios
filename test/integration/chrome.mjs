@@ -140,7 +140,8 @@ export async function launch() {
       const [{ result }, { profile }] = await Promise.all([coverage, cpu]).catch(() => [{}, {}]);
       if (!result || !run) return;
       cdp.send('Profiler.start', {}, sessionId).catch(() => {});
-      run.scripts.push(...result.filter((script) => script.url.startsWith(server.url)));
+      const ours = (script) => script.url.startsWith(server.url) && script.url.endsWith('.js');
+      run.scripts.push(...result.filter(ours));
       const name = target.type === 'page' ? 'page' : basename(target.url);
       const file = new URL(`${String(++run.dumps).padStart(2, '0')}-${name}.cpuprofile`, run.dir);
       await writeFile(file, JSON.stringify(profile));
