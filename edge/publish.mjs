@@ -35,10 +35,14 @@ function files() {
     .sort();
 }
 
-function previous(name) {
+function prefix(name) {
+  return name === 'seven' ? name : `branches/${name}`;
+}
+
+function previous(at) {
   let manifest;
   try {
-    manifest = wrangler(['get', `${bucket}/${name}.json`, '--pipe']);
+    manifest = wrangler(['get', `${bucket}/${at}.json`, '--pipe']);
   } catch (error) {
     if (`${error.stderr}`.includes('The specified key does not exist')) return { files: [] };
     throw error;
@@ -48,30 +52,22 @@ function previous(name) {
 
 export function publish(branch) {
   const name = label(branch);
-  const { branch: owner = branch, files: before } = previous(name);
-  if (owner !== branch)
+  const at = prefix(name);
+  const { branch: owner = branch, files: before } = previous(at);
+  if (owner !== branch) {
     throw new Error(`${name}.sliccy.ai already serves ${owner}, rename ${branch}`);
+  }
   const current = files();
   for (const file of current) {
-    wrangler(['put', `${bucket}/${name}/${file}`, '--file', join(root, file)]);
+    wrangler(['put', `${bucket}/${at}/${file}`, '--file', join(root, file)]);
   }
   for (const file of before.filter((file) => !current.includes(file))) {
-    wrangler(['delete', `${bucket}/${name}/${file}`]);
+    wrangler(['delete', `${bucket}/${at}/${file}`]);
   }
-  wrangler(['put', `${bucket}/${name}.json`, '--pipe'], JSON.stringify({ branch, files: current }));
-  return `https://${name}.sliccy.ai/`;
-}
-
-export function remove(branch) {
-  const name = label(branch);
-  const { branch: owner, files: before } = previous(name);
-  if (owner !== branch) return `https://${name}.sliccy.ai/ is not ${branch}, left in place`;
-  for (const file of before) wrangler(['delete', `${bucket}/${name}/${file}`]);
-  wrangler(['delete', `${bucket}/${name}.json`]);
+  wrangler(['put', `${bucket}/${at}.json`, '--pipe'], JSON.stringify({ branch, files: current }));
   return `https://${name}.sliccy.ai/`;
 }
 
 if (argv[1] === fileURLToPath(import.meta.url)) {
-  const [command, branch] = argv.slice(2);
-  stdout.write(`${{ publish, remove }[command](branch)}\n`);
+  stdout.write(`${publish(argv[2])}\n`);
 }

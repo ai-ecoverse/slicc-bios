@@ -3,18 +3,16 @@ name: Deploy
 on:
   push:
     branches: ['**']
-  delete:
 
 permissions:
   contents: read
 
 concurrency:
-  group: deploy-${{ github.event_name == 'delete' && github.event.ref || github.ref_name }}
+  group: deploy-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   publish:
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -26,20 +24,4 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: node edge/publish.mjs publish "$GITHUB_REF_NAME" >> "$GITHUB_STEP_SUMMARY"
-
-  remove:
-    if: github.event_name == 'delete' && github.event.ref_type == 'branch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      BRANCH: ${{ github.event.ref }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: node edge/publish.mjs remove "$BRANCH" >> "$GITHUB_STEP_SUMMARY"
+      - run: node edge/publish.mjs "$GITHUB_REF_NAME" >> "$GITHUB_STEP_SUMMARY"

@@ -36,8 +36,9 @@ The profiles are recorded with coverage switched on, so absolute timings run hig
 
 The hosts are served by the [sliccy-ai](https://github.com/ai-ecoverse/sliccy-ai) worker from the R2 bucket `slicc-bios`. This repo only publishes into that bucket:
 
-- [`edge/publish.mjs`](edge/publish.mjs) `publish <branch>` uploads `src/` under the branch's label and deletes what the previous upload had and this one doesn't. `remove <branch>` deletes a branch's files. A manifest at `<label>.json` records which branch owns the label, so two branches that map to the same label can't overwrite each other.
-- [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) publishes on every push and removes a branch's files when the branch is deleted. It needs the `CLOUDFLARE_API_TOKEN` secret, an account token with Workers R2 Storage Write.
+- [`edge/publish.mjs`](edge/publish.mjs) `<branch>` uploads `src/` to `seven/` for `main` and to `branches/<label>/` for every other branch, and deletes what the previous upload had and this one doesn't. A manifest next to it (`seven.json`, `branches/<label>.json`) records which branch owns the label, so two branches that map to the same label can't overwrite each other.
+- The bucket expires everything under `branches/` 30 days after upload. Every push uploads all files again, so a branch stays up while it's active and disappears a month after its last push. Nothing needs to be cleaned up when a branch is deleted.
+- [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) publishes on every push. It needs the `CLOUDFLARE_API_TOKEN` secret, an account token with Workers R2 Storage Write.
 
 ## Rules
 
