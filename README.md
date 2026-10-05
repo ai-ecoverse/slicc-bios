@@ -9,7 +9,17 @@ The page shows six boot steps as they run:
 3. **Install packages from npm into OPFS** – the installer reads [`src/packages/package-lock.json`](src/packages/package-lock.json), the lockfile the BIOS ships with. For every locked package it downloads the tarball from `registry.npmjs.org` and checks its `integrity`, then unpacks it with the built-in `DecompressionStream` and [`modern-tar`](https://github.com/ayuhito/modern-tar) into OPFS at its lockfile path (`node_modules/…`). It records a receipt in `var/lib/bios/`. Packages whose receipt matches the lockfile's integrity and whose files are still there are not downloaded again, so pinning a new version replaces just that package. Replacing a package keeps its nested `node_modules`, and packages the lockfile no longer lists are deleted along with their receipts.
 4. **Add UI page to OPFS** – the installer copies `src/seed/` to `os/` in OPFS. This is a stand-in until the UI ships as a downloadable asset.
 5. **Intercept same-origin requests** – `sw.js` answers any in-scope request whose path exists in OPFS and passes everything else to the network. Everything it serves from OPFS carries `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy: require-corp` and `Cross-Origin-Resource-Policy: same-origin`, so the UI page and the workers it starts are cross-origin isolated.
-6. **Serve UI from OPFS** – navigate to `os/` with a cross-document view transition. That page imports [`@ai-ecoverse/slicc-kernel`](https://github.com/ai-ecoverse/slicc-kernel) and [`@ai-ecoverse/slicc-spectrum`](https://github.com/ai-ecoverse/slicc-spectrum) from `node_modules/` in OPFS through an import map, starts the kernel on the OPFS root and runs `bash -i` in a `<slicc-terminal>`. Commands come from the installed packages (`wasm-bash` and `wasm-coreutils`), the shell starts in `/home`, and whatever it writes stays in OPFS across reloads.
+6. **Serve UI from OPFS** – navigate to `os/` (keeping the URL fragment) with a cross-document view transition. That page imports [`@ai-ecoverse/slicc-kernel`](https://github.com/ai-ecoverse/slicc-kernel) and [`@ai-ecoverse/slicc-spectrum`](https://github.com/ai-ecoverse/slicc-spectrum) from `node_modules/` in OPFS through an import map, starts the kernel on the OPFS root and runs `bash -i` in a `<slicc-terminal>`. Commands come from the installed packages (`wasm-bash` and `wasm-coreutils`), the shell starts in `/home`, and whatever it writes stays in OPFS across reloads.
+
+## Network
+
+Before the kernel starts, `os/transport.js` picks how programs reach the network. The first of these that applies wins:
+
+1. **A local proxy:** [slicc-node](https://github.com/ai-ecoverse/slicc-node) (`npx @ai-ecoverse/slicc-node`) or slicc-swift. The launcher opens `https://seven.sliccy.ai/#proxy=<url>&key=<key>`. The page takes both from the fragment and removes them from the address bar. It accepts only a plain `http://` origin on `127.0.0.1`, `localhost` or `[::1]`, so a link can't send traffic elsewhere. It keeps them in IndexedDB (`slicc-os`, store `transport`), so a reload keeps using the proxy. Each load checks the proxy with `probeLocalProxy`; if it is gone or refuses the key (every proxy process mints a new one), the page forgets it and falls through.
+2. **[slicc-extension](https://github.com/ai-ecoverse/slicc-extension):** when the extension defines `globalThis.sliccExtension`, the kernel uses `fetchTransport({ fetch: sliccExtension.fetch })`.
+3. **The page's own `fetch`:** `fetchTransport()`, bound by CORS.
+
+The choice is in `document.documentElement.dataset.transport`: `local-proxy`, `extension` or `page`.
 
 ## Develop
 
