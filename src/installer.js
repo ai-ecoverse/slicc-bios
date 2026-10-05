@@ -76,7 +76,7 @@ async function unpack(bytes, path) {
   for await (const { header, body } of gzip.pipeThrough(createTarDecoder())) {
     const name = header.name.slice(header.name.indexOf('/') + 1);
     if (header.type === 'file' && name) {
-      await body.pipeTo(await (await open(`${path}/${name}`, true)).createWritable());
+      await save(`${path}/${name}`, await new Response(body).arrayBuffer());
     } else {
       await body.cancel();
     }
@@ -136,16 +136,10 @@ async function packages({ from }, progress) {
 async function install({ from, to = '', files }, progress) {
   let bytes = 0;
   for (const file of files) {
-    const response = await get(new URL(file, from));
-    const writable = await (await open(to + file, true)).createWritable();
-    const counter = new TransformStream({
-      transform(chunk, controller) {
-        bytes += chunk.byteLength;
-        progress({ file, bytes });
-        controller.enqueue(chunk);
-      },
-    });
-    await response.body.pipeThrough(counter).pipeTo(writable);
+    const data = await (await get(new URL(file, from))).arrayBuffer();
+    await save(to + file, data);
+    bytes += data.byteLength;
+    progress({ file, bytes });
   }
   return { files: files.length, bytes };
 }
