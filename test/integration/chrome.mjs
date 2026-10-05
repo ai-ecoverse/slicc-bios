@@ -8,7 +8,7 @@ import { artifacts, raw, slug, source } from './artifacts.mjs';
 import { connect } from './cdp.mjs';
 import { serve } from './server.mjs';
 
-const CDN = 'https://cdn.jsdelivr.net/';
+const remotes = ['https://cdn.jsdelivr.net/', 'https://registry.npmjs.org/'];
 const cache = new URL('../../node_modules/.cache/slicc-bios-cdn/', import.meta.url);
 const profiled = new Set(['page', 'service_worker', 'shared_worker']);
 const cors = [{ name: 'access-control-allow-origin', value: '*' }];
@@ -29,7 +29,8 @@ const flags = [
 ];
 
 async function download(url) {
-  const file = new URL(url.slice(CDN.length), cache);
+  const { host, pathname } = new URL(url);
+  const file = new URL(`${host}${pathname}`, cache);
   const hit = await readFile(file).catch(() => null);
   if (hit) return hit;
   const response = await fetch(url);
@@ -129,7 +130,7 @@ export async function launch() {
   const cdp = await connect(url);
   const sessions = new Map();
   const tabs = new Map();
-  const cdn = { status: 0, requests: [] };
+  const cdn = { status: 0, corrupt: false, requests: [] };
   let run = null;
 
   async function checkpoint() {
@@ -140,7 +141,8 @@ export async function launch() {
       const [{ result }, { profile }] = await Promise.all([coverage, cpu]).catch(() => [{}, {}]);
       if (!result || !run) return;
       cdp.send('Profiler.start', {}, sessionId).catch(() => {});
-      run.scripts.push(...result.filter((script) => script.url.startsWith(server.url)));
+      const ours = (script) => script.url.startsWith(server.url) && script.url.endsWith('.js');
+      run.scripts.push(...result.filter(ours));
       const name = target.type === 'page' ? 'page' : basename(target.url);
       const file = new URL(`${String(++run.dumps).padStart(2, '0')}-${name}.cpuprofile`, run.dir);
       await writeFile(file, JSON.stringify(profile));
@@ -153,6 +155,7 @@ export async function launch() {
     if (profiled.has(targetInfo.type)) {
       sessions.set(sessionId, targetInfo);
       commands.push(
+        ['Runtime.enable'],
         ['Profiler.enable'],
         ['Profiler.setSamplingInterval', { interval: 100 }],
         ['Profiler.startPreciseCoverage', { callCount: true, detailed: true }],
@@ -161,7 +164,6 @@ export async function launch() {
     }
     if (targetInfo.type === 'page') {
       commands.push(
-        ['Runtime.enable'],
         ['Network.enable'],
         ['Debugger.enable'],
         ['Page.enable'],
@@ -190,16 +192,25 @@ export async function launch() {
     return tabs.get(targetId);
   }
 
+  function log(sessionId, line) {
+    const target = sessions.get(sessionId);
+    if (!run || target?.browserContextId !== run.context) return;
+    const name = target.type === 'page' ? 'page' : basename(target.url);
+    run.console.push(`${name}: ${line}`);
+  }
+
   async function intercept({ requestId, request }) {
     cdn.requests.push(request.url);
     const failure = { requestId, responseCode: cdn.status, responseHeaders: cors };
     if (cdn.status) return cdp.send('Fetch.fulfillRequest', failure);
     const body = await download(request.url).catch(() => null);
     if (!body) return cdp.send('Fetch.failRequest', { requestId, errorReason: 'Failed' });
+    if (cdn.corrupt) body[body.length - 1] ^= 0xff;
+    const type = request.url.endsWith('.js') ? 'text/javascript' : 'application/octet-stream';
     return cdp.send('Fetch.fulfillRequest', {
       requestId,
       responseCode: 200,
-      responseHeaders: cors,
+      responseHeaders: [...cors, { name: 'content-type', value: type }],
       body: body.toString('base64'),
     });
   }
@@ -208,12 +219,21 @@ export async function launch() {
     if (method === 'Target.attachedToTarget') await attach(params).catch(() => {});
     if (method === 'Target.detachedFromTarget') sessions.delete(params.sessionId);
     if (method === 'Fetch.requestPaused') await intercept(params);
+    if (method === 'Runtime.consoleAPICalled') {
+      const text = params.args.map((arg) => arg.value ?? arg.description).join(' ');
+      log(sessionId, `${params.type} ${text}`);
+    }
+    if (method === 'Runtime.exceptionThrown') {
+      const { exception, text } = params.exceptionDetails;
+      log(sessionId, `uncaught ${exception?.description ?? text}`);
+    }
     if (method === 'Debugger.paused') {
       await checkpoint();
       await cdp.send('Debugger.resume', {}, sessionId).catch(() => {});
     }
   });
-  await cdp.send('Fetch.enable', { patterns: [{ urlPattern: `${CDN}*` }] });
+  const patterns = remotes.map((remote) => ({ urlPattern: `${remote}*` }));
+  await cdp.send('Fetch.enable', { patterns });
   await cdp.send('Target.setAutoAttach', {
     autoAttach: true,
     waitForDebuggerOnStart: true,
@@ -240,9 +260,14 @@ export async function launch() {
     });
     await mkdir(raw, { recursive: true });
     await writeFile(new URL(`${run.name}.json`, raw), JSON.stringify(await Promise.all(entries)));
+    await writeFile(
+      new URL('console.log', run.dir),
+      run.console.map((line) => `${line}\n`).join('')
+    );
     for (const opened of pages) opened.dispose();
     run = null;
     cdn.status = 0;
+    cdn.corrupt = false;
     cdn.requests.length = 0;
     await cdp.send('Target.disposeBrowserContext', { browserContextId });
   }
@@ -250,6 +275,7 @@ export async function launch() {
   return {
     cdn,
     requests: server.requests,
+    overrides: server.overrides,
     async page(t) {
       const suite = slug(basename(t.filePath, '.test.mjs'));
       const dir = new URL(`${suite}/${slug(t.name)}/`, artifacts);
@@ -260,9 +286,11 @@ export async function launch() {
         name: `${suite}-${slug(t.name)}`,
         context: browserContextId,
         scripts: [],
+        console: [],
         dumps: 0,
       };
       server.requests.length = 0;
+      server.overrides.clear();
       const pages = [];
       t.after(() => finish(pages, browserContextId));
       const another = async () => {

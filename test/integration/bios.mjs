@@ -1,4 +1,4 @@
-export const steps = ['opfs', 'kernel', 'bash', 'seed', 'intercept', 'navigate'];
+export const steps = ['opfs', 'kernel', 'packages', 'seed', 'intercept', 'navigate'];
 export const booted = steps.flatMap((step) => [`${step}:active`, `${step}:done`]);
 
 export async function watch(page) {
@@ -39,7 +39,7 @@ export async function ready(page) {
   await page.until(
     () =>
       location.pathname === '/os/' &&
-      document.querySelectorAll('#files li').length === 6 &&
+      document.querySelectorAll('#files li').length >= 9 &&
       /^bash\.wasm compiled from OPFS: \d+ exports$/.test(
         document.getElementById('bash').textContent
       )
