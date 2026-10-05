@@ -29,12 +29,12 @@ test('keeps serving the UI from OPFS after the network copy is gone', async (t) 
   assert.ok(!chrome.requests.some((path) => path.startsWith('/node_modules/')));
 });
 
-test('shares one kernel between tabs', async (t) => {
+test('shares one installer between tabs', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
 
   const second = await page.tab();
   const bios = await watch(second);
   await boot(second);
-  assert.match(bios.texts('kernel')[0], /^connection #[2-9]$/);
+  assert.match(bios.texts('installer')[0], /^connection #[2-9]$/);
 });

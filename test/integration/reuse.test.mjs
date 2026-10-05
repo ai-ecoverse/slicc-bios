@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { boot, booted, eventually, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
@@ -7,6 +8,9 @@ const chrome = await launch();
 after(() => chrome.close());
 
 const bash = 'node_modules/@ai-ecoverse/wasm-bash';
+const shipped = JSON.parse(
+  await readFile(new URL('../../src/packages/package-lock.json', import.meta.url), 'utf8')
+);
 const lit = {
   '': {
     name: 'lit-fixture',
@@ -83,9 +87,9 @@ async function opfs(page, path) {
 test('reuses packages already in OPFS on reboot', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
-  assert.equal(downloads().length, 1);
+  assert.equal(downloads().length, 4);
 
-  assert.equal(await reboot(page), '0/1 downloaded from npm, 0B');
+  assert.equal(await reboot(page), '0/4 downloaded from npm, 0B');
   assert.deepEqual(downloads(), []);
 });
 
@@ -96,10 +100,11 @@ test('installs a package again when its directory is gone', async (t) => {
     const modules = await (await navigator.storage.getDirectory()).getDirectoryHandle(
       'node_modules'
     );
-    await modules.removeEntry('@ai-ecoverse', { recursive: true });
+    const scope = await modules.getDirectoryHandle('@ai-ecoverse');
+    await scope.removeEntry('wasm-bash', { recursive: true });
   });
 
-  assert.match(await reboot(page), /^1\/1 downloaded from npm, [\d.]+MB$/);
+  assert.match(await reboot(page), /^1\/4 downloaded from npm, [\d.]+MB$/);
   assert.deepEqual(downloads(), [
     'https://registry.npmjs.org/@ai-ecoverse/wasm-bash/-/wasm-bash-5.3.0-7.tgz',
   ]);
@@ -111,7 +116,7 @@ test('replaces a package when the lockfile pins another version', async (t) => {
   chrome.overrides.set(
     '/packages/package-lock.json',
     lockfile({
-      '': { name: 'slicc-bios-packages' },
+      ...shipped.packages,
       [bash]: {
         version: '5.3.0-6',
         resolved: 'https://registry.npmjs.org/@ai-ecoverse/wasm-bash/-/wasm-bash-5.3.0-6.tgz',
@@ -121,7 +126,7 @@ test('replaces a package when the lockfile pins another version', async (t) => {
     })
   );
 
-  assert.match(await reboot(page), /^1\/1 downloaded from npm, [\d.]+MB$/);
+  assert.match(await reboot(page), /^1\/4 downloaded from npm, [\d.]+MB$/);
   assert.equal(JSON.parse(await opfs(page, `${bash}/package.json`)).version, '5.3.0-6');
   const receipt = JSON.parse(await opfs(page, `var/lib/bios/${bash}.json`));
   assert.equal(
@@ -181,7 +186,7 @@ test('removes packages the lockfile no longer lists', async (t) => {
   await arrive(page);
   chrome.overrides.delete('/packages/package-lock.json');
 
-  assert.match(await reboot(page), /^1\/1 downloaded from npm, [\d.]+MB, 6 removed$/);
+  assert.match(await reboot(page), /^4\/4 downloaded from npm, [\d.]+MB, 6 removed$/);
   const left = await page.evaluate(async () => {
     const paths = [];
     const walk = async (dir, prefix) => {

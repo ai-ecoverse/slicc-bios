@@ -6,7 +6,7 @@ function size(bytes) {
 }
 
 function connect() {
-  const { port } = new SharedWorker(new URL('kernel.js', import.meta.url), 'slicc-kernel');
+  const { port } = new SharedWorker(new URL('installer.js', import.meta.url), 'slicc-installer');
   const calls = new Map();
   let id = 0;
   port.onmessage = ({ data }) => {
@@ -40,7 +40,7 @@ async function step(name, task) {
   document.querySelector('progress').value += 1;
 }
 
-let kernel;
+let installer;
 
 await step('opfs', async () => {
   await navigator.storage.getDirectory();
@@ -49,16 +49,18 @@ await step('opfs', async () => {
   return `${persisted ? 'persistent' : 'best effort'}, ${size(quota - usage)} free`;
 });
 
-await step('kernel', async () => {
-  kernel = connect();
-  const { connections } = await kernel('hello');
+await step('installer', async () => {
+  installer = connect();
+  const { connections } = await installer('hello');
   return `connection #${connections}`;
 });
 
 await step('packages', async (report) => {
   const from = new URL('packages/package-lock.json', import.meta.url).href;
-  const { packages, downloaded, removed, bytes } = await kernel('packages', { from }, (progress) =>
-    report(`${progress.done}/${progress.total} ${progress.path}`)
+  const { packages, downloaded, removed, bytes } = await installer(
+    'packages',
+    { from },
+    (progress) => report(`${progress.done}/${progress.total} ${progress.path}`)
   );
   const pruned = removed ? `, ${removed} removed` : '';
   return `${downloaded}/${packages} downloaded from npm, ${size(bytes)}${pruned}`;
@@ -67,7 +69,7 @@ await step('packages', async (report) => {
 await step('seed', async () => {
   const files = ['index.html', 'os.css', 'os.js'];
   const from = new URL('seed/', import.meta.url).href;
-  const { bytes } = await kernel('install', { from, to: 'os/', files });
+  const { bytes } = await installer('install', { from, to: 'os/', files });
   return `os/{${files.join(',')}} ${size(bytes)}`;
 });
 

@@ -6,6 +6,12 @@ const types = {
   wasm: 'application/wasm',
 };
 
+const isolation = {
+  'cross-origin-opener-policy': 'same-origin',
+  'cross-origin-embedder-policy': 'require-corp',
+  'cross-origin-resource-policy': 'same-origin',
+};
+
 async function read(path) {
   const names = path.split('/');
   const name = names.pop() || 'index.html';
@@ -21,7 +27,9 @@ async function serve(request) {
   try {
     const file = await read(path);
     const type = types[file.name.split('.').pop()] ?? 'application/octet-stream';
-    return new Response(file, { headers: { 'content-type': type, 'x-served-from': 'opfs' } });
+    return new Response(file, {
+      headers: { ...isolation, 'content-type': type, 'x-served-from': 'opfs' },
+    });
   } catch {
     return fetch(request);
   }

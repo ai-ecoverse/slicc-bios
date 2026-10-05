@@ -9,16 +9,21 @@
       navigation: auto;
     }
     </style>
+    <script type="importmap">
+    {
+      "imports": {
+        "@ai-ecoverse/slicc-kernel": "../node_modules/@ai-ecoverse/slicc-kernel/dist/index.js",
+        "@ai-ecoverse/slicc-spectrum": "../node_modules/@ai-ecoverse/slicc-spectrum/dist/slicc-terminal.js"
+      }
+    }
+    </script>
     <link rel="stylesheet" href="os.css">
     <script type="module" src="os.js"></script>
   </head>
   <body>
     <main>
       <h1 class="brand">SLICC</h1>
-      <p>This page was served from OPFS by the slicc-bios service worker.</p>
-      <p id="bash">Compiling bash.wasm…</p>
-      <h2>OPFS</h2>
-      <ul id="files"></ul>
+      <slicc-terminal></slicc-terminal>
     </main>
   </body>
 </html>
