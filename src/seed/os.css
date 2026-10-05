@@ -37,3 +37,37 @@ slicc-terminal {
   --slicc-terminal-height: min(32rem, 100vh - 12rem);
   --slicc-terminal-font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
+
+.update {
+  display: flex;
+  gap: 1rem;
+  align-items: baseline;
+  margin: 0.75rem 0 0;
+  color: #7c7c84;
+}
+
+.update[hidden] {
+  display: none;
+}
+
+.update[data-state="ready"] {
+  color: #ececec;
+}
+
+.update[data-state="failed"] {
+  color: #ff4d5a;
+}
+
+.update button {
+  font: inherit;
+  color: #0c0c0f;
+  background: var(--accent);
+  border: 0;
+  border-radius: 0.25rem;
+  padding: 0 0.75rem;
+  cursor: pointer;
+}
+
+.update:not([data-state="ready"]) button {
+  display: none;
+}

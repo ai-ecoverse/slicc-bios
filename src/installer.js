@@ -83,14 +83,25 @@ async function unpack(bytes, path) {
   }
 }
 
-async function current(path, integrity) {
-  const receipt = JSON.parse(await (await read(`var/lib/bios/${path}.json`)).text());
+async function linked() {
+  try {
+    return JSON.parse(await (await read('node_modules/.modules.yaml')).text()).hoistedLocations;
+  } catch {
+    return {};
+  }
+}
+
+async function current(path, { version, integrity }, pnpm) {
   await read(`${path}/package.json`);
+  const name = path.slice(path.lastIndexOf('node_modules/') + 'node_modules/'.length);
+  if (pnpm[`${name}@${version}`]?.includes(path)) return true;
+  const receipt = JSON.parse(await (await read(`var/lib/bios/${path}.json`)).text());
   return receipt.integrity === integrity;
 }
 
-async function add([path, { resolved, integrity }]) {
-  if (await current(path, integrity).catch(() => false)) return 0;
+async function add([path, entry], pnpm) {
+  const { resolved, integrity } = entry;
+  if (await current(path, entry, pnpm).catch(() => false)) return 0;
   const bytes = await (await get(resolved)).arrayBuffer();
   await verify(bytes, integrity, path);
   await clear(path);
@@ -112,9 +123,14 @@ async function prune(locked) {
 }
 
 async function packages({ from }, progress) {
+  return navigator.locks.request('slicc-packages', () => replay(from, progress));
+}
+
+async function replay(from, progress) {
   const lock = await (await get(from)).json();
   const queue = Object.entries(lock.packages).filter(([path, entry]) => path && entry.resolved);
   const removed = await prune(new Set(queue.map(([path]) => path)));
+  const pnpm = (await linked()) ?? {};
   const total = queue.length;
   let done = 0;
   let downloaded = 0;
@@ -122,7 +138,7 @@ async function packages({ from }, progress) {
   const worker = async () => {
     while (queue.length) {
       const entry = queue.shift();
-      const size = await add(entry);
+      const size = await add(entry, pnpm);
       done += 1;
       downloaded += size ? 1 : 0;
       bytes += size;
@@ -130,6 +146,7 @@ async function packages({ from }, progress) {
     }
   };
   await Promise.all(Array.from({ length: 4 }, worker));
+  await install({ from: new URL('./', from), files: ['package.json', 'pnpm-lock.yaml'] }, () => {});
   return { packages: total, downloaded, removed, bytes };
 }
 

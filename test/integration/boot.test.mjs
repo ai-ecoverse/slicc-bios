@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { boot, booted, eventually, opfs, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch();
 after(() => chrome.close());
+
+const shipped = JSON.parse(
+  await readFile(new URL('../../src/packages/package.json', import.meta.url), 'utf8')
+);
 
 test('boots through every step into the UI served from OPFS', async (t) => {
   const page = await chrome.page(t);
@@ -20,13 +25,13 @@ test('boots through every step into the UI served from OPFS', async (t) => {
   assert.deepEqual(page.errors, []);
 
   const files = await opfs(page);
-  for (const name of ['slicc-kernel', 'slicc-spectrum', 'wasm-bash', 'wasm-coreutils']) {
-    assert.ok(files.includes(`node_modules/@ai-ecoverse/${name}/package.json`), name);
-    assert.ok(files.includes(`var/lib/bios/node_modules/@ai-ecoverse/${name}.json`), name);
+  for (const name of Object.keys(shipped.dependencies)) {
+    assert.ok(files.includes(`node_modules/${name}/package.json`), name);
+    assert.ok(files.includes(`var/lib/bios/node_modules/${name}.json`), name);
   }
   assert.deepEqual(
     files.filter((path) => path.startsWith('os/')),
-    ['os/index.html', 'os/os.css', 'os/os.js']
+    ['os/index.html', 'os/os.css', 'os/os.js', 'os/update.js']
   );
   assert.equal(await page.evaluate(() => crossOriginIsolated), true);
   assert.equal(ui.headers['cross-origin-opener-policy'], 'same-origin');
@@ -41,9 +46,9 @@ test('reports each step and the download as it happens', async (t) => {
   const [opfs] = bios.texts('opfs');
   assert.match(opfs, /^(persistent|best effort), [\d,.]+[kMG]?B free$/);
   assert.deepEqual(bios.texts('installer'), ['connection #1']);
-  assert.match(bios.texts('packages')[0], /^1\/4 node_modules\/@ai-ecoverse\/[\w-]+$/);
-  assert.match(bios.texts('packages').at(-1), /^4\/4 downloaded from npm, [\d.]+MB$/);
-  assert.match(bios.texts('seed')[0], /^os\/\{index\.html,os\.css,os\.js\} [\d.]+kB$/);
+  assert.match(bios.texts('packages')[0], /^1\/13 node_modules\/@ai-ecoverse\/[\w-]+$/);
+  assert.match(bios.texts('packages').at(-1), /^13\/13 downloaded from npm, [\d.]+MB$/);
+  assert.match(bios.texts('seed')[0], /^os\/\{index\.html,os\.css,os\.js,update\.js\} [\d.]+kB$/);
   const origin = await page.evaluate(() => new URL('/', location).href);
   assert.deepEqual(bios.texts('intercept'), [origin]);
   assert.deepEqual(bios.texts('navigate'), ['/os/']);
