@@ -22,7 +22,7 @@
     "format": "biome check --write ."
   },
   "devDependencies": {
-    "@ai-ecoverse/slicc-shared-web": "github:ai-ecoverse/slicc-shared-web#d28ddcb962913aff6771735165fe030e3aeb6f16",
+    "@ai-ecoverse/slicc-shared-web": "github:ai-ecoverse/slicc-shared-web#0a15806bfd20676bd28a01c4c02bd481cab82751",
     "@biomejs/biome": "2.5.15",
     "lefthook": "2.1.16",
     "modern-tar": "0.8.5",
