@@ -58,10 +58,11 @@ await step('kernel', async () => {
 
 await step('bash', async (report) => {
   const files = ['bin/bash', 'bin/bash.wasm'];
-  const { bytes } = await kernel('install', { from: BASH, files }, (progress) =>
+  const receipt = 'var/lib/bios/wasm-bash.json';
+  const { bytes, reused } = await kernel('install', { from: BASH, files, receipt }, (progress) =>
     report(`${progress.file} ${size(progress.bytes)}`)
   );
-  return `${files.join(', ')} ${size(bytes)}`;
+  return `${files.join(', ')} ${size(bytes)}${reused ? ', already in OPFS' : ''}`;
 });
 
 await step('seed', async () => {

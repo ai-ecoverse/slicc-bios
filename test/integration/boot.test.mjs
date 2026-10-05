@@ -28,6 +28,7 @@ test('boots through every step into the UI served from OPFS', async (t) => {
     /^os\/index\.html[\d.]+k?B$/,
     /^os\/os\.css[\d.]+k?B$/,
     /^os\/os\.js[\d.]+k?B$/,
+    /^var\/lib\/bios\/wasm-bash\.json\d+B$/,
   ];
   assert.equal(files.length, expected.length);
   for (const [i, pattern] of expected.entries()) assert.match(files[i], pattern);
