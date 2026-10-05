@@ -13,6 +13,7 @@ async function reboot(page) {
   const bios = await watch(page);
   await boot(page);
   assert.deepEqual(bios.states(), booted);
+  assert.deepEqual(bios.texts('script'), ['wrote os/bash.html after seeing 4 files in os/']);
   return bios.texts('bash').at(-1);
 }
 

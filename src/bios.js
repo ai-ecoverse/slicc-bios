@@ -72,6 +72,12 @@ await step('seed', async () => {
   return `os/{${files.join(',')}} ${size(bytes)}`;
 });
 
+await step('script', async () => {
+  const from = new URL('boot.sh', import.meta.url).href;
+  const { output } = await kernel('bash', { from, cwd: 'os' });
+  return output.at(-1);
+});
+
 await step('intercept', async () => {
   await navigator.serviceWorker.register(new URL('sw.js', import.meta.url));
   const { scope } = await navigator.serviceWorker.ready;
@@ -79,7 +85,7 @@ await step('intercept', async () => {
 });
 
 await step('navigate', async () => {
-  const ui = new URL('os/', import.meta.url);
+  const ui = new URL('os/bash.html', import.meta.url);
   location.replace(ui);
   return ui.pathname;
 });

@@ -52,3 +52,7 @@ li {
 li span {
   color: var(--dim);
 }
+
+a {
+  color: var(--accent);
+}

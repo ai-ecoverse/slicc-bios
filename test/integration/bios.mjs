@@ -1,4 +1,4 @@
-export const steps = ['opfs', 'kernel', 'bash', 'seed', 'intercept', 'navigate'];
+export const steps = ['opfs', 'kernel', 'bash', 'seed', 'script', 'intercept', 'navigate'];
 export const booted = steps.flatMap((step) => [`${step}:active`, `${step}:done`]);
 
 export async function watch(page) {
@@ -32,14 +32,23 @@ export async function watch(page) {
 
 export async function boot(page) {
   await page.goto('/');
-  await ready(page);
+  await landed(page);
 }
 
-export async function ready(page) {
+export async function landed(page) {
+  await page.until(
+    () =>
+      location.pathname === '/os/bash.html' &&
+      /^Hello from bash 5\.3\.\d+\(1\)-release$/.test(document.getElementById('shell')?.textContent)
+  );
+}
+
+export async function ui(page) {
+  await page.goto('/os/');
   await page.until(
     () =>
       location.pathname === '/os/' &&
-      document.querySelectorAll('#files li').length === 6 &&
+      document.querySelectorAll('#files li').length === 7 &&
       /^bash\.wasm compiled from OPFS: \d+ exports$/.test(
         document.getElementById('bash').textContent
       )

@@ -153,6 +153,7 @@ export async function launch() {
     if (profiled.has(targetInfo.type)) {
       sessions.set(sessionId, targetInfo);
       commands.push(
+        ['Runtime.enable'],
         ['Profiler.enable'],
         ['Profiler.setSamplingInterval', { interval: 100 }],
         ['Profiler.startPreciseCoverage', { callCount: true, detailed: true }],
@@ -161,7 +162,6 @@ export async function launch() {
     }
     if (targetInfo.type === 'page') {
       commands.push(
-        ['Runtime.enable'],
         ['Network.enable'],
         ['Debugger.enable'],
         ['Page.enable'],
@@ -190,6 +190,13 @@ export async function launch() {
     return tabs.get(targetId);
   }
 
+  function log(sessionId, line) {
+    const target = sessions.get(sessionId);
+    if (!run || target?.browserContextId !== run.context) return;
+    const name = target.type === 'page' ? 'page' : basename(target.url);
+    run.console.push(`${name}: ${line}`);
+  }
+
   async function intercept({ requestId, request }) {
     cdn.requests.push(request.url);
     const failure = { requestId, responseCode: cdn.status, responseHeaders: cors };
@@ -208,6 +215,14 @@ export async function launch() {
     if (method === 'Target.attachedToTarget') await attach(params).catch(() => {});
     if (method === 'Target.detachedFromTarget') sessions.delete(params.sessionId);
     if (method === 'Fetch.requestPaused') await intercept(params);
+    if (method === 'Runtime.consoleAPICalled') {
+      const text = params.args.map((arg) => arg.value ?? arg.description).join(' ');
+      log(sessionId, `${params.type} ${text}`);
+    }
+    if (method === 'Runtime.exceptionThrown') {
+      const { exception, text } = params.exceptionDetails;
+      log(sessionId, `uncaught ${exception?.description ?? text}`);
+    }
     if (method === 'Debugger.paused') {
       await checkpoint();
       await cdp.send('Debugger.resume', {}, sessionId).catch(() => {});
@@ -240,6 +255,10 @@ export async function launch() {
     });
     await mkdir(raw, { recursive: true });
     await writeFile(new URL(`${run.name}.json`, raw), JSON.stringify(await Promise.all(entries)));
+    await writeFile(
+      new URL('console.log', run.dir),
+      run.console.map((line) => `${line}\n`).join('')
+    );
     for (const opened of pages) opened.dispose();
     run = null;
     cdn.status = 0;
@@ -250,6 +269,7 @@ export async function launch() {
   return {
     cdn,
     requests: server.requests,
+    overrides: server.overrides,
     async page(t) {
       const suite = slug(basename(t.filePath, '.test.mjs'));
       const dir = new URL(`${suite}/${slug(t.name)}/`, artifacts);
@@ -260,9 +280,11 @@ export async function launch() {
         name: `${suite}-${slug(t.name)}`,
         context: browserContextId,
         scripts: [],
+        console: [],
         dumps: 0,
       };
       server.requests.length = 0;
+      server.overrides.clear();
       const pages = [];
       t.after(() => finish(pages, browserContextId));
       const another = async () => {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { boot, ready, watch } from './bios.mjs';
+import { boot, landed, ui, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch();
@@ -12,7 +12,7 @@ test('keeps serving the UI from OPFS after the network copy is gone', async (t) 
   chrome.requests.length = 0;
 
   await page.reload();
-  await ready(page);
+  await landed(page);
   assert.deepEqual(
     chrome.requests.filter((path) => /^\/(os|bin)\//.test(path)),
     []
@@ -29,9 +29,32 @@ test('keeps serving the UI from OPFS after the network copy is gone', async (t) 
   assert.ok(!chrome.requests.includes('/bin/bash'));
 });
 
-test('shares one kernel between tabs', async (t) => {
+test('lists everything in OPFS in the seed UI next to the page bash wrote', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
+  await ui(page);
+
+  const files = await page.evaluate(() =>
+    [...document.querySelectorAll('#files li')].map((item) => item.textContent)
+  );
+  const expected = [
+    /^bin\/bash[\d.]+kB$/,
+    /^bin\/bash\.wasm[\d.]+MB$/,
+    /^os\/bash\.html[\d.]+k?B$/,
+    /^os\/index\.html[\d.]+k?B$/,
+    /^os\/os\.css[\d.]+k?B$/,
+    /^os\/os\.js[\d.]+k?B$/,
+    /^var\/lib\/bios\/wasm-bash\.json\d+B$/,
+  ];
+  assert.equal(files.length, expected.length);
+  for (const [i, pattern] of expected.entries()) assert.match(files[i], pattern);
+  assert.deepEqual(page.errors, []);
+});
+
+test('shares one kernel between a tab on the UI and a tab booting', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await ui(page);
 
   const second = await page.tab();
   const bios = await watch(second);

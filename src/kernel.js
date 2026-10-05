@@ -9,14 +9,26 @@ async function open(path, create = false) {
   return dir.getFileHandle(name, { create });
 }
 
+async function directory(path) {
+  let dir = await root;
+  for (const part of path.split('/')) dir = await dir.getDirectoryHandle(part, { create: true });
+  return dir;
+}
+
 async function read(path) {
   return (await open(path)).getFile();
 }
 
-async function write(path, text) {
-  const writable = await (await open(path, true)).createWritable();
-  await writable.write(text);
+async function save(handle, data) {
+  const writable = await handle.createWritable();
+  await writable.write(data);
   await writable.close();
+}
+
+async function get(url) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`${response.status} ${response.url}`);
+  return response;
 }
 
 async function reusable(from, to, files, receipt) {
@@ -32,8 +44,7 @@ async function install({ from, to = '', files, receipt }, progress) {
   if (reused) return reused;
   let bytes = 0;
   for (const file of files) {
-    const response = await fetch(new URL(file, from));
-    if (!response.ok) throw new Error(`${response.status} ${response.url}`);
+    const response = await get(new URL(file, from));
     const writable = await (await open(to + file, true)).createWritable();
     const counter = new TransformStream({
       transform(chunk, controller) {
@@ -44,8 +55,60 @@ async function install({ from, to = '', files, receipt }, progress) {
     });
     await response.body.pipeThrough(counter).pipeTo(writable);
   }
-  if (receipt) await write(receipt, JSON.stringify({ from, bytes }));
+  if (receipt) await save(await open(receipt, true), JSON.stringify({ from, bytes }));
   return { files: files.length, bytes };
+}
+
+async function mirror(fs, dir, path) {
+  fs.mkdirTree(path);
+  for await (const handle of dir.values()) {
+    const target = `${path}/${handle.name}`;
+    if (handle.kind === 'directory') await mirror(fs, handle, target);
+    else fs.writeFile(target, new Uint8Array(await (await handle.getFile()).arrayBuffer()));
+  }
+}
+
+async function persist(fs, path, dir) {
+  for (const name of fs.readdir(path).filter((entry) => entry !== '.' && entry !== '..')) {
+    const source = `${path}/${name}`;
+    if (fs.isDir(fs.stat(source).mode)) {
+      await persist(fs, source, await dir.getDirectoryHandle(name, { create: true }));
+    } else {
+      await save(await dir.getFileHandle(name, { create: true }), fs.readFile(source));
+    }
+  }
+}
+
+async function bash({ from, cwd }) {
+  const [glue, wasm, script] = await Promise.all([
+    read('bin/bash').then((file) => file.text()),
+    read('bin/bash.wasm').then((file) => file.arrayBuffer()),
+    get(from).then((response) => response.text()),
+  ]);
+  const output = [];
+  const ready = Promise.withResolvers();
+  const shell = new Function('Module', `${glue.replace(/^#!.*\n/, '')}\nreturn Module;`)({
+    noInitialRun: true,
+    thisProgram: 'bash',
+    instantiateWasm: (imports, receive) => {
+      WebAssembly.instantiate(wasm, imports).then(
+        ({ instance }) => receive(instance),
+        ready.reject
+      );
+    },
+    print: (line) => output.push(line),
+    printErr: (line) => output.push(line),
+    onAbort: (reason) => ready.reject(new Error(`bash aborted: ${reason}`)),
+    onRuntimeInitialized: ready.resolve,
+  });
+  await ready.promise;
+  const dir = await directory(cwd);
+  await mirror(shell.FS, dir, `/${cwd}`);
+  shell.FS.chdir(`/${cwd}`);
+  const status = await shell.sliccRunMain(['-c', script]);
+  await persist(shell.FS, `/${cwd}`, dir);
+  if (status !== 0) throw new Error(`bash exited with ${status}: ${output.at(-1)}`);
+  return { status, output };
 }
 
 async function list(dir, prefix) {
@@ -59,6 +122,7 @@ async function list(dir, prefix) {
 }
 
 const ops = {
+  bash,
   hello: () => ({ connections }),
   install,
   list: async () => (await list(await root, '')).sort((a, b) => (a.path < b.path ? -1 : 1)),

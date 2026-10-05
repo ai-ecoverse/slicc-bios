@@ -2,14 +2,15 @@
 
 A slim loader for [SLICC](https://github.com/ai-ecoverse/slicc), from the boot-process idea in [ai-ecoverse/slicc#3793](https://github.com/ai-ecoverse/slicc/issues/3793): load a small BIOS first, put everything else into OPFS, and serve the UI from there.
 
-The page shows six boot steps as they run:
+The page shows seven boot steps as they run:
 
 1. **Acquire OPFS** – open the origin private file system and ask for persistent storage.
 2. **Create shared worker** – start `kernel.js`, which does all OPFS writes and is shared by every tab.
 3. **Download wasm bash into OPFS** – the kernel streams `bin/bash` and `bin/bash.wasm` from [`@ai-ecoverse/wasm-bash`](https://www.npmjs.com/package/@ai-ecoverse/wasm-bash) on npm (through jsDelivr) into OPFS and records the source and size in `var/lib/bios/wasm-bash.json`. Later boots skip the download when that receipt names the same version and the files in OPFS still add up to the recorded size.
 4. **Add UI page to OPFS** – the kernel copies `src/seed/` to `os/` in OPFS. This is a stand-in until the UI ships as a downloadable asset.
-5. **Intercept same-origin requests** – `sw.js` answers any in-scope request whose path exists in OPFS and passes everything else to the network.
-6. **Serve UI from OPFS** – navigate to `os/` with a cross-document view transition. That page lists OPFS through the kernel and compiles `bash.wasm` straight from OPFS.
+5. **Run bash in the shared worker** – the kernel loads the bash glue and `bash.wasm` straight from OPFS, copies OPFS `os/` into the shell's in-memory file system, runs [`src/boot.sh`](src/boot.sh) there, and writes the results back to OPFS. The script generates `os/bash.html`. A non-zero exit halts the boot with bash's last line of output.
+6. **Intercept same-origin requests** – `sw.js` answers any in-scope request whose path exists in OPFS and passes everything else to the network.
+7. **Open the page bash wrote** – navigate to `os/bash.html` with a cross-document view transition. It links to the seed UI in `os/`, which lists OPFS through the kernel and compiles `bash.wasm` straight from OPFS.
 
 ## Develop
 
@@ -25,7 +26,7 @@ npm run lint
 `npm test` runs the integration tests with `node --test` against Chromium (fetched by `playwright-core`), driven directly over the DevTools protocol. Every run leaves behind:
 
 - `coverage/` – V8 coverage of the page, the shared worker, and the service worker as `lcov.info` plus an HTML report.
-- `artifacts/<suite>/<test>/` – a `.cpuprofile` per page and worker for every document and test (open them in the DevTools Performance panel or [speedscope](https://www.speedscope.app)) and a screenshot of each tab at the end of the test.
+- `artifacts/<suite>/<test>/` – a `.cpuprofile` per page and worker for every document and test (open them in the DevTools Performance panel or [speedscope](https://www.speedscope.app)), a screenshot of each tab at the end of the test, and a `console.log` with console output and uncaught errors from the pages and workers.
 - `artifacts/hotspots.md` – the functions in `src/` with the most self time across all profiles, also printed after the test run and added to the CI job summary.
 
 The profiles are recorded with coverage switched on, so absolute timings run high. Use them to compare functions with each other rather than as real-world numbers.

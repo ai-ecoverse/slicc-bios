@@ -15,14 +15,15 @@
   <body>
     <main>
       <h1 class="brand">SLICC</h1>
-      <progress max="6" value="0"></progress>
+      <progress max="7" value="0"></progress>
       <ol aria-live="polite">
         <li data-step="opfs">Acquire OPFS <output></output></li>
         <li data-step="kernel">Create shared worker <output></output></li>
         <li data-step="bash">Download wasm bash into OPFS <output></output></li>
         <li data-step="seed">Add UI page to OPFS <output></output></li>
+        <li data-step="script">Run bash in the shared worker <output></output></li>
         <li data-step="intercept">Intercept same-origin requests <output></output></li>
-        <li data-step="navigate">Serve UI from OPFS <output></output></li>
+        <li data-step="navigate">Open the page bash wrote <output></output></li>
       </ol>
     </main>
   </body>
