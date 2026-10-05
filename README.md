@@ -30,6 +30,14 @@ npm run lint
 
 The profiles are recorded with coverage switched on, so absolute timings run high. Use them to compare functions with each other rather than as real-world numbers.
 
+## Hosting
+
+`main` is live at <https://seven.sliccy.com/>, and every other branch at `https://<branch>.sliccy.com/`, where the branch name is lowercased and runs of anything but letters and digits become `-` (`feat/edge-hosting` → <https://feat-edge-hosting.sliccy.com/>). Each host is its own origin, so a branch gets its own OPFS and service worker and can't disturb `seven`.
+
+- [`edge/router.js`](edge/router.js) is the `slicc-bios` Cloudflare Worker on the route `*.sliccy.com/*`. It serves `<label>/<path>` from the R2 bucket `slicc-bios`, where `<label>` is the first label of the host name. `www.sliccy.com` and `sliccy.com` have more specific routes to the website's worker and never reach it.
+- [`edge/publish.mjs`](edge/publish.mjs) uploads `src/` under the branch's label and deletes what the previous upload had and this one doesn't; `node edge/publish.mjs remove <branch>` deletes a branch's files.
+- [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) publishes on every push, deploys the worker from `main`, and removes a branch's files when the branch is deleted. It needs the `CLOUDFLARE_API_TOKEN` secret (Workers Scripts and Workers R2 Storage on the account, Workers Routes and Zone Read on `sliccy.com`).
+
 ## Rules
 
 The Biome, lefthook, Renovate and CI configuration comes from [slicc-shared-web](https://github.com/ai-ecoverse/slicc-shared-web), which also provides the `slicc-*` commands below.
