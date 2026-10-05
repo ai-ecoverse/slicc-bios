@@ -30,6 +30,16 @@ npm run lint
 
 The profiles are recorded with coverage switched on, so absolute timings run high. Use them to compare functions with each other rather than as real-world numbers.
 
+## Hosting
+
+`main` is live at <https://seven.sliccy.ai/>, and every other branch at `https://<branch>.sliccy.ai/`, where the branch name is lowercased and runs of anything but letters and digits become `-` (`feat/edge-hosting` → <https://feat-edge-hosting.sliccy.ai/>). Each host is its own origin, so a branch gets its own OPFS and service worker and can't disturb `seven`.
+
+The hosts are served by the [sliccy-ai](https://github.com/ai-ecoverse/sliccy-ai) worker from the R2 bucket `slicc-bios`. This repo only publishes into that bucket:
+
+- [`edge/publish.mjs`](edge/publish.mjs) `<branch>` uploads `src/` to `seven/` for `main` and to `branches/<label>/` for every other branch, and deletes what the previous upload had and this one doesn't. A manifest next to it (`seven.json`, `branches/<label>.json`) records which branch owns the label, so two branches that map to the same label can't overwrite each other.
+- The bucket expires everything under `branches/` 30 days after upload. Every push uploads all files again, so a branch stays up while it's active and disappears a month after its last push. Nothing needs to be cleaned up when a branch is deleted.
+- [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) publishes on every push. It needs the `CLOUDFLARE_API_TOKEN` secret, an account token with Workers R2 Storage Write.
+
 ## Rules
 
 The Biome, lefthook, Renovate and CI configuration comes from [slicc-shared-web](https://github.com/ai-ecoverse/slicc-shared-web), which also provides the `slicc-*` commands below.
