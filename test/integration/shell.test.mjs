@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { boot, opfs, ready, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
@@ -38,4 +39,19 @@ test('boots into bash -i in the terminal and keeps what it writes in OPFS', asyn
   await run(page, 'echo "words $(wc -w < booted.txt)"');
   await shows(page, 'words 3');
   assert.deepEqual(page.errors, []);
+});
+
+test('waits for an updated service worker before opening the shell', async (t) => {
+  const page = await chrome.page(t);
+  const current = await readFile(new URL('../../src/sw.js', import.meta.url), 'utf8');
+  chrome.overrides.set('/sw.js', current.replace('...isolation, ', ''));
+  await page.goto('/');
+  await page.until(() => location.pathname === '/os/');
+  assert.equal(await page.evaluate(() => crossOriginIsolated), false);
+  chrome.overrides.delete('/sw.js');
+
+  await boot(page);
+  assert.equal(await page.evaluate(() => crossOriginIsolated), true);
+  await run(page, 'echo "upgraded $((1 + 1))"');
+  await shows(page, 'upgraded 2');
 });

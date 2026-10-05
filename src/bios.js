@@ -42,6 +42,17 @@ async function step(name, task) {
 
 let installer;
 
+function activated(worker) {
+  return new Promise((resolve, reject) => {
+    const check = () => {
+      if (worker.state === 'activated') resolve();
+      if (worker.state === 'redundant') reject(new Error(`${worker.scriptURL} failed to install`));
+    };
+    worker.addEventListener('statechange', check);
+    check();
+  });
+}
+
 await step('opfs', async () => {
   await navigator.storage.getDirectory();
   const persisted = await navigator.storage.persist();
@@ -74,9 +85,11 @@ await step('seed', async () => {
 });
 
 await step('intercept', async () => {
-  await navigator.serviceWorker.register(new URL('sw.js', import.meta.url));
-  const { scope } = await navigator.serviceWorker.ready;
-  return scope;
+  const registration = await navigator.serviceWorker.register(new URL('sw.js', import.meta.url));
+  if (!registration.installing && !registration.waiting) await registration.update();
+  const update = registration.installing ?? registration.waiting;
+  if (update) await activated(update);
+  return registration.scope;
 });
 
 await step('navigate', async () => {
