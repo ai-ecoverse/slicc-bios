@@ -14,4 +14,4 @@ concurrency:
 
 jobs:
   ci:
-    uses: ai-ecoverse/slicc-shared-web/.github/workflows/node-ci.yml@b96a6ded74d46659b3613759724f159e565e0433
+    uses: ai-ecoverse/slicc-shared-web/.github/workflows/node-ci.yml@d28ddcb962913aff6771735165fe030e3aeb6f16
