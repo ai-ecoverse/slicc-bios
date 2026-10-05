@@ -57,10 +57,41 @@ async function clear(path) {
   }
 }
 
-async function get(url) {
-  const response = await fetch(url);
+const IDLE = 30000;
+const stalled = Symbol('stalled');
+
+function within(promise) {
+  let timer;
+  promise.catch(() => {});
+  const idle = new Promise((resolve) => {
+    timer = setTimeout(resolve, IDLE, stalled);
+  });
+  return Promise.race([promise, idle]).finally(() => clearTimeout(timer));
+}
+
+async function receive(url, signal) {
+  const response = await within(fetch(url, { signal }));
+  if (response === stalled) return stalled;
   if (!response.ok) throw new Error(`${response.status} ${response.url}`);
-  return response;
+  const reader = response.body.getReader();
+  const chunks = [];
+  for (;;) {
+    const next = await within(reader.read());
+    if (next === stalled) return stalled;
+    if (next.done) return new Blob(chunks).arrayBuffer();
+    chunks.push(next.value);
+  }
+}
+
+async function download(url) {
+  for (let attempt = 1; ; attempt += 1) {
+    const controller = new AbortController();
+    const bytes = await receive(url, controller.signal);
+    if (bytes !== stalled) return bytes;
+    controller.abort();
+    if (attempt === 2) throw new Error(`stalled: ${url}`);
+    console.warn(`no data for ${IDLE / 1000} s, fetching again: ${url}`);
+  }
 }
 
 async function verify(bytes, integrity, path) {
@@ -105,7 +136,7 @@ async function current(path, { resolved, version, integrity }, pnpm) {
 async function add([path, entry], pnpm) {
   const { resolved, integrity } = entry;
   if (await current(path, entry, pnpm).catch(() => false)) return 0;
-  const bytes = await (await get(resolved)).arrayBuffer();
+  const bytes = await download(resolved);
   await verify(bytes, integrity, path);
   await clear(path);
   await unpack(bytes, path);
@@ -130,7 +161,7 @@ async function packages({ from }, progress) {
 }
 
 async function replay(from, progress) {
-  const lock = await (await get(from)).json();
+  const lock = JSON.parse(new TextDecoder().decode(await download(from)));
   const queue = Object.entries(lock.packages).filter(([path, entry]) => path && entry.resolved);
   const removed = await prune(new Set(queue.map(([path]) => path)));
   const pnpm = (await linked()) ?? {};
@@ -158,7 +189,7 @@ async function replay(from, progress) {
 async function install({ from, to = '', files }, progress) {
   let bytes = 0;
   for (const file of files) {
-    const data = await (await get(new URL(file, from))).arrayBuffer();
+    const data = await download(new URL(file, from));
     await save(to + file, data);
     bytes += data.byteLength;
     progress({ file, bytes });
