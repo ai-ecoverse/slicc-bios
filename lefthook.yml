@@ -1,0 +1,15 @@
+pre-commit:
+  parallel: true
+  jobs:
+    - name: biome
+      glob: "*.{js,mjs,json,css,html}"
+      run: npx biome check --no-errors-on-unmatched --files-ignore-unknown=true {staged_files}
+    - name: no comments
+      run: npm run --silent lint:comments
+    - name: no unit tests
+      run: npm run --silent lint:no-unit-tests
+
+pre-push:
+  jobs:
+    - name: integration tests
+      run: npm test

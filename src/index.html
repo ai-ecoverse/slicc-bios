@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SLICC BIOS</title>
+    <style>
+    @view-transition {
+      navigation: auto;
+    }
+    </style>
+    <link rel="stylesheet" href="bios.css">
+    <script type="module" src="bios.js"></script>
+  </head>
+  <body>
+    <main>
+      <h1 class="brand">SLICC</h1>
+      <progress max="6" value="0"></progress>
+      <ol aria-live="polite">
+        <li data-step="opfs">Acquire OPFS <output></output></li>
+        <li data-step="kernel">Create shared worker <output></output></li>
+        <li data-step="bash">Download wasm bash into OPFS <output></output></li>
+        <li data-step="seed">Add UI page to OPFS <output></output></li>
+        <li data-step="intercept">Intercept same-origin requests <output></output></li>
+        <li data-step="navigate">Serve UI from OPFS <output></output></li>
+      </ol>
+    </main>
+  </body>
+</html>

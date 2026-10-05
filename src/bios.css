@@ -1,0 +1,100 @@
+:root {
+  color-scheme: dark;
+  --ink: #ececec;
+  --dim: #7c7c84;
+  --accent: #ff6b2c;
+  --bad: #ff4d5a;
+  background: #0c0c0f;
+  color: var(--ink);
+  font:
+    15px / 1.6 ui-monospace,
+    "SF Mono",
+    Menlo,
+    Consolas,
+    monospace;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+}
+
+main {
+  width: min(42rem, 100% - 2rem);
+}
+
+.brand {
+  view-transition-name: brand;
+  width: fit-content;
+  margin: 0 0 1.5rem;
+  font-size: 2.5rem;
+  letter-spacing: 0.4em;
+  color: var(--accent);
+}
+
+progress {
+  width: 100%;
+  height: 0.4rem;
+  accent-color: var(--accent);
+}
+
+ol {
+  padding: 0;
+  list-style: none;
+}
+
+li {
+  color: var(--dim);
+}
+
+li::before {
+  display: inline-block;
+  width: 1.5em;
+  content: "○";
+}
+
+li[data-state="active"] {
+  color: var(--ink);
+}
+
+li[data-state="active"]::before {
+  content: "◐";
+  animation: spin 0.8s linear infinite;
+}
+
+li[data-state="done"]::before {
+  content: "●";
+  color: var(--accent);
+}
+
+li[data-state="done"] {
+  color: var(--ink);
+}
+
+li[data-state="failed"] {
+  color: var(--bad);
+}
+
+li[data-state="failed"]::before {
+  content: "✕";
+}
+
+output {
+  display: block;
+  padding-left: 1.5em;
+  font-size: 0.85em;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+
+li[data-state="failed"] output {
+  color: var(--bad);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
