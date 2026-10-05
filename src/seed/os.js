@@ -1,10 +1,13 @@
-import { createKernel, fetchTransport } from '@ai-ecoverse/slicc-kernel';
+import { createKernel } from '@ai-ecoverse/slicc-kernel';
 import { kernelBackend } from '@ai-ecoverse/slicc-spectrum';
+import { pickTransport } from './transport.js';
 import { update } from './update.js';
 
+const { kind, transport } = await pickTransport();
+document.documentElement.dataset.transport = kind;
 const kernel = await createKernel({
   root: await navigator.storage.getDirectory(),
-  network: { transport: fetchTransport() },
+  network: { transport },
 });
 const terminal = document.querySelector('slicc-terminal');
 terminal.backend = kernelBackend(kernel, { cwd: '/home', env: { PS1: 'slicc:\\w\\$ ' } });

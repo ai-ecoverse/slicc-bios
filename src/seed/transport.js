@@ -1,0 +1,65 @@
+import { fetchTransport, localProxyTransport, probeLocalProxy } from '@ai-ecoverse/slicc-kernel';
+
+const DATABASE = 'slicc-os';
+const STORE = 'transport';
+const PROXY = 'proxy';
+const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
+
+function isLoopback(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' && LOOPBACK.has(parsed.hostname) && parsed.origin === url;
+  } catch {
+    return false;
+  }
+}
+
+export function takeFragment() {
+  const params = new URLSearchParams(location.hash.slice(1));
+  if (!params.has('proxy') && !params.has('key')) return null;
+  const url = params.get('proxy');
+  const key = params.get('key');
+  params.delete('proxy');
+  params.delete('key');
+  const rest = params.toString();
+  history.replaceState(
+    history.state,
+    '',
+    `${location.pathname}${location.search}${rest ? `#${rest}` : ''}`
+  );
+  return key && isLoopback(url) ? { url, key } : null;
+}
+
+function request(operation) {
+  return new Promise((resolve, reject) => {
+    operation.onsuccess = () => resolve(operation.result);
+    operation.onerror = () => reject(operation.error);
+  });
+}
+
+async function stored(mode, act) {
+  const opening = indexedDB.open(DATABASE, 1);
+  opening.onupgradeneeded = () => opening.result.createObjectStore(STORE);
+  const db = await request(opening);
+  try {
+    return await request(act(db.transaction(STORE, mode).objectStore(STORE)));
+  } finally {
+    db.close();
+  }
+}
+
+export async function pickTransport() {
+  const given = takeFragment();
+  if (given) await stored('readwrite', (store) => store.put(given, PROXY));
+  const proxy = given ?? (await stored('readonly', (store) => store.get(PROXY)));
+  if (proxy) {
+    if (await probeLocalProxy(proxy)) {
+      return { kind: 'local-proxy', transport: localProxyTransport(proxy) };
+    }
+    await stored('readwrite', (store) => store.delete(PROXY));
+  }
+  const extension = globalThis.sliccExtension;
+  if (extension)
+    return { kind: 'extension', transport: fetchTransport({ fetch: extension.fetch }) };
+  return { kind: 'page', transport: fetchTransport() };
+}
