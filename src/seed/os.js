@@ -18,6 +18,8 @@ port.onmessage = ({ data: { result } }) => {
 };
 port.postMessage({ id: 1, op: 'list' });
 
-const bash = await WebAssembly.compileStreaming(fetch('../bin/bash.wasm'));
+const bash = await WebAssembly.compileStreaming(
+  fetch('../node_modules/@ai-ecoverse/wasm-bash/bin/bash.wasm')
+);
 const exports = WebAssembly.Module.exports(bash).length;
 document.getElementById('bash').textContent = `bash.wasm compiled from OPFS: ${exports} exports`;

@@ -1,4 +1,3 @@
-const BASH = 'https://cdn.jsdelivr.net/npm/@ai-ecoverse/wasm-bash@5.3.0-7/';
 const units = ['B', 'kB', 'MB', 'GB'];
 
 function size(bytes) {
@@ -56,13 +55,13 @@ await step('kernel', async () => {
   return `connection #${connections}`;
 });
 
-await step('bash', async (report) => {
-  const files = ['bin/bash', 'bin/bash.wasm'];
-  const receipt = 'var/lib/bios/wasm-bash.json';
-  const { bytes, reused } = await kernel('install', { from: BASH, files, receipt }, (progress) =>
-    report(`${progress.file} ${size(progress.bytes)}`)
+await step('packages', async (report) => {
+  const from = new URL('packages/package-lock.json', import.meta.url).href;
+  const { packages, downloaded, removed, bytes } = await kernel('packages', { from }, (progress) =>
+    report(`${progress.done}/${progress.total} ${progress.path}`)
   );
-  return `${files.join(', ')} ${size(bytes)}${reused ? ', already in OPFS' : ''}`;
+  const pruned = removed ? `, ${removed} removed` : '';
+  return `${downloaded}/${packages} downloaded from npm, ${size(bytes)}${pruned}`;
 });
 
 await step('seed', async () => {

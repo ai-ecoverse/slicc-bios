@@ -6,10 +6,10 @@ The page shows six boot steps as they run:
 
 1. **Acquire OPFS** – open the origin private file system and ask for persistent storage.
 2. **Create shared worker** – start `kernel.js`, which does all OPFS writes and is shared by every tab.
-3. **Download wasm bash into OPFS** – the kernel streams `bin/bash` and `bin/bash.wasm` from [`@ai-ecoverse/wasm-bash`](https://www.npmjs.com/package/@ai-ecoverse/wasm-bash) on npm (through jsDelivr) into OPFS and records the source and size in `var/lib/bios/wasm-bash.json`. Later boots skip the download when that receipt names the same version and the files in OPFS still add up to the recorded size.
-4. **Add UI page to OPFS** – the kernel copies `src/seed/` to `os/` in OPFS. This is a stand-in until the UI ships as a downloadable asset.
+3. **Install packages from npm into OPFS** – the shared worker reads [`src/packages/package-lock.json`](src/packages/package-lock.json), the lockfile the BIOS ships with. For every locked package it downloads the tarball from `registry.npmjs.org` and checks its `integrity`, then unpacks it with the built-in `DecompressionStream` and [`modern-tar`](https://github.com/ayuhito/modern-tar) into OPFS at its lockfile path (`node_modules/…`). It records a receipt in `var/lib/bios/`. Packages whose receipt matches the lockfile's integrity and whose files are still there are not downloaded again, so pinning a new version replaces just that package. Replacing a package keeps its nested `node_modules`, and packages the lockfile no longer lists are deleted along with their receipts.
+4. **Add UI page to OPFS** – the shared worker copies `src/seed/` to `os/` in OPFS. This is a stand-in until the UI ships as a downloadable asset.
 5. **Intercept same-origin requests** – `sw.js` answers any in-scope request whose path exists in OPFS and passes everything else to the network.
-6. **Serve UI from OPFS** – navigate to `os/` with a cross-document view transition. That page lists OPFS through the kernel and compiles `bash.wasm` straight from OPFS.
+6. **Serve UI from OPFS** – navigate to `os/` with a cross-document view transition. That page lists OPFS through the shared worker and compiles the installed `bash.wasm` straight from OPFS.
 
 ## Develop
 
@@ -20,7 +20,7 @@ npm test
 npm run lint
 ```
 
-`npm start` serves `src/` on <http://127.0.0.1:8080/>. There is no build step. `npm install` also installs the [lefthook](https://lefthook.dev) pre-commit hook, which runs Biome, the no-comment check, the no-unit-tests-in-git guard, and the diff-coverage check described below.
+`npm start` serves `src/` on <http://127.0.0.1:8080/>. There is no build step. To change what the BIOS installs, edit `src/packages/package.json` and refresh the lockfile with `npm install --package-lock-only` in that directory; npm resolves the dependency tree, the BIOS only replays it. `npm install` also installs the [lefthook](https://lefthook.dev) pre-commit hook, which runs Biome, the no-comment check, the no-unit-tests-in-git guard, and the diff-coverage check described below.
 
 `npm test` runs the integration tests with `node --test` against Chromium (fetched by `playwright-core`), driven directly over the DevTools protocol. Every run leaves behind:
 

@@ -14,19 +14,19 @@ test('keeps serving the UI from OPFS after the network copy is gone', async (t) 
   await page.reload();
   await ready(page);
   assert.deepEqual(
-    chrome.requests.filter((path) => /^\/(os|bin)\//.test(path)),
+    chrome.requests.filter((path) => /^\/(os|node_modules)\//.test(path)),
     []
   );
   assert.equal(await page.evaluate(() => fetch('../bios.css').then((r) => r.status)), 200);
   assert.ok(chrome.requests.includes('/bios.css'));
   const bash = await page.evaluate(() =>
-    fetch('../bin/bash').then((r) => [
+    fetch('../node_modules/@ai-ecoverse/wasm-bash/bin/bash').then((r) => [
       r.headers.get('content-type'),
       r.headers.get('x-served-from'),
     ])
   );
   assert.deepEqual(bash, ['application/octet-stream', 'opfs']);
-  assert.ok(!chrome.requests.includes('/bin/bash'));
+  assert.ok(!chrome.requests.some((path) => path.startsWith('/node_modules/')));
 });
 
 test('shares one kernel between tabs', async (t) => {
