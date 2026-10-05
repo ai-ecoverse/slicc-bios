@@ -78,7 +78,7 @@ await step('packages', async (report) => {
 });
 
 await step('seed', async () => {
-  const files = ['index.html', 'os.css', 'os.js'];
+  const files = ['index.html', 'os.css', 'os.js', 'transport.js'];
   const from = new URL('seed/', import.meta.url).href;
   const { bytes } = await installer('install', { from, to: 'os/', files });
   return `os/{${files.join(',')}} ${size(bytes)}`;
@@ -94,6 +94,7 @@ await step('intercept', async () => {
 
 await step('navigate', async () => {
   const ui = new URL('os/', import.meta.url);
+  ui.hash = location.hash;
   location.replace(ui);
   return ui.pathname;
 });
