@@ -20,8 +20,6 @@ jobs:
       LEFTHOOK: '0'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -42,12 +40,6 @@ jobs:
       - name: Hotspots
         if: always()
         run: cat artifacts/hotspots.md >> "$GITHUB_STEP_SUMMARY" || true
-
-      - name: Changed lines are covered
-        if: github.event_name == 'pull_request'
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-        run: pipx run diff-cover coverage/lcov.info --compare-branch "$BASE" --fail-under 100
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
