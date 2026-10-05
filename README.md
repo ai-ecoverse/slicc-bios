@@ -32,6 +32,7 @@ Limits:
 - The first update after a bootstrap has no pnpm state yet, so pnpm downloads every package once into its store and copies all of them. Later updates touch only what changed.
 - Between an in-place update of `slicc-kernel` and the reload, the old kernel worker starts new processes with the new `process-worker.js`. The two are built together, so this works as long as their protocol doesn't change; a kernel that loads its process worker once would remove the gap.
 - Packages added to `/package.json` by hand are removed by the next update. Projects of your own belong in `/home`.
+- Emscripten programs see only the directories at `/`, so `ls /` and `cat /pnpm-lock.yaml` don't find the two files; WASI programs such as `pnpm` (`cd / && pnpm install`) do.
 - An update of the seed (`os/`) or `sw.js` alone has no lockfile change, so it arrives with the next boot through the BIOS.
 
 ## Develop
