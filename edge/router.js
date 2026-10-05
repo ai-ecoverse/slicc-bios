@@ -6,6 +6,16 @@ const types = {
   wasm: 'application/wasm',
 };
 
+function failed(headers, object) {
+  const match = headers.get('if-match');
+  if (match) {
+    const tags = match.split(',').map((tag) => tag.trim());
+    return match === '*' || tags.includes(object.httpEtag) ? 304 : 412;
+  }
+  const since = Date.parse(headers.get('if-unmodified-since'));
+  return Math.floor(object.uploaded / 1000) * 1000 > since ? 412 : 304;
+}
+
 function key(url) {
   const label = url.hostname.split('.')[0];
   const path = url.pathname.endsWith('/') ? `${url.pathname}index.html` : url.pathname;
@@ -25,7 +35,9 @@ export default {
       'cache-control': 'no-cache',
       etag: object.httpEtag,
     };
-    if (!('body' in object)) return new Response(null, { status: 304, headers });
+    if (!('body' in object)) {
+      return new Response(null, { status: failed(request.headers, object), headers });
+    }
     return new Response(request.method === 'HEAD' ? null : object.body, { headers });
   },
 };

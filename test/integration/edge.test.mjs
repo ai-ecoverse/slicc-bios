@@ -20,7 +20,7 @@ const bucket = await worker.getR2Bucket(binding);
 await bucket.put('seven/index.html', '<!doctype html><title>seven</title>');
 await bucket.put('seven/bios.js', 'export {};');
 await bucket.put('seven/packages/package-lock.json', '{}');
-await bucket.put('seven.json', '["index.html"]');
+await bucket.put('seven.json', '{"branch":"main","files":["index.html"]}');
 await bucket.put('feat-shell/index.html', '<!doctype html><title>branch</title>');
 
 const get = (url, init) => worker.dispatchFetch(url, init);
@@ -71,6 +71,23 @@ test('supports HEAD and conditional requests', async () => {
   });
   assert.equal(cached.status, 304);
   assert.equal(cached.headers.get('etag'), etag);
+});
+
+test('answers failed match preconditions with 412', async () => {
+  const url = 'https://seven.sliccy.com/bios.js';
+  const head = await get(url, { method: 'HEAD' });
+  const etag = head.headers.get('etag');
+  const cases = [
+    [{ 'if-match': '"other"' }, 412],
+    [{ 'if-match': `"other", ${etag}`, 'if-none-match': etag }, 304],
+    [{ 'if-unmodified-since': 'Mon, 01 Jan 2024 00:00:00 GMT' }, 412],
+    [{ 'if-modified-since': new Date(Date.now() + 60000).toUTCString() }, 304],
+  ];
+  for (const [headers, status] of cases) {
+    const response = await get(url, { headers });
+    await response.arrayBuffer();
+    assert.equal(response.status, status, JSON.stringify(headers));
+  }
 });
 
 test('rejects writes', async () => {

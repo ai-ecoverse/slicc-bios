@@ -24,7 +24,7 @@ function wrangler(args, input) {
   return execFileSync(
     'npx',
     ['--no-install', 'wrangler', 'r2', 'object', ...args, '--remote', '--config', config],
-    { input, stdio: ['pipe', 'pipe', 'inherit'] }
+    { input, stdio: 'pipe' }
   );
 }
 
@@ -36,29 +36,37 @@ function files() {
 }
 
 function previous(name) {
+  let manifest;
   try {
-    return JSON.parse(wrangler(['get', `${bucket}/${name}.json`, '--pipe']));
-  } catch {
-    return [];
+    manifest = wrangler(['get', `${bucket}/${name}.json`, '--pipe']);
+  } catch (error) {
+    if (`${error.stderr}`.includes('The specified key does not exist')) return { files: [] };
+    throw error;
   }
+  return JSON.parse(manifest);
 }
 
 export function publish(branch) {
   const name = label(branch);
+  const { branch: owner = branch, files: before } = previous(name);
+  if (owner !== branch)
+    throw new Error(`${name}.sliccy.com already serves ${owner}, rename ${branch}`);
   const current = files();
   for (const file of current) {
     wrangler(['put', `${bucket}/${name}/${file}`, '--file', join(root, file)]);
   }
-  for (const file of previous(name).filter((file) => !current.includes(file))) {
+  for (const file of before.filter((file) => !current.includes(file))) {
     wrangler(['delete', `${bucket}/${name}/${file}`]);
   }
-  wrangler(['put', `${bucket}/${name}.json`, '--pipe'], JSON.stringify(current));
+  wrangler(['put', `${bucket}/${name}.json`, '--pipe'], JSON.stringify({ branch, files: current }));
   return `https://${name}.sliccy.com/`;
 }
 
 export function remove(branch) {
   const name = label(branch);
-  for (const file of previous(name)) wrangler(['delete', `${bucket}/${name}/${file}`]);
+  const { branch: owner, files: before } = previous(name);
+  if (owner !== branch) return `https://${name}.sliccy.com/ is not ${branch}, left in place`;
+  for (const file of before) wrangler(['delete', `${bucket}/${name}/${file}`]);
   wrangler(['delete', `${bucket}/${name}.json`]);
   return `https://${name}.sliccy.com/`;
 }
