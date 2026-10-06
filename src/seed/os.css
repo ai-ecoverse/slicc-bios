@@ -71,3 +71,35 @@ slicc-terminal {
 .update:not([data-state="ready"]) button {
   display: none;
 }
+
+.network {
+  display: flex;
+  gap: 1rem;
+  align-items: baseline;
+  margin: 0.75rem 0 0;
+  color: #7c7c84;
+}
+
+.network[hidden],
+.network button[hidden] {
+  display: none;
+}
+
+.network[data-state="failed"] {
+  color: #ffb547;
+}
+
+.network button {
+  font: inherit;
+  color: #0c0c0f;
+  background: var(--accent);
+  border: 0;
+  border-radius: 0.25rem;
+  padding: 0 0.75rem;
+  cursor: pointer;
+}
+
+.network button:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}

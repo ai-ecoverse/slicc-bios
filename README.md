@@ -15,11 +15,11 @@ The page shows six boot steps as they run:
 
 Before the kernel starts, `os/transport.js` picks how programs reach the network. The first of these that applies wins:
 
-1. **A local proxy:** [slicc-node](https://github.com/ai-ecoverse/slicc-node) (`npx @ai-ecoverse/slicc-node`) or slicc-swift. The launcher opens `https://seven.sliccy.ai/#proxy=<url>&key=<key>`. The page takes both from the fragment and removes them from the address bar. It accepts only a plain `http://` origin on `127.0.0.1`, `localhost` or `[::1]`, so a link can't send traffic elsewhere. It keeps them in IndexedDB (`slicc-os`, store `transport`), so a reload keeps using the proxy. Each load checks the proxy with `probeLocalProxy`; if it is gone or refuses the key (every proxy process mints a new one), the page forgets it and falls through.
+1. **A local proxy:** [slicc-node](https://github.com/ai-ecoverse/slicc-node) (`npx @ai-ecoverse/slicc-node`) or slicc-swift. The launcher opens `https://seven.sliccy.ai/#proxy=<url>&key=<key>`. The page takes both from the fragment and removes them from the address bar. It accepts only a plain `http://` origin on `127.0.0.1`, `localhost` or `[::1]`, so a link can't send traffic elsewhere. It keeps them in IndexedDB (`slicc-os`, store `transport`), so a reload keeps using the proxy. Each load checks the proxy with `checkLocalProxy`. If the proxy refuses the key (every proxy process mints a new one), isn't a proxy, or doesn't answer although the page may reach loopback, the page forgets it and falls through. It keeps the proxy, and still falls through, when Chrome's Local Network Access permission is denied, or when nothing answered while the permission is undecided (Chrome asks only once it has a connection, so a dismissed prompt and a stopped proxy look the same).
 2. **[slicc-extension](https://github.com/ai-ecoverse/slicc-extension):** when the extension defines `globalThis.sliccExtension`, the kernel uses `fetchTransport({ fetch: sliccExtension.fetch })`.
-3. **The page's own `fetch`:** `fetchTransport()`, bound by CORS.
+3. **The page's own `fetch`:** `fetchTransport()`, bound by CORS. A request CORS stops is answered `502` with a hint to run slicc-node or install slicc-extension, which `curl` prints.
 
-The choice is in `document.documentElement.dataset.transport`: `local-proxy`, `extension` or `page`.
+The choice is in `document.documentElement.dataset.transport`: `local-proxy`, `extension` or `page`. A line under the terminal, `os/network.js`, names it too. When a local proxy was asked for but isn't used, the line says why (blocked by the permission, not answering, or refusing the key) and what the page uses instead. Where trying again can help, it offers **Retry**: Retry checks the proxy again and reloads the page onto it once it answers. The line is self-contained, so the new UI from [slicc-spectrum#11](https://github.com/ai-ecoverse/slicc-spectrum/issues/11) can take it over.
 
 ## Updates
 

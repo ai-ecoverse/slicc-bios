@@ -31,7 +31,7 @@ test('boots through every step into the UI served from OPFS', async (t) => {
   }
   assert.deepEqual(
     files.filter((path) => path.startsWith('os/')),
-    ['os/index.html', 'os/os.css', 'os/os.js', 'os/transport.js', 'os/update.js']
+    ['os/index.html', 'os/network.js', 'os/os.css', 'os/os.js', 'os/transport.js', 'os/update.js']
   );
   assert.equal(await page.evaluate(() => crossOriginIsolated), true);
   assert.equal(ui.headers['cross-origin-opener-policy'], 'same-origin');
@@ -50,7 +50,7 @@ test('reports each step and the download as it happens', async (t) => {
   assert.match(bios.texts('packages').at(-1), /^13\/13 downloaded from npm, [\d.]+MB$/);
   assert.match(
     bios.texts('seed')[0],
-    /^os\/\{index\.html,os\.css,os\.js,transport\.js,update\.js\} [\d.]+kB$/
+    /^os\/\{index\.html,network\.js,os\.css,os\.js,transport\.js,update\.js\} [\d.]+kB$/
   );
   const origin = await page.evaluate(() => new URL('/', location).href);
   assert.deepEqual(bios.texts('intercept'), [origin]);
