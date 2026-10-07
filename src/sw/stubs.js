@@ -5,6 +5,10 @@ const shims = {
     webcrypto: 'globalThis.crypto',
     subtle: 'globalThis.crypto.subtle',
   },
+  url: {
+    URL: 'globalThis.URL',
+    URLSearchParams: 'globalThis.URLSearchParams',
+  },
 };
 
 import { reserved } from './transform.js';

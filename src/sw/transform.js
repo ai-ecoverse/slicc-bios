@@ -8,20 +8,32 @@ export const reserved = new Set(
   )
 );
 
+function namespaceMembers(source, clause) {
+  const namespace = clause.match(/\*\s*as\s+([A-Za-z_$][\w$]*)/)?.[1];
+  if (!namespace) return [];
+  const access = new RegExp(
+    `(?<![\\w$.])${namespace.replaceAll('$', '\\$')}\\.([A-Za-z_$][\\w$]*)`,
+    'g'
+  );
+  return [...new Set([...source.matchAll(access)].map((match) => match[1]))];
+}
+
 export function importedNames(source, entry) {
   const clause = source.slice(entry.statement, entry.start);
+  if (!/^import\b/.test(clause)) return [];
   const braces = clause.match(/\{([^}]*)\}/);
-  if (!braces || !/^import\b/.test(clause)) return [];
-  return braces[1]
-    .split(',')
-    .map((part) =>
-      part
-        .trim()
-        .replace(/^type\s+/, '')
-        .split(/\s+as\s+/)[0]
-        .trim()
-    )
-    .filter((name) => identifier.test(name) && !reserved.has(name));
+  const named = braces
+    ? braces[1].split(',').map((part) =>
+        part
+          .trim()
+          .replace(/^type\s+/, '')
+          .split(/\s+as\s+/)[0]
+          .trim()
+      )
+    : [];
+  return [...named, ...namespaceMembers(source, clause)].filter(
+    (name) => identifier.test(name) && !reserved.has(name)
+  );
 }
 
 function located(target, base) {
