@@ -93,7 +93,9 @@ await step('seed', async () => {
 });
 
 await step('intercept', async () => {
-  const registration = await navigator.serviceWorker.register(new URL('sw.js', import.meta.url));
+  const registration = await navigator.serviceWorker.register(new URL('sw.js', import.meta.url), {
+    type: 'module',
+  });
   if (!registration.installing && !registration.waiting) await registration.update();
   const update = registration.installing ?? registration.waiting;
   if (update) await activated(update);
