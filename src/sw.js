@@ -1,7 +1,13 @@
+import { createResolver, NODE_STUBS } from './sw/resolve.js';
+import { nodeStub } from './sw/stubs.js';
+import { transform } from './sw/transform.js';
+
 const types = {
   css: 'text/css; charset=utf-8',
   html: 'text/html; charset=utf-8',
   js: 'text/javascript; charset=utf-8',
+  mjs: 'text/javascript; charset=utf-8',
+  cjs: 'text/javascript; charset=utf-8',
   json: 'application/json',
   wasm: 'application/wasm',
 };
@@ -12,27 +18,81 @@ const isolation = {
   'cross-origin-resource-policy': 'same-origin',
 };
 
+const script = /\.(m?js|cjs)$/;
+
 async function read(path) {
-  const names = path.split('/');
-  const name = names.pop() || 'index.html';
+  const names = path.split('/').filter(Boolean);
+  const name = path.endsWith('/') || names.length === 0 ? 'index.html' : names.pop();
   let dir = await navigator.storage.getDirectory();
   for (const part of names) dir = await dir.getDirectoryHandle(part);
   return (await dir.getFileHandle(name)).getFile();
 }
 
-async function serve(request) {
-  const path = new URL(request.url).pathname.slice(
-    new URL(self.registration.scope).pathname.length
+const opfs = {
+  readText: (path) =>
+    read(path).then(
+      (file) => file.text(),
+      () => undefined
+    ),
+  isFile: (path) =>
+    read(path).then(
+      () => true,
+      () => false
+    ),
+};
+
+let generation;
+let resolver;
+const transformed = new Map();
+
+async function currentResolver() {
+  const stamp = await read('/pnpm-lock.yaml').then(
+    (file) => file.lastModified,
+    () => 0
   );
+  if (stamp !== generation) {
+    generation = stamp;
+    resolver = createResolver(opfs);
+    transformed.clear();
+  }
+  return resolver;
+}
+
+async function rewrite(path, file, base) {
+  const resolve = await currentResolver();
+  const cached = transformed.get(path);
+  if (cached?.stamp === file.lastModified) return cached.text;
+  const text = await transform(path, await file.text(), { resolve, base });
+  transformed.set(path, { stamp: file.lastModified, text });
+  return text;
+}
+
+function respond(body, type, origin) {
+  return new Response(body, {
+    headers: { ...isolation, 'content-type': type, 'x-served-from': origin },
+  });
+}
+
+async function serve(request) {
+  const scope = new URL(self.registration.scope).pathname;
+  const url = new URL(request.url);
+  const path = `/${url.pathname.slice(scope.length)}`;
+  const base = scope.replace(/\/$/, '');
+  if (path.startsWith(NODE_STUBS)) {
+    const name = path.slice(NODE_STUBS.length).replace(/\.js$/, '');
+    const wanted = url.searchParams.get('names')?.split(',') ?? [];
+    return respond(nodeStub(name, wanted), types.js, 'stub');
+  }
+  let file;
   try {
-    const file = await read(path);
-    const type = types[file.name.split('.').pop()] ?? 'application/octet-stream';
-    return new Response(file, {
-      headers: { ...isolation, 'content-type': type, 'x-served-from': 'opfs' },
-    });
+    file = await read(path);
   } catch {
     return fetch(request);
   }
+  const extension = file.name.split('.').pop();
+  const type = types[extension] ?? 'application/octet-stream';
+  if (!script.test(file.name)) return respond(file, type, 'opfs');
+  return respond(await rewrite(path, file, base), type, 'opfs');
 }
 
 self.addEventListener('install', () => self.skipWaiting());
