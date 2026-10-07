@@ -5,7 +5,7 @@
   "dependencies": {
     "@ai-ecoverse/slicc-kernel": "1.7.2",
     "@ai-ecoverse/slicc-spectrum": "1.5.0",
-    "@ai-ecoverse/wasi-pnpm": "12.9.1-1",
+    "@ai-ecoverse/wasi-pnpm": "12.9.1-4",
     "@ai-ecoverse/wasm-bash": "5.3.0-7",
     "@ai-ecoverse/wasm-coreutils": "9.7.0-3",
     "@ai-ecoverse/wasm-curl": "8.22.0-1",
@@ -15,8 +15,6 @@
     "@ai-ecoverse/wasm-jq": "1.8.1-1",
     "@ai-ecoverse/wasm-less": "668.0.0-1",
     "@ai-ecoverse/wasm-sed": "4.9.0-3",
-    "@ai-ecoverse/wasm-tls-engine": "3.6.5-1",
-    "@shikijs/langs": "4.5.0",
-    "@shikijs/themes": "4.5.0"
+    "@ai-ecoverse/wasm-tls-engine": "3.6.5-1"
   }
 }

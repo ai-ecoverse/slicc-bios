@@ -1,0 +1,9 @@
+{
+  "name": "slicc-bios-grammars",
+  "private": true,
+  "description": "Syntax grammars and themes the UI installs with pnpm in the background, into /opt/grammars in OPFS",
+  "dependencies": {
+    "@shikijs/langs": "4.5.0",
+    "@shikijs/themes": "4.5.0"
+  }
+}
