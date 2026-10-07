@@ -41,9 +41,9 @@ app.model = createKernelModel({
   files: { skip },
   terminals: { env: { PS1: 'slicc:\\w\\$ ' } },
 });
-if (await installed()) app.grammarBase = grammarBase;
 await app.updateComplete;
 app.show('terminal');
+if (await installed()) app.grammarBase = grammarBase;
 
 const notice = document.querySelector('.update');
 const [status, reload] = notice.children;
@@ -64,7 +64,7 @@ async function check() {
     show('failed', `update failed: ${error.message}`);
   }
   try {
-    await grammars(kernel);
+    await grammars(() => createKernel({ root, network: { transport } }));
     app.grammarBase = grammarBase;
   } catch (error) {
     console.warn(`grammars stay on jsDelivr: ${error.message}`);

@@ -9,19 +9,24 @@ export async function installed() {
   return (await text(await navigator.storage.getDirectory(), receipt)) !== null;
 }
 
-async function install(kernel, from) {
+async function install(start, from) {
   const root = await navigator.storage.getDirectory();
   const lock = await fetchText('pnpm-lock.yaml', from);
   if (lock === (await text(root, receipt))) return false;
   await write(root, `${folder}/package.json`, await fetchText('package.json', from));
   await write(root, `${folder}/pnpm-lock.yaml`, lock);
   const argv = ['pnpm', 'install', '--frozen-lockfile', '--trust-lockfile'];
-  const { status, stderr } = await kernel.run(argv, { cwd: `/${folder}` });
-  if (status) throw new Error(stderr.trim() || `pnpm exited with ${status}`);
+  const kernel = await start();
+  try {
+    const { status, stderr } = await kernel.run(argv, { cwd: `/${folder}` });
+    if (status) throw new Error(stderr.trim() || `pnpm exited with ${status}`);
+  } finally {
+    kernel.terminate();
+  }
   await write(root, receipt, lock);
   return true;
 }
 
-export function grammars(kernel, { from = deployed } = {}) {
-  return navigator.locks.request('slicc-grammars', () => install(kernel, from));
+export function grammars(start, { from = deployed } = {}) {
+  return navigator.locks.request('slicc-grammars', () => install(start, from));
 }
