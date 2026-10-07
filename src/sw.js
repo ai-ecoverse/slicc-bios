@@ -19,6 +19,7 @@ const isolation = {
 };
 
 const script = /\.(m?js|cjs)$/;
+const markers = ['/var/lib/slicc/pnpm-lock.yaml', '/node_modules/.modules.yaml'];
 
 async function read(path) {
   const names = path.split('/').filter(Boolean);
@@ -46,10 +47,15 @@ let resolver;
 const transformed = new Map();
 
 async function currentResolver() {
-  const stamp = await read('/pnpm-lock.yaml').then(
-    (file) => file.lastModified,
-    () => 0
+  const times = await Promise.all(
+    markers.map((marker) =>
+      read(marker).then(
+        (file) => file.lastModified,
+        () => 0
+      )
+    )
   );
+  const stamp = times.join(':');
   if (stamp !== generation) {
     generation = stamp;
     resolver = createResolver(opfs);

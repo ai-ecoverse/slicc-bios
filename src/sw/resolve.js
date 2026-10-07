@@ -167,14 +167,18 @@ export function createResolver(fs) {
     return path;
   }
 
+  async function mapped(found) {
+    return found && browserMapped(found);
+  }
+
   async function packageEntry(dir, json, subpath) {
     if (json.exports !== undefined) {
       const found = exportsTarget(json.exports, subpath);
       return found === undefined ? undefined : join(dir, found);
     }
-    if (subpath !== '.') return file(join(dir, subpath));
+    if (subpath !== '.') return mapped(await file(join(dir, subpath)));
     const browser = typeof json.browser === 'string' ? json.browser : undefined;
-    return file(join(dir, browser ?? json.module ?? json.main ?? 'index.js'));
+    return mapped(await file(join(dir, browser ?? json.module ?? json.main ?? 'index.js')));
   }
 
   async function bare(specifier, importer) {
@@ -193,8 +197,7 @@ export function createResolver(fs) {
     if (node !== undefined) return `${NODE_STUBS}${node}.js`;
     if (specifier.startsWith('/')) return file(specifier);
     if (specifier.startsWith('./') || specifier.startsWith('../')) {
-      const found = await file(join(dirname(importer), specifier));
-      return found && browserMapped(found);
+      return mapped(await file(join(dirname(importer), specifier)));
     }
     return bare(specifier, importer);
   }

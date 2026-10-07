@@ -18,22 +18,23 @@ function namespaceMembers(source, clause) {
   return [...new Set([...source.matchAll(access)].map((match) => match[1]))];
 }
 
+function clauseNames(list) {
+  return list.split(',').map((part) =>
+    part
+      .trim()
+      .replace(/^type\s+/, '')
+      .split(/\s+as\s+/)[0]
+      .trim()
+  );
+}
+
 export function importedNames(source, entry) {
   const clause = source.slice(entry.statement, entry.start);
-  if (!/^import\b/.test(clause)) return [];
+  if (!/^(import|export)\b/.test(clause)) return [];
   const braces = clause.match(/\{([^}]*)\}/);
-  const named = braces
-    ? braces[1].split(',').map((part) =>
-        part
-          .trim()
-          .replace(/^type\s+/, '')
-          .split(/\s+as\s+/)[0]
-          .trim()
-      )
-    : [];
-  return [...named, ...namespaceMembers(source, clause)].filter(
-    (name) => identifier.test(name) && !reserved.has(name)
-  );
+  const named = braces ? clauseNames(braces[1]) : [];
+  const members = clause.startsWith('import') ? namespaceMembers(source, clause) : [];
+  return [...named, ...members].filter((name) => identifier.test(name) && !reserved.has(name));
 }
 
 function located(target, base) {
@@ -73,8 +74,13 @@ async function wrap(path, source, resolve, base) {
     const target = await resolve(id, path);
     if (!target) continue;
     const url = target.startsWith(NODE_STUBS) ? `${base}${target}` : located(target, base);
-    lines.push(`import * as __slicc_${index} from ${JSON.stringify(url)};`);
-    table.push(`${JSON.stringify(id)}: __slicc_${index}`);
+    if (target.endsWith('.json')) {
+      lines.push(`import __slicc_${index} from ${JSON.stringify(url)} with { type: 'json' };`);
+      table.push(`${JSON.stringify(id)}: { __slicc_cjs: true, default: __slicc_${index} }`);
+    } else {
+      lines.push(`import * as __slicc_${index} from ${JSON.stringify(url)};`);
+      table.push(`${JSON.stringify(id)}: __slicc_${index}`);
+    }
   }
   const names = exportNames(source);
   return [
