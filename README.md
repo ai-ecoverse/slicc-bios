@@ -26,7 +26,7 @@ Spectrum bundles 16 syntax languages; the rest come from `@shikijs/langs` and `@
 
 1. **Until they're installed,** the UI loads grammars from jsDelivr.
 2. **After every update check,** `os/grammars.js` compares the deployed `packages/grammars/pnpm-lock.yaml` with `var/lib/slicc/grammars/pnpm-lock.yaml`. If they differ, it writes the manifest and lockfile to `/opt/grammars` and runs `pnpm install --frozen-lockfile --trust-lockfile` there, under its own Web Lock, `slicc-grammars`, so a long install never holds up the BIOS in another tab. Only once pnpm succeeds does it record the lockfile.
-3. **Once they're installed,** `grammarBase` points at `/opt/grammars/node_modules/@shikijs/`, so highlighting works offline from then on. If pnpm fails, the page stays on jsDelivr, logs a warning, and tries again at the next check.
+3. **Once they're installed,** `grammarBase` points at `/opt/grammars/node_modules/@shikijs/`. On later loads the page sets it as soon as the recorded lockfile is there, before any network check, so highlighting works offline. If pnpm fails, the page stays on jsDelivr, logs a warning, and tries again at the next check.
 
 The Files panel lists `/opt/grammars/node_modules` but doesn't scan it.
 

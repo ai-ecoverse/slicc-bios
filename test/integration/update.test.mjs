@@ -158,5 +158,9 @@ test('installs the grammars with pnpm in the background and serves them from OPF
     await read(page, 'var/lib/slicc/grammars/pnpm-lock.yaml'),
     await readFile(new URL('../../src/packages/grammars/pnpm-lock.yaml', import.meta.url), 'utf8')
   );
+
+  await page.reload();
+  await ready(page);
+  assert.equal(await page.evaluate(() => document.querySelector('slicc-app').grammarBase), base);
   assert.deepEqual(page.errors, []);
 });

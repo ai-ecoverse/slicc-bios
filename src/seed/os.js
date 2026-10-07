@@ -1,7 +1,7 @@
 import { createKernel } from '@ai-ecoverse/slicc-kernel';
 import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
 import { surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
-import { grammarBase, grammars } from './grammars.js';
+import { grammarBase, grammars, installed } from './grammars.js';
 import { showNetwork } from './network.js';
 import { pickTransport } from './transport.js';
 import { update } from './update.js';
@@ -41,6 +41,7 @@ app.model = createKernelModel({
   files: { skip },
   terminals: { env: { PS1: 'slicc:\\w\\$ ' } },
 });
+if (await installed()) app.grammarBase = grammarBase;
 await app.updateComplete;
 app.show('terminal');
 
