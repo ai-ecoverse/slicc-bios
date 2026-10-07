@@ -60,12 +60,16 @@ async function clear(path) {
 
 const IDLE = 30000;
 const stalled = Symbol('stalled');
+let heard = 0;
 
 function within(promise) {
   let timer;
   promise.catch(() => {});
   const idle = new Promise((resolve) => {
-    timer = setTimeout(resolve, IDLE, stalled);
+    const wait = (seen) => {
+      timer = setTimeout(() => (heard === seen ? resolve(stalled) : wait(heard)), IDLE);
+    };
+    wait(heard);
   });
   return Promise.race([promise, idle]).finally(() => clearTimeout(timer));
 }
@@ -73,12 +77,14 @@ function within(promise) {
 async function receive(url, signal) {
   const response = await within(fetch(url, { signal }));
   if (response === stalled) return stalled;
+  heard += 1;
   if (!response.ok) throw new Error(`${response.status} ${response.url}`);
   const reader = response.body.getReader();
   const chunks = [];
   for (;;) {
     const next = await within(reader.read());
     if (next === stalled) return stalled;
+    heard += 1;
     if (next.done) return new Blob(chunks).arrayBuffer();
     chunks.push(next.value);
   }
