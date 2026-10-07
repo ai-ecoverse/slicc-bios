@@ -13,7 +13,8 @@
     {
       "imports": {
         "@ai-ecoverse/slicc-kernel": "../node_modules/@ai-ecoverse/slicc-kernel/dist/index.js",
-        "@ai-ecoverse/slicc-spectrum": "../node_modules/@ai-ecoverse/slicc-spectrum/dist/slicc-terminal.js"
+        "@ai-ecoverse/slicc-spectrum/kernel": "../node_modules/@ai-ecoverse/slicc-spectrum/dist/slicc-kernel-model.js",
+        "@ai-ecoverse/slicc-spectrum/ui": "../node_modules/@ai-ecoverse/slicc-spectrum/dist/slicc-ui.js"
       }
     }
     </script>
@@ -21,15 +22,13 @@
     <script type="module" src="os.js"></script>
   </head>
   <body>
-    <main>
-      <h1 class="brand">SLICC</h1>
-      <slicc-terminal></slicc-terminal>
-      <p class="network" aria-live="polite" hidden>
+    <slicc-app>
+      <span slot="status" class="network" aria-live="polite" hidden>
         <output></output><button type="button">Retry</button>
-      </p>
-      <p class="update" aria-live="polite" hidden>
+      </span>
+      <span slot="status" class="update" aria-live="polite" hidden>
         <output></output><button type="button">Reload</button>
-      </p>
-    </main>
+      </span>
+    </slicc-app>
   </body>
 </html>

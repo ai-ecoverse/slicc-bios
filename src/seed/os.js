@@ -1,21 +1,43 @@
 import { createKernel } from '@ai-ecoverse/slicc-kernel';
-import { kernelBackend } from '@ai-ecoverse/slicc-spectrum';
+import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
+import { surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
 import { showNetwork } from './network.js';
 import { pickTransport } from './transport.js';
 import { update } from './update.js';
+
+export const layouts = {
+  terminal: { side: 'center', open: ['phone', 'tablet', 'desktop'] },
+  files: { side: 'left', open: ['tablet', 'desktop'] },
+};
+
+export const skip = ['/node_modules', '/home/.local/share/pnpm', '/home/.cache'];
+
+export function offered(all) {
+  return Object.entries(layouts).map(([id, layout]) => ({
+    ...all.find((item) => item.id === id),
+    ...layout,
+  }));
+}
 
 const network = await pickTransport();
 const { kind, transport } = network;
 document.documentElement.dataset.transport = kind;
 showNetwork(document.querySelector('.network'), network);
-const kernel = await createKernel({
-  root: await navigator.storage.getDirectory(),
-  network: { transport },
+const root = await navigator.storage.getDirectory();
+const kernel = await createKernel({ root, network: { transport } });
+const app = document.querySelector('slicc-app');
+app.grammarBase = new URL('../node_modules/@shikijs/', import.meta.url).href;
+app.layoutKey = 'slicc-os.layout';
+app.surfaces = offered(surfaces);
+app.model = createKernelModel({
+  kernel,
+  root,
+  storage: localStorage,
+  files: { skip },
+  terminals: { env: { PS1: 'slicc:\\w\\$ ' } },
 });
-const terminal = document.querySelector('slicc-terminal');
-terminal.backend = kernelBackend(kernel, { cwd: '/home', env: { PS1: 'slicc:\\w\\$ ' } });
-await terminal.ready;
-terminal.focus();
+await app.updateComplete;
+app.show('terminal');
 
 const notice = document.querySelector('.update');
 const [status, reload] = notice.children;
@@ -23,6 +45,7 @@ reload.addEventListener('click', () => location.replace(new URL('../', location.
 
 function show(state, text) {
   notice.dataset.state = state;
+  notice.title = text;
   status.value = text;
   notice.hidden = false;
 }

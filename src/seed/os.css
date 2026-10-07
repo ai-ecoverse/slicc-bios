@@ -1,105 +1,59 @@
-:root {
-  color-scheme: dark;
-  --accent: #ff6b2c;
-  background: #0c0c0f;
-  color: #ececec;
-  font:
-    15px / 1.6 ui-monospace,
-    "SF Mono",
-    Menlo,
-    Consolas,
-    monospace;
-}
-
+html,
 body {
+  height: 100%;
   margin: 0;
-  min-height: 100vh;
-  display: grid;
-  place-items: center;
 }
 
-main {
-  width: min(64rem, 100% - 2rem);
+:root {
+  color-scheme: light dark;
 }
 
-.brand {
-  view-transition-name: brand;
-  width: fit-content;
-  margin: 0 0 1.5rem;
-  font-size: 2.5rem;
-  letter-spacing: 0.4em;
-  color: var(--accent);
-}
-
-slicc-terminal {
-  display: block;
-  --slicc-terminal-background: #121216;
-  --slicc-terminal-height: min(32rem, 100vh - 12rem);
-  --slicc-terminal-font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-}
-
-.update {
+slicc-app > [slot="status"] {
   display: flex;
-  gap: 1rem;
-  align-items: baseline;
-  margin: 0.75rem 0 0;
-  color: #7c7c84;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
 }
 
-.update[hidden] {
+slicc-app > [slot="status"][hidden],
+slicc-app > [slot="status"] button[hidden] {
   display: none;
 }
 
+slicc-app > [slot="status"] output {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+slicc-app > [slot="status"] button {
+  flex: none;
+  font: inherit;
+  color: var(--spectrum-accent-content-color-default, currentColor);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+slicc-app > [slot="status"] button:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+.network[data-state="failed"] {
+  color: var(--spectrum-notice-visual-color);
+}
+
 .update[data-state="ready"] {
-  color: #ececec;
+  color: var(--spectrum-neutral-content-color-default);
 }
 
 .update[data-state="failed"] {
-  color: #ff4d5a;
-}
-
-.update button {
-  font: inherit;
-  color: #0c0c0f;
-  background: var(--accent);
-  border: 0;
-  border-radius: 0.25rem;
-  padding: 0 0.75rem;
-  cursor: pointer;
+  color: var(--spectrum-negative-visual-color);
 }
 
 .update:not([data-state="ready"]) button {
   display: none;
-}
-
-.network {
-  display: flex;
-  gap: 1rem;
-  align-items: baseline;
-  margin: 0.75rem 0 0;
-  color: #7c7c84;
-}
-
-.network[hidden],
-.network button[hidden] {
-  display: none;
-}
-
-.network[data-state="failed"] {
-  color: #ffb547;
-}
-
-.network button {
-  font: inherit;
-  color: #0c0c0f;
-  background: var(--accent);
-  border: 0;
-  border-radius: 0.25rem;
-  padding: 0 0.75rem;
-  cursor: pointer;
-}
-
-.network button:disabled {
-  opacity: 0.5;
-  cursor: progress;
 }
