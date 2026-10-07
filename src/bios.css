@@ -60,13 +60,13 @@ li[data-state="active"] {
 }
 
 li[data-state="active"]::before {
-  content: "⠋";
+  content: "⠋" / "";
   animation: braille 0.8s linear infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
   li[data-state="active"]::before {
-    content: "⠿";
+    content: "⠿" / "";
     animation: none;
   }
 }
@@ -102,36 +102,36 @@ li[data-state="failed"] output {
 
 @keyframes braille {
   0% {
-    content: "⠋";
+    content: "⠋" / "";
   }
   10% {
-    content: "⠙";
+    content: "⠙" / "";
   }
   20% {
-    content: "⠹";
+    content: "⠹" / "";
   }
   30% {
-    content: "⠸";
+    content: "⠸" / "";
   }
   40% {
-    content: "⠼";
+    content: "⠼" / "";
   }
   50% {
-    content: "⠴";
+    content: "⠴" / "";
   }
   60% {
-    content: "⠦";
+    content: "⠦" / "";
   }
   70% {
-    content: "⠧";
+    content: "⠧" / "";
   }
   80% {
-    content: "⠇";
+    content: "⠇" / "";
   }
   90% {
-    content: "⠏";
+    content: "⠏" / "";
   }
   100% {
-    content: "⠋";
+    content: "⠋" / "";
   }
 }
