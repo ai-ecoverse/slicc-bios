@@ -5,17 +5,18 @@ let handles = new Map();
 
 function directory(names, create = true) {
   const key = names.join('/');
-  if (!handles.has(key)) {
-    const parent = names.length ? directory(names.slice(0, -1), create) : root;
-    const dir = names.length
-      ? parent.then((handle) => handle.getDirectoryHandle(names.at(-1), { create }))
-      : root;
+  if (handles.has(key)) return handles.get(key);
+  if (!names.length) return root;
+  const dir = directory(names.slice(0, -1), create).then((handle) =>
+    handle.getDirectoryHandle(names.at(-1), { create })
+  );
+  if (create) {
     handles.set(key, dir);
     dir.catch(() => {
       if (handles.get(key) === dir) handles.delete(key);
     });
   }
-  return handles.get(key);
+  return dir;
 }
 
 function forget(path) {
