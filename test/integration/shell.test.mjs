@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
-import { boot, opfs, ready, run, shows } from './bios.mjs';
+import { boot, opfs, ready, run, shows, ui } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch();
@@ -72,4 +72,65 @@ test('waits for an updated service worker before opening the shell', async (t) =
   assert.equal(await page.evaluate(() => crossOriginIsolated), true);
   await run(page, 'echo "upgraded $((1 + 1))"');
   await shows(page, 'upgraded 2');
+});
+
+test('boots into the SLICC UI: a file from the terminal shows up in the tree, opens and edits in a tab, and stays', async (t) => {
+  const page = await chrome.page(t);
+  await ui(page);
+  await boot(page);
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window.ui
+        .app()
+        .dock.api.panels.map((panel) => panel.id)
+        .sort()
+    ),
+    ['files', 'terminal']
+  );
+  assert.equal(
+    await page.evaluate(
+      () => window.ui.app().grammarBase === new URL('/node_modules/@shikijs/', location.href).href
+    ),
+    true
+  );
+
+  await run(
+    page,
+    'mkdir -p notes && echo "first $((2 * 21))" > notes/today.md; cat notes/today.md'
+  );
+  await shows(page, 'first 42');
+  await page.until(() => window.ui.tree().paths.includes('home/notes/today.md'));
+  await page.evaluate(() => {
+    const { tree } = window.ui.tree();
+    tree.getItem('home/').expand();
+    tree.getItem('home/notes/').expand();
+    tree.getItem('home/notes/today.md').select();
+  });
+  const path = '/home/notes/today.md';
+  const shown = (text) =>
+    page.until(([path, text]) => window.ui.code(path).includes(text), [path, text]);
+  await shown('first 42');
+
+  await page.evaluate((path) => window.ui.button(path, 'Edit').click(), path);
+  await page.until((path) => !!window.ui.view(path).shadowRoot.querySelector('textarea'), path);
+  await page.evaluate((path) => {
+    const area = window.ui.view(path).shadowRoot.querySelector('textarea');
+    area.value = '# edited in SLICC\n';
+    area.dispatchEvent(new Event('input'));
+    area.focus();
+  }, path);
+  await page.press('s', 'ctrl');
+  await shown('# edited in SLICC');
+  await run(page, 'cat notes/today.md');
+  await shows(page, '# edited in SLICC');
+  await run(page, 'echo "and from bash" >> notes/today.md');
+  await shown('and from bash');
+  await page.screenshot(new URL('ui.png', page.dir));
+
+  await page.reload();
+  await ready(page);
+  await shown('and from bash');
+  await run(page, 'echo "lines $(wc -l < notes/today.md)"');
+  await shows(page, 'lines 2');
+  assert.deepEqual(page.errors, []);
 });

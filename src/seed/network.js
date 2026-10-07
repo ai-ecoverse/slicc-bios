@@ -46,6 +46,7 @@ export function showNetwork(notice, choice, options = {}) {
   const render = (view) => {
     notice.dataset.state = view.state;
     output.value = view.text;
+    notice.title = view.text;
     retry.hidden = !view.retry;
     notice.hidden = false;
   };

@@ -15,6 +15,8 @@
     "@ai-ecoverse/wasm-jq": "1.8.1-1",
     "@ai-ecoverse/wasm-less": "668.0.0-1",
     "@ai-ecoverse/wasm-sed": "4.9.0-3",
-    "@ai-ecoverse/wasm-tls-engine": "3.6.5-1"
+    "@ai-ecoverse/wasm-tls-engine": "3.6.5-1",
+    "@shikijs/langs": "4.5.0",
+    "@shikijs/themes": "4.5.0"
   }
 }

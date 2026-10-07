@@ -75,7 +75,7 @@ test('pins the same packages in the bootstrap and the pnpm lockfile', async () =
       /^ {2}'?(\S+?)'?:\n {4}resolution: \{integrity: (\S+)\}/gm
     ),
   ].map(([, id, integrity]) => `${id} ${integrity}`);
-  assert.equal(npm.length, 13);
+  assert.equal(npm.length, 19);
   assert.deepEqual(npm.sort(), pnpm.sort());
 });
 
@@ -127,7 +127,7 @@ test('updates a running install from a bumped lockfile', async (t) => {
       const bios = await watch(page);
       await reload(page);
       await eventually(() => assert.deepEqual(bios.states(), booted));
-      assert.equal(bios.texts('packages').at(-1), '0/13 downloaded from npm, 0B');
+      assert.equal(bios.texts('packages').at(-1), '0/19 downloaded from npm, 0B');
       assert.deepEqual(
         chrome.cdn.requests.filter((url) => url.endsWith('.tgz')),
         []

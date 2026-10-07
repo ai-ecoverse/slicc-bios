@@ -44,20 +44,35 @@ export async function ready(page) {
   await page.until(
     (prompt) =>
       location.pathname === '/os/' &&
-      document.querySelector('slicc-terminal .term-grid')?.textContent.includes(prompt),
+      document
+        .querySelector('slicc-app')
+        ?.dock?.content('terminal')
+        ?.shadowRoot.querySelector('slicc-terminal:not([hidden]) .term-grid')
+        ?.textContent.includes(prompt),
     prompt
   );
 }
 
 export async function shows(page, text) {
   await page.until(
-    (needle) => document.querySelector('slicc-terminal .term-grid').textContent.includes(needle),
+    (needle) =>
+      document
+        .querySelector('slicc-app')
+        .dock.content('terminal')
+        .shadowRoot.querySelector('slicc-terminal:not([hidden]) .term-grid')
+        .textContent.includes(needle),
     text
   );
 }
 
 export async function run(page, command) {
-  await page.evaluate(() => document.querySelector('slicc-terminal').focus());
+  await page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .dock.content('terminal')
+      .shadowRoot.querySelector('slicc-terminal:not([hidden])')
+      .focus()
+  );
   await page.insert(command);
   await page.enter();
 }
@@ -86,4 +101,24 @@ export async function eventually(check) {
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
   }
+}
+
+export async function ui(page) {
+  await page.init(() => {
+    const app = () => document.querySelector('slicc-app');
+    const view = (path) => app().dock.content(`file:${path}`);
+    window.ui = {
+      app,
+      view,
+      tree: () => app().dock.content('files').shadowRoot.querySelector('slicc-file-tree'),
+      code: (path) =>
+        view(path)
+          ?.shadowRoot.querySelector('slicc-code-view')
+          ?.shadowRoot.querySelector('diffs-container')?.shadowRoot.textContent ?? '',
+      button: (path, text) =>
+        [...view(path).shadowRoot.querySelectorAll('sp-action-button')].find(
+          (button) => button.textContent.trim() === text
+        ),
+    };
+  });
 }
