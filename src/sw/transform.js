@@ -95,6 +95,14 @@ async function wrap(path, source, resolve, base) {
   ].join('\n');
 }
 
+function needsJsonType(source, entry, target) {
+  return (
+    !entry.dynamic &&
+    target.endsWith('.json') &&
+    !/^\s*(with|assert)\b/.test(source.slice(entry.end + 1, entry.end + 40))
+  );
+}
+
 export async function transform(path, source, { resolve, base = '' }) {
   const { imports, module } = scan(source);
   if (!module && imports.length === 0 && looksCommonJs(path, source))
@@ -111,6 +119,10 @@ export async function transform(path, source, { resolve, base = '' }) {
     }
     out += source.slice(at, entry.start) + url;
     at = entry.end;
+    if (needsJsonType(source, entry, target)) {
+      out += `${source[at]} with { type: 'json' }`;
+      at += 1;
+    }
   }
   return out + source.slice(at);
 }

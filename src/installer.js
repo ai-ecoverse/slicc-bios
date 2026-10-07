@@ -111,11 +111,17 @@ async function verify(bytes, integrity, path) {
   if (actual !== expected) throw new Error(`integrity mismatch for ${path}`);
 }
 
+function entryName(name) {
+  const parts = name.split('/').filter((part) => part && part !== '.');
+  if (parts.includes('..')) return '';
+  return (parts.length > 1 ? parts.slice(1) : parts).join('/');
+}
+
 async function unpack(bytes, path) {
   const { createTarDecoder } = await import(TAR);
   const gzip = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
   for await (const { header, body } of gzip.pipeThrough(createTarDecoder())) {
-    const name = header.name.slice(header.name.indexOf('/') + 1);
+    const name = entryName(header.name);
     if (header.type === 'file' && name) {
       await save(`${path}/${name}`, await new Response(body).arrayBuffer());
     } else {
@@ -172,7 +178,9 @@ async function packages({ from }, progress) {
 
 async function replay(from, progress) {
   const lock = JSON.parse(new TextDecoder().decode(await download(from)));
-  const queue = Object.entries(lock.packages).filter(([path, entry]) => path && entry.resolved);
+  const queue = Object.entries(lock.packages).filter(
+    ([path, entry]) => path && entry.resolved && !entry.os && !entry.cpu
+  );
   const removed = await prune(new Set(queue.map(([path]) => path)));
   const pnpm = (await linked()) ?? {};
   const total = queue.length;

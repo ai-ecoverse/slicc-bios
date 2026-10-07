@@ -6,6 +6,7 @@ const options = {
   roots: [['/', 'src/']],
   aliases: [['/os/', 'src/seed/']],
   intercept: ['https://cdn.jsdelivr.net/', 'https://registry.npmjs.org/'],
+  timeout: 90000,
 };
 
 export const launch = (overrides) => start({ ...options, ...overrides });
