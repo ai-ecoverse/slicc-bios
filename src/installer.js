@@ -65,11 +65,14 @@ let heard = 0;
 function within(promise) {
   let timer;
   promise.catch(() => {});
+  const since = Date.now();
   const idle = new Promise((resolve) => {
-    const wait = (seen) => {
-      timer = setTimeout(() => (heard === seen ? resolve(stalled) : wait(heard)), IDLE);
+    const wait = () => {
+      const quiet = Date.now() - Math.max(heard, since);
+      if (quiet >= IDLE) resolve(stalled);
+      else timer = setTimeout(wait, IDLE - quiet);
     };
-    wait(heard);
+    timer = setTimeout(wait, IDLE);
   });
   return Promise.race([promise, idle]).finally(() => clearTimeout(timer));
 }
@@ -77,14 +80,14 @@ function within(promise) {
 async function receive(url, signal) {
   const response = await within(fetch(url, { signal }));
   if (response === stalled) return stalled;
-  heard += 1;
+  heard = Date.now();
   if (!response.ok) throw new Error(`${response.status} ${response.url}`);
   const reader = response.body.getReader();
   const chunks = [];
   for (;;) {
     const next = await within(reader.read());
     if (next === stalled) return stalled;
-    heard += 1;
+    heard = Date.now();
     if (next.done) return new Blob(chunks).arrayBuffer();
     chunks.push(next.value);
   }
