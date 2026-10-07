@@ -18,7 +18,17 @@ The page shows six boot steps as they run:
 - **Terminal:** `bash -i` sessions on the kernel, starting in `/home`, as many as you open with **+**.
 - **Files:** the OPFS root as a tree. `/node_modules`, pnpm's store and `/home/.cache` are listed but not scanned. The tree follows what the terminal writes (a rescan every 2 s and on `FileSystemObserver` records). Files open in tabs, and **Edit** turns a tab into a text area that **Save** or `Mod+S` writes back to OPFS.
 
-Each screen class has its own layout, kept in `localStorage` (`slicc-os.layout.<screen>`). On desktop and tablet the terminal is in the middle, files are on the left, and file tabs open between them. On a phone it's the terminal, with files in the bottom rail. Chat, agents, changes, the browser, memory, the monitor and settings come back as their backends land. Grammars beyond spectrum's bundled ones load from `node_modules/@shikijs/` in OPFS (`@shikijs/langs` and `@shikijs/themes` are among the installed packages), so highlighting works offline. Adobe Clean comes from `/fonts/`, which the sliccy-ai worker serves on every host.
+Each screen class has its own layout, kept in `localStorage` (`slicc-os.layout.<screen>`). On desktop and tablet the terminal is in the middle, files are on the left, and file tabs open between them. On a phone it's the terminal, with files in the bottom rail. Chat, agents, changes, the browser, memory, the monitor and settings come back as their backends land. Adobe Clean comes from `/fonts/`, which the sliccy-ai worker serves on every host.
+
+### Grammars
+
+Spectrum bundles 16 syntax languages; the rest come from `@shikijs/langs` and `@shikijs/themes` (725 and 135 files). They aren't part of the first boot. They're a separate pnpm project, [`src/packages/grammars/`](src/packages/grammars/), deployed next to the BIOS's lockfiles:
+
+1. **Until they're installed,** the UI loads grammars from jsDelivr.
+2. **After every update check,** `os/grammars.js` compares the deployed `packages/grammars/pnpm-lock.yaml` with `var/lib/slicc/grammars/pnpm-lock.yaml`. If they differ, it writes the manifest and lockfile to `/opt/grammars` and runs `pnpm install --frozen-lockfile --trust-lockfile` there, under its own Web Lock, `slicc-grammars`, so a long install never holds up the BIOS in another tab. Only once pnpm succeeds does it record the lockfile.
+3. **Once they're installed,** `grammarBase` points at `/opt/grammars/node_modules/@shikijs/`, so highlighting works offline from then on. If pnpm fails, the page stays on jsDelivr, logs a warning, and tries again at the next check.
+
+The Files panel lists `/opt/grammars/node_modules` but doesn't scan it.
 
 The network and update notices sit in the UI's status bar.
 

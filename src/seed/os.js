@@ -1,6 +1,7 @@
 import { createKernel } from '@ai-ecoverse/slicc-kernel';
 import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
 import { surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
+import { grammarBase, grammars } from './grammars.js';
 import { showNetwork } from './network.js';
 import { pickTransport } from './transport.js';
 import { update } from './update.js';
@@ -10,7 +11,12 @@ export const layouts = {
   files: { side: 'left', open: ['tablet', 'desktop'] },
 };
 
-export const skip = ['/node_modules', '/home/.local/share/pnpm', '/home/.cache'];
+export const skip = [
+  '/node_modules',
+  '/opt/grammars/node_modules',
+  '/home/.local/share/pnpm',
+  '/home/.cache',
+];
 
 export function offered(all) {
   return Object.entries(layouts).map(([id, layout]) => ({
@@ -26,7 +32,6 @@ showNetwork(document.querySelector('.network'), network);
 const root = await navigator.storage.getDirectory();
 const kernel = await createKernel({ root, network: { transport } });
 const app = document.querySelector('slicc-app');
-app.grammarBase = new URL('../node_modules/@shikijs/', import.meta.url).href;
 app.layoutKey = 'slicc-os.layout';
 app.surfaces = offered(surfaces);
 app.model = createKernelModel({
@@ -56,6 +61,12 @@ async function check() {
     if (changes) show('ready', `updated ${changes.join(', ') || 'packages'}`);
   } catch (error) {
     show('failed', `update failed: ${error.message}`);
+  }
+  try {
+    await grammars(kernel);
+    app.grammarBase = grammarBase;
+  } catch (error) {
+    console.warn(`grammars stay on jsDelivr: ${error.message}`);
   }
 }
 

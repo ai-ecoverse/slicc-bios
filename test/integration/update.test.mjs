@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
-import { boot, booted, eventually, ready, run, shows, watch } from './bios.mjs';
+import { boot, booted, eventually, opfs, ready, run, shows, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch({ timeout: 120000 });
@@ -75,7 +75,7 @@ test('pins the same packages in the bootstrap and the pnpm lockfile', async () =
       /^ {2}'?(\S+?)'?:\n {4}resolution: \{integrity: (\S+)\}/gm
     ),
   ].map(([, id, integrity]) => `${id} ${integrity}`);
-  assert.equal(npm.length, 19);
+  assert.equal(npm.length, 13);
   assert.deepEqual(npm.sort(), pnpm.sort());
 });
 
@@ -127,7 +127,7 @@ test('updates a running install from a bumped lockfile', async (t) => {
       const bios = await watch(page);
       await reload(page);
       await eventually(() => assert.deepEqual(bios.states(), booted));
-      assert.equal(bios.texts('packages').at(-1), '0/19 downloaded from npm, 0B');
+      assert.equal(bios.texts('packages').at(-1), '0/13 downloaded from npm, 0B');
       assert.deepEqual(
         chrome.cdn.requests.filter((url) => url.endsWith('.tgz')),
         []
@@ -139,4 +139,24 @@ test('updates a running install from a bumped lockfile', async (t) => {
       assert.deepEqual(page.errors, []);
     }
   );
+});
+
+test('installs the grammars with pnpm in the background and serves them from OPFS', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  assert.equal(await page.evaluate(() => document.querySelector('slicc-app').grammarBase), null);
+  assert.equal((await opfs(page)).filter((path) => path.includes('@shikijs')).length, 0);
+  await page.until(() => document.querySelector('slicc-app').grammarBase !== null);
+  const base = await page.evaluate(() => document.querySelector('slicc-app').grammarBase);
+  assert.equal(base, new URL('/opt/grammars/node_modules/@shikijs/', chrome.url).href);
+  const served = await page.evaluate(async (base) => {
+    const response = await fetch(new URL('langs/dist/rust.mjs', base));
+    return [response.status, (await response.text()).includes('rust')];
+  }, base);
+  assert.deepEqual(served, [200, true]);
+  assert.equal(
+    await read(page, 'var/lib/slicc/grammars/pnpm-lock.yaml'),
+    await readFile(new URL('../../src/packages/grammars/pnpm-lock.yaml', import.meta.url), 'utf8')
+  );
+  assert.deepEqual(page.errors, []);
 });
