@@ -1,6 +1,6 @@
 const deployed = new URL('../packages/', import.meta.url);
 
-async function text(dir, path) {
+export async function text(dir, path) {
   const names = path.split('/');
   const name = names.pop();
   try {
@@ -11,7 +11,7 @@ async function text(dir, path) {
   }
 }
 
-async function write(dir, path, data) {
+export async function write(dir, path, data) {
   const names = path.split('/');
   const name = names.pop();
   for (const part of names) dir = await dir.getDirectoryHandle(part, { create: true });
@@ -20,7 +20,7 @@ async function write(dir, path, data) {
   await writable.close();
 }
 
-async function fetchText(name, from) {
+export async function fetchText(name, from) {
   const response = await fetch(new URL(name, from), { cache: 'no-cache' });
   if (!response.ok) throw new Error(`${response.status} ${response.url}`);
   return response.text();
