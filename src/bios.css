@@ -60,8 +60,15 @@ li[data-state="active"] {
 }
 
 li[data-state="active"]::before {
-  content: "◐";
-  animation: spin 0.8s linear infinite;
+  content: "⠋" / "";
+  animation: braille 0.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  li[data-state="active"]::before {
+    content: "⠿" / "";
+    animation: none;
+  }
 }
 
 li[data-state="done"]::before {
@@ -93,8 +100,38 @@ li[data-state="failed"] output {
   color: var(--bad);
 }
 
-@keyframes spin {
-  to {
-    transform: rotate(1turn);
+@keyframes braille {
+  0% {
+    content: "⠋" / "";
+  }
+  10% {
+    content: "⠙" / "";
+  }
+  20% {
+    content: "⠹" / "";
+  }
+  30% {
+    content: "⠸" / "";
+  }
+  40% {
+    content: "⠼" / "";
+  }
+  50% {
+    content: "⠴" / "";
+  }
+  60% {
+    content: "⠦" / "";
+  }
+  70% {
+    content: "⠧" / "";
+  }
+  80% {
+    content: "⠇" / "";
+  }
+  90% {
+    content: "⠏" / "";
+  }
+  100% {
+    content: "⠋" / "";
   }
 }
