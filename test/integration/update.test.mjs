@@ -52,7 +52,8 @@ async function updated(page) {
   chrome.cdn.requests.length = 0;
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await page.until(() => /ready|failed/.test(document.querySelector('.update').dataset.state));
-  assert.equal((await notice(page)).state, 'ready');
+  const result = await notice(page);
+  assert.equal(result.state, 'ready', result.text);
 }
 
 async function bootOlder(page) {
