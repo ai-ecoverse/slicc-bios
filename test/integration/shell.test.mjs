@@ -56,6 +56,9 @@ test('reaches npm over HTTPS with curl and the everyday tools', async (t) => {
   await shows(page, 'found 1');
   await run(page, 'find /usr/bin -name "less" | head -1');
   await shows(page, '/usr/bin/less');
+  await run(page, 'which bash; which nope 2>/dev/null; echo "which says $?"');
+  await shows(page, '/usr/bin/bash');
+  await shows(page, 'which says 1');
   assert.deepEqual(page.errors, []);
 });
 
