@@ -12,8 +12,8 @@ importers:
         specifier: 1.12.0
         version: 1.12.0
       '@ai-ecoverse/slicc-spectrum':
-        specifier: 1.8.2
-        version: 1.8.2
+        specifier: 1.8.3
+        version: 1.8.3
       '@ai-ecoverse/wasi-pnpm':
         specifier: 12.9.1-4
         version: 12.9.1-4
@@ -54,8 +54,8 @@ packages:
     resolution: {integrity: sha512-fSwJNHKCU5qrOQ2KuOnCuXM19KIT3gmwrDqwLQdNsW/PcRNTH5X5oJV7FK9VxBmBWEFe/V3Hp0t1wfrotNl1tw==}
     engines: {node: '>=24'}
 
-  '@ai-ecoverse/slicc-spectrum@1.8.2':
-    resolution: {integrity: sha512-8dMJt24RJszqPAJdaX6e04znYZHlgKYyhNyZxbEQMqmE2uDaCTXmZ2LxCTRzTdqbng2mWtRXjnX1JvbqPbJKEw==}
+  '@ai-ecoverse/slicc-spectrum@1.8.3':
+    resolution: {integrity: sha512-szDSDU+wPLlKOmutzMtb0zwUlykvupF1BSGFgLKDQN5+Qz+hItdkAQHLsVRSBuNAwVJiiKjMRs21VZO3udW7Iw==}
     engines: {node: '>=24'}
     peerDependencies:
       '@shikijs/langs': 4.5.0
@@ -104,7 +104,7 @@ snapshots:
 
   '@ai-ecoverse/slicc-kernel@1.12.0': {}
 
-  '@ai-ecoverse/slicc-spectrum@1.8.2': {}
+  '@ai-ecoverse/slicc-spectrum@1.8.3': {}
 
   '@ai-ecoverse/wasi-pnpm@12.9.1-4': {}
 
