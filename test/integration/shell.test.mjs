@@ -147,3 +147,18 @@ test('installs a command with pnpm add -g and runs it in the same shell', async 
   await shows(page, 'gone 127');
   assert.deepEqual(page.errors, []);
 });
+
+test('lists and kills processes with procps', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await run(page, 'sleep 60 & ps | grep -c "[s]leep" | sed "s/^/sleeping /"');
+  await shows(page, 'sleeping 1');
+  await run(
+    page,
+    'env kill $(pgrep sleep); sleep 1; ps | grep -c "[s]leep" | sed "s/^/after kill /"'
+  );
+  await shows(page, 'after kill 0');
+  await run(page, 'free | head -1 | grep -c total | sed "s/^/free /"');
+  await shows(page, 'free 1');
+  assert.deepEqual(page.errors, []);
+});
