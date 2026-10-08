@@ -29,6 +29,13 @@ jobs:
 
       - run: npm ci
 
+      - name: Harness download cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: node_modules/.cache/slicc-harness/cdn
+          key: harness-cdn-${{ hashFiles('src/packages/**/pnpm-lock.yaml', 'src/packages/**/package.json') }}
+          restore-keys: harness-cdn-
+
       - name: Lint
         run: npm run lint
 
