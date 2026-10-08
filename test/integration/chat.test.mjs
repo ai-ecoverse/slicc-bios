@@ -151,6 +151,14 @@ const helpers = () => {
 };
 
 const INSTALL = 15 * 60 * 1000;
+
+async function eventually(check, ms = 30000) {
+  const deadline = Date.now() + ms;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`still false after ${ms} ms: ${check}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
 const UPDATE = 5 * 60 * 1000;
 
 test('chat in seven answers through the agent worker, Bedrock and the local proxy', {
@@ -305,8 +313,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   await page.screenshot(new URL('signing-in.png', page.dir));
   await page.evaluate(() => document.querySelector('.sign-in button').click());
   await page.until(() => document.querySelector('.sign-in').hidden);
-  assert.equal(proxy.dropped.length, 1);
-  assert.equal(authorized.length, 1);
+  await eventually(() => proxy.dropped.length === 1 && authorized.length === 1);
   hold = false;
   authorized.length = 0;
   await signIn();
