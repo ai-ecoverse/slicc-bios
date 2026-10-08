@@ -56,6 +56,9 @@ test('reaches npm over HTTPS with curl and the everyday tools', async (t) => {
   await shows(page, 'found 1');
   await run(page, 'find /usr/bin -name "less" | head -1');
   await shows(page, '/usr/bin/less');
+  await run(page, 'which bash; which nope 2>/dev/null; echo "which says $?"');
+  await shows(page, '/usr/bin/bash');
+  await shows(page, 'which says 1');
   assert.deepEqual(page.errors, []);
 });
 
@@ -127,5 +130,19 @@ test('boots into the SLICC UI: a file from the terminal shows up in the tree, op
   await shown('and from bash');
   await run(page, 'echo "lines $(wc -l < notes/today.md)"');
   await shows(page, 'lines 2');
+  assert.deepEqual(page.errors, []);
+});
+test('lists and kills processes with procps', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await run(page, 'sleep 60 & ps | grep -c "[s]leep" | sed "s/^/sleeping /"');
+  await shows(page, 'sleeping 1');
+  await run(
+    page,
+    'env kill $(pgrep sleep); sleep 1; ps | grep -c "[s]leep" | sed "s/^/after kill /"'
+  );
+  await shows(page, 'after kill 0');
+  await run(page, 'free | head -1 | grep -c total | sed "s/^/free /"');
+  await shows(page, 'free 1');
   assert.deepEqual(page.errors, []);
 });
