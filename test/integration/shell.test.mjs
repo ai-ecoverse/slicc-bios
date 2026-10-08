@@ -132,3 +132,18 @@ test('boots into the SLICC UI: a file from the terminal shows up in the tree, op
   await shows(page, 'lines 2');
   assert.deepEqual(page.errors, []);
 });
+
+test('installs a command with pnpm add -g and runs it in the same shell', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await run(page, 'pnpm add -g @ai-ecoverse/wasm-xxd@9.1.1850 >/dev/null 2>&1; echo "added $?"');
+  await shows(page, 'added 0');
+  await run(page, 'echo hi | xxd');
+  await shows(page, '00000000: 6869 0a');
+  await run(
+    page,
+    'pnpm remove -g @ai-ecoverse/wasm-xxd >/dev/null 2>&1; xxd -v >/dev/null 2>&1; echo "gone $?"'
+  );
+  await shows(page, 'gone 127');
+  assert.deepEqual(page.errors, []);
+});
