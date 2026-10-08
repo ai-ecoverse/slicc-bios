@@ -16,6 +16,7 @@ import { pickTransport } from './transport.js';
 import { update } from './update.js';
 
 export const layouts = {
+  agents: { side: 'left', open: ['tablet', 'desktop'] },
   chat: { side: 'center', open: ['phone', 'tablet', 'desktop'] },
   terminal: { side: 'center', open: ['phone', 'tablet', 'desktop'] },
   files: { side: 'left', open: ['tablet', 'desktop'] },
