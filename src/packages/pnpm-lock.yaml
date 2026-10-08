@@ -15,8 +15,8 @@ importers:
         specifier: 1.11.0
         version: 1.11.0
       '@ai-ecoverse/wasi-pnpm':
-        specifier: 12.9.1-4
-        version: 12.9.1-4
+        specifier: 12.9.1-5
+        version: 12.9.1-5
       '@ai-ecoverse/wasm-bash':
         specifier: 5.3.0-7
         version: 5.3.0-7
@@ -66,8 +66,8 @@ packages:
       '@shikijs/themes':
         optional: true
 
-  '@ai-ecoverse/wasi-pnpm@12.9.1-4':
-    resolution: {integrity: sha512-D3QDiPDyTbeVvlZZx6HDu97rHOMV7SdJeyhBxVyCX5qYQkRTzEE0UJ9UpmUxhL1BkATfyRaO9fduixBMs0MJwA==}
+  '@ai-ecoverse/wasi-pnpm@12.9.1-5':
+    resolution: {integrity: sha512-92KfM4GzY/G5BHNkR+zAwgikdSDV50Wq4o5sE9yxBQqPtddvw1y4eboBljwcaKXiA1z1ZVxISF2qMT0Ah2JiqA==}
     engines: {slicc-kernel: '>=1.7.2'}
 
   '@ai-ecoverse/wasm-bash@5.3.0-7':
@@ -106,7 +106,7 @@ snapshots:
 
   '@ai-ecoverse/slicc-spectrum@1.11.0': {}
 
-  '@ai-ecoverse/wasi-pnpm@12.9.1-4': {}
+  '@ai-ecoverse/wasi-pnpm@12.9.1-5': {}
 
   '@ai-ecoverse/wasm-bash@5.3.0-7': {}
 
