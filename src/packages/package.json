@@ -3,7 +3,7 @@
   "private": true,
   "description": "Packages the BIOS installs from npm into OPFS, pinned by package-lock.json and pnpm-lock.yaml",
   "dependencies": {
-    "@ai-ecoverse/slicc-kernel": "1.16.0",
+    "@ai-ecoverse/slicc-kernel": "1.16.1",
     "@ai-ecoverse/slicc-spectrum": "1.22.2",
     "@ai-ecoverse/wasi-pnpm": "12.9.1-6",
     "@ai-ecoverse/wasm-bash": "5.3.0-7",
