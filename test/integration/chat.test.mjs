@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { createServer } from 'node:https';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
 import { ready } from './bios.mjs';
@@ -7,6 +12,14 @@ import { launch } from './chrome.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
 
 const KEY = 'dummy-bedrock-key-0000';
+const ADOBE = 'https://adobe-llm-proxy.paolo-moz.workers.dev/';
+const ADOBE_TOKEN = 'dummy-adobe-token-0000';
+const adobeConfig = {
+  clientId: 'test-client',
+  scopes: 'openid,AdobeID',
+  imsEnvironment: 'prod',
+  models: [{ id: 'claude-test', name: 'Claude Test', context_window: 200000, max_tokens: 8192 }],
+};
 const BEDROCK = 'https://bedrock-runtime.us-west-2.amazonaws.com/';
 
 const stream = Buffer.concat([
@@ -21,11 +34,69 @@ const stream = Buffer.concat([
   }),
 ]);
 
-const chrome = await launch({ agent: true, timeout: 1200000 });
+const certs = mkdtempSync(join(tmpdir(), 'ims-'));
+execFileSync(
+  'openssl',
+  [
+    'req',
+    '-x509',
+    '-newkey',
+    'rsa:2048',
+    '-nodes',
+    '-days',
+    '1',
+    '-subj',
+    '/CN=ims-na1.adobelogin.com',
+    '-keyout',
+    join(certs, 'key.pem'),
+    '-out',
+    join(certs, 'cert.pem'),
+  ],
+  { stdio: 'ignore' }
+);
+const authorized = [];
+let hold = true;
+const ims = createServer(
+  { key: readFileSync(join(certs, 'key.pem')), cert: readFileSync(join(certs, 'cert.pem')) },
+  (req, res) => {
+    const url = new URL(req.url, 'https://ims-na1.adobelogin.com');
+    if (url.pathname === '/ims/authorize/v2') authorized.push(Object.fromEntries(url.searchParams));
+    const state = JSON.parse(
+      Buffer.from(url.searchParams.get('state') ?? 'e30=', 'base64').toString()
+    );
+    const target = `http://localhost:${state.port}${state.path}?nonce=${state.nonce}#access_token=${ADOBE_TOKEN}&expires_in=86400`;
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(
+      hold ? 'Sign in to Adobe' : `<script>location.replace(${JSON.stringify(target)});</script>`
+    );
+  }
+);
+await new Promise((resolve) => ims.listen(0, '127.0.0.1', resolve));
+const chrome = await launch({
+  agent: true,
+  timeout: 1200000,
+  args: [
+    `--host-resolver-rules=MAP ims-na1.adobelogin.com:443 127.0.0.1:${ims.address().port}`,
+    '--ignore-certificate-errors',
+  ],
+});
 const proxy = await fakeProxy({
   origin: new URL(chrome.url).origin,
   key: 'the-key',
   answer: async (request) => {
+    if (request.url.startsWith(ADOBE)) {
+      const bearer = request.headers.find(([name]) => name.toLowerCase() === 'authorization')?.[1];
+      const body = request.url.endsWith('/v1/config')
+        ? adobeConfig
+        : bearer === `Bearer ${ADOBE_TOKEN}`
+          ? { usage: { weekly: { status: 'ok', percent: 42, resetsAt: '2026-10-15T00:00:00Z' } } }
+          : { error: 'unauthorized' };
+      return {
+        status: body.error ? 401 : 200,
+        headers: [['content-type', 'application/json']],
+        body: Buffer.from(JSON.stringify(body)),
+      };
+    }
     if (request.url.startsWith('https://registry.npmjs.org/')) {
       const type = request.url.endsWith('.tgz') ? 'application/octet-stream' : 'application/json';
       return { status: 200, headers: [['content-type', type]], body: await download(request.url) };
@@ -49,6 +120,7 @@ const proxy = await fakeProxy({
   },
 });
 after(async () => {
+  ims.close();
   await proxy.close();
   await chrome.close();
 });
@@ -205,5 +277,62 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
       3
   );
   assert.equal(keyed().length, 2);
+
+  await page.evaluate(() => document.querySelector('slicc-app').show('settings'));
+  await page.evaluate(() => {
+    window.adobeButton = () =>
+      window.deep(
+        document.querySelector('slicc-app').dock.content('settings').shadowRoot,
+        '.account[data-id=adobe] sp-button'
+      );
+  });
+  const signIn = async () => {
+    await page.until(() => !!window.adobeButton() && !window.adobeButton().disabled);
+    await page.evaluate(() => window.adobeButton().focus());
+    await page.press('Enter');
+  };
+  await signIn();
+  await page.until(() => !document.querySelector('.sign-in').hidden);
+  assert.equal(
+    await page.evaluate(() => document.querySelector('.sign-in output').value),
+    'signing in to Adobe…'
+  );
+  await page.screenshot(new URL('signing-in.png', page.dir));
+  await page.evaluate(() => document.querySelector('.sign-in button').click());
+  await page.until(() => document.querySelector('.sign-in').hidden);
+  assert.equal(proxy.dropped.length, 1);
+  assert.equal(authorized.length, 1);
+  hold = false;
+  authorized.length = 0;
+  await signIn();
+  await page.until(
+    () =>
+      document
+        .querySelector('slicc-app')
+        .model.settings.accounts()
+        .find((item) => item.id === 'adobe')?.status === 'connected'
+  );
+  const [authorize] = authorized;
+  assert.equal(authorize.client_id, 'test-client');
+  assert.equal(authorize.redirect_uri, 'https://www.sliccy.ai/auth/callback');
+  assert.equal(authorize.response_type, 'token');
+  assert.equal(JSON.parse(Buffer.from(authorize.state, 'base64').toString()).source, 'local');
+  assert.equal(authorize.scope, 'openid,AdobeID');
+  await page.until(
+    () => document.querySelector('slicc-app').model.tray.status().budget.percent === 42
+  );
+  await page.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.settings.models()
+      .some((option) => option.id === 'adobe/claude-test')
+  );
+  await page.screenshot(new URL('adobe.png', page.dir));
+  assert.ok(
+    !(await page.evaluate(
+      (token) => document.documentElement.outerHTML.includes(token),
+      ADOBE_TOKEN
+    ))
+  );
   assert.deepEqual(page.errors, []);
 });
