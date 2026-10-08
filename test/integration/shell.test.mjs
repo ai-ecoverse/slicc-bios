@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
-import { boot, opfs, ready, run, shows, ui } from './bios.mjs';
+import { boot, opfs, ready, run, screen, shows, ui } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch();
@@ -144,5 +144,22 @@ test('lists and kills processes with procps', async (t) => {
   await shows(page, 'after kill 0');
   await run(page, 'free | head -1 | grep -c total | sed "s/^/free /"');
   await shows(page, 'free 1');
+  assert.deepEqual(page.errors, []);
+});
+
+test('installs a command with pnpm add -g and runs it in the same shell', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await run(page, 'pnpm add -g @ai-ecoverse/wasm-xxd@9.1.1850; echo "added $((40+$?))"');
+  await shows(page, 'added 4', 300000);
+  assert.match(await screen(page), /added 40/, await screen(page));
+  await run(page, 'echo hi | xxd');
+  await shows(page, '00000000: 6869 0a');
+  await run(
+    page,
+    'pnpm remove -g @ai-ecoverse/wasm-xxd; xxd -v >/dev/null 2>&1; echo "gone $((1000+$?))"'
+  );
+  await shows(page, 'gone 1', 300000);
+  assert.match(await screen(page), /gone 1127/, await screen(page));
   assert.deepEqual(page.errors, []);
 });

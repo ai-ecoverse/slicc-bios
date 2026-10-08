@@ -22,7 +22,7 @@
     "format": "biome check --write ."
   },
   "devDependencies": {
-    "@ai-ecoverse/slicc-shared-web": "1.6.0",
+    "@ai-ecoverse/slicc-shared-web": "1.7.1",
     "@biomejs/biome": "2.5.15",
     "es-module-lexer": "3.0.3",
     "fake-indexeddb": "6.2.5",

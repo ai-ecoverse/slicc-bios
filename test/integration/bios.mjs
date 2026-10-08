@@ -68,6 +68,16 @@ function showing(needle) {
     .textContent.includes(needle);
 }
 
+export async function screen(page) {
+  return page.evaluate(
+    () =>
+      document
+        .querySelector('slicc-app')
+        .dock.content('terminal')
+        .shadowRoot.querySelector('slicc-terminal:not([hidden]) .term-grid').textContent
+  );
+}
+
 export async function shows(page, text, ms) {
   if (ms) await page.within(ms, showing, text);
   else await page.until(showing, text);
