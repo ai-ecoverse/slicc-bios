@@ -127,7 +127,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     await page.evaluate(() =>
       window.deepText(window.deep(window.chatView().shadowRoot, '.error-card'))
     ),
-    /security token included in the request is invalid[\s\S]*Open settings/
+    /Bedrock rejected the API key\.[\s\S]*security token included in the request is invalid[\s\S]*Open settings/
   );
   await page.screenshot(new URL('error-card.png', page.dir));
   await connect(KEY);
