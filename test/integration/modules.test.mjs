@@ -56,3 +56,38 @@ test('the UI itself loads without an import map', async (t) => {
   );
   assert.equal(maps, 0);
 });
+
+test('node:worker_threads starts a module worker with workerData and a parentPort', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  const result = await page.evaluate(async () => {
+    const root = await navigator.storage.getDirectory();
+    const os = await root.getDirectoryHandle('os', { create: true });
+    const writable = await (await os.getFileHandle('echo.js', { create: true })).createWritable();
+    await writable.write(
+      'import { parentPort, workerData, isMainThread } from "node:worker_threads";\nparentPort.on("message", (message) => parentPort.postMessage({ workerData, isMainThread, echo: message }));'
+    );
+    await writable.close();
+    const threads = await import(
+      '/__slicc/node/worker_threads.js?names=Worker,isMainThread,MessageChannel'
+    );
+    const worker = new threads.Worker('/os/echo.js', { workerData: { seed: 7 } });
+    const reply = await new Promise((resolve, reject) => {
+      worker.on('message', resolve).on('error', reject);
+      worker.postMessage('ping');
+    });
+    const code = await worker.terminate();
+    let missing = '';
+    try {
+      threads.MessageChannel();
+    } catch (error) {
+      missing = error.message;
+    }
+    return { reply, code, main: threads.isMainThread, missing, fallback: threads.default.threadId };
+  });
+  assert.deepEqual(result.reply, { workerData: { seed: 7 }, isMainThread: false, echo: 'ping' });
+  assert.equal(result.code, 1);
+  assert.equal(result.main, true);
+  assert.match(result.missing, /node:worker_threads\.MessageChannel is not available/);
+  assert.equal(result.fallback, 0);
+});
