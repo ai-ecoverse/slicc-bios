@@ -4,6 +4,7 @@ import { surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
 import {
   installed as agentInstalled,
   installAgent,
+  recorded,
   restartChat,
   startChat,
   whenIdle,
@@ -70,11 +71,19 @@ app.model = base;
 await app.updateComplete;
 app.show('terminal');
 let agent = null;
+let startedWith = null;
+function started(chat, lock) {
+  if (chat) startedWith = lock;
+  else agent = null;
+  return chat;
+}
 function startOnce() {
-  agent ??= offerAgent(app, base, startChat(kernel)).then((chat) => {
-    if (!chat) agent = null;
-    return chat;
-  });
+  if (!agent) {
+    const lock = recorded();
+    agent = offerAgent(app, base, startChat(kernel)).then(async (chat) =>
+      started(chat, await lock)
+    );
+  }
   return agent;
 }
 if (await agentInstalled()) void startOnce();
@@ -99,23 +108,26 @@ async function restart() {
   showAgent('active', 'restarting the agent once it is idle…');
   const chat = await agent;
   await whenIdle(app.model.agent);
-  agent = offerAgent(app, base, restartChat(chat)).then((restarted) => {
-    if (!restarted) agent = null;
-    return restarted;
-  });
+  const lock = recorded();
+  agent = offerAgent(app, base, restartChat(chat)).then(async (restarted) =>
+    started(restarted, await lock)
+  );
   if (await agent) agentNotice.hidden = true;
   else showAgent('failed', 'the agent did not restart', 'Retry');
 }
 
 async function offerChat() {
-  const running = agent;
   try {
-    const changed = await installAgent(() => createKernel({ root, network: { transport } }), {
+    await installAgent(() => createKernel({ root, network: { transport } }), {
       report: (text) => showAgent('active', text),
     });
+    const running = agent && (await agent);
+    if (running && (await recorded()) !== startedWith) {
+      showAgent('ready', 'agent updated', 'Restart agent');
+      return;
+    }
     agentNotice.hidden = true;
-    if (changed && (await running)) showAgent('ready', 'agent updated', 'Restart agent');
-    else await startOnce();
+    await startOnce();
   } catch (error) {
     showAgent('failed', `agent install failed: ${error.message}`, 'Retry');
   }

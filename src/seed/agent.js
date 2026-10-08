@@ -9,8 +9,12 @@ export const modules = new URL(
 );
 export const agentWorker = new URL('agent-worker.js', modules);
 
+export async function recorded() {
+  return text(await navigator.storage.getDirectory(), receipt);
+}
+
 export async function installed() {
-  return (await text(await navigator.storage.getDirectory(), receipt)) !== null;
+  return (await recorded()) !== null;
 }
 
 export function progress(output) {
