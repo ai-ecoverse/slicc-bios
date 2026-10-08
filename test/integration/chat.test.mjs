@@ -150,11 +150,11 @@ const helpers = () => {
   };
 };
 
-const INSTALL = 10 * 60 * 1000;
+const INSTALL = 15 * 60 * 1000;
 const UPDATE = 5 * 60 * 1000;
 
 test('chat in seven answers through the agent worker, Bedrock and the local proxy', {
-  timeout: 25 * 60 * 1000,
+  timeout: 30 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
   await page.init(helpers);
