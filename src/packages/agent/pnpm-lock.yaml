@@ -9,13 +9,13 @@ importers:
   .:
     dependencies:
       '@ai-ecoverse/slicc-agent':
-        specifier: 2.7.0
-        version: 2.7.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
+        specifier: 2.8.0
+        version: 2.8.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
 
 packages:
 
-  '@ai-ecoverse/slicc-agent@2.7.0':
-    resolution: {integrity: sha512-Je8RURNTs1w5pususCLdosUMkE+tZkeFJIWe3hgBdN3mZuGZd5HaHtC+ROgmeYvYrO815Tt4P5fSoy3uhwwtDg==}
+  '@ai-ecoverse/slicc-agent@2.8.0':
+    resolution: {integrity: sha512-NDLg2i1Q5UvPkbSWKTH19Pq3rib1xBhdFfH+gC1OxfyHSVl5NDJmhBPj6xAsE1ZOtbgwL9jEPOK/QfkvV8No0Q==}
     engines: {node: '>=24'}
     peerDependencies:
       '@ai-ecoverse/slicc-spectrum': ^1.7.0
@@ -23,8 +23,8 @@ packages:
       '@ai-ecoverse/slicc-spectrum':
         optional: true
 
-  '@ai-ecoverse/slicc-kernel@1.12.0':
-    resolution: {integrity: sha512-fSwJNHKCU5qrOQ2KuOnCuXM19KIT3gmwrDqwLQdNsW/PcRNTH5X5oJV7FK9VxBmBWEFe/V3Hp0t1wfrotNl1tw==}
+  '@ai-ecoverse/slicc-kernel@1.13.0':
+    resolution: {integrity: sha512-uOHMfcO1cjQyRIyIuG9XbkKRhNrpFPn45HvowNRF1hWpzDmQoBjJ4ZoPdBGAa2KcwpVQxxN78zHITUyReTpnog==}
     engines: {node: '>=24'}
 
   '@anthropic-ai/sdk@0.129.0':
@@ -577,9 +577,9 @@ packages:
 
 snapshots:
 
-  '@ai-ecoverse/slicc-agent@2.7.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)':
+  '@ai-ecoverse/slicc-agent@2.8.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)':
     dependencies:
-      '@ai-ecoverse/slicc-kernel': 1.12.0
+      '@ai-ecoverse/slicc-kernel': 1.13.0
       '@earendil-works/chord': 1.0.4
       '@earendil-works/pi-ai': 1.0.4(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@earendil-works/pi-client': 1.0.4
@@ -600,7 +600,7 @@ snapshots:
       - ws
       - zod
 
-  '@ai-ecoverse/slicc-kernel@1.12.0': {}
+  '@ai-ecoverse/slicc-kernel@1.13.0': {}
 
   '@anthropic-ai/sdk@0.129.0':
     dependencies:
