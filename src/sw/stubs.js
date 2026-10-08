@@ -69,13 +69,24 @@ export class Worker {
 let port = null;
 let data = null;
 if (inside) {
-  const queued = [];
-  const listeners = [];
-  data = await new Promise((resolve) => {
+  const key = Symbol.for(NAME);
+  globalThis[key] ??= new Promise((resolve) => {
+    const queued = [];
+    const listeners = [];
+    const shared = {
+      postMessage: (message) => globalThis.postMessage(message),
+      on(event, listener) {
+        if (event === 'message') {
+          listeners.push(listener);
+          for (const message of queued.splice(0)) listener(message);
+        }
+        return shared;
+      },
+    };
     globalThis.addEventListener(
       'message',
       (event) => {
-        resolve(event.data?.workerData ?? null);
+        resolve({ data: event.data?.workerData ?? null, port: shared });
         globalThis.addEventListener('message', (next) => {
           if (listeners.length) for (const listener of listeners) listener(next.data);
           else queued.push(next.data);
@@ -84,16 +95,7 @@ if (inside) {
       { once: true }
     );
   });
-  port = {
-    postMessage: (message) => globalThis.postMessage(message),
-    on(event, listener) {
-      if (event === 'message') {
-        listeners.push(listener);
-        for (const message of queued.splice(0)) listener(message);
-      }
-      return port;
-    },
-  };
+  ({ data, port } = await globalThis[key]);
 }
 
 export const parentPort = port;

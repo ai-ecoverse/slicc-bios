@@ -65,7 +65,7 @@ test('node:worker_threads starts a module worker with workerData and a parentPor
     const os = await root.getDirectoryHandle('os', { create: true });
     const writable = await (await os.getFileHandle('echo.js', { create: true })).createWritable();
     await writable.write(
-      'import { parentPort, workerData, isMainThread } from "node:worker_threads";\nparentPort.on("message", (message) => parentPort.postMessage({ workerData, isMainThread, echo: message }));'
+      'import { parentPort, isMainThread } from "node:worker_threads";\nconst { workerData } = await import("node:worker_threads");\nparentPort.on("message", (message) => parentPort.postMessage({ workerData, isMainThread, echo: message }));'
     );
     await writable.close();
     const threads = await import(
