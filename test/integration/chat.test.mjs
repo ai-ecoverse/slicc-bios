@@ -172,8 +172,19 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   await page.init(helpers);
   await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
   await ready(page);
-  await page.until(() =>
-    /installing the agent… \d+\/\d+/.test(document.querySelector('.agent').textContent)
+  await page.evaluate(() => {
+    const output = document.querySelector('.agent output');
+    window.progress = [];
+    new MutationObserver(() => window.progress.push(output.value)).observe(output, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+  });
+  await page.within(INSTALL, () =>
+    /installing the agent… downloading [1-9]\d*\/\d{2,}/.test(
+      document.querySelector('.agent').textContent
+    )
   );
   await page.screenshot(new URL('installing.png', page.dir));
   await page.within(INSTALL, () =>
@@ -182,6 +193,13 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
       .model.settings.accounts()
       .some((account) => account.id === 'amazon-bedrock')
   );
+  const phases = await page.evaluate(() =>
+    window.progress.map((text) => text.match(/(downloading|linking) (\d+)\/(\d+)/)).filter(Boolean)
+  );
+  const firstLink = phases.findIndex(([, phase]) => phase === 'linking');
+  assert.ok(firstLink > 0, JSON.stringify(phases.slice(-5)));
+  assert.ok(phases.slice(0, firstLink).every(([, phase]) => phase === 'downloading'));
+  assert.ok(phases.slice(firstLink).every(([, phase]) => phase === 'linking'));
   const account = await page.evaluate(() =>
     document
       .querySelector('slicc-app')

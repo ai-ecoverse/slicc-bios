@@ -18,10 +18,14 @@ export async function installed() {
 }
 
 export function progress(output) {
-  const last = [...output.matchAll(/resolved (\d+), reused \d+, downloaded \d+, added (\d+)/g)].at(
-    -1
-  );
-  return last ? `${last[2]}/${last[1]}` : null;
+  const last = [
+    ...output.matchAll(/resolved (\d+), reused (\d+), downloaded (\d+), added (\d+)/g),
+  ].at(-1);
+  if (!last) return null;
+  const [resolved, reused, downloaded, added] = last.slice(1).map(Number);
+  return added > 0
+    ? `linking ${added}/${resolved}`
+    : `downloading ${reused + downloaded}/${resolved}`;
 }
 
 async function install(start, from, report) {
