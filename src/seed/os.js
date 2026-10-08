@@ -1,8 +1,7 @@
-import { startAgent } from '@ai-ecoverse/slicc-agent/page';
-import { createAgentModel } from '@ai-ecoverse/slicc-agent/spectrum';
 import { createKernel } from '@ai-ecoverse/slicc-kernel';
 import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
 import { surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
+import { installed as agentInstalled, installAgent, startChat } from './agent.js';
 import { grammarBase, grammars, installed } from './grammars.js';
 import { showNetwork } from './network.js';
 import { pickTransport } from './transport.js';
@@ -15,32 +14,25 @@ export const layouts = {
   settings: { side: 'center', open: [] },
 };
 
-export const agentWorker = new URL(
-  '../node_modules/@ai-ecoverse/slicc-agent/dist/agent-worker.js',
-  import.meta.url
-);
-
 export const skip = [
+  '/.slicc',
   '/node_modules',
+  '/opt/agent/node_modules',
   '/opt/grammars/node_modules',
   '/home/.local/share/pnpm',
   '/home/.cache',
 ];
 
-export async function startChat(kernel, start = startAgent) {
-  const owner = await start({
-    worker: () => new Worker(agentWorker, { type: 'module', name: 'slicc-agent' }),
-    kernel: { connect: () => kernel.connect() },
-  });
-  return owner.connect();
-}
-
 export function offerAgent(app, base, connecting) {
   return connecting.then(
-    (connection) => {
+    ({ connection, createAgentModel }) => {
       app.model = { ...base, ...createAgentModel(connection, { storage: localStorage }) };
+      return true;
     },
-    (error) => console.warn(`the agent did not start: ${error.message}`)
+    (error) => {
+      console.warn(`the agent did not start: ${error.message}`);
+      return false;
+    }
   );
 }
 
@@ -70,12 +62,44 @@ const base = createKernelModel({
 app.model = base;
 await app.updateComplete;
 app.show('terminal');
-void offerAgent(app, base, startChat(kernel));
+let agent = null;
+function startOnce() {
+  agent ??= offerAgent(app, base, startChat(kernel)).then((started) => {
+    if (!started) agent = null;
+    return started;
+  });
+  return agent;
+}
+if (await agentInstalled()) void startOnce();
 if (await installed()) app.grammarBase = grammarBase;
 
 const notice = document.querySelector('.update');
 const [status, reload] = notice.children;
 reload.addEventListener('click', () => location.replace(new URL('../', location.href)));
+
+const agentNotice = document.querySelector('.agent');
+const [agentStatus, retry] = agentNotice.children;
+
+function showAgent(state, text) {
+  agentNotice.dataset.state = state;
+  agentNotice.title = text;
+  agentStatus.value = text;
+  agentNotice.hidden = false;
+}
+
+async function offerChat() {
+  try {
+    await installAgent(() => createKernel({ root, network: { transport } }), {
+      report: (text) => showAgent('active', text),
+    });
+    agentNotice.hidden = true;
+    await startOnce();
+  } catch (error) {
+    showAgent('failed', `agent install failed: ${error.message}`);
+  }
+}
+
+retry.addEventListener('click', () => void offerChat());
 
 function show(state, text) {
   notice.dataset.state = state;
@@ -91,6 +115,7 @@ async function check() {
   } catch (error) {
     show('failed', `update failed: ${error.message}`);
   }
+  await offerChat();
   try {
     await grammars(() => createKernel({ root, network: { transport } }));
     app.grammarBase = grammarBase;

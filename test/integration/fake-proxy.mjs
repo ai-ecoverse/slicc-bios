@@ -69,9 +69,9 @@ export async function fakeProxy({ origin, key, port = 0, answer }) {
     const raw = req.headers['x-slicc-raw-request'];
     if (raw && answer && req.headers['x-bridge-token'] === key) {
       const request = JSON.parse(raw);
-      void readBody(req).then((body) => {
+      void readBody(req).then(async (body) => {
         requests.push({ ...request, body: body.toString() });
-        const { status, headers, body: reply } = answer(request, body);
+        const { status, headers, body: reply } = await answer(request, body);
         res.writeHead(200, { ...cors, 'Content-Type': RAW });
         res.end(rawResponse(status, headers, reply));
       });

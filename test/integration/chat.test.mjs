@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
+import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
 import { ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
@@ -19,11 +20,15 @@ const stream = Buffer.concat([
   }),
 ]);
 
-const chrome = await launch();
+const chrome = await launch({ agent: true, timeout: 600000 });
 const proxy = await fakeProxy({
   origin: new URL(chrome.url).origin,
   key: 'the-key',
-  answer: (request) => {
+  answer: async (request) => {
+    if (request.url.startsWith('https://registry.npmjs.org/')) {
+      const type = request.url.endsWith('.tgz') ? 'application/octet-stream' : 'application/json';
+      return { status: 200, headers: [['content-type', type]], body: await download(request.url) };
+    }
     const authorization = request.headers.find(([name]) => name.toLowerCase() === 'authorization');
     if (!request.url.startsWith(BEDROCK) || authorization?.[1] !== `Bearer ${KEY}`) {
       return {
@@ -74,6 +79,10 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   await page.init(helpers);
   await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
   await ready(page);
+  await page.until(() =>
+    /installing the agent… \d+\/\d+/.test(document.querySelector('.agent').textContent)
+  );
+  await page.screenshot(new URL('installing.png', page.dir));
   await page.until(() =>
     document
       .querySelector('slicc-app')
@@ -130,5 +139,6 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   assert.match(sent[0].url, /\/model\/us\.anthropic\.claude-sonnet-5-5\/converse-stream$/);
   assert.equal(sent[0].method, 'POST');
   assert.match(sent[0].body, /Say hello/);
+  assert.equal(await page.evaluate(() => document.querySelector('.agent').hidden), true);
   assert.deepEqual(page.errors, []);
 });

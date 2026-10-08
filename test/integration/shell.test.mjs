@@ -78,7 +78,6 @@ test('boots into the SLICC UI: a file from the terminal shows up in the tree, op
   const page = await chrome.page(t);
   await ui(page);
   await boot(page);
-  await page.until(() => window.ui.app().dock.api.panels.some((panel) => panel.id === 'chat:cone'));
   assert.deepEqual(
     await page.evaluate(() =>
       window.ui
@@ -86,7 +85,7 @@ test('boots into the SLICC UI: a file from the terminal shows up in the tree, op
         .dock.api.panels.map((panel) => panel.id)
         .sort()
     ),
-    ['chat:cone', 'files', 'terminal']
+    ['files', 'terminal']
   );
   assert.equal(await page.evaluate(() => window.ui.app().dock.api.activePanel?.id), 'terminal');
 
