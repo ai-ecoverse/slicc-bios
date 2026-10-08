@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { crc32 } from 'node:zlib';
 
@@ -47,7 +48,99 @@ async function readBody(req) {
   return Buffer.concat(chunks);
 }
 
-export async function fakeProxy({ origin, key, port = 0, answer }) {
+function fail(res, cors, status, errno, extra = {}) {
+  res.writeHead(status, {
+    ...cors,
+    'Content-Type': 'application/json',
+    'X-Hostfs-Errno': errno,
+    ...extra,
+  });
+  res.end(JSON.stringify({ errno, message: errno }));
+}
+
+function attrOf(files, path) {
+  if (path === '') return { kind: 'directory', size: 0, mtime: 0, mode: 0o40755, ino: 1 };
+  const index = Object.keys(files).indexOf(path);
+  if (index < 0) return null;
+  const size = Buffer.byteLength(files[path]);
+  return { kind: 'file', size, mtime: 0, mode: 0o100644, ino: index + 2, etag: `"${size}"` };
+}
+
+function hostfs(req, res, { cors, key, exports, grants }) {
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      ...cors,
+      'Access-Control-Allow-Methods': 'POST, PUT, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers':
+        'Content-Type, X-Bridge-Token, X-Hostfs-Token, X-Hostfs-Request',
+      'Access-Control-Expose-Headers': 'X-Hostfs-Errno, ETag',
+    });
+    res.end();
+    return;
+  }
+  if (req.url === '/api/hostfs/grant') {
+    if (req.headers['x-bridge-token'] !== key) {
+      fail(res, cors, 403, 'EACCES', { 'X-Proxy-Error': '1' });
+      return;
+    }
+    void readBody(req).then((body) => {
+      const { mount, readonly } = JSON.parse(body.toString());
+      if (!exports[mount]) {
+        fail(res, cors, 404, 'ENOENT');
+        return;
+      }
+      const token = randomBytes(32).toString('base64url');
+      grants.set(token, mount);
+      res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ token, mount, readonly, capabilities: { maxIo: 1 << 20 } }));
+    });
+    return;
+  }
+  const files = exports[grants.get(req.headers['x-hostfs-token'])];
+  if (!files) {
+    fail(res, cors, 403, 'EACCES', { 'X-Proxy-Error': '1' });
+    return;
+  }
+  if (req.url === '/api/hostfs/watch') {
+    res.writeHead(200, { ...cors, 'Content-Type': 'application/x-ndjson' });
+    res.write('{"ping":1}\n');
+    const timer = setInterval(() => res.write('{"ping":1}\n'), 5000);
+    res.on('close', () => clearInterval(timer));
+    return;
+  }
+  if (req.url !== '/api/hostfs') {
+    fail(res, cors, 403, 'EROFS');
+    return;
+  }
+  void readBody(req).then((body) => {
+    const call = JSON.parse(body.toString());
+    const names = Object.keys(files);
+    const path = call.path ?? names[call.fh];
+    const attr = attrOf(files, path);
+    const json = (value) => {
+      res.writeHead(200, { ...cors, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(value));
+    };
+    if (call.op === 'statfs') return json({ bsize: 4096, blocks: 1024, bfree: 512 });
+    if (!attr) return fail(res, cors, 404, 'ENOENT');
+    if (call.op === 'stat') return json(attr);
+    if (call.op === 'list') {
+      return json({ entries: names.map((name) => ({ name, attr: attrOf(files, name) })) });
+    }
+    if (call.op === 'open' && !call.write) return json({ fh: names.indexOf(path), attr });
+    if (call.op === 'release') return json({ attr });
+    if (call.op === 'read') {
+      const bytes = Buffer.from(files[path]).subarray(call.offset, call.offset + call.size);
+      res.writeHead(200, { ...cors, 'Content-Type': 'application/octet-stream', ETag: attr.etag });
+      res.end(bytes);
+      return;
+    }
+    fail(res, cors, 403, 'EROFS');
+  });
+}
+
+export async function fakeProxy({ origin, key, port = 0, answer, exports = {} }) {
+  const grants = new Map();
   const probes = [];
   const requests = [];
   const cors = { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' };
@@ -120,6 +213,10 @@ export async function fakeProxy({ origin, key, port = 0, answer }) {
       });
       return;
     }
+    if (req.url.startsWith('/api/hostfs') && req.headers.origin === origin) {
+      hostfs(req, res, { cors, key, exports, grants });
+      return;
+    }
     if (req.url !== '/api/fetch-proxy' || req.headers.origin !== origin) {
       res.writeHead(403);
       res.end();
@@ -160,6 +257,7 @@ export async function fakeProxy({ origin, key, port = 0, answer }) {
   return {
     url: `http://127.0.0.1:${server.address().port}`,
     probes,
+    grants,
     dropped,
     requests,
     close: () =>

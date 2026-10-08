@@ -11,6 +11,7 @@ import {
   whenIdle,
 } from './agent.js';
 import { grammarBase, grammars, installed } from './grammars.js';
+import { createFolders, offTheRecord } from './mounts.js';
 import { showNetwork } from './network.js';
 import { pickTransport } from './transport.js';
 import { update } from './update.js';
@@ -78,20 +79,30 @@ const login = signIn({ network, notice: showSignIn });
 document.documentElement.dataset.transport = kind;
 showNetwork(document.querySelector('.network'), network);
 const root = await navigator.storage.getDirectory();
-const kernel = await createKernel({ root, network: { transport } });
 const app = document.querySelector('slicc-app');
+const folders = createFolders({
+  app,
+  storage: localStorage,
+  network,
+  secret: await offTheRecord(),
+});
+const kernel = await createKernel({ root, network: { transport }, ...folders.options });
 app.layoutKey = 'slicc-os.layout';
 app.surfaces = offered(surfaces);
-const base = createKernelModel({
+const base = await folders.attach(
   kernel,
-  root,
-  storage: localStorage,
-  files: { skip, hide },
-  terminals: { env: { PS1: 'slicc:\\w\\$ ' } },
-});
+  createKernelModel({
+    kernel,
+    root,
+    storage: localStorage,
+    files: { skip, hide },
+    terminals: { env: { PS1: 'slicc:\\w\\$ ' } },
+  })
+);
 app.model = base;
 await app.updateComplete;
 app.show('terminal');
+void folders.restore();
 let agent = null;
 let startedWith = null;
 function started(chat, lock) {
