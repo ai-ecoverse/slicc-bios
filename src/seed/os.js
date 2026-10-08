@@ -1,6 +1,7 @@
 import { createKernel } from '@ai-ecoverse/slicc-kernel';
 import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
 import { surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
+import { signIn } from './adobe.js';
 import {
   installed as agentInstalled,
   installAgent,
@@ -31,10 +32,13 @@ export const skip = [
   '/home/.cache',
 ];
 
-export function offerAgent(app, base, connecting) {
+export function offerAgent(app, base, connecting, login) {
   return connecting.then(
     (chat) => {
-      app.model = { ...base, ...chat.createAgentModel(chat.connection, { storage: localStorage }) };
+      app.model = {
+        ...base,
+        ...chat.createAgentModel(chat.connection, { storage: localStorage, login }),
+      };
       return chat;
     },
     (error) => {
@@ -53,6 +57,23 @@ export function offered(all) {
 
 const network = await pickTransport();
 const { kind, transport } = network;
+const signInNotice = document.querySelector('.sign-in');
+const [signInStatus, signInCancel] = signInNotice.children;
+let cancelSignIn = () => {};
+signInCancel.addEventListener('click', () => cancelSignIn());
+
+export function showSignIn({ text, cancel }) {
+  cancelSignIn = cancel;
+  signInNotice.title = text;
+  signInStatus.value = text;
+  signInNotice.hidden = false;
+  return () => {
+    signInNotice.hidden = true;
+    cancelSignIn = () => {};
+  };
+}
+
+const login = signIn({ network, notice: showSignIn });
 document.documentElement.dataset.transport = kind;
 showNetwork(document.querySelector('.network'), network);
 const root = await navigator.storage.getDirectory();
@@ -80,7 +101,7 @@ function started(chat, lock) {
 function startOnce() {
   if (!agent) {
     const lock = recorded();
-    agent = offerAgent(app, base, startChat(kernel)).then(async (chat) =>
+    agent = offerAgent(app, base, startChat(kernel), login).then(async (chat) =>
       started(chat, await lock)
     );
   }
@@ -109,7 +130,7 @@ async function restart() {
   const chat = await agent;
   await whenIdle(app.model.agent);
   const lock = recorded();
-  agent = offerAgent(app, base, restartChat(chat)).then(async (restarted) =>
+  agent = offerAgent(app, base, restartChat(chat), login).then(async (restarted) =>
     started(restarted, await lock)
   );
   if (await agent) agentNotice.hidden = true;

@@ -18,7 +18,8 @@ The page shows six boot steps as they run:
 - **Chat:** SLICC's agent, one cone, once it's installed (see [Agent](#agent)). Its tab joins the terminal's group without taking focus. The model is AWS Bedrock (`us.anthropic.claude-sonnet-5-5` in `us-west-2`) with a Bedrock API key entered under **Settings → Accounts**. The key stays in the agent worker's encrypted credential store. Bedrock sends no CORS headers, so chat needs a local proxy or the extension (see [Network](#network)).
 - **Terminal:** `bash -i` sessions on the kernel, starting in `/home`, as many as you open with **+**.
 - **Files:** the OPFS root as a tree. `/.slicc` (the agent's own state) is hidden (`hide`, spectrum ≥ 1.9.0); `/node_modules`, `/opt/agent/node_modules`, pnpm's store and `/home/.cache` are listed but not scanned. The tree follows what the terminal writes (a rescan every 2 s and on `FileSystemObserver` records). Files open in tabs, and **Edit** turns a tab into a text area that **Save** or `Mod+S` writes back to OPFS.
-- **Settings:** the theme, the model, thinking and the Bedrock account.
+- **Settings:** the theme, the model, thinking, diffs, and the Bedrock and Adobe accounts.
+- **Adobe sign-in:** **Connect** on the Adobe account signs in to Adobe IMS. When slicc-extension is installed, it signs in with `chrome.identity`. Otherwise it goes through slicc-node, which needs a local proxy: seven registers a nonce with `POST /api/oauth-state` and opens the IMS popup through the `www.sliccy.ai/auth/callback` relay. It then polls `GET /api/oauth-result` once a second. Polling is needed because seven is cross-origin isolated, so the popup has no opener. While it waits, the status bar shows *signing in to Adobe…* with **Cancel**. Cancel, a `404` or the 10-minute timeout stops polling and drops the nonce. The token goes to the agent worker's credential store, and the tray shows the weekly budget.
 
 Each screen class has its own layout, kept in `localStorage` (`slicc-os.layout.<screen>`). On desktop and tablet chat and the terminal share the middle, files are on the left, and file tabs open between them. On a phone it's chat and the terminal, with files in the bottom rail. Agents, changes, the browser, memory and the monitor come back as their backends land. Adobe Clean comes from `/fonts/`, which the sliccy-ai worker serves on every host.
 
@@ -109,7 +110,7 @@ npm run lint
 
 The profiles are recorded with coverage switched on, so absolute timings run high. Use them to compare functions with each other rather than as real-world numbers.
 
-No test calls a real model. Every test serves an empty `packages/agent/` project (`emptyAgent` in `test/integration/chrome.mjs`), so only the chat test installs the agent in the background. In it, `test/integration/fake-proxy.mjs` plays a local proxy and answers Bedrock's `converse-stream` with a scripted event stream, so the turn runs through the real agent worker, pi-ai's Bedrock client and the kernel's transport.
+No test calls a real model. Every test serves an empty `packages/agent/` project (`emptyAgent` in `test/integration/chrome.mjs`), so only the chat test installs the agent in the background. In it, `test/integration/fake-proxy.mjs` plays a local proxy and answers Bedrock's `converse-stream` with a scripted event stream, so the turn runs through the real agent worker, pi-ai's Bedrock client and the kernel's transport. The test also signs in to Adobe against a fake IMS (`--host-resolver-rules` maps `ims-na1.adobelogin.com` to a local HTTPS server) and the fake proxy's `oauth-state`/`oauth-result` endpoints, cancelling once first.
 
 ## Hosting
 
