@@ -51,31 +51,33 @@ export async function ready(page) {
   await page.until(
     (prompt) =>
       location.pathname === '/os/' &&
-      document
+      !!document
         .querySelector('slicc-app')
-        ?.dock?.content('terminal')
-        ?.shadowRoot.querySelector('slicc-terminal:not([hidden]) .term-grid')
-        ?.textContent.includes(prompt),
+        ?.dock?.content(
+          document
+            .querySelector('slicc-app')
+            .dock.api.panels.map((panel) => panel.id)
+            .findLast((id) => id.startsWith('terminal:'))
+        )
+        ?.screen?.textContent.includes(prompt),
     prompt
   );
 }
 
 function showing(needle) {
-  return document
-    .querySelector('slicc-app')
-    .dock.content('terminal')
-    .shadowRoot.querySelector('slicc-terminal:not([hidden]) .term-grid')
-    .textContent.includes(needle);
+  const { dock } = document.querySelector('slicc-app');
+  return dock
+    .content(dock.api.panels.map((panel) => panel.id).findLast((id) => id.startsWith('terminal:')))
+    .screen.textContent.includes(needle);
 }
 
 export async function screen(page) {
-  return page.evaluate(
-    () =>
-      document
-        .querySelector('slicc-app')
-        .dock.content('terminal')
-        .shadowRoot.querySelector('slicc-terminal:not([hidden]) .term-grid').textContent
-  );
+  return page.evaluate(() => {
+    const { dock } = document.querySelector('slicc-app');
+    return dock.content(
+      dock.api.panels.map((panel) => panel.id).findLast((id) => id.startsWith('terminal:'))
+    ).screen.textContent;
+  });
 }
 
 export async function shows(page, text, ms) {
@@ -84,13 +86,14 @@ export async function shows(page, text, ms) {
 }
 
 export async function run(page, command) {
-  await page.evaluate(() =>
-    document
-      .querySelector('slicc-app')
-      .dock.content('terminal')
-      .shadowRoot.querySelector('slicc-terminal:not([hidden])')
-      .focus()
-  );
+  await page.evaluate(() => {
+    const { dock } = document.querySelector('slicc-app');
+    dock
+      .content(
+        dock.api.panels.map((panel) => panel.id).findLast((id) => id.startsWith('terminal:'))
+      )
+      .screen.focus();
+  });
   await page.insert(command);
   await page.enter();
 }

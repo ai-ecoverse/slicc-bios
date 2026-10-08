@@ -85,12 +85,12 @@ test('boots into the SLICC UI: a file from the terminal shows up in the tree, op
     await page.evaluate(() =>
       window.ui
         .app()
-        .dock.api.panels.map((panel) => panel.id)
+        .dock.api.panels.map((panel) => panel.id.replace(/^terminal:.*/, 'terminal'))
         .sort()
     ),
     ['files', 'terminal']
   );
-  assert.equal(await page.evaluate(() => window.ui.app().dock.api.activePanel?.id), 'terminal');
+  assert.match(await page.evaluate(() => window.ui.app().dock.api.activePanel?.id), /^terminal:/);
   assert.deepEqual(
     await page.evaluate(() => [
       window.ui.app().surfaces.some((surface) => surface.id === 'updates'),
