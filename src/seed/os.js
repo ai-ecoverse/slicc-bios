@@ -14,8 +14,9 @@ export const layouts = {
   settings: { side: 'center', open: [] },
 };
 
+export const hide = ['/.slicc'];
+
 export const skip = [
-  '/.slicc',
   '/node_modules',
   '/opt/agent/node_modules',
   '/opt/grammars/node_modules',
@@ -56,7 +57,7 @@ const base = createKernelModel({
   kernel,
   root,
   storage: localStorage,
-  files: { skip },
+  files: { skip, hide },
   terminals: { env: { PS1: 'slicc:\\w\\$ ' } },
 });
 app.model = base;
