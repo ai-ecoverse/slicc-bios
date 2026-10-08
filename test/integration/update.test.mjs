@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
-import { boot, booted, eventually, opfs, ready, run, shows, watch } from './bios.mjs';
+import { boot, booted, eventually, installable, opfs, ready, run, shows, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch({ timeout: 120000 });
@@ -52,7 +52,8 @@ async function updated(page) {
   chrome.cdn.requests.length = 0;
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await page.until(() => /ready|failed/.test(document.querySelector('.update').dataset.state));
-  assert.equal((await notice(page)).state, 'ready');
+  const result = await notice(page);
+  assert.equal(result.state, 'ready', result.text);
 }
 
 async function bootOlder(page) {
@@ -75,7 +76,7 @@ test('pins the same packages in the bootstrap and the pnpm lockfile', async () =
       /^ {2}'?(\S+?)'?:\n {4}resolution: \{integrity: (\S+)\}/gm
     ),
   ].map(([, id, integrity]) => `${id} ${integrity}`);
-  assert.equal(npm.length, 13);
+  assert.ok(npm.length >= 13);
   assert.deepEqual(npm.sort(), pnpm.sort());
 });
 
@@ -127,7 +128,7 @@ test('updates a running install from a bumped lockfile', async (t) => {
       const bios = await watch(page);
       await reload(page);
       await eventually(() => assert.deepEqual(bios.states(), booted));
-      assert.equal(bios.texts('packages').at(-1), '0/13 downloaded from npm, 0B');
+      assert.equal(bios.texts('packages').at(-1), `0/${installable} downloaded from npm, 0B`);
       assert.deepEqual(
         chrome.cdn.requests.filter((url) => url.endsWith('.tgz')),
         []

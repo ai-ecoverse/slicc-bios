@@ -19,7 +19,12 @@ const isolation = {
 };
 
 const script = /\.(m?js|cjs)$/;
-const markers = ['/var/lib/slicc/pnpm-lock.yaml', '/node_modules/.modules.yaml'];
+const markers = [
+  '/var/lib/slicc/pnpm-lock.yaml',
+  '/node_modules/.modules.yaml',
+  '/var/lib/slicc/agent/pnpm-lock.yaml',
+  '/opt/agent/node_modules/.modules.yaml',
+];
 
 async function read(path) {
   const names = path.split('/').filter(Boolean);

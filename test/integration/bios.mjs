@@ -1,3 +1,10 @@
+import { readFileSync } from 'node:fs';
+
+export const installable = Object.entries(
+  JSON.parse(readFileSync(new URL('../../src/packages/package-lock.json', import.meta.url), 'utf8'))
+    .packages
+).filter(([path, entry]) => path && entry.resolved && !entry.os && !entry.cpu).length;
+
 export const steps = ['opfs', 'installer', 'packages', 'seed', 'intercept', 'navigate'];
 export const booted = steps.flatMap((step) => [`${step}:active`, `${step}:done`]);
 

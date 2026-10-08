@@ -57,3 +57,11 @@ slicc-app > [slot="status"] button:disabled {
 .update:not([data-state="ready"]) button {
   display: none;
 }
+
+.agent[data-state="failed"] {
+  color: var(--spectrum-negative-visual-color);
+}
+
+.agent:not([data-state="failed"]) button {
+  display: none;
+}

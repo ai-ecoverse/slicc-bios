@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
-import { boot, booted, eventually, watch } from './bios.mjs';
+import { boot, booted, eventually, installable, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch();
@@ -87,9 +87,9 @@ async function opfs(page, path) {
 test('reuses packages already in OPFS on reboot', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
-  assert.equal(downloads().length, 13);
+  assert.equal(downloads().length, installable);
 
-  assert.equal(await reboot(page), '0/13 downloaded from npm, 0B');
+  assert.equal(await reboot(page), `0/${installable} downloaded from npm, 0B`);
   assert.deepEqual(downloads(), []);
 });
 
@@ -104,7 +104,7 @@ test('installs a package again when its directory is gone', async (t) => {
     await scope.removeEntry('wasm-bash', { recursive: true });
   });
 
-  assert.match(await reboot(page), /^1\/13 downloaded from npm, [\d.]+MB$/);
+  assert.match(await reboot(page), new RegExp(`^1/${installable} downloaded from npm, [\\d.]+MB$`));
   assert.deepEqual(downloads(), [
     'https://registry.npmjs.org/@ai-ecoverse/wasm-bash/-/wasm-bash-5.3.0-7.tgz',
   ]);
@@ -126,7 +126,7 @@ test('replaces a package when the lockfile pins another version', async (t) => {
     })
   );
 
-  assert.match(await reboot(page), /^1\/13 downloaded from npm, [\d.]+MB$/);
+  assert.match(await reboot(page), new RegExp(`^1/${installable} downloaded from npm, [\\d.]+MB$`));
   assert.equal(JSON.parse(await opfs(page, `${bash}/package.json`)).version, '5.3.0-6');
   const receipt = JSON.parse(await opfs(page, `var/lib/bios/${bash}.json`));
   assert.equal(
@@ -186,7 +186,10 @@ test('removes packages the lockfile no longer lists', async (t) => {
   await arrive(page);
   chrome.overrides.delete('/packages/package-lock.json');
 
-  assert.match(await reboot(page), /^13\/13 downloaded from npm, [\d.]+MB, 6 removed$/);
+  assert.match(
+    await reboot(page),
+    new RegExp(`^${installable}/${installable} downloaded from npm, [\\d.]+MB, 6 removed$`)
+  );
   const left = await page.evaluate(async (dirs) => {
     const paths = [];
     const walk = async (dir, prefix) => {

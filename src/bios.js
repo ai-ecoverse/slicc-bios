@@ -79,6 +79,7 @@ await step('packages', async (report) => {
 
 await step('seed', async () => {
   const files = [
+    'agent.js',
     'grammars.js',
     'index.html',
     'network.js',

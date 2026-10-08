@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
-import { boot, booted, eventually, opfs, watch } from './bios.mjs';
+import { boot, booted, eventually, installable, opfs, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch();
@@ -32,6 +32,7 @@ test('boots through every step into the UI served from OPFS', async (t) => {
   assert.deepEqual(
     files.filter((path) => path.startsWith('os/')),
     [
+      'os/agent.js',
       'os/grammars.js',
       'os/index.html',
       'os/network.js',
@@ -54,11 +55,14 @@ test('reports each step and the download as it happens', async (t) => {
   const [opfs] = bios.texts('opfs');
   assert.match(opfs, /^(persistent|best effort), [\d,.]+[kMG]?B free$/);
   assert.deepEqual(bios.texts('installer'), ['connection #1']);
-  assert.match(bios.texts('packages')[0], /^1\/13 node_modules\/@ai-ecoverse\/[\w-]+$/);
-  assert.match(bios.texts('packages').at(-1), /^13\/13 downloaded from npm, [\d.]+MB$/);
+  assert.match(bios.texts('packages')[0], new RegExp(`^1/${installable} node_modules/[@\\w./-]+$`));
+  assert.match(
+    bios.texts('packages').at(-1),
+    new RegExp(`^${installable}/${installable} downloaded from npm, [\\d.]+MB$`)
+  );
   assert.match(
     bios.texts('seed')[0],
-    /^os\/\{grammars\.js,index\.html,network\.js,os\.css,os\.js,transport\.js,update\.js\} [\d.]+kB$/
+    /^os\/\{agent\.js,grammars\.js,index\.html,network\.js,os\.css,os\.js,transport\.js,update\.js\} [\d.]+kB$/
   );
   const origin = await page.evaluate(() => new URL('/', location).href);
   assert.deepEqual(bios.texts('intercept'), [origin]);
