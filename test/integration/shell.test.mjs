@@ -170,3 +170,33 @@ test('installs a command with pnpm add -g and runs it in the same shell', async 
   assert.match(await screen(page), /gone 1127/, await screen(page));
   assert.deepEqual(page.errors, []);
 });
+
+test('mounts and unmounts a tmpfs with mount and umount', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await run(page, 'mount | grep -c "^proc on /proc type proc" | sed "s/^/proc mounted /"');
+  await shows(page, 'proc mounted 1');
+  await run(
+    page,
+    'mkdir -p /tmp/m && mount -t tmpfs none /tmp/m && echo "hi $((20 + 22))" > /tmp/m/f && cat /tmp/m/f && mount -t tmpfs | grep -c "^none on /tmp/m type tmpfs" | sed "s/^/listed /" && umount /tmp/m && echo "unmounted $((5 * 5))"'
+  );
+  await shows(page, 'hi 42');
+  await shows(page, 'listed 1');
+  await shows(page, 'unmounted 25');
+  await run(page, 'ls /tmp/m | wc -l | sed "s/^/left /"');
+  await shows(page, 'left 0');
+  await run(
+    page,
+    'mount -t tmpfs none /tmp/m; mount -t tmpfs none /tmp/m 2>/dev/null; echo "busy $((1000 + $?))"; umount /tmp/m'
+  );
+  await shows(page, 'busy 1032');
+  await run(page, 'mount -t tmpfs none /tmp/nowhere 2>/dev/null; echo "missing $((1000 + $?))"');
+  await shows(page, 'missing 1032');
+  await run(page, 'mount -t nosuchfs none /tmp/m 2>/dev/null; echo "unknown $((1000 + $?))"');
+  await shows(page, 'unknown 1032');
+  await run(page, 'umount /tmp/m 2>/dev/null; echo "not mounted $((1000 + $?))"');
+  await shows(page, 'not mounted 1032');
+  await run(page, 'mount --bogus 2>/dev/null; echo "usage $((1000 + $?))"');
+  await shows(page, 'usage 1001');
+  assert.deepEqual(page.errors, []);
+});
