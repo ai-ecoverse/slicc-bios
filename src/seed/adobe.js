@@ -15,16 +15,31 @@ export function nonce(random = (bytes) => crypto.getRandomValues(bytes)) {
     .replaceAll('=', '');
 }
 
-export function authorizeUrl({ clientId, scopes, imsEnvironment }, port, value) {
-  const state = btoa(JSON.stringify({ source: 'local', port, path: CALLBACK, nonce: value }));
+function authorize({ clientId, scopes, imsEnvironment }, state) {
   const params = new URLSearchParams({
     client_id: clientId,
     scope: scopes,
     response_type: 'token',
     redirect_uri: RELAY,
-    state,
+    state: btoa(JSON.stringify(state)),
   });
   return `${imsHosts[imsEnvironment] ?? imsHosts.prod}/ims/authorize/v2?${params}`;
+}
+
+export function authorizeUrl(config, port, value) {
+  return authorize(config, { source: 'local', port, path: CALLBACK, nonce: value });
+}
+
+export function relayUrl(config, origin, value) {
+  return authorize(config, { source: 'origin', origin, nonce: value });
+}
+
+const SLICCY = /^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.sliccy\.ai$/;
+export const CHANNEL = 'slicc-sign-in';
+export const FORCE_RELAY = 'slicc-os.sign-in';
+
+export function relayed(origin) {
+  return SLICCY.test(origin ?? '') && origin !== 'https://www.sliccy.ai';
 }
 
 export function tokenFrom(redirectUrl, expected) {
@@ -42,32 +57,83 @@ export function tokenFrom(redirectUrl, expected) {
 
 export const SIGN_IN_TIMEOUT = 10 * 60 * 1000;
 
-export function signIn({
-  network,
-  open = (url) => window.open(url, 'slicc-sign-in', 'popup,width=520,height=720'),
-  fetch: fetcher = (input, init) => globalThis.fetch(input, init),
-  every = 1000,
-  timeout = SIGN_IN_TIMEOUT,
-  notice = () => () => {},
-  extension = globalThis.sliccExtension,
-}) {
-  if (extension?.signIn) {
-    return async (_providerId, options) => {
-      const config = await options();
-      if (!config) throw new Error('this account has no sign-in');
-      return extension.signIn(config);
+function waiting({ popup, notice, timeout, start, abandon = () => {} }) {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    let stop = () => {};
+    const finish = (error, token) => {
+      if (done) return;
+      done = true;
+      clearTimeout(deadline);
+      stop();
+      hide();
+      if (!error) {
+        resolve(token);
+        return;
+      }
+      abandon();
+      popup.close();
+      reject(error);
     };
+    const deadline = setTimeout(() => finish(new Error('the sign-in timed out')), timeout);
+    const hide = notice({
+      text: 'signing in to Adobe…',
+      cancel: () => finish(new Error('the sign-in was cancelled')),
+    });
+    stop = start(
+      (token) => finish(null, token),
+      (error) => finish(error)
+    );
+  });
+}
+
+async function prepare(open, options, address) {
+  const popup = open('about:blank');
+  if (!popup) throw new Error('the browser blocked the sign-in window');
+  try {
+    const config = await options();
+    if (!config) throw new Error('this account has no sign-in');
+    popup.location.href = await address(config);
+  } catch (error) {
+    popup.close();
+    throw error;
   }
-  const proxy = network?.kind === 'local-proxy' ? network.proxy : null;
+  return popup;
+}
+
+function viaRelay({ open, origin, listen, notice, timeout }) {
+  return async (_providerId, options) => {
+    const value = nonce();
+    const popup = await prepare(open, options, (config) => relayUrl(config, origin, value));
+    return waiting({
+      popup,
+      notice,
+      timeout,
+      start: (ok, fail) => {
+        const channel = listen(CHANNEL);
+        channel.onmessage = ({ data }) => {
+          if (data?.type !== 'oauth-callback' || data.nonce !== value) return;
+          let token;
+          try {
+            token = tokenFrom(data.redirectUrl, value);
+          } catch (error) {
+            fail(error);
+            return;
+          }
+          ok(token);
+        };
+        return () => channel.close();
+      },
+    });
+  };
+}
+
+function viaProxy({ proxy, open, fetcher, every, timeout, notice }) {
   return async (_providerId, options) => {
     if (!proxy) throw new Error(NEEDS_PROXY);
-    const popup = open('about:blank');
-    if (!popup) throw new Error('the browser blocked the sign-in window');
     const value = nonce();
     const headers = { 'X-Bridge-Token': proxy.key };
-    try {
-      const config = await options();
-      if (!config) throw new Error('this account has no sign-in');
+    const popup = await prepare(open, options, async (config) => {
       const registered = await fetcher(`${proxy.url}/api/oauth-state`, {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
@@ -78,56 +144,72 @@ export function signIn({
           `slicc-node refused the sign-in (${registered.status}); update it with npx @ai-ecoverse/slicc-node@latest`
         );
       }
-      popup.location.href = authorizeUrl(config, Number(new URL(proxy.url).port), value);
-    } catch (error) {
-      popup.close();
-      throw error;
-    }
-    return new Promise((resolve, reject) => {
-      let done = false;
-      let timer;
-      const finish = (error, token) => {
-        if (done) return;
-        done = true;
-        clearTimeout(timer);
-        clearTimeout(deadline);
-        hide();
-        if (!error) {
-          resolve(token);
-          return;
-        }
+      return authorizeUrl(config, Number(new URL(proxy.url).port), value);
+    });
+    return waiting({
+      popup,
+      notice,
+      timeout,
+      abandon: () =>
         fetcher(`${proxy.url}/api/oauth-state?nonce=${value}`, { method: 'DELETE', headers }).catch(
           () => {}
-        );
-        popup.close();
-        reject(error);
-      };
-      const poll = async () => {
-        let token;
-        try {
-          const response = await fetcher(`${proxy.url}/api/oauth-result?nonce=${value}`, {
-            headers,
-          });
-          if (done) return;
-          if (response.status === 204) {
-            timer = setTimeout(poll, every);
+        ),
+      start: (ok, fail) => {
+        let stopped = false;
+        let timer;
+        const poll = async () => {
+          let token;
+          try {
+            const response = await fetcher(`${proxy.url}/api/oauth-result?nonce=${value}`, {
+              headers,
+            });
+            if (stopped) return;
+            if (response.status === 204) {
+              timer = setTimeout(poll, every);
+              return;
+            }
+            if (response.status === 404) throw new Error('the sign-in expired; try again');
+            if (!response.ok)
+              throw new Error(`slicc-node refused the sign-in (${response.status})`);
+            token = tokenFrom((await response.json()).redirectUrl, value);
+          } catch (error) {
+            fail(error);
             return;
           }
-          if (response.status === 404) throw new Error('the sign-in expired; try again');
-          if (!response.ok) throw new Error(`slicc-node refused the sign-in (${response.status})`);
-          token = tokenFrom((await response.json()).redirectUrl, value);
-        } catch (error) {
-          finish(error);
-          return;
-        }
-        finish(null, token);
-      };
-      const deadline = setTimeout(() => finish(new Error('the sign-in timed out')), timeout);
-      const hide = notice({
-        text: 'signing in to Adobe…',
-        cancel: () => finish(new Error('the sign-in was cancelled')),
-      });
-      timer = setTimeout(poll, every);
+          ok(token);
+        };
+        timer = setTimeout(poll, every);
+        return () => {
+          stopped = true;
+          clearTimeout(timer);
+        };
+      },
     });
   };
+}
+
+export function signIn({
+  network,
+  open = (url) => window.open(url, 'slicc-sign-in', 'popup,width=520,height=720'),
+  fetch: fetcher = (input, init) => globalThis.fetch(input, init),
+  every = 1000,
+  timeout = SIGN_IN_TIMEOUT,
+  notice = () => () => {},
+  extension = globalThis.sliccExtension,
+  origin = globalThis.location?.origin,
+  force,
+  listen = (name) => new BroadcastChannel(name),
+}) {
+  const relay = viaRelay({ open, origin, listen, notice, timeout });
+  const proxy = network?.kind === 'local-proxy' ? network.proxy : null;
+  const direct = extension?.signIn
+    ? async (_providerId, options) => {
+        const config = await options();
+        if (!config) throw new Error('this account has no sign-in');
+        return extension.signIn(config);
+      }
+    : viaProxy({ proxy, open, fetcher, every, timeout, notice });
+  const forced = () => force ?? globalThis.localStorage?.getItem(FORCE_RELAY) === 'relay';
+  return (providerId, options) =>
+    relayed(origin) || forced() ? relay(providerId, options) : direct(providerId, options);
 }

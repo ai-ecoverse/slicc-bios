@@ -64,7 +64,11 @@ const ims = createServer(
     const state = JSON.parse(
       Buffer.from(url.searchParams.get('state') ?? 'e30=', 'base64').toString()
     );
-    const target = `http://localhost:${state.port}${state.path}?nonce=${state.nonce}#access_token=${ADOBE_TOKEN}&expires_in=86400`;
+    const back =
+      state.source === 'origin'
+        ? `${state.origin}/auth/callback`
+        : `http://localhost:${state.port}${state.path}`;
+    const target = `${back}?nonce=${state.nonce}#access_token=${ADOBE_TOKEN}&expires_in=86400`;
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end(
       hold ? 'Sign in to Adobe' : `<script>location.replace(${JSON.stringify(target)});</script>`
@@ -316,6 +320,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   await eventually(() => proxy.dropped.length === 1 && authorized.length === 1);
   hold = false;
   authorized.length = 0;
+  await page.evaluate(() => localStorage.setItem('slicc-os.sign-in', 'relay'));
   await signIn();
   await page.until(
     () =>
@@ -328,7 +333,11 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   assert.equal(authorize.client_id, 'test-client');
   assert.equal(authorize.redirect_uri, 'https://www.sliccy.ai/auth/callback');
   assert.equal(authorize.response_type, 'token');
-  assert.equal(JSON.parse(Buffer.from(authorize.state, 'base64').toString()).source, 'local');
+  assert.deepEqual(JSON.parse(Buffer.from(authorize.state, 'base64').toString()), {
+    source: 'origin',
+    origin: new URL(chrome.url).origin,
+    nonce: JSON.parse(Buffer.from(authorize.state, 'base64').toString()).nonce,
+  });
   assert.equal(authorize.scope, 'openid,AdobeID');
   await page.until(
     () => document.querySelector('slicc-app').model.tray.status().budget.percent === 42

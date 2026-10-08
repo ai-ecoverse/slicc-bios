@@ -87,7 +87,8 @@ function respond(body, type, origin) {
 async function serve(request) {
   const scope = new URL(self.registration.scope).pathname;
   const url = new URL(request.url);
-  const path = `/${url.pathname.slice(scope.length)}`;
+  const asked = `/${url.pathname.slice(scope.length)}`;
+  const path = asked === '/auth/callback' ? '/os/callback.html' : asked;
   const base = scope.replace(/\/$/, '');
   if (path.startsWith(NODE_STUBS)) {
     const name = path.slice(NODE_STUBS.length).replace(/\.js$/, '');
