@@ -74,7 +74,7 @@ const ims = createServer(
 await new Promise((resolve) => ims.listen(0, '127.0.0.1', resolve));
 const chrome = await launch({
   agent: true,
-  timeout: 1200000,
+  timeout: 60000,
   args: [
     `--host-resolver-rules=MAP ims-na1.adobelogin.com:443 127.0.0.1:${ims.address().port}`,
     '--ignore-certificate-errors',
@@ -150,7 +150,12 @@ const helpers = () => {
   };
 };
 
-test('chat in seven answers through the agent worker, Bedrock and the local proxy', async (t) => {
+const INSTALL = 10 * 60 * 1000;
+const UPDATE = 5 * 60 * 1000;
+
+test('chat in seven answers through the agent worker, Bedrock and the local proxy', {
+  timeout: 25 * 60 * 1000,
+}, async (t) => {
   const page = await chrome.page(t);
   await page.init(helpers);
   await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
@@ -159,7 +164,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     /installing the agent… \d+\/\d+/.test(document.querySelector('.agent').textContent)
   );
   await page.screenshot(new URL('installing.png', page.dir));
-  await page.until(() =>
+  await page.within(INSTALL, () =>
     document
       .querySelector('slicc-app')
       .model.settings.accounts()
@@ -256,7 +261,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   );
   chrome.overrides.set('/packages/agent/pnpm-lock.yaml', `${lock}# updated\n`);
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
-  await page.until(() => document.querySelector('.agent').dataset.state === 'ready');
+  await page.within(UPDATE, () => document.querySelector('.agent').dataset.state === 'ready');
   assert.deepEqual(
     await page.evaluate(() => {
       const notice = document.querySelector('.agent');
