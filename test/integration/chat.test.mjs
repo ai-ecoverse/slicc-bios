@@ -318,12 +318,22 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     window.adobeButton = () =>
       window.deep(
         document.querySelector('slicc-app').dock.content('settings').shadowRoot,
-        '.account[data-id=adobe] sp-button'
+        '.account[data-id=adobe] [data-action=connect]'
       );
   });
   const signIn = async () => {
-    await page.until(() => !!window.adobeButton() && !window.adobeButton().disabled);
-    await page.evaluate(() => window.adobeButton().focus());
+    await page.until(
+      () =>
+        !!window.adobeButton() &&
+        !window.adobeButton().matches('[disabled], [pending], [aria-disabled=true]')
+    );
+    assert.equal(
+      await page.evaluate(() => {
+        window.adobeButton().focus();
+        return window.adobeButton().matches(':focus-within');
+      }),
+      true
+    );
     await page.press('Enter');
   };
   await signIn();

@@ -91,6 +91,13 @@ test('boots into the SLICC UI: a file from the terminal shows up in the tree, op
     ['files', 'terminal']
   );
   assert.equal(await page.evaluate(() => window.ui.app().dock.api.activePanel?.id), 'terminal');
+  assert.deepEqual(
+    await page.evaluate(() => [
+      window.ui.app().surfaces.some((surface) => surface.id === 'updates'),
+      !!window.ui.app().model.updates,
+    ]),
+    [false, false]
+  );
 
   await run(
     page,

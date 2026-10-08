@@ -134,8 +134,8 @@ export async function ui(page) {
           ?.shadowRoot.querySelector('slicc-code-view')
           ?.shadowRoot.querySelector('diffs-container')?.shadowRoot.textContent ?? '',
       button: (path, text) =>
-        [...view(path).shadowRoot.querySelectorAll('sp-action-button')].find(
-          (button) => button.textContent.trim() === text
+        [...view(path).shadowRoot.querySelectorAll('*')].findLast(
+          (element) => element.textContent.trim() === text
         ),
     };
   });
