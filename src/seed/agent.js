@@ -9,8 +9,12 @@ export const modules = new URL(
 );
 export const agentWorker = new URL('agent-worker.js', modules);
 
+export async function recorded() {
+  return text(await navigator.storage.getDirectory(), receipt);
+}
+
 export async function installed() {
-  return (await text(await navigator.storage.getDirectory(), receipt)) !== null;
+  return (await recorded()) !== null;
 }
 
 export function progress(output) {
@@ -58,5 +62,24 @@ export async function startChat(kernel, { load = (file) => import(new URL(file, 
     worker: () => new Worker(agentWorker, { type: 'module', name: 'slicc-agent' }),
     kernel: { connect: () => kernel.connect() },
   });
-  return { connection: await owner.connect(), createAgentModel };
+  return { owner, connection: await owner.connect(), createAgentModel };
+}
+
+export function whenIdle(agent) {
+  return new Promise((resolve) => {
+    let off = () => {};
+    const check = () => {
+      if (agent.busy(agent.active())) return false;
+      off();
+      resolve();
+      return true;
+    };
+    if (!check()) off = agent.on('agents', check);
+  });
+}
+
+export async function restartChat({ owner, connection, createAgentModel }) {
+  void connection.close().catch(() => undefined);
+  await owner.restart();
+  return { owner, connection: await owner.connect(), createAgentModel };
 }

@@ -1,7 +1,14 @@
 import { createKernel } from '@ai-ecoverse/slicc-kernel';
 import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
 import { surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
-import { installed as agentInstalled, installAgent, startChat } from './agent.js';
+import {
+  installed as agentInstalled,
+  installAgent,
+  recorded,
+  restartChat,
+  startChat,
+  whenIdle,
+} from './agent.js';
 import { grammarBase, grammars, installed } from './grammars.js';
 import { showNetwork } from './network.js';
 import { pickTransport } from './transport.js';
@@ -26,13 +33,13 @@ export const skip = [
 
 export function offerAgent(app, base, connecting) {
   return connecting.then(
-    ({ connection, createAgentModel }) => {
-      app.model = { ...base, ...createAgentModel(connection, { storage: localStorage }) };
-      return true;
+    (chat) => {
+      app.model = { ...base, ...chat.createAgentModel(chat.connection, { storage: localStorage }) };
+      return chat;
     },
     (error) => {
       console.warn(`the agent did not start: ${error.message}`);
-      return false;
+      return null;
     }
   );
 }
@@ -64,11 +71,19 @@ app.model = base;
 await app.updateComplete;
 app.show('terminal');
 let agent = null;
+let startedWith = null;
+function started(chat, lock) {
+  if (chat) startedWith = lock;
+  else agent = null;
+  return chat;
+}
 function startOnce() {
-  agent ??= offerAgent(app, base, startChat(kernel)).then((started) => {
-    if (!started) agent = null;
-    return started;
-  });
+  if (!agent) {
+    const lock = recorded();
+    agent = offerAgent(app, base, startChat(kernel)).then(async (chat) =>
+      started(chat, await lock)
+    );
+  }
   return agent;
 }
 if (await agentInstalled()) void startOnce();
@@ -79,13 +94,26 @@ const [status, reload] = notice.children;
 reload.addEventListener('click', () => location.replace(new URL('../', location.href)));
 
 const agentNotice = document.querySelector('.agent');
-const [agentStatus, retry] = agentNotice.children;
+const [agentStatus, agentAction] = agentNotice.children;
 
-function showAgent(state, text) {
+function showAgent(state, text, action = '') {
   agentNotice.dataset.state = state;
   agentNotice.title = text;
   agentStatus.value = text;
+  agentAction.textContent = action;
   agentNotice.hidden = false;
+}
+
+async function restart() {
+  showAgent('active', 'restarting the agent once it is idle…');
+  const chat = await agent;
+  await whenIdle(app.model.agent);
+  const lock = recorded();
+  agent = offerAgent(app, base, restartChat(chat)).then(async (restarted) =>
+    started(restarted, await lock)
+  );
+  if (await agent) agentNotice.hidden = true;
+  else showAgent('failed', 'the agent did not restart', 'Retry');
 }
 
 async function offerChat() {
@@ -93,14 +121,22 @@ async function offerChat() {
     await installAgent(() => createKernel({ root, network: { transport } }), {
       report: (text) => showAgent('active', text),
     });
+    const running = agent && (await agent);
+    if (running && (await recorded()) !== startedWith) {
+      showAgent('ready', 'agent updated', 'Restart agent');
+      return;
+    }
     agentNotice.hidden = true;
     await startOnce();
   } catch (error) {
-    showAgent('failed', `agent install failed: ${error.message}`);
+    showAgent('failed', `agent install failed: ${error.message}`, 'Retry');
   }
 }
 
-retry.addEventListener('click', () => void offerChat());
+agentAction.addEventListener(
+  'click',
+  () => void (agentNotice.dataset.state === 'ready' ? restart() : offerChat())
+);
 
 function show(state, text) {
   notice.dataset.state = state;

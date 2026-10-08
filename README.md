@@ -30,7 +30,7 @@ Each screen class has its own layout, kept in `localStorage` (`slicc-os.layout.<
 2. **Once it's installed,** the page imports `page.js` and `spectrum/index.js` from `/opt/agent/node_modules/@ai-ecoverse/slicc-agent/dist/`. `startAgent` takes the Web Lock `slicc-agent`, starts `agent-worker.js` from there as a module worker and hands it a port to the page's kernel, so the agent's `bash`, `read`, `write` and `edit` run on the same kernel and files as the terminal. The page swaps in `createAgentModel()` when the worker connects. On later loads the agent starts at once, before any network check, so chat works offline. If another tab owns the agent, this tab has terminals and files only.
 3. **The conversation** is kept in SQLite in OPFS (`/.slicc/agent/`).
 
-`/opt/agent` is an ordinary pnpm project, so `cd /opt/agent && pnpm upgrade` updates the agent in place, and the service worker drops its resolution cache when `/opt/agent`'s lockfile or `.modules.yaml` changes. A running agent keeps the code it started with until the page reloads.
+`/opt/agent` is an ordinary pnpm project, so `cd /opt/agent && pnpm upgrade` updates the agent in place, and the service worker drops its resolution cache when `/opt/agent`'s lockfile or `.modules.yaml` changes. When an update installs a new `/opt/agent` while the agent runs, the status bar says `agent updated` and offers **Restart agent** (D16). It waits until the agent is idle, then restarts only the agent worker; durable resumes the conversation from SQLite, and the page reconnects and swaps in the new connection. The kernel, terminals and the page itself keep running, so the page-side adapter is updated at the next reload.
 
 ### Grammars
 
