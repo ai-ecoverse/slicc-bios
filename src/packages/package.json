@@ -15,7 +15,7 @@
     "@ai-ecoverse/wasm-jq": "1.8.1-1",
     "@ai-ecoverse/wasm-less": "668.0.0-1",
     "@ai-ecoverse/wasm-mount": "1.0.0-1",
-    "@ai-ecoverse/wasm-procps": "4.0.5-1",
+    "@ai-ecoverse/wasm-procps": "4.0.5-2",
     "@ai-ecoverse/wasm-sed": "4.9.0-3",
     "@ai-ecoverse/wasm-tls-engine": "3.6.5-1",
     "@ai-ecoverse/wasm-which": "2.23.0-1"
