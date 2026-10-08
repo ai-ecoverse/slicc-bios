@@ -60,16 +60,17 @@ export async function ready(page) {
   );
 }
 
-export async function shows(page, text) {
-  await page.until(
-    (needle) =>
-      document
-        .querySelector('slicc-app')
-        .dock.content('terminal')
-        .shadowRoot.querySelector('slicc-terminal:not([hidden]) .term-grid')
-        .textContent.includes(needle),
-    text
-  );
+function showing(needle) {
+  return document
+    .querySelector('slicc-app')
+    .dock.content('terminal')
+    .shadowRoot.querySelector('slicc-terminal:not([hidden]) .term-grid')
+    .textContent.includes(needle);
+}
+
+export async function shows(page, text, ms) {
+  if (ms) await page.within(ms, showing, text);
+  else await page.until(showing, text);
 }
 
 export async function run(page, command) {
