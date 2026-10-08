@@ -59,7 +59,7 @@ Packages are served unbundled, exactly as npm publishes them, so `pnpm upgrade <
 - **Resolving** (`src/sw/resolve.js`): bare specifiers resolve like Node does for a browser bundler, by walking up to the nearest `node_modules/<name>`.
   - `exports` is read with the conditions `browser`, `import`, `module` and `default`, then the `browser` field (including its file mappings), `module` and `main`.
   - Extensionless relative imports get `.js`, `.mjs`, `.cjs`, `.json` or `/index.js`.
-- **Node built-ins** (`node:x` and the bare names) become `/__slicc/node/<x>.js`. That's a generated module exporting exactly the names the importer asks for: `crypto.randomUUID`, `getRandomValues`, `webcrypto` and `subtle` are real, and everything else throws when called (not when imported).
+- **Node built-ins** (`node:x` and the bare names) become `/__slicc/node/<x>.js`. That's a generated module exporting exactly the names the importer asks for: `crypto.randomUUID`, `getRandomValues`, `webcrypto` and `subtle` are real, and everything else throws when called (not when imported). `node:worker_threads` is a real module instead: its `Worker` starts a module Web Worker, posts `workerData` to it first, and forwards `message` and `error`; inside that worker, `workerData` and a `parentPort` with `postMessage` and `on('message')` work as in Node.
 - **CommonJS** (`src/sw/transform.js`): a script without module syntax that uses `require` or `exports` is wrapped as an ES module. Its `require()` calls become imports, `module.exports` is the default export, and `exports.x =` assignments become named exports.
 - **Caching:** rewritten scripts are cached per file until the file or `/pnpm-lock.yaml` changes, so an update is picked up without reinstalling the service worker.
 
