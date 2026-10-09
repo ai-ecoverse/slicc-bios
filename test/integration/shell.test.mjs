@@ -56,6 +56,8 @@ test('reaches npm over HTTPS with curl and the everyday tools', async (t) => {
   await shows(page, 'found 1');
   await run(page, 'find /usr/bin -name "less" | head -1');
   await shows(page, '/usr/bin/less');
+  await run(page, 'seq 3 | xargs -n 1 echo | wc -l | sed "s/^/xargs ran /"');
+  await shows(page, 'xargs ran 3');
   await run(page, 'which bash; which nope 2>/dev/null; echo "which says $?"');
   await shows(page, '/usr/bin/bash');
   await shows(page, 'which says 1');
@@ -179,7 +181,7 @@ test('keeps the pid across exec and agrees with ps, and pkill -f spares itself',
 test('installs a command with pnpm add -g and runs it in the same shell', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
-  await run(page, 'pnpm add -g @ai-ecoverse/wasm-xxd@9.1.1850; echo "added $((40+$?))"');
+  await run(page, 'pnpm add -g @ai-ecoverse/wasm-xxd@9.2.1167-1; echo "added $((40+$?))"');
   await shows(page, 'added 4', 300000);
   assert.match(await screen(page), /added 40/, await screen(page));
   await run(page, 'echo hi | xxd');
