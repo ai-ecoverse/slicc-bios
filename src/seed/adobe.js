@@ -55,18 +55,31 @@ export function tokenFrom(redirectUrl, expected) {
   return token;
 }
 
+export function abortable(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(cancelled());
+  return new Promise((resolve, reject) => {
+    const stop = () => reject(cancelled());
+    signal.addEventListener('abort', stop, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', stop));
+  });
+}
+
 export const SIGN_IN_TIMEOUT = 10 * 60 * 1000;
 
-function waiting({ popup, notice, timeout, start, abandon = () => {} }) {
+export const cancelled = () => new DOMException('the sign-in was cancelled', 'AbortError');
+
+function waiting({ popup, signal, timeout, start, abandon = () => {} }) {
   return new Promise((resolve, reject) => {
     let done = false;
     let stop = () => {};
+    const cancel = () => finish(cancelled());
     const finish = (error, token) => {
       if (done) return;
       done = true;
       clearTimeout(deadline);
       stop();
-      hide();
+      signal?.removeEventListener('abort', cancel);
       if (!error) {
         resolve(token);
         return;
@@ -76,10 +89,11 @@ function waiting({ popup, notice, timeout, start, abandon = () => {} }) {
       reject(error);
     };
     const deadline = setTimeout(() => finish(new Error('the sign-in timed out')), timeout);
-    const hide = notice({
-      text: 'signing in to Adobe…',
-      cancel: () => finish(new Error('the sign-in was cancelled')),
-    });
+    signal?.addEventListener('abort', cancel);
+    if (signal?.aborted) {
+      cancel();
+      return;
+    }
     stop = start(
       (token) => finish(null, token),
       (error) => finish(error)
@@ -101,13 +115,13 @@ async function prepare(open, options, address) {
   return popup;
 }
 
-function viaRelay({ open, origin, listen, notice, timeout }) {
-  return async (_providerId, options) => {
+function viaRelay({ open, origin, listen, timeout }) {
+  return async (_providerId, options, signal) => {
     const value = nonce();
     const popup = await prepare(open, options, (config) => relayUrl(config, origin, value));
     return waiting({
       popup,
-      notice,
+      signal,
       timeout,
       start: (ok, fail) => {
         const channel = listen(CHANNEL);
@@ -128,8 +142,8 @@ function viaRelay({ open, origin, listen, notice, timeout }) {
   };
 }
 
-function viaProxy({ proxy, open, fetcher, every, timeout, notice }) {
-  return async (_providerId, options) => {
+function viaProxy({ proxy, open, fetcher, every, timeout }) {
+  return async (_providerId, options, signal) => {
     if (!proxy) throw new Error(NEEDS_PROXY);
     const value = nonce();
     const headers = { 'X-Bridge-Token': proxy.key };
@@ -148,7 +162,7 @@ function viaProxy({ proxy, open, fetcher, every, timeout, notice }) {
     });
     return waiting({
       popup,
-      notice,
+      signal,
       timeout,
       abandon: () =>
         fetcher(`${proxy.url}/api/oauth-state?nonce=${value}`, { method: 'DELETE', headers }).catch(
@@ -194,22 +208,23 @@ export function signIn({
   fetch: fetcher = (input, init) => globalThis.fetch(input, init),
   every = 1000,
   timeout = SIGN_IN_TIMEOUT,
-  notice = () => () => {},
   extension = globalThis.sliccExtension,
   origin = globalThis.location?.origin,
   force,
   listen = (name) => new BroadcastChannel(name),
 }) {
-  const relay = viaRelay({ open, origin, listen, notice, timeout });
+  const relay = viaRelay({ open, origin, listen, timeout });
   const proxy = network?.kind === 'local-proxy' ? network.proxy : null;
   const direct = extension?.signIn
-    ? async (_providerId, options) => {
+    ? async (_providerId, options, signal) => {
         const config = await options();
         if (!config) throw new Error('this account has no sign-in');
-        return extension.signIn(config);
+        return abortable(extension.signIn(config), signal);
       }
-    : viaProxy({ proxy, open, fetcher, every, timeout, notice });
+    : viaProxy({ proxy, open, fetcher, every, timeout });
   const forced = () => force ?? globalThis.localStorage?.getItem(FORCE_RELAY) === 'relay';
-  return (providerId, options) =>
-    relayed(origin) || forced() ? relay(providerId, options) : direct(providerId, options);
+  return (providerId, options, { signal } = {}) =>
+    relayed(origin) || forced()
+      ? relay(providerId, options, signal)
+      : direct(providerId, options, signal);
 }
