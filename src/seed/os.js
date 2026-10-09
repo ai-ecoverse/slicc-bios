@@ -16,6 +16,7 @@ import { serveLoopback } from './loopback.js';
 import { createFolders, offTheRecord } from './mounts.js';
 import { createNetwork } from './network.js';
 import { pickTransport } from './transport.js';
+import { openTunnel } from './tunnel.js';
 import { text, update, versions } from './update.js';
 import { count, createUpdates, owners } from './updates.js';
 
@@ -95,6 +96,7 @@ const folders = createFolders({
 });
 const kernel = await createKernel({ root, network: { transport }, ...folders.options });
 serveLoopback(kernel);
+if (network.status?.probe?.kernelTunnel) openTunnel(kernel, network.proxy);
 app.layoutKey = 'slicc-os.layout';
 app.surfaces = offered(surfaces);
 const updates = createUpdates({ ready: await agentInstalled() });
