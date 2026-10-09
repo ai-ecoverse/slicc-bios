@@ -151,7 +151,7 @@ async function restart() {
 
 async function offerChat() {
   try {
-    await installAgent(() => createKernel({ root, network: { transport } }), {
+    await installAgent(() => createKernel({ root, network: { transport }, media: false }), {
       report: (text) => showAgent('active', text),
     });
     const running = agent && (await agent);
@@ -187,7 +187,7 @@ async function check() {
   }
   await offerChat();
   try {
-    await grammars(() => createKernel({ root, network: { transport } }));
+    await grammars(() => createKernel({ root, network: { transport }, media: false }));
     app.grammarBase = grammarBase;
   } catch (error) {
     console.warn(`grammars stay on jsDelivr: ${error.message}`);
