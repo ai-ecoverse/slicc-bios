@@ -27,8 +27,8 @@ importers:
         specifier: 9.12.0-4
         version: 9.12.0-4
       '@ai-ecoverse/wasm-curl':
-        specifier: 8.22.0-3
-        version: 8.22.0-3
+        specifier: 8.22.0-4
+        version: 8.22.0-4
       '@ai-ecoverse/wasm-findutils':
         specifier: 4.11.0-1
         version: 4.11.0-1
@@ -98,8 +98,8 @@ packages:
   '@ai-ecoverse/wasm-coreutils@9.12.0-4':
     resolution: {integrity: sha512-BBkw0xAP1DysuzzptNDPwHT3ChFCIvDnXS1z2k/gkBN4dB2o8Z/yFQH3i1qjTqwvDTveQtMo77CsPLqKJHFn2Q==}
 
-  '@ai-ecoverse/wasm-curl@8.22.0-3':
-    resolution: {integrity: sha512-rF9TSTdHOWRJDF8DFFwMyUdgo2Z4baBJNw+vgwUitz3jUhevf4Pm+TiN18ksqEd8aQZU5FpGW++EL+2vwEUGcw==}
+  '@ai-ecoverse/wasm-curl@8.22.0-4':
+    resolution: {integrity: sha512-FYCuUOylMQ6iPLJUvCAMk0lqcdb764t+9xv8qrIAOyQJWtSJrnUNntP7APzHo4m6I3LYJqYDO1NrImqc29S6Yg==}
 
   '@ai-ecoverse/wasm-findutils@4.11.0-1':
     resolution: {integrity: sha512-MKF21UnnF5IQCkMcwGfjbdgsq3eb0vzW76HHAl4XGkdf46wPvjPsNFdqBcgavkPO5YGhukLwZLT2EawnKeV88A==}
@@ -151,7 +151,7 @@ snapshots:
 
   '@ai-ecoverse/wasm-coreutils@9.12.0-4': {}
 
-  '@ai-ecoverse/wasm-curl@8.22.0-3': {}
+  '@ai-ecoverse/wasm-curl@8.22.0-4': {}
 
   '@ai-ecoverse/wasm-findutils@4.11.0-1': {}
 
