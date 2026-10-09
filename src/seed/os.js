@@ -33,6 +33,8 @@ export const layouts = {
   updates: { side: 'center', open: [] },
 };
 
+const STUCK = "Couldn't start the agent. Retry, or reload the page.";
+
 export const hide = ['/.slicc'];
 
 export const skip = [
@@ -94,7 +96,7 @@ serveLoopback(kernel);
 if (network.status?.probe?.kernelTunnel) openTunnel(kernel, network.proxy);
 app.layoutKey = 'slicc-os.layout';
 app.surfaces = offered(surfaces);
-const updates = createUpdates({ ready: await agentInstalled() });
+const updates = createUpdates();
 const base = {
   ...(await folders.attach(
     kernel,
@@ -123,13 +125,18 @@ updates.set('agent', waiting(await agentVersion()));
 updates.set('grammars', waiting(await grammarsVersion()));
 app.model = base;
 await app.updateComplete;
-app.show('terminal');
 void folders.restore();
 let agent = null;
 let startedWith = null;
-function started(chat, lock) {
-  if (chat) startedWith = lock;
-  else agent = null;
+async function started(chat, lock) {
+  if (chat) {
+    startedWith = lock;
+    updates.setReady(true);
+    return chat;
+  }
+  agent = null;
+  if ((await agentVersion()) === null) updates.setReady(true);
+  else updates.fail('agent', Object.assign(new Error('the agent did not start'), { plain: STUCK }));
   return chat;
 }
 function startOnce() {
@@ -170,7 +177,6 @@ async function offerChat() {
   try {
     const changed = await installAgent(start, { report: updates.track('agent') });
     const at = await agentVersion();
-    updates.setReady(true);
     const running = agent && (await agent);
     if (running && (await recorded()) !== startedWith) {
       updates.checked('agent', {
