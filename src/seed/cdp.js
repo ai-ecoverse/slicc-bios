@@ -123,14 +123,15 @@ export function proxyHost(proxy) {
       return;
     }
     if (message.id !== undefined) return;
+    const parent = message.sessionId;
     const child = message.params?.sessionId;
-    if (message.method === 'Target.attachedToTarget' && child && owners.has(message.sessionId)) {
-      owners.set(child, owners.get(message.sessionId));
+    if (message.method === 'Target.attachedToTarget' && child && owners.has(parent)) {
+      owners.set(child, owners.get(parent));
     }
-    const owner = message.sessionId === undefined ? null : owners.get(message.sessionId);
-    if (message.method === 'Target.detachedFromTarget') owners.delete(message.sessionId);
+    const owner = owners.get(parent ?? child);
+    if (message.method === 'Target.detachedFromTarget' && child) owners.delete(child);
     if (owner) owner.deliver(message);
-    else if (message.sessionId === undefined) for (const each of connections) each.deliver(message);
+    else if (parent === undefined) for (const each of connections) each.deliver(message);
   };
 
   const lost = (code, reason) => {
@@ -196,7 +197,8 @@ export function proxyHost(proxy) {
           return;
         }
         const done =
-          message.method === 'Target.attachToTarget'
+          message.method === 'Target.attachToTarget' ||
+          message.method === 'Target.attachToBrowserTarget'
             ? (reply) => {
                 if (!reply.result?.sessionId) return;
                 if (closed)
