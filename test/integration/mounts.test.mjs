@@ -91,6 +91,12 @@ test('off the record, a shell fsa mount asks for a folder in the notice strip, w
   await page.until(() => window.ui.tree().paths.includes('mnt/x/made.txt'));
   assert.deepEqual(await mounts(page), ['/mnt/x']);
   assert.deepEqual(await remembered(page), []);
+  assert.equal(
+    await page.evaluate(async () =>
+      (await indexedDB.databases()).some((database) => database.name.endsWith(':media'))
+    ),
+    false
+  );
 
   await run(page, 'umount /mnt/x && echo "ejected $((3 * 3))"');
   await shows(page, 'ejected 9');

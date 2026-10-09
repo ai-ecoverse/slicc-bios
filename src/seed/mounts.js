@@ -145,7 +145,7 @@ async function settle(kernel, before, update) {
 
 function kernelOptions({ secret, pick, pending, allow, network }) {
   return {
-    ...(secret ? { metadata: false } : {}),
+    ...(secret ? { media: false } : {}),
     requestDirectory: () => pick(),
     onMountPending: pending,
     processMounts: allow,
