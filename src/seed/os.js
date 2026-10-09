@@ -1,6 +1,6 @@
 import { createKernel } from '@ai-ecoverse/slicc-kernel';
 import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
-import { confirm, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
+import { surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
 import { signIn } from './adobe.js';
 import {
   installed as agentInstalled,
@@ -11,7 +11,7 @@ import {
   startChat,
   whenIdle,
 } from './agent.js';
-import { ASK, browserControl } from './cdp.js';
+import { browserControl } from './cdp.js';
 import { grammarBase, grammars, version as grammarsVersion, installed } from './grammars.js';
 import { serveLoopback } from './loopback.js';
 import { createFolders, offTheRecord } from './mounts.js';
@@ -77,11 +77,7 @@ export function offered(all) {
 
 const network = await pickTransport();
 const { kind } = network;
-const control = browserControl(
-  network,
-  () => confirm(ASK),
-  () => reach.changed()
-);
+const control = browserControl(network);
 const tailscale = createTailscale(await tailscaleConfig());
 const reach = createNetwork(network, { browser: control.status, tailnet: tailscale.panel });
 const transport = tailscale.wrap(reach.transport);
