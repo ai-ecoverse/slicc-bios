@@ -78,7 +78,8 @@ const login = signIn({ network, notice: showSignIn });
 document.documentElement.dataset.transport = kind;
 showNetwork(document.querySelector('.network'), network);
 const root = await navigator.storage.getDirectory();
-const kernel = await createKernel({ root, network: { transport } });
+const env = { XDG_CONFIG_HOME: '/home/.config' };
+const kernel = await createKernel({ root, env, network: { transport } });
 const app = document.querySelector('slicc-app');
 app.layoutKey = 'slicc-os.layout';
 app.surfaces = offered(surfaces);
@@ -140,7 +141,7 @@ async function restart() {
 
 async function offerChat() {
   try {
-    await installAgent(() => createKernel({ root, network: { transport } }), {
+    await installAgent(() => createKernel({ root, env, network: { transport } }), {
       report: (text) => showAgent('active', text),
     });
     const running = agent && (await agent);
@@ -176,7 +177,7 @@ async function check() {
   }
   await offerChat();
   try {
-    await grammars(() => createKernel({ root, network: { transport } }));
+    await grammars(() => createKernel({ root, env, network: { transport } }));
     app.grammarBase = grammarBase;
   } catch (error) {
     console.warn(`grammars stay on jsDelivr: ${error.message}`);

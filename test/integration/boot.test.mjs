@@ -25,6 +25,7 @@ test('boots through every step into the UI served from OPFS', async (t) => {
   assert.deepEqual(page.errors, []);
 
   const files = await opfs(page);
+  assert.ok(files.includes('home/.config/pnpm/config.yaml'));
   for (const name of Object.keys(shipped.dependencies)) {
     assert.ok(files.includes(`node_modules/${name}/package.json`), name);
     assert.ok(files.includes(`var/lib/bios/node_modules/${name}.json`), name);

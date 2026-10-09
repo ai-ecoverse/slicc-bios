@@ -35,6 +35,13 @@ async function read(path) {
   return (await open(path)).getFile();
 }
 
+async function exists(path) {
+  return read(path).then(
+    () => true,
+    () => false
+  );
+}
+
 async function save(path, data) {
   const writable = await (await open(path, true)).createWritable();
   await writable.write(data);
@@ -201,6 +208,12 @@ async function replay(from, progress) {
   const deployed = new URL('./', from);
   await install({ from: deployed, files: ['package.json', 'pnpm-lock.yaml'] }, () => {});
   await install({ from: deployed, to: 'var/lib/slicc/', files: ['pnpm-lock.yaml'] }, () => {});
+  if (!(await exists('home/.config/pnpm/config.yaml'))) {
+    await install(
+      { from: new URL('pnpm/', deployed), to: 'home/.config/pnpm/', files: ['config.yaml'] },
+      () => {}
+    );
+  }
   return { packages: total, downloaded, removed, bytes };
 }
 
