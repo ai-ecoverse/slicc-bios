@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
+import { startProxy } from '@ai-ecoverse/slicc-node';
 import { boot, ready, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
@@ -91,4 +92,29 @@ test('reaches a kernel server as <port>.kernel.localhost, and plain localhost st
     )
   );
   assert.equal(plain, 'TypeError');
+});
+
+test("navigates a tab to a kernel server through slicc-node's kernel tunnel", async (t) => {
+  const proxy = await startProxy({ origins: [new URL(chrome.url).origin], kernelPort: 0 });
+  t.after(() => proxy.close());
+  assert.ok(proxy.kernelPort);
+  const page = await chrome.page(t);
+  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}`);
+  await ready(page);
+  assert.equal(
+    await page.evaluate(() => document.documentElement.dataset.transport),
+    'local-proxy'
+  );
+  await install(page);
+  await page.reload();
+  await ready(page);
+  await run(page, 'httptest 8400 &');
+  await shows(page, 'listening 8400');
+
+  const tab = await page.tab();
+  const text = () => tab.evaluate(() => document.body.textContent.trim());
+  await tab.goto(`http://8400.kernel.localhost:${proxy.kernelPort}/x.js`);
+  assert.equal(await text(), "globalThis.fromKernel = 'hello from the kernel';");
+  await tab.goto(`http://8401.kernel.localhost:${proxy.kernelPort}/`);
+  assert.equal(await text(), 'nothing listening on kernel port 8401');
 });

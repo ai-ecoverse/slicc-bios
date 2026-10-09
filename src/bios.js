@@ -92,6 +92,7 @@ await step('seed', async () => {
     'os.css',
     'os.js',
     'transport.js',
+    'tunnel.js',
     'update.js',
     'updates.js',
   ];
