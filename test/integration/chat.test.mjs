@@ -673,9 +673,9 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   await page.until(() => !!window.freezerButton('Delete'));
   await page.evaluate(() => window.freezerButton('Delete').click());
   await page.until(() => !!window.confirmDialog());
-  assert.match(
-    await page.evaluate(() => window.deepText(window.deep(document, 'slicc-confirm').shadowRoot)),
-    new RegExp(`Delete ${frozen.name}\\?`)
+  assert.equal(
+    await page.evaluate(() => window.deep(document, 'slicc-confirm').heading),
+    `Delete ${frozen.name}?`
   );
   await page.screenshot(new URL('freezer-delete-light.png', page.dir));
   await color('dark');
