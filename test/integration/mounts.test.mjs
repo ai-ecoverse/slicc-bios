@@ -31,18 +31,22 @@ async function picker(page) {
   });
 }
 
-const notice = (page, target) =>
+const waiting = (page, target) =>
   page.evaluate((target) => {
-    const element = document.querySelector(`.mount[data-target="${target}"]`);
-    if (!element) return null;
-    const [output, button] = element.children;
-    return {
-      slot: element.slot,
-      role: element.getAttribute('role'),
-      text: output.value,
-      button: button.textContent,
-    };
+    const needs = document.querySelector('slicc-app').model.files.needsFolder().includes(target);
+    const button = window
+      .filesPanel()
+      .querySelector(`[data-action="insert-folder"][data-id="${target}"]`);
+    return { needs, button: button?.textContent.trim() ?? null };
   }, target);
+const until = (page, target, needs) =>
+  page.until(
+    ([target, needs]) =>
+      document.querySelector('slicc-app').model.files.needsFolder().includes(target) === needs &&
+      !!window.filesPanel().querySelector(`[data-action="insert-folder"][data-id="${target}"]`) ===
+        needs,
+    [target, needs]
+  );
 
 const remembered = (page) =>
   page.evaluate(() => JSON.parse(localStorage.getItem('slicc-os.mounts') ?? '[]'));
@@ -59,7 +63,7 @@ async function read(page, path) {
   }, path);
 }
 
-test('off the record, a shell fsa mount asks for a folder in the notice strip, works and is not kept', async (t) => {
+test('off the record, a shell fsa mount asks for a folder in the Files panel, works and is not kept', async (t) => {
   const { page } = await opened(t);
   await ui(page);
   await picker(page);
@@ -70,16 +74,18 @@ test('off the record, a shell fsa mount asks for a folder in the notice strip, w
     'mkdir -p /tmp/picked /mnt/x && echo "from the folder $((6 * 7))" > /tmp/picked/hello.txt && mount -t fsa none /mnt/x && mount | grep -c "on /mnt/x type fsa (rw,nomedium)" | sed "s/^/pending /"'
   );
   await shows(page, 'pending 1');
-  await page.until(() => !!document.querySelector('.mount[data-target="/mnt/x"]'));
-  assert.deepEqual(await notice(page, '/mnt/x'), {
-    slot: 'status',
-    role: 'status',
-    text: '/mnt/x needs a folder (asked again after a reload)',
-    button: 'Insert folder',
-  });
+  await until(page, '/mnt/x', true);
+  assert.deepEqual(await waiting(page, '/mnt/x'), { needs: true, button: 'Insert folder…' });
+  assert.equal(
+    await page.evaluate(() => document.querySelectorAll('[slot="status"]:not([hidden])').length),
+    0
+  );
+  await page.screenshot(new URL('needs-folder.png', page.dir));
 
-  await page.evaluate(() => document.querySelector('.mount[data-target="/mnt/x"] button').click());
-  await page.until(() => !document.querySelector('.mount[data-target="/mnt/x"]'));
+  await page.evaluate(() =>
+    window.filesPanel().querySelector('[data-action="insert-folder"][data-id="/mnt/x"]').click()
+  );
+  await until(page, '/mnt/x', false);
   assert.equal(await page.evaluate(() => window.picked), 1);
   assert.equal(await page.evaluate(() => document.documentElement.dataset.folders), 'session');
   await run(
@@ -106,12 +112,12 @@ test('off the record, a shell fsa mount asks for a folder in the notice strip, w
 
   await run(page, 'mount -t fsa none /mnt/x && echo "again $((8 * 8))"');
   await shows(page, 'again 64');
-  await page.until(() => !!document.querySelector('.mount[data-target="/mnt/x"]'));
+  await until(page, '/mnt/x', true);
   await page.reload();
   await ready(page);
   await run(page, 'mount | grep -c "/mnt/x" | sed "s/^/after reload /"');
   await shows(page, 'after reload 0');
-  assert.equal(await notice(page, '/mnt/x'), null);
+  assert.deepEqual(await waiting(page, '/mnt/x'), { needs: false, button: null });
 
   await run(
     page,
@@ -139,7 +145,7 @@ test('Mount a folder and Eject in the Files panel mount and unmount a picked fol
   await page.until(() => window.ui.tree().paths.includes('mnt/picked/leaf.txt'));
   assert.equal(await page.evaluate(() => window.picked), 1);
   assert.deepEqual(await mounts(page), ['/mnt/picked']);
-  assert.equal(await notice(page, '/mnt/picked'), null);
+  assert.deepEqual(await waiting(page, '/mnt/picked'), { needs: false, button: null });
   await page.until(
     () => !!window.filesPanel().querySelector('[data-action="eject"][data-path="/mnt/picked"]')
   );
@@ -160,13 +166,13 @@ test('Mount a folder and Eject in the Files panel mount and unmount a picked fol
 
   await run(page, 'mkdir -p /mnt/y && mount -t fsa none /mnt/y && echo "asked $((5 * 5))"');
   await shows(page, 'asked 25');
-  await page.until(() => !!document.querySelector('.mount[data-target="/mnt/y"]'));
+  await until(page, '/mnt/y', true);
   await page.until(
     () => !!window.filesPanel().querySelector('[data-action="eject"][data-path="/mnt/y"]')
   );
   await run(page, 'umount /mnt/y && echo "gone $((6 * 6))"');
   await shows(page, 'gone 36');
-  await page.until(() => !document.querySelector('.mount[data-target="/mnt/y"]'));
+  await until(page, '/mnt/y', false);
   assert.deepEqual(page.errors, []);
 });
 

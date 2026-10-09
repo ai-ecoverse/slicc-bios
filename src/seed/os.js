@@ -14,7 +14,7 @@ import {
 import { grammarBase, grammars, version as grammarsVersion, installed } from './grammars.js';
 import { serveLoopback } from './loopback.js';
 import { createFolders, offTheRecord } from './mounts.js';
-import { showNetwork } from './network.js';
+import { createNetwork } from './network.js';
 import { pickTransport } from './transport.js';
 import { text, update, versions } from './update.js';
 import { count, createUpdates, owners } from './updates.js';
@@ -25,6 +25,7 @@ export const layouts = {
   terminal: { side: 'center', open: ['phone', 'tablet', 'desktop'] },
   files: { side: 'left', open: ['tablet', 'desktop'] },
   memory: { side: 'left', open: [] },
+  network: { side: 'right', open: [] },
   settings: { side: 'center', open: [] },
   updates: { side: 'center', open: [] },
 };
@@ -63,7 +64,9 @@ export function offered(all) {
 }
 
 const network = await pickTransport();
-const { kind, transport } = network;
+const { kind } = network;
+const reach = createNetwork(network);
+const { transport } = reach;
 const signInNotice = document.querySelector('.sign-in');
 const [signInStatus, signInCancel] = signInNotice.children;
 let cancelSignIn = () => {};
@@ -82,11 +85,9 @@ export function showSignIn({ text, cancel }) {
 
 const login = signIn({ network, notice: showSignIn });
 document.documentElement.dataset.transport = kind;
-showNetwork(document.querySelector('.network'), network);
 const root = await navigator.storage.getDirectory();
 const app = document.querySelector('slicc-app');
 const folders = createFolders({
-  app,
   storage: localStorage,
   network,
   secret: await offTheRecord(),
@@ -108,6 +109,7 @@ const base = {
     })
   )),
   updates,
+  network: reach.port,
 };
 const owned = new Map(Object.entries(owners).map(([id, name]) => [name, id]));
 const manifest = JSON.parse((await text(root, 'package.json')) ?? '{}');
@@ -118,7 +120,7 @@ for (const [id, name] of Object.entries(owners)) {
 }
 const others = count(names.filter((name) => !owned.has(name)).length);
 updates.set('bios', { from: others, to: others });
-const waiting = (at) => ({ from: at, to: at, state: at ? 'current' : 'checking' });
+const waiting = (at) => ({ from: at, to: at, state: at ? 'current' : 'queued' });
 updates.set('agent', waiting(await agentVersion()));
 updates.set('grammars', waiting(await grammarsVersion()));
 app.model = base;

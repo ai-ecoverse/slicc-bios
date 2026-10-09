@@ -99,42 +99,6 @@ export function mountName(name, taken) {
   return target;
 }
 
-export function pendingNotice(app, { target, insert, done, session }) {
-  const notice = document.createElement('span');
-  notice.slot = 'status';
-  notice.className = 'mount';
-  notice.dataset.target = target;
-  notice.setAttribute('role', 'status');
-  notice.setAttribute('aria-live', 'polite');
-  const output = document.createElement('output');
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.textContent = 'Insert folder';
-  const say = (text, state = 'pending') => {
-    notice.dataset.state = state;
-    notice.title = text;
-    output.value = text;
-  };
-  say(
-    session ? `${target} needs a folder (asked again after a reload)` : `${target} needs a folder`
-  );
-  button.addEventListener('click', () => {
-    const inserting = insert();
-    button.disabled = true;
-    void inserting.then(
-      () => done(),
-      (error) => {
-        button.disabled = false;
-        if (error?.name === 'AbortError') return;
-        say(`no folder for ${target}: ${error?.message ?? error}`, 'failed');
-      }
-    );
-  });
-  notice.append(output, button);
-  app.append(notice);
-  return () => notice.remove();
-}
-
 async function settle(kernel, before, update) {
   const was = JSON.stringify(before);
   for (const end = Date.now() + SETTLE_MS; Date.now() < end; await pause(STEP_MS)) {
@@ -153,12 +117,21 @@ function kernelOptions({ secret, pick, pending, allow, network }) {
   };
 }
 
+export function chosen(picking) {
+  return picking.then(
+    (value) => value ?? true,
+    (error) => {
+      if (error?.name === 'AbortError') return null;
+      throw error;
+    }
+  );
+}
+
 function markFolders(session) {
   document.documentElement.dataset.folders = session ? 'session' : 'remembered';
 }
 
 export function createFolders({
-  app,
   storage,
   network,
   secret: initial = false,
@@ -166,14 +139,13 @@ export function createFolders({
   persist = () => navigator.storage.persist?.(),
   check = offTheRecord,
   mark = markFolders,
-  notice = pendingNotice,
   attach = attachKernel,
 }) {
   let secret = initial;
   mark(secret);
   const exports = network.kind === 'local-proxy' ? hostfsExports(network.proxy) : null;
   const listeners = new Map();
-  const notices = new Map();
+  const waiting = new Map();
   const inserting = new Set();
   let kernel = null;
   let fs = null;
@@ -230,11 +202,9 @@ export function createFolders({
     const previous = folders(table);
     table = next;
     remember(storage, secret, previous, folders(next));
-    for (const [target, dismiss] of notices) {
-      const entry = next.find((mount) => mount.target === target);
-      if (entry?.state !== 'nomedium') {
-        dismiss();
-        notices.delete(target);
+    for (const target of waiting.keys()) {
+      if (next.find((mount) => mount.target === target)?.state !== 'nomedium') {
+        waiting.delete(target);
       }
     }
     emit('mounts', mounted());
@@ -248,23 +218,20 @@ export function createFolders({
     remember(storage, secret, [], folders(table));
   }
 
-  function pending({ target, source, insert }) {
+  function pending({ target, insert }) {
     if (inserting.has(target)) return;
-    notices.get(target)?.();
-    notices.set(
-      target,
-      notice(app, {
-        target,
-        source,
-        session: secret,
-        insert: () => {
-          const inserted = insert();
-          void upgrade().catch(() => {});
-          return inserted;
-        },
-        done: () => void kernel.mounts().then(update),
-      })
-    );
+    waiting.set(target, insert);
+    emit('mounts', mounted());
+  }
+
+  async function fill(target) {
+    const insert = waiting.get(target);
+    if (!insert) throw new Error(`${target} is not waiting for a folder`);
+    const inserted = chosen(insert());
+    void upgrade().catch(() => {});
+    if ((await inserted) === null) return null;
+    await update(await kernel.mounts());
+    return target;
   }
 
   async function allow(req) {
@@ -298,14 +265,11 @@ export function createFolders({
     accept: (path) => files.accept(path),
     revert: (path) => files.revert(path),
     mounts: mounted,
-    async mountFolder() {
-      let handle;
-      try {
-        handle = await pick();
-      } catch (error) {
-        if (error?.name === 'AbortError') return null;
-        throw error;
-      }
+    needsFolder: () => [...waiting.keys()],
+    async mountFolder(path) {
+      if (path) return fill(path);
+      const handle = await chosen(pick());
+      if (!handle) return null;
       const target = mountName(handle.name, new Set(table.map((entry) => entry.target)));
       await fs.mkdir(target);
       inserting.add(target);
