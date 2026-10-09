@@ -459,17 +459,40 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
       picker.value = value;
       picker.dispatchEvent(new Event('change'));
     }, id);
+  const color = async (value) => {
+    await page.evaluate((wanted) => {
+      const app = document.querySelector('slicc-app');
+      if (app.color !== wanted) app.toggleColor();
+    }, value);
+    await page.until(
+      (wanted) =>
+        document
+          .querySelector('slicc-app')
+          .shadowRoot.querySelector('.swc-theme')
+          .classList.contains(`swc-theme--${wanted}`),
+      value
+    );
+  };
   const shots = async (name) => {
     await page.screenshot(new URL(`memory-${name}-light.png`, page.dir));
-    await page.send('Emulation.setEmulatedMedia', {
-      features: [{ name: 'prefers-color-scheme', value: 'dark' }],
-    });
+    await color('dark');
     await page.screenshot(new URL(`memory-${name}-dark.png`, page.dir));
-    await page.send('Emulation.setEmulatedMedia', { features: [] });
+    await color('light');
+  };
+  const screen = async (value) => {
+    await page.until((wanted) => document.querySelector('slicc-app').screen === wanted, value);
+    await page.evaluate(() => {
+      const app = document.querySelector('slicc-app');
+      app.show('chat');
+      app.show('memory');
+    });
+    await page.until(() => !!window.memoryView()?.shadowRoot.querySelector('.tools'));
   };
   await page.until(() =>
     window.deepText(window.memoryView().shadowRoot).includes('Sam prefers meetings in the morning.')
   );
+  await color('light');
+  await screen('desktop');
   await shots('global');
   await scope('cone');
   await page.until(() =>
@@ -482,8 +505,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     deviceScaleFactor: 1,
     mobile: false,
   });
-  await page.evaluate(() => document.querySelector('slicc-app').show('memory'));
-  await page.until(() => !!window.memoryView()?.shadowRoot.querySelector('.tools'));
+  await screen('phone');
   await scope('cone');
   await page.until(() =>
     window.deepText(window.memoryView().shadowRoot).includes('harbor ships on Fridays')
@@ -495,8 +517,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   );
   await page.screenshot(new URL('memory-global-420.png', page.dir));
   await page.send('Emulation.clearDeviceMetricsOverride');
-  await page.evaluate(() => document.querySelector('slicc-app').show('memory'));
-  await page.until(() => !!window.memoryView()?.shadowRoot.querySelector('.tools'));
+  await screen('desktop');
   await scope('global');
   await page.until(
     () =>
