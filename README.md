@@ -139,6 +139,18 @@ seven can also join a tailnet, with a patched build of Tailscale's wasm client (
 
 A server running inside the kernel (vite, `python -m http.server`, impeccable `live`) listens on the kernel's own loopback, not the machine's. Pages reach it as **`http://<port>.kernel.localhost/`**:
 
+- **Testing on a tailnet of its own:** `test/integration/tailnet.mjs` starts one on this machine with no account, sign-in or key from anyone:
+  - [headscale](https://github.com/juanfont/headscale) with its embedded DERP over plain HTTP, behind a small CORS proxy for the browser's control requests;
+  - two userspace `tailscaled` nodes, `peer` (a web page and a half-close echo) and `exit` (an approved exit node).
+
+  The stage B integration test then joins seven with a headscale pre-auth key (`hskey-…`, handed over in `globalThis.sliccTailscaleAuthKey`). The stored setting `derpOverHttp` makes the wasm speak DERP over `ws://`, and is only for this. The test checks:
+  - curl over raw TCP to the peer, by address and by MagicDNS name;
+  - half-close;
+  - `10.0.2.2` refused;
+  - no inbound connections on 80, 5710 or 9222;
+  - public addresses unreachable without an exit node, and reachable by address and by name with one.
+
+  To run it: `HEADSCALE=… TAILSCALED=… TAILSCALE=… TAILSCALE_E2E=1 npm test -- --test-name-pattern 'stage B'` (`TS_SHOTS=<dir>` also saves screenshots of the Network panel and the Install / Update row).
 - **Plain `localhost` and `127.0.0.1` stay the real machine.** The service worker passes them through untouched. Inside the kernel it's the other way round: `localhost` is the kernel loopback, and `host.slicc.internal` reaches the machine. The kernel exports the page-visible name as `SLICC_PAGE_LOOPBACK`, so tools can print the right URL.
 - **Why the port goes in the name.** `kernel.localhost:8400` would resolve to the machine's real port 8400 whenever the service worker doesn't answer, as for a navigation or a WebSocket, and reach the wrong server. `8400.kernel.localhost` lands on port 80, which is closed or answered by [slicc-node](https://github.com/ai-ecoverse/slicc-node)'s kernel tunnel, and it gives every kernel port its own origin. The service worker routes by the name alone and ignores the URL's port.
 - **How a request gets there.** A seven page's request to `*.kernel.localhost`, with any method, reaches the service worker. `*.localhost` is potentially trustworthy, so an `https` page loads it without a mixed-content block. The service worker answers it itself, so nothing goes to the network, no Local Network Access prompt is shown, and there's no CORS preflight. It hands the request to the `/os/` tab: the requesting one, or else the most recently focused. That tab calls `kernel.loopbackFetch(request, { port })` and transfers the streamed response body back.

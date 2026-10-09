@@ -15,6 +15,7 @@ const LOOPBACK = new Set(['localhost', '::1']);
 const TAILNET = ['100.64.0.0/10', 'fd7a:115c:a1e0::/48'];
 const DOH = 'https://1.1.1.1/dns-query';
 const NAME_TTL = 60;
+const AUTH_KEY = /^(tskey|hskey)-/;
 
 export function takeTailscale(location, history) {
   const params = new URLSearchParams(location.hash.slice(1));
@@ -30,7 +31,7 @@ export function takeTailscale(location, history) {
     `${location.pathname}${location.search}${rest ? `#${rest}` : ''}`
   );
   if (value === 'off') return { enabled: false };
-  if (value.startsWith('tskey-'))
+  if (AUTH_KEY.test(value))
     console.warn(
       'tailscale: an auth key in the address was dropped; paste it in the Network panel'
     );
@@ -40,7 +41,7 @@ export function takeTailscale(location, history) {
 export function takeSessionKey(scope = globalThis) {
   const key = scope.sliccTailscaleAuthKey;
   delete scope.sliccTailscaleAuthKey;
-  return typeof key === 'string' && key.startsWith('tskey-') ? key : null;
+  return typeof key === 'string' && AUTH_KEY.test(key) ? key : null;
 }
 
 export async function tailscaleConfig({
@@ -530,6 +531,7 @@ export function createTailscale(config, deps = {}) {
               ...(config.controlURL ? { controlURL: config.controlURL } : {}),
               exitNode: config.exitNode ?? 'auto:any',
               ephemeral: config.ephemeral === true,
+              ...(config.derpOverHttp === true ? { derpOverHttp: true } : {}),
             },
           },
         },
@@ -574,7 +576,7 @@ export function createTailscale(config, deps = {}) {
     },
     async submitAuthKey(key) {
       const trimmed = key.trim();
-      if (!trimmed.startsWith('tskey-')) throw new Error('That is not a Tailscale auth key.');
+      if (!AUTH_KEY.test(trimmed)) throw new Error('That is not a Tailscale auth key.');
       running().login(trimmed);
     },
     async logoutTailnet() {

@@ -35,6 +35,7 @@ async function start({ wasm, exec, config, state }) {
     URL.revokeObjectURL(glue);
   }
   const go = new self.Go();
+  if (config.derpOverHttp) go.env = { ...go.env, TS_DEBUG_USE_DERP_HTTP: '1' };
   const { instance } = await WebAssembly.instantiate(wasm, go.importObject);
   void go.run(instance);
   while (typeof self.newIPN !== 'function') await new Promise((resolve) => setTimeout(resolve, 10));

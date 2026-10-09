@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { after, test } from 'node:test';
 import { ready, run } from './bios.mjs';
 import { launch } from './chrome.mjs';
+import { startTailnet, tailnetAvailable } from './tailnet.mjs';
 
 const dist = process.env.TAILSCALE_DIST;
 const usable = dist && existsSync(`${dist}/main.wasm`);
@@ -13,7 +14,7 @@ const chrome =
   usable || online
     ? await launch({
         roots: [...(usable ? [['/tailscale-dist/', dist]] : []), ['/', 'src/']],
-        timeout: process.env.TS_INTERACTIVE === '1' ? 900000 : 300000,
+        timeout: 300000,
       })
     : null;
 after(() => chrome?.close());
@@ -128,14 +129,15 @@ const curled = async (page, url, name) => {
   await page.until(async (name) => {
     const home = await (await navigator.storage.getDirectory()).getDirectoryHandle('home');
     return home.getFileHandle(`${name}.done`).then(
-      () => true,
+      async (handle) => (await handle.getFile()).size > 0,
       () => false
     );
   }, name);
   return page.evaluate(async (name) => {
     const home = await (await navigator.storage.getDirectory()).getDirectoryHandle('home');
     const read = async (file) => (await (await home.getFileHandle(file)).getFile()).text();
-    return { code: (await read(`${name}.done`)).trim(), body: (await read(`${name}.txt`)).trim() };
+    const body = await read(`${name}.txt`).catch(() => '');
+    return { code: (await read(`${name}.done`)).trim(), body: body.trim() };
   }, name);
 };
 
@@ -313,8 +315,6 @@ test('joins the tailnet with an auth key and reaches the web through it', {
   console.log(`panel: ${JSON.stringify(await tailnet(page))}`);
 });
 
-const interactive = process.env.TS_INTERACTIVE === '1';
-const signInFile = process.env.TS_SIGN_IN_FILE ?? '/tmp/tailscale-sign-in.txt';
 const shots = process.env.TS_SHOTS;
 
 const knockFrom = (cli, addr, port) =>
@@ -330,23 +330,31 @@ const knockFrom = (cli, addr, port) =>
     setTimeout(() => child.stdin.end(), 5000);
   });
 
-test('stage B: programs reach the tailnet and the exit node over raw TCP', {
-  skip: !(online && interactive),
+const model = () => document.querySelector('slicc-app').model.network.status().tailnet;
+
+test('stage B on a tailnet of its own: raw TCP to a peer and through an exit node, nothing inbound', {
+  skip: !(tailnetAvailable && (usable || online)),
 }, async (t) => {
+  const tailnet = await startTailnet();
+  t.after(() => tailnet.close());
   const page = await chrome.page(t);
-  await page.init('() => { globalThis.sliccTailscaleDebug = true; }');
-  if (usable) {
-    await page.goto('/');
-    await ready(page);
-    await page.evaluate(async () => {
-      const root = await navigator.storage.getDirectory();
-      const opt = await root.getDirectoryHandle('opt', { create: true });
-      const dir = await opt.getDirectoryHandle('tailscale-dev', { create: true });
-      for (const name of ['main.wasm', 'wasm_exec.js']) {
-        const body = await (await fetch(`/tailscale-dist/${name}`)).arrayBuffer();
-        const writable = await (await dir.getFileHandle(name, { create: true })).createWritable();
-        await writable.write(body);
-        await writable.close();
+  await page.init(
+    `() => { globalThis.sliccTailscaleDebug = true; globalThis.sliccTailscaleAuthKey = ${JSON.stringify(tailnet.key)}; }`
+  );
+  await page.goto('/');
+  await ready(page);
+  await page.evaluate(
+    async (controlURL, dev) => {
+      if (dev) {
+        const root = await navigator.storage.getDirectory();
+        const opt = await root.getDirectoryHandle('opt', { create: true });
+        const dir = await opt.getDirectoryHandle('tailscale-dev', { create: true });
+        for (const name of ['main.wasm', 'wasm_exec.js']) {
+          const body = await (await fetch(`/tailscale-dist/${name}`)).arrayBuffer();
+          const writable = await (await dir.getFileHandle(name, { create: true })).createWritable();
+          await writable.write(body);
+          await writable.close();
+        }
       }
       await new Promise((resolve, reject) => {
         const open = indexedDB.open('slicc-os', 1);
@@ -355,7 +363,13 @@ test('stage B: programs reach the tailnet and the exit node over raw TCP', {
         open.onsuccess = () => {
           const tx = open.result.transaction('transport', 'readwrite');
           tx.objectStore('transport').put(
-            { enabled: true, from: '/opt/tailscale-dev' },
+            {
+              enabled: true,
+              controlURL,
+              ephemeral: true,
+              derpOverHttp: true,
+              ...(dev ? { from: '/opt/tailscale-dev' } : {}),
+            },
             'tailscale'
           );
           tx.oncomplete = () => {
@@ -364,23 +378,18 @@ test('stage B: programs reach the tailnet and the exit node over raw TCP', {
           };
         };
       });
-    });
-    await page.reload();
-  } else await page.goto('/#tailscale=on');
+    },
+    tailnet.controlURL,
+    usable
+  );
+  await page.reload();
   await ready(page);
-  const model = () => document.querySelector('slicc-app').model.network.status().tailnet;
-  await page.until((m) => {
-    const tailnet = document.querySelector('slicc-app').model.network.status().tailnet;
-    return tailnet?.loginUrl || tailnet?.state === 'running' || tailnet?.state === 'failed';
-  }, model.toString());
-  const first = await page.evaluate(model);
-  if (first.loginUrl) {
-    writeFileSync(signInFile, `${first.loginUrl}\n`);
-    console.log(`sign in at ${first.loginUrl}`);
-  }
   await page.until(() => {
     const tailnet = document.querySelector('slicc-app').model.network.status().tailnet;
-    return tailnet?.state === 'running' && tailnet.node?.addresses?.length;
+    return (
+      tailnet?.state === 'failed' ||
+      (tailnet?.state === 'running' && tailnet.node?.addresses?.length)
+    );
   });
   const running = await page.evaluate(model);
   console.log(
@@ -390,98 +399,104 @@ test('stage B: programs reach the tailnet and the exit node over raw TCP', {
       shieldsUp: running.shieldsUp,
     })
   );
+  assert.equal(running.state, 'running', running.detail);
   assert.equal(running.shieldsUp, true);
+  assert.equal(await page.evaluate(() => 'sliccTailscaleAuthKey' in globalThis), false);
 
-  const peer = process.env.TS_PEER_URL;
-  if (peer) {
-    const raw = await curled(page, `--noproxy '*' ${peer}`, 'raw-peer');
-    console.log(JSON.stringify({ rawPeer: raw }));
-    assert.equal(raw.code, '0');
-    assert.match(raw.body, /hello from the tailnet/);
-    const name = process.env.TS_PEER_NAME;
-    if (name) {
-      const byName = new URL(peer);
-      byName.hostname = name;
-      const named = await curled(page, `--noproxy '*' ${byName}`, 'raw-peer-name');
-      console.log(JSON.stringify({ rawPeerByName: named }));
-      assert.equal(named.code, '0');
-      assert.match(named.body, /hello from the tailnet/);
-    }
-  }
+  const raw = await curled(page, `--noproxy '*' --max-time 20 ${tailnet.peer.web}`, 'raw-peer');
+  console.log(JSON.stringify({ rawPeer: raw }));
+  assert.equal(raw.code, '0');
+  assert.match(raw.body, /hello from the local tailnet/);
+  const byName = new URL(tailnet.peer.web);
+  byName.hostname = 'peer';
+  const peerByName = await curled(page, `--noproxy '*' --max-time 20 ${byName}`, 'raw-peer-name');
+  console.log(JSON.stringify({ rawPeerByName: peerByName }));
+  assert.equal(peerByName.code, '0');
+  assert.equal(peerByName.body, raw.body);
 
-  const echo = process.env.TS_PEER_HALF_CLOSE;
-  if (echo) {
-    const reply = await page.evaluate(async (addr) => {
-      const conn = await globalThis.sliccTailscale.dial('tcp', addr);
-      await conn.write(new TextEncoder().encode('hello'));
-      conn.closeWrite();
-      const bytes = [];
-      for (let chunk = await conn.read(); chunk; chunk = await conn.read()) bytes.push(...chunk);
-      conn.close();
-      return new TextDecoder().decode(new Uint8Array(bytes));
-    }, echo);
-    console.log(JSON.stringify({ halfClose: reply }));
-    assert.equal(reply, 'got hello then EOF');
-  }
+  const half = await page.evaluate(async (addr) => {
+    const conn = await globalThis.sliccTailscale.dial('tcp', addr);
+    await conn.write(new TextEncoder().encode('hello'));
+    conn.closeWrite();
+    const bytes = [];
+    for (let chunk = await conn.read(); chunk; chunk = await conn.read()) bytes.push(...chunk);
+    conn.close();
+    return new TextDecoder().decode(new Uint8Array(bytes));
+  }, tailnet.peer.echo);
+  console.log(JSON.stringify({ halfClose: half }));
+  assert.equal(half, 'got hello then EOF');
 
   const host = await curled(page, `--noproxy '*' --max-time 10 http://10.0.2.2:5711/`, 'raw-host');
   console.log(JSON.stringify({ rawHost: host.code }));
   assert.notEqual(host.code, '0', 'host.slicc.internal never reaches the uplink');
 
-  const cli = process.env.TS_PEER_CLI;
-  if (cli) {
-    const self = running.node.addresses[0];
-    for (const port of [80, 5710, 9222]) {
-      const attempt = await knockFrom(cli, self, port);
-      console.log(JSON.stringify({ inbound: port, ...attempt }));
-      assert.equal(attempt.connected, false);
-      assert.equal(attempt.answered, false);
-    }
+  for (const port of [80, 5710, 9222]) {
+    const attempt = await knockFrom(tailnet.peer.cli, running.node.addresses[0], port);
+    console.log(JSON.stringify({ inbound: port, ...attempt }));
+    assert.equal(attempt.connected, false);
+    assert.equal(attempt.answered, false);
   }
 
-  const exit = process.env.TS_EXIT_NODE;
-  if (exit) {
-    const choice = running.exitNodes.find((node) => node.name === exit);
-    assert.ok(choice, `exit node ${exit} is offered`);
-    await page.evaluate(
-      (id) => document.querySelector('slicc-app').model.network.setExitNode(id),
-      choice.id
-    );
-    await page.until(
-      (name) =>
-        document.querySelector('slicc-app').model.network.status().tailnet.exitNode === name,
-      exit
-    );
-    const trace = await curled(
-      page,
-      `--noproxy '*' --max-time 20 http://1.1.1.1/cdn-cgi/trace`,
-      'raw-exit'
-    );
-    const ip = /^ip=(.*)$/m.exec(trace.body)?.[1];
-    console.log(JSON.stringify({ rawExit: trace.code, ip }));
-    assert.equal(trace.code, '0');
-    assert.ok(ip);
-    if (shots) {
-      await page.evaluate(() => document.querySelector('slicc-app').show('network'));
-      await page.screenshot(`${shots}/network-panel.png`);
-      await page.evaluate(() => document.querySelector('slicc-app').show('updates'));
-      await page.screenshot(`${shots}/install-update.png`);
-    }
-    await page.evaluate(() => document.querySelector('slicc-app').model.network.setExitNode(null));
-    await page.until(
-      () => !document.querySelector('slicc-app').model.network.status().tailnet.exitNode
-    );
-    const without = await curled(
-      page,
-      `--noproxy '*' --max-time 10 http://1.1.1.1/cdn-cgi/trace`,
-      'raw-noexit'
-    );
-    console.log(JSON.stringify({ rawWithoutExit: without.code }));
-    assert.notEqual(
-      without.code,
-      '0',
-      'without an exit node, public addresses are unreachable over raw TCP'
-    );
+  const without = await curled(
+    page,
+    `--noproxy '*' --max-time 10 http://1.1.1.1/cdn-cgi/trace`,
+    'raw-noexit'
+  );
+  console.log(JSON.stringify({ rawWithoutExit: without.code }));
+  assert.notEqual(
+    without.code,
+    '0',
+    'without an exit node, public addresses are unreachable over raw TCP'
+  );
+  const exit = running.exitNodes.find((node) => node.name === 'exit');
+  assert.ok(exit, 'the local exit node is offered');
+  await page.evaluate(
+    (id) => document.querySelector('slicc-app').model.network.setExitNode(id),
+    exit.id
+  );
+  await page.until(
+    () => document.querySelector('slicc-app').model.network.status().tailnet.exitNode === 'exit'
+  );
+  const trace = await curled(
+    page,
+    `--noproxy '*' --max-time 20 http://1.1.1.1/cdn-cgi/trace`,
+    'raw-exit'
+  );
+  console.log(JSON.stringify({ rawExit: trace.code, bytes: trace.body.length }));
+  assert.equal(trace.code, '0');
+  assert.ok(trace.body.length > 0);
+  const exitByName = await curled(
+    page,
+    `--noproxy '*' --max-time 30 http://ifconfig.me/ip`,
+    'raw-exit-name'
+  );
+  console.log(JSON.stringify({ rawExitByName: exitByName.code, ip: exitByName.body }));
+  assert.equal(
+    exitByName.code,
+    '0',
+    'a public name resolves over DNS-over-HTTPS through the exit node'
+  );
+  assert.match(exitByName.body, /^[0-9a-f.:]+$/);
+  if (shots) {
+    await page.evaluate(() => document.querySelector('slicc-app').show('network'));
+    await page.screenshot(`${shots}/network-panel.png`);
+    await page.evaluate(() => document.querySelector('slicc-app').show('updates'));
+    await page.until(() => {
+      const find = (root) => {
+        for (const el of root.querySelectorAll('*')) {
+          if (el.shadowRoot) {
+            const hit = find(el.shadowRoot);
+            if (hit) return hit;
+          }
+          if (el.children.length === 0 && el.textContent.trim() === 'Tailscale (/opt/tailscale)')
+            return el;
+        }
+        return null;
+      };
+      const row = find(document);
+      row?.scrollIntoView({ block: 'center' });
+      return Boolean(row);
+    });
+    await page.screenshot(`${shots}/install-update.png`);
   }
-  await page.evaluate(() => document.querySelector('slicc-app').model.network.logoutTailnet());
 });
