@@ -19,11 +19,11 @@ export const ASK = {
   title: 'Let SLICC’s agents control this browser?',
   body: 'They can open tabs, click and type with your logins. This lasts until you reload.',
   action: 'Allow',
+  cancel: 'Don’t allow',
   variant: 'confirmation',
 };
 
 export const DECLINED = 'browser control was declined in seven; reload to be asked again';
-export const DECLINED_DETAIL = 'You declined it in this session. Reload to be asked again.';
 
 export function extensionConnection(cdp) {
   const sessions = new Map();
@@ -162,7 +162,7 @@ export function browserControl(network, ask, changed) {
   });
   const status = () => {
     const via = browserVia(network);
-    return declined && via ? { via, detail: DECLINED_DETAIL } : { via };
+    return declined && via ? { via, declined: true } : { via };
   };
   return { hook, status };
 }

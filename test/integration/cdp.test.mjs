@@ -77,6 +77,7 @@ function asked(page) {
       title: dialog.querySelector('#title').textContent,
       body: dialog.querySelector('#body').textContent,
       action: action.textContent.trim(),
+      cancel: dialog.querySelector('[data-cancel]').textContent.trim(),
       variant: action.getAttribute('variant'),
     };
   });
@@ -119,6 +120,7 @@ test('playwright-cli drives a page through slicc-extension once allowed, and the
     title: 'Let SLICC’s agents control this browser?',
     body: 'They can open tabs, click and type with your logins. This lasts until you reload.',
     action: 'Allow',
+    cancel: 'Don’t allow',
     variant: 'accent',
   });
   await answer(page, 'action');
@@ -203,7 +205,7 @@ test('declining browser control answers 502 until the page reloads', async (t) =
   assert.equal(await read(page, '/tmp/again'), declined);
   assert.deepEqual(await automation(page), {
     via: 'extension',
-    detail: 'You declined it in this session. Reload to be asked again.',
+    declined: true,
   });
   assert.deepEqual(extension.sent, []);
 });
