@@ -9,13 +9,13 @@ importers:
   .:
     dependencies:
       '@ai-ecoverse/slicc-agent':
-        specifier: 3.7.0
-        version: 3.7.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
+        specifier: 3.11.0
+        version: 3.11.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
 
 packages:
 
-  '@ai-ecoverse/slicc-agent@3.7.0':
-    resolution: {integrity: sha512-nS4veNhIpXGbEKfd2/OdDSACNlYJsvxG49/SdkTHWQLtIfeYz3fb1rq81Zu8jDpsBKVRzNIFgIs4IJc9hn8fyw==}
+  '@ai-ecoverse/slicc-agent@3.11.0':
+    resolution: {integrity: sha512-0Foc7ShhOd+IWwp5faYuNBA3v1IPbn9fi0FBe19YElXsfquJv6o2cWglhDz/zEcPFAb+mRTmqpazLPfJRB1KbQ==}
     engines: {node: '>=24'}
     peerDependencies:
       '@ai-ecoverse/slicc-spectrum': ^1.13.0
@@ -23,8 +23,8 @@ packages:
       '@ai-ecoverse/slicc-spectrum':
         optional: true
 
-  '@ai-ecoverse/slicc-kernel@1.16.0':
-    resolution: {integrity: sha512-V1srCBFw77FbQlqV+ukif/Vcp9Blgip4wRIDqDhIipGS4CbyjCvzpKM+pAZHRz3f0emIyDCuCToIki7elG0IFQ==}
+  '@ai-ecoverse/slicc-kernel@1.17.4':
+    resolution: {integrity: sha512-2dDrnHhJ2sdKRTM3CgJ4zrp1OXZXd8+Q4wdBPg2+NcjynC6tFSXcTzKFxHV9Ug7rEgmwrTMsTw4GrvR/5eHjvw==}
     engines: {node: '>=24'}
 
   '@anthropic-ai/sdk@0.129.0':
@@ -131,6 +131,10 @@ packages:
 
   '@earendil-works/pi-client@1.0.4':
     resolution: {integrity: sha512-c+hB+VE+K+2990do99wk4m+R7RvRt7A/Wb9JOHWM3c+vCFqZqo8VdU65a+P/hUZp2cVhoxFnzFZsDf9yqaGvUA==}
+    engines: {node: '>=22.19.0'}
+
+  '@earendil-works/pi-codemode@1.1.0':
+    resolution: {integrity: sha512-8Asc2AzhoNaXS1snmRFa96OhcWIlFM5k1Kuiz6p2DvIYgi5QHQccRAmDVY9oO92TzWrizpvQpconZGQ7JhlI7Q==}
     engines: {node: '>=22.19.0'}
 
   '@earendil-works/pi-durable@1.0.4':
@@ -537,6 +541,9 @@ packages:
       kerberos:
         optional: true
 
+  quickjs-wasi@3.6.2:
+    resolution: {integrity: sha512-FCqGtGOrMgzUiIrMNMA2YnsOxCNwo31dzqXvclXUC6xeT35NJLKXQJsvbeCTjvoFAwZgEAPg8U6+KAPDGXn8Mg==}
+
   retry@0.13.1:
     resolution: {integrity: sha512-XQBQ3I8W1Cge0Seh+6gjj03LbmRFWuoszgK9ooCpwYIrhhoO80pfq4cUkU5DkknwfOfFteRwlZ56PYOGYyFWdg==}
     engines: {node: '>= 4'}
@@ -577,12 +584,13 @@ packages:
 
 snapshots:
 
-  '@ai-ecoverse/slicc-agent@3.7.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)':
+  '@ai-ecoverse/slicc-agent@3.11.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)':
     dependencies:
-      '@ai-ecoverse/slicc-kernel': 1.16.0
+      '@ai-ecoverse/slicc-kernel': 1.17.4
       '@earendil-works/chord': 1.0.4
       '@earendil-works/pi-ai': 1.0.4(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@earendil-works/pi-client': 1.0.4
+      '@earendil-works/pi-codemode': 1.1.0
       '@earendil-works/pi-durable': 1.0.4(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@earendil-works/pi-protocol': 1.0.4
       '@earendil-works/pi-server': 1.0.4
@@ -600,7 +608,7 @@ snapshots:
       - ws
       - zod
 
-  '@ai-ecoverse/slicc-kernel@1.16.0': {}
+  '@ai-ecoverse/slicc-kernel@1.17.4': {}
 
   '@anthropic-ai/sdk@0.129.0':
     dependencies:
@@ -824,6 +832,10 @@ snapshots:
     dependencies:
       '@earendil-works/chord': 1.0.4
       '@earendil-works/pi-protocol': 1.0.4
+
+  '@earendil-works/pi-codemode@1.1.0':
+    dependencies:
+      quickjs-wasi: 3.6.2
 
   '@earendil-works/pi-durable@1.0.4(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)':
     dependencies:
@@ -1188,6 +1200,8 @@ snapshots:
       long: 5.3.2
 
   proxy-agent-negotiate@1.1.0: {}
+
+  quickjs-wasi@3.6.2: {}
 
   retry@0.13.1: {}
 
