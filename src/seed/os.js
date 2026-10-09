@@ -142,9 +142,12 @@ async function started(chat, lock) {
 function startOnce() {
   if (!agent) {
     const lock = recorded();
-    agent = offerAgent(app, base, startChat(kernel), login).then(async (chat) =>
-      started(chat, await lock)
-    );
+    const back = updates.get('agent').state === 'installed' ? 'installed' : 'current';
+    if (!updates.ready()) updates.set('agent', { state: 'checking' });
+    agent = offerAgent(app, base, startChat(kernel), login).then(async (chat) => {
+      if (updates.get('agent').state === 'checking') updates.set('agent', { state: back });
+      return started(chat, await lock);
+    });
   }
   return agent;
 }
