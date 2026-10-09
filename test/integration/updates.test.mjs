@@ -55,6 +55,14 @@ function deploy(files) {
 
 const helpers = () => {
   window.app = () => document.querySelector('slicc-app');
+  window.seen = { ready: null, open: false };
+  const watch = setInterval(() => {
+    const app = window.app();
+    if (!app?.model?.updates) return;
+    window.seen.ready ??= app.model.updates.ready();
+    window.seen.open ||= !!app.dock.api.getPanel('updates')?.params?.boot;
+    if (window.seen.open && app.model.updates.ready()) clearInterval(watch);
+  }, 5);
   window.agentRow = () =>
     window
       .app()
@@ -113,6 +121,16 @@ test('Install / Update opens at boot until the agent is installed, and a failed 
       /resolved 1, reused 0, downloaded 1, added 1/
     );
   });
+
+  await t.test(
+    'a reload opens it while the installed agent loads, and it closes once it is up',
+    async () => {
+      await page.reload();
+      await ready(page);
+      await page.until(() => window.app().model.updates.ready() && !window.updatesOpen());
+      assert.deepEqual(await page.evaluate(() => window.seen), { ready: false, open: true });
+    }
+  );
 
   await t.test('a later failed tarball opens it again with Retry', async () => {
     deploy(missing('98.0.0'));

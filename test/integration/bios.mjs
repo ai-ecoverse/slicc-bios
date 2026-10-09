@@ -49,8 +49,21 @@ export const prompt = 'slicc:~$ ';
 
 export async function ready(page) {
   await page.until(
-    (prompt) =>
+    () =>
       location.pathname === '/os/' &&
+      !!document
+        .querySelector('slicc-app')
+        ?.dock?.api.panels.some((panel) => panel.id.startsWith('terminal:'))
+  );
+  await page.evaluate(() => {
+    const { dock } = document.querySelector('slicc-app');
+    const id = dock.api.panels
+      .map((panel) => panel.id)
+      .findLast((id) => id.startsWith('terminal:'));
+    dock.api.getPanel(id)?.api.setActive();
+  });
+  await page.until(
+    (prompt) =>
       !!document
         .querySelector('slicc-app')
         ?.dock?.content(
@@ -87,7 +100,12 @@ export async function shows(page, text, ms) {
 
 export async function run(page, command) {
   await page.evaluate(() => {
-    const { dock } = document.querySelector('slicc-app');
+    const app = document.querySelector('slicc-app');
+    const { dock } = app;
+    const id = dock.api.panels
+      .map((panel) => panel.id)
+      .findLast((id) => id.startsWith('terminal:'));
+    dock.api.getPanel(id)?.api.setActive();
     dock
       .content(
         dock.api.panels.map((panel) => panel.id).findLast((id) => id.startsWith('terminal:'))
