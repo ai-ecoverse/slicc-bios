@@ -16,7 +16,7 @@ import { grammarBase, grammars, version as grammarsVersion, installed } from './
 import { serveLoopback } from './loopback.js';
 import { createFolders, offTheRecord } from './mounts.js';
 import { createNetwork } from './network.js';
-import { createTailscale, tailscaleConfig } from './tailscale.js';
+import { createTailscale, installTailscale, tailscaleConfig } from './tailscale.js';
 import { pickTransport } from './transport.js';
 import { openTunnel } from './tunnel.js';
 import { text, update, versions } from './update.js';
@@ -129,7 +129,15 @@ updates.set('grammars', waiting(await grammarsVersion()));
 app.model = base;
 await app.updateComplete;
 const restoring = folders.restore();
-void tailscale.start({ kernel, ready: restoring, traits: reach.transport.traits });
+void tailscale.start({
+  kernel,
+  ready: restoring,
+  traits: reach.transport.traits,
+  install: (report) =>
+    installTailscale(() => createKernel({ root, network: { transport }, media: false }), {
+      report,
+    }),
+});
 let agent = null;
 let startedWith = null;
 async function started(chat, lock) {

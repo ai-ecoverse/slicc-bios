@@ -53,6 +53,11 @@ async function start({ wasm, exec, config, state }) {
     ...(config.controlURL ? { controlURL: config.controlURL } : {}),
     ...(config.exitNode ? { exitNode: config.exitNode } : {}),
   });
+  if (ipn instanceof Error) {
+    const error = ipn;
+    ipn = null;
+    throw error;
+  }
   let running = false;
   ipn.run({
     notifyState: (backend) => {

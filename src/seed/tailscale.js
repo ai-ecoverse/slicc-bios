@@ -1,9 +1,14 @@
 import { attachKernel } from '@ai-ecoverse/slicc-kernel';
 import { stored } from './transport.js';
+import { fetchText, pnpm, text, write } from './update.js';
 
 const CONFIG = 'tailscale';
 const STATE = 'tailscale-state';
-const SOURCES = ['/mnt/tailscale', '/opt/tailscale'];
+const PACKAGE = '@ai-ecoverse/wasm-tailscale';
+const FOLDER = 'opt/tailscale';
+const RECEIPT = 'var/lib/slicc/tailscale/pnpm-lock.yaml';
+const deployed = new URL('../packages/tailscale/', import.meta.url);
+const SOURCES = ['/mnt/tailscale', `/${FOLDER}/node_modules/${PACKAGE}/dist`, `/${FOLDER}`];
 const IDLE_MS = 30000;
 const HEAD_MS = 60000;
 const LOOPBACK = new Set(['localhost', '::1']);
@@ -86,7 +91,7 @@ const STARTING = {
 export function panelStatus(view, enabled) {
   if (!enabled) return { state: 'off' };
   if (view.failed) return { state: 'failed', detail: view.failed };
-  if (!view.backend) return { state: 'loading', detail: 'Loading Tailscale…' };
+  if (!view.backend) return { state: 'loading', detail: view.installing ?? 'Loading Tailscale…' };
   if (view.login || view.backend === 'NeedsLogin')
     return { state: 'needs-login', ...(view.login ? { loginUrl: view.login } : {}) };
   if (view.backend !== 'Running' || !view.status)
@@ -306,6 +311,32 @@ export async function readModule(fs, sources = SOURCES) {
   throw new Error(`no main.wasm and wasm_exec.js in ${tried.join(' or ')}`);
 }
 
+export function installTailscale(start, options = {}) {
+  const { from = deployed, report = () => {}, locks = navigator.locks, root } = options;
+  return locks.request('slicc-tailscale', async () => {
+    const dir = root ?? (await navigator.storage.getDirectory());
+    const lock = await fetchText('pnpm-lock.yaml', from);
+    if (lock === (await text(dir, RECEIPT))) return false;
+    const manifest = await fetchText('package.json', from);
+    await write(dir, `${FOLDER}/package.json`, manifest);
+    await write(dir, `${FOLDER}/pnpm-lock.yaml`, lock);
+    const kernel = await start();
+    try {
+      await pnpm(kernel, `/${FOLDER}`, report, JSON.parse(manifest).dependencies?.[PACKAGE]);
+    } finally {
+      kernel.terminate();
+    }
+    await write(dir, RECEIPT, lock);
+    return true;
+  });
+}
+
+export function installing({ progress }) {
+  if (!progress) return 'Installing Tailscale…';
+  const verb = progress.phase === 'link' ? 'linking' : 'downloading';
+  return `Installing Tailscale (${verb} ${progress.done} of ${progress.total})…`;
+}
+
 function spawn() {
   return new Worker(new URL('tailscale-worker.js', import.meta.url), {
     type: 'module',
@@ -341,6 +372,13 @@ export function createTailscale(config, deps = {}) {
     changed();
     try {
       await context.ready;
+      if (context.install && !config.from) {
+        await context.install((step) => {
+          view = { ...view, installing: installing(step) };
+          changed();
+        });
+        view = { ...view, installing: null };
+      }
       const client = await (deps.attach ?? attachKernel)(await context.kernel.connect());
       const { wasm, exec } = await readModule(client.fs, config.from ? [config.from] : undefined);
       const worker = (deps.worker ?? spawn)();
@@ -428,8 +466,8 @@ export function createTailscale(config, deps = {}) {
   return {
     panel,
     wrap: (base) => routedTransport(base, slot),
-    start({ kernel, ready, traits }) {
-      context = { kernel, ready, traits };
+    start({ kernel, ready, traits, install }) {
+      context = { kernel, ready, traits, install };
       changed();
       if (enabled && !starting) starting = boot();
       return starting;

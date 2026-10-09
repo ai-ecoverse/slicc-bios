@@ -7,16 +7,15 @@ import { launch } from './chrome.mjs';
 
 const dist = process.env.TAILSCALE_DIST;
 const usable = dist && existsSync(`${dist}/main.wasm`);
+const online = process.env.TAILSCALE_E2E === '1';
 
-const chrome = usable
-  ? await launch({
-      roots: [
-        ['/tailscale-dist/', dist],
-        ['/', 'src/'],
-      ],
-      timeout: 180000,
-    })
-  : null;
+const chrome =
+  usable || online
+    ? await launch({
+        roots: [...(usable ? [['/tailscale-dist/', dist]] : []), ['/', 'src/']],
+        timeout: 300000,
+      })
+    : null;
 after(() => chrome?.close());
 
 const tailnet = (page) =>
@@ -58,13 +57,10 @@ const install = (page) =>
     }
   });
 
-test('tailscale joins from the wasm in /opt/tailscale and asks to sign in', {
-  skip: !usable,
+test('turning Tailscale on installs the package with pnpm and asks to sign in', {
+  skip: !online,
 }, async (t) => {
   const page = await chrome.page(t);
-  await page.goto('/');
-  await ready(page);
-  await install(page);
   await page.goto('/#tailscale=on');
   await ready(page);
   await page.until(() => {
@@ -80,6 +76,23 @@ test('tailscale joins from the wasm in /opt/tailscale and asks to sign in', {
     JSON.stringify({ state: shown.state, detail: shown.detail, loginUrl: Boolean(shown.loginUrl) })
   );
   assert.equal(shown.state, 'needs-login', shown.detail);
+  const installed = await page.evaluate(async () => {
+    const root = await navigator.storage.getDirectory();
+    const dir = async (path) => {
+      let at = root;
+      for (const name of path.split('/')) at = await at.getDirectoryHandle(name);
+      return at;
+    };
+    const dist = await dir('opt/tailscale/node_modules/@ai-ecoverse/wasm-tailscale/dist');
+    const receipt = await (await dir('var/lib/slicc/tailscale')).getFileHandle('pnpm-lock.yaml');
+    return {
+      wasm: (await (await dist.getFileHandle('main.wasm')).getFile()).size,
+      receipt: Boolean(receipt),
+    };
+  });
+  console.log(JSON.stringify({ installed }));
+  assert.ok(installed.wasm > 20e6);
+  assert.equal(installed.receipt, true);
   assert.match(shown.loginUrl ?? '', /^https:\/\/login\.tailscale\.com\//);
   assert.equal(await page.evaluate(() => 'sliccTailscale' in globalThis), false);
   await page.evaluate(() => document.querySelector('slicc-app').show('network'));

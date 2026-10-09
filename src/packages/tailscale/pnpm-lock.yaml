@@ -1,0 +1,22 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      '@ai-ecoverse/wasm-tailscale':
+        specifier: 1.104.1-5
+        version: 1.104.1-5
+
+packages:
+
+  '@ai-ecoverse/wasm-tailscale@1.104.1-5':
+    resolution: {integrity: sha512-+GGLolYvIBA0RrQH+CT6TVQKQ2U6wW1aR9AXGiwnTegXJLGUZ8HXcO54wGfY5Sa+N8c2OOQYMa+1aJ6Ks6PIYg==}
+
+snapshots:
+
+  '@ai-ecoverse/wasm-tailscale@1.104.1-5': {}
