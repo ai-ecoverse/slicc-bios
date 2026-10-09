@@ -23,6 +23,7 @@ import { count, createUpdates, owners } from './updates.js';
 
 export const layouts = {
   agents: { side: 'left', open: ['tablet', 'desktop'] },
+  changes: { side: 'left', open: [] },
   chat: { side: 'center', open: ['phone', 'tablet', 'desktop'] },
   terminal: { side: 'center', open: ['phone', 'tablet', 'desktop'] },
   files: { side: 'left', open: ['tablet', 'desktop'] },
