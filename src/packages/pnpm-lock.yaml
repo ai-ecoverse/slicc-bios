@@ -42,8 +42,8 @@ importers:
         specifier: 1.8.2-2
         version: 1.8.2-2
       '@ai-ecoverse/wasm-less':
-        specifier: 668.0.0-1
-        version: 668.0.0-1
+        specifier: 668.0.0-2
+        version: 668.0.0-2
       '@ai-ecoverse/wasm-mount':
         specifier: 1.0.0-1
         version: 1.0.0-1
@@ -113,8 +113,8 @@ packages:
   '@ai-ecoverse/wasm-jq@1.8.2-2':
     resolution: {integrity: sha512-lP0JB5DroQj0EUUfQTz8FPUIDIK2q3EDomXTtz5hzZnns8pPWBoeGcH79SiVjCEu5cREEDPeYS87oSA0uYFbaQ==}
 
-  '@ai-ecoverse/wasm-less@668.0.0-1':
-    resolution: {integrity: sha512-1aUW5mgMfca6fyUMKRc1sILTe8PwokaP1kpZezOX6BhFkzMWnvzDir/U08Rtj6Uyn7fudHIZmKfSh47P/5Ph0A==}
+  '@ai-ecoverse/wasm-less@668.0.0-2':
+    resolution: {integrity: sha512-UlQHO4nK5Xdh/xUYy7O5Wyn/CK8PROFZB/DsGsHagOd2EBLTqEKmEIEQIyxR1EQx/2oWCVSLvatGVS8rqr8QXA==}
 
   '@ai-ecoverse/wasm-mount@1.0.0-1':
     resolution: {integrity: sha512-s0C3IR/N+qEzNMBLgUO0gQX2sWdI607yZnbo2b7jkALtlhwpiQ1y2Ak1NjyMkDLNuvZyscsleDwFIsCuP50e1Q==}
@@ -161,7 +161,7 @@ snapshots:
 
   '@ai-ecoverse/wasm-jq@1.8.2-2': {}
 
-  '@ai-ecoverse/wasm-less@668.0.0-1': {}
+  '@ai-ecoverse/wasm-less@668.0.0-2': {}
 
   '@ai-ecoverse/wasm-mount@1.0.0-1': {}
 
