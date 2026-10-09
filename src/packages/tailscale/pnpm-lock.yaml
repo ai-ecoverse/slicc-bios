@@ -9,14 +9,14 @@ importers:
   .:
     dependencies:
       '@ai-ecoverse/wasm-tailscale':
-        specifier: 1.104.1-5
-        version: 1.104.1-5
+        specifier: 1.104.1-8
+        version: 1.104.1-8
 
 packages:
 
-  '@ai-ecoverse/wasm-tailscale@1.104.1-5':
-    resolution: {integrity: sha512-+GGLolYvIBA0RrQH+CT6TVQKQ2U6wW1aR9AXGiwnTegXJLGUZ8HXcO54wGfY5Sa+N8c2OOQYMa+1aJ6Ks6PIYg==}
+  '@ai-ecoverse/wasm-tailscale@1.104.1-8':
+    resolution: {integrity: sha512-F8H2HVuDswpmFq2tfqabKDQlzZ8xmWpNUDinUIWplixiz+SCKwA0uE4YJIAHdw+lGJP1AEVdHHTFtcroGGv1Pw==}
 
 snapshots:
 
-  '@ai-ecoverse/wasm-tailscale@1.104.1-5': {}
+  '@ai-ecoverse/wasm-tailscale@1.104.1-8': {}

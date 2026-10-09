@@ -388,17 +388,38 @@ export async function resolveOverExit(tailnet, name, family, signal) {
 
 const unreachable = (message, code = 'ENETUNREACH') => Object.assign(new Error(message), { code });
 
+export const KERNEL_NAMES = ['emscripten', 'slicc'];
+const ASKED = 50;
+
+export function ownName(name, own) {
+  const bare = name.replace(/\.$/, '').toLowerCase();
+  return own.has(bare) || own.has(bare.split('.')[0]);
+}
+
 export function createUplink(slot) {
+  const own = new Set(KERNEL_NAMES);
+  const asked = [];
+  const forwarded = [];
+  const remember = (list, name) => {
+    list.push(name);
+    if (list.length > ASKED) list.shift();
+  };
   return {
     traits: { tcp: true, udp: false, ipv6: false },
     routes: { prefixes: [], exit: false },
+    asked,
+    forwarded,
+    own,
     async resolve(name, family, signal) {
+      remember(asked, name);
       const tailnet = slot.current;
       const status = tailnet?.view.status;
       if (status?.state !== 'Running') return [];
+      if (ownName(name, own)) return [];
       const known = tailnetNames(name, status);
       if (known) return { addresses: pick(known, family), ttl: NAME_TTL };
-      if (!status.exitNode) return [];
+      if (!status.exitNode || !name.replace(/\.$/, '').includes('.')) return [];
+      remember(forwarded, name);
       return resolveOverExit(tailnet, name, family, signal);
     },
     async dial({ host, port, signal }) {
@@ -417,6 +438,14 @@ export function createUplink(slot) {
       };
     },
   };
+}
+
+export async function learnNodeName(client, own) {
+  const name = await client
+    .run?.(['uname', '-n'])
+    .then((result) => (result.status === 0 ? result.stdout.trim().toLowerCase() : ''))
+    .catch(() => '');
+  if (name) own.add(name);
 }
 
 export function installTailscale(start, options = {}) {
@@ -505,6 +534,7 @@ export function createTailscale(config, deps = {}) {
         view = { ...view, installing: null };
       }
       const client = await (deps.attach ?? attachKernel)(await context.kernel.connect());
+      await learnNodeName(client, uplink.own);
       const { wasm, exec } = await readModule(client.fs, config.from ? [config.from] : undefined);
       const worker = (deps.worker ?? spawn)();
       const tailnet = createTailnet({ worker, traits: context.traits });
@@ -538,7 +568,10 @@ export function createTailscale(config, deps = {}) {
       );
       authKey = undefined;
       slot.current = tailnet;
-      if (globalThis.sliccTailscaleDebug === true) globalThis.sliccTailscale = tailnet;
+      if (globalThis.sliccTailscaleDebug === true) {
+        globalThis.sliccTailscale = tailnet;
+        globalThis.sliccTailscaleUplink = uplink;
+      }
       return tailnet;
     } catch (error) {
       view = { ...view, failed: `Tailscale didn't start: ${error.message}.` };

@@ -481,6 +481,26 @@ test('stage B on a tailnet of its own: raw TCP to a peer and through an exit nod
   await page.until(
     () => document.querySelector('slicc-app').model.network.status().tailnet.exitNode === 'exit'
   );
+  const own = await curled(page, '', 'own-name', 'uname -n > /home/own-name.txt');
+  const local = await curled(page, `--noproxy '*' --max-time 5 http://${own.body}:9/`, 'raw-own');
+  const single = await curled(page, `--noproxy '*' --max-time 5 http://printer/`, 'raw-single');
+  const leaked = await page.evaluate(() => [...globalThis.sliccTailscaleUplink.forwarded]);
+  console.log(
+    JSON.stringify({
+      ownName: own.body,
+      rawOwn: local.code,
+      rawSingleLabel: single.code,
+      forwarded: leaked,
+    })
+  );
+  assert.ok(own.body.length > 0);
+  assert.equal(
+    leaked.some((name) => name.toLowerCase().startsWith(own.body.toLowerCase())),
+    false,
+    'the own name never leaves'
+  );
+  assert.equal(leaked.includes('printer'), false, 'single-label names never leave');
+  assert.notEqual(single.code, '0');
   const trace = await curled(
     page,
     `--noproxy '*' --max-time 20 http://1.1.1.1/cdn-cgi/trace`,
