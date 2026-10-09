@@ -36,6 +36,9 @@ jobs:
           key: harness-cdn-${{ hashFiles('src/packages/**/pnpm-lock.yaml', 'src/packages/**/package.json') }}
           restore-keys: harness-cdn-
 
+      - name: Drop cached npm documents, keep tarballs
+        run: find node_modules/.cache/slicc-harness/cdn/registry.npmjs.org -type f ! -path '*/-/*' -delete || true
+
       - name: Lint
         run: npm run lint
 

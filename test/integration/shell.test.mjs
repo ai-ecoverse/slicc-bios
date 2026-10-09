@@ -188,8 +188,8 @@ test('clears the screen and reads the terminal size with ncurses-utils', async (
     '[ "$(tput cols)" = "$(stty size | cut -d " " -f 2)" ] && echo "cols agree $((5 * 5))"'
   );
   await shows(page, 'cols agree 25');
-  await run(page, 'TERM=dumb clear; echo "dumb $((1000 + $?))"');
-  await shows(page, 'dumb 1000');
+  await run(page, 'out=$(TERM=dumb clear 2>&1); echo "dumb $((1000 + $?)) ${#out}"');
+  await shows(page, 'dumb 1001 0');
   assert.deepEqual(page.errors, []);
 });
 
