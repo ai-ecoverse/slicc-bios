@@ -205,3 +205,67 @@ test('installs the grammars with pnpm in the background and serves them from OPF
   assert.equal(await page.evaluate(() => document.querySelector('slicc-app').grammarBase), base);
   assert.deepEqual(page.errors, []);
 });
+
+test('an /opt/agent installed without a workspace file updates to a pruned one', async (t) => {
+  const page = await chrome.page(t);
+  const manifest = '{"name":"slicc-bios-agent","private":true,"dependencies":{"is-odd":"3.0.1"}}';
+  const deploy = (lock, workspace) => {
+    chrome.overrides.set('/packages/agent/package.json', manifest);
+    chrome.overrides.set('/packages/agent/pnpm-lock.yaml', lock);
+    chrome.overrides.set('/packages/agent/pnpm-workspace.yaml', workspace);
+  };
+  const plain = "minimumReleaseAgeExclude:\n  - '@ai-ecoverse/*'\n";
+  const agentRow = () =>
+    page.evaluate(() =>
+      document
+        .querySelector('slicc-app')
+        .model.updates.list()
+        .find((item) => item.id === 'agent')
+    );
+  deploy(
+    "lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\n\nimporters:\n\n  .:\n    dependencies:\n      is-odd:\n        specifier: 3.0.1\n        version: 3.0.1\n\npackages:\n\n  is-number@6.0.0:\n    resolution: {integrity: sha512-Wu1VHeILBK8KAWJUAiSZQX94GmOE45Rg6/538fKwiloUu21KncEkYGPqob2oSZ5mUT73vLGrHQjKw3KMPwfDzg==}\n    engines: {node: '>=0.10.0'}\n\n  is-odd@3.0.1:\n    resolution: {integrity: sha512-CQpnWPrDwmP1+SMHXZhtLtJv90yiyVfluGsX5iNCVkrhQtU3TQHsUWPG9wkdk9Lgd5yNpAg9jQEo90CBaXgWMA==}\n    engines: {node: '>=4'}\n\nsnapshots:\n\n  is-number@6.0.0: {}\n\n  is-odd@3.0.1:\n    dependencies:\n      is-number: 6.0.0\n",
+    plain
+  );
+  await boot(page);
+  await page.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.updates.list()
+      .some((item) => item.id === 'agent' && item.state === 'installed')
+  );
+  const installed = (await opfs(page)).filter((path) => path.startsWith('opt/agent/'));
+  assert.ok(installed.some((path) => path.includes('/is-number/package.json')));
+  await page.evaluate(async () => {
+    const root = await navigator.storage.getDirectory();
+    const opt = await (await root.getDirectoryHandle('opt')).getDirectoryHandle('agent');
+    await opt.removeEntry('pnpm-workspace.yaml');
+  });
+
+  deploy(
+    "lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\n\noverrides:\n  is-number: '-'\n\nimporters:\n\n  .:\n    dependencies:\n      is-odd:\n        specifier: 3.0.1\n        version: 3.0.1\n\npackages:\n\n  is-odd@3.0.1:\n    resolution: {integrity: sha512-CQpnWPrDwmP1+SMHXZhtLtJv90yiyVfluGsX5iNCVkrhQtU3TQHsUWPG9wkdk9Lgd5yNpAg9jQEo90CBaXgWMA==}\n    engines: {node: '>=4'}\n\nsnapshots:\n\n  is-odd@3.0.1: {}\n",
+    `${plain}overrides:\n  is-number: '-'\n`
+  );
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await page.within(5 * 60 * 1000, async () => {
+    const root = await navigator.storage.getDirectory();
+    try {
+      const lib = await (
+        await (
+          await (await root.getDirectoryHandle('var')).getDirectoryHandle('lib')
+        ).getDirectoryHandle('slicc')
+      ).getDirectoryHandle('agent');
+      return (await (await (await lib.getFileHandle('pnpm-lock.yaml')).getFile()).text()).includes(
+        'overrides:'
+      );
+    } catch {
+      return false;
+    }
+  });
+  const row = await agentRow();
+  assert.notEqual(row.state, 'failed', row.error);
+  assert.match(await read(page, 'opt/agent/pnpm-workspace.yaml'), /is-number: '-'/);
+  const pruned = (await opfs(page)).filter((path) => path.startsWith('opt/agent/'));
+  assert.ok(pruned.some((path) => path.includes('/is-odd/package.json')));
+  assert.ok(!pruned.some((path) => path.includes('/is-number/package.json')), pruned.join('\n'));
+  assert.deepEqual(page.errors, []);
+});
