@@ -628,6 +628,64 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     () => !window.deepText(window.memoryView().shadowRoot).includes('Sam prefers meetings')
   );
 
+  assert.equal(
+    await page.evaluate(() =>
+      document.querySelector('slicc-app').dock.api.panels.some((panel) => panel.id === 'changes')
+    ),
+    false
+  );
+  const openChanges = async () => {
+    await page.until(
+      () =>
+        !!window.deep(document.querySelector('slicc-app').shadowRoot, '[data-surface="changes"]')
+    );
+    await page.evaluate(() =>
+      window
+        .deep(document.querySelector('slicc-app').shadowRoot, '[data-surface="changes"]')
+        .click()
+    );
+    await page.until(
+      () =>
+        !!document
+          .querySelector('slicc-app')
+          .dock.content('changes')
+          ?.shadowRoot?.querySelector('[data-unavailable]')
+    );
+  };
+  await openChanges();
+  assert.match(
+    await page.evaluate(
+      () =>
+        document
+          .querySelector('slicc-app')
+          .dock.content('changes')
+          .shadowRoot.querySelector('[data-unavailable]').textContent
+    ),
+    /git/i
+  );
+  await page.screenshot(new URL('changes-light.png', page.dir));
+  await color('dark');
+  await page.screenshot(new URL('changes-dark.png', page.dir));
+  await color('light');
+  await page.send('Emulation.setDeviceMetricsOverride', {
+    width: 420,
+    height: 800,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.until(() => document.querySelector('slicc-app').screen === 'phone');
+  await page.evaluate(() => document.querySelector('slicc-app').show('changes'));
+  await page.until(
+    () =>
+      !!document
+        .querySelector('slicc-app')
+        .dock.content('changes')
+        ?.shadowRoot?.querySelector('[data-unavailable]')
+  );
+  await page.screenshot(new URL('changes-420.png', page.dir));
+  await page.send('Emulation.clearDeviceMetricsOverride');
+  await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
+
   await page.evaluate(() => {
     const app = document.querySelector('slicc-app');
     window.freezerView = () => app.dock.content('freezer');
