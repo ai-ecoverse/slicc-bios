@@ -2,15 +2,10 @@ import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { scanImports } from '../../src/sw/scan.js';
+import { seedFiles as installed } from './seed.mjs';
 
 const src = new URL('../../src/', import.meta.url);
 const seed = new URL('seed/', src);
-
-async function installed() {
-  const bios = await readFile(new URL('bios.js', src), 'utf8');
-  const [, list] = bios.match(/step\('seed'[\s\S]*?const files = \[([\s\S]*?)\];/);
-  return [...list.matchAll(/'([^']+)'/g)].map(([, name]) => name);
-}
 
 function local(specifier, from) {
   if (specifier.startsWith('/os/')) return specifier.slice('/os/'.length);
