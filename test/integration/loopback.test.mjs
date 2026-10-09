@@ -80,7 +80,7 @@ test('reaches a kernel server as <port>.kernel.localhost, and plain localhost st
   const refused = await page.evaluate(() =>
     fetch('http://8401.kernel.localhost/x.js').then(async (r) => [r.status, await r.text()])
   );
-  assert.deepEqual(refused, [502, 'sw: nothing listens on kernel port 8401\n']);
+  assert.deepEqual(refused, [502, 'sw: nothing listening on kernel port 8401\n']);
 
   const plain = await page.evaluate(() =>
     fetch('http://localhost:8400/x.js').then(

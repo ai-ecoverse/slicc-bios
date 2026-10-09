@@ -58,7 +58,7 @@ export async function loopback(request, port, { clients, clientId, scope, origin
   const answer = await reply;
   channel.port1.close();
   if (answer.code === 'ECONNREFUSED')
-    throw new Unreachable(`nothing listens on kernel port ${port}`);
+    throw new Unreachable(`nothing listening on kernel port ${port}`);
   if (answer.error) throw new Unreachable(`kernel port ${port}: ${answer.error}`);
   const { status, statusText, headers } = answer;
   const content = empty.has(status) || request.method === 'HEAD' ? null : answer.body;

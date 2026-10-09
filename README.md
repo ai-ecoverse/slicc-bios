@@ -99,7 +99,7 @@ A server running inside the kernel (vite, `python -m http.server`, impeccable `l
 - **How a request gets there.** A seven page's request to `*.kernel.localhost`, with any method, reaches the service worker. `*.localhost` is potentially trustworthy, so an `https` page loads it without a mixed-content block. The service worker answers it itself, so nothing goes to the network, no Local Network Access prompt is shown, and there's no CORS preflight. It hands the request to the `/os/` tab: the requesting one, or else the most recently focused. That tab calls `kernel.loopbackFetch(request, { port })` and transfers the streamed response body back.
 - **The response.** Status, headers and body pass through. Bodies stream, so `EventSource` and long-poll work, and closing the `EventSource` closes the kernel socket. seven's pages are cross-origin isolated, so where the server sent none, the service worker adds `access-control-allow-origin: <seven's origin>` with `access-control-allow-credentials: true`, and `cross-origin-resource-policy: cross-origin`. That lets a plain `<script src>` or `fetch` load from a server that knows nothing about CORS.
 - **When it fails.**
-  - Nothing listens on the port: `502` `sw: nothing listens on kernel port <port>`.
+  - Nothing listens on the port: `502` `sw: nothing listening on kernel port <port>`.
   - No `/os/` tab is open: `502` `sw: no kernel to reach <port>.kernel.localhost`.
   - Any other kernel error: `502` that names the port.
   - The headers take longer than 30 s: `504` `sw: no answer from kernel port <port> for <path> in 30 s`.
