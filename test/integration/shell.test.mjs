@@ -178,6 +178,21 @@ test('keeps the pid across exec and agrees with ps, and pkill -f spares itself',
   assert.deepEqual(page.errors, []);
 });
 
+test('clears the screen and reads the terminal size with ncurses-utils', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await run(page, 'clear && echo "cleared $((6 * 7))"');
+  await shows(page, 'cleared 42');
+  await run(
+    page,
+    '[ "$(tput cols)" = "$(stty size | cut -d " " -f 2)" ] && echo "cols agree $((5 * 5))"'
+  );
+  await shows(page, 'cols agree 25');
+  await run(page, 'TERM=dumb clear; echo "dumb $((1000 + $?))"');
+  await shows(page, 'dumb 1000');
+  assert.deepEqual(page.errors, []);
+});
+
 test('installs a command with pnpm add -g and runs it in the same shell', async (t) => {
   const page = await chrome.page(t);
   await boot(page);

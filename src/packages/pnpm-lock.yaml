@@ -44,6 +44,9 @@ importers:
       '@ai-ecoverse/wasm-mount':
         specifier: 1.0.0-1
         version: 1.0.0-1
+      '@ai-ecoverse/wasm-ncurses-utils':
+        specifier: 6.5.0-1
+        version: 6.5.0-1
       '@ai-ecoverse/wasm-procps':
         specifier: 4.0.5-2
         version: 4.0.5-2
@@ -106,6 +109,9 @@ packages:
   '@ai-ecoverse/wasm-mount@1.0.0-1':
     resolution: {integrity: sha512-s0C3IR/N+qEzNMBLgUO0gQX2sWdI607yZnbo2b7jkALtlhwpiQ1y2Ak1NjyMkDLNuvZyscsleDwFIsCuP50e1Q==}
 
+  '@ai-ecoverse/wasm-ncurses-utils@6.5.0-1':
+    resolution: {integrity: sha512-Csbtl50xEJKVCHWf4JOg5ELrCW/V3U7r1RUsvOMxo8+N73D2yvlOLwSVW7xb/jecp+DfNqxJka9aNxbcfOl1OA==}
+
   '@ai-ecoverse/wasm-procps@4.0.5-2':
     resolution: {integrity: sha512-6LXW03jUdlmwCqVjQt1IZhpbwtpC7CSfhlQKdNGPi9mN6XwuvNEWR9b9FpvexD3wfkhNK4oZFNn+NBJS4ZQEtA==}
 
@@ -143,6 +149,8 @@ snapshots:
   '@ai-ecoverse/wasm-less@668.0.0-1': {}
 
   '@ai-ecoverse/wasm-mount@1.0.0-1': {}
+
+  '@ai-ecoverse/wasm-ncurses-utils@6.5.0-1': {}
 
   '@ai-ecoverse/wasm-procps@4.0.5-2': {}
 
