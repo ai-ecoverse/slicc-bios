@@ -117,7 +117,15 @@ What doesn't work through the service worker:
 - **Opening a kernel server as a page.** A navigation to `http://<port>.kernel.localhost/` is another origin, which seven's service worker doesn't control.
 - **Cookies.** The responses are built in the page, so `Set-Cookie` is dropped.
 
-Navigations and WebSockets work once slicc-node's kernel tunnel is connected, since it answers `*.kernel.localhost` on port 80.
+**slicc-node's kernel tunnel** carries what the service worker can't. slicc-node listens on `127.0.0.1:80`, or on the port `--kernel-port` gives it, and the URLs then carry that port: `http://8400.kernel.localhost:8080/`. It hands every connection to `*.kernel.localhost` to the page through a WebSocket, as raw bytes, so navigations, keep-alive and WebSocket upgrades (vite HMR) work. A page opened this way is its own origin, isolated from seven's.
+
+- **Opening the tunnel.** When the local proxy's probe reports `kernelTunnel`, `os/tunnel.js` opens `ws://<proxy>/api/kernel-tunnel`, with the proxy key as a WebSocket subprotocol.
+- **Serving streams.** For every stream slicc-node opens, the page calls `kernel.dial({ port })` and pipes the bytes both ways. Each direction may have at most 256 KiB in flight before the other side credits it, so a slow stream doesn't hold up the others.
+- **A dial that fails** is reset with its error code. slicc-node then answers `502 nothing listening on kernel port <port>`.
+- **Reconnecting.** A dropped tunnel reconnects after 1, 2, 5, 10, then every 30 seconds.
+- **Several tabs.** slicc-node gives new streams to the most recently connected tunnel. A seven tab reconnects when it gets focus, so the focused tab's kernel takes new streams, and its old tunnel closes once its open streams have ended.
+
+The contract is in slicc-node's README, under [Kernel services](https://github.com/ai-ecoverse/slicc-node#kernel-services).
 
 ## Updates
 
