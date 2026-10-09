@@ -38,7 +38,7 @@ export function progress(output) {
     : { phase: 'download', done: reused + downloaded, total: resolved };
 }
 
-export async function pnpm(kernel, cwd, report) {
+export async function pnpm(kernel, cwd, report, to = null) {
   const argv = ['pnpm', 'install', '--frozen-lockfile', '--trust-lockfile'];
   let log = '';
   report({ progress: null, log });
@@ -50,6 +50,7 @@ export async function pnpm(kernel, cwd, report) {
   if (status) {
     const error = new Error(stderr.trim() || `pnpm exited with ${status}`);
     error.log = (log + stderr).slice(-LOG);
+    error.to = to;
     throw error;
   }
 }

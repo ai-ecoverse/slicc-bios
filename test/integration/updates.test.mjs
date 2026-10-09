@@ -84,7 +84,18 @@ test('Install / Update opens at boot until the agent is installed, and a failed 
     await page.until(() => !!window.updatesButton('agent', 'retry'));
     const row = await page.evaluate(() => window.agentRow());
     assert.deepEqual(row.actions, ['retry']);
-    assert.ok(row.error);
+    assert.match(
+      row.error,
+      /^Couldn't download the agent: the registry wasn't reachable .*Retry, or check the network\.$/
+    );
+    assert.match(row.log, /ERR_PNPM_/);
+    const grammars = await page.evaluate(() =>
+      window
+        .app()
+        .model.updates.list()
+        .find((item) => item.id === 'grammars')
+    );
+    assert.notEqual(grammars.state, 'current');
     assert.equal(await page.evaluate(() => window.updatesOpen()), true);
     assert.equal(await page.evaluate(() => window.app().model.updates.ready()), false);
     await page.screenshot(new URL('failed.png', page.dir));
@@ -108,6 +119,8 @@ test('Install / Update opens at boot until the agent is installed, and a failed 
     await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
     await page.within(INSTALL, () => window.agentRow().state === 'failed');
     await page.until(() => window.updatesOpen() && !!window.updatesButton('agent', 'retry'));
+    const row = await page.evaluate(() => window.agentRow());
+    assert.match(row.error, /^Couldn't download the agent: the registry wasn't reachable/);
     assert.match(
       await page.evaluate(() => window.app().shadowRoot.querySelector('#updates')?.textContent),
       /1 failed/

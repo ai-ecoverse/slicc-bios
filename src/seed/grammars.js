@@ -19,11 +19,12 @@ async function install(start, from, report) {
   const root = await navigator.storage.getDirectory();
   const lock = await fetchText('pnpm-lock.yaml', from);
   if (lock === (await text(root, receipt))) return false;
-  await write(root, `${folder}/package.json`, await fetchText('package.json', from));
+  const manifest = await fetchText('package.json', from);
+  await write(root, `${folder}/package.json`, manifest);
   await write(root, `${folder}/pnpm-lock.yaml`, lock);
   const kernel = await start();
   try {
-    await pnpm(kernel, `/${folder}`, report);
+    await pnpm(kernel, `/${folder}`, report, JSON.parse(manifest).dependencies?.[PACKAGE]);
   } finally {
     kernel.terminate();
   }

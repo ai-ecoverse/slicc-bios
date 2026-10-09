@@ -115,10 +115,9 @@ for (const [id, name] of Object.entries(owners)) {
 }
 const others = count(names.filter((name) => !owned.has(name)).length);
 updates.set('bios', { from: others, to: others });
-const agentAt = await agentVersion();
-updates.set('agent', { from: agentAt, to: agentAt });
-const grammarsAt = await grammarsVersion();
-updates.set('grammars', { from: grammarsAt, to: grammarsAt });
+const waiting = (at) => ({ from: at, to: at, state: at ? 'current' : 'checking' });
+updates.set('agent', waiting(await agentVersion()));
+updates.set('grammars', waiting(await grammarsVersion()));
 app.model = base;
 await app.updateComplete;
 app.show('terminal');
@@ -152,7 +151,12 @@ async function restart() {
     started(restarted, await lock)
   );
   if (!(await agent)) {
-    updates.fail('agent', new Error('the agent did not restart'));
+    updates.fail(
+      'agent',
+      Object.assign(new Error('the agent did not restart'), {
+        plain: "Couldn't restart the agent. Retry, or reload the page.",
+      })
+    );
     return;
   }
   const at = await agentVersion();

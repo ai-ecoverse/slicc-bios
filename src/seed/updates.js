@@ -14,6 +14,35 @@ export const owners = {
 const RUNNING = { download: 'downloading', link: 'linking' };
 const SETTLE = new Set(['checking', 'downloading', 'linking', 'failed']);
 
+const NAMES = {
+  agent: 'the agent',
+  kernel: 'the BIOS packages',
+  ui: 'the BIOS packages',
+  bios: 'the BIOS packages',
+  grammars: 'the syntax grammars',
+};
+const UNREACHABLE = /\b(ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT|EAI_AGAIN)\b/;
+
+export function explain(item, error) {
+  if (error.plain) return error.plain;
+  if (error.log === undefined) {
+    return `Couldn't check ${NAMES[item.id]} for updates (${error.message}). Retry, or check the network.`;
+  }
+  const subject = `${NAMES[item.id]}${item.from === null ? '' : ' update'}${error.to ? ` ${error.to}` : ''}`;
+  const raw = `${error.message}\n${error.log}`;
+  if (/ERR_PNPM_FETCH_404|ERR_PNPM_NO_MATCHING_VERSION/.test(raw)) {
+    return `Couldn't download ${subject}: the registry doesn't have it (404). Retry later.`;
+  }
+  if (/INTEGRITY|EINTEGRITY/i.test(raw)) {
+    return `Couldn't install ${subject}: the download was damaged. Retry.`;
+  }
+  const code = raw.match(UNREACHABLE)?.[1];
+  if (code || /ERR_PNPM_\w*FETCH|Failed to fetch/.test(raw)) {
+    return `Couldn't download ${subject}: the registry wasn't reachable${code ? ` (${code})` : ''}. Retry, or check the network.`;
+  }
+  return `Couldn't install ${subject}: pnpm stopped with an error, shown in the install log. Retry.`;
+}
+
 export function count(n) {
   return `${n} ${n === 1 ? 'package' : 'packages'}`;
 }
@@ -79,12 +108,15 @@ export function createUpdates({ ready = false, now = Date.now } = {}) {
       port.set(id, { ...reset, checkedAt: now(), ...patch });
     },
     fail(id, error) {
+      const item = port.get(id);
+      const log = error.log ?? item.log ?? '';
       port.set(id, {
         state: 'failed',
         progress: null,
         checkedAt: now(),
-        error: error.message,
-        log: error.log ?? port.get(id).log,
+        to: error.to ?? item.to,
+        error: explain(item, error),
+        log: log.includes(error.message) ? log : `${log}${log ? '\n' : ''}${error.message}`,
         actions: ['retry'],
       });
     },
