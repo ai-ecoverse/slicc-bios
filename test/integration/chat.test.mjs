@@ -694,8 +694,8 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
       window
         .freezerView()
         ?.shadowRoot?.querySelector(`.card[data-id="${id}"] [data-action="${action}"]`);
-    window.deleteCone = (name) =>
-      window.deep(document, `[data-action="delete-cone"][accessible-label="Delete cone ${name}"]`);
+    window.deleteCone = (id) =>
+      window.deep(document, `[data-action="delete-cone"][id="delete-${id}"]`);
     window.confirmDialog = () =>
       window.deep(document, 'slicc-confirm')?.shadowRoot?.querySelector('dialog[open]');
     window.confirmButton = (label) =>
@@ -735,10 +735,10 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   };
   await freezerShots('live');
 
-  const removeCone = async (name) => {
+  const removeCone = async ({ id, name }) => {
     await page.evaluate(() => document.querySelector('slicc-app').show('agents'));
-    await page.until((name) => !!window.deleteCone(name), name);
-    await page.evaluate((name) => window.deleteCone(name).click(), name);
+    await page.until((id) => !!window.deleteCone(id), id);
+    await page.evaluate((id) => window.deleteCone(id).click(), id);
     await page.until(() => !!window.confirmDialog());
     assert.equal(
       await page.evaluate(() => window.deep(document, 'slicc-confirm').heading),
@@ -748,15 +748,17 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     await page.until(() => !window.confirmDialog());
     await page.evaluate(() => document.querySelector('slicc-app').show('freezer'));
   };
-  await removeCone(live.name);
-  await page.until(
-    (name) => window.rows().some((row) => row.name === name && !row.live && row.title),
-    live.name
+  await page.evaluate(() => {
+    window.rowsBefore = window.rows().map((row) => row.id);
+  });
+  await removeCone(live);
+  await page.until(() =>
+    window.rows().some((row) => !row.live && row.title && !window.rowsBefore.includes(row.id))
   );
-  const frozen = await page.evaluate(
-    (name) => window.rows().find((row) => row.name === name && !row.live),
-    live.name
+  const frozen = await page.evaluate(() =>
+    window.rows().find((row) => !row.live && !window.rowsBefore.includes(row.id))
   );
+  assert.equal(frozen.name, live.name);
   assert.ok(frozen.messages >= 2);
   await page.until(
     ([id, title]) =>
@@ -787,15 +789,25 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   );
   assert.match(thawed.name, new RegExp(`^${live.name}`));
 
-  await removeCone(thawed.name);
+  await page.evaluate(() => {
+    window.rowsBefore = window.rows().map((row) => row.id);
+  });
+  await removeCone(thawed);
   await page.until(
-    (name) => window.rows().some((row) => row.name === name && !row.live),
-    thawed.name
+    (id) =>
+      !document
+        .querySelector('slicc-app')
+        .model.agent.list()
+        .some((agent) => agent.id === id),
+    thawed.id
   );
-  const gone = await page.evaluate(
-    (name) => window.rows().find((row) => row.name === name && !row.live),
-    thawed.name
+  await page.until(() =>
+    window.rows().some((row) => !row.live && !window.rowsBefore.includes(row.id))
   );
+  const gone = await page.evaluate(() =>
+    window.rows().find((row) => !row.live && !window.rowsBefore.includes(row.id))
+  );
+  assert.equal(gone.name, thawed.name);
   await page.until((id) => !!window.cardButton(id, 'remove'), gone.id);
   await page.evaluate((id) => window.cardButton(id, 'remove').click(), gone.id);
   await page.until(() => !!window.confirmDialog());
