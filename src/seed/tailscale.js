@@ -497,7 +497,7 @@ export function createTailscale(config, deps = {}) {
     changed();
     try {
       await context.ready;
-      if (context.install && !config.from) {
+      if (context.install) {
         await context.install((step) => {
           view = { ...view, installing: installing(step) };
           changed();

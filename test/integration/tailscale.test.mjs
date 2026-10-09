@@ -13,7 +13,7 @@ const chrome =
   usable || online
     ? await launch({
         roots: [...(usable ? [['/tailscale-dist/', dist]] : []), ['/', 'src/']],
-        timeout: 300000,
+        timeout: process.env.TS_INTERACTIVE === '1' ? 900000 : 300000,
       })
     : null;
 after(() => chrome?.close());
@@ -335,7 +335,38 @@ test('stage B: programs reach the tailnet and the exit node over raw TCP', {
 }, async (t) => {
   const page = await chrome.page(t);
   await page.init('() => { globalThis.sliccTailscaleDebug = true; }');
-  await page.goto('/#tailscale=on');
+  if (usable) {
+    await page.goto('/');
+    await ready(page);
+    await page.evaluate(async () => {
+      const root = await navigator.storage.getDirectory();
+      const opt = await root.getDirectoryHandle('opt', { create: true });
+      const dir = await opt.getDirectoryHandle('tailscale-dev', { create: true });
+      for (const name of ['main.wasm', 'wasm_exec.js']) {
+        const body = await (await fetch(`/tailscale-dist/${name}`)).arrayBuffer();
+        const writable = await (await dir.getFileHandle(name, { create: true })).createWritable();
+        await writable.write(body);
+        await writable.close();
+      }
+      await new Promise((resolve, reject) => {
+        const open = indexedDB.open('slicc-os', 1);
+        open.onupgradeneeded = () => open.result.createObjectStore('transport');
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const tx = open.result.transaction('transport', 'readwrite');
+          tx.objectStore('transport').put(
+            { enabled: true, from: '/opt/tailscale-dev' },
+            'tailscale'
+          );
+          tx.oncomplete = () => {
+            open.result.close();
+            resolve();
+          };
+        };
+      });
+    });
+    await page.reload();
+  } else await page.goto('/#tailscale=on');
   await ready(page);
   const model = () => document.querySelector('slicc-app').model.network.status().tailnet;
   await page.until((m) => {
@@ -376,6 +407,21 @@ test('stage B: programs reach the tailnet and the exit node over raw TCP', {
       assert.equal(named.code, '0');
       assert.match(named.body, /hello from the tailnet/);
     }
+  }
+
+  const echo = process.env.TS_PEER_HALF_CLOSE;
+  if (echo) {
+    const reply = await page.evaluate(async (addr) => {
+      const conn = await globalThis.sliccTailscale.dial('tcp', addr);
+      await conn.write(new TextEncoder().encode('hello'));
+      conn.closeWrite();
+      const bytes = [];
+      for (let chunk = await conn.read(); chunk; chunk = await conn.read()) bytes.push(...chunk);
+      conn.close();
+      return new TextDecoder().decode(new Uint8Array(bytes));
+    }, echo);
+    console.log(JSON.stringify({ halfClose: reply }));
+    assert.equal(reply, 'got hello then EOF');
   }
 
   const host = await curled(page, `--noproxy '*' --max-time 10 http://10.0.2.2:5711/`, 'raw-host');
