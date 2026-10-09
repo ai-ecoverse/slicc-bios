@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, request } from 'node:http';
 import { connect, createServer as createTcpServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -78,6 +78,46 @@ function halfCloseServer(port) {
   return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));
 }
 
+async function gitServer(port, dir) {
+  const work = join(dir, 'git-work');
+  const bare = join(dir, 'git', 'repo.git');
+  const git = (...args) =>
+    run('git', args, {
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'slicc',
+        GIT_AUTHOR_EMAIL: 'slicc@test',
+        GIT_COMMITTER_NAME: 'slicc',
+        GIT_COMMITTER_EMAIL: 'slicc@test',
+      },
+    });
+  await git('init', '--quiet', '--bare', '--initial-branch=main', bare);
+  await git('init', '--quiet', '--initial-branch=main', work);
+  await writeFile(join(work, 'README'), 'hello from git over the tailnet\n');
+  await git('-C', work, 'add', 'README');
+  await git('-C', work, 'commit', '--quiet', '-m', 'hello');
+  await git('-C', work, 'push', '--quiet', bare, 'main');
+  await git('-C', bare, 'update-server-info');
+  const root = join(dir, 'git');
+  const server = createServer(async (req, res) => {
+    const path = join(root, decodeURIComponent(new URL(req.url, 'http://x').pathname));
+    if (!path.startsWith(root)) {
+      res.writeHead(403);
+      res.end();
+      return;
+    }
+    try {
+      const body = await readFile(path);
+      res.writeHead(200, { 'content-type': 'application/octet-stream' });
+      res.end(body);
+    } catch {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));
+}
+
 function webServer(port, body) {
   const server = createServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'text/plain' });
@@ -88,9 +128,8 @@ function webServer(port, body) {
 
 export async function startTailnet() {
   const dir = await mkdtemp(join(tmpdir(), 'slicc-tailnet-'));
-  const [hsPort, proxyPort, stunPort, metricsPort, grpcPort, webPort, echoPort] = await Promise.all(
-    Array.from({ length: 7 }, freePort)
-  );
+  const [hsPort, proxyPort, stunPort, metricsPort, grpcPort, webPort, echoPort, gitPort] =
+    await Promise.all(Array.from({ length: 8 }, freePort));
   const config = join(dir, 'config.yaml');
   await writeFile(
     config,
@@ -173,6 +212,7 @@ unix_socket_permission: "0770"
   servers.push(await corsProxy(hsPort, proxyPort));
   servers.push(await webServer(webPort, `hello from the local tailnet ${Date.now()}`));
   servers.push(await halfCloseServer(echoPort));
+  servers.push(await gitServer(gitPort, dir));
 
   const env = { ...process.env, TS_DEBUG_USE_DERP_HTTP: '1' };
   const node = async (name, extra = []) => {
@@ -226,7 +266,12 @@ unix_socket_permission: "0770"
   return {
     controlURL: `http://127.0.0.1:${proxyPort}`,
     key,
-    peer: { ...peer, web: `http://${peer.ip}:${webPort}/`, echo: `${peer.ip}:${echoPort}` },
+    peer: {
+      ...peer,
+      web: `http://${peer.ip}:${webPort}/`,
+      echo: `${peer.ip}:${echoPort}`,
+      git: `http://peer:${gitPort}/repo.git`,
+    },
     exit,
     async close() {
       for (const server of servers) server.close();

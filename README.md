@@ -145,6 +145,7 @@ A server running inside the kernel (vite, `python -m http.server`, impeccable `l
 
   The stage B integration test then joins seven with a headscale pre-auth key (`hskey-…`, handed over in `globalThis.sliccTailscaleAuthKey`). The stored setting `derpOverHttp` makes the wasm speak DERP over `ws://`, and is only for this. The test checks:
   - curl over raw TCP to the peer, by address and by MagicDNS name;
+  - `git clone` from the peer by name (wasm-git 2.55.0-11, installed with `pnpm add -g` in the test; `TS_GIT=0` skips it);
   - half-close;
   - `10.0.2.2` refused;
   - no inbound connections on 80, 5710 or 9222;

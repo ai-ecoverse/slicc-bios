@@ -124,8 +124,8 @@ test('turning Tailscale on installs the package with pnpm and asks to sign in', 
   );
 });
 
-const curled = async (page, url, name) => {
-  await run(page, `curl -s -o /home/${name}.txt ${url}; echo $? > /home/${name}.done`);
+const curled = async (page, url, name, command = `curl -s -o /home/${name}.txt ${url}`) => {
+  await run(page, `${command}; echo $? > /home/${name}.done`);
   await page.until(async (name) => {
     const home = await (await navigator.storage.getDirectory()).getDirectoryHandle('home');
     return home.getFileHandle(`${name}.done`).then(
@@ -413,6 +413,30 @@ test('stage B on a tailnet of its own: raw TCP to a peer and through an exit nod
   console.log(JSON.stringify({ rawPeerByName: peerByName }));
   assert.equal(peerByName.code, '0');
   assert.equal(peerByName.body, raw.body);
+
+  if (process.env.TS_GIT !== '0') {
+    await run(
+      page,
+      'pnpm add -g @ai-ecoverse/wasm-git@2.55.0-11 > /home/git-install.txt 2>&1; echo $? > /home/git-install.done'
+    );
+    const installed = await page.until(async () => {
+      const home = await (await navigator.storage.getDirectory()).getDirectoryHandle('home');
+      return home.getFileHandle('git-install.done').then(
+        async (handle) => (await (await handle.getFile()).text()).trim() || false,
+        () => false
+      );
+    });
+    assert.equal(installed, '0', 'pnpm add -g wasm-git');
+    const cloned = await curled(
+      page,
+      '',
+      'raw-git',
+      `NO_PROXY='*' no_proxy='*' git clone --quiet ${tailnet.peer.git} /home/repo && cat /home/repo/README > /home/raw-git.txt`
+    );
+    console.log(JSON.stringify({ gitClone: cloned }));
+    assert.equal(cloned.code, '0');
+    assert.equal(cloned.body, 'hello from git over the tailnet');
+  }
 
   const half = await page.evaluate(async (addr) => {
     const conn = await globalThis.sliccTailscale.dial('tcp', addr);
