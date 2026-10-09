@@ -740,9 +740,9 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     await page.until((id) => !!window.deleteCone(id), id);
     await page.evaluate((id) => window.deleteCone(id).click(), id);
     await page.until(() => !!window.confirmDialog());
-    assert.equal(
+    assert.match(
       await page.evaluate(() => window.deep(document, 'slicc-confirm').heading),
-      `Delete cone ${name}?`
+      new RegExp(`^Delete cone ${name}( \\(.+\\))?\\?$`)
     );
     await page.evaluate(() => window.confirmButton('Delete cone').click());
     await page.until(() => !window.confirmDialog());
@@ -788,6 +788,34 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
       .find((agent) => agent.kind === 'cone' && !window.before.includes(agent.id))
   );
   assert.match(thawed.name, new RegExp(`^${live.name}`));
+  const twins = async (name) => {
+    await page.evaluate(() => {
+      const app = document.querySelector('slicc-app');
+      app.show('agents');
+      const picker = app.shadowRoot.querySelector('header sp-picker');
+      if (picker) picker.open = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await page.screenshot(new URL(`twins-${name}.png`, page.dir));
+    await page.evaluate(() => {
+      const picker = document
+        .querySelector('slicc-app')
+        .shadowRoot.querySelector('header sp-picker');
+      if (picker) picker.open = false;
+    });
+  };
+  await twins('1280-light');
+  await page.send('Emulation.setDeviceMetricsOverride', {
+    width: 420,
+    height: 800,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.until(() => document.querySelector('slicc-app').screen === 'phone');
+  await twins('420-light');
+  await page.send('Emulation.clearDeviceMetricsOverride');
+  await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
+  await page.evaluate(() => document.querySelector('slicc-app').show('freezer'));
 
   await page.evaluate(() => {
     window.rowsBefore = window.rows().map((row) => row.id);
@@ -811,9 +839,9 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   await page.until((id) => !!window.cardButton(id, 'remove'), gone.id);
   await page.evaluate((id) => window.cardButton(id, 'remove').click(), gone.id);
   await page.until(() => !!window.confirmDialog());
-  assert.equal(
+  assert.match(
     await page.evaluate(() => window.deep(document, 'slicc-confirm').heading),
-    `Remove ${thawed.name} from the Freezer?`
+    new RegExp(`^Remove ${thawed.name}( \\(.+\\))? from the Freezer\\?$`)
   );
   await page.screenshot(new URL('freezer-remove-light.png', page.dir));
   await color('dark');
