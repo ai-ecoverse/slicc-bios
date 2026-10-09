@@ -90,6 +90,29 @@ Before the kernel starts, `os/transport.js` picks how programs reach the network
 
 The choice is in `document.documentElement.dataset.transport`: `local-proxy`, `extension` or `page`. An item in the status bar, `os/network.js`, names it too. When a local proxy was asked for but isn't used, the line says why (blocked by the permission, not answering, or refusing the key) and what the page uses instead. Where trying again can help, it offers **Retry**: Retry checks the proxy again and reloads the page onto it once it answers. The item is plain light DOM slotted into `<slicc-app>`'s status bar (`slot="status"`).
 
+## Kernel servers
+
+A server running inside the kernel (vite, `python -m http.server`, impeccable `live`) listens on the kernel's own loopback, not the machine's. Pages reach it as **`http://<port>.kernel.localhost/`**:
+
+- **Plain `localhost` and `127.0.0.1` stay the real machine.** The service worker passes them through untouched. Inside the kernel it's the other way round: `localhost` is the kernel loopback, and `host.slicc.internal` reaches the machine. The kernel exports the page-visible name as `SLICC_PAGE_LOOPBACK`, so tools can print the right URL.
+- **Why the port goes in the name.** `kernel.localhost:8400` would resolve to the machine's real port 8400 whenever the service worker doesn't answer, as for a navigation or a WebSocket, and reach the wrong server. `8400.kernel.localhost` lands on port 80, which is closed or answered by [slicc-node](https://github.com/ai-ecoverse/slicc-node)'s kernel tunnel, and it gives every kernel port its own origin. The service worker routes by the name alone and ignores the URL's port.
+- **How a request gets there.** A seven page's request to `*.kernel.localhost`, with any method, reaches the service worker. `*.localhost` is potentially trustworthy, so an `https` page loads it without a mixed-content block. The service worker answers it itself, so nothing goes to the network, no Local Network Access prompt is shown, and there's no CORS preflight. It hands the request to the `/os/` tab: the requesting one, or else the most recently focused. That tab calls `kernel.loopbackFetch(request, { port })` and transfers the streamed response body back.
+- **The response.** Status, headers and body pass through. Bodies stream, so `EventSource` and long-poll work, and closing the `EventSource` closes the kernel socket. seven's pages are cross-origin isolated, so where the server sent none, the service worker adds `access-control-allow-origin: <seven's origin>` with `access-control-allow-credentials: true`, and `cross-origin-resource-policy: cross-origin`. That lets a plain `<script src>` or `fetch` load from a server that knows nothing about CORS.
+- **When it fails.**
+  - Nothing listens on the port: `502` `sw: nothing listens on kernel port <port>`.
+  - No `/os/` tab is open: `502` `sw: no kernel to reach <port>.kernel.localhost`.
+  - Any other kernel error: `502` that names the port.
+  - The headers take longer than 30 s: `504` `sw: no answer from kernel port <port> for <path> in 30 s`.
+  - After the headers, the 30 s applies to each chunk, not to the whole response. A stream that stays silent for 30 s is ended and its socket closed. `EventSource` reconnects by itself, so a server should send a comment line as a heartbeat. Chrome may also stop the service worker during a long stream, and `EventSource` reconnects then too.
+
+What doesn't work through the service worker:
+
+- **WebSockets.** A service worker never sees them, so `ws://<port>.kernel.localhost/` goes to the machine's port 80. Vite's HMR can't connect: the page loads and runs, but needs reloading by hand.
+- **Opening a kernel server as a page.** A navigation to `http://<port>.kernel.localhost/` is another origin, which seven's service worker doesn't control.
+- **Cookies.** The responses are built in the page, so `Set-Cookie` is dropped.
+
+Navigations and WebSockets work once slicc-node's kernel tunnel is connected, since it answers `*.kernel.localhost` on port 80.
+
 ## Updates
 
 A running install updates itself from the deployment it was booted from, package by package, without a reload:

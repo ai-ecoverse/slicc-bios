@@ -1,3 +1,4 @@
+import { kernelPort, loopback, Unreachable } from './sw/loopback.js';
 import { createResolver, NODE_STUBS } from './sw/resolve.js';
 import { nodeStub } from './sw/stubs.js';
 import { transform } from './sw/transform.js';
@@ -111,6 +112,7 @@ function watched(response, pathname, controller) {
         else stream.enqueue(value);
       } catch (error) {
         controller.abort();
+        reader.cancel(error).catch(() => {});
         stream.error(error);
       } finally {
         idle.clear();
@@ -121,20 +123,37 @@ function watched(response, pathname, controller) {
   return new Response(body, response);
 }
 
-function answer(request) {
+function answer(request, work, from = '') {
   const { pathname } = new URL(request.url);
   const controller = new AbortController();
   let timer;
   const late = new Promise((resolve) => {
     timer = setTimeout(() => {
       controller.abort();
-      resolve(failed(504, `sw: no answer for ${pathname} in ${PATIENCE / 1000} s`));
+      resolve(failed(504, `sw: no answer${from} for ${pathname} in ${PATIENCE / 1000} s`));
     }, PATIENCE);
   });
-  const served = serve(request, controller).catch((error) =>
-    failed(502, `sw: ${pathname} failed: ${error.message}`)
+  const served = work(request, controller).catch((error) =>
+    error instanceof Unreachable
+      ? failed(502, `sw: ${error.message}`)
+      : failed(502, `sw: ${pathname} failed: ${error.message}`)
   );
   return Promise.race([served, late]).finally(() => clearTimeout(timer));
+}
+
+async function kernel(request, controller, port, clientId) {
+  const { pathname } = new URL(request.url);
+  const response = await loopback(request, port, {
+    clients: self.clients,
+    clientId,
+    scope: new URL(self.registration.scope).pathname,
+    origin: self.location.origin,
+  });
+  if (controller.signal.aborted) {
+    await response.body?.cancel();
+    return response;
+  }
+  return watched(response, pathname, controller);
 }
 
 async function serve(request, controller) {
@@ -163,7 +182,17 @@ async function serve(request, controller) {
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', (event) => {
-  if (event.request.method === 'GET' && event.request.url.startsWith(self.registration.scope)) {
-    event.respondWith(answer(event.request));
+  const { request, clientId } = event;
+  const port = kernelPort(request.url);
+  if (port) {
+    event.respondWith(
+      answer(
+        request,
+        (asked, controller) => kernel(asked, controller, port, clientId),
+        ` from kernel port ${port}`
+      )
+    );
+  } else if (request.method === 'GET' && request.url.startsWith(self.registration.scope)) {
+    event.respondWith(answer(request, serve));
   }
 });
