@@ -15,6 +15,15 @@ function command(text) {
   }
 }
 
+export const ASK = {
+  title: "Let SLICC's agents control this browser?",
+  body: 'They can open tabs, click and type with your logins. This lasts until you reload.',
+  action: 'Allow',
+  variant: 'confirmation',
+};
+
+export const DECLINED = 'browser control was declined in seven; reload to be asked again';
+
 export function extensionConnection(cdp) {
   const sessions = new Map();
   let closed = false;
@@ -111,7 +120,8 @@ export function proxyConnection(proxy) {
   });
 }
 
-export function browserHook(network) {
+export function browserHook(network, ask) {
+  let allowed;
   return async ({ runtime } = {}) => {
     if (runtime && !RUNTIMES.includes(runtime)) {
       throw new Error(`unknown runtime "${runtime}" (${RUNTIMES.join(', ')})`);
@@ -124,6 +134,8 @@ export function browserHook(network) {
     };
     const open = runtime ? hosts[runtime] : hosts.extension || hosts.proxy;
     if (!open) throw new Error(MISSING[runtime ?? 'any']);
+    allowed ??= Promise.resolve().then(ask);
+    if (!(await allowed)) throw new Error(DECLINED);
     return open();
   };
 }
