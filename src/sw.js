@@ -78,13 +78,36 @@ async function rewrite(path, file, base) {
   return text;
 }
 
-function respond(body, type, origin) {
+function respond(body, type, origin, status = 200) {
   return new Response(body, {
+    status,
     headers: { ...isolation, 'content-type': type, 'x-served-from': origin },
   });
 }
 
-async function serve(request) {
+const PATIENCE = 30000;
+
+function failed(status, text) {
+  return respond(`${text}\n`, 'text/plain; charset=utf-8', 'sw', status);
+}
+
+function answer(request) {
+  const { pathname } = new URL(request.url);
+  const controller = new AbortController();
+  let timer;
+  const late = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve(failed(504, `sw: no answer for ${pathname} in ${PATIENCE / 1000} s`));
+    }, PATIENCE);
+  });
+  const served = serve(request, controller.signal).catch((error) =>
+    failed(502, `sw: ${pathname} failed: ${error.message}`)
+  );
+  return Promise.race([served, late]).finally(() => clearTimeout(timer));
+}
+
+async function serve(request, signal) {
   const scope = new URL(self.registration.scope).pathname;
   const url = new URL(request.url);
   const asked = `/${url.pathname.slice(scope.length)}`;
@@ -99,7 +122,7 @@ async function serve(request) {
   try {
     file = await read(path);
   } catch {
-    return fetch(request);
+    return fetch(request, { signal });
   }
   const extension = file.name.split('.').pop();
   const type = types[extension] ?? 'application/octet-stream';
@@ -111,6 +134,6 @@ self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', (event) => {
   if (event.request.method === 'GET' && event.request.url.startsWith(self.registration.scope)) {
-    event.respondWith(serve(event.request));
+    event.respondWith(answer(event.request));
   }
 });

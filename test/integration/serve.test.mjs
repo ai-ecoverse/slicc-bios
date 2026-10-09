@@ -1,10 +1,22 @@
 import assert from 'node:assert/strict';
+import { ServerResponse } from 'node:http';
 import { after, test } from 'node:test';
 import { boot, ready, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch();
-after(() => chrome.close());
+const held = [];
+const end = ServerResponse.prototype.end;
+ServerResponse.prototype.end = function (...args) {
+  if (!this.req?.url?.startsWith('/never/')) return end.apply(this, args);
+  held.push(() => end.apply(this, args));
+  return this;
+};
+after(async () => {
+  ServerResponse.prototype.end = end;
+  for (const release of held) release();
+  await chrome.close();
+});
 
 test('keeps serving the UI from OPFS after the network copy is gone', async (t) => {
   const page = await chrome.page(t);
@@ -37,4 +49,15 @@ test('shares one installer between tabs', async (t) => {
   const bios = await watch(second);
   await boot(second);
   assert.match(bios.texts('installer')[0], /^connection #[2-9]$/);
+});
+
+test('answers with a 504 that names the path when the network never answers', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+
+  const answer = await page.evaluate(() =>
+    fetch('/never/answered.js').then(async (r) => [r.status, await r.text()])
+  );
+  assert.deepEqual(answer, [504, 'sw: no answer for /never/answered.js in 30 s\n']);
+  assert.ok(chrome.requests.includes('/never/answered.js'));
 });
