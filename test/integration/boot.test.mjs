@@ -3,10 +3,12 @@ import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { boot, booted, eventually, installable, opfs, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
+import { seedFiles } from './seed.mjs';
 
 const chrome = await launch();
 after(() => chrome.close());
 
+const seed = await seedFiles();
 const shipped = JSON.parse(
   await readFile(new URL('../../src/packages/package.json', import.meta.url), 'utf8')
 );
@@ -31,22 +33,7 @@ test('boots through every step into the UI served from OPFS', async (t) => {
   }
   assert.deepEqual(
     files.filter((path) => path.startsWith('os/')),
-    [
-      'os/adobe.js',
-      'os/agent.js',
-      'os/callback.html',
-      'os/callback.js',
-      'os/grammars.js',
-      'os/index.html',
-      'os/loopback.js',
-      'os/mounts.js',
-      'os/network.js',
-      'os/os.css',
-      'os/os.js',
-      'os/transport.js',
-      'os/update.js',
-      'os/updates.js',
-    ]
+    seed.map((name) => `os/${name}`).sort()
   );
   assert.equal(await page.evaluate(() => crossOriginIsolated), true);
   assert.equal(ui.headers['cross-origin-opener-policy'], 'same-origin');
@@ -66,10 +53,9 @@ test('reports each step and the download as it happens', async (t) => {
     bios.texts('packages').at(-1),
     new RegExp(`^${installable}/${installable} downloaded from npm, [\\d.]+MB$`)
   );
-  assert.match(
-    bios.texts('seed')[0],
-    /^os\/\{adobe\.js,agent\.js,callback\.html,callback\.js,grammars\.js,index\.html,loopback\.js,mounts\.js,network\.js,os\.css,os\.js,transport\.js,update\.js,updates\.js\} [\d.]+kB$/
-  );
+  const [installed] = bios.texts('seed');
+  assert.ok(installed.startsWith(`os/{${seed.join(',')}} `), installed);
+  assert.match(installed, / [\d.]+kB$/);
   const origin = await page.evaluate(() => new URL('/', location).href);
   assert.deepEqual(bios.texts('intercept'), [origin]);
   assert.deepEqual(bios.texts('navigate'), ['/os/']);
