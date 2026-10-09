@@ -48,20 +48,16 @@ export async function boot(page) {
 export const prompt = 'slicc:~$ ';
 
 export async function ready(page) {
-  await page.until(
-    (prompt) =>
-      location.pathname === '/os/' &&
-      !!document
-        .querySelector('slicc-app')
-        ?.dock?.content(
-          document
-            .querySelector('slicc-app')
-            .dock.api.panels.map((panel) => panel.id)
-            .findLast((id) => id.startsWith('terminal:'))
-        )
-        ?.screen?.textContent.includes(prompt),
-    prompt
-  );
+  await page.until((prompt) => {
+    if (location.pathname !== '/os/') return false;
+    const dock = document.querySelector('slicc-app')?.dock;
+    const id = dock?.api.panels
+      .map((panel) => panel.id)
+      .findLast((id) => id.startsWith('terminal:'));
+    if (!id) return false;
+    dock.api.getPanel(id)?.api.setActive();
+    return !!dock.content(id)?.screen?.textContent.includes(prompt);
+  }, prompt);
 }
 
 function showing(needle) {

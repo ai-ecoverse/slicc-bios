@@ -134,6 +134,7 @@ test('a proxy that is not running is named, and Retry switches to it once it is 
     origin: new URL(chrome.url).origin,
     key: 'later-key',
     port: Number(port),
+    answer,
   });
   t.after(() => back.close());
   await page.evaluate(() =>
