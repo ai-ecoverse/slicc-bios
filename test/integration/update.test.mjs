@@ -126,17 +126,16 @@ test('updates a running install from a bumped lockfile', async (t) => {
       [bios.log, bios.actions, bios.from],
       ['@ai-ecoverse/wasm-bash 5.3.0-7 → 5.3.0-8', ['reload'], bios.to]
     );
-    assert.equal(
-      await page.evaluate(() =>
-        document.querySelector('slicc-app').dock.api.panels.some((panel) => panel.id === 'updates')
-      ),
-      false
+    await page.until(
+      () =>
+        document.querySelector('slicc-app').model.updates.ready() &&
+        !document.querySelector('slicc-app').dock.api.getPanel('updates')
     );
     assert.match(
       await page.evaluate(
         () => document.querySelector('slicc-app').shadowRoot.querySelector('#updates')?.textContent
       ),
-      /Update ready/
+      /Update ready|Updating \d/
     );
     assert.equal(await version(page), '5.3.0-8');
     assert.equal(

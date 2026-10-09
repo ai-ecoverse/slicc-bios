@@ -171,7 +171,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   const page = await chrome.page(t);
   await page.init(helpers);
   await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
-  await ready(page, { settle: false });
+  await ready(page);
   await page.evaluate(() => {
     window.progress = [];
     window.agentRow = () =>

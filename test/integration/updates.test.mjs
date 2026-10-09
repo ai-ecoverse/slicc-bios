@@ -75,7 +75,7 @@ test('Install / Update opens at boot until the agent is installed, and a failed 
   deploy(missing('99.0.0'));
   await page.init(helpers);
   await page.goto('/');
-  await ready(page, { settle: false });
+  await ready(page);
 
   await t.test('a cold boot opens the panel while the agent installs', async () => {
     assert.equal(await page.evaluate(() => window.app().model.updates.ready()), false);
