@@ -86,47 +86,169 @@ export function extensionConnection(cdp) {
   return connection;
 }
 
-export function proxyConnection(proxy) {
+const CLOSED = {
+  4001: 'another page took over the local proxy’s browser connection',
+  4002: 'the local proxy lost its browser',
+};
+
+function openSocket(proxy) {
   const url = new URL('/cdp', proxy.url);
   url.protocol = 'ws:';
-  const host = url.host;
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(url, [PROTOCOL, `slicc.key.${proxy.key}`]);
-    let open = false;
+    socket.onopen = () => {
+      if (socket.protocol === PROTOCOL) resolve(socket);
+      else socket.close();
+    };
+    socket.onclose = () =>
+      reject(new Error(`the local proxy at ${url.host} did not open a browser session`));
+  });
+}
+
+export function proxyHost(proxy) {
+  const host = new URL(proxy.url).host;
+  const pending = new Map();
+  const owners = new Map();
+  const connections = new Set();
+  let socket;
+  let next = 0;
+
+  const forward = (message) => {
+    const call = pending.get(message.id);
+    if (call) {
+      pending.delete(message.id);
+      if (call.done) call.done(message);
+      if (!call.connection) return;
+      call.connection.deliver({ ...message, id: call.id });
+      return;
+    }
+    if (message.id !== undefined) return;
+    const parent = message.sessionId;
+    const child = message.params?.sessionId;
+    if (message.method === 'Target.attachedToTarget' && child && owners.has(parent)) {
+      owners.set(child, owners.get(parent));
+    }
+    const owner = owners.get(parent ?? child);
+    if (message.method === 'Target.detachedFromTarget' && child) owners.delete(child);
+    if (owner) owner.deliver(message);
+    else if (parent === undefined) for (const each of connections) each.deliver(message);
+  };
+
+  const lost = (code, reason) => {
+    const why = `${CLOSED[code] ?? `the local proxy at ${host} closed its browser connection`}${reason ? ` (${reason})` : ''}`;
+    socket = undefined;
+    pending.clear();
+    owners.clear();
+    for (const each of [...connections]) each.drop(why);
+  };
+
+  const ensure = () => {
+    if (socket) return socket;
+    const opening = openSocket(proxy).then(
+      (opened) => {
+        opened.onmessage = ({ data }) => {
+          if (typeof data === 'string') forward(command(data));
+        };
+        opened.onclose = ({ code, reason }) => {
+          if (socket === opening) lost(code, reason);
+        };
+        return opened;
+      },
+      (error) => {
+        if (socket === opening) socket = undefined;
+        throw error;
+      }
+    );
+    socket = opening;
+    return opening;
+  };
+
+  const post = async (message, call) => {
+    const opened = await ensure();
+    const id = ++next;
+    pending.set(id, call);
+    opened.send(JSON.stringify({ ...message, id }));
+  };
+
+  return async () => {
+    await ensure();
+    let closed = false;
+    const sessions = () => [...owners].filter(([, owner]) => owner === connection);
     const connection = {
       onmessage: null,
       onclose: null,
+      deliver(message) {
+        if (!closed) connection.onmessage?.(JSON.stringify(message));
+      },
+      drop(why) {
+        if (closed) return;
+        closed = true;
+        connections.delete(connection);
+        connection.onclose?.(why);
+      },
       send(text) {
-        if (socket.readyState === WebSocket.OPEN) socket.send(text);
+        if (closed) return;
+        const message = command(text);
+        if (typeof message.method !== 'string') {
+          connection.deliver({
+            id: message.id,
+            error: { code: -32600, message: 'a command needs a method' },
+          });
+          return;
+        }
+        const done =
+          message.method === 'Target.attachToTarget' ||
+          message.method === 'Target.attachToBrowserTarget'
+            ? (reply) => {
+                if (!reply.result?.sessionId) return;
+                if (closed)
+                  void post(
+                    {
+                      method: 'Target.detachFromTarget',
+                      params: { sessionId: reply.result.sessionId },
+                    },
+                    {}
+                  );
+                else owners.set(reply.result.sessionId, connection);
+              }
+            : undefined;
+        post(message, { connection, id: message.id, done }).catch((error) =>
+          connection.deliver({ id: message.id, error: { code: -32000, message: error.message } })
+        );
       },
       close() {
-        socket.close();
+        if (closed) return;
+        closed = true;
+        connections.delete(connection);
+        for (const [sessionId] of sessions()) {
+          owners.delete(sessionId);
+          void post({ method: 'Target.detachFromTarget', params: { sessionId } }, {}).catch(
+            () => {}
+          );
+        }
+        for (const [id, call] of pending)
+          if (call.connection === connection) pending.set(id, { done: call.done });
+        if (connections.size === 0 && socket) {
+          const closing = socket;
+          socket = undefined;
+          void closing.then((opened) => opened.close());
+        }
       },
     };
-    socket.onopen = () => {
-      if (socket.protocol !== PROTOCOL) {
-        socket.close();
-        return;
-      }
-      open = true;
-      resolve(connection);
-    };
-    socket.onmessage = ({ data }) => {
-      if (typeof data === 'string') connection.onmessage?.(data);
-    };
-    socket.onclose = ({ reason }) => {
-      if (open) connection.onclose?.(reason || undefined);
-      else reject(new Error(`the local proxy at ${host} did not open a browser session`));
-    };
-  });
+    connections.add(connection);
+    return connection;
+  };
 }
+
+const proxies = new WeakMap();
 
 export function browserHosts(network) {
   const extension = globalThis.sliccExtension?.cdp;
   const proxy = network.kind === 'local-proxy' && network.status?.probe?.cdp;
+  if (proxy && !proxies.has(network.proxy)) proxies.set(network.proxy, proxyHost(network.proxy));
   return {
     extension: extension && (() => extensionConnection(extension)),
-    proxy: proxy && (() => proxyConnection(network.proxy)),
+    proxy: proxy && proxies.get(network.proxy),
   };
 }
 
