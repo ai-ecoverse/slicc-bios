@@ -21,6 +21,7 @@ export const layouts = {
   chat: { side: 'center', open: ['phone', 'tablet', 'desktop'] },
   terminal: { side: 'center', open: ['phone', 'tablet', 'desktop'] },
   files: { side: 'left', open: ['tablet', 'desktop'] },
+  memory: { side: 'left', open: [] },
   settings: { side: 'center', open: [] },
 };
 
