@@ -139,12 +139,13 @@ test('a proxy that is not running is named, and Retry switches to it once it is 
   await page.evaluate(() =>
     document.querySelector('slicc-app').shadowRoot.querySelector('[data-network]').click()
   );
-  const check = () =>
-    document
-      .querySelector('slicc-app')
-      .dock.content('network')
-      ?.shadowRoot?.querySelector('[data-action="check"]');
-  await page.until(check);
+  await page.until(
+    () =>
+      !!document
+        .querySelector('slicc-app')
+        .dock.content('network')
+        ?.shadowRoot?.querySelector('[data-action="check"]')
+  );
   await page.screenshot(new URL('network-panel.png', page.dir));
   await page.evaluate(
     () =>
