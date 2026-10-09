@@ -29,6 +29,9 @@ export function extensionConnection(cdp) {
   const off = cdp.on((event) => {
     if (!sessions.has(event.sessionId)) return;
     if (event.method === 'Target.detachedFromTarget') sessions.delete(event.sessionId);
+    if (event.method === 'Target.attachedToTarget' && event.params?.sessionId) {
+      attached(event.params.sessionId, 1);
+    }
     deliver(event);
   });
   const connection = {
@@ -44,6 +47,10 @@ export function extensionConnection(cdp) {
       cdp.send(method, params, sessionId).then(
         (result) => {
           if (method === 'Target.attachToTarget' && result.sessionId) {
+            if (closed) {
+              cdp.send('Target.detachFromTarget', { sessionId: result.sessionId }).catch(() => {});
+              return;
+            }
             attached(result.sessionId, 1);
           }
           if (method === 'Target.detachFromTarget' && sessions.has(params?.sessionId)) {
