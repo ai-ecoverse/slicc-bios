@@ -367,6 +367,15 @@ test('stage B: programs reach the tailnet and the exit node over raw TCP', {
     console.log(JSON.stringify({ rawPeer: raw }));
     assert.equal(raw.code, '0');
     assert.match(raw.body, /hello from the tailnet/);
+    const name = process.env.TS_PEER_NAME;
+    if (name) {
+      const byName = new URL(peer);
+      byName.hostname = name;
+      const named = await curled(page, `--noproxy '*' ${byName}`, 'raw-peer-name');
+      console.log(JSON.stringify({ rawPeerByName: named }));
+      assert.equal(named.code, '0');
+      assert.match(named.body, /hello from the tailnet/);
+    }
   }
 
   const host = await curled(page, `--noproxy '*' --max-time 10 http://10.0.2.2:5711/`, 'raw-host');
