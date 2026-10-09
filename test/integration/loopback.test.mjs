@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
-import { boot, run, shows } from './bios.mjs';
+import { boot, ready, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch();
@@ -35,6 +35,8 @@ test('reaches a kernel server as <port>.kernel.localhost, and plain localhost st
   const page = await chrome.page(t);
   await boot(page);
   await install(page);
+  await page.reload();
+  await ready(page);
   await run(page, 'httptest 8400 &');
   await shows(page, 'listening 8400');
 
@@ -49,6 +51,13 @@ test('reaches a kernel server as <port>.kernel.localhost, and plain localhost st
       })
   );
   assert.equal(script, 'hello from the kernel');
+
+  const echoed = await page.evaluate(() =>
+    fetch('http://8400.kernel.localhost/echo', { method: 'POST', body: 'posted' }).then(
+      async (r) => [r.status, r.headers.get('x-served-from'), await r.text()]
+    )
+  );
+  assert.deepEqual(echoed, [200, 'kernel', 'posted']);
 
   const events = await page.evaluate(
     () =>
@@ -69,13 +78,6 @@ test('reaches a kernel server as <port>.kernel.localhost, and plain localhost st
       })
   );
   assert.deepEqual(events, ['event 1', 'event 2', 'event 3']);
-
-  const echoed = await page.evaluate(() =>
-    fetch('http://8400.kernel.localhost/echo', { method: 'POST', body: 'posted' }).then(
-      async (r) => [r.status, r.headers.get('x-served-from'), await r.text()]
-    )
-  );
-  assert.deepEqual(echoed, [200, 'kernel', 'posted']);
 
   const refused = await page.evaluate(() =>
     fetch('http://8401.kernel.localhost/x.js').then(async (r) => [r.status, await r.text()])
