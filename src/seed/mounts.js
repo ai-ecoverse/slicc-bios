@@ -14,6 +14,7 @@ const folders = (table) => table.filter((entry) => FOLDERS.has(entry.type));
 const same = (a, b) => a.target === b.target && a.source === b.source;
 
 export async function offTheRecord(storage = navigator.storage, memory = performance.memory) {
+  if ((await storage.persisted?.()) !== true) return true;
   const { quota } = await storage.estimate();
   return quota < (memory?.jsHeapSizeLimit ?? 2 ** 30) * 2;
 }

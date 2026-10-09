@@ -18,7 +18,7 @@ async function opened(t) {
   return { page: await chrome.page(t), proxy };
 }
 
-async function picker(page, { secret = false } = {}) {
+async function picker(page) {
   await page.init(() => {
     window.picked = 0;
     window.showDirectoryPicker = async () => {
@@ -28,11 +28,6 @@ async function picker(page, { secret = false } = {}) {
       return tmp.getDirectoryHandle('picked', { create: true });
     };
   });
-  if (secret) {
-    await page.init(() => {
-      navigator.storage.estimate = async () => ({ quota: 100 * 1024 * 1024, usage: 0 });
-    });
-  }
 }
 
 const notice = (page, target) =>
@@ -63,11 +58,12 @@ async function read(page, path) {
   }, path);
 }
 
-test('mount -t fsa from the shell asks for a folder in the notice strip and stays mounted across a reload', async (t) => {
+test('off the record, a shell fsa mount asks for a folder in the notice strip, works and is not kept', async (t) => {
   const { page } = await opened(t);
   await ui(page);
   await picker(page);
   await boot(page);
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.folders), 'session');
   await run(
     page,
     'mkdir -p /tmp/picked /mnt/x && echo "from the folder $((6 * 7))" > /tmp/picked/hello.txt && mount -t fsa none /mnt/x && mount | grep -c "on /mnt/x type fsa (rw,nomedium)" | sed "s/^/pending /"'
@@ -93,28 +89,21 @@ test('mount -t fsa from the shell asks for a folder in the notice strip and stay
   assert.equal(await read(page, 'tmp/picked/made.txt'), 'made 5\n');
   await page.until(() => window.ui.tree().paths.includes('mnt/x/made.txt'));
   assert.deepEqual(await mounts(page), ['/mnt/x']);
-  const [stored] = await remembered(page);
-  assert.equal(stored.type, 'fsa');
-  assert.equal(stored.target, '/mnt/x');
-  assert.match(stored.source, /^fsa:[0-9a-f-]{36}$/);
-
-  await page.reload();
-  await ready(page);
-  await page.until(() => document.querySelector('slicc-app').model.files.mounts().length === 1);
-  await run(
-    page,
-    'cat /mnt/x/made.txt; mount | grep -c "^fsa:.* on /mnt/x type fsa (rw)$" | sed "s/^/again /"'
-  );
-  await shows(page, 'made 5');
-  await shows(page, 'again 1');
-  assert.equal(await notice(page, '/mnt/x'), null);
-  assert.equal(await page.evaluate(() => window.picked), 0);
+  assert.deepEqual(await remembered(page), []);
 
   await run(page, 'umount /mnt/x && echo "ejected $((3 * 3))"');
   await shows(page, 'ejected 9');
   await page.until(() => document.querySelector('slicc-app').model.files.mounts().length === 0);
-  assert.deepEqual(await remembered(page), []);
   assert.equal(await read(page, 'tmp/picked/made.txt'), 'made 5\n');
+
+  await run(page, 'mount -t fsa none /mnt/x && echo "again $((8 * 8))"');
+  await shows(page, 'again 64');
+  await page.until(() => !!document.querySelector('.mount[data-target="/mnt/x"]'));
+  await page.reload();
+  await ready(page);
+  await run(page, 'mount | grep -c "/mnt/x" | sed "s/^/after reload /"');
+  await shows(page, 'after reload 0');
+  assert.equal(await notice(page, '/mnt/x'), null);
 
   await run(
     page,
@@ -161,25 +150,6 @@ test('the files port mounts a picked folder and ejects it, and the pending notic
   assert.deepEqual(page.errors, []);
 });
 
-test('off the record, a folder mount is neither remembered nor mounted again after a reload', async (t) => {
-  const { page } = await opened(t);
-  await picker(page, { secret: true });
-  await boot(page);
-  await run(page, 'mkdir -p /mnt/z && mount -t fsa none /mnt/z && echo "private $((7 * 7))"');
-  await shows(page, 'private 49');
-  await page.until(() => !!document.querySelector('.mount[data-target="/mnt/z"]'));
-  await page.evaluate(() => document.querySelector('.mount[data-target="/mnt/z"] button').click());
-  await page.until(() => !document.querySelector('.mount[data-target="/mnt/z"]'));
-  assert.deepEqual(await mounts(page), ['/mnt/z']);
-  assert.deepEqual(await remembered(page), []);
-
-  await page.reload();
-  await ready(page);
-  await run(page, 'mount | grep -c "/mnt/z" | sed "s/^/after reload /"');
-  await shows(page, 'after reload 0');
-  assert.deepEqual(page.errors, []);
-});
-
 test('mount -t hostfs mounts a folder the local proxy exports, with a grant the shell never sees', async (t) => {
   const { page, proxy } = await opened(t);
   await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
@@ -200,6 +170,14 @@ test('mount -t hostfs mounts a folder the local proxy exports, with a grant the 
   assert.deepEqual(await remembered(page), [
     { type: 'hostfs', source: 'project', target: '/mnt/p', options: { ro: '' } },
   ]);
+
+  await page.reload();
+  await ready(page);
+  await page.until(() =>
+    document.querySelector('slicc-app').model.files.mounts().includes('/mnt/p')
+  );
+  await run(page, 'cat /mnt/p/hello.txt | tr a-z A-Z');
+  await shows(page, 'HELLO FROM THE HOST');
 
   await run(
     page,
