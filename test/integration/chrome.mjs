@@ -7,6 +7,7 @@ const options = {
   aliases: [['/os/', 'src/seed/']],
   intercept: ['https://cdn.jsdelivr.net/', 'https://registry.npmjs.org/'],
   timeout: 60000,
+  args: ['--disable-gpu-compositing'],
 };
 
 export const emptyAgent = {
