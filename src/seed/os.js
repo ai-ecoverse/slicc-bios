@@ -11,6 +11,7 @@ import {
   startChat,
   whenIdle,
 } from './agent.js';
+import { browserHook } from './cdp.js';
 import { grammarBase, grammars, version as grammarsVersion, installed } from './grammars.js';
 import { serveLoopback } from './loopback.js';
 import { createFolders, offTheRecord } from './mounts.js';
@@ -92,7 +93,12 @@ const folders = createFolders({
   network,
   secret: await offTheRecord(),
 });
-const kernel = await createKernel({ root, network: { transport }, ...folders.options });
+const kernel = await createKernel({
+  root,
+  network: { transport },
+  cdp: browserHook(network),
+  ...folders.options,
+});
 serveLoopback(kernel);
 app.layoutKey = 'slicc-os.layout';
 app.surfaces = offered(surfaces);
