@@ -143,9 +143,9 @@ function startOnce() {
   if (!agent) {
     const lock = recorded();
     const back = updates.get('agent').state === 'installed' ? 'installed' : 'current';
-    if (!updates.ready()) updates.set('agent', { state: 'checking' });
+    if (!updates.ready()) updates.set('agent', { state: 'starting' });
     agent = offerAgent(app, base, startChat(kernel), login).then(async (chat) => {
-      if (updates.get('agent').state === 'checking') updates.set('agent', { state: back });
+      if (updates.get('agent').state === 'starting') updates.set('agent', { state: back });
       return started(chat, await lock);
     });
   }
