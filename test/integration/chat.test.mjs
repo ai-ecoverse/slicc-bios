@@ -377,6 +377,16 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
 
   await page.evaluate(() => document.querySelector('slicc-app').show('settings'));
   await page.evaluate(() => {
+    window.adobeStatus = () =>
+      document
+        .querySelector('slicc-app')
+        .model.settings.accounts()
+        .find((item) => item.id === 'adobe')?.status;
+    window.adobeCancel = () =>
+      window.deep(
+        document.querySelector('slicc-app').dock.content('settings').shadowRoot,
+        '.account[data-id=adobe] [data-action=cancel-sign-in]'
+      );
     window.adobeButton = () =>
       window.deep(
         document.querySelector('slicc-app').dock.content('settings').shadowRoot,
@@ -399,14 +409,36 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     await page.press('Enter');
   };
   await signIn();
-  await page.until(() => !document.querySelector('.sign-in').hidden);
+  await page.until(() => window.adobeStatus() === 'signing-in');
+  await page.until(() => !!window.adobeCancel());
   assert.equal(
-    await page.evaluate(() => document.querySelector('.sign-in output').value),
-    'signing in to Adobe…'
+    await page.evaluate(() => document.querySelectorAll('slicc-app > [slot="status"]').length),
+    0
   );
-  await page.screenshot(new URL('signing-in.png', page.dir));
-  await page.evaluate(() => document.querySelector('.sign-in button').click());
-  await page.until(() => document.querySelector('.sign-in').hidden);
+  await page.screenshot(new URL('signing-in-light.png', page.dir));
+  await page.evaluate(() => {
+    const app = document.querySelector('slicc-app');
+    if (app.color !== 'dark') app.toggleColor();
+  });
+  await page.screenshot(new URL('signing-in-dark.png', page.dir));
+  await page.evaluate(() => document.querySelector('slicc-app').toggleColor());
+  await page.send('Emulation.setDeviceMetricsOverride', {
+    width: 420,
+    height: 800,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.until(() => document.querySelector('slicc-app').screen === 'phone');
+  await page.evaluate(() => document.querySelector('slicc-app').show('settings'));
+  await page.until(() => !!window.adobeCancel());
+  await page.evaluate(() => window.adobeCancel().scrollIntoView({ block: 'center' }));
+  await page.screenshot(new URL('signing-in-420.png', page.dir));
+  await page.send('Emulation.clearDeviceMetricsOverride');
+  await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
+  await page.evaluate(() => document.querySelector('slicc-app').show('settings'));
+  await page.until(() => !!window.adobeCancel());
+  await page.evaluate(() => window.adobeCancel().click());
+  await page.until(() => window.adobeStatus() === 'disconnected');
   await eventually(() => proxy.dropped.length === 1 && authorized.length === 1);
   hold = false;
   authorized.length = 0;

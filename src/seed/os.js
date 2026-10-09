@@ -69,23 +69,7 @@ const network = await pickTransport();
 const { kind } = network;
 const reach = createNetwork(network);
 const { transport } = reach;
-const signInNotice = document.querySelector('.sign-in');
-const [signInStatus, signInCancel] = signInNotice.children;
-let cancelSignIn = () => {};
-signInCancel.addEventListener('click', () => cancelSignIn());
-
-export function showSignIn({ text, cancel }) {
-  cancelSignIn = cancel;
-  signInNotice.title = text;
-  signInStatus.value = text;
-  signInNotice.hidden = false;
-  return () => {
-    signInNotice.hidden = true;
-    cancelSignIn = () => {};
-  };
-}
-
-const login = signIn({ network, notice: showSignIn });
+const login = signIn({ network });
 document.documentElement.dataset.transport = kind;
 const root = await navigator.storage.getDirectory();
 const app = document.querySelector('slicc-app');

@@ -5,7 +5,7 @@
   "dependencies": {
     "@ai-ecoverse/slicc-cdp": "1.1.2",
     "@ai-ecoverse/slicc-kernel": "1.23.0",
-    "@ai-ecoverse/slicc-spectrum": "1.33.0",
+    "@ai-ecoverse/slicc-spectrum": "1.34.0",
     "@ai-ecoverse/wasi-pnpm": "12.9.1-6",
     "@ai-ecoverse/wasm-bash": "5.3.0-8",
     "@ai-ecoverse/wasm-coreutils": "9.12.0-3",
