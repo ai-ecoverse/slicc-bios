@@ -36,9 +36,6 @@ jobs:
           key: harness-cdn-${{ hashFiles('src/packages/**/pnpm-lock.yaml', 'src/packages/**/package.json') }}
           restore-keys: harness-cdn-
 
-      - name: Drop cached npm documents, keep tarballs
-        run: find node_modules/.cache/slicc-harness/cdn/registry.npmjs.org -type f ! -path '*/-/*' -delete || true
-
       - name: Lint
         run: npm run lint
 
@@ -51,6 +48,19 @@ jobs:
       - name: Hotspots
         if: always()
         run: cat artifacts/hotspots.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Crash dumps
+        if: always()
+        run: |
+          find artifacts -name '*.dmp' 2>/dev/null | while read -r dump; do
+            report="${dump%.dmp}.txt"
+            node node_modules/.bin/slicc-minidump "$dump" > "$report" 2>&1 || true
+            {
+              printf '### Crash dump %s\n\n~~~\n' "$dump"
+              sed -n '1,/^modules:$/p' "$report" | head -100
+              printf '~~~\n\n'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
