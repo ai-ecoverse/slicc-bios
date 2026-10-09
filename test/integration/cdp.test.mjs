@@ -92,6 +92,22 @@ test('playwright-cli drives a page through slicc-extension without asking, and t
   await shows(page, 'listed as page');
   assert.deepEqual(await automation(page), { via: 'extension' });
   assert.equal(await open(page), false);
+  await page.evaluate(() =>
+    document.querySelector('slicc-app').shadowRoot.querySelector('[data-network]').click()
+  );
+  await page.until(
+    () =>
+      document
+        .querySelector('slicc-app')
+        .dock.content('network')
+        ?.shadowRoot?.textContent.includes('Browser automation: through the SLICC extension.') ??
+      false
+  );
+  await page.evaluate(() => {
+    const app = document.querySelector('slicc-app');
+    if (app.color !== 'light') app.toggleColor();
+  });
+  await page.screenshot(new URL('network-browser-light.png', page.dir));
 
   await run(
     page,
