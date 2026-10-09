@@ -152,6 +152,23 @@ const helpers = () => {
     const id = dock.api.panels.map((panel) => panel.id).find((panel) => panel.startsWith('chat:'));
     return id ? dock.content(id) : null;
   };
+  window.memoryView = () => document.querySelector('slicc-app').dock.content('memory');
+  const folder = async (parts) => {
+    let handle = await navigator.storage.getDirectory();
+    for (const part of parts) handle = await handle.getDirectoryHandle(part, { create: true });
+    return handle;
+  };
+  const fileOf = async (path) => {
+    const parts = path.split('/').filter(Boolean);
+    const name = parts.pop();
+    return (await folder(parts)).getFileHandle(name, { create: true });
+  };
+  window.writeFile = async (path, text) => {
+    const writable = await (await fileOf(path)).createWritable();
+    await writable.write(text);
+    await writable.close();
+  };
+  window.readFile = async (path) => (await (await fileOf(path)).getFile()).text();
 };
 
 const INSTALL = 15 * 60 * 1000;
@@ -164,6 +181,8 @@ async function eventually(check, ms = 30000) {
   }
 }
 const UPDATE = 5 * 60 * 1000;
+const GLOBAL_MEMORY = '/home/.pi/agent/memory/MEMORY.md';
+const CONE_MEMORY = '/home/.pi/agent/memory/cone/MEMORY.md';
 
 test('chat in seven answers through the agent worker, Bedrock and the local proxy', {
   timeout: 30 * 60 * 1000,
@@ -172,6 +191,21 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   await page.init(helpers);
   await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
   await ready(page);
+  await page.evaluate(
+    (global, cone) =>
+      Promise.all([
+        window.writeFile(
+          global,
+          '## About the user\n\n### Name\ntag: user\n\nThe user is Sam, at Example Inc.\n\n## Preferences\n\n### Short replies\ntag: feedback\n\nSam likes short replies with the answer first.\n'
+        ),
+        window.writeFile(
+          cone,
+          '## Projects\n\nExample Inc. keeps its forecasts in a small API called harbor.\n\n### harbor releases\ntag: project\n\nharbor ships on Fridays, after the forecast tests pass.\n'
+        ),
+      ]),
+    GLOBAL_MEMORY,
+    CONE_MEMORY
+  );
   await page.evaluate(() => {
     const output = document.querySelector('.agent output');
     window.progress = [];
@@ -382,6 +416,156 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
       (token) => document.documentElement.outerHTML.includes(token),
       ADOBE_TOKEN
     ))
+  );
+
+  await page.evaluate(() => document.querySelector('slicc-app').show('memory'));
+  await page.until(() =>
+    window
+      .deepText(window.memoryView()?.shadowRoot ?? document)
+      .includes('The user is Sam, at Example Inc.')
+  );
+  await page.evaluate(() => {
+    const root = window.memoryView().shadowRoot;
+    [...root.querySelectorAll('.bar swc-action-button')]
+      .find((button) => button.textContent.includes('Remember'))
+      .click();
+  });
+  await page.until(() => !!window.memoryView().shadowRoot.querySelector('.editor'));
+  await page.evaluate(() => {
+    const editor = window.memoryView().shadowRoot.querySelector('.editor');
+    const fields = {
+      title: 'Meetings',
+      section: 'About the user',
+      tag: 'user',
+      body: 'Sam prefers meetings in the morning.',
+    };
+    for (const [name, value] of Object.entries(fields))
+      editor.querySelector(`[name=${name}]`).value = value;
+    [...editor.querySelectorAll('swc-button')]
+      .find((button) => button.textContent.trim() === 'Save')
+      .click();
+  });
+  await page.until(
+    async (path) => (await window.readFile(path)).includes('### Meetings'),
+    GLOBAL_MEMORY
+  );
+  assert.equal(
+    await page.evaluate((path) => window.readFile(path), GLOBAL_MEMORY),
+    '## About the user\n\n### Name\ntag: user\n\nThe user is Sam, at Example Inc.\n\n### Meetings\ntag: user\n\nSam prefers meetings in the morning.\n\n## Preferences\n\n### Short replies\ntag: feedback\n\nSam likes short replies with the answer first.\n'
+  );
+  const scope = (id) =>
+    page.evaluate((value) => {
+      const picker = window.memoryView().shadowRoot.querySelector('.tools sp-picker[label=Scope]');
+      picker.value = value;
+      picker.dispatchEvent(new Event('change'));
+    }, id);
+  const color = async (value) => {
+    await page.evaluate((wanted) => {
+      const app = document.querySelector('slicc-app');
+      if (app.color !== wanted) app.toggleColor();
+    }, value);
+    await page.until(
+      (wanted) =>
+        document
+          .querySelector('slicc-app')
+          .shadowRoot.querySelector('.swc-theme')
+          .classList.contains(`swc-theme--${wanted}`),
+      value
+    );
+  };
+  const shots = async (name) => {
+    await page.screenshot(new URL(`memory-${name}-light.png`, page.dir));
+    await color('dark');
+    await page.screenshot(new URL(`memory-${name}-dark.png`, page.dir));
+    await color('light');
+  };
+  const screen = async (value) => {
+    await page.until((wanted) => document.querySelector('slicc-app').screen === wanted, value);
+    await page.evaluate(() => {
+      const app = document.querySelector('slicc-app');
+      app.show('chat');
+      app.show('memory');
+    });
+    await page.until(() => !!window.memoryView()?.shadowRoot.querySelector('.tools'));
+  };
+  await page.until(() =>
+    window.deepText(window.memoryView().shadowRoot).includes('Sam prefers meetings in the morning.')
+  );
+  await color('light');
+  await screen('desktop');
+  await shots('global');
+  await scope('cone');
+  await page.until(() =>
+    window.deepText(window.memoryView().shadowRoot).includes('harbor ships on Fridays')
+  );
+  await shots('cone');
+  await page.send('Emulation.setDeviceMetricsOverride', {
+    width: 420,
+    height: 800,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await screen('phone');
+  await scope('cone');
+  await page.until(() =>
+    window.deepText(window.memoryView().shadowRoot).includes('harbor ships on Fridays')
+  );
+  await page.screenshot(new URL('memory-cone-420.png', page.dir));
+  await scope('global');
+  await page.until(() =>
+    window.deepText(window.memoryView().shadowRoot).includes('The user is Sam, at Example Inc.')
+  );
+  await page.screenshot(new URL('memory-global-420.png', page.dir));
+  await page.send('Emulation.clearDeviceMetricsOverride');
+  await screen('desktop');
+  await scope('global');
+  await page.until(
+    () =>
+      !!window
+        .memoryView()
+        .shadowRoot.querySelector('[data-id="global/about-the-user/meetings"] .head')
+  );
+  await page.evaluate(() =>
+    window
+      .memoryView()
+      .shadowRoot.querySelector('[data-id="global/about-the-user/meetings"] .head')
+      .click()
+  );
+  await page.until(
+    () =>
+      !!window
+        .memoryView()
+        .shadowRoot.querySelector('[data-id="global/about-the-user/meetings"] .actions')
+  );
+  await page.evaluate(() =>
+    [
+      ...window
+        .memoryView()
+        .shadowRoot.querySelectorAll(
+          '[data-id="global/about-the-user/meetings"] .actions swc-action-button'
+        ),
+    ]
+      .find((button) => button.textContent.includes('Forget'))
+      .click()
+  );
+  await page.until(
+    () => !!window.deep(document, 'slicc-confirm')?.shadowRoot?.querySelector('dialog[open]')
+  );
+  await page.evaluate(() =>
+    [...window.deep(document, 'slicc-confirm').shadowRoot.querySelectorAll('swc-button')]
+      .find((button) => button.textContent.trim() === 'Forget')
+      .click()
+  );
+  await page.until(
+    async (path) => !(await window.readFile(path)).includes('### Meetings'),
+    GLOBAL_MEMORY
+  );
+  assert.equal(
+    await page.evaluate((path) => window.readFile(path), GLOBAL_MEMORY),
+    '## About the user\n\n### Name\ntag: user\n\nThe user is Sam, at Example Inc.\n\n## Preferences\n\n### Short replies\ntag: feedback\n\nSam likes short replies with the answer first.\n'
+  );
+  await page.until(
+    () => !window.deepText(window.memoryView().shadowRoot).includes('Sam prefers meetings')
   );
   assert.deepEqual(page.errors, []);
 });

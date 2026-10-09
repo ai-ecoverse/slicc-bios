@@ -13,12 +13,13 @@ The page shows six boot steps as they run:
 
 ## UI
 
-`os/` is `<slicc-app>` from `@ai-ecoverse/slicc-spectrum/ui` on `createKernelModel` from `@ai-ecoverse/slicc-spectrum/kernel`, with the agent spread over it once it's up. The page offers five sections:
+`os/` is `<slicc-app>` from `@ai-ecoverse/slicc-spectrum/ui` on `createKernelModel` from `@ai-ecoverse/slicc-spectrum/kernel`, with the agent spread over it once it's up. The page offers six sections:
 
 - **Agents:** the rail of cones and their scoops, with each one's status (spectrum ≥ 1.23.0). Selecting a scoop opens its chat, and **Drop** stops it after a confirm. The header picker lists the cones and creates new ones with **New cone**. A cone starts scoops with the `agent` and `subagent` commands that slicc-agent installs in `$PNPM_HOME/bin`: `agent --prompt …` runs a scoop until it answers, and `agent --async …` starts one that reports back to its cone as a lick.
 - **Chat:** SLICC's agent, a chat per cone or scoop, once it's installed (see [Agent](#agent)). Its tab joins the terminal's group without taking focus. The model is AWS Bedrock (`us.anthropic.claude-sonnet-5-5` in `us-west-2`) with a Bedrock API key entered under **Settings → Accounts**. The key stays in the agent worker's encrypted credential store. Bedrock sends no CORS headers, so chat needs a local proxy or the extension (see [Network](#network)).
 - **Terminal:** `bash -i` sessions on the kernel, starting in `/home`, as many as you open with **+**.
 - **Files:** the OPFS root as a tree. `/.slicc` (the agent's own state) is hidden (`hide`, spectrum ≥ 1.9.0); `/node_modules`, `/opt/agent/node_modules`, pnpm's store and `/home/.cache` are listed but not scanned. The tree follows what the terminal writes (a rescan every 2 s and on `FileSystemObserver` records). Files open in tabs, and **Edit** turns a tab into a text area that **Save** or `Mod+S` writes back to OPFS. Mounted folders show in the tree too (see [Folder mounts](#folder-mounts)).
+- **Memory:** what the agent remembers (slicc-agent ≥ 3.14.0, spectrum ≥ 1.28.0). Each scope is one `MEMORY.md`: `/home/.pi/agent/memory/` for everyone and one per cone, `/home/.pi/agent/agent-memory/<path>/` for roles. An entry is a `###` title under a `##` section, with an optional `tag:` line before its body. The agent writes them with `memory_write`, the panel's **Save** and **Forget** write the same files, and a file edited by hand shows up in the panel.
 - **Settings:** the theme, the model, thinking, diffs, and the Bedrock and Adobe accounts.
 - **Adobe sign-in:** **Connect** on the Adobe account signs in to Adobe IMS. IMS only redirects to `www.sliccy.ai/auth/callback`, and seven is cross-origin isolated, so the popup has no opener to report back to. Which path seven uses depends on where it runs:
   - **On `https://<label>.sliccy.ai`:** seven asks the relay for its own origin (state `{ source: 'origin', origin, nonce }`). The relay navigates the popup to `<origin>/auth/callback`. The service worker serves that page from `os/callback.html`, which hands the redirect to the tab over the same-origin `BroadcastChannel('slicc-sign-in')`, clears the token from its address and closes. Neither slicc-node nor the extension is needed.
@@ -27,7 +28,7 @@ The page shows six boot steps as they run:
 
   Setting `localStorage['slicc-os.sign-in'] = 'relay'` forces the first path on a dev origin; the chat test does that. Seven checks the nonce on every path. While it waits, the status bar shows *signing in to Adobe…* with **Cancel**, and Cancel or the 10-minute timeout stops the wait. On the slicc-node path, Cancel and a `404` also drop the nonce. The token goes to the agent worker's credential store, and the tray shows the weekly budget.
 
-Each screen class has its own layout, kept in `localStorage` (`slicc-os.layout.<screen>`). On desktop and tablet chat and the terminal share the middle, the agents and files are on the left, and file tabs open between them. On a phone it's chat and the terminal, with the agents and files in the bottom rail. Changes, the browser, memory and the monitor come back as their backends land. Adobe Clean comes from `/fonts/`, which the sliccy-ai worker serves on every host.
+Each screen class has its own layout, kept in `localStorage` (`slicc-os.layout.<screen>`). On desktop and tablet chat and the terminal share the middle, the agents and files are on the left, and file tabs open between them. On a phone it's chat and the terminal, with the agents and files in the bottom rail. Memory opens from the View menu. Changes, the browser and the monitor come back as their backends land. Adobe Clean comes from `/fonts/`, which the sliccy-ai worker serves on every host.
 
 ### Folder mounts
 
