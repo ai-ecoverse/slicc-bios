@@ -137,6 +137,9 @@ test('playwright-cli drives a page through slicc-extension once allowed, and the
   assert.ok(driven.some(({ url }) => url === target));
   await run(page, 'playwright-cli close && echo closed-$?');
   await shows(page, 'closed-0');
+  await run(page, `curlwright http://foreign.test/ > /tmp/curlwright 2>&1; echo "curlwright-$?"`);
+  await shows(page, 'curlwright-2');
+  assert.match(await read(page, '/tmp/curlwright'), /--tab/);
   assert.equal(await open(page), false);
 
   for (const method of ['Target.getTargets', 'Target.attachToTarget', 'Runtime.evaluate']) {

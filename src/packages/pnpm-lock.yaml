@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@ai-ecoverse/slicc-cdp':
-        specifier: 1.1.2
-        version: 1.1.2
+        specifier: 1.2.2
+        version: 1.2.2
       '@ai-ecoverse/slicc-kernel':
         specifier: 1.26.3
         version: 1.26.3
@@ -18,8 +18,8 @@ importers:
         specifier: 1.37.1
         version: 1.37.1
       '@ai-ecoverse/wasi-pnpm':
-        specifier: 12.9.1-6
-        version: 12.9.1-6
+        specifier: 12.9.1-8
+        version: 12.9.1-8
       '@ai-ecoverse/wasm-bash':
         specifier: 5.3.0-8
         version: 5.3.0-8
@@ -68,8 +68,8 @@ importers:
 
 packages:
 
-  '@ai-ecoverse/slicc-cdp@1.1.2':
-    resolution: {integrity: sha512-KebzlO9plTEoZEtx2L/dnL86Y7cXou5hF12P9HXAewfj80NW1oqmaFWIoMV168jaa7TBMOy5VqBe/AvbK3JLcQ==}
+  '@ai-ecoverse/slicc-cdp@1.2.2':
+    resolution: {integrity: sha512-WE/hbmqEcP8SEUh0g0ym5ZvgbolyZmXBUy24hcN4jWTxTyjLj3XZSzhZdz5UUnZF3pxWpfZ9wp7cCcDwe8eFwQ==}
     engines: {node: '>=24'}
 
   '@ai-ecoverse/slicc-kernel@1.26.3':
@@ -88,8 +88,8 @@ packages:
       '@shikijs/themes':
         optional: true
 
-  '@ai-ecoverse/wasi-pnpm@12.9.1-6':
-    resolution: {integrity: sha512-+FXCUltNazIxJKFV6LBgMcWywPUpeGGEPFdxY1nQKNzYL6sfgiUSUvVW+CihVhX18NJLfX8qUPgIBpr8k9xUeg==}
+  '@ai-ecoverse/wasi-pnpm@12.9.1-8':
+    resolution: {integrity: sha512-/3LRssC7T2t9HovusS9neuDg5+FNMhf90MkECauL1vZI/6BsQSadLyopnzn3ifYvY0LDC+Q8Src22oGCE+x1QA==}
     engines: {slicc-kernel: '>=1.7.2'}
 
   '@ai-ecoverse/wasm-bash@5.3.0-8':
@@ -139,13 +139,13 @@ packages:
 
 snapshots:
 
-  '@ai-ecoverse/slicc-cdp@1.1.2': {}
+  '@ai-ecoverse/slicc-cdp@1.2.2': {}
 
   '@ai-ecoverse/slicc-kernel@1.26.3': {}
 
   '@ai-ecoverse/slicc-spectrum@1.37.1': {}
 
-  '@ai-ecoverse/wasi-pnpm@12.9.1-6': {}
+  '@ai-ecoverse/wasi-pnpm@12.9.1-8': {}
 
   '@ai-ecoverse/wasm-bash@5.3.0-8': {}
 
