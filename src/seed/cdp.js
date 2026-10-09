@@ -16,7 +16,7 @@ function command(text) {
 }
 
 export const ASK = {
-  title: "Let SLICC's agents control this browser?",
+  title: 'Let SLICC’s agents control this browser?',
   body: 'They can open tabs, click and type with your logins. This lasts until you reload.',
   action: 'Allow',
   variant: 'confirmation',

@@ -116,7 +116,7 @@ test('playwright-cli drives a page through slicc-extension once allowed, and the
     `curl -sf http://127.0.0.1:9222/json/list | jq -r '.[] | select(.url | endswith("/os/")) | "listed as " + .type'`
   );
   assert.deepEqual(await asked(page), {
-    title: "Let SLICC's agents control this browser?",
+    title: 'Let SLICC’s agents control this browser?',
     body: 'They can open tabs, click and type with your logins. This lasts until you reload.',
     action: 'Allow',
     variant: 'accent',
