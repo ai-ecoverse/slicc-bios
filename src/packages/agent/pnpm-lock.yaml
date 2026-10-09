@@ -9,20 +9,20 @@ importers:
   .:
     dependencies:
       '@ai-ecoverse/slicc-agent':
-        specifier: 3.21.1
-        version: 3.21.1(@ai-ecoverse/slicc-kernel@1.26.6)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
+        specifier: 3.23.0
+        version: 3.23.0(@ai-ecoverse/slicc-kernel@1.26.6)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@ai-ecoverse/slicc-kernel':
         specifier: 1.26.6
         version: 1.26.6
 
 packages:
 
-  '@ai-ecoverse/slicc-agent@3.21.1':
-    resolution: {integrity: sha512-iCcmue81Yp+pKrTuREANrRiVxM1pUErUDoiPIy3jNQHzR3DdtGfcUZO+n4H7/iQBpKzRgiLP67RPkIVyH3jJSA==}
+  '@ai-ecoverse/slicc-agent@3.23.0':
+    resolution: {integrity: sha512-Na42RUyZuxYBtoRbNim7L3qCpUAdlP8b7bEnvFxOEpd2EqF2TnbQqGCugx3PCZSf7PTLcl+PUEJ9RTalGaXczQ==}
     engines: {node: '>=24'}
     peerDependencies:
-      '@ai-ecoverse/slicc-kernel': '>=1.23.0 <2'
-      '@ai-ecoverse/slicc-spectrum': ^1.37.0
+      '@ai-ecoverse/slicc-kernel': '>=1.26.3 <2'
+      '@ai-ecoverse/slicc-spectrum': ^1.39.0
     peerDependenciesMeta:
       '@ai-ecoverse/slicc-spectrum':
         optional: true
@@ -588,7 +588,7 @@ packages:
 
 snapshots:
 
-  '@ai-ecoverse/slicc-agent@3.21.1(@ai-ecoverse/slicc-kernel@1.26.6)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)':
+  '@ai-ecoverse/slicc-agent@3.23.0(@ai-ecoverse/slicc-kernel@1.26.6)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)':
     dependencies:
       '@ai-ecoverse/slicc-kernel': 1.26.6
       '@earendil-works/chord': 1.0.4
