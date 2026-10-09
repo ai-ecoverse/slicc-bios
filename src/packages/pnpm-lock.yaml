@@ -24,8 +24,8 @@ importers:
         specifier: 5.3.0-8
         version: 5.3.0-8
       '@ai-ecoverse/wasm-coreutils':
-        specifier: 9.12.0-3
-        version: 9.12.0-3
+        specifier: 9.12.0-4
+        version: 9.12.0-4
       '@ai-ecoverse/wasm-curl':
         specifier: 8.22.0-1
         version: 8.22.0-1
@@ -92,8 +92,8 @@ packages:
   '@ai-ecoverse/wasm-bash@5.3.0-8':
     resolution: {integrity: sha512-5ZV/N3qcfPBYfMYhGut9psL3RF7sKRvJ+1KBChnbFSntNFe4vEkR4WsTBIrMIlItJm20bG3NFUFVR2tYDa/MPQ==}
 
-  '@ai-ecoverse/wasm-coreutils@9.12.0-3':
-    resolution: {integrity: sha512-CDTyom4JGCnsJb68V5sv48nzN9kJyU3FuNmJgq1LPjWNq6xBAQTUfXiIsXzQ6MbxZugRztOhA1qIXBhpjhXkQA==}
+  '@ai-ecoverse/wasm-coreutils@9.12.0-4':
+    resolution: {integrity: sha512-BBkw0xAP1DysuzzptNDPwHT3ChFCIvDnXS1z2k/gkBN4dB2o8Z/yFQH3i1qjTqwvDTveQtMo77CsPLqKJHFn2Q==}
 
   '@ai-ecoverse/wasm-curl@8.22.0-1':
     resolution: {integrity: sha512-z0zqBmaDBgGVtIk6jFlSu6+zWi0/cErnX1cWwdekjqZvqcos6b/0Cjp6TqSTGRrOErvEMS/tPNO2sKuZJu8EoQ==}
@@ -143,7 +143,7 @@ snapshots:
 
   '@ai-ecoverse/wasm-bash@5.3.0-8': {}
 
-  '@ai-ecoverse/wasm-coreutils@9.12.0-3': {}
+  '@ai-ecoverse/wasm-coreutils@9.12.0-4': {}
 
   '@ai-ecoverse/wasm-curl@8.22.0-1': {}
 
