@@ -45,6 +45,16 @@ export function describe({ kind, proxy, status }) {
   return `${PROBLEM[status.state](new URL(proxy.url).host, status)}; using ${NAME[kind]}`;
 }
 
+function tailnetActions(tailnet) {
+  if (!tailnet) return {};
+  return {
+    setTailnet: (on) => tailnet.setTailnet(on),
+    setExitNode: (id) => tailnet.setExitNode(id),
+    submitAuthKey: (key) => tailnet.submitAuthKey(key),
+    logoutTailnet: () => tailnet.logoutTailnet(),
+  };
+}
+
 export function createNetwork(choice, options = {}) {
   const probe = options.check ?? checkLocalProxy;
   const reload = options.reload ?? (() => location.reload());
@@ -65,6 +75,7 @@ export function createNetwork(choice, options = {}) {
       failures,
       extensionUrl: EXTENSION_URL,
       ...(options.browser ? { browser: options.browser() } : {}),
+      ...(options.tailnet ? { tailnet: options.tailnet.status() } : {}),
     };
   };
   const emit = () => {
@@ -103,7 +114,9 @@ export function createNetwork(choice, options = {}) {
       return () => listeners.delete(listener);
     },
     status,
+    ...tailnetActions(options.tailnet),
     async check() {
+      if (options.tailnet?.status().state === 'failed') await options.tailnet.check();
       if (!choice.proxy) {
         emit();
         return;
@@ -122,5 +135,6 @@ export function createNetwork(choice, options = {}) {
       emit();
     },
   };
+  options.tailnet?.on(emit);
   return { port, transport, changed: emit };
 }

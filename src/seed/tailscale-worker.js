@@ -15,6 +15,10 @@ function report() {
   }
 }
 
+function later() {
+  setTimeout(report, 0);
+}
+
 function failure(error) {
   return {
     message: error?.message ?? String(error),
@@ -59,9 +63,9 @@ async function start({ wasm, exec, config, state }) {
         if (config.exitNode)
           ipn.setExitNode(config.exitNode).catch((error) => send({ warning: failure(error) }));
       }
-      report();
+      later();
     },
-    notifyNetMap: () => report(),
+    notifyNetMap: later,
     notifyBrowseToURL: (url) => send({ login: url }),
     notifyPanicRecover: (error) => send({ warning: { message: error } }),
   });
@@ -138,12 +142,28 @@ function cancelOne(id) {
   } else dropped.add(id);
 }
 
+async function settle(id, work) {
+  try {
+    await work;
+    send({ done: { id } });
+    report();
+  } catch (error) {
+    send({ error: { id, ...failure(error) } });
+  }
+}
+
 export function handle(data) {
   if (data.start) return start(data.start).catch((error) => send({ failed: failure(error) }));
   if (!ipn)
     return send({
       error: {
-        id: data.fetch?.id ?? data.dial?.id ?? data.write?.id ?? data.read,
+        id:
+          data.fetch?.id ??
+          data.dial?.id ??
+          data.write?.id ??
+          data.exitNode?.id ??
+          data.logout ??
+          data.read,
         message: 'tailscale is not running',
       },
     });
@@ -153,11 +173,8 @@ export function handle(data) {
   if (data.dial) return dialOne(data.dial);
   if (data.write) return writeOne(data.write);
   if (data.close !== undefined) return closeOne(data.close);
-  if (data.exitNode !== undefined)
-    return ipn
-      .setExitNode(data.exitNode)
-      .then(report)
-      .catch((error) => send({ warning: failure(error) }));
+  if (data.exitNode) return settle(data.exitNode.id, ipn.setExitNode(data.exitNode.expr));
+  if (data.logout !== undefined) return settle(data.logout, Promise.resolve(ipn.logout()));
   if (typeof data.login === 'string') return ipn.login(data.login);
   if (data.login) return ipn.login();
 }

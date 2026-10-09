@@ -115,11 +115,19 @@ When no host can drive a browser, `/json/list` and the WebSocket handshake answe
 
 seven can also join a tailnet, with a patched build of Tailscale's wasm client ([`@tailscale/connect`](https://www.npmjs.com/package/@tailscale/connect)) that adds a full HTTP `fetch`, raw `dial` (TCP and UDP, available to the page as `sliccTailscale.dial`), exit-node selection and status. It runs in its own module worker, `os/tailscale-worker.js`. No CORS applies, because Go makes the requests itself over the tailnet, and its relays (DERP) carry the traffic over WebSocket.
 
-- **Turning it on:** open seven with `#tailscale=on`, optionally with `&exit=<node>`: `auto:any` (the default), an IP, a MagicDNS name, or empty for none. `#tailscale=off` turns it off. The setting and the node's state are kept in IndexedDB (`slicc-os`, store `transport`), so the node keeps its identity across reloads.
-- **Joining:** sign in through the link in the status bar, or paste an auth key into the field next to it. A key is held in memory for that one login and is never stored, put in a URL or logged. An auth key in the fragment is dropped with a warning. The integration test hands its key to the page in `globalThis.sliccTailscaleAuthKey` through an init script, and the page takes it once and deletes it.
+- **Turning it on:** the Network panel's **Use Tailscale** switch (spectrum ≥ 1.38.0) starts it at once and remembers the choice. Opening seven with `#tailscale=on` or `#tailscale=off` does the same. The setting, the exit node and the node's state are kept in IndexedDB (`slicc-os`, store `transport`), so the node keeps its identity across reloads.
+- **The Network panel** (`os/network.js` passes `os/tailscale.js`'s panel through as `NetworkStatus.tailnet` and the port's `setTailnet`, `setExitNode`, `submitAuthKey` and `logoutTailnet`) shows:
+  - the node's name and 100.x address and how many other devices are on the tailnet;
+  - the exit node picker: None, Automatic (`auto:any`, the default), or one of the tailnet's exit nodes;
+  - whether shields are up;
+  - **Sign out**;
+  - when it fails, why, with Retry (`check()` starts it again).
+
+  `document.documentElement.dataset.tailscale` shows the backend state, or `off`.
+- **Joining:** **Sign in to Tailscale** opens Tailscale's login in a new tab. Or paste an auth key into the panel's field. A key is held in memory for that one login and is never stored, put in a URL or logged. An auth key in the fragment is dropped with a warning. The integration test hands its key to the page in `globalThis.sliccTailscaleAuthKey` through an init script, and the page takes it once and deletes it. The tailnet object is exposed as `globalThis.sliccTailscale` only when an init script sets `globalThis.sliccTailscaleDebug`, as the integration test does.
 - **Nothing inbound:** the node runs with shields up, so tailnet peers can't open connections to it. The build has no peerapi server, and the page listens on nothing. Peers can't reach the kernel's services, `*.kernel.localhost` or the CDP facade.
 - **Where the wasm comes from:** the patched build isn't published yet. The page reads `main.wasm` and `wasm_exec.js` through the kernel from `/mnt/tailscale` (a host folder: `npx @ai-ecoverse/slicc-node --mount <dist>:tailscale:ro`, then `mount -t hostfs tailscale /mnt/tailscale`), or else from `/opt/tailscale` in OPFS.
-- **Routing:** the kernel keeps the transport [picked above](#network), and Tailscale is layered over it. While an exit node is in use, every request goes through the tailnet, except loopback (which keeps `host.slicc.internal` on the local proxy). Without one, only tailnet addresses (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) and MagicDNS names go there. The status bar shows the node's address and exit node, and `document.documentElement.dataset.tailscale` shows the backend state.
+- **Routing:** the kernel keeps the transport [picked above](#network), and Tailscale is layered over it. While an exit node is in use, every request goes through the tailnet, except loopback (which keeps `host.slicc.internal` on the local proxy). Without one, only tailnet addresses (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) and MagicDNS names go there. 
 
 ## Kernel servers
 

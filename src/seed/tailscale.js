@@ -23,7 +23,9 @@ export function takeTailscale(location, history) {
   );
   if (value === 'off') return { enabled: false };
   if (value.startsWith('tskey-'))
-    console.warn('tailscale: an auth key in the address was dropped; paste it in the status bar');
+    console.warn(
+      'tailscale: an auth key in the address was dropped; paste it in the Network panel'
+    );
   return { enabled: true, ...(exit !== null ? { exitNode: exit } : {}) };
 }
 
@@ -43,9 +45,14 @@ export async function tailscaleConfig({
   const { authKey, ...saved } = (await store('readonly', (s) => s.get(CONFIG))) ?? {};
   const config = given ? { ...saved, ...given } : saved;
   if (given || authKey) await store('readwrite', (s) => s.put(config, CONFIG));
-  if (!config.enabled) return null;
-  const key = takeSessionKey(scope);
+  const key = config.enabled ? takeSessionKey(scope) : null;
   return key ? { ...config, authKey: key } : config;
+}
+
+export function saveConfig(change, store = stored) {
+  return store('readwrite', (s) => s.get(CONFIG)).then(({ authKey, ...saved } = {}) =>
+    store('readwrite', (s) => s.put({ ...saved, ...change }, CONFIG))
+  );
 }
 
 export function tailnetAddress(host) {
@@ -66,43 +73,36 @@ export function viaTailnet(url, status) {
   return status.peers.some((peer) => peer.dnsName.toLowerCase().split('.')[0] === host);
 }
 
-export function describeTailscale({ backend, status, login, failed }) {
-  if (failed) return { state: 'failed', text: `tailscale: ${failed}` };
-  if (login || backend === 'NeedsLogin')
-    return { state: 'login', text: 'tailscale: sign in or paste an auth key', login };
-  if (backend !== 'Running' || !status)
-    return { state: 'starting', text: `tailscale: ${backend ?? 'starting'}…` };
-  const self = status.self?.addresses?.[0] ?? '';
-  const exit = status.exitNode;
-  const via = exit
-    ? `everything via exit node ${exit.dnsName.split('.')[0] || exit.name}`
-    : status.autoExitNode
-      ? 'tailnet only, waiting for an exit node'
-      : 'tailnet only, no exit node';
-  const shields = status.shieldsUp ? '' : ', shields down';
-  return { state: 'ok', text: `tailscale: ${self} (${via}${shields})` };
-}
+const short = (dnsName, name) => dnsName?.replace(/\.$/, '').split('.')[0] || name;
 
-export function showTailscale(notice, view) {
-  const [output, link, form] = notice.children;
-  notice.dataset.state = view.state;
-  output.value = view.text;
-  notice.title = view.text;
-  link.hidden = !view.login;
-  if (view.login) link.href = view.login;
-  form.hidden = view.state !== 'login';
-  notice.hidden = false;
-}
+const STARTING = {
+  NoState: 'Starting Tailscale…',
+  Starting: 'Connecting to your tailnet…',
+  Stopped: 'Tailscale is stopped.',
+  NeedsMachineAuth: 'Waiting for this browser to be approved in the Tailscale admin console.',
+  InUseOtherUser: 'Tailscale is in use by another user.',
+};
 
-export function offerKey(notice, tailnet) {
-  const form = notice.children[2];
-  const input = form.querySelector('input');
-  form.addEventListener('submit', (event) => {
-    event.preventDefault();
-    const key = input.value.trim();
-    input.value = '';
-    if (key) tailnet.login(key);
-  });
+export function panelStatus(view, enabled) {
+  if (!enabled) return { state: 'off' };
+  if (view.failed) return { state: 'failed', detail: view.failed };
+  if (!view.backend) return { state: 'loading', detail: 'Loading Tailscale…' };
+  if (view.login || view.backend === 'NeedsLogin')
+    return { state: 'needs-login', ...(view.login ? { loginUrl: view.login } : {}) };
+  if (view.backend !== 'Running' || !view.status)
+    return { state: 'starting', detail: STARTING[view.backend] ?? `Tailscale: ${view.backend}` };
+  const { self, exitNode, peers = [] } = view.status;
+  return {
+    state: 'running',
+    node: { name: short(self?.dnsName, self?.name), addresses: self?.addresses ?? [] },
+    exitNode: exitNode ? short(exitNode.dnsName, exitNode.name) : null,
+    exitNodes: peers
+      .filter((peer) => peer.exitNodeOption)
+      .map((peer) => ({ id: peer.id, name: short(peer.dnsName, peer.name), online: peer.online })),
+    autoExitNode: Boolean(view.status.autoExitNode),
+    shieldsUp: view.status.shieldsUp === true,
+    peers: peers.length,
+  };
 }
 
 export function createTailnet({ worker, traits, idleMs = IDLE_MS, headMs = HEAD_MS }) {
@@ -131,6 +131,7 @@ export function createTailnet({ worker, traits, idleMs = IDLE_MS, headMs = HEAD_
     wrote: ({ id, n }) => answer(id, n),
     chunk: ({ id, bytes }) => answer(id, bytes),
     end: ({ id }) => answer(id, null),
+    done: ({ id }) => answer(id, undefined),
     error: ({ id, message, code, status }) =>
       answer(id, null, Object.assign(new Error(message), { code, status: status ?? 502 })),
     backend: (backend) => {
@@ -184,8 +185,24 @@ export function createTailnet({ worker, traits, idleMs = IDLE_MS, headMs = HEAD_
       return () => listeners.delete(listener);
     },
     routes: (url) => viaTailnet(url, view.status),
-    setExitNode: (expr) => worker.postMessage({ exitNode: expr ?? '' }),
+    setExitNode(expr) {
+      const id = ++nextId;
+      return ask(id, { exitNode: { id, expr: expr ?? '' } });
+    },
+    logout() {
+      const id = ++nextId;
+      return ask(id, { logout: id });
+    },
     login: (key) => worker.postMessage({ login: key ?? true }),
+    stop() {
+      worker.terminate?.();
+      for (const id of [...waiting.keys()])
+        answer(
+          id,
+          null,
+          Object.assign(new Error('Tailscale was turned off'), { code: 'ECANCELED' })
+        );
+    },
     async dial(network, addr) {
       const id = ++nextId;
       const conn = await ask(id, { dial: { id, network, addr } });
@@ -296,30 +313,46 @@ function spawn() {
   });
 }
 
-export function prepareTailscale(network, config, deps = {}) {
-  if (!config) return null;
+const EXIT = { auto: 'auto:any' };
+
+export function createTailscale(config, deps = {}) {
   const store = deps.store ?? stored;
   const slot = { current: null };
-  const transport = routedTransport(network.transport, slot);
-  const start = async ({ kernel, ready, notice }) => {
-    const render = (view) => notice && showTailscale(notice, describeTailscale(view));
-    render({ backend: 'loading' });
+  const listeners = new Set();
+  let enabled = config.enabled === true;
+  let view = { backend: null, status: null, login: null, failed: null };
+  let context = null;
+  let starting = null;
+  let authKey = config.authKey;
+  const changed = () => {
+    document.documentElement.dataset.tailscale = !enabled
+      ? 'off'
+      : view.failed
+        ? 'failed'
+        : (view.backend ?? 'loading');
+    for (const listener of [...listeners]) listener();
+  };
+  const running = () => {
+    if (!slot.current) throw new Error('Tailscale is not running.');
+    return slot.current;
+  };
+  const boot = async () => {
+    view = { backend: null, status: null, login: null, failed: null };
+    changed();
     try {
-      await ready;
-      const client = await (deps.attach ?? attachKernel)(await kernel.connect());
+      await context.ready;
+      const client = await (deps.attach ?? attachKernel)(await context.kernel.connect());
       const { wasm, exec } = await readModule(client.fs, config.from ? [config.from] : undefined);
       const worker = (deps.worker ?? spawn)();
-      const tailnet = createTailnet({ worker, traits: network.transport.traits });
+      const tailnet = createTailnet({ worker, traits: context.traits });
       const state = (await store('readonly', (s) => s.get(STATE))) ?? {};
       tailnet.onState = ({ key, value }) => {
         state[key] = value;
         void store('readwrite', (s) => s.put(state, STATE));
       };
-      tailnet.on((view) => {
-        render(view);
-        document.documentElement.dataset.tailscale = view.failed
-          ? 'failed'
-          : (view.backend ?? 'loading');
+      tailnet.on((next) => {
+        view = next;
+        changed();
       });
       const bytes = wasm.buffer.slice(wasm.byteOffset, wasm.byteOffset + wasm.byteLength);
       worker.postMessage(
@@ -330,7 +363,7 @@ export function prepareTailscale(network, config, deps = {}) {
             state,
             config: {
               hostname: config.hostname ?? `slicc-${location.hostname.split('.')[0]}`,
-              ...(config.authKey ? { authKey: config.authKey } : {}),
+              ...(authKey ? { authKey } : {}),
               ...(config.controlURL ? { controlURL: config.controlURL } : {}),
               exitNode: config.exitNode ?? 'auto:any',
               ephemeral: config.ephemeral === true,
@@ -339,15 +372,67 @@ export function prepareTailscale(network, config, deps = {}) {
         },
         [bytes]
       );
-      if (notice) offerKey(notice, tailnet);
+      authKey = undefined;
       slot.current = tailnet;
-      globalThis.sliccTailscale = tailnet;
+      if (globalThis.sliccTailscaleDebug === true) globalThis.sliccTailscale = tailnet;
       return tailnet;
     } catch (error) {
-      render({ failed: error.message });
-      document.documentElement.dataset.tailscale = 'failed';
+      view = { ...view, failed: `Tailscale didn't start: ${error.message}.` };
+      changed();
       return null;
     }
   };
-  return { transport, start };
+  const stop = () => {
+    slot.current?.stop();
+    slot.current = null;
+    starting = null;
+    view = { backend: null, status: null, login: null, failed: null };
+  };
+  const panel = {
+    status: () => panelStatus(view, enabled),
+    on(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    async setTailnet(on) {
+      enabled = on;
+      config = { ...config, enabled: on };
+      await saveConfig({ enabled: on }, store);
+      if (!on) stop();
+      else if (context && !starting) starting = boot();
+      changed();
+      await starting;
+    },
+    async setExitNode(choice) {
+      const expr = choice === null ? '' : (EXIT[choice] ?? choice);
+      await running().setExitNode(expr);
+      config = { ...config, exitNode: expr };
+      await saveConfig({ exitNode: expr }, store);
+    },
+    async submitAuthKey(key) {
+      const trimmed = key.trim();
+      if (!trimmed.startsWith('tskey-')) throw new Error('That is not a Tailscale auth key.');
+      running().login(trimmed);
+    },
+    async logoutTailnet() {
+      await running().logout();
+    },
+    async check() {
+      if (!enabled) return;
+      stop();
+      starting = boot();
+      changed();
+      await starting;
+    },
+  };
+  return {
+    panel,
+    wrap: (base) => routedTransport(base, slot),
+    start({ kernel, ready, traits }) {
+      context = { kernel, ready, traits };
+      changed();
+      if (enabled && !starting) starting = boot();
+      return starting;
+    },
+  };
 }

@@ -19,17 +19,30 @@ const chrome = usable
   : null;
 after(() => chrome?.close());
 
-const view = (page) =>
+const tailnet = (page) =>
+  page.evaluate(() => document.querySelector('slicc-app').model.network.status().tailnet ?? null);
+
+const section = (page) =>
   page.evaluate(() => {
-    const notice = document.querySelector('.tailscale');
-    const [output, link] = notice.children;
-    return {
-      hidden: notice.hidden,
-      state: notice.dataset.state,
-      text: output.value,
-      login: link.hidden ? null : link.href,
-      backend: document.documentElement.dataset.tailscale,
+    const find = (root) => {
+      const hit = root.querySelector('section[data-tailnet]');
+      if (hit) return hit;
+      for (const host of root.querySelectorAll('*')) {
+        const found = host.shadowRoot && find(host.shadowRoot);
+        if (found) return found;
+      }
+      return null;
     };
+    const hit = find(document);
+    const link =
+      hit && find(hit.getRootNode()) && hit.querySelector('[data-action="tailnet-sign-in"]');
+    return hit
+      ? {
+          state: hit.dataset.tailnet,
+          signIn: link?.href ?? link?.getAttribute?.('href') ?? null,
+          keyField: Boolean(hit.querySelector('[data-form="auth-key"]')),
+        }
+      : null;
   });
 
 const install = (page) =>
@@ -55,15 +68,46 @@ test('tailscale joins from the wasm in /opt/tailscale and asks to sign in', {
   await page.goto('/#tailscale=on');
   await ready(page);
   await page.until(() => {
-    const backend = document.documentElement.dataset.tailscale;
-    const link = document.querySelector('.tailscale a');
-    return backend === 'failed' || backend === 'Running' || (link && !link.hidden);
+    const tailnet = document.querySelector('slicc-app').model.network?.status().tailnet;
+    return (
+      tailnet?.state === 'failed' ||
+      tailnet?.state === 'running' ||
+      (tailnet?.state === 'needs-login' && tailnet.loginUrl)
+    );
   });
-  const shown = await view(page);
-  console.log(JSON.stringify(shown));
-  assert.notEqual(shown.backend, 'failed', shown.text);
-  assert.match(shown.login ?? '', /^https:\/\/login\.tailscale\.com\//);
-  assert.equal(shown.state, 'login');
+  const shown = await tailnet(page);
+  console.log(
+    JSON.stringify({ state: shown.state, detail: shown.detail, loginUrl: Boolean(shown.loginUrl) })
+  );
+  assert.equal(shown.state, 'needs-login', shown.detail);
+  assert.match(shown.loginUrl ?? '', /^https:\/\/login\.tailscale\.com\//);
+  assert.equal(await page.evaluate(() => 'sliccTailscale' in globalThis), false);
+  await page.evaluate(() => document.querySelector('slicc-app').show('network'));
+  await page.until(() => {
+    const find = (root) =>
+      root.querySelector('section[data-tailnet]') ??
+      [...root.querySelectorAll('*')]
+        .map((el) => el.shadowRoot && find(el.shadowRoot))
+        .find(Boolean);
+    return find(document);
+  });
+  const panel = await section(page);
+  console.log(JSON.stringify({ panel }));
+  assert.equal(panel.state, 'needs-login');
+  assert.equal(panel.keyField, true);
+  await assert.rejects(
+    page.evaluate(() =>
+      document.querySelector('slicc-app').model.network.submitAuthKey('not-a-key')
+    ),
+    /not a Tailscale auth key/
+  );
+  await page.evaluate(() => document.querySelector('slicc-app').model.network.setTailnet(false));
+  assert.deepEqual(await tailnet(page), { state: 'off' });
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.tailscale), 'off');
+  await page.evaluate(() => document.querySelector('slicc-app').model.network.setTailnet(true));
+  await page.until(
+    () => document.querySelector('slicc-app').model.network.status().tailnet.loginUrl
+  );
 });
 
 const curled = async (page, url, name) => {
@@ -110,7 +154,9 @@ test('joins the tailnet with an auth key and reaches the web through it', {
       }),
     process.env.TS_EXIT_NODE ?? 'auto:any'
   );
-  await page.init(`() => { globalThis.sliccTailscaleAuthKey = ${JSON.stringify(authKey)}; }`);
+  await page.init(
+    `() => { globalThis.sliccTailscaleAuthKey = ${JSON.stringify(authKey)}; globalThis.sliccTailscaleDebug = true; }`
+  );
   await install(page);
   await page.reload();
   await ready(page);
@@ -123,7 +169,7 @@ test('joins the tailnet with an auth key and reaches the web through it', {
   });
   await page.until(() => globalThis.sliccTailscale.view.status.exitNode).catch(() => {});
   assert.equal(await page.evaluate(() => 'sliccTailscaleAuthKey' in globalThis), false);
-  const failed = await page.evaluate(() => document.querySelector('.tailscale output').value);
+  const failed = (await tailnet(page))?.detail;
   assert.notEqual(
     await page.evaluate(() => document.documentElement.dataset.tailscale),
     'failed',
@@ -251,7 +297,5 @@ test('joins the tailnet with an auth key and reaches the web through it', {
     console.log(JSON.stringify({ withoutExitNode: without.slice(0, 120) }));
     assert.notEqual(without, 'reached');
   }
-  console.log(
-    `indicator: ${await page.evaluate(() => document.querySelector('.tailscale output').value)}`
-  );
+  console.log(`panel: ${JSON.stringify(await tailnet(page))}`);
 });
