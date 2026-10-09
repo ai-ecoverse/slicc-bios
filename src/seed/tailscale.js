@@ -343,8 +343,7 @@ export function reserved(host) {
 
 export function tailnetNames(name, status) {
   const want = name.replace(/\.$/, '').toLowerCase();
-  const nodes = [status?.self, ...(status?.peers ?? [])].filter(Boolean);
-  for (const node of nodes) {
+  for (const node of status?.peers ?? []) {
     const dns = (node.dnsName ?? '').replace(/\.$/, '').toLowerCase();
     if (dns && (dns === want || dns.split('.')[0] === want)) return node.addresses ?? [];
   }
