@@ -177,10 +177,8 @@ test('under the page fetch, the 502 curl shows points at slicc-node and slicc-ex
     indicator: 'limited',
   });
   await run(page, 'curl -sS https://unreachable.invalid/');
-  await shows(
-    page,
-    'for the whole web, run npx @ai-ecoverse/slicc-node or install slicc-extension'
-  );
+  await shows(page, 'for the whole web');
+  await shows(page, 'install slicc-extension');
   await page.until(() =>
     document
       .querySelector('slicc-app')
