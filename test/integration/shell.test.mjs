@@ -159,7 +159,7 @@ test('keeps the pid across exec and agrees with ps, and pkill -f spares itself',
   await boot(page);
   await run(
     page,
-    'ps -o pid=,ppid= -p $$ | awk -v pid=$$ -v ppid=$PPID \'{ print "ps agrees " ($1 == pid && $2 == ppid) * 42 }\''
+    'bash -c \'echo $$ $PPID; ps -o pid=,ppid= -p $$\' | tr -s " " | sed "s/^ //" | uniq -c | awk -v outer=$$ \'{ print "ps agrees " ($1 == 2 && $3 == outer) * 42 }\''
   );
   await shows(page, 'ps agrees 42');
   await run(
