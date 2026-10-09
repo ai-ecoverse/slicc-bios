@@ -9,15 +9,15 @@ after(() => chrome.close());
 
 const bash = 'node_modules/@ai-ecoverse/wasm-bash';
 const shipped =
-  'sha512-XNfXF1z2vQvZuEYNm9D1n+mBRGWu4G0B8mkibEOKUpIhdaf/hkp8KCJzBtGMu4rkMb8AlqDSyTjI3RHyTqMD8w==';
+  'sha512-5ZV/N3qcfPBYfMYhGut9psL3RF7sKRvJ+1KBChnbFSntNFe4vEkR4WsTBIrMIlItJm20bG3NFUFVR2tYDa/MPQ==';
 const older =
-  'sha512-4mwVr9PT6JHJygxiJT9uWJFnf5PRo3n6TvoHVQ5sYm0V0mi1nQB6j/4r9VXSsQsXhgwcbEkeXu2L1FwHqWbWWw==';
+  'sha512-XNfXF1z2vQvZuEYNm9D1n+mBRGWu4G0B8mkibEOKUpIhdaf/hkp8KCJzBtGMu4rkMb8AlqDSyTjI3RHyTqMD8w==';
 const files = ['package.json', 'package-lock.json', 'pnpm-lock.yaml'];
 
 async function downgrade() {
   for (const file of files) {
     const text = await readFile(new URL(`../../src/packages/${file}`, import.meta.url), 'utf8');
-    const pinned = text.replaceAll('5.3.0-7', '5.3.0-6').replaceAll(shipped, older);
+    const pinned = text.replaceAll('5.3.0-8', '5.3.0-7').replaceAll(shipped, older);
     chrome.overrides.set(`/packages/${file}`, pinned);
   }
 }
@@ -59,7 +59,7 @@ async function updated(page) {
 async function bootOlder(page) {
   await downgrade();
   await boot(page);
-  assert.equal(await version(page), '5.3.0-6');
+  assert.equal(await version(page), '5.3.0-7');
   assert.equal((await notice(page)).hidden, true);
 }
 
@@ -98,15 +98,15 @@ test('updates a running install from a bumped lockfile', async (t) => {
   await t.test('installs the new version in place while the shell keeps running', async () => {
     await updated(page);
     const { text } = await notice(page);
-    assert.equal(text.trim(), 'updated @ai-ecoverse/wasm-bash 5.3.0-6 → 5.3.0-7Reload');
-    assert.equal(await version(page), '5.3.0-7');
+    assert.equal(text.trim(), 'updated @ai-ecoverse/wasm-bash 5.3.0-7 → 5.3.0-8Reload');
+    assert.equal(await version(page), '5.3.0-8');
     assert.equal(
       await read(page, 'var/lib/slicc/pnpm-lock.yaml'),
       await readFile(new URL('../../src/packages/pnpm-lock.yaml', import.meta.url), 'utf8')
     );
     assert.deepEqual(
       chrome.cdn.requests.filter((url) => url.includes('/wasm-bash/')),
-      ['https://registry.npmjs.org/@ai-ecoverse/wasm-bash/-/wasm-bash-5.3.0-7.tgz']
+      ['https://registry.npmjs.org/@ai-ecoverse/wasm-bash/-/wasm-bash-5.3.0-8.tgz']
     );
     await page.screenshot(new URL('updated.png', page.dir));
 
@@ -114,7 +114,7 @@ test('updates a running install from a bumped lockfile', async (t) => {
       page,
       `echo "$session $(bash -c 'head -3 /${bash}/package.json' | tail -1 | tr -d ' ')"`
     );
-    await shows(page, 'kept "version":"5.3.0-7",');
+    await shows(page, 'kept "version":"5.3.0-8",');
   });
 
   await t.test('keeps what the shell wrote across the update', async () => {
@@ -133,7 +133,7 @@ test('updates a running install from a bumped lockfile', async (t) => {
         chrome.cdn.requests.filter((url) => url.endsWith('.tgz')),
         []
       );
-      assert.equal(await version(page), '5.3.0-7');
+      assert.equal(await version(page), '5.3.0-8');
       assert.equal((await notice(page)).hidden, true);
       await run(page, 'cat work/notes.txt');
       await shows(page, 'draft');

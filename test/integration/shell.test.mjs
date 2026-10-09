@@ -154,6 +154,28 @@ test('lists and kills processes with procps', async (t) => {
   assert.deepEqual(page.errors, []);
 });
 
+test('keeps the pid across exec and agrees with ps, and pkill -f spares itself', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await run(
+    page,
+    'bash -c \'echo $$ $PPID; ps -o pid=,ppid= -p $$\' | tr -s " " | sed "s/^ //" | uniq -c | awk -v outer=$$ \'{ print "ps agrees " ($1 == 2 && $3 == outer) * 42 }\''
+  );
+  await shows(page, 'ps agrees 42');
+  await run(
+    page,
+    'bash -c \'echo $$; exec bash -c "echo \\$\\$; ps -o pid= -p \\$\\$"\' | tr -d " " | uniq -c | awk \'{ print "exec kept " $1 }\''
+  );
+  await shows(page, 'exec kept 3');
+  await run(
+    page,
+    'sleep 30 & sleep 1; pkill -f "sleep 30"; echo "pkill $((1000 + $?))"; sleep 1; pgrep -f "sleep 30" | wc -l | sed "s/^/left /"'
+  );
+  await shows(page, 'pkill 1000');
+  await shows(page, 'left 0');
+  assert.deepEqual(page.errors, []);
+});
+
 test('installs a command with pnpm add -g and runs it in the same shell', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
