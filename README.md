@@ -90,7 +90,7 @@ Before the kernel starts, `os/transport.js` picks how programs reach the network
 The choice is in `document.documentElement.dataset.transport`: `local-proxy`, `extension` or `page`. `os/network.js` is spectrum's `NetworkPort` (`model.network`, spectrum ≥ 1.32.0), behind the header's **Network** indicator and panel:
 
 - **Route and health:** `proxy` or `extension` is green (`ok`) and turns red (`failing`) when its last request failed, until one gets through. `page` is yellow (`limited`).
-- **Detail:** one line names the route. When a local proxy was asked for but isn't used, it says why (blocked by the permission, not answering, or refusing the key) and what the page uses instead.
+- **Detail:** one line, next to spectrum's own description of the route. It names the local proxy. When a local proxy was asked for but isn't used, it says why (blocked by the permission, not answering, or refusing the key) and what the page uses instead. When the route stops answering, it says so and what to do. It is empty on the extension and the page fetch while there is nothing to add.
 - **Failures:** the last 20 requests that failed in the transport, newest first, with URL, error and time.
 - **Check again** (`check()`) probes the local proxy again: on the proxy route it updates the health, and otherwise it reloads the page onto the proxy once it answers.
 - **Get the whole web** links slicc-extension in the Chrome Web Store (`extensionUrl`).

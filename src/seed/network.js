@@ -15,9 +15,11 @@ const NAME = {
   page: 'the page fetch, limited by CORS',
 };
 
-const ALONE = {
-  extension: 'Through slicc-extension',
-  page: 'The page fetch, limited by CORS',
+const STOPPED = {
+  'local-proxy': ({ proxy }) =>
+    `The local proxy at ${new URL(proxy.url).host} stopped answering: run npx @ai-ecoverse/slicc-node again, then Check again`,
+  extension: () =>
+    'slicc-extension stopped answering: check that it is still installed and enabled',
 };
 
 const PROBLEM = {
@@ -39,7 +41,7 @@ export function describe({ kind, proxy, status }) {
     }
     return `Local proxy at ${new URL(proxy.url).host}`;
   }
-  if (!status) return ALONE[kind];
+  if (!status) return null;
   return `${PROBLEM[status.state](new URL(proxy.url).host, status)}; using ${NAME[kind]}`;
 }
 
@@ -55,10 +57,11 @@ export function createNetwork(choice, options = {}) {
   const status = () => {
     const route = ROUTE[state.kind];
     const fullWeb = route === 'proxy' || route === 'extension';
+    const stopped = fullWeb && failing && (state.status?.state ?? 'ready') === 'ready';
     return {
       route,
       health: !fullWeb ? 'limited' : failing ? 'failing' : 'ok',
-      detail: describe(state),
+      detail: stopped ? STOPPED[state.kind](state) : describe(state),
       failures,
       extensionUrl: EXTENSION_URL,
     };

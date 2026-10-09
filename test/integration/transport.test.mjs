@@ -171,7 +171,7 @@ test('under the page fetch, the 502 curl shows points at slicc-node and slicc-ex
   assert.deepEqual(await shown(page), {
     route: 'page',
     health: 'limited',
-    detail: 'The page fetch, limited by CORS',
+    detail: null,
     indicator: 'limited',
   });
   await run(page, 'curl -sS https://unreachable.invalid/');
@@ -210,7 +210,7 @@ test('without a proxy, the extension relay is used when it is there', async (t) 
   assert.deepEqual(await shown(page), {
     route: 'extension',
     health: 'ok',
-    detail: 'Through slicc-extension',
+    detail: null,
     indicator: 'ok',
   });
 });
