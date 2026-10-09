@@ -24,6 +24,7 @@ export const layouts = {
   chat: { side: 'center', open: ['phone', 'tablet', 'desktop'] },
   terminal: { side: 'center', open: ['phone', 'tablet', 'desktop'] },
   files: { side: 'left', open: ['tablet', 'desktop'] },
+  freezer: { side: 'left', open: [] },
   memory: { side: 'left', open: [] },
   network: { side: 'right', open: [] },
   settings: { side: 'center', open: [] },
