@@ -651,23 +651,24 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   };
   await freezerShots('frozen');
 
-  await page.evaluate(() => window.freezerButton('Thaw').click());
+  await page.evaluate(() => {
+    window.before = document
+      .querySelector('slicc-app')
+      .model.agent.list()
+      .map((agent) => agent.id);
+    window.freezerButton('Thaw').click();
+  });
   await page.until(() => document.querySelector('slicc-app').model.agent.frozen().length === 0);
-  assert.ok(
-    await page.evaluate(
-      (id) =>
-        document
-          .querySelector('slicc-app')
-          .model.agent.list()
-          .some((agent) => agent.id === id),
-      frozen.id
-    )
+  const thawed = await page.evaluate(
+    () =>
+      document
+        .querySelector('slicc-app')
+        .model.agent.list()
+        .find((agent) => agent.kind === 'cone' && !window.before.includes(agent.id))?.id
   );
+  assert.ok(thawed);
 
-  await page.evaluate(
-    (id) => document.querySelector('slicc-app').model.agent.select(id),
-    frozen.id
-  );
+  await page.evaluate((id) => document.querySelector('slicc-app').model.agent.select(id), thawed);
   await freeze();
   await page.until(() => !!window.freezerButton('Delete'));
   await page.evaluate(() => window.freezerButton('Delete').click());
