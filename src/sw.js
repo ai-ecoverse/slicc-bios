@@ -91,6 +91,36 @@ function failed(status, text) {
   return respond(`${text}\n`, 'text/plain; charset=utf-8', 'sw', status);
 }
 
+function deadline(text) {
+  let timer;
+  const late = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(text)), PATIENCE);
+  });
+  return { late, clear: () => clearTimeout(timer) };
+}
+
+function watched(response, pathname, controller) {
+  if (!response.body) return response;
+  const reader = response.body.getReader();
+  const body = new ReadableStream({
+    async pull(stream) {
+      const idle = deadline(`sw: no data for ${pathname} in ${PATIENCE / 1000} s`);
+      try {
+        const { done, value } = await Promise.race([reader.read(), idle.late]);
+        if (done) stream.close();
+        else stream.enqueue(value);
+      } catch (error) {
+        controller.abort();
+        stream.error(error);
+      } finally {
+        idle.clear();
+      }
+    },
+    cancel: (reason) => reader.cancel(reason),
+  });
+  return new Response(body, response);
+}
+
 function answer(request) {
   const { pathname } = new URL(request.url);
   const controller = new AbortController();
@@ -101,13 +131,13 @@ function answer(request) {
       resolve(failed(504, `sw: no answer for ${pathname} in ${PATIENCE / 1000} s`));
     }, PATIENCE);
   });
-  const served = serve(request, controller.signal).catch((error) =>
+  const served = serve(request, controller).catch((error) =>
     failed(502, `sw: ${pathname} failed: ${error.message}`)
   );
   return Promise.race([served, late]).finally(() => clearTimeout(timer));
 }
 
-async function serve(request, signal) {
+async function serve(request, controller) {
   const scope = new URL(self.registration.scope).pathname;
   const url = new URL(request.url);
   const asked = `/${url.pathname.slice(scope.length)}`;
@@ -122,7 +152,7 @@ async function serve(request, signal) {
   try {
     file = await read(path);
   } catch {
-    return fetch(request, { signal });
+    return watched(await fetch(request, { signal: controller.signal }), url.pathname, controller);
   }
   const extension = file.name.split('.').pop();
   const type = types[extension] ?? 'application/octet-stream';

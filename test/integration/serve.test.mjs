@@ -7,9 +7,10 @@ import { launch } from './chrome.mjs';
 const chrome = await launch();
 const held = [];
 const end = ServerResponse.prototype.end;
-ServerResponse.prototype.end = function (...args) {
-  if (!this.req?.url?.startsWith('/never/')) return end.apply(this, args);
-  held.push(() => end.apply(this, args));
+ServerResponse.prototype.end = function (chunk, ...rest) {
+  if (!this.req?.url?.startsWith('/never/')) return end.call(this, chunk, ...rest);
+  if (chunk) this.write(chunk);
+  held.push(() => end.call(this));
   return this;
 };
 after(async () => {
@@ -51,13 +52,24 @@ test('shares one installer between tabs', async (t) => {
   assert.match(bios.texts('installer')[0], /^connection #[2-9]$/);
 });
 
-test('answers with a 504 that names the path when the network never answers', async (t) => {
+test('answers with a 504 that names the path when the network never answers, and ends a body that stops', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
+  chrome.overrides.set('/never/partial.js', 'export const half = 1;\n');
 
   const answer = await page.evaluate(() =>
     fetch('/never/answered.js').then(async (r) => [r.status, await r.text()])
   );
   assert.deepEqual(answer, [504, 'sw: no answer for /never/answered.js in 30 s\n']);
   assert.ok(chrome.requests.includes('/never/answered.js'));
+
+  const partial = await page.evaluate(() =>
+    fetch('/never/partial.js').then((r) =>
+      r.text().then(
+        () => [r.status, 'complete'],
+        (error) => [r.status, error.name]
+      )
+    )
+  );
+  assert.deepEqual(partial, [200, 'TypeError']);
 });
