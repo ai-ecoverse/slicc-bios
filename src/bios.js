@@ -91,6 +91,7 @@ await step('seed', async () => {
     'os.js',
     'transport.js',
     'update.js',
+    'updates.js',
   ];
   const from = new URL('seed/', import.meta.url).href;
   const { bytes } = await installer('install', { from, to: 'os/', files });

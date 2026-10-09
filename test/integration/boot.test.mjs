@@ -44,6 +44,7 @@ test('boots through every step into the UI served from OPFS', async (t) => {
       'os/os.js',
       'os/transport.js',
       'os/update.js',
+      'os/updates.js',
     ]
   );
   assert.equal(await page.evaluate(() => crossOriginIsolated), true);
