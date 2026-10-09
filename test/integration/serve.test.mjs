@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { ServerResponse } from 'node:http';
 import { after, test } from 'node:test';
 import { boot, ready, watch } from './bios.mjs';
@@ -54,13 +55,16 @@ test('shares one installer between tabs', async (t) => {
 
 test('answers with a 504 that names the path when the network never answers, and ends a body that stops', async (t) => {
   const page = await chrome.page(t);
+  const sw = await readFile(new URL('../../src/sw.js', import.meta.url), 'utf8');
+  chrome.overrides.set('/sw.js', sw.replace('const PATIENCE = 30000;', 'const PATIENCE = 10000;'));
+  t.after(() => chrome.overrides.delete('/sw.js'));
   await boot(page);
   chrome.overrides.set('/never/partial.js', 'export const half = 1;\n');
 
   const answer = await page.evaluate(() =>
     fetch('/never/answered.js').then(async (r) => [r.status, await r.text()])
   );
-  assert.deepEqual(answer, [504, 'sw: no answer for /never/answered.js in 30 s\n']);
+  assert.deepEqual(answer, [504, 'sw: no answer for /never/answered.js in 10 s\n']);
   assert.ok(chrome.requests.includes('/never/answered.js'));
 
   const partial = await page.evaluate(() =>
