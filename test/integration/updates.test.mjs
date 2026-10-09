@@ -10,6 +10,7 @@ const INSTALL = 5 * 60 * 1000;
 
 function agent(version, integrity) {
   return {
+    '/packages/agent/pnpm-workspace.yaml': "minimumReleaseAgeExclude:\n  - '@ai-ecoverse/*'\n",
     '/packages/agent/package.json': JSON.stringify({
       name: 'slicc-bios-agent',
       private: true,

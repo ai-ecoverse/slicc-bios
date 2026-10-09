@@ -27,6 +27,8 @@ async function install(start, from, report) {
   const manifest = await fetchText('package.json', from);
   await write(root, `${folder}/package.json`, manifest);
   await write(root, `${folder}/pnpm-lock.yaml`, lock);
+  const workspace = await fetchText('pnpm-workspace.yaml', from).catch(() => '{}\n');
+  await write(root, `${folder}/pnpm-workspace.yaml`, workspace);
   const kernel = await start();
   try {
     await pnpm(kernel, `/${folder}`, report, JSON.parse(manifest).dependencies?.[PACKAGE]);

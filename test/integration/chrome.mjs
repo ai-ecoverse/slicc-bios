@@ -13,6 +13,7 @@ export const emptyAgent = {
   '/packages/agent/package.json': '{ "name": "slicc-bios-agent", "private": true }\n',
   '/packages/agent/pnpm-lock.yaml':
     "lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\n\nimporters:\n\n  .: {}\n",
+  '/packages/agent/pnpm-workspace.yaml': "minimumReleaseAgeExclude:\n  - '@ai-ecoverse/*'\n",
 };
 
 export async function launch({ agent = false, ...overrides } = {}) {

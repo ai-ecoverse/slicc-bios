@@ -223,6 +223,10 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     document.querySelector('slicc-app').model.updates.on('items', () => {
       const { progress } = window.agentRow();
       if (progress) window.progress.push(progress);
+      const { state } = window.agentRow();
+      if (['checking', 'downloading', 'linking'].includes(state))
+        window.installStart ??= performance.now();
+      if (state === 'installed') window.installEnd ??= performance.now();
     });
   });
   await page.within(INSTALL, () => {
@@ -256,6 +260,42 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
       return [document.querySelector('slicc-app').model.updates.ready(), state, actions];
     }),
     [true, 'installed', []]
+  );
+  const measured = await page.evaluate(async () => {
+    const root = await navigator.storage.getDirectory();
+    const modules = await (
+      await (await root.getDirectoryHandle('opt')).getDirectoryHandle('agent')
+    ).getDirectoryHandle('node_modules');
+    let bytes = 0;
+    const walk = async (dir) => {
+      for await (const handle of dir.values()) {
+        if (handle.kind === 'directory') await walk(handle);
+        else bytes += (await handle.getFile()).size;
+      }
+    };
+    await walk(modules);
+    let packages = 0;
+    const count = async (dir) => {
+      for await (const handle of dir.values()) {
+        if (handle.kind !== 'directory' || handle.name.startsWith('.')) continue;
+        if (handle.name.startsWith('@')) await count(handle);
+        else {
+          packages += 1;
+          const nested = await handle.getDirectoryHandle('node_modules').catch(() => null);
+          if (nested) await count(nested);
+        }
+      }
+    };
+    const store = await modules.getDirectoryHandle('.pnpm').catch(() => null);
+    if (store) {
+      for await (const name of store.keys()) {
+        if (name.includes('@') && !name.endsWith('.yaml') && name !== 'node_modules') packages += 1;
+      }
+    } else await count(modules);
+    return { ms: Math.round(window.installEnd - window.installStart), bytes, packages };
+  });
+  console.log(
+    `agent install: ${measured.ms} ms, ${(measured.bytes / 1e6).toFixed(1)} MB in /opt/agent/node_modules, ${measured.packages} packages`
   );
   const phases = await page.evaluate(() => window.progress.map(({ phase }) => phase));
   const firstLink = phases.indexOf('link');
