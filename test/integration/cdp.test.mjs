@@ -92,6 +92,9 @@ function answer(page, button) {
   }, button);
 }
 
+const automation = (page) =>
+  page.evaluate(() => document.querySelector('slicc-app').model.network.status().browser);
+
 const open = (page) =>
   page.evaluate(() =>
     Boolean(document.querySelector('slicc-app').shadowRoot.querySelector('slicc-confirm'))
@@ -120,6 +123,7 @@ test('playwright-cli drives a page through slicc-extension once allowed, and the
   });
   await answer(page, 'action');
   await shows(page, 'listed as page');
+  assert.deepEqual(await automation(page), { via: 'extension' });
   assert.equal(await open(page), false);
 
   await run(
@@ -171,6 +175,7 @@ test('with no host, the CDP endpoint says what to install', async (t) => {
     await read(page, '/tmp/elsewhere'),
     'CDP host: unknown runtime "elsewhere" (extension, proxy)\n502'
   );
+  assert.deepEqual(await automation(page), { via: null });
 });
 
 test('declining browser control answers 502 until the page reloads', async (t) => {
@@ -196,5 +201,9 @@ test('declining browser control answers 502 until the page reloads', async (t) =
   await shows(page, 'again-0');
   assert.equal(await open(page), false);
   assert.equal(await read(page, '/tmp/again'), declined);
+  assert.deepEqual(await automation(page), {
+    via: 'extension',
+    detail: 'You declined it in this session. Reload to be asked again.',
+  });
   assert.deepEqual(extension.sent, []);
 });

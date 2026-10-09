@@ -23,6 +23,7 @@ export const ASK = {
 };
 
 export const DECLINED = 'browser control was declined in seven; reload to be asked again';
+export const DECLINED_DETAIL = 'You declined it in this session. Reload to be asked again.';
 
 export function extensionConnection(cdp) {
   const sessions = new Map();
@@ -147,4 +148,21 @@ export function browserHook(network, ask) {
     if (!(await allowed)) throw new Error(DECLINED);
     return open();
   };
+}
+
+export function browserControl(network, ask, changed) {
+  let declined = false;
+  const hook = browserHook(network, async () => {
+    const allowed = await ask();
+    if (!allowed) {
+      declined = true;
+      changed();
+    }
+    return allowed;
+  });
+  const status = () => {
+    const via = browserVia(network);
+    return declined && via ? { via, detail: DECLINED_DETAIL } : { via };
+  };
+  return { hook, status };
 }

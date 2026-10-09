@@ -64,6 +64,7 @@ export function createNetwork(choice, options = {}) {
       detail: stopped ? STOPPED[state.kind](state) : describe(state),
       failures,
       extensionUrl: EXTENSION_URL,
+      ...(options.browser ? { browser: options.browser() } : {}),
     };
   };
   const emit = () => {
@@ -121,5 +122,5 @@ export function createNetwork(choice, options = {}) {
       emit();
     },
   };
-  return { port, transport };
+  return { port, transport, changed: emit };
 }

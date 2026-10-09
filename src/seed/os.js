@@ -11,7 +11,7 @@ import {
   startChat,
   whenIdle,
 } from './agent.js';
-import { ASK, browserHook } from './cdp.js';
+import { ASK, browserControl } from './cdp.js';
 import { grammarBase, grammars, version as grammarsVersion, installed } from './grammars.js';
 import { serveLoopback } from './loopback.js';
 import { createFolders, offTheRecord } from './mounts.js';
@@ -67,7 +67,12 @@ export function offered(all) {
 
 const network = await pickTransport();
 const { kind } = network;
-const reach = createNetwork(network);
+const control = browserControl(
+  network,
+  () => confirm(ASK),
+  () => reach.changed()
+);
+const reach = createNetwork(network, { browser: control.status });
 const { transport } = reach;
 const login = signIn({ network });
 document.documentElement.dataset.transport = kind;
@@ -81,7 +86,7 @@ const folders = createFolders({
 const kernel = await createKernel({
   root,
   network: { transport },
-  cdp: browserHook(network, () => confirm(ASK)),
+  cdp: control.hook,
   ...folders.options,
 });
 serveLoopback(kernel);
