@@ -65,7 +65,43 @@ async function fakeExtension(page) {
   return { sent, close: () => socket.close() };
 }
 
-test('playwright-cli drives a page through slicc-extension, and the page cannot reach 9222', async (t) => {
+function asked(page) {
+  return page.until(() => {
+    const dialog = document
+      .querySelector('slicc-app')
+      ?.shadowRoot?.querySelector('slicc-confirm')
+      ?.renderRoot?.querySelector('dialog[open]');
+    if (!dialog) return null;
+    const action = dialog.querySelector('[data-action]');
+    return {
+      title: dialog.querySelector('#title').textContent,
+      body: dialog.querySelector('#body').textContent,
+      action: action.textContent.trim(),
+      cancel: dialog.querySelector('[data-cancel]').textContent.trim(),
+      variant: action.getAttribute('variant'),
+    };
+  });
+}
+
+function answer(page, button) {
+  return page.evaluate((button) => {
+    document
+      .querySelector('slicc-app')
+      .shadowRoot.querySelector('slicc-confirm')
+      .renderRoot.querySelector(`[data-${button}]`)
+      .click();
+  }, button);
+}
+
+const automation = (page) =>
+  page.evaluate(() => document.querySelector('slicc-app').model.network.status().browser);
+
+const open = (page) =>
+  page.evaluate(() =>
+    Boolean(document.querySelector('slicc-app').shadowRoot.querySelector('slicc-confirm'))
+  );
+
+test('playwright-cli drives a page through slicc-extension once allowed, and the page cannot reach 9222', async (t) => {
   const page = await chrome.page(t);
   const extension = await fakeExtension(page);
   t.after(extension.close);
@@ -80,7 +116,17 @@ test('playwright-cli drives a page through slicc-extension, and the page cannot 
     page,
     `curl -sf http://127.0.0.1:9222/json/list | jq -r '.[] | select(.url | endswith("/os/")) | "listed as " + .type'`
   );
+  assert.deepEqual(await asked(page), {
+    title: 'Let SLICC’s agents control this browser?',
+    body: 'They can open tabs, click and type with your logins. This lasts until you reload.',
+    action: 'Allow',
+    cancel: 'Don’t allow',
+    variant: 'accent',
+  });
+  await answer(page, 'action');
   await shows(page, 'listed as page');
+  assert.deepEqual(await automation(page), { via: 'extension' });
+  assert.equal(await open(page), false);
 
   await run(
     page,
@@ -91,6 +137,7 @@ test('playwright-cli drives a page through slicc-extension, and the page cannot 
   assert.ok(driven.some(({ url }) => url === target));
   await run(page, 'playwright-cli close && echo closed-$?');
   await shows(page, 'closed-0');
+  assert.equal(await open(page), false);
 
   for (const method of ['Target.getTargets', 'Target.attachToTarget', 'Runtime.evaluate']) {
     assert.ok(extension.sent.includes(method), `${method} went to the extension`);
@@ -130,4 +177,35 @@ test('with no host, the CDP endpoint says what to install', async (t) => {
     await read(page, '/tmp/elsewhere'),
     'CDP host: unknown runtime "elsewhere" (extension, proxy)\n502'
   );
+  assert.deepEqual(await automation(page), { via: null });
+});
+
+test('declining browser control answers 502 until the page reloads', async (t) => {
+  const page = await chrome.page(t);
+  const extension = await fakeExtension(page);
+  t.after(extension.close);
+  await boot(page);
+  const declined = 'CDP host: browser control was declined in seven; reload to be asked again\n502';
+
+  await run(
+    page,
+    `curl -s -w '%{http_code}' http://127.0.0.1:9222/json/list > /tmp/first; echo first-$?`
+  );
+  await asked(page);
+  await answer(page, 'cancel');
+  await shows(page, 'first-0');
+  assert.equal(await read(page, '/tmp/first'), declined);
+
+  await run(
+    page,
+    `playwright-cli tab-list; curl -s -w '%{http_code}' http://127.0.0.1:9222/json/list > /tmp/again; echo again-$?`
+  );
+  await shows(page, 'again-0');
+  assert.equal(await open(page), false);
+  assert.equal(await read(page, '/tmp/again'), declined);
+  assert.deepEqual(await automation(page), {
+    via: 'extension',
+    declined: true,
+  });
+  assert.deepEqual(extension.sent, []);
 });

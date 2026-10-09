@@ -15,6 +15,16 @@ function command(text) {
   }
 }
 
+export const ASK = {
+  title: 'Let SLICC’s agents control this browser?',
+  body: 'They can open tabs, click and type with your logins. This lasts until you reload.',
+  action: 'Allow',
+  cancel: 'Don’t allow',
+  variant: 'confirmation',
+};
+
+export const DECLINED = 'browser control was declined in seven; reload to be asked again';
+
 export function extensionConnection(cdp) {
   const sessions = new Map();
   let closed = false;
@@ -111,19 +121,48 @@ export function proxyConnection(proxy) {
   });
 }
 
-export function browserHook(network) {
+export function browserHosts(network) {
+  const extension = globalThis.sliccExtension?.cdp;
+  const proxy = network.kind === 'local-proxy' && network.status?.probe?.cdp;
+  return {
+    extension: extension && (() => extensionConnection(extension)),
+    proxy: proxy && (() => proxyConnection(network.proxy)),
+  };
+}
+
+export function browserVia(network) {
+  const hosts = browserHosts(network);
+  return RUNTIMES.find((runtime) => hosts[runtime]) ?? null;
+}
+
+export function browserHook(network, ask) {
+  let allowed;
   return async ({ runtime } = {}) => {
     if (runtime && !RUNTIMES.includes(runtime)) {
       throw new Error(`unknown runtime "${runtime}" (${RUNTIMES.join(', ')})`);
     }
-    const extension = globalThis.sliccExtension?.cdp;
-    const proxy = network.kind === 'local-proxy' && network.status?.probe?.cdp;
-    const hosts = {
-      extension: extension && (() => extensionConnection(extension)),
-      proxy: proxy && (() => proxyConnection(network.proxy)),
-    };
+    const hosts = browserHosts(network);
     const open = runtime ? hosts[runtime] : hosts.extension || hosts.proxy;
     if (!open) throw new Error(MISSING[runtime ?? 'any']);
+    allowed ??= Promise.resolve().then(ask);
+    if (!(await allowed)) throw new Error(DECLINED);
     return open();
   };
+}
+
+export function browserControl(network, ask, changed) {
+  let declined = false;
+  const hook = browserHook(network, async () => {
+    const allowed = await ask();
+    if (!allowed) {
+      declined = true;
+      changed();
+    }
+    return allowed;
+  });
+  const status = () => {
+    const via = browserVia(network);
+    return declined && via ? { via, declined: true } : { via };
+  };
+  return { hook, status };
 }

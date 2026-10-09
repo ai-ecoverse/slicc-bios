@@ -105,6 +105,8 @@ Programs in the kernel drive a browser over the Chrome DevTools Protocol: `playw
 
 A program picks a host by adding `runtime=extension` or `runtime=proxy` to the query of the URL it opens (`playwright-cli --runtime proxy`). With no runtime, the extension goes first. The hook never derives a URL from the request: it reaches only the extension's page global and the proxy the page already checked.
 
+**Consent.** The first time a program asks for a connection in a page session, after the hook has found a host, seven asks with spectrum's `confirm()`: "Let SLICC’s agents control this browser?" (accent, **Allow** or **Don’t allow**, which keeps the focus). Allowing covers every later connection until the page reloads. Declining makes every connection in that session answer `502` `CDP host: browser control was declined in seven; reload to be asked again`. This interim gate is to be replaced by per-action approvals. The Network panel shows the host in its browser automation line (`browser` on the network port, from `browserVia`): through the extension, through slicc-node, or not available. After a decline it says browser automation is off for the session (`declined: true`) until a reload asks again.
+
 When no host can drive a browser, `/json/list` and the WebSocket handshake answer `502` with `CDP host: no browser to drive: install slicc-extension, or run npx @ai-ecoverse/slicc-node`. A runtime that isn't `extension` or `proxy` gets `CDP host: unknown runtime "<name>" (extension, proxy)`. `/json/version` answers either way, since a hook is always offered.
 
 ## Kernel servers
