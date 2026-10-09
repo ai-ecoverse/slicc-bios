@@ -388,7 +388,7 @@ export async function resolveOverExit(tailnet, name, family, signal) {
 
 const unreachable = (message, code = 'ENETUNREACH') => Object.assign(new Error(message), { code });
 
-export const KERNEL_NAMES = ['emscripten', 'slicc'];
+export const KERNEL_NAMES = ['emscripten', 'slicc', 'wasmer.sh'];
 const ASKED = 50;
 
 export function ownName(name, own) {
