@@ -267,31 +267,20 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
       await (await root.getDirectoryHandle('opt')).getDirectoryHandle('agent')
     ).getDirectoryHandle('node_modules');
     let bytes = 0;
-    const walk = async (dir) => {
-      for await (const handle of dir.values()) {
-        if (handle.kind === 'directory') await walk(handle);
-        else bytes += (await handle.getFile()).size;
-      }
-    };
-    await walk(modules);
     let packages = 0;
-    const count = async (dir) => {
+    const walk = async (dir, inModules) => {
       for await (const handle of dir.values()) {
-        if (handle.kind !== 'directory' || handle.name.startsWith('.')) continue;
-        if (handle.name.startsWith('@')) await count(handle);
-        else {
-          packages += 1;
-          const nested = await handle.getDirectoryHandle('node_modules').catch(() => null);
-          if (nested) await count(nested);
+        if (handle.kind !== 'directory') {
+          bytes += (await handle.getFile()).size;
+          continue;
         }
+        if (inModules && !handle.name.startsWith('.') && !handle.name.startsWith('@'))
+          packages += 1;
+        const scope = inModules && handle.name.startsWith('@');
+        await walk(handle, handle.name === 'node_modules' || scope);
       }
     };
-    const store = await modules.getDirectoryHandle('.pnpm').catch(() => null);
-    if (store) {
-      for await (const name of store.keys()) {
-        if (name.includes('@') && !name.endsWith('.yaml') && name !== 'node_modules') packages += 1;
-      }
-    } else await count(modules);
+    await walk(modules, true);
     return { ms: Math.round(window.installEnd - window.installStart), bytes, packages };
   });
   console.log(
