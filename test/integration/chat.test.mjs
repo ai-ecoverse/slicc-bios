@@ -659,23 +659,26 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     window.freezerButton('Thaw').click();
   });
   await page.until(() => document.querySelector('slicc-app').model.agent.frozen().length === 0);
-  const thawed = await page.evaluate(
-    () =>
-      document
-        .querySelector('slicc-app')
-        .model.agent.list()
-        .find((agent) => agent.kind === 'cone' && !window.before.includes(agent.id))?.id
+  const thawed = await page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.agent.list()
+      .find((agent) => agent.kind === 'cone' && !window.before.includes(agent.id))
   );
   assert.ok(thawed);
+  assert.match(thawed.name, new RegExp(`^${frozen.name}`));
 
-  await page.evaluate((id) => document.querySelector('slicc-app').model.agent.select(id), thawed);
+  await page.evaluate(
+    (id) => document.querySelector('slicc-app').model.agent.select(id),
+    thawed.id
+  );
   await freeze();
   await page.until(() => !!window.freezerButton('Delete'));
   await page.evaluate(() => window.freezerButton('Delete').click());
   await page.until(() => !!window.confirmDialog());
   assert.equal(
     await page.evaluate(() => window.deep(document, 'slicc-confirm').heading),
-    `Delete ${frozen.name}?`
+    `Delete ${thawed.name}?`
   );
   await page.screenshot(new URL('freezer-delete-light.png', page.dir));
   await color('dark');
