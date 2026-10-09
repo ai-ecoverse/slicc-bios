@@ -59,6 +59,9 @@ importers:
       '@ai-ecoverse/wasm-tls-engine':
         specifier: 3.6.5-1
         version: 3.6.5-1
+      '@ai-ecoverse/wasm-tree':
+        specifier: 2.3.2-1
+        version: 2.3.2-1
       '@ai-ecoverse/wasm-which':
         specifier: 2.23.0-1
         version: 2.23.0-1
@@ -128,6 +131,9 @@ packages:
   '@ai-ecoverse/wasm-tls-engine@3.6.5-1':
     resolution: {integrity: sha512-4dy6QCAUwpN6EG7njdeYDmtNXpy1+3jU+qLuwl6/dOs7S+fO/Ybcs+XfZWgp9LFUYEE1mQfr+8bqkgiOwK8RnQ==}
 
+  '@ai-ecoverse/wasm-tree@2.3.2-1':
+    resolution: {integrity: sha512-SRKXqI491XrD7vhNPpKKerreIAFsf0XpUmbOm6E4TBAIXSq6KTWcieVivGo/ZsW+cNdW9yOyLGaVVFIQEx+fUw==}
+
   '@ai-ecoverse/wasm-which@2.23.0-1':
     resolution: {integrity: sha512-ijCQxAjVhGT/2vlNrpNSWuXzGAGFOncJtad1QdYBD4iYB5AUdweGGTS+sfKVOb8C4OKgq6p/emFHp6KMhd9+jA==}
 
@@ -166,5 +172,7 @@ snapshots:
   '@ai-ecoverse/wasm-sed@4.9.0-3': {}
 
   '@ai-ecoverse/wasm-tls-engine@3.6.5-1': {}
+
+  '@ai-ecoverse/wasm-tree@2.3.2-1': {}
 
   '@ai-ecoverse/wasm-which@2.23.0-1': {}

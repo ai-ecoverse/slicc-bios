@@ -61,6 +61,11 @@ test('reaches npm over HTTPS with curl and the everyday tools', async (t) => {
   await run(page, 'which bash; which nope 2>/dev/null; echo "which says $?"');
   await shows(page, '/usr/bin/bash');
   await shows(page, 'which says 1');
+  await run(
+    page,
+    'mkdir -p leaf/twig && touch leaf/twig/bud.txt && tree --noreport leaf | tail -1 | sed "s/^.* /tree drew /"'
+  );
+  await shows(page, 'tree drew bud.txt');
   assert.deepEqual(page.errors, []);
 });
 
