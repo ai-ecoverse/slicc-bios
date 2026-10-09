@@ -171,20 +171,42 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   const page = await chrome.page(t);
   await page.init(helpers);
   await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
-  await ready(page);
+  await ready(page, { settle: false });
   await page.evaluate(() => {
-    const output = document.querySelector('.agent output');
     window.progress = [];
-    new MutationObserver(() => window.progress.push(output.value)).observe(output, {
-      childList: true,
-      characterData: true,
-      subtree: true,
+    window.agentRow = () =>
+      document
+        .querySelector('slicc-app')
+        .model.updates.list()
+        .find((item) => item.id === 'agent');
+    window.updatesButton = (id, action) =>
+      document
+        .querySelector('slicc-app')
+        .dock.content('updates')
+        ?.shadowRoot?.querySelector(`article[data-id="${id}"] swc-button[data-action="${action}"]`);
+    window.updatesOpen = () =>
+      document.querySelector('slicc-app').dock.api.panels.some((panel) => panel.id === 'updates');
+    document.querySelector('slicc-app').model.updates.on('items', () => {
+      const { progress } = window.agentRow();
+      if (progress) window.progress.push(progress);
     });
   });
-  await page.within(INSTALL, () =>
-    /installing the agent… downloading [1-9]\d*\/\d{2,}/.test(
-      document.querySelector('.agent').textContent
-    )
+  await page.within(INSTALL, () => {
+    const { state, progress } = window.agentRow();
+    return (
+      state === 'downloading' &&
+      progress.done > 0 &&
+      progress.total >= 10 &&
+      window.updatesOpen() &&
+      !document.querySelector('slicc-app').model.updates.ready()
+    );
+  });
+  await page.until(
+    () =>
+      !!document
+        .querySelector('slicc-app')
+        .dock.content('updates')
+        ?.shadowRoot?.querySelector('article[data-id="agent"] swc-progress-bar[value]')
   );
   await page.screenshot(new URL('installing.png', page.dir));
   await page.within(INSTALL, () =>
@@ -193,13 +215,19 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
       .model.settings.accounts()
       .some((account) => account.id === 'amazon-bedrock')
   );
-  const phases = await page.evaluate(() =>
-    window.progress.map((text) => text.match(/(downloading|linking) (\d+)\/(\d+)/)).filter(Boolean)
+  await page.until(() => !window.updatesOpen());
+  assert.deepEqual(
+    await page.evaluate(() => {
+      const { state, actions } = window.agentRow();
+      return [document.querySelector('slicc-app').model.updates.ready(), state, actions];
+    }),
+    [true, 'installed', []]
   );
-  const firstLink = phases.findIndex(([, phase]) => phase === 'linking');
+  const phases = await page.evaluate(() => window.progress.map(({ phase }) => phase));
+  const firstLink = phases.indexOf('link');
   assert.ok(firstLink > 0, JSON.stringify(phases.slice(-5)));
-  assert.ok(phases.slice(0, firstLink).every(([, phase]) => phase === 'downloading'));
-  assert.ok(phases.slice(firstLink).every(([, phase]) => phase === 'linking'));
+  assert.ok(phases.slice(0, firstLink).every((phase) => phase === 'download'));
+  assert.ok(phases.slice(firstLink).every((phase) => phase === 'link'));
   const account = await page.evaluate(() =>
     document
       .querySelector('slicc-app')
@@ -283,7 +311,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   assert.match(sent[0].url, /\/model\/us\.anthropic\.claude-sonnet-5-5\/converse-stream$/);
   assert.equal(sent[0].method, 'POST');
   assert.match(sent[0].body, /Say hello/);
-  assert.equal(await page.evaluate(() => document.querySelector('.agent').hidden), true);
+  assert.equal(await page.evaluate(() => window.agentRow().state), 'installed');
 
   const lock = await readFile(
     new URL('../../src/packages/agent/pnpm-lock.yaml', import.meta.url),
@@ -291,17 +319,17 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   );
   chrome.overrides.set('/packages/agent/pnpm-lock.yaml', `${lock}# updated\n`);
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
-  await page.within(UPDATE, () => document.querySelector('.agent').dataset.state === 'ready');
-  assert.deepEqual(
-    await page.evaluate(() => {
-      const notice = document.querySelector('.agent');
-      return [notice.querySelector('output').value, notice.querySelector('button').textContent];
-    }),
-    ['agent updated', 'Restart agent']
-  );
+  await page.within(UPDATE, () => window.agentRow().state === 'ready');
+  assert.deepEqual(await page.evaluate(() => [window.agentRow().actions, window.updatesOpen()]), [
+    ['restart-agent'],
+    false,
+  ]);
+  await page.evaluate(() => document.querySelector('slicc-app').show('updates'));
+  await page.until(() => !!window.updatesButton('agent', 'restart-agent'));
   await page.screenshot(new URL('restart.png', page.dir));
-  await page.evaluate(() => document.querySelector('.agent button').click());
-  await page.until(() => document.querySelector('.agent').hidden);
+  await page.evaluate(() => window.updatesButton('agent', 'restart-agent').click());
+  await page.until(() => window.agentRow().state === 'current');
+  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
   await page.until(
     () => !!window.chatView() && !!window.deep(window.chatView().shadowRoot, 'textarea')
   );

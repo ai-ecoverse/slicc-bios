@@ -47,10 +47,15 @@ export async function boot(page) {
 
 export const prompt = 'slicc:~$ ';
 
-export async function ready(page) {
+export async function ready(page, { settle = true } = {}) {
   await page.until(
-    (prompt) =>
+    ([prompt, settle]) =>
       location.pathname === '/os/' &&
+      (!settle ||
+        (!!document.querySelector('slicc-app')?.model?.updates?.ready() &&
+          !document
+            .querySelector('slicc-app')
+            .dock.api.panels.some((panel) => panel.id === 'updates'))) &&
       !!document
         .querySelector('slicc-app')
         ?.dock?.content(
@@ -60,7 +65,7 @@ export async function ready(page) {
             .findLast((id) => id.startsWith('terminal:'))
         )
         ?.screen?.textContent.includes(prompt),
-    prompt
+    [prompt, settle]
   );
 }
 

@@ -98,7 +98,7 @@ test('boots into the SLICC UI: a file from the terminal shows up in the tree, op
       window.ui.app().surfaces.some((surface) => surface.id === 'updates'),
       !!window.ui.app().model.updates,
     ]),
-    [false, false]
+    [true, true]
   );
 
   await run(

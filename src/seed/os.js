@@ -4,17 +4,19 @@ import { surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
 import { signIn } from './adobe.js';
 import {
   installed as agentInstalled,
+  version as agentVersion,
   installAgent,
   recorded,
   restartChat,
   startChat,
   whenIdle,
 } from './agent.js';
-import { grammarBase, grammars, installed } from './grammars.js';
+import { grammarBase, grammars, version as grammarsVersion, installed } from './grammars.js';
 import { createFolders, offTheRecord } from './mounts.js';
 import { showNetwork } from './network.js';
 import { pickTransport } from './transport.js';
-import { update } from './update.js';
+import { text, update, versions } from './update.js';
+import { count, createUpdates, owners } from './updates.js';
 
 export const layouts = {
   agents: { side: 'left', open: ['tablet', 'desktop'] },
@@ -22,6 +24,7 @@ export const layouts = {
   terminal: { side: 'center', open: ['phone', 'tablet', 'desktop'] },
   files: { side: 'left', open: ['tablet', 'desktop'] },
   settings: { side: 'center', open: [] },
+  updates: { side: 'center', open: [] },
 };
 
 export const hide = ['/.slicc'];
@@ -89,16 +92,33 @@ const folders = createFolders({
 const kernel = await createKernel({ root, network: { transport }, ...folders.options });
 app.layoutKey = 'slicc-os.layout';
 app.surfaces = offered(surfaces);
-const base = await folders.attach(
-  kernel,
-  createKernelModel({
+const updates = createUpdates({ ready: await agentInstalled() });
+const base = {
+  ...(await folders.attach(
     kernel,
-    root,
-    storage: localStorage,
-    files: { skip, hide },
-    terminals: { env: { PS1: 'slicc:\\w\\$ ' } },
-  })
-);
+    createKernelModel({
+      kernel,
+      root,
+      storage: localStorage,
+      files: { skip, hide },
+      terminals: { env: { PS1: 'slicc:\\w\\$ ' } },
+    })
+  )),
+  updates,
+};
+const owned = new Map(Object.entries(owners).map(([id, name]) => [name, id]));
+const manifest = JSON.parse((await text(root, 'package.json')) ?? '{}');
+const names = Object.keys(manifest.dependencies ?? {});
+const found = await versions(root, names);
+for (const [id, name] of Object.entries(owners)) {
+  updates.set(id, { from: found[name], to: found[name] });
+}
+const others = count(names.filter((name) => !owned.has(name)).length);
+updates.set('bios', { from: others, to: others });
+const agentAt = await agentVersion();
+updates.set('agent', { from: agentAt, to: agentAt });
+const grammarsAt = await grammarsVersion();
+updates.set('grammars', { from: grammarsAt, to: grammarsAt });
 app.model = base;
 await app.updateComplete;
 app.show('terminal');
@@ -122,76 +142,100 @@ function startOnce() {
 if (await agentInstalled()) void startOnce();
 if (await installed()) app.grammarBase = grammarBase;
 
-const notice = document.querySelector('.update');
-const [status, reload] = notice.children;
-reload.addEventListener('click', () => location.replace(new URL('../', location.href)));
-
-const agentNotice = document.querySelector('.agent');
-const [agentStatus, agentAction] = agentNotice.children;
-
-function showAgent(state, text, action = '') {
-  agentNotice.dataset.state = state;
-  agentNotice.title = text;
-  agentStatus.value = text;
-  agentAction.textContent = action;
-  agentNotice.hidden = false;
-}
+const start = () => createKernel({ root, network: { transport }, media: false });
 
 async function restart() {
-  showAgent('active', 'restarting the agent once it is idle…');
   const chat = await agent;
   await whenIdle(app.model.agent);
   const lock = recorded();
   agent = offerAgent(app, base, restartChat(chat), login).then(async (restarted) =>
     started(restarted, await lock)
   );
-  if (await agent) agentNotice.hidden = true;
-  else showAgent('failed', 'the agent did not restart', 'Retry');
+  if (!(await agent)) {
+    updates.fail('agent', new Error('the agent did not restart'));
+    return;
+  }
+  const at = await agentVersion();
+  updates.checked('agent', { state: 'current', from: at, to: at, actions: [] });
 }
 
 async function offerChat() {
   try {
-    await installAgent(() => createKernel({ root, network: { transport }, media: false }), {
-      report: (text) => showAgent('active', text),
-    });
+    const changed = await installAgent(start, { report: updates.track('agent') });
+    const at = await agentVersion();
+    updates.setReady(true);
     const running = agent && (await agent);
     if (running && (await recorded()) !== startedWith) {
-      showAgent('ready', 'agent updated', 'Restart agent');
+      updates.checked('agent', {
+        state: 'ready',
+        progress: null,
+        to: at,
+        actions: ['restart-agent'],
+      });
       return;
     }
-    agentNotice.hidden = true;
+    updates.checked('agent', changed ? { state: 'installed', from: at, to: at } : {});
     await startOnce();
   } catch (error) {
-    showAgent('failed', `agent install failed: ${error.message}`, 'Retry');
+    updates.fail('agent', error);
   }
 }
 
-agentAction.addEventListener(
-  'click',
-  () => void (agentNotice.dataset.state === 'ready' ? restart() : offerChat())
-);
-
-function show(state, text) {
-  notice.dataset.state = state;
-  notice.title = text;
-  status.value = text;
-  notice.hidden = false;
-}
-
-async function check() {
+async function checkPackages() {
   try {
-    const changes = await update(kernel, { report: (text) => show('active', text) });
-    if (changes) show('ready', `updated ${changes.join(', ') || 'packages'}`);
+    const changes = await update(kernel, { report: updates.track('bios') });
+    for (const id of owned.values()) updates.checked(id);
+    if (!changes) {
+      updates.checked('bios');
+      return;
+    }
+    const rest = changes.filter(({ name }) => !owned.has(name));
+    for (const { name, from, to } of changes.filter(({ name }) => owned.has(name))) {
+      updates.set(owned.get(name), { state: 'ready', from, to, actions: ['reload'] });
+    }
+    updates.checked(
+      'bios',
+      rest.length
+        ? {
+            state: 'ready',
+            progress: null,
+            actions: ['reload'],
+            log: rest.map(({ name, from, to }) => `${name} ${from ?? 'new'} → ${to}`).join('\n'),
+          }
+        : { state: 'current', progress: null }
+    );
   } catch (error) {
-    show('failed', `update failed: ${error.message}`);
+    updates.fail('bios', error);
   }
-  await offerChat();
+}
+
+async function installGrammars() {
   try {
-    await grammars(() => createKernel({ root, network: { transport }, media: false }));
+    const changed = await grammars(start, { report: updates.track('grammars') });
+    const at = await grammarsVersion();
+    updates.checked('grammars', changed ? { state: 'installed', from: at, to: at } : {});
     app.grammarBase = grammarBase;
   } catch (error) {
-    console.warn(`grammars stay on jsDelivr: ${error.message}`);
+    updates.fail('grammars', error);
   }
+}
+
+const retry = {
+  agent: offerChat,
+  grammars: installGrammars,
+  bios: checkPackages,
+  kernel: checkPackages,
+  ui: checkPackages,
+};
+updates.handle('retry', (id) => retry[id]());
+updates.handle('update-now', (id) => retry[id]());
+updates.handle('restart-agent', restart);
+updates.handle('reload', () => location.replace(new URL('../', location.href)));
+
+async function check() {
+  await checkPackages();
+  await offerChat();
+  await installGrammars();
 }
 
 document.addEventListener('visibilitychange', () => {
