@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { after, test } from 'node:test';
 import { ready, run } from './bios.mjs';
 import { launch } from './chrome.mjs';
@@ -311,4 +311,122 @@ test('joins the tailnet with an auth key and reaches the web through it', {
     assert.notEqual(without, 'reached');
   }
   console.log(`panel: ${JSON.stringify(await tailnet(page))}`);
+});
+
+const interactive = process.env.TS_INTERACTIVE === '1';
+const signInFile = process.env.TS_SIGN_IN_FILE ?? '/tmp/tailscale-sign-in.txt';
+const shots = process.env.TS_SHOTS;
+
+const knockFrom = (cli, addr, port) =>
+  new Promise((resolve) => {
+    const [bin, ...base] = cli.split(' ');
+    const child = execFile(
+      bin,
+      [...base, 'nc', addr, String(port)],
+      { timeout: 15000 },
+      (error, out) => resolve({ answered: out.length > 0, connected: !error })
+    );
+    child.stdin.write('GET / HTTP/1.0\r\n\r\n');
+    setTimeout(() => child.stdin.end(), 5000);
+  });
+
+test('stage B: programs reach the tailnet and the exit node over raw TCP', {
+  skip: !(online && interactive),
+}, async (t) => {
+  const page = await chrome.page(t);
+  await page.init('() => { globalThis.sliccTailscaleDebug = true; }');
+  await page.goto('/#tailscale=on');
+  await ready(page);
+  const model = () => document.querySelector('slicc-app').model.network.status().tailnet;
+  await page.until((m) => {
+    const tailnet = document.querySelector('slicc-app').model.network.status().tailnet;
+    return tailnet?.loginUrl || tailnet?.state === 'running' || tailnet?.state === 'failed';
+  }, model.toString());
+  const first = await page.evaluate(model);
+  if (first.loginUrl) {
+    writeFileSync(signInFile, `${first.loginUrl}\n`);
+    console.log(`sign in at ${first.loginUrl}`);
+  }
+  await page.until(() => {
+    const tailnet = document.querySelector('slicc-app').model.network.status().tailnet;
+    return tailnet?.state === 'running' && tailnet.node?.addresses?.length;
+  });
+  const running = await page.evaluate(model);
+  console.log(
+    JSON.stringify({
+      node: running.node,
+      exitNodes: running.exitNodes,
+      shieldsUp: running.shieldsUp,
+    })
+  );
+  assert.equal(running.shieldsUp, true);
+
+  const peer = process.env.TS_PEER_URL;
+  if (peer) {
+    const raw = await curled(page, `--noproxy '*' ${peer}`, 'raw-peer');
+    console.log(JSON.stringify({ rawPeer: raw }));
+    assert.equal(raw.code, '0');
+    assert.match(raw.body, /hello from the tailnet/);
+  }
+
+  const host = await curled(page, `--noproxy '*' --max-time 10 http://10.0.2.2:5711/`, 'raw-host');
+  console.log(JSON.stringify({ rawHost: host.code }));
+  assert.notEqual(host.code, '0', 'host.slicc.internal never reaches the uplink');
+
+  const cli = process.env.TS_PEER_CLI;
+  if (cli) {
+    const self = running.node.addresses[0];
+    for (const port of [80, 5710, 9222]) {
+      const attempt = await knockFrom(cli, self, port);
+      console.log(JSON.stringify({ inbound: port, ...attempt }));
+      assert.equal(attempt.connected, false);
+      assert.equal(attempt.answered, false);
+    }
+  }
+
+  const exit = process.env.TS_EXIT_NODE;
+  if (exit) {
+    const choice = running.exitNodes.find((node) => node.name === exit);
+    assert.ok(choice, `exit node ${exit} is offered`);
+    await page.evaluate(
+      (id) => document.querySelector('slicc-app').model.network.setExitNode(id),
+      choice.id
+    );
+    await page.until(
+      (name) =>
+        document.querySelector('slicc-app').model.network.status().tailnet.exitNode === name,
+      exit
+    );
+    const trace = await curled(
+      page,
+      `--noproxy '*' --max-time 20 http://1.1.1.1/cdn-cgi/trace`,
+      'raw-exit'
+    );
+    const ip = /^ip=(.*)$/m.exec(trace.body)?.[1];
+    console.log(JSON.stringify({ rawExit: trace.code, ip }));
+    assert.equal(trace.code, '0');
+    assert.ok(ip);
+    if (shots) {
+      await page.evaluate(() => document.querySelector('slicc-app').show('network'));
+      await page.screenshot(`${shots}/network-panel.png`);
+      await page.evaluate(() => document.querySelector('slicc-app').show('updates'));
+      await page.screenshot(`${shots}/install-update.png`);
+    }
+    await page.evaluate(() => document.querySelector('slicc-app').model.network.setExitNode(null));
+    await page.until(
+      () => !document.querySelector('slicc-app').model.network.status().tailnet.exitNode
+    );
+    const without = await curled(
+      page,
+      `--noproxy '*' --max-time 10 http://1.1.1.1/cdn-cgi/trace`,
+      'raw-noexit'
+    );
+    console.log(JSON.stringify({ rawWithoutExit: without.code }));
+    assert.notEqual(
+      without.code,
+      '0',
+      'without an exit node, public addresses are unreachable over raw TCP'
+    );
+  }
+  await page.evaluate(() => document.querySelector('slicc-app').model.network.logoutTailnet());
 });

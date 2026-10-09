@@ -4,6 +4,7 @@ export const components = [
   ['ui', 'ui', 'UI'],
   ['bios', 'bios', 'BIOS packages'],
   ['grammars', 'grammars', 'Syntax grammars'],
+  ['tailscale', 'tailscale', 'Tailscale (/opt/tailscale)'],
 ];
 
 export const owners = {
@@ -20,6 +21,7 @@ const NAMES = {
   ui: 'the BIOS packages',
   bios: 'the BIOS packages',
   grammars: 'the syntax grammars',
+  tailscale: 'Tailscale',
 };
 const UNREACHABLE = /\b(ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT|EAI_AGAIN)\b/;
 

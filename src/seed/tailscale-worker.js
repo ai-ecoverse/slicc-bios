@@ -124,14 +124,18 @@ async function dialOne({ id, network, addr }) {
   }
 }
 
-async function writeOne({ id, bytes }) {
+async function writeOne({ id, op = id, bytes }) {
   const conn = open.get(id);
-  if (!conn?.write) return send({ error: { id, message: 'no such connection' } });
+  if (!conn?.write) return send({ error: { id: op, message: 'no such connection' } });
   try {
-    send({ wrote: { id, n: await conn.write(bytes) } });
+    send({ wrote: { id: op, n: await conn.write(bytes) } });
   } catch (error) {
-    send({ error: { id, ...failure(error) } });
+    send({ error: { id: op, ...failure(error) } });
   }
+}
+
+function closeWriteOne(id) {
+  open.get(id)?.closeWrite?.();
 }
 
 function closeOne(id) {
@@ -165,6 +169,7 @@ export function handle(data) {
         id:
           data.fetch?.id ??
           data.dial?.id ??
+          data.write?.op ??
           data.write?.id ??
           data.exitNode?.id ??
           data.logout ??
@@ -178,6 +183,7 @@ export function handle(data) {
   if (data.dial) return dialOne(data.dial);
   if (data.write) return writeOne(data.write);
   if (data.close !== undefined) return closeOne(data.close);
+  if (data.closeWrite !== undefined) return closeWriteOne(data.closeWrite);
   if (data.exitNode) return settle(data.exitNode.id, ipn.setExitNode(data.exitNode.expr));
   if (data.logout !== undefined) return settle(data.logout, Promise.resolve(ipn.logout()));
   if (typeof data.login === 'string') return ipn.login(data.login);

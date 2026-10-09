@@ -16,7 +16,12 @@ import { grammarBase, grammars, version as grammarsVersion, installed } from './
 import { serveLoopback } from './loopback.js';
 import { createFolders, offTheRecord } from './mounts.js';
 import { createNetwork } from './network.js';
-import { createTailscale, installTailscale, tailscaleConfig } from './tailscale.js';
+import {
+  createTailscale,
+  installTailscale,
+  tailscaleConfig,
+  tailscaleVersion,
+} from './tailscale.js';
 import { pickTransport } from './transport.js';
 import { openTunnel } from './tunnel.js';
 import { text, update, versions } from './update.js';
@@ -91,7 +96,7 @@ const folders = createFolders({
 });
 const kernel = await createKernel({
   root,
-  network: { transport },
+  network: { transport, uplink: tailscale.uplink },
   cdp: control.hook,
   ...folders.options,
 });
@@ -126,6 +131,32 @@ updates.set('bios', { from: others, to: others });
 const waiting = (at) => ({ from: at, to: at, state: at ? 'current' : 'queued' });
 updates.set('agent', waiting(await agentVersion()));
 updates.set('grammars', waiting(await grammarsVersion()));
+const tailscaleAt = await tailscaleVersion();
+updates.set('tailscale', { from: tailscaleAt, to: tailscaleAt });
+
+async function installTailnet(report = () => {}) {
+  const track = updates.track('tailscale');
+  try {
+    const changed = await installTailscale(
+      () => createKernel({ root, network: { transport }, media: false }),
+      {
+        report: (step) => {
+          report(step);
+          track(step);
+        },
+      }
+    );
+    const at = await tailscaleVersion();
+    updates.checked(
+      'tailscale',
+      changed ? { state: 'installed', from: at, to: at } : { from: at, to: at }
+    );
+    return changed;
+  } catch (error) {
+    updates.fail('tailscale', error);
+    throw error;
+  }
+}
 app.model = base;
 await app.updateComplete;
 const restoring = folders.restore();
@@ -133,10 +164,7 @@ void tailscale.start({
   kernel,
   ready: restoring,
   traits: reach.transport.traits,
-  install: (report) =>
-    installTailscale(() => createKernel({ root, network: { transport }, media: false }), {
-      report,
-    }),
+  install: installTailnet,
 });
 let agent = null;
 let startedWith = null;
@@ -251,6 +279,7 @@ async function installGrammars() {
 const retry = {
   agent: offerChat,
   grammars: installGrammars,
+  tailscale: () => tailscale.panel.check(),
   bios: checkPackages,
   kernel: checkPackages,
   ui: checkPackages,
@@ -260,10 +289,17 @@ updates.handle('update-now', (id) => retry[id]());
 updates.handle('restart-agent', restart);
 updates.handle('reload', () => location.replace(new URL('../', location.href)));
 
+async function updateTailnet() {
+  if (tailscale.panel.status().state !== 'running') return;
+  const changed = await installTailnet().catch(() => false);
+  if (changed) updates.set('tailscale', { state: 'ready', actions: ['reload'] });
+}
+
 async function check() {
   await checkPackages();
   await offerChat();
   await installGrammars();
+  await updateTailnet();
 }
 
 document.addEventListener('visibilitychange', () => {

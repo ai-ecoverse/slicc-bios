@@ -1,6 +1,6 @@
 import { attachKernel } from '@ai-ecoverse/slicc-kernel';
 import { stored } from './transport.js';
-import { fetchText, pnpm, text, write } from './update.js';
+import { fetchText, pnpm, text, versions, write } from './update.js';
 
 const CONFIG = 'tailscale';
 const STATE = 'tailscale-state';
@@ -12,6 +12,9 @@ const SOURCES = ['/mnt/tailscale', `/${FOLDER}/node_modules/${PACKAGE}/dist`, `/
 const IDLE_MS = 30000;
 const HEAD_MS = 60000;
 const LOOPBACK = new Set(['localhost', '::1']);
+const TAILNET = ['100.64.0.0/10', 'fd7a:115c:a1e0::/48'];
+const DOH = 'https://1.1.1.1/dns-query';
+const NAME_TTL = 60;
 
 export function takeTailscale(location, history) {
   const params = new URLSearchParams(location.hash.slice(1));
@@ -221,9 +224,13 @@ export function createTailnet({ worker, traits, idleMs = IDLE_MS, headMs = HEAD_
         localAddr: conn.localAddr,
         remoteAddr: conn.remoteAddr,
         read: () => (closed ? Promise.resolve(null) : ask(id, { read: id })),
+        closeWrite: () => {
+          if (!closed) worker.postMessage({ closeWrite: id });
+        },
         write: (bytes) => {
           const copy = new Uint8Array(bytes);
-          return ask(id, { write: { id, bytes: copy } }, [copy.buffer]);
+          const op = ++nextId;
+          return ask(op, { write: { id, op, bytes: copy } }, [copy.buffer]);
         },
         close,
       };
@@ -311,6 +318,107 @@ export async function readModule(fs, sources = SOURCES) {
   throw new Error(`no main.wasm and wasm_exec.js in ${tried.join(' or ')}`);
 }
 
+export function routeTable(status) {
+  if (status?.state !== 'Running') return { prefixes: [], exit: false };
+  return { prefixes: TAILNET, exit: Boolean(status.exitNode) };
+}
+
+export function reserved(host) {
+  const bare = host.replace(/^\[|\]$/g, '').toLowerCase();
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(bare);
+  const v4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(mapped?.[1] ?? bare);
+  if (v4) {
+    const [a, b, c, d] = v4.slice(1).map(Number);
+    return (
+      a === 0 ||
+      a === 127 ||
+      a >= 224 ||
+      (a === 169 && b === 254) ||
+      (a === 10 && b === 0 && c === 2 && d === 2)
+    );
+  }
+  return bare === '::' || bare === '::1' || /^(fe[89ab]|ff)/.test(bare) || !bare.includes(':');
+}
+
+export function tailnetNames(name, status) {
+  const want = name.replace(/\.$/, '').toLowerCase();
+  const nodes = [status?.self, ...(status?.peers ?? [])].filter(Boolean);
+  for (const node of nodes) {
+    const dns = (node.dnsName ?? '').replace(/\.$/, '').toLowerCase();
+    if (dns && (dns === want || dns.split('.')[0] === want)) return node.addresses ?? [];
+  }
+  return null;
+}
+
+const v6 = (address) => address.includes(':');
+const pick = (addresses, family) =>
+  addresses.filter((a) => (family === 4 ? !v6(a) : family === 6 ? v6(a) : true));
+
+async function readAll(response) {
+  const chunks = [];
+  for await (const chunk of response.body) chunks.push(...chunk);
+  return new TextDecoder().decode(new Uint8Array(chunks));
+}
+
+export async function resolveOverExit(tailnet, name, family, signal) {
+  const types = family === 6 ? ['AAAA'] : family === 4 ? ['A'] : ['A', 'AAAA'];
+  const addresses = [];
+  let ttl = NAME_TTL;
+  for (const type of types) {
+    const url = `${DOH}?${new URLSearchParams({ name, type })}`;
+    const response = await tailnet.fetch({
+      url,
+      method: 'GET',
+      headers: [['accept', 'application/dns-json']],
+      signal,
+    });
+    if (response.status !== 200) {
+      await response.cancel();
+      continue;
+    }
+    const answer = JSON.parse(await readAll(response));
+    for (const record of answer.Answer ?? []) {
+      if (record.type !== 1 && record.type !== 28) continue;
+      addresses.push(record.data);
+      ttl = Math.min(ttl, record.TTL ?? NAME_TTL);
+    }
+  }
+  return { addresses, ttl };
+}
+
+const unreachable = (message, code = 'ENETUNREACH') => Object.assign(new Error(message), { code });
+
+export function createUplink(slot) {
+  return {
+    traits: { tcp: true, udp: false, ipv6: false },
+    routes: { prefixes: [], exit: false },
+    async resolve(name, family, signal) {
+      const tailnet = slot.current;
+      const status = tailnet?.view.status;
+      if (status?.state !== 'Running') return [];
+      const known = tailnetNames(name, status);
+      if (known) return { addresses: pick(known, family), ttl: NAME_TTL };
+      if (!status.exitNode) return [];
+      return resolveOverExit(tailnet, name, family, signal);
+    },
+    async dial({ host, port, signal }) {
+      const tailnet = slot.current;
+      if (!tailnet) throw unreachable('Tailscale is not running');
+      if (reserved(host)) throw unreachable(`the tailnet does not carry ${host}`);
+      signal?.throwIfAborted();
+      const conn = await tailnet.dial('tcp', v6(host) ? `[${host}]:${port}` : `${host}:${port}`);
+      return {
+        localAddr: conn.localAddr,
+        remoteAddr: conn.remoteAddr,
+        read: () => conn.read(),
+        write: (bytes) => conn.write(bytes),
+        closeWrite: () => conn.closeWrite(),
+        close: () => conn.close(),
+      };
+    },
+  };
+}
+
 export function installTailscale(start, options = {}) {
   const { from = deployed, report = () => {}, locks = navigator.locks, root } = options;
   return locks.request('slicc-tailscale', async () => {
@@ -329,6 +437,11 @@ export function installTailscale(start, options = {}) {
     await write(dir, RECEIPT, lock);
     return true;
   });
+}
+
+export async function tailscaleVersion(root) {
+  const dir = root ?? (await navigator.storage.getDirectory());
+  return (await versions(dir, [PACKAGE], `${FOLDER}/`))[PACKAGE];
 }
 
 export function installing({ progress }) {
@@ -355,7 +468,19 @@ export function createTailscale(config, deps = {}) {
   let context = null;
   let starting = null;
   let authKey = config.authKey;
+  const uplink = createUplink(slot);
+  let routes = JSON.stringify(uplink.routes);
+  const syncRoutes = () => {
+    const table = routeTable(slot.current ? view.status : null);
+    const next = JSON.stringify(table);
+    if (next === routes || !context?.kernel?.setRoutes) return;
+    routes = next;
+    context.kernel
+      .setRoutes(table)
+      .catch((error) => console.warn(`tailscale routes: ${error.message}`));
+  };
   const changed = () => {
+    syncRoutes();
     document.documentElement.dataset.tailscale = !enabled
       ? 'off'
       : view.failed
@@ -465,6 +590,7 @@ export function createTailscale(config, deps = {}) {
   };
   return {
     panel,
+    uplink,
     wrap: (base) => routedTransport(base, slot),
     start({ kernel, ready, traits, install }) {
       context = { kernel, ready, traits, install };
