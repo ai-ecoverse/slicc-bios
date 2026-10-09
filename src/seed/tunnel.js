@@ -150,6 +150,8 @@ export function openTunnel(kernel, { url, key }, options = {}) {
     target = globalThis,
     delays = DELAYS,
     setTimeout = globalThis.setTimeout,
+    channel = globalThis.BroadcastChannel && new BroadcastChannel('slicc-kernel-tunnel'),
+    hasFocus = () => globalThis.document?.hasFocus() ?? false,
   } = options;
   const address = `${url.replace(/^http:/, 'ws:')}/api/kernel-tunnel`;
   const tunnels = new Set();
@@ -177,15 +179,21 @@ export function openTunnel(kernel, { url, key }, options = {}) {
     socket.onopen = () => {
       failures = 0;
       for (const other of tunnels) if (other !== tunnel) retire(other);
+      channel?.postMessage('opened');
     };
     tunnels.add(tunnel);
     current = tunnel;
   }
 
-  const focused = () => {
+  const claim = () => {
     if (current?.socket.readyState === 1) connect();
   };
-  target.addEventListener?.('focus', focused);
+  if (channel) {
+    channel.onmessage = () => {
+      if (hasFocus()) claim();
+    };
+  }
+  target.addEventListener?.('focus', claim);
   connect();
   return {
     get tunnel() {
@@ -194,7 +202,8 @@ export function openTunnel(kernel, { url, key }, options = {}) {
     close() {
       stopped = true;
       clearTimeout(timer);
-      target.removeEventListener?.('focus', focused);
+      target.removeEventListener?.('focus', claim);
+      channel?.close();
       for (const tunnel of tunnels) tunnel.close();
     },
   };

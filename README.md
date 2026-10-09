@@ -123,7 +123,7 @@ What doesn't work through the service worker:
 - **Serving streams.** For every stream slicc-node opens, the page calls `kernel.dial({ port })` and pipes the bytes both ways. Each direction may have at most 256 KiB in flight before the other side credits it, so a slow stream doesn't hold up the others.
 - **A dial that fails** is reset with its error code. slicc-node then answers `502 nothing listening on kernel port <port>`.
 - **Reconnecting.** A dropped tunnel reconnects after 1, 2, 5, 10, then every 30 seconds.
-- **Several tabs.** slicc-node gives new streams to the most recently connected tunnel. A seven tab reconnects when it gets focus, so the focused tab's kernel takes new streams, and its old tunnel closes once its open streams have ended.
+- **Several tabs.** slicc-node gives new streams to the most recently connected tunnel. A seven tab reconnects when it gets focus. When another seven tab's tunnel opens, for example after slicc-node restarts, a tab that has focus reconnects too, over the BroadcastChannel `slicc-kernel-tunnel`. So the focused tab's kernel takes new streams, and an old tunnel closes once its open streams have ended.
 
 The contract is in slicc-node's README, under [Kernel services](https://github.com/ai-ecoverse/slicc-node#kernel-services).
 
