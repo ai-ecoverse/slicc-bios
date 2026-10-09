@@ -85,6 +85,7 @@ await step('seed', async () => {
     'callback.js',
     'grammars.js',
     'index.html',
+    'loopback.js',
     'mounts.js',
     'network.js',
     'os.css',

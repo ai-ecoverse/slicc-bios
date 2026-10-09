@@ -38,6 +38,7 @@ test('boots through every step into the UI served from OPFS', async (t) => {
       'os/callback.js',
       'os/grammars.js',
       'os/index.html',
+      'os/loopback.js',
       'os/mounts.js',
       'os/network.js',
       'os/os.css',
