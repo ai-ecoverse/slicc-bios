@@ -73,13 +73,14 @@ test('off the record, a shell fsa mount asks for a folder in the notice strip, w
   assert.deepEqual(await notice(page, '/mnt/x'), {
     slot: 'status',
     role: 'status',
-    text: '/mnt/x needs a folder',
+    text: '/mnt/x needs a folder (asked again after a reload)',
     button: 'Insert folder',
   });
 
   await page.evaluate(() => document.querySelector('.mount[data-target="/mnt/x"] button').click());
   await page.until(() => !document.querySelector('.mount[data-target="/mnt/x"]'));
   assert.equal(await page.evaluate(() => window.picked), 1);
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.folders), 'session');
   await run(
     page,
     'cat /mnt/x/hello.txt; echo "made $((2 + 3))" > /mnt/x/made.txt && echo "written $((3 + 4))"'
@@ -110,7 +111,7 @@ test('off the record, a shell fsa mount asks for a folder in the notice strip, w
     'mkdir -p /mnt/h; mount -t hostfs project /mnt/h; echo "no proxy $((1000 + $?))"'
   );
   await shows(page, 'no proxy 1032');
-  assert.match(await screen(page), /unknown filesystem type 'hostfs'/);
+  assert.match(await screen(page), /hostfs is not available here \(no host connection\)/);
   assert.deepEqual(page.errors, []);
 });
 

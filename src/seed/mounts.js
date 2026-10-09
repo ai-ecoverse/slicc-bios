@@ -99,7 +99,7 @@ export function mountName(name, taken) {
   return target;
 }
 
-export function pendingNotice(app, { target, insert, done }) {
+export function pendingNotice(app, { target, insert, done, session }) {
   const notice = document.createElement('span');
   notice.slot = 'status';
   notice.className = 'mount';
@@ -115,7 +115,9 @@ export function pendingNotice(app, { target, insert, done }) {
     notice.title = text;
     output.value = text;
   };
-  say(`${target} needs a folder`);
+  say(
+    session ? `${target} needs a folder (asked again after a reload)` : `${target} needs a folder`
+  );
   button.addEventListener('click', () => {
     const inserting = insert();
     button.disabled = true;
@@ -133,15 +135,42 @@ export function pendingNotice(app, { target, insert, done }) {
   return () => notice.remove();
 }
 
+async function settle(kernel, before, update) {
+  const was = JSON.stringify(before);
+  for (const end = Date.now() + SETTLE_MS; Date.now() < end; await pause(STEP_MS)) {
+    const next = await kernel.mounts();
+    if (JSON.stringify(next) !== was) return update(next);
+  }
+}
+
+function kernelOptions({ secret, pick, pending, allow, network }) {
+  return {
+    ...(secret ? { metadata: false } : {}),
+    requestDirectory: () => pick(),
+    onMountPending: pending,
+    processMounts: allow,
+    ...(network.kind === 'local-proxy' ? { hostfs: hostfsGrants(network.proxy) } : {}),
+  };
+}
+
+function markFolders(session) {
+  document.documentElement.dataset.folders = session ? 'session' : 'remembered';
+}
+
 export function createFolders({
   app,
   storage,
   network,
-  secret = false,
+  secret: initial = false,
   pick = () => showDirectoryPicker({ mode: 'readwrite' }),
+  persist = () => navigator.storage.persist?.(),
+  check = offTheRecord,
+  mark = markFolders,
   notice = pendingNotice,
   attach = attachKernel,
 }) {
+  let secret = initial;
+  mark(secret);
   const exports = network.kind === 'local-proxy' ? hostfsExports(network.proxy) : null;
   const listeners = new Map();
   const notices = new Map();
@@ -208,12 +237,11 @@ export function createFolders({
     await refresh(true);
   }
 
-  async function settle(before) {
-    const was = JSON.stringify(before);
-    for (const end = Date.now() + SETTLE_MS; Date.now() < end; await pause(STEP_MS)) {
-      const next = await kernel.mounts();
-      if (JSON.stringify(next) !== was) return update(next);
-    }
+  async function upgrade() {
+    if (!secret || !(await persist()) || (await check())) return;
+    secret = false;
+    mark(secret);
+    remember(storage, secret, [], folders(table));
   }
 
   function pending({ target, source, insert }) {
@@ -224,17 +252,21 @@ export function createFolders({
       notice(app, {
         target,
         source,
-        insert,
+        session: secret,
+        insert: () => {
+          const inserted = insert();
+          void upgrade().catch(() => {});
+          return inserted;
+        },
         done: () => void kernel.mounts().then(update),
       })
     );
   }
 
   async function allow(req) {
-    if (req.op === 'mount' && req.type === 'hostfs' && exports) {
-      if (!(await exports()).includes(req.source)) return false;
-    }
-    void settle(await kernel.mounts());
+    const hostfs = req.op === 'mount' && req.type === 'hostfs' && exports;
+    if (hostfs && !(await exports()).includes(req.source)) return false;
+    void settle(kernel, await kernel.mounts(), update);
     return true;
   }
 
@@ -289,13 +321,7 @@ export function createFolders({
   };
 
   return {
-    options: {
-      ...(secret ? { metadata: false } : {}),
-      requestDirectory: () => pick(),
-      onMountPending: pending,
-      processMounts: allow,
-      ...(network.kind === 'local-proxy' ? { hostfs: hostfsGrants(network.proxy) } : {}),
-    },
+    options: kernelOptions({ secret: initial, pick, pending, allow, network }),
     async attach(attached, model) {
       kernel = attached;
       files = model.files;

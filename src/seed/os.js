@@ -80,9 +80,12 @@ document.documentElement.dataset.transport = kind;
 showNetwork(document.querySelector('.network'), network);
 const root = await navigator.storage.getDirectory();
 const app = document.querySelector('slicc-app');
-const secret = await offTheRecord();
-document.documentElement.dataset.folders = secret ? 'session' : 'remembered';
-const folders = createFolders({ app, storage: localStorage, network, secret });
+const folders = createFolders({
+  app,
+  storage: localStorage,
+  network,
+  secret: await offTheRecord(),
+});
 const kernel = await createKernel({ root, network: { transport }, ...folders.options });
 app.layoutKey = 'slicc-os.layout';
 app.surfaces = offered(surfaces);
