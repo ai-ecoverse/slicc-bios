@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:net';
 import { after, test } from 'node:test';
-import { boot, run, shows } from './bios.mjs';
+import { startProxy } from '@ai-ecoverse/slicc-node';
+import { boot, ready, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const port = await new Promise((resolve) => {
@@ -211,4 +212,80 @@ test('declining browser control answers 502 until the page reloads', async (t) =
     declined: true,
   });
   assert.deepEqual(extension.sent, []);
+});
+
+async function viaProxy(t) {
+  const proxy = await startProxy({
+    port: 0,
+    origins: [new URL(chrome.url).origin],
+    cdp: `http://127.0.0.1:${port}`,
+    kernelPort: null,
+    log: () => {},
+  });
+  t.after(() => proxy.close());
+  return proxy;
+}
+
+async function launched(t, proxy) {
+  const page = await chrome.page(t);
+  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}`);
+  await ready(page);
+  return page;
+}
+
+test('playwright-cli drives a page through slicc-node’s /cdp, on one shared socket', async (t) => {
+  const proxy = await viaProxy(t);
+  const page = await launched(t, proxy);
+  assert.deepEqual(await automation(page), { via: 'proxy' });
+  chrome.overrides.set(
+    '/driven.html',
+    '<!doctype html><title>driven</title><h1>Driven through slicc-node</h1>'
+  );
+  const target = new URL('/driven.html', chrome.url).href;
+
+  await run(
+    page,
+    `curl -sf http://127.0.0.1:9222/json/list | jq -r '.[] | select(.url | endswith("/os/")) | "listed as " + .type'`
+  );
+  await asked(page);
+  await answer(page, 'action');
+  await shows(page, 'listed as page');
+
+  await run(
+    page,
+    `playwright-cli open about:blank && playwright-cli goto ${target} && playwright-cli snapshot`
+  );
+  await shows(page, 'heading "Driven through slicc-node"');
+  await run(page, 'playwright-cli close && echo closed-$?');
+  await shows(page, 'closed-0');
+  assert.equal(await open(page), false);
+  assert.deepEqual(page.errors, []);
+});
+
+test('when another page takes over slicc-node’s /cdp, the first page’s connections close and say so', async (t) => {
+  const proxy = await viaProxy(t);
+  const first = await launched(t, proxy);
+  await run(first, 'playwright-cli open about:blank');
+  await asked(first);
+  await answer(first, 'action');
+  await shows(first, 'Opened about:blank');
+  await run(first, `playwright-cli eval 'new Promise(() => {})' > /tmp/held 2>&1; echo "held-$?"`);
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+
+  const second = await first.tab();
+  await second.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}`);
+  await ready(second);
+  await run(
+    second,
+    `curl -s -o /dev/null -w 'second-%{http_code}' http://127.0.0.1:9222/json/list`
+  );
+  await asked(second);
+  await answer(second, 'action');
+  await shows(second, 'second-200');
+  await first.send('Page.bringToFront');
+  await shows(first, 'held-1');
+  assert.equal(
+    await read(first, '/tmp/held'),
+    'websocket closed 1011 another page took over the local proxy’s browser connection (superseded-by-new-cdp-client)\n'
+  );
 });
