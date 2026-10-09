@@ -12,6 +12,7 @@ import {
   whenIdle,
 } from './agent.js';
 import { grammarBase, grammars, version as grammarsVersion, installed } from './grammars.js';
+import { serveLoopback } from './loopback.js';
 import { createFolders, offTheRecord } from './mounts.js';
 import { showNetwork } from './network.js';
 import { pickTransport } from './transport.js';
@@ -91,6 +92,7 @@ const folders = createFolders({
   secret: await offTheRecord(),
 });
 const kernel = await createKernel({ root, network: { transport }, ...folders.options });
+serveLoopback(kernel);
 app.layoutKey = 'slicc-os.layout';
 app.surfaces = offered(surfaces);
 const updates = createUpdates({ ready: await agentInstalled() });
