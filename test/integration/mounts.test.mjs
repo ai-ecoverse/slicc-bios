@@ -20,6 +20,7 @@ async function opened(t) {
 
 async function picker(page) {
   await page.init(() => {
+    window.filesPanel = () => document.querySelector('slicc-app').dock.content('files').shadowRoot;
     window.picked = 0;
     window.showDirectoryPicker = async () => {
       window.picked++;
@@ -121,7 +122,7 @@ test('off the record, a shell fsa mount asks for a folder in the notice strip, w
   assert.deepEqual(page.errors, []);
 });
 
-test('the files port mounts a picked folder and ejects it, and the pending notice goes when the shell unmounts', async (t) => {
+test('Mount a folder and Eject in the Files panel mount and unmount a picked folder, and the Mounted strip follows the shell', async (t) => {
   const { page } = await opened(t);
   await ui(page);
   await picker(page);
@@ -131,26 +132,38 @@ test('the files port mounts a picked folder and ejects it, and the pending notic
     'mkdir -p /tmp/picked && echo "tree $((4 * 4))" > /tmp/picked/leaf.txt && cat /tmp/picked/leaf.txt'
   );
   await shows(page, 'tree 16');
-  const target = await page.evaluate(() =>
-    document.querySelector('slicc-app').model.files.mountFolder()
+  await page.until(() => !!window.filesPanel().querySelector('[data-action="mount-folder"]'));
+  await page.evaluate(() =>
+    window.filesPanel().querySelector('[data-action="mount-folder"]').click()
   );
-  assert.equal(target, '/mnt/picked');
-  assert.equal(await notice(page, target), null);
   await page.until(() => window.ui.tree().paths.includes('mnt/picked/leaf.txt'));
+  assert.equal(await page.evaluate(() => window.picked), 1);
+  assert.deepEqual(await mounts(page), ['/mnt/picked']);
+  assert.equal(await notice(page, '/mnt/picked'), null);
+  await page.until(
+    () => !!window.filesPanel().querySelector('[data-action="eject"][data-path="/mnt/picked"]')
+  );
   assert.equal(
     await page.evaluate(() =>
       document.querySelector('slicc-app').model.files.read('/mnt/picked/leaf.txt')
     ),
     'tree 16\n'
   );
-  await page.evaluate(() => document.querySelector('slicc-app').model.files.eject('/mnt/picked'));
-  assert.deepEqual(await mounts(page), []);
+  await page.evaluate(() =>
+    window.filesPanel().querySelector('[data-action="eject"][data-path="/mnt/picked"]').click()
+  );
+  await page.until(() => document.querySelector('slicc-app').model.files.mounts().length === 0);
+  await page.until(() => !window.filesPanel().querySelector('[data-action="eject"]'));
+  await page.until(() => !window.ui.tree().paths.includes('mnt/picked/leaf.txt'));
   await run(page, 'mount | grep -c "/mnt/picked" | sed "s/^/still /"');
   await shows(page, 'still 0');
 
   await run(page, 'mkdir -p /mnt/y && mount -t fsa none /mnt/y && echo "asked $((5 * 5))"');
   await shows(page, 'asked 25');
   await page.until(() => !!document.querySelector('.mount[data-target="/mnt/y"]'));
+  await page.until(
+    () => !!window.filesPanel().querySelector('[data-action="eject"][data-path="/mnt/y"]')
+  );
   await run(page, 'umount /mnt/y && echo "gone $((6 * 6))"');
   await shows(page, 'gone 36');
   await page.until(() => !document.querySelector('.mount[data-target="/mnt/y"]'));

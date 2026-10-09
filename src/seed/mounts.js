@@ -180,6 +180,7 @@ export function createFolders({
   let files = null;
   let table = [];
   let entries = [];
+  const removed = [];
   let running = null;
   let again = false;
   let forced = false;
@@ -193,6 +194,8 @@ export function createFolders({
   async function scan() {
     const out = await walkMounts(fs, table);
     const changed = JSON.stringify(out) !== JSON.stringify(entries);
+    const kept = new Set(out.map((entry) => entry.path));
+    removed.push(...entries.filter((entry) => entry.kind === 'file' && !kept.has(entry.path)));
     entries = out;
     return changed;
   }
@@ -214,6 +217,7 @@ export function createFolders({
         if ((await scan()) || forced) {
           forced = false;
           emit('files', await list());
+          for (const entry of removed.splice(0)) emit('file', entry.path);
         }
       } while (again);
     })().finally(() => {
