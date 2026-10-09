@@ -196,7 +196,7 @@ test('clears the screen and reads the terminal size with ncurses-utils', async (
 test('installs a command with pnpm add -g and runs it in the same shell', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
-  await run(page, 'pnpm add -g @ai-ecoverse/wasm-xxd@9.1.1850; echo "added $((40+$?))"');
+  await run(page, 'pnpm add -g @ai-ecoverse/wasm-xxd@9.2.1167-1; echo "added $((40+$?))"');
   await shows(page, 'added 4', 300000);
   assert.match(await screen(page), /added 40/, await screen(page));
   await run(page, 'echo hi | xxd');
