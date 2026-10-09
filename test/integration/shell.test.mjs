@@ -56,6 +56,8 @@ test('reaches npm over HTTPS with curl and the everyday tools', async (t) => {
   await shows(page, 'found 1');
   await run(page, 'find /usr/bin -name "less" | head -1');
   await shows(page, '/usr/bin/less');
+  await run(page, 'seq 3 | xargs -n 1 echo | wc -l | sed "s/^/xargs ran /"');
+  await shows(page, 'xargs ran 3');
   await run(page, 'which bash; which nope 2>/dev/null; echo "which says $?"');
   await shows(page, '/usr/bin/bash');
   await shows(page, 'which says 1');
