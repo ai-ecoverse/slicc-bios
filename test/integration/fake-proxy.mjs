@@ -96,6 +96,14 @@ function hostfs(req, res, { cors, key, exports, grants }) {
     });
     return;
   }
+  if (req.url === '/api/hostfs/mounts') {
+    const ok = req.headers['x-bridge-token'] === key;
+    res.writeHead(ok ? 200 : 403, { ...cors, 'Content-Type': 'application/json' });
+    res.end(
+      ok ? JSON.stringify(Object.keys(exports).map((name) => ({ name, readonly: false }))) : ''
+    );
+    return;
+  }
   const files = exports[grants.get(req.headers['x-hostfs-token'])];
   if (!files) {
     fail(res, cors, 403, 'EACCES', { 'X-Proxy-Error': '1' });

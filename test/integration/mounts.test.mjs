@@ -1,22 +1,25 @@
 import assert from 'node:assert/strict';
-import { after, test } from 'node:test';
+import { test } from 'node:test';
 import { boot, ready, run, screen, shows, ui } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { fakeProxy } from './fake-proxy.mjs';
 
-const chrome = await launch();
-const proxy = await fakeProxy({
-  origin: new URL(chrome.url).origin,
-  key: 'the-key',
-  exports: { project: { 'hello.txt': 'hello from the host\n' } },
-});
-after(async () => {
-  await proxy.close();
-  await chrome.close();
-});
+async function opened(t) {
+  const chrome = await launch();
+  const proxy = await fakeProxy({
+    origin: new URL(chrome.url).origin,
+    key: 'the-key',
+    exports: { project: { 'hello.txt': 'hello from the host\n' } },
+  });
+  t.after(async () => {
+    await proxy.close();
+    await chrome.close();
+  });
+  return { page: await chrome.page(t), proxy };
+}
 
-async function picker(page, { quota } = {}) {
-  await page.init((quota) => {
+async function picker(page, { secret = false } = {}) {
+  await page.init(() => {
     window.picked = 0;
     window.showDirectoryPicker = async () => {
       window.picked++;
@@ -24,8 +27,12 @@ async function picker(page, { quota } = {}) {
       const tmp = await root.getDirectoryHandle('tmp', { create: true });
       return tmp.getDirectoryHandle('picked', { create: true });
     };
-    if (quota) navigator.storage.estimate = async () => ({ quota, usage: 0 });
-  }, quota);
+  });
+  if (secret) {
+    await page.init(() => {
+      navigator.storage.estimate = async () => ({ quota: 100 * 1024 * 1024, usage: 0 });
+    });
+  }
 }
 
 const notice = (page, target) =>
@@ -57,7 +64,7 @@ async function read(page, path) {
 }
 
 test('mount -t fsa from the shell asks for a folder in the notice strip and stays mounted across a reload', async (t) => {
-  const page = await chrome.page(t);
+  const { page } = await opened(t);
   await ui(page);
   await picker(page);
   await boot(page);
@@ -77,8 +84,12 @@ test('mount -t fsa from the shell asks for a folder in the notice strip and stay
   await page.evaluate(() => document.querySelector('.mount[data-target="/mnt/x"] button').click());
   await page.until(() => !document.querySelector('.mount[data-target="/mnt/x"]'));
   assert.equal(await page.evaluate(() => window.picked), 1);
-  await run(page, 'cat /mnt/x/hello.txt; echo "made $((2 + 3))" > /mnt/x/made.txt');
+  await run(
+    page,
+    'cat /mnt/x/hello.txt; echo "made $((2 + 3))" > /mnt/x/made.txt && echo "written $((3 + 4))"'
+  );
   await shows(page, 'from the folder 42');
+  await shows(page, 'written 7');
   assert.equal(await read(page, 'tmp/picked/made.txt'), 'made 5\n');
   await page.until(() => window.ui.tree().paths.includes('mnt/x/made.txt'));
   assert.deepEqual(await mounts(page), ['/mnt/x']);
@@ -115,11 +126,14 @@ test('mount -t fsa from the shell asks for a folder in the notice strip and stay
 });
 
 test('the files port mounts a picked folder and ejects it, and the pending notice goes when the shell unmounts', async (t) => {
-  const page = await chrome.page(t);
+  const { page } = await opened(t);
   await ui(page);
   await picker(page);
   await boot(page);
-  await run(page, 'mkdir -p /tmp/picked && echo "tree $((4 * 4))" > /tmp/picked/leaf.txt');
+  await run(
+    page,
+    'mkdir -p /tmp/picked && echo "tree $((4 * 4))" > /tmp/picked/leaf.txt && cat /tmp/picked/leaf.txt'
+  );
   await shows(page, 'tree 16');
   const target = await page.evaluate(() =>
     document.querySelector('slicc-app').model.files.mountFolder()
@@ -148,8 +162,8 @@ test('the files port mounts a picked folder and ejects it, and the pending notic
 });
 
 test('off the record, a folder mount is neither remembered nor mounted again after a reload', async (t) => {
-  const page = await chrome.page(t);
-  await picker(page, { quota: 100 * 1024 * 1024 });
+  const { page } = await opened(t);
+  await picker(page, { secret: true });
   await boot(page);
   await run(page, 'mkdir -p /mnt/z && mount -t fsa none /mnt/z && echo "private $((7 * 7))"');
   await shows(page, 'private 49');
@@ -167,7 +181,7 @@ test('off the record, a folder mount is neither remembered nor mounted again aft
 });
 
 test('mount -t hostfs mounts a folder the local proxy exports, with a grant the shell never sees', async (t) => {
-  const page = await chrome.page(t);
+  const { page, proxy } = await opened(t);
   await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
   await ready(page);
   await run(
@@ -189,7 +203,7 @@ test('mount -t hostfs mounts a folder the local proxy exports, with a grant the 
 
   await run(
     page,
-    'mkdir -p /mnt/q; mount -t hostfs elsewhere /mnt/q 2>/dev/null; echo "refused $((1000 + $?))"'
+    'mkdir -p /mnt/q; mount -t hostfs elsewhere /mnt/q; echo "refused $((1000 + $?))"'
   );
   await shows(page, 'refused 1032');
   assert.deepEqual(page.errors, []);

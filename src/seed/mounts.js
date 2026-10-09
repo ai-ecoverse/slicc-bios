@@ -35,6 +35,18 @@ export function hostfsGrants(proxy, fetcher = fetch) {
   };
 }
 
+export function hostfsExports(proxy, fetcher = fetch) {
+  return async () => {
+    const response = await fetcher(new URL('/api/hostfs/mounts', proxy.url), {
+      method: 'POST',
+      headers: { 'X-Bridge-Token': proxy.key },
+    });
+    if (!response.ok) return [];
+    const list = await response.json().catch(() => []);
+    return Array.isArray(list) ? list.map((entry) => entry.name) : [];
+  };
+}
+
 export function remembered(storage, secret) {
   let list = [];
   try {
@@ -129,6 +141,7 @@ export function createFolders({
   notice = pendingNotice,
   attach = attachKernel,
 }) {
+  const exports = network.kind === 'local-proxy' ? hostfsExports(network.proxy) : null;
   const listeners = new Map();
   const notices = new Map();
   const inserting = new Set();
@@ -216,7 +229,10 @@ export function createFolders({
     );
   }
 
-  async function allow() {
+  async function allow(req) {
+    if (req.op === 'mount' && req.type === 'hostfs' && exports) {
+      if (!(await exports()).includes(req.source)) return false;
+    }
     void settle(await kernel.mounts());
     return true;
   }
