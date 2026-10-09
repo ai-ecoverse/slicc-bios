@@ -12,7 +12,7 @@ export const owners = {
 };
 
 const RUNNING = { download: 'downloading', link: 'linking' };
-const SETTLE = new Set(['checking', 'downloading', 'linking', 'failed']);
+const SETTLE = new Set(['queued', 'checking', 'downloading', 'linking', 'failed']);
 
 const NAMES = {
   agent: 'the agent',

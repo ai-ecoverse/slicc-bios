@@ -42,10 +42,6 @@ slicc-app > [slot="status"] button:disabled {
   cursor: progress;
 }
 
-.network[data-state="failed"] {
-  color: var(--spectrum-notice-visual-color);
-}
-
 .mount[data-state="failed"] {
   color: var(--spectrum-negative-visual-color);
 }
