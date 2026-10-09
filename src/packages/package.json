@@ -20,6 +20,7 @@
     "@ai-ecoverse/wasm-procps": "4.0.5-2",
     "@ai-ecoverse/wasm-sed": "4.9.0-3",
     "@ai-ecoverse/wasm-tls-engine": "3.6.5-1",
+    "@ai-ecoverse/wasm-tree": "2.3.2-1",
     "@ai-ecoverse/wasm-which": "2.23.0-1"
   }
 }
