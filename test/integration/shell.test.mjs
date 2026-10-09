@@ -83,6 +83,10 @@ test('boots into the SLICC UI: a file from the terminal shows up in the tree, op
   const page = await chrome.page(t);
   await ui(page);
   await boot(page);
+  await page.within(
+    5 * 60 * 1000,
+    () => window.ui.app().model.updates.ready() && !window.ui.app().dock.api.getPanel('updates')
+  );
   assert.deepEqual(
     await page.evaluate(() =>
       window.ui
@@ -98,7 +102,7 @@ test('boots into the SLICC UI: a file from the terminal shows up in the tree, op
       window.ui.app().surfaces.some((surface) => surface.id === 'updates'),
       !!window.ui.app().model.updates,
     ]),
-    [false, false]
+    [true, true]
   );
 
   await run(

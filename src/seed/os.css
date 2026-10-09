@@ -46,26 +46,6 @@ slicc-app > [slot="status"] button:disabled {
   color: var(--spectrum-notice-visual-color);
 }
 
-.update[data-state="ready"] {
-  color: var(--spectrum-neutral-content-color-default);
-}
-
-.update[data-state="failed"] {
-  color: var(--spectrum-negative-visual-color);
-}
-
-.update:not([data-state="ready"]) button {
-  display: none;
-}
-
-.agent[data-state="failed"] {
-  color: var(--spectrum-negative-visual-color);
-}
-
-.agent[data-state="active"] button {
-  display: none;
-}
-
 .mount[data-state="failed"] {
   color: var(--spectrum-negative-visual-color);
 }

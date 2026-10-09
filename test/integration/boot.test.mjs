@@ -44,6 +44,7 @@ test('boots through every step into the UI served from OPFS', async (t) => {
       'os/os.js',
       'os/transport.js',
       'os/update.js',
+      'os/updates.js',
     ]
   );
   assert.equal(await page.evaluate(() => crossOriginIsolated), true);
@@ -66,7 +67,7 @@ test('reports each step and the download as it happens', async (t) => {
   );
   assert.match(
     bios.texts('seed')[0],
-    /^os\/\{adobe\.js,agent\.js,callback\.html,callback\.js,grammars\.js,index\.html,mounts\.js,network\.js,os\.css,os\.js,transport\.js,update\.js\} [\d.]+kB$/
+    /^os\/\{adobe\.js,agent\.js,callback\.html,callback\.js,grammars\.js,index\.html,mounts\.js,network\.js,os\.css,os\.js,transport\.js,update\.js,updates\.js\} [\d.]+kB$/
   );
   const origin = await page.evaluate(() => new URL('/', location).href);
   assert.deepEqual(bios.texts('intercept'), [origin]);

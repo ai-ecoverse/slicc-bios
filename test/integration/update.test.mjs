@@ -40,27 +40,38 @@ async function version(page) {
   return JSON.parse(await read(page, `${bash}/package.json`)).version;
 }
 
-async function notice(page) {
-  return page.evaluate(() => {
-    const notice = document.querySelector('.update');
-    return { hidden: notice.hidden, state: notice.dataset.state, text: notice.textContent };
-  });
+async function row(page, id) {
+  return page.evaluate(
+    (id) =>
+      document
+        .querySelector('slicc-app')
+        .model.updates.list()
+        .find((item) => item.id === id),
+    id
+  );
 }
 
 async function updated(page) {
   deploy();
   chrome.cdn.requests.length = 0;
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
-  await page.until(() => /ready|failed/.test(document.querySelector('.update').dataset.state));
-  const result = await notice(page);
-  assert.equal(result.state, 'ready', result.text);
+  await page.until(() =>
+    /ready|failed/.test(
+      document
+        .querySelector('slicc-app')
+        .model.updates.list()
+        .find((item) => item.id === 'bios').state
+    )
+  );
+  const bios = await row(page, 'bios');
+  assert.equal(bios.state, 'ready', bios.error);
 }
 
 async function bootOlder(page) {
   await downgrade();
   await boot(page);
   assert.equal(await version(page), '5.3.0-7');
-  assert.equal((await notice(page)).hidden, true);
+  assert.equal((await row(page, 'bios')).state, 'current');
 }
 
 test('pins the same packages in the bootstrap and the pnpm lockfile', async () => {
@@ -81,9 +92,22 @@ test('pins the same packages in the bootstrap and the pnpm lockfile', async () =
 });
 
 async function reload(page) {
+  await page.evaluate(() => document.querySelector('slicc-app').show('updates'));
+  await page.until(
+    () =>
+      !!document
+        .querySelector('slicc-app')
+        .dock.content('updates')
+        ?.shadowRoot?.querySelector('article[data-id="bios"] swc-button[data-action="reload"]')
+  );
+  await page.screenshot(new URL('updates-panel.png', page.dir));
   await page.evaluate(() => {
     window.stale = true;
-    document.querySelector('.update button').click();
+    document
+      .querySelector('slicc-app')
+      .dock.content('updates')
+      .shadowRoot.querySelector('article[data-id="bios"] swc-button[data-action="reload"]')
+      .click();
   });
   await page.until(() => !window.stale && location.pathname === '/os/');
   await ready(page);
@@ -97,8 +121,22 @@ test('updates a running install from a bumped lockfile', async (t) => {
 
   await t.test('installs the new version in place while the shell keeps running', async () => {
     await updated(page);
-    const { text } = await notice(page);
-    assert.equal(text.trim(), 'updated @ai-ecoverse/wasm-bash 5.3.0-7 → 5.3.0-8Reload');
+    const bios = await row(page, 'bios');
+    assert.deepEqual(
+      [bios.log, bios.actions, bios.from],
+      ['@ai-ecoverse/wasm-bash 5.3.0-7 → 5.3.0-8', ['reload'], bios.to]
+    );
+    await page.until(
+      () =>
+        document.querySelector('slicc-app').model.updates.ready() &&
+        !document.querySelector('slicc-app').dock.api.getPanel('updates')
+    );
+    assert.match(
+      await page.evaluate(
+        () => document.querySelector('slicc-app').shadowRoot.querySelector('#updates')?.textContent
+      ),
+      /Update ready|Updating \d/
+    );
     assert.equal(await version(page), '5.3.0-8');
     assert.equal(
       await read(page, 'var/lib/slicc/pnpm-lock.yaml'),
@@ -134,7 +172,7 @@ test('updates a running install from a bumped lockfile', async (t) => {
         []
       );
       assert.equal(await version(page), '5.3.0-8');
-      assert.equal((await notice(page)).hidden, true);
+      assert.equal((await row(page, 'bios')).state, 'current');
       await run(page, 'cat work/notes.txt');
       await shows(page, 'draft');
       assert.deepEqual(page.errors, []);
@@ -155,6 +193,8 @@ test('installs the grammars with pnpm in the background and serves them from OPF
     return [response.status, (await response.text()).includes('rust')];
   }, base);
   assert.deepEqual(served, [200, true]);
+  const grammars = await row(page, 'grammars');
+  assert.deepEqual([grammars.state, grammars.from], ['installed', '4.5.0']);
   assert.equal(
     await read(page, 'var/lib/slicc/grammars/pnpm-lock.yaml'),
     await readFile(new URL('../../src/packages/grammars/pnpm-lock.yaml', import.meta.url), 'utf8')
