@@ -595,5 +595,100 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   await page.until(
     () => !window.deepText(window.memoryView().shadowRoot).includes('Sam prefers meetings')
   );
+
+  await page.evaluate(() => {
+    const app = document.querySelector('slicc-app');
+    window.freezerView = () => app.dock.content('freezer');
+    window.freezerButton = (label) =>
+      [...(window.freezerView()?.shadowRoot?.querySelectorAll('swc-action-button') ?? [])].find(
+        (button) =>
+          button.textContent.trim().startsWith(label) ||
+          button.getAttribute('accessible-label')?.startsWith(label)
+      );
+    window.confirmDialog = () =>
+      window.deep(document, 'slicc-confirm')?.shadowRoot?.querySelector('dialog[open]');
+    window.confirmButton = (label) =>
+      [...window.deep(document, 'slicc-confirm').shadowRoot.querySelectorAll('swc-button')].find(
+        (button) => button.textContent.trim() === label
+      );
+    app.show('freezer');
+  });
+  const freeze = async () => {
+    await page.until(() => !!window.freezerButton('Freeze'));
+    await page.evaluate(() => window.freezerButton('Freeze').click());
+    await page.until(() => document.querySelector('slicc-app').model.agent.frozen().length === 1);
+  };
+  await freeze();
+  const [frozen] = await page.evaluate(() =>
+    document.querySelector('slicc-app').model.agent.frozen()
+  );
+  assert.ok(frozen.title);
+  assert.ok(frozen.messages >= 2);
+  await page.until(
+    ([id, title]) =>
+      window.freezerView().shadowRoot.querySelector(`.card[data-id="${id}"] .title`)
+        ?.textContent === title,
+    [frozen.id, frozen.title]
+  );
+  const freezerShots = async (name) => {
+    await page.screenshot(new URL(`freezer-${name}-light.png`, page.dir));
+    await color('dark');
+    await page.screenshot(new URL(`freezer-${name}-dark.png`, page.dir));
+    await color('light');
+    await page.send('Emulation.setDeviceMetricsOverride', {
+      width: 420,
+      height: 800,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await page.until(() => document.querySelector('slicc-app').screen === 'phone');
+    await page.evaluate(() => document.querySelector('slicc-app').show('freezer'));
+    await page.until(() => !!window.freezerView()?.shadowRoot?.querySelector('.list'));
+    await page.screenshot(new URL(`freezer-${name}-420.png`, page.dir));
+    await page.send('Emulation.clearDeviceMetricsOverride');
+    await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
+    await page.evaluate(() => document.querySelector('slicc-app').show('freezer'));
+  };
+  await freezerShots('frozen');
+
+  await page.evaluate(() => window.freezerButton('Thaw').click());
+  await page.until(() => document.querySelector('slicc-app').model.agent.frozen().length === 0);
+  assert.ok(
+    await page.evaluate(
+      (id) =>
+        document
+          .querySelector('slicc-app')
+          .model.agent.list()
+          .some((agent) => agent.id === id),
+      frozen.id
+    )
+  );
+
+  await page.evaluate(
+    (id) => document.querySelector('slicc-app').model.agent.select(id),
+    frozen.id
+  );
+  await freeze();
+  await page.until(() => !!window.freezerButton('Delete'));
+  await page.evaluate(() => window.freezerButton('Delete').click());
+  await page.until(() => !!window.confirmDialog());
+  assert.match(
+    await page.evaluate(() => window.deepText(window.deep(document, 'slicc-confirm').shadowRoot)),
+    new RegExp(`Delete ${frozen.name}\\?`)
+  );
+  await page.screenshot(new URL('freezer-delete-light.png', page.dir));
+  await color('dark');
+  await page.screenshot(new URL('freezer-delete-dark.png', page.dir));
+  await color('light');
+  await page.evaluate(() => window.confirmButton('Cancel').click());
+  await page.until(() => !window.confirmDialog());
+  assert.equal(
+    await page.evaluate(() => document.querySelector('slicc-app').model.agent.frozen().length),
+    1
+  );
+  await page.evaluate(() => window.freezerButton('Delete').click());
+  await page.until(() => !!window.confirmDialog());
+  await page.evaluate(() => window.confirmButton('Delete').click());
+  await page.until(() => document.querySelector('slicc-app').model.agent.frozen().length === 0);
   assert.deepEqual(page.errors, []);
 });
