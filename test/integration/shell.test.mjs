@@ -178,10 +178,25 @@ test('keeps the pid across exec and agrees with ps, and pkill -f spares itself',
   assert.deepEqual(page.errors, []);
 });
 
+test('clears the screen and reads the terminal size with ncurses-utils', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await run(page, 'clear && echo "cleared $((6 * 7))"');
+  await shows(page, 'cleared 42');
+  await run(
+    page,
+    '[ "$(tput cols)" = "$(stty size | cut -d " " -f 2)" ] && echo "cols agree $((5 * 5))"'
+  );
+  await shows(page, 'cols agree 25');
+  await run(page, 'out=$(TERM=dumb clear 2>&1); echo "dumb $((1000 + $?)) ${#out}"');
+  await shows(page, 'dumb 1001 0');
+  assert.deepEqual(page.errors, []);
+});
+
 test('installs a command with pnpm add -g and runs it in the same shell', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
-  await run(page, 'pnpm add -g @ai-ecoverse/wasm-xxd@9.1.1850; echo "added $((40+$?))"');
+  await run(page, 'pnpm add -g @ai-ecoverse/wasm-xxd@9.2.1167-1; echo "added $((40+$?))"');
   await shows(page, 'added 4', 300000);
   assert.match(await screen(page), /added 40/, await screen(page));
   await run(page, 'echo hi | xxd');
