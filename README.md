@@ -111,6 +111,16 @@ A program picks a host by adding `runtime=extension` or `runtime=proxy` to the q
 
 When no host can drive a browser, `/json/list` and the WebSocket handshake answer `502` with `CDP host: no browser to drive: install slicc-extension, or run npx @ai-ecoverse/slicc-node`. A runtime that isn't `extension` or `proxy` gets `CDP host: unknown runtime "<name>" (extension, proxy)`. `/json/version` answers either way, since a hook is always offered.
 
+### Tailscale (proof of concept)
+
+seven can also join a tailnet, with a patched build of Tailscale's wasm client ([`@tailscale/connect`](https://www.npmjs.com/package/@tailscale/connect)) that adds a full HTTP `fetch`, raw `dial` (TCP and UDP, available to the page as `sliccTailscale.dial`), exit-node selection and status. It runs in its own module worker, `os/tailscale-worker.js`. No CORS applies, because Go makes the requests itself over the tailnet, and its relays (DERP) carry the traffic over WebSocket.
+
+- **Turning it on:** open seven with `#tailscale=on`, optionally with `&exit=<node>`: `auto:any` (the default), an IP, a MagicDNS name, or empty for none. `#tailscale=off` turns it off. The setting and the node's state are kept in IndexedDB (`slicc-os`, store `transport`), so the node keeps its identity across reloads.
+- **Joining:** sign in through the link in the status bar, or paste an auth key into the field next to it. A key is held in memory for that one login and is never stored, put in a URL or logged. An auth key in the fragment is dropped with a warning. The integration test hands its key to the page in `globalThis.sliccTailscaleAuthKey` through an init script, and the page takes it once and deletes it.
+- **Nothing inbound:** the node runs with shields up, so tailnet peers can't open connections to it. The build has no peerapi server, and the page listens on nothing. Peers can't reach the kernel's services, `*.kernel.localhost` or the CDP facade.
+- **Where the wasm comes from:** the patched build isn't published yet. The page reads `main.wasm` and `wasm_exec.js` through the kernel from `/mnt/tailscale` (a host folder: `npx @ai-ecoverse/slicc-node --mount <dist>:tailscale:ro`, then `mount -t hostfs tailscale /mnt/tailscale`), or else from `/opt/tailscale` in OPFS.
+- **Routing:** the kernel keeps the transport [picked above](#network), and Tailscale is layered over it. While an exit node is in use, every request goes through the tailnet, except loopback (which keeps `host.slicc.internal` on the local proxy). Without one, only tailnet addresses (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) and MagicDNS names go there. The status bar shows the node's address and exit node, and `document.documentElement.dataset.tailscale` shows the backend state.
+
 ## Kernel servers
 
 A server running inside the kernel (vite, `python -m http.server`, impeccable `live`) listens on the kernel's own loopback, not the machine's. Pages reach it as **`http://<port>.kernel.localhost/`**:

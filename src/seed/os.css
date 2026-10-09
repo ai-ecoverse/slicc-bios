@@ -7,3 +7,38 @@ body {
 :root {
   color-scheme: light dark;
 }
+
+.tailscale {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.tailscale[hidden],
+.tailscale [hidden] {
+  display: none;
+}
+
+.tailscale output {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tailscale[data-state="failed"] {
+  color: var(--spectrum-notice-visual-color);
+}
+
+.tailscale a {
+  color: inherit;
+}
+
+.tailscale form {
+  display: flex;
+  gap: 4px;
+}
+
+.tailscale input {
+  font: inherit;
+  width: 14em;
+}

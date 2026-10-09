@@ -16,6 +16,7 @@ import { grammarBase, grammars, version as grammarsVersion, installed } from './
 import { serveLoopback } from './loopback.js';
 import { createFolders, offTheRecord } from './mounts.js';
 import { createNetwork } from './network.js';
+import { prepareTailscale, tailscaleConfig } from './tailscale.js';
 import { pickTransport } from './transport.js';
 import { openTunnel } from './tunnel.js';
 import { text, update, versions } from './update.js';
@@ -77,7 +78,8 @@ const control = browserControl(
   () => reach.changed()
 );
 const reach = createNetwork(network, { browser: control.status });
-const { transport } = reach;
+const tailscale = prepareTailscale({ transport: reach.transport }, await tailscaleConfig());
+const transport = tailscale?.transport ?? reach.transport;
 const login = signIn({ network });
 document.documentElement.dataset.transport = kind;
 const root = await navigator.storage.getDirectory();
@@ -126,7 +128,8 @@ updates.set('agent', waiting(await agentVersion()));
 updates.set('grammars', waiting(await grammarsVersion()));
 app.model = base;
 await app.updateComplete;
-void folders.restore();
+const restoring = folders.restore();
+void tailscale?.start({ kernel, ready: restoring, notice: document.querySelector('.tailscale') });
 let agent = null;
 let startedWith = null;
 async function started(chat, lock) {
