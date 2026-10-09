@@ -83,6 +83,7 @@ await step('seed', async () => {
     'agent.js',
     'callback.html',
     'callback.js',
+    'cdp.js',
     'grammars.js',
     'index.html',
     'loopback.js',

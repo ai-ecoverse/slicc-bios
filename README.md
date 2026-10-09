@@ -96,6 +96,17 @@ The choice is in `document.documentElement.dataset.transport`: `local-proxy`, `e
 - **Check again** (`check()`) probes the local proxy again: on the proxy route it updates the health, and otherwise it reloads the page onto the proxy once it answers.
 - **Get the whole web** links slicc-extension in the Chrome Web Store (`extensionUrl`).
 
+## Browser automation
+
+Programs in the kernel drive a browser over the Chrome DevTools Protocol: `playwright-cli` ([slicc-cdp](https://github.com/ai-ecoverse/slicc-cdp), in the base set) or anything else that reads `SLICC_CDP_URL`. The kernel's facade on `127.0.0.1:9222` takes connections only from programs inside the kernel. It hands each one to the `cdp` hook that `os/cdp.js` gives `createKernel`, and the hook connects it to a host:
+
+1. **[slicc-extension](https://github.com/ai-ecoverse/slicc-extension):** when the extension defines `sliccExtension.cdp`, its `chrome.debugger` bridge drives the Chrome that seven runs in. Every program connection shares the page's one extension port. The hook gives each connection only the answers to its own commands and the events of the sessions it attached, and on close it detaches every session the connection attached.
+2. **The local proxy:** used when it is the transport (see [Network](#network)) and its probe says `cdp: 1`. The hook opens `ws://<proxy>/cdp` and offers the subprotocols `slicc.cdp.v1` and `slicc.key.<key>`, so the key never appears in a URL. It accepts the socket only when the proxy selects `slicc.cdp.v1`. The proxy checks the key and the page's `Origin` before the upgrade.
+
+A program picks a host by adding `runtime=extension` or `runtime=proxy` to the query of the URL it opens (`playwright-cli --runtime proxy`). With no runtime, the extension goes first. The hook never derives a URL from the request: it reaches only the extension's page global and the proxy the page already checked.
+
+When no host can drive a browser, `/json/list` and the WebSocket handshake answer `502` with `CDP host: no browser to drive: install slicc-extension, or run npx @ai-ecoverse/slicc-node`. A runtime that isn't `extension` or `proxy` gets `CDP host: unknown runtime "<name>" (extension, proxy)`. `/json/version` answers either way, since a hook is always offered.
+
 ## Kernel servers
 
 A server running inside the kernel (vite, `python -m http.server`, impeccable `live`) listens on the kernel's own loopback, not the machine's. Pages reach it as **`http://<port>.kernel.localhost/`**:
