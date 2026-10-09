@@ -15,6 +15,12 @@ const NAME = {
   page: 'the page fetch, limited by CORS',
 };
 
+const BASE = {
+  'local-proxy': ({ proxy }) => `the local proxy at ${new URL(proxy.url).host}`,
+  extension: () => 'slicc-extension',
+  page: () => "this page's own fetch",
+};
+
 const STOPPED = {
   'local-proxy': ({ proxy }) =>
     `The local proxy at ${new URL(proxy.url).host} stopped answering: run npx @ai-ecoverse/slicc-node again, then Check again`,
@@ -68,14 +74,24 @@ export function createNetwork(choice, options = {}) {
     const route = ROUTE[state.kind];
     const fullWeb = route === 'proxy' || route === 'extension';
     const stopped = fullWeb && failing && (state.status?.state ?? 'ready') === 'ready';
+    const tailnet = options.tailnet?.status();
+    const exit = tailnet?.state === 'running' && tailnet.exitNode;
     return {
-      route,
-      health: !fullWeb ? 'limited' : failing ? 'failing' : 'ok',
-      detail: stopped ? STOPPED[state.kind](state) : describe(state),
+      ...(exit
+        ? {
+            route: 'tailnet',
+            health: 'ok',
+            detail: `This computer's own services still go through ${BASE[state.kind](state)}.`,
+          }
+        : {
+            route,
+            health: !fullWeb ? 'limited' : failing ? 'failing' : 'ok',
+            detail: stopped ? STOPPED[state.kind](state) : describe(state),
+          }),
       failures,
       extensionUrl: EXTENSION_URL,
       ...(options.browser ? { browser: options.browser() } : {}),
-      ...(options.tailnet ? { tailnet: options.tailnet.status() } : {}),
+      ...(tailnet ? { tailnet } : {}),
     };
   };
   const emit = () => {
