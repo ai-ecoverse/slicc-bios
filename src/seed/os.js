@@ -15,6 +15,7 @@ import { createBrowser } from './browser.js';
 import { browserControl } from './cdp.js';
 import { createExitRouter } from './exits.js';
 import { grammarBase, grammars, version as grammarsVersion, installed } from './grammars.js';
+import { createLinks, installLocal, trustHostKey } from './link.js';
 import { serveLoopback } from './loopback.js';
 import { createFolders, offTheRecord } from './mounts.js';
 import { createNetwork } from './network.js';
@@ -105,6 +106,14 @@ const kernel = await createKernel({
   ...folders.options,
 });
 exits.attach(kernel);
+const links = createLinks({
+  router: exits,
+  makePeer: (config) => new RTCPeerConnection(config),
+  onLink: (link, peer) => {
+    trustHostKey(kernel, link, peer).catch((error) => console.warn(`link: ${error.message}`));
+  },
+});
+installLocal(links);
 serveLoopback(kernel);
 if (network.status?.probe?.kernelTunnel) openTunnel(kernel, network.proxy);
 app.layoutKey = 'slicc-os.layout';
