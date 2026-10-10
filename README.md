@@ -73,7 +73,7 @@ Several tabs of one origin share one kernel and one agent (spectrum ≥ 1.46.0 f
 
 Each tab picks its own cone. A follower can't mount folders, since the kernel's folder handles are the owner's page's.
 
-**When the owner closes, reloads or crashes,** the first waiting tab gets the lock and becomes the owner in place: it starts a kernel and the agent, which resumes from SQLite. Terminals in every tab print `[the tab running SLICC closed; starting a new shell]` and open a new shell on the new kernel, and anything typed meanwhile is kept.
+**When the owner closes, reloads or crashes,** the first waiting tab gets the lock and becomes the owner in place: it starts a kernel and the agent, which resumes from SQLite. Terminals in every tab print `[the tab running SLICC closed; starting a new shell]` and open a new shell on the new kernel. Anything typed meanwhile goes to the new shell once it has printed its prompt, so it shows once.
 
 **`model.tabs`** says what this tab is:
 - `role`: `owner`, `follower`, `connecting`, or `alone` (without SharedWorker, a second tab shows only "SLICC is open in another tab");

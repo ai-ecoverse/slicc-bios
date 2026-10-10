@@ -1,7 +1,7 @@
 import { SWITCHBOARD_LOCK, TAB_LOCK, VERSION } from './switchboard.js';
 
 export const OWNER_LOCK = 'slicc-agent';
-export const NOTICE = '\r\n[the tab running SLICC closed; starting a new shell]\r\n';
+export const NOTICE = '\r\x1b[2K[the tab running SLICC closed; starting a new shell]\r\n';
 
 export function hold(locks, name) {
   return new Promise((acquired, failed) => {
@@ -282,11 +282,17 @@ export function followKernel({ port, attach, notice = NOTICE }) {
     let inner = null;
     let closed = false;
     const queued = [];
+    let waiting = false;
     let finish;
     const exited = new Promise((resolve) => {
       finish = resolve;
     });
-    const output = (bytes) => onData?.(bytes);
+    const output = (bytes) => {
+      onData?.(bytes);
+      if (!waiting || !inner) return;
+      waiting = false;
+      for (const data of queued.splice(0)) inner.write(data);
+    };
     async function open() {
       let used;
       for (;;) {
@@ -294,7 +300,6 @@ export function followKernel({ port, attach, notice = NOTICE }) {
         try {
           inner = await used.openTerminal(argv, { cwd, env, ...size, onData: output });
           if (closed) inner.close();
-          for (const data of queued.splice(0)) inner.write(data);
           break;
         } catch (error) {
           if (!gone(error)) throw error;
@@ -309,6 +314,7 @@ export function followKernel({ port, attach, notice = NOTICE }) {
           finish(1);
           return;
         }
+        waiting = true;
         output(encoder.encode(notice));
         open().catch((failure) => {
           output(encoder.encode(`\r\n${failure.message}\r\n`));
@@ -323,7 +329,7 @@ export function followKernel({ port, attach, notice = NOTICE }) {
       },
       exited,
       write(data) {
-        if (inner) inner.write(data);
+        if (inner && !waiting) inner.write(data);
         else if (!closed) queued.push(data);
       },
       resize(columns, lines) {
