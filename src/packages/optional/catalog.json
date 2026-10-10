@@ -18,7 +18,7 @@
     "label": "Python",
     "description": "Python 3.14 with pip, for scripts and data work.",
     "commands": ["python3", "pip"],
-    "size": 46060649
+    "size": 48826881
   },
   "@ai-ecoverse/wasix-uv-shim": {
     "id": "uv",
@@ -26,7 +26,7 @@
     "description": "Python projects and virtual environments, as a shim over pip and venv.",
     "commands": ["uv"],
     "requires": ["python"],
-    "size": 10321
+    "size": 10326
   },
   "@ai-ecoverse/wasix-ruby": {
     "id": "ruby",
