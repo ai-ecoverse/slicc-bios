@@ -575,14 +575,16 @@ export function device(link) {
 }
 
 const KNOWN_HOSTS = [
-  'd="$HOME/.ssh"; [ -d "$d" ] || mkdir -p "$d"; f="$d/known_hosts"; out=""',
+  'f="$4"; d="${f%/*}"; [ -d "$d" ] || mkdir -p "$d"; out=""',
   'if [ -f "$f" ]; then while IFS= read -r line || [ -n "$line" ]; do',
   'case "${line%% *}" in "$1,"*|*",$2") ;; *) out+="$line"$\'\\n\' ;; esac',
   'done < "$f"; fi',
   'printf \'%s%s,%s %s\\n\' "$out" "$1" "$2" "$3" > "$f.new" && mv -f "$f.new" "$f"',
 ].join('\n');
 
-export async function trustHostKey(kernel, link, peer) {
+export const SSH_KNOWN_HOSTS = '/etc/ssh/ssh_known_hosts';
+
+export async function trustHostKey(kernel, link, peer, file = SSH_KNOWN_HOSTS) {
   const key = String(peer.sshHostKey ?? '');
   if (!/^ssh-[a-z0-9-]+ [A-Za-z0-9+/]+=*$/.test(key)) return false;
   const name = `${link.label}.slicc.internal`;
@@ -594,6 +596,7 @@ export async function trustHostKey(kernel, link, peer) {
     name,
     link.address,
     key,
+    file,
   ]);
   return status === 0;
 }

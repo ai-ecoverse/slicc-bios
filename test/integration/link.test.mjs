@@ -135,6 +135,13 @@ const kernelFile = (page, name) =>
     return (await (await dir.getFileHandle(parts.at(-1))).getFile()).text();
   }, name);
 
+const knownHosts = (page, name) =>
+  shell(
+    page,
+    'for i in $(seq 1 50); do [ -s /etc/ssh/ssh_known_hosts ] && break; sleep 0.2; done; cat /etc/ssh/ssh_known_hosts',
+    `known-${name}`
+  );
+
 async function shell(page, command, name) {
   await run(page, `${command} > /home/${name}.txt 2>&1; echo $? > /home/${name}.done`);
   await page.until(async (name) => {
@@ -162,16 +169,10 @@ test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback
     { v: 1, role: 'page', name: 'seven', mode: 'local', caps: [] }
   );
   assert.match(hello.name, /^seven on (localhost|127\.0\.0\.1):\d+$/);
-  await page.until(async () => {
-    const home = await (await navigator.storage.getDirectory()).getDirectoryHandle('home');
-    const ssh = await home.getDirectoryHandle('.ssh').catch(() => null);
-    const file = await ssh?.getFileHandle('known_hosts').catch(() => null);
-    return Boolean(file && (await file.getFile()).size > 0);
+  assert.deepEqual(await knownHosts(page, 'fake'), {
+    code: '0',
+    out: `fake-node.slicc.internal,198.18.57.11 ${KEY}`,
   });
-  assert.equal(
-    await kernelFile(page, '.ssh/known_hosts'),
-    `fake-node.slicc.internal,198.18.57.11 ${KEY}\n`
-  );
 
   const raw = await shell(
     page,
@@ -283,4 +284,84 @@ test('links the real slicc CLI over stdio signaling, and kernel curl reaches its
   assert.equal(seen[0], 'node:hello');
   for (const step of ['offer', 'candidate', 'node:answer']) assert.ok(seen.includes(step), step);
   assert.ok(seen.indexOf('offer') < seen.indexOf('node:answer'));
+});
+
+test('the real slicc CLI: ssh into it with its pinned host key, and as the exit it resolves names from its hosts file, or refuses them under its policy', {
+  skip: !cli,
+}, async (t) => {
+  const { mkdtemp, writeFile } = await import('node:fs/promises');
+  const { networkInterfaces, tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const lan = Object.values(networkInterfaces())
+    .flat()
+    .find((entry) => entry.family === 'IPv4' && !entry.internal)?.address;
+  assert.ok(lan, 'a non-loopback IPv4 address for the hosts-file test');
+  const dir = await mkdtemp(join(tmpdir(), 'link-hosts-'));
+  const hosts = join(dir, 'hosts');
+  await writeFile(hosts, `# test names\n${lan} ref.link.test\n`);
+  const server = createServer((request, response) => response.end(`hosts ${request.url}\n`));
+  await new Promise((resolve) => server.listen(0, lan, resolve));
+  t.after(() => server.close());
+  const { port } = server.address();
+  const page = await chrome.page(t);
+  await boot(page);
+  await ready(page);
+  let current = null;
+  await page.expose('sliccLinkSend', (message) =>
+    current?.stdin.write(`${JSON.stringify(message)}\n`)
+  );
+  const attach = async (extra) => {
+    current?.kill();
+    const node = spawn(
+      cli,
+      ['attach', '--signal', 'stdio', '--name', 'ref-node', '--hosts', hosts, ...extra],
+      {
+        stdio: ['pipe', 'pipe', 'inherit'],
+      }
+    );
+    t.after(() => node.kill());
+    current = node;
+    createInterface({ input: node.stdout }).on('line', (line) =>
+      page.evaluate((line) => globalThis.sliccLinkReceive(line), line).catch(() => {})
+    );
+    await page.until(() =>
+      document
+        .querySelector('slicc-app')
+        .model.network.status()
+        .links?.devices.some((d) => d.state === 'connected')
+    );
+  };
+  await attach(['--runner', 'sh', '-c']);
+  const devices = await page.evaluate(
+    () => document.querySelector('slicc-app').model.network.status().links.devices
+  );
+  assert.deepEqual(devices[0].offers, ['net', 'http', 'ssh']);
+  const known = await knownHosts(page, 'ref');
+  assert.match(known.out, /^ref-node\.slicc\.internal,198\.18\.57\.11 ssh-ed25519 \S+$/);
+  const added = await shell(page, 'pnpm add -g @ai-ecoverse/wasix-openssh@10.6.0-5', 'ssh-add');
+  assert.equal(added.code, '0', added.out);
+  const ssh = await shell(
+    page,
+    "ssh -o StrictHostKeyChecking=yes -o BatchMode=yes ref-node.slicc.internal 'echo ssh $((6 * 7))'",
+    'ssh-exec'
+  );
+  assert.deepEqual(ssh, { code: '0', out: 'ssh 42' });
+
+  await page.evaluate(() =>
+    document.querySelector('slicc-app').model.network.setExit({ kind: 'link', id: 'local' })
+  );
+  const named = await shell(
+    page,
+    `curl -s --noproxy '*' --max-time 10 http://ref.link.test:${port}/named`,
+    'hosts-named'
+  );
+  assert.deepEqual(named, { code: '0', out: 'hosts /named' });
+  await attach(['--deny', `${lan}/32`]);
+  const denied = await shell(
+    page,
+    `curl -s --noproxy '*' --max-time 10 http://ref.link.test:${port}/named`,
+    'hosts-denied'
+  );
+  assert.notEqual(denied.code, '0');
+  await page.evaluate(() => document.querySelector('slicc-app').model.network.setExit(null));
 });
