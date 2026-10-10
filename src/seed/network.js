@@ -164,11 +164,8 @@ export function createNetwork(choice, options = {}) {
     if (!chosen?.startsWith('link:') || !options.links) return {};
     const id = chosen.slice(5);
     const devices = [...options.links.devices(), ...(options.tray?.away() ?? [])];
-    const device = devices.find((item) => item.id === id);
-    const name = device?.name ?? 'the linked device';
-    return device?.state === 'connected'
-      ? { health: 'ok', detail: `${name} carries the internet traffic.` }
-      : { health: 'failing', detail: `Internet traffic waits for ${name}.` };
+    const connected = devices.some((item) => item.id === id && item.state === 'connected');
+    return { health: connected ? 'ok' : 'failing', detail: null };
   };
   const linkStatus = () => {
     if (!options.links || !options.router) return {};
