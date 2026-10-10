@@ -44,6 +44,25 @@ export function pick(addresses, family) {
 
 const unreachable = (message, code = 'ENETUNREACH') => Object.assign(new Error(message), { code });
 
+export function held(id) {
+  const fail = async () => {
+    throw unreachable(`the exit ${id} isn't connected, so internet traffic waits for it`);
+  };
+  return {
+    id,
+    kind: 'held',
+    held: true,
+    active: () => false,
+    offersDefault: () => true,
+    claims: () => false,
+    prefixes: () => [],
+    knows: () => null,
+    resolve: async () => [],
+    dial: fail,
+    fetch: fail,
+  };
+}
+
 export function createExitRouter() {
   const exits = [];
   const own = new Set(KERNEL_NAMES);
@@ -55,8 +74,14 @@ export function createExitRouter() {
     list.push(name);
     if (list.length > REMEMBER) list.shift();
   };
+  let chosen = null;
   const active = () => exits.filter((exit) => exit.active());
-  const fallback = () => active().find((exit) => exit.offersDefault()) ?? null;
+  const fallback = () => {
+    if (chosen === null)
+      return active().find((exit) => !exit.chosenOnly && exit.offersDefault()) ?? null;
+    const exit = exits.find((item) => item.id === chosen);
+    return exit?.active() && exit.offersDefault() ? exit : held(chosen);
+  };
   const carrier = (host) => active().find((exit) => exit.claims(host)) ?? fallback();
   const httpCarrier = (host) => {
     const bare = bareHost(host).replace(/\.$/, '');
@@ -81,6 +106,11 @@ export function createExitRouter() {
       router.sync();
     },
     defaultExit: fallback,
+    chosen: () => chosen,
+    choose(id) {
+      chosen = id ?? null;
+      router.sync();
+    },
     table() {
       return {
         prefixes: [...new Set(active().flatMap((exit) => exit.prefixes()))],

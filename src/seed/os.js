@@ -88,7 +88,19 @@ const browser = createBrowser(network);
 const control = browserControl(network, { observe: browser.observe });
 const exits = createExitRouter();
 const tailscale = createTailscale(await tailscaleConfig(), { router: exits });
-const reach = createNetwork(network, { browser: control.status, tailnet: tailscale.panel });
+const links = createLinks({
+  router: exits,
+  makePeer: (config) => new RTCPeerConnection(config),
+  onLink: (link, peer) => {
+    trustHostKey(kernel, link, peer).catch((error) => console.warn(`link: ${error.message}`));
+  },
+});
+const reach = createNetwork(network, {
+  browser: control.status,
+  tailnet: tailscale.panel,
+  router: exits,
+  links,
+});
 const transport = exits.transport(reach.transport);
 const login = signIn({ network });
 document.documentElement.dataset.transport = kind;
@@ -106,13 +118,6 @@ const kernel = await createKernel({
   ...folders.options,
 });
 exits.attach(kernel);
-const links = createLinks({
-  router: exits,
-  makePeer: (config) => new RTCPeerConnection(config),
-  onLink: (link, peer) => {
-    trustHostKey(kernel, link, peer).catch((error) => console.warn(`link: ${error.message}`));
-  },
-});
 installLocal(links);
 serveLoopback(kernel);
 if (network.status?.probe?.kernelTunnel) openTunnel(kernel, network.proxy);
