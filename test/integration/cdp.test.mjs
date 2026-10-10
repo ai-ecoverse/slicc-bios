@@ -134,6 +134,63 @@ test('playwright-cli drives a page through slicc-extension without asking, and t
   assert.deepEqual(page.errors, []);
 });
 
+test('the browser port lists only the tabs the agent drives, holds them for a while, and shows them', async (t) => {
+  const page = await chrome.page(t);
+  const extension = await fakeExtension(page);
+  t.after(extension.close);
+  await boot(page);
+  chrome.overrides.set(
+    '/port.html',
+    '<!doctype html><title>Tide tables</title><h1 style="font-size:96px">Tide tables</h1>'
+  );
+  const target = new URL('/port.html', chrome.url).href;
+  const foreign = await (
+    await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' })
+  ).json();
+  t.after(() => fetch(`http://127.0.0.1:${port}/json/close/${foreign.id}`));
+
+  await run(page, `playwright-cli open ${target} && echo opened-$?`);
+  await shows(page, 'opened-0');
+  const tabs = await page.until(() => {
+    const tabs = document.querySelector('slicc-app').model.browser.list();
+    return tabs.length > 0 && tabs.every(({ title }) => title) && tabs;
+  });
+  assert.deepEqual(
+    tabs.map(({ url, title, agentId }) => [url, title, agentId]),
+    [[target, 'Tide tables', null]]
+  );
+  assert.equal(tabs[0].controlled, true);
+  const shot = await page.evaluate(
+    (id) => document.querySelector('slicc-app').model.browser.screenshot(id),
+    tabs[0].id
+  );
+  assert.match(shot, /^data:image\/jpeg;base64,\/9j\//);
+  const refused = await page.evaluate(
+    (id) =>
+      document
+        .querySelector('slicc-app')
+        .model.browser.screenshot(id)
+        .then(
+          () => 'shown',
+          (error) => error.message
+        ),
+    foreign.id
+  );
+  assert.equal(refused, `not a tab SLICC is using: ${foreign.id}`);
+  await page.within(
+    20000,
+    () => document.querySelector('slicc-app').model.browser.list()[0]?.controlled === false
+  );
+  assert.ok(extension.sent.includes('Page.captureScreenshot'));
+  assert.ok(extension.sent.includes('Target.detachFromTarget'));
+  assert.equal(extension.sent.filter((method) => method.startsWith('Slicc.')).length, 0);
+
+  await run(page, 'playwright-cli close && echo closed-$?');
+  await shows(page, 'closed-0');
+  await page.until(() => document.querySelector('slicc-app').model.browser.list().length === 0);
+  assert.deepEqual(page.errors, []);
+});
+
 async function read(page, path) {
   return page.evaluate(async (path) => {
     let dir = await navigator.storage.getDirectory();

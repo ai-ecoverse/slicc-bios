@@ -247,7 +247,7 @@ export function browserVia(network) {
   return RUNTIMES.find((runtime) => hosts[runtime]) ?? null;
 }
 
-export function browserHook(network) {
+export function browserHook(network, observe = (connection) => connection) {
   return async ({ runtime } = {}) => {
     if (runtime && !RUNTIMES.includes(runtime)) {
       throw new Error(`unknown runtime "${runtime}" (${RUNTIMES.join(', ')})`);
@@ -255,10 +255,10 @@ export function browserHook(network) {
     const hosts = browserHosts(network);
     const open = runtime ? hosts[runtime] : hosts.extension || hosts.proxy;
     if (!open) throw new Error(MISSING[runtime ?? 'any']);
-    return open();
+    return observe(await open());
   };
 }
 
-export function browserControl(network) {
-  return { hook: browserHook(network), status: () => ({ via: browserVia(network) }) };
+export function browserControl(network, { observe } = {}) {
+  return { hook: browserHook(network, observe), status: () => ({ via: browserVia(network) }) };
 }

@@ -81,6 +81,7 @@ await step('seed', async () => {
   const files = [
     'adobe.js',
     'agent.js',
+    'browser.js',
     'callback.html',
     'callback.js',
     'cdp.js',
