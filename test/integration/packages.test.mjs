@@ -384,7 +384,6 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
       'buf available',
       'tar available',
       'screen available',
-      'hf available',
       'dig available',
       'gpg available',
     ]

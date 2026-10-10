@@ -59,7 +59,9 @@ export const skip = [
   '/opt/agent/node_modules',
   '/opt/grammars/node_modules',
   '/home/.local/share/pnpm',
+  '/usr/local/share/pnpm',
   '/home/.cache',
+  '/root/.cache',
 ];
 
 export function offerAgent(app, base, connecting, login, sent = () => {}) {
@@ -241,6 +243,7 @@ const optional = loadCatalog()
     });
     updates.handlePackages(packages.act);
     await packages.refresh();
+    void packages.move().catch((error) => console.warn(`optional packages: ${error.message}`));
     return packages;
   })
   .catch((error) => {

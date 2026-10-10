@@ -8,6 +8,9 @@ const RUNNING = { install: 'installing', update: 'updating', remove: 'removing' 
 const LOCKED =
   /^ {2}'?((?:@[^/\s]+\/)?[^@'\s]+)@([^'(\s]+)'?:\n {4}resolution: \{integrity: ([^,}\s]+)/gm;
 
+export const RETIRED = 'No longer offered. Remove it, or keep using it as it is.';
+export const MOVED = 'var/lib/slicc/optional/moved';
+
 export const MISMATCH =
   "This version doesn't match the tested build, so it was removed again. Retry later.";
 
@@ -68,7 +71,18 @@ export async function loadCatalog(from = deployed) {
     requires: entry.requires ?? [],
     offered: manifest.dependencies[name],
   }));
-  return { entries, certified };
+  const gone = await fetchText('retired.json', from)
+    .then(JSON.parse)
+    .catch(() => ({}));
+  const retired = Object.entries(gone).map(([name, entry]) => ({
+    ...entry,
+    package: name,
+    description: RETIRED,
+    requires: [],
+    offered: null,
+    retired: true,
+  }));
+  return { entries, certified, retired };
 }
 
 async function directories(dir, path) {
@@ -138,45 +152,49 @@ function plain(action, label, error) {
   return `Couldn't ${verb} ${label}: pnpm stopped with an error, shown in the install log. Retry.`;
 }
 
+export function describe(entry, version, running) {
+  const outdated = version !== null && !entry.retired && compare(entry.offered, version) > 0;
+  const base = {
+    id: entry.id,
+    package: entry.package,
+    label: entry.label,
+    description: entry.description,
+    commands: entry.commands,
+    requires: entry.requires,
+    version,
+    offered: entry.offered,
+    size: entry.size,
+    progress: null,
+    error: null,
+  };
+  if (running?.state === 'failed') {
+    return {
+      ...base,
+      state: 'failed',
+      error: running.error,
+      log: running.log,
+      actions: version === null ? ['retry'] : ['retry', 'remove'],
+    };
+  }
+  if (running) return { ...base, ...running, actions: [] };
+  if (version === null) return { ...base, state: 'available', actions: ['install'] };
+  if (entry.retired) return { ...base, state: 'installed', actions: ['remove'] };
+  if (outdated) return { ...base, state: 'outdated', actions: ['update', 'remove'] };
+  return { ...base, state: 'installed', actions: ['remove'] };
+}
+
 export function createPackages({ catalog, root, kernel, ask, emit, global = GLOBAL }) {
-  const { entries, certified } = catalog;
-  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const { entries, certified, retired = [] } = catalog;
+  const byId = new Map([...retired, ...entries].map((entry) => [entry.id, entry]));
   const live = new Map();
   let installed = new Map();
 
-  const item = (entry) => {
-    const version = installed.get(entry.package) ?? null;
-    const running = live.get(entry.id);
-    const outdated = version !== null && compare(entry.offered, version) > 0;
-    const base = {
-      id: entry.id,
-      package: entry.package,
-      label: entry.label,
-      description: entry.description,
-      commands: entry.commands,
-      requires: entry.requires,
-      version,
-      offered: entry.offered,
-      size: entry.size,
-      progress: null,
-      error: null,
-    };
-    if (running?.state === 'failed') {
-      return {
-        ...base,
-        state: 'failed',
-        error: running.error,
-        log: running.log,
-        actions: version === null ? ['retry'] : ['retry', 'remove'],
-      };
-    }
-    if (running) return { ...base, ...running, actions: [] };
-    if (version === null) return { ...base, state: 'available', actions: ['install'] };
-    if (outdated) return { ...base, state: 'outdated', actions: ['update', 'remove'] };
-    return { ...base, state: 'installed', actions: ['remove'] };
-  };
+  const item = (entry) => describe(entry, installed.get(entry.package) ?? null, live.get(entry.id));
 
-  const list = () => entries.map(item);
+  const list = () => [
+    ...entries.map(item),
+    ...retired.filter((entry) => installed.has(entry.package) || live.has(entry.id)).map(item),
+  ];
   const changed = () => emit(list());
 
   async function refresh() {
@@ -278,6 +296,8 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
     const entry = byId.get(id);
     if (!entry) throw new Error(`${id} is not an optional package`);
     const action = requested === 'retry' ? (live.get(id)?.action ?? 'install') : requested;
+    if (entry.retired && action !== 'remove')
+      throw new Error(`${entry.label} is no longer offered.`);
     live.set(id, { state: 'queued', progress: null });
     changed();
     let failed = null;
@@ -299,5 +319,22 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
     if (failed) throw new Error(live.get(id).error);
   }
 
-  return { list, refresh, act };
+  async function move(legacy = GLOBAL) {
+    if (legacy === global || (await text(root, MOVED)) !== null) return [];
+    const old = await globals(root, legacy);
+    if (!old.length) return [];
+    const ids = entries
+      .filter((entry) => old.some(({ name }) => name === entry.package))
+      .filter((entry) => !installed.has(entry.package))
+      .map((entry) => entry.id);
+    for (const id of ids) await act(id, 'install').catch(() => undefined);
+    await write(
+      root,
+      MOVED,
+      `${JSON.stringify(old.map(({ name, version }) => `${name}@${version}`))}\n`
+    );
+    return ids;
+  }
+
+  return { list, refresh, act, move };
 }

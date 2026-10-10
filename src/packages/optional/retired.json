@@ -1,0 +1,7 @@
+{
+  "@ai-ecoverse/wasi-hf": {
+    "id": "hf",
+    "label": "Hugging Face",
+    "commands": ["hf"]
+  }
+}

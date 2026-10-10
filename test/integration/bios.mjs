@@ -40,14 +40,14 @@ export async function watch(page) {
   };
 }
 
-export async function boot(page) {
+export async function boot(page, prompts = [prompt]) {
   await page.goto('/');
-  await ready(page);
+  await ready(page, prompts);
 }
 
-export const prompt = 'slicc:~$ ';
+export const prompt = 'slicc:/home# ';
 
-export async function ready(page) {
+export async function ready(page, prompts = [prompt]) {
   await page.until(
     () =>
       location.pathname === '/os/' &&
@@ -62,19 +62,15 @@ export async function ready(page) {
       .findLast((id) => id.startsWith('terminal:'));
     dock.api.getPanel(id)?.api.setActive();
   });
-  await page.until(
-    (prompt) =>
-      !!document
+  await page.until((prompts) => {
+    const text = document.querySelector('slicc-app')?.dock?.content(
+      document
         .querySelector('slicc-app')
-        ?.dock?.content(
-          document
-            .querySelector('slicc-app')
-            .dock.api.panels.map((panel) => panel.id)
-            .findLast((id) => id.startsWith('terminal:'))
-        )
-        ?.screen?.textContent.includes(prompt),
-    prompt
-  );
+        .dock.api.panels.map((panel) => panel.id)
+        .findLast((id) => id.startsWith('terminal:'))
+    )?.screen?.textContent;
+    return !!text && prompts.some((wanted) => text.includes(wanted));
+  }, prompts);
 }
 
 function showing(needle) {
