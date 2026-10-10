@@ -15,10 +15,11 @@ const files = {
     'import { randomUUID } from "node:crypto";\nimport cjs, { add } from "cjs-demo";\nexport const id = randomUUID();\nexport const sum = add(2, 3) + cjs.offset;',
   'node_modules/cjs-demo/package.json': JSON.stringify({ main: 'lib/index.js' }),
   'node_modules/cjs-demo/lib/index.js':
-    'const util = require("./util");\nconst path = require("node:path");\nexports.add = (a, b) => a + b;\nexports.offset = util.offset;\nexports.hasPath = typeof path === "object";',
-  'node_modules/cjs-demo/lib/util.js': 'module.exports = { offset: 10 };',
+    'const util = require("./util");\nconst path = require("node:path");\nexports.add = (a, b) => a + b;\nexports.offset = util.offset;\nexports.own = util.own;\nexports.same = util.same;\nexports.hasPath = typeof path === "object";\nexports.platform = process.platform === "win32" || global.TESTING_WINDOWS ? "windows" : process.platform;\nexports.env = typeof process.env.OSTYPE;\nprocess.env.SLICC_SEEN = "yes";',
+  'node_modules/cjs-demo/lib/util.js':
+    'const global = globalThis;\nconst process = { platform: "own" };\nmodule.exports = { offset: 10, own: process.platform, same: global === globalThis };',
   'os/probe.js':
-    'import { id, sum } from "esm-demo";\nimport { hasPath } from "cjs-demo";\nexport const result = { id, sum, hasPath, lazy: (await import("cjs-demo")).default.offset };',
+    'import { id, sum } from "esm-demo";\nimport { hasPath, platform, env, own, same } from "cjs-demo";\nexport const result = { id, sum, hasPath, platform, env, own, same, seen: globalThis.__slicc_process.env.SLICC_SEEN, lazy: (await import("cjs-demo")).default.offset };',
 };
 
 test('loads an unbundled package graph with CommonJS and node builtins through the service worker', async (t) => {
@@ -44,6 +45,11 @@ test('loads an unbundled package graph with CommonJS and node builtins through t
   assert.match(result.id, /^[0-9a-f-]{36}$/);
   assert.equal(result.sum, 15);
   assert.equal(result.hasPath, true);
+  assert.equal(result.platform, 'browser');
+  assert.equal(result.env, 'undefined');
+  assert.equal(result.seen, 'yes');
+  assert.equal(result.own, 'own');
+  assert.equal(result.same, true);
   assert.equal(result.lazy, 10);
   assert.equal(result.stub, true);
 });
