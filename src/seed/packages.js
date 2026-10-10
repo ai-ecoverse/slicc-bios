@@ -278,12 +278,20 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
     const entry = byId.get(id);
     if (!entry) throw new Error(`${id} is not an optional package`);
     const action = requested === 'retry' ? (live.get(id)?.action ?? 'install') : requested;
-    if (action === 'remove' && !(await removable(entry))) return;
     live.set(id, { state: 'queued', progress: null });
     changed();
     let failed = null;
     try {
-      await navigator.locks.request('slicc-optional', () => attempt(entry, action));
+      await navigator.locks.request('slicc-optional', async () => {
+        if (action === 'remove') {
+          await refresh();
+          if (!(await removable(entry))) {
+            live.delete(id);
+            return;
+          }
+        }
+        await attempt(entry, action);
+      });
     } catch (error) {
       failed = error;
     }
