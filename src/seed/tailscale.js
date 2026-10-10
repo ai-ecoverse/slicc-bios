@@ -73,7 +73,10 @@ export function tailnetAddress(host) {
 
 export function claimsHost(host, status) {
   if (status?.state !== 'Running') return false;
-  const bare = host.replace(/^\[|\]$/g, '').toLowerCase();
+  const bare = host
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.$/, '')
+    .toLowerCase();
   if (tailnetAddress(bare)) return true;
   const suffix = status.magicDNSSuffix?.replace(/\.$/, '').toLowerCase();
   if (suffix && bare.endsWith(`.${suffix}`)) return true;
