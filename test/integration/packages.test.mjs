@@ -370,6 +370,7 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
     (await items(page)).map(({ id, state }) => `${id} ${state}`),
     [
       'git available',
+      'ssh available',
       'python installed',
       'uv installed',
       'ruby available',
