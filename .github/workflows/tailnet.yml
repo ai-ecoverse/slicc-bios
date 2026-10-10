@@ -1,0 +1,70 @@
+name: Tailnet
+
+on:
+  pull_request:
+    paths:
+      - src/packages/tailscale/**
+      - src/seed/tailscale.js
+      - src/seed/tailscale-worker.js
+      - src/seed/network.js
+      - test/integration/tailscale.test.mjs
+      - test/integration/tailnet.mjs
+      - .github/workflows/tailnet.yml
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tailnet-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tailnet:
+    name: tailnet / stage B on a tailnet of its own
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      LEFTHOOK: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      - name: headscale and tailscaled
+        run: |
+          mkdir -p "$RUNNER_TEMP/tailnet" && cd "$RUNNER_TEMP/tailnet"
+          curl -fsSL -o headscale https://github.com/juanfont/headscale/releases/download/v0.29.4/headscale_0.29.4_linux_amd64
+          chmod +x headscale
+          curl -fsSL https://pkgs.tailscale.com/stable/tailscale_1.104.1_amd64.tgz | tar -xz --strip-components=1
+          echo "HEADSCALE=$RUNNER_TEMP/tailnet/headscale" >> "$GITHUB_ENV"
+          echo "TAILSCALED=$RUNNER_TEMP/tailnet/tailscaled" >> "$GITHUB_ENV"
+          echo "TAILSCALE=$RUNNER_TEMP/tailnet/tailscale" >> "$GITHUB_ENV"
+
+      - name: Chromium
+        run: |
+          npx playwright-core install chromium
+          npx playwright-core install-deps chromium
+
+      - name: Tailscale integration tests
+        env:
+          TAILSCALE_E2E: '1'
+          TS_SHOTS: ${{ runner.temp }}/shots
+        run: |
+          mkdir -p "$TS_SHOTS"
+          node --test --test-concurrency=1 --test-timeout=600000 --test-global-setup=node_modules/@ai-ecoverse/slicc-shared-web/harness/global.mjs test/integration/tailscale.test.mjs
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: tailnet
+          path: |
+            ${{ runner.temp }}/shots
+            artifacts/tailscale

@@ -111,10 +111,47 @@ A program picks a host by adding `runtime=extension` or `runtime=proxy` to the q
 
 When no host can drive a browser, `/json/list` and the WebSocket handshake answer `502` with `CDP host: no browser to drive: install slicc-extension, or run npx @ai-ecoverse/slicc-node`. A runtime that isn't `extension` or `proxy` gets `CDP host: unknown runtime "<name>" (extension, proxy)`. `/json/version` answers either way, since a hook is always offered.
 
+### Tailscale (proof of concept)
+
+seven can also join a tailnet, with a patched build of Tailscale's wasm client ([`@tailscale/connect`](https://www.npmjs.com/package/@tailscale/connect)) that adds a full HTTP `fetch`, raw `dial` (TCP and UDP, available to the page as `sliccTailscale.dial`), exit-node selection and status. It runs in its own module worker, `os/tailscale-worker.js`. No CORS applies, because Go makes the requests itself over the tailnet, and its relays (DERP) carry the traffic over WebSocket.
+
+- **Turning it on:** the Network panel's **Use Tailscale** switch (spectrum ≥ 1.38.0) starts it at once and remembers the choice. Opening seven with `#tailscale=on` or `#tailscale=off` does the same. The setting, the exit node and the node's state are kept in IndexedDB (`slicc-os`, store `transport`), so the node keeps its identity across reloads.
+- **The Network panel** (`os/network.js` passes `os/tailscale.js`'s panel through as `NetworkStatus.tailnet` and the port's `setTailnet`, `setExitNode`, `submitAuthKey` and `logoutTailnet`) shows:
+  - the node's name and 100.x address and how many other devices are on the tailnet;
+  - the exit node picker: None, Automatic (`auto:any`, the default), or one of the tailnet's exit nodes;
+  - whether shields are up;
+  - **Sign out**;
+  - when it fails, why, with Retry (`check()` starts it again).
+
+  `document.documentElement.dataset.tailscale` shows the backend state, or `off`. While an exit node is in use, the panel's Connection block reports `route: 'tailnet'` (spectrum ≥ 1.41.0), with health `ok` and a note that this computer's own services still go through the base route. Without one, it reports the base route.
+- **Joining:** **Sign in to Tailscale** opens Tailscale's login in a new tab. Or paste an auth key into the panel's field. A key is held in memory for that one login and is never stored, put in a URL or logged. An auth key in the fragment is dropped with a warning. The integration test hands its key to the page in `globalThis.sliccTailscaleAuthKey` through an init script, and the page takes it once and deletes it. The tailnet object is exposed as `globalThis.sliccTailscale` only when an init script sets `globalThis.sliccTailscaleDebug`, as the integration test does.
+- **Nothing inbound:** the node runs with shields up, so tailnet peers can't open connections to it. The build has no peerapi server, and the page listens on nothing. Peers can't reach the kernel's services, `*.kernel.localhost` or the CDP facade.
+- **Where the wasm comes from:** shown as **Tailscale (/opt/tailscale)** in [Install / Update](#install--update). [`@ai-ecoverse/wasm-tailscale`](https://www.npmjs.com/package/@ai-ecoverse/wasm-tailscale) (built in [ai-ecoverse/wasm-tailscale](https://github.com/ai-ecoverse/wasm-tailscale), certified, 1.104.1-8) is a pnpm project of its own, [`src/packages/tailscale/`](src/packages/tailscale/), installed like the grammars, never at boot. The first time Tailscale is turned on, `os/tailscale.js` writes the deployed manifest and lockfile to `/opt/tailscale` and runs `pnpm install --frozen-lockfile --trust-lockfile` there under the Web Lock `slicc-tailscale`. The panel shows the download progress. The lockfile is recorded in `var/lib/slicc/tailscale/pnpm-lock.yaml`, so later starts skip the install, and a new deployed lockfile installs the new version on the next start. The page then reads `main.wasm` and `wasm_exec.js` through the kernel. A host folder mounted at `/mnt/tailscale`, or a folder named in the stored setting's `from`, (`npx @ai-ecoverse/slicc-node --mount <dist>:tailscale:ro`, then `mount -t hostfs tailscale /mnt/tailscale`) wins over the package, for trying a local build.
+- **Routing:** the kernel keeps the transport [picked above](#network), and Tailscale is layered over it. While an exit node is in use, every request goes through the tailnet, except loopback (which keeps `host.slicc.internal` on the local proxy). Without one, only tailnet addresses (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) and MagicDNS names go there. 
+- **Raw connections (stage B, slicc-kernel ≥ 1.28.0):** the kernel also gets `os/tailscale.js`'s uplink, so a program's `connect()` to a tailnet address, or to any address while an exit node is in use, goes through the tailnet (`tailnet.dial`). This needs no proxy, for example `curl --noproxy '*' http://100.x.y.z:8080/`.
+  - **Routes:** the page pushes the route table with `kernel.setRoutes` whenever it changes: `100.64.0.0/10` and `fd7a:115c:a1e0::/48`, plus everything while an exit node is in use.
+  - **Names:** MagicDNS names of the other nodes resolve from the netmap. The page never answers or forwards the kernel's own node name (`uname -n`, and `emscripten`, `slicc` and `wasmer.sh`), nor a single-label name the netmap doesn't know: the kernel answers its own hostname locally (slicc-kernel#181), and the uplink says "not mine". While an exit node is in use, other names resolve over DNS-over-HTTPS (`1.1.1.1`) through it.
+  - **What stays out:** the kernel keeps loopback (the CDP facade included) and `host.slicc.internal` off the uplink, and the page also refuses to dial loopback, `10.0.2.2` and reserved addresses.
+  - **Who can use it:** every process in the kernel, since joining is per machine.
+  - **Nothing comes in:** the node keeps shields up, and nothing listens on a tailnet address.
+
 ## Kernel servers
 
 A server running inside the kernel (vite, `python -m http.server`, impeccable `live`) listens on the kernel's own loopback, not the machine's. Pages reach it as **`http://<port>.kernel.localhost/`**:
 
+- **Testing on a tailnet of its own:** `test/integration/tailnet.mjs` starts one on this machine with no account, sign-in or key from anyone:
+  - [headscale](https://github.com/juanfont/headscale) with its embedded DERP over plain HTTP, behind a small CORS proxy for the browser's control requests;
+  - two userspace `tailscaled` nodes, `peer` (a web page and a half-close echo) and `exit` (an approved exit node).
+
+  The stage B integration test then joins seven with a headscale pre-auth key (`hskey-…`, handed over in `globalThis.sliccTailscaleAuthKey`). The stored setting `derpOverHttp` makes the wasm speak DERP over `ws://`, and is only for this. The test checks:
+  - curl over raw TCP to the peer, by address and by MagicDNS name;
+  - `git clone` from the peer by name (wasm-git 2.55.0-11, installed with `pnpm add -g` in the test; `TS_GIT=0` skips it);
+  - half-close;
+  - `10.0.2.2` refused;
+  - no inbound connections on 80, 5710 or 9222;
+  - public addresses unreachable without an exit node, and reachable by address and by name with one.
+
+  To run it: `HEADSCALE=… TAILSCALED=… TAILSCALE=… TAILSCALE_E2E=1 npm test -- --test-name-pattern 'stage B'` (`TS_SHOTS=<dir>` also saves screenshots of the Network panel and the Install / Update row).
 - **Plain `localhost` and `127.0.0.1` stay the real machine.** The service worker passes them through untouched. Inside the kernel it's the other way round: `localhost` is the kernel loopback, and `host.slicc.internal` reaches the machine. The kernel exports the page-visible name as `SLICC_PAGE_LOOPBACK`, so tools can print the right URL.
 - **Why the port goes in the name.** `kernel.localhost:8400` would resolve to the machine's real port 8400 whenever the service worker doesn't answer, as for a navigation or a WebSocket, and reach the wrong server. `8400.kernel.localhost` lands on port 80, which is closed or answered by [slicc-node](https://github.com/ai-ecoverse/slicc-node)'s kernel tunnel, and it gives every kernel port its own origin. The service worker routes by the name alone and ignores the URL's port.
 - **How a request gets there.** A seven page's request to `*.kernel.localhost`, with any method, reaches the service worker. `*.localhost` is potentially trustworthy, so an `https` page loads it without a mixed-content block. The service worker answers it itself, so nothing goes to the network, no Local Network Access prompt is shown, and there's no CORS preflight. It hands the request to the `/os/` tab: the requesting one, or else the most recently focused. That tab calls `kernel.loopbackFetch(request, { port })` and transfers the streamed response body back.

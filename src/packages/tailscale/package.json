@@ -1,0 +1,8 @@
+{
+  "name": "slicc-bios-tailscale",
+  "private": true,
+  "description": "Tailscale's wasm client, which the UI installs with pnpm into /opt/tailscale in OPFS the first time Tailscale is turned on",
+  "dependencies": {
+    "@ai-ecoverse/wasm-tailscale": "1.104.1-8"
+  }
+}

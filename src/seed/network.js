@@ -15,6 +15,12 @@ const NAME = {
   page: 'the page fetch, limited by CORS',
 };
 
+const BASE = {
+  'local-proxy': ({ proxy }) => `the local proxy at ${new URL(proxy.url).host}`,
+  extension: () => 'slicc-extension',
+  page: () => "this page's own fetch",
+};
+
 const STOPPED = {
   'local-proxy': ({ proxy }) =>
     `The local proxy at ${new URL(proxy.url).host} stopped answering: run npx @ai-ecoverse/slicc-node again, then Check again`,
@@ -45,6 +51,16 @@ export function describe({ kind, proxy, status }) {
   return `${PROBLEM[status.state](new URL(proxy.url).host, status)}; using ${NAME[kind]}`;
 }
 
+function tailnetActions(tailnet) {
+  if (!tailnet) return {};
+  return {
+    setTailnet: (on) => tailnet.setTailnet(on),
+    setExitNode: (id) => tailnet.setExitNode(id),
+    submitAuthKey: (key) => tailnet.submitAuthKey(key),
+    logoutTailnet: () => tailnet.logoutTailnet(),
+  };
+}
+
 export function createNetwork(choice, options = {}) {
   const probe = options.check ?? checkLocalProxy;
   const reload = options.reload ?? (() => location.reload());
@@ -58,13 +74,24 @@ export function createNetwork(choice, options = {}) {
     const route = ROUTE[state.kind];
     const fullWeb = route === 'proxy' || route === 'extension';
     const stopped = fullWeb && failing && (state.status?.state ?? 'ready') === 'ready';
+    const tailnet = options.tailnet?.status();
+    const exit = tailnet?.state === 'running' && tailnet.exitNode;
     return {
-      route,
-      health: !fullWeb ? 'limited' : failing ? 'failing' : 'ok',
-      detail: stopped ? STOPPED[state.kind](state) : describe(state),
+      ...(exit
+        ? {
+            route: 'tailnet',
+            health: 'ok',
+            detail: `This computer's own services still go through ${BASE[state.kind](state)}.`,
+          }
+        : {
+            route,
+            health: !fullWeb ? 'limited' : failing ? 'failing' : 'ok',
+            detail: stopped ? STOPPED[state.kind](state) : describe(state),
+          }),
       failures,
       extensionUrl: EXTENSION_URL,
       ...(options.browser ? { browser: options.browser() } : {}),
+      ...(tailnet ? { tailnet } : {}),
     };
   };
   const emit = () => {
@@ -103,7 +130,9 @@ export function createNetwork(choice, options = {}) {
       return () => listeners.delete(listener);
     },
     status,
+    ...tailnetActions(options.tailnet),
     async check() {
+      if (options.tailnet?.status().state === 'failed') await options.tailnet.check();
       if (!choice.proxy) {
         emit();
         return;
@@ -122,5 +151,6 @@ export function createNetwork(choice, options = {}) {
       emit();
     },
   };
+  options.tailnet?.on(emit);
   return { port, transport, changed: emit };
 }

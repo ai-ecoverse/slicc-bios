@@ -39,7 +39,7 @@ function request(operation) {
   });
 }
 
-async function stored(mode, act) {
+export async function stored(mode, act) {
   const opening = indexedDB.open(DATABASE, 1);
   opening.onupgradeneeded = () => opening.result.createObjectStore(STORE);
   const db = await request(opening);
