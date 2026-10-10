@@ -28,6 +28,13 @@
     "commands": ["ruby", "gem", "bundle", "rake", "irb", "erb"],
     "size": 9743368
   },
+  "@ai-ecoverse/wasix-perl": {
+    "id": "perl",
+    "label": "Perl",
+    "description": "Perl 5.42 with cpan, perldoc and prove, for scripts and text processing.",
+    "commands": ["perl", "cpan", "perldoc", "prove", "pod2html", "pod2man", "pod2text"],
+    "size": 15522193
+  },
   "@ai-ecoverse/wasi-esbuild": {
     "id": "esbuild",
     "label": "esbuild",
@@ -87,9 +94,9 @@
   "@ai-ecoverse/wasm-screen": {
     "id": "screen",
     "label": "screen",
-    "description": "Keeps a terminal session running to detach and reattach, from the same terminal.",
+    "description": "Keeps a terminal session running to detach and reattach, from any terminal.",
     "commands": ["screen"],
-    "size": 712777
+    "size": 712776
   },
   "@ai-ecoverse/wasi-hf": {
     "id": "hf",
@@ -104,5 +111,12 @@
     "description": "Looks up DNS records, tailnet names included.",
     "commands": ["dig"],
     "size": 221617
+  },
+  "@ai-ecoverse/wasix-gnupg": {
+    "id": "gpg",
+    "label": "GnuPG",
+    "description": "Signs, verifies and encrypts files and commits with OpenPGP keys.",
+    "commands": ["gpg", "gpgv", "gpg-agent", "gpgconf", "gpg-connect-agent", "gpg2"],
+    "size": 3296950
   }
 }

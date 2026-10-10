@@ -373,6 +373,7 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
       'python installed',
       'uv installed',
       'ruby available',
+      'perl available',
       'esbuild failed',
       'tsc available',
       'biome available',
@@ -384,6 +385,7 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
       'screen available',
       'hf available',
       'dig available',
+      'gpg available',
     ]
   );
 
