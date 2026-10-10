@@ -88,6 +88,7 @@ await step('seed', async () => {
     'exits.js',
     'grammars.js',
     'index.html',
+    'link.js',
     'loopback.js',
     'mounts.js',
     'network.js',

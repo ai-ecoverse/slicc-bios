@@ -75,6 +75,11 @@ export function createExitRouter() {
       router.sync();
       return exit;
     },
+    remove(exit) {
+      const at = exits.indexOf(exit);
+      if (at >= 0) exits.splice(at, 1);
+      router.sync();
+    },
     defaultExit: fallback,
     table() {
       return {
