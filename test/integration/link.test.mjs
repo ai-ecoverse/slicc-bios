@@ -150,7 +150,7 @@ async function shell(page, command, name) {
   };
 }
 
-test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback, and its host key', async (t) => {
+test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback, its host key, and as the chosen exit, held while it is gone', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
   await ready(page);
@@ -194,8 +194,39 @@ test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback
     ),
     false
   );
+  const network = () =>
+    page.evaluate(() => {
+      const { exit, links } = document.querySelector('slicc-app').model.network.status();
+      return {
+        exit,
+        devices: links?.devices.map((d) => [d.id, d.host, d.state, d.exit, d.offers.join()]),
+      };
+    });
+  assert.deepEqual(await network(), {
+    exit: null,
+    devices: [['local', 'fake-node.slicc.internal', 'connected', true, 'net,http,ssh']],
+  });
+  await page.evaluate(() =>
+    document.querySelector('slicc-app').model.network.setExit({ kind: 'link', id: 'local' })
+  );
+  assert.deepEqual((await network()).exit, { kind: 'link', id: 'local' });
+  const through = await shell(
+    page,
+    "curl -s --noproxy '*' --max-time 10 http://far.example/far",
+    'link-exit'
+  );
+  assert.deepEqual(through, { code: '0', out: 'raw 203.0.113.7:80 /far' });
   await page.reload();
   await ready(page);
+  assert.deepEqual(await network(), { exit: { kind: 'link', id: 'local' } });
+  const heldBack = await shell(
+    page,
+    "curl -s --noproxy '*' --max-time 5 http://far.example/far",
+    'link-held'
+  );
+  assert.notEqual(heldBack.code, '0');
+  await page.evaluate(() => document.querySelector('slicc-app').model.network.setExit(null));
+  assert.equal((await network()).exit, null);
 });
 
 const cli = process.env.SLICC_CLI;
