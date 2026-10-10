@@ -21,6 +21,13 @@
     "requires": ["python"],
     "size": 10321
   },
+  "@ai-ecoverse/wasix-ruby": {
+    "id": "ruby",
+    "label": "Ruby",
+    "description": "Ruby 3.4 with gem, bundler, rake, irb and erb, for scripts and gems.",
+    "commands": ["ruby", "gem", "bundle", "rake", "irb", "erb"],
+    "size": 9743368
+  },
   "@ai-ecoverse/wasi-esbuild": {
     "id": "esbuild",
     "label": "esbuild",
