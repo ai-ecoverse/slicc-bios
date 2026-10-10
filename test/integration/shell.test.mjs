@@ -78,6 +78,13 @@ test('reaches npm over HTTPS with curl and the everyday tools', async (t) => {
     'mkdir -p hay && echo needle > hay/stack.txt && cd hay && bash -c "rg -l needle" | sed "s/^/rg found /"; cd /home'
   );
   await shows(page, 'rg found stack.txt');
+  await run(page, '(umask 077; : > private.txt); stat -c "umask made %a" private.txt');
+  await shows(page, 'umask made 600');
+  await run(
+    page,
+    'gawk \'BEGIN { s = "/inet/tcp/8461/0/0"; print "hello over tcp" |& s; close(s) }\' & sleep 1; exec 3<>/dev/tcp/127.0.0.1/8461; head -1 <&3 | sed "s/^/bash read: /"; exec 3<&-; wait'
+  );
+  await shows(page, 'bash read: hello over tcp');
   assert.deepEqual(page.errors, []);
 });
 
