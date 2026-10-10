@@ -41,7 +41,7 @@ self.onmessage = ({ data, ports }) => {
     setInterval(async () => {
       const start = Date.now();
       try {
-        await (await fetch('/os/index.html', { cache: 'no-store' })).text();
+        await (await fetch(data.busy, { cache: 'no-store' })).text();
         fetches.push([start, Date.now() - start]);
       } catch {
         fetches.push([start, -1]);
@@ -56,12 +56,19 @@ async function owner(page, due) {
   return page.evaluate(
     async (source, due, busy) => {
       const tabs = await import('/os/tabs.js');
-      const { createKernel } = await import('/node_modules/@ai-ecoverse/slicc-kernel/dist/index.js');
+      const { createKernel } = await import(
+        '/node_modules/@ai-ecoverse/slicc-kernel/dist/index.js'
+      );
       const claimed = await tabs.claim(navigator.locks, 'r1-owner');
       const board = await tabs.joinSwitchboard({ versions: { bios: 'r1' } });
-      const kernel = await createKernel({ root: await navigator.storage.getDirectory(), media: false });
-      const worker = new Worker(URL.createObjectURL(new Blob([source], { type: 'text/javascript' })));
-      worker.postMessage({ due, busy });
+      const kernel = await createKernel({
+        root: await navigator.storage.getDirectory(),
+        media: false,
+      });
+      const worker = new Worker(
+        URL.createObjectURL(new Blob([source], { type: 'text/javascript' }))
+      );
+      worker.postMessage({ due, busy: busy && new URL('/os/index.html', location.href).href });
       const gaps = [];
       let last = Date.now();
       setInterval(() => {
@@ -152,7 +159,9 @@ function stats(values) {
 const within = (samples, [from, to]) =>
   samples.filter(([at]) => at >= from && at < to).map(([, value]) => value);
 
-test(`R1: the owner tab in the background (${variant || 'off'})`, { skip: !variant && 'set R1' }, async (t) => {
+test(`R1: the owner tab in the background (${variant || 'off'})`, {
+  skip: !variant && 'set R1',
+}, async (t) => {
   const a = await chrome.page(t);
   await boot(a);
   const b = await a.tab();
@@ -179,9 +188,12 @@ test(`R1: the owner tab in the background (${variant || 'off'})`, { skip: !varia
   } else {
     await b.send('Page.bringToFront');
   }
+  await sleep(3000);
   const state = await a.evaluate(() => document.visibilityState);
   const followerState = await b.evaluate(() => document.visibilityState);
-  await sleep(minutes * 60 * 1000);
+  await sleep(minutes * 60 * 1000 - 3000);
+  const ownerStateLate = await a.evaluate(() => document.visibilityState);
+  const followerStateLate = await b.evaluate(() => document.visibilityState);
   const background = [hiddenFrom, Date.now()];
   if (variant === 'frozen') await a.send('Page.setWebLifecycleState', { state: 'active' });
   if (variant === 'minimized' && !note) {
@@ -199,7 +211,9 @@ test(`R1: the owner tab in the background (${variant || 'off'})`, { skip: !varia
     const ticks = read.stdout.trim().split('\n').map(Number);
     return { samples: window.r1.samples, ticks };
   });
-  const tickGaps = followed.ticks.slice(1).map((s, i) => [s * 1000, (s - followed.ticks[i]) * 1000]);
+  const tickGaps = followed.ticks
+    .slice(1)
+    .map((s, i) => [s * 1000, (s - followed.ticks[i]) * 1000]);
   const phases = { visible, background };
   const result = {
     variant,
@@ -208,6 +222,8 @@ test(`R1: the owner tab in the background (${variant || 'off'})`, { skip: !varia
     note,
     ownerState: state,
     followerState,
+    ownerStateLate,
+    followerStateLate,
     cronLateMs: owned.worker.fired ? owned.worker.fired - owned.worker.due : null,
     stalls: followed.samples.stalls,
   };

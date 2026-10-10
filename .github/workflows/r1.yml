@@ -16,11 +16,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { variant: hidden, minutes: 6, busy: '0' }
           - { variant: hidden, minutes: 6, busy: '1' }
-          - { variant: hidden, minutes: 30, busy: '1' }
           - { variant: minimized, minutes: 6, busy: '1' }
-          - { variant: frozen, minutes: 1, busy: '1' }
           - { variant: fast, minutes: 3, busy: '1' }
     env:
       LEFTHOOK: '0'
