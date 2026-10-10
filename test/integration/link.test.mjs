@@ -250,7 +250,7 @@ test('links the real slicc CLI over stdio signaling, and kernel curl reaches its
   const page = await chrome.page(t);
   await boot(page);
   await ready(page);
-  const node = spawn(cli, ['attach', '--signal', 'stdio', '--name', 'ref-node'], {
+  const node = spawn(cli, ['attach', '--signal', 'stdio', '--name', 'ref-node', '--no-kernel'], {
     stdio: ['pipe', 'pipe', 'inherit'],
   });
   t.after(() => node.kill());
@@ -314,7 +314,17 @@ test('the real slicc CLI: ssh into it with its pinned host key, and as the exit 
     current?.kill();
     const node = spawn(
       cli,
-      ['attach', '--signal', 'stdio', '--name', 'ref-node', '--hosts', hosts, ...extra],
+      [
+        'attach',
+        '--signal',
+        'stdio',
+        '--name',
+        'ref-node',
+        '--no-kernel',
+        '--hosts',
+        hosts,
+        ...extra,
+      ],
       {
         stdio: ['pipe', 'pipe', 'inherit'],
       }
