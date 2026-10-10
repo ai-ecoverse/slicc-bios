@@ -29,6 +29,7 @@ import {
   tailscaleVersion,
 } from './tailscale.js';
 import { pickTransport } from './transport.js';
+import { createTray, TRAY_HUB_KEY } from './tray.js';
 import { openTunnel } from './tunnel.js';
 import { text, update, versions } from './update.js';
 import { count, createUpdates, owners } from './updates.js';
@@ -90,16 +91,22 @@ const exits = createExitRouter();
 const tailscale = createTailscale(await tailscaleConfig(), { router: exits });
 const links = createLinks({
   router: exits,
+  name: `seven on ${location.host}`,
   makePeer: (config) => new RTCPeerConnection(config),
   onLink: (link, peer) => {
     trustHostKey(kernel, link, peer).catch((error) => console.warn(`link: ${error.message}`));
   },
 });
+const hub = location.hostname.endsWith('.sliccy.ai')
+  ? location.origin
+  : localStorage.getItem(TRAY_HUB_KEY);
+const tray = hub ? createTray({ links, origin: hub }) : null;
 const reach = createNetwork(network, {
   browser: control.status,
   tailnet: tailscale.panel,
   router: exits,
   links,
+  tray,
 });
 const transport = exits.transport(reach.transport);
 const login = signIn({ network });
@@ -119,6 +126,7 @@ const kernel = await createKernel({
 });
 exits.attach(kernel);
 installLocal(links);
+tray?.start();
 serveLoopback(kernel);
 if (network.status?.probe?.kernelTunnel) openTunnel(kernel, network.proxy);
 app.layoutKey = 'slicc-os.layout';

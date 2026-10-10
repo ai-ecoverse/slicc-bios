@@ -72,7 +72,7 @@ export function currentExit(router, tailnet) {
   return { kind: 'tailnet', node: node?.id ?? 'auto' };
 }
 
-function exitActions({ router, links, tailnet, storage }, emit) {
+function exitActions({ router, links, tray, tailnet, storage }, emit) {
   if (!router || !links) return {};
   const remember = (id) => {
     if (id) storage.setItem(EXIT_KEY, id);
@@ -101,13 +101,26 @@ function exitActions({ router, links, tailnet, storage }, emit) {
       emit();
     },
     async unlink(id) {
-      links.drop(id, 'unlinked');
+      if (tray?.known(id)) await tray.forget(id);
+      else links.drop(id, 'unlinked');
       if (router.chosen() === `link:${id}`) {
         router.choose(null);
         remember(null);
       }
       emit();
     },
+    ...(tray
+      ? {
+          rotateJoinUrl: async () => {
+            await tray.rotate();
+            emit();
+          },
+          retryLinks: async () => {
+            tray.stop();
+            tray.start();
+          },
+        }
+      : {}),
   };
 }
 
@@ -147,12 +160,13 @@ export function createNetwork(choice, options = {}) {
   };
   const linkStatus = () => {
     if (!options.links || !options.router) return {};
-    const devices = options.links.devices();
+    const devices = [...options.links.devices(), ...(options.tray?.away() ?? [])];
     const exit = currentExit(options.router, options.tailnet?.status());
+    const { joinUrl = null, joinCommand = null } = options.tray?.status() ?? {};
     return {
       exit,
-      ...(devices.length
-        ? { links: { joinUrl: null, joinCommand: null, devices, permission: null } }
+      ...(devices.length || options.tray
+        ? { links: { joinUrl, joinCommand, devices, permission: null } }
         : {}),
     };
   };
@@ -218,5 +232,6 @@ export function createNetwork(choice, options = {}) {
   };
   options.tailnet?.on(emit);
   options.links?.on(emit);
+  options.tray?.on(emit);
   return { port, transport };
 }

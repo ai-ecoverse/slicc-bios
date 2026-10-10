@@ -103,6 +103,7 @@ await step('seed', async () => {
     'tailscale.js',
     'tailscale-worker.js',
     'transport.js',
+    'tray.js',
     'tunnel.js',
     'update.js',
     'updates.js',

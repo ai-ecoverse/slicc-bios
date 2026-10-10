@@ -466,11 +466,12 @@ export function offerLink({ pc, send, hello, timers, onClose }) {
   };
 }
 
-export function createLinks({ router, makePeer, onLink = () => {}, timers }) {
+export function createLinks({ router, makePeer, onLink = () => {}, timers, name = 'seven' }) {
   const links = new Map();
   const taken = () => new Set([...links.values()].map((link) => link.label).filter(Boolean));
-  const free = () => {
+  const free = (wanted) => {
     const used = new Set([...links.values()].map((link) => link.address));
+    if (wanted?.startsWith(`${SUBNET}.`) && !used.has(wanted)) return wanted;
     for (let n = FIRST; n < 255; n += 1) if (!used.has(`${SUBNET}.${n}`)) return `${SUBNET}.${n}`;
     throw failure('ENOSPC: no free link address');
   };
@@ -486,14 +487,14 @@ export function createLinks({ router, makePeer, onLink = () => {}, timers }) {
       return () => listeners.delete(listener);
     },
     devices: () => [...links.values()].map(device),
-    start({ key, send, mode, iceServers }) {
+    start({ key, send, mode, iceServers, address }) {
       manager.drop(key, 'replaced');
-      const link = { key, mode, address: free(), label: null, peer: null };
+      const link = { key, mode, address: free(address), label: null, peer: null };
       const pc = makePeer({ iceServers });
       link.offer = offerLink({
         pc,
         send,
-        hello: { name: 'seven', mode, caps: [] },
+        hello: { name, mode, caps: [] },
         timers,
         onClose: () => {
           if (links.get(key) === link) links.delete(key);
