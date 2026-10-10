@@ -4,7 +4,7 @@
     "label": "git",
     "description": "Version control for your projects.",
     "commands": ["git"],
-    "size": 18815549
+    "size": 18815546
   },
   "@ai-ecoverse/wasix-python": {
     "id": "python",
