@@ -62,7 +62,7 @@ export function createExitRouter() {
     const bare = bareHost(host).replace(/\.$/, '');
     const literal = /^\d+\.\d+\.\d+\.\d+$/.test(bare) || bare.includes(':');
     if (literal ? reserved(bare) : ownName(bare, own)) return null;
-    const claimant = active().find((exit) => exit.claims(host));
+    const claimant = active().find((exit) => exit.claims(bare));
     if (claimant) return claimant;
     return literal || bare.includes('.') ? fallback() : null;
   };
