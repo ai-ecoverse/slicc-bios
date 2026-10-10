@@ -6,4 +6,5 @@ body {
 
 :root {
   color-scheme: light dark;
+  background: light-dark(#f8f8f8, #1b1b1b);
 }

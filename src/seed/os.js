@@ -17,7 +17,9 @@ import { grammarBase, grammars, version as grammarsVersion, installed } from './
 import { serveLoopback } from './loopback.js';
 import { createFolders, offTheRecord } from './mounts.js';
 import { createNetwork } from './network.js';
+import { createNotices } from './notices.js';
 import { createPackages, globalDir, loadCatalog, writeListing } from './packages.js';
+import { installPrompts, keepStorage, onSend } from './storage.js';
 import {
   createTailscale,
   installTailscale,
@@ -28,6 +30,8 @@ import { pickTransport } from './transport.js';
 import { openTunnel } from './tunnel.js';
 import { text, update, versions } from './update.js';
 import { count, createUpdates, owners } from './updates.js';
+
+const prompts = installPrompts();
 
 export const layouts = {
   agents: { side: 'left', open: ['tablet', 'desktop'] },
@@ -54,11 +58,11 @@ export const skip = [
   '/home/.cache',
 ];
 
-export function offerAgent(app, base, connecting, login) {
+export function offerAgent(app, base, connecting, login, sent = () => {}) {
   return connecting.then(
     (chat) => {
       const model = chat.createAgentModel(chat.connection, { storage: localStorage, login });
-      app.model = { ...base, ...model, agent: browser.stopping(model.agent) };
+      app.model = { ...base, ...model, agent: onSend(browser.stopping(model.agent), sent) };
       return chat;
     },
     (error) => {
@@ -102,6 +106,8 @@ if (network.status?.probe?.kernelTunnel) openTunnel(kernel, network.proxy);
 app.layoutKey = 'slicc-os.layout';
 app.surfaces = offered(surfaces);
 const updates = createUpdates();
+const notices = createNotices();
+const keep = keepStorage({ notices, prompts });
 const base = {
   ...(await folders.attach(
     kernel,
@@ -114,6 +120,7 @@ const base = {
     })
   )),
   updates,
+  notices,
   network: reach.port,
   browser: browser.port,
 };
@@ -183,7 +190,7 @@ function startOnce() {
     const lock = recorded();
     const back = updates.get('agent').state === 'installed' ? 'installed' : 'current';
     if (!updates.ready()) updates.set('agent', { state: 'starting' });
-    agent = offerAgent(app, base, startChat(kernel), login).then(async (chat) => {
+    agent = offerAgent(app, base, startChat(kernel), login, keep.sent).then(async (chat) => {
       if (updates.get('agent').state === 'starting') updates.set('agent', { state: back });
       return started(chat, await lock);
     });
@@ -219,7 +226,7 @@ async function restart() {
   const chat = await agent;
   await whenIdle(app.model.agent);
   const lock = recorded();
-  agent = offerAgent(app, base, restartChat(chat), login).then(async (restarted) =>
+  agent = offerAgent(app, base, restartChat(chat), login, keep.sent).then(async (restarted) =>
     started(restarted, await lock)
   );
   if (!(await agent)) {

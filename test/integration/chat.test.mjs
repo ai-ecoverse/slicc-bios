@@ -171,6 +171,25 @@ const helpers = () => {
   window.readFile = async (path) => (await (await fileOf(path)).getFile()).text();
 };
 
+const storageStub = () => {
+  let saved;
+  try {
+    saved = localStorage.getItem('test.storage');
+  } catch {
+    return;
+  }
+  const answers = JSON.parse(saved ?? '{"persisted":false,"persist":false}');
+  window.storageAnswers = answers;
+  window.persistCalls = Number(localStorage.getItem('test.persistCalls') ?? 0);
+  navigator.storage.persisted = async () => answers.persisted;
+  navigator.storage.persist = async () => {
+    window.persistCalls += 1;
+    localStorage.setItem('test.persistCalls', String(window.persistCalls));
+    return answers.persist;
+  };
+  window.storageNotice = () => window.deep(window.chatView().shadowRoot, '[data-notice="storage"]');
+};
+
 const INSTALL = 15 * 60 * 1000;
 
 async function eventually(check, ms = 30000) {
@@ -189,6 +208,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
 }, async (t) => {
   const page = await chrome.page(t);
   await page.init(helpers);
+  await page.init(storageStub);
   await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
   await ready(page);
   await page.evaluate(
@@ -319,8 +339,95 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   await page.until(
     () => !!window.chatView() && !!window.deep(window.chatView().shadowRoot, 'textarea')
   );
+  const booted = await page.evaluate(() => window.persistCalls);
   await sendChat('Say hello');
+  await page.until(() => !!window.storageNotice());
+  assert.equal(await page.evaluate(() => window.persistCalls), booted + 1);
+  const [notice] = await page.evaluate(() =>
+    document.querySelector('slicc-app').model.notices.list()
+  );
+  assert.equal(notice.title, 'Seven’s files may be cleared');
+  assert.match(
+    notice.body,
+    /^Chrome may clear seven’s files and chats when disk space runs low\. (Install seven as an app|Bookmark seven) to keep them\.$/
+  );
+  assert.equal(notice.actions.at(-1).id, 'retry');
+  assert.deepEqual(
+    notice.actions.map(({ id }) => id),
+    notice.body.includes('Install') ? ['install', 'retry'] : ['retry']
+  );
   await page.until(() => !!window.deep(window.chatView().shadowRoot, '.error-card'));
+  await page.screenshot(new URL('storage-notice-bookmark-light.png', page.dir));
+  await page.evaluate(() => {
+    const offer = new Event('beforeinstallprompt', { cancelable: true });
+    window.prompted = 0;
+    offer.prompt = async () => {
+      window.prompted += 1;
+    };
+    offer.userChoice = Promise.resolve({ outcome: 'dismissed' });
+    window.dispatchEvent(offer);
+  });
+  await page.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.notices.list()
+      .some((notice) => notice.actions[0]?.id === 'install')
+  );
+  assert.equal(
+    (await page.evaluate(() => document.querySelector('slicc-app').model.notices.list()))[0].body,
+    'Chrome may clear seven’s files and chats when disk space runs low. Install seven as an app to keep them.'
+  );
+  await page.until(() => !!window.deep(window.storageNotice(), '[data-action="install"]'));
+  await page.screenshot(new URL('storage-notice-light.png', page.dir));
+  await page.evaluate(() => {
+    const app = document.querySelector('slicc-app');
+    if (app.color !== 'dark') app.toggleColor();
+  });
+  await page.screenshot(new URL('storage-notice-dark.png', page.dir));
+  await page.evaluate(() => document.querySelector('slicc-app').toggleColor());
+  await page.send('Emulation.setDeviceMetricsOverride', {
+    width: 420,
+    height: 800,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.until(() => document.querySelector('slicc-app').screen === 'phone');
+  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
+  await page.until(() => !!window.chatView() && !!window.storageNotice());
+  await page.screenshot(new URL('storage-notice-420.png', page.dir));
+  await page.send('Emulation.clearDeviceMetricsOverride');
+  await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
+  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
+  await page.until(() => !!window.chatView() && !!window.storageNotice());
+  await page.evaluate(() => window.deep(window.storageNotice(), '[data-action="install"]').click());
+  await page.until(
+    () =>
+      window.prompted === 1 &&
+      document.querySelector('slicc-app').model.notices.list()[0]?.actions.length === 1
+  );
+  assert.equal(
+    await page.evaluate(() =>
+      document
+        .querySelector('slicc-app')
+        .model.notices.act('storage', 'retry')
+        .then(
+          () => 'kept',
+          (error) => error.message
+        )
+    ),
+    'Chrome still doesn’t keep seven’s files. Install seven as an app or bookmark it, then try again.'
+  );
+  assert.ok(await page.evaluate(() => !!window.storageNotice()));
+  await page.evaluate(() => {
+    window.storageAnswers.persist = true;
+    window.deep(window.storageNotice(), '[data-action="retry"]').click();
+  });
+  await page.until(() => !window.storageNotice());
+  assert.deepEqual(
+    await page.evaluate(() => document.querySelector('slicc-app').model.notices.list()),
+    []
+  );
+  assert.equal(await page.evaluate(() => window.persistCalls), booted + 3);
   assert.match(
     await page.evaluate(() =>
       window.deepText(window.deep(window.chatView().shadowRoot, '.error-card'))
@@ -397,6 +504,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     () => !!window.chatView() && !!window.deep(window.chatView().shadowRoot, 'textarea')
   );
   await sendChat('Say hello again');
+  assert.equal(await page.evaluate(() => window.persistCalls), booted + 3);
   await page.until(
     () =>
       window.deepText(window.chatView().shadowRoot).split('Hello from Bedrock in seven.').length ===
@@ -883,5 +991,28 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   await page.until(() => !!window.confirmDialog());
   await page.evaluate(() => window.confirmButton('Remove').click());
   await page.until((id) => !window.rows().some((row) => row.id === id), gone.id);
+
+  await page.evaluate(() => {
+    localStorage.setItem('test.storage', JSON.stringify({ persisted: false, persist: true }));
+  });
+  await page.reload();
+  await ready(page);
+  await page.until(() =>
+    document
+      .querySelector('slicc-app')
+      .dock.api.panels.some((panel) => panel.id.startsWith('chat:'))
+  );
+  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
+  await page.until(
+    () => !!window.chatView() && !!window.deep(window.chatView().shadowRoot, 'textarea')
+  );
+  const reloaded = await page.evaluate(() => window.persistCalls);
+  await sendChat('Say hello once more');
+  await page.until((before) => window.persistCalls === before + 1, reloaded);
+  assert.equal(await page.evaluate(() => !!window.storageNotice()), false);
+  assert.deepEqual(
+    await page.evaluate(() => document.querySelector('slicc-app').model.notices.list()),
+    []
+  );
   assert.deepEqual(page.errors, []);
 });
