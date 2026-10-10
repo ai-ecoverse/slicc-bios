@@ -1,0 +1,48 @@
+name: R1
+
+on:
+  push:
+    branches: ['r1/**']
+
+permissions:
+  contents: read
+
+jobs:
+  r1:
+    name: r1 / ${{ matrix.variant }}${{ matrix.busy == '1' && ' busy' || '' }} ${{ matrix.minutes }} min
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { variant: hidden, minutes: 6, busy: '0' }
+          - { variant: hidden, minutes: 6, busy: '1' }
+          - { variant: hidden, minutes: 30, busy: '1' }
+          - { variant: minimized, minutes: 6, busy: '1' }
+          - { variant: frozen, minutes: 1, busy: '1' }
+          - { variant: fast, minutes: 3, busy: '1' }
+    env:
+      LEFTHOOK: '0'
+      R1: ${{ matrix.variant }}
+      R1_MINUTES: ${{ matrix.minutes }}
+      R1_BUSY: ${{ matrix.busy }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npx playwright-core install-deps chromium && npx playwright-core install --no-shell chromium
+      - name: Measure
+        run: xvfb-run -a node --test --test-concurrency=1 --test-timeout=2700000 --test-global-setup=node_modules/@ai-ecoverse/slicc-shared-web/harness/global.mjs test/integration/zz-r1.test.mjs
+      - name: Numbers
+        if: always()
+        run: cat artifacts/r1-*.json >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: r1-${{ matrix.variant }}-${{ matrix.minutes }}-${{ matrix.busy }}
+          path: artifacts/
+          if-no-files-found: ignore
