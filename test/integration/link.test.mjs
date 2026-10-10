@@ -166,7 +166,7 @@ test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback
   const hello = await page.evaluate(() => globalThis.fakeNodeLog.find((m) => m.role === 'page'));
   assert.deepEqual(
     { ...hello, name: hello.name.replace(/ on .*/, '') },
-    { v: 1, role: 'page', name: 'seven', mode: 'local', caps: ['kernel-in'] }
+    { v: 1, role: 'page', name: 'seven', mode: 'local', caps: ['kernel-in', 'browsers'] }
   );
   assert.match(hello.name, /^seven on (localhost|127\.0\.0\.1):\d+$/);
   assert.deepEqual(await knownHosts(page, 'fake'), {
@@ -462,4 +462,88 @@ test('the real slicc CLI carries <port>.kernel.localhost into the page, and the 
   assert.equal(nothing[0], 502);
   const facade = await kernelGet(kernelPort, '9222.kernel.localhost', '/json/version');
   assert.notEqual(facade[0], 200);
+});
+
+test('the real slicc CLI shares another browser over cdp: the 9222 facade reaches it as <device>/<browser>', {
+  skip: !cli,
+}, async (t) => {
+  const { chromium } = await import('playwright-core');
+  const { mkdtemp } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const probe = createServer();
+  await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+  const debugPort = probe.address().port;
+  await new Promise((resolve) => probe.close(resolve));
+  const profile = await mkdtemp(join(tmpdir(), 'link-cdp-'));
+  const other = spawn(
+    chromium.executablePath(),
+    [
+      '--headless=new',
+      `--remote-debugging-port=${debugPort}`,
+      `--user-data-dir=${profile}`,
+      '--no-first-run',
+      'about:blank',
+    ],
+    { stdio: 'ignore' }
+  );
+  t.after(() => other.kill());
+  for (let i = 0; i < 40; i += 1) {
+    if (
+      await fetch(`http://127.0.0.1:${debugPort}/json/version`).then(
+        (r) => r.ok,
+        () => false
+      )
+    )
+      break;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  const page = await chrome.page(t);
+  await boot(page);
+  await ready(page);
+  const node = spawn(
+    cli,
+    [
+      'attach',
+      '--signal',
+      'stdio',
+      '--name',
+      'ref-node',
+      '--no-kernel',
+      '--cdp-extra',
+      `http://127.0.0.1:${debugPort}`,
+    ],
+    { stdio: ['pipe', 'pipe', 'inherit'] }
+  );
+  t.after(() => node.kill());
+  await page.expose('sliccLinkSend', (message) => node.stdin.write(`${JSON.stringify(message)}\n`));
+  createInterface({ input: node.stdout }).on('line', (line) =>
+    page.evaluate((line) => globalThis.sliccLinkReceive(line), line).catch(() => {})
+  );
+  await page.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.network.status()
+      .links?.devices.some((d) => d.state === 'connected')
+  );
+  const listed = await shell(
+    page,
+    "curl -s 'http://127.0.0.1:9222/json/list?runtime=nope'",
+    'cdp-nope'
+  );
+  const runtime = /ref-node\/[A-Za-z0-9._-]+/.exec(listed.out)?.[0];
+  assert.ok(runtime, listed.out);
+  const pages = await shell(
+    page,
+    `curl -sf 'http://127.0.0.1:9222/json/list?runtime=${runtime}' | jq -r '.[].url'`,
+    'cdp-list'
+  );
+  assert.equal(pages.code, '0', pages.out);
+  assert.match(pages.out, /about:blank/);
+  const driven = await shell(
+    page,
+    `{ playwright-cli --runtime ${runtime} open 'data:text/html,<title>linked-browser</title>' > /dev/null && playwright-cli --runtime ${runtime} eval 'document.title'; playwright-cli --runtime ${runtime} close > /dev/null; }`,
+    'cdp-driven'
+  );
+  assert.match(driven.out, /linked-browser/);
 });
