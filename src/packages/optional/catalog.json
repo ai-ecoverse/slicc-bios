@@ -1,0 +1,101 @@
+{
+  "@ai-ecoverse/wasm-git": {
+    "id": "git",
+    "label": "git",
+    "description": "Version control for your projects.",
+    "commands": ["git"],
+    "size": 18815549
+  },
+  "@ai-ecoverse/wasix-python": {
+    "id": "python",
+    "label": "Python",
+    "description": "Python 3.14 with pip, for scripts and data work.",
+    "commands": ["python3", "pip"],
+    "size": 46060649
+  },
+  "@ai-ecoverse/wasix-uv-shim": {
+    "id": "uv",
+    "label": "uv",
+    "description": "Python projects and virtual environments, as a shim over pip and venv.",
+    "commands": ["uv"],
+    "requires": ["python"],
+    "size": 10321
+  },
+  "@ai-ecoverse/wasi-esbuild": {
+    "id": "esbuild",
+    "label": "esbuild",
+    "description": "Bundles and minifies JavaScript and TypeScript.",
+    "commands": ["esbuild"],
+    "size": 5093287
+  },
+  "@ai-ecoverse/wasi-typescript": {
+    "id": "tsc",
+    "label": "TypeScript",
+    "description": "The TypeScript 7 compiler and type checker.",
+    "commands": ["tsc"],
+    "size": 10814667
+  },
+  "@ai-ecoverse/wasi-biome": {
+    "id": "biome",
+    "label": "Biome",
+    "description": "Formats and lints JavaScript, TypeScript, JSON and CSS.",
+    "commands": ["biome"],
+    "size": 10522726
+  },
+  "@ai-ecoverse/wasm-poppler": {
+    "id": "pdf",
+    "label": "PDF tools",
+    "description": "Reads PDFs: text, page images, and splitting or joining files.",
+    "commands": ["pdftotext", "pdfinfo", "pdftoppm", "pdfimages", "pdfunite", "pdfseparate"],
+    "size": 2583976
+  },
+  "@ai-ecoverse/wasm-qpdf": {
+    "id": "qpdf",
+    "label": "qpdf",
+    "description": "Merges, splits, rotates and encrypts PDF files.",
+    "commands": ["qpdf"],
+    "size": 992082
+  },
+  "@ai-ecoverse/wasm-rsync": {
+    "id": "rsync",
+    "label": "rsync",
+    "description": "Copies and syncs folders, sending only what changed, also to rsync:// servers.",
+    "commands": ["rsync"],
+    "size": 915915
+  },
+  "@ai-ecoverse/wasi-buf": {
+    "id": "buf",
+    "label": "buf",
+    "description": "Lints, formats and builds Protocol Buffers.",
+    "commands": ["buf"],
+    "size": 16875828
+  },
+  "@ai-ecoverse/wasm-tar": {
+    "id": "tar",
+    "label": "tar",
+    "description": "Packs and unpacks .tar archives; hard links aren't recreated, and a symlink exits 2 though it's created.",
+    "commands": ["tar"],
+    "size": 1156421
+  },
+  "@ai-ecoverse/wasm-screen": {
+    "id": "screen",
+    "label": "screen",
+    "description": "Keeps a terminal session running to detach and reattach, from the same terminal.",
+    "commands": ["screen"],
+    "size": 712777
+  },
+  "@ai-ecoverse/wasi-hf": {
+    "id": "hf",
+    "label": "Hugging Face",
+    "description": "Downloads models and datasets from the Hugging Face Hub.",
+    "commands": ["hf"],
+    "size": 122241
+  },
+  "@ai-ecoverse/wasi-dig": {
+    "id": "dig",
+    "label": "dig",
+    "description": "Looks up DNS records, tailnet names included.",
+    "commands": ["dig"],
+    "size": 221617
+  }
+}

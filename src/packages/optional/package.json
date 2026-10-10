@@ -1,0 +1,21 @@
+{
+  "name": "slicc-bios-optional",
+  "private": true,
+  "description": "The certified versions of the optional packages that seven's Install / Update panel offers. Never installed as a project: the panel runs pnpm add -g for each one.",
+  "dependencies": {
+    "@ai-ecoverse/wasi-biome": "2.5.15-2",
+    "@ai-ecoverse/wasi-buf": "1.73.0-2",
+    "@ai-ecoverse/wasi-dig": "0.1.0-1",
+    "@ai-ecoverse/wasi-esbuild": "0.28.2-2",
+    "@ai-ecoverse/wasi-hf": "0.1.0-2",
+    "@ai-ecoverse/wasi-typescript": "7.0.2-1",
+    "@ai-ecoverse/wasix-python": "3.14.2-11",
+    "@ai-ecoverse/wasix-uv-shim": "0.1.0-2",
+    "@ai-ecoverse/wasm-git": "2.55.0-12",
+    "@ai-ecoverse/wasm-poppler": "26.10.0-2",
+    "@ai-ecoverse/wasm-qpdf": "12.4.2-1",
+    "@ai-ecoverse/wasm-rsync": "3.4.4-3",
+    "@ai-ecoverse/wasm-screen": "5.0.1-8",
+    "@ai-ecoverse/wasm-tar": "1.35.0-4"
+  }
+}

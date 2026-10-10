@@ -50,8 +50,10 @@ export function count(n) {
 }
 
 export function createUpdates({ ready = false, now = Date.now } = {}) {
-  const listeners = new Set();
+  const listeners = { items: new Set(), packages: new Set() };
   const handlers = new Map();
+  let packages = [];
+  let packageHandler = null;
   let items = components.map(([id, kind, label]) => ({
     id,
     label,
@@ -65,15 +67,28 @@ export function createUpdates({ ready = false, now = Date.now } = {}) {
     actions: [],
   }));
   const emit = () => {
-    for (const listener of [...listeners]) listener(items);
+    for (const listener of [...listeners.items]) listener(items);
   };
   const port = {
     on(type, listener) {
-      if (type !== 'items') return () => {};
-      listeners.add(listener);
-      return () => listeners.delete(listener);
+      const set = Object.hasOwn(listeners, type) ? listeners[type] : null;
+      if (!set) return () => {};
+      set.add(listener);
+      return () => set.delete(listener);
     },
     list: () => items,
+    packages: () => packages,
+    setPackages(list) {
+      packages = list;
+      for (const listener of [...listeners.packages]) listener(packages);
+    },
+    handlePackages(handler) {
+      packageHandler = handler;
+    },
+    async actPackage(id, action) {
+      if (!packageHandler) throw new Error('Optional packages are not available yet.');
+      await packageHandler(id, action);
+    },
     ready: () => ready,
     get: (id) => items.find((item) => item.id === id),
     set(id, patch) {
