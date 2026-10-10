@@ -33,14 +33,14 @@
     "label": "Ruby",
     "description": "Ruby 3.4 with gem, bundler, rake, irb and erb, for scripts and gems.",
     "commands": ["ruby", "gem", "bundle", "rake", "irb", "erb"],
-    "size": 9743368
+    "size": 9754400
   },
   "@ai-ecoverse/wasix-perl": {
     "id": "perl",
     "label": "Perl",
     "description": "Perl 5.42 with cpan, perldoc and prove, for scripts and text processing.",
     "commands": ["perl", "cpan", "perldoc", "prove", "pod2html", "pod2man", "pod2text"],
-    "size": 15522193
+    "size": 15529492
   },
   "@ai-ecoverse/wasi-esbuild": {
     "id": "esbuild",
