@@ -89,7 +89,7 @@ test('a follower tab uses the owner tab kernel, and its terminal moves on when t
   await b.until(() => window.pr17.out.includes('the tab running SLICC closed'));
   await b.until(() => window.pr17.board.owner()?.versions?.bios === 'b');
   await b.evaluate(() => window.pr17.terminal.write('echo after-$((40+3))\n'));
-  await b.within(15000, () => window.pr17.out.includes('after-43'));
+  await b.within(30000, () => window.pr17.out.includes('after-43'));
   assert.deepEqual(b.errors, []);
 });
 

@@ -226,6 +226,7 @@ export function followKernel({ port, attach, notice = NOTICE }) {
     const size = { cols, rows };
     let inner = null;
     let closed = false;
+    const queued = [];
     let finish;
     const exited = new Promise((resolve) => {
       finish = resolve;
@@ -238,6 +239,7 @@ export function followKernel({ port, attach, notice = NOTICE }) {
         try {
           inner = await used.openTerminal(argv, { cwd, env, ...size, onData: output });
           if (closed) inner.close();
+          for (const data of queued.splice(0)) inner.write(data);
           break;
         } catch (error) {
           if (!gone(error)) throw error;
@@ -265,7 +267,10 @@ export function followKernel({ port, attach, notice = NOTICE }) {
         return inner?.pid ?? null;
       },
       exited,
-      write: (data) => inner?.write(data),
+      write(data) {
+        if (inner) inner.write(data);
+        else if (!closed) queued.push(data);
+      },
       resize(columns, lines) {
         size.cols = columns;
         size.rows = lines;
