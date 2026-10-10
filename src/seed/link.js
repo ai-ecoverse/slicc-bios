@@ -719,6 +719,11 @@ export function device(link) {
     ...(typeof peer?.policy?.summary === 'string' ? { policy: peer.policy.summary } : {}),
     exit: Boolean(peer?.routes?.exit) && caps.includes('net'),
     state: peer ? 'connected' : 'connecting',
+    ...(caps.includes('cdp') && link.browsers?.length
+      ? {
+          browsers: link.browsers.map(({ id, name }) => ({ runtime: `${link.label}/${id}`, name })),
+        }
+      : {}),
   };
 }
 

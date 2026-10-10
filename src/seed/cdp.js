@@ -252,9 +252,10 @@ export function linkedBrowsers(links) {
   );
 }
 
-export function browserVia(network) {
+export function browserVia(network, links) {
   const hosts = browserHosts(network);
-  return RUNTIMES.find((runtime) => hosts[runtime]) ?? null;
+  const via = RUNTIMES.find((runtime) => hosts[runtime]);
+  return via ?? (linkedBrowsers(links).length ? 'link' : null);
 }
 
 export function browserHook(network, observe = (connection) => connection, links) {
@@ -279,6 +280,6 @@ export function browserHook(network, observe = (connection) => connection, links
 export function browserControl(network, { observe, links } = {}) {
   return {
     hook: browserHook(network, observe, links),
-    status: () => ({ via: browserVia(network) }),
+    status: () => ({ via: browserVia(network, links) }),
   };
 }

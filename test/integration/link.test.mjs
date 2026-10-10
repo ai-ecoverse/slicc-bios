@@ -483,21 +483,21 @@ test('the real slicc CLI shares another browser over cdp: the 9222 facade reache
       `--remote-debugging-port=${debugPort}`,
       `--user-data-dir=${profile}`,
       '--no-first-run',
+      ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
       'about:blank',
     ],
     { stdio: 'ignore' }
   );
   t.after(() => other.kill());
-  for (let i = 0; i < 40; i += 1) {
-    if (
-      await fetch(`http://127.0.0.1:${debugPort}/json/version`).then(
-        (r) => r.ok,
-        () => false
-      )
-    )
-      break;
-    await new Promise((resolve) => setTimeout(resolve, 250));
+  let up = false;
+  for (let i = 0; i < 120 && !up; i += 1) {
+    up = await fetch(`http://127.0.0.1:${debugPort}/json/version`).then(
+      (r) => r.ok,
+      () => false
+    );
+    if (!up) await new Promise((resolve) => setTimeout(resolve, 250));
   }
+  assert.ok(up, 'the second Chromium answers on its debugging port');
   const page = await chrome.page(t);
   await boot(page);
   await ready(page);
