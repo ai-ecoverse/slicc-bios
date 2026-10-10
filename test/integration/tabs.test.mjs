@@ -80,6 +80,10 @@ test('each tab sizes its own shell: the owner at 1280, a follower at 420 with Ch
   });
   await b.until(() => document.querySelector('slicc-app').screen === 'phone');
   await b.evaluate(() => document.querySelector('slicc-app').show('chat'));
+  const settled = () =>
+    !document.querySelector('slicc-app').dock.api.panels.some((panel) => panel.id === 'updates');
+  await a.until(settled);
+  await b.until(settled);
   await a.send('Page.bringToFront');
   const wide = await size(a);
   await run(a, 'stty size; echo a-$((1+1))');

@@ -244,6 +244,7 @@ export class Unanswered extends Error {
 }
 
 const gone = (error) => error?.name === 'KernelGoneError';
+export const TINY = { cols: 20, rows: 4 };
 const encoder = new TextEncoder();
 
 export function followKernel({ port, attach, notice = NOTICE }) {
@@ -336,6 +337,7 @@ export function followKernel({ port, attach, notice = NOTICE }) {
         else if (!closed) queued.push(data);
       },
       resize(columns, lines) {
+        if (columns < TINY.cols || lines < TINY.rows) return;
         size.cols = columns;
         size.rows = lines;
         inner?.resize(columns, lines);
