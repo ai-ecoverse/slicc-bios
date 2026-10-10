@@ -95,6 +95,7 @@ const links = createLinks({
   router: exits,
   name: `seven on ${location.host}`,
   makePeer: (config) => new RTCPeerConnection(config),
+  kernel: () => kernel,
   onLink: (link, peer) => {
     trustHostKey(kernel, link, peer).catch((error) => console.warn(`link: ${error.message}`));
   },

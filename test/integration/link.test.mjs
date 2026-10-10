@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { createServer } from 'node:http';
+import { createServer, request } from 'node:http';
 import { createInterface } from 'node:readline';
 import { after, test } from 'node:test';
 import { boot, ready, run } from './bios.mjs';
@@ -166,7 +166,7 @@ test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback
   const hello = await page.evaluate(() => globalThis.fakeNodeLog.find((m) => m.role === 'page'));
   assert.deepEqual(
     { ...hello, name: hello.name.replace(/ on .*/, '') },
-    { v: 1, role: 'page', name: 'seven', mode: 'local', caps: [] }
+    { v: 1, role: 'page', name: 'seven', mode: 'local', caps: ['kernel-in'] }
   );
   assert.match(hello.name, /^seven on (localhost|127\.0\.0\.1):\d+$/);
   assert.deepEqual(await knownHosts(page, 'fake'), {
@@ -364,4 +364,92 @@ test('the real slicc CLI: ssh into it with its pinned host key, and as the exit 
   );
   assert.notEqual(denied.code, '0');
   await page.evaluate(() => document.querySelector('slicc-app').model.network.setExit(null));
+});
+
+const fixture = new URL('fixtures/httptest/', import.meta.url);
+
+async function installHttptest(page) {
+  const { readFile } = await import('node:fs/promises');
+  const files = {
+    'node_modules/httptest/package.json': (
+      await readFile(new URL('package.json', fixture))
+    ).toString('base64'),
+    'node_modules/httptest/bin/httptest.wasm': (
+      await readFile(new URL('bin/httptest.wasm', fixture))
+    ).toString('base64'),
+  };
+  await page.evaluate(async (files) => {
+    for (const [path, data] of Object.entries(files)) {
+      const names = path.split('/');
+      const name = names.pop();
+      let dir = await navigator.storage.getDirectory();
+      for (const part of names) dir = await dir.getDirectoryHandle(part, { create: true });
+      const writable = await (await dir.getFileHandle(name, { create: true })).createWritable();
+      await writable.write(Uint8Array.from(atob(data), (c) => c.charCodeAt(0)));
+      await writable.close();
+    }
+  }, files);
+}
+
+function kernelGet(port, host, path, method = 'GET', body) {
+  return new Promise((resolve, reject) => {
+    const req = request({ host: '127.0.0.1', port, path, method, headers: { host } }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => resolve([res.statusCode, Buffer.concat(chunks).toString()]));
+    });
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
+test('the real slicc CLI carries <port>.kernel.localhost into the page, and the page refuses the CDP facade', {
+  skip: !cli,
+}, async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await installHttptest(page);
+  await page.reload();
+  await ready(page);
+  await run(page, 'httptest 8400 &');
+  await page.until(() => document.querySelector('slicc-app') && true);
+  const probe = createServer();
+  await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+  const kernelPort = probe.address().port;
+  await new Promise((resolve) => probe.close(resolve));
+  const node = spawn(
+    cli,
+    ['attach', '--signal', 'stdio', '--name', 'ref-node', '--kernel-port', String(kernelPort)],
+    {
+      stdio: ['pipe', 'pipe', 'inherit'],
+    }
+  );
+  t.after(() => node.kill());
+  await page.expose('sliccLinkSend', (message) => node.stdin.write(`${JSON.stringify(message)}\n`));
+  createInterface({ input: node.stdout }).on('line', (line) =>
+    page.evaluate((line) => globalThis.sliccLinkReceive(line), line).catch(() => {})
+  );
+  await page.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.network.status()
+      .links?.devices.some((d) => d.state === 'connected')
+  );
+  let served;
+  for (let i = 0; i < 40; i += 1) {
+    served = await kernelGet(kernelPort, '8400.kernel.localhost', '/x.js').catch((error) => [
+      0,
+      error.message,
+    ]);
+    if (served[0] === 200) break;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  assert.equal(served[0], 200, served[1]);
+  assert.match(served[1], /hello from the kernel/);
+  const echoed = await kernelGet(kernelPort, '8400.kernel.localhost', '/echo', 'POST', 'posted');
+  assert.deepEqual(echoed, [200, 'posted']);
+  const nothing = await kernelGet(kernelPort, '8401.kernel.localhost', '/');
+  assert.equal(nothing[0], 502);
+  const facade = await kernelGet(kernelPort, '9222.kernel.localhost', '/json/version');
+  assert.notEqual(facade[0], 200);
 });
