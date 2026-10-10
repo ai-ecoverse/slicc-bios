@@ -10,6 +10,7 @@
     "@ai-ecoverse/wasi-hf": "0.1.0-2",
     "@ai-ecoverse/wasi-typescript": "7.0.2-1",
     "@ai-ecoverse/wasix-python": "3.14.2-11",
+    "@ai-ecoverse/wasix-ruby": "3.4.11-9",
     "@ai-ecoverse/wasix-uv-shim": "0.1.0-2",
     "@ai-ecoverse/wasm-git": "2.55.0-12",
     "@ai-ecoverse/wasm-poppler": "26.10.0-2",
