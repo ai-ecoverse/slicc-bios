@@ -4,7 +4,7 @@ export function mirrorUpdates(os) {
   const listeners = { items: new Set(), packages: new Set() };
   let items = [];
   let packages = [];
-  let ready = false;
+  let ready = true;
   const take = (snapshot) => {
     items = snapshot.items;
     ready = snapshot.ready;

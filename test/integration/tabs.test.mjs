@@ -27,12 +27,12 @@ test('a second tab follows the first on one kernel, and takes over when the firs
 
   await b.send('Page.bringToFront');
   await a.close();
+  await shows(b, 'SLICC closed', 30000);
   await run(b, 'echo once-$((20+2))');
   await b.within(
     30000,
     () => document.querySelector('slicc-app').model.tabs?.state().role === 'owner'
   );
-  await shows(b, 'SLICC closed');
   await shows(b, 'once-22', 30000);
   const text = await screen(b);
   assert.equal(text.split('echo once-$((20+2))').length, 2, text);

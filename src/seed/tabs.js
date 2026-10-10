@@ -298,8 +298,11 @@ export function followKernel({ port, attach, notice = NOTICE }) {
       for (;;) {
         used = await client();
         try {
-          inner = await used.openTerminal(argv, { cwd, env, ...size, onData: output });
+          const opened = { ...size };
+          inner = await used.openTerminal(argv, { cwd, env, ...opened, onData: output });
           if (closed) inner.close();
+          if (opened.cols !== size.cols || opened.rows !== size.rows)
+            inner.resize(size.cols, size.rows);
           break;
         } catch (error) {
           if (!gone(error)) throw error;
