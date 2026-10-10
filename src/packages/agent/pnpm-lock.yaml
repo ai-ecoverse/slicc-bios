@@ -13,16 +13,16 @@ importers:
   .:
     dependencies:
       '@ai-ecoverse/slicc-agent':
-        specifier: 3.27.1
-        version: 3.27.1(@ai-ecoverse/slicc-kernel@1.41.3)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
+        specifier: 3.28.0
+        version: 3.28.0(@ai-ecoverse/slicc-kernel@1.41.3)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@ai-ecoverse/slicc-kernel':
         specifier: 1.41.3
         version: 1.41.3
 
 packages:
 
-  '@ai-ecoverse/slicc-agent@3.27.1':
-    resolution: {integrity: sha512-S5br7L0pgOcUhlmPTABabbm8mxIiorUoEDXJR/wnUWc6LByhYYVzCSklHqd4WMUkphnG2ivn5KZS+Ln9YpFA5A==}
+  '@ai-ecoverse/slicc-agent@3.28.0':
+    resolution: {integrity: sha512-kcBZS/mUhs3B3BakEycNznryHt5P8PFUqPDKDMxgRFhxEiJNcmrHv70cDIbfubSbB8PbBd0YRPGgJ42iHP+ZzA==}
     engines: {node: '>=24'}
     peerDependencies:
       '@ai-ecoverse/slicc-kernel': '>=1.26.3 <2'
@@ -149,6 +149,10 @@ packages:
     resolution: {integrity: sha512-i22unyhavxrTF/KS/JcBOKprQRgepufOIztnqBKZXJCWbEHsXDzcINtjmmBSbFB/3S+4FWIl3eJ5FMbRe33Ybg==}
     engines: {node: '>=22.19.0'}
 
+  '@earendil-works/pi-mcp@1.1.0':
+    resolution: {integrity: sha512-xGKwvu3SvVTeoIx8Z7UGoJprB4VK20wKORMhufcWGx61fIauhu3J+UqfB5eeoF1oE/geYBA598K6nh1SdABQkg==}
+    engines: {node: '>=22.19.0'}
+
   '@earendil-works/pi-protocol@1.0.4':
     resolution: {integrity: sha512-GJ1ieSJdguV3VaO5fXD+LEm6w1Rx0HKk7P1g8I6ZelmiGpmQAYOneUZaCUhAz5BeC6FpyUFzBb+AOo0Npfxtvw==}
     engines: {node: '>=22.19.0'}
@@ -199,6 +203,10 @@ packages:
   bowser@2.14.1:
     resolution: {integrity: sha512-tzPjzCxygAKWFOJP011oxFHs57HzIhOEracIgAePE4pqB3LikALKnSzUyU4MGs9/iCEUuHlAJTjTc5M+u7YEGg==}
 
+  cross-spawn@7.0.6:
+    resolution: {integrity: sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==}
+    engines: {node: '>= 8'}
+
   debug@4.4.3:
     resolution: {integrity: sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==}
     engines: {node: '>=6.0'}
@@ -222,6 +230,9 @@ packages:
   https-proxy-agent@9.1.0:
     resolution: {integrity: sha512-ag87y7cJJ9/3+GxFr8Oy4O5faDsGRGnBGsJj/YjOSsSx/5eadKLYTMPlzuR6obgoCDDm0abAAZitXXQkMOPSpA==}
     engines: {node: '>= 20'}
+
+  isexe@2.0.0:
+    resolution: {integrity: sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw==}
 
   json-schema-to-ts@3.1.1:
     resolution: {integrity: sha512-+DWg8jCJG2TEnpy7kOm/7/AxaYoaRbjVB4LFZLySZlWn8exGs3A4OLJR966cVvU26N7X9TWxl+Jsw7dzAqKT6g==}
@@ -257,6 +268,10 @@ packages:
   partial-json@0.1.7:
     resolution: {integrity: sha512-Njv/59hHaokb/hRUjce3Hdv12wd60MtM9Z5Olmn+nehe0QDAsRtRbJPvJ0Z91TusF0SuZRIvnM+S4l6EIP8leA==}
 
+  path-key@3.1.1:
+    resolution: {integrity: sha512-ojmeN0qd+y0jszEtoY48r0Peq5dwMEkIlCOu6Q5f41lfkswXuKtYrhgoTpLnyIcHm24Uhqx+5Tqm2InSwLhE6Q==}
+    engines: {node: '>=8'}
+
   proxy-agent-negotiate@1.1.0:
     resolution: {integrity: sha512-N8IBcM3UgCVzz2L2Lqv8DVntDnnC8/hiV4nEDUPkqq72TPUgYWjQc+bdZlBPZK9LzPAvOY//gAt0S0DApoOXWQ==}
     engines: {node: '>= 20'}
@@ -269,6 +284,14 @@ packages:
   quickjs-wasi@3.6.2:
     resolution: {integrity: sha512-FCqGtGOrMgzUiIrMNMA2YnsOxCNwo31dzqXvclXUC6xeT35NJLKXQJsvbeCTjvoFAwZgEAPg8U6+KAPDGXn8Mg==}
 
+  shebang-command@2.0.0:
+    resolution: {integrity: sha512-kHxr2zZpYtdmrN1qDjrrX/Z1rR1kG8Dx+gkpK1G4eXmvXswmcE1hTWBWYUzlraYw1/yZp6YuDY77YtvbN0dmDA==}
+    engines: {node: '>=8'}
+
+  shebang-regex@3.0.0:
+    resolution: {integrity: sha512-7++dFhtcx3353uBaq8DDR4NuxBetBzC7ZQOhmTQInHEd6bSrXdiEyzCvG07Z44UYdLShWUyXt5M/yhz8ekcb1A==}
+    engines: {node: '>=8'}
+
   standardwebhooks@1.1.1:
     resolution: {integrity: sha512-bCbX9ZEyFkWPsRz7Bl3NuQUJohmwGSev/yhr7vhaGPlc4AfIrspIRa6cPTBuI1ItmrTDJ4d/S2hCsfe4+vQGnQ==}
 
@@ -280,6 +303,11 @@ packages:
 
   typebox@1.3.27:
     resolution: {integrity: sha512-zu+jc1pcy4UiNThxikUr36f0Rybk9PEeCg/NE6adeWr/SKsdNO4EzZHYRDlv2YCVAfj3Odq3dESSo/jNyoBXzA==}
+
+  which@2.0.2:
+    resolution: {integrity: sha512-BLI3Tl1TW3Pvl70l3yq3Y64i+awpwXqsGBYWkkqMtnbXgrMD+yj7rhW0kuEDxzJaYXGjEW5ogapKNMEKNMjibA==}
+    engines: {node: '>= 8'}
+    hasBin: true
 
   ws@8.22.0:
     resolution: {integrity: sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg==}
@@ -295,7 +323,7 @@ packages:
 
 snapshots:
 
-  '@ai-ecoverse/slicc-agent@3.27.1(@ai-ecoverse/slicc-kernel@1.41.3)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)':
+  '@ai-ecoverse/slicc-agent@3.28.0(@ai-ecoverse/slicc-kernel@1.41.3)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)':
     dependencies:
       '@ai-ecoverse/slicc-kernel': 1.41.3
       '@earendil-works/chord': 1.0.4
@@ -303,6 +331,7 @@ snapshots:
       '@earendil-works/pi-client': 1.0.4
       '@earendil-works/pi-codemode': 1.1.0
       '@earendil-works/pi-durable': 1.0.4(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
+      '@earendil-works/pi-mcp': 1.1.0
       '@earendil-works/pi-protocol': 1.0.4
       '@earendil-works/pi-server': 1.0.4
       '@sqlite.org/sqlite-wasm': 3.53.4-build2
@@ -555,6 +584,10 @@ snapshots:
       - ws
       - zod
 
+  '@earendil-works/pi-mcp@1.1.0':
+    dependencies:
+      cross-spawn: 7.0.6
+
   '@earendil-works/pi-protocol@1.0.4':
     dependencies:
       '@earendil-works/chord': 1.0.4
@@ -608,6 +641,12 @@ snapshots:
 
   bowser@2.14.1: {}
 
+  cross-spawn@7.0.6:
+    dependencies:
+      path-key: 3.1.1
+      shebang-command: 2.0.0
+      which: 2.0.2
+
   debug@4.4.3:
     dependencies:
       ms: 2.1.3
@@ -634,6 +673,8 @@ snapshots:
       - kerberos
       - supports-color
 
+  isexe@2.0.0: {}
+
   json-schema-to-ts@3.1.1:
     dependencies:
       '@babel/runtime': 7.29.7
@@ -649,9 +690,17 @@ snapshots:
 
   partial-json@0.1.7: {}
 
+  path-key@3.1.1: {}
+
   proxy-agent-negotiate@1.1.0: {}
 
   quickjs-wasi@3.6.2: {}
+
+  shebang-command@2.0.0:
+    dependencies:
+      shebang-regex: 3.0.0
+
+  shebang-regex@3.0.0: {}
 
   standardwebhooks@1.1.1:
     dependencies:
@@ -663,6 +712,10 @@ snapshots:
   tslib@2.8.1: {}
 
   typebox@1.3.27: {}
+
+  which@2.0.2:
+    dependencies:
+      isexe: 2.0.0
 
   ws@8.22.0:
     optional: true
