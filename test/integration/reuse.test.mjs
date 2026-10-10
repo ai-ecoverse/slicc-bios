@@ -106,7 +106,7 @@ test('installs a package again when its directory is gone', async (t) => {
 
   assert.match(await reboot(page), new RegExp(`^1/${installable} downloaded from npm, [\\d.]+MB$`));
   assert.deepEqual(downloads(), [
-    'https://registry.npmjs.org/@ai-ecoverse/wasm-bash/-/wasm-bash-5.3.0-8.tgz',
+    'https://registry.npmjs.org/@ai-ecoverse/wasm-bash/-/wasm-bash-5.3.0-10.tgz',
   ]);
 });
 
