@@ -59,8 +59,8 @@ export function createSwitchboard({
     return tab;
   }
 
-  function want(port, from, { id }) {
-    if (owner) send(tabs.get(owner).port, { want: { id, from } });
+  function want(port, from, { id, names }) {
+    if (owner) send(tabs.get(owner).port, { want: { id, from, names } });
     else send(port, { give: { id, error: 'no tab runs SLICC' } });
   }
 
