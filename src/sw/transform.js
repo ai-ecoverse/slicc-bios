@@ -89,7 +89,7 @@ async function wrap(path, source, resolve, base) {
     'const require = (id) => { const found = __slicc_required[id]; if (!found) throw new Error(`Cannot require ${id} in the browser`); return found.__slicc_cjs ? found.default : found; };',
     'const module = { exports: {} };',
     "globalThis.__slicc_process ??= globalThis.process ?? { platform: 'browser', env: {}, argv: [], version: '', versions: {}, cwd: () => '/', nextTick: (callback, ...args) => queueMicrotask(() => callback(...args)) };",
-    `(function (module, exports, require, process, global) {\n${source}\n}).call(module.exports, module, module.exports, require, globalThis.__slicc_process, globalThis);`,
+    `(function (process, global) {\n(function (module, exports, require) {\n${source}\n}).call(module.exports, module, module.exports, require);\n})(globalThis.__slicc_process, globalThis);`,
     'export default module.exports;',
     'export const __slicc_cjs = true;',
     ...names.map((name) => `export const ${name} = module.exports.${name};`),
