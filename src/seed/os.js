@@ -13,6 +13,7 @@ import {
 } from './agent.js';
 import { createBrowser } from './browser.js';
 import { browserControl } from './cdp.js';
+import { createExitRouter } from './exits.js';
 import { grammarBase, grammars, version as grammarsVersion, installed } from './grammars.js';
 import { serveLoopback } from './loopback.js';
 import { createFolders, offTheRecord } from './mounts.js';
@@ -79,9 +80,10 @@ const network = await pickTransport();
 const { kind } = network;
 const browser = createBrowser(network);
 const control = browserControl(network, { observe: browser.observe });
-const tailscale = createTailscale(await tailscaleConfig());
+const exits = createExitRouter();
+const tailscale = createTailscale(await tailscaleConfig(), { router: exits });
 const reach = createNetwork(network, { browser: control.status, tailnet: tailscale.panel });
-const transport = tailscale.wrap(reach.transport);
+const transport = exits.transport(reach.transport);
 const login = signIn({ network });
 document.documentElement.dataset.transport = kind;
 const root = await navigator.storage.getDirectory();
@@ -93,10 +95,11 @@ const folders = createFolders({
 });
 const kernel = await createKernel({
   root,
-  network: { transport, uplink: tailscale.uplink },
+  network: { transport, uplink: exits.uplink },
   cdp: control.hook,
   ...folders.options,
 });
+exits.attach(kernel);
 serveLoopback(kernel);
 if (network.status?.probe?.kernelTunnel) openTunnel(kernel, network.proxy);
 app.layoutKey = 'slicc-os.layout';

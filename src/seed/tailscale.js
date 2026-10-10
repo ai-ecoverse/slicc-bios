@@ -1,4 +1,5 @@
 import { attachKernel } from '@ai-ecoverse/slicc-kernel';
+import { createExitRouter, loopback } from './exits.js';
 import { stored } from './transport.js';
 import { fetchText, pnpm, text, versions, write } from './update.js';
 
@@ -11,7 +12,6 @@ const deployed = new URL('../packages/tailscale/', import.meta.url);
 const SOURCES = ['/mnt/tailscale', `/${FOLDER}/node_modules/${PACKAGE}/dist`, `/${FOLDER}`];
 const IDLE_MS = 30000;
 const HEAD_MS = 60000;
-const LOOPBACK = new Set(['localhost', '::1']);
 const TAILNET = ['100.64.0.0/10', 'fd7a:115c:a1e0::/48'];
 const DOH = 'https://1.1.1.1/dns-query';
 const NAME_TTL = 60;
@@ -71,15 +71,20 @@ export function tailnetAddress(host) {
   return bare.startsWith('fd7a:115c:a1e0:');
 }
 
+export function claimsHost(host, status) {
+  if (status?.state !== 'Running') return false;
+  const bare = host.replace(/^\[|\]$/g, '').toLowerCase();
+  if (tailnetAddress(bare)) return true;
+  const suffix = status.magicDNSSuffix?.replace(/\.$/, '').toLowerCase();
+  if (suffix && bare.endsWith(`.${suffix}`)) return true;
+  return (status.peers ?? []).some((peer) => peer.dnsName.toLowerCase().split('.')[0] === bare);
+}
+
 export function viaTailnet(url, status) {
   if (status?.state !== 'Running') return false;
-  const host = new URL(url).hostname.replace(/^\[|\]$/g, '').toLowerCase();
-  if (LOOPBACK.has(host) || host.startsWith('127.')) return false;
-  if (status.exitNode) return true;
-  if (tailnetAddress(host)) return true;
-  const suffix = status.magicDNSSuffix?.replace(/\.$/, '').toLowerCase();
-  if (suffix && host.endsWith(`.${suffix}`)) return true;
-  return status.peers.some((peer) => peer.dnsName.toLowerCase().split('.')[0] === host);
+  const host = new URL(url).hostname;
+  if (loopback(host)) return false;
+  return Boolean(status.exitNode) || claimsHost(host, status);
 }
 
 const short = (dnsName, name) => dnsName?.replace(/\.$/, '').split('.')[0] || name;
@@ -295,14 +300,6 @@ export function createTailnet({ worker, traits, idleMs = IDLE_MS, headMs = HEAD_
   return tailnet;
 }
 
-export function routedTransport(base, tailnet) {
-  return {
-    traits: base.traits,
-    fetch: (request) =>
-      tailnet.current?.routes(request.url) ? tailnet.current.fetch(request) : base.fetch(request),
-  };
-}
-
 export async function readModule(fs, sources = SOURCES) {
   const tried = [];
   for (const dir of sources) {
@@ -319,28 +316,6 @@ export async function readModule(fs, sources = SOURCES) {
   throw new Error(`no main.wasm and wasm_exec.js in ${tried.join(' or ')}`);
 }
 
-export function routeTable(status) {
-  if (status?.state !== 'Running') return { prefixes: [], exit: false };
-  return { prefixes: TAILNET, exit: Boolean(status.exitNode) };
-}
-
-export function reserved(host) {
-  const bare = host.replace(/^\[|\]$/g, '').toLowerCase();
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(bare);
-  const v4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(mapped?.[1] ?? bare);
-  if (v4) {
-    const [a, b, c, d] = v4.slice(1).map(Number);
-    return (
-      a === 0 ||
-      a === 127 ||
-      a >= 224 ||
-      (a === 169 && b === 254) ||
-      (a === 10 && b === 0 && c === 2 && d === 2)
-    );
-  }
-  return bare === '::' || bare === '::1' || /^(fe[89ab]|ff)/.test(bare) || !bare.includes(':');
-}
-
 export function tailnetNames(name, status) {
   const want = name.replace(/\.$/, '').toLowerCase();
   for (const node of status?.peers ?? []) {
@@ -351,8 +326,6 @@ export function tailnetNames(name, status) {
 }
 
 const v6 = (address) => address.includes(':');
-const pick = (addresses, family) =>
-  addresses.filter((a) => (family === 4 ? !v6(a) : family === 6 ? v6(a) : true));
 
 async function readAll(response) {
   const chunks = [];
@@ -386,57 +359,20 @@ export async function resolveOverExit(tailnet, name, family, signal) {
   return { addresses, ttl };
 }
 
-const unreachable = (message, code = 'ENETUNREACH') => Object.assign(new Error(message), { code });
-
-export const KERNEL_NAMES = ['emscripten', 'slicc', 'wasmer.sh'];
-const ASKED = 50;
-
-export function ownName(name, own) {
-  const bare = name.replace(/\.$/, '').toLowerCase();
-  return own.has(bare) || own.has(bare.split('.')[0]);
-}
-
-export function createUplink(slot) {
-  const own = new Set(KERNEL_NAMES);
-  const asked = [];
-  const forwarded = [];
-  const remember = (list, name) => {
-    list.push(name);
-    if (list.length > ASKED) list.shift();
-  };
+export function tailnetExit(slot) {
+  const status = () => slot.current?.view.status;
   return {
-    traits: { tcp: true, udp: false, ipv6: false },
-    routes: { prefixes: [], exit: false },
-    asked,
-    forwarded,
-    own,
-    async resolve(name, family, signal) {
-      remember(asked, name);
-      const tailnet = slot.current;
-      const status = tailnet?.view.status;
-      if (status?.state !== 'Running') return [];
-      if (ownName(name, own)) return [];
-      const known = tailnetNames(name, status);
-      if (known) return { addresses: pick(known, family), ttl: NAME_TTL };
-      if (!status.exitNode || !name.replace(/\.$/, '').includes('.')) return [];
-      remember(forwarded, name);
-      return resolveOverExit(tailnet, name, family, signal);
-    },
-    async dial({ host, port, signal }) {
-      const tailnet = slot.current;
-      if (!tailnet) throw unreachable('Tailscale is not running');
-      if (reserved(host)) throw unreachable(`the tailnet does not carry ${host}`);
-      signal?.throwIfAborted();
-      const conn = await tailnet.dial('tcp', v6(host) ? `[${host}]:${port}` : `${host}:${port}`);
-      return {
-        localAddr: conn.localAddr,
-        remoteAddr: conn.remoteAddr,
-        read: () => conn.read(),
-        write: (bytes) => conn.write(bytes),
-        closeWrite: () => conn.closeWrite(),
-        close: () => conn.close(),
-      };
-    },
+    id: 'tailscale',
+    kind: 'tailnet',
+    active: () => status()?.state === 'Running',
+    offersDefault: () => Boolean(status()?.exitNode),
+    claims: (host) => claimsHost(host, status()),
+    prefixes: () => TAILNET,
+    knows: (name) => tailnetNames(name, status()),
+    resolve: (name, family, signal) => resolveOverExit(slot.current, name, family, signal),
+    dial: ({ host, port }) =>
+      slot.current.dial('tcp', v6(host) ? `[${host}]:${port}` : `${host}:${port}`),
+    fetch: (request) => slot.current.fetch(request),
   };
 }
 
@@ -497,19 +433,10 @@ export function createTailscale(config, deps = {}) {
   let context = null;
   let starting = null;
   let authKey = config.authKey;
-  const uplink = createUplink(slot);
-  let routes = JSON.stringify(uplink.routes);
-  const syncRoutes = () => {
-    const table = routeTable(slot.current ? view.status : null);
-    const next = JSON.stringify(table);
-    if (next === routes || !context?.kernel?.setRoutes) return;
-    routes = next;
-    context.kernel
-      .setRoutes(table)
-      .catch((error) => console.warn(`tailscale routes: ${error.message}`));
-  };
+  const router = deps.router ?? createExitRouter();
+  const exit = router.add(tailnetExit(slot));
   const changed = () => {
-    syncRoutes();
+    router.sync();
     document.documentElement.dataset.tailscale = !enabled
       ? 'off'
       : view.failed
@@ -534,7 +461,7 @@ export function createTailscale(config, deps = {}) {
         view = { ...view, installing: null };
       }
       const client = await (deps.attach ?? attachKernel)(await context.kernel.connect());
-      await learnNodeName(client, uplink.own);
+      await learnNodeName(client, router.own);
       const { wasm, exec } = await readModule(client.fs, config.from ? [config.from] : undefined);
       const worker = (deps.worker ?? spawn)();
       const tailnet = createTailnet({ worker, traits: context.traits });
@@ -570,7 +497,7 @@ export function createTailscale(config, deps = {}) {
       slot.current = tailnet;
       if (globalThis.sliccTailscaleDebug === true) {
         globalThis.sliccTailscale = tailnet;
-        globalThis.sliccTailscaleUplink = uplink;
+        globalThis.sliccTailscaleUplink = router.uplink;
       }
       return tailnet;
     } catch (error) {
@@ -624,8 +551,8 @@ export function createTailscale(config, deps = {}) {
   };
   return {
     panel,
-    uplink,
-    wrap: (base) => routedTransport(base, slot),
+    router,
+    exit,
     start({ kernel, ready, traits, install }) {
       context = { kernel, ready, traits, install };
       changed();

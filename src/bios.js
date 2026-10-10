@@ -85,6 +85,7 @@ await step('seed', async () => {
     'callback.html',
     'callback.js',
     'cdp.js',
+    'exits.js',
     'grammars.js',
     'index.html',
     'loopback.js',
