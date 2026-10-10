@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
+import { createInterface } from 'node:readline';
 import { after, test } from 'node:test';
 import { boot, ready, run } from './bios.mjs';
 import { launch } from './chrome.mjs';
@@ -192,4 +195,50 @@ test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback
   );
   await page.reload();
   await ready(page);
+});
+
+const cli = process.env.SLICC_CLI;
+
+test('links the real slicc CLI over stdio signaling, and kernel curl reaches its loopback', {
+  skip: !cli,
+}, async (t) => {
+  const big = Buffer.alloc(1024 * 1024, 'x');
+  const server = createServer((request, response) => {
+    response.setHeader('content-type', 'text/plain');
+    response.end(request.url === '/big' ? big : `cli ${request.method} ${request.url}\n`);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const { port } = server.address();
+  const page = await chrome.page(t);
+  await boot(page);
+  await ready(page);
+  const node = spawn(cli, ['attach', '--signal', 'stdio', '--name', 'ref-node'], {
+    stdio: ['pipe', 'pipe', 'inherit'],
+  });
+  t.after(() => node.kill());
+  const seen = [];
+  await page.expose('sliccLinkSend', (message) => {
+    seen.push(message.t);
+    node.stdin.write(`${JSON.stringify(message)}\n`);
+  });
+  for await (const line of createInterface({ input: node.stdout })) {
+    const message = JSON.parse(line);
+    seen.push(`node:${message.t}`);
+    await page.evaluate((line) => globalThis.sliccLinkReceive(line), line);
+    if (message.t === 'answer') break;
+  }
+  createInterface({ input: node.stdout }).on('line', (line) =>
+    page.evaluate((line) => globalThis.sliccLinkReceive(line), line).catch(() => {})
+  );
+  const url = `http://ref-node.slicc.internal:${port}`;
+  const raw = await shell(
+    page,
+    `for i in 1 2 3 4 5 6 7 8 9 10; do curl -s --noproxy '*' ${url}/raw && break; sleep 1; done`,
+    'cli-raw'
+  );
+  assert.deepEqual(raw, { code: '0', out: 'cli GET /raw' });
+  const size = await shell(page, `curl -s --noproxy '*' ${url}/big | wc -c`, 'cli-big');
+  assert.deepEqual(size, { code: '0', out: String(big.length) });
+  assert.deepEqual(seen.slice(0, 3), ['node:hello', 'offer', 'candidate']);
 });

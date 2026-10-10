@@ -39,6 +39,18 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.26'
+          cache: false
+
+      - name: The slicc CLI, the link's reference peer
+        env:
+          SLICC_CLI_COMMIT: 6c040fa4ec43a65a1a6018d11c43ce4cad813e5b
+        run: |
+          GOBIN="$RUNNER_TEMP/slicc-cli" go install "github.com/ai-ecoverse/slicc-cli/cmd/slicc@$SLICC_CLI_COMMIT"
+          echo "SLICC_CLI=$RUNNER_TEMP/slicc-cli/slicc" >> "$GITHUB_ENV"
+
       - name: Chromium system dependencies
         run: npx playwright-core install-deps chromium
 
