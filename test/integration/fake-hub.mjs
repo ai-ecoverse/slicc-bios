@@ -135,6 +135,7 @@ export async function follower() {
     }
     return pc.localDescription.sdp;
   };
+  globalThis.followerClose = () => pc?.close();
   globalThis.followerCandidate = (candidate) => pc?.addIceCandidate(candidate).catch(() => {});
 }
 
