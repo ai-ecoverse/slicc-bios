@@ -19,6 +19,17 @@ test('the optional catalog describes exactly the pinned packages, each locked wi
   for (const [path, entry] of Object.entries(lock.packages)) {
     if (path) assert.match(entry.integrity ?? '', /^sha512-/, `${path} has an integrity`);
   }
+  const text = await readFile(new URL('package-lock.json', optional), 'utf8');
+  const keys = [...text.matchAll(/^ {4}"(node_modules\/[^"]+)": \{$/gm)].map(([, key]) => key);
+  assert.deepEqual(keys, [...new Set(keys)], 'each locked path appears once');
+  for (const path of keys.filter((key) => key.includes('/node_modules/', 1))) {
+    const name = path.slice(path.lastIndexOf('node_modules/') + 'node_modules/'.length);
+    assert.notEqual(
+      lock.packages[path].version,
+      lock.packages[`node_modules/${name}`]?.version,
+      `${path} duplicates the top-level ${name}`
+    );
+  }
 });
 
 test('every catalog entry has a unique id, a label, a description, commands and a size, and requires only other entries without cycles', async () => {
