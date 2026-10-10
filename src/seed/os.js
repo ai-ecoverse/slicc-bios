@@ -36,7 +36,7 @@ export const layouts = {
 
 const STUCK = "Couldn't start the agent. Retry, or reload the page.";
 
-export const hide = ['/.slicc'];
+export const hide = ['/.slicc', '/.slicc-unlinked'];
 
 export const skip = [
   '/node_modules',
