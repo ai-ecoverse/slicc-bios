@@ -3,13 +3,14 @@
   "extends": ["github>ai-ecoverse/slicc-shared-web"],
   "packageRules": [
     {
-      "description": "The kernel, pnpm, slicc-cdp and the wasm command packages go to seven only after the homescoop coordinator certifies them, often as a set, so Renovate opens their PRs but never merges them. slicc-agent and slicc-spectrum are held too: agent releases can carry a newer kernel client, both change the UI and follow the spectrum ordering rule, and their automerges kept conflicting with bios PRs that change the neighbouring pins.",
+      "description": "The kernel, pnpm, slicc-cdp and the wasm, wasi and wasix command packages (the base set's and the optional catalog's) go to seven only after the homescoop coordinator certifies them, often as a set, so Renovate opens their PRs but never merges them. slicc-agent and slicc-spectrum are held too: agent releases can carry a newer kernel client, both change the UI and follow the spectrum ordering rule, and their automerges kept conflicting with bios PRs that change the neighbouring pins.",
       "matchPackageNames": [
         "@ai-ecoverse/slicc-agent",
         "@ai-ecoverse/slicc-cdp",
         "@ai-ecoverse/slicc-kernel",
         "@ai-ecoverse/slicc-spectrum",
-        "@ai-ecoverse/wasi-pnpm",
+        "@ai-ecoverse/wasi-*",
+        "@ai-ecoverse/wasix-*",
         "@ai-ecoverse/wasm-*"
       ],
       "automerge": false

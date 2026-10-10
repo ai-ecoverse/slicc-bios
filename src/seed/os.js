@@ -1,6 +1,6 @@
 import { createKernel } from '@ai-ecoverse/slicc-kernel';
 import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
-import { surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
+import { confirm, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
 import { signIn } from './adobe.js';
 import {
   installed as agentInstalled,
@@ -17,6 +17,7 @@ import { grammarBase, grammars, version as grammarsVersion, installed } from './
 import { serveLoopback } from './loopback.js';
 import { createFolders, offTheRecord } from './mounts.js';
 import { createNetwork } from './network.js';
+import { createPackages, globalDir, loadCatalog, writeListing } from './packages.js';
 import {
   createTailscale,
   installTailscale,
@@ -195,6 +196,26 @@ if (await installed()) app.grammarBase = grammarBase;
 
 const start = () => createKernel({ root, network: { transport }, media: false });
 
+const optional = loadCatalog()
+  .then(async (catalog) => {
+    await writeListing(root, catalog.entries);
+    const packages = createPackages({
+      catalog,
+      root,
+      kernel,
+      global: await globalDir(kernel),
+      ask: confirm,
+      emit: updates.setPackages,
+    });
+    updates.handlePackages(packages.act);
+    await packages.refresh();
+    return packages;
+  })
+  .catch((error) => {
+    console.warn(`optional packages are unavailable: ${error.message}`);
+    return null;
+  });
+
 async function restart() {
   const chat = await agent;
   await whenIdle(app.model.agent);
@@ -299,6 +320,7 @@ async function check() {
   await offerChat();
   await installGrammars();
   await updateTailnet();
+  await (await optional)?.refresh().catch(() => undefined);
 }
 
 document.addEventListener('visibilitychange', () => {

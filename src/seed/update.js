@@ -38,8 +38,9 @@ export function progress(output) {
     : { phase: 'download', done: reused + downloaded, total: resolved };
 }
 
-export async function pnpm(kernel, cwd, report, to = null) {
-  const argv = ['pnpm', 'install', '--frozen-lockfile', '--trust-lockfile'];
+const INSTALL = ['pnpm', 'install', '--frozen-lockfile', '--trust-lockfile'];
+
+export async function pnpm(kernel, cwd, report, to = null, argv = INSTALL) {
   let log = '';
   report({ progress: null, log });
   const onStdout = (chunk) => {
