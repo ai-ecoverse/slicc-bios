@@ -71,7 +71,11 @@ function startHub() {
   );
 }
 
-function follower() {
+async function follower() {
+  const certificate = await RTCPeerConnection.generateCertificate({
+    name: 'ECDSA',
+    namedCurve: 'P-256',
+  });
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const frame = (type, id, payload = '') => {
@@ -83,8 +87,8 @@ function follower() {
     return out;
   };
   const log = (globalThis.followerLog = []);
-  const pc = new RTCPeerConnection();
-  pc.ondatachannel = ({ channel }) => {
+  let pc = null;
+  const serve = ({ channel }) => {
     channel.binaryType = 'arraybuffer';
     channel.onmessage = ({ data }) => {
       if (typeof data === 'string') {
@@ -124,6 +128,8 @@ function follower() {
     };
   };
   globalThis.followerAccept = async (sdp) => {
+    pc = new RTCPeerConnection({ certificates: [certificate] });
+    pc.ondatachannel = serve;
     await pc.setRemoteDescription({ type: 'offer', sdp });
     await pc.setLocalDescription(await pc.createAnswer());
     if (pc.iceGatheringState !== 'complete') {
@@ -136,7 +142,7 @@ function follower() {
     }
     return pc.localDescription.sdp;
   };
-  globalThis.followerCandidate = (candidate) => pc.addIceCandidate(candidate).catch(() => {});
+  globalThis.followerCandidate = (candidate) => pc?.addIceCandidate(candidate).catch(() => {});
 }
 
 const model = (page, fn, arg) =>
@@ -204,9 +210,10 @@ test('seven leads a tray: a follower joins and links, rotation moves it to a new
       .links?.devices.some((d) => d.state === 'connected')
   );
   const [device] = await model(page, (network) => network.status().links.devices);
+  assert.match(device.id, /^[0-9a-f]{64}$/);
   assert.deepEqual(
-    [device.id, device.name, device.host, device.mode, device.state, device.exit],
-    ['dev1', 'slicc on far', 'far.slicc.internal', 'remote', 'connected', true]
+    [device.name, device.host, device.mode, device.state, device.exit],
+    ['slicc on far', 'far.slicc.internal', 'remote', 'connected', true]
   );
   assert.equal(
     (await page.evaluate(() => globalThis.followerLog[0])).name.startsWith('seven on '),
@@ -241,21 +248,30 @@ test('seven leads a tray: a follower joins and links, rotation moves it to a new
   );
   assert.equal(hub.sockets.at(-1).path, '/controller/c2?leaderKey=lk');
 
-  await model(page, (network) => network.unlink('dev1'));
+  await model(page, (network, id) => network.unlink(id), device.id);
   assert.deepEqual((await page.evaluate(() => globalThis.followerLog)).at(-1), { kind: 'unlink' });
   assert.deepEqual(await model(page, (network) => network.status().links.devices), []);
   hub.send({
     type: 'follower.join_requested',
     trayId: 't2',
-    controllerId: 'dev1',
+    controllerId: 'dev1-again',
     bootstrapId: 'b2',
     attempt: 1,
     runtime: 'slicc-link/1',
   });
+  const reoffer = await hub.next('bootstrap.offer');
+  const reanswer = await page.evaluate((sdp) => globalThis.followerAccept(sdp), reoffer.offer.sdp);
+  hub.send({
+    type: 'bootstrap.answer',
+    trayId: 't2',
+    controllerId: 'dev1-again',
+    bootstrapId: 'b2',
+    answer: { type: 'answer', sdp: reanswer },
+  });
   const refused = await hub.next('bootstrap.failed');
   assert.deepEqual(
     [refused.controllerId, refused.code, refused.retryable],
-    ['dev1', 'UNLINKED', false]
+    ['dev1-again', 'UNLINKED', false]
   );
   await page.evaluate(() => localStorage.removeItem('slicc-os.tray-hub'));
 });

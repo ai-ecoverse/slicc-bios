@@ -157,7 +157,11 @@ test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback
   await page.evaluate(fakeNode, KEY);
   await page.until(() => globalThis.fakeNodeLog?.some((m) => m.role === 'page'));
   const hello = await page.evaluate(() => globalThis.fakeNodeLog.find((m) => m.role === 'page'));
-  assert.deepEqual(hello, { v: 1, role: 'page', name: 'seven', mode: 'local', caps: [] });
+  assert.deepEqual(
+    { ...hello, name: hello.name.replace(/ on .*/, '') },
+    { v: 1, role: 'page', name: 'seven', mode: 'local', caps: [] }
+  );
+  assert.match(hello.name, /^seven on (localhost|127\.0\.0\.1):\d+$/);
   await page.until(async () => {
     const home = await (await navigator.storage.getDirectory()).getDirectoryHandle('home');
     const ssh = await home.getDirectoryHandle('.ssh').catch(() => null);

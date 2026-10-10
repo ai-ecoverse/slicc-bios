@@ -11,7 +11,8 @@ export const JOIN_MS = 5_000;
 const BACKOFF = [1_000, 2_000, 5_000, 10_000, 30_000];
 
 export function fingerprint(sdp) {
-  return /^a=fingerprint:(\S+ \S+)/im.exec(sdp ?? '')?.[1]?.toLowerCase() ?? null;
+  const found = /^a=fingerprint:sha-256 ([0-9a-f:]+)\s*$/im.exec(sdp ?? '')?.[1];
+  return found ? found.replaceAll(':', '').toLowerCase() : null;
 }
 
 export function joinCommand(url) {
@@ -103,13 +104,10 @@ function followers({ links, send, devices, unlinked, pinned }) {
       return refuse(message, 'UNSUPPORTED_RUNTIME', 'seven links only slicc CLI followers');
     if ((message.trust ?? 'full') !== 'full')
       return refuse(message, 'UNTRUSTED', 'a link needs a fully trusted follower');
-    if (unlinked.has(controllerId))
-      return refuse(message, 'UNLINKED', 'this device was unlinked; run the join command again');
     const link = links.start({
       key: controllerId,
       mode: 'remote',
       iceServers: message.iceServers ?? [],
-      address: devices()[controllerId]?.address,
       send: (out) => {
         if (out.t === 'offer') {
           send({
@@ -134,14 +132,20 @@ function followers({ links, send, devices, unlinked, pinned }) {
   function answer(message) {
     const link = links.links.get(message.controllerId);
     if (link?.bootstrapId !== message.bootstrapId) return;
-    const seen = fingerprint(message.answer?.sdp);
-    const known = devices()[message.controllerId]?.fingerprint;
-    if (!seen || (known && known !== seen)) {
-      refuse(message, 'FINGERPRINT_CHANGED', 'this device presented a different identity');
-      links.drop(message.controllerId, 'its identity changed');
+    const id = fingerprint(message.answer?.sdp);
+    if (!id || unlinked.has(id)) {
+      refuse(
+        message,
+        id ? 'UNLINKED' : 'NO_FINGERPRINT',
+        id
+          ? 'this device was unlinked; run the join command again'
+          : 'the answer has no SHA-256 fingerprint'
+      );
+      links.drop(message.controllerId, id ? 'unlinked' : 'no fingerprint');
       return;
     }
-    link.fingerprint = seen;
+    link.fingerprint = id;
+    links.identify(message.controllerId, id, devices()[id]?.address);
     pinned();
     void link.offer.receive({ t: 'answer', sdp: message.answer.sdp });
   }
@@ -160,17 +164,9 @@ function remember(links, devices, save) {
   for (const link of links.links.values()) {
     if (link.mode !== 'remote' || !link.peer || !link.fingerprint) continue;
     const { name, offers, policy, exit } = device(link);
-    const next = {
-      name,
-      label: link.label,
-      address: link.address,
-      offers,
-      policy,
-      exit,
-      fingerprint: link.fingerprint,
-    };
-    if (JSON.stringify(devices[link.key]) !== JSON.stringify(next)) {
-      devices[link.key] = next;
+    const next = { name, label: link.label, address: link.address, offers, policy, exit };
+    if (JSON.stringify(devices[link.id]) !== JSON.stringify(next)) {
+      devices[link.id] = next;
       dirty = true;
     }
   }
@@ -320,8 +316,9 @@ export function createTray({
       return { state, error, joinUrl, joinCommand: joinCommand(joinUrl) };
     },
     away() {
+      const live = new Set([...links.links.values()].map((link) => link.id));
       return Object.entries(devices)
-        .filter(([id]) => !links.links.has(id))
+        .filter(([id]) => !live.has(id))
         .map(([id, known]) => ({
           id,
           name: known.name,
@@ -339,9 +336,11 @@ export function createTray({
       delete devices[id];
       unlinked.add(id);
       save();
-      const link = links.links.get(id);
-      if (link) await notify(link, { kind: 'unlink' });
-      links.drop(id, 'unlinked');
+      const link = [...links.links.values()].find((item) => item.id === id);
+      if (link) {
+        await notify(link, { kind: 'unlink' });
+        links.drop(link.key, 'unlinked');
+      }
       changed();
     },
     async rotate() {

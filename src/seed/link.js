@@ -315,20 +315,19 @@ export function linkExit(session, { id, address, label }) {
   const name = () => `${label()}.slicc.internal`;
   const mine = (host) => {
     const bare = bareHost(host).replace(/\.$/, '');
-    return bare === address || bare === name();
+    return bare === address() || bare === name();
   };
   const hello = () => session.peer();
   return {
     id,
     kind: 'link',
     chosenOnly: true,
-    address,
     name,
     active: () => Boolean(hello()) && !session.closed(),
     offersDefault: () => Boolean(hello()?.routes?.exit) && session.caps().includes('net'),
     claims: mine,
-    prefixes: () => [`${address}/32`],
-    knows: (query) => (query.replace(/\.$/, '').toLowerCase() === name() ? [address] : null),
+    prefixes: () => [`${address()}/32`],
+    knows: (query) => (query.replace(/\.$/, '').toLowerCase() === name() ? [address()] : null),
     async resolve(query, family) {
       if (!session.caps().includes('net')) return [];
       const s = await session.open({ kind: 'resolve', name: query, family }, { shared: true });
@@ -504,7 +503,7 @@ export function createLinks({ router, makePeer, onLink = () => {}, timers, name 
       });
       link.exit = linkExit(link.offer.session, {
         id: `link:${key}`,
-        address: link.address,
+        address: () => link.address,
         label: () => link.label,
       });
       links.set(key, link);
@@ -520,6 +519,15 @@ export function createLinks({ router, makePeer, onLink = () => {}, timers, name 
       );
       changed();
       return link;
+    },
+    identify(key, id, wanted) {
+      const link = links.get(key);
+      for (const [other, item] of [...links])
+        if (other !== key && item.id === id) manager.drop(other, 'reconnected');
+      link.id = id;
+      link.exit.id = `link:${id}`;
+      if (wanted && free(wanted) === wanted) link.address = wanted;
+      changed();
     },
     drop(key, reason) {
       const link = links.get(key);
@@ -554,7 +562,7 @@ export function device(link) {
   const { peer } = link;
   const caps = Array.isArray(peer?.caps) ? peer.caps : [];
   return {
-    id: link.key,
+    id: link.id ?? link.key,
     name: String(peer?.name ?? (link.mode === 'local' ? 'slicc on this computer' : 'slicc')),
     host: link.label ? `${link.label}.slicc.internal` : '',
     address: link.address,
