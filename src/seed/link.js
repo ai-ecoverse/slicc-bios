@@ -143,6 +143,10 @@ function stream(streams, id, channel, own) {
     answered,
     receive: (type, payload) => handlers[type](payload),
     fail,
+    accepted() {
+      state.opened = true;
+      send(OPENED, '{}');
+    },
     async read() {
       while (!chunks.length && !error && !state.gotEnd) await wait();
       if (chunks.length) {
@@ -185,7 +189,37 @@ function stream(streams, id, channel, own) {
   return api;
 }
 
-export function createSession({ control, createChannel, hello, timers = globalThis, onClose }) {
+export async function pipe(stream, socket) {
+  const reader = socket.readable.getReader();
+  const writer = socket.writable.getWriter();
+  const abort = () => {
+    stream.close();
+    reader.cancel().catch(() => {});
+  };
+  const outbound = (async () => {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return stream.closeWrite();
+      await stream.write(value);
+    }
+  })().catch(abort);
+  const inbound = (async () => {
+    for (let chunk = await stream.read(); chunk; chunk = await stream.read())
+      await writer.write(chunk);
+    await writer.close();
+  })().catch(abort);
+  await Promise.all([outbound, inbound]);
+  socket.close();
+}
+
+export function createSession({
+  control,
+  createChannel,
+  hello,
+  timers = globalThis,
+  onClose,
+  accept,
+}) {
   const streams = new Map();
   const peerIds = new Set();
   const channels = new Set();
@@ -209,6 +243,29 @@ export function createSession({ control, createChannel, hello, timers = globalTh
     onClose?.(reason);
   }
 
+  function incoming(channel, id, payload) {
+    if (id % 2 === 1 || peerIds.has(id)) return close('an OPEN with a bad stream id');
+    peerIds.add(id);
+    const meta = json(payload);
+    if (typeof meta?.kind !== 'string') return channel.send(frame(RESET, id, 'EPROTO'));
+    if (!accept) return channel.send(frame(RESET, id, 'EOPNOTSUPP'));
+    const s = stream(streams, id, channel, false);
+    streams.set(id, s);
+    Promise.resolve()
+      .then(() => accept(meta))
+      .then(
+        (socket) => {
+          if (!streams.has(id)) return socket.close();
+          s.accepted();
+          return pipe(s, socket);
+        },
+        (error) => {
+          streams.delete(id);
+          if (channel.readyState === 'open') channel.send(frame(RESET, id, error.code ?? 'EIO'));
+        }
+      );
+  }
+
   function receive(channel, data) {
     if (closed) return;
     if (typeof data === 'string') {
@@ -224,12 +281,7 @@ export function createSession({ control, createChannel, hello, timers = globalTh
     const parsed = parse(data);
     if (!parsed || parsed.id === 0) return close('a malformed frame');
     const { type, id, payload } = parsed;
-    if (type === OPEN) {
-      if (id % 2 === 1 || peerIds.has(id)) return close('an OPEN with a bad stream id');
-      peerIds.add(id);
-      channel.send(frame(RESET, id, 'EOPNOTSUPP'));
-      return;
-    }
+    if (type === OPEN) return incoming(channel, id, payload);
     streams.get(id)?.receive(type, payload);
   }
 
@@ -413,13 +465,14 @@ export function dnsLabel(hint, taken) {
   for (let n = 2; ; n += 1) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
 }
 
-export function offerLink({ pc, send, hello, timers, onClose }) {
+export function offerLink({ pc, send, hello, timers, onClose, accept }) {
   const control = pc.createDataChannel(CONTROL, { ordered: true });
   const session = createSession({
     control,
     createChannel: (label) => pc.createDataChannel(label, { ordered: true }),
     hello,
     timers,
+    accept,
     onClose: (reason) => {
       pc.close();
       onClose?.(reason);
@@ -465,7 +518,14 @@ export function offerLink({ pc, send, hello, timers, onClose }) {
   };
 }
 
-export function createLinks({ router, makePeer, onLink = () => {}, timers, name = 'seven' }) {
+export function createLinks({
+  router,
+  makePeer,
+  onLink = () => {},
+  timers,
+  name = 'seven',
+  kernel = null,
+}) {
   const links = new Map();
   const taken = () => new Set([...links.values()].map((link) => link.label).filter(Boolean));
   const free = (wanted) => {
@@ -493,7 +553,8 @@ export function createLinks({ router, makePeer, onLink = () => {}, timers, name 
       link.offer = offerLink({
         pc,
         send,
-        hello: { name, mode, caps: [] },
+        hello: { name, mode, caps: kernel ? ['kernel-in'] : [] },
+        accept: kernel ? (meta) => kernelIn(kernel, meta) : undefined,
         timers,
         onClose: () => {
           if (links.get(key) === link) links.delete(key);
@@ -554,6 +615,16 @@ export function createLinks({ router, makePeer, onLink = () => {}, timers, name 
     },
   };
   return manager;
+}
+
+export const FACADE_PORT = 9222;
+
+export async function kernelIn(kernel, meta) {
+  if (meta.kind !== 'kernel') throw failure('EOPNOTSUPP');
+  const { port } = meta;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw failure('EINVAL');
+  if (port === FACADE_PORT) throw failure('EACCES');
+  return (await kernel()).dial({ port });
 }
 
 const OFFERS = ['net', 'http', 'ssh'];

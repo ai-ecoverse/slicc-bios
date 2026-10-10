@@ -46,7 +46,7 @@ jobs:
 
       - name: The slicc CLI, the link's reference peer
         env:
-          SLICC_CLI_COMMIT: bf4e20cbf5ee09fc4b8424dbcdc6068d2b2c8b50
+          SLICC_CLI_COMMIT: 86fc4222d928ab4b4744526868962785210f7a04
         run: |
           GOBIN="$RUNNER_TEMP/slicc-cli" go install "github.com/ai-ecoverse/slicc-cli/cmd/slicc@$SLICC_CLI_COMMIT"
           echo "SLICC_CLI=$RUNNER_TEMP/slicc-cli/slicc" >> "$GITHUB_ENV"
