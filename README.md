@@ -278,7 +278,7 @@ The hosts are served by the [sliccy-ai](https://github.com/ai-ecoverse/sliccy-ai
 - The bucket expires everything under `branches/` 30 days after upload. Every push uploads all files again, so a branch stays up while it's active and disappears a month after its last push. Nothing needs to be cleaned up when a branch is deleted.
 - [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) publishes on every push. It needs `CLOUDFLARE_API_TOKEN`, an account token with Workers R2 Storage Write. That token could overwrite `seven/`, so it's not a repository secret, which any pushed branch could read by changing the workflow. It's kept in two GitHub environments:
   - `production`, for `main` only (deployment branch policy `main`);
-  - `preview`, for every other branch, with a required reviewer, so a branch's publish waits for a maintainer's approval.
+  - `preview`, for every other branch, with no approval step, so a branch publishes as soon as it's pushed.
 
 ## Rules
 
