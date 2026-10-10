@@ -188,7 +188,7 @@ test('mount -t hostfs mounts a folder the local proxy exports, with a grant the 
   await shows(page, 'listed 1');
   const [token] = proxy.grants.keys();
   assert.ok(token);
-  await run(page, `grep -c "${token.slice(0, 12)}" /proc/mounts | sed "s/^/leaked /"`);
+  await run(page, `grep -c -e "${token.slice(0, 12)}" /proc/mounts | sed "s/^/leaked /"`);
   await shows(page, 'leaked 0');
   await page.until(() =>
     document.querySelector('slicc-app').model.files.mounts().includes('/mnt/p')
