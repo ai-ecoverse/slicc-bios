@@ -28,7 +28,10 @@ function compare(a, b) {
   const x = parts(a);
   const y = parts(b);
   for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) - (y[i] ?? 0);
-  return 0;
+  if (x[3] === y[3]) return 0;
+  if (x[3] === null) return 1;
+  if (y[3] === null) return -1;
+  return x[3] < y[3] ? -1 : 1;
 }
 
 export function satisfies(version, range) {
@@ -36,7 +39,7 @@ export function satisfies(version, range) {
     .trim()
     .split(/\s+/)
     .every((clause) => {
-      const match = /^(>=|<=|>|<|=)?(\d+(?:\.\d+){0,2})$/.exec(clause);
+      const match = /^(>=|<=|>|<|=)?(\d+(?:\.\d+){0,2}(?:-[\w.]+)?)$/.exec(clause);
       assert.ok(match, `unsupported range clause "${clause}" in "${range}"`);
       const [, op = '=', bound] = match;
       const d = compare(version, bound);
@@ -49,12 +52,15 @@ test('the pinned slicc-kernel satisfies every pinned package’s engines and pee
   const wanted = [];
   for (const file of ['package-lock.json', 'optional/package-lock.json']) {
     for (const [path, entry] of Object.entries(JSON.parse(await read(file)).packages)) {
+      if (!path) continue;
+      const name = `${file} ${path.split('node_modules/').at(-1)}@${entry.version}`;
       const range = entry.engines?.['slicc-kernel'];
-      if (path && range)
-        wanted.push([`${file} ${path.split('node_modules/').at(-1)}@${entry.version}`, range]);
+      if (range) wanted.push([name, range]);
+      const peer = entry.peerDependencies?.[KERNEL];
+      if (peer) wanted.push([`${name} (peer)`, peer]);
     }
   }
-  for (const file of ['pnpm-lock.yaml', 'agent/pnpm-lock.yaml']) {
+  for (const file of ['pnpm-lock.yaml', 'agent/pnpm-lock.yaml', 'tailscale/pnpm-lock.yaml']) {
     const text = await read(file);
     for (const [, name, range] of text.matchAll(
       /^ {2}'?([^\s':]+)'?:\n(?: {4}.*\n)*? {4}engines: \{[^}]*slicc-kernel: '([^']+)'/gm
@@ -82,5 +88,9 @@ test('the range check reads the forms the packages use', () => {
   assert.equal(satisfies('1.47.1', '>=1.26.3 <2'), true);
   assert.equal(satisfies('2.0.0', '>=1.26.3 <2'), false);
   assert.equal(satisfies('1.47.1', '1.47.1'), true);
+  assert.equal(satisfies('1.48.0-rc.1', '>=1.48.0'), false);
+  assert.equal(satisfies('1.48.0', '>=1.48.0-rc.1'), true);
+  assert.equal(satisfies('1.48.0-rc.2', '>=1.48.0-rc.1'), true);
+  assert.equal(satisfies('1.48.0-rc.1', '1.48.0-rc.1'), true);
   assert.throws(() => satisfies('1.0.0', '^1.0.0'), /unsupported range clause/);
 });
