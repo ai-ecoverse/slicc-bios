@@ -66,34 +66,6 @@ async function fakeExtension(page) {
   return { sent, close: () => socket.close() };
 }
 
-function asked(page) {
-  return page.until(() => {
-    const dialog = document
-      .querySelector('slicc-app')
-      ?.shadowRoot?.querySelector('slicc-confirm')
-      ?.renderRoot?.querySelector('dialog[open]');
-    if (!dialog) return null;
-    const action = dialog.querySelector('[data-action]');
-    return {
-      title: dialog.querySelector('#title').textContent,
-      body: dialog.querySelector('#body').textContent,
-      action: action.textContent.trim(),
-      cancel: dialog.querySelector('[data-cancel]').textContent.trim(),
-      variant: action.getAttribute('variant'),
-    };
-  });
-}
-
-function answer(page, button) {
-  return page.evaluate((button) => {
-    document
-      .querySelector('slicc-app')
-      .shadowRoot.querySelector('slicc-confirm')
-      .renderRoot.querySelector(`[data-${button}]`)
-      .click();
-  }, button);
-}
-
 const automation = (page) =>
   page.evaluate(() => document.querySelector('slicc-app').model.network.status().browser);
 
@@ -102,7 +74,7 @@ const open = (page) =>
     Boolean(document.querySelector('slicc-app').shadowRoot.querySelector('slicc-confirm'))
   );
 
-test('playwright-cli drives a page through slicc-extension once allowed, and the page cannot reach 9222', async (t) => {
+test('playwright-cli drives a page through slicc-extension without asking, and the page cannot reach 9222', async (t) => {
   const page = await chrome.page(t);
   const extension = await fakeExtension(page);
   t.after(extension.close);
@@ -117,17 +89,25 @@ test('playwright-cli drives a page through slicc-extension once allowed, and the
     page,
     `curl -sf http://127.0.0.1:9222/json/list | jq -r '.[] | select(.url | endswith("/os/")) | "listed as " + .type'`
   );
-  assert.deepEqual(await asked(page), {
-    title: 'Let SLICC’s agents control this browser?',
-    body: 'They can open tabs, click and type with your logins. This lasts until you reload.',
-    action: 'Allow',
-    cancel: 'Don’t allow',
-    variant: 'accent',
-  });
-  await answer(page, 'action');
   await shows(page, 'listed as page');
   assert.deepEqual(await automation(page), { via: 'extension' });
   assert.equal(await open(page), false);
+  await page.evaluate(() =>
+    document.querySelector('slicc-app').shadowRoot.querySelector('[data-network]').click()
+  );
+  await page.until(
+    () =>
+      document
+        .querySelector('slicc-app')
+        .dock.content('network')
+        ?.shadowRoot?.textContent.includes('Browser automation: through the SLICC extension.') ??
+      false
+  );
+  await page.evaluate(() => {
+    const app = document.querySelector('slicc-app');
+    if (app.color !== 'light') app.toggleColor();
+  });
+  await page.screenshot(new URL('network-browser-light.png', page.dir));
 
   await run(
     page,
@@ -184,36 +164,6 @@ test('with no host, the CDP endpoint says what to install', async (t) => {
   assert.deepEqual(await automation(page), { via: null });
 });
 
-test('declining browser control answers 502 until the page reloads', async (t) => {
-  const page = await chrome.page(t);
-  const extension = await fakeExtension(page);
-  t.after(extension.close);
-  await boot(page);
-  const declined = 'CDP host: browser control was declined in seven; reload to be asked again\n502';
-
-  await run(
-    page,
-    `curl -s -w '%{http_code}' http://127.0.0.1:9222/json/list > /tmp/first; echo first-$?`
-  );
-  await asked(page);
-  await answer(page, 'cancel');
-  await shows(page, 'first-0');
-  assert.equal(await read(page, '/tmp/first'), declined);
-
-  await run(
-    page,
-    `playwright-cli tab-list; curl -s -w '%{http_code}' http://127.0.0.1:9222/json/list > /tmp/again; echo again-$?`
-  );
-  await shows(page, 'again-0');
-  assert.equal(await open(page), false);
-  assert.equal(await read(page, '/tmp/again'), declined);
-  assert.deepEqual(await automation(page), {
-    via: 'extension',
-    declined: true,
-  });
-  assert.deepEqual(extension.sent, []);
-});
-
 async function viaProxy(t) {
   const proxy = await startProxy({
     port: 0,
@@ -247,8 +197,6 @@ test('playwright-cli drives a page through slicc-node’s /cdp, on one shared so
     page,
     `curl -sf http://127.0.0.1:9222/json/list | jq -r '.[] | select(.url | endswith("/os/")) | "listed as " + .type'`
   );
-  await asked(page);
-  await answer(page, 'action');
   await shows(page, 'listed as page');
 
   await run(
@@ -266,8 +214,6 @@ test('when another page takes over slicc-node’s /cdp, the first page’s conne
   const proxy = await viaProxy(t);
   const first = await launched(t, proxy);
   await run(first, 'playwright-cli open about:blank');
-  await asked(first);
-  await answer(first, 'action');
   await shows(first, 'Opened about:blank');
   await run(first, `playwright-cli eval 'new Promise(() => {})' > /tmp/held 2>&1; echo "held-$?"`);
   await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -279,8 +225,6 @@ test('when another page takes over slicc-node’s /cdp, the first page’s conne
     second,
     `curl -s -o /dev/null -w 'second-%{http_code}' http://127.0.0.1:9222/json/list`
   );
-  await asked(second);
-  await answer(second, 'action');
   await shows(second, 'second-200');
   await first.send('Page.bringToFront');
   await shows(first, 'held-1');

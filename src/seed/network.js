@@ -152,5 +152,5 @@ export function createNetwork(choice, options = {}) {
     },
   };
   options.tailnet?.on(emit);
-  return { port, transport, changed: emit };
+  return { port, transport };
 }
