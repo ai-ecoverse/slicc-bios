@@ -20,7 +20,7 @@
     "@ai-ecoverse/wasm-mount": "1.0.0-1",
     "@ai-ecoverse/wasm-ncurses-utils": "6.5.0-1",
     "@ai-ecoverse/wasm-patch": "2.8.0-1",
-    "@ai-ecoverse/wasm-procps": "4.0.5-2",
+    "@ai-ecoverse/wasm-procps": "4.0.5-3",
     "@ai-ecoverse/wasm-sed": "4.9.0-3",
     "@ai-ecoverse/wasm-tls-engine": "3.6.5-1",
     "@ai-ecoverse/wasm-tree": "2.3.2-1",
