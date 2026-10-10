@@ -11,6 +11,7 @@ import {
   startChat,
   whenIdle,
 } from './agent.js';
+import { createBrowser } from './browser.js';
 import { browserControl } from './cdp.js';
 import { grammarBase, grammars, version as grammarsVersion, installed } from './grammars.js';
 import { serveLoopback } from './loopback.js';
@@ -77,7 +78,8 @@ export function offered(all) {
 
 const network = await pickTransport();
 const { kind } = network;
-const control = browserControl(network);
+const browser = createBrowser(network);
+const control = browserControl(network, { observe: browser.observe });
 const tailscale = createTailscale(await tailscaleConfig());
 const reach = createNetwork(network, { browser: control.status, tailnet: tailscale.panel });
 const transport = tailscale.wrap(reach.transport);
@@ -114,6 +116,7 @@ const base = {
   )),
   updates,
   network: reach.port,
+  browser: browser.port,
 };
 const owned = new Map(Object.entries(owners).map(([id, name]) => [name, id]));
 const manifest = JSON.parse((await text(root, 'package.json')) ?? '{}');
