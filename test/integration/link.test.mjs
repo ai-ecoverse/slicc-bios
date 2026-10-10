@@ -241,5 +241,7 @@ test('links the real slicc CLI over stdio signaling, and kernel curl reaches its
   assert.deepEqual(raw, { code: '0', out: 'cli GET /raw' });
   const size = await shell(page, `curl -s --noproxy '*' ${url}/big | wc -c`, 'cli-big');
   assert.deepEqual(size, { code: '0', out: String(big.length) });
-  assert.deepEqual(seen.slice(0, 3), ['node:hello', 'offer', 'candidate']);
+  assert.equal(seen[0], 'node:hello');
+  for (const step of ['offer', 'candidate', 'node:answer']) assert.ok(seen.includes(step), step);
+  assert.ok(seen.indexOf('offer') < seen.indexOf('node:answer'));
 });
