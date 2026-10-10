@@ -161,7 +161,9 @@ seven can also join a tailnet, with a patched build of Tailscale's wasm client (
 - **Exits:** `os/exits.js` routes traffic over any number of exits. Today the only one is Tailscale; a CLI attached over WebRTC comes next.
   - **Kernel side:** the kernel gets one uplink and one route table, the union of what the active exits offer, pushed with `kernel.setRoutes`.
   - **Choosing an exit:** for each destination, an exit that claims it (a tailnet address or MagicDNS name) wins. Otherwise the default exit takes it: the one that offers a default route, for example Tailscale with an exit node. Otherwise HTTP stays on the picked transport, and raw connections are `ENETUNREACH`.
-  - **What never goes out:** loopback, `10.0.2.2` and reserved addresses, the kernel's own names, and unknown single-label names.
+  - **What never goes out:**
+    - raw connections never go to loopback, `10.0.2.2`, reserved addresses, the kernel's own names or unknown single-label names;
+    - HTTP only keeps loopback local: while a default exit is in use, HTTP to every other host goes through it, those included.
 - **Raw connections (stage B, slicc-kernel ≥ 1.28.0):** the kernel also gets `os/tailscale.js`'s uplink, so a program's `connect()` to a tailnet address, or to any address while an exit node is in use, goes through the tailnet (`tailnet.dial`). This needs no proxy, for example `curl --noproxy '*' http://100.x.y.z:8080/`.
   - **Routes:** the page pushes the route table with `kernel.setRoutes` whenever it changes: `100.64.0.0/10` and `fd7a:115c:a1e0::/48`, plus everything while an exit node is in use.
   - **Names:** MagicDNS names of the other nodes resolve from the netmap. The page never answers or forwards the kernel's own node name (`uname -n`, and `emscripten`, `slicc` and `wasmer.sh`), nor a single-label name the netmap doesn't know: the kernel answers its own hostname locally (slicc-kernel#181), and the uplink says "not mine". While an exit node is in use, other names resolve over DNS-over-HTTPS (`1.1.1.1`) through it.
