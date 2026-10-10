@@ -55,6 +55,24 @@ A local folder can be mounted into seven as on Linux ([#73](https://github.com/a
 
 `/opt/agent` is an ordinary pnpm project, so `cd /opt/agent && pnpm upgrade` updates the agent in place, and the service worker drops its resolution cache when `/opt/agent`'s lockfile or `.modules.yaml` changes. When an update installs a new `/opt/agent` while the agent runs, the **Agent** row says *Ready to apply* and offers **Restart agent** (D16). It waits until the agent is idle, then restarts only the agent worker; durable resumes the conversation from SQLite, and the page reconnects and swaps in the new connection. The kernel, terminals and the page itself keep running, so the page-side adapter is updated at the next reload.
 
+### Tabs
+
+Several tabs of one origin share one kernel and one agent. One tab, the owner, holds the Web Lock `slicc-agent` and runs both; the others follow it. The pieces are in place, but os.js doesn't use them yet:
+
+- **The switchboard:** `os/switchboard-worker.js` is a module SharedWorker named `slicc-switchboard` with a fixed URL. It keeps a table of tabs (id, visibility, versions) and the owner. It brokers MessagePorts and never sees their traffic.
+  - The frames are JSON with `v: 1`, and other versions are refused: `hello`, `welcome`, `visible`, `own`, `owner`, `replaced`, `want`, `give`, `ping`/`pong`, `stalled` and `unstalled`.
+  - A follower's `want` goes to the owner, and the owner's `give` comes back with up to three ports: `agent` (pi-protocol), `kernel` (slicc-kernel's client protocol) and `os` (a small RPC to the owner page).
+- **Liveness:** a MessagePort reports no close, so liveness uses Web Locks.
+  - Each tab holds `slicc-tab:<id>`, and the switchboard waits on it. When that lock is granted, the tab is dropped, and if it was the owner, every tab hears `owner { tab: null }`.
+  - The switchboard holds `slicc-switchboard`, and every tab waits on it. When a tab gets that lock, the switchboard has died: the tab opens a new one and says `hello` again, and the owner sends `own` again. Ports already brokered keep working.
+- **Stalls:** the switchboard pings the owner every second. After 5 s without a `pong`, followers hear `stalled`, and when the owner answers again, `unstalled`. An owner frozen with `Page.setWebLifecycleState` is reported as stalled after about 5.7 s.
+- **`os/tabs.js`** has the tab side:
+  - `claim()`: ownership with `ifAvailable`, and otherwise a queued request that resolves when this tab takes over;
+  - `joinSwitchboard()`;
+  - `followKernel()`: a kernel facade over the owner's kernel port. Its terminals survive a change of owner: they print `[the tab running SLICC closed; starting a new shell]` and open `bash` again in the new owner's kernel with the same size;
+  - `createOs()` and `osClient()` for the `os` port;
+  - `skew()`, which compares two tabs' versions.
+
 ### Grammars
 
 Spectrum bundles 16 syntax languages; the rest come from `@shikijs/langs` and `@shikijs/themes` (725 and 135 files). They aren't part of the first boot. They're a separate pnpm project, [`src/packages/grammars/`](src/packages/grammars/), deployed next to the BIOS's lockfiles:
