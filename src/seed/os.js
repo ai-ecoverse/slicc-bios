@@ -57,10 +57,8 @@ export const skip = [
 export function offerAgent(app, base, connecting, login) {
   return connecting.then(
     (chat) => {
-      app.model = {
-        ...base,
-        ...chat.createAgentModel(chat.connection, { storage: localStorage, login }),
-      };
+      const model = chat.createAgentModel(chat.connection, { storage: localStorage, login });
+      app.model = { ...base, ...model, agent: browser.stopping(model.agent) };
       return chat;
     },
     (error) => {
@@ -119,6 +117,7 @@ const base = {
   network: reach.port,
   browser: browser.port,
 };
+base.agent = browser.stopping(base.agent);
 const owned = new Map(Object.entries(owners).map(([id, name]) => [name, id]));
 const manifest = JSON.parse((await text(root, 'package.json')) ?? '{}');
 const names = Object.keys(manifest.dependencies ?? {});

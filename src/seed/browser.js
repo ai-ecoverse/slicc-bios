@@ -5,7 +5,38 @@ export const FRESH = 2000;
 export const SHOT_GAP = 1000;
 export const SHOT_WIDTH = 960;
 export const CALL_TIMEOUT = 10000;
+export const KEEP = 50;
+export const STOPPED_WITHIN = 2000;
 const KEY = 'slicc-os.browser.tabs';
+const KINDS = new Set([
+  'open',
+  'goto',
+  'back',
+  'reload',
+  'close',
+  'select',
+  'snapshot',
+  'screenshot',
+  'eval',
+  'click',
+  'fill',
+  'type',
+  'press',
+  'scroll',
+  'request',
+]);
+const LABELLED = new Set(['click', 'fill', 'type', 'press', 'screenshot', 'select', 'scroll']);
+const CAP = 200;
+export const ERRORS = new Set([
+  'element not found',
+  'no snapshot',
+  'unknown tab',
+  'navigation failed',
+  'timeout',
+  'connection lost',
+  'not allowed',
+  'failed',
+]);
 const OPENABLE = /^(https?:\/\/|about:blank$)/i;
 
 function parse(text) {
@@ -21,6 +52,61 @@ function openable(url) {
     throw new Error(`only http, https and about:blank can be opened here: ${url}`);
   }
   return url;
+}
+
+function text(value, cap = CAP) {
+  if (typeof value !== 'string') return undefined;
+  const line = value
+    .split('\n')
+    .find((part) => part.trim())
+    ?.trim();
+  return line ? line.slice(0, cap) : undefined;
+}
+
+function address(value) {
+  if (typeof value !== 'string' || !URL.canParse(value)) return undefined;
+  const url = new URL(value);
+  url.username = '';
+  url.password = '';
+  url.hash = '';
+  url.search = '';
+  return text(url.href);
+}
+
+function valueOf(kind, params) {
+  if (kind === 'open' || kind === 'goto') return address(params.url);
+  if (kind === 'press') {
+    return typeof params.key === 'string' && /^[\w+-]{1,32}$/.test(params.key)
+      ? params.key
+      : undefined;
+  }
+  if (kind === 'request') {
+    const method = /^[A-Z]{1,10}$/.test(params.method ?? '') ? params.method : 'GET';
+    const url = address(params.url);
+    return url && `${method} ${url}`;
+  }
+  return undefined;
+}
+
+export function agentOf(value) {
+  if (typeof value !== 'string') return null;
+  if (/^cone:[\w.-]{1,64}$/.test(value)) return value.slice('cone:'.length);
+  if (/^scoop:[\w.-]{1,64}$/.test(value)) return value;
+  return null;
+}
+
+export function sanitize(params) {
+  const kind = KINDS.has(params?.kind) ? params.kind : null;
+  if (!kind) return null;
+  const action = { kind };
+  const target = LABELLED.has(kind) ? text(params.target) : undefined;
+  if (target) action.target = target;
+  const value = valueOf(kind, params);
+  if (value) action.value = value;
+  if ((kind === 'fill' || kind === 'type') && Number.isSafeInteger(params.length)) {
+    action.length = Math.max(0, params.length);
+  }
+  return action;
 }
 
 export function pageClient(opener, clock) {
@@ -130,6 +216,10 @@ class Browser {
   #provisional = 0;
   #capturing = false;
   #activated = null;
+  #actions = [];
+  #counter = 0;
+  #connections = new Set();
+  #stops = new Map();
 
   constructor(network, options) {
     this.#clock = options.clock ?? globalThis;
@@ -167,10 +257,100 @@ class Browser {
       id,
       title: info.title ?? '',
       url: info.url ?? '',
-      status: 'complete',
+      status: this.#loading(id) ? 'loading' : 'complete',
       agentId: this.#owned.get(id) ?? null,
       controlled: this.#controlled(id),
     };
+  }
+
+  #loading(id) {
+    return this.#actions.some(
+      (action) =>
+        action.tabId === id &&
+        action.status === 'running' &&
+        (action.kind === 'open' || action.kind === 'goto')
+    );
+  }
+
+  actions(tabId) {
+    const all = tabId ? this.#actions.filter((action) => action.tabId === tabId) : this.#actions;
+    return all.map((action) => ({ ...action }));
+  }
+
+  #record(action) {
+    if (!this.#actions.includes(action)) this.#actions.push(action);
+    while (this.#actions.length > KEEP) this.#actions.shift();
+    this.#emit('action', { ...action });
+  }
+
+  begin(link, params) {
+    const sanitized = sanitize(params);
+    if (!sanitized) return;
+    const agentId = agentOf(params.agent);
+    if (agentId) link.agent = agentId;
+    const action = {
+      id: `a${++this.#counter}`,
+      tabId: link.tab(params.tab),
+      agentId: link.agent ?? null,
+      ...sanitized,
+      status: 'running',
+      at: this.#now(),
+    };
+    link.action = action;
+    if (action.tabId) this.own(action.tabId, action.agentId);
+    this.#record(action);
+    if (action.tabId) this.changed();
+  }
+
+  finish(link, params) {
+    const action = link.action;
+    if (action?.status !== 'running') return;
+    action.tabId ??= link.tab(params.tab);
+    if (action.tabId) this.own(action.tabId, action.agentId);
+    action.status = params.ok === false ? 'failed' : 'done';
+    const error = action.kind === 'eval' ? undefined : ERRORS.has(params.error) && params.error;
+    if (action.status === 'failed' && error) action.error = error;
+    this.#record(action);
+    if (action.tabId) this.changed();
+  }
+
+  interrupted(link) {
+    const action = link.action;
+    if (action?.status !== 'running') return;
+    const at = this.#stops.get(action.agentId);
+    action.status = 'failed';
+    action.error =
+      at !== undefined && this.#now() - at <= STOPPED_WITHIN ? 'Stopped' : 'Interrupted';
+    this.#record(action);
+    if (action.tabId) this.changed();
+  }
+
+  owns(id) {
+    return this.#owned.has(id);
+  }
+
+  placed(link, target) {
+    link.action.tabId = target;
+    this.own(target, link.action.agentId);
+    this.#record(link.action);
+    this.changed();
+  }
+
+  link(link) {
+    this.#connections.add(link);
+    return () => this.#connections.delete(link);
+  }
+
+  stopped(agentId) {
+    if (!agentId) return;
+    this.#stops.set(agentId, this.#now());
+    for (const link of [...this.#connections]) if (link.agent === agentId) link.kill('Stopped');
+    for (const [id, entry] of this.#use) {
+      if (this.#owned.get(id) === agentId && entry.sessions === 0) {
+        this.#release(id);
+      }
+    }
+    this.changed();
   }
 
   list() {
@@ -412,10 +592,35 @@ const TRACKED = {
   'Target.closeTarget': (params) => ({ closed: params?.targetId }),
 };
 
+function annotate(browser, link, message) {
+  const params = message.params ?? {};
+  if (message.method !== 'Slicc.action') return;
+  if (params.phase === 'start') browser.begin(link, params);
+  if (params.phase === 'end') browser.finish(link, params);
+}
+
 function observeConnection(browser, connection) {
   const sessions = new Map();
+  const touched = new Set();
   const calls = new Map();
   let closed = false;
+  let pending;
+  const link = {
+    agent: null,
+    action: null,
+    tab(id) {
+      if (typeof id !== 'string') return null;
+      if (touched.has(id) || browser.owns(id)) return id;
+      pending = id;
+      return null;
+    },
+    kill(why) {
+      if (closed) return;
+      outer.close();
+      outer.onclose?.(why);
+    },
+  };
+  const unlink = browser.link(link);
 
   const gone = (sessionId) => {
     const target = sessions.get(sessionId);
@@ -427,18 +632,35 @@ function observeConnection(browser, connection) {
   };
 
   const end = () => {
+    unlink();
+    browser.interrupted(link);
     for (const sessionId of [...sessions.keys()]) gone(sessionId);
     void browser.refresh();
+  };
+
+  const reached = (target, created = false) => {
+    touched.add(target);
+    if (
+      link.action?.status === 'running' &&
+      !link.action.tabId &&
+      (created || pending === target)
+    ) {
+      browser.placed(link, target);
+    }
   };
 
   const answered = (call, message) => {
     const result = message.result ?? {};
     if (message.error) return;
-    if (call.created) browser.own(result.targetId);
+    if (call.created && result.targetId) {
+      browser.own(result.targetId, link.agent);
+      reached(result.targetId, true);
+    }
     if (call.attach && result.sessionId) {
-      browser.own(call.attach);
+      browser.own(call.attach, link.agent);
       sessions.set(result.sessionId, call.attach);
       browser.touch(call.attach, 1);
+      reached(call.attach);
     }
     if (call.detached) gone(call.detached);
     if (call.closed) {
@@ -454,6 +676,7 @@ function observeConnection(browser, connection) {
       if (closed) return;
       const message = parse(text);
       if (typeof message.method === 'string' && message.method.startsWith('Slicc.')) {
+        annotate(browser, link, message);
         if (message.id === undefined) return;
         queueMicrotask(() => {
           const reply = { id: message.id, result: {} };
@@ -495,6 +718,17 @@ function observeConnection(browser, connection) {
   return outer;
 }
 
+export function withStop(agent, browser) {
+  if (!agent || typeof agent.stop !== 'function') return agent;
+  const stop = agent.stop.bind(agent);
+  agent.stop = (agentId) => {
+    const id = agentId ?? agent.active?.();
+    stop(agentId);
+    browser.stopped(id);
+  };
+  return agent;
+}
+
 export function createBrowser(network, options = {}) {
   const browser = new Browser(network, options);
   const port = {
@@ -506,6 +740,11 @@ export function createBrowser(network, options = {}) {
     navigate: (id, url) => browser.navigate(id, url),
     close: (id) => browser.close(id),
     screenshot: (id) => browser.screenshot(id),
+    actions: (tabId) => browser.actions(tabId),
   };
-  return { port, observe: (connection) => observeConnection(browser, connection) };
+  return {
+    port,
+    observe: (connection) => observeConnection(browser, connection),
+    stopping: (agent) => withStop(agent, browser),
+  };
 }
