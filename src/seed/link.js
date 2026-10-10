@@ -537,7 +537,7 @@ const KNOWN_HOSTS = [
   'if [ -f "$f" ]; then while IFS= read -r line || [ -n "$line" ]; do',
   'case "${line%% *}" in "$1,"*|*",$2") ;; *) out+="$line"$\'\\n\' ;; esac',
   'done < "$f"; fi',
-  'printf \'%s%s,%s %s\\n\' "$out" "$1" "$2" "$3" > "$f"',
+  'printf \'%s%s,%s %s\\n\' "$out" "$1" "$2" "$3" > "$f.new" && mv -f "$f.new" "$f"',
 ].join('\n');
 
 export async function trustHostKey(kernel, link, peer) {

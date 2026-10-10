@@ -161,7 +161,8 @@ test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback
   await page.until(async () => {
     const home = await (await navigator.storage.getDirectory()).getDirectoryHandle('home');
     const ssh = await home.getDirectoryHandle('.ssh').catch(() => null);
-    return Boolean(await ssh?.getFileHandle('known_hosts').catch(() => null));
+    const file = await ssh?.getFileHandle('known_hosts').catch(() => null);
+    return Boolean(file && (await file.getFile()).size > 0);
   });
   assert.equal(
     await kernelFile(page, '.ssh/known_hosts'),
