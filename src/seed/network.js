@@ -61,6 +61,69 @@ function tailnetActions(tailnet) {
   };
 }
 
+export const EXIT_KEY = 'slicc-os.exit';
+
+export function currentExit(router, tailnet) {
+  const chosen = router?.chosen();
+  if (chosen?.startsWith('link:')) return { kind: 'link', id: chosen.slice(5) };
+  if (tailnet?.state !== 'running' || !tailnet.exitNode) return null;
+  if (tailnet.autoExitNode) return { kind: 'tailnet', node: 'auto' };
+  const node = tailnet.exitNodes?.find((item) => item.name === tailnet.exitNode);
+  return { kind: 'tailnet', node: node?.id ?? 'auto' };
+}
+
+function exitActions({ router, links, tray, tailnet, storage }, emit) {
+  if (!router || !links) return {};
+  const remember = (id) => {
+    if (id) storage.setItem(EXIT_KEY, id);
+    else storage.removeItem(EXIT_KEY);
+  };
+  const clearTailnet = async () => {
+    const status = tailnet?.status();
+    if (status?.state === 'running' && status.exitNode) await tailnet.setExitNode(null);
+  };
+  const saved = storage.getItem(EXIT_KEY);
+  if (saved?.startsWith('link:')) router.choose(saved);
+  return {
+    async setExit(exit) {
+      if (exit?.kind === 'link') {
+        const device = links.devices().find((item) => item.id === exit.id);
+        if (!device?.exit) throw new Error('That device doesn’t offer to be the exit.');
+        await clearTailnet();
+        router.choose(`link:${exit.id}`);
+        remember(`link:${exit.id}`);
+      } else {
+        router.choose(null);
+        remember(null);
+        if (exit?.kind === 'tailnet') await tailnet.setExitNode(exit.node);
+        else await clearTailnet();
+      }
+      emit();
+    },
+    async unlink(id) {
+      if (tray?.known(id)) await tray.forget(id);
+      else links.drop(id, 'unlinked');
+      if (router.chosen() === `link:${id}`) {
+        router.choose(null);
+        remember(null);
+      }
+      emit();
+    },
+    ...(tray
+      ? {
+          rotateJoinUrl: async () => {
+            await tray.rotate();
+            emit();
+          },
+          retryLinks: async () => {
+            tray.stop();
+            tray.start();
+          },
+        }
+      : {}),
+  };
+}
+
 export function createNetwork(choice, options = {}) {
   const probe = options.check ?? checkLocalProxy;
   const reload = options.reload ?? (() => location.reload());
@@ -92,6 +155,28 @@ export function createNetwork(choice, options = {}) {
       extensionUrl: EXTENSION_URL,
       ...(options.browser ? { browser: options.browser() } : {}),
       ...(tailnet ? { tailnet } : {}),
+      ...linkStatus(),
+      ...viaLink(),
+    };
+  };
+  const viaLink = () => {
+    const chosen = options.router?.chosen();
+    if (!chosen?.startsWith('link:') || !options.links) return {};
+    const id = chosen.slice(5);
+    const devices = [...options.links.devices(), ...(options.tray?.away() ?? [])];
+    const connected = devices.some((item) => item.id === id && item.state === 'connected');
+    return { health: connected ? 'ok' : 'failing', detail: null };
+  };
+  const linkStatus = () => {
+    if (!options.links || !options.router) return {};
+    const devices = [...options.links.devices(), ...(options.tray?.away() ?? [])];
+    const exit = currentExit(options.router, options.tailnet?.status());
+    const { joinUrl = null, joinCommand = null } = options.tray?.status() ?? {};
+    return {
+      exit,
+      ...(devices.length || options.tray
+        ? { links: { joinUrl, joinCommand, devices, permission: null } }
+        : {}),
     };
   };
   const emit = () => {
@@ -131,6 +216,9 @@ export function createNetwork(choice, options = {}) {
     },
     status,
     ...tailnetActions(options.tailnet),
+    ...exitActions({ ...options, storage: options.storage ?? globalThis.localStorage }, () =>
+      emit()
+    ),
     async check() {
       if (options.tailnet?.status().state === 'failed') await options.tailnet.check();
       if (!choice.proxy) {
@@ -152,5 +240,7 @@ export function createNetwork(choice, options = {}) {
     },
   };
   options.tailnet?.on(emit);
+  options.links?.on(emit);
+  options.tray?.on(emit);
   return { port, transport };
 }

@@ -311,24 +311,23 @@ export function bufferedReader(stream) {
 const mapped = (error) =>
   error.code === 'ENOTFOUND' ? Object.assign(error, { code: 'EHOSTUNREACH' }) : error;
 
-export function linkExit(session, { id, address, label, useAsExit = () => false }) {
+export function linkExit(session, { id, address, label }) {
   const name = () => `${label()}.slicc.internal`;
   const mine = (host) => {
     const bare = bareHost(host).replace(/\.$/, '');
-    return bare === address || bare === name();
+    return bare === address() || bare === name();
   };
   const hello = () => session.peer();
   return {
     id,
     kind: 'link',
-    address,
+    chosenOnly: true,
     name,
     active: () => Boolean(hello()) && !session.closed(),
-    offersDefault: () =>
-      Boolean(hello()?.routes?.exit) && session.caps().includes('net') && useAsExit(),
+    offersDefault: () => Boolean(hello()?.routes?.exit) && session.caps().includes('net'),
     claims: mine,
-    prefixes: () => [`${address}/32`],
-    knows: (query) => (query.replace(/\.$/, '').toLowerCase() === name() ? [address] : null),
+    prefixes: () => [`${address()}/32`],
+    knows: (query) => (query.replace(/\.$/, '').toLowerCase() === name() ? [address()] : null),
     async resolve(query, family) {
       if (!session.caps().includes('net')) return [];
       const s = await session.open({ kind: 'resolve', name: query, family }, { shared: true });
@@ -466,47 +465,69 @@ export function offerLink({ pc, send, hello, timers, onClose }) {
   };
 }
 
-export function createLinks({ router, makePeer, onLink = () => {}, timers }) {
+export function createLinks({ router, makePeer, onLink = () => {}, timers, name = 'seven' }) {
   const links = new Map();
   const taken = () => new Set([...links.values()].map((link) => link.label).filter(Boolean));
-  const free = () => {
+  const free = (wanted) => {
     const used = new Set([...links.values()].map((link) => link.address));
+    if (wanted?.startsWith(`${SUBNET}.`) && !used.has(wanted)) return wanted;
     for (let n = FIRST; n < 255; n += 1) if (!used.has(`${SUBNET}.${n}`)) return `${SUBNET}.${n}`;
     throw failure('ENOSPC: no free link address');
   };
   let local = null;
+  const listeners = new Set();
+  const changed = () => {
+    for (const listener of [...listeners]) listener();
+  };
   const manager = {
     links,
-    start({ key, send, mode, iceServers }) {
+    on(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    devices: () => [...links.values()].map(device),
+    start({ key, send, mode, iceServers, address }) {
       manager.drop(key, 'replaced');
-      const link = { key, address: free(), label: null, useAsExit: false };
+      const link = { key, mode, address: free(address), label: null, peer: null };
       const pc = makePeer({ iceServers });
       link.offer = offerLink({
         pc,
         send,
-        hello: { name: 'seven', mode, caps: [] },
+        hello: { name, mode, caps: [] },
         timers,
         onClose: () => {
           if (links.get(key) === link) links.delete(key);
           router.remove(link.exit);
+          changed();
         },
       });
       link.exit = linkExit(link.offer.session, {
         id: `link:${key}`,
-        address: link.address,
+        address: () => link.address,
         label: () => link.label,
-        useAsExit: () => link.useAsExit,
       });
       links.set(key, link);
       link.offer.session.ready.then(
         (peer) => {
           link.label = dnsLabel(peer.host ?? peer.name, taken());
+          link.peer = peer;
           router.add(link.exit);
           onLink(link, peer);
+          changed();
         },
         () => {}
       );
+      changed();
       return link;
+    },
+    identify(key, id, wanted) {
+      const link = links.get(key);
+      for (const [other, item] of [...links])
+        if (other !== key && item.id === id) manager.drop(other, 'reconnected');
+      link.id = id;
+      link.exit.id = `link:${id}`;
+      if (wanted && free(wanted) === wanted) link.address = wanted;
+      changed();
     },
     drop(key, reason) {
       const link = links.get(key);
@@ -535,15 +556,35 @@ export function createLinks({ router, makePeer, onLink = () => {}, timers }) {
   return manager;
 }
 
+const OFFERS = ['net', 'http', 'ssh'];
+
+export function device(link) {
+  const { peer } = link;
+  const caps = Array.isArray(peer?.caps) ? peer.caps : [];
+  return {
+    id: link.id ?? link.key,
+    name: String(peer?.name ?? (link.mode === 'local' ? 'slicc on this computer' : 'slicc')),
+    host: link.label ? `${link.label}.slicc.internal` : '',
+    address: link.address,
+    mode: link.mode,
+    offers: OFFERS.filter((offer) => caps.includes(offer)),
+    ...(typeof peer?.policy?.summary === 'string' ? { policy: peer.policy.summary } : {}),
+    exit: Boolean(peer?.routes?.exit) && caps.includes('net'),
+    state: peer ? 'connected' : 'connecting',
+  };
+}
+
 const KNOWN_HOSTS = [
-  'd="$HOME/.ssh"; [ -d "$d" ] || mkdir -p "$d"; f="$d/known_hosts"; out=""',
+  'f="$4"; d="${f%/*}"; [ -d "$d" ] || mkdir -p "$d"; out=""',
   'if [ -f "$f" ]; then while IFS= read -r line || [ -n "$line" ]; do',
   'case "${line%% *}" in "$1,"*|*",$2") ;; *) out+="$line"$\'\\n\' ;; esac',
   'done < "$f"; fi',
   'printf \'%s%s,%s %s\\n\' "$out" "$1" "$2" "$3" > "$f.new" && mv -f "$f.new" "$f"',
 ].join('\n');
 
-export async function trustHostKey(kernel, link, peer) {
+export const SSH_KNOWN_HOSTS = '/etc/ssh/ssh_known_hosts';
+
+export async function trustHostKey(kernel, link, peer, file = SSH_KNOWN_HOSTS) {
   const key = String(peer.sshHostKey ?? '');
   if (!/^ssh-[a-z0-9-]+ [A-Za-z0-9+/]+=*$/.test(key)) return false;
   const name = `${link.label}.slicc.internal`;
@@ -555,6 +596,7 @@ export async function trustHostKey(kernel, link, peer) {
     name,
     link.address,
     key,
+    file,
   ]);
   return status === 0;
 }
