@@ -66,6 +66,18 @@ test('reaches npm over HTTPS with curl and the everyday tools', async (t) => {
     'mkdir -p leaf/twig && touch leaf/twig/bud.txt && tree --noreport leaf | tail -1 | sed "s/^.* /tree drew /"'
   );
   await shows(page, 'tree drew bud.txt');
+  await run(
+    page,
+    'printf "one\\ntwo\\n" > a.txt; printf "one\\nthree\\n" > b.txt; cp a.txt c.txt; diff -u a.txt b.txt | patch -s c.txt && cmp b.txt c.txt && echo "patched $((6 * 7))"'
+  );
+  await shows(page, 'patched 42');
+  await run(page, 'printf "alpha\\nbeta\\n" | rg -c bet | sed "s/^/rg piped /"');
+  await shows(page, 'rg piped 1');
+  await run(
+    page,
+    'mkdir -p hay && echo needle > hay/stack.txt && cd hay && bash -c "rg -l needle" | sed "s/^/rg found /"; cd /home'
+  );
+  await shows(page, 'rg found stack.txt');
   assert.deepEqual(page.errors, []);
 });
 
