@@ -6,6 +6,13 @@
     "commands": ["git"],
     "size": 18815546
   },
+  "@ai-ecoverse/wasix-openssh": {
+    "id": "ssh",
+    "label": "OpenSSH",
+    "description": "Connects to servers and copies files with ssh, scp and sftp; git over ssh too.",
+    "commands": ["ssh", "scp", "sftp", "ssh-keygen", "ssh-add"],
+    "size": 3343805
+  },
   "@ai-ecoverse/wasix-python": {
     "id": "python",
     "label": "Python",
