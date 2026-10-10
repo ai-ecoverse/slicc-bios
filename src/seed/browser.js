@@ -27,6 +27,17 @@ const KINDS = new Set([
 ]);
 const LABELLED = new Set(['click', 'fill', 'type', 'press', 'screenshot', 'select', 'scroll']);
 const CAP = 200;
+const HIERARCHICAL = new Set([
+  'http:',
+  'https:',
+  'ws:',
+  'wss:',
+  'ftp:',
+  'file:',
+  'chrome:',
+  'chrome-extension:',
+]);
+const OPAQUE = new Set(['data:', 'javascript:', 'blob:', 'about:', 'view-source:']);
 export const ERRORS = new Set([
   'element not found',
   'no snapshot',
@@ -67,7 +78,8 @@ function address(value) {
   if (typeof value !== 'string' || !URL.canParse(value)) return undefined;
   const url = new URL(value);
   if (url.href.toLowerCase() === 'about:blank') return 'about:blank';
-  if (!['http:', 'https:'].includes(url.protocol)) return url.protocol;
+  if (OPAQUE.has(url.protocol)) return url.protocol;
+  if (!HIERARCHICAL.has(url.protocol)) return undefined;
   url.username = '';
   url.password = '';
   url.hash = '';

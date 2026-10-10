@@ -244,7 +244,7 @@ test('playwright-cli’s reports become private action rows, and Stop closes the
   );
   await run(
     page,
-    `${agent} playwright-cli goto 'data:text/html,<p>DATASECRET</p>' > /dev/null 2>&1; ${agent} playwright-cli goto 'javascript:void("JSSECRET")' > /dev/null 2>&1; echo opaque-done`
+    `${agent} playwright-cli goto 'data:text/html,<p>DATASECRET</p>' > /dev/null 2>&1; ${agent} playwright-cli goto 'javascript:void("JSSECRET")' > /dev/null 2>&1; ${agent} playwright-cli goto 'host:8080/HOSTSECRET' > /dev/null 2>&1; ${agent} playwright-cli goto 'user:USERSECRET@host/x' > /dev/null 2>&1; echo opaque-done`
   );
   await shows(page, 'opaque-done');
   const opaque = await page.until(() => {
@@ -252,17 +252,17 @@ test('playwright-cli’s reports become private action rows, and Stop closes the
       .querySelector('slicc-app')
       .model.browser.actions()
       .filter(({ kind }) => kind === 'goto');
-    return gone.length === 2 && gone.every(({ status }) => status !== 'running') && gone;
+    return gone.length === 4 && gone.every(({ status }) => status !== 'running') && gone;
   });
   assert.deepEqual(
     opaque.map(({ value }) => value),
-    ['data:', 'javascript:']
+    ['data:', 'javascript:', undefined, undefined]
   );
   const later = JSON.stringify([
     await page.evaluate(() => document.querySelector('slicc-app').model.browser.actions()),
     await page.evaluate(() => window.rows),
   ]);
-  for (const secret of ['DATASECRET', 'JSSECRET']) {
+  for (const secret of ['DATASECRET', 'JSSECRET', 'HOSTSECRET', 'USERSECRET']) {
     assert.equal(later.includes(secret), false, secret);
   }
   assert.equal(extension.sent.filter((method) => method.startsWith('Slicc.')).length, 0);
