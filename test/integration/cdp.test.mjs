@@ -289,6 +289,40 @@ test('playwright-cli’s reports become private action rows, and Stop closes the
   assert.deepEqual(page.errors, []);
 });
 
+test('watch gives a live view of a driven tab, sampled when it is in the background, and stops', async (t) => {
+  const page = await chrome.page(t);
+  const extension = await fakeExtension(page);
+  t.after(extension.close);
+  await boot(page);
+  chrome.overrides.set(
+    '/live.html',
+    '<!doctype html><title>Live</title><h1 id="n">0</h1><script>let n = 0; setInterval(() => (document.getElementById("n").textContent = ++n), 100)</script>'
+  );
+  const target = new URL('/live.html', chrome.url).href;
+  await run(
+    page,
+    `playwright-cli open ${target} && playwright-cli eval 'new Promise((r) => setTimeout(r, 8000))'; echo watched-$?`
+  );
+  const id = await page.until(() => {
+    const [tab] = document.querySelector('slicc-app').model.browser.list();
+    return tab?.controlled && tab.id;
+  });
+  await page.evaluate((id) => {
+    const { browser } = document.querySelector('slicc-app').model;
+    window.liveFrames = [];
+    browser.on('frame', (frame) => frame.tabId === id && window.liveFrames.push(frame.src.length));
+    window.stopLive = browser.watch(id, { width: 480, height: 300 });
+  }, id);
+  await page.within(10000, () => window.liveFrames.length >= 3);
+  await page.evaluate(() => window.stopLive());
+  await shows(page, 'watched-0');
+  assert.ok(extension.sent.includes('Page.startScreencast'));
+  assert.ok(extension.sent.includes('Page.stopScreencast'));
+  await run(page, 'playwright-cli close && echo closed-$?');
+  await shows(page, 'closed-0');
+  assert.deepEqual(page.errors, []);
+});
+
 async function read(page, path) {
   return page.evaluate(async (path) => {
     let dir = await navigator.storage.getDirectory();
