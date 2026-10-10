@@ -4,7 +4,7 @@
     "label": "git",
     "description": "Version control for your projects.",
     "commands": ["git"],
-    "size": 18815546
+    "size": 18836262
   },
   "@ai-ecoverse/wasix-openssh": {
     "id": "ssh",
@@ -104,13 +104,6 @@
     "description": "Keeps a terminal session running to detach and reattach, from any terminal.",
     "commands": ["screen"],
     "size": 712776
-  },
-  "@ai-ecoverse/wasi-hf": {
-    "id": "hf",
-    "label": "Hugging Face",
-    "description": "Downloads models and datasets from the Hugging Face Hub.",
-    "commands": ["hf"],
-    "size": 122241
   },
   "@ai-ecoverse/wasi-dig": {
     "id": "dig",

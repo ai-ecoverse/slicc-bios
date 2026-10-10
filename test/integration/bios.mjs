@@ -45,7 +45,7 @@ export async function boot(page) {
   await ready(page);
 }
 
-export const prompt = 'slicc:~$ ';
+export const prompt = 'slicc:/home# ';
 
 export async function ready(page) {
   await page.until(
