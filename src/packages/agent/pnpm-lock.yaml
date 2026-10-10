@@ -13,16 +13,16 @@ importers:
   .:
     dependencies:
       '@ai-ecoverse/slicc-agent':
-        specifier: 3.26.0
-        version: 3.26.0(@ai-ecoverse/slicc-kernel@1.40.1)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
+        specifier: 3.27.1
+        version: 3.27.1(@ai-ecoverse/slicc-kernel@1.41.0)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@ai-ecoverse/slicc-kernel':
-        specifier: 1.40.1
-        version: 1.40.1
+        specifier: 1.41.0
+        version: 1.41.0
 
 packages:
 
-  '@ai-ecoverse/slicc-agent@3.26.0':
-    resolution: {integrity: sha512-NEIn0iYm9I3heNeAJBiM0U9TUxmDUjLHdj6gXDit/sPwpep1llbQz+vDcs3cgdSO7RCEqZE/GvlbQ+AfAo+JIw==}
+  '@ai-ecoverse/slicc-agent@3.27.1':
+    resolution: {integrity: sha512-S5br7L0pgOcUhlmPTABabbm8mxIiorUoEDXJR/wnUWc6LByhYYVzCSklHqd4WMUkphnG2ivn5KZS+Ln9YpFA5A==}
     engines: {node: '>=24'}
     peerDependencies:
       '@ai-ecoverse/slicc-kernel': '>=1.26.3 <2'
@@ -31,8 +31,8 @@ packages:
       '@ai-ecoverse/slicc-spectrum':
         optional: true
 
-  '@ai-ecoverse/slicc-kernel@1.40.1':
-    resolution: {integrity: sha512-8phlQz70gmdwzZ+xXdH+w9Vg2Gsi8xVsT48X4+25eaMPH3y0ULCEenYaEkDI0bAQ+MkEXDpZak9ItIEppzc2Lw==}
+  '@ai-ecoverse/slicc-kernel@1.41.0':
+    resolution: {integrity: sha512-3RbOMqL8n19hRqXnG4dl7j7zkp+SKdNAVW4rc7Kap/ptDUKBvMO8JgO47VVVn83K0ukm25SvJYTgo2cwp/7V3w==}
     engines: {node: '>=24'}
 
   '@anthropic-ai/sdk@0.129.0':
@@ -295,9 +295,9 @@ packages:
 
 snapshots:
 
-  '@ai-ecoverse/slicc-agent@3.26.0(@ai-ecoverse/slicc-kernel@1.40.1)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)':
+  '@ai-ecoverse/slicc-agent@3.27.1(@ai-ecoverse/slicc-kernel@1.41.0)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)':
     dependencies:
-      '@ai-ecoverse/slicc-kernel': 1.40.1
+      '@ai-ecoverse/slicc-kernel': 1.41.0
       '@earendil-works/chord': 1.0.4
       '@earendil-works/pi-ai': 1.0.4(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@earendil-works/pi-client': 1.0.4
@@ -316,7 +316,7 @@ snapshots:
       - ws
       - zod
 
-  '@ai-ecoverse/slicc-kernel@1.40.1': {}
+  '@ai-ecoverse/slicc-kernel@1.41.0': {}
 
   '@anthropic-ai/sdk@0.129.0':
     dependencies:
