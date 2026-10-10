@@ -290,9 +290,9 @@ export function followKernel({ port, attach, notice = NOTICE, quiet = QUIET }) {
     const exited = new Promise((resolve) => {
       finish = resolve;
     });
-    const flush = () => {
+    const flush = (target) => {
       settling = null;
-      if (!inner) return;
+      if (inner !== target) return;
       waiting = false;
       for (const data of queued.splice(0)) inner.write(data);
     };
@@ -300,7 +300,7 @@ export function followKernel({ port, attach, notice = NOTICE, quiet = QUIET }) {
       onData?.(bytes);
       if (!waiting || !inner) return;
       clearTimeout(settling);
-      settling = setTimeout(flush, quiet);
+      settling = setTimeout(flush, quiet, inner);
     };
     async function open() {
       let used;
@@ -319,6 +319,7 @@ export function followKernel({ port, attach, notice = NOTICE, quiet = QUIET }) {
         }
       }
       inner.exited.then(finish, (error) => {
+        clearTimeout(settling);
         inner = null;
         if (gone(error)) forget(used);
         if (!gone(error)) {
