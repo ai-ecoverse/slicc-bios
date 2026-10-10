@@ -13,8 +13,11 @@ export function loopback(host) {
 
 export function reserved(host) {
   const bare = bareHost(host);
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(bare);
-  const v4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(mapped?.[1] ?? bare);
+  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(bare);
+  const words = hex?.slice(1).map((word) => Number.parseInt(word, 16));
+  const dotted = words && [words[0] >> 8, words[0] & 255, words[1] >> 8, words[1] & 255].join('.');
+  const mapped = dotted ?? /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(bare)?.[1];
+  const v4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(mapped ?? bare);
   if (v4) {
     const [a, b, c, d] = v4.slice(1).map(Number);
     return (
@@ -55,6 +58,14 @@ export function createExitRouter() {
   const active = () => exits.filter((exit) => exit.active());
   const fallback = () => active().find((exit) => exit.offersDefault()) ?? null;
   const carrier = (host) => active().find((exit) => exit.claims(host)) ?? fallback();
+  const httpCarrier = (host) => {
+    const bare = bareHost(host).replace(/\.$/, '');
+    const literal = /^\d+\.\d+\.\d+\.\d+$/.test(bare) || bare.includes(':');
+    if (literal ? reserved(bare) : ownName(bare, own)) return null;
+    const claimant = active().find((exit) => exit.claims(host));
+    if (claimant) return claimant;
+    return literal || bare.includes('.') ? fallback() : null;
+  };
 
   const router = {
     own,
@@ -83,15 +94,13 @@ export function createExitRouter() {
       kernel.setRoutes(table).catch((error) => console.warn(`exit routes: ${error.message}`));
     },
     routes: (url) => {
-      const host = new URL(url).hostname;
-      return !loopback(host) && Boolean(carrier(host));
+      return Boolean(httpCarrier(new URL(url).hostname));
     },
     transport(base) {
       return {
         traits: base.traits,
         fetch(request) {
-          const host = new URL(request.url).hostname;
-          const exit = loopback(host) ? null : carrier(host);
+          const exit = httpCarrier(new URL(request.url).hostname);
           return exit ? exit.fetch(request) : base.fetch(request);
         },
       };
