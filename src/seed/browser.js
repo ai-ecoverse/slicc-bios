@@ -129,6 +129,7 @@ class Browser {
   #refreshing;
   #provisional = 0;
   #capturing = false;
+  #activated = null;
 
   constructor(network, options) {
     this.#clock = options.clock ?? globalThis;
@@ -179,7 +180,11 @@ class Browser {
   }
 
   active() {
-    return [...this.#owned.keys()].find((id) => this.#infos.get(id)?.active) ?? null;
+    const reported = [...this.#owned.keys()].find((id) => this.#infos.get(id)?.active);
+    if (reported) return reported;
+    return this.#owned.has(this.#activated) && this.#infos.has(this.#activated)
+      ? this.#activated
+      : null;
   }
 
   changed() {
@@ -259,9 +264,10 @@ class Browser {
     if (hold) void hold.then((sessionId) => sessionId && this.#detach(sessionId));
   }
 
-  touch(id) {
+  touch(id, sessions = 0) {
     const entry = this.state(id);
     const was = this.#controlled(id);
+    entry.sessions += sessions;
     this.#clock.clearTimeout(entry.timer);
     entry.timer = undefined;
     entry.hold ??= this.#attach(id).catch(() => undefined);
@@ -345,7 +351,13 @@ class Browser {
 
   activate(id) {
     if (!this.#owned.has(id)) return;
-    void this.#client.call('Target.activateTarget', { targetId: id }).catch(() => undefined);
+    void this.#client.call('Target.activateTarget', { targetId: id }).then(
+      () => {
+        this.#activated = id;
+        this.#emit('active', this.active());
+      },
+      () => undefined
+    );
   }
 
   open(url, agentId = null) {
@@ -426,8 +438,7 @@ function observeConnection(browser, connection) {
     if (call.attach && result.sessionId) {
       browser.own(call.attach);
       sessions.set(result.sessionId, call.attach);
-      browser.state(call.attach).sessions += 1;
-      browser.touch(call.attach);
+      browser.touch(call.attach, 1);
     }
     if (call.detached) gone(call.detached);
     if (call.closed) {
@@ -445,7 +456,9 @@ function observeConnection(browser, connection) {
       if (typeof message.method === 'string' && message.method.startsWith('Slicc.')) {
         if (message.id === undefined) return;
         queueMicrotask(() => {
-          if (!closed) outer.onmessage?.(JSON.stringify({ id: message.id, result: {} }));
+          const reply = { id: message.id, result: {} };
+          if (message.sessionId) reply.sessionId = message.sessionId;
+          if (!closed) outer.onmessage?.(JSON.stringify(reply));
         });
         return;
       }
