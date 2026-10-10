@@ -323,6 +323,156 @@ test('watch gives a live view of a driven tab, sampled when it is in the backgro
   assert.deepEqual(page.errors, []);
 });
 
+const tides =
+  '<!doctype html><title>Tide tables</title><style>body{font:16px system-ui;margin:0;color:#1d2b36}header{background:#0b5b7a;color:#fff;padding:18px 32px;font-size:22px}main{padding:24px 32px;display:grid;grid-template-columns:1fr 320px;gap:24px}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #d8e3ea;padding:8px;text-align:left}aside{background:#e8f3f8;border-radius:12px;padding:16px}input{font:inherit;padding:6px;width:180px}button{font:inherit;padding:6px 14px;background:#0b5b7a;color:#fff;border:0;border-radius:6px}</style><header>tidewatch.example · Harbor forecast</header><main><section><h1>Tide tables</h1><table><tr><th>Time</th><th>Height</th><th>Tide</th></tr><tr><td>04:12</td><td>3.4 m</td><td>High</td></tr><tr><td>10:31</td><td>0.6 m</td><td>Low</td></tr><tr><td>16:40</td><td>3.2 m</td><td>High</td></tr><tr><td>22:55</td><td>0.8 m</td><td>Low</td></tr></table></section><aside><p><input aria-label="Port" placeholder="Port"></p><p><button>Show forecast</button></p></aside></main>';
+const lighthouse =
+  '<!doctype html><title>Lighthouse log</title><style>body{font:16px system-ui;margin:0;color:#2b2416}header{background:#7a4b0b;color:#fff;padding:18px 32px;font-size:22px}main{padding:24px 32px}li{margin:8px 0}</style><header>lighthouse.example · Keeper’s log</header><main><h1>Lighthouse log</h1><ul><li>06:00 Lamp off, lens cleaned</li><li>12:00 Visibility 8 nm</li><li>18:30 Lamp on</li></ul></main>';
+
+test('screenshots of the browser panel: a driven tab live, two driven tabs, Stop and its last frame', async (t) => {
+  const page = await chrome.page(t);
+  const extension = await fakeExtension(page);
+  t.after(extension.close);
+  await boot(page);
+  chrome.overrides.set('/tidewatch/forecast.html', tides);
+  chrome.overrides.set('/lighthouse/log.html', lighthouse);
+  const forecast = new URL('/tidewatch/forecast.html', chrome.url).href;
+  const log = new URL('/lighthouse/log.html', chrome.url).href;
+  const harbor = 'SLICC_AGENT=cone:harbor';
+  const keeper = 'SLICC_AGENT=cone:keeper';
+  const wait = "eval 'new Promise((r) => setTimeout(r, 25000))'";
+  await run(
+    page,
+    `${keeper} playwright-cli open ${log} > /tmp/k && ${keeper} playwright-cli snapshot > /dev/null && (for n in 1 2 3 4 5 6 7 8; do ${keeper} playwright-cli ${wait} > /dev/null 2>&1; done &) ; ${harbor} playwright-cli open ${forecast} && ${harbor} playwright-cli snapshot > /tmp/snap && ref=$(grep -o 'textbox "Port" \\[ref=[a-z0-9]*' /tmp/snap | sed 's/.*ref=//') && ${harbor} playwright-cli fill $ref Lisbon && ${harbor} playwright-cli snapshot > /tmp/snap && button=$(grep -o 'button "Show forecast" \\[ref=[a-z0-9]*' /tmp/snap | sed 's/.*ref=//') && ${harbor} playwright-cli click $button && ${harbor} playwright-cli snapshot > /dev/null; ${harbor} playwright-cli click e99 > /dev/null 2>&1; echo acted-$?; (for n in 1 2 3 4 5 6 7 8; do ${harbor} playwright-cli ${wait} > /dev/null 2>&1 || break; done &)`
+  );
+  await shows(page, 'acted-1');
+  await page.until(
+    () =>
+      document
+        .querySelector('slicc-app')
+        .model.browser.list()
+        .filter(({ controlled }) => controlled).length === 2
+  );
+  const live = () => !!window.panel()?.querySelector('figure[data-view="live"]');
+  const color = (wanted) =>
+    page.evaluate((wanted) => {
+      const app = document.querySelector('slicc-app');
+      if (app.color !== wanted) app.toggleColor();
+    }, wanted);
+  const shot = (name) => page.screenshot(new URL(`browser-${name}.png`, page.dir));
+  const pointer = async (selector) => {
+    const { x, y } = await page.evaluate((selector) => {
+      const box = window.panel().querySelector(selector).getBoundingClientRect();
+      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    }, selector);
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await page.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
+    }
+  };
+
+  await page.evaluate(() => {
+    window.panel = () => document.querySelector('slicc-app').dock.content('browser')?.shadowRoot;
+    document.querySelector('slicc-app').show('browser');
+  });
+  await color('light');
+  await page.within(20000, live);
+  await page.until(() => window.panel().textContent.includes('harbor is using this tab'));
+  await page.until(() => !!window.panel().querySelector('li[data-status="failed"]'));
+  await shot('live-light');
+  await page.evaluate((to) => {
+    const box = window.panel().querySelector('.scroll');
+    box.scrollTop = to === 'end' ? box.scrollHeight : 0;
+  }, 'end');
+  await shot('actions-light');
+  await page.evaluate((to) => {
+    const box = window.panel().querySelector('.scroll');
+    box.scrollTop = to === 'end' ? box.scrollHeight : 0;
+  }, 'top');
+  await color('dark');
+  await page.within(20000, live);
+  await shot('live-dark');
+  await page.evaluate((to) => {
+    const box = window.panel().querySelector('.scroll');
+    box.scrollTop = to === 'end' ? box.scrollHeight : 0;
+  }, 'end');
+  await shot('actions-dark');
+  await page.evaluate((to) => {
+    const box = window.panel().querySelector('.scroll');
+    box.scrollTop = to === 'end' ? box.scrollHeight : 0;
+  }, 'top');
+  await pointer('[data-action="all-tabs"]');
+  await page.until(() => window.panel().querySelectorAll('li[data-controlled]').length === 2);
+  await page.until(() => window.panel().querySelectorAll('.thumb img').length === 2);
+  await shot('overview-dark');
+  await color('light');
+  await shot('overview-light');
+
+  await page.send('Emulation.setDeviceMetricsOverride', {
+    width: 420,
+    height: 800,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.until(() => document.querySelector('slicc-app').screen === 'phone');
+  await page.evaluate(() => document.querySelector('slicc-app').show('browser'));
+  await page.within(20000, live);
+  await shot('live-420');
+  await pointer('[data-action="all-tabs"]');
+  await page.until(() => window.panel()?.querySelectorAll('li[data-controlled]').length === 2);
+  await shot('overview-420');
+  await page.evaluate(() =>
+    [...window.panel().querySelectorAll('li[data-controlled]')]
+      .find((card) => card.textContent.includes('Tide tables'))
+      .querySelector('.window')
+      .click()
+  );
+  await page.until(() =>
+    [...window.panel().querySelectorAll('[data-action="stop-agent"]')].some((button) =>
+      button.textContent.includes('harbor')
+    )
+  );
+  await page.evaluate(() =>
+    [...window.panel().querySelectorAll('[data-action="stop-agent"]')]
+      .find((button) => button.textContent.includes('harbor'))
+      .click()
+  );
+  await page.within(20000, () =>
+    document
+      .querySelector('slicc-app')
+      .model.browser.actions()
+      .some(({ agentId, error }) => agentId === 'harbor' && error === 'Stopped')
+  );
+  await page.until(() => window.panel().textContent.includes('No agent is using this tab'));
+  await shot('stopped-420');
+  await page.send('Emulation.clearDeviceMetricsOverride');
+  await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
+  await page.evaluate(() => document.querySelector('slicc-app').show('browser'));
+  await page.until(() => !!window.panel()?.querySelector('[data-action="all-tabs"]'));
+  await pointer('[data-action="all-tabs"]');
+  await page.until(() => window.panel().querySelectorAll('li[data-id] .window').length === 2);
+  await page.evaluate(() =>
+    [...window.panel().querySelectorAll('li[data-id]')]
+      .find((card) => card.textContent.includes('Tide tables'))
+      .querySelector('.window')
+      .click()
+  );
+  await page.until(() => window.panel()?.textContent.includes('No agent is using this tab'));
+  await shot('stopped-light');
+  await color('dark');
+  await shot('stopped-dark');
+  await color('light');
+  const stopped = await page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.browser.actions()
+      .filter(({ agentId, error }) => agentId === 'harbor' && error === 'Stopped')
+  );
+  assert.deepEqual(
+    stopped.map(({ kind, status }) => [kind, status]),
+    [['eval', 'failed']]
+  );
+  assert.deepEqual(page.errors, []);
+});
+
 async function read(page, path) {
   return page.evaluate(async (path) => {
     let dir = await navigator.storage.getDirectory();

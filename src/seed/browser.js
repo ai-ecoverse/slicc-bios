@@ -225,10 +225,10 @@ export function live({ client, clock, now, session, size, dpr, visible, frame, s
       });
   };
   const adapt = (bytes, sessionId) => {
+    if (bytes > BIG) small = 0;
     if (restarting) return;
     if (bytes > BIG && level < QUALITIES.length - 1) {
       level += 1;
-      small = 0;
       void restart(sessionId);
     } else if (bytes <= BIG && level > 0 && ++small >= SMALL_RUN) {
       level -= 1;
