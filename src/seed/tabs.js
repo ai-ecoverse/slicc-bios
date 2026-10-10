@@ -1,7 +1,7 @@
 import { SWITCHBOARD_LOCK, TAB_LOCK, VERSION } from './switchboard.js';
 
 export const OWNER_LOCK = 'slicc-agent';
-export const NOTICE = '\r\n[the tab running SLICC closed; starting a new shell]\r\n';
+export const NOTICE = '\r\x1b[2K[the tab running SLICC closed; starting a new shell]\r\n';
 
 export function hold(locks, name) {
   return new Promise((acquired, failed) => {
@@ -36,6 +36,60 @@ function openSwitchboard() {
 
 const NAMES = ['agent', 'kernel', 'os'];
 
+function pick(given, names) {
+  return Object.fromEntries(
+    NAMES.map((name) => [name, names.includes(name) ? (given[name] ?? null) : null])
+  );
+}
+
+export function localBoard({ id = crypto.randomUUID(), versions = null } = {}) {
+  const listeners = new Set();
+  let serving = null;
+  let owner = { tab: null, versions: null };
+  return {
+    id,
+    owner: () => owner,
+    on(type, listener) {
+      if (type !== 'owner') return () => undefined;
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    show() {},
+    own(give, next = versions) {
+      serving = give;
+      versions = next;
+      owner = { tab: id, versions };
+      for (const listener of [...listeners]) listener(owner);
+    },
+    async ports(names = NAMES) {
+      if (!serving) throw new Error('no tab runs SLICC');
+      return pick(await serving(id, names), names);
+    },
+  };
+}
+
+export function createTabs({
+  reload = () => location.replace(new URL('../', location.href)),
+} = {}) {
+  const listeners = new Set();
+  let state = { role: 'connecting', stalled: false, skew: null };
+  return {
+    on(type, listener) {
+      if (type !== 'tabs') return () => undefined;
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    state: () => state,
+    reload: () => reload(),
+    set(patch) {
+      const next = { ...state, ...patch };
+      if (Object.keys(next).every((key) => next[key] === state[key])) return;
+      state = next;
+      for (const listener of [...listeners]) listener(state);
+    },
+  };
+}
+
 export async function joinSwitchboard({
   open = openSwitchboard,
   locks = navigator.locks,
@@ -64,7 +118,7 @@ export async function joinSwitchboard({
   async function answer(want) {
     const to = want.from;
     try {
-      const given = await serving(to);
+      const given = await serving(to, want.names ?? NAMES);
       const names = NAMES.filter((name) => given[name]);
       send(
         { give: { id: want.id, to, names } },
@@ -145,20 +199,21 @@ export async function joinSwitchboard({
       shown = Boolean(value);
       send({ visible: shown });
     },
-    own(give) {
+    own(give, next = versions) {
       serving = give;
+      versions = next;
       send({ own: { versions } });
     },
-    async ports() {
+    async ports(names = NAMES) {
       for (;;) {
         const current = await settled();
-        if (current.tab === id && serving) return serving(id);
+        if (current.tab === id && serving) return pick(await serving(id, names), names);
         next += 1;
         const request = next;
         const answered = new Promise((resolve, reject) =>
           pending.set(request, { resolve, reject })
         );
-        send({ want: { id: request } });
+        send({ want: { id: request, names } });
         try {
           return await answered;
         } catch (error) {
@@ -189,6 +244,7 @@ export class Unanswered extends Error {
 }
 
 const gone = (error) => error?.name === 'KernelGoneError';
+export const TINY = { cols: 20, rows: 4 };
 const encoder = new TextEncoder();
 
 export function followKernel({ port, attach, notice = NOTICE }) {
@@ -227,19 +283,27 @@ export function followKernel({ port, attach, notice = NOTICE }) {
     let inner = null;
     let closed = false;
     const queued = [];
+    let waiting = false;
     let finish;
     const exited = new Promise((resolve) => {
       finish = resolve;
     });
-    const output = (bytes) => onData?.(bytes);
+    const output = (bytes) => {
+      onData?.(bytes);
+      if (!waiting || !inner) return;
+      waiting = false;
+      for (const data of queued.splice(0)) inner.write(data);
+    };
     async function open() {
       let used;
       for (;;) {
         used = await client();
         try {
-          inner = await used.openTerminal(argv, { cwd, env, ...size, onData: output });
+          const opened = { ...size };
+          inner = await used.openTerminal(argv, { cwd, env, ...opened, onData: output });
           if (closed) inner.close();
-          for (const data of queued.splice(0)) inner.write(data);
+          if (opened.cols !== size.cols || opened.rows !== size.rows)
+            inner.resize(size.cols, size.rows);
           break;
         } catch (error) {
           if (!gone(error)) throw error;
@@ -254,6 +318,7 @@ export function followKernel({ port, attach, notice = NOTICE }) {
           finish(1);
           return;
         }
+        waiting = true;
         output(encoder.encode(notice));
         open().catch((failure) => {
           output(encoder.encode(`\r\n${failure.message}\r\n`));
@@ -268,10 +333,11 @@ export function followKernel({ port, attach, notice = NOTICE }) {
       },
       exited,
       write(data) {
-        if (inner) inner.write(data);
+        if (inner && !waiting) inner.write(data);
         else if (!closed) queued.push(data);
       },
       resize(columns, lines) {
+        if (columns < TINY.cols || lines < TINY.rows) return;
         size.cols = columns;
         size.rows = lines;
         inner?.resize(columns, lines);

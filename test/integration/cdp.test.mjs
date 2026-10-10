@@ -558,13 +558,19 @@ test('when another page takes over slicc-node’s /cdp, the first page’s conne
   await new Promise((resolve) => setTimeout(resolve, 2000));
 
   const second = await first.tab();
-  await second.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}`);
-  await ready(second);
-  await run(
-    second,
-    `curl -s -o /dev/null -w 'second-%{http_code}' http://127.0.0.1:9222/json/list`
+  await second.goto('/packages/agent/package.json');
+  assert.equal(
+    await second.evaluate(
+      ({ url, key }) =>
+        new Promise((resolve, reject) => {
+          const socket = new WebSocket(new URL('/cdp', url), ['slicc.cdp.v1', `slicc.key.${key}`]);
+          socket.onopen = () => resolve(socket.protocol);
+          socket.onerror = () => reject(new Error('the second page could not connect'));
+        }),
+      { url: proxy.url, key: proxy.key }
+    ),
+    'slicc.cdp.v1'
   );
-  await shows(second, 'second-200');
   await first.send('Page.bringToFront');
   await shows(first, 'held-1');
   assert.equal(

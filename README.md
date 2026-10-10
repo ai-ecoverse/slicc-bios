@@ -59,7 +59,28 @@ A local folder can be mounted into seven as on Linux ([#73](https://github.com/a
 
 ### Tabs
 
-Several tabs of one origin share one kernel and one agent. One tab, the owner, holds the Web Lock `slicc-agent` and runs both; the others follow it. The pieces are in place, but os.js doesn't use them yet:
+Several tabs of one origin share one kernel and one agent (spectrum ≥ 1.46.0 for `model.tabs`).
+
+**The owner** is the tab holding the Web Lock `slicc-agent`. `os.js` asks for it with `ifAvailable` before it starts a kernel. The owner does everything a single tab did before, and only the owner does it:
+- it runs the kernel and the agent worker (`startAgent({ held: true })`);
+- it handles folder mounts, Tailscale, the tunnel, and the installs and update checks.
+
+**Every other tab is a follower.** It starts no kernel. It shows the full UI:
+- the chat, through its own pi-protocol connection to the owner's agent worker;
+- terminals on the owner's kernel;
+- Files on OPFS;
+- the Install / Update rows, mirrored from the owner, with their buttons sent to the owner.
+
+Each tab picks its own cone. A follower can't mount folders, since the kernel's folder handles are the owner's page's.
+
+**When the owner closes, reloads or crashes,** the first waiting tab gets the lock and becomes the owner in place: it starts a kernel and the agent, which resumes from SQLite. Terminals in every tab print `[the tab running SLICC closed; starting a new shell]` and open a new shell on the new kernel. Anything typed meanwhile goes to the new shell once it has printed its prompt, so it shows once.
+
+**`model.tabs`** says what this tab is:
+- `role`: `owner`, `follower`, `connecting`, or `alone` (without SharedWorker, a second tab shows only "SLICC is open in another tab");
+- `stalled`: the owner hasn't answered for 5 s, typically because Chrome froze it;
+- `skew`: another tab runs a different `os.js` (an 8-byte SHA-256 of the tab files) or a different agent version. A follower with skew doesn't attach to the agent.
+
+A hidden owner is fine. In R1, 30 minutes in the background throttled only the owner page's own timers, so no handover happens then. These are the pieces:
 
 - **The switchboard:** `os/switchboard-worker.js` is a module SharedWorker named `slicc-switchboard` with a fixed URL. It keeps a table of tabs (id, visibility, versions) and the owner. It brokers MessagePorts and never sees their traffic.
   - The frames are JSON with `v: 1`, and other versions are refused: `hello`, `welcome`, `visible`, `own`, `owner`, `replaced`, `want`, `give`, `ping`/`pong`, `stalled` and `unstalled`.
@@ -73,7 +94,9 @@ Several tabs of one origin share one kernel and one agent. One tab, the owner, h
   - `joinSwitchboard()`;
   - `followKernel()`: a kernel facade over the owner's kernel port. Its terminals survive a change of owner: they print `[the tab running SLICC closed; starting a new shell]` and open `bash` again in the new owner's kernel with the same size;
   - `createOs()` and `osClient()` for the `os` port;
-  - `skew()`, which compares two tabs' versions.
+  - `skew()`, which compares two tabs' versions;
+  - `localBoard()`, the switchboard of a tab alone, and `createTabs()`, the tabs port.
+- **`os/present.js`** attaches a tab to the owner whenever the owner changes. It gives the follower an `os` port and mirrors the owner's updates over it. The owner tab attaches to its own agent the same way.
 
 ### Grammars
 
