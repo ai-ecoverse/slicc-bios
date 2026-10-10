@@ -242,6 +242,29 @@ test('playwright-cli’s reports become private action rows, and Stop closes the
     tabs.map(({ id, agentId }) => [id, agentId]),
     [[opened.tabId, 'harbor']]
   );
+  await run(
+    page,
+    `${agent} playwright-cli goto 'data:text/html,<p>DATASECRET</p>' > /dev/null 2>&1; ${agent} playwright-cli goto 'javascript:void("JSSECRET")' > /dev/null 2>&1; echo opaque-done`
+  );
+  await shows(page, 'opaque-done');
+  const opaque = await page.until(() => {
+    const gone = document
+      .querySelector('slicc-app')
+      .model.browser.actions()
+      .filter(({ kind }) => kind === 'goto');
+    return gone.length === 2 && gone.every(({ status }) => status !== 'running') && gone;
+  });
+  assert.deepEqual(
+    opaque.map(({ value }) => value),
+    ['data:', 'javascript:']
+  );
+  const later = JSON.stringify([
+    await page.evaluate(() => document.querySelector('slicc-app').model.browser.actions()),
+    await page.evaluate(() => window.rows),
+  ]);
+  for (const secret of ['DATASECRET', 'JSSECRET']) {
+    assert.equal(later.includes(secret), false, secret);
+  }
   assert.equal(extension.sent.filter((method) => method.startsWith('Slicc.')).length, 0);
 
   const cone = 'cone';

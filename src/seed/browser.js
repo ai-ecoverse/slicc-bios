@@ -66,6 +66,8 @@ function text(value, cap = CAP) {
 function address(value) {
   if (typeof value !== 'string' || !URL.canParse(value)) return undefined;
   const url = new URL(value);
+  if (url.href.toLowerCase() === 'about:blank') return 'about:blank';
+  if (!['http:', 'https:'].includes(url.protocol)) return url.protocol;
   url.username = '';
   url.password = '';
   url.hash = '';
