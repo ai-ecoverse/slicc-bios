@@ -191,6 +191,104 @@ test('the browser port lists only the tabs the agent drives, holds them for a wh
   assert.deepEqual(page.errors, []);
 });
 
+test('playwright-cli’s reports become private action rows, and Stop closes the agent’s connection', async (t) => {
+  const page = await chrome.page(t);
+  const extension = await fakeExtension(page);
+  t.after(extension.close);
+  await boot(page);
+  chrome.overrides.set(
+    '/form.html',
+    '<!doctype html><title>Tide form</title><input aria-label="Port"><button>Show forecast</button>'
+  );
+  const target = new URL('/form.html', chrome.url).href;
+  await page.evaluate(() => {
+    window.rows = [];
+    document
+      .querySelector('slicc-app')
+      .model.browser.on('action', (row) => window.rows.push(JSON.stringify(row)));
+  });
+  const agent = 'SLICC_AGENT=cone:harbor';
+  await run(
+    page,
+    `${agent} playwright-cli open '${target}?q=QUERYSECRET#FRAGSECRET' && ${agent} playwright-cli snapshot > /tmp/snap && ref=$(grep -o 'textbox "Port" \\[ref=[a-z0-9]*' /tmp/snap | sed 's/.*ref=//') && ${agent} playwright-cli fill $ref secret-text && ${agent} playwright-cli eval 'document.title + "-hidden-source"' && { ${agent} playwright-cli eval 'throw new Error("EVALSECRET")'; echo acted-$?; }`
+  );
+  await shows(page, 'acted-1');
+  const rows = await page.until(() => {
+    const rows = document.querySelector('slicc-app').model.browser.actions();
+    return rows.length >= 5 && rows.every(({ status }) => status !== 'running') && rows;
+  });
+  assert.deepEqual(
+    rows.map(({ kind, status, agentId }) => [kind, status, agentId]),
+    [
+      ['open', 'done', 'harbor'],
+      ['snapshot', 'done', 'harbor'],
+      ['fill', 'done', 'harbor'],
+      ['eval', 'done', 'harbor'],
+      ['eval', 'failed', 'harbor'],
+    ]
+  );
+  assert.equal('error' in rows[4], false);
+  const [opened, , filled] = rows;
+  assert.equal(opened.value, target);
+  assert.equal(filled.target, 'textbox "Port"');
+  assert.equal(filled.length, 11);
+  const everything = JSON.stringify([rows, await page.evaluate(() => window.rows)]);
+  assert.equal(everything.includes('secret-text'), false);
+  for (const secret of ['hidden-source', 'QUERYSECRET', 'FRAGSECRET', 'EVALSECRET']) {
+    assert.equal(everything.includes(secret), false, secret);
+  }
+  const tabs = await page.evaluate(() => document.querySelector('slicc-app').model.browser.list());
+  assert.deepEqual(
+    tabs.map(({ id, agentId }) => [id, agentId]),
+    [[opened.tabId, 'harbor']]
+  );
+  await run(
+    page,
+    `${agent} playwright-cli goto 'data:text/html,<p>DATASECRET</p>' > /dev/null 2>&1; ${agent} playwright-cli goto 'javascript:void("JSSECRET")' > /dev/null 2>&1; ${agent} playwright-cli goto 'host:8080/HOSTSECRET' > /dev/null 2>&1; ${agent} playwright-cli goto 'user:USERSECRET@host/x' > /dev/null 2>&1; echo opaque-done`
+  );
+  await shows(page, 'opaque-done');
+  const opaque = await page.until(() => {
+    const gone = document
+      .querySelector('slicc-app')
+      .model.browser.actions()
+      .filter(({ kind }) => kind === 'goto');
+    return gone.length === 4 && gone.every(({ status }) => status !== 'running') && gone;
+  });
+  assert.deepEqual(
+    opaque.map(({ value }) => value),
+    ['data:', 'javascript:', undefined, undefined]
+  );
+  const later = JSON.stringify([
+    await page.evaluate(() => document.querySelector('slicc-app').model.browser.actions()),
+    await page.evaluate(() => window.rows),
+  ]);
+  for (const secret of ['DATASECRET', 'JSSECRET', 'HOSTSECRET', 'USERSECRET']) {
+    assert.equal(later.includes(secret), false, secret);
+  }
+  assert.equal(extension.sent.filter((method) => method.startsWith('Slicc.')).length, 0);
+
+  const cone = 'cone';
+  await run(
+    page,
+    `SLICC_AGENT=cone:${cone} playwright-cli eval 'new Promise(() => {})' > /tmp/held 2>&1; echo "held-$?"`
+  );
+  await page.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.browser.actions()
+      .some(({ kind, status }) => kind === 'eval' && status === 'running')
+  );
+  await page.evaluate((cone) => document.querySelector('slicc-app').model.agent.stop(cone), cone);
+  await shows(page, 'held-1');
+  const stopped = await page.evaluate(() =>
+    document.querySelector('slicc-app').model.browser.actions().at(-1)
+  );
+  assert.deepEqual([stopped.kind, stopped.status, stopped.error], ['eval', 'failed', 'Stopped']);
+  await run(page, 'playwright-cli close && echo closed-$?');
+  await shows(page, 'closed-0');
+  assert.deepEqual(page.errors, []);
+});
+
 async function read(page, path) {
   return page.evaluate(async (path) => {
     let dir = await navigator.storage.getDirectory();
