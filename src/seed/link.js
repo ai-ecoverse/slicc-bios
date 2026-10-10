@@ -517,11 +517,14 @@ export function createLinks({ router, makePeer, onLink = () => {}, timers }) {
     receiveLocal(text, sendLocal) {
       const message = typeof text === 'string' ? JSON.parse(text) : text;
       if (message.t === 'hello') {
-        local = message.nonce;
+        const { nonce } = message;
+        local = nonce;
         manager.start({
           key: 'local',
           mode: 'local',
-          send: (out) => sendLocal(JSON.stringify({ ...out, nonce: local })),
+          send: (out) => {
+            if (nonce === local) sendLocal(JSON.stringify({ ...out, nonce }));
+          },
         });
         return;
       }
