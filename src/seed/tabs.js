@@ -42,6 +42,7 @@ export async function joinSwitchboard({
   id = crypto.randomUUID(),
   visible = true,
   versions = null,
+  retry = 1000,
 } = {}) {
   const listeners = new Map();
   const pending = new Map();
@@ -126,7 +127,6 @@ export async function joinSwitchboard({
     if (owner?.tab) return Promise.resolve(owner);
     return new Promise((resolve) => {
       const off = board.on('owner', (value) => {
-        if (!value.tab) return;
         off();
         resolve(value);
       });
@@ -162,7 +162,8 @@ export async function joinSwitchboard({
         try {
           return await answered;
         } catch (error) {
-          if (error instanceof Unanswered) owner = null;
+          if (error instanceof Unanswered)
+            await new Promise((resolve) => setTimeout(resolve, retry));
         }
       }
     },
@@ -369,26 +370,38 @@ export function osClient(port) {
 }
 
 function parts(version) {
-  return String(version)
-    .split(/[.+-]/)
-    .map((part) => (/^\d+$/.test(part) ? Number(part) : part));
+  const [core, pre] = String(version).split('+')[0].split(/-(.*)/s);
+  const number = (part) => (/^\d+$/.test(part) ? Number(part) : part);
+  return { core: core.split('.').map(number), pre: pre ? pre.split('.').map(number) : [] };
+}
+
+function order(x, y) {
+  if (typeof x !== typeof y) return typeof x === 'number' ? -1 : 1;
+  return x > y ? 1 : -1;
+}
+
+function compare(x, y, missing) {
+  for (let i = 0; i < Math.max(x.length, y.length); i += 1) {
+    if (x[i] === y[i]) continue;
+    if (x[i] === undefined) return -missing;
+    if (y[i] === undefined) return missing;
+    return order(x[i], y[i]);
+  }
+  return 0;
 }
 
 export function newer(a, b) {
   const [x, y] = [parts(a), parts(b)];
-  for (let i = 0; i < Math.max(x.length, y.length); i += 1) {
-    if (x[i] === y[i]) continue;
-    if (x[i] === undefined) return false;
-    if (y[i] === undefined) return true;
-    return typeof x[i] === typeof y[i] ? x[i] > y[i] : typeof x[i] === 'number';
-  }
-  return false;
+  const core = compare(x.core, y.core, 1);
+  if (core) return core > 0;
+  if (!x.pre.length || !y.pre.length) return !x.pre.length && y.pre.length > 0;
+  return compare(x.pre, y.pre, 1) > 0;
 }
 
 export function skew(mine, theirs) {
   for (const key of ['bios', 'agent']) {
     const [a, b] = [mine?.[key], theirs?.[key]];
-    if (!a || !b || a === b) continue;
+    if (!a || !b || (!newer(a, b) && !newer(b, a))) continue;
     return newer(b, a) ? 'newer' : 'older';
   }
   return null;

@@ -23,11 +23,17 @@ export function createSwitchboard({
   };
   const ownerFrame = () => ({ tab: owner, versions: owner ? tabs.get(owner).versions : null });
 
+  function unstall() {
+    if (!stalled) return;
+    stalled = false;
+    broadcast({ unstalled: true });
+  }
+
   function drop(id) {
     tabs.delete(id);
     if (owner !== id) return;
     owner = null;
-    stalled = false;
+    unstall();
     broadcast({ owner: ownerFrame() });
   }
 
@@ -37,7 +43,7 @@ export function createSwitchboard({
     const previous = owner;
     owner = id;
     answered = now();
-    stalled = false;
+    unstall();
     if (previous && previous !== id) send(tabs.get(previous).port, { replaced: true });
     broadcast({ owner: ownerFrame() });
   }
@@ -69,9 +75,7 @@ export function createSwitchboard({
 
   function pong() {
     answered = now();
-    if (!stalled) return;
-    stalled = false;
-    broadcast({ unstalled: true });
+    unstall();
   }
 
   function receive(port, data, ports, from) {
