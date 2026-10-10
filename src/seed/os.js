@@ -36,6 +36,7 @@ const prompts = installPrompts();
 
 export const layouts = {
   agents: { side: 'left', open: ['tablet', 'desktop'] },
+  browser: { side: 'right', open: [] },
   changes: { side: 'left', open: [] },
   chat: { side: 'center', open: ['phone', 'tablet', 'desktop'] },
   terminal: { side: 'center', open: ['phone', 'tablet', 'desktop'] },
