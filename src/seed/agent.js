@@ -43,16 +43,29 @@ export function installAgent(start, { from = deployed, report = () => {} } = {})
   return navigator.locks.request('slicc-agent-install', () => install(start, from, report));
 }
 
-export async function startChat(kernel, { load = (file) => import(new URL(file, modules)) } = {}) {
-  const [{ startAgent }, { createAgentModel }] = await Promise.all([
-    load('page.js'),
-    load('spectrum/index.js'),
-  ]);
-  const owner = await startAgent({
+let chat = null;
+
+export function loadChat({ load = (file) => import(new URL(file, modules)) } = {}) {
+  chat ??= Promise.all([load('page.js'), load('spectrum/index.js')]).then(
+    ([{ startAgent, connectAgent }, { createAgentModel }]) => ({
+      startAgent,
+      connectAgent,
+      createAgentModel,
+    })
+  );
+  chat.catch(() => {
+    chat = null;
+  });
+  return chat;
+}
+
+export async function startChat(kernel, options) {
+  const { startAgent } = await loadChat(options);
+  return startAgent({
     worker: () => new Worker(agentWorker, { type: 'module', name: 'slicc-agent' }),
     kernel: { connect: () => kernel.connect() },
+    held: true,
   });
-  return { owner, connection: await owner.connect(), createAgentModel };
 }
 
 export function whenIdle(agent) {
@@ -66,10 +79,4 @@ export function whenIdle(agent) {
     };
     if (!check()) off = agent.on('agents', check);
   });
-}
-
-export async function restartChat({ owner, connection, createAgentModel }) {
-  void connection.close().catch(() => undefined);
-  await owner.restart();
-  return { owner, connection: await owner.connect(), createAgentModel };
 }

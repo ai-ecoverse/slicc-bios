@@ -512,6 +512,35 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   );
   assert.equal(keyed().length, 2);
 
+  const other = await page.tab();
+  await other.init(helpers);
+  await other.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await ready(other);
+  await other.until(
+    () => document.querySelector('slicc-app').model.tabs?.state().role === 'follower'
+  );
+  await other.evaluate(() => document.querySelector('slicc-app').show('chat'));
+  await other.until(
+    () => !!window.chatView() && !!window.deep(window.chatView().shadowRoot, 'textarea')
+  );
+  await other.until(
+    () =>
+      window.deepText(window.chatView().shadowRoot).split('Hello from Bedrock in seven.').length ===
+      3
+  );
+  await other.evaluate(() => window.deep(window.chatView().shadowRoot, 'textarea').focus());
+  await other.insert('Say hello from the other tab');
+  await other.enter();
+  const answered = () =>
+    window.deepText(window.chatView().shadowRoot).split('Hello from Bedrock in seven.').length ===
+    4;
+  await other.until(answered);
+  await page.until(answered);
+  assert.equal(keyed().length, 3);
+  assert.match(keyed()[2].body, /Say hello from the other tab/);
+  assert.deepEqual(other.errors, []);
+  await other.close();
+
   await page.evaluate(() => document.querySelector('slicc-app').show('settings'));
   await page.evaluate(() => {
     window.adobeStatus = () =>

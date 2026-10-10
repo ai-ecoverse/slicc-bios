@@ -36,6 +36,60 @@ function openSwitchboard() {
 
 const NAMES = ['agent', 'kernel', 'os'];
 
+function pick(given, names) {
+  return Object.fromEntries(
+    NAMES.map((name) => [name, names.includes(name) ? (given[name] ?? null) : null])
+  );
+}
+
+export function localBoard({ id = crypto.randomUUID(), versions = null } = {}) {
+  const listeners = new Set();
+  let serving = null;
+  let owner = { tab: null, versions: null };
+  return {
+    id,
+    owner: () => owner,
+    on(type, listener) {
+      if (type !== 'owner') return () => undefined;
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    show() {},
+    own(give, next = versions) {
+      serving = give;
+      versions = next;
+      owner = { tab: id, versions };
+      for (const listener of [...listeners]) listener(owner);
+    },
+    async ports(names = NAMES) {
+      if (!serving) throw new Error('no tab runs SLICC');
+      return pick(await serving(id, names), names);
+    },
+  };
+}
+
+export function createTabs({
+  reload = () => location.replace(new URL('../', location.href)),
+} = {}) {
+  const listeners = new Set();
+  let state = { role: 'connecting', stalled: false, skew: null };
+  return {
+    on(type, listener) {
+      if (type !== 'tabs') return () => undefined;
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    state: () => state,
+    reload: () => reload(),
+    set(patch) {
+      const next = { ...state, ...patch };
+      if (Object.keys(next).every((key) => next[key] === state[key])) return;
+      state = next;
+      for (const listener of [...listeners]) listener(state);
+    },
+  };
+}
+
 export async function joinSwitchboard({
   open = openSwitchboard,
   locks = navigator.locks,
@@ -64,7 +118,7 @@ export async function joinSwitchboard({
   async function answer(want) {
     const to = want.from;
     try {
-      const given = await serving(to);
+      const given = await serving(to, want.names ?? NAMES);
       const names = NAMES.filter((name) => given[name]);
       send(
         { give: { id: want.id, to, names } },
@@ -145,20 +199,21 @@ export async function joinSwitchboard({
       shown = Boolean(value);
       send({ visible: shown });
     },
-    own(give) {
+    own(give, next = versions) {
       serving = give;
+      versions = next;
       send({ own: { versions } });
     },
-    async ports() {
+    async ports(names = NAMES) {
       for (;;) {
         const current = await settled();
-        if (current.tab === id && serving) return serving(id);
+        if (current.tab === id && serving) return pick(await serving(id, names), names);
         next += 1;
         const request = next;
         const answered = new Promise((resolve, reject) =>
           pending.set(request, { resolve, reject })
         );
-        send({ want: { id: request } });
+        send({ want: { id: request, names } });
         try {
           return await answered;
         } catch (error) {

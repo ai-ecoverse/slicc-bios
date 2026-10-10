@@ -1,4 +1,4 @@
-import { createKernel } from '@ai-ecoverse/slicc-kernel';
+import { attachKernel, createKernel } from '@ai-ecoverse/slicc-kernel';
 import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
 import { confirm, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
 import { signIn } from './adobe.js';
@@ -6,8 +6,8 @@ import {
   installed as agentInstalled,
   version as agentVersion,
   installAgent,
+  loadChat,
   recorded,
-  restartChat,
   startChat,
   whenIdle,
 } from './agent.js';
@@ -21,7 +21,24 @@ import { createFolders, offTheRecord } from './mounts.js';
 import { createNetwork } from './network.js';
 import { createNotices } from './notices.js';
 import { createPackages, globalDir, loadCatalog, writeListing } from './packages.js';
+import {
+  biosHash,
+  mirrorNetwork,
+  mirrorUpdates,
+  present,
+  serveNetwork,
+  serveUpdates,
+} from './present.js';
 import { installPrompts, keepStorage, onSend } from './storage.js';
+import {
+  claim,
+  createOs,
+  createTabs,
+  followKernel,
+  joinSwitchboard,
+  localBoard,
+  supported,
+} from './tabs.js';
 import {
   createTailscale,
   installTailscale,
@@ -64,20 +81,6 @@ export const skip = [
   '/root/.cache',
 ];
 
-export function offerAgent(app, base, connecting, login, sent = () => {}) {
-  return connecting.then(
-    (chat) => {
-      const model = chat.createAgentModel(chat.connection, { storage: localStorage, login });
-      app.model = { ...base, ...model, agent: onSend(browser.stopping(model.agent), sent) };
-      return chat;
-    },
-    (error) => {
-      console.warn(`the agent did not start: ${error.message}`);
-      return null;
-    }
-  );
-}
-
 export function offered(all) {
   return Object.entries(layouts).map(([id, layout]) => ({
     ...all.find((item) => item.id === id),
@@ -115,71 +118,70 @@ const login = signIn({ network });
 document.documentElement.dataset.transport = kind;
 const root = await navigator.storage.getDirectory();
 const app = document.querySelector('slicc-app');
-const folders = createFolders({
-  storage: localStorage,
-  network,
-  secret: await offTheRecord(),
-});
-const kernel = await createKernel({
-  root,
-  network: { transport, uplink: exits.uplink },
-  cdp: control.hook,
-  ...folders.options,
-});
-exits.attach(kernel);
-installLocal(links);
-tray?.start();
-serveLoopback(kernel);
-if (network.status?.probe?.kernelTunnel) openTunnel(kernel, network.proxy);
 app.layoutKey = 'slicc-os.layout';
 app.surfaces = offered(surfaces);
+const read = async (name) => (await text(root, `os/${name}`)) ?? '';
+let mine = { bios: await biosHash(read), agent: await agentVersion(), run: 0 };
+const tabs = createTabs();
+const shared = supported();
+const visible = () => document.visibilityState === 'visible';
+const board = shared
+  ? await joinSwitchboard({ visible: visible(), versions: mine })
+  : localBoard({ versions: mine });
+document.addEventListener('visibilitychange', () => board.show(visible()));
+const claimed = await claim();
 const updates = createUpdates();
 const notices = createNotices();
 const keep = keepStorage({ notices, prompts });
-const base = {
-  ...(await folders.attach(
-    kernel,
-    createKernelModel({
-      kernel,
-      root,
-      storage: localStorage,
-      files: { skip, hide },
-      terminals: { env: { PS1: 'slicc:\\w\\$ ' } },
-    })
-  )),
-  updates,
-  notices,
-  network: reach.port,
-  browser: browser.port,
-};
-base.agent = browser.stopping(base.agent);
-const owned = new Map(Object.entries(owners).map(([id, name]) => [name, id]));
-const manifest = JSON.parse((await text(root, 'package.json')) ?? '{}');
-const names = Object.keys(manifest.dependencies ?? {});
-const found = await versions(root, names);
-for (const [id, name] of Object.entries(owners)) {
-  updates.set(id, { from: found[name], to: found[name] });
+let model = null;
+let files = null;
+let presentation = null;
+let kernel = null;
+let folders = null;
+let owner = null;
+let agent = null;
+let startedWith = null;
+let owned = new Map();
+let serving = null;
+let optional = Promise.resolve(null);
+
+const start = () => createKernel({ root, network: { transport }, media: false });
+
+function base(os) {
+  return {
+    ...files,
+    agent: browser.stopping(files.agent),
+    updates: os ? mirrorUpdates(os) : updates,
+    notices,
+    network: os ? mirrorNetwork(os, reach.port) : reach.port,
+    browser: browser.port,
+  };
 }
-const others = count(names.filter((name) => !owned.has(name)).length);
-updates.set('bios', { from: others, to: others });
-const waiting = (at) => ({ from: at, to: at, state: at ? 'current' : 'queued' });
-updates.set('agent', waiting(await agentVersion()));
-updates.set('grammars', waiting(await grammarsVersion()));
-const tailscaleAt = await tailscaleVersion();
-updates.set('tailscale', { from: tailscaleAt, to: tailscaleAt });
+
+async function give(_from, names) {
+  return {
+    kernel: names.includes('kernel') ? await kernel.connect() : null,
+    agent: names.includes('agent') && owner ? await owner.port() : null,
+    os: names.includes('os') ? serving.open() : null,
+  };
+}
+
+function announce(agentAt) {
+  mine = { ...mine, agent: agentAt, run: mine.run + 1 };
+  const attached = presentation.next();
+  board.own(give, mine);
+  return attached;
+}
 
 async function installTailnet(report = () => {}) {
   const track = updates.track('tailscale');
   try {
-    const changed = await installTailscale(
-      () => createKernel({ root, network: { transport }, media: false }),
-      {
-        report: (step) => {
-          report(step);
-          track(step);
-        },
-      }
-    );
+    const changed = await installTailscale(start, {
+      report: (step) => {
+        report(step);
+        track(step);
+      },
+    });
     const at = await tailscaleVersion();
     updates.checked(
       'tailscale',
@@ -191,17 +193,7 @@ async function installTailnet(report = () => {}) {
     throw error;
   }
 }
-app.model = base;
-await app.updateComplete;
-const restoring = folders.restore();
-void tailscale.start({
-  kernel,
-  ready: restoring,
-  traits: reach.transport.traits,
-  install: installTailnet,
-});
-let agent = null;
-let startedWith = null;
+
 async function started(chat, lock) {
   if (chat) {
     startedWith = lock;
@@ -213,51 +205,47 @@ async function started(chat, lock) {
   else updates.fail('agent', Object.assign(new Error('the agent did not start'), { plain: STUCK }));
   return chat;
 }
+
+async function launch() {
+  try {
+    owner = await startChat(kernel);
+    if (await announce(await agentVersion())) return owner;
+  } catch (error) {
+    console.warn(`the agent did not start: ${error.message}`);
+  }
+  await owner?.release();
+  owner = null;
+  return null;
+}
+
 function startOnce() {
   if (!agent) {
     const lock = recorded();
     const back = updates.get('agent').state === 'installed' ? 'installed' : 'current';
     if (!updates.ready()) updates.set('agent', { state: 'starting' });
-    agent = offerAgent(app, base, startChat(kernel), login, keep.sent).then(async (chat) => {
+    agent = launch().then(async (chat) => {
       if (updates.get('agent').state === 'starting') updates.set('agent', { state: back });
       return started(chat, await lock);
     });
   }
   return agent;
 }
-if (await agentInstalled()) void startOnce();
-if (await installed()) app.grammarBase = grammarBase;
 
-const start = () => createKernel({ root, network: { transport }, media: false });
-
-const optional = loadCatalog()
-  .then(async (catalog) => {
-    await writeListing(root, catalog.entries);
-    const packages = createPackages({
-      catalog,
-      root,
-      kernel,
-      global: await globalDir(kernel),
-      ask: confirm,
-      emit: updates.setPackages,
-    });
-    updates.handlePackages(packages.act);
-    await packages.refresh();
-    void packages.move().catch((error) => console.warn(`optional packages: ${error.message}`));
-    return packages;
-  })
-  .catch((error) => {
-    console.warn(`optional packages are unavailable: ${error.message}`);
-    return null;
-  });
+async function relaunch(running) {
+  try {
+    await running.restart();
+    if (await announce(await agentVersion())) return running;
+  } catch (error) {
+    console.warn(`the agent did not restart: ${error.message}`);
+  }
+  return null;
+}
 
 async function restart() {
-  const chat = await agent;
+  const running = await agent;
   await whenIdle(app.model.agent);
   const lock = recorded();
-  agent = offerAgent(app, base, restartChat(chat), login, keep.sent).then(async (restarted) =>
-    started(restarted, await lock)
-  );
+  agent = relaunch(running).then(async (restarted) => started(restarted, await lock));
   if (!(await agent)) {
     updates.fail(
       'agent',
@@ -331,19 +319,6 @@ async function installGrammars() {
   }
 }
 
-const retry = {
-  agent: offerChat,
-  grammars: installGrammars,
-  tailscale: () => tailscale.panel.check(),
-  bios: checkPackages,
-  kernel: checkPackages,
-  ui: checkPackages,
-};
-updates.handle('retry', (id) => retry[id]());
-updates.handle('update-now', (id) => retry[id]());
-updates.handle('restart-agent', restart);
-updates.handle('reload', () => location.replace(new URL('../', location.href)));
-
 async function updateTailnet() {
   if (tailscale.panel.status().state !== 'running') return;
   const changed = await installTailnet().catch(() => false);
@@ -358,8 +333,154 @@ async function check() {
   await (await optional)?.refresh().catch(() => undefined);
 }
 
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') void check();
-});
-setInterval(check, 15 * 60 * 1000);
-await check();
+function offerPackages() {
+  return loadCatalog()
+    .then(async (catalog) => {
+      await writeListing(root, catalog.entries);
+      const packages = createPackages({
+        catalog,
+        root,
+        kernel,
+        global: await globalDir(kernel),
+        ask: confirm,
+        emit: updates.setPackages,
+      });
+      updates.handlePackages(packages.act);
+      await packages.refresh();
+      void packages.move().catch((error) => console.warn(`optional packages: ${error.message}`));
+      return packages;
+    })
+    .catch((error) => {
+      console.warn(`optional packages are unavailable: ${error.message}`);
+      return null;
+    });
+}
+
+const retry = {
+  agent: offerChat,
+  grammars: installGrammars,
+  tailscale: () => tailscale.panel.check(),
+  bios: checkPackages,
+  kernel: checkPackages,
+  ui: checkPackages,
+};
+updates.handle('retry', (id) => retry[id]());
+updates.handle('update-now', (id) => retry[id]());
+updates.handle('restart-agent', restart);
+updates.handle('reload', () => location.replace(new URL('../', location.href)));
+
+async function rows() {
+  owned = new Map(Object.entries(owners).map(([id, name]) => [name, id]));
+  const manifest = JSON.parse((await text(root, 'package.json')) ?? '{}');
+  const names = Object.keys(manifest.dependencies ?? {});
+  const found = await versions(root, names);
+  for (const [id, name] of Object.entries(owners)) {
+    updates.set(id, { from: found[name], to: found[name] });
+  }
+  const others = count(names.filter((name) => !owned.has(name)).length);
+  updates.set('bios', { from: others, to: others });
+  const waiting = (at) => ({ from: at, to: at, state: at ? 'current' : 'queued' });
+  updates.set('agent', waiting(await agentVersion()));
+  updates.set('grammars', waiting(await grammarsVersion()));
+  const tailscaleAt = await tailscaleVersion();
+  updates.set('tailscale', { from: tailscaleAt, to: tailscaleAt });
+}
+
+async function own() {
+  folders = createFolders({ storage: localStorage, network, secret: await offTheRecord() });
+  kernel = await createKernel({
+    root,
+    network: { transport, uplink: exits.uplink },
+    cdp: control.hook,
+    ...folders.options,
+  });
+  exits.attach(kernel);
+  installLocal(links);
+  tray?.start();
+  if (network.status?.probe?.kernelTunnel) openTunnel(kernel, network.proxy);
+  files = await folders.attach(kernel, model);
+  const served = serveUpdates(updates);
+  const routes = serveNetwork(reach.port);
+  serving = createOs({ ...served.handlers, ...routes.handlers });
+  served.forward(serving);
+  routes.forward(serving);
+  await rows();
+  await announce(null);
+  const restoring = folders.restore();
+  void tailscale.start({
+    kernel,
+    ready: restoring,
+    traits: reach.transport.traits,
+    install: installTailnet,
+  });
+  if (await agentInstalled()) void startOnce();
+  if (await installed()) app.grammarBase = grammarBase;
+  optional = offerPackages();
+  document.addEventListener('visibilitychange', () => {
+    if (visible()) void check();
+  });
+  setInterval(check, 15 * 60 * 1000);
+  await check();
+}
+
+async function follow() {
+  const facade = followKernel({
+    port: async () => (await board.ports(['kernel'])).kernel,
+    attach: attachKernel,
+  });
+  serveLoopback(facade);
+  model = createKernelModel({
+    kernel: facade,
+    root,
+    storage: localStorage,
+    files: { skip, hide },
+    terminals: { env: { PS1: 'slicc:\\w\\$ ' } },
+  });
+  files = model;
+  const waiting = claimed.owner ? updates : createUpdates({ ready: true });
+  app.model = {
+    ...model,
+    updates: waiting,
+    notices,
+    network: reach.port,
+    browser: browser.port,
+    tabs,
+  };
+  await app.updateComplete;
+  presentation = present({
+    app,
+    board,
+    tabs,
+    base,
+    versions: mine,
+    chat: () => loadChat(),
+    wrap: (agent) => onSend(browser.stopping(agent), keep.sent),
+    storage: localStorage,
+    login,
+    disk: () => biosHash(read),
+  });
+  void presentation.attach();
+}
+
+async function alone() {
+  await follow();
+  await own();
+}
+
+if (!shared && !claimed.owner) {
+  void claimed.next.then(alone);
+  tabs.set({ role: 'alone' });
+  app.model = {
+    ...createKernelModel({
+      kernel: { openTerminal: () => new Promise(() => {}) },
+      root,
+      storage: localStorage,
+      terminals: { open: 0 },
+    }),
+    tabs,
+  };
+} else {
+  await follow();
+  if (claimed.owner) await own();
+  else void claimed.next.then(own);
+}
