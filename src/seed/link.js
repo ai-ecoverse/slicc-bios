@@ -557,5 +557,8 @@ export async function trustHostKey(kernel, link, peer) {
 }
 
 export function installLocal(links, scope = globalThis) {
-  scope.sliccLinkReceive = (text) => links.receiveLocal(text, (out) => scope.sliccLinkSend?.(out));
+  scope.sliccLinkReceive = (text) =>
+    links.receiveLocal(text, (out) => {
+      if (typeof scope.sliccLinkSend === 'function') scope.sliccLinkSend(out);
+    });
 }
