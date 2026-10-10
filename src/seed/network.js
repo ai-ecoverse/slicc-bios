@@ -156,7 +156,19 @@ export function createNetwork(choice, options = {}) {
       ...(options.browser ? { browser: options.browser() } : {}),
       ...(tailnet ? { tailnet } : {}),
       ...linkStatus(),
+      ...viaLink(),
     };
+  };
+  const viaLink = () => {
+    const chosen = options.router?.chosen();
+    if (!chosen?.startsWith('link:') || !options.links) return {};
+    const id = chosen.slice(5);
+    const devices = [...options.links.devices(), ...(options.tray?.away() ?? [])];
+    const device = devices.find((item) => item.id === id);
+    const name = device?.name ?? 'the linked device';
+    return device?.state === 'connected'
+      ? { health: 'ok', detail: `${name} carries the internet traffic.` }
+      : { health: 'failing', detail: `Internet traffic waits for ${name}.` };
   };
   const linkStatus = () => {
     if (!options.links || !options.router) return {};
