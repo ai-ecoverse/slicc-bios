@@ -105,6 +105,16 @@ const proxy = await fakeProxy({
       const type = request.url.endsWith('.tgz') ? 'application/octet-stream' : 'application/json';
       return { status: 200, headers: [['content-type', type]], body: await download(request.url) };
     }
+    if (request.url.startsWith('https://tracker.example.com/')) {
+      return {
+        status: 401,
+        headers: [
+          ['content-type', 'application/json'],
+          ['www-authenticate', 'Bearer'],
+        ],
+        body: Buffer.from('{"error":"invalid_token"}'),
+      };
+    }
     const authorization = request.headers.find(([name]) => name.toLowerCase() === 'authorization');
     if (!request.url.startsWith(BEDROCK) || authorization?.[1] !== `Bearer ${KEY}`) {
       return {
@@ -1051,6 +1061,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
         headers: { Authorization: 'Bearer ${DOCS_TOKEN}' },
         description: 'Search the product docs',
       },
+      tracker: { url: 'https://tracker.example.com/mcp', description: 'Release issues' },
     },
   };
   await run(
@@ -1058,27 +1069,49 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     `mkdir -p /home/.pi/agent && echo ${Buffer.from(JSON.stringify(servers)).toString('base64')} | base64 -d > /home/.pi/agent/mcp.json; echo "mcp $((6 * 7))"`
   );
   await shows(page, 'mcp 42');
-  await page.until(() =>
-    document
-      .querySelector('slicc-app')
-      .model.settings.accounts()
-      .some((item) => item.id === 'mcp:docs')
+  await page.until(
+    () =>
+      document
+        .querySelector('slicc-app')
+        .model.settings.accounts()
+        .filter((item) => item.group === 'mcp').length === 2
   );
-  const docs = await page.evaluate(() =>
-    document
-      .querySelector('slicc-app')
-      .model.settings.accounts()
-      .find((item) => item.id === 'mcp:docs')
+  const [docs, tracker] = await page.evaluate(() =>
+    ['mcp:docs', 'mcp:tracker'].map((id) =>
+      document
+        .querySelector('slicc-app')
+        .model.settings.accounts()
+        .find((item) => item.id === id)
+    )
   );
-  assert.equal(docs.group, 'mcp');
-  assert.notEqual(docs.status, 'connected');
+  assert.deepEqual([docs.auth, docs.secret, docs.status], ['api-key', 'token', 'disconnected']);
+  assert.deepEqual([tracker.auth, tracker.status], ['oauth', 'disconnected']);
+  const callback = await page.evaluate(async () => {
+    const response = await fetch(new URL('../oauth/mcp-callback?code=x&state=y', location.href));
+    let dir = await navigator.storage.getDirectory();
+    for (const part of 'opt/agent/node_modules/@ai-ecoverse/slicc-agent/dist/oauth'.split('/'))
+      dir = await dir.getDirectoryHandle(part);
+    const page = await (await dir.getFileHandle('mcp-callback.html')).getFile();
+    return {
+      status: response.status,
+      type: response.headers.get('content-type'),
+      same: (await response.text()) === (await page.text()),
+      channel: (await page.text()).includes('slicc-mcp-oauth'),
+    };
+  });
+  assert.deepEqual(callback, {
+    status: 200,
+    type: 'text/html; charset=utf-8',
+    same: true,
+    channel: true,
+  });
   const mcpRow = async () => {
     await page.evaluate(() => document.querySelector('slicc-app').show('settings'));
     await page.until(
       () =>
         !!window.deep(
           document.querySelector('slicc-app').dock.content('settings').shadowRoot,
-          '.accounts[data-group=mcp] [data-id="mcp:docs"]'
+          '.accounts[data-group=mcp] [data-id="mcp:tracker"]'
         )
     );
     await page.evaluate(() =>

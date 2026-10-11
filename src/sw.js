@@ -156,11 +156,19 @@ async function kernel(request, controller, port, clientId) {
   return watched(response, pathname, controller);
 }
 
+const aliases = new Map([
+  ['/auth/callback', '/os/callback.html'],
+  [
+    '/oauth/mcp-callback',
+    '/opt/agent/node_modules/@ai-ecoverse/slicc-agent/dist/oauth/mcp-callback.html',
+  ],
+]);
+
 async function serve(request, controller) {
   const scope = new URL(self.registration.scope).pathname;
   const url = new URL(request.url);
   const asked = `/${url.pathname.slice(scope.length)}`;
-  const path = asked === '/auth/callback' ? '/os/callback.html' : asked;
+  const path = aliases.get(asked) ?? asked;
   const base = scope.replace(/\/$/, '');
   if (path.startsWith(NODE_STUBS)) {
     const name = path.slice(NODE_STUBS.length).replace(/\.js$/, '');
