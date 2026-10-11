@@ -1,7 +1,18 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
-import { boot, booted, eventually, installable, opfs, ready, run, shows, watch } from './bios.mjs';
+import {
+  boot,
+  booted,
+  eventually,
+  installable,
+  opfs,
+  ready,
+  run,
+  screen,
+  shows,
+  watch,
+} from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch({ timeout: 120000 });
@@ -270,4 +281,252 @@ test('an /opt/agent installed without a workspace file updates to a pruned one',
   assert.ok(pruned.some((path) => path.includes('/is-odd/package.json')));
   assert.ok(!pruned.some((path) => path.includes('/is-number/package.json')), pruned.join('\n'));
   assert.deepEqual(page.errors, []);
+});
+
+const MS =
+  'sha512-GsCCIZDE/p3i96vtEqx+7dBUGXrc7zeSK3wwPHIaRThS+9OhWIXRqzs4d6k1SVU8g91DrNRWxWUGhp5KXQb2VA==';
+const ESTREE =
+  'sha512-dWHzHa2WqEXI/O1E9OjrocMTKJl2mSrEolh1Iomrv6U+JuNwaHXsXx9bLu5gG7BUWFIN0skIQJQ/L1rIex4X6w==';
+const PREFIX =
+  "lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\n\nimporters:\n\n  .:\n    dependencies:\n";
+const BASE_LOCK = `${PREFIX}      '@types/ms':\n        specifier: 2.1.0\n        version: 2.1.0\n\npackages:\n\n  '@types/ms@2.1.0':\n    resolution: {integrity: ${MS}}\n\nsnapshots:\n\n  '@types/ms@2.1.0': {}\n`;
+const NEWER_LOCK = `${PREFIX}      '@types/estree':\n        specifier: 1.0.8\n        version: 1.0.8\n      '@types/ms':\n        specifier: 2.1.0\n        version: 2.1.0\n\npackages:\n\n  '@types/estree@1.0.8':\n    resolution: {integrity: ${ESTREE}}\n\n  '@types/ms@2.1.0':\n    resolution: {integrity: ${MS}}\n\nsnapshots:\n\n  '@types/estree@1.0.8': {}\n\n  '@types/ms@2.1.0': {}\n`;
+const AGENT_FILES = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'];
+
+function deployAgent(dependencies, lock) {
+  const manifest = JSON.stringify({ name: 'slicc-bios-agent', private: true, dependencies });
+  chrome.overrides.set('/packages/agent/package.json', manifest);
+  chrome.overrides.set('/packages/agent/pnpm-lock.yaml', lock);
+  chrome.overrides.set(
+    '/packages/agent/pnpm-workspace.yaml',
+    "minimumReleaseAgeExclude:\n  - '@ai-ecoverse/*'\n"
+  );
+}
+
+async function installedVersion(page, name) {
+  return JSON.parse(await read(page, `opt/agent/node_modules/${name}/package.json`)).version;
+}
+
+async function own(page) {
+  return page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.updates.packages()
+      .filter((item) => item.origin === 'user')
+      .map(({ id, state, version, pin, actions, error }) => ({
+        id,
+        state,
+        version,
+        pin,
+        actions,
+        error,
+      }))
+  );
+}
+
+async function settled(page, lock) {
+  await page.within(
+    5 * 60 * 1000,
+    async (lock) => {
+      const root = await navigator.storage.getDirectory();
+      try {
+        let dir = root;
+        for (const part of ['var', 'lib', 'slicc', 'agent'])
+          dir = await dir.getDirectoryHandle(part);
+        const user = JSON.parse(
+          await (await (await dir.getFileHandle('user.json')).getFile()).text()
+        );
+        const recorded = await (await (await dir.getFileHandle('pnpm-lock.yaml')).getFile()).text();
+        return recorded === lock && !user.pending;
+      } catch {
+        return false;
+      }
+    },
+    lock
+  );
+}
+
+async function yours(page) {
+  await page.evaluate(() => {
+    let focused = document.activeElement;
+    while (focused?.shadowRoot?.activeElement) focused = focused.shadowRoot.activeElement;
+    focused?.blur();
+    document
+      .querySelector('slicc-app')
+      .dock.content('updates')
+      .shadowRoot.querySelector('section[data-section="user-packages"]')
+      .scrollIntoView({ block: 'start' });
+  });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+}
+
+async function checkNow(page) {
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+}
+
+test("the user's pnpm add and pnpm upgrade in /opt/agent survive seven's updates", async (t) => {
+  t.after(() => {
+    for (const file of AGENT_FILES) chrome.overrides.delete(`/packages/agent/${file}`);
+  });
+  const page = await chrome.page(t);
+  deployAgent({ '@types/ms': '2.1.0' }, BASE_LOCK);
+  await boot(page);
+  await page.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.updates.list()
+      .some((item) => item.id === 'agent' && item.state === 'installed')
+  );
+  await run(
+    page,
+    'cd /opt/agent; pnpm add @types/semver@7.7.1 @types/ms@0.7.34; echo added-$((40+2))-$?'
+  );
+  await shows(page, 'added-42-', 5 * 60 * 1000);
+  assert.match(await screen(page), /added-42-0/, await screen(page));
+  await checkNow(page);
+  await page.until(
+    () =>
+      document
+        .querySelector('slicc-app')
+        .model.updates.packages()
+        .filter((item) => item.origin === 'user').length === 2
+  );
+  assert.deepEqual(await own(page), [
+    {
+      id: 'user:agent:@types/ms',
+      state: 'installed',
+      version: '0.7.34',
+      pin: { base: '2.1.0', range: '0.7.34', project: '/opt/agent' },
+      actions: ['unpin'],
+      error: null,
+    },
+    {
+      id: 'user:agent:@types/semver',
+      state: 'installed',
+      version: '7.7.1',
+      pin: { base: null, range: '7.7.1', project: '/opt/agent' },
+      actions: ['remove'],
+      error: null,
+    },
+  ]);
+
+  await t.test('pnpm add in /opt/agent survives an agent update', async () => {
+    deployAgent({ '@types/ms': '2.1.0', '@types/estree': '1.0.8' }, NEWER_LOCK);
+    await checkNow(page);
+    await settled(page, NEWER_LOCK);
+    const agent = await row(page, 'agent');
+    assert.notEqual(agent.state, 'failed', agent.error);
+    const manifest = JSON.parse(await read(page, 'opt/agent/package.json'));
+    assert.deepEqual(manifest.dependencies, {
+      '@types/ms': '0.7.34',
+      '@types/estree': '1.0.8',
+      '@types/semver': '7.7.1',
+    });
+    assert.equal(await installedVersion(page, '@types/semver'), '7.7.1');
+    assert.equal(await installedVersion(page, '@types/estree'), '1.0.8');
+    assert.deepEqual(JSON.parse(await read(page, 'var/lib/slicc/agent/user.json')).add, {
+      '@types/semver': { spec: '7.7.1', field: 'dependencies' },
+    });
+  });
+
+  await t.test('a user pin survives the update and wins over the base', async () => {
+    assert.equal(await installedVersion(page, '@types/ms'), '0.7.34');
+    assert.deepEqual(JSON.parse(await read(page, 'var/lib/slicc/agent/user.json')).pin, {
+      '@types/ms': { spec: '0.7.34', field: 'dependencies', base: '2.1.0' },
+    });
+    const rows = await own(page);
+    assert.deepEqual(
+      rows.map(({ id, version, pin }) => [id, version, pin]),
+      [
+        [
+          'user:agent:@types/ms',
+          '0.7.34',
+          { base: '2.1.0', range: '0.7.34', project: '/opt/agent' },
+        ],
+        [
+          'user:agent:@types/semver',
+          '7.7.1',
+          { base: null, range: '7.7.1', project: '/opt/agent' },
+        ],
+      ]
+    );
+    await page.evaluate(() => document.querySelector('slicc-app').show('updates'));
+    await page.until(
+      () =>
+        !!document
+          .querySelector('slicc-app')
+          .dock.content('updates')
+          ?.shadowRoot?.querySelector(
+            'section[data-section="user-packages"] li[data-id="user:agent:@types/ms"]'
+          )
+    );
+    const color = (wanted) =>
+      page.evaluate((wanted) => {
+        const app = document.querySelector('slicc-app');
+        if (app.color !== wanted) app.toggleColor();
+      }, wanted);
+    await color('light');
+    await yours(page);
+    await page.screenshot(new URL('your-packages-light.png', page.dir));
+    await color('dark');
+    await yours(page);
+    await page.screenshot(new URL('your-packages-dark.png', page.dir));
+    await color('light');
+    await page.send('Emulation.setDeviceMetricsOverride', {
+      width: 420,
+      height: 800,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await page.until(() => document.querySelector('slicc-app').screen === 'phone');
+    await page.evaluate(() => document.querySelector('slicc-app').show('updates'));
+    await page.until(
+      () =>
+        !!document
+          .querySelector('slicc-app')
+          .dock.content('updates')
+          ?.shadowRoot?.querySelector(
+            'section[data-section="user-packages"] li[data-id="user:agent:@types/ms"]'
+          )
+    );
+    await yours(page);
+    await page.screenshot(new URL('your-packages-420.png', page.dir));
+    await page.send('Emulation.clearDeviceMetricsOverride');
+    await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
+  });
+
+  await t.test(
+    'unpin restores the base version, and removing the addition the shipped lockfile',
+    async () => {
+      await page.evaluate(() =>
+        document
+          .querySelector('slicc-app')
+          .model.updates.actPackage('user:agent:@types/ms', 'unpin')
+      );
+      await settled(page, NEWER_LOCK);
+      assert.equal(await installedVersion(page, '@types/ms'), '2.1.0');
+      assert.equal(await installedVersion(page, '@types/semver'), '7.7.1');
+      assert.deepEqual(
+        (await own(page)).map(({ id }) => id),
+        ['user:agent:@types/semver']
+      );
+      await page.evaluate(() =>
+        document
+          .querySelector('slicc-app')
+          .model.updates.actPackage('user:agent:@types/semver', 'remove')
+      );
+      await settled(page, NEWER_LOCK);
+      assert.deepEqual(await own(page), []);
+      assert.equal(await read(page, 'opt/agent/pnpm-lock.yaml'), NEWER_LOCK);
+      assert.deepEqual(JSON.parse(await read(page, 'opt/agent/package.json')).dependencies, {
+        '@types/ms': '2.1.0',
+        '@types/estree': '1.0.8',
+      });
+      const installed = (await opfs(page)).filter((path) =>
+        path.startsWith('opt/agent/node_modules/')
+      );
+      assert.ok(!installed.some((path) => path.includes('/@types/semver/')), installed.join('\n'));
+      assert.deepEqual(page.errors, []);
+    }
+  );
 });

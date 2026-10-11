@@ -5,7 +5,7 @@
   "dependencies": {
     "@ai-ecoverse/slicc-cdp": "1.5.4",
     "@ai-ecoverse/slicc-kernel": "1.54.9",
-    "@ai-ecoverse/slicc-spectrum": "1.54.0",
+    "@ai-ecoverse/slicc-spectrum": "1.56.0",
     "@ai-ecoverse/wasi-pnpm": "12.9.1-8",
     "@ai-ecoverse/wasi-ripgrep": "15.2.0-3",
     "@ai-ecoverse/wasm-bash": "5.3.0-17",

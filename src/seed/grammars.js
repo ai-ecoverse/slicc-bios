@@ -1,10 +1,20 @@
-import { fetchText, pnpm, text, versions, write } from './update.js';
+import { apply } from './layer.js';
+import { text, versions } from './update.js';
 
 const deployed = new URL('../packages/grammars/', import.meta.url);
 export const folder = 'opt/grammars';
 export const grammarBase = new URL(`../${folder}/node_modules/@shikijs/`, import.meta.url).href;
-const receipt = 'var/lib/slicc/grammars/pnpm-lock.yaml';
+const state = 'var/lib/slicc/grammars';
+const receipt = `${state}/pnpm-lock.yaml`;
 const PACKAGE = '@shikijs/langs';
+export const project = {
+  id: 'grammars',
+  folder,
+  state,
+  from: deployed,
+  primary: PACKAGE,
+  lock: 'slicc-grammars',
+};
 
 export async function installed() {
   return (await text(await navigator.storage.getDirectory(), receipt)) !== null;
@@ -15,23 +25,8 @@ export async function version() {
   return (await versions(root, [PACKAGE], `${folder}/`))[PACKAGE];
 }
 
-async function install(start, from, report) {
-  const root = await navigator.storage.getDirectory();
-  const lock = await fetchText('pnpm-lock.yaml', from);
-  if (lock === (await text(root, receipt))) return false;
-  const manifest = await fetchText('package.json', from);
-  await write(root, `${folder}/package.json`, manifest);
-  await write(root, `${folder}/pnpm-lock.yaml`, lock);
-  const kernel = await start();
-  try {
-    await pnpm(kernel, `/${folder}`, report, JSON.parse(manifest).dependencies?.[PACKAGE]);
-  } finally {
-    kernel.terminate();
-  }
-  await write(root, receipt, lock);
-  return true;
-}
-
-export function grammars(start, { from = deployed, report = () => {} } = {}) {
-  return navigator.locks.request('slicc-grammars', () => install(start, from, report));
+export function grammars(start, { from = deployed, ...options } = {}) {
+  return navigator.locks.request(project.lock, async () =>
+    apply(await navigator.storage.getDirectory(), { ...project, from }, { start, ...options })
+  );
 }
