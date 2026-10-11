@@ -245,9 +245,10 @@ export class Unanswered extends Error {
 
 const gone = (error) => error?.name === 'KernelGoneError';
 export const TINY = { cols: 20, rows: 4 };
+export const QUIET = 250;
 const encoder = new TextEncoder();
 
-export function followKernel({ port, attach, notice = NOTICE }) {
+export function followKernel({ port, attach, notice = NOTICE, quiet = QUIET }) {
   let current = null;
   let live = null;
 
@@ -284,15 +285,22 @@ export function followKernel({ port, attach, notice = NOTICE }) {
     let closed = false;
     const queued = [];
     let waiting = false;
+    let settling = null;
     let finish;
     const exited = new Promise((resolve) => {
       finish = resolve;
     });
+    const flush = (target) => {
+      settling = null;
+      if (inner !== target) return;
+      waiting = false;
+      for (const data of queued.splice(0)) inner.write(data);
+    };
     const output = (bytes) => {
       onData?.(bytes);
       if (!waiting || !inner) return;
-      waiting = false;
-      for (const data of queued.splice(0)) inner.write(data);
+      clearTimeout(settling);
+      settling = setTimeout(flush, quiet, inner);
     };
     async function open() {
       let used;
@@ -311,6 +319,7 @@ export function followKernel({ port, attach, notice = NOTICE }) {
         }
       }
       inner.exited.then(finish, (error) => {
+        clearTimeout(settling);
         inner = null;
         if (gone(error)) forget(used);
         if (!gone(error)) {
