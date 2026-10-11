@@ -168,9 +168,9 @@ export function createNetwork(choice, options = {}) {
     };
   };
   const viaLink = () => {
-    const chosen = options.router?.chosen();
-    if (!chosen?.startsWith('link:') || !options.links) return {};
-    const id = chosen.slice(5);
+    const exit = options.router ? currentExit(options.router, null) : null;
+    if (exit?.kind !== 'link' || !options.links) return {};
+    const { id } = exit;
     const devices = [...options.links.devices(), ...(options.tray?.away() ?? [])];
     const connected = devices.some((item) => item.id === id && item.state === 'connected');
     return { health: connected ? 'ok' : 'failing', detail: null };
