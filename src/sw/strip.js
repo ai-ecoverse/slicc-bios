@@ -5,6 +5,7 @@ const number =
 const punctuator =
   /\.\.\.|===|!==|\*\*=|<<=|&&=|\|\|=|\?\?=|=>|==|!=|<=|\+=|-=|\*=|\/=|%=|&=|\|=|\^=|&&|\|\||\?\?|\?\.(?!\d)|\+\+|--|\*\*|<<|[{}()[\];,<>=!+\-*/%&|^~?:.@]/y;
 const lineBreak = /[\n\r\u2028\u2029]/;
+const restOfLine = /[^\n\r\u2028\u2029]*/y;
 const blankable = /\S/g;
 const words = (text) => new Set(text.split(' '));
 const binary = words('|| && ?? | ^ & == != === !== < <= << + - * / % ** instanceof');
@@ -45,8 +46,9 @@ class Lexer {
     while (this.pos < source.length) {
       const char = source[this.pos];
       if (char === '/' && source[this.pos + 1] === '/') {
-        const end = source.slice(this.pos).search(lineBreak);
-        this.pos = end < 0 ? source.length : this.pos + end;
+        restOfLine.lastIndex = this.pos;
+        restOfLine.exec(source);
+        this.pos = restOfLine.lastIndex;
       } else if (char === '/' && source[this.pos + 1] === '*') {
         const end = source.indexOf('*/', this.pos + 2);
         if (end < 0) throw new Fail('unterminated comment', { cause: this.pos });
@@ -431,7 +433,7 @@ class Stripper {
       const count = this.blanks.length;
       this.statement();
       const whole = this.blanks.slice(count).some(([from, to]) => from <= at && to >= this.prevEnd);
-      if (!whole && !this.is(';', { type: 'punct', value: this.source[at] }))
+      if (!whole && this.source[at] !== ';')
         this.unsupported('A TypeScript namespace with values', start);
     }
     this.next();
