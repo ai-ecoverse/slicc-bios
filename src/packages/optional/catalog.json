@@ -11,7 +11,7 @@
     "label": "OpenSSH",
     "description": "Connects to servers and copies files with ssh, scp and sftp; git over ssh too.",
     "commands": ["ssh", "scp", "sftp", "ssh-keygen", "ssh-add"],
-    "size": 3343805
+    "size": 3355615
   },
   "@ai-ecoverse/wasix-python": {
     "id": "python",
@@ -117,6 +117,6 @@
     "label": "GnuPG",
     "description": "Signs, verifies and encrypts files and commits with OpenPGP keys.",
     "commands": ["gpg", "gpgv", "gpg-agent", "gpgconf", "gpg-connect-agent", "gpg2"],
-    "size": 3296950
+    "size": 3317873
   }
 }

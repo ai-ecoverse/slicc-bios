@@ -43,9 +43,17 @@
     "integrity": "sha512-O1V9mpj62CiI6gkKcD0YxBaHKRZ3pDLdwVB8hif2DBOin4bQsWaHgUn0P7jaoArIUjlD/Ak3Wk/u+wJawto/FA==",
     "sha256": "7b36fec5ff7585373c8f22482b245641e38d979d61c470383b030d678a3893ff"
   },
+  "@ai-ecoverse/wasix-gnupg@2.4.9-5": {
+    "integrity": "sha512-3CMCluHf4DVOARN/vF5PbpKUO3k1u2ndzZhfk/yfrIOaymQszFKVbBI23Bmj0cJ92eM+N4ajTJqJPzZ/R9akYw==",
+    "sha256": "75cc248276bba48951bf62ba43206ee119ad3c1a98b3be009dc8d68978a0e696"
+  },
   "@ai-ecoverse/wasix-openssh@10.6.0-5": {
     "integrity": "sha512-reI3IU82MFVeAQWWcAlKYvo4W909UZZJt0SrgHkyr6EkbRgcbkKwZNWQH3vHG06t/GRCr+EneoNPS6Yu0sz1rg==",
     "sha256": "e29ae47e9dc7742b0f7e58d4108d98d23f2d9d0b39e719ce8dab3725fd203f1d"
+  },
+  "@ai-ecoverse/wasix-openssh@10.6.0-6": {
+    "integrity": "sha512-eb4K379LaFj8HV/wB+Ob7LbyBDgwxn6Bt/6/HuZ207+7SemejWutP4PbwAj7gtAD6eV8RuCi4XqaOhgo+p5Kew==",
+    "sha256": "0f371d3dfba21552622375ebb0f7e6402b3e679d112c319acd313aa8b921fbf5"
   },
   "@ai-ecoverse/wasix-perl@5.42.0-9": {
     "integrity": "sha512-sSpR6JeqbRrTDkd6MdGCD+l0IUBxo7fZSol86ZJRPYvfs/9NsXM9zuDiRymeAWoIpfTOYihG/d+dA1JQSNI5nw==",
