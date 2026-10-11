@@ -89,6 +89,80 @@ test('seven leads a tray: a follower joins and links, rotation moves it to a new
   });
   assert.equal(far.trim(), 'from far');
 
+  await page.evaluate(() => {
+    window.deep = (root, selector) => {
+      const found = root.querySelector(selector);
+      if (found) return found;
+      for (const element of root.querySelectorAll('*')) {
+        const inner = element.shadowRoot && window.deep(element.shadowRoot, selector);
+        if (inner) return inner;
+      }
+      return null;
+    };
+    const app = document.querySelector('slicc-app');
+    const status = {
+      name: 'harbor',
+      kind: 'hosted',
+      connection: 'live',
+      role: 'leader',
+      followers: [
+        { id: 'f1', name: 'bay-laptop', device: 'browser', since: Date.now() - 40 * 60000 },
+        { id: 'f2', name: 'reef-phone', device: 'phone', since: Date.now() - 5 * 60000 },
+      ],
+      spent: 3.42,
+      rate: 0.18,
+      budget: { percent: 42, window: 'weekly', resets: '2026-10-15T00:00:00Z' },
+      joinUrl: 'https://www.sliccy.ai/join/dummy-join-0000',
+    };
+    const tray = { status: () => status, reconnect() {}, disconnect() {}, on: () => () => {} };
+    window.untrayed = app.model;
+    app.model = { ...app.model, tray };
+  });
+  const color = (wanted) =>
+    page.evaluate((value) => {
+      const app = document.querySelector('slicc-app');
+      if (app.color !== value) app.toggleColor();
+    }, wanted);
+  const sync = async (name) => {
+    await page.until(
+      () => !!window.deep(document, 'slicc-tray')?.shadowRoot?.querySelector('#chip')
+    );
+    await page.evaluate(() =>
+      window.deep(document, 'slicc-tray').shadowRoot.querySelector('#chip').click()
+    );
+    await page.until(() => !!window.deep(document, '[data-sync]'));
+    await page.screenshot(new URL(`network-sync-${name}.png`, page.dir));
+    await page.evaluate(() =>
+      document
+        .querySelector('slicc-app')
+        .dock.api.panels.find((panel) => panel.id === 'network')
+        ?.api.close()
+    );
+  };
+  for (const theme of ['light', 'dark']) {
+    await color(theme);
+    await page.until(() => !!window.deep(document, '.selected[data-visible]'));
+    await page.screenshot(new URL(`rail-${theme}-1280.png`, page.dir));
+    await sync(`${theme}-1280`);
+  }
+  await color('light');
+  await page.send('Emulation.setDeviceMetricsOverride', {
+    width: 420,
+    height: 800,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.until(() => document.querySelector('slicc-app').screen === 'phone');
+  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
+  await page.until(() => !!window.deep(document, '.selected[data-visible]'));
+  await page.screenshot(new URL('rail-light-420.png', page.dir));
+  await sync('light-420');
+  await page.send('Emulation.clearDeviceMetricsOverride');
+  await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
+  await page.evaluate(() => {
+    document.querySelector('slicc-app').model = window.untrayed;
+  });
+
   await model(page, (network) => network.rotateJoinUrl());
   assert.equal(hub.trays, 2);
   assert.deepEqual(

@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
-import { ready } from './bios.mjs';
+import { ready, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
 
@@ -1043,5 +1043,68 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     await page.evaluate(() => document.querySelector('slicc-app').model.notices.list()),
     []
   );
+
+  const servers = {
+    mcpServers: {
+      docs: {
+        url: 'https://docs.example.com/mcp',
+        headers: { Authorization: 'Bearer ${DOCS_TOKEN}' },
+        description: 'Search the product docs',
+      },
+    },
+  };
+  await run(
+    page,
+    `mkdir -p /home/.pi/agent && echo ${Buffer.from(JSON.stringify(servers)).toString('base64')} | base64 -d > /home/.pi/agent/mcp.json; echo "mcp $((6 * 7))"`
+  );
+  await shows(page, 'mcp 42');
+  await page.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.settings.accounts()
+      .some((item) => item.id === 'mcp:docs')
+  );
+  const docs = await page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.settings.accounts()
+      .find((item) => item.id === 'mcp:docs')
+  );
+  assert.equal(docs.group, 'mcp');
+  assert.notEqual(docs.status, 'connected');
+  const mcpRow = async () => {
+    await page.evaluate(() => document.querySelector('slicc-app').show('settings'));
+    await page.until(
+      () =>
+        !!window.deep(
+          document.querySelector('slicc-app').dock.content('settings').shadowRoot,
+          '.accounts[data-group=mcp] [data-id="mcp:docs"]'
+        )
+    );
+    await page.evaluate(() =>
+      window
+        .deep(
+          document.querySelector('slicc-app').dock.content('settings').shadowRoot,
+          '.accounts[data-group=mcp]'
+        )
+        .scrollIntoView({ block: 'center' })
+    );
+  };
+  await mcpRow();
+  await page.screenshot(new URL('settings-mcp-light-1280.png', page.dir));
+  await color('dark');
+  await page.screenshot(new URL('settings-mcp-dark-1280.png', page.dir));
+  await color('light');
+  await page.send('Emulation.setDeviceMetricsOverride', {
+    width: 420,
+    height: 800,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.until(() => document.querySelector('slicc-app').screen === 'phone');
+  await mcpRow();
+  await page.screenshot(new URL('settings-mcp-light-420.png', page.dir));
+  await page.send('Emulation.clearDeviceMetricsOverride');
+  await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
   assert.deepEqual(page.errors, []);
 });
