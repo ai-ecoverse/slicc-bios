@@ -67,14 +67,16 @@ function looksCommonJs(path, source) {
   return /\b(require\(|module\.exports|exports\.[A-Za-z_$])/.test(source);
 }
 
-async function wrap(path, source, resolve, base) {
+async function wrap(path, source, resolve, base, suffix) {
   const ids = requires(source);
   const lines = [];
   const table = [];
   for (const [index, id] of ids.entries()) {
     const target = await resolve(id, path);
     if (!target) continue;
-    const url = target.startsWith(NODE_STUBS) ? `${base}${target}` : located(target, base);
+    const url = target.startsWith(NODE_STUBS)
+      ? `${base}${target}`
+      : `${located(target, base)}${suffix(target)}`;
     if (target.endsWith('.json')) {
       lines.push(`import __slicc_${index} from ${JSON.stringify(url)} with { type: 'json' };`);
       table.push(`${JSON.stringify(id)}: { __slicc_cjs: true, default: __slicc_${index} }`);
@@ -105,16 +107,16 @@ function needsJsonType(source, entry, target) {
   );
 }
 
-async function rewrite(path, source, { resolve, base = '' }) {
+async function rewrite(path, source, { resolve, base = '', suffix = () => '' }) {
   const { imports, module } = scan(source);
   if (!module && imports.length === 0 && looksCommonJs(path, source))
-    return wrap(path, source, resolve, base);
+    return wrap(path, source, resolve, base, suffix);
   let out = '';
   let at = 0;
   for (const entry of imports) {
     const target = await resolve(entry.value, path);
     if (!target) continue;
-    let url = located(target, base);
+    let url = `${located(target, base)}${suffix(target)}`;
     if (target.startsWith(NODE_STUBS)) {
       const names = importedNames(source, entry);
       url = `${base}${target}${names.length ? `?names=${names.join(',')}` : ''}`;

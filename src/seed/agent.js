@@ -44,9 +44,16 @@ export function installAgent(start, { from = deployed, report = () => {} } = {})
 }
 
 let chat = null;
+let run = 0;
 
-export function loadChat({ load = (file) => import(new URL(file, modules)) } = {}) {
-  chat ??= Promise.all([load('page.js'), load('spectrum/index.js')]).then(
+export function loadChat({ load = (file) => import(new URL(file, modules)), fresh = false } = {}) {
+  if (fresh) {
+    run += 1;
+    chat = null;
+  }
+  if (chat) return chat;
+  const query = run ? `?run=${run}` : '';
+  const loading = Promise.all([load(`page.js${query}`), load(`spectrum/index.js${query}`)]).then(
     ([{ startAgent, connectAgent, remoteControl }, { createAgentModel }]) => ({
       startAgent,
       connectAgent,
@@ -54,10 +61,13 @@ export function loadChat({ load = (file) => import(new URL(file, modules)) } = {
       createAgentModel,
     })
   );
-  chat.catch(() => {
+  chat = loading;
+  loading.catch(() => {
+    if (chat !== loading) return;
     chat = null;
+    run += 1;
   });
-  return chat;
+  return loading;
 }
 
 export async function startChat(kernel, options) {
@@ -67,6 +77,11 @@ export async function startChat(kernel, options) {
     kernel: { connect: () => kernel.connect() },
     held: true,
   });
+}
+
+export async function restartChat(kernel, running, options = {}) {
+  await loadChat({ ...options, fresh: true }).finally(() => running.release());
+  return startChat(kernel, options);
 }
 
 export function whenIdle(agent) {

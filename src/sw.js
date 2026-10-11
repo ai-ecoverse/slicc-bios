@@ -29,6 +29,7 @@ const markers = [
   '/var/lib/slicc/agent/pnpm-lock.yaml',
   '/opt/agent/node_modules/.modules.yaml',
 ];
+const AGENT = '/opt/agent/';
 
 async function read(path) {
   const names = path.split('/').filter(Boolean);
@@ -73,12 +74,15 @@ async function currentResolver() {
   return resolver;
 }
 
-async function rewrite(path, file, base) {
+async function rewrite(path, file, base, run) {
   const resolve = await currentResolver();
-  const cached = transformed.get(path);
+  const query = run ? `?run=${encodeURIComponent(run)}` : '';
+  const key = `${path}${query}`;
+  const cached = transformed.get(key);
   if (cached?.stamp === file.lastModified) return cached.text;
-  const text = await transform(path, await file.text(), { resolve, base });
-  transformed.set(path, { stamp: file.lastModified, text });
+  const suffix = (target) => (target.startsWith(AGENT) ? query : '');
+  const text = await transform(path, await file.text(), { resolve, base, suffix });
+  transformed.set(key, { stamp: file.lastModified, text });
   return text;
 }
 
@@ -179,7 +183,8 @@ async function serve(request, controller) {
   const extension = file.name.split('.').pop();
   const type = types[extension] ?? 'application/octet-stream';
   if (!script.test(file.name)) return respond(file, type, 'opfs');
-  return respond(await rewrite(path, file, base), type, 'opfs');
+  const run = path.startsWith(AGENT) ? url.searchParams.get('run') : null;
+  return respond(await rewrite(path, file, base, run), type, 'opfs');
 }
 
 self.addEventListener('install', () => self.skipWaiting());
