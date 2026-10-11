@@ -94,3 +94,38 @@ test('the range check reads the forms the packages use', () => {
   assert.equal(satisfies('1.48.0-rc.1', '1.48.0-rc.1'), true);
   assert.throws(() => satisfies('1.0.0', '^1.0.0'), /unsupported range clause/);
 });
+
+const GATED = /^@ai-ecoverse\/(slicc-kernel|slicc-cdp|wasi-|wasix-|wasm-|py-)/;
+
+async function lockedGated() {
+  const found = new Map();
+  for (const file of ['package-lock.json', 'optional/package-lock.json']) {
+    for (const [path, entry] of Object.entries(JSON.parse(await read(file)).packages)) {
+      const name = path.split('node_modules/').at(-1);
+      if (path && GATED.test(name)) found.set(`${name}@${entry.version}`, [file, entry.integrity]);
+    }
+  }
+  for (const file of ['pnpm-lock.yaml', 'agent/pnpm-lock.yaml', 'tailscale/pnpm-lock.yaml']) {
+    for (const [, name, version, integrity] of (await read(file)).matchAll(
+      /^ {2}'?(@ai-ecoverse\/[^@'\s]+)@([^'(\s]+)'?:\n {4}resolution: \{integrity: ([^,}\s]+)/gm
+    )) {
+      if (GATED.test(name)) found.set(`${name}@${version}`, [file, integrity]);
+    }
+  }
+  return found;
+}
+
+test('every gated package in every lockfile is certified, with the certified integrity', async () => {
+  const certs = JSON.parse(await read('certs.json'));
+  const found = await lockedGated();
+  assert.ok(found.size >= 30, `found ${found.size} gated packages`);
+  const missing = [...found]
+    .filter(([key, [, integrity]]) => certs[key]?.integrity !== integrity)
+    .map(([key, [file]]) => `${file} ${key}`);
+  assert.deepEqual(missing, [], 'not in src/packages/certs.json with this integrity');
+  for (const [key, entry] of Object.entries(certs)) {
+    assert.match(key, /^@ai-ecoverse\/[\w.-]+@\d+\.\d+\.\d+(-[\w.]+)?$/, key);
+    assert.match(entry.integrity, /^sha512-/, key);
+    if (entry.sha256) assert.match(entry.sha256, /^[0-9a-f]{64}$/, key);
+  }
+});
