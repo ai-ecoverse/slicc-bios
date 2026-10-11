@@ -494,11 +494,40 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     ['restart-agent'],
     false,
   ]);
+  const shipped = await page.evaluate(async (dist) => {
+    const manifest = JSON.parse(await window.readFile(`${dist}/package.json`));
+    const owner = await window.readFile(`${dist}/dist/owner.js`);
+    const port = await window.readFile(`${dist}/dist/spectrum/agent-port.js`);
+    if (!/\bclass AgentAdapter\b/.test(port)) throw new Error('agent-port.js has no AgentAdapter');
+    await window.writeFile(
+      `${dist}/dist/owner.js`,
+      `${owner}\nglobalThis.sevenAdapters = [...(globalThis.sevenAdapters ?? []), 'next'];\n`
+    );
+    await window.writeFile(
+      `${dist}/dist/spectrum/agent-port.js`,
+      `${port}\nAgentAdapter.prototype.sevenBuild = 'next';\n`
+    );
+    const next = `${manifest.version}-next`;
+    await window.writeFile(`${dist}/package.json`, JSON.stringify({ ...manifest, version: next }));
+    return manifest.version;
+  }, '/opt/agent/node_modules/@ai-ecoverse/slicc-agent');
+  assert.equal(
+    await page.evaluate(() => document.querySelector('slicc-app').model.agent.sevenBuild),
+    undefined
+  );
   await page.evaluate(() => document.querySelector('slicc-app').show('updates'));
   await page.until(() => !!window.updatesButton('agent', 'restart-agent'));
   await page.screenshot(new URL('restart.png', page.dir));
   await page.evaluate(() => window.updatesButton('agent', 'restart-agent').click());
   await page.until(() => window.agentRow().state === 'current');
+  assert.deepEqual(
+    await page.evaluate(() => [
+      window.agentRow().to,
+      globalThis.sevenAdapters,
+      document.querySelector('slicc-app').model.agent.sevenBuild,
+    ]),
+    [`${shipped}-next`, ['next'], 'next']
+  );
   await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
   await page.until(
     () => !!window.chatView() && !!window.deep(window.chatView().shadowRoot, 'textarea')

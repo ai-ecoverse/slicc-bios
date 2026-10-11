@@ -9,6 +9,7 @@ import {
   loadChat,
   recorded,
   remoteAgent,
+  restartChat,
   startChat,
   whenIdle,
 } from './agent.js';
@@ -248,11 +249,13 @@ function startOnce() {
 
 async function relaunch(running) {
   try {
-    await running.restart();
-    if (await announce(await agentVersion())) return running;
+    owner = await restartChat(kernel, running);
+    if (await announce(await agentVersion())) return owner;
   } catch (error) {
     console.warn(`the agent did not restart: ${error.message}`);
   }
+  await owner?.release();
+  owner = null;
   return null;
 }
 
