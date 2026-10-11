@@ -1,4 +1,4 @@
-import { attachKernel, createKernel } from '@ai-ecoverse/slicc-kernel';
+import { attachKernel, createKernel, serveHostfsPort } from '@ai-ecoverse/slicc-kernel';
 import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
 import { confirm, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
 import { signIn } from './adobe.js';
@@ -25,7 +25,7 @@ import {
   installed,
 } from './grammars.js';
 import { change, userRows } from './layer.js';
-import { createLinks, installLocal, trustHostKey } from './link.js';
+import { createLinks, installLocal, labelStore, trustHostKey } from './link.js';
 import { serveLoopback } from './loopback.js';
 import { createFolders, offTheRecord } from './mounts.js';
 import { createNetwork } from './network.js';
@@ -113,6 +113,7 @@ const remote = createRemote({
 const allowedRemotely = (link) => link.mode === 'local' || Boolean(tray?.controlAllowed(link.id));
 const links = createLinks({
   router: exits,
+  labels: labelStore(localStorage),
   agent: { allowed: allowedRemotely, handle: (link, meta, s) => remote.handle(link, meta, s) },
   describe: (link) => ({
     control:
@@ -122,6 +123,7 @@ const links = createLinks({
   name: `seven on ${location.host}`,
   makePeer: (config) => new RTCPeerConnection(config),
   kernel: () => kernel,
+  serveFs: serveHostfsPort,
   onLink: (link, peer) => {
     trustHostKey(kernel, link, peer).catch((error) => console.warn(`link: ${error.message}`));
   },
@@ -458,7 +460,12 @@ async function rows() {
 }
 
 async function own() {
-  folders = createFolders({ storage: localStorage, network, secret: await offTheRecord() });
+  folders = createFolders({
+    storage: localStorage,
+    network,
+    secret: await offTheRecord(),
+    linked: links,
+  });
   kernel = await createKernel({
     root,
     network: { transport, uplink: exits.uplink },

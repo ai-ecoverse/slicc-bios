@@ -171,7 +171,7 @@ test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback
       role: 'page',
       name: 'seven',
       mode: 'local',
-      caps: ['kernel-in', 'browsers', 'agent'],
+      caps: ['kernel-in', 'browsers', 'mounts', 'agent'],
     }
   );
   assert.match(hello.name, /^seven on (localhost|127\.0\.0\.1):\d+$/);
@@ -564,4 +564,104 @@ test('the real slicc CLI shares another browser over cdp: the 9222 facade reache
     'cdp-driven'
   );
   assert.match(driven.out, /linked-browser/);
+});
+
+test('the real slicc CLI shares a folder: the kernel mounts <device>/<name> over the link, reads, writes, and sees host edits', {
+  skip: !cli,
+}, async (t) => {
+  const { mkdtemp, readFile, writeFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'link-fs-'));
+  await writeFile(join(dir, 'hello.txt'), 'from the host\n');
+  const page = await chrome.page(t);
+  await boot(page);
+  await ready(page);
+  const node = spawn(
+    cli,
+    ['attach', '--signal', 'stdio', '--name', 'ref-node', '--no-kernel', '--mount', `${dir}:proj`],
+    {
+      stdio: ['pipe', 'pipe', 'inherit'],
+    }
+  );
+  t.after(() => node.kill());
+  await page.expose('sliccLinkSend', (message) => node.stdin.write(`${JSON.stringify(message)}\n`));
+  createInterface({ input: node.stdout }).on('line', (line) =>
+    page.evaluate((line) => globalThis.sliccLinkReceive(line), line).catch(() => {})
+  );
+  await page.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.network.status()
+      .links?.devices.some((d) => d.state === 'connected')
+  );
+  const mounted = await shell(
+    page,
+    '{ mkdir -p /mnt/proj && mount -t hostfs ref-node/proj /mnt/proj && cat /mnt/proj/hello.txt && echo written > /mnt/proj/w.txt && ls /mnt/proj; }',
+    'fs-mount'
+  );
+  assert.deepEqual(mounted, { code: '0', out: 'from the host\nhello.txt\nw.txt' });
+  assert.equal(await readFile(join(dir, 'w.txt'), 'utf8'), 'written\n');
+  await writeFile(join(dir, 'hello.txt'), 'edited on the host\n');
+  let seen;
+  for (let i = 0; i < 20; i += 1) {
+    seen = await shell(page, 'cat /mnt/proj/hello.txt', `fs-edit-${i}`);
+    if (seen.out === 'edited on the host') break;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  assert.equal(seen.out, 'edited on the host');
+  const unknown = await shell(
+    page,
+    '{ mkdir -p /mnt/x && mount -t hostfs ref-node/nope /mnt/x; }',
+    'fs-nope'
+  );
+  assert.notEqual(unknown.code, '0');
+  const ro = await shell(
+    page,
+    'mkdir -p /mnt/ro && mount -t hostfs -o ro ref-node/proj /mnt/ro && { echo x > /mnt/ro/x.txt; echo "write $?"; }',
+    'fs-ro'
+  );
+  assert.match(ro.out, /write [1-9]/);
+});
+
+test('a remembered linked folder mounted before its CLI links fills in when the CLI arrives', {
+  skip: !cli,
+}, async (t) => {
+  const { mkdtemp, writeFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'link-fs-later-'));
+  await writeFile(join(dir, 'hello.txt'), 'remembered\n');
+  const page = await chrome.page(t);
+  await boot(page);
+  await ready(page);
+  await page.evaluate(() =>
+    localStorage.setItem(
+      'slicc-os.mounts',
+      JSON.stringify([
+        { type: 'hostfs', source: 'ref-node/proj', target: '/mnt/proj', options: {} },
+      ])
+    )
+  );
+  await page.reload();
+  await ready(page);
+  const before = await shell(page, 'grep -c " /mnt/proj " /proc/mounts', 'fs-later-before');
+  assert.equal(before.out, '1');
+  const node = spawn(
+    cli,
+    ['attach', '--signal', 'stdio', '--name', 'ref-node', '--no-kernel', '--mount', `${dir}:proj`],
+    { stdio: ['pipe', 'pipe', 'inherit'] }
+  );
+  t.after(() => node.kill());
+  await page.expose('sliccLinkSend', (message) => node.stdin.write(`${JSON.stringify(message)}\n`));
+  createInterface({ input: node.stdout }).on('line', (line) =>
+    page.evaluate((line) => globalThis.sliccLinkReceive(line), line).catch(() => {})
+  );
+  let seen;
+  for (let i = 0; i < 80; i += 1) {
+    seen = await shell(page, 'cat /mnt/proj/hello.txt 2>&1', `fs-later-${i}`);
+    if (seen.out === 'remembered') break;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  assert.equal(seen.out, 'remembered');
 });

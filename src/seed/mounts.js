@@ -107,13 +107,24 @@ async function settle(kernel, before, update) {
   }
 }
 
-function kernelOptions({ secret, pick, pending, allow, network }) {
+export function hostfsHook(network, linked) {
+  const proxy = network.kind === 'local-proxy' ? hostfsGrants(network.proxy) : null;
+  if (!linked) return proxy;
+  return (source, options) => {
+    if (linked.claims(source)) return linked.fsGrant(source, options);
+    if (proxy) return proxy(source, options);
+    return Promise.reject(new Error(`no host folder ${source}`));
+  };
+}
+
+function kernelOptions({ secret, pick, pending, allow, network, linked }) {
+  const hostfs = hostfsHook(network, linked);
   return {
     ...(secret ? { media: false } : {}),
     requestDirectory: () => pick(),
     onMountPending: pending,
     processMounts: allow,
-    ...(network.kind === 'local-proxy' ? { hostfs: hostfsGrants(network.proxy) } : {}),
+    ...(hostfs ? { hostfs } : {}),
   };
 }
 
@@ -140,6 +151,7 @@ export function createFolders({
   check = offTheRecord,
   mark = markFolders,
   attach = attachKernel,
+  linked = null,
 }) {
   let secret = initial;
   mark(secret);
@@ -235,8 +247,9 @@ export function createFolders({
   }
 
   async function allow(req) {
-    const hostfs = req.op === 'mount' && req.type === 'hostfs' && exports;
-    if (hostfs && !(await exports()).includes(req.source)) return false;
+    const hostfs = req.op === 'mount' && req.type === 'hostfs';
+    const link = hostfs && linked?.mounts().some((entry) => entry.source === req.source);
+    if (hostfs && !link && !(exports && (await exports()).includes(req.source))) return false;
     void settle(kernel, await kernel.mounts(), update);
     return true;
   }
@@ -289,7 +302,7 @@ export function createFolders({
   };
 
   return {
-    options: kernelOptions({ secret: initial, pick, pending, allow, network }),
+    options: kernelOptions({ secret: initial, pick, pending, allow, network, linked }),
     async attach(attached, model) {
       kernel = attached;
       files = model.files;
