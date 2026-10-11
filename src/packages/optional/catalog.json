@@ -18,7 +18,7 @@
     "label": "Python",
     "description": "Python 3.14 with pip, for scripts and data work.",
     "commands": ["python3", "pip"],
-    "size": 49553556
+    "size": 49555063
   },
   "@ai-ecoverse/wasix-uv-shim": {
     "id": "uv",
@@ -35,7 +35,7 @@
     "description": "numpy, pandas, scipy and matplotlib for Python, about 270 MB on disk.",
     "commands": [],
     "requires": ["python"],
-    "size": 71955347
+    "size": 71955355
   },
   "@ai-ecoverse/wasix-ruby": {
     "id": "ruby",
