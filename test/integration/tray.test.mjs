@@ -153,8 +153,12 @@ test('seven leads a tray: a follower joins and links, rotation moves it to a new
     mobile: false,
   });
   await page.until(() => document.querySelector('slicc-app').screen === 'phone');
-  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
-  await page.until(() => !!window.deep(document, '.selected[data-visible]'));
+  await page.evaluate(() => document.querySelector('slicc-app').show('terminal'));
+  await page.until(
+    () =>
+      !!window.deep(document, '.rail.bottom [data-surface="chat"]') &&
+      !!window.deep(document, '.rail.bottom .selected[data-visible][data-surface="terminal"]')
+  );
   await page.screenshot(new URL('rail-light-420.png', page.dir));
   await sync('light-420');
   await page.send('Emulation.clearDeviceMetricsOverride');
