@@ -1,4 +1,64 @@
 {
+  "@ai-ecoverse/py-contourpy@1.4.0-5": {
+    "integrity": "sha512-Bx0yRKXK1TS8fmjNkT38lc/35ZZQFx10mxw6lm0yjfrUMaJzswcyuodPh2/4ptvENI+cZNyuC/QmMVQT+NKrUw==",
+    "sha256": "e1724e29d8e4e8afdc4d3e047e62592bf4cffc9bc1f2b357355628a694bcf347"
+  },
+  "@ai-ecoverse/py-cycler@0.12.1-5": {
+    "integrity": "sha512-6ikdLdovKfH4GKersS107LxKeo3KOGNuGxC++2RxauiBuXRL1Zk9ERFw16SdDpAeKSC40xshj+sfFbejNfVjQA==",
+    "sha256": "4f82499628639b01ae022afd8a84fa2f08079dbf6b51dc63539709a25e947016"
+  },
+  "@ai-ecoverse/py-fonttools@4.66.1-5": {
+    "integrity": "sha512-K0IoyfKlhZe7pWn/p/mK7GKGnu4+rsAkEpl/9If5mxGPw/04ys2o/ja5o1ZazltN1aN0JXqD0MQ59zl6d4EDrQ==",
+    "sha256": "c72b5900b5cf72f53e2f0f30f27f191003ab19660574099dbbb6ce3295f65324"
+  },
+  "@ai-ecoverse/py-kiwisolver@1.5.1-5": {
+    "integrity": "sha512-iPlyNsJP6gLptvS6YwMm32zRCTrZiJjTDmJWDMtalQ6xNorR0Hvx+DW2WGaktsb92RuggbTQmJhrVY85j3UO2A==",
+    "sha256": "b5eec3bb653874580f5e6ccb527e0a4fade7a9ccc98d62ae950d01e9a9873a7d"
+  },
+  "@ai-ecoverse/py-matplotlib@3.11.2-6": {
+    "integrity": "sha512-uEjcO76jBkmnamlAQQ1RmgvDMX8DenfvuEb3G32aQO1jogjY5omfoQ9MMS4eMf9TnVtHK3dp6lvBbPRzuaFVhA==",
+    "sha256": "5f6e38db1047c5bb512350272068fbbef04b4740b22b665b26ccbe4f932a04bc"
+  },
+  "@ai-ecoverse/py-numpy@2.3.2-8": {
+    "integrity": "sha512-WEScW3EQEEWo0JcvnR7v/9Qax4dYpCu95yAU5Xx/fDteNzpXUWIpkSjN8/xd2lRW+9mdenorBdEVCagGj56qNA==",
+    "sha256": "cf97ea1e463db39facfc5c8f00e1f72e2349de0830a3959990eeb1b1428c8af8"
+  },
+  "@ai-ecoverse/py-packaging@26.3.0-5": {
+    "integrity": "sha512-syvuROdk7JkbVO9OYKeKZ+Wc2ib97K98rjOnNhK+1qb8+QefeDwMeix7kvL7ow82LRTkfoV0yVrzuNcOh7hxCA==",
+    "sha256": "e6b89f4b730a2d75a66d65e3791276b338c580850ecb6ed6dd34bec3dcd6059c"
+  },
+  "@ai-ecoverse/py-pandas@2.3.2-9": {
+    "integrity": "sha512-CLbOzjLivGA0jme1gdKV+BlcUkL/cffRyt34ugfnY77tA5WrK8HSA1BGH3hDfk9M00ZnpdtFslGSTlIQy1PV/w==",
+    "sha256": "22c7b67999343c8ebd6b2bae890871e386ac307196cf6d898080c61ae82fcbdd"
+  },
+  "@ai-ecoverse/py-pillow@12.3.0-6": {
+    "integrity": "sha512-oyuDfimQshBOfzQzWycwqxm4/a9FRojIHkPL/buwyyKE9zbGXdR7NRNFvmoNyOayNcgmUct0/sGXRVGXl4e7SA==",
+    "sha256": "1e7811bc2f0c46ccef65588b8b323c2bf3e2cbcc7ad0ec7ec271edc7b8b4e134"
+  },
+  "@ai-ecoverse/py-pyparsing@3.3.3-5": {
+    "integrity": "sha512-RoiKQMo0Hdnp0snet9D1yLNY2Szq0ToAeT1m4TSPR8AooC2tlYiLgfJh5XXz7z+Fj5jzttW6Yx7KWd+ghUN96Q==",
+    "sha256": "2b2a9e8acd76e0b160bfdff288d2aa8a0055df5735d2e2945e2d596eb310068d"
+  },
+  "@ai-ecoverse/py-python-dateutil@2.9.0-post0.2": {
+    "integrity": "sha512-RCa4x3MbuASOiDFxmiK6vmstyUvl8KffqQWJarGQa4MAHvtoT8tM3vl3iPTqbgGIPPUVfYSTy0bMKLNWx7uG9w==",
+    "sha256": "2a355c9dd7e008d27970b8cd4eef641756bec74d61f393dae7452a7a55f61c48"
+  },
+  "@ai-ecoverse/py-pytz@2026.4.0-2": {
+    "integrity": "sha512-fdYh2M/sSwFd8Y1rnUkZCbyFxkF5GB5otiSpJxNphLlFQa3kHDdU7dpwK6XGpJ3ZH2YvmNo01qY5eWbw+Gq9mw==",
+    "sha256": "a9f47842a14d204823694ce95105ba9fa745a504e0dcaa9c9e8fd0e2ded27470"
+  },
+  "@ai-ecoverse/py-scipy@1.18.0-10": {
+    "integrity": "sha512-kF/DI0T7qHI5TIkV63AUj8lMkBP1enUdkwkKQw78OZeRpLHP5riZX88bEW/tcdD3pUzMr1NAz5tsC4VRkBXvSw==",
+    "sha256": "b6ab14cdb98e3f3cf8670fda175a233ca91579efd8518d3e73de009434e5f85e"
+  },
+  "@ai-ecoverse/py-six@1.17.0-2": {
+    "integrity": "sha512-BNEgSp4l+y5dhmvKqqId7TO2Krchq/uw5vg/Q6bB6UKj+dfmr8ad42vGs4VFzTCnmqpGSgNRVg+TYeRi50t3yg==",
+    "sha256": "53fd2ac9ba87baebe147fdfcbdd0ea0af9498f725d0d3702d960a209722779cc"
+  },
+  "@ai-ecoverse/py-tzdata@2026.4.0-2": {
+    "integrity": "sha512-/LF+/f3HP+61PPp5WXUdWv1Dw2ajeNXasDeFicbU740PEeLJjZXVBq3EkI8bD32gM5EZWOLI+yBK7Wt9x5HgcQ==",
+    "sha256": "bd7c7d68b8ffc99bc8aacae4d7a5385d4ab8739036726411c939f80f88d7cfaf"
+  },
   "@ai-ecoverse/slicc-cdp@1.3.3": {
     "integrity": "sha512-gnMXHW27MTuqZsz/RocF7Dw7f8AlkXY/55yChSShT3mK3tzlv3LljU0d7/DUBTu3hyb/4LiVtdbFT5GTFlHdlQ==",
     "sha256": "16045695154abfaa5a167c2783759ba15ea2d0582e00f0665eb6388031667fa1"
