@@ -53,7 +53,13 @@ export function createUpdates({ ready = false, now = Date.now } = {}) {
   const listeners = { items: new Set(), packages: new Set() };
   const handlers = new Map();
   let packages = [];
+  let own = [];
   let packageHandler = null;
+  let ownHandler = null;
+  const listed = () => {
+    const all = [...own, ...packages];
+    for (const listener of [...listeners.packages]) listener(all);
+  };
   let items = components.map(([id, kind, label]) => ({
     id,
     label,
@@ -77,15 +83,28 @@ export function createUpdates({ ready = false, now = Date.now } = {}) {
       return () => set.delete(listener);
     },
     list: () => items,
-    packages: () => packages,
+    packages: () => [...own, ...packages],
     setPackages(list) {
       packages = list;
-      for (const listener of [...listeners.packages]) listener(packages);
+      listed();
+    },
+    userPackages: () => own,
+    setUserPackages(list) {
+      own = list;
+      listed();
     },
     handlePackages(handler) {
       packageHandler = handler;
     },
+    handleUserPackages(handler) {
+      ownHandler = handler;
+    },
     async actPackage(id, action) {
+      if (id.startsWith('user:')) {
+        if (!ownHandler) throw new Error('Your packages are not available yet.');
+        await ownHandler(id, action);
+        return;
+      }
       if (!packageHandler) throw new Error('Optional packages are not available yet.');
       await packageHandler(id, action);
     },

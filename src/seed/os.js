@@ -4,6 +4,7 @@ import { confirm, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
 import { signIn } from './adobe.js';
 import {
   installed as agentInstalled,
+  project as agentProject,
   version as agentVersion,
   installAgent,
   loadChat,
@@ -16,7 +17,14 @@ import {
 import { createBrowser } from './browser.js';
 import { browserControl } from './cdp.js';
 import { createExitRouter } from './exits.js';
-import { grammarBase, grammars, version as grammarsVersion, installed } from './grammars.js';
+import {
+  grammarBase,
+  grammars,
+  project as grammarsProject,
+  version as grammarsVersion,
+  installed,
+} from './grammars.js';
+import { change, userRows } from './layer.js';
 import { createLinks, installLocal, trustHostKey } from './link.js';
 import { serveLoopback } from './loopback.js';
 import { createFolders, offTheRecord } from './mounts.js';
@@ -277,9 +285,50 @@ async function restart() {
   updates.checked('agent', { state: 'current', from: at, to: at, actions: [] });
 }
 
+const layered = { agent: agentProject, grammars: grammarsProject };
+const UNDOING = { unpin: 'updating', remove: 'removing', retry: 'updating' };
+
+async function listOwn() {
+  const list = [];
+  for (const project of Object.values(layered)) list.push(...(await userRows(root, project)));
+  updates.setUserPackages(list);
+}
+
+function refuse(list, project) {
+  for (const { name, kind, spec, keeps } of list) {
+    const what = kind === 'pin' ? 'pin of' : 'addition of';
+    const short = name.replace(/^@ai-ecoverse\/(?:slicc-)?/, '');
+    notices.show(
+      {
+        id: `refused:${project.id}:${name}@${spec}`,
+        tone: 'warning',
+        title: `Seven undid a change in /${project.folder}`,
+        body: `Seven undid your ${what} ${name} in /${project.folder}: it has to match seven's ${short} ${keeps}.`,
+        actions: [],
+      },
+      () => {}
+    );
+  }
+}
+
+async function actOwn(id, action) {
+  const which = id.split(':')[1];
+  const name = id.slice(`user:${which}:`.length);
+  updates.setUserPackages(
+    updates
+      .userPackages()
+      .map((row) =>
+        row.id === id ? { ...row, state: UNDOING[action], error: null, actions: [] } : row
+      )
+  );
+  await change(layered[which], action === 'retry' ? null : name);
+  await (which === 'agent' ? offerChat() : installGrammars());
+}
+
 async function offerChat() {
   try {
-    const changed = await installAgent(start, { report: updates.track('agent') });
+    const changed = await installAgent(start, { report: updates.track('agent'), refuse });
+    await listOwn();
     const at = await agentVersion();
     const running = agent && (await agent);
     if (running && (await recorded()) !== startedWith) {
@@ -295,6 +344,7 @@ async function offerChat() {
     await startOnce();
   } catch (error) {
     updates.fail('agent', error);
+    await listOwn();
   }
 }
 
@@ -328,13 +378,14 @@ async function checkPackages() {
 
 async function installGrammars() {
   try {
-    const changed = await grammars(start, { report: updates.track('grammars') });
+    const changed = await grammars(start, { report: updates.track('grammars'), refuse });
     const at = await grammarsVersion();
     updates.checked('grammars', changed ? { state: 'installed', from: at, to: at } : {});
     app.grammarBase = grammarBase;
   } catch (error) {
     updates.fail('grammars', error);
   }
+  await listOwn();
 }
 
 async function updateTailnet() {
@@ -382,6 +433,7 @@ const retry = {
   kernel: checkPackages,
   ui: checkPackages,
 };
+updates.handleUserPackages(actOwn);
 updates.handle('retry', (id) => retry[id]());
 updates.handle('update-now', (id) => retry[id]());
 updates.handle('restart-agent', restart);
@@ -402,6 +454,7 @@ async function rows() {
   updates.set('grammars', waiting(await grammarsVersion()));
   const tailscaleAt = await tailscaleVersion();
   updates.set('tailscale', { from: tailscaleAt, to: tailscaleAt });
+  await listOwn();
 }
 
 async function own() {
