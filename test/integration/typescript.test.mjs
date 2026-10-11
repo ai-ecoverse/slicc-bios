@@ -65,6 +65,7 @@ export const result = {
   circle: circle.r,
   first: first([7]),
   thing: new Thing().name,
+  only: (await import('ts-only')).only,
   made: Base.make('made'),
   twice: twice(21),
   legacy: legacy.value,
@@ -76,6 +77,12 @@ postMessage(message);
 `,
   'os/ts-broken.ts': `export const ok: number = 1;
 export enum Color { Red }
+`,
+  'os/ts-uses-broken.ts': `import { Color, ok } from './ts-broken.js';
+export const red: number = Color.Red + ok;
+`,
+  'node_modules/ts-only/package.json': JSON.stringify({ exports: './index.js' }),
+  'node_modules/ts-only/index.ts': `export const only: string = 'ts-only';
 `,
 };
 
@@ -120,6 +127,7 @@ test('TypeScript from node_modules and OPFS loads in a page and in a worker', as
     circle: 1,
     first: 7,
     thing: 'thing',
+    only: 'ts-only',
     made: 'made',
     twice: 42,
     legacy: 21,
@@ -137,16 +145,19 @@ test('TypeScript that cannot be stripped fails the import with its file and line
   const page = await chrome.page(t);
   await boot(page);
   await write(page, files);
-  const message = await page.evaluate(() =>
-    import('/os/ts-broken.ts').then(
-      () => 'loaded',
-      (error) => `${error.name}: ${error.message}`
+  const messages = await page.evaluate(() =>
+    Promise.all(
+      ['/os/ts-broken.ts', '/os/ts-uses-broken.ts'].map((path) =>
+        import(path).then(
+          () => 'loaded',
+          (error) => `${error.name}: ${error.message}`
+        )
+      )
     )
   );
-  assert.equal(
-    message,
-    'SyntaxError: /os/ts-broken.ts:2:8: A TypeScript enum is not supported by type stripping'
-  );
+  const wanted =
+    'SyntaxError: /os/ts-broken.ts:2:8: A TypeScript enum is not supported by type stripping';
+  assert.deepEqual(messages, [wanted, wanted]);
   assert.deepEqual(page.errors, []);
 });
 

@@ -72,7 +72,8 @@ class Lexer {
     while (source[at] !== quote) {
       if (at >= source.length || source[at] === '\n' || source[at] === '\r')
         throw new Fail('unterminated string', { cause: start });
-      at += source[at] === '\\' ? 2 : 1;
+      if (source[at] !== '\\') at++;
+      else at += source.startsWith('\r\n', at + 1) ? 3 : 2;
     }
     this.pos = at + 1;
     return this.token('string', source.slice(start + 1, at), start, nl);

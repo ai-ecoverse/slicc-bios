@@ -129,6 +129,32 @@ async function rewrite(path, source, { resolve, base = '' }) {
   return out + source.slice(at);
 }
 
+const declaredExport =
+  /\bexport\s+(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?:const\s+enum|enum|const|let|var|function\s*\*?|class|namespace|module)\s*([A-Za-z_$][\w$]*)/g;
+const exportList = /\bexport\s+(?:type\s+)?\{([^}]*)\}/g;
+
+export function failing(source, message) {
+  const names = new Set([...source.matchAll(declaredExport)].map((match) => match[1]));
+  for (const [, list] of source.matchAll(exportList)) {
+    for (const part of list.split(','))
+      names.add(
+        part
+          .trim()
+          .split(/\s+as\s+/)
+          .pop()
+      );
+  }
+  const named = [...names].filter((name) => identifier.test(name) && !reserved.has(name));
+  return [
+    `throw new SyntaxError(${JSON.stringify(message)});`,
+    ...(named.length ? [`export let ${named.join(', ')};`] : []),
+    ...(names.has('default') || /\bexport\s+default\b/.test(source)
+      ? ['export default undefined;']
+      : []),
+    '',
+  ].join('\n');
+}
+
 export async function transform(path, source, options) {
   if (!/\.[cm]?ts$/.test(path)) return rewrite(path, source, options);
   let script;
@@ -136,7 +162,7 @@ export async function transform(path, source, options) {
     script = strip(source, path);
   } catch (error) {
     if (!(error instanceof TypeScriptError)) throw error;
-    return `throw new SyntaxError(${JSON.stringify(error.message)});\n`;
+    return failing(source, error.message);
   }
   return rewrite(path, script, options);
 }
