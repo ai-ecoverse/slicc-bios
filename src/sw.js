@@ -9,6 +9,9 @@ const types = {
   js: 'text/javascript; charset=utf-8',
   mjs: 'text/javascript; charset=utf-8',
   cjs: 'text/javascript; charset=utf-8',
+  ts: 'text/javascript; charset=utf-8',
+  mts: 'text/javascript; charset=utf-8',
+  cts: 'text/javascript; charset=utf-8',
   json: 'application/json',
   wasm: 'application/wasm',
 };
@@ -19,7 +22,7 @@ const isolation = {
   'cross-origin-resource-policy': 'same-origin',
 };
 
-const script = /\.(m?js|cjs)$/;
+const script = /\.[cm]?[jt]s$/;
 const markers = [
   '/var/lib/slicc/pnpm-lock.yaml',
   '/node_modules/.modules.yaml',

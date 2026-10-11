@@ -152,7 +152,17 @@ export function createResolver(fs) {
     ]) {
       if (await fs.isFile(candidate)) return candidate;
     }
-    return undefined;
+    return typescript(path);
+  }
+
+  async function typescript(path) {
+    const typed = path.replace(/\.([cm]?)js$/, '.$1ts');
+    return typed !== path && (await fs.isFile(typed)) ? typed : undefined;
+  }
+
+  async function exported(path) {
+    if (!/\.[cm]?js$/.test(path) || (await fs.isFile(path))) return path;
+    return (await typescript(path)) ?? path;
   }
 
   async function browserMapped(path) {
@@ -174,7 +184,7 @@ export function createResolver(fs) {
   async function packageEntry(dir, json, subpath) {
     if (json.exports !== undefined) {
       const found = exportsTarget(json.exports, subpath);
-      return found === undefined ? undefined : join(dir, found);
+      return found === undefined ? undefined : exported(join(dir, found));
     }
     if (subpath !== '.') return mapped(await file(join(dir, subpath)));
     const browser = typeof json.browser === 'string' ? json.browser : undefined;
