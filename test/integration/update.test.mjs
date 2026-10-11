@@ -1,7 +1,18 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
-import { boot, booted, eventually, installable, opfs, ready, run, shows, watch } from './bios.mjs';
+import {
+  boot,
+  booted,
+  eventually,
+  installable,
+  opfs,
+  ready,
+  run,
+  screen,
+  shows,
+  watch,
+} from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch({ timeout: 120000 });
@@ -354,8 +365,9 @@ test("the user's pnpm add and pnpm upgrade in /opt/agent survive seven's updates
       .model.updates.list()
       .some((item) => item.id === 'agent' && item.state === 'installed')
   );
-  await run(page, 'cd /opt/agent && pnpm add is-even@1.0.0 is-odd@3.0.0 && echo added-$((40+2))');
-  await shows(page, 'added-42', 5 * 60 * 1000);
+  await run(page, 'cd /opt/agent; pnpm add is-even@1.0.0 is-odd@3.0.0; echo added-$((40+2))-$?');
+  await shows(page, 'added-42-', 5 * 60 * 1000);
+  assert.match(await screen(page), /added-42-0/, await screen(page));
   await checkNow(page);
   await page.until(
     () =>
@@ -369,7 +381,7 @@ test("the user's pnpm add and pnpm upgrade in /opt/agent survive seven's updates
       id: 'user:agent:is-odd',
       state: 'installed',
       version: '3.0.0',
-      pin: { base: '3.0.1' },
+      pin: { base: '3.0.1', range: '3.0.0', project: '/opt/agent' },
       actions: ['unpin'],
       error: null,
     },
@@ -377,7 +389,7 @@ test("the user's pnpm add and pnpm upgrade in /opt/agent survive seven's updates
       id: 'user:agent:is-even',
       state: 'installed',
       version: '1.0.0',
-      pin: undefined,
+      pin: { base: null, range: '1.0.0', project: '/opt/agent' },
       actions: ['remove'],
       error: null,
     },
@@ -411,8 +423,8 @@ test("the user's pnpm add and pnpm upgrade in /opt/agent survive seven's updates
     assert.deepEqual(
       rows.map(({ id, version, pin }) => [id, version, pin]),
       [
-        ['user:agent:is-odd', '3.0.0', { base: '3.0.1' }],
-        ['user:agent:is-even', '1.0.0', undefined],
+        ['user:agent:is-odd', '3.0.0', { base: '3.0.1', range: '3.0.0', project: '/opt/agent' }],
+        ['user:agent:is-even', '1.0.0', { base: null, range: '1.0.0', project: '/opt/agent' }],
       ]
     );
     await page.evaluate(() => document.querySelector('slicc-app').show('updates'));
@@ -421,7 +433,9 @@ test("the user's pnpm add and pnpm upgrade in /opt/agent survive seven's updates
         !!document
           .querySelector('slicc-app')
           .dock.content('updates')
-          ?.shadowRoot?.querySelector('li[data-id="user:agent:is-odd"]')
+          ?.shadowRoot?.querySelector(
+            'section[data-section="user-packages"] li[data-id="user:agent:is-odd"]'
+          )
     );
     const color = (wanted) =>
       page.evaluate((wanted) => {
@@ -446,7 +460,9 @@ test("the user's pnpm add and pnpm upgrade in /opt/agent survive seven's updates
         !!document
           .querySelector('slicc-app')
           .dock.content('updates')
-          ?.shadowRoot?.querySelector('li[data-id="user:agent:is-odd"]')
+          ?.shadowRoot?.querySelector(
+            'section[data-section="user-packages"] li[data-id="user:agent:is-odd"]'
+          )
     );
     await page.screenshot(new URL('your-packages-420.png', page.dir));
     await page.send('Emulation.clearDeviceMetricsOverride');

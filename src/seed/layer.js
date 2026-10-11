@@ -275,7 +275,11 @@ export async function userRows(root, project) {
         description: `${kind === 'pin' ? 'Pinned' : 'Added'} with pnpm in /${folder}`,
         commands: [],
         origin: 'user',
-        ...(kind === 'pin' ? { pin: { base: base.get(name)?.spec ?? null } } : {}),
+        pin: {
+          base: kind === 'pin' ? (base.get(name)?.spec ?? null) : null,
+          range: spec,
+          project: `/${folder}`,
+        },
         state: layer.error ? 'failed' : 'installed',
         version: layer.error ? spec : (installed?.version ?? spec),
         offered: null,

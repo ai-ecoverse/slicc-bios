@@ -286,7 +286,7 @@ async function restart() {
 }
 
 const layered = { agent: agentProject, grammars: grammarsProject };
-const UNDOING = { unpin: 'updating', remove: 'removing', retry: 'updating' };
+const UNDOING = { unpin: 'removing', remove: 'removing', retry: 'updating' };
 
 async function listOwn() {
   const list = [];
