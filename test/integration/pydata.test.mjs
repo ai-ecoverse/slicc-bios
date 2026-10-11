@@ -19,18 +19,26 @@ const row = (page, id) =>
     id
   );
 
-const act = (page, id, action) =>
-  page.evaluate(
-    ([id, action]) =>
+async function act(page, id, action) {
+  await page.evaluate(
+    ([id, action]) => {
+      window.acted = undefined;
       document
         .querySelector('slicc-app')
         .model.updates.actPackage(id, action)
         .then(
           () => 'ok',
           (error) => error.message
-        ),
+        )
+        .then((result) => {
+          window.acted = result;
+        });
+    },
     [id, action]
   );
+  await page.within(INSTALL, () => window.acted !== undefined);
+  return page.evaluate(() => window.acted);
+}
 
 const exists = (page, path) =>
   page.evaluate(async (path) => {
