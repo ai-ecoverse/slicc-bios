@@ -54,7 +54,8 @@ test('the shell runs as root: whoami, id, ls -l and ps name the users, and git w
   assert.match(text, /uid=0\(root\) gid=0\(root\)/);
   assert.match(text, /drwx------\s+\d+\s+root\s+root\b/);
   assert.match(text, /root\s+\d+\s+bash/);
-  assert.match(text, /\/usr\/local\/share\/pnpm\/(bin\/)?agent/);
+  assert.match(text, /^\s*\/usr\/local\/bin\/agent\s*$/m);
+  assert.doesNotMatch(text, /\/share\/pnpm\/(bin\/)?agent/);
 
   const installed = await page.evaluate(() =>
     document
