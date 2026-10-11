@@ -63,6 +63,8 @@ export function held(id) {
   };
 }
 
+export const DIRECT = 'direct';
+
 export function createExitRouter() {
   const exits = [];
   const own = new Set(KERNEL_NAMES);
@@ -77,8 +79,13 @@ export function createExitRouter() {
   let chosen = null;
   const active = () => exits.filter((exit) => exit.active());
   const fallback = () => {
-    if (chosen === null)
-      return active().find((exit) => !exit.chosenOnly && exit.offersDefault()) ?? null;
+    if (chosen === DIRECT) return null;
+    if (chosen === null) {
+      const offering = active().filter((exit) => exit.offersDefault());
+      return (
+        offering.find((exit) => !exit.chosenOnly) ?? offering.find((exit) => exit.automatic) ?? null
+      );
+    }
     const exit = exits.find((item) => item.id === chosen);
     return exit?.active() && exit.offersDefault() ? exit : held(chosen);
   };
