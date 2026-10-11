@@ -6,7 +6,7 @@ const PROXY = 'proxy';
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
 const BODY_IDLE_MS = 30000;
 const PROXY_BODY_IDLE_MS = 300000;
-export const HINT = 'for the whole web, run npx @ai-ecoverse/slicc-node or install slicc-extension';
+export const HINT = 'for the whole web, run npx sliccy@next or install slicc-extension';
 
 function isLoopback(url) {
   try {
