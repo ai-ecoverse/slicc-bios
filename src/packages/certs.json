@@ -119,6 +119,10 @@
     "integrity": "sha512-kxMgrTHEEzUU2bjXvvaBlmE+sMNcAQCcec2EpJc37IGST+lGI/kqIY6BoeFZ8eXP9tMKUPpI0Nw9ZFpjHIZ1ig==",
     "sha256": "d276b94045ee986ea7af4c0adb775a34644d39894a3f5e64cff695f465990c39"
   },
+  "@ai-ecoverse/slicc-jsh@0.2.0": {
+    "integrity": "sha512-4J5SH/kWFXGLw8vCDjPegAjA3pTGcZ069oR1wD0CoTxCso21pFs9eMVq4Sz/F1mTVR82gAlHrgEKI9Ek2NZWBg==",
+    "sha256": "203510103bb0e3e8a1026fdcb494dcec55b0e9e035667040144b3137ff9f1d27"
+  },
   "@ai-ecoverse/slicc-kernel@1.53.3": {
     "integrity": "sha512-bGAzgiz/V3cAtKumrK6Fu1raUdIA4Jkcm5ni3deNlfoATDZX+fY7khICHrxknpFT4knJS2AhhmUzAIR1IGFAjw==",
     "sha256": "2ef150188e4b6f983b7d3af3db4ac63c884471642f11e828ca4d05396c74d3c5"
