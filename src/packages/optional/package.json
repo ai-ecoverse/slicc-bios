@@ -11,7 +11,7 @@
     "@ai-ecoverse/wasix-gnupg": "2.4.9-4",
     "@ai-ecoverse/wasix-openssh": "10.6.0-5",
     "@ai-ecoverse/wasix-perl": "5.42.0-9",
-    "@ai-ecoverse/wasix-python": "3.14.2-15",
+    "@ai-ecoverse/wasix-python": "3.14.2-16",
     "@ai-ecoverse/wasix-ruby": "3.4.11-10",
     "@ai-ecoverse/wasix-uv-shim": "0.1.0-5",
     "@ai-ecoverse/wasm-git": "2.55.0-15",
