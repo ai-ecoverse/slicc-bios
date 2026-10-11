@@ -280,6 +280,10 @@ Limits:
 - Emscripten programs see only the directories at `/`, so `ls /` and `cat /pnpm-lock.yaml` don't find the two files; WASI programs such as `pnpm` (`cd / && pnpm install`) do.
 - An update of the seed (`os/`) or `sw.js` alone has no lockfile change, so it arrives with the next boot through the BIOS.
 
+## Certified packages
+
+[`src/packages/certs.json`](src/packages/certs.json) lists every certified version of the gated packages: slicc-kernel, slicc-cdp, and the `wasi-*`, `wasix-*`, `wasm-*` and `py-*` packages. Each entry has its npm integrity, and its tarball sha256 where the cert gave one. `test/integration/pins.test.mjs` fails when any lockfile seven ships (the base set, `/opt/agent`, the optional catalog with its nested dependencies, and Tailscale) pins a gated package that isn't listed there with the same integrity. It also fails when a pinned package's `engines.slicc-kernel` or kernel peer range isn't met by the pinned kernel. An uncertified bump, from Renovate or anyone, turns CI red. When homescoop (or the CDP coordinator, for slicc-cdp) certifies a version, add it here in the same PR that pins it.
+
 ## Develop
 
 ```sh
