@@ -113,7 +113,9 @@ test('Python data tools install as one project next to the catalog’s Python, i
   assert.deepEqual(before.requires, ['python']);
   await shots(page, 'pydata-before');
 
-  assert.equal(await act(page, 'pydata', 'install'), 'ok');
+  const result = await act(page, 'pydata', 'install');
+  const quota = await page.evaluate(() => navigator.storage.estimate());
+  assert.equal(result, 'ok', `${(await row(page, 'pydata')).log}\nquota ${JSON.stringify(quota)}`);
   assert.equal((await row(page, 'python')).state, 'installed');
   const installed = await row(page, 'pydata');
   assert.equal(installed.state, 'installed');
