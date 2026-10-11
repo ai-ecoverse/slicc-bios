@@ -21,8 +21,8 @@ importers:
         specifier: 2.3.2-9
         version: 2.3.2-9
       '@ai-ecoverse/py-scipy':
-        specifier: 1.18.0-10
-        version: 1.18.0-10
+        specifier: 1.18.0-11
+        version: 1.18.0-11
 
 packages:
 
@@ -44,6 +44,9 @@ packages:
   '@ai-ecoverse/py-numpy@2.3.2-8':
     resolution: {integrity: sha512-WEScW3EQEEWo0JcvnR7v/9Qax4dYpCu95yAU5Xx/fDteNzpXUWIpkSjN8/xd2lRW+9mdenorBdEVCagGj56qNA==}
 
+  '@ai-ecoverse/py-numpy@2.3.2-9':
+    resolution: {integrity: sha512-bTq0DxMlzCWroiKcVJw4WSd//AnHLS2BXMW95sKUpH8PkfDguB+gqcWjPkaej9lT8R5GgwVcekNN1R7PRX2ELw==}
+
   '@ai-ecoverse/py-packaging@26.3.0-5':
     resolution: {integrity: sha512-syvuROdk7JkbVO9OYKeKZ+Wc2ib97K98rjOnNhK+1qb8+QefeDwMeix7kvL7ow82LRTkfoV0yVrzuNcOh7hxCA==}
 
@@ -62,8 +65,8 @@ packages:
   '@ai-ecoverse/py-pytz@2026.4.0-2':
     resolution: {integrity: sha512-fdYh2M/sSwFd8Y1rnUkZCbyFxkF5GB5otiSpJxNphLlFQa3kHDdU7dpwK6XGpJ3ZH2YvmNo01qY5eWbw+Gq9mw==}
 
-  '@ai-ecoverse/py-scipy@1.18.0-10':
-    resolution: {integrity: sha512-kF/DI0T7qHI5TIkV63AUj8lMkBP1enUdkwkKQw78OZeRpLHP5riZX88bEW/tcdD3pUzMr1NAz5tsC4VRkBXvSw==}
+  '@ai-ecoverse/py-scipy@1.18.0-11':
+    resolution: {integrity: sha512-YUJ8Cvt31TQFScem5oXUVTDtE/8rgBnUGBGeNWZ+NtxNEbECErtd93o4DhYbYpWLVW5E/LE6KWqnThvBT73y+Q==}
 
   '@ai-ecoverse/py-six@1.17.0-2':
     resolution: {integrity: sha512-BNEgSp4l+y5dhmvKqqId7TO2Krchq/uw5vg/Q6bB6UKj+dfmr8ad42vGs4VFzTCnmqpGSgNRVg+TYeRi50t3yg==}
@@ -97,6 +100,8 @@ snapshots:
 
   '@ai-ecoverse/py-numpy@2.3.2-8': {}
 
+  '@ai-ecoverse/py-numpy@2.3.2-9': {}
+
   '@ai-ecoverse/py-packaging@26.3.0-5': {}
 
   '@ai-ecoverse/py-pandas@2.3.2-9':
@@ -117,9 +122,9 @@ snapshots:
 
   '@ai-ecoverse/py-pytz@2026.4.0-2': {}
 
-  '@ai-ecoverse/py-scipy@1.18.0-10':
+  '@ai-ecoverse/py-scipy@1.18.0-11':
     dependencies:
-      '@ai-ecoverse/py-numpy': 2.3.2-8
+      '@ai-ecoverse/py-numpy': 2.3.2-9
 
   '@ai-ecoverse/py-six@1.17.0-2': {}
 
