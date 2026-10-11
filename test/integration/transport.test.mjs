@@ -166,7 +166,7 @@ test('a proxy that is not running is named, and Retry switches to it once it is 
   });
 });
 
-test('under the page fetch, the 502 curl shows points at slicc-node and slicc-extension', async (t) => {
+test('under the page fetch, the 502 curl shows points at the slicc CLI and slicc-extension', async (t) => {
   const page = await chrome.page(t);
   await page.goto('/');
   await ready(page);
@@ -177,7 +177,7 @@ test('under the page fetch, the 502 curl shows points at slicc-node and slicc-ex
     indicator: 'limited',
   });
   await run(page, 'curl -sS https://unreachable.invalid/');
-  await shows(page, 'for the whole web');
+  await shows(page, 'for the whole web, run npx sliccy@next');
   await shows(page, 'install slicc-extension');
   await page.until(() =>
     document

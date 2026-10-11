@@ -16,7 +16,7 @@ export function fingerprint(sdp) {
 }
 
 export function joinCommand(url) {
-  return url ? `npx sliccy ${url} follow` : null;
+  return url ? `npx sliccy@next ${url} follow` : null;
 }
 
 function read(storage, key, fallback) {
