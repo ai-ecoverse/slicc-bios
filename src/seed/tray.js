@@ -163,14 +163,43 @@ function remember(links, devices, save) {
   let dirty = false;
   for (const link of links.links.values()) {
     if (link.mode !== 'remote' || !link.peer || !link.fingerprint) continue;
+    const known = devices[link.id];
+    const capable = Array.isArray(link.peer.caps) && link.peer.caps.length > 0;
+    if (known && !capable) continue;
     const { name, offers, policy, exit } = device(link);
-    const next = { name, label: link.label, address: link.address, offers, policy, exit };
-    if (JSON.stringify(devices[link.id]) !== JSON.stringify(next)) {
+    const next = {
+      name,
+      label: link.label,
+      address: link.address,
+      offers,
+      policy,
+      exit,
+      ...(known?.control ? { control: true } : {}),
+    };
+    if (JSON.stringify(known) !== JSON.stringify(next)) {
       devices[link.id] = next;
       dirty = true;
     }
   }
   if (dirty) save();
+}
+
+function awayDevices(devices, links) {
+  const live = new Set([...links.links.values()].map((link) => link.id));
+  return Object.entries(devices)
+    .filter(([id]) => !live.has(id))
+    .map(([id, known]) => ({
+      id,
+      name: known.name,
+      host: known.label ? `${known.label}.slicc.internal` : '',
+      address: known.address,
+      mode: 'remote',
+      offers: known.offers ?? [],
+      ...(known.policy ? { policy: known.policy } : {}),
+      exit: Boolean(known.exit),
+      control: { allowed: known.control === true },
+      state: 'offline',
+    }));
 }
 
 export function createTray({
@@ -315,23 +344,17 @@ export function createTray({
       const joinUrl = state === 'ready' ? session.joinUrl : null;
       return { state, error, joinUrl, joinCommand: joinCommand(joinUrl) };
     },
-    away() {
-      const live = new Set([...links.links.values()].map((link) => link.id));
-      return Object.entries(devices)
-        .filter(([id]) => !live.has(id))
-        .map(([id, known]) => ({
-          id,
-          name: known.name,
-          host: known.label ? `${known.label}.slicc.internal` : '',
-          address: known.address,
-          mode: 'remote',
-          offers: known.offers ?? [],
-          ...(known.policy ? { policy: known.policy } : {}),
-          exit: Boolean(known.exit),
-          state: 'reconnecting',
-        }));
-    },
+    away: () => awayDevices(devices, links),
     known: (id) => id in devices,
+    controlAllowed: (id) => devices[id]?.control === true,
+    setControl(id, allowed) {
+      const known = devices[id];
+      if (!known) throw new Error('That device isn’t linked.');
+      if (allowed) known.control = true;
+      else delete known.control;
+      save();
+      changed();
+    },
     async forget(id) {
       delete devices[id];
       unlinked.add(id);

@@ -166,7 +166,13 @@ test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback
   const hello = await page.evaluate(() => globalThis.fakeNodeLog.find((m) => m.role === 'page'));
   assert.deepEqual(
     { ...hello, name: hello.name.replace(/ on .*/, '') },
-    { v: 1, role: 'page', name: 'seven', mode: 'local', caps: ['kernel-in', 'browsers'] }
+    {
+      v: 1,
+      role: 'page',
+      name: 'seven',
+      mode: 'local',
+      caps: ['kernel-in', 'browsers', 'agent'],
+    }
   );
   assert.match(hello.name, /^seven on (localhost|127\.0\.0\.1):\d+$/);
   assert.deepEqual(await knownHosts(page, 'fake'), {
@@ -357,9 +363,13 @@ test('the real slicc CLI: ssh into it with its pinned host key, and as the exit 
   );
   assert.deepEqual(ssh, { code: '0', out: 'ssh 42' });
 
-  await page.evaluate(() =>
-    document.querySelector('slicc-app').model.network.setExit({ kind: 'link', id: 'local' })
-  );
+  const exitToConnected = () =>
+    page.evaluate(() => {
+      const network = document.querySelector('slicc-app').model.network;
+      const device = network.status().links.devices.find((d) => d.state === 'connected');
+      return network.setExit({ kind: 'link', id: device.id });
+    });
+  await exitToConnected();
   const named = await shell(
     page,
     `curl -s --noproxy '*' --max-time 10 http://ref.link.test:${port}/named`,
@@ -367,6 +377,14 @@ test('the real slicc CLI: ssh into it with its pinned host key, and as the exit 
   );
   assert.deepEqual(named, { code: '0', out: 'hosts /named' });
   await attach(['--deny', `${lan}/32`]);
+  await page.until(
+    () =>
+      document
+        .querySelector('slicc-app')
+        .model.network.status()
+        .links.devices.filter((d) => d.state === 'connected').length === 1
+  );
+  await exitToConnected();
   const denied = await shell(
     page,
     `curl -s --noproxy '*' --max-time 10 http://ref.link.test:${port}/named`,

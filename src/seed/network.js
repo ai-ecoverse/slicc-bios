@@ -119,6 +119,10 @@ function exitActions({ router, links, tray, tailnet, storage }, emit) {
             tray.stop();
             tray.start();
           },
+          setRemoteControl: async (id, allowed) => {
+            tray.setControl(id, allowed);
+            emit();
+          },
         }
       : {}),
   };

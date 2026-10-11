@@ -97,6 +97,7 @@ await step('seed', async () => {
     'os.js',
     'packages.js',
     'present.js',
+    'remote.js',
     'storage.js',
     'switchboard-worker.js',
     'switchboard.js',

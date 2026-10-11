@@ -8,6 +8,7 @@ import {
   installAgent,
   loadChat,
   recorded,
+  remoteAgent,
   startChat,
   whenIdle,
 } from './agent.js';
@@ -29,6 +30,7 @@ import {
   serveNetwork,
   serveUpdates,
 } from './present.js';
+import { createRemote } from './remote.js';
 import { installPrompts, keepStorage, onSend } from './storage.js';
 import {
   claim,
@@ -94,8 +96,19 @@ const browser = createBrowser(network);
 const control = browserControl(network, { observe: browser.observe, links: () => links });
 const exits = createExitRouter();
 const tailscale = createTailscale(await tailscaleConfig(), { router: exits });
+const remote = createRemote({
+  control: () => remoteAgent(owner, { cone: () => app.model?.agent?.active?.() }),
+  onChange: () => links.changed(),
+});
+const allowedRemotely = (link) => link.mode === 'local' || Boolean(tray?.controlAllowed(link.id));
 const links = createLinks({
   router: exits,
+  agent: { allowed: allowedRemotely, handle: (link, meta, s) => remote.handle(link, meta, s) },
+  describe: (link) => ({
+    control:
+      link.mode === 'local' ? { allowed: true, fixed: true } : { allowed: allowedRemotely(link) },
+    ...(remote.controlling(link) ? { controlling: remote.controlling(link) } : {}),
+  }),
   name: `seven on ${location.host}`,
   makePeer: (config) => new RTCPeerConnection(config),
   kernel: () => kernel,
