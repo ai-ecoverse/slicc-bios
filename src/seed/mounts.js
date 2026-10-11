@@ -111,8 +111,7 @@ export function hostfsHook(network, linked) {
   const proxy = network.kind === 'local-proxy' ? hostfsGrants(network.proxy) : null;
   if (!linked) return proxy;
   return (source, options) => {
-    if (linked.mounts().some((entry) => entry.source === source))
-      return linked.fsGrant(source, options);
+    if (linked.claims(source)) return linked.fsGrant(source, options);
     if (proxy) return proxy(source, options);
     return Promise.reject(new Error(`no host folder ${source}`));
   };

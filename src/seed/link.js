@@ -475,6 +475,46 @@ export function dnsLabel(hint, taken) {
   for (let n = 2; ; n += 1) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
 }
 
+export const LABELS = 'slicc-os.link-labels';
+export const SOURCES = 'slicc-os.link-sources';
+export const LABELS_KEPT = 64;
+
+export function labelStore(storage = null) {
+  const load = (key) => {
+    try {
+      const read = JSON.parse(storage?.getItem(key) ?? '[]');
+      return Array.isArray(read)
+        ? read.filter((entry) => Array.isArray(entry) && entry.length === 2)
+        : [];
+    } catch {
+      return [];
+    }
+  };
+  const lists = { [LABELS]: load(LABELS), [SOURCES]: load(SOURCES) };
+  const get = (key, who) => lists[key].find(([k]) => k === who)?.[1];
+  const put = (key, who, value) => {
+    lists[key] = [...lists[key].filter(([k]) => k !== who), [who, value]].slice(-LABELS_KEPT);
+    try {
+      storage?.setItem(key, JSON.stringify(lists[key]));
+    } catch {}
+  };
+  return {
+    pick(identity, hint, taken) {
+      const base = dnsLabel(hint, new Set());
+      const kept = get(LABELS, identity);
+      const fits =
+        typeof kept === 'string' &&
+        (kept === base ||
+          (kept.startsWith(`${base}-`) && /^\d+$/.test(kept.slice(base.length + 1))));
+      const label = fits && !taken.has(kept) ? kept : dnsLabel(hint, taken);
+      put(LABELS, identity, label);
+      return label;
+    },
+    bind: (source, identity) => put(SOURCES, source, identity),
+    bound: (source) => get(SOURCES, source),
+  };
+}
+
 export function offerLink({ pc, send, hello, timers, onClose, accept }) {
   const control = pc.createDataChannel(CONTROL, { ordered: true });
   const session = createSession({
@@ -544,6 +584,18 @@ export function mergeDevices(entries) {
   return [...byId.values()];
 }
 
+function linkedFolder(live, source, owner) {
+  const name = source.slice(source.indexOf('/') + 1);
+  const mine = live.find((entry) => entry.link.identity === owner && entry.mount.name === name);
+  if (mine) return mine;
+  const here = live.find((entry) => entry.source === source);
+  if (!here || !owner) return here;
+  const rivals = live.filter(
+    (entry) => entry.mount.name === name && entry.link.base === here.link.base
+  );
+  return rivals.length > 1 ? undefined : here;
+}
+
 export function createLinks({
   router,
   makePeer,
@@ -554,6 +606,7 @@ export function createLinks({
   serveFs = null,
   agent = null,
   describe = () => ({}),
+  labels = labelStore(),
 }) {
   const links = new Map();
   let serial = 0;
@@ -592,10 +645,13 @@ export function createLinks({
           ? link.mounts.map((mount) => ({ source: `${link.label}/${mount.name}`, link, mount }))
           : []
       ),
+    claims: (source) =>
+      manager.mounts().some((entry) => entry.source === source) || Boolean(labels.bound(source)),
     async fsGrant(source, { readonly }) {
-      const found = manager.mounts().find((entry) => entry.source === source);
+      const found = linkedFolder(manager.mounts(), source, labels.bound(source));
       if (!found || !serveFs) throw failure(`ENOENT: no linked folder ${source}`);
       const { link, mount } = found;
+      labels.bind(source, link.identity);
       const token = `${link.id ?? link.key}#${link.serial}`;
       const { port1, port2 } = new MessageChannel();
       const transport = linkFs(link.offer.session, {
@@ -675,7 +731,9 @@ export function createLinks({
           link.browsers = browserList(peer.browsers);
           link.mounts = mountList(peer.mounts);
           if (Array.isArray(peer.caps) && peer.caps.length) {
-            link.label = dnsLabel(peer.host ?? peer.name, taken());
+            link.identity = `${link.id ?? key}|${node ?? ''}`;
+            link.base = dnsLabel(peer.host ?? peer.name, new Set());
+            link.label = labels.pick(link.identity, peer.host ?? peer.name, taken());
             router.add(link.exit);
           }
           onLink(link, peer);

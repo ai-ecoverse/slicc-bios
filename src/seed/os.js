@@ -25,7 +25,7 @@ import {
   installed,
 } from './grammars.js';
 import { change, userRows } from './layer.js';
-import { createLinks, installLocal, trustHostKey } from './link.js';
+import { createLinks, installLocal, labelStore, trustHostKey } from './link.js';
 import { serveLoopback } from './loopback.js';
 import { createFolders, offTheRecord } from './mounts.js';
 import { createNetwork } from './network.js';
@@ -113,6 +113,7 @@ const remote = createRemote({
 const allowedRemotely = (link) => link.mode === 'local' || Boolean(tray?.controlAllowed(link.id));
 const links = createLinks({
   router: exits,
+  labels: labelStore(localStorage),
   agent: { allowed: allowedRemotely, handle: (link, meta, s) => remote.handle(link, meta, s) },
   describe: (link) => ({
     control:

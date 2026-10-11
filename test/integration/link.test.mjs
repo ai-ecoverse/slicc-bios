@@ -623,3 +623,45 @@ test('the real slicc CLI shares a folder: the kernel mounts <device>/<name> over
   );
   assert.match(ro.out, /write [1-9]/);
 });
+
+test('a remembered linked folder mounted before its CLI links fills in when the CLI arrives', {
+  skip: !cli,
+}, async (t) => {
+  const { mkdtemp, writeFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'link-fs-later-'));
+  await writeFile(join(dir, 'hello.txt'), 'remembered\n');
+  const page = await chrome.page(t);
+  await boot(page);
+  await ready(page);
+  await page.evaluate(() =>
+    localStorage.setItem(
+      'slicc-os.mounts',
+      JSON.stringify([
+        { type: 'hostfs', source: 'ref-node/proj', target: '/mnt/proj', options: {} },
+      ])
+    )
+  );
+  await page.reload();
+  await ready(page);
+  const before = await shell(page, 'grep -c " /mnt/proj " /proc/mounts', 'fs-later-before');
+  assert.equal(before.out, '1');
+  const node = spawn(
+    cli,
+    ['attach', '--signal', 'stdio', '--name', 'ref-node', '--no-kernel', '--mount', `${dir}:proj`],
+    { stdio: ['pipe', 'pipe', 'inherit'] }
+  );
+  t.after(() => node.kill());
+  await page.expose('sliccLinkSend', (message) => node.stdin.write(`${JSON.stringify(message)}\n`));
+  createInterface({ input: node.stdout }).on('line', (line) =>
+    page.evaluate((line) => globalThis.sliccLinkReceive(line), line).catch(() => {})
+  );
+  let seen;
+  for (let i = 0; i < 80; i += 1) {
+    seen = await shell(page, 'cat /mnt/proj/hello.txt 2>&1', `fs-later-${i}`);
+    if (seen.out === 'remembered') break;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  assert.equal(seen.out, 'remembered');
+});
