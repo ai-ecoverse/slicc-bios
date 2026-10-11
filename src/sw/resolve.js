@@ -152,7 +152,8 @@ export function createResolver(fs) {
     ]) {
       if (await fs.isFile(candidate)) return candidate;
     }
-    return undefined;
+    const typed = path.replace(/\.([cm]?)js$/, '.$1ts');
+    return typed !== path && (await fs.isFile(typed)) ? typed : undefined;
   }
 
   async function browserMapped(path) {

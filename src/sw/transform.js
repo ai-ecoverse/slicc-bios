@@ -1,5 +1,6 @@
 import { NODE_STUBS } from './resolve.js';
 import { scan } from './scan.js';
+import { strip, TypeScriptError } from './strip.js';
 
 const identifier = /^[A-Za-z_$][\w$]*$/;
 export const reserved = new Set(
@@ -62,7 +63,7 @@ export function requires(source) {
 }
 
 function looksCommonJs(path, source) {
-  if (path.endsWith('.cjs')) return true;
+  if (path.endsWith('.cjs') || path.endsWith('.cts')) return true;
   return /\b(require\(|module\.exports|exports\.[A-Za-z_$])/.test(source);
 }
 
@@ -104,7 +105,7 @@ function needsJsonType(source, entry, target) {
   );
 }
 
-export async function transform(path, source, { resolve, base = '' }) {
+async function rewrite(path, source, { resolve, base = '' }) {
   const { imports, module } = scan(source);
   if (!module && imports.length === 0 && looksCommonJs(path, source))
     return wrap(path, source, resolve, base);
@@ -126,4 +127,16 @@ export async function transform(path, source, { resolve, base = '' }) {
     }
   }
   return out + source.slice(at);
+}
+
+export async function transform(path, source, options) {
+  if (!/\.[cm]?ts$/.test(path)) return rewrite(path, source, options);
+  let script;
+  try {
+    script = strip(source, path);
+  } catch (error) {
+    if (!(error instanceof TypeScriptError)) throw error;
+    return `throw new SyntaxError(${JSON.stringify(error.message)});\n`;
+  }
+  return rewrite(path, script, options);
 }
