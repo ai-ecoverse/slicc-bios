@@ -157,6 +157,7 @@ test('Python data tools install as one project next to the catalog’s Python, i
   assert.deepEqual(orphan.notes, [
     "Needs Python, which isn't installed. Install Python again to use it.",
   ]);
+  await shots(page, 'pydata-without-python');
 
   assert.equal(await act(page, 'pydata', 'remove'), 'ok');
   assert.equal((await row(page, 'pydata')).state, 'available');
