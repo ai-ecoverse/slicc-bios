@@ -528,18 +528,28 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     ]),
     [`${shipped}-next`, ['next'], 'next']
   );
+  await eventually(() => keyed().length === 2, UPDATE);
+  assert.match(keyed()[1].body, /channel=\\?"upgrade\\?"/);
   await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
   await page.until(
     () => !!window.chatView() && !!window.deep(window.chatView().shadowRoot, 'textarea')
   );
+  await page.until(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    return (
+      !agent.busy(agent.active()) &&
+      window.deepText(window.chatView().shadowRoot).split('Hello from Bedrock in seven.').length ===
+        3
+    );
+  });
   await sendChat('Say hello again');
   assert.equal(await page.evaluate(() => window.persistCalls), booted + 3);
   await page.until(
     () =>
       window.deepText(window.chatView().shadowRoot).split('Hello from Bedrock in seven.').length ===
-      3
+      4
   );
-  assert.equal(keyed().length, 2);
+  assert.equal(keyed().length, 3);
 
   const other = await page.tab();
   await other.init(helpers);
@@ -555,18 +565,18 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   await other.until(
     () =>
       window.deepText(window.chatView().shadowRoot).split('Hello from Bedrock in seven.').length ===
-      3
+      4
   );
   await other.evaluate(() => window.deep(window.chatView().shadowRoot, 'textarea').focus());
   await other.insert('Say hello from the other tab');
   await other.enter();
   const answered = () =>
     window.deepText(window.chatView().shadowRoot).split('Hello from Bedrock in seven.').length ===
-    4;
+    5;
   await other.until(answered);
   await page.until(answered);
-  assert.equal(keyed().length, 3);
-  assert.match(keyed()[2].body, /Say hello from the other tab/);
+  assert.equal(keyed().length, 4);
+  assert.match(keyed()[3].body, /Say hello from the other tab/);
   assert.deepEqual(other.errors, []);
   await other.close();
 
