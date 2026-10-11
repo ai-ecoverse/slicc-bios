@@ -1,7 +1,6 @@
 import { fetchText, pnpm, text, write } from './update.js';
 
 export const FILES = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'];
-const RACE = /ERR_PNPM_CMD_SHIM_PARSE_MANIFEST/;
 
 export const folder = (id) => `opt/slicc/${id}`;
 export const receipt = (id) => `var/lib/slicc/optional/${id}/package.json`;
@@ -72,10 +71,7 @@ async function removeIn(root, path) {
 
 export async function installProject({ root, kernel, id, project, report, to }) {
   for (const name of FILES) await write(root, `${folder(id)}/${name}`, project.files[name]);
-  await pnpm(kernel, `/${folder(id)}`, report, to).catch((error) => {
-    if (!RACE.test(error.log)) throw error;
-    return pnpm(kernel, `/${folder(id)}`, report, to);
-  });
+  await pnpm(kernel, `/${folder(id)}`, report, to);
   const pth = await writePth(root, id);
   await write(
     root,
