@@ -551,10 +551,12 @@ export function createLinks({
   timers,
   name = 'seven',
   kernel = null,
+  serveFs = null,
   agent = null,
   describe = () => ({}),
 }) {
   const links = new Map();
+  let serial = 0;
   const taken = () => new Set([...links.values()].map((link) => link.label).filter(Boolean));
   const free = (wanted) => {
     const used = new Set([...links.values()].map((link) => link.address));
@@ -584,9 +586,38 @@ export function createLinks({
     changed,
     devices: () =>
       mergeDevices([...links.values()].map((link) => ({ ...device(link), ...describe(link) }))),
+    mounts: () =>
+      [...links.values()].flatMap((link) =>
+        link.peer && link.offer.session.caps().includes('fs')
+          ? link.mounts.map((mount) => ({ source: `${link.label}/${mount.name}`, link, mount }))
+          : []
+      ),
+    async fsGrant(source, { readonly }) {
+      const found = manager.mounts().find((entry) => entry.source === source);
+      if (!found || !serveFs) throw failure(`ENOENT: no linked folder ${source}`);
+      const { link, mount } = found;
+      const token = `${link.id ?? link.key}#${link.serial}`;
+      const { port1, port2 } = new MessageChannel();
+      const transport = linkFs(link.offer.session, {
+        mount,
+        readonly: readonly || mount.readonly,
+        token,
+      });
+      link.served.push(serveFs(port2, transport));
+      return { port: port1, token, capabilities: mount.capabilities };
+    },
     start({ key, send, mode, iceServers, address }) {
       manager.drop(key, 'replaced');
-      const link = { key, mode, address: free(address), label: null, peer: null };
+      serial += 1;
+      const link = {
+        key,
+        mode,
+        address: free(address),
+        label: null,
+        peer: null,
+        serial,
+        served: [],
+      };
       const pc = makePeer({ iceServers });
       link.offer = offerLink({
         pc,
@@ -597,6 +628,7 @@ export function createLinks({
           caps: [
             ...(kernel ? ['kernel-in'] : []),
             'browsers',
+            'mounts',
             ...(agent?.allowed(link) ? ['agent'] : []),
           ],
         }),
@@ -604,6 +636,11 @@ export function createLinks({
           if (meta.kind === 'agent') {
             if (!agent?.allowed(link)) return Promise.reject(failure('EACCES'));
             return { handle: (s) => agent.handle(link, meta, s) };
+          }
+          if (meta.kind === 'mounts') {
+            link.mounts = mountList(meta.mounts);
+            changed();
+            return null;
           }
           if (meta.kind !== 'browsers')
             return kernel ? kernelIn(kernel, meta) : Promise.reject(failure('EOPNOTSUPP'));
@@ -615,6 +652,7 @@ export function createLinks({
         onClose: () => {
           if (links.get(key) === link) links.delete(key);
           router.remove(link.exit);
+          for (const stop of link.served.splice(0)) stop();
           changed();
         },
       });
@@ -635,6 +673,7 @@ export function createLinks({
           }
           link.peer = peer;
           link.browsers = browserList(peer.browsers);
+          link.mounts = mountList(peer.mounts);
           if (Array.isArray(peer.caps) && peer.caps.length) {
             link.label = dnsLabel(peer.host ?? peer.name, taken());
             router.add(link.exit);
@@ -686,6 +725,109 @@ export function createLinks({
 }
 
 export const FACADE_PORT = 9222;
+export const SHARED_READ = 64 * 1024;
+
+export function mountList(list) {
+  return (Array.isArray(list) ? list : [])
+    .filter((mount) => typeof mount?.name === 'string' && /^[A-Za-z0-9._-]+$/.test(mount.name))
+    .map(({ name, readonly, capabilities }) => ({
+      name,
+      readonly: readonly === true,
+      capabilities: capabilities && typeof capabilities === 'object' ? capabilities : {},
+    }));
+}
+
+const notConnected = (error) =>
+  error.code === 'ECONNRESET' ? Object.assign(error, { code: 'ENOTCONN' }) : error;
+
+async function drain(stream) {
+  const chunks = [];
+  for (let chunk = await stream.read(); chunk; chunk = await stream.read()) chunks.push(chunk);
+  const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+  let at = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, at);
+    at += chunk.length;
+  }
+  return out;
+}
+
+export function linkFs(session, { mount, readonly, token }) {
+  const open = (op, args, shared = true) =>
+    session
+      .open(
+        { kind: 'fs', mount: mount.name, op, ...args, ...(readonly ? { readonly: true } : {}) },
+        { shared }
+      )
+      .catch((error) => Promise.reject(notConnected(error)));
+  const finish = async (stream) => {
+    const bytes = await drain(stream).catch((error) => Promise.reject(notConnected(error)));
+    stream.closeWrite();
+    return bytes;
+  };
+  return {
+    capabilities: mount.capabilities,
+    token,
+    maxIo: mount.capabilities.maxIo ?? 16 * 1024 * 1024,
+    get gone() {
+      return session.closed() !== null;
+    },
+    async call(op, body = {}) {
+      const stream = await open(op, body);
+      const extra = await finish(stream);
+      if (op !== 'list') return stream.info;
+      const entries = decoder
+        .decode(extra)
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      return { entries };
+    },
+    async read(fh, offset, size, ifMatch) {
+      const stream = await open(
+        'read',
+        { fh, offset, size, ...(ifMatch ? { ifMatch } : {}) },
+        size <= SHARED_READ
+      );
+      return finish(stream);
+    },
+    async write(fh, offset, bytes) {
+      const stream = await open('write', { fh, offset }, false);
+      await stream.write(bytes).catch((error) => Promise.reject(notConnected(error)));
+      stream.closeWrite();
+      await drain(stream).catch((error) => Promise.reject(notConnected(error)));
+    },
+    async watch(signal, onEvent, onOpen = () => {}) {
+      if (signal.aborted) return;
+      const stream = await session
+        .open({ kind: 'fs', op: 'watch', mounts: [mount.name] })
+        .catch((error) => Promise.reject(notConnected(error)));
+      const stop = () => stream.close();
+      signal.addEventListener('abort', stop, { once: true });
+      onOpen();
+      let buffered = '';
+      try {
+        for (let chunk = await stream.read(); chunk; chunk = await stream.read()) {
+          buffered += decoder.decode(chunk, { stream: true });
+          const parts = buffered.split('\n');
+          buffered = parts.pop();
+          for (const part of parts.filter(Boolean)) {
+            const { paths, all, ping } = JSON.parse(part);
+            onEvent({
+              ...(paths ? { paths } : {}),
+              ...(all ? { all: true } : {}),
+              ...(ping ? { ping } : {}),
+            });
+          }
+        }
+      } catch (error) {
+        if (!signal.aborted) throw notConnected(error);
+      } finally {
+        signal.removeEventListener('abort', stop);
+      }
+    },
+  };
+}
 export const MAX_CDP_MESSAGE = 64 * 1024 * 1024;
 
 export function browserList(list) {

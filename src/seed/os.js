@@ -1,4 +1,4 @@
-import { attachKernel, createKernel } from '@ai-ecoverse/slicc-kernel';
+import { attachKernel, createKernel, serveHostfsPort } from '@ai-ecoverse/slicc-kernel';
 import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
 import { confirm, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
 import { signIn } from './adobe.js';
@@ -122,6 +122,7 @@ const links = createLinks({
   name: `seven on ${location.host}`,
   makePeer: (config) => new RTCPeerConnection(config),
   kernel: () => kernel,
+  serveFs: serveHostfsPort,
   onLink: (link, peer) => {
     trustHostKey(kernel, link, peer).catch((error) => console.warn(`link: ${error.message}`));
   },
@@ -458,7 +459,12 @@ async function rows() {
 }
 
 async function own() {
-  folders = createFolders({ storage: localStorage, network, secret: await offTheRecord() });
+  folders = createFolders({
+    storage: localStorage,
+    network,
+    secret: await offTheRecord(),
+    linked: links,
+  });
   kernel = await createKernel({
     root,
     network: { transport, uplink: exits.uplink },
