@@ -119,6 +119,10 @@
     "integrity": "sha512-kxMgrTHEEzUU2bjXvvaBlmE+sMNcAQCcec2EpJc37IGST+lGI/kqIY6BoeFZ8eXP9tMKUPpI0Nw9ZFpjHIZ1ig==",
     "sha256": "d276b94045ee986ea7af4c0adb775a34644d39894a3f5e64cff695f465990c39"
   },
+  "@ai-ecoverse/slicc-cdp@1.7.1": {
+    "integrity": "sha512-CrGW+xGXr3kQzPx7vCDMv24Qv0LqQfvY73msuwse2qiLSt7mPi9FdT3NEJ//CHUq/TZ3cyueLKVHGn5NW5oi5w==",
+    "sha256": "6b3f109ceebe4e03254f12ca549908e532ee3819250ad01a8df9ee437330bae1"
+  },
   "@ai-ecoverse/slicc-jsh@0.2.0": {
     "integrity": "sha512-4J5SH/kWFXGLw8vCDjPegAjA3pTGcZ069oR1wD0CoTxCso21pFs9eMVq4Sz/F1mTVR82gAlHrgEKI9Ek2NZWBg==",
     "sha256": "203510103bb0e3e8a1026fdcb494dcec55b0e9e035667040144b3137ff9f1d27"
@@ -142,6 +146,10 @@
   "@ai-ecoverse/slicc-kernel@1.58.1": {
     "integrity": "sha512-Nh1p+Su97x7sRqAp8WLutNfkiwtTU0M4mZciXxsqW9ZfGH1Y1JmGQS/D68MJnf1toYYUGbBmPBZb0uGxHdoauA==",
     "sha256": "0ff546fd7be772f64670f32f4c4bec55b26adafe206d057f40747e73e5550389"
+  },
+  "@ai-ecoverse/slicc-kernel@1.61.0": {
+    "integrity": "sha512-GN46Biv3VrzRz96ljT6VSYbPQsZVx+9c0szjEClAmq9cLUsMPlgGoYp/SnlwMy260pOjjuFn6agn+Yzuys74nw==",
+    "sha256": "9f1db5b6f9eb795d3e23dd331758d444c2e991d56a7a6973bab292b0ead9a2ac"
   },
   "@ai-ecoverse/wasi-biome@2.5.15-2": {
     "integrity": "sha512-5oIfngw8Ln2/ddCJ0wtqMoSnW+UO2zuih0+x1CNDbwKkB18TxuWoI60QFQySjd69N6eP+blL/stz/AZyoYpeuw==",

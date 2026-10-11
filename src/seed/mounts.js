@@ -12,6 +12,11 @@ const under = (path, target) => path.startsWith(`${target}/`);
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const folders = (table) => table.filter((entry) => FOLDERS.has(entry.type));
 const same = (a, b) => a.target === b.target && a.source === b.source;
+const ROOT = { uid: 0, gid: 0 };
+
+export function owned(options = {}, user = ROOT) {
+  return { ...options, uid: String(user.uid), gid: String(user.gid) };
+}
 
 export async function offTheRecord(storage = navigator.storage, memory = performance.memory) {
   if ((await storage.persisted?.()) !== true) return true;
@@ -287,7 +292,7 @@ export function createFolders({
       await fs.mkdir(target);
       inserting.add(target);
       try {
-        await kernel.mount({ type: 'fsa', source: 'none', target });
+        await kernel.mount({ type: 'fsa', source: 'none', target, options: owned() });
         await kernel.insert(target, handle);
       } finally {
         inserting.delete(target);
@@ -322,7 +327,7 @@ export function createFolders({
       for (const { type, source, target, options } of remembered(storage, secret)) {
         try {
           await fs.mkdir(target);
-          await kernel.mount({ type, source, target, options });
+          await kernel.mount({ type, source, target, options: owned(options) });
         } catch (error) {
           console.warn(`${target} was not mounted again: ${error.message}`);
         }

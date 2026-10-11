@@ -146,6 +146,8 @@ test('Mount a folder and Eject in the Files panel mount and unmount a picked fol
   assert.equal(await page.evaluate(() => window.picked), 1);
   assert.deepEqual(await mounts(page), ['/mnt/picked']);
   assert.deepEqual(await waiting(page, '/mnt/picked'), { needs: false, button: null });
+  await run(page, 'grep -c " /mnt/picked fsa .*uid=0,gid=0" /proc/mounts | sed "s/^/owned /"');
+  await shows(page, 'owned 1');
   await page.until(
     () => !!window.filesPanel().querySelector('[data-action="eject"][data-path="/mnt/picked"]')
   );
@@ -202,8 +204,12 @@ test('mount -t hostfs mounts a folder the local proxy exports, with a grant the 
   await page.until(() =>
     document.querySelector('slicc-app').model.files.mounts().includes('/mnt/p')
   );
-  await run(page, 'cat /mnt/p/hello.txt | tr a-z A-Z');
+  await run(
+    page,
+    'cat /mnt/p/hello.txt | tr a-z A-Z; grep -c "^project /mnt/p hostfs ro.*uid=0,gid=0" /proc/mounts | sed "s/^/restored /"'
+  );
   await shows(page, 'HELLO FROM THE HOST');
+  await shows(page, 'restored 1');
 
   await run(
     page,
