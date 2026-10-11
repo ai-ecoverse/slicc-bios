@@ -272,7 +272,7 @@ export async function userRows(root, project) {
         id: `user:${id}:${name}`,
         package: name,
         label: name,
-        description: `${kind === 'pin' ? 'Pinned' : 'Added'} with pnpm in /${folder}`,
+        description: installed?.description ?? `${kind === 'pin' ? 'Pinned' : 'Added'} with pnpm`,
         commands: [],
         origin: 'user',
         pin: {

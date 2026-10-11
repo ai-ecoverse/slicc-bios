@@ -283,16 +283,14 @@ test('an /opt/agent installed without a workspace file updates to a pruned one',
   assert.deepEqual(page.errors, []);
 });
 
-const ODD =
-  'sha512-CQpnWPrDwmP1+SMHXZhtLtJv90yiyVfluGsX5iNCVkrhQtU3TQHsUWPG9wkdk9Lgd5yNpAg9jQEo90CBaXgWMA==';
-const NUMBER6 =
-  'sha512-Wu1VHeILBK8KAWJUAiSZQX94GmOE45Rg6/538fKwiloUu21KncEkYGPqob2oSZ5mUT73vLGrHQjKw3KMPwfDzg==';
-const NUMBER7 =
-  'sha512-41Cifkg6e8TylSpdtTpeLVMqvSBEVzTttHvERD741+pnZ8ANv0004MRL43QKPDlK9cGvNp6NZWZUBlbGXYxxng==';
+const MS =
+  'sha512-GsCCIZDE/p3i96vtEqx+7dBUGXrc7zeSK3wwPHIaRThS+9OhWIXRqzs4d6k1SVU8g91DrNRWxWUGhp5KXQb2VA==';
+const ESTREE =
+  'sha512-dWHzHa2WqEXI/O1E9OjrocMTKJl2mSrEolh1Iomrv6U+JuNwaHXsXx9bLu5gG7BUWFIN0skIQJQ/L1rIex4X6w==';
 const PREFIX =
   "lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\n\nimporters:\n\n  .:\n    dependencies:\n";
-const BASE_LOCK = `${PREFIX}      is-odd:\n        specifier: 3.0.1\n        version: 3.0.1\n\npackages:\n\n  is-number@6.0.0:\n    resolution: {integrity: ${NUMBER6}}\n    engines: {node: '>=0.10.0'}\n\n  is-odd@3.0.1:\n    resolution: {integrity: ${ODD}}\n    engines: {node: '>=4'}\n\nsnapshots:\n\n  is-number@6.0.0: {}\n\n  is-odd@3.0.1:\n    dependencies:\n      is-number: 6.0.0\n`;
-const NEWER_LOCK = `${PREFIX}      is-number:\n        specifier: 7.0.0\n        version: 7.0.0\n      is-odd:\n        specifier: 3.0.1\n        version: 3.0.1\n\npackages:\n\n  is-number@6.0.0:\n    resolution: {integrity: ${NUMBER6}}\n    engines: {node: '>=0.10.0'}\n\n  is-number@7.0.0:\n    resolution: {integrity: ${NUMBER7}}\n    engines: {node: '>=0.12.0'}\n\n  is-odd@3.0.1:\n    resolution: {integrity: ${ODD}}\n    engines: {node: '>=4'}\n\nsnapshots:\n\n  is-number@6.0.0: {}\n\n  is-number@7.0.0: {}\n\n  is-odd@3.0.1:\n    dependencies:\n      is-number: 6.0.0\n`;
+const BASE_LOCK = `${PREFIX}      '@types/ms':\n        specifier: 2.1.0\n        version: 2.1.0\n\npackages:\n\n  '@types/ms@2.1.0':\n    resolution: {integrity: ${MS}}\n\nsnapshots:\n\n  '@types/ms@2.1.0': {}\n`;
+const NEWER_LOCK = `${PREFIX}      '@types/estree':\n        specifier: 1.0.8\n        version: 1.0.8\n      '@types/ms':\n        specifier: 2.1.0\n        version: 2.1.0\n\npackages:\n\n  '@types/estree@1.0.8':\n    resolution: {integrity: ${ESTREE}}\n\n  '@types/ms@2.1.0':\n    resolution: {integrity: ${MS}}\n\nsnapshots:\n\n  '@types/estree@1.0.8': {}\n\n  '@types/ms@2.1.0': {}\n`;
 const AGENT_FILES = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'];
 
 function deployAgent(dependencies, lock) {
@@ -348,6 +346,20 @@ async function settled(page, lock) {
   );
 }
 
+async function yours(page) {
+  await page.evaluate(() => {
+    let focused = document.activeElement;
+    while (focused?.shadowRoot?.activeElement) focused = focused.shadowRoot.activeElement;
+    focused?.blur();
+    document
+      .querySelector('slicc-app')
+      .dock.content('updates')
+      .shadowRoot.querySelector('section[data-section="user-packages"]')
+      .scrollIntoView({ block: 'start' });
+  });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+}
+
 async function checkNow(page) {
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
 }
@@ -357,7 +369,7 @@ test("the user's pnpm add and pnpm upgrade in /opt/agent survive seven's updates
     for (const file of AGENT_FILES) chrome.overrides.delete(`/packages/agent/${file}`);
   });
   const page = await chrome.page(t);
-  deployAgent({ 'is-odd': '3.0.1' }, BASE_LOCK);
+  deployAgent({ '@types/ms': '2.1.0' }, BASE_LOCK);
   await boot(page);
   await page.until(() =>
     document
@@ -365,7 +377,10 @@ test("the user's pnpm add and pnpm upgrade in /opt/agent survive seven's updates
       .model.updates.list()
       .some((item) => item.id === 'agent' && item.state === 'installed')
   );
-  await run(page, 'cd /opt/agent; pnpm add is-even@1.0.0 is-odd@3.0.0; echo added-$((40+2))-$?');
+  await run(
+    page,
+    'cd /opt/agent; pnpm add @types/semver@7.7.1 @types/ms@0.7.34; echo added-$((40+2))-$?'
+  );
   await shows(page, 'added-42-', 5 * 60 * 1000);
   assert.match(await screen(page), /added-42-0/, await screen(page));
   await checkNow(page);
@@ -378,53 +393,61 @@ test("the user's pnpm add and pnpm upgrade in /opt/agent survive seven's updates
   );
   assert.deepEqual(await own(page), [
     {
-      id: 'user:agent:is-odd',
+      id: 'user:agent:@types/ms',
       state: 'installed',
-      version: '3.0.0',
-      pin: { base: '3.0.1', range: '3.0.0', project: '/opt/agent' },
+      version: '0.7.34',
+      pin: { base: '2.1.0', range: '0.7.34', project: '/opt/agent' },
       actions: ['unpin'],
       error: null,
     },
     {
-      id: 'user:agent:is-even',
+      id: 'user:agent:@types/semver',
       state: 'installed',
-      version: '1.0.0',
-      pin: { base: null, range: '1.0.0', project: '/opt/agent' },
+      version: '7.7.1',
+      pin: { base: null, range: '7.7.1', project: '/opt/agent' },
       actions: ['remove'],
       error: null,
     },
   ]);
 
   await t.test('pnpm add in /opt/agent survives an agent update', async () => {
-    deployAgent({ 'is-odd': '3.0.1', 'is-number': '7.0.0' }, NEWER_LOCK);
+    deployAgent({ '@types/ms': '2.1.0', '@types/estree': '1.0.8' }, NEWER_LOCK);
     await checkNow(page);
     await settled(page, NEWER_LOCK);
     const agent = await row(page, 'agent');
     assert.notEqual(agent.state, 'failed', agent.error);
     const manifest = JSON.parse(await read(page, 'opt/agent/package.json'));
     assert.deepEqual(manifest.dependencies, {
-      'is-odd': '3.0.0',
-      'is-number': '7.0.0',
-      'is-even': '1.0.0',
+      '@types/ms': '0.7.34',
+      '@types/estree': '1.0.8',
+      '@types/semver': '7.7.1',
     });
-    assert.equal(await installedVersion(page, 'is-even'), '1.0.0');
-    assert.equal(await installedVersion(page, 'is-number'), '7.0.0');
+    assert.equal(await installedVersion(page, '@types/semver'), '7.7.1');
+    assert.equal(await installedVersion(page, '@types/estree'), '1.0.8');
     assert.deepEqual(JSON.parse(await read(page, 'var/lib/slicc/agent/user.json')).add, {
-      'is-even': { spec: '1.0.0', field: 'dependencies' },
+      '@types/semver': { spec: '7.7.1', field: 'dependencies' },
     });
   });
 
   await t.test('a user pin survives the update and wins over the base', async () => {
-    assert.equal(await installedVersion(page, 'is-odd'), '3.0.0');
+    assert.equal(await installedVersion(page, '@types/ms'), '0.7.34');
     assert.deepEqual(JSON.parse(await read(page, 'var/lib/slicc/agent/user.json')).pin, {
-      'is-odd': { spec: '3.0.0', field: 'dependencies', base: '3.0.1' },
+      '@types/ms': { spec: '0.7.34', field: 'dependencies', base: '2.1.0' },
     });
     const rows = await own(page);
     assert.deepEqual(
       rows.map(({ id, version, pin }) => [id, version, pin]),
       [
-        ['user:agent:is-odd', '3.0.0', { base: '3.0.1', range: '3.0.0', project: '/opt/agent' }],
-        ['user:agent:is-even', '1.0.0', { base: null, range: '1.0.0', project: '/opt/agent' }],
+        [
+          'user:agent:@types/ms',
+          '0.7.34',
+          { base: '2.1.0', range: '0.7.34', project: '/opt/agent' },
+        ],
+        [
+          'user:agent:@types/semver',
+          '7.7.1',
+          { base: null, range: '7.7.1', project: '/opt/agent' },
+        ],
       ]
     );
     await page.evaluate(() => document.querySelector('slicc-app').show('updates'));
@@ -434,7 +457,7 @@ test("the user's pnpm add and pnpm upgrade in /opt/agent survive seven's updates
           .querySelector('slicc-app')
           .dock.content('updates')
           ?.shadowRoot?.querySelector(
-            'section[data-section="user-packages"] li[data-id="user:agent:is-odd"]'
+            'section[data-section="user-packages"] li[data-id="user:agent:@types/ms"]'
           )
     );
     const color = (wanted) =>
@@ -443,8 +466,10 @@ test("the user's pnpm add and pnpm upgrade in /opt/agent survive seven's updates
         if (app.color !== wanted) app.toggleColor();
       }, wanted);
     await color('light');
+    await yours(page);
     await page.screenshot(new URL('your-packages-light.png', page.dir));
     await color('dark');
+    await yours(page);
     await page.screenshot(new URL('your-packages-dark.png', page.dir));
     await color('light');
     await page.send('Emulation.setDeviceMetricsOverride', {
@@ -461,9 +486,10 @@ test("the user's pnpm add and pnpm upgrade in /opt/agent survive seven's updates
           .querySelector('slicc-app')
           .dock.content('updates')
           ?.shadowRoot?.querySelector(
-            'section[data-section="user-packages"] li[data-id="user:agent:is-odd"]'
+            'section[data-section="user-packages"] li[data-id="user:agent:@types/ms"]'
           )
     );
+    await yours(page);
     await page.screenshot(new URL('your-packages-420.png', page.dir));
     await page.send('Emulation.clearDeviceMetricsOverride');
     await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
@@ -473,29 +499,33 @@ test("the user's pnpm add and pnpm upgrade in /opt/agent survive seven's updates
     'unpin restores the base version, and removing the addition the shipped lockfile',
     async () => {
       await page.evaluate(() =>
-        document.querySelector('slicc-app').model.updates.actPackage('user:agent:is-odd', 'unpin')
+        document
+          .querySelector('slicc-app')
+          .model.updates.actPackage('user:agent:@types/ms', 'unpin')
       );
       await settled(page, NEWER_LOCK);
-      assert.equal(await installedVersion(page, 'is-odd'), '3.0.1');
-      assert.equal(await installedVersion(page, 'is-even'), '1.0.0');
+      assert.equal(await installedVersion(page, '@types/ms'), '2.1.0');
+      assert.equal(await installedVersion(page, '@types/semver'), '7.7.1');
       assert.deepEqual(
         (await own(page)).map(({ id }) => id),
-        ['user:agent:is-even']
+        ['user:agent:@types/semver']
       );
       await page.evaluate(() =>
-        document.querySelector('slicc-app').model.updates.actPackage('user:agent:is-even', 'remove')
+        document
+          .querySelector('slicc-app')
+          .model.updates.actPackage('user:agent:@types/semver', 'remove')
       );
       await settled(page, NEWER_LOCK);
       assert.deepEqual(await own(page), []);
       assert.equal(await read(page, 'opt/agent/pnpm-lock.yaml'), NEWER_LOCK);
       assert.deepEqual(JSON.parse(await read(page, 'opt/agent/package.json')).dependencies, {
-        'is-odd': '3.0.1',
-        'is-number': '7.0.0',
+        '@types/ms': '2.1.0',
+        '@types/estree': '1.0.8',
       });
       const installed = (await opfs(page)).filter((path) =>
         path.startsWith('opt/agent/node_modules/')
       );
-      assert.ok(!installed.some((path) => path.includes('/is-even/')), installed.join('\n'));
+      assert.ok(!installed.some((path) => path.includes('/@types/semver/')), installed.join('\n'));
       assert.deepEqual(page.errors, []);
     }
   );
