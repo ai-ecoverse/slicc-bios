@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
 const packages = new URL('../../src/packages/', import.meta.url);
@@ -105,7 +105,15 @@ async function lockedGated() {
       if (path && GATED.test(name)) found.set(`${name}@${entry.version}`, [file, entry.integrity]);
     }
   }
-  for (const file of ['pnpm-lock.yaml', 'agent/pnpm-lock.yaml', 'tailscale/pnpm-lock.yaml']) {
+  const projects = (await readdir(new URL('optional/projects/', packages))).map(
+    (id) => `optional/projects/${id}/pnpm-lock.yaml`
+  );
+  for (const file of [
+    'pnpm-lock.yaml',
+    'agent/pnpm-lock.yaml',
+    'tailscale/pnpm-lock.yaml',
+    ...projects,
+  ]) {
     for (const [, name, version, integrity] of (await read(file)).matchAll(
       /^ {2}'?(@ai-ecoverse\/[^@'\s]+)@([^'(\s]+)'?:\n {4}resolution: \{integrity: ([^,}\s]+)/gm
     )) {
