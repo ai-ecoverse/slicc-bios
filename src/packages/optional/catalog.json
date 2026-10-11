@@ -37,6 +37,13 @@
     "requires": ["python"],
     "size": 71955355
   },
+  "@ai-ecoverse/slicc-jsh": {
+    "id": "node",
+    "label": "Node.js (jsh)",
+    "description": "A Node.js 22-compatible node command: fs, streams, http, fetch and WebSocket, without tls, crypto, zlib or child_process.",
+    "commands": ["node"],
+    "size": 325506
+  },
   "@ai-ecoverse/wasix-ruby": {
     "id": "ruby",
     "label": "Ruby",
