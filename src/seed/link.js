@@ -143,9 +143,9 @@ function stream(streams, id, channel, own) {
     answered,
     receive: (type, payload) => handlers[type](payload),
     fail,
-    accepted() {
+    accepted(info = {}) {
       state.opened = true;
-      send(OPENED, '{}');
+      send(OPENED, JSON.stringify(info));
     },
     async read() {
       while (!chunks.length && !error && !state.gotEnd) await wait();
@@ -181,9 +181,12 @@ function stream(streams, id, channel, own) {
       over();
     },
     close() {
+      api.reset('ECONNRESET');
+    },
+    reset(code) {
       if (!streams.has(id)) return;
-      send(RESET, 'ECONNRESET');
-      fail(failure('ECONNRESET: closed'));
+      send(RESET, code);
+      fail(failure(code.includes(':') ? code : `${code}: closed`));
     },
   };
   return api;
@@ -255,6 +258,7 @@ export function createSession({
       .then(() => accept(meta))
       .then(
         (socket) => {
+          if (typeof socket?.handle === 'function') return socket.handle(s);
           if (!streams.has(id)) return socket?.close();
           s.accepted();
           if (!socket) return s.closeWrite();
@@ -304,7 +308,7 @@ export function createSession({
   opened(control).then(
     () => {
       if (closed) return;
-      control.send(JSON.stringify({ v: 1, role: 'page', ...hello }));
+      control.send(JSON.stringify({ v: 1, role: 'page', ...hello() }));
       timer = timers.setTimeout(() => close('no HELLO from the node within 10 s'), HELLO_MS);
     },
     () => {}
@@ -524,6 +528,22 @@ export function offerLink({ pc, send, hello, timers, onClose, accept }) {
   };
 }
 
+export function mergeDevices(entries) {
+  const byId = new Map();
+  for (const entry of entries) {
+    const seen = byId.get(entry.id);
+    if (!seen) {
+      byId.set(entry.id, entry);
+      continue;
+    }
+    const [main, other] = seen.offers.length >= entry.offers.length ? [seen, entry] : [entry, seen];
+    const prompting = main.controlling === 'prompt' || other.controlling === 'prompt';
+    const controlling = prompting ? 'prompt' : (main.controlling ?? other.controlling);
+    byId.set(entry.id, { ...main, ...(controlling ? { controlling } : {}) });
+  }
+  return [...byId.values()];
+}
+
 export function createLinks({
   router,
   makePeer,
@@ -531,6 +551,8 @@ export function createLinks({
   timers,
   name = 'seven',
   kernel = null,
+  agent = null,
+  describe = () => ({}),
 }) {
   const links = new Map();
   const taken = () => new Set([...links.values()].map((link) => link.label).filter(Boolean));
@@ -540,8 +562,16 @@ export function createLinks({
     for (let n = FIRST; n < 255; n += 1) if (!used.has(`${SUBNET}.${n}`)) return `${SUBNET}.${n}`;
     throw failure('ENOSPC: no free link address');
   };
-  let local = null;
+  const local = new Map();
   const listeners = new Set();
+  const supersede = (link) => {
+    if (!link.id || !link.peer) return;
+    const node = typeof link.peer.node === 'string' ? link.peer.node : null;
+    for (const [other, item] of [...links]) {
+      const same = other !== link.key && item.id === link.id;
+      if (same && (node === null || item.peer?.node === node)) manager.drop(other, 'reconnected');
+    }
+  };
   const changed = () => {
     for (const listener of [...listeners]) listener();
   };
@@ -551,7 +581,9 @@ export function createLinks({
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    devices: () => [...links.values()].map(device),
+    changed,
+    devices: () =>
+      mergeDevices([...links.values()].map((link) => ({ ...device(link), ...describe(link) }))),
     start({ key, send, mode, iceServers, address }) {
       manager.drop(key, 'replaced');
       const link = { key, mode, address: free(address), label: null, peer: null };
@@ -559,8 +591,20 @@ export function createLinks({
       link.offer = offerLink({
         pc,
         send,
-        hello: { name, mode, caps: kernel ? ['kernel-in', 'browsers'] : ['browsers'] },
+        hello: () => ({
+          name,
+          mode,
+          caps: [
+            ...(kernel ? ['kernel-in'] : []),
+            'browsers',
+            ...(agent?.allowed(link) ? ['agent'] : []),
+          ],
+        }),
         accept: (meta) => {
+          if (meta.kind === 'agent') {
+            if (!agent?.allowed(link)) return Promise.reject(failure('EACCES'));
+            return { handle: (s) => agent.handle(link, meta, s) };
+          }
           if (meta.kind !== 'browsers')
             return kernel ? kernelIn(kernel, meta) : Promise.reject(failure('EOPNOTSUPP'));
           link.browsers = browserList(meta.browsers);
@@ -583,10 +627,18 @@ export function createLinks({
       links.set(key, link);
       link.offer.session.ready.then(
         (peer) => {
-          link.label = dnsLabel(peer.host ?? peer.name, taken());
+          const node = typeof peer.node === 'string' ? peer.node : null;
+          for (const [other, item] of [...links]) {
+            const same = other !== key && link.id && item.id === link.id;
+            if (same && (node === null || item.peer?.node === node))
+              manager.drop(other, 'reconnected');
+          }
           link.peer = peer;
           link.browsers = browserList(peer.browsers);
-          router.add(link.exit);
+          if (Array.isArray(peer.caps) && peer.caps.length) {
+            link.label = dnsLabel(peer.host ?? peer.name, taken());
+            router.add(link.exit);
+          }
           onLink(link, peer);
           changed();
         },
@@ -597,9 +649,8 @@ export function createLinks({
     },
     identify(key, id, wanted) {
       const link = links.get(key);
-      for (const [other, item] of [...links])
-        if (other !== key && item.id === id) manager.drop(other, 'reconnected');
       link.id = id;
+      supersede(link);
       link.exit.id = `link:${id}`;
       if (wanted && free(wanted) === wanted) link.address = wanted;
       changed();
@@ -614,18 +665,21 @@ export function createLinks({
       const message = typeof text === 'string' ? JSON.parse(text) : text;
       if (message.t === 'hello') {
         const { nonce } = message;
-        local = nonce;
+        const key =
+          typeof message.node === 'string' && message.node ? `local:${message.node}` : 'local';
+        for (const [old, owner] of local) if (owner === key) local.delete(old);
+        local.set(nonce, key);
         manager.start({
-          key: 'local',
+          key,
           mode: 'local',
           send: (out) => {
-            if (nonce === local) sendLocal(JSON.stringify({ ...out, nonce }));
+            if (local.get(nonce) === key) sendLocal(JSON.stringify({ ...out, nonce }));
           },
         });
         return;
       }
-      if (message.nonce !== local) return;
-      void links.get('local')?.offer.receive(message);
+      const key = local.get(message.nonce);
+      if (key) void links.get(key)?.offer.receive(message);
     },
   };
   return manager;

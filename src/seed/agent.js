@@ -47,9 +47,10 @@ let chat = null;
 
 export function loadChat({ load = (file) => import(new URL(file, modules)) } = {}) {
   chat ??= Promise.all([load('page.js'), load('spectrum/index.js')]).then(
-    ([{ startAgent, connectAgent }, { createAgentModel }]) => ({
+    ([{ startAgent, connectAgent, remoteControl }, { createAgentModel }]) => ({
       startAgent,
       connectAgent,
+      remoteControl,
       createAgentModel,
     })
   );
@@ -79,4 +80,18 @@ export function whenIdle(agent) {
     };
     if (!check()) off = agent.on('agents', check);
   });
+}
+
+export async function remoteAgent(owner, { load = loadChat, cone } = {}) {
+  if (!owner) return null;
+  const { connectAgent, remoteControl } = await load();
+  if (!remoteControl) return null;
+  const connection = await connectAgent(await owner.port());
+  const remote = remoteControl(connection, cone ? { agent: cone } : {});
+  return {
+    prompt: (args) => remote.prompt(args),
+    watch: (args) => remote.watch(args),
+    abort: () => remote.abort(),
+    close: () => connection.close(),
+  };
 }
