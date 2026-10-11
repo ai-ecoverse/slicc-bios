@@ -157,7 +157,7 @@ async function shell(page, command, name) {
   };
 }
 
-test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback, its host key, and as the chosen exit, held while it is gone', async (t) => {
+test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback, its host key, as the automatic exit until Directly, and as the chosen exit, held while it is gone', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
   await ready(page);
@@ -193,18 +193,6 @@ test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback
   );
   assert.ok(kinds.includes('tcp'), JSON.stringify(kinds));
   assert.ok(kinds.includes('http'), JSON.stringify(kinds));
-  const far = await shell(
-    page,
-    "curl -s --noproxy '*' --max-time 5 http://far.example/",
-    'link-far'
-  );
-  assert.notEqual(far.code, '0');
-  assert.equal(
-    await page.evaluate(() =>
-      globalThis.fakeNodeLog.some((m) => m.kind === 'resolve' || m.host === '203.0.113.7')
-    ),
-    false
-  );
   const network = () =>
     page.evaluate(() => {
       const { exit, links } = document.querySelector('slicc-app').model.network.status();
@@ -214,9 +202,34 @@ test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback
       };
     });
   assert.deepEqual(await network(), {
-    exit: null,
+    exit: { kind: 'link', id: 'local' },
     devices: [['local', 'fake-node.slicc.internal', 'connected', true, 'net,http,ssh']],
   });
+  const automatic = await shell(
+    page,
+    "curl -s --noproxy '*' --max-time 10 http://far.example/automatic",
+    'link-automatic'
+  );
+  assert.deepEqual(automatic, { code: '0', out: 'raw 203.0.113.7:80 /automatic' });
+  await page.evaluate(() => document.querySelector('slicc-app').model.network.setExit(null));
+  assert.equal((await network()).exit, null);
+  const before = await page.evaluate(() => globalThis.fakeNodeLog.length);
+  const far = await shell(
+    page,
+    "curl -s --noproxy '*' --max-time 5 http://far.example/",
+    'link-far'
+  );
+  assert.notEqual(far.code, '0');
+  assert.equal(
+    await page.evaluate(
+      (from) =>
+        globalThis.fakeNodeLog
+          .slice(from)
+          .some((m) => m.kind === 'resolve' || m.host === '203.0.113.7'),
+      before
+    ),
+    false
+  );
   await page.evaluate(() =>
     document.querySelector('slicc-app').model.network.setExit({ kind: 'link', id: 'local' })
   );
