@@ -2,6 +2,7 @@ import { failure } from './link.js';
 
 const NEEDS = { pi: ['view'], terminal: ['view', 'terminal'] };
 export const REVOKED = 'EACCES: the owner took this access back';
+export const CHANGED = 'ECONNRESET: the owner changed this access';
 
 export function createFollowers({ tray, name = 'SLICC', serve = {}, onChange = () => {} }) {
   const open = new Map();
@@ -14,12 +15,16 @@ export function createFollowers({ tray, name = 'SLICC', serve = {}, onChange = (
 
   tray.on(() => {
     for (const items of open.values()) {
-      for (const item of [...items]) if (!allowed(item.link, item.kind)) item.stream.reset(REVOKED);
+      for (const item of [...items]) {
+        if (!allowed(item.link, item.kind)) item.stream.reset(REVOKED);
+        else if (item.kind === 'pi' && item.control !== tray.access(item.link.id).control)
+          item.stream.reset(CHANGED);
+      }
     }
   });
 
   async function track(link, kind, stream, run) {
-    const item = { link, kind, stream };
+    const item = { link, kind, stream, control: tray.access(link.id).control };
     if (!open.has(link.key)) open.set(link.key, new Set());
     open.get(link.key).add(item);
     onChange();
@@ -45,7 +50,8 @@ export function createFollowers({ tray, name = 'SLICC', serve = {}, onChange = (
       if (!handler) return Promise.reject(failure('EOPNOTSUPP'));
       if (!allowed(link, meta.kind)) return Promise.reject(failure('EACCES'));
       return {
-        handle: (stream) => track(link, meta.kind, stream, () => handler(link, meta, stream)),
+        handle: (stream) =>
+          track(link, meta.kind, stream, () => handler(link, meta, stream, tray.access(link.id))),
       };
     },
     describe(link) {

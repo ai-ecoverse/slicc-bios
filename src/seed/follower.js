@@ -1,5 +1,7 @@
+import { createKernel, fetchTransport } from '@ai-ecoverse/slicc-kernel';
 import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
 import { confirm, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
+import { followAgent, installAgent, loadChat } from './agent.js';
 import { createFollow, deviceName, hubClient, keepFollow, takeFollow } from './follow.js';
 import { failure } from './link.js';
 import { createNotices } from './notices.js';
@@ -36,6 +38,88 @@ export function remoteKernel(follow) {
     follow,
   };
 }
+
+export const RETRY_MS = 2_000;
+
+export function agentFollower({
+  follow,
+  show,
+  prepare = async () => undefined,
+  connect = (open) => followAgent(open),
+  create = async (connection) => (await loadChat()).createAgentModel(connection, {}),
+  timers = globalThis,
+}) {
+  let connection = null;
+  let session = null;
+  let busy = false;
+  let retry = null;
+  const drop = () => {
+    const old = connection;
+    connection = null;
+    session = null;
+    show(null);
+    void old?.close().catch(() => undefined);
+  };
+  const later = () => {
+    timers.clearTimeout(retry);
+    retry = timers.setTimeout(sync, RETRY_MS);
+  };
+  async function join(current) {
+    await prepare();
+    const joined = await connect((meta) => follow.open(meta));
+    if (follow.session() !== current || !follow.status().access.view) {
+      void joined.close().catch(() => undefined);
+      return;
+    }
+    connection = joined;
+    session = current;
+    show(await create(joined));
+    void joined.closed.then(() => {
+      if (connection !== joined) return;
+      drop();
+      later();
+    });
+  }
+  async function sync() {
+    const current = follow.session();
+    const { view } = follow.status().access;
+    if (connection && (!view || current !== session)) drop();
+    if (!current || !view || connection || busy) return;
+    busy = true;
+    try {
+      await join(current);
+    } catch (error) {
+      console.warn(`following the agent: ${error.message}`);
+      later();
+    } finally {
+      busy = false;
+    }
+  }
+  follow.on(() => void sync());
+  return { sync, connection: () => connection };
+}
+
+export function preparer(root, { install = installAgent } = {}) {
+  let prepared = null;
+  return () => {
+    prepared ??= install(() =>
+      createKernel({ root, network: { transport: fetchTransport() }, media: false })
+    ).catch((error) => {
+      prepared = null;
+      throw error;
+    });
+    return prepared;
+  };
+}
+
+export const shower = (app, base) => (agent) => {
+  app.model = agent ? { ...base, ...agent } : base;
+};
+
+export const chatModel =
+  (storage, load = loadChat) =>
+  async (connection) =>
+    (await load()).createAgentModel(connection, { storage });
 
 export const proxied = (at) => (at.hostname.endsWith('.sliccy.ai') ? at.origin : null);
 
@@ -92,7 +176,7 @@ export function startFollower({
     ...surfaces.find((item) => item.id === id),
     ...layout,
   }));
-  app.model = {
+  const base = {
     ...createKernelModel({
       kernel: remoteKernel(follow),
       root,
@@ -103,6 +187,13 @@ export function startFollower({
     notices: createNotices({ storage }),
     follow: followPort(follow),
   };
+  app.model = base;
+  agentFollower({
+    follow,
+    show: shower(app, base),
+    prepare: preparer(root),
+    create: chatModel(storage),
+  });
   document.documentElement.dataset.follow = 'on';
   void admit().then((yes) => yes && follow.start());
   return follow;

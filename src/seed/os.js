@@ -6,6 +6,7 @@ import {
   installed as agentInstalled,
   project as agentProject,
   version as agentVersion,
+  bridgeAgent,
   deliverWebhook,
   installAgent,
   loadChat,
@@ -175,7 +176,15 @@ const tray = hub
     })
   : null;
 followers = tray
-  ? createFollowers({ tray, name: deviceName(), onChange: () => links.changed() })
+  ? createFollowers({
+      tray,
+      name: deviceName(),
+      serve: {
+        pi: (_link, _meta, stream, access) =>
+          bridgeAgent(owner, stream, { readOnly: !access.control }),
+      },
+      onChange: () => links.changed(),
+    })
   : null;
 const reach = createNetwork(network, {
   browser: control.status,
