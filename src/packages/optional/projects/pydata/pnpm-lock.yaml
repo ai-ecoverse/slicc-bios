@@ -15,8 +15,8 @@ importers:
         specifier: 3.11.2-6
         version: 3.11.2-6
       '@ai-ecoverse/py-numpy':
-        specifier: 2.3.2-8
-        version: 2.3.2-8
+        specifier: 2.3.2-9
+        version: 2.3.2-9
       '@ai-ecoverse/py-pandas':
         specifier: 2.3.2-9
         version: 2.3.2-9
@@ -43,6 +43,9 @@ packages:
 
   '@ai-ecoverse/py-numpy@2.3.2-8':
     resolution: {integrity: sha512-WEScW3EQEEWo0JcvnR7v/9Qax4dYpCu95yAU5Xx/fDteNzpXUWIpkSjN8/xd2lRW+9mdenorBdEVCagGj56qNA==}
+
+  '@ai-ecoverse/py-numpy@2.3.2-9':
+    resolution: {integrity: sha512-bTq0DxMlzCWroiKcVJw4WSd//AnHLS2BXMW95sKUpH8PkfDguB+gqcWjPkaej9lT8R5GgwVcekNN1R7PRX2ELw==}
 
   '@ai-ecoverse/py-packaging@26.3.0-5':
     resolution: {integrity: sha512-syvuROdk7JkbVO9OYKeKZ+Wc2ib97K98rjOnNhK+1qb8+QefeDwMeix7kvL7ow82LRTkfoV0yVrzuNcOh7hxCA==}
@@ -96,6 +99,8 @@ snapshots:
       '@ai-ecoverse/py-python-dateutil': 2.9.0-post0.2
 
   '@ai-ecoverse/py-numpy@2.3.2-8': {}
+
+  '@ai-ecoverse/py-numpy@2.3.2-9': {}
 
   '@ai-ecoverse/py-packaging@26.3.0-5': {}
 
