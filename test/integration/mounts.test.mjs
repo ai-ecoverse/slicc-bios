@@ -124,7 +124,7 @@ test('off the record, a shell fsa mount asks for a folder in the Files panel, wo
     'mkdir -p /mnt/h; mount -t hostfs project /mnt/h; echo "no proxy $((1000 + $?))"'
   );
   await shows(page, 'no proxy 1032');
-  assert.match(await screen(page), /hostfs is not available here \(no host connection\)/);
+  assert.match(await screen(page), /mount: \/mnt\/h: Operation not permitted/);
   assert.deepEqual(page.errors, []);
 });
 
