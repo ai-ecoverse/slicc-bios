@@ -12,8 +12,8 @@ importers:
   .:
     dependencies:
       '@ai-ecoverse/py-matplotlib':
-        specifier: 3.11.2-6
-        version: 3.11.2-6
+        specifier: 3.11.2-7
+        version: 3.11.2-7
       '@ai-ecoverse/py-numpy':
         specifier: 2.3.2-8
         version: 2.3.2-8
@@ -26,35 +26,38 @@ importers:
 
 packages:
 
-  '@ai-ecoverse/py-contourpy@1.4.0-5':
-    resolution: {integrity: sha512-Bx0yRKXK1TS8fmjNkT38lc/35ZZQFx10mxw6lm0yjfrUMaJzswcyuodPh2/4ptvENI+cZNyuC/QmMVQT+NKrUw==}
+  '@ai-ecoverse/py-contourpy@1.4.0-6':
+    resolution: {integrity: sha512-VKNEZPMgROHP+EYcuXBE3gHny+K29ATHsg+ruxoO97gDTJMoggbj3VhbsCnxnH27JD6m9tVkWdUAAsdDK1Sr+Q==}
 
-  '@ai-ecoverse/py-cycler@0.12.1-5':
-    resolution: {integrity: sha512-6ikdLdovKfH4GKersS107LxKeo3KOGNuGxC++2RxauiBuXRL1Zk9ERFw16SdDpAeKSC40xshj+sfFbejNfVjQA==}
+  '@ai-ecoverse/py-cycler@0.12.1-6':
+    resolution: {integrity: sha512-S/nIJ7Vd7WDB+jFVY18Q1FJzWNK1Z7BAOdJ+05Tnwjh5CTM+GZA6TvBD3vpl0x/C9eq1l10aQeldhaFt4uh4Rg==}
 
-  '@ai-ecoverse/py-fonttools@4.66.1-5':
-    resolution: {integrity: sha512-K0IoyfKlhZe7pWn/p/mK7GKGnu4+rsAkEpl/9If5mxGPw/04ys2o/ja5o1ZazltN1aN0JXqD0MQ59zl6d4EDrQ==}
+  '@ai-ecoverse/py-fonttools@4.66.1-6':
+    resolution: {integrity: sha512-H+oUWs5RzTDIQVOOb4FKg9iBZiXIAa3NXLR2by92VdSnbob8YWAieDFdLMr1GpEc4WCkblAlnsGaOmo22BuhqQ==}
 
-  '@ai-ecoverse/py-kiwisolver@1.5.1-5':
-    resolution: {integrity: sha512-iPlyNsJP6gLptvS6YwMm32zRCTrZiJjTDmJWDMtalQ6xNorR0Hvx+DW2WGaktsb92RuggbTQmJhrVY85j3UO2A==}
+  '@ai-ecoverse/py-kiwisolver@1.5.1-6':
+    resolution: {integrity: sha512-hNUM+rB+IEotVQ76pztZMY1nwcADXbnNZg2IQxKayfRTXbvkCaLjpfJlTxSNpC7xgVGqYyJZ5RGm9KJAA/D/QA==}
 
-  '@ai-ecoverse/py-matplotlib@3.11.2-6':
-    resolution: {integrity: sha512-uEjcO76jBkmnamlAQQ1RmgvDMX8DenfvuEb3G32aQO1jogjY5omfoQ9MMS4eMf9TnVtHK3dp6lvBbPRzuaFVhA==}
+  '@ai-ecoverse/py-matplotlib@3.11.2-7':
+    resolution: {integrity: sha512-F9c37Mqst9w8xochnG7tfITKZCwWu6+oIeiAyYKbW+dI8KliWS6B3ShrFtIbE/Riunbw7HSkFRVDBAtQaj45tg==}
 
   '@ai-ecoverse/py-numpy@2.3.2-8':
     resolution: {integrity: sha512-WEScW3EQEEWo0JcvnR7v/9Qax4dYpCu95yAU5Xx/fDteNzpXUWIpkSjN8/xd2lRW+9mdenorBdEVCagGj56qNA==}
 
-  '@ai-ecoverse/py-packaging@26.3.0-5':
-    resolution: {integrity: sha512-syvuROdk7JkbVO9OYKeKZ+Wc2ib97K98rjOnNhK+1qb8+QefeDwMeix7kvL7ow82LRTkfoV0yVrzuNcOh7hxCA==}
+  '@ai-ecoverse/py-numpy@2.3.2-9':
+    resolution: {integrity: sha512-bTq0DxMlzCWroiKcVJw4WSd//AnHLS2BXMW95sKUpH8PkfDguB+gqcWjPkaej9lT8R5GgwVcekNN1R7PRX2ELw==}
+
+  '@ai-ecoverse/py-packaging@26.3.0-6':
+    resolution: {integrity: sha512-qn7qAxSYoIIng+Yk26Z/SzBu2wJfRWtN5zR1FR9jcfvSgxOhwi2yd4rnkB1pYzB/5vn0zPNRLQ5NsLdE/U1g0w==}
 
   '@ai-ecoverse/py-pandas@2.3.2-9':
     resolution: {integrity: sha512-CLbOzjLivGA0jme1gdKV+BlcUkL/cffRyt34ugfnY77tA5WrK8HSA1BGH3hDfk9M00ZnpdtFslGSTlIQy1PV/w==}
 
-  '@ai-ecoverse/py-pillow@12.3.0-6':
-    resolution: {integrity: sha512-oyuDfimQshBOfzQzWycwqxm4/a9FRojIHkPL/buwyyKE9zbGXdR7NRNFvmoNyOayNcgmUct0/sGXRVGXl4e7SA==}
+  '@ai-ecoverse/py-pillow@12.3.0-7':
+    resolution: {integrity: sha512-dm7sI+Lj8MoAmRa/ZsDINSbbRc9UPx7hMxfhJpoT6z70h65Bkc9nHdkRyKawOqqoSJKyW2F3XwEq9X4uwDAV0A==}
 
-  '@ai-ecoverse/py-pyparsing@3.3.3-5':
-    resolution: {integrity: sha512-RoiKQMo0Hdnp0snet9D1yLNY2Szq0ToAeT1m4TSPR8AooC2tlYiLgfJh5XXz7z+Fj5jzttW6Yx7KWd+ghUN96Q==}
+  '@ai-ecoverse/py-pyparsing@3.3.3-6':
+    resolution: {integrity: sha512-fHG4DtnxQ8N3bOKbJZ7SU5xzz7W9xzgw8580SLF6SHr5NRh1TJ/gYJFxpjKm9MlRx+Yk3ddvZY96W5ZpFyr0mA==}
 
   '@ai-ecoverse/py-python-dateutil@2.9.0-post0.2':
     resolution: {integrity: sha512-RCa4x3MbuASOiDFxmiK6vmstyUvl8KffqQWJarGQa4MAHvtoT8tM3vl3iPTqbgGIPPUVfYSTy0bMKLNWx7uG9w==}
@@ -73,31 +76,33 @@ packages:
 
 snapshots:
 
-  '@ai-ecoverse/py-contourpy@1.4.0-5':
+  '@ai-ecoverse/py-contourpy@1.4.0-6':
     dependencies:
-      '@ai-ecoverse/py-numpy': 2.3.2-8
+      '@ai-ecoverse/py-numpy': 2.3.2-9
 
-  '@ai-ecoverse/py-cycler@0.12.1-5': {}
+  '@ai-ecoverse/py-cycler@0.12.1-6': {}
 
-  '@ai-ecoverse/py-fonttools@4.66.1-5': {}
+  '@ai-ecoverse/py-fonttools@4.66.1-6': {}
 
-  '@ai-ecoverse/py-kiwisolver@1.5.1-5': {}
+  '@ai-ecoverse/py-kiwisolver@1.5.1-6': {}
 
-  '@ai-ecoverse/py-matplotlib@3.11.2-6':
+  '@ai-ecoverse/py-matplotlib@3.11.2-7':
     dependencies:
-      '@ai-ecoverse/py-contourpy': 1.4.0-5
-      '@ai-ecoverse/py-cycler': 0.12.1-5
-      '@ai-ecoverse/py-fonttools': 4.66.1-5
-      '@ai-ecoverse/py-kiwisolver': 1.5.1-5
-      '@ai-ecoverse/py-numpy': 2.3.2-8
-      '@ai-ecoverse/py-packaging': 26.3.0-5
-      '@ai-ecoverse/py-pillow': 12.3.0-6
-      '@ai-ecoverse/py-pyparsing': 3.3.3-5
+      '@ai-ecoverse/py-contourpy': 1.4.0-6
+      '@ai-ecoverse/py-cycler': 0.12.1-6
+      '@ai-ecoverse/py-fonttools': 4.66.1-6
+      '@ai-ecoverse/py-kiwisolver': 1.5.1-6
+      '@ai-ecoverse/py-numpy': 2.3.2-9
+      '@ai-ecoverse/py-packaging': 26.3.0-6
+      '@ai-ecoverse/py-pillow': 12.3.0-7
+      '@ai-ecoverse/py-pyparsing': 3.3.3-6
       '@ai-ecoverse/py-python-dateutil': 2.9.0-post0.2
 
   '@ai-ecoverse/py-numpy@2.3.2-8': {}
 
-  '@ai-ecoverse/py-packaging@26.3.0-5': {}
+  '@ai-ecoverse/py-numpy@2.3.2-9': {}
+
+  '@ai-ecoverse/py-packaging@26.3.0-6': {}
 
   '@ai-ecoverse/py-pandas@2.3.2-9':
     dependencies:
@@ -107,9 +112,9 @@ snapshots:
       '@ai-ecoverse/py-six': 1.17.0-2
       '@ai-ecoverse/py-tzdata': 2026.4.0-2
 
-  '@ai-ecoverse/py-pillow@12.3.0-6': {}
+  '@ai-ecoverse/py-pillow@12.3.0-7': {}
 
-  '@ai-ecoverse/py-pyparsing@3.3.3-5': {}
+  '@ai-ecoverse/py-pyparsing@3.3.3-6': {}
 
   '@ai-ecoverse/py-python-dateutil@2.9.0-post0.2':
     dependencies:
