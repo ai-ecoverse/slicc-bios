@@ -214,8 +214,8 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
       );
   const item = (entry) => {
     const described = describe(entry, installed.get(entry.package) ?? null, live.get(entry.id));
-    const notes = described.version === null ? [] : missing(entry);
-    return notes.length ? { ...described, notes } : described;
+    const warnings = described.version === null ? [] : missing(entry);
+    return warnings.length ? { ...described, warnings } : described;
   };
 
   const list = () => [

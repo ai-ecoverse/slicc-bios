@@ -124,7 +124,7 @@ Below the system rows, Install / Update offers **Optional packages** (spectrum â
   - **Install:** bios writes the project to `/opt/slicc/pydata` and installs it with `pnpm install --frozen-lockfile`, so pnpm checks every integrity against the lockfile bios ships. Its `pnpm-workspace.yaml` overrides `@ai-ecoverse/wasix-python` to nothing, and the entry `requires` the catalog's Python, which runs it.
   - **How Python finds it:** bios writes `/root/.local/lib/python3.14/site-packages/slicc-pydata.pth`, which lists each package's site-packages (from its `slicc.python.sitePackages`), so `python3` imports the packages from any shell or agent. Python's own discovery only looks in its own project, so the `.pth` stays.
   - **State and Remove:** a receipt in `var/lib/slicc/optional/pydata/` records the installed version. **Remove** deletes the project, the `.pth` and the receipt.
-  - **Without Python:** if Python is removed while the data tools stay installed, the row says it needs Python (`notes`).
+  - **Without Python:** if Python is removed while the data tools stay installed, the row warns that it needs Python (`warnings`, spectrum â‰¥ 1.49.1).
 - **The agent** reads the same catalog: bios writes it to `/etc/slicc/optional.json` at every boot (id, package, version, label, description, commands, requires).
 
 Optional packages never count in the header and never open the panel. The terminal's `pnpm add -g` still installs anything, at any version.

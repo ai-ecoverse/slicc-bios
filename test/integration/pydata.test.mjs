@@ -109,7 +109,7 @@ test('Python data tools install as one project next to the catalog’s Python, i
   assert.equal((await row(page, 'python')).state, 'installed');
   const installed = await row(page, 'pydata');
   assert.equal(installed.state, 'installed');
-  assert.equal(installed.notes, undefined);
+  assert.equal(installed.warnings, undefined);
   assert.ok(await exists(page, PTH));
   await shots(page, 'pydata-after');
 
@@ -154,7 +154,7 @@ test('Python data tools install as one project next to the catalog’s Python, i
   assert.equal((await row(page, 'python')).state, 'available');
   const orphan = await row(page, 'pydata');
   assert.equal(orphan.state, 'installed');
-  assert.deepEqual(orphan.notes, [
+  assert.deepEqual(orphan.warnings, [
     "Needs Python, which isn't installed. Install Python again to use it.",
   ]);
   await shots(page, 'pydata-without-python');
