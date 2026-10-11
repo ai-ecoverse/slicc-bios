@@ -51,8 +51,9 @@ export function loadChat({ load = (file) => import(new URL(file, modules)), fres
     run += 1;
     chat = null;
   }
+  if (chat) return chat;
   const query = run ? `?run=${run}` : '';
-  chat ??= Promise.all([load(`page.js${query}`), load(`spectrum/index.js${query}`)]).then(
+  const loading = Promise.all([load(`page.js${query}`), load(`spectrum/index.js${query}`)]).then(
     ([{ startAgent, connectAgent, remoteControl }, { createAgentModel }]) => ({
       startAgent,
       connectAgent,
@@ -60,10 +61,13 @@ export function loadChat({ load = (file) => import(new URL(file, modules)), fres
       createAgentModel,
     })
   );
-  chat.catch(() => {
+  chat = loading;
+  loading.catch(() => {
+    if (chat !== loading) return;
     chat = null;
+    run += 1;
   });
-  return chat;
+  return loading;
 }
 
 export async function startChat(kernel, options) {
