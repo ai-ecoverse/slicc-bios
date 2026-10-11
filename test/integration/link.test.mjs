@@ -702,3 +702,83 @@ test('a remembered linked folder mounted before its CLI links fills in when the 
   }
   assert.equal(seen.out, 'remembered');
 });
+
+test('the real slicc CLI lists its folders on its device row, and Mount and Eject mount one at /mnt/<device>/<name>', {
+  skip: !cli,
+}, async (t) => {
+  const { mkdtemp, writeFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'link-row-'));
+  await writeFile(join(dir, 'hello.txt'), 'from the row\n');
+  const page = await chrome.page(t);
+  await boot(page);
+  await ready(page);
+  const node = spawn(
+    cli,
+    [
+      'attach',
+      '--signal',
+      'stdio',
+      '--name',
+      'ref-node',
+      '--no-kernel',
+      '--mount',
+      `${dir}:proj`,
+      '--mount',
+      `${dir}:archive:ro`,
+    ],
+    { stdio: ['pipe', 'pipe', 'inherit'] }
+  );
+  t.after(() => node.kill());
+  await page.expose('sliccLinkSend', (message) => node.stdin.write(`${JSON.stringify(message)}\n`));
+  createInterface({ input: node.stdout }).on('line', (line) =>
+    page.evaluate((line) => globalThis.sliccLinkReceive(line), line).catch(() => {})
+  );
+  const row = () =>
+    page.evaluate(
+      () =>
+        document.querySelector('slicc-app').model.network.status().links?.devices[0]?.folders ??
+        null
+    );
+  await page.until(
+    () =>
+      document.querySelector('slicc-app').model.network.status().links?.devices[0]?.folders
+        ?.length === 2
+  );
+  assert.deepEqual(await row(), [
+    { name: 'proj', source: 'ref-node/proj', readonly: false },
+    { name: 'archive', source: 'ref-node/archive', readonly: true },
+  ]);
+  const target = await page.evaluate(() =>
+    document.querySelector('slicc-app').model.network.mountFolder('ref-node/proj')
+  );
+  assert.equal(target, '/mnt/ref-node/proj');
+  assert.deepEqual(await shell(page, 'cat /mnt/ref-node/proj/hello.txt', 'row-read'), {
+    code: '0',
+    out: 'from the row',
+  });
+  await page.until(
+    () =>
+      document.querySelector('slicc-app').model.network.status().links.devices[0].folders[0].mounted
+  );
+  assert.equal((await row())[0].mounted, '/mnt/ref-node/proj');
+  assert.deepEqual(
+    await page.evaluate(() => document.querySelector('slicc-app').model.files.mountInfo()),
+    [{ target: '/mnt/ref-node/proj', source: 'ref-node/proj', type: 'hostfs' }]
+  );
+  await page.evaluate(() =>
+    document.querySelector('slicc-app').model.network.ejectFolder('ref-node/proj')
+  );
+  await page.until(
+    () =>
+      !document.querySelector('slicc-app').model.network.status().links.devices[0].folders[0]
+        .mounted
+  );
+  await assert.rejects(
+    page.evaluate(() =>
+      document.querySelector('slicc-app').model.network.ejectFolder('ref-node/proj')
+    ),
+    /not mounted/
+  );
+});
