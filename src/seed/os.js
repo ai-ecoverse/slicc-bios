@@ -75,6 +75,7 @@ export const skip = [
   '/node_modules',
   '/opt/agent/node_modules',
   '/opt/grammars/node_modules',
+  '/opt/slicc',
   '/home/.local/share/pnpm',
   '/usr/local/share/pnpm',
   '/home/.cache',

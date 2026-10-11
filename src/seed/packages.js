@@ -1,3 +1,4 @@
+import { installProject, loadProject, projectVersion, removeProject } from './projects.js';
 import { fetchText, pnpm, text, write } from './update.js';
 
 const deployed = new URL('../packages/optional/', import.meta.url);
@@ -65,12 +66,26 @@ export async function loadCatalog(from = deployed) {
       certified.set(`${name}@${entry.version}`, entry.integrity);
     }
   }
-  const entries = Object.entries(catalog).map(([name, entry]) => ({
-    ...entry,
-    package: name,
-    requires: entry.requires ?? [],
-    offered: manifest.dependencies[name],
-  }));
+  const entries = await Promise.all(
+    Object.entries(catalog).map(async ([name, entry]) => {
+      if (entry.kind !== 'project') {
+        return {
+          ...entry,
+          package: name,
+          requires: entry.requires ?? [],
+          offered: manifest.dependencies[name],
+        };
+      }
+      const project = await loadProject(entry.id, from);
+      return {
+        ...entry,
+        package: project.name,
+        requires: entry.requires ?? [],
+        offered: project.version,
+        project,
+      };
+    })
+  );
   const gone = await fetchText('retired.json', from)
     .then(JSON.parse)
     .catch(() => ({}));
@@ -189,7 +204,19 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
   const live = new Map();
   let installed = new Map();
 
-  const item = (entry) => describe(entry, installed.get(entry.package) ?? null, live.get(entry.id));
+  const missing = (entry) =>
+    entry.requires
+      .map((id) => byId.get(id))
+      .filter((needed) => needed && !installed.has(needed.package))
+      .map(
+        (needed) =>
+          `Needs ${needed.label}, which isn't installed. Install ${needed.label} again to use it.`
+      );
+  const item = (entry) => {
+    const described = describe(entry, installed.get(entry.package) ?? null, live.get(entry.id));
+    const warnings = described.version === null ? [] : missing(entry);
+    return warnings.length ? { ...described, warnings } : described;
+  };
 
   const list = () => [
     ...entries.map(item),
@@ -204,27 +231,43 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
       const before = installed.get(name);
       if (!before || compare(version, before) > 0) installed.set(name, version);
     }
+    for (const entry of entries.filter((entry) => entry.kind === 'project')) {
+      const version = await projectVersion(root, entry.id);
+      if (version) installed.set(entry.package, version);
+    }
     changed();
     return found;
   }
 
+  const reporter =
+    (entry, action) =>
+    ({ progress, log }) => {
+      live.set(entry.id, {
+        state: RUNNING[action],
+        progress: progress && progress.total > 1 ? progress : null,
+        log: `${entry.package}@${entry.offered}\n${log}`,
+      });
+      changed();
+    };
+
   async function run(entry, action, argv) {
     live.set(entry.id, { state: RUNNING[action], progress: null, log: '' });
     changed();
-    await pnpm(
+    await pnpm(kernel, '/home', reporter(entry, action), entry.offered, argv);
+  }
+
+  async function project(entry, action) {
+    live.set(entry.id, { state: RUNNING[action], progress: null, log: '' });
+    changed();
+    if (action === 'remove') return removeProject(root, entry.id);
+    await installProject({
+      root,
       kernel,
-      '/home',
-      ({ progress, log }) => {
-        live.set(entry.id, {
-          state: RUNNING[action],
-          progress: progress && progress.total > 1 ? progress : null,
-          log: `${entry.package}@${entry.offered}\n${log}`,
-        });
-        changed();
-      },
-      entry.offered,
-      argv
-    );
+      id: entry.id,
+      project: entry.project,
+      report: reporter(entry, action),
+      to: entry.offered,
+    });
   }
 
   async function add(entry, action) {
@@ -246,6 +289,7 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
   }
 
   async function perform(entry, action) {
+    if (entry.kind === 'project' && action === 'remove') return project(entry, action);
     if (action === 'remove') {
       await run(entry, action, ['pnpm', 'remove', '-g', entry.package]);
       return;
@@ -259,6 +303,7 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
         });
       });
     }
+    if (entry.kind === 'project') return project(entry, action);
     await add(entry, action);
   }
 
@@ -319,22 +364,29 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
     if (failed) throw new Error(live.get(id).error);
   }
 
-  async function move(legacy = GLOBAL) {
-    if (legacy === global || (await text(root, MOVED)) !== null) return [];
-    const old = await globals(root, legacy);
-    if (!old.length) return [];
-    const ids = entries
-      .filter((entry) => old.some(({ name }) => name === entry.package))
-      .filter((entry) => !installed.has(entry.package))
-      .map((entry) => entry.id);
-    for (const id of ids) await act(id, 'install').catch(() => undefined);
-    await write(
-      root,
-      MOVED,
-      `${JSON.stringify(old.map(({ name, version }) => `${name}@${version}`))}\n`
-    );
-    return ids;
-  }
+  const api = { list, refresh, act };
+  return { ...api, move: (legacy) => moveFrom({ root, global, entries, packages: api, legacy }) };
+}
 
-  return { list, refresh, act, move };
+export async function moveFrom({ root, global, entries, packages, legacy = GLOBAL }) {
+  if (legacy === global || (await text(root, MOVED)) !== null) return [];
+  const old = await globals(root, legacy);
+  if (!old.length) return [];
+  const present = new Set(
+    packages
+      .list()
+      .filter(({ version }) => version !== null)
+      .map(({ id }) => id)
+  );
+  const ids = entries
+    .filter((entry) => old.some(({ name }) => name === entry.package))
+    .filter((entry) => !present.has(entry.id))
+    .map((entry) => entry.id);
+  for (const id of ids) await packages.act(id, 'install').catch(() => undefined);
+  await write(
+    root,
+    MOVED,
+    `${JSON.stringify(old.map(({ name, version }) => `${name}@${version}`))}\n`
+  );
+  return ids;
 }

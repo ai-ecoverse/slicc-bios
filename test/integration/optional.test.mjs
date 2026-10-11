@@ -9,7 +9,8 @@ test('the optional catalog describes exactly the pinned packages, each locked wi
   const catalog = await read('catalog.json');
   const { dependencies } = await read('package.json');
   const lock = await read('package-lock.json');
-  assert.deepEqual(Object.keys(catalog).sort(), Object.keys(dependencies).sort());
+  const packages = Object.entries(catalog).filter(([, entry]) => entry.kind !== 'project');
+  assert.deepEqual(packages.map(([name]) => name).sort(), Object.keys(dependencies).sort());
   for (const [name, version] of Object.entries(dependencies)) {
     assert.match(version, /^\d+\.\d+\.\d+(-[\w.]+)?$/, `${name} is pinned exactly`);
     const entry = lock.packages[`node_modules/${name}`];
@@ -38,7 +39,8 @@ test('every catalog entry has a unique id, a label, a description, commands and 
   assert.equal(new Set(ids).size, ids.length);
   for (const entry of entries) {
     assert.match(entry.id, /^[a-z][a-z0-9-]*$/);
-    assert.ok(entry.label && entry.description && entry.commands.length, entry.id);
+    assert.ok(entry.label && entry.description, entry.id);
+    assert.ok(entry.kind === 'project' || entry.commands.length, `${entry.id} has commands`);
     assert.ok(Number.isInteger(entry.size) && entry.size > 0, entry.id);
     for (const id of entry.requires ?? [])
       assert.ok(ids.includes(id), `${entry.id} requires ${id}`);
@@ -49,4 +51,35 @@ test('every catalog entry has a unique id, a label, a description, commands and 
     for (const next of byId.get(id).requires ?? []) visit(next, [...path, id]);
   };
   for (const id of ids) visit(id, []);
+});
+
+test('a project entry ships its manifest, a lockfile and a workspace that overrides Python away', async () => {
+  const catalog = await read('catalog.json');
+  const projects = Object.entries(catalog).filter(([, entry]) => entry.kind === 'project');
+  assert.ok(projects.length >= 1);
+  for (const [name, entry] of projects) {
+    const manifest = await read(`projects/${entry.id}/package.json`);
+    assert.equal(manifest.name, name);
+    assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
+    for (const [dependency, version] of Object.entries(manifest.dependencies)) {
+      assert.match(version, /^\d+\.\d+\.\d+(-[\w.]+)?$/, `${dependency} is pinned exactly`);
+    }
+    const lock = await readFile(new URL(`projects/${entry.id}/pnpm-lock.yaml`, optional), 'utf8');
+    for (const dependency of Object.keys(manifest.dependencies)) {
+      assert.match(
+        lock,
+        new RegExp(
+          `^ {6}'${dependency}':\\n {8}specifier: ${manifest.dependencies[dependency]}$`,
+          'm'
+        )
+      );
+    }
+    const workspace = await readFile(
+      new URL(`projects/${entry.id}/pnpm-workspace.yaml`, optional),
+      'utf8'
+    );
+    assert.match(workspace, /'@ai-ecoverse\/wasix-python': '-'/);
+    assert.match(lock, /^overrides:\n {2}'@ai-ecoverse\/wasix-python': '-'$/m);
+    assert.ok(entry.requires.includes('python'), `${entry.id} needs the catalog's Python`);
+  }
 });

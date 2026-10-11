@@ -28,6 +28,15 @@
     "requires": ["python"],
     "size": 10326
   },
+  "slicc-py-datatools": {
+    "id": "pydata",
+    "kind": "project",
+    "label": "Python data tools",
+    "description": "numpy, pandas, scipy and matplotlib for Python, about 270 MB on disk.",
+    "commands": [],
+    "requires": ["python"],
+    "size": 71955347
+  },
   "@ai-ecoverse/wasix-ruby": {
     "id": "ruby",
     "label": "Ruby",
