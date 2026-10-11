@@ -91,7 +91,7 @@ export function offered(all) {
 const network = await pickTransport();
 const { kind } = network;
 const browser = createBrowser(network);
-const control = browserControl(network, { observe: browser.observe });
+const control = browserControl(network, { observe: browser.observe, links: () => links });
 const exits = createExitRouter();
 const tailscale = createTailscale(await tailscaleConfig(), { router: exits });
 const links = createLinks({

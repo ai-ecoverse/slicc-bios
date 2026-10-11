@@ -255,8 +255,9 @@ export function createSession({
       .then(() => accept(meta))
       .then(
         (socket) => {
-          if (!streams.has(id)) return socket.close();
+          if (!streams.has(id)) return socket?.close();
           s.accepted();
+          if (!socket) return s.closeWrite();
           return pipe(s, socket);
         },
         (error) => {
@@ -363,7 +364,7 @@ export function bufferedReader(stream) {
 const mapped = (error) =>
   error.code === 'ENOTFOUND' ? Object.assign(error, { code: 'EHOSTUNREACH' }) : error;
 
-export function linkExit(session, { id, address, label }) {
+export function linkExit(session, { id, address, label, browsers = () => [] }) {
   const name = () => `${label()}.slicc.internal`;
   const mine = (host) => {
     const bare = bareHost(host).replace(/\.$/, '');
@@ -406,6 +407,11 @@ export function linkExit(session, { id, address, label }) {
         closeWrite: () => s.closeWrite(),
         close: () => s.close(),
       };
+    },
+    browsers: () => (session.peer() && session.caps().includes('cdp') ? browsers() : []),
+    async cdp(browser) {
+      const s = await session.open({ kind: 'cdp', browser });
+      return cdpConnection(s);
     },
     async fetch(request) {
       const { signal } = request;
@@ -553,8 +559,14 @@ export function createLinks({
       link.offer = offerLink({
         pc,
         send,
-        hello: { name, mode, caps: kernel ? ['kernel-in'] : [] },
-        accept: kernel ? (meta) => kernelIn(kernel, meta) : undefined,
+        hello: { name, mode, caps: kernel ? ['kernel-in', 'browsers'] : ['browsers'] },
+        accept: (meta) => {
+          if (meta.kind !== 'browsers')
+            return kernel ? kernelIn(kernel, meta) : Promise.reject(failure('EOPNOTSUPP'));
+          link.browsers = browserList(meta.browsers);
+          changed();
+          return null;
+        },
         timers,
         onClose: () => {
           if (links.get(key) === link) links.delete(key);
@@ -566,12 +578,14 @@ export function createLinks({
         id: `link:${key}`,
         address: () => link.address,
         label: () => link.label,
+        browsers: () => link.browsers,
       });
       links.set(key, link);
       link.offer.session.ready.then(
         (peer) => {
           link.label = dnsLabel(peer.host ?? peer.name, taken());
           link.peer = peer;
+          link.browsers = browserList(peer.browsers);
           router.add(link.exit);
           onLink(link, peer);
           changed();
@@ -618,6 +632,69 @@ export function createLinks({
 }
 
 export const FACADE_PORT = 9222;
+export const MAX_CDP_MESSAGE = 64 * 1024 * 1024;
+
+export function browserList(list) {
+  return (Array.isArray(list) ? list : [])
+    .filter((browser) => typeof browser?.id === 'string' && /^[A-Za-z0-9._-]+$/.test(browser.id))
+    .map(({ id, name, version, seven }) => ({
+      id,
+      name: String(name ?? id),
+      version: String(version ?? ''),
+      seven: seven === true,
+    }));
+}
+
+export function cdpConnection(stream) {
+  let ended = false;
+  let writes = Promise.resolve();
+  const connection = {
+    onmessage: null,
+    onclose: null,
+    send(text) {
+      if (ended) return;
+      const body = encoder.encode(text);
+      const framed = new Uint8Array(4 + body.length);
+      new DataView(framed.buffer).setUint32(0, body.length);
+      framed.set(body, 4);
+      writes = writes.then(() => stream.write(framed)).catch(() => {});
+    },
+    close() {
+      if (ended) return;
+      ended = true;
+      writes.then(() => stream.closeWrite());
+    },
+  };
+  const finish = (why) => {
+    ended = true;
+    connection.onclose?.(why);
+  };
+  (async () => {
+    let buffer = new Uint8Array(0);
+    const size = () => new DataView(buffer.buffer, buffer.byteOffset).getUint32(0);
+    for (;;) {
+      while (buffer.length < 4 || buffer.length < 4 + size()) {
+        if (buffer.length >= 4 && size() > MAX_CDP_MESSAGE) {
+          stream.close();
+          return finish('EMSGSIZE: a CDP message over 64 MiB');
+        }
+        const chunk = await stream.read();
+        if (chunk === null)
+          return finish(
+            buffer.length ? 'EPROTO: the browser ended inside a message' : 'the browser closed'
+          );
+        const merged = new Uint8Array(buffer.length + chunk.length);
+        merged.set(buffer);
+        merged.set(chunk, buffer.length);
+        buffer = merged;
+      }
+      const length = size();
+      connection.onmessage?.(decoder.decode(buffer.subarray(4, 4 + length)));
+      buffer = buffer.slice(4 + length);
+    }
+  })().catch((error) => finish(error.message));
+  return connection;
+}
 
 export async function kernelIn(kernel, meta) {
   if (meta.kind !== 'kernel') throw failure('EOPNOTSUPP');
@@ -642,6 +719,11 @@ export function device(link) {
     ...(typeof peer?.policy?.summary === 'string' ? { policy: peer.policy.summary } : {}),
     exit: Boolean(peer?.routes?.exit) && caps.includes('net'),
     state: peer ? 'connected' : 'connecting',
+    ...(caps.includes('cdp') && link.browsers?.length
+      ? {
+          browsers: link.browsers.map(({ id, name }) => ({ runtime: `${link.label}/${id}`, name })),
+        }
+      : {}),
   };
 }
 
