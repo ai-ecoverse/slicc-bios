@@ -18,7 +18,7 @@
     "label": "Python",
     "description": "Python 3.14 with pip, for scripts and data work.",
     "commands": ["python3", "pip"],
-    "size": 48826881
+    "size": 49553556
   },
   "@ai-ecoverse/wasix-uv-shim": {
     "id": "uv",
