@@ -686,6 +686,88 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
       .some((option) => option.id === 'adobe/claude-test')
   );
   await page.screenshot(new URL('adobe.png', page.dir));
+
+  await page.evaluate(() => {
+    const app = document.querySelector('slicc-app');
+    window.monitorView = () => app.dock.content('monitor');
+    window.monitorSection = (id) =>
+      window.monitorView()?.shadowRoot?.querySelector(`.section[data-id="${id}"]`);
+    window.monitorRows = (id) => [...(window.monitorSection(id)?.querySelectorAll('.row') ?? [])];
+    window.monitorOpen = () => app.dock.api.panels.some((panel) => panel.id === 'monitor');
+    window.usageButton = () =>
+      window.deep(app.shadowRoot, 'slicc-tray')?.shadowRoot?.querySelector('#usage');
+  });
+  assert.equal(await page.evaluate(() => window.monitorOpen()), false);
+  await page.until(() => window.usageButton()?.localName === 'swc-action-button');
+  await page.evaluate(() => window.usageButton().click());
+  await page.until(() => window.monitorOpen() && !!window.monitorView()?.shadowRoot);
+  const expand = async () => {
+    await page.until(() =>
+      ['agents', 'processes'].every(
+        (id) => Number(window.monitorSection(id)?.querySelector('.num')?.textContent) > 0
+      )
+    );
+    await page.evaluate(() => {
+      for (const id of ['agents', 'tasks', 'processes']) {
+        const toggle = window.monitorSection(id)?.querySelector('button.toggle');
+        if (toggle?.getAttribute('aria-expanded') === 'false') toggle.click();
+      }
+    });
+    await page.until(
+      () => window.monitorRows('agents').length > 0 && window.monitorRows('processes').length > 0
+    );
+  };
+  await expand();
+  const watched = await page.evaluate(() => {
+    const { monitor, agent } = document.querySelector('slicc-app').model;
+    const snapshot = monitor.snapshot();
+    const section = (id) => snapshot.sections.find((item) => item.id === id);
+    const cone = agent.list().find((item) => item.id === agent.active());
+    return {
+      updated: snapshot.updatedAt > 0,
+      vitals: snapshot.vitals.map((vital) => vital.id),
+      cone: section('agents').rows.some((row) => row.id === cone.id && row.depth === 0),
+      shell: section('processes').rows.some((row) => /\bbash\b/.test(row.name)),
+      shown: window.monitorRows('agents').map((row) => row.dataset.id),
+      bar: window.deepText(window.monitorView().shadowRoot.querySelector('.bar')),
+    };
+  });
+  assert.equal(watched.updated, true);
+  assert.ok(watched.vitals.includes('agents') && watched.vitals.includes('processes'));
+  assert.equal(watched.cone, true);
+  assert.equal(watched.shell, true);
+  assert.ok(watched.shown.length > 0);
+  assert.match(watched.bar, /Live monitor[\s\S]*Updated \d\d:\d\d:\d\d UTC/);
+  await page.screenshot(new URL('monitor-light-1280.png', page.dir));
+  await page.evaluate(() => {
+    const app = document.querySelector('slicc-app');
+    if (app.color !== 'dark') app.toggleColor();
+  });
+  await page.until(() =>
+    document
+      .querySelector('slicc-app')
+      .shadowRoot.querySelector('.swc-theme')
+      .classList.contains('swc-theme--dark')
+  );
+  await page.screenshot(new URL('monitor-dark-1280.png', page.dir));
+  await page.evaluate(() => document.querySelector('slicc-app').toggleColor());
+  await page.send('Emulation.setDeviceMetricsOverride', {
+    width: 420,
+    height: 800,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.until(() => document.querySelector('slicc-app').screen === 'phone');
+  await page.evaluate(() => document.querySelector('slicc-app').show('monitor'));
+  await page.until(() => window.monitorOpen() && !!window.monitorView()?.shadowRoot);
+  await expand();
+  await page.screenshot(new URL('monitor-light-420.png', page.dir));
+  await page.send('Emulation.clearDeviceMetricsOverride');
+  await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
+  await page.evaluate(() => document.querySelector('slicc-app').dock.close('monitor'));
+  await page.until(() => !window.monitorOpen());
+  await new Promise((resolve) => setTimeout(resolve, 11000));
+  assert.deepEqual(page.errors, []);
   assert.ok(
     !(await page.evaluate(
       (token) => document.documentElement.outerHTML.includes(token),
