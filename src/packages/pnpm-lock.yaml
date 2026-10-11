@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@ai-ecoverse/slicc-cdp':
-        specifier: 1.5.0
-        version: 1.5.0
+        specifier: 1.5.4
+        version: 1.5.4
       '@ai-ecoverse/slicc-kernel':
         specifier: 1.53.3
         version: 1.53.3
@@ -77,8 +77,8 @@ importers:
 
 packages:
 
-  '@ai-ecoverse/slicc-cdp@1.5.0':
-    resolution: {integrity: sha512-6dRhNSOLFbDuKey2scam30u0DcEVIfsnNSYj0waVu+oLfKP125xm+Oi/70PqCM5geoDjYt21tgjq2w+JNvWRUg==}
+  '@ai-ecoverse/slicc-cdp@1.5.4':
+    resolution: {integrity: sha512-kxMgrTHEEzUU2bjXvvaBlmE+sMNcAQCcec2EpJc37IGST+lGI/kqIY6BoeFZ8eXP9tMKUPpI0Nw9ZFpjHIZ1ig==}
     engines: {node: '>=24'}
 
   '@ai-ecoverse/slicc-kernel@1.53.3':
@@ -161,7 +161,7 @@ packages:
 
 snapshots:
 
-  '@ai-ecoverse/slicc-cdp@1.5.0': {}
+  '@ai-ecoverse/slicc-cdp@1.5.4': {}
 
   '@ai-ecoverse/slicc-kernel@1.53.3': {}
 
