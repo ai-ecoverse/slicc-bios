@@ -454,6 +454,8 @@ const CONNECTION = {
   failed: 'error',
 };
 
+export const displayName = (name) => String(name ?? '').replace(/^slicc\b/i, 'SLICC');
+
 export function trayPort(network, { name }) {
   const status = () => {
     const links = network.status().links ?? {};
@@ -463,11 +465,11 @@ export function trayPort(network, { name }) {
       kind: 'hosted',
       connection: CONNECTION[links.sync] ?? 'offline',
       role: tray ? 'leader' : 'none',
-      followers: (links.devices ?? [])
+      followers: (tray ? (links.devices ?? []) : [])
         .filter((item) => item.mode === 'remote' && item.state === 'connected')
         .map((item) => ({
           id: item.id,
-          name: item.name,
+          name: displayName(item.name),
           device: item.kind === 'seven' ? 'browser' : 'cli',
           since: 0,
         })),
