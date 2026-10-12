@@ -10,7 +10,7 @@ const held = [];
 const end = ServerResponse.prototype.end;
 ServerResponse.prototype.end = function (chunk, ...rest) {
   if (!this.req?.url?.startsWith('/never/')) return end.call(this, chunk, ...rest);
-  if (chunk) this.write(chunk);
+  if (chunk) this.write(chunk.slice(0, Math.ceil(chunk.length / 2)));
   held.push(() => end.call(this));
   return this;
 };
