@@ -56,7 +56,15 @@ export function serveUpdates(updates) {
   };
 }
 
-const NETWORK = ['setTailnet', 'setExitNode', 'submitAuthKey', 'logoutTailnet', 'check'];
+const NETWORK = [
+  'setTailnet',
+  'setExitNode',
+  'submitAuthKey',
+  'logoutTailnet',
+  'check',
+  'retryLinks',
+  'stopLinks',
+];
 
 export function serveNetwork(port) {
   return {
@@ -69,6 +77,23 @@ export function serveNetwork(port) {
       },
     },
     forward: (os) => port.on('network', (status) => os.emit('network', status)),
+  };
+}
+
+export function joinTray(agent, own) {
+  const status = () => ({ ...agent?.status?.(), ...own.status() });
+  return {
+    ...own,
+    status,
+    on(type, listener) {
+      const offs = [
+        agent?.on?.(type, () => listener(status())),
+        own.on(type, () => listener(status())),
+      ];
+      return () => {
+        for (const off of offs) off?.();
+      };
+    },
   };
 }
 
@@ -156,7 +181,12 @@ export function present({
       }
       connection = joined;
       const created = loaded.createAgentModel(joined, { storage, login });
-      model = { ...model, ...created, agent: wrap(created.agent) };
+      model = {
+        ...model,
+        ...created,
+        agent: wrap(created.agent),
+        ...(model.tray ? { tray: joinTray(created.tray, model.tray) } : {}),
+      };
     }
     return { model, agent: Boolean(ports.agent) };
   }

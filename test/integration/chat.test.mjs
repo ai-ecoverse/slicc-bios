@@ -679,6 +679,15 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   await page.until(
     () => document.querySelector('slicc-app').model.tray.status().budget.percent === 42
   );
+  assert.deepEqual(
+    await page.evaluate(() => {
+      const { kind, role, connection, budget } = document
+        .querySelector('slicc-app')
+        .model.tray.status();
+      return { kind, role, connection, percent: budget.percent };
+    }),
+    { kind: 'hosted', role: 'none', connection: 'offline', percent: 42 }
+  );
   await page.until(() =>
     document
       .querySelector('slicc-app')
