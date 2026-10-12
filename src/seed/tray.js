@@ -102,17 +102,26 @@ export function trayHub(origin, fetcher) {
 
   async function supersede(old, joinUrl) {
     const token = new URL(old.controllerUrl).pathname.split('/').at(-1);
-    await fetcher(`${origin}/api/tray/${encodeURIComponent(old.trayId)}/supersede`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-      body: JSON.stringify({ joinUrl }),
-    });
+    const response = await fetcher(
+      `${origin}/api/tray/${encodeURIComponent(old.trayId)}/supersede`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ joinUrl }),
+      }
+    ).catch(() => null);
+    return Boolean(response && response.status < 500);
   }
 
   async function lead(session, fresh = false) {
     const upgrade = !fresh && session && !('webhookUrl' in session);
     let current = !fresh && !upgrade && session ? session : await create();
-    if (upgrade) await supersede(session, current.joinUrl).catch(() => {});
+    if (upgrade)
+      current.superseding = { trayId: session.trayId, controllerUrl: session.controllerUrl };
+    if (current.superseding && (await supersede(current.superseding, current.joinUrl))) {
+      const { superseding: _, ...done } = current;
+      current = done;
+    }
     let claimed = await claim(current);
     if (claimed.gone && !fresh) {
       current = await create();
