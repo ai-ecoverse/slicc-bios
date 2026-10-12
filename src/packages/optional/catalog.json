@@ -42,7 +42,7 @@
     "label": "Node.js (jsh)",
     "description": "Node.js 22-compatible node and jsh commands: fs, streams, http, fetch, WebSocket and child_process, without tls, crypto, zlib, worker, fork or the sync child_process calls.",
     "commands": ["node", "jsh"],
-    "size": 433063
+    "size": 433380
   },
   "@ai-ecoverse/wasix-ruby": {
     "id": "ruby",
