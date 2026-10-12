@@ -258,7 +258,13 @@ export function browserVia(network, links) {
   return via ?? (linkedBrowsers(links).length ? 'link' : null);
 }
 
-export function browserHook(network, observe = (connection) => connection, links) {
+export function browserHook(
+  network,
+  observe = (connection) => connection,
+  links,
+  own = globalThis.location?.origin
+) {
+  const guard = (connection) => observe(guardOwnOrigin(connection, own));
   return async ({ runtime } = {}) => {
     const linked = linkedBrowsers(links);
     const hosts = browserHosts(network);
@@ -268,12 +274,12 @@ export function browserHook(network, observe = (connection) => connection, links
         const known = [...RUNTIMES, ...linked.map((browser) => browser.runtime)];
         throw new Error(`unknown runtime "${runtime}" (${known.join(', ')})`);
       }
-      return observe(await found.open());
+      return guard(await found.open());
     }
     const fallback = linked.find((browser) => browser.seven) ?? linked[0];
     const open = runtime ? hosts[runtime] : hosts.extension || hosts.proxy || fallback?.open;
     if (!open) throw new Error(MISSING[runtime ?? 'any']);
-    return observe(await open());
+    return guard(await open());
   };
 }
 
@@ -282,4 +288,114 @@ export function browserControl(network, { observe, links } = {}) {
     hook: browserHook(network, observe, links),
     status: () => ({ via: browserVia(network, links) }),
   };
+}
+
+const GUARD_IDS = 2 ** 30;
+export const OWN = 'seven’s own pages are out of reach of browser automation';
+
+const urlOrigin = (url) => {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+};
+
+export function guardOwnOrigin(connection, own) {
+  const isOwn = (url) => urlOrigin(url) === own;
+  const urls = new Map();
+  const sessions = new Map();
+  const blocked = new Set();
+  const internal = new Map();
+  let next = GUARD_IDS;
+  const guarded = { onmessage: null, onclose: null };
+  const deliver = (message) => guarded.onmessage?.(JSON.stringify(message));
+  const call = (method, params, sessionId) =>
+    new Promise((resolve) => {
+      next += 1;
+      internal.set(next, resolve);
+      connection.send(
+        JSON.stringify({ id: next, method, params, ...(sessionId ? { sessionId } : {}) })
+      );
+    });
+  const learn = (info) => {
+    if (info?.targetId) urls.set(info.targetId, info.url ?? '');
+  };
+  const cut = (sessionId) => {
+    blocked.add(sessionId);
+    void call('Target.detachFromTarget', { sessionId });
+  };
+  const refuse = (id) => deliver({ id, error: { code: -32000, message: OWN } });
+  const targetUrl = async (targetId) => {
+    if (!urls.has(targetId))
+      learn((await call('Target.getTargetInfo', { targetId })).result?.targetInfo);
+    return urls.get(targetId);
+  };
+
+  function event(message) {
+    const { method, params = {} } = message;
+    if (method === 'Target.attachedToTarget') {
+      learn(params.targetInfo);
+      sessions.set(params.sessionId, params.targetInfo?.targetId);
+      if (isOwn(params.targetInfo?.url)) return cut(params.sessionId);
+    }
+    if (method === 'Target.targetCreated' || method === 'Target.targetInfoChanged') {
+      learn(params.targetInfo);
+      if (isOwn(params.targetInfo?.url)) {
+        for (const [sessionId, targetId] of sessions)
+          if (targetId === params.targetInfo.targetId && !blocked.has(sessionId)) cut(sessionId);
+        return;
+      }
+    }
+    if (method === 'Target.detachedFromTarget') sessions.delete(params.sessionId);
+    if (blocked.has(message.sessionId)) return;
+    deliver(message);
+  }
+
+  function answer(message, asked) {
+    if (asked?.method === 'Target.attachToTarget' && message.result?.sessionId)
+      sessions.set(message.result.sessionId, asked.params?.targetId);
+    if (asked?.method === 'Target.getTargets' && Array.isArray(message.result?.targetInfos)) {
+      for (const info of message.result.targetInfos) learn(info);
+      const targetInfos = message.result.targetInfos.filter((info) => !isOwn(info.url));
+      return deliver({ ...message, result: { ...message.result, targetInfos } });
+    }
+    deliver(message);
+  }
+
+  const asked = new Map();
+  connection.onmessage = (text) => {
+    const message = command(text);
+    if (internal.has(message.id)) {
+      const resolve = internal.get(message.id);
+      internal.delete(message.id);
+      return resolve(message);
+    }
+    if (message.id === undefined) return event(message);
+    const was = asked.get(message.id);
+    asked.delete(message.id);
+    answer(message, was);
+  };
+  connection.onclose = (why) => guarded.onclose?.(why);
+
+  async function check({ method, params = {}, sessionId }) {
+    if (sessionId && blocked.has(sessionId)) return false;
+    if (method === 'Target.attachToTarget') return !isOwn(await targetUrl(params.targetId));
+    if (method === 'Target.createTarget' || method === 'Page.navigate') return !isOwn(params.url);
+    return true;
+  }
+
+  let order = Promise.resolve();
+  guarded.send = (text) => {
+    const message = command(text);
+    order = order
+      .then(() => check(message))
+      .then((ok) => {
+        if (!ok) return refuse(message.id);
+        asked.set(message.id, message);
+        connection.send(text);
+      });
+  };
+  guarded.close = () => connection.close();
+  return guarded;
 }
