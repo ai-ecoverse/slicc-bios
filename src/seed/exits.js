@@ -79,12 +79,11 @@ export function createExitRouter() {
   let chosen = null;
   const active = () => exits.filter((exit) => exit.active());
   const fallback = () => {
-    if (chosen === DIRECT) return null;
-    if (chosen === null) {
+    if (chosen === null || chosen === DIRECT) {
       const offering = active().filter((exit) => exit.offersDefault());
-      return (
-        offering.find((exit) => !exit.chosenOnly) ?? offering.find((exit) => exit.automatic) ?? null
-      );
+      const own = offering.find((exit) => !exit.chosenOnly);
+      if (own || chosen === DIRECT) return own ?? null;
+      return offering.find((exit) => exit.automatic) ?? null;
     }
     const exit = exits.find((item) => item.id === chosen);
     return exit?.active() && exit.offersDefault() ? exit : held(chosen);
