@@ -157,7 +157,7 @@ async function shell(page, command, name) {
   };
 }
 
-test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback, its host key, and as the chosen exit, held while it is gone', async (t) => {
+test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback, its host key, as the automatic exit until Directly, and as the chosen exit, held while it is gone', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
   await ready(page);
@@ -193,18 +193,6 @@ test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback
   );
   assert.ok(kinds.includes('tcp'), JSON.stringify(kinds));
   assert.ok(kinds.includes('http'), JSON.stringify(kinds));
-  const far = await shell(
-    page,
-    "curl -s --noproxy '*' --max-time 5 http://far.example/",
-    'link-far'
-  );
-  assert.notEqual(far.code, '0');
-  assert.equal(
-    await page.evaluate(() =>
-      globalThis.fakeNodeLog.some((m) => m.kind === 'resolve' || m.host === '203.0.113.7')
-    ),
-    false
-  );
   const network = () =>
     page.evaluate(() => {
       const { exit, links } = document.querySelector('slicc-app').model.network.status();
@@ -214,9 +202,34 @@ test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback
       };
     });
   assert.deepEqual(await network(), {
-    exit: null,
+    exit: { kind: 'link', id: 'local' },
     devices: [['local', 'fake-node.slicc.internal', 'connected', true, 'net,http,ssh']],
   });
+  const automatic = await shell(
+    page,
+    "curl -s --noproxy '*' --max-time 10 http://far.example/automatic",
+    'link-automatic'
+  );
+  assert.deepEqual(automatic, { code: '0', out: 'raw 203.0.113.7:80 /automatic' });
+  await page.evaluate(() => document.querySelector('slicc-app').model.network.setExit(null));
+  assert.equal((await network()).exit, null);
+  const before = await page.evaluate(() => globalThis.fakeNodeLog.length);
+  const far = await shell(
+    page,
+    "curl -s --noproxy '*' --max-time 5 http://far.example/",
+    'link-far'
+  );
+  assert.notEqual(far.code, '0');
+  assert.equal(
+    await page.evaluate(
+      (from) =>
+        globalThis.fakeNodeLog
+          .slice(from)
+          .some((m) => m.kind === 'resolve' || m.host === '203.0.113.7'),
+      before
+    ),
+    false
+  );
   await page.evaluate(() =>
     document.querySelector('slicc-app').model.network.setExit({ kind: 'link', id: 'local' })
   );
@@ -292,7 +305,7 @@ test('links the real slicc CLI over stdio signaling, and kernel curl reaches its
   assert.ok(seen.indexOf('offer') < seen.indexOf('node:answer'));
 });
 
-test('the real slicc CLI: ssh into it with its pinned host key, and as the exit it resolves names from its hosts file, or refuses them under its policy', {
+test('the real slicc CLI: ssh into it with its pinned host key, and as the exit, automatic for a local CLI, it resolves names from its hosts file, or refuses them under its policy', {
   skip: !cli,
 }, async (t) => {
   const { mkdtemp, writeFile } = await import('node:fs/promises');
@@ -369,6 +382,30 @@ test('the real slicc CLI: ssh into it with its pinned host key, and as the exit 
       const device = network.status().links.devices.find((d) => d.state === 'connected');
       return network.setExit({ kind: 'link', id: device.id });
     });
+  const automatic = await shell(
+    page,
+    `curl -s --noproxy '*' --max-time 10 http://ref.link.test:${port}/automatic`,
+    'hosts-automatic'
+  );
+  assert.deepEqual(automatic, { code: '0', out: 'hosts /automatic' });
+  const shown = await page.evaluate(() => {
+    const status = document.querySelector('slicc-app').model.network.status();
+    return [status.exit, status.links.devices[0].id];
+  });
+  assert.deepEqual(shown[0], { kind: 'link', id: shown[1] });
+  await page.evaluate(() => document.querySelector('slicc-app').model.network.setExit(null));
+  const direct = await shell(
+    page,
+    `curl -s --noproxy '*' --max-time 10 http://ref.link.test:${port}/direct`,
+    'hosts-direct'
+  );
+  assert.notEqual(direct.code, '0');
+  assert.equal(
+    await page.evaluate(
+      () => document.querySelector('slicc-app').model.network.status().exit ?? null
+    ),
+    null
+  );
   await exitToConnected();
   const named = await shell(
     page,

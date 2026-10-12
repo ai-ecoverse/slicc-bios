@@ -368,7 +368,7 @@ export function bufferedReader(stream) {
 const mapped = (error) =>
   error.code === 'ENOTFOUND' ? Object.assign(error, { code: 'EHOSTUNREACH' }) : error;
 
-export function linkExit(session, { id, address, label, browsers = () => [] }) {
+export function linkExit(session, { id, address, label, browsers = () => [], automatic = false }) {
   const name = () => `${label()}.slicc.internal`;
   const mine = (host) => {
     const bare = bareHost(host).replace(/\.$/, '');
@@ -379,6 +379,7 @@ export function linkExit(session, { id, address, label, browsers = () => [] }) {
     id,
     kind: 'link',
     chosenOnly: true,
+    automatic,
     name,
     active: () => Boolean(hello()) && !session.closed(),
     offersDefault: () => Boolean(hello()?.routes?.exit) && session.caps().includes('net'),
@@ -717,6 +718,7 @@ export function createLinks({
         address: () => link.address,
         label: () => link.label,
         browsers: () => link.browsers,
+        automatic: mode === 'local',
       });
       links.set(key, link);
       link.offer.session.ready.then(

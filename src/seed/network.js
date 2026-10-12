@@ -1,4 +1,5 @@
 import { checkLocalProxy } from '@ai-ecoverse/slicc-kernel';
+import { DIRECT } from './exits.js';
 
 export const EXTENSION_URL =
   'https://chromewebstore.google.com/detail/slicc/akjjllgokmbgpbdbmafpiefnhidlmbgf';
@@ -66,6 +67,8 @@ export const EXIT_KEY = 'slicc-os.exit';
 export function currentExit(router, tailnet) {
   const chosen = router?.chosen();
   if (chosen?.startsWith('link:')) return { kind: 'link', id: chosen.slice(5) };
+  const automatic = chosen === null ? router.defaultExit() : null;
+  if (automatic?.kind === 'link') return { kind: 'link', id: automatic.id.slice(5) };
   if (tailnet?.state !== 'running' || !tailnet.exitNode) return null;
   if (tailnet.autoExitNode) return { kind: 'tailnet', node: 'auto' };
   const node = tailnet.exitNodes?.find((item) => item.name === tailnet.exitNode);
@@ -83,7 +86,7 @@ function exitActions({ router, links, tray, tailnet, storage }, emit) {
     if (status?.state === 'running' && status.exitNode) await tailnet.setExitNode(null);
   };
   const saved = storage.getItem(EXIT_KEY);
-  if (saved?.startsWith('link:')) router.choose(saved);
+  if (saved?.startsWith('link:') || saved === DIRECT) router.choose(saved);
   return {
     async setExit(exit) {
       if (exit?.kind === 'link') {
@@ -93,8 +96,9 @@ function exitActions({ router, links, tray, tailnet, storage }, emit) {
         router.choose(`link:${exit.id}`);
         remember(`link:${exit.id}`);
       } else {
-        router.choose(null);
-        remember(null);
+        const direct = exit?.kind === 'tailnet' ? null : DIRECT;
+        router.choose(direct);
+        remember(direct);
         if (exit?.kind === 'tailnet') await tailnet.setExitNode(exit.node);
         else await clearTailnet();
       }
@@ -164,9 +168,9 @@ export function createNetwork(choice, options = {}) {
     };
   };
   const viaLink = () => {
-    const chosen = options.router?.chosen();
-    if (!chosen?.startsWith('link:') || !options.links) return {};
-    const id = chosen.slice(5);
+    const exit = options.router ? currentExit(options.router, null) : null;
+    if (exit?.kind !== 'link' || !options.links) return {};
+    const { id } = exit;
     const devices = [...options.links.devices(), ...(options.tray?.away() ?? [])];
     const connected = devices.some((item) => item.id === id && item.state === 'connected');
     return { health: connected ? 'ok' : 'failing', detail: null };
