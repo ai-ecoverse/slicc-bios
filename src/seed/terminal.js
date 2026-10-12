@@ -3,6 +3,7 @@ import { failure } from './link.js';
 export const BYTES = 0;
 export const RESIZE = 1;
 export const SIGNAL = 2;
+export const EXIT = 3;
 export const MAX_RECORD = 1024 * 1024;
 export const SIZE = 10_000;
 export const SIGNALS = ['INT', 'TSTP', 'QUIT', 'HUP'];
@@ -91,7 +92,8 @@ export async function serveTerminal(kernel, meta, stream) {
   stream.accepted({ pid: terminal.pid ?? null });
   const parse = records();
   const exited = terminal.exited.then(
-    async () => {
+    async (status) => {
+      send(record(EXIT, String(Number.isInteger(status) ? status : 0)));
       await send.flushed();
       stream.closeWrite();
     },
@@ -114,12 +116,16 @@ export async function remoteTerminal(open, { cwd, cols, rows, onData }) {
   const send = writer(stream);
   const parse = records();
   const exited = (async () => {
+    let status = 0;
     try {
       for (let chunk = await stream.read(); chunk; chunk = await stream.read()) {
-        for (const { type, payload } of parse(chunk)) if (type === BYTES) onData?.(payload);
+        for (const { type, payload } of parse(chunk)) {
+          if (type === BYTES) onData?.(payload);
+          else if (type === EXIT) status = Number.parseInt(decoder.decode(payload), 10) || 0;
+        }
       }
       stream.closeWrite();
-      return 0;
+      return status;
     } catch (error) {
       onData?.(encoder.encode(`\r\n[${error.message}]\r\n`));
       return 1;
