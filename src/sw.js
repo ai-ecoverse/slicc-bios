@@ -1,3 +1,4 @@
+import { openIntegrity, sha256, treeOf } from './sw/integrity.js';
 import { kernelPort, loopback, Unreachable } from './sw/loopback.js';
 import { createResolver, NODE_STUBS } from './sw/resolve.js';
 import { nodeStub } from './sw/stubs.js';
@@ -82,12 +83,67 @@ async function read(path) {
   return (await dir.getFileHandle(name)).getFile();
 }
 
+class Changed extends Error {}
+
+let ledger;
+const trusted = new Set();
+const HEAL_GAP = 60000;
+const healed = new Map();
+
+function integrity() {
+  ledger ??= openIntegrity();
+  return ledger;
+}
+
+async function checked(path, file) {
+  const tree = treeOf(path);
+  if (!tree) return file;
+  const key = `${path}\n${file.size}\n${file.lastModified}`;
+  if (trusted.has(key)) return file;
+  const store = await integrity();
+  if (!(await store.generation(tree))) throw new Changed(`sw: ${path} isn't verified yet`);
+  const record = await store.lookup(path);
+  const bytes = await file.arrayBuffer();
+  if (record?.size !== bytes.byteLength || record.sha256 !== (await sha256(bytes))) {
+    throw new Changed(`sw: ${path} was changed after seven installed it`);
+  }
+  trusted.add(key);
+  return new File([bytes], file.name, { lastModified: file.lastModified });
+}
+
+async function updating() {
+  const { held = [] } = (await navigator.locks?.query()) ?? {};
+  return held.some(({ name }) => name === 'slicc-packages');
+}
+
+async function heal(scope, path) {
+  if (Date.now() - (healed.get(path) ?? 0) < HEAL_GAP) return;
+  healed.set(path, Date.now());
+  const windows = await self.clients.matchAll({ type: 'window' });
+  for (const client of windows) {
+    const { pathname, hash } = new URL(client.url);
+    if (pathname === `${scope}os/` || pathname === `${scope}os/index.html`) {
+      client.navigate(`${self.registration.scope}${hash}`).catch(() => {});
+    }
+  }
+}
+
+async function refuse(path, request, error, scope) {
+  if (await updating()) return failed(503, `sw: seven is updating ${path}, try again`);
+  if (error.message.endsWith('installed it')) await (await integrity()).tamper(path);
+  if (request.mode === 'navigate') return Response.redirect(self.registration.scope, 302);
+  await heal(scope, path);
+  return failed(500, error.message);
+}
+
 const opfs = {
   readText: (path) =>
-    read(path).then(
-      (file) => file.text(),
-      () => undefined
-    ),
+    read(path)
+      .then((file) => checked(path, file))
+      .then(
+        (file) => file.text(),
+        () => undefined
+      ),
   isFile: (path) =>
     read(path).then(
       () => true,
@@ -248,6 +304,13 @@ async function serve(request, controller) {
   const extension = file.name.split('.').pop();
   if (served === 'sandboxed') {
     return sandboxed(file, inert[extension] ?? types[extension] ?? 'application/octet-stream');
+  }
+  const at = path.endsWith('/') ? `${path}index.html` : path;
+  try {
+    file = await checked(at, file);
+  } catch (error) {
+    if (!(error instanceof Changed)) throw error;
+    return refuse(at, request, error, scope);
   }
   const type = types[extension] ?? 'application/octet-stream';
   if (!script.test(file.name)) return respond(file, type, 'opfs');

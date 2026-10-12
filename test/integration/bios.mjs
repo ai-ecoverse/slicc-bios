@@ -157,3 +157,35 @@ export async function ui(page) {
     };
   });
 }
+
+export async function trust(page, files) {
+  await page.evaluate(async (files) => {
+    const root = await navigator.storage.getDirectory();
+    const records = [];
+    for (const [path, text] of Object.entries(files)) {
+      const parts = path.split('/');
+      const name = parts.pop();
+      let dir = root;
+      for (const part of parts) dir = await dir.getDirectoryHandle(part, { create: true });
+      const writable = await (await dir.getFileHandle(name, { create: true })).createWritable();
+      await writable.write(text);
+      await writable.close();
+      const bytes = new TextEncoder().encode(text);
+      const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+      const sha256 = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
+      records.push({ path: `/${path}`, size: bytes.byteLength, sha256, source: `test:/${path}` });
+    }
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open('slicc-bios-integrity');
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const transaction = db.transaction('files', 'readwrite');
+    for (const record of records) transaction.objectStore('files').put(record);
+    await new Promise((resolve, reject) => {
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error);
+    });
+    db.close();
+  }, files);
+}

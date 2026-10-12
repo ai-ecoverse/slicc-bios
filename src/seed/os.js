@@ -32,7 +32,7 @@ import { createLinks, installLocal, labelStore, trustHostKey } from './link.js';
 import { serveLoopback } from './loopback.js';
 import { createFolders, offTheRecord } from './mounts.js';
 import { createNetwork } from './network.js';
-import { createNotices } from './notices.js';
+import { createNotices, reportRepairs } from './notices.js';
 import { createPackages, globalDir, loadCatalog, writeListing } from './packages.js';
 import {
   biosHash,
@@ -207,6 +207,7 @@ document.addEventListener('visibilitychange', () => board.show(visible()));
 const claimed = await claim();
 const updates = createUpdates();
 const notices = createNotices();
+reportRepairs(notices);
 const keep = keepStorage({ notices, prompts });
 let model = null;
 let files = null;

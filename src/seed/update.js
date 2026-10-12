@@ -40,6 +40,23 @@ export function progress(output) {
 
 const INSTALL = ['pnpm', 'install', '--frozen-lockfile', '--trust-lockfile'];
 
+export function installer(
+  op,
+  args,
+  connect = () => new SharedWorker(new URL('../installer.js', import.meta.url), 'slicc-installer')
+) {
+  const { port } = connect();
+  return new Promise((resolve, reject) => {
+    port.onmessage = ({ data }) => {
+      if ('progress' in data) return;
+      port.close();
+      if ('error' in data) reject(new Error(data.error));
+      else resolve(data.result);
+    };
+    port.postMessage({ id: 1, op, args });
+  });
+}
+
 export async function pnpm(kernel, cwd, report, to = null, argv = INSTALL) {
   let log = '';
   report({ progress: null, log });
@@ -66,7 +83,7 @@ export async function versions(dir, names, prefix = '') {
   return found;
 }
 
-async function install(kernel, from, report) {
+async function install(kernel, from, report, record) {
   const root = await navigator.storage.getDirectory();
   const lock = await fetchText('pnpm-lock.yaml', from);
   if (lock === (await text(root, 'var/lib/slicc/pnpm-lock.yaml'))) return null;
@@ -76,6 +93,7 @@ async function install(kernel, from, report) {
   await write(root, 'package.json', manifest);
   await write(root, 'pnpm-lock.yaml', lock);
   await pnpm(kernel, '/', report);
+  await record('packages', { from: new URL('package-lock.json', from).href, held: true });
   await write(root, 'var/lib/slicc/pnpm-lock.yaml', lock);
   const after = await versions(root, names);
   return names
@@ -83,6 +101,6 @@ async function install(kernel, from, report) {
     .map((name) => ({ name, from: before[name], to: after[name] }));
 }
 
-export function update(kernel, { from = deployed, report = () => {} } = {}) {
-  return navigator.locks.request('slicc-packages', () => install(kernel, from, report));
+export function update(kernel, { from = deployed, report = () => {}, record = installer } = {}) {
+  return navigator.locks.request('slicc-packages', () => install(kernel, from, report, record));
 }

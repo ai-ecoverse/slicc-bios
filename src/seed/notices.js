@@ -47,3 +47,25 @@ export function createNotices({ storage = localStorage } = {}) {
     },
   };
 }
+
+export const REPAIRED = 'slicc-bios.repaired';
+
+export function reportRepairs(notices, storage = localStorage) {
+  const paths = JSON.parse(storage.getItem(REPAIRED) ?? '[]');
+  storage.removeItem(REPAIRED);
+  if (!paths.length) return false;
+  const what =
+    paths.length === 1
+      ? `Seven’s file ${paths[0]} changed after seven installed it.`
+      : `${paths.length} of seven’s files, such as ${paths[0]}, changed after seven installed them.`;
+  return notices.show(
+    {
+      id: `repaired:${Date.now()}`,
+      tone: 'warning',
+      title: 'Seven’s files were changed',
+      body: `${what} Seven didn’t run the changed code and put back the files it installed.`,
+      actions: [],
+    },
+    () => {}
+  );
+}
