@@ -2,6 +2,7 @@ import { apply } from './layer.js';
 import { failure } from './link.js';
 import { agentTag } from './tags.js';
 import { text, versions } from './update.js';
+import { kernelSource } from './users.js';
 
 const deployed = new URL('../packages/agent/', import.meta.url);
 const PACKAGE = '@ai-ecoverse/slicc-agent';
@@ -77,7 +78,7 @@ export async function startChat(kernel, options) {
   const { startAgent } = await loadChat(options);
   return startAgent({
     worker: () => new Worker(agentWorker, { type: 'module', name: 'slicc-agent' }),
-    kernel: { connect: () => kernel.connect({ tag: agentTag('root') }) },
+    kernel: kernelSource(kernel),
     held: true,
   });
 }

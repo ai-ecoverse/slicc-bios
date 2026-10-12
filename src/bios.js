@@ -101,11 +101,13 @@ await step('seed', async () => {
   const files = [
     'adobe.js',
     'agent.js',
+    'approvals.js',
     'browser.js',
     'callback.html',
     'callback.js',
     'cdp.js',
     'clipboard.js',
+    'denials.js',
     'exits.js',
     'follow.js',
     'follower.js',
@@ -140,6 +142,7 @@ await step('seed', async () => {
     'tunnel.js',
     'update.js',
     'updates.js',
+    'users.js',
   ];
   const from = new URL('seed/', import.meta.url).href;
   const {

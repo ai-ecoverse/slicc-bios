@@ -64,6 +64,18 @@ A kernel process can still write to `/os/` and `/node_modules/` (any process whi
 
 Each screen class has its own layout, kept in `localStorage` (`slicc-os.layout.<screen>`). On desktop and tablet chat and the terminal share the middle, the agents and files are on the left, and file tabs open between them. On a phone it's chat and the terminal, with chat, the agents and files in the bottom rail. Every panel keeps its rail icon while it's open; while it's visible the icon shows selected (`.selected`, `data-visible`, labelled "{Title}, shown", spectrum ≥ 1.53.0), and a click brings it to the front. The header's tray connection (`#chip`) opens Network at its **Sync** section: the tray's state, the float's name, the join link with **Copy**, the followers, and **Disconnect** (after a confirm) or **Reconnect**. The agent's tray port is a placeholder today (offline, no join link), so the section reads offline; seven's own tray leader shows under Linked devices (see [Network](#network)). Memory opens from the View menu. Changes, the browser and the monitor come back as their backends land. Adobe Clean comes from `/fonts/`, which the sliccy-ai worker serves on every host.
 
+### Kernel users (draft, K4 joint cert)
+
+This branch pins slicc-kernel 1.66.0 and can run the kernel with users on. It is for the K4 joint cert only and never merges.
+
+- **The switch:** `#users=report` or `#users=enforce` in the URL, remembered in `localStorage['slicc-os.users']` (`#users=off` clears it). Without it, users stay `'off'`, as on main. `<html data-users>` says which mode is on.
+- **The first cone:** with users on, bios adds `cone` at every boot: in `sudo`, home `0710`, umask `077`. The agent adds further cones and scoops through its `KernelSource`.
+- **A terminal as a user:** `localStorage['slicc-os.terminal-user'] = 'cone'` binds every panel terminal to that user, while users are on. It's for the cert and the tests.
+- **The agent's `KernelSource`** (`os/users.js`) passes `connect({ user, agentId })`, `users` and `groups` to the kernel, only for agent users. It refuses root and any user but `cone`, `cone-<n>` and `scoop-<folder>`, requires the agentId to match the user exactly (`cone:cone`, `cone:cone-2`, `scoop:<folder>`), and allows groups only of cones and `sudo` only for cones. The tag is `{"kind":"agent","agentId":…}` as JSON; a panel terminal's is `{"kind":"user","where":"terminal:<tab>"}`.
+- **Sudo approvals:** the kernel's `approve` hook feeds `model.approvals`, spectrum's sudo dialog. It shows the resolved path and arguments, shell-quoted, the directory, the requester mapped from the tag, the target and *Always allow*. Every tab shows the request (`BroadcastChannel('slicc-approvals')`), and the first decision wins; the other tabs see *Answered in another tab*.
+- **Denials:** every denial under `'report'` and `'enforce'` is appended to `/var/log/slicc/denials.log`, one JSON line each: `time`, `user`, `tag` (`null`, since the kernel doesn't report one yet), `op`, `path`, `errno` and `mode`.
+- **Known gap:** the pydata `.pth` is in `/root/.local`, which cones can't read, so cones don't import the data tools.
+
 ### Folder mounts
 
 A local folder can be mounted into seven as on Linux ([#73](https://github.com/ai-ecoverse/slicc-bios/issues/73)). `os/mounts.js` gives slicc-kernel the hooks it needs:
