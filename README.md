@@ -245,7 +245,7 @@ seven can also join a tailnet, with a patched build of Tailscale's wasm client (
     - **Name and role:** seven's name, `leader` while it leads the tray (`none` when disconnected), and `hosted`.
     - **Connection:** Live, Connecting, Reconnecting, Error or Offline.
     - **Join link**, the same one Linked devices offers.
-    - **Followers:** the connected remote devices, sevens as `browser` and CLIs as `cli`.
+    - **Followers:** the connected remote devices, sevens as `browser` and CLIs as `cli`, named as Linked devices names them (a leading `slicc` reads `SLICC`). While Sync is Offline the list is empty.
     - **Disconnect and Reconnect:** they stop and restart the tray (`stopLinks`, `retryLinks`). Links that are already up stay up.
     - **Other tabs** show the same, through the owner tab's network port.
     - **The agent's tray:** when the agent is running, its tray port (the Adobe budget, spend and rate) is joined with this one, so both show.
