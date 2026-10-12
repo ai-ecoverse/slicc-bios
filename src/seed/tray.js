@@ -27,7 +27,9 @@ export function webhookDelivery(message) {
     )
   );
   const { body } = message;
+  const json = /json/i.test(headers['content-type'] ?? '');
   const raw =
+    !json &&
     body &&
     typeof body === 'object' &&
     Object.keys(body).length === 1 &&
@@ -113,18 +115,26 @@ export function trayHub(origin, fetcher) {
     return Boolean(response && response.status < 500);
   }
 
+  async function point(current) {
+    const { origin: from } = current;
+    if (!from || from.pointed === current.joinUrl) return current;
+    if (!(await supersede(from, current.joinUrl))) return current;
+    return { ...current, origin: { ...from, pointed: current.joinUrl } };
+  }
+
   async function lead(session, fresh = false) {
     const upgrade = !fresh && session && !('webhookUrl' in session);
     let current = !fresh && !upgrade && session ? session : await create();
     if (upgrade)
-      current.superseding = { trayId: session.trayId, controllerUrl: session.controllerUrl };
-    if (current.superseding && (await supersede(current.superseding, current.joinUrl))) {
-      const { superseding: _, ...done } = current;
-      current = done;
-    }
+      current.origin = {
+        trayId: session.trayId,
+        controllerUrl: session.controllerUrl,
+        pointed: null,
+      };
+    current = await point(current);
     let claimed = await claim(current);
     if (claimed.gone && !fresh) {
-      current = await create();
+      current = await point({ ...(await create()), origin: current.origin });
       claimed = await claim(current);
     }
     if (!claimed.session) throw new Error(`the tray hub answered ${claimed.status}`);
