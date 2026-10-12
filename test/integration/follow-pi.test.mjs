@@ -237,6 +237,25 @@ test('a follower watches the owner run with View, is refused a send, and sends w
     for (const notice of notices.list()) notices.dismiss(notice.id);
   });
   await shoot(owner, 'owner-watching', { show: 'network', target: '[aria-labelledby="links"]' });
+  const tray = await page.evaluate(() => {
+    const status = document.querySelector('slicc-app').model.tray.status();
+    const deep = (root) => {
+      for (const element of root.querySelectorAll('*')) {
+        if (element.localName === 'slicc-tray') return element;
+        const inner = element.shadowRoot && deep(element.shadowRoot);
+        if (inner) return inner;
+      }
+      return null;
+    };
+    const chip = deep(document)?.shadowRoot?.querySelector('#chip');
+    return { ...status, chip: chip?.getAttribute('aria-label') ?? null };
+  });
+  assert.deepEqual(
+    [tray.role, tray.connection, tray.joinUrl, tray.followers],
+    ['follower', 'live', '', []]
+  );
+  assert.equal(typeof tray.budget?.percent, 'number');
+  assert.match(tray.chip, new RegExp(`^Tray ${tray.name}: Live, 0 followers$`));
 
   const ownerBefore = await owned(owner);
   const followerBefore = await owned(page);
