@@ -91,7 +91,7 @@ test('an OPFS page outside the code paths runs in an opaque origin without stora
   assert.deepEqual(headers.page, {
     status: 200,
     type: 'text/html; charset=utf-8',
-    csp: 'sandbox allow-scripts allow-forms allow-popups allow-modals',
+    csp: "sandbox allow-scripts allow-forms allow-popups allow-modals; frame-ancestors 'self'",
     sniff: 'nosniff',
     coop: null,
     coep: null,
@@ -99,7 +99,7 @@ test('an OPFS page outside the code paths runs in an opaque origin without stora
   assert.deepEqual(headers.os, {
     status: 200,
     type: 'text/html; charset=utf-8',
-    csp: null,
+    csp: "frame-ancestors 'self'",
     sniff: null,
     coop: 'same-origin',
     coep: 'require-corp',
