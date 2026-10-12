@@ -190,57 +190,83 @@ async function packages({ from, held = false }, progress) {
   return navigator.locks.request('slicc-packages', () => replay(from, progress));
 }
 
-async function replay(from, progress) {
-  const lock = JSON.parse(new TextDecoder().decode(await download(from)));
-  const queue = Object.entries(lock.packages).filter(
-    ([path, entry]) => path && entry.resolved && !entry.os && !entry.cpu
-  );
-  const removed = await prune(new Set(queue.map(([path]) => path)));
-  const ledger = await integrity();
-  const tampered = (await ledger.tampered()).filter((path) => path.startsWith('/node_modules/'));
-  const names = queue.map(([path]) => path);
-  const changed = new Set(tampered.map((path) => owner(path, names)).filter(Boolean));
-  const total = queue.length;
-  let done = 0;
-  let downloaded = 0;
-  let bytes = 0;
-  const worker = async () => {
-    while (queue.length) {
-      const entry = queue.shift();
-      const size = await add(entry, changed);
-      done += 1;
-      downloaded += size ? 1 : 0;
-      bytes += size;
-      progress({ done, total, path: entry[0] });
-    }
-  };
-  await Promise.all(Array.from({ length: 4 }, worker));
-  const deployed = new URL('./', from);
-  await install({ from: deployed, files: ['package.json', 'pnpm-lock.yaml'] }, () => {});
-  await install({ from: deployed, to: 'var/lib/slicc/', files: ['pnpm-lock.yaml'] }, () => {});
-  await ledger.bump('node_modules');
-  const repaired = await ledger.heal('/node_modules/');
-  return { packages: total, downloaded, removed, bytes, repaired };
+async function outcome(ledger, prefix, task) {
+  const { appendLog, described } = await import(INTEGRITY);
+  let result;
+  try {
+    result = await task();
+  } catch (error) {
+    for (const entry of await ledger.fail(prefix))
+      await appendLog(root, described(entry, 'failed'));
+    throw error;
+  }
+  const healed = await ledger.heal(prefix);
+  for (const entry of healed) await appendLog(root, described(entry, 'restored'));
+  const stopped = await ledger.stopped(prefix);
+  return { ...result, repaired: healed.map(({ path }) => path), stopped };
 }
 
-async function install({ from, to = '', files, source = null }, progress) {
+async function replay(from, progress) {
+  const ledger = await integrity();
+  return outcome(ledger, '/node_modules/', async () => {
+    const lock = JSON.parse(new TextDecoder().decode(await download(from)));
+    const queue = Object.entries(lock.packages).filter(
+      ([path, entry]) => path && entry.resolved && !entry.os && !entry.cpu
+    );
+    const removed = await prune(new Set(queue.map(([path]) => path)));
+    const tampered = (await ledger.tampered()).filter((path) => path.startsWith('/node_modules/'));
+    const names = queue.map(([path]) => path);
+    const changed = new Set(tampered.map((path) => owner(path, names)).filter(Boolean));
+    const total = queue.length;
+    let done = 0;
+    let downloaded = 0;
+    let bytes = 0;
+    const worker = async () => {
+      while (queue.length) {
+        const entry = queue.shift();
+        const size = await add(entry, changed);
+        done += 1;
+        downloaded += size ? 1 : 0;
+        bytes += size;
+        progress({ done, total, path: entry[0] });
+      }
+    };
+    await Promise.all(Array.from({ length: 4 }, worker));
+    const deployed = new URL('./', from);
+    await install({ from: deployed, files: ['package.json', 'pnpm-lock.yaml'] }, () => {});
+    await install({ from: deployed, to: 'var/lib/slicc/', files: ['pnpm-lock.yaml'] }, () => {});
+    await ledger.bump('node_modules');
+    return { packages: total, downloaded, removed, bytes };
+  });
+}
+
+async function copy({ from, to, files }, progress, keep = new Set()) {
   const { sha256 } = await import(INTEGRITY);
   let bytes = 0;
   const hashed = [];
   for (const file of files) {
     const data = await download(new URL(file, from));
-    await save(to + file, data);
-    if (source)
-      hashed.push({ path: `/${to}${file}`, size: data.byteLength, sha256: await sha256(data) });
+    if (!keep.has(`/${to}${file}`)) await save(to + file, data);
+    hashed.push({ path: `/${to}${file}`, size: data.byteLength, sha256: await sha256(data) });
     bytes += data.byteLength;
     progress({ file, bytes });
   }
-  if (!source) return { files: files.length, bytes };
+  return { bytes, hashed };
+}
+
+async function install({ from, to = '', files, source = null }, progress) {
+  if (!source) {
+    const { bytes } = await copy({ from, to, files }, progress);
+    return { files: files.length, bytes };
+  }
   const ledger = await integrity();
-  await ledger.record(source, hashed);
-  await ledger.bump(source);
-  const repaired = await ledger.heal(`/${to}`);
-  return { files: files.length, bytes, repaired };
+  return outcome(ledger, `/${to}`, async () => {
+    const keep = new Set(await ledger.stopped(`/${to}`));
+    const { bytes, hashed } = await copy({ from, to, files }, progress, keep);
+    await ledger.record(source, hashed);
+    await ledger.bump(source);
+    return { files: files.length, bytes };
+  });
 }
 
 async function list(dir, prefix) {

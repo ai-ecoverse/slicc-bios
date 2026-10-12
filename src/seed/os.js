@@ -32,7 +32,7 @@ import { createLinks, installLocal, labelStore, trustHostKey } from './link.js';
 import { serveLoopback } from './loopback.js';
 import { createFolders, offTheRecord } from './mounts.js';
 import { createNetwork } from './network.js';
-import { createNotices, reportRepairs } from './notices.js';
+import { createNotices, reportRepairs, reportStopped } from './notices.js';
 import { createPackages, globalDir, loadCatalog, writeListing } from './packages.js';
 import {
   biosHash,
@@ -208,6 +208,7 @@ const claimed = await claim();
 const updates = createUpdates();
 const notices = createNotices();
 reportRepairs(notices);
+reportStopped(notices);
 const keep = keepStorage({ notices, prompts });
 let model = null;
 let files = null;

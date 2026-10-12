@@ -69,3 +69,27 @@ export function reportRepairs(notices, storage = localStorage) {
     () => {}
   );
 }
+
+export const STOPPED = 'slicc-bios.stopped';
+
+export function reportStopped(notices, storage = localStorage, worker = navigator.serviceWorker) {
+  const show = (path) =>
+    notices.show(
+      {
+        id: `stopped:${path}`,
+        tone: 'warning',
+        title: 'Seven stopped restoring a file',
+        body: `Seven keeps finding ${path} changed. It stopped restoring it and won’t run it. Something on this computer may be changing seven’s files.`,
+        actions: [],
+      },
+      () => {}
+    );
+  const known = () => JSON.parse(storage.getItem(STOPPED) ?? '[]');
+  worker?.addEventListener('message', ({ data }) => {
+    const path = data?.integrity?.stopped;
+    if (!path) return;
+    storage.setItem(STOPPED, JSON.stringify([...new Set([...known(), path])]));
+    show(path);
+  });
+  for (const path of known()) show(path);
+}

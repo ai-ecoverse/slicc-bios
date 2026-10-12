@@ -90,3 +90,73 @@ test('seven refuses its own code once a kernel process changes it, puts it back 
   await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
   assert.deepEqual(page.errors, []);
 });
+
+test('seven stops restoring a file that changes again right after it put it back, logs it and says so', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  const bios = await watch(page);
+  await run(page, `echo 'globalThis.__changed = 1;' >> /os/callback.js && echo first-$((40 + 2))`);
+  await shows(page, 'first-42');
+  await page.evaluate(() => {
+    void fetch('/os/callback.js');
+  });
+  await eventually(() => assert.ok(bios.states().includes('navigate:done')));
+  await ready(page);
+  assert.doesNotMatch(await read(page, 'os/callback.js'), /__changed/);
+
+  await run(page, `echo 'globalThis.__changed = 2;' >> /os/callback.js && echo second-$((40 + 2))`);
+  await shows(page, 'second-42');
+  const refused = await page.evaluate(async () => {
+    const response = await fetch('/os/callback.js');
+    return [response.status, await response.text()];
+  });
+  assert.deepEqual(refused, [
+    500,
+    'sw: /os/callback.js keeps changing, so seven stopped restoring it\n',
+  ]);
+  const stopped = () =>
+    document
+      .querySelector('slicc-app')
+      .model.notices.list()
+      .find(({ id }) => id === 'stopped:/os/callback.js')?.body;
+  assert.equal(
+    await page.until(stopped),
+    'Seven keeps finding /os/callback.js changed. It stopped restoring it and won’t run it. Something on this computer may be changing seven’s files.'
+  );
+  assert.match(await read(page, 'os/callback.js'), /__changed = 2/);
+  const lines = (await read(page, 'var/log/slicc/integrity.log'))
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line))
+    .filter(({ path }) => path === '/os/callback.js');
+  assert.deepEqual(
+    lines.map(({ event }) => event),
+    ['changed', 'restored', 'stopped']
+  );
+  for (const line of lines) assert.match(line.expected, /^[0-9a-f]{64}$/);
+  assert.notEqual(lines[0].actual, lines[2].actual);
+
+  await page.reload();
+  await ready(page);
+  await page.until(stopped);
+  await page.until(() => {
+    const deep = (root) => {
+      const found = root.querySelector('[data-notice^="stopped:"]');
+      if (found) return found;
+      for (const element of root.querySelectorAll('*')) {
+        const inner = element.shadowRoot && deep(element.shadowRoot);
+        if (inner) return inner;
+      }
+      return null;
+    };
+    document.querySelector('slicc-app').show('chat');
+    return !!deep(document);
+  });
+  await page.evaluate(() => {
+    const app = document.querySelector('slicc-app');
+    if (app.color === 'dark') app.toggleColor();
+  });
+  await page.screenshot(new URL('integrity-stopped-light.png', page.dir));
+  assert.match(await read(page, 'os/callback.js'), /__changed = 2/);
+  assert.deepEqual(page.errors, []);
+});

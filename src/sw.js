@@ -1,4 +1,4 @@
-import { openIntegrity, sha256, treeOf } from './sw/integrity.js';
+import { appendLog, described, openIntegrity, sha256, treeOf } from './sw/integrity.js';
 import { kernelPort, loopback, Unreachable } from './sw/loopback.js';
 import { createResolver, NODE_STUBS } from './sw/resolve.js';
 import { nodeStub } from './sw/stubs.js';
@@ -84,9 +84,10 @@ async function read(path) {
 }
 
 class Changed extends Error {
-  constructor(path, what) {
+  constructor(path, what, hashes = {}) {
     super(`sw: ${path} ${what}`);
     this.path = path;
+    this.hashes = hashes;
     this.recorded = what.endsWith('installed it');
   }
 }
@@ -110,16 +111,24 @@ async function checked(path, file) {
   if (!(await store.generation(tree))) throw new Changed(path, "isn't verified yet");
   const record = await store.lookup(path);
   const bytes = await file.arrayBuffer();
-  if (record?.size !== bytes.byteLength || record.sha256 !== (await sha256(bytes))) {
-    throw new Changed(path, 'was changed after seven installed it');
+  const actual = await sha256(bytes);
+  if (record?.size !== bytes.byteLength || record.sha256 !== actual) {
+    throw new Changed(path, 'was changed after seven installed it', {
+      expected: record?.sha256 ?? null,
+      actual,
+    });
   }
   trusted.add(key);
   return new File([bytes], file.name, { lastModified: file.lastModified });
 }
 
 async function missing(path) {
-  if (treeOf(path) && (await (await integrity()).lookup(path))) {
-    throw new Changed(path, 'was removed after seven installed it');
+  const record = treeOf(path) && (await (await integrity()).lookup(path));
+  if (record) {
+    throw new Changed(path, 'was removed after seven installed it', {
+      expected: record.sha256,
+      actual: null,
+    });
   }
 }
 
@@ -140,10 +149,27 @@ async function heal(scope, path) {
   }
 }
 
+async function stop(path) {
+  const windows = await self.clients.matchAll({ type: 'window' });
+  for (const client of windows) client.postMessage({ integrity: { stopped: path } });
+}
+
 async function refuse(error, request, scope) {
   if (!(error instanceof Changed)) throw error;
   if (await updating()) return failed(503, `sw: seven is updating ${error.path}, try again`);
-  if (error.recorded) await (await integrity()).tamper(error.path);
+  if (error.recorded) {
+    const { fresh, stopped, entry } = await (await integrity()).tamper(error.path, error.hashes);
+    if (fresh) {
+      await appendLog(
+        navigator.storage.getDirectory(),
+        described(entry, stopped ? 'stopped' : 'changed')
+      );
+    }
+    if (stopped) {
+      if (fresh) await stop(error.path);
+      return failed(500, `sw: ${error.path} keeps changing, so seven stopped restoring it`);
+    }
+  }
   if (request.mode === 'navigate') return Response.redirect(self.registration.scope, 302);
   await heal(scope, error.path);
   return failed(500, error.message);
