@@ -141,12 +141,26 @@ function exitActions({ router, links, tray, tailnet, storage, linkedFolders }, e
             emit();
           },
           setRemoteControl: async (id, allowed) => {
-            tray.setControl(id, allowed);
+            await tray.setControl(id, allowed);
+            emit();
+          },
+          setAccess: async (id, name, allowed) => {
+            await tray.setAccess(id, name, allowed);
             emit();
           },
         }
       : {}),
   };
+}
+
+export function distinct(devices) {
+  const counts = new Map();
+  for (const item of devices) counts.set(item.name, (counts.get(item.name) ?? 0) + 1);
+  return devices.map((item) =>
+    item.kind === 'seven' && counts.get(item.name) > 1
+      ? { ...item, name: `${item.name} · ${item.id.slice(0, 4)}` }
+      : item
+  );
 }
 
 export function createNetwork(choice, options = {}) {
@@ -194,10 +208,10 @@ export function createNetwork(choice, options = {}) {
   };
   const linkStatus = () => {
     if (!options.links || !options.router) return {};
-    const devices = [...options.links.devices(), ...(options.tray?.away() ?? [])];
+    const devices = distinct([...options.links.devices(), ...(options.tray?.away() ?? [])]);
     const exit = currentExit(options.router, options.tailnet?.status());
     const sync = options.tray?.status() ?? {};
-    const { joinUrl = null, joinCommand = null, webhookUrl = null } = sync;
+    const { joinUrl = null, joinCommand = null, webhookUrl = null, followUrl } = sync;
     return {
       exit,
       ...(devices.length || options.tray
@@ -205,6 +219,7 @@ export function createNetwork(choice, options = {}) {
             links: {
               joinUrl,
               joinCommand,
+              ...(followUrl !== undefined ? { followUrl } : {}),
               devices,
               permission: null,
               webhookUrl,

@@ -12,13 +12,17 @@ test('seven leads a tray: a follower joins and links, rotation moves it to a new
   t.after(() => hub.close());
   const page = await chrome.page(t);
   await boot(page);
-  await page.evaluate((url) => localStorage.setItem('slicc-os.tray-hub', url), hub.url);
+  await page.evaluate((url) => {
+    localStorage.setItem('slicc-os.tray-hub', url);
+    localStorage.setItem('slicc-os.followers', 'on');
+  }, hub.url);
   await page.reload();
   await ready(page);
   await page.until(() => document.querySelector('slicc-app').model.network.status().links?.joinUrl);
   const links = await model(page, (network) => network.status().links);
   assert.deepEqual(links, {
     joinUrl: `${hub.url}/join/j1`,
+    followUrl: `${new URL(chrome.url).origin}/#follow=${encodeURIComponent(`${hub.url}/join/j1`)}`,
     joinCommand: `npx sliccy@next ${hub.url}/join/j1 follow`,
     devices: [],
     permission: null,
@@ -220,5 +224,8 @@ test('seven leads a tray: a follower joins and links, rotation moves it to a new
     [refused.controllerId, refused.code, refused.retryable],
     ['dev1-again', 'UNLINKED', false]
   );
-  await page.evaluate(() => localStorage.removeItem('slicc-os.tray-hub'));
+  await page.evaluate(() => {
+    localStorage.removeItem('slicc-os.tray-hub');
+    localStorage.removeItem('slicc-os.followers');
+  });
 });
