@@ -23,6 +23,46 @@ const isolation = {
 };
 
 const script = /\.[cm]?[jt]s$/;
+const inert = {
+  ...Object.fromEntries(
+    ['js', 'mjs', 'cjs', 'ts', 'mts', 'cts'].map((extension) => [
+      extension,
+      'text/plain; charset=utf-8',
+    ])
+  ),
+  wasm: 'application/octet-stream',
+};
+const sandbox = {
+  'content-security-policy': 'sandbox allow-scripts allow-forms allow-popups allow-modals',
+  'x-content-type-options': 'nosniff',
+  'cross-origin-resource-policy': 'same-origin',
+};
+const code = new Set([
+  'script',
+  'worker',
+  'sharedworker',
+  'serviceworker',
+  'audioworklet',
+  'paintworklet',
+  'xslt',
+]);
+const live = ['/os/', '/node_modules/', '/opt/agent/', '/opt/grammars/'];
+const own = new Set([
+  '/',
+  '/index.html',
+  '/bios.js',
+  '/bios.css',
+  '/installer.js',
+  '/sw.js',
+  '/manifest.json',
+]);
+const ownDirs = ['/sw/', '/seed/', '/packages/', '/icons/', '/fonts/'];
+
+function kind(path) {
+  if (own.has(path) || ownDirs.some((dir) => path.startsWith(dir))) return 'bios';
+  if (path.startsWith(NODE_STUBS)) return 'stub';
+  return live.some((dir) => path.startsWith(dir)) ? 'live' : 'sandboxed';
+}
 const markers = [
   '/var/lib/slicc/pnpm-lock.yaml',
   '/node_modules/.modules.yaml',
@@ -97,6 +137,13 @@ const PATIENCE = 30000;
 
 function failed(status, text) {
   return respond(`${text}\n`, 'text/plain; charset=utf-8', 'sw', status);
+}
+
+function sandboxed(body, type, status = 200) {
+  return new Response(body, {
+    status,
+    headers: { ...sandbox, 'content-type': type, 'x-served-from': 'opfs' },
+  });
 }
 
 function deadline(text) {
@@ -177,18 +224,28 @@ async function serve(request, controller) {
   const asked = `/${url.pathname.slice(scope.length)}`;
   const path = aliases.get(asked) ?? asked;
   const base = scope.replace(/\/$/, '');
-  if (path.startsWith(NODE_STUBS)) {
+  const network = async () =>
+    watched(await fetch(request, { signal: controller.signal }), url.pathname, controller);
+  const served = kind(path);
+  if (served === 'bios') return network();
+  if (served === 'stub') {
     const name = path.slice(NODE_STUBS.length).replace(/\.js$/, '');
     const wanted = url.searchParams.get('names')?.split(',') ?? [];
     return respond(nodeStub(name, wanted), types.js, 'stub');
+  }
+  if (served === 'sandboxed' && code.has(request.destination)) {
+    return sandboxed(`sw: ${path} is not served as code\n`, 'text/plain; charset=utf-8', 403);
   }
   let file;
   try {
     file = await read(path);
   } catch {
-    return watched(await fetch(request, { signal: controller.signal }), url.pathname, controller);
+    return network();
   }
   const extension = file.name.split('.').pop();
+  if (served === 'sandboxed') {
+    return sandboxed(file, inert[extension] ?? types[extension] ?? 'application/octet-stream');
+  }
   const type = types[extension] ?? 'application/octet-stream';
   if (!script.test(file.name)) return respond(file, type, 'opfs');
   const run = path.startsWith(AGENT) ? url.searchParams.get('run') : null;
