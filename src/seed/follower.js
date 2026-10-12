@@ -52,6 +52,7 @@ export function agentFollower({
   let connection = null;
   let session = null;
   let busy = false;
+  let again = false;
   let retry = null;
   const drop = () => {
     const old = connection;
@@ -64,16 +65,24 @@ export function agentFollower({
     timers.clearTimeout(retry);
     retry = timers.setTimeout(sync, RETRY_MS);
   };
+  const fresh = (current) => follow.session() === current && follow.status().access.view;
   async function join(current) {
     await prepare();
     const joined = await connect((meta) => follow.open(meta));
-    if (follow.session() !== current || !follow.status().access.view) {
+    let agent = null;
+    try {
+      agent = fresh(current) ? await create(joined) : null;
+    } catch (error) {
+      void joined.close().catch(() => undefined);
+      throw error;
+    }
+    if (!agent || !fresh(current)) {
       void joined.close().catch(() => undefined);
       return;
     }
     connection = joined;
     session = current;
-    show(await create(joined));
+    show(agent);
     void joined.closed.then(() => {
       if (connection !== joined) return;
       drop();
@@ -84,6 +93,7 @@ export function agentFollower({
     const current = follow.session();
     const { view } = follow.status().access;
     if (connection && (!view || current !== session)) drop();
+    if (busy) again = true;
     if (!current || !view || connection || busy) return;
     busy = true;
     try {
@@ -93,6 +103,10 @@ export function agentFollower({
       later();
     } finally {
       busy = false;
+    }
+    if (again) {
+      again = false;
+      await sync();
     }
   }
   follow.on(() => void sync());
