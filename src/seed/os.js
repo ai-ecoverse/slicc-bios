@@ -111,6 +111,21 @@ const remote = createRemote({
   control: () => remoteAgent(owner, { cone: () => app.model?.agent?.active?.() }),
   onChange: () => links.changed(),
 });
+function linkFolders(link) {
+  const list = links
+    .mounts()
+    .filter((entry) => entry.link === link)
+    .map(({ source, mount }) => {
+      const mounted = folders?.mountedAt(source);
+      return {
+        name: mount.name,
+        source,
+        readonly: mount.readonly,
+        ...(mounted ? { mounted } : {}),
+      };
+    });
+  return list.length ? { folders: list } : {};
+}
 const allowedRemotely = (link) => link.mode === 'local' || Boolean(tray?.controlAllowed(link.id));
 const links = createLinks({
   router: exits,
@@ -120,6 +135,7 @@ const links = createLinks({
     control:
       link.mode === 'local' ? { allowed: true, fixed: true } : { allowed: allowedRemotely(link) },
     ...(remote.controlling(link) ? { controlling: remote.controlling(link) } : {}),
+    ...linkFolders(link),
   }),
   name: `seven on ${location.host}`,
   makePeer: (config) => new RTCPeerConnection(config),
@@ -139,6 +155,10 @@ const reach = createNetwork(network, {
   router: exits,
   links,
   tray,
+  linkedFolders: {
+    mount: (source) => folders.mountLinked(source),
+    eject: (source) => folders.ejectLinked(source),
+  },
 });
 const transport = exits.transport(reach.transport);
 const login = signIn({ network });
@@ -478,6 +498,7 @@ async function own() {
   tray?.start();
   if (network.status?.probe?.kernelTunnel) openTunnel(kernel, network.proxy);
   files = await folders.attach(kernel, model);
+  files.files.on('mounts', links.changed);
   const served = serveUpdates(updates);
   const routes = serveNetwork(reach.port);
   serving = createOs({ ...served.handlers, ...routes.handlers });

@@ -1,4 +1,5 @@
 import { attachKernel } from '@ai-ecoverse/slicc-kernel';
+import { plainName } from './link.js';
 
 export const KEY = 'slicc-os.mounts';
 const FOLDERS = new Set(['fsa', 'hostfs']);
@@ -147,6 +148,36 @@ function markFolders(session) {
   document.documentElement.dataset.folders = session ? 'session' : 'remembered';
 }
 
+const info = ({ target, source, type }) =>
+  type === 'hostfs' ? { target, source, type } : { target, type };
+
+function linkedActions(state, update) {
+  const at = (source) =>
+    folders(state().table).find((entry) => entry.type === 'hostfs' && entry.source === source)
+      ?.target;
+  return {
+    mountedAt: at,
+    async mountLinked(source) {
+      const parts = String(source).split('/');
+      if (parts.length !== 2 || !parts.every(plainName))
+        throw new Error(`${source} is not a linked folder`);
+      const { fs, kernel } = state();
+      const target = `/mnt/${source}`;
+      await fs.mkdir(target, { recursive: true });
+      await kernel.mount({ type: 'hostfs', source, target });
+      await update(await kernel.mounts());
+      return target;
+    },
+    async ejectLinked(source) {
+      const target = at(source);
+      if (!target) throw new Error(`${source} is not mounted`);
+      const { kernel } = state();
+      await kernel.umount(target);
+      await update(await kernel.mounts());
+    },
+  };
+}
+
 export function createFolders({
   storage,
   network,
@@ -283,6 +314,7 @@ export function createFolders({
     accept: (path) => files.accept(path),
     revert: (path) => files.revert(path),
     mounts: mounted,
+    mountInfo: () => folders(table).map(info),
     needsFolder: () => [...waiting.keys()],
     async mountFolder(path) {
       if (path) return fill(path);
@@ -323,6 +355,7 @@ export function createFolders({
       setInterval(() => void refresh(), POLL_MS);
       return { ...model, files: port };
     },
+    ...linkedActions(() => ({ fs, kernel, table }), update),
     async restore() {
       for (const { type, source, target, options } of remembered(storage, secret)) {
         try {

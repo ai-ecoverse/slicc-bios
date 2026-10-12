@@ -75,7 +75,7 @@ export function currentExit(router, tailnet) {
   return { kind: 'tailnet', node: node?.id ?? 'auto' };
 }
 
-function exitActions({ router, links, tray, tailnet, storage }, emit) {
+function exitActions({ router, links, tray, tailnet, storage, linkedFolders }, emit) {
   if (!router || !links) return {};
   const remember = (id) => {
     if (id) storage.setItem(EXIT_KEY, id);
@@ -113,6 +113,19 @@ function exitActions({ router, links, tray, tailnet, storage }, emit) {
       }
       emit();
     },
+    ...(linkedFolders
+      ? {
+          async mountFolder(source) {
+            const target = await linkedFolders.mount(source);
+            emit();
+            return target;
+          },
+          async ejectFolder(source) {
+            await linkedFolders.eject(source);
+            emit();
+          },
+        }
+      : {}),
     ...(tray
       ? {
           rotateJoinUrl: async () => {
