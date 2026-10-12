@@ -183,6 +183,14 @@
     "integrity": "sha512-e+ZsJ+APRWmWXamebRphpMQKt7blS2tvfeyG8XbjI1ZtRy8yTp8RUzn0JeIVJqOIGlNFSxx/PLcH/r4lEQXzUg==",
     "sha256": "7cb5cd0f8c71952e617fb88ca22ba02bb6d4073c60f3ad8c9f3a151ae6c6f0f9"
   },
+  "@ai-ecoverse/slicc-kernel@1.64.2": {
+    "integrity": "sha512-vEaURCP/AGnkuBDauuAsC+g0Aw+6eBNnwaR2tdXNaUiUFdjWUQrhxnbqZJAfqSFz5urm73S+Y+Qu8JO7gImaHA==",
+    "sha256": "5a897e7deaba73505b38c6e2a75f520862725247993d3951f91a454b5953f433"
+  },
+  "@ai-ecoverse/slicc-kernel@1.65.2": {
+    "integrity": "sha512-VP7F68CUKOaFE8E1f5sHULKryjlNedmE+afxP0puIqtN3NZMUFwHfdiAmaYl/DtnboqMRbCwE+vubV4//DpRog==",
+    "sha256": "2e49c463cf208759f06125f4b1197acf0049d6527cfdbf4f9f6bc2fb190d12c5"
+  },
   "@ai-ecoverse/wasi-biome@2.5.15-2": {
     "integrity": "sha512-5oIfngw8Ln2/ddCJ0wtqMoSnW+UO2zuih0+x1CNDbwKkB18TxuWoI60QFQySjd69N6eP+blL/stz/AZyoYpeuw==",
     "sha256": "25599e4317ec2e7ca9a447ff99ac01f271358cd06bd2d727e6b28b10c05bf44a"
