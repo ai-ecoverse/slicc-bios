@@ -301,11 +301,30 @@ const urlOrigin = (url) => {
   }
 };
 
+const UNSAFE = new Set([
+  'Target.sendMessageToTarget',
+  'Target.attachToBrowserTarget',
+  'Target.exposeDevToolsProtocol',
+]);
+const FLAT = new Set(['Target.attachToTarget', 'Target.setAutoAttach']);
+const NAVIGATED = new Set([
+  'Page.frameStartedNavigating',
+  'Page.frameRequestedNavigation',
+  'Page.frameNavigated',
+]);
+
+function forbidden({ method, params = {} }, isOwn) {
+  if (UNSAFE.has(method)) return true;
+  if (FLAT.has(method) && params.flatten !== true) return true;
+  return (method === 'Target.createTarget' || method === 'Page.navigate') && isOwn(params.url);
+}
+
 export function guardOwnOrigin(connection, own) {
   const isOwn = (url) => urlOrigin(url) === own;
   const urls = new Map();
   const sessions = new Map();
   const blocked = new Set();
+  const pages = new Set();
   const internal = new Map();
   let next = GUARD_IDS;
   const guarded = { onmessage: null, onclose: null };
@@ -322,39 +341,54 @@ export function guardOwnOrigin(connection, own) {
     if (info?.targetId) urls.set(info.targetId, info.url ?? '');
   };
   const cut = (sessionId) => {
+    if (blocked.has(sessionId)) return;
     blocked.add(sessionId);
     void call('Target.detachFromTarget', { sessionId });
   };
-  const refuse = (id) => deliver({ id, error: { code: -32000, message: OWN } });
+  const watch = (sessionId, targetId) => {
+    sessions.set(sessionId, targetId);
+    void call('Page.enable', {}, sessionId);
+  };
+  const refuse = ({ id, sessionId }) =>
+    deliver({ id, ...(sessionId ? { sessionId } : {}), error: { code: -32000, message: OWN } });
   const targetUrl = async (targetId) => {
     if (!urls.has(targetId))
       learn((await call('Target.getTargetInfo', { targetId })).result?.targetInfo);
     return urls.get(targetId);
   };
+  const walked = ({ params = {} }) => isOwn(params.url) || isOwn(params.frame?.url);
 
-  function event(message) {
-    const { method, params = {} } = message;
+  function targets({ method, params = {} }) {
     if (method === 'Target.attachedToTarget') {
       learn(params.targetInfo);
-      sessions.set(params.sessionId, params.targetInfo?.targetId);
-      if (isOwn(params.targetInfo?.url)) return cut(params.sessionId);
+      if (isOwn(params.targetInfo?.url)) {
+        cut(params.sessionId);
+        return true;
+      }
+      watch(params.sessionId, params.targetInfo?.targetId);
     }
     if (method === 'Target.targetCreated' || method === 'Target.targetInfoChanged') {
       learn(params.targetInfo);
-      if (isOwn(params.targetInfo?.url)) {
-        for (const [sessionId, targetId] of sessions)
-          if (targetId === params.targetInfo.targetId && !blocked.has(sessionId)) cut(sessionId);
-        return;
-      }
+      if (!isOwn(params.targetInfo?.url)) return false;
+      for (const [id, targetId] of sessions) if (targetId === params.targetInfo.targetId) cut(id);
+      return true;
     }
     if (method === 'Target.detachedFromTarget') sessions.delete(params.sessionId);
-    if (blocked.has(message.sessionId)) return;
+    return false;
+  }
+
+  function event(message) {
+    const { method, sessionId } = message;
+    if (targets(message)) return;
+    if (sessionId && NAVIGATED.has(method) && walked(message)) return cut(sessionId);
+    if (blocked.has(sessionId)) return;
+    if (sessionId && method.startsWith('Page.') && !pages.has(sessionId)) return;
     deliver(message);
   }
 
   function answer(message, asked) {
     if (asked?.method === 'Target.attachToTarget' && message.result?.sessionId)
-      sessions.set(message.result.sessionId, asked.params?.targetId);
+      watch(message.result.sessionId, asked.params?.targetId);
     if (asked?.method === 'Target.getTargets' && Array.isArray(message.result?.targetInfos)) {
       for (const info of message.result.targetInfos) learn(info);
       const targetInfos = message.result.targetInfos.filter((info) => !isOwn(info.url));
@@ -378,11 +412,23 @@ export function guardOwnOrigin(connection, own) {
   };
   connection.onclose = (why) => guarded.onclose?.(why);
 
-  async function check({ method, params = {}, sessionId }) {
+  async function check(message) {
+    const { method, params = {}, sessionId } = message;
     if (sessionId && blocked.has(sessionId)) return false;
+    if (forbidden(message, isOwn)) return false;
     if (method === 'Target.attachToTarget') return !isOwn(await targetUrl(params.targetId));
-    if (method === 'Target.createTarget' || method === 'Page.navigate') return !isOwn(params.url);
     return true;
+  }
+
+  function pass(message, text) {
+    const { id, method, sessionId } = message;
+    if (sessionId && method === 'Page.enable') pages.add(sessionId);
+    if (sessionId && method === 'Page.disable' && sessions.has(sessionId)) {
+      pages.delete(sessionId);
+      return deliver({ id, sessionId, result: {} });
+    }
+    asked.set(id, message);
+    connection.send(text);
   }
 
   let order = Promise.resolve();
@@ -390,11 +436,7 @@ export function guardOwnOrigin(connection, own) {
     const message = command(text);
     order = order
       .then(() => check(message))
-      .then((ok) => {
-        if (!ok) return refuse(message.id);
-        asked.set(message.id, message);
-        connection.send(text);
-      });
+      .then((ok) => (ok ? pass(message, text) : refuse(message)));
   };
   guarded.close = () => connection.close();
   return guarded;

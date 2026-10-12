@@ -12,6 +12,11 @@ const port = await new Promise((resolve) => {
   });
 });
 const chrome = await launch({ args: [`--remote-debugging-port=${port}`] });
+const elsewhere = (path) => {
+  const at = new URL(path, chrome.url);
+  at.hostname = 'localhost';
+  return at.href;
+};
 after(() => chrome.close());
 const browser = (await (await fetch(`http://127.0.0.1:${port}/json/version`)).json())
   .webSocketDebuggerUrl;
@@ -83,13 +88,13 @@ test('playwright-cli drives a page through slicc-extension without asking, and t
     '/driven.html',
     '<!doctype html><title>driven</title><h1>Driven from the kernel</h1>'
   );
-  const target = new URL('/driven.html', chrome.url).href;
+  const target = elsewhere('/driven.html');
 
   await run(
     page,
-    `curl -sf http://127.0.0.1:9222/json/list | jq -r '.[] | select(.url | endswith("/os/")) | "listed as " + .type'`
+    `curl -sf http://127.0.0.1:9222/json/list | jq -r '[.[] | select(.url | endswith("/os/"))] | "seven listed " + (length | tostring)'`
   );
-  await shows(page, 'listed as page');
+  await shows(page, 'seven listed 0');
   assert.deepEqual(await automation(page), { via: 'extension' });
   assert.equal(await open(page), false);
   await page.evaluate(() =>
@@ -143,7 +148,7 @@ test('the browser port lists only the tabs the agent drives, holds them for a wh
     '/port.html',
     '<!doctype html><title>Tide tables</title><h1 style="font-size:96px">Tide tables</h1>'
   );
-  const target = new URL('/port.html', chrome.url).href;
+  const target = elsewhere('/port.html');
   const foreign = await (
     await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' })
   ).json();
@@ -200,7 +205,7 @@ test('playwright-cli’s reports become private action rows, and Stop closes the
     '/form.html',
     '<!doctype html><title>Tide form</title><input aria-label="Port"><button>Show forecast</button>'
   );
-  const target = new URL('/form.html', chrome.url).href;
+  const target = elsewhere('/form.html');
   await page.evaluate(() => {
     window.rows = [];
     document
@@ -298,7 +303,7 @@ test('watch gives a live view of a driven tab, sampled when it is in the backgro
     '/live.html',
     '<!doctype html><title>Live</title><h1 id="n">0</h1><script>let n = 0; setInterval(() => (document.getElementById("n").textContent = ++n), 100)</script>'
   );
-  const target = new URL('/live.html', chrome.url).href;
+  const target = elsewhere('/live.html');
   await run(
     page,
     `playwright-cli open ${target} && playwright-cli eval 'new Promise((r) => setTimeout(r, 8000))'; echo watched-$?`
@@ -335,8 +340,8 @@ test('screenshots of the browser panel: a driven tab live, two driven tabs, Stop
   await boot(page);
   chrome.overrides.set('/tidewatch/forecast.html', tides);
   chrome.overrides.set('/lighthouse/log.html', lighthouse);
-  const forecast = new URL('/tidewatch/forecast.html', chrome.url).href;
-  const log = new URL('/lighthouse/log.html', chrome.url).href;
+  const forecast = elsewhere('/tidewatch/forecast.html');
+  const log = elsewhere('/lighthouse/log.html');
   const harbor = 'SLICC_AGENT=cone:harbor';
   const keeper = 'SLICC_AGENT=cone:keeper';
   const wait = "eval 'new Promise((r) => setTimeout(r, 25000))'";
@@ -530,13 +535,13 @@ test('playwright-cli drives a page through slicc-node’s /cdp, on one shared so
     '/driven.html',
     '<!doctype html><title>driven</title><h1>Driven through slicc-node</h1>'
   );
-  const target = new URL('/driven.html', chrome.url).href;
+  const target = elsewhere('/driven.html');
 
   await run(
     page,
-    `curl -sf http://127.0.0.1:9222/json/list | jq -r '.[] | select(.url | endswith("/os/")) | "listed as " + .type'`
+    `curl -sf http://127.0.0.1:9222/json/list | jq -r '[.[] | select(.url | endswith("/os/"))] | "seven listed " + (length | tostring)'`
   );
-  await shows(page, 'listed as page');
+  await shows(page, 'seven listed 0');
 
   await run(
     page,

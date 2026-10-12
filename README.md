@@ -196,7 +196,8 @@ Programs in the kernel drive a browser over the Chrome DevTools Protocol: `playw
 **Seven's own pages are out of reach.** Every connection, whether through the extension, the local proxy or a linked browser, goes through a guard (`guardOwnOrigin` in `os/cdp.js`), so no program in the kernel can drive a tab on seven's own origin. Seven's own pages can show files from OPFS that the user or the agent wrote, and driving such a tab would run them.
 - **Refused commands:** `Target.attachToTarget` to a target on seven's origin, and `Target.createTarget` or `Page.navigate` to it, answer an error.
 - **Hidden pages:** `Target.getTargets` leaves seven's pages out, and so do the target events.
-- **Cut sessions:** a session whose page walks to seven's origin is detached at once. Its later events are dropped, and its commands are refused. An auto-attached target on seven's origin is detached too.
+- **Cut sessions:** a session whose page, or any frame in it, starts navigating to seven's origin is detached at once. The guard watches each session's `Page` events itself, and passes them on only when the program asked for them. The session's later events are dropped, and its commands are refused. An auto-attached target on seven's origin is detached too.
+- **Flat sessions only:** `Target.attachToTarget` and `Target.setAutoAttach` need `flatten: true`. `Target.sendMessageToTarget`, `Target.attachToBrowserTarget` and `Target.exposeDevToolsProtocol` are refused, so no command can be tunnelled past the guard.
 
 A program picks a host by adding `runtime=extension` or `runtime=proxy` to the query of the URL it opens (`playwright-cli --runtime proxy`). With no runtime, the extension goes first. The hook never derives a URL from the request: it reaches only the extension's page global and the proxy the page already checked.
 
