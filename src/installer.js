@@ -152,8 +152,12 @@ function owner(path, packages) {
 async function current(path, entry, changed) {
   if (changed.has(path)) return false;
   await read(`${path}/package.json`);
-  const known = await (await integrity()).source(path);
-  return known?.integrity === entry.integrity;
+  const ledger = await integrity();
+  if ((await ledger.source(path))?.integrity !== entry.integrity) return false;
+  for (const { path: at, size } of await ledger.files(path)) {
+    if ((await read(at.slice(1))).size !== size) return false;
+  }
+  return true;
 }
 
 async function add([path, entry], changed) {

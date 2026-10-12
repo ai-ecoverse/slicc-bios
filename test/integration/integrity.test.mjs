@@ -23,7 +23,7 @@ test('seven refuses its own code once a kernel process changes it, puts it back 
   await boot(page);
   await run(
     page,
-    `echo 'globalThis.__changed = "os";' >> /os/tabs.js && echo 'globalThis.__changed = "spectrum";' >> /${model} && echo changed-$((40 + 2))`
+    `echo 'globalThis.__changed = "os";' >> /os/tabs.js && echo 'globalThis.__changed = "spectrum";' >> /${model} && rm /os/present.js && echo changed-$((40 + 2))`
   );
   await shows(page, 'changed-42');
   assert.match(await read(page, 'os/tabs.js'), /__changed/);
@@ -42,6 +42,7 @@ test('seven refuses its own code once a kernel process changes it, puts it back 
   assert.equal(await page.evaluate(() => globalThis.__changed ?? null), null);
   assert.doesNotMatch(await read(page, 'os/tabs.js'), /__changed/);
   assert.doesNotMatch(await read(page, model), /__changed/);
+  assert.match(await read(page, 'os/present.js'), /export/);
   const notices = await page.evaluate(() =>
     document
       .querySelector('slicc-app')

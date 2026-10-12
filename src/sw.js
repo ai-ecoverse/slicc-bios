@@ -83,7 +83,13 @@ async function read(path) {
   return (await dir.getFileHandle(name)).getFile();
 }
 
-class Changed extends Error {}
+class Changed extends Error {
+  constructor(path, what) {
+    super(`sw: ${path} ${what}`);
+    this.path = path;
+    this.recorded = what.endsWith('installed it');
+  }
+}
 
 let ledger;
 const trusted = new Set();
@@ -101,14 +107,20 @@ async function checked(path, file) {
   const key = `${path}\n${file.size}\n${file.lastModified}`;
   if (trusted.has(key)) return file;
   const store = await integrity();
-  if (!(await store.generation(tree))) throw new Changed(`sw: ${path} isn't verified yet`);
+  if (!(await store.generation(tree))) throw new Changed(path, "isn't verified yet");
   const record = await store.lookup(path);
   const bytes = await file.arrayBuffer();
   if (record?.size !== bytes.byteLength || record.sha256 !== (await sha256(bytes))) {
-    throw new Changed(`sw: ${path} was changed after seven installed it`);
+    throw new Changed(path, 'was changed after seven installed it');
   }
   trusted.add(key);
   return new File([bytes], file.name, { lastModified: file.lastModified });
+}
+
+async function missing(path) {
+  if (treeOf(path) && (await (await integrity()).lookup(path))) {
+    throw new Changed(path, 'was removed after seven installed it');
+  }
 }
 
 async function updating() {
@@ -128,22 +140,26 @@ async function heal(scope, path) {
   }
 }
 
-async function refuse(path, request, error, scope) {
-  if (await updating()) return failed(503, `sw: seven is updating ${path}, try again`);
-  if (error.message.endsWith('installed it')) await (await integrity()).tamper(path);
+async function refuse(error, request, scope) {
+  if (!(error instanceof Changed)) throw error;
+  if (await updating()) return failed(503, `sw: seven is updating ${error.path}, try again`);
+  if (error.recorded) await (await integrity()).tamper(error.path);
   if (request.mode === 'navigate') return Response.redirect(self.registration.scope, 302);
-  await heal(scope, path);
+  await heal(scope, error.path);
   return failed(500, error.message);
 }
 
 const opfs = {
-  readText: (path) =>
-    read(path)
-      .then((file) => checked(path, file))
-      .then(
-        (file) => file.text(),
-        () => undefined
-      ),
+  readText: async (path) => {
+    let file;
+    try {
+      file = await read(path);
+    } catch {
+      await missing(path);
+      return undefined;
+    }
+    return (await checked(path, file)).text();
+  },
   isFile: (path) =>
     read(path).then(
       () => true,
@@ -295,27 +311,33 @@ async function serve(request, controller) {
   if (served === 'sandboxed' && code.has(request.destination)) {
     return sandboxed(`sw: ${path} is not served as code\n`, 'text/plain; charset=utf-8', 403);
   }
+  const at = path.endsWith('/') ? `${path}index.html` : path;
   let file;
   try {
     file = await read(path);
   } catch {
-    return network();
+    const gone =
+      served === 'live'
+        ? await missing(at).then(
+            () => null,
+            (error) => error
+          )
+        : null;
+    return gone ? refuse(gone, request, scope) : network();
   }
   const extension = file.name.split('.').pop();
   if (served === 'sandboxed') {
     return sandboxed(file, inert[extension] ?? types[extension] ?? 'application/octet-stream');
   }
-  const at = path.endsWith('/') ? `${path}index.html` : path;
+  const type = types[extension] ?? 'application/octet-stream';
   try {
     file = await checked(at, file);
+    if (!script.test(file.name)) return respond(file, type, 'opfs');
+    const run = path.startsWith(AGENT) ? url.searchParams.get('run') : null;
+    return respond(await rewrite(path, file, base, run), type, 'opfs');
   } catch (error) {
-    if (!(error instanceof Changed)) throw error;
-    return refuse(at, request, error, scope);
+    return refuse(error, request, scope);
   }
-  const type = types[extension] ?? 'application/octet-stream';
-  if (!script.test(file.name)) return respond(file, type, 'opfs');
-  const run = path.startsWith(AGENT) ? url.searchParams.get('run') : null;
-  return respond(await rewrite(path, file, base, run), type, 'opfs');
 }
 
 self.addEventListener('install', () => self.skipWaiting());

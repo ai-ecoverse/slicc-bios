@@ -47,6 +47,8 @@ export function createIntegrity(db) {
   return {
     lookup: (path) => get('files', path),
     source: (source) => get('sources', source),
+    files: (source) =>
+      done(db.transaction('files').objectStore('files').index('source').getAll(source)),
     generation: async (tree) => (await get('trees', tree))?.generation ?? 0,
     tampered: async () => (await all('tampered')).map(({ path }) => path),
     async record(source, entries, integrity = null) {
