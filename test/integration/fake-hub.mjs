@@ -21,6 +21,7 @@ export function startHub() {
           capabilities: {
             join: { url: `${hub.url}/join/j${n}` },
             controller: { url: `${hub.url}/controller/c${n}` },
+            webhook: { url: `${hub.url}/webhook/w${n}` },
           },
         })
       );
