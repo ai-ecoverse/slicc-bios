@@ -23,7 +23,23 @@ test('seven leads a tray: a follower joins and links, rotation moves it to a new
     devices: [],
     permission: null,
     webhookUrl: `${hub.url}/webhook/w1`,
+    sync: 'ready',
   });
+  assert.deepEqual(
+    await page.evaluate(() => {
+      const { connection, role, kind, joinUrl, followers } = document
+        .querySelector('slicc-app')
+        .model.tray.status();
+      return { connection, role, kind, joinUrl, followers };
+    }),
+    {
+      connection: 'live',
+      role: 'leader',
+      kind: 'hosted',
+      joinUrl: `${hub.url}/join/j1`,
+      followers: [],
+    }
+  );
   assert.equal(hub.sockets[0].path, '/controller/c1?leaderKey=lk');
 
   await page.evaluate(follower);
