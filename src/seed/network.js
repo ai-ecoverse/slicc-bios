@@ -192,11 +192,11 @@ export function createNetwork(choice, options = {}) {
     if (!options.links || !options.router) return {};
     const devices = [...options.links.devices(), ...(options.tray?.away() ?? [])];
     const exit = currentExit(options.router, options.tailnet?.status());
-    const { joinUrl = null, joinCommand = null } = options.tray?.status() ?? {};
+    const { joinUrl = null, joinCommand = null, webhookUrl = null } = options.tray?.status() ?? {};
     return {
       exit,
       ...(devices.length || options.tray
-        ? { links: { joinUrl, joinCommand, devices, permission: null } }
+        ? { links: { joinUrl, joinCommand, devices, permission: null, webhookUrl } }
         : {}),
     };
   };

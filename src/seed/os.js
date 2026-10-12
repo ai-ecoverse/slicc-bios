@@ -6,6 +6,7 @@ import {
   installed as agentInstalled,
   project as agentProject,
   version as agentVersion,
+  deliverWebhook,
   installAgent,
   loadChat,
   recorded,
@@ -148,7 +149,13 @@ const links = createLinks({
 const hub = location.hostname.endsWith('.sliccy.ai')
   ? location.origin
   : localStorage.getItem(TRAY_HUB_KEY);
-const tray = hub ? createTray({ links, origin: hub }) : null;
+const tray = hub
+  ? createTray({
+      links,
+      origin: hub,
+      onWebhook: (name, delivery) => deliverWebhook(owner, name, delivery),
+    })
+  : null;
 const reach = createNetwork(network, {
   browser: control.status,
   tailnet: tailscale.panel,
