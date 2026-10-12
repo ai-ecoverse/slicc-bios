@@ -56,7 +56,15 @@ export function serveUpdates(updates) {
   };
 }
 
-const NETWORK = ['setTailnet', 'setExitNode', 'submitAuthKey', 'logoutTailnet', 'check'];
+const NETWORK = [
+  'setTailnet',
+  'setExitNode',
+  'submitAuthKey',
+  'logoutTailnet',
+  'check',
+  'retryLinks',
+  'stopLinks',
+];
 
 export function serveNetwork(port) {
   return {

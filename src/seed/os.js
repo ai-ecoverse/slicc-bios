@@ -58,7 +58,7 @@ import {
   tailscaleVersion,
 } from './tailscale.js';
 import { pickTransport } from './transport.js';
-import { createTray, TRAY_HUB_KEY } from './tray.js';
+import { createTray, TRAY_HUB_KEY, trayPort } from './tray.js';
 import { openTunnel } from './tunnel.js';
 import { text, update, versions } from './update.js';
 import { count, createUpdates, owners } from './updates.js';
@@ -202,13 +202,15 @@ let optional = Promise.resolve(null);
 const start = () => createKernel({ root, network: { transport }, media: false });
 
 function base(os) {
+  const network = os ? mirrorNetwork(os, reach.port) : reach.port;
   return {
     ...files,
     agent: browser.stopping(files.agent),
     updates: os ? mirrorUpdates(os) : updates,
     notices,
-    network: os ? mirrorNetwork(os, reach.port) : reach.port,
+    network,
     browser: browser.port,
+    tray: trayPort(network, { name: `seven on ${location.host}` }),
   };
 }
 

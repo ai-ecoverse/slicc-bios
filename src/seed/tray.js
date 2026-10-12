@@ -445,3 +445,42 @@ export function createTray({
     },
   };
 }
+
+const CONNECTION = {
+  idle: 'offline',
+  connecting: 'connecting',
+  ready: 'live',
+  reconnecting: 'reconnecting',
+  failed: 'error',
+};
+
+export function trayPort(network, { name }) {
+  const status = () => {
+    const links = network.status().links ?? {};
+    const tray = Boolean(links.sync) && links.sync !== 'idle';
+    return {
+      name,
+      kind: 'hosted',
+      connection: CONNECTION[links.sync] ?? 'offline',
+      role: tray ? 'leader' : 'none',
+      followers: (links.devices ?? [])
+        .filter((item) => item.mode === 'remote' && item.state === 'connected')
+        .map((item) => ({
+          id: item.id,
+          name: item.name,
+          device: item.kind === 'seven' ? 'browser' : 'cli',
+          since: 0,
+        })),
+      joinUrl: links.joinUrl ?? '',
+    };
+  };
+  return {
+    on(type, listener) {
+      if (type !== 'status') return () => undefined;
+      return network.on('network', () => listener(status()));
+    },
+    status,
+    reconnect: () => void network.retryLinks?.(),
+    disconnect: () => void network.stopLinks?.(),
+  };
+}

@@ -136,6 +136,10 @@ function exitActions({ router, links, tray, tailnet, storage, linkedFolders }, e
             tray.stop();
             tray.start();
           },
+          stopLinks: async () => {
+            tray.stop();
+            emit();
+          },
           setRemoteControl: async (id, allowed) => {
             tray.setControl(id, allowed);
             emit();
@@ -192,11 +196,21 @@ export function createNetwork(choice, options = {}) {
     if (!options.links || !options.router) return {};
     const devices = [...options.links.devices(), ...(options.tray?.away() ?? [])];
     const exit = currentExit(options.router, options.tailnet?.status());
-    const { joinUrl = null, joinCommand = null, webhookUrl = null } = options.tray?.status() ?? {};
+    const sync = options.tray?.status() ?? {};
+    const { joinUrl = null, joinCommand = null, webhookUrl = null } = sync;
     return {
       exit,
       ...(devices.length || options.tray
-        ? { links: { joinUrl, joinCommand, devices, permission: null, webhookUrl } }
+        ? {
+            links: {
+              joinUrl,
+              joinCommand,
+              devices,
+              permission: null,
+              webhookUrl,
+              ...(options.tray ? { sync: sync.state } : {}),
+            },
+          }
         : {}),
     };
   };
