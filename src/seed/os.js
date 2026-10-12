@@ -60,7 +60,7 @@ import {
   tailscaleVersion,
 } from './tailscale.js';
 import { pickTransport } from './transport.js';
-import { createTray, TRAY_HUB_KEY, trayPort } from './tray.js';
+import { createTray, followPage, TRAY_HUB_KEY, trayPort } from './tray.js';
 import { openTunnel } from './tunnel.js';
 import { text, update, versions } from './update.js';
 import { count, createUpdates, owners } from './updates.js';
@@ -170,7 +170,7 @@ const tray = hub
   ? createTray({
       links,
       origin: hub,
-      page: location.origin,
+      page: followPage(localStorage, location.origin),
       onWebhook: (name, delivery) => deliverWebhook(owner, name, delivery),
     })
   : null;

@@ -77,7 +77,10 @@ const devices = (page) => model(page, (network) => network.status().links.device
 async function lead(t, hub) {
   const owner = await owners.page(t);
   await boot(owner);
-  await owner.evaluate((url) => localStorage.setItem('slicc-os.tray-hub', url), hub.url);
+  await owner.evaluate((url) => {
+    localStorage.setItem('slicc-os.tray-hub', url);
+    localStorage.setItem('slicc-os.followers', 'on');
+  }, hub.url);
   await owner.reload();
   await ready(owner);
   await owner.until(
@@ -211,5 +214,8 @@ test('a seven follows another: it asks first, follows once allowed, keeps its ce
   assert.deepEqual(await devices(owner), []);
   assert.deepEqual(owner.errors, []);
   assert.deepEqual(page.errors, []);
-  await owner.evaluate(() => localStorage.removeItem('slicc-os.tray-hub'));
+  await owner.evaluate(() => {
+    localStorage.removeItem('slicc-os.tray-hub');
+    localStorage.removeItem('slicc-os.followers');
+  });
 });
