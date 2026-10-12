@@ -1,4 +1,5 @@
 import { attachKernel } from '@ai-ecoverse/slicc-kernel';
+import { plainName } from './link.js';
 
 export const KEY = 'slicc-os.mounts';
 const FOLDERS = new Set(['fsa', 'hostfs']);
@@ -157,6 +158,9 @@ function linkedActions(state, update) {
   return {
     mountedAt: at,
     async mountLinked(source) {
+      const parts = String(source).split('/');
+      if (parts.length !== 2 || !parts.every(plainName))
+        throw new Error(`${source} is not a linked folder`);
       const { fs, kernel } = state();
       const target = `/mnt/${source}`;
       await fs.mkdir(target, { recursive: true });

@@ -787,9 +787,12 @@ export function createLinks({
 export const FACADE_PORT = 9222;
 export const SHARED_READ = 64 * 1024;
 
+export const plainName = (name) =>
+  typeof name === 'string' && /^[A-Za-z0-9._-]+$/.test(name) && name !== '.' && name !== '..';
+
 export function mountList(list) {
   return (Array.isArray(list) ? list : [])
-    .filter((mount) => typeof mount?.name === 'string' && /^[A-Za-z0-9._-]+$/.test(mount.name))
+    .filter((mount) => plainName(mount?.name))
     .map(({ name, readonly, capabilities }) => ({
       name,
       readonly: readonly === true,
