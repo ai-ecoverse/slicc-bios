@@ -80,6 +80,23 @@ export function serveNetwork(port) {
   };
 }
 
+export function joinTray(agent, own) {
+  const status = () => ({ ...agent?.status?.(), ...own.status() });
+  return {
+    ...own,
+    status,
+    on(type, listener) {
+      const offs = [
+        agent?.on?.(type, () => listener(status())),
+        own.on(type, () => listener(status())),
+      ];
+      return () => {
+        for (const off of offs) off?.();
+      };
+    },
+  };
+}
+
 export function mirrorNetwork(os, local) {
   const listeners = new Set();
   let current = local.status();
@@ -164,7 +181,12 @@ export function present({
       }
       connection = joined;
       const created = loaded.createAgentModel(joined, { storage, login });
-      model = { ...model, ...created, agent: wrap(created.agent) };
+      model = {
+        ...model,
+        ...created,
+        agent: wrap(created.agent),
+        ...(model.tray ? { tray: joinTray(created.tray, model.tray) } : {}),
+      };
     }
     return { model, agent: Boolean(ports.agent) };
   }
