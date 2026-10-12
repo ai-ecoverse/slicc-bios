@@ -16,9 +16,11 @@ import {
   startChat,
   whenIdle,
 } from './agent.js';
+import { createApprovals } from './approvals.js';
 import { createBrowser } from './browser.js';
 import { browserControl } from './cdp.js';
 import { clipboardHook } from './clipboard.js';
+import { denialLog } from './denials.js';
 import { createExitRouter } from './exits.js';
 import { deviceName } from './follow.js';
 import { createFollowers } from './followers.js';
@@ -69,6 +71,7 @@ import { createTray, TRAY_HUB_KEY, trayPort } from './tray.js';
 import { openTunnel } from './tunnel.js';
 import { text, update, versions } from './update.js';
 import { count, createUpdates, owners } from './updates.js';
+import { addCone, boundTo, kernelUsers, terminalTag, terminalUser, usersMode } from './users.js';
 
 const prompts = installPrompts();
 
@@ -223,6 +226,10 @@ const updates = createUpdates();
 const notices = createNotices();
 reportRepairs(notices);
 reportStopped(notices);
+const approvals = createApprovals();
+const mode = usersMode();
+const asUser = terminalUser({ mode });
+document.documentElement.dataset.users = mode;
 const keep = keepStorage({ notices, prompts });
 let model = null;
 let files = null;
@@ -245,6 +252,7 @@ function base(os) {
     agent: browser.stopping(files.agent),
     updates: os ? mirrorUpdates(os) : updates,
     notices,
+    approvals: approvals.port,
     network,
     browser: browser.port,
     tray: trayPort(network, { name: `seven on ${location.host}` }),
@@ -262,7 +270,9 @@ async function followerShell(link, meta, stream) {
 
 async function give(from, names) {
   return {
-    kernel: names.includes('kernel') ? await kernel.connect({ tag: terminalTag(from) }) : null,
+    kernel: names.includes('kernel')
+      ? await kernel.connect({ tag: terminalTag(from), ...boundTo(asUser) })
+      : null,
     agent: names.includes('agent') && owner ? await owner.port() : null,
     os: names.includes('os') ? serving.open() : null,
   };
@@ -542,6 +552,7 @@ async function own() {
     secret: await offTheRecord(),
     linked: links,
   });
+  approvals.own();
   kernel = await createKernel({
     root,
     users: 'off',
@@ -550,7 +561,12 @@ async function own() {
     cdp: control.hook,
     clipboard: clipboardHook(),
     ...folders.options,
+    ...kernelUsers(mode, {
+      approve: approvals.approve,
+      onDenial: denialLog({ root, users: () => kernel?.users, mode }),
+    }),
   });
+  await addCone(kernel);
   exits.attach(kernel);
   installLocal(links);
   tray?.start();
@@ -600,6 +616,7 @@ async function follow() {
     ...model,
     updates: waiting,
     notices,
+    approvals: approvals.port,
     network: reach.port,
     browser: browser.port,
     tabs,
