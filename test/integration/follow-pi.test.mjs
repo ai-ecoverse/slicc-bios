@@ -109,8 +109,7 @@ test('a follower watches the owner run with View, is refused a send, and sends w
   );
   const [device] = await model(owner, (network) => network.status().links.devices);
   await model(owner, (network, id) => network.setAccess(id, 'view', true), device.id);
-  await page.within(INSTALL, () => !!document.querySelector('slicc-app').model.agent);
-  await owner.until(() =>
+  await owner.within(INSTALL, () =>
     document
       .querySelector('slicc-app')
       .model.network.status()
