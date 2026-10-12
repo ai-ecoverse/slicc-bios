@@ -100,8 +100,19 @@ export function trayHub(origin, fetcher) {
     };
   }
 
+  async function supersede(old, joinUrl) {
+    const token = new URL(old.controllerUrl).pathname.split('/').at(-1);
+    await fetcher(`${origin}/api/tray/${encodeURIComponent(old.trayId)}/supersede`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ joinUrl }),
+    });
+  }
+
   async function lead(session, fresh = false) {
-    let current = !fresh && session ? session : await create();
+    const upgrade = !fresh && session && !('webhookUrl' in session);
+    let current = !fresh && !upgrade && session ? session : await create();
+    if (upgrade) await supersede(session, current.joinUrl).catch(() => {});
     let claimed = await claim(current);
     if (claimed.gone && !fresh) {
       current = await create();
