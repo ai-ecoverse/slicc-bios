@@ -19,7 +19,6 @@ async function lead(t, hub) {
   await boot(owner);
   await owner.evaluate((url) => {
     localStorage.setItem('slicc-os.tray-hub', url);
-    localStorage.setItem('slicc-os.followers', 'on');
   }, hub.url);
   await owner.reload();
   await ready(owner);
@@ -162,6 +161,5 @@ test('a seven follows another: it asks first, follows once allowed, keeps its ce
   assert.deepEqual(page.errors, []);
   await owner.evaluate(() => {
     localStorage.removeItem('slicc-os.tray-hub');
-    localStorage.removeItem('slicc-os.followers');
   });
 });

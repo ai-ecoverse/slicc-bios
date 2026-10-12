@@ -2,7 +2,6 @@ import { device } from './link.js';
 
 export const SESSION_KEY = 'slicc-os.tray';
 export const TRAY_HUB_KEY = 'slicc-os.tray-hub';
-export const FOLLOWERS_KEY = 'slicc-os.followers';
 export const DEVICES_KEY = 'slicc-os.devices';
 export const UNLINKED_KEY = 'slicc-os.unlinked';
 export const RUNTIME = 'slicc-seven/1';
@@ -48,10 +47,6 @@ export function webhookDelivery(message) {
 
 export function joinCommand(url) {
   return url ? `npx sliccy@next ${url} follow` : null;
-}
-
-export function followPage(storage, origin) {
-  return storage.getItem(FOLLOWERS_KEY) === 'on' ? origin : null;
 }
 
 export function followUrl(page, url) {
