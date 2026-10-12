@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { boot } from './bios.mjs';
+import { boot, trust } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch();
@@ -86,25 +86,10 @@ export const red: number = Color.Red + ok;
 `,
 };
 
-async function write(page, entries) {
-  await page.evaluate(async (entries) => {
-    const root = await navigator.storage.getDirectory();
-    for (const [path, text] of Object.entries(entries)) {
-      const parts = path.split('/');
-      const name = parts.pop();
-      let dir = root;
-      for (const part of parts) dir = await dir.getDirectoryHandle(part, { create: true });
-      const writable = await (await dir.getFileHandle(name, { create: true })).createWritable();
-      await writable.write(text);
-      await writable.close();
-    }
-  }, entries);
-}
-
 test('TypeScript from node_modules and OPFS loads in a page and in a worker', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
-  await write(page, files);
+  await trust(page, files);
   const result = await page.evaluate(async () => {
     const { result } = await import('/os/ts-probe.mts');
     const worker = new Worker('/os/ts-worker.ts', { type: 'module' });
@@ -144,7 +129,7 @@ test('TypeScript from node_modules and OPFS loads in a page and in a worker', as
 test('TypeScript that cannot be stripped fails the import with its file and line', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
-  await write(page, files);
+  await trust(page, files);
   const messages = await page.evaluate(() =>
     Promise.all(
       ['/os/ts-broken.ts', '/os/ts-uses-broken.ts'].map((path) =>
@@ -190,6 +175,7 @@ test('real files of the three test-matrix pi extensions load as published', asyn
       'https://cdn.jsdelivr.net/npm/modern-tar@0.8.5/dist/web/index.js'
     );
     const root = await navigator.storage.getDirectory();
+    const records = [];
     for (const { name, url, integrity } of published) {
       const bytes = await (await fetch(url)).arrayBuffer();
       const digest = new Uint8Array(await crypto.subtle.digest('SHA-512', bytes));
@@ -207,8 +193,27 @@ test('real files of the three test-matrix pi extensions load as published', asyn
         const writable = await (await dir.getFileHandle(file, { create: true })).createWritable();
         await writable.write(data);
         await writable.close();
+        const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', data));
+        const path = `/${[...parts, file].join('/')}`;
+        records.push({
+          path,
+          size: data.byteLength,
+          sha256: Array.from(hash, (byte) => byte.toString(16).padStart(2, '0')).join(''),
+          source: `test:${name}`,
+        });
       }
     }
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open('slicc-bios-integrity');
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const transaction = db.transaction('files', 'readwrite');
+    for (const record of records) transaction.objectStore('files').put(record);
+    await new Promise((resolve) => {
+      transaction.oncomplete = resolve;
+    });
+    db.close();
     const todo = await import('/node_modules/@juicesharp/rpiv-todo/state/state-reducer.ts');
     const litellm = await import('/node_modules/pi-provider-litellm/src/model-groups.ts');
     const plan = await import('/node_modules/@narumitw/pi-plan-mode/src/tool-selection.ts');
