@@ -345,27 +345,52 @@ export function guardOwnOrigin(connection, own) {
     blocked.add(sessionId);
     void call('Target.detachFromTarget', { sessionId });
   };
-  const watch = (sessionId, targetId) => {
-    sessions.set(sessionId, targetId);
+  const held = new Map();
+  const framed = (tree) =>
+    [tree?.frame?.url, ...(tree?.childFrames ?? []).flatMap((child) => framed(child))].filter(
+      Boolean
+    );
+  const checked = new Map();
+  const later = new Map();
+  const verify = async (sessionId) => {
+    held.set(sessionId, []);
     void call('Page.enable', {}, sessionId);
+    const tree = (await call('Page.getFrameTree', {}, sessionId)).result?.frameTree;
+    const waiting = held.get(sessionId);
+    held.delete(sessionId);
+    if (framed(tree).some(isOwn)) {
+      cut(sessionId);
+      return false;
+    }
+    later.set(sessionId, waiting);
+    return true;
+  };
+  const watch = async (sessionId, targetId, first) => {
+    sessions.set(sessionId, targetId);
+    if (!checked.has(sessionId)) checked.set(sessionId, verify(sessionId));
+    const ok = await checked.get(sessionId);
+    if (!ok) return false;
+    first();
+    const waiting = later.get(sessionId) ?? [];
+    later.delete(sessionId);
+    for (const message of waiting) event(message);
+    return true;
   };
   const refuse = ({ id, sessionId }) =>
     deliver({ id, ...(sessionId ? { sessionId } : {}), error: { code: -32000, message: OWN } });
   const targetUrl = async (targetId) => {
-    if (!urls.has(targetId))
-      learn((await call('Target.getTargetInfo', { targetId })).result?.targetInfo);
+    learn((await call('Target.getTargetInfo', { targetId })).result?.targetInfo);
     return urls.get(targetId);
   };
   const walked = ({ params = {} }) => isOwn(params.url) || isOwn(params.frame?.url);
 
-  function targets({ method, params = {} }) {
+  function targets(message) {
+    const { method, params = {} } = message;
     if (method === 'Target.attachedToTarget') {
       learn(params.targetInfo);
-      if (isOwn(params.targetInfo?.url)) {
-        cut(params.sessionId);
-        return true;
-      }
-      watch(params.sessionId, params.targetInfo?.targetId);
+      if (isOwn(params.targetInfo?.url)) cut(params.sessionId);
+      else void watch(params.sessionId, params.targetInfo?.targetId, () => deliver(message));
+      return true;
     }
     if (method === 'Target.targetCreated' || method === 'Target.targetInfoChanged') {
       learn(params.targetInfo);
@@ -379,6 +404,7 @@ export function guardOwnOrigin(connection, own) {
 
   function event(message) {
     const { method, sessionId } = message;
+    if (held.has(sessionId)) return held.get(sessionId).push(message);
     if (targets(message)) return;
     if (sessionId && NAVIGATED.has(method) && walked(message)) return cut(sessionId);
     if (blocked.has(sessionId)) return;
@@ -387,8 +413,13 @@ export function guardOwnOrigin(connection, own) {
   }
 
   function answer(message, asked) {
-    if (asked?.method === 'Target.attachToTarget' && message.result?.sessionId)
-      watch(message.result.sessionId, asked.params?.targetId);
+    if (asked?.method === 'Target.attachToTarget' && message.result?.sessionId) {
+      const { sessionId } = message.result;
+      void watch(sessionId, asked.params?.targetId, () => deliver(message)).then(
+        (ok) => ok || refuse(asked)
+      );
+      return;
+    }
     if (asked?.method === 'Target.getTargets' && Array.isArray(message.result?.targetInfos)) {
       for (const info of message.result.targetInfos) learn(info);
       const targetInfos = message.result.targetInfos.filter((info) => !isOwn(info.url));
