@@ -61,6 +61,7 @@ import {
   tailscaleConfig,
   tailscaleVersion,
 } from './tailscale.js';
+import { serveTerminal } from './terminal.js';
 import { pickTransport } from './transport.js';
 import { createTray, followPage, TRAY_HUB_KEY, trayPort } from './tray.js';
 import { openTunnel } from './tunnel.js';
@@ -183,6 +184,7 @@ followers = tray
       serve: {
         pi: (_link, _meta, stream, access) =>
           bridgeAgent(owner, stream, { readOnly: !access.control }),
+        terminal: (_link, meta, stream) => serveTerminal(kernel, meta, stream),
       },
       onChange: () => links.changed(),
     })

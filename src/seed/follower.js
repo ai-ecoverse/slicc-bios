@@ -3,8 +3,8 @@ import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
 import { confirm, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
 import { followAgent, installAgent, loadChat } from './agent.js';
 import { createFollow, deviceName, hubClient, keepFollow, takeFollow } from './follow.js';
-import { failure } from './link.js';
 import { createNotices } from './notices.js';
+import { remoteTerminal } from './terminal.js';
 import { createUpdates } from './updates.js';
 
 export const layouts = {
@@ -34,7 +34,7 @@ export function followPort(
 
 export function remoteKernel(follow) {
   return {
-    openTerminal: () => Promise.reject(failure('EOPNOTSUPP: no terminals over this link yet')),
+    openTerminal: (_argv, options) => remoteTerminal((meta) => follow.open(meta), options),
     follow,
   };
 }
