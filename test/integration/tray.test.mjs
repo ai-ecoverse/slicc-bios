@@ -19,6 +19,7 @@ test('seven leads a tray: a follower joins and links, rotation moves it to a new
   const links = await model(page, (network) => network.status().links);
   assert.deepEqual(links, {
     joinUrl: `${hub.url}/join/j1`,
+    followUrl: `${new URL(chrome.url).origin}/#follow=${encodeURIComponent(`${hub.url}/join/j1`)}`,
     joinCommand: `npx sliccy@next ${hub.url}/join/j1 follow`,
     devices: [],
     permission: null,

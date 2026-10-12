@@ -1,8 +1,112 @@
 import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
 
+function bootstraps(hub) {
+  const all = new Map();
+  let made = 0;
+  const status = (b) => ({
+    controllerId: b.controllerId,
+    bootstrapId: b.bootstrapId,
+    attempt: 1,
+    state: b.state,
+    cursor: b.events.length,
+    maxRetries: 0,
+    retriesRemaining: 0,
+    retryAfterMs: null,
+    failure: b.failure,
+  });
+  const leader = (token) => hub.sockets.findLast((s) => s.path.startsWith(`/controller/c${token}`));
+  hub.attaches = [];
+  return {
+    fromLeader(message) {
+      const b = all.get(message.bootstrapId);
+      if (!b) return;
+      if (message.type === 'bootstrap.offer') {
+        b.state = 'offered';
+        b.events.push({ type: 'bootstrap.offer', offer: message.offer });
+      } else if (message.type === 'bootstrap.ice_candidate') {
+        b.events.push({ type: 'bootstrap.ice_candidate', candidate: message.candidate });
+      } else if (message.type === 'bootstrap.failed') {
+        b.state = 'failed';
+        b.failure = { code: message.code, message: message.message, retryable: false };
+      }
+    },
+    follow(token, body) {
+      const tray = { trayId: `t${token}`, controllerId: body.controllerId, role: 'follower' };
+      const socket = leader(token);
+      if (!body.action) {
+        hub.attaches.push(body);
+        if (socket?.socket.readyState !== 1) {
+          return {
+            ...tray,
+            result: { action: 'wait', code: 'LEADER_NOT_CONNECTED', retryAfterMs: 200 },
+          };
+        }
+        made += 1;
+        const b = {
+          controllerId: body.controllerId,
+          bootstrapId: `fb${made}`,
+          state: 'pending',
+          events: [],
+          failure: null,
+          socket,
+        };
+        all.set(b.bootstrapId, b);
+        socket.socket.send(
+          JSON.stringify({
+            type: 'follower.join_requested',
+            trayId: tray.trayId,
+            controllerId: b.controllerId,
+            runtime: body.runtime,
+            bootstrapId: b.bootstrapId,
+            attempt: 1,
+            iceServers: [],
+          })
+        );
+        return {
+          ...tray,
+          result: { action: 'signal', code: 'LEADER_CONNECTED', bootstrap: status(b) },
+        };
+      }
+      const b = all.get(body.bootstrapId);
+      if (!b) return { code: 'BOOTSTRAP_NOT_FOUND', error: 'no such bootstrap' };
+      const to = (message) =>
+        b.socket.socket.send(
+          JSON.stringify({
+            ...message,
+            trayId: tray.trayId,
+            controllerId: b.controllerId,
+            bootstrapId: b.bootstrapId,
+          })
+        );
+      if (body.action === 'answer') {
+        if (b.state !== 'failed') b.state = 'connected';
+        to({ type: 'bootstrap.answer', answer: body.answer });
+      } else if (body.action === 'ice-candidate') {
+        to({ type: 'bootstrap.ice_candidate', candidate: body.candidate });
+      }
+      const cursor = body.cursor ?? 0;
+      const events = b.events
+        .map((event, i) => ({ ...event, sequence: i + 1 }))
+        .filter((event) => event.sequence > cursor);
+      return { ...tray, bootstrap: status(b), events: body.action === 'poll' ? events : [] };
+    },
+  };
+}
+
+async function body(request) {
+  const chunks = [];
+  for await (const chunk of request) chunks.push(chunk);
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString() || '{}');
+  } catch {
+    return {};
+  }
+}
+
 export function startHub() {
   const hub = { trays: 0, sockets: [], fromLeader: [], waiters: [] };
+  const followers = bootstraps(hub);
   const server = createServer(async (request, response) => {
     const cors = {
       'access-control-allow-origin': '*',
@@ -12,6 +116,11 @@ export function startHub() {
     };
     if (request.method === 'OPTIONS') return response.writeHead(204, cors).end();
     const url = new URL(request.url, hub.url);
+    const joining = /^\/join\/j(\d+)$/.exec(url.pathname);
+    if (joining) {
+      const answer = followers.follow(joining[1], await body(request));
+      return response.writeHead(answer.role ? 200 : 404, cors).end(JSON.stringify(answer));
+    }
     if (url.pathname === '/tray') {
       hub.trays += 1;
       const n = hub.trays;
@@ -40,6 +149,7 @@ export function startHub() {
     socket.on('message', (data) => {
       const message = JSON.parse(data);
       if (message.type === 'ping') return;
+      followers.fromLeader(message);
       hub.fromLeader.push(message);
       for (const wake of hub.waiters.splice(0)) wake();
     });

@@ -18,6 +18,8 @@ import {
 import { createBrowser } from './browser.js';
 import { browserControl } from './cdp.js';
 import { createExitRouter } from './exits.js';
+import { deviceName } from './follow.js';
+import { createFollowers } from './followers.js';
 import {
   grammarBase,
   grammars,
@@ -128,16 +130,31 @@ function linkFolders(link) {
   return list.length ? { folders: list } : {};
 }
 const allowedRemotely = (link) => link.mode === 'local' || Boolean(tray?.controlAllowed(link.id));
+let followers = null;
 const links = createLinks({
   router: exits,
   labels: labelStore(localStorage),
   agent: { allowed: allowedRemotely, handle: (link, meta, s) => remote.handle(link, meta, s) },
-  describe: (link) => ({
-    control:
-      link.mode === 'local' ? { allowed: true, fixed: true } : { allowed: allowedRemotely(link) },
-    ...(remote.controlling(link) ? { controlling: remote.controlling(link) } : {}),
-    ...linkFolders(link),
-  }),
+  sevens: {
+    hello: (link) => followers.hello(link),
+    accept: (link, meta) => followers.accept(link, meta),
+  },
+  describe: (link) =>
+    link.kind === 'seven'
+      ? followers.describe(link)
+      : {
+          kind: 'cli',
+          access:
+            link.mode === 'local'
+              ? { control: true, fixed: true }
+              : { control: allowedRemotely(link) },
+          control:
+            link.mode === 'local'
+              ? { allowed: true, fixed: true }
+              : { allowed: allowedRemotely(link) },
+          ...(remote.controlling(link) ? { controlling: remote.controlling(link) } : {}),
+          ...linkFolders(link),
+        },
   name: `seven on ${location.host}`,
   makePeer: (config) => new RTCPeerConnection(config),
   kernel: () => kernel,
@@ -153,8 +170,12 @@ const tray = hub
   ? createTray({
       links,
       origin: hub,
+      page: location.origin,
       onWebhook: (name, delivery) => deliverWebhook(owner, name, delivery),
     })
+  : null;
+followers = tray
+  ? createFollowers({ tray, name: deviceName(), onChange: () => links.changed() })
   : null;
 const reach = createNetwork(network, {
   browser: control.status,

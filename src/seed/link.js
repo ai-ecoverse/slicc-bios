@@ -222,11 +222,14 @@ export function createSession({
   timers = globalThis,
   onClose,
   accept,
+  role = 'page',
 }) {
+  const other = role === 'page' ? 'node' : 'page';
+  const parity = role === 'page' ? 1 : 0;
   const streams = new Map();
   const peerIds = new Set();
   const channels = new Set();
-  let next = 1;
+  let next = 2 - parity;
   let peer = null;
   let closed = null;
   let timer = null;
@@ -247,7 +250,7 @@ export function createSession({
   }
 
   function incoming(channel, id, payload) {
-    if (id % 2 === 1 || peerIds.has(id)) return close('an OPEN with a bad stream id');
+    if (id % 2 === parity || peerIds.has(id)) return close('an OPEN with a bad stream id');
     peerIds.add(id);
     const meta = json(payload);
     if (typeof meta?.kind !== 'string') return channel.send(frame(RESET, id, 'EPROTO'));
@@ -276,7 +279,7 @@ export function createSession({
     if (typeof data === 'string') {
       if (channel !== control || peer) return close('a text message after HELLO');
       const parsed = json(encoder.encode(data));
-      if (parsed?.role !== 'node') return close('a malformed HELLO');
+      if (parsed?.role !== other) return close('a malformed HELLO');
       peer = parsed;
       timers.clearTimeout(timer);
       settle.resolve(peer);
@@ -308,8 +311,8 @@ export function createSession({
   opened(control).then(
     () => {
       if (closed) return;
-      control.send(JSON.stringify({ v: 1, role: 'page', ...hello() }));
-      timer = timers.setTimeout(() => close('no HELLO from the node within 10 s'), HELLO_MS);
+      control.send(JSON.stringify({ v: 1, role, ...hello() }));
+      timer = timers.setTimeout(() => close(`no HELLO from the ${other} within 10 s`), HELLO_MS);
     },
     () => {}
   );
@@ -569,6 +572,74 @@ export function offerLink({ pc, send, hello, timers, onClose, accept }) {
   };
 }
 
+export function answerLink({ pc, send, hello, timers, onClose, accept }) {
+  let session = null;
+  let settle;
+  const linked = new Promise((resolve, reject) => {
+    settle = { resolve, reject };
+  });
+  linked.catch(() => undefined);
+  const early = [];
+  const pending = [];
+  let offered = false;
+  let described = false;
+  let answered = false;
+  let ended = null;
+  const finish = (reason) => {
+    if (ended) return;
+    ended = reason;
+    settle.reject(failure(`ECONNRESET: ${reason}`));
+    pc.close();
+    onClose?.(reason);
+  };
+  const close = (reason) => (session ? session.close(reason) : finish(reason));
+  pc.addEventListener('datachannel', ({ channel }) => {
+    if (session) return session.adopt(channel);
+    if (channel.label !== CONTROL) return channel.close();
+    session = createSession({
+      control: channel,
+      createChannel: (label) => pc.createDataChannel(label, { ordered: true }),
+      hello,
+      timers,
+      accept,
+      role: 'node',
+      onClose: finish,
+    });
+    settle.resolve(session);
+  });
+  pc.addEventListener('icecandidate', ({ candidate }) => {
+    if (!candidate) return;
+    const message = { t: 'candidate', candidate: candidate.toJSON() };
+    if (answered) send(message);
+    else pending.push(message);
+  });
+  pc.addEventListener('connectionstatechange', () => {
+    if (pc.connectionState === 'failed') close('the connection failed');
+  });
+  return {
+    linked,
+    close,
+    closed: () => ended,
+    remote: () => pc.remoteDescription.sdp,
+    async receive(message) {
+      if (message.t === 'offer') {
+        if (offered) return;
+        offered = true;
+        await pc.setRemoteDescription({ type: 'offer', sdp: message.sdp });
+        described = true;
+        await pc.setLocalDescription(await pc.createAnswer());
+        for (const candidate of early.splice(0)) await pc.addIceCandidate(candidate);
+        await send({ t: 'answer', sdp: pc.localDescription.sdp });
+        answered = true;
+        for (const queued of pending.splice(0)) send(queued);
+      } else if (message.t === 'candidate' && message.candidate) {
+        if (described) await pc.addIceCandidate(message.candidate);
+        else early.push(message.candidate);
+      }
+    },
+  };
+}
+
 export function mergeDevices(entries) {
   const byId = new Map();
   for (const entry of entries) {
@@ -597,6 +668,21 @@ function linkedFolder(live, source, owner) {
   return rivals.length > 1 ? undefined : here;
 }
 
+function greeting(link, { name, kernel, agent, sevens }) {
+  const { mode } = link;
+  if (link.kind === 'seven') return { name, mode, ...sevens.hello(link) };
+  return {
+    name,
+    mode,
+    caps: [
+      ...(kernel ? ['kernel-in'] : []),
+      'browsers',
+      'mounts',
+      ...(agent?.allowed(link) ? ['agent'] : []),
+    ],
+  };
+}
+
 export function createLinks({
   router,
   makePeer,
@@ -606,6 +692,7 @@ export function createLinks({
   kernel = null,
   serveFs = null,
   agent = null,
+  sevens = null,
   describe = () => ({}),
   labels = labelStore(),
 }) {
@@ -663,12 +750,14 @@ export function createLinks({
       link.served.push(serveFs(port2, transport));
       return { port: port1, token, capabilities: mount.capabilities };
     },
-    start({ key, send, mode, iceServers, address }) {
+    start({ key, send, mode, kind = 'cli', iceServers, address }) {
       manager.drop(key, 'replaced');
       serial += 1;
+      const seven = kind === 'seven';
       const link = {
         key,
         mode,
+        kind,
         address: free(address),
         label: null,
         peer: null,
@@ -679,17 +768,9 @@ export function createLinks({
       link.offer = offerLink({
         pc,
         send,
-        hello: () => ({
-          name,
-          mode,
-          caps: [
-            ...(kernel ? ['kernel-in'] : []),
-            'browsers',
-            'mounts',
-            ...(agent?.allowed(link) ? ['agent'] : []),
-          ],
-        }),
+        hello: () => greeting(link, { name, kernel, agent, sevens }),
         accept: (meta) => {
+          if (seven) return sevens.accept(link, meta);
           if (meta.kind === 'agent') {
             if (!agent?.allowed(link)) return Promise.reject(failure('EACCES'));
             return { handle: (s) => agent.handle(link, meta, s) };
@@ -723,6 +804,10 @@ export function createLinks({
       links.set(key, link);
       link.offer.session.ready.then(
         (peer) => {
+          if (seven !== (peer.kind === 'seven')) {
+            manager.drop(key, 'a HELLO that does not match the runtime');
+            return;
+          }
           const node = typeof peer.node === 'string' ? peer.node : null;
           for (const [other, item] of [...links]) {
             const same = other !== key && link.id && item.id === link.id;
@@ -732,7 +817,7 @@ export function createLinks({
           link.peer = peer;
           link.browsers = browserList(peer.browsers);
           link.mounts = mountList(peer.mounts);
-          if (Array.isArray(peer.caps) && peer.caps.length) {
+          if (!seven && Array.isArray(peer.caps) && peer.caps.length) {
             link.identity = `${link.id ?? key}|${node ?? ''}`;
             link.base = dnsLabel(peer.host ?? peer.name, new Set());
             link.label = labels.pick(link.identity, peer.host ?? peer.name, taken());
@@ -968,11 +1053,13 @@ const OFFERS = ['net', 'http', 'ssh'];
 export function device(link) {
   const { peer } = link;
   const caps = Array.isArray(peer?.caps) ? peer.caps : [];
+  const fallback = link.kind === 'seven' ? 'seven' : 'slicc';
   return {
     id: link.id ?? link.key,
-    name: String(peer?.name ?? (link.mode === 'local' ? 'slicc on this computer' : 'slicc')),
+    name: String(peer?.name ?? (link.mode === 'local' ? 'slicc on this computer' : fallback)),
+    ...(link.kind === 'seven' ? { kind: 'seven' } : {}),
     host: link.label ? `${link.label}.slicc.internal` : '',
-    address: link.address,
+    address: link.kind === 'seven' ? '' : link.address,
     mode: link.mode,
     offers: OFFERS.filter((offer) => caps.includes(offer)),
     ...(typeof peer?.policy?.summary === 'string' ? { policy: peer.policy.summary } : {}),

@@ -6,6 +6,7 @@ export const DEVICES_KEY = 'slicc-os.devices';
 export const UNLINKED_KEY = 'slicc-os.unlinked';
 export const RUNTIME = 'slicc-seven/1';
 export const FOLLOWER = 'slicc-link/1';
+export const ACCESS = ['view', 'control', 'terminal'];
 export const PING_MS = 30_000;
 export const JOIN_MS = 5_000;
 const BACKOFF = [1_000, 2_000, 5_000, 10_000, 30_000];
@@ -46,6 +47,10 @@ export function webhookDelivery(message) {
 
 export function joinCommand(url) {
   return url ? `npx sliccy@next ${url} follow` : null;
+}
+
+export function followUrl(page, url) {
+  return url ? `${page}/#follow=${encodeURIComponent(url)}` : null;
 }
 
 function read(storage, key, fallback) {
@@ -158,13 +163,14 @@ function followers({ links, send, devices, unlinked, pinned }) {
 
   function join(message) {
     const { controllerId, bootstrapId } = message;
-    if (message.runtime !== FOLLOWER)
-      return refuse(message, 'UNSUPPORTED_RUNTIME', 'seven links only slicc CLI followers');
+    if (message.runtime !== FOLLOWER && message.runtime !== RUNTIME)
+      return refuse(message, 'UNSUPPORTED_RUNTIME', 'seven links only slicc CLIs and sevens');
     if ((message.trust ?? 'full') !== 'full')
       return refuse(message, 'UNTRUSTED', 'a link needs a fully trusted follower');
     const link = links.start({
       key: controllerId,
       mode: 'remote',
+      kind: message.runtime === RUNTIME ? 'seven' : 'cli',
       iceServers: message.iceServers ?? [],
       send: (out) => {
         if (out.t === 'offer') {
@@ -227,12 +233,13 @@ function remember(links, devices, save) {
     const { name, offers, policy, exit } = device(link);
     const next = {
       name,
+      ...(link.kind === 'seven' ? { kind: 'seven' } : {}),
       label: link.label,
       address: link.address,
       offers,
       policy,
       exit,
-      ...(known?.control ? { control: true } : {}),
+      ...Object.fromEntries(ACCESS.filter((key) => known?.[key]).map((key) => [key, true])),
     };
     if (JSON.stringify(known) !== JSON.stringify(next)) {
       devices[link.id] = next;
@@ -250,19 +257,55 @@ function awayDevices(devices, links) {
       id,
       name: known.name,
       host: known.label ? `${known.label}.slicc.internal` : '',
-      address: known.address,
+      address: known.kind === 'seven' ? '' : known.address,
       mode: 'remote',
       offers: known.offers ?? [],
       ...(known.policy ? { policy: known.policy } : {}),
       exit: Boolean(known.exit),
-      control: { allowed: known.control === true },
+      ...(known.kind === 'seven'
+        ? { kind: 'seven', access: granted(known), ...(known.view ? {} : { asking: true }) }
+        : {
+            kind: 'cli',
+            access: { control: known.control === true },
+            control: { allowed: known.control === true },
+          }),
       state: 'offline',
     }));
+}
+
+export function permit(known, name, allowed) {
+  if (!known) throw new Error('That device isn’t linked.');
+  if (!ACCESS.includes(name)) throw new Error(`There is no ${name} access.`);
+  const wanted = { ...granted(known), [name]: Boolean(allowed) };
+  if (name !== 'view' && allowed) wanted.view = true;
+  if (name === 'view' && !allowed) Object.assign(wanted, { control: false, terminal: false });
+  for (const key of ACCESS) {
+    if (wanted[key]) known[key] = true;
+    else delete known[key];
+  }
+  return granted(known);
+}
+
+function described(state, error, session, page) {
+  const joinUrl = state === 'ready' ? session.joinUrl : null;
+  return {
+    state,
+    error,
+    joinUrl,
+    joinCommand: joinCommand(joinUrl),
+    webhookUrl: state === 'ready' ? (session.webhookUrl ?? null) : null,
+    followUrl: followUrl(page, joinUrl),
+  };
+}
+
+export function granted(known) {
+  return Object.fromEntries(ACCESS.map((key) => [key, known?.[key] === true]));
 }
 
 export function createTray({
   links,
   origin = location.origin,
+  page = origin,
   fetch: fetcher = (...args) => fetch(...args),
   WebSocket: Socket = WebSocket,
   storage = localStorage,
@@ -372,8 +415,8 @@ export function createTray({
     attempts += 1;
   }
 
-  const notify = async (link, meta) => {
-    if (!link.offer.session.caps().includes('join')) return false;
+  const notify = async (link, meta, cap = 'join') => {
+    if (!link.offer.session.caps().includes(cap)) return false;
     const stream = await Promise.race([
       link.offer.session.open(meta, { shared: true }),
       new Promise((resolve) => timers.setTimeout(resolve, JOIN_MS, null)),
@@ -381,6 +424,16 @@ export function createTray({
     stream?.closeWrite();
     return Boolean(stream);
   };
+
+  async function setAccess(id, name, allowed) {
+    const now = permit(devices[id], name, allowed);
+    save();
+    changed();
+    const live = [...links.links.values()].filter((link) => link.id === id && link.peer);
+    await Promise.all(
+      live.map((link) => notify(link, { kind: 'permissions', ...now }, 'permissions'))
+    );
+  }
 
   links.on(() => remember(links, devices, save));
 
@@ -406,22 +459,13 @@ export function createTray({
       state = 'idle';
       changed();
     },
-    status() {
-      const joinUrl = state === 'ready' ? session.joinUrl : null;
-      const webhookUrl = state === 'ready' ? (session.webhookUrl ?? null) : null;
-      return { state, error, joinUrl, joinCommand: joinCommand(joinUrl), webhookUrl };
-    },
+    status: () => described(state, error, session, page),
     away: () => awayDevices(devices, links),
     known: (id) => id in devices,
     controlAllowed: (id) => devices[id]?.control === true,
-    setControl(id, allowed) {
-      const known = devices[id];
-      if (!known) throw new Error('That device isn’t linked.');
-      if (allowed) known.control = true;
-      else delete known.control;
-      save();
-      changed();
-    },
+    access: (id) => granted(devices[id]),
+    setControl: (id, allowed) => setAccess(id, 'control', allowed),
+    setAccess,
     async forget(id) {
       delete devices[id];
       unlinked.add(id);
