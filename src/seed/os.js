@@ -73,6 +73,7 @@ export const layouts = {
   files: { side: 'left', open: ['tablet', 'desktop'] },
   freezer: { side: 'left', open: [] },
   memory: { side: 'left', open: [] },
+  monitor: { side: 'right', open: [] },
   network: { side: 'right', open: [] },
   settings: { side: 'center', open: [] },
   updates: { side: 'center', open: [] },
