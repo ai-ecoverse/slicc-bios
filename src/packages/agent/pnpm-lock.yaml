@@ -13,16 +13,16 @@ importers:
   .:
     dependencies:
       '@ai-ecoverse/slicc-agent':
-        specifier: 3.38.0
-        version: 3.38.0(@ai-ecoverse/slicc-kernel@1.62.3)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
+        specifier: 3.43.1
+        version: 3.43.1(@ai-ecoverse/slicc-kernel@1.62.3)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@ai-ecoverse/slicc-kernel':
         specifier: 1.62.3
         version: 1.62.3
 
 packages:
 
-  '@ai-ecoverse/slicc-agent@3.38.0':
-    resolution: {integrity: sha512-1IwcXarkp+1tby05U6HDZPhgIRnQ5yxG6lEv6nl68C65HkqkjVeO1rVf0GaafTFOdT/tcmIzm7kSZXMJkm8t8w==}
+  '@ai-ecoverse/slicc-agent@3.43.1':
+    resolution: {integrity: sha512-WROvdeJmaVluUh0MJ3nMLPgh/M3hu+BZgOjF3cHmKV9cHyKqAKQINdRq4vfFno6UkhVHc2c/EjcTwK4xcddfVw==}
     engines: {node: '>=24'}
     peerDependencies:
       '@ai-ecoverse/slicc-kernel': '>=1.47.1 <2'
@@ -30,6 +30,10 @@ packages:
     peerDependenciesMeta:
       '@ai-ecoverse/slicc-spectrum':
         optional: true
+
+  '@ai-ecoverse/slicc-browsers@1.4.0':
+    resolution: {integrity: sha512-meMq3bE018XQVO7DiuUQNm28McUzpy2NQ3CY77bkg0rcY8Gq1wXhPWii1Ui97Qvynx1iZcTvJPZUoGxaLd/C9Q==}
+    engines: {node: '>=24'}
 
   '@ai-ecoverse/slicc-kernel@1.62.3':
     resolution: {integrity: sha512-e+ZsJ+APRWmWXamebRphpMQKt7blS2tvfeyG8XbjI1ZtRy8yTp8RUzn0JeIVJqOIGlNFSxx/PLcH/r4lEQXzUg==}
@@ -323,8 +327,9 @@ packages:
 
 snapshots:
 
-  '@ai-ecoverse/slicc-agent@3.38.0(@ai-ecoverse/slicc-kernel@1.62.3)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)':
+  '@ai-ecoverse/slicc-agent@3.43.1(@ai-ecoverse/slicc-kernel@1.62.3)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)':
     dependencies:
+      '@ai-ecoverse/slicc-browsers': 1.4.0
       '@ai-ecoverse/slicc-kernel': 1.62.3
       '@earendil-works/chord': 1.0.4
       '@earendil-works/pi-ai': 1.0.4(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
@@ -344,6 +349,8 @@ snapshots:
       - undici
       - ws
       - zod
+
+  '@ai-ecoverse/slicc-browsers@1.4.0': {}
 
   '@ai-ecoverse/slicc-kernel@1.62.3': {}
 
