@@ -40,7 +40,7 @@
   "@ai-ecoverse/slicc-jsh": {
     "id": "node",
     "label": "Node.js (jsh)",
-    "description": "Node.js 22-compatible node and jsh commands: fs, streams, http, fetch, WebSocket and child_process, without tls, crypto, zlib, worker, fork or the sync child_process calls.",
+    "description": "Node.js 22-compatible node and jsh commands: fs, streams, http, fetch and WebSocket, without child_process, tls, crypto, zlib or worker for now.",
     "commands": ["node", "jsh"],
     "size": 346272
   },

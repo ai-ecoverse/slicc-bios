@@ -39,7 +39,7 @@ async function act(page, id, action) {
   return page.evaluate(() => window.acted);
 }
 
-test('Node.js (jsh) installs from the catalog, runs node with CommonJS and ESM and jsh with child_process, and removes cleanly', async (t) => {
+test('Node.js (jsh) installs from the catalog, runs node with CommonJS and ESM and a .jsh script with jsh, and removes cleanly', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
   await page.until(() =>
@@ -70,9 +70,9 @@ test('Node.js (jsh) installs from the catalog, runs node with CommonJS and ESM a
   await shows(page, 'read 54');
   await run(
     page,
-    `clear; printf '%s\\n' 'const { execFile } = require("node:child_process");' 'execFile("bash", ["-c", "exit 7"], (error) => console.log("child", error.code * 6));' > /home/child.jsh && jsh /home/child.jsh`
+    `clear; printf '%s\\n' 'const { readFileSync } = require("node:fs");' 'console.log("jsh read", readFileSync("/home/hello.txt", "utf8").trim().length * 6);' > /home/read.jsh && jsh /home/read.jsh`
   );
-  await shows(page, 'child 42');
+  await shows(page, 'jsh read 54');
 
   assert.equal(await act(page, 'node', 'remove'), 'ok');
   assert.equal((await row(page, 'node')).state, 'available');
