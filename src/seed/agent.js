@@ -106,3 +106,16 @@ export async function remoteAgent(owner, { load = loadChat, cone } = {}) {
     close: () => connection.close(),
   };
 }
+
+export async function deliverWebhook(owner, name, delivery, { load = loadChat } = {}) {
+  if (!owner) throw new Error('the agent is not running');
+  const { connectAgent } = await load();
+  const connection = await connectAgent(await owner.port());
+  try {
+    if (typeof connection.webhook !== 'function')
+      throw new Error('this slicc-agent takes no webhooks');
+    return await connection.webhook(name, delivery);
+  } finally {
+    connection.close();
+  }
+}

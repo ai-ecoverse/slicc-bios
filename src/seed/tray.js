@@ -15,6 +15,35 @@ export function fingerprint(sdp) {
   return found ? found.replaceAll(':', '').toLowerCase() : null;
 }
 
+const WEBHOOK_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const SECRET_HEADERS = new Set(['authorization', 'proxy-authorization', 'cookie']);
+
+export function webhookDelivery(message) {
+  const name = message?.webhookId;
+  if (typeof name !== 'string' || !WEBHOOK_NAME.test(name)) return null;
+  const headers = Object.fromEntries(
+    Object.entries(message.headers ?? {}).filter(
+      ([key, value]) => typeof value === 'string' && !SECRET_HEADERS.has(key.toLowerCase())
+    )
+  );
+  const { body } = message;
+  const json = /json/i.test(headers['content-type'] ?? '');
+  const raw =
+    !json &&
+    body &&
+    typeof body === 'object' &&
+    Object.keys(body).length === 1 &&
+    typeof body.raw === 'string';
+  return {
+    name,
+    delivery: {
+      id: headers['idempotency-key'] ?? headers['x-github-delivery'] ?? null,
+      headers,
+      body: raw ? body.raw : JSON.stringify(body ?? null),
+    },
+  };
+}
+
 export function joinCommand(url) {
   return url ? `npx sliccy@next ${url} follow` : null;
 }
@@ -52,6 +81,7 @@ export function trayHub(origin, fetcher) {
       controllerId: crypto.randomUUID(),
       controllerUrl: capabilities.controller.url,
       joinUrl: capabilities.join.url,
+      webhookUrl: capabilities.webhook?.url ?? null,
     };
   }
 
@@ -72,11 +102,39 @@ export function trayHub(origin, fetcher) {
     };
   }
 
+  async function supersede(old, joinUrl) {
+    const token = new URL(old.controllerUrl).pathname.split('/').at(-1);
+    const response = await fetcher(
+      `${origin}/api/tray/${encodeURIComponent(old.trayId)}/supersede`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ joinUrl }),
+      }
+    ).catch(() => null);
+    return Boolean(response && response.status < 500);
+  }
+
+  async function point(current) {
+    const { origin: from } = current;
+    if (!from || from.pointed === current.joinUrl) return current;
+    if (!(await supersede(from, current.joinUrl))) return current;
+    return { ...current, origin: { ...from, pointed: current.joinUrl } };
+  }
+
   async function lead(session, fresh = false) {
-    let current = !fresh && session ? session : await create();
+    const upgrade = !fresh && session && !('webhookUrl' in session);
+    let current = !fresh && !upgrade && session ? session : await create();
+    if (upgrade)
+      current.origin = {
+        trayId: session.trayId,
+        controllerUrl: session.controllerUrl,
+        pointed: null,
+      };
+    current = await point(current);
     let claimed = await claim(current);
     if (claimed.gone && !fresh) {
-      current = await create();
+      current = await point({ ...(await create()), origin: current.origin });
       claimed = await claim(current);
     }
     if (!claimed.session) throw new Error(`the tray hub answered ${claimed.status}`);
@@ -209,6 +267,7 @@ export function createTray({
   WebSocket: Socket = WebSocket,
   storage = localStorage,
   timers = globalThis,
+  onWebhook = null,
 }) {
   const listeners = new Set();
   let session = read(storage, SESSION_KEY, null);
@@ -250,6 +309,13 @@ export function createTray({
     'follower.join_requested': follower.join,
     'bootstrap.answer': follower.answer,
     'bootstrap.ice_candidate': follower.candidate,
+    'webhook.event': (message) => {
+      const found = webhookDelivery(message);
+      if (!found || !onWebhook) return;
+      Promise.resolve()
+        .then(() => onWebhook(found.name, found.delivery))
+        .catch((failed) => console.warn(`webhook ${found.name}: ${failed.message}`));
+    },
   };
 
   function open(claimed) {
@@ -342,7 +408,8 @@ export function createTray({
     },
     status() {
       const joinUrl = state === 'ready' ? session.joinUrl : null;
-      return { state, error, joinUrl, joinCommand: joinCommand(joinUrl) };
+      const webhookUrl = state === 'ready' ? (session.webhookUrl ?? null) : null;
+      return { state, error, joinUrl, joinCommand: joinCommand(joinUrl), webhookUrl };
     },
     away: () => awayDevices(devices, links),
     known: (id) => id in devices,

@@ -22,6 +22,7 @@ test('seven leads a tray: a follower joins and links, rotation moves it to a new
     joinCommand: `npx sliccy@next ${hub.url}/join/j1 follow`,
     devices: [],
     permission: null,
+    webhookUrl: `${hub.url}/webhook/w1`,
   });
   assert.equal(hub.sockets[0].path, '/controller/c1?leaderKey=lk');
 
