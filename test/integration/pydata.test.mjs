@@ -3,7 +3,7 @@ import { after, test } from 'node:test';
 import { boot, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
-const chrome = await launch({ timeout: 120000 });
+const chrome = await launch({ timeout: 120000, persistent: true });
 after(() => chrome.close());
 
 const INSTALL = 15 * 60 * 1000;
