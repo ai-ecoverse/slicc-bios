@@ -20,6 +20,8 @@ const isolation = {
   'cross-origin-opener-policy': 'same-origin',
   'cross-origin-embedder-policy': 'require-corp',
   'cross-origin-resource-policy': 'same-origin',
+  'content-security-policy': "frame-ancestors 'self'",
+  'x-frame-options': 'SAMEORIGIN',
 };
 
 const script = /\.[cm]?[jt]s$/;
@@ -33,7 +35,8 @@ const inert = {
   wasm: 'application/octet-stream',
 };
 const sandbox = {
-  'content-security-policy': 'sandbox allow-scripts allow-forms allow-popups allow-modals',
+  'content-security-policy':
+    "sandbox allow-scripts allow-forms allow-popups allow-modals; frame-ancestors 'self'",
   'x-content-type-options': 'nosniff',
   'cross-origin-resource-policy': 'same-origin',
 };
