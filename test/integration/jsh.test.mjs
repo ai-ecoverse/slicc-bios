@@ -56,7 +56,7 @@ test('Node.js (jsh) installs from the catalog, runs node with CommonJS and ESM a
   assert.equal(result, 'ok', (await row(page, 'node')).log);
   const installed = await row(page, 'node');
   assert.equal(installed.state, 'installed');
-  assert.equal(installed.version, '0.3.4');
+  assert.equal(installed.version, '0.3.8');
 
   await run(
     page,
