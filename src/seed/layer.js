@@ -1,5 +1,5 @@
 import { compare, locked } from './packages.js';
-import { fetchText, pnpm, text, write } from './update.js';
+import { fetchText, pnpm, readable, text, write } from './update.js';
 
 export const FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies'];
 const EXACT = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
@@ -206,12 +206,16 @@ async function install(root, project, found, { start, report, certs }) {
   const kernel = await start();
   try {
     const error = plain ? null : await relaxed(kernel, root, project, report, to, lock, certs);
-    if (!plain && !error) return { wanted, error };
+    if (!plain && !error) {
+      await readable(kernel, `/${folder}`);
+      return { wanted, error };
+    }
     if (error) {
       await write(root, `${folder}/package.json`, baseText);
       await write(root, `${folder}/pnpm-lock.yaml`, lock);
     }
     await pnpm(kernel, `/${folder}`, report, to);
+    await readable(kernel, `/${folder}`);
     return { wanted: error ? baseText : wanted, error };
   } finally {
     kernel.terminate();

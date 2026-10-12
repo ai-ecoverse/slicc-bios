@@ -57,6 +57,15 @@ test('the shell runs as root: whoami, id, ls -l and ps name the users, and git w
   assert.match(text, /(^|\s)\/usr\/local\/bin\/agent(\s|$)/);
   assert.doesNotMatch(text, /\/share\/pnpm\/(bin\/)?agent/);
 
+  await run(
+    page,
+    'clear; for d in /opt/agent /opt/grammars /node_modules; do echo "unreadable $d $(find $d ! -perm -o=r | wc -l) $(find $d -type d ! -perm -o=x | wc -l)"; done; echo "checked $((6 * 7))"'
+  );
+  await shows(page, 'checked 42');
+  for (const tree of ['/opt/agent', '/opt/grammars', '/node_modules']) {
+    assert.match(await screen(page), new RegExp(`unreadable ${tree} 0 0`));
+  }
+
   const installed = await page.evaluate(() =>
     document
       .querySelector('slicc-app')

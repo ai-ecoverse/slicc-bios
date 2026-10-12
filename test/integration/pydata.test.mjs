@@ -7,7 +7,7 @@ const chrome = await launch({ timeout: 120000, persistent: true });
 after(() => chrome.close());
 
 const INSTALL = 15 * 60 * 1000;
-const PTH = 'root/.local/lib/python3.14/site-packages/slicc-pydata.pth';
+const PTH = 'opt/slicc/python/slicc-pydata.pth';
 
 const row = (page, id) =>
   page.evaluate(
@@ -121,6 +121,13 @@ test('Python data tools install as one project next to the catalog’s Python, i
   assert.equal(installed.state, 'installed');
   assert.equal(installed.warnings, undefined);
   assert.ok(await exists(page, PTH));
+  assert.ok(await exists(page, 'opt/slicc/python/sitecustomize.py'));
+  await run(
+    page,
+    'clear; echo "unreadable $(find /opt/slicc ! -perm -o=r | wc -l) $(find /opt/slicc -type d ! -perm -o=x | wc -l)"; echo "checked $((6 * 7))"'
+  );
+  await shows(page, 'checked 42');
+  assert.match(await screen(page), /unreadable 0 0/);
   await shots(page, 'pydata-after');
 
   await run(

@@ -1,10 +1,12 @@
-import { fetchText, pnpm, text, write } from './update.js';
+import { fetchText, pnpm, readable, text, write } from './update.js';
 
 export const FILES = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'];
 
 export const folder = (id) => `opt/slicc/${id}`;
 export const receipt = (id) => `var/lib/slicc/optional/${id}/package.json`;
 export const pthName = (id) => `slicc-${id}.pth`;
+export const PYTHON = 'opt/slicc/python';
+const CUSTOMIZE = `import site\n\nsite.addsitedir('/${PYTHON}')\n`;
 
 export async function loadProject(id, from) {
   const files = {};
@@ -56,7 +58,8 @@ export async function writePth(root, id) {
   const found = await sitePackages(root, id);
   if (!found.length) return null;
   const lines = found.map(({ name, site }) => `/${folder(id)}/node_modules/${name}/${site}`);
-  const path = `root/.local/${found[0].site}/${pthName(id)}`;
+  const path = `${PYTHON}/${pthName(id)}`;
+  await write(root, `${PYTHON}/sitecustomize.py`, CUSTOMIZE);
   await write(root, path, `${lines.join('\n')}\n`);
   return path;
 }
@@ -72,6 +75,7 @@ async function removeIn(root, path) {
 export async function installProject({ root, kernel, id, project, report, to }) {
   for (const name of FILES) await write(root, `${folder(id)}/${name}`, project.files[name]);
   await pnpm(kernel, `/${folder(id)}`, report, to);
+  await readable(kernel, `/${folder(id)}`);
   const pth = await writePth(root, id);
   await write(
     root,
@@ -85,4 +89,13 @@ export async function removeProject(root, id) {
   if (pth) await removeIn(root, pth);
   await removeIn(root, folder(id));
   await removeIn(root, receipt(id));
+}
+
+export async function movePth(root, id) {
+  const kept = JSON.parse((await text(root, receipt(id))) ?? 'null');
+  if (!kept?.pth || kept.pth.startsWith(`${PYTHON}/`)) return false;
+  const pth = await writePth(root, id);
+  await removeIn(root, kept.pth);
+  await write(root, receipt(id), `${JSON.stringify({ ...kept, pth })}\n`);
+  return true;
 }

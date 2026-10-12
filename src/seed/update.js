@@ -56,6 +56,11 @@ export async function pnpm(kernel, cwd, report, to = null, argv = INSTALL) {
   }
 }
 
+export async function readable(kernel, path) {
+  const { status, stderr } = await kernel.run(['chmod', '-R', 'a+rX', path], { cwd: '/' });
+  if (status) throw new Error(stderr.trim() || `chmod exited with ${status}`);
+}
+
 export async function versions(dir, names, prefix = '') {
   const found = {};
   for (const name of names) {

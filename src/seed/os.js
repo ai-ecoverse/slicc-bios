@@ -42,6 +42,7 @@ import {
   serveNetwork,
   serveUpdates,
 } from './present.js';
+import { PYTHON } from './projects.js';
 import { createRemote } from './remote.js';
 import { installPrompts, keepStorage, onSend } from './storage.js';
 import {
@@ -519,6 +520,7 @@ async function own() {
   });
   kernel = await createKernel({
     root,
+    env: { PYTHONPATH: `/${PYTHON}` },
     network: { transport, uplink: exits.uplink },
     cdp: control.hook,
     ...folders.options,
