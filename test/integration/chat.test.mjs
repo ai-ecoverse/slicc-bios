@@ -1447,8 +1447,8 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     });
     await viewed.until(() => document.querySelector('slicc-app').screen === 'phone');
     await phone();
+    await new Promise((resolve) => setTimeout(resolve, 1000));
     await settled(viewed);
-    await new Promise((resolve) => setTimeout(resolve, 500));
     await viewed.screenshot(new URL(`panel-${name}-light-420.png`, page.dir));
     await viewed.send('Emulation.clearDeviceMetricsOverride');
     await viewed.until(() => document.querySelector('slicc-app').screen === 'desktop');
