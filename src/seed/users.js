@@ -64,7 +64,7 @@ export function terminalTag(where) {
 
 export function kernelSource(kernel) {
   const connect = (options) => {
-    if (!options?.user) return kernel.connect();
+    if (!options?.user) return kernel.connect({ tag: agentTag('root') });
     const { user, agentId } = options;
     if (agentFor(user) !== agentId) {
       throw refused(`${agentId ?? 'an agent'} as the kernel user ${user}`);
@@ -98,8 +98,8 @@ export function boundTo(user) {
   return user ? { user } : {};
 }
 
-export function kernelUsers(mode, hooks) {
-  return mode === 'off' ? {} : { users: mode, ...hooks };
+export function kernelUsers(mode, hooks = {}) {
+  return mode === 'off' ? { users: 'off' } : { users: mode, ...hooks };
 }
 
 export function terminalHome(user) {
