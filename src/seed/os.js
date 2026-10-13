@@ -264,7 +264,13 @@ let serving = null;
 let optional = Promise.resolve(null);
 
 const start = () =>
-  createKernel({ root, users: 'off', network: { transport }, media: false, ...protection() });
+  createKernel({
+    root,
+    network: { transport },
+    media: false,
+    ...kernelUsers(mode),
+    ...protection(),
+  });
 
 function base(os) {
   const network = os ? mirrorNetwork(os, reach.port) : reach.port;
