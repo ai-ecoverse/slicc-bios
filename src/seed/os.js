@@ -70,6 +70,7 @@ import { pickTransport } from './transport.js';
 import { createTray, TRAY_HUB_KEY, trayPort } from './tray.js';
 import { openTunnel } from './tunnel.js';
 import {
+  baseManifest,
   guarded,
   PROTECTED,
   protectInstalls,
@@ -549,7 +550,7 @@ updates.handle('reload', () => location.replace(new URL('../', location.href)));
 
 async function rows() {
   owned = new Map(Object.entries(owners).map(([id, name]) => [name, id]));
-  const manifest = JSON.parse((await text(root, 'package.json')) ?? '{}');
+  const manifest = await baseManifest(root);
   const names = Object.keys(manifest.dependencies ?? {});
   const found = await versions(root, names);
   for (const [id, name] of Object.entries(owners)) {

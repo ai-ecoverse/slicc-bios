@@ -304,3 +304,45 @@ test('enforce: seven’s code paths are read-only to root and cones, and install
   assert.equal(notice.title, 'A remembered folder wasn’t mounted');
   assert.match(notice.body, /\/opt, \/opt\/agent\/deep/);
 });
+
+test('enforce: the base set installs from /opt/slicc/base, whatever a root process puts at /', async (t) => {
+  const page = await chrome.page(t);
+  await page.goto('/#users=enforce');
+  await ready(page, ['slicc:/home# ']);
+  assert.match(await read(page, 'opt/slicc/base/pnpm-lock.yaml'), /lockfileVersion/);
+  assert.ok(await read(page, 'opt/slicc/base/pnpm-workspace.yaml'));
+  assert.equal(await read(page, 'package.json'), '');
+  assert.equal(await read(page, 'pnpm-lock.yaml'), '');
+  const bash = async () =>
+    JSON.parse(await read(page, 'node_modules/@ai-ecoverse/wasm-bash/package.json')).version;
+  const before = await bash();
+  await run(
+    page,
+    'clear; echo \'lockfileVersion: 9.0\\nimporters:\\n  .:\\n    dependencies:\\n      evil: {specifier: 1.0.0, version: 1.0.0}\' > /pnpm-lock.yaml; echo \'{"dependencies":{"evil":"1.0.0"}}\' > /package.json; echo \'registry=https://evil.invalid/\' > /.npmrc; printf \'overrides:\\n  "@ai-ecoverse/wasm-bash": "0.0.1"\\n\' > /pnpm-workspace.yaml; touch /opt/slicc/base/pnpm-lock.yaml; echo base=$?; rm /var/lib/slicc/pnpm-lock.yaml; echo planted-$((40 + 2))'
+  );
+  await shows(page, 'planted-42');
+  assert.match(await screen(page), /base=1/);
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await page.within(5 * 60 * 1000, async () => {
+    let dir = await navigator.storage.getDirectory();
+    try {
+      for (const part of ['var', 'lib', 'slicc']) dir = await dir.getDirectoryHandle(part);
+      await dir.getFileHandle('pnpm-lock.yaml');
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  const bios = await page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.updates.list()
+      .find((item) => item.id === 'bios')
+  );
+  assert.notEqual(bios.state, 'failed', bios.error);
+  assert.equal(await bash(), before);
+  assert.equal(await read(page, 'node_modules/evil/package.json'), '');
+  for (const name of ['package.json', 'pnpm-lock.yaml', '.npmrc', 'pnpm-workspace.yaml']) {
+    assert.equal(await read(page, name), '', name);
+  }
+});
