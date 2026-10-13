@@ -34,7 +34,7 @@ import {
 import { change, userRows } from './layer.js';
 import { createLinks, installLocal, labelStore, trustHostKey } from './link.js';
 import { serveLoopback } from './loopback.js';
-import { createFolders, offTheRecord } from './mounts.js';
+import { createFolders, KEY, offTheRecord } from './mounts.js';
 import { createNetwork } from './network.js';
 import { createNotices, reportRepairs, reportStopped } from './notices.js';
 import { createPackages, globalDir, loadCatalog, writeListing } from './packages.js';
@@ -69,11 +69,20 @@ import { serveTerminal } from './terminal.js';
 import { pickTransport } from './transport.js';
 import { createTray, TRAY_HUB_KEY, trayPort } from './tray.js';
 import { openTunnel } from './tunnel.js';
-import { text, update, versions } from './update.js';
+import {
+  guarded,
+  PROTECTED,
+  protectInstalls,
+  protection,
+  text,
+  update,
+  versions,
+} from './update.js';
 import { count, createUpdates, owners } from './updates.js';
 import {
   addCone,
   boundTo,
+  dropProtectedMounts,
   homeSkips,
   kernelUsers,
   terminalHome,
@@ -237,6 +246,7 @@ reportRepairs(notices);
 reportStopped(notices);
 const approvals = createApprovals();
 const mode = usersMode();
+protectInstalls(mode !== 'off');
 const asUser = terminalUser({ mode });
 document.documentElement.dataset.users = mode;
 const keep = keepStorage({ notices, prompts });
@@ -252,7 +262,8 @@ let owned = new Map();
 let serving = null;
 let optional = Promise.resolve(null);
 
-const start = () => createKernel({ root, users: 'off', network: { transport }, media: false });
+const start = () =>
+  createKernel({ root, users: 'off', network: { transport }, media: false, ...protection() });
 
 function base(os) {
   const network = os ? mirrorNetwork(os, reach.port) : reach.port;
@@ -566,6 +577,7 @@ async function own() {
     root,
     users: 'off',
     env: { PYTHONPATH: `/${PYTHON}` },
+    ...protection(),
     network: { transport, uplink: exits.uplink },
     cdp: control.hook,
     clipboard: clipboardHook(),
@@ -591,6 +603,8 @@ async function own() {
   routes.forward(serving);
   await rows();
   await announce(null);
+  if (guarded())
+    dropProtectedMounts({ storage: localStorage, key: KEY, paths: PROTECTED, notices });
   const restoring = folders.restore();
   void tailscale.start({
     kernel,

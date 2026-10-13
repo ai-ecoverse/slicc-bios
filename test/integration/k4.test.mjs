@@ -238,3 +238,69 @@ test('enforce: a cone’s terminal starts in its home, and its Python finds what
   await shows(page, 'sudo 42', 5 * 60 * 1000);
   assert.deepEqual(page.errors, []);
 });
+
+test('enforce: seven’s code paths are read-only to root and cones, and installs still write them', async (t) => {
+  const page = await chrome.page(t);
+  await page.goto('/#users=enforce');
+  await ready(page, ['slicc:/home# ']);
+  await page.within(5 * 60 * 1000, async () => {
+    let dir = await navigator.storage.getDirectory();
+    try {
+      for (const part of ['var', 'lib', 'slicc', 'agent']) dir = await dir.getDirectoryHandle(part);
+      await dir.getFileHandle('pnpm-lock.yaml');
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  const agentRow = await page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.updates.list()
+      .find((item) => item.id === 'agent')
+  );
+  assert.notEqual(agentRow.state, 'failed', agentRow.error);
+  assert.ok(await read(page, 'opt/agent/node_modules/.modules.yaml'));
+
+  await run(
+    page,
+    'clear; touch /opt/agent/x; echo agent=$?; touch /os/x; echo os=$?; mkdir -p /mnt/free; mount -t fsa none /opt; echo opt=$?; echo root-$((40 + 2))'
+  );
+  await shows(page, 'root-42');
+  let text = await screen(page);
+  assert.match(text, /Read-only file system/);
+  assert.match(text, /agent=1/);
+  assert.match(text, /os=1/);
+  assert.match(text, /opt=[1-9]/);
+
+  await page.evaluate(() => {
+    localStorage.setItem('slicc-os.terminal-user', 'cone');
+    localStorage.setItem(
+      'slicc-os.mounts',
+      JSON.stringify([
+        { type: 'hostfs', source: 'one', target: '/opt' },
+        { type: 'hostfs', source: 'two', target: '/opt/agent/deep' },
+        { type: 'hostfs', source: 'three', target: '/mnt/kept' },
+      ])
+    );
+  });
+  await page.reload();
+  await ready(page, coneShell);
+  await run(page, 'clear; touch /opt/agent/x; echo cone=$?; echo cone-$((40 + 2))');
+  await shows(page, 'cone-42');
+  text = await screen(page);
+  assert.match(text, /Permission denied|Read-only file system/);
+  assert.match(text, /cone=1/);
+  const kept = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem('slicc-os.mounts')).map(({ target }) => target)
+  );
+  assert.deepEqual(kept, ['/mnt/kept']);
+  const notice = await page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.notices.list()
+      .find(({ id }) => id.startsWith('mounts-protected:'))
+  );
+  assert.equal(notice.title, 'A remembered folder wasn’t mounted');
+  assert.match(notice.body, /\/opt, \/opt\/agent\/deep/);
+});

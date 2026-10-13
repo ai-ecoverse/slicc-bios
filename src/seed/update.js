@@ -38,6 +38,72 @@ export function progress(output) {
     : { phase: 'download', done: reused + downloaded, total: resolved };
 }
 
+export const WRITER = 'bios-installer';
+export const PROTECTED = [
+  '/node_modules',
+  '/opt/agent',
+  '/opt/grammars',
+  '/opt/tailscale',
+  '/opt/slicc',
+  '/os',
+];
+const INSTALLER = '/opt/slicc/.installer';
+const SYSTEM = '/usr/local/share/pnpm';
+const HYGIENE = [
+  '--ignore-scripts',
+  '--ignore-pnpmfile',
+  '--config.userconfig=/dev/null',
+  '--config.store-dir=/opt/slicc/.store',
+  '--config.verify-store-integrity=true',
+];
+const CLEAN = {
+  HOME: INSTALLER,
+  XDG_CONFIG_HOME: `${INSTALLER}/.config`,
+  XDG_CACHE_HOME: `${INSTALLER}/.cache`,
+  PNPM_HOME: SYSTEM,
+  PATH: `${SYSTEM}/bin:/usr/local/bin:/usr/bin:/bin`,
+  NODE_OPTIONS: '',
+};
+const guard = { on: false };
+
+export function protectInstalls(on) {
+  guard.on = on;
+}
+
+export function protection() {
+  return guard.on ? { protect: { paths: PROTECTED, writers: [WRITER] } } : {};
+}
+
+export function writing(cwd) {
+  return guard.on ? { cwd, tag: WRITER, env: CLEAN } : { cwd };
+}
+
+export function hygiene(argv) {
+  return guard.on && argv[0] === 'pnpm' ? [...argv, ...HYGIENE] : argv;
+}
+
+export function guarded() {
+  return guard.on;
+}
+
+const STRAYS = ['.npmrc', '.pnpmfile.cjs', '.pnpmfile.mjs'];
+const FENCE = "minimumReleaseAgeExclude:\n  - '@ai-ecoverse/*'\n";
+
+async function removeFile(dir, name) {
+  await dir.removeEntry(name).catch(() => {});
+}
+
+export async function fence(root, cwd) {
+  const folder = cwd.replace(/^\/+|\/+$/g, '');
+  if (!folder) {
+    for (const name of [...STRAYS, 'pnpm-workspace.yaml']) await removeFile(root, name);
+    return;
+  }
+  if ((await text(root, `${folder}/pnpm-workspace.yaml`)) === null) {
+    await write(root, `${folder}/pnpm-workspace.yaml`, FENCE);
+  }
+}
+
 const INSTALL = ['pnpm', 'install', '--frozen-lockfile', '--trust-lockfile'];
 
 export function installer(
@@ -57,14 +123,16 @@ export function installer(
   });
 }
 
-export async function pnpm(kernel, cwd, report, to = null, argv = INSTALL) {
+export async function pnpm(kernel, cwd, report, to = null, argv = INSTALL, writer = true) {
   let log = '';
   report({ progress: null, log });
   const onStdout = (chunk) => {
     log = (log + chunk).slice(-LOG);
     report({ progress: progress(log), log });
   };
-  const { status, stderr } = await kernel.run(argv, { cwd, onStdout });
+  if (writer && guard.on) await fence(await navigator.storage.getDirectory(), cwd);
+  const run = writer ? { ...writing(cwd), onStdout } : { cwd, onStdout };
+  const { status, stderr } = await kernel.run(writer ? hygiene(argv) : argv, run);
   if (status) {
     const error = new Error(stderr.trim() || `pnpm exited with ${status}`);
     error.log = (log + stderr).slice(-LOG);
@@ -74,7 +142,7 @@ export async function pnpm(kernel, cwd, report, to = null, argv = INSTALL) {
 }
 
 export async function readable(kernel, path) {
-  const { status, stderr } = await kernel.run(['chmod', '-R', 'a+rX', path], { cwd: '/' });
+  const { status, stderr } = await kernel.run(['chmod', '-R', 'a+rX', path], writing('/'));
   if (status) throw new Error(stderr.trim() || `chmod exited with ${status}`);
 }
 
