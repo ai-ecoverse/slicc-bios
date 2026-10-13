@@ -156,7 +156,7 @@ test('updates a running install from a bumped lockfile', async (t) => {
       await readFile(new URL('../../src/packages/pnpm-lock.yaml', import.meta.url), 'utf8')
     );
     assert.deepEqual(
-      chrome.cdn.requests.filter((url) => url.includes('/wasm-bash/')),
+      [...new Set(chrome.cdn.requests.filter((url) => url.includes('/wasm-bash/')))],
       ['https://registry.npmjs.org/@ai-ecoverse/wasm-bash/-/wasm-bash-5.3.0-17.tgz']
     );
     await page.screenshot(new URL('updated.png', page.dir));

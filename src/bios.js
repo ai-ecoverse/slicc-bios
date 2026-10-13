@@ -23,6 +23,17 @@ function connect() {
     });
 }
 
+function remember(key, list) {
+  if (list.length) return localStorage.setItem(key, JSON.stringify(list));
+  return localStorage.removeItem(key);
+}
+
+function fixed(changed) {
+  return changed.length
+    ? `, ${changed.length} changed ${changed.length === 1 ? 'file' : 'files'} put back`
+    : '';
+}
+
 async function step(name, task) {
   const item = document.querySelector(`[data-step="${name}"]`);
   const output = item.querySelector('output');
@@ -41,6 +52,8 @@ async function step(name, task) {
 }
 
 let installer;
+const repaired = [];
+const stopped = [];
 
 function activated(worker) {
   return new Promise((resolve, reject) => {
@@ -68,13 +81,20 @@ await step('installer', async () => {
 
 await step('packages', async (report) => {
   const from = new URL('packages/package-lock.json', import.meta.url).href;
-  const { packages, downloaded, removed, bytes } = await installer(
-    'packages',
-    { from },
-    (progress) => report(`${progress.done}/${progress.total} ${progress.path}`)
+  const {
+    packages,
+    downloaded,
+    removed,
+    bytes,
+    repaired: changed,
+    stopped: kept,
+  } = await installer('packages', { from }, (progress) =>
+    report(`${progress.done}/${progress.total} ${progress.path}`)
   );
   const pruned = removed ? `, ${removed} removed` : '';
-  return `${downloaded}/${packages} downloaded from npm, ${size(bytes)}${pruned}`;
+  repaired.push(...changed);
+  stopped.push(...kept);
+  return `${downloaded}/${packages} downloaded from npm, ${size(bytes)}${pruned}${fixed(changed)}`;
 });
 
 await step('seed', async () => {
@@ -117,8 +137,19 @@ await step('seed', async () => {
     'updates.js',
   ];
   const from = new URL('seed/', import.meta.url).href;
-  const { bytes } = await installer('install', { from, to: 'os/', files });
-  return `os/{${files.join(',')}} ${size(bytes)}`;
+  const {
+    bytes,
+    repaired: changed,
+    stopped: kept,
+  } = await installer('install', {
+    from,
+    to: 'os/',
+    files,
+    source: 'os',
+  });
+  repaired.push(...changed);
+  stopped.push(...kept);
+  return `os/{${files.join(',')}} ${size(bytes)}${fixed(changed)}`;
 });
 
 await step('intercept', async () => {
@@ -132,6 +163,8 @@ await step('intercept', async () => {
 });
 
 await step('navigate', async () => {
+  remember('slicc-bios.repaired', repaired);
+  remember('slicc-bios.stopped', stopped);
   const ui = new URL('os/', import.meta.url);
   ui.hash = location.hash;
   location.replace(ui);

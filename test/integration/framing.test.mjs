@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { after, test } from 'node:test';
-import { boot } from './bios.mjs';
+import { boot, trust } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch();
@@ -26,18 +26,7 @@ const files = {
 };
 
 async function write(page) {
-  await page.evaluate(async (files) => {
-    const root = await navigator.storage.getDirectory();
-    for (const [path, text] of Object.entries(files)) {
-      const parts = path.split('/');
-      const name = parts.pop();
-      let dir = root;
-      for (const part of parts) dir = await dir.getDirectoryHandle(part, { create: true });
-      const writable = await (await dir.getFileHandle(name, { create: true })).createWritable();
-      await writable.write(text);
-      await writable.close();
-    }
-  }, files);
+  await trust(page, files);
 }
 
 function framer(base) {

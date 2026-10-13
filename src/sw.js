@@ -1,3 +1,4 @@
+import { appendLog, described, openIntegrity, sha256, treeOf } from './sw/integrity.js';
 import { kernelPort, loopback, Unreachable } from './sw/loopback.js';
 import { createResolver, NODE_STUBS } from './sw/resolve.js';
 import { nodeStub } from './sw/stubs.js';
@@ -82,12 +83,110 @@ async function read(path) {
   return (await dir.getFileHandle(name)).getFile();
 }
 
+class Changed extends Error {
+  constructor(path, what, hashes = {}) {
+    super(`sw: ${path} ${what}`);
+    this.path = path;
+    this.hashes = hashes;
+    this.recorded = what.endsWith('installed it');
+  }
+}
+
+let ledger;
+const trusted = new Set();
+const HEAL_GAP = 60000;
+const STATUS = '/__slicc/integrity';
+const healed = new Map();
+
+function integrity() {
+  ledger ??= openIntegrity();
+  return ledger;
+}
+
+async function checked(path, file) {
+  const tree = treeOf(path);
+  if (!tree) return file;
+  const key = `${path}\n${file.size}\n${file.lastModified}`;
+  if (trusted.has(key)) return file;
+  const store = await integrity();
+  if (!(await store.generation(tree))) throw new Changed(path, "isn't verified yet");
+  const record = await store.lookup(path);
+  const bytes = await file.arrayBuffer();
+  const actual = await sha256(bytes);
+  if (record?.size !== bytes.byteLength || record.sha256 !== actual) {
+    throw new Changed(path, 'was changed after seven installed it', {
+      expected: record?.sha256 ?? null,
+      actual,
+    });
+  }
+  trusted.add(key);
+  return new File([bytes], file.name, { lastModified: file.lastModified });
+}
+
+async function missing(path) {
+  const record = treeOf(path) && (await (await integrity()).lookup(path));
+  if (record) {
+    throw new Changed(path, 'was removed after seven installed it', {
+      expected: record.sha256,
+      actual: null,
+    });
+  }
+}
+
+async function updating() {
+  const { held = [] } = (await navigator.locks?.query()) ?? {};
+  return held.some(({ name }) => name === 'slicc-packages');
+}
+
+async function heal(scope, path) {
+  if (Date.now() - (healed.get(path) ?? 0) < HEAL_GAP) return;
+  healed.set(path, Date.now());
+  const windows = await self.clients.matchAll({ type: 'window' });
+  for (const client of windows) {
+    const { pathname, hash } = new URL(client.url);
+    if (pathname === `${scope}os/` || pathname === `${scope}os/index.html`) {
+      client.navigate(`${self.registration.scope}${hash}`).catch(() => {});
+    }
+  }
+}
+
+async function stop(path) {
+  const windows = await self.clients.matchAll({ type: 'window' });
+  for (const client of windows) client.postMessage({ integrity: { stopped: path } });
+}
+
+async function refuse(error, request, scope) {
+  if (!(error instanceof Changed)) throw error;
+  if (await updating()) return failed(503, `sw: seven is updating ${error.path}, try again`);
+  if (error.recorded) {
+    const { fresh, stopped, entry } = await (await integrity()).tamper(error.path, error.hashes);
+    if (fresh) {
+      await appendLog(
+        navigator.storage.getDirectory(),
+        described(entry, stopped ? 'stopped' : 'changed')
+      );
+    }
+    if (stopped) {
+      if (fresh) await stop(error.path);
+      return failed(500, `sw: ${error.path} keeps changing, so seven stopped restoring it`);
+    }
+  }
+  if (request.mode === 'navigate') return Response.redirect(self.registration.scope, 302);
+  await heal(scope, error.path);
+  return failed(500, error.message);
+}
+
 const opfs = {
-  readText: (path) =>
-    read(path).then(
-      (file) => file.text(),
-      () => undefined
-    ),
+  readText: async (path) => {
+    let file;
+    try {
+      file = await read(path);
+    } catch {
+      await missing(path);
+      return undefined;
+    }
+    return (await checked(path, file)).text();
+  },
   isFile: (path) =>
     read(path).then(
       () => true,
@@ -231,6 +330,10 @@ async function serve(request, controller) {
     watched(await fetch(request, { signal: controller.signal }), url.pathname, controller);
   const served = kind(path);
   if (served === 'bios') return network();
+  if (path === STATUS) {
+    const stopped = await (await integrity()).stopped();
+    return respond(JSON.stringify({ stopped }), types.json, 'sw');
+  }
   if (served === 'stub') {
     const name = path.slice(NODE_STUBS.length).replace(/\.js$/, '');
     const wanted = url.searchParams.get('names')?.split(',') ?? [];
@@ -239,20 +342,33 @@ async function serve(request, controller) {
   if (served === 'sandboxed' && code.has(request.destination)) {
     return sandboxed(`sw: ${path} is not served as code\n`, 'text/plain; charset=utf-8', 403);
   }
+  const at = path.endsWith('/') ? `${path}index.html` : path;
   let file;
   try {
     file = await read(path);
   } catch {
-    return network();
+    const gone =
+      served === 'live'
+        ? await missing(at).then(
+            () => null,
+            (error) => error
+          )
+        : null;
+    return gone ? refuse(gone, request, scope) : network();
   }
   const extension = file.name.split('.').pop();
   if (served === 'sandboxed') {
     return sandboxed(file, inert[extension] ?? types[extension] ?? 'application/octet-stream');
   }
   const type = types[extension] ?? 'application/octet-stream';
-  if (!script.test(file.name)) return respond(file, type, 'opfs');
-  const run = path.startsWith(AGENT) ? url.searchParams.get('run') : null;
-  return respond(await rewrite(path, file, base, run), type, 'opfs');
+  try {
+    file = await checked(at, file);
+    if (!script.test(file.name)) return respond(file, type, 'opfs');
+    const run = path.startsWith(AGENT) ? url.searchParams.get('run') : null;
+    return respond(await rewrite(path, file, base, run), type, 'opfs');
+  } catch (error) {
+    return refuse(error, request, scope);
+  }
 }
 
 self.addEventListener('install', () => self.skipWaiting());
