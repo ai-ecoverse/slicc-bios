@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { boot, run, screen, shows } from './bios.mjs';
+import { boot, prompt, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch();
@@ -17,9 +17,14 @@ test('a second tab follows the first on one kernel, and takes over when the firs
   await b.until(() => document.querySelector('slicc-app').model.tabs?.state().role === 'follower');
   assert.deepEqual(await role(b), { role: 'follower', stalled: false, skew: null });
 
-  await a.send('Page.bringToFront');
-  await run(a, 'echo from-the-owner > /tmp/pr17; sleep 300 &');
-  await b.send('Page.bringToFront');
+  const front = async (page) => {
+    await page.send('Page.bringToFront');
+    await shows(page, prompt);
+  };
+  await front(a);
+  await run(a, 'echo from-the-owner > /tmp/pr17; sleep 300 & echo wrote-$((40+1))');
+  await shows(a, 'wrote-41');
+  await front(b);
   await run(b, 'cat /tmp/pr17');
   await shows(b, 'from-the-owner');
   await run(b, 'pgrep -f "sleep 300" > /dev/null && echo seen-$((40+2))');
@@ -27,7 +32,6 @@ test('a second tab follows the first on one kernel, and takes over when the firs
   await run(b, 'pkill -f "sleep 300"; pgrep -f "sleep 300" || echo gone-$((40+3))');
   await shows(b, 'gone-43');
 
-  await b.send('Page.bringToFront');
   await a.close();
   await shows(b, 'SLICC closed', 30000);
   await run(b, 'echo once-$((20+2))');
