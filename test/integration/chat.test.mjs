@@ -34,6 +34,60 @@ const stream = Buffer.concat([
   }),
 ]);
 
+const usage = eventFrame('metadata', {
+  usage: { inputTokens: 12, outputTokens: 5, totalTokens: 17 },
+  metrics: { latencyMs: 1 },
+});
+const said = (text) =>
+  Buffer.concat([
+    eventFrame('messageStart', { role: 'assistant' }),
+    eventFrame('contentBlockDelta', { contentBlockIndex: 0, delta: { text } }),
+    eventFrame('contentBlockStop', { contentBlockIndex: 0 }),
+    eventFrame('messageStop', { stopReason: 'end_turn' }),
+    usage,
+  ]);
+const bashCall = (toolUseId, command) =>
+  Buffer.concat([
+    eventFrame('messageStart', { role: 'assistant' }),
+    eventFrame('contentBlockStart', {
+      contentBlockIndex: 0,
+      start: { toolUse: { toolUseId, name: 'bash' } },
+    }),
+    eventFrame('contentBlockDelta', {
+      contentBlockIndex: 0,
+      delta: { toolUse: { input: JSON.stringify({ command }) } },
+    }),
+    eventFrame('contentBlockStop', { contentBlockIndex: 0 }),
+    eventFrame('messageStop', { stopReason: 'tool_use' }),
+    usage,
+  ]);
+const toolResults = [];
+function scripted(raw) {
+  let sent;
+  try {
+    sent = JSON.parse(raw.toString());
+  } catch {
+    return null;
+  }
+  if (!sent.toolConfig?.tools?.some((tool) => tool.toolSpec?.name === 'bash')) return null;
+  const last = sent.messages?.at(-1);
+  if (last?.role !== 'user') return null;
+  const result = last.content.find((part) => part.toolResult)?.toolResult;
+  if (result) {
+    toolResults.push({
+      id: result.toolUseId,
+      status: result.status,
+      text: result.content.map((part) => part.text ?? '').join(''),
+    });
+    return said('Ran it.');
+  }
+  const command = last.content
+    .map((part) => part.text ?? '')
+    .join('')
+    .match(/RUN: ([^\n]+)/)?.[1];
+  return command ? bashCall(`run-${toolResults.length + 1}`, command) : null;
+}
+
 const certs = mkdtempSync(join(tmpdir(), 'ims-'));
 execFileSync(
   'openssl',
@@ -87,7 +141,7 @@ const chrome = await launch({
 const proxy = await fakeProxy({
   origin: new URL(chrome.url).origin,
   key: 'the-key',
-  answer: async (request) => {
+  answer: async (request, raw) => {
     if (request.url.startsWith(ADOBE)) {
       const bearer = request.headers.find(([name]) => name.toLowerCase() === 'authorization')?.[1];
       const body = request.url.endsWith('/v1/config')
@@ -129,7 +183,7 @@ const proxy = await fakeProxy({
     return {
       status: 200,
       headers: [['content-type', 'application/vnd.amazon.eventstream']],
-      body: stream,
+      body: scripted(raw) ?? stream,
     };
   },
 });
@@ -1269,5 +1323,249 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   await page.screenshot(new URL('settings-mcp-light-420.png', page.dir));
   await page.send('Emulation.clearDeviceMetricsOverride');
   await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
+
+  const origins = await page.evaluate(async () => {
+    const at = new URL(
+      '../opt/agent/node_modules/@ai-ecoverse/slicc-agent/dist/browser/origins.js',
+      location.href
+    );
+    const source = await (await fetch(at)).text();
+    const [, url] =
+      source.match(/from\s*"([^"]*catalog\.json)"\s*with\s*\{\s*type:\s*['"]json['"]\s*\}/) ?? [];
+    if (!url) return { url: null };
+    const response = await fetch(new URL(url, at));
+    const catalog = await response.json();
+    return {
+      url: new URL(url, at).pathname,
+      status: response.status,
+      type: response.headers.get('content-type'),
+      from: response.headers.get('x-served-from'),
+      parsed: typeof catalog === 'object' && catalog !== null,
+    };
+  });
+  assert.match(
+    origins.url,
+    /^\/opt\/agent\/node_modules\/.*@ai-ecoverse\/slicc-browsers\/catalog\.json$/
+  );
+  assert.deepEqual(
+    [origins.status, origins.type, origins.from, origins.parsed],
+    [200, 'application/json', 'opfs', true]
+  );
+
+  await page.evaluate(() => {
+    const app = document.querySelector('slicc-app');
+    window.panelIds = () => app.dock.api.panels.map((panel) => panel.id);
+    window.panelLeft = (id) =>
+      app.dock.api.getPanel(id)?.group.element.getBoundingClientRect().left ?? null;
+    window.panelSide = (id) => {
+      const at = window.panelLeft(id);
+      const chat = window.panelLeft(window.panelIds().find((panel) => panel.startsWith('chat:')));
+      return at === null || chat === null
+        ? null
+        : at < chat
+          ? 'left'
+          : at > chat
+            ? 'right'
+            : 'center';
+    };
+  });
+  const agentRun = async (command) => {
+    const before = toolResults.length;
+    await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
+    await page.until(
+      () => !!window.chatView() && !!window.deep(window.chatView().shadowRoot, 'textarea')
+    );
+    await sendChat(`RUN: ${command}`);
+    await eventually(() => toolResults.length > before, 120000);
+    await page.until(() => {
+      const { agent } = document.querySelector('slicc-app').model;
+      return !agent.busy(agent.active());
+    });
+    return toolResults[before];
+  };
+  const lightIn = async (viewed) => {
+    await viewed.evaluate(() => {
+      const app = document.querySelector('slicc-app');
+      if (app.color !== 'light') app.toggleColor();
+    });
+    await viewed.until(() =>
+      document
+        .querySelector('slicc-app')
+        .shadowRoot.querySelector('.swc-theme')
+        .classList.contains('swc-theme--light')
+    );
+  };
+  const openLastTool = async () => {
+    await page.evaluate(() => {
+      const found = [];
+      const walk = (root) => {
+        found.push(...root.querySelectorAll('details.tool'));
+        for (const element of root.querySelectorAll('*'))
+          if (element.shadowRoot) walk(element.shadowRoot);
+      };
+      walk(window.chatView().shadowRoot);
+      window.deep(window.chatView().shadowRoot, 'textarea').blur();
+      const last = found.at(-1);
+      last.open = true;
+      last.scrollIntoView({ block: 'center' });
+    });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  };
+  const settled = (viewed) =>
+    viewed.until(() => {
+      const app = document.querySelector('slicc-app');
+      if (app.model.notices.list().some((notice) => notice.id === 'storage'))
+        app.model.notices.dismiss('storage');
+      if (!app.dock.api.panels.some((panel) => panel.id === 'monitor')) return true;
+      const processes = app.model.monitor
+        .snapshot()
+        .vitals.find((vital) => vital.id === 'processes');
+      return !!processes && processes.value !== '—';
+    });
+  const panelShots = async (name, viewed, phone) => {
+    await lightIn(viewed);
+    await settled(viewed);
+    await viewed.screenshot(new URL(`panel-${name}-light-1280.png`, page.dir));
+    await viewed.evaluate(() => {
+      const app = document.querySelector('slicc-app');
+      if (app.color !== 'dark') app.toggleColor();
+    });
+    await viewed.until(() =>
+      document
+        .querySelector('slicc-app')
+        .shadowRoot.querySelector('.swc-theme')
+        .classList.contains('swc-theme--dark')
+    );
+    await settled(viewed);
+    await viewed.screenshot(new URL(`panel-${name}-dark-1280.png`, page.dir));
+    await viewed.evaluate(() => document.querySelector('slicc-app').toggleColor());
+    await viewed.send('Emulation.setDeviceMetricsOverride', {
+      width: 420,
+      height: 800,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await viewed.until(() => document.querySelector('slicc-app').screen === 'phone');
+    await phone();
+    await settled(viewed);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await viewed.screenshot(new URL(`panel-${name}-light-420.png`, page.dir));
+    await viewed.send('Emulation.clearDeviceMetricsOverride');
+    await viewed.until(() => document.querySelector('slicc-app').screen === 'desktop');
+    if (viewed === page) await run(page, 'clear');
+  };
+
+  const guarded = await agentRun('playwright-cli open https://seven.sliccy.ai/');
+  assert.match(
+    guarded.text,
+    /SLICC's own pages can't be opened or driven from the browser tools\./
+  );
+
+  await run(page, 'echo "tab=$SLICC_TAB"');
+  await page.until(() =>
+    /tab=[0-9a-f-]{36}/.test(
+      document
+        .querySelector('slicc-app')
+        .dock.content(window.panelIds().findLast((id) => id.startsWith('terminal:'))).screen
+        .textContent
+    )
+  );
+  const ownTab = await page.evaluate(
+    () =>
+      document
+        .querySelector('slicc-app')
+        .dock.content(window.panelIds().findLast((id) => id.startsWith('terminal:')))
+        .screen.textContent.match(/tab=([0-9a-f-]{36})/)[1]
+  );
+
+  assert.equal(await page.evaluate(() => window.panelIds().includes('monitor')), false);
+  const opened = await agentRun('panel open monitor left');
+  assert.equal(opened.status, 'success', opened.text);
+  await page.until(
+    () => window.panelIds().includes('monitor') && window.panelSide('monitor') === 'left'
+  );
+  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
+  await page.until(() => window.panelSide('monitor') === 'left');
+  await panelShots('open-monitor-left', page, async () => {
+    const shown = await agentRun('panel open monitor');
+    assert.equal(shown.status, 'success', shown.text);
+    await page.until(() => window.panelIds().includes('monitor'));
+    await page.evaluate(() => document.querySelector('slicc-app').show('monitor'));
+  });
+  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
+
+  const reset = await agentRun('panel reset');
+  assert.equal(reset.status, 'success', reset.text);
+  await page.until(() => !window.panelIds().includes('monitor'));
+  assert.deepEqual(
+    await page.evaluate(() => ['agents', 'files'].map((id) => window.panelSide(id))),
+    ['left', 'left']
+  );
+  await panelShots('reset', page, async () => {
+    const phoneReset = await agentRun('panel reset');
+    assert.equal(phoneReset.status, 'success', phoneReset.text);
+    await page.until(() => !window.panelIds().includes('monitor'));
+  });
+  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
+
+  const second = await page.tab();
+  await second.init(helpers);
+  await second.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await ready(second);
+  await second.until(
+    () => document.querySelector('slicc-app').model.tabs?.state().role === 'follower'
+  );
+  await second.until(() => !!document.querySelector('slicc-app').model.agent);
+  await page.send('Page.bringToFront');
+
+  let listed;
+  for (let tries = 0; tries < 20; tries += 1) {
+    listed = await agentRun('panel tabs --json');
+    if (JSON.parse(listed.text.match(/\[[\s\S]*\]/)?.[0] ?? '[]').length === 2) break;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  const tabs = JSON.parse(listed.text.match(/\[[\s\S]*\]/)[0]);
+  assert.equal(tabs.length, 2, listed.text);
+  assert.ok(tabs.some((tab) => tab.tab === ownTab));
+  const otherTab = tabs.find((tab) => tab.tab !== ownTab).tab;
+  const table = await agentRun('panel tabs');
+  assert.ok(table.text.includes(ownTab) && table.text.includes(otherTab), table.text);
+  await lightIn(page);
+  await settled(page);
+  await openLastTool();
+  await page.screenshot(new URL('panel-tabs-light-1280.png', page.dir));
+
+  const routed = await agentRun(`panel --tab ${otherTab} open monitor right`);
+  assert.equal(routed.status, 'success', routed.text);
+  await second.evaluate(() => {
+    const app = document.querySelector('slicc-app');
+    window.panelIds = () => app.dock.api.panels.map((panel) => panel.id);
+  });
+  await second.until(() => window.panelIds().includes('monitor'));
+  assert.equal(await page.evaluate(() => window.panelIds().includes('monitor')), false);
+  await second.send('Page.bringToFront');
+  await second.until(() => {
+    const { dock } = document.querySelector('slicc-app');
+    const at = dock.api.getPanel('monitor').group.element.getBoundingClientRect().left;
+    const chat = dock.api.panels.find((panel) => panel.id.startsWith('chat:'));
+    return !chat || at > dock.api.getPanel(chat.id).group.element.getBoundingClientRect().left;
+  });
+  await panelShots('tab-other-monitor-right', second, () =>
+    second.evaluate(() => document.querySelector('slicc-app').show('monitor'))
+  );
+  assert.deepEqual(second.errors, []);
+  await second.close();
+  await page.send('Page.bringToFront');
+
+  await page.evaluate(() => document.querySelector('slicc-app').dock.close('files'));
+  await page.until(() => !window.panelIds().includes('files'));
+  const refused = await agentRun('panel open files');
+  assert.match(refused.text, /the user closed files \d+ s ago; ask before opening it again/);
+  assert.match(refused.text, /exited with code 5/);
+  assert.equal(await page.evaluate(() => window.panelIds().includes('files')), false);
+  await lightIn(page);
+  await settled(page);
+  await openLastTool();
+  await page.screenshot(new URL('panel-refused-light-1280.png', page.dir));
   assert.deepEqual(page.errors, []);
 });

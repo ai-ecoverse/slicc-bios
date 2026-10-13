@@ -564,7 +564,7 @@ async function follow() {
     root,
     storage: localStorage,
     files: { skip, hide },
-    terminals: { env: { PS1: 'slicc:\\w\\$ ' } },
+    terminals: { env: { PS1: 'slicc:\\w\\$ ', SLICC_TAB: board.id } },
   });
   files = model;
   const waiting = claimed.owner ? updates : createUpdates({ ready: true });
