@@ -100,3 +100,49 @@ export function denialLog({
   log.flush = flush;
   return log;
 }
+
+export const COMMAND = 'usr/local/bin/slicc-denials';
+
+export const SCRIPT = `#!/bin/bash
+log=/${LOG}
+json=0
+for arg in "$@"; do
+  case "$arg" in
+    --json) json=1 ;;
+    -h|--help)
+      echo "usage: slicc-denials [--json]"
+      echo "Sums up $log (and $log.1): denials by tag kind, op, errno and path prefix."
+      exit 0 ;;
+    *) echo "slicc-denials: unknown option $arg" >&2; exit 2 ;;
+  esac
+done
+cat "$log.1" "$log" 2>/dev/null | jq -s '
+  def kind: (.tag // null) as $t
+    | if $t == null then "untagged" else ((try ($t | fromjson | .kind) catch null) // "other") end;
+  def prefix: (.path // "" | split("/") | .[1:3] | map(select(. != "")) | "/" + join("/"));
+  def tally(f): group_by(f) | map({ key: (.[0] | f), count: (map(.count // 1) | add) }) | sort_by(-.count, .key);
+  {
+    total: (map(.count // 1) | add // 0),
+    since: (map(.first // .time) | min),
+    until: (map(.time) | max),
+    kinds: tally(kind),
+    ops: tally(.op),
+    errnos: tally(.errno),
+    paths: tally(prefix)
+  }' > /tmp/slicc-denials.$$ || { rm -f /tmp/slicc-denials.$$; exit 1; }
+if [ "$json" = 1 ]; then
+  cat /tmp/slicc-denials.$$
+else
+  jq -r '
+    "denials: \\(.total)" + (if .since then " from \\(.since) to \\(.until)" else "" end),
+    (["kinds", "ops", "errnos", "paths"][] as $s | "", "by \\($s | rtrimstr("s")):",
+      (.[$s][] | "  \\(.count)\\t\\(.key)"))' /tmp/slicc-denials.$$
+fi
+rm -f /tmp/slicc-denials.$$
+`;
+
+export async function installCommand(root, kernel, write) {
+  await write(root, COMMAND, SCRIPT);
+  const { status, stderr } = await kernel.run(['chmod', '755', `/${COMMAND}`], { cwd: '/' });
+  if (status) throw new Error(stderr.trim() || `chmod exited with ${status}`);
+}

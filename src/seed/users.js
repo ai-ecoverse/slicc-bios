@@ -1,19 +1,27 @@
-const MODES = ['report', 'enforce'];
+const MODES = ['off', 'report', 'enforce'];
 const KEY = 'slicc-os.users';
 const CONE = /^cone(-[1-9]\d*)?$/;
 const SCOOP = /^scoop-[a-z0-9][a-z0-9._-]*$/;
+export const PRODUCTION = 'seven.sliccy.ai';
+export const PRODUCTION_USERS = 'report';
 
-export function usersMode({ hash = location.hash, storage = localStorage } = {}) {
+export function usersMode({
+  hash = location.hash,
+  storage = localStorage,
+  host = location.hostname,
+  warn = console.warn,
+} = {}) {
   const asked = new URLSearchParams(hash.slice(1)).get('users');
+  if (host === PRODUCTION) {
+    if (asked !== null || storage.getItem(KEY) !== null) {
+      storage.removeItem(KEY);
+      warn(`seven runs kernel users '${PRODUCTION_USERS}' and ignores any other mode`);
+    }
+    return PRODUCTION_USERS;
+  }
   if (MODES.includes(asked)) storage.setItem(KEY, asked);
-  if (asked === 'off') storage.removeItem(KEY);
   const mode = storage.getItem(KEY);
-  return MODES.includes(mode) ? mode : 'off';
-}
-
-export function terminalUser({ mode, storage = localStorage } = {}) {
-  const user = storage.getItem('slicc-os.terminal-user');
-  return mode !== 'off' && user && agentFor(user) ? user : null;
+  return MODES.includes(mode) ? mode : PRODUCTION_USERS;
 }
 
 export function agentFor(user) {
@@ -94,16 +102,33 @@ export async function addCone(kernel, name = 'cone') {
   return kernel.users.add({ name, groups: ['sudo'], homeMode: 0o710, umask: 0o077 });
 }
 
-export function boundTo(user) {
-  return user ? { user } : {};
+export const LEGACY = [
+  '/home/.pi',
+  '/home/.slicc',
+  '/home/sprinkles',
+  '/home/.gelatiere',
+  '/home/.welcomed',
+  '/home/.welcome.json',
+  '/home/sessions',
+  '/home/.local',
+  '/scoops',
+];
+export const LOCKED = 'var/lib/slicc/legacy-locked';
+
+export async function lockLegacy(kernel, { text, write, root }) {
+  if (!kernel.users || kernel.users.mode === 'off') return false;
+  if ((await text(root, LOCKED)) !== null) return false;
+  const script = 'for p in "$@"; do [ -e "$p" ] && chmod -R go-rwx "$p"; done; true';
+  const { status, stderr } = await kernel.run(['bash', '-c', script, 'lock', ...LEGACY], {
+    cwd: '/',
+  });
+  if (status) throw new Error(stderr.trim() || `chmod exited with ${status}`);
+  await write(root, LOCKED, `${new Date().toISOString()}\n`);
+  return true;
 }
 
 export function kernelUsers(mode, hooks = {}) {
   return mode === 'off' ? { users: 'off' } : { users: mode, ...hooks };
-}
-
-export function terminalHome(user) {
-  return user ? { cwd: `/home/${user}` } : {};
 }
 
 export function homeSkips(passwd) {
