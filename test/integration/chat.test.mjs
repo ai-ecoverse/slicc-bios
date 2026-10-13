@@ -1452,7 +1452,6 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     await viewed.screenshot(new URL(`panel-${name}-light-420.png`, page.dir));
     await viewed.send('Emulation.clearDeviceMetricsOverride');
     await viewed.until(() => document.querySelector('slicc-app').screen === 'desktop');
-    if (viewed === page) await run(page, 'clear');
   };
 
   const guarded = await agentRun('playwright-cli open https://seven.sliccy.ai/');
