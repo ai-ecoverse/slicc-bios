@@ -37,9 +37,10 @@ function cone(name) {
   return name;
 }
 
-function spec({ name, home, groups = [], umask, homeGroup, homeMode }) {
+function spec({ name, home, groups: asked = [], umask, homeGroup, homeMode }) {
   agentUser(name);
   const scoop = SCOOP.test(name);
+  const groups = scoop || asked.includes('sudo') ? asked : [...asked, 'sudo'];
   for (const group of groups) if (scoop || group !== 'sudo') cone(group);
   if (scoop && groups.includes('sudo')) throw refused(`sudo for the scoop ${name}`);
   if (homeGroup !== undefined) cone(homeGroup);
