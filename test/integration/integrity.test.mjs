@@ -188,7 +188,7 @@ test('a UI whose own code keeps changing says so instead of staying blank', asyn
   assert.deepEqual(shown, {
     path: '/os/',
     title: 'Seven couldn’t start',
-    text: 'One of seven’s files, /os/os.js, keeps changing, so seven stopped putting it back and won’t run it. It tries again in about 10 minutes, or when you reload after that.',
+    text: 'One of seven’s files, /os/os.js, keeps changing, so seven stopped putting it back and won’t run it. Seven tries again in about 10 minutes. Reload after that.',
     button: 'Reload',
   });
   assert.equal(await page.evaluate(() => globalThis.__changed ?? null), null);

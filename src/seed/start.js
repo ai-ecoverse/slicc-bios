@@ -4,7 +4,7 @@ export const REFUSED =
 export const STATUS = new URL('../__slicc/integrity', import.meta.url);
 
 export function stoppedText(path) {
-  return `One of seven’s files, ${path}, keeps changing, so seven stopped putting it back and won’t run it. It tries again in about 10 minutes, or when you reload after that.`;
+  return `One of seven’s files, ${path}, keeps changing, so seven stopped putting it back and won’t run it. Seven tries again in about 10 minutes. Reload after that.`;
 }
 
 export async function stoppedPath(fetcher = fetch) {
