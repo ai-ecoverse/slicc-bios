@@ -46,13 +46,13 @@ export function denialLog({
   let queue = Promise.resolve();
   let timer = null;
   const nameOf = async (uid) => {
-    if (!names.has(uid)) {
+    if (uid !== null && !names.has(uid)) {
       for (const user of (await users()
         ?.list()
         .catch(() => [])) ?? [])
         names.set(user.uid, user.name);
     }
-    return names.get(uid) ?? String(uid);
+    return names.get(uid) ?? (uid === null ? null : String(uid));
   };
   const flush = () => {
     if (timer !== null) cancel(timer);
@@ -145,4 +145,14 @@ export async function installCommand(root, kernel, write) {
   await write(root, COMMAND, SCRIPT);
   const { status, stderr } = await kernel.run(['chmod', '755', `/${COMMAND}`], { cwd: '/' });
   if (status) throw new Error(stderr.trim() || `chmod exited with ${status}`);
+}
+
+export async function watchProtected({ kernel, attach, paths, log, busy }) {
+  const client = await attach(await kernel.connect());
+  const record = (path) =>
+    log({ pid: 0, uid: null, tag: null, op: 'protect', path, errno: 'EROFS' });
+  return client.fs.watch(paths, { recursive: true }, ({ paths: changed, overflow }) => {
+    if (busy()) return;
+    for (const path of overflow ? paths : changed) record(path);
+  });
 }

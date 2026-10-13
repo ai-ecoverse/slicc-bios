@@ -1,5 +1,5 @@
 import { compare, locked } from './packages.js';
-import { baseManifest, fetchText, guarded, pnpm, readable, text, write } from './update.js';
+import { baseManifest, enforced, fetchText, pnpm, readable, text, write } from './update.js';
 
 export const FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies'];
 const EXACT = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
@@ -34,7 +34,7 @@ export function entries(manifest) {
   return found;
 }
 
-export function sealed(layer, on = guarded()) {
+export function sealed(layer, on = enforced()) {
   return on ? { ...layer, add: {}, pin: {} } : layer;
 }
 

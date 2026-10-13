@@ -65,14 +65,34 @@ const CLEAN = {
   PATH: `${SYSTEM}/bin:/usr/local/bin:/usr/bin:/bin`,
   NODE_OPTIONS: '',
 };
-const guard = { on: false };
+const guard = { on: false, enforce: false, writing: new Map() };
 
-export function protectInstalls(on) {
+export function protectInstalls(on, enforce = on) {
   guard.on = on;
+  guard.enforce = on && enforce;
 }
 
 export function protection() {
-  return guard.on ? { protect: { paths: PROTECTED, writers: [WRITER] } } : {};
+  return guard.enforce ? { protect: { paths: PROTECTED, writers: [WRITER] } } : {};
+}
+
+export function enforced() {
+  return guard.enforce;
+}
+
+export function installing(kernel) {
+  return (guard.writing.get(kernel) ?? 0) > 0;
+}
+
+async function writing_(kernel, task) {
+  guard.writing.set(kernel, (guard.writing.get(kernel) ?? 0) + 1);
+  try {
+    return await task();
+  } finally {
+    const left = guard.writing.get(kernel) - 1;
+    if (left) guard.writing.set(kernel, left);
+    else guard.writing.delete(kernel);
+  }
 }
 
 export function writing(cwd) {
@@ -143,7 +163,8 @@ export async function pnpm(kernel, cwd, report, to = null, argv = INSTALL, write
   };
   if (writer && guard.on) await fence(await navigator.storage.getDirectory(), cwd);
   const run = writer ? { ...writing(cwd), onStdout } : { cwd, onStdout };
-  const { status, stderr } = await kernel.run(writer ? hygiene(argv) : argv, run);
+  const ran = () => kernel.run(writer ? hygiene(argv) : argv, run);
+  const { status, stderr } = await (writer ? writing_(kernel, ran) : ran());
   if (status) {
     const error = new Error(stderr.trim() || `pnpm exited with ${status}`);
     error.log = (log + stderr).slice(-LOG);
@@ -153,7 +174,9 @@ export async function pnpm(kernel, cwd, report, to = null, argv = INSTALL, write
 }
 
 export async function readable(kernel, path) {
-  const { status, stderr } = await kernel.run(['chmod', '-R', 'a+rX', path], writing('/'));
+  const { status, stderr } = await writing_(kernel, () =>
+    kernel.run(['chmod', '-R', 'a+rX', path], writing('/'))
+  );
   if (status) throw new Error(stderr.trim() || `chmod exited with ${status}`);
 }
 
