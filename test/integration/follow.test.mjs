@@ -66,6 +66,8 @@ test('a seven follows another: it asks first, follows once allowed, keeps its ce
   const owner = await lead(t, hub);
   const { joinUrl, followUrl } = await model(owner, (network) => network.status().links);
   assert.equal(followUrl, `${new URL(owners.url).origin}/#follow=${encodeURIComponent(joinUrl)}`);
+  assert.equal(await owner.evaluate(() => localStorage.getItem('slicc-os.followers')), null);
+  await shoot(owner, 'owner-tray', { show: 'network', target: '#sync' });
   await shoot(owner, 'owner-open-on-another-device', { show: 'network', target: '#follow-link' });
 
   const page = await join(t, joinUrl, hub);

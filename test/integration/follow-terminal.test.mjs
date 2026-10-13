@@ -3,6 +3,7 @@ import { after, test } from 'node:test';
 import { boot, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { model, startHub } from './fake-hub.mjs';
+import { shoot } from './shots.mjs';
 
 const owners = await launch();
 const followers = await launch();
@@ -135,6 +136,14 @@ test('a follower with Terminal gets a shell in the owner kernel: ls, ^C, resize 
   await page.press('c', 'ctrl');
   await type(page, 'echo sleep-ended-$?');
   await shows(page, 'sleep-ended-130');
+  await type(page, "bash -c 'exit 7'; echo exit-status-$?");
+  await shows(page, 'exit-status-7');
+  await shoot(page, 'follower-terminal', { show: 'terminal' });
+  await owner.evaluate(() => document.querySelector('slicc-app').show('terminal'));
+  await shows(owner, 'slicc:');
+  await type(owner, 'ls -l /home/far');
+  await shows(owner, 'from-the-follower');
+  await shoot(owner, 'owner-terminal', { show: 'terminal' });
 
   await page.send('Emulation.setDeviceMetricsOverride', {
     width: 900,
