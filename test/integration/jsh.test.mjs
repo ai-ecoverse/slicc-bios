@@ -56,7 +56,7 @@ test('Node.js (jsh) installs from the catalog, runs node with CommonJS and ESM a
   assert.equal(result, 'ok', (await row(page, 'node')).log);
   const installed = await row(page, 'node');
   assert.equal(installed.state, 'installed');
-  assert.equal(installed.version, '0.3.8');
+  assert.equal(installed.version, '0.10.0');
 
   await run(
     page,
@@ -78,6 +78,11 @@ test('Node.js (jsh) installs from the catalog, runs node with CommonJS and ESM a
     `clear; printf '%s\\n' 'const { execFile } = require("node:child_process");' 'execFile("bash", ["-c", "exit 7"], (error) => console.log("child", error.code * 6));' > /home/child.jsh && jsh /home/child.jsh`
   );
   await shows(page, 'child 42');
+  await run(
+    page,
+    `clear; node -e "console.log('sync', require('node:child_process').execSync('echo 6').toString().trim() * 7)"`
+  );
+  await shows(page, 'sync 42');
 
   assert.equal(await act(page, 'node', 'remove'), 'ok');
   assert.equal((await row(page, 'node')).state, 'available');

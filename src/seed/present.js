@@ -1,3 +1,4 @@
+import { panelCommand } from '@ai-ecoverse/slicc-spectrum/ui';
 import { osClient, skew } from './tabs.js';
 
 export function mirrorUpdates(os) {
@@ -142,6 +143,7 @@ export function present({
   const listeners = new Set();
   let generation = 0;
   let connection = null;
+  let page = null;
   let os = null;
   let seen = null;
 
@@ -155,6 +157,8 @@ export function present({
   function drop() {
     os?.close();
     os = null;
+    void page?.dispose();
+    page = null;
     const previous = connection;
     connection = null;
     void previous?.close().catch(() => undefined);
@@ -180,7 +184,12 @@ export function present({
         return null;
       }
       connection = joined;
-      const created = loaded.createAgentModel(joined, { storage, login });
+      const { page: adapter, ...created } = loaded.createAgentModel(joined, {
+        storage,
+        login,
+        page: { tab: board.id, run: (argv, caller) => panelCommand(app, argv, caller) },
+      });
+      page = adapter ?? null;
       model = {
         ...model,
         ...created,

@@ -44,12 +44,24 @@ test('seven is installable as an app from the UI, and stays cross-origin isolate
     manifest.icons.map(({ src, sizes }) => `${src} ${sizes}`)
   );
   assert.deepEqual(
-    await page.evaluate(() =>
-      [...document.querySelectorAll('meta[name="theme-color"]')].map(
+    await page.evaluate(async () => {
+      const html = await (await fetch(location.href)).text();
+      const parsed = new DOMParser().parseFromString(html, 'text/html');
+      return [...parsed.querySelectorAll('meta[name="theme-color"]')].map(
         (meta) => `${meta.media} ${meta.content}`
-      )
-    ),
+      );
+    }),
     ['(prefers-color-scheme: light) #f8f8f8', '(prefers-color-scheme: dark) #1b1b1b']
   );
+  const themed = (color) =>
+    page.evaluate(async (wanted) => {
+      const app = document.querySelector('slicc-app');
+      if (app.color !== wanted) app.toggleColor();
+      await app.updateComplete;
+      return [...document.querySelectorAll('meta[name="theme-color"]')].map((meta) => meta.content);
+    }, color);
+  assert.deepEqual(await themed('light'), ['#f8f8f8', '#f8f8f8']);
+  assert.deepEqual(await themed('dark'), ['#1b1b1b', '#1b1b1b']);
+  assert.deepEqual(await themed('light'), ['#f8f8f8', '#f8f8f8']);
   assert.deepEqual(page.errors, []);
 });

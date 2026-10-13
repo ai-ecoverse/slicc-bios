@@ -3,5 +3,10 @@
     "id": "hf",
     "label": "Hugging Face",
     "commands": ["hf"]
+  },
+  "@ai-ecoverse/wasm-tar": {
+    "id": "tar",
+    "label": "tar",
+    "commands": ["tar"]
   }
 }

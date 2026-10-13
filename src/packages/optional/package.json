@@ -3,7 +3,7 @@
   "private": true,
   "description": "The certified versions of the optional packages that seven's Install / Update panel offers. Never installed as a project: the panel runs pnpm add -g for each one.",
   "dependencies": {
-    "@ai-ecoverse/slicc-jsh": "0.3.8",
+    "@ai-ecoverse/slicc-jsh": "0.10.0",
     "@ai-ecoverse/wasi-biome": "2.5.15-2",
     "@ai-ecoverse/wasi-buf": "1.73.0-2",
     "@ai-ecoverse/wasi-dig": "0.1.0-1",
@@ -19,7 +19,6 @@
     "@ai-ecoverse/wasm-poppler": "26.10.0-2",
     "@ai-ecoverse/wasm-qpdf": "12.4.2-1",
     "@ai-ecoverse/wasm-rsync": "3.4.4-3",
-    "@ai-ecoverse/wasm-screen": "5.0.1-9",
-    "@ai-ecoverse/wasm-tar": "1.35.0-4"
+    "@ai-ecoverse/wasm-screen": "5.0.1-9"
   }
 }
