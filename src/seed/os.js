@@ -88,7 +88,6 @@ import {
   homeSkips,
   kernelUsers,
   lockLegacy,
-  terminalTag,
   usersMode,
 } from './users.js';
 
