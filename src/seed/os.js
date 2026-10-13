@@ -20,7 +20,7 @@ import { createApprovals } from './approvals.js';
 import { createBrowser } from './browser.js';
 import { browserControl } from './cdp.js';
 import { clipboardHook } from './clipboard.js';
-import { denialLog, installCommand } from './denials.js';
+import { denialLog, installCommand, watchProtected } from './denials.js';
 import { createExitRouter } from './exits.js';
 import { deviceName } from './follow.js';
 import { createFollowers } from './followers.js';
@@ -71,7 +71,8 @@ import { createTray, TRAY_HUB_KEY, trayPort } from './tray.js';
 import { openTunnel } from './tunnel.js';
 import {
   baseManifest,
-  guarded,
+  enforced,
+  installing,
   PROTECTED,
   protectInstalls,
   protection,
@@ -246,7 +247,7 @@ reportRepairs(notices);
 reportStopped(notices);
 const approvals = createApprovals();
 const mode = usersMode();
-protectInstalls(mode !== 'off');
+protectInstalls(mode !== 'off', mode === 'enforce');
 document.documentElement.dataset.users = mode;
 const keep = keepStorage({ notices, prompts });
 let model = null;
@@ -578,6 +579,7 @@ async function own() {
     owner: () => coneIds ?? { uid: 0, gid: 0 },
   });
   approvals.own();
+  const denials = denialLog({ root, users: () => kernel?.users, mode });
   kernel = await createKernel({
     root,
     users: 'off',
@@ -587,16 +589,22 @@ async function own() {
     cdp: control.hook,
     clipboard: clipboardHook(),
     ...folders.options,
-    ...kernelUsers(mode, {
-      approve: approvals.approve,
-      onDenial: denialLog({ root, users: () => kernel?.users, mode }),
-    }),
+    ...kernelUsers(mode, { approve: approvals.approve, onDenial: denials }),
   });
   const cone = await addCone(kernel);
   coneIds = cone && { uid: cone.uid, gid: cone.gid };
   await lockLegacy(kernel, { text, write, root }).catch((error) =>
     console.warn(`legacy files: ${error.message}`)
   );
+  if (mode === 'report') {
+    await watchProtected({
+      kernel,
+      attach: attachKernel,
+      paths: PROTECTED,
+      log: denials,
+      busy: () => installing(kernel),
+    }).catch((error) => console.warn(`protect watch: ${error.message}`));
+  }
   if (mode !== 'off') {
     await installCommand(root, kernel, write).catch((error) =>
       console.warn(`slicc-denials: ${error.message}`)
@@ -617,7 +625,7 @@ async function own() {
   routes.forward(serving);
   await rows();
   await announce(null);
-  if (guarded())
+  if (enforced())
     dropProtectedMounts({ storage: localStorage, key: KEY, paths: PROTECTED, notices });
   const restoring = folders.restore();
   void tailscale.start({
