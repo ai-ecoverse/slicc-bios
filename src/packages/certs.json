@@ -203,6 +203,10 @@
     "integrity": "sha512-VP7F68CUKOaFE8E1f5sHULKryjlNedmE+afxP0puIqtN3NZMUFwHfdiAmaYl/DtnboqMRbCwE+vubV4//DpRog==",
     "sha256": "2e49c463cf208759f06125f4b1197acf0049d6527cfdbf4f9f6bc2fb190d12c5"
   },
+  "@ai-ecoverse/slicc-kernel@1.67.1": {
+    "integrity": "sha512-Z7ylHfrgkjf1pR7GSMLeg00QuohB8RBASTQYX9c5mhIprFuKRn473l+1epiwO+rLUMI7ON/gq2kQiSDaTPrrgQ==",
+    "sha256": "1e1b9d1a82e735f5515b6ae6bf3d61999057e60aa8605fddc064860907bf8412"
+  },
   "@ai-ecoverse/wasi-biome@2.5.15-2": {
     "integrity": "sha512-5oIfngw8Ln2/ddCJ0wtqMoSnW+UO2zuih0+x1CNDbwKkB18TxuWoI60QFQySjd69N6eP+blL/stz/AZyoYpeuw==",
     "sha256": "25599e4317ec2e7ca9a447ff99ac01f271358cd06bd2d727e6b28b10c05bf44a"
