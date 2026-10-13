@@ -50,11 +50,18 @@ const opfsHas = (page, path) =>
     }
   }, path);
 
-const openPort = (page) =>
-  page.evaluate(async () => {
+async function openPort(page) {
+  await page.evaluate(() => {
     const { terminals } = document.querySelector('slicc-app').model;
     const info = terminals.open({ cwd: '/home' });
-    const kept = { id: info.id, output: '', exited: null, error: null, session: null };
+    const kept = {
+      id: info.id,
+      output: '',
+      exited: null,
+      error: null,
+      session: null,
+      settled: false,
+    };
     window.keptTerminal = kept;
     const sink = {
       output: (bytes) => {
@@ -64,13 +71,34 @@ const openPort = (page) =>
         kept.exited = status;
       },
     };
-    try {
-      kept.session = await terminals.backend(info.id).open(sink, { cols: 80, rows: 24 });
-    } catch (error) {
-      kept.error = error.code ?? error.message;
-    }
-    return { error: kept.error, open: !!kept.session };
+    terminals
+      .backend(info.id)
+      .open(sink, { cols: 80, rows: 24 })
+      .then(
+        (session) => {
+          kept.session = session;
+        },
+        (error) => {
+          kept.error = error.code ?? error.message;
+        }
+      )
+      .finally(() => {
+        kept.settled = true;
+      });
   });
+  try {
+    await page.within(90000, () => window.keptTerminal.settled);
+  } catch (error) {
+    const state = await page.evaluate(() =>
+      JSON.stringify({ ...window.keptTerminal, session: !!window.keptTerminal.session })
+    );
+    throw new Error(`the follower's terminal port never settled: ${state}`, { cause: error });
+  }
+  return page.evaluate(() => ({
+    error: window.keptTerminal.error,
+    open: !!window.keptTerminal.session,
+  }));
+}
 
 const shows = (page, needle) =>
   page.until(
