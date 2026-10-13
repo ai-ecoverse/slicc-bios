@@ -9,6 +9,12 @@ import { shoot } from './shots.mjs';
 
 const KEY = 'dummy-bedrock-key-0000';
 const BEDROCK = 'https://bedrock-runtime.us-west-2.amazonaws.com/';
+const ADOBE = 'https://adobe-llm-proxy.paolo-moz.workers.dev/';
+const ADOBE_TOKEN = 'dummy-adobe-token-0000';
+const adobe = {
+  config: { clientId: 'test-client', scopes: 'openid,AdobeID', imsEnvironment: 'prod', models: [] },
+  usage: { usage: { weekly: { status: 'ok', percent: 42, resetsAt: '2026-10-15T00:00:00Z' } } },
+};
 const INSTALL = 15 * 60 * 1000;
 const reply = Buffer.concat([
   eventFrame('messageStart', { role: 'assistant' }),
@@ -76,6 +82,14 @@ const proxy = await fakeProxy({
       const type = request.url.endsWith('.tgz') ? 'application/octet-stream' : 'application/json';
       return { status: 200, headers: [['content-type', type]], body: await download(request.url) };
     }
+    if (request.url.startsWith(ADOBE))
+      return {
+        status: 200,
+        headers: [['content-type', 'application/json']],
+        body: Buffer.from(
+          JSON.stringify(request.url.endsWith('/v1/config') ? adobe.config : adobe.usage)
+        ),
+      };
     if (!request.url.startsWith(BEDROCK))
       return { status: 404, headers: [], body: Buffer.alloc(0) };
     asked.push(body.toString());
@@ -180,6 +194,10 @@ test('a follower watches the owner run with View, is refused a send, and sends w
       document.querySelector('slicc-app').model.settings.connect('amazon-bedrock', secret),
     KEY
   );
+  await owner.evaluate(
+    (secret) => document.querySelector('slicc-app').model.settings.connect('adobe', secret),
+    ADOBE_TOKEN
+  );
   const { joinUrl } = await model(owner, (network) => network.status().links);
 
   const page = await followers.page(t);
@@ -237,6 +255,9 @@ test('a follower watches the owner run with View, is refused a send, and sends w
     for (const notice of notices.list()) notices.dismiss(notice.id);
   });
   await shoot(owner, 'owner-watching', { show: 'network', target: '[aria-labelledby="links"]' });
+  await page.until(
+    () => document.querySelector('slicc-app').model.tray.status().budget?.percent === 42
+  );
   const tray = await page.evaluate(() => {
     const status = document.querySelector('slicc-app').model.tray.status();
     const deep = (root) => {
@@ -254,8 +275,36 @@ test('a follower watches the owner run with View, is refused a send, and sends w
     [tray.role, tray.connection, tray.joinUrl, tray.followers],
     ['follower', 'live', '', []]
   );
-  assert.equal(typeof tray.budget?.percent, 'number');
+  assert.equal(tray.budget.percent, 42);
   assert.match(tray.chip, new RegExp(`^Tray ${tray.name}: Live, 0 followers$`));
+  await shoot(page, 'follower-tray', { show: 'chat' });
+  await shoot(page, 'follower-tray-leave', {
+    show: 'chat',
+    before: () => {
+      const deep = (root) => {
+        for (const element of root.querySelectorAll('*')) {
+          if (element.localName === 'slicc-follow' && !element.hasAttribute('page')) return element;
+          const inner = element.shadowRoot && deep(element.shadowRoot);
+          if (inner) return inner;
+        }
+        return null;
+      };
+      const popover = deep(document)?.shadowRoot?.querySelector('swc-popover');
+      if (popover && !popover.open) popover.open = true;
+    },
+  });
+  await page.evaluate(() => {
+    const deep = (root) => {
+      for (const element of root.querySelectorAll('*')) {
+        if (element.localName === 'slicc-follow' && !element.hasAttribute('page')) return element;
+        const inner = element.shadowRoot && deep(element.shadowRoot);
+        if (inner) return inner;
+      }
+      return null;
+    };
+    const popover = deep(document)?.shadowRoot?.querySelector('swc-popover');
+    if (popover) popover.open = false;
+  });
 
   const ownerBefore = await owned(owner);
   const followerBefore = await owned(page);
