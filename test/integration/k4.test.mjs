@@ -124,9 +124,20 @@ test('enforce: a cone writes its home, is refused in root’s, and sudo asks fir
   assert.equal(listed.command, '/usr/bin/ls -la /root');
   await shows(page, 'denied=1');
 
+  await page.until(async () => {
+    let dir = await navigator.storage.getDirectory();
+    try {
+      for (const part of ['var', 'log', 'slicc']) dir = await dir.getDirectoryHandle(part);
+      const text = await (await (await dir.getFileHandle('denials.log')).getFile()).text();
+      return text.includes('/root/theirs');
+    } catch {
+      return false;
+    }
+  });
   const lines = await denials(page);
-  const refused = lines.find((line) => line.path === '/root/theirs' || line.path === '/root');
+  const refused = lines.find((line) => line.path === '/root/theirs');
   assert.ok(refused, JSON.stringify(lines));
+  assert.ok(refused.count >= 1);
   assert.equal(refused.user, 'cone');
   assert.equal(refused.errno, 'EACCES');
   assert.equal(refused.mode, 'enforce');
@@ -171,15 +182,19 @@ test('enforce: a cone’s terminal starts in its home, and its Python finds what
   await shows(page, 'home-42');
   assert.match(await screen(page), /^\/home\/cone\s/);
   assert.match(await screen(page), /wrote=0/);
-  const installed = await page.evaluate(() =>
-    document
+  await page.evaluate(() => {
+    window.installed = document
       .querySelector('slicc-app')
       .model.updates.actPackage('python', 'install')
       .then(
         () => 'ok',
         (error) => error.message
-      )
-  );
+      );
+    window.installed.then((result) => {
+      window.result = result;
+    });
+  });
+  const installed = await page.within(10 * 60 * 1000, () => window.result);
   assert.equal(installed, 'ok');
   await page.evaluate(async () => {
     const root = await navigator.storage.getDirectory();
