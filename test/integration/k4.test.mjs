@@ -292,9 +292,26 @@ test('seven’s code paths are read-only to root and cones, installs still write
   await shoot(page, 'mount-notice');
 });
 
-test('the base set installs from /opt/slicc/base, whatever a root process puts at /', async (t) => {
+test('report: a write to a protected tree goes through and is logged as a would-be protect hit', async (t) => {
   const page = await chrome.page(t);
   await bootIn(page, 'report');
+  await run(page, 'clear; touch /opt/agent/x; echo agent=$?; echo wrote-$((40 + 2))');
+  await shows(page, 'wrote-42');
+  assert.match(await screen(page), /agent=0/);
+  const [hit] = await logged(page, '/opt/agent/x');
+  assert.equal(hit.op, 'protect');
+  assert.equal(hit.errno, 'EROFS');
+  assert.equal(hit.mode, 'report');
+  await run(page, 'clear; slicc-denials | grep -A3 "by op:"; echo summed-$?');
+  await shows(page, 'summed-0');
+  assert.match(await screen(page), /by op:\s+\d+\s+\w+/);
+  assert.match(await screen(page), /\d+\s+protect/);
+  assert.deepEqual(page.errors, []);
+});
+
+test('enforce: the base set installs from /opt/slicc/base, whatever a root process puts at /', async (t) => {
+  const page = await chrome.page(t);
+  await bootIn(page, 'enforce');
   assert.match(await read(page, 'opt/slicc/base/pnpm-lock.yaml'), /lockfileVersion/);
   assert.ok(await read(page, 'opt/slicc/base/pnpm-workspace.yaml'));
   assert.equal(await read(page, 'package.json'), '');
