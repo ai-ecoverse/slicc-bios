@@ -114,7 +114,7 @@ const deep = `(selector) => {
   return walk(document);
 }`;
 
-test("the agent's UI on slicc-agent 3.48 and spectrum 1.67: a failed bash card with notes, the Monitor at warn, the drop overlay, a sent image and Secrets", {
+test("the agent's UI on slicc-agent 3.48 and spectrum 1.67: a failed bash card with notes, the Monitor at warn, the drop overlay, a sent image, Secrets and Changes without a repository", {
   timeout: 30 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -265,6 +265,22 @@ test("the agent's UI on slicc-agent 3.48 and spectrum 1.67: a failed bash card w
   await page.until(new Function(`return !!(${deep})('slicc-secrets')`));
   await quiet(page);
   await shoot(page, 'settings-secrets', { show: 'settings', target: 'slicc-secrets' });
+
+  await page.evaluate(() => document.querySelector('slicc-app').show('terminal'));
+  await run(
+    page,
+    "printf '#!/bin/sh\\nexit 1\\n' > /usr/local/bin/git && chmod +x /usr/local/bin/git && touch /home/notes.txt"
+  );
+  await page.evaluate(() => document.querySelector('slicc-app').show('changes'));
+  await page.within(
+    120000,
+    new Function(`
+      const box = (${deep})('[data-unavailable]');
+      return !!box && /there are none here yet/.test(box.textContent) && !!box.parentElement.querySelector('[data-command^="curl -fsSL https://get.sliccy.ai/slicc"] [data-action="copy-command"]');
+    `)
+  );
+  await quiet(page);
+  await shoot(page, 'changes-no-repo', { show: 'changes' });
 
   assert.deepEqual(page.errors, []);
 });
