@@ -1,5 +1,6 @@
 import { apply } from './layer.js';
 import { failure } from './link.js';
+import { agentTag } from './tags.js';
 import { text, versions } from './update.js';
 
 const deployed = new URL('../packages/agent/', import.meta.url);
@@ -76,7 +77,7 @@ export async function startChat(kernel, options) {
   const { startAgent } = await loadChat(options);
   return startAgent({
     worker: () => new Worker(agentWorker, { type: 'module', name: 'slicc-agent' }),
-    kernel: { connect: () => kernel.connect() },
+    kernel: { connect: () => kernel.connect({ tag: agentTag('root') }) },
     held: true,
   });
 }

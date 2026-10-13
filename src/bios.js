@@ -129,6 +129,7 @@ await step('seed', async () => {
     'switchboard-worker.js',
     'switchboard.js',
     'tabs.js',
+    'tags.js',
     'tailscale.js',
     'tailscale-worker.js',
     'transport.js',
