@@ -184,6 +184,22 @@ test('lists and kills processes with procps', async (t) => {
   assert.deepEqual(page.errors, []);
 });
 
+test('Ctrl+Z in the panel stops the foreground job, jobs lists it as Stopped, and fg runs it to the end', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await run(page, "bash -c 'sleep 30; echo slept-$?'");
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await page.press('z', 'ctrl');
+  await shows(page, 'Stopped');
+  await run(page, 'jobs | sed "s/^/listed: /"');
+  await shows(page, 'listed: [1]+  Stopped');
+  await run(page, 'fg');
+  await shows(page, 'slept-0', 45000);
+  await run(page, 'jobs | wc -l | sed "s/^/jobs left /"');
+  await shows(page, 'jobs left 0');
+  assert.deepEqual(page.errors, []);
+});
+
 test('keeps the pid across exec and agrees with ps, and pkill -f spares itself', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
