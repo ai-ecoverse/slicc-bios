@@ -55,6 +55,7 @@ import {
   localBoard,
   supported,
 } from './tabs.js';
+import { terminalTag } from './tags.js';
 import {
   createTailscale,
   installTailscale,
@@ -249,9 +250,9 @@ function base(os) {
   };
 }
 
-async function give(_from, names) {
+async function give(from, names) {
   return {
-    kernel: names.includes('kernel') ? await kernel.connect() : null,
+    kernel: names.includes('kernel') ? await kernel.connect({ tag: terminalTag(from) }) : null,
     agent: names.includes('agent') && owner ? await owner.port() : null,
     os: names.includes('os') ? serving.open() : null,
   };

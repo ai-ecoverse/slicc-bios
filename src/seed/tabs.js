@@ -365,11 +365,8 @@ export function followKernel({ port, attach, notice = NOTICE, quiet = QUIET }) {
       (await client())[name](...args);
 
   return {
-    client,
     openTerminal,
-    connect: port,
     loopbackFetch: through('loopbackFetch'),
-    run: through('run'),
     ps: through('ps'),
     kill: through('kill'),
     mounts: through('mounts'),
