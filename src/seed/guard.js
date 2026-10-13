@@ -509,6 +509,7 @@ class Guard {
   async check(message) {
     const { method, params = {}, sessionId } = message;
     if (typeof method !== 'string') return null;
+    if (method.startsWith('Fetch.') && sessionId === undefined) return FETCH;
     if (this.plainly(method, params, sessionId)) return PROTECTED;
     if (params.targetId !== undefined && (await this.target(params.targetId))) return PROTECTED;
     if (await this.frame(params.frameId)) return PROTECTED;

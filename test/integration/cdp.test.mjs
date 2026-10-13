@@ -613,6 +613,14 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
   const events = () => page.evaluate(() => window.guarded.events);
   const REFUSAL = 'seven’s own pages and the vault are out of reach of browser automation';
 
+  assert.equal(
+    (await send('Fetch.enable', { patterns: [{ urlPattern: '*' }] })).error?.message,
+    'Fetch needs a tab session; it can’t pause the whole browser'
+  );
+  assert.equal(
+    await page.evaluate(() => fetch(location.href).then((response) => response.status)),
+    200
+  );
   const { result } = await send('Target.getTargets');
   const ids = result.targetInfos.map((info) => info.targetId);
   assert.ok(ids.includes(plain));
