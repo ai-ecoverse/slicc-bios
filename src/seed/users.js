@@ -1,3 +1,5 @@
+import { agentTag } from './tags.js';
+
 const MODES = ['off', 'report', 'enforce'];
 const KEY = 'slicc-os.users';
 const CONE = /^cone(-[1-9]\d*)?$/;
@@ -60,14 +62,6 @@ function spec({ name, home, groups: asked = [], umask, homeGroup, homeMode }) {
     ...(homeGroup === undefined ? {} : { homeGroup }),
     ...(homeMode === undefined ? {} : { homeMode }),
   };
-}
-
-export function agentTag(agentId) {
-  return JSON.stringify({ kind: 'agent', agentId });
-}
-
-export function terminalTag(where) {
-  return JSON.stringify({ kind: 'user', where: `terminal:${where}` });
 }
 
 export function kernelSource(kernel) {
