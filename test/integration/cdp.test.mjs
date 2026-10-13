@@ -145,6 +145,13 @@ test('playwright-cli drives a page through slicc-extension without asking, and t
     `playwright-cli open about:blank && playwright-cli goto ${target} && playwright-cli snapshot`
   );
   await shows(page, 'heading "Driven from the kernel"');
+  await run(
+    page,
+    `playwright-cli route '**/routed.json' --body '{"routed":42}' --content-type application/json && playwright-cli eval "fetch('/routed.json').then((r) => r.json()).then((j) => 'routed-' + j.routed)"`
+  );
+  await shows(page, 'routed-42');
+  await run(page, 'playwright-cli unroute && echo unrouted-$?');
+  await shows(page, 'unrouted-0');
   const driven = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
   assert.ok(driven.some(({ url }) => url === target));
   await run(page, 'playwright-cli close && echo closed-$?');
