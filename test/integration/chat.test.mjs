@@ -1420,7 +1420,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
       const processes = app.model.monitor
         .snapshot()
         .vitals.find((vital) => vital.id === 'processes');
-      return !!processes && processes.value !== '—';
+      return /^\d+$/.test(processes?.value ?? '');
     });
   const panelShots = async (name, viewed, phone) => {
     await lightIn(viewed);
