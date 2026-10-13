@@ -1,5 +1,5 @@
 import { compare, locked } from './packages.js';
-import { fetchText, guarded, pnpm, readable, text, write } from './update.js';
+import { baseManifest, fetchText, guarded, pnpm, readable, text, write } from './update.js';
 
 export const FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies'];
 const EXACT = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
@@ -193,7 +193,7 @@ async function inspect(root, project, force) {
   let before = parse(recordedBase);
   if (!before && receipt !== null) before = changed ? importers(receipt) : base;
   const observed = sealed(before && current ? observe(before, current, saved) : saved);
-  const provided = parse(await text(root, 'package.json'))?.dependencies ?? {};
+  const provided = (await baseManifest(root)).dependencies ?? {};
   const { layer, refused } = settle(observed, base, provided);
   const due = asked || (!layer.error && !same(merge(base, layer), current));
   return { lock, changed, currentText, recordedBase, baseText, base, layer, refused, due };

@@ -48,6 +48,7 @@ export const PROTECTED = [
   '/os',
 ];
 const INSTALLER = '/opt/slicc/.installer';
+export const BASE = 'opt/slicc/base';
 const SYSTEM = '/usr/local/share/pnpm';
 const HYGIENE = [
   '--ignore-scripts',
@@ -86,22 +87,32 @@ export function guarded() {
   return guard.on;
 }
 
-const STRAYS = ['.npmrc', '.pnpmfile.cjs', '.pnpmfile.mjs'];
+const ROOTED = [
+  'package.json',
+  'pnpm-lock.yaml',
+  'pnpm-workspace.yaml',
+  '.npmrc',
+  '.pnpmfile.cjs',
+  '.pnpmfile.mjs',
+];
 const FENCE = "minimumReleaseAgeExclude:\n  - '@ai-ecoverse/*'\n";
-
-async function removeFile(dir, name) {
-  await dir.removeEntry(name).catch(() => {});
-}
 
 export async function fence(root, cwd) {
   const folder = cwd.replace(/^\/+|\/+$/g, '');
-  if (!folder) {
-    for (const name of [...STRAYS, 'pnpm-workspace.yaml']) await removeFile(root, name);
-    return;
-  }
+  if (!folder) return;
   if ((await text(root, `${folder}/pnpm-workspace.yaml`)) === null) {
     await write(root, `${folder}/pnpm-workspace.yaml`, FENCE);
   }
+}
+
+export async function retire(root) {
+  for (const name of ROOTED) await root.removeEntry(name).catch(() => {});
+}
+
+export function project() {
+  return guard.on
+    ? { folder: `${BASE}/`, cwd: `/${BASE}`, flags: ['--modules-dir=/node_modules'] }
+    : { folder: '', cwd: '/', flags: [] };
 }
 
 const INSTALL = ['pnpm', 'install', '--frozen-lockfile', '--trust-lockfile'];
@@ -146,6 +157,14 @@ export async function readable(kernel, path) {
   if (status) throw new Error(stderr.trim() || `chmod exited with ${status}`);
 }
 
+export async function baseManifest(root) {
+  return JSON.parse(
+    (await text(root, `${project().folder}package.json`)) ??
+      (await text(root, 'package.json')) ??
+      '{}'
+  );
+}
+
 export async function versions(dir, names, prefix = '') {
   const found = {};
   for (const name of names) {
@@ -163,10 +182,16 @@ async function install(kernel, from, report, record) {
   const manifest = await fetchText('package.json', from);
   const names = Object.keys(JSON.parse(manifest).dependencies ?? {});
   const before = await versions(root, names);
-  await write(root, 'package.json', manifest);
-  await write(root, 'pnpm-lock.yaml', lock);
-  await pnpm(kernel, '/', report);
-  await record('packages', { from: new URL('package-lock.json', from).href, held: true });
+  const { folder, cwd, flags } = project();
+  await write(root, `${folder}package.json`, manifest);
+  await write(root, `${folder}pnpm-lock.yaml`, lock);
+  if (guard.on) {
+    await write(root, `${folder}pnpm-workspace.yaml`, await fetchText('pnpm-workspace.yaml', from));
+    await retire(root);
+  }
+  await pnpm(kernel, cwd, report, null, [...INSTALL, ...flags]);
+  const base = guard.on ? { base: BASE } : {};
+  await record('packages', { from: new URL('package-lock.json', from).href, held: true, ...base });
   await write(root, 'var/lib/slicc/pnpm-lock.yaml', lock);
   const after = await versions(root, names);
   return names

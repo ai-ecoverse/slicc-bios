@@ -185,9 +185,18 @@ async function prune(locked) {
   return stale.length;
 }
 
-async function packages({ from, held = false }, progress) {
-  if (held) return replay(from, progress);
-  return navigator.locks.request('slicc-packages', () => replay(from, progress));
+async function packages({ from, held = false, base = '' }, progress) {
+  if (held) return replay(from, progress, base);
+  return navigator.locks.request('slicc-packages', () => replay(from, progress, base));
+}
+
+const ROOTED = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc'];
+
+async function project(from, base) {
+  if (!base) return install({ from, files: ['package.json', 'pnpm-lock.yaml'] }, () => {});
+  const files = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'];
+  await install({ from, to: `${base}/`, files }, () => {});
+  for (const name of ROOTED) await remove(name);
 }
 
 async function outcome(ledger, prefix, task) {
@@ -206,7 +215,7 @@ async function outcome(ledger, prefix, task) {
   return { ...result, repaired: healed.map(({ path }) => path), stopped };
 }
 
-async function replay(from, progress) {
+async function replay(from, progress, base) {
   const ledger = await integrity();
   return outcome(ledger, '/node_modules/', async () => {
     const lock = JSON.parse(new TextDecoder().decode(await download(from)));
@@ -233,7 +242,7 @@ async function replay(from, progress) {
     };
     await Promise.all(Array.from({ length: 4 }, worker));
     const deployed = new URL('./', from);
-    await install({ from: deployed, files: ['package.json', 'pnpm-lock.yaml'] }, () => {});
+    await project(deployed, base);
     await install({ from: deployed, to: 'var/lib/slicc/', files: ['pnpm-lock.yaml'] }, () => {});
     await ledger.bump('node_modules');
     return { packages: total, downloaded, removed, bytes };

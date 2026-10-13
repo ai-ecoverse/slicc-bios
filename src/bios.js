@@ -52,6 +52,13 @@ async function step(name, task) {
 }
 
 let installer;
+
+function baseProject() {
+  const users = new URLSearchParams(location.hash.slice(1)).get('users');
+  const kept = globalThis.localStorage?.getItem('slicc-os.users');
+  const mode = ['report', 'enforce', 'off'].includes(users) ? users : kept;
+  return mode === 'report' || mode === 'enforce' ? { base: 'opt/slicc/base' } : {};
+}
 const repaired = [];
 const stopped = [];
 
@@ -88,7 +95,7 @@ await step('packages', async (report) => {
     bytes,
     repaired: changed,
     stopped: kept,
-  } = await installer('packages', { from }, (progress) =>
+  } = await installer('packages', { from, ...baseProject() }, (progress) =>
     report(`${progress.done}/${progress.total} ${progress.path}`)
   );
   const pruned = removed ? `, ${removed} removed` : '';
