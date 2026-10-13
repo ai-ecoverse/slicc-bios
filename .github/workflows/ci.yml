@@ -12,11 +12,43 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  SHARDED: '/(follow[^/]*|chat|remote|pydata|updates)\.test\.mjs$'
+
 jobs:
-  ci:
-    name: ci / test
+  lint:
+    name: ci / lint
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 15
+    env:
+      LEFTHOOK: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+  integration:
+    name: ci / integration (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: follow-chat
+            match: '/(follow[^/]*|chat)\.test\.mjs$'
+          - shard: remote-pydata
+            match: '/(remote|pydata|updates)\.test\.mjs$'
+          - shard: rest
+            match: ''
     env:
       LEFTHOOK: '0'
     steps:
@@ -36,9 +68,6 @@ jobs:
           key: harness-cdn-${{ hashFiles('src/packages/**/pnpm-lock.yaml', 'src/packages/**/package.json') }}
           restore-keys: harness-cdn-
 
-      - name: Lint
-        run: npm run lint
-
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version: '1.27'
@@ -55,11 +84,15 @@ jobs:
         run: npx playwright-core install-deps chromium
 
       - name: Integration tests with coverage, CPU profiles, and screenshots
-        run: npm test
-
-      - name: Hotspots
-        if: always()
-        run: cat artifacts/hotspots.md >> "$GITHUB_STEP_SUMMARY" || true
+        env:
+          MATCH: ${{ matrix.match }}
+        run: |
+          all=$(ls test/integration/*.test.mjs)
+          if [ -n "$MATCH" ]; then files=$(printf '%s\n' "$all" | grep -E "$MATCH" || true)
+          else files=$(printf '%s\n' "$all" | grep -vE "$SHARDED" || true); fi
+          if [ -z "$files" ]; then echo "no test files in shard ${{ matrix.shard }}" >&2; exit 1; fi
+          printf 'shard ${{ matrix.shard }}:\n%s\n' "$files"
+          SLICC_TESTS="$(printf '%s\n' "$files" | tr '\n' ' ')" npm test
 
       - name: Crash dumps
         if: always()
@@ -77,8 +110,62 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
+          name: integration-${{ matrix.shard }}
+          include-hidden-files: true
+          path: |
+            artifacts/
+            node_modules/.cache/slicc-harness/coverage/
+            node_modules/.cache/slicc-harness/hotspots/
+          if-no-files-found: ignore
+
+  ci:
+    name: ci / test
+    needs: [lint, integration]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      LEFTHOOK: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: integration-*
+          merge-multiple: true
+          path: .
+
+      - name: Coverage and hotspots across the shards
+        run: |
+          rm -rf artifacts/hotspots.md coverage
+          node --input-type=module -e "
+            const { pathToFileURL } = await import('node:url');
+            const harness = await import(pathToFileURL('node_modules/@ai-ecoverse/slicc-shared-web/harness/global.mjs'));
+            await harness.report();
+            await harness.hotspots();
+          "
+          cat artifacts/hotspots.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
           name: coverage-profiles-screenshots
           path: |
             coverage/
             artifacts/
           if-no-files-found: ignore
+
+      - name: Every shard and lint passed
+        env:
+          LINT: ${{ needs.lint.result }}
+          INTEGRATION: ${{ needs.integration.result }}
+        run: |
+          echo "lint: $LINT, integration: $INTEGRATION"
+          test "$LINT" = success && test "$INTEGRATION" = success
