@@ -5,6 +5,7 @@ import { createInterface } from 'node:readline';
 import { after, test } from 'node:test';
 import { boot, ready, run } from './bios.mjs';
 import { launch } from './chrome.mjs';
+import { shoot } from './shots.mjs';
 
 const chrome = await launch();
 after(() => chrome.close());
@@ -418,6 +419,36 @@ test('the real slicc CLI: ssh into it with its pinned host key, and as the exit,
     'hosts-automatic'
   );
   assert.deepEqual(automatic, { code: '0', out: 'hosts /automatic' });
+  await page.evaluate(() => {
+    const { notices } = document.querySelector('slicc-app').model;
+    for (const notice of notices.list()) notices.dismiss(notice.id);
+  });
+  await shoot(page, 'network-linked-slicc', { show: 'network' });
+  await shoot(page, 'network-whole-web', {
+    show: 'network',
+    before: () => {
+      const walk = (root) => {
+        for (const element of root.querySelectorAll('details')) {
+          if (
+            /Other ways to reach the whole web/.test(
+              element.querySelector('summary')?.textContent ?? ''
+            )
+          )
+            return element;
+        }
+        for (const element of root.querySelectorAll('*')) {
+          const inner = element.shadowRoot && walk(element.shadowRoot);
+          if (inner) return inner;
+        }
+        return null;
+      };
+      const details = walk(document);
+      if (details) {
+        details.open = true;
+        details.scrollIntoView({ block: 'start' });
+      }
+    },
+  });
   const shown = await page.evaluate(() => {
     const status = document.querySelector('slicc-app').model.network.status();
     return [status.exit, status.links.devices[0].id];

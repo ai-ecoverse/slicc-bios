@@ -114,7 +114,7 @@ const deep = `(selector) => {
   return walk(document);
 }`;
 
-test("the agent's UI on slicc-agent 3.48 and spectrum 1.67: a failed bash card with notes, the Monitor at warn, the drop overlay, a sent image, Secrets and Changes without a repository", {
+test("the agent's UI on slicc-agent 3.48 and spectrum 1.68: a failed bash card with notes, the Monitor at warn, the drop overlay, a sent image, Secrets, Changes without a repository and an empty Browser", {
   timeout: 30 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -281,6 +281,9 @@ test("the agent's UI on slicc-agent 3.48 and spectrum 1.67: a failed bash card w
   );
   await quiet(page);
   await shoot(page, 'changes-no-repo', { show: 'changes' });
+  await page.evaluate(() => document.querySelector('slicc-app').show('browser'));
+  await quiet(page);
+  await shoot(page, 'browser-empty', { show: 'browser' });
 
   assert.deepEqual(page.errors, []);
 });
