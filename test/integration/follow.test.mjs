@@ -1,73 +1,13 @@
 import assert from 'node:assert/strict';
-import { writeFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { boot, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { model, startHub } from './fake-hub.mjs';
+import { shoot } from './shots.mjs';
 
 const owners = await launch();
 const followers = await launch();
 after(() => Promise.all([owners.close(), followers.close()]));
-
-const reveal = (selector) => {
-  const deep = (root) => {
-    const found = root.querySelector(selector);
-    if (found) return found;
-    for (const element of root.querySelectorAll('*')) {
-      const inner = element.shadowRoot && deep(element.shadowRoot);
-      if (inner) return inner;
-    }
-    return null;
-  };
-  deep(document)?.scrollIntoView({ block: 'start' });
-};
-
-async function shoot(page, name, show, target) {
-  const app = (fn, arg) =>
-    page.evaluate(
-      new Function('arg', `return (${fn})(document.querySelector('slicc-app'), arg)`),
-      arg
-    );
-  const capture = async (file, clip) => {
-    await new Promise((resolve) => setTimeout(resolve, 800));
-    if (target)
-      await page.evaluate(new Function('selector', `return (${reveal})(selector)`), target);
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    const { data } = await page.send('Page.captureScreenshot', {
-      format: 'png',
-      ...(clip ? { clip } : {}),
-    });
-    await writeFile(new URL(file, page.dir), Buffer.from(data, 'base64'));
-  };
-  const theme = (wanted) =>
-    app((el, wanted) => {
-      if (el.color !== wanted) el.toggleColor();
-    }, wanted);
-  await page.send('Emulation.setDeviceMetricsOverride', {
-    width: 1280,
-    height: 800,
-    deviceScaleFactor: 1,
-    mobile: false,
-  });
-  await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
-  if (show) await app((el, id) => el.show(id), show);
-  for (const color of ['light', 'dark']) {
-    await theme(color);
-    await capture(`${name}-${color}-1280.png`);
-  }
-  await theme('light');
-  await page.send('Emulation.setDeviceMetricsOverride', {
-    width: 420,
-    height: 800,
-    deviceScaleFactor: 1,
-    mobile: false,
-  });
-  await page.until(() => document.querySelector('slicc-app').screen === 'phone');
-  if (show) await app((el, id) => el.show(id), show);
-  await capture(`${name}-light-420.png`, { x: 0, y: 0, width: 420, height: 800, scale: 1 });
-  await page.send('Emulation.clearDeviceMetricsOverride');
-  await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
-}
 
 const follow = (page) =>
   page.evaluate(() => document.querySelector('slicc-app').model.follow?.state() ?? null);
@@ -127,7 +67,7 @@ test('a seven follows another: it asks first, follows once allowed, keeps its ce
   const owner = await lead(t, hub);
   const { joinUrl, followUrl } = await model(owner, (network) => network.status().links);
   assert.equal(followUrl, `${new URL(owners.url).origin}/#follow=${encodeURIComponent(joinUrl)}`);
-  await shoot(owner, 'owner-open-on-another-device', 'network', '#follow-link');
+  await shoot(owner, 'owner-open-on-another-device', { show: 'network', target: '#follow-link' });
 
   const page = await join(t, joinUrl, hub);
   assert.equal(await page.evaluate(() => location.hash), '');
@@ -167,7 +107,10 @@ test('a seven follows another: it asks first, follows once allowed, keeps its ce
     ],
     ['seven', 'remote', true, { view: false, control: false, terminal: false }, false, '', '']
   );
-  await shoot(owner, 'owner-asks-to-follow', 'network', '[aria-labelledby="links"]');
+  await shoot(owner, 'owner-asks-to-follow', {
+    show: 'network',
+    target: '[aria-labelledby="links"]',
+  });
 
   await model(owner, (network, id) => network.setAccess(id, 'control', true), device.id);
   await page.until(() => document.querySelector('slicc-app').model.follow.state().access.view);
@@ -180,7 +123,10 @@ test('a seven follows another: it asks first, follows once allowed, keeps its ce
   assert.equal(allowed.asking, undefined);
   await model(owner, (network, id) => network.setAccess(id, 'terminal', true), device.id);
   await page.until(() => document.querySelector('slicc-app').model.follow.state().access.terminal);
-  await shoot(owner, 'owner-view-control-terminal', 'network', '[aria-labelledby="links"]');
+  await shoot(owner, 'owner-view-control-terminal', {
+    show: 'network',
+    target: '[aria-labelledby="links"]',
+  });
   await shoot(page, 'follower-following');
   await model(owner, (network, id) => network.setAccess(id, 'view', false), device.id);
   await page.until(() => !document.querySelector('slicc-app').model.follow.state().access.view);

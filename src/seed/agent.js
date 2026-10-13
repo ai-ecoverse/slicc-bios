@@ -1,4 +1,5 @@
 import { apply } from './layer.js';
+import { failure } from './link.js';
 import { text, versions } from './update.js';
 
 const deployed = new URL('../packages/agent/', import.meta.url);
@@ -50,10 +51,15 @@ export function loadChat({ load = (file) => import(new URL(file, modules)), fres
   if (chat) return chat;
   const query = run ? `?run=${run}` : '';
   const loading = Promise.all([load(`page.js${query}`), load(`spectrum/index.js${query}`)]).then(
-    ([{ startAgent, connectAgent, remoteControl }, { createAgentModel }]) => ({
+    ([
+      { startAgent, connectAgent, remoteControl, bridgePort, linkEndpoint },
+      { createAgentModel },
+    ]) => ({
       startAgent,
       connectAgent,
       remoteControl,
+      bridgePort,
+      linkEndpoint,
       createAgentModel,
     })
   );
@@ -118,4 +124,43 @@ export async function deliverWebhook(owner, name, delivery, { load = loadChat } 
   } finally {
     connection.close();
   }
+}
+
+export function streamSink(stream) {
+  let writes = Promise.resolve();
+  return {
+    write(chunk) {
+      writes = writes.then(() => stream.write(chunk)).catch(() => undefined);
+    },
+    close() {
+      writes = writes.then(() => stream.closeWrite());
+    },
+  };
+}
+
+export async function pumpLink(stream, end) {
+  try {
+    for (let chunk = await stream.read(); chunk; chunk = await stream.read()) end.receive(chunk);
+    end.end();
+  } catch (error) {
+    end.end(error);
+  }
+}
+
+export async function bridgeAgent(owner, stream, { readOnly, load = loadChat } = {}) {
+  if (!owner) throw failure('EAGAIN: the agent is not running');
+  const { bridgePort } = await load();
+  if (!bridgePort) throw failure('EOPNOTSUPP: this agent cannot be followed');
+  const port = await owner.port({ readOnly, pages: false });
+  stream.accepted({});
+  await pumpLink(stream, bridgePort(port, streamSink(stream)));
+}
+
+export async function followAgent(open, { load = loadChat } = {}) {
+  const { connectAgent, linkEndpoint } = await load();
+  if (!linkEndpoint) throw failure('EOPNOTSUPP: this agent cannot follow');
+  const stream = await open({ kind: 'pi' });
+  const endpoint = linkEndpoint(streamSink(stream));
+  void pumpLink(stream, endpoint);
+  return connectAgent(endpoint);
 }
