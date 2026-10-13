@@ -35,11 +35,7 @@ export function entries(manifest) {
 }
 
 export function sealed(layer, on = guarded()) {
-  if (!on) return layer;
-  const pin = Object.fromEntries(
-    Object.entries(layer.pin).filter(([, { spec }]) => /^file:rc\/[\w.-]+\.tgz$/.test(spec))
-  );
-  return { ...layer, add: {}, pin };
+  return on ? { ...layer, add: {}, pin: {} } : layer;
 }
 
 export function empty(layer) {

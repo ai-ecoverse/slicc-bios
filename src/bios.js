@@ -1,3 +1,5 @@
+import { usersMode } from './seed/users.js';
+
 const units = ['B', 'kB', 'MB', 'GB'];
 
 function size(bytes) {
@@ -54,11 +56,9 @@ async function step(name, task) {
 let installer;
 
 function baseProject() {
-  const users = new URLSearchParams(location.hash.slice(1)).get('users');
-  const kept = globalThis.localStorage?.getItem('slicc-os.users');
-  const mode = ['report', 'enforce', 'off'].includes(users) ? users : kept;
-  return mode === 'report' || mode === 'enforce' ? { base: 'opt/slicc/base' } : {};
+  return usersMode() === 'off' ? {} : { base: 'opt/slicc/base' };
 }
+
 const repaired = [];
 const stopped = [];
 
