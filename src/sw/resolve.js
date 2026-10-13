@@ -115,6 +115,13 @@ export function exportsTarget(exports, subpath) {
   return undefined;
 }
 
+export function packageRoot(dir) {
+  const parent = dirname(dir);
+  const scope = /\/@[^/]+$/;
+  if (dir === '/os' || (parent.endsWith('/node_modules') && !scope.test(dir))) return true;
+  return scope.test(parent) && dirname(parent).endsWith('/node_modules');
+}
+
 export function createResolver(fs) {
   const manifests = new Map();
   const results = new Map();
@@ -132,13 +139,14 @@ export function createResolver(fs) {
   }
 
   async function owner(path) {
-    for (let dir = dirname(path); ; dir = dirname(dir)) {
+    for (let dir = dirname(path); dir !== '/'; dir = dirname(dir)) {
       if (!dir.endsWith('/node_modules')) {
         const found = await manifest(dir);
         if (found) return { dir, json: found };
       }
-      if (dir === '/') return undefined;
+      if (packageRoot(dir)) return undefined;
     }
+    return undefined;
   }
 
   async function file(path) {
