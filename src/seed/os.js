@@ -55,7 +55,7 @@ import {
   localBoard,
   supported,
 } from './tabs.js';
-import { terminalTag } from './tags.js';
+import { followerTag, terminalTag } from './tags.js';
 import {
   createTailscale,
   installTailscale,
@@ -185,7 +185,7 @@ followers = tray
       serve: {
         pi: (_link, _meta, stream, access) =>
           bridgeAgent(owner, stream, { readOnly: !access.control }),
-        terminal: (_link, meta, stream) => serveTerminal(kernel, meta, stream),
+        terminal: (link, meta, stream) => followerShell(link, meta, stream),
       },
       onChange: () => links.changed(),
     })
@@ -248,6 +248,15 @@ function base(os) {
     browser: browser.port,
     tray: trayPort(network, { name: `seven on ${location.host}` }),
   };
+}
+
+async function followerShell(link, meta, stream) {
+  const client = await attachKernel(await kernel.connect({ tag: followerTag(link.id) }));
+  try {
+    await serveTerminal(client, meta, stream);
+  } finally {
+    await client.close().catch(() => undefined);
+  }
 }
 
 async function give(from, names) {
