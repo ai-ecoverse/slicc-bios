@@ -110,6 +110,7 @@ await step('seed', async () => {
     'follower.js',
     'followers.js',
     'grammars.js',
+    'guard.js',
     'index.html',
     'layer.js',
     'link-ws.js',

@@ -139,6 +139,14 @@
     "integrity": "sha512-0ARCGaQzHyELeqZscCe8PXEeSYFpQG5UD8iEv455htAOgZ0cmh81DTV6HQS1HSkf+/M91LcODjKI8yx4/X8JNA==",
     "sha256": "82625a56be5f8e47619cb87150a52c53c2ccf2f12c4c9a3f9203115f5e4b21cb"
   },
+  "@ai-ecoverse/slicc-cdp@1.10.0": {
+    "integrity": "sha512-JW/ALeEQv+udV/AeoRPuQRskfPGo+eMsAaMf6+ubP9Fnn/bMay8R5h3F44EowdLNutyHZwCAMSmq0Scf7MpvaQ==",
+    "sha256": "3deac813615a1a09912638f48e9bc7c0e86295f077412fa2a6b06f5e629bdad1"
+  },
+  "@ai-ecoverse/slicc-cdp@1.11.2": {
+    "integrity": "sha512-CcqOzehBpQDy2jykr7U+a8yaXd6CeQ843rt+5+JRtB1TwNuxSOQTgSCmrQs0gf4gff9b/VpevUxC75yHTtYItg==",
+    "sha256": "b9175cfb85d413afc25cc71440d5f3c2eba88f55fcee40e13ef3cbd969833dfc"
+  },
   "@ai-ecoverse/slicc-jsh@0.2.0": {
     "integrity": "sha512-4J5SH/kWFXGLw8vCDjPegAjA3pTGcZ069oR1wD0CoTxCso21pFs9eMVq4Sz/F1mTVR82gAlHrgEKI9Ek2NZWBg==",
     "sha256": "203510103bb0e3e8a1026fdcb494dcec55b0e9e035667040144b3137ff9f1d27"
