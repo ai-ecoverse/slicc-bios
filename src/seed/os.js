@@ -71,7 +71,16 @@ import { createTray, TRAY_HUB_KEY, trayPort } from './tray.js';
 import { openTunnel } from './tunnel.js';
 import { text, update, versions } from './update.js';
 import { count, createUpdates, owners } from './updates.js';
-import { addCone, boundTo, kernelUsers, terminalTag, terminalUser, usersMode } from './users.js';
+import {
+  addCone,
+  boundTo,
+  homeSkips,
+  kernelUsers,
+  terminalHome,
+  terminalTag,
+  terminalUser,
+  usersMode,
+} from './users.js';
 
 const prompts = installPrompts();
 
@@ -607,8 +616,8 @@ async function follow() {
     kernel: facade,
     root,
     storage: localStorage,
-    files: { skip, hide },
-    terminals: { env: { PS1: 'slicc:\\w\\$ ', SLICC_TAB: board.id } },
+    files: { skip: [...skip, ...homeSkips(await text(root, 'etc/passwd'))], hide },
+    terminals: { env: { PS1: 'slicc:\w\$ ', SLICC_TAB: board.id }, ...terminalHome(asUser) },
   });
   files = model;
   const waiting = claimed.owner ? updates : createUpdates({ ready: true });
