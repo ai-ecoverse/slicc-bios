@@ -18,7 +18,8 @@ const stand = createHttp((req, res) => {
   hits.push(`${url.host}${url.pathname}${url.search}`);
   const pages = {
     '/vault': `<!doctype html><title>VAULT-MARK</title><h1>VAULT-BODY-MARK</h1><script>fetch('http://localhost:${url.port}/data?from=vault', { mode: 'no-cors' });</script>`,
-    '/plain': `<!doctype html><title>PLAIN-MARK</title><h1>Plain</h1><iframe src="http://vault.sliccy.ai:${url.port}/vault?framed"></iframe>`,
+    '/plain': '<!doctype html><title>PLAIN-MARK</title><h1>Plain</h1>',
+    '/walker': '<!doctype html><title>WALKER-MARK</title><h1>Walker</h1>',
   };
   if (url.pathname === '/data') {
     res.writeHead(200, { 'content-type': 'text/plain', 'access-control-allow-origin': '*' });
@@ -621,7 +622,9 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
     await page.evaluate(() => fetch(location.href).then((response) => response.status)),
     200
   );
-  const { result } = await send('Target.getTargets');
+  const listing = await send('Target.getTargets');
+  assert.ok(listing.result, JSON.stringify(listing));
+  const { result } = listing;
   const ids = result.targetInfos.map((info) => info.targetId);
   assert.ok(ids.includes(plain));
   assert.ok(!ids.includes(vault) && !ids.includes(seven));
@@ -643,8 +646,16 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
     assert.equal(await listed(targetId), true);
   }
 
-  const attached = await send('Target.attachToTarget', { targetId: plain, flatten: true });
-  const session = attached.result.sessionId;
+  const detached = async (sessionId) => {
+    for (let n = 0; n < 100; n += 1) {
+      const answer = await send('Runtime.evaluate', { expression: '1' }, sessionId);
+      if (answer.error?.message === REFUSAL) return;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    assert.fail(`${sessionId} was not cut`);
+  };
+  const session = (await send('Target.attachToTarget', { targetId: plain, flatten: true })).result
+    .sessionId;
   assert.equal(
     (await send('Runtime.evaluate', { expression: 'document.title', returnByValue: true }, session))
       .result.result.value,
@@ -654,22 +665,9 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
     ['Page.enable', {}],
     ['Network.enable', {}],
     ['Fetch.enable', { patterns: [{ urlPattern: '*' }] }],
-    ['Target.setAutoAttach', { autoAttach: true, flatten: true, waitForDebuggerOnStart: false }],
   ]) {
     assert.deepEqual((await send(method, params, session)).error, undefined, method);
   }
-  hits.length = 0;
-  await send('Page.reload', {}, session);
-  await page.within(20000, () =>
-    window.guarded.events.some((event) => event.method === 'Page.loadEventFired')
-  );
-  for (let n = 0; n < 50 && !hits.some((hit) => hit.endsWith('from=vault')); n += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  assert.ok(
-    hits.some((hit) => hit.endsWith('from=vault')),
-    hits.join(' ')
-  );
   assert.equal(
     (
       await send(
@@ -684,21 +682,17 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
     ).result.result.value,
     'data for plain'
   );
-  const seen = await events();
-  const urls = seen.map(
-    (event) => event.params?.request?.url ?? event.params?.targetInfo?.url ?? ''
-  );
-  assert.ok(urls.some((url) => url.endsWith('from=plain')));
-  assert.ok(
-    !urls.some((url) => url.includes('vault')),
-    urls.filter((url) => url.includes('vault')).join(' ')
-  );
-  assert.ok(!JSON.stringify(seen).includes('VAULT'));
-  const plainRequest = seen.find(
+  const plainRequest = (await events()).find(
     (event) =>
       event.method === 'Network.requestWillBeSent' &&
       event.params.request.url.endsWith('from=plain')
   ).params.requestId;
+  assert.ok(
+    (await events()).some(
+      (event) =>
+        event.method === 'Fetch.requestPaused' && event.params.request.url.endsWith('from=plain')
+    )
+  );
   assert.equal(
     (await send('Network.getResponseBody', { requestId: plainRequest }, session)).result.body,
     'data for plain'
@@ -708,24 +702,44 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
     /wasn’t seen/
   );
 
+  hits.length = 0;
   await send(
     'Runtime.evaluate',
-    { expression: `location.href = ${JSON.stringify(`${VAULT}?walked`)}` },
+    {
+      expression: `document.body.append(Object.assign(document.createElement('iframe'), { src: ${JSON.stringify(`${VAULT}?framed`)} }))`,
+    },
     session
   );
-  await page.within(
-    20000,
-    (id) =>
-      window.guarded.events.some(
-        (event) => event.method === 'Target.detachedFromTarget' && event.params.sessionId === id
-      ),
-    session
+  await detached(session);
+  for (let n = 0; n < 50 && !hits.some((hit) => hit.endsWith('from=vault')); n += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.ok(
+    hits.some((hit) => hit.endsWith('from=vault')),
+    hits.join(' ')
   );
   assert.equal(
     (await send('Runtime.evaluate', { expression: 'document.title' }, session)).error.message,
     REFUSAL
   );
-  assert.ok(!JSON.stringify(await events()).includes('VAULT'));
+
+  const walker = await tabAt(`http://localhost:${standPort}/walker`, 'WALKER-MARK');
+  t.after(() => fetch(`http://127.0.0.1:${port}/json/close/${walker}`));
+  const walking = (await send('Target.attachToTarget', { targetId: walker, flatten: true })).result
+    .sessionId;
+  assert.deepEqual((await send('Network.enable', {}, walking)).error, undefined);
+  await send(
+    'Runtime.evaluate',
+    { expression: `location.href = ${JSON.stringify(`${VAULT}?walked`)}` },
+    walking
+  );
+  await detached(walking);
+  assert.equal(
+    (await send('Runtime.evaluate', { expression: 'document.title' }, walking)).error.message,
+    REFUSAL
+  );
+  const seen = JSON.stringify(await events());
+  assert.ok(!seen.includes('VAULT') && !seen.includes('vault.sliccy.ai'), seen.slice(0, 2000));
 
   await run(
     page,

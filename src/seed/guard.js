@@ -4,6 +4,7 @@ import { protectedOrigins } from '@ai-ecoverse/slicc-browsers/protected.mjs';
 export const PROTECTED = 'seven’s own pages and the vault are out of reach of browser automation';
 export const UNSEEN = 'this request wasn’t seen, so it could be seven’s or the vault’s';
 export const FETCH = 'Fetch needs a tab session; it can’t pause the whole browser';
+export const FAILED = 'the CDP guard couldn’t check this answer, so it held it back';
 
 const GUARD_IDS = 2 ** 30;
 const HOLD_MS = 2000;
@@ -94,11 +95,15 @@ const STORED = [
 const WORKERS = ['registrationId', 'versionId'];
 
 function parse(text) {
+  let message;
   try {
-    return JSON.parse(text) ?? {};
+    message = JSON.parse(text);
   } catch {
     return {};
   }
+  if (!message || typeof message !== 'object') return {};
+  if (message.params === null || typeof message.params !== 'object') delete message.params;
+  return message;
 }
 
 const header = (headers, name) =>
@@ -132,7 +137,11 @@ class Guard {
   }
 
   deliver(message) {
-    this.guarded.onmessage?.(JSON.stringify(message));
+    try {
+      this.guarded.onmessage?.(JSON.stringify(message));
+    } catch (error) {
+      console.warn(`a CDP client failed on a message: ${error.message}`);
+    }
   }
 
   call(method, params, sessionId) {
@@ -516,7 +525,7 @@ class Guard {
     return this.unseen(method, params);
   }
 
-  pass(message, text) {
+  pass(message) {
     const { id, method, sessionId } = message;
     if (sessionId && method === 'Page.enable') this.pages.add(sessionId);
     if (sessionId && method === 'Page.disable' && this.shown.has(sessionId)) {
@@ -524,7 +533,7 @@ class Guard {
       return this.deliver({ id, sessionId, result: {} });
     }
     this.asked.set(id, message);
-    this.connection.send(text);
+    this.connection.send(JSON.stringify(message));
   }
 
   received(text) {
@@ -534,12 +543,14 @@ class Guard {
       this.internal.delete(message.id);
       return resolve(message);
     }
-    this.inbound = (this.inbound ?? Promise.resolve()).then(() => {
-      if (message.id === undefined) return this.event(message);
-      const was = this.asked.get(message.id);
-      this.asked.delete(message.id);
-      return this.answer(message, was);
-    });
+    const was = message.id === undefined ? undefined : this.asked.get(message.id);
+    this.asked.delete(message.id);
+    this.inbound = (this.inbound ?? Promise.resolve())
+      .then(() => (message.id === undefined ? this.event(message) : this.answer(message, was)))
+      .catch((error) => {
+        console.warn(`the CDP guard dropped a message: ${error.message}`);
+        if (was) this.refuse(was, FAILED);
+      });
   }
 
   start() {
@@ -551,7 +562,11 @@ class Guard {
       const message = parse(text);
       order = order
         .then(() => this.check(message))
-        .then((why) => (why ? this.refuse(message, why) : this.pass(message, text)));
+        .then((why) => (why ? this.refuse(message, why) : this.pass(message)))
+        .catch((error) => {
+          console.warn(`the CDP guard refused a command: ${error.message}`);
+          this.refuse(message, FAILED);
+        });
     };
     guarded.close = () => connection.close();
     return guarded;
