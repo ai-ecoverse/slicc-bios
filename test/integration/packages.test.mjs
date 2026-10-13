@@ -384,7 +384,6 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
       'qpdf available',
       'rsync installed',
       'buf available',
-      'tar available',
       'screen available',
       'dig available',
       'gpg available',

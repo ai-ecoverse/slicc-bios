@@ -107,13 +107,6 @@
     "commands": ["buf"],
     "size": 16875828
   },
-  "@ai-ecoverse/wasm-tar": {
-    "id": "tar",
-    "label": "tar",
-    "description": "Packs and unpacks .tar archives; hard links aren't recreated, and a symlink exits 2 though it's created.",
-    "commands": ["tar"],
-    "size": 1156421
-  },
   "@ai-ecoverse/wasm-screen": {
     "id": "screen",
     "label": "screen",

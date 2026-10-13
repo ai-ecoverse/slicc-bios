@@ -26,6 +26,9 @@ importers:
       '@ai-ecoverse/wasm-bash':
         specifier: 5.3.0-17
         version: 5.3.0-17
+      '@ai-ecoverse/wasm-bzip2':
+        specifier: 1.0.8-1
+        version: 1.0.8-1
       '@ai-ecoverse/wasm-coreutils':
         specifier: 9.12.0-5
         version: 9.12.0-5
@@ -44,6 +47,9 @@ importers:
       '@ai-ecoverse/wasm-grep':
         specifier: 3.12.0-3
         version: 3.12.0-3
+      '@ai-ecoverse/wasm-gzip':
+        specifier: 1.15.0-1
+        version: 1.15.0-1
       '@ai-ecoverse/wasm-jq':
         specifier: 1.8.2-2
         version: 1.8.2-2
@@ -65,6 +71,9 @@ importers:
       '@ai-ecoverse/wasm-sed':
         specifier: 4.9.0-3
         version: 4.9.0-3
+      '@ai-ecoverse/wasm-tar':
+        specifier: 1.35.0-4
+        version: 1.35.0-4
       '@ai-ecoverse/wasm-tls-engine':
         specifier: 3.6.5-1
         version: 3.6.5-1
@@ -74,6 +83,9 @@ importers:
       '@ai-ecoverse/wasm-which':
         specifier: 2.23.0-1
         version: 2.23.0-1
+      '@ai-ecoverse/wasm-xz':
+        specifier: 5.8.4-1
+        version: 5.8.4-1
 
 packages:
 
@@ -109,6 +121,9 @@ packages:
     resolution: {integrity: sha512-Zz/69+giDQoYGqjTpOk4XzxpqkR0mTikIhswffikhRaCSXbAZvA3SpzE1B3o5JG6CywVuiB66Bfj7aultu70Pw==}
     engines: {slicc-kernel: '>=1.48.3'}
 
+  '@ai-ecoverse/wasm-bzip2@1.0.8-1':
+    resolution: {integrity: sha512-xT8HkPFCdzQwJat8ZUYdv4U7C5Q8qMMOouor7Ss6neJ7Q8SHcuLVPYFph+zOQ2icZ1Cjm/3kGH9jXbvUpD416g==}
+
   '@ai-ecoverse/wasm-coreutils@9.12.0-5':
     resolution: {integrity: sha512-FYVgCa3FEGBTci7YV9nwuqDsmPXqErNjKwCjj7JQ5JahoV5/uv1DriGQn3+kT1p4RYIcMKp4Ca4OtUz1DtV3Fg==}
     engines: {slicc-kernel: '>=1.44.0'}
@@ -127,6 +142,9 @@ packages:
 
   '@ai-ecoverse/wasm-grep@3.12.0-3':
     resolution: {integrity: sha512-2zUPO95WUlvdlRp2EOZW4ABaTvPdmF6qwX/mSWke1r51vW1NXTsqx1G+EXRwNFPzeYcOih17GViA0XGA7ph3/g==}
+
+  '@ai-ecoverse/wasm-gzip@1.15.0-1':
+    resolution: {integrity: sha512-XQp/9qXWGsoYAjnDyfIywNaeWMH81qP4mW1cfkTkpQgfobu9DUNfy9hbHrerPzlf/fn1fYdkVbnUSHEyqRFlOw==}
 
   '@ai-ecoverse/wasm-jq@1.8.2-2':
     resolution: {integrity: sha512-lP0JB5DroQj0EUUfQTz8FPUIDIK2q3EDomXTtz5hzZnns8pPWBoeGcH79SiVjCEu5cREEDPeYS87oSA0uYFbaQ==}
@@ -150,6 +168,9 @@ packages:
   '@ai-ecoverse/wasm-sed@4.9.0-3':
     resolution: {integrity: sha512-t+sfLSgTzFW5tyysusEtV7D1xPY/qELvbNAqbNobp8/q898b0zFZrM2b2/PjNN5o1O6jEgjOTHuT1Z71tzb9bw==}
 
+  '@ai-ecoverse/wasm-tar@1.35.0-4':
+    resolution: {integrity: sha512-eCZROUZ8crzsEbdL1i5lm8I8Fgup3afj3ZW9gvN9GGV5pnFae8KZhmSlszwSFPMNgA4UTBu46mfTEF0pPmkOQA==}
+
   '@ai-ecoverse/wasm-tls-engine@3.6.5-1':
     resolution: {integrity: sha512-4dy6QCAUwpN6EG7njdeYDmtNXpy1+3jU+qLuwl6/dOs7S+fO/Ybcs+XfZWgp9LFUYEE1mQfr+8bqkgiOwK8RnQ==}
 
@@ -158,6 +179,9 @@ packages:
 
   '@ai-ecoverse/wasm-which@2.23.0-1':
     resolution: {integrity: sha512-ijCQxAjVhGT/2vlNrpNSWuXzGAGFOncJtad1QdYBD4iYB5AUdweGGTS+sfKVOb8C4OKgq6p/emFHp6KMhd9+jA==}
+
+  '@ai-ecoverse/wasm-xz@5.8.4-1':
+    resolution: {integrity: sha512-Y8AHpR0+RGfoneyERltFK4jt3P8EfsQzvKMrSFfaLWgtWk7dIC28GuHBK76+IsbE9+fbfs4m9ItcpqjlQckH4Q==}
 
 snapshots:
 
@@ -173,6 +197,8 @@ snapshots:
 
   '@ai-ecoverse/wasm-bash@5.3.0-17': {}
 
+  '@ai-ecoverse/wasm-bzip2@1.0.8-1': {}
+
   '@ai-ecoverse/wasm-coreutils@9.12.0-5': {}
 
   '@ai-ecoverse/wasm-curl@8.22.0-4': {}
@@ -184,6 +210,8 @@ snapshots:
   '@ai-ecoverse/wasm-gawk@5.4.1-2': {}
 
   '@ai-ecoverse/wasm-grep@3.12.0-3': {}
+
+  '@ai-ecoverse/wasm-gzip@1.15.0-1': {}
 
   '@ai-ecoverse/wasm-jq@1.8.2-2': {}
 
@@ -199,8 +227,12 @@ snapshots:
 
   '@ai-ecoverse/wasm-sed@4.9.0-3': {}
 
+  '@ai-ecoverse/wasm-tar@1.35.0-4': {}
+
   '@ai-ecoverse/wasm-tls-engine@3.6.5-1': {}
 
   '@ai-ecoverse/wasm-tree@2.3.2-1': {}
 
   '@ai-ecoverse/wasm-which@2.23.0-1': {}
+
+  '@ai-ecoverse/wasm-xz@5.8.4-1': {}

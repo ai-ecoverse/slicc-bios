@@ -267,3 +267,27 @@ test('mounts and unmounts a tmpfs with mount and umount', async (t) => {
   await shows(page, 'usage 1001');
   assert.deepEqual(page.errors, []);
 });
+
+test('tar packs and unpacks gzip, xz and bzip2 archives through the base set compressors', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await run(
+    page,
+    'mkdir -p /tmp/pack/src/inner && echo "first file" > /tmp/pack/src/a.txt && seq 500 > /tmp/pack/src/inner/b.txt && ln -s ../a.txt /tmp/pack/src/inner/link && cd /tmp/pack && echo "made $((6 * 7))"'
+  );
+  await shows(page, 'made 42');
+  for (const [flag, suffix] of [
+    ['z', 'tgz'],
+    ['J', 'txz'],
+    ['j', 'tbz'],
+  ]) {
+    await run(
+      page,
+      `clear; rm -rf out-${suffix} && mkdir out-${suffix} && tar -c${flag}f src.${suffix} src && tar -x${flag}f src.${suffix} -C out-${suffix} && diff -r src out-${suffix}/src && [ "$(readlink out-${suffix}/src/inner/link)" = ../a.txt ] && echo "round trip ${suffix} $((6 * 7))"`
+    );
+    await shows(page, `round trip ${suffix} 42`);
+  }
+  await run(page, 'clear; tar --zstd -cf src.tzst src 2>/dev/null; echo "zstd exits $?"');
+  await shows(page, 'zstd exits 2');
+  assert.deepEqual(page.errors, []);
+});
