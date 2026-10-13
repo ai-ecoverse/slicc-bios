@@ -95,6 +95,7 @@ class Changed extends Error {
 let ledger;
 const trusted = new Set();
 const HEAL_GAP = 60000;
+const STATUS = '/__slicc/integrity';
 const healed = new Map();
 
 function integrity() {
@@ -329,6 +330,10 @@ async function serve(request, controller) {
     watched(await fetch(request, { signal: controller.signal }), url.pathname, controller);
   const served = kind(path);
   if (served === 'bios') return network();
+  if (path === STATUS) {
+    const stopped = await (await integrity()).stopped();
+    return respond(JSON.stringify({ stopped }), types.json, 'sw');
+  }
   if (served === 'stub') {
     const name = path.slice(NODE_STUBS.length).replace(/\.js$/, '');
     const wanted = url.searchParams.get('names')?.split(',') ?? [];

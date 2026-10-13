@@ -1,13 +1,30 @@
 export const REFUSED =
   'Seven didn’t load its own code: one of its files changed after seven installed it, or is missing. Reloading goes through the BIOS, which puts seven’s files back.';
 
-export function refused(doc = document, go = (url) => location.replace(url)) {
+export const STATUS = new URL('../__slicc/integrity', import.meta.url);
+
+export function stoppedText(path) {
+  return `One of seven’s files, ${path}, keeps changing, so seven stopped putting it back and won’t run it. It tries again in about 10 minutes, or when you reload after that.`;
+}
+
+export async function stoppedPath(fetcher = fetch) {
+  try {
+    const response = await fetcher(STATUS);
+    if (!response.ok) return null;
+    const { stopped = [] } = await response.json();
+    return stopped[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function refused(doc = document, go = (url) => location.replace(url), stopped = null) {
   const box = doc.createElement('main');
   box.dataset.refused = '';
   const title = doc.createElement('h1');
   title.textContent = 'Seven couldn’t start';
   const text = doc.createElement('p');
-  text.textContent = REFUSED;
+  text.textContent = stopped ? stoppedText(stopped) : REFUSED;
   const button = doc.createElement('button');
   button.type = 'button';
   button.textContent = 'Reload';
@@ -22,13 +39,14 @@ export async function start({
   follower = () => import('./follower.js'),
   os = () => import('./os.js'),
   fail = refused,
+  check = stoppedPath,
 } = {}) {
   try {
     const { takeFollow } = await follow();
     await (takeFollow() ? follower() : os());
   } catch (error) {
     console.error(error);
-    fail();
+    fail(undefined, undefined, await check());
   }
 }
 

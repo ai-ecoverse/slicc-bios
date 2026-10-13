@@ -188,7 +188,7 @@ test('a UI whose own code keeps changing says so instead of staying blank', asyn
   assert.deepEqual(shown, {
     path: '/os/',
     title: 'Seven couldn’t start',
-    text: 'Seven didn’t load its own code: one of its files changed after seven installed it, or is missing. Reloading goes through the BIOS, which puts seven’s files back.',
+    text: 'One of seven’s files, /os/os.js, keeps changing, so seven stopped putting it back and won’t run it. It tries again in about 10 minutes, or when you reload after that.',
     button: 'Reload',
   });
   assert.equal(await page.evaluate(() => globalThis.__changed ?? null), null);
@@ -200,6 +200,15 @@ test('a UI whose own code keeps changing says so instead of staying blank', asyn
   await page.screenshot(new URL('integrity-refused-light.png', page.dir));
   await scheme('dark');
   await page.screenshot(new URL('integrity-refused-dark.png', page.dir));
+  await scheme('light');
+  await page.send('Emulation.setDeviceMetricsOverride', {
+    width: 420,
+    height: 800,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.screenshot(new URL('integrity-refused-420.png', page.dir));
+  await page.send('Emulation.clearDeviceMetricsOverride');
   await scheme('');
   assert.deepEqual(page.errors, []);
 });

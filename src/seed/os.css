@@ -10,6 +10,7 @@ body {
 }
 
 [data-refused] {
+  color: light-dark(#222, #eee);
   max-width: 36rem;
   margin: 15vh auto 0;
   padding: 0 1.5rem;
@@ -24,5 +25,10 @@ body {
 
 [data-refused] button {
   font: inherit;
-  padding: 0.4rem 1.2rem;
+  color: inherit;
+  background: light-dark(#fff, #2c2c2c);
+  border: 1px solid light-dark(#8e8e8e, #8e8e8e);
+  border-radius: 1rem;
+  padding: 0.3rem 1.2rem;
+  cursor: pointer;
 }
