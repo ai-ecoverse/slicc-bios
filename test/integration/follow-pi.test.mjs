@@ -5,6 +5,7 @@ import { ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { model, startHub } from './fake-hub.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
+import { shoot } from './shots.mjs';
 
 const KEY = 'dummy-bedrock-key-0000';
 const BEDROCK = 'https://bedrock-runtime.us-west-2.amazonaws.com/';
@@ -21,6 +22,45 @@ const reply = Buffer.concat([
   }),
 ]);
 
+const looking = Buffer.concat([
+  eventFrame('messageStart', { role: 'assistant' }),
+  eventFrame('contentBlockDelta', {
+    contentBlockIndex: 0,
+    delta: { text: 'Let me look around this SLICC first.' },
+  }),
+  eventFrame('contentBlockStop', { contentBlockIndex: 0 }),
+  eventFrame('contentBlockStart', {
+    contentBlockIndex: 1,
+    start: { toolUse: { toolUseId: 'look-1', name: 'bash' } },
+  }),
+  eventFrame('contentBlockDelta', {
+    contentBlockIndex: 1,
+    delta: { toolUse: { input: JSON.stringify({ command: 'ls /' }) } },
+  }),
+  eventFrame('contentBlockStop', { contentBlockIndex: 1 }),
+  eventFrame('messageStop', { stopReason: 'tool_use' }),
+  eventFrame('metadata', {
+    usage: { inputTokens: 3, outputTokens: 9, totalTokens: 12 },
+    metrics: { latencyMs: 1 },
+  }),
+]);
+let release = null;
+const held = new Promise((resolve) => {
+  release = resolve;
+});
+let holding = false;
+const lastTurn = (body) => {
+  try {
+    const sent = JSON.parse(body.toString());
+    return {
+      tools: !!sent.toolConfig?.tools?.length,
+      content: sent.messages?.at(-1)?.content ?? [],
+    };
+  } catch {
+    return { tools: false, content: [] };
+  }
+};
+
 const owners = await launch({ agent: true, timeout: 60000 });
 const followers = await launch({ agent: true, timeout: 60000 });
 const asked = [];
@@ -35,6 +75,17 @@ const proxy = await fakeProxy({
     if (!request.url.startsWith(BEDROCK))
       return { status: 404, headers: [], body: Buffer.alloc(0) };
     asked.push(body.toString());
+    const turn = lastTurn(body);
+    if (turn.tools && turn.content.some((item) => item.text?.includes('Say hello')))
+      return {
+        status: 200,
+        headers: [['content-type', 'application/vnd.amazon.eventstream']],
+        body: looking,
+      };
+    if (turn.content.some((item) => item.toolResult) && !holding) {
+      holding = true;
+      await held;
+    }
     return {
       status: 200,
       headers: [['content-type', 'application/vnd.amazon.eventstream']],
@@ -118,13 +169,29 @@ test('a follower watches the owner run with View, is refused a send, and sends w
 
   await owner.evaluate(() => {
     const { agent } = document.querySelector('slicc-app').model;
-    return agent.send(agent.active(), 'Say hello');
+    void agent.send(agent.active(), 'Say hello');
   });
+  for (let i = 0; i < 600 && !holding; i += 1)
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.ok(holding, 'the owner agent never ran its tool');
+  await page.until(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    const said = JSON.stringify(agent.messages(agent.active()));
+    return said.includes('look around this SLICC') && agent.busy(agent.active());
+  });
+  await shoot(page, 'follower-chat-mid-answer', { show: 'chat' });
+  release();
   await page.until(() => {
     const { agent } = document.querySelector('slicc-app').model;
     return JSON.stringify(agent.messages(agent.active())).includes('Hello from the owner.');
   });
   assert.match(await said(page), /Say hello/);
+  await page.until(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    return !agent.busy(agent.active());
+  });
+  await shoot(page, 'follower-chat-answered', { show: 'chat' });
+  await shoot(owner, 'owner-watching', { show: 'network', target: '[aria-labelledby="links"]' });
 
   const refused = await page.evaluate(() => {
     const { agent } = document.querySelector('slicc-app').model;
