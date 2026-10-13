@@ -160,7 +160,7 @@ async function refusedOnly(page, from, at = 1) {
   for (let i = 0; i < 100 && page.errors.length < from + at; i += 1) await pause(100);
   await pause(2000);
   const refusals = page.errors.splice(from);
-  assert.ok(refusals.length >= at, `expected ${at} refusals, saw: ${refusals.join('\n')}`);
+  assert.equal(refusals.length, at, `expected ${at} refusals, saw: ${refusals.join('\n')}`);
   for (const refusal of refusals) assert.match(refusal, /watch, but not send/);
 }
 

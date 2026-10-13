@@ -151,10 +151,12 @@ test('a follower with Terminal gets a shell in the owner kernel: ls, ^C, resize 
     document.querySelector('slicc-app').model.terminals.close(kept.id);
     return { error: kept.error, exited: kept.exited, output: kept.output };
   });
-  assert.ok(
-    /EACCES/.test(`${unopened.error} ${unopened.output}`) || unopened.exited !== null,
-    `a terminal opened without Terminal: ${JSON.stringify({ viewOnly, unopened })}`
+  assert.equal(
+    viewOnly.open,
+    false,
+    `a terminal opened without Terminal: ${JSON.stringify(unopened)}`
   );
+  assert.match(String(unopened.error), /EACCES/);
   await new Promise((resolve) => setTimeout(resolve, 2000));
   assert.equal(await opfsHas(owner, 'home/view-only-wrote'), false);
   assert.ok(
