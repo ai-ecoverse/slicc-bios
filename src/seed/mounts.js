@@ -284,7 +284,7 @@ export function createFolders({
 
   async function allow(req) {
     const hostfs = req.op === 'mount' && req.type === 'hostfs';
-    const link = hostfs && linked?.mounts().some((entry) => entry.source === req.source);
+    const link = hostfs && linked?.claims(req.source);
     if (hostfs && !link && !(exports && (await exports()).includes(req.source))) return false;
     void settle(kernel, await kernel.mounts(), update);
     return true;
