@@ -88,7 +88,11 @@ test('seven refuses its own code once a kernel process changes it, puts it back 
   await page.screenshot(new URL('integrity-notice-420.png', page.dir));
   await page.send('Emulation.clearDeviceMetricsOverride');
   await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
-  assert.deepEqual(page.errors, []);
+  const refused = /^TypeError: Failed to fetch dynamically imported module: .*\/os\/os\.js$/;
+  assert.deepEqual(
+    page.errors.filter((error) => !refused.test(error)),
+    []
+  );
 });
 
 test('seven stops restoring a file that changes again right after it put it back, logs it and says so', async (t) => {
