@@ -163,8 +163,20 @@ const owned = (page) =>
       agents: agent.list().map((a) => [a.id, a.kind, !!a.frozen]),
       frozen: agent.frozen().length,
       messages: agent.messages(agent.active()).length,
+      busy: agent.busy(agent.active()),
+      queue: agent.queue(agent.active()).length,
     });
   });
+
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function refusedOnly(page, from, at = 1) {
+  for (let i = 0; i < 100 && page.errors.length < from + at; i += 1) await pause(100);
+  await pause(2000);
+  const refusals = page.errors.splice(from);
+  assert.equal(refusals.length, at, `expected ${at} refusals, saw: ${refusals.join('\n')}`);
+  for (const refusal of refusals) assert.match(refusal, /watch, but not send/);
+}
 
 const said = (page) =>
   page.evaluate(() => {
@@ -239,6 +251,28 @@ test('a follower watches the owner run with View, is refused a send, and sends w
     return said.includes('look around this SLICC') && agent.busy(agent.active());
   });
   await shoot(page, 'follower-chat-mid-answer', { show: 'chat' });
+
+  const turning = await owned(owner);
+  assert.equal(JSON.parse(turning).busy, true);
+  const turnErrors = page.errors.length;
+  const steered = await page.evaluate(async () => {
+    const { agent } = document.querySelector('slicc-app').model;
+    const id = agent.active();
+    const outcome = (sent) =>
+      sent.then(
+        () => 'accepted',
+        (error) => error.message
+      );
+    const steer = await outcome(agent.send(id, 'Steer from a watcher'));
+    const queue = await outcome(agent.send(id, { text: 'Queued from a watcher', mode: 'queue' }));
+    agent.stop(id);
+    return { steer, queue };
+  });
+  assert.match(steered.steer, /watch, but not send/);
+  assert.match(steered.queue, /watch, but not send/);
+  await refusedOnly(page, turnErrors);
+  assert.equal(await owned(owner), turning);
+  assert.ok(!asked.some((body) => /from a watcher/.test(body)));
   release();
   await page.until(() => {
     const { agent } = document.querySelector('slicc-app').model;
@@ -359,6 +393,55 @@ test('a follower watches the owner run with View, is refused a send, and sends w
   assert.equal(await owned(owner), ownerBefore);
   assert.equal(await owned(page), followerBefore);
   assert.equal(asked.length, askedBefore);
+
+  const sweepErrors = page.errors.length;
+  const ownerIdle = await owned(owner);
+  const accounts = () =>
+    owner.evaluate(() =>
+      JSON.stringify(document.querySelector('slicc-app').model.settings.accounts())
+    );
+  const accountsBefore = await accounts();
+  const swept = await page.evaluate(async () => {
+    const { agent, settings, sprinkles } = document.querySelector('slicc-app').model;
+    const id = agent.active();
+    const last = agent.messages(id).at(-1)?.id ?? 'none';
+    const outcome = (fn) => {
+      try {
+        return Promise.resolve(fn()).then(
+          () => 'accepted',
+          (error) => error.message
+        );
+      } catch (error) {
+        return Promise.resolve(error.message);
+      }
+    };
+    const awaited = {
+      send: await outcome(() => agent.send(id, 'Prompt from a watcher')),
+      rewind: await outcome(() => agent.rewind?.(id, last)),
+      drop: await outcome(() => agent.drop?.(id)),
+      createCone: await outcome(() => agent.createCone?.('From a watcher')),
+      connect: await outcome(() => settings.connect('amazon-bedrock', 'dummy-other-key-0000')),
+      call: await outcome(() => sprinkles.call('welcome', 'getState', [])),
+    };
+    agent.compact(id);
+    const fired = [
+      () => agent.stop(id),
+      () => agent.clear(id),
+      () => agent.setModel(id, 'amazon-bedrock/another-model'),
+      () => agent.freeze?.(id),
+      () => sprinkles.send('welcome', { action: 'onboarding-complete', data: {} }),
+      () => settings.disconnect('amazon-bedrock'),
+    ];
+    for (const fire of fired) fire();
+    return { awaited, fired: fired.length };
+  });
+  for (const [name, message] of Object.entries(swept.awaited))
+    assert.match(message, /watch, but not send/, `${name}: ${message}`);
+  await refusedOnly(page, sweepErrors, swept.fired);
+  assert.equal(await owned(owner), ownerIdle);
+  assert.equal(await accounts(), accountsBefore);
+  assert.equal(asked.length, askedBefore);
+  assert.doesNotMatch(await said(owner), /from a watcher/i);
 
   const refused = await page.evaluate(() => {
     const { agent } = document.querySelector('slicc-app').model;
