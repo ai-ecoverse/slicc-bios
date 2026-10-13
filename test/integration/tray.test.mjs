@@ -14,7 +14,6 @@ test('seven leads a tray: a follower joins and links, rotation moves it to a new
   await boot(page);
   await page.evaluate((url) => {
     localStorage.setItem('slicc-os.tray-hub', url);
-    localStorage.setItem('slicc-os.followers', 'on');
   }, hub.url);
   await page.reload();
   await ready(page);
@@ -226,6 +225,5 @@ test('seven leads a tray: a follower joins and links, rotation moves it to a new
   );
   await page.evaluate(() => {
     localStorage.removeItem('slicc-os.tray-hub');
-    localStorage.removeItem('slicc-os.followers');
   });
 });
