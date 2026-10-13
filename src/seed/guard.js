@@ -130,6 +130,7 @@ class Guard {
     this.internal = new Map();
     this.asked = new Map();
     this.watching = new Map();
+    this.queues = new Map();
     this.allowed = new Set();
     this.blockedWorkers = new Set();
     this.next = GUARD_IDS;
@@ -229,7 +230,11 @@ class Guard {
   }
 
   async inspect(sessionId, targetId, parent) {
-    if ((targetId && (await this.target(targetId))) || !(await this.verify(sessionId))) {
+    const [guarded, clean] = await Promise.all([
+      targetId ? this.target(targetId) : false,
+      this.verify(sessionId),
+    ]);
+    if (guarded || !clean) {
       this.cut(sessionId, parent);
       return false;
     }
@@ -545,28 +550,41 @@ class Guard {
     }
     const was = message.id === undefined ? undefined : this.asked.get(message.id);
     this.asked.delete(message.id);
-    this.inbound = (this.inbound ?? Promise.resolve())
-      .then(() => (message.id === undefined ? this.event(message) : this.answer(message, was)))
-      .catch((error) => {
+    this.queue(
+      message.sessionId ?? was?.sessionId ?? '',
+      () => (message.id === undefined ? this.event(message) : this.answer(message, was)),
+      (error) => {
         console.warn(`the CDP guard dropped a message: ${error.message}`);
         if (was) this.refuse(was, FAILED);
-      });
+      }
+    );
+  }
+
+  queue(key, task, failed) {
+    const next = (this.queues.get(key) ?? Promise.resolve()).then(task).catch(failed);
+    this.queues.set(key, next);
+    void next.then(() => {
+      if (this.queues.get(key) === next) this.queues.delete(key);
+    });
   }
 
   start() {
     const { connection, guarded } = this;
     connection.onmessage = (text) => this.received(text);
     connection.onclose = (why) => guarded.onclose?.(why);
-    let order = Promise.resolve();
     guarded.send = (text) => {
       const message = parse(text);
-      order = order
-        .then(() => this.check(message))
-        .then((why) => (why ? this.refuse(message, why) : this.pass(message)))
-        .catch((error) => {
+      this.queue(
+        `send:${message.sessionId ?? ''}`,
+        async () => {
+          const why = await this.check(message);
+          return why ? this.refuse(message, why) : this.pass(message);
+        },
+        (error) => {
           console.warn(`the CDP guard refused a command: ${error.message}`);
           this.refuse(message, FAILED);
-        });
+        }
+      );
     };
     guarded.close = () => connection.close();
     return guarded;
