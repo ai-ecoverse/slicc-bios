@@ -17,14 +17,10 @@ test('a second tab follows the first on one kernel, and takes over when the firs
   await b.until(() => document.querySelector('slicc-app').model.tabs?.state().role === 'follower');
   assert.deepEqual(await role(b), { role: 'follower', stalled: false, skew: null });
 
-  const front = async (page) => {
-    await page.send('Page.bringToFront');
-    await shows(page, prompt);
-  };
-  await front(a);
+  await shows(a, prompt);
   await run(a, 'echo from-the-owner > /tmp/pr17; sleep 300 & echo wrote-$((40+1))');
   await shows(a, 'wrote-41');
-  await front(b);
+  await shows(b, prompt);
   await run(b, 'cat /tmp/pr17');
   await shows(b, 'from-the-owner');
   await run(b, 'pgrep -f "sleep 300" > /dev/null && echo seen-$((40+2))');
