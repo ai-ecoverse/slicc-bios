@@ -15,8 +15,16 @@ export function wsRecord(type, payload) {
   return out;
 }
 
+function cut(reason, limit) {
+  const bytes = encoder.encode(reason ?? '');
+  if (bytes.length <= limit) return bytes;
+  let end = limit;
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+  return bytes.subarray(0, end);
+}
+
 export function closePayload(code, reason) {
-  const text = encoder.encode(reason ?? '').subarray(0, 123);
+  const text = cut(reason, 123);
   const out = new Uint8Array(2 + text.length);
   new DataView(out.buffer).setUint16(0, code);
   out.set(text, 2);
@@ -41,7 +49,12 @@ function inbox(onOverflow) {
       if (waiter) return waiter({ value: item, done: false });
       size += length(item);
       items.push(item);
-      if (size > WS_QUEUED) onOverflow();
+      if (size > WS_QUEUED) {
+        ended = true;
+        items.length = 0;
+        size = 0;
+        onOverflow();
+      }
     },
     end() {
       ended = true;
@@ -87,6 +100,10 @@ async function records(reader, each) {
 export async function linkWebSocket(session, { url, protocols, headers, signal }, reader) {
   signal?.throwIfAborted();
   const s = await session.open({ kind: 'ws', url, protocols, headers });
+  if (signal?.aborted) {
+    s.close();
+    signal.throwIfAborted();
+  }
   let state = 'open';
   let buffered = 0;
   let writes = Promise.resolve();
@@ -128,7 +145,12 @@ export async function linkWebSocket(session, { url, protocols, headers, signal }
       if (state !== 'open')
         throw Object.assign(new Error('the WebSocket is closed'), { code: 'EPIPE' });
       const text = typeof data === 'string';
-      void write(wsRecord(text ? WS_TEXT : WS_BINARY, text ? encoder.encode(data) : data));
+      const payload = text ? encoder.encode(data) : data;
+      if (payload.length > WS_MAX) {
+        close(1009, 'a message over 64 MiB');
+        throw Object.assign(new Error('a WebSocket message over 64 MiB'), { code: 'EMSGSIZE' });
+      }
+      void write(wsRecord(text ? WS_TEXT : WS_BINARY, payload));
     },
     messages,
     close,
