@@ -26,6 +26,22 @@ function fakeNode(key) {
   const pc = new RTCPeerConnection();
   const answer = (channel, id, meta) => {
     log.push(meta);
+    if (meta.kind === 'ws') {
+      channel.send(frame(2, id, JSON.stringify({ protocol: '' })));
+      const hello = encoder.encode(`ws hello ${meta.url}`);
+      const record = new Uint8Array(5 + hello.length);
+      record[0] = 1;
+      new DataView(record.buffer).setUint32(1, hello.length);
+      record.set(hello, 5);
+      channel.send(frame(3, id, record));
+      return (type, payload) => {
+        if (type !== 3) return;
+        const credit = new Uint8Array(4);
+        new DataView(credit.buffer).setUint32(0, payload.length);
+        channel.send(frame(6, id, credit));
+        channel.send(frame(3, id, payload));
+      };
+    }
     if (meta.kind === 'resolve') {
       const addresses = meta.name === 'far.example' ? ['203.0.113.7'] : [];
       channel.send(frame(2, id, JSON.stringify({ addresses, ttl: 30 })));
@@ -90,7 +106,7 @@ function fakeNode(key) {
             name: 'fake node',
             host: 'Fake-Node',
             mode: 'local',
-            caps: ['net', 'http', 'ssh'],
+            caps: ['net', 'http', 'ssh', 'ws'],
             routes: { prefixes: [], exit: true },
             sshHostKey: key,
           })
@@ -211,6 +227,18 @@ test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback
     'link-automatic'
   );
   assert.deepEqual(automatic, { code: '0', out: 'raw 203.0.113.7:80 /automatic' });
+  const upgraded = await shell(
+    page,
+    "curl -s -i -N --noproxy '' --max-time 4 -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' http://far.example/ws | tr -d '\\000-\\010\\016-\\037\\200-\\377'",
+    'link-ws'
+  );
+  assert.match(upgraded.out, /^HTTP\/1\.1 101 Switching Protocols/, upgraded.out);
+  assert.match(upgraded.out, /ws hello ws:\/\/far\.example\/ws/, upgraded.out);
+  assert.ok(
+    await page.evaluate(() =>
+      globalThis.fakeNodeLog.some((m) => m.kind === 'ws' && m.url === 'ws://far.example/ws')
+    )
+  );
   await page.evaluate(() => document.querySelector('slicc-app').model.network.setExit(null));
   assert.equal((await network()).exit, null);
   const before = await page.evaluate(() => globalThis.fakeNodeLog.length);

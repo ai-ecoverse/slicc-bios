@@ -112,6 +112,7 @@ await step('seed', async () => {
     'grammars.js',
     'index.html',
     'layer.js',
+    'link-ws.js',
     'link.js',
     'loopback.js',
     'mounts.js',
