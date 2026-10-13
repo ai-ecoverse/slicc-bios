@@ -20,7 +20,7 @@ import { createApprovals } from './approvals.js';
 import { createBrowser } from './browser.js';
 import { browserControl } from './cdp.js';
 import { clipboardHook } from './clipboard.js';
-import { denialLog } from './denials.js';
+import { denialLog, installCommand } from './denials.js';
 import { createExitRouter } from './exits.js';
 import { deviceName } from './follow.js';
 import { createFollowers } from './followers.js';
@@ -78,17 +78,16 @@ import {
   text,
   update,
   versions,
+  write,
 } from './update.js';
 import { count, createUpdates, owners } from './updates.js';
 import {
   addCone,
-  boundTo,
   dropProtectedMounts,
   homeSkips,
   kernelUsers,
-  terminalHome,
+  lockLegacy,
   terminalTag,
-  terminalUser,
   usersMode,
 } from './users.js';
 
@@ -248,7 +247,6 @@ reportStopped(notices);
 const approvals = createApprovals();
 const mode = usersMode();
 protectInstalls(mode !== 'off');
-const asUser = terminalUser({ mode });
 document.documentElement.dataset.users = mode;
 const keep = keepStorage({ notices, prompts });
 let model = null;
@@ -262,6 +260,7 @@ let startedWith = null;
 let owned = new Map();
 let serving = null;
 let optional = Promise.resolve(null);
+let coneIds = null;
 
 const start = () =>
   createKernel({
@@ -297,9 +296,7 @@ async function followerShell(link, meta, stream) {
 
 async function give(from, names) {
   return {
-    kernel: names.includes('kernel')
-      ? await kernel.connect({ tag: terminalTag(from), ...boundTo(asUser) })
-      : null,
+    kernel: names.includes('kernel') ? await kernel.connect({ tag: terminalTag(from) }) : null,
     agent: names.includes('agent') && owner ? await owner.port() : null,
     os: names.includes('os') ? serving.open() : null,
   };
@@ -578,6 +575,7 @@ async function own() {
     network,
     secret: await offTheRecord(),
     linked: links,
+    owner: () => coneIds ?? { uid: 0, gid: 0 },
   });
   approvals.own();
   kernel = await createKernel({
@@ -594,7 +592,16 @@ async function own() {
       onDenial: denialLog({ root, users: () => kernel?.users, mode }),
     }),
   });
-  await addCone(kernel);
+  const cone = await addCone(kernel);
+  coneIds = cone && { uid: cone.uid, gid: cone.gid };
+  await lockLegacy(kernel, { text, write, root }).catch((error) =>
+    console.warn(`legacy files: ${error.message}`)
+  );
+  if (mode !== 'off') {
+    await installCommand(root, kernel, write).catch((error) =>
+      console.warn(`slicc-denials: ${error.message}`)
+    );
+  }
   exits.attach(kernel);
   if (globalThis.sliccKernelDebug === true)
     globalThis.sliccKernelClient = async () => attachKernel(await kernel.connect());
@@ -640,7 +647,7 @@ async function follow() {
     root,
     storage: localStorage,
     files: { skip: [...skip, ...homeSkips(await text(root, 'etc/passwd'))], hide },
-    terminals: { env: { PS1: 'slicc:\w\$ ', SLICC_TAB: board.id }, ...terminalHome(asUser) },
+    terminals: { env: { PS1: 'slicc:\\w\\$ ', SLICC_TAB: board.id } },
   });
   files = model;
   const waiting = claimed.owner ? updates : createUpdates({ ready: true });

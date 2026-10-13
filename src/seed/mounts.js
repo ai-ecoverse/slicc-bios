@@ -151,7 +151,7 @@ function markFolders(session) {
 const info = ({ target, source, type }) =>
   type === 'hostfs' ? { target, source, type } : { target, type };
 
-function linkedActions(state, update) {
+function linkedActions(state, update, owner) {
   const at = (source) =>
     folders(state().table).find((entry) => entry.type === 'hostfs' && entry.source === source)
       ?.target;
@@ -164,7 +164,7 @@ function linkedActions(state, update) {
       const { fs, kernel } = state();
       const target = `/mnt/${source}`;
       await fs.mkdir(target, { recursive: true });
-      await kernel.mount({ type: 'hostfs', source, target });
+      await kernel.mount({ type: 'hostfs', source, target, options: owned({}, owner()) });
       await update(await kernel.mounts());
       return target;
     },
@@ -188,6 +188,7 @@ export function createFolders({
   mark = markFolders,
   attach = attachKernel,
   linked = null,
+  owner = () => ROOT,
 }) {
   let secret = initial;
   mark(secret);
@@ -324,7 +325,7 @@ export function createFolders({
       await fs.mkdir(target);
       inserting.add(target);
       try {
-        await kernel.mount({ type: 'fsa', source: 'none', target, options: owned() });
+        await kernel.mount({ type: 'fsa', source: 'none', target, options: owned({}, owner()) });
         await kernel.insert(target, handle);
       } finally {
         inserting.delete(target);
@@ -355,12 +356,12 @@ export function createFolders({
       setInterval(() => void refresh(), POLL_MS);
       return { ...model, files: port };
     },
-    ...linkedActions(() => ({ fs, kernel, table }), update),
+    ...linkedActions(() => ({ fs, kernel, table }), update, owner),
     async restore() {
       for (const { type, source, target, options } of remembered(storage, secret)) {
         try {
           await fs.mkdir(target);
-          await kernel.mount({ type, source, target, options: owned(options) });
+          await kernel.mount({ type, source, target, options: owned(options, owner()) });
         } catch (error) {
           console.warn(`${target} was not mounted again: ${error.message}`);
         }

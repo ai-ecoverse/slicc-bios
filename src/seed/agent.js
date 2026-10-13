@@ -1,6 +1,6 @@
-import { apply, merge, readLayer } from './layer.js';
+import { apply } from './layer.js';
 import { failure } from './link.js';
-import { text, versions, write } from './update.js';
+import { text, versions } from './update.js';
 import { kernelSource } from './users.js';
 
 const deployed = new URL('../packages/agent/', import.meta.url);
@@ -35,40 +35,10 @@ export async function version() {
   return (await versions(root, [PACKAGE], `${folder}/`))[PACKAGE];
 }
 
-export const BUILD = 'slicc-os.agent-build';
-
-export async function pinBuild(root, url, fetcher = fetch) {
-  const base = JSON.parse((await text(root, `${state}/package.json`)) ?? 'null');
-  const known = JSON.parse((await text(root, `${state}/build.json`)) ?? 'null');
-  if (!url || !base || known?.url === url) return false;
-  const response = await fetcher(url);
-  if (!response.ok) throw new Error(`the agent build at ${url} answered ${response.status}`);
-  const bytes = await response.arrayBuffer();
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-  const id = Array.from(digest.slice(0, 6), (byte) => byte.toString(16).padStart(2, '0')).join('');
-  const file = `rc/slicc-agent-${id}.tgz`;
-  await write(root, `${folder}/${file}`, bytes);
-  const layer = readLayer(await text(root, `${state}/user.json`));
-  layer.pin[PACKAGE] = {
-    spec: `file:${file}`,
-    field: 'dependencies',
-    base: base.dependencies?.[PACKAGE] ?? null,
-  };
-  await write(root, `${folder}/package.json`, `${JSON.stringify(merge(base, layer), null, 2)}\n`);
-  await write(root, `${state}/user.json`, `${JSON.stringify({ ...layer, pending: true })}\n`);
-  await write(root, `${state}/build.json`, `${JSON.stringify({ url, file })}\n`);
-  return true;
-}
-
-export function installAgent(
-  start,
-  { from = deployed, build = localStorage.getItem(BUILD), ...options } = {}
-) {
-  return navigator.locks.request(project.lock, async () => {
-    const root = await navigator.storage.getDirectory();
-    await pinBuild(root, build).catch((error) => console.warn(`agent build: ${error.message}`));
-    return apply(root, { ...project, from }, { start, ...options });
-  });
+export function installAgent(start, { from = deployed, ...options } = {}) {
+  return navigator.locks.request(project.lock, async () =>
+    apply(await navigator.storage.getDirectory(), { ...project, from }, { start, ...options })
+  );
 }
 
 let chat = null;
