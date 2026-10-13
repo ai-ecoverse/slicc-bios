@@ -60,8 +60,18 @@ export function held(id) {
     resolve: async () => [],
     dial: fail,
     fetch: fail,
+    websocket: fail,
   };
 }
+
+export const SEALED = /fnox_proxy_[0-9a-f]{24}/;
+export const NO_SEALED_WEBSOCKET = "secrets in WebSocket handshakes aren't supported yet";
+
+const sealed = ({ url, headers = [] }) =>
+  SEALED.test(url) || headers.some(([name, value]) => SEALED.test(`${name}:${value}`));
+
+export const NO_WEBSOCKET =
+  'WebSockets go out only through an exit: link a slicc CLI (npx sliccy@next) and use it as the exit';
 
 export const DIRECT = 'direct';
 
@@ -139,10 +149,19 @@ export function createExitRouter() {
     },
     transport(base) {
       return {
-        traits: base.traits,
+        traits: { ...base.traits, websocket: true },
         fetch(request) {
           const exit = httpCarrier(new URL(request.url).hostname);
           return exit ? exit.fetch(request) : base.fetch(request);
+        },
+        async websocket(request) {
+          if (sealed(request))
+            throw Object.assign(new Error(NO_SEALED_WEBSOCKET), { code: 'EACCES', status: 502 });
+          const exit = httpCarrier(new URL(request.url).hostname);
+          if (exit?.websocket) return exit.websocket(request);
+          const why = exit ? `the exit ${exit.id} carries no WebSockets` : NO_WEBSOCKET;
+          if (!exit && base.websocket) return base.websocket(request);
+          throw Object.assign(new Error(why), { status: exit ? 502 : 501 });
         },
       };
     },

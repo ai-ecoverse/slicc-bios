@@ -1,4 +1,5 @@
 import { bareHost } from './exits.js';
+import { linkWebSocket } from './link-ws.js';
 
 export const OPEN = 1;
 export const OPENED = 2;
@@ -420,6 +421,17 @@ export function linkExit(session, { id, address, label, browsers = () => [], aut
     async cdp(browser) {
       const s = await session.open({ kind: 'cdp', browser });
       return cdpConnection(s);
+    },
+    async websocket(request) {
+      if (!session.caps().includes('ws'))
+        throw Object.assign(new Error(`${label()} carries no WebSockets; update its slicc CLI`), {
+          status: 502,
+        });
+      const url = new URL(request.url);
+      if (mine(url.hostname)) url.hostname = '127.0.0.1';
+      return linkWebSocket(session, { ...request, url: url.href }, bufferedReader).catch((error) =>
+        Promise.reject(Object.assign(mapped(error), { status: 502 }))
+      );
     },
     async fetch(request) {
       const { signal } = request;

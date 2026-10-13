@@ -26,6 +26,22 @@ function fakeNode(key) {
   const pc = new RTCPeerConnection();
   const answer = (channel, id, meta) => {
     log.push(meta);
+    if (meta.kind === 'ws') {
+      channel.send(frame(2, id, JSON.stringify({ protocol: '' })));
+      const hello = encoder.encode(`ws hello ${meta.url}`);
+      const record = new Uint8Array(5 + hello.length);
+      record[0] = 1;
+      new DataView(record.buffer).setUint32(1, hello.length);
+      record.set(hello, 5);
+      channel.send(frame(3, id, record));
+      return (type, payload) => {
+        if (type !== 3) return;
+        const credit = new Uint8Array(4);
+        new DataView(credit.buffer).setUint32(0, payload.length);
+        channel.send(frame(6, id, credit));
+        channel.send(frame(3, id, payload));
+      };
+    }
     if (meta.kind === 'resolve') {
       const addresses = meta.name === 'far.example' ? ['203.0.113.7'] : [];
       channel.send(frame(2, id, JSON.stringify({ addresses, ttl: 30 })));
@@ -90,7 +106,7 @@ function fakeNode(key) {
             name: 'fake node',
             host: 'Fake-Node',
             mode: 'local',
-            caps: ['net', 'http', 'ssh'],
+            caps: ['net', 'http', 'ssh', 'ws'],
             routes: { prefixes: [], exit: true },
             sshHostKey: key,
           })
@@ -211,6 +227,18 @@ test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback
     'link-automatic'
   );
   assert.deepEqual(automatic, { code: '0', out: 'raw 203.0.113.7:80 /automatic' });
+  const upgraded = await shell(
+    page,
+    "curl -s -i -N --noproxy '' --max-time 4 -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' http://far.example/ws | tr -d '\\000-\\010\\016-\\037\\200-\\377'",
+    'link-ws'
+  );
+  assert.match(upgraded.out, /^HTTP\/1\.1 101 Switching Protocols/, upgraded.out);
+  assert.match(upgraded.out, /ws hello ws:\/\/far\.example\/ws/, upgraded.out);
+  assert.ok(
+    await page.evaluate(() =>
+      globalThis.fakeNodeLog.some((m) => m.kind === 'ws' && m.url === 'ws://far.example/ws')
+    )
+  );
   await page.evaluate(() => document.querySelector('slicc-app').model.network.setExit(null));
   assert.equal((await network()).exit, null);
   const before = await page.evaluate(() => globalThis.fakeNodeLog.length);
@@ -804,5 +832,99 @@ test('the real slicc CLI lists its folders on its device row, and Mount and Ejec
       document.querySelector('slicc-app').model.network.ejectFolder('ref-node/proj')
     ),
     /not mounted/
+  );
+});
+
+const WS_SCRIPT = (port) =>
+  [
+    'exec 3<>/dev/tcp/127.0.0.1/3128',
+    `printf 'GET http://ref-node.slicc.internal:${port}/ HTTP/1.1\\r\\nHost: ref-node.slicc.internal:${port}\\r\\nConnection: Upgrade\\r\\nUpgrade: websocket\\r\\nSec-WebSocket-Version: 13\\r\\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\\r\\nSec-WebSocket-Protocol: echo\\r\\n\\r\\n' >&3`,
+    'sleep 1',
+    'printf "$1" >&3',
+    'sleep 1',
+    'printf "$2" >&3',
+    'timeout 8 cat <&3 | od -An -tx1 -v | tr -d " \\n"',
+  ].join('\n');
+
+test('the real slicc CLI carries a program WebSocket over the link: text, binary, a close from each end, and its policy', {
+  skip: !cli,
+}, async (t) => {
+  const { WebSocketServer } = await import('ws');
+  const echo = new WebSocketServer({
+    host: '127.0.0.1',
+    port: 0,
+    handleProtocols: (set) => (set.has('echo') ? 'echo' : false),
+  });
+  echo.on('connection', (socket) =>
+    socket.on('message', (data, binary) => {
+      if (!binary && String(data) === 'bye') socket.close(4001, 'far end done');
+      else socket.send(data, { binary });
+    })
+  );
+  await new Promise((resolve) => echo.once('listening', resolve));
+  t.after(() => echo.close());
+  const { port } = echo.address();
+  const page = await chrome.page(t);
+  await boot(page);
+  await ready(page);
+  let current = null;
+  await page.expose('sliccLinkSend', (message) =>
+    current?.stdin.write(`${JSON.stringify(message)}\n`)
+  );
+  const attach = async (extra) => {
+    current?.kill();
+    const node = spawn(
+      cli,
+      ['attach', '--signal', 'stdio', '--name', 'ref-node', '--no-kernel', ...extra],
+      {
+        stdio: ['pipe', 'pipe', 'inherit'],
+      }
+    );
+    t.after(() => node.kill());
+    current = node;
+    createInterface({ input: node.stdout }).on('line', (line) =>
+      page.evaluate((line) => globalThis.sliccLinkReceive(line), line).catch(() => {})
+    );
+    await page.until(() =>
+      document
+        .querySelector('slicc-app')
+        .model.network.status()
+        .links?.devices.some((d) => d.state === 'connected')
+    );
+  };
+  await attach([]);
+  await page.evaluate(async (script) => {
+    const home = await (await navigator.storage.getDirectory()).getDirectoryHandle('home');
+    const writable = await (await home.getFileHandle('ws.sh', { create: true })).createWritable();
+    await writable.write(script);
+    await writable.close();
+  }, WS_SCRIPT(port));
+  const hex = (text) => Buffer.from(text).toString('hex');
+  const echoed = await shell(
+    page,
+    String.raw`bash /home/ws.sh '\x81\x82\x00\x00\x00\x00hi\x82\x83\x00\x00\x00\x00\x01\x02\x03' '\x88\x82\x00\x00\x00\x00\x03\xe8'`,
+    'ws-echo'
+  );
+  assert.ok(echoed.out.startsWith(hex('HTTP/1.1 101 Switching Protocols')), echoed.out);
+  assert.ok(
+    echoed.out.includes(hex('Sec-WebSocket-Protocol: echo').toLowerCase()) ||
+      echoed.out.includes(hex('sec-websocket-protocol: echo')),
+    echoed.out
+  );
+  assert.ok(echoed.out.includes(`8102${hex('hi')}`), echoed.out);
+  assert.ok(echoed.out.includes('8203010203'), echoed.out);
+  assert.ok(echoed.out.includes('880203e8'), echoed.out);
+  const far = await shell(
+    page,
+    String.raw`bash /home/ws.sh '\x81\x83\x00\x00\x00\x00bye' ''`,
+    'ws-far'
+  );
+  assert.ok(far.out.includes(`880e0fa1${hex('far end done')}`), far.out);
+  await attach(['--deny', '127.0.0.1/32']);
+  const denied = await shell(page, String.raw`bash /home/ws.sh '' ''`, 'ws-denied');
+  assert.ok(denied.out.startsWith(hex('HTTP/1.1 502')), denied.out);
+  assert.ok(
+    denied.out.includes(hex('EACCES')) || denied.out.includes(hex('policy')),
+    Buffer.from(denied.out, 'hex').toString()
   );
 });
