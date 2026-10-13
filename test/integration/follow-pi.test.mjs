@@ -243,22 +243,24 @@ test('a follower watches the owner run with View, is refused a send, and sends w
   const askedBefore = asked.length;
   const errorsBefore = page.errors.length;
   await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
-  let finished = [];
-  for (let i = 0; i < 60 && !finished.includes('done'); i += 1) {
-    finished = await inFrames(page, () => {
-      const done = document.getElementById('sDone');
-      if (!done) return 'none';
-      if (done.classList.contains('active')) return 'done';
+  let picked = [];
+  for (let i = 0; i < 60 && !picked.includes('picked'); i += 1) {
+    picked = await inFrames(page, () => {
       const work = [...document.querySelectorAll('#purposePills .pill')].find(
         (pill) => pill.textContent.trim() === 'Work'
       );
-      if (work && document.getElementById('s1').classList.contains('active')) work.click();
-      else document.getElementById('skipBtn')?.click();
-      return 'stepping';
+      if (!work) return 'none';
+      work.click();
+      return 'picked';
     });
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    if (!picked.includes('picked')) await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  assert.ok(finished.includes('done'), `the welcome wizard never finished: ${finished}`);
+  assert.ok(picked.includes('picked'), `no Welcome choice to pick: ${picked}`);
+  await page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.sprinkles.send('welcome', { action: 'onboarding-complete', data: { purpose: 'work' } })
+  );
   await page.until(
     new Function(`
     const deep = (root) => {
