@@ -385,6 +385,7 @@ export function linkExit(session, { id, address, label, browsers = () => [], aut
     chosenOnly: true,
     automatic,
     hostLoopback: () => automatic && session.caps().includes('http'),
+    caps: () => session.caps(),
     name,
     active: () => Boolean(hello()) && !session.closed(),
     offersDefault: () => Boolean(hello()?.routes?.exit) && session.caps().includes('net'),

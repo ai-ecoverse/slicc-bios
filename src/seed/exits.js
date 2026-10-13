@@ -75,6 +75,15 @@ export const NO_WEBSOCKET =
 
 export const DIRECT = 'direct';
 
+const TAILNET_CAPS = ['net', 'http'];
+
+export function describe(exit) {
+  if (exit.kind === 'link')
+    return { kind: exit.automatic ? 'local' : 'remote', caps: [...exit.caps()] };
+  if (exit.kind === 'tailnet') return { kind: 'tailnet', caps: [...TAILNET_CAPS] };
+  return { kind: String(exit.kind ?? 'exit'), caps: [...(exit.caps?.() ?? [])] };
+}
+
 export function createExitRouter() {
   const exits = [];
   const own = new Set(KERNEL_NAMES);
@@ -150,7 +159,11 @@ export function createExitRouter() {
     },
     transport(base) {
       return {
-        traits: { ...base.traits, websocket: true },
+        get traits() {
+          const exit = fallback();
+          const about = exit && !exit.held ? describe(exit) : null;
+          return { ...base.traits, websocket: true, ...(about ? { exit: about } : {}) };
+        },
         fetch(request) {
           const exit = httpCarrier(new URL(request.url).hostname);
           return exit ? exit.fetch(request) : base.fetch(request);
