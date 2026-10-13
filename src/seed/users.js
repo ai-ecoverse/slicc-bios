@@ -113,3 +113,40 @@ export function homeSkips(passwd) {
     .filter((home) => home?.startsWith('/home/'));
   return homes.flatMap((home) => [`${home}/.local/share/pnpm`, `${home}/.cache`]);
 }
+
+export function underProtected(target, paths) {
+  return paths.some(
+    (path) =>
+      target === path ||
+      target.startsWith(`${path}/`) ||
+      target === '/' ||
+      path.startsWith(`${target.replace(/\/$/, '')}/`)
+  );
+}
+
+export function dropProtectedMounts({ storage, key, paths, notices }) {
+  let list;
+  try {
+    list = JSON.parse(storage.getItem(key) ?? '[]');
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(list)) return [];
+  const dropped = list.filter(
+    (entry) => typeof entry?.target === 'string' && underProtected(entry.target, paths)
+  );
+  if (!dropped.length) return [];
+  storage.setItem(key, JSON.stringify(list.filter((entry) => !dropped.includes(entry))));
+  const where = dropped.map(({ target }) => target).join(', ');
+  notices.show(
+    {
+      id: `mounts-protected:${where}`,
+      tone: 'warning',
+      title: 'A remembered folder wasn’t mounted',
+      body: `Seven no longer mounts folders at ${where}: that's where seven keeps its own code. Mount the folder somewhere else, such as /mnt.`,
+      actions: [],
+    },
+    () => {}
+  );
+  return dropped;
+}

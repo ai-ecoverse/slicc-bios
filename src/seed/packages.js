@@ -262,7 +262,7 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
   async function run(entry, action, argv) {
     live.set(entry.id, { state: RUNNING[action], progress: null, log: '' });
     changed();
-    await pnpm(kernel, '/home', reporter(entry, action), entry.offered, argv);
+    await pnpm(kernel, '/home', reporter(entry, action), entry.offered, argv, false);
   }
 
   async function project(entry, action) {
