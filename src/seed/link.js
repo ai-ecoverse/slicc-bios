@@ -713,6 +713,7 @@ function reclaim(links, labels, onLink, gone) {
   const heir = live
     .filter((item) => item.peer && item.wanted === gone.label && item.label !== gone.label)
     .at(-1);
+  if (heir?.served.length) return;
   if (!heir) return;
   heir.label = gone.label;
   labels.keep(heir.identity, heir.label);
