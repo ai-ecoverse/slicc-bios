@@ -8,3 +8,21 @@ body {
   color-scheme: light dark;
   background: light-dark(#f8f8f8, #1b1b1b);
 }
+
+[data-refused] {
+  max-width: 36rem;
+  margin: 15vh auto 0;
+  padding: 0 1.5rem;
+  font:
+    1rem / 1.5 system-ui,
+    sans-serif;
+}
+
+[data-refused] h1 {
+  font-size: 1.5rem;
+}
+
+[data-refused] button {
+  font: inherit;
+  padding: 0.4rem 1.2rem;
+}

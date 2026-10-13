@@ -88,11 +88,7 @@ test('seven refuses its own code once a kernel process changes it, puts it back 
   await page.screenshot(new URL('integrity-notice-420.png', page.dir));
   await page.send('Emulation.clearDeviceMetricsOverride');
   await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
-  const refused = /^TypeError: Failed to fetch dynamically imported module: .*\/os\/os\.js$/;
-  assert.deepEqual(
-    page.errors.filter((error) => !refused.test(error)),
-    []
-  );
+  assert.deepEqual(page.errors, []);
 });
 
 test('seven stops restoring a file that changes again right after it put it back, logs it and says so', async (t) => {
@@ -162,5 +158,48 @@ test('seven stops restoring a file that changes again right after it put it back
   });
   await page.screenshot(new URL('integrity-stopped-light.png', page.dir));
   assert.match(await read(page, 'os/callback.js'), /__changed = 2/);
+  assert.deepEqual(page.errors, []);
+});
+
+test('a UI whose own code keeps changing says so instead of staying blank', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  const bios = await watch(page);
+  await run(page, `echo 'globalThis.__changed = 3;' >> /os/os.js && echo first-$((40 + 2))`);
+  await shows(page, 'first-42');
+  await page.reload();
+  await ready(page);
+  await eventually(() => assert.ok(bios.states().includes('navigate:done')));
+  assert.doesNotMatch(await read(page, 'os/os.js'), /__changed/);
+  await run(page, `echo 'globalThis.__changed = 4;' >> /os/os.js && echo second-$((40 + 2))`);
+  await shows(page, 'second-42');
+  await page.reload();
+  const shown = await page.until(() => {
+    const box = document.querySelector('[data-refused]');
+    return (
+      box && {
+        path: location.pathname,
+        title: box.querySelector('h1').textContent,
+        text: box.querySelector('p').textContent,
+        button: box.querySelector('button').textContent,
+      }
+    );
+  });
+  assert.deepEqual(shown, {
+    path: '/os/',
+    title: 'Seven couldn’t start',
+    text: 'Seven didn’t load its own code: one of its files changed after seven installed it, or is missing. Reloading goes through the BIOS, which puts seven’s files back.',
+    button: 'Reload',
+  });
+  assert.equal(await page.evaluate(() => globalThis.__changed ?? null), null);
+  const scheme = (value) =>
+    page.send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-color-scheme', value }],
+    });
+  await scheme('light');
+  await page.screenshot(new URL('integrity-refused-light.png', page.dir));
+  await scheme('dark');
+  await page.screenshot(new URL('integrity-refused-dark.png', page.dir));
+  await scheme('');
   assert.deepEqual(page.errors, []);
 });
