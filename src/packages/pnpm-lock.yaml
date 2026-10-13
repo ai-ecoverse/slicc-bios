@@ -48,8 +48,8 @@ importers:
         specifier: 3.12.0-3
         version: 3.12.0-3
       '@ai-ecoverse/wasm-gzip':
-        specifier: 1.15.0-1
-        version: 1.15.0-1
+        specifier: 1.15.0-2
+        version: 1.15.0-2
       '@ai-ecoverse/wasm-jq':
         specifier: 1.8.2-2
         version: 1.8.2-2
@@ -143,8 +143,8 @@ packages:
   '@ai-ecoverse/wasm-grep@3.12.0-3':
     resolution: {integrity: sha512-2zUPO95WUlvdlRp2EOZW4ABaTvPdmF6qwX/mSWke1r51vW1NXTsqx1G+EXRwNFPzeYcOih17GViA0XGA7ph3/g==}
 
-  '@ai-ecoverse/wasm-gzip@1.15.0-1':
-    resolution: {integrity: sha512-XQp/9qXWGsoYAjnDyfIywNaeWMH81qP4mW1cfkTkpQgfobu9DUNfy9hbHrerPzlf/fn1fYdkVbnUSHEyqRFlOw==}
+  '@ai-ecoverse/wasm-gzip@1.15.0-2':
+    resolution: {integrity: sha512-Y5Rame9OWGT0b7DInO9WB7AX1oEyhp95aKPcvTjjeBXa+OiMu0CpcQ3YXncwOZOMxfaAGPXWC/mCD3sxALj5Nw==}
 
   '@ai-ecoverse/wasm-jq@1.8.2-2':
     resolution: {integrity: sha512-lP0JB5DroQj0EUUfQTz8FPUIDIK2q3EDomXTtz5hzZnns8pPWBoeGcH79SiVjCEu5cREEDPeYS87oSA0uYFbaQ==}
@@ -211,7 +211,7 @@ snapshots:
 
   '@ai-ecoverse/wasm-grep@3.12.0-3': {}
 
-  '@ai-ecoverse/wasm-gzip@1.15.0-1': {}
+  '@ai-ecoverse/wasm-gzip@1.15.0-2': {}
 
   '@ai-ecoverse/wasm-jq@1.8.2-2': {}
 
