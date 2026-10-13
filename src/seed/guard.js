@@ -4,6 +4,8 @@ import { protectedOrigins } from '@ai-ecoverse/slicc-browsers/protected.mjs';
 export const PROTECTED = 'seven’s own pages and the vault are out of reach of browser automation';
 export const UNSEEN = 'this request wasn’t seen, so it could be seven’s or the vault’s';
 export const FETCH = 'Fetch needs a tab session; it can’t pause the whole browser';
+export const STREAM =
+  'this stream wasn’t handed out by the guard, so it could be seven’s or the vault’s';
 export const FAILED = 'the CDP guard couldn’t check this answer, so it held it back';
 
 const GUARD_IDS = 2 ** 30;
@@ -21,6 +23,9 @@ const UNSAFE = new Set([
   'Storage.clearCookies',
   'ServiceWorker.stopAllWorkers',
   'BackgroundService.clearEvents',
+  'Network.loadNetworkResource',
+  'Storage.getPrivateVerificationTokens',
+  'Storage.getTrustTokens',
 ]);
 const FLAT = new Set(['Target.attachToTarget', 'Target.setAutoAttach']);
 const NAVIGATED = new Set([
@@ -131,6 +136,7 @@ class Guard {
     this.asked = new Map();
     this.watching = new Map();
     this.queues = new Map();
+    this.streams = new Set();
     this.allowed = new Set();
     this.blockedWorkers = new Set();
     this.next = GUARD_IDS;
@@ -431,6 +437,7 @@ class Guard {
     if (method === 'Target.createTarget' && result?.targetId) {
       this.learn({ targetId: result.targetId, url: params.url });
     }
+    if (typeof result?.stream === 'string') this.streams.add(result.stream);
     if (COOKIES.has(method) && Array.isArray(result?.cookies)) {
       const cookies = result.cookies.filter((item) => !this.cookie(item));
       return this.deliver({ ...message, result: { ...result, cookies } });
@@ -525,6 +532,9 @@ class Guard {
     if (typeof method !== 'string') return null;
     if (method.startsWith('Fetch.') && sessionId === undefined) return FETCH;
     if (this.plainly(method, params, sessionId)) return PROTECTED;
+    if ((method === 'IO.read' || method === 'IO.close') && !this.streams.has(params.handle)) {
+      return STREAM;
+    }
     if (params.targetId !== undefined && (await this.target(params.targetId))) return PROTECTED;
     if (await this.frame(params.frameId)) return PROTECTED;
     return this.unseen(method, params);
