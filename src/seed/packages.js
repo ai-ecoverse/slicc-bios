@@ -1,4 +1,11 @@
-import { installProject, loadProject, movePth, projectVersion, removeProject } from './projects.js';
+import {
+  installProject,
+  loadProject,
+  movePth,
+  normalizeProject,
+  projectVersion,
+  removeProject,
+} from './projects.js';
 import { fetchText, pnpm, text, write } from './update.js';
 
 const deployed = new URL('../packages/optional/', import.meta.url);
@@ -235,6 +242,7 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
       const version = await projectVersion(root, entry.id);
       if (version) installed.set(entry.package, version);
       if (version) await movePth(root, entry.id);
+      if (version) await normalizeProject(root, kernel, entry.id);
     }
     changed();
     return found;

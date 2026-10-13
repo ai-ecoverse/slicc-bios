@@ -4,6 +4,7 @@ export const FILES = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'];
 
 export const folder = (id) => `opt/slicc/${id}`;
 export const receipt = (id) => `var/lib/slicc/optional/${id}/package.json`;
+const marker = (id) => `var/lib/slicc/optional/${id}/readable`;
 export const pthName = (id) => `slicc-${id}.pth`;
 export const PYTHON = 'opt/slicc/python';
 const CUSTOMIZE = `import site\n\nsite.addsitedir('/${PYTHON}')\n`;
@@ -76,6 +77,7 @@ export async function installProject({ root, kernel, id, project, report, to }) 
   for (const name of FILES) await write(root, `${folder(id)}/${name}`, project.files[name]);
   await pnpm(kernel, `/${folder(id)}`, report, to);
   await readable(kernel, `/${folder(id)}`);
+  await write(root, marker(id), '1\n');
   const pth = await writePth(root, id);
   await write(
     root,
@@ -97,5 +99,12 @@ export async function movePth(root, id) {
   const pth = await writePth(root, id);
   await removeIn(root, kept.pth);
   await write(root, receipt(id), `${JSON.stringify({ ...kept, pth })}\n`);
+  return true;
+}
+
+export async function normalizeProject(root, kernel, id) {
+  if ((await text(root, marker(id))) !== null) return false;
+  await readable(kernel, `/${folder(id)}`);
+  await write(root, marker(id), '1\n');
   return true;
 }

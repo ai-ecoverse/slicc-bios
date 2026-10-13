@@ -222,9 +222,24 @@ async function install(root, project, found, { start, report, certs }) {
   }
 }
 
+export async function normalize(root, project, start) {
+  const { folder, state } = project;
+  if ((await text(root, `${state}/pnpm-lock.yaml`)) === null) return false;
+  if ((await text(root, `${state}/readable`)) !== null) return false;
+  const kernel = await start();
+  try {
+    await readable(kernel, `/${folder}`);
+  } finally {
+    kernel.terminate();
+  }
+  await write(root, `${state}/readable`, '1\n');
+  return true;
+}
+
 export async function apply(root, project, options = {}) {
   const { force = false, report = () => {} } = options;
   const { folder, state } = project;
+  await normalize(root, project, options.start);
   const found = await inspect(root, project, force);
   if (!found) return false;
   const { layer, refused, baseText } = found;
@@ -240,6 +255,7 @@ export async function apply(root, project, options = {}) {
   await write(root, `${state}/package.json`, baseText);
   await write(root, `${state}/applied.json`, wanted);
   await write(root, `${state}/pnpm-lock.yaml`, found.lock);
+  await write(root, `${state}/readable`, '1\n');
   seen.set(folder, await text(root, `${folder}/package.json`));
   if (refused.length) options.refuse?.(refused, project);
   return true;
