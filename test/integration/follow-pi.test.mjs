@@ -62,7 +62,11 @@ const lastTurn = (body) => {
 };
 
 const owners = await launch({ agent: true, timeout: 60000 });
-const followers = await launch({ agent: true, timeout: 60000 });
+const followers = await launch({
+  agent: true,
+  timeout: 60000,
+  args: ['--disable-features=IsolateSandboxedIframes'],
+});
 const asked = [];
 const proxy = await fakeProxy({
   origin: new URL(owners.url).origin,
@@ -110,6 +114,43 @@ const dialog = () => {
   };
   return deep(document)?.shadowRoot?.querySelector('dialog[open]') ?? null;
 };
+
+async function inFrames(page, fn) {
+  const { frameTree } = await page.send('Page.getFrameTree');
+  const frames = [];
+  const walk = (node) => {
+    for (const child of node.childFrames ?? []) {
+      frames.push(child.frame.id);
+      walk(child);
+    }
+  };
+  walk(frameTree);
+  const results = [];
+  for (const frameId of frames) {
+    const world = await page
+      .send('Page.createIsolatedWorld', { frameId, worldName: 'follow-pi' })
+      .catch(() => null);
+    if (!world) continue;
+    const { result } = await page.send('Runtime.evaluate', {
+      contextId: world.executionContextId,
+      expression: `(${fn})()`,
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    results.push(result?.value);
+  }
+  return results;
+}
+
+const owned = (page) =>
+  page.evaluate(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    return JSON.stringify({
+      agents: agent.list().map((a) => [a.id, a.kind, !!a.frozen]),
+      frozen: agent.frozen().length,
+      messages: agent.messages(agent.active()).length,
+    });
+  });
 
 const said = (page) =>
   page.evaluate(() => {
@@ -191,7 +232,63 @@ test('a follower watches the owner run with View, is refused a send, and sends w
     return !agent.busy(agent.active());
   });
   await shoot(page, 'follower-chat-answered', { show: 'chat' });
+  await owner.evaluate(() => {
+    const { notices } = document.querySelector('slicc-app').model;
+    for (const notice of notices.list()) notices.dismiss(notice.id);
+  });
   await shoot(owner, 'owner-watching', { show: 'network', target: '[aria-labelledby="links"]' });
+
+  const ownerBefore = await owned(owner);
+  const followerBefore = await owned(page);
+  const askedBefore = asked.length;
+  const errorsBefore = page.errors.length;
+  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
+  let finished = [];
+  for (let i = 0; i < 60 && !finished.includes('done'); i += 1) {
+    finished = await inFrames(page, () => {
+      const done = document.getElementById('sDone');
+      if (!done) return 'none';
+      if (done.classList.contains('active')) return 'done';
+      const work = [...document.querySelectorAll('#purposePills .pill')].find(
+        (pill) => pill.textContent.trim() === 'Work'
+      );
+      if (work && document.getElementById('s1').classList.contains('active')) work.click();
+      else document.getElementById('skipBtn')?.click();
+      return 'stepping';
+    });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  assert.ok(finished.includes('done'), `the welcome wizard never finished: ${finished}`);
+  await page.until(
+    new Function(`
+    const deep = (root) => {
+      for (const element of root.querySelectorAll('*')) {
+        if (element.localName === 'slicc-agents') return element;
+        const inner = element.shadowRoot && deep(element.shadowRoot);
+        if (inner) return inner;
+      }
+      return null;
+    };
+    const button = deep(document)?.shadowRoot?.querySelector('[data-action="delete-cone"]');
+    button?.click();
+    return !!button;
+  `)
+  );
+  await page.until(new Function(`return !!(${dialog})()`));
+  await page.evaluate(
+    new Function(
+      `[...(${dialog})().getRootNode().host.shadowRoot.querySelectorAll('swc-button')].find((b) => b.textContent.trim() === 'Delete cone').click()`
+    )
+  );
+  for (let i = 0; i < 100 && page.errors.length < errorsBefore + 2; i += 1)
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  const refusals = page.errors.splice(errorsBefore);
+  assert.ok(refusals.length >= 2, refusals.join('\n'));
+  for (const refusal of refusals) assert.match(refusal, /watch, but not send/);
+  assert.equal(await owned(owner), ownerBefore);
+  assert.equal(await owned(page), followerBefore);
+  assert.equal(asked.length, askedBefore);
 
   const refused = await page.evaluate(() => {
     const { agent } = document.querySelector('slicc-app').model;
