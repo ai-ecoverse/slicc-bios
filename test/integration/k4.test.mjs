@@ -212,5 +212,14 @@ test('enforce: a cone’s terminal starts in its home, and its Python finds what
       .screen.textContent.includes('probe 42')
   );
   assert.match(await screen(page), /^cone\s/);
+
+  await run(
+    page,
+    `clear; bash -lc 'python3 -c "import sliccprobe; print(\\"login\\", sliccprobe.ok)"'`
+  );
+  await shows(page, 'login 42', 5 * 60 * 1000);
+  await run(page, `clear; sudo python3 -c "import sliccprobe; print('sudo', sliccprobe.ok)"`);
+  await decide(page, 'once');
+  await shows(page, 'sudo 42', 5 * 60 * 1000);
   assert.deepEqual(page.errors, []);
 });
