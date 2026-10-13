@@ -4,6 +4,7 @@ import { confirm, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
 import { followAgent, installAgent, loadChat } from './agent.js';
 import { createFollow, deviceName, hubClient, keepFollow, takeFollow } from './follow.js';
 import { createNotices } from './notices.js';
+import { joinTray } from './present.js';
 import { remoteTerminal } from './terminal.js';
 import { createUpdates } from './updates.js';
 
@@ -29,6 +30,37 @@ export function followPort(
       reload();
     },
     retry: () => follow.retry(),
+  };
+}
+
+const CONNECTION = {
+  connecting: 'connecting',
+  connected: 'live',
+  reconnecting: 'reconnecting',
+  failed: 'error',
+  unlinked: 'offline',
+};
+
+export function followTray(follow, port) {
+  const status = () => {
+    const state = follow.status();
+    return {
+      name: state.owner,
+      kind: 'hosted',
+      connection: CONNECTION[state.link] ?? 'offline',
+      role: 'follower',
+      followers: [],
+      joinUrl: '',
+    };
+  };
+  return {
+    on(type, listener) {
+      if (type !== 'status') return () => undefined;
+      return follow.on(() => listener(status()));
+    },
+    status,
+    reconnect: () => void follow.retry(),
+    disconnect: () => void port.leave(),
   };
 }
 
@@ -127,7 +159,7 @@ export function preparer(root, { install = installAgent } = {}) {
 }
 
 export const shower = (app, base) => (agent) => {
-  app.model = agent ? { ...base, ...agent } : base;
+  app.model = agent ? { ...base, ...agent, tray: joinTray(agent.tray, base.tray) } : base;
 };
 
 export const chatModel =
@@ -190,6 +222,7 @@ export function startFollower({
     ...surfaces.find((item) => item.id === id),
     ...layout,
   }));
+  const port = followPort(follow);
   const base = {
     ...createKernelModel({
       kernel: remoteKernel(follow),
@@ -199,7 +232,8 @@ export function startFollower({
     }),
     updates: createUpdates({ ready: true }),
     notices: createNotices({ storage }),
-    follow: followPort(follow),
+    follow: port,
+    tray: followTray(follow, port),
   };
   app.model = base;
   agentFollower({
