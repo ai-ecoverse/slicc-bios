@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createServer as createHttp } from 'node:http';
 import { createServer } from 'node:net';
 import { after, test } from 'node:test';
 import { startProxy } from '@ai-ecoverse/slicc-node';
@@ -11,13 +12,37 @@ const port = await new Promise((resolve) => {
     server.close(() => resolve(port));
   });
 });
-const chrome = await launch({ args: [`--remote-debugging-port=${port}`] });
+const hits = [];
+const stand = createHttp((req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  hits.push(`${url.host}${url.pathname}${url.search}`);
+  const pages = {
+    '/vault': `<!doctype html><title>VAULT-MARK</title><h1>VAULT-BODY-MARK</h1><script>fetch('http://localhost:${url.port}/data?from=vault', { mode: 'no-cors' });</script>`,
+    '/plain': `<!doctype html><title>PLAIN-MARK</title><h1>Plain</h1><iframe src="http://vault.sliccy.ai:${url.port}/vault?framed"></iframe>`,
+  };
+  if (url.pathname === '/data') {
+    res.writeHead(200, { 'content-type': 'text/plain', 'access-control-allow-origin': '*' });
+    return res.end(`data for ${url.searchParams.get('from')}`);
+  }
+  res.writeHead(pages[url.pathname] ? 200 : 404, { 'content-type': 'text/html' });
+  res.end(pages[url.pathname] ?? 'missing');
+});
+await new Promise((resolve) => stand.listen(0, '127.0.0.1', resolve));
+const standPort = stand.address().port;
+const VAULT = `http://vault.sliccy.ai:${standPort}/vault`;
+const PLAIN = `http://localhost:${standPort}/plain`;
+const chrome = await launch({
+  args: [`--remote-debugging-port=${port}`, '--host-resolver-rules=MAP vault.sliccy.ai 127.0.0.1'],
+});
 const elsewhere = (path) => {
   const at = new URL(path, chrome.url);
   at.hostname = 'localhost';
   return at.href;
 };
-after(() => chrome.close());
+after(() => {
+  chrome.close();
+  stand.close();
+});
 const browser = (await (await fetch(`http://127.0.0.1:${port}/json/version`)).json())
   .webSocketDebuggerUrl;
 
@@ -506,6 +531,203 @@ test('with no host, the CDP endpoint says what to install', async (t) => {
     'CDP host: unknown runtime "elsewhere" (extension, proxy)\n502'
   );
   assert.deepEqual(await automation(page), { via: null });
+});
+
+const devtools = (path, init) =>
+  fetch(`http://127.0.0.1:${port}${path}`, init).then((r) => r.json());
+async function tabAt(url, title) {
+  const made = await devtools(`/json/new?${url}`, { method: 'PUT' });
+  for (let n = 0; n < 100; n += 1) {
+    const found = (await devtools('/json/list')).find((tab) => tab.id === made.id);
+    if (found?.title === title) return made.id;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`${url} did not load`);
+}
+const listed = async (id) => (await devtools('/json/list')).some((tab) => tab.id === id);
+
+test('the guard keeps seven’s tabs and the vault out of reach, and a protected document’s requests away from the agent', async (t) => {
+  const page = await chrome.page(t);
+  const extension = await fakeExtension(page);
+  t.after(extension.close);
+  await boot(page);
+  const vault = await tabAt(VAULT, 'VAULT-MARK');
+  const plain = await tabAt(PLAIN, 'PLAIN-MARK');
+  t.after(() =>
+    Promise.all([vault, plain].map((id) => fetch(`http://127.0.0.1:${port}/json/close/${id}`)))
+  );
+  const seven = (await devtools('/json/list')).find(
+    (tab) => tab.type === 'page' && tab.url.startsWith(new URL('/os/', chrome.url).href)
+  ).id;
+  await page.evaluate(async () => {
+    const { guardProtected } = await import(new URL('guard.js', location.href).href);
+    const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
+    const connection = guardProtected(
+      extensionConnection(globalThis.sliccExtension.cdp),
+      location.origin
+    );
+    const pending = new Map();
+    const events = [];
+    let next = 0;
+    connection.onmessage = (text) => {
+      const message = JSON.parse(text);
+      if (message.id !== undefined) {
+        pending.get(message.id)?.(message);
+        pending.delete(message.id);
+        return;
+      }
+      events.push(message);
+      if (message.method === 'Fetch.requestPaused') {
+        connection.send(
+          JSON.stringify({
+            id: ++next,
+            method: 'Fetch.continueRequest',
+            params: { requestId: message.params.requestId },
+            sessionId: message.sessionId,
+          })
+        );
+      }
+    };
+    window.guarded = {
+      events,
+      send: (method, params = {}, sessionId) =>
+        new Promise((resolve) => {
+          next += 1;
+          const id = next;
+          const timer = setTimeout(() => {
+            pending.delete(id);
+            resolve({ error: { message: `${method} got no answer` } });
+          }, 20000);
+          pending.set(id, (message) => {
+            clearTimeout(timer);
+            resolve(message);
+          });
+          connection.send(
+            JSON.stringify({ id: next, method, params, ...(sessionId ? { sessionId } : {}) })
+          );
+        }),
+    };
+  });
+  const send = (method, params, sessionId) =>
+    page.evaluate(([m, p, s]) => window.guarded.send(m, p, s), [method, params, sessionId]);
+  const events = () => page.evaluate(() => window.guarded.events);
+  const REFUSAL = 'seven’s own pages and the vault are out of reach of browser automation';
+
+  const { result } = await send('Target.getTargets');
+  const ids = result.targetInfos.map((info) => info.targetId);
+  assert.ok(ids.includes(plain));
+  assert.ok(!ids.includes(vault) && !ids.includes(seven));
+  assert.ok(!JSON.stringify(result).includes('VAULT-MARK'));
+  for (const targetId of [seven, vault]) {
+    for (const method of [
+      'Target.attachToTarget',
+      'Target.activateTarget',
+      'Target.getTargetInfo',
+      'Target.closeTarget',
+    ]) {
+      const answer = await send(method, { targetId, flatten: true });
+      assert.equal(
+        answer.error?.message,
+        REFUSAL,
+        `${method} on ${targetId === seven ? 'seven' : 'the vault'}`
+      );
+    }
+    assert.equal(await listed(targetId), true);
+  }
+
+  const attached = await send('Target.attachToTarget', { targetId: plain, flatten: true });
+  const session = attached.result.sessionId;
+  assert.equal(
+    (await send('Runtime.evaluate', { expression: 'document.title', returnByValue: true }, session))
+      .result.result.value,
+    'PLAIN-MARK'
+  );
+  for (const [method, params] of [
+    ['Page.enable', {}],
+    ['Network.enable', {}],
+    ['Fetch.enable', { patterns: [{ urlPattern: '*' }] }],
+    ['Target.setAutoAttach', { autoAttach: true, flatten: true, waitForDebuggerOnStart: false }],
+  ]) {
+    assert.deepEqual((await send(method, params, session)).error, undefined, method);
+  }
+  hits.length = 0;
+  await send('Page.reload', {}, session);
+  await page.within(20000, () =>
+    window.guarded.events.some((event) => event.method === 'Page.loadEventFired')
+  );
+  for (let n = 0; n < 50 && !hits.some((hit) => hit.endsWith('from=vault')); n += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.ok(
+    hits.some((hit) => hit.endsWith('from=vault')),
+    hits.join(' ')
+  );
+  assert.equal(
+    (
+      await send(
+        'Runtime.evaluate',
+        {
+          expression: "fetch('/data?from=plain').then((r) => r.text())",
+          awaitPromise: true,
+          returnByValue: true,
+        },
+        session
+      )
+    ).result.result.value,
+    'data for plain'
+  );
+  const seen = await events();
+  const urls = seen.map(
+    (event) => event.params?.request?.url ?? event.params?.targetInfo?.url ?? ''
+  );
+  assert.ok(urls.some((url) => url.endsWith('from=plain')));
+  assert.ok(
+    !urls.some((url) => url.includes('vault')),
+    urls.filter((url) => url.includes('vault')).join(' ')
+  );
+  assert.ok(!JSON.stringify(seen).includes('VAULT'));
+  const plainRequest = seen.find(
+    (event) =>
+      event.method === 'Network.requestWillBeSent' &&
+      event.params.request.url.endsWith('from=plain')
+  ).params.requestId;
+  assert.equal(
+    (await send('Network.getResponseBody', { requestId: plainRequest }, session)).result.body,
+    'data for plain'
+  );
+  assert.match(
+    (await send('Network.getResponseBody', { requestId: 'never-seen' }, session)).error.message,
+    /wasn’t seen/
+  );
+
+  await send(
+    'Runtime.evaluate',
+    { expression: `location.href = ${JSON.stringify(`${VAULT}?walked`)}` },
+    session
+  );
+  await page.within(
+    20000,
+    (id) =>
+      window.guarded.events.some(
+        (event) => event.method === 'Target.detachedFromTarget' && event.params.sessionId === id
+      ),
+    session
+  );
+  assert.equal(
+    (await send('Runtime.evaluate', { expression: 'document.title' }, session)).error.message,
+    REFUSAL
+  );
+  assert.ok(!JSON.stringify(await events()).includes('VAULT'));
+
+  await run(
+    page,
+    `playwright-cli tab-list > /tmp/tabs 2>&1; playwright-cli eval --tab ${vault} 'document.title' > /tmp/eval 2>&1; echo "eval-$?"`
+  );
+  await shows(page, 'eval-1');
+  assert.doesNotMatch(await read(page, '/tmp/tabs'), /VAULT-MARK|vault\.sliccy\.ai/);
+  assert.doesNotMatch(await read(page, '/tmp/eval'), /VAULT-MARK/);
+  assert.equal(await listed(vault), true);
+  assert.deepEqual(page.errors, []);
 });
 
 async function viaProxy(t) {
