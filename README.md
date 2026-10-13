@@ -291,6 +291,8 @@ seven can also join a tailnet, with a patched build of Tailscale's wasm client (
     - **`caps`:** what it carries, such as `['net', 'http', 'ws']`;
     - **Absent:** while traffic goes directly, or waits for an exit that's away.
 
+    The Network panel's status says the same: while a linked device carries the traffic, `route` is `'link'`, next to `exit: { kind: 'link', id }`, and that device's `mode` tells local from remote. A Tailscale exit node reads `'tailnet'`, as before.
+
     `traits` is read fresh each time, but the kernel takes it once when it attaches, so routing never depends on it: every request still goes through the router.
   - **The host machine:** the kernel sends `host.slicc.internal:<port>` to the transport as `127.0.0.1:<port>`, and that goes to the CLI linked on this computer (its `http` streams, under its policy), so a dev server on the host is reachable without CORS or Chrome's Local Network Access prompt. This holds even under Directly, since it isn't internet traffic. A remote device's loopback is never used for it, and without a local CLI it stays on the page's transport.
   - **WebSockets (`ws`):** a program's WebSocket (the kernel proxy's `Upgrade: websocket`, or `ctx.websocket`) goes to the exit that would carry that host's HTTP, and a linked CLI with cap `ws` carries it as `OPEN { kind: 'ws', url, protocols, headers }` (`os/link-ws.js`).

@@ -204,7 +204,7 @@ export function createNetwork(choice, options = {}) {
     const { id } = exit;
     const devices = [...options.links.devices(), ...(options.tray?.away() ?? [])];
     const connected = devices.some((item) => item.id === id && item.state === 'connected');
-    return { health: connected ? 'ok' : 'failing', detail: null };
+    return { route: 'link', health: connected ? 'ok' : 'failing', detail: null };
   };
   const linkStatus = () => {
     if (!options.links || !options.router) return {};
