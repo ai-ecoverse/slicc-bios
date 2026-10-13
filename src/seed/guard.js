@@ -31,7 +31,10 @@ const FLAT = new Set(['Target.attachToTarget', 'Target.setAutoAttach']);
 const NAVIGATED = new Set([
   'Page.frameStartedNavigating',
   'Page.frameRequestedNavigation',
+  'Page.frameScheduledNavigation',
+  'Page.navigatedWithinDocument',
   'Page.frameNavigated',
+  'Page.frameStartedLoading',
 ]);
 const BODIES = new Set([
   'Network.getResponseBody',
@@ -218,7 +221,22 @@ class Guard {
   cut(sessionId, parent) {
     if (this.blocked.has(sessionId)) return;
     this.blocked.add(sessionId);
-    void this.call('Target.detachFromTarget', { sessionId }, parent);
+    const targetId = this.sessions.get(sessionId)?.targetId;
+    if (targetId) {
+      const known = this.targets.get(targetId) ?? { url: '' };
+      this.targets.set(targetId, { ...known, was: true, guarded: true });
+    }
+    void this.call(
+      'Target.detachFromTarget',
+      { sessionId },
+      parent ?? this.sessions.get(sessionId)?.parent
+    );
+  }
+
+  async current(targetId) {
+    const info = (await this.call('Target.getTargetInfo', { targetId })).result?.targetInfo;
+    if (info) this.learn(info);
+    return this.target(targetId);
   }
 
   cutTarget(targetId) {
@@ -382,13 +400,26 @@ class Guard {
     return false;
   }
 
-  walked({ method, params = {} }) {
+  walked({ method, params = {}, sessionId }) {
     if (method === 'Page.frameNavigated' && params.frame) {
       this.frames.set(params.frame.id, params.frame.url);
+      const targetId = this.sessions.get(sessionId)?.targetId;
+      if (!params.frame.parentId && targetId && this.targets.has(targetId)) {
+        this.targets.get(targetId).url = params.frame.url;
+      }
       return this.is.url(params.frame.url) || this.is.url(params.frame.securityOrigin);
     }
     if (NAVIGATED.has(method)) return this.is.url(params.url);
+    if (method === 'Network.requestWillBeSent' && params.type === 'Document') {
+      return this.is.url(params.request?.url);
+    }
     return method === 'Runtime.executionContextCreated' && this.is.url(params.context?.origin);
+  }
+
+  naming(message) {
+    const { method, params } = message;
+    if (method.startsWith('Network.') || method.startsWith('Fetch.')) return false;
+    return this.valued(params);
   }
 
   swallowed(message) {
@@ -410,6 +441,7 @@ class Guard {
     if (this.walked({ ...message, method })) return this.cut(sessionId);
     if (await this.swallowed({ ...message, method })) return;
     if (this.stored({ ...message, method })) return;
+    if (sessionId && this.naming({ ...message, method })) return;
     if (sessionId && method.startsWith('Page.') && !this.pages.has(sessionId)) return;
     this.deliver(message);
   }
@@ -535,7 +567,7 @@ class Guard {
     if ((method === 'IO.read' || method === 'IO.close') && !this.streams.has(params.handle)) {
       return STREAM;
     }
-    if (params.targetId !== undefined && (await this.target(params.targetId))) return PROTECTED;
+    if (params.targetId !== undefined && (await this.current(params.targetId))) return PROTECTED;
     if (await this.frame(params.frameId)) return PROTECTED;
     return this.unseen(method, params);
   }

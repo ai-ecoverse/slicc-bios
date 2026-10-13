@@ -734,7 +734,9 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
   t.after(() => fetch(`http://127.0.0.1:${port}/json/close/${walker}`));
   const walking = (await send('Target.attachToTarget', { targetId: walker, flatten: true })).result
     .sessionId;
-  assert.deepEqual((await send('Network.enable', {}, walking)).error, undefined);
+  for (const method of ['Page.enable', 'Network.enable', 'Runtime.enable']) {
+    assert.deepEqual((await send(method, {}, walking)).error, undefined, method);
+  }
   await send(
     'Runtime.evaluate',
     { expression: `location.href = ${JSON.stringify(`${VAULT}?walked`)}` },
@@ -745,6 +747,14 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
     (await send('Runtime.evaluate', { expression: 'document.title' }, walking)).error.message,
     REFUSAL
   );
+  for (const method of ['Target.getTargetInfo', 'Target.activateTarget', 'Target.closeTarget']) {
+    assert.equal(
+      (await send(method, { targetId: walker })).error?.message,
+      REFUSAL,
+      `${method} on the tab that walked into the vault`
+    );
+  }
+  assert.equal(await listed(walker), true);
   const seen = JSON.stringify(await events());
   assert.ok(!seen.includes('VAULT') && !seen.includes('vault.sliccy.ai'), seen.slice(0, 2000));
 
