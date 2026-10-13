@@ -1,5 +1,5 @@
 import { compare, locked } from './packages.js';
-import { fetchText, pnpm, text, write } from './update.js';
+import { fetchText, pnpm, readable, text, write } from './update.js';
 
 export const FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies'];
 const EXACT = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
@@ -206,21 +206,40 @@ async function install(root, project, found, { start, report, certs }) {
   const kernel = await start();
   try {
     const error = plain ? null : await relaxed(kernel, root, project, report, to, lock, certs);
-    if (!plain && !error) return { wanted, error };
+    if (!plain && !error) {
+      await readable(kernel, `/${folder}`);
+      return { wanted, error };
+    }
     if (error) {
       await write(root, `${folder}/package.json`, baseText);
       await write(root, `${folder}/pnpm-lock.yaml`, lock);
     }
     await pnpm(kernel, `/${folder}`, report, to);
+    await readable(kernel, `/${folder}`);
     return { wanted: error ? baseText : wanted, error };
   } finally {
     kernel.terminate();
   }
 }
 
+export async function normalize(root, project, start) {
+  const { folder, state } = project;
+  if ((await text(root, `${state}/pnpm-lock.yaml`)) === null) return false;
+  if ((await text(root, `${state}/readable`)) !== null) return false;
+  const kernel = await start();
+  try {
+    await readable(kernel, `/${folder}`);
+  } finally {
+    kernel.terminate();
+  }
+  await write(root, `${state}/readable`, '1\n');
+  return true;
+}
+
 export async function apply(root, project, options = {}) {
   const { force = false, report = () => {} } = options;
   const { folder, state } = project;
+  await normalize(root, project, options.start);
   const found = await inspect(root, project, force);
   if (!found) return false;
   const { layer, refused, baseText } = found;
@@ -236,6 +255,7 @@ export async function apply(root, project, options = {}) {
   await write(root, `${state}/package.json`, baseText);
   await write(root, `${state}/applied.json`, wanted);
   await write(root, `${state}/pnpm-lock.yaml`, found.lock);
+  await write(root, `${state}/readable`, '1\n');
   seen.set(folder, await text(root, `${folder}/package.json`));
   if (refused.length) options.refuse?.(refused, project);
   return true;
