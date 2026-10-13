@@ -37,6 +37,41 @@ async function type(page, text) {
   await page.enter();
 }
 
+const opfsHas = (page, path) =>
+  page.evaluate(async (path) => {
+    let dir = await navigator.storage.getDirectory();
+    const parts = path.split('/').filter(Boolean);
+    try {
+      for (const part of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(part);
+      await dir.getFileHandle(parts.at(-1));
+      return true;
+    } catch {
+      return false;
+    }
+  }, path);
+
+const openPort = (page) =>
+  page.evaluate(async () => {
+    const { terminals } = document.querySelector('slicc-app').model;
+    const info = terminals.open({ cwd: '/home' });
+    const kept = { id: info.id, output: '', exited: null, error: null, session: null };
+    window.keptTerminal = kept;
+    const sink = {
+      output: (bytes) => {
+        kept.output += typeof bytes === 'string' ? bytes : new TextDecoder().decode(bytes);
+      },
+      exit: (status) => {
+        kept.exited = status;
+      },
+    };
+    try {
+      kept.session = await terminals.backend(info.id).open(sink, { cols: 80, rows: 24 });
+    } catch (error) {
+      kept.error = error.code ?? error.message;
+    }
+    return { error: kept.error, open: !!kept.session };
+  });
+
 const shows = (page, needle) =>
   page.until(
     ([last, needle]) => new Function(`return (${last})()`)()?.screen?.textContent.includes(needle),
@@ -108,6 +143,24 @@ test('a follower with Terminal gets a shell in the owner kernel: ls, ^C, resize 
   }, joinUrl);
   assert.equal(refused, 'EACCES');
 
+  const viewOnly = await openPort(page);
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  const unopened = await page.evaluate(() => {
+    const kept = window.keptTerminal;
+    if (kept.session) kept.session.write(new TextEncoder().encode('touch /home/view-only-wrote\r'));
+    document.querySelector('slicc-app').model.terminals.close(kept.id);
+    return { error: kept.error, exited: kept.exited, output: kept.output };
+  });
+  assert.ok(
+    /EACCES/.test(`${unopened.error} ${unopened.output}`) || unopened.exited !== null,
+    `a terminal opened without Terminal: ${JSON.stringify({ viewOnly, unopened })}`
+  );
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  assert.equal(await opfsHas(owner, 'home/view-only-wrote'), false);
+  assert.ok(
+    (await model(owner, (network) => network.status().links.devices)).every((d) => !d.terminals)
+  );
+
   await model(owner, (network, id) => network.setAccess(id, 'terminal', true), device.id);
   await page.until(() => document.querySelector('slicc-app').model.follow.state().access.terminal);
   await page.evaluate(() => document.querySelector('slicc-app').show('terminal'));
@@ -160,6 +213,8 @@ test('a follower with Terminal gets a shell in the owner kernel: ls, ^C, resize 
   await shows(page, `size-${size.replace(' ', 'x')}`);
   await page.send('Emulation.clearDeviceMetricsOverride');
 
+  assert.deepEqual(await openPort(page), { error: null, open: true });
+  await page.until(() => window.keptTerminal.output.includes('slicc:'));
   await model(owner, (network, id) => network.setAccess(id, 'terminal', false), device.id);
   await owner.until(() =>
     document
@@ -167,6 +222,12 @@ test('a follower with Terminal gets a shell in the owner kernel: ls, ^C, resize 
       .model.network.status()
       .links.devices.every((d) => !d.terminals)
   );
+  await page.until(() => window.keptTerminal.exited !== null);
+  await page.evaluate(() =>
+    window.keptTerminal.session.write(new TextEncoder().encode('touch /home/after-revoke\r'))
+  );
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  assert.equal(await opfsHas(owner, 'home/after-revoke'), false);
   assert.deepEqual(owner.errors, []);
   assert.deepEqual(page.errors, []);
   await owner.evaluate(() => localStorage.removeItem('slicc-os.tray-hub'));
