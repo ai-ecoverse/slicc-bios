@@ -163,3 +163,54 @@ test('report: the same refusal is logged but allowed', async (t) => {
   assert.ok(lines.some((line) => line.path.startsWith('/root')));
   assert.deepEqual(page.errors, []);
 });
+
+test('enforce: a cone’s terminal starts in its home, and its Python finds what /opt/slicc/python lists', async (t) => {
+  const page = await chrome.page(t);
+  await bootAs(page, 'enforce');
+  await run(page, 'clear; pwd; echo hi > f && echo wrote=$?; echo home-$((40 + 2))');
+  await shows(page, 'home-42');
+  assert.match(await screen(page), /^\/home\/cone\s/);
+  assert.match(await screen(page), /wrote=0/);
+  const installed = await page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.updates.actPackage('python', 'install')
+      .then(
+        () => 'ok',
+        (error) => error.message
+      )
+  );
+  assert.equal(installed, 'ok');
+  await page.evaluate(async () => {
+    const root = await navigator.storage.getDirectory();
+    const put = async (path, data) => {
+      const names = path.split('/');
+      const name = names.pop();
+      let dir = root;
+      for (const part of names) dir = await dir.getDirectoryHandle(part, { create: true });
+      const writable = await (await dir.getFileHandle(name, { create: true })).createWritable();
+      await writable.write(data);
+      await writable.close();
+    };
+    await put('opt/slicc/probe/sliccprobe.py', 'ok = 42\n');
+    await put('opt/slicc/python/slicc-probe.pth', '/opt/slicc/probe\n');
+    await put(
+      'opt/slicc/python/sitecustomize.py',
+      "import site\n\nsite.addsitedir('/opt/slicc/python')\n"
+    );
+  });
+  await run(page, 'clear; whoami; python3 -c "import sliccprobe; print(\'probe\', sliccprobe.ok)"');
+  await page.within(10 * 60 * 1000, () =>
+    document
+      .querySelector('slicc-app')
+      .dock.content(
+        document
+          .querySelector('slicc-app')
+          .dock.api.panels.map((panel) => panel.id)
+          .findLast((id) => id.startsWith('terminal:'))
+      )
+      .screen.textContent.includes('probe 42')
+  );
+  assert.match(await screen(page), /^cone\s/);
+  assert.deepEqual(page.errors, []);
+});

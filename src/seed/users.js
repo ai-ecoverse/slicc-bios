@@ -100,3 +100,15 @@ export function boundTo(user) {
 export function kernelUsers(mode, hooks) {
   return mode === 'off' ? {} : { users: mode, ...hooks };
 }
+
+export function terminalHome(user) {
+  return user ? { cwd: `/home/${user}` } : {};
+}
+
+export function homeSkips(passwd) {
+  const homes = (passwd ?? '')
+    .split('\n')
+    .map((line) => line.split(':')[5])
+    .filter((home) => home?.startsWith('/home/'));
+  return homes.flatMap((home) => [`${home}/.local/share/pnpm`, `${home}/.cache`]);
+}
