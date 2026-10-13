@@ -102,6 +102,7 @@ export function createExitRouter() {
   const httpCarrier = (host) => {
     const bare = bareHost(host).replace(/\.$/, '');
     const literal = /^\d+\.\d+\.\d+\.\d+$/.test(bare) || bare.includes(':');
+    if (loopback(bare)) return active().find((exit) => exit.hostLoopback?.()) ?? null;
     if (literal ? reserved(bare) : ownName(bare, own)) return null;
     const claimant = active().find((exit) => exit.claims(bare));
     if (claimant) return claimant;

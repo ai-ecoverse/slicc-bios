@@ -283,7 +283,7 @@ test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback
 
 const cli = process.env.SLICC_CLI;
 
-test('links the real slicc CLI over stdio signaling, and kernel curl reaches its loopback over raw TCP and the http kind', {
+test('links the real slicc CLI over stdio signaling, and kernel curl reaches its loopback over raw TCP and the http kind, also as host.slicc.internal', {
   skip: !cli,
 }, async (t) => {
   const big = Buffer.alloc(1024 * 1024, 'x');
@@ -328,6 +328,8 @@ test('links the real slicc CLI over stdio signaling, and kernel curl reaches its
   assert.deepEqual(http, { code: '0', out: 'cli POST /http' });
   const httpBig = await shell(page, `curl -s ${url}/big | wc -c`, 'cli-http-big');
   assert.deepEqual(httpBig, { code: '0', out: String(big.length) });
+  const host = await shell(page, `curl -s http://host.slicc.internal:${port}/host`, 'cli-host');
+  assert.deepEqual(host, { code: '0', out: 'cli GET /host' });
   assert.equal(seen[0], 'node:hello');
   for (const step of ['offer', 'candidate', 'node:answer']) assert.ok(seen.includes(step), step);
   assert.ok(seen.indexOf('offer') < seen.indexOf('node:answer'));

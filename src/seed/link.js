@@ -384,6 +384,7 @@ export function linkExit(session, { id, address, label, browsers = () => [], aut
     kind: 'link',
     chosenOnly: true,
     automatic,
+    hostLoopback: () => automatic && session.caps().includes('http'),
     name,
     active: () => Boolean(hello()) && !session.closed(),
     offersDefault: () => Boolean(hello()?.routes?.exit) && session.caps().includes('net'),
@@ -514,18 +515,23 @@ export function labelStore(storage = null) {
       storage?.setItem(key, JSON.stringify(lists[key]));
     } catch {}
   };
+  const wanted = (identity, hint) => {
+    const base = dnsLabel(hint, new Set());
+    const kept = get(LABELS, identity);
+    const fits =
+      typeof kept === 'string' &&
+      (kept === base || (kept.startsWith(`${base}-`) && /^\d+$/.test(kept.slice(base.length + 1))));
+    return fits ? kept : base;
+  };
   return {
+    wanted,
     pick(identity, hint, taken) {
-      const base = dnsLabel(hint, new Set());
-      const kept = get(LABELS, identity);
-      const fits =
-        typeof kept === 'string' &&
-        (kept === base ||
-          (kept.startsWith(`${base}-`) && /^\d+$/.test(kept.slice(base.length + 1))));
-      const label = fits && !taken.has(kept) ? kept : dnsLabel(hint, taken);
+      const want = wanted(identity, hint);
+      const label = taken.has(want) ? dnsLabel(hint, taken) : want;
       put(LABELS, identity, label);
       return label;
     },
+    keep: (identity, label) => put(LABELS, identity, label),
     bind: (source, identity) => put(SOURCES, source, identity),
     bound: (source) => get(SOURCES, source),
   };
@@ -668,10 +674,16 @@ export function mergeDevices(entries) {
   return [...byId.values()];
 }
 
+function localFolder(live, name) {
+  const here = live.filter((entry) => entry.link.mode === 'local' && entry.mount.name === name);
+  return here.length === 1 ? here[0] : undefined;
+}
+
 function linkedFolder(live, source, owner) {
   const name = source.slice(source.indexOf('/') + 1);
   const mine = live.find((entry) => entry.link.identity === owner && entry.mount.name === name);
   if (mine) return mine;
+  if (!source.includes('/')) return localFolder(live, source);
   const here = live.find((entry) => entry.source === source);
   if (!here || !owner) return here;
   const rivals = live.filter(
@@ -693,6 +705,19 @@ function greeting(link, { name, kernel, agent, sevens }) {
       ...(agent?.allowed(link) ? ['agent'] : []),
     ],
   };
+}
+
+function reclaim(links, labels, onLink, gone) {
+  const live = [...links.values()];
+  if (!gone.label || links.has(gone.key) || live.some((item) => item.label === gone.label)) return;
+  const heir = live
+    .filter((item) => item.peer && item.wanted === gone.label && item.label !== gone.label)
+    .at(-1);
+  if (heir?.served.length) return;
+  if (!heir) return;
+  heir.label = gone.label;
+  labels.keep(heir.identity, heir.label);
+  onLink(heir, heir.peer);
 }
 
 export function createLinks({
@@ -746,7 +771,9 @@ export function createLinks({
           : []
       ),
     claims: (source) =>
-      manager.mounts().some((entry) => entry.source === source) || Boolean(labels.bound(source)),
+      manager.mounts().some((entry) => entry.source === source) ||
+      Boolean(labels.bound(source)) ||
+      (!source.includes('/') && Boolean(localFolder(manager.mounts(), source))),
     async fsGrant(source, { readonly }) {
       const found = linkedFolder(manager.mounts(), source, labels.bound(source));
       if (!found || !serveFs) throw failure(`ENOENT: no linked folder ${source}`);
@@ -803,6 +830,7 @@ export function createLinks({
           if (links.get(key) === link) links.delete(key);
           router.remove(link.exit);
           for (const stop of link.served.splice(0)) stop();
+          reclaim(links, labels, onLink, link);
           changed();
         },
       });
@@ -832,6 +860,7 @@ export function createLinks({
           if (!seven && Array.isArray(peer.caps) && peer.caps.length) {
             link.identity = `${link.id ?? key}|${node ?? ''}`;
             link.base = dnsLabel(peer.host ?? peer.name, new Set());
+            link.wanted = labels.wanted(link.identity, peer.host ?? peer.name);
             link.label = labels.pick(link.identity, peer.host ?? peer.name, taken());
             router.add(link.exit);
           }
