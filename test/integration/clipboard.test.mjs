@@ -45,7 +45,10 @@ test('/dev/clipboard, pbcopy, pbpaste and xclip write and read the browser clipb
     window.fakeClipboard.refuse = true;
   });
   await run(page, 'cat /dev/clipboard; echo "refused $?"');
-  await shows(page, 'cat: /dev/clipboard: Permission denied');
+  await shows(
+    page,
+    "cat: /dev/clipboard: The clipboard needs seven's tab to be in front, and clipboard access allowed"
+  );
   await shows(page, 'refused 1');
   await run(page, 'printf x | cat > /dev/clipboard; echo "write refused $?"');
   await shows(page, 'cat: write error: Permission denied');
