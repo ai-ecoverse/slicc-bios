@@ -423,3 +423,26 @@ test('an install from before users boots with them, its legacy files locked once
   assert.match(text, /\b644\s/);
   assert.deepEqual(page.errors, []);
 });
+
+test('enforce: pnpm’s shims run, and a 0644 file doesn’t', async (t) => {
+  const page = await chrome.page(t);
+  await bootIn(page, 'enforce');
+  const kernel = JSON.parse(
+    await read(page, 'node_modules/@ai-ecoverse/slicc-kernel/package.json')
+  );
+  if (!kernel.exports?.['./meta']) {
+    t.skip(`slicc-kernel ${kernel.version} has no /meta`);
+    return;
+  }
+  await run(
+    page,
+    "clear; i --help > /dev/null 2>&1; echo i=$?; npm --version > /dev/null 2>&1; echo npm=$?; npx --version > /dev/null 2>&1; echo npx=$?; printf 'echo ran\\n' > /tmp/plain; chmod 644 /tmp/plain; sudo -u cone bash -c /tmp/plain; echo plain=$?; echo shims-$((40 + 2))"
+  );
+  await shows(page, 'shims-42', 5 * 60 * 1000);
+  const text = await screen(page);
+  assert.match(text, /i=0/);
+  assert.match(text, /npm=0/);
+  assert.match(text, /npx=0/);
+  assert.match(text, /plain=126/);
+  assert.deepEqual(page.errors, []);
+});
