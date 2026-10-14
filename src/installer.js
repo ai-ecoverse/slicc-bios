@@ -223,10 +223,14 @@ async function repair(entries, fresh) {
     if (fresh.has(path)) continue;
     const receipt = await receiptOf(path).catch(() => null);
     if (!receipt || receipt.modes) continue;
-    const bytes = await download(resolved);
-    await verify(bytes, expected, path);
-    stamps.push(...(await headers(bytes, path)));
-    repaired.push(path);
+    try {
+      const bytes = await download(resolved);
+      await verify(bytes, expected, path);
+      stamps.push(...(await headers(bytes, path)));
+      repaired.push(path);
+    } catch (error) {
+      console.warn(`modes of ${path} not repaired yet: ${error.message}`);
+    }
   }
   if (repaired.length && (await stamp(stamps))) await marked(repaired);
   return repaired;
@@ -306,17 +310,26 @@ async function replay(from, progress, base) {
     const stamps = [];
     const fresh = new Set();
     const entries = [...queue];
+    let failure = null;
     const worker = async () => {
-      while (queue.length) {
+      while (queue.length && !failure) {
         const entry = queue.shift();
-        const size = await add(entry, changed, stamps, fresh);
-        done += 1;
-        downloaded += size ? 1 : 0;
-        bytes += size;
-        progress({ done, total, path: entry[0] });
+        try {
+          const size = await add(entry, changed, stamps, fresh);
+          done += 1;
+          downloaded += size ? 1 : 0;
+          bytes += size;
+          progress({ done, total, path: entry[0] });
+        } catch (error) {
+          failure ??= error;
+        }
       }
     };
     await Promise.all(Array.from({ length: 4 }, worker));
+    if (failure) {
+      if (await stamp(stamps)) await marked([...fresh]);
+      throw failure;
+    }
     if (await stamp(stamps)) await marked([...fresh]);
     const restamped = await repair(entries, fresh);
     const deployed = new URL('./', from);
