@@ -59,16 +59,40 @@ async function events(stream, onEvent) {
 
 export async function j1(link, meta, { onProgress = () => {}, signal, timers = globalThis } = {}) {
   const session = link.offer.session;
-  const stream = await session.open({ kind: 'jerk', ...meta });
-  const stop = () => stream.close?.();
-  signal?.addEventListener?.('abort', stop, { once: true });
-  const deadline = timers.setTimeout(stop, meta.op === 'create' ? CREATE_MS : OTHER_MS);
+  let stream = null;
+  let stopped = null;
+  let halt;
+  const halted = new Promise((_resolve, reject) => {
+    halt = reject;
+  });
+  halted.catch(() => {});
+  const stop = (error) => {
+    stopped ??= error;
+    stream?.close?.();
+    halt(stopped);
+  };
+  const cancel = () =>
+    stop(Object.assign(new Error('the jerk request was cancelled'), { code: 'ECANCELED' }));
+  signal?.addEventListener?.('abort', cancel, { once: true });
+  const deadline = timers.setTimeout(
+    () => stop(Object.assign(new Error('jerk timed out'), { code: 'ETIMEDOUT' })),
+    meta.op === 'create' ? CREATE_MS : OTHER_MS
+  );
   try {
+    if (signal?.aborted) cancel();
+    const opening = session.open({ kind: 'jerk', ...meta });
+    opening.then(
+      (opened) => stopped && opened.close?.(),
+      () => {}
+    );
+    stream = await Promise.race([opening, halted]);
     stream.closeWrite?.();
-    return await events(stream, onProgress);
+    const result = await events(stream, onProgress);
+    if (stopped?.code === 'ETIMEDOUT') throw stopped;
+    return result;
   } finally {
     timers.clearTimeout(deadline);
-    signal?.removeEventListener?.('abort', stop);
+    signal?.removeEventListener?.('abort', cancel);
   }
 }
 

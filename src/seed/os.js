@@ -645,8 +645,9 @@ async function own() {
   exits.attach(kernel);
   if (globalThis.sliccKernelDebug === true)
     globalThis.sliccKernelClient = async () => attachKernel(await kernel.connect());
-  if (keepSudoGid(localStorage, await sudoGidOf(kernel).catch(() => undefined)))
-    void vault.reconnect();
+  const gid = await sudoGidOf(kernel).catch(() => undefined);
+  keepSudoGid(localStorage, gid);
+  void vault.sudoGid(gid);
   installLocal(links);
   tray?.start();
   if (network.status?.probe?.kernelTunnel) openTunnel(kernel, network.proxy);
