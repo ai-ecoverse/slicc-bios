@@ -182,7 +182,7 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
   for (const run of runs) {
     const report = merge({
       run,
-      biosRef: env.BIOS_REF ?? '',
+      biosRef: run.ref ?? '',
       runner: env.CANARY_RUNNER ?? '',
       url: env.RUN_URL ?? '',
       found: await shards(values.dir, run.id),

@@ -1,9 +1,13 @@
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { argv, env } from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { PACKAGES, projects, ROOT, registryUrl, specs } from './override-pins.mjs';
+
+const exec = promisify(execFile);
 
 export const WATCHED =
   /^@ai-ecoverse\/(slicc-kernel|slicc-jsh|slicc-cdp|slicc-agent|wasm-|wasi-|wasix-|py-)/;
@@ -82,11 +86,24 @@ function shardList(text) {
 
 export function jobs(runs) {
   return runs.flatMap((run) =>
-    run.shards.map((shard) => ({ run: run.id, shard, overrides: run.overrides }))
+    run.shards.map((shard) => ({ run: run.id, ref: run.ref, shard, overrides: run.overrides }))
   );
 }
 
-export async function plan(event, { overrides = '', expect = '', shards = '' } = {}) {
+async function sha(ref, fallback) {
+  if (!ref) return fallback;
+  if (/^[0-9a-f]{40}$/.test(ref)) return ref;
+  await exec('git', ['fetch', '--quiet', '--depth=1', 'origin', ref], { cwd: ROOT });
+  return (await exec('git', ['rev-parse', 'FETCH_HEAD'], { cwd: ROOT })).stdout.trim();
+}
+
+export async function pinRefs(runs, fallback) {
+  const resolved = [];
+  for (const run of runs) resolved.push({ ...run, ref: await sha(run.ref, fallback) });
+  return resolved;
+}
+
+export async function plan(event, { overrides = '', expect = '', shards = '', ref = '' } = {}) {
   if (event === 'pull_request') {
     const proofs = JSON.parse(await readFile(join(ROOT, 'scripts/canary/proofs.json'), 'utf8'));
     return { runs: proofs, key: '', inputs: null };
@@ -101,7 +118,7 @@ export async function plan(event, { overrides = '', expect = '', shards = '' } =
   }
   const list = specs([overrides]);
   const wanted = expect.trim() ? JSON.parse(expect) : [];
-  const run = { id: 'canary', overrides: list, shards: shardList(shards), expect: wanted };
+  const run = { id: 'canary', ref, overrides: list, shards: shardList(shards), expect: wanted };
   return { runs: [run], key: '', inputs: null };
 }
 
@@ -110,7 +127,9 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
     overrides: env.OVERRIDES ?? '',
     expect: env.EXPECT ?? '',
     shards: env.SHARDS ?? '',
+    ref: env.BIOS_REF ?? '',
   });
+  result.runs = await pinRefs(result.runs, env.TOOLS_SHA ?? '');
   const inputs = join(ROOT, 'canary-inputs.json');
   await writeFile(inputs, `${JSON.stringify(result.inputs ?? {}, null, 2)}\n`);
   const lines = [

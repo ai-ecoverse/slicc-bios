@@ -99,6 +99,17 @@ function label({ file, name }) {
   return name === file ? file : `${basename(file)} › ${name}`;
 }
 
+async function certifyForOldRefs(candidates) {
+  const test = await readFile(join(ROOT, 'test/integration/pins.test.mjs'), 'utf8').catch(() => '');
+  if (test.includes('SLICC_CANARY') || !Object.keys(candidates).length) return;
+  const file = join(PACKAGES, 'certs.json');
+  const certs = JSON.parse(await readFile(file, 'utf8'));
+  for (const [key, { integrity, sha256 }] of Object.entries(candidates)) {
+    certs[key] = sha256 ? { integrity, sha256 } : { integrity };
+  }
+  await writeFile(file, `${JSON.stringify(certs, null, 2)}\n`);
+}
+
 async function restore(snapshot) {
   await rm(PACKAGES, { recursive: true, force: true });
   await cp(snapshot, PACKAGES, { recursive: true });
@@ -120,6 +131,7 @@ export async function shard({ name, overrides, out }) {
     ? await overridePins(overrides, { out: OUT })
     : { overrides: [], changed: [], held: [], candidates: {} };
   await writeFile(pinsFile, `${JSON.stringify(pins, null, 2)}\n`);
+  await certifyForOldRefs(pins.candidates);
   await cp(PACKAGES, candidate, { recursive: true });
   const phases = {};
   const first = await run(files, {

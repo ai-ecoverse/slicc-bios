@@ -74,12 +74,12 @@ jobs:
       runs: ${{ steps.decide.outputs.runs }}
       jobs: ${{ steps.decide.outputs.jobs }}
       key: ${{ steps.plan.outputs.key }}
-      ref: ${{ steps.ref.outputs.sha }}
+      tools: ${{ steps.ref.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ai-ecoverse/slicc-bios
-          ref: ${{ inputs.bios-ref || (github.repository == 'ai-ecoverse/slicc-bios' && github.sha) || 'main' }}
+          ref: ${{ (github.repository == 'ai-ecoverse/slicc-bios' && github.sha) || 'main' }}
 
       - id: ref
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -95,6 +95,8 @@ jobs:
           OVERRIDES: ${{ inputs.overrides }}
           EXPECT: ${{ inputs.expect }}
           SHARDS: ${{ inputs.shards }}
+          BIOS_REF: ${{ inputs.bios-ref }}
+          TOOLS_SHA: ${{ steps.ref.outputs.sha }}
         run: node scripts/canary/plan.mjs
 
       - id: seen
@@ -142,7 +144,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ai-ecoverse/slicc-bios
-          ref: ${{ needs.plan.outputs.ref }}
+          ref: ${{ matrix.job.ref }}
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        if: matrix.job.ref != needs.plan.outputs.tools
+        with:
+          repository: ai-ecoverse/slicc-bios
+          ref: ${{ needs.plan.outputs.tools }}
+          path: .canary-tools
+
+      - name: The canary's scripts and sweep on the tested ref
+        if: matrix.job.ref != needs.plan.outputs.tools
+        run: |
+          rm -rf scripts/canary
+          mkdir -p scripts
+          cp -R .canary-tools/scripts/canary scripts/canary
+          test -e test/integration/sweep.test.mjs || cp .canary-tools/test/integration/sweep.test.mjs test/integration/
+          rm -rf .canary-tools
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -208,7 +226,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ai-ecoverse/slicc-bios
-          ref: ${{ needs.plan.outputs.ref }}
+          ref: ${{ needs.plan.outputs.tools }}
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -223,7 +241,6 @@ jobs:
         name: canary.json and the summary
         env:
           RUNS: ${{ needs.plan.outputs.runs }}
-          BIOS_REF: ${{ needs.plan.outputs.ref }}
           CANARY_RUNNER: ${{ inputs.runner || vars.CERT_RUNNER || 'ubuntu-latest' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: node scripts/canary/report.mjs --dir shards --runs "$RUNS" --out canary
