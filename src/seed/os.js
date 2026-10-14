@@ -1,7 +1,7 @@
 import { attachKernel, createKernel, serveHostfsPort } from '@ai-ecoverse/slicc-kernel';
 import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
 import { confirm, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
-import { signIn } from './adobe.js';
+import { sealedLogin, signIn } from './adobe.js';
 import {
   installed as agentInstalled,
   project as agentProject,
@@ -14,6 +14,7 @@ import {
   remoteAgent,
   restartChat,
   startChat,
+  useVault,
   whenIdle,
 } from './agent.js';
 import { createApprovals, rootChecked } from './approvals.js';
@@ -31,6 +32,7 @@ import {
   version as grammarsVersion,
   installed,
 } from './grammars.js';
+import { createJerk } from './jerk.js';
 import { change, userRows } from './layer.js';
 import { createLinks, installLocal, labelStore, trustHostKey } from './link.js';
 import { serveLoopback } from './loopback.js';
@@ -91,6 +93,15 @@ import {
   lockLegacy,
   usersMode,
 } from './users.js';
+import {
+  createVault,
+  keepSudoGid,
+  sealedOption,
+  storedSudoGid,
+  sudoGidOf,
+  takesVault,
+  vaultOrigin,
+} from './vault.js';
 
 const prompts = installPrompts();
 
@@ -109,6 +120,7 @@ export const layouts = {
   updates: { side: 'center', open: [] },
 };
 
+const KERNEL = '@ai-ecoverse/slicc-kernel';
 const STUCK = "Couldn't start the agent. Retry, or reload the page.";
 
 export const hide = ['/.slicc', '/.slicc-unlinked'];
@@ -225,7 +237,20 @@ const reach = createNetwork(network, {
   },
 });
 const transport = exits.transport(reach.transport);
-const login = signIn({ network });
+const vault = createVault({
+  origin: vaultOrigin(),
+  transport,
+  sudoGid: async () => storedSudoGid(localStorage),
+  users: () => kernel?.users?.mode ?? 'off',
+  onRequest: (req, id) => void jerk.handle(req, id),
+  onCancelled: (id) => jerk.cancelled(id),
+});
+const jerk = createJerk({ links: () => links, vault });
+useVault(vault);
+const login = sealedLogin(signIn({ network }), {
+  vault,
+  takes: () => takesVault(mine.agent),
+});
 document.documentElement.dataset.transport = kind;
 const root = await navigator.storage.getDirectory();
 const app = document.querySelector('slicc-app');
@@ -282,6 +307,7 @@ function base(os) {
     approvals: approvals.port,
     network,
     browser: browser.port,
+    vault: vault.port,
     tray: trayPort(network, { name: `seven on ${location.host}` }),
   };
 }
@@ -588,6 +614,7 @@ async function own() {
     network: { transport, uplink: exits.uplink },
     cdp: control.hook,
     clipboard: clipboardHook(),
+    ...sealedOption((await versions(root, [KERNEL]))[KERNEL], vault),
     ...folders.options,
     ...kernelUsers(mode, { approve: approvals.approve, onDenial: denials }),
   });
@@ -618,6 +645,8 @@ async function own() {
   exits.attach(kernel);
   if (globalThis.sliccKernelDebug === true)
     globalThis.sliccKernelClient = async () => attachKernel(await kernel.connect());
+  if (keepSudoGid(localStorage, await sudoGidOf(kernel).catch(() => undefined)))
+    void vault.reconnect();
   installLocal(links);
   tray?.start();
   if (network.status?.probe?.kernelTunnel) openTunnel(kernel, network.proxy);
@@ -671,6 +700,7 @@ async function follow() {
     approvals: approvals.port,
     network: reach.port,
     browser: browser.port,
+    vault: vault.port,
     tabs,
   };
   await app.updateComplete;

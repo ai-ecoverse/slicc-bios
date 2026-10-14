@@ -123,6 +123,7 @@ await step('seed', async () => {
     'grammars.js',
     'guard.js',
     'index.html',
+    'jerk.js',
     'layer.js',
     'link-udp.js',
     'link-ws.js',
@@ -154,6 +155,7 @@ await step('seed', async () => {
     'update.js',
     'updates.js',
     'users.js',
+    'vault.js',
   ];
   const from = new URL('seed/', import.meta.url).href;
   const {

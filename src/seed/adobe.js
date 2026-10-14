@@ -1,3 +1,5 @@
+import { IMS_TOKEN } from './vault.js';
+
 const imsHosts = {
   prod: 'https://ims-na1.adobelogin.com',
   stg1: 'https://ims-na1-stg1.adobelogin.com',
@@ -43,6 +45,10 @@ export function relayed(origin) {
 }
 
 export function tokenFrom(redirectUrl, expected) {
+  return grantFrom(redirectUrl, expected).token;
+}
+
+export function grantFrom(redirectUrl, expected) {
   const url = new URL(redirectUrl);
   if (url.searchParams.get('nonce') !== expected)
     throw new Error('the sign-in answered for another request');
@@ -52,7 +58,8 @@ export function tokenFrom(redirectUrl, expected) {
     throw new Error(
       fragment.get('error_description') ?? fragment.get('error') ?? 'Adobe sent no token'
     );
-  return token;
+  const expiresIn = Number(fragment.get('expires_in'));
+  return Number.isFinite(expiresIn) && expiresIn > 0 ? { token, expiresIn } : { token };
 }
 
 export function abortable(promise, signal) {
@@ -129,7 +136,7 @@ function viaRelay({ open, origin, listen, timeout }) {
           if (data?.type !== 'oauth-callback' || data.nonce !== value) return;
           let token;
           try {
-            token = tokenFrom(data.redirectUrl, value);
+            token = grantFrom(data.redirectUrl, value);
           } catch (error) {
             fail(error);
             return;
@@ -185,7 +192,7 @@ function viaProxy({ proxy, open, fetcher, every, timeout }) {
             if (response.status === 404) throw new Error('the sign-in expired; try again');
             if (!response.ok)
               throw new Error(`slicc-node refused the sign-in (${response.status})`);
-            token = tokenFrom((await response.json()).redirectUrl, value);
+            token = grantFrom((await response.json()).redirectUrl, value);
           } catch (error) {
             fail(error);
             return;
@@ -219,12 +226,34 @@ export function signIn({
     ? async (_providerId, options, signal) => {
         const config = await options();
         if (!config) throw new Error('this account has no sign-in');
-        return abortable(extension.signIn(config), signal);
+        const token = await abortable(extension.signIn(config), signal);
+        return typeof token === 'string' ? { token } : token;
       }
     : viaProxy({ proxy, open, fetcher, every, timeout });
   const forced = () => force ?? globalThis.localStorage?.getItem(FORCE_RELAY) === 'relay';
-  return (providerId, options, { signal } = {}) =>
+  const grant = (providerId, options, { signal } = {}) =>
     relayed(origin) || forced()
       ? relay(providerId, options, signal)
       : direct(providerId, options, signal);
+  const login = (providerId, options, context) =>
+    grant(providerId, options, context).then((got) => got.token);
+  login.grant = grant;
+  return login;
+}
+
+export function sealedLogin(login, { vault, takes, now = Date.now }) {
+  return (providerId, options, context) => {
+    if (providerId !== 'adobe' || !takes()) return login(providerId, options, context);
+    return login.grant(providerId, options, context).then(async ({ token, expiresIn }) => {
+      await vault.seal({
+        kind: 'model',
+        provider: 'adobe',
+        name: IMS_TOKEN,
+        value: token,
+        source: 'oauth:adobe',
+        ...(expiresIn ? { expiresAt: now() + expiresIn } : {}),
+      });
+      return { sealed: true };
+    });
+  };
 }
