@@ -35,6 +35,8 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+    outputs:
+      base: ${{ steps.pr.outputs.base }}
     env:
       LEFTHOOK: '0'
       PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
@@ -121,7 +123,7 @@ jobs:
           allowed_bots: 'renovate[bot]'
           claude_args: |
             --model ${{ vars.CERT_BEDROCK_MODEL || 'global.anthropic.claude-opus-5-5' }}
-            --allowedTools "Bash(scripts/cert/sandbox:*),Bash(node scripts/cert/inspect.mjs:*),Bash(gh pr view:*),Bash(gh pr diff:*),Read(//home/cert/**),Read(/${{ github.workspace }}/**),Write(/${{ runner.temp }}/cert-review/**)"
+            --allowedTools "Bash(scripts/cert/sandbox:*),Bash(gh pr view:*),Bash(gh pr diff:*),Read(//home/cert/**),Read(/${{ github.workspace }}/**),Write(/${{ runner.temp }}/cert-review/**)"
             --disallowedTools "Bash(gh pr comment:*),Bash(gh api:*),Read(//proc/**),Read(/${{ github.workspace }}/.git/**),Read(/${{ github.workspace }}/.cert-head/.git/**),WebFetch,WebSearch"
             --max-turns 300
           prompt: |
@@ -141,18 +143,18 @@ jobs:
               - `SLICC_TESTS='test/integration/shell.test.mjs test/integration/jsh.test.mjs' npm test`: the integration suites, in headless Chrome against bios's real page. Each file takes 2 to 15 minutes, and the whole set about 80, so pick files.
               - `CERT_COMMANDS=/home/cert/head/artifacts/cmds.txt SLICC_TESTS=test/integration/cert.test.mjs npm test`: boots seven in Chrome and runs each line of that file in seven's terminal. It writes the exit status and output of every line to `artifacts/cert/seven.json`. Write the command file first, e.g. `scripts/cert/sandbox head 'mkdir -p artifacts && printf "%s\n" "grep --version" "echo hi | sed s/hi/ok/" > artifacts/cmds.txt'`. Set `CERT_TIMEOUT` (ms per command, default 180000) for slow commands.
               - `npm view`, `npm pack`, `node -e`, `ls`, `cat`, `jq`, and the like, to look inside packages.
-            - `node scripts/cert/inspect.mjs <name>@<version> [--against <old version>]` prints a package's tarball sha256 and integrity (checked against the registry), gitHead, repository, install scripts, engines and npm provenance (the workflow, ref and commit that built it), plus the versions certs.json already certifies. With `--against` it lists the files that differ from the old version and writes the full diff to `artifacts/cert/`.
+            - `scripts/cert/sandbox base 'node scripts/cert/inspect.mjs <name>@<version> [--against <old version>]'` prints a package's tarball sha256 and integrity (checked against the registry), gitHead, repository, install scripts, engines and npm provenance (the workflow, ref and commit that built it), plus the versions certs.json already certifies. With `--against` it lists the files that differ from the old version and writes the full diff to `/home/cert/base/artifacts/cert/`.
             - `gh pr view` and `gh pr diff` for this pull request.
             - Read, for files under `/home/cert/` and the current directory only. For listing or searching, use `ls`, `grep`, `find` or `jq` through the sandbox.
             - Write, only for `${{ runner.temp }}/cert-review/comment.md`, your verdict. A later step checks it for secrets and posts it to the pull request. You can't post comments yourself.
 
             WHAT TO DO
             1. Read the pull request and its diff. List every package whose pinned version changes in `src/packages/**` (package.json files and lockfiles), with its old and new version. Leave out transitive moves that a pinned package's own release brings, but say so.
-            2. For each changed gated package, run `inspect.mjs <name>@<new> --against <old>` and check:
+            2. For each changed gated package, run `scripts/cert/sandbox base 'node scripts/cert/inspect.mjs <name>@<new> --against <old>'` and check:
                - the integrity in the pull request's lockfiles equals the registry's, and the sha256 is what you record;
                - provenance: slicc-kernel, slicc-jsh, slicc-cdp, slicc-clipboard, slicc-agent and slicc-spectrum publish it, and it must point at that `ai-ecoverse` repository's release workflow, with the commit matching gitHead. homescoop's packages (wasm-*, wasi-*, wasix-*, py-*; repository homescoop) are published without it today, so record its absence for those but don't fail on it;
                - there are no install scripts;
-               - the diff: read the changed files (in `artifacts/cert/`, or with `npm pack` in the sandbox). Look for anything that widens what a kernel program or the page can reach: new network hosts, `eval` or `new Function`, access to withheld browser APIs (IndexedDB, BroadcastChannel, Worker, navigator.storage, OPFS handles), changes to sudo, users, protect, mounts, /dev/sealed, the CDP guard or the lockdown, and minified or binary blobs whose source isn't in the diff. Compare with the release notes in the package's repository if they help.
+               - the diff: read the changed files (in `/home/cert/base/artifacts/cert/`, or with `npm pack` in the sandbox). Look for anything that widens what a kernel program or the page can reach: new network hosts, `eval` or `new Function`, access to withheld browser APIs (IndexedDB, BroadcastChannel, Worker, navigator.storage, OPFS handles), changes to sudo, users, protect, mounts, /dev/sealed, the CDP guard or the lockdown, and minified or binary blobs whose source isn't in the diff. Compare with the release notes in the package's repository if they help.
             3. Run the tests that exercise the package, in `head`, choosing by package:
                - slicc-kernel: `shell`, `jsh`, `packages`, `optional`, `mounts`, `users`, `sandbox`, `transport`, `cdp`, plus `cert.test.mjs` with a base-set sweep (step 4);
                - slicc-jsh: `jsh`, `typescript`, `modules`, `shell`;
@@ -189,7 +191,7 @@ jobs:
             certs.json: "@ai-ecoverse/<name>@<version>": { "integrity": "<integrity>", "sha256": "<sha256>" }
             ```
 
-            Take sha256 and integrity from `inspect.mjs`, which computes both from the registry's tarball itself, and only when `integrityMatches` is true. The `certs.json:` line can then be copied into certs.json as it is.
+            Take sha256 and integrity from `inspect.mjs`, which computes both from the registry's tarball itself, and only when `integrityMatches` is true. A trusted step re-downloads every package you list and withholds the whole verdict if any sha256 or integrity differs, so copy them exactly. The `certs.json:` line can then go into certs.json as it is.
 
             Use one table and one result line per package when there are several.
             - **A pass** gets the `certified` line and the `certs.json:` line above.
@@ -232,13 +234,23 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
+      - name: Trusted checkout of the base, for the scanner and the sha check
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.certify.outputs.base || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         continue-on-error: true
         with:
           name: cert-review-verdict-${{ env.PR_NUMBER }}
           path: ${{ runner.temp }}/verdict
 
-      - name: Post the verdict, or refuse if anything in it looks secret
+      - name: Post the verdict, or refuse if anything in it looks secret or its shas are wrong
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -249,12 +261,16 @@ jobs:
             gh pr comment "$PR_NUMBER" --repo "$REPO" --body "**Cert review:** the review ended without a verdict. The evidence is in $RUN_URL"
             exit 1
           fi
-          leak=no
-          if [ -n "$BEDROCK" ] && grep -qF -- "$BEDROCK" "$file"; then leak=yes; fi
-          if grep -qE 'ABSK[A-Za-z0-9+/=]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|AKIA[0-9A-Z]{12,}|-----BEGIN' "$file"; then leak=yes; fi
-          if [ "$leak" = yes ]; then
+          if ! CERT_SECRET_NAMES=BEDROCK node scripts/cert/scan.mjs "$file"; then
             echo "::error::the verdict held secret-shaped content, so nothing was posted"
             gh pr comment "$PR_NUMBER" --repo "$REPO" --body "**cert-review output withheld: secret-shaped content.** A human needs to look at $RUN_URL before anything from it is used."
             exit 1
           fi
+          if ! node scripts/cert/verify.mjs "$file" > "$RUNNER_TEMP/verify.txt" 2>&1; then
+            cat "$RUNNER_TEMP/verify.txt"
+            echo "::error::a sha256 or integrity in the verdict doesn't match the registry's tarball, so nothing was posted"
+            gh pr comment "$PR_NUMBER" --repo "$REPO" --body "**cert-review output withheld: its sha256 or integrity doesn't match the registry's tarball.** See $RUN_URL"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/verify.txt"
           gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$file"
