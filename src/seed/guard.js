@@ -323,10 +323,10 @@ class Guard {
   settle(requestId, marked) {
     this.remember(requestId, marked);
     const waiting = this.held.get(requestId);
-    if (!waiting) return;
+    if (!waiting) return [];
     this.held.delete(requestId);
     clearTimeout(waiting.timer);
-    if (!marked) for (const message of waiting.messages) this.deliver(message);
+    return waiting.messages;
   }
 
   hold(requestId, message) {
@@ -344,8 +344,11 @@ class Guard {
     const { requestId } = params;
     if (method === 'Network.requestWillBeSent' || method === 'Network.webSocketCreated') {
       const marked = this.requests.get(requestId) === true || (await this.request(params));
-      this.settle(requestId, marked);
-      return marked;
+      const waiting = this.settle(requestId, marked);
+      if (marked) return true;
+      this.deliver(message);
+      for (const held of waiting) this.deliver(held);
+      return true;
     }
     if (!this.requests.has(requestId)) {
       this.hold(requestId, message);
