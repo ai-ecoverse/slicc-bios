@@ -7,8 +7,12 @@ export const FETCH = 'Fetch needs a tab session; it can’t pause the whole brow
 export const STREAM =
   'this stream wasn’t handed out by the guard, so it could be seven’s or the vault’s';
 export const FAILED = 'the CDP guard couldn’t check this answer, so it held it back';
+export const SCRIPTS =
+  'scripts and bindings for later documents could run in seven’s pages or the vault, so the guard doesn’t allow them; run a script in the page you see with Runtime.evaluate instead';
 export const HEADERS =
-  'headers and user agents for a whole session could reach seven’s pages or the vault, so the guard doesn’t allow them; change a request’s headers through Fetch instead';
+  'settings for a whole session (headers, user agent, locale, time zone, cache, network conditions, blocked URLs) could reach seven’s pages or the vault, so the guard doesn’t allow them; change a request through Fetch instead';
+export const DEBUGGER =
+  'breakpoints could run in seven’s pages or the vault, so the guard doesn’t offer the Debugger domains';
 
 const GUARD_IDS = 2 ** 30;
 const HOLD_MS = 2000;
@@ -30,11 +34,25 @@ const UNSAFE = new Set([
   'Storage.getTrustTokens',
 ]);
 const FLAT = new Set(['Target.attachToTarget', 'Target.setAutoAttach']);
+const LATER = new Set([
+  'Page.addScriptToEvaluateOnNewDocument',
+  'Page.addScriptToEvaluateOnLoad',
+  'Runtime.addBinding',
+  'Page.setBypassCSP',
+]);
 const STICKY = new Set([
   'Network.setExtraHTTPHeaders',
   'Network.setUserAgentOverride',
   'Emulation.setUserAgentOverride',
+  'Emulation.setLocaleOverride',
+  'Emulation.setTimezoneOverride',
+  'Network.setCacheDisabled',
+  'Network.emulateNetworkConditions',
+  'Network.emulateNetworkConditionsByRule',
+  'Network.overrideNetworkState',
+  'Network.setBlockedURLs',
 ]);
+const DEBUGGERS = ['Debugger.', 'DOMDebugger.', 'EventBreakpoints.'];
 const NAVIGATED = new Set([
   'Page.frameStartedNavigating',
   'Page.frameRequestedNavigation',
@@ -579,7 +597,9 @@ class Guard {
     const { method, params = {}, sessionId } = message;
     if (typeof method !== 'string') return null;
     if (method.startsWith('Fetch.') && sessionId === undefined) return FETCH;
+    if (LATER.has(method)) return SCRIPTS;
     if (STICKY.has(method)) return HEADERS;
+    if (DEBUGGERS.some((domain) => method.startsWith(domain))) return DEBUGGER;
     if (this.plainly(method, params, sessionId)) return PROTECTED;
     if ((method === 'IO.read' || method === 'IO.close') && !this.streams.has(params.handle)) {
       return STREAM;

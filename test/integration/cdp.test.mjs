@@ -743,7 +743,7 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
   for (const method of ['Page.enable', 'Network.enable', 'Runtime.enable']) {
     assert.deepEqual((await send(method, {}, walking)).error, undefined, method);
   }
-  const SESSION_WIDE = /headers and user agents for a whole session/;
+  const SESSION_WIDE = /settings for a whole session/;
   for (const [method, params] of [
     ['Network.setExtraHTTPHeaders', { headers: { 'X-Agent': 'set-by-agent' } }],
     ['Network.setUserAgentOverride', { userAgent: 'agent-set-ua/1' }],
