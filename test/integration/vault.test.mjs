@@ -8,7 +8,7 @@ const fake = await startFakeVault({
   locked: true,
   secrets: ['HARBOR_API_KEY', 'TIDE_STATION_TOKEN'],
 });
-const chrome = await launch();
+const chrome = await launch({ vault: false });
 after(() => {
   chrome.close();
   fake.close();

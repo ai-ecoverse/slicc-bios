@@ -189,3 +189,19 @@ export async function trust(page, files) {
     db.close();
   }, files);
 }
+
+export const VAULT_NAMES = {
+  'amazon-bedrock': 'AWS_BEARER_TOKEN_BEDROCK',
+  adobe: 'ADOBE_IMS_TOKEN',
+};
+
+export async function connectAccount(page, id, key) {
+  return page.evaluate(
+    async ({ id, key, name }) => {
+      const { vault, settings } = document.querySelector('slicc-app').model;
+      await vault.put(name, key, undefined, { kind: 'model', provider: id });
+      if (id !== 'adobe') return settings.connect(id);
+    },
+    { id, key, name: VAULT_NAMES[id] }
+  );
+}

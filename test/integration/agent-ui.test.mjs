@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
-import { ready, run } from './bios.mjs';
+import { connectAccount, ready, run } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
 import { shoot } from './shots.mjs';
@@ -126,11 +126,7 @@ test("the agent's UI on slicc-agent 3.48 and spectrum 1.68: a failed bash card w
       .model.settings?.accounts?.()
       .some((a) => a.id === 'amazon-bedrock')
   );
-  await page.evaluate(
-    (secret) =>
-      document.querySelector('slicc-app').model.settings.connect('amazon-bedrock', secret),
-    KEY
-  );
+  await connectAccount(page, 'amazon-bedrock', KEY);
   await quiet(page);
 
   await page.evaluate(() => {
