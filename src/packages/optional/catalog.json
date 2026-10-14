@@ -110,7 +110,7 @@
   "@ai-ecoverse/wasm-rsync": {
     "id": "rsync",
     "label": "rsync",
-    "description": "Copies and syncs folders, sending only what changed, also to rsync:// servers. A non-root rsync -a of a tree with symlinks exits 23 although it copies correctly (fix coming).",
+    "description": "Copies and syncs folders, sending only what changed, also to rsync:// servers.",
     "commands": ["rsync"],
     "size": 917492
   },
