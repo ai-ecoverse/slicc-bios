@@ -520,6 +520,10 @@ export function createVault({
       return data(await call('seal', fields, { value: fields.value }));
     },
     answer: (request, status, fields = {}) => call('answer', { ...fields, request, state: status }),
+    async forward({ head, body, owner, exit, rawTraits }, port) {
+      const fields = { head, owner, exit, rawTraits, ...maybe('body', body) };
+      return data(await call('forward', fields, { transfer: [port] }));
+    },
     attach(worker) {
       workers.add(worker);
       agent(worker);
