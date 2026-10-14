@@ -385,13 +385,17 @@ class Browser {
   #trim() {
     const oldest = this.#now() - MAX_AGE;
     const finished = (action) => action.status !== 'running';
-    let kept = this.#actions.filter((action) => !finished(action) || action.at >= oldest);
+    const gone = (action) => action.tabId !== null && !this.#owned.has(action.tabId);
+    const key = (action) => action.tabId ?? `agent:${action.agentId}`;
+    let kept = this.#actions.filter(
+      (action) => !finished(action) || (action.at >= oldest && !gone(action))
+    );
     const counts = new Map();
-    for (const action of kept) counts.set(action.tabId, (counts.get(action.tabId) ?? 0) + 1);
+    for (const action of kept) counts.set(key(action), (counts.get(key(action)) ?? 0) + 1);
     kept = kept.filter((action) => {
-      const count = counts.get(action.tabId);
+      const count = counts.get(key(action));
       if (count <= PER_TAB || !finished(action)) return true;
-      counts.set(action.tabId, count - 1);
+      counts.set(key(action), count - 1);
       return false;
     });
     let over = kept.length - TOTAL;
@@ -432,8 +436,9 @@ class Browser {
   finish(link, params) {
     const action = link.action;
     if (action?.status !== 'running') return;
+    const placed = !action.tabId;
     action.tabId ??= link.tab(params.tab);
-    if (action.tabId) this.own(action.tabId, action.agentId);
+    if (placed && action.tabId) this.own(action.tabId, action.agentId);
     action.status = params.ok === false ? 'failed' : 'done';
     const error = action.kind === 'eval' ? undefined : ERRORS.has(params.error) && params.error;
     if (action.status === 'failed' && error) action.error = error;
@@ -501,9 +506,7 @@ class Browser {
 
   forget(id) {
     if (!this.#owned.delete(id)) return;
-    this.#actions = this.#actions.filter(
-      (action) => action.tabId !== id || action.status === 'running'
-    );
+    this.#trim();
     this.#infos.delete(id);
     this.#frames.delete(id);
     this.#queue.delete(id);
