@@ -7,6 +7,8 @@ export const FETCH = 'Fetch needs a tab session; it can’t pause the whole brow
 export const STREAM =
   'this stream wasn’t handed out by the guard, so it could be seven’s or the vault’s';
 export const FAILED = 'the CDP guard couldn’t check this answer, so it held it back';
+export const HEADERS =
+  'headers and user agents for a whole session could reach seven’s pages or the vault, so the guard doesn’t allow them; change a request’s headers through Fetch instead';
 
 const GUARD_IDS = 2 ** 30;
 const HOLD_MS = 2000;
@@ -28,6 +30,11 @@ const UNSAFE = new Set([
   'Storage.getTrustTokens',
 ]);
 const FLAT = new Set(['Target.attachToTarget', 'Target.setAutoAttach']);
+const STICKY = new Set([
+  'Network.setExtraHTTPHeaders',
+  'Network.setUserAgentOverride',
+  'Emulation.setUserAgentOverride',
+]);
 const NAVIGATED = new Set([
   'Page.frameStartedNavigating',
   'Page.frameRequestedNavigation',
@@ -572,6 +579,7 @@ class Guard {
     const { method, params = {}, sessionId } = message;
     if (typeof method !== 'string') return null;
     if (method.startsWith('Fetch.') && sessionId === undefined) return FETCH;
+    if (STICKY.has(method)) return HEADERS;
     if (this.plainly(method, params, sessionId)) return PROTECTED;
     if ((method === 'IO.read' || method === 'IO.close') && !this.streams.has(params.handle)) {
       return STREAM;

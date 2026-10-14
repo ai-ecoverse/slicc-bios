@@ -13,9 +13,15 @@ const port = await new Promise((resolve) => {
   });
 });
 const hits = [];
+const heard = [];
 const stand = createHttp((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   hits.push(`${url.host}${url.pathname}${url.search}`);
+  heard.push({
+    path: `${url.pathname}${url.search}`,
+    agent: req.headers['x-agent'] ?? null,
+    ua: req.headers['user-agent'] ?? '',
+  });
   const pages = {
     '/vault': `<!doctype html><title>VAULT-MARK</title><h1>VAULT-BODY-MARK</h1><script>fetch('http://localhost:${url.port}/data?from=vault', { mode: 'no-cors' });</script>`,
     '/plain': '<!doctype html><title>PLAIN-MARK</title><h1>Plain</h1>',
@@ -737,12 +743,27 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
   for (const method of ['Page.enable', 'Network.enable', 'Runtime.enable']) {
     assert.deepEqual((await send(method, {}, walking)).error, undefined, method);
   }
+  const SESSION_WIDE = /headers and user agents for a whole session/;
+  for (const [method, params] of [
+    ['Network.setExtraHTTPHeaders', { headers: { 'X-Agent': 'set-by-agent' } }],
+    ['Network.setUserAgentOverride', { userAgent: 'agent-set-ua/1' }],
+    ['Emulation.setUserAgentOverride', { userAgent: 'agent-set-ua/1' }],
+  ]) {
+    assert.match((await send(method, params, walking)).error?.message ?? '', SESSION_WIDE, method);
+  }
+  heard.length = 0;
   await send(
     'Runtime.evaluate',
     { expression: `location.href = ${JSON.stringify(`${VAULT}?walked`)}` },
     walking
   );
   await detached(walking);
+  for (let n = 0; n < 50 && !heard.some((hit) => hit.path === '/vault?walked'); n += 1)
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  const walkedIn = heard.find((hit) => hit.path === '/vault?walked');
+  assert.ok(walkedIn, JSON.stringify(heard));
+  assert.equal(walkedIn.agent, null);
+  assert.doesNotMatch(walkedIn.ua, /agent-set-ua/);
   assert.equal(
     (await send('Runtime.evaluate', { expression: 'document.title' }, walking)).error.message,
     REFUSAL
