@@ -10,7 +10,7 @@ export const FAILED = 'the CDP guard couldn’t check this answer, so it held it
 export const SCRIPTS =
   'scripts and bindings for later documents could run in seven’s pages or the vault, so the guard doesn’t allow them; run a script in the page you see with Runtime.evaluate instead';
 export const HEADERS =
-  'settings for a whole session (headers, user agent, locale, time zone, cache, network conditions, blocked URLs) could reach seven’s pages or the vault, so the guard doesn’t allow them; change a request through Fetch instead';
+  'settings for a whole session (headers, user agent, locale, time zone, cache, network conditions, blocked URLs, emulation) could reach seven’s pages or the vault, so the guard doesn’t allow them; change a request through Fetch instead';
 export const DEBUGGER =
   'breakpoints could run in seven’s pages or the vault, so the guard doesn’t offer the Debugger domains';
 
@@ -53,6 +53,7 @@ const STICKY = new Set([
   'Network.setBlockedURLs',
 ]);
 const DEBUGGERS = ['Debugger.', 'DOMDebugger.', 'EventBreakpoints.'];
+const EMULATION = /^Emulation\.(set|add|update|remove)[A-Z]/;
 const NAVIGATED = new Set([
   'Page.frameStartedNavigating',
   'Page.frameRequestedNavigation',
@@ -598,7 +599,7 @@ class Guard {
     if (typeof method !== 'string') return null;
     if (method.startsWith('Fetch.') && sessionId === undefined) return FETCH;
     if (LATER.has(method)) return SCRIPTS;
-    if (STICKY.has(method)) return HEADERS;
+    if (STICKY.has(method) || EMULATION.test(method)) return HEADERS;
     if (DEBUGGERS.some((domain) => method.startsWith(domain))) return DEBUGGER;
     if (this.plainly(method, params, sessionId)) return PROTECTED;
     if ((method === 'IO.read' || method === 'IO.close') && !this.streams.has(params.handle)) {

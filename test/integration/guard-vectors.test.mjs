@@ -12,7 +12,7 @@ const DETACH = [
 ];
 const SCRIPTS = /^scripts and bindings for later documents could run in seven’s pages or the vault/;
 const SETTINGS =
-  /^settings for a whole session \(headers, user agent, locale, time zone, cache, network conditions, blocked URLs\)/;
+  /^settings for a whole session \(headers, user agent, locale, time zone, cache, network conditions, blocked URLs, emulation\)/;
 const DEBUGGER = /^breakpoints could run in seven’s pages or the vault/;
 const PROTECTED = 'seven’s own pages and the vault are out of reach of browser automation';
 const UNSEEN = 'this request wasn’t seen, so it could be seven’s or the vault’s';
@@ -28,7 +28,7 @@ const port = await new Promise((resolve) => {
 const beacons = [];
 const heard = [];
 const page = (body, head = '') =>
-  `<!doctype html><html><head>${head}<title>STAND</title></head><body>${body}<script>console.log('STAND-CONSOLE ' + location.host);document.documentElement.setAttribute('data-locale', Intl.DateTimeFormat().resolvedOptions().locale);document.documentElement.setAttribute('data-tz', Intl.DateTimeFormat().resolvedOptions().timeZone);new Image().src = 'http://localhost:${standPort}/pixel' + location.search;</script></body></html>`;
+  `<!doctype html><html><head>${head}<title>STAND</title></head><body>${body}<script>console.log('STAND-CONSOLE ' + location.host);document.documentElement.setAttribute('data-locale', Intl.DateTimeFormat().resolvedOptions().locale);document.documentElement.setAttribute('data-tz', Intl.DateTimeFormat().resolvedOptions().timeZone);document.documentElement.setAttribute('data-online', String(navigator.onLine));new Image().src = 'http://localhost:${standPort}/pixel' + location.search;</script></body></html>`;
 const SVG = (width) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="1"><rect width="${width}" height="1"/></svg>`;
 const CSP = `<meta http-equiv="Content-Security-Policy" content="script-src 'none'">`;
@@ -92,11 +92,12 @@ const standPort = stand.address().port;
 const PLAIN = `http://localhost:${standPort}`;
 const OTHER = `http://plain.test:${standPort}`;
 const VAULT = `http://vault.sliccy.ai:${standPort}`;
+const ABC = `http://abc.sliccy.ai:${standPort}`;
 
 const chrome = await launch({
   args: [
     `--remote-debugging-port=${port}`,
-    '--host-resolver-rules=MAP vault.sliccy.ai 127.0.0.1, MAP plain.test 127.0.0.1',
+    '--host-resolver-rules=MAP vault.sliccy.ai 127.0.0.1, MAP plain.test 127.0.0.1, MAP abc.sliccy.ai 127.0.0.1',
   ],
 });
 const SEVEN = new URL(chrome.url).origin;
@@ -123,12 +124,20 @@ function cdp() {
     socket.onopen = resolve;
     socket.onerror = reject;
   });
+  ready.catch(() => {});
   const send = async (method, params = {}, sessionId) => {
     await ready;
     next += 1;
     const id = next;
     return new Promise((resolve) => {
-      pending.set(id, resolve);
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        resolve({ error: { message: `${method} got no answer from Chrome` } });
+      }, 15000);
+      pending.set(id, (message) => {
+        clearTimeout(timer);
+        resolve(message);
+      });
       socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
     });
   };
@@ -166,11 +175,22 @@ async function harness(targetId) {
 }
 
 async function readAttribute(prefix, name = 'data-k', ms = 4000) {
+  return readIn(
+    prefix,
+    `document.documentElement?.getAttribute(${JSON.stringify(name)}) ?? null`,
+    ms
+  );
+}
+
+const loaded = async (prefix, ms = 8000) =>
+  (await readIn(prefix, "document.title === 'STAND' ? 'loaded' : null", ms)).value === 'loaded';
+
+async function readIn(prefix, expression, ms) {
   const deadline = Date.now() + ms;
   let last = { found: false, value: null };
   while (Date.now() < deadline) {
     const { result } = await own.send('Target.getTargets');
-    const target = result.targetInfos.find(
+    const target = (result?.targetInfos ?? []).find(
       (info) => (info.type === 'page' || info.type === 'iframe') && info.url.startsWith(prefix)
     );
     if (target) {
@@ -183,7 +203,7 @@ async function readAttribute(prefix, name = 'data-k', ms = 4000) {
         const answer = await own.send(
           'Runtime.evaluate',
           {
-            expression: `document.documentElement?.getAttribute(${JSON.stringify(name)}) ?? null`,
+            expression,
             returnByValue: true,
           },
           sessionId
@@ -317,7 +337,7 @@ const targets = () => ({
 });
 const sevenPages = (seven) => {
   const body = (head, inline) =>
-    `<!doctype html><html><head>${head}<title>STAND</title></head><body><h1>STAND-BODY</h1>${inline}<script>console.log('STAND-CONSOLE ' + location.host);document.documentElement.setAttribute('data-locale', Intl.DateTimeFormat().resolvedOptions().locale);document.documentElement.setAttribute('data-tz', Intl.DateTimeFormat().resolvedOptions().timeZone);new Image().src = 'http://localhost:${standPort}/pixel' + location.search;</script></body></html>`;
+    `<!doctype html><html><head>${head}<title>STAND</title></head><body><h1>STAND-BODY</h1>${inline}<script>console.log('STAND-CONSOLE ' + location.host);document.documentElement.setAttribute('data-locale', Intl.DateTimeFormat().resolvedOptions().locale);document.documentElement.setAttribute('data-tz', Intl.DateTimeFormat().resolvedOptions().timeZone);document.documentElement.setAttribute('data-online', String(navigator.onLine));new Image().src = 'http://localhost:${standPort}/pixel' + location.search;</script></body></html>`;
   chrome.overrides.set('/probe-doc.html', body('', ''));
   chrome.overrides.set(
     '/probe-csp.html',
@@ -339,6 +359,10 @@ const VECTOR = { href: 'C1.href', 302: 'C2.302', popup: 'C3.popup', iframe: 'C4.
 const registrations = {
   C: (id) => [
     ['Page.addScriptToEvaluateOnNewDocument', { source: marker(id), runImmediately: true }],
+  ],
+  basic: (id) => [['Page.addScriptToEvaluateOnNewDocument', { source: marker(id) }]],
+  world: (id) => [
+    ['Page.addScriptToEvaluateOnNewDocument', { source: marker(id), worldName: 'kworld' }],
   ],
   E1: (id) => [['Page.addScriptToEvaluateOnLoad', { scriptSource: marker(id) }]],
 };
@@ -409,92 +433,147 @@ async function controlThroughHarness(id, setup, trigger, to, open) {
   }
 }
 
+const instrumentOn = (guard, setup) =>
+  guard.seven.evaluate((setup) => {
+    const { guarded } = window;
+    for (const handler of guarded.handlers) guarded.handlers.delete(handler);
+    if (!setup) return;
+    guarded.handlers.add((event) => {
+      if (event.method !== 'Target.attachedToTarget') return;
+      const child = event.params.sessionId;
+      void (async () => {
+        await guarded.send('Page.enable', {}, child, 3000);
+        await guarded.send('Runtime.enable', {}, child, 3000);
+        for (const [method, params] of setup) await guarded.send(method, params, child, 3000);
+        await guarded.send('Runtime.runIfWaitingForDebugger', {}, child, 3000);
+      })();
+    });
+  }, setup);
+
 for (const [detach, lag] of DETACH) {
   test(`C1–C4 and E1 at registration, ${detach} detach`, { timeout: 20 * 60 * 1000 }, async (t) => {
     const guard = await guardPage(t, lag);
     sevenPages(guard.seven);
-    for (const [kind, setup, prefix] of [
-      ['C', registrations.C, null],
-      ['E1', registrations.E1, 'E1'],
-    ]) {
-      for (const trigger of ['href', 302, 'popup', 'iframe']) {
-        if (kind === 'E1' && trigger !== 'href') continue;
-        for (const [name, at] of Object.entries(targets())) {
-          const id = `${prefix ?? VECTOR[trigger]}.${name}`;
-          const to = at('/doc');
-          await t.test(`${id} control`, async () => {
-            const plainTo = trigger === 'iframe' ? `${OTHER}/doc?c=${id}` : `${OTHER}/doc?c=${id}`;
-            const children = trigger === 'popup' || trigger === 'iframe';
-            const onPlain = await controlThroughHarness(
-              `${id}:plain`,
-              setup,
-              trigger,
-              plainTo,
-              children
-            );
-            assert.equal(onPlain.value, `${id}:plain`, `${id} control on the plain stand-in`);
-            const onProtected = await controlThroughHarness(
-              `${id}:protected`,
-              setup,
-              trigger,
-              `${to}?c=${id}`,
-              children
+    const rows = [];
+    for (const trigger of ['href', 302, 'popup', 'iframe']) {
+      rows.push([VECTOR[trigger], registrations.C, trigger]);
+      if (trigger !== 'popup') {
+        rows.push([`${VECTOR[trigger]}-basic`, registrations.basic, trigger]);
+        rows.push([`${VECTOR[trigger]}-world`, registrations.world, trigger]);
+      }
+    }
+    rows.push(['E1', registrations.E1, 'href']);
+    for (const [vector, setup, trigger] of rows) {
+      const children = trigger === 'popup' || trigger === 'iframe';
+      for (const [name, at] of Object.entries(targets())) {
+        const id = `${vector}.${name}`;
+        const to = at('/doc');
+        await t.test(`${id} control`, async () => {
+          const onPlain = await controlThroughHarness(
+            `${id}:plain`,
+            setup,
+            trigger,
+            `${OTHER}/doc?c=${id}`,
+            children
+          );
+          assert.equal(onPlain.value, `${id}:plain`, `${id} control on the plain stand-in`);
+          const onProtected = await controlThroughHarness(
+            `${id}:protected`,
+            setup,
+            trigger,
+            `${to}?c=${id}`,
+            children
+          );
+          assert.equal(
+            onProtected.value,
+            `${id}:protected`,
+            `${id} control on the protected stand-in`
+          );
+          assert.ok(
+            beacons.some((b) => b.id === `${id}:plain`),
+            `${id} control beacon, plain`
+          );
+          assert.ok(
+            beacons.some((b) => b.id === `${id}:protected`),
+            `${id} control beacon, protected`
+          );
+        });
+        await t.test(`${id} protected`, async () => {
+          const targetId = await tab(`${PLAIN}/doc`);
+          const url = `${to}?p=${id}`;
+          const auto = { autoAttach: true, waitForDebuggerOnStart: true, flatten: true };
+          try {
+            const session = await guard.attach(targetId);
+            for (const [method, params] of setup(id)) {
+              const answer = await guard.send(method, params, session);
+              assert.match(
+                answer.error?.message ?? '',
+                SCRIPTS,
+                `${method}: the guard's own refusal`
+              );
+            }
+            if (children) {
+              await instrumentOn(guard, setup(id));
+              assert.equal(
+                (await guard.send('Target.setDiscoverTargets', { discover: true })).error,
+                undefined
+              );
+              assert.equal(
+                (await guard.send('Target.setAutoAttach', auto, session)).error,
+                undefined
+              );
+              assert.equal((await guard.send('Target.setAutoAttach', auto)).error, undefined);
+            }
+            const before = (await guard.events()).length;
+            const ran = await guard.go(TRIGGERS[trigger](url), session);
+            if (trigger === 'popup') assert.equal(ran.error, undefined, `${id}: the trigger ran`);
+            assert.ok(
+              await loaded(url, lag + 15000),
+              `${id}: the protected document loaded, read through the harness's own CDP`
             );
             assert.equal(
-              onProtected.value,
-              `${id}:protected`,
-              `${id} control on the protected stand-in`
+              (await readAttribute(url, 'data-k', 1500)).value,
+              null,
+              `${id}: no attribute`
             );
+            assert.ok(!beacons.some((b) => b.id === id), `${id}: no beacon`);
+            const later = (await guard.events()).slice(before);
             assert.ok(
-              beacons.some((b) => b.id === `${id}:protected`),
-              `${id} control beacon`
+              !JSON.stringify(later).includes(url),
+              `${id}: nothing naming the protected document reached the client`
             );
-          });
-          await t.test(`${id} protected`, async () => {
-            const targetId = await tab(`${PLAIN}/doc`);
-            try {
-              const session = await guard.attach(targetId);
-              for (const [method, params] of setup(id)) {
-                const answer = await guard.send(method, params, session);
-                assert.match(
-                  answer.error?.message ?? '',
-                  SCRIPTS,
-                  `${method}: the guard's own refusal`
-                );
-              }
-              if (trigger === 'popup' || trigger === 'iframe') {
-                const auto = await guard.send(
-                  'Target.setAutoAttach',
-                  { autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
-                  session
-                );
-                assert.equal(auto.error, undefined);
-              }
-              const before = (await guard.events()).length;
-              await guard.go(TRIGGERS[trigger](`${to}?p=${id}`), session);
-              const seen = await readAttribute(`${to}`, 'data-k', lag ? lag + 3000 : 4000);
-              assert.equal(seen.value, null, `${id}: no attribute on the protected document`);
-              assert.ok(!beacons.some((b) => b.id === id), `${id}: no beacon`);
-              if (trigger === 'popup' || trigger === 'iframe') {
-                const later = (await guard.events()).slice(before);
-                assert.ok(
-                  !later.some(
-                    (event) =>
-                      event.method === 'Target.attachedToTarget' &&
-                      JSON.stringify(event).includes(new URL(to).host)
-                  ),
-                  `${id}: the protected ${trigger} was not attached to the client`
-                );
-              }
-            } finally {
+            if (children) {
               const { result } = await own.send('Target.getTargets');
-              const extra = result.targetInfos.filter(
-                (info) => info.type === 'page' && info.url.startsWith(to)
+              const child = result.targetInfos.find((info) => info.url.startsWith(url));
+              assert.ok(child, `${id}: the protected ${trigger} is a target`);
+              const about = later.filter((event) => JSON.stringify(event).includes(child.targetId));
+              assert.deepEqual(
+                about.filter((event) => event.method === 'Target.attachedToTarget'),
+                [],
+                `${id}: the protected ${trigger} was never attached to the client`
               );
-              await closeAll([targetId, ...extra.map((info) => info.targetId)]);
+              assert.ok(
+                !about.some((event) => JSON.stringify(event).includes(new URL(to).host)),
+                `${id}: no target event shows the protected ${trigger}'s origin (${JSON.stringify(about).slice(0, 400)})`
+              );
             }
-          });
-        }
+          } finally {
+            if (children) {
+              await guard.send('Target.setAutoAttach', {
+                autoAttach: false,
+                waitForDebuggerOnStart: false,
+                flatten: true,
+              });
+              await guard.send('Target.setDiscoverTargets', { discover: false });
+              await instrumentOn(guard, null);
+            }
+            const { result } = await own.send('Target.getTargets');
+            const extra = result.targetInfos.filter(
+              (info) => info.type === 'page' && info.url.startsWith(to)
+            );
+            await closeAll([targetId, ...extra.map((info) => info.targetId)]);
+          }
+        });
       }
     }
   });
@@ -552,6 +631,10 @@ for (const [detach, lag] of DETACH) {
           );
           const before = (await guard.events()).length;
           await guard.go(TRIGGERS.href(`${at('/doc')}?e2p`), session);
+          assert.ok(
+            await loaded(`${at('/doc')}?e2p`, lag + 15000),
+            'E2: the protected document loaded'
+          );
           await pause(lag ? lag + 2000 : 2500);
           assert.ok(
             !(await guard.events()).slice(before).some((e) => e.method === 'Runtime.bindingCalled'),
@@ -591,6 +674,7 @@ for (const [detach, lag] of DETACH) {
           );
           const to = at('/csp');
           await guard.go(TRIGGERS.href(`${to}?e3p`), session);
+          assert.ok(await loaded(`${to}?e3p`, lag + 15000), 'E3: the protected document loaded');
           const seen = await readAttribute(to, 'data-k', lag ? lag + 3000 : 4000);
           assert.equal(seen.value, null, 'E3: the protected page kept its CSP');
         } finally {
@@ -602,7 +686,7 @@ for (const [detach, lag] of DETACH) {
         for (const to of [`${OTHER}/doc?e4`, `${at('/doc')}?e4c`]) {
           const targetId = await tab(`${PLAIN}/doc`);
           try {
-            const { send } = await harness(targetId);
+            const { send, sessionId } = await harness(targetId);
             await send('Debugger.enable');
             const condition = `document.documentElement.setAttribute('data-k', 'E4'), false`;
             await send('Debugger.setBreakpointByUrl', {
@@ -612,16 +696,31 @@ for (const [detach, lag] of DETACH) {
               condition,
             });
             await send('DOMDebugger.setEventListenerBreakpoint', { eventName: 'DOMContentLoaded' });
+            await send('Debugger.setInstrumentationBreakpoint', {
+              instrumentation: 'beforeScriptExecution',
+            });
             const from = own.events.length;
-            await send('Runtime.evaluate', { expression: TRIGGERS.href(to) });
-            await pause(2500);
-            const paused = own.events.slice(from).some((e) => e.method === 'Debugger.paused');
-            for (const e of own.events.slice(from))
-              if (e.method === 'Debugger.paused') await send('Debugger.resume');
+            void send('Runtime.evaluate', { expression: TRIGGERS.href(to) });
+            const reasons = [];
+            let seenTo = from;
+            for (const end = Date.now() + 4000; Date.now() < end; ) {
+              for (const e of own.events.slice(seenTo)) {
+                seenTo += 1;
+                if (e.method !== 'Debugger.paused' || e.sessionId !== sessionId) continue;
+                reasons.push(e.params.reason);
+                await send('Debugger.resume');
+              }
+              await pause(50);
+            }
+            await send('Debugger.disable');
             const seen = await readAttribute(to, 'data-k', 2000);
             assert.ok(
-              paused || seen.value === 'E4',
-              `E4 control on ${to}: breakpoint condition evaluated or paused`
+              reasons.includes('instrumentation'),
+              `E4 control on ${to}: the instrumentation breakpoint paused (${reasons})`
+            );
+            assert.ok(
+              reasons.some((reason) => reason !== 'instrumentation') || seen.value === 'E4',
+              `E4 control on ${to}: a breakpoint condition evaluated or a listener breakpoint paused (${reasons})`
             );
           } finally {
             await closeAll([targetId]);
@@ -653,6 +752,10 @@ for (const [detach, lag] of DETACH) {
           }
           const before = (await guard.events()).length;
           await guard.go(TRIGGERS.href(`${at('/doc')}?e4p`), session);
+          assert.ok(
+            await loaded(`${at('/doc')}?e4p`, lag + 15000),
+            'E4: the protected document loaded'
+          );
           const seen = await readAttribute(at('/doc'), 'data-k', lag ? lag + 3000 : 4000);
           assert.equal(seen.value, null, 'E4: no condition evaluated in the protected document');
           assert.ok(
@@ -712,9 +815,10 @@ for (const [detach, lag] of DETACH) {
     }
   });
 
-  test(`E6 session overrides, ${detach} detach`, { timeout: 20 * 60 * 1000 }, async (t) => {
+  test(`E6 session overrides, ${detach} detach`, { timeout: 30 * 60 * 1000 }, async (t) => {
     const guard = await guardPage(t, lag);
     sevenPages(guard.seven);
+    const offline = { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1 };
     const overrides = [
       [
         'headers',
@@ -746,281 +850,321 @@ for (const [detach, lag] of DETACH) {
         { urlPatterns: [{ urlPattern: '*://*:*/pixel*', block: true }] },
         null,
       ],
+      ['netcond', 'Network.emulateNetworkConditions', offline, 'offline'],
       [
-        'netcond',
-        'Network.emulateNetworkConditions',
-        { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1 },
+        'netcond.rule',
+        'Network.emulateNetworkConditionsByRule',
+        { matchedNetworkConditions: [{ urlPattern: '', ...offline }] },
         'offline',
       ],
+      ['netstate', 'Network.overrideNetworkState', offline, 'data-online'],
       ['locale', 'Emulation.setLocaleOverride', { locale: 'de-CH' }, 'data-locale'],
       ['timezone', 'Emulation.setTimezoneOverride', { timezoneId: 'Pacific/Chatham' }, 'data-tz'],
     ];
-    const value = { locale: 'de-CH', timezone: 'Pacific/Chatham' };
-    for (const [name, at] of Object.entries(targets())) {
-      for (const [key, method, params, check] of overrides) {
-        const id = `E6.${key}.${name}`;
-        if (name === 'seven' && typeof check === 'function') continue;
-        const observe = async (to, tag, mark) => {
-          const path = new URL(to).pathname;
-          if (typeof check === 'function') {
-            await pause(2000);
-            return heard.some((hit) => hit.path.includes(tag) && check(hit));
-          }
-          if (check === null || check === 'offline') {
-            await pause(2500);
-            const loaded =
-              heard.some((hit) => hit.path === `${path}?${tag}`) ||
-              chrome.requests.slice(mark).some((at) => at.startsWith('/probe-doc'));
-            if (check === 'offline') return !loaded;
-            return (
-              loaded &&
-              !heard.some((hit) => hit.path.startsWith('/pixel') && hit.path.includes(tag))
-            );
-          }
-          return (await readAttribute(to, check, 3000)).value === value[key];
-        };
-        await t.test(`${id} control`, async () => {
-          for (const [to, tag] of [
-            [`${OTHER}/doc?${id}:plain`, `${id}:plain`],
-            [`${at('/doc')}?${id}:protected`, `${id}:protected`],
-          ]) {
-            if (name === 'seven' && typeof check === 'function' && tag.endsWith('protected'))
-              continue;
+    const value = { locale: 'de-CH', timezone: 'Pacific/Chatham', netstate: 'false' };
+    const FRAMED = new Set([
+      'headers',
+      'ua.network',
+      'ua.emulation',
+      'cache',
+      'netcond',
+      'netcond.rule',
+    ]);
+    const where = (name, check) =>
+      typeof check === 'function'
+        ? { seven: `${ABC}/doc`, vault: `${VAULT}/doc` }[name]
+        : targets()[name]('/doc');
+    for (const trigger of ['href', 'iframe']) {
+      for (const name of ['seven', 'vault']) {
+        for (const [key, method, params, check] of overrides) {
+          if (trigger === 'iframe' && !FRAMED.has(key)) continue;
+          const id = `E6.${key}${trigger === 'iframe' ? '-iframe' : ''}.${name}`;
+          const doc = where(name, check);
+          const observe = async (to, tag, mark) => {
+            const path = new URL(to).pathname;
+            if (typeof check === 'function') {
+              await pause(2000);
+              return heard.some((hit) => hit.path.includes(tag) && check(hit));
+            }
+            if (check === null || check === 'offline') {
+              await pause(2500);
+              const arrived =
+                heard.some((hit) => hit.path === `${path}?${tag}`) ||
+                chrome.requests.slice(mark).some((at) => at.startsWith('/probe-doc'));
+              if (check === 'offline') return !arrived;
+              return (
+                arrived &&
+                !heard.some((hit) => hit.path.startsWith('/pixel') && hit.path.includes(tag))
+              );
+            }
+            return (await readAttribute(to, check, 3000)).value === value[key];
+          };
+          await t.test(`${id} control`, async () => {
+            for (const [to, tag] of [
+              [`${OTHER}/doc?${id}:plain`, `${id}:plain`],
+              [`${doc}?${id}:protected`, `${id}:protected`],
+            ]) {
+              const targetId = await tab(`${PLAIN}/doc`);
+              try {
+                const { send } = await harness(targetId);
+                await send('Network.enable');
+                assert.equal((await send(method, params)).error, undefined, method);
+                const mark = chrome.requests.length;
+                await send('Runtime.evaluate', { expression: TRIGGERS[trigger](to) });
+                assert.ok(await observe(to, tag, mark), `${id} control applied on ${to}`);
+              } finally {
+                await closeAll([targetId]);
+              }
+            }
+          });
+          await t.test(`${id} protected`, async () => {
             const targetId = await tab(`${PLAIN}/doc`);
             try {
-              const { send } = await harness(targetId);
-              await send('Network.enable');
-              assert.equal((await send(method, params)).error, undefined, method);
+              const session = await guard.attach(targetId);
+              await guard.send('Network.enable', {}, session);
+              assert.match(
+                (await guard.send(method, params, session)).error?.message ?? '',
+                SETTINGS,
+                method
+              );
+              const tag = `${id}:guard`;
+              const to = `${doc}?${tag}`;
               const mark = chrome.requests.length;
-              await send('Runtime.evaluate', { expression: TRIGGERS.href(to) });
-              assert.ok(await observe(to, tag, mark), `${id} control applied on ${to}`);
+              await guard.go(TRIGGERS[trigger](to), session);
+              assert.ok(await loaded(to, lag + 15000), `${id}: the protected document loaded`);
+              assert.equal(
+                await observe(to, tag, mark),
+                false,
+                `${id}: not applied to the protected document`
+              );
             } finally {
               await closeAll([targetId]);
             }
-          }
-        });
-        await t.test(`${id} protected`, async () => {
-          const targetId = await tab(`${PLAIN}/doc`);
-          try {
-            const session = await guard.attach(targetId);
-            await guard.send('Network.enable', {}, session);
-            assert.match(
-              (await guard.send(method, params, session)).error?.message ?? '',
-              SETTINGS,
-              method
-            );
-            const tag = `${id}:guard`;
-            const to = `${at('/doc')}?${tag}`;
-            const mark = chrome.requests.length;
-            await guard.go(TRIGGERS.href(to), session);
-            if (lag) await pause(lag);
-            assert.equal(
-              await observe(to, tag, mark),
-              false,
-              `${id}: not applied to the protected document`
-            );
-          } finally {
-            await closeAll([targetId]);
-          }
-        });
+          });
+        }
       }
     }
   });
 }
 
-test('C5 and C6 on the guard path', { timeout: 20 * 60 * 1000 }, async (t) => {
-  const guard = await guardPage(t, 0);
-  sevenPages(guard.seven);
-  for (const [name, at] of Object.entries(targets())) {
-    const to = at('/doc');
-    await t.test(`C5.fulfill.${name} control`, async () => {
-      const targetId = await tab(`${PLAIN}/doc`);
-      try {
-        const session = await guard.attach(targetId);
-        assert.equal(
-          (await guard.send('Fetch.enable', { patterns: [{ urlPattern: '*' }] }, session)).error,
-          undefined
-        );
-        const before = (await guard.events()).length;
-        void guard.go(TRIGGERS.href(`${OTHER}/doc?c5`), session);
-        let paused = null;
-        for (let n = 0; n < 50 && !paused; n += 1) {
-          paused = (await guard.events())
-            .slice(before)
-            .find(
-              (e) => e.method === 'Fetch.requestPaused' && e.params.request.url.includes('/doc?c5')
-            );
-          if (!paused) await pause(100);
+for (const [detach, lag] of DETACH)
+  test(`C5 and C6 on the guard path, ${detach} detach`, { timeout: 20 * 60 * 1000 }, async (t) => {
+    const guard = await guardPage(t, lag);
+    sevenPages(guard.seven);
+    for (const [name, at] of Object.entries(targets())) {
+      const to = at('/doc');
+      await t.test(`C5.fulfill.${name} control`, async () => {
+        const targetId = await tab(`${PLAIN}/doc`);
+        try {
+          const session = await guard.attach(targetId);
+          assert.equal(
+            (await guard.send('Fetch.enable', { patterns: [{ urlPattern: '*' }] }, session)).error,
+            undefined
+          );
+          const before = (await guard.events()).length;
+          void guard.go(TRIGGERS.href(`${OTHER}/doc?c5`), session);
+          let paused = null;
+          for (let n = 0; n < 50 && !paused; n += 1) {
+            paused = (await guard.events())
+              .slice(before)
+              .find(
+                (e) =>
+                  e.method === 'Fetch.requestPaused' && e.params.request.url.includes('/doc?c5')
+              );
+            if (!paused) await pause(100);
+          }
+          assert.ok(paused, 'C5 control: the plain document request is paused for the client');
+          const body = Buffer.from(
+            `<!doctype html><html data-k="C5"><title>AGENT</title></html>`
+          ).toString('base64');
+          const answer = await guard.send(
+            'Fetch.fulfillRequest',
+            {
+              requestId: paused.params.requestId,
+              responseCode: 200,
+              responseHeaders: [{ name: 'content-type', value: 'text/html' }],
+              body,
+            },
+            session
+          );
+          assert.equal(answer.error, undefined);
+          assert.equal(
+            (await readAttribute(`${OTHER}/doc?c5`)).value,
+            'C5',
+            'C5 control: the agent’s body renders'
+          );
+        } finally {
+          await closeAll([targetId]);
         }
-        assert.ok(paused, 'C5 control: the plain document request is paused for the client');
-        const body = Buffer.from(
-          `<!doctype html><html data-k="C5"><title>AGENT</title></html>`
-        ).toString('base64');
-        const answer = await guard.send(
-          'Fetch.fulfillRequest',
-          {
-            requestId: paused.params.requestId,
-            responseCode: 200,
-            responseHeaders: [{ name: 'content-type', value: 'text/html' }],
-            body,
-          },
-          session
-        );
-        assert.equal(answer.error, undefined);
-        assert.equal(
-          (await readAttribute(`${OTHER}/doc?c5`)).value,
-          'C5',
-          'C5 control: the agent’s body renders'
-        );
-      } finally {
-        await closeAll([targetId]);
-      }
-    });
-    await t.test(`C5.fulfill.${name} protected`, async () => {
-      const targetId = await tab(`${PLAIN}/doc`);
-      try {
-        const session = await guard.attach(targetId);
-        assert.equal(
-          (await guard.send('Fetch.enable', { patterns: [{ urlPattern: '*' }] }, session)).error,
-          undefined
-        );
-        const before = (await guard.events()).length;
-        await guard.go(TRIGGERS.href(`${to}?c5p`), session);
-        await pause(3000);
-        const later = (await guard.events()).slice(before);
-        assert.ok(
-          !later.some(
-            (e) =>
-              (e.method === 'Fetch.requestPaused' || e.method === 'Fetch.authRequired') &&
-              JSON.stringify(e).includes(new URL(to).host)
-          ),
-          'C5: no paused event for the protected document reached the client'
-        );
-        const guessed = await guard.send(
-          'Fetch.fulfillRequest',
-          { requestId: 'interception-job-1.0', responseCode: 200, body: '' },
-          session
-        );
-        assert.ok(
-          [UNSEEN, PROTECTED].includes(guessed.error?.message),
-          `C5: fulfil refused (${guessed.error?.message})`
-        );
-        const shown = await readAttribute(to, 'data-k', 1500);
-        assert.equal(shown.value, null, 'C5: the protected page shows its real body');
-      } finally {
-        await closeAll([targetId]);
-      }
-    });
-
-    const origin = name === 'seven' ? SEVEN : VAULT;
-    await t.test(`C6.cookies.${name} control`, async () => {
-      const targetId = await tab(`${PLAIN}/doc`);
-      try {
-        const session = await guard.attach(targetId);
-        await own.send('Storage.setCookies', {
-          cookies: [{ name: 'pk', value: '1', url: `${OTHER}/` }],
-        });
-        const plain = (cookies) =>
-          (cookies ?? []).filter((c) => c.name === 'pk' && c.domain === 'plain.test');
-        const read = await guard.send('Network.getCookies', { urls: [`${OTHER}/`] }, session);
-        assert.equal(
-          plain(read.result?.cookies)[0]?.value,
-          '1',
-          `C6 control: Network.getCookies (${JSON.stringify(read).slice(0, 200)})`
-        );
-        assert.equal(
-          plain((await guard.send('Storage.getCookies')).result?.cookies)[0]?.value,
-          '1',
-          'C6 control: Storage.getCookies'
-        );
-        assert.equal(
-          (
-            await guard.send(
-              'Network.setCookie',
-              { name: 'pk', value: '2', url: `${OTHER}/` },
-              session
-            )
-          ).error,
-          undefined
-        );
-        assert.equal(
-          plain((await own.send('Storage.getCookies')).result.cookies)[0]?.value,
-          '2',
-          'C6 control: the plain cookie changed'
-        );
-        assert.equal(
-          (await guard.send('Network.deleteCookies', { name: 'pk', url: `${OTHER}/` }, session))
-            .error,
-          undefined
-        );
-        assert.equal(
-          plain((await own.send('Storage.getCookies')).result.cookies).length,
-          0,
-          'C6 control: the plain cookie deleted'
-        );
-      } finally {
-        await closeAll([targetId]);
-      }
-    });
-    await t.test(`C6.cookies.${name} protected`, async () => {
-      const targetId = await tab(`${PLAIN}/doc`);
-      try {
-        const session = await guard.attach(targetId);
-        await own.send('Storage.setCookies', {
-          cookies: [{ name: 'pk', value: '1', url: `${origin}/` }],
-        });
-        const host = new URL(origin).hostname;
-        const mine = (cookies) =>
-          (cookies ?? []).filter((c) => c.name === 'pk' && c.domain.replace(/^\./, '') === host);
-        assert.equal(
-          mine((await own.send('Storage.getCookies')).result.cookies).length,
-          1,
-          'C6: pk=1 planted'
-        );
-        for (const [method, params, at] of [
-          ['Network.getCookies', { urls: [`${origin}/`] }, session],
-          ['Network.getAllCookies', {}, session],
-          ['Storage.getCookies', {}, undefined],
-        ]) {
-          const answer = await guard.send(method, params, at);
+      });
+      await t.test(`C5.fulfill.${name} protected`, async () => {
+        const targetId = await tab(`${PLAIN}/doc`);
+        try {
+          const session = await guard.attach(targetId);
+          assert.equal(
+            (await guard.send('Fetch.enable', { patterns: [{ urlPattern: '*' }] }, session)).error,
+            undefined
+          );
+          const before = (await guard.events()).length;
+          await guard.go(TRIGGERS.href(`${to}?c5p`), session);
+          assert.ok(await loaded(`${to}?c5p`, lag + 15000), 'C5: the real stand-in body is shown');
+          await pause(lag ? lag : 1000);
+          const later = (await guard.events()).slice(before);
           assert.ok(
-            Array.isArray(answer.result?.cookies),
-            `${method} answered (${JSON.stringify(answer).slice(0, 200)})`
+            !later.some(
+              (e) =>
+                (e.method === 'Fetch.requestPaused' || e.method === 'Fetch.authRequired') &&
+                JSON.stringify(e).includes(new URL(to).host)
+            ),
+            'C5: no paused event for the protected document reached the client'
+          );
+          const guessed = await guard.send(
+            'Fetch.fulfillRequest',
+            { requestId: 'interception-job-1.0', responseCode: 200, body: '' },
+            session
+          );
+          assert.ok(
+            [UNSEEN, PROTECTED].includes(guessed.error?.message),
+            `C5: fulfil refused (${guessed.error?.message})`
+          );
+          const shown = await readAttribute(`${to}?c5p`, 'data-k', 1500);
+          assert.equal(shown.value, null, 'C5: the agent’s body never replaced the protected one');
+        } finally {
+          await closeAll([targetId]);
+        }
+      });
+
+      const origin = name === 'seven' ? SEVEN : VAULT;
+      await t.test(`C6.cookies.${name} control`, async () => {
+        const targetId = await tab(`${PLAIN}/doc`);
+        try {
+          const session = await guard.attach(targetId);
+          await own.send('Storage.setCookies', {
+            cookies: [{ name: 'pk', value: '1', url: `${OTHER}/` }],
+          });
+          const plain = (cookies) =>
+            (cookies ?? []).filter((c) => c.name === 'pk' && c.domain === 'plain.test');
+          const read = await guard.send('Network.getCookies', { urls: [`${OTHER}/`] }, session);
+          assert.equal(
+            plain(read.result?.cookies)[0]?.value,
+            '1',
+            `C6 control: Network.getCookies (${JSON.stringify(read).slice(0, 200)})`
           );
           assert.equal(
-            mine(answer.result.cookies).length,
-            0,
-            `C6: ${method} doesn't return the protected cookie`
+            plain((await guard.send('Storage.getCookies')).result?.cookies)[0]?.value,
+            '1',
+            'C6 control: Storage.getCookies'
           );
+          assert.equal(
+            plain((await guard.send('Network.getAllCookies', {}, session)).result?.cookies)[0]
+              ?.value,
+            '1',
+            'C6 control: Network.getAllCookies'
+          );
+          for (const [method, value, at] of [
+            ['Network.setCookies', '3', session],
+            ['Storage.setCookies', '4', undefined],
+          ]) {
+            assert.equal(
+              (await guard.send(method, { cookies: [{ name: 'pk', value, url: `${OTHER}/` }] }, at))
+                .error,
+              undefined,
+              method
+            );
+            assert.equal(
+              plain((await own.send('Storage.getCookies')).result.cookies)[0]?.value,
+              value,
+              `C6 control: ${method} changed the plain cookie`
+            );
+          }
+          assert.equal(
+            (
+              await guard.send(
+                'Network.setCookie',
+                { name: 'pk', value: '2', url: `${OTHER}/` },
+                session
+              )
+            ).error,
+            undefined
+          );
+          assert.equal(
+            plain((await own.send('Storage.getCookies')).result.cookies)[0]?.value,
+            '2',
+            'C6 control: the plain cookie changed'
+          );
+          assert.equal(
+            (await guard.send('Network.deleteCookies', { name: 'pk', url: `${OTHER}/` }, session))
+              .error,
+            undefined
+          );
+          assert.equal(
+            plain((await own.send('Storage.getCookies')).result.cookies).length,
+            0,
+            'C6 control: the plain cookie deleted'
+          );
+        } finally {
+          await closeAll([targetId]);
         }
-        for (const [method, params, at] of [
-          ['Network.setCookie', { name: 'pk', value: '9', url: `${origin}/` }, session],
-          [
-            'Network.setCookies',
-            { cookies: [{ name: 'pk', value: '9', url: `${origin}/` }] },
-            session,
-          ],
-          [
-            'Storage.setCookies',
-            { cookies: [{ name: 'pk', value: '9', url: `${origin}/` }] },
-            undefined,
-          ],
-          ['Network.deleteCookies', { name: 'pk', url: `${origin}/` }, session],
-        ]) {
-          assert.equal((await guard.send(method, params, at)).error?.message, PROTECTED, method);
+      });
+      await t.test(`C6.cookies.${name} protected`, async () => {
+        const targetId = await tab(`${PLAIN}/doc`);
+        try {
+          const session = await guard.attach(targetId);
+          await own.send('Storage.setCookies', {
+            cookies: [{ name: 'pk', value: '1', url: `${origin}/` }],
+          });
+          const host = new URL(origin).hostname;
+          const mine = (cookies) =>
+            (cookies ?? []).filter((c) => c.name === 'pk' && c.domain.replace(/^\./, '') === host);
+          assert.equal(
+            mine((await own.send('Storage.getCookies')).result.cookies).length,
+            1,
+            'C6: pk=1 planted'
+          );
+          for (const [method, params, at] of [
+            ['Network.getCookies', { urls: [`${origin}/`] }, session],
+            ['Network.getAllCookies', {}, session],
+            ['Storage.getCookies', {}, undefined],
+          ]) {
+            const answer = await guard.send(method, params, at);
+            assert.ok(
+              Array.isArray(answer.result?.cookies),
+              `${method} answered (${JSON.stringify(answer).slice(0, 200)})`
+            );
+            assert.equal(
+              mine(answer.result.cookies).length,
+              0,
+              `C6: ${method} doesn't return the protected cookie`
+            );
+          }
+          for (const [method, params, at] of [
+            ['Network.setCookie', { name: 'pk', value: '9', url: `${origin}/` }, session],
+            [
+              'Network.setCookies',
+              { cookies: [{ name: 'pk', value: '9', url: `${origin}/` }] },
+              session,
+            ],
+            [
+              'Storage.setCookies',
+              { cookies: [{ name: 'pk', value: '9', url: `${origin}/` }] },
+              undefined,
+            ],
+            ['Network.deleteCookies', { name: 'pk', url: `${origin}/` }, session],
+          ]) {
+            assert.equal((await guard.send(method, params, at)).error?.message, PROTECTED, method);
+          }
+          const left = mine((await own.send('Storage.getCookies')).result.cookies);
+          assert.deepEqual(
+            left.map((c) => c.value),
+            ['1'],
+            'C6: the planted cookie is unchanged'
+          );
+        } finally {
+          await closeAll([targetId]);
         }
-        const left = mine((await own.send('Storage.getCookies')).result.cookies);
-        assert.deepEqual(
-          left.map((c) => c.value),
-          ['1'],
-          'C6: the planted cookie is unchanged'
-        );
-      } finally {
-        await closeAll([targetId]);
-      }
-    });
-  }
-});
+      });
+    }
+  });
 
 const fetchOn = (guard, session, rule) =>
   guard.seven.evaluate(
@@ -1184,7 +1328,7 @@ for (const [detach, lag] of DETACH) {
     }
 
     const authVector = async (id, at) => {
-      const url = `${at}/auth/${detach}/?n=${id}`;
+      const url = `${at}/auth/${detach}-${id.replace(/\W/g, '-')}/?n=${id}`;
       const probe = (u) =>
         `fetch(${JSON.stringify(u)}, { credentials: 'include' }).then(async (r) => r.status + ' ' + (await r.text()), () => 'error')`;
       const untouched = await plainTab();
@@ -1213,22 +1357,27 @@ for (const [detach, lag] of DETACH) {
         untouched: body === plain,
       };
     };
-    await t.test('C5.auth.vault control', async () => {
-      const got = await authVector('C5.auth.vault:plain', OTHER);
-      assert.deepEqual(
-        [got.seen, got.paused, got.authed, got.untouched],
-        [true, true, true, false],
-        `C5.auth control: the client answers a plain challenge (${got.plain} / ${got.body})`
-      );
-    });
-    await t.test('C5.auth.vault protected', async () => {
-      const got = await authVector('C5.auth.vault:guard', VAULT);
-      assert.deepEqual(
-        [got.seen, got.paused, got.authed, got.untouched],
-        [false, false, false, true],
-        `C5.auth: the vault's challenge never reaches the client and the request goes on untouched (${got.plain} / ${got.body})`
-      );
-    });
+    for (const [name, at] of [
+      ['seven', ABC],
+      ['vault', VAULT],
+    ]) {
+      await t.test(`C5.auth.${name} control`, async () => {
+        const got = await authVector(`C5.auth.${name}:plain`, OTHER);
+        assert.deepEqual(
+          [got.seen, got.paused, got.authed, got.untouched],
+          [true, true, true, false],
+          `C5.auth control: the client answers a plain challenge (${got.plain} / ${got.body})`
+        );
+      });
+      await t.test(`C5.auth.${name} protected`, async () => {
+        const got = await authVector(`C5.auth.${name}:guard`, at);
+        assert.deepEqual(
+          [got.seen, got.paused, got.authed, got.untouched],
+          [false, false, false, true],
+          `C5.auth: the protected challenge never reaches the client and the request goes on untouched (${got.plain} / ${got.body})`
+        );
+      });
+    }
 
     const guessed = async (id, at) => {
       const { session } = await plainTab();
@@ -1261,21 +1410,40 @@ for (const [detach, lag] of DETACH) {
       const [lo, hi] = [num(ids[before]), num(ids[after])];
       const prefix = (ids[before] ?? '').replace(/\d+\.\d+$/, '');
       const attempts = [];
-      for (let n = lo + 1; n < hi; n += 1) {
-        const answer = await guard.send(
+      const headers = [
+        { name: 'content-type', value: 'text/plain' },
+        { name: 'access-control-allow-origin', value: '*' },
+      ];
+      const commands = [
+        [
           'Fetch.fulfillRequest',
+          { responseCode: 200, responseHeaders: headers, body: btoa('guessed') },
+        ],
+        [
+          'Fetch.continueRequest',
           {
-            requestId: `${prefix}${n}.0`,
-            responseCode: 200,
-            responseHeaders: [
-              { name: 'content-type', value: 'text/plain' },
-              { name: 'access-control-allow-origin', value: '*' },
-            ],
-            body: btoa('guessed'),
+            url: `${OTHER}/data?n=rewritten-${id}`,
+            headers: [{ name: 'X-Agent', value: 'set-by-agent' }],
           },
-          session
-        );
-        attempts.push(answer.error?.message ?? null);
+        ],
+        ['Fetch.continueResponse', { responseCode: 200, responseHeaders: headers }],
+        [
+          'Fetch.continueWithAuth',
+          {
+            authChallengeResponse: { response: 'ProvideCredentials', username: 'u', password: 'p' },
+          },
+        ],
+        ['Fetch.failRequest', { errorReason: 'Failed' }],
+      ];
+      for (let n = lo + 1; n < hi; n += 1) {
+        for (const [method, params] of commands) {
+          const answer = await guard.send(
+            method,
+            { ...params, requestId: `${prefix}${n}.0` },
+            session
+          );
+          attempts.push([method, answer.error?.message ?? null]);
+        }
       }
       const body = await value(guard, session, 'window.probe');
       await guard.send('Fetch.disable', {}, session);
@@ -1284,7 +1452,8 @@ for (const [detach, lag] of DETACH) {
         fulfilled: body === 'guessed',
         refused:
           attempts.length > 0 &&
-          attempts.every((message) => message === UNSEEN || message === PROTECTED),
+          attempts.every(([, message]) => message === UNSEEN || message === PROTECTED),
+        rewritten: heard.some((hit) => hit.path.includes(`rewritten-${id}`)),
         answered: reached(at, path, id, mark),
         body,
         attempts,
@@ -1306,8 +1475,8 @@ for (const [detach, lag] of DETACH) {
       await t.test(`${id} protected`, async () => {
         const got = await guessed(`${id}:guard`, at);
         assert.deepEqual(
-          [got.candidates, got.fulfilled, got.refused, got.answered],
-          [true, false, true, true],
+          [got.candidates, got.fulfilled, got.refused, got.answered, got.rewritten],
+          [true, false, true, true, false],
           `${id}: every guessed id is refused and the protected request is answered by its server (${got.body} ${JSON.stringify(got.attempts)})`
         );
       });
