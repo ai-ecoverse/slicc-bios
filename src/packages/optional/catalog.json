@@ -112,7 +112,7 @@
     "label": "rsync",
     "description": "Copies and syncs folders, sending only what changed, also to rsync:// servers. A non-root rsync -a of a tree with symlinks exits 23 although it copies correctly (fix coming).",
     "commands": ["rsync"],
-    "size": 917237
+    "size": 917492
   },
   "@ai-ecoverse/wasi-buf": {
     "id": "buf",

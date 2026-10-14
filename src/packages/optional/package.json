@@ -20,7 +20,7 @@
     "@ai-ecoverse/wasm-libheif": "1.23.6-1",
     "@ai-ecoverse/wasm-poppler": "26.10.0-2",
     "@ai-ecoverse/wasm-qpdf": "12.4.2-1",
-    "@ai-ecoverse/wasm-rsync": "3.4.4-4",
+    "@ai-ecoverse/wasm-rsync": "3.4.4-5",
     "@ai-ecoverse/wasm-screen": "5.0.1-10"
   }
 }

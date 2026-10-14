@@ -403,9 +403,9 @@
     "integrity": "sha512-i/xVordg4UzcM/c64J2UTPEJnpwN3hb3CFmGER6u9XyPjX32zg7yXPrqcsub2MPniTM/cs+gwgr3y3lX+2k+Fg==",
     "sha256": "c203ee50c30992052e635fab4ccbccd2fbb84718369f4927b3132461cb791e23"
   },
-  "@ai-ecoverse/wasm-rsync@3.4.4-4": {
-    "integrity": "sha512-rvntBRwUc5moJNzLBpBiMcuDU4+eihDcQmIvjeljGki3IX6RvoVPACb2CEeLlrY7Zo5/L246oQFyZVnqL6SYNA==",
-    "sha256": "7417f5462efa66144f4299eb88713355f727050095c49c2f08ffb78c69431943"
+  "@ai-ecoverse/wasm-rsync@3.4.4-5": {
+    "integrity": "sha512-DPv/rkHbdRAmDd/UnX+ZEQl7NE3+VDQv/GrkLgng/posngIo+75UyX9QejtDq6CMQrAKBd37301ixtWioekl3g==",
+    "sha256": "dc44e327301397c51c12e525fd3ec86f2734c324875b007025cfe9b4e3ce013d"
   },
   "@ai-ecoverse/wasm-screen@5.0.1-9": {
     "integrity": "sha512-k3wcAieBfWa28hHWGZuA6MqhgJtQi5n0j1eyzopjSzXia9lysv39yKYGDrf5AZz6sad9unZkXSuW6u3jgo1XYg==",
