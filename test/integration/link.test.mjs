@@ -449,6 +449,7 @@ test('the real slicc CLI: ssh into it with its pinned host key, and as the exit,
       }
     },
   });
+  await page.evaluate(() => document.querySelector('slicc-app').show('terminal'));
   const shown = await page.evaluate(() => {
     const status = document.querySelector('slicc-app').model.network.status();
     return [status.exit, status.links.devices[0].id];

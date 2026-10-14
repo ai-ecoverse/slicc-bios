@@ -1559,7 +1559,10 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   await page.evaluate(() => document.querySelector('slicc-app').dock.close('files'));
   await page.until(() => !window.panelIds().includes('files'));
   const refused = await agentRun('panel open files');
-  assert.match(refused.text, /the user closed files \d+ s ago; ask before opening it again/);
+  assert.match(
+    refused.text,
+    /the user closed files (\d+ s ago|just now); ask before opening it again/
+  );
   assert.match(refused.text, /exited with code 5/);
   assert.equal(await page.evaluate(() => window.panelIds().includes('files')), false);
   await lightIn(page);

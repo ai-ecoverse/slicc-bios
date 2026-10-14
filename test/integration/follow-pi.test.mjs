@@ -373,8 +373,7 @@ test('a follower watches the owner run with View, is refused a send, and sends w
       .querySelector('slicc-app')
       .model.sprinkles.send('welcome', { action: 'onboarding-complete', data: { purpose: 'work' } })
   );
-  await page.until(
-    new Function(`
+  const deleteButton = new Function(`
     const deep = (root) => {
       for (const element of root.querySelectorAll('*')) {
         if (element.localName === 'slicc-agents') return element;
@@ -383,17 +382,14 @@ test('a follower watches the owner run with View, is refused a send, and sends w
       }
       return null;
     };
-    const button = deep(document)?.shadowRoot?.querySelector('[data-action="delete-cone"]');
-    button?.click();
-    return !!button;
-  `)
-  );
-  await page.until(new Function(`return !!(${dialog})()`));
-  await page.evaluate(
-    new Function(
-      `[...(${dialog})().getRootNode().host.shadowRoot.querySelectorAll('swc-button')].find((b) => b.textContent.trim() === 'Delete cone').click()`
-    )
-  );
+    const agents = deep(document);
+    return agents ? !!agents.shadowRoot?.querySelector('[data-action="delete-cone"]') : null;
+  `);
+  await page.until(new Function(`return (${deleteButton})() === false`));
+  await page.evaluate(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    agent.freeze(agent.active());
+  });
   await refusedOnly(page, noticesBefore, 2);
   assert.equal(await owned(owner), ownerBefore);
   assert.equal(await owned(page), followerBefore);
