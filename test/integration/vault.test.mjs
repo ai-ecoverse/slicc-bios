@@ -180,7 +180,11 @@ test('the vault button is the vault’s own button.html, themed with seven’s c
       .map((entry) => entry.theme);
   await page.until(
     () =>
-      document.querySelector('#probe').shadowRoot.querySelector('iframe')?.style.width === '120px'
+      document
+        .querySelector('#probe')
+        .shadowRoot.querySelector('iframe')
+        ?.style.width.endsWith('px') &&
+      document.querySelector('#probe').shadowRoot.querySelector('iframe').style.width !== '0px'
   );
   const frame = await page.evaluate(() => {
     const element = document.querySelector('#probe').shadowRoot.querySelector('iframe');

@@ -437,8 +437,10 @@ export function createVault({
 
   function event(message, ports) {
     if (message.event === 'status') {
+      const relock = Boolean(view.status?.locked) !== Boolean(message.status?.locked);
       view.status = message.status;
       take(view.status?.scrub);
+      if (relock) for (const worker of workers) agent(worker);
       state.emit('status', view.status);
     } else if (message.event === 'placeholders') take(message.scrub);
     else if (message.event === 'changed') void relist();

@@ -71,6 +71,7 @@ addEventListener('message', (event) => {
   } else {
     port.onmessage = (message) => {
       log({ role: 'agent', op: message.data.op });
+      if (state.agentSilent) return;
       port.postMessage({ v: 1, id: message.data.id, error: { code: 'ENOTSUP', message: 'later' } });
     };
   }
@@ -84,16 +85,19 @@ addEventListener('message', (event) => {
   fetch('/log', { method: 'POST', body: JSON.stringify({ role: 'button', op: event.data.op, theme: event.data.button?.theme ?? null }) });
   if (event.data.op === 'button') {
     document.documentElement.style.colorScheme = event.data.button.theme ?? 'normal';
-    document.querySelector('button').textContent = 'Unlock vault';
-    parent.postMessage({ type: 'slicc-vault', v: 1, event: 'size', width: 120, height: 36, inset: 2 }, '*');
-    parent.postMessage({ type: 'slicc-vault', v: 1, event: 'label', label: 'Unlock vault' }, '*');
+    const control = document.querySelector('button');
+    const config = event.data.button;
+    control.textContent = config.label ?? (config.intent?.kind === 'protect' ? 'Vault lock' : 'Unlock vault');
+    const { width, height } = control.getBoundingClientRect();
+    parent.postMessage({ type: 'slicc-vault', v: 1, event: 'size', width: Math.ceil(width) + 4, height: Math.ceil(height) + 4, inset: 2 }, '*');
+    parent.postMessage({ type: 'slicc-vault', v: 1, event: 'label', label: control.textContent }, '*');
   }
 });
 parent.postMessage({ type: 'slicc-vault', v: 1, event: 'ready' }, '*');
 `;
 
 const buttonPage =
-  '<!doctype html><meta charset="utf-8"><style>html,body{margin:0;background:transparent}button{margin:2px;height:32px;padding:0 14px;border-radius:16px;border:2px solid #8f8f8f;background:Canvas;color:CanvasText;font:700 14px system-ui}</style><button type="button">Vault</button><script src="/button.js"></script>';
+  '<!doctype html><meta charset="utf-8"><style>html,body{margin:0;background:transparent}button{margin:2px;height:32px;padding:0 14px;border-radius:16px;border:2px solid #8f8f8f;background:Canvas;color:CanvasText;font:700 14px system-ui;white-space:nowrap}</style><button type="button">Vault</button><script src="/button.js"></script>';
 
 export async function startFakeVault(initial = {}) {
   const log = [];
