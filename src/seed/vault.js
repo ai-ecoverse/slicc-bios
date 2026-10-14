@@ -188,7 +188,6 @@ export function vaultButtons({ document, origin, media }) {
     element.style.border = '0';
     element.style.width = '0';
     element.style.height = '0';
-    element.style.colorScheme = scheme;
     element.src = `${origin}/button.html`;
     const heard = new Set();
     let config = null;
@@ -201,7 +200,6 @@ export function vaultButtons({ document, origin, media }) {
     };
     const handle = {
       repaint() {
-        element.style.colorScheme = scheme;
         if (config) send({ type: TYPE, v: 1, op: 'button', button: { ...config, theme: scheme } });
       },
     };
