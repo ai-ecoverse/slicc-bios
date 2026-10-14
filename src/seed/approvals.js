@@ -250,7 +250,7 @@ const META = /[$`'"\\;&|<>*?[\]{}()~!\n]/;
 const WRITABLE = ['/tmp', '/var/tmp', '/home', '/mnt', '/scoops', '/dev/shm'];
 
 const base = (path) => String(path).split('/').pop();
-const under = (path, dirs) => dirs.some((dir) => path === dir || path.startsWith(`${dir}/`));
+const under = (path, dirs) => dirs.some((dir) => path.startsWith(`${dir}/`));
 
 export function alwaysAllowed(req) {
   const argv = (req.argv ?? []).map(String);
@@ -274,6 +274,66 @@ export function alwaysAllowed(req) {
     if (under(arg, homes)) return false;
   }
   return !secretRules(req);
+}
+
+const PROBE = [
+  'for p in "$@"; do',
+  'r=$(realpath -m -- "$p") || exit 1; echo "P $r"; d=$r;',
+  'while :; do',
+  'if [ -e "$d" ]; then stat -c "S %u %a %F" -- "$d" || exit 1; else echo M; fi;',
+  '[ "$d" = / ] && break; d=$(dirname -- "$d");',
+  'done; echo E;',
+  'done',
+].join(' ');
+
+export function operands(req) {
+  return (req.argv ?? [])
+    .slice(1)
+    .map(String)
+    .map((arg) => (arg.startsWith('-') ? arg.slice(arg.indexOf('=') + 1) : arg))
+    .filter((arg) => arg.startsWith('/'));
+}
+
+function chains(stdout) {
+  const found = [];
+  let current = null;
+  for (const line of stdout.split('\n')) {
+    if (line.startsWith('P ')) current = { path: line.slice(2), chain: [] };
+    else if (line === 'E') found.push(current);
+    else if (line === 'M') current.chain.push(null);
+    else if (line.startsWith('S ')) {
+      const [uid, mode, ...type] = line.slice(2).split(' ');
+      current.chain.push({
+        uid: Number(uid),
+        mode: Number.parseInt(mode, 8),
+        dir: type.join(' ') === 'directory',
+      });
+    }
+  }
+  return found;
+}
+
+const sound = (entry) => entry !== null && entry.uid === 0 && (entry.mode & 0o022) === 0;
+
+export async function rootChecked(run, req) {
+  const paths = [String(req.path ?? req.argv?.[0] ?? ''), ...operands(req)];
+  let result;
+  try {
+    result = await run(['bash', '-c', PROBE, 'probe', ...paths]);
+  } catch {
+    return false;
+  }
+  if (result.status !== 0) return false;
+  const found = chains(result.stdout ?? '');
+  if (found.length !== paths.length) return false;
+  const [command, ...rest] = found;
+  if (!command.chain.every(sound)) return false;
+  return rest.every(({ chain }) => {
+    const [own, ...above] = chain;
+    if (!above.every(sound)) return false;
+    if (own === null) return true;
+    return own.dir ? own.uid === 0 : sound(own);
+  });
 }
 
 export function approval(req) {
@@ -304,7 +364,11 @@ function emitter() {
   };
 }
 
-export function createApprovals({ channel = new BroadcastChannel(CHANNEL) } = {}) {
+export function createApprovals({
+  channel = new BroadcastChannel(CHANNEL),
+  verify = async () => true,
+} = {}) {
+  let check = verify;
   const events = emitter();
   const waiting = new Map();
   const mine = new Set();
@@ -355,17 +419,22 @@ export function createApprovals({ channel = new BroadcastChannel(CHANNEL) } = {}
       owning = true;
       publish();
     },
-    approve(req, { signal } = {}) {
+    verify(next) {
+      check = next;
+    },
+    async approve(req, { signal } = {}) {
       const item = approval(req);
+      if (item.always) item.always = await check(req).catch(() => false);
       return new Promise((resolve) => {
         waiting.set(item.id, {
           item,
           resolve: (decision) => resolve(decision === 'always' && !item.always ? 'once' : decision),
         });
         publish();
-        signal?.addEventListener('abort', () =>
-          settle(item.id, 'deny', signal.reason === 'expired' ? 'expired' : 'withdrawn')
-        );
+        const stop = () =>
+          settle(item.id, 'deny', signal.reason === 'expired' ? 'expired' : 'withdrawn');
+        if (signal?.aborted) stop();
+        else signal?.addEventListener('abort', stop);
       });
     },
   };
