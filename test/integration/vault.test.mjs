@@ -66,7 +66,10 @@ test('seven embeds the vault at its origin: the page hello, status and list, a l
         (error) => ({ code: error.code, message: error.message })
       )
   );
-  assert.deepEqual(refused, { code: 'EACCES', message: 'vault is locked' });
+  assert.deepEqual(refused, {
+    code: 'EACCES',
+    message: 'vault is locked: unlock it in the vault window',
+  });
   fake.set({ locked: false });
   await page.evaluate(() => {
     const element = document.querySelector('iframe[data-vault=core]');
@@ -214,6 +217,117 @@ test('the vault button is the vault’s own button.html, themed with seven’s c
   assert.ok(await logged(() => themes().length > count));
   assert.equal(themes().at(-1), second);
   assert.ok(['light', 'dark'].includes(first));
+  assert.deepEqual(page.errors, []);
+});
+
+test('locked, every Secrets action either waits for the unlock with a reason or works, and none fails with an error', async (t) => {
+  fake.set({ locked: true, secrets: ['HARBOR_API_KEY', 'TIDE_STATION_TOKEN'], version: 2 });
+  const page = await chrome.page(t);
+  await page.init(override(fake.origin));
+  await boot(page);
+  await page.evaluate(() => {
+    const deep = (root, selector) => {
+      const found = root.querySelector(selector);
+      if (found) return found;
+      for (const element of root.querySelectorAll('*')) {
+        const inner = element.shadowRoot && deep(element.shadowRoot, selector);
+        if (inner) return inner;
+      }
+      return null;
+    };
+    window.secrets = () => deep(document, 'slicc-secrets');
+    window.confirmDialog = () => deep(document, 'slicc-confirm');
+    window.within = (selector) => window.secrets()?.shadowRoot.querySelector(selector);
+    window.state = (selector) => {
+      const form = window.within('[data-form]');
+      const submit = form?.querySelector(
+        '[data-action=save], [data-action=read], [data-action=download]'
+      );
+      return {
+        form: form?.dataset.form ?? null,
+        submitDisabled: submit ? submit.hasAttribute('disabled') : null,
+        reason: form?.querySelector('[data-locked]')?.textContent.trim() ?? null,
+        error:
+          window.secrets().shadowRoot.querySelector('[role=alert], .error')?.textContent.trim() ??
+          null,
+        enabled: selector ? !window.within(selector)?.hasAttribute('disabled') : null,
+      };
+    };
+    document.querySelector('slicc-app').show('settings');
+  });
+  await page.until(
+    () => window.secrets()?.shadowRoot.querySelector('section')?.dataset.vault === 'locked'
+  );
+  const table = {};
+  const open = async (label, selector) => {
+    await page.evaluate(() => window.within('[data-action=cancel]')?.click());
+    const before = await page.evaluate((selector) => window.state(selector), selector);
+    await page.evaluate((selector) => window.within(selector).click(), selector);
+    await page.until(() => !!window.within('[data-form]'));
+    await page.evaluate(() => {
+      for (const input of window
+        .within('[data-form]')
+        .querySelectorAll('input[type=password], input[type=text]')) {
+        input.value = input.dataset.field === 'name' ? 'DOCK_TOKEN' : 'dock-value-12345678';
+        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      }
+      window
+        .within('[data-form] input')
+        ?.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true })
+        );
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    table[label] = {
+      button: before.enabled ? 'enabled' : 'disabled',
+      ...(await page.evaluate(() => window.state())),
+    };
+    delete table[label].enabled;
+  };
+  await open('Add secret', '[data-action=add-secret]');
+  await open('Import…', '[data-tools] [data-action=import]');
+  await open('Export…', '[data-tools] [data-action=export]');
+  await open('Export backup', '[data-backup] [data-action=export]');
+  await open('Replace value', '[data-action=replace]');
+  for (const [label, row] of Object.entries(table)) {
+    assert.equal(row.submitDisabled, true, label);
+    assert.equal(row.reason, 'Unlock the vault first', label);
+    assert.equal(row.error, null, label);
+  }
+  await page.evaluate(() => window.within('[data-action=cancel]')?.click());
+  await page.evaluate(() => window.within('[data-action=remove]').click());
+  await page.until(() => !!window.confirmDialog()?.shadowRoot?.querySelector('[data-action]'));
+  await page.evaluate(() =>
+    window.confirmDialog().shadowRoot.querySelector('[data-action]').click()
+  );
+  await page.until(
+    () => document.querySelector('slicc-app').model.vault.list()?.secrets.length === 1
+  );
+  table.Remove = {
+    button: 'enabled',
+    form: null,
+    works: 'removed while locked',
+    error: await page.evaluate(() => window.state().error),
+  };
+  assert.equal(table.Remove.error, null);
+  t.diagnostic(JSON.stringify(table));
+  await page.evaluate(() => window.within('[data-action=add-secret]').click());
+  await page.evaluate(() => {
+    const form = window.within('[data-form=add]');
+    for (const input of form.querySelectorAll('input')) {
+      input.value = input.dataset.field === 'name' ? 'DOCK_TOKEN' : 'dock-value-12345678';
+      input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    }
+  });
+  fake.unlock();
+  await page.until(
+    () =>
+      window.within('[data-form=add] [data-action=save]') &&
+      !window.within('[data-form=add] [data-action=save]').hasAttribute('disabled')
+  );
+  await page.evaluate(() => window.within('[data-form=add] [data-action=save]').click());
+  await page.until(() => !!window.within('[data-said=saved]'));
+  assert.ok(fake.log.some((entry) => entry.op === 'put' && entry.name === 'DOCK_TOKEN'));
   assert.deepEqual(page.errors, []);
 });
 
