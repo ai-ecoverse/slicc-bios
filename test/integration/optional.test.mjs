@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
+import { boot, run, shows } from './bios.mjs';
+import { launch } from './chrome.mjs';
 
 const optional = new URL('../../src/packages/optional/', import.meta.url);
 const read = async (path) => JSON.parse(await readFile(new URL(path, optional), 'utf8'));
@@ -82,4 +84,44 @@ test('a project entry ships its manifest, a lockfile and a workspace that overri
     assert.match(lock, /^overrides:\n {2}'@ai-ecoverse\/wasix-python': '-'$/m);
     assert.ok(entry.requires.includes('python'), `${entry.id} needs the catalog's Python`);
   }
+});
+
+test('HEIF and AVIF images installs from the catalog, and heif-convert runs', {
+  timeout: 15 * 60 * 1000,
+}, async (t) => {
+  const chrome = await launch({ timeout: 120000 });
+  t.after(() => chrome.close());
+  const page = await chrome.page(t);
+  await boot(page);
+  const heif = () =>
+    page.evaluate(() =>
+      document
+        .querySelector('slicc-app')
+        .model.updates.packages()
+        .find((item) => item.id === 'heif')
+    );
+  await page.within(300000, async () => {
+    const item = document
+      .querySelector('slicc-app')
+      .model.updates.packages()
+      .find((entry) => entry.id === 'heif');
+    return item?.state === 'available';
+  });
+  const result = await page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.updates.actPackage('heif', 'install')
+      .then(
+        () => 'ok',
+        (error) => error.message
+      )
+  );
+  assert.equal(result, 'ok', (await heif())?.log);
+  assert.equal((await heif()).version, '1.23.6-1');
+  await run(
+    page,
+    'clear; heif-convert --version 2>&1 | head -1 | grep -c 1.23.6 | sed "s/^/heif ran /"'
+  );
+  await shows(page, 'heif ran 1');
+  assert.deepEqual(page.errors, []);
 });

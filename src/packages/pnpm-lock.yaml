@@ -33,8 +33,8 @@ importers:
         specifier: 5.3.0-18
         version: 5.3.0-18
       '@ai-ecoverse/wasm-bzip2':
-        specifier: 1.0.8-1
-        version: 1.0.8-1
+        specifier: 1.0.8-2
+        version: 1.0.8-2
       '@ai-ecoverse/wasm-coreutils':
         specifier: 9.12.0-5
         version: 9.12.0-5
@@ -78,8 +78,8 @@ importers:
         specifier: 4.9.0-3
         version: 4.9.0-3
       '@ai-ecoverse/wasm-tar':
-        specifier: 1.35.0-4
-        version: 1.35.0-4
+        specifier: 1.35.0-5
+        version: 1.35.0-5
       '@ai-ecoverse/wasm-tls-engine':
         specifier: 3.6.5-1
         version: 3.6.5-1
@@ -135,8 +135,8 @@ packages:
     resolution: {integrity: sha512-4QRTNWXVecJG/zvEIpW2BEIWE//bqYNyWE+UnJOevyHhkGmFI5h2D4EHyjeH03Yqo/uqWFJVEsLkCPUdHw7IPA==}
     engines: {slicc-kernel: '>=1.48.3'}
 
-  '@ai-ecoverse/wasm-bzip2@1.0.8-1':
-    resolution: {integrity: sha512-xT8HkPFCdzQwJat8ZUYdv4U7C5Q8qMMOouor7Ss6neJ7Q8SHcuLVPYFph+zOQ2icZ1Cjm/3kGH9jXbvUpD416g==}
+  '@ai-ecoverse/wasm-bzip2@1.0.8-2':
+    resolution: {integrity: sha512-FzE8FE3sMzOQLwm3hV1SFW717mhSjjrchGOgFuZW8JCZ57oPs6gJ/915POb5DHsjv3luXKnd2uycKdlOsdZoEQ==}
 
   '@ai-ecoverse/wasm-coreutils@9.12.0-5':
     resolution: {integrity: sha512-FYVgCa3FEGBTci7YV9nwuqDsmPXqErNjKwCjj7JQ5JahoV5/uv1DriGQn3+kT1p4RYIcMKp4Ca4OtUz1DtV3Fg==}
@@ -182,8 +182,8 @@ packages:
   '@ai-ecoverse/wasm-sed@4.9.0-3':
     resolution: {integrity: sha512-t+sfLSgTzFW5tyysusEtV7D1xPY/qELvbNAqbNobp8/q898b0zFZrM2b2/PjNN5o1O6jEgjOTHuT1Z71tzb9bw==}
 
-  '@ai-ecoverse/wasm-tar@1.35.0-4':
-    resolution: {integrity: sha512-eCZROUZ8crzsEbdL1i5lm8I8Fgup3afj3ZW9gvN9GGV5pnFae8KZhmSlszwSFPMNgA4UTBu46mfTEF0pPmkOQA==}
+  '@ai-ecoverse/wasm-tar@1.35.0-5':
+    resolution: {integrity: sha512-OLbgXoJ1H+Q9Xlgn0Edhqq68oYjclzH1tjM2k5c0B8NuCHlwwEleLHJwzUaKO//fwltrdNLWWRp6VHavYWVWNg==}
 
   '@ai-ecoverse/wasm-tls-engine@3.6.5-1':
     resolution: {integrity: sha512-4dy6QCAUwpN6EG7njdeYDmtNXpy1+3jU+qLuwl6/dOs7S+fO/Ybcs+XfZWgp9LFUYEE1mQfr+8bqkgiOwK8RnQ==}
@@ -215,7 +215,7 @@ snapshots:
 
   '@ai-ecoverse/wasm-bash@5.3.0-18': {}
 
-  '@ai-ecoverse/wasm-bzip2@1.0.8-1': {}
+  '@ai-ecoverse/wasm-bzip2@1.0.8-2': {}
 
   '@ai-ecoverse/wasm-coreutils@9.12.0-5': {}
 
@@ -245,7 +245,7 @@ snapshots:
 
   '@ai-ecoverse/wasm-sed@4.9.0-3': {}
 
-  '@ai-ecoverse/wasm-tar@1.35.0-4': {}
+  '@ai-ecoverse/wasm-tar@1.35.0-5': {}
 
   '@ai-ecoverse/wasm-tls-engine@3.6.5-1': {}
 

@@ -6,6 +6,13 @@
     "commands": ["git"],
     "size": 18836262
   },
+  "@ai-ecoverse/wasi-gh": {
+    "id": "gh",
+    "label": "GitHub CLI",
+    "description": "GitHub CLI. In seven, use GH_TOKEN from the vault; gh auth login stores a plain-text token. gh auth login -c (clipboard) needs slicc-clipboard. A git credential helper using gh auth git-credential gets no token.",
+    "commands": ["gh"],
+    "size": 16248809
+  },
   "@ai-ecoverse/wasix-openssh": {
     "id": "ssh",
     "label": "OpenSSH",
@@ -54,9 +61,9 @@
   "@ai-ecoverse/wasix-perl": {
     "id": "perl",
     "label": "Perl",
-    "description": "Perl 5.42 with cpan, perldoc and prove, for scripts and text processing.",
+    "description": "Perl 5.42 with cpan, perldoc and prove, for scripts and text processing. prove/TAP::Harness doesn't work yet.",
     "commands": ["perl", "cpan", "perldoc", "prove", "pod2html", "pod2man", "pod2text"],
-    "size": 15529492
+    "size": 15530750
   },
   "@ai-ecoverse/wasi-esbuild": {
     "id": "esbuild",
@@ -93,12 +100,19 @@
     "commands": ["qpdf"],
     "size": 992082
   },
+  "@ai-ecoverse/wasm-libheif": {
+    "id": "heif",
+    "label": "HEIF and AVIF images",
+    "description": "HEIC/HEIF and AVIF image decoder (heif-convert, heif-info). Includes an HEVC decoder (libde265); HEVC is patent-encumbered. LGPL-3.0-or-later.",
+    "commands": ["heif-convert", "heif-dec", "heif-info"],
+    "size": 4541841
+  },
   "@ai-ecoverse/wasm-rsync": {
     "id": "rsync",
     "label": "rsync",
-    "description": "Copies and syncs folders, sending only what changed, also to rsync:// servers.",
+    "description": "Copies and syncs folders, sending only what changed, also to rsync:// servers. A non-root rsync -a of a tree with symlinks exits 23 although it copies correctly (fix coming).",
     "commands": ["rsync"],
-    "size": 915915
+    "size": 917237
   },
   "@ai-ecoverse/wasi-buf": {
     "id": "buf",
@@ -112,7 +126,7 @@
     "label": "screen",
     "description": "Keeps a terminal session running to detach and reattach, from any terminal.",
     "commands": ["screen"],
-    "size": 712776
+    "size": 715434
   },
   "@ai-ecoverse/wasi-dig": {
     "id": "dig",
