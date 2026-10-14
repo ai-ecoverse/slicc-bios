@@ -1,3 +1,5 @@
+import { dialogRules } from './rules.js';
+
 const CHANNEL = 'slicc-approvals';
 const SAFE = /^[\w@%+=:,./-]+$/;
 
@@ -61,7 +63,32 @@ function words(argv) {
   );
 }
 
-export function secretRules({ argv = [], path, cwd = '/' }) {
+const STRICT = /[$`'"\\]/;
+
+function cautious(argv) {
+  const shell = argv.indexOf('-c');
+  if (shell < 0) return false;
+  return argv
+    .slice(shell + 1)
+    .some((word) => STRICT.test(word) || /(^|[\s;&|(])(cd|pushd)\s/.test(word));
+}
+
+export function secretRules(req) {
+  const { argv = [] } = req;
+  if (cautious(argv) || argv.slice(1).some((word) => /^[^-].*['"\\]|[$`]/.test(word))) return true;
+  if (dialogRules(approvalText(req)) !== null) return true;
+  return ownRules(req);
+}
+
+function approvalText(req) {
+  const { argv = [], path, cwd } = req;
+  return {
+    command: [path ?? argv[0] ?? '', ...argv.slice(1)].map(quote).join(' '),
+    cwd,
+  };
+}
+
+function ownRules({ argv = [], path, cwd = '/' }) {
   const all = words([path ?? argv[0] ?? '', ...argv.slice(1)]);
   const name = String(path ?? argv[0] ?? '')
     .split('/')
