@@ -30,7 +30,7 @@
     "fake-indexeddb": "6.2.5",
     "lefthook": "2.1.17",
     "modern-tar": "0.8.5",
-    "monocart-coverage-reports": "2.13.1",
+    "monocart-coverage-reports": "2.13.2",
     "playwright-core": "1.63.0",
     "wrangler": "4.148.0",
     "ws": "8.22.0"
