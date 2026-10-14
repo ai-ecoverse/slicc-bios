@@ -101,6 +101,7 @@ const STORED = [
   'BackgroundService.',
 ];
 const WORKERS = ['registrationId', 'versionId'];
+const PAUSES = new Set(['Fetch.requestPaused', 'Fetch.authRequired']);
 
 function parse(text) {
   let message;
@@ -354,22 +355,26 @@ class Guard {
   }
 
   async paused(message) {
-    const { params = {}, sessionId } = message;
+    const { params = {} } = message;
     const marked = this.requests.get(params.networkId) === true || (await this.request(params));
     this.remember(params.requestId, marked);
     if (params.networkId !== undefined && marked) this.settle(params.networkId, true);
     if (!marked) return false;
+    this.release(message);
+    return true;
+  }
+
+  release({ method, params = {}, sessionId }) {
     const { requestId } = params;
-    if (message.method === 'Fetch.authRequired') {
+    if (method === 'Fetch.authRequired') {
       const authChallengeResponse = { response: 'Default' };
       void this.call('Fetch.continueWithAuth', { requestId, authChallengeResponse }, sessionId);
-      return true;
+      return;
     }
     const response =
       params.responseStatusCode !== undefined || params.responseErrorReason !== undefined;
-    const method = response ? 'Fetch.continueResponse' : 'Fetch.continueRequest';
-    void this.call(method, { requestId }, sessionId);
-    return true;
+    const next = response ? 'Fetch.continueResponse' : 'Fetch.continueRequest';
+    void this.call(next, { requestId }, sessionId);
   }
 
   async targetEvent(message) {
@@ -437,6 +442,7 @@ class Guard {
     const method = message.method ?? '';
     const { sessionId } = message;
     if (method.startsWith('Target.') && (await this.targetEvent(message))) return;
+    if (this.blocked.has(sessionId) && PAUSES.has(method)) return this.release(message);
     if (this.hidden(sessionId)) return;
     if (this.walked({ ...message, method })) return this.cut(sessionId);
     if (await this.swallowed({ ...message, method })) return;
