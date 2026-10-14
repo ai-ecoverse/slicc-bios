@@ -2,6 +2,7 @@ import { apply } from './layer.js';
 import { failure } from './link.js';
 import { text, versions } from './update.js';
 import { kernelSource } from './users.js';
+import { takesVault } from './vault.js';
 
 const deployed = new URL('../packages/agent/', import.meta.url);
 const PACKAGE = '@ai-ecoverse/slicc-agent';
@@ -73,10 +74,35 @@ export function loadChat({ load = (file) => import(new URL(file, modules)), fres
   return loading;
 }
 
-export async function startChat(kernel, options) {
+export function vaultWorker(create, vault) {
+  if (!vault) return create;
+  return () => {
+    const worker = create();
+    const detach = vault.attach(worker);
+    return {
+      postMessage: (message, transfer) => worker.postMessage(message, transfer),
+      terminate() {
+        detach();
+        worker.terminate();
+      },
+    };
+  };
+}
+
+let chatVault = null;
+
+export function useVault(vault) {
+  chatVault = vault;
+}
+
+export async function startChat(kernel, { vault = chatVault, ...options } = {}) {
   const { startAgent } = await loadChat(options);
+  const takes = vault && takesVault(await version());
   return startAgent({
-    worker: () => new Worker(agentWorker, { type: 'module', name: 'slicc-agent' }),
+    worker: vaultWorker(
+      () => new Worker(agentWorker, { type: 'module', name: 'slicc-agent' }),
+      takes ? vault : null
+    ),
     kernel: kernelSource(kernel),
     held: true,
   });
