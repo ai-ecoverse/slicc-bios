@@ -63,7 +63,7 @@ const skill = (name, description) =>
 const checkNow = (page) =>
   page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
 
-test('Your packages live in /opt/user: an addition moves there, its bin runs in a panel terminal, its skill reaches the agent, and a name the agent ships is ignored with a warning', {
+test('Your packages live in /opt/user: an addition moves there, its bin runs in a panel terminal, its change offers Restart agent, which brings its skill to the agent, and a name the agent ships is ignored with a warning', {
   timeout: 30 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -181,8 +181,16 @@ test('Your packages live in /opt/user: an addition moves there, its bin runs in 
   await shows(page, 'greetings-42');
   await shows(page, 'on-path /opt/user/node_modules/.bin/greet');
 
-  await page.reload();
-  await ready(page);
+  await checkNow(page);
+  await page.within(5 * 60 * 1000, () =>
+    document
+      .querySelector('slicc-app')
+      .model.updates.list()
+      .some((item) => item.id === 'agent' && item.actions?.includes('restart-agent'))
+  );
+  await page.evaluate(() =>
+    document.querySelector('slicc-app').model.updates.act('agent', 'restart-agent')
+  );
   await page.within(INSTALL, async () => {
     const { agent } = document.querySelector('slicc-app').model;
     return (

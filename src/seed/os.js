@@ -77,6 +77,7 @@ import {
   rows as ownRows,
   remove as removeUser,
   PATH as USER_PATH,
+  folder as userFolder,
   locked as userLocked,
 } from './user.js';
 
@@ -306,6 +307,11 @@ async function installTailnet(report = () => {}) {
   }
 }
 
+async function stamp() {
+  const manifest = (await text(root, `${userFolder}/package.json`)) ?? '';
+  return `${await recorded()}\n${manifest}`;
+}
+
 async function started(chat, lock) {
   if (chat) {
     startedWith = lock;
@@ -332,7 +338,7 @@ async function launch() {
 
 function startOnce() {
   if (!agent) {
-    const lock = recorded();
+    const lock = stamp();
     const back = updates.get('agent').state === 'installed' ? 'installed' : 'current';
     if (!updates.ready()) updates.set('agent', { state: 'starting' });
     agent = launch().then(async (chat) => {
@@ -358,7 +364,7 @@ async function relaunch(running) {
 async function restart() {
   const running = await agent;
   await whenIdle(app.model.agent);
-  const lock = recorded();
+  const lock = stamp();
   agent = relaunch(running).then(async (restarted) => started(restarted, await lock));
   if (!(await agent)) {
     updates.fail(
@@ -430,6 +436,7 @@ async function actUser(name) {
   } finally {
     await listOwn();
   }
+  await offerChat();
 }
 
 const tidied = (project, task) =>
@@ -460,7 +467,7 @@ async function offerChat() {
     await listOwn();
     const at = await agentVersion();
     const running = agent && (await agent);
-    if (running && (await recorded()) !== startedWith) {
+    if (running && (await stamp()) !== startedWith) {
       updates.checked('agent', {
         state: 'ready',
         progress: null,
