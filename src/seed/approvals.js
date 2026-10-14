@@ -106,6 +106,176 @@ function ownRules({ argv = [], path, cwd = '/' }) {
   return false;
 }
 
+const WRAPPERS = new Set([
+  'sh',
+  'bash',
+  'dash',
+  'zsh',
+  'ash',
+  'ksh',
+  'mksh',
+  'fish',
+  'csh',
+  'tcsh',
+  'rbash',
+  'node',
+  'jsh',
+  'deno',
+  'bun',
+  'perl',
+  'ruby',
+  'php',
+  'lua',
+  'luajit',
+  'tclsh',
+  'wish',
+  'awk',
+  'gawk',
+  'mawk',
+  'nawk',
+  'busybox',
+  'env',
+  'xargs',
+  'parallel',
+  'sudo',
+  'su',
+  'doas',
+  'pkexec',
+  'runuser',
+  'nohup',
+  'nice',
+  'ionice',
+  'timeout',
+  'stdbuf',
+  'chroot',
+  'setsid',
+  'script',
+  'watch',
+  'time',
+  'exec',
+  'eval',
+  'command',
+  'builtin',
+  'unshare',
+  'nsenter',
+  'flock',
+  'taskset',
+  'chrt',
+  'strace',
+  'ltrace',
+  'gdb',
+  'expect',
+  'make',
+  'vi',
+  'vim',
+  'nvim',
+  'emacs',
+  'nano',
+  'ed',
+  'ex',
+  'less',
+  'more',
+  'man',
+  'ssh',
+  'scp',
+  'sftp',
+]);
+const INTERPRETER = /^(?:python|pypy|perl|ruby|php|lua|node|tclsh|pwsh)[\d.]*$/;
+const WRITERS = new Set([
+  'tee',
+  'cp',
+  'mv',
+  'chmod',
+  'chown',
+  'chgrp',
+  'dd',
+  'install',
+  'ln',
+  'link',
+  'unlink',
+  'rm',
+  'rmdir',
+  'mkdir',
+  'mkfifo',
+  'mknod',
+  'truncate',
+  'touch',
+  'rsync',
+  'unzip',
+  'zip',
+  'gzip',
+  'gunzip',
+  'bzip2',
+  'xz',
+  'zstd',
+  'patch',
+  'git',
+  'pnpm',
+  'npm',
+  'npx',
+  'pip',
+  'pip3',
+  'uv',
+  'shred',
+  'split',
+  'csplit',
+  'mount',
+  'umount',
+  'chattr',
+  'setfacl',
+  'useradd',
+  'usermod',
+  'userdel',
+  'groupadd',
+  'passwd',
+  'crontab',
+  'curl',
+  'wget',
+  'sqlite3',
+  'openssl',
+  'gpg',
+  'ssh-keygen',
+  'tic',
+  'cpio',
+  'ar',
+]);
+const WRITING = {
+  find: (args) => args.some((arg) => /^-(?:exec|execdir|ok|okdir|delete|fprint\w*|fls)$/.test(arg)),
+  sed: (args) => args.some((arg) => /^-[^-]*i|^--in-place/.test(arg)),
+  tar: (args) => !/^(?:-?t[vzjJaf]*|--list)$/.test(args[0] ?? ''),
+  sort: (args) => args.some((arg) => /^-[^-]*o|^--output/.test(arg)),
+  uniq: (args) => args.filter((arg) => !arg.startsWith('-')).length > 1,
+};
+const META = /[$`'"\\;&|<>*?[\]{}()~!\n]/;
+const WRITABLE = ['/tmp', '/var/tmp', '/home', '/mnt', '/scoops', '/dev/shm'];
+
+const base = (path) => String(path).split('/').pop();
+const under = (path, dirs) => dirs.some((dir) => path === dir || path.startsWith(`${dir}/`));
+
+export function alwaysAllowed(req) {
+  const argv = (req.argv ?? []).map(String);
+  const path = String(req.path ?? argv[0] ?? '');
+  if (!path.startsWith('/')) return false;
+  const names = [base(path), base(argv[0] ?? '')];
+  if (names.some((name) => WRAPPERS.has(name) || INTERPRETER.test(name) || WRITERS.has(name)))
+    return false;
+  const args = argv.slice(1);
+  if (names.some((name) => WRITING[name]?.(args))) return false;
+  if ([path, ...argv].some((word) => META.test(word))) return false;
+  const homes = [...WRITABLE, ...(req.user ? [`/home/${req.user}`] : [])];
+  for (const arg of args) {
+    if (arg.startsWith('-')) {
+      const value = arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : '';
+      if (value && !/^\d+$/.test(value) && (!value.startsWith('/') || under(value, homes)))
+        return false;
+      continue;
+    }
+    if (!arg.startsWith('/')) return false;
+    if (under(arg, homes)) return false;
+  }
+  return !secretRules(req);
+}
+
 export function approval(req) {
   return {
     id: String(req.id),
@@ -116,7 +286,7 @@ export function approval(req) {
     cwd: req.cwd,
     createdAt: req.createdAt,
     expiresAt: req.expiresAt,
-    always: req.always !== false && !secretRules(req),
+    always: req.always !== false && alwaysAllowed(req),
   };
 }
 
