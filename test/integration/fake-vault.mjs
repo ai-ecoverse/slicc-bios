@@ -47,8 +47,17 @@ const page = (port) => (event) => {
   if (op === 'list') return reply({ list: list() });
   if (op === 'audit') return reply({ audit: [], more: false });
   if (op === 'sealed') return reply({ reply: { v: 1, secrets: secrets.map((name) => ({ name, placeholder: view(name).placeholder, state: 'inert', exec: false, rules: [] })) } });
+  const refuse = () => port.postMessage({ v: 1, id, error: { code: 'EACCES', message: 'vault is locked: unlock it in the vault window' } });
+  if (op === 'remove' || op === 'restore') {
+    const at = secrets.indexOf(event.data.name);
+    if (op === 'remove' && at >= 0) secrets.splice(at, 1);
+    for (const each of pages) each.postMessage({ v: 1, event: 'changed', parts: ['secrets'] });
+    return reply({ name: event.data.name, placeholder: view('X').placeholder, state: op === 'remove' ? 'removed' : 'inert' });
+  }
+  if ((op === 'import' || op === 'export') && locked) return refuse();
+  if (op === 'dismissBackupReminder') return reply({ backupReminder: 'dismissed' });
   if (op === 'put' || op === 'seal') {
-    if (locked) return port.postMessage({ v: 1, id, error: { code: 'EACCES', message: 'vault is locked' } });
+    if (locked) return refuse();
     if (!secrets.includes(event.data.name)) secrets.push(event.data.name);
     version += 1;
     for (const each of pages) {
@@ -60,6 +69,12 @@ const page = (port) => (event) => {
   }
   return port.postMessage({ v: 1, id, error: { code: 'ENOTSUP', message: op + ' arrives later' } });
 };
+setInterval(async () => {
+  const wanted = (await (await fetch('/state')).json()).locked;
+  if (wanted === locked) return;
+  locked = wanted;
+  for (const each of pages) each.postMessage({ v: 1, event: 'status', status: status() });
+}, 200);
 addEventListener('message', (event) => {
   if (event.source !== parent || event.data?.type !== 'slicc-vault' || event.data.op !== 'hello') return;
   const port = event.ports[0];
@@ -80,6 +95,12 @@ addEventListener('message', (event) => {
 `;
 
 const button = `
+setInterval(async () => {
+  const wanted = (await (await fetch('/state')).json()).locked;
+  if (wanted === locked) return;
+  locked = wanted;
+  for (const each of pages) each.postMessage({ v: 1, event: 'status', status: status() });
+}, 200);
 addEventListener('message', (event) => {
   if (event.source !== parent || event.data?.type !== 'slicc-vault') return;
   fetch('/log', { method: 'POST', body: JSON.stringify({ role: 'button', op: event.data.op, theme: event.data.button?.theme ?? null }) });
@@ -121,6 +142,10 @@ export async function startFakeVault(initial = {}) {
       });
       return;
     }
+    if (url.pathname === '/state') {
+      res.writeHead(200, { ...headers, 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ locked: state.locked }));
+    }
     const files = {
       '/': ['text/html', '<!doctype html><meta charset="utf-8"><script src="/frame.js"></script>'],
       '/frame.js': ['text/javascript', frame(state)],
@@ -134,6 +159,10 @@ export async function startFakeVault(initial = {}) {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   return {
     origin: `http://localhost:${server.address().port}`,
+    unlock: () => {
+      state.locked = false;
+      state.unlocked = (state.unlocked ?? 0) + 1;
+    },
     log,
     state,
     set: (next) => Object.assign(state, next),
