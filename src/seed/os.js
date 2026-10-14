@@ -73,11 +73,11 @@ import {
   droppedNotice,
   enforcing,
   ensure as ensureUser,
+  fingerprint,
   move,
   rows as ownRows,
   remove as removeUser,
   PATH as USER_PATH,
-  folder as userFolder,
   locked as userLocked,
 } from './user.js';
 
@@ -308,8 +308,18 @@ async function installTailnet(report = () => {}) {
 }
 
 async function stamp() {
-  const manifest = (await text(root, `${userFolder}/package.json`)) ?? '';
-  return `${await recorded()}\n${manifest}`;
+  return { lock: await recorded(), user: await fingerprint(root) };
+}
+
+function rebase(now) {
+  if (startedWith && now.user.packages !== startedWith.user.packages)
+    startedWith = { ...startedWith, user: now.user };
+}
+
+async function stale() {
+  const now = await stamp();
+  rebase(now);
+  return now.lock !== startedWith.lock || now.user.files !== startedWith.user.files;
 }
 
 async function started(chat, lock) {
@@ -434,6 +444,7 @@ async function actUser(name) {
   try {
     await userLocked(() => removeUser(root, kernel, name));
   } finally {
+    rebase(await stamp());
     await listOwn();
   }
   await offerChat();
@@ -458,6 +469,7 @@ async function tidyUser() {
       if (!strict || !grammar) await move(root, kernel, project, edit);
     });
   }
+  rebase(await stamp());
   if (dropped.length) notices.show(droppedNotice(grammarsDropped), () => {});
 }
 
@@ -467,7 +479,7 @@ async function offerChat() {
     await listOwn();
     const at = await agentVersion();
     const running = agent && (await agent);
-    if (running && (await stamp()) !== startedWith) {
+    if (running && (await stale())) {
       updates.checked('agent', {
         state: 'ready',
         progress: null,

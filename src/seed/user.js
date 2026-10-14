@@ -145,6 +145,41 @@ export async function rows(root, agent) {
   return out;
 }
 
+async function opened(dir, path) {
+  try {
+    for (const part of path.split('/')) dir = await dir.getDirectoryHandle(part);
+    return dir;
+  } catch {
+    return null;
+  }
+}
+
+async function walk(dir, prefix, out) {
+  for await (const child of dir.values()) {
+    const path = `${prefix}/${child.name}`;
+    if (child.kind === 'file') {
+      const file = await child.getFile();
+      out.push(`${path} ${file.size} ${file.lastModified}`);
+    } else if (child.name !== 'node_modules') await walk(child, path, out);
+  }
+}
+
+export async function fingerprint(root) {
+  const manifest = parse(await text(root, `${folder}/package.json`)) ?? {};
+  const packages = [];
+  const files = [];
+  for (const field of FIELDS) {
+    for (const [name, spec] of Object.entries(manifest[field] ?? {})) {
+      const at = `${folder}/node_modules/${name}`;
+      const installed = parse(await text(root, `${at}/package.json`));
+      packages.push(`${field} ${name} ${spec} ${installed?.version ?? ''}`);
+      const dir = await opened(root, at);
+      if (dir) await walk(dir, name, files);
+    }
+  }
+  return { packages: packages.sort().join('\n'), files: files.sort().join('\n') };
+}
+
 export function remove(root, kernel, name) {
   return pnpm(root, kernel, ['remove', name]);
 }

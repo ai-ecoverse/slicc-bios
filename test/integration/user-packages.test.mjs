@@ -9,27 +9,29 @@ import { shoot } from './shots.mjs';
 const INSTALL = 15 * 60 * 1000;
 const KEY = 'dummy-bedrock-key-0000';
 const BEDROCK = 'https://bedrock-runtime.us-west-2.amazonaws.com/';
-const noted = Buffer.concat([
-  eventFrame('messageStart', { role: 'assistant' }),
-  eventFrame('contentBlockDelta', { contentBlockIndex: 0, delta: { text: 'Noted.' } }),
-  eventFrame('contentBlockStop', { contentBlockIndex: 0 }),
-  eventFrame('messageStop', { stopReason: 'end_turn' }),
-  eventFrame('metadata', {
-    usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
-    metrics: { latencyMs: 1 },
-  }),
-]);
+const TITLE = 'Greeter package from opt user';
+const said = (text) =>
+  Buffer.concat([
+    eventFrame('messageStart', { role: 'assistant' }),
+    eventFrame('contentBlockDelta', { contentBlockIndex: 0, delta: { text } }),
+    eventFrame('contentBlockStop', { contentBlockIndex: 0 }),
+    eventFrame('messageStop', { stopReason: 'end_turn' }),
+    eventFrame('metadata', {
+      usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+      metrics: { latencyMs: 1 },
+    }),
+  ]);
 
 const chrome = await launch({ agent: true, timeout: 60000 });
 const proxy = await fakeProxy({
   origin: new URL(chrome.url).origin,
   key: 'the-key',
-  answer: async (request) => {
+  answer: async (request, body) => {
     if (request.url.startsWith(BEDROCK))
       return {
         status: 200,
         headers: [['content-type', 'application/vnd.amazon.eventstream']],
-        body: noted,
+        body: said(body.includes('Give this chat a title') ? TITLE : 'Noted.'),
       };
     if (!request.url.startsWith('https://registry.npmjs.org/'))
       return { status: 404, headers: [], body: Buffer.alloc(0) };
@@ -63,7 +65,7 @@ const skill = (name, description) =>
 const checkNow = (page) =>
   page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
 
-test('Your packages live in /opt/user: an addition moves there, its bin runs in a panel terminal, its change offers Restart agent, which brings its skill to the agent, and a name the agent ships is ignored with a warning', {
+test('Your packages live in /opt/user: an addition moves there, its bin runs, its skill reaches the agent without a restart, an edit inside it offers Restart agent, a shipped name is ignored', {
   timeout: 30 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -181,6 +183,33 @@ test('Your packages live in /opt/user: an addition moves there, its bin runs in 
   await shows(page, 'greetings-42');
   await shows(page, 'on-path /opt/user/node_modules/.bin/greet');
 
+  const greeter = () =>
+    page.evaluate(() => {
+      const { agent } = document.querySelector('slicc-app').model;
+      return agent.commands(agent.active()).find((command) => command.name === 'skill:greeter')
+        ?.description;
+    });
+  await page.within(INSTALL, async () => {
+    const { agent } = document.querySelector('slicc-app').model;
+    return agent.commands(agent.active()).some((command) => command.name === 'skill:greeter');
+  });
+  assert.equal(await greeter(), 'Greets the user from a package in /opt/user.');
+  const offered = () =>
+    page.evaluate(() =>
+      document
+        .querySelector('slicc-app')
+        .model.updates.list()
+        .some((item) => item.id === 'agent' && item.actions?.includes('restart-agent'))
+    );
+  await checkNow(page);
+  await new Promise((resolve) => setTimeout(resolve, 10000));
+  assert.equal(await offered(), false, 'an addition needs no restart');
+
+  await run(
+    page,
+    'clear; sed -i \'s/Greets the user from a package in \\/opt\\/user\\./Waves at the user from \\/opt\\/user./\' /opt/user/node_modules/greeter/skills/greeter/SKILL.md; echo "edited-$((40 + 2))"'
+  );
+  await shows(page, 'edited-42');
   await checkNow(page);
   await page.within(5 * 60 * 1000, () =>
     document
@@ -188,15 +217,19 @@ test('Your packages live in /opt/user: an addition moves there, its bin runs in 
       .model.updates.list()
       .some((item) => item.id === 'agent' && item.actions?.includes('restart-agent'))
   );
+  assert.equal(await greeter(), 'Greets the user from a package in /opt/user.');
   await page.evaluate(() =>
     document.querySelector('slicc-app').model.updates.act('agent', 'restart-agent')
   );
   await page.within(INSTALL, async () => {
     const { agent } = document.querySelector('slicc-app').model;
-    return (
-      !!agent?.commands &&
-      agent.commands(agent.active()).some((command) => command.name === 'skill:greeter')
-    );
+    return agent
+      .commands(agent.active())
+      .some(
+        (command) =>
+          command.name === 'skill:greeter' &&
+          command.description === 'Waves at the user from /opt/user.'
+      );
   });
   await page.within(120000, () =>
     JSON.stringify(
@@ -241,5 +274,32 @@ test('Your packages live in /opt/user: an addition moves there, its bin runs in 
     document.querySelector('slicc-app').model.notices.show(droppedNotice(true), () => {});
   });
   await shoot(page, 'pins-dropped-notice', { show: 'chat' });
+  await page.evaluate(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    void agent.send(agent.active(), 'Which packages did I add to /opt/user today?');
+  });
+  await page.within(
+    120000,
+    (title) => {
+      const { agent } = document.querySelector('slicc-app').model;
+      const messages = agent.messages(agent.active());
+      const asked = messages.findIndex(
+        (message) => message.role === 'user' && message.text.includes('Which packages')
+      );
+      return (
+        asked >= 0 &&
+        messages.slice(asked + 1).some((message) => message.role === 'assistant') &&
+        agent
+          .list()
+          .some((cone) => cone.kind === 'cone' && cone.title === title && cone.status === 'idle')
+      );
+    },
+    TITLE
+  );
+  await page.evaluate(() => {
+    const { notices } = document.querySelector('slicc-app').model;
+    for (const notice of notices.list()) notices.dismiss(notice.id);
+  });
+  await shoot(page, 'agents-model-title', { show: 'agents' });
   assert.deepEqual(page.errors, []);
 });
