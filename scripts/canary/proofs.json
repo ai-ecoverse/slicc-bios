@@ -40,12 +40,5 @@
         "log": "rc=70"
       }
     ]
-  },
-  {
-    "id": "k4-head",
-    "ref": "b707d5f70479f9dd2a544728ae5bb03b21969b87",
-    "overrides": [],
-    "shards": ["follow-chat", "remote-pydata", "rest"],
-    "expect": []
   }
 ]
