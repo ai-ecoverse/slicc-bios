@@ -190,9 +190,52 @@ async function current(path, entry, changed) {
   return true;
 }
 
-async function add([path, entry], changed, stamps) {
+async function headers(bytes, path) {
+  const { createTarDecoder } = await import(TAR);
+  const gzip = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+  const found = [];
+  for await (const { header, body } of gzip.pipeThrough(createTarDecoder())) {
+    await body.cancel();
+    const name = entryName(header.name);
+    if (header.type !== 'file' || !name) continue;
+    found.push({ path: `/${path}/${name}`, mode: (header.mode ?? 0o644) & 0o7777, uid: 0, gid: 0 });
+  }
+  return found;
+}
+
+async function receiptOf(path) {
+  return JSON.parse(await (await read(`var/lib/bios/${path}.json`)).text());
+}
+
+async function marked(paths) {
+  for (const path of paths) {
+    const receipt = await receiptOf(path).catch(() => null);
+    if (receipt)
+      await save(`var/lib/bios/${path}.json`, JSON.stringify({ ...receipt, modes: true }));
+  }
+}
+
+async function repair(entries, fresh) {
+  if (!(await metadata())) return [];
+  const stamps = [];
+  const repaired = [];
+  for (const [path, { resolved, integrity: expected }] of entries) {
+    if (fresh.has(path)) continue;
+    const receipt = await receiptOf(path).catch(() => null);
+    if (!receipt || receipt.modes) continue;
+    const bytes = await download(resolved);
+    await verify(bytes, expected, path);
+    stamps.push(...(await headers(bytes, path)));
+    repaired.push(path);
+  }
+  if (repaired.length && (await stamp(stamps))) await marked(repaired);
+  return repaired;
+}
+
+async function add([path, entry], changed, stamps, fresh = new Set()) {
   const { resolved, integrity: expected } = entry;
   if (await current(path, entry, changed).catch(() => false)) return 0;
+  fresh.add(path);
   const bytes = await download(resolved);
   await verify(bytes, expected, path);
   await clear(path);
@@ -252,10 +295,12 @@ async function replay(from, progress) {
     let downloaded = 0;
     let bytes = 0;
     const stamps = [];
+    const fresh = new Set();
+    const entries = [...queue];
     const worker = async () => {
       while (queue.length) {
         const entry = queue.shift();
-        const size = await add(entry, changed, stamps);
+        const size = await add(entry, changed, stamps, fresh);
         done += 1;
         downloaded += size ? 1 : 0;
         bytes += size;
@@ -263,12 +308,13 @@ async function replay(from, progress) {
       }
     };
     await Promise.all(Array.from({ length: 4 }, worker));
-    await stamp(stamps);
+    if (await stamp(stamps)) await marked([...fresh]);
+    const restamped = await repair(entries, fresh);
     const deployed = new URL('./', from);
     await install({ from: deployed, files: ['package.json', 'pnpm-lock.yaml'] }, () => {});
     await install({ from: deployed, to: 'var/lib/slicc/', files: ['pnpm-lock.yaml'] }, () => {});
     await ledger.bump('node_modules');
-    return { packages: total, downloaded, removed, bytes };
+    return { packages: total, downloaded, removed, bytes, restamped: restamped.length };
   });
 }
 
