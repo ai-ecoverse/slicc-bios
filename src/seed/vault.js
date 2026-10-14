@@ -188,6 +188,7 @@ export function vaultButtons({ document, origin, media }) {
     element.style.border = '0';
     element.style.width = '0';
     element.style.height = '0';
+    element.style.colorScheme = scheme;
     element.src = `${origin}/button.html`;
     const heard = new Set();
     let config = null;
@@ -200,9 +201,11 @@ export function vaultButtons({ document, origin, media }) {
     };
     const handle = {
       repaint() {
+        element.style.colorScheme = scheme;
         if (config) send({ type: TYPE, v: 1, op: 'button', button: { ...config, theme: scheme } });
       },
     };
+    element.addEventListener('load', handle.repaint);
     buttons.add(handle);
     return {
       element,
@@ -440,7 +443,9 @@ export function createVault({
       const relock = Boolean(view.status?.locked) !== Boolean(message.status?.locked);
       view.status = message.status;
       take(view.status?.scrub);
-      if (relock) for (const worker of workers) agent(worker);
+      if (relock)
+        for (const worker of workers)
+          worker.postMessage({ locked: Boolean(view.status?.locked) }, []);
       state.emit('status', view.status);
     } else if (message.event === 'placeholders') take(message.scrub);
     else if (message.event === 'changed') void relist();

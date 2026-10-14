@@ -191,12 +191,28 @@ test('the vault button is the vault’s own button.html, themed with seven’s c
     return { src: element.src, sandboxed: element.hasAttribute('sandbox') };
   });
   assert.deepEqual(frame, { src: `${fake.origin}/button.html`, sandboxed: false });
+  const scheme = () =>
+    page.evaluate(() => {
+      const element = document.querySelector('#probe').shadowRoot.querySelector('iframe');
+      return {
+        frame: getComputedStyle(element).colorScheme,
+        app: document.querySelector('slicc-app').color,
+      };
+    });
+  assert.ok(await logged(() => themes().length > 0));
   const first = themes().at(-1);
+  assert.deepEqual(await scheme(), { frame: first, app: first });
   await page.evaluate(() => document.querySelector('slicc-app').toggleColor());
-  for (let tries = 0; themes().at(-1) === first && tries < 100; tries += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  assert.notEqual(themes().at(-1), first);
+  assert.ok(await logged(() => themes().at(-1) !== first));
+  const second = themes().at(-1);
+  assert.deepEqual(await scheme(), { frame: second, app: second });
+  await page.evaluate(() => {
+    const element = document.querySelector('#probe').shadowRoot.querySelector('iframe');
+    element.setAttribute('src', element.getAttribute('src'));
+  });
+  const count = themes().length;
+  assert.ok(await logged(() => themes().length > count));
+  assert.equal(themes().at(-1), second);
   assert.ok(['light', 'dark'].includes(first));
   assert.deepEqual(page.errors, []);
 });
