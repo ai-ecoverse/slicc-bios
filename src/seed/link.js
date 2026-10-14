@@ -666,6 +666,8 @@ export function answerLink({ pc, send, hello, timers, onClose, accept }) {
   };
 }
 
+const RANK = { connected: 2, offline: 1 };
+
 export function mergeDevices(entries) {
   const byId = new Map();
   for (const entry of entries) {
@@ -674,7 +676,7 @@ export function mergeDevices(entries) {
       byId.set(entry.id, entry);
       continue;
     }
-    const up = (item) => (item.state === 'connected' ? 1 : 0);
+    const up = (item) => RANK[item.state] ?? 0;
     const first =
       up(seen) !== up(entry) ? up(seen) > up(entry) : seen.offers.length >= entry.offers.length;
     const [main, other] = first ? [seen, entry] : [entry, seen];

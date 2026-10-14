@@ -250,7 +250,9 @@ function remember(links, devices, save) {
 }
 
 function awayDevices(devices, links) {
-  const live = new Set([...links.links.values()].map((link) => link.id));
+  const live = new Set(
+    [...links.links.values()].filter((link) => link.peer).map((link) => link.id)
+  );
   return Object.entries(devices)
     .filter(([id]) => !live.has(id))
     .map(([id, known]) => ({
