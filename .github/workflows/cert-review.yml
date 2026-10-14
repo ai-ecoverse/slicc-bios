@@ -32,7 +32,7 @@ jobs:
           (github.event.action == 'labeled' && github.event.label.name == 'cert-review')
         )
       )
-    runs-on: ${{ vars.CERT_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CERT_REVIEW_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 180
     env:
       LEFTHOOK: '0'
@@ -108,6 +108,7 @@ jobs:
           scripts/cert/sandbox base 'npm ci --ignore-scripts --no-audit --no-fund'
 
       - name: Certify
+        id: certify
         uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b
         env:
           AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
@@ -195,13 +196,14 @@ jobs:
             - **A pass that needs a runner cert:** under the cert lane's rules, changes to the kernel's users, protect or sealed surfaces, and slicc-cdp, the extension, the vault, jerk and mcpcat, need a runner cert after CI. For those, write `cert-ci: PASS @ai-ecoverse/<name>@<version> sha256=<sha256> (ci: <run url>), runner cert required` instead of the `certified` line, and keep the `certs.json:` line.
 
       - name: Post the verdict, once nothing secret is in it
-        if: always()
+        if: always() && steps.certify.outcome != 'skipped'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
         run: |
           file="$RUNNER_TEMP/cert-review/comment.md"
+          mkdir -p "$RUNNER_TEMP/cert-review"
           if [ ! -s "$file" ]; then
             printf '**Cert review:** the review ended without a verdict. The evidence is in %s\n' "$RUN_URL" > "$file"
           fi
