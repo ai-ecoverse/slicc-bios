@@ -51,14 +51,14 @@ const CALLS = {
   pidof: 'pidof bash',
   which: 'which bash',
 };
-const SHELL = new Set(['yes']);
+const SHELL = new Set(['yes', '[']);
 const EXITS = {
   false: [1],
   bunzip2: [0, 2],
   bzcat: [0, 2],
   i: [0, 2],
-  chcon: [126, 127],
-  runcon: [126, 127],
+  chcon: [1],
+  runcon: [1],
 };
 
 const REAL = [
