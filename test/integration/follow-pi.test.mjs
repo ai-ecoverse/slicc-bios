@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
-import { ready } from './bios.mjs';
+import { connectAccount, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { model, startHub } from './fake-hub.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
@@ -211,15 +211,8 @@ test('a follower watches the owner run with View, is refused a send, and sends w
       .model.settings?.accounts?.()
       .some((a) => a.id === 'amazon-bedrock')
   );
-  await owner.evaluate(
-    (secret) =>
-      document.querySelector('slicc-app').model.settings.connect('amazon-bedrock', secret),
-    KEY
-  );
-  await owner.evaluate(
-    (secret) => document.querySelector('slicc-app').model.settings.connect('adobe', secret),
-    ADOBE_TOKEN
-  );
+  await connectAccount(owner, 'amazon-bedrock', KEY);
+  await connectAccount(owner, 'adobe', ADOBE_TOKEN);
   const { joinUrl } = await model(owner, (network) => network.status().links);
 
   const page = await followers.page(t);

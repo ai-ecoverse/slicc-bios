@@ -5,12 +5,37 @@ const state = ${JSON.stringify(state)};
 const log = (entry) => fetch('/log', { method: 'POST', body: JSON.stringify(entry) });
 let version = state.version;
 let locked = state.locked;
-const secrets = state.secrets;
+let serial = 0;
+const records = new Map((state.records ?? []).map((record) => [record.kind + '\\u0000' + record.name, record]));
+serial = records.size;
+const save = () => fetch('/records', { method: 'POST', body: JSON.stringify({ records: [...records.values()], version }) });
 const pages = [];
 const agents = [];
-const scrub = () => ({ needed: secrets.length > 0 || version > 0, version, ready: true });
+const mint = () => 'fnox_proxy_' + String(++serial).padStart(24, '0');
+const key = (kind, name) => kind + '\\u0000' + name;
+const keep = (fields) => {
+  const kind = fields.kind ?? 'secret';
+  const found = records.get(key(kind, fields.name));
+  const record = {
+    ...found,
+    kind,
+    name: fields.name,
+    value: fields.value,
+    source: fields.source ?? 'settings',
+    placeholder: found?.placeholder ?? mint(),
+    ...(fields.provider ? { provider: fields.provider } : {}),
+    ...(fields.server ? { server: fields.server } : {}),
+    ...(fields.expiresAt ? { expiresAt: fields.expiresAt } : {}),
+  };
+  delete record.removedAt;
+  records.set(key(kind, fields.name), record);
+  return record;
+};
+if (!state.records) for (const name of state.secrets) keep({ name, value: 'dummy-value-' + name.toLowerCase() });
+const live = () => [...records.values()].filter((record) => !record.removedAt);
+const scrub = () => ({ needed: records.size > 0 || version > 0, version, ready: true });
 const status = () => ({
-  version: '1.9.0',
+  version: '1.9.1',
   protocol: 1,
   origin: location.ancestorOrigins?.[0] ?? '',
   locked,
@@ -18,55 +43,80 @@ const status = () => ({
   scrub: scrub(),
   waiting: [],
   exportedAt: null,
-  backupReminder: secrets.length ? 'due' : null,
+  backupReminder: live().some((record) => record.kind === 'secret') ? 'due' : null,
   policy: [],
 });
-const view = (name) => ({
-  name,
-  kind: 'secret',
-  placeholder: 'fnox_proxy_' + '0'.repeat(24),
+const view = (record) => ({
+  name: record.name,
+  kind: record.kind,
+  placeholder: record.placeholder,
   state: 'inert',
-  source: 'settings',
+  source: record.source,
   sourceDevice: null,
+  ...(record.provider ? { provider: record.provider } : {}),
+  ...(record.server ? { server: record.server } : {}),
   domains: [],
   rules: [],
   exec: false,
   createdAt: 1767225600000,
 });
 const list = () => ({
-  secrets: secrets.map(view),
+  secrets: live().map(view),
   refused: [],
   audit: [],
   auditMore: false,
   exits: { file: '/etc/slicc/secrets-policy.toml', sha256: null, restricted: [] },
 });
+const placeholders = () => live().map((record) => record.placeholder).sort();
+const changed = () => {
+  version += 1;
+  save();
+  for (const each of pages) each.postMessage({ v: 1, event: 'placeholders', placeholders: placeholders(), scrub: scrub() });
+};
+const announce = () => {
+  for (const each of pages) {
+    each.postMessage({ v: 1, event: 'status', status: status() });
+    each.postMessage({ v: 1, event: 'changed', parts: ['secrets'] });
+  }
+};
+const fill = (text, kinds) => {
+  let out = text;
+  for (const record of live()) if (kinds.includes(record.kind)) out = out.split(record.placeholder).join(record.value);
+  return out;
+};
+const hide = (text) => {
+  let out = text;
+  for (const record of records.values()) out = out.split(record.value).join(record.placeholder);
+  return out;
+};
 const page = (port) => (event) => {
   const { id, op } = event.data;
   log({ role: 'page', op, name: event.data.name, sealed: event.data.req?.op, stamp: Boolean(event.data.stamp) });
   const reply = (fields) => port.postMessage({ v: 1, id, op, ...fields });
+  const refuse = () => port.postMessage({ v: 1, id, error: { code: 'EACCES', message: 'vault is locked: unlock it in the vault window' } });
+  const result = (record) => ({ name: record.name, placeholder: record.placeholder, state: record.removedAt ? 'removed' : 'inert' });
   if (op === 'status') return reply({ status: status() });
   if (op === 'list') return reply({ list: list() });
   if (op === 'audit') return reply({ audit: [], more: false });
-  if (op === 'sealed') return reply({ reply: { v: 1, secrets: secrets.map((name) => ({ name, placeholder: view(name).placeholder, state: 'inert', exec: false, rules: [] })) } });
-  const refuse = () => port.postMessage({ v: 1, id, error: { code: 'EACCES', message: 'vault is locked: unlock it in the vault window' } });
+  if (op === 'placeholders') return reply({ placeholders: placeholders(), scrub: scrub() });
+  if (op === 'sealed') return reply({ reply: { v: 1, secrets: live().filter((record) => record.kind === 'secret').map((record) => ({ name: record.name, placeholder: record.placeholder, state: 'inert', exec: false, rules: [] })) } });
   if (op === 'remove' || op === 'restore') {
-    const at = secrets.indexOf(event.data.name);
-    if (op === 'remove' && at >= 0) secrets.splice(at, 1);
-    for (const each of pages) each.postMessage({ v: 1, event: 'changed', parts: ['secrets'] });
-    return reply({ name: event.data.name, placeholder: view('X').placeholder, state: op === 'remove' ? 'removed' : 'inert' });
+    const record = records.get(key(event.data.kind ?? 'secret', event.data.name));
+    if (!record) return port.postMessage({ v: 1, id, error: { code: 'ENOENT', message: 'no record named ' + event.data.name } });
+    if (op === 'remove') record.removedAt = Date.now();
+    else delete record.removedAt;
+    changed();
+    reply(result(record));
+    return announce();
   }
   if ((op === 'import' || op === 'export') && locked) return refuse();
   if (op === 'dismissBackupReminder') return reply({ backupReminder: 'dismissed' });
   if (op === 'put' || op === 'seal') {
     if (locked) return refuse();
-    if (!secrets.includes(event.data.name)) secrets.push(event.data.name);
-    version += 1;
-    for (const each of pages) {
-      each.postMessage({ v: 1, event: 'placeholders', placeholders: [view('X').placeholder], scrub: scrub() });
-      each.postMessage({ v: 1, event: 'status', status: status() });
-      each.postMessage({ v: 1, event: 'changed', parts: ['secrets'] });
-    }
-    return reply({ name: event.data.name, placeholder: view('X').placeholder, state: 'inert' });
+    const record = keep(event.data);
+    changed();
+    reply(result(record));
+    return announce();
   }
   return port.postMessage({ v: 1, id, error: { code: 'ENOTSUP', message: op + ' arrives later' } });
 };
@@ -89,9 +139,15 @@ addEventListener('message', (event) => {
     const held = [];
     const answer = (data) => {
       const reply = (fields) => port.postMessage({ v: 1, id: data.id, op: data.op, ...fields });
-      if (data.op === 'redact') return reply({ texts: data.texts, hits: [], version });
-      if (data.op === 'records') return reply({ records: [] });
+      const prepare = (kinds) => {
+        const request = { ...data.request, url: fill(data.request.url, kinds), headers: data.request.headers.map(([name, value]) => [name, fill(value, kinds)]) };
+        return reply({ request, hits: [], version });
+      };
+      if (data.op === 'redact') return reply({ texts: data.texts.map((text) => (typeof text === 'string' ? hide(text) : text)), hits: [], version });
+      if (data.op === 'records') return reply({ records: live().filter((record) => record.kind === 'model' || record.kind === 'mcp').map((record) => ({ kind: record.kind, name: record.name, placeholder: record.placeholder, state: 'ready', ...(record.provider ? { provider: record.provider } : {}), ...(record.server ? { server: record.server } : {}) })) });
       if (data.op === 'endpoints') return reply({ ok: true });
+      if (data.op === 'model') return prepare(['model']);
+      if (data.op === 'mcp') return prepare(['mcp']);
       if (data.op === 'redactStream') return reply({ stream: data.stream, idleMs: 250, version });
       if (data.op === 'push') return reply({ chunk: data.chunk });
       if (data.op === 'idle') return reply({ chunk: new Uint8Array() });
@@ -109,7 +165,7 @@ addEventListener('message', (event) => {
         port.postMessage({ v: 1, id: message.data.id, error: { code: 'ENOTSUP', message: 'later' } });
         return;
       }
-      if (locked && message.data.op !== 'records' && message.data.op !== 'endpoints') held.push(message.data);
+      if (locked && !['records', 'endpoints'].includes(message.data.op)) held.push(message.data);
       else answer(message.data);
     };
   }
@@ -154,6 +210,20 @@ export async function startFakeVault(initial = {}) {
   };
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://fake');
+    if (req.method === 'POST' && url.pathname === '/records') {
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk;
+      });
+      req.on('end', () => {
+        const saved = JSON.parse(body);
+        state.records = saved.records;
+        state.version = saved.version;
+        res.writeHead(204, headers);
+        res.end();
+      });
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/log') {
       let body = '';
       req.on('data', (chunk) => {
@@ -189,7 +259,10 @@ export async function startFakeVault(initial = {}) {
     },
     log,
     state,
-    set: (next) => Object.assign(state, next),
+    set: (next) => {
+      if ('secrets' in next) delete state.records;
+      return Object.assign(state, next);
+    },
     close: () => server.close(),
   };
 }

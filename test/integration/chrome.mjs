@@ -1,6 +1,7 @@
 import { argv, env } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { serve, launch as start } from '@ai-ecoverse/slicc-shared-web/harness';
+import { startFakeVault } from './fake-vault.mjs';
 
 const options = {
   roots: [['/', 'src/']],
@@ -16,13 +17,26 @@ export const emptyAgent = {
   '/packages/agent/pnpm-workspace.yaml': "minimumReleaseAgeExclude:\n  - '@ai-ecoverse/*'\n",
 };
 
-export async function launch({ agent = false, ...overrides } = {}) {
+export const VAULT_KEY = 'slicc-os.vault-origin';
+
+export async function launch({ agent = false, vault = true, ...overrides } = {}) {
   const chrome = await start({ ...options, ...overrides });
-  if (agent) return chrome;
+  const fake = vault ? await startFakeVault({ agentReal: true }) : null;
   const page = chrome.page;
+  const close = chrome.close;
+  chrome.vault = fake;
+  chrome.close = (...args) => {
+    fake?.close();
+    return close.apply(chrome, args);
+  };
   chrome.page = async (t) => {
     const opened = await page(t);
-    for (const [path, body] of Object.entries(emptyAgent)) chrome.overrides.set(path, body);
+    if (fake)
+      await opened.init(
+        `() => { if (location.origin === ${JSON.stringify(new URL(chrome.url).origin)} && !localStorage.getItem(${JSON.stringify(VAULT_KEY)})) localStorage.setItem(${JSON.stringify(VAULT_KEY)}, ${JSON.stringify(fake.origin)}); }`
+      );
+    if (!agent)
+      for (const [path, body] of Object.entries(emptyAgent)) chrome.overrides.set(path, body);
     return opened;
   };
   return chrome;

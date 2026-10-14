@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
-import { ready, run, shows } from './bios.mjs';
+import { connectAccount, ready, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { startHub } from './fake-hub.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
@@ -81,11 +81,7 @@ test('a linked slicc CLI prompts the agent, watches it, and aborts, over the lin
       .model.settings?.accounts?.()
       .some((a) => a.id === 'amazon-bedrock')
   );
-  await page.evaluate(
-    (secret) =>
-      document.querySelector('slicc-app').model.settings.connect('amazon-bedrock', secret),
-    KEY
-  );
+  await connectAccount(page, 'amazon-bedrock', KEY);
   await page.until(
     () =>
       document
@@ -154,11 +150,7 @@ test('a webhook from the tray hub reaches the agent as a lick, without secret he
       .model.settings?.accounts?.()
       .some((a) => a.id === 'amazon-bedrock')
   );
-  await page.evaluate(
-    (secret) =>
-      document.querySelector('slicc-app').model.settings.connect('amazon-bedrock', secret),
-    KEY
-  );
+  await connectAccount(page, 'amazon-bedrock', KEY);
   await page.until(
     () =>
       document

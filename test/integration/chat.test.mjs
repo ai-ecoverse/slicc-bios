@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
-import { ready, run, shows } from './bios.mjs';
+import { connectAccount, ready, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
 
@@ -122,7 +122,7 @@ const ims = createServer(
       state.source === 'origin'
         ? `${state.origin}/auth/callback`
         : `http://localhost:${state.port}${state.path}`;
-    const target = `${back}?nonce=${state.nonce}#access_token=${ADOBE_TOKEN}&expires_in=86400`;
+    const target = `${back}?nonce=${state.nonce}#access_token=${ADOBE_TOKEN}&token_type=bearer&expires_in=86399000`;
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end(
       hold ? 'Sign in to Adobe' : `<script>location.replace(${JSON.stringify(target)});</script>`
@@ -384,12 +384,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   assert.equal(account.status, 'disconnected');
   assert.equal(account.needs, 'cors-free-transport');
 
-  const connect = (key) =>
-    page.evaluate(
-      (secret) =>
-        document.querySelector('slicc-app').model.settings.connect('amazon-bedrock', secret),
-      key
-    );
+  const connect = (key) => connectAccount(page, 'amazon-bedrock', key);
   const sendChat = async (text) => {
     await page.evaluate(() => window.deep(window.chatView().shadowRoot, 'textarea').focus());
     await page.insert(text);
@@ -538,7 +533,8 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
         request.url.startsWith(BEDROCK) &&
         request.headers.some(
           ([name, value]) => name.toLowerCase() === 'authorization' && value === `Bearer ${KEY}`
-        )
+        ) &&
+        !request.body.includes('Give this chat a title')
     );
   const sent = keyed();
   assert.equal(sent.length, 1);
@@ -766,32 +762,30 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   await page.until(() => window.monitorOpen() && !!window.monitorView()?.shadowRoot);
   const expand = async () => {
     await page.until(() =>
-      ['agents', 'processes'].every(
+      ['processes'].every(
         (id) => Number(window.monitorSection(id)?.querySelector('.num')?.textContent) > 0
       )
     );
     await page.evaluate(() => {
-      for (const id of ['agents', 'tasks', 'processes']) {
+      for (const id of ['tasks', 'processes']) {
         const toggle = window.monitorSection(id)?.querySelector('button.toggle');
         if (toggle?.getAttribute('aria-expanded') === 'false') toggle.click();
       }
     });
-    await page.until(
-      () => window.monitorRows('agents').length > 0 && window.monitorRows('processes').length > 0
-    );
+    await page.until(() => window.monitorRows('processes').length > 0);
   };
   await expand();
   const watched = await page.evaluate(() => {
     const { monitor, agent } = document.querySelector('slicc-app').model;
     const snapshot = monitor.snapshot();
     const section = (id) => snapshot.sections.find((item) => item.id === id);
-    const cone = agent.list().find((item) => item.id === agent.active());
+    const cones = agent.list().length;
     return {
       updated: snapshot.updatedAt > 0,
       vitals: snapshot.vitals.map((vital) => vital.id),
-      cone: section('agents').rows.some((row) => row.id === cone.id && row.depth === 0),
+      cone: snapshot.vitals.find((vital) => vital.id === 'agents')?.unit === `of ${cones}`,
       shell: section('processes').rows.some((row) => /\bbash\b/.test(row.name)),
-      shown: window.monitorRows('agents').map((row) => row.dataset.id),
+      shown: window.monitorRows('processes').map((row) => row.dataset.id),
       bar: window.deepText(window.monitorView().shadowRoot.querySelector('.bar')),
     };
   });
