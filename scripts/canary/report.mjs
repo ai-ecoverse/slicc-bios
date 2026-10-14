@@ -56,8 +56,12 @@ export function merge({ run, biosRef, runner, url, found, expected }) {
   const unexpected = regressions.filter((r) => !run.expect.some((wanted) => hit(r, wanted)));
   const strict = run.strict ?? run.expect.length === 0;
   const missingShards = expected.filter((name) => !found.some((shard) => shard.shard === name));
+  const unexplainedExits = found
+    .filter((shard) => shard.exit !== 0 && !shard.results.some((r) => r.status === 'fail'))
+    .map(({ shard, exit: code }) => ({ shard, exit: code }));
   const ok =
     missingShards.length === 0 &&
+    unexplainedExits.length === 0 &&
     failed.length === 0 &&
     expect.every((wanted) => wanted.found) &&
     (!strict || unexpected.length === 0);
@@ -87,6 +91,7 @@ export function merge({ run, biosRef, runner, url, found, expected }) {
       exit: code,
     })),
     missingShards,
+    unexplainedExits,
     counts: Object.fromEntries(
       ['pass', 'skip', 'fail', 'regression', 'both', 'flaky'].map((v) => [
         v,
@@ -148,6 +153,12 @@ export function markdown(report) {
   }
   for (const name of report.missingShards) lines.push(`| ${name} | | no result | | | | |`);
   lines.push('');
+  for (const { shard, exit: code } of report.unexplainedExits) {
+    lines.push(
+      `- **${shard}** exited ${code} with no failing test (a crash or a failing teardown).`
+    );
+  }
+  if (report.unexplainedExits.length) lines.push('');
   if (report.expect.length) {
     lines.push('| expected regression | log | found |', '| :--- | :--- | :--- |');
     for (const e of report.expect) {
