@@ -16,7 +16,7 @@ import {
   startChat,
   whenIdle,
 } from './agent.js';
-import { createApprovals } from './approvals.js';
+import { createApprovals, rootChecked } from './approvals.js';
 import { createBrowser } from './browser.js';
 import { browserControl } from './cdp.js';
 import { clipboardHook } from './clipboard.js';
@@ -590,6 +590,7 @@ async function own() {
     ...folders.options,
     ...kernelUsers(mode, { approve: approvals.approve, onDenial: denials }),
   });
+  approvals.verify((req) => rootChecked((argv) => kernel.run(argv, { cwd: '/' }), req));
   const cone = await addCone(kernel);
   coneIds = cone && { uid: cone.uid, gid: cone.gid };
   await lockLegacy(kernel, { text, write, root }).catch((error) =>
