@@ -68,7 +68,7 @@ concurrency:
 jobs:
   plan:
     name: canary / plan
-    runs-on: ${{ inputs.runner || vars.CERT_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CERT_LIGHT_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     outputs:
       runs: ${{ steps.decide.outputs.runs }}
@@ -222,7 +222,7 @@ jobs:
     name: canary / report
     needs: [plan, shard]
     if: ${{ !cancelled() && needs.plan.outputs.jobs != '[]' }}
-    runs-on: ${{ inputs.runner || vars.CERT_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.CERT_LIGHT_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 15
     outputs:
       ok: ${{ steps.report.outputs.ok }}
