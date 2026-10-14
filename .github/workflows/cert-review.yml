@@ -18,8 +18,6 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: write
-  id-token: write
 
 jobs:
   certify:
@@ -34,6 +32,9 @@ jobs:
       )
     runs-on: ${{ vars.CERT_REVIEW_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 180
+    permissions:
+      contents: read
+      pull-requests: read
     env:
       LEFTHOOK: '0'
       PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
@@ -195,36 +196,12 @@ jobs:
             - **A fail** gets `cert-ci: FAIL @ai-ecoverse/<name>@<version>: <the blocking reason>` and no `certs.json:` line. A fail is a regression, a mismatched integrity, missing or wrong provenance where it should have one, install scripts, or a diff that widens reach without reason.
             - **A pass that needs a runner cert:** under the cert lane's rules, changes to the kernel's users, protect or sealed surfaces, and slicc-cdp, the extension, the vault, jerk and mcpcat, need a runner cert after CI. For those, write `cert-ci: PASS @ai-ecoverse/<name>@<version> sha256=<sha256> (ci: <run url>), runner cert required` instead of the `certified` line, and keep the `certs.json:` line.
 
-      - name: Post the verdict, once nothing secret is in it
-        if: always() && steps.certify.outcome != 'skipped'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
-        run: |
-          file="$RUNNER_TEMP/cert-review/comment.md"
-          mkdir -p "$RUNNER_TEMP/cert-review"
-          if [ ! -s "$file" ]; then
-            printf '**Cert review:** the review ended without a verdict. The evidence is in %s\n' "$RUN_URL" > "$file"
-          fi
-          leak=no
-          for value in "$BEDROCK" "$GH_TOKEN"; do
-            if [ -n "$value" ] && grep -qF -- "$value" "$file"; then leak=yes; fi
-          done
-          if grep -qE 'ABSK[A-Za-z0-9+/=]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|BEGIN [A-Z ]*PRIVATE KEY' "$file"; then leak=yes; fi
-          if [ "$leak" = yes ]; then
-            echo "::error::the verdict looked like it held a secret, so it wasn't posted"
-            printf '**Cert review:** the verdict was withheld, because it looked like it held a secret. The evidence is in %s\n' "$RUN_URL" > "$file"
-          fi
-          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$file"
-          test "$leak" = no
-
       - name: Evidence
         if: always()
         run: |
           mkdir -p "$RUNNER_TEMP/evidence"
           cp -r artifacts "$RUNNER_TEMP/evidence/inspect" 2>/dev/null || true
-          if [ -s "$RUNNER_TEMP/cert-review/comment.md" ]; then cp "$RUNNER_TEMP/cert-review/comment.md" "$RUNNER_TEMP/evidence/"; fi
+          if [ -s "$RUNNER_TEMP/cert-review/comment.md" ]; then cp "$RUNNER_TEMP/cert-review/comment.md" "$RUNNER_TEMP/verdict.md"; fi
           sudo cp -r /home/cert/head/artifacts "$RUNNER_TEMP/evidence/head" 2>/dev/null || true
           sudo cp -r /home/cert/base/artifacts "$RUNNER_TEMP/evidence/base" 2>/dev/null || true
           sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/evidence"
@@ -235,3 +212,49 @@ jobs:
           name: cert-review-${{ env.PR_NUMBER }}
           path: ${{ runner.temp }}/evidence/
           if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always() && steps.certify.outcome != 'skipped'
+        with:
+          name: cert-review-verdict-${{ env.PR_NUMBER }}
+          path: ${{ runner.temp }}/verdict.md
+          if-no-files-found: ignore
+
+  post:
+    name: cert / post
+    needs: certify
+    if: always() && needs.certify.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pull-requests: write
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        continue-on-error: true
+        with:
+          name: cert-review-verdict-${{ env.PR_NUMBER }}
+          path: ${{ runner.temp }}/verdict
+
+      - name: Post the verdict, or refuse if anything in it looks secret
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+        run: |
+          file="$RUNNER_TEMP/verdict/verdict.md"
+          if [ ! -s "$file" ]; then
+            gh pr comment "$PR_NUMBER" --repo "$REPO" --body "**Cert review:** the review ended without a verdict. The evidence is in $RUN_URL"
+            exit 1
+          fi
+          leak=no
+          if [ -n "$BEDROCK" ] && grep -qF -- "$BEDROCK" "$file"; then leak=yes; fi
+          if grep -qE 'ABSK[A-Za-z0-9+/=]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|AKIA[0-9A-Z]{12,}|-----BEGIN' "$file"; then leak=yes; fi
+          if [ "$leak" = yes ]; then
+            echo "::error::the verdict held secret-shaped content, so nothing was posted"
+            gh pr comment "$PR_NUMBER" --repo "$REPO" --body "**cert-review output withheld: secret-shaped content.** A human needs to look at $RUN_URL before anything from it is used."
+            exit 1
+          fi
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$file"
