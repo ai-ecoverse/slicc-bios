@@ -287,8 +287,11 @@ test('seven’s code paths are read-only to root and cones, installs still write
       .model.notices.list()
       .find(({ id }) => id.startsWith('mounts-protected:'))
   );
-  assert.equal(notice.title, 'A remembered folder wasn’t mounted');
-  assert.match(notice.body, /\/opt, \/opt\/agent\/deep/);
+  assert.equal(notice.title, 'Some remembered folders weren’t mounted');
+  assert.equal(
+    notice.body,
+    'Seven keeps its own code in /opt, so it no longer mounts folders there. Not mounted: /opt, /opt/agent/deep. Mount them somewhere else, such as /mnt.'
+  );
   await shoot(page, 'mount-notice');
 });
 
