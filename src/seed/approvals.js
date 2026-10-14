@@ -20,6 +20,65 @@ export function requester({ user, tag }) {
   return { kind: 'user', name: user };
 }
 
+const READ_ONLY = new Set([
+  'cat',
+  'df',
+  'diff',
+  'du',
+  'echo',
+  'file',
+  'grep',
+  'head',
+  'ls',
+  'pwd',
+  'readlink',
+  'realpath',
+  'stat',
+  'tail',
+  'tree',
+  'wc',
+]);
+const RULES = ['/etc/fnox', '/etc/slicc/secrets-policy.toml'];
+const PARENTS = ['/', '/etc', '/etc/slicc'];
+const OPAQUE = /[*?[{$`~]|\.\.(\/|$)/;
+
+function resolved(cwd, word) {
+  const parts = (word.startsWith('/') ? word : `${cwd}/${word}`).split('/');
+  const out = [];
+  for (const part of parts) {
+    if (part === '..') out.pop();
+    else if (part && part !== '.') out.push(part);
+  }
+  return `/${out.join('/')}`;
+}
+
+function words(argv) {
+  return argv.flatMap((word) =>
+    String(word)
+      .split(/[\s;&|()<>=,'"]+/)
+      .flatMap((part) => [part, ...(part.startsWith('-') ? [part.replace(/^-+[^/]*/, '')] : [])])
+      .filter(Boolean)
+  );
+}
+
+export function secretRules({ argv = [], path, cwd = '/' }) {
+  const all = words([path ?? argv[0] ?? '', ...argv.slice(1)]);
+  const name = String(path ?? argv[0] ?? '')
+    .split('/')
+    .pop();
+  const reading = READ_ONLY.has(name);
+  const inside = (at) => RULES.some((rule) => at === rule || at.startsWith(`${rule}/`));
+  if (inside(resolved('/', cwd))) return true;
+  for (const word of all.slice(1)) {
+    if (/fnox|secrets-policy/.test(word)) return true;
+    if (OPAQUE.test(word) && !reading) return true;
+    const at = resolved(cwd, word);
+    if (inside(at)) return true;
+    if (!reading && PARENTS.includes(at)) return true;
+  }
+  return false;
+}
+
 export function approval(req) {
   return {
     id: String(req.id),
@@ -30,7 +89,7 @@ export function approval(req) {
     cwd: req.cwd,
     createdAt: req.createdAt,
     expiresAt: req.expiresAt,
-    always: req.always !== false,
+    always: req.always !== false && !secretRules(req),
   };
 }
 
@@ -102,7 +161,10 @@ export function createApprovals({ channel = new BroadcastChannel(CHANNEL) } = {}
     approve(req, { signal } = {}) {
       const item = approval(req);
       return new Promise((resolve) => {
-        waiting.set(item.id, { item, resolve });
+        waiting.set(item.id, {
+          item,
+          resolve: (decision) => resolve(decision === 'always' && !item.always ? 'once' : decision),
+        });
         publish();
         signal?.addEventListener('abort', () =>
           settle(item.id, 'deny', signal.reason === 'expired' ? 'expired' : 'withdrawn')

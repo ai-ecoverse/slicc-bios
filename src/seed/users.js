@@ -143,6 +143,13 @@ export function underProtected(target, paths) {
   );
 }
 
+function places(dropped, paths) {
+  const tops = paths
+    .filter((path) => dropped.some(({ target }) => underProtected(target, [path])))
+    .map((path) => `/${path.split('/')[1]}`);
+  return [...new Set(tops)].join(', ');
+}
+
 export function dropProtectedMounts({ storage, key, paths, notices }) {
   let list;
   try {
@@ -157,12 +164,13 @@ export function dropProtectedMounts({ storage, key, paths, notices }) {
   if (!dropped.length) return [];
   storage.setItem(key, JSON.stringify(list.filter((entry) => !dropped.includes(entry))));
   const where = dropped.map(({ target }) => target).join(', ');
+  const one = dropped.length === 1;
   notices.show(
     {
       id: `mounts-protected:${where}`,
       tone: 'warning',
-      title: 'A remembered folder wasn’t mounted',
-      body: `Seven no longer mounts folders at ${where}: that's where seven keeps its own code. Mount the folder somewhere else, such as /mnt.`,
+      title: one ? 'A remembered folder wasn’t mounted' : 'Some remembered folders weren’t mounted',
+      body: `Seven keeps its own code in ${places(dropped, paths)}, so it no longer mounts folders there. Not mounted: ${where}. Mount ${one ? 'it' : 'them'} somewhere else, such as /mnt.`,
       actions: [],
     },
     () => {}
