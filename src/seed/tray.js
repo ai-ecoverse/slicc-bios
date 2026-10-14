@@ -302,6 +302,14 @@ export function granted(known) {
   return Object.fromEntries(ACCESS.map((key) => [key, known?.[key] === true]));
 }
 
+async function unlinkAll(links, id, notify) {
+  const mine = [...links.links.values()].filter((item) => item.id === id);
+  await Promise.all(
+    mine.filter((item) => item.peer).map((item) => notify(item, { kind: 'unlink' }))
+  );
+  for (const item of mine) links.drop(item.key, 'unlinked');
+}
+
 export function createTray({
   links,
   origin = location.origin,
@@ -470,11 +478,7 @@ export function createTray({
       delete devices[id];
       unlinked.add(id);
       save();
-      const link = [...links.links.values()].find((item) => item.id === id);
-      if (link) {
-        await notify(link, { kind: 'unlink' });
-        links.drop(link.key, 'unlinked');
-      }
+      await unlinkAll(links, id, notify);
       changed();
     },
     async rotate() {
