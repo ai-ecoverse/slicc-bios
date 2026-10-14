@@ -167,6 +167,10 @@
     "integrity": "sha512-4J5SH/kWFXGLw8vCDjPegAjA3pTGcZ069oR1wD0CoTxCso21pFs9eMVq4Sz/F1mTVR82gAlHrgEKI9Ek2NZWBg==",
     "sha256": "203510103bb0e3e8a1026fdcb494dcec55b0e9e035667040144b3137ff9f1d27"
   },
+  "@ai-ecoverse/slicc-jsh@0.25.0": {
+    "integrity": "sha512-mHIWDkF/E1hfVDMn6ZcfhWH+oH7voR5FpNMXp4w8t5LaAAsMfjBtnGVrarqJT7GM74IIko6HiXcZffKRKqUuBw==",
+    "sha256": "d47f0d2c6db3f81d8bc9e09b58ed69ac1ee9a19847956d243919c6a56679d377"
+  },
   "@ai-ecoverse/slicc-jsh@0.3.2": {
     "integrity": "sha512-KwQS/iCuqHhIW69qDqVDzy6+di67VGncxe6PXsV7tq628dwlyvT731O+d5a7drxGkcB/FzqRtWqR65tunygPzg==",
     "sha256": "a3ae520d7f8a917e546f7b5876797d2adeca0bb63a59ddf23b034f3137afd061"
