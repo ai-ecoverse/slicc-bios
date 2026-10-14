@@ -174,7 +174,10 @@ jobs:
             <a few sentences: what changed, what you checked, anything a human should look at>
 
             cert-ci: PASS @ai-ecoverse/<name>@<version> sha256=<sha256> (pr <n> @<short head>, run <run url>)
+            certs.json: "@ai-ecoverse/<name>@<version>": { "integrity": "<integrity>", "sha256": "<sha256>" }
             ```
+
+            Take sha256 and integrity from `inspect.mjs`, which computes both from the registry's tarball itself, and only when `integrityMatches` is true. On a PASS, add the `certs.json:` line right after the `cert-ci:` line, so it can be copied into certs.json as it is. On a FAIL, leave it out.
 
             Use one table per package when there are several, and one `cert-ci:` line each. Write `cert-ci: FAIL @ai-ecoverse/<name>@<version>: <the blocking reason>` for a package that has a regression, a mismatched integrity, missing or wrong provenance where it should have one, install scripts or a diff that widens reach without reason. Under the cert lane's rules, the kernel's users, protect and sealed surfaces, slicc-cdp, the extension, the vault, jerk and mcpcat also need a runner cert after CI. For those, end the line with `, runner cert required`.
 
