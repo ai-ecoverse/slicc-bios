@@ -72,6 +72,12 @@ jobs:
         with:
           node-version: '24'
 
+      - name: The model answers with this key
+        env:
+          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          REGION: ${{ vars.CERT_AWS_REGION || 'us-west-2' }}
+        run: node scripts/cert/probe.mjs '${{ vars.CERT_BEDROCK_MODEL || 'global.anthropic.claude-opus-5-5' }}' global.anthropic.claude-sonnet-5 global.anthropic.claude-sonnet-4-6
+
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version: '1.27'
@@ -198,6 +204,17 @@ jobs:
             - **A fail** gets `cert-ci: FAIL @ai-ecoverse/<name>@<version>: <the blocking reason>` and no `certs.json:` line. A fail is a regression, a mismatched integrity, missing or wrong provenance where it should have one, install scripts, or a diff that widens reach without reason.
             - **A pass that needs a runner cert:** under the cert lane's rules, changes to the kernel's users, protect or sealed surfaces, and slicc-cdp, the extension, the vault, jerk and mcpcat, need a runner cert after CI. For those, write `cert-ci: PASS @ai-ecoverse/<name>@<version> sha256=<sha256> (ci: <run url>), runner cert required` instead of the `certified` line, and keep the `certs.json:` line.
 
+      - name: What the review itself returned
+        if: always() && steps.certify.outcome != 'skipped'
+        env:
+          EXECUTION: ${{ steps.certify.outputs.execution_file }}
+          BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+        run: |
+          file="${EXECUTION:-$RUNNER_TEMP/claude-execution-output.json}"
+          if [ ! -s "$file" ]; then echo "no execution file"; exit 0; fi
+          jq '[.[] | select(.type == "result") | {subtype, is_error, num_turns, duration_ms, total_cost_usd, result: ((.result // "") | tostring | .[0:1500])}]' "$file" > "$RUNNER_TEMP/result.json" || exit 0
+          if CERT_SECRET_NAMES=BEDROCK node scripts/cert/scan.mjs "$RUNNER_TEMP/result.json"; then cat "$RUNNER_TEMP/result.json"; else echo "the result held secret-shaped content, so it isn't shown"; fi
+
       - name: Evidence
         if: always()
         run: |
@@ -225,7 +242,7 @@ jobs:
   post:
     name: cert / post
     needs: certify
-    if: always() && needs.certify.result != 'skipped'
+    if: always() && (needs.certify.result == 'success' || needs.certify.result == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
