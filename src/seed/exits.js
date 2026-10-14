@@ -148,6 +148,9 @@ export function createExitRouter() {
       router.sync();
     },
     sync() {
+      kernel
+        ?.updateTransportTraits?.()
+        .catch((error) => console.warn(`exit traits: ${error.message}`));
       const table = router.table();
       const next = JSON.stringify(table);
       if (next === pushed || !kernel?.setRoutes) return;
