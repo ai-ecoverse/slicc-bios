@@ -162,7 +162,8 @@ const owned = (page) =>
     return JSON.stringify({
       agents: agent.list().map((a) => [a.id, a.kind, !!a.frozen]),
       frozen: agent.frozen().length,
-      messages: agent.messages(agent.active()).length,
+      messages: agent.messages(agent.active()).filter((message) => message.kind !== 'notice')
+        .length,
       busy: agent.busy(agent.active()),
       queue: agent.queue(agent.active()).length,
     });
@@ -170,12 +171,21 @@ const owned = (page) =>
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const notices = (page) =>
+  page.evaluate(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    return agent
+      .messages(agent.active())
+      .filter((message) => message.kind === 'notice')
+      .map((message) => message.text);
+  });
+
 async function refusedOnly(page, from, at = 1) {
-  for (let i = 0; i < 100 && page.errors.length < from + at; i += 1) await pause(100);
+  for (let i = 0; i < 100 && (await notices(page)).length < from + at; i += 1) await pause(100);
   await pause(2000);
-  const refusals = page.errors.splice(from);
+  const refusals = (await notices(page)).slice(from);
   assert.equal(refusals.length, at, `expected ${at} refusals, saw: ${refusals.join('\n')}`);
-  for (const refusal of refusals) assert.match(refusal, /watch, but not send/);
+  for (const refusal of refusals) assert.match(refusal, /^This page is view-only, so it can't /);
 }
 
 const said = (page) =>
@@ -254,7 +264,7 @@ test('a follower watches the owner run with View, is refused a send, and sends w
 
   const turning = await owned(owner);
   assert.equal(JSON.parse(turning).busy, true);
-  const turnErrors = page.errors.length;
+  const turnNotices = (await notices(page)).length;
   const steered = await page.evaluate(async () => {
     const { agent } = document.querySelector('slicc-app').model;
     const id = agent.active();
@@ -270,7 +280,7 @@ test('a follower watches the owner run with View, is refused a send, and sends w
   });
   assert.match(steered.steer, /watch, but not send/);
   assert.match(steered.queue, /watch, but not send/);
-  await refusedOnly(page, turnErrors);
+  await refusedOnly(page, turnNotices);
   assert.equal(await owned(owner), turning);
   assert.ok(!asked.some((body) => /from a watcher/.test(body)));
   release();
@@ -343,7 +353,7 @@ test('a follower watches the owner run with View, is refused a send, and sends w
   const ownerBefore = await owned(owner);
   const followerBefore = await owned(page);
   const askedBefore = asked.length;
-  const errorsBefore = page.errors.length;
+  const noticesBefore = (await notices(page)).length;
   await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
   let picked = [];
   for (let i = 0; i < 60 && !picked.includes('picked'); i += 1) {
@@ -363,8 +373,7 @@ test('a follower watches the owner run with View, is refused a send, and sends w
       .querySelector('slicc-app')
       .model.sprinkles.send('welcome', { action: 'onboarding-complete', data: { purpose: 'work' } })
   );
-  await page.until(
-    new Function(`
+  const deleteButton = new Function(`
     const deep = (root) => {
       for (const element of root.querySelectorAll('*')) {
         if (element.localName === 'slicc-agents') return element;
@@ -373,28 +382,20 @@ test('a follower watches the owner run with View, is refused a send, and sends w
       }
       return null;
     };
-    const button = deep(document)?.shadowRoot?.querySelector('[data-action="delete-cone"]');
-    button?.click();
-    return !!button;
-  `)
-  );
-  await page.until(new Function(`return !!(${dialog})()`));
-  await page.evaluate(
-    new Function(
-      `[...(${dialog})().getRootNode().host.shadowRoot.querySelectorAll('swc-button')].find((b) => b.textContent.trim() === 'Delete cone').click()`
-    )
-  );
-  for (let i = 0; i < 100 && page.errors.length < errorsBefore + 2; i += 1)
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  await new Promise((resolve) => setTimeout(resolve, 3000));
-  const refusals = page.errors.splice(errorsBefore);
-  assert.ok(refusals.length >= 2, refusals.join('\n'));
-  for (const refusal of refusals) assert.match(refusal, /watch, but not send/);
+    const agents = deep(document);
+    return agents ? !!agents.shadowRoot?.querySelector('[data-action="delete-cone"]') : null;
+  `);
+  await page.until(new Function(`return (${deleteButton})() === false`));
+  await page.evaluate(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    agent.freeze(agent.active());
+  });
+  await refusedOnly(page, noticesBefore, 2);
   assert.equal(await owned(owner), ownerBefore);
   assert.equal(await owned(page), followerBefore);
   assert.equal(asked.length, askedBefore);
 
-  const sweepErrors = page.errors.length;
+  const sweepNotices = (await notices(page)).length;
   const ownerIdle = await owned(owner);
   const accounts = () =>
     owner.evaluate(() =>
@@ -423,8 +424,8 @@ test('a follower watches the owner run with View, is refused a send, and sends w
       connect: await outcome(() => settings.connect('amazon-bedrock', 'dummy-other-key-0000')),
       call: await outcome(() => sprinkles.call('welcome', 'getState', [])),
     };
-    agent.compact(id);
     const fired = [
+      () => agent.compact(id),
       () => agent.stop(id),
       () => agent.clear(id),
       () => agent.setModel(id, 'amazon-bedrock/another-model'),
@@ -437,7 +438,7 @@ test('a follower watches the owner run with View, is refused a send, and sends w
   });
   for (const [name, message] of Object.entries(swept.awaited))
     assert.match(message, /watch, but not send/, `${name}: ${message}`);
-  await refusedOnly(page, sweepErrors, swept.fired);
+  await refusedOnly(page, sweepNotices, swept.fired);
   assert.equal(await owned(owner), ownerIdle);
   assert.equal(await accounts(), accountsBefore);
   assert.equal(asked.length, askedBefore);
