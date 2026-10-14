@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ready, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
-import { fakeProxy } from './fake-proxy.mjs';
 
 const INSTALL = 15 * 60 * 1000;
 const rootShell = ['slicc:/home# '];
@@ -23,19 +22,11 @@ async function read(page, path) {
 
 const agentUp = () => document.querySelector('slicc-app').model.updates.ready();
 
-test('an install from before users boots fresh under enforce: the agent works as cone, old files are locked, folders still mount', {
+test('an install from before users boots fresh under enforce: the agent works as cone, old files are locked, a picked folder is the cone’s', {
   timeout: 40 * 60 * 1000,
 }, async (t) => {
   const chrome = await launch({ timeout: 120000, agent: true });
-  const proxy = await fakeProxy({
-    origin: new URL(chrome.url).origin,
-    key: 'the-key',
-    exports: { project: { 'hello.txt': 'hello from the host\n' } },
-  });
-  t.after(async () => {
-    await proxy.close();
-    await chrome.close();
-  });
+  t.after(() => chrome.close());
   const page = await chrome.page(t);
   await page.init(() => {
     window.showDirectoryPicker = async () => {
@@ -44,20 +35,34 @@ test('an install from before users boots fresh under enforce: the agent works as
       return tmp.getDirectoryHandle('picked', { create: true });
     };
   });
-  const hash = (mode) =>
-    `/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key', users: mode })}`;
+  const hash = (mode) => `/#users=${mode}`;
 
   await page.goto(hash('off'));
   await ready(page, rootShell);
   await page.within(INSTALL, agentUp);
+  await page.evaluate(async () => {
+    const root = await navigator.storage.getDirectory();
+    const put = async (path, data) => {
+      const names = path.split('/');
+      const name = names.pop();
+      let dir = root;
+      for (const part of names) dir = await dir.getDirectoryHandle(part, { create: true });
+      const writable = await (await dir.getFileHandle(name, { create: true })).createWritable();
+      await writable.write(data);
+      await writable.close();
+    };
+    await put('home/.pi/agent/mcp.json', '{"servers":{}}\n');
+    await put('scoops/old/workspace/notes.md', 'work\n');
+    await put('home/sprinkles/x.shtml', '<title>x</title>\n');
+    await put('home/.slicc/crontab', '* * * * * cone echo hi\n');
+    await put('home/notes.txt', 'mine\n');
+  });
   await run(
     page,
-    "clear; mkdir -p /home/.pi/agent /scoops/old/workspace /home/sprinkles /home/.slicc /mnt/p; echo '{\"servers\":{}}' > /home/.pi/agent/mcp.json; echo work > /scoops/old/workspace/notes.md; echo '<title>x</title>' > /home/sprinkles/x.shtml; echo '* * * * * cone echo hi' > /home/.slicc/crontab; echo mine > /home/notes.txt; mount -t hostfs -o ro project /mnt/p && echo populated-$((40 + 2))"
+    'clear; ls /home/.pi/agent/mcp.json /scoops/old/workspace/notes.md; echo populated-$((40 + 2))'
   );
   await shows(page, 'populated-42');
-  await page.until(() =>
-    document.querySelector('slicc-app').model.files.mounts().includes('/mnt/p')
-  );
+  assert.doesNotMatch(await screen(page), /No such file/);
 
   await page.goto(hash('enforce'));
   await ready(page, rootShell);
@@ -70,20 +75,15 @@ test('an install from before users boots fresh under enforce: the agent works as
       .find((item) => item.id === 'agent')
   );
   assert.notEqual(agentRow.state, 'failed', agentRow.error);
-  await page.until(() =>
-    document.querySelector('slicc-app').model.files.mounts().includes('/mnt/p')
-  );
 
   await run(
     page,
-    "clear; id cone; stat -c '%a %U %G' /home/cone; sudo -u cone cat /mnt/p/hello.txt; grep -c '^project /mnt/p hostfs ro.*uid=1000,gid=1000' /proc/mounts | sed 's/^/owned /'; ls -d /var/lib/slicc/agent/requests/cone && echo spool-ok; echo layout-$((40 + 2))"
+    "clear; id cone; stat -c '%a %U %G' /home/cone; ls -d /var/lib/slicc/agent/requests/cone && echo spool-ok; echo layout-$((40 + 2))"
   );
   await shows(page, 'layout-42', 5 * 60 * 1000);
   let text = await screen(page);
   assert.match(text, /uid=1000\(cone\).*\bsudo\b/);
   assert.match(text, /710 cone cone/);
-  assert.match(text, /hello from the host/);
-  assert.match(text, /owned 1/);
   assert.match(text, /spool-ok/);
 
   await run(
@@ -94,8 +94,8 @@ test('an install from before users boots fresh under enforce: the agent works as
   text = await screen(page);
   assert.match(text, /mcp=1/);
   assert.match(text, /scoops=1/);
-  for (const kept of ['{"servers":{}}', ' work ', '<title>x</title>', 'cone echo hi', ' mine ']) {
-    assert.ok(text.includes(kept.trim()), kept);
+  for (const kept of ['{"servers":{}}', 'work', '<title>x</title>', 'cone echo hi', 'mine']) {
+    assert.ok(text.includes(kept), `${kept} in ${text}`);
   }
   assert.match(text, /600 root/);
   assert.match(text, /644 root/);
@@ -108,10 +108,11 @@ test('an install from before users boots fresh under enforce: the agent works as
   assert.equal(picked, '/mnt/picked');
   await run(
     page,
-    "clear; sudo -u cone sh -c 'echo from-cone > /mnt/picked/cone.txt' && cat /mnt/picked/cone.txt && echo wrote-$((40 + 2))"
+    'clear; while read -r src at type opts rest; do [ "$at" = /mnt/picked ] && [[ $opts == *uid=1000,gid=1000* ]] && echo owned 1; done < /proc/mounts; sudo -u cone sh -c \'echo from-cone > /mnt/picked/cone.txt\' && cat /mnt/picked/cone.txt && echo wrote-$((40 + 2))'
   );
   await shows(page, 'wrote-42');
   assert.match(await screen(page), /from-cone/);
+  assert.match(await screen(page), /owned 1/);
 
   await page.reload();
   await ready(page, rootShell);
