@@ -7,6 +7,7 @@ let version = state.version;
 let locked = state.locked;
 const secrets = state.secrets;
 const pages = [];
+const agents = [];
 const scrub = () => ({ needed: secrets.length > 0 || version > 0, version, ready: true });
 const status = () => ({
   version: '1.9.0',
@@ -74,6 +75,7 @@ setInterval(async () => {
   if (wanted === locked) return;
   locked = wanted;
   for (const each of pages) each.postMessage({ v: 1, event: 'status', status: status() });
+  for (const release of agents) release();
 }, 200);
 addEventListener('message', (event) => {
   if (event.source !== parent || event.data?.type !== 'slicc-vault' || event.data.op !== 'hello') return;
@@ -84,10 +86,31 @@ addEventListener('message', (event) => {
     pages.push(port);
     port.onmessage = page(port);
   } else {
+    const held = [];
+    const answer = (data) => {
+      const reply = (fields) => port.postMessage({ v: 1, id: data.id, op: data.op, ...fields });
+      if (data.op === 'redact') return reply({ texts: data.texts, hits: [], version });
+      if (data.op === 'records') return reply({ records: [] });
+      if (data.op === 'endpoints') return reply({ ok: true });
+      if (data.op === 'redactStream') return reply({ stream: data.stream, idleMs: 250, version });
+      if (data.op === 'push') return reply({ chunk: data.chunk });
+      if (data.op === 'idle') return reply({ chunk: new Uint8Array() });
+      if (data.op === 'end') return reply({ chunk: new Uint8Array(), hits: [] });
+      if (data.op === 'drop') return reply({});
+      port.postMessage({ v: 1, id: data.id, error: { code: 'ENOTSUP', message: 'later' } });
+    };
+    agents.push(() => {
+      while (!locked && held.length) answer(held.shift());
+    });
     port.onmessage = (message) => {
       log({ role: 'agent', op: message.data.op });
       if (state.agentSilent) return;
-      port.postMessage({ v: 1, id: message.data.id, error: { code: 'ENOTSUP', message: 'later' } });
+      if (!state.agentReal) {
+        port.postMessage({ v: 1, id: message.data.id, error: { code: 'ENOTSUP', message: 'later' } });
+        return;
+      }
+      if (locked && message.data.op !== 'records' && message.data.op !== 'endpoints') held.push(message.data);
+      else answer(message.data);
     };
   }
   port.postMessage({ v: 1, op: 'welcome', role, status: status() });
@@ -100,6 +123,7 @@ setInterval(async () => {
   if (wanted === locked) return;
   locked = wanted;
   for (const each of pages) each.postMessage({ v: 1, event: 'status', status: status() });
+  for (const release of agents) release();
 }, 200);
 addEventListener('message', (event) => {
   if (event.source !== parent || event.data?.type !== 'slicc-vault') return;

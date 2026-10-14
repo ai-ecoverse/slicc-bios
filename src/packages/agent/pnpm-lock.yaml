@@ -13,20 +13,20 @@ importers:
   .:
     dependencies:
       '@ai-ecoverse/slicc-agent':
-        specifier: 3.50.2
-        version: 3.50.2(@ai-ecoverse/slicc-kernel@1.102.5)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
+        specifier: 4.0.0
+        version: 4.0.0(@ai-ecoverse/slicc-kernel@1.102.5)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@ai-ecoverse/slicc-kernel':
         specifier: 1.102.5
         version: 1.102.5
 
 packages:
 
-  '@ai-ecoverse/slicc-agent@3.50.2':
-    resolution: {integrity: sha512-8WcNCTemX9W7QOTrt3yqUBqieF7eCm04hxdW4J8+PJ6IZpN9vBIeoOZvKS+sdl/Z3qTiITTxXUW53w+kbrX0TQ==}
+  '@ai-ecoverse/slicc-agent@4.0.0':
+    resolution: {integrity: sha512-EqspKhevWQ9tQ8fPDKXJZExs2iELU/5yUcKEHyP3BGKBHOI9Q2NbSiGH+BLTGnZ3JR35iDwHeDvRI6IH7B/+dA==}
     engines: {node: '>=24'}
     peerDependencies:
       '@ai-ecoverse/slicc-kernel': '>=1.47.1 <2'
-      '@ai-ecoverse/slicc-spectrum': ^1.39.0
+      '@ai-ecoverse/slicc-spectrum': ^1.59.0
     peerDependenciesMeta:
       '@ai-ecoverse/slicc-spectrum':
         optional: true
@@ -37,6 +37,10 @@ packages:
 
   '@ai-ecoverse/slicc-kernel@1.102.5':
     resolution: {integrity: sha512-p4ya+WnAUor3eo4hX9ZRDLCfgFn3RYac4Oas1UOO+Efnv2ecGKMCdGfPlGPCoIlrs6ab8FJl8YG1xGtGNem9JQ==}
+    engines: {node: '>=24'}
+
+  '@ai-ecoverse/slicc-vault@1.9.0':
+    resolution: {integrity: sha512-rZCb7ZkFxnwNxIUaF5Mbl+wyMdMqnufxnj5Ciu0G6mMkq/GYLwzKsnhyXIOX0aLWtmCZ1Ng/GG7Ywz9BkrHUwQ==}
     engines: {node: '>=24'}
 
   '@anthropic-ai/sdk@0.129.0':
@@ -327,10 +331,11 @@ packages:
 
 snapshots:
 
-  '@ai-ecoverse/slicc-agent@3.50.2(@ai-ecoverse/slicc-kernel@1.102.5)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)':
+  '@ai-ecoverse/slicc-agent@4.0.0(@ai-ecoverse/slicc-kernel@1.102.5)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)':
     dependencies:
       '@ai-ecoverse/slicc-browsers': 1.5.0
       '@ai-ecoverse/slicc-kernel': 1.102.5
+      '@ai-ecoverse/slicc-vault': 1.9.0
       '@earendil-works/chord': 1.0.4
       '@earendil-works/pi-ai': 1.0.4(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@earendil-works/pi-client': 1.0.4
@@ -353,6 +358,8 @@ snapshots:
   '@ai-ecoverse/slicc-browsers@1.5.0': {}
 
   '@ai-ecoverse/slicc-kernel@1.102.5': {}
+
+  '@ai-ecoverse/slicc-vault@1.9.0': {}
 
   '@anthropic-ai/sdk@0.129.0':
     dependencies:
