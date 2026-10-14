@@ -13,6 +13,7 @@ function connect() {
   let id = 0;
   port.onmessage = ({ data }) => {
     const call = calls.get(data.id);
+    if (!call) return;
     if ('progress' in data) return call.progress(data.progress);
     calls.delete(data.id);
     if ('error' in data) call.reject(new Error(data.error));
