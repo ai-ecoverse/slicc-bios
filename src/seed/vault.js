@@ -123,19 +123,55 @@ export function answerEgress(transport, request, port, { timers = globalThis } =
     EGRESS_MS
   );
   return (async () => {
+    const body = new TextEncoder().encode(request.body ?? '');
     try {
-      const response = await transport.fetch({
+      const response = await unfollowed(transport, {
         url: request.url,
         method: request.method,
         headers: request.headers,
-        body: new TextEncoder().encode(request.body ?? ''),
+        body,
       });
-      const body = await bytesOf(response.body);
-      reply({ status: response.status, headers: pairs(response.headers), body });
+      body.fill(0);
+      if (response.redirected || response.type === 'opaqueredirect' || response.status === 0)
+        return reply({ error: 'EACCES: the token endpoint redirected' });
+      reply({
+        status: response.status,
+        headers: pairs(response.headers),
+        body: await bytesOf(response.body),
+      });
     } catch (error) {
+      body.fill(0);
       reply({ error: `${error?.code ?? 'EIO'}: the token request failed` });
     }
   })();
+}
+
+export function unfollowed(
+  transport,
+  request,
+  { fetcher = (url, init) => globalThis.fetch(url, init) } = {}
+) {
+  if (transport?.traits?.manualRedirects)
+    return transport.fetch({ ...request, redirect: 'manual' });
+  return fetcher(request.url, {
+    method: request.method,
+    headers: request.headers,
+    body: request.body,
+    redirect: 'manual',
+    credentials: 'omit',
+    cache: 'no-store',
+  }).then((response) => ({
+    status: response.status,
+    type: response.type,
+    redirected: response.redirected,
+    headers: response.headers,
+    body: response.body ? chunksOf(response.body) : null,
+  }));
+}
+
+async function* chunksOf(stream) {
+  const reader = stream.getReader();
+  for (let next = await reader.read(); !next.done; next = await reader.read()) yield next.value;
 }
 
 export function vaultButtons({ document, origin, media }) {
@@ -242,17 +278,24 @@ export function vaultPort({ call, state, button }) {
   };
 }
 
+const CONSUME = ['ticket', 'stamp', 'path', 'resolved', 'argv', 'cwd', 'interpreters', 'trusted'];
+
+const refusal = (code, message) => ({ v: 1, error: { code, message } });
+
 export function sealedRelay({ call, forward, users, onRequest }) {
   return async (req, { signal } = {}) => {
     const { caller, ...rest } = req ?? {};
-    if (rest.op === 'materialize') {
-      const enforced = users() === 'enforce';
-      const message = enforced
-        ? 'materialize arrives with the kernel exec hook'
-        : 'secrets reach programs only when kernel users are enforce';
-      return { v: 1, error: { code: enforced ? 'ENOTSUP' : 'EACCES', message } };
-    }
+    const exec = rest.op === 'materialize' || rest.op === 'materializeConsume';
+    if (exec && users() !== 'enforce')
+      return refusal('EACCES', 'secrets reach programs only when kernel users are enforce');
     try {
+      if (rest.op === 'materializeConsume') {
+        const fields = Object.fromEntries(
+          CONSUME.filter((key) => key in rest).map((key) => [key, rest[key]])
+        );
+        const { values, placeholders } = await call('materializeConsume', fields, { signal });
+        return { values, placeholders };
+      }
       const { reply } = await call(
         'sealed',
         { req: rest, stamp: caller },
@@ -263,7 +306,7 @@ export function sealedRelay({ call, forward, users, onRequest }) {
         onRequest(rest, reply.id, caller);
       return reply;
     } catch (error) {
-      return { v: 1, error: { code: error.code, message: error.message } };
+      return refusal(error.code, error.message);
     }
   };
 }
