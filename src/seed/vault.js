@@ -132,7 +132,9 @@ export function answerEgress(transport, request, port, { timers = globalThis } =
         body,
       });
       body.fill(0);
-      if (response.redirected || response.type === 'opaqueredirect' || response.status === 0)
+      const status = response.status;
+      const moved = response.redirected || response.type === 'opaqueredirect';
+      if (moved || status === 0 || (status >= 300 && status < 400))
         return reply({ error: 'EACCES: the token endpoint redirected' });
       reply({
         status: response.status,
@@ -379,6 +381,7 @@ export function createVault({
   let page = null;
   let loads = 0;
   let scrub = stored(storage);
+  let sentGid;
 
   const pair = () => (scrub ? { ...scrub } : null);
   const forward = () => {
@@ -481,6 +484,7 @@ export function createVault({
     const load = loads;
     const gid = await sudoGid().catch(() => undefined);
     if (load !== loads || !frame.contentWindow) return;
+    sentGid = Number.isInteger(gid) ? gid : undefined;
     const { port1, port2 } = new MessageChannel();
     page?.close();
     page = port1;
@@ -528,6 +532,10 @@ export function createVault({
       return () => workers.delete(worker);
     },
     reconnect: () => (loads ? hello() : Promise.resolve()),
+    sudoGid(gid) {
+      const wanted = Number.isInteger(gid) ? gid : undefined;
+      return loads && wanted !== sentGid ? hello() : Promise.resolve();
+    },
     close() {
       buttons.close();
       page?.close();
