@@ -139,6 +139,7 @@ await step('seed', async () => {
     'tunnel.js',
     'update.js',
     'updates.js',
+    'user.js',
   ];
   const from = new URL('seed/', import.meta.url).href;
   const {

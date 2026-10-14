@@ -364,7 +364,7 @@ async function checkNow(page) {
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
 }
 
-test("the user's pnpm add and pnpm upgrade in /opt/agent survive seven's updates", async (t) => {
+test("the user's pnpm add in /opt/agent moves to /opt/user, and a pnpm upgrade there survives seven's updates", async (t) => {
   t.after(() => {
     for (const file of AGENT_FILES) chrome.overrides.delete(`/packages/agent/${file}`);
   });
@@ -410,24 +410,34 @@ test("the user's pnpm add and pnpm upgrade in /opt/agent survive seven's updates
     },
   ]);
 
-  await t.test('pnpm add in /opt/agent survives an agent update', async () => {
-    deployAgent({ '@types/ms': '2.1.0', '@types/estree': '1.0.8' }, NEWER_LOCK);
-    await checkNow(page);
-    await settled(page, NEWER_LOCK);
-    const agent = await row(page, 'agent');
-    assert.notEqual(agent.state, 'failed', agent.error);
-    const manifest = JSON.parse(await read(page, 'opt/agent/package.json'));
-    assert.deepEqual(manifest.dependencies, {
-      '@types/ms': '0.7.34',
-      '@types/estree': '1.0.8',
-      '@types/semver': '7.7.1',
-    });
-    assert.equal(await installedVersion(page, '@types/semver'), '7.7.1');
-    assert.equal(await installedVersion(page, '@types/estree'), '1.0.8');
-    assert.deepEqual(JSON.parse(await read(page, 'var/lib/slicc/agent/user.json')).add, {
-      '@types/semver': { spec: '7.7.1', field: 'dependencies' },
-    });
-  });
+  await t.test(
+    'the next check moves the addition to /opt/user, and the agent update keeps the pin',
+    async () => {
+      deployAgent({ '@types/ms': '2.1.0', '@types/estree': '1.0.8' }, NEWER_LOCK);
+      await checkNow(page);
+      await settled(page, NEWER_LOCK);
+      const agent = await row(page, 'agent');
+      assert.notEqual(agent.state, 'failed', agent.error);
+      const manifest = JSON.parse(await read(page, 'opt/agent/package.json'));
+      assert.deepEqual(manifest.dependencies, {
+        '@types/ms': '0.7.34',
+        '@types/estree': '1.0.8',
+      });
+      assert.equal(await installedVersion(page, '@types/estree'), '1.0.8');
+      assert.deepEqual(JSON.parse(await read(page, 'var/lib/slicc/agent/user.json')).add, {});
+      assert.deepEqual(JSON.parse(await read(page, 'opt/user/package.json')).dependencies, {
+        '@types/semver': '7.7.1',
+      });
+      assert.equal(
+        JSON.parse(await read(page, 'opt/user/node_modules/@types/semver/package.json')).version,
+        '7.7.1'
+      );
+      const installed = (await opfs(page)).filter((path) =>
+        path.startsWith('opt/agent/node_modules/')
+      );
+      assert.ok(!installed.some((path) => path.includes('/@types/semver/')), installed.join('\n'));
+    }
+  );
 
   await t.test('a user pin survives the update and wins over the base', async () => {
     assert.equal(await installedVersion(page, '@types/ms'), '0.7.34');
@@ -443,11 +453,7 @@ test("the user's pnpm add and pnpm upgrade in /opt/agent survive seven's updates
           '0.7.34',
           { base: '2.1.0', range: '0.7.34', project: '/opt/agent' },
         ],
-        [
-          'user:agent:@types/semver',
-          '7.7.1',
-          { base: null, range: '7.7.1', project: '/opt/agent' },
-        ],
+        ['user:user:@types/semver', '7.7.1', { base: null, range: '7.7.1', project: '/opt/user' }],
       ]
     );
     await page.evaluate(() => document.querySelector('slicc-app').show('updates'));
@@ -505,25 +511,33 @@ test("the user's pnpm add and pnpm upgrade in /opt/agent survive seven's updates
       );
       await settled(page, NEWER_LOCK);
       assert.equal(await installedVersion(page, '@types/ms'), '2.1.0');
-      assert.equal(await installedVersion(page, '@types/semver'), '7.7.1');
       assert.deepEqual(
         (await own(page)).map(({ id }) => id),
-        ['user:agent:@types/semver']
+        ['user:user:@types/semver']
       );
       await page.evaluate(() =>
         document
           .querySelector('slicc-app')
-          .model.updates.actPackage('user:agent:@types/semver', 'remove')
+          .model.updates.actPackage('user:user:@types/semver', 'remove')
       );
-      await settled(page, NEWER_LOCK);
-      assert.deepEqual(await own(page), []);
+      await page.until(
+        () =>
+          !document
+            .querySelector('slicc-app')
+            .model.updates.packages()
+            .some((item) => item.origin === 'user')
+      );
+      assert.deepEqual(
+        JSON.parse(await read(page, 'opt/user/package.json')).dependencies ?? {},
+        {}
+      );
       assert.equal(await read(page, 'opt/agent/pnpm-lock.yaml'), NEWER_LOCK);
       assert.deepEqual(JSON.parse(await read(page, 'opt/agent/package.json')).dependencies, {
         '@types/ms': '2.1.0',
         '@types/estree': '1.0.8',
       });
       const installed = (await opfs(page)).filter((path) =>
-        path.startsWith('opt/agent/node_modules/')
+        path.startsWith('opt/user/node_modules/')
       );
       assert.ok(!installed.some((path) => path.includes('/@types/semver/')), installed.join('\n'));
       assert.deepEqual(page.errors, []);

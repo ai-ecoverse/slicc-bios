@@ -28,7 +28,7 @@ import {
   version as grammarsVersion,
   installed,
 } from './grammars.js';
-import { change, userRows } from './layer.js';
+import { change, edit, userRows } from './layer.js';
 import { createLinks, installLocal, labelStore, trustHostKey } from './link.js';
 import { serveLoopback } from './loopback.js';
 import { createFolders, offTheRecord } from './mounts.js';
@@ -68,6 +68,17 @@ import { createTray, TRAY_HUB_KEY, trayPort } from './tray.js';
 import { openTunnel } from './tunnel.js';
 import { text, update, versions } from './update.js';
 import { count, createUpdates, owners } from './updates.js';
+import {
+  drop,
+  droppedNotice,
+  enforcing,
+  ensure as ensureUser,
+  move,
+  rows as ownRows,
+  remove as removeUser,
+  PATH as USER_PATH,
+  locked as userLocked,
+} from './user.js';
 
 const prompts = installPrompts();
 
@@ -368,6 +379,7 @@ const UNDOING = { unpin: 'removing', remove: 'removing', retry: 'updating' };
 async function listOwn() {
   const list = [];
   for (const project of Object.values(layered)) list.push(...(await userRows(root, project)));
+  list.push(...(await ownRows(root, agentProject)));
   updates.setUserPackages(list);
 }
 
@@ -390,6 +402,7 @@ function refuse(list, project) {
 
 async function actOwn(id, action) {
   const which = id.split(':')[1];
+  if (which === 'user') return actUser(id.slice('user:user:'.length));
   const name = id.slice(`user:${which}:`.length);
   updates.setUserPackages(
     updates
@@ -400,6 +413,45 @@ async function actOwn(id, action) {
   );
   await change(layered[which], action === 'retry' ? null : name);
   await (which === 'agent' ? offerChat() : installGrammars());
+}
+
+async function actUser(name) {
+  updates.setUserPackages(
+    updates
+      .userPackages()
+      .map((row) =>
+        row.id === `user:user:${name}`
+          ? { ...row, state: 'removing', error: null, actions: [] }
+          : row
+      )
+  );
+  try {
+    await userLocked(() => removeUser(root, kernel, name));
+  } finally {
+    await listOwn();
+  }
+}
+
+const tidied = (project, task) =>
+  navigator.locks.request(project.lock, () => userLocked(() => task(project)));
+
+async function tidyUser() {
+  await userLocked(() => ensureUser(root, kernel));
+  const strict = enforcing(kernel);
+  const dropped = [];
+  let grammarsDropped = false;
+  for (const project of Object.values(layered)) {
+    const grammar = project === grammarsProject;
+    await tidied(project, async () => {
+      if (strict) {
+        const gone = await drop(root, project, edit, { additions: grammar });
+        dropped.push(...gone);
+        if (grammar && gone.length) grammarsDropped = true;
+      }
+      if (!strict || !grammar) await move(root, kernel, project, edit);
+    });
+  }
+  if (dropped.length) notices.show(droppedNotice(grammarsDropped), () => {});
 }
 
 async function offerChat() {
@@ -473,6 +525,7 @@ async function updateTailnet() {
 
 async function check() {
   await checkPackages();
+  await tidyUser().catch((error) => console.warn(`your packages: ${error.message}`));
   await offerChat();
   await installGrammars();
   await updateTailnet();
@@ -589,7 +642,7 @@ async function follow() {
     root,
     storage: localStorage,
     files: { skip, hide },
-    terminals: { env: { PS1: 'slicc:\\w\\$ ', SLICC_TAB: board.id } },
+    terminals: { env: { PS1: 'slicc:\\w\\$ ', SLICC_TAB: board.id, PATH: USER_PATH } },
   });
   files = model;
   const waiting = claimed.owner ? updates : createUpdates({ ready: true });

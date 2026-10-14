@@ -1,4 +1,5 @@
 import { failure } from './link.js';
+import { PATH } from './user.js';
 
 export const BYTES = 0;
 export const RESIZE = 1;
@@ -10,6 +11,7 @@ export const SIGNALS = ['INT', 'TSTP', 'QUIT', 'HUP'];
 export const SHELL = ['bash', '-i'];
 export const ENV = {
   PS1: 'slicc:\\w\\$ ',
+  PATH,
   PROMPT_COMMAND: `printf '\\033]7;file://%s%s\\007' "\${HOSTNAME:-}" "$PWD"`,
 };
 
