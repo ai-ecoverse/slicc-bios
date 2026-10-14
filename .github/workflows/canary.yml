@@ -190,7 +190,11 @@ jobs:
 
       - name: Chromium
         run: |
-          npx playwright-core install-deps chromium
+          if sudo -n true 2>/dev/null; then
+            npx playwright-core install-deps chromium
+          else
+            echo "No root on $RUNNER_NAME: the image's system libraries and fonts serve Chromium."
+          fi
           npx playwright-core install --no-shell chromium
 
       - name: The shard with the overrides, then main's pins for what failed
