@@ -95,7 +95,8 @@ test('the range check reads the forms the packages use', () => {
   assert.throws(() => satisfies('1.0.0', '^1.0.0'), /unsupported range clause/);
 });
 
-const GATED = /^@ai-ecoverse\/(slicc-kernel|slicc-cdp|slicc-jsh|wasi-|wasix-|wasm-|py-)/;
+const GATED =
+  /^@ai-ecoverse\/(slicc-kernel|slicc-cdp|slicc-clipboard|slicc-jsh|wasi-|wasix-|wasm-|py-)/;
 
 async function lockedGated() {
   const found = new Map();
