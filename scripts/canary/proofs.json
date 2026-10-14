@@ -2,19 +2,49 @@
   {
     "id": "positive",
     "overrides": ["@ai-ecoverse/slicc-kernel@1.81.0"],
-    "expect": []
+    "shards": ["rest"],
+    "strict": true,
+    "expect": [
+      {
+        "test": "wasi-pnpm \u00b7 i --version",
+        "log": "rc=126"
+      }
+    ]
   },
   {
     "id": "negative",
     "overrides": ["@ai-ecoverse/slicc-kernel@1.78.0"],
+    "shards": ["sweep"],
+    "strict": false,
     "expect": [
-      { "test": "wasm-grep · ", "log": "rc=70" },
-      { "test": "wasm-sed · ", "log": "rc=70" },
-      { "test": "wasm-jq · ", "log": "rc=70" },
-      { "test": "wasm-xz · ", "log": "rc=70" },
-      { "test": "wasm-findutils · ", "log": "rc=70" },
-      { "test": "wasm-diffutils · ", "log": "rc=70" },
-      { "test": "wasm-patch · ", "log": "rc=70" }
+      {
+        "test": "wasm-grep \u00b7 ",
+        "log": "rc=70"
+      },
+      {
+        "test": "wasm-sed \u00b7 ",
+        "log": "rc=70"
+      },
+      {
+        "test": "wasm-jq \u00b7 ",
+        "log": "rc=70"
+      },
+      {
+        "test": "wasm-xz \u00b7 ",
+        "log": "rc=70"
+      },
+      {
+        "test": "wasm-findutils \u00b7 ",
+        "log": "rc=70"
+      },
+      {
+        "test": "wasm-diffutils \u00b7 ",
+        "log": "rc=70"
+      },
+      {
+        "test": "wasm-patch \u00b7 ",
+        "log": "rc=70"
+      }
     ]
   }
 ]

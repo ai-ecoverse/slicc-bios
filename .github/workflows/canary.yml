@@ -19,6 +19,10 @@ on:
         description: 'slicc-bios ref to test; empty means the dispatched ref'
         type: string
         default: ''
+      shards:
+        description: 'Shards from scripts/canary/shards.json, a JSON list; empty means ci.yml''s three'
+        type: string
+        default: ''
   workflow_call:
     inputs:
       overrides:
@@ -34,6 +38,10 @@ on:
         required: false
         default: ''
       bios-ref:
+        type: string
+        required: false
+        default: ''
+      shards:
         type: string
         required: false
         default: ''
@@ -57,9 +65,6 @@ concurrency:
   group: canary-${{ github.event_name == 'pull_request' && github.ref || github.event_name == 'schedule' && 'schedule' || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  SHARDED: '/(follow[^/]*|chat|remote|pydata|updates)\.test\.mjs$'
-
 jobs:
   plan:
     name: canary / plan
@@ -67,6 +72,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       runs: ${{ steps.decide.outputs.runs }}
+      jobs: ${{ steps.decide.outputs.jobs }}
       key: ${{ steps.plan.outputs.key }}
       ref: ${{ steps.ref.outputs.sha }}
     steps:
@@ -88,6 +94,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           OVERRIDES: ${{ inputs.overrides }}
           EXPECT: ${{ inputs.expect }}
+          SHARDS: ${{ inputs.shards }}
         run: node scripts/canary/plan.mjs
 
       - id: seen
@@ -103,13 +110,14 @@ jobs:
         name: Run only when something changed
         env:
           RUNS: ${{ steps.plan.outputs.runs }}
+          JOBS: ${{ steps.plan.outputs.jobs }}
           SEEN: ${{ steps.seen.outputs.cache-hit }}
         run: |
           if [ "$SEEN" = true ]; then
-            echo 'runs=[]' >> "$GITHUB_OUTPUT"
+            printf 'runs=[]\njobs=[]\n' >> "$GITHUB_OUTPUT"
             echo 'Nothing new on npm since the last canary.' >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "runs=$RUNS" >> "$GITHUB_OUTPUT"
+            printf 'runs=%s\njobs=%s\n' "$RUNS" "$JOBS" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -119,22 +127,15 @@ jobs:
           path: canary-inputs.json
 
   shard:
-    name: canary / ${{ matrix.run.id }} (${{ matrix.shard.name }})
+    name: canary / ${{ matrix.job.run }} (${{ matrix.job.shard }})
     needs: plan
-    if: needs.plan.outputs.runs != '[]'
+    if: needs.plan.outputs.jobs != '[]'
     runs-on: ${{ inputs.runner || vars.CERT_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
-        run: ${{ fromJSON(needs.plan.outputs.runs) }}
-        shard:
-          - name: follow-chat
-            match: '/(follow[^/]*|chat)\.test\.mjs$'
-          - name: remote-pydata
-            match: '/(remote|pydata|updates)\.test\.mjs$'
-          - name: rest
-            match: ''
+        job: ${{ fromJSON(needs.plan.outputs.jobs) }}
     env:
       LEFTHOOK: '0'
     steps:
@@ -176,38 +177,33 @@ jobs:
 
       - name: The shard with the overrides, then main's pins for what failed
         env:
-          OVERRIDES: ${{ toJSON(matrix.run.overrides) }}
-          SHARD: ${{ matrix.shard.name }}
-          MATCH: ${{ matrix.shard.match }}
-          OUT: canary/${{ matrix.run.id }}-${{ matrix.shard.name }}
-        run: node scripts/canary/shard.mjs --shard "$SHARD" --match "$MATCH" --overrides "$OVERRIDES" --out "$OUT"
+          OVERRIDES: ${{ toJSON(matrix.job.overrides) }}
+          SHARD: ${{ matrix.job.shard }}
+          OUT: canary/${{ matrix.job.run }}-${{ matrix.job.shard }}
+        run: node scripts/canary/shard.mjs --shard "$SHARD" --overrides "$OVERRIDES" --out "$OUT"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: canary-${{ matrix.run.id }}-${{ matrix.shard.name }}
-          path: canary/${{ matrix.run.id }}-${{ matrix.shard.name }}/
+          name: canary-shard-${{ matrix.job.run }}-${{ matrix.job.shard }}
+          path: canary/${{ matrix.job.run }}-${{ matrix.job.shard }}/
           if-no-files-found: ignore
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: canary-files-${{ matrix.run.id }}-${{ matrix.shard.name }}
+          name: canary-files-${{ matrix.job.run }}-${{ matrix.job.shard }}
           path: artifacts/
           if-no-files-found: ignore
 
   report:
-    name: canary / ${{ matrix.run.id }} report
+    name: canary / report
     needs: [plan, shard]
-    if: ${{ !cancelled() && needs.plan.outputs.runs != '[]' }}
+    if: ${{ !cancelled() && needs.plan.outputs.jobs != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
       ok: ${{ steps.report.outputs.ok }}
-    strategy:
-      fail-fast: false
-      matrix:
-        run: ${{ fromJSON(needs.plan.outputs.runs) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -220,23 +216,23 @@ jobs:
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          pattern: canary-${{ matrix.run.id }}-*
+          pattern: canary-shard-*
           path: shards
 
       - id: report
         name: canary.json and the summary
         env:
-          RUN: ${{ toJSON(matrix.run) }}
+          RUNS: ${{ needs.plan.outputs.runs }}
           BIOS_REF: ${{ needs.plan.outputs.ref }}
           CANARY_RUNNER: ${{ inputs.runner || vars.CERT_RUNNER || 'ubuntu-latest' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: node scripts/canary/report.mjs --dir shards --run "$RUN" --shards '["follow-chat","remote-pydata","rest"]' --out canary.json
+        run: node scripts/canary/report.mjs --dir shards --runs "$RUNS" --out canary
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: ${{ !cancelled() }}
         with:
-          name: ${{ matrix.run.id == 'canary' && 'canary' || format('canary-{0}', matrix.run.id) }}
-          path: canary.json
+          name: canary
+          path: canary/
           if-no-files-found: ignore
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c

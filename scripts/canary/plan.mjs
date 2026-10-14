@@ -72,7 +72,21 @@ export async function newest() {
   return { checked: checked.sort((a, b) => a.name.localeCompare(b.name)), overrides };
 }
 
-export async function plan(event, { overrides = '', expect = '' } = {}) {
+export const SHARDS = ['follow-chat', 'remote-pydata', 'rest'];
+
+function shardList(text) {
+  const list = text?.trim() ? JSON.parse(text) : SHARDS;
+  if (!Array.isArray(list) || !list.length) throw new Error(`shards must be a JSON list: ${text}`);
+  return list;
+}
+
+export function jobs(runs) {
+  return runs.flatMap((run) =>
+    run.shards.map((shard) => ({ run: run.id, shard, overrides: run.overrides }))
+  );
+}
+
+export async function plan(event, { overrides = '', expect = '', shards = '' } = {}) {
   if (event === 'pull_request') {
     const proofs = JSON.parse(await readFile(join(ROOT, 'scripts/canary/proofs.json'), 'utf8'));
     return { runs: proofs, key: '', inputs: null };
@@ -81,23 +95,29 @@ export async function plan(event, { overrides = '', expect = '' } = {}) {
     const inputs = await newest();
     const digest = createHash('sha256').update(JSON.stringify(inputs.overrides)).digest('hex');
     const runs = inputs.overrides.length
-      ? [{ id: 'canary', overrides: inputs.overrides, expect: [] }]
+      ? [{ id: 'canary', overrides: inputs.overrides, shards: SHARDS, expect: [] }]
       : [];
     return { runs, key: `canary-inputs-${digest.slice(0, 32)}`, inputs };
   }
   const list = specs([overrides]);
   const wanted = expect.trim() ? JSON.parse(expect) : [];
-  return { runs: [{ id: 'canary', overrides: list, expect: wanted }], key: '', inputs: null };
+  const run = { id: 'canary', overrides: list, shards: shardList(shards), expect: wanted };
+  return { runs: [run], key: '', inputs: null };
 }
 
 if (argv[1] === fileURLToPath(import.meta.url)) {
   const result = await plan(env.EVENT ?? 'workflow_dispatch', {
     overrides: env.OVERRIDES ?? '',
     expect: env.EXPECT ?? '',
+    shards: env.SHARDS ?? '',
   });
   const inputs = join(ROOT, 'canary-inputs.json');
   await writeFile(inputs, `${JSON.stringify(result.inputs ?? {}, null, 2)}\n`);
-  const lines = [`runs=${JSON.stringify(result.runs)}`, `key=${result.key}`];
+  const lines = [
+    `runs=${JSON.stringify(result.runs)}`,
+    `jobs=${JSON.stringify(jobs(result.runs))}`,
+    `key=${result.key}`,
+  ];
   if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, `${lines.join('\n')}\n`);
   console.log(lines.join('\n'));
   for (const { name, pinned: at, latest: newer } of result.inputs?.checked ?? []) {

@@ -1,4 +1,4 @@
-import { appendFile, readdir, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { argv, env, exit } from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -14,44 +14,53 @@ export function verdict(result, overridden) {
   return 'regression';
 }
 
-async function shards(dir) {
+async function shards(dir, run) {
   const found = [];
   for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
-    if (!entry.isDirectory()) continue;
+    if (!entry.isDirectory() || !entry.name.startsWith(`canary-shard-${run}-`)) continue;
     const text = await readFile(join(dir, entry.name, 'shard.json'), 'utf8').catch(() => null);
     if (text) found.push(JSON.parse(text));
   }
   return found.sort((a, b) => a.shard.localeCompare(b.shard));
 }
 
-function matches(results, { test = '', log = '' }) {
-  return results.some((result) => result.test.includes(test) && (result.log ?? '').includes(log));
+const PARENT = /^\d+ subtests? failed$/;
+
+function hit(result, { test = '', log = '' }) {
+  return result.test.includes(test) && (result.log ?? '').includes(log);
 }
 
 export function merge({ run, biosRef, runner, url, found, expected }) {
   const pins = found.find((shard) => shard.pins?.overrides?.length)?.pins ?? found[0]?.pins;
   const overridden = run.overrides.length > 0;
   const results = found.flatMap((shard) =>
-    shard.results.map((result) => ({
-      shard: shard.shard,
-      test: result.test,
-      status: result.status,
-      baseline: result.baseline,
-      retry: result.retry,
-      verdict: verdict(result, overridden),
-      durationMs: result.durationMs,
-      log: result.log,
-    }))
+    shard.results
+      .filter((result) => !PARENT.test(result.log ?? ''))
+      .map((result) => ({
+        shard: shard.shard,
+        test: result.test,
+        status: result.status,
+        baseline: result.baseline,
+        retry: result.retry,
+        verdict: verdict(result, overridden),
+        durationMs: result.durationMs,
+        log: result.log,
+      }))
   );
   const regressions = results.filter((r) => r.verdict === 'regression');
   const failed = results.filter((r) => r.verdict === 'fail');
-  const expect = run.expect.map((wanted) => ({ ...wanted, found: matches(regressions, wanted) }));
+  const expect = run.expect.map((wanted) => ({
+    ...wanted,
+    found: regressions.some((r) => hit(r, wanted)),
+  }));
+  const unexpected = regressions.filter((r) => !run.expect.some((wanted) => hit(r, wanted)));
+  const strict = run.strict ?? run.expect.length === 0;
   const missingShards = expected.filter((name) => !found.some((shard) => shard.shard === name));
   const ok =
     missingShards.length === 0 &&
     failed.length === 0 &&
     expect.every((wanted) => wanted.found) &&
-    (expect.length > 0 || regressions.length === 0);
+    (!strict || unexpected.length === 0);
   return {
     biosRef,
     run: run.id,
@@ -164,23 +173,29 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
   const { values } = parseArgs({
     options: {
       dir: { type: 'string' },
-      run: { type: 'string' },
-      shards: { type: 'string' },
-      out: { type: 'string', default: 'canary.json' },
+      runs: { type: 'string' },
+      out: { type: 'string', default: 'canary' },
     },
   });
-  const report = merge({
-    run: JSON.parse(values.run),
-    biosRef: env.BIOS_REF ?? '',
-    runner: env.CANARY_RUNNER ?? '',
-    url: env.RUN_URL ?? '',
-    found: await shards(values.dir),
-    expected: JSON.parse(values.shards),
-  });
-  await writeFile(values.out, `${JSON.stringify(report, null, 2)}\n`);
-  const text = markdown(report);
-  if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, text);
-  if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, `ok=${report.ok}\n`);
-  console.log(text);
-  if (!report.ok) exit(1);
+  const runs = JSON.parse(values.runs);
+  let ok = true;
+  for (const run of runs) {
+    const report = merge({
+      run,
+      biosRef: env.BIOS_REF ?? '',
+      runner: env.CANARY_RUNNER ?? '',
+      url: env.RUN_URL ?? '',
+      found: await shards(values.dir, run.id),
+      expected: run.shards,
+    });
+    const dir = runs.length === 1 ? values.out : join(values.out, run.id);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'canary.json'), `${JSON.stringify(report, null, 2)}\n`);
+    const text = markdown(report);
+    if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, text);
+    console.log(text);
+    ok &&= report.ok;
+  }
+  if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, `ok=${ok}\n`);
+  if (!ok) exit(1);
 }

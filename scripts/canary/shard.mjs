@@ -10,13 +10,16 @@ import { OUT, overridePins, PACKAGES, ROOT, specs } from './override-pins.mjs';
 
 const REPORTER = './scripts/canary/reporter.mjs';
 
-export async function select(match, sharded) {
+export async function select(name) {
+  const shards = JSON.parse(await readFile(join(ROOT, 'scripts/canary/shards.json'), 'utf8'));
+  const picked = shards[name];
+  if (!picked) throw new Error(`no shard ${name} in scripts/canary/shards.json`);
   const all = (await readdir(join(ROOT, 'test/integration')))
-    .filter((name) => name.endsWith('.test.mjs'))
+    .filter((file) => file.endsWith('.test.mjs'))
     .sort()
-    .map((name) => `test/integration/${name}`);
-  if (match) return all.filter((file) => new RegExp(match).test(file));
-  return sharded ? all.filter((file) => !new RegExp(sharded).test(file)) : all;
+    .map((file) => `test/integration/${file}`);
+  if (picked.match) return all.filter((file) => new RegExp(picked.match).test(file));
+  return all.filter((file) => !new RegExp(picked.exclude).test(file));
 }
 
 async function command() {
@@ -101,12 +104,12 @@ async function restore(snapshot) {
   await cp(snapshot, PACKAGES, { recursive: true });
 }
 
-export async function shard({ name, match, overrides, out }) {
+export async function shard({ name, overrides, out }) {
   chdir(ROOT);
   await mkdir(out, { recursive: true });
   const startedAt = new Date().toISOString();
   const started = Date.now();
-  const files = await select(match, env.SHARDED);
+  const files = await select(name);
   if (!files.length) throw new Error(`no test files in shard ${name}`);
   const scratch = await mkdtemp(join(tmpdir(), 'slicc-canary-shard-'));
   const baseline = join(scratch, 'baseline');
@@ -184,14 +187,12 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
   const { values } = parseArgs({
     options: {
       shard: { type: 'string' },
-      match: { type: 'string', default: '' },
       overrides: { type: 'string', default: '[]' },
       out: { type: 'string' },
     },
   });
   const summary = await shard({
     name: values.shard,
-    match: values.match,
     overrides: specs([values.overrides]),
     out: values.out,
   });
