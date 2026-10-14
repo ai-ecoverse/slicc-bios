@@ -239,13 +239,13 @@ async function repair(entries, fresh) {
 async function add([path, entry], changed, stamps, fresh = new Set()) {
   const { resolved, integrity: expected } = entry;
   if (await current(path, entry, changed).catch(() => false)) return 0;
-  fresh.add(path);
   const bytes = await download(resolved);
   await verify(bytes, expected, path);
   await clear(path);
   const files = await unpack(bytes, path, stamps);
   await (await integrity()).record(path, files, expected);
   await save(`var/lib/bios/${path}.json`, JSON.stringify({ resolved, integrity: expected }));
+  fresh.add(path);
   return bytes.byteLength;
 }
 
