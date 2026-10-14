@@ -29,6 +29,8 @@ const beacons = [];
 const heard = [];
 const page = (body, head = '') =>
   `<!doctype html><html><head>${head}<title>STAND</title></head><body>${body}<script>console.log('STAND-CONSOLE ' + location.host);document.documentElement.setAttribute('data-locale', Intl.DateTimeFormat().resolvedOptions().locale);document.documentElement.setAttribute('data-tz', Intl.DateTimeFormat().resolvedOptions().timeZone);new Image().src = 'http://localhost:${standPort}/pixel' + location.search;</script></body></html>`;
+const SVG = (width) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="1"><rect width="${width}" height="1"/></svg>`;
 const CSP = `<meta http-equiv="Content-Security-Policy" content="script-src 'none'">`;
 const stand = createHttp((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -48,6 +50,28 @@ const stand = createHttp((req, res) => {
   if (url.pathname === '/redirect') {
     res.writeHead(302, { location: url.searchParams.get('to') });
     return res.end();
+  }
+  const open = { 'access-control-allow-origin': '*' };
+  if (url.pathname === '/data') {
+    res.writeHead(200, { ...open, 'content-type': 'text/plain' });
+    return res.end(`real-${url.searchParams.get('n')}`);
+  }
+  if (url.pathname === '/img') {
+    res.writeHead(200, { ...open, 'content-type': 'image/svg+xml' });
+    return res.end(SVG(1));
+  }
+  if (url.pathname.startsWith('/auth/')) {
+    const credentialed = {
+      'access-control-allow-origin': req.headers.origin ?? '*',
+      'access-control-allow-credentials': 'true',
+      'content-type': 'text/plain',
+    };
+    if (!req.headers.authorization) {
+      res.writeHead(401, { ...credentialed, 'www-authenticate': `Basic realm="${url.pathname}"` });
+      return res.end('denied');
+    }
+    res.writeHead(200, credentialed);
+    return res.end('authed');
   }
   const cookie = { 'set-cookie': 'pk=1; Path=/', 'content-type': 'text/html' };
   if (url.pathname === '/csp') {
@@ -245,9 +269,12 @@ async function guardPage(t, lag) {
         return;
       }
       events.push(message);
+      for (const handler of handlers) handler(message);
     };
+    const handlers = new Set();
     window.guarded = {
       events,
+      handlers,
       send: (method, params = {}, sessionId = undefined, wait = 20000) =>
         new Promise((resolve) => {
           next += 1;
@@ -994,3 +1021,296 @@ test('C5 and C6 on the guard path', { timeout: 20 * 60 * 1000 }, async (t) => {
     });
   }
 });
+
+const fetchOn = (guard, session, rule) =>
+  guard.seven.evaluate(
+    ([session, rule]) => {
+      const { guarded } = window;
+      guarded.seen = [];
+      guarded.ids = {};
+      for (const handler of guarded.handlers) guarded.handlers.delete(handler);
+      guarded.handlers.add((event) => {
+        if (event.sessionId !== session) return;
+        const { requestId, request = {} } = event.params ?? {};
+        const mine = request.url === rule.url;
+        if (event.method === 'Fetch.authRequired') {
+          if (mine) guarded.seen.push('auth');
+          const authChallengeResponse =
+            mine && rule.credentials
+              ? { response: 'ProvideCredentials', username: 'u', password: 'p' }
+              : { response: 'Default' };
+          void guarded.send(
+            'Fetch.continueWithAuth',
+            { requestId, authChallengeResponse },
+            session
+          );
+          return;
+        }
+        if (event.method !== 'Fetch.requestPaused') return;
+        const response =
+          event.params.responseStatusCode !== undefined ||
+          event.params.responseErrorReason !== undefined;
+        guarded.ids[request.url] = requestId;
+        if (mine) guarded.seen.push(response ? 'response' : 'request');
+        if (mine && !response && rule.fulfil) {
+          void guarded.send(
+            'Fetch.fulfillRequest',
+            {
+              requestId,
+              responseCode: 200,
+              responseHeaders: [
+                { name: 'content-type', value: rule.type },
+                { name: 'access-control-allow-origin', value: '*' },
+              ],
+              body: rule.fulfil,
+            },
+            session
+          );
+          return;
+        }
+        if (mine && rule.hold) return;
+        void guarded.send(
+          response ? 'Fetch.continueResponse' : 'Fetch.continueRequest',
+          { requestId },
+          session
+        );
+      });
+    },
+    [session, rule]
+  );
+const fetchSeen = (guard) =>
+  guard.seven.evaluate(() => ({ seen: window.guarded.seen, ids: window.guarded.ids }));
+const value = async (guard, session, expression) =>
+  (
+    await guard.send(
+      'Runtime.evaluate',
+      {
+        expression: `Promise.race([${expression}, new Promise((resolve) => setTimeout(() => resolve('timeout'), 6000))])`,
+        awaitPromise: true,
+        returnByValue: true,
+      },
+      session,
+      10000
+    )
+  ).result?.result?.value;
+const KINDS = {
+  fetch: {
+    path: (at) => (at === SEVEN ? '/probe-data.txt' : '/data'),
+    run: (url) => `fetch(${JSON.stringify(url)}).then((r) => r.text(), () => 'error')`,
+    fulfilled: 'fulfilled',
+    body: () => btoa('fulfilled'),
+    type: 'text/plain',
+  },
+  xhr: {
+    path: (at) => (at === SEVEN ? '/probe-data.txt' : '/data'),
+    run: (url) =>
+      `new Promise((resolve) => { const x = new XMLHttpRequest(); x.open('GET', ${JSON.stringify(url)}); x.onload = () => resolve(x.responseText); x.onerror = () => resolve('error'); x.send(); })`,
+    fulfilled: 'fulfilled',
+    body: () => btoa('fulfilled'),
+    type: 'text/plain',
+  },
+  image: {
+    path: (at) => (at === SEVEN ? '/probe-img.svg' : '/img'),
+    run: (url) =>
+      `new Promise((resolve) => { const i = new Image(); i.onload = () => resolve('width ' + i.naturalWidth); i.onerror = () => resolve('error'); i.src = ${JSON.stringify(url)}; })`,
+    fulfilled: 'width 2',
+    body: () => btoa(SVG(2)),
+    type: 'image/svg+xml',
+  },
+};
+const reached = (at, path, tag, mark) =>
+  at === SEVEN
+    ? chrome.requests.slice(mark).includes(path)
+    : heard.some((hit) => hit.path === `${path}?n=${tag}`);
+
+for (const [detach, lag] of DETACH) {
+  test(`C5 subresources, auth and guessed ids on the guard path, ${detach} detach`, {
+    timeout: 20 * 60 * 1000,
+  }, async (t) => {
+    const guard = await guardPage(t, lag);
+    chrome.overrides.set('/probe-data.txt', 'real-seven');
+    chrome.overrides.set('/probe-img.svg', SVG(1));
+    const plainTab = async () => {
+      const targetId = await tab(`${PLAIN}/doc`);
+      t.after(() => closeAll([targetId]));
+      return { targetId, session: await guard.attach(targetId) };
+    };
+    const both = {
+      patterns: [
+        { urlPattern: '*', requestStage: 'Request' },
+        { urlPattern: '*', requestStage: 'Response' },
+      ],
+    };
+    for (const [kind, k] of Object.entries(KINDS)) {
+      const vector = async (id, at) => {
+        const { session } = await plainTab();
+        assert.equal((await guard.send('Fetch.enable', both, session)).error, undefined);
+        const path = k.path(at);
+        const url = `${at}${path}?n=${id}`;
+        await fetchOn(guard, session, { url, fulfil: k.body(), type: k.type });
+        const mark = chrome.requests.length;
+        const body = await value(guard, session, k.run(url));
+        await guard.send('Fetch.disable', {}, session);
+        const { seen } = await fetchSeen(guard);
+        return {
+          seen: seen.length > 0,
+          fulfilled: body === k.fulfilled,
+          answered: reached(at, path, id, mark),
+          body,
+        };
+      };
+      for (const [name, at] of [
+        ['seven', SEVEN],
+        ['vault', VAULT],
+      ]) {
+        const id = `C5.${kind}.${name}`;
+        await t.test(`${id} control`, async () => {
+          const got = await vector(`${id}:plain`, OTHER);
+          assert.deepEqual(
+            [got.seen, got.fulfilled, got.answered],
+            [true, true, false],
+            `${id} control: the client sees and fulfils a plain ${kind} (${got.body})`
+          );
+        });
+        await t.test(`${id} protected`, async () => {
+          const got = await vector(`${id}:guard`, at);
+          assert.deepEqual(
+            [got.seen, got.fulfilled, got.answered],
+            [false, false, true],
+            `${id}: the protected ${kind} is never shown, not fulfilled, and reaches the real server (${got.body})`
+          );
+        });
+      }
+    }
+
+    const authVector = async (id, at) => {
+      const url = `${at}/auth/${detach}/?n=${id}`;
+      const probe = (u) =>
+        `fetch(${JSON.stringify(u)}, { credentials: 'include' }).then(async (r) => r.status + ' ' + (await r.text()), () => 'error')`;
+      const untouched = await plainTab();
+      const plain = await value(guard, untouched.session, probe(`${url}&plain=1`));
+      const { session } = await plainTab();
+      assert.equal(
+        (
+          await guard.send(
+            'Fetch.enable',
+            { patterns: [{ urlPattern: '*' }], handleAuthRequests: true },
+            session
+          )
+        ).error,
+        undefined
+      );
+      await fetchOn(guard, session, { url, credentials: true });
+      const body = await value(guard, session, probe(url));
+      await guard.send('Fetch.disable', {}, session);
+      const { seen } = await fetchSeen(guard);
+      return {
+        plain,
+        body,
+        seen: seen.includes('auth'),
+        paused: seen.includes('request'),
+        authed: body === '200 authed',
+        untouched: body === plain,
+      };
+    };
+    await t.test('C5.auth.vault control', async () => {
+      const got = await authVector('C5.auth.vault:plain', OTHER);
+      assert.deepEqual(
+        [got.seen, got.paused, got.authed, got.untouched],
+        [true, true, true, false],
+        `C5.auth control: the client answers a plain challenge (${got.plain} / ${got.body})`
+      );
+    });
+    await t.test('C5.auth.vault protected', async () => {
+      const got = await authVector('C5.auth.vault:guard', VAULT);
+      assert.deepEqual(
+        [got.seen, got.paused, got.authed, got.untouched],
+        [false, false, false, true],
+        `C5.auth: the vault's challenge never reaches the client and the request goes on untouched (${got.plain} / ${got.body})`
+      );
+    });
+
+    const guessed = async (id, at) => {
+      const { session } = await plainTab();
+      assert.equal(
+        (
+          await guard.send(
+            'Fetch.enable',
+            { patterns: [{ urlPattern: '*', requestStage: 'Request' }] },
+            session
+          )
+        ).error,
+        undefined
+      );
+      const path = KINDS.fetch.path(at);
+      const url = `${at}${path}?n=${id}`;
+      await fetchOn(guard, session, { url, hold: true });
+      const before = `${OTHER}/data?n=a-${id}`;
+      const after = `${OTHER}/data?n=b-${id}`;
+      const mark = chrome.requests.length;
+      await value(guard, session, KINDS.fetch.run(before));
+      await guard.send(
+        'Runtime.evaluate',
+        { expression: `window.probe = ${KINDS.fetch.run(url)}; true` },
+        session
+      );
+      await pause(300);
+      await value(guard, session, KINDS.fetch.run(after));
+      const { ids } = await fetchSeen(guard);
+      const num = (requestId) => Number(/(\d+)\.\d+$/.exec(requestId ?? '')?.[1]);
+      const [lo, hi] = [num(ids[before]), num(ids[after])];
+      const prefix = (ids[before] ?? '').replace(/\d+\.\d+$/, '');
+      const attempts = [];
+      for (let n = lo + 1; n < hi; n += 1) {
+        const answer = await guard.send(
+          'Fetch.fulfillRequest',
+          {
+            requestId: `${prefix}${n}.0`,
+            responseCode: 200,
+            responseHeaders: [
+              { name: 'content-type', value: 'text/plain' },
+              { name: 'access-control-allow-origin', value: '*' },
+            ],
+            body: btoa('guessed'),
+          },
+          session
+        );
+        attempts.push(answer.error?.message ?? null);
+      }
+      const body = await value(guard, session, 'window.probe');
+      await guard.send('Fetch.disable', {}, session);
+      return {
+        candidates: attempts.length > 0,
+        fulfilled: body === 'guessed',
+        refused:
+          attempts.length > 0 &&
+          attempts.every((message) => message === UNSEEN || message === PROTECTED),
+        answered: reached(at, path, id, mark),
+        body,
+        attempts,
+      };
+    };
+    for (const [name, at] of [
+      ['seven', SEVEN],
+      ['vault', VAULT],
+    ]) {
+      const id = `C5.guessed-id.${name}`;
+      await t.test(`${id} control`, async () => {
+        const got = await guessed(`${id}:plain`, OTHER);
+        assert.deepEqual(
+          [got.candidates, got.fulfilled, got.refused, got.answered],
+          [true, true, false, false],
+          `${id} control: a guessed id fulfils a held plain request (${got.body} ${JSON.stringify(got.attempts)})`
+        );
+      });
+      await t.test(`${id} protected`, async () => {
+        const got = await guessed(`${id}:guard`, at);
+        assert.deepEqual(
+          [got.candidates, got.fulfilled, got.refused, got.answered],
+          [true, false, true, true],
+          `${id}: every guessed id is refused and the protected request is answered by its server (${got.body} ${JSON.stringify(got.attempts)})`
+        );
+      });
+    }
+  });
+}
