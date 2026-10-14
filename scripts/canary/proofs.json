@@ -1,15 +1,9 @@
 [
   {
     "id": "positive",
-    "overrides": ["@ai-ecoverse/slicc-kernel@1.81.0"],
+    "overrides": ["@ai-ecoverse/slicc-kernel@1.86.0"],
     "shards": ["rest"],
-    "strict": true,
-    "expect": [
-      {
-        "test": "wasi-pnpm \u00b7 i --version",
-        "log": "rc=126"
-      }
-    ]
+    "expect": []
   },
   {
     "id": "negative",

@@ -50,6 +50,12 @@ const CALLS = {
   uptime: 'uptime',
   pidof: 'pidof bash',
   which: 'which bash',
+  pbcopy: 'pbcopy --help',
+  pbpaste: 'pbpaste --help',
+  xclip: 'xclip -help',
+  xsel: 'xsel --help',
+  'wl-copy': 'wl-copy --help',
+  'wl-paste': 'wl-paste --help',
 };
 const SHELL = new Set(['yes', '[']);
 const EXITS = {

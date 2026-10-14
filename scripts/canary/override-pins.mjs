@@ -12,7 +12,8 @@ const exec = promisify(execFile);
 export const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 export const PACKAGES = join(ROOT, 'src/packages');
 export const OUT = join(ROOT, 'node_modules/.cache/slicc-canary/pins.json');
-export const GATED = /^@ai-ecoverse\/(slicc-kernel|slicc-cdp|slicc-jsh|wasi-|wasix-|wasm-|py-)/;
+export const GATED =
+  /^@ai-ecoverse\/(slicc-kernel|slicc-cdp|slicc-clipboard|slicc-jsh|wasi-|wasix-|wasm-|py-)/;
 const REGISTRY = env.CANARY_REGISTRY ?? 'https://registry.npmjs.org/';
 const PNPM = ['--yes', 'pnpm@12'];
 const PNPM_LOCK_ENTRY =

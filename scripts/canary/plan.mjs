@@ -10,7 +10,7 @@ import { PACKAGES, projects, ROOT, registryUrl, specs } from './override-pins.mj
 const exec = promisify(execFile);
 
 export const WATCHED =
-  /^@ai-ecoverse\/(slicc-kernel|slicc-jsh|slicc-cdp|slicc-agent|wasm-|wasi-|wasix-|py-)/;
+  /^@ai-ecoverse\/(slicc-kernel|slicc-jsh|slicc-cdp|slicc-clipboard|slicc-agent|wasm-|wasi-|wasix-|py-)/;
 
 function parts(version) {
   const [main, ...pre] = version.split('-');
