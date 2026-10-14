@@ -105,6 +105,7 @@ await step('seed', async () => {
     'callback.html',
     'callback.js',
     'cdp.js',
+    'clipboard.js',
     'exits.js',
     'follow.js',
     'follower.js',
