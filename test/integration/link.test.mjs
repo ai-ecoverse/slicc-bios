@@ -962,3 +962,25 @@ test('the real slicc CLI carries a program WebSocket over the link: text, binary
     Buffer.from(denied.out, 'hex').toString()
   );
 });
+
+test('a connected kernel client learns the exit when a linked CLI comes up, and again when it goes', async (t) => {
+  const page = await chrome.page(t);
+  await page.init('() => { globalThis.sliccKernelDebug = true; }');
+  await boot(page);
+  await ready(page);
+  await page.until(() => typeof globalThis.sliccKernelClient === 'function');
+  await page.evaluate(async () => {
+    const client = await globalThis.sliccKernelClient();
+    globalThis.traitsSeen = [client.transport.traits.exit ?? null];
+    client.onTraits((traits) => globalThis.traitsSeen.push(traits.exit ?? null));
+  });
+  assert.deepEqual(await page.evaluate(() => globalThis.traitsSeen), [null]);
+  await page.evaluate(fakeNode, KEY);
+  await page.until(() => globalThis.traitsSeen.at(-1)?.kind === 'local');
+  assert.deepEqual(await page.evaluate(() => globalThis.traitsSeen.at(-1)), {
+    kind: 'local',
+    caps: ['net', 'http', 'ssh', 'ws'],
+  });
+  await page.evaluate(() => document.querySelector('slicc-app').model.network.setExit(null));
+  await page.until(() => globalThis.traitsSeen.at(-1) === null);
+});
