@@ -149,7 +149,7 @@ export function preparer(root, { install = installAgent } = {}) {
   let prepared = null;
   return () => {
     prepared ??= install(() =>
-      createKernel({ root, network: { transport: fetchTransport() }, media: false })
+      createKernel({ root, users: 'off', network: { transport: fetchTransport() }, media: false })
     ).catch((error) => {
       prepared = null;
       throw error;
