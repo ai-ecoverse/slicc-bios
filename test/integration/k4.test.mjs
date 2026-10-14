@@ -175,6 +175,37 @@ test('enforce: a cone writes its home, is refused in root’s, and sudo asks wit
     await page.evaluate(() => document.querySelector('slicc-app').model.approvals.list()),
     []
   );
+
+  await run(page, 'clear; echo x > /tmp/k4x; sudo -u cone sudo cat /tmp/k4x; echo tmp=$?');
+  const [shown] = await page.until(() => {
+    const list = document.querySelector('slicc-app').model.approvals.list();
+    return list.length ? list : null;
+  });
+  assert.equal(shown.always, false);
+  await page.evaluate(
+    (id) => document.querySelector('slicc-app').model.approvals.decide(id, 'always'),
+    shown.id
+  );
+  await shows(page, 'tmp=0');
+  await page.until(() => {
+    const find = (root) => {
+      const found = root.querySelector('slicc-approvals');
+      if (found) return found;
+      for (const element of root.querySelectorAll('*')) {
+        const inner = element.shadowRoot && find(element.shadowRoot);
+        if (inner) return inner;
+      }
+      return null;
+    };
+    const dialog = find(document)?.shadowRoot?.querySelector('dialog');
+    if (!dialog) return true;
+    dialog.querySelector('[data-action="close"]')?.click();
+    return false;
+  });
+  await run(page, 'clear; sudo -u cone sudo cat /tmp/k4x; echo tmp2=$?');
+  await decide(page, 'deny');
+  await shows(page, 'tmp2=1');
+  assert.doesNotMatch(await read(page, 'etc/sudoers.d/cone'), /k4x/);
   assert.deepEqual(page.errors, []);
 });
 
