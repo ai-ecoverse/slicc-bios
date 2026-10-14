@@ -10,6 +10,7 @@ export const CREDIT = 6;
 export const WINDOW = 256 * 1024;
 export const CHUNK = 64 * 1024;
 export const HELLO_MS = 10_000;
+export const CONNECT_MS = 30_000;
 export const CONTROL = 'slicc.link.v1';
 export const STREAM = 'slicc.link.v1.stream';
 export const SUBNET = '198.18.57';
@@ -567,6 +568,12 @@ export function offerLink({ pc, send, hello, timers, onClose, accept }) {
   pc.addEventListener('connectionstatechange', () => {
     if (pc.connectionState === 'failed') session.close('the connection failed');
   });
+  const clock = timers ?? globalThis;
+  const expiry = clock.setTimeout(() => {
+    if (!session.peer() && !session.closed()) session.close('no link within 30 s');
+  }, CONNECT_MS);
+  const settled = () => clock.clearTimeout(expiry);
+  session.ready.then(settled, settled);
   const started = (async () => {
     await pc.setLocalDescription(await pc.createOffer());
     send({ t: 'offer', sdp: pc.localDescription.sdp });
@@ -659,6 +666,8 @@ export function answerLink({ pc, send, hello, timers, onClose, accept }) {
   };
 }
 
+const RANK = { connected: 2, offline: 1 };
+
 export function mergeDevices(entries) {
   const byId = new Map();
   for (const entry of entries) {
@@ -667,7 +676,10 @@ export function mergeDevices(entries) {
       byId.set(entry.id, entry);
       continue;
     }
-    const [main, other] = seen.offers.length >= entry.offers.length ? [seen, entry] : [entry, seen];
+    const up = (item) => RANK[item.state] ?? 0;
+    const first =
+      up(seen) !== up(entry) ? up(seen) > up(entry) : seen.offers.length >= entry.offers.length;
+    const [main, other] = first ? [seen, entry] : [entry, seen];
     const prompting = main.controlling === 'prompt' || other.controlling === 'prompt';
     const controlling = prompting ? 'prompt' : (main.controlling ?? other.controlling);
     byId.set(entry.id, { ...main, ...(controlling ? { controlling } : {}) });

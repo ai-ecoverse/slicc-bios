@@ -1,5 +1,6 @@
 import { checkLocalProxy } from '@ai-ecoverse/slicc-kernel';
 import { DIRECT } from './exits.js';
+import { mergeDevices } from './link.js';
 
 export const EXTENSION_URL =
   'https://chromewebstore.google.com/detail/slicc/akjjllgokmbgpbdbmafpiefnhidlmbgf';
@@ -208,7 +209,9 @@ export function createNetwork(choice, options = {}) {
   };
   const linkStatus = () => {
     if (!options.links || !options.router) return {};
-    const devices = distinct([...options.links.devices(), ...(options.tray?.away() ?? [])]);
+    const devices = distinct(
+      mergeDevices([...options.links.devices(), ...(options.tray?.away() ?? [])])
+    );
     const exit = currentExit(options.router, options.tailnet?.status());
     const sync = options.tray?.status() ?? {};
     const { joinUrl = null, joinCommand = null, webhookUrl = null, followUrl } = sync;
