@@ -536,6 +536,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     proxy.requests.filter(
       (request) =>
         request.url.startsWith(BEDROCK) &&
+        !request.body.includes('Give this chat a title') &&
         request.headers.some(
           ([name, value]) => name.toLowerCase() === 'authorization' && value === `Bearer ${KEY}`
         )
@@ -765,39 +766,37 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   await page.evaluate(() => window.usageButton().click());
   await page.until(() => window.monitorOpen() && !!window.monitorView()?.shadowRoot);
   const expand = async () => {
-    await page.until(() =>
-      ['agents', 'processes'].every(
-        (id) => Number(window.monitorSection(id)?.querySelector('.num')?.textContent) > 0
-      )
+    await page.until(
+      () => Number(window.monitorSection('processes')?.querySelector('.num')?.textContent) > 0
     );
     await page.evaluate(() => {
-      for (const id of ['agents', 'tasks', 'processes']) {
+      for (const id of ['tasks', 'processes']) {
         const toggle = window.monitorSection(id)?.querySelector('button.toggle');
         if (toggle?.getAttribute('aria-expanded') === 'false') toggle.click();
       }
     });
-    await page.until(
-      () => window.monitorRows('agents').length > 0 && window.monitorRows('processes').length > 0
-    );
+    await page.until(() => window.monitorRows('processes').length > 0);
   };
   await expand();
   const watched = await page.evaluate(() => {
-    const { monitor, agent } = document.querySelector('slicc-app').model;
+    const { monitor } = document.querySelector('slicc-app').model;
     const snapshot = monitor.snapshot();
     const section = (id) => snapshot.sections.find((item) => item.id === id);
-    const cone = agent.list().find((item) => item.id === agent.active());
     return {
       updated: snapshot.updatedAt > 0,
       vitals: snapshot.vitals.map((vital) => vital.id),
-      cone: section('agents').rows.some((row) => row.id === cone.id && row.depth === 0),
+      sections: snapshot.sections.map((item) => item.id),
       shell: section('processes').rows.some((row) => /\bbash\b/.test(row.name)),
-      shown: window.monitorRows('agents').map((row) => row.dataset.id),
+      shown: window.monitorRows('processes').map((row) => row.dataset.id),
       bar: window.deepText(window.monitorView().shadowRoot.querySelector('.bar')),
     };
   });
   assert.equal(watched.updated, true);
-  assert.ok(watched.vitals.includes('agents') && watched.vitals.includes('processes'));
-  assert.equal(watched.cone, true);
+  assert.ok(watched.vitals.includes('processes'), watched.vitals.join(', '));
+  assert.ok(
+    !watched.sections.includes('agents') && !watched.sections.includes('sprinkles'),
+    watched.sections.join(', ')
+  );
   assert.equal(watched.shell, true);
   assert.ok(watched.shown.length > 0);
   assert.match(watched.bar, /Live monitor[\s\S]*Updated \d\d:\d\d:\d\d UTC/);
