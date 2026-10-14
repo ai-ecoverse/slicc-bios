@@ -124,7 +124,36 @@ function entryName(name) {
   return (parts.length > 1 ? parts.slice(1) : parts).join('/');
 }
 
-async function unpack(bytes, path) {
+const KERNEL = 'node_modules/@ai-ecoverse/slicc-kernel';
+
+async function metadata() {
+  try {
+    const manifest = JSON.parse(await (await read(`${KERNEL}/package.json`)).text());
+    const entry = manifest.exports?.['./meta'];
+    const target = typeof entry === 'string' ? entry : entry?.default;
+    if (!target) return null;
+    const code = await (await read(`${KERNEL}/${target.replace(/^\.\//, '')}`)).text();
+    const url = `data:text/javascript;charset=utf-8,${encodeURIComponent(code)}`;
+    return (await import(url)).writeMetadata ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function stamp(entries) {
+  if (!entries.length) return false;
+  const write = await metadata();
+  if (!write) return false;
+  try {
+    await write(await root, entries);
+    return true;
+  } catch (error) {
+    console.warn(`modes not recorded: ${error.message}`);
+    return false;
+  }
+}
+
+async function unpack(bytes, path, stamps = []) {
   const { createTarDecoder } = await import(TAR);
   const { sha256 } = await import(INTEGRITY);
   const gzip = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
@@ -136,6 +165,7 @@ async function unpack(bytes, path) {
       await save(`${path}/${name}`, data);
       const at = `/${path}/${name}`;
       files.set(at, { path: at, size: data.byteLength, sha256: await sha256(data) });
+      stamps.push({ path: at, mode: (header.mode ?? 0o644) & 0o7777, uid: 0, gid: 0 });
     } else {
       await body.cancel();
     }
@@ -160,13 +190,13 @@ async function current(path, entry, changed) {
   return true;
 }
 
-async function add([path, entry], changed) {
+async function add([path, entry], changed, stamps) {
   const { resolved, integrity: expected } = entry;
   if (await current(path, entry, changed).catch(() => false)) return 0;
   const bytes = await download(resolved);
   await verify(bytes, expected, path);
   await clear(path);
-  const files = await unpack(bytes, path);
+  const files = await unpack(bytes, path, stamps);
   await (await integrity()).record(path, files, expected);
   await save(`var/lib/bios/${path}.json`, JSON.stringify({ resolved, integrity: expected }));
   return bytes.byteLength;
@@ -221,10 +251,11 @@ async function replay(from, progress) {
     let done = 0;
     let downloaded = 0;
     let bytes = 0;
+    const stamps = [];
     const worker = async () => {
       while (queue.length) {
         const entry = queue.shift();
-        const size = await add(entry, changed);
+        const size = await add(entry, changed, stamps);
         done += 1;
         downloaded += size ? 1 : 0;
         bytes += size;
@@ -232,6 +263,7 @@ async function replay(from, progress) {
       }
     };
     await Promise.all(Array.from({ length: 4 }, worker));
+    await stamp(stamps);
     const deployed = new URL('./', from);
     await install({ from: deployed, files: ['package.json', 'pnpm-lock.yaml'] }, () => {});
     await install({ from: deployed, to: 'var/lib/slicc/', files: ['pnpm-lock.yaml'] }, () => {});
@@ -263,6 +295,11 @@ async function install({ from, to = '', files, source = null }, progress) {
   return outcome(ledger, `/${to}`, async () => {
     const keep = new Set(await ledger.stopped(`/${to}`));
     const { bytes, hashed } = await copy({ from, to, files }, progress, keep);
+    await stamp(
+      hashed
+        .filter(({ path }) => !keep.has(path))
+        .map(({ path }) => ({ path, mode: 0o644, uid: 0, gid: 0 }))
+    );
     await ledger.record(source, hashed);
     await ledger.bump(source);
     return { files: files.length, bytes };
