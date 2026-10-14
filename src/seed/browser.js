@@ -5,7 +5,9 @@ export const FRESH = 2000;
 export const SHOT_GAP = 1000;
 export const SHOT_WIDTH = 960;
 export const CALL_TIMEOUT = 10000;
-export const KEEP = 50;
+export const PER_TAB = 500;
+export const MAX_AGE = 24 * 60 * 60 * 1000;
+export const TOTAL = 5000;
 export const FRAME_GAP = 500;
 export const SAMPLE_GAP = 1000;
 export const QUALITIES = [60, 45, 30];
@@ -375,13 +377,40 @@ class Browser {
   }
 
   actions(tabId) {
+    this.#trim();
     const all = tabId ? this.#actions.filter((action) => action.tabId === tabId) : this.#actions;
     return all.map((action) => ({ ...action }));
   }
 
+  #trim() {
+    const oldest = this.#now() - MAX_AGE;
+    const finished = (action) => action.status !== 'running';
+    const gone = (action) => action.tabId !== null && !this.#owned.has(action.tabId);
+    const key = (action) => action.tabId ?? `agent:${action.agentId}`;
+    let kept = this.#actions.filter(
+      (action) => !finished(action) || (action.at >= oldest && !gone(action))
+    );
+    const counts = new Map();
+    for (const action of kept) counts.set(key(action), (counts.get(key(action)) ?? 0) + 1);
+    kept = kept.filter((action) => {
+      const count = counts.get(key(action));
+      if (count <= PER_TAB || !finished(action)) return true;
+      counts.set(key(action), count - 1);
+      return false;
+    });
+    let over = kept.length - TOTAL;
+    if (over > 0)
+      kept = kept.filter((action) => {
+        if (over <= 0 || !finished(action)) return true;
+        over -= 1;
+        return false;
+      });
+    this.#actions = kept;
+  }
+
   #record(action) {
     if (!this.#actions.includes(action)) this.#actions.push(action);
-    while (this.#actions.length > KEEP) this.#actions.shift();
+    this.#trim();
     this.#emit('action', { ...action });
   }
 
@@ -407,8 +436,9 @@ class Browser {
   finish(link, params) {
     const action = link.action;
     if (action?.status !== 'running') return;
+    const placed = !action.tabId;
     action.tabId ??= link.tab(params.tab);
-    if (action.tabId) this.own(action.tabId, action.agentId);
+    if (placed && action.tabId) this.own(action.tabId, action.agentId);
     action.status = params.ok === false ? 'failed' : 'done';
     const error = action.kind === 'eval' ? undefined : ERRORS.has(params.error) && params.error;
     if (action.status === 'failed' && error) action.error = error;
@@ -476,6 +506,7 @@ class Browser {
 
   forget(id) {
     if (!this.#owned.delete(id)) return;
+    this.#trim();
     this.#infos.delete(id);
     this.#frames.delete(id);
     this.#queue.delete(id);
