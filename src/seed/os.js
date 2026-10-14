@@ -18,6 +18,7 @@ import {
 } from './agent.js';
 import { createBrowser } from './browser.js';
 import { browserControl } from './cdp.js';
+import { clipboardHook } from './clipboard.js';
 import { createExitRouter } from './exits.js';
 import { deviceName } from './follow.js';
 import { createFollowers } from './followers.js';
@@ -247,7 +248,7 @@ let owned = new Map();
 let serving = null;
 let optional = Promise.resolve(null);
 
-const start = () => createKernel({ root, network: { transport }, media: false });
+const start = () => createKernel({ root, users: 'off', network: { transport }, media: false });
 
 function base(os) {
   const network = os ? mirrorNetwork(os, reach.port) : reach.port;
@@ -615,9 +616,11 @@ async function own() {
   });
   kernel = await createKernel({
     root,
+    users: 'off',
     env: { PYTHONPATH: `/${PYTHON}` },
     network: { transport, uplink: exits.uplink },
     cdp: control.hook,
+    clipboard: clipboardHook(),
     ...folders.options,
   });
   exits.attach(kernel);

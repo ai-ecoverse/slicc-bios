@@ -24,7 +24,7 @@
   "devDependencies": {
     "@ai-ecoverse/slicc-browsers": "1.5.0",
     "@ai-ecoverse/slicc-node": "2.5.1",
-    "@ai-ecoverse/slicc-shared-web": "1.13.1",
+    "@ai-ecoverse/slicc-shared-web": "1.13.2",
     "@biomejs/biome": "2.5.15",
     "es-module-lexer": "3.0.3",
     "fake-indexeddb": "6.2.5",

@@ -101,6 +101,7 @@ const STORED = [
   'BackgroundService.',
 ];
 const WORKERS = ['registrationId', 'versionId'];
+const PAUSES = new Set(['Fetch.requestPaused', 'Fetch.authRequired']);
 
 function parse(text) {
   let message;
@@ -322,10 +323,10 @@ class Guard {
   settle(requestId, marked) {
     this.remember(requestId, marked);
     const waiting = this.held.get(requestId);
-    if (!waiting) return;
+    if (!waiting) return [];
     this.held.delete(requestId);
     clearTimeout(waiting.timer);
-    if (!marked) for (const message of waiting.messages) this.deliver(message);
+    return waiting.messages;
   }
 
   hold(requestId, message) {
@@ -343,8 +344,11 @@ class Guard {
     const { requestId } = params;
     if (method === 'Network.requestWillBeSent' || method === 'Network.webSocketCreated') {
       const marked = this.requests.get(requestId) === true || (await this.request(params));
-      this.settle(requestId, marked);
-      return marked;
+      const waiting = this.settle(requestId, marked);
+      if (marked) return true;
+      this.deliver(message);
+      for (const held of waiting) this.deliver(held);
+      return true;
     }
     if (!this.requests.has(requestId)) {
       this.hold(requestId, message);
@@ -354,22 +358,26 @@ class Guard {
   }
 
   async paused(message) {
-    const { params = {}, sessionId } = message;
+    const { params = {} } = message;
     const marked = this.requests.get(params.networkId) === true || (await this.request(params));
     this.remember(params.requestId, marked);
     if (params.networkId !== undefined && marked) this.settle(params.networkId, true);
     if (!marked) return false;
+    this.release(message);
+    return true;
+  }
+
+  release({ method, params = {}, sessionId }) {
     const { requestId } = params;
-    if (message.method === 'Fetch.authRequired') {
+    if (method === 'Fetch.authRequired') {
       const authChallengeResponse = { response: 'Default' };
       void this.call('Fetch.continueWithAuth', { requestId, authChallengeResponse }, sessionId);
-      return true;
+      return;
     }
     const response =
       params.responseStatusCode !== undefined || params.responseErrorReason !== undefined;
-    const method = response ? 'Fetch.continueResponse' : 'Fetch.continueRequest';
-    void this.call(method, { requestId }, sessionId);
-    return true;
+    const next = response ? 'Fetch.continueResponse' : 'Fetch.continueRequest';
+    void this.call(next, { requestId }, sessionId);
   }
 
   async targetEvent(message) {
@@ -437,6 +445,7 @@ class Guard {
     const method = message.method ?? '';
     const { sessionId } = message;
     if (method.startsWith('Target.') && (await this.targetEvent(message))) return;
+    if (this.blocked.has(sessionId) && PAUSES.has(method)) return this.release(message);
     if (this.hidden(sessionId)) return;
     if (this.walked({ ...message, method })) return this.cut(sessionId);
     if (await this.swallowed({ ...message, method })) return;
