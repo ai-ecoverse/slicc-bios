@@ -1,0 +1,253 @@
+name: Canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      overrides:
+        description: 'Candidate versions, a JSON list of name@version: ["@ai-ecoverse/slicc-kernel@1.81.0"]'
+        type: string
+        default: '[]'
+      runner:
+        description: 'Runner label; empty means vars.CERT_RUNNER, then ubuntu-latest'
+        type: string
+        default: ''
+      expect:
+        description: 'Regressions that must show up, a JSON list of {test, log} substrings (a negative proof)'
+        type: string
+        default: ''
+      bios-ref:
+        description: 'slicc-bios ref to test; empty means the dispatched ref'
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      overrides:
+        type: string
+        required: false
+        default: '[]'
+      runner:
+        type: string
+        required: false
+        default: ''
+      expect:
+        type: string
+        required: false
+        default: ''
+      bios-ref:
+        type: string
+        required: false
+        default: ''
+    outputs:
+      ok:
+        description: 'true when the canary is green'
+        value: ${{ jobs.report.outputs.ok }}
+  schedule:
+    - cron: '23 * * * *'
+  pull_request:
+    paths:
+      - .github/workflows/canary.yml
+      - scripts/canary/**
+      - test/integration/sweep.test.mjs
+      - test/integration/pins.test.mjs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canary-${{ github.event_name == 'pull_request' && github.ref || github.event_name == 'schedule' && 'schedule' || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  SHARDED: '/(follow[^/]*|chat|remote|pydata|updates)\.test\.mjs$'
+
+jobs:
+  plan:
+    name: canary / plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      runs: ${{ steps.decide.outputs.runs }}
+      key: ${{ steps.plan.outputs.key }}
+      ref: ${{ steps.ref.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ai-ecoverse/slicc-bios
+          ref: ${{ inputs.bios-ref || (github.repository == 'ai-ecoverse/slicc-bios' && github.sha) || 'main' }}
+
+      - id: ref
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+
+      - id: plan
+        name: What to test
+        env:
+          EVENT: ${{ github.event_name }}
+          OVERRIDES: ${{ inputs.overrides }}
+          EXPECT: ${{ inputs.expect }}
+        run: node scripts/canary/plan.mjs
+
+      - id: seen
+        name: The last scheduled canary's inputs
+        if: github.event_name == 'schedule' && steps.plan.outputs.key != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: canary-inputs.json
+          key: ${{ steps.plan.outputs.key }}
+          lookup-only: true
+
+      - id: decide
+        name: Run only when something changed
+        env:
+          RUNS: ${{ steps.plan.outputs.runs }}
+          SEEN: ${{ steps.seen.outputs.cache-hit }}
+        run: |
+          if [ "$SEEN" = true ]; then
+            echo 'runs=[]' >> "$GITHUB_OUTPUT"
+            echo 'Nothing new on npm since the last canary.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "runs=$RUNS" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: github.event_name == 'schedule'
+        with:
+          name: canary-inputs
+          path: canary-inputs.json
+
+  shard:
+    name: canary / ${{ matrix.run.id }} (${{ matrix.shard.name }})
+    needs: plan
+    if: needs.plan.outputs.runs != '[]'
+    runs-on: ${{ inputs.runner || vars.CERT_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        run: ${{ fromJSON(needs.plan.outputs.runs) }}
+        shard:
+          - name: follow-chat
+            match: '/(follow[^/]*|chat)\.test\.mjs$'
+          - name: remote-pydata
+            match: '/(remote|pydata|updates)\.test\.mjs$'
+          - name: rest
+            match: ''
+    env:
+      LEFTHOOK: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ai-ecoverse/slicc-bios
+          ref: ${{ needs.plan.outputs.ref }}
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Harness download cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: node_modules/.cache/slicc-harness/cdn
+          key: harness-cdn-${{ hashFiles('src/packages/**/pnpm-lock.yaml', 'src/packages/**/package.json') }}
+          restore-keys: harness-cdn-
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: '1.27'
+          cache: false
+
+      - name: The slicc CLI, the link's reference peer
+        env:
+          SLICC_CLI_COMMIT: 8d2706f26f9a60622b9ce039aeb8dab19e93588f
+        run: |
+          GOBIN="$RUNNER_TEMP/slicc-cli" go install "github.com/ai-ecoverse/slicc-cli/cmd/slicc@$SLICC_CLI_COMMIT"
+          echo "SLICC_CLI=$RUNNER_TEMP/slicc-cli/slicc" >> "$GITHUB_ENV"
+
+      - name: Chromium
+        run: |
+          npx playwright-core install-deps chromium
+          npx playwright-core install --no-shell chromium
+
+      - name: The shard with the overrides, then main's pins for what failed
+        env:
+          OVERRIDES: ${{ toJSON(matrix.run.overrides) }}
+          SHARD: ${{ matrix.shard.name }}
+          MATCH: ${{ matrix.shard.match }}
+          OUT: canary/${{ matrix.run.id }}-${{ matrix.shard.name }}
+        run: node scripts/canary/shard.mjs --shard "$SHARD" --match "$MATCH" --overrides "$OVERRIDES" --out "$OUT"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: canary-${{ matrix.run.id }}-${{ matrix.shard.name }}
+          path: canary/${{ matrix.run.id }}-${{ matrix.shard.name }}/
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: canary-files-${{ matrix.run.id }}-${{ matrix.shard.name }}
+          path: artifacts/
+          if-no-files-found: ignore
+
+  report:
+    name: canary / ${{ matrix.run.id }} report
+    needs: [plan, shard]
+    if: ${{ !cancelled() && needs.plan.outputs.runs != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      ok: ${{ steps.report.outputs.ok }}
+    strategy:
+      fail-fast: false
+      matrix:
+        run: ${{ fromJSON(needs.plan.outputs.runs) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ai-ecoverse/slicc-bios
+          ref: ${{ needs.plan.outputs.ref }}
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: canary-${{ matrix.run.id }}-*
+          path: shards
+
+      - id: report
+        name: canary.json and the summary
+        env:
+          RUN: ${{ toJSON(matrix.run) }}
+          BIOS_REF: ${{ needs.plan.outputs.ref }}
+          CANARY_RUNNER: ${{ inputs.runner || vars.CERT_RUNNER || 'ubuntu-latest' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node scripts/canary/report.mjs --dir shards --run "$RUN" --shards '["follow-chat","remote-pydata","rest"]' --out canary.json
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: ${{ !cancelled() }}
+        with:
+          name: ${{ matrix.run.id == 'canary' && 'canary' || format('canary-{0}', matrix.run.id) }}
+          path: canary.json
+          if-no-files-found: ignore
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        if: ${{ !cancelled() && github.event_name == 'schedule' }}
+        with:
+          name: canary-inputs
+          path: .
+
+      - name: Remember these inputs
+        if: ${{ !cancelled() && github.event_name == 'schedule' && needs.plan.outputs.key != '' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: canary-inputs.json
+          key: ${{ needs.plan.outputs.key }}

@@ -1,0 +1,20 @@
+[
+  {
+    "id": "positive",
+    "overrides": ["@ai-ecoverse/slicc-kernel@1.81.0"],
+    "expect": []
+  },
+  {
+    "id": "negative",
+    "overrides": ["@ai-ecoverse/slicc-kernel@1.78.0"],
+    "expect": [
+      { "test": "wasm-grep · ", "log": "rc=70" },
+      { "test": "wasm-sed · ", "log": "rc=70" },
+      { "test": "wasm-jq · ", "log": "rc=70" },
+      { "test": "wasm-xz · ", "log": "rc=70" },
+      { "test": "wasm-findutils · ", "log": "rc=70" },
+      { "test": "wasm-diffutils · ", "log": "rc=70" },
+      { "test": "wasm-patch · ", "log": "rc=70" }
+    ]
+  }
+]
