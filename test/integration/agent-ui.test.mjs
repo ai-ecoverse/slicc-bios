@@ -128,6 +128,15 @@ test("the agent's UI on slicc-agent 3.48 and spectrum 1.68: a failed bash card w
   );
   await connectAccount(page, 'amazon-bedrock', KEY);
   await quiet(page);
+  const hold = () => document.querySelector('slicc-app').model.agent.hold?.() ?? null;
+  assert.equal(await page.evaluate(hold), null);
+  chrome.vault.set({ locked: true });
+  await page.within(
+    30000,
+    () => document.querySelector('slicc-app').model.agent.hold?.()?.reason === 'locked'
+  );
+  chrome.vault.set({ locked: false });
+  await page.within(30000, () => document.querySelector('slicc-app').model.agent.hold?.() === null);
 
   await page.evaluate(() => {
     const { agent } = document.querySelector('slicc-app').model;

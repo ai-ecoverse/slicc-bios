@@ -745,6 +745,15 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
       .some((option) => option.id === 'adobe/claude-test')
   );
   await page.screenshot(new URL('adobe.png', page.dir));
+  const ims = chrome.vault.state.records.find((record) => record.name === 'ADOBE_IMS_TOKEN');
+  assert.deepEqual(
+    { kind: ims.kind, provider: ims.provider, source: ims.source },
+    { kind: 'model', provider: 'adobe', source: 'oauth:adobe' }
+  );
+  assert.ok(
+    Math.abs(ims.expiresAt - Date.now() - 86399000) < 10 * 60 * 1000,
+    String(ims.expiresAt)
+  );
 
   await page.evaluate(() => {
     const app = document.querySelector('slicc-app');
