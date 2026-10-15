@@ -552,6 +552,8 @@ async function own() {
     ...folders.options,
   });
   exits.attach(kernel);
+  if (globalThis.sliccKernelDebug === true)
+    globalThis.sliccKernelClient = async () => attachKernel(await kernel.connect());
   installLocal(links);
   tray?.start();
   if (network.status?.probe?.kernelTunnel) openTunnel(kernel, network.proxy);
