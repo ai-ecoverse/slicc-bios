@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  SHARDED: '/(follow[^/]*|chat|remote|pydata|updates|users|agent-ui|packages|update|cdp)\.test\.mjs$'
+  SHARDED: '/(follow[^/]*|chat|remote|pydata|updates|users|agent-ui|packages|update|cdp|guard-vectors|k4[^/]*|link)\.test\.mjs$'
 
 jobs:
   lint:
@@ -51,6 +51,10 @@ jobs:
             match: '/(users|agent-ui)\.test\.mjs$'
           - shard: packages-update-cdp
             match: '/(packages|update|cdp)\.test\.mjs$'
+          - shard: guard
+            match: '/guard-vectors\.test\.mjs$'
+          - shard: k4-link
+            match: '/(k4[^/]*|link)\.test\.mjs$'
           - shard: rest
             match: ''
     env:
