@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { markdown, merge } from '../../scripts/canary/report.mjs';
-import { enforceNote, kernelCalls } from '../../scripts/canary/users.mjs';
+import { atLeast, enforceNote, kernelCalls } from '../../scripts/canary/users.mjs';
 
 const pins = {
   overrides: [{ name: '@ai-ecoverse/slicc-kernel', version: '1.86.0', sha256: 'a'.repeat(64) }],
@@ -118,4 +118,31 @@ test('a kernel from 1.78.0 on a ref with no users mode gets the enforce note', (
     /> \*\*Note:\*\* This bios ref creates its kernel with no users mode/
   );
   assert.deepEqual(report([shard(0, [pass('a')])]).notes, []);
+});
+
+test('only the top-level users option of the createKernel call counts', () => {
+  const nested = [
+    'createKernel({',
+    '  root,',
+    "  network: { users: 'enforce', transport },",
+    "  env: { NOTE: 'users: off, ...users' },",
+    "  hooks: [{ users: 'report' }],",
+    '});',
+  ].join('\n');
+  assert.deepEqual(kernelCalls(nested), [{ line: 1, users: null }]);
+  assert.deepEqual(kernelCalls("createKernel({ network: { users: 'off' }, users: 'report' })"), [
+    { line: 1, users: 'report' },
+  ]);
+  assert.deepEqual(kernelCalls("createKernel({ 'users': 'off' })"), [{ line: 1, users: 'off' }]);
+  assert.deepEqual(kernelCalls('createKernel(options)'), [{ line: 1, users: 'dynamic' }]);
+  assert.match(enforceNote(kernel('1.86.0'), scan(nested)), /no users mode/);
+});
+
+test('a prerelease of 1.78.0 is below 1.78.0, and gets no enforce note', () => {
+  assert.equal(atLeast('1.78.0-rc.1', '1.78.0'), false);
+  assert.equal(atLeast('1.78.0', '1.78.0'), true);
+  assert.equal(atLeast('1.78.1-rc.1', '1.78.0'), true);
+  assert.equal(atLeast('1.77.9', '1.78.0'), false);
+  assert.equal(enforceNote(kernel('1.78.0-rc.1'), scan(old)), null);
+  assert.notEqual(enforceNote(kernel('1.78.0'), scan(old)), null);
 });

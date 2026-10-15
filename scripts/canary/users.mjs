@@ -1,26 +1,58 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
+import { compare } from './plan.mjs';
 
 export const ENFORCE_SINCE = '1.78.0';
 
-function call(text, start) {
-  let depth = 0;
-  for (let i = text.indexOf('(', start); i < text.length; i++) {
-    if (text[i] === '(') depth++;
-    else if (text[i] === ')' && --depth === 0) return text.slice(start, i + 1);
+const OPEN = { '(': ')', '{': '}', '[': ']' };
+const QUOTES = new Set(["'", '"', '`']);
+
+function skip(text, i) {
+  const quote = text[i];
+  for (let j = i + 1; j < text.length; j++) {
+    if (text[j] === '\\') j++;
+    else if (text[j] === quote) return j;
   }
-  return text.slice(start);
+  return text.length;
+}
+
+function topLevel(text, open) {
+  const parts = [];
+  const stack = [];
+  let from = open + 1;
+  for (let i = open; i < text.length; i++) {
+    const c = text[i];
+    if (QUOTES.has(c)) i = skip(text, i);
+    else if (OPEN[c]) stack.push(OPEN[c]);
+    else if (c === stack.at(-1)) {
+      stack.pop();
+      if (!stack.length) {
+        parts.push(text.slice(from, i));
+        return parts;
+      }
+    } else if (c === ',' && stack.length === 1) {
+      parts.push(text.slice(from, i));
+      from = i + 1;
+    }
+  }
+  return parts;
+}
+
+function mode(parts) {
+  for (const part of parts.map((text) => text.trim())) {
+    const literal = /^(['"]?)users\1\s*:\s*(['"`])([^'"`]*)\2\s*$/.exec(part);
+    if (literal) return literal[3];
+    if (/^(['"]?)users\1\s*(:|$)/.test(part)) return 'dynamic';
+    if (/^\.\.\./.test(part) && /users/i.test(part)) return 'dynamic';
+  }
+  return null;
 }
 
 export function kernelCalls(text) {
-  return [...text.matchAll(/\bcreateKernel\(/g)].map((match) => {
-    const args = call(text, match.index);
-    const mode = /\busers\s*:\s*(['"`])([^'"`]*)\1/.exec(args)?.[2];
-    const named = /\busers\s*[:,}]|\.\.\.\s*[\w.]*users/i.test(args);
-    return {
-      line: text.slice(0, match.index).split('\n').length,
-      users: mode ?? (named ? 'dynamic' : null),
-    };
+  return [...text.matchAll(/\bcreateKernel\(\s*/g)].map((match) => {
+    const at = match.index + match[0].length;
+    const users = text[at] === '{' ? mode(topLevel(text, at)) : 'dynamic';
+    return { line: text.slice(0, match.index).split('\n').length, users };
   });
 }
 
@@ -44,14 +76,8 @@ export async function usersModes(root) {
   return found;
 }
 
-function parts(version) {
-  return version.split('-')[0].split('.').map(Number);
-}
-
 export function atLeast(version, floor) {
-  const [x, y] = [parts(version), parts(floor)];
-  for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0);
-  return true;
+  return compare(version, floor) >= 0;
 }
 
 export function enforceNote(overrides, kernels) {
