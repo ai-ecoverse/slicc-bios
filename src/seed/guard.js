@@ -23,6 +23,10 @@ const HOLD_MS = 2000;
 const BLANK_MS = 10000;
 const ERROR_PAGE = 'chrome-error://chromewebdata/';
 const bare = (url) => url.split('#')[0];
+const SCRUB_MS = 5000;
+export const BLANKED = 'about:blank#blocked';
+const HISTORY = new Set(['Page.getNavigationHistory']);
+const TREES = new Set(['Page.getFrameTree', 'Page.getResourceTree']);
 const NAV_MS = 10000;
 const NAV_TYPES = new Set(['page', 'iframe', 'background_page', 'webview']);
 const UNWAITED = new Set(['Target.getTargetInfo', 'Target.detachFromTarget']);
@@ -342,11 +346,18 @@ class Guard {
         session
       ),
       this.call('Network.setBypassServiceWorker', { bypass: true }, session),
+      this.call('Page.enable', {}, session),
     ]);
     nav.settle(steps.some((step) => step.error));
   }
 
   navEvent({ method, params = {} }, nav) {
+    if (method === 'Page.frameNavigated' && params.frame && !params.frame.parentId) {
+      return this.wiping(nav, `${params.frame.url}${params.frame.urlFragment ?? ''}`);
+    }
+    if (method === 'Page.frameStoppedLoading' && params.frameId === nav.targetId) {
+      return this.wipe(nav);
+    }
     if (method !== 'Fetch.requestPaused') return;
     const { requestId } = params;
     if (params.resourceType === 'Document' && this.is.url(params.request?.url)) {
@@ -374,6 +385,7 @@ class Guard {
     const nav = this.navs.get(this.sessions.get(sessionId)?.targetId);
     if (!nav) return null;
     await nav.ready;
+    if (nav.scrub) await nav.scrub;
     return nav.failed ? UNGUARDED : null;
   }
 
@@ -500,7 +512,40 @@ class Guard {
   }
 
   failed(targetId, { frameId, request }) {
-    if (targetId && frameId === targetId) this.errored.set(targetId, bare(request.url));
+    if (!targetId || frameId !== targetId) return;
+    this.errored.set(targetId, bare(request.url));
+    const nav = this.navs.get(targetId);
+    if (nav?.session && !nav.scrub) nav.scrub = this.scrubbing(nav);
+  }
+
+  scrubbing(nav) {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        nav.wiped = null;
+        nav.scrub = null;
+        this.cutTarget(nav.targetId);
+        resolve();
+      }, SCRUB_MS);
+      timer.unref?.();
+      nav.wiped = () => {
+        clearTimeout(timer);
+        nav.wiped = null;
+        nav.scrub = null;
+        resolve();
+      };
+    });
+  }
+
+  wiping(nav, url) {
+    if (!nav.wiped) return;
+    if (url === BLANKED) return nav.wiped();
+    nav.erred = url.startsWith('chrome-error:');
+  }
+
+  wipe(nav) {
+    if (!nav.wiped || !nav.erred) return;
+    nav.erred = false;
+    void this.call('Page.navigate', { url: BLANKED }, nav.session);
   }
 
   release({ method, params = {}, sessionId }) {
@@ -588,6 +633,32 @@ class Guard {
     return method === 'Runtime.executionContextCreated' && this.is.url(params.context?.origin);
   }
 
+  hides(entry) {
+    return this.is.url(entry.url) || this.is.url(entry.userTypedURL);
+  }
+
+  entry(entry) {
+    if (!this.hides(entry)) return entry;
+    return { ...entry, url: ERROR_PAGE, userTypedURL: ERROR_PAGE, title: '' };
+  }
+
+  tree({ frame, childFrames, resources, ...rest }) {
+    const hidden = this.is.url(frame.url) || this.is.url(frame.unreachableUrl);
+    const { unreachableUrl, urlFragment, ...shown } = frame;
+    return {
+      ...rest,
+      frame: hidden ? { ...shown, url: ERROR_PAGE, securityOrigin: '://' } : frame,
+      ...(childFrames ? { childFrames: childFrames.map((child) => this.tree(child)) } : {}),
+      ...(resources ? { resources: resources.filter((item) => !this.is.url(item.url)) } : {}),
+    };
+  }
+
+  async back(params, sessionId) {
+    const history = (await this.call('Page.getNavigationHistory', {}, sessionId)).result;
+    const entry = history?.entries?.find((item) => item.id === params.entryId);
+    return Boolean(entry && this.hides(entry));
+  }
+
   masked(info) {
     if (info.url === undefined || this.errored.get(info.targetId) !== bare(info.url)) return info;
     return { ...info, url: ERROR_PAGE, title: ERROR_PAGE };
@@ -652,6 +723,16 @@ class Guard {
     }
     if (method === 'Target.getTargets' && Array.isArray(result?.targetInfos)) {
       return this.listed(message, result);
+    }
+    if (HISTORY.has(method) && Array.isArray(result?.entries)) {
+      const entries = result.entries.map((entry) => this.entry(entry));
+      return this.deliver({ ...message, result: { ...result, entries } });
+    }
+    if (TREES.has(method) && result?.frameTree) {
+      return this.deliver({
+        ...message,
+        result: { ...result, frameTree: this.tree(result.frameTree) },
+      });
     }
     if (method === 'Target.getTargetInfo' && result?.targetInfo) {
       return this.deliver({ ...message, result: { targetInfo: this.masked(result.targetInfo) } });
@@ -762,6 +843,10 @@ class Guard {
     if ((method === 'IO.read' || method === 'IO.close') && !this.streams.has(params.handle)) {
       return STREAM;
     }
+    return this.reaching(method, params, sessionId);
+  }
+
+  async reaching(method, params, sessionId) {
     if (params.targetId !== undefined && (await this.current(params.targetId))) return PROTECTED;
     if (method === 'Target.attachToTarget') {
       this.touch(params.targetId);
@@ -770,6 +855,9 @@ class Guard {
       if (nav?.failed) return UNGUARDED;
     }
     if (await this.frame(params.frameId)) return PROTECTED;
+    if (method === 'Page.navigateToHistoryEntry' && (await this.back(params, sessionId))) {
+      return PROTECTED;
+    }
     return this.unseen(method, params);
   }
 

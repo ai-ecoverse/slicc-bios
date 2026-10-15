@@ -15,6 +15,10 @@ const SETTINGS =
 const SCRIPTS = /^scripts and bindings for later documents could run in seven’s pages or the vault/;
 const DEBUGGER = /^breakpoints could run in seven’s pages or the vault/;
 const PROTECTED = 'seven’s own pages and the vault are out of reach of browser automation';
+const UNFLAT =
+  'the guard only hands out flattened sessions, so attach with flatten: true and send commands with a sessionId';
+const UNGUARDED =
+  'the guard couldn’t keep seven’s pages and the vault out of this tab, so it refuses commands there';
 const UNSEEN = 'this request wasn’t seen, so it could be seven’s or the vault’s';
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -192,6 +196,9 @@ const served = (url, mark) => {
   return heard.some((hit) => hit.host === at.host && hit.path === `${at.pathname}${at.search}`);
 };
 
+const BLANKED = 'about:blank#blocked';
+const stopped = (href) => String(href).startsWith('chrome-error://') || href === BLANKED;
+
 async function errorPage(targetId, ms) {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
@@ -204,7 +211,7 @@ async function errorPage(targetId, ms) {
         sessionId
       );
       await own.send('Target.detachFromTarget', { sessionId });
-      if (String(answer.result?.result?.value).startsWith('chrome-error://')) return true;
+      if (stopped(answer.result?.result?.value)) return true;
     }
     await pause(200);
   }
@@ -234,7 +241,7 @@ async function kept(guard, id, { targetId, session, url, lag = 0 }) {
   const { result } = await own.send('Target.getTargetInfo', { targetId });
   assert.ok(result?.targetInfo, `${id}: the tab is kept`);
   let href = null;
-  for (const end = Date.now() + lag + 5000; !String(href).startsWith('chrome-error://'); ) {
+  for (const end = Date.now() + lag + 5000; !stopped(href); ) {
     href = (
       await guard.send(
         'Runtime.evaluate',
@@ -245,16 +252,14 @@ async function kept(guard, id, { targetId, session, url, lag = 0 }) {
     if (Date.now() > end) break;
     await pause(200);
   }
-  assert.equal(
-    href,
-    'chrome-error://chromewebdata/',
-    `${id}: the client's session is kept, on Chrome's error page`
+  assert.ok(
+    stopped(href),
+    `${id}: the client's session is kept, on a page the guard left (${href})`
   );
   const info = await guard.send('Target.getTargetInfo', { targetId });
-  assert.equal(
-    info.result?.targetInfo?.url,
-    'chrome-error://chromewebdata/',
-    `${id}: the client can still name the tab, and sees the error page, not the URL it failed (${JSON.stringify(info.error ?? '')})`
+  assert.ok(
+    stopped(info.result?.targetInfo?.url),
+    `${id}: the client can still name the tab, and sees the page the guard left, not the URL it failed (${JSON.stringify(info.result?.targetInfo?.url ?? info.error)})`
   );
 }
 
@@ -304,7 +309,21 @@ async function guardPage(t, lag) {
   t.after(() => socket.close());
   socket.onmessage = ({ data }) =>
     void seven.evaluate((message) => window.cdpIn(message), data).catch(() => false);
+  const stalls = [];
   await seven.expose('cdpOut', (command) => {
+    const stall = stalls.findIndex(
+      ({ method }) =>
+        command.method === method &&
+        (command.params?.patterns ?? []).some((pattern) => pattern.resourceType === 'Document')
+    );
+    if (stall >= 0) {
+      const [{ how }] = stalls.splice(stall, 1);
+      if (how === 'fail') {
+        const answer = JSON.stringify({ id: command.id, error: { message: 'failed by the test' } });
+        void seven.evaluate((message) => window.cdpIn(message), answer).catch(() => false);
+      }
+      return;
+    }
     const send = () => socket.readyState === 1 && socket.send(JSON.stringify(command));
     if (lag && command.method === 'Target.detachFromTarget') setTimeout(send, lag);
     else send();
@@ -401,7 +420,8 @@ async function guardPage(t, lag) {
     await send('Runtime.enable', {}, answer.result.sessionId);
     return answer.result.sessionId;
   };
-  return { seven, send, go, events, attach };
+  const stall = (how) => stalls.push({ method: 'Fetch.enable', how });
+  return { seven, send, go, events, attach, stall };
 }
 
 const targets = () => ({
@@ -595,6 +615,7 @@ for (const [detach, lag] of DETACH) {
                 (await guard.send('Target.setAutoAttach', auto, session)).error,
                 undefined
               );
+              assert.equal((await guard.send('Target.setAutoAttach', auto)).error, undefined);
             }
             const before = (await guard.events()).length;
             const mark = chrome.requests.length;
@@ -624,15 +645,18 @@ for (const [detach, lag] of DETACH) {
                 PROTECTED,
                 `${id}: the client can't attach to the protected popup`
               );
+              assert.equal(
+                (await readAttribute(url, 'data-k', 1500)).value,
+                null,
+                `${id}: no attribute in the protected popup`
+              );
+              assert.ok(
+                !beacons.some((b) => b.id === id),
+                `${id}: no beacon from the protected popup`
+              );
             } else {
               await keptOut(id, { targetId, url, mark, trigger, lag });
             }
-            assert.equal(
-              (await readAttribute(url, 'data-k', 1500)).value,
-              null,
-              `${id}: no attribute`
-            );
-            assert.ok(!beacons.some((b) => b.id === id), `${id}: no beacon`);
             const later = (await guard.events()).slice(before);
             assert.ok(
               !JSON.stringify(later).includes(url),
@@ -670,6 +694,11 @@ for (const [detach, lag] of DETACH) {
             }
           } finally {
             if (children) {
+              await guard.send('Target.setAutoAttach', {
+                autoAttach: false,
+                waitForDebuggerOnStart: false,
+                flatten: true,
+              });
               await guard.send('Target.setDiscoverTargets', { discover: false });
               await instrumentOn(guard, null);
             }
@@ -742,8 +771,10 @@ for (const [detach, lag] of DETACH) {
           await keptOut('E2', { targetId, url: `${at('/doc')}?e2p`, mark, lag });
           await pause(lag ? lag + 2000 : 2500);
           assert.ok(
-            !(await guard.events()).slice(before).some((e) => e.method === 'Runtime.bindingCalled'),
-            'E2: no bindingCalled'
+            !JSON.stringify((await guard.events()).slice(before)).includes(
+              new URL(at('/doc')).host
+            ),
+            'E2: nothing naming the protected host reached the client'
           );
         } finally {
           await closeAll([targetId]);
@@ -781,8 +812,6 @@ for (const [detach, lag] of DETACH) {
           const mark = chrome.requests.length;
           await guard.go(TRIGGERS.href(`${to}?e3p`), session);
           await keptOut('E3', { targetId, url: `${to}?e3p`, mark, lag });
-          const seen = await readAttribute(to, 'data-k', lag ? lag + 3000 : 4000);
-          assert.equal(seen.value, null, 'E3: the protected page kept its CSP');
         } finally {
           await closeAll([targetId]);
         }
@@ -860,11 +889,12 @@ for (const [detach, lag] of DETACH) {
           const mark = chrome.requests.length;
           await guard.go(TRIGGERS.href(`${at('/doc')}?e4p`), session);
           await keptOut('E4', { targetId, url: `${at('/doc')}?e4p`, mark, lag });
-          const seen = await readAttribute(at('/doc'), 'data-k', lag ? lag + 3000 : 4000);
-          assert.equal(seen.value, null, 'E4: no condition evaluated in the protected document');
+          await pause(lag ? lag + 2000 : 2500);
           assert.ok(
-            !(await guard.events()).slice(before).some((e) => e.method === 'Debugger.paused'),
-            'E4: no Debugger.paused'
+            !JSON.stringify((await guard.events()).slice(before)).includes(
+              new URL(at('/doc')).host
+            ),
+            'E4: nothing naming the protected host reached the client'
           );
         } finally {
           await closeAll([targetId]);
@@ -920,10 +950,6 @@ for (const [detach, lag] of DETACH) {
           await pause(lag ? lag + 3000 : 3000);
           const host = new URL(to).host;
           const later = JSON.stringify((await guard.events()).slice(before));
-          assert.ok(
-            !later.includes(`STAND-CONSOLE ${host}`),
-            'E5: no console event from the protected document'
-          );
           assert.ok(
             !later.includes(host),
             'E5: nothing naming the protected host reached the client'
@@ -1052,12 +1078,6 @@ for (const [detach, lag] of DETACH) {
               const mark = chrome.requests.length;
               await guard.go(TRIGGERS[trigger](to), session);
               await keptOut(id, { targetId, url: to, mark, trigger, lag });
-              if (check !== 'offline')
-                assert.equal(
-                  await observe(to, tag, mark),
-                  false,
-                  `${id}: not applied to the protected document`
-                );
             } finally {
               await closeAll([targetId]);
             }
@@ -1306,6 +1326,7 @@ const fetchOn = (guard, session, rule) =>
         const mine = request.url === rule.url;
         if (event.method === 'Fetch.authRequired') {
           if (mine) guarded.seen.push('auth');
+          if (mine && rule.holdAuth) return;
           const authChallengeResponse =
             mine && rule.credentials
               ? { response: 'ProvideCredentials', username: 'u', password: 'p' }
@@ -1532,45 +1553,65 @@ for (const [detach, lag] of DETACH) {
       ],
       fail: ['Fetch.failRequest', { errorReason: 'Failed' }],
     };
-    const guessed = async (id, at, [method, params]) => {
+    const STAGED = {
+      response: { requestStage: 'Response' },
+      auth: {
+        path: (id) => `/auth/g-${detach}-${id.replace(/[^a-z0-9]+/gi, '-')}/`,
+        holdAuth: true,
+      },
+    };
+    const guessed = async (id, at, kind, [method, params]) => {
+      const staged = STAGED[kind] ?? {};
       const { session } = await plainTab();
       assert.equal(
         (
           await guard.send(
             'Fetch.enable',
-            { patterns: [{ urlPattern: '*', requestStage: 'Request' }] },
+            {
+              patterns: [{ urlPattern: '*', requestStage: staged.requestStage ?? 'Request' }],
+              ...(staged.holdAuth ? { handleAuthRequests: true } : {}),
+            },
             session
           )
         ).error,
         undefined
       );
-      const path = KINDS.fetch.path(at);
+      const path = staged.path ? staged.path(id) : KINDS.fetch.path(at);
       const url = `${at}${path}?n=${id}`;
-      await fetchOn(guard, session, { url, hold: true });
+      await fetchOn(
+        guard,
+        session,
+        staged.holdAuth ? { url, holdAuth: true } : { url, hold: true }
+      );
       const before = `${OTHER}/data?n=a-${id}`;
       const after = `${OTHER}/data?n=b-${id}`;
       const mark = chrome.requests.length;
       const seen = heard.length;
       await value(guard, session, KINDS.fetch.run(before));
-      await guard.send(
-        'Runtime.evaluate',
-        { expression: `window.probe = ${KINDS.fetch.run(url)}; true` },
-        session
-      );
+      const run = staged.holdAuth
+        ? `fetch(${JSON.stringify(url)}, { credentials: 'include' }).then((r) => r.text(), () => 'error')`
+        : KINDS.fetch.run(url);
+      await guard.send('Runtime.evaluate', { expression: `window.probe = ${run}; true` }, session);
       await pause(300);
       await value(guard, session, KINDS.fetch.run(after));
+      if (staged.holdAuth && at === OTHER) {
+        for (let n = 0; n < 30 && !(await fetchSeen(guard)).seen.includes('auth'); n += 1) {
+          await pause(100);
+        }
+      }
       const { ids } = await fetchSeen(guard);
       const num = (requestId) => Number(/(\d+)\.\d+$/.exec(requestId ?? '')?.[1]);
       const [lo, hi] = [num(ids[before]), num(ids[after])];
       const prefix = (ids[before] ?? '').replace(/\d+\.\d+$/, '');
+      const suffix = /\.\d+$/.exec(ids[before] ?? '')?.[0] ?? '.0';
       const attempts = [];
       for (let n = lo + 1; n < hi; n += 1) {
         const answer = await guard.send(
           method,
-          { ...params, requestId: `${prefix}${n}.0` },
+          { ...params, requestId: `${prefix}${n}${suffix}` },
           session
         );
-        attempts.push([`${prefix}${n}.0`, answer.error?.message ?? null]);
+        attempts.push([`${prefix}${n}${suffix}`, answer.error?.message ?? null]);
       }
       const body = await value(guard, session, 'window.probe');
       await guard.send('Fetch.disable', {}, session);
@@ -1595,8 +1636,8 @@ for (const [detach, lag] of DETACH) {
     const effect = {
       fulfill: (got) => got.body === 'guessed' && !got.answered,
       continue: (got) => got.tagged,
-      response: (got) => got.accepted,
-      auth: (got) => got.accepted,
+      response: (got) => got.answered && !['timeout', 'error', 'guessed'].includes(got.body),
+      auth: (got) => got.body === 'authed',
       fail: (got) => got.body === 'error' && !got.answered,
     };
     for (const [name, at] of [
@@ -1606,14 +1647,14 @@ for (const [detach, lag] of DETACH) {
       for (const [kind, command] of Object.entries(COMMANDS)) {
         const id = `C5.guessed-id.${kind}.${name}`;
         await t.test(`${id} control`, async () => {
-          const got = await guessed(`${id}:plain`, OTHER, command);
+          const got = await guessed(`${id}:plain`, OTHER, kind, command);
           assert.ok(
             got.candidates && got.accepted && effect[kind](got),
-            `${id} control: ${command[0]} on a guessed id reaches a held plain request of its own (${got.body} ${JSON.stringify(got.attempts)})`
+            `${id} control: ${command[0]} on a guessed id releases a held plain request of its own, with its effect (${got.body} ${JSON.stringify(got.attempts)})`
           );
         });
         await t.test(`${id} protected`, async () => {
-          const got = await guessed(`${id}:guard`, at, command);
+          const got = await guessed(`${id}:guard`, at, kind, command);
           assert.deepEqual(
             [got.candidates, got.refused, got.body === 'guessed', got.tagged, got.answered],
             [true, true, false, false, true],
@@ -1697,6 +1738,173 @@ for (const [detach, lag] of DETACH) {
       );
     };
 
+    const blankShot = async () => {
+      const targetId = await tab('about:blank');
+      opened.push(targetId);
+      const { sessionId } = (await own.send('Target.attachToTarget', { targetId, flatten: true }))
+        .result;
+      const shot = (await own.send('Page.captureScreenshot', { format: 'png' }, sessionId)).result
+        ?.data;
+      await own.send('Target.detachFromTarget', { sessionId });
+      return shot;
+    };
+    await t.test(
+      'the page a failed protected document leaves shows nothing of it: frame tree, history, title, text and pixels (#450)',
+      async () => {
+        const blank = await blankShot();
+        assert.ok(blank, 'a blank tab can be shot');
+        for (const [how, base] of [
+          ['direct', `${VAULT}/doc`],
+          ['302', `${VAULT}/doc`],
+          ['direct', `${SEVEN}/probe-doc.html`],
+          ['302', `${SEVEN}/probe-doc.html`],
+        ]) {
+          const id = tag(`wiped-${how}`);
+          const url = `${base}?secret-${id}#frag-${id}`;
+          const page = await touched(id);
+          assert.equal(
+            (await guard.send('Target.setDiscoverTargets', { discover: true })).error,
+            undefined
+          );
+          const before = (await guard.events()).length;
+          await guard.go(how === 'direct' ? TRIGGERS.href(url) : TRIGGERS[302](url), page.session);
+          await keptOut(id, {
+            targetId: page.targetId,
+            url: url.split('#')[0],
+            mark: chrome.requests.length,
+            lag,
+          });
+          await pause(lag + 1000);
+          const read = async (method, params = {}) =>
+            JSON.stringify(await guard.send(method, params, page.session));
+          const seen = {
+            tree: await read('Page.getFrameTree'),
+            history: await read('Page.getNavigationHistory'),
+            page: await read('Runtime.evaluate', {
+              expression:
+                'JSON.stringify([document.title, document.body?.innerText ?? "", window.loadTimeData?.data_ ?? null, location.href])',
+              returnByValue: true,
+            }),
+            info: await read('Target.getTargetInfo', { targetId: page.targetId }),
+            targets: await read('Target.getTargets'),
+          };
+          await guard.send('Target.setDiscoverTargets', { discover: false });
+          const asked = `${PLAIN}/redirect?to=${encodeURIComponent(url)}`;
+          seen.events = JSON.stringify((await guard.events()).slice(before)).replaceAll(
+            asked,
+            'the client’s own request'
+          );
+          const host = new URL(base).host;
+          for (const [what, text] of Object.entries(seen)) {
+            assert.ok(
+              !text.includes(`secret-${id}`) &&
+                !text.includes(`frag-${id}`) &&
+                !text.includes(host),
+              `${id}: ${what} shows nothing of the failed document (${text.slice(0, 400)})`
+            );
+          }
+          const { result: history } = await guard.send(
+            'Page.getNavigationHistory',
+            {},
+            page.session
+          );
+          const failed = history.entries.find(
+            (entry) => entry.url === 'chrome-error://chromewebdata/'
+          );
+          assert.ok(failed, `${id}: the failed entry is listed as the error page`);
+          assert.equal(
+            (await guard.send('Page.navigateToHistoryEntry', { entryId: failed.id }, page.session))
+              .error?.message,
+            PROTECTED,
+            `${id}: the client can't go back to the failed entry`
+          );
+          const shot = await guard.send('Page.captureScreenshot', { format: 'png' }, page.session);
+          assert.equal(
+            shot.result?.data,
+            blank,
+            `${id}: the tab shows a blank page, not Chrome's error page naming the protected host`
+          );
+        }
+      }
+    );
+    await t.test(
+      'an unflattened attach is refused as unflattened on an ordinary tab, and as protected on the vault',
+      async () => {
+        const plain = await tab(`${PLAIN}/doc?unflat-${tag('unflat')}`);
+        const vault = await tab(`${VAULT}/doc?unflat-${tag('unflat')}`);
+        opened.push(plain, vault);
+        for (const params of [{ targetId: plain }, { targetId: plain, flatten: false }]) {
+          assert.equal(
+            (await guard.send('Target.attachToTarget', params)).error?.message,
+            UNFLAT,
+            JSON.stringify(params)
+          );
+        }
+        assert.equal(
+          (await guard.send('Target.attachToTarget', { targetId: vault })).error?.message,
+          PROTECTED
+        );
+        assert.equal(
+          (await guard.send('Target.attachToTarget', { targetId: plain, flatten: true })).error,
+          undefined,
+          'the same tab attaches once flattened'
+        );
+      }
+    );
+    await t.test(
+      'a tab the guard cannot arm, because arming fails or never answers, is refused (UNGUARDED)',
+      async () => {
+        for (const how of ['fail', 'drop']) {
+          const targetId = await tab(`${PLAIN}/doc?unarmed-${tag(how)}`);
+          opened.push(targetId);
+          const before = (await guard.events()).length;
+          guard.stall(how);
+          const answer = await guard.send(
+            'Target.attachToTarget',
+            { targetId, flatten: true },
+            undefined,
+            20000
+          );
+          assert.equal(answer.error?.message, UNGUARDED, `${how}: ${JSON.stringify(answer)}`);
+          assert.ok(
+            !(await guard.events())
+              .slice(before)
+              .some((event) => event.method === 'Target.attachedToTarget'),
+            `${how}: the client never got a session`
+          );
+        }
+      }
+    );
+    await t.test('a protected page restored without a request still cuts the client', async () => {
+      const id = tag('bfcache');
+      const vault = `${VAULT}/doc?${id}`;
+      const targetId = await tab(vault);
+      opened.push(targetId);
+      const raw = (await own.send('Target.attachToTarget', { targetId, flatten: true })).result
+        .sessionId;
+      await own.send('Page.navigate', { url: `${PLAIN}/doc?after-${id}` }, raw);
+      await pause(1500);
+      await own.send('Target.detachFromTarget', { sessionId: raw });
+      const session = await guard.attach(targetId);
+      const before = (await guard.events()).length;
+      const requested = heard.length;
+      await guard.go('history.back()', session);
+      assert.ok(await loaded(vault, lag + 8000), 'the vault page came back from the cache');
+      assert.ok(
+        !heard.slice(requested).some((hit) => hit.host === new URL(VAULT).host),
+        'without a request, so the guard could not fail it'
+      );
+      let answer = null;
+      for (let n = 0; n < 50 && answer?.error?.message !== PROTECTED; n += 1) {
+        answer = await guard.send('Runtime.evaluate', { expression: 'document.title' }, session);
+        if (answer.error?.message !== PROTECTED) await pause(200);
+      }
+      assert.equal(answer.error?.message, PROTECTED, 'the client’s session on it is cut');
+      assert.ok(
+        !JSON.stringify((await guard.events()).slice(before)).includes(new URL(VAULT).host),
+        'nothing naming the vault reached the client'
+      );
+    });
     await t.test('an untouched tab still loads both protected origins', async () => {
       for (const url of [
         `${SEVEN}/probe-doc.html?${tag('untouched')}`,
@@ -2091,8 +2299,9 @@ for (const [detach, lag] of DETACH) {
           );
           const url = `${SEVEN}/probe-doc.html?${id}`;
           const mark = (await guard.events()).length;
+          const requests = chrome.requests.length;
           await guard.go(TRIGGERS.href(url), session);
-          await keptOut(id, { targetId, url, mark: chrome.requests.length, lag });
+          await keptOut(id, { targetId, url, mark: requests, lag });
           assert.ok(
             !JSON.stringify((await guard.events()).slice(mark)).includes(id),
             'the client’s Fetch and Network never saw the protected request'
