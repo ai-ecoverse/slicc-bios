@@ -417,7 +417,7 @@ Limits:
 
 ### The npm package
 
-`@ai-ecoverse/slicc-bios` on npm carries only the manifests a consumer needs to test against what seven ships: `src/packages/package.json`, `package-lock.json`, `pnpm-lock.yaml` and `certs.json`, `src/packages/agent/package.json` and `pnpm-lock.yaml`, and `src/packages/optional/package.json`, `package-lock.json` and `catalog.json`. It has no runtime code and no dependencies, and those paths stay where they are. [`.github/workflows/release.yml`](.github/workflows/release.yml) releases it from `main` only: semantic-release reads the conventional commits, tags `v<version>` and writes the GitHub release, then `npm publish --provenance` publishes it through npm's trusted publishing on a GitHub-hosted runner. The deploy to seven (`deploy.yml`) is separate and doesn't wait for it.
+`@ai-ecoverse/slicc-bios` on npm carries only the manifests a consumer needs to test against what seven ships: `src/packages/package.json`, `package-lock.json`, `pnpm-lock.yaml` and `certs.json`, `src/packages/agent/package.json` and `pnpm-lock.yaml`, and `src/packages/optional/package.json`, `package-lock.json` and `catalog.json`. It has no runtime code and no dependencies, and those paths stay where they are. [`.github/workflows/release.yml`](.github/workflows/release.yml) releases it from `main` only: semantic-release reads the conventional commits, tags `v<version>` and writes the GitHub release, then `npm publish --provenance` publishes the tag at HEAD through npm's trusted publishing on a GitHub-hosted runner, retrying, and skipping a version npm already has. So re-running the workflow on main publishes a tag whose publish failed. The deploy to seven (`deploy.yml`) is separate and doesn't wait for it.
 
 ## Develop
 
