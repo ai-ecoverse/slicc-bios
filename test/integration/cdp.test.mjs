@@ -662,7 +662,7 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
 
   const errorPage = async (sessionId) => {
     let href = null;
-    for (let n = 0; n < 50 && !String(href).startsWith('chrome-error://'); n += 1) {
+    for (let n = 0; n < 50 && href !== 'about:blank#blocked'; n += 1) {
       await new Promise((resolve) => setTimeout(resolve, 200));
       href = (
         await send(
@@ -765,8 +765,8 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
   );
   assert.equal(
     await errorPage(walking),
-    'chrome-error://chromewebdata/',
-    'the walk into the vault ends on Chrome’s error page, and the client keeps its session'
+    'about:blank#blocked',
+    'the walk into the vault ends on a blank page, and the client keeps its session'
   );
   await new Promise((resolve) => setTimeout(resolve, 3000));
   assert.ok(
@@ -775,12 +775,12 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
   );
   assert.equal(
     (await devtools('/json/list')).find((tab) => tab.id === walker)?.url,
-    `${VAULT}?walked`
+    'about:blank#blocked'
   );
   assert.equal(
     (await send('Target.getTargetInfo', { targetId: walker })).result?.targetInfo.url,
-    'chrome-error://chromewebdata/',
-    'the client sees the error page, not the vault URL it failed'
+    'about:blank#blocked',
+    'the client sees the blank page, not the vault URL it failed'
   );
   assert.equal((await send('Target.activateTarget', { targetId: walker })).error, undefined);
   assert.equal(await listed(walker), true);
