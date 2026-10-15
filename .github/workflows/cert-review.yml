@@ -37,6 +37,7 @@ jobs:
       pull-requests: read
     outputs:
       base: ${{ steps.pr.outputs.base }}
+      started: ${{ steps.started.outputs.started }}
     env:
       LEFTHOOK: '0'
       PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
@@ -95,8 +96,10 @@ jobs:
 
       - name: Two sandbox users, one for the head and one for the base, and no secrets
         run: |
-          sudo useradd --create-home --shell /bin/bash cert
-          sudo useradd --create-home --shell /bin/bash certbase
+          skel=$(mktemp -d)
+          sudo useradd --create-home --skel "$skel" --shell /bin/bash cert
+          sudo useradd --create-home --skel "$skel" --shell /bin/bash certbase
+          rmdir "$skel"
           sudo chmod 0755 /home/cert /home/certbase
           chmod 0750 "$HOME"
           sudo rsync -a --exclude .cert-head ./ /home/certbase/base/
@@ -116,13 +119,7 @@ jobs:
           done
 
       - name: Neither sandbox user can write the other's tree
-        run: |
-          check() {
-            found=$(sudo -n -u "$1" find "$2" -writable -print -quit 2>/dev/null || true)
-            if [ -n "$found" ]; then echo "::error::sandbox user $1 can write $found"; exit 1; fi
-          }
-          check cert /home/certbase
-          check certbase /home/cert
+        run: scripts/cert/separate
 
       - name: Install both trees and Chrome inside the sandbox
         run: |
@@ -130,13 +127,11 @@ jobs:
           scripts/cert/sandbox head 'npm ci --ignore-scripts --no-audit --no-fund && npx playwright-core install --no-shell chromium'
 
       - name: After the installs, neither sandbox user can write the other's tree
-        run: |
-          check() {
-            found=$(sudo -n -u "$1" find "$2" -writable -print -quit 2>/dev/null || true)
-            if [ -n "$found" ]; then echo "::error::sandbox user $1 can write $found"; exit 1; fi
-          }
-          check cert /home/certbase
-          check certbase /home/cert
+        run: scripts/cert/separate
+
+      - name: The review starts
+        id: started
+        run: echo "started=1" >> "$GITHUB_OUTPUT"
 
       - name: Certify
         id: certify
@@ -268,6 +263,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      actions: read
       pull-requests: write
     env:
       PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
@@ -294,10 +290,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          STARTED: ${{ needs.certify.outputs.started }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           file="$RUNNER_TEMP/verdict/verdict.md"
           if [ ! -s "$file" ]; then
-            gh pr comment "$PR_NUMBER" --repo "$REPO" --body "**Cert review:** the review ended without a verdict. The evidence is in $RUN_URL"
+            if [ "$STARTED" != 1 ]; then
+              step=$(gh api "repos/$REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" --jq '[.jobs[] | select(.name == "cert / review") | .steps[] | select(.conclusion == "failure") | .name][0] // "an unknown step"' 2>/dev/null || echo "an unknown step")
+              gh pr comment "$PR_NUMBER" --repo "$REPO" --body "**Cert review: the cert review couldn't start.** It failed at \"$step\", before the reviewer ran, so nothing was reviewed. See $RUN_URL"
+            else
+              gh pr comment "$PR_NUMBER" --repo "$REPO" --body "**Cert review:** the review ended without a verdict. The evidence is in $RUN_URL"
+            fi
             exit 1
           fi
           if ! CERT_SECRET_NAMES=BEDROCK node scripts/cert/scan.mjs "$file"; then

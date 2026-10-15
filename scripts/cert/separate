@@ -1,0 +1,33 @@
+#!/bin/sh
+set -eu
+found=$(mktemp)
+trap 'rm -f "$found"' EXIT
+fail=0
+check() {
+  user=$1
+  tree=$2
+  sudo -n -u "$user" find "$tree" -writable -print 2>/dev/null | head -20 > "$found" || true
+  while IFS= read -r path; do
+    fail=1
+    if [ -L "$path" ]; then
+      echo "::error::sandbox user $user can write $path, a symlink to $(readlink -f "$path" || echo '?'), a writable place shared outside $tree"
+    else
+      echo "::error::sandbox user $user can write $path"
+    fi
+  done < "$found"
+  for link in $(sudo -n find "$tree" -type l 2>/dev/null | head -50); do
+    target=$(readlink -f "$link" || true)
+    case "$target" in
+      "$tree" | "$tree"/*) ;;
+      *)
+        if [ -n "$target" ] && sudo -n -u "$user" test -w "$target"; then
+          fail=1
+          echo "::error::$link links to $target outside $tree, and sandbox user $user can write it"
+        fi
+        ;;
+    esac
+  done
+}
+check cert /home/certbase
+check certbase /home/cert
+exit "$fail"
