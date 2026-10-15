@@ -1,0 +1,44 @@
+[
+  {
+    "id": "positive",
+    "overrides": ["@ai-ecoverse/slicc-kernel@1.86.0"],
+    "shards": ["rest"],
+    "expect": []
+  },
+  {
+    "id": "negative",
+    "overrides": ["@ai-ecoverse/slicc-kernel@1.78.0"],
+    "shards": ["sweep"],
+    "strict": false,
+    "expect": [
+      {
+        "test": "wasm-grep \u00b7 ",
+        "log": "rc=70"
+      },
+      {
+        "test": "wasm-sed \u00b7 ",
+        "log": "rc=70"
+      },
+      {
+        "test": "wasm-jq \u00b7 ",
+        "log": "rc=70"
+      },
+      {
+        "test": "wasm-xz \u00b7 ",
+        "log": "rc=70"
+      },
+      {
+        "test": "wasm-findutils \u00b7 ",
+        "log": "rc=70"
+      },
+      {
+        "test": "wasm-diffutils \u00b7 ",
+        "log": "rc=70"
+      },
+      {
+        "test": "wasm-patch \u00b7 ",
+        "log": "rc=70"
+      }
+    ]
+  }
+]

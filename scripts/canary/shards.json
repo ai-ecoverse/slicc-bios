@@ -1,0 +1,6 @@
+{
+  "follow-chat": { "match": "/(follow[^/]*|chat)\\.test\\.mjs$" },
+  "remote-pydata": { "match": "/(remote|pydata|updates)\\.test\\.mjs$" },
+  "rest": { "exclude": "/(follow[^/]*|chat|remote|pydata|updates)\\.test\\.mjs$" },
+  "sweep": { "match": "/(sweep|pins)\\.test\\.mjs$" }
+}

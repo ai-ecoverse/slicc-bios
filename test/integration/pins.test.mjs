@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
+const canary = process.env.SLICC_CANARY
+  ? JSON.parse(await readFile(process.env.SLICC_CANARY, 'utf8')).candidates
+  : {};
+
 const packages = new URL('../../src/packages/', import.meta.url);
 const read = async (path) => readFile(new URL(path, packages), 'utf8');
 const KERNEL = '@ai-ecoverse/slicc-kernel';
@@ -124,12 +128,20 @@ async function lockedGated() {
   return found;
 }
 
-test('every gated package in every lockfile is certified, with the certified integrity', async () => {
+test('every gated package in every lockfile is certified, with the certified integrity', async (t) => {
   const certs = JSON.parse(await read('certs.json'));
   const found = await lockedGated();
   assert.ok(found.size >= 30, `found ${found.size} gated packages`);
-  const missing = [...found]
-    .filter(([key, [, integrity]]) => certs[key]?.integrity !== integrity)
+  const uncertified = [...found].filter(
+    ([key, [, integrity]]) => certs[key]?.integrity !== integrity
+  );
+  for (const [key, [file, integrity]] of uncertified) {
+    if (canary[key]?.integrity === integrity) {
+      t.diagnostic(`${file} ${key}: candidate, not certified`);
+    }
+  }
+  const missing = uncertified
+    .filter(([key, [, integrity]]) => canary[key]?.integrity !== integrity)
     .map(([key, [file]]) => `${file} ${key}`);
   assert.deepEqual(missing, [], 'not in src/packages/certs.json with this integrity');
   for (const [key, entry] of Object.entries(certs)) {
