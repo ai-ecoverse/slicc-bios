@@ -29,7 +29,7 @@
     "@biomejs/biome": "2.5.15",
     "es-module-lexer": "3.0.3",
     "fake-indexeddb": "6.2.5",
-    "lefthook": "2.2.0",
+    "lefthook": "2.2.1",
     "modern-tar": "0.8.5",
     "monocart-coverage-reports": "2.13.2",
     "playwright-core": "1.64.0",
