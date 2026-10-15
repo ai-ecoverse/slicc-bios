@@ -54,6 +54,7 @@ jobs:
         env:
           NUMBER: ${{ github.event.workflow_run.pull_requests[0].number || github.event.pull_request.number || inputs.pr_number }}
           CI_RUN: ${{ github.event.workflow_run.id }}
+          CI_HEAD: ${{ github.event.workflow_run.head_sha }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -65,7 +66,9 @@ jobs:
             const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: number });
             const files = await github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number: number });
             const packages = files.some(({ filename }) => filename.startsWith('src/packages/'));
-            const go = context.eventName !== 'workflow_run' || (!pr.draft && packages);
+            const current = !process.env.CI_HEAD || process.env.CI_HEAD === pr.head.sha;
+            if (!current) core.info(`the pull request moved on from ${process.env.CI_HEAD}; CI on ${pr.head.sha} starts its own review`);
+            const go = context.eventName !== 'workflow_run' || (!pr.draft && packages && current);
             const runs = async (params) =>
               (await github.rest.actions.listWorkflowRuns({ owner, repo, workflow_id: 'ci.yml', ...params })).data.workflow_runs;
             let headCi = process.env.CI_RUN;
