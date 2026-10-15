@@ -447,3 +447,31 @@ test('enforce: pnpm’s shims run, and a 0644 file doesn’t', async (t) => {
   assert.match(text, /plain=126/);
   assert.deepEqual(page.errors, []);
 });
+
+test('enforce: a cone’s denial is in the log when the page reloads right after it', async (t) => {
+  const page = await chrome.page(t);
+  await bootIn(page, 'enforce');
+  await run(page, 'clear; sudo -u cone cat /root/reloaded; echo tried-$((40 + 2))');
+  await shows(page, 'tried-42');
+  await page.reload();
+  await ready(page, rootShell);
+  const [refused] = await logged(page, '/root/reloaded');
+  assert.equal(refused.user, 'cone');
+  assert.equal(refused.errno, 'EACCES');
+  assert.deepEqual(page.errors, []);
+});
+
+test('enforce: slicc-denials run as root leaves a file a cone links into /tmp alone', async (t) => {
+  const page = await chrome.page(t);
+  await bootIn(page, 'enforce');
+  await run(
+    page,
+    "clear; echo intact > /root/target; chmod 600 /root/target; sudo -u cone bash -c 'p=$$; for i in $(seq 150 249); do ln -s /root/target /tmp/slicc-denials.$((p + i)); done'; slicc-denials > /dev/null; echo summary=$?; echo target=$(cat /root/target); echo planted=$(ls /tmp | grep -c slicc-denials); echo done-$((40 + 2))"
+  );
+  await shows(page, 'done-42');
+  const text = await screen(page);
+  assert.match(text, /summary=0/);
+  assert.match(text, /target=intact/);
+  assert.match(text, /planted=100/);
+  assert.deepEqual(page.errors, []);
+});

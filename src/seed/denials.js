@@ -1,5 +1,6 @@
 export const LOG = 'var/log/slicc/denials.log';
 export const CAP = 1024 * 1024;
+export const SPOOL = 'slicc.denials.spool.';
 
 async function folder(root) {
   const parts = LOG.split('/');
@@ -41,11 +42,31 @@ export function denialLog({
   schedule = setTimeout,
   cancel = clearTimeout,
   events = globalThis,
+  spool = events.document ? events.localStorage : null,
+  id = `${Date.now()}.${Math.random().toString(36).slice(2)}`,
 }) {
   const names = new Map();
   const pending = new Map();
+  const inflight = new Set();
+  let spooled = [];
   let queue = Promise.resolve();
   let timer = null;
+  const keyOf = (denial) =>
+    [denial.uid, denial.tag, denial.op, denial.path, denial.errno].join('\0');
+  const keep = () => {
+    try {
+      if (spooled.length) spool?.setItem(SPOOL + id, JSON.stringify(spooled));
+      else spool?.removeItem(SPOOL + id);
+    } catch (error) {
+      console.warn(`denials.log: ${error.message}`);
+    }
+  };
+  const settle = (taken) => {
+    inflight.delete(taken);
+    if (!spooled.some((entry) => taken.includes(entry))) return;
+    spooled = spooled.filter((entry) => !taken.includes(entry));
+    keep();
+  };
   const nameOf = async (uid) => {
     if (uid !== null && !names.has(uid)) {
       for (const user of (await users()
@@ -61,6 +82,7 @@ export function denialLog({
     const taken = [...pending.values()];
     pending.clear();
     if (!taken.length) return queue;
+    inflight.add(taken);
     queue = queue
       .then(async () => {
         const lines = [];
@@ -80,26 +102,57 @@ export function denialLog({
         }
         await append(root, lines.join(''), cap);
       })
-      .catch((error) => console.warn(`denials.log: ${error.message}`));
+      .catch((error) => console.warn(`denials.log: ${error.message}`))
+      .then(() => settle(taken));
     return queue;
+  };
+  const add = (entry) => {
+    const key = keyOf(entry);
+    const known = pending.get(key);
+    if (known) {
+      known.count += entry.count;
+      known.first = Math.min(known.first, entry.first);
+      known.last = Math.max(known.last, entry.last);
+    } else {
+      pending.set(key, entry);
+    }
+  };
+  const hide = () => {
+    if (timer !== null) cancel(timer);
+    timer = null;
+    spooled = [...new Set([...spooled, ...[...inflight].flat(), ...pending.values()])];
+    pending.clear();
+    keep();
+  };
+  const drain = () => {
+    const keys = [];
+    for (let i = 0; i < (spool?.length ?? 0); i += 1) {
+      const key = spool.key(i);
+      if (key?.startsWith(SPOOL)) keys.push(key);
+    }
+    for (const key of keys) {
+      try {
+        const entries = JSON.parse(spool.getItem(key));
+        spool.removeItem(key);
+        for (const entry of entries) add(entry);
+      } catch (error) {
+        spool.removeItem(key);
+        console.warn(`denials.log: ${error.message}`);
+      }
+    }
+    if (pending.size && timer === null) timer = schedule(flush, every);
   };
   const log = (denial) => {
     const at = now();
     const tag = denial.tag ?? null;
-    const key = [denial.uid, tag, denial.op, denial.path, denial.errno].join('\0');
-    const known = pending.get(key);
-    if (known) {
-      known.count += 1;
-      known.last = at;
-    } else {
-      pending.set(key, { ...denial, tag, count: 1, first: at, last: at });
-    }
+    add({ ...denial, tag, count: 1, first: at, last: at });
     if (pending.size >= batch) return flush();
     if (timer === null) timer = schedule(flush, every);
     return queue;
   };
   log.flush = flush;
-  events.addEventListener?.('pagehide', () => void flush());
+  log.drain = drain;
+  events.addEventListener?.('pagehide', hide);
   events.addEventListener?.('visibilitychange', () => {
     if (events.document?.visibilityState === 'hidden') void flush();
   });

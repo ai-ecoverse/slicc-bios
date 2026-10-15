@@ -593,6 +593,7 @@ async function own() {
   approvals.verify((req) => rootChecked((argv) => kernel.run(argv, { cwd: '/' }), req));
   const cone = await addCone(kernel);
   coneIds = cone && { uid: cone.uid, gid: cone.gid };
+  denials.drain();
   await lockLegacy(kernel, { text, write, root }).catch((error) =>
     console.warn(`legacy files: ${error.message}`)
   );
