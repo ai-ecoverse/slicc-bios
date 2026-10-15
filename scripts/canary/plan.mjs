@@ -76,7 +76,13 @@ export async function newest() {
   return { checked: checked.sort((a, b) => a.name.localeCompare(b.name)), overrides };
 }
 
-export const SHARDS = ['follow-chat', 'remote-pydata', 'rest'];
+export const SHARDS = [
+  'follow-chat',
+  'remote-pydata',
+  'users-agent-ui',
+  'packages-update-cdp',
+  'rest',
+];
 
 function shardList(text) {
   const list = text?.trim() ? JSON.parse(text) : SHARDS;

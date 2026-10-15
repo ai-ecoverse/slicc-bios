@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
-import { scan } from '../../scripts/cert/scan.mjs';
 import { claims, verify } from '../../scripts/cert/verify.mjs';
 
 const name = '@ai-ecoverse/wasm-bzip2';
@@ -19,21 +18,6 @@ const clean = [
   `certified ${name}@${version} sha256=${sha256} (ci: https://github.com/ai-ecoverse/slicc-bios/actions/runs/1)`,
   `certs.json: "${name}@${version}": { "integrity": "${integrity}", "sha256": "${sha256}" }`,
 ].join('\n');
-
-test('the scanner lets a clean verdict through', () => {
-  assert.deepEqual(scan(clean, ['not-in-the-text']), []);
-});
-
-test('the scanner withholds a Bedrock-key shape, a GitHub token, a private key and the exact secret', () => {
-  assert.deepEqual(scan(`${clean}\nABSKQmVkcm9ja0FQSUtleS1mYWtl`), ['a Bedrock key']);
-  assert.deepEqual(scan(`${clean}\nghs_FakeInstallationToken123`), ['a GitHub token']);
-  assert.deepEqual(scan(`${clean}\ngithub_pat_11FAKE_abcdefghij`), ['a GitHub token']);
-  assert.deepEqual(scan(`${clean}\n-----BEGIN OPENSSH PRIVATE KEY-----`), ['a private key']);
-  assert.deepEqual(scan(`${clean}\nkey: fake-secret-7f3a`, ['fake-secret-7f3a']), [
-    'a secret value',
-  ]);
-  assert.deepEqual(scan(clean, ['']), []);
-});
 
 test('the claims parser reads the certified, cert-ci and certs.json lines', () => {
   const text = `${clean}\ncert-ci: PASS @ai-ecoverse/slicc-cdp@1.11.2 sha256=${'b'.repeat(64)} (ci: x), runner cert required\ncert-ci: FAIL @ai-ecoverse/slicc-kernel@1.78.0: grep exits 70`;

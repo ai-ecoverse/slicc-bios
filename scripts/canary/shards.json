@@ -1,6 +1,20 @@
 {
-  "follow-chat": { "match": "/(follow[^/]*|chat)\\.test\\.mjs$" },
-  "remote-pydata": { "match": "/(remote|pydata|updates)\\.test\\.mjs$" },
-  "rest": { "exclude": "/(follow[^/]*|chat|remote|pydata|updates)\\.test\\.mjs$" },
-  "sweep": { "match": "/(sweep|pins)\\.test\\.mjs$" }
+  "follow-chat": {
+    "match": "/(follow[^/]*|chat)\\.test\\.mjs$"
+  },
+  "remote-pydata": {
+    "match": "/(remote|pydata|updates)\\.test\\.mjs$"
+  },
+  "users-agent-ui": {
+    "match": "/(users|agent-ui)\\.test\\.mjs$"
+  },
+  "packages-update-cdp": {
+    "match": "/(packages|update|cdp)\\.test\\.mjs$"
+  },
+  "rest": {
+    "exclude": "/(follow[^/]*|chat|remote|pydata|updates|users|agent-ui|packages|update|cdp)\\.test\\.mjs$"
+  },
+  "sweep": {
+    "match": "/(sweep|pins)\\.test\\.mjs$"
+  }
 }

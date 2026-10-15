@@ -13,12 +13,12 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  SHARDED: '/(follow[^/]*|chat|remote|pydata|updates)\.test\.mjs$'
+  SHARDED: '/(follow[^/]*|chat|remote|pydata|updates|users|agent-ui|packages|update|cdp)\.test\.mjs$'
 
 jobs:
   lint:
     name: ci / lint
-    runs-on: ubuntu-latest
+    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["push","schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_LIGHT_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 15
     env:
       LEFTHOOK: '0'
@@ -37,7 +37,7 @@ jobs:
 
   integration:
     name: ci / integration (${{ matrix.shard }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["push","schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 75
     strategy:
       fail-fast: false
@@ -47,10 +47,16 @@ jobs:
             match: '/(follow[^/]*|chat)\.test\.mjs$'
           - shard: remote-pydata
             match: '/(remote|pydata|updates)\.test\.mjs$'
+          - shard: users-agent-ui
+            match: '/(users|agent-ui)\.test\.mjs$'
+          - shard: packages-update-cdp
+            match: '/(packages|update|cdp)\.test\.mjs$'
           - shard: rest
             match: ''
     env:
       LEFTHOOK: '0'
+      SLICC_NO_UPDATE_CHECK: '1'
+      SLICC_CLI: ${{ github.workspace }}/node_modules/.bin/slicc
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
@@ -68,20 +74,13 @@ jobs:
           key: harness-cdn-${{ hashFiles('src/packages/**/pnpm-lock.yaml', 'src/packages/**/package.json') }}
           restore-keys: harness-cdn-
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version: '1.27'
-          cache: false
-
-      - name: The slicc CLI, the link's reference peer
-        env:
-          SLICC_CLI_COMMIT: 8d2706f26f9a60622b9ce039aeb8dab19e93588f
-        run: |
-          GOBIN="$RUNNER_TEMP/slicc-cli" go install "github.com/ai-ecoverse/slicc-cli/cmd/slicc@$SLICC_CLI_COMMIT"
-          echo "SLICC_CLI=$RUNNER_TEMP/slicc-cli/slicc" >> "$GITHUB_ENV"
-
       - name: Chromium system dependencies
-        run: npx playwright-core install-deps chromium
+        run: |
+          if sudo -n true 2>/dev/null; then
+            npx playwright-core install-deps chromium
+          else
+            echo "No root on $RUNNER_NAME: the image's system libraries and fonts serve Chromium."
+          fi
 
       - name: Integration tests with coverage, CPU profiles, and screenshots
         env:
@@ -122,7 +121,7 @@ jobs:
     name: ci / test
     needs: [lint, integration]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["push","schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_LIGHT_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 20
     env:
       LEFTHOOK: '0'
