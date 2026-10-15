@@ -180,6 +180,7 @@ function stream(streams, id, channel, own) {
       if (error || state.sentEnd) return;
       state.sentEnd = true;
       send(END);
+      wake();
       over();
     },
     close() {
