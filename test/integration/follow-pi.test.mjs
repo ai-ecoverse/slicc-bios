@@ -476,7 +476,7 @@ test('a follower watches the owner run with View, is refused a send, and sends w
   await owner.evaluate(() => localStorage.removeItem('slicc-os.tray-hub'));
 });
 
-test('a follower of an owner whose agent speaks a newer link protocol says so once and stops connecting', {
+test('a follower of an owner whose agent speaks a newer link protocol only watches, with a banner it can’t dismiss, and stops connecting', {
   timeout: 30 * 60 * 1000,
 }, async (t) => {
   const hub = await startHub();
@@ -503,7 +503,7 @@ test('a follower of an owner whose agent speaks a newer link protocol says so on
   assert.ok(file, 'the owner has the agent installed');
   const newer = file.text.replace(
     'new TextEncoder().encode(frame.hello)',
-    'new TextEncoder().encode(`slicc-agent-link/5 ${frame.hello}`)'
+    'new TextEncoder().encode(frame.hello.replace(/^slicc-agent-link\\/\\d+ /, "slicc-agent-link/9 "))'
   );
   assert.notEqual(newer, file.text);
   await trust(owner, { [file.path]: newer });
@@ -543,24 +543,41 @@ test('a follower of an owner whose agent speaks a newer link protocol says so on
       .links.devices.find((d) => d.kind === 'seven' && d.asking && d.state === 'connected')
   );
   await model(owner, (network, id) => network.setAccess(id, 'view', true), device.id);
-  await page.within(INSTALL, () => {
+  const banner = await page.within(INSTALL, () =>
+    document
+      .querySelector('slicc-app')
+      .model.notices?.list()
+      .find((item) => item.id === 'agent-mismatch')
+  );
+  assert.equal(banner.dismissible, false);
+  assert.equal(banner.title, "This tab can't follow that SLICC");
+  assert.equal(
+    await page.evaluate(() => document.querySelector('slicc-app').model.agent.readOnly?.()),
+    'Watch only.'
+  );
+  const before = await owned(owner);
+  const sent = await page.evaluate(async () => {
     const { agent } = document.querySelector('slicc-app').model;
-    return /newer version of the agent/.test(JSON.stringify(agent?.messages(agent.active()) ?? []));
+    window.firstAgent = agent;
+    return agent.send(agent.active(), 'From a mismatched follower').then(
+      () => 'sent',
+      (error) => error.code ?? error.message
+    );
   });
-  await page.evaluate(() => {
-    window.firstAgent = document.querySelector('slicc-app').model.agent;
-  });
+  assert.equal(sent, 'EPROTO');
   await pause(10000);
   const after = await page.evaluate(() => {
-    const { agent } = document.querySelector('slicc-app').model;
-    const said = JSON.stringify(agent.messages(agent.active()));
+    const { agent, notices } = document.querySelector('slicc-app').model;
     return {
       same: agent === window.firstAgent,
-      notices: said.split('newer version of the agent').length - 1,
+      banners: notices.list().filter((item) => item.id === 'agent-mismatch').length,
       warnings: window.followWarnings,
     };
   });
-  assert.deepEqual(after, { same: true, notices: 1, warnings: 0 });
+  assert.deepEqual(after, { same: true, banners: 1, warnings: 0 });
+  assert.equal(await owned(owner), before);
+  assert.ok(!asked.some((body) => body.includes('From a mismatched follower')));
+  await shoot(page, 'follower-watch-only', { show: 'chat' });
   assert.deepEqual(page.errors, []);
   await owner.evaluate(() => localStorage.removeItem('slicc-os.tray-hub'));
 });
