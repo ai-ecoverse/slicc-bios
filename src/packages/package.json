@@ -6,7 +6,7 @@
     "@ai-ecoverse/slicc-browsers": "1.5.0",
     "@ai-ecoverse/slicc-cdp": "1.11.2",
     "@ai-ecoverse/slicc-clipboard": "1.0.2",
-    "@ai-ecoverse/slicc-kernel": "1.86.0",
+    "@ai-ecoverse/slicc-kernel": "1.90.0",
     "@ai-ecoverse/slicc-spectrum": "1.68.0",
     "@ai-ecoverse/wasi-pnpm": "12.9.1-8",
     "@ai-ecoverse/wasi-ripgrep": "15.2.0-3",
