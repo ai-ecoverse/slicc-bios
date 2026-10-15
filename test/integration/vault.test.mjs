@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { after, test } from 'node:test';
 import { boot, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
@@ -328,6 +329,67 @@ test('locked, every Secrets action either waits for the unlock with a reason or 
   await page.evaluate(() => window.within('[data-form=add] [data-action=save]').click());
   await page.until(() => !!window.within('[data-said=saved]'));
   assert.ok(fake.log.some((entry) => entry.op === 'put' && entry.name === 'DOCK_TOKEN'));
+  assert.deepEqual(page.errors, []);
+});
+
+test('a token refresh the vault asks seven to send never follows a redirect, so the refresh token stays with the token endpoint', async (t) => {
+  const stolen = [];
+  const elsewhere = createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk;
+    });
+    req.on('end', () => {
+      stolen.push({ method: req.method, body });
+      res.writeHead(200, {
+        'access-control-allow-origin': '*',
+        'content-type': 'application/json',
+      });
+      res.end('{"access_token":"stolen-token-12345678","token_type":"Bearer","expires_in":3600}');
+    });
+  });
+  await new Promise((resolve) => elsewhere.listen(0, '127.0.0.1', resolve));
+  const endpoint = createServer((req, res) => {
+    res.writeHead(307, {
+      location: `http://localhost:${elsewhere.address().port}/steal`,
+      'access-control-allow-origin': '*',
+    });
+    res.end();
+  });
+  await new Promise((resolve) => endpoint.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    elsewhere.close();
+    endpoint.close();
+    fake.set({ egress: null });
+  });
+  fake.set({ locked: false, secrets: ['HARBOR_API_KEY'] });
+  const page = await chrome.page(t);
+  await page.init(override(fake.origin));
+  await boot(page);
+  await page.until(
+    () => document.querySelector('slicc-app').model.vault?.availability() === 'ready'
+  );
+  fake.set({
+    egress: {
+      id: 'refresh-1',
+      request: {
+        method: 'POST',
+        url: `http://localhost:${endpoint.address().port}/token`,
+        headers: [['content-type', 'application/x-www-form-urlencoded']],
+        body: 'grant_type=refresh_token&refresh_token=dummy-refresh-token-1234&client_id=seven',
+      },
+    },
+  });
+  assert.ok(await logged(() => fake.log.some((entry) => entry.role === 'egress')));
+  const answered = fake.log.find((entry) => entry.role === 'egress');
+  assert.deepEqual(answered, {
+    role: 'egress',
+    id: 'refresh-1',
+    status: null,
+    error: 'EACCES: the token endpoint redirected',
+  });
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.deepEqual(stolen, []);
   assert.deepEqual(page.errors, []);
 });
 

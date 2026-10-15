@@ -98,6 +98,24 @@ export function joinTray(agent, own) {
   };
 }
 
+export function joinNotices(agent, own) {
+  if (!agent) return own;
+  if (!own) return agent;
+  const list = () => [...own.list(), ...agent.list()];
+  const mine = (id) => own.list().some((notice) => notice.id === id);
+  return {
+    list,
+    on(type, listener) {
+      const offs = [agent.on(type, () => listener(list())), own.on(type, () => listener(list()))];
+      return () => {
+        for (const off of offs) off();
+      };
+    },
+    act: (id, action) => (mine(id) ? own.act(id, action) : agent.act(id, action)),
+    dismiss: (id) => (mine(id) ? own.dismiss(id) : agent.dismiss(id)),
+  };
+}
+
 export function mirrorNetwork(os, local) {
   const listeners = new Set();
   let current = local.status();
@@ -194,6 +212,7 @@ export function present({
         ...model,
         ...created,
         agent: wrap(created.agent),
+        notices: joinNotices(created.notices, model.notices),
         ...(model.tray ? { tray: joinTray(created.tray, model.tray) } : {}),
       };
     }

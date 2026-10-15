@@ -120,8 +120,19 @@ const page = (port) => (event) => {
   }
   return port.postMessage({ v: 1, id, error: { code: 'ENOTSUP', message: op + ' arrives later' } });
 };
+let egressed = null;
 setInterval(async () => {
-  const wanted = (await (await fetch('/state')).json()).locked;
+  const shared = await (await fetch('/state')).json();
+  if (shared.egress && shared.egress.id !== egressed && pages.length) {
+    egressed = shared.egress.id;
+    const channel = new MessageChannel();
+    channel.port1.onmessage = ({ data }) => {
+      log({ role: 'egress', id: egressed, status: data.status ?? null, error: data.error ?? null });
+      channel.port1.close();
+    };
+    pages.at(-1).postMessage({ v: 1, event: 'egress', request: shared.egress.request }, [channel.port2]);
+  }
+  const wanted = shared.locked;
   if (wanted === locked) return;
   locked = wanted;
   for (const each of pages) each.postMessage({ v: 1, event: 'status', status: status() });
@@ -174,13 +185,6 @@ addEventListener('message', (event) => {
 `;
 
 const button = `
-setInterval(async () => {
-  const wanted = (await (await fetch('/state')).json()).locked;
-  if (wanted === locked) return;
-  locked = wanted;
-  for (const each of pages) each.postMessage({ v: 1, event: 'status', status: status() });
-  for (const release of agents) release();
-}, 200);
 addEventListener('message', (event) => {
   if (event.source !== parent || event.data?.type !== 'slicc-vault') return;
   fetch('/log', { method: 'POST', body: JSON.stringify({ role: 'button', op: event.data.op, theme: event.data.button?.theme ?? null }) });
@@ -238,7 +242,7 @@ export async function startFakeVault(initial = {}) {
     }
     if (url.pathname === '/state') {
       res.writeHead(200, { ...headers, 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ locked: state.locked }));
+      return res.end(JSON.stringify({ locked: state.locked, egress: state.egress ?? null }));
     }
     const files = {
       '/': ['text/html', '<!doctype html><meta charset="utf-8"><script src="/frame.js"></script>'],
