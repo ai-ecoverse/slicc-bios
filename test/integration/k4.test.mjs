@@ -102,22 +102,23 @@ async function shoot(page, name) {
   await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
 }
 
-test('seven runs kernel users report by default, and the human’s terminal is root', async (t) => {
+test('seven runs kernel users enforce by default, and the human’s terminal is root', async (t) => {
   const page = await chrome.page(t);
   await page.goto('/');
   await ready(page, rootShell);
-  assert.equal(await page.evaluate(() => document.documentElement.dataset.users), 'report');
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.users), 'enforce');
   await run(
     page,
-    'clear; whoami; id -nG cone; printf "echo ran-\\$((40 + 2))\\n" > /tmp/nox; chmod 644 /tmp/nox; /tmp/nox'
+    'clear; whoami; id -nG cone; printf "echo ran\\n" > /tmp/nox; chmod 644 /tmp/nox; /tmp/nox; echo rc=$?; echo done-$((40 + 2))'
   );
-  await shows(page, 'ran-42');
+  await shows(page, 'done-42');
   const text = await screen(page);
   assert.match(text, /^root\s/);
   assert.match(text, /\bsudo\b/);
+  assert.match(text, /rc=126/);
   const [line] = await logged(page, '/tmp/nox');
   assert.equal(line.user, 'root');
-  assert.equal(line.mode, 'report');
+  assert.equal(line.mode, 'enforce');
   assert.equal(JSON.parse(line.tag).kind, 'user');
   assert.match(JSON.parse(line.tag).where, /^terminal:/);
 
