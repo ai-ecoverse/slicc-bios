@@ -6,27 +6,35 @@ fail=0
 check() {
   user=$1
   tree=$2
-  sudo -n -u "$user" find "$tree" -writable -print 2>/dev/null | head -20 > "$found" || true
+  sudo -n -u "$user" find "$tree" -writable -print 2>/dev/null > "$found" || true
+  count=0
   while IFS= read -r path; do
     fail=1
+    count=$((count + 1))
+    if [ "$count" -gt 20 ]; then continue; fi
     if [ -L "$path" ]; then
       echo "::error::sandbox user $user can write $path, a symlink to $(readlink -f "$path" || echo '?'), a writable place shared outside $tree"
     else
       echo "::error::sandbox user $user can write $path"
     fi
   done < "$found"
-  for link in $(sudo -n find "$tree" -type l 2>/dev/null | head -50); do
+  if [ "$count" -gt 20 ]; then echo "::error::and $((count - 20)) more paths $user can write in $tree"; fi
+  shown=0
+  sudo -n find "$tree" -type l -print 2>/dev/null > "$found" || true
+  while IFS= read -r link; do
     target=$(readlink -f "$link" || true)
     case "$target" in
-      "$tree" | "$tree"/*) ;;
-      *)
-        if [ -n "$target" ] && sudo -n -u "$user" test -w "$target"; then
-          fail=1
-          echo "::error::$link links to $target outside $tree, and sandbox user $user can write it"
-        fi
-        ;;
+      "$tree" | "$tree"/*) continue ;;
     esac
-  done
+    if [ -n "$target" ] && sudo -n -u "$user" test -w "$target"; then
+      fail=1
+      shown=$((shown + 1))
+      if [ "$shown" -le 20 ]; then
+        echo "::error::$link links to $target outside $tree, and sandbox user $user can write it"
+      fi
+    fi
+  done < "$found"
+  if [ "$shown" -gt 20 ]; then echo "::error::and $((shown - 20)) more such links in $tree"; fi
 }
 check cert /home/certbase
 check certbase /home/cert
