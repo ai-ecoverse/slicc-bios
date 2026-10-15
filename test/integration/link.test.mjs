@@ -365,7 +365,6 @@ test('the real slicc CLI: ssh into it with its pinned host key, and as the exit,
     .filter((entry) => entry.family === 'IPv4' && !entry.internal);
   const lan = (outside.find((entry) => private4(entry.address)) ?? outside[0])?.address;
   assert.ok(lan, 'a non-loopback IPv4 address for the hosts-file test');
-  const reach = private4(lan) ? [] : ['--allow', `${lan}/32`];
   const dir = await mkdtemp(join(tmpdir(), 'link-hosts-'));
   const hosts = join(dir, 'hosts');
   await writeFile(hosts, `# test names\n${lan} ref.link.test\n`);
@@ -393,7 +392,6 @@ test('the real slicc CLI: ssh into it with its pinned host key, and as the exit,
         '--no-kernel',
         '--hosts',
         hosts,
-        ...reach,
         ...extra,
       ],
       {
@@ -427,6 +425,10 @@ test('the real slicc CLI: ssh into it with its pinned host key, and as the exit,
     'ssh-exec'
   );
   assert.deepEqual(ssh, { code: '0', out: 'ssh 42' });
+  if (!private4(lan)) {
+    t.skip(`hosts file: no private IPv4 on this runner (${lan}), see slicc-bios#443`);
+    return;
+  }
 
   const exitToConnected = () =>
     page.evaluate(() => {
@@ -439,11 +441,7 @@ test('the real slicc CLI: ssh into it with its pinned host key, and as the exit,
     `curl -s --noproxy '*' --max-time 10 http://ref.link.test:${port}/automatic`,
     'hosts-automatic'
   );
-  assert.deepEqual(
-    automatic,
-    { code: '0', out: 'hosts /automatic' },
-    `this runner's address ${lan}`
-  );
+  assert.deepEqual(automatic, { code: '0', out: 'hosts /automatic' });
   await page.evaluate(() => {
     const { notices } = document.querySelector('slicc-app').model;
     for (const notice of notices.list()) notices.dismiss(notice.id);
