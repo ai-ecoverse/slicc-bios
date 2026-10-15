@@ -56,7 +56,10 @@ test('agent 4.x wipes 3.x’s key store once, says which accounts to add again, 
       .find((item) => item.id === 'keys-moved')
   );
   assert.equal(notice.title, "Your keys moved to seven's vault.");
-  for (const name of ['Adobe', 'Bedrock', 'github']) assert.match(notice.body, new RegExp(name));
+  assert.equal(
+    notice.body,
+    'Add them again in Settings › Accounts: Adobe, Bedrock, and the MCP server github.'
+  );
   const databases = await page.evaluate(async () =>
     (await indexedDB.databases()).map((database) => database.name)
   );

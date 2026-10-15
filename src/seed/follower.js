@@ -4,7 +4,7 @@ import { confirm, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
 import { followAgent, installAgent, loadChat } from './agent.js';
 import { createFollow, deviceName, hubClient, keepFollow, takeFollow } from './follow.js';
 import { createNotices } from './notices.js';
-import { joinTray } from './present.js';
+import { joinNotices, joinTray } from './present.js';
 import { remoteTerminal } from './terminal.js';
 import { createUpdates } from './updates.js';
 
@@ -159,7 +159,14 @@ export function preparer(root, { install = installAgent } = {}) {
 }
 
 export const shower = (app, base) => (agent) => {
-  app.model = agent ? { ...base, ...agent, tray: joinTray(agent.tray, base.tray) } : base;
+  app.model = agent
+    ? {
+        ...base,
+        ...agent,
+        notices: joinNotices(agent.notices, base.notices),
+        tray: joinTray(agent.tray, base.tray),
+      }
+    : base;
 };
 
 export const chatModel =

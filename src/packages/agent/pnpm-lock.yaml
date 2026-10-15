@@ -13,16 +13,16 @@ importers:
   .:
     dependencies:
       '@ai-ecoverse/slicc-agent':
-        specifier: 4.3.1
-        version: 4.3.1(@ai-ecoverse/slicc-kernel@1.100.0)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
+        specifier: 4.3.3
+        version: 4.3.3(@ai-ecoverse/slicc-kernel@1.100.0)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@ai-ecoverse/slicc-kernel':
         specifier: 1.100.0
         version: 1.100.0
 
 packages:
 
-  '@ai-ecoverse/slicc-agent@4.3.1':
-    resolution: {integrity: sha512-K55Ei8ypcFll9cNLBElyB8GKi1YeZjb8GIC24bgqV5MtxHCzpe93F+M8r6xrHvRuzPde/U/y6dU98kDgch34Jw==}
+  '@ai-ecoverse/slicc-agent@4.3.3':
+    resolution: {integrity: sha512-5qLi+CTlLjuJzItkrudwEQ+thIXjf2X7LhuKM4UzOGEjoR7drzUUblXDMqoSK7tY8lTmFTBbUjMCYkMlXP3/rQ==}
     engines: {node: '>=24'}
     peerDependencies:
       '@ai-ecoverse/slicc-kernel': '>=1.47.1 <2'
@@ -31,8 +31,8 @@ packages:
       '@ai-ecoverse/slicc-spectrum':
         optional: true
 
-  '@ai-ecoverse/slicc-browsers@1.5.0':
-    resolution: {integrity: sha512-H+K/cAMqVCPHKycoM68ZW/jDaOBcmqbMR4mVeBKP/L2Tb5U4dX15vcJ/EmFyBvA2XwYDM40KToJSWMUgK/Q/dg==}
+  '@ai-ecoverse/slicc-browsers@1.6.0':
+    resolution: {integrity: sha512-GgVOegU2pzZxjczO2wizKB/zyLDiFrlw4jnKolwzTAo2qSAi7IBSma9zrxuOQPmQeD91XEIeBx7giLYx+ItInw==}
     engines: {node: '>=24'}
 
   '@ai-ecoverse/slicc-kernel@1.100.0':
@@ -331,9 +331,9 @@ packages:
 
 snapshots:
 
-  '@ai-ecoverse/slicc-agent@4.3.1(@ai-ecoverse/slicc-kernel@1.100.0)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)':
+  '@ai-ecoverse/slicc-agent@4.3.3(@ai-ecoverse/slicc-kernel@1.100.0)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)':
     dependencies:
-      '@ai-ecoverse/slicc-browsers': 1.5.0
+      '@ai-ecoverse/slicc-browsers': 1.6.0
       '@ai-ecoverse/slicc-kernel': 1.100.0
       '@ai-ecoverse/slicc-vault': 1.9.1
       '@earendil-works/chord': 1.0.4
@@ -355,7 +355,7 @@ snapshots:
       - ws
       - zod
 
-  '@ai-ecoverse/slicc-browsers@1.5.0': {}
+  '@ai-ecoverse/slicc-browsers@1.6.0': {}
 
   '@ai-ecoverse/slicc-kernel@1.100.0': {}
 

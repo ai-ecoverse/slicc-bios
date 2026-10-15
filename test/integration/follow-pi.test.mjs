@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
-import { connectAccount, ready } from './bios.mjs';
+import { connectAccount, ready, trust } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { model, startHub } from './fake-hub.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
@@ -472,6 +472,88 @@ test('a follower watches the owner run with View, is refused a send, and sends w
   );
   assert.ok(asked.some((body) => body.includes('From the follower')));
   assert.deepEqual(owner.errors, []);
+  assert.deepEqual(page.errors, []);
+  await owner.evaluate(() => localStorage.removeItem('slicc-os.tray-hub'));
+});
+
+test('a follower of an owner whose agent speaks a newer link protocol says so once and stops connecting', {
+  timeout: 30 * 60 * 1000,
+}, async (t) => {
+  const hub = await startHub();
+  t.after(() => hub.close());
+  const owner = await owners.page(t);
+  await owner.goto('/');
+  await ready(owner);
+  await owner.within(INSTALL, () => document.querySelector('slicc-app').model.updates.ready());
+  const file = await owner.evaluate(async () => {
+    const walk = async (dir, prefix) => {
+      for await (const [name, handle] of dir.entries()) {
+        const path = `${prefix}${name}`;
+        if (handle.kind === 'file' && path.endsWith('@ai-ecoverse/slicc-agent/dist/link.js'))
+          return { path, text: await (await handle.getFile()).text() };
+        if (handle.kind === 'directory' && /^(opt|opt\/agent|.*node_modules.*)$/.test(path)) {
+          const found = await walk(handle, `${path}/`);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    return walk(await navigator.storage.getDirectory(), '');
+  });
+  assert.ok(file, 'the owner has the agent installed');
+  const newer = file.text.replace(
+    'new TextEncoder().encode(frame.hello)',
+    'new TextEncoder().encode(`slicc-agent-link/5 ${frame.hello}`)'
+  );
+  assert.notEqual(newer, file.text);
+  await trust(owner, { [file.path]: newer });
+  await owner.evaluate((url) => localStorage.setItem('slicc-os.tray-hub', url), hub.url);
+  await owner.reload();
+  await ready(owner);
+  const { joinUrl } = await model(owner, (network) => network.status().links);
+
+  const page = await followers.page(t);
+  await page.init(() => {
+    window.followWarnings = 0;
+    const warn = console.warn;
+    console.warn = (...args) => {
+      if (String(args[0]).startsWith('following the agent')) window.followWarnings += 1;
+      warn.apply(console, args);
+    };
+  });
+  await page.goto(`/#follow=${encodeURIComponent(joinUrl)}`);
+  await page.until(new Function(`return !!(${dialog})()`));
+  await page.evaluate(
+    new Function(
+      `[...(${dialog})().getRootNode().host.shadowRoot.querySelectorAll('swc-button')].find((b) => b.textContent.trim() === 'Follow').click()`
+    )
+  );
+  await owner.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.network.status()
+      .links.devices.some((d) => d.kind === 'seven' && d.asking)
+  );
+  const [device] = await model(owner, (network) => network.status().links.devices);
+  await model(owner, (network, id) => network.setAccess(id, 'view', true), device.id);
+  await page.within(INSTALL, () => {
+    const { agent } = document.querySelector('slicc-app').model;
+    return /newer version of the agent/.test(JSON.stringify(agent?.messages(agent.active()) ?? []));
+  });
+  await page.evaluate(() => {
+    window.firstAgent = document.querySelector('slicc-app').model.agent;
+  });
+  await pause(10000);
+  const after = await page.evaluate(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    const said = JSON.stringify(agent.messages(agent.active()));
+    return {
+      same: agent === window.firstAgent,
+      notices: said.split('newer version of the agent').length - 1,
+      warnings: window.followWarnings,
+    };
+  });
+  assert.deepEqual(after, { same: true, notices: 1, warnings: 0 });
   assert.deepEqual(page.errors, []);
   await owner.evaluate(() => localStorage.removeItem('slicc-os.tray-hub'));
 });
