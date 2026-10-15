@@ -9,6 +9,10 @@ export const STREAM =
 export const FAILED = 'the CDP guard couldn’t check this answer, so it held it back';
 export const SCRIPTS =
   'scripts and bindings for later documents could run in seven’s pages or the vault, so the guard doesn’t allow them; run a script in the page you see with Runtime.evaluate instead';
+export const UNFLAT =
+  'the guard only hands out flattened sessions, so attach with flatten: true and send commands with a sessionId';
+export const UNGUARDED =
+  'the guard couldn’t keep seven’s pages and the vault out of this tab, so it refuses commands there';
 export const HEADERS =
   'settings for a whole session (headers, user agent, locale, time zone, cache, network conditions, blocked URLs, emulation) could reach seven’s pages or the vault, so the guard doesn’t allow them; change a request through Fetch instead';
 export const DEBUGGER =
@@ -17,6 +21,11 @@ export const DEBUGGER =
 const GUARD_IDS = 2 ** 30;
 const HOLD_MS = 2000;
 const BLANK_MS = 10000;
+const ERROR_PAGE = 'chrome-error://chromewebdata/';
+const bare = (url) => url.split('#')[0];
+const NAV_MS = 10000;
+const NAV_TYPES = new Set(['page', 'iframe', 'background_page', 'webview']);
+const UNWAITED = new Set(['Target.getTargetInfo', 'Target.detachFromTarget']);
 const POLL_MS = 100;
 const REMEMBERED = 10000;
 
@@ -101,6 +110,7 @@ const ORIGINS = new Set([
   'manifestId',
   'url',
   'documentURL',
+  'unreachableUrl',
 ]);
 const FREE = new Set([
   'expression',
@@ -144,6 +154,26 @@ function parse(text) {
 const header = (headers, name) =>
   Object.entries(headers ?? {}).find(([key]) => key.toLowerCase() === name)?.[1];
 
+const under = (host, domain) => host === domain || host.endsWith(`.${domain}`);
+
+export function documentPatterns(own, rules = catalog.protectedOrigins) {
+  const patterns = new Set();
+  const add = (host) => {
+    for (const name of [host, `${host}.`]) {
+      patterns.add(`*://*${name}/*`);
+      patterns.add(`*://*${name}:*/*`);
+    }
+  };
+  for (const domain of rules.domains) add(domain);
+  for (const host of rules.hosts) if (!rules.domains.some((d) => under(host, d))) add(host);
+  if (own) patterns.add(`*://${new URL(own).host}/*`);
+  return [...patterns].map((urlPattern) => ({
+    urlPattern,
+    resourceType: 'Document',
+    requestStage: 'Request',
+  }));
+}
+
 export function protection(own) {
   const matcher = protectedOrigins(catalog.protectedOrigins, own ? [own] : []);
   const web = (url) => typeof url === 'string' && matcher.url(url.replace(/^ws(s?):/i, 'http$1:'));
@@ -154,6 +184,10 @@ class Guard {
   constructor(connection, own) {
     this.connection = connection;
     this.is = protection(own);
+    this.patterns = documentPatterns(own);
+    this.navs = new Map();
+    this.navSessions = new Map();
+    this.errored = new Map();
     this.targets = new Map();
     this.sessions = new Map();
     this.shown = new Set();
@@ -198,8 +232,10 @@ class Guard {
   learn(info) {
     if (!info?.targetId) return;
     const known = this.targets.get(info.targetId);
+    const failed = info.url !== undefined && this.errored.get(info.targetId) === bare(info.url);
     this.targets.set(info.targetId, {
-      url: info.url ?? '',
+      url: failed ? ERROR_PAGE : (info.url ?? ''),
+      type: info.type ?? known?.type,
       openerId: info.openerId,
       was: known?.was || known?.guarded || false,
       guarded: known?.guarded || false,
@@ -272,6 +308,75 @@ class Guard {
     }
   }
 
+  touch(targetId) {
+    if (!targetId || this.navs.has(targetId)) return;
+    if (!NAV_TYPES.has(this.targets.get(targetId)?.type ?? 'page')) return;
+    const nav = { targetId, session: null, done: false, failed: false };
+    nav.ready = new Promise((resolve) => {
+      nav.settle = (failed) => {
+        if (nav.done) return;
+        nav.done = true;
+        nav.failed = failed;
+        clearTimeout(nav.timer);
+        resolve();
+      };
+    });
+    nav.timer = setTimeout(() => nav.settle(true), NAV_MS);
+    nav.timer.unref?.();
+    this.navs.set(targetId, nav);
+    nav.attaching = this.call('Target.attachToTarget', { targetId, flatten: true }).then(
+      (answer) => answer.result?.sessionId ?? null
+    );
+    void nav.attaching.then((session) => this.arm(nav, session));
+  }
+
+  async arm(nav, session) {
+    if (!session) return nav.settle(true);
+    nav.session = session;
+    this.navSessions.set(session, nav);
+    const steps = await Promise.all([
+      this.call('Fetch.enable', { patterns: this.patterns }, session),
+      this.call(
+        'Network.enable',
+        { maxTotalBufferSize: 0, maxResourceBufferSize: 0, maxPostDataSize: 0 },
+        session
+      ),
+      this.call('Network.setBypassServiceWorker', { bypass: true }, session),
+    ]);
+    nav.settle(steps.some((step) => step.error));
+  }
+
+  navEvent({ method, params = {} }, nav) {
+    if (method !== 'Fetch.requestPaused') return;
+    const { requestId } = params;
+    if (params.resourceType === 'Document' && this.is.url(params.request?.url)) {
+      void this.call(
+        'Fetch.failRequest',
+        { requestId, errorReason: 'BlockedByClient' },
+        nav.session
+      );
+      this.failed(nav.targetId, params);
+      return;
+    }
+    void this.call('Fetch.continueRequest', { requestId }, nav.session);
+  }
+
+  lost(session) {
+    const nav = this.navSessions.get(session);
+    this.navSessions.delete(session);
+    nav.session = null;
+    nav.settle(true);
+    nav.failed = true;
+  }
+
+  async guarding(method, sessionId) {
+    if (sessionId === undefined || UNWAITED.has(method)) return null;
+    const nav = this.navs.get(this.sessions.get(sessionId)?.targetId);
+    if (!nav) return null;
+    await nav.ready;
+    return nav.failed ? UNGUARDED : null;
+  }
+
   async verify(sessionId) {
     void this.call('Page.enable', {}, sessionId);
     const tree = (await this.call('Page.getFrameTree', {}, sessionId)).result?.frameTree;
@@ -321,6 +426,7 @@ class Guard {
     this.targets.delete(info.targetId);
     this.learn(info);
     if (await this.watch(sessionId, info.targetId, parent)) {
+      this.touch(info.targetId);
       this.deliver({
         ...message,
         params: { ...params, targetInfo: info, waitingForDebugger: false },
@@ -393,8 +499,21 @@ class Guard {
     return true;
   }
 
+  failed(targetId, { frameId, request }) {
+    if (targetId && frameId === targetId) this.errored.set(targetId, bare(request.url));
+  }
+
   release({ method, params = {}, sessionId }) {
     const { requestId } = params;
+    if (
+      method === 'Fetch.requestPaused' &&
+      params.resourceType === 'Document' &&
+      this.is.url(params.request?.url)
+    ) {
+      void this.call('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' }, sessionId);
+      this.failed(this.sessions.get(sessionId)?.targetId, params);
+      return;
+    }
     if (method === 'Fetch.authRequired') {
       const authChallengeResponse = { response: 'Default' };
       void this.call('Fetch.continueWithAuth', { requestId, authChallengeResponse }, sessionId);
@@ -410,24 +529,43 @@ class Guard {
     const { method, params = {}, sessionId } = message;
     if (method === 'Target.attachedToTarget') {
       const info = params.targetInfo ?? {};
+      const nav = this.navs.get(info.targetId);
+      if (nav && sessionId === undefined && (await nav.attaching) === params.sessionId) return true;
       if (!info.url && (info.type === 'page' || info.type === 'iframe')) {
         void this.blank(message);
         return true;
       }
       this.learn(info);
-      if (await this.watch(params.sessionId, info.targetId, sessionId)) this.deliver(message);
+      if (await this.watch(params.sessionId, info.targetId, sessionId)) {
+        this.touch(info.targetId);
+        this.deliver(message);
+      }
       return true;
     }
     if (method === 'Target.targetCreated' || method === 'Target.targetInfoChanged') {
       this.learn(params.targetInfo);
-      if (!(await this.target(params.targetInfo?.targetId))) return false;
+      if (!(await this.target(params.targetInfo?.targetId))) {
+        this.deliver({
+          ...message,
+          params: { ...params, targetInfo: this.masked(params.targetInfo) },
+        });
+        return true;
+      }
       this.cutTarget(params.targetInfo.targetId);
       return true;
     }
     if (method === 'Target.targetDestroyed') {
+      const nav = this.navs.get(params.targetId);
+      this.navs.delete(params.targetId);
+      this.errored.delete(params.targetId);
+      if (nav?.session) this.navSessions.delete(nav.session);
       return this.targets.get(params.targetId)?.guarded === true;
     }
     if (method === 'Target.detachedFromTarget') {
+      if (this.navSessions.has(params.sessionId)) {
+        this.lost(params.sessionId);
+        return true;
+      }
       this.sessions.delete(params.sessionId);
       return !this.shown.delete(params.sessionId);
     }
@@ -443,11 +581,21 @@ class Guard {
       }
       return this.is.url(params.frame.url) || this.is.url(params.frame.securityOrigin);
     }
-    if (NAVIGATED.has(method)) return this.is.url(params.url);
+    if (NAVIGATED.has(method)) return !this.armed(sessionId) && this.is.url(params.url);
     if (method === 'Network.requestWillBeSent' && params.type === 'Document') {
-      return this.is.url(params.request?.url);
+      return !this.armed(sessionId) && this.is.url(params.request?.url);
     }
     return method === 'Runtime.executionContextCreated' && this.is.url(params.context?.origin);
+  }
+
+  masked(info) {
+    if (info.url === undefined || this.errored.get(info.targetId) !== bare(info.url)) return info;
+    return { ...info, url: ERROR_PAGE, title: ERROR_PAGE };
+  }
+
+  armed(sessionId) {
+    const nav = this.navs.get(this.sessions.get(sessionId)?.targetId);
+    return Boolean(nav?.done && !nav.failed && nav.session);
   }
 
   naming(message) {
@@ -470,6 +618,8 @@ class Guard {
   async event(message) {
     const method = message.method ?? '';
     const { sessionId } = message;
+    if (this.navSessions.has(sessionId))
+      return this.navEvent(message, this.navSessions.get(sessionId));
     if (method.startsWith('Target.') && (await this.targetEvent(message))) return;
     if (this.blocked.has(sessionId) && PAUSES.has(method)) return this.release(message);
     if (this.hidden(sessionId)) return;
@@ -485,7 +635,7 @@ class Guard {
     const targetInfos = [];
     for (const info of result.targetInfos) {
       this.learn(info);
-      if (!(await this.target(info.targetId))) targetInfos.push(info);
+      if (!(await this.target(info.targetId))) targetInfos.push(this.masked(info));
     }
     return this.deliver({ ...message, result: { ...result, targetInfos } });
   }
@@ -496,13 +646,15 @@ class Guard {
     const { result } = message;
     if (method === 'Target.attachToTarget' && result?.sessionId) {
       const ok = await this.watch(result.sessionId, params.targetId);
-      return ok ? this.deliver(message) : this.refuse(was);
+      if (!ok) return this.refuse(was);
+      this.touch(params.targetId);
+      return this.deliver(message);
     }
     if (method === 'Target.getTargets' && Array.isArray(result?.targetInfos)) {
       return this.listed(message, result);
     }
-    if (method === 'Target.createTarget' && result?.targetId) {
-      this.learn({ targetId: result.targetId, url: params.url });
+    if (method === 'Target.getTargetInfo' && result?.targetInfo) {
+      return this.deliver({ ...message, result: { targetInfo: this.masked(result.targetInfo) } });
     }
     if (typeof result?.stream === 'string') this.streams.add(result.stream);
     if (COOKIES.has(method) && Array.isArray(result?.cookies)) {
@@ -578,7 +730,6 @@ class Guard {
     return (
       (sessionId !== undefined && this.hidden(sessionId)) ||
       UNSAFE.has(method) ||
-      (FLAT.has(method) && params.flatten !== true) ||
       this.valued(params) ||
       this.workers(method, params) ||
       (method === 'Target.detachFromTarget' &&
@@ -599,15 +750,39 @@ class Guard {
     if (typeof method !== 'string') return null;
     if (method.startsWith('Fetch.') && sessionId === undefined) return FETCH;
     if (LATER.has(method)) return SCRIPTS;
+    if (FLAT.has(method) && params.flatten !== true) {
+      const target = params.targetId !== undefined && (await this.current(params.targetId));
+      return target ? PROTECTED : UNFLAT;
+    }
     if (STICKY.has(method) || EMULATION.test(method)) return HEADERS;
     if (DEBUGGERS.some((domain) => method.startsWith(domain))) return DEBUGGER;
     if (this.plainly(method, params, sessionId)) return PROTECTED;
+    const unguarded = await this.guarding(method, sessionId);
+    if (unguarded) return unguarded;
     if ((method === 'IO.read' || method === 'IO.close') && !this.streams.has(params.handle)) {
       return STREAM;
     }
     if (params.targetId !== undefined && (await this.current(params.targetId))) return PROTECTED;
+    if (method === 'Target.attachToTarget') {
+      this.touch(params.targetId);
+      const nav = this.navs.get(params.targetId);
+      if (nav) await nav.ready;
+      if (nav?.failed) return UNGUARDED;
+    }
     if (await this.frame(params.frameId)) return PROTECTED;
     return this.unseen(method, params);
+  }
+
+  async create({ id, params }) {
+    const answer = await this.call('Target.createTarget', { ...params, url: 'about:blank' });
+    const targetId = answer.result?.targetId;
+    if (!targetId) return this.deliver({ ...answer, id });
+    this.learn({ targetId, url: 'about:blank', type: 'page' });
+    this.touch(targetId);
+    const nav = this.navs.get(targetId);
+    await nav.ready;
+    if (!nav.failed) void this.call('Page.navigate', { url: params.url }, nav.session);
+    this.deliver({ id, result: answer.result });
   }
 
   pass(message) {
@@ -658,7 +833,11 @@ class Guard {
         `send:${message.sessionId ?? ''}`,
         async () => {
           const why = await this.check(message);
-          return why ? this.refuse(message, why) : this.pass(message);
+          if (why) return this.refuse(message, why);
+          if (message.method === 'Target.createTarget' && message.params?.url) {
+            return this.create(message);
+          }
+          return this.pass(message);
         },
         (error) => {
           console.warn(`the CDP guard refused a command: ${error.message}`);
