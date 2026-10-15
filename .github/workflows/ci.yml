@@ -13,12 +13,12 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  SHARDED: '/(follow[^/]*|chat|remote|pydata|updates)\.test\.mjs$'
+  SHARDED: '/(follow[^/]*|chat|remote|pydata|updates|users|agent-ui|packages|update|cdp)\.test\.mjs$'
 
 jobs:
   lint:
     name: ci / lint
-    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_LIGHT_RUNNER) || 'ubuntu-latest' }}
+    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["push","schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_LIGHT_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 15
     env:
       LEFTHOOK: '0'
@@ -37,7 +37,7 @@ jobs:
 
   integration:
     name: ci / integration (${{ matrix.shard }})
-    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_RUNNER) || 'ubuntu-latest' }}
+    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["push","schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 75
     strategy:
       fail-fast: false
@@ -47,6 +47,10 @@ jobs:
             match: '/(follow[^/]*|chat)\.test\.mjs$'
           - shard: remote-pydata
             match: '/(remote|pydata|updates)\.test\.mjs$'
+          - shard: users-agent-ui
+            match: '/(users|agent-ui)\.test\.mjs$'
+          - shard: packages-update-cdp
+            match: '/(packages|update|cdp)\.test\.mjs$'
           - shard: rest
             match: ''
     env:
@@ -128,7 +132,7 @@ jobs:
     name: ci / test
     needs: [lint, integration]
     if: ${{ !cancelled() }}
-    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_LIGHT_RUNNER) || 'ubuntu-latest' }}
+    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["push","schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_LIGHT_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 20
     env:
       LEFTHOOK: '0'

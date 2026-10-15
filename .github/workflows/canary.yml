@@ -20,7 +20,7 @@ on:
         type: string
         default: ''
       shards:
-        description: 'Shards from scripts/canary/shards.json, a JSON list; empty means ci.yml''s three'
+        description: 'Shards from scripts/canary/shards.json, a JSON list; empty means ci.yml''s'
         type: string
         default: ''
   workflow_call:
