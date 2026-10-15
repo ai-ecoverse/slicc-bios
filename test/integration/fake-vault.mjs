@@ -11,6 +11,7 @@ serial = records.size;
 const save = () => fetch('/records', { method: 'POST', body: JSON.stringify({ records: [...records.values()], version }) });
 const pages = [];
 const agents = [];
+const requests = new Map();
 const mint = () => 'fnox_proxy_' + String(++serial).padStart(24, '0');
 const key = (kind, name) => kind + '\\u0000' + name;
 const keep = (fields) => {
@@ -99,6 +100,28 @@ const page = (port) => (event) => {
   if (op === 'list') return reply({ list: list() });
   if (op === 'audit') return reply({ audit: [], more: false });
   if (op === 'placeholders') return reply({ placeholders: placeholders(), scrub: scrub() });
+  if (op === 'sealed' && event.data.req?.op === 'request') {
+    const id = 'req-' + String(requests.size + 1);
+    requests.set(id, { kind: event.data.req.kind, state: 'pending' });
+    return reply({ reply: { v: 1, state: 'pending', id } });
+  }
+  if (op === 'sealed' && event.data.req?.op === 'cancel') {
+    const found = requests.get(event.data.req.id);
+    if (found) {
+      found.state = 'cancelled';
+      for (const each of pages) each.postMessage({ v: 1, event: 'cancelled', request: event.data.req.id, kind: found.kind });
+    }
+    return reply({ reply: { v: 1, state: found?.state ?? 'expired' } });
+  }
+  if (op === 'sealed' && event.data.req?.op === 'status')
+    return reply({ reply: { v: 1, ...(requests.get(event.data.req.id) ?? { state: 'expired' }) } });
+  if (op === 'answer') {
+    const found = requests.get(event.data.request);
+    log({ role: 'page', op: 'answered', request: event.data.request, state: event.data.state, exit: event.data.exit ?? null });
+    if (!found || found.state !== 'pending') return port.postMessage({ v: 1, id, error: { code: 'EINVAL', message: 'the request ended' } });
+    if (event.data.state === 'done') found.state = 'done';
+    return reply({ state: found.state });
+  }
   if (op === 'sealed') return reply({ reply: { v: 1, secrets: live().filter((record) => record.kind === 'secret').map((record) => ({ name: record.name, placeholder: record.placeholder, state: 'inert', exec: false, rules: [] })) } });
   if (op === 'remove' || op === 'restore') {
     const record = records.get(key(event.data.kind ?? 'secret', event.data.name));

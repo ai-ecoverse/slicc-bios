@@ -421,6 +421,81 @@ test('/dev/sealed relays to the vault with the kernel stamp', async (t) => {
   assert.deepEqual(page.errors, []);
 });
 
+const cli = process.env.SLICC_CLI;
+
+test('a jerk sign-in cancelled while the linked computer doesn’t answer leaves no jerk running there', {
+  skip: !cli,
+}, async (t) => {
+  const { chmod, mkdtemp, writeFile } = await import('node:fs/promises');
+  const { existsSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { spawn } = await import('node:child_process');
+  const { createInterface } = await import('node:readline');
+  const dir = await mkdtemp(join(tmpdir(), 'vault-jerk-'));
+  await writeFile(
+    join(dir, 'jerk'),
+    `#!/bin/sh\ncase "$1" in --version) echo "jerk 0.9.0"; exit 0;; esac\nif [ "$2" = create ]; then touch "${dir}/started"; sleep 6; touch "${dir}/finished"; echo '{"exit":0,"message":"signed in"}'; exit 0; fi\necho '{"exit":0,"items":[]}'\n`
+  );
+  await chmod(join(dir, 'jerk'), 0o755);
+  fake.set({ locked: false, secrets: [] });
+  const page = await chrome.page(t);
+  await page.init(override(fake.origin));
+  await boot(page);
+  await page.until(
+    () => document.querySelector('slicc-app').model.vault?.availability() === 'ready'
+  );
+  const said = [];
+  const node = spawn(cli, ['attach', '--signal', 'stdio', '--name', 'jerk-node', '--no-kernel'], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+  });
+  t.after(() => {
+    node.kill('SIGCONT');
+    node.kill();
+  });
+  createInterface({ input: node.stderr }).on('line', (line) => said.push(line));
+  await page.expose('sliccLinkSend', (message) => node.stdin.write(`${JSON.stringify(message)}\n`));
+  createInterface({ input: node.stdout }).on('line', (line) =>
+    page.evaluate((line) => globalThis.sliccLinkReceive(line), line).catch(() => {})
+  );
+  await page.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.network.status()
+      .links?.devices.some((device) => device.state === 'connected')
+  );
+  assert.ok(
+    said.some((line) => /jerk: offering slicc-jerk 0\.9\.0/.test(line)),
+    said.join('\n')
+  );
+  node.kill('SIGSTOP');
+  await run(
+    page,
+    `exec 3<>/dev/sealed; printf '{"v":1,"op":"request","kind":"jerk","jop":"create","provider":"github"}' >&3; R=$(cat <&3); exec 3>&-; echo "ASKED $R"`
+  );
+  await shows(page, 'ASKED {');
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await run(
+    page,
+    `exec 3<>/dev/sealed; printf '{"v":1,"op":"cancel","id":"req-1"}' >&3; R=$(cat <&3); exec 3>&-; echo "CANCELLED $R"`
+  );
+  await shows(page, 'CANCELLED {');
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  node.kill('SIGCONT');
+  await new Promise((resolve) => setTimeout(resolve, 10000));
+  assert.equal(
+    existsSync(join(dir, 'finished')),
+    false,
+    'jerk kept running on the linked computer after the cancel'
+  );
+  assert.equal(
+    fake.log.some((entry) => entry.op === 'answered' && entry.request === 'req-1'),
+    false
+  );
+  assert.deepEqual(page.errors, []);
+});
+
 test('the live vault answers on vault.sliccy.ai (smoke)', async (t) => {
   const response = await fetch('https://vault.sliccy.ai/', {
     signal: AbortSignal.timeout(10000),
