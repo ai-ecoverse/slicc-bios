@@ -210,6 +210,8 @@ test("the agent's UI on slicc-agent 3.48 and spectrum 1.68: a failed bash card w
   await quiet(page);
   await shoot(page, 'monitor-warn', { show: 'monitor' });
   await page.evaluate(() => document.querySelector('slicc-app').show('terminal'));
+  await run(page, 'kill $(pgrep sleep) 2>/dev/null; true');
+  await page.evaluate(() => document.querySelector('slicc-app').show('terminal'));
   await run(page, alert.command);
   await page.evaluate(() => document.querySelector('slicc-app').show('monitor'));
   await page.within(60000, () =>
@@ -319,13 +321,22 @@ test("the agent's UI on slicc-agent 3.48 and spectrum 1.68: a failed bash card w
     "printf '#!/bin/sh\\nexit 1\\n' > /usr/local/bin/git && chmod +x /usr/local/bin/git && touch /home/notes.txt"
   );
   await page.evaluate(() => document.querySelector('slicc-app').show('changes'));
-  await page.within(
-    120000,
-    new Function(`
+  await page
+    .within(
+      120000,
+      new Function(`
       const box = (${deep})('[data-unavailable]');
       return !!box && /there are none here yet/.test(box.textContent) && !!box.parentElement.querySelector('[data-command^="curl -fsSL https://get.sliccy.ai/slicc"] [data-action="copy-command"]');
     `)
-  );
+    )
+    .catch(async (error) => {
+      const shown = await page.evaluate(
+        new Function(
+          `return (${deep})('slicc-changes')?.shadowRoot?.textContent ?? 'no changes panel'`
+        )
+      );
+      throw new Error(`${error.message}\nshown: ${shown}`);
+    });
   await quiet(page);
   await shoot(page, 'changes-no-repo', { show: 'changes' });
   await page.evaluate(() => document.querySelector('slicc-app').show('browser'));
