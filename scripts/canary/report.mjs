@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { argv, env, exit } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { enforceNote } from './users.mjs';
 
 const ROWS = 150;
 
@@ -34,6 +35,7 @@ function hit(result, { test = '', log = '' }) {
 
 export function merge({ run, biosRef, runner, url, found, expected }) {
   const pins = found.find((shard) => shard.pins?.overrides?.length)?.pins ?? found[0]?.pins;
+  const kernels = found.find((shard) => shard.kernels)?.kernels ?? null;
   const overridden = run.overrides.length > 0;
   const results = found.flatMap((shard) =>
     shard.results
@@ -84,6 +86,8 @@ export function merge({ run, biosRef, runner, url, found, expected }) {
       files: entry.files,
     })),
     held: pins?.held ?? [],
+    kernels,
+    notes: [enforceNote(pins?.overrides ?? [], kernels)].filter(Boolean),
     shards: found.map(({ shard, files, startedAt, wallMs, phases, exit: code }) => ({
       shard,
       files: files.length,
@@ -134,7 +138,8 @@ export function markdown(report) {
     lines.push('| override | version | sha256 |', '| :--- | :--- | :--- |');
     for (const o of report.overrides) lines.push(`| ${o.name} | ${o.version} | \`${o.sha256}\` |`);
     lines.push('');
-  } else lines.push("No overrides: main's own pins.", '');
+  } else lines.push("No overrides: the ref's own pins.", '');
+  for (const note of report.notes ?? []) lines.push(`> **Note:** ${note}`, '');
   if (report.candidates.length) {
     lines.push('| package | status | via |', '| :--- | :--- | :--- |');
     for (const c of report.candidates) lines.push(`| ${c.package} | ${c.status} | ${c.via} |`);

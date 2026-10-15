@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { markdown, merge } from '../../scripts/canary/report.mjs';
+import { enforceNote, kernelCalls } from '../../scripts/canary/users.mjs';
 
 const pins = {
   overrides: [{ name: '@ai-ecoverse/slicc-kernel', version: '1.86.0', sha256: 'a'.repeat(64) }],
@@ -61,4 +62,60 @@ test('a nonzero exit that a failing test explains is judged by the verdicts', ()
 test('a missing shard turns the canary red', () => {
   const found = [shard(0, [pass('a')])];
   assert.equal(report(found, {}, ['rest', 'follow-chat']).ok, false);
+});
+
+const old = [
+  'const start = () => createKernel({ root, network: { transport }, media: false });',
+  'kernel = await createKernel({',
+  '  root,',
+  '  network: { transport, uplink: exits.uplink },',
+  '  ...folders.options,',
+  '});',
+].join('\n');
+const off = old
+  .replace('{ root,', "{ root, users: 'off',")
+  .replace('  root,', "  root,\n  users: 'off',");
+const kernel = (version) => [
+  { name: '@ai-ecoverse/slicc-kernel', version, sha256: 'a'.repeat(64) },
+];
+const scan = (text) => kernelCalls(text).map((call) => ({ file: 'src/seed/os.js', ...call }));
+
+test('the scan finds every createKernel call and the users mode it passes', () => {
+  assert.deepEqual(kernelCalls(old), [
+    { line: 1, users: null },
+    { line: 2, users: null },
+  ]);
+  assert.deepEqual(kernelCalls(off), [
+    { line: 1, users: 'off' },
+    { line: 2, users: 'off' },
+  ]);
+  assert.deepEqual(kernelCalls('createKernel({ root, users })'), [{ line: 1, users: 'dynamic' }]);
+  assert.deepEqual(kernelCalls('createKernel({ root, ...kernelUsers(mode) })'), [
+    { line: 1, users: 'dynamic' },
+  ]);
+});
+
+test('a kernel from 1.78.0 on a ref with no users mode gets the enforce note', () => {
+  const note = enforceNote(kernel('1.86.0'), scan(old));
+  assert.match(note, /no users mode \(src\/seed\/os\.js:1, src\/seed\/os\.js:2\)/);
+  assert.match(note, /slicc-kernel 1\.86\.0 runs under its default, enforce/);
+  assert.match(note, /#495/);
+  assert.equal(enforceNote(kernel('1.78.0'), scan(old)) === null, false);
+  assert.equal(enforceNote(kernel('1.77.2'), scan(old)), null);
+  assert.equal(enforceNote(kernel('1.86.0'), scan(off)), null);
+  assert.equal(enforceNote([], scan(old)), null);
+  const found = [
+    {
+      ...shard(0, [pass('a')]),
+      pins: { ...pins, overrides: kernel('1.81.0') },
+      kernels: scan(old),
+    },
+  ];
+  const shown = report(found);
+  assert.equal(shown.notes.length, 1);
+  assert.match(
+    markdown(shown),
+    /> \*\*Note:\*\* This bios ref creates its kernel with no users mode/
+  );
+  assert.deepEqual(report([shard(0, [pass('a')])]).notes, []);
 });
