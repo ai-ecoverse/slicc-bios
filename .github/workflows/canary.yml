@@ -76,6 +76,7 @@ jobs:
       jobs: ${{ steps.decide.outputs.jobs }}
       key: ${{ steps.plan.outputs.key }}
       tools: ${{ steps.ref.outputs.sha }}
+      cli: ${{ steps.cli.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -88,6 +89,10 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '24'
+
+      - id: cli
+        name: The slicc CLI main pins
+        run: echo "version=$(node -p "require('./package.json').devDependencies['@ai-ecoverse/slicc']")" >> "$GITHUB_OUTPUT"
 
       - id: plan
         name: What to test
@@ -141,6 +146,7 @@ jobs:
         job: ${{ fromJSON(needs.plan.outputs.jobs) }}
     env:
       LEFTHOOK: '0'
+      SLICC_NO_UPDATE_CHECK: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -177,21 +183,16 @@ jobs:
           key: harness-cdn-${{ hashFiles('src/packages/**/pnpm-lock.yaml', 'src/packages/**/package.json') }}
           restore-keys: harness-cdn-
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with:
-          go-version: '1.27'
-          cache: false
-
       - name: The slicc CLI, the link's reference peer
         env:
-          SLICC_CLI_COMMIT: 8d2706f26f9a60622b9ce039aeb8dab19e93588f
+          CLI_VERSION: ${{ needs.plan.outputs.cli }}
         run: |
-          for attempt in 1 2 3; do
-            GOBIN="$RUNNER_TEMP/slicc-cli" go install "github.com/ai-ecoverse/slicc-cli/cmd/slicc@$SLICC_CLI_COMMIT" && break
-            test "$attempt" = 3 && exit 1
-            sleep $((attempt * 15))
-          done
-          echo "SLICC_CLI=$RUNNER_TEMP/slicc-cli/slicc" >> "$GITHUB_ENV"
+          if [ -x node_modules/.bin/slicc ]; then
+            echo "SLICC_CLI=$PWD/node_modules/.bin/slicc" >> "$GITHUB_ENV"
+          else
+            npm install --no-save --no-audit --no-fund --prefix "$RUNNER_TEMP/slicc-cli" "@ai-ecoverse/slicc@$CLI_VERSION"
+            echo "SLICC_CLI=$RUNNER_TEMP/slicc-cli/node_modules/.bin/slicc" >> "$GITHUB_ENV"
+          fi
 
       - name: Chromium
         run: |
