@@ -125,11 +125,11 @@ test('optional packages installed before the upgrade come back for root, in the 
     const old = 'home/.local/share/pnpm/global/v11/1-before';
     await put(
       `${old}/package.json`,
-      JSON.stringify({ dependencies: { '@ai-ecoverse/wasm-rsync': '3.4.4-3' } })
+      JSON.stringify({ dependencies: { '@ai-ecoverse/wasm-rsync': '3.4.4-5' } })
     );
     await put(
       `${old}/node_modules/@ai-ecoverse/wasm-rsync/package.json`,
-      JSON.stringify({ name: '@ai-ecoverse/wasm-rsync', version: '3.4.4-3' })
+      JSON.stringify({ name: '@ai-ecoverse/wasm-rsync', version: '3.4.4-5' })
     );
   });
   await page.reload();
@@ -140,7 +140,7 @@ test('optional packages installed before the upgrade come back for root, in the 
       .model.updates.packages()
       .some((item) => item.id === 'rsync' && item.state === 'installed')
   );
-  assert.equal((await row(page, 'rsync')).version, '3.4.4-3');
+  assert.equal((await row(page, 'rsync')).version, '3.4.4-5');
   assert.equal((await row(page, 'git')).state, 'available');
   await run(page, 'rsync --version | head -1 | grep -c "version 3.4.4" | sed "s/^/rsync ran /"');
   await shows(page, 'rsync ran 1');

@@ -370,6 +370,7 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
     (await items(page)).map(({ id, state }) => `${id} ${state}`),
     [
       'git available',
+      'gh available',
       'ssh available',
       'python installed',
       'uv installed',
@@ -382,6 +383,7 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
       'biome available',
       'pdf outdated',
       'qpdf available',
+      'heif available',
       'rsync installed',
       'buf available',
       'screen available',
