@@ -290,6 +290,14 @@ test('links the real slicc CLI over stdio signaling, and kernel curl reaches its
   const big = Buffer.alloc(1024 * 1024, 'x');
   const server = createServer((request, response) => {
     response.setHeader('content-type', 'text/plain');
+    if (request.url === '/upload') {
+      let received = 0;
+      request.on('data', (chunk) => {
+        received += chunk.length;
+      });
+      request.on('end', () => response.end(`got ${request.method} ${received}\n`));
+      return;
+    }
     response.end(request.url === '/big' ? big : `cli ${request.method} ${request.url}\n`);
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -329,6 +337,12 @@ test('links the real slicc CLI over stdio signaling, and kernel curl reaches its
   assert.deepEqual(http, { code: '0', out: 'cli POST /http' });
   const httpBig = await shell(page, `curl -s ${url}/big | wc -c`, 'cli-http-big');
   assert.deepEqual(httpBig, { code: '0', out: String(big.length) });
+  const upload = await shell(
+    page,
+    `head -c 8388608 /dev/zero > /tmp/upload.bin && curl -s -T /tmp/upload.bin ${url}/upload`,
+    'cli-http-upload'
+  );
+  assert.deepEqual(upload, { code: '0', out: 'got PUT 8388608' });
   const host = await shell(page, `curl -s http://host.slicc.internal:${port}/host`, 'cli-host');
   assert.deepEqual(host, { code: '0', out: 'cli GET /host' });
   assert.equal(seen[0], 'node:hello');
