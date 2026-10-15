@@ -415,6 +415,10 @@ Limits:
 
 `test/integration/sweep.test.mjs`, the base-set sweep, runs in both workflows. It boots the BIOS, checks that each base-set package in OPFS has the version `package-lock.json` pins, and runs every command its `slicc.commands` lists with `--version` or a trivial call under `timeout 60`, then real grep, egrep, sed -i, xz, jq, find, xargs, diff, cmp, patch, awk, gzip, bzip2 and tar work. Each command is its own subtest named `<package> · <call>`. The clipboard commands run `--help` (`xclip -help`). Known exits: `false` 1, `bunzip2`/`bzcat --version` 2 (upstream), `i --version` 2 (argument parsing; 126 is #495), and `chcon`/`runcon` 1 (listed by coreutils, not built: "unknown program"). `[` runs as bash's builtin, since `timeout` can't exec it.
 
+### The npm package
+
+`@ai-ecoverse/slicc-bios` on npm carries only the manifests a consumer needs to test against what seven ships: `src/packages/package.json`, `package-lock.json`, `pnpm-lock.yaml` and `certs.json`, `src/packages/agent/package.json` and `pnpm-lock.yaml`, and `src/packages/optional/package.json`, `package-lock.json` and `catalog.json`. It has no runtime code and no dependencies, and those paths stay where they are. [`.github/workflows/release.yml`](.github/workflows/release.yml) releases it from `main` only: semantic-release reads the conventional commits, tags `v<version>` and writes the GitHub release, then `npm publish --provenance` publishes the tag at HEAD through npm's trusted publishing on a GitHub-hosted runner, retrying, and skipping a version npm already has. So re-running the workflow on main publishes a tag whose publish failed. The deploy to seven (`deploy.yml`) is separate and doesn't wait for it.
+
 ## Develop
 
 ```sh
