@@ -466,7 +466,7 @@ test('a jerk sign-in cancelled while the linked computer doesn’t answer leaves
       .links?.devices.some((device) => device.state === 'connected')
   );
   assert.ok(
-    said.some((line) => /jerk: offering slicc-jerk 0\.9\.0/.test(line)),
+    await logged(() => said.some((line) => /jerk: offering slicc-jerk 0\.9\.0/.test(line))),
     said.join('\n')
   );
   node.kill('SIGSTOP');
