@@ -66,8 +66,11 @@ function spec({ name, home, groups: asked = [], umask, homeGroup, homeMode }) {
 
 export function kernelSource(kernel) {
   const connect = (options) => {
-    if (!options?.user) return kernel.connect({ tag: agentTag('root') });
+    if (options === undefined || options === null || !('user' in options))
+      return kernel.connect({ tag: agentTag('root') });
     const { user, agentId } = options;
+    if (typeof user !== 'string')
+      throw refused(`${agentId ?? 'an agent'} as a kernel user that isn't a name`);
     if (agentFor(user) !== agentId) {
       throw refused(`${agentId ?? 'an agent'} as the kernel user ${user}`);
     }

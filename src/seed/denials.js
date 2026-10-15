@@ -35,11 +35,12 @@ export function denialLog({
   users,
   mode,
   now = Date.now,
-  every = 2000,
+  every = 250,
   batch = 100,
   cap = CAP,
   schedule = setTimeout,
   cancel = clearTimeout,
+  events = globalThis,
 }) {
   const names = new Map();
   const pending = new Map();
@@ -98,6 +99,10 @@ export function denialLog({
     return queue;
   };
   log.flush = flush;
+  events.addEventListener?.('pagehide', () => void flush());
+  events.addEventListener?.('visibilitychange', () => {
+    if (events.document?.visibilityState === 'hidden') void flush();
+  });
   return log;
 }
 
@@ -116,7 +121,7 @@ for arg in "$@"; do
     *) echo "slicc-denials: unknown option $arg" >&2; exit 2 ;;
   esac
 done
-cat "$log.1" "$log" 2>/dev/null | jq -s '
+summary=$(cat "$log.1" "$log" 2>/dev/null | jq -s '
   def kind: (.tag // null) as $t
     | if $t == null then "untagged" else ((try ($t | fromjson | .kind) catch null) // "other") end;
   def prefix: (.path // "" | split("/") | .[1:3] | map(select(. != "")) | "/" + join("/"));
@@ -129,16 +134,15 @@ cat "$log.1" "$log" 2>/dev/null | jq -s '
     ops: tally(.op),
     errnos: tally(.errno),
     paths: tally(prefix)
-  }' > /tmp/slicc-denials.$$ || { rm -f /tmp/slicc-denials.$$; exit 1; }
+  }') || exit 1
 if [ "$json" = 1 ]; then
-  cat /tmp/slicc-denials.$$
+  printf '%s\\n' "$summary"
 else
-  jq -r '
+  printf '%s\\n' "$summary" | jq -r '
     "denials: \\(.total)" + (if .since then " from \\(.since) to \\(.until)" else "" end),
     (["kinds", "ops", "errnos", "paths"][] as $s | "", "by \\($s | rtrimstr("s")):",
-      (.[$s][] | "  \\(.count)\\t\\(.key)"))' /tmp/slicc-denials.$$
+      (.[$s][] | "  \\(.count)\\t\\(.key)"))'
 fi
-rm -f /tmp/slicc-denials.$$
 `;
 
 export async function installCommand(root, kernel, write) {
