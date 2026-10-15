@@ -47,9 +47,9 @@
   "@ai-ecoverse/slicc-jsh": {
     "id": "node",
     "label": "Node.js (jsh)",
-    "description": "Node.js 22-compatible node and jsh commands: fs (chmod included), streams, http, fetch, WebSocket, zlib, crypto and child_process, the sync calls (spawnSync, execSync, execFileSync) and detached spawns included, without fork, tls, worker or asymmetric crypto yet. fetch() reaches servers inside seven (localhost, <port>.kernel.localhost) and streams their responses. A loopback http.Agent with a finite maxSockets can hang after that many requests. node with no arguments opens the REPL.",
+    "description": "Node.js 22-compatible node and jsh commands: fs (chmod included), streams, http, fetch, WebSocket, zlib, crypto and child_process, the sync calls (spawnSync, execSync, execFileSync) and detached spawns included, without fork, tls, worker or asymmetric crypto yet. fetch() reaches servers inside seven (localhost, <port>.kernel.localhost) and streams their responses. An http server's headersTimeout and requestTimeout are ignored. node with no arguments opens the REPL.",
     "commands": ["node", "jsh"],
-    "size": 1073736
+    "size": 1093431
   },
   "@ai-ecoverse/wasix-ruby": {
     "id": "ruby",
