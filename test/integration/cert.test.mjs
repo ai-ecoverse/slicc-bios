@@ -37,7 +37,7 @@ export function wrapped(command, n) {
 
 test('runs the cert commands in seven and records each exit status and output', {
   skip: !listed,
-  timeout: 0,
+  timeout: Infinity,
 }, async (t) => {
   const chrome = await launch({ agent: env.CERT_AGENT === '1' });
   t.after(() => chrome.close());
