@@ -1,3 +1,5 @@
+import { usersMode } from './seed/users.js';
+
 const units = ['B', 'kB', 'MB', 'GB'];
 
 function size(bytes) {
@@ -11,6 +13,7 @@ function connect() {
   let id = 0;
   port.onmessage = ({ data }) => {
     const call = calls.get(data.id);
+    if (!call) return;
     if ('progress' in data) return call.progress(data.progress);
     calls.delete(data.id);
     if ('error' in data) call.reject(new Error(data.error));
@@ -52,6 +55,11 @@ async function step(name, task) {
 }
 
 let installer;
+
+function baseProject() {
+  return usersMode() === 'off' ? {} : { base: 'opt/slicc/base' };
+}
+
 const repaired = [];
 const stopped = [];
 
@@ -88,7 +96,7 @@ await step('packages', async (report) => {
     bytes,
     repaired: changed,
     stopped: kept,
-  } = await installer('packages', { from }, (progress) =>
+  } = await installer('packages', { from, ...baseProject() }, (progress) =>
     report(`${progress.done}/${progress.total} ${progress.path}`)
   );
   const pruned = removed ? `, ${removed} removed` : '';
@@ -101,11 +109,13 @@ await step('seed', async () => {
   const files = [
     'adobe.js',
     'agent.js',
+    'approvals.js',
     'browser.js',
     'callback.html',
     'callback.js',
     'cdp.js',
     'clipboard.js',
+    'denials.js',
     'exits.js',
     'follow.js',
     'follower.js',
@@ -126,6 +136,7 @@ await step('seed', async () => {
     'projects.js',
     'present.js',
     'remote.js',
+    'rules.js',
     'start.js',
     'storage.js',
     'switchboard-worker.js',
@@ -140,6 +151,7 @@ await step('seed', async () => {
     'tunnel.js',
     'update.js',
     'updates.js',
+    'users.js',
   ];
   const from = new URL('seed/', import.meta.url).href;
   const {

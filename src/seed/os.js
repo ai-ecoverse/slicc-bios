@@ -16,9 +16,11 @@ import {
   startChat,
   whenIdle,
 } from './agent.js';
+import { createApprovals, rootChecked } from './approvals.js';
 import { createBrowser } from './browser.js';
 import { browserControl } from './cdp.js';
 import { clipboardHook } from './clipboard.js';
+import { denialLog, installCommand, watchProtected } from './denials.js';
 import { createExitRouter } from './exits.js';
 import { deviceName } from './follow.js';
 import { createFollowers } from './followers.js';
@@ -32,7 +34,7 @@ import {
 import { change, userRows } from './layer.js';
 import { createLinks, installLocal, labelStore, trustHostKey } from './link.js';
 import { serveLoopback } from './loopback.js';
-import { createFolders, offTheRecord } from './mounts.js';
+import { createFolders, KEY, offTheRecord } from './mounts.js';
 import { createNetwork } from './network.js';
 import { createNotices, reportRepairs, reportStopped } from './notices.js';
 import { createPackages, globalDir, loadCatalog, writeListing } from './packages.js';
@@ -67,8 +69,27 @@ import { serveTerminal } from './terminal.js';
 import { pickTransport } from './transport.js';
 import { createTray, TRAY_HUB_KEY, trayPort } from './tray.js';
 import { openTunnel } from './tunnel.js';
-import { text, update, versions } from './update.js';
+import {
+  baseManifest,
+  enforced,
+  installing,
+  PROTECTED,
+  protectInstalls,
+  protection,
+  text,
+  update,
+  versions,
+  write,
+} from './update.js';
 import { count, createUpdates, owners } from './updates.js';
+import {
+  addCone,
+  dropProtectedMounts,
+  homeSkips,
+  kernelUsers,
+  lockLegacy,
+  usersMode,
+} from './users.js';
 
 const prompts = installPrompts();
 
@@ -223,6 +244,10 @@ const updates = createUpdates();
 const notices = createNotices();
 reportRepairs(notices);
 reportStopped(notices);
+const approvals = createApprovals();
+const mode = usersMode();
+protectInstalls(mode !== 'off', mode === 'enforce');
+document.documentElement.dataset.users = mode;
 const keep = keepStorage({ notices, prompts });
 let model = null;
 let files = null;
@@ -235,8 +260,16 @@ let startedWith = null;
 let owned = new Map();
 let serving = null;
 let optional = Promise.resolve(null);
+let coneIds = null;
 
-const start = () => createKernel({ root, users: 'off', network: { transport }, media: false });
+const start = () =>
+  createKernel({
+    root,
+    network: { transport },
+    media: false,
+    ...kernelUsers(mode),
+    ...protection(),
+  });
 
 function base(os) {
   const network = os ? mirrorNetwork(os, reach.port) : reach.port;
@@ -245,6 +278,7 @@ function base(os) {
     agent: browser.stopping(files.agent),
     updates: os ? mirrorUpdates(os) : updates,
     notices,
+    approvals: approvals.port,
     network,
     browser: browser.port,
     tray: trayPort(network, { name: `seven on ${location.host}` }),
@@ -519,7 +553,7 @@ updates.handle('reload', () => location.replace(new URL('../', location.href)));
 
 async function rows() {
   owned = new Map(Object.entries(owners).map(([id, name]) => [name, id]));
-  const manifest = JSON.parse((await text(root, 'package.json')) ?? '{}');
+  const manifest = await baseManifest(root);
   const names = Object.keys(manifest.dependencies ?? {});
   const found = await versions(root, names);
   for (const [id, name] of Object.entries(owners)) {
@@ -541,16 +575,42 @@ async function own() {
     network,
     secret: await offTheRecord(),
     linked: links,
+    owner: () => coneIds ?? { uid: 0, gid: 0 },
   });
+  approvals.own();
+  const denials = denialLog({ root, users: () => kernel?.users, mode });
   kernel = await createKernel({
     root,
     users: 'off',
     env: { PYTHONPATH: `/${PYTHON}` },
+    ...protection(),
     network: { transport, uplink: exits.uplink },
     cdp: control.hook,
     clipboard: clipboardHook(),
     ...folders.options,
+    ...kernelUsers(mode, { approve: approvals.approve, onDenial: denials }),
   });
+  approvals.verify((req) => rootChecked((argv) => kernel.run(argv, { cwd: '/' }), req));
+  const cone = await addCone(kernel);
+  coneIds = cone && { uid: cone.uid, gid: cone.gid };
+  denials.drain();
+  await lockLegacy(kernel, { text, write, root }).catch((error) =>
+    console.warn(`legacy files: ${error.message}`)
+  );
+  if (mode === 'report') {
+    await watchProtected({
+      kernel,
+      attach: attachKernel,
+      paths: PROTECTED,
+      log: denials,
+      busy: () => installing(kernel),
+    }).catch((error) => console.warn(`protect watch: ${error.message}`));
+  }
+  if (mode !== 'off') {
+    await installCommand(root, kernel, write).catch((error) =>
+      console.warn(`slicc-denials: ${error.message}`)
+    );
+  }
   exits.attach(kernel);
   if (globalThis.sliccKernelDebug === true)
     globalThis.sliccKernelClient = async () => attachKernel(await kernel.connect());
@@ -566,6 +626,8 @@ async function own() {
   routes.forward(serving);
   await rows();
   await announce(null);
+  if (enforced())
+    dropProtectedMounts({ storage: localStorage, key: KEY, paths: PROTECTED, notices });
   const restoring = folders.restore();
   void tailscale.start({
     kernel,
@@ -593,7 +655,7 @@ async function follow() {
     kernel: facade,
     root,
     storage: localStorage,
-    files: { skip, hide },
+    files: { skip: [...skip, ...homeSkips(await text(root, 'etc/passwd'))], hide },
     terminals: { env: { PS1: 'slicc:\\w\\$ ', SLICC_TAB: board.id } },
   });
   files = model;
@@ -602,6 +664,7 @@ async function follow() {
     ...model,
     updates: waiting,
     notices,
+    approvals: approvals.port,
     network: reach.port,
     browser: browser.port,
     tabs,

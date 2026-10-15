@@ -56,7 +56,7 @@ test('Node.js (jsh) installs from the catalog, runs node with CommonJS and ESM a
   assert.equal(result, 'ok', (await row(page, 'node')).log);
   const installed = await row(page, 'node');
   assert.equal(installed.state, 'installed');
-  assert.equal(installed.version, '0.19.0');
+  assert.equal(installed.version, '0.25.0');
 
   await run(
     page,
@@ -88,5 +88,26 @@ test('Node.js (jsh) installs from the catalog, runs node with CommonJS and ESM a
   assert.equal((await row(page, 'node')).state, 'available');
   await run(page, 'clear; node -e 1 2>/dev/null || echo "no-node-$((6 * 7))"');
   await shows(page, 'no-node-42');
+  assert.deepEqual(page.errors, []);
+});
+
+test('node writes and reads through a root symlink onto a tmpfs mount, the file is on the mount, and nothing is left under the mount point', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  assert.equal(await act(page, 'node', 'install'), 'ok');
+  await run(
+    page,
+    "clear; mkdir -p /mnt/t5 /srv && mount -t tmpfs none /mnt/t5 && mkdir -p /mnt/t5/proj && ln -sfn /mnt/t5/proj /srv/proj && node -e \"const fs = require('fs'); fs.writeFileSync('/srv/proj/x.txt', 'through ' + (40 + 2)); console.log('node read', fs.readFileSync('/srv/proj/x.txt', 'utf8'))\"; echo mount has $(cat /mnt/t5/proj/x.txt); umount /mnt/t5; echo hidden:$(ls -A /mnt/t5)-$((40 + 2))"
+  );
+  await shows(page, '-42');
+  const text = await page.evaluate(() => {
+    const { dock } = document.querySelector('slicc-app');
+    return dock.content(
+      dock.api.panels.map((panel) => panel.id).findLast((id) => id.startsWith('terminal:'))
+    ).screen.textContent;
+  });
+  assert.match(text, /node read through 42/);
+  assert.match(text, /mount has through 42/);
+  assert.match(text, /hidden:-42/);
   assert.deepEqual(page.errors, []);
 });

@@ -1,5 +1,5 @@
 import { compare, locked } from './packages.js';
-import { fetchText, pnpm, readable, text, write } from './update.js';
+import { baseManifest, enforced, fetchText, pnpm, readable, text, write } from './update.js';
 
 export const FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies'];
 const EXACT = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
@@ -32,6 +32,10 @@ export function entries(manifest) {
     }
   }
   return found;
+}
+
+export function sealed(layer, on = enforced()) {
+  return on ? { ...layer, add: {}, pin: {} } : layer;
 }
 
 export function empty(layer) {
@@ -173,7 +177,7 @@ async function inspect(root, project, force) {
   const lock = await fetchText('pnpm-lock.yaml', from);
   const receipt = await text(root, `${state}/pnpm-lock.yaml`);
   const currentText = await text(root, `${folder}/package.json`);
-  const saved = readLayer(await text(root, `${state}/user.json`));
+  const saved = sealed(readLayer(await text(root, `${state}/user.json`)));
   const changed = lock !== receipt;
   const asked = changed || force || Boolean(saved.pending);
   if (!asked && seen.get(folder) === currentText) return null;
@@ -184,8 +188,8 @@ async function inspect(root, project, force) {
   const base = JSON.parse(baseText);
   let before = parse(recordedBase);
   if (!before && receipt !== null) before = changed ? importers(receipt) : base;
-  const observed = before && current ? observe(before, current, saved) : saved;
-  const provided = parse(await text(root, 'package.json'))?.dependencies ?? {};
+  const observed = sealed(before && current ? observe(before, current, saved) : saved);
+  const provided = (await baseManifest(root)).dependencies ?? {};
   const { layer, refused } = settle(observed, base, provided);
   const due = asked || (!layer.error && !same(merge(base, layer), current));
   return { lock, changed, currentText, recordedBase, baseText, base, layer, refused, due };

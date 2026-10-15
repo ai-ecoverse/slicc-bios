@@ -177,7 +177,7 @@ test('a webhook from the tray hub reaches the agent as a lick, without secret he
   );
   await run(
     page,
-    `mkdir -p /home/.slicc/webhooks && echo '{ "target": "cone", "message": "Deploy finished" }' > /home/.slicc/webhooks/deploy.json && echo hook-ready`
+    `mkdir -p /root/.slicc/webhooks && echo '{ "target": "cone", "message": "Deploy finished" }' > /root/.slicc/webhooks/deploy.json && echo hook-ready`
   );
   await shows(page, 'hook-ready');
   await new Promise((resolve) => setTimeout(resolve, 2000));

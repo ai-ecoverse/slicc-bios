@@ -38,6 +38,103 @@ export function progress(output) {
     : { phase: 'download', done: reused + downloaded, total: resolved };
 }
 
+export const WRITER = 'bios-installer';
+export const PROTECTED = [
+  '/node_modules',
+  '/opt/agent',
+  '/opt/grammars',
+  '/opt/tailscale',
+  '/opt/slicc',
+  '/os',
+];
+const INSTALLER = '/opt/slicc/.installer';
+export const BASE = 'opt/slicc/base';
+const SYSTEM = '/usr/local/share/pnpm';
+const HYGIENE = [
+  '--ignore-scripts',
+  '--ignore-pnpmfile',
+  '--config.userconfig=/dev/null',
+  '--config.store-dir=/opt/slicc/.store',
+  '--config.verify-store-integrity=true',
+];
+const CLEAN = {
+  HOME: INSTALLER,
+  XDG_CONFIG_HOME: `${INSTALLER}/.config`,
+  XDG_CACHE_HOME: `${INSTALLER}/.cache`,
+  PNPM_HOME: SYSTEM,
+  PATH: `${SYSTEM}/bin:/usr/local/bin:/usr/bin:/bin`,
+  NODE_OPTIONS: '',
+};
+const guard = { on: false, enforce: false, writing: new Map() };
+
+export function protectInstalls(on, enforce = on) {
+  guard.on = on;
+  guard.enforce = on && enforce;
+}
+
+export function protection() {
+  return guard.enforce ? { protect: { paths: PROTECTED, writers: [WRITER] } } : {};
+}
+
+export function enforced() {
+  return guard.enforce;
+}
+
+export function installing(kernel) {
+  return (guard.writing.get(kernel) ?? 0) > 0;
+}
+
+async function writing_(kernel, task) {
+  guard.writing.set(kernel, (guard.writing.get(kernel) ?? 0) + 1);
+  try {
+    return await task();
+  } finally {
+    const left = guard.writing.get(kernel) - 1;
+    if (left) guard.writing.set(kernel, left);
+    else guard.writing.delete(kernel);
+  }
+}
+
+export function writing(cwd) {
+  return guard.on ? { cwd, tag: WRITER, env: CLEAN } : { cwd };
+}
+
+export function hygiene(argv) {
+  return guard.on && argv[0] === 'pnpm' ? [...argv, ...HYGIENE] : argv;
+}
+
+export function guarded() {
+  return guard.on;
+}
+
+const ROOTED = [
+  'package.json',
+  'pnpm-lock.yaml',
+  'pnpm-workspace.yaml',
+  '.npmrc',
+  '.pnpmfile.cjs',
+  '.pnpmfile.mjs',
+];
+const FENCE = "minimumReleaseAgeExclude:\n  - '@ai-ecoverse/*'\n";
+
+export async function fence(root, cwd) {
+  const folder = cwd.replace(/^\/+|\/+$/g, '');
+  if (!folder) return;
+  if ((await text(root, `${folder}/pnpm-workspace.yaml`)) === null) {
+    await write(root, `${folder}/pnpm-workspace.yaml`, FENCE);
+  }
+}
+
+export async function retire(root) {
+  for (const name of ROOTED) await root.removeEntry(name).catch(() => {});
+}
+
+export function project() {
+  return guard.on
+    ? { folder: `${BASE}/`, cwd: `/${BASE}`, flags: ['--modules-dir=/node_modules'] }
+    : { folder: '', cwd: '/', flags: [] };
+}
+
 const INSTALL = ['pnpm', 'install', '--frozen-lockfile', '--trust-lockfile'];
 
 export function installer(
@@ -57,14 +154,17 @@ export function installer(
   });
 }
 
-export async function pnpm(kernel, cwd, report, to = null, argv = INSTALL) {
+export async function pnpm(kernel, cwd, report, to = null, argv = INSTALL, writer = true) {
   let log = '';
   report({ progress: null, log });
   const onStdout = (chunk) => {
     log = (log + chunk).slice(-LOG);
     report({ progress: progress(log), log });
   };
-  const { status, stderr } = await kernel.run(argv, { cwd, onStdout });
+  if (writer && guard.on) await fence(await navigator.storage.getDirectory(), cwd);
+  const run = writer ? { ...writing(cwd), onStdout } : { cwd, onStdout };
+  const ran = () => kernel.run(writer ? hygiene(argv) : argv, run);
+  const { status, stderr } = await (writer ? writing_(kernel, ran) : ran());
   if (status) {
     const error = new Error(stderr.trim() || `pnpm exited with ${status}`);
     error.log = (log + stderr).slice(-LOG);
@@ -74,8 +174,18 @@ export async function pnpm(kernel, cwd, report, to = null, argv = INSTALL) {
 }
 
 export async function readable(kernel, path) {
-  const { status, stderr } = await kernel.run(['chmod', '-R', 'a+rX', path], { cwd: '/' });
+  const { status, stderr } = await writing_(kernel, () =>
+    kernel.run(['chmod', '-R', 'a+rX', path], writing('/'))
+  );
   if (status) throw new Error(stderr.trim() || `chmod exited with ${status}`);
+}
+
+export async function baseManifest(root) {
+  return JSON.parse(
+    (await text(root, `${project().folder}package.json`)) ??
+      (await text(root, 'package.json')) ??
+      '{}'
+  );
 }
 
 export async function versions(dir, names, prefix = '') {
@@ -95,10 +205,16 @@ async function install(kernel, from, report, record) {
   const manifest = await fetchText('package.json', from);
   const names = Object.keys(JSON.parse(manifest).dependencies ?? {});
   const before = await versions(root, names);
-  await write(root, 'package.json', manifest);
-  await write(root, 'pnpm-lock.yaml', lock);
-  await pnpm(kernel, '/', report);
-  await record('packages', { from: new URL('package-lock.json', from).href, held: true });
+  const { folder, cwd, flags } = project();
+  await write(root, `${folder}package.json`, manifest);
+  await write(root, `${folder}pnpm-lock.yaml`, lock);
+  if (guard.on) {
+    await write(root, `${folder}pnpm-workspace.yaml`, await fetchText('pnpm-workspace.yaml', from));
+    await retire(root);
+  }
+  await pnpm(kernel, cwd, report, null, [...INSTALL, ...flags]);
+  const base = guard.on ? { base: BASE } : {};
+  await record('packages', { from: new URL('package-lock.json', from).href, held: true, ...base });
   await write(root, 'var/lib/slicc/pnpm-lock.yaml', lock);
   const after = await versions(root, names);
   return names
