@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { after, test } from 'node:test';
+import { after, before, describe, test } from 'node:test';
 import { boot, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
@@ -99,87 +99,109 @@ async function shots(page, name) {
   await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
 }
 
-test('Python data tools install as one project next to the catalog’s Python, import, plot, and remove cleanly', async (t) => {
-  const page = await chrome.page(t);
-  await boot(page);
-  await page.until(() =>
-    document
-      .querySelector('slicc-app')
-      .model.updates.packages()
-      .some((item) => item.id === 'pydata')
-  );
-  const before = await row(page, 'pydata');
-  assert.equal(before.state, 'available');
-  assert.deepEqual(before.requires, ['python']);
-  await shots(page, 'pydata-before');
-
-  const result = await act(page, 'pydata', 'install');
-  const quota = await page.evaluate(() => navigator.storage.estimate());
-  assert.equal(result, 'ok', `${(await row(page, 'pydata')).log}\nquota ${JSON.stringify(quota)}`);
-  assert.equal((await row(page, 'python')).state, 'installed');
-  const installed = await row(page, 'pydata');
-  assert.equal(installed.state, 'installed');
-  assert.equal(installed.warnings, undefined);
-  assert.ok(await exists(page, PTH));
-  assert.ok(await exists(page, 'opt/slicc/python/sitecustomize.py'));
-  await run(
-    page,
-    'clear; echo "unreadable $(find /opt/slicc ! -perm -o=r | wc -l) $(find /opt/slicc -type d ! -perm -o=x | wc -l)"; echo "checked $((6 * 7))"'
-  );
-  await shows(page, 'checked 42');
-  assert.match(await screen(page), /unreadable 0 0/);
-  await shots(page, 'pydata-after');
-
-  await run(
-    page,
-    `clear; cd /home && python3 -c "import numpy, pandas, scipy, matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt; plt.plot([1, 4, 9]); plt.savefig('/home/plot.png'); print('numpy', numpy.__version__, 'pandas', pandas.__version__, 'scipy', scipy.__version__, 'matplotlib', matplotlib.__version__)" && ls -l /home/plot.png && echo "plotted $((6 * 7))"`
-  );
-  await page.within(INSTALL, () =>
-    window.document
-      .querySelector('slicc-app')
-      .dock.content(
-        window.document
-          .querySelector('slicc-app')
-          .dock.api.panels.map((panel) => panel.id)
-          .findLast((id) => id.startsWith('terminal:'))
-      )
-      .screen.textContent.includes('plotted 42')
-  );
-  assert.match(
-    await screen(page),
-    /numpy 2\.3\.2 pandas 2\.3\.2 scipy 1\.18\.0 matplotlib 3\.11\.2/
-  );
-  await color(page, 'light');
-  await page.screenshot(new URL('pydata-terminal-light.png', page.dir));
-
-  await page.evaluate(() => {
-    window.removed = document
-      .querySelector('slicc-app')
-      .model.updates.actPackage('python', 'remove');
+describe('Python data tools install as one project next to the catalog’s Python, import, plot, and remove cleanly', () => {
+  let page;
+  let finish;
+  after(() => finish?.());
+  before(async () => {
+    page = await chrome.page({
+      name: 'Python data tools',
+      filePath: import.meta.filename,
+      after: (fn) => {
+        finish = fn;
+      },
+    });
+    await boot(page);
   });
-  await page.until(
-    () => !!document.querySelector('slicc-app').shadowRoot.querySelector('slicc-confirm')
-  );
-  await page.evaluate(() =>
-    document
-      .querySelector('slicc-app')
-      .shadowRoot.querySelector('slicc-confirm')
-      .renderRoot.querySelector('[data-action]')
-      .click()
-  );
-  await page.evaluate(() => window.removed);
-  assert.equal((await row(page, 'python')).state, 'available');
-  const orphan = await row(page, 'pydata');
-  assert.equal(orphan.state, 'installed');
-  assert.deepEqual(orphan.warnings, [
-    "Needs Python, which isn't installed. Install Python again to use it.",
-  ]);
-  await shots(page, 'pydata-without-python');
 
-  assert.equal(await act(page, 'pydata', 'remove'), 'ok');
-  assert.equal((await row(page, 'pydata')).state, 'available');
-  assert.equal(await exists(page, PTH), false);
-  assert.equal(await exists(page, 'opt/slicc/pydata'), false);
-  await shows(page, 'plotted 42');
-  assert.deepEqual(page.errors, []);
+  test('they install as one project next to the catalog’s Python, readable by every user', async () => {
+    await page.until(() =>
+      document
+        .querySelector('slicc-app')
+        .model.updates.packages()
+        .some((item) => item.id === 'pydata')
+    );
+    const listed = await row(page, 'pydata');
+    assert.equal(listed.state, 'available');
+    assert.deepEqual(listed.requires, ['python']);
+    await shots(page, 'pydata-before');
+
+    const result = await act(page, 'pydata', 'install');
+    const quota = await page.evaluate(() => navigator.storage.estimate());
+    assert.equal(
+      result,
+      'ok',
+      `${(await row(page, 'pydata')).log}\nquota ${JSON.stringify(quota)}`
+    );
+    assert.equal((await row(page, 'python')).state, 'installed');
+    const installed = await row(page, 'pydata');
+    assert.equal(installed.state, 'installed');
+    assert.equal(installed.warnings, undefined);
+    assert.ok(await exists(page, PTH));
+    assert.ok(await exists(page, 'opt/slicc/python/sitecustomize.py'));
+    await run(
+      page,
+      'clear; echo "unreadable $(find /opt/slicc ! -perm -o=r | wc -l) $(find /opt/slicc -type d ! -perm -o=x | wc -l)"; echo "checked $((6 * 7))"'
+    );
+    await shows(page, 'checked 42');
+    assert.match(await screen(page), /unreadable 0 0/);
+    await shots(page, 'pydata-after');
+  });
+
+  test('numpy, pandas, scipy and matplotlib import and plot', async () => {
+    await run(
+      page,
+      `clear; cd /home && python3 -c "import numpy, pandas, scipy, matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt; plt.plot([1, 4, 9]); plt.savefig('/home/plot.png'); print('numpy', numpy.__version__, 'pandas', pandas.__version__, 'scipy', scipy.__version__, 'matplotlib', matplotlib.__version__)" && ls -l /home/plot.png && echo "plotted $((6 * 7))"`
+    );
+    await page.within(INSTALL, () =>
+      window.document
+        .querySelector('slicc-app')
+        .dock.content(
+          window.document
+            .querySelector('slicc-app')
+            .dock.api.panels.map((panel) => panel.id)
+            .findLast((id) => id.startsWith('terminal:'))
+        )
+        .screen.textContent.includes('plotted 42')
+    );
+    assert.match(
+      await screen(page),
+      /numpy 2\.3\.2 pandas 2\.3\.2 scipy 1\.18\.0 matplotlib 3\.11\.2/
+    );
+    await color(page, 'light');
+    await page.screenshot(new URL('pydata-terminal-light.png', page.dir));
+  });
+
+  test('without Python they warn, and they remove cleanly', async () => {
+    await page.evaluate(() => {
+      window.removed = document
+        .querySelector('slicc-app')
+        .model.updates.actPackage('python', 'remove');
+    });
+    await page.until(
+      () => !!document.querySelector('slicc-app').shadowRoot.querySelector('slicc-confirm')
+    );
+    await page.evaluate(() =>
+      document
+        .querySelector('slicc-app')
+        .shadowRoot.querySelector('slicc-confirm')
+        .renderRoot.querySelector('[data-action]')
+        .click()
+    );
+    await page.evaluate(() => window.removed);
+    assert.equal((await row(page, 'python')).state, 'available');
+    const orphan = await row(page, 'pydata');
+    assert.equal(orphan.state, 'installed');
+    assert.deepEqual(orphan.warnings, [
+      "Needs Python, which isn't installed. Install Python again to use it.",
+    ]);
+    await shots(page, 'pydata-without-python');
+
+    assert.equal(await act(page, 'pydata', 'remove'), 'ok');
+    assert.equal((await row(page, 'pydata')).state, 'available');
+    assert.equal(await exists(page, PTH), false);
+    assert.equal(await exists(page, 'opt/slicc/pydata'), false);
+    await shows(page, 'plotted 42');
+    assert.deepEqual(page.errors, []);
+  });
 });
