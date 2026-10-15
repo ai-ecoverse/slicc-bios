@@ -1,10 +1,4 @@
 const shims = {
-  crypto: {
-    randomUUID: 'globalThis.crypto.randomUUID.bind(globalThis.crypto)',
-    getRandomValues: 'globalThis.crypto.getRandomValues.bind(globalThis.crypto)',
-    webcrypto: 'globalThis.crypto',
-    subtle: 'globalThis.crypto.subtle',
-  },
   url: {
     URL: 'globalThis.URL',
     URLSearchParams: 'globalThis.URLSearchParams',

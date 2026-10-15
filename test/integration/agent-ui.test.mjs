@@ -59,6 +59,11 @@ function answer(body) {
   if (result === 'build-1')
     return text('The build failed with exit status 3; the full log is saved.');
   if (result === 'workers-1') return text('Started 40 workers.');
+  if (result === 'look-1') return bash('look-2', 'ls /home');
+  if (result === 'look-2') return bash('look-3', 'uname -a');
+  if (result === 'look-3')
+    return text('That is the whole of this SLICC: a root file system and an empty home.');
+  if (tools && said.includes('Look around')) return bash('look-1', 'ls /');
   if (tools && said.includes('Run the build')) return bash('build-1', BUILD);
   if (tools && said.includes('Start the workers')) return bash('workers-1', WORKERS);
   if (content.some((item) => item.image)) return text('A blue square.');
@@ -137,6 +142,14 @@ test("the agent's UI on slicc-agent 3.48 and spectrum 1.68: a failed bash card w
   );
   chrome.vault.set({ locked: false });
   await page.within(30000, () => document.querySelector('slicc-app').model.agent.hold?.() === null);
+
+  await page.evaluate(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    void agent.send(agent.active(), 'Look around this SLICC');
+  });
+  await settled(page, 'That is the whole of this SLICC');
+  await quiet(page);
+  await shoot(page, 'tool-run-clusters', { show: 'chat' });
 
   await page.evaluate(() => {
     const { agent } = document.querySelector('slicc-app').model;
@@ -270,6 +283,35 @@ test("the agent's UI on slicc-agent 3.48 and spectrum 1.68: a failed bash card w
   await page.until(new Function(`return !!(${deep})('slicc-secrets')`));
   await quiet(page);
   await shoot(page, 'settings-secrets', { show: 'settings', target: 'slicc-secrets' });
+  await page.evaluate(async () => {
+    const at = new URL(
+      '../node_modules/@ai-ecoverse/slicc-spectrum/dist/slicc-dummy.js',
+      location.href
+    );
+    const { DummyVault } = await import(at.href);
+    const app = document.querySelector('slicc-app');
+    app.model = {
+      ...app.model,
+      vault: new DummyVault('locked', { delay: 0, sleep: async () => {} }),
+    };
+  });
+  await page.until(
+    new Function(
+      `return (${deep})('slicc-secrets')?.shadowRoot?.querySelector('section')?.dataset.vault === 'locked'`
+    )
+  );
+  await page.evaluate(
+    new Function(
+      `(${deep})('slicc-secrets').shadowRoot.querySelector('[data-action=add-secret]').click()`
+    )
+  );
+  await page.until(
+    new Function(`return !!(${deep})('slicc-secrets').shadowRoot.querySelector('[data-form=add]')`)
+  );
+  await shoot(page, 'secrets-locked', {
+    show: 'settings',
+    target: 'slicc-secrets',
+  });
 
   await page.evaluate(() => document.querySelector('slicc-app').show('terminal'));
   await run(
