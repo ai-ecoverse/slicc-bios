@@ -250,6 +250,12 @@ async function kept(guard, id, { targetId, session, url, lag = 0 }) {
     'chrome-error://chromewebdata/',
     `${id}: the client's session is kept, on Chrome's error page`
   );
+  const info = await guard.send('Target.getTargetInfo', { targetId });
+  assert.equal(
+    info.result?.targetInfo?.url,
+    'chrome-error://chromewebdata/',
+    `${id}: the client can still name the tab, and sees the error page, not the URL it failed (${JSON.stringify(info.error ?? '')})`
+  );
 }
 
 async function readIn(prefix, expression, ms) {
@@ -1715,6 +1721,37 @@ for (const [detach, lag] of DETACH) {
         await blocked(id, await touched(id), url, TRIGGERS[302](url));
       }
     });
+    await t.test(
+      'a tab the client creates straight onto a redirect into the vault never loads it',
+      async () => {
+        for (const base of [`${SEVEN}/probe-doc.html`, `${VAULT}/doc`]) {
+          const id = tag('created');
+          const url = `${base}?${id}`;
+          const before = (await guard.events()).length;
+          const mark = chrome.requests.length;
+          const created = await guard.send('Target.createTarget', {
+            url: `${PLAIN}/redirect?to=${encodeURIComponent(url)}`,
+          });
+          const targetId = created.result?.targetId;
+          assert.ok(targetId, `${id}: the tab was created (${JSON.stringify(created)})`);
+          opened.push(targetId);
+          await keptOut(id, { targetId, url, mark, lag });
+          const session = await guard.attach(targetId);
+          await kept(guard, id, { targetId, session, url, lag });
+          assert.ok(
+            !JSON.stringify((await guard.events()).slice(before)).includes(url),
+            `${id}: nothing naming the protected document reached the client`
+          );
+        }
+      }
+    );
+    await t.test(
+      'a script navigation onto the vault with a fragment keeps the session too',
+      async () => {
+        const id = tag('fragment');
+        await blocked(id, await touched(id), `${VAULT}/doc?${id}#section`);
+      }
+    );
     const popupOf = async (openerId, ms) => {
       for (const end = Date.now() + ms; Date.now() < end; ) {
         const { result } = await own.send('Target.getTargets');

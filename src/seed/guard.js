@@ -22,6 +22,7 @@ const GUARD_IDS = 2 ** 30;
 const HOLD_MS = 2000;
 const BLANK_MS = 10000;
 const ERROR_PAGE = 'chrome-error://chromewebdata/';
+const bare = (url) => url.split('#')[0];
 const NAV_MS = 10000;
 const NAV_TYPES = new Set(['page', 'iframe', 'background_page', 'webview']);
 const UNWAITED = new Set(['Target.getTargetInfo', 'Target.detachFromTarget']);
@@ -231,7 +232,7 @@ class Guard {
   learn(info) {
     if (!info?.targetId) return;
     const known = this.targets.get(info.targetId);
-    const failed = info.url !== undefined && this.errored.get(info.targetId) === info.url;
+    const failed = info.url !== undefined && this.errored.get(info.targetId) === bare(info.url);
     this.targets.set(info.targetId, {
       url: failed ? ERROR_PAGE : (info.url ?? ''),
       type: info.type ?? known?.type,
@@ -354,7 +355,7 @@ class Guard {
         { requestId, errorReason: 'BlockedByClient' },
         nav.session
       );
-      if (params.frameId === nav.targetId) this.errored.set(nav.targetId, params.request.url);
+      this.failed(nav.targetId, params);
       return;
     }
     void this.call('Fetch.continueRequest', { requestId }, nav.session);
@@ -498,6 +499,10 @@ class Guard {
     return true;
   }
 
+  failed(targetId, { frameId, request }) {
+    if (targetId && frameId === targetId) this.errored.set(targetId, bare(request.url));
+  }
+
   release({ method, params = {}, sessionId }) {
     const { requestId } = params;
     if (
@@ -506,6 +511,7 @@ class Guard {
       this.is.url(params.request?.url)
     ) {
       void this.call('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' }, sessionId);
+      this.failed(this.sessions.get(sessionId)?.targetId, params);
       return;
     }
     if (method === 'Fetch.authRequired') {
@@ -583,7 +589,7 @@ class Guard {
   }
 
   masked(info) {
-    if (info.url === undefined || this.errored.get(info.targetId) !== info.url) return info;
+    if (info.url === undefined || this.errored.get(info.targetId) !== bare(info.url)) return info;
     return { ...info, url: ERROR_PAGE, title: ERROR_PAGE };
   }
 
@@ -649,10 +655,6 @@ class Guard {
     }
     if (method === 'Target.getTargetInfo' && result?.targetInfo) {
       return this.deliver({ ...message, result: { targetInfo: this.masked(result.targetInfo) } });
-    }
-    if (method === 'Target.createTarget' && result?.targetId) {
-      this.learn({ targetId: result.targetId, url: params.url, type: 'page' });
-      this.touch(result.targetId);
     }
     if (typeof result?.stream === 'string') this.streams.add(result.stream);
     if (COOKIES.has(method) && Array.isArray(result?.cookies)) {
@@ -771,6 +773,18 @@ class Guard {
     return this.unseen(method, params);
   }
 
+  async create({ id, params }) {
+    const answer = await this.call('Target.createTarget', { ...params, url: 'about:blank' });
+    const targetId = answer.result?.targetId;
+    if (!targetId) return this.deliver({ ...answer, id });
+    this.learn({ targetId, url: 'about:blank', type: 'page' });
+    this.touch(targetId);
+    const nav = this.navs.get(targetId);
+    await nav.ready;
+    if (!nav.failed) void this.call('Page.navigate', { url: params.url }, nav.session);
+    this.deliver({ id, result: answer.result });
+  }
+
   pass(message) {
     const { id, method, sessionId } = message;
     if (sessionId && method === 'Page.enable') this.pages.add(sessionId);
@@ -819,7 +833,11 @@ class Guard {
         `send:${message.sessionId ?? ''}`,
         async () => {
           const why = await this.check(message);
-          return why ? this.refuse(message, why) : this.pass(message);
+          if (why) return this.refuse(message, why);
+          if (message.method === 'Target.createTarget' && message.params?.url) {
+            return this.create(message);
+          }
+          return this.pass(message);
         },
         (error) => {
           console.warn(`the CDP guard refused a command: ${error.message}`);
