@@ -264,8 +264,8 @@ async function eventually(check, ms = 30000) {
   }
 }
 const UPDATE = 5 * 60 * 1000;
-const GLOBAL_MEMORY = '/home/.pi/agent/memory/MEMORY.md';
-const CONE_MEMORY = '/home/.pi/agent/memory/cone/MEMORY.md';
+const GLOBAL_MEMORY = '/root/.pi/agent/memory/MEMORY.md';
+const CONE_MEMORY = '/root/.pi/agent/memory/cone/MEMORY.md';
 
 test('chat in seven answers through the agent worker, Bedrock and the local proxy', {
   timeout: 30 * 60 * 1000,
@@ -1250,7 +1250,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   };
   await run(
     page,
-    `mkdir -p /home/.pi/agent && echo ${Buffer.from(JSON.stringify(servers)).toString('base64')} | base64 -d > /home/.pi/agent/mcp.json; echo "mcp $((6 * 7))"`
+    `mkdir -p /etc/slicc/agent && echo ${Buffer.from(JSON.stringify(servers)).toString('base64')} | base64 -d > /etc/slicc/agent/mcp.json; echo "mcp $((6 * 7))"`
   );
   await shows(page, 'mcp 42');
   await page.until(
