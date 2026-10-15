@@ -12,13 +12,13 @@
     "match": "/(packages|update|cdp)\\.test\\.mjs$"
   },
   "guard": {
-    "match": "/guard-vectors\\.test\\.mjs$"
+    "match": "/(guard-vectors|serve)\\.test\\.mjs$"
   },
   "k4-link": {
     "match": "/(k4[^/]*|link)\\.test\\.mjs$"
   },
   "rest": {
-    "exclude": "/(follow[^/]*|chat|remote|pydata|updates|users|agent-ui|packages|update|cdp|guard-vectors|k4[^/]*|link)\\.test\\.mjs$"
+    "exclude": "/(follow[^/]*|chat|remote|pydata|updates|users|agent-ui|packages|update|cdp|guard-vectors|serve|k4[^/]*|link)\\.test\\.mjs$"
   },
   "sweep": {
     "match": "/(sweep|pins)\\.test\\.mjs$"
