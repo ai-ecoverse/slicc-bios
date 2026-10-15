@@ -370,6 +370,25 @@ export function bufferedReader(stream) {
   };
 }
 
+function bodySource(body) {
+  if (body == null) return { next: async () => ({ done: true }), stop() {} };
+  const stream =
+    typeof body.getReader === 'function'
+      ? body
+      : body[Symbol.asyncIterator]
+        ? null
+        : new Response(body).body;
+  if (stream) {
+    const reader = stream.getReader();
+    return { next: () => reader.read(), stop: () => reader.cancel().catch(() => {}) };
+  }
+  const it = body[Symbol.asyncIterator]();
+  return {
+    next: () => it.next(),
+    stop: () => Promise.resolve(it.return?.()).catch(() => {}),
+  };
+}
+
 const mapped = (error) =>
   error.code === 'ENOTFOUND' ? Object.assign(error, { code: 'EHOSTUNREACH' }) : error;
 
@@ -441,22 +460,48 @@ export function linkExit(session, { id, address, label, browsers = () => [], aut
       signal?.throwIfAborted();
       const url = new URL(request.url);
       if (mine(url.hostname)) url.hostname = '127.0.0.1';
-      const body = request.body
-        ? new Uint8Array(await new Response(request.body).arrayBuffer())
-        : new Uint8Array(0);
       const s = await session.open({ kind: 'http' });
       const cancel = async () => s.close();
       signal?.addEventListener('abort', cancel, { once: true });
-      const head = encoder.encode(
-        JSON.stringify({ url: url.href, method: request.method, headers: request.headers })
-      );
-      await s.write(u32(head.length));
-      await s.write(head);
-      if (body.length) await s.write(body);
-      s.closeWrite();
+      const source = bodySource(request.body);
+      let halt;
+      const halted = new Promise((resolve) => {
+        halt = () => resolve({ done: true });
+      });
+      const stop = () => {
+        halt();
+        source.stop();
+        s.closeWrite();
+      };
       const reader = bufferedReader(s);
-      const size = new DataView((await reader.take(4)).buffer).getUint32(0);
-      const answer = json(await reader.take(size));
+      let answer;
+      try {
+        signal?.throwIfAborted();
+        const head = encoder.encode(
+          JSON.stringify({ url: url.href, method: request.method, headers: request.headers })
+        );
+        await s.write(u32(head.length));
+        await s.write(head);
+        const sending = (async () => {
+          for (;;) {
+            const { done, value } = await Promise.race([source.next(), halted]);
+            if (done) return s.closeWrite();
+            await s.write(value);
+          }
+        })();
+        const answering = (async () => {
+          const size = new DataView((await reader.take(4)).buffer).getUint32(0);
+          return json(await reader.take(size));
+        })();
+        sending.catch(() => {});
+        answering.catch(() => {});
+        answer = await Promise.race([answering, sending.then(() => answering)]);
+        stop();
+      } catch (error) {
+        s.close();
+        stop();
+        throw signal?.aborted ? signal.reason : error;
+      }
       if (!answer) {
         s.close();
         throw failure('EPROTO: a malformed response head');
