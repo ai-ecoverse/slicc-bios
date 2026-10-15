@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+tree=head
+case "${1:-}" in
+  head | base) tree=$1; shift ;;
+esac
+if [ "$#" -eq 0 ]; then
+  printf 'usage: sandbox [head|base] <command>\n' >&2
+  exit 64
+fi
+exec sudo -n -u cert -H env -i \
+  HOME=/home/cert \
+  PATH="${CERT_PATH:?}" \
+  LANG=C.UTF-8 \
+  CI=1 \
+  LEFTHOOK=0 \
+  SLICC_CLI="${SLICC_CLI:-}" \
+  sh -c 'cd "/home/cert/$1" && shift && exec bash -o pipefail -c "$*"' sandbox "$tree" "$@"
