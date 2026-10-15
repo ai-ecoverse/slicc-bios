@@ -1555,7 +1555,10 @@ for (const [detach, lag] of DETACH) {
     };
     const STAGED = {
       response: { requestStage: 'Response' },
-      auth: { path: (id) => `/auth/g-${id.replace(/[^a-z0-9]+/gi, '-')}/`, holdAuth: true },
+      auth: {
+        path: (id) => `/auth/g-${detach}-${id.replace(/[^a-z0-9]+/gi, '-')}/`,
+        holdAuth: true,
+      },
     };
     const guessed = async (id, at, kind, [method, params]) => {
       const staged = STAGED[kind] ?? {};
@@ -1794,7 +1797,9 @@ for (const [detach, lag] of DETACH) {
           const host = new URL(base).host;
           for (const [what, text] of Object.entries(seen)) {
             assert.ok(
-              !text.includes(`secret-${id}`) && !text.includes(host),
+              !text.includes(`secret-${id}`) &&
+                !text.includes(`frag-${id}`) &&
+                !text.includes(host),
               `${id}: ${what} shows nothing of the failed document (${text.slice(0, 400)})`
             );
           }

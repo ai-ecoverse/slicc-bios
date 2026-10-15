@@ -695,15 +695,17 @@ test('the real slicc CLI shares another browser over cdp: the 9222 facade reache
   assert.doesNotMatch(opened.out, /open 0$/, opened.out);
   const walked = await shell(
     page,
-    `{ playwright-cli --runtime ${runtime} open 'data:text/html,<title>start</title>' > /dev/null; playwright-cli --runtime ${runtime} eval 'location.href = ${JSON.stringify(`${own}/`)}' > /dev/null 2>&1; sleep 2; playwright-cli --runtime ${runtime} eval 'location.origin' 2>&1; playwright-cli --runtime ${runtime} close > /dev/null 2>&1; }`,
+    `{ playwright-cli --runtime ${runtime} open 'data:text/html,<title>start</title>' > /dev/null; playwright-cli --runtime ${runtime} eval 'location.href = ${JSON.stringify(`${own}/`)}' > /dev/null 2>&1; sleep 2; playwright-cli --runtime ${runtime} eval 'location.href' 2>&1; playwright-cli --runtime ${runtime} close > /dev/null 2>&1; }`,
     'cdp-own-walk'
   );
   assert.ok(!walked.out.includes(own), walked.out);
-  const tabs = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) => r.json());
-  assert.ok(
-    tabs.some((tab) => tab.url.startsWith(own)),
-    'the page did walk to seven’s origin in the other browser'
+  assert.match(
+    walked.out,
+    /about:blank#blocked/,
+    `the walk to seven’s origin was failed in the other browser, and the guard left a blank page: ${walked.out}`
   );
+  const tabs = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) => r.json());
+  assert.ok(!tabs.some((tab) => tab.url.startsWith(own)), 'seven’s page never loaded there');
   const hidden = await shell(
     page,
     `curl -s 'http://127.0.0.1:9222/json/list?runtime=${runtime}'`,

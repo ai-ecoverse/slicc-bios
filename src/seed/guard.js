@@ -644,7 +644,7 @@ class Guard {
 
   tree({ frame, childFrames, resources, ...rest }) {
     const hidden = this.is.url(frame.url) || this.is.url(frame.unreachableUrl);
-    const { unreachableUrl, ...shown } = frame;
+    const { unreachableUrl, urlFragment, ...shown } = frame;
     return {
       ...rest,
       frame: hidden ? { ...shown, url: ERROR_PAGE, securityOrigin: '://' } : frame,
