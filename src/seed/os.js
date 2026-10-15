@@ -46,6 +46,7 @@ import {
   serveNetwork,
   serveUpdates,
 } from './present.js';
+import { installProfile } from './profile.js';
 import { PYTHON } from './projects.js';
 import { createRemote } from './remote.js';
 import { installPrompts, keepStorage, onSend } from './storage.js';
@@ -606,6 +607,9 @@ async function own() {
       busy: () => installing(kernel),
     }).catch((error) => console.warn(`protect watch: ${error.message}`));
   }
+  await installProfile(root, { text, write }).catch((error) =>
+    console.warn(`login profile: ${error.message}`)
+  );
   if (mode !== 'off') {
     await installCommand(root, kernel, write).catch((error) =>
       console.warn(`slicc-denials: ${error.message}`)

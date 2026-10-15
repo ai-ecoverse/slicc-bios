@@ -873,3 +873,68 @@ test('when another page takes over slicc-node’s /cdp, the first page’s conne
     'websocket closed 1011 another page took over the local proxy’s browser connection (superseded-by-new-cdp-client)\n'
   );
 });
+
+test('a cone’s .jsh script, with sliccy:browser installed from the catalog, opens an ordinary tab and reads its title, and never finds seven or the vault', async (t) => {
+  const page = await chrome.page(t);
+  const extension = await fakeExtension(page);
+  t.after(extension.close);
+  await boot(page);
+  const vault = await tabAt(VAULT, 'VAULT-MARK');
+  const opened = [];
+  t.after(async () => {
+    const tabs = await devtools('/json/list');
+    const walker = tabs.filter((tab) => tab.url.includes('/walker')).map((tab) => tab.id);
+    await Promise.all(
+      [vault, ...opened, ...walker].map((id) => fetch(`http://127.0.0.1:${port}/json/close/${id}`))
+    );
+  });
+  await page.until(
+    (id) =>
+      document
+        .querySelector('slicc-app')
+        .model.updates.packages()
+        .some((item) => item.id === id),
+    'jsh-browser'
+  );
+  await page.evaluate(() => {
+    window.installed = undefined;
+    document
+      .querySelector('slicc-app')
+      .model.updates.actPackage('jsh-browser', 'install')
+      .then(
+        () => 'ok',
+        (error) => error.message
+      )
+      .then((result) => {
+        window.installed = result;
+      });
+  });
+  assert.equal(await page.within(15 * 60 * 1000, () => window.installed), 'ok');
+  const script = `const browser = require('sliccy:browser');
+(async () => {
+  const tab = await browser.ensureTab(${JSON.stringify(`http://127.0.0.1:${standPort}/walker`)});
+  console.log('title', await browser.eval(tab, 'document.title'));
+  console.log('vault', JSON.stringify(await browser.findTab({ domain: 'vault.sliccy.ai' })));
+  console.log('seven', JSON.stringify(await browser.findTab({ urlMatch: '/os/' })));
+  console.log('user', require('node:os').userInfo().username);
+})().catch((error) => console.log('failed', error.message));
+`;
+  await run(
+    page,
+    `clear; cd /; sudo -u cone bash -c 'cd && echo ${Buffer.from(script).toString('base64')} | base64 -d > browse.jsh && jsh browse.jsh'; echo browsed-$((40 + 2))`
+  );
+  await shows(page, 'browsed-42', 5 * 60 * 1000);
+  const text = await page.evaluate(() => {
+    const { dock } = document.querySelector('slicc-app');
+    return dock.content(
+      dock.api.panels.map((panel) => panel.id).findLast((id) => id.startsWith('terminal:'))
+    ).screen.textContent;
+  });
+  assert.match(text, /title WALKER-MARK/);
+  assert.match(text, /vault null/);
+  assert.match(text, /seven null/);
+  assert.match(text, /user cone/);
+  assert.doesNotMatch(text, /failed /);
+  assert.equal(await listed(vault), true);
+  assert.deepEqual(page.errors, []);
+});

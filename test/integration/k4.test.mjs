@@ -251,6 +251,11 @@ test('enforce: a cone’s Python finds what /opt/slicc/python lists, in a login 
   await shows(page, 'cone 42', 5 * 60 * 1000);
   await run(
     page,
+    "clear; sudo -u cone bash -c 'pip --version && pip3 --version' | grep -c '^pip ' | sed 's/^/pips-/'"
+  );
+  await shows(page, 'pips-2', 5 * 60 * 1000);
+  await run(
+    page,
     `clear; sudo -u cone bash -lc 'python3 -c "import sliccprobe; print(\\"login\\", sliccprobe.ok)"'`
   );
   await shows(page, 'login 42', 5 * 60 * 1000);
