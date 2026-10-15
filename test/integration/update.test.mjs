@@ -370,7 +370,8 @@ test("the user's pnpm add and pnpm upgrade in /opt/agent survive seven's updates
   });
   const page = await chrome.page(t);
   deployAgent({ '@types/ms': '2.1.0' }, BASE_LOCK);
-  await boot(page);
+  await page.goto('/#users=off');
+  await ready(page);
   await page.until(() =>
     document
       .querySelector('slicc-app')

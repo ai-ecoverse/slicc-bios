@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { boot, eventually, ready, run, shows, watch } from './bios.mjs';
+import { eventually, ready, run, shows, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch();
@@ -20,7 +20,8 @@ async function read(page, path) {
 
 test('seven refuses its own code once a kernel process changes it, puts it back and says so', async (t) => {
   const page = await chrome.page(t);
-  await boot(page);
+  await page.goto('/#users=off');
+  await ready(page);
   await run(
     page,
     `echo 'globalThis.__changed = "os";' >> /os/tabs.js && echo 'globalThis.__changed = "spectrum";' >> /${model} && rm /os/present.js && echo changed-$((40 + 2))`
@@ -93,7 +94,8 @@ test('seven refuses its own code once a kernel process changes it, puts it back 
 
 test('seven stops restoring a file that changes again right after it put it back, logs it and says so', async (t) => {
   const page = await chrome.page(t);
-  await boot(page);
+  await page.goto('/#users=off');
+  await ready(page);
   const bios = await watch(page);
   await run(page, `echo 'globalThis.__changed = 1;' >> /os/callback.js && echo first-$((40 + 2))`);
   await shows(page, 'first-42');
@@ -163,7 +165,8 @@ test('seven stops restoring a file that changes again right after it put it back
 
 test('a UI whose own code keeps changing says so instead of staying blank', async (t) => {
   const page = await chrome.page(t);
-  await boot(page);
+  await page.goto('/#users=off');
+  await ready(page);
   const bios = await watch(page);
   await run(page, `echo 'globalThis.__changed = 3;' >> /os/os.js && echo first-$((40 + 2))`);
   await shows(page, 'first-42');

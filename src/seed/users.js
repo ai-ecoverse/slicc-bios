@@ -5,7 +5,7 @@ const KEY = 'slicc-os.users';
 const CONE = /^cone(-[1-9]\d*)?$/;
 const SCOOP = /^scoop-[a-z0-9][a-z0-9._-]*$/;
 export const PRODUCTION = 'seven.sliccy.ai';
-export const PRODUCTION_USERS = 'report';
+export const PRODUCTION_USERS = 'enforce';
 
 export function usersMode({
   hash = location.hash,
