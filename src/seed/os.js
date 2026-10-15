@@ -1,6 +1,6 @@
 import { attachKernel, createKernel, serveHostfsPort } from '@ai-ecoverse/slicc-kernel';
 import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
-import { confirm, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
+import { confirm, secretRules, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
 import { sealedLogin, signIn } from './adobe.js';
 import {
   installed as agentInstalled,
@@ -17,7 +17,7 @@ import {
   useVault,
   whenIdle,
 } from './agent.js';
-import { createApprovals, rootChecked } from './approvals.js';
+import { createApprovals, rootChecked, useSecretRules } from './approvals.js';
 import { createBrowser } from './browser.js';
 import { browserControl } from './cdp.js';
 import { clipboardHook } from './clipboard.js';
@@ -270,6 +270,7 @@ const updates = createUpdates();
 const notices = createNotices();
 reportRepairs(notices);
 reportStopped(notices);
+useSecretRules(secretRules);
 const approvals = createApprovals();
 const mode = usersMode();
 protectInstalls(mode !== 'off', mode === 'enforce');

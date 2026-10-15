@@ -1,5 +1,3 @@
-import { dialogRules } from './rules.js';
-
 const CHANNEL = 'slicc-approvals';
 const SAFE = /^[\w@%+=:,./-]+$/;
 
@@ -73,10 +71,19 @@ function cautious(argv) {
     .some((word) => STRICT.test(word) || /(^|[\s;&|(])(cd|pushd)\s/.test(word));
 }
 
+const UNCHECKED = { certain: null, maybe: 'the secret rules check' };
+let classify = () => UNCHECKED;
+
+export function useSecretRules(check) {
+  classify = check;
+}
+
 export function secretRules(req) {
   const { argv = [] } = req;
   if (cautious(argv) || argv.slice(1).some((word) => /^[^-].*['"\\]|[$`]/.test(word))) return true;
-  if (dialogRules(approvalText(req)) !== null) return true;
+  const { command, cwd } = approvalText(req);
+  const verdict = classify(command, cwd);
+  if (verdict?.certain || verdict?.maybe) return true;
   return ownRules(req);
 }
 
