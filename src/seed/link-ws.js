@@ -15,7 +15,7 @@ export function wsRecord(type, payload) {
   return out;
 }
 
-function cut(reason, limit) {
+export function cut(reason, limit) {
   const bytes = encoder.encode(reason ?? '');
   if (bytes.length <= limit) return bytes;
   let end = limit;
@@ -36,7 +36,7 @@ export const sendable = (code) =>
     ? code
     : 1000;
 
-function inbox(onOverflow) {
+export function inbox(onOverflow) {
   const items = [];
   const waiters = [];
   let size = 0;

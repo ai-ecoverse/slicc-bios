@@ -332,9 +332,7 @@ const knockFrom = (cli, addr, port) =>
 
 const model = () => document.querySelector('slicc-app').model.network.status().tailnet;
 
-test('stage B on a tailnet of its own: raw TCP to a peer and through an exit node, nothing inbound', {
-  skip: !(tailnetAvailable && (usable || online)),
-}, async (t) => {
+async function joinLocal(t, extra = {}) {
   const tailnet = await startTailnet();
   t.after(() => tailnet.close());
   const page = await chrome.page(t);
@@ -344,7 +342,7 @@ test('stage B on a tailnet of its own: raw TCP to a peer and through an exit nod
   await page.goto('/');
   await ready(page);
   await page.evaluate(
-    async (controlURL, dev) => {
+    async (controlURL, dev, extra) => {
       if (dev) {
         const root = await navigator.storage.getDirectory();
         const opt = await root.getDirectoryHandle('opt', { create: true });
@@ -369,6 +367,7 @@ test('stage B on a tailnet of its own: raw TCP to a peer and through an exit nod
               ephemeral: true,
               derpOverHttp: true,
               ...(dev ? { from: '/opt/tailscale-dev' } : {}),
+              ...extra,
             },
             'tailscale'
           );
@@ -380,7 +379,8 @@ test('stage B on a tailnet of its own: raw TCP to a peer and through an exit nod
       });
     },
     tailnet.controlURL,
-    usable
+    usable,
+    extra
   );
   await page.reload();
   await ready(page);
@@ -402,6 +402,13 @@ test('stage B on a tailnet of its own: raw TCP to a peer and through an exit nod
   assert.equal(running.state, 'running', running.detail);
   assert.equal(running.shieldsUp, true);
   assert.equal(await page.evaluate(() => 'sliccTailscaleAuthKey' in globalThis), false);
+  return { tailnet, page, running };
+}
+
+test('stage B on a tailnet of its own: raw TCP to a peer and through an exit node, nothing inbound', {
+  skip: !(tailnetAvailable && (usable || online)),
+}, async (t) => {
+  const { tailnet, page, running } = await joinLocal(t);
 
   const raw = await curled(page, `--noproxy '*' --max-time 20 ${tailnet.peer.web}`, 'raw-peer');
   console.log(JSON.stringify({ rawPeer: raw }));
@@ -543,4 +550,96 @@ test('stage B on a tailnet of its own: raw TCP to a peer and through an exit nod
     });
     await page.screenshot(`${shots}/install-update.png`);
   }
+});
+
+const WS_SCRIPT = [
+  'exec 3<>/dev/tcp/127.0.0.1/3128',
+  `printf "GET http://$1/$2 HTTP/1.1\\r\\nHost: $1\\r\\nConnection: Upgrade\\r\\nUpgrade: websocket\\r\\nSec-WebSocket-Version: 13\\r\\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\\r\\nSec-WebSocket-Protocol: echo\\r\\n$3\\r\\n" >&3`,
+  'sleep 1',
+  'printf "$4" >&3',
+  'sleep 1',
+  'printf "$5" >&3',
+  'timeout "$6" cat <&3 | od -An -tx1 -v | tr -d " \\n"',
+].join('\n');
+
+const hex = (text) => Buffer.from(text).toString('hex');
+const PLACEHOLDER = 'fnox_proxy_0123456789abcdef01234567';
+
+test('a program WebSocket goes through the Tailscale exit to a tailnet peer, a silent one times out, and a vault placeholder never leaves', {
+  skip: !(tailnetAvailable && (usable || online)),
+}, async (t) => {
+  const { tailnet, page } = await joinLocal(t, { handshakeMs: 5000 });
+  await page.evaluate(async (script) => {
+    const home = await (await navigator.storage.getDirectory()).getDirectoryHandle('home');
+    const writable = await (await home.getFileHandle('ws.sh', { create: true })).createWritable();
+    await writable.write(script);
+    await writable.close();
+  }, WS_SCRIPT);
+  const ws = (name, ...args) =>
+    curled(
+      page,
+      '',
+      name,
+      `bash /home/ws.sh ${args.map((arg) => `'${arg}'`).join(' ')} > /home/${name}.txt`
+    );
+  const echoed = await ws(
+    'ts-ws-echo',
+    tailnet.peer.ws,
+    '',
+    '',
+    String.raw`\x81\x82\x00\x00\x00\x00hi\x82\x83\x00\x00\x00\x00\x01\x02\x03`,
+    String.raw`\x88\x82\x00\x00\x00\x00\x03\xe8`,
+    20
+  );
+  console.log(
+    JSON.stringify({ wsEcho: Buffer.from(echoed.body, 'hex').toString('latin1').slice(0, 200) })
+  );
+  assert.ok(echoed.body.startsWith(hex('HTTP/1.1 101 Switching Protocols')), echoed.body);
+  assert.ok(
+    echoed.body.includes(hex('Sec-WebSocket-Protocol: echo')) ||
+      echoed.body.includes(hex('sec-websocket-protocol: echo')),
+    echoed.body
+  );
+  assert.ok(echoed.body.includes(`8102${hex('hi')}`), echoed.body);
+  assert.ok(echoed.body.includes('8203010203'), echoed.body);
+  assert.ok(echoed.body.includes('880203e8'), echoed.body);
+  assert.equal(tailnet.peer.wsSeen.length, 1);
+
+  const far = await ws(
+    'ts-ws-far',
+    tailnet.peer.ws,
+    '',
+    '',
+    String.raw`\x81\x83\x00\x00\x00\x00bye`,
+    '',
+    20
+  );
+  assert.ok(far.body.includes(`880e0fa1${hex('far end done')}`), far.body);
+
+  const began = Date.now();
+  const silent = await ws('ts-ws-silent', tailnet.peer.silent, '', '', '', '', 25);
+  const waited = Date.now() - began;
+  const said = Buffer.from(silent.body, 'hex').toString('latin1');
+  console.log(JSON.stringify({ wsSilent: said.split('\r\n')[0], waited }));
+  assert.ok(said.startsWith('HTTP/1.1 502'), said);
+  assert.match(said, /the WebSocket handshake got no answer in 5 s/);
+  assert.ok(tailnet.peer.silentAccepted() >= 1, 'the handshake reached the silent peer');
+  assert.ok(waited < 25000, `answered in ${waited} ms, before the 30 s default`);
+
+  const before = tailnet.peer.wsSeen.length;
+  for (const [name, path, header] of [
+    ['ts-ws-sealed-url', `?key=${PLACEHOLDER}`, ''],
+    ['ts-ws-sealed-header', '', `Authorization: Bearer ${PLACEHOLDER}\\r\\n`],
+  ]) {
+    const sealed = await ws(name, tailnet.peer.ws, path, header, '', '', 10);
+    const answer = Buffer.from(sealed.body, 'hex').toString('latin1');
+    console.log(JSON.stringify({ [name]: answer.split('\r\n')[0] }));
+    assert.ok(answer.startsWith('HTTP/1.1 502'), answer);
+    assert.match(answer, /secrets in WebSocket handshakes aren't supported yet/);
+  }
+  assert.equal(tailnet.peer.wsSeen.length, before, 'no sealed handshake reached the peer');
+  assert.equal(
+    tailnet.peer.wsSeen.some((seen) => JSON.stringify(seen).includes('fnox_proxy_')),
+    false
+  );
 });

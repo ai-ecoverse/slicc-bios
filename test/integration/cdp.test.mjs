@@ -384,9 +384,10 @@ test('screenshots of the browser panel: a driven tab live, two driven tabs, Stop
   const harbor = 'SLICC_AGENT=cone:harbor';
   const keeper = 'SLICC_AGENT=cone:keeper';
   const wait = "eval 'new Promise((r) => setTimeout(r, 25000))'";
+  const hold = "eval 'new Promise((r) => setTimeout(r, 60000))'";
   await run(
     page,
-    `mkdir -p /tmp/keeper && cd /tmp/keeper && ${keeper} playwright-cli open ${log} > /tmp/k && ${keeper} playwright-cli snapshot > /dev/null && (for n in 1 2 3 4 5 6 7 8; do ${keeper} playwright-cli ${wait} > /dev/null 2>&1; done &) ; cd /home; ${harbor} playwright-cli open ${forecast} && ${harbor} playwright-cli snapshot > /tmp/snap && ref=$(grep -o 'textbox "Port" \\[ref=[a-z0-9]*' /tmp/snap | sed 's/.*ref=//') && ${harbor} playwright-cli fill $ref Lisbon && ${harbor} playwright-cli snapshot > /tmp/snap && button=$(grep -o 'button "Show forecast" \\[ref=[a-z0-9]*' /tmp/snap | sed 's/.*ref=//') && ${harbor} playwright-cli click $button && ${harbor} playwright-cli snapshot > /dev/null; ${harbor} playwright-cli click e99 > /dev/null 2>&1; echo acted-$?; (for n in 1 2 3 4 5 6 7 8; do ${harbor} playwright-cli ${wait} > /dev/null 2>&1 || break; done &)`
+    `mkdir -p /tmp/keeper && cd /tmp/keeper && ${keeper} playwright-cli open ${log} > /tmp/k && ${keeper} playwright-cli snapshot > /dev/null && (for n in 1 2 3 4; do ${keeper} playwright-cli ${hold} > /dev/null 2>&1; done &) ; cd /home; ${harbor} playwright-cli open ${forecast} && ${harbor} playwright-cli snapshot > /tmp/snap && ref=$(grep -o 'textbox "Port" \\[ref=[a-z0-9]*' /tmp/snap | sed 's/.*ref=//') && ${harbor} playwright-cli fill $ref Lisbon && ${harbor} playwright-cli snapshot > /tmp/snap && button=$(grep -o 'button "Show forecast" \\[ref=[a-z0-9]*' /tmp/snap | sed 's/.*ref=//') && ${harbor} playwright-cli click $button && ${harbor} playwright-cli snapshot > /dev/null; ${harbor} playwright-cli click e99 > /dev/null 2>&1; echo acted-$?; (for n in 1 2 3 4 5 6 7 8; do ${harbor} playwright-cli ${wait} > /dev/null 2>&1 || break; done &)`
   );
   await shows(page, 'acted-1');
   await page.until(
@@ -659,13 +660,19 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
     assert.equal(await listed(targetId), true);
   }
 
-  const detached = async (sessionId) => {
-    for (let n = 0; n < 100; n += 1) {
-      const answer = await send('Runtime.evaluate', { expression: '1' }, sessionId);
-      if (answer.error?.message === REFUSAL) return;
+  const errorPage = async (sessionId) => {
+    let href = null;
+    for (let n = 0; n < 50 && !String(href).startsWith('chrome-error://'); n += 1) {
       await new Promise((resolve) => setTimeout(resolve, 200));
+      href = (
+        await send(
+          'Runtime.evaluate',
+          { expression: 'location.href', returnByValue: true },
+          sessionId
+        )
+      ).result?.result?.value;
     }
-    assert.fail(`${sessionId} was not cut`);
+    return href;
   };
   const session = (await send('Target.attachToTarget', { targetId: plain, flatten: true })).result
     .sessionId;
@@ -723,17 +730,16 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
     },
     session
   );
-  await detached(session);
-  for (let n = 0; n < 50 && !hits.some((hit) => hit.endsWith('from=vault')); n += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
+  await new Promise((resolve) => setTimeout(resolve, 3000));
   assert.ok(
-    hits.some((hit) => hit.endsWith('from=vault')),
-    hits.join(' ')
+    !hits.some((hit) => hit.endsWith('from=vault') || hit.endsWith('/vault?framed')),
+    `the vault frame is failed at the request: ${hits.join(' ')}`
   );
   assert.equal(
-    (await send('Runtime.evaluate', { expression: 'document.title' }, session)).error.message,
-    REFUSAL
+    (await send('Runtime.evaluate', { expression: 'document.title', returnByValue: true }, session))
+      .result?.result?.value,
+    'PLAIN-MARK',
+    'the client keeps its session on the page that framed the vault'
   );
 
   const walker = await tabAt(`http://localhost:${standPort}/walker`, 'WALKER-MARK');
@@ -757,24 +763,26 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
     { expression: `location.href = ${JSON.stringify(`${VAULT}?walked`)}` },
     walking
   );
-  await detached(walking);
-  for (let n = 0; n < 50 && !heard.some((hit) => hit.path === '/vault?walked'); n += 1)
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  const walkedIn = heard.find((hit) => hit.path === '/vault?walked');
-  assert.ok(walkedIn, JSON.stringify(heard));
-  assert.equal(walkedIn.agent, null);
-  assert.doesNotMatch(walkedIn.ua, /agent-set-ua/);
   assert.equal(
-    (await send('Runtime.evaluate', { expression: 'document.title' }, walking)).error.message,
-    REFUSAL
+    await errorPage(walking),
+    'chrome-error://chromewebdata/',
+    'the walk into the vault ends on Chrome’s error page, and the client keeps its session'
   );
-  for (const method of ['Target.getTargetInfo', 'Target.activateTarget', 'Target.closeTarget']) {
-    assert.equal(
-      (await send(method, { targetId: walker })).error?.message,
-      REFUSAL,
-      `${method} on the tab that walked into the vault`
-    );
-  }
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  assert.ok(
+    !heard.some((hit) => hit.path === '/vault?walked'),
+    `the walk into the vault is failed at the request: ${JSON.stringify(heard)}`
+  );
+  assert.equal(
+    (await devtools('/json/list')).find((tab) => tab.id === walker)?.url,
+    `${VAULT}?walked`
+  );
+  assert.equal(
+    (await send('Target.getTargetInfo', { targetId: walker })).result?.targetInfo.url,
+    'chrome-error://chromewebdata/',
+    'the client sees the error page, not the vault URL it failed'
+  );
+  assert.equal((await send('Target.activateTarget', { targetId: walker })).error, undefined);
   assert.equal(await listed(walker), true);
   const seen = JSON.stringify(await events());
   assert.ok(!seen.includes('VAULT') && !seen.includes('vault.sliccy.ai'), seen.slice(0, 2000));

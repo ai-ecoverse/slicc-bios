@@ -118,6 +118,48 @@ async function gitServer(port, dir) {
   return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));
 }
 
+async function wsEchoServer(port) {
+  const { WebSocketServer } = await import('ws');
+  const server = new WebSocketServer({
+    host: '127.0.0.1',
+    port,
+    handleProtocols: (set) => (set.has('echo') ? 'echo' : false),
+  });
+  server.seen = [];
+  const close = server.close.bind(server);
+  server.close = () => {
+    for (const client of server.clients) client.terminate();
+    return close();
+  };
+  server.on('connection', (socket, req) => {
+    server.seen.push({ url: req.url, headers: req.headers });
+    socket.on('message', (data, binary) => {
+      if (!binary && String(data) === 'bye') socket.close(4001, 'far end done');
+      else socket.send(data, { binary });
+    });
+  });
+  await new Promise((resolve) => server.once('listening', resolve));
+  return server;
+}
+
+function silentServer(port) {
+  const sockets = new Set();
+  let total = 0;
+  const server = createTcpServer((socket) => {
+    total += 1;
+    sockets.add(socket);
+    socket.on('error', () => {});
+    socket.on('close', () => sockets.delete(socket));
+  });
+  server.accepted = () => total;
+  const close = server.close.bind(server);
+  server.close = () => {
+    for (const socket of sockets) socket.destroy();
+    return close();
+  };
+  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));
+}
+
 function webServer(port, body) {
   const server = createServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'text/plain' });
@@ -128,8 +170,18 @@ function webServer(port, body) {
 
 export async function startTailnet() {
   const dir = await mkdtemp(join(tmpdir(), 'slicc-tailnet-'));
-  const [hsPort, proxyPort, stunPort, metricsPort, grpcPort, webPort, echoPort, gitPort] =
-    await Promise.all(Array.from({ length: 8 }, freePort));
+  const [
+    hsPort,
+    proxyPort,
+    stunPort,
+    metricsPort,
+    grpcPort,
+    webPort,
+    echoPort,
+    gitPort,
+    wsPort,
+    silentPort,
+  ] = await Promise.all(Array.from({ length: 10 }, freePort));
   const config = join(dir, 'config.yaml');
   await writeFile(
     config,
@@ -213,6 +265,10 @@ unix_socket_permission: "0770"
   servers.push(await webServer(webPort, `hello from the local tailnet ${Date.now()}`));
   servers.push(await halfCloseServer(echoPort));
   servers.push(await gitServer(gitPort, dir));
+  const wsEcho = await wsEchoServer(wsPort);
+  servers.push(wsEcho);
+  const silent = await silentServer(silentPort);
+  servers.push(silent);
 
   const env = { ...process.env, TS_DEBUG_USE_DERP_HTTP: '1' };
   const node = async (name, extra = []) => {
@@ -271,6 +327,10 @@ unix_socket_permission: "0770"
       web: `http://${peer.ip}:${webPort}/`,
       echo: `${peer.ip}:${echoPort}`,
       git: `http://peer:${gitPort}/repo.git`,
+      ws: `${peer.ip}:${wsPort}`,
+      wsSeen: wsEcho.seen,
+      silent: `${peer.ip}:${silentPort}`,
+      silentAccepted: () => silent.accepted(),
     },
     exit,
     async close() {

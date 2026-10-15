@@ -1,5 +1,6 @@
 import { attachKernel } from '@ai-ecoverse/slicc-kernel';
 import { createExitRouter, loopback } from './exits.js';
+import { cut, inbox, sendable, WS_MAX } from './link-ws.js';
 import { stored } from './transport.js';
 import { fetchText, pnpm, text, versions, write } from './update.js';
 
@@ -12,6 +13,7 @@ const deployed = new URL('../packages/tailscale/', import.meta.url);
 const SOURCES = ['/mnt/tailscale', `/${FOLDER}/node_modules/${PACKAGE}/dist`, `/${FOLDER}`];
 const IDLE_MS = 30000;
 const HEAD_MS = 60000;
+export const HANDSHAKE_MS = 30000;
 const TAILNET = ['100.64.0.0/10', 'fd7a:115c:a1e0::/48'];
 const DOH = 'https://1.1.1.1/dns-query';
 const NAME_TTL = 60;
@@ -122,7 +124,132 @@ export function panelStatus(view, enabled) {
   };
 }
 
-export function createTailnet({ worker, traits, idleMs = IDLE_MS, headMs = HEAD_MS }) {
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+const failed = (message, extra) => Object.assign(new Error(message), extra);
+
+export function tailnetWebSocket(worker, request, { handshakeMs = HANDSHAKE_MS, sockets } = {}) {
+  const { url, protocols = [], headers = [], signal } = request;
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  const { port1: port, port2 } = new MessageChannel();
+  return new Promise((resolve, reject) => {
+    let state = 'opening';
+    let inflight = 0;
+    let written = 0;
+    let broken = null;
+    const sizes = [];
+    let settle;
+    const closed = new Promise((done) => {
+      settle = done;
+    });
+    const end = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+      sockets?.delete(stop);
+      port.close();
+    };
+    const fail = (error) => {
+      if (state !== 'opening') return;
+      state = 'closed';
+      port.postMessage({ abort: error.message ?? String(error) });
+      end();
+      reject(error);
+    };
+    const finish = (result) => {
+      if (state === 'closed') return;
+      state = 'closed';
+      end();
+      messages.end();
+      settle(result);
+    };
+    const close = (code, reason) => {
+      if (state !== 'open') return;
+      state = 'closing';
+      port.postMessage({
+        close: { code: sendable(code), reason: decoder.decode(cut(reason, 123)) },
+      });
+    };
+    const messages = inbox(() => close(1009, 'too many waiting messages'));
+    const abort = () => {
+      if (state === 'opening') return fail(signal.reason);
+      if (state === 'closed') return;
+      state = 'closing';
+      port.postMessage({ abort: 'the request was aborted' });
+    };
+    const stop = () => {
+      const error = failed('Tailscale was turned off', { code: 'ECANCELED' });
+      if (state === 'opening') fail(error);
+      else finish({ code: 1006, reason: error.message });
+    };
+    const timer = setTimeout(
+      () =>
+        fail(
+          failed(`the WebSocket handshake got no answer in ${handshakeMs / 1000} s`, {
+            code: 'ETIMEDOUT',
+            status: 504,
+          })
+        ),
+      handshakeMs
+    );
+    signal?.addEventListener('abort', abort, { once: true });
+    sockets?.add(stop);
+    const socket = {
+      protocol: '',
+      get buffered() {
+        return inflight + written;
+      },
+      send(data) {
+        if (broken) throw broken;
+        if (state !== 'open') throw failed('the WebSocket is closed', { code: 'EPIPE' });
+        const size = typeof data === 'string' ? encoder.encode(data).length : data.byteLength;
+        if (size > WS_MAX) {
+          close(1009, 'a message over 64 MiB');
+          throw failed('a WebSocket message over 64 MiB', { code: 'EMSGSIZE' });
+        }
+        sizes.push(size);
+        inflight += size;
+        port.postMessage({ send: data });
+      },
+      messages,
+      close,
+      closed,
+    };
+    const replies = {
+      open: ({ protocol }) => {
+        if (state !== 'opening') return;
+        state = 'open';
+        clearTimeout(timer);
+        socket.protocol = String(protocol ?? '');
+        resolve(socket);
+      },
+      error: ({ message, code, status }) => fail(failed(message, { code, status: status ?? 502 })),
+      message: (message) => messages.push(message),
+      sent: (error, { buffered }) => {
+        inflight -= sizes.shift() ?? 0;
+        written = buffered;
+        if (error) broken = failed(error.message, { code: error.code });
+      },
+      buffered: (buffered) => {
+        written = buffered;
+      },
+      closed: ({ code, reason }) => finish({ code, reason }),
+    };
+    port.onmessage = ({ data }) => {
+      const [kind] = Object.keys(data);
+      if (Object.hasOwn(replies, kind)) replies[kind](data[kind], data);
+    };
+    worker.postMessage({ websocket: { port: port2, url, protocols, headers } }, [port2]);
+  });
+}
+
+export function createTailnet({
+  worker,
+  traits,
+  idleMs = IDLE_MS,
+  headMs = HEAD_MS,
+  handshakeMs = HANDSHAKE_MS,
+}) {
+  const sockets = new Set();
   const waiting = new Map();
   const listeners = new Set();
   let nextId = 0;
@@ -213,6 +340,7 @@ export function createTailnet({ worker, traits, idleMs = IDLE_MS, headMs = HEAD_
     login: (key) => worker.postMessage({ login: key ?? true }),
     stop() {
       worker.terminate?.();
+      for (const socket of [...sockets]) socket();
       for (const id of [...waiting.keys()])
         answer(
           id,
@@ -220,6 +348,7 @@ export function createTailnet({ worker, traits, idleMs = IDLE_MS, headMs = HEAD_
           Object.assign(new Error('Tailscale was turned off'), { code: 'ECANCELED' })
         );
     },
+    websocket: (request) => tailnetWebSocket(worker, request, { handshakeMs, sockets }),
     async dial(network, addr) {
       const id = ++nextId;
       const conn = await ask(id, { dial: { id, network, addr } });
@@ -376,6 +505,7 @@ export function tailnetExit(slot) {
     dial: ({ host, port }) =>
       slot.current.dial('tcp', v6(host) ? `[${host}]:${port}` : `${host}:${port}`),
     fetch: (request) => slot.current.fetch(request),
+    websocket: (request) => slot.current.websocket(request),
   };
 }
 
@@ -467,7 +597,11 @@ export function createTailscale(config, deps = {}) {
       await learnNodeName(client, router.own);
       const { wasm, exec } = await readModule(client.fs, config.from ? [config.from] : undefined);
       const worker = (deps.worker ?? spawn)();
-      const tailnet = createTailnet({ worker, traits: context.traits });
+      const tailnet = createTailnet({
+        worker,
+        traits: context.traits,
+        ...(Number.isFinite(config.handshakeMs) ? { handshakeMs: config.handshakeMs } : {}),
+      });
       const state = (await store('readonly', (s) => s.get(STATE))) ?? {};
       tailnet.onState = ({ key, value }) => {
         state[key] = value;

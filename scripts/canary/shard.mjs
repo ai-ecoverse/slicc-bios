@@ -7,6 +7,7 @@ import { argv, chdir, env, stderr, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { OUT, overridePins, PACKAGES, ROOT, specs } from './override-pins.mjs';
+import { usersModes } from './users.mjs';
 
 const REPORTER = './scripts/canary/reporter.mjs';
 
@@ -189,6 +190,7 @@ export async function shard({ name, overrides, out }) {
     phases,
     exit: first.code,
     pins,
+    kernels: await usersModes(ROOT),
     results,
   };
   await writeFile(join(out, 'shard.json'), `${JSON.stringify(summary, null, 2)}\n`);

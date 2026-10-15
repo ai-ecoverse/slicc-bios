@@ -81,6 +81,8 @@ export const SHARDS = [
   'remote-pydata',
   'users-agent-ui',
   'packages-update-cdp',
+  'guard',
+  'k4-link',
   'rest',
 ];
 
