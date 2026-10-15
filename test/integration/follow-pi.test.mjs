@@ -528,13 +528,20 @@ test('a follower of an owner whose agent speaks a newer link protocol says so on
       `[...(${dialog})().getRootNode().host.shadowRoot.querySelectorAll('swc-button')].find((b) => b.textContent.trim() === 'Follow').click()`
     )
   );
+  await page.until(
+    () => document.querySelector('slicc-app')?.model?.follow?.state().link === 'connected'
+  );
   await owner.until(() =>
     document
       .querySelector('slicc-app')
       .model.network.status()
-      .links.devices.some((d) => d.kind === 'seven' && d.asking)
+      .links.devices.some((d) => d.kind === 'seven' && d.asking && d.state === 'connected')
   );
-  const [device] = await model(owner, (network) => network.status().links.devices);
+  const device = await model(owner, (network) =>
+    network
+      .status()
+      .links.devices.find((d) => d.kind === 'seven' && d.asking && d.state === 'connected')
+  );
   await model(owner, (network, id) => network.setAccess(id, 'view', true), device.id);
   await page.within(INSTALL, () => {
     const { agent } = document.querySelector('slicc-app').model;
