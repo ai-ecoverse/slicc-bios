@@ -15,6 +15,8 @@ export function verdict(result, overridden) {
 }
 
 async function shards(dir, run) {
+  const only = await readFile(join(dir, 'shard.json'), 'utf8').catch(() => null);
+  if (only) return [JSON.parse(only)];
   const found = [];
   for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
     if (!entry.isDirectory() || !entry.name.startsWith(`canary-shard-${run}-`)) continue;

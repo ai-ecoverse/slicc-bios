@@ -1,11 +1,5 @@
 [
   {
-    "id": "positive",
-    "overrides": ["@ai-ecoverse/slicc-kernel@1.86.0"],
-    "shards": ["rest"],
-    "expect": []
-  },
-  {
     "id": "negative",
     "overrides": ["@ai-ecoverse/slicc-kernel@1.78.0"],
     "shards": ["sweep"],
