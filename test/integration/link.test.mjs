@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer, request } from 'node:http';
+import { networkInterfaces } from 'node:os';
 import { createInterface } from 'node:readline';
 import { after, test } from 'node:test';
 import { boot, ready, run } from './bios.mjs';
@@ -350,22 +351,27 @@ test('links the real slicc CLI over stdio signaling, and kernel curl reaches its
   assert.ok(seen.indexOf('offer') < seen.indexOf('node:answer'));
 });
 
+const routable = Object.values(networkInterfaces())
+  .flat()
+  .some(
+    (entry) => entry.family === 'IPv4' && !entry.internal && !entry.address.startsWith('169.254.')
+  );
+
 test('the real slicc CLI: ssh into it with its pinned host key, and as the exit, automatic for a local CLI, it resolves names from its hosts file, or refuses them under its policy', {
-  skip: !cli,
+  skip: !cli
+    ? true
+    : !routable &&
+      'this runner has only a link-local IPv4 address, which the CLI denies as cloud metadata; hosted runners (push to main, forks) run it',
 }, async (t) => {
   const { mkdtemp, writeFile } = await import('node:fs/promises');
-  const { networkInterfaces, tmpdir } = await import('node:os');
+  const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
-  const private4 = (address) => {
-    const [a, b] = address.split('.').map(Number);
-    return a === 10 || (a === 172 && b >= 16 && b < 32) || (a === 192 && b === 168);
-  };
-  const outside = Object.values(networkInterfaces())
+  const lan = Object.values(networkInterfaces())
     .flat()
-    .filter((entry) => entry.family === 'IPv4' && !entry.internal);
-  const lan = (outside.find((entry) => private4(entry.address)) ?? outside[0])?.address;
+    .find(
+      (entry) => entry.family === 'IPv4' && !entry.internal && !entry.address.startsWith('169.254.')
+    )?.address;
   assert.ok(lan, 'a non-loopback IPv4 address for the hosts-file test');
-  const reach = private4(lan) ? [] : ['--allow', `${lan}/32`];
   const dir = await mkdtemp(join(tmpdir(), 'link-hosts-'));
   const hosts = join(dir, 'hosts');
   await writeFile(hosts, `# test names\n${lan} ref.link.test\n`);
@@ -393,7 +399,6 @@ test('the real slicc CLI: ssh into it with its pinned host key, and as the exit,
         '--no-kernel',
         '--hosts',
         hosts,
-        ...reach,
         ...extra,
       ],
       {
@@ -439,11 +444,7 @@ test('the real slicc CLI: ssh into it with its pinned host key, and as the exit,
     `curl -s --noproxy '*' --max-time 10 http://ref.link.test:${port}/automatic`,
     'hosts-automatic'
   );
-  assert.deepEqual(
-    automatic,
-    { code: '0', out: 'hosts /automatic' },
-    `this runner's address ${lan}`
-  );
+  assert.deepEqual(automatic, { code: '0', out: 'hosts /automatic' });
   await page.evaluate(() => {
     const { notices } = document.querySelector('slicc-app').model;
     for (const notice of notices.list()) notices.dismiss(notice.id);
