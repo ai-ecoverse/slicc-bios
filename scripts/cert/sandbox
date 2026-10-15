@@ -8,11 +8,18 @@ if [ "$#" -eq 0 ]; then
   printf 'usage: sandbox [head|base] <command>\n' >&2
   exit 64
 fi
-exec sudo -n -u cert -H env -i \
-  HOME=/home/cert \
+user=cert
+if [ "$tree" = base ]; then
+  user=certbase
+  sudo -n pkill -KILL -u cert 2>/dev/null || true
+fi
+home=/home/$user
+exec sudo -n -u "$user" -H env -i \
+  HOME="$home" \
+  TMPDIR="$home/tmp" \
   PATH="${CERT_PATH:?}" \
   LANG=C.UTF-8 \
   CI=1 \
   LEFTHOOK=0 \
   SLICC_CLI="${SLICC_CLI:-}" \
-  sh -c 'cd "/home/cert/$1" && shift && exec bash -o pipefail -c "$*"' sandbox "$tree" "$@"
+  sh -c 'mkdir -p "$TMPDIR" && cd "$HOME/$1" && shift && exec bash -o pipefail -c "$*"' sandbox "$tree" "$@"

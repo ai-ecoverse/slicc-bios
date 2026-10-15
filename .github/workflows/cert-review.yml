@@ -93,14 +93,16 @@ jobs:
       - name: Chromium system dependencies
         run: npx --yes playwright-core@1.63.0 install-deps chromium
 
-      - name: A sandbox user with the base and the head, and no secrets
+      - name: Two sandbox users, one for the head and one for the base, and no secrets
         run: |
           sudo useradd --create-home --shell /bin/bash cert
-          sudo chmod 0755 /home/cert
+          sudo useradd --create-home --shell /bin/bash certbase
+          sudo chmod 0755 /home/cert /home/certbase
           chmod 0750 "$HOME"
-          sudo rsync -a --exclude .cert-head ./ /home/cert/base/
+          sudo rsync -a --exclude .cert-head ./ /home/certbase/base/
           sudo rsync -a .cert-head/ /home/cert/head/
           sudo chown -R cert:cert /home/cert
+          sudo chown -R certbase:certbase /home/certbase
           echo "CERT_PATH=$(dirname "$(command -v node)"):/opt/cert/bin:/usr/local/bin:/usr/bin:/bin" >> "$GITHUB_ENV"
           echo "SLICC_CLI=/opt/cert/bin/slicc" >> "$GITHUB_ENV"
 
@@ -108,13 +110,33 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/cert-review"
           for path in "$HOME" "$RUNNER_TEMP" "$RUNNER_TEMP/cert-review" "$GITHUB_WORKSPACE/.git" "/proc/$$/environ"; do
-            if sudo -n -u cert test -r "$path"; then echo "::error::the sandbox user can read $path"; exit 1; fi
+            for user in cert certbase; do
+              if sudo -n -u "$user" test -r "$path"; then echo "::error::sandbox user $user can read $path"; exit 1; fi
+            done
           done
+
+      - name: Neither sandbox user can write the other's tree
+        run: |
+          check() {
+            found=$(sudo -n -u "$1" find "$2" -writable -print -quit 2>/dev/null || true)
+            if [ -n "$found" ]; then echo "::error::sandbox user $1 can write $found"; exit 1; fi
+          }
+          check cert /home/certbase
+          check certbase /home/cert
 
       - name: Install both trees and Chrome inside the sandbox
         run: |
+          scripts/cert/sandbox base 'npm ci --ignore-scripts --no-audit --no-fund && npx playwright-core install --no-shell chromium'
           scripts/cert/sandbox head 'npm ci --ignore-scripts --no-audit --no-fund && npx playwright-core install --no-shell chromium'
-          scripts/cert/sandbox base 'npm ci --ignore-scripts --no-audit --no-fund'
+
+      - name: After the installs, neither sandbox user can write the other's tree
+        run: |
+          check() {
+            found=$(sudo -n -u "$1" find "$2" -writable -print -quit 2>/dev/null || true)
+            if [ -n "$found" ]; then echo "::error::sandbox user $1 can write $found"; exit 1; fi
+          }
+          check cert /home/certbase
+          check certbase /home/cert
 
       - name: Certify
         id: certify
@@ -129,7 +151,7 @@ jobs:
           allowed_bots: 'renovate[bot]'
           claude_args: |
             --model ${{ vars.CERT_BEDROCK_MODEL || 'global.anthropic.claude-opus-5-5' }}
-            --allowedTools "Bash(scripts/cert/sandbox:*),Bash(gh pr view:*),Bash(gh pr diff:*),Read(//home/cert/**),Read(/${{ github.workspace }}/**),Write(/${{ runner.temp }}/cert-review/**)"
+            --allowedTools "Bash(scripts/cert/sandbox:*),Bash(gh pr view:*),Bash(gh pr diff:*),Read(//home/cert/**),Read(//home/certbase/**),Read(/${{ github.workspace }}/**),Write(/${{ runner.temp }}/cert-review/**)"
             --disallowedTools "Bash(gh pr comment:*),Bash(gh api:*),Read(//proc/**),Read(/${{ github.workspace }}/.git/**),Read(/${{ github.workspace }}/.cert-head/.git/**),WebFetch,WebSearch"
             --max-turns 300
           prompt: |
@@ -141,17 +163,17 @@ jobs:
 
             WHERE THINGS ARE
             - The current directory is a trusted checkout of the base. Its `scripts/cert/` holds your tools. Never trust or run the head's copies of them.
-            - `/home/cert/head` is the pull request's head and `/home/cert/base` the base, both with `npm ci` done and Chrome installed. They belong to the sandbox user `cert`, which holds no secrets.
+            - `/home/cert/head` is the pull request's head and `/home/certbase/base` the base, both with `npm ci` done and Chrome installed. The head belongs to the sandbox user `cert` and the base to `certbase`. Neither holds secrets, and neither can write the other's files, so the head's code can't change the base you compare against.
             - `src/packages/certs.json` maps every certified `name@version` to its integrity and sha256. Integration test `pins.test.mjs` refuses any gated package (slicc-kernel, slicc-cdp, slicc-jsh, slicc-clipboard, wasm-*, wasi-*, wasix-*, py-*) whose version isn't in it. A dependency pull request for a gated package therefore always fails that one check until it is certified. That failure is expected, so report it but don't count it against the package.
 
             YOUR TOOLS (nothing else is allowed)
-            - `scripts/cert/sandbox [head|base] '<shell command>'` runs a command as `cert` in that tree. This is the only way to run pull-request code. Useful commands:
+            - `scripts/cert/sandbox [head|base] '<shell command>'` runs a command in that tree, as `cert` for the head and `certbase` for the base, with `$HOME` set to that user's home. Every base command first stops all of the head's processes, so run the head and the base one after the other, not side by side. This is the only way to run pull-request code. Useful commands:
               - `SLICC_TESTS='test/integration/shell.test.mjs test/integration/jsh.test.mjs' npm test`: the integration suites, in headless Chrome against bios's real page. Each file takes 2 to 15 minutes, and the whole set about 80, so pick files.
-              - `CERT_COMMANDS=/home/cert/cmds.txt npm run test:cert`: boots seven in Chrome and runs each line of that file in seven's terminal. It writes the exit status and output of every line to `artifacts/cert/seven.json`. Write the command file first, outside `artifacts/` (the test harness clears that directory when it starts), e.g. `scripts/cert/sandbox head 'printf "%s\n" "grep --version" "echo hi | sed s/hi/ok/" > /home/cert/cmds.txt'`. Set `CERT_TIMEOUT` (ms per command, default 180000) for slow commands. The whole sweep may take up to `CERT_BUDGET` ms (default 8400000), not `npm test`'s 15 minutes per file, so don't run it through `npm test`.
+              - `CERT_COMMANDS="$HOME/cmds.txt" npm run test:cert`: boots seven in Chrome and runs each line of that file in seven's terminal. It writes the exit status and output of every line to `artifacts/cert/seven.json`. Write the command file first, in the home of the tree you run it in and outside `artifacts/` (the test harness clears that directory when it starts), e.g. `scripts/cert/sandbox head 'printf "%s\n" "grep --version" "echo hi | sed s/hi/ok/" > "$HOME/cmds.txt"'`, and the same with `base` for the base. Write the base's file with the base's sandbox; never reuse a file the head could have changed. Set `CERT_TIMEOUT` (ms per command, default 180000) for slow commands. The whole sweep may take up to `CERT_BUDGET` ms (default 8400000), not `npm test`'s 15 minutes per file, so don't run it through `npm test`.
               - `npm view`, `npm pack`, `node -e`, `ls`, `cat`, `jq`, and the like, to look inside packages.
-            - `scripts/cert/sandbox base 'node scripts/cert/inspect.mjs <name>@<version> [--against <old version>]'` prints a package's tarball sha256 and integrity (checked against the registry), gitHead, repository, install scripts, engines and npm provenance (the workflow, ref and commit that built it), plus the versions certs.json already certifies. With `--against` it lists the files that differ from the old version and writes the full diff to `/home/cert/base/artifacts/cert/`.
+            - `scripts/cert/sandbox base 'node scripts/cert/inspect.mjs <name>@<version> [--against <old version>]'` prints a package's tarball sha256 and integrity (checked against the registry), gitHead, repository, install scripts, engines and npm provenance (the workflow, ref and commit that built it), plus the versions certs.json already certifies. With `--against` it lists the files that differ from the old version and writes the full diff to `/home/certbase/base/artifacts/cert/`.
             - `gh pr view` and `gh pr diff` for this pull request.
-            - Read, for files under `/home/cert/` and the current directory only. For listing or searching, use `ls`, `grep`, `find` or `jq` through the sandbox.
+            - Read, for files under `/home/cert/`, `/home/certbase/` and the current directory only. For listing or searching, use `ls`, `grep`, `find` or `jq` through the sandbox.
             - Write, only for `${{ runner.temp }}/cert-review/comment.md`, your verdict. A later step checks it for secrets and posts it to the pull request. You can't post comments yourself.
 
             WHAT TO DO
@@ -160,7 +182,7 @@ jobs:
                - the integrity in the pull request's lockfiles equals the registry's, and the sha256 is what you record;
                - provenance: slicc-kernel, slicc-jsh, slicc-cdp, slicc-clipboard, slicc-agent and slicc-spectrum publish it, and it must point at that `ai-ecoverse` repository's release workflow, with the commit matching gitHead. homescoop's packages (wasm-*, wasi-*, wasix-*, py-*; repository homescoop) are published without it today, so record its absence for those but don't fail on it;
                - there are no install scripts;
-               - the diff: read the changed files (in `/home/cert/base/artifacts/cert/`, or with `npm pack` in the sandbox). Look for anything that widens what a kernel program or the page can reach: new network hosts, `eval` or `new Function`, access to withheld browser APIs (IndexedDB, BroadcastChannel, Worker, navigator.storage, OPFS handles), changes to sudo, users, protect, mounts, /dev/sealed, the CDP guard or the lockdown, and minified or binary blobs whose source isn't in the diff. Compare with the release notes in the package's repository if they help.
+               - the diff: read the changed files (in `/home/certbase/base/artifacts/cert/`, or with `npm pack` in the sandbox). Look for anything that widens what a kernel program or the page can reach: new network hosts, `eval` or `new Function`, access to withheld browser APIs (IndexedDB, BroadcastChannel, Worker, navigator.storage, OPFS handles), changes to sudo, users, protect, mounts, /dev/sealed, the CDP guard or the lockdown, and minified or binary blobs whose source isn't in the diff. Compare with the release notes in the package's repository if they help.
             3. Run the tests that exercise the package, in `head`, choosing by package:
                - slicc-kernel: `shell`, `jsh`, `packages`, `optional`, `mounts`, `users`, `sandbox`, `transport`, `cdp`, plus `cert.test.mjs` with a base-set sweep (step 4);
                - slicc-jsh: `jsh`, `typescript`, `modules`, `shell`;
@@ -222,7 +244,7 @@ jobs:
           cp -r artifacts "$RUNNER_TEMP/evidence/inspect" 2>/dev/null || true
           if [ -s "$RUNNER_TEMP/cert-review/comment.md" ]; then cp "$RUNNER_TEMP/cert-review/comment.md" "$RUNNER_TEMP/verdict.md"; fi
           sudo cp -r /home/cert/head/artifacts "$RUNNER_TEMP/evidence/head" 2>/dev/null || true
-          sudo cp -r /home/cert/base/artifacts "$RUNNER_TEMP/evidence/base" 2>/dev/null || true
+          sudo cp -r /home/certbase/base/artifacts "$RUNNER_TEMP/evidence/base" 2>/dev/null || true
           sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/evidence"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
