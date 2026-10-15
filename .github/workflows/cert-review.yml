@@ -83,10 +83,19 @@ jobs:
               ...(await runs({ head_sha: pr.base.sha, per_page: 5 })),
               ...(await runs({ branch: 'main', event: 'push', per_page: 30 })),
             ];
+            const lost = async ({ id }) =>
+              (await github.rest.checks.listAnnotations({ owner, repo, check_run_id: id })).data.some(({ message }) =>
+                /lost communication with the server/i.test(message ?? '')
+              );
             for (const run of candidates) {
               const { data } = await github.rest.actions.listJobsForWorkflowRun({ owner, repo, run_id: run.id });
               const shards = data.jobs.filter(({ name }) => name.startsWith('ci / integration'));
-              if (shards.length && shards.every(({ conclusion }) => conclusion === 'success' || conclusion === 'failure')) {
+              if (!shards.length || !shards.every(({ conclusion }) => conclusion === 'success' || conclusion === 'failure')) continue;
+              let usable = true;
+              for (const shard of shards) {
+                if (shard.conclusion === 'failure' && (await lost(shard))) usable = false;
+              }
+              if (usable) {
                 baseCi = run;
                 break;
               }
@@ -143,7 +152,12 @@ jobs:
         with:
           node-version: '24'
 
-      - name: The released slicc and gh CLIs
+      - name: Install both trees and the harness's Chromium
+        run: |
+          (cd base && npm ci --no-audit --no-fund)
+          (cd head && npm ci --no-audit --no-fund && npx playwright-core install --no-shell chromium)
+
+      - name: Each tree's slicc CLI (the released binary where a tree has none), and gh
         run: |
           case "$(uname -m)" in
             x86_64) arch=amd64 ;;
@@ -152,11 +166,22 @@ jobs:
           esac
           mkdir -p "$RUNNER_TEMP/bin"
           cd "$RUNNER_TEMP/bin"
-          release=https://github.com/ai-ecoverse/slicc-cli/releases/latest/download
-          curl -fsSL -O "$release/slicc-linux-$arch" -O "$release/SHA256SUMS"
-          sha256sum -c SHA256SUMS --ignore-missing
-          mv "slicc-linux-$arch" slicc
-          chmod +x slicc
+          for tree in base head; do
+            cli="$GITHUB_WORKSPACE/$tree/node_modules/.bin/slicc"
+            if [ ! -x "$cli" ]; then
+              if [ ! -x slicc-release ]; then
+                release=https://github.com/ai-ecoverse/slicc-cli/releases/latest/download
+                curl -fsSL -O "$release/slicc-linux-$arch" -O "$release/SHA256SUMS"
+                sha256sum -c SHA256SUMS --ignore-missing
+                mv "slicc-linux-$arch" slicc-release
+                chmod +x slicc-release
+              fi
+              cli="$RUNNER_TEMP/bin/slicc-release"
+            fi
+            echo "SLICC_CLI_${tree^^}=$cli" >> "$GITHUB_ENV"
+            echo "$tree: $("$cli" --version) ($cli)"
+            [ "$tree" = head ] && ln -sf "$cli" slicc && echo "SLICC_CLI=$cli" >> "$GITHUB_ENV"
+          done
           if ! command -v gh > /dev/null; then
             v=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/cli/cli/releases/latest | jq -r '.tag_name | ltrimstr("v")')
             curl -fsSL -O "https://github.com/cli/cli/releases/download/v$v/gh_${v}_linux_$arch.tar.gz" \
@@ -165,15 +190,8 @@ jobs:
             tar -xzf "gh_${v}_linux_$arch.tar.gz" --strip-components=2 "gh_${v}_linux_$arch/bin/gh"
           fi
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-          echo "SLICC_CLI=$RUNNER_TEMP/bin/slicc" >> "$GITHUB_ENV"
           PATH="$RUNNER_TEMP/bin:$PATH"
-          slicc --version
           gh --version | head -1
-
-      - name: Install both trees and the harness's Chromium
-        run: |
-          (cd base && npm ci --no-audit --no-fund)
-          (cd head && npm ci --no-audit --no-fund && npx playwright-core install --no-shell chromium)
 
       - name: Two Chromes with windows, the base on CDP 9222 and the head on CDP 9223
         run: |
@@ -226,8 +244,8 @@ jobs:
 
             WHAT'S SET UP
             - `base/` is the base (${{ needs.plan.outputs.base }}) and `head/` the pull request (${{ needs.plan.outputs.head }}), both with `npm ci` done.
-            - CI has already run the integration suite, headless on ubuntu-latest, in three shard jobs (`ci / integration (rest|follow-chat|remote-pydata)`): on the pull request in run `${{ needs.plan.outputs.head_ci || 'none found' }}`, and on main in run `${{ needs.plan.outputs.base_ci || 'none found' }}` (commit ${{ needs.plan.outputs.base_ci_sha }}, the base or the closest main commit whose shards finished). Don't run the suite again. `gh` is on `PATH` with a token that reads Actions: `gh run view <run> --json jobs`, `gh run view <run> --log-failed`, `gh run view --job <job> --log`, and `gh run download <run> -n integration-<shard> -D <dir>` for a shard's `artifacts/` (screenshots, `chrome-stderr.log`, crash dumps). Look only at what failed. A run whose shards all finished can still say "cancelled" when the final `ci / test` job was superseded: judge by the shard jobs.
-            - For a test that fails on the pull request but not on main, re-run just that file in both trees to tell a flake from a regression: `cd head && SLICC_TESTS='test/integration/<file>' npm test` (and the same in `base`). Each file takes 2 to 15 minutes.
+            - CI has already run the integration suite in its `ci / integration (<shard>)` jobs: on the pull request in run `${{ needs.plan.outputs.head_ci || 'none found' }}`, and on main in run `${{ needs.plan.outputs.base_ci || 'none found' }}` (commit ${{ needs.plan.outputs.base_ci_sha }}, the base or the closest main commit whose shards finished). Don't run the suite again. `gh` is on `PATH` with a token that reads Actions: `gh run view <run> --json jobs`, `gh run view <run> --log-failed`, `gh run view --job <job> --log`, and `gh run download <run> -n integration-<shard> -D <dir>` for a shard's `artifacts/` (screenshots, `chrome-stderr.log`, crash dumps). Look only at what failed. A run whose shards all finished can still say "cancelled" when the final `ci / test` job was superseded: judge by the shard jobs. A shard that ended with "The self-hosted runner lost communication with the server" lost its machine, not a test: re-run its files here if they matter.
+            - For a test that fails on the pull request but not on main, re-run just that file in both trees, each with its own slicc CLI as CI uses it, to tell a flake from a regression: `cd head && SLICC_CLI="$SLICC_CLI_HEAD" SLICC_TESTS='test/integration/<file>' npm test`, and the same in `base` with `$SLICC_CLI_BASE`. Each file takes 2 to 15 minutes.
             - Two Chromes with windows are running, each with bios open: the base's on CDP `http://127.0.0.1:9222` (page `http://127.0.0.1:8080/`) and the head's on CDP `http://127.0.0.1:9223` (page `http://127.0.0.1:8081/`). Their logs are `${{ runner.temp }}/chrome-<base|head>.log`. Drive them over CDP (`playwright-core` is in both trees' `node_modules`: `chromium.connectOverCDP`), or with the slicc CLI on `PATH` (`slicc --help`; for example `slicc attach --cdp http://127.0.0.1:9223 --origin http://127.0.0.1:8081` links the head's seven to this machine, as a user's CLI would).
             - `node base/scripts/cert/inspect.mjs <name>@<new> --against <old>` prints a package's tarball sha256 and integrity (computed from the registry's tarball), gitHead, repository, install scripts and npm provenance, and writes the diff against the old version to `base/artifacts/cert/`.
             - `cd head && CERT_COMMANDS="$PWD/cmds.txt" npm run test:cert` boots seven and runs each line of `cmds.txt` in its terminal, writing every exit status and output to `artifacts/cert/seven.json`.
