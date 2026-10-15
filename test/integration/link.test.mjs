@@ -356,10 +356,13 @@ test('the real slicc CLI: ssh into it with its pinned host key, and as the exit,
   const { mkdtemp, writeFile } = await import('node:fs/promises');
   const { networkInterfaces, tmpdir } = await import('node:os');
   const { join } = await import('node:path');
-  const lan = Object.values(networkInterfaces())
+  const outside = Object.values(networkInterfaces())
     .flat()
-    .find((entry) => entry.family === 'IPv4' && !entry.internal)?.address;
+    .filter((entry) => entry.family === 'IPv4' && !entry.internal);
+  const lan = (outside.find((entry) => !entry.address.startsWith('169.254.')) ?? outside[0])
+    ?.address;
   assert.ok(lan, 'a non-loopback IPv4 address for the hosts-file test');
+  const reach = lan.startsWith('169.254.') ? ['--allow', `${lan}/32`] : [];
   const dir = await mkdtemp(join(tmpdir(), 'link-hosts-'));
   const hosts = join(dir, 'hosts');
   await writeFile(hosts, `# test names\n${lan} ref.link.test\n`);
@@ -387,6 +390,7 @@ test('the real slicc CLI: ssh into it with its pinned host key, and as the exit,
         '--no-kernel',
         '--hosts',
         hosts,
+        ...reach,
         ...extra,
       ],
       {
