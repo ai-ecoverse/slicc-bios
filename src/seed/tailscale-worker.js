@@ -152,6 +152,52 @@ function cancelOne(id) {
   } else dropped.add(id);
 }
 
+async function websocketOne({ port, url, protocols, headers }) {
+  const controller = new AbortController();
+  let socket = null;
+  let watching = false;
+  const watch = () => {
+    if (!socket || watching) return;
+    watching = true;
+    setTimeout(() => {
+      watching = false;
+      if (!socket) return;
+      port.postMessage({ buffered: socket.buffered });
+      if (socket.buffered > 0) watch();
+    }, 50);
+  };
+  port.onmessage = ({ data }) => {
+    if (data.abort) return controller.abort(new Error(data.abort));
+    if (!socket) return;
+    if (data.send !== undefined) {
+      const error = socket.send(data.send);
+      port.postMessage({
+        sent: error instanceof Error ? failure(error) : null,
+        buffered: socket.buffered,
+      });
+      return watch();
+    }
+    if (data.close) socket.close(data.close.code, data.close.reason);
+  };
+  try {
+    socket = await ipn.websocket({ url, protocols, headers, signal: controller.signal });
+  } catch (error) {
+    port.postMessage({ error: failure(error) });
+    port.close();
+    return;
+  }
+  port.postMessage({ open: { protocol: socket.protocol } });
+  try {
+    for await (const message of socket.messages) port.postMessage({ message });
+    const { code, reason } = await socket.closed;
+    port.postMessage({ closed: { code, reason } });
+  } catch (error) {
+    port.postMessage({ closed: { code: 1006, reason: failure(error).message } });
+  }
+  socket = null;
+  port.close();
+}
+
 async function settle(id, work) {
   try {
     await work;
@@ -164,6 +210,10 @@ async function settle(id, work) {
 
 export function handle(data) {
   if (data.start) return start(data.start).catch((error) => send({ failed: failure(error) }));
+  if (!ipn && data.websocket) {
+    data.websocket.port.postMessage({ error: { message: 'tailscale is not running' } });
+    return data.websocket.port.close();
+  }
   if (!ipn)
     return send({
       error: {
@@ -182,6 +232,7 @@ export function handle(data) {
   if (data.read !== undefined) return readOne(data.read);
   if (data.cancel !== undefined) return cancelOne(data.cancel);
   if (data.dial) return dialOne(data.dial);
+  if (data.websocket) return websocketOne(data.websocket);
   if (data.write) return writeOne(data.write);
   if (data.close !== undefined) return closeOne(data.close);
   if (data.closeWrite !== undefined) return closeWriteOne(data.closeWrite);

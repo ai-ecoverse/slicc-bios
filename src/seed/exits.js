@@ -71,7 +71,7 @@ const sealed = ({ url, headers = [] }) =>
   SEALED.test(url) || headers.some(([name, value]) => SEALED.test(`${name}:${value}`));
 
 export const NO_WEBSOCKET =
-  'WebSockets go out only through an exit: link a slicc CLI (npx sliccy@next) and use it as the exit';
+  'WebSockets go out only through an exit: link a slicc CLI (npx sliccy@next), or use a Tailscale exit node';
 
 export const DIRECT = 'direct';
 
@@ -80,7 +80,8 @@ const TAILNET_CAPS = ['net', 'http'];
 export function describe(exit) {
   if (exit.kind === 'link')
     return { kind: exit.automatic ? 'local' : 'remote', caps: [...exit.caps()] };
-  if (exit.kind === 'tailnet') return { kind: 'tailnet', caps: [...TAILNET_CAPS] };
+  if (exit.kind === 'tailnet')
+    return { kind: 'tailnet', caps: [...TAILNET_CAPS, ...(exit.websocket ? ['ws'] : [])] };
   return { kind: String(exit.kind ?? 'exit'), caps: [...(exit.caps?.() ?? [])] };
 }
 
