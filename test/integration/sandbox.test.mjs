@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { boot, run, shows } from './bios.mjs';
+import { boot, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch();
@@ -127,9 +127,11 @@ test('a page the shell writes to /home still renders as a preview', async (t) =>
   await boot(page);
   await run(
     page,
-    `echo '<h1>Preview</h1><script>document.body.dataset.ran = "yes"</script>' > /home/preview.html && ln -s /home/preview.html /os/linked.html && echo written-$((40 + 2))`
+    `echo '<h1>Preview</h1><script>document.body.dataset.ran = "yes"</script>' > /home/preview.html && echo written-$((40 + 2)); ln -s /home/preview.html /os/linked.html; echo linked-$?`
   );
-  await shows(page, 'written-42');
+  await shows(page, 'linked-1');
+  assert.match(await screen(page), /written-42/);
+  assert.match(await screen(page), /Read-only file system/);
   const linked = await page.evaluate(() =>
     fetch('/os/linked.html').then((r) => [r.status, r.headers.get('x-served-from')])
   );

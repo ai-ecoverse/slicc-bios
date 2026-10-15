@@ -174,9 +174,17 @@ describe('Python data tools install as one project next to the catalog’s Pytho
 
   test('without Python they warn, and they remove cleanly', async () => {
     await page.evaluate(() => {
-      window.removed = document
+      window.removed = undefined;
+      document
         .querySelector('slicc-app')
-        .model.updates.actPackage('python', 'remove');
+        .model.updates.actPackage('python', 'remove')
+        .then(
+          () => 'ok',
+          (error) => error.message
+        )
+        .then((result) => {
+          window.removed = result;
+        });
     });
     await page.until(
       () => !!document.querySelector('slicc-app').shadowRoot.querySelector('slicc-confirm')
@@ -188,7 +196,7 @@ describe('Python data tools install as one project next to the catalog’s Pytho
         .renderRoot.querySelector('[data-action]')
         .click()
     );
-    await page.evaluate(() => window.removed);
+    assert.equal(await page.within(INSTALL, () => window.removed), 'ok');
     assert.equal((await row(page, 'python')).state, 'available');
     const orphan = await row(page, 'pydata');
     assert.equal(orphan.state, 'installed');
