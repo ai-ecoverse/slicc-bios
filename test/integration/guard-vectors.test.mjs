@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer as createHttp } from 'node:http';
 import { createServer } from 'node:net';
 import { after, test } from 'node:test';
+import { startProxy } from '@ai-ecoverse/slicc-node';
 import { boot } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
@@ -52,6 +53,14 @@ const stand = createHttp((req, res) => {
     return res.end();
   }
   if (url.pathname === '/hang') return;
+  if (url.pathname === '/bounce') {
+    const to = JSON.stringify(url.searchParams.get('to'));
+    const ms = Number(url.searchParams.get('ms') ?? 1000);
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end(
+      `<!doctype html><title>bounce</title><script>setTimeout(() => { location.href = ${to}; }, ${ms});</script>`
+    );
+  }
   if (url.pathname === '/redirect') {
     res.writeHead(302, { location: url.searchParams.get('to') });
     return res.end();
@@ -299,7 +308,7 @@ async function readIn(prefix, expression, ms) {
 const marker = (id) =>
   `(function k(){var d=document.documentElement;if(!d){return setTimeout(k,0);}if(!d.hasAttribute('data-k')){d.setAttribute('data-k',${JSON.stringify(id)});fetch('http://localhost:${standPort}/beacon?id='+encodeURIComponent(${JSON.stringify(id)})+'&host='+encodeURIComponent(location.host),{mode:'no-cors'});}})()`;
 
-async function guardPage(t, lag) {
+async function guardPage(t, lag, proxy = null) {
   const seven = await chrome.page(t);
   const socket = new WebSocket(browser);
   await new Promise((resolve, reject) => {
@@ -363,11 +372,24 @@ async function guardPage(t, lag) {
     });
   });
   await boot(seven);
-  await seven.evaluate(async () => {
+  await seven.evaluate(async (proxy) => {
     const { guardProtected } = await import(new URL('guard.js', location.href).href);
-    const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
+    const { extensionConnection, proxyHost } = await import(new URL('cdp.js', location.href).href);
+    window.armDelay = 0;
+    const slowed = (connection) => {
+      const send = connection.send.bind(connection);
+      connection.send = (text) => {
+        const { method, params } = JSON.parse(text);
+        const arming =
+          method === 'Fetch.enable' &&
+          (params?.patterns ?? []).some((pattern) => pattern.resourceType === 'Document');
+        if (arming && Date.now() < window.armDelay) setTimeout(() => send(text), 4000);
+        else send(text);
+      };
+      return connection;
+    };
     const connection = guardProtected(
-      extensionConnection(globalThis.sliccExtension.cdp),
+      proxy ? slowed(await proxyHost(proxy)()) : extensionConnection(globalThis.sliccExtension.cdp),
       location.origin
     );
     const pending = new Map();
@@ -404,7 +426,7 @@ async function guardPage(t, lag) {
           );
         }),
     };
-  });
+  }, proxy);
   const send = (method, params, sessionId, wait) =>
     seven.evaluate(
       ([m, p, s, w]) => window.guarded.send(m, p ?? {}, s ?? undefined, w ?? 20000),
@@ -421,7 +443,11 @@ async function guardPage(t, lag) {
     return answer.result.sessionId;
   };
   const stall = (how) => stalls.push({ method: 'Fetch.enable', how });
-  return { seven, send, go, events, attach, stall };
+  const slowArm = (ms) =>
+    seven.evaluate((until) => {
+      window.armDelay = until;
+    }, Date.now() + ms);
+  return { seven, send, go, events, attach, stall, slowArm };
 }
 
 const targets = () => ({
@@ -2316,3 +2342,70 @@ for (const [detach, lag] of DETACH) {
     });
   });
 }
+
+test('PRE-1b on the proxy path, which forwards browser-level events: a popup the client auto-attaches is armed before it runs, so the client never holds a session to it while it loads a protected page, even when the guard is slow to arm', {
+  timeout: 10 * 60 * 1000,
+}, async (t) => {
+  const proxy = await startProxy({
+    port: 0,
+    origins: [SEVEN],
+    cdp: `http://127.0.0.1:${port}`,
+    kernelPort: null,
+    log: () => {},
+  });
+  t.after(() => proxy.close());
+  const guard = await guardPage(t, 0, { url: proxy.url, key: proxy.key });
+  const opened = [];
+  t.after(() => closeAll(opened));
+  for (let round = 0; round < 3; round += 1) {
+    const id = `armed-${round}-${Date.now()}`;
+    const opener = await tab(`${PLAIN}/doc?opener-${id}`);
+    opened.push(opener);
+    const session = await guard.attach(opener);
+    const auto = { autoAttach: true, waitForDebuggerOnStart: true, flatten: true };
+    assert.equal((await guard.send('Target.setAutoAttach', auto)).error, undefined);
+    try {
+      const before = (await guard.events()).length;
+      const vault = `${VAULT}/doc?${id}`;
+      await guard.slowArm(6000);
+      await guard.go(
+        TRIGGERS.popup(`${OTHER}/bounce?ms=1000&to=${encodeURIComponent(vault)}`),
+        session
+      );
+      let popup = null;
+      for (const end = Date.now() + 8000; !popup && Date.now() < end; ) {
+        const { result } = await own.send('Target.getTargets');
+        popup = (result?.targetInfos ?? []).find(
+          (info) => info.type === 'page' && info.openerId === opener
+        );
+        if (!popup) await pause(200);
+      }
+      assert.ok(popup, `${id}: the popup opened, found through the harness’s own CDP`);
+      opened.push(popup.targetId);
+      await pause(9000);
+      const later = (await guard.events()).slice(before);
+      const shown = later.some(
+        (event) =>
+          event.method === 'Target.attachedToTarget' &&
+          event.params.targetInfo.targetId === popup.targetId
+      );
+      const servedVault = served(vault, 0);
+      assert.ok(
+        !(shown && servedVault),
+        `${id}: the client got a session to the popup, and its navigation into the vault was still served`
+      );
+      if (!shown) {
+        assert.ok(
+          !JSON.stringify(later).includes(`${new URL(VAULT).host}/doc?${id}`),
+          `${id}: the client never got the popup, and nothing naming its vault document`
+        );
+      }
+    } finally {
+      await guard.send('Target.setAutoAttach', {
+        autoAttach: false,
+        waitForDebuggerOnStart: false,
+        flatten: true,
+      });
+    }
+  }
+});
