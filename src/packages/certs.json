@@ -7,22 +7,6 @@
     "integrity": "sha512-VKNEZPMgROHP+EYcuXBE3gHny+K29ATHsg+ruxoO97gDTJMoggbj3VhbsCnxnH27JD6m9tVkWdUAAsdDK1Sr+Q==",
     "sha256": "c4e2cee8f42acd79ed84d8ac88860a545031cc51c4f842e87aaed03c35c35f76"
   },
-  "@ai-ecoverse/py-cycler@0.12.1-5": {
-    "integrity": "sha512-6ikdLdovKfH4GKersS107LxKeo3KOGNuGxC++2RxauiBuXRL1Zk9ERFw16SdDpAeKSC40xshj+sfFbejNfVjQA==",
-    "sha256": "4f82499628639b01ae022afd8a84fa2f08079dbf6b51dc63539709a25e947016"
-  },
-  "@ai-ecoverse/py-cycler@0.12.1-6": {
-    "integrity": "sha512-S/nIJ7Vd7WDB+jFVY18Q1FJzWNK1Z7BAOdJ+05Tnwjh5CTM+GZA6TvBD3vpl0x/C9eq1l10aQeldhaFt4uh4Rg==",
-    "sha256": "ef2f42591ccc499337e66b83677912a3a710587bece849ef6b47b23ad0e961d6"
-  },
-  "@ai-ecoverse/py-fonttools@4.66.1-5": {
-    "integrity": "sha512-K0IoyfKlhZe7pWn/p/mK7GKGnu4+rsAkEpl/9If5mxGPw/04ys2o/ja5o1ZazltN1aN0JXqD0MQ59zl6d4EDrQ==",
-    "sha256": "c72b5900b5cf72f53e2f0f30f27f191003ab19660574099dbbb6ce3295f65324"
-  },
-  "@ai-ecoverse/py-fonttools@4.66.1-6": {
-    "integrity": "sha512-H+oUWs5RzTDIQVOOb4FKg9iBZiXIAa3NXLR2by92VdSnbob8YWAieDFdLMr1GpEc4WCkblAlnsGaOmo22BuhqQ==",
-    "sha256": "c8d0136d356cc41c32bf3034f1231b0cb1e6926ab23b5f9893c10a57345e17be"
-  },
   "@ai-ecoverse/py-kiwisolver@1.5.1-5": {
     "integrity": "sha512-iPlyNsJP6gLptvS6YwMm32zRCTrZiJjTDmJWDMtalQ6xNorR0Hvx+DW2WGaktsb92RuggbTQmJhrVY85j3UO2A==",
     "sha256": "b5eec3bb653874580f5e6ccb527e0a4fade7a9ccc98d62ae950d01e9a9873a7d"
@@ -30,22 +14,6 @@
   "@ai-ecoverse/py-kiwisolver@1.5.1-6": {
     "integrity": "sha512-hNUM+rB+IEotVQ76pztZMY1nwcADXbnNZg2IQxKayfRTXbvkCaLjpfJlTxSNpC7xgVGqYyJZ5RGm9KJAA/D/QA==",
     "sha256": "ac43056dbe4b320a4b51ca2026eceec378d9ec401c8c41332b6329ad7231c65d"
-  },
-  "@ai-ecoverse/py-matplotlib@3.11.2-6": {
-    "integrity": "sha512-uEjcO76jBkmnamlAQQ1RmgvDMX8DenfvuEb3G32aQO1jogjY5omfoQ9MMS4eMf9TnVtHK3dp6lvBbPRzuaFVhA==",
-    "sha256": "5f6e38db1047c5bb512350272068fbbef04b4740b22b665b26ccbe4f932a04bc"
-  },
-  "@ai-ecoverse/py-matplotlib@3.11.2-7": {
-    "integrity": "sha512-F9c37Mqst9w8xochnG7tfITKZCwWu6+oIeiAyYKbW+dI8KliWS6B3ShrFtIbE/Riunbw7HSkFRVDBAtQaj45tg==",
-    "sha256": "4d33e1e92be0848662679725825d8dce1ecf01bd4c7597b9125b0fa4daf2868f"
-  },
-  "@ai-ecoverse/py-packaging@26.3.0-5": {
-    "integrity": "sha512-syvuROdk7JkbVO9OYKeKZ+Wc2ib97K98rjOnNhK+1qb8+QefeDwMeix7kvL7ow82LRTkfoV0yVrzuNcOh7hxCA==",
-    "sha256": "e6b89f4b730a2d75a66d65e3791276b338c580850ecb6ed6dd34bec3dcd6059c"
-  },
-  "@ai-ecoverse/py-packaging@26.3.0-6": {
-    "integrity": "sha512-qn7qAxSYoIIng+Yk26Z/SzBu2wJfRWtN5zR1FR9jcfvSgxOhwi2yd4rnkB1pYzB/5vn0zPNRLQ5NsLdE/U1g0w==",
-    "sha256": "35e36090847bf0040cc06870794d22ca4ce91dc6da5676487edea6147813f3a8"
   },
   "@ai-ecoverse/py-pillow@12.3.0-6": {
     "integrity": "sha512-oyuDfimQshBOfzQzWycwqxm4/a9FRojIHkPL/buwyyKE9zbGXdR7NRNFvmoNyOayNcgmUct0/sGXRVGXl4e7SA==",
@@ -55,14 +23,6 @@
     "integrity": "sha512-dm7sI+Lj8MoAmRa/ZsDINSbbRc9UPx7hMxfhJpoT6z70h65Bkc9nHdkRyKawOqqoSJKyW2F3XwEq9X4uwDAV0A==",
     "sha256": "6aa31dfbbd35bd2edbe9e2cc51f1c9467c0fe707ea348e4b7b888ad1940dcf20"
   },
-  "@ai-ecoverse/py-pyparsing@3.3.3-5": {
-    "integrity": "sha512-RoiKQMo0Hdnp0snet9D1yLNY2Szq0ToAeT1m4TSPR8AooC2tlYiLgfJh5XXz7z+Fj5jzttW6Yx7KWd+ghUN96Q==",
-    "sha256": "2b2a9e8acd76e0b160bfdff288d2aa8a0055df5735d2e2945e2d596eb310068d"
-  },
-  "@ai-ecoverse/py-pyparsing@3.3.3-6": {
-    "integrity": "sha512-fHG4DtnxQ8N3bOKbJZ7SU5xzz7W9xzgw8580SLF6SHr5NRh1TJ/gYJFxpjKm9MlRx+Yk3ddvZY96W5ZpFyr0mA==",
-    "sha256": "fed54c6136fee0a471cc1156c7375e48d7df9b02da50ee9afa0cdaf2e0fa947f"
-  },
   "@ai-ecoverse/py-python-dateutil@2.9.0-post0.2": {
     "integrity": "sha512-RCa4x3MbuASOiDFxmiK6vmstyUvl8KffqQWJarGQa4MAHvtoT8tM3vl3iPTqbgGIPPUVfYSTy0bMKLNWx7uG9w==",
     "sha256": "2a355c9dd7e008d27970b8cd4eef641756bec74d61f393dae7452a7a55f61c48"
@@ -70,14 +30,6 @@
   "@ai-ecoverse/py-pytz@2026.4.0-2": {
     "integrity": "sha512-fdYh2M/sSwFd8Y1rnUkZCbyFxkF5GB5otiSpJxNphLlFQa3kHDdU7dpwK6XGpJ3ZH2YvmNo01qY5eWbw+Gq9mw==",
     "sha256": "a9f47842a14d204823694ce95105ba9fa745a504e0dcaa9c9e8fd0e2ded27470"
-  },
-  "@ai-ecoverse/py-scipy@1.18.0-10": {
-    "integrity": "sha512-kF/DI0T7qHI5TIkV63AUj8lMkBP1enUdkwkKQw78OZeRpLHP5riZX88bEW/tcdD3pUzMr1NAz5tsC4VRkBXvSw==",
-    "sha256": "b6ab14cdb98e3f3cf8670fda175a233ca91579efd8518d3e73de009434e5f85e"
-  },
-  "@ai-ecoverse/py-scipy@1.18.0-11": {
-    "integrity": "sha512-YUJ8Cvt31TQFScem5oXUVTDtE/8rgBnUGBGeNWZ+NtxNEbECErtd93o4DhYbYpWLVW5E/LE6KWqnThvBT73y+Q==",
-    "sha256": "517304bd038d28c49b9dd803bf8bec2b38c0befdb0ace63d3828e4b9d5b1205c"
   },
   "@ai-ecoverse/py-six@1.17.0-2": {
     "integrity": "sha512-BNEgSp4l+y5dhmvKqqId7TO2Krchq/uw5vg/Q6bB6UKj+dfmr8ad42vGs4VFzTCnmqpGSgNRVg+TYeRi50t3yg==",
@@ -279,10 +231,6 @@
     "integrity": "sha512-hTKxTKNCvvfzXoVp30xFe8o/iB3cZ+FxjxYPv4kvyTuvG9i6InbGmZH/IgPsfRgMIL3g0TYIZQcFNlaOHjCTCg==",
     "sha256": "6e3c79623cb82067121e971e8fb4b879c64591cd756c89cea33a3487b7928c7f"
   },
-  "@ai-ecoverse/wasi-buf@1.73.0-2": {
-    "integrity": "sha512-zkfuvCUoe8VbKicU1GbHnGFRx6S3EI2laW37y8fJdVxfU22L2vyBLHUfCe2wVq/DDKzoQRz7OA8FxJ0xH4zIFQ==",
-    "sha256": "0499c7c91181aefd49e7b8838409f52241e344ef826a857ab131e41052a7753a"
-  },
   "@ai-ecoverse/wasi-dig@0.1.0-1": {
     "integrity": "sha512-jGCiTdo9CRNEH+iJ1+pl7IYvghP3A5curSXhr9WigKccKkTpyzhGMpoQRfRdNIeVcy1jgbgZOoDgA4GDJpdupQ==",
     "sha256": "7d173721a83c63cd2231111d063410f078999df12172dba5f0734f5fd8605205"
@@ -295,13 +243,10 @@
     "integrity": "sha512-puU9FN7kXKnlxaClZyqGd/m/229HHmVOA50+YExQBxzb1IrwPz/yS0Q1KDw0GnzC/glVLqu6jkSyc05LK1Fzyg==",
     "sha256": "3b6607de060ea30756807aa936774842b3bded9f463025c4d10732a8b474b175"
   },
-  "@ai-ecoverse/wasi-esbuild@0.28.2-2": {
-    "integrity": "sha512-Z6LXuBY2G9Po4cbEUFhbASSQ0ab5tdSHqtt1qDxNCgJFquAk525swjbTRVsj/j0v2iJVlq3Um1r2eYiYkGyLrQ==",
-    "sha256": "9d9ed5820c8b5e8cb1924d4f2756e8a9a59f82ed344508ff1704b213bc1199ca"
-  },
   "@ai-ecoverse/wasi-gh@2.102.0-1": {
     "integrity": "sha512-LX/ieGLiCbc7GMevt4hctBMaBYoK9jvrGKv+bRIOrs0qy5qdAm8E6RvZopm1Yaaa30d9as/hZbytDx9P2hKKjw==",
-    "sha256": "134acd4ccc67ba48e98102e5a6b4ee995a21eb87b628e2b683b750437319a631"
+    "sha256": "134acd4ccc67ba48e98102e5a6b4ee995a21eb87b628e2b683b750437319a631",
+    "exception": "unverifiable build (homescoop#864): kept because gh is core; bump when its reproduce check or a CI-built gh is certified"
   },
   "@ai-ecoverse/wasi-pnpm@12.9.1-8": {
     "integrity": "sha512-/3LRssC7T2t9HovusS9neuDg5+FNMhf90MkECauL1vZI/6BsQSadLyopnzn3ifYvY0LDC+Q8Src22oGCE+x1QA==",
@@ -314,10 +259,6 @@
   "@ai-ecoverse/wasi-ripgrep@15.2.0-3": {
     "integrity": "sha512-UYnMCCev7OQYAOGJ+sO/wbmZGg5mOlsaa8zJPtsrere2mrKHczvwMYmLnGeC1cqV3XW/AwRlMNk0j+S3pYUZ2A==",
     "sha256": "d7db54ccdade9379aff3fa90fd8b07bb48990d96097fde39691b0fa17bffe2fe"
-  },
-  "@ai-ecoverse/wasi-typescript@7.0.2-1": {
-    "integrity": "sha512-FvlAbqh0x+1ckznDGMw3zy7Ttyu07ICtzg9fP0nTaeuP2VXJ8OJTCTKp1GxY+OZEc7t6qb48VuZTgazv7AnRVA==",
-    "sha256": "348de00af6350011d4e8f6cec8e8afd0de420a57c87249b6c260e604ebcdaccc"
   },
   "@ai-ecoverse/wasix-gnupg@2.4.9-4": {
     "integrity": "sha512-O1V9mpj62CiI6gkKcD0YxBaHKRZ3pDLdwVB8hif2DBOin4bQsWaHgUn0P7jaoArIUjlD/Ak3Wk/u+wJawto/FA==",
@@ -371,14 +312,6 @@
     "integrity": "sha512-qTMGYM+x0738OjxXdBuzTDadzDJb1XrR92ER3V1Y7l5Rw6IHfHSalizKuO+Jo+zM6qAa81OAmoYe61NrI50jgg==",
     "sha256": "a2efdbf4a3977e7cb6e158b51d619772f92b062aef8dca32236ed7be261c2606"
   },
-  "@ai-ecoverse/wasix-uv-shim@0.1.0-5": {
-    "integrity": "sha512-EvvD894Dc8agRIvdhQ12nrXJIKtPOWXibiN/RYT7/SgtX4JyxrBfFxFa4Fo5VVnRp8u6QNSwN7FeGGpPryt6Jw==",
-    "sha256": "97cea396f18264d8358259ea9e103b9459c80da33c022a2593c3b0f3e469fdac"
-  },
-  "@ai-ecoverse/wasix-uv-shim@0.1.0-6": {
-    "integrity": "sha512-fEmBJVZ6DDWwogpP7mmgQGnOHqQ0VPCeuhJh/IkHsril59T5InBczSEZ2y8KY+Vl71lVQRKt5IJ5Au7JP4YpAQ==",
-    "sha256": "b3ecab2258cd2e07fc71d38358eeaff3818d366559b41d37eb5d9af3fc10f5b8"
-  },
   "@ai-ecoverse/wasix-websocat@4.0.0-alpha3-3": {
     "integrity": "sha512-D3iGDb+tx30SUwuONfyMfRDY9ZIJnEnF8A4X5r4P8uPXYUge9ZTL8wVTMW9x060kq0VN1w9mifNzDF6Lb1/fFA==",
     "sha256": "50062e7d8f0d05eb04735aa3f5fd71b561bd831d7426f5a4baa0621980c20a61"
@@ -427,10 +360,6 @@
     "integrity": "sha512-k8vezSs6/M0Mu/PxymsxvyM6lYym7nm+otzb+Epnw6dN9TiW/67Rtpk1YcbcLcIvqMIQpvUIzqVFhTBMIjoYMQ==",
     "sha256": "0fcb72f0a420af33d4e24370bc3c3284c6df78bda0d33dd544f71de1ee6729dd"
   },
-  "@ai-ecoverse/wasm-emscripten@6.0.9-16": {
-    "integrity": "sha512-Uknz71uTLXOuR/tj71tWXM6sXPY16yBPm5n1Bzn2nub46s5oGC0aBbXv+xn7lK1yS9sBl6XFN/oCzo4S+R/HKA==",
-    "sha256": "6f9bc18f388977f1959bf6f2c6ac47125e2aa40071550d399bc62cc58a33f9ba"
-  },
   "@ai-ecoverse/wasm-findutils@4.11.0-1": {
     "integrity": "sha512-MKF21UnnF5IQCkMcwGfjbdgsq3eb0vzW76HHAl4XGkdf46wPvjPsNFdqBcgavkPO5YGhukLwZLT2EawnKeV88A=="
   },
@@ -440,7 +369,8 @@
   },
   "@ai-ecoverse/wasm-git@2.55.0-15": {
     "integrity": "sha512-iN+it7A5iVGAV4UL7p2ulLcopY/7vGADgin7GTk+8JKC5bmE++BkGSbDCHvv+FTBe17KHVljzHQ5Mz8SZlMZ/A==",
-    "sha256": "42605553b8afb9471114530422cb3e69ec0e039cbac14aae16f17ace6e58c459"
+    "sha256": "42605553b8afb9471114530422cb3e69ec0e039cbac14aae16f17ace6e58c459",
+    "exception": "unverifiable build (homescoop#858/#859): kept because git is core; bump when its reproduce check or a CI-built git is certified"
   },
   "@ai-ecoverse/wasm-grep@3.12.0-3": {
     "integrity": "sha512-2zUPO95WUlvdlRp2EOZW4ABaTvPdmF6qwX/mSWke1r51vW1NXTsqx1G+EXRwNFPzeYcOih17GViA0XGA7ph3/g=="
