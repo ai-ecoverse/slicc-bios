@@ -227,10 +227,11 @@ jobs:
             curl -fsS "http://127.0.0.1:$cdp/json/version"
           done
 
-      - name: A git repository at the workspace root, which claude-code-action configures and diffs
+      - name: A git repository at the workspace root with the repo as origin, which claude-code-action configures, fetches the base from and diffs
         run: |
           git init -q "$GITHUB_WORKSPACE"
           git -C "$GITHUB_WORKSPACE" -c user.name=cert -c user.email=cert@invalid commit -q --allow-empty -m workspace
+          git -C "$GITHUB_WORKSPACE" remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
           printf '%s\n' base/ head/ >> "$GITHUB_WORKSPACE/.git/info/exclude"
 
       - name: Certify
