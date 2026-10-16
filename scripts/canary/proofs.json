@@ -6,33 +6,42 @@
     "strict": false,
     "expect": [
       {
-        "test": "wasm-grep \u00b7 ",
+        "test": "wasm-grep · ",
         "log": "rc=70"
       },
       {
-        "test": "wasm-sed \u00b7 ",
+        "test": "wasm-sed · ",
         "log": "rc=70"
       },
       {
-        "test": "wasm-jq \u00b7 ",
+        "test": "wasm-jq · ",
         "log": "rc=70"
       },
       {
-        "test": "wasm-xz \u00b7 ",
+        "test": "wasm-xz · ",
         "log": "rc=70"
       },
       {
-        "test": "wasm-findutils \u00b7 ",
+        "test": "wasm-findutils · ",
         "log": "rc=70"
       },
       {
-        "test": "wasm-diffutils \u00b7 ",
+        "test": "wasm-diffutils · ",
         "log": "rc=70"
       },
       {
-        "test": "wasm-patch \u00b7 ",
+        "test": "wasm-patch · ",
         "log": "rc=70"
       }
     ]
+  },
+  {
+    "id": "artifact",
+    "pack": "@ai-ecoverse/slicc-cdp@1.26.2",
+    "sha256": "67fa941ce0afe790b60ade22c0014658fb5d0ef993e35437c43144361f3f82b3",
+    "shards": ["packages-update-cdp", "guard"],
+    "repeat": 3,
+    "strict": false,
+    "expect": []
   }
 ]

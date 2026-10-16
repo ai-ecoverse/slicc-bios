@@ -6,7 +6,7 @@ import { basename, join } from 'node:path';
 import { argv, chdir, env, stderr, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { OUT, overridePins, PACKAGES, ROOT, specs } from './override-pins.mjs';
+import { findPacked, OUT, overridePins, PACKAGES, ROOT, specs } from './override-pins.mjs';
 import { usersModes } from './users.mjs';
 
 const REPORTER = './scripts/canary/reporter.mjs';
@@ -116,7 +116,39 @@ async function restore(snapshot) {
   await cp(snapshot, PACKAGES, { recursive: true });
 }
 
-export async function shard({ name, overrides, out }) {
+async function repeated(files, times, { canary, out, phase }) {
+  const runs = [];
+  let ms = 0;
+  for (let n = 1; n <= times; n++) {
+    const tag = times > 1 ? `${phase}-${n}` : phase;
+    const done = await run(files, {
+      canary,
+      log: join(out, `${tag}.log`),
+      jsonl: join(out, `${tag}.jsonl`),
+    });
+    ms += done.ms;
+    runs.push(done);
+  }
+  return { runs, ms };
+}
+
+function statuses(runs) {
+  const found = new Map();
+  for (const { results } of runs) {
+    for (const [key, result] of keyed(results)) {
+      found.set(key, [...(found.get(key) ?? []), result.status]);
+    }
+  }
+  return found;
+}
+
+async function artifactsFor(candidate, dir) {
+  if (!candidate) return [];
+  const file = await findPacked(dir, candidate.package);
+  return [{ file, ...candidate }];
+}
+
+export async function shard({ name, overrides, out, candidate = null, dir = '', repeat = 1 }) {
   chdir(ROOT);
   await mkdir(out, { recursive: true });
   const startedAt = new Date().toISOString();
@@ -125,42 +157,50 @@ export async function shard({ name, overrides, out }) {
   if (!files.length) throw new Error(`no test files in shard ${name}`);
   const scratch = await mkdtemp(join(tmpdir(), 'slicc-canary-shard-'));
   const baseline = join(scratch, 'baseline');
-  const candidate = join(scratch, 'candidate');
+  const candidatePins = join(scratch, 'candidate');
   await cp(PACKAGES, baseline, { recursive: true });
   const pinsFile = join(out, 'pins.json');
-  const pins = overrides.length
-    ? await overridePins(overrides, { out: OUT })
+  const artifacts = await artifactsFor(candidate, dir);
+  const changed = overrides.length > 0 || artifacts.length > 0;
+  const pins = changed
+    ? await overridePins(overrides, { out: OUT, artifacts })
     : { overrides: [], changed: [], held: [], candidates: {} };
   await writeFile(pinsFile, `${JSON.stringify(pins, null, 2)}\n`);
   await certifyForOldRefs(pins.candidates);
-  await cp(PACKAGES, candidate, { recursive: true });
+  await cp(PACKAGES, candidatePins, { recursive: true });
   const phases = {};
-  const first = await run(files, {
-    canary: overrides.length ? OUT : null,
-    log: join(out, 'candidate.log'),
-    jsonl: join(out, 'candidate.jsonl'),
-  });
-  phases.candidate = first.ms;
-  const failing = [...new Set(first.results.filter((r) => r.status === 'fail').map((r) => r.file))];
+  const canary = changed ? OUT : null;
+  const tried = await repeated(files, repeat, { canary, out, phase: 'candidate' });
+  const first = tried.runs[0];
+  phases.candidate = tried.ms;
+  const seen = statuses(tried.runs);
   const base = new Map();
   const retry = new Map();
-  if (failing.length && overrides.length) {
+  const failing = [
+    ...new Set(
+      tried.runs.flatMap(({ results }) =>
+        results.filter((r) => r.status === 'fail').map((r) => r.file)
+      )
+    ),
+  ];
+  if (failing.length && changed) {
     await restore(baseline);
-    const second = await run(failing, {
-      canary: null,
-      log: join(out, 'baseline.log'),
-      jsonl: join(out, 'baseline.jsonl'),
-    });
-    phases.baseline = second.ms;
-    for (const [key, result] of keyed(second.results)) base.set(key, result.status);
-    await restore(candidate);
-    const suspects = [
-      ...new Set(
-        keyed(first.results)
-          .filter(([key, result]) => result.status === 'fail' && base.get(key) !== 'fail')
-          .map(([, result]) => result.file)
-      ),
-    ];
+    const main = await repeated(failing, repeat, { canary: null, out, phase: 'baseline' });
+    phases.baseline = main.ms;
+    for (const [key, list] of statuses(main.runs)) base.set(key, list);
+    await restore(candidatePins);
+    const suspects =
+      repeat > 1
+        ? []
+        : [
+            ...new Set(
+              keyed(first.results)
+                .filter(
+                  ([key, result]) => result.status === 'fail' && base.get(key)?.[0] !== 'fail'
+                )
+                .map(([, result]) => result.file)
+            ),
+          ];
     if (suspects.length) {
       const third = await run(suspects, {
         canary: OUT,
@@ -172,23 +212,32 @@ export async function shard({ name, overrides, out }) {
     }
   }
   await rm(scratch, { recursive: true, force: true });
-  const results = keyed(first.results).map(([key, result]) => ({
-    test: label(result),
-    file: result.file,
-    nesting: result.nesting,
-    status: result.status,
-    baseline: base.get(key) ?? null,
-    retry: retry.get(key) ?? null,
-    durationMs: result.durationMs,
-    log: result.log,
-  }));
+  const results = keyed(first.results).map(([key, result]) => {
+    const runs = seen.get(key) ?? [result.status];
+    return {
+      test: label(result),
+      file: result.file,
+      nesting: result.nesting,
+      status: runs.includes('fail') ? 'fail' : result.status,
+      baseline: base.get(key)?.[0] ?? null,
+      retry: retry.get(key) ?? null,
+      ...(repeat > 1 ? { runs, baselines: base.get(key) ?? [] } : {}),
+      durationMs: result.durationMs,
+      log:
+        result.log ||
+        tried.runs
+          .flatMap(({ results: all }) => keyed(all))
+          .find(([k, r]) => k === key && r.log)?.[1].log,
+    };
+  });
   const summary = {
     shard: name,
     files,
     startedAt,
     wallMs: Date.now() - started,
     phases,
-    exit: first.code,
+    exit: tried.runs.find(({ code }) => code !== 0)?.code ?? 0,
+    repeat,
     pins,
     kernels: await usersModes(ROOT),
     results,
@@ -203,12 +252,20 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
       shard: { type: 'string' },
       overrides: { type: 'string', default: '[]' },
       out: { type: 'string' },
+      candidate: { type: 'string', default: '' },
+      'candidate-dir': { type: 'string', default: '.canary-candidate' },
+      repeat: { type: 'string', default: '1' },
     },
   });
+  const candidate =
+    values.candidate && values.candidate !== 'null' ? JSON.parse(values.candidate) : null;
   const summary = await shard({
     name: values.shard,
     overrides: specs([values.overrides]),
     out: values.out,
+    candidate,
+    dir: values['candidate-dir'],
+    repeat: Number(values.repeat) || 1,
   });
   const failed = summary.results.filter((r) => r.status === 'fail').length;
   console.log(

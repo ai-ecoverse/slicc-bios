@@ -7,13 +7,27 @@ import { enforceNote } from './users.mjs';
 
 const ROWS = 150;
 
+export function classify(runs, baselines, overridden) {
+  const failed = runs.filter((status) => status === 'fail').length;
+  if (!failed) return runs[0] ?? 'pass';
+  if (!overridden) return 'fail';
+  const base = baselines.filter((status) => status === 'fail').length;
+  if (failed === runs.length && baselines.length && base === 0) return 'regression';
+  if (failed === runs.length && baselines.length && base === baselines.length) return 'both';
+  return 'flaky';
+}
+
 export function verdict(result, overridden) {
+  if (result.runs?.length > 1) return classify(result.runs, result.baselines ?? [], overridden);
   if (result.status !== 'fail') return result.status;
   if (!overridden) return 'fail';
   if (result.retry === 'pass') return 'flaky';
   if (result.baseline === 'fail') return 'both';
   return 'regression';
 }
+
+const failures = (list = []) =>
+  `${list.filter((status) => status === 'fail').length}/${list.length}`;
 
 async function shards(dir, run) {
   const only = await readFile(join(dir, 'shard.json'), 'utf8').catch(() => null);
@@ -36,7 +50,7 @@ function hit(result, { test = '', log = '' }) {
 export function merge({ run, biosRef, runner, url, found, expected }) {
   const pins = found.find((shard) => shard.pins?.overrides?.length)?.pins ?? found[0]?.pins;
   const kernels = found.find((shard) => shard.kernels)?.kernels ?? null;
-  const overridden = run.overrides.length > 0;
+  const overridden = run.overrides.length > 0 || (pins?.overrides?.length ?? 0) > 0;
   const results = found.flatMap((shard) =>
     shard.results
       .filter((result) => !PARENT.test(result.log ?? ''))
@@ -47,6 +61,9 @@ export function merge({ run, biosRef, runner, url, found, expected }) {
         baseline: result.baseline,
         retry: result.retry,
         verdict: verdict(result, overridden),
+        ...(result.runs?.length > 1
+          ? { failed: { candidate: failures(result.runs), baseline: failures(result.baselines) } }
+          : {}),
         durationMs: result.durationMs,
         log: result.log,
       }))
@@ -74,6 +91,7 @@ export function merge({ run, biosRef, runner, url, found, expected }) {
     run: run.id,
     runner,
     url,
+    repeat: run.repeat ?? 1,
     overrides: (pins?.overrides ?? []).map(({ name, version, sha256 }) => ({
       name,
       version,
@@ -81,9 +99,12 @@ export function merge({ run, biosRef, runner, url, found, expected }) {
     })),
     candidates: Object.entries(pins?.candidates ?? {}).map(([key, entry]) => ({
       package: key,
-      status: 'candidate, not certified',
+      status: entry.source
+        ? `candidate (artifact ${entry.source.run}/${entry.source.artifact}, sha256 ${entry.sha256})`
+        : 'candidate, not certified',
       via: entry.via,
       files: entry.files,
+      ...(entry.source ? { source: entry.source, sha256: entry.sha256 } : {}),
     })),
     held: pins?.held ?? [],
     kernels,
@@ -110,6 +131,42 @@ export function merge({ run, biosRef, runner, url, found, expected }) {
   };
 }
 
+const LISTED = 100;
+
+export function summary(report, artifact = null) {
+  const pick = (kind) =>
+    report.results
+      .filter((r) => r.verdict === kind)
+      .slice(0, LISTED)
+      .map(({ shard, test, failed, log }) => ({
+        shard,
+        test,
+        ...(failed ? { failed } : {}),
+        log: String(log ?? '').slice(0, 300),
+      }));
+  return {
+    ok: report.ok,
+    run: report.run,
+    biosRef: report.biosRef,
+    url: report.url,
+    repeat: report.repeat,
+    overrides: report.overrides,
+    candidates: report.candidates.map(({ package: key, status, via }) => ({
+      package: key,
+      status,
+      via,
+    })),
+    counts: report.counts,
+    regressions: pick('regression'),
+    both: pick('both'),
+    flaky: pick('flaky'),
+    failures: pick('fail'),
+    missingShards: report.missingShards,
+    unexplainedExits: report.unexplainedExits,
+    ...(artifact ? { artifact } : {}),
+  };
+}
+
 const cell = (text) =>
   String(text ?? '')
     .split('\n')[0]
@@ -120,16 +177,27 @@ const minutes = (ms) => (ms === undefined ? '' : `${(ms / 60000).toFixed(1)} min
 function rows(results) {
   const shown = results
     .slice(0, ROWS)
-    .map((r) => `| ${cell(r.test)} | ${r.shard} | ${cell(r.log)} |`);
-  if (results.length > ROWS) shown.push(`| … ${results.length - ROWS} more in canary.json | | |`);
-  return ['| test | shard | first line of the failure |', '| :--- | :--- | :--- |', ...shown];
+    .map(
+      (r) =>
+        `| ${cell(r.test)} | ${r.shard} | ${r.failed ? `${r.failed.candidate} vs ${r.failed.baseline}` : ''} | ${cell(r.log)} |`
+    );
+  if (results.length > ROWS) shown.push(`| … ${results.length - ROWS} more in canary.json | | | |`);
+  return [
+    '| test | shard | failed (candidate vs main’s pins) | first line of the failure |',
+    '| :--- | :--- | :--- | :--- |',
+    ...shown,
+  ];
 }
+
+const repeated = ({ repeat }) => (repeat > 1 ? `, each test ${repeat} times` : '');
 
 export function markdown(report) {
   const lines = [
     `## Canary \`${report.run}\`: ${report.ok ? 'green' : 'red'}`,
     '',
-    `bios \`${report.biosRef}\` on \`${report.runner}\`. ${Object.entries(report.counts)
+    `bios \`${report.biosRef}\` on \`${report.runner}\`${repeated(report)}. ${Object.entries(
+      report.counts
+    )
       .map(([k, v]) => `${k} ${v}`)
       .join(', ')}.`,
     '',
@@ -176,7 +244,7 @@ export function markdown(report) {
   const groups = [
     ['Regressions: pass on main’s pins, fail with the overrides', 'regression'],
     ['Failures on both: fail on main’s pins too', 'both'],
-    ['Flaky: failed once, passed on the retry', 'flaky'],
+    ['Flaky: failed in some runs, not in all', 'flaky'],
     ['Failures', 'fail'],
   ];
   for (const [title, kind] of groups) {
@@ -197,6 +265,7 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
   });
   const runs = JSON.parse(values.runs);
   let ok = true;
+  const summaries = [];
   for (const run of runs) {
     const report = merge({
       run,
@@ -209,11 +278,15 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
     const dir = runs.length === 1 ? values.out : join(values.out, run.id);
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, 'canary.json'), `${JSON.stringify(report, null, 2)}\n`);
+    summaries.push(summary(report));
     const text = markdown(report);
     if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, text);
     console.log(text);
     ok &&= report.ok;
   }
+  await mkdir(values.out, { recursive: true });
+  const result = runs.length === 1 ? summaries[0] : { ok, runs: summaries };
+  await writeFile(join(values.out, 'result.json'), `${JSON.stringify(result)}\n`);
   if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, `ok=${ok}\n`);
   if (!ok) exit(1);
 }

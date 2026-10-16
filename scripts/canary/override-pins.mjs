@@ -1,8 +1,9 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import { argv, chdir, env } from 'node:process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
@@ -12,6 +13,8 @@ const exec = promisify(execFile);
 export const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 export const PACKAGES = join(ROOT, 'src/packages');
 export const OUT = join(ROOT, 'node_modules/.cache/slicc-canary/pins.json');
+export const CDN = join(ROOT, 'node_modules/.cache/slicc-harness/cdn');
+const NPM = 'https://registry.npmjs.org/';
 export const GATED =
   /^@ai-ecoverse\/(slicc-kernel|slicc-cdp|slicc-clipboard|slicc-jsh|wasi-|wasix-|wasm-|py-)/;
 const REGISTRY = env.CANARY_REGISTRY ?? 'https://registry.npmjs.org/';
@@ -66,6 +69,137 @@ export async function resolve({ name, version }, download) {
   return { name, version, integrity, sha256, tarball, size: bytes.length };
 }
 
+export function tarballUrl(name, version) {
+  return `${NPM}${name}/-/${name.split('/').pop()}-${version}.tgz`;
+}
+
+export function packed(name) {
+  return `${name.replace(/^@/, '').replace('/', '-')}-`;
+}
+
+export async function artifactPackage({ file, sha256, package: wanted, ...source }) {
+  if (!/^[0-9a-f]{64}$/.test(sha256 ?? ''))
+    throw new Error(`candidate sha256 must be 64 hex digits: ${sha256}`);
+  const bytes = await readFile(file);
+  const actual = createHash('sha256').update(bytes).digest('hex');
+  if (actual !== sha256) {
+    throw new Error(
+      `candidate ${basename(file)}: its sha256 is ${actual}, not ${sha256}; refusing it`
+    );
+  }
+  const { stdout } = await exec('tar', ['-xzOf', file, 'package/package.json'], {
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  const manifest = JSON.parse(stdout);
+  if (manifest.name !== wanted) {
+    throw new Error(`candidate ${basename(file)} is ${manifest.name}, not ${wanted}`);
+  }
+  if (!/^\d+\.\d+\.\d+(-[\w.-]+)?$/.test(manifest.version ?? '')) {
+    throw new Error(`candidate ${manifest.name} has no exact version: ${manifest.version}`);
+  }
+  const integrity = `sha512-${createHash('sha512').update(bytes).digest('base64')}`;
+  return {
+    name: manifest.name,
+    version: manifest.version,
+    integrity,
+    sha256,
+    tarball: tarballUrl(manifest.name, manifest.version),
+    size: bytes.length,
+    via: 'artifact',
+    source,
+    manifest,
+    bytes,
+  };
+}
+
+export async function findPacked(dir, name) {
+  const found = (await readdir(dir)).filter(
+    (file) => file.endsWith('.tgz') && file.startsWith(packed(name))
+  );
+  if (found.length !== 1) {
+    throw new Error(`the candidate artifact needs one ${packed(name)}*.tgz, found ${found.length}`);
+  }
+  return join(dir, found[0]);
+}
+
+export async function seed(candidate, cdn = CDN) {
+  const { host, pathname } = new URL(candidate.tarball);
+  const file = join(cdn, host, pathname.replaceAll('%', '%25'));
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file, candidate.bytes);
+  return file;
+}
+
+function relocate(packument, from, to) {
+  for (const entry of Object.values(packument.versions ?? {})) {
+    if (typeof entry?.dist?.tarball === 'string' && entry.dist.tarball.startsWith(from)) {
+      entry.dist.tarball = to + entry.dist.tarball.slice(from.length);
+    }
+  }
+  return packument;
+}
+
+export async function registry(candidates, upstream = REGISTRY) {
+  const byName = new Map(candidates.map((c) => [c.name, c]));
+  let origin = '';
+  const server = createServer(async (request, response) => {
+    try {
+      const path = decodeURIComponent(new URL(request.url, 'http://x').pathname.slice(1));
+      const tarball = candidates.find(
+        (c) => path === `${c.name}/-/${c.name.split('/').pop()}-${c.version}.tgz`
+      );
+      if (tarball) {
+        response.writeHead(200, { 'content-type': 'application/octet-stream' });
+        return response.end(tarball.bytes);
+      }
+      const name = path.includes('/-/') ? null : path;
+      const found = await fetch(`${upstream}${name === null ? path : path.replace('/', '%2f')}`, {
+        headers: { accept: request.headers.accept ?? 'application/json' },
+        signal: AbortSignal.timeout(60000),
+      });
+      const candidate = name && byName.get(name);
+      if (!found.ok && !candidate) {
+        response.writeHead(found.status);
+        return response.end();
+      }
+      if (name === null) {
+        response.writeHead(200, { 'content-type': 'application/octet-stream' });
+        return response.end(Buffer.from(await found.arrayBuffer()));
+      }
+      const packument = found.ok
+        ? await found.json()
+        : { name, 'dist-tags': {}, versions: {}, time: {} };
+      relocate(packument, upstream, `${origin}/`);
+      if (candidate) {
+        const { manifest, version, integrity } = candidate;
+        packument.versions = { ...packument.versions };
+        packument.versions[version] = {
+          ...manifest,
+          _id: `${name}@${version}`,
+          dist: { tarball: `${origin}/${candidate.tarball.slice(NPM.length)}`, integrity },
+        };
+        packument.time = {
+          ...packument.time,
+          [version]: packument.time?.[version] ?? '2000-01-01T00:00:00.000Z',
+        };
+        packument['dist-tags'] = { latest: version, ...packument['dist-tags'] };
+      }
+      response.writeHead(200, { 'content-type': 'application/json' });
+      return response.end(JSON.stringify(packument));
+    } catch (error) {
+      response.writeHead(502);
+      response.end(String(error.message));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  origin = `http://127.0.0.1:${server.address().port}`;
+  return {
+    url: `${origin}/`,
+    origin,
+    close: () => new Promise((resolve) => server.close(resolve)),
+  };
+}
+
 async function exists(path) {
   return stat(path).then(
     () => true,
@@ -114,15 +248,22 @@ function addOverride(workspace, name, version) {
   return `${kept.replace(/\n*$/, '\n')}overrides:\n${line}`;
 }
 
-async function isolated(dir, files, command, args) {
+async function isolated(dir, files, command, args, local) {
   const scratch = await mkdtemp(join(tmpdir(), 'slicc-canary-'));
   try {
     for (const file of files) {
       if (await exists(join(dir, file))) await copyFile(join(dir, file), join(scratch, file));
     }
-    await exec(command, args, { cwd: scratch, maxBuffer: 64 * 1024 * 1024 });
+    const extra = local ? [`--registry=${local.url}`] : [];
+    await exec(command, [...args, ...extra], { cwd: scratch, maxBuffer: 64 * 1024 * 1024 });
     for (const file of files) {
-      if (await exists(join(scratch, file))) await copyFile(join(scratch, file), join(dir, file));
+      if (!(await exists(join(scratch, file)))) continue;
+      if (local && file !== 'package.json') {
+        const text = await readFile(join(scratch, file), 'utf8');
+        await writeFile(join(dir, file), text.replaceAll(`${local.origin}/`, NPM));
+      } else {
+        await copyFile(join(scratch, file), join(dir, file));
+      }
     }
   } finally {
     await rm(scratch, { recursive: true, force: true });
@@ -141,9 +282,9 @@ function checkNpm(lock, file, direct) {
   }
 }
 
-async function rewriteNpm(dir, overrides, direct, report) {
+async function rewriteNpm(dir, overrides, direct, report, { packages, local }) {
   const at = (file) => join(dir, file);
-  const file = relative(PACKAGES, at('package-lock.json'));
+  const file = relative(packages, at('package-lock.json'));
   const lock = JSON.parse(await readFile(at('package-lock.json'), 'utf8'));
   const touched = new Set(direct.map(({ name }) => name));
   for (const { name } of overrides.filter((o) => !touched.has(o.name))) {
@@ -152,13 +293,13 @@ async function rewriteNpm(dir, overrides, direct, report) {
     }
   }
   if (!direct.length) return;
-  await isolated(dir, NPM_LOCK, 'npm', [
-    'install',
-    '--package-lock-only',
-    '--ignore-scripts',
-    '--no-audit',
-    '--no-fund',
-  ]);
+  await isolated(
+    dir,
+    NPM_LOCK,
+    'npm',
+    ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'],
+    local
+  );
   report.changed.add(file);
   checkNpm(JSON.parse(await readFile(at('package-lock.json'), 'utf8')), file, direct);
 }
@@ -176,9 +317,9 @@ function checkPnpm(text, file, direct, forced) {
   }
 }
 
-async function rewritePnpm(dir, overrides, direct, report) {
+async function rewritePnpm(dir, overrides, direct, report, { packages, local }) {
   const at = (file) => join(dir, file);
-  const file = relative(PACKAGES, at('pnpm-lock.yaml'));
+  const file = relative(packages, at('pnpm-lock.yaml'));
   const text = await readFile(at('pnpm-lock.yaml'), 'utf8');
   const touched = new Set(direct.map(({ name }) => name));
   const workspace = await exists(at('pnpm-workspace.yaml'));
@@ -195,41 +336,44 @@ async function rewritePnpm(dir, overrides, direct, report) {
     let yaml = await readFile(at('pnpm-workspace.yaml'), 'utf8');
     for (const { name, version } of forced) yaml = addOverride(yaml, name, version);
     await writeFile(at('pnpm-workspace.yaml'), yaml);
-    report.changed.add(relative(PACKAGES, at('pnpm-workspace.yaml')));
+    report.changed.add(relative(packages, at('pnpm-workspace.yaml')));
   }
   if (!direct.length && !forced.length) return;
-  await isolated(dir, PNPM_LOCK, 'npx', [
-    ...PNPM,
-    'install',
-    '--lockfile-only',
-    '--ignore-scripts',
-  ]);
+  await isolated(
+    dir,
+    PNPM_LOCK,
+    'npx',
+    [...PNPM, 'install', '--lockfile-only', '--ignore-scripts'],
+    local
+  );
   report.changed.add(file);
   checkPnpm(await readFile(at('pnpm-lock.yaml'), 'utf8'), file, direct, forced);
 }
 
-async function rewrite(dir, overrides, report) {
+async function rewrite(dir, overrides, report, options) {
   const at = (file) => join(dir, file);
   const manifest = JSON.parse(await readFile(at('package.json'), 'utf8'));
   const direct = overrides.filter(({ name }) => manifest.dependencies?.[name]);
   for (const { name, version } of direct) manifest.dependencies[name] = version;
   if (direct.length) {
     await write(at('package.json'), manifest);
-    report.changed.add(relative(PACKAGES, at('package.json')));
+    report.changed.add(relative(options.packages, at('package.json')));
   }
-  if (await exists(at('package-lock.json'))) await rewriteNpm(dir, overrides, direct, report);
-  if (await exists(at('pnpm-lock.yaml'))) await rewritePnpm(dir, overrides, direct, report);
+  if (await exists(at('package-lock.json')))
+    await rewriteNpm(dir, overrides, direct, report, options);
+  if (await exists(at('pnpm-lock.yaml')))
+    await rewritePnpm(dir, overrides, direct, report, options);
 }
 
-export async function lockedAll() {
+export async function lockedAll(packages = PACKAGES) {
   const found = new Map();
   const add = (key, file, integrity) => {
     const entry = found.get(key) ?? { integrity, files: [] };
     entry.files.push(file);
     found.set(key, entry);
   };
-  for (const dir of await projects()) {
-    const file = (name) => relative(PACKAGES, join(dir, name));
+  for (const dir of await projects(packages)) {
+    const file = (name) => relative(packages, join(dir, name));
     if (await exists(join(dir, 'package-lock.json'))) {
       const lock = JSON.parse(await readFile(join(dir, 'package-lock.json'), 'utf8'));
       for (const [path, entry] of Object.entries(lock.packages ?? {})) {
@@ -247,42 +391,72 @@ export async function lockedAll() {
   return found;
 }
 
-export async function overridePins(list, { out = OUT } = {}) {
+export async function overridePins(
+  list,
+  { out = OUT, artifacts = [], packages = PACKAGES, cdn = CDN } = {}
+) {
   chdir(ROOT);
   const wanted = list.map(parse);
+  const candidates = [];
+  for (const artifact of artifacts) candidates.push(await artifactPackage(artifact));
   const names = new Set();
-  for (const { name } of wanted) {
+  for (const { name } of [...wanted, ...candidates]) {
     if (names.has(name)) throw new Error(`${name} is overridden twice`);
     names.add(name);
   }
-  const download = await harnessDownload();
   const overrides = [];
-  for (const spec of wanted) overrides.push(await resolve(spec, download));
+  if (wanted.length) {
+    const download = await harnessDownload();
+    for (const spec of wanted) overrides.push(await resolve(spec, download));
+  }
+  for (const candidate of candidates) {
+    await seed(candidate, cdn);
+    overrides.push(candidate);
+  }
+  const local = candidates.length ? await registry(candidates) : null;
   const report = { changed: new Set(), held: [] };
-  for (const dir of await projects()) await rewrite(dir, overrides, report);
-  const locked = await lockedAll();
+  try {
+    for (const dir of await projects(packages)) {
+      await rewrite(dir, overrides, report, { packages, local });
+    }
+  } finally {
+    await local?.close();
+  }
+  const locked = await lockedAll(packages);
   const nowhere = overrides
     .map(({ name, version }) => `${name}@${version}`)
     .filter((key) => !locked.has(key));
   if (nowhere.length) throw new Error(`bios pins none of these: ${nowhere.join(', ')}`);
-  const certs = JSON.parse(await readFile(join(PACKAGES, 'certs.json'), 'utf8'));
-  const candidates = {};
+  const certs = JSON.parse(await readFile(join(packages, 'certs.json'), 'utf8'));
+  const found = {};
   for (const [key, entry] of locked) {
     if (!GATED.test(key.slice(0, key.lastIndexOf('@')))) continue;
     if (certs[key]?.integrity === entry.integrity) continue;
     const override = overrides.find((o) => `${o.name}@${o.version}` === key);
-    candidates[key] = {
+    found[key] = {
       integrity: entry.integrity,
       files: entry.files,
-      via: override ? 'override' : 'dependency',
+      via: override ? (override.via ?? 'override') : 'dependency',
       ...(override ? { sha256: override.sha256 } : {}),
+      ...(override?.source ? { source: override.source } : {}),
     };
   }
   const result = {
-    overrides,
+    overrides: overrides.map(
+      ({ name, version, integrity, sha256, tarball, size, via, source }) => ({
+        name,
+        version,
+        integrity,
+        sha256,
+        tarball,
+        size,
+        ...(via ? { via } : {}),
+        ...(source ? { source } : {}),
+      })
+    ),
     changed: [...report.changed].sort(),
     held: report.held,
-    candidates,
+    candidates: found,
   };
   await mkdir(dirname(out), { recursive: true });
   await write(out, result);
