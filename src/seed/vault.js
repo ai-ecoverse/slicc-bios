@@ -11,6 +11,7 @@ export const IMS_TOKEN = 'ADOBE_IMS_TOKEN';
 export const FNOX_DIR = '/etc/fnox';
 export const FNOX_CONFIG = 'default_provider = "seven"\n\n[providers.seven]\ntype = "sealed"\n';
 export const NOT_CONNECTED = "seven's vault isn't connected";
+export const RECONNECTED = "seven's vault reconnected before it answered";
 const TYPE = 'slicc-vault';
 const SCRUBBING = new Set(['put', 'seal', 'import']);
 
@@ -370,6 +371,20 @@ function dropAway(pending, view, state) {
   }
 }
 
+const READS = new Set(['list', 'audit']);
+
+function dropSent(pending) {
+  for (const [id, item] of pending) {
+    if (!item.sent) continue;
+    if (READS.has(item.message.op)) {
+      item.sent = null;
+      continue;
+    }
+    pending.delete(id);
+    item.reject(failure({ code: 'ENOTCONN', message: RECONNECTED }));
+  }
+}
+
 function coreFrame(document) {
   const frame = document.createElement('iframe');
   frame.hidden = true;
@@ -510,6 +525,7 @@ export function createVault({
     sentGid = Number.isInteger(gid) ? gid : undefined;
     const { port1, port2 } = new MessageChannel();
     page?.close();
+    dropSent(pending);
     page = port1;
     view.welcomed = false;
     view.since = now();

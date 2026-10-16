@@ -95,6 +95,7 @@ const page = (port) => (event) => {
   const { id, op } = event.data;
   log({ role: 'page', op, name: event.data.name, sealed: event.data.req?.op, stamp: Boolean(event.data.stamp) });
   if (event.data.stamp) log({ role: 'stamp', op: event.data.req?.op ?? op, uid: event.data.stamp.uid, users: event.data.stamp.users ?? null, groups: event.data.stamp.groups ?? null });
+  if (holding.includes(op)) return;
   const reply = (fields) => port.postMessage({ v: 1, id, op, ...fields });
   const refuse = () => port.postMessage({ v: 1, id, error: { code: 'EACCES', message: 'vault is locked: unlock it in the vault window' } });
   const result = (record) => ({ name: record.name, placeholder: record.placeholder, state: record.removedAt ? 'removed' : 'inert' });
@@ -181,9 +182,11 @@ const page = (port) => (event) => {
 };
 let egressed = null;
 let muted = state.mute === true;
+let holding = state.hold ?? [];
 setInterval(async () => {
   const shared = await (await fetch('/state')).json();
   muted = shared.mute === true;
+  holding = shared.hold;
   if (shared.egress && shared.egress.id !== egressed && pages.length) {
     egressed = shared.egress.id;
     const channel = new MessageChannel();
@@ -309,6 +312,7 @@ export async function startFakeVault(initial = {}) {
           locked: state.locked,
           egress: state.egress ?? null,
           mute: state.mute === true,
+          hold: state.hold ?? [],
         })
       );
     }

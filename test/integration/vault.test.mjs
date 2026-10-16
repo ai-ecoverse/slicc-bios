@@ -432,6 +432,57 @@ test('a /dev/sealed request made while the vault hasn’t answered yet fails wit
   assert.deepEqual(page.errors, []);
 });
 
+test('a vault frame that reloads while a /dev/sealed request waits fails it with ENOTCONN at once, and seven never sends it again', async (t) => {
+  t.after(() => fake.set({ mute: false, hold: [] }));
+  fake.set({ mute: false, locked: false, hold: [] });
+  const page = await chrome.page(t);
+  await page.init(override(fake.origin));
+  await boot(page);
+  await page.until(
+    () => document.querySelector('slicc-app').model.vault?.availability() === 'ready'
+  );
+  const reload = () =>
+    page.evaluate(() => {
+      const element = document.querySelector('iframe[data-vault=core]');
+      element.setAttribute('src', element.getAttribute('src'));
+    });
+  const relayed = () =>
+    fake.log.filter((entry) => entry.role === 'page' && entry.op === 'sealed').length;
+  fake.set({ hold: ['sealed'] });
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  const before = relayed();
+  await run(
+    page,
+    `clear; exec 3<>/dev/sealed; printf '{"v":1,"op":"list"}' >&3; cat <&3; echo; R=HEL; echo "$R"D`
+  );
+  assert.ok(await logged(() => relayed() === before + 1), 'the vault got the request');
+  fake.set({ hold: [], mute: true });
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  const started = Date.now();
+  await reload();
+  await shows(page, 'HELD', 20000);
+  const elapsed = Date.now() - started;
+  const text = await page.evaluate(() => {
+    const { dock } = document.querySelector('slicc-app');
+    const id = dock.api.panels
+      .map((panel) => panel.id)
+      .findLast((id) => id.startsWith('terminal:'));
+    return dock.content(id).screen.textContent;
+  });
+  assert.match(text, /ENOTCONN/, text);
+  assert.match(text, /reconnected before it answered/, text);
+  assert.ok(elapsed < 9000, String(elapsed));
+  fake.set({ mute: false });
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  await reload();
+  await page.until(
+    () => document.querySelector('slicc-app').model.vault.availability() === 'ready'
+  );
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  assert.equal(relayed(), before + 1);
+  assert.deepEqual(page.errors, []);
+});
+
 test('a token refresh whose endpoint stalls is given up at seven’s deadline, and its connection is closed', {
   timeout: 120000,
 }, async (t) => {
