@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
-import { agentUp, connectAccount, listsAccount, ready, trust } from './bios.mjs';
+import {
+  AGENT_RESTART,
+  agentState,
+  agentUp,
+  connectAccount,
+  listsAccount,
+  ready,
+  trust,
+} from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { model, startHub } from './fake-hub.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
@@ -186,6 +194,21 @@ async function refusedOnly(page, from, at = 1) {
   const refusals = (await notices(page)).slice(from);
   assert.equal(refusals.length, at, `expected ${at} refusals, saw: ${refusals.join('\n')}`);
   for (const refusal of refusals) assert.match(refusal, /^This page is view-only, so it can't /);
+}
+
+async function restored(owner, ms = 60000) {
+  const deadline = Date.now() + ms;
+  let last = null;
+  for (;;) {
+    const now = await owned(owner);
+    if (JSON.parse(now).messages > 0 && now === last) return now;
+    if (Date.now() > deadline)
+      throw new Error(
+        `the owner's agent never showed its chat again after the reload: ${now}\n${await agentState(owner)}`
+      );
+    last = now;
+    await pause(1000);
+  }
 }
 
 const said = (page) =>
@@ -509,6 +532,8 @@ test('a follower watches the owner run with View, is refused a send, and sends w
   await trust(owner, { [file.path]: newer });
   await owner.reload();
   await ready(owner);
+  await agentUp(owner, { budget: AGENT_RESTART, label: 'owner agent after the reload' });
+  const before = await restored(owner);
   await page.evaluate(() => {
     window.followWarnings = 0;
     const warn = console.warn;
@@ -529,7 +554,6 @@ test('a follower watches the owner run with View, is refused a send, and sends w
     await page.evaluate(() => document.querySelector('slicc-app').model.agent.readOnly?.()),
     'Watch only.'
   );
-  const before = await owned(owner);
   const sent = await page.evaluate(async () => {
     const { agent } = document.querySelector('slicc-app').model;
     window.firstAgent = agent;
@@ -551,6 +575,7 @@ test('a follower watches the owner run with View, is refused a send, and sends w
   });
   assert.deepEqual(after, { same: true, banners: 1, warnings: 0 });
   assert.equal(await owned(owner), before);
+  assert.doesNotMatch(await said(owner), /From a mismatched follower/);
   assert.ok(!asked.some((body) => body.includes('From a mismatched follower')));
   await shoot(page, 'follower-watch-only', { show: 'chat' });
   await owner.evaluate(() => localStorage.removeItem('slicc-os.tray-hub'));
