@@ -145,7 +145,7 @@ test('every gated package in every lockfile is certified, with the certified int
     .map(([key, [file]]) => `${file} ${key}`);
   assert.deepEqual(missing, [], 'not in src/packages/certs.json with this integrity');
   for (const [key, entry] of Object.entries(certs)) {
-    assert.match(key, /^@ai-ecoverse\/[\w.-]+@\d+\.\d+\.\d+(-[\w.]+)?$/, key);
+    assert.match(key, /^@ai-ecoverse\/[\w.-]+@\d+\.\d+\.\d+(-[\w.-]+)?$/, key);
     assert.match(entry.integrity, /^sha512-/, key);
     if (entry.sha256) assert.match(entry.sha256, /^[0-9a-f]{64}$/, key);
   }

@@ -25,7 +25,7 @@ export function parse(spec) {
   const version = spec.slice(at + 1);
   if (at <= 0 || !/^@[\w.-]+\/[\w.-]+$/.test(name))
     throw new Error(`not a scoped name@version: ${spec}`);
-  if (!/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version)) throw new Error(`not an exact version: ${spec}`);
+  if (!/^\d+\.\d+\.\d+(-[\w.-]+)?$/.test(version)) throw new Error(`not an exact version: ${spec}`);
   return { name, version };
 }
 

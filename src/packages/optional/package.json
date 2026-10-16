@@ -17,6 +17,7 @@
     "@ai-ecoverse/wasix-python": "3.14.2-20",
     "@ai-ecoverse/wasix-ruby": "3.4.11-12",
     "@ai-ecoverse/wasix-uv-shim": "0.1.0-6",
+    "@ai-ecoverse/wasix-websocat": "4.0.0-alpha3-3",
     "@ai-ecoverse/wasm-git": "2.55.0-15",
     "@ai-ecoverse/wasm-libheif": "1.23.6-1",
     "@ai-ecoverse/wasm-poppler": "26.10.0-2",

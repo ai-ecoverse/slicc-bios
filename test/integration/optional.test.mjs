@@ -14,7 +14,7 @@ test('the optional catalog describes exactly the pinned packages, each locked wi
   const packages = Object.entries(catalog).filter(([, entry]) => entry.kind !== 'project');
   assert.deepEqual(packages.map(([name]) => name).sort(), Object.keys(dependencies).sort());
   for (const [name, version] of Object.entries(dependencies)) {
-    assert.match(version, /^\d+\.\d+\.\d+(-[\w.]+)?$/, `${name} is pinned exactly`);
+    assert.match(version, /^\d+\.\d+\.\d+(-[\w.-]+)?$/, `${name} is pinned exactly`);
     const entry = lock.packages[`node_modules/${name}`];
     assert.equal(entry?.version, version, `${name} is locked at ${version}`);
     assert.match(entry.integrity, /^sha512-/, `${name} has an integrity`);
@@ -67,7 +67,7 @@ test('a project entry ships its manifest, a lockfile and a workspace that overri
     assert.equal(manifest.name, name);
     assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
     for (const [dependency, version] of Object.entries(manifest.dependencies)) {
-      assert.match(version, /^\d+\.\d+\.\d+(-[\w.]+)?$/, `${dependency} is pinned exactly`);
+      assert.match(version, /^\d+\.\d+\.\d+(-[\w.-]+)?$/, `${dependency} is pinned exactly`);
     }
     const lock = await readFile(new URL(`projects/${entry.id}/pnpm-lock.yaml`, optional), 'utf8');
     for (const dependency of Object.keys(manifest.dependencies)) {
