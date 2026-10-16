@@ -98,7 +98,7 @@ export function jobs(runs) {
       run: run.id,
       ref: run.ref,
       shard,
-      overrides: run.overrides,
+      overrides: run.overrides ?? [],
       candidate: run.candidate ?? null,
       repeat: run.repeat ?? 1,
     }))
@@ -142,7 +142,11 @@ async function packProof(proof, { runId, repo, dir }) {
   const artifact = `canary-candidate-${proof.id}`;
   const { pack, sha256, ...rest } = proof;
   return {
-    run: { ...rest, candidate: candidateOf({ package: name, artifact, run: runId, sha256, repo }) },
+    run: {
+      overrides: [],
+      ...rest,
+      candidate: candidateOf({ package: name, artifact, run: runId, sha256, repo }),
+    },
     upload: { name: artifact, path: out },
   };
 }
