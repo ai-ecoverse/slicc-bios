@@ -42,7 +42,10 @@ test('every catalog entry has a unique id, a label, a description, commands and 
   for (const entry of entries) {
     assert.match(entry.id, /^[a-z][a-z0-9-]*$/);
     assert.ok(entry.label && entry.description, entry.id);
-    assert.ok(entry.kind === 'project' || entry.commands.length, `${entry.id} has commands`);
+    assert.ok(
+      entry.kind === 'project' || entry.commands.length || entry.requires?.length,
+      `${entry.id} has commands or extends what it requires`
+    );
     assert.ok(Number.isInteger(entry.size) && entry.size > 0, entry.id);
     for (const id of entry.requires ?? [])
       assert.ok(ids.includes(id), `${entry.id} requires ${id}`);

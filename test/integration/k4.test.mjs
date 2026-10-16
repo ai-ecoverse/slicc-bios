@@ -213,6 +213,12 @@ test('enforce: a cone writes its home, is refused in root’s, and sudo asks wit
 test('enforce: a cone’s Python finds what /opt/slicc/python lists, in a login shell and through sudo', async (t) => {
   const page = await chrome.page(t);
   await bootIn(page, 'enforce');
+  await page.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.updates.packages()
+      .some((item) => item.id === 'python')
+  );
   await page.evaluate(() => {
     window.installed = document
       .querySelector('slicc-app')
@@ -249,6 +255,11 @@ test('enforce: a cone’s Python finds what /opt/slicc/python lists, in a login 
     `clear; sudo -u cone python3 -c "import sliccprobe; print('cone', sliccprobe.ok)"`
   );
   await shows(page, 'cone 42', 5 * 60 * 1000);
+  await run(
+    page,
+    "clear; sudo -u cone bash -c 'pip --version && pip3 --version' | grep -c '^pip ' | sed 's/^/pips-/'"
+  );
+  await shows(page, 'pips-2', 5 * 60 * 1000);
   await run(
     page,
     `clear; sudo -u cone bash -lc 'python3 -c "import sliccprobe; print(\\"login\\", sliccprobe.ok)"'`
