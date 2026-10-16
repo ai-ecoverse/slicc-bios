@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { boot, run, shows } from './bios.mjs';
+import { boot, ready, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch({ timeout: 120000 });
@@ -84,5 +84,26 @@ test('a cone’s gem install puts a command on PATH, and a fresh login shell run
   const text = await terminal(page);
   assert.match(text, /hello 42 from a gem/);
   assert.match(text, /ran=0/);
+  assert.deepEqual(page.errors, []);
+});
+
+test('an /etc/profile of its own keeps its lines, gets the profile.d loop once across boots, and login shells find gem commands', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await run(page, "clear; echo 'export EDITOR=vi' > /etc/profile; echo kept-$((40 + 2))");
+  await shows(page, 'kept-42');
+  await page.reload();
+  await ready(page);
+  await page.reload();
+  await ready(page);
+  await run(
+    page,
+    "clear; cd /; echo loops=$(grep -c 'slicc runs /etc/profile.d' /etc/profile) first=$(head -1 /etc/profile); sudo -u cone bash -lc 'echo editor=$EDITOR; case :$PATH: in *:$HOME/.local/share/gem/ruby/3.4.0/bin:*) echo gems=on ;; *) echo gems=off ;; esac'; echo done-$((40 + 2))"
+  );
+  await shows(page, 'done-42');
+  const text = await terminal(page);
+  assert.match(text, /loops=1 first=export EDITOR=vi/);
+  assert.match(text, /editor=vi/);
+  assert.match(text, /gems=on/);
   assert.deepEqual(page.errors, []);
 });

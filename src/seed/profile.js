@@ -1,7 +1,10 @@
 export const PROFILE = 'etc/profile';
 export const SCRIPT = 'etc/profile.d/slicc.sh';
 
-export const LOOP = `for script in /etc/profile.d/*.sh; do
+export const MARK = ': slicc runs /etc/profile.d';
+
+export const LOOP = `${MARK}
+for script in /etc/profile.d/*.sh; do
   [ -r "$script" ] && . "$script"
 done
 unset script
@@ -18,5 +21,8 @@ export PATH
 
 export async function installProfile(root, { text, write }) {
   await write(root, SCRIPT, PATHS);
-  if ((await text(root, PROFILE)) === null) await write(root, PROFILE, LOOP);
+  const profile = await text(root, PROFILE);
+  if (profile === null) return write(root, PROFILE, LOOP);
+  if (profile.includes(MARK) || profile.includes('/etc/profile.d/')) return;
+  await write(root, PROFILE, `${profile}${profile.endsWith('\n') ? '' : '\n'}${LOOP}`);
 }
