@@ -121,7 +121,7 @@ jobs:
     name: cert / review
     needs: plan
     if: needs.plan.outputs.go == 'true'
-    runs-on: ${{ vars.CERT_RUNNER || 'cloud-run-bench' }}
+    runs-on: ${{ vars.CERT_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 180
     concurrency:
       group: cert-review-${{ needs.plan.outputs.number }}
