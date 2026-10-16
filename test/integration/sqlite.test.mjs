@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { boot, run, shows } from './bios.mjs';
+import { actPackage, boot, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch({ timeout: 120000 });
 after(() => chrome.close());
-
-const INSTALL = 10 * 60 * 1000;
 
 const row = (page, id) =>
   page.evaluate(
@@ -17,27 +15,6 @@ const row = (page, id) =>
         .find((item) => item.id === id),
     id
   );
-
-async function act(page, id, action) {
-  await page.evaluate(
-    ([id, action]) => {
-      window.acted = undefined;
-      document
-        .querySelector('slicc-app')
-        .model.updates.actPackage(id, action)
-        .then(
-          () => 'ok',
-          (error) => error.message
-        )
-        .then((result) => {
-          window.acted = result;
-        });
-    },
-    [id, action]
-  );
-  await page.within(INSTALL, () => window.acted !== undefined);
-  return page.evaluate(() => window.acted);
-}
 
 const terminal = (page) =>
   page.evaluate(() => {
@@ -58,7 +35,7 @@ test('a cone makes a SQLite database, writes and reads it, and journal_mode=WAL 
         .some((item) => item.id === id),
     'sqlite3'
   );
-  assert.equal(await act(page, 'sqlite3', 'install'), 'ok');
+  assert.equal(await actPackage(page, 'sqlite3', 'install'), 'ok');
   assert.equal((await row(page, 'sqlite3')).version, '3.54.0-3');
   await run(
     page,
@@ -83,7 +60,7 @@ async function installed(page) {
         .some((item) => item.id === id),
     'sqlite3'
   );
-  assert.equal(await act(page, 'sqlite3', 'install'), 'ok');
+  assert.equal(await actPackage(page, 'sqlite3', 'install'), 'ok');
 }
 
 const WRITER = [

@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { boot, ready, run, shows } from './bios.mjs';
+import { actPackage, boot, ready, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch({ timeout: 120000 });
 after(() => chrome.close());
-
-const INSTALL = 10 * 60 * 1000;
 
 const row = (page, id) =>
   page.evaluate(
@@ -17,27 +15,6 @@ const row = (page, id) =>
         .find((item) => item.id === id),
     id
   );
-
-async function act(page, id, action) {
-  await page.evaluate(
-    ([id, action]) => {
-      window.acted = undefined;
-      document
-        .querySelector('slicc-app')
-        .model.updates.actPackage(id, action)
-        .then(
-          () => 'ok',
-          (error) => error.message
-        )
-        .then((result) => {
-          window.acted = result;
-        });
-    },
-    [id, action]
-  );
-  await page.within(INSTALL, () => window.acted !== undefined);
-  return page.evaluate(() => window.acted);
-}
 
 const terminal = (page) =>
   page.evaluate(() => {
@@ -71,7 +48,7 @@ test('a cone’s gem install puts a command on PATH, and a fresh login shell run
         .some((item) => item.id === id),
     'ruby'
   );
-  assert.equal(await act(page, 'ruby', 'install'), 'ok');
+  assert.equal(await actPackage(page, 'ruby', 'install'), 'ok');
   assert.equal((await row(page, 'ruby')).version, '3.4.11-12');
   await run(
     page,
