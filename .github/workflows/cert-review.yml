@@ -33,7 +33,7 @@ jobs:
         github.event.label.name == 'cert-review' &&
         github.event.pull_request.head.repo.full_name == github.repository
       )
-    runs-on: ${{ vars.CERT_LIGHT_RUNNER || 'cloud-run' }}
+    runs-on: ${{ vars.CERT_LIGHT_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 150
     permissions:
       actions: read
@@ -121,7 +121,7 @@ jobs:
     name: cert / review
     needs: plan
     if: needs.plan.outputs.go == 'true'
-    runs-on: ${{ vars.CERT_RUNNER || 'cloud-run-bench' }}
+    runs-on: ${{ vars.CERT_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 180
     concurrency:
       group: cert-review-${{ needs.plan.outputs.number }}
