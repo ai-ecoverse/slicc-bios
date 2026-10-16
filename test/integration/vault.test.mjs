@@ -395,6 +395,106 @@ test('a token refresh the vault asks seven to send never follows a redirect, so 
   assert.deepEqual(page.errors, []);
 });
 
+test('a /dev/sealed request made while the vault hasn’t answered yet fails with ENOTCONN once seven stops waiting, not at the kernel’s timeout', async (t) => {
+  t.after(() => fake.set({ mute: false }));
+  fake.set({ mute: false, locked: false });
+  const page = await chrome.page(t);
+  await page.init(override(fake.origin));
+  await boot(page);
+  await page.until(
+    () => document.querySelector('slicc-app').model.vault?.availability() === 'ready'
+  );
+  fake.set({ mute: true });
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  await page.evaluate(() => {
+    const element = document.querySelector('iframe[data-vault=core]');
+    element.setAttribute('src', element.getAttribute('src'));
+  });
+  await page.until(
+    () => document.querySelector('slicc-app').model.vault.availability() === 'connecting'
+  );
+  const started = Date.now();
+  await run(
+    page,
+    `clear; exec 3<>/dev/sealed; printf '{"v":1,"op":"list"}' >&3; cat <&3; echo; R=EARL; echo "$R"Y`
+  );
+  await shows(page, 'EARLY');
+  const elapsed = Date.now() - started;
+  const screen = await page.evaluate(() => {
+    const { dock } = document.querySelector('slicc-app');
+    const id = dock.api.panels
+      .map((panel) => panel.id)
+      .findLast((id) => id.startsWith('terminal:'));
+    return dock.content(id).screen.textContent;
+  });
+  assert.match(screen, /ENOTCONN/, screen);
+  assert.ok(elapsed < 9000, String(elapsed));
+  assert.deepEqual(page.errors, []);
+});
+
+test('a token refresh whose endpoint stalls is given up at seven’s deadline, and its connection is closed', {
+  timeout: 120000,
+}, async (t) => {
+  const seen = { opened: 0, closed: 0 };
+  const endpoint = createServer((req, res) => {
+    seen.opened += 1;
+    res.on('close', () => {
+      seen.closed += 1;
+    });
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, {
+        'access-control-allow-origin': '*',
+        'access-control-allow-headers': '*',
+      });
+      res.end();
+    }
+  });
+  await new Promise((resolve) => endpoint.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    endpoint.closeAllConnections?.();
+    endpoint.close();
+    fake.set({ egress: null });
+  });
+  fake.set({ locked: false, mute: false });
+  const page = await chrome.page(t);
+  await page.init(override(fake.origin));
+  await boot(page);
+  await page.until(
+    () => document.querySelector('slicc-app').model.vault?.availability() === 'ready'
+  );
+  fake.set({
+    egress: {
+      id: 'stall-1',
+      request: {
+        method: 'POST',
+        url: `http://localhost:${endpoint.address().port}/token`,
+        headers: [['content-type', 'application/x-www-form-urlencoded']],
+        body: 'grant_type=refresh_token&refresh_token=dummy-refresh-token-5678&client_id=seven',
+      },
+    },
+  });
+  for (
+    let n = 0;
+    n < 600 && !fake.log.some((entry) => entry.role === 'egress' && entry.id === 'stall-1');
+    n += 1
+  )
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.deepEqual(
+    fake.log.find((entry) => entry.role === 'egress' && entry.id === 'stall-1'),
+    {
+      role: 'egress',
+      id: 'stall-1',
+      status: null,
+      error: 'ETIMEDOUT: the token request took too long',
+    }
+  );
+  assert.ok(seen.opened > 0);
+  for (let n = 0; n < 50 && seen.closed < seen.opened; n += 1)
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(seen.closed, seen.opened, JSON.stringify(seen));
+  assert.deepEqual(page.errors, []);
+});
+
 test('/dev/sealed relays to the vault with the kernel stamp', async (t) => {
   const page = await chrome.page(t);
   await page.init(override(fake.origin));

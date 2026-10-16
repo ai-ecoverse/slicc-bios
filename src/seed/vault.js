@@ -92,10 +92,13 @@ export async function sudoGidOf(kernel) {
   return Number.isInteger(sudo?.gid) ? sudo.gid : undefined;
 }
 
-async function bytesOf(body) {
+async function bytesOf(body, signal) {
   if (!body) return new Uint8Array(0);
   const chunks = [];
-  for await (const chunk of body) chunks.push(chunk);
+  for await (const chunk of body) {
+    signal?.throwIfAborted();
+    chunks.push(chunk);
+  }
   const out = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
   let at = 0;
   for (const chunk of chunks) {
@@ -114,38 +117,39 @@ function pairs(headers) {
 
 export function answerEgress(transport, request, port, { timers = globalThis } = {}) {
   let done = false;
+  const body = new TextEncoder().encode(request.body ?? '');
+  const controller = new AbortController();
   const reply = (message) => {
     if (done) return;
     done = true;
     timers.clearTimeout(deadline);
+    body.fill(0);
     port.postMessage(message);
     port.close?.();
   };
-  const deadline = timers.setTimeout(
-    () => reply({ error: 'ETIMEDOUT: the token request took too long' }),
-    EGRESS_MS
-  );
+  const deadline = timers.setTimeout(() => {
+    reply({ error: 'ETIMEDOUT: the token request took too long' });
+    controller.abort();
+  }, EGRESS_MS);
   return (async () => {
-    const body = new TextEncoder().encode(request.body ?? '');
     try {
       const response = await unfollowed(transport, {
         url: request.url,
         method: request.method,
         headers: request.headers,
         body,
+        signal: controller.signal,
       });
       body.fill(0);
       const status = response.status;
       const moved = response.redirected || response.type === 'opaqueredirect';
-      if (moved || status === 0 || (status >= 300 && status < 400))
+      if (moved || status === 0 || (status >= 300 && status < 400)) {
+        response.cancel?.();
         return reply({ error: 'EACCES: the token endpoint redirected' });
-      reply({
-        status: response.status,
-        headers: pairs(response.headers),
-        body: await bytesOf(response.body),
-      });
+      }
+      const read = await bytesOf(response.body, controller.signal);
+      reply({ status: response.status, headers: pairs(response.headers), body: read });
     } catch (error) {
-      body.fill(0);
       reply({ error: `${error?.code ?? 'EIO'}: the token request failed` });
     }
   })();
@@ -162,6 +166,7 @@ export function unfollowed(
     method: request.method,
     headers: request.headers,
     body: request.body,
+    signal: request.signal,
     redirect: 'manual',
     credentials: 'omit',
     cache: 'no-store',
@@ -300,13 +305,16 @@ export function sealedRelay({ call, forward, users, onRequest, away = () => fals
         const fields = Object.fromEntries(
           CONSUME.filter((key) => key in rest).map((key) => [key, rest[key]])
         );
-        const { values, placeholders } = await call('materializeConsume', fields, { signal });
+        const { values, placeholders } = await call('materializeConsume', fields, {
+          signal,
+          dropAway: true,
+        });
         return { values, placeholders };
       }
       const { reply } = await call(
         'sealed',
         { req: rest, stamp: caller },
-        { signal, value: rest.value }
+        { signal, value: rest.value, dropAway: true }
       );
       if (rest.op === 'seal') forward();
       if (rest.op === 'request' && reply?.state === 'pending' && typeof reply.id === 'string')
@@ -352,6 +360,15 @@ function snapshots({ now, timers, pending, view }) {
 }
 
 const away = (view, state) => !view.welcomed && state.availability() === 'waiting';
+
+function dropAway(pending, view, state) {
+  if (!away(view, state)) return;
+  for (const [id, item] of pending) {
+    if (!item.dropAway || item.sent) continue;
+    pending.delete(id);
+    item.reject(failure({ code: 'ENOTCONN', message: NOT_CONNECTED }));
+  }
+}
 
 function coreFrame(document) {
   const frame = document.createElement('iframe');
@@ -407,13 +424,13 @@ export function createVault({
     state.later(ANSWER_MS);
   };
 
-  function call(op, fields = {}, { value, signal, transfer = [] } = {}) {
+  function call(op, fields = {}, { value, signal, transfer = [], dropAway = false } = {}) {
     if (signal?.aborted)
       return Promise.reject(failure({ code: 'ECANCELED', message: 'cancelled' }));
     const id = ++serial;
     const message = { ...fields, v: 1, id, op };
     return new Promise((resolve, reject) => {
-      const item = { message, transfer, value, resolve, reject, sent: null, at: now() };
+      const item = { message, transfer, value, resolve, reject, sent: null, at: now(), dropAway };
       pending.set(id, item);
       signal?.addEventListener?.(
         'abort',
@@ -504,6 +521,7 @@ export function createVault({
       origin,
       [port2]
     );
+    timers.setTimeout(() => dropAway(pending, view, state), WELCOME_MS);
     state.later(WELCOME_MS);
     state.refresh();
   }
@@ -515,6 +533,7 @@ export function createVault({
   });
   frame.src = `${origin}/`;
   document.body.append(frame);
+  timers.setTimeout(() => dropAway(pending, view, state), WELCOME_MS);
   state.later(WELCOME_MS);
 
   return {
