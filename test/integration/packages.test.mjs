@@ -390,6 +390,7 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
       'buf available',
       'screen available',
       'dig available',
+      'websocat available',
       'gpg available',
     ]
   );
