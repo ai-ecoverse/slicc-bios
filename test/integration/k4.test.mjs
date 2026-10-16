@@ -579,3 +579,30 @@ test('enforce: tar unpacks hard-link members into a tmpfs mount as one inode, an
   assert.match(text, /conln=0 cone=2/);
   assert.deepEqual(page.errors, []);
 });
+
+test('enforce: a cone has no crontab until it installs one, and its @reboot line runs on the next load, logged under /var/log/cron/cone', async (t) => {
+  const page = await chrome.page(t);
+  await bootIn(page, 'enforce');
+  await run(
+    page,
+    "clear; cd /; sudo -u cone crontab -l; echo listed=$?; echo '@reboot echo cron-booted-$((40 + 2)) as $(id -un)' | sudo -u cone crontab -; echo installed=$?; sudo -u cone crontab -l; echo done-$((40 + 2))"
+  );
+  await shows(page, 'done-42');
+  let text = await screen(page);
+  assert.match(text, /no crontab for cone/);
+  assert.match(text, /listed=1/);
+  assert.match(text, /installed=0/);
+  assert.match(text, /@reboot echo cron-booted/);
+  await page.reload();
+  await ready(page, rootShell);
+  await run(
+    page,
+    "clear; for i in $(seq 1 60); do grep -qs 'cron-booted-42 as cone' /var/log/cron/cone/*.log && break; sleep 1; done; cat /var/log/cron/cone/*.log; stat -c '%U %a' /var/log/cron/cone; echo logged-$((40 + 2))"
+  );
+  await shows(page, 'logged-42', 2 * 60 * 1000);
+  text = await screen(page);
+  assert.match(text, /--- .* exit=0 missed=0 ---/);
+  assert.match(text, /cron-booted-42 as cone/);
+  assert.match(text, /root 755/);
+  assert.deepEqual(page.errors, []);
+});
