@@ -8,6 +8,31 @@ after(() => chrome.close());
 
 const rootShell = ['slicc:/home# '];
 
+const EPOLL = `import asyncio
+import select
+import socket
+
+
+async def main():
+    loop = asyncio.get_running_loop()
+    here, there = socket.socketpair()
+    here.setblocking(False)
+    there.setblocking(False)
+    await loop.sock_sendall(there, b"echo 42")
+    print("asyncio", (await loop.sock_recv(here, 100)).decode(), type(loop._selector).__name__)
+
+
+asyncio.run(main())
+poll = select.epoll()
+one, two = socket.socketpair()
+poll.register(one.fileno(), select.EPOLLIN)
+try:
+    poll.register(one.fileno(), select.EPOLLIN)
+    print("double registered")
+except FileExistsError:
+    print("double FileExistsError")
+`;
+
 async function read(page, path) {
   return page.evaluate(async (path) => {
     let dir = await navigator.storage.getDirectory();
@@ -210,7 +235,7 @@ test('enforce: a cone writes its home, is refused in root’s, and sudo asks wit
   assert.deepEqual(page.errors, []);
 });
 
-test('enforce: a cone’s Python finds what /opt/slicc/python lists, in a login shell and through sudo', async (t) => {
+test('enforce: a cone’s Python finds what /opt/slicc/python lists, in a login shell and through sudo, and asyncio runs on epoll', async (t) => {
   const page = await chrome.page(t);
   await bootIn(page, 'enforce');
   await page.until(() =>
@@ -260,6 +285,15 @@ test('enforce: a cone’s Python finds what /opt/slicc/python lists, in a login 
     "clear; sudo -u cone bash -c 'pip --version && pip3 --version' | grep -c '^pip ' | sed 's/^/pips-/'"
   );
   await shows(page, 'pips-2', 5 * 60 * 1000);
+  const epoll = Buffer.from(EPOLL).toString('base64');
+  await run(
+    page,
+    `clear; cd /; sudo -u cone bash -c 'cd && echo ${epoll} | base64 -d > epoll.py && python3 epoll.py'; echo polled-$((40 + 2))`
+  );
+  await shows(page, 'polled-42', 5 * 60 * 1000);
+  const polled = await screen(page);
+  assert.match(polled, /asyncio echo 42 EpollSelector/);
+  assert.match(polled, /double FileExistsError/);
   await run(
     page,
     `clear; sudo -u cone bash -lc 'python3 -c "import sliccprobe; print(\\"login\\", sliccprobe.ok)"'`
