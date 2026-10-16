@@ -95,8 +95,10 @@ import {
 } from './users.js';
 import {
   createVault,
+  FNOX_DIR,
   keepSudoGid,
   sealedOption,
+  seedFnox,
   storedSudoGid,
   sudoGidOf,
   takesVault,
@@ -610,7 +612,7 @@ async function own() {
   kernel = await createKernel({
     root,
     users: 'off',
-    env: { PYTHONPATH: `/${PYTHON}` },
+    env: { PYTHONPATH: `/${PYTHON}`, FNOX_CONFIG_DIR: FNOX_DIR },
     ...protection(),
     network: { transport, uplink: exits.uplink },
     cdp: control.hook,
@@ -646,6 +648,7 @@ async function own() {
   exits.attach(kernel);
   if (globalThis.sliccKernelDebug === true)
     globalThis.sliccKernelClient = async () => attachKernel(await kernel.connect());
+  await seedFnox(kernel).catch((error) => console.warn(`fnox config: ${error.message}`));
   const gid = await sudoGidOf(kernel).catch(() => undefined);
   keepSudoGid(localStorage, gid);
   void vault.sudoGid(gid);

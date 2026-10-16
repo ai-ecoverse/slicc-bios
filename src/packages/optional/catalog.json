@@ -157,6 +157,14 @@
     "commands": ["websocat"],
     "size": 1266828
   },
+  "@ai-ecoverse/wasi-fnox": {
+    "id": "fnox",
+    "label": "fnox",
+    "description": "Secrets by name: fnox keeps placeholders and seven's vault keeps the values. Pipe a value into fnox set NAME to add or change one; fnox exec hands a program the values the secret rules allow.",
+    "commands": ["fnox"],
+    "size": 2154238
+  },
+
   "@ai-ecoverse/wasix-gnupg": {
     "id": "gpg",
     "label": "GnuPG",

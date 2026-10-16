@@ -12,6 +12,7 @@ const save = () => fetch('/records', { method: 'POST', body: JSON.stringify({ re
 const pages = [];
 const agents = [];
 const requests = new Map();
+const tickets = new Map();
 const mint = () => 'fnox_proxy_' + String(++serial).padStart(24, '0');
 const key = (kind, name) => kind + '\\u0000' + name;
 const keep = (fields) => {
@@ -101,6 +102,40 @@ const page = (port) => (event) => {
   if (op === 'list') return reply({ list: list() });
   if (op === 'audit') return reply({ audit: [], more: false });
   if (op === 'placeholders') return reply({ placeholders: placeholders(), scrub: scrub() });
+  if (op === 'sealed' && event.data.req?.op === 'seal') {
+    if (locked) return reply({ reply: { v: 1, error: { code: 'EACCES', message: 'vault is locked' } } });
+    const record = keep({ name: event.data.req.name, value: event.data.req.value, source: 'process' });
+    changed();
+    reply({ reply: { v: 1, placeholder: record.placeholder, state: 'inert' } });
+    return announce();
+  }
+  if (op === 'sealed' && event.data.req?.op === 'placeholder') {
+    const record = records.get(key('secret', event.data.req.name));
+    return reply({
+      reply: record
+        ? { v: 1, placeholder: record.placeholder, state: record.removedAt ? 'removed' : 'inert' }
+        : { v: 1, error: { code: 'ENOENT', message: 'no record named ' + event.data.req.name } },
+    });
+  }
+  if (op === 'sealed' && event.data.req?.op === 'materialize') {
+    const names = event.data.req.names ?? [];
+    const ticket = 'ticket-' + String(tickets.size + 1).padStart(28, '0');
+    tickets.set(ticket, names);
+    log({ role: 'page', op: 'materialized', names, path: event.data.req.path, uid: event.data.stamp?.uid });
+    const real = Object.fromEntries(names.map((name) => [name, records.has(key('secret', name))]));
+    return reply({ reply: { v: 1, ticket, expiresAt: Date.now() + 30000, real } });
+  }
+  if (op === 'materializeConsume') {
+    const names = tickets.get(event.data.ticket);
+    tickets.delete(event.data.ticket);
+    log({ role: 'page', op: 'consumed', ticket: event.data.ticket, ok: Boolean(names), resolved: event.data.resolved ?? null });
+    if (!names) return port.postMessage({ v: 1, id, error: { code: 'EACCES', message: 'ticket refused: unknown ticket' } });
+    const found = names.map((name) => records.get(key('secret', name))).filter(Boolean);
+    return reply({
+      values: Object.fromEntries(found.map((record) => [record.name, record.value])),
+      placeholders: Object.fromEntries(found.map((record) => [record.name, record.placeholder])),
+    });
+  }
   if (op === 'sealed' && event.data.req?.op === 'request') {
     const id = 'req-' + String(requests.size + 1);
     requests.set(id, { kind: event.data.req.kind, state: 'pending' });

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
-import { ready } from './bios.mjs';
+import { connectAccount, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
 
@@ -150,11 +150,7 @@ test('enforce: a cone agent’s sudo asks the human, naming the agent, and Deny 
       .model.settings?.accounts?.()
       .some((a) => a.id === 'amazon-bedrock')
   );
-  await page.evaluate(
-    (secret) =>
-      document.querySelector('slicc-app').model.settings.connect('amazon-bedrock', secret),
-    KEY
-  );
+  await connectAccount(page, 'amazon-bedrock', KEY);
   await page.evaluate(() => {
     const { notices } = document.querySelector('slicc-app').model;
     for (const notice of notices.list()) notices.dismiss(notice.id);
