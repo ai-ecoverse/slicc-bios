@@ -125,7 +125,7 @@
   "@ai-ecoverse/wasm-sqlite3": {
     "id": "sqlite3",
     "label": "SQLite",
-    "description": "The sqlite3 shell 3.54, for SQLite databases. One process per database: two processes writing one database at once can lose updates (slicc-kernel#665). journal_mode=WAL falls back to delete, and a WAL database made elsewhere opens as \"file is not a database\".",
+    "description": "The sqlite3 shell 3.54, for SQLite databases. journal_mode=WAL falls back to delete, and a WAL database made elsewhere opens as \"file is not a database\".",
     "commands": ["sqlite3"],
     "size": 668627
   },
