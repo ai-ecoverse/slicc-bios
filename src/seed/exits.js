@@ -1,3 +1,5 @@
+import { datagrams } from './link-udp.js';
+
 export const KERNEL_NAMES = ['emscripten', 'slicc', 'wasmer.sh'];
 const LOOPBACK = new Set(['localhost', '::1']);
 const REMEMBER = 50;
@@ -59,6 +61,7 @@ export function held(id) {
     knows: () => null,
     resolve: async () => [],
     dial: fail,
+    udp: fail,
     fetch: fail,
     websocket: fail,
   };
@@ -81,8 +84,57 @@ export function describe(exit) {
   if (exit.kind === 'link')
     return { kind: exit.automatic ? 'local' : 'remote', caps: [...exit.caps()] };
   if (exit.kind === 'tailnet')
-    return { kind: 'tailnet', caps: [...TAILNET_CAPS, ...(exit.websocket ? ['ws'] : [])] };
+    return {
+      kind: 'tailnet',
+      caps: [...TAILNET_CAPS, ...(exit.websocket ? ['ws'] : []), ...(exit.udp ? ['udp'] : [])],
+    };
   return { kind: String(exit.kind ?? 'exit'), caps: [...(exit.caps?.() ?? [])] };
+}
+
+export function routedUdp({ family, signal }, choose) {
+  const messages = datagrams();
+  let opening = null;
+  let closed = false;
+  const close = () => {
+    signal?.removeEventListener('abort', close);
+    closed = true;
+    messages.end();
+    opening?.then((socket) => socket.close()).catch(() => {});
+  };
+  signal?.addEventListener('abort', close, { once: true });
+  const forward = async (socket) => {
+    try {
+      for await (const message of socket.messages) messages.push(message);
+    } finally {
+      close();
+    }
+  };
+  const open = (host) => {
+    const exit = choose(host);
+    if (!exit) return Promise.reject(unreachable(`no exit carries ${host}`));
+    if (!exit.udp) return Promise.reject(unreachable(`the exit ${exit.id} carries no UDP`));
+    const socket = Promise.resolve().then(() => exit.udp({ family, signal }));
+    socket.then(
+      (opened) => (closed ? opened.close() : void forward(opened).catch(() => {})),
+      () => {}
+    );
+    return socket;
+  };
+  return {
+    localAddr: '',
+    messages,
+    close,
+    async send(bytes, host, port) {
+      if (closed) throw unreachable('the UDP socket is closed');
+      const pending = (opening ??= open(host));
+      const socket = await pending.catch((error) => {
+        if (opening === pending) opening = null;
+        throw error;
+      });
+      if (closed) throw unreachable('the UDP socket is closed');
+      await socket.send(bytes, host, port);
+    },
+  };
 }
 
 export function createExitRouter() {
@@ -184,7 +236,7 @@ export function createExitRouter() {
       };
     },
     uplink: {
-      traits: { tcp: true, udp: false, ipv6: false },
+      traits: { tcp: true, udp: true, ipv6: false },
       routes: { prefixes: [], exit: false },
       asked,
       forwarded,
@@ -215,6 +267,10 @@ export function createExitRouter() {
           closeWrite: () => conn.closeWrite(),
           close: () => conn.close(),
         };
+      },
+      async udp({ family, signal }) {
+        signal?.throwIfAborted();
+        return routedUdp({ family, signal }, (host) => (reserved(host) ? null : carrier(host)));
       },
     },
   };

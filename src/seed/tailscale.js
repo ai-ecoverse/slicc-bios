@@ -1,5 +1,6 @@
 import { attachKernel } from '@ai-ecoverse/slicc-kernel';
 import { createExitRouter, loopback } from './exits.js';
+import { datagrams, fitsFamily, UDP_MAX, udpCode } from './link-udp.js';
 import { cut, inbox, sendable, WS_MAX } from './link-ws.js';
 import { stored } from './transport.js';
 import { fetchText, pnpm, text, versions, write } from './update.js';
@@ -491,6 +492,68 @@ export async function resolveOverExit(tailnet, name, family, signal) {
   return { addresses, ttl };
 }
 
+export const TAILNET_UDP_PEERS = 256;
+
+const udpRefused = (message, code) => Object.assign(new Error(message), { code });
+
+export function tailnetUdp(tailnet, { family, signal }) {
+  signal?.throwIfAborted();
+  const messages = datagrams();
+  const conns = new Map();
+  let closed = false;
+  const forget = (key, conn) => {
+    if (conns.get(key) !== conn) return;
+    conns.delete(key);
+    conn.then((opened) => opened.close()).catch(() => {});
+  };
+  const close = () => {
+    signal?.removeEventListener('abort', close);
+    closed = true;
+    messages.end();
+    for (const [key, conn] of [...conns]) forget(key, conn);
+  };
+  signal?.addEventListener('abort', close, { once: true });
+  const pump = async (key, conn, opened, host, port) => {
+    try {
+      for (let bytes = await opened.read(); bytes && !closed; bytes = await opened.read())
+        messages.push({ bytes, host, port });
+    } catch (error) {
+      if (!closed && conns.get(key) === conn)
+        messages.push({ error: udpCode(String(error.code ?? '')), host, port });
+    }
+    forget(key, conn);
+  };
+  const connect = (host, port) => {
+    const key = `${host} ${port}`;
+    const known = conns.get(key);
+    if (known) return known;
+    if (conns.size >= TAILNET_UDP_PEERS) {
+      const [oldest, conn] = conns.entries().next().value;
+      forget(oldest, conn);
+    }
+    const conn = tailnet.dial('udp', v6(host) ? `[${host}]:${port}` : `${host}:${port}`);
+    conns.set(key, conn);
+    conn.then(
+      (opened) => (closed ? opened.close() : pump(key, conn, opened, host, port)),
+      () => conns.get(key) === conn && conns.delete(key)
+    );
+    return conn;
+  };
+  return {
+    localAddr: '',
+    messages,
+    close,
+    async send(bytes, host, port) {
+      if (closed) throw udpRefused('the UDP socket is closed', 'ENETUNREACH');
+      if (!fitsFamily(host, family))
+        throw udpRefused(`${host} is no IPv${family} address`, 'ENETUNREACH');
+      if (bytes.length > UDP_MAX[family])
+        throw udpRefused('a datagram over the UDP limit', 'EMSGSIZE');
+      await (await connect(host, port)).write(bytes);
+    },
+  };
+}
+
 export function tailnetExit(slot) {
   const status = () => slot.current?.view.status;
   return {
@@ -504,6 +567,7 @@ export function tailnetExit(slot) {
     resolve: (name, family, signal) => resolveOverExit(slot.current, name, family, signal),
     dial: ({ host, port }) =>
       slot.current.dial('tcp', v6(host) ? `[${host}]:${port}` : `${host}:${port}`),
+    udp: (options) => tailnetUdp(slot.current, options),
     fetch: (request) => slot.current.fetch(request),
     websocket: (request) => slot.current.websocket(request),
   };

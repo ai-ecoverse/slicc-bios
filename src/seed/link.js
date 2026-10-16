@@ -1,4 +1,5 @@
-import { bareHost } from './exits.js';
+import { bareHost, loopback } from './exits.js';
+import { linkUdp } from './link-udp.js';
 import { linkWebSocket } from './link-ws.js';
 
 export const OPEN = 1;
@@ -143,6 +144,9 @@ function stream(streams, id, channel, own) {
       return info;
     },
     answered,
+    get room() {
+      return WINDOW - state.unacked;
+    },
     receive: (type, payload) => handlers[type](payload),
     fail,
     accepted(info = {}) {
@@ -455,6 +459,20 @@ export function linkExit(session, { id, address, label, browsers = () => [], aut
       return linkWebSocket(session, { ...request, url: url.href }, bufferedReader).catch((error) =>
         Promise.reject(Object.assign(mapped(error), { status: 502 }))
       );
+    },
+    async udp({ family, signal }) {
+      if (!session.caps().includes('udp'))
+        throw failure(`ENETUNREACH: ${label()} carries no UDP; update its slicc CLI`);
+      return linkUdp(
+        session,
+        {
+          family,
+          signal,
+          remote: (host) => (family === 4 && mine(host) ? '127.0.0.1' : host),
+          local: (host) => (family === 4 && loopback(host) ? address() : host),
+        },
+        bufferedReader
+      ).catch((error) => Promise.reject(mapped(error)));
     },
     async fetch(request) {
       const { signal } = request;
