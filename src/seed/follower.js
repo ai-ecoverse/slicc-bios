@@ -4,7 +4,7 @@ import { confirm, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
 import { followAgent, installAgent, loadChat } from './agent.js';
 import { createFollow, deviceName, hubClient, keepFollow, takeFollow } from './follow.js';
 import { createNotices } from './notices.js';
-import { joinNotices, joinTray } from './present.js';
+import { joinTray } from './present.js';
 import { remoteTerminal } from './terminal.js';
 import { createUpdates } from './updates.js';
 
@@ -159,20 +159,13 @@ export function preparer(root, { install = installAgent } = {}) {
 }
 
 export const shower = (app, base) => (agent) => {
-  app.model = agent
-    ? {
-        ...base,
-        ...agent,
-        notices: joinNotices(agent.notices, base.notices),
-        tray: joinTray(agent.tray, base.tray),
-      }
-    : base;
+  app.model = agent ? { ...base, ...agent, tray: joinTray(agent.tray, base.tray) } : base;
 };
 
 export const chatModel =
-  (storage, load = loadChat) =>
+  (storage, notices, load = loadChat) =>
   async (connection) =>
-    (await load()).createAgentModel(connection, { storage });
+    (await load()).createAgentModel(connection, { storage, notices });
 
 export const proxied = (at) => (at.hostname.endsWith('.sliccy.ai') ? at.origin : null);
 
@@ -247,7 +240,7 @@ export function startFollower({
     follow,
     show: shower(app, base),
     prepare: preparer(root),
-    create: chatModel(storage),
+    create: chatModel(storage, base.notices),
   });
   document.documentElement.dataset.follow = 'on';
   void admit().then((yes) => yes && follow.start());

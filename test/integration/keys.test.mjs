@@ -98,6 +98,15 @@ test('agent 4.x wipes 3.x’s key store once, says which accounts to add again, 
       .model.notices.list()
       .every((item) => item.id !== 'keys-moved')
   );
+  assert.ok(
+    await page.evaluate(() =>
+      document
+        .querySelector('slicc-app')
+        .model.notices.list()
+        .some((item) => item.id === 'storage')
+    ),
+    'dismissing the agent’s notice leaves seven’s own'
+  );
   await page.reload();
   await ready(page);
   await page.within(INSTALL, () => document.querySelector('slicc-app').model.updates.ready());
