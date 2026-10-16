@@ -58,6 +58,44 @@ const looking = Buffer.concat([
     metrics: { latencyMs: 1 },
   }),
 ]);
+const SUDO = [
+  ['Sudo once', 'sudo-once', 'sudo ls -la /etc'],
+  ['Sudo always', 'sudo-always', 'sudo ls -la /root'],
+  ['Sudo again', 'sudo-again', 'sudo ls -la /root'],
+];
+const stream = (blocks, stopReason) =>
+  Buffer.concat([
+    eventFrame('messageStart', { role: 'assistant' }),
+    ...blocks,
+    eventFrame('messageStop', { stopReason }),
+    eventFrame('metadata', {
+      usage: { inputTokens: 3, outputTokens: 5, totalTokens: 8 },
+      metrics: { latencyMs: 1 },
+    }),
+  ]);
+const spoken = (words) =>
+  stream(
+    [
+      eventFrame('contentBlockDelta', { contentBlockIndex: 0, delta: { text: words } }),
+      eventFrame('contentBlockStop', { contentBlockIndex: 0 }),
+    ],
+    'end_turn'
+  );
+const runs = (id, command) =>
+  stream(
+    [
+      eventFrame('contentBlockStart', {
+        contentBlockIndex: 0,
+        start: { toolUse: { toolUseId: id, name: 'bash' } },
+      }),
+      eventFrame('contentBlockDelta', {
+        contentBlockIndex: 0,
+        delta: { toolUse: { input: JSON.stringify({ command }) } },
+      }),
+      eventFrame('contentBlockStop', { contentBlockIndex: 0 }),
+    ],
+    'tool_use'
+  );
 let release = null;
 const held = new Promise((resolve) => {
   release = resolve;
@@ -102,6 +140,20 @@ const proxy = await fakeProxy({
       return { status: 404, headers: [], body: Buffer.alloc(0) };
     asked.push(body.toString());
     const turn = lastTurn(body);
+    const result = turn.content.find((item) => item.toolResult)?.toolResult?.toolUseId;
+    if (SUDO.some(([, id]) => id === result))
+      return {
+        status: 200,
+        headers: [['content-type', 'application/vnd.amazon.eventstream']],
+        body: spoken(`Ran ${result}.`),
+      };
+    const sudo = SUDO.find(([prompt]) => turn.content.some((item) => item.text?.includes(prompt)));
+    if (turn.tools && sudo)
+      return {
+        status: 200,
+        headers: [['content-type', 'application/vnd.amazon.eventstream']],
+        body: runs(sudo[1], sudo[2]),
+      };
     if (turn.tools && turn.content.some((item) => item.text?.includes('Say hello')))
       return {
         status: 200,
@@ -217,7 +269,7 @@ const said = (page) =>
     return agent ? JSON.stringify(agent.messages(agent.active())) : '';
   });
 
-test('a follower watches the owner run with View, is refused a send, and sends with Control', {
+test('a follower watches the owner run with View, is refused a send, sends with Control, and answers the cone’s sudo with Allow once and Always', {
   timeout: 35 * 60 * 1000,
 }, async (t) => {
   const hub = await startHub();
@@ -505,6 +557,81 @@ test('a follower watches the owner run with View, is refused a send, and sends w
         .model.agent.busy(document.querySelector('slicc-app').model.agent.active())
   );
   assert.ok(asked.some((body) => body.includes('From the follower')));
+
+  const sudoFor = async (prompt, command, decision) => {
+    await owner.evaluate((prompt) => {
+      const { agent } = document.querySelector('slicc-app').model;
+      void agent.send(agent.active(), prompt);
+    }, prompt);
+    const item = await page
+      .within(
+        5 * 60 * 1000,
+        (command) =>
+          document
+            .querySelector('slicc-app')
+            .model.approvals.list()
+            .find((entry) => entry.kind === 'sudo' && entry.command === command) ?? null,
+        command
+      )
+      .catch(async (error) => {
+        throw new Error(
+          `the follower never saw the cone's sudo for ${command}: ${error.message}\nowner approvals: ${JSON.stringify(await owner.evaluate(() => document.querySelector('slicc-app').model.approvals.list()))}\nowner chat: ${await said(owner)}`
+        );
+      });
+    assert.deepEqual(
+      await owner.evaluate(
+        (id) =>
+          document
+            .querySelector('slicc-app')
+            .model.approvals.list()
+            .map((entry) => entry.id)
+            .includes(id),
+        item.id
+      ),
+      true
+    );
+    await page.evaluate(
+      ([id, decision]) => document.querySelector('slicc-app').model.approvals.decide(id, decision),
+      [item.id, decision]
+    );
+    return item;
+  };
+  const finished = (id) =>
+    owner.within(
+      5 * 60 * 1000,
+      (id) => {
+        const { agent } = document.querySelector('slicc-app').model;
+        const said = JSON.stringify(agent.messages(agent.active()));
+        return !agent.busy(agent.active()) && said.includes(`Ran ${id}.`) ? said : null;
+      },
+      id
+    );
+  const once = await sudoFor('Sudo once', '/usr/bin/ls -la /etc', 'once');
+  assert.deepEqual([once.requester.kind, once.requester.agentId], ['agent', 'cone']);
+  assert.match(await finished('sudo-once'), /passwd/);
+  const always = await sudoFor('Sudo always', '/usr/bin/ls -la /root', 'always');
+  assert.equal(always.always, true);
+  assert.doesNotMatch(await finished('sudo-always'), /approval denied/);
+  const rule = await owner.evaluate(async () => {
+    let dir = await navigator.storage.getDirectory();
+    try {
+      for (const part of ['etc', 'sudoers.d']) dir = await dir.getDirectoryHandle(part);
+      return await (await (await dir.getFileHandle('cone')).getFile()).text();
+    } catch {
+      return '';
+    }
+  });
+  assert.match(rule, /\/usr\/bin\/ls/);
+  await owner.evaluate(() => {
+    window.sudoAsked = 0;
+    document.querySelector('slicc-app').model.approvals.on('approvals', (list) => {
+      if (list.length) window.sudoAsked += 1;
+    });
+    const { agent } = document.querySelector('slicc-app').model;
+    void agent.send(agent.active(), 'Sudo again');
+  });
+  assert.doesNotMatch(await finished('sudo-again'), /approval denied/);
+  assert.equal(await owner.evaluate(() => window.sudoAsked), 0);
   assert.deepEqual(owner.errors, []);
   assert.deepEqual(page.errors, []);
 
