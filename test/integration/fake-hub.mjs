@@ -361,7 +361,15 @@ export async function leader(hubUrl) {
     new Promise((resolve) => {
       const id = next;
       next += 2;
-      waiting.set(id, resolve);
+      const timer = setTimeout(() => {
+        waiting.delete(id);
+        resolve(`no answer to OPEN ${JSON.stringify(meta)} within 10 s`);
+      }, 10000);
+      waiting.set(id, (answer) => {
+        clearTimeout(timer);
+        waiting.delete(id);
+        resolve(answer);
+      });
       control.send(frame(1, id, JSON.stringify(meta)));
     });
   globalThis.fakeLeader = state;
