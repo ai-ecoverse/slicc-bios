@@ -226,9 +226,8 @@ test('in seven’s terminal a cone’s slicc prompts, watches and aborts another
     (await sh(page, 'sudo -u cone printenv SLICC_LINK_URL')).out.trim(),
     'tcp://127.0.0.1:7400'
   );
-  await run(page, `clear; J='${joinUrl}'`);
 
-  const first = await typed(page, 'sudo -u cone slicc "$J" prompt "Say hello"', 'refused');
+  const first = await typed(page, `sudo -u cone slicc '${joinUrl}' prompt "Say hello"`, 'refused');
   assert.equal(first.code, 3, first.text);
   assert.match(first.text, /doesn't allow remote control from this one/);
   const linked = await device(owner, []);
@@ -241,7 +240,7 @@ test('in seven’s terminal a cone’s slicc prompts, watches and aborts another
 
   await run(
     page,
-    'clear; sudo -u cone slicc "$J" watch --json > /tmp/watch.json 2> /tmp/watch.err & echo $! > /tmp/watch.pid'
+    `clear; sudo -u cone slicc '${joinUrl}' watch --json > /tmp/watch.json 2> /tmp/watch.err & echo $! > /tmp/watch.pid`
   );
   await owner
     .within(STEP, () =>
@@ -257,7 +256,11 @@ test('in seven’s terminal a cone’s slicc prompts, watches and aborts another
       );
     });
 
-  const prompted = await typed(page, 'sudo -u cone slicc "$J" prompt "Say hello"', 'prompted');
+  const prompted = await typed(
+    page,
+    `sudo -u cone slicc '${joinUrl}' prompt "Say hello"`,
+    'prompted'
+  );
   if (prompted.code !== 0)
     assert.fail(
       `slicc prompt exited ${prompted.code}:\n${prompted.text}\n${await agentState(owner)}`
@@ -285,7 +288,7 @@ test('in seven’s terminal a cone’s slicc prompts, watches and aborts another
   });
   const scrubbed = await typed(
     page,
-    `sudo -u cone slicc "$J" prompt "Keep ${SECRET} marker-77"`,
+    `sudo -u cone slicc '${joinUrl}' prompt "Keep ${SECRET} marker-77"`,
     'scrubbed'
   );
   assert.equal(scrubbed.code, 0, scrubbed.text);
@@ -295,7 +298,7 @@ test('in seven’s terminal a cone’s slicc prompts, watches and aborts another
 
   await run(
     page,
-    `clear; (sudo -u cone slicc "$J" prompt "Hold on" > /tmp/held.out 2>&1; echo "held=$?" >> /tmp/held.out) &`
+    `clear; (sudo -u cone slicc '${joinUrl}' prompt "Hold on" > /tmp/held.out 2>&1; echo "held=$?" >> /tmp/held.out) &`
   );
   for (let i = 0; i < 1200 && !holding; i += 1)
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -303,7 +306,7 @@ test('in seven’s terminal a cone’s slicc prompts, watches and aborts another
     holding,
     `the held prompt never reached the leader’s model\n${(await sh(page, 'cat /tmp/held.out')).out}`
   );
-  const aborted = await typed(page, 'sudo -u cone slicc "$J" abort', 'aborted');
+  const aborted = await typed(page, `sudo -u cone slicc '${joinUrl}' abort`, 'aborted');
   assert.equal(aborted.code, 0, aborted.text);
   assert.match(aborted.text, /aborted the run/);
   const heldOut = await file(page, '/tmp/held.out', /held=\d+/);
@@ -335,7 +338,7 @@ test('in seven’s terminal a cone’s slicc prompts, watches and aborts another
   assert.match(elsewhere.text, /isn't on a tray hub this seven links through/);
 
   await page.evaluate(() => globalThis.followClient.users.add({ name: 'scoop-probe' }));
-  const scoop = await typed(page, 'sudo -u scoop-probe slicc "$J" watch', 'scoop');
+  const scoop = await typed(page, `sudo -u scoop-probe slicc '${joinUrl}' watch`, 'scoop');
   assert.equal(scoop.code, 3, scoop.text);
   assert.match(scoop.text, /only root and members of sudo may reach another seven/);
   const denials = await logged(page, /"user":"scoop-probe"/);
@@ -381,7 +384,7 @@ test('in seven’s terminal a cone’s slicc prompts, watches and aborts another
   await model(owner, (network, id) => network.unlink(id), linked.id);
   const unlinked = await typed(
     page,
-    'sudo -u cone slicc "$J" prompt "After the unlink"',
+    `sudo -u cone slicc '${joinUrl}' prompt "After the unlink"`,
     'unlinked'
   );
   assert.equal(unlinked.code, 3, unlinked.text);
@@ -389,7 +392,7 @@ test('in seven’s terminal a cone’s slicc prompts, watches and aborts another
   assert.equal(await certificate(page, hub.url), 'none');
   assert.deepEqual((await followed(page)).keys, []);
   assert.ok(!asked.some((body) => body.includes('After the unlink')));
-  const again = await typed(page, 'sudo -u cone slicc "$J" abort', 'relinked');
+  const again = await typed(page, `sudo -u cone slicc '${joinUrl}' abort`, 'relinked');
   assert.equal(again.code, 3, again.text);
   assert.match(again.text, /doesn't allow remote control from this one/);
   const fresh = await device(owner, [linked.id]);
