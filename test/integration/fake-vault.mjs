@@ -180,7 +180,7 @@ const page = (port) => (event) => {
   return port.postMessage({ v: 1, id, error: { code: 'ENOTSUP', message: op + ' arrives later' } });
 };
 let egressed = null;
-let muted = false;
+let muted = state.mute === true;
 setInterval(async () => {
   const shared = await (await fetch('/state')).json();
   muted = shared.mute === true;
