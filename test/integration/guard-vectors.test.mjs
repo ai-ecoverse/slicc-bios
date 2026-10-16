@@ -12,15 +12,17 @@ const DETACH = [
   ['lagging', LAG],
 ];
 const SETTINGS =
-  /^settings for a whole session \(headers, user agent, locale, time zone, cache, network conditions, blocked URLs, emulation\)/;
-const SCRIPTS = /^scripts and bindings for later documents could run in seven’s pages or the vault/;
-const DEBUGGER = /^breakpoints could run in seven’s pages or the vault/;
-const PROTECTED = 'seven’s own pages and the vault are out of reach of browser automation';
+  /^slicc: refused: settings for a whole session \(headers, user agent, locale, time zone, cache, network conditions, blocked URLs, emulation\)/;
+const SCRIPTS =
+  /^slicc: refused: scripts and bindings for later documents could run in seven’s pages or the vault/;
+const DEBUGGER = /^slicc: refused: breakpoints could run in seven’s pages or the vault/;
+const PROTECTED =
+  'slicc: refused: seven’s own pages and the vault are out of reach of browser automation';
 const UNFLAT =
-  'the guard only hands out flattened sessions, so attach with flatten: true and send commands with a sessionId';
+  'slicc: refused: the guard only hands out flattened sessions, so attach with flatten: true and send commands with a sessionId';
 const UNGUARDED =
-  'the guard couldn’t keep seven’s pages and the vault out of this tab, so it refuses commands there';
-const UNSEEN = 'this request wasn’t seen, so it could be seven’s or the vault’s';
+  'slicc: refused: the guard couldn’t keep seven’s pages and the vault out of this tab, so it refuses commands there';
+const UNSEEN = 'slicc: refused: this request wasn’t seen, so it could be seven’s or the vault’s';
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const port = await new Promise((resolve) => {
