@@ -244,6 +244,10 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
       if (version) await movePth(root, entry.id);
       if (version) await normalizeProject(root, kernel, entry.id);
     }
+    for (const entry of retired.filter((entry) => entry.kind === 'project')) {
+      const version = await projectVersion(root, entry.id);
+      if (version) installed.set(entry.package, version);
+    }
     changed();
     return found;
   }

@@ -8,5 +8,11 @@
     "id": "tar",
     "label": "tar",
     "commands": ["tar"]
+  },
+  "slicc-py-datatools": {
+    "id": "pydata",
+    "kind": "project",
+    "label": "Python data tools",
+    "commands": []
   }
 }

@@ -125,7 +125,7 @@ async function lockedGated() {
       if (path && GATED.test(name)) found.set(`${name}@${entry.version}`, [file, entry.integrity]);
     }
   }
-  const projects = (await readdir(new URL('optional/projects/', packages))).map(
+  const projects = (await readdir(new URL('optional/projects/', packages)).catch(() => [])).map(
     (id) => `optional/projects/${id}/pnpm-lock.yaml`
   );
   for (const file of [
