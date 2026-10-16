@@ -135,6 +135,7 @@ test("the agent's UI: vault hold, tool-run clusters, a failed bash card's notes,
     30000,
     () => document.querySelector('slicc-app').model.agent.hold?.()?.reason === 'locked'
   );
+  await shoot(page, 'vault-hold', { show: 'chat' });
   chrome.vault.set({ locked: false });
   await page.within(30000, () => document.querySelector('slicc-app').model.agent.hold?.() === null);
 
