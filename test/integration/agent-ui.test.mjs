@@ -118,7 +118,7 @@ const deep = `(selector) => {
   return walk(document);
 }`;
 
-test("the agent's UI: the composer holds while the vault is locked, tool runs cluster, a failed bash card notes its truncated output, the Monitor warns about a process crowd, an image drops and sends, Secrets lists, Changes explains a failing git, and Browser starts empty", {
+test("the agent's UI: vault hold, tool-run clusters, a failed bash card's notes, the Monitor's crowd alert, image drop and send, Secrets, Changes when git fails, empty Browser", {
   timeout: 35 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
