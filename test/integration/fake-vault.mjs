@@ -119,7 +119,7 @@ const page = (port) => (event) => {
   }
   if (op === 'sealed' && event.data.req?.op === 'materialize') {
     const names = event.data.req.names ?? [];
-    const ticket = 'ticket-' + String(tickets.size + 1).padStart(28, '0');
+    const ticket = String(tickets.size + 1).padStart(32, '0');
     tickets.set(ticket, names);
     log({ role: 'page', op: 'materialized', names, path: event.data.req.path, uid: event.data.stamp?.uid });
     const real = Object.fromEntries(names.map((name) => [name, records.has(key('secret', name))]));

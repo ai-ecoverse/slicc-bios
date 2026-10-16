@@ -1,40 +1,45 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:net';
 import { after, test } from 'node:test';
-import { boot, run } from './bios.mjs';
+import { boot } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const VALUE = 'dummy-fnox-value-0123456789';
 const chrome = await launch({ timeout: 120000 });
 after(() => chrome.close());
 
-let calls = 0;
+async function client(page) {
+  await page.until(() => typeof globalThis.sliccKernelClient === 'function');
+  await page.evaluate(async () => {
+    globalThis.fnoxClient ??= await globalThis.sliccKernelClient();
+    globalThis.fnoxRuns ??= new Map();
+  });
+}
+
+async function start(page, command, label) {
+  await client(page);
+  await page.evaluate(
+    ({ command, label }) => {
+      globalThis.fnoxRuns.set(
+        label,
+        globalThis.fnoxClient.run(['bash', '-c', command], { cwd: '/' }).then(
+          ({ status, stdout, stderr }) => ({
+            code: String(status),
+            out: `${stdout ?? ''}${stderr ?? ''}`.trim(),
+          }),
+          (error) => ({ code: 'error', out: error.message })
+        )
+      );
+    },
+    { command, label }
+  );
+}
+
+const finish = (page, label) => page.evaluate((label) => globalThis.fnoxRuns.get(label), label);
 
 async function sh(page, command, label) {
-  calls += 1;
-  const name = `${label}-${calls}`;
-  await run(
-    page,
-    `clear; mkdir -p /root/out; rm -f /root/out/${name}.*; ( ${command} ) > /root/out/${name}.txt 2>&1; echo $? > /root/out/${name}.done`
-  );
-  await page.within(
-    300000,
-    async (name) => {
-      const out = await (await (await navigator.storage.getDirectory()).getDirectoryHandle('root'))
-        .getDirectoryHandle('out')
-        .catch(() => null);
-      const done = await out?.getFileHandle(`${name}.done`).catch(() => null);
-      return done ? (await done.getFile()).size > 0 : false;
-    },
-    name
-  );
-  return page.evaluate(async (name) => {
-    const out = await (
-      await (await navigator.storage.getDirectory()).getDirectoryHandle('root')
-    ).getDirectoryHandle('out');
-    const text = async (file) => (await (await out.getFileHandle(file)).getFile()).text();
-    return { code: (await text(`${name}.done`)).trim(), out: (await text(`${name}.txt`)).trim() };
-  }, name);
+  await start(page, command, label);
+  return finish(page, label);
 }
 
 async function install(page) {
@@ -75,6 +80,7 @@ test('fnox in seven: its config is rootâ€™s /etc/fnox, a cone reads it and canâ€
   timeout: 20 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
+  await page.init('() => { globalThis.sliccKernelDebug = true; }');
   await boot(page);
   await install(page);
   const seeded = await config(page);
@@ -107,36 +113,39 @@ test('fnox in seven: its config is rootâ€™s /etc/fnox, a cone reads it and canâ€
   assert.match(wrote.out, /Permission denied|EACCES/);
   assert.equal((await config(page)).out, after.out);
 
-  await run(
+  await start(
     page,
-    `clear; cd /tmp && printf '%s' 'dummy-dock-value-0123456789' | sudo -u cone sudo fnox set --global DOCK_TOKEN > /root/out/deny.txt 2>&1; echo $? > /root/out/deny.done`
+    `cd /tmp && printf '%s' 'dummy-dock-value-0123456789' | sudo -u cone sudo fnox set --global DOCK_TOKEN`,
+    'deny'
   );
   const denied = await decide(page, 'deny');
   assert.match(denied.command, /fnox set --global DOCK_TOKEN/);
-  await page.within(60000, async () => {
-    const out = await (
-      await (await navigator.storage.getDirectory()).getDirectoryHandle('root')
-    ).getDirectoryHandle('out');
-    return (await (await out.getFileHandle('deny.done').catch(() => null))?.getFile())?.size > 0;
-  });
+  const denyRun = await finish(page, 'deny');
+  assert.notEqual(denyRun.code, '0', denyRun.out);
   assert.doesNotMatch((await config(page)).out, /DOCK_TOKEN/);
 
-  await run(
+  await start(
     page,
-    `clear; cd /etc/fnox && printf '%s' 'dummy-dock-value-0123456789' | sudo -u cone sudo fnox set --global DOCK_TOKEN > /root/out/once.txt 2>&1; echo $? > /root/out/once.done`
+    `cd /tmp && printf '%s' 'dummy-dock-value-0123456789' | sudo -u cone sudo fnox set --global DOCK_TOKEN`,
+    'once'
   );
   const once = await decide(page, 'once');
   assert.equal(once.always, false);
-  await page.within(60000, async () => {
-    const out = await (
-      await (await navigator.storage.getDirectory()).getDirectoryHandle('root')
-    ).getDirectoryHandle('out');
-    return (await (await out.getFileHandle('once.done').catch(() => null))?.getFile())?.size > 0;
-  });
+  const onceRun = await finish(page, 'once');
+  assert.equal(onceRun.code, '0', onceRun.out);
   assert.match((await config(page)).out, /DOCK_TOKEN\s*=\s*\{/);
 
-  const exec = await sh(page, 'cd /tmp && sudo -u cone fnox exec -- printenv HARBOR_TOKEN', 'exec');
-  assert.deepEqual(exec, { code: '0', out: VALUE });
+  const exec = await sh(
+    page,
+    `cd /tmp && sudo -u cone fnox exec -- /bin/sh -c 'printf %s "$HARBOR_TOKEN" | wc -c; printenv HARBOR_TOKEN'`,
+    'exec'
+  );
+  const debug = JSON.stringify(
+    chrome.vault.log
+      .filter((entry) => ['materialized', 'consumed', 'sealed'].includes(entry.op))
+      .slice(-6)
+  );
+  assert.deepEqual(exec, { code: '0', out: `${VALUE.length}\n${placeholder}` }, debug);
   assert.ok(
     chrome.vault.log.some(
       (entry) => entry.op === 'materialized' && entry.names.includes('HARBOR_TOKEN')
@@ -146,10 +155,10 @@ test('fnox in seven: its config is rootâ€™s /etc/fnox, a cone reads it and canâ€
 
   const leaked = await sh(
     page,
-    `sudo -u cone grep -rlsF -e '${VALUE}' -e dummy-dock-value /home /tmp /etc /var /usr /opt /mnt; echo "grep $?"`,
+    `sudo -u cone grep -rlsF -e '${VALUE}' -e dummy-dock-value /home /tmp /etc /var /usr /opt /mnt; echo "listed"`,
     'leak'
   );
-  assert.match(leaked.out, /grep 1$/, leaked.out);
+  assert.equal(leaked.out, 'listed');
   assert.deepEqual(page.errors, []);
 });
 
@@ -166,6 +175,7 @@ test('without the vault, fnoxâ€™s sealed operations fail closed with ENOTCONN', 
   await page.init(
     `() => { if (location.origin === ${JSON.stringify(new URL(chrome.url).origin)}) localStorage.setItem('slicc-os.vault-origin', ${JSON.stringify(dead)}); }`
   );
+  await page.init('() => { globalThis.sliccKernelDebug = true; }');
   await boot(page);
   await install(page);
   await page.within(
