@@ -9,7 +9,7 @@ after(() => chrome.close());
 
 const ROOT_SHELL = ['slicc:/home# '];
 const DROPPED =
-  'Seven now uses the versions it ships for the agent and its tools. Your pinned versions were removed.';
+  'Seven now uses the versions it ships for the agent and its tools. To add your own packages, use /opt/user (Install / Update › Your packages).';
 const MOVE = 5 * 60 * 1000;
 
 const skill = (name, description) =>

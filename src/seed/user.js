@@ -5,9 +5,7 @@ export const folder = 'opt/user';
 export const MODULES = `/${folder}/node_modules`;
 export const LOCK = 'slicc-user-packages';
 export const DROPPED =
-  'Seven now uses the versions it ships for the agent and its tools. Your pinned versions were removed.';
-export const DROPPED_GRAMMARS =
-  'Seven now uses the versions it ships for the agent and its tools. Your pinned versions and added grammar packages were removed.';
+  'Seven now uses the versions it ships for the agent and its tools. To add your own packages, use /opt/user (Install / Update › Your packages).';
 const UNINSTALLED = 'Not installed in /opt/user yet. Retry installs it.';
 const HOME = '/var/lib/slicc/user/home';
 const SYSTEM = '/usr/local/share/pnpm';
@@ -45,8 +43,10 @@ export function droppedNotice(grammars) {
   return {
     id: 'pins-dropped',
     tone: 'info',
-    title: 'Your pinned versions were removed',
-    body: grammars ? DROPPED_GRAMMARS : DROPPED,
+    title: grammars
+      ? 'Your pinned versions and added grammar packages were removed'
+      : 'Your pinned versions were removed',
+    body: DROPPED,
     actions: [],
   };
 }
