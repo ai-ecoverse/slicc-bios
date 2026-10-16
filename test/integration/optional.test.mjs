@@ -150,3 +150,32 @@ test('Python data tools are withdrawn until numpy and pandas come from verified 
   });
   assert.deepEqual(withdrawn, []);
 });
+
+test('uv, esbuild, tsc and buf are withdrawn until attested rebuilds (homescoop#864): retired rows, no pins and no certs, while git and gh stay as recorded exceptions', async () => {
+  const catalog = await read('catalog.json');
+  const { dependencies } = await read('package.json');
+  const retired = await read('retired.json');
+  const certs = JSON.parse(await readFile(new URL('../certs.json', optional), 'utf8'));
+  for (const [name, id] of [
+    ['@ai-ecoverse/wasix-uv-shim', 'uv'],
+    ['@ai-ecoverse/wasi-esbuild', 'esbuild'],
+    ['@ai-ecoverse/wasi-typescript', 'tsc'],
+    ['@ai-ecoverse/wasi-buf', 'buf'],
+  ]) {
+    assert.equal(catalog[name], undefined, name);
+    assert.equal(dependencies[name], undefined, name);
+    assert.equal(retired[name]?.id, id, name);
+    assert.deepEqual(
+      Object.keys(certs).filter((key) => key.startsWith(`${name}@`)),
+      [],
+      name
+    );
+  }
+  for (const name of ['@ai-ecoverse/wasm-git', '@ai-ecoverse/wasi-gh']) {
+    assert.ok(catalog[name], name);
+    assert.match(
+      certs[`${name}@${dependencies[name]}`].exception,
+      /unverifiable build \(homescoop#/
+    );
+  }
+});

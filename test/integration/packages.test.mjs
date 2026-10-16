@@ -349,18 +349,18 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
   await state(page, 'pdf', 'outdated');
   assert.equal(await act(page, 'rsync', 'install'), 'ok');
   chrome.cdn.status = 404;
-  assert.match(await act(page, 'esbuild', 'install'), /^Couldn't install esbuild/);
+  assert.match(await act(page, 'dig', 'install'), /^Couldn't install dig/);
   chrome.cdn.status = 0;
 
-  await start(page, 'uv', 'install');
-  await state(page, 'python', 'installing');
+  await start(page, 'jsh-browser', 'install');
+  await state(page, 'node', 'installing');
   assert.equal(
     await page.evaluate(
       () =>
         document
           .querySelector('slicc-app')
           .model.updates.packages()
-          .find((item) => item.id === 'uv').state
+          .find((item) => item.id === 'jsh-browser').state
     ),
     'queued'
   );
@@ -372,23 +372,19 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
       'git available',
       'gh available',
       'ssh available',
-      'python installed',
-      'uv installed',
-      'node available',
-      'jsh-browser available',
+      'python available',
+      'node installed',
+      'jsh-browser installed',
       'ruby available',
       'perl available',
-      'esbuild failed',
-      'tsc available',
       'biome available',
       'pdf outdated',
       'qpdf available',
       'heif available',
       'rsync installed',
       'sqlite3 available',
-      'buf available',
       'screen available',
-      'dig available',
+      'dig failed',
       'websocat available',
       'fnox available',
       'gpg available',
@@ -402,7 +398,7 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
     document
       .querySelector('slicc-app')
       .dock.content('updates')
-      .shadowRoot.querySelector('li[data-id="esbuild"]')
+      .shadowRoot.querySelector('li[data-id="dig"]')
       .scrollIntoView({ block: 'start' })
   );
   await page.screenshot(new URL('packages-failed-outdated-light.png', page.dir));
@@ -410,10 +406,10 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
   await page.screenshot(new URL('packages-failed-outdated-dark.png', page.dir));
   await color('light');
 
-  await start(page, 'python', 'remove');
+  await start(page, 'node', 'remove');
   assert.deepEqual(await asked(page), {
-    title: 'Remove Python?',
-    body: 'uv needs it and stops working until Python is back.',
+    title: 'Remove Node.js (jsh)?',
+    body: 'Browser for jsh scripts needs it and stops working until Node.js (jsh) is back.',
     action: 'Remove',
   });
   await shots('requires-confirm');
