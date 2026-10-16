@@ -337,7 +337,12 @@ test('in seven’s terminal a cone’s slicc prompts, watches and aborts another
   assert.equal(elsewhere.code, 3, elsewhere.text);
   assert.match(elsewhere.text, /isn't on a tray hub this seven links through/);
 
-  await page.evaluate(() => globalThis.followClient.users.add({ name: 'scoop-probe' }));
+  const made = await sh(
+    page,
+    "echo 'scoop-probe:x:1100:1100:scoop-probe:/home/cone:/bin/bash' >> /etc/passwd && echo 'scoop-probe:x:1100:' >> /etc/group && sed -i 's/^cone:x:1000:$/cone:x:1000:scoop-probe/' /etc/group && sudo -u scoop-probe id"
+  );
+  assert.match(made.out, /uid=1100\(scoop-probe\).*1000\(cone\)/, made.out);
+  assert.doesNotMatch(made.out, /sudo/);
   const scoop = await typed(page, `sudo -u scoop-probe slicc '${joinUrl}' watch`, 'scoop');
   assert.equal(scoop.code, 3, scoop.text);
   assert.match(scoop.text, /only root and members of sudo may reach another seven/);

@@ -297,8 +297,12 @@ export async function leader(hubUrl) {
       const id = new DataView(bytes.buffer).getUint32(1);
       const payload = decoder.decode(bytes.subarray(5));
       if (bytes[0] === 1) {
-        state.opens.push(JSON.parse(payload));
-        channel.send(frame(2, id, JSON.stringify({ head: 'h0' })));
+        const meta = JSON.parse(payload);
+        state.opens.push(meta);
+        channel.send(
+          frame(2, id, JSON.stringify(meta.op === 'abort' ? { aborted: false } : { head: 'h0' }))
+        );
+        if (meta.op === 'abort') channel.send(frame(4, id));
       } else if (bytes[0] === 2 || bytes[0] === 5) {
         waiting.get(id)?.(bytes[0] === 2 ? 'opened' : payload);
       }
