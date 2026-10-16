@@ -387,7 +387,7 @@ test('screenshots of the browser panel: a driven tab live, two driven tabs, Stop
   const hold = "eval 'new Promise((r) => setTimeout(r, 60000))'";
   await run(
     page,
-    `mkdir -p /tmp/keeper && cd /tmp/keeper && ${keeper} playwright-cli open ${log} > /tmp/k && ${keeper} playwright-cli snapshot > /dev/null && (for n in 1 2 3 4; do ${keeper} playwright-cli ${hold} > /dev/null 2>&1; done &) ; cd /home; ${harbor} playwright-cli open ${forecast} && ${harbor} playwright-cli snapshot > /tmp/snap && ref=$(grep -o 'textbox "Port" \\[ref=[a-z0-9]*' /tmp/snap | sed 's/.*ref=//') && ${harbor} playwright-cli fill $ref Lisbon && ${harbor} playwright-cli snapshot > /tmp/snap && button=$(grep -o 'button "Show forecast" \\[ref=[a-z0-9]*' /tmp/snap | sed 's/.*ref=//') && ${harbor} playwright-cli click $button && ${harbor} playwright-cli snapshot > /dev/null; ${harbor} playwright-cli click e99 > /dev/null 2>&1; echo acted-$?; (for n in 1 2 3 4 5 6 7 8; do ${harbor} playwright-cli ${wait} > /dev/null 2>&1 || break; done &)`
+    `mkdir -p /tmp/keeper && cd /tmp/keeper && ${keeper} playwright-cli open ${log} > /tmp/k && ${keeper} playwright-cli snapshot > /dev/null && (for n in 1 2 3 4; do ${keeper} playwright-cli ${hold} > /dev/null 2>&1; done &) ; cd /home; ${harbor} playwright-cli open ${forecast} && ${harbor} playwright-cli snapshot > /tmp/snap && ref=$(grep -o 'textbox "Port" \\[ref=[a-z0-9]*' /tmp/snap | sed 's/.*ref=//') && ${harbor} playwright-cli fill $ref Lisbon && ${harbor} playwright-cli snapshot > /tmp/snap && button=$(grep -o 'button "Show forecast" \\[ref=[a-z0-9]*' /tmp/snap | sed 's/.*ref=//') && ${harbor} playwright-cli click $button && ${harbor} playwright-cli snapshot > /dev/null; ${harbor} playwright-cli click e99 > /dev/null 2>&1; echo acted-$?; (for n in 1 2 3 4 5 6 7 8; do echo "start $n $(date +%s)" >> /tmp/harbor; ${harbor} playwright-cli ${wait} >> /tmp/harbor 2>&1 || { echo "failed $n $(date +%s)" >> /tmp/harbor; break; }; echo "end $n $(date +%s)" >> /tmp/harbor; done &)`
   );
   await shows(page, 'acted-1');
   await page.until(
@@ -475,17 +475,62 @@ test('screenshots of the browser panel: a driven tab live, two driven tabs, Stop
       button.textContent.includes('harbor')
     )
   );
+  const running = () =>
+    document
+      .querySelector('slicc-app')
+      .model.browser.actions()
+      .some(({ agentId, status }) => agentId === 'harbor' && status === 'running');
+  const seen = async () => {
+    const state = await page.evaluate(() => {
+      const browser = document.querySelector('slicc-app').model.browser;
+      return {
+        now: Date.now(),
+        tabs: browser.list().map(({ id, url, agentId, controlled, status }) => ({
+          id,
+          url,
+          agentId,
+          controlled,
+          status,
+        })),
+        actions: browser
+          .actions()
+          .slice(-12)
+          .map(({ agentId, kind, status, error, at, tabId }) => ({
+            agentId,
+            kind,
+            status,
+            error,
+            at,
+            tabId,
+          })),
+      };
+    });
+    return `${JSON.stringify(state)}\n/tmp/harbor:\n${await read(page, '/tmp/harbor').catch((error) => error.message)}`;
+  };
+  try {
+    await page.within(30000, running);
+  } catch (error) {
+    throw new Error(
+      `harbor never had a command in flight to stop: ${error.message}\n${await seen()}`
+    );
+  }
   await page.evaluate(() =>
     [...window.panel().querySelectorAll('[data-action="stop-agent"]')]
       .find((button) => button.textContent.includes('harbor'))
       .click()
   );
-  await page.within(20000, () =>
-    document
-      .querySelector('slicc-app')
-      .model.browser.actions()
-      .some(({ agentId, error }) => agentId === 'harbor' && error === 'Stopped')
-  );
+  try {
+    await page.within(20000, () =>
+      document
+        .querySelector('slicc-app')
+        .model.browser.actions()
+        .some(({ agentId, error }) => agentId === 'harbor' && error === 'Stopped')
+    );
+  } catch (error) {
+    throw new Error(
+      `Stop never landed on harbor’s command in flight: ${error.message}\n${await seen()}`
+    );
+  }
   await page.until(() => window.panel().textContent.includes('No agent is using this tab'));
   await shot('stopped-420');
   await page.send('Emulation.clearDeviceMetricsOverride');
