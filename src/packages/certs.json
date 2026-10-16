@@ -267,6 +267,14 @@
     "integrity": "sha512-kwmwGmvyZHmks+p3ZFYZk1xKT808Knv3NT0qZiPqvPy8SCU1o7pnc+KdDAi5tPZyc3zeuXSxtI05Az9X8TkZ3w==",
     "sha256": "7925b6222d44c4ca8f092a5fbb5e86f532fb34223d8fc4536952a0dcaa2decc8"
   },
+  "@ai-ecoverse/slicc-kernel@1.102.2": {
+    "integrity": "sha512-NfeN+FbOs2A3vH92X36DyHwHiIWwaNGf+emPWbHSZq/tE1E+jQxqzAQN9Pl7aMbHkJmYQaMSR4MMHMhhPvr51g==",
+    "sha256": "7cdcd166c626a33456881208ea95f571f79dd1b1050a29e84598c9470142b712"
+  },
+  "@ai-ecoverse/slicc-kernel@1.102.5": {
+    "integrity": "sha512-p4ya+WnAUor3eo4hX9ZRDLCfgFn3RYac4Oas1UOO+Efnv2ecGKMCdGfPlGPCoIlrs6ab8FJl8YG1xGtGNem9JQ==",
+    "sha256": "162a062bdcf2dcf48b3d55197eeac073d23e5c327f5a066a2ba9318d005b22d0"
+  },
   "@ai-ecoverse/wasi-biome@2.5.15-2": {
     "integrity": "sha512-5oIfngw8Ln2/ddCJ0wtqMoSnW+UO2zuih0+x1CNDbwKkB18TxuWoI60QFQySjd69N6eP+blL/stz/AZyoYpeuw==",
     "sha256": "25599e4317ec2e7ca9a447ff99ac01f271358cd06bd2d727e6b28b10c05bf44a"
@@ -343,6 +351,10 @@
     "integrity": "sha512-jaPk9rNqjTDj4lvuc7TV4cwYT8q5adbmTGrv/VKKKIIPwd12gkKY05GxJCEvZPcNaVT7sGbGS3YchaooEq0T7g==",
     "sha256": "5ef04fe21917bd47ec2e53899d3a6db4b14a9178c4ceecf7d13b62c0e4337c06"
   },
+  "@ai-ecoverse/wasix-python@3.14.2-20": {
+    "integrity": "sha512-Mbf9IERBIMo9aySMQ4dNNcWSjxK0+Oz14S0KJNIv+UvfYc5gFOGFIWwJSeik8Wo+BWhuKWk5LIEM3CvOeQ0oSw==",
+    "sha256": "6be243d130649d730baee6e8196fb54941b9961790abfdb5975deca3749c962e"
+  },
   "@ai-ecoverse/wasix-ruby@3.4.11-10": {
     "integrity": "sha512-HY2DH3Mgvcpmn0icZqrv7oivk3eb4jcuf+HDCUuYq9YP1+rdQ/auyZpfVhu7UOQsTc+xkVyTsxHvLKifWxNVBw==",
     "sha256": "6852e7668ada97a107af743b992a3073da189b32cb18f4eccf4f32d5de741456"
@@ -386,6 +398,10 @@
   "@ai-ecoverse/wasm-coreutils@9.12.0-6": {
     "integrity": "sha512-XYjNWSmsmisA5AXWYvhkaRI2EOc91hSLfcLOGvYcMRuXnDeVp3PtCBDPL1xjZeemiTAzk7C0/YFHdyBH37BkfQ==",
     "sha256": "3bf43c85964b4acf4de6e220057e9d7f6821c9d7c570afab3f44fe655eecf64f"
+  },
+  "@ai-ecoverse/wasm-coreutils@9.12.0-7": {
+    "integrity": "sha512-lYZYVpddOr/BsmqYLTlj3pmrft3c+s8sXoW6kROrwfL/TSJP8TZslzGfmmNmK2ebd3+rjg6AX6tmZ3lyvsy5YQ==",
+    "sha256": "748e8a435a8f0aea6eae019a9ddeeccc316c68739b4ddb520275a817774240fd"
   },
   "@ai-ecoverse/wasm-curl@8.22.0-4": {
     "integrity": "sha512-FYCuUOylMQ6iPLJUvCAMk0lqcdb764t+9xv8qrIAOyQJWtSJrnUNntP7APzHo4m6I3LYJqYDO1NrImqc29S6Yg==",

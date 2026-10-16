@@ -309,3 +309,20 @@ test('tar packs and unpacks gzip, xz and bzip2 archives through the base set com
   await shows(page, 'zstd exits 2');
   assert.deepEqual(page.errors, []);
 });
+
+test('uname -r prints the kernel’s release, the one /proc/sys/kernel/osrelease names', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await run(
+    page,
+    'clear; echo "release=$(uname -r) proc=$(cat /proc/sys/kernel/osrelease) system=$(uname -s)"; echo done-$((40 + 2))'
+  );
+  await shows(page, 'done-42');
+  const [, release, proc, system] = (await screen(page)).match(
+    /release=(\S+) proc=(\S+) system=(\S+)/
+  );
+  assert.equal(release, proc);
+  assert.notEqual(release, '4.0.23');
+  assert.equal(system, 'Linux');
+  assert.deepEqual(page.errors, []);
+});
