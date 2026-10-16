@@ -72,6 +72,7 @@ test('seven embeds the vault at its origin: the page hello, status and list, a l
     message: 'vault is locked: unlock it in the vault window',
   });
   fake.set({ locked: false });
+  const hellos = roles('hello').filter((role) => role === 'page').length;
   await page.evaluate(() => {
     const element = document.querySelector('iframe[data-vault=core]');
     element.setAttribute('src', element.getAttribute('src'));
@@ -79,7 +80,7 @@ test('seven embeds the vault at its origin: the page hello, status and list, a l
   await page.until(
     () => document.querySelector('slicc-app').model.vault.availability() === 'ready'
   );
-  assert.ok(await logged(() => roles('hello').filter((role) => role === 'page').length === 2));
+  assert.ok(await logged(() => roles('hello').filter((role) => role === 'page').length > hellos));
   const lists = roles('list').length;
   const sealed = await page.evaluate(() =>
     document.querySelector('slicc-app').model.vault.put('DOCK_TOKEN', 'dock-value-12345678')
@@ -516,7 +517,7 @@ test('a jerk sign-in cancelled while the linked computer doesn’t answer leaves
   const dir = await mkdtemp(join(tmpdir(), 'vault-jerk-'));
   await writeFile(
     join(dir, 'jerk'),
-    `#!/bin/sh\ncase "$1" in --version) echo "jerk 0.9.0"; exit 0;; esac\nif [ "$2" = create ]; then touch "${dir}/started"; sleep 6; touch "${dir}/finished"; echo '{"exit":0,"message":"signed in"}'; exit 0; fi\necho '{"exit":0,"items":[]}'\n`
+    `#!/bin/sh\ncase "$1" in --version) echo "jerk 99.0.0"; exit 0;; esac\nif [ "$2" = create ]; then touch "${dir}/started"; sleep 6; touch "${dir}/finished"; echo '{"exit":0,"message":"signed in"}'; exit 0; fi\necho '{"exit":0,"items":[]}'\n`
   );
   await chmod(join(dir, 'jerk'), 0o755);
   fake.set({ locked: false, secrets: [] });
@@ -547,7 +548,7 @@ test('a jerk sign-in cancelled while the linked computer doesn’t answer leaves
       .links?.devices.some((device) => device.state === 'connected')
   );
   assert.ok(
-    await logged(() => said.some((line) => /jerk: offering slicc-jerk 0\.9\.0/.test(line))),
+    await logged(() => said.some((line) => /jerk: offering slicc-jerk 99\.0\.0/.test(line))),
     said.join('\n')
   );
   node.kill('SIGSTOP');

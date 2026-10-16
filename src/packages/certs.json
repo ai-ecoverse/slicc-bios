@@ -283,6 +283,10 @@
     "integrity": "sha512-xpi0li0G2wD3ezIlHGcfDJ8Pd1/pT9w+dNU5U3vrx8XlkIAEnpjJRpPU/+sIDeBy81EauPd9H0M3ke33wZD53g==",
     "sha256": "ea735648aff0c8620b62462bcbe9023d10c7306bbb41930e140977a2aa530964"
   },
+  "@ai-ecoverse/wasi-fnox@1.39.0-2": {
+    "integrity": "sha512-puU9FN7kXKnlxaClZyqGd/m/229HHmVOA50+YExQBxzb1IrwPz/yS0Q1KDw0GnzC/glVLqu6jkSyc05LK1Fzyg==",
+    "sha256": "3b6607de060ea30756807aa936774842b3bded9f463025c4d10732a8b474b175"
+  },
   "@ai-ecoverse/wasi-esbuild@0.28.2-2": {
     "integrity": "sha512-Z6LXuBY2G9Po4cbEUFhbASSQ0ab5tdSHqtt1qDxNCgJFquAk525swjbTRVsj/j0v2iJVlq3Um1r2eYiYkGyLrQ==",
     "sha256": "9d9ed5820c8b5e8cb1924d4f2756e8a9a59f82ed344508ff1704b213bc1199ca"

@@ -8,6 +8,9 @@ export const WELCOME_MS = 5000;
 export const ANSWER_MS = 2000;
 export const EGRESS_MS = 25000;
 export const IMS_TOKEN = 'ADOBE_IMS_TOKEN';
+export const FNOX_DIR = '/etc/fnox';
+export const FNOX_CONFIG = 'default_provider = "seven"\n\n[providers.seven]\ntype = "sealed"\n';
+export const NOT_CONNECTED = "seven's vault isn't connected";
 const TYPE = 'slicc-vault';
 const SCRUBBING = new Set(['put', 'seal', 'import']);
 
@@ -285,9 +288,10 @@ const CONSUME = ['ticket', 'stamp', 'path', 'resolved', 'argv', 'cwd', 'interpre
 
 const refusal = (code, message) => ({ v: 1, error: { code, message } });
 
-export function sealedRelay({ call, forward, users, onRequest }) {
+export function sealedRelay({ call, forward, users, onRequest, away = () => false }) {
   return async (req, { signal } = {}) => {
     const { caller, ...rest } = req ?? {};
+    if (away()) return refusal('ENOTCONN', NOT_CONNECTED);
     const exec = rest.op === 'materialize' || rest.op === 'materializeConsume';
     if (exec && users() !== 'enforce')
       return refusal('EACCES', 'secrets reach programs only when kernel users are enforce');
@@ -346,6 +350,8 @@ function snapshots({ now, timers, pending, view }) {
     availability,
   };
 }
+
+const away = (view, state) => !view.welcomed && state.availability() === 'waiting';
 
 function coreFrame(document) {
   const frame = document.createElement('iframe');
@@ -516,7 +522,7 @@ export function createVault({
     frame,
     port: vaultPort({ call, state, button: buttons.button }),
     call,
-    sealed: sealedRelay({ call, forward, users, onRequest }),
+    sealed: sealedRelay({ call, forward, users, onRequest, away: () => away(view, state) }),
     scrub: pair,
     async seal(fields) {
       return data(await call('seal', fields, { value: fields.value }));
@@ -564,4 +570,24 @@ export function takesSealed(version) {
 
 export function sealedOption(version, vault) {
   return takesSealed(version) ? { sealed: (req, context) => vault.sealed(req, context) } : {};
+}
+
+const FNOX_SEED = [
+  'set -e',
+  'mkdir -p "$1"',
+  'chown 0:0 "$1"',
+  'chmod 0755 "$1"',
+  '[ -e "$1/config.toml" ] || printf "%s" "$2" > "$1/config.toml"',
+  'chown 0:0 "$1/config.toml"',
+  'chmod 0644 "$1/config.toml"',
+].join('; ');
+
+export async function seedFnox(kernel) {
+  const { status, stderr } = await kernel.run(
+    ['bash', '-c', FNOX_SEED, 'fnox', FNOX_DIR, FNOX_CONFIG],
+    {
+      cwd: '/',
+    }
+  );
+  if (status) throw new Error(stderr.trim() || `the fnox config setup exited with ${status}`);
 }
