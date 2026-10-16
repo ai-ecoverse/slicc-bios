@@ -227,6 +227,12 @@ jobs:
             curl -fsS "http://127.0.0.1:$cdp/json/version"
           done
 
+      - name: A git repository at the workspace root, which claude-code-action configures and diffs
+        run: |
+          git init -q "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" -c user.name=cert -c user.email=cert@invalid commit -q --allow-empty -m workspace
+          printf '%s\n' base/ head/ >> "$GITHUB_WORKSPACE/.git/info/exclude"
+
       - name: Certify
         id: certify
         uses: anthropics/claude-code-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8
