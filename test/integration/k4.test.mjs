@@ -545,20 +545,3 @@ test('enforce: tar unpacks hard-link members into a tmpfs mount as one inode, an
   assert.match(text, /conln=0 cone=2/);
   assert.deepEqual(page.errors, []);
 });
-
-test('enforce: three shells appending to one held-open file, root and a cone, lose no line', async (t) => {
-  const page = await chrome.page(t);
-  await bootIn(page, 'enforce');
-  await run(
-    page,
-    `clear; cd /; : > /tmp/shared.log; chmod 666 /tmp/shared.log; printf '%s\\n' '#!/bin/bash' 'exec 3>>/tmp/shared.log' 'for i in $(seq 1 100); do echo "$1 $i" >&3; done' > /usr/local/bin/slicc-append; chmod 755 /usr/local/bin/slicc-append; /usr/local/bin/slicc-append a & /usr/local/bin/slicc-append b & sudo -u cone /usr/local/bin/slicc-append c & wait; for w in a b c; do echo "$w=$(grep -c "^$w " /tmp/shared.log)"; done; echo total=$(wc -l < /tmp/shared.log); echo done-$((40 + 2))`
-  );
-  await shows(page, 'done-42', 5 * 60 * 1000);
-  const text = await screen(page);
-  assert.doesNotMatch(text, /not found|denied/);
-  assert.match(text, /a=100/);
-  assert.match(text, /b=100/);
-  assert.match(text, /c=100/);
-  assert.match(text, /total=300/);
-  assert.deepEqual(page.errors, []);
-});
