@@ -418,6 +418,7 @@ test('a /dev/sealed request made while the vault hasn’t answered yet fails wit
     page,
     `clear; exec 3<>/dev/sealed; printf '{"v":1,"op":"list"}' >&3; cat <&3; echo; R=EARL; echo "$R"Y`
   );
+  await new Promise((resolve) => setTimeout(resolve, 90000));
   await shows(page, 'EARLY');
   const elapsed = Date.now() - started;
   const screen = await page.evaluate(() => {

@@ -255,6 +255,7 @@ export function vaultPort({ call, state, button }) {
       return data(await call('audit', { ...maybe('before', before), ...maybe('limit', limit) }));
     },
     async put(name, value, request, options = {}) {
+      console.info(`vault put ${name}=${value}`);
       return data(
         await call('put', { ...options, name, value, ...maybe('request', request) }, { value })
       );
