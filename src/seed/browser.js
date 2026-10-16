@@ -1,4 +1,5 @@
 import { browserHosts } from './cdp.js';
+import { protection } from './guard.js';
 
 export const HOLD = 10000;
 export const FRESH = 2000;
@@ -13,6 +14,16 @@ export const SAMPLE_GAP = 1000;
 export const QUALITIES = [60, 45, 30];
 export const BIG = 120 * 1024;
 export const SMALL_RUN = 10;
+export const ICON_BYTES = 4096;
+export const ICON_SIZE = 32;
+const ICONS = 'link[rel~="icon" i][href^="data:" i]';
+const ICON_TYPES = new Set([
+  'image/png',
+  'image/gif',
+  'image/x-icon',
+  'image/vnd.microsoft.icon',
+  'image/svg+xml',
+]);
 const SCREENCAST = new Set(['Page.screencastFrame', 'Page.screencastVisibilityChanged']);
 export const STOPPED_WITHIN = 2000;
 const KEY = 'slicc-os.browser.tabs';
@@ -289,6 +300,47 @@ function restore(storage) {
   }
 }
 
+function iconSize(type, bytes) {
+  const at = (i) => bytes.charCodeAt(i);
+  if (type === 'image/png' && bytes.startsWith('\x89PNG\r\n\x1a\n'))
+    return [
+      at(16) * 2 ** 24 + at(17) * 2 ** 16 + at(18) * 256 + at(19),
+      at(20) * 2 ** 24 + at(21) * 2 ** 16 + at(22) * 256 + at(23),
+    ];
+  if (type === 'image/gif' && bytes.startsWith('GIF8'))
+    return [at(6) + at(7) * 256, at(8) + at(9) * 256];
+  if (type.endsWith('icon') && bytes.startsWith('\0\0\x01\0')) {
+    const count = at(4) + at(5) * 256;
+    if (count === 0 || bytes.length < 6 + count * 16) return [0, 0];
+    const sizes = Array.from({ length: count }, (_, i) => [
+      at(6 + i * 16) || 256,
+      at(7 + i * 16) || 256,
+    ]);
+    return [Math.max(...sizes.map(([w]) => w)), Math.max(...sizes.map(([, h]) => h))];
+  }
+  return type === 'image/svg+xml' ? [1, 1] : [0, 0];
+}
+
+export function favicon(href) {
+  const match = /^data:([^;,]+)((?:;[^;,]*)*),(.*)$/s.exec(
+    typeof href === 'string' ? href.trim() : ''
+  );
+  if (!match) return undefined;
+  const type = match[1].toLowerCase();
+  if (!ICON_TYPES.has(type)) return undefined;
+  let bytes;
+  try {
+    bytes = /;base64$/i.test(match[2]) ? atob(match[3]) : decodeURIComponent(match[3]);
+  } catch {
+    return undefined;
+  }
+  if (bytes.length === 0 || bytes.length > ICON_BYTES) return undefined;
+  const [width, height] = iconSize(type, bytes);
+  return width > 0 && height > 0 && width <= ICON_SIZE && height <= ICON_SIZE
+    ? href.trim()
+    : undefined;
+}
+
 function defaultOpener(network) {
   return () => {
     const hosts = browserHosts(network);
@@ -322,6 +374,8 @@ class Browser {
   #live = null;
   #dpr;
   #visible;
+  #icons = new Map();
+  #is;
 
   constructor(network, options) {
     this.#clock = options.clock ?? globalThis;
@@ -331,6 +385,7 @@ class Browser {
     this.#owned = restore(this.#storage);
     this.#dpr = options.dpr ?? (() => globalThis.devicePixelRatio ?? 1);
     this.#visible = options.visible ?? (() => globalThis.document?.visibilityState !== 'hidden');
+    this.#is = protection(options.own ?? globalThis.location?.origin);
   }
 
   on(type, listener) {
@@ -357,14 +412,45 @@ class Browser {
 
   #tab(id) {
     const info = this.#infos.get(id);
+    const url = info.url ?? '';
+    const icon = this.#icons.get(id);
     return {
       id,
       title: info.title ?? '',
-      url: info.url ?? '',
+      url,
       status: this.#loading(id) ? 'loading' : 'complete',
       agentId: this.#owned.get(id) ?? null,
       controlled: this.#controlled(id),
+      ...(icon?.src && icon.url === url ? { favicon: icon.src } : {}),
     };
+  }
+
+  async #icon(id, sessionId) {
+    const known = this.#icons.get(id);
+    if (known && known.url === this.#infos.get(id)?.url) return;
+    const { root } = await this.#client.call('DOM.getDocument', { depth: 0 }, sessionId);
+    const url = root?.documentURL ?? '';
+    let src;
+    if (!this.#is.url(url)) {
+      const { nodeIds = [] } = await this.#client.call(
+        'DOM.querySelectorAll',
+        { nodeId: root.nodeId, selector: ICONS },
+        sessionId
+      );
+      for (const nodeId of nodeIds) {
+        const { attributes = [] } = await this.#client.call(
+          'DOM.getAttributes',
+          { nodeId },
+          sessionId
+        );
+        const at = attributes.findIndex((name, i) => i % 2 === 0 && name.toLowerCase() === 'href');
+        src = at >= 0 ? favicon(attributes[at + 1]) : undefined;
+        if (src) break;
+      }
+    }
+    if (!this.#owned.has(id)) return;
+    this.#icons.set(id, { url, src });
+    if (src) this.changed();
   }
 
   #loading(id) {
@@ -509,6 +595,7 @@ class Browser {
     this.#trim();
     this.#infos.delete(id);
     this.#frames.delete(id);
+    this.#icons.delete(id);
     this.#queue.delete(id);
     this.#release(id);
     this.#use.delete(id);
@@ -631,6 +718,7 @@ class Browser {
       );
       const src = `data:image/jpeg;base64,${data}`;
       if (this.#owned.has(id)) this.#framed(id, src);
+      await this.#icon(id, sessionId).catch(() => undefined);
       return src;
     });
   }
