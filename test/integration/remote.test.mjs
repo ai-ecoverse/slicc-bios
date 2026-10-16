@@ -14,6 +14,7 @@ import {
   shows,
 } from './bios.mjs';
 import { launch } from './chrome.mjs';
+import { cliEnv } from './cli.mjs';
 import { startHub } from './fake-hub.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
 
@@ -62,7 +63,7 @@ after(async () => {
 });
 
 function slicc(page, args) {
-  const node = spawn(cli, [...args], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const node = spawn(cli, [...args], { stdio: ['pipe', 'pipe', 'pipe'], env: cliEnv() });
   const events = [];
   const stderr = [];
   node.stderr.on('data', (chunk) => stderr.push(chunk.toString()));
