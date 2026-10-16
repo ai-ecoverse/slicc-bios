@@ -312,10 +312,15 @@ class Guard {
     }
   }
 
-  touch(targetId) {
-    if (!targetId || this.navs.has(targetId)) return;
+  touch(targetId, held = false) {
+    if (!targetId) return;
+    const known = this.navs.get(targetId);
+    if (known) {
+      if (!held) known.held = false;
+      return;
+    }
     if (!NAV_TYPES.has(this.targets.get(targetId)?.type ?? 'page')) return;
-    const nav = { targetId, session: null, done: false, failed: false };
+    const nav = { targetId, session: null, done: false, failed: false, held };
     nav.ready = new Promise((resolve) => {
       nav.settle = (failed) => {
         if (nav.done) return;
@@ -361,6 +366,11 @@ class Guard {
     if (method !== 'Fetch.requestPaused') return;
     const { requestId } = params;
     if (params.resourceType === 'Document' && this.is.url(params.request?.url)) {
+      if (nav.held) {
+        nav.taken = true;
+        void this.call('Fetch.continueRequest', { requestId }, nav.session);
+        return;
+      }
       void this.call(
         'Fetch.failRequest',
         { requestId, errorReason: 'BlockedByClient' },
@@ -431,14 +441,19 @@ class Guard {
   async blank(message) {
     const { params, sessionId: parent } = message;
     const { sessionId, targetInfo } = params;
-    this.sessions.set(sessionId, { targetId: targetInfo.targetId, parent });
+    const { targetId } = targetInfo;
+    this.sessions.set(sessionId, { targetId, parent });
+    this.learn(targetInfo);
+    this.touch(targetId, true);
+    const nav = this.navs.get(targetId);
+    await nav?.ready;
     if (params.waitingForDebugger) void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
-    const info = await this.named(targetInfo.targetId);
-    if (!info) return this.cut(sessionId, parent);
+    const info = await this.named(targetId);
+    if (nav) nav.held = false;
+    if (!info || nav?.taken || nav?.failed) return this.cut(sessionId, parent);
     this.targets.delete(info.targetId);
     this.learn(info);
     if (await this.watch(sessionId, info.targetId, parent)) {
-      this.touch(info.targetId);
       this.deliver({
         ...message,
         params: { ...params, targetInfo: info, waitingForDebugger: false },
