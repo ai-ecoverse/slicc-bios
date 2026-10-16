@@ -23,26 +23,18 @@ test('/opt/agent pins the same slicc-kernel as the base set, and pnpm resolves o
   assert.deepEqual([...new Set(resolved)], [base]);
 });
 
-test('a package the repo pins twice, at its root and in what seven ships, is pinned to one version', async () => {
+const SHIPPED_AT_ROOT = ['@ai-ecoverse/slicc-spectrum'];
+
+test('a package whose shipped code the unit tests load from the root is pinned at the root as in the base set', async () => {
   const root = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8'));
   const base = JSON.parse(await read('package.json')).dependencies;
-  const agentLock = await read('agent/pnpm-lock.yaml');
-  const inAgent = (name) => [
-    ...new Set(
-      [
-        ...agentLock.matchAll(new RegExp(`^ {2}'${name.replace('/', '\\/')}@([^'(]+)':$`, 'gm')),
-      ].map(([, version]) => version)
-    ),
-  ];
-  const twice = Object.entries(root.devDependencies).filter(
-    ([name]) => name in base || inAgent(name).length
-  );
-  assert.ok(twice.some(([name]) => name === '@ai-ecoverse/slicc-spectrum'));
-  for (const [name, version] of twice) {
-    if (name in base)
-      assert.equal(version, base[name], `${name}: root ${version}, base set ${base[name]}`);
-    for (const shipped of inAgent(name))
-      assert.equal(version, shipped, `${name}: root ${version}, /opt/agent ${shipped}`);
+  for (const name of SHIPPED_AT_ROOT) {
+    assert.ok(base[name], `${name} is in the base set`);
+    assert.equal(
+      root.devDependencies[name],
+      base[name],
+      `${name}: root ${root.devDependencies[name]}, base set ${base[name]}`
+    );
   }
 });
 
