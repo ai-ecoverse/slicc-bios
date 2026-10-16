@@ -180,8 +180,10 @@ const page = (port) => (event) => {
   return port.postMessage({ v: 1, id, error: { code: 'ENOTSUP', message: op + ' arrives later' } });
 };
 let egressed = null;
+let muted = false;
 setInterval(async () => {
   const shared = await (await fetch('/state')).json();
+  muted = shared.mute === true;
   if (shared.egress && shared.egress.id !== egressed && pages.length) {
     egressed = shared.egress.id;
     const channel = new MessageChannel();
@@ -199,6 +201,7 @@ setInterval(async () => {
 }, 200);
 addEventListener('message', (event) => {
   if (event.source !== parent || event.data?.type !== 'slicc-vault' || event.data.op !== 'hello') return;
+  if (muted) return;
   const port = event.ports[0];
   const role = event.data.role ?? 'page';
   log({ role, op: 'hello', origin: event.origin, sudoGid: event.data.sudoGid ?? null });
@@ -301,7 +304,13 @@ export async function startFakeVault(initial = {}) {
     }
     if (url.pathname === '/state') {
       res.writeHead(200, { ...headers, 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ locked: state.locked, egress: state.egress ?? null }));
+      return res.end(
+        JSON.stringify({
+          locked: state.locked,
+          egress: state.egress ?? null,
+          mute: state.mute === true,
+        })
+      );
     }
     const files = {
       '/': ['text/html', '<!doctype html><meta charset="utf-8"><script src="/frame.js"></script>'],
