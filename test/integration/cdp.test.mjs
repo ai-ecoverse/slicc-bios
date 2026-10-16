@@ -626,11 +626,12 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
   const send = (method, params, sessionId) =>
     page.evaluate(([m, p, s]) => window.guarded.send(m, p, s), [method, params, sessionId]);
   const events = () => page.evaluate(() => window.guarded.events);
-  const REFUSAL = 'seven’s own pages and the vault are out of reach of browser automation';
+  const REFUSAL =
+    'slicc: refused: seven’s own pages and the vault are out of reach of browser automation';
 
   assert.equal(
     (await send('Fetch.enable', { patterns: [{ urlPattern: '*' }] })).error?.message,
-    'Fetch needs a tab session; it can’t pause the whole browser'
+    'slicc: refused: Fetch needs a tab session; it can’t pause the whole browser'
   );
   assert.equal(
     await page.evaluate(() => fetch(location.href).then((response) => response.status)),
