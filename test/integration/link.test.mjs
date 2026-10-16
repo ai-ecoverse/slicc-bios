@@ -27,6 +27,41 @@ function fakeNode(key) {
   const pc = new RTCPeerConnection();
   const answer = (channel, id, meta) => {
     log.push(meta);
+    if (meta.kind === 'udp') {
+      channel.send(frame(2, id, JSON.stringify({ localAddr: '0.0.0.0:4000' })));
+      let buffer = new Uint8Array(0);
+      return (type, payload) => {
+        if (type !== 3) return;
+        const credit = new Uint8Array(4);
+        new DataView(credit.buffer).setUint32(0, payload.length);
+        channel.send(frame(6, id, credit));
+        const merged = new Uint8Array(buffer.length + payload.length);
+        merged.set(buffer);
+        merged.set(payload, buffer.length);
+        buffer = merged;
+        for (;;) {
+          const view = new DataView(buffer.buffer, buffer.byteOffset);
+          if (buffer.length < 3) return;
+          const size = view.getUint16(1);
+          if (buffer.length < 9 + size) return;
+          const length = view.getUint32(5 + size);
+          if (buffer.length < 9 + size + length) return;
+          const record = buffer.slice(0, 9 + size + length);
+          const host = decoder.decode(record.subarray(3, 3 + size));
+          log.push({ udp: host, port: view.getUint16(3 + size) });
+          buffer = buffer.slice(9 + size + length);
+          if (host === '203.0.113.66') {
+            const text = encoder.encode('EACCES: refused by the fake node');
+            const refusal = new Uint8Array(9 + size + text.length);
+            refusal.set(record.subarray(0, 5 + size));
+            refusal[0] = 2;
+            new DataView(refusal.buffer).setUint32(5 + size, text.length);
+            refusal.set(text, 9 + size);
+            channel.send(frame(3, id, refusal));
+          } else channel.send(frame(3, id, record));
+        }
+      };
+    }
     if (meta.kind === 'ws') {
       channel.send(frame(2, id, JSON.stringify({ protocol: '' })));
       const hello = encoder.encode(`ws hello ${meta.url}`);
@@ -107,7 +142,7 @@ function fakeNode(key) {
             name: 'fake node',
             host: 'Fake-Node',
             mode: 'local',
-            caps: ['net', 'http', 'ssh', 'ws'],
+            caps: ['net', 'http', 'ssh', 'ws', 'udp'],
             routes: { prefixes: [], exit: true },
             sshHostKey: key,
           })
@@ -159,9 +194,10 @@ const knownHosts = (page, name) =>
     `known-${name}`
   );
 
-async function shell(page, command, name) {
+async function shell(page, command, name, ms) {
   await run(page, `${command} > /home/${name}.txt 2>&1; echo $? > /home/${name}.done`);
-  await page.until(async (name) => {
+  const wait = ms ? (fn, arg) => page.within(ms, fn, arg) : (fn, arg) => page.until(fn, arg);
+  await wait(async (name) => {
     const home = await (await navigator.storage.getDirectory()).getDirectoryHandle('home');
     return home.getFileHandle(`${name}.done`).then(
       async (handle) => (await handle.getFile()).size > 0,
@@ -280,6 +316,67 @@ test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback
   assert.notEqual(heldBack.code, '0');
   await page.evaluate(() => document.querySelector('slicc-app').model.network.setExit(null));
   assert.equal((await network()).exit, null);
+});
+
+const PYTHON = '@ai-ecoverse/wasix-python@3.14.2-18';
+
+const UDP_SCRIPT = `import errno, socket, sys
+host, port, mode = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(15)
+try:
+    if mode == 'connected':
+        s.connect((host, port))
+        s.send(b'ping')
+        print('got', s.recv(2048).decode())
+    else:
+        s.sendto(b'ping', (host, port))
+        data, addr = s.recvfrom(2048)
+        print('got', data.decode(), 'from', addr[0], addr[1])
+except OSError as e:
+    print('error', errno.errorcode.get(e.errno), type(e).__name__)
+`;
+
+async function withUdpScript(page) {
+  await page.evaluate(async (script) => {
+    const home = await (await navigator.storage.getDirectory()).getDirectoryHandle('home');
+    const writable = await (await home.getFileHandle('udp.py', { create: true })).createWritable();
+    await writable.write(script);
+    await writable.close();
+  }, UDP_SCRIPT);
+  const added = await shell(page, `pnpm add -g ${PYTHON}`, 'udp-python', 600000);
+  assert.equal(added.code, '0', added.out);
+}
+
+test('a linked node with cap udp carries a kernel program datagram as the automatic exit: the echo comes back, and its refusal fails a connected socket', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await ready(page);
+  await withUdpScript(page);
+  await page.evaluate(fakeNode, KEY);
+  await page.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.network.status()
+      .links?.devices.some((d) => d.state === 'connected')
+  );
+  const echoed = await shell(page, 'python3 /home/udp.py far.example 53 sendto', 'udp-fake-echo');
+  assert.deepEqual(echoed, { code: '0', out: 'got ping from 203.0.113.7 53' });
+  const refused = await shell(
+    page,
+    'python3 /home/udp.py 203.0.113.66 53 connected',
+    'udp-fake-refused'
+  );
+  assert.deepEqual(refused, { code: '0', out: 'error EACCES PermissionError' });
+  const log = await page.evaluate(() =>
+    globalThis.fakeNodeLog.filter((m) => m.kind === 'udp' || m.udp)
+  );
+  assert.deepEqual(log, [
+    { kind: 'udp', family: 4 },
+    { udp: '203.0.113.7', port: 53 },
+    { kind: 'udp', family: 4 },
+    { udp: '203.0.113.66', port: 53 },
+  ]);
 });
 
 const cli = process.env.SLICC_CLI;
@@ -988,6 +1085,66 @@ test('the real slicc CLI carries a program WebSocket over the link: text, binary
   );
 });
 
+test('the real slicc CLI carries a kernel program datagram over the link: an echo from its loopback, and EACCES under --deny on a connected socket', {
+  skip: !cli,
+}, async (t) => {
+  const { createSocket } = await import('node:dgram');
+  const echo = createSocket('udp4');
+  echo.on('message', (message, from) =>
+    echo.send(Buffer.concat([Buffer.from('echo '), message]), from.port, from.address)
+  );
+  await new Promise((resolve) => echo.bind(0, '127.0.0.1', resolve));
+  t.after(() => echo.close());
+  const { port } = echo.address();
+  const page = await chrome.page(t);
+  await boot(page);
+  await ready(page);
+  const node = spawn(
+    cli,
+    [
+      'attach',
+      '--signal',
+      'stdio',
+      '--name',
+      'ref-node',
+      '--no-kernel',
+      '--deny',
+      '203.0.113.0/24',
+    ],
+    { stdio: ['pipe', 'pipe', 'inherit'] }
+  );
+  t.after(() => node.kill());
+  await page.expose('sliccLinkSend', (message) => node.stdin.write(`${JSON.stringify(message)}\n`));
+  createInterface({ input: node.stdout }).on('line', (line) =>
+    page.evaluate((line) => globalThis.sliccLinkReceive(line), line).catch(() => {})
+  );
+  await page.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.network.status()
+      .links?.devices.some((d) => d.state === 'connected')
+  );
+  await withUdpScript(page);
+  const unconnected = await shell(
+    page,
+    `python3 /home/udp.py ref-node.slicc.internal ${port} sendto`,
+    'udp-cli-echo'
+  );
+  assert.deepEqual(unconnected, { code: '0', out: `got echo ping from 198.18.57.11 ${port}` });
+  const connected = await shell(
+    page,
+    `python3 /home/udp.py 198.18.57.11 ${port} connected`,
+    'udp-cli-connected'
+  );
+  assert.deepEqual(connected, { code: '0', out: 'got echo ping' });
+  const denied = await shell(
+    page,
+    'python3 /home/udp.py 203.0.113.5 53 connected',
+    'udp-cli-denied'
+  );
+  assert.deepEqual(denied, { code: '0', out: 'error EACCES PermissionError' });
+});
+
 test('a connected kernel client learns the exit when a linked CLI comes up, and again when it goes', async (t) => {
   const page = await chrome.page(t);
   await page.init('() => { globalThis.sliccKernelDebug = true; }');
@@ -1004,7 +1161,7 @@ test('a connected kernel client learns the exit when a linked CLI comes up, and 
   await page.until(() => globalThis.traitsSeen.at(-1)?.kind === 'local');
   assert.deepEqual(await page.evaluate(() => globalThis.traitsSeen.at(-1)), {
     kind: 'local',
-    caps: ['net', 'http', 'ssh', 'ws'],
+    caps: ['net', 'http', 'ssh', 'ws', 'udp'],
   });
   await page.evaluate(() => document.querySelector('slicc-app').model.network.setExit(null));
   await page.until(() => globalThis.traitsSeen.at(-1) === null);

@@ -124,6 +124,7 @@ await step('seed', async () => {
     'guard.js',
     'index.html',
     'layer.js',
+    'link-udp.js',
     'link-ws.js',
     'link.js',
     'loopback.js',
