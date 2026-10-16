@@ -56,7 +56,7 @@ test('Node.js (jsh) installs from the catalog, runs node with CommonJS and ESM a
   assert.equal(result, 'ok', (await row(page, 'node')).log);
   const installed = await row(page, 'node');
   assert.equal(installed.state, 'installed');
-  assert.equal(installed.version, '0.25.0');
+  assert.equal(installed.version, '0.27.2');
 
   await run(
     page,
@@ -94,6 +94,12 @@ test('Node.js (jsh) installs from the catalog, runs node with CommonJS and ESM a
 test('node writes and reads through a root symlink onto a tmpfs mount, the file is on the mount, and nothing is left under the mount point', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
+  await page.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.updates.packages()
+      .some((item) => item.id === 'node')
+  );
   assert.equal(await act(page, 'node', 'install'), 'ok');
   await run(
     page,

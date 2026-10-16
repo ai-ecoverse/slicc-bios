@@ -147,6 +147,10 @@
     "integrity": "sha512-CcqOzehBpQDy2jykr7U+a8yaXd6CeQ843rt+5+JRtB1TwNuxSOQTgSCmrQs0gf4gff9b/VpevUxC75yHTtYItg==",
     "sha256": "b9175cfb85d413afc25cc71440d5f3c2eba88f55fcee40e13ef3cbd969833dfc"
   },
+  "@ai-ecoverse/slicc-cdp@1.25.1": {
+    "integrity": "sha512-gBj/wHcDmRC0e4oSdgThodGLoCQWk3crEfAv/sOg1mH3MnBdEzUjIWArnvnH8m8dovz+MB2KC5Z20jXzJIcaZw==",
+    "sha256": "713fba137c1a682039bca80268ce4e4005f29c4a0e1f1a537f51b4e22347821e"
+  },
   "@ai-ecoverse/slicc-clipboard@1.0.2": {
     "integrity": "sha512-p7b1h85qkiU0LKjNLCLiU7GVXjGigkyR2+VUCInM1cZo2yjLFxr7tGAOO09e6OG9nB7XKiQn3W88wb3s0gxy+g==",
     "sha256": "1bd73c6ae4c5c0dc149ba6a301e7615a78bf4b97ff88c5b0f6eb7d8e270588aa"
@@ -190,6 +194,10 @@
   "@ai-ecoverse/slicc-jsh@0.25.0": {
     "integrity": "sha512-mHIWDkF/E1hfVDMn6ZcfhWH+oH7voR5FpNMXp4w8t5LaAAsMfjBtnGVrarqJT7GM74IIko6HiXcZffKRKqUuBw==",
     "sha256": "d47f0d2c6db3f81d8bc9e09b58ed69ac1ee9a19847956d243919c6a56679d377"
+  },
+  "@ai-ecoverse/slicc-jsh@0.27.2": {
+    "integrity": "sha512-9ByobHEeoyV02eNx++fab6gBLrRtYQvRRzYS6E9/fnqpwpTTNODddQ8722cdmk17X+bvQYHKMJu30QxYKyLpJA==",
+    "sha256": "f2086437cc621d4aa2acd5494843422e50f9800d9435076b1e4bb84361e8a5f8"
   },
   "@ai-ecoverse/slicc-kernel@1.53.3": {
     "integrity": "sha512-bGAzgiz/V3cAtKumrK6Fu1raUdIA4Jkcm5ni3deNlfoATDZX+fY7khICHrxknpFT4knJS2AhhmUzAIR1IGFAjw==",
@@ -242,6 +250,10 @@
   "@ai-ecoverse/slicc-kernel@1.90.0": {
     "integrity": "sha512-s0NTSl62qVEd4p4r6wpAcyKbBPCdFjBmE4ouHF7QuZjXs95p8oT27+Br1aJqJs31ytp+rrNsork1sYknHwftoQ==",
     "sha256": "a0536d4078f985ef07728c2b4fb993c012ab1afdecb60e6e352b474e150a944f"
+  },
+  "@ai-ecoverse/slicc-kernel@1.94.0": {
+    "integrity": "sha512-Iu3F2xOiUBNGWyToogpsYtMMBsc647HcZmC2PMuTcHrW93g1jgB5eAZ4x/6/qZbJQUxhAjPucMyg3TWQNCs/uQ==",
+    "sha256": "1d92e493505ccc4a9a49a870a76bf5195d9f4bb91906d663219172e3521c8ab3"
   },
   "@ai-ecoverse/wasi-biome@2.5.15-2": {
     "integrity": "sha512-5oIfngw8Ln2/ddCJ0wtqMoSnW+UO2zuih0+x1CNDbwKkB18TxuWoI60QFQySjd69N6eP+blL/stz/AZyoYpeuw==",
@@ -342,6 +354,10 @@
   "@ai-ecoverse/wasm-coreutils@9.12.0-5": {
     "integrity": "sha512-FYVgCa3FEGBTci7YV9nwuqDsmPXqErNjKwCjj7JQ5JahoV5/uv1DriGQn3+kT1p4RYIcMKp4Ca4OtUz1DtV3Fg==",
     "sha256": "25b468bccb2b85d03a1b70cf70309bac8a18a3b0c5355d542736689e71a2e741"
+  },
+  "@ai-ecoverse/wasm-coreutils@9.12.0-6": {
+    "integrity": "sha512-XYjNWSmsmisA5AXWYvhkaRI2EOc91hSLfcLOGvYcMRuXnDeVp3PtCBDPL1xjZeemiTAzk7C0/YFHdyBH37BkfQ==",
+    "sha256": "3bf43c85964b4acf4de6e220057e9d7f6821c9d7c570afab3f44fe655eecf64f"
   },
   "@ai-ecoverse/wasm-curl@8.22.0-4": {
     "integrity": "sha512-FYCuUOylMQ6iPLJUvCAMk0lqcdb764t+9xv8qrIAOyQJWtSJrnUNntP7APzHo4m6I3LYJqYDO1NrImqc29S6Yg==",
@@ -445,6 +461,10 @@
   "@ai-ecoverse/wasm-tar@1.35.0-5": {
     "integrity": "sha512-OLbgXoJ1H+Q9Xlgn0Edhqq68oYjclzH1tjM2k5c0B8NuCHlwwEleLHJwzUaKO//fwltrdNLWWRp6VHavYWVWNg==",
     "sha256": "2f3cb6a1f46b667b7b7ef3bc44deeff6f2c79aaef625dda70caabfa9cff0a64c"
+  },
+  "@ai-ecoverse/wasm-tar@1.35.0-6": {
+    "integrity": "sha512-EjOrsCO4s4k0KAHVUeUqkgod0rilC9Gd1f1CpCcwBD2maG3aVQQsXYI6DAgcZR5HLK5sHxzUOVSPcCZT0HQ8dQ==",
+    "sha256": "0496cd2c2bf792dbfd5839967ab8622297fcb692bac5dca0d01c9aa6cd2cc00a"
   },
   "@ai-ecoverse/wasm-tls-engine@3.6.5-1": {
     "integrity": "sha512-4dy6QCAUwpN6EG7njdeYDmtNXpy1+3jU+qLuwl6/dOs7S+fO/Ybcs+XfZWgp9LFUYEE1mQfr+8bqkgiOwK8RnQ=="

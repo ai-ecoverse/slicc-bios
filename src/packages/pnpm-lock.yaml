@@ -12,14 +12,14 @@ importers:
         specifier: 1.7.1
         version: 1.7.1
       '@ai-ecoverse/slicc-cdp':
-        specifier: 1.11.2
-        version: 1.11.2
+        specifier: 1.25.1
+        version: 1.25.1
       '@ai-ecoverse/slicc-clipboard':
         specifier: 1.0.2
         version: 1.0.2
       '@ai-ecoverse/slicc-kernel':
-        specifier: 1.90.0
-        version: 1.90.0
+        specifier: 1.94.0
+        version: 1.94.0
       '@ai-ecoverse/slicc-spectrum':
         specifier: 1.68.0
         version: 1.68.0
@@ -36,8 +36,8 @@ importers:
         specifier: 1.0.8-2
         version: 1.0.8-2
       '@ai-ecoverse/wasm-coreutils':
-        specifier: 9.12.0-5
-        version: 9.12.0-5
+        specifier: 9.12.0-6
+        version: 9.12.0-6
       '@ai-ecoverse/wasm-curl':
         specifier: 8.22.0-4
         version: 8.22.0-4
@@ -78,8 +78,8 @@ importers:
         specifier: 4.9.0-3
         version: 4.9.0-3
       '@ai-ecoverse/wasm-tar':
-        specifier: 1.35.0-5
-        version: 1.35.0-5
+        specifier: 1.35.0-6
+        version: 1.35.0-6
       '@ai-ecoverse/wasm-tls-engine':
         specifier: 3.6.5-1
         version: 3.6.5-1
@@ -99,16 +99,16 @@ packages:
     resolution: {integrity: sha512-35vGFMbZrl33ZQ9/VgjwZDBXp0RP87mKY0hnIG31tW5Nt5hh+icdp+3Y/t1kypoENAre+jnVEDa9W/H+yK6zyA==}
     engines: {node: '>=24'}
 
-  '@ai-ecoverse/slicc-cdp@1.11.2':
-    resolution: {integrity: sha512-CcqOzehBpQDy2jykr7U+a8yaXd6CeQ843rt+5+JRtB1TwNuxSOQTgSCmrQs0gf4gff9b/VpevUxC75yHTtYItg==}
+  '@ai-ecoverse/slicc-cdp@1.25.1':
+    resolution: {integrity: sha512-gBj/wHcDmRC0e4oSdgThodGLoCQWk3crEfAv/sOg1mH3MnBdEzUjIWArnvnH8m8dovz+MB2KC5Z20jXzJIcaZw==}
     engines: {node: '>=24'}
 
   '@ai-ecoverse/slicc-clipboard@1.0.2':
     resolution: {integrity: sha512-p7b1h85qkiU0LKjNLCLiU7GVXjGigkyR2+VUCInM1cZo2yjLFxr7tGAOO09e6OG9nB7XKiQn3W88wb3s0gxy+g==}
     engines: {node: '>=24', slicc-kernel: '>=1.75.0'}
 
-  '@ai-ecoverse/slicc-kernel@1.90.0':
-    resolution: {integrity: sha512-s0NTSl62qVEd4p4r6wpAcyKbBPCdFjBmE4ouHF7QuZjXs95p8oT27+Br1aJqJs31ytp+rrNsork1sYknHwftoQ==}
+  '@ai-ecoverse/slicc-kernel@1.94.0':
+    resolution: {integrity: sha512-Iu3F2xOiUBNGWyToogpsYtMMBsc647HcZmC2PMuTcHrW93g1jgB5eAZ4x/6/qZbJQUxhAjPucMyg3TWQNCs/uQ==}
     engines: {node: '>=24'}
 
   '@ai-ecoverse/slicc-spectrum@1.68.0':
@@ -138,8 +138,8 @@ packages:
   '@ai-ecoverse/wasm-bzip2@1.0.8-2':
     resolution: {integrity: sha512-FzE8FE3sMzOQLwm3hV1SFW717mhSjjrchGOgFuZW8JCZ57oPs6gJ/915POb5DHsjv3luXKnd2uycKdlOsdZoEQ==}
 
-  '@ai-ecoverse/wasm-coreutils@9.12.0-5':
-    resolution: {integrity: sha512-FYVgCa3FEGBTci7YV9nwuqDsmPXqErNjKwCjj7JQ5JahoV5/uv1DriGQn3+kT1p4RYIcMKp4Ca4OtUz1DtV3Fg==}
+  '@ai-ecoverse/wasm-coreutils@9.12.0-6':
+    resolution: {integrity: sha512-XYjNWSmsmisA5AXWYvhkaRI2EOc91hSLfcLOGvYcMRuXnDeVp3PtCBDPL1xjZeemiTAzk7C0/YFHdyBH37BkfQ==}
     engines: {slicc-kernel: '>=1.44.0'}
 
   '@ai-ecoverse/wasm-curl@8.22.0-4':
@@ -182,8 +182,8 @@ packages:
   '@ai-ecoverse/wasm-sed@4.9.0-3':
     resolution: {integrity: sha512-t+sfLSgTzFW5tyysusEtV7D1xPY/qELvbNAqbNobp8/q898b0zFZrM2b2/PjNN5o1O6jEgjOTHuT1Z71tzb9bw==}
 
-  '@ai-ecoverse/wasm-tar@1.35.0-5':
-    resolution: {integrity: sha512-OLbgXoJ1H+Q9Xlgn0Edhqq68oYjclzH1tjM2k5c0B8NuCHlwwEleLHJwzUaKO//fwltrdNLWWRp6VHavYWVWNg==}
+  '@ai-ecoverse/wasm-tar@1.35.0-6':
+    resolution: {integrity: sha512-EjOrsCO4s4k0KAHVUeUqkgod0rilC9Gd1f1CpCcwBD2maG3aVQQsXYI6DAgcZR5HLK5sHxzUOVSPcCZT0HQ8dQ==}
 
   '@ai-ecoverse/wasm-tls-engine@3.6.5-1':
     resolution: {integrity: sha512-4dy6QCAUwpN6EG7njdeYDmtNXpy1+3jU+qLuwl6/dOs7S+fO/Ybcs+XfZWgp9LFUYEE1mQfr+8bqkgiOwK8RnQ==}
@@ -201,11 +201,11 @@ snapshots:
 
   '@ai-ecoverse/slicc-browsers@1.7.1': {}
 
-  '@ai-ecoverse/slicc-cdp@1.11.2': {}
+  '@ai-ecoverse/slicc-cdp@1.25.1': {}
 
   '@ai-ecoverse/slicc-clipboard@1.0.2': {}
 
-  '@ai-ecoverse/slicc-kernel@1.90.0': {}
+  '@ai-ecoverse/slicc-kernel@1.94.0': {}
 
   '@ai-ecoverse/slicc-spectrum@1.68.0': {}
 
@@ -217,7 +217,7 @@ snapshots:
 
   '@ai-ecoverse/wasm-bzip2@1.0.8-2': {}
 
-  '@ai-ecoverse/wasm-coreutils@9.12.0-5': {}
+  '@ai-ecoverse/wasm-coreutils@9.12.0-6': {}
 
   '@ai-ecoverse/wasm-curl@8.22.0-4': {}
 
@@ -245,7 +245,7 @@ snapshots:
 
   '@ai-ecoverse/wasm-sed@4.9.0-3': {}
 
-  '@ai-ecoverse/wasm-tar@1.35.0-5': {}
+  '@ai-ecoverse/wasm-tar@1.35.0-6': {}
 
   '@ai-ecoverse/wasm-tls-engine@3.6.5-1': {}
 

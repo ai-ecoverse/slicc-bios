@@ -3,7 +3,7 @@
   "private": true,
   "description": "The certified versions of the optional packages that seven's Install / Update panel offers. Never installed as a project: the panel runs pnpm add -g for each one.",
   "dependencies": {
-    "@ai-ecoverse/slicc-jsh": "0.25.0",
+    "@ai-ecoverse/slicc-jsh": "0.27.2",
     "@ai-ecoverse/wasi-biome": "2.5.15-2",
     "@ai-ecoverse/wasi-buf": "1.73.0-2",
     "@ai-ecoverse/wasi-dig": "0.1.0-1",
