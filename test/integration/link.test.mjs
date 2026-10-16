@@ -1204,7 +1204,7 @@ test('the real slicc CLI as the exit for kernel websocat: ws:// to its loopback,
   assert.deepEqual(page.errors, []);
 });
 
-test('without an exit, kernel websocat to a host outside seven fails at once with a non-zero exit', async (t) => {
+test('without an exit, kernel websocat to a host outside seven fails at once with a non-zero exit, and its subprocess endpoints are refused at startup', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
   await ready(page);
@@ -1217,6 +1217,13 @@ test('without an exit, kernel websocat to a host outside seven fails at once wit
   );
   refusedFast(await websocat(page, 'ws://echo.sliccy.ai/', 'websocat-none'), 'a name');
   refusedFast(await websocat(page, 'ws://203.0.113.9/', 'websocat-none-address'), 'an address');
+  for (const spec of ['cmd:true', 'exec:true', 'sh-c:true']) {
+    const name = `websocat-${spec.split(':')[0]}`;
+    const spawned = await shell(page, `timeout ${WEBSOCAT_S} websocat ${spec}`, name, 60000);
+    assert.notEqual(spawned.code, '0', `${spec}: ${spawned.out}`);
+    assert.notEqual(spawned.code, '124', `${spec} hangs: ${spawned.out}`);
+    assert.match(spawned.out, /not supported on WASIX/, spec);
+  }
   assert.deepEqual(page.errors, []);
 });
 
