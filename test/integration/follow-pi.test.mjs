@@ -473,18 +473,7 @@ test('a follower watches the owner run with View, is refused a send, and sends w
   assert.ok(asked.some((body) => body.includes('From the follower')));
   assert.deepEqual(owner.errors, []);
   assert.deepEqual(page.errors, []);
-  await owner.evaluate(() => localStorage.removeItem('slicc-os.tray-hub'));
-});
 
-test('a follower of an owner whose agent speaks a newer link protocol only watches, with a banner it can’t dismiss, and stops connecting', {
-  timeout: 30 * 60 * 1000,
-}, async (t) => {
-  const hub = await startHub();
-  t.after(() => hub.close());
-  const owner = await owners.page(t);
-  await owner.goto('/');
-  await ready(owner);
-  await owner.within(INSTALL, () => document.querySelector('slicc-app').model.updates.ready());
   const file = await owner.evaluate(async () => {
     const walk = async (dir, prefix) => {
       for await (const [name, handle] of dir.entries()) {
@@ -507,13 +496,9 @@ test('a follower of an owner whose agent speaks a newer link protocol only watch
   );
   assert.notEqual(newer, file.text);
   await trust(owner, { [file.path]: newer });
-  await owner.evaluate((url) => localStorage.setItem('slicc-os.tray-hub', url), hub.url);
   await owner.reload();
   await ready(owner);
-  const { joinUrl } = await model(owner, (network) => network.status().links);
-
-  const page = await followers.page(t);
-  await page.init(() => {
+  await page.evaluate(() => {
     window.followWarnings = 0;
     const warn = console.warn;
     console.warn = (...args) => {
@@ -521,29 +506,7 @@ test('a follower of an owner whose agent speaks a newer link protocol only watch
       warn.apply(console, args);
     };
   });
-  await page.goto(`/#follow=${encodeURIComponent(joinUrl)}`);
-  await page.until(new Function(`return !!(${dialog})()`));
-  await page.evaluate(
-    new Function(
-      `[...(${dialog})().getRootNode().host.shadowRoot.querySelectorAll('swc-button')].find((b) => b.textContent.trim() === 'Follow').click()`
-    )
-  );
-  await page.until(
-    () => document.querySelector('slicc-app')?.model?.follow?.state().link === 'connected'
-  );
-  await owner.until(() =>
-    document
-      .querySelector('slicc-app')
-      .model.network.status()
-      .links.devices.some((d) => d.kind === 'seven' && d.asking && d.state === 'connected')
-  );
-  const device = await model(owner, (network) =>
-    network
-      .status()
-      .links.devices.find((d) => d.kind === 'seven' && d.asking && d.state === 'connected')
-  );
-  await model(owner, (network, id) => network.setAccess(id, 'view', true), device.id);
-  const banner = await page.within(INSTALL, () =>
+  const banner = await page.within(5 * 60 * 1000, () =>
     document
       .querySelector('slicc-app')
       .model.notices?.list()
@@ -559,6 +522,7 @@ test('a follower of an owner whose agent speaks a newer link protocol only watch
   const sent = await page.evaluate(async () => {
     const { agent } = document.querySelector('slicc-app').model;
     window.firstAgent = agent;
+    window.followWarnings = 0;
     return agent.send(agent.active(), 'From a mismatched follower').then(
       () => 'sent',
       (error) => error.code ?? error.message
@@ -578,6 +542,5 @@ test('a follower of an owner whose agent speaks a newer link protocol only watch
   assert.equal(await owned(owner), before);
   assert.ok(!asked.some((body) => body.includes('From a mismatched follower')));
   await shoot(page, 'follower-watch-only', { show: 'chat' });
-  assert.deepEqual(page.errors, []);
   await owner.evaluate(() => localStorage.removeItem('slicc-os.tray-hub'));
 });

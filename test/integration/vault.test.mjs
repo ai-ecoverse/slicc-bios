@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
 import { after, test } from 'node:test';
 import { boot, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
@@ -504,6 +505,19 @@ test('a tab that takes over from the owner says hello again with the sudo group 
 });
 
 const cli = process.env.SLICC_CLI;
+const native = (() => {
+  const target = {
+    'darwin arm64': 'darwin-arm64',
+    'darwin x64': 'darwin-amd64',
+    'linux arm64': 'linux-arm64',
+    'linux x64': 'linux-amd64',
+  }[`${process.platform} ${process.arch}`];
+  try {
+    return createRequire(import.meta.url).resolve(`@ai-ecoverse/slicc-${target}/bin/slicc`);
+  } catch {
+    return cli;
+  }
+})();
 
 test('a jerk sign-in cancelled while the linked computer doesn’t answer leaves no jerk running there', {
   skip: !cli,
@@ -528,10 +542,14 @@ test('a jerk sign-in cancelled while the linked computer doesn’t answer leaves
     () => document.querySelector('slicc-app').model.vault?.availability() === 'ready'
   );
   const said = [];
-  const node = spawn(cli, ['attach', '--signal', 'stdio', '--name', 'jerk-node', '--no-kernel'], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
-  });
+  const node = spawn(
+    native,
+    ['attach', '--signal', 'stdio', '--name', 'jerk-node', '--no-kernel'],
+    {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+    }
+  );
   t.after(() => {
     node.kill('SIGCONT');
     node.kill();
