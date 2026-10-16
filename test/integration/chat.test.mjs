@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
-import { connectAccount, ready, run, shows } from './bios.mjs';
+import { agentState, agentUp, connectAccount, listsAccount, ready, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
 
@@ -254,7 +254,7 @@ const storageStub = () => {
   window.storageNotice = () => window.deep(window.chatView().shadowRoot, '[data-notice="storage"]');
 };
 
-const INSTALL = 15 * 60 * 1000;
+const SHOWN = 5 * 60 * 1000;
 
 async function eventually(check, ms = 30000) {
   const deadline = Date.now() + ms;
@@ -268,7 +268,7 @@ const GLOBAL_MEMORY = '/root/.pi/agent/memory/MEMORY.md';
 const CONE_MEMORY = '/root/.pi/agent/memory/cone/MEMORY.md';
 
 test('chat in seven answers through the agent worker, Bedrock and the local proxy', {
-  timeout: 30 * 60 * 1000,
+  timeout: 35 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
   await page.init(helpers);
@@ -313,16 +313,22 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
       if (state === 'installed') window.installEnd ??= performance.now();
     });
   });
-  await page.within(INSTALL, () => {
-    const { state, progress } = window.agentRow();
-    return (
-      state === 'downloading' &&
-      progress.done > 0 &&
-      progress.total >= 10 &&
-      window.updatesOpen() &&
-      !document.querySelector('slicc-app').model.updates.ready()
-    );
-  });
+  await page
+    .within(SHOWN, () => {
+      const { state, progress } = window.agentRow();
+      return (
+        state === 'downloading' &&
+        progress.done > 0 &&
+        progress.total >= 10 &&
+        window.updatesOpen() &&
+        !document.querySelector('slicc-app').model.updates.ready()
+      );
+    })
+    .catch(async (error) => {
+      throw new Error(
+        `the panel never showed the download: ${error.message}\n${await agentState(page)}`
+      );
+    });
   await page.until(
     () =>
       !!document
@@ -331,12 +337,8 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
         ?.shadowRoot?.querySelector('article[data-id="agent"] swc-progress-bar[value]')
   );
   await page.screenshot(new URL('installing.png', page.dir));
-  await page.within(INSTALL, () =>
-    document
-      .querySelector('slicc-app')
-      .model.settings.accounts()
-      .some((account) => account.id === 'amazon-bedrock')
-  );
+  await agentUp(page);
+  await listsAccount(page, 'amazon-bedrock');
   await page.until(() => !window.updatesOpen());
   assert.deepEqual(
     await page.evaluate(() => {

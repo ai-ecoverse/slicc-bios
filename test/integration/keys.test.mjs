@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { ready } from './bios.mjs';
+import { agentUp, AGENT_RESTART as RESTART, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { shoot } from './shots.mjs';
 
-const INSTALL = 15 * 60 * 1000;
 const chrome = await launch({ agent: true, timeout: 60000 });
 after(() => chrome.close());
 
@@ -21,7 +20,9 @@ const deep = (selector) => {
   return walk(document);
 };
 
-test('agent 4.x wipes 3.x’s key store once, says which accounts to add again, and a send says Bedrock isn’t connected', async (t) => {
+test('the agent wipes the 3.x key store once, says which accounts to add again, and a send says Bedrock isn’t connected', {
+  timeout: 35 * 60 * 1000,
+}, async (t) => {
   const page = await chrome.page(t);
   await page.goto('/manifest.json');
   await page.evaluate(async () => {
@@ -48,7 +49,7 @@ test('agent 4.x wipes 3.x’s key store once, says which accounts to add again, 
   });
   await page.goto('/');
   await ready(page);
-  await page.within(INSTALL, () => document.querySelector('slicc-app').model.updates.ready());
+  await agentUp(page);
   const notice = await page.within(60000, () =>
     document
       .querySelector('slicc-app')
@@ -109,7 +110,7 @@ test('agent 4.x wipes 3.x’s key store once, says which accounts to add again, 
   );
   await page.reload();
   await ready(page);
-  await page.within(INSTALL, () => document.querySelector('slicc-app').model.updates.ready());
+  await agentUp(page, { budget: RESTART, label: 'agent after the reload' });
   await new Promise((resolve) => setTimeout(resolve, 5000));
   assert.equal(
     await page.evaluate(() =>

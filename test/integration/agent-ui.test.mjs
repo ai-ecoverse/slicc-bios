@@ -1,14 +1,13 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
-import { connectAccount, ready, run } from './bios.mjs';
+import { agentUp, connectAccount, listsAccount, ready, run } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
 import { shoot } from './shots.mjs';
 
 const KEY = 'dummy-bedrock-key-0000';
 const BEDROCK = 'https://bedrock-runtime.us-west-2.amazonaws.com/';
-const INSTALL = 15 * 60 * 1000;
 const BUILD = `l=$(printf '%0240d' 0); for i in $(seq 1 2400); do echo "dummy build line $i $l"; done; exit 3`;
 const WORKERS = 'for i in $(seq 1 40); do sleep 900 > /dev/null 2>&1 & done; echo started';
 
@@ -119,18 +118,14 @@ const deep = `(selector) => {
   return walk(document);
 }`;
 
-test("the agent's UI on slicc-agent 3.48 and spectrum 1.68: a failed bash card with notes, the Monitor at warn, the drop overlay, a sent image, Secrets, Changes without a repository and an empty Browser", {
-  timeout: 30 * 60 * 1000,
+test("the agent's UI: the composer holds while the vault is locked, tool runs cluster, a failed bash card notes its truncated output, the Monitor warns about a process crowd, an image drops and sends, Secrets lists, Changes explains a failing git, and Browser starts empty", {
+  timeout: 35 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
   await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
   await ready(page);
-  await page.within(INSTALL, () =>
-    document
-      .querySelector('slicc-app')
-      .model.settings?.accounts?.()
-      .some((a) => a.id === 'amazon-bedrock')
-  );
+  await agentUp(page);
+  await listsAccount(page, 'amazon-bedrock');
   await connectAccount(page, 'amazon-bedrock', KEY);
   await quiet(page);
   const hold = () => document.querySelector('slicc-app').model.agent.hold?.() ?? null;

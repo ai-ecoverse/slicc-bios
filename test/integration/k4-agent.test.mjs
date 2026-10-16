@@ -1,13 +1,12 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
-import { connectAccount, ready } from './bios.mjs';
+import { agentUp, connectAccount, listsAccount, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
 
 const KEY = 'dummy-bedrock-key-0000';
 const BEDROCK = 'https://bedrock-runtime.us-west-2.amazonaws.com/';
-const INSTALL = 15 * 60 * 1000;
 
 const usage = eventFrame('metadata', {
   usage: { inputTokens: 3, outputTokens: 5, totalTokens: 8 },
@@ -137,19 +136,15 @@ const shade = (page, value) =>
   }, value);
 
 test('enforce: a cone agent’s sudo asks the human, naming the agent, and Deny refuses it', {
-  timeout: 30 * 60 * 1000,
+  timeout: 35 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
   await page.goto(
     `/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key', users: 'enforce' })}`
   );
   await ready(page, ['slicc:/home# ']);
-  await page.within(INSTALL, () =>
-    document
-      .querySelector('slicc-app')
-      .model.settings?.accounts?.()
-      .some((a) => a.id === 'amazon-bedrock')
-  );
+  await agentUp(page);
+  await listsAccount(page, 'amazon-bedrock');
   await connectAccount(page, 'amazon-bedrock', KEY);
   await page.evaluate(() => {
     const { notices } = document.querySelector('slicc-app').model;

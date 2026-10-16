@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { boot, ready, run, screen, shows } from './bios.mjs';
+import { actPackage, agentUp, boot, ready, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch({ timeout: 120000, agent: true });
-const INSTALL = 15 * 60 * 1000;
 after(() => chrome.close());
 
 const color = (page, value) =>
@@ -39,11 +38,13 @@ const row = (page, id) =>
     id
   );
 
-test('the shell runs as root: whoami, id, ls -l and ps name the users, and git works in a repo', async (t) => {
+test('the shell runs as root: whoami, id, ls -l and ps name the users, and git works in a repo', {
+  timeout: 35 * 60 * 1000,
+}, async (t) => {
   const page = await chrome.page(t);
   await boot(page);
   assert.match(await screen(page), /slicc:\/home# /);
-  await page.within(INSTALL, () => document.querySelector('slicc-app').model.updates.ready());
+  await agentUp(page);
   await run(
     page,
     'clear; whoami; id; ls -ld /root /home; ps -o user,pid,comm; which agent; echo "listed $((6 * 7))"'
@@ -66,16 +67,7 @@ test('the shell runs as root: whoami, id, ls -l and ps name the users, and git w
     assert.match(await screen(page), new RegExp(`unreadable ${tree} 0 0`));
   }
 
-  const installed = await page.evaluate(() =>
-    document
-      .querySelector('slicc-app')
-      .model.updates.actPackage('git', 'install')
-      .then(
-        () => 'ok',
-        (error) => error.message
-      )
-  );
-  assert.equal(installed, 'ok');
+  assert.equal(await actPackage(page, 'git'), 'ok');
   await run(
     page,
     'mkdir -p /home/repo && cd /home/repo && git init -q && echo hi > notes.txt && git status --short; echo "git says $?"'

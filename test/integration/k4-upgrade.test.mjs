@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ready, run, screen, shows } from './bios.mjs';
+import { agentUp, AGENT_RESTART as RESTART, ready, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
-const INSTALL = 15 * 60 * 1000;
 const rootShell = ['slicc:/home# '];
 
 async function read(page, path) {
@@ -19,8 +18,6 @@ async function read(page, path) {
     }
   }, path);
 }
-
-const agentUp = () => document.querySelector('slicc-app').model.updates.ready();
 
 test('an install from before users boots fresh under enforce: the agent works as cone, old files are locked, a picked folder is the cone’s', {
   timeout: 40 * 60 * 1000,
@@ -39,7 +36,7 @@ test('an install from before users boots fresh under enforce: the agent works as
 
   await page.goto(hash('off'));
   await ready(page, rootShell);
-  await page.within(INSTALL, agentUp);
+  await agentUp(page, { label: 'agent under users off' });
   await page.evaluate(async () => {
     const root = await navigator.storage.getDirectory();
     const put = async (path, data) => {
@@ -67,7 +64,7 @@ test('an install from before users boots fresh under enforce: the agent works as
   await page.goto(hash('enforce'));
   await ready(page, rootShell);
   assert.equal(await page.evaluate(() => document.documentElement.dataset.users), 'enforce');
-  await page.within(INSTALL, agentUp);
+  await agentUp(page, { label: 'agent under enforce' });
   const agentRow = await page.evaluate(() =>
     document
       .querySelector('slicc-app')
@@ -116,7 +113,7 @@ test('an install from before users boots fresh under enforce: the agent works as
 
   await page.reload();
   await ready(page, rootShell);
-  await page.within(INSTALL, agentUp);
+  await agentUp(page, { budget: RESTART, label: 'agent after the reload' });
   assert.equal(await read(page, 'var/lib/slicc/legacy-locked'), marker);
   const denials = (await read(page, 'var/log/slicc/denials.log'))
     .trim()
