@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
-import { actPackage, agentUp, boot, ready, run, screen, shows } from './bios.mjs';
+import { actPackage, agentState, agentUp, boot, ready, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch({ timeout: 120000, agent: true });
@@ -197,5 +197,57 @@ test('optional packages installed before the upgrade come back for root, in the 
   );
   await page.screenshot(new URL('upgraded-rsync-420.png', page.dir));
   await wide(page);
+  assert.deepEqual(page.errors, []);
+});
+
+const readOpfs = (page, path) =>
+  page.evaluate(async (path) => {
+    let dir = await navigator.storage.getDirectory();
+    const parts = path.split('/');
+    const name = parts.pop();
+    try {
+      for (const part of parts) dir = await dir.getDirectoryHandle(part);
+      return await (await (await dir.getFileHandle(name)).getFile()).text();
+    } catch {
+      return null;
+    }
+  }, path);
+
+test('a schedule in a cone’s ~/.slicc/crontab from an older agent moves into the cone’s kernel crontab and fires as a cron lick', {
+  timeout: 35 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await agentUp(page);
+  await run(
+    page,
+    "clear; mkdir -p /home/cone/.slicc && printf '%s\\n' '* * * * * hello cone ping from the old schedule' > /home/cone/.slicc/crontab && chown -R cone:cone /home/cone/.slicc && echo \"wrote $((6 * 7))\""
+  );
+  await shows(page, 'wrote 42');
+  const state = async () => ({
+    table: await readOpfs(page, 'var/spool/cron/crontabs/cone'),
+    old: await readOpfs(page, 'home/cone/.slicc/crontab'),
+    migrated: await readOpfs(page, 'home/cone/.slicc/crontab.migrated'),
+    chat: await page.evaluate(() => {
+      const { agent } = document.querySelector('slicc-app').model;
+      return JSON.stringify(agent.messages(agent.active())).slice(-2000);
+    }),
+  });
+  const deadline = Date.now() + 4 * 60 * 1000;
+  let seen = await state();
+  while (
+    !(seen.table?.includes('agent send cone') && seen.chat.includes('ping from the old schedule'))
+  ) {
+    if (Date.now() > deadline)
+      throw new Error(
+        `the old schedule never fired as a cron lick within 240 s: ${JSON.stringify(seen)}\n${await agentState(page)}\n${page.console.slice(-15).join('\n')}`
+      );
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    seen = await state();
+  }
+  assert.match(seen.table, /# name: hello/);
+  assert.equal(seen.old, null);
+  assert.match(seen.migrated, /hello cone ping from the old schedule/);
+  assert.match(seen.chat, /cron/);
   assert.deepEqual(page.errors, []);
 });
