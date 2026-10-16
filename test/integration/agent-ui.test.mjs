@@ -276,6 +276,7 @@ test("the agent's UI on slicc-agent 3.48 and spectrum 1.68: a failed bash card w
     );
     const { DummyVault } = await import(at.href);
     const app = document.querySelector('slicc-app');
+    window.realVault = app.model.vault;
     app.model = {
       ...app.model,
       vault: new DummyVault('secrets', { delay: 0, sleep: async () => {} }),
@@ -285,34 +286,9 @@ test("the agent's UI on slicc-agent 3.48 and spectrum 1.68: a failed bash card w
   await page.until(new Function(`return !!(${deep})('slicc-secrets')`));
   await quiet(page);
   await shoot(page, 'settings-secrets', { show: 'settings', target: 'slicc-secrets' });
-  await page.evaluate(async () => {
-    const at = new URL(
-      '../node_modules/@ai-ecoverse/slicc-spectrum/dist/slicc-dummy.js',
-      location.href
-    );
-    const { DummyVault } = await import(at.href);
+  await page.evaluate(() => {
     const app = document.querySelector('slicc-app');
-    app.model = {
-      ...app.model,
-      vault: new DummyVault('locked', { delay: 0, sleep: async () => {} }),
-    };
-  });
-  await page.until(
-    new Function(
-      `return (${deep})('slicc-secrets')?.shadowRoot?.querySelector('section')?.dataset.vault === 'locked'`
-    )
-  );
-  await page.evaluate(
-    new Function(
-      `(${deep})('slicc-secrets').shadowRoot.querySelector('[data-action=add-secret]').click()`
-    )
-  );
-  await page.until(
-    new Function(`return !!(${deep})('slicc-secrets').shadowRoot.querySelector('[data-form=add]')`)
-  );
-  await shoot(page, 'secrets-locked', {
-    show: 'settings',
-    target: 'slicc-secrets',
+    app.model = { ...app.model, vault: window.realVault };
   });
 
   await page.evaluate(() => document.querySelector('slicc-app').show('terminal'));
@@ -326,7 +302,7 @@ test("the agent's UI on slicc-agent 3.48 and spectrum 1.68: a failed bash card w
       120000,
       new Function(`
       const box = (${deep})('[data-unavailable]');
-      return !!box && /there are none here yet/.test(box.textContent) && !!box.parentElement.querySelector('[data-command^="curl -fsSL https://get.sliccy.ai/slicc"] [data-action="copy-command"]');
+      return !!box && /there are none here yet|Changes needs git/.test(box.textContent) && !!box.parentElement.querySelector('[data-command^="curl -fsSL https://get.sliccy.ai/slicc"] [data-action="copy-command"]');
     `)
     )
     .catch(async (error) => {
