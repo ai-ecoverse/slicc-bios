@@ -20,6 +20,13 @@
     "commands": ["ssh", "scp", "sftp", "ssh-keygen", "ssh-add"],
     "size": 3355615
   },
+  "@ai-ecoverse/wasi-slicc": {
+    "id": "slicc",
+    "label": "slicc",
+    "description": "Prompts, watches and aborts another seven's agent from this terminal: slicc <join-url> prompt, watch or abort. For root and cones; the other seven must allow remote control from this one in its Linked devices.",
+    "commands": ["slicc"],
+    "size": 1324902
+  },
   "@ai-ecoverse/wasix-python": {
     "id": "python",
     "label": "Python",
