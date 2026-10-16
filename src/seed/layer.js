@@ -269,9 +269,9 @@ export async function edit(root, project, name = null) {
   const { folder, state } = project;
   const layer = readLayer(await text(root, `${state}/user.json`));
   const base = parse(await text(root, `${state}/package.json`)) ?? {};
-  if (name !== null) {
-    delete layer.add[name];
-    delete layer.pin[name];
+  for (const one of [name ?? []].flat()) {
+    delete layer.add[one];
+    delete layer.pin[one];
   }
   await write(root, `${state}/user.json`, json({ ...layer, pending: true }));
   await write(root, `${folder}/package.json`, json(merge(base, layer)));
