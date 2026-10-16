@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
 
 export const installable = Object.entries(
   JSON.parse(readFileSync(new URL('../../src/packages/package-lock.json', import.meta.url), 'utf8'))
@@ -210,6 +211,11 @@ function agentProbe() {
     version: row?.to ?? row?.from ?? null,
     error: row?.error ?? null,
     log: (row?.log ?? '').trim().split('\n').slice(-6),
+    notes: (row?.log ?? '')
+      .split('\n')
+      .filter((line) =>
+        /WARN|ERR_|retr(y|ies)|timed? ?out|ECONN|ETIMEDOUT|EAI_AGAIN|socket/i.test(line)
+      ),
     accounts: accounts?.map((account) => `${account.id} ${account.status}`) ?? null,
     notices: (model.notices?.list?.() ?? []).map((notice) => `${notice.title}: ${notice.body}`),
     vault: model.vault?.availability?.() ?? null,
@@ -242,38 +248,171 @@ export async function agentState(page) {
   return describe(await probeAgent(page), page);
 }
 
+const GAP = 30 * 1000;
+
+function resourceTimes() {
+  return {
+    timeOrigin: performance.timeOrigin,
+    entries: performance
+      .getEntriesByType('resource')
+      .filter((entry) => !entry.name.startsWith(location.origin))
+      .map((entry) => ({
+        name: entry.name,
+        initiator: entry.initiatorType,
+        protocol: entry.nextHopProtocol,
+        startTime: Math.round(entry.startTime),
+        requestStart: Math.round(entry.requestStart),
+        responseStart: Math.round(entry.responseStart),
+        responseEnd: Math.round(entry.responseEnd),
+        size: entry.transferSize,
+      })),
+  };
+}
+
+function networkSetting() {
+  const model = document.querySelector('slicc-app')?.model ?? {};
+  const status = model.network?.status?.() ?? {};
+  return {
+    transport: document.documentElement.dataset.transport ?? null,
+    route: status.route ?? null,
+    health: status.health ?? null,
+    exit: status.exit ?? null,
+    versions: Object.fromEntries(
+      (model.updates?.list?.() ?? []).map((item) => [item.id, item.to ?? item.from ?? null])
+    ),
+    userAgent: navigator.userAgent,
+  };
+}
+
+function installTrace(page, label, log) {
+  if (!page.trace) return null;
+  const started = Date.now();
+  const steps = [];
+  const notes = new Set();
+  const gaps = [];
+  let dumped = false;
+  const since = (at) => (at ? Math.round((at - started) / 100) / 10 : null);
+  const row = (request) => ({
+    url: request.url,
+    method: request.method,
+    type: request.type,
+    cached: request.cached,
+    protocol: request.protocol ?? null,
+    status: request.status ?? null,
+    bytes: request.bytes ?? null,
+    error: request.error ?? null,
+    sent: since(request.sent),
+    paused: since(request.paused),
+    headers: since(request.headers),
+    finished: since(request.finished),
+    failed: since(request.failed),
+  });
+  const open = () =>
+    page.trace.requests().filter((request) => !request.finished && !request.failed);
+  return {
+    step: (line) => steps.push({ at: since(Date.now()), line }),
+    note: (lines) => {
+      for (const line of lines ?? []) notes.add(line.trim());
+    },
+    moved: () => {
+      dumped = false;
+    },
+    async gap(quiet) {
+      if (dumped) return;
+      dumped = true;
+      const timing = await page
+        .evaluate(resourceTimes)
+        .catch((error) => ({ error: error.message }));
+      const flying = open().sort((a, b) => a.sent - b.sent);
+      gaps.push({ at: since(Date.now()), quiet, inFlight: flying.map(row), timing });
+      const oldest = flying[0];
+      log(
+        `${label} trace: no progress for ${quiet} s, ${flying.length} requests in flight${oldest ? `, the oldest ${oldest.url} for ${Math.round((Date.now() - oldest.sent) / 1000)} s${oldest.paused ? '' : ', not yet handed to the harness'}` : ''}`
+      );
+    },
+    async save(outcome) {
+      const requests = page.trace.requests();
+      const [browser, setting, timing] = await Promise.all([
+        page.trace.browser().catch((error) => ({ error: error.message })),
+        page.evaluate(networkSetting).catch((error) => ({ error: error.message })),
+        page.evaluate(resourceTimes).catch((error) => ({ error: error.message })),
+      ]);
+      const name = `${label.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-install-trace.json`;
+      const file = new URL(name, page.dir);
+      await writeFile(
+        file,
+        `${JSON.stringify(
+          {
+            label,
+            outcome,
+            started: new Date(started).toISOString(),
+            browser,
+            setting,
+            steps,
+            notes: [...notes],
+            gaps,
+            requests: requests.map(row),
+            timing,
+          },
+          null,
+          2
+        )}\n`
+      );
+      const done = requests.filter((request) => request.finished);
+      const slowest = done.sort((a, b) => b.finished - b.sent - (a.finished - a.sent))[0];
+      log(
+        `${label} trace: ${requests.length} requests, ${open().length} never finished, ${gaps.length} quiet spells over ${GAP / 1000} s${slowest ? `, slowest ${slowest.url} ${slowest.finished - slowest.sent} ms` : ''}, transport ${setting?.transport ?? '?'}, in ${file.pathname}`
+      );
+    },
+  };
+}
+
 export async function agentUp(
   page,
   { budget = AGENT_BUDGET, stall = AGENT_STALL, label = 'agent', log = console.log } = {}
 ) {
   const start = Date.now();
+  const trace = installTrace(page, label, log);
   let seen = null;
   let moved = start;
   let said = 0;
-  for (;;) {
-    const probe = await probeAgent(page);
-    const now = Date.now();
-    const at = `${label} after ${Math.round((now - start) / 1000)} s`;
-    const key = JSON.stringify([probe.state, probe.progress, probe.ready, probe.attached]);
-    if (key !== seen || now - said >= HEARTBEAT) {
-      if (key !== seen) moved = now;
-      seen = key;
-      said = now;
-      log(
-        `${at}: ${probe.unreachable ? 'no answer' : `${probe.state ?? 'no row'}${probe.progress ? ` ${probe.progress}` : ''}${probe.ready ? ', ready' : ''}${probe.attached ? ', attached' : ''}`}`
-      );
+  let outcome = 'up';
+  try {
+    for (;;) {
+      const probe = await probeAgent(page);
+      const now = Date.now();
+      const at = `${label} after ${Math.round((now - start) / 1000)} s`;
+      const key = JSON.stringify([probe.state, probe.progress, probe.ready, probe.attached]);
+      trace?.note(probe.notes);
+      if (key !== seen || now - said >= HEARTBEAT) {
+        if (key !== seen) {
+          moved = now;
+          trace?.moved();
+        }
+        seen = key;
+        said = now;
+        const line = `${at}: ${probe.unreachable ? 'no answer' : `${probe.state ?? 'no row'}${probe.progress ? ` ${probe.progress}` : ''}${probe.ready ? ', ready' : ''}${probe.attached ? ', attached' : ''}`}`;
+        log(line);
+        trace?.step(line);
+      }
+      if (probe.ready && probe.attached) return probe;
+      if (trace && now - moved >= GAP) await trace.gap(Math.round((now - moved) / 1000));
+      const why =
+        probe.state === 'failed'
+          ? 'the agent install failed'
+          : now - moved >= stall
+            ? `the agent made no progress for ${Math.round(stall / 1000)} s`
+            : now - start >= budget
+              ? `the agent was not up within ${Math.round(budget / 1000)} s`
+              : null;
+      if (why) {
+        outcome = why;
+        throw new Error(`${at}: ${why}\n${describe(probe, page)}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
-    if (probe.ready && probe.attached) return probe;
-    const why =
-      probe.state === 'failed'
-        ? 'the agent install failed'
-        : now - moved >= stall
-          ? `the agent made no progress for ${Math.round(stall / 1000)} s`
-          : now - start >= budget
-            ? `the agent was not up within ${Math.round(budget / 1000)} s`
-            : null;
-    if (why) throw new Error(`${at}: ${why}\n${describe(probe, page)}`);
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+  } finally {
+    await trace?.save(outcome).catch((error) => log(`${label} trace: not saved: ${error.message}`));
   }
 }
 
