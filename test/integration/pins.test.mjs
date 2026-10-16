@@ -23,6 +23,21 @@ test('/opt/agent pins the same slicc-kernel as the base set, and pnpm resolves o
   assert.deepEqual([...new Set(resolved)], [base]);
 });
 
+const SHIPPED_AT_ROOT = ['@ai-ecoverse/slicc-spectrum'];
+
+test('a package whose shipped code the unit tests load from the root is pinned at the root as in the base set', async () => {
+  const root = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8'));
+  const base = JSON.parse(await read('package.json')).dependencies;
+  for (const name of SHIPPED_AT_ROOT) {
+    assert.ok(base[name], `${name} is in the base set`);
+    assert.equal(
+      root.devDependencies[name],
+      base[name],
+      `${name}: root ${root.devDependencies[name]}, base set ${base[name]}`
+    );
+  }
+});
+
 function parts(version) {
   const [main, ...pre] = version.split('-');
   return [...main.split('.').map(Number), pre.length ? pre.join('-') : null];

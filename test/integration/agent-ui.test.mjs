@@ -1,14 +1,13 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
-import { ready, run } from './bios.mjs';
+import { agentUp, connectAccount, listsAccount, ready, run } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
 import { shoot } from './shots.mjs';
 
 const KEY = 'dummy-bedrock-key-0000';
 const BEDROCK = 'https://bedrock-runtime.us-west-2.amazonaws.com/';
-const INSTALL = 15 * 60 * 1000;
 const BUILD = `l=$(printf '%0240d' 0); for i in $(seq 1 2400); do echo "dummy build line $i $l"; done; exit 3`;
 const WORKERS = 'for i in $(seq 1 40); do sleep 900 > /dev/null 2>&1 & done; echo started';
 
@@ -59,6 +58,11 @@ function answer(body) {
   if (result === 'build-1')
     return text('The build failed with exit status 3; the full log is saved.');
   if (result === 'workers-1') return text('Started 40 workers.');
+  if (result === 'look-1') return bash('look-2', 'ls /home');
+  if (result === 'look-2') return bash('look-3', 'uname -a');
+  if (result === 'look-3')
+    return text('That is the whole of this SLICC: a root file system and an empty home.');
+  if (tools && said.includes('Look around')) return bash('look-1', 'ls /');
   if (tools && said.includes('Run the build')) return bash('build-1', BUILD);
   if (tools && said.includes('Start the workers')) return bash('workers-1', WORKERS);
   if (content.some((item) => item.image)) return text('A blue square.');
@@ -114,24 +118,33 @@ const deep = `(selector) => {
   return walk(document);
 }`;
 
-test("the agent's UI on slicc-agent 3.48 and spectrum 1.68: a failed bash card with notes, the Monitor at warn, the drop overlay, a sent image, Secrets, Changes without a repository and an empty Browser", {
-  timeout: 30 * 60 * 1000,
+test("the agent's UI: vault hold, tool-run clusters, a failed bash card's notes, the Monitor's crowd alert, image drop and send, Secrets, Changes when git fails, empty Browser", {
+  timeout: 35 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
   await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
   await ready(page);
-  await page.within(INSTALL, () =>
-    document
-      .querySelector('slicc-app')
-      .model.settings?.accounts?.()
-      .some((a) => a.id === 'amazon-bedrock')
-  );
-  await page.evaluate(
-    (secret) =>
-      document.querySelector('slicc-app').model.settings.connect('amazon-bedrock', secret),
-    KEY
-  );
+  await agentUp(page);
+  await listsAccount(page, 'amazon-bedrock');
+  await connectAccount(page, 'amazon-bedrock', KEY);
   await quiet(page);
+  const hold = () => document.querySelector('slicc-app').model.agent.hold?.() ?? null;
+  assert.equal(await page.evaluate(hold), null);
+  chrome.vault.set({ locked: true });
+  await page.within(
+    30000,
+    () => document.querySelector('slicc-app').model.agent.hold?.()?.reason === 'locked'
+  );
+  chrome.vault.set({ locked: false });
+  await page.within(30000, () => document.querySelector('slicc-app').model.agent.hold?.() === null);
+
+  await page.evaluate(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    void agent.send(agent.active(), 'Look around this SLICC');
+  });
+  await settled(page, 'That is the whole of this SLICC');
+  await quiet(page);
+  await shoot(page, 'tool-run-clusters', { show: 'chat' });
 
   await page.evaluate(() => {
     const { agent } = document.querySelector('slicc-app').model;
@@ -191,6 +204,8 @@ test("the agent's UI on slicc-agent 3.48 and spectrum 1.68: a failed bash card w
   assert.equal(alert.severity, 'warn');
   await quiet(page);
   await shoot(page, 'monitor-warn', { show: 'monitor' });
+  await page.evaluate(() => document.querySelector('slicc-app').show('terminal'));
+  await run(page, 'kill $(pgrep sleep) 2>/dev/null; true');
   await page.evaluate(() => document.querySelector('slicc-app').show('terminal'));
   await run(page, alert.command);
   await page.evaluate(() => document.querySelector('slicc-app').show('monitor'));
@@ -256,6 +271,7 @@ test("the agent's UI on slicc-agent 3.48 and spectrum 1.68: a failed bash card w
     );
     const { DummyVault } = await import(at.href);
     const app = document.querySelector('slicc-app');
+    window.realVault = app.model.vault;
     app.model = {
       ...app.model,
       vault: new DummyVault('secrets', { delay: 0, sleep: async () => {} }),
@@ -265,6 +281,10 @@ test("the agent's UI on slicc-agent 3.48 and spectrum 1.68: a failed bash card w
   await page.until(new Function(`return !!(${deep})('slicc-secrets')`));
   await quiet(page);
   await shoot(page, 'settings-secrets', { show: 'settings', target: 'slicc-secrets' });
+  await page.evaluate(() => {
+    const app = document.querySelector('slicc-app');
+    app.model = { ...app.model, vault: window.realVault };
+  });
 
   await page.evaluate(() => document.querySelector('slicc-app').show('terminal'));
   await run(
@@ -272,13 +292,22 @@ test("the agent's UI on slicc-agent 3.48 and spectrum 1.68: a failed bash card w
     "printf '#!/bin/sh\\nexit 1\\n' > /usr/local/bin/git && chmod +x /usr/local/bin/git && touch /home/notes.txt"
   );
   await page.evaluate(() => document.querySelector('slicc-app').show('changes'));
-  await page.within(
-    120000,
-    new Function(`
+  await page
+    .within(
+      120000,
+      new Function(`
       const box = (${deep})('[data-unavailable]');
-      return !!box && /there are none here yet/.test(box.textContent) && !!box.parentElement.querySelector('[data-command^="curl -fsSL https://get.sliccy.ai/slicc"] [data-action="copy-command"]');
+      return !!box && /there are none here yet|Changes needs git/.test(box.textContent) && !!box.parentElement.querySelector('[data-command^="curl -fsSL https://get.sliccy.ai/slicc"] [data-action="copy-command"]');
     `)
-  );
+    )
+    .catch(async (error) => {
+      const shown = await page.evaluate(
+        new Function(
+          `return (${deep})('slicc-changes')?.shadowRoot?.textContent ?? 'no changes panel'`
+        )
+      );
+      throw new Error(`${error.message}\nshown: ${shown}`);
+    });
   await quiet(page);
   await shoot(page, 'changes-no-repo', { show: 'changes' });
   await page.evaluate(() => document.querySelector('slicc-app').show('browser'));

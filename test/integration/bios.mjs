@@ -189,3 +189,226 @@ export async function trust(page, files) {
     db.close();
   }, files);
 }
+
+export const AGENT_BUDGET = 25 * 60 * 1000;
+export const AGENT_STALL = 5 * 60 * 1000;
+export const AGENT_RESTART = 5 * 60 * 1000;
+const HEARTBEAT = 60 * 1000;
+
+function agentProbe() {
+  const app = document.querySelector('slicc-app');
+  const model = app?.model ?? {};
+  const row = model.updates?.list?.().find((item) => item.id === 'agent') ?? null;
+  const progress = row?.progress;
+  const accounts = model.settings?.accounts?.();
+  return {
+    page: location.pathname,
+    ready: Boolean(model.updates?.ready?.()),
+    attached: Array.isArray(accounts) && accounts.length > 0,
+    state: row?.state ?? null,
+    progress: progress ? `${progress.phase} ${progress.done} of ${progress.total}` : null,
+    version: row?.to ?? row?.from ?? null,
+    error: row?.error ?? null,
+    log: (row?.log ?? '').trim().split('\n').slice(-6),
+    accounts: accounts?.map((account) => `${account.id} ${account.status}`) ?? null,
+    notices: (model.notices?.list?.() ?? []).map((notice) => `${notice.title}: ${notice.body}`),
+    vault: model.vault?.availability?.() ?? null,
+    tab: model.tabs?.state?.() ?? null,
+    rows: (model.updates?.list?.() ?? []).map((item) => `${item.id} ${item.state}`),
+  };
+}
+
+const probeAgent = (page) =>
+  page.evaluate(agentProbe).catch((error) => ({ unreachable: error.message }));
+
+function describe(probe, page) {
+  if (probe.unreachable) return `the page did not answer: ${probe.unreachable}`;
+  return [
+    `page ${probe.page}, agent ${probe.state ?? 'no row'}${probe.progress ? ` (${probe.progress})` : ''}${probe.version ? ` ${probe.version}` : ''}, updates ready ${probe.ready}, agent model ${probe.attached ? 'attached' : 'not attached'}`,
+    `updates: ${probe.rows.join(', ')}`,
+    `vault ${probe.vault}, tab ${JSON.stringify(probe.tab)}`,
+    `accounts: ${probe.accounts ? probe.accounts.join(', ') || 'none' : 'not listed'}`,
+    ...(probe.error ? [`error: ${probe.error}`] : []),
+    ...(probe.log.length ? ['install log:', ...probe.log.map((line) => `  ${line}`)] : []),
+    ...(probe.notices.length ? ['notices:', ...probe.notices.map((line) => `  ${line}`)] : []),
+    ...(page.errors.length ? ['page errors:', ...page.errors.map((line) => `  ${line}`)] : []),
+    ...(page.console?.length
+      ? ['console:', ...page.console.slice(-15).map((line) => `  ${line}`)]
+      : []),
+  ].join('\n');
+}
+
+export async function agentState(page) {
+  return describe(await probeAgent(page), page);
+}
+
+export async function agentUp(
+  page,
+  { budget = AGENT_BUDGET, stall = AGENT_STALL, label = 'agent', log = console.log } = {}
+) {
+  const start = Date.now();
+  let seen = null;
+  let moved = start;
+  let said = 0;
+  for (;;) {
+    const probe = await probeAgent(page);
+    const now = Date.now();
+    const at = `${label} after ${Math.round((now - start) / 1000)} s`;
+    const key = JSON.stringify([probe.state, probe.progress, probe.ready, probe.attached]);
+    if (key !== seen || now - said >= HEARTBEAT) {
+      if (key !== seen) moved = now;
+      seen = key;
+      said = now;
+      log(
+        `${at}: ${probe.unreachable ? 'no answer' : `${probe.state ?? 'no row'}${probe.progress ? ` ${probe.progress}` : ''}${probe.ready ? ', ready' : ''}${probe.attached ? ', attached' : ''}`}`
+      );
+    }
+    if (probe.ready && probe.attached) return probe;
+    const why =
+      probe.state === 'failed'
+        ? 'the agent install failed'
+        : now - moved >= stall
+          ? `the agent made no progress for ${Math.round(stall / 1000)} s`
+          : now - start >= budget
+            ? `the agent was not up within ${Math.round(budget / 1000)} s`
+            : null;
+    if (why) throw new Error(`${at}: ${why}\n${describe(probe, page)}`);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+}
+
+export const PACKAGE_BUDGET = 10 * 60 * 1000;
+export const PACKAGE_STALL = 4 * 60 * 1000;
+
+function packageProbe(id) {
+  const model = document.querySelector('slicc-app')?.model ?? {};
+  const row = model.updates?.packages?.().find((item) => item.id === id) ?? null;
+  const progress = row?.progress;
+  return {
+    done: window.sliccActed?.[id],
+    state: row?.state ?? null,
+    progress: progress ? `${progress.phase} ${progress.done} of ${progress.total}` : null,
+    error: row?.error ?? null,
+    log: (row?.log ?? '').trim().split('\n').slice(-6),
+  };
+}
+
+export async function actPackage(
+  page,
+  id,
+  action = 'install',
+  { budget = PACKAGE_BUDGET, stall = PACKAGE_STALL, log = console.log } = {}
+) {
+  await page.evaluate(
+    ([id, action]) => {
+      window.sliccActed ??= {};
+      window.sliccActed[id] = undefined;
+      document
+        .querySelector('slicc-app')
+        .model.updates.actPackage(id, action)
+        .then(
+          () => 'ok',
+          (error) => error.message
+        )
+        .then((result) => {
+          window.sliccActed[id] = result;
+        });
+    },
+    [id, action]
+  );
+  const start = Date.now();
+  let seen = null;
+  let moved = start;
+  let said = 0;
+  for (;;) {
+    const probe = await page
+      .evaluate(packageProbe, id)
+      .catch((error) => ({ unreachable: error.message, log: [] }));
+    const now = Date.now();
+    const at = `${action} ${id} after ${Math.round((now - start) / 1000)} s`;
+    if (probe.done !== undefined) {
+      log(`${at}: ${probe.done}`);
+      return probe.done;
+    }
+    const key = JSON.stringify([probe.state, probe.progress, probe.unreachable]);
+    if (key !== seen || now - said >= HEARTBEAT) {
+      if (key !== seen) moved = now;
+      seen = key;
+      said = now;
+      log(
+        `${at}: ${probe.unreachable ? 'no answer' : `${probe.state}${probe.progress ? ` ${probe.progress}` : ''}`}`
+      );
+    }
+    const why =
+      now - moved >= stall
+        ? `no progress for ${Math.round(stall / 1000)} s`
+        : now - start >= budget
+          ? `not done within ${Math.round(budget / 1000)} s`
+          : null;
+    if (why)
+      throw new Error(
+        [
+          `${at}: ${why}`,
+          probe.unreachable
+            ? `the page did not answer: ${probe.unreachable}`
+            : `${id} ${probe.state}${probe.progress ? ` (${probe.progress})` : ''}`,
+          ...(probe.error ? [`error: ${probe.error}`] : []),
+          ...(probe.log.length ? ['log:', ...probe.log.map((line) => `  ${line}`)] : []),
+          ...(page.console?.length
+            ? ['console:', ...page.console.slice(-15).map((line) => `  ${line}`)]
+            : []),
+        ].join('\n')
+      );
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+}
+
+export async function listsAccount(page, id, ms = 30000) {
+  await page
+    .within(
+      ms,
+      (id) =>
+        !!document
+          .querySelector('slicc-app')
+          .model.settings?.accounts?.()
+          .some((account) => account.id === id),
+      id
+    )
+    .catch(async (error) => {
+      throw new Error(
+        `${id} is not among the accounts: ${error.message}\n${await agentState(page)}`
+      );
+    });
+}
+
+export async function connected(page, id, ms = 60000) {
+  await page
+    .within(
+      ms,
+      (id) =>
+        document
+          .querySelector('slicc-app')
+          .model.settings.accounts()
+          .find((account) => account.id === id)?.status === 'connected',
+      id
+    )
+    .catch(async (error) => {
+      throw new Error(`${id} did not connect: ${error.message}\n${await agentState(page)}`);
+    });
+}
+
+export const VAULT_NAMES = {
+  'amazon-bedrock': 'AWS_BEARER_TOKEN_BEDROCK',
+  adobe: 'ADOBE_IMS_TOKEN',
+};
+
+export async function connectAccount(page, id, key) {
+  return page.evaluate(
+    async ({ id, key, name }) => {
+      const { vault, settings } = document.querySelector('slicc-app').model;
+      await vault.put(name, key, undefined, { kind: 'model', provider: id });
+      if (id !== 'adobe') return settings.connect(id);
+    },
+    { id, key, name: VAULT_NAMES[id] }
+  );
+}

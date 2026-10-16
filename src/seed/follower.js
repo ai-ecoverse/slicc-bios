@@ -163,9 +163,9 @@ export const shower = (app, base) => (agent) => {
 };
 
 export const chatModel =
-  (storage, load = loadChat) =>
+  (storage, notices, load = loadChat) =>
   async (connection) =>
-    (await load()).createAgentModel(connection, { storage });
+    (await load()).createAgentModel(connection, { storage, notices });
 
 export const proxied = (at) => (at.hostname.endsWith('.sliccy.ai') ? at.origin : null);
 
@@ -240,7 +240,7 @@ export function startFollower({
     follow,
     show: shower(app, base),
     prepare: preparer(root),
-    create: chatModel(storage),
+    create: chatModel(storage, base.notices),
   });
   document.documentElement.dataset.follow = 'on';
   void admit().then((yes) => yes && follow.start());

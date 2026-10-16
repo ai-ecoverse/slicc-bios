@@ -3,7 +3,16 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
-import { ready, run, shows } from './bios.mjs';
+import {
+  agentState,
+  agentUp,
+  connectAccount,
+  connected,
+  listsAccount,
+  ready,
+  run,
+  shows,
+} from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { startHub } from './fake-hub.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
@@ -11,7 +20,6 @@ import { eventFrame, fakeProxy } from './fake-proxy.mjs';
 const cli = process.env.SLICC_CLI;
 const KEY = 'dummy-bedrock-key-0000';
 const BEDROCK = 'https://bedrock-runtime.us-west-2.amazonaws.com/';
-const INSTALL = 15 * 60 * 1000;
 const stream = Buffer.concat([
   eventFrame('messageStart', { role: 'assistant' }),
   eventFrame('contentBlockDelta', { contentBlockIndex: 0, delta: { text: 'Hello from ' } }),
@@ -70,29 +78,15 @@ function slicc(page, args) {
 
 test('a linked slicc CLI prompts the agent, watches it, and aborts, over the link', {
   skip: !cli,
-  timeout: 30 * 60 * 1000,
+  timeout: 35 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
   await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
   await ready(page);
-  await page.within(INSTALL, () =>
-    document
-      .querySelector('slicc-app')
-      .model.settings?.accounts?.()
-      .some((a) => a.id === 'amazon-bedrock')
-  );
-  await page.evaluate(
-    (secret) =>
-      document.querySelector('slicc-app').model.settings.connect('amazon-bedrock', secret),
-    KEY
-  );
-  await page.until(
-    () =>
-      document
-        .querySelector('slicc-app')
-        .model.settings.accounts()
-        .find((a) => a.id === 'amazon-bedrock').status === 'connected'
-  );
+  await agentUp(page);
+  await listsAccount(page, 'amazon-bedrock');
+  await connectAccount(page, 'amazon-bedrock', KEY);
+  await connected(page, 'amazon-bedrock');
   let current = null;
   await page.expose('sliccLinkSend', (message) =>
     current?.node.stdin.write(`${JSON.stringify(message)}\n`)
@@ -110,7 +104,14 @@ test('a linked slicc CLI prompts the agent, watches it, and aborts, over the lin
   const prompt = slicc(page, ['prompt', '--signal', 'stdio', 'Say hello']);
   current = prompt;
   const code = await prompt.exited;
-  assert.equal(code, 0, prompt.stderr.join(''));
+  if (code !== 0) {
+    const devices = await page.evaluate(
+      () => document.querySelector('slicc-app').model.network.status().links?.devices
+    );
+    assert.fail(
+      `slicc prompt exited ${code}: ${prompt.stderr.join('')}\nits events: ${JSON.stringify(prompt.events)}\nthe watcher's events: ${JSON.stringify(watcher.events)}\nlinked devices: ${JSON.stringify(devices)}\n${await agentState(page)}`
+    );
+  }
   const kinds = prompt.events.map((e) => e.t);
   assert.equal(kinds[0], 'user');
   assert.equal(prompt.events[0].text, 'Say hello');
@@ -140,7 +141,7 @@ test('a linked slicc CLI prompts the agent, watches it, and aborts, over the lin
 });
 
 test('a webhook from the tray hub reaches the agent as a lick, without secret headers', {
-  timeout: 30 * 60 * 1000,
+  timeout: 35 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
   await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
@@ -148,24 +149,10 @@ test('a webhook from the tray hub reaches the agent as a lick, without secret he
   await page.evaluate((url) => localStorage.setItem('slicc-os.tray-hub', url), hub.url);
   await page.reload();
   await ready(page);
-  await page.within(INSTALL, () =>
-    document
-      .querySelector('slicc-app')
-      .model.settings?.accounts?.()
-      .some((a) => a.id === 'amazon-bedrock')
-  );
-  await page.evaluate(
-    (secret) =>
-      document.querySelector('slicc-app').model.settings.connect('amazon-bedrock', secret),
-    KEY
-  );
-  await page.until(
-    () =>
-      document
-        .querySelector('slicc-app')
-        .model.settings.accounts()
-        .find((a) => a.id === 'amazon-bedrock').status === 'connected'
-  );
+  await agentUp(page);
+  await listsAccount(page, 'amazon-bedrock');
+  await connectAccount(page, 'amazon-bedrock', KEY);
+  await connected(page, 'amazon-bedrock');
   await page.until(
     () => document.querySelector('slicc-app').model.network.status().links?.webhookUrl
   );

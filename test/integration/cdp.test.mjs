@@ -3,7 +3,7 @@ import { createServer as createHttp } from 'node:http';
 import { createServer } from 'node:net';
 import { after, test } from 'node:test';
 import { startProxy } from '@ai-ecoverse/slicc-node';
-import { boot, ready, run, shows } from './bios.mjs';
+import { actPackage, boot, ready, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const port = await new Promise((resolve) => {
@@ -896,20 +896,7 @@ test('a cone’s .jsh script, with sliccy:browser installed from the catalog, op
         .some((item) => item.id === id),
     'jsh-browser'
   );
-  await page.evaluate(() => {
-    window.installed = undefined;
-    document
-      .querySelector('slicc-app')
-      .model.updates.actPackage('jsh-browser', 'install')
-      .then(
-        () => 'ok',
-        (error) => error.message
-      )
-      .then((result) => {
-        window.installed = result;
-      });
-  });
-  assert.equal(await page.within(15 * 60 * 1000, () => window.installed), 'ok');
+  assert.equal(await actPackage(page, 'jsh-browser', 'install'), 'ok');
   const script = `const browser = require('sliccy:browser');
 (async () => {
   const tab = await browser.ensureTab(${JSON.stringify(`http://127.0.0.1:${standPort}/walker`)});

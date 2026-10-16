@@ -187,6 +187,7 @@ export function present({
       const { page: adapter, ...created } = loaded.createAgentModel(joined, {
         storage,
         login,
+        notices: model.notices,
         page: { tab: board.id, run: (argv, caller) => panelCommand(app, argv, caller) },
       });
       page = adapter ?? null;

@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
-import { boot, run, screen, shows } from './bios.mjs';
+import { actPackage, boot, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch({ timeout: 120000, persistent: true });
 after(() => chrome.close());
 
-const INSTALL = 15 * 60 * 1000;
+const PLOT = 5 * 60 * 1000;
+const REMOVE = 5 * 60 * 1000;
 const PTH = 'opt/slicc/python/slicc-pydata.pth';
 
 const row = (page, id) =>
@@ -18,27 +19,6 @@ const row = (page, id) =>
         .find((item) => item.id === id),
     id
   );
-
-async function act(page, id, action) {
-  await page.evaluate(
-    ([id, action]) => {
-      window.acted = undefined;
-      document
-        .querySelector('slicc-app')
-        .model.updates.actPackage(id, action)
-        .then(
-          () => 'ok',
-          (error) => error.message
-        )
-        .then((result) => {
-          window.acted = result;
-        });
-    },
-    [id, action]
-  );
-  await page.within(INSTALL, () => window.acted !== undefined);
-  return page.evaluate(() => window.acted);
-}
 
 const exists = (page, path) =>
   page.evaluate(async (path) => {
@@ -126,7 +106,10 @@ describe('Python data tools install as one project next to the catalog’s Pytho
     assert.deepEqual(listed.requires, ['python']);
     await shots(page, 'pydata-before');
 
-    const result = await act(page, 'pydata', 'install');
+    const result = await actPackage(page, 'pydata', 'install', {
+      budget: 14 * 60 * 1000,
+      stall: 8 * 60 * 1000,
+    });
     const quota = await page.evaluate(() => navigator.storage.estimate());
     assert.equal(
       result,
@@ -153,7 +136,7 @@ describe('Python data tools install as one project next to the catalog’s Pytho
       page,
       `clear; cd /home && python3 -c "import numpy, pandas, scipy, matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt; plt.plot([1, 4, 9]); plt.savefig('/home/plot.png'); print('numpy', numpy.__version__, 'pandas', pandas.__version__, 'scipy', scipy.__version__, 'matplotlib', matplotlib.__version__)" && ls -l /home/plot.png && echo "plotted $((6 * 7))"`
     );
-    await page.within(INSTALL, () =>
+    await page.within(PLOT, () =>
       window.document
         .querySelector('slicc-app')
         .dock.content(
@@ -196,7 +179,7 @@ describe('Python data tools install as one project next to the catalog’s Pytho
         .renderRoot.querySelector('[data-action]')
         .click()
     );
-    assert.equal(await page.within(INSTALL, () => window.removed), 'ok');
+    assert.equal(await page.within(REMOVE, () => window.removed), 'ok');
     assert.equal((await row(page, 'python')).state, 'available');
     const orphan = await row(page, 'pydata');
     assert.equal(orphan.state, 'installed');
@@ -205,7 +188,7 @@ describe('Python data tools install as one project next to the catalog’s Pytho
     ]);
     await shots(page, 'pydata-without-python');
 
-    assert.equal(await act(page, 'pydata', 'remove'), 'ok');
+    assert.equal(await actPackage(page, 'pydata', 'remove'), 'ok');
     assert.equal((await row(page, 'pydata')).state, 'available');
     assert.equal(await exists(page, PTH), false);
     assert.equal(await exists(page, 'opt/slicc/pydata'), false);

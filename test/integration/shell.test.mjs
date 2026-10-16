@@ -301,9 +301,12 @@ test('tar packs and unpacks gzip, xz and bzip2 archives through the base set com
   ]) {
     await run(
       page,
-      `clear; rm -rf out-${suffix} && mkdir out-${suffix} && tar -c${flag}f src.${suffix} src && tar -x${flag}f src.${suffix} -C out-${suffix} && diff -r src out-${suffix}/src && [ "$(readlink out-${suffix}/src/inner/link)" = ../a.txt ] && echo "round trip ${suffix} $((6 * 7))"`
+      `clear; rm -rf out-${suffix} && mkdir out-${suffix}; tar -c${flag}f src.${suffix} src; echo "pack=$?"; tar -t${flag}vf src.${suffix} | grep inner/link; tar -x${flag}f src.${suffix} -C out-${suffix}; echo "unpack=$?"; ls -lA out-${suffix}/src/inner; diff -r src out-${suffix}/src; echo "diff=$?"; echo "link=$(readlink out-${suffix}/src/inner/link)"; echo "checked ${suffix} $((6 * 7))"`
     );
-    await shows(page, `round trip ${suffix} 42`);
+    await shows(page, `checked ${suffix} 42`);
+    const text = await screen(page);
+    for (const wanted of ['pack=0', 'unpack=0', 'diff=0', 'link=../a.txt'])
+      assert.ok(text.includes(wanted), `${suffix}: no ${wanted} in\n${text}`);
   }
   await run(page, 'clear; tar --zstd -cf src.tzst src 2>/dev/null; echo "zstd exits $?"');
   await shows(page, 'zstd exits 2');

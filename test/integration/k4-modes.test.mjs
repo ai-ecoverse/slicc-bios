@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { ready, run, screen, shows } from './bios.mjs';
+import { agentUp, ready, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
-const INSTALL = 15 * 60 * 1000;
 const KERNEL = 'node_modules/@ai-ecoverse/slicc-kernel';
 const OLD = {
   version: '1.67.1',
@@ -47,7 +46,7 @@ test('a profile whose /opt/agent was installed on kernel 1.67.1 keeps its bin sc
   chrome.overrides.set('/packages/package-lock.json', JSON.stringify(olderLock(shipped)));
   await page.goto('/#users=off');
   await ready(page, ['slicc:/home# ']);
-  await page.within(INSTALL, () => document.querySelector('slicc-app').model.updates.ready());
+  await agentUp(page, { label: 'agent on kernel 1.67.1' });
   if (current) chrome.overrides.set('/packages/package-lock.json', current);
   else chrome.overrides.delete('/packages/package-lock.json');
   chrome.cdn.requests.length = 0;
@@ -60,7 +59,7 @@ test('a profile whose /opt/agent was installed on kernel 1.67.1 keeps its bin sc
   }
   const fetched = chrome.cdn.requests.filter((url) => url.endsWith('.tgz'));
   t.diagnostic(`the repair fetched ${fetched.length} tarballs: ${fetched.join(' ')}`);
-  await page.within(INSTALL, () => document.querySelector('slicc-app').model.updates.ready());
+  await agentUp(page, { label: 'agent after the repair' });
   await run(
     page,
     'clear; ls /opt/agent/node_modules/.bin | head -3; for b in /opt/agent/node_modules/.bin/*; do [ -x "$b" ] || echo "noexec $b"; done; b=$(ls /opt/agent/node_modules/.bin | head -1); stat -L -c \'%a %n\' "/opt/agent/node_modules/.bin/$b"; sudo -u cone "/opt/agent/node_modules/.bin/$b" --version > /dev/null 2>&1; echo ran=$?; i --help > /dev/null 2>&1; echo i=$?; echo bins-$((40 + 2))'

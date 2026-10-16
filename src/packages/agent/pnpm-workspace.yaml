@@ -2,4 +2,3 @@ minimumReleaseAgeExclude:
   - '@ai-ecoverse/*'
 overrides:
   '@google/genai': '-'
-  esbuild: '-'

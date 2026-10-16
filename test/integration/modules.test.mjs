@@ -12,7 +12,7 @@ const files = {
     exports: { '.': { node: './node.js', browser: './browser.js' } },
   }),
   'node_modules/esm-demo/browser.js':
-    'import { randomUUID } from "node:crypto";\nimport cjs, { add } from "cjs-demo";\nexport const id = randomUUID();\nexport const sum = add(2, 3) + cjs.offset;',
+    'import { URL as NodeURL } from "node:url";\nimport cjs, { add } from "cjs-demo";\nexport const id = new NodeURL("https://example.com/a").pathname;\nexport const sum = add(2, 3) + cjs.offset;',
   'node_modules/cjs-demo/package.json': JSON.stringify({ main: 'lib/index.js' }),
   'node_modules/cjs-demo/lib/index.js':
     'const util = require("./util");\nconst path = require("node:path");\nexports.add = (a, b) => a + b;\nexports.offset = util.offset;\nexports.own = util.own;\nexports.same = util.same;\nexports.hasPath = typeof path === "object";\nexports.platform = process.platform === "win32" || global.TESTING_WINDOWS ? "windows" : process.platform;\nexports.env = typeof process.env.OSTYPE;\nprocess.env.SLICC_SEEN = "yes";',
@@ -33,7 +33,7 @@ test('loads an unbundled package graph with CommonJS and node builtins through t
     );
     return { ...result, stub: stub.includes('export const readFile') };
   });
-  assert.match(result.id, /^[0-9a-f-]{36}$/);
+  assert.equal(result.id, '/a');
   assert.equal(result.sum, 15);
   assert.equal(result.hasPath, true);
   assert.equal(result.platform, 'browser');

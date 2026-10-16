@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
-import { ready } from './bios.mjs';
+import {
+  AGENT_RESTART,
+  agentState,
+  agentUp,
+  connectAccount,
+  listsAccount,
+  ready,
+  trust,
+} from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { model, startHub } from './fake-hub.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
@@ -15,7 +23,7 @@ const adobe = {
   config: { clientId: 'test-client', scopes: 'openid,AdobeID', imsEnvironment: 'prod', models: [] },
   usage: { usage: { weekly: { status: 'ok', percent: 42, resetsAt: '2026-10-15T00:00:00Z' } } },
 };
-const INSTALL = 15 * 60 * 1000;
+const WATCH = 3 * 60 * 1000;
 const reply = Buffer.concat([
   eventFrame('messageStart', { role: 'assistant' }),
   eventFrame('contentBlockDelta', { contentBlockIndex: 0, delta: { text: 'Hello from ' } }),
@@ -188,6 +196,21 @@ async function refusedOnly(page, from, at = 1) {
   for (const refusal of refusals) assert.match(refusal, /^This page is view-only, so it can't /);
 }
 
+async function restored(owner, ms = 60000) {
+  const deadline = Date.now() + ms;
+  let last = null;
+  for (;;) {
+    const now = await owned(owner);
+    if (JSON.parse(now).messages > 0 && now === last) return now;
+    if (Date.now() > deadline)
+      throw new Error(
+        `the owner's agent never showed its chat again after the reload: ${now}\n${await agentState(owner)}`
+      );
+    last = now;
+    await pause(1000);
+  }
+}
+
 const said = (page) =>
   page.evaluate(() => {
     const { agent } = document.querySelector('slicc-app').model;
@@ -195,34 +218,28 @@ const said = (page) =>
   });
 
 test('a follower watches the owner run with View, is refused a send, and sends with Control', {
-  timeout: 30 * 60 * 1000,
+  timeout: 35 * 60 * 1000,
 }, async (t) => {
   const hub = await startHub();
   t.after(() => hub.close());
   const owner = await owners.page(t);
+  const page = await followers.page(t);
   await owner.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
   await ready(owner);
   await owner.evaluate((url) => localStorage.setItem('slicc-os.tray-hub', url), hub.url);
   await owner.reload();
   await ready(owner);
-  await owner.within(INSTALL, () =>
-    document
-      .querySelector('slicc-app')
-      .model.settings?.accounts?.()
-      .some((a) => a.id === 'amazon-bedrock')
-  );
-  await owner.evaluate(
-    (secret) =>
-      document.querySelector('slicc-app').model.settings.connect('amazon-bedrock', secret),
-    KEY
-  );
-  await owner.evaluate(
-    (secret) => document.querySelector('slicc-app').model.settings.connect('adobe', secret),
-    ADOBE_TOKEN
-  );
+  await page.goto('/');
+  await ready(page);
+  await Promise.all([
+    agentUp(owner, { label: 'owner agent' }),
+    agentUp(page, { label: 'follower agent' }),
+  ]);
+  await listsAccount(owner, 'amazon-bedrock');
+  await connectAccount(owner, 'amazon-bedrock', KEY);
+  await connectAccount(owner, 'adobe', ADOBE_TOKEN);
   const { joinUrl } = await model(owner, (network) => network.status().links);
 
-  const page = await followers.page(t);
   await page.goto(`/#follow=${encodeURIComponent(joinUrl)}`);
   await page.until(new Function(`return !!(${dialog})()`));
   await page.evaluate(
@@ -241,12 +258,22 @@ test('a follower watches the owner run with View, is refused a send, and sends w
   );
   const [device] = await model(owner, (network) => network.status().links.devices);
   await model(owner, (network, id) => network.setAccess(id, 'view', true), device.id);
-  await owner.within(INSTALL, () =>
-    document
-      .querySelector('slicc-app')
-      .model.network.status()
-      .links.devices.some((d) => d.controlling === 'watch')
-  );
+  await owner
+    .within(WATCH, () =>
+      document
+        .querySelector('slicc-app')
+        .model.network.status()
+        .links.devices.some((d) => d.controlling === 'watch')
+    )
+    .catch(async (error) => {
+      const devices = await model(owner, (network) => network.status().links.devices);
+      const follow = await page.evaluate(() =>
+        document.querySelector('slicc-app').model.follow?.state()
+      );
+      throw new Error(
+        `the follower never watched: ${error.message}\nowner devices: ${JSON.stringify(devices)}\nfollower: ${JSON.stringify(follow)}\nfollower console:\n${page.console.slice(-15).join('\n')}`
+      );
+    });
 
   await owner.evaluate(() => {
     const { agent } = document.querySelector('slicc-app').model;
@@ -480,5 +507,76 @@ test('a follower watches the owner run with View, is refused a send, and sends w
   assert.ok(asked.some((body) => body.includes('From the follower')));
   assert.deepEqual(owner.errors, []);
   assert.deepEqual(page.errors, []);
+
+  const file = await owner.evaluate(async () => {
+    const walk = async (dir, prefix) => {
+      for await (const [name, handle] of dir.entries()) {
+        const path = `${prefix}${name}`;
+        if (handle.kind === 'file' && path.endsWith('@ai-ecoverse/slicc-agent/dist/link.js'))
+          return { path, text: await (await handle.getFile()).text() };
+        if (handle.kind === 'directory' && /^(opt|opt\/agent|.*node_modules.*)$/.test(path)) {
+          const found = await walk(handle, `${path}/`);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    return walk(await navigator.storage.getDirectory(), '');
+  });
+  assert.ok(file, 'the owner has the agent installed');
+  const newer = file.text.replace(
+    'new TextEncoder().encode(frame.hello)',
+    'new TextEncoder().encode(frame.hello.replace(/^slicc-agent-link\\/\\d+ /, "slicc-agent-link/9 "))'
+  );
+  assert.notEqual(newer, file.text);
+  await trust(owner, { [file.path]: newer });
+  await owner.reload();
+  await ready(owner);
+  await agentUp(owner, { budget: AGENT_RESTART, label: 'owner agent after the reload' });
+  const before = await restored(owner);
+  await page.evaluate(() => {
+    window.followWarnings = 0;
+    const warn = console.warn;
+    console.warn = (...args) => {
+      if (String(args[0]).startsWith('following the agent')) window.followWarnings += 1;
+      warn.apply(console, args);
+    };
+  });
+  const banner = await page.within(5 * 60 * 1000, () =>
+    document
+      .querySelector('slicc-app')
+      .model.notices?.list()
+      .find((item) => item.id === 'agent-mismatch')
+  );
+  assert.equal(banner.dismissible, false);
+  assert.equal(banner.title, "This tab can't follow that SLICC");
+  assert.equal(
+    await page.evaluate(() => document.querySelector('slicc-app').model.agent.readOnly?.()),
+    'Watch only.'
+  );
+  const sent = await page.evaluate(async () => {
+    const { agent } = document.querySelector('slicc-app').model;
+    window.firstAgent = agent;
+    window.followWarnings = 0;
+    return agent.send(agent.active(), 'From a mismatched follower').then(
+      () => 'sent',
+      (error) => error.code ?? error.message
+    );
+  });
+  assert.equal(sent, 'EPROTO');
+  await pause(10000);
+  const after = await page.evaluate(() => {
+    const { agent, notices } = document.querySelector('slicc-app').model;
+    return {
+      same: agent === window.firstAgent,
+      banners: notices.list().filter((item) => item.id === 'agent-mismatch').length,
+      warnings: window.followWarnings,
+    };
+  });
+  assert.deepEqual(after, { same: true, banners: 1, warnings: 0 });
+  assert.equal(await owned(owner), before);
+  assert.doesNotMatch(await said(owner), /From a mismatched follower/);
+  assert.ok(!asked.some((body) => body.includes('From a mismatched follower')));
+  await shoot(page, 'follower-watch-only', { show: 'chat' });
   await owner.evaluate(() => localStorage.removeItem('slicc-os.tray-hub'));
 });
