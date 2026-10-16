@@ -285,28 +285,75 @@ export const trace = (...parts) =>
   process.env.GUARD_TRACE && process.stderr.write(`guard-set ${Date.now()} ${parts.join(' ')}\n`);
 const only = (list) => (list ? list.split(',') : null);
 const KNOWN = {
-  'C4.static-cross-site':
-    'slicc-browsers 1.7.3: errorFrame seen on the out-of-process iframe; the control’s frame is same-site with its page, so its beacon also depends on the page’s refused init script',
-  'C4.script-cross-site':
-    'slicc-browsers 1.7.3: errorFrame seen on the out-of-process iframe; the control’s frame is same-site with its page, so its beacon also depends on the page’s refused init script',
-  'C4.static-same-site':
-    'seven target only: bios protects every sliccy.ai host, so no unprotected origin is same-site with seven and ordinary-same-site is left unmapped, yet the runner runs the row (it skips the vault target only). Both legs then never load anything: the guarded leg shows the protected document never served and no frame or target on it, so nothing reached the client',
-  'C4.script-same-site':
-    'seven target only: bios protects every sliccy.ai host, so no unprotected origin is same-site with seven and ordinary-same-site is left unmapped, yet the runner runs the row (it skips the vault target only). Both legs then never load anything: the guarded leg shows the protected document never served and no frame or target on it, so nothing reached the client',
-  'C3.popup-self-nav':
-    'control only, intermittent (proxy, vault and vault-x): the client’s own Page.navigate of the ordinary popup returns ERR_ABORTED against the popup’s first load, and the later href sometimes does not land, so the control’s target document is not served. No exposure: on every run the guarded leg passes, the protected document is never served (fixture log), the client gets no attachedToTarget for it, and no event on any client session names its host',
-  'C3.popup-on-redirect-302':
-    'control only, intermittent (proxy): a browser-level auto-attach attaches every existing target (other tabs, chrome:// pages), and the children steps run on whichever of them attach in time, so the child refusals land on one leg and not the other. No exposure: the guarded leg never gets an attachedToTarget for the protected popup, and the only events naming its host are the opener’s pre-action beacon and Page.windowOpen, which carry the client’s own hop URL with the target percent-encoded in its query',
-  'C3.popup-on-redirect-chain':
-    'control only, intermittent (proxy): a browser-level auto-attach attaches every existing target (other tabs, chrome:// pages), and the children steps run on whichever of them attach in time, so the child refusals land on one leg and not the other. No exposure: the guarded leg never gets an attachedToTarget for the protected popup, and the only events naming its host are the opener’s pre-action beacon and Page.windowOpen, which carry the client’s own hop URL with the target percent-encoded in its query',
-  'C6.read-cookies':
-    'slicc-browsers: a page-or-browser step with browserContextId runs on the page session when browserSession is false',
-  'C6.write-cookies':
-    'slicc-browsers: a page-or-browser step with browserContextId runs on the page session when browserSession is false',
-  'C6.storage-getCookies':
-    'slicc-browsers: a page-or-browser step with browserContextId runs on the page session when browserSession is false',
+  'C4.static-cross-site': {
+    paths: ['proxy'],
+    targets: null,
+    legs: ['control'],
+    why: 'the control’s frame is same-site with its page, so its beacon also depends on the page’s refused init script; slicc-browsers 1.7.4 adds that dependsOn',
+  },
+  'C4.script-cross-site': {
+    paths: ['proxy'],
+    targets: null,
+    legs: ['control'],
+    why: 'the control’s frame is same-site with its page, so its beacon also depends on the page’s refused init script; slicc-browsers 1.7.4 adds that dependsOn',
+  },
+  'C4.static-same-site': {
+    paths: ['proxy'],
+    targets: ['seven'],
+    legs: ['control', 'guarded'],
+    why: 'seven target only: bios protects every sliccy.ai host, so no unprotected origin is same-site with seven and ordinary-same-site is left unmapped, yet the runner runs the row (it skips the vault target only). Both legs then never load anything: the guarded leg shows the protected document never served and no frame or target on it, so nothing reached the client',
+  },
+  'C4.script-same-site': {
+    paths: ['proxy'],
+    targets: ['seven'],
+    legs: ['control', 'guarded'],
+    why: 'seven target only: bios protects every sliccy.ai host, so no unprotected origin is same-site with seven and ordinary-same-site is left unmapped, yet the runner runs the row (it skips the vault target only). Both legs then never load anything: the guarded leg shows the protected document never served and no frame or target on it, so nothing reached the client',
+  },
+  'C3.popup-self-nav': {
+    paths: ['proxy'],
+    targets: null,
+    legs: ['control'],
+    why: 'control only, intermittent (proxy, vault and vault-x): the client’s own Page.navigate of the ordinary popup returns ERR_ABORTED against the popup’s first load, and the later href sometimes does not land, so the control’s target document is not served. No exposure: on every run the guarded leg passes, the protected document is never served (fixture log), the client gets no attachedToTarget for it, and no event on any client session names its host',
+  },
+  'C3.popup-on-redirect-302': {
+    paths: ['proxy'],
+    targets: null,
+    legs: ['control'],
+    why: 'control only, intermittent (proxy): a browser-level auto-attach attaches every existing target (other tabs, chrome:// pages), and the children steps run on whichever of them attach in time, so the child refusals land on one leg and not the other. No exposure: the guarded leg never gets an attachedToTarget for the protected popup, and the only events naming its host are the opener’s pre-action beacon and Page.windowOpen, which carry the client’s own hop URL with the target percent-encoded in its query',
+  },
+  'C3.popup-on-redirect-chain': {
+    paths: ['proxy'],
+    targets: null,
+    legs: ['control'],
+    why: 'control only, intermittent (proxy): a browser-level auto-attach attaches every existing target (other tabs, chrome:// pages), and the children steps run on whichever of them attach in time, so the child refusals land on one leg and not the other. No exposure: the guarded leg never gets an attachedToTarget for the protected popup, and the only events naming its host are the opener’s pre-action beacon and Page.windowOpen, which carry the client’s own hop URL with the target percent-encoded in its query',
+  },
+  'C6.read-cookies': {
+    paths: ['extension'],
+    targets: null,
+    legs: ['control'],
+    why: 'slicc-browsers: a page-or-browser step with browserContextId runs on the page session when browserSession is false',
+  },
+  'C6.write-cookies': {
+    paths: ['extension'],
+    targets: null,
+    legs: ['control'],
+    why: 'slicc-browsers: a page-or-browser step with browserContextId runs on the page session when browserSession is false',
+  },
+  'C6.storage-getCookies': {
+    paths: ['extension'],
+    targets: null,
+    legs: ['control', 'live'],
+    why: 'slicc-browsers: a page-or-browser step with browserContextId runs on the page session when browserSession is false',
+  },
 };
 const failing = (row) => row.control === 'fail' || row.guarded === 'fail' || row.live === 'fail';
+const known = (row) => {
+  const entry = KNOWN[row.id];
+  if (!entry?.paths.includes(row.transport)) return null;
+  if (entry.targets && !entry.targets.includes(row.target)) return null;
+  const legs = ['control', 'guarded', 'live'].filter((leg) => row[leg] === 'fail');
+  return legs.every((leg) => entry.legs.includes(leg)) ? entry : null;
+};
 
 export function shared(path) {
   const chosen = {
@@ -359,7 +406,7 @@ export function shared(path) {
         results.push(...execution.results);
       }
       const unknown = results.filter(
-        (row) => row.variant === variant && failing(row) && !KNOWN[row.id]
+        (row) => row.variant === variant && failing(row) && !known(row)
       );
       assert.deepEqual(
         unknown.map(({ id, target, control, guarded, live, why, errors }) => ({
@@ -378,7 +425,7 @@ export function shared(path) {
   }
   test(`the shared set is complete on the ${path} path: no row missing, none skipped for a missing observer`, async () => {
     const report = summary({ set, results, guard: 'slicc-bios', sha: process.env.GUARD_SHA });
-    const known = results.filter((row) => failing(row) && KNOWN[row.id]);
+    const accepted = results.filter((row) => failing(row) && known(row));
     const skips = {};
     for (const row of results) {
       if (row.control === 'skip' || row.guarded === 'skip') {
@@ -394,8 +441,8 @@ export function shared(path) {
       ...Object.entries(skips).map(
         ([reason, rows]) => `skip ${reason} (${rows.length}): ${rows.join(' ')}`
       ),
-      ...known.map(
-        (row) => `known ${row.id}@${row.target}/${row.variant}: ${KNOWN[row.id]} (${row.why})`
+      ...accepted.map(
+        (row) => `known ${row.id}@${row.target}/${row.variant}: ${known(row).why} (${row.why})`
       ),
     ];
     process.stdout.write(`${lines.join('\n')}\n`);
@@ -407,6 +454,6 @@ export function shared(path) {
     if (process.env.GUARD_IDS || process.env.GUARD_TARGETS || process.env.GUARD_VARIANTS) return;
     assert.deepEqual(report.missing, []);
     assert.equal(report.observerSkipped, 0);
-    assert.equal(results.filter((row) => failing(row) && !KNOWN[row.id]).length, 0, report.line);
+    assert.equal(results.filter((row) => failing(row) && !known(row)).length, 0, report.line);
   });
 }
