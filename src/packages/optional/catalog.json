@@ -150,6 +150,13 @@
     "commands": ["dig"],
     "size": 207317
   },
+  "@ai-ecoverse/wasix-websocat": {
+    "id": "websocat",
+    "label": "websocat",
+    "description": "Connects to WebSocket servers (ws:// and wss://) from the terminal. An upstream alpha (websocat 4). It speaks raw TCP, so hosts outside seven need an exit: a linked slicc CLI or a Tailscale exit node. The cmd: and exec: endpoints don't work yet.",
+    "commands": ["websocat"],
+    "size": 1267201
+  },
   "@ai-ecoverse/wasix-gnupg": {
     "id": "gpg",
     "label": "GnuPG",

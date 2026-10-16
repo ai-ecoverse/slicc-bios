@@ -1085,6 +1085,141 @@ test('the real slicc CLI carries a program WebSocket over the link: text, binary
   );
 });
 
+const WEBSOCAT_S = 20;
+
+const ECHO = 'wss://echo.sliccy.ai/';
+
+async function installWebsocat(page) {
+  const { readFile } = await import('node:fs/promises');
+  const { dependencies } = JSON.parse(
+    await readFile(new URL('../../src/packages/optional/package.json', import.meta.url), 'utf8')
+  );
+  await page.within(300000, () =>
+    document
+      .querySelector('slicc-app')
+      .model.updates.packages()
+      .some((item) => item.id === 'websocat' && item.state === 'available')
+  );
+  const result = await page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.updates.actPackage('websocat', 'install')
+      .then(
+        () => 'ok',
+        (error) => error.message
+      )
+  );
+  assert.equal(result, 'ok');
+  const row = await page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.updates.packages()
+      .find((item) => item.id === 'websocat')
+  );
+  assert.equal(row.version, dependencies['@ai-ecoverse/wasix-websocat']);
+}
+
+async function websocat(page, url, name) {
+  const message = `${name} says ${6 * 7}`;
+  const started = Date.now();
+  const { code, out } = await shell(
+    page,
+    `{ echo '${message}' | timeout ${WEBSOCAT_S} websocat ${url} 2> /home/${name}.err; }`,
+    name,
+    (WEBSOCAT_S + 40) * 1000
+  );
+  const err = (await kernelFile(page, `${name}.err`)).trim();
+  return { code, out, err, message, ms: Date.now() - started };
+}
+
+const STAGES = [
+  ['DNS', /resolv|lookup|getaddrinfo|name or service|no such host|os error 44|dns/i],
+  ['TLS', /tls|certificate|rustls|webpki|UnknownIssuer|alert/i],
+  ['closed socket', /reset|closed|broken pipe|eof|os error (15|64)\b/i],
+  ['TCP connect', /connect|refused|unreachable|os error (14|23|40)\b/i],
+  ['WebSocket upgrade', /upgrade|status|http/i],
+];
+
+function failure({ code, out, err, message }) {
+  if (code === '0' && out === message) return null;
+  const said = [err, out].filter(Boolean).join('\n') || '(nothing)';
+  if (code === '124') return `no answer within ${WEBSOCAT_S} s, websocat said: ${said}`;
+  if (code === '0') return `closed socket: no echo of ${JSON.stringify(message)}: ${said}`;
+  const stage = STAGES.find(([, pattern]) => pattern.test(said))?.[0] ?? 'unknown stage';
+  return `${stage} failed, exit ${code}, websocat said: ${said}`;
+}
+
+function refusedFast(result, what) {
+  const seen = `${what}: ${JSON.stringify(result)}`;
+  assert.notEqual(result.code, '0', seen);
+  assert.notEqual(result.code, '124', seen);
+  assert.ok(result.ms < 15000, seen);
+  assert.match(`${result.err}\n${result.out}`, /ERROR|error/, seen);
+}
+
+test('the real slicc CLI as the exit for kernel websocat: ws:// to its loopback, wss://echo.sliccy.ai/ with the certificate chain checked, and refused under Directly', {
+  skip: !cli,
+}, async (t) => {
+  const probe = await fetch(ECHO.replace('wss:', 'https:')).then(
+    (response) => response.status,
+    (error) => error.message
+  );
+  assert.equal(probe, 426, `${ECHO} isn't serving its echo yet (sliccy-ai#38): GET gave ${probe}`);
+  const { WebSocketServer } = await import('ws');
+  const echo = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  echo.on('connection', (socket) =>
+    socket.on('message', (data, binary) => socket.send(data, { binary }))
+  );
+  await new Promise((resolve) => echo.once('listening', resolve));
+  t.after(() => echo.close());
+  const { port } = echo.address();
+  const page = await chrome.page(t);
+  await boot(page);
+  await ready(page);
+  await installWebsocat(page);
+  const node = spawn(cli, ['attach', '--signal', 'stdio', '--name', 'ref-node', '--no-kernel'], {
+    stdio: ['pipe', 'pipe', 'inherit'],
+  });
+  t.after(() => node.kill());
+  await page.expose('sliccLinkSend', (message) => node.stdin.write(`${JSON.stringify(message)}\n`));
+  createInterface({ input: node.stdout }).on('line', (line) =>
+    page.evaluate((line) => globalThis.sliccLinkReceive(line), line).catch(() => {})
+  );
+  await page.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.network.status()
+      .links?.devices.some((d) => d.state === 'connected')
+  );
+  const ws = await websocat(page, `ws://ref-node.slicc.internal:${port}/`, 'websocat-ws');
+  assert.equal(failure(ws), null, "ws:// to the CLI's loopback");
+  const wss = await websocat(page, ECHO, 'websocat-wss');
+  assert.equal(failure(wss), null, `${ECHO} through the CLI exit, without -k`);
+  await page.evaluate(() => document.querySelector('slicc-app').model.network.setExit(null));
+  refusedFast(await websocat(page, ECHO, 'websocat-direct'), `${ECHO} under Directly`);
+  refusedFast(
+    await websocat(page, 'ws://203.0.113.9/', 'websocat-direct-address'),
+    'ws://203.0.113.9/ under Directly'
+  );
+  assert.deepEqual(page.errors, []);
+});
+
+test('without an exit, kernel websocat to a host outside seven fails at once with a non-zero exit', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await ready(page);
+  await installWebsocat(page);
+  assert.equal(
+    await page.evaluate(
+      () => document.querySelector('slicc-app').model.network.status().exit ?? null
+    ),
+    null
+  );
+  refusedFast(await websocat(page, 'ws://echo.sliccy.ai/', 'websocat-none'), 'a name');
+  refusedFast(await websocat(page, 'ws://203.0.113.9/', 'websocat-none-address'), 'an address');
+  assert.deepEqual(page.errors, []);
+});
+
 test('the real slicc CLI carries a kernel program datagram over the link: an echo from its loopback, and EACCES under --deny on a connected socket', {
   skip: !cli,
 }, async (t) => {
