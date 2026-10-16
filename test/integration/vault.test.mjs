@@ -421,6 +421,87 @@ test('/dev/sealed relays to the vault with the kernel stamp', async (t) => {
   assert.deepEqual(page.errors, []);
 });
 
+test('under users enforce, a cone’s /dev/sealed request reaches the vault with the cone’s stamp, and seven names the sudo group in its hello', async (t) => {
+  const page = await chrome.page(t);
+  await page.init(override(fake.origin));
+  await boot(page);
+  assert.ok(
+    await logged(() =>
+      fake.log.some((entry) => entry.op === 'hello' && Number.isInteger(entry.sudoGid))
+    ),
+    JSON.stringify(fake.log.filter((entry) => entry.op === 'hello'))
+  );
+  const { sudoGid } = fake.log.findLast(
+    (entry) => entry.op === 'hello' && Number.isInteger(entry.sudoGid)
+  );
+  await run(
+    page,
+    `clear; sudo -u cone bash -c 'exec 3<>/dev/sealed; printf "{\\"v\\":1,\\"op\\":\\"list\\"}" >&3; cat <&3'; echo; echo "CO""NE=$(id -u cone)"`
+  );
+  const uid = Number(
+    await page.until(() => {
+      const { dock } = document.querySelector('slicc-app');
+      const id = dock.api.panels
+        .map((panel) => panel.id)
+        .findLast((id) => id.startsWith('terminal:'));
+      return /CONE=(\d+)/.exec(dock.content(id).screen.textContent)?.[1];
+    })
+  );
+  assert.ok(uid >= 1000, String(uid));
+  assert.ok(
+    await logged(() => fake.log.some((entry) => entry.role === 'stamp' && entry.uid === uid))
+  );
+  const stamp = fake.log.find((entry) => entry.role === 'stamp' && entry.uid === uid);
+  assert.equal(stamp.users, 'enforce');
+  assert.ok(stamp.groups?.includes(sudoGid), JSON.stringify(stamp));
+  assert.deepEqual(page.errors, []);
+});
+
+test('a tab that takes over from the owner says hello again with the sudo group its own first hello lacked', async (t) => {
+  const first = await chrome.page(t);
+  await first.init(override(fake.origin));
+  await boot(first);
+  assert.ok(
+    await logged(() =>
+      fake.log.some((entry) => entry.op === 'hello' && Number.isInteger(entry.sudoGid))
+    )
+  );
+  const kept = await first.evaluate(() => localStorage.getItem('slicc-os.vault-sudo-gid'));
+  assert.ok(kept);
+  await first.evaluate(() => localStorage.removeItem('slicc-os.vault-sudo-gid'));
+  const before = fake.log.length;
+  const second = await first.tab();
+  await second.goto('/');
+  await second.until(
+    () => document.querySelector('slicc-app')?.model?.tabs?.state().role === 'follower'
+  );
+  assert.ok(
+    await logged(() =>
+      fake.log
+        .slice(before)
+        .some((entry) => entry.op === 'hello' && entry.role === 'page' && entry.sudoGid === null)
+    )
+  );
+  await second.evaluate((gid) => localStorage.setItem('slicc-os.vault-sudo-gid', gid), kept);
+  const promoted = fake.log.length;
+  await first.close();
+  await second.within(
+    120000,
+    () => document.querySelector('slicc-app')?.model?.tabs?.state().role === 'owner'
+  );
+  assert.ok(
+    await logged(() =>
+      fake.log
+        .slice(promoted)
+        .some(
+          (entry) => entry.op === 'hello' && entry.role === 'page' && entry.sudoGid === Number(kept)
+        )
+    ),
+    JSON.stringify(fake.log.slice(promoted).filter((entry) => entry.op === 'hello'))
+  );
+  assert.deepEqual(second.errors, []);
+});
+
 const cli = process.env.SLICC_CLI;
 
 test('a jerk sign-in cancelled while the linked computer doesn’t answer leaves no jerk running there', {
