@@ -5,6 +5,7 @@ import { createInterface } from 'node:readline';
 import { after, test } from 'node:test';
 import { boot, ready, run } from './bios.mjs';
 import { launch } from './chrome.mjs';
+import { attach, HOST_CDP } from './cli.mjs';
 import { shoot } from './shots.mjs';
 
 const chrome = await launch();
@@ -403,7 +404,7 @@ test('links the real slicc CLI over stdio signaling, and kernel curl reaches its
   const page = await chrome.page(t);
   await boot(page);
   await ready(page);
-  const node = spawn(cli, ['attach', '--signal', 'stdio', '--name', 'ref-node', '--no-kernel'], {
+  const node = attach(cli, ['--signal', 'stdio', '--name', 'ref-node', '--no-kernel'], {
     stdio: ['pipe', 'pipe', 'inherit'],
   });
   t.after(() => node.kill());
@@ -447,6 +448,64 @@ test('links the real slicc CLI over stdio signaling, and kernel curl reaches its
   assert.ok(seen.indexOf('offer') < seen.indexOf('node:answer'));
 });
 
+test("the real slicc CLI in these tests never reaches the host's debugging ports 9222–9229: its discovery is off, its policy denies them to seven, and a decoy port under the same rule is refused before a connection is made", {
+  skip: !cli,
+}, async (t) => {
+  const listen = async (name) => {
+    const hits = [];
+    const server = createServer((request, response) => response.end(`${name} ${request.url}\n`));
+    server.on('connection', () => hits.push(name));
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => server.close());
+    return { hits, port: server.address().port };
+  };
+  const open = await listen('open');
+  const decoy = await listen('decoy');
+  const page = await chrome.page(t);
+  await boot(page);
+  await ready(page);
+  const said = [];
+  const node = attach(
+    cli,
+    ['--signal', 'stdio', '--name', 'ref-node', '--no-kernel'],
+    { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, SLICC_DEBUG: '1' } },
+    [decoy.port]
+  );
+  t.after(() => node.kill());
+  createInterface({ input: node.stderr }).on('line', (line) => said.push(line));
+  await page.expose('sliccLinkSend', (message) => node.stdin.write(`${JSON.stringify(message)}\n`));
+  createInterface({ input: node.stdout }).on('line', (line) =>
+    page.evaluate((line) => globalThis.sliccLinkReceive(line), line).catch(() => {})
+  );
+  const policy = await page.within(
+    60000,
+    () =>
+      document
+        .querySelector('slicc-app')
+        .model.network.status()
+        .links?.devices.find((d) => d.state === 'connected')?.policy
+  );
+  for (const port of [...HOST_CDP, decoy.port])
+    for (const host of ['127.0.0.0/8', '[::1]/128'])
+      assert.ok(policy.includes(`${host}:${port}`), `${host}:${port} isn't denied: ${policy}`);
+  const reached = await shell(
+    page,
+    `for i in 1 2 3 4 5 6 7 8 9 10; do curl -s --noproxy '*' http://ref-node.slicc.internal:${open.port}/open && break; sleep 1; done`,
+    'cdp-open'
+  );
+  assert.deepEqual(reached, { code: '0', out: 'open /open' }, said.join('\n'));
+  const refused = await shell(
+    page,
+    `curl -s --noproxy '*' http://ref-node.slicc.internal:${decoy.port}/decoy`,
+    'cdp-decoy'
+  );
+  assert.notEqual(refused.code, '0', `the decoy answered: ${refused.out}`);
+  assert.deepEqual(decoy.hits, [], `the decoy saw a connection: ${refused.out}`);
+  assert.deepEqual(open.hits, ['open']);
+  const probes = said.filter((line) => HOST_CDP.some((port) => line.includes(`:${port}`)));
+  assert.deepEqual(probes, [], said.join('\n'));
+});
+
 test('the real slicc CLI: ssh into it with its pinned host key, and as the exit, automatic for a local CLI, it resolves names from its hosts file, or refuses them under its policy', {
   skip: !cli,
 }, async (t) => {
@@ -476,21 +535,11 @@ test('the real slicc CLI: ssh into it with its pinned host key, and as the exit,
   await page.expose('sliccLinkSend', (message) =>
     current?.stdin.write(`${JSON.stringify(message)}\n`)
   );
-  const attach = async (extra) => {
+  const relink = async (extra) => {
     current?.kill();
-    const node = spawn(
+    const node = attach(
       cli,
-      [
-        'attach',
-        '--signal',
-        'stdio',
-        '--name',
-        'ref-node',
-        '--no-kernel',
-        '--hosts',
-        hosts,
-        ...extra,
-      ],
+      ['--signal', 'stdio', '--name', 'ref-node', '--no-kernel', '--hosts', hosts, ...extra],
       {
         stdio: ['pipe', 'pipe', 'inherit'],
       }
@@ -507,7 +556,7 @@ test('the real slicc CLI: ssh into it with its pinned host key, and as the exit,
         .links?.devices.some((d) => d.state === 'connected')
     );
   };
-  await attach(['--runner', 'sh', '-c']);
+  await relink(['--runner', 'sh', '-c']);
   const devices = await page.evaluate(
     () => document.querySelector('slicc-app').model.network.status().links.devices
   );
@@ -595,7 +644,7 @@ test('the real slicc CLI: ssh into it with its pinned host key, and as the exit,
     'hosts-named'
   );
   assert.deepEqual(named, { code: '0', out: 'hosts /named' });
-  await attach(['--deny', `${lan}/32`]);
+  await relink(['--deny', `${lan}/32`]);
   await page.until(
     () =>
       document
@@ -664,9 +713,9 @@ test('the real slicc CLI carries <port>.kernel.localhost into the page, and the 
   await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
   const kernelPort = probe.address().port;
   await new Promise((resolve) => probe.close(resolve));
-  const node = spawn(
+  const node = attach(
     cli,
-    ['attach', '--signal', 'stdio', '--name', 'ref-node', '--kernel-port', String(kernelPort)],
+    ['--signal', 'stdio', '--name', 'ref-node', '--kernel-port', String(kernelPort)],
     {
       stdio: ['pipe', 'pipe', 'inherit'],
     }
@@ -738,10 +787,9 @@ test('the real slicc CLI shares another browser over cdp: the 9222 facade reache
   const page = await chrome.page(t);
   await boot(page);
   await ready(page);
-  const node = spawn(
+  const node = attach(
     cli,
     [
-      'attach',
       '--signal',
       'stdio',
       '--name',
@@ -822,9 +870,9 @@ test('the real slicc CLI shares a folder: the kernel mounts <device>/<name> over
   const page = await chrome.page(t);
   await boot(page);
   await ready(page);
-  const node = spawn(
+  const node = attach(
     cli,
-    ['attach', '--signal', 'stdio', '--name', 'ref-node', '--no-kernel', '--mount', `${dir}:proj`],
+    ['--signal', 'stdio', '--name', 'ref-node', '--no-kernel', '--mount', `${dir}:proj`],
     {
       stdio: ['pipe', 'pipe', 'inherit'],
     }
@@ -892,9 +940,9 @@ test('a remembered linked folder mounted before its CLI links fills in when the 
   await ready(page);
   const before = await shell(page, 'grep -c " /mnt/proj " /proc/mounts', 'fs-later-before');
   assert.equal(before.out, '1');
-  const node = spawn(
+  const node = attach(
     cli,
-    ['attach', '--signal', 'stdio', '--name', 'ref-node', '--no-kernel', '--mount', `${dir}:proj`],
+    ['--signal', 'stdio', '--name', 'ref-node', '--no-kernel', '--mount', `${dir}:proj`],
     { stdio: ['pipe', 'pipe', 'inherit'] }
   );
   t.after(() => node.kill());
@@ -922,10 +970,9 @@ test('the real slicc CLI lists its folders on its device row, and Mount and Ejec
   const page = await chrome.page(t);
   await boot(page);
   await ready(page);
-  const node = spawn(
+  const node = attach(
     cli,
     [
-      'attach',
       '--signal',
       'stdio',
       '--name',
@@ -1027,15 +1074,11 @@ test('the real slicc CLI carries a program WebSocket over the link: text, binary
   await page.expose('sliccLinkSend', (message) =>
     current?.stdin.write(`${JSON.stringify(message)}\n`)
   );
-  const attach = async (extra) => {
+  const relink = async (extra) => {
     current?.kill();
-    const node = spawn(
-      cli,
-      ['attach', '--signal', 'stdio', '--name', 'ref-node', '--no-kernel', ...extra],
-      {
-        stdio: ['pipe', 'pipe', 'inherit'],
-      }
-    );
+    const node = attach(cli, ['--signal', 'stdio', '--name', 'ref-node', '--no-kernel', ...extra], {
+      stdio: ['pipe', 'pipe', 'inherit'],
+    });
     t.after(() => node.kill());
     current = node;
     createInterface({ input: node.stdout }).on('line', (line) =>
@@ -1048,7 +1091,7 @@ test('the real slicc CLI carries a program WebSocket over the link: text, binary
         .links?.devices.some((d) => d.state === 'connected')
     );
   };
-  await attach([]);
+  await relink([]);
   await page.evaluate(async (script) => {
     const home = await (await navigator.storage.getDirectory()).getDirectoryHandle('home');
     const writable = await (await home.getFileHandle('ws.sh', { create: true })).createWritable();
@@ -1076,7 +1119,7 @@ test('the real slicc CLI carries a program WebSocket over the link: text, binary
     'ws-far'
   );
   assert.ok(far.out.includes(`880e0fa1${hex('far end done')}`), far.out);
-  await attach(['--deny', '127.0.0.1/32']);
+  await relink(['--deny', '127.0.0.1/32']);
   const denied = await shell(page, String.raw`bash /home/ws.sh '' ''`, 'ws-denied');
   assert.ok(denied.out.startsWith(hex('HTTP/1.1 502')), denied.out);
   assert.ok(
@@ -1177,7 +1220,7 @@ test('the real slicc CLI as the exit for kernel websocat: ws:// to its loopback,
   await boot(page);
   await ready(page);
   await installWebsocat(page);
-  const node = spawn(cli, ['attach', '--signal', 'stdio', '--name', 'ref-node', '--no-kernel'], {
+  const node = attach(cli, ['--signal', 'stdio', '--name', 'ref-node', '--no-kernel'], {
     stdio: ['pipe', 'pipe', 'inherit'],
   });
   t.after(() => node.kill());
@@ -1241,18 +1284,9 @@ test('the real slicc CLI carries a kernel program datagram over the link: an ech
   const page = await chrome.page(t);
   await boot(page);
   await ready(page);
-  const node = spawn(
+  const node = attach(
     cli,
-    [
-      'attach',
-      '--signal',
-      'stdio',
-      '--name',
-      'ref-node',
-      '--no-kernel',
-      '--deny',
-      '203.0.113.0/24',
-    ],
+    ['--signal', 'stdio', '--name', 'ref-node', '--no-kernel', '--deny', '203.0.113.0/24'],
     { stdio: ['pipe', 'pipe', 'inherit'] }
   );
   t.after(() => node.kill());

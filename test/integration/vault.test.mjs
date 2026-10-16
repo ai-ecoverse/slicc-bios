@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { after, test } from 'node:test';
 import { boot, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
+import { attach } from './cli.mjs';
 import { startFakeVault } from './fake-vault.mjs';
 
 const fake = await startFakeVault({
@@ -677,7 +678,6 @@ test('a jerk sign-in cancelled while the linked computer doesn’t answer leaves
   const { existsSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
-  const { spawn } = await import('node:child_process');
   const { createInterface } = await import('node:readline');
   const dir = await mkdtemp(join(tmpdir(), 'vault-jerk-'));
   await writeFile(
@@ -693,14 +693,10 @@ test('a jerk sign-in cancelled while the linked computer doesn’t answer leaves
     () => document.querySelector('slicc-app').model.vault?.availability() === 'ready'
   );
   const said = [];
-  const node = spawn(
-    native,
-    ['attach', '--signal', 'stdio', '--name', 'jerk-node', '--no-kernel'],
-    {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
-    }
-  );
+  const node = attach(native, ['--signal', 'stdio', '--name', 'jerk-node', '--no-kernel'], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+  });
   t.after(() => {
     node.kill('SIGCONT');
     node.kill();
