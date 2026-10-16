@@ -188,6 +188,7 @@ export function present({
         storage,
         login,
         notices: model.notices,
+        ...(model.approvals ? { approvals: model.approvals } : {}),
         page: { tab: board.id, run: (argv, caller) => panelCommand(app, argv, caller) },
       });
       page = adapter ?? null;
