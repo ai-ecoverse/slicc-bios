@@ -329,3 +329,17 @@ test('uname -r prints the kernel’s release, the one /proc/sys/kernel/osrelease
   assert.equal(system, 'Linux');
   assert.deepEqual(page.errors, []);
 });
+
+test('cat follows a chain of 40 symlinks, as Linux does, and stops at 41', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await run(
+    page,
+    'clear; mkdir -p /tmp/c40 && cd /tmp/c40 && for i in $(seq 0 38); do ln -sfn /tmp/c40/l$((i+1)) l$i; done && printf forty-two > /tmp/c40.txt && ln -sfn /tmp/c40.txt l39 && ln -sfn /tmp/c40/l0 over; echo "chain=$(cat /tmp/c40/l0)"; cat /tmp/c40/over > /dev/null 2>&1; echo over=$?; echo done-$((40 + 2))'
+  );
+  await shows(page, 'done-42');
+  const text = await screen(page);
+  assert.match(text, /chain=forty-two/);
+  assert.match(text, /over=1/);
+  assert.deepEqual(page.errors, []);
+});
