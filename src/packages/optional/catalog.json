@@ -164,7 +164,6 @@
     "commands": ["fnox"],
     "size": 2154238
   },
-
   "@ai-ecoverse/wasix-gnupg": {
     "id": "gpg",
     "label": "GnuPG",
