@@ -160,7 +160,13 @@ const guestSaid = (page) =>
 
 async function shootGuest(page, name) {
   const capture = async (file, clip) => {
-    await new Promise((resolve) => setTimeout(resolve, 800));
+    await page.within(10000, async () => {
+      await document.fonts.ready;
+      const chat = document.querySelector('slicc-chat');
+      const turns = chat.shadowRoot?.querySelectorAll('swc-conversation-turn').length ?? 0;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      return !chat.hidden && turns > 0 && chat.updateComplete.then(() => true);
+    });
     const { data } = await page.send('Page.captureScreenshot', {
       format: 'png',
       ...(clip ? { clip } : {}),
@@ -648,15 +654,34 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
     (id) => document.querySelector('slicc-app').model.approvals.decide(id, 'once'),
     steer.id
   );
-  await new Promise((resolve) => setTimeout(resolve, 2000));
-  assert.equal(
-    await owner.evaluate(() => {
+  const inbox = () =>
+    owner.evaluate(() => {
       const { agent } = document.querySelector('slicc-app').model;
-      return agent.busy(agent.active());
-    }),
-    true,
-    'a guest’s Stop stopped the run'
-  );
+      const id = agent.active();
+      return {
+        busy: agent.busy(id),
+        queued: agent
+          .queue(id)
+          .filter((item) => item.origin === 'guest')
+          .map((item) => ({ text: item.text, mode: item.mode })),
+      };
+    });
+  await owner
+    .within(60000, () => {
+      const { agent } = document.querySelector('slicc-app').model;
+      return agent
+        .queue(agent.active())
+        .some((item) => item.origin === 'guest' && item.text.includes('Not a steer'));
+    })
+    .catch(async (error) => {
+      throw new Error(
+        `the approved guest message never queued: ${error.message}\n${JSON.stringify(await inbox())}`
+      );
+    });
+  assert.deepEqual(await inbox(), {
+    busy: true,
+    queued: [{ text: 'Not a steer', mode: 'queue' }],
+  });
   release();
   await owner.until(() => {
     const { agent } = document.querySelector('slicc-app').model;
