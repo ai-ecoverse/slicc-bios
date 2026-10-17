@@ -138,6 +138,7 @@ export function present({
   storage,
   login,
   disk,
+  guests = null,
   wrap = (agent) => agent,
 }) {
   const listeners = new Set();
@@ -164,6 +165,15 @@ export function present({
     void previous?.close().catch(() => undefined);
   }
 
+  const options = (model) => ({
+    storage,
+    login,
+    notices: model.notices,
+    ...(model.approvals ? { approvals: model.approvals } : {}),
+    ...(guests ? { guests } : {}),
+    page: { tab: board.id, run: (argv, caller) => panelCommand(app, argv, caller) },
+  });
+
   async function join(owner, owning, mine) {
     const loaded = owner.versions?.agent ? await chat().catch(() => null) : null;
     if (mine !== generation) return null;
@@ -184,13 +194,7 @@ export function present({
         return null;
       }
       connection = joined;
-      const { page: adapter, ...created } = loaded.createAgentModel(joined, {
-        storage,
-        login,
-        notices: model.notices,
-        ...(model.approvals ? { approvals: model.approvals } : {}),
-        page: { tab: board.id, run: (argv, caller) => panelCommand(app, argv, caller) },
-      });
+      const { page: adapter, ...created } = loaded.createAgentModel(joined, options(model));
       page = adapter ?? null;
       model = {
         ...model,

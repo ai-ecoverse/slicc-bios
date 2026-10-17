@@ -72,7 +72,7 @@ import {
 } from './tailscale.js';
 import { serveTerminal } from './terminal.js';
 import { pickTransport } from './transport.js';
-import { createTray, TRAY_HUB_KEY, trayPort } from './tray.js';
+import { createTray, seatNotices, TRAY_HUB_KEY, trayPort } from './tray.js';
 import { openTunnel } from './tunnel.js';
 import {
   baseManifest,
@@ -224,6 +224,7 @@ const tray = hub
       origin: hub,
       page: location.origin,
       onWebhook: (name, delivery) => deliverWebhook(owner, name, delivery),
+      onGuest: (seat, stream) => bridgeAgent(owner, stream, { guest: seat }),
     })
   : null;
 followers = tray
@@ -761,6 +762,7 @@ async function follow() {
     versions: mine,
     chat: () => loadChat(),
     wrap: (agent) => onSend(browser.stopping(agent), keep.sent),
+    guests: tray ? seatNotices(tray.guests, notices) : null,
     storage: localStorage,
     login,
     disk: () => biosHash(read),
