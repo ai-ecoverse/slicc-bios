@@ -77,13 +77,13 @@ export function createLeaders({
     writeLeaders(storage, kept);
   };
 
-  async function unlinked(hub) {
+  const unlinked = (entry) => {
     const kept = readLeaders(storage);
-    for (const [key, item] of Object.entries(kept)) if (item?.hub === hub) delete kept[key];
+    kept[entry.key] = { hub: entry.hub, unlinked: true, at: now() };
     writeLeaders(storage, kept);
-    for (const entry of entries.values()) if (entry.hub === hub) entry.current = entry.given;
-    await forget(hub).catch(() => undefined);
-  }
+    entry.current = entry.given;
+    entry.relink = true;
+  };
 
   function idle(entry) {
     timers.clearTimeout(entry.idle);
@@ -135,6 +135,11 @@ export function createLeaders({
       accept: () => Promise.reject(failure('EACCES')),
     };
     try {
+      if (entry.relink) {
+        entry.relink = false;
+        await forget(entry.hub).catch(() => undefined);
+        remember(entry);
+      }
       for (let attempt = 0; !over; attempt += 1) {
         try {
           const { linked, ended } = await dial(ctx, newId());
@@ -151,7 +156,7 @@ export function createLeaders({
           return session;
         } catch (error) {
           made?.close('gave up');
-          if (error.unlinked) await unlinked(entry.hub);
+          if (error.unlinked) unlinked(entry);
           if (over || error.unlinked || error.gone || error.code === 'EACCES') throw refusal(error);
           await ctx.nap(BACKOFF[Math.min(attempt, BACKOFF.length - 1)]);
         }
@@ -178,6 +183,7 @@ export function createLeaders({
         hub,
         given: url,
         current: moved && hubOrigin(moved) === hub ? moved : url,
+        relink: kept?.hub === hub && kept.unlinked === true,
         uses: 0,
         ready: null,
         link: null,
