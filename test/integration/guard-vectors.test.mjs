@@ -310,7 +310,7 @@ async function readIn(prefix, expression, ms) {
 const marker = (id) =>
   `(function k(){var d=document.documentElement;if(!d){return setTimeout(k,0);}if(!d.hasAttribute('data-k')){d.setAttribute('data-k',${JSON.stringify(id)});fetch('http://localhost:${standPort}/beacon?id='+encodeURIComponent(${JSON.stringify(id)})+'&host='+encodeURIComponent(location.host),{mode:'no-cors'});}})()`;
 
-async function guardPage(t, lag, proxy = null) {
+async function guardPage(t, lag, proxy = null, lens = null) {
   const seven = await chrome.page(t);
   const socket = new WebSocket(browser);
   await new Promise((resolve, reject) => {
@@ -318,8 +318,17 @@ async function guardPage(t, lag, proxy = null) {
     socket.onerror = reject;
   });
   t.after(() => socket.close());
-  socket.onmessage = ({ data }) =>
-    void seven.evaluate((message) => window.cdpIn(message), data).catch(() => false);
+  const asked = new Map();
+  socket.onmessage = ({ data }) => {
+    let text = data;
+    if (lens) {
+      const message = JSON.parse(data);
+      const method = asked.get(message.id);
+      asked.delete(message.id);
+      text = JSON.stringify(lens(message, method));
+    }
+    void seven.evaluate((message) => window.cdpIn(message), text).catch(() => false);
+  };
   const stalls = [];
   await seven.expose('cdpOut', (command) => {
     const stall = stalls.findIndex(
@@ -335,6 +344,7 @@ async function guardPage(t, lag, proxy = null) {
       }
       return;
     }
+    if (lens) asked.set(command.id, command.method);
     const send = () => socket.readyState === 1 && socket.send(JSON.stringify(command));
     if (lag && command.method === 'Target.detachFromTarget') setTimeout(send, lag);
     else send();
@@ -2409,5 +2419,109 @@ test('PRE-1b on the proxy path, which forwards browser-level events: a popup the
         flatten: true,
       });
     }
+  }
+});
+
+test('privileged browser pages through the guard: a browser_ui target that reports a web URL stays out of reach, and a new tab with its chrome-untrusted frame is attached and driven', {
+  timeout: 5 * 60 * 1000,
+}, async (t) => {
+  const listed = (await own.send('Target.getTargets')).result.targetInfos;
+  const ui = listed.filter((info) => info.type === 'browser_ui').map((info) => info.targetId);
+  assert.ok(
+    ui.length > 0,
+    `Chrome lists a browser_ui target: ${JSON.stringify(listed.map((info) => info.type))}`
+  );
+  const NTP_FRAME = 'chrome-untrusted://new-tab-page/one-google-bar?paramsencoded=';
+  const newTabs = new Map();
+  const web = (info) => {
+    if (info?.type === 'browser_ui') return { ...info, url: `${PLAIN}/doc?browser-ui` };
+    if (newTabs.has(info?.targetId) && info.url === 'about:blank')
+      return { ...info, url: newTabs.get(info.targetId) };
+    return info;
+  };
+  const lens = (message, method) => {
+    const result = message.result;
+    if (result?.targetInfos) result.targetInfos = result.targetInfos.map(web);
+    if (result?.targetInfo) result.targetInfo = web(result.targetInfo);
+    if (message.params?.targetInfo) message.params.targetInfo = web(message.params.targetInfo);
+    const top = result?.frameTree?.frame;
+    const framed = (tree) => [tree, ...(tree?.childFrames ?? []).flatMap(framed)];
+    if (
+      method === 'Page.getFrameTree' &&
+      newTabs.has(top?.id) &&
+      !framed(result.frameTree).some((tree) => tree?.frame?.url === NTP_FRAME)
+    ) {
+      if (top.url === 'about:blank') top.url = newTabs.get(top.id);
+      result.frameTree.childFrames = [
+        ...(result.frameTree.childFrames ?? []),
+        {
+          frame: {
+            id: `${top.id}-bar`,
+            parentId: top.id,
+            loaderId: top.loaderId,
+            url: NTP_FRAME,
+            securityOrigin: 'chrome-untrusted://new-tab-page',
+            mimeType: 'text/html',
+          },
+        },
+      ];
+    }
+    return message;
+  };
+  const guard = await guardPage(t, 0, null, lens);
+  const shown = (await guard.send('Target.getTargets')).result.targetInfos;
+  assert.deepEqual(
+    shown.filter((info) => ui.includes(info.targetId)),
+    [],
+    'the guard lists no browser_ui target, though the lens gave each a web URL'
+  );
+  for (const targetId of ui) {
+    for (const method of ['Target.attachToTarget', 'Target.getTargetInfo']) {
+      assert.equal(
+        (await guard.send(method, { targetId, flatten: true })).error?.message,
+        PROTECTED,
+        `${method} on browser_ui ${targetId}`
+      );
+    }
+  }
+  const opened = [];
+  try {
+    for (const url of ['chrome://newtab/', 'chrome://new-tab-page/']) {
+      const { result } = await own.send('Target.createTarget', { url });
+      opened.push(result.targetId);
+      newTabs.set(result.targetId, url);
+      await pause(1500);
+      const answer = await guard.send('Target.attachToTarget', {
+        targetId: result.targetId,
+        flatten: true,
+      });
+      assert.equal(
+        answer.error,
+        undefined,
+        `${url}: the client attaches to the new tab: ${JSON.stringify(answer.error)}`
+      );
+      const sessionId = answer.result.sessionId;
+      const tree = await guard.send('Page.getFrameTree', {}, sessionId);
+      assert.ok(
+        (tree.result?.frameTree?.childFrames ?? []).some((child) => child.frame.url === NTP_FRAME),
+        `${url}: the tab holds the chrome-untrusted frame: ${JSON.stringify(tree)}`
+      );
+      const target = `${PLAIN}/doc?ntp=${encodeURIComponent(url)}`;
+      const navigated = await guard.send('Page.navigate', { url: target }, sessionId);
+      assert.equal(
+        navigated.error,
+        undefined,
+        `${url}: Page.navigate goes through: ${JSON.stringify(navigated.error)}`
+      );
+      let now = '';
+      for (let n = 0; n < 50 && now !== target; n += 1) {
+        now = (await own.send('Target.getTargetInfo', { targetId: result.targetId })).result
+          ?.targetInfo?.url;
+        if (now !== target) await pause(100);
+      }
+      assert.equal(now, target, `${url}: the same tab reached the plain page`);
+    }
+  } finally {
+    await closeAll(opened);
   }
 });
