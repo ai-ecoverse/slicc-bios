@@ -162,27 +162,9 @@ function parse(text) {
 const header = (headers, name) =>
   Object.entries(headers ?? {}).find(([key]) => key.toLowerCase() === name)?.[1];
 
-const under = (host, domain) => host === domain || host.endsWith(`.${domain}`);
-
 const owned = (own) => [own ?? []].flat().filter(Boolean);
 
-export function documentPatterns(own, rules = catalog.protectedOrigins) {
-  const patterns = new Set();
-  const add = (host) => {
-    for (const name of [host, `${host}.`]) {
-      patterns.add(`*://*${name}/*`);
-      patterns.add(`*://*${name}:*/*`);
-    }
-  };
-  for (const domain of rules.domains) add(domain);
-  for (const host of rules.hosts) if (!rules.domains.some((d) => under(host, d))) add(host);
-  for (const origin of owned(own)) patterns.add(`*://${new URL(origin).host}/*`);
-  return [...patterns].map((urlPattern) => ({
-    urlPattern,
-    resourceType: 'Document',
-    requestStage: 'Request',
-  }));
-}
+export const ARM = [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }];
 
 export function protection(own) {
   const matcher = protectedOrigins(catalog.protectedOrigins, owned(own));
@@ -194,7 +176,6 @@ class Guard {
   constructor(connection, own) {
     this.connection = connection;
     this.is = protection(own);
-    this.patterns = documentPatterns(own);
     this.navs = new Map();
     this.navSessions = new Map();
     this.errored = new Map();
@@ -353,7 +334,7 @@ class Guard {
     nav.session = session;
     this.navSessions.set(session, nav);
     const steps = await Promise.all([
-      this.call('Fetch.enable', { patterns: this.patterns }, session),
+      this.call('Fetch.enable', { patterns: ARM }, session),
       this.call(
         'Network.enable',
         { maxTotalBufferSize: 0, maxResourceBufferSize: 0, maxPostDataSize: 0 },
