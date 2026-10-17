@@ -134,12 +134,24 @@ export function repeatOf(text) {
   return n;
 }
 
-async function packProof(proof, { runId, repo, dir }) {
+export function prefixOf(label, { called = false, candidate = null } = {}) {
+  const text = String(label ?? '').trim();
+  if (text) {
+    if (!/^[A-Za-z0-9][\w.-]{0,39}$/.test(text)) {
+      throw new Error(`label is not 1 to 40 letters, digits, dots, dashes or underscores: ${text}`);
+    }
+    return `${text}-`;
+  }
+  if (!called) return '';
+  return candidate ? 'candidate-' : 'base-';
+}
+
+async function packProof(proof, { runId, repo, dir, prefix = '' }) {
   const { name } = parse(proof.pack);
   const out = join(dir, proof.id);
   await mkdir(out, { recursive: true });
   await exec('npm', ['pack', proof.pack, '--pack-destination', out], { cwd: ROOT });
-  const artifact = `canary-candidate-${proof.id}`;
+  const artifact = `${prefix}canary-candidate-${proof.id}`;
   const { pack, sha256, ...rest } = proof;
   return {
     run: {
@@ -175,10 +187,12 @@ export async function plan(
     repeat = '',
     runId = '',
     repo = '',
+    label = '',
     packDir = join(ROOT, 'canary-pack'),
   } = {}
 ) {
   if (event === 'pull_request') {
+    const prefix = prefixOf(label);
     const proofs = JSON.parse(await readFile(join(ROOT, 'scripts/canary/proofs.json'), 'utf8'));
     const runs = [];
     const uploads = [];
@@ -187,11 +201,11 @@ export async function plan(
         runs.push(proof);
         continue;
       }
-      const packed = await packProof(proof, { runId, repo, dir: packDir });
+      const packed = await packProof(proof, { runId, repo, dir: packDir, prefix });
       runs.push(packed.run);
       uploads.push(packed.upload);
     }
-    return { runs, key: '', inputs: null, uploads };
+    return { runs, key: '', inputs: null, uploads, prefix };
   }
   if (event === 'schedule') {
     const inputs = await newest();
@@ -199,7 +213,13 @@ export async function plan(
     const runs = inputs.overrides.length
       ? [{ id: 'canary', overrides: inputs.overrides, shards: SHARDS, expect: [] }]
       : [];
-    return { runs, key: `canary-inputs-${digest.slice(0, 32)}`, inputs, uploads: [] };
+    return {
+      runs,
+      key: `canary-inputs-${digest.slice(0, 32)}`,
+      inputs,
+      uploads: [],
+      prefix: prefixOf(label),
+    };
   }
   const list = specs([overrides]);
   const wanted = expect.trim() ? JSON.parse(expect) : [];
@@ -215,7 +235,13 @@ export async function plan(
   if (!run.overrides.length && !run.candidate && run.repeat > 1) {
     throw new Error('repeat compares a candidate with main’s pins: name overrides or a candidate');
   }
-  return { runs: [run], key: '', inputs: null, uploads: [] };
+  return {
+    runs: [run],
+    key: '',
+    inputs: null,
+    uploads: [],
+    prefix: prefixOf(label, { called: event === 'workflow_call', candidate: run.candidate }),
+  };
 }
 
 if (argv[1] === fileURLToPath(import.meta.url)) {
@@ -234,6 +260,7 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
     repeat: env.REPEAT ?? '',
     runId: env.GITHUB_RUN_ID ?? '',
     repo: env.GITHUB_REPOSITORY ?? '',
+    label: env.LABEL ?? '',
   });
   result.runs = await pinRefs(result.runs, env.TOOLS_SHA ?? '');
   const inputs = join(ROOT, 'canary-inputs.json');
@@ -243,6 +270,7 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
     `jobs=${JSON.stringify(jobs(result.runs))}`,
     `key=${result.key}`,
     `uploads=${JSON.stringify(result.uploads ?? [])}`,
+    `prefix=${result.prefix ?? ''}`,
   ];
   if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, `${lines.join('\n')}\n`);
   console.log(lines.join('\n'));

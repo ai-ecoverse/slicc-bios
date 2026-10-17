@@ -29,12 +29,12 @@ export function verdict(result, overridden) {
 const failures = (list = []) =>
   `${list.filter((status) => status === 'fail').length}/${list.length}`;
 
-async function shards(dir, run) {
+export async function shards(dir, run, prefix = '') {
   const only = await readFile(join(dir, 'shard.json'), 'utf8').catch(() => null);
   if (only) return [JSON.parse(only)];
   const found = [];
   for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
-    if (!entry.isDirectory() || !entry.name.startsWith(`canary-shard-${run}-`)) continue;
+    if (!entry.isDirectory() || !entry.name.startsWith(`${prefix}canary-shard-${run}-`)) continue;
     const text = await readFile(join(dir, entry.name, 'shard.json'), 'utf8').catch(() => null);
     if (text) found.push(JSON.parse(text));
   }
@@ -261,6 +261,7 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
       dir: { type: 'string' },
       runs: { type: 'string' },
       out: { type: 'string', default: 'canary' },
+      prefix: { type: 'string', default: '' },
     },
   });
   const runs = JSON.parse(values.runs);
@@ -272,7 +273,7 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
       biosRef: run.ref ?? '',
       runner: env.CANARY_RUNNER ?? '',
       url: env.RUN_URL ?? '',
-      found: await shards(values.dir, run.id),
+      found: await shards(values.dir, run.id, values.prefix),
       expected: run.shards,
     });
     const dir = runs.length === 1 ? values.out : join(values.out, run.id);

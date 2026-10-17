@@ -367,3 +367,77 @@ test('a candidate input needs its package, artifact, run and sha256, and repeat 
   assert.throws(() => repeatOf('11'), /1 to 10/);
   assert.throws(() => repeatOf('0'), /1 to 10/);
 });
+
+test('two canaries in one caller run name their artifacts apart, and a report reads only its own shards', async () => {
+  const { plan, prefixOf } = await import('../../scripts/canary/plan.mjs');
+  const { shards } = await import('../../scripts/canary/report.mjs');
+  const sha256 = 'f'.repeat(64);
+  const candidate = { package: CDP, artifact: 'packed', run: '7', sha256 };
+  const base = await plan('workflow_call', { overrides: '["@ai-ecoverse/slicc-cdp@1.25.1"]' });
+  const tried = await plan('workflow_call', { candidate, repo: 'ai-ecoverse/slicc-cdp' });
+  assert.equal(base.prefix, 'base-');
+  assert.equal(tried.prefix, 'candidate-');
+  assert.equal(
+    (await plan('workflow_call', { candidate, repo: 'o/r', label: 'cdp-1.27.0' })).prefix,
+    'cdp-1.27.0-'
+  );
+  assert.equal((await plan('workflow_dispatch', { candidate, repo: 'o/r' })).prefix, '');
+  assert.equal(prefixOf('', { called: false }), '');
+  assert.throws(() => prefixOf('a/b'), /label/);
+  assert.throws(() => prefixOf('x'.repeat(41)), /label/);
+
+  const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'canary-prefix-'));
+  for (const [prefix, shard] of [
+    ['base-', 'cdp'],
+    ['candidate-', 'cdp'],
+    ['candidate-', 'guard'],
+  ]) {
+    const at = join(dir, `${prefix}canary-shard-canary-${shard}`);
+    await mkdir(at, { recursive: true });
+    await writeFile(join(at, 'shard.json'), JSON.stringify({ shard, prefix }));
+  }
+  assert.deepEqual(
+    (await shards(dir, 'canary', 'candidate-')).map(({ shard, prefix }) => `${prefix}${shard}`),
+    ['candidate-cdp', 'candidate-guard']
+  );
+  assert.deepEqual(
+    (await shards(dir, 'canary', 'base-')).map(({ shard }) => shard),
+    ['cdp']
+  );
+  await rm(dir, { recursive: true });
+});
+
+test('the canary workflow checks out without credentials, keeps the tools off 9222-9229, runs a caller’s candidate on GitHub-hosted runners and prefixes every artifact', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const yml = await readFile(
+    new URL('../../.github/workflows/canary.yml', import.meta.url),
+    'utf8'
+  );
+  const checkouts = yml
+    .split(/\n(?=\s+- uses: )/)
+    .filter((step) => /uses: actions\/checkout@/.test(step));
+  assert.equal(checkouts.length, 4);
+  for (const step of checkouts) assert.match(step, /persist-credentials: false/);
+  assert.match(yml, /\nenv:\n {2}SLICC_CDP_PORTS: '9300-9309'\n/);
+  const direct =
+    "startsWith(github.workflow_ref, 'ai-ecoverse/slicc-bios/.github/workflows/canary.yml@')";
+  const shard = yml.slice(yml.indexOf('\n  shard:'), yml.indexOf('\n  report:'));
+  const runsOn = shard.match(/\n {4}runs-on: (.*)/)[1];
+  assert.ok(runsOn.startsWith(`\${{ (${direct} && `), runsOn);
+  assert.ok(runsOn.endsWith("|| 'ubuntu-latest' }}"), runsOn);
+  assert.match(
+    yml,
+    new RegExp(`CANARY_RUNNER: \\$\\{\\{ \\(${direct.replace(/[().'/@]/g, '\\$&')} && `)
+  );
+  const names = [...yml.matchAll(/\n {10}(name|pattern): (.*)/g)].filter(
+    ([, , value]) => /canary/.test(value) && !/^\$\{\{ matrix\.job\.candidate/.test(value)
+  );
+  assert.ok(names.length >= 6, `${names.length} artifact names`);
+  for (const [, , value] of names) {
+    assert.match(value, /^\$\{\{ (needs\.plan|steps\.plan)\.outputs\.prefix \}\}canary/, value);
+  }
+  assert.match(yml, /cancel-in-progress: \$\{\{ startsWith\(/);
+});
