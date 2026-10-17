@@ -136,8 +136,8 @@ async function agentVersion(page) {
   return (await screen(page)).match(/agent "version": "([^"]+)" at-42/)?.[1] ?? null;
 }
 
-test("a follower of a SLICC on another agent version shows the agent's sentence as bios's own warning and stops, and the older agent's sudo still asks in bios's dialog", {
-  timeout: 45 * 60 * 1000,
+test("a follower of a SLICC on another agent version shows the agent's sentence as bios's own warning and stops, the older agent's sudo still asks in bios's dialog, and the warning goes once the owner upgrades", {
+  timeout: 60 * 60 * 1000,
 }, async (t) => {
   const hub = await startHub();
   t.after(() => hub.close());
@@ -252,4 +252,46 @@ test("a follower of a SLICC on another agent version shows the agent's sentence 
     }),
     /approval denied/
   );
+
+  for (const file of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'])
+    owners.overrides.set(
+      `/packages/agent/${file}`,
+      readFileSync(new URL(`../../src/packages/agent/${file}`, import.meta.url), 'utf8')
+    );
+  await owner.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await owner
+    .within(
+      20 * 60 * 1000,
+      () => document.querySelector('slicc-app').model.updates.get('agent')?.state === 'ready'
+    )
+    .catch(async (error) => {
+      throw new Error(
+        `the owner never got the newer agent ready: ${error.message}\n${await agentState(owner)}`
+      );
+    });
+  await owner.evaluate(() =>
+    document.querySelector('slicc-app').model.updates.act('agent', 'restart-agent')
+  );
+  await owner.within(
+    5 * 60 * 1000,
+    () => document.querySelector('slicc-app').model.updates.get('agent')?.state === 'current'
+  );
+  await owner.reload();
+  await ready(owner);
+  await agentUp(owner, { label: 'owner agent after the upgrade' });
+  assert.notEqual(await agentVersion(owner), '5.0.3');
+  await page
+    .within(
+      5 * 60 * 1000,
+      (id) => {
+        const { model } = document.querySelector('slicc-app');
+        return !model.notices.list().some((notice) => notice.id === id) && !!model.agent;
+      },
+      NOTICE
+    )
+    .catch(async (error) => {
+      throw new Error(
+        `the follower kept the other-version warning after the owner upgraded: ${error.message}\nfollower attempts: ${attempts(page).join('\n')}\nfollower console:\n${page.console.slice(-15).join('\n')}`
+      );
+    });
 });

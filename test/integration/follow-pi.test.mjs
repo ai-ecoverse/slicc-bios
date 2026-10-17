@@ -8,6 +8,8 @@ import {
   connectAccount,
   listsAccount,
   ready,
+  run,
+  shows,
   trust,
 } from './bios.mjs';
 import { launch } from './chrome.mjs';
@@ -269,7 +271,7 @@ const said = (page) =>
     return agent ? JSON.stringify(agent.messages(agent.active())) : '';
   });
 
-test('a follower watches the owner run with View, is refused a send, sends with Control, and answers the cone’s sudo with Allow once and Always', {
+test('a follower watches the owner run with View, is refused a send, sends with Control, answers the cone’s sudo with Allow once and Always, and its shell’s sudo names the device', {
   timeout: 35 * 60 * 1000,
 }, async (t) => {
   const hub = await startHub();
@@ -632,6 +634,34 @@ test('a follower watches the owner run with View, is refused a send, sends with 
   });
   assert.doesNotMatch(await finished('sudo-again'), /approval denied/);
   assert.equal(await owner.evaluate(() => window.sudoAsked), 0);
+
+  await model(owner, (network, id) => network.setAccess(id, 'terminal', true), device.id);
+  await page.until(() => document.querySelector('slicc-app').model.follow.state().access.terminal);
+  await page.evaluate(() => document.querySelector('slicc-app').show('terminal'));
+  await shows(page, 'slicc:/home# ');
+  await run(page, `su cone -c 'sudo id -u'; echo "su says $((40 + 2))"`);
+  const fromShell = await owner
+    .within(
+      5 * 60 * 1000,
+      () =>
+        document
+          .querySelector('slicc-app')
+          .model.approvals.list()
+          .find((entry) => entry.kind === 'sudo' && entry.command.endsWith(' -u')) ?? null
+    )
+    .catch(async (error) => {
+      throw new Error(
+        `the follower shell's sudo never reached the owner's approvals: ${error.message}\nowner approvals: ${JSON.stringify(await owner.evaluate(() => document.querySelector('slicc-app').model.approvals.list()))}`
+      );
+    });
+  assert.equal(fromShell.requester.kind, 'user');
+  assert.equal(fromShell.requester.where, `on ${device.name}`);
+  await owner.evaluate(
+    (id) => document.querySelector('slicc-app').model.approvals.decide(id, 'deny'),
+    fromShell.id
+  );
+  await shows(page, 'su says 42');
+  await model(owner, (network, id) => network.setAccess(id, 'terminal', false), device.id);
   assert.deepEqual(owner.errors, []);
   assert.deepEqual(page.errors, []);
 
