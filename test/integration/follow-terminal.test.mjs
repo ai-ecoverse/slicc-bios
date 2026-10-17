@@ -120,6 +120,25 @@ test('a follower with Terminal gets a shell in the owner kernel: ls, ^C, resize 
     () => document.querySelector('slicc-app').model.network.status().links?.joinUrl
   );
   const { joinUrl } = await model(owner, (network) => network.status().links);
+  await owner.evaluate(() => {
+    const { network } = document.querySelector('slicc-app').model;
+    globalThis.allowed = null;
+    const off = network.on('network', (status) => {
+      const asking = status.links?.devices.find((d) => d.asking);
+      if (!asking || globalThis.allowed) return;
+      const allowed = { id: asking.id, state: asking.state };
+      globalThis.allowed = allowed;
+      off();
+      network.setAccess(asking.id, 'view', true).then(
+        () => {
+          allowed.done = true;
+        },
+        (error) => {
+          allowed.error = error.message;
+        }
+      );
+    });
+  });
   const page = await followers.page(t);
   await page.goto(`/#follow=${encodeURIComponent(joinUrl)}`);
   await page.until(new Function(`return !!(${dialog})()`));
@@ -131,14 +150,11 @@ test('a follower with Terminal gets a shell in the owner kernel: ls, ^C, resize 
   await page.until(
     () => document.querySelector('slicc-app')?.model?.follow?.state().link === 'connected'
   );
-  await owner.until(() =>
-    document
-      .querySelector('slicc-app')
-      .model.network.status()
-      .links.devices.some((d) => d.asking)
+  const device = await owner.within(
+    60000,
+    () => (globalThis.allowed?.done || globalThis.allowed?.error) && globalThis.allowed
   );
-  const [device] = await model(owner, (network) => network.status().links.devices);
-  await model(owner, (network, id) => network.setAccess(id, 'view', true), device.id);
+  assert.deepEqual(device, { id: device.id, state: 'connected', done: true });
   await page.until(() => document.querySelector('slicc-app').model.follow.state().access.view);
 
   const refused = await page.evaluate(async (url) => {
