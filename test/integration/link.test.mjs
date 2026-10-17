@@ -179,6 +179,80 @@ function fakeNode(key) {
   globalThis.sliccLinkReceive(JSON.stringify({ t: 'hello', v: 1, nonce }));
 }
 
+function earlyNode() {
+  const encoder = new TextEncoder();
+  const frame = (type, id, text) => {
+    const bytes = encoder.encode(text);
+    const out = new Uint8Array(5 + bytes.length);
+    out[0] = type;
+    new DataView(out.buffer).setUint32(1, id);
+    out.set(bytes, 5);
+    return out;
+  };
+  const log = (globalThis.earlyLog = []);
+  const pc = new RTCPeerConnection();
+  pc.ondatachannel = ({ channel: control }) => {
+    control.onclose = () => log.push('closed');
+    control.onmessage = ({ data }) => {
+      if (typeof data !== 'string') return;
+      log.push(JSON.parse(data).role);
+      const stream = pc.createDataChannel('slicc.link.v1.stream', { ordered: true });
+      stream.binaryType = 'arraybuffer';
+      stream.onmessage = ({ data }) => {
+        const bytes = new Uint8Array(data);
+        log.push([bytes[0], new DataView(bytes.buffer).getUint32(1)]);
+      };
+      stream.onopen = () => {
+        stream.bufferedAmountLowThreshold = 0;
+        stream.onbufferedamountlow = () => {
+          stream.onbufferedamountlow = null;
+          log.push('hello sent');
+          control.send(
+            JSON.stringify({
+              v: 1,
+              role: 'node',
+              name: 'early node',
+              host: 'Early-Node',
+              mode: 'local',
+              caps: ['fs'],
+            })
+          );
+        };
+        stream.send(
+          frame(
+            1,
+            2,
+            JSON.stringify({
+              kind: 'mounts',
+              mounts: [{ name: 'early', readonly: true, capabilities: {} }],
+            })
+          )
+        );
+        log.push('open sent');
+      };
+    };
+  };
+  const nonce = 'early-nonce';
+  pc.onicecandidate = ({ candidate }) =>
+    globalThis.sliccLinkReceive(
+      JSON.stringify({ t: 'candidate', nonce, candidate: candidate?.toJSON() ?? null })
+    );
+  globalThis.sliccLinkSend = async (text) => {
+    const message = JSON.parse(text);
+    if (message.nonce !== nonce) return;
+    if (message.t === 'offer') {
+      await pc.setRemoteDescription({ type: 'offer', sdp: message.sdp });
+      await pc.setLocalDescription(await pc.createAnswer());
+      globalThis.sliccLinkReceive(
+        JSON.stringify({ t: 'answer', nonce, sdp: pc.localDescription.sdp })
+      );
+    } else if (message.t === 'candidate' && message.candidate) {
+      await pc.addIceCandidate(message.candidate).catch(() => {});
+    }
+  };
+  globalThis.sliccLinkReceive(JSON.stringify({ t: 'hello', v: 1, nonce }));
+}
+
 const kernelFile = (page, name) =>
   page.evaluate(async (name) => {
     const home = await (await navigator.storage.getDirectory()).getDirectoryHandle('home');
@@ -317,6 +391,36 @@ test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback
   assert.notEqual(heldBack.code, '0');
   await page.evaluate(() => document.querySelector('slicc-app').model.network.setExit(null));
   assert.equal((await network()).exit, null);
+});
+
+test('a node whose OPEN on a stream channel overtakes its HELLO stays linked, and the OPEN is answered once the HELLO arrives', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await ready(page);
+  await page.evaluate(earlyNode);
+  await page.until(() =>
+    globalThis.earlyLog.some(
+      (entry) => entry === 'closed' || (Array.isArray(entry) && entry[0] === 4)
+    )
+  );
+  assert.deepEqual(await page.evaluate(() => globalThis.earlyLog), [
+    'page',
+    'open sent',
+    'hello sent',
+    [2, 2],
+    [4, 2],
+  ]);
+  await page.until(
+    () =>
+      document.querySelector('slicc-app').model.network.status().links?.devices[0]?.folders
+        ?.length === 1
+  );
+  const [row] = await page.evaluate(
+    () => document.querySelector('slicc-app').model.network.status().links.devices
+  );
+  assert.equal(row.state, 'connected');
+  assert.deepEqual(row.folders, [{ name: 'early', source: 'early-node/early', readonly: true }]);
+  assert.ok(!(await page.evaluate(() => globalThis.earlyLog.includes('closed'))));
 });
 
 const PYTHON = '@ai-ecoverse/wasix-python@3.14.2-18';
