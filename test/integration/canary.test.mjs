@@ -345,21 +345,35 @@ test('a candidate input needs its package, artifact, run and sha256, and repeat 
   const { candidateOf, repeatOf } = await import('../../scripts/canary/plan.mjs');
   assert.equal(candidateOf({}), null);
   const sha256 = 'd'.repeat(64);
+  const bound = { id: '991', digest: 'E'.repeat(64) };
   assert.deepEqual(
-    candidateOf({ package: CDP, artifact: 'packed', run: '123', sha256 }, 'ai-ecoverse/slicc-cdp'),
-    { package: CDP, artifact: 'packed', run: '123', sha256, repo: 'ai-ecoverse/slicc-cdp' }
+    candidateOf(
+      { package: CDP, artifact: 'packed', run: '123', sha256, ...bound },
+      'ai-ecoverse/slicc-cdp'
+    ),
+    {
+      package: CDP,
+      artifact: 'packed',
+      run: '123',
+      sha256,
+      repo: 'ai-ecoverse/slicc-cdp',
+      id: '991',
+      digest: 'e'.repeat(64),
+      binding: 'strict',
+    }
   );
   assert.throws(() => candidateOf({ package: CDP, artifact: 'packed', run: '123' }), /needs/);
+  assert.throws(() => candidateOf({ id: '991', digest: 'e'.repeat(64) }, 'o/r'), /needs/);
   assert.throws(
-    () => candidateOf({ package: 'slicc-cdp', artifact: 'a', run: '1', sha256 }, 'o/r'),
+    () => candidateOf({ package: 'slicc-cdp', artifact: 'a', run: '1', sha256, ...bound }, 'o/r'),
     /scoped/
   );
   assert.throws(
-    () => candidateOf({ package: CDP, artifact: 'a', run: 'x', sha256 }, 'o/r'),
+    () => candidateOf({ package: CDP, artifact: 'a', run: 'x', sha256, ...bound }, 'o/r'),
     /run id/
   );
   assert.throws(
-    () => candidateOf({ package: CDP, artifact: 'a', run: '1', sha256: 'e' }, 'o/r'),
+    () => candidateOf({ package: CDP, artifact: 'a', run: '1', sha256: 'e', ...bound }, 'o/r'),
     /64 hex/
   );
   assert.equal(repeatOf(''), 1);
@@ -370,9 +384,16 @@ test('a candidate input needs its package, artifact, run and sha256, and repeat 
 
 test('two canaries in one caller run name their artifacts apart, and a report reads only its own shards', async () => {
   const { plan, prefixOf } = await import('../../scripts/canary/plan.mjs');
-  const { shards } = await import('../../scripts/canary/report.mjs');
+  const { found, readShards } = await import('../../scripts/canary/report.mjs');
   const sha256 = 'f'.repeat(64);
-  const candidate = { package: CDP, artifact: 'packed', run: '7', sha256 };
+  const candidate = {
+    package: CDP,
+    artifact: 'packed',
+    run: '7',
+    sha256,
+    id: '70',
+    digest: 'a'.repeat(64),
+  };
   const base = await plan('workflow_call', { overrides: '["@ai-ecoverse/slicc-cdp@1.25.1"]' });
   const tried = await plan('workflow_call', { candidate, repo: 'ai-ecoverse/slicc-cdp' });
   assert.equal(base.prefix, 'base-');
@@ -390,21 +411,33 @@ test('two canaries in one caller run name their artifacts apart, and a report re
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
   const dir = await mkdtemp(join(tmpdir(), 'canary-prefix-'));
-  for (const [prefix, shard] of [
-    ['base-', 'cdp'],
-    ['candidate-', 'cdp'],
-    ['candidate-', 'guard'],
-  ]) {
-    const at = join(dir, `${prefix}canary-shard-canary-${shard}`);
-    await mkdir(at, { recursive: true });
-    await writeFile(join(at, 'shard.json'), JSON.stringify({ shard, prefix }));
+  const layout = {
+    'base-': ['cdp'],
+    'candidate-': ['cdp', 'guard'],
+  };
+  for (const [prefix, list] of Object.entries(layout)) {
+    for (const shard of list) {
+      const at = join(dir, prefix, `${prefix}canary-shard-canary-${shard}`);
+      await mkdir(at, { recursive: true });
+      await writeFile(join(at, 'shard.json'), JSON.stringify({ shard, prefix }));
+    }
   }
+  const read = async (prefix) => {
+    const verified = layout[prefix].map((shard) => ({
+      run: 'canary',
+      shard,
+      name: `${prefix}canary-shard-canary-${shard}`,
+    }));
+    const { docs, refused } = await readShards(join(dir, prefix), verified);
+    assert.deepEqual(refused, []);
+    return found(docs, { id: 'canary', shards: layout[prefix] });
+  };
   assert.deepEqual(
-    (await shards(dir, 'canary', 'candidate-')).map(({ shard, prefix }) => `${prefix}${shard}`),
+    (await read('candidate-')).map(({ shard, prefix }) => `${prefix}${shard}`),
     ['candidate-cdp', 'candidate-guard']
   );
   assert.deepEqual(
-    (await shards(dir, 'canary', 'base-')).map(({ shard }) => shard),
+    (await read('base-')).map(({ shard }) => shard),
     ['cdp']
   );
   await rm(dir, { recursive: true });
@@ -435,7 +468,7 @@ test('the canary workflow checks out without credentials, keeps the tools off 92
   const names = [...yml.matchAll(/\n {10}(name|pattern): (.*)/g)].filter(
     ([, , value]) => /canary/.test(value) && !/^\$\{\{ matrix\.job\.candidate/.test(value)
   );
-  assert.ok(names.length >= 6, `${names.length} artifact names`);
+  assert.ok(names.length >= 4, `${names.length} artifact names`);
   for (const [, , value] of names) {
     assert.match(value, /^\$\{\{ (needs\.plan|steps\.plan)\.outputs\.prefix \}\}canary/, value);
   }
@@ -540,6 +573,10 @@ test('the canary report names a verdict, and zero tests or a missing shard is a 
     }),
     { ok: false, line: 'canary r: FAIL 1 regression, missing guard' }
   );
+  assert.deepEqual(
+    verdictLine({ ok: false, run: 'canary', counts: counts(0), missingShards: ['guard'] }),
+    { ok: false, line: 'canary canary: FAIL 0 tests ran, missing guard' }
+  );
 });
 
 test('every gate in the workflows prints a verdict and its caller fails without it', async () => {
@@ -562,4 +599,656 @@ test('every gate in the workflows prints a verdict and its caller fails without 
   assert.doesNotMatch(release, /npm already has \$version"\n\s+exit 0/);
   const canary = await read('canary.yml');
   assert.match(canary, /canary: FAIL the report wrote no verdict/);
+});
+
+const BIND = new URL('../../scripts/canary/bind.mjs', import.meta.url);
+const REPORT = new URL('../../scripts/canary/report.mjs', import.meta.url);
+const ONE = '1'.repeat(64);
+const TWO = '2'.repeat(64);
+
+function meta(id, name, run, repositoryId, digest, more = {}) {
+  return {
+    id: Number(id),
+    name,
+    digest: `sha256:${digest}`,
+    expired: false,
+    workflow_run: { id: Number(run), repository_id: repositoryId, head_repository_id: 999 },
+    ...more,
+  };
+}
+
+async function fakeApi(repos, artifacts) {
+  const { createServer } = await import('node:http');
+  const seen = [];
+  const server = createServer((request, response) => {
+    seen.push({ url: request.url, auth: request.headers.authorization ?? '' });
+    const repo = request.url.match(/^\/repos\/([^/]+\/[^/]+)$/);
+    const artifact = request.url.match(/^\/repos\/([^/]+\/[^/]+)\/actions\/artifacts\/(\d+)$/);
+    let body = null;
+    if (repo && repos[repo[1]]) body = { id: repos[repo[1]], full_name: repo[1] };
+    if (artifact) body = artifacts[`${artifact[1]}#${artifact[2]}`] ?? null;
+    response.writeHead(body ? 200 : 404, { 'content-type': 'application/json' });
+    response.end(JSON.stringify(body ?? { message: 'Not Found' }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return {
+    api: `http://127.0.0.1:${server.address().port}`,
+    seen,
+    close: () => new Promise((resolve) => server.close(resolve)),
+  };
+}
+
+async function cli(script, args, extra = {}) {
+  const { execFile } = await import('node:child_process');
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const { promisify } = await import('node:util');
+  const dir = await mkdtemp(join(tmpdir(), 'canary-cli-'));
+  const env = {
+    PATH: process.env.PATH,
+    HOME: process.env.HOME,
+    TMPDIR: tmpdir(),
+    GH_TOKEN: 'test-token',
+    GITHUB_OUTPUT: join(dir, 'out'),
+    ...extra,
+  };
+  let code = 0;
+  let stdout = '';
+  try {
+    ({ stdout } = await promisify(execFile)(process.execPath, [fileURLToPath(script), ...args], {
+      env,
+      cwd: extra.CWD ?? process.cwd(),
+    }));
+  } catch (error) {
+    code = error.code;
+    stdout = error.stdout;
+  }
+  const text = await readFile(join(dir, 'out'), 'utf8').catch(() => '');
+  await rm(dir, { recursive: true, force: true });
+  const outputs = Object.fromEntries(
+    text
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)])
+  );
+  return { code, stdout, outputs };
+}
+
+test('the report job’s upload step returns the canary artifact’s id and digest, and the call exposes those as artifact-id, artifact-digest and the report row of artifacts', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const yml = await readFile(
+    new URL('../../.github/workflows/canary.yml', import.meta.url),
+    'utf8'
+  );
+  for (const key of ['artifact-id', 'artifact-digest', 'artifacts']) {
+    assert.match(
+      yml,
+      new RegExp(
+        `\\n {6}${key}:\\n {8}description: .*\\n {8}value: \\$\\{\\{ jobs\\.report\\.outputs\\.${key} \\}\\}\\n`
+      ),
+      key
+    );
+  }
+  const report = yml.slice(yml.indexOf('\n  report:'));
+  assert.match(report, /\n {6}artifact-id: \$\{\{ steps\.upload\.outputs\.artifact-id \}\}\n/);
+  assert.match(
+    report,
+    /\n {6}artifact-digest: \$\{\{ steps\.upload\.outputs\.artifact-digest \}\}\n/
+  );
+  assert.match(report, /\n {6}artifacts: \$\{\{ steps\.manifest\.outputs\.artifacts \}\}\n/);
+  assert.match(
+    report,
+    /\n {6}- id: upload\n {8}uses: actions\/upload-artifact@[0-9a-f]{40}\n {8}if: \$\{\{ !cancelled\(\) \}\}\n {8}with:\n {10}name: \$\{\{ needs\.plan\.outputs\.prefix \}\}canary\n/
+  );
+  assert.match(report, /REPORT_ID: \$\{\{ steps\.upload\.outputs\.artifact-id \}\}/);
+  assert.match(report, /REPORT_DIGEST: \$\{\{ steps\.upload\.outputs\.artifact-digest \}\}/);
+  assert.match(report, /ARTIFACT_ID: \$\{\{ steps\.upload\.outputs\.artifact-id \}\}/);
+  assert.match(report, /ARTIFACT_DIGEST: \$\{\{ steps\.upload\.outputs\.artifact-digest \}\}/);
+  assert.match(report, /id: process\.env\.ARTIFACT_ID \|\| ""/);
+  assert.doesNotMatch(yml, /\n\s+pattern: /);
+
+  const done = await cli(BIND, ['manifest', '--bindings', '/nonexistent/bindings.json'], {
+    PREFIX: 'candidate-',
+    UPLOADS: '[]',
+    REPORT_ID: '9001',
+    REPORT_DIGEST: 'AB'.repeat(32),
+    GITHUB_RUN_ATTEMPT: '2',
+  });
+  assert.equal(done.code, 0, done.stdout);
+  assert.deepEqual(JSON.parse(done.outputs.artifacts), [
+    { role: 'report', name: 'candidate-canary', id: '9001', digest: 'ab'.repeat(32), attempt: '2' },
+  ]);
+  const none = await cli(BIND, ['manifest', '--bindings', '/nonexistent/bindings.json'], {
+    PREFIX: 'base-',
+  });
+  assert.deepEqual(JSON.parse(none.outputs.artifacts), []);
+  const bad = await cli(BIND, ['manifest', '--bindings', '/nonexistent/bindings.json'], {
+    REPORT_ID: '9001',
+    REPORT_DIGEST: 'not-a-digest',
+  });
+  assert.notEqual(bad.code, 0);
+  assert.equal(bad.outputs.artifacts, undefined);
+});
+
+test('the manifest keeps both matrix shards’ upload ids and digests, each from its own job output, not the last job’s', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const { MAX_JOBS } = await import('../../scripts/canary/bind.mjs');
+  const { jobs } = await import('../../scripts/canary/plan.mjs');
+  const yml = await readFile(
+    new URL('../../.github/workflows/canary.yml', import.meta.url),
+    'utf8'
+  );
+  const shard = yml.slice(yml.indexOf('\n  shard:'), yml.indexOf('\n  report:'));
+  const declared = [
+    ...shard.matchAll(/\n {6}(binding_\d+): \$\{\{ steps\.bind\.outputs\.(\S+) \}\}/g),
+  ];
+  assert.deepEqual(
+    declared.map(([, key, value]) => [key, value]),
+    Array.from({ length: MAX_JOBS }, (_, i) => [`binding_${i}`, `binding_${i}`])
+  );
+  assert.match(shard, /\n {10}INDEX: \$\{\{ strategy\.job-index \}\}\n/);
+  assert.match(shard, /SHARD_ID: \$\{\{ steps\.shard-upload\.outputs\.artifact-id \}\}/);
+  assert.match(shard, /SHARD_DIGEST: \$\{\{ steps\.shard-upload\.outputs\.artifact-digest \}\}/);
+  assert.match(shard, /FILES_ID: \$\{\{ steps\.files-upload\.outputs\.artifact-id \}\}/);
+  assert.match(shard, /FILES_DIGEST: \$\{\{ steps\.files-upload\.outputs\.artifact-digest \}\}/);
+  assert.match(
+    shard,
+    /- id: shard-upload\n.*\n.*\n.*\n {10}name: \$\{\{ needs\.plan\.outputs\.prefix \}\}canary-shard-\$\{\{ matrix\.job\.run \}\}-\$\{\{ matrix\.job\.shard \}\}\n/
+  );
+  assert.match(
+    shard,
+    /- id: files-upload\n.*\n.*\n.*\n {10}name: \$\{\{ needs\.plan\.outputs\.prefix \}\}canary-files-\$\{\{ matrix\.job\.run \}\}-\$\{\{ matrix\.job\.shard \}\}\n/
+  );
+  const known = JSON.parse(
+    await readFile(new URL('../../scripts/canary/shards.json', import.meta.url), 'utf8')
+  );
+  assert.ok(Object.keys(known).length <= MAX_JOBS);
+  const many = Array.from({ length: MAX_JOBS + 1 }, (_, i) => `s${i}`);
+  assert.throws(() => jobs([{ id: 'canary', ref: 'r', shards: many }]), /at most 16/);
+
+  const planned = jobs([{ id: 'canary', ref: 'r', shards: ['packages-update-cdp', 'guard'] }]);
+  const outputs = Object.fromEntries(
+    Array.from({ length: MAX_JOBS }, (_, i) => [`binding_${i}`, ''])
+  );
+  const uploads = [
+    ['packages-update-cdp', '101', 'A1'.repeat(32), '102', 'a2'.repeat(32)],
+    ['guard', '201', 'b1'.repeat(32), '', ''],
+  ];
+  for (const [index, [name, shardId, shardDigest, filesId, filesDigest]] of uploads.entries()) {
+    const done = await cli(BIND, ['shard'], {
+      INDEX: String(index),
+      RUN: 'canary',
+      SHARD: name,
+      PREFIX: 'candidate-',
+      ATTEMPT: '1',
+      SHARD_ID: shardId,
+      SHARD_DIGEST: shardDigest,
+      FILES_ID: filesId,
+      FILES_DIGEST: filesDigest,
+    });
+    assert.equal(done.code, 0, done.stdout);
+    assert.deepEqual(Object.keys(done.outputs), [`binding_${index}`]);
+    Object.assign(outputs, done.outputs);
+  }
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const repo = 'ai-ecoverse/slicc-cdp';
+  const uploaded = {
+    101: ['candidate-canary-shard-canary-packages-update-cdp', 'a1'.repeat(32)],
+    102: ['candidate-canary-files-canary-packages-update-cdp', 'a2'.repeat(32)],
+    201: ['candidate-canary-shard-canary-guard', 'b1'.repeat(32)],
+  };
+  const server = await fakeApi(
+    { [repo]: 7 },
+    Object.fromEntries(
+      Object.entries(uploaded).map(([id, [name, digest]]) => [
+        `${repo}#${id}`,
+        meta(id, name, 600, 7, digest),
+      ])
+    )
+  );
+  const dir = await mkdtemp(join(tmpdir(), 'canary-manifest-'));
+  const bindings = join(dir, 'bindings.json');
+  const api = {
+    GITHUB_API_URL: server.api,
+    GITHUB_RUN_ID: '600',
+    GITHUB_REPOSITORY: repo,
+    PREFIX: 'candidate-',
+    JOBS: JSON.stringify(planned),
+  };
+  try {
+    const bound = await cli(BIND, ['shards', '--out', bindings, '--dir', join(dir, 'shards')], {
+      ...api,
+      BINDINGS: JSON.stringify(outputs),
+    });
+    assert.equal(bound.code, 0, bound.stdout);
+    assert.match(bound.stdout, /^canary bindings: PASS 2 shards, 3 artifacts$/m);
+    assert.deepEqual(bound.outputs, { ids: '101,201', path: join(dir, 'shards') });
+    const done = await cli(BIND, ['manifest', '--bindings', bindings], {
+      PREFIX: 'candidate-',
+      UPLOADS: '[]',
+      REPORT_ID: '301',
+      REPORT_DIGEST: 'c1'.repeat(32),
+      GITHUB_RUN_ATTEMPT: '1',
+    });
+    assert.equal(done.code, 0, done.stdout);
+    assert.deepEqual(JSON.parse(done.outputs.artifacts), [
+      {
+        role: 'shard',
+        name: 'candidate-canary-shard-canary-packages-update-cdp',
+        id: '101',
+        digest: 'a1'.repeat(32),
+        attempt: '1',
+      },
+      {
+        role: 'files',
+        name: 'candidate-canary-files-canary-packages-update-cdp',
+        id: '102',
+        digest: 'a2'.repeat(32),
+        attempt: '1',
+      },
+      {
+        role: 'shard',
+        name: 'candidate-canary-shard-canary-guard',
+        id: '201',
+        digest: 'b1'.repeat(32),
+        attempt: '1',
+      },
+      {
+        role: 'report',
+        name: 'candidate-canary',
+        id: '301',
+        digest: 'c1'.repeat(32),
+        attempt: '1',
+      },
+    ]);
+    const tampered = JSON.parse(outputs.binding_0);
+    tampered.rows[1].digest = 'ff'.repeat(32);
+    const refused = await cli(BIND, ['shards', '--out', bindings, '--dir', join(dir, 'shards')], {
+      ...api,
+      BINDINGS: JSON.stringify({ ...outputs, binding_0: JSON.stringify(tampered) }),
+    });
+    assert.match(
+      refused.stdout,
+      /^canary bindings: FAIL candidate-canary-files-canary-packages-update-cdp: .*refusing it$/m
+    );
+    const partial = await cli(BIND, ['manifest', '--bindings', bindings], { PREFIX: 'candidate-' });
+    assert.deepEqual(
+      JSON.parse(partial.outputs.artifacts).map(({ name }) => name),
+      ['candidate-canary-shard-canary-packages-update-cdp', 'candidate-canary-shard-canary-guard']
+    );
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+  const proof = await cli(BIND, ['manifest', '--bindings', '/nonexistent/bindings.json'], {
+    PREFIX: '',
+    UPLOADS: JSON.stringify([{ name: 'canary-candidate-artifact', path: 'x' }]),
+    PROOF_ID: '55',
+    PROOF_DIGEST: ONE,
+    PLAN_ATTEMPT: '1',
+  });
+  assert.deepEqual(JSON.parse(proof.outputs.artifacts), [
+    { role: 'plan', name: 'canary-candidate-artifact', id: '55', digest: ONE, attempt: '1' },
+  ]);
+});
+
+test('a candidate artifact whose id, name, repository, run or zip digest is not the bound one is refused before it is downloaded, and a strict call without a binding is refused', async () => {
+  const { candidateOf, plan } = await import('../../scripts/canary/plan.mjs');
+  const { bindCandidate, candidateBinding } = await import('../../scripts/canary/bind.mjs');
+  const sha256 = 'f'.repeat(64);
+  const given = { package: CDP, artifact: 'cdp-pack', run: '500', sha256 };
+  assert.throws(
+    () => candidateOf(given, 'ai-ecoverse/slicc-cdp'),
+    /a strict candidate needs candidate-artifact-id and candidate-artifact-digest .*refusing it/
+  );
+  assert.throws(() => candidateOf({ ...given, binding: 'strict' }, 'o/r'), /strict candidate/);
+  assert.throws(() => candidateOf({ ...given, id: '42' }, 'o/r'), /go together/);
+  assert.throws(() => candidateOf({ ...given, digest: ONE }, 'o/r'), /go together/);
+  assert.throws(() => candidateOf({ ...given, id: 'x', digest: ONE }, 'o/r'), /not an artifact id/);
+  assert.throws(() => candidateOf({ ...given, id: '42', digest: 'zz' }, 'o/r'), /not a sha256/);
+  await assert.rejects(
+    plan('workflow_call', { candidate: given, repo: 'ai-ecoverse/slicc-cdp' }),
+    /strict candidate/
+  );
+  await assert.rejects(
+    plan('workflow_call', { candidate: { ...given, binding: 'plan' }, repo: 'o/r' }),
+    /strict or legacy/
+  );
+  assert.equal((await plan('workflow_call', {})).runs[0].candidate, null);
+  const legacy = candidateOf({ ...given, binding: 'legacy' }, 'o/r');
+  assert.equal(legacy.binding, 'legacy');
+  assert.equal(legacy.id, undefined);
+  const candidate = candidateOf(
+    { ...given, id: '42', digest: `sha256:${ONE}` },
+    'ai-ecoverse/slicc-cdp'
+  );
+  assert.equal(candidate.digest, ONE);
+
+  const cdp = 'ai-ecoverse/slicc-cdp';
+  const server = await fakeApi(
+    { [cdp]: 7 },
+    {
+      [`${cdp}#42`]: meta(42, 'cdp-pack', 500, 7, ONE),
+      [`${cdp}#43`]: meta(43, 'cdp-pack-other', 500, 7, ONE),
+      [`${cdp}#44`]: meta(44, 'cdp-pack', 501, 7, ONE),
+      [`${cdp}#45`]: meta(45, 'cdp-pack', 500, 8, ONE),
+      [`${cdp}#46`]: meta(46, 'cdp-pack', 500, 7, ONE, { expired: true }),
+      [`${cdp}#47`]: meta(47, 'cdp-pack', 500, 7, TWO),
+      [`${cdp}#48`]: meta(49, 'cdp-pack', 500, 7, ONE),
+    }
+  );
+  try {
+    const bound = await bindCandidate(candidate, { api: server.api });
+    assert.equal(bound.id, '42');
+    assert.equal(bound.name, '');
+    assert.match(
+      bound.line,
+      new RegExp(`^canary candidate: PASS artifact 42 cdp-pack .*sha256:${ONE}$`)
+    );
+    assert.ok(server.seen.every(({ auth }) => auth === 'Bearer test-token' || auth === ''));
+    const refusals = [
+      ['43', { digest: ONE }, /its name is cdp-pack-other/],
+      ['44', { digest: ONE }, /it is from run 501, not 500/],
+      ['45', { digest: ONE }, /it is from repository 8, not 7/],
+      ['46', { digest: ONE }, /it has expired/],
+      ['47', { digest: ONE }, new RegExp(`its digest is sha256:${TWO}, not sha256:${ONE}`)],
+      ['42', { digest: TWO }, new RegExp(`its digest is sha256:${ONE}, not sha256:${TWO}`)],
+      ['48', { digest: ONE }, /its id is 49, not 48/],
+      ['99', { digest: ONE }, /404/],
+    ];
+    for (const [id, more, pattern] of refusals) {
+      await assert.rejects(
+        bindCandidate({ ...candidate, id, ...more }, { api: server.api }),
+        pattern
+      );
+    }
+    await assert.rejects(
+      bindCandidate({ ...candidate, repo: 'evil/fork' }, { api: server.api }),
+      /404/
+    );
+    const unbound = { ...candidate, id: undefined, digest: undefined };
+    await assert.rejects(bindCandidate(unbound, { api: server.api }), /strict candidate/);
+    const calls = server.seen.length;
+    assert.deepEqual(await bindCandidate(legacy, { api: server.api }), {
+      id: '',
+      name: 'cdp-pack',
+      line: `canary candidate: PASS legacy binding, cdp-pack by name from o/r run 500, sha256 ${sha256} checked after download`,
+    });
+    assert.equal(server.seen.length, calls);
+
+    const planRows = [{ role: 'plan', name: 'canary-candidate-artifact', id: '5', digest: ONE }];
+    const proof = { artifact: 'canary-candidate-artifact', binding: 'plan' };
+    assert.deepEqual(candidateBinding(proof, planRows), { id: '5', digest: ONE });
+    assert.throws(
+      () => candidateBinding({ ...proof, artifact: 'canary-candidate-other' }, planRows),
+      /uploaded no canary-candidate-other/
+    );
+
+    const env = { GITHUB_API_URL: server.api };
+    const refused = await cli(BIND, ['candidate'], {
+      ...env,
+      CANDIDATE: JSON.stringify({ ...candidate, digest: TWO }),
+    });
+    assert.equal(refused.code, 1);
+    assert.match(
+      refused.stdout,
+      /^canary candidate: FAIL artifact 42 \(cdp-pack\): .*refusing it$/m
+    );
+    assert.deepEqual(refused.outputs, {});
+    const passed = await cli(BIND, ['candidate'], { ...env, CANDIDATE: JSON.stringify(candidate) });
+    assert.equal(passed.code, 0, passed.stdout);
+    assert.deepEqual(passed.outputs, { id: '42', name: '' });
+  } finally {
+    await server.close();
+  }
+  const { readFile } = await import('node:fs/promises');
+  const yml = await readFile(
+    new URL('../../.github/workflows/canary.yml', import.meta.url),
+    'utf8'
+  );
+  const shard = yml.slice(yml.indexOf('\n  shard:'), yml.indexOf('\n  report:'));
+  const check = shard.indexOf('run: node scripts/canary/bind.mjs candidate');
+  const download = shard.indexOf('- name: The candidate artifact\n');
+  assert.ok(check > 0 && check < download && download < shard.indexOf('- run: npm ci'));
+  assert.match(
+    shard.slice(download, download + 600),
+    /artifact-ids: \$\{\{ steps\.candidate\.outputs\.id \}\}\n {10}name: \$\{\{ steps\.candidate\.outputs\.name \}\}\n[\s\S]*digest-mismatch: error/
+  );
+});
+
+test('a forged shard artifact with an extra suffix, or one the API does not match to its upload step, is refused and turns the canary red', async () => {
+  const { mkdtemp, mkdir, readFile, rm, writeFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { collect, verifyShards } = await import('../../scripts/canary/bind.mjs');
+  const { jobs } = await import('../../scripts/canary/plan.mjs');
+  const { merge, readShards, verdictLine } = await import('../../scripts/canary/report.mjs');
+  const planned = jobs([{ id: 'canary', ref: 'r', shards: ['packages-update-cdp', 'guard'] }]);
+  const name = (shard) => `candidate-canary-shard-canary-${shard}`;
+  const binding = (shard, id, digest, rowName = name(shard)) =>
+    JSON.stringify({
+      run: 'canary',
+      shard,
+      rows: [{ role: 'shard', name: rowName, id, digest, attempt: '1' }],
+    });
+  const honest = {
+    binding_0: binding('packages-update-cdp', '11', ONE),
+    binding_1: binding('guard', '12', TWO),
+  };
+  assert.deepEqual(
+    collect(honest, planned, 'candidate-').shards.map(({ shard, id }) => [shard, id]),
+    [
+      ['packages-update-cdp', '11'],
+      ['guard', '12'],
+    ]
+  );
+  const extra = collect(
+    { ...honest, binding_2: binding('guard-extra', '13', ONE) },
+    planned,
+    'candidate-'
+  );
+  assert.deepEqual(extra.refused, [
+    { name: 'binding_2', reason: 'canary/guard-extra is not a planned shard' },
+  ]);
+  const suffixed = collect(
+    { ...honest, binding_1: binding('guard', '13', ONE, `${name('guard')}-extra`) },
+    planned,
+    'candidate-'
+  );
+  assert.deepEqual(suffixed.refused, [
+    { name: `${name('guard')}-extra`, reason: `its name is not ${name('guard')}` },
+  ]);
+  assert.deepEqual(
+    suffixed.shards.map(({ shard }) => shard),
+    ['packages-update-cdp']
+  );
+
+  const repo = 'ai-ecoverse/slicc-cdp';
+  const server = await fakeApi(
+    { [repo]: 7 },
+    {
+      [`${repo}#11`]: meta(11, name('packages-update-cdp'), 600, 7, ONE),
+      [`${repo}#12`]: meta(12, name('guard'), 600, 7, TWO),
+      [`${repo}#14`]: meta(14, name('guard'), 600, 7, ONE),
+    }
+  );
+  const dir = await mkdtemp(join(tmpdir(), 'canary-forged-'));
+  try {
+    const ok = await verifyShards(
+      { outputs: honest, jobs: planned, prefix: 'candidate-', run: '600', repo },
+      { api: server.api }
+    );
+    assert.equal(ok.verdict, 'canary bindings: PASS 2 shards, 2 artifacts');
+    assert.deepEqual(
+      ok.verified.map(({ name: n, id }) => [n, id]),
+      [
+        [name('packages-update-cdp'), '11'],
+        [name('guard'), '12'],
+      ]
+    );
+    const swapped = await verifyShards(
+      {
+        outputs: { ...honest, binding_1: binding('guard', '14', TWO) },
+        jobs: planned,
+        prefix: 'candidate-',
+        run: '600',
+        repo,
+      },
+      { api: server.api }
+    );
+    assert.equal(swapped.ok, false);
+    assert.match(
+      swapped.verdict,
+      /^canary bindings: FAIL candidate-canary-shard-canary-guard: .*its digest is sha256:1{64}, not sha256:2{64}; refusing it$/
+    );
+    const missing = await verifyShards(
+      {
+        outputs: { binding_0: honest.binding_0 },
+        jobs: planned,
+        prefix: 'candidate-',
+        run: '600',
+        repo,
+      },
+      { api: server.api }
+    );
+    assert.match(missing.verdict, /FAIL candidate-canary-shard-canary-guard: no binding$/);
+
+    const shards = join(dir, 'shards');
+    for (const [shard, at] of [
+      ['packages-update-cdp', name('packages-update-cdp')],
+      ['guard', name('guard')],
+      ['guard', `${name('guard')}-extra`],
+    ]) {
+      await mkdir(join(shards, at), { recursive: true });
+      await writeFile(
+        join(shards, at, 'shard.json'),
+        JSON.stringify(
+          shard === 'guard' && at.endsWith('-extra') ? forgedShard() : realShard(shard)
+        )
+      );
+    }
+    const read = await readShards(shards, ok.verified);
+    assert.deepEqual(read.refused, [
+      { name: `${name('guard')}-extra`, reason: 'no verified binding names it' },
+    ]);
+    const red = merge({
+      run: { id: 'canary', overrides: [], expect: [] },
+      biosRef: 'f'.repeat(40),
+      runner: 'ubuntu-latest',
+      url: '',
+      found: [...read.docs.values()],
+      expected: ['packages-update-cdp', 'guard'],
+      refused: read.refused,
+    });
+    assert.equal(red.ok, false);
+    assert.equal(verdictLine(red).line, `canary canary: FAIL refused ${name('guard')}-extra`);
+    const failed = await readShards(shards, ok.verified, { download: 'failure' });
+    assert.equal(failed.docs.size, 0);
+    assert.equal(failed.refused.length, 3);
+    const wrong = await readShards(shards, [{ ...ok.verified[1], shard: 'other' }]);
+    assert.match(JSON.stringify(wrong.refused), /it holds shard guard, not other/);
+
+    await writeFile(join(dir, 'bindings.json'), JSON.stringify(ok));
+    const runs = JSON.stringify([
+      {
+        id: 'canary',
+        ref: 'f'.repeat(40),
+        overrides: [],
+        shards: ['packages-update-cdp', 'guard'],
+        expect: [],
+      },
+    ]);
+    const args = [
+      '--dir',
+      shards,
+      '--runs',
+      runs,
+      '--out',
+      join(dir, 'canary'),
+      '--bindings',
+      join(dir, 'bindings.json'),
+      '--download',
+      'success',
+    ];
+    const forged = await cli(REPORT, args);
+    assert.equal(forged.code, 1);
+    assert.equal(forged.outputs.ok, 'false');
+    const result = JSON.parse(await readFile(join(dir, 'canary/result.json'), 'utf8'));
+    assert.equal(result.verdict, `canary canary: FAIL refused ${name('guard')}-extra`);
+    const canary = JSON.parse(await readFile(join(dir, 'canary/canary.json'), 'utf8'));
+    assert.deepEqual(
+      canary.results.map(({ test }) => test),
+      ['real guard', 'real packages-update-cdp']
+    );
+    await rm(join(shards, `${name('guard')}-extra`), { recursive: true });
+    const clean = await cli(REPORT, args);
+    assert.equal(clean.code, 0, clean.stdout);
+    assert.equal(clean.outputs.ok, 'true');
+    await writeFile(join(dir, 'bindings.json'), '{}');
+    const unbound = await cli(REPORT, args);
+    assert.equal(unbound.code, 1);
+    assert.match(
+      JSON.parse(await readFile(join(dir, 'canary/result.json'), 'utf8')).verdict,
+      /FAIL refused .*bindings\.json/
+    );
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+function realShard(name) {
+  return { ...shard(0, [pass(`real ${name}`)], name) };
+}
+
+function forgedShard() {
+  return { ...shard(0, [pass('forged guard')], 'guard') };
+}
+
+test('a call the plan refuses still gets a red report that names the refusal, under its own label', async () => {
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const PLAN = new URL('../../scripts/canary/plan.mjs', import.meta.url);
+  const refused = await cli(PLAN, [], {
+    EVENT: 'workflow_call',
+    LABEL: 'candidate',
+    CANDIDATE_PACKAGE: CDP,
+    CANDIDATE_ARTIFACT: 'cdp-pack',
+    CANDIDATE_RUN: '500',
+    CANDIDATE_SHA256: 'f'.repeat(64),
+    GITHUB_REPOSITORY: 'ai-ecoverse/slicc-cdp',
+  });
+  assert.equal(refused.code, 1);
+  assert.match(refused.stdout, /^canary plan: FAIL a strict candidate needs .*refusing it$/m);
+  assert.equal(refused.outputs.prefix, 'candidate-');
+  assert.equal(refused.outputs.jobs, undefined);
+  const dir = await mkdtemp(join(tmpdir(), 'canary-refused-'));
+  try {
+    const report = await cli(
+      REPORT,
+      [
+        '--dir',
+        join(dir, 'shards'),
+        '--runs',
+        '',
+        '--out',
+        join(dir, 'canary'),
+        '--bindings',
+        join(dir, 'none.json'),
+      ],
+      { PLAN_REFUSED: refused.outputs.refused }
+    );
+    assert.equal(report.code, 1);
+    assert.equal(report.outputs.ok, 'false');
+    const result = JSON.parse(await readFile(join(dir, 'canary/result.json'), 'utf8'));
+    assert.equal(result.ok, false);
+    assert.match(result.verdict, /^canary: FAIL the plan refused: a strict candidate needs /);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
