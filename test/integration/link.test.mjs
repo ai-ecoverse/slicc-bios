@@ -552,62 +552,67 @@ test('links the real slicc CLI over stdio signaling, and kernel curl reaches its
   assert.ok(seen.indexOf('offer') < seen.indexOf('node:answer'));
 });
 
-test("the real slicc CLI in these tests never reaches the host's debugging ports 9222–9229: its discovery is off, its policy denies them to seven, and a decoy port under the same rule is refused before a connection is made", {
+test("the real slicc CLI in these tests never reaches the host's debugging ports 9222–9229: its discovery is off, and without any --deny it refuses seven every one of them this test can listen on, and a decoy debugging port, before a connection is made", {
   skip: !cli,
 }, async (t) => {
-  const listen = async (name) => {
+  const listen = async (name, port = 0) => {
     const hits = [];
     const server = createServer((request, response) => response.end(`${name} ${request.url}\n`));
     server.on('connection', () => hits.push(name));
-    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const bound = await new Promise((resolve) => {
+      server.once('error', () => resolve(false));
+      server.listen(port, '127.0.0.1', () => resolve(true));
+    });
+    if (!bound) return null;
     t.after(() => server.close());
     return { hits, port: server.address().port };
   };
   const open = await listen('open');
   const decoy = await listen('decoy');
+  const debug = [];
+  for (const port of HOST_CDP) {
+    const held = await listen(`debug ${port}`, port);
+    if (held) debug.push(held);
+  }
+  assert.ok(debug.length, 'every port 9222–9229 is taken on this machine, so none can be tried');
   const page = await chrome.page(t);
   await boot(page);
   await ready(page);
   const said = [];
-  const node = attach(
-    cli,
-    ['--signal', 'stdio', '--name', 'ref-node', '--no-kernel'],
-    { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, SLICC_DEBUG: '1' } },
-    [decoy.port]
-  );
+  const node = attach(cli, ['--signal', 'stdio', '--name', 'ref-node', '--no-kernel'], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, SLICC_DEBUG: '1', SLICC_PROTECTED_PORTS: String(decoy.port) },
+  });
   t.after(() => node.kill());
   createInterface({ input: node.stderr }).on('line', (line) => said.push(line));
   await page.expose('sliccLinkSend', (message) => node.stdin.write(`${JSON.stringify(message)}\n`));
   createInterface({ input: node.stdout }).on('line', (line) =>
     page.evaluate((line) => globalThis.sliccLinkReceive(line), line).catch(() => {})
   );
-  const policy = await page.within(
-    60000,
-    () =>
-      document
-        .querySelector('slicc-app')
-        .model.network.status()
-        .links?.devices.find((d) => d.state === 'connected')?.policy
+  await page.within(60000, () =>
+    document
+      .querySelector('slicc-app')
+      .model.network.status()
+      .links?.devices.some((d) => d.state === 'connected')
   );
-  for (const port of [...HOST_CDP, decoy.port])
-    for (const host of ['127.0.0.0/8', '[::1]/128'])
-      assert.ok(policy.includes(`${host}:${port}`), `${host}:${port} isn't denied: ${policy}`);
   const reached = await shell(
     page,
     `for i in 1 2 3 4 5 6 7 8 9 10; do curl -s --noproxy '*' http://ref-node.slicc.internal:${open.port}/open && break; sleep 1; done`,
     'cdp-open'
   );
   assert.deepEqual(reached, { code: '0', out: 'open /open' }, said.join('\n'));
-  const refused = await shell(
-    page,
-    `curl -s --noproxy '*' http://ref-node.slicc.internal:${decoy.port}/decoy`,
-    'cdp-decoy'
-  );
-  assert.notEqual(refused.code, '0', `the decoy answered: ${refused.out}`);
-  assert.deepEqual(decoy.hits, [], `the decoy saw a connection: ${refused.out}`);
-  assert.deepEqual(open.hits, ['open']);
   const probes = said.filter((line) => HOST_CDP.some((port) => line.includes(`:${port}`)));
   assert.deepEqual(probes, [], said.join('\n'));
+  for (const { port, hits } of [...debug, decoy]) {
+    const refused = await shell(
+      page,
+      `curl -s --noproxy '*' http://ref-node.slicc.internal:${port}/json/version`,
+      `cdp-${port}`
+    );
+    assert.notEqual(refused.code, '0', `${port} answered: ${refused.out}`);
+    assert.deepEqual(hits, [], `${port} saw a connection: ${refused.out}\n${said.join('\n')}`);
+  }
+  assert.deepEqual(open.hits, ['open']);
 });
 
 test('the real slicc CLI: ssh into it with its pinned host key, and as the exit, automatic for a local CLI, it resolves names from its hosts file, or refuses them under its policy', {
