@@ -547,18 +547,14 @@ test('every gate in the workflows prints a verdict and its caller fails without 
   const read = (name) =>
     readFile(new URL(`../../.github/workflows/${name}`, import.meta.url), 'utf8');
   const ci = await read('ci.yml');
-  const shards = [...ci.matchAll(/^ {10}- shard: (\S+)$/gm)].map(([, name]) => name);
-  assert.deepEqual(ci.match(/^ {2}SHARDS: '([^']+)'$/m)[1].split(' '), shards);
-  assert.match(ci, /npm test 2>&1 \| tee "\$RUNNER_TEMP\/test\.log"/);
-  assert.match(ci, /set -o pipefail/);
-  const verdictStep = ci.slice(ci.indexOf("- name: The shard's verdict"));
-  assert.match(verdictStep.slice(0, 400), /if: always\(\)/);
-  assert.match(verdictStep.slice(0, 400), /scripts\/ci\/verdict\.mjs shard /);
+  assert.match(ci, /run: node scripts\/ci\/shard\.mjs --name "\$SHARD" --items "\$ITEMS"/);
   const job = ci.slice(ci.indexOf('\n  ci:'));
+  assert.match(job, /^ {4}needs: \[plan, lint, integration\]$/m);
   assert.match(job, /^ {4}if: always\(\)$/m);
+  assert.match(job, /SHARDS: \$\{\{ needs\.plan\.outputs\.shards \}\}/);
   assert.match(
     job,
-    /scripts\/ci\/verdict\.mjs shards --dir artifacts\/verdicts --expect "\$SHARDS"/
+    /scripts\/ci\/verdict\.mjs shards --dir artifacts\/verdicts --expect "\$SHARDS" --results "\{\\"plan\\":\\"\$PLAN\\"/
   );
   const release = await read('release.yml');
   assert.match(release, /scripts\/ci\/verdict\.mjs release --log/);
