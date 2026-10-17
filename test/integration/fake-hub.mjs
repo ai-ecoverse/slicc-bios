@@ -150,6 +150,7 @@ function biscotti(hub, followers) {
       }
       const seat = [...seats.values()].find((item) => item.id === body.id && item.tray === tray);
       if (!seat) return [404, { error: `no biscotto with id ${body.id}` }];
+      if (hub.failStops) return [500, { error: 'biscotto request failed' }];
       seat.revoked = true;
       const socket = hub.sockets.findLast((s) => s.path.startsWith(`/controller/c${tray}`));
       socket?.socket.send(
