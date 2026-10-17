@@ -29,16 +29,54 @@ export function verdict(result, overridden) {
 const failures = (list = []) =>
   `${list.filter((status) => status === 'fail').length}/${list.length}`;
 
-export async function shards(dir, run, prefix = '') {
-  const only = await readFile(join(dir, 'shard.json'), 'utf8').catch(() => null);
-  if (only) return [JSON.parse(only)];
-  const found = [];
-  for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
-    if (!entry.isDirectory() || !entry.name.startsWith(`${prefix}canary-shard-${run}-`)) continue;
-    const text = await readFile(join(dir, entry.name, 'shard.json'), 'utf8').catch(() => null);
-    if (text) found.push(JSON.parse(text));
+export async function readBindings(file) {
+  const text = await readFile(file, 'utf8').catch(() => null);
+  let bindings = null;
+  try {
+    bindings = text ? JSON.parse(text) : null;
+  } catch {
+    bindings = null;
   }
-  return found.sort((a, b) => a.shard.localeCompare(b.shard));
+  if (!/^canary bindings: (PASS|FAIL)\b/.test(bindings?.verdict ?? '')) {
+    return {
+      verified: [],
+      refused: [{ name: file, reason: 'the bindings step wrote no verdict' }],
+    };
+  }
+  return { verified: bindings.verified ?? [], refused: bindings.refused ?? [] };
+}
+
+export async function readShards(dir, verified, { download = 'success' } = {}) {
+  const refused = [];
+  const docs = new Map();
+  const wanted = new Map(verified.map((bound) => [bound.name, bound]));
+  for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    if (!wanted.has(entry.name)) {
+      refused.push({ name: entry.name, reason: 'no verified binding names it' });
+    }
+  }
+  if (verified.length && download !== 'success') {
+    for (const { name } of verified) refused.push({ name, reason: `its download ${download}` });
+    return { docs, refused };
+  }
+  for (const bound of verified) {
+    const text = await readFile(join(dir, bound.name, 'shard.json'), 'utf8').catch(() => null);
+    if (!text) continue;
+    const doc = JSON.parse(text);
+    if (doc.shard !== bound.shard) {
+      refused.push({ name: bound.name, reason: `it holds shard ${doc.shard}, not ${bound.shard}` });
+      continue;
+    }
+    docs.set(`${bound.run}\u0000${bound.shard}`, doc);
+  }
+  return { docs, refused };
+}
+
+export function found(docs, run) {
+  return run.shards
+    .map((shard) => docs.get(`${run.id}\u0000${shard}`))
+    .filter(Boolean)
+    .sort((a, b) => a.shard.localeCompare(b.shard));
 }
 
 const PARENT = /^\d+ subtests? failed$/;
@@ -47,7 +85,7 @@ function hit(result, { test = '', log = '' }) {
   return result.test.includes(test) && (result.log ?? '').includes(log);
 }
 
-export function merge({ run, biosRef, runner, url, found, expected }) {
+export function merge({ run, biosRef, runner, url, found, expected, refused = [] }) {
   const pins = found.find((shard) => shard.pins?.overrides?.length)?.pins ?? found[0]?.pins;
   const kernels = found.find((shard) => shard.kernels)?.kernels ?? null;
   const overridden = run.overrides.length > 0 || (pins?.overrides?.length ?? 0) > 0;
@@ -81,6 +119,7 @@ export function merge({ run, biosRef, runner, url, found, expected }) {
     .filter((shard) => shard.exit !== 0 && !shard.results.some((r) => r.status === 'fail'))
     .map(({ shard, exit: code }) => ({ shard, exit: code }));
   const ok =
+    refused.length === 0 &&
     missingShards.length === 0 &&
     unexplainedExits.length === 0 &&
     failed.length === 0 &&
@@ -119,6 +158,7 @@ export function merge({ run, biosRef, runner, url, found, expected }) {
     })),
     missingShards,
     unexplainedExits,
+    refused,
     counts: Object.fromEntries(
       ['pass', 'skip', 'fail', 'regression', 'both', 'flaky'].map((v) => [
         v,
@@ -137,6 +177,10 @@ export function verdictLine(result) {
   const counts = result.counts ?? {};
   const ran = Object.values(counts).reduce((sum, n) => sum + n, 0);
   const id = `canary ${result.run ?? ''}`.trim();
+  if (result.refused?.length) {
+    const names = result.refused.map(({ name }) => name).join(', ');
+    return { ok: false, line: `${id}: FAIL refused ${names}` };
+  }
   if (!ran) return { ok: false, line: `${id}: FAIL 0 tests ran` };
   if (!result.ok) {
     const bad = ['fail', 'regression', 'both']
@@ -180,6 +224,7 @@ export function summary(report, artifact = null) {
     failures: pick('fail'),
     missingShards: report.missingShards,
     unexplainedExits: report.unexplainedExits,
+    refused: report.refused ?? [],
     ...(artifact ? { artifact } : {}),
   };
 }
@@ -207,6 +252,20 @@ function rows(results) {
 }
 
 const repeated = ({ repeat }) => (repeat > 1 ? `, each test ${repeat} times` : '');
+
+function problems(report) {
+  const lines = (report.refused ?? []).map(
+    ({ name, reason }) => `- **refused** ${cell(name)}: ${cell(reason)}`
+  );
+  if (lines.length) lines.push('');
+  for (const { shard, exit: code } of report.unexplainedExits) {
+    lines.push(
+      `- **${shard}** exited ${code} with no failing test (a crash or a failing teardown).`
+    );
+  }
+  if (report.unexplainedExits.length) lines.push('');
+  return lines;
+}
 
 export function markdown(report) {
   const lines = [
@@ -245,12 +304,7 @@ export function markdown(report) {
   }
   for (const name of report.missingShards) lines.push(`| ${name} | | no result | | | | |`);
   lines.push('');
-  for (const { shard, exit: code } of report.unexplainedExits) {
-    lines.push(
-      `- **${shard}** exited ${code} with no failing test (a crash or a failing teardown).`
-    );
-  }
-  if (report.unexplainedExits.length) lines.push('');
+  lines.push(...problems(report));
   if (report.expect.length) {
     lines.push('| expected regression | log | found |', '| :--- | :--- | :--- |');
     for (const e of report.expect) {
@@ -276,12 +330,16 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
   const { values } = parseArgs({
     options: {
       dir: { type: 'string' },
-      runs: { type: 'string' },
+      runs: { type: 'string', default: '' },
       out: { type: 'string', default: 'canary' },
-      prefix: { type: 'string', default: '' },
+      bindings: { type: 'string', default: 'bindings.json' },
+      download: { type: 'string', default: '' },
     },
   });
-  const runs = JSON.parse(values.runs);
+  const runs = values.runs.trim() ? JSON.parse(values.runs) : [];
+  const bindings = await readBindings(values.bindings);
+  const read = await readShards(values.dir, bindings.verified, { download: values.download });
+  const refused = [...bindings.refused, ...read.refused];
   let ok = true;
   const summaries = [];
   for (const run of runs) {
@@ -290,8 +348,9 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
       biosRef: run.ref ?? '',
       runner: env.CANARY_RUNNER ?? '',
       url: env.RUN_URL ?? '',
-      found: await shards(values.dir, run.id, values.prefix),
+      found: found(read.docs, run),
       expected: run.shards,
+      refused,
     });
     const dir = runs.length === 1 ? values.out : join(values.out, run.id);
     await mkdir(dir, { recursive: true });
@@ -307,14 +366,18 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
   }
   await mkdir(values.out, { recursive: true });
   const lines = summaries.map(({ verdict }) => verdict);
-  if (!runs.length) lines.push('canary: FAIL no runs');
+  if (!runs.length) {
+    const why = (env.PLAN_REFUSED ?? '').replace(/^canary plan: FAIL /, '');
+    lines.push(why ? `canary: FAIL the plan refused: ${why}` : 'canary: FAIL no runs');
+  }
   ok &&= runs.length > 0;
   await writeFile(join(values.out, 'verdict.txt'), `${lines.join('\n')}\n`);
   const result =
     runs.length === 1
       ? { ...summaries[0], ok }
-      : { ok, verdict: lines.join('; '), runs: summaries };
+      : { ok, verdict: lines.join('; '), runs: summaries, refused };
   await writeFile(join(values.out, 'result.json'), `${JSON.stringify(result)}\n`);
+  console.log(lines.join('\n'));
   if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, `ok=${ok}\n`);
   if (!ok) exit(1);
 }
