@@ -2490,7 +2490,18 @@ test('privileged browser pages through the guard: a browser_ui target that repor
       const { result } = await own.send('Target.createTarget', { url });
       opened.push(result.targetId);
       newTabs.set(result.targetId, url);
-      await pause(1500);
+      let seen = '';
+      for (let n = 0; n < 100 && !seen.startsWith('chrome://'); n += 1) {
+        seen = (await own.send('Target.getTargetInfo', { targetId: result.targetId })).result
+          ?.targetInfo?.url;
+        seen ??= '';
+        if (!seen.startsWith('chrome://')) await pause(100);
+      }
+      assert.match(
+        seen,
+        /^chrome:\/\//,
+        `${url}: the new tab committed a chrome:// page; last seen ${seen}`
+      );
       const answer = await guard.send('Target.attachToTarget', {
         targetId: result.targetId,
         flatten: true,
