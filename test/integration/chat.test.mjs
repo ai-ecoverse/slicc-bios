@@ -956,12 +956,12 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
         .memoryView()
         .shadowRoot.querySelector('[data-id="global/about-the-user/meetings"] .head')
   );
-  await page.evaluate(() =>
-    window
+  await page.evaluate(() => {
+    const head = window
       .memoryView()
-      .shadowRoot.querySelector('[data-id="global/about-the-user/meetings"] .head')
-      .click()
-  );
+      .shadowRoot.querySelector('[data-id="global/about-the-user/meetings"] .head');
+    if (head.getAttribute('aria-expanded') !== 'true') head.click();
+  });
   await page.until(
     () =>
       !!window
