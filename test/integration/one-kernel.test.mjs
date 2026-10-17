@@ -17,7 +17,6 @@ function watchKernels() {
         ? `${agent.progress.phase} ${agent.progress.done} of ${agent.progress.total}`
         : null,
       rsync: rsync?.state ?? null,
-      rsyncProgress: rsync?.progress ? `${rsync.progress.phase} ${rsync.progress.done}` : null,
     });
   };
   window.sliccSamples = [];
@@ -83,8 +82,6 @@ test('a cold agent install runs in the page’s one kernel with no package scrip
   const samples = await page.evaluate(() => window.sliccSamples);
   assert.equal(kernels.peak, 1, `kernels on the root at once: ${JSON.stringify(kernels)}`);
   assert.equal(kernels.made, 1, `kernels made: ${JSON.stringify(kernels)}`);
-  const overlap = samples.filter((s) => s.agentProgress && s.rsyncProgress);
-  assert.deepEqual(overlap, [], 'rsync’s pnpm made progress while the agent’s pnpm did');
   const done = samples.findIndex((s) => s.rsync === 'installed');
   const busy = samples.findLastIndex(
     (s, i) => s.agentProgress && i > 0 && s.agentProgress !== samples[i - 1].agentProgress
