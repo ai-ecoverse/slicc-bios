@@ -158,13 +158,13 @@ test('over the extension’s shield, the guard arms every driven tab with no pro
 
   await run(
     page,
-    `t0=$(date +%s); playwright-cli goto ${PLAIN} > /tmp/plain 2>&1; echo "plain-$? took-$(( $(date +%s) - t0 ))" >> /tmp/plain; echo "plain-""done"`
+    `playwright-cli goto ${PLAIN} > /tmp/plain 2>&1; echo "plain-$?" >> /tmp/plain; playwright-cli eval '(() => { const n = performance.getEntriesByType("navigation")[0]; return "waited-" + Math.round(n.responseStart - n.startTime); })()' >> /tmp/plain 2>&1; echo "plain-""done"`
   );
   await shows(page, 'plain-done', 60000);
   const plain = await read(page, '/tmp/plain');
-  const took = Number(/took-(\d+)/.exec(plain)?.[1]);
+  const waited = Number(/waited-(\d+)/.exec(plain)?.[1]);
   assert.match(plain, /plain-0/, plain);
-  assert.ok(took <= 5, `an ordinary document took ${took} s: ${plain}`);
+  assert.ok(waited <= 3000, `an ordinary document waited ${waited} ms for its response: ${plain}`);
 
   hits.length = 0;
   await run(
