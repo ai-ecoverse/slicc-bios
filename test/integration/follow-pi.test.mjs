@@ -676,7 +676,7 @@ test('a follower watches the owner run with View, is refused a send, sends with 
   assert.equal(await page.evaluate(() => window.sudoShell.error), null);
   await page.evaluate(
     (command) => window.sudoShell.session.write(new TextEncoder().encode(`${command}\r`)),
-    `su cone -c 'sudo id -u'; echo "su says $((40 + 2))"`
+    `sudo -u cone sudo id -u; echo "sudo says $((40 + 2))"`
   );
   const fromShell = await owner
     .within(
@@ -699,7 +699,7 @@ test('a follower watches the owner run with View, is refused a send, sends with 
     fromShell.id
   );
   await page
-    .within(60000, () => window.sudoShell.output.includes('su says 42'))
+    .within(60000, () => window.sudoShell.output.includes('sudo says 42'))
     .catch(async (error) => {
       throw new Error(
         `the follower's shell never finished: ${error.message}\n${await shellOutput()}`
