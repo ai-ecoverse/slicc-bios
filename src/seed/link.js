@@ -77,6 +77,10 @@ function stream(streams, id, channel, own) {
     answer = { resolve, reject };
   });
   answered.catch(() => {});
+  let finish;
+  const settled = new Promise((resolve) => {
+    finish = resolve;
+  });
   const wake = () => {
     for (const resume of [...waiting]) resume();
   };
@@ -94,6 +98,7 @@ function stream(streams, id, channel, own) {
   const done = () => {
     streams.delete(id);
     if (own) channel.close();
+    finish(error);
   };
   const fail = (reason) => {
     error = reason;
@@ -144,6 +149,7 @@ function stream(streams, id, channel, own) {
       return info;
     },
     answered,
+    settled,
     get room() {
       return WINDOW - state.unacked;
     },

@@ -281,7 +281,13 @@ export async function leader(hubUrl) {
   });
   const socket = new WebSocket(claim.websocket.url);
   await new Promise((resolve) => socket.addEventListener('open', resolve, { once: true }));
-  const state = { joinUrl: tray.capabilities.join.url, runtimes: [], hello: null, opens: [] };
+  const state = {
+    joinUrl: tray.capabilities.join.url,
+    runtimes: [],
+    hello: null,
+    opens: [],
+    resets: [],
+  };
   const waiting = new Map();
   let next = 1;
   let pc = null;
@@ -304,6 +310,7 @@ export async function leader(hubUrl) {
         );
         if (meta.op === 'abort') channel.send(frame(4, id));
       } else if (bytes[0] === 2 || bytes[0] === 5) {
+        if (bytes[0] === 5 && id % 2 === 0) state.resets.push(payload);
         waiting.get(id)?.(bytes[0] === 2 ? 'opened' : payload);
       }
     });

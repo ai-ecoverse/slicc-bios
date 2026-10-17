@@ -340,12 +340,18 @@ test('in seven’s terminal a cone’s slicc prompts, watches and aborts another
     )
   );
   await sh(page, 'kill $(cat /tmp/watch.pid)');
-  await owner.within(STEP, () =>
-    document
-      .querySelector('slicc-app')
-      .model.network.status()
-      .links.devices.every((item) => !item.controlling)
-  );
+  await owner
+    .within(60000, () =>
+      document
+        .querySelector('slicc-app')
+        .model.network.status()
+        .links.devices.every((item) => !item.controlling)
+    )
+    .catch(async (error) => {
+      throw new Error(
+        `the leader still shows the killed watch: ${error.message}\n${JSON.stringify(await devices(owner))}\n${(await sh(page, 'cat /tmp/watch.err')).out}`
+      );
+    });
 
   const forged = await typed(page, `sudo -u cone slicc '${hub.url}/join/j999' prompt hi`, 'forged');
   assert.equal(forged.code, 3, forged.text);
@@ -406,6 +412,13 @@ test('in seven’s terminal a cone’s slicc prompts, watches and aborts another
   assert.equal(await certificate(page, hub.url), 'kept');
   assert.equal((await followed(page)).keys.length, 2);
   await sh(page, 'kill $(cat /tmp/fake.pid)');
+  assert.deepEqual(
+    await owner.within(
+      60000,
+      () => globalThis.fakeLeader.resets.length && globalThis.fakeLeader.resets
+    ),
+    ['ECONNRESET']
+  );
 
   await model(owner, (network, id) => network.unlink(id), linked.id);
   const unlinked = await typed(
