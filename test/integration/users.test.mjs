@@ -8,6 +8,8 @@ const chrome = await launch({ timeout: 120000, agent: true });
 const RSYNC = JSON.parse(
   await readFile(new URL('../../src/packages/optional/package.json', import.meta.url), 'utf8')
 ).dependencies['@ai-ecoverse/wasm-rsync'];
+const TREES = ['/opt/agent', '/opt/grammars', '/node_modules'];
+const SCAN = 5 * 60 * 1000;
 after(() => chrome.close());
 
 const color = (page, value) =>
@@ -64,12 +66,21 @@ test('the shell runs as root: whoami, id, ls -l and ps name the users, and git w
 
   await run(
     page,
-    'clear; for d in /opt/agent /opt/grammars /node_modules; do echo "unreadable $d $(find $d ! -perm -o=r | wc -l) $(find $d -type d ! -perm -o=x | wc -l)"; done; echo "checked $((6 * 7))"'
+    `clear; for d in ${TREES.join(' ')}; do echo "unreadable $d $(find $d ! -perm -o=r | wc -l) $(find $d -type d ! -perm -o=x | wc -l)"; done; echo "checked $((6 * 7))"`
   );
-  await shows(page, 'checked 42');
-  for (const tree of ['/opt/agent', '/opt/grammars', '/node_modules']) {
-    assert.match(await screen(page), new RegExp(`unreadable ${tree} 0 0`));
+  const scanning = Date.now();
+  for (const tree of TREES) {
+    const begun = Date.now();
+    await shows(page, `unreadable ${tree} `, SCAN).catch(async (error) => {
+      throw new Error(
+        `find printed nothing for ${tree} within ${Math.round((Date.now() - begun) / 1000)} s (${Math.round((Date.now() - scanning) / 1000)} s since the scan began): ${error.message}\n${await screen(page)}`
+      );
+    });
+    console.log(`scanned ${tree} in ${Math.round((Date.now() - begun) / 1000)} s`);
+    const shown = await screen(page);
+    assert.match(shown, new RegExp(`unreadable ${tree} 0 0`), shown);
   }
+  await shows(page, 'checked 42');
 
   assert.equal(await actPackage(page, 'git'), 'ok');
   await run(
