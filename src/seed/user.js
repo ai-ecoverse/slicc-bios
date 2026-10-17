@@ -1,5 +1,5 @@
 import { edit, entries, FIELDS, readLayer } from './layer.js';
-import { fence, text, write } from './update.js';
+import { fence, STORE, text, write } from './update.js';
 
 export const folder = 'opt/user';
 export const MODULES = `/${folder}/node_modules`;
@@ -144,7 +144,7 @@ export function createUserPackages({
   };
   const pnpm = async (argv) => {
     await ensure(root);
-    await run(['pnpm', ...argv, ...HYGIENE]);
+    await locks.request(STORE, () => run(['pnpm', ...argv, ...HYGIENE]));
     await run(READABLE);
   };
   async function install() {

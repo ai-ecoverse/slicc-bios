@@ -222,7 +222,7 @@ async function install(root, project, found, { start, report, certs }) {
     await readable(kernel, `/${folder}`);
     return { wanted: error ? baseText : wanted, error };
   } finally {
-    kernel.terminate();
+    if (!start.shared) kernel.terminate();
   }
 }
 
@@ -234,7 +234,7 @@ export async function normalize(root, project, start) {
   try {
     await readable(kernel, `/${folder}`);
   } finally {
-    kernel.terminate();
+    if (!start.shared) kernel.terminate();
   }
   await write(root, `${state}/readable`, '1\n');
   return true;

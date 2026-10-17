@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { boot, ready, run, screen, shows } from './bios.mjs';
+import { boot, ready, run, screen, settled, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch();
@@ -23,6 +23,7 @@ test('the BIOS installer keeps each packed file’s mode, so a shim outside bin/
     t.skip(`slicc-kernel ${kernel.version} has no /meta`);
     return;
   }
+  await settled(page);
   await run(
     page,
     `clear; stat -c '%a %u:%g %n' ${SHIM} /node_modules/@ai-ecoverse/wasi-pnpm/package.json /os/os.js; ${SHIM} --help > /dev/null 2>&1; echo shim=$?; echo modes-$((40 + 2))`
@@ -66,6 +67,7 @@ test('a profile from a kernel without /meta gets its modes on the first boot wit
     t.skip(`slicc-kernel ${(await kernel()).version} has no /meta`);
     return;
   }
+  await settled(page);
   await run(
     page,
     `clear; stat -c '%a %n' ${SHIM} /node_modules/@ai-ecoverse/wasi-pnpm/shims/npm /node_modules/@ai-ecoverse/wasi-pnpm/shims/npx; ${SHIM} --help > /dev/null 2>&1; echo i=$?; echo again-$((40 + 2))`

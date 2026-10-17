@@ -74,6 +74,14 @@ export async function ready(page, prompts = [prompt]) {
   }, prompts);
 }
 
+export async function settled(page, ms = 120000) {
+  await page.within(ms, () => {
+    const app = document.querySelector('slicc-app');
+    return app?.model?.updates?.ready?.() && !app.dock.api.getPanel('updates')?.params?.boot;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 500));
+}
+
 function showing(needle) {
   const { dock } = document.querySelector('slicc-app');
   return dock
