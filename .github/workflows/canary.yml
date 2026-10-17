@@ -23,6 +23,34 @@ on:
         description: 'Shards from scripts/canary/shards.json, a JSON list; empty means ci.yml''s'
         type: string
         default: ''
+      candidate-package:
+        description: 'The package an npm-packed candidate replaces, e.g. @ai-ecoverse/slicc-cdp'
+        type: string
+        default: ''
+      candidate-artifact:
+        description: 'The artifact holding the npm pack tarball'
+        type: string
+        default: ''
+      candidate-run:
+        description: 'The run id that uploaded the artifact'
+        type: string
+        default: ''
+      candidate-sha256:
+        description: 'The tarball''s sha256; anything else is refused'
+        type: string
+        default: ''
+      candidate-repo:
+        description: 'The repository of that run; empty means this one'
+        type: string
+        default: ''
+      repeat:
+        description: 'Run each selected test this many times (1 to 10)'
+        type: string
+        default: '1'
+      label:
+        description: 'A prefix for every artifact name, so two canaries in one run do not collide'
+        type: string
+        default: ''
   workflow_call:
     inputs:
       overrides:
@@ -45,10 +73,41 @@ on:
         type: string
         required: false
         default: ''
+      candidate-package:
+        type: string
+        required: false
+        default: ''
+      candidate-artifact:
+        type: string
+        required: false
+        default: ''
+      candidate-run:
+        type: string
+        required: false
+        default: ''
+      candidate-sha256:
+        type: string
+        required: false
+        default: ''
+      candidate-repo:
+        type: string
+        required: false
+        default: ''
+      repeat:
+        type: number
+        required: false
+        default: 1
+      label:
+        type: string
+        required: false
+        default: ''
     outputs:
       ok:
         description: 'true when the canary is green'
         value: ${{ jobs.report.outputs.ok }}
+      result:
+        description: 'The JSON summary: ok, counts, regressions, both, flaky, failures, missingShards, candidates, and the canary artifact''s name and url'
+        value: ${{ jobs.report.outputs.result }}
   schedule:
     - cron: '23 * * * *'
   pull_request:
@@ -61,10 +120,14 @@ on:
 
 permissions:
   contents: read
+  actions: read
+
+env:
+  SLICC_CDP_PORTS: '9300-9309'
 
 concurrency:
-  group: canary-${{ github.event_name == 'pull_request' && github.ref || github.event_name == 'schedule' && 'schedule' || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: canary-${{ (!startsWith(github.workflow_ref, 'ai-ecoverse/slicc-bios/.github/workflows/canary.yml@') && format('call-{0}-{1}-{2}-{3}', github.run_id, inputs.label, inputs.candidate-sha256, inputs.overrides)) || (github.event_name == 'pull_request' && github.ref) || (github.event_name == 'schedule' && 'schedule') || github.run_id }}
+  cancel-in-progress: ${{ startsWith(github.workflow_ref, 'ai-ecoverse/slicc-bios/.github/workflows/canary.yml@') && github.event_name == 'pull_request' }}
 
 jobs:
   plan:
@@ -75,11 +138,14 @@ jobs:
       runs: ${{ steps.decide.outputs.runs }}
       jobs: ${{ steps.decide.outputs.jobs }}
       key: ${{ steps.plan.outputs.key }}
+      uploads: ${{ steps.plan.outputs.uploads }}
       tools: ${{ steps.ref.outputs.sha }}
       cli: ${{ steps.cli.outputs.version }}
+      prefix: ${{ steps.plan.outputs.prefix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          persist-credentials: false
           repository: ai-ecoverse/slicc-bios
           ref: ${{ (github.repository == 'ai-ecoverse/slicc-bios' && github.sha) || 'main' }}
 
@@ -97,8 +163,15 @@ jobs:
       - id: plan
         name: What to test
         env:
-          EVENT: ${{ github.event_name }}
+          EVENT: ${{ startsWith(github.workflow_ref, 'ai-ecoverse/slicc-bios/.github/workflows/canary.yml@') && github.event_name || 'workflow_call' }}
           OVERRIDES: ${{ inputs.overrides }}
+          CANDIDATE_PACKAGE: ${{ inputs.candidate-package }}
+          CANDIDATE_ARTIFACT: ${{ inputs.candidate-artifact }}
+          CANDIDATE_RUN: ${{ inputs.candidate-run }}
+          CANDIDATE_SHA256: ${{ inputs.candidate-sha256 }}
+          CANDIDATE_REPO: ${{ inputs.candidate-repo }}
+          REPEAT: ${{ inputs.repeat }}
+          LABEL: ${{ inputs.label }}
           EXPECT: ${{ inputs.expect }}
           SHARDS: ${{ inputs.shards }}
           BIOS_REF: ${{ inputs.bios-ref }}
@@ -131,14 +204,20 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: github.event_name == 'schedule'
         with:
-          name: canary-inputs
+          name: ${{ steps.plan.outputs.prefix }}canary-inputs
           path: canary-inputs.json
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: fromJSON(steps.plan.outputs.uploads || '[]')[0]
+        with:
+          name: ${{ fromJSON(steps.plan.outputs.uploads)[0].name }}
+          path: ${{ fromJSON(steps.plan.outputs.uploads)[0].path }}
 
   shard:
     name: canary / ${{ matrix.job.run }} (${{ matrix.job.shard }})
     needs: plan
     if: needs.plan.outputs.jobs != '[]'
-    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && (inputs.runner || vars.CERT_RUNNER)) || 'ubuntu-latest' }}
+    runs-on: ${{ (startsWith(github.workflow_ref, 'ai-ecoverse/slicc-bios/.github/workflows/canary.yml@') && ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && (inputs.runner || vars.CERT_RUNNER)) || 'ubuntu-latest' }}
     timeout-minutes: 180
     strategy:
       fail-fast: false
@@ -150,12 +229,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          persist-credentials: false
           repository: ai-ecoverse/slicc-bios
           ref: ${{ matrix.job.ref }}
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         if: matrix.job.ref != needs.plan.outputs.tools
         with:
+          persist-credentials: false
           repository: ai-ecoverse/slicc-bios
           ref: ${{ needs.plan.outputs.tools }}
           path: .canary-tools
@@ -203,24 +284,36 @@ jobs:
           fi
           npx playwright-core install --no-shell chromium
 
+      - name: The candidate artifact
+        if: matrix.job.candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: ${{ matrix.job.candidate.artifact }}
+          run-id: ${{ matrix.job.candidate.run }}
+          repository: ${{ matrix.job.candidate.repo }}
+          github-token: ${{ github.token }}
+          path: .canary-candidate
+
       - name: The shard with the overrides, then main's pins for what failed
         env:
           OVERRIDES: ${{ toJSON(matrix.job.overrides) }}
+          CANDIDATE: ${{ toJSON(matrix.job.candidate) }}
+          REPEAT: ${{ matrix.job.repeat }}
           SHARD: ${{ matrix.job.shard }}
           OUT: canary/${{ matrix.job.run }}-${{ matrix.job.shard }}
-        run: node scripts/canary/shard.mjs --shard "$SHARD" --overrides "$OVERRIDES" --out "$OUT"
+        run: node scripts/canary/shard.mjs --shard "$SHARD" --overrides "$OVERRIDES" --candidate "$CANDIDATE" --repeat "$REPEAT" --out "$OUT"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: canary-shard-${{ matrix.job.run }}-${{ matrix.job.shard }}
+          name: ${{ needs.plan.outputs.prefix }}canary-shard-${{ matrix.job.run }}-${{ matrix.job.shard }}
           path: canary/${{ matrix.job.run }}-${{ matrix.job.shard }}/
           if-no-files-found: ignore
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: canary-files-${{ matrix.job.run }}-${{ matrix.job.shard }}
+          name: ${{ needs.plan.outputs.prefix }}canary-files-${{ matrix.job.run }}-${{ matrix.job.shard }}
           path: artifacts/
           if-no-files-found: ignore
 
@@ -232,9 +325,11 @@ jobs:
     timeout-minutes: 15
     outputs:
       ok: ${{ steps.report.outputs.ok }}
+      result: ${{ steps.result.outputs.result }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          persist-credentials: false
           repository: ai-ecoverse/slicc-bios
           ref: ${{ needs.plan.outputs.tools }}
 
@@ -244,28 +339,44 @@ jobs:
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          pattern: canary-shard-*
+          pattern: ${{ needs.plan.outputs.prefix }}canary-shard-*
           path: shards
 
       - id: report
         name: canary.json and the summary
         env:
           RUNS: ${{ needs.plan.outputs.runs }}
-          CANARY_RUNNER: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && (inputs.runner || vars.CERT_RUNNER)) || 'ubuntu-latest' }}
+          CANARY_RUNNER: ${{ (startsWith(github.workflow_ref, 'ai-ecoverse/slicc-bios/.github/workflows/canary.yml@') && ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && (inputs.runner || vars.CERT_RUNNER)) || 'ubuntu-latest' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: node scripts/canary/report.mjs --dir shards --runs "$RUNS" --out canary
+          PREFIX: ${{ needs.plan.outputs.prefix }}
+        run: node scripts/canary/report.mjs --dir shards --runs "$RUNS" --out canary --prefix "$PREFIX"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: ${{ !cancelled() }}
         with:
-          name: canary
+          name: ${{ needs.plan.outputs.prefix }}canary
           path: canary/
           if-no-files-found: ignore
+
+      - id: result
+        name: The machine-readable result
+        if: ${{ !cancelled() }}
+        env:
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          ARTIFACT_NAME: ${{ needs.plan.outputs.prefix }}canary
+        run: |
+          node -e '
+            const { readFileSync, appendFileSync } = require("node:fs");
+            const result = JSON.parse(readFileSync("canary/result.json", "utf8"));
+            result.artifact = { name: process.env.ARTIFACT_NAME, url: process.env.ARTIFACT_URL || "" };
+            appendFileSync(process.env.GITHUB_OUTPUT, `result=${JSON.stringify(result)}\n`);
+          '
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         if: ${{ !cancelled() && github.event_name == 'schedule' }}
         with:
-          name: canary-inputs
+          name: ${{ needs.plan.outputs.prefix }}canary-inputs
           path: .
 
       - name: Remember these inputs

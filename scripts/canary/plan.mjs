@@ -1,11 +1,11 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFile, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { argv, env } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { PACKAGES, projects, ROOT, registryUrl, specs } from './override-pins.mjs';
+import { PACKAGES, parse, projects, ROOT, registryUrl, specs } from './override-pins.mjs';
 
 const exec = promisify(execFile);
 
@@ -94,8 +94,73 @@ function shardList(text) {
 
 export function jobs(runs) {
   return runs.flatMap((run) =>
-    run.shards.map((shard) => ({ run: run.id, ref: run.ref, shard, overrides: run.overrides }))
+    run.shards.map((shard) => ({
+      run: run.id,
+      ref: run.ref,
+      shard,
+      overrides: run.overrides ?? [],
+      candidate: run.candidate ?? null,
+      repeat: run.repeat ?? 1,
+    }))
   );
+}
+
+const NAME = /^@[\w.-]+\/[\w.-]+$/;
+
+export function candidateOf(
+  { package: name = '', artifact = '', run = '', sha256 = '', repo = '' },
+  fallbackRepo = ''
+) {
+  const given = [name, artifact, run, sha256].filter((value) => String(value).trim());
+  if (!given.length) return null;
+  if (given.length < 4) {
+    throw new Error(
+      'a candidate needs candidate-package, candidate-artifact, candidate-run and candidate-sha256'
+    );
+  }
+  if (!NAME.test(name)) throw new Error(`candidate-package is not a scoped package name: ${name}`);
+  if (!/^\d+$/.test(String(run))) throw new Error(`candidate-run is not a run id: ${run}`);
+  if (!/^[0-9a-f]{64}$/.test(sha256))
+    throw new Error(`candidate-sha256 is not 64 hex digits: ${sha256}`);
+  const from = repo || fallbackRepo;
+  if (!/^[\w.-]+\/[\w.-]+$/.test(from))
+    throw new Error(`candidate-repo is not owner/name: ${from}`);
+  return { package: name, artifact, run: String(run), sha256, repo: from };
+}
+
+export function repeatOf(text) {
+  const n = Number(text === '' || text === undefined || text === null ? 1 : text);
+  if (!Number.isInteger(n) || n < 1 || n > 10) throw new Error(`repeat must be 1 to 10: ${text}`);
+  return n;
+}
+
+export function prefixOf(label, { called = false, candidate = null } = {}) {
+  const text = String(label ?? '').trim();
+  if (text) {
+    if (!/^[A-Za-z0-9][\w.-]{0,39}$/.test(text)) {
+      throw new Error(`label is not 1 to 40 letters, digits, dots, dashes or underscores: ${text}`);
+    }
+    return `${text}-`;
+  }
+  if (!called) return '';
+  return candidate ? 'candidate-' : 'base-';
+}
+
+async function packProof(proof, { runId, repo, dir, prefix = '' }) {
+  const { name } = parse(proof.pack);
+  const out = join(dir, proof.id);
+  await mkdir(out, { recursive: true });
+  await exec('npm', ['pack', proof.pack, '--pack-destination', out], { cwd: ROOT });
+  const artifact = `${prefix}canary-candidate-${proof.id}`;
+  const { pack, sha256, ...rest } = proof;
+  return {
+    run: {
+      overrides: [],
+      ...rest,
+      candidate: candidateOf({ package: name, artifact, run: runId, sha256, repo }),
+    },
+    upload: { name: artifact, path: out },
+  };
 }
 
 async function sha(ref, fallback) {
@@ -111,10 +176,36 @@ export async function pinRefs(runs, fallback) {
   return resolved;
 }
 
-export async function plan(event, { overrides = '', expect = '', shards = '', ref = '' } = {}) {
+export async function plan(
+  event,
+  {
+    overrides = '',
+    expect = '',
+    shards = '',
+    ref = '',
+    candidate = {},
+    repeat = '',
+    runId = '',
+    repo = '',
+    label = '',
+    packDir = join(ROOT, 'canary-pack'),
+  } = {}
+) {
   if (event === 'pull_request') {
+    const prefix = prefixOf(label);
     const proofs = JSON.parse(await readFile(join(ROOT, 'scripts/canary/proofs.json'), 'utf8'));
-    return { runs: proofs, key: '', inputs: null };
+    const runs = [];
+    const uploads = [];
+    for (const proof of proofs) {
+      if (!proof.pack) {
+        runs.push(proof);
+        continue;
+      }
+      const packed = await packProof(proof, { runId, repo, dir: packDir, prefix });
+      runs.push(packed.run);
+      uploads.push(packed.upload);
+    }
+    return { runs, key: '', inputs: null, uploads, prefix };
   }
   if (event === 'schedule') {
     const inputs = await newest();
@@ -122,12 +213,35 @@ export async function plan(event, { overrides = '', expect = '', shards = '', re
     const runs = inputs.overrides.length
       ? [{ id: 'canary', overrides: inputs.overrides, shards: SHARDS, expect: [] }]
       : [];
-    return { runs, key: `canary-inputs-${digest.slice(0, 32)}`, inputs };
+    return {
+      runs,
+      key: `canary-inputs-${digest.slice(0, 32)}`,
+      inputs,
+      uploads: [],
+      prefix: prefixOf(label),
+    };
   }
   const list = specs([overrides]);
   const wanted = expect.trim() ? JSON.parse(expect) : [];
-  const run = { id: 'canary', ref, overrides: list, shards: shardList(shards), expect: wanted };
-  return { runs: [run], key: '', inputs: null };
+  const run = {
+    id: 'canary',
+    ref,
+    overrides: list,
+    shards: shardList(shards),
+    expect: wanted,
+    candidate: candidateOf(candidate, repo),
+    repeat: repeatOf(repeat),
+  };
+  if (!run.overrides.length && !run.candidate && run.repeat > 1) {
+    throw new Error('repeat compares a candidate with main’s pins: name overrides or a candidate');
+  }
+  return {
+    runs: [run],
+    key: '',
+    inputs: null,
+    uploads: [],
+    prefix: prefixOf(label, { called: event === 'workflow_call', candidate: run.candidate }),
+  };
 }
 
 if (argv[1] === fileURLToPath(import.meta.url)) {
@@ -136,6 +250,17 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
     expect: env.EXPECT ?? '',
     shards: env.SHARDS ?? '',
     ref: env.BIOS_REF ?? '',
+    candidate: {
+      package: env.CANDIDATE_PACKAGE ?? '',
+      artifact: env.CANDIDATE_ARTIFACT ?? '',
+      run: env.CANDIDATE_RUN ?? '',
+      sha256: env.CANDIDATE_SHA256 ?? '',
+      repo: env.CANDIDATE_REPO ?? '',
+    },
+    repeat: env.REPEAT ?? '',
+    runId: env.GITHUB_RUN_ID ?? '',
+    repo: env.GITHUB_REPOSITORY ?? '',
+    label: env.LABEL ?? '',
   });
   result.runs = await pinRefs(result.runs, env.TOOLS_SHA ?? '');
   const inputs = join(ROOT, 'canary-inputs.json');
@@ -144,6 +269,8 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
     `runs=${JSON.stringify(result.runs)}`,
     `jobs=${JSON.stringify(jobs(result.runs))}`,
     `key=${result.key}`,
+    `uploads=${JSON.stringify(result.uploads ?? [])}`,
+    `prefix=${result.prefix ?? ''}`,
   ];
   if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, `${lines.join('\n')}\n`);
   console.log(lines.join('\n'));
