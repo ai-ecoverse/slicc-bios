@@ -34,13 +34,22 @@ export function refused(doc = document, go = (url) => location.replace(url), sto
   return box;
 }
 
+export function seatPage(at = location) {
+  if (!new URLSearchParams(at.hash.slice(1)).has('seat')) return null;
+  return new URL(`join.html${at.hash}`, import.meta.url).href;
+}
+
 export async function start({
+  seat = seatPage,
+  go = (url) => location.replace(url),
   follow = () => import('./follow.js'),
   follower = () => import('./follower.js'),
   os = () => import('./os.js'),
   fail = refused,
   check = stoppedPath,
 } = {}) {
+  const guest = seat();
+  if (guest) return go(guest);
   try {
     const { takeFollow } = await follow();
     await (takeFollow() ? follower() : os());

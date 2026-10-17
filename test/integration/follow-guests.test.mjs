@@ -1,0 +1,684 @@
+import assert from 'node:assert/strict';
+import { writeFile } from 'node:fs/promises';
+import { after, test } from 'node:test';
+import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
+import { agentUp, connectAccount, listsAccount, ready } from './bios.mjs';
+import { launch } from './chrome.mjs';
+import { model, startHub } from './fake-hub.mjs';
+import { eventFrame, fakeProxy } from './fake-proxy.mjs';
+import { shoot } from './shots.mjs';
+
+const KEY = 'dummy-bedrock-key-0000';
+const BEDROCK = 'https://bedrock-runtime.us-west-2.amazonaws.com/';
+const LABEL = 'Anna';
+const REFUSED = 'This guest link isn’t valid any more.';
+const EVENTS = [['content-type', 'application/vnd.amazon.eventstream']];
+
+const stream = (blocks, stopReason) =>
+  Buffer.concat([
+    eventFrame('messageStart', { role: 'assistant' }),
+    ...blocks,
+    eventFrame('messageStop', { stopReason }),
+    eventFrame('metadata', {
+      usage: { inputTokens: 3, outputTokens: 5, totalTokens: 8 },
+      metrics: { latencyMs: 1 },
+    }),
+  ]);
+const spoken = (words) =>
+  stream(
+    [
+      eventFrame('contentBlockDelta', { contentBlockIndex: 0, delta: { text: words } }),
+      eventFrame('contentBlockStop', { contentBlockIndex: 0 }),
+    ],
+    'end_turn'
+  );
+const runs = (id, command) =>
+  stream(
+    [
+      eventFrame('contentBlockStart', {
+        contentBlockIndex: 0,
+        start: { toolUse: { toolUseId: id, name: 'bash' } },
+      }),
+      eventFrame('contentBlockDelta', {
+        contentBlockIndex: 0,
+        delta: { toolUse: { input: JSON.stringify({ command }) } },
+      }),
+      eventFrame('contentBlockStop', { contentBlockIndex: 0 }),
+    ],
+    'tool_use'
+  );
+const lastTurn = (body) => {
+  try {
+    const sent = JSON.parse(body.toString());
+    return {
+      tools: !!sent.toolConfig?.tools?.length,
+      content: sent.messages?.at(-1)?.content ?? [],
+    };
+  } catch {
+    return { tools: false, content: [] };
+  }
+};
+
+let release = null;
+const held = new Promise((resolve) => {
+  release = resolve;
+});
+let holding = false;
+const asked = [];
+
+const owners = await launch({ agent: true, timeout: 60000 });
+const guests = await launch({
+  agent: true,
+  timeout: 60000,
+  args: ['--disable-features=IsolateSandboxedIframes'],
+});
+const proxy = await fakeProxy({
+  origin: new URL(owners.url).origin,
+  key: 'the-key',
+  answer: async (request, body) => {
+    if (request.url.startsWith('https://registry.npmjs.org/')) {
+      const type = request.url.endsWith('.tgz') ? 'application/octet-stream' : 'application/json';
+      return { status: 200, headers: [['content-type', type]], body: await download(request.url) };
+    }
+    if (!request.url.startsWith(BEDROCK))
+      return { status: 404, headers: [], body: Buffer.alloc(0) };
+    asked.push(body.toString());
+    const turn = lastTurn(body);
+    const says = (text) => turn.content.some((item) => item.text?.includes(text));
+    const result = turn.content.find((item) => item.toolResult)?.toolResult?.toolUseId;
+    if (result === 'guest-look')
+      return { status: 200, headers: EVENTS, body: spoken('Done looking.') };
+    if (result === 'guest-sudo')
+      return { status: 200, headers: EVENTS, body: spoken('Sudo answered.') };
+    if (turn.tools && says('Look around')) {
+      holding = true;
+      await held;
+      return { status: 200, headers: EVENTS, body: runs('guest-look', 'ls /') };
+    }
+    if (turn.tools && says('Use sudo'))
+      return { status: 200, headers: EVENTS, body: runs('guest-sudo', 'sudo ls -la /etc') };
+    if (says('Not a steer'))
+      return { status: 200, headers: EVENTS, body: spoken('Got the follow-up from Anna.') };
+    if (says('Hello from Anna'))
+      return { status: 200, headers: EVENTS, body: spoken('Nice to meet you, Anna.') };
+    return { status: 200, headers: EVENTS, body: spoken('Hello from the owner.') };
+  },
+});
+after(async () => {
+  await proxy.close();
+  await Promise.all([owners.close(), guests.close()]);
+});
+
+function deep() {
+  window.deep = (...path) => {
+    const find = (root, selector) => {
+      const found = root.querySelector(selector);
+      if (found) return found;
+      for (const element of root.querySelectorAll('*')) {
+        const inner = element.shadowRoot && find(element.shadowRoot, selector);
+        if (inner) return inner;
+      }
+      return null;
+    };
+    let node = document;
+    for (const selector of path) {
+      node = find(node.shadowRoot ?? node, selector);
+      if (!node) return null;
+    }
+    return node;
+  };
+  window.netPanel = () =>
+    window.deep('slicc-dock')?.content?.('network')?.shadowRoot ??
+    window.deep('slicc-network')?.shadowRoot ??
+    null;
+  window.invite = (selector) =>
+    window.deep('slicc-guest-invite')?.shadowRoot?.querySelector(selector);
+}
+
+const seats = (page) =>
+  page.evaluate(() =>
+    (document.querySelector('slicc-app').model.guests?.list() ?? []).map((seat) => ({
+      id: seat.id,
+      label: seat.label,
+      agentId: seat.agentId,
+      expiresAt: seat.expiresAt,
+      connected: seat.connected,
+    }))
+  );
+
+const transcript = (page) =>
+  page.evaluate(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    return JSON.stringify(agent.messages(agent.active()));
+  });
+
+const guestSaid = (page) =>
+  page.evaluate(() => {
+    const { agent } = document.querySelector('slicc-chat').model ?? {};
+    return agent ? JSON.stringify(agent.messages(agent.active())) : '';
+  });
+
+async function shootGuest(page, name) {
+  const capture = async (file, clip) => {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const { data } = await page.send('Page.captureScreenshot', {
+      format: 'png',
+      ...(clip ? { clip } : {}),
+    });
+    await writeFile(new URL(file, page.dir), Buffer.from(data, 'base64'));
+  };
+  const scheme = async (value) => {
+    await page.send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-color-scheme', value }],
+    });
+    await page.until(
+      (value) => document.querySelector('.swc-theme').classList.contains(`swc-theme--${value}`),
+      value
+    );
+  };
+  await page.send('Emulation.setDeviceMetricsOverride', {
+    width: 1280,
+    height: 800,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  for (const color of ['light', 'dark']) {
+    await scheme(color);
+    await capture(`${name}-${color}-1280.png`);
+  }
+  await scheme('light');
+  await page.send('Emulation.setDeviceMetricsOverride', {
+    width: 420,
+    height: 800,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await capture(`${name}-light-420.png`, { x: 0, y: 0, width: 420, height: 800, scale: 1 });
+  await page.send('Emulation.clearDeviceMetricsOverride');
+  await page.send('Emulation.setEmulatedMedia', { features: [] });
+}
+
+function probeLink(url) {
+  return (async () => {
+    const { createFollow, hubClient, hubOrigin } = await import('/os/follow.js');
+    const follow = createFollow({
+      kept: { hub: hubOrigin(url), url },
+      storage: { setItem() {}, removeItem() {} },
+      post: hubClient({ origin: null, fetch: (...args) => fetch(...args) }),
+      makePeer: (config) => new RTCPeerConnection(config),
+      cert: () => RTCPeerConnection.generateCertificate({ name: 'ECDSA', namedCurve: 'P-256' }),
+      forget: async () => undefined,
+      hello: () => ({ name: 'probe', mode: 'remote', kind: 'guest', caps: [], node: 'probe' }),
+    });
+    window.probe = follow;
+    follow.start();
+    return true;
+  })();
+}
+
+function probeStreams() {
+  return (async () => {
+    const outcome = (opening) =>
+      opening.then(
+        (stream) => {
+          stream.close();
+          return 'opened';
+        },
+        (error) => error.code ?? error.message
+      );
+    const refused = {};
+    for (const kind of [
+      'terminal',
+      'kernel',
+      'fs',
+      'agent',
+      'mounts',
+      'browsers',
+      'tcp',
+      'http',
+      'resolve',
+      'join',
+      'permissions',
+      'unlink',
+    ])
+      refused[kind] = await outcome(window.probe.open({ kind }));
+    const { linkEndpoint, connectAgent } = await import(
+      '/opt/agent/node_modules/@ai-ecoverse/slicc-agent/dist/page.js'
+    );
+    const { pumpLink, streamSink } = await import('/os/agent.js');
+    const first = await window.probe.open({ kind: 'pi' });
+    const second = await outcome(window.probe.open({ kind: 'pi' }));
+    const endpoint = linkEndpoint(streamSink(first));
+    void pumpLink(first, endpoint);
+    const owner = await Promise.race([
+      connectAgent(endpoint).then(
+        () => 'connected',
+        (error) => error.code ?? error.message
+      ),
+      new Promise((resolve) => setTimeout(resolve, 20000, 'no answer')),
+    ]);
+    return { refused, second, owner };
+  })();
+}
+
+test('the owner invites a guest to a live cone; the guest chats through a seat link, can’t drive the cone or reach other streams, a follower sees the seat, and Revoke ends it at once', {
+  timeout: 40 * 60 * 1000,
+}, async (t) => {
+  const hub = await startHub();
+  t.after(() => hub.close());
+  const owner = await owners.page(t);
+  const guest = await guests.page(t);
+  await owner.init(deep);
+  await guest.init(deep);
+  await owner.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await ready(owner);
+  await owner.evaluate((url) => localStorage.setItem('slicc-os.tray-hub', url), hub.url);
+  await owner.reload();
+  await ready(owner);
+  await guest.goto('/');
+  await ready(guest);
+  await Promise.all([
+    agentUp(owner, { label: 'owner agent' }),
+    agentUp(guest, { label: 'guest browser agent' }),
+  ]);
+  await listsAccount(owner, 'amazon-bedrock');
+  await connectAccount(owner, 'amazon-bedrock', KEY);
+  await owner.until(
+    () => document.querySelector('slicc-app').model.network.status().links?.sync === 'ready'
+  );
+
+  await owner.evaluate(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    void agent.send(agent.active(), 'Welcome, Anna');
+  });
+  await owner.until(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    return JSON.stringify(agent.messages(agent.active())).includes('Hello from the owner.');
+  });
+  const cone = await owner.evaluate(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    return { id: agent.active(), name: agent.list().find((a) => a.id === agent.active()).name };
+  });
+
+  await owner.evaluate(() => document.querySelector('slicc-app').show('network'));
+  await owner.until(() => !!window.netPanel()?.querySelector('section[data-guests]'));
+  assert.equal(
+    await owner.evaluate(() => !!window.netPanel().querySelector('[data-guests-empty]')),
+    true
+  );
+  await shoot(owner, 'guests-empty', { show: 'network', target: 'section[data-guests]' });
+
+  await owner.evaluate(() => window.netPanel().querySelector('[data-action=invite-guest]').click());
+  await owner.until(() => !!window.invite('dialog[open]'));
+  await owner.until(
+    () =>
+      window.invite('#guest-name') === window.deep('slicc-guest-invite').shadowRoot.activeElement
+  );
+  await owner.insert(LABEL);
+  await shoot(owner, 'guests-invite', {});
+  const before = Date.now();
+  await owner.evaluate(() => window.invite('[data-action=create-guest-link]').click());
+  await owner.until(() => !!window.invite('dialog[data-guest-invite=link]'));
+  const link = await owner.evaluate(() => window.invite('[data-copy=guest-url]').value);
+  const seatAt = new URL(link);
+  assert.equal(seatAt.origin, new URL(owners.url).origin);
+  assert.equal(seatAt.pathname, '/');
+  const hubSeat = new URLSearchParams(seatAt.hash.slice(1)).get('seat');
+  assert.equal(hubSeat, `${hub.url}/join/g1`);
+  assert.deepEqual(
+    hub.minted.map(({ label, unitJid }) => ({ label, unitJid })),
+    [{ label: LABEL, unitJid: cone.id }]
+  );
+  const week = 7 * 24 * 60 * 60 * 1000;
+  assert.ok(Math.abs(hub.minted[0].ttlMs - week) < 5 * 60 * 1000, `ttl ${hub.minted[0].ttlMs}`);
+  await shoot(owner, 'guests-invite-link', {});
+  await owner.evaluate(() => window.invite('[data-action=done-guest]').click());
+  await owner.until(() => !window.deep('slicc-guest-invite'));
+
+  const [minted] = await seats(owner);
+  assert.equal(minted.id, 's1');
+  assert.equal(minted.label, LABEL);
+  assert.equal(minted.agentId, cone.id);
+  assert.equal(minted.connected, false);
+  assert.ok(Math.abs(minted.expiresAt - (before + week)) < 5 * 60 * 1000);
+  assert.deepEqual(
+    await owner.evaluate(() =>
+      [...window.netPanel().querySelectorAll('li[data-seat]')].map((row) => [
+        row.dataset.seat,
+        row.dataset.connected,
+        row.querySelector('[data-expiry]').textContent,
+      ])
+    ),
+    [['s1', 'false', 'Expires in 7 days']]
+  );
+  assert.ok(
+    !(await owner.evaluate(() => JSON.stringify({ ...localStorage }))).includes('/join/g1'),
+    'the owner keeps no seat link'
+  );
+
+  await guest.goto(`/${seatAt.hash}`);
+  await guest.until(() => location.pathname === '/os/join.html' && !location.hash);
+  await guest
+    .within(
+      10 * 60 * 1000,
+      () => document.querySelector('slicc-chat')?.model?.seat?.label === 'Anna'
+    )
+    .catch(async (error) => {
+      const state = await guest.evaluate(
+        () => document.querySelector('[data-seat-state]')?.textContent
+      );
+      throw new Error(
+        `the guest page never joined: ${error.message}\nstate: ${state}\nconsole:\n${guest.console.slice(-15).join('\n')}`
+      );
+    });
+  assert.equal(
+    await guest.evaluate(() => sessionStorage.getItem('slicc-os.seat')),
+    `${hub.url}/join/g1`
+  );
+  await owner.until(
+    () => document.querySelector('slicc-app').model.guests.list()[0]?.connected === true
+  );
+  await guest.until(() => {
+    const chat = document.querySelector('slicc-chat');
+    const { agent } = chat.model;
+    const welcome = agent.messages(agent.active()).find((m) => m.text === 'Welcome, Anna');
+    return (
+      welcome &&
+      chat.shadowRoot.querySelector(`swc-conversation-turn[data-id="${welcome.id}"] .who`)
+        ?.textContent === 'From the host'
+    );
+  });
+  assert.match(await guestSaid(guest), /Hello from the owner\./);
+  await owner.until(
+    () => window.netPanel()?.querySelector('li[data-seat="s1"]')?.dataset.connected === 'true'
+  );
+  await shoot(owner, 'guests-connected', { show: 'network', target: 'section[data-guests]' });
+
+  await guest.evaluate(() => {
+    const { agent } = document.querySelector('slicc-chat').model;
+    return agent.send(agent.active(), 'Hello from Anna');
+  });
+  const review = await owner.within(60000, () =>
+    document
+      .querySelector('slicc-app')
+      .model.approvals.list()
+      .find((item) => item.kind === 'guest-message')
+  );
+  assert.ok(!asked.some((body) => body.includes('Hello from Anna')), 'sent before the review');
+  await owner.evaluate(
+    (id) => document.querySelector('slicc-app').model.approvals.decide(id, 'once'),
+    review.id
+  );
+  await guest.until(() => {
+    const { agent } = document.querySelector('slicc-chat').model;
+    return JSON.stringify(agent.messages(agent.active())).includes('Nice to meet you, Anna.');
+  });
+  const delivered = asked.find((body) => body.includes('Hello from Anna'));
+  assert.match(delivered, /A guest message from \\"Anna\\"/);
+  assert.match(await transcript(owner), /Hello from Anna/);
+  await shootGuest(guest, 'guest-chat');
+
+  await owner.evaluate(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    void agent.send(agent.active(), 'Look around');
+  });
+  for (let i = 0; i < 600 && !holding; i += 1) await new Promise((r) => setTimeout(r, 100));
+  assert.ok(holding, 'the owner’s run never asked the model');
+  await guest.until(() => {
+    const { agent } = document.querySelector('slicc-chat').model;
+    return agent.busy(agent.active());
+  });
+  const agentsBefore = await owner.evaluate(() =>
+    JSON.stringify(
+      document
+        .querySelector('slicc-app')
+        .model.agent.list()
+        .map((a) => [a.id, a.name])
+    )
+  );
+  const tried = await guest.evaluate(async () => {
+    const { agent } = document.querySelector('slicc-chat').model;
+    const id = agent.active();
+    const outcome = async (fn) => {
+      try {
+        await fn();
+        return 'accepted';
+      } catch (error) {
+        return error.message;
+      }
+    };
+    agent.stop(id);
+    return {
+      createCone: await outcome(() => agent.createCone('Renamed by a guest')),
+      drop: await outcome(() => agent.drop(id)),
+      rewind: await outcome(() => agent.rewind(id, agent.messages(id).at(-1)?.id ?? 'x')),
+      steer: await outcome(() => agent.send(id, 'Not a steer')),
+      fired: [
+        () => agent.clear(id),
+        () => agent.createScoop(id, 'renamed'),
+        () => agent.compact(id),
+        () => agent.freeze(id),
+        () => agent.setModel(id, 'amazon-bedrock/another-model'),
+        () => agent.setThinking(id, 'high'),
+      ].map((fire) => {
+        try {
+          fire();
+          return 'fired';
+        } catch (error) {
+          return error.message;
+        }
+      }),
+    };
+  });
+  for (const name of ['createCone', 'drop', 'rewind'])
+    assert.match(tried[name], /a guest can only watch and send messages/, name);
+  assert.equal(tried.steer, 'accepted');
+  const steer = await owner.within(60000, () =>
+    document
+      .querySelector('slicc-app')
+      .model.approvals.list()
+      .find((item) => item.kind === 'guest-message')
+  );
+  await owner.evaluate(
+    (id) => document.querySelector('slicc-app').model.approvals.decide(id, 'once'),
+    steer.id
+  );
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  assert.equal(
+    await owner.evaluate(() => {
+      const { agent } = document.querySelector('slicc-app').model;
+      return agent.busy(agent.active());
+    }),
+    true,
+    'a guest’s Stop stopped the run'
+  );
+  release();
+  await owner.until(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    const said = JSON.stringify(agent.messages(agent.active()));
+    return said.includes('Got the follow-up from Anna.') && !agent.busy(agent.active());
+  });
+  const toolRound = asked.find(
+    (body) => body.includes('guest-look') && body.includes('toolResult')
+  );
+  assert.ok(toolRound, 'the run never sent its tool result');
+  assert.ok(!toolRound.includes('Not a steer'), 'the guest’s message steered the run');
+  const order = await owner.evaluate(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    const list = agent.messages(agent.active());
+    return {
+      done: list.findIndex(
+        (m) => m.role === 'assistant' && JSON.stringify(m).includes('Done looking.')
+      ),
+      guest: list.findIndex(
+        (m) =>
+          m.role === 'user' && m.origin === 'guest' && JSON.stringify(m).includes('Not a steer')
+      ),
+    };
+  });
+  assert.ok(
+    order.done >= 0 && order.guest > order.done,
+    `not a follow-up: ${JSON.stringify(order)}`
+  );
+  assert.equal(
+    await owner.evaluate(() =>
+      JSON.stringify(
+        document
+          .querySelector('slicc-app')
+          .model.agent.list()
+          .map((a) => [a.id, a.name])
+      )
+    ),
+    agentsBefore
+  );
+  assert.equal(
+    await owner.evaluate(() => {
+      const { agent } = document.querySelector('slicc-app').model;
+      return agent.list().find((a) => a.id === agent.active()).name;
+    }),
+    cone.name
+  );
+
+  await owner.evaluate(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    void agent.send(agent.active(), 'Use sudo');
+  });
+  const sudo = await owner.within(120000, () =>
+    document
+      .querySelector('slicc-app')
+      .model.approvals.list()
+      .find((item) => item.kind === 'sudo')
+  );
+  assert.deepEqual(
+    await guest.evaluate(() => {
+      const { approvals } = document.querySelector('slicc-chat').model;
+      return { list: approvals.list().length, decide: typeof approvals.decide };
+    }),
+    { list: 0, decide: 'undefined' }
+  );
+  await owner.evaluate(
+    (id) => document.querySelector('slicc-app').model.approvals.decide(id, 'deny'),
+    sudo.id
+  );
+  await owner.until(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    return JSON.stringify(agent.messages(agent.active())).includes('Sudo answered.');
+  });
+
+  const follower = await guest.tab();
+  await follower.init(deep);
+  const { joinUrl } = await model(owner, (network) => network.status().links);
+  await follower.goto(`/#follow=${encodeURIComponent(joinUrl)}`);
+  await follower.until(
+    () => !!window.deep('slicc-confirm')?.shadowRoot?.querySelector('dialog[open]')
+  );
+  await follower.evaluate(() =>
+    [...window.deep('slicc-confirm').shadowRoot.querySelectorAll('swc-button')]
+      .find((b) => b.textContent.trim() === 'Follow')
+      .click()
+  );
+  await owner.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.network.status()
+      .links.devices.some((d) => d.kind === 'seven' && d.asking)
+  );
+  const device = await owner.evaluate(
+    () =>
+      document
+        .querySelector('slicc-app')
+        .model.network.status()
+        .links.devices.find((d) => d.kind === 'seven').id
+  );
+  await model(owner, (network, id) => network.setAccess(id, 'view', true), device);
+  await follower.within(5 * 60 * 1000, () =>
+    (document.querySelector('slicc-app').model.guests?.list() ?? []).some(
+      (seat) => seat.id === 's1' && seat.label === 'Anna' && seat.connected
+    )
+  );
+  await follower.evaluate(() => document.querySelector('slicc-app').show('network'));
+  await follower.until(
+    () => window.netPanel()?.querySelector('li[data-seat="s1"]')?.dataset.connected === 'true'
+  );
+  assert.deepEqual(
+    await follower.evaluate(() => ({
+      surfaces: document.querySelector('slicc-app').surfaces.map((s) => s.id),
+      network: 'network' in document.querySelector('slicc-app').model,
+      guests: !!window.netPanel().querySelector('section[data-guests]'),
+      unavailable: window.netPanel().querySelector('[data-guests-unavailable]')?.textContent.trim(),
+      invite: !!window.netPanel().querySelector('[data-action=invite-guest]'),
+    })),
+    {
+      surfaces: ['agents', 'chat', 'terminal', 'network', 'settings'],
+      network: false,
+      guests: true,
+      unavailable: 'Inviting guests needs the tray hub.',
+      invite: false,
+    }
+  );
+
+  const probe = await guest.tab();
+  await probe.goto('/os/join.html');
+  await probe.until(
+    (text) => document.querySelector('[data-seat-state]')?.textContent === text,
+    REFUSED
+  );
+  await probe.evaluate(probeLink, hubSeat);
+  await probe.until(() => window.probe.status().link === 'connected');
+  const streams = await probe.evaluate(probeStreams);
+  for (const [kind, code] of Object.entries(streams.refused))
+    assert.equal(code, 'EOPNOTSUPP', `a guest link opened ${kind}`);
+  assert.equal(streams.second, 'EBUSY');
+  assert.notEqual(streams.owner, 'connected', 'a guest link reached the owner’s AgentControl');
+
+  await owner.evaluate(() =>
+    window.netPanel().querySelector('li[data-seat="s1"] [data-action=revoke-guest]').click()
+  );
+  await owner.until(
+    () => !!window.deep('slicc-confirm')?.shadowRoot?.querySelector('[data-action]')
+  );
+  const revokedAt = Date.now();
+  await owner.evaluate(() =>
+    window.deep('slicc-confirm').shadowRoot.querySelector('[data-action]').click()
+  );
+  await probe.within(5000, () => window.probe.status().link !== 'connected');
+  await guest.within(
+    10000,
+    (text) =>
+      document.querySelector('[data-seat-state]')?.textContent === text &&
+      document.querySelector('slicc-chat').hidden,
+    REFUSED
+  );
+  const closedIn = Date.now() - revokedAt;
+  await probe.within(60000, () => window.probe.status().link === 'failed');
+  assert.equal(await guest.evaluate(() => sessionStorage.getItem('slicc-os.seat')), null);
+  assert.equal(hub.seats.get('g1').revoked, true);
+  await owner.until(() => !window.netPanel().querySelector('li[data-seat="s1"]'));
+  assert.deepEqual(await seats(owner), []);
+  await follower.until(
+    () => !(document.querySelector('slicc-app').model.guests?.list() ?? []).length
+  );
+  assert.deepEqual(
+    await owner.evaluate(() =>
+      document
+        .querySelector('slicc-app')
+        .model.network.status()
+        .links.devices.map((d) => [d.id, d.kind])
+    ),
+    [[device, 'seven']]
+  );
+  const stored = await owner.evaluate(() => JSON.stringify({ ...localStorage }));
+  assert.ok(!stored.includes('/join/g1') && !stored.includes('"s1"'), 'the owner kept the seat');
+
+  const again = await guest.tab();
+  await again.goto(`/${seatAt.hash}`);
+  await again.within(
+    5 * 60 * 1000,
+    (text) => document.querySelector('[data-seat-state]')?.textContent === text,
+    REFUSED
+  );
+  assert.equal(await again.evaluate(() => sessionStorage.getItem('slicc-os.seat')), null);
+  t.diagnostic(`the guest's page showed the refusal ${closedIn} ms after Revoke`);
+
+  for (const page of [owner, guest, follower, probe, again]) assert.deepEqual(page.errors, []);
+});

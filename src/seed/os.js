@@ -224,6 +224,7 @@ const tray = hub
       origin: hub,
       page: location.origin,
       onWebhook: (name, delivery) => deliverWebhook(owner, name, delivery),
+      onGuest: (seat, stream) => bridgeAgent(owner, stream, { guest: seat }),
     })
   : null;
 followers = tray
@@ -761,6 +762,7 @@ async function follow() {
     versions: mine,
     chat: () => loadChat(),
     wrap: (agent) => onSend(browser.stopping(agent), keep.sent),
+    guests: tray?.guests ?? null,
     storage: localStorage,
     login,
     disk: () => biosHash(read),

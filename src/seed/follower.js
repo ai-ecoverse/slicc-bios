@@ -12,6 +12,7 @@ export const layouts = {
   agents: { side: 'left', open: ['tablet', 'desktop'] },
   chat: { side: 'center', open: ['phone', 'tablet', 'desktop'] },
   terminal: { side: 'center', open: ['phone', 'tablet', 'desktop'] },
+  network: { side: 'right', open: [] },
   settings: { side: 'center', open: [] },
 };
 
