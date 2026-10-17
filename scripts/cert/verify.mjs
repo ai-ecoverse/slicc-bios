@@ -32,6 +32,28 @@ export function claims(text) {
   }));
 }
 
+const REVIEW = new RegExp(`^\\*\\*Cert review: ${pkg}\\*\\*`, 'gm');
+const PASSED = new RegExp(`^(?:certified|cert-ci: PASS) ${pkg} sha256=[0-9a-f]{64}\\b`, 'gm');
+const FAILED = new RegExp(`^cert-ci: FAIL ${pkg}:`, 'gm');
+
+export function verdictOf(text, problems = []) {
+  const ids = (re) =>
+    new Set([...text.matchAll(re)].map(([, name, version]) => `${name}@${version}`));
+  const reviewed = ids(REVIEW);
+  const passed = ids(PASSED);
+  const failed = ids(FAILED);
+  const named = new Set([...reviewed, ...passed, ...failed]);
+  if (!named.size) return { ok: false, line: 'cert-review: FAIL no verdict' };
+  const why = [];
+  for (const id of named) {
+    if (failed.has(id)) why.push(`${id} FAIL`);
+    else if (!passed.has(id)) why.push(`${id} has no certified or cert-ci line`);
+  }
+  if (problems.length) why.push(`sha check: ${problems.join('; ')}`);
+  if (why.length) return { ok: false, line: `cert-review: FAIL ${why.join(', ')}` };
+  return { ok: true, line: `cert-review: CERTIFIED ${[...named].sort().join(', ')}` };
+}
+
 export async function registry(name, version, fetcher = fetch) {
   const meta = await (await fetcher(`https://registry.npmjs.org/${name}/${version}`)).json();
   const response = await fetcher(meta.dist.tarball);
@@ -65,10 +87,18 @@ export async function verify(text, lookup = registry) {
 }
 
 if (import.meta.url === `file://${argv[1]}`) {
-  const { checked, problems } = await verify(await readFile(argv[2], 'utf8'));
-  console.log(`checked: ${checked.join(', ') || 'nothing'}`);
-  if (problems.length) {
-    console.error(problems.join('\n'));
-    exit(1);
+  if (argv[2] === '--verdict') {
+    const text = await readFile(argv[3], 'utf8').catch(() => '');
+    const { problems } = text.trim() ? await verify(text) : { problems: [] };
+    const { ok, line } = verdictOf(text, problems);
+    console.log(line);
+    if (!ok) exit(1);
+  } else {
+    const { checked, problems } = await verify(await readFile(argv[2], 'utf8'));
+    console.log(`checked: ${checked.join(', ') || 'nothing'}`);
+    if (problems.length) {
+      console.error(problems.join('\n'));
+      exit(1);
+    }
   }
 }

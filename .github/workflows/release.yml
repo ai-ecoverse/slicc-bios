@@ -39,7 +39,7 @@ jobs:
             echo "current=true" >> "$GITHUB_OUTPUT"
           else
             echo "current=false" >> "$GITHUB_OUTPUT"
-            echo "main has moved past $(git rev-parse --short HEAD); the run for the newer commit releases it" >> "$GITHUB_STEP_SUMMARY"
+            echo "release: SKIPPED main has moved past $(git rev-parse --short HEAD); the run for the newer commit releases it" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
       - if: steps.head.outputs.current == 'true'
@@ -62,9 +62,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          npx semantic-release
+          set -o pipefail
+          npx semantic-release 2>&1 | tee "$RUNNER_TEMP/release.log"
           tag=$(git tag --points-at HEAD | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          node scripts/ci/verdict.mjs release --log "$RUNNER_TEMP/release.log" --tag "$tag"
 
       - name: Publish the tag to npm with provenance, unless npm already has it
         if: steps.release.outputs.tag != ''
@@ -73,14 +75,22 @@ jobs:
         run: |
           version="${TAG#v}"
           published() { [ "$(npm view "@ai-ecoverse/slicc-bios@$version" version 2> /dev/null)" = "$version" ]; }
+          verdict() { node scripts/ci/verdict.mjs publish --name @ai-ecoverse/slicc-bios --version "$version" --published "$(npm view "@ai-ecoverse/slicc-bios@$version" version 2> /dev/null)" "$@"; }
           if published; then
-            echo "npm already has $version"
-            exit 0
+            verdict --already
+            exit
           fi
           npm version --no-git-tag-version --allow-same-version "$version"
           for attempt in 1 2 3; do
-            if npm publish --provenance --access public; then exit 0; fi
-            if published; then exit 0; fi
+            if npm publish --provenance --access public; then
+              for _ in $(seq 10); do published && break; sleep 6; done
+              verdict
+              exit
+            fi
+            if published; then
+              verdict
+              exit
+            fi
             echo "npm publish failed (attempt $attempt)"
             sleep $((attempt * 30))
           done

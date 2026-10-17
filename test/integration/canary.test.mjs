@@ -441,3 +441,129 @@ test('the canary workflow checks out without credentials, keeps the tools off 92
   }
   assert.match(yml, /cancel-in-progress: \$\{\{ startsWith\(/);
 });
+
+test('a shard passes only with a test summary, no failure or cancellation, at least one passing test, and the verdict lines its files owe', async () => {
+  const { shardVerdict } = await import('../../scripts/ci/verdict.mjs');
+  const tally = (pass, fail = 0, cancelled = 0) =>
+    `✔ a\nℹ tests ${pass + fail + cancelled}\nℹ suites 0\nℹ pass ${pass}\nℹ fail ${fail}\nℹ cancelled ${cancelled}\nℹ skipped 0\nℹ todo 0\n`;
+  assert.deepEqual(shardVerdict('rest', tally(4)), { ok: true, line: 'shard rest: PASS 4 tests' });
+  assert.deepEqual(shardVerdict('rest', ''), {
+    ok: false,
+    line: 'shard rest: FAIL no test summary',
+  });
+  assert.deepEqual(shardVerdict('rest', tally(0)), {
+    ok: false,
+    line: 'shard rest: FAIL 0 tests passed',
+  });
+  assert.deepEqual(shardVerdict('rest', tally(3, 1)), {
+    ok: false,
+    line: 'shard rest: FAIL 1 failed',
+  });
+  assert.deepEqual(shardVerdict('rest', tally(3, 0, 2)), {
+    ok: false,
+    line: 'shard rest: FAIL 2 cancelled',
+  });
+  assert.deepEqual(shardVerdict('rest', `\u001b[34m${tally(2)}\u001b[39m`).ok, true);
+  const pins = ['test/integration/pins.test.mjs'];
+  assert.deepEqual(shardVerdict('rest', tally(6), pins), {
+    ok: false,
+    line: 'shard rest: FAIL pins.test.mjs printed no verdict line',
+  });
+  assert.equal(shardVerdict('rest', `ℹ pins: PASS 46 packages\n${tally(6)}`, pins).ok, true);
+});
+
+test('ci / test fails for a shard with no verdict, a failing verdict, or a cancelled or timed-out job', async () => {
+  const { shardsVerdict } = await import('../../scripts/ci/verdict.mjs');
+  const pass = ['shard a: PASS 3 tests', 'shard b: PASS 1 tests'];
+  const ok = { lint: 'success', integration: 'success' };
+  assert.deepEqual(shardsVerdict(['a', 'b'], pass, ok), { ok: true, line: 'ci: PASS 2 shards' });
+  assert.deepEqual(shardsVerdict(['a', 'b'], pass.slice(0, 1), ok), {
+    ok: false,
+    line: 'ci: FAIL b: no verdict',
+  });
+  assert.deepEqual(shardsVerdict(['a', 'b'], [pass[0], 'shard b: FAIL 0 tests passed'], ok), {
+    ok: false,
+    line: 'ci: FAIL b: FAIL 0 tests passed',
+  });
+  assert.deepEqual(shardsVerdict(['a', 'b'], pass, { lint: 'success', integration: 'cancelled' }), {
+    ok: false,
+    line: 'ci: FAIL integration: cancelled',
+  });
+  assert.equal(shardsVerdict(['a', 'b'], pass, { lint: 'success', integration: '' }).ok, false);
+  assert.equal(shardsVerdict([], [], ok).ok, false);
+});
+
+test('a release says which tag it made, or that nothing was releasable, and publishing names the version npm has', async () => {
+  const { releaseVerdict, publishVerdict } = await import('../../scripts/ci/verdict.mjs');
+  assert.deepEqual(releaseVerdict('', 'v1.84.0'), { ok: true, line: 'release: v1.84.0' });
+  assert.deepEqual(
+    releaseVerdict(
+      '[semantic-release] Found git tag v1.83.2 associated with version 1.83.2 on branch main\n[semantic-release] There are no relevant changes, so no new version is released.',
+      ''
+    ),
+    { ok: true, line: 'release: NONE no releasable commits since v1.83.2' }
+  );
+  assert.equal(releaseVerdict('', '').ok, false);
+  assert.equal(releaseVerdict('[semantic-release] something else', '').ok, false);
+  assert.deepEqual(publishVerdict('@ai-ecoverse/slicc-bios', '1.84.0', '1.84.0', false), {
+    ok: true,
+    line: 'published: @ai-ecoverse/slicc-bios@1.84.0',
+  });
+  assert.equal(publishVerdict('@ai-ecoverse/slicc-bios', '1.84.0', '', false).ok, false);
+});
+
+test('the canary report names a verdict, and zero tests or a missing shard is a fail', async () => {
+  const { verdictLine } = await import('../../scripts/canary/report.mjs');
+  const counts = (pass, more = {}) => ({
+    pass,
+    skip: 0,
+    fail: 0,
+    regression: 0,
+    both: 0,
+    flaky: 0,
+    ...more,
+  });
+  assert.deepEqual(verdictLine({ ok: true, run: 'canary', counts: counts(12) }), {
+    ok: true,
+    line: 'canary canary: PASS 12 tests',
+  });
+  assert.deepEqual(verdictLine({ ok: true, run: 'canary', counts: counts(0) }), {
+    ok: false,
+    line: 'canary canary: FAIL 0 tests ran',
+  });
+  assert.deepEqual(
+    verdictLine({
+      ok: false,
+      run: 'r',
+      counts: counts(3, { regression: 1 }),
+      missingShards: ['guard'],
+    }),
+    { ok: false, line: 'canary r: FAIL 1 regression, missing guard' }
+  );
+});
+
+test('every gate in the workflows prints a verdict and its caller fails without it', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const read = (name) =>
+    readFile(new URL(`../../.github/workflows/${name}`, import.meta.url), 'utf8');
+  const ci = await read('ci.yml');
+  const shards = [...ci.matchAll(/^ {10}- shard: (\S+)$/gm)].map(([, name]) => name);
+  assert.deepEqual(ci.match(/^ {2}SHARDS: '([^']+)'$/m)[1].split(' '), shards);
+  assert.match(ci, /npm test 2>&1 \| tee "\$RUNNER_TEMP\/test\.log"/);
+  assert.match(ci, /set -o pipefail/);
+  const verdictStep = ci.slice(ci.indexOf("- name: The shard's verdict"));
+  assert.match(verdictStep.slice(0, 400), /if: always\(\)/);
+  assert.match(verdictStep.slice(0, 400), /scripts\/ci\/verdict\.mjs shard /);
+  const job = ci.slice(ci.indexOf('\n  ci:'));
+  assert.match(job, /^ {4}if: always\(\)$/m);
+  assert.match(
+    job,
+    /scripts\/ci\/verdict\.mjs shards --dir artifacts\/verdicts --expect "\$SHARDS"/
+  );
+  const release = await read('release.yml');
+  assert.match(release, /scripts\/ci\/verdict\.mjs release --log/);
+  assert.match(release, /scripts\/ci\/verdict\.mjs publish /);
+  assert.doesNotMatch(release, /npm already has \$version"\n\s+exit 0/);
+  const canary = await read('canary.yml');
+  assert.match(canary, /canary: FAIL the report wrote no verdict/);
+});

@@ -173,6 +173,7 @@ test('every gated package in every lockfile is certified, with the certified int
     if (entry.sha256) assert.match(entry.sha256, /^[0-9a-f]{64}$/, key);
     if ('exception' in entry) assert.match(entry.exception, /\(homescoop#\d+/, key);
   }
+  t.diagnostic(`pins: PASS ${found.size} packages`);
 });
 
 test('an uncertified pin fails unless its certs entry records an exception, and git and gh are the recorded exceptions', async () => {
