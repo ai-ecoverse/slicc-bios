@@ -149,15 +149,18 @@ export function createUserPackages({
   };
   async function install() {
     let names = [];
+    let failure = null;
     try {
       await locked(async () => {
         names = await missing(root);
         if (names.length) await pnpm(['install', '--no-frozen-lockfile']);
       });
-      for (const name of names) errors.delete(name);
     } catch (error) {
-      for (const name of names) errors.set(name, firstLine(error.message));
+      failure = firstLine(error.message);
     }
+    const left = new Set(await missing(root));
+    for (const name of [...errors.keys()]) if (!left.has(name)) errors.delete(name);
+    if (failure) for (const name of names) errors.set(name, failure);
   }
   return {
     rows: () => rows(root, errors),
