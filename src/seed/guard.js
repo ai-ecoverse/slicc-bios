@@ -185,6 +185,7 @@ class Guard {
     this.sessions = new Map();
     this.shown = new Set();
     this.blocked = new Set();
+    this.waiting = new Set();
     this.pages = new Set();
     this.frames = new Map();
     this.requests = new Map();
@@ -278,6 +279,8 @@ class Guard {
   cut(sessionId, parent) {
     if (this.blocked.has(sessionId)) return;
     this.blocked.add(sessionId);
+    if (this.waiting.delete(sessionId))
+      void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
     const targetId = this.sessions.get(sessionId)?.targetId;
     if (targetId) {
       const known = this.targets.get(targetId) ?? { url: '' };
@@ -398,11 +401,8 @@ class Guard {
   }
 
   async inspect(sessionId, targetId, parent) {
-    const [guarded, clean] = await Promise.all([
-      targetId ? this.target(targetId) : false,
-      this.verify(sessionId),
-    ]);
-    if (guarded || !clean) {
+    const guarded = targetId ? await this.target(targetId) : false;
+    if (guarded || !(await this.verify(sessionId))) {
       this.cut(sessionId, parent);
       return false;
     }
@@ -437,13 +437,14 @@ class Guard {
     this.touch(targetId, true);
     const nav = this.navs.get(targetId);
     await nav?.ready;
-    if (params.waitingForDebugger) void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
+    if (this.waiting.delete(sessionId))
+      void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
     const info = await this.named(targetId);
-    if (nav) nav.held = false;
     if (!info || nav?.taken || nav?.failed) return this.cut(sessionId, parent);
     this.targets.delete(info.targetId);
     this.learn(info);
     if (await this.watch(sessionId, info.targetId, parent)) {
+      if (nav) nav.held = false;
       this.deliver({
         ...message,
         params: { ...params, targetInfo: info, waitingForDebugger: false },
@@ -581,6 +582,7 @@ class Guard {
       const info = params.targetInfo ?? {};
       const nav = this.navs.get(info.targetId);
       if (nav && sessionId === undefined && (await nav.attaching) === params.sessionId) return true;
+      if (params.waitingForDebugger) this.waiting.add(params.sessionId);
       if (!info.url && (info.type === 'page' || info.type === 'iframe')) {
         void this.blank(message);
         return true;
@@ -617,6 +619,7 @@ class Guard {
         return true;
       }
       this.sessions.delete(params.sessionId);
+      this.waiting.delete(params.sessionId);
       return !this.shown.delete(params.sessionId);
     }
     return false;
