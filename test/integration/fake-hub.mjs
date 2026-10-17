@@ -289,6 +289,7 @@ export async function leader(hubUrl) {
     resets: [],
     fingerprints: [],
     unlinked: [],
+    away: false,
   };
   const waiting = new Map();
   let next = 1;
@@ -359,6 +360,7 @@ export async function leader(hubUrl) {
       const found = /^a=fingerprint:sha-256 ([0-9A-F:]+)/im.exec(message.answer.sdp)?.[1];
       const id = found?.replaceAll(':', '').toLowerCase() ?? null;
       state.fingerprints.push(id);
+      if (state.away) return;
       if (state.unlinked.includes(id)) {
         socket.send(
           JSON.stringify({

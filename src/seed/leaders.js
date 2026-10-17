@@ -138,6 +138,7 @@ export function createLeaders({
       if (entry.relink) {
         entry.relink = false;
         await forget(entry.hub).catch(() => undefined);
+        remember(entry);
       }
       for (let attempt = 0; !over; attempt += 1) {
         try {

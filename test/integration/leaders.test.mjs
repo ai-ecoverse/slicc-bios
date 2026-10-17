@@ -112,11 +112,29 @@ test('an unlink by one seven leaves this seven’s certificate, so another seven
     [[known.id, true]]
   );
 
+  await owner.evaluate(() => {
+    globalThis.fakeLeader.away = true;
+  });
+  const fingerprints = () => owner.evaluate(() => globalThis.fakeLeader.fingerprints);
+  for (const label of ['away', 'still-away']) {
+    const from = (await fingerprints()).length;
+    const unanswered = await typed(page, toFake, label);
+    assert.notEqual(unanswered.code, 0, unanswered.text);
+    assert.match(unanswered.text, /couldn't reach that seven through its tray/);
+    assert.ok((await fingerprints()).length > from, `${label}: the re-link reached the leader`);
+  }
+  await owner.evaluate(() => {
+    globalThis.fakeLeader.away = false;
+  });
   const relinked = await typed(page, toFake, 'relinked');
   assert.equal(relinked.code, 0, relinked.text);
-  const seen = await owner.evaluate(() => globalThis.fakeLeader.fingerprints);
-  assert.equal(seen.length, 3);
+  const seen = await fingerprints();
   assert.notEqual(seen[2], before, 'the re-link is a new device');
+  assert.deepEqual(
+    [...new Set(seen.slice(2))],
+    [seen[2]],
+    're-links that fail mint one certificate, not one per retry'
+  );
 
   await page.reload();
   await ready(page);
