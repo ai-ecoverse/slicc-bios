@@ -244,6 +244,7 @@ export function createSession({
   const peerIds = new Set();
   const channels = new Set();
   const early = [];
+  let held = 0;
   let next = 2 - parity;
   let peer = null;
   let closed = null;
@@ -289,22 +290,29 @@ export function createSession({
       );
   }
 
-  function receive(channel, data) {
-    if (closed) return;
-    if (typeof data === 'string') {
-      if (channel !== control || peer) return close('a text message after HELLO');
-      const parsed = json(encoder.encode(data));
-      if (parsed?.role !== other) return close('a malformed HELLO');
-      peer = parsed;
-      timers.clearTimeout(timer);
-      settle.resolve(peer);
-      for (const [held, bytes] of early.splice(0)) framed(held, bytes);
-      return;
-    }
-    if (peer) return framed(channel, data);
+  function heard(channel, data) {
+    if (channel !== control || peer) return close('a text message after HELLO');
+    const parsed = json(encoder.encode(data));
+    if (parsed?.role !== other) return close('a malformed HELLO');
+    peer = parsed;
+    timers.clearTimeout(timer);
+    settle.resolve(peer);
+    for (const [from, bytes] of early.splice(0)) if (channels.has(from)) framed(from, bytes);
+  }
+
+  function hold(channel, data) {
     if (channel === control) return close('a frame before HELLO');
     if (early.length >= EARLY) return close('too many frames before HELLO');
+    held += data.byteLength;
+    if (held > WINDOW) return close('too many bytes before HELLO');
     early.push([channel, data]);
+  }
+
+  function receive(channel, data) {
+    if (closed) return;
+    if (typeof data === 'string') return heard(channel, data);
+    if (peer) return framed(channel, data);
+    hold(channel, data);
   }
 
   function framed(channel, data) {
