@@ -244,7 +244,8 @@ export async function fakeProxy({ origin, key, port = 0, answer, exports = {} })
       const request = JSON.parse(raw);
       void readBody(req).then(async (body) => {
         requests.push({ ...request, body: body.toString() });
-        const { status, headers, body: reply } = await answer(request, body);
+        const closed = new Promise((resolve) => res.on('close', () => resolve(Date.now())));
+        const { status, headers, body: reply } = await answer(request, body, { closed });
         res.writeHead(200, { ...cors, 'Content-Type': RAW });
         res.end(rawResponse(status, headers, reply));
       });
