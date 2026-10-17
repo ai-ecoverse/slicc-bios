@@ -24,8 +24,13 @@ export const targets = {
   log: origin('log.example.test'),
 };
 const PATHS = {
-  extension: { autoAttach: true, browserSession: false, browserContexts: true },
-  proxy: { autoAttach: true, browserSession: true, browserContexts: true },
+  extension: {
+    autoAttach: true,
+    browserSession: false,
+    browserContexts: true,
+    chromeUrlsAttach: false,
+  },
+  proxy: { autoAttach: true, browserSession: true, browserContexts: true, chromeUrlsAttach: true },
 };
 
 const port = await new Promise((resolve) => {
