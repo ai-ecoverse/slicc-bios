@@ -32,11 +32,37 @@ const answer = Buffer.concat([
   }),
 ]);
 
-let holding = false;
-let release = null;
-const held = new Promise((resolve) => {
-  release = resolve;
-});
+const sleeping = Buffer.concat([
+  eventFrame('messageStart', { role: 'assistant' }),
+  eventFrame('contentBlockStart', {
+    contentBlockIndex: 0,
+    start: { toolUse: { toolUseId: 'sleep-1', name: 'bash' } },
+  }),
+  eventFrame('contentBlockDelta', {
+    contentBlockIndex: 0,
+    delta: { toolUse: { input: JSON.stringify({ command: 'sleep 600' }) } },
+  }),
+  eventFrame('contentBlockStop', { contentBlockIndex: 0 }),
+  eventFrame('messageStop', { stopReason: 'tool_use' }),
+  eventFrame('metadata', {
+    usage: { inputTokens: 3, outputTokens: 9, totalTokens: 12 },
+    metrics: { latencyMs: 1 },
+  }),
+]);
+
+const lastTurn = (body) => {
+  try {
+    const sent = JSON.parse(body.toString());
+    return {
+      tools: !!sent.toolConfig?.tools?.length,
+      content: sent.messages?.at(-1)?.content ?? [],
+    };
+  } catch {
+    return { tools: false, content: [] };
+  }
+};
+
+let sleeps = 0;
 
 const leaders = await launch({ agent: true, timeout: 60000 });
 const followers = await launch({ timeout: 60000 });
@@ -51,22 +77,19 @@ const proxy = await fakeProxy({
     }
     if (!request.url.startsWith(BEDROCK))
       return { status: 404, headers: [], body: Buffer.alloc(0) };
-    const sent = body.toString();
-    asked.push(sent);
-    if (sent.includes('Hold on') && !holding) {
-      holding = true;
-      await held;
-    }
+    asked.push(body.toString());
+    const turn = lastTurn(body);
+    const hold = turn.tools && turn.content.some((item) => item.text?.includes('Hold on'));
+    if (hold) sleeps += 1;
     return {
       status: 200,
       headers: [['content-type', 'application/vnd.amazon.eventstream']],
-      body: answer,
+      body: hold ? sleeping : answer,
     };
   },
 });
 const hub = await startHub();
 after(async () => {
-  release();
   hub.close();
   await proxy.close();
   await Promise.all([leaders.close(), followers.close()]);
@@ -300,19 +323,17 @@ test('in seven’s terminal a cone’s slicc prompts, watches and aborts another
     page,
     `clear; (sudo -u cone slicc '${joinUrl}' prompt "Hold on" > /tmp/held.out 2>&1; echo "held=$?" >> /tmp/held.out) &`
   );
-  for (let i = 0; i < 1200 && !holding; i += 1)
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  assert.ok(
-    holding,
-    `the held prompt never reached the leader’s model\n${(await sh(page, 'cat /tmp/held.out')).out}`
+  const sleep = events(await file(page, '/tmp/watch.json', /sleep 600/, STEP)).find(
+    (event) => event.t === 'tool' && /sleep 600/.test(event.summary)
   );
+  assert.ok(sleep, 'the held prompt’s tool call reached the watch');
+  assert.equal(sleeps, 1);
   const aborted = await typed(page, `sudo -u cone slicc '${joinUrl}' abort`, 'aborted');
   assert.equal(aborted.code, 0, aborted.text);
   assert.match(aborted.text, /aborted the run/);
   const heldOut = await file(page, '/tmp/held.out', /held=\d+/);
   assert.match(heldOut, /held=1/);
   assert.match(heldOut, /the run was aborted/);
-  release();
   assert.ok(
     events(await file(page, '/tmp/watch.json', /Hold on/)).some(
       (event) => event.t === 'user' && event.text === 'Hold on'
