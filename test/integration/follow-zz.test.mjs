@@ -93,13 +93,6 @@ after(async () => {
   await Promise.all([leaders.close(), followers.close()]);
 });
 
-async function shell(page) {
-  await page.until(() => typeof globalThis.sliccKernelClient === 'function');
-  await page.evaluate(async () => {
-    globalThis.followClient ??= await globalThis.sliccKernelClient();
-  });
-}
-
 async function typed(page, command, label, ms = STEP) {
   await run(page, `clear; ${command}; echo "${label}-$((40 + 2)) $?"`);
   const pattern = `${label}-42 (\\d+)`;
@@ -163,7 +156,6 @@ test('diagnostic: first contacts to a busy leader refuse with the hint, never a 
   await listsAccount(owner, 'amazon-bedrock');
   await connectAccount(owner, 'amazon-bedrock', KEY);
   await connected(owner, 'amazon-bedrock');
-  await shell(page);
   const { joinUrl } = await model(owner, (network) => network.status().links);
   const bad = [];
   const N = 20;
