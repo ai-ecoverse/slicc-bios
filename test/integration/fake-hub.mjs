@@ -17,6 +17,8 @@ function bootstraps(hub) {
   });
   const leader = (token) => hub.sockets.findLast((s) => s.path.startsWith(`/controller/c${token}`));
   hub.attaches = [];
+  hub.dials = {};
+  hub.expired = new Set();
   return {
     fromLeader(message) {
       const b = all.get(message.bootstrapId);
@@ -32,6 +34,8 @@ function bootstraps(hub) {
       }
     },
     follow(token, body) {
+      if (!body.action) hub.dials[token] = (hub.dials[token] ?? 0) + 1;
+      if (hub.expired.has(token)) return { code: 'TRAY_EXPIRED', error: 'The tray has expired.' };
       if (Number(token) < 1 || Number(token) > hub.trays)
         return {
           code: 'INVALID_JOIN_CAPABILITY',
@@ -385,6 +389,7 @@ export async function leader(hubUrl) {
     const message = JSON.parse(data);
     queue = queue.then(() => handle(message)).catch(() => {});
   });
+  globalThis.fakeLeaderClose = () => pc?.close();
   state.unlink = () => {
     state.unlinked.push(state.fingerprints.at(-1));
     pc?.close();

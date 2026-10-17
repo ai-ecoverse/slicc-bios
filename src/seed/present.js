@@ -65,6 +65,10 @@ const NETWORK = [
   'check',
   'retryLinks',
   'stopLinks',
+  'retryLeader',
+  'disconnectLeader',
+  'reconnectLeader',
+  'forgetLeader',
 ];
 
 export function serveNetwork(port) {
