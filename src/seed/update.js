@@ -84,7 +84,8 @@ export function installing(kernel) {
   return (guard.writing.get(kernel) ?? 0) > 0;
 }
 
-async function writing_(kernel, task) {
+async function writing_(lent, task) {
+  const kernel = lent.lender ?? lent;
   guard.writing.set(kernel, (guard.writing.get(kernel) ?? 0) + 1);
   try {
     return await task();
@@ -93,6 +94,10 @@ async function writing_(kernel, task) {
     if (left) guard.writing.set(kernel, left);
     else guard.writing.delete(kernel);
   }
+}
+
+export function lend(kernel) {
+  return { lender: kernel, run: (argv, options) => kernel.run(argv, options), terminate() {} };
 }
 
 export function writing(cwd) {

@@ -78,6 +78,7 @@ import {
   baseManifest,
   enforced,
   installing,
+  lend,
   PROTECTED,
   protectInstalls,
   protection,
@@ -311,6 +312,8 @@ const start = () =>
     ...protection(),
   });
 
+const installer = () => (kernel ? lend(kernel) : start());
+
 function base(os) {
   const network = os ? mirrorNetwork(os, reach.port) : reach.port;
   return {
@@ -353,7 +356,7 @@ function announce(agentAt) {
 async function installTailnet(report = () => {}) {
   const track = updates.track('tailscale');
   try {
-    const changed = await installTailscale(start, {
+    const changed = await installTailscale(installer, {
       report: (step) => {
         report(step);
         track(step);
@@ -493,7 +496,7 @@ async function actOwn(id, action) {
 
 async function offerChat() {
   try {
-    const changed = await installAgent(start, { report: updates.track('agent'), refuse });
+    const changed = await installAgent(installer, { report: updates.track('agent'), refuse });
     await listOwn();
     const at = await agentVersion();
     const running = agent && (await agent);
@@ -544,7 +547,7 @@ async function checkPackages() {
 
 async function installGrammars() {
   try {
-    const changed = await grammars(start, { report: updates.track('grammars'), refuse });
+    const changed = await grammars(installer, { report: updates.track('grammars'), refuse });
     const at = await grammarsVersion();
     updates.checked('grammars', changed ? { state: 'installed', from: at, to: at } : {});
     app.grammarBase = grammarBase;
