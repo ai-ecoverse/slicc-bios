@@ -11,6 +11,7 @@ export const CREDIT = 6;
 export const WINDOW = 256 * 1024;
 export const CHUNK = 64 * 1024;
 export const HELLO_MS = 10_000;
+export const EARLY = 64;
 export const CONNECT_MS = 30_000;
 export const CONTROL = 'slicc.link.v1';
 export const STREAM = 'slicc.link.v1.stream';
@@ -242,6 +243,8 @@ export function createSession({
   const streams = new Map();
   const peerIds = new Set();
   const channels = new Set();
+  const early = [];
+  let held = 0;
   let next = 2 - parity;
   let peer = null;
   let closed = null;
@@ -271,9 +274,10 @@ export function createSession({
     const s = stream(streams, id, channel, false);
     streams.set(id, s);
     Promise.resolve()
-      .then(() => accept(meta))
+      .then(() => (closed ? Promise.reject(failure(`ECONNRESET: ${closed}`)) : accept(meta)))
       .then(
         (socket) => {
+          if (closed) return socket?.close?.();
           if (typeof socket?.handle === 'function') return socket.handle(s);
           if (!streams.has(id)) return socket?.close();
           s.accepted();
@@ -287,18 +291,33 @@ export function createSession({
       );
   }
 
+  function heard(channel, data) {
+    if (channel !== control || peer) return close('a text message after HELLO');
+    const parsed = json(encoder.encode(data));
+    if (parsed?.role !== other) return close('a malformed HELLO');
+    peer = parsed;
+    timers.clearTimeout(timer);
+    settle.resolve(peer);
+    for (const [from, bytes] of early.splice(0)) if (channels.has(from)) framed(from, bytes);
+  }
+
+  function hold(channel, data) {
+    if (channel === control) return close('a frame before HELLO');
+    if (early.length >= EARLY) return close('too many frames before HELLO');
+    held += data.byteLength;
+    if (held > WINDOW) return close('too many bytes before HELLO');
+    early.push([channel, data]);
+  }
+
   function receive(channel, data) {
     if (closed) return;
-    if (typeof data === 'string') {
-      if (channel !== control || peer) return close('a text message after HELLO');
-      const parsed = json(encoder.encode(data));
-      if (parsed?.role !== other) return close('a malformed HELLO');
-      peer = parsed;
-      timers.clearTimeout(timer);
-      settle.resolve(peer);
-      return;
-    }
-    if (!peer) return close('a frame before HELLO');
+    if (typeof data === 'string') return heard(channel, data);
+    if (peer) return framed(channel, data);
+    hold(channel, data);
+  }
+
+  function framed(channel, data) {
+    if (closed) return;
     const parsed = parse(data);
     if (!parsed || parsed.id === 0) return close('a malformed frame');
     const { type, id, payload } = parsed;
