@@ -133,6 +133,23 @@ export function merge({ run, biosRef, runner, url, found, expected }) {
 
 const LISTED = 100;
 
+export function verdictLine(result) {
+  const counts = result.counts ?? {};
+  const ran = Object.values(counts).reduce((sum, n) => sum + n, 0);
+  const id = `canary ${result.run ?? ''}`.trim();
+  if (!ran) return { ok: false, line: `${id}: FAIL 0 tests ran` };
+  if (!result.ok) {
+    const bad = ['fail', 'regression', 'both']
+      .filter((kind) => counts[kind])
+      .map((kind) => `${counts[kind]} ${kind}`);
+    const missing = result.missingShards?.length
+      ? [`missing ${result.missingShards.join(', ')}`]
+      : [];
+    return { ok: false, line: `${id}: FAIL ${[...bad, ...missing].join(', ') || 'not ok'}` };
+  }
+  return { ok: true, line: `${id}: PASS ${ran} tests` };
+}
+
 export function summary(report, artifact = null) {
   const pick = (kind) =>
     report.results
@@ -279,14 +296,24 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
     const dir = runs.length === 1 ? values.out : join(values.out, run.id);
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, 'canary.json'), `${JSON.stringify(report, null, 2)}\n`);
-    summaries.push(summary(report));
-    const text = markdown(report);
+    const brief = summary(report);
+    const verdict = verdictLine(brief);
+    brief.verdict = verdict.line;
+    summaries.push(brief);
+    const text = `${markdown(report)}\n${verdict.line}\n`;
     if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, text);
     console.log(text);
-    ok &&= report.ok;
+    ok &&= report.ok && verdict.ok;
   }
   await mkdir(values.out, { recursive: true });
-  const result = runs.length === 1 ? summaries[0] : { ok, runs: summaries };
+  const lines = summaries.map(({ verdict }) => verdict);
+  if (!runs.length) lines.push('canary: FAIL no runs');
+  ok &&= runs.length > 0;
+  await writeFile(join(values.out, 'verdict.txt'), `${lines.join('\n')}\n`);
+  const result =
+    runs.length === 1
+      ? { ...summaries[0], ok }
+      : { ok, verdict: lines.join('; '), runs: summaries };
   await writeFile(join(values.out, 'result.json'), `${JSON.stringify(result)}\n`);
   if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, `ok=${ok}\n`);
   if (!ok) exit(1);

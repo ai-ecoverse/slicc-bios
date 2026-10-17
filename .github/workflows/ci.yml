@@ -14,6 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  SHARDS: 'follow-chat remote-pydata users-agent-ui packages-update-cdp guard guard-set-extension guard-set-proxy k4-link rest'
   SHARDED: '/(follow[^/]*|chat|remote|pydata|updates|users|agent-ui|packages|update|cdp|guard-vectors|guard-set-[a-z]+|serve|k4[^/]*|link)\.test\.mjs$'
 
 jobs:
@@ -100,7 +101,15 @@ jobs:
           else files=$(printf '%s\n' "$all" | grep -vE "$SHARDED" || true); fi
           if [ -z "$files" ]; then echo "no test files in shard ${{ matrix.shard }}" >&2; exit 1; fi
           printf 'shard ${{ matrix.shard }}:\n%s\n' "$files"
-          SLICC_TESTS="$(printf '%s\n' "$files" | tr '\n' ' ')" npm test
+          printf '%s\n' "$files" > "$RUNNER_TEMP/files.txt"
+          set -o pipefail
+          SLICC_TESTS="$(printf '%s\n' "$files" | tr '\n' ' ')" npm test 2>&1 | tee "$RUNNER_TEMP/test.log"
+
+      - name: The shard's verdict, from the test summary
+        if: always()
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: node scripts/ci/verdict.mjs shard --name "$SHARD" --log "$RUNNER_TEMP/test.log" --files "$(cat "$RUNNER_TEMP/files.txt" 2>/dev/null)" --out "artifacts/verdicts/$SHARD.txt"
 
       - name: Crash dumps
         if: always()
@@ -129,7 +138,7 @@ jobs:
   ci:
     name: ci / test
     needs: [lint, integration]
-    if: ${{ !cancelled() }}
+    if: always()
     runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["push","schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_LIGHT_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 20
     env:
@@ -170,10 +179,9 @@ jobs:
             artifacts/
           if-no-files-found: ignore
 
-      - name: Every shard and lint passed
+      - name: Every shard and lint passed, each with its verdict
+        if: always()
         env:
           LINT: ${{ needs.lint.result }}
           INTEGRATION: ${{ needs.integration.result }}
-        run: |
-          echo "lint: $LINT, integration: $INTEGRATION"
-          test "$LINT" = success && test "$INTEGRATION" = success
+        run: node scripts/ci/verdict.mjs shards --dir artifacts/verdicts --expect "$SHARDS" --results "{\"lint\":\"$LINT\",\"integration\":\"$INTEGRATION\"}"

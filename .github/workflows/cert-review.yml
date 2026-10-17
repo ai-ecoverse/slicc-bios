@@ -312,3 +312,7 @@ jobs:
           name: cert-review-${{ env.PR_NUMBER }}
           path: ${{ runner.temp }}/evidence/
           if-no-files-found: ignore
+
+      - name: The verdict, which fails this check unless every package is certified
+        if: always()
+        run: node base/scripts/cert/verify.mjs --verdict "$RUNNER_TEMP/cert-review/comment.md"

@@ -369,8 +369,13 @@ jobs:
           node -e '
             const { readFileSync, appendFileSync } = require("node:fs");
             const result = JSON.parse(readFileSync("canary/result.json", "utf8"));
+            if (typeof result.ok !== "boolean" || !/^canary\b.*: (PASS|FAIL)\b/.test(result.verdict ?? "")) {
+              console.error("canary: FAIL the report wrote no verdict");
+              process.exit(1);
+            }
             result.artifact = { name: process.env.ARTIFACT_NAME, url: process.env.ARTIFACT_URL || "" };
             appendFileSync(process.env.GITHUB_OUTPUT, `result=${JSON.stringify(result)}\n`);
+            console.log(result.verdict);
           '
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c

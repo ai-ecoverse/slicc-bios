@@ -104,3 +104,43 @@ test('the cert sweep runs under its own budget, not npm test’s 15-minute cap',
   assert.equal(await sweep(dir, 500), 1, 'a budget shorter than the sweep cuts it');
   assert.equal(await sweep(dir, 6000), 0, 'a budget longer than the sweep lets it finish');
 });
+
+test('a cert review with no verdict, a FAIL, a package without its result line or a sha mismatch fails the check; only a certified line for every package passes', async () => {
+  const { verdictOf } = await import('../../scripts/cert/verify.mjs');
+  assert.deepEqual(verdictOf(''), { ok: false, line: 'cert-review: FAIL no verdict' });
+  assert.deepEqual(verdictOf('**Cert review:** no verdict. See https://example.test/run'), {
+    ok: false,
+    line: 'cert-review: FAIL no verdict',
+  });
+  assert.deepEqual(verdictOf(clean), {
+    ok: true,
+    line: `cert-review: CERTIFIED ${name}@${version}`,
+  });
+  assert.deepEqual(verdictOf(clean, ['bad sha']), {
+    ok: false,
+    line: 'cert-review: FAIL sha check: bad sha',
+  });
+  const failed = `**Cert review: ${name}@${version}** (from 1.0.8-1)\ncert-ci: FAIL ${name}@${version}: the regression test fails`;
+  assert.deepEqual(verdictOf(failed), {
+    ok: false,
+    line: `cert-review: FAIL ${name}@${version} FAIL`,
+  });
+  const two = `${clean}\n**Cert review: @ai-ecoverse/wasm-xz@5.8.1-2** (from 5.8.1-1)\n| Check | Result |`;
+  assert.deepEqual(verdictOf(two), {
+    ok: false,
+    line: 'cert-review: FAIL @ai-ecoverse/wasm-xz@5.8.1-2 has no certified or cert-ci line',
+  });
+});
+
+test('the cert review job ends with the verdict check, so a review that writes nothing turns it red', async () => {
+  const yml = await readFile(
+    new URL('../../.github/workflows/cert-review.yml', import.meta.url),
+    'utf8'
+  );
+  const last = yml.trimEnd().split('\n      - ').at(-1);
+  assert.match(last, /if: always\(\)/);
+  assert.match(
+    last,
+    /node base\/scripts\/cert\/verify\.mjs --verdict "\$RUNNER_TEMP\/cert-review\/comment\.md"/
+  );
+});
