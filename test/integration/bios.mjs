@@ -192,7 +192,7 @@ export async function trust(page, files) {
 }
 
 export const AGENT_BUDGET = 25 * 60 * 1000;
-export const AGENT_STALL = 5 * 60 * 1000;
+export const AGENT_STALL = 15 * 60 * 1000;
 export const AGENT_RESTART = 5 * 60 * 1000;
 const HEARTBEAT = 60 * 1000;
 
