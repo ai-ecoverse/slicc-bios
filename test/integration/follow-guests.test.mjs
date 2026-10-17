@@ -261,39 +261,113 @@ function probeStreams() {
   })();
 }
 
-function seatConnection() {
+function rawWire() {
   return (async () => {
-    const { linkEndpoint, connectGuest } = await import(
-      '/opt/agent/node_modules/@ai-ecoverse/slicc-agent/dist/page.js'
-    );
+    const base = '/opt/agent/node_modules/@ai-ecoverse/slicc-agent/dist/';
+    const [{ linkEndpoint }, { PortLink }, { clientHost }, services] = await Promise.all([
+      import(`${base}page.js`),
+      import(`${base}wire.js`),
+      import(`${base}client.js`),
+      import(`${base}services.js`),
+    ]);
     const { pumpLink, streamSink } = await import('/os/agent.js');
-    const stream = await window.seated.open({ kind: 'pi' });
+    const stream = await window.raw.open({ kind: 'pi' });
     const endpoint = linkEndpoint(streamSink(stream));
     void pumpLink(stream, endpoint);
-    window.guestConnection = await connectGuest(endpoint);
-    return window.guestConnection.guest.agentId;
+    const link = new PortLink(endpoint);
+    await link.hello;
+    const wire = { link, rewrite: null };
+    const send = link.send.bind(link);
+    link.send = (frame) => send(wire.rewrite ? wire.rewrite(frame) : frame);
+    const host = clientHost(link, 'raw');
+    const answer = (promise) =>
+      Promise.race([
+        promise.then(
+          (value) => (value?.variant ? `held ${value.variant}` : 'accepted'),
+          (error) => error.code ?? error.message
+        ),
+        new Promise((resolve) => setTimeout(resolve, 20000, 'no answer')),
+      ]);
+    const holds = {};
+    for (const name of [
+      'AgentControl',
+      'AgentTranscript',
+      'AgentSettings',
+      'AgentRemoteService',
+      'AgentPagesService',
+      'AgentSudoService',
+    ])
+      holds[name] = await answer(host.get(services[name], {}, {}));
+    wire.rewrite = (frame) =>
+      frame.t === 'hold' ? { ...frame, principal: { seat: 'owner' }, origin: 'owner' } : frame;
+    holds.claimingOwner = await answer(host.get(services.AgentControl, {}, {}));
+    wire.rewrite = null;
+    const guest = await host.get(services.AgentGuestService, {}, {});
+    wire.call = (member, args) => host.root((ctx) => guest[member](args, ctx), {});
+    wire.forge = (member, args) => {
+      wire.rewrite = (frame) =>
+        frame.t === 'call' && frame.member === 'propose' ? { ...frame, member, args } : frame;
+      return answer(
+        wire.call('propose', [{ text: `forged ${member}`, requestId: crypto.randomUUID() }])
+      ).finally(() => {
+        wire.rewrite = null;
+      });
+    };
+    window.wire = wire;
+    return {
+      holds,
+      variant: guest.variant,
+      open: await answer(
+        wire.call('guestOpen', [{ id: 'x', label: 'x', agentId: 'x', expiresAt: null, gates: {} }])
+      ),
+      revoke: await answer(wire.call('guestRevoke', ['s1'])),
+    };
   })();
 }
 
-function driveRun(cone) {
+function rawPropose(text) {
+  return window.wire.call('propose', [{ text, requestId: crypto.randomUUID() }]);
+}
+
+function rawForge([cone, approval]) {
   return (async () => {
-    const { control } = window.guestConnection;
-    const outcome = (call) =>
-      Promise.resolve()
-        .then(call)
-        .then(
-          (value) => JSON.stringify(value ?? null),
-          (error) => error.message
-        );
-    return {
-      abort: await outcome(() => control.abort()),
-      stopAgent: await outcome(() => control.stopAgent(cone)),
-      compact: await outcome(() => control.compactAgent(cone, null)),
-      configure: await outcome(() =>
-        control.configure({ agentId: cone, model: null, thinkingLevel: 'high' })
-      ),
-      decide: await outcome(() => control.decide('any', 'once', null)),
+    const forged = {};
+    const tries = {
+      abort: [],
+      stopAgent: [cone],
+      compactAgent: [cone, null],
+      configure: [
+        {
+          agentId: cone,
+          model: { provider: 'amazon-bedrock', modelId: 'other' },
+          thinkingLevel: 'high',
+        },
+      ],
+      decide: [approval, 'once', null],
+      send: [
+        {
+          agentId: cone,
+          text: 'Steer from a raw guest',
+          whenBusy: 'steer',
+          requestId: 'raw-steer',
+        },
+      ],
+      followUp: [
+        {
+          agentId: cone,
+          text: 'Follow-up from a raw guest',
+          whenBusy: 'followUp',
+          requestId: 'raw-follow',
+        },
+      ],
+      createCone: ['Renamed by a raw guest'],
+      newChat: [cone],
+      freeze: [cone],
+      prompt: [{ text: 'Prompt from a raw guest' }],
     };
+    for (const [name, args] of Object.entries(tries))
+      forged[name] = await window.wire.forge(name === 'followUp' ? 'send' : name, args);
+    return forged;
   })();
 }
 
@@ -461,16 +535,28 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
     REFUSED
   );
   await probe.evaluate(probeLink, hubSeat, 'probe');
-  await probe.evaluate(probeLink, hubSeat, 'seated');
+  await probe.evaluate(probeLink, hubSeat, 'raw');
   await probe.until(
-    () => window.probe.status().link === 'connected' && window.seated.status().link === 'connected'
+    () => window.probe.status().link === 'connected' && window.raw.status().link === 'connected'
   );
   const streams = await probe.evaluate(probeStreams);
   for (const [kind, code] of Object.entries(streams.refused))
     assert.equal(code, 'EOPNOTSUPP', `a guest link opened ${kind}`);
   assert.equal(streams.second, 'EBUSY');
   assert.notEqual(streams.owner, 'connected', 'a guest link reached the owner’s AgentControl');
-  assert.equal(await probe.evaluate(seatConnection), cone.id);
+  const wired = await probe.evaluate(rawWire);
+  assert.deepEqual(wired.holds, {
+    AgentControl: 'forbidden',
+    AgentTranscript: 'forbidden',
+    AgentSettings: 'forbidden',
+    AgentRemoteService: 'forbidden',
+    AgentPagesService: 'forbidden',
+    AgentSudoService: 'forbidden',
+    claimingOwner: 'forbidden',
+  });
+  assert.equal(wired.variant, 'guest');
+  assert.equal(wired.open, 'forbidden');
+  assert.equal(wired.revoke, 'forbidden');
 
   await owner.evaluate(() => {
     const { agent } = document.querySelector('slicc-app').model;
@@ -482,14 +568,16 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
     const { agent } = document.querySelector('slicc-chat').model;
     return agent.busy(agent.active());
   });
-  const agentsBefore = await owner.evaluate(() =>
-    JSON.stringify(
-      document
-        .querySelector('slicc-app')
-        .model.agent.list()
-        .map((a) => [a.id, a.name])
-    )
-  );
+  const coneState = () =>
+    owner.evaluate(() =>
+      JSON.stringify(
+        document
+          .querySelector('slicc-app')
+          .model.agent.list()
+          .map((a) => [a.id, a.name, a.model, a.kind])
+      )
+    );
+  const agentsBefore = await coneState();
   const tried = await guest.evaluate(async () => {
     const { agent } = document.querySelector('slicc-chat').model;
     const id = agent.active();
@@ -506,7 +594,6 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
       createCone: await outcome(() => agent.createCone('Renamed by a guest')),
       drop: await outcome(() => agent.drop(id)),
       rewind: await outcome(() => agent.rewind(id, agent.messages(id).at(-1)?.id ?? 'x')),
-      steer: await outcome(() => agent.send(id, 'Not a steer')),
       fired: [
         () => agent.clear(id),
         () => agent.createScoop(id, 'renamed'),
@@ -526,16 +613,37 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
   });
   for (const name of ['createCone', 'drop', 'rewind'])
     assert.match(tried[name], /a guest can only watch and send messages/, name);
-  const driven = await probe.evaluate(driveRun, cone.id);
-  for (const [name, said] of Object.entries(driven))
-    assert.match(said, /a guest can only watch and send messages/, `${name}: ${said}`);
-  assert.equal(tried.steer, 'accepted');
+  const proposed = await probe.evaluate(rawPropose, 'Not a steer');
+  assert.equal(proposed.state, 'queued');
   const steer = await owner.within(60000, () =>
     document
       .querySelector('slicc-app')
       .model.approvals.list()
       .find((item) => item.kind === 'guest-message')
   );
+  const forged = await probe.evaluate(rawForge, [cone.id, steer.id]);
+  for (const [name, code] of Object.entries(forged))
+    assert.equal(code, 'not_in_variant', `the owner’s agent took a guest’s ${name}: ${code}`);
+  assert.ok(
+    await owner.evaluate(
+      (id) =>
+        document
+          .querySelector('slicc-app')
+          .model.approvals.list()
+          .some((item) => item.id === id),
+      steer.id
+    ),
+    'a guest decided its own review'
+  );
+  assert.equal(
+    await owner.evaluate(() => {
+      const { agent } = document.querySelector('slicc-app').model;
+      return agent.busy(agent.active());
+    }),
+    true,
+    'a guest stopped or aborted the run'
+  );
+  assert.equal(await coneState(), agentsBefore);
   await owner.evaluate(
     (id) => document.querySelector('slicc-app').model.approvals.decide(id, 'once'),
     steer.id
@@ -560,6 +668,8 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
   );
   assert.ok(toolRound, 'the run never sent its tool result');
   assert.ok(!toolRound.includes('Not a steer'), 'the guest’s message steered the run');
+  assert.ok(!asked.some((body) => /raw guest/.test(body)), 'a forged call reached the model');
+  assert.doesNotMatch(await transcript(owner), /raw guest/);
   const followed = JSON.parse(asked.find((body) => body.includes('Not a steer')));
   const [answered, last] = followed.messages.slice(-2);
   assert.equal(answered.role, 'assistant');
@@ -584,17 +694,7 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
     order.done >= 0 && order.guest > order.done,
     `not a follow-up: ${JSON.stringify(order)}`
   );
-  assert.equal(
-    await owner.evaluate(() =>
-      JSON.stringify(
-        document
-          .querySelector('slicc-app')
-          .model.agent.list()
-          .map((a) => [a.id, a.name])
-      )
-    ),
-    agentsBefore
-  );
+  assert.equal(await coneState(), agentsBefore);
   assert.equal(
     await owner.evaluate(() => {
       const { agent } = document.querySelector('slicc-app').model;
@@ -619,6 +719,21 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
       return { list: approvals.list().length, decide: typeof approvals.decide };
     }),
     { list: 0, decide: 'undefined' }
+  );
+  assert.equal(
+    await probe.evaluate((id) => window.wire.forge('decide', [id, 'always', null]), sudo.id),
+    'not_in_variant'
+  );
+  assert.ok(
+    await owner.evaluate(
+      (id) =>
+        document
+          .querySelector('slicc-app')
+          .model.approvals.list()
+          .some((item) => item.id === id),
+      sudo.id
+    ),
+    'a guest answered the cone’s sudo'
   );
   await owner.evaluate(
     (id) => document.querySelector('slicc-app').model.approvals.decide(id, 'deny'),
@@ -693,7 +808,7 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
   );
   await probe.within(
     5000,
-    () => window.probe.status().link !== 'connected' && window.seated.status().link !== 'connected'
+    () => window.probe.status().link !== 'connected' && window.raw.status().link !== 'connected'
   );
   await guest.within(
     10000,
@@ -705,7 +820,7 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
   const closedIn = Date.now() - revokedAt;
   await probe.within(
     60000,
-    () => window.probe.status().link === 'failed' && window.seated.status().link === 'failed'
+    () => window.probe.status().link === 'failed' && window.raw.status().link === 'failed'
   );
   assert.equal(await guest.evaluate(() => sessionStorage.getItem('slicc-os.seat')), null);
   assert.equal(hub.seats.get('g1').revoked, true);
