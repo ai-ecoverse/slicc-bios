@@ -244,6 +244,7 @@ const reach = createNetwork(network, {
   router: exits,
   links,
   tray,
+  leaders,
   linkedFolders: {
     mount: (source) => folders.mountLinked(source),
     eject: (source) => folders.ejectLinked(source),
@@ -698,6 +699,7 @@ async function own() {
   void vault.sudoGid(gid);
   installLocal(links);
   tray?.start();
+  leaders.start();
   if (network.status?.probe?.kernelTunnel) openTunnel(kernel, network.proxy);
   files = await folders.attach(kernel, model);
   files.files.on('mounts', links.changed);

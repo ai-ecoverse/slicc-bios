@@ -446,14 +446,20 @@ test('in seven’s terminal a cone’s slicc prompts, watches and aborts another
   const fresh = await device(owner, [linked.id]);
   assert.notEqual(fresh.id, linked.id);
 
-  const state = await followed(page);
+  const state = Object.values(JSON.parse((await followed(page)).text));
+  assert.ok(
+    state.every((item) => item.url === undefined || [joinUrl, fake].includes(item.url)),
+    'a leader record keeps only its own join URL'
+  );
+  const shown = await model(page, (network) => network.status().leaders);
+  assert.equal(shown.length, 2);
   const logs = [
     ...page.console,
     ...owner.console,
     ...page.errors,
     ...owner.errors,
     denials,
-    state.text,
+    JSON.stringify(shown),
     await logged(page, /./),
     (await sh(page, 'cat /tmp/watch.err /tmp/fake.json 2>/dev/null; true')).out,
   ].join('\n');
