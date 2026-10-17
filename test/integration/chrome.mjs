@@ -134,6 +134,10 @@ export async function launch({ agent = false, vault = true, ...overrides } = {})
       };
       await opened.init(() => performance.setResourceTimingBufferSize(20000));
     }
+    if (env.SLICC_NO_FS_OBSERVER === '1')
+      await opened.init(() => {
+        delete globalThis.FileSystemObserver;
+      });
     if (fake)
       await opened.init(
         `() => { if (location.origin === ${JSON.stringify(new URL(chrome.url).origin)} && !localStorage.getItem(${JSON.stringify(VAULT_KEY)})) localStorage.setItem(${JSON.stringify(VAULT_KEY)}, ${JSON.stringify(fake.origin)}); }`

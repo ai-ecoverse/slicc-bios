@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  SHARDS: 'follow-chat remote-pydata users-agent-ui packages-update-cdp guard guard-set-extension guard-set-proxy k4-link rest'
+  SHARDS: 'ab'
   SHARDED: '/(follow[^/]*|chat|remote|pydata|updates|users|agent-ui|packages|update|cdp|guard-vectors|guard-set-[a-z]+|serve|k4[^/]*|link)\.test\.mjs$'
 
 jobs:
@@ -45,24 +45,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - shard: follow-chat
-            match: '/(follow[^/]*|chat)\.test\.mjs$'
-          - shard: remote-pydata
-            match: '/(remote|pydata|updates)\.test\.mjs$'
-          - shard: users-agent-ui
-            match: '/(users|agent-ui)\.test\.mjs$'
-          - shard: packages-update-cdp
-            match: '/(packages|update|cdp)\.test\.mjs$'
-          - shard: guard
-            match: '/(guard-vectors|serve)\.test\.mjs$'
-          - shard: guard-set-extension
-            match: '/guard-set-extension\.test\.mjs$'
-          - shard: guard-set-proxy
-            match: '/guard-set-proxy\.test\.mjs$'
-          - shard: k4-link
-            match: '/(k4[^/]*|link)\.test\.mjs$'
-          - shard: rest
-            match: ''
+          - shard: ab
+            match: '/agent-ui\.test\.mjs$'
     env:
       LEFTHOOK: '0'
       SLICC_NO_UPDATE_CHECK: '1'
@@ -92,6 +76,9 @@ jobs:
             echo "No root on $RUNNER_NAME: the image's system libraries and fonts serve Chromium."
           fi
 
+      - name: Sample the runner's CPU while the tests run
+        run: nohup node scripts/ci/cpu.mjs watch "$RUNNER_TEMP/cpu.jsonl" > /dev/null 2>&1 &
+
       - name: Integration tests with coverage, CPU profiles, and screenshots
         env:
           MATCH: ${{ matrix.match }}
@@ -103,7 +90,20 @@ jobs:
           printf 'shard ${{ matrix.shard }}:\n%s\n' "$files"
           printf '%s\n' "$files" > "$RUNNER_TEMP/files.txt"
           set -o pipefail
-          SLICC_TESTS="$(printf '%s\n' "$files" | tr '\n' ' ')" npm test 2>&1 | tee "$RUNNER_TEMP/test.log"
+          for off in 1 0 1 0; do
+            echo "ab pass: SLICC_NO_FS_OBSERVER=$off"
+            SLICC_NO_FS_OBSERVER=$off SLICC_TESTS="$files" npm test 2>&1 | tee -a "$RUNNER_TEMP/test.log"
+          done
+
+      - name: CPU on the runner
+        if: always()
+        continue-on-error: true
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          mkdir -p artifacts
+          cp "$RUNNER_TEMP/cpu.jsonl" "artifacts/cpu-$SHARD.jsonl"
+          node scripts/ci/cpu.mjs report "$RUNNER_TEMP/cpu.jsonl" "$SHARD" >> "$GITHUB_STEP_SUMMARY"
 
       - name: The shard's verdict, from the test summary
         if: always()
