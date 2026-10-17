@@ -47,6 +47,10 @@ export function shardVerdict(name, text, files = []) {
   return { ok: true, line: `shard ${name}: PASS ${counts.pass} tests` };
 }
 
+export function matrixShards(yml) {
+  return [...yml.matchAll(/^ {10}- shard: (\S+)$/gm)].map(([, name]) => name);
+}
+
 const SHARD_LINE = /^shard (\S+): (PASS \d+ tests|FAIL .*)$/;
 
 export function shardsVerdict(expected, lines, results = {}) {
@@ -116,6 +120,7 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
       out: { type: 'string', default: '' },
       dir: { type: 'string', default: '' },
       expect: { type: 'string', default: '' },
+      workflow: { type: 'string', default: '' },
       results: { type: 'string', default: '{}' },
       tag: { type: 'string', default: '' },
       version: { type: 'string', default: '' },
@@ -128,7 +133,9 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
     const files = values.files.split(/\s+/).filter(Boolean);
     await say(shardVerdict(values.name, await text(values.log), files), values.out);
   } else if (command === 'shards') {
-    const expected = values.expect.split(/\s+/).filter(Boolean);
+    const expected = values.workflow
+      ? matrixShards(await text(values.workflow))
+      : values.expect.split(/\s+/).filter(Boolean);
     const lines = [];
     for (const name of expected)
       lines.push(...(await text(join(values.dir, `${name}.txt`))).split('\n'));
