@@ -67,6 +67,7 @@ test('a profile from a kernel without /meta gets its modes on the first boot wit
     t.skip(`slicc-kernel ${(await kernel()).version} has no /meta`);
     return;
   }
+  await settled(page);
   await run(
     page,
     `clear; stat -c '%a %n' ${SHIM} /node_modules/@ai-ecoverse/wasi-pnpm/shims/npm /node_modules/@ai-ecoverse/wasi-pnpm/shims/npx; ${SHIM} --help > /dev/null 2>&1; echo i=$?; echo again-$((40 + 2))`
