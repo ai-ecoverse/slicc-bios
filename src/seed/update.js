@@ -173,9 +173,29 @@ export async function pnpm(kernel, cwd, report, to = null, argv = INSTALL, write
   }
 }
 
+const UNREADABLE = [
+  '(',
+  '!',
+  '-perm',
+  '-a+r',
+  '-o',
+  '-perm',
+  '/111',
+  '!',
+  '-perm',
+  '-a+x',
+  '-o',
+  '-type',
+  'd',
+  '!',
+  '-perm',
+  '-a+x',
+  ')',
+];
+
 export async function readable(kernel, path) {
   const { status, stderr } = await writing_(kernel, () =>
-    kernel.run(['chmod', '-R', 'a+rX', path], writing('/'))
+    kernel.run(['find', path, ...UNREADABLE, '-exec', 'chmod', 'a+rX', '{}', '+'], writing('/'))
   );
   if (status) throw new Error(stderr.trim() || `chmod exited with ${status}`);
 }
