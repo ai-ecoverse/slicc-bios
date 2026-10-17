@@ -231,7 +231,7 @@ followers = tray
       tray,
       name: deviceName(),
       serve: {
-        pi: (_link, _meta, stream, access) =>
+        pi: (link, _meta, stream, access) =>
           bridgeAgent(owner, stream, { readOnly: !access.control, device: link.id }),
         terminal: (link, meta, stream) => followerShell(link, meta, stream),
       },
@@ -290,7 +290,8 @@ const sudo = routeSudo({
   fallback: approvals.approve,
   offered: approvals.offered,
   where: (req) => {
-    const name = links.links.get(followerDevice(req.tag))?.peer?.name;
+    const device = followerDevice(req.tag);
+    const name = device && [...links.links.values()].find((link) => link.id === device)?.peer?.name;
     return name ? `on ${name}` : undefined;
   },
 });
