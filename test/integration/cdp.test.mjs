@@ -6,6 +6,7 @@ import { startProxy } from '@ai-ecoverse/slicc-node';
 import { actPackage, boot, ready, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
+import { EXTENSION, realExtension, SEVEN } from './real-extension.mjs';
 
 const port = await new Promise((resolve) => {
   const server = createServer().listen(0, '127.0.0.1', () => {
@@ -129,6 +130,94 @@ test('playwright-cli drives a page through slicc-extension without asking, and t
   );
   assert.deepEqual(refused, [502, 'sw: nothing listening on kernel port 9222\n']);
   assert.deepEqual(page.errors, []);
+});
+
+test('over the extension’s shield, the guard arms every driven tab with no protected pattern: playwright-cli opens, goes and snapshots, an ordinary document isn’t held, and a protected one still fails before it commits', async (t) => {
+  const page = await chrome.page(t);
+  const extension = await fakeExtension(page);
+  t.after(extension.close);
+  await boot(page);
+  chrome.overrides.set(
+    '/shield.html',
+    '<!doctype html><title>shield</title><h1>Past the shield</h1>'
+  );
+  const target = elsewhere('/shield.html');
+  await run(
+    page,
+    `playwright-cli open about:blank > /tmp/pw 2>&1 && playwright-cli goto ${target} >> /tmp/pw 2>&1 && playwright-cli snapshot >> /tmp/pw 2>&1; echo pw-$? >> /tmp/pw; echo "pw-""done"`
+  );
+  await shows(page, 'pw-done', 120000);
+  const pw = await read(page, '/tmp/pw');
+  assert.deepEqual(extension.shielding, [], `the shield refused the guard’s Fetch.enable: ${pw}`);
+  assert.ok(
+    extension.sent.includes('Fetch.enable'),
+    'the guard armed the tab through the extension'
+  );
+  assert.match(pw, /heading "Past the shield"/, pw);
+  assert.match(pw, /pw-0/, pw);
+
+  await run(
+    page,
+    `playwright-cli goto ${PLAIN} > /tmp/plain 2>&1; echo "plain-$?" >> /tmp/plain; playwright-cli eval '(() => { const n = performance.getEntriesByType("navigation")[0]; return "waited-" + Math.round(n.responseStart - n.startTime); })()' >> /tmp/plain 2>&1; echo "plain-""done"`
+  );
+  await shows(page, 'plain-done', 60000);
+  const plain = await read(page, '/tmp/plain');
+  const waited = Number(/waited-(\d+)/.exec(plain)?.[1]);
+  assert.match(plain, /plain-0/, plain);
+  assert.ok(waited <= 3000, `an ordinary document waited ${waited} ms for its response: ${plain}`);
+
+  hits.length = 0;
+  await run(
+    page,
+    `playwright-cli goto ${VAULT} > /tmp/vault 2>&1; echo vault-$? >> /tmp/vault; playwright-cli eval 'location.href + " " + document.title' >> /tmp/vault 2>&1; echo "vault-""done"`
+  );
+  await shows(page, 'vault-done', 60000);
+  const vault = await read(page, '/tmp/vault');
+  assert.ok(
+    !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
+    `the vault was served: ${hits.join(' ')}`
+  );
+  assert.doesNotMatch(vault, /VAULT-MARK|VAULT-BODY-MARK/, vault);
+  assert.deepEqual(extension.shielding, []);
+  assert.deepEqual(page.errors, []);
+});
+
+test(`with the real slicc-extension ${EXTENSION.version} (its release zip, pinned by sha256), playwright-cli in seven opens, goes and snapshots an ordinary page, and a protected document stays out`, {
+  timeout: 10 * 60 * 1000,
+}, async (t) => {
+  const real = await realExtension({ rules: ['MAP vault.sliccy.ai 127.0.0.1'] });
+  t.after(() => real.close());
+  const page = await real.page(t);
+  await page.goto(SEVEN);
+  await ready(page);
+  assert.deepEqual(await automation(page), { via: 'extension' });
+  real.overrides.set(
+    '/driven.html',
+    '<!doctype html><title>driven</title><h1>Driven past the real shield</h1>'
+  );
+  const target = new URL('/driven.html', real.url);
+  target.hostname = 'localhost';
+  await run(
+    page,
+    `playwright-cli open about:blank > /tmp/pw 2>&1 && playwright-cli goto ${target.href} >> /tmp/pw 2>&1 && playwright-cli snapshot >> /tmp/pw 2>&1; echo pw-$? >> /tmp/pw; echo "pw-""done"`
+  );
+  await shows(page, 'pw-done', 180000);
+  const pw = await read(page, '/tmp/pw');
+  assert.doesNotMatch(pw, /slicc: refused/, pw);
+  assert.match(pw, /heading "Driven past the real shield"/, pw);
+  assert.match(pw, /pw-0/, pw);
+  hits.length = 0;
+  await run(
+    page,
+    `playwright-cli goto ${VAULT} > /tmp/vault 2>&1; playwright-cli eval 'location.href + " " + document.title' >> /tmp/vault 2>&1; echo "vault-""done"`
+  );
+  await shows(page, 'vault-done', 60000);
+  const vault = await read(page, '/tmp/vault');
+  assert.ok(
+    !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
+    `the vault was served: ${hits.join(' ')}`
+  );
+  assert.doesNotMatch(vault, /VAULT-MARK|VAULT-BODY-MARK/, vault);
 });
 
 test('the browser port lists only the tabs the agent drives, holds them for a while, and shows them', async (t) => {
@@ -870,6 +959,18 @@ test('playwright-cli drives a page through slicc-node’s /cdp, on one shared so
     `playwright-cli open about:blank && playwright-cli goto ${target} && playwright-cli snapshot`
   );
   await shows(page, 'heading "Driven through slicc-node"');
+  hits.length = 0;
+  await run(
+    page,
+    `playwright-cli goto ${VAULT} > /tmp/vault 2>&1; playwright-cli eval 'location.href + " " + document.title' >> /tmp/vault 2>&1; echo "vault-""done"`
+  );
+  await shows(page, 'vault-done', 60000);
+  const vault = await read(page, '/tmp/vault');
+  assert.ok(
+    !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
+    `the vault was served: ${hits.join(' ')}`
+  );
+  assert.doesNotMatch(vault, /VAULT-MARK|VAULT-BODY-MARK/, vault);
   await run(page, 'playwright-cli close && echo closed-$?');
   await shows(page, 'closed-0');
   assert.equal(await open(page), false);

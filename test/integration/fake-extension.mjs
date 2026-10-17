@@ -1,3 +1,15 @@
+import catalog from '@ai-ecoverse/slicc-browsers/catalog.json' with { type: 'json' };
+import { protectedOrigins } from '@ai-ecoverse/slicc-browsers/protected.mjs';
+
+export const SHIELD = "slicc: refused: target is on seven's origin";
+const shielded = protectedOrigins(catalog.protectedOrigins);
+const namesProtected = ({ urlPattern } = {}) => {
+  const text = typeof urlPattern === 'string' ? urlPattern : '*';
+  if (catalog.protectedOrigins.domains.some((domain) => text.toLowerCase().includes(domain)))
+    return true;
+  return shielded.url(text.replace(/\\(.)/g, '$1').replace(/\*/g, '').replace(/\?/g, 'a'));
+};
+
 export function extensionOver(browser) {
   return async function fakeExtension(page) {
     const socket = new WebSocket(browser);
@@ -6,10 +18,19 @@ export function extensionOver(browser) {
       socket.onerror = reject;
     });
     const sent = [];
-    socket.onmessage = ({ data }) =>
-      void page.evaluate((message) => window.cdpIn(message), data).catch(() => false);
+    const shielding = [];
+    const deliver = (message) =>
+      void page.evaluate((message) => window.cdpIn(message), message).catch(() => false);
+    socket.onmessage = ({ data }) => deliver(data);
     await page.expose('cdpOut', (command) => {
       sent.push(command.method);
+      if (
+        command.method === 'Fetch.enable' &&
+        (command.params?.patterns ?? []).some(namesProtected)
+      ) {
+        shielding.push(command.params.patterns);
+        return deliver(JSON.stringify({ id: command.id, error: { message: SHIELD } }));
+      }
       socket.send(JSON.stringify(command));
     });
     await page.init(() => {
@@ -46,6 +67,6 @@ export function extensionOver(browser) {
         }),
       });
     });
-    return { sent, close: () => socket.close() };
+    return { sent, shielding, close: () => socket.close() };
   };
 }
