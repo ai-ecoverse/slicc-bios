@@ -133,6 +133,7 @@ export function agentFollower({
     }
     connection = joined;
     session = current;
+    notices?.remove(OTHER_VERSION);
     show(agent);
     void joined.closed.then(() => {
       if (connection !== joined) return;
