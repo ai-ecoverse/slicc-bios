@@ -125,7 +125,7 @@ async function lockedGated() {
       if (path && GATED.test(name)) found.set(`${name}@${entry.version}`, [file, entry.integrity]);
     }
   }
-  const projects = (await readdir(new URL('optional/projects/', packages))).map(
+  const projects = (await readdir(new URL('optional/projects/', packages)).catch(() => [])).map(
     (id) => `optional/projects/${id}/pnpm-lock.yaml`
   );
   for (const file of [
@@ -143,25 +143,67 @@ async function lockedGated() {
   return found;
 }
 
-test('every gated package in every lockfile is certified, with the certified integrity', async (t) => {
+export function judge(found, certs, candidates = {}) {
+  const missing = [];
+  const listed = [];
+  const exceptions = [];
+  for (const [key, [file, integrity]] of found) {
+    const entry = certs[key];
+    if (entry?.integrity === integrity) {
+      if (entry.exception) exceptions.push(`${file} ${key}: exception, ${entry.exception}`);
+      continue;
+    }
+    if (candidates[key]?.integrity === integrity)
+      listed.push(`${file} ${key}: candidate, not certified`);
+    else missing.push(`${file} ${key}`);
+  }
+  return { missing, candidates: listed, exceptions };
+}
+
+test('every gated package in every lockfile is certified, with the certified integrity, or a recorded exception', async (t) => {
   const certs = JSON.parse(await read('certs.json'));
   const found = await lockedGated();
   assert.ok(found.size >= 30, `found ${found.size} gated packages`);
-  const uncertified = [...found].filter(
-    ([key, [, integrity]]) => certs[key]?.integrity !== integrity
-  );
-  for (const [key, [file, integrity]] of uncertified) {
-    if (canary[key]?.integrity === integrity) {
-      t.diagnostic(`${file} ${key}: candidate, not certified`);
-    }
-  }
-  const missing = uncertified
-    .filter(([key, [, integrity]]) => canary[key]?.integrity !== integrity)
-    .map(([key, [file]]) => `${file} ${key}`);
+  const { missing, candidates, exceptions } = judge(found, certs, canary);
+  for (const line of [...candidates, ...exceptions]) t.diagnostic(line);
   assert.deepEqual(missing, [], 'not in src/packages/certs.json with this integrity');
   for (const [key, entry] of Object.entries(certs)) {
     assert.match(key, /^@ai-ecoverse\/[\w.-]+@\d+\.\d+\.\d+(-[\w.-]+)?$/, key);
     assert.match(entry.integrity, /^sha512-/, key);
     if (entry.sha256) assert.match(entry.sha256, /^[0-9a-f]{64}$/, key);
+    if ('exception' in entry) assert.match(entry.exception, /\(homescoop#\d+/, key);
   }
+});
+
+test('an uncertified pin fails unless its certs entry records an exception, and git and gh are the recorded exceptions', async () => {
+  const integrity = 'sha512-x';
+  const found = new Map([
+    ['@ai-ecoverse/wasm-a@1.0.0', ['package-lock.json', integrity]],
+    ['@ai-ecoverse/wasm-b@1.0.0', ['package-lock.json', integrity]],
+    ['@ai-ecoverse/wasm-c@1.0.0', ['package-lock.json', integrity]],
+    ['@ai-ecoverse/wasm-d@1.0.0', ['package-lock.json', 'sha512-other']],
+  ]);
+  const certs = {
+    '@ai-ecoverse/wasm-a@1.0.0': { integrity },
+    '@ai-ecoverse/wasm-c@1.0.0': { integrity, exception: 'kept (homescoop#1)' },
+    '@ai-ecoverse/wasm-d@1.0.0': { integrity, exception: 'kept (homescoop#1)' },
+  };
+  assert.deepEqual(judge(found, certs), {
+    missing: [
+      'package-lock.json @ai-ecoverse/wasm-b@1.0.0',
+      'package-lock.json @ai-ecoverse/wasm-d@1.0.0',
+    ],
+    candidates: [],
+    exceptions: ['package-lock.json @ai-ecoverse/wasm-c@1.0.0: exception, kept (homescoop#1)'],
+  });
+  const real = JSON.parse(await read('certs.json'));
+  assert.deepEqual(
+    Object.keys(real).filter((key) => real[key].exception),
+    ['@ai-ecoverse/wasi-gh@2.102.0-1', '@ai-ecoverse/wasm-git@2.55.0-15']
+  );
+  const { exceptions } = judge(await lockedGated(), real);
+  assert.deepEqual(exceptions.map((line) => line.split(':')[0]).sort(), [
+    'optional/package-lock.json @ai-ecoverse/wasi-gh@2.102.0-1',
+    'optional/package-lock.json @ai-ecoverse/wasm-git@2.55.0-15',
+  ]);
 });

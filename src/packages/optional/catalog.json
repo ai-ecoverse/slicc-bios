@@ -27,23 +27,6 @@
     "commands": ["python3", "pip", "pip3"],
     "size": 49598727
   },
-  "@ai-ecoverse/wasix-uv-shim": {
-    "id": "uv",
-    "label": "uv",
-    "description": "Python projects and virtual environments, as a shim over pip and venv.",
-    "commands": ["uv"],
-    "requires": ["python"],
-    "size": 10326
-  },
-  "slicc-py-datatools": {
-    "id": "pydata",
-    "kind": "project",
-    "label": "Python data tools",
-    "description": "numpy, pandas, scipy and matplotlib for Python, about 270 MB on disk.",
-    "commands": [],
-    "requires": ["python"],
-    "size": 71955355
-  },
   "@ai-ecoverse/slicc-jsh": {
     "id": "node",
     "label": "Node.js (jsh)",
@@ -72,20 +55,6 @@
     "description": "Perl 5.42 with cpan, perldoc and prove, for scripts and text processing.",
     "commands": ["perl", "cpan", "perldoc", "prove", "pod2html", "pod2man", "pod2text"],
     "size": 15533777
-  },
-  "@ai-ecoverse/wasi-esbuild": {
-    "id": "esbuild",
-    "label": "esbuild",
-    "description": "Bundles and minifies JavaScript and TypeScript.",
-    "commands": ["esbuild"],
-    "size": 5093287
-  },
-  "@ai-ecoverse/wasi-typescript": {
-    "id": "tsc",
-    "label": "TypeScript",
-    "description": "The TypeScript 7 compiler and type checker.",
-    "commands": ["tsc"],
-    "size": 10814667
   },
   "@ai-ecoverse/wasi-biome": {
     "id": "biome",
@@ -128,13 +97,6 @@
     "description": "The sqlite3 shell 3.54, for SQLite databases. journal_mode=WAL falls back to delete, and a WAL database made elsewhere opens as \"file is not a database\".",
     "commands": ["sqlite3"],
     "size": 668627
-  },
-  "@ai-ecoverse/wasi-buf": {
-    "id": "buf",
-    "label": "buf",
-    "description": "Lints, formats and builds Protocol Buffers.",
-    "commands": ["buf"],
-    "size": 16875828
   },
   "@ai-ecoverse/wasm-screen": {
     "id": "screen",

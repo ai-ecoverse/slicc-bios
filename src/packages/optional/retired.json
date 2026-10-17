@@ -8,5 +8,31 @@
     "id": "tar",
     "label": "tar",
     "commands": ["tar"]
+  },
+  "slicc-py-datatools": {
+    "id": "pydata",
+    "kind": "project",
+    "label": "Python data tools",
+    "commands": []
+  },
+  "@ai-ecoverse/wasix-uv-shim": {
+    "id": "uv",
+    "label": "uv",
+    "commands": ["uv"]
+  },
+  "@ai-ecoverse/wasi-esbuild": {
+    "id": "esbuild",
+    "label": "esbuild",
+    "commands": ["esbuild"]
+  },
+  "@ai-ecoverse/wasi-typescript": {
+    "id": "tsc",
+    "label": "TypeScript",
+    "commands": ["tsc"]
+  },
+  "@ai-ecoverse/wasi-buf": {
+    "id": "buf",
+    "label": "buf",
+    "commands": ["buf"]
   }
 }

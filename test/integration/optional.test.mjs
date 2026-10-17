@@ -61,7 +61,6 @@ test('every catalog entry has a unique id, a label, a description, commands and 
 test('a project entry ships its manifest, a lockfile and a workspace that overrides Python away', async () => {
   const catalog = await read('catalog.json');
   const projects = Object.entries(catalog).filter(([, entry]) => entry.kind === 'project');
-  assert.ok(projects.length >= 1);
   for (const [name, entry] of projects) {
     const manifest = await read(`projects/${entry.id}/package.json`);
     assert.equal(manifest.name, name);
@@ -127,4 +126,56 @@ test('HEIF and AVIF images installs from the catalog, and heif-convert runs', {
   );
   await shows(page, 'heif ran 1');
   assert.deepEqual(page.errors, []);
+});
+
+test('Python data tools are withdrawn until numpy and pandas come from verified CI builds: no row, no lock, no certified numpy 2.3.2-4 to -10 or pandas 2.3.2-5 to -11, and a retired row so an install can be removed', async () => {
+  const catalog = await read('catalog.json');
+  assert.ok(!Object.values(catalog).some((entry) => entry.id === 'pydata'));
+  assert.ok(Object.values(catalog).some((entry) => entry.id === 'python'));
+  const retired = await read('retired.json');
+  assert.deepEqual(retired['slicc-py-datatools'], {
+    id: 'pydata',
+    kind: 'project',
+    label: 'Python data tools',
+    commands: [],
+  });
+  const certs = JSON.parse(await readFile(new URL('../certs.json', optional), 'utf8'));
+  const withdrawn = Object.keys(certs).filter((key) => {
+    const numpy = key.match(/^@ai-ecoverse\/py-numpy@2\.3\.2-(\d+)$/);
+    const pandas = key.match(/^@ai-ecoverse\/py-pandas@2\.3\.2-(\d+)$/);
+    return (
+      (numpy && +numpy[1] >= 4 && +numpy[1] <= 10) ||
+      (pandas && +pandas[1] >= 5 && +pandas[1] <= 11)
+    );
+  });
+  assert.deepEqual(withdrawn, []);
+});
+
+test('uv, esbuild, tsc and buf are withdrawn until attested rebuilds (homescoop#864): retired rows, no pins and no certs, while git and gh stay as recorded exceptions', async () => {
+  const catalog = await read('catalog.json');
+  const { dependencies } = await read('package.json');
+  const retired = await read('retired.json');
+  const certs = JSON.parse(await readFile(new URL('../certs.json', optional), 'utf8'));
+  for (const [name, id] of [
+    ['@ai-ecoverse/wasix-uv-shim', 'uv'],
+    ['@ai-ecoverse/wasi-esbuild', 'esbuild'],
+    ['@ai-ecoverse/wasi-typescript', 'tsc'],
+    ['@ai-ecoverse/wasi-buf', 'buf'],
+  ]) {
+    assert.equal(catalog[name], undefined, name);
+    assert.equal(dependencies[name], undefined, name);
+    assert.equal(retired[name]?.id, id, name);
+    assert.deepEqual(
+      Object.keys(certs).filter((key) => key.startsWith(`${name}@`)),
+      [],
+      name
+    );
+  }
+  for (const name of ['@ai-ecoverse/wasm-git', '@ai-ecoverse/wasi-gh']) {
+    assert.ok(catalog[name], name);
+    assert.match(
+      certs[`${name}@${dependencies[name]}`].exception,
+      /unverifiable build \(homescoop#/
+    );
+  }
 });
