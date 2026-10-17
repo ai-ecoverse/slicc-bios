@@ -198,7 +198,7 @@ async function shootGuest(page, name) {
   await page.send('Emulation.setEmulatedMedia', { features: [] });
 }
 
-function probeLink(url) {
+function probeLink(url, name) {
   return (async () => {
     const { createFollow, hubClient, hubOrigin } = await import('/os/follow.js');
     const follow = createFollow({
@@ -208,9 +208,9 @@ function probeLink(url) {
       makePeer: (config) => new RTCPeerConnection(config),
       cert: () => RTCPeerConnection.generateCertificate({ name: 'ECDSA', namedCurve: 'P-256' }),
       forget: async () => undefined,
-      hello: () => ({ name: 'probe', mode: 'remote', kind: 'guest', caps: [], node: 'probe' }),
+      hello: () => ({ name, mode: 'remote', kind: 'guest', caps: [], node: name }),
     });
-    window.probe = follow;
+    window[name] = follow;
     follow.start();
     return true;
   })();
@@ -258,6 +258,42 @@ function probeStreams() {
       new Promise((resolve) => setTimeout(resolve, 20000, 'no answer')),
     ]);
     return { refused, second, owner };
+  })();
+}
+
+function seatConnection() {
+  return (async () => {
+    const { linkEndpoint, connectGuest } = await import(
+      '/opt/agent/node_modules/@ai-ecoverse/slicc-agent/dist/page.js'
+    );
+    const { pumpLink, streamSink } = await import('/os/agent.js');
+    const stream = await window.seated.open({ kind: 'pi' });
+    const endpoint = linkEndpoint(streamSink(stream));
+    void pumpLink(stream, endpoint);
+    window.guestConnection = await connectGuest(endpoint);
+    return window.guestConnection.guest.agentId;
+  })();
+}
+
+function driveRun(cone) {
+  return (async () => {
+    const { control } = window.guestConnection;
+    const outcome = (call) =>
+      Promise.resolve()
+        .then(call)
+        .then(
+          (value) => JSON.stringify(value ?? null),
+          (error) => error.message
+        );
+    return {
+      abort: await outcome(() => control.abort()),
+      stopAgent: await outcome(() => control.stopAgent(cone)),
+      compact: await outcome(() => control.compactAgent(cone, null)),
+      configure: await outcome(() =>
+        control.configure({ agentId: cone, model: null, thinkingLevel: 'high' })
+      ),
+      decide: await outcome(() => control.decide('any', 'once', null)),
+    };
   })();
 }
 
@@ -418,6 +454,24 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
   assert.match(await transcript(owner), /Hello from Anna/);
   await shootGuest(guest, 'guest-chat');
 
+  const probe = await guest.tab();
+  await probe.goto('/os/join.html');
+  await probe.until(
+    (text) => document.querySelector('[data-seat-state]')?.textContent === text,
+    REFUSED
+  );
+  await probe.evaluate(probeLink, hubSeat, 'probe');
+  await probe.evaluate(probeLink, hubSeat, 'seated');
+  await probe.until(
+    () => window.probe.status().link === 'connected' && window.seated.status().link === 'connected'
+  );
+  const streams = await probe.evaluate(probeStreams);
+  for (const [kind, code] of Object.entries(streams.refused))
+    assert.equal(code, 'EOPNOTSUPP', `a guest link opened ${kind}`);
+  assert.equal(streams.second, 'EBUSY');
+  assert.notEqual(streams.owner, 'connected', 'a guest link reached the owner’s AgentControl');
+  assert.equal(await probe.evaluate(seatConnection), cone.id);
+
   await owner.evaluate(() => {
     const { agent } = document.querySelector('slicc-app').model;
     void agent.send(agent.active(), 'Look around');
@@ -472,6 +526,9 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
   });
   for (const name of ['createCone', 'drop', 'rewind'])
     assert.match(tried[name], /a guest can only watch and send messages/, name);
+  const driven = await probe.evaluate(driveRun, cone.id);
+  for (const [name, said] of Object.entries(driven))
+    assert.match(said, /a guest can only watch and send messages/, `${name}: ${said}`);
   assert.equal(tried.steer, 'accepted');
   const steer = await owner.within(60000, () =>
     document
@@ -503,6 +560,13 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
   );
   assert.ok(toolRound, 'the run never sent its tool result');
   assert.ok(!toolRound.includes('Not a steer'), 'the guest’s message steered the run');
+  const followed = JSON.parse(asked.find((body) => body.includes('Not a steer')));
+  const [answered, last] = followed.messages.slice(-2);
+  assert.equal(answered.role, 'assistant');
+  assert.match(JSON.stringify(answered.content), /Done looking\./);
+  assert.equal(last.role, 'user');
+  assert.ok(!last.content.some((item) => item.toolResult), 'the guest’s message fed a tool round');
+  assert.match(JSON.stringify(last.content), /Not a steer/);
   const order = await owner.evaluate(() => {
     const { agent } = document.querySelector('slicc-app').model;
     const list = agent.messages(agent.active());
@@ -617,20 +681,6 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
     }
   );
 
-  const probe = await guest.tab();
-  await probe.goto('/os/join.html');
-  await probe.until(
-    (text) => document.querySelector('[data-seat-state]')?.textContent === text,
-    REFUSED
-  );
-  await probe.evaluate(probeLink, hubSeat);
-  await probe.until(() => window.probe.status().link === 'connected');
-  const streams = await probe.evaluate(probeStreams);
-  for (const [kind, code] of Object.entries(streams.refused))
-    assert.equal(code, 'EOPNOTSUPP', `a guest link opened ${kind}`);
-  assert.equal(streams.second, 'EBUSY');
-  assert.notEqual(streams.owner, 'connected', 'a guest link reached the owner’s AgentControl');
-
   await owner.evaluate(() =>
     window.netPanel().querySelector('li[data-seat="s1"] [data-action=revoke-guest]').click()
   );
@@ -641,7 +691,10 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
   await owner.evaluate(() =>
     window.deep('slicc-confirm').shadowRoot.querySelector('[data-action]').click()
   );
-  await probe.within(5000, () => window.probe.status().link !== 'connected');
+  await probe.within(
+    5000,
+    () => window.probe.status().link !== 'connected' && window.seated.status().link !== 'connected'
+  );
   await guest.within(
     10000,
     (text) =>
@@ -650,7 +703,10 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
     REFUSED
   );
   const closedIn = Date.now() - revokedAt;
-  await probe.within(60000, () => window.probe.status().link === 'failed');
+  await probe.within(
+    60000,
+    () => window.probe.status().link === 'failed' && window.seated.status().link === 'failed'
+  );
   assert.equal(await guest.evaluate(() => sessionStorage.getItem('slicc-os.seat')), null);
   assert.equal(hub.seats.get('g1').revoked, true);
   await owner.until(() => !window.netPanel().querySelector('li[data-seat="s1"]'));
