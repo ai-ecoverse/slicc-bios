@@ -154,7 +154,13 @@ export function installer(
   });
 }
 
-export async function pnpm(kernel, cwd, report, to = null, argv = INSTALL, writer = true) {
+export const STORE = 'slicc-pnpm-store';
+
+export function pnpm(kernel, cwd, report, to = null, argv = INSTALL, writer = true) {
+  return navigator.locks.request(STORE, () => pnpmAlone(kernel, cwd, report, to, argv, writer));
+}
+
+async function pnpmAlone(kernel, cwd, report, to, argv, writer) {
   let log = '';
   report({ progress: null, log });
   const onStdout = (chunk) => {
