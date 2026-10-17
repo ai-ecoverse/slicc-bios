@@ -13,10 +13,10 @@ importers:
     dependencies:
       '@ai-ecoverse/slicc-agent':
         specifier: 5.0.3
-        version: 5.0.3(@ai-ecoverse/slicc-kernel@1.113.0)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
+        version: 5.0.3(@ai-ecoverse/slicc-kernel@1.122.3)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@ai-ecoverse/slicc-kernel':
-        specifier: 1.113.0
-        version: 1.113.0
+        specifier: 1.122.3
+        version: 1.122.3
 
 packages:
 
@@ -34,8 +34,8 @@ packages:
     resolution: {integrity: sha512-35vGFMbZrl33ZQ9/VgjwZDBXp0RP87mKY0hnIG31tW5Nt5hh+icdp+3Y/t1kypoENAre+jnVEDa9W/H+yK6zyA==}
     engines: {node: '>=24'}
 
-  '@ai-ecoverse/slicc-kernel@1.113.0':
-    resolution: {integrity: sha512-PGJvZUm/oQYuS9pbUxDIpBSCeyaW91wDN2yWPCZIv664WDWKsiCTeQ1c4i8xU4Bq7C66viFK6EzZhvvofQ6b3Q==}
+  '@ai-ecoverse/slicc-kernel@1.122.3':
+    resolution: {integrity: sha512-fg4fEmaFlIes0z3N1QeuW0uVqS+bnL2KL+8lAOR2mNGrpJMIL0EVV2dyFmyShSNMz71H7W09sjRIXhss9H2Nhw==}
     engines: {node: '>=24'}
 
   '@ai-ecoverse/slicc-vault@1.9.1':
@@ -324,10 +324,10 @@ packages:
 
 snapshots:
 
-  '@ai-ecoverse/slicc-agent@5.0.3(@ai-ecoverse/slicc-kernel@1.113.0)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)':
+  '@ai-ecoverse/slicc-agent@5.0.3(@ai-ecoverse/slicc-kernel@1.122.3)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)':
     dependencies:
       '@ai-ecoverse/slicc-browsers': 1.7.1
-      '@ai-ecoverse/slicc-kernel': 1.113.0
+      '@ai-ecoverse/slicc-kernel': 1.122.3
       '@ai-ecoverse/slicc-vault': 1.9.1
       '@earendil-works/chord': 1.2.0
       '@earendil-works/pi-ai': 1.2.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
@@ -348,7 +348,7 @@ snapshots:
 
   '@ai-ecoverse/slicc-browsers@1.7.1': {}
 
-  '@ai-ecoverse/slicc-kernel@1.113.0': {}
+  '@ai-ecoverse/slicc-kernel@1.122.3': {}
 
   '@ai-ecoverse/slicc-vault@1.9.1': {}
 
