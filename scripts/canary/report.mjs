@@ -181,7 +181,8 @@ export function verdictLine(result) {
     const names = result.refused.map(({ name }) => name).join(', ');
     return { ok: false, line: `${id}: FAIL refused ${names}` };
   }
-  if (!ran) return { ok: false, line: `${id}: FAIL 0 tests ran` };
+  const absent = result.missingShards?.length ? `, missing ${result.missingShards.join(', ')}` : '';
+  if (!ran) return { ok: false, line: `${id}: FAIL 0 tests ran${absent}` };
   if (!result.ok) {
     const bad = ['fail', 'regression', 'both']
       .filter((kind) => counts[kind])

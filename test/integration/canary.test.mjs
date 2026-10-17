@@ -573,6 +573,10 @@ test('the canary report names a verdict, and zero tests or a missing shard is a 
     }),
     { ok: false, line: 'canary r: FAIL 1 regression, missing guard' }
   );
+  assert.deepEqual(
+    verdictLine({ ok: false, run: 'canary', counts: counts(0), missingShards: ['guard'] }),
+    { ok: false, line: 'canary canary: FAIL 0 tests ran, missing guard' }
+  );
 });
 
 test('every gate in the workflows prints a verdict and its caller fails without it', async () => {
@@ -1146,3 +1150,47 @@ function realShard(name) {
 function forgedShard() {
   return { ...shard(0, [pass('forged guard')], 'guard') };
 }
+
+test('a call the plan refuses still gets a red report that names the refusal, under its own label', async () => {
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const PLAN = new URL('../../scripts/canary/plan.mjs', import.meta.url);
+  const refused = await cli(PLAN, [], {
+    EVENT: 'workflow_call',
+    LABEL: 'candidate',
+    CANDIDATE_PACKAGE: CDP,
+    CANDIDATE_ARTIFACT: 'cdp-pack',
+    CANDIDATE_RUN: '500',
+    CANDIDATE_SHA256: 'f'.repeat(64),
+    GITHUB_REPOSITORY: 'ai-ecoverse/slicc-cdp',
+  });
+  assert.equal(refused.code, 1);
+  assert.match(refused.stdout, /^canary plan: FAIL a strict candidate needs .*refusing it$/m);
+  assert.equal(refused.outputs.prefix, 'candidate-');
+  assert.equal(refused.outputs.jobs, undefined);
+  const dir = await mkdtemp(join(tmpdir(), 'canary-refused-'));
+  try {
+    const report = await cli(
+      REPORT,
+      [
+        '--dir',
+        join(dir, 'shards'),
+        '--runs',
+        '',
+        '--out',
+        join(dir, 'canary'),
+        '--bindings',
+        join(dir, 'none.json'),
+      ],
+      { PLAN_REFUSED: refused.outputs.refused }
+    );
+    assert.equal(report.code, 1);
+    assert.equal(report.outputs.ok, 'false');
+    const result = JSON.parse(await readFile(join(dir, 'canary/result.json'), 'utf8'));
+    assert.equal(result.ok, false);
+    assert.match(result.verdict, /^canary: FAIL the plan refused: a strict candidate needs /);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

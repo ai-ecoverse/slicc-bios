@@ -344,7 +344,18 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
     await main();
   } catch (error) {
     const line = `canary plan: FAIL ${error.message}`.replace(/\s+/g, ' ');
-    if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, `refused=${line}\n`);
+    let prefix = '';
+    try {
+      prefix = prefixOf(env.LABEL ?? '', {
+        called: env.EVENT === 'workflow_call',
+        candidate: env.CANDIDATE_ARTIFACT || env.CANDIDATE_PACKAGE ? {} : null,
+      });
+    } catch {
+      prefix = '';
+    }
+    if (env.GITHUB_OUTPUT) {
+      await appendFile(env.GITHUB_OUTPUT, `refused=${line}\nprefix=${prefix}\n`);
+    }
     console.log(line);
     exit(1);
   }
