@@ -1,16 +1,20 @@
 import { certificate, dial, dropCertificate, hubOrigin, hubs, joinUrl, sleep } from './follow.js';
 import { failure } from './link.js';
-import { FOLLOWER } from './tray.js';
+import { displayName, FOLLOWER } from './tray.js';
 
 export const LEADERS_KEY = 'slicc-os.leaders';
 export const KEPT = 16;
-export const IDLE_MS = 10 * 60 * 1000;
 export const DIAL_MS = 45_000;
-const BACKOFF = [1_000, 2_000, 5_000];
+export const HIDDEN_MS = 10 * 60 * 1000;
+export const BACKOFF = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000];
 export const ELSEWHERE = "EACCES: that join URL isn't on a tray hub this seven links through";
 export const UNREACHABLE = "ENOTCONN: couldn't reach that seven through its tray";
 export const NO_CONTROL =
   "EACCES: that seven doesn't allow remote control from this one; turn it on in its Linked devices";
+export const DISCONNECTED =
+  'EACCES: this seven disconnected from that one; reconnect it in Network to follow it again';
+export const FORGOTTEN = 'ECONNABORTED: this seven forgot that one';
+const AWAY = "ENOTCONN: that seven isn't on its tray right now";
 const REFUSED = {
   UNLINKED: 'that seven unlinked this one; run slicc again to link as a new device',
   INVALID_JOIN_CAPABILITY: "the tray hub doesn't know that join URL",
@@ -53,6 +57,260 @@ function refusal(error) {
 const refusedByLeader = (error) =>
   error.code === 'EACCES' && error.message === 'EACCES' ? failure(NO_CONTROL) : error;
 
+export function sentence(text) {
+  const said = String(text || 'the link failed');
+  return `${said[0].toUpperCase()}${said.slice(1)}${/[.!?]$/.test(said) ? '' : '.'}`;
+}
+
+export function distinctLeaders(rows) {
+  const counts = new Map();
+  for (const row of rows) counts.set(row.name, (counts.get(row.name) ?? 0) + 1);
+  return rows.map((row) =>
+    counts.get(row.name) > 1 ? { ...row, name: `${row.name} · ${row.id.slice(0, 4)}` } : row
+  );
+}
+
+function stateOf(entry) {
+  if (entry.off) return 'disconnected';
+  if (entry.failed) return 'failed';
+  if (entry.session) return 'connected';
+  return entry.seen ? 'reconnecting' : 'connecting';
+}
+
+const wake = (entry) => {
+  for (const resume of [...entry.stop]) resume();
+};
+
+const drop = (self, entry) => {
+  if (self.entries.get(entry.key) === entry) self.entries.delete(entry.key);
+};
+
+const settle = (entry, error) => {
+  for (const waiter of [...entry.waiters]) waiter.reject(error);
+};
+
+function row(entry) {
+  const host = new URL(entry.hub).host;
+  const state = stateOf(entry);
+  return {
+    id: entry.key,
+    name: displayName(entry.name || host),
+    hub: host,
+    state,
+    ...(state === 'failed' ? { error: entry.failed } : {}),
+  };
+}
+
+function remember(self, entry) {
+  if (self.entries.get(entry.key) !== entry) return;
+  const kept = readLeaders(self.storage);
+  kept[entry.key] = {
+    hub: entry.hub,
+    url: entry.current,
+    ...(entry.name ? { name: entry.name } : {}),
+    ...(entry.off ? { off: true } : {}),
+    at: self.now(),
+  };
+  writeLeaders(self.storage, kept);
+}
+
+function mark(self, entry, extra = { unlinked: true }) {
+  const kept = readLeaders(self.storage);
+  kept[entry.key] = { hub: entry.hub, ...extra, at: self.now() };
+  writeLeaders(self.storage, kept);
+}
+
+function make(self, key, url, kept) {
+  const hub = hubOrigin(url);
+  const same = kept?.hub === hub;
+  const live = same && kept.unlinked !== true;
+  const moved = live ? joinUrl(kept.url, hubs(self.storage)) : null;
+  return {
+    key,
+    hub,
+    given: url,
+    current: moved && hubOrigin(moved) === hub ? moved : url,
+    name: live && typeof kept.name === 'string' ? kept.name : null,
+    known: Boolean(moved),
+    off: Boolean(moved) && kept.off === true,
+    relink: same && kept.unlinked === true,
+    untold: same && kept.unlinked === true && kept.untold === true,
+    failed: null,
+    session: null,
+    link: null,
+    abort: null,
+    running: false,
+    seen: false,
+    over: false,
+    stop: new Set(),
+    waiters: new Set(),
+  };
+}
+
+function halt(entry, why) {
+  entry.over = true;
+  entry.abort?.();
+  wake(entry);
+  entry.link?.close('left');
+  entry.link = null;
+  entry.session = null;
+  settle(entry, failure(why));
+}
+
+async function attempt(self, entry) {
+  let over = false;
+  let made = null;
+  let timer = null;
+  const expired = new Promise((_, reject) => {
+    entry.abort = () => {
+      over = true;
+      wake(entry);
+      made?.close('gave up');
+      reject(failure(UNREACHABLE));
+    };
+    timer = self.timers.setTimeout(entry.abort, DIAL_MS);
+  });
+  expired.catch(() => undefined);
+  const ctx = {
+    hub: entry.hub,
+    runtime: FOLLOWER,
+    post: self.post,
+    makePeer: self.makePeer,
+    cert: () => self.cert(entry.hub),
+    hello: () => ({ name: self.name, mode: 'remote', node: self.newId(), caps: [] }),
+    timers: self.timers,
+    now: self.now,
+    url: () => entry.current,
+    keep: (next) => {
+      entry.current = next;
+      if (entry.known) remember(self, entry);
+    },
+    over: () => over || entry.over,
+    nap: (ms) => sleep(self.timers, ms, entry.stop),
+    waiting: () => {
+      if (!entry.waiters.size) throw failure(AWAY);
+    },
+    adopt: (link) => {
+      made = link;
+      entry.link = link;
+    },
+    accept: () => Promise.reject(failure('EACCES')),
+  };
+  try {
+    if (entry.relink) {
+      entry.relink = false;
+      await self.forget(entry.hub).catch(() => undefined);
+      mark(self, entry, {});
+    }
+    const { linked, ended } = await dial(ctx, self.newId());
+    return { session: await Promise.race([linked, expired]), ended };
+  } catch (error) {
+    made?.close('gave up');
+    if (entry.link === made) entry.link = null;
+    throw error;
+  } finally {
+    over = true;
+    entry.abort = null;
+    self.timers.clearTimeout(timer);
+  }
+}
+
+function linked(self, entry, session) {
+  const peer = session.peer();
+  entry.session = session;
+  entry.seen = true;
+  entry.known = true;
+  if (typeof peer?.name === 'string' && peer.name) entry.name = peer.name;
+  remember(self, entry);
+  for (const waiter of [...entry.waiters]) waiter.resolve(session);
+  self.changed();
+}
+
+function unlinked(self, entry, error) {
+  mark(self, entry, { unlinked: true, ...(entry.waiters.size ? {} : { untold: true }) });
+  drop(self, entry);
+  settle(entry, refusal(error));
+  self.changed(entry.known ? [{ ...row(entry), state: 'unlinked' }] : []);
+}
+
+function fail(self, entry, error) {
+  const refused = refusal(error);
+  entry.failed = sentence(refused.message);
+  settle(entry, refused);
+  if (!entry.known) drop(self, entry);
+  self.changed();
+}
+
+async function cycle(self, entry) {
+  try {
+    const { session, ended } = await attempt(self, entry);
+    linked(self, entry, session);
+    await ended;
+    entry.session = null;
+    entry.link = null;
+    if (!entry.over) self.changed();
+    return 'linked';
+  } catch (error) {
+    if (entry.over) return 'stop';
+    if (error.unlinked) unlinked(self, entry, error);
+    else if (error.gone || error.code === 'EACCES') fail(self, entry, error);
+    else return 'again';
+    return 'stop';
+  }
+}
+
+async function follow(self, entry) {
+  entry.over = false;
+  entry.failed = null;
+  if (entry.running) {
+    wake(entry);
+    self.changed();
+    return;
+  }
+  entry.running = true;
+  self.changed();
+  let attempts = 0;
+  try {
+    while (!entry.over) {
+      if (!entry.known && !entry.waiters.size) return drop(self, entry);
+      if (self.asleep() && !entry.waiters.size) {
+        await sleep(self.timers, HIDDEN_MS, entry.stop);
+        continue;
+      }
+      const result = await cycle(self, entry);
+      if (result === 'stop' || entry.over) return;
+      if (result === 'linked') attempts = 0;
+      await sleep(self.timers, BACKOFF[Math.min(attempts, BACKOFF.length - 1)], entry.stop);
+      attempts += 1;
+    }
+  } finally {
+    entry.running = false;
+  }
+}
+
+function reach(self, entry) {
+  if (entry.session) return Promise.resolve(entry.session);
+  return new Promise((resolve, reject) => {
+    const done = () => {
+      self.timers.clearTimeout(timer);
+      entry.waiters.delete(waiter);
+    };
+    const waiter = {
+      resolve: (session) => {
+        done();
+        resolve(session);
+      },
+      reject: (error) => {
+        done();
+        reject(error);
+      },
+    };
+    const timer = self.timers.setTimeout(() => waiter.reject(failure(UNREACHABLE)), DIAL_MS);
+    entry.waiters.add(waiter);
+    void follow(self, entry);
+  });
+}
+
 export function createLeaders({
   storage = localStorage,
   post,
@@ -64,109 +322,49 @@ export function createLeaders({
   now = Date.now,
   newId = () => crypto.randomUUID(),
   digest = joinKey,
+  document: page = globalThis.document,
 }) {
+  const listeners = new Set();
+  const minting = new Map();
   const entries = new Map();
-
-  const remember = (entry) => {
-    const kept = readLeaders(storage);
-    kept[entry.key] = {
-      hub: entry.hub,
-      ...(entry.current === entry.given ? {} : { url: entry.current }),
-      at: now(),
-    };
-    writeLeaders(storage, kept);
+  let gone = [];
+  let started = false;
+  let hiddenAt = page?.visibilityState === 'hidden' ? now() : null;
+  const self = {
+    storage,
+    post,
+    makePeer,
+    name,
+    forget,
+    timers,
+    now,
+    newId,
+    entries,
+    changed(fresh = []) {
+      gone = fresh;
+      for (const listener of [...listeners]) listener();
+    },
+    asleep: () => hiddenAt !== null && now() - hiddenAt >= HIDDEN_MS,
+    cert(hub) {
+      if (!minting.has(hub))
+        minting.set(
+          hub,
+          Promise.resolve()
+            .then(() => cert(hub))
+            .finally(() => minting.delete(hub))
+        );
+      return minting.get(hub);
+    },
   };
 
-  const unlinked = (entry) => {
-    const kept = readLeaders(storage);
-    kept[entry.key] = { hub: entry.hub, unlinked: true, at: now() };
-    writeLeaders(storage, kept);
-    entry.current = entry.given;
-    entry.relink = true;
-  };
-
-  function idle(entry) {
-    timers.clearTimeout(entry.idle);
-    if (!entry.ready) {
-      entries.delete(entry.key);
+  page?.addEventListener?.('visibilitychange', () => {
+    if (page.visibilityState === 'hidden') {
+      hiddenAt ??= now();
       return;
     }
-    entry.idle = timers.setTimeout(() => {
-      if (entry.uses) return;
-      entries.delete(entry.key);
-      entry.link?.close('idle');
-    }, IDLE_MS);
-  }
-
-  async function connect(entry) {
-    const stop = new Set();
-    let over = false;
-    let made = null;
-    let timer = null;
-    const expired = new Promise((_, reject) => {
-      timer = timers.setTimeout(() => {
-        over = true;
-        for (const wake of [...stop]) wake();
-        made?.close('gave up');
-        reject(failure(UNREACHABLE));
-      }, DIAL_MS);
-    });
-    expired.catch(() => undefined);
-    const ctx = {
-      hub: entry.hub,
-      runtime: FOLLOWER,
-      post,
-      makePeer,
-      cert: () => cert(entry.hub),
-      hello: () => ({ name, mode: 'remote', node: newId(), caps: [] }),
-      timers,
-      now,
-      url: () => entry.current,
-      keep: (next) => {
-        entry.current = next;
-        remember(entry);
-      },
-      over: () => over,
-      nap: (ms) => sleep(timers, ms, stop),
-      waiting: () => undefined,
-      adopt: (link) => {
-        made = link;
-      },
-      accept: () => Promise.reject(failure('EACCES')),
-    };
-    try {
-      if (entry.relink) {
-        entry.relink = false;
-        await forget(entry.hub).catch(() => undefined);
-        remember(entry);
-      }
-      for (let attempt = 0; !over; attempt += 1) {
-        try {
-          const { linked, ended } = await dial(ctx, newId());
-          const session = await Promise.race([linked, expired]);
-          const link = made;
-          entry.link = link;
-          void ended.then(() => {
-            if (entry.link !== link) return;
-            entry.link = null;
-            entry.ready = null;
-            if (!entry.uses) idle(entry);
-          });
-          remember(entry);
-          return session;
-        } catch (error) {
-          made?.close('gave up');
-          if (error.unlinked) unlinked(entry);
-          if (over || error.unlinked || error.gone || error.code === 'EACCES') throw refusal(error);
-          await ctx.nap(BACKOFF[Math.min(attempt, BACKOFF.length - 1)]);
-        }
-      }
-      throw failure(UNREACHABLE);
-    } finally {
-      over = true;
-      timers.clearTimeout(timer);
-    }
-  }
+    hiddenAt = null;
+    for (const entry of entries.values()) wake(entry);
+  });
 
   async function open(join, meta) {
     const allowed = hubs(storage);
@@ -175,50 +373,77 @@ export function createLeaders({
     const key = await digest(url);
     let entry = entries.get(key);
     if (!entry) {
-      const hub = hubOrigin(url);
-      const kept = readLeaders(storage)[key];
-      const moved = kept?.hub === hub ? joinUrl(kept.url, allowed) : null;
-      entry = {
-        key,
-        hub,
-        given: url,
-        current: moved && hubOrigin(moved) === hub ? moved : url,
-        relink: kept?.hub === hub && kept.unlinked === true,
-        uses: 0,
-        ready: null,
-        link: null,
-        idle: null,
-      };
+      entry = make(self, key, url, readLeaders(storage)[key]);
+      if (entry.untold) {
+        mark(self, entry);
+        throw refusal({ unlinked: true });
+      }
       entries.set(key, entry);
     }
-    entry.uses += 1;
-    timers.clearTimeout(entry.idle);
-    let held = true;
-    const release = () => {
-      if (!held) return;
-      held = false;
-      entry.uses -= 1;
-      if (!entry.uses) idle(entry);
-    };
-    try {
-      entry.ready ??= connect(entry).catch((error) => {
-        entry.ready = null;
-        throw error;
-      });
-      const session = await entry.ready;
-      if (!session.caps().includes('agent')) {
-        entry.link?.close('no remote control');
-        throw failure(NO_CONTROL);
-      }
-      const stream = await session.open(meta).catch((error) => {
-        throw refusedByLeader(error);
-      });
-      return { stream, release };
-    } catch (error) {
-      release();
-      throw error;
-    }
+    if (entry.off) throw failure(DISCONNECTED);
+    const session = await reach(self, entry);
+    const stream = await session.open(meta).catch((error) => {
+      throw refusedByLeader(error);
+    });
+    return { stream, release: () => undefined };
   }
 
-  return { open };
+  const followed = (id) => {
+    const entry = entries.get(id);
+    if (!entry?.known) throw new Error('This SLICC doesn’t follow that leader.');
+    return entry;
+  };
+
+  return {
+    open,
+    start() {
+      if (started) return;
+      started = true;
+      const allowed = hubs(storage);
+      for (const [key, kept] of Object.entries(readLeaders(storage))) {
+        const url = joinUrl(kept?.url, allowed);
+        if (entries.has(key) || !url || !allowed.includes(hubOrigin(url))) continue;
+        const entry = make(self, key, url, kept);
+        if (!entry.known) continue;
+        entries.set(key, entry);
+        if (!entry.off) void follow(self, entry);
+      }
+      self.changed();
+    },
+    on(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    status: () =>
+      distinctLeaders([
+        ...[...entries.values()].filter((entry) => entry.known).map(row),
+        ...gone.filter((item) => !entries.has(item.id)),
+      ]),
+    async retry(id) {
+      const entry = followed(id);
+      entry.seen = false;
+      void follow(self, entry);
+    },
+    async disconnect(id) {
+      const entry = followed(id);
+      entry.off = true;
+      halt(entry, DISCONNECTED);
+      remember(self, entry);
+      self.changed();
+    },
+    async reconnect(id) {
+      const entry = followed(id);
+      entry.off = false;
+      entry.seen = false;
+      remember(self, entry);
+      void follow(self, entry);
+    },
+    async forget(id) {
+      const entry = followed(id);
+      halt(entry, FORGOTTEN);
+      drop(self, entry);
+      mark(self, entry);
+      self.changed();
+    },
+  };
 }

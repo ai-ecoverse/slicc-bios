@@ -76,6 +76,20 @@ export function currentExit(router, tailnet) {
   return { kind: 'tailnet', node: node?.id ?? 'auto' };
 }
 
+function leaderActions(leaders, emit) {
+  if (!leaders) return {};
+  const act = (name) => async (id) => {
+    await leaders[name](id);
+    emit();
+  };
+  return {
+    retryLeader: act('retry'),
+    disconnectLeader: act('disconnect'),
+    reconnectLeader: act('reconnect'),
+    forgetLeader: act('forget'),
+  };
+}
+
 function exitActions({ router, links, tray, tailnet, storage, linkedFolders }, emit) {
   if (!router || !links) return {};
   const remember = (id) => {
@@ -197,6 +211,7 @@ export function createNetwork(choice, options = {}) {
       ...(tailnet ? { tailnet } : {}),
       ...linkStatus(),
       ...viaLink(),
+      ...(options.leaders ? { leaders: options.leaders.status() } : {}),
     };
   };
   const viaLink = () => {
@@ -269,6 +284,7 @@ export function createNetwork(choice, options = {}) {
     },
     status,
     ...tailnetActions(options.tailnet),
+    ...leaderActions(options.leaders, () => emit()),
     ...exitActions({ ...options, storage: options.storage ?? globalThis.localStorage }, () =>
       emit()
     ),
@@ -295,5 +311,6 @@ export function createNetwork(choice, options = {}) {
   options.tailnet?.on(emit);
   options.links?.on(emit);
   options.tray?.on(emit);
+  options.leaders?.on(emit);
   return { port, transport };
 }
