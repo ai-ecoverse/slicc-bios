@@ -214,6 +214,28 @@ test("a follower of a SLICC on another agent version shows the agent's sentence 
       NOTICE
     )
   );
+  const top = () =>
+    page.evaluate(
+      new Function(`
+        const owner = document.querySelector('slicc-app').model.follow.state().owner;
+        const light = (${find})('[data-follow="connected"]');
+        return { owner, light: light?.textContent.replace(/\\s+/g, ' ').trim() ?? null, footer: !!(${find})('p.watch-only') };
+      `)
+    );
+  await page
+    .within(30000, () => document.querySelector('slicc-app').model.follow.state().refused)
+    .catch(async (error) => {
+      throw new Error(
+        `the follow state never said refused: ${error.message}\n${JSON.stringify(await page.evaluate(() => document.querySelector('slicc-app').model.follow.state()))}`
+      );
+    });
+  let shownTop = await top();
+  for (let i = 0; i < 60 && !shownTop.light?.includes('Can’t follow'); i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    shownTop = await top();
+  }
+  assert.ok(shownTop.light?.includes(`Can’t follow ${shownTop.owner}`), JSON.stringify(shownTop));
+  assert.equal(shownTop.footer, false, JSON.stringify(shownTop));
   await shoot(page, 'follower-other-agent-version', { show: 'chat' });
 
   await owner.evaluate(() => {
@@ -294,4 +316,10 @@ test("a follower of a SLICC on another agent version shows the agent's sentence 
         `the follower kept the other-version warning after the owner upgraded: ${error.message}\nfollower attempts: ${attempts(page).join('\n')}\nfollower console:\n${page.console.slice(-15).join('\n')}`
       );
     });
+  const after = await top();
+  assert.equal(
+    await page.evaluate(() => document.querySelector('slicc-app').model.follow.state().refused),
+    undefined
+  );
+  assert.ok(after.light?.includes(`Following ${after.owner}`), JSON.stringify(after));
 });
