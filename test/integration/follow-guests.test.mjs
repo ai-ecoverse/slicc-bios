@@ -756,18 +756,13 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
       .find((b) => b.textContent.trim() === 'Follow')
       .click()
   );
-  await owner.until(() =>
-    document
-      .querySelector('slicc-app')
-      .model.network.status()
-      .links.devices.some((d) => d.kind === 'seven' && d.asking)
-  );
-  const device = await owner.evaluate(
+  const device = await owner.within(
+    120000,
     () =>
       document
         .querySelector('slicc-app')
         .model.network.status()
-        .links.devices.find((d) => d.kind === 'seven').id
+        .links.devices.find((d) => d.kind === 'seven' && d.asking && d.state === 'connected')?.id
   );
   await model(owner, (network, id) => network.setAccess(id, 'view', true), device);
   await follower.within(5 * 60 * 1000, () =>
