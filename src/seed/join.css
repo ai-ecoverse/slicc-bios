@@ -1,3 +1,7 @@
+@view-transition {
+  navigation: auto;
+}
+
 @font-face {
   font-family: "adobe-clean";
   font-weight: 400;
