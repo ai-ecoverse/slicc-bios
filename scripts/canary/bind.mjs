@@ -384,9 +384,8 @@ async function main() {
         `\n| role | artifact | id | digest | attempt |\n| :--- | :--- | ---: | :--- | ---: |\n${table.join('\n')}\n`
       );
     }
-    console.log(
-      `canary artifacts: ${rows.map(({ role, name, id }) => `${role} ${name} ${id}`).join(', ')}`
-    );
+    console.log(`canary artifacts: ${rows.length} rows`);
+    console.log(`artifacts=${JSON.stringify(rows)}`);
     return;
   }
   throw new Error(`bind.mjs candidate|shard|shards|manifest, not ${command}`);
