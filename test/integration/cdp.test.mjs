@@ -1058,3 +1058,39 @@ test('a cone’s .jsh script, with sliccy:browser installed from the catalog, op
   assert.equal(await listed(vault), true);
   assert.deepEqual(page.errors, []);
 });
+
+test('a cone runs playwright-cli from a directory it cannot write, and it drives the browser', async (t) => {
+  const page = await chrome.page(t);
+  const extension = await fakeExtension(page);
+  t.after(extension.close);
+  await boot(page);
+  chrome.overrides.set(
+    '/read-only.html',
+    '<!doctype html><title>READ-ONLY-MARK</title><h1>Read-only cwd</h1>'
+  );
+  const target = elsewhere('/read-only.html');
+  t.after(async () => {
+    const tabs = await devtools('/json/list');
+    await Promise.all(
+      tabs
+        .filter((tab) => tab.url.includes('/read-only.html'))
+        .map((tab) => fetch(`http://127.0.0.1:${port}/json/close/${tab.id}`))
+    );
+  });
+  await run(
+    page,
+    `clear; cd /; sudo -u cone bash -c 'cd /usr/local && touch probe 2> /dev/null; echo writable=$?; playwright-cli open ${target} > /dev/null && playwright-cli tab-list; echo listed=$?'; echo done-$((40 + 2))`
+  );
+  await shows(page, 'done-42', 2 * 60 * 1000);
+  const text = await page.evaluate(() => {
+    const { dock } = document.querySelector('slicc-app');
+    return dock.content(
+      dock.api.panels.map((panel) => panel.id).findLast((id) => id.startsWith('terminal:'))
+    ).screen.textContent;
+  });
+  assert.match(text, /writable=1/);
+  assert.match(text, /READ-ONLY-MARK/);
+  assert.match(text, /listed=0/);
+  assert.doesNotMatch(text, /Permission denied/);
+  assert.deepEqual(page.errors, []);
+});

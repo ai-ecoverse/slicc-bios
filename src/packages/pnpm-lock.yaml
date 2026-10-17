@@ -12,8 +12,8 @@ importers:
         specifier: 1.7.6
         version: 1.7.6
       '@ai-ecoverse/slicc-cdp':
-        specifier: 1.25.1
-        version: 1.25.1
+        specifier: 1.26.2
+        version: 1.26.2
       '@ai-ecoverse/slicc-clipboard':
         specifier: 1.0.2
         version: 1.0.2
@@ -21,8 +21,8 @@ importers:
         specifier: 1.113.0
         version: 1.113.0
       '@ai-ecoverse/slicc-spectrum':
-        specifier: 1.77.0
-        version: 1.77.0
+        specifier: 1.84.2
+        version: 1.84.2
       '@ai-ecoverse/wasi-pnpm':
         specifier: 12.9.1-9
         version: 12.9.1-9
@@ -99,9 +99,10 @@ packages:
     resolution: {integrity: sha512-clzlvrVLjmWEiKXhuK/Lez7y3Dwmo+FJ8POUs5GYqLJy5u8cOAiXyliQlNUNOVkNx9EoPm0RVvdfFkSTgv/isg==}
     engines: {node: '>=24'}
 
-  '@ai-ecoverse/slicc-cdp@1.25.1':
-    resolution: {integrity: sha512-gBj/wHcDmRC0e4oSdgThodGLoCQWk3crEfAv/sOg1mH3MnBdEzUjIWArnvnH8m8dovz+MB2KC5Z20jXzJIcaZw==}
+  '@ai-ecoverse/slicc-cdp@1.26.2':
+    resolution: {integrity: sha512-YSmqvEOQMcwu3aQrPZ4W1XpHl+O7Sm4QE7MOtG4wnfjx8go2XakagTHrPiPE199GQ2QuQAJE+dluRNZn3bB4cg==}
     engines: {node: '>=24'}
+    hasBin: true
 
   '@ai-ecoverse/slicc-clipboard@1.0.2':
     resolution: {integrity: sha512-p7b1h85qkiU0LKjNLCLiU7GVXjGigkyR2+VUCInM1cZo2yjLFxr7tGAOO09e6OG9nB7XKiQn3W88wb3s0gxy+g==}
@@ -111,8 +112,8 @@ packages:
     resolution: {integrity: sha512-PGJvZUm/oQYuS9pbUxDIpBSCeyaW91wDN2yWPCZIv664WDWKsiCTeQ1c4i8xU4Bq7C66viFK6EzZhvvofQ6b3Q==}
     engines: {node: '>=24'}
 
-  '@ai-ecoverse/slicc-spectrum@1.77.0':
-    resolution: {integrity: sha512-2IDp53NpmNoqKqdIgtv3H+wEAEYCp3Z4GeNp0DFnzqx/PUiC9crEdKt9ce3a3NHNJKtcPeDGwr1lu7GLRfEWPg==}
+  '@ai-ecoverse/slicc-spectrum@1.84.2':
+    resolution: {integrity: sha512-7nSam2gjvT18jjpajcEn4Q7IqX0qTITU5G4ZrH1oipcgiOMmNmXTMeWOra1CAPL1+JZMHHQIIdYmh6nBCLAGlw==}
     engines: {node: '>=24'}
     peerDependencies:
       '@shikijs/langs': 4.5.0
@@ -201,13 +202,13 @@ snapshots:
 
   '@ai-ecoverse/slicc-browsers@1.7.6': {}
 
-  '@ai-ecoverse/slicc-cdp@1.25.1': {}
+  '@ai-ecoverse/slicc-cdp@1.26.2': {}
 
   '@ai-ecoverse/slicc-clipboard@1.0.2': {}
 
   '@ai-ecoverse/slicc-kernel@1.113.0': {}
 
-  '@ai-ecoverse/slicc-spectrum@1.77.0': {}
+  '@ai-ecoverse/slicc-spectrum@1.84.2': {}
 
   '@ai-ecoverse/wasi-pnpm@12.9.1-9': {}
 

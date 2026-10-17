@@ -17,7 +17,7 @@ import {
   useVault,
   whenIdle,
 } from './agent.js';
-import { createApprovals, rootChecked, useSecretRules } from './approvals.js';
+import { createApprovals, rootChecked, routeSudo, useSecretRules } from './approvals.js';
 import { createBrowser } from './browser.js';
 import { browserControl } from './cdp.js';
 import { clipboardHook } from './clipboard.js';
@@ -63,7 +63,7 @@ import {
   localBoard,
   supported,
 } from './tabs.js';
-import { followerTag, terminalTag } from './tags.js';
+import { followerDevice, followerTag, terminalTag } from './tags.js';
 import {
   createTailscale,
   installTailscale,
@@ -231,8 +231,8 @@ followers = tray
       tray,
       name: deviceName(),
       serve: {
-        pi: (_link, _meta, stream, access) =>
-          bridgeAgent(owner, stream, { readOnly: !access.control }),
+        pi: (link, _meta, stream, access) =>
+          bridgeAgent(owner, stream, { readOnly: !access.control, device: link.id }),
         terminal: (link, meta, stream) => followerShell(link, meta, stream),
       },
       onChange: () => links.changed(),
@@ -285,6 +285,16 @@ reportRepairs(notices);
 reportStopped(notices);
 useSecretRules(secretRules);
 const approvals = createApprovals();
+const sudo = routeSudo({
+  agent: () => owner,
+  fallback: approvals.approve,
+  offered: approvals.offered,
+  where: (req) => {
+    const device = followerDevice(req.tag);
+    const name = device && [...links.links.values()].find((link) => link.id === device)?.peer?.name;
+    return name ? `on ${name}` : undefined;
+  },
+});
 const mode = usersMode();
 protectInstalls(mode !== 'off', mode === 'enforce');
 document.documentElement.dataset.users = mode;
@@ -653,7 +663,7 @@ async function own() {
     facades: { link: { port: LINK_PORT, hook: link } },
     ...sealedOption((await versions(root, [KERNEL]))[KERNEL], vault),
     ...folders.options,
-    ...kernelUsers(mode, { approve: approvals.approve, onDenial: denials }),
+    ...kernelUsers(mode, { approve: sudo, onDenial: denials }),
   });
   approvals.verify((req) => rootChecked((argv) => kernel.run(argv, { cwd: '/' }), req));
   const cone = await addCone(kernel);

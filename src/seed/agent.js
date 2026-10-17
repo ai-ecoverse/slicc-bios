@@ -174,11 +174,11 @@ export async function pumpLink(stream, end) {
   }
 }
 
-export async function bridgeAgent(owner, stream, { readOnly, load = loadChat } = {}) {
+export async function bridgeAgent(owner, stream, { readOnly, device, load = loadChat } = {}) {
   if (!owner) throw failure('EAGAIN: the agent is not running');
   const { bridgePort } = await load();
   if (!bridgePort) throw failure('EOPNOTSUPP: this agent cannot be followed');
-  const port = await owner.port({ readOnly, pages: false });
+  const port = await owner.port({ readOnly, pages: false, ...(device ? { device } : {}) });
   stream.accepted({});
   await pumpLink(stream, bridgePort(port, streamSink(stream)));
 }

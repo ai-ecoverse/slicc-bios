@@ -73,12 +73,15 @@ export function remoteKernel(follow) {
 
 export const RETRY_MS = 2_000;
 
+export const OTHER_VERSION = 'follow:other-agent-version';
+
 export function agentFollower({
   follow,
   show,
   prepare = async () => undefined,
   connect = (open) => followAgent(open),
   create = async (connection) => (await loadChat()).createAgentModel(connection, {}),
+  notices = null,
   timers = globalThis,
 }) {
   let connection = null;
@@ -86,6 +89,22 @@ export function agentFollower({
   let busy = false;
   let again = false;
   let retry = null;
+  let refused = null;
+  const refuse = (current, error) => {
+    refused = current;
+    timers.clearTimeout(retry);
+    notices?.show(
+      {
+        id: OTHER_VERSION,
+        tone: 'warning',
+        title: 'This tab can’t follow that SLICC',
+        body: error.message,
+        actions: [],
+        dismissible: false,
+      },
+      () => {}
+    );
+  };
   const drop = () => {
     const old = connection;
     connection = null;
@@ -114,6 +133,7 @@ export function agentFollower({
     }
     connection = joined;
     session = current;
+    notices?.remove(OTHER_VERSION);
     show(agent);
     void joined.closed.then(() => {
       if (connection !== joined) return;
@@ -126,13 +146,14 @@ export function agentFollower({
     const { view } = follow.status().access;
     if (connection && (!view || current !== session)) drop();
     if (busy) again = true;
-    if (!current || !view || connection || busy) return;
+    if (!current || !view || connection || busy || current === refused) return;
     busy = true;
     try {
       await join(current);
     } catch (error) {
       console.warn(`following the agent: ${error.message}`);
-      later();
+      if (error?.code === 'EVERSION') refuse(current, error);
+      else later();
     } finally {
       busy = false;
     }
@@ -241,6 +262,7 @@ export function startFollower({
     show: shower(app, base),
     prepare: preparer(root),
     create: chatModel(storage, base.notices),
+    notices: base.notices,
   });
   document.documentElement.dataset.follow = 'on';
   void admit().then((yes) => yes && follow.start());

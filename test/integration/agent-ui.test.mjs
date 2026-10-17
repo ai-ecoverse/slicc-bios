@@ -73,7 +73,19 @@ const chrome = await launch({ agent: true, timeout: 60000 });
 const proxy = await fakeProxy({
   origin: new URL(chrome.url).origin,
   key: 'the-key',
-  answer: async (request, body) => {
+  answer: async (request, body, { closed }) => {
+    if (
+      request.url.startsWith(BEDROCK) &&
+      turn(body).tools &&
+      body.toString().includes('Hold the first token')
+    ) {
+      held.at = Date.now();
+      void closed.then((at) => {
+        held.closed = at;
+      });
+      await Promise.race([closed, held.released]);
+      return { status: 200, headers: [], body: Buffer.alloc(0) };
+    }
     if (request.url.startsWith('https://registry.npmjs.org/')) {
       const type = request.url.endsWith('.tgz') ? 'application/octet-stream' : 'application/json';
       return { status: 200, headers: [['content-type', type]], body: await download(request.url) };
@@ -91,6 +103,15 @@ after(async () => {
   await proxy.close();
   await chrome.close();
 });
+
+let release = () => {};
+const held = {
+  at: 0,
+  closed: 0,
+  released: new Promise((resolve) => {
+    release = resolve;
+  }),
+};
 
 const settled = (page, needle) =>
   page.until((needle) => {
@@ -118,7 +139,7 @@ const deep = `(selector) => {
   return walk(document);
 }`;
 
-test("the agent's UI: vault hold, tool-run clusters, a failed bash card's notes, the Monitor's crowd alert, image drop and send, Secrets, Changes when git fails, empty Browser", {
+test("the agent's UI: vault hold, tool-run clusters, a failed bash card's notes, the Monitor's crowd alert, image drop and send, Secrets, Changes when git fails, empty Browser, and Stop before the first token", {
   timeout: 35 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -135,6 +156,7 @@ test("the agent's UI: vault hold, tool-run clusters, a failed bash card's notes,
     30000,
     () => document.querySelector('slicc-app').model.agent.hold?.()?.reason === 'locked'
   );
+  await shoot(page, 'vault-hold', { show: 'chat' });
   chrome.vault.set({ locked: false });
   await page.within(30000, () => document.querySelector('slicc-app').model.agent.hold?.() === null);
 
@@ -313,6 +335,46 @@ test("the agent's UI: vault hold, tool-run clusters, a failed bash card's notes,
   await page.evaluate(() => document.querySelector('slicc-app').show('browser'));
   await quiet(page);
   await shoot(page, 'browser-empty', { show: 'browser' });
+
+  await page.evaluate(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    void agent.send(agent.active(), 'Hold the first token');
+  });
+  for (let i = 0; i < 600 && !held.at; i += 1)
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.ok(held.at, 'the model request never reached the proxy');
+  assert.equal(
+    await page.evaluate(() => {
+      const { agent } = document.querySelector('slicc-app').model;
+      return agent.busy(agent.active());
+    }),
+    true
+  );
+  const stopped = Date.now();
+  await page.evaluate(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    agent.stop(agent.active());
+  });
+  await page
+    .within(10000, () => {
+      const { agent } = document.querySelector('slicc-app').model;
+      return !agent.busy(agent.active());
+    })
+    .catch(async (error) => {
+      release();
+      throw new Error(
+        `Stop didn't end a turn whose model request had no response yet: ${error.message}\nproxy hop closed: ${held.closed ? `${held.closed - stopped} ms after Stop` : 'no'}\nconsole:\n${page.console.slice(-15).join('\n')}`
+      );
+    });
+  for (let i = 0; i < 100 && !held.closed; i += 1)
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  release();
+  assert.ok(held.closed, 'the proxy never saw the held model request close after Stop');
+  assert.ok(held.closed - stopped < 10000, `the hop closed ${held.closed - stopped} ms after Stop`);
+  assert.ok(
+    !page.console.some((line) => line.includes('aws-websocket-abort-signal:')),
+    page.console.join('\n')
+  );
 
   assert.deepEqual(page.errors, []);
 });

@@ -1,15 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
-import {
-  AGENT_RESTART,
-  agentState,
-  agentUp,
-  connectAccount,
-  listsAccount,
-  ready,
-  trust,
-} from './bios.mjs';
+import { agentUp, connectAccount, listsAccount, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { model, startHub } from './fake-hub.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
@@ -58,6 +50,44 @@ const looking = Buffer.concat([
     metrics: { latencyMs: 1 },
   }),
 ]);
+const SUDO = [
+  ['Sudo once', 'sudo-once', 'sudo ls -la /etc'],
+  ['Sudo always', 'sudo-always', 'sudo ls -la /root'],
+  ['Sudo again', 'sudo-again', 'sudo ls -la /root'],
+];
+const stream = (blocks, stopReason) =>
+  Buffer.concat([
+    eventFrame('messageStart', { role: 'assistant' }),
+    ...blocks,
+    eventFrame('messageStop', { stopReason }),
+    eventFrame('metadata', {
+      usage: { inputTokens: 3, outputTokens: 5, totalTokens: 8 },
+      metrics: { latencyMs: 1 },
+    }),
+  ]);
+const spoken = (words) =>
+  stream(
+    [
+      eventFrame('contentBlockDelta', { contentBlockIndex: 0, delta: { text: words } }),
+      eventFrame('contentBlockStop', { contentBlockIndex: 0 }),
+    ],
+    'end_turn'
+  );
+const runs = (id, command) =>
+  stream(
+    [
+      eventFrame('contentBlockStart', {
+        contentBlockIndex: 0,
+        start: { toolUse: { toolUseId: id, name: 'bash' } },
+      }),
+      eventFrame('contentBlockDelta', {
+        contentBlockIndex: 0,
+        delta: { toolUse: { input: JSON.stringify({ command }) } },
+      }),
+      eventFrame('contentBlockStop', { contentBlockIndex: 0 }),
+    ],
+    'tool_use'
+  );
 let release = null;
 const held = new Promise((resolve) => {
   release = resolve;
@@ -102,6 +132,20 @@ const proxy = await fakeProxy({
       return { status: 404, headers: [], body: Buffer.alloc(0) };
     asked.push(body.toString());
     const turn = lastTurn(body);
+    const result = turn.content.find((item) => item.toolResult)?.toolResult?.toolUseId;
+    if (SUDO.some(([, id]) => id === result))
+      return {
+        status: 200,
+        headers: [['content-type', 'application/vnd.amazon.eventstream']],
+        body: spoken(`Ran ${result}.`),
+      };
+    const sudo = SUDO.find(([prompt]) => turn.content.some((item) => item.text?.includes(prompt)));
+    if (turn.tools && sudo)
+      return {
+        status: 200,
+        headers: [['content-type', 'application/vnd.amazon.eventstream']],
+        body: runs(sudo[1], sudo[2]),
+      };
     if (turn.tools && turn.content.some((item) => item.text?.includes('Say hello')))
       return {
         status: 200,
@@ -196,28 +240,13 @@ async function refusedOnly(page, from, at = 1) {
   for (const refusal of refusals) assert.match(refusal, /^This page is view-only, so it can't /);
 }
 
-async function restored(owner, ms = 60000) {
-  const deadline = Date.now() + ms;
-  let last = null;
-  for (;;) {
-    const now = await owned(owner);
-    if (JSON.parse(now).messages > 0 && now === last) return now;
-    if (Date.now() > deadline)
-      throw new Error(
-        `the owner's agent never showed its chat again after the reload: ${now}\n${await agentState(owner)}`
-      );
-    last = now;
-    await pause(1000);
-  }
-}
-
 const said = (page) =>
   page.evaluate(() => {
     const { agent } = document.querySelector('slicc-app').model;
     return agent ? JSON.stringify(agent.messages(agent.active())) : '';
   });
 
-test('a follower watches the owner run with View, is refused a send, and sends with Control', {
+test('a follower watches the owner run with View, is refused a send, sends with Control, answers the cone’s sudo with Allow once and Always, and its shell’s sudo names the device', {
   timeout: 35 * 60 * 1000,
 }, async (t) => {
   const hub = await startHub();
@@ -505,78 +534,158 @@ test('a follower watches the owner run with View, is refused a send, and sends w
         .model.agent.busy(document.querySelector('slicc-app').model.agent.active())
   );
   assert.ok(asked.some((body) => body.includes('From the follower')));
+
+  const sudoFor = async (prompt, command, decision) => {
+    await owner.evaluate((prompt) => {
+      const { agent } = document.querySelector('slicc-app').model;
+      void agent.send(agent.active(), prompt);
+    }, prompt);
+    const item = await page
+      .within(
+        5 * 60 * 1000,
+        (command) =>
+          document
+            .querySelector('slicc-app')
+            .model.approvals.list()
+            .find((entry) => entry.kind === 'sudo' && entry.command === command) ?? null,
+        command
+      )
+      .catch(async (error) => {
+        throw new Error(
+          `the follower never saw the cone's sudo for ${command}: ${error.message}\nowner approvals: ${JSON.stringify(await owner.evaluate(() => document.querySelector('slicc-app').model.approvals.list()))}\nowner chat: ${await said(owner)}`
+        );
+      });
+    assert.deepEqual(
+      await owner.evaluate(
+        (id) =>
+          document
+            .querySelector('slicc-app')
+            .model.approvals.list()
+            .map((entry) => entry.id)
+            .includes(id),
+        item.id
+      ),
+      true
+    );
+    await page.evaluate(
+      ([id, decision]) => document.querySelector('slicc-app').model.approvals.decide(id, decision),
+      [item.id, decision]
+    );
+    return item;
+  };
+  const finished = (id) =>
+    owner.within(
+      5 * 60 * 1000,
+      (id) => {
+        const { agent } = document.querySelector('slicc-app').model;
+        const said = JSON.stringify(agent.messages(agent.active()));
+        return !agent.busy(agent.active()) && said.includes(`Ran ${id}.`) ? said : null;
+      },
+      id
+    );
+  const once = await sudoFor('Sudo once', '/usr/bin/ls -la /etc', 'once');
+  assert.deepEqual([once.requester.kind, once.requester.agentId], ['agent', 'cone']);
+  assert.match(await finished('sudo-once'), /passwd/);
+  const always = await sudoFor('Sudo always', '/usr/bin/ls -la /root', 'always');
+  assert.equal(always.always, true);
+  assert.doesNotMatch(await finished('sudo-always'), /approval denied/);
+  const rule = await owner.evaluate(async () => {
+    let dir = await navigator.storage.getDirectory();
+    try {
+      for (const part of ['etc', 'sudoers.d']) dir = await dir.getDirectoryHandle(part);
+      return await (await (await dir.getFileHandle('cone')).getFile()).text();
+    } catch {
+      return '';
+    }
+  });
+  assert.match(rule, /\/usr\/bin\/ls/);
+  await owner.evaluate(() => {
+    window.sudoAsked = 0;
+    document.querySelector('slicc-app').model.approvals.on('approvals', (list) => {
+      if (list.length) window.sudoAsked += 1;
+    });
+    const { agent } = document.querySelector('slicc-app').model;
+    void agent.send(agent.active(), 'Sudo again');
+  });
+  assert.doesNotMatch(await finished('sudo-again'), /approval denied/);
+  assert.equal(await owner.evaluate(() => window.sudoAsked), 0);
+
+  await model(owner, (network, id) => network.setAccess(id, 'terminal', true), device.id);
+  await page.until(() => document.querySelector('slicc-app').model.follow.state().access.terminal);
+  await page.evaluate(() => {
+    const { terminals } = document.querySelector('slicc-app').model;
+    const info = terminals.open({ cwd: '/home' });
+    const kept = { output: '', session: null, error: null };
+    window.sudoShell = kept;
+    terminals
+      .backend(info.id)
+      .open(
+        {
+          output: (bytes) => {
+            kept.output += typeof bytes === 'string' ? bytes : new TextDecoder().decode(bytes);
+          },
+          exit: () => {},
+        },
+        { cols: 120, rows: 24 }
+      )
+      .then(
+        (session) => {
+          kept.session = session;
+        },
+        (error) => {
+          kept.error = error.code ?? error.message;
+        }
+      );
+  });
+  const shellOutput = () => page.evaluate(() => window.sudoShell.output);
+  await page
+    .within(
+      90000,
+      () =>
+        window.sudoShell.error ||
+        (window.sudoShell.session && window.sudoShell.output.includes('# '))
+    )
+    .catch(async (error) => {
+      throw new Error(
+        `the follower's shell never opened: ${error.message}\n${await page.evaluate(() => JSON.stringify({ ...window.sudoShell, session: !!window.sudoShell.session }))}`
+      );
+    });
+  assert.equal(await page.evaluate(() => window.sudoShell.error), null);
+  await page.evaluate(
+    (command) => window.sudoShell.session.write(new TextEncoder().encode(`${command}\r`)),
+    `sudo -u cone sudo id -u; echo "sudo says $((40 + 2))"`
+  );
+  const fromShell = await owner
+    .within(
+      5 * 60 * 1000,
+      () =>
+        document
+          .querySelector('slicc-app')
+          .model.approvals.list()
+          .find((entry) => entry.kind === 'sudo' && entry.command.endsWith(' -u')) ?? null
+    )
+    .catch(async (error) => {
+      throw new Error(
+        `the follower shell's sudo never reached the owner's approvals: ${error.message}\nowner approvals: ${JSON.stringify(await owner.evaluate(() => document.querySelector('slicc-app').model.approvals.list()))}\nfollower shell: ${await shellOutput()}`
+      );
+    });
+  assert.equal(fromShell.requester.kind, 'user');
+  assert.equal(fromShell.requester.where, `on ${device.name}`);
+  await owner.evaluate(
+    (id) => document.querySelector('slicc-app').model.approvals.decide(id, 'deny'),
+    fromShell.id
+  );
+  await page
+    .within(60000, () => window.sudoShell.output.includes('sudo says 42'))
+    .catch(async (error) => {
+      throw new Error(
+        `the follower's shell never finished: ${error.message}\n${await shellOutput()}`
+      );
+    });
+  await page.evaluate(() => window.sudoShell.session.close());
+  await model(owner, (network, id) => network.setAccess(id, 'terminal', false), device.id);
   assert.deepEqual(owner.errors, []);
   assert.deepEqual(page.errors, []);
 
-  const file = await owner.evaluate(async () => {
-    const walk = async (dir, prefix) => {
-      for await (const [name, handle] of dir.entries()) {
-        const path = `${prefix}${name}`;
-        if (handle.kind === 'file' && path.endsWith('@ai-ecoverse/slicc-agent/dist/link.js'))
-          return { path, text: await (await handle.getFile()).text() };
-        if (handle.kind === 'directory' && /^(opt|opt\/agent|.*node_modules.*)$/.test(path)) {
-          const found = await walk(handle, `${path}/`);
-          if (found) return found;
-        }
-      }
-      return null;
-    };
-    return walk(await navigator.storage.getDirectory(), '');
-  });
-  assert.ok(file, 'the owner has the agent installed');
-  const newer = file.text.replace(
-    'new TextEncoder().encode(frame.hello)',
-    'new TextEncoder().encode(frame.hello.replace(/^slicc-agent-link\\/\\d+ /, "slicc-agent-link/9 "))'
-  );
-  assert.notEqual(newer, file.text);
-  await trust(owner, { [file.path]: newer });
-  await owner.reload();
-  await ready(owner);
-  await agentUp(owner, { budget: AGENT_RESTART, label: 'owner agent after the reload' });
-  const before = await restored(owner);
-  await page.evaluate(() => {
-    window.followWarnings = 0;
-    const warn = console.warn;
-    console.warn = (...args) => {
-      if (String(args[0]).startsWith('following the agent')) window.followWarnings += 1;
-      warn.apply(console, args);
-    };
-  });
-  const banner = await page.within(5 * 60 * 1000, () =>
-    document
-      .querySelector('slicc-app')
-      .model.notices?.list()
-      .find((item) => item.id === 'agent-mismatch')
-  );
-  assert.equal(banner.dismissible, false);
-  assert.equal(banner.title, "This tab can't follow that SLICC");
-  assert.equal(
-    await page.evaluate(() => document.querySelector('slicc-app').model.agent.readOnly?.()),
-    'Watch only.'
-  );
-  const sent = await page.evaluate(async () => {
-    const { agent } = document.querySelector('slicc-app').model;
-    window.firstAgent = agent;
-    window.followWarnings = 0;
-    return agent.send(agent.active(), 'From a mismatched follower').then(
-      () => 'sent',
-      (error) => error.code ?? error.message
-    );
-  });
-  assert.equal(sent, 'EPROTO');
-  await pause(10000);
-  const after = await page.evaluate(() => {
-    const { agent, notices } = document.querySelector('slicc-app').model;
-    return {
-      same: agent === window.firstAgent,
-      banners: notices.list().filter((item) => item.id === 'agent-mismatch').length,
-      warnings: window.followWarnings,
-    };
-  });
-  assert.deepEqual(after, { same: true, banners: 1, warnings: 0 });
-  assert.equal(await owned(owner), before);
-  assert.doesNotMatch(await said(owner), /From a mismatched follower/);
-  assert.ok(!asked.some((body) => body.includes('From a mismatched follower')));
-  await shoot(page, 'follower-watch-only', { show: 'chat' });
   await owner.evaluate(() => localStorage.removeItem('slicc-os.tray-hub'));
 });

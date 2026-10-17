@@ -135,7 +135,7 @@ const shade = (page, value) =>
     if (app.color !== value) app.toggleColor();
   }, value);
 
-test('enforce: a cone agent’s sudo asks the human, naming the agent, and Deny refuses it', {
+test('enforce: a cone agent’s sudo asks the human through the agent’s approvals, naming the agent, Deny refuses it, and Always is refused where bios didn’t offer it', {
   timeout: 35 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -159,7 +159,7 @@ test('enforce: a cone agent’s sudo asks the human, naming the agent, and Deny 
   });
   assert.equal(asked.kind, 'sudo');
   assert.equal(asked.command, '/usr/bin/ls -la /root');
-  assert.deepEqual(asked.requester, { kind: 'agent', name: 'cone', agentId: 'cone:cone' });
+  assert.deepEqual([asked.requester.kind, asked.requester.agentId], ['agent', 'cone']);
   assert.equal(asked.target, 'root');
   assert.equal(asked.cwd, '/home/cone');
   await page.until(
@@ -204,10 +204,19 @@ test('enforce: a cone agent’s sudo asks the human, naming the agent, and Deny 
   );
   assert.deepEqual(buttons.sort(), ['deny', 'once']);
   await shots(page, 'agent-secret-rules');
-  await page.evaluate(
-    (id) => document.querySelector('slicc-app').model.approvals.decide(id, 'always'),
+  const forced = await page.evaluate(
+    (id) =>
+      document
+        .querySelector('slicc-app')
+        .model.approvals.decide(id, 'always')
+        .then(
+          () => 'decided',
+          (error) => error.message
+        ),
     rules.id
   );
+  assert.match(forced, /Always isn.t offered/);
+  await click(page, rules.id, 'deny');
   await page.within(5 * 60 * 1000, () => {
     const { agent } = document.querySelector('slicc-app').model;
     const id = agent.active();

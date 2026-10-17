@@ -429,6 +429,9 @@ export function createApprovals({
     verify(next) {
       check = next;
     },
+    async offered(req) {
+      return req.always !== false && alwaysAllowed(req) && (await check(req).catch(() => false));
+    },
     async approve(req, { signal } = {}) {
       const item = approval(req);
       if (item.always) item.always = await check(req).catch(() => false);
@@ -444,5 +447,25 @@ export function createApprovals({
         else signal?.addEventListener('abort', stop);
       });
     },
+  };
+}
+
+export function routeSudo({ agent, fallback, offered, where = () => undefined }) {
+  return async (req, options = {}) => {
+    const owner = agent();
+    if (typeof owner?.approve !== 'function') return fallback(req, options);
+    const always = await offered(req);
+    if (options.signal?.aborted) return 'deny';
+    const place = where(req);
+    try {
+      const answer = await owner.approve(
+        { ...req, always },
+        { signal: options.signal, ...(place ? { where: place } : {}) }
+      );
+      return answer === 'always' && !always ? 'once' : answer;
+    } catch (error) {
+      if (error?.code === 'EAGAIN') return fallback(req, options);
+      return 'deny';
+    }
   };
 }
