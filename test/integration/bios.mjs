@@ -440,6 +440,41 @@ function packageProbe(id) {
   };
 }
 
+function packageEvidence([id, lockDir]) {
+  const listing = async (dir, prefix) => {
+    const lines = [];
+    for await (const [name, handle] of dir.entries()) {
+      if (handle.kind === 'directory') {
+        lines.push(`${prefix}${name}/`, ...(await listing(handle, `${prefix}${name}/`)));
+      } else {
+        const file = await handle.getFile();
+        lines.push(`${prefix}${name} ${file.size} ${new Date(file.lastModified).toISOString()}`);
+      }
+    }
+    return lines;
+  };
+  return (async () => {
+    const model = document.querySelector('slicc-app')?.model ?? {};
+    const rows = model.updates?.packages?.() ?? [];
+    const row = rows.find((item) => item.id === id) ?? null;
+    let tmp = await navigator.storage.getDirectory();
+    let lock = [];
+    try {
+      for (const part of lockDir.split('/')) tmp = await tmp.getDirectoryHandle(part);
+      lock = await listing(tmp, '');
+    } catch (error) {
+      lock = [`${lockDir}: ${error.name}`];
+    }
+    return [
+      `row: ${JSON.stringify({ state: row?.state, error: row?.error, version: row?.version })}`,
+      `ls -la /${lockDir} (OPFS):`,
+      ...lock.map((line) => `  ${line}`),
+      'log:',
+      row?.log ?? '',
+    ].join('\n');
+  })();
+}
+
 export async function actPackage(
   page,
   id,
@@ -475,6 +510,16 @@ export async function actPackage(
     const at = `${action} ${id} after ${Math.round((now - start) / 1000)} s`;
     if (probe.done !== undefined) {
       log(`${at}: ${probe.done}`);
+      if (probe.done !== 'ok' && page.dir) {
+        const evidence = await page
+          .evaluate(packageEvidence, [id, 'tmp/pnpm-store-operation-locks-0'])
+          .catch((error) => `no evidence: ${error.message}`);
+        const agent = await agentState(page).catch((error) => `agent: ${error.message}`);
+        await writeFile(
+          new URL(`${action}-${id}-failed.log`, page.dir),
+          `${at}: ${probe.done}\n${evidence}\nagent:\n${agent}\n`
+        ).catch(() => {});
+      }
       return probe.done;
     }
     const key = JSON.stringify([probe.state, probe.progress, probe.unreachable]);
