@@ -14,7 +14,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  SHARDS: 'follow-chat remote-pydata users-agent-ui packages-update-cdp guard guard-set-extension-prompt guard-set-extension-lagging guard-set-proxy-prompt guard-set-proxy-lagging k4-link user-packages-keys-favicon rest'
   SHARDED: '/(follow[^/]*|chat|remote|pydata|updates|users|agent-ui|packages|update|cdp|guard-vectors|guard-set-[a-z]+|serve|k4[^/]*|link|user-packages|keys|favicon)\.test\.mjs$'
 
 jobs:
@@ -195,4 +194,4 @@ jobs:
         env:
           LINT: ${{ needs.lint.result }}
           INTEGRATION: ${{ needs.integration.result }}
-        run: node scripts/ci/verdict.mjs shards --dir artifacts/verdicts --expect "$SHARDS" --results "{\"lint\":\"$LINT\",\"integration\":\"$INTEGRATION\"}"
+        run: node scripts/ci/verdict.mjs shards --dir artifacts/verdicts --workflow .github/workflows/ci.yml --results "{\"lint\":\"$LINT\",\"integration\":\"$INTEGRATION\"}"

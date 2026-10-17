@@ -547,8 +547,9 @@ test('every gate in the workflows prints a verdict and its caller fails without 
   const read = (name) =>
     readFile(new URL(`../../.github/workflows/${name}`, import.meta.url), 'utf8');
   const ci = await read('ci.yml');
-  const shards = [...ci.matchAll(/^ {10}- shard: (\S+)$/gm)].map(([, name]) => name);
-  assert.deepEqual(ci.match(/^ {2}SHARDS: '([^']+)'$/m)[1].split(' '), shards);
+  const { matrixShards } = await import('../../scripts/ci/verdict.mjs');
+  const shards = matrixShards(ci);
+  assert.ok(shards.length >= 9 && shards.includes('rest'), shards.join(' '));
   assert.match(ci, /npm test 2>&1 \| tee "\$RUNNER_TEMP\/test\.log"/);
   assert.match(ci, /set -o pipefail/);
   const verdictStep = ci.slice(ci.indexOf("- name: The shard's verdict"));
@@ -558,7 +559,7 @@ test('every gate in the workflows prints a verdict and its caller fails without 
   assert.match(job, /^ {4}if: always\(\)$/m);
   assert.match(
     job,
-    /scripts\/ci\/verdict\.mjs shards --dir artifacts\/verdicts --expect "\$SHARDS"/
+    /scripts\/ci\/verdict\.mjs shards --dir artifacts\/verdicts --workflow \.github\/workflows\/ci\.yml/
   );
   const release = await read('release.yml');
   assert.match(release, /scripts\/ci\/verdict\.mjs release --log/);
