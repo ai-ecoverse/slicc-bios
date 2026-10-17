@@ -9,6 +9,7 @@ import {
   listsAccount,
   ready,
   run,
+  screen,
   shows,
   trust,
 } from './bios.mjs';
@@ -639,7 +640,18 @@ test('a follower watches the owner run with View, is refused a send, sends with 
   await page.until(() => document.querySelector('slicc-app').model.follow.state().access.terminal);
   await page.evaluate(() => document.querySelector('slicc-app').show('terminal'));
   await shows(page, 'slicc:/home# ');
+  await owner.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.network.status()
+      .links.devices.some((d) => d.terminals === 1)
+  );
   await run(page, `su cone -c 'sudo id -u'; echo "su says $((40 + 2))"`);
+  await shows(page, 'su cone -c', 30000).catch(async (error) => {
+    throw new Error(
+      `the follower's shell never echoed the command: ${error.message}\nfollower screen: ${await screen(page)}`
+    );
+  });
   const fromShell = await owner
     .within(
       5 * 60 * 1000,
