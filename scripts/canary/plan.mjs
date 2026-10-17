@@ -2,9 +2,10 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
-import { argv, env } from 'node:process';
+import { argv, env, exit } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { digestOf, MAX_JOBS } from './bind.mjs';
 import { PACKAGES, parse, projects, ROOT, registryUrl, specs } from './override-pins.mjs';
 
 const exec = promisify(execFile);
@@ -98,7 +99,7 @@ function shardList(text) {
 }
 
 export function jobs(runs) {
-  return runs.flatMap((run) =>
+  const planned = runs.flatMap((run) =>
     run.shards.map((shard) => ({
       run: run.id,
       ref: run.ref,
@@ -108,17 +109,32 @@ export function jobs(runs) {
       repeat: run.repeat ?? 1,
     }))
   );
+  if (planned.length > MAX_JOBS) {
+    throw new Error(`${planned.length} shard jobs, but the report binds at most ${MAX_JOBS}`);
+  }
+  return planned;
 }
 
 const NAME = /^@[\w.-]+\/[\w.-]+$/;
 
+export const BINDINGS = ['strict', 'legacy'];
+
 export function candidateOf(
-  { package: name = '', artifact = '', run = '', sha256 = '', repo = '' },
+  {
+    package: name = '',
+    artifact = '',
+    run = '',
+    sha256 = '',
+    repo = '',
+    id = '',
+    digest = '',
+    binding = '',
+  },
   fallbackRepo = ''
 ) {
-  const given = [name, artifact, run, sha256].filter((value) => String(value).trim());
+  const given = [name, artifact, run, sha256, id, digest].filter((value) => String(value).trim());
   if (!given.length) return null;
-  if (given.length < 4) {
+  if (![name, artifact, run, sha256].every((value) => String(value).trim())) {
     throw new Error(
       'a candidate needs candidate-package, candidate-artifact, candidate-run and candidate-sha256'
     );
@@ -130,7 +146,32 @@ export function candidateOf(
   const from = repo || fallbackRepo;
   if (!/^[\w.-]+\/[\w.-]+$/.test(from))
     throw new Error(`candidate-repo is not owner/name: ${from}`);
-  return { package: name, artifact, run: String(run), sha256, repo: from };
+  const mode = String(binding).trim() || 'strict';
+  if (![...BINDINGS, 'plan'].includes(mode)) {
+    throw new Error(`candidate-binding is strict or legacy, not ${binding}`);
+  }
+  const artifactId = String(id).trim();
+  const artifactDigest = String(digest).trim();
+  if (artifactId && !/^\d+$/.test(artifactId)) {
+    throw new Error(`candidate-artifact-id is not an artifact id: ${artifactId}`);
+  }
+  if (Boolean(artifactId) !== Boolean(artifactDigest)) {
+    throw new Error('candidate-artifact-id and candidate-artifact-digest go together; refusing it');
+  }
+  if (mode === 'strict' && !artifactId) {
+    throw new Error(
+      'a strict candidate needs candidate-artifact-id and candidate-artifact-digest from the step that uploaded it; refusing it'
+    );
+  }
+  return {
+    package: name,
+    artifact,
+    run: String(run),
+    sha256,
+    repo: from,
+    ...(artifactId ? { id: artifactId, digest: digestOf(artifactDigest) } : {}),
+    binding: mode,
+  };
 }
 
 export function repeatOf(text) {
@@ -162,7 +203,14 @@ async function packProof(proof, { runId, repo, dir, prefix = '' }) {
     run: {
       overrides: [],
       ...rest,
-      candidate: candidateOf({ package: name, artifact, run: runId, sha256, repo }),
+      candidate: candidateOf({
+        package: name,
+        artifact,
+        run: runId,
+        sha256,
+        repo,
+        binding: 'plan',
+      }),
     },
     upload: { name: artifact, path: out },
   };
@@ -226,6 +274,9 @@ export async function plan(
       prefix: prefixOf(label),
     };
   }
+  if (candidate.binding && !BINDINGS.includes(String(candidate.binding).trim())) {
+    throw new Error(`candidate-binding is strict or legacy, not ${candidate.binding}`);
+  }
   const list = specs([overrides]);
   const wanted = expect.trim() ? JSON.parse(expect) : [];
   const run = {
@@ -249,7 +300,7 @@ export async function plan(
   };
 }
 
-if (argv[1] === fileURLToPath(import.meta.url)) {
+async function main() {
   const result = await plan(env.EVENT ?? 'workflow_dispatch', {
     overrides: env.OVERRIDES ?? '',
     expect: env.EXPECT ?? '',
@@ -261,6 +312,9 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
       run: env.CANDIDATE_RUN ?? '',
       sha256: env.CANDIDATE_SHA256 ?? '',
       repo: env.CANDIDATE_REPO ?? '',
+      id: env.CANDIDATE_ARTIFACT_ID ?? '',
+      digest: env.CANDIDATE_ARTIFACT_DIGEST ?? '',
+      binding: env.CANDIDATE_BINDING ?? '',
     },
     repeat: env.REPEAT ?? '',
     runId: env.GITHUB_RUN_ID ?? '',
@@ -281,5 +335,17 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
   console.log(lines.join('\n'));
   for (const { name, pinned: at, latest: newer } of result.inputs?.checked ?? []) {
     console.log(`${name}: pinned ${at.join(', ')}, latest ${newer}`);
+  }
+  console.log(`canary plan: PASS ${result.runs.length} runs`);
+}
+
+if (argv[1] === fileURLToPath(import.meta.url)) {
+  try {
+    await main();
+  } catch (error) {
+    const line = `canary plan: FAIL ${error.message}`.replace(/\s+/g, ' ');
+    if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, `refused=${line}\n`);
+    console.log(line);
+    exit(1);
   }
 }

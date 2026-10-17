@@ -43,6 +43,18 @@ on:
         description: 'The repository of that run; empty means this one'
         type: string
         default: ''
+      candidate-artifact-id:
+        description: 'The artifact''s id, the artifact-id output of the step that uploaded it'
+        type: string
+        default: ''
+      candidate-artifact-digest:
+        description: 'The artifact''s zip digest, the artifact-digest output of that step: 64 hex digits, a sha256: prefix is allowed'
+        type: string
+        default: ''
+      candidate-binding:
+        description: 'strict (empty) refuses a candidate without its artifact id and digest; legacy accepts one bound by name only'
+        type: string
+        default: ''
       repeat:
         description: 'Run each selected test this many times (1 to 10)'
         type: string
@@ -93,6 +105,18 @@ on:
         type: string
         required: false
         default: ''
+      candidate-artifact-id:
+        type: string
+        required: false
+        default: ''
+      candidate-artifact-digest:
+        type: string
+        required: false
+        default: ''
+      candidate-binding:
+        type: string
+        required: false
+        default: ''
       repeat:
         type: number
         required: false
@@ -108,6 +132,15 @@ on:
       result:
         description: 'The JSON summary: ok, counts, regressions, both, flaky, failures, missingShards, candidates, and the canary artifact''s name and url'
         value: ${{ jobs.report.outputs.result }}
+      artifact-id:
+        description: 'The canary artifact''s id, the artifact-id output of the report job''s upload step'
+        value: ${{ jobs.report.outputs.artifact-id }}
+      artifact-digest:
+        description: 'The canary artifact''s zip SHA-256 from that upload step: 64 lowercase hex digits; the REST API''s digest is sha256: and the same digits'
+        value: ${{ jobs.report.outputs.artifact-digest }}
+      artifacts:
+        description: 'A JSON list of {role, name, id, digest, attempt} for every artifact this call uploaded (role plan, shard, files or report), each id and digest from its own upload step'
+        value: ${{ jobs.report.outputs.artifacts }}
   schedule:
     - cron: '23 * * * *'
   pull_request:
@@ -142,6 +175,12 @@ jobs:
       tools: ${{ steps.ref.outputs.sha }}
       cli: ${{ steps.cli.outputs.version }}
       prefix: ${{ steps.plan.outputs.prefix }}
+      refused: ${{ steps.plan.outputs.refused }}
+      attempt: ${{ github.run_attempt }}
+      inputs-id: ${{ steps.inputs.outputs.artifact-id }}
+      inputs-digest: ${{ steps.inputs.outputs.artifact-digest }}
+      proof-id: ${{ steps.proof.outputs.artifact-id }}
+      proof-digest: ${{ steps.proof.outputs.artifact-digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -170,6 +209,9 @@ jobs:
           CANDIDATE_RUN: ${{ inputs.candidate-run }}
           CANDIDATE_SHA256: ${{ inputs.candidate-sha256 }}
           CANDIDATE_REPO: ${{ inputs.candidate-repo }}
+          CANDIDATE_ARTIFACT_ID: ${{ inputs.candidate-artifact-id }}
+          CANDIDATE_ARTIFACT_DIGEST: ${{ inputs.candidate-artifact-digest }}
+          CANDIDATE_BINDING: ${{ inputs.candidate-binding }}
           REPEAT: ${{ inputs.repeat }}
           LABEL: ${{ inputs.label }}
           EXPECT: ${{ inputs.expect }}
@@ -201,13 +243,15 @@ jobs:
             printf 'runs=%s\njobs=%s\n' "$RUNS" "$JOBS" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - id: inputs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: github.event_name == 'schedule'
         with:
           name: ${{ steps.plan.outputs.prefix }}canary-inputs
           path: canary-inputs.json
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - id: proof
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: fromJSON(steps.plan.outputs.uploads || '[]')[0]
         with:
           name: ${{ fromJSON(steps.plan.outputs.uploads)[0].name }}
@@ -219,6 +263,23 @@ jobs:
     if: needs.plan.outputs.jobs != '[]'
     runs-on: ${{ (startsWith(github.workflow_ref, 'ai-ecoverse/slicc-bios/.github/workflows/canary.yml@') && ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && (inputs.runner || vars.CERT_RUNNER)) || 'ubuntu-latest' }}
     timeout-minutes: 180
+    outputs:
+      binding_0: ${{ steps.bind.outputs.binding_0 }}
+      binding_1: ${{ steps.bind.outputs.binding_1 }}
+      binding_2: ${{ steps.bind.outputs.binding_2 }}
+      binding_3: ${{ steps.bind.outputs.binding_3 }}
+      binding_4: ${{ steps.bind.outputs.binding_4 }}
+      binding_5: ${{ steps.bind.outputs.binding_5 }}
+      binding_6: ${{ steps.bind.outputs.binding_6 }}
+      binding_7: ${{ steps.bind.outputs.binding_7 }}
+      binding_8: ${{ steps.bind.outputs.binding_8 }}
+      binding_9: ${{ steps.bind.outputs.binding_9 }}
+      binding_10: ${{ steps.bind.outputs.binding_10 }}
+      binding_11: ${{ steps.bind.outputs.binding_11 }}
+      binding_12: ${{ steps.bind.outputs.binding_12 }}
+      binding_13: ${{ steps.bind.outputs.binding_13 }}
+      binding_14: ${{ steps.bind.outputs.binding_14 }}
+      binding_15: ${{ steps.bind.outputs.binding_15 }}
     strategy:
       fail-fast: false
       matrix:
@@ -255,6 +316,30 @@ jobs:
           node-version: '24'
           cache: npm
 
+      - id: candidate
+        name: The candidate artifact's id, name, repository, run and digest, before it is downloaded
+        if: matrix.job.candidate
+        env:
+          CANDIDATE: ${{ toJSON(matrix.job.candidate) }}
+          PREFIX: ${{ needs.plan.outputs.prefix }}
+          UPLOADS: ${{ needs.plan.outputs.uploads }}
+          PROOF_ID: ${{ needs.plan.outputs.proof-id }}
+          PROOF_DIGEST: ${{ needs.plan.outputs.proof-digest }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/canary/bind.mjs candidate
+
+      - name: The candidate artifact
+        if: matrix.job.candidate && (steps.candidate.outputs.id != '' || steps.candidate.outputs.name != '')
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ steps.candidate.outputs.id }}
+          name: ${{ steps.candidate.outputs.name }}
+          run-id: ${{ matrix.job.candidate.run }}
+          repository: ${{ matrix.job.candidate.repo }}
+          github-token: ${{ github.token }}
+          digest-mismatch: error
+          path: .canary-candidate
+
       - run: npm ci
 
       - name: Harness download cache
@@ -284,16 +369,6 @@ jobs:
           fi
           npx playwright-core install --no-shell chromium
 
-      - name: The candidate artifact
-        if: matrix.job.candidate
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          name: ${{ matrix.job.candidate.artifact }}
-          run-id: ${{ matrix.job.candidate.run }}
-          repository: ${{ matrix.job.candidate.repo }}
-          github-token: ${{ github.token }}
-          path: .canary-candidate
-
       - name: The shard with the overrides, then main's pins for what failed
         env:
           OVERRIDES: ${{ toJSON(matrix.job.overrides) }}
@@ -303,19 +378,36 @@ jobs:
           OUT: canary/${{ matrix.job.run }}-${{ matrix.job.shard }}
         run: node scripts/canary/shard.mjs --shard "$SHARD" --overrides "$OVERRIDES" --candidate "$CANDIDATE" --repeat "$REPEAT" --out "$OUT"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - id: shard-upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: ${{ needs.plan.outputs.prefix }}canary-shard-${{ matrix.job.run }}-${{ matrix.job.shard }}
           path: canary/${{ matrix.job.run }}-${{ matrix.job.shard }}/
           if-no-files-found: ignore
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - id: files-upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: ${{ needs.plan.outputs.prefix }}canary-files-${{ matrix.job.run }}-${{ matrix.job.shard }}
           path: artifacts/
           if-no-files-found: ignore
+
+      - id: bind
+        name: This shard's artifacts as their upload steps returned them
+        if: always()
+        env:
+          INDEX: ${{ strategy.job-index }}
+          RUN: ${{ matrix.job.run }}
+          SHARD: ${{ matrix.job.shard }}
+          PREFIX: ${{ needs.plan.outputs.prefix }}
+          ATTEMPT: ${{ github.run_attempt }}
+          SHARD_ID: ${{ steps.shard-upload.outputs.artifact-id }}
+          SHARD_DIGEST: ${{ steps.shard-upload.outputs.artifact-digest }}
+          FILES_ID: ${{ steps.files-upload.outputs.artifact-id }}
+          FILES_DIGEST: ${{ steps.files-upload.outputs.artifact-digest }}
+        run: node scripts/canary/bind.mjs shard
 
   report:
     name: canary / report
@@ -326,6 +418,9 @@ jobs:
     outputs:
       ok: ${{ steps.report.outputs.ok }}
       result: ${{ steps.result.outputs.result }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
+      artifacts: ${{ steps.manifest.outputs.artifacts }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -337,19 +432,33 @@ jobs:
         with:
           node-version: '24'
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - id: bind
+        name: Each planned shard's artifact, checked against its upload step's id and digest before it is downloaded
+        env:
+          JOBS: ${{ needs.plan.outputs.jobs }}
+          BINDINGS: ${{ toJSON(needs.shard.outputs) }}
+          PREFIX: ${{ needs.plan.outputs.prefix }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/canary/bind.mjs shards --out bindings.json --dir shards
+
+      - id: download
+        if: steps.bind.outputs.ids != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          pattern: ${{ needs.plan.outputs.prefix }}canary-shard-*
-          path: shards
+          artifact-ids: ${{ steps.bind.outputs.ids }}
+          digest-mismatch: error
+          path: ${{ steps.bind.outputs.path }}
 
       - id: report
         name: canary.json and the summary
+        if: ${{ !cancelled() }}
         env:
           RUNS: ${{ needs.plan.outputs.runs }}
           CANARY_RUNNER: ${{ (startsWith(github.workflow_ref, 'ai-ecoverse/slicc-bios/.github/workflows/canary.yml@') && ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && (inputs.runner || vars.CERT_RUNNER)) || 'ubuntu-latest' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          PREFIX: ${{ needs.plan.outputs.prefix }}
-        run: node scripts/canary/report.mjs --dir shards --runs "$RUNS" --out canary --prefix "$PREFIX"
+          DOWNLOAD: ${{ steps.download.outcome }}
+          PLAN_REFUSED: ${{ needs.plan.outputs.refused }}
+        run: node scripts/canary/report.mjs --dir shards --runs "$RUNS" --out canary --bindings bindings.json --download "$DOWNLOAD"
 
       - id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -365,6 +474,8 @@ jobs:
         env:
           ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
           ARTIFACT_NAME: ${{ needs.plan.outputs.prefix }}canary
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
         run: |
           node -e '
             const { readFileSync, appendFileSync } = require("node:fs");
@@ -373,15 +484,38 @@ jobs:
               console.error("canary: FAIL the report wrote no verdict");
               process.exit(1);
             }
-            result.artifact = { name: process.env.ARTIFACT_NAME, url: process.env.ARTIFACT_URL || "" };
+            result.artifact = {
+              name: process.env.ARTIFACT_NAME,
+              url: process.env.ARTIFACT_URL || "",
+              id: process.env.ARTIFACT_ID || "",
+              digest: process.env.ARTIFACT_DIGEST || "",
+            };
             appendFileSync(process.env.GITHUB_OUTPUT, `result=${JSON.stringify(result)}\n`);
             console.log(result.verdict);
           '
 
+      - id: manifest
+        name: Every artifact this call uploaded, with the id and digest its upload step returned
+        if: ${{ !cancelled() }}
+        env:
+          JOBS: ${{ needs.plan.outputs.jobs }}
+          BINDINGS: ${{ toJSON(needs.shard.outputs) }}
+          PREFIX: ${{ needs.plan.outputs.prefix }}
+          UPLOADS: ${{ needs.plan.outputs.uploads }}
+          PLAN_ATTEMPT: ${{ needs.plan.outputs.attempt }}
+          INPUTS_ID: ${{ needs.plan.outputs.inputs-id }}
+          INPUTS_DIGEST: ${{ needs.plan.outputs.inputs-digest }}
+          PROOF_ID: ${{ needs.plan.outputs.proof-id }}
+          PROOF_DIGEST: ${{ needs.plan.outputs.proof-digest }}
+          REPORT_ID: ${{ steps.upload.outputs.artifact-id }}
+          REPORT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: node scripts/canary/bind.mjs manifest
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        if: ${{ !cancelled() && github.event_name == 'schedule' }}
+        if: ${{ !cancelled() && github.event_name == 'schedule' && needs.plan.outputs.inputs-id != '' }}
         with:
-          name: ${{ needs.plan.outputs.prefix }}canary-inputs
+          artifact-ids: ${{ needs.plan.outputs.inputs-id }}
+          digest-mismatch: error
           path: .
 
       - name: Remember these inputs
