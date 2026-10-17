@@ -646,10 +646,14 @@ async function cli(script, args, extra = {}) {
   const { fileURLToPath } = await import('node:url');
   const { promisify } = await import('node:util');
   const dir = await mkdtemp(join(tmpdir(), 'canary-cli-'));
-  const env = { ...process.env, GH_TOKEN: 'test-token', GITHUB_OUTPUT: join(dir, 'out') };
-  delete env.GITHUB_STEP_SUMMARY;
-  delete env.GITHUB_TOKEN;
-  Object.assign(env, extra);
+  const env = {
+    PATH: process.env.PATH,
+    HOME: process.env.HOME,
+    TMPDIR: tmpdir(),
+    GH_TOKEN: 'test-token',
+    GITHUB_OUTPUT: join(dir, 'out'),
+    ...extra,
+  };
   let code = 0;
   let stdout = '';
   try {
