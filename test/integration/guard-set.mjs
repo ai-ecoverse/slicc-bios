@@ -284,52 +284,8 @@ export async function guardHost(t) {
 export const trace = (...parts) =>
   process.env.GUARD_TRACE && process.stderr.write(`guard-set ${Date.now()} ${parts.join(' ')}\n`);
 const only = (list) => (list ? list.split(',') : null);
-const KNOWN = {
-  'C3.popup-on-redirect-302': {
-    paths: ['proxy'],
-    targets: null,
-    legs: ['control'],
-    why: 'slicc-browsers 1.7.4 scopes the children to the popup, so they run only on the control’s ordinary popup and their refusals land on that leg alone. The guarded leg passes: bios never attaches the protected popup (attached false), and no event names its host beyond the client’s own hop URL',
-  },
-  'C3.popup-on-redirect-chain': {
-    paths: ['proxy'],
-    targets: null,
-    legs: ['control'],
-    why: 'slicc-browsers 1.7.4 scopes the children to the popup, so they run only on the control’s ordinary popup and their refusals land on that leg alone. The guarded leg passes: bios never attaches the protected popup (attached false), and no event names its host beyond the client’s own hop URL',
-  },
-  'C4.script-cross-site': {
-    paths: ['proxy'],
-    targets: null,
-    legs: ['control'],
-    why: 'the control’s frame is same-site with its page, so its beacon also depends on the page’s refused init script; slicc-browsers 1.7.4 added that dependsOn to C4.static-cross-site only. The guarded leg passes',
-  },
-  'C3.popup-self-nav': {
-    paths: ['proxy'],
-    targets: null,
-    legs: ['control', 'guarded'],
-    why: 'intermittent runner error on both legs, “settle: no beacon from {ordinary}”: the pre-trigger settle waits for a beacon from the page’s init script, which bios refuses. The observations show no exposure: the guarded leg’s protected document is never served (loaded false)',
-  },
-  'C2.post-307-308': {
-    paths: ['extension', 'proxy'],
-    targets: null,
-    legs: ['control', 'guarded'],
-    why: 'the vector observes 1500 ms after the POST, while its settle waits for a beacon from the refused init script, so a slower chain is seen unfinished on either leg ("loaded/hopped: got false"); slicc-browsers 1.7.9 settles on the served last hop',
-  },
-  'C2.post-308-307': {
-    paths: ['extension', 'proxy'],
-    targets: null,
-    legs: ['control', 'guarded'],
-    why: 'the vector observes 1500 ms after the POST, while its settle waits for a beacon from the refused init script, so a slower chain is seen unfinished on either leg ("loaded/hopped: got false"); slicc-browsers 1.7.9 settles on the served last hop',
-  },
-};
 const failing = (row) => row.control === 'fail' || row.guarded === 'fail' || row.live === 'fail';
-const known = (row) => {
-  const entry = KNOWN[row.id];
-  if (!entry?.paths.includes(row.transport)) return null;
-  if (entry.targets && !entry.targets.includes(row.target)) return null;
-  const legs = ['control', 'guarded', 'live'].filter((leg) => row[leg] === 'fail');
-  return legs.every((leg) => entry.legs.includes(leg)) ? entry : null;
-};
+export const ROW_MS = 3 * 60 * 1000;
 
 export function shared(path) {
   const chosen = {
@@ -356,6 +312,7 @@ export function shared(path) {
         trace('run', path, target, variant);
         const execution = await run(subset(target), {
           clientFactory: clientFactory(path),
+          rowTimeoutMs: ROW_MS,
           targets,
           capabilities: PATHS[path],
           variant,
@@ -381,11 +338,9 @@ export function shared(path) {
         });
         results.push(...execution.results);
       }
-      const unknown = results.filter(
-        (row) => row.variant === variant && failing(row) && !known(row)
-      );
+      const failed = results.filter((row) => row.variant === variant && failing(row));
       assert.deepEqual(
-        unknown.map(({ id, target, control, guarded, live, why, errors }) => ({
+        failed.map(({ id, target, control, guarded, live, why, errors }) => ({
           id,
           target,
           control,
@@ -395,14 +350,14 @@ export function shared(path) {
           errors,
         })),
         [],
-        'every failing row is a known issue named by its vector id'
+        'no row fails on any leg'
       );
     });
   }
   const scope = process.env.GUARD_VARIANTS ? `, ${chosen.variants.join(' and ')} detach` : '';
   test(`the shared set is complete on the ${path} path${scope}: no row missing, none skipped for a missing observer`, async () => {
     const report = summary({ set, results, guard: 'slicc-bios', sha: process.env.GUARD_SHA });
-    const accepted = results.filter((row) => failing(row) && known(row));
+    const informed = results.filter((row) => row.ran || row.notes);
     const skips = {};
     for (const row of results) {
       if (row.control === 'skip' || row.guarded === 'skip') {
@@ -418,8 +373,9 @@ export function shared(path) {
       ...Object.entries(skips).map(
         ([reason, rows]) => `skip ${reason} (${rows.length}): ${rows.join(' ')}`
       ),
-      ...accepted.map(
-        (row) => `known ${row.id}@${row.target}/${row.variant}: ${known(row).why} (${row.why})`
+      ...informed.map(
+        (row) =>
+          `informational ${row.id}@${row.target}/${row.variant}: ${JSON.stringify({ ran: row.ran, notes: row.notes })}`
       ),
     ];
     process.stdout.write(`${lines.join('\n')}\n`);
@@ -441,6 +397,11 @@ export function shared(path) {
     );
     assert.deepEqual(report.missing, []);
     assert.equal(report.observerSkipped, 0);
-    assert.equal(results.filter((row) => failing(row) && !known(row)).length, 0, report.line);
+    assert.equal(results.filter(failing).length, 0, report.line);
+    assert.match(
+      report.line,
+      /^GUARD-PASS /,
+      'the runner prints a passing verdict for the whole set'
+    );
   });
 }
