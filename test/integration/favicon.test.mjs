@@ -47,6 +47,8 @@ const wave = (x, y) => {
 };
 const HARBOR_ICON = png(16, wave);
 const BIG_ICON = png(64, () => [200, 40, 40, 255]);
+const EDGE_ICON = png(32, () => [40, 120, 60, 255]);
+const SVG_ICON = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#7a4b0b"/></svg>')}`;
 
 const port = await new Promise((resolve) => {
   const server = createServer().listen(0, '127.0.0.1', () => {
@@ -60,6 +62,8 @@ const pages = {
   '/lighthouse/log.html':
     '<!doctype html><title>Lighthouse log</title><link rel="icon" href="/lighthouse/icon.png"><h1>Keeper’s log</h1><p>18:30 Lamp on.</p>',
   '/buoys/list.html': `<!doctype html><title>Buoys</title><link rel="icon" href="${BIG_ICON}"><h1>Buoys</h1>`,
+  '/pier/notes.html': `<!doctype html><title>Pier</title><link rel="icon" href="${BIG_ICON}"><link rel="icon" href="${EDGE_ICON}"><h1>Pier</h1>`,
+  '/beacon/notes.html': `<!doctype html><title>Beacon</title><link rel="icon" href="/beacon/icon.png"><link rel="icon" href="${SVG_ICON}"><h1>Beacon</h1>`,
   '/vault': `<!doctype html><title>VAULT-MARK</title><link rel="icon" href="${HARBOR_ICON}"><h1>Vault</h1>`,
 };
 const stand = createHttp((req, res) => {
@@ -74,6 +78,8 @@ const HARBOR = at('harbor.example.test', '/harbor/forecast.html');
 const LIGHTHOUSE = at('lighthouse.example.test', '/lighthouse/log.html');
 const BUOYS = at('buoys.example.test', '/buoys/list.html');
 const VAULT = at('vault.sliccy.ai', '/vault');
+const PIER = at('pier.example.test', '/pier/notes.html');
+const BEACON = at('beacon.example.test', '/beacon/notes.html');
 
 const usage = eventFrame('metadata', {
   usage: { inputTokens: 3, outputTokens: 5, totalTokens: 8 },
@@ -107,7 +113,10 @@ const STEPS = [
   ['lighthouse', LIGHTHOUSE],
   ['buoys', BUOYS],
   ['vault', VAULT],
+  ['pier', PIER],
+  ['beacon', BEACON],
 ];
+const FIRST = 4;
 const open = (index) => {
   const [name, url] = STEPS[index];
   return bash(
@@ -128,9 +137,11 @@ function answer(body) {
   const said = content.map((item) => item.text ?? '').join(' ');
   const result = content.find((item) => item.toolResult)?.toolResult?.toolUseId;
   const index = result ? Number(result.slice(4)) + 1 : -1;
-  if (index > 0 && index < STEPS.length) return open(index);
-  if (index === STEPS.length) return text('The harbor, the lighthouse and the buoys are open.');
+  if (index === FIRST) return text('The harbor, the lighthouse and the buoys are open.');
+  if (index === STEPS.length) return text('The pier and the beacon are open.');
+  if (index > 0) return open(index);
   if (tools && said.includes('Open the harbor')) return open(0);
+  if (tools && said.includes('Open the pier')) return open(FIRST);
   return text('Done.');
 }
 
@@ -261,4 +272,50 @@ test('a tab’s favicon comes from the data: icon its page already loaded: a too
   };
   await page.evaluate(quiet);
   await shoot(page, 'favicon-strip', { show: 'chat', before: quiet });
+
+  await page.evaluate(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    void agent.send(agent.active(), 'Open the pier and the beacon');
+  });
+  await page.until(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    const id = agent.active();
+    return !agent.busy(id) && JSON.stringify(agent.messages(id)).includes('the beacon are open');
+  });
+  const icon = (host) =>
+    document
+      .querySelector('slicc-app')
+      .model.browser.list()
+      .find(({ url }) => new URL(url).hostname === host)?.favicon ?? null;
+  await page.within(
+    60000,
+    new Function(
+      'wanted',
+      `const icon = ${icon}; return icon('pier.example.test') === wanted[0] && icon('beacon.example.test') === wanted[1];`
+    ),
+    [EDGE_ICON, SVG_ICON]
+  );
+  const controls = await page.evaluate(tabs);
+  const after = Object.fromEntries(controls.map(({ host, favicon }) => [host, favicon]));
+  assert.equal(
+    after['pier.example.test'],
+    EDGE_ICON,
+    'the 64×64 icon is passed over for the 32×32 one'
+  );
+  assert.equal(
+    after['beacon.example.test'],
+    SVG_ICON,
+    'the http icon link is passed over for the data: one'
+  );
+  assert.equal(after['lighthouse.example.test'], null, JSON.stringify(controls));
+  assert.equal(after['buoys.example.test'], null, JSON.stringify(controls));
+  const fetched = hits.filter((hit) => /\/(lighthouse|beacon)\/icon\.png$/.test(hit));
+  assert.ok(
+    fetched.length <= 2,
+    `linked icons were fetched ${fetched.length} times: ${hits.join(' ')}`
+  );
+  assert.deepEqual(hits.filter((hit) => !fetched.includes(hit)).slice(3), [
+    'pier.example.test/pier/notes.html',
+    'beacon.example.test/beacon/notes.html',
+  ]);
 });

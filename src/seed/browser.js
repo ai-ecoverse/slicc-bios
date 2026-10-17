@@ -427,7 +427,7 @@ class Browser {
 
   async #icon(id, sessionId) {
     const known = this.#icons.get(id);
-    if (known && known.url === this.#infos.get(id)?.url) return;
+    if (known?.src && known.url === this.#infos.get(id)?.url) return;
     const { root } = await this.#client.call('DOM.getDocument', { depth: 0 }, sessionId);
     const url = root?.documentURL ?? '';
     let src;
