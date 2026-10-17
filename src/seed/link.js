@@ -274,9 +274,10 @@ export function createSession({
     const s = stream(streams, id, channel, false);
     streams.set(id, s);
     Promise.resolve()
-      .then(() => accept(meta))
+      .then(() => (closed ? Promise.reject(failure(`ECONNRESET: ${closed}`)) : accept(meta)))
       .then(
         (socket) => {
+          if (closed) return socket?.close?.();
           if (typeof socket?.handle === 'function') return socket.handle(s);
           if (!streams.has(id)) return socket?.close();
           s.accepted();
