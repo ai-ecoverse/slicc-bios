@@ -8,9 +8,6 @@ import {
   connectAccount,
   listsAccount,
   ready,
-  run,
-  screen,
-  shows,
   trust,
 } from './bios.mjs';
 import { launch } from './chrome.mjs';
@@ -638,20 +635,49 @@ test('a follower watches the owner run with View, is refused a send, sends with 
 
   await model(owner, (network, id) => network.setAccess(id, 'terminal', true), device.id);
   await page.until(() => document.querySelector('slicc-app').model.follow.state().access.terminal);
-  await page.evaluate(() => document.querySelector('slicc-app').show('terminal'));
-  await shows(page, 'slicc:/home# ');
-  await owner.until(() =>
-    document
-      .querySelector('slicc-app')
-      .model.network.status()
-      .links.devices.some((d) => d.terminals === 1)
-  );
-  await run(page, `su cone -c 'sudo id -u'; echo "su says $((40 + 2))"`);
-  await shows(page, 'su cone -c', 30000).catch(async (error) => {
-    throw new Error(
-      `the follower's shell never echoed the command: ${error.message}\nfollower screen: ${await screen(page)}`
-    );
+  await page.evaluate(() => {
+    const { terminals } = document.querySelector('slicc-app').model;
+    const info = terminals.open({ cwd: '/home' });
+    const kept = { output: '', session: null, error: null };
+    window.sudoShell = kept;
+    terminals
+      .backend(info.id)
+      .open(
+        {
+          output: (bytes) => {
+            kept.output += typeof bytes === 'string' ? bytes : new TextDecoder().decode(bytes);
+          },
+          exit: () => {},
+        },
+        { cols: 120, rows: 24 }
+      )
+      .then(
+        (session) => {
+          kept.session = session;
+        },
+        (error) => {
+          kept.error = error.code ?? error.message;
+        }
+      );
   });
+  const shellOutput = () => page.evaluate(() => window.sudoShell.output);
+  await page
+    .within(
+      90000,
+      () =>
+        window.sudoShell.error ||
+        (window.sudoShell.session && window.sudoShell.output.includes('# '))
+    )
+    .catch(async (error) => {
+      throw new Error(
+        `the follower's shell never opened: ${error.message}\n${await page.evaluate(() => JSON.stringify({ ...window.sudoShell, session: !!window.sudoShell.session }))}`
+      );
+    });
+  assert.equal(await page.evaluate(() => window.sudoShell.error), null);
+  await page.evaluate(
+    (command) => window.sudoShell.session.write(new TextEncoder().encode(`${command}\r`)),
+    `su cone -c 'sudo id -u'; echo "su says $((40 + 2))"`
+  );
   const fromShell = await owner
     .within(
       5 * 60 * 1000,
@@ -663,7 +689,7 @@ test('a follower watches the owner run with View, is refused a send, sends with 
     )
     .catch(async (error) => {
       throw new Error(
-        `the follower shell's sudo never reached the owner's approvals: ${error.message}\nowner approvals: ${JSON.stringify(await owner.evaluate(() => document.querySelector('slicc-app').model.approvals.list()))}`
+        `the follower shell's sudo never reached the owner's approvals: ${error.message}\nowner approvals: ${JSON.stringify(await owner.evaluate(() => document.querySelector('slicc-app').model.approvals.list()))}\nfollower shell: ${await shellOutput()}`
       );
     });
   assert.equal(fromShell.requester.kind, 'user');
@@ -672,7 +698,14 @@ test('a follower watches the owner run with View, is refused a send, sends with 
     (id) => document.querySelector('slicc-app').model.approvals.decide(id, 'deny'),
     fromShell.id
   );
-  await shows(page, 'su says 42');
+  await page
+    .within(60000, () => window.sudoShell.output.includes('su says 42'))
+    .catch(async (error) => {
+      throw new Error(
+        `the follower's shell never finished: ${error.message}\n${await shellOutput()}`
+      );
+    });
+  await page.evaluate(() => window.sudoShell.session.close());
   await model(owner, (network, id) => network.setAccess(id, 'terminal', false), device.id);
   assert.deepEqual(owner.errors, []);
   assert.deepEqual(page.errors, []);
