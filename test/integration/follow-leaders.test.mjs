@@ -239,6 +239,16 @@ test('Leaders: Disconnect holds across a reload with no dial, Reconnect keeps th
   await leaderIs(page, other, 'connected');
   assert.ok(hub.dials[tokenOf(fake)] > fakeDials, 'boot dials a kept leader again');
   await leaderIs(page, real, 'disconnected');
+  const retried = await model(
+    page,
+    (network, id) =>
+      network.retryLeader(id).then(
+        () => 'dialled',
+        (error) => error.message
+      ),
+    real
+  );
+  assert.match(retried, /disconnected; reconnect it/);
   assert.equal(hub.dials[tokenOf(joinUrl)], dials, 'a disconnected leader is never dialled');
   await shoot(page, 'leaders-disconnected', { show: 'network', target: 'section[data-leaders]' });
 

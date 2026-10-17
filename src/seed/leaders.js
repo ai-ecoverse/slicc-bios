@@ -271,7 +271,7 @@ async function follow(self, entry) {
   self.changed();
   let attempts = 0;
   try {
-    while (!entry.over) {
+    while (!entry.over && !entry.off) {
       if (!entry.known && !entry.waiters.size) return drop(self, entry);
       if (self.asleep() && !entry.waiters.size) {
         await sleep(self.timers, HIDDEN_MS, entry.stop);
@@ -421,6 +421,8 @@ export function createLeaders({
       ]),
     async retry(id) {
       const entry = followed(id);
+      if (entry.off)
+        throw new Error('That leader is disconnected; reconnect it to follow it again.');
       entry.seen = false;
       void follow(self, entry);
     },
