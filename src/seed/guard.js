@@ -256,6 +256,7 @@ class Guard {
     if (depth > 8) return true;
     const verdict = this.is.target({
       url: found.url,
+      type: found.type,
       previous: found.was,
       opener: await this.opener(found.openerId, depth),
     });
