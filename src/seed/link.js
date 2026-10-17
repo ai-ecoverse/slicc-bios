@@ -11,6 +11,7 @@ export const CREDIT = 6;
 export const WINDOW = 256 * 1024;
 export const CHUNK = 64 * 1024;
 export const HELLO_MS = 10_000;
+export const EARLY = 64;
 export const CONNECT_MS = 30_000;
 export const CONTROL = 'slicc.link.v1';
 export const STREAM = 'slicc.link.v1.stream';
@@ -242,6 +243,7 @@ export function createSession({
   const streams = new Map();
   const peerIds = new Set();
   const channels = new Set();
+  const early = [];
   let next = 2 - parity;
   let peer = null;
   let closed = null;
@@ -296,9 +298,17 @@ export function createSession({
       peer = parsed;
       timers.clearTimeout(timer);
       settle.resolve(peer);
+      for (const [held, bytes] of early.splice(0)) framed(held, bytes);
       return;
     }
-    if (!peer) return close('a frame before HELLO');
+    if (peer) return framed(channel, data);
+    if (channel === control) return close('a frame before HELLO');
+    if (early.length >= EARLY) return close('too many frames before HELLO');
+    early.push([channel, data]);
+  }
+
+  function framed(channel, data) {
+    if (closed) return;
     const parsed = parse(data);
     if (!parsed || parsed.id === 0) return close('a malformed frame');
     const { type, id, payload } = parsed;
