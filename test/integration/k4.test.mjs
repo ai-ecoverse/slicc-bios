@@ -375,10 +375,10 @@ test('seven’s code paths are read-only to root and cones, installs still write
 test('report: a write to a protected tree goes through and is logged as a would-be protect hit', async (t) => {
   const page = await chrome.page(t);
   await bootIn(page, 'report');
-  await run(page, 'clear; touch /opt/agent/x; echo agent=$?; echo wrote-$((40 + 2))');
+  await run(page, 'clear; touch /os/x; echo os=$?; echo wrote-$((40 + 2))');
   await shows(page, 'wrote-42');
-  assert.match(await screen(page), /agent=0/);
-  const [hit] = await logged(page, '/opt/agent/x');
+  assert.match(await screen(page), /os=0/);
+  const [hit] = await logged(page, '/os/x');
   assert.equal(hit.op, 'protect');
   assert.equal(hit.errno, 'EROFS');
   assert.equal(hit.mode, 'report');

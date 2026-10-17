@@ -209,7 +209,7 @@ export async function watchProtected({ kernel, attach, paths, log, busy }) {
   const record = (path) =>
     log({ pid: 0, uid: null, tag: null, op: 'protect', path, errno: 'EROFS' });
   return client.fs.watch(paths, { recursive: true }, ({ paths: changed, overflow }) => {
-    if (busy()) return;
-    for (const path of overflow ? paths : changed) record(path);
+    if (overflow && busy()) return;
+    for (const path of overflow ? paths : changed) if (!busy(path)) record(path);
   });
 }

@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
-import { actPackage, agentState, agentUp, boot, ready, run, screen, shows } from './bios.mjs';
+import {
+  AGENT_BUDGET,
+  actPackage,
+  agentState,
+  agentUp,
+  boot,
+  ready,
+  run,
+  screen,
+  shows,
+} from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch({ timeout: 120000, agent: true });
@@ -141,7 +151,7 @@ test('optional packages installed before the upgrade come back for root, in the 
   }, RSYNC);
   await page.reload();
   await ready(page);
-  await page.within(300000, () =>
+  await page.within(AGENT_BUDGET, () =>
     document
       .querySelector('slicc-app')
       .model.updates.packages()

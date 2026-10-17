@@ -671,7 +671,7 @@ async function own() {
       attach: attachKernel,
       paths: PROTECTED,
       log: denials,
-      busy: () => installing(kernel),
+      busy: (path) => installing(kernel, path),
     }).catch((error) => console.warn(`protect watch: ${error.message}`));
   }
   await installProfile(root, { text, write }).catch((error) =>

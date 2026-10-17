@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { actPackage, agentUp, boot, run, shows } from './bios.mjs';
+import { AGENT_BUDGET, actPackage, agentUp, boot, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch({ timeout: 120000, agent: true });
@@ -75,7 +75,10 @@ test('a cold agent install runs in the page’s one kernel with no package scrip
   assert.match(seen, /--frozen-lockfile/, screen);
   assert.match(seen, /--ignore-scripts/, screen);
   assert.match(seen, /--ignore-pnpmfile/, screen);
-  const optional = actPackage(page, 'rsync', 'install');
+  const optional = actPackage(page, 'rsync', 'install', {
+    budget: AGENT_BUDGET,
+    stall: AGENT_BUDGET,
+  });
   await agentUp(page);
   assert.equal(await optional, 'ok');
   const kernels = await page.evaluate(() => window.sliccKernelWorkers);
