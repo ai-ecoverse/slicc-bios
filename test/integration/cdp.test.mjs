@@ -195,10 +195,26 @@ test('the browser port lists only the tabs the agent drives, holds them for a wh
 
   await run(page, `playwright-cli open ${target} && echo opened-$?`);
   await shows(page, 'opened-0');
-  const tabs = await page.until(() => {
+  const listed = () => document.querySelector('slicc-app').model.browser.list();
+  const opened = () => {
     const tabs = document.querySelector('slicc-app').model.browser.list();
-    return tabs.length > 0 && tabs.every(({ title }) => title) && tabs;
-  });
+    const away = ({ url, title, status }) =>
+      url &&
+      url !== 'about:blank' &&
+      title &&
+      title !== 'about:blank' &&
+      !url.endsWith(title) &&
+      status === 'complete';
+    return tabs.length > 0 && tabs.every(away) && tabs;
+  };
+  let tabs;
+  try {
+    tabs = await page.within(30000, opened);
+  } catch (error) {
+    throw new Error(
+      `the agent's tab never left about:blank in the list: ${error.message}\nlast list: ${JSON.stringify(await page.evaluate(listed))}`
+    );
+  }
   assert.deepEqual(
     tabs.map(({ url, title, agentId }) => [url, title, agentId]),
     [[target, 'Tide tables', null]]
