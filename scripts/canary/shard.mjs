@@ -11,16 +11,21 @@ import { usersModes } from './users.mjs';
 
 const REPORTER = './scripts/canary/reporter.mjs';
 
-export async function select(name) {
+export async function picked(name) {
   const shards = JSON.parse(await readFile(join(ROOT, 'scripts/canary/shards.json'), 'utf8'));
-  const picked = shards[name];
-  if (!picked) throw new Error(`no shard ${name} in scripts/canary/shards.json`);
+  const found = shards[name];
+  if (!found) throw new Error(`no shard ${name} in scripts/canary/shards.json`);
+  return found;
+}
+
+export async function select(name) {
+  const found = await picked(name);
   const all = (await readdir(join(ROOT, 'test/integration')))
     .filter((file) => file.endsWith('.test.mjs'))
     .sort()
     .map((file) => `test/integration/${file}`);
-  if (picked.match) return all.filter((file) => new RegExp(picked.match).test(file));
-  return all.filter((file) => !new RegExp(picked.exclude).test(file));
+  if (found.match) return all.filter((file) => new RegExp(found.match).test(file));
+  return all.filter((file) => !new RegExp(found.exclude).test(file));
 }
 
 async function command() {
@@ -155,6 +160,7 @@ export async function shard({ name, overrides, out, candidate = null, dir = '', 
   const started = Date.now();
   const files = await select(name);
   if (!files.length) throw new Error(`no test files in shard ${name}`);
+  Object.assign(env, (await picked(name)).env ?? {});
   const scratch = await mkdtemp(join(tmpdir(), 'slicc-canary-shard-'));
   const baseline = join(scratch, 'baseline');
   const candidatePins = join(scratch, 'candidate');

@@ -399,7 +399,8 @@ export function shared(path) {
       );
     });
   }
-  test(`the shared set is complete on the ${path} path: no row missing, none skipped for a missing observer`, async () => {
+  const scope = process.env.GUARD_VARIANTS ? `, ${chosen.variants.join(' and ')} detach` : '';
+  test(`the shared set is complete on the ${path} path${scope}: no row missing, none skipped for a missing observer`, async () => {
     const report = summary({ set, results, guard: 'slicc-bios', sha: process.env.GUARD_SHA });
     const accepted = results.filter((row) => failing(row) && known(row));
     const skips = {};
@@ -427,7 +428,17 @@ export function shared(path) {
         process.env.GUARD_REPORT,
         JSON.stringify({ report, results, lines }, null, 2)
       );
-    if (process.env.GUARD_IDS || process.env.GUARD_TARGETS || process.env.GUARD_VARIANTS) return;
+    if (process.env.GUARD_IDS || process.env.GUARD_TARGETS) return;
+    assert.deepEqual(
+      chosen.variants.filter((variant) => !Object.hasOwn(set.variants, variant)),
+      [],
+      'every chosen variant is in the set'
+    );
+    assert.deepEqual(
+      [...new Set(results.map((row) => row.variant))].sort(),
+      [...chosen.variants].sort(),
+      'every chosen variant ran'
+    );
     assert.deepEqual(report.missing, []);
     assert.equal(report.observerSkipped, 0);
     assert.equal(results.filter((row) => failing(row) && !known(row)).length, 0, report.line);

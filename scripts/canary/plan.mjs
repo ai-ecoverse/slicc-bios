@@ -82,7 +82,12 @@ export const SHARDS = [
   'users-agent-ui',
   'packages-update-cdp',
   'guard',
+  'guard-set-extension-prompt',
+  'guard-set-extension-lagging',
+  'guard-set-proxy-prompt',
+  'guard-set-proxy-lagging',
   'k4-link',
+  'user-packages-keys-favicon',
   'rest',
 ];
 

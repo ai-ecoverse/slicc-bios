@@ -14,8 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  SHARDS: 'follow-chat remote-pydata users-agent-ui packages-update-cdp guard guard-set-extension guard-set-proxy k4-link rest'
-  SHARDED: '/(follow[^/]*|chat|remote|pydata|updates|users|agent-ui|packages|update|cdp|guard-vectors|guard-set-[a-z]+|serve|k4[^/]*|link)\.test\.mjs$'
+  SHARDS: 'follow-chat remote-pydata users-agent-ui packages-update-cdp guard guard-set-extension-prompt guard-set-extension-lagging guard-set-proxy-prompt guard-set-proxy-lagging k4-link user-packages-keys-favicon rest'
+  SHARDED: '/(follow[^/]*|chat|remote|pydata|updates|users|agent-ui|packages|update|cdp|guard-vectors|guard-set-[a-z]+|serve|k4[^/]*|link|user-packages|keys|favicon)\.test\.mjs$'
 
 jobs:
   lint:
@@ -55,12 +55,22 @@ jobs:
             match: '/(packages|update|cdp)\.test\.mjs$'
           - shard: guard
             match: '/(guard-vectors|serve)\.test\.mjs$'
-          - shard: guard-set-extension
+          - shard: guard-set-extension-prompt
             match: '/guard-set-extension\.test\.mjs$'
-          - shard: guard-set-proxy
+            variants: prompt
+          - shard: guard-set-extension-lagging
+            match: '/guard-set-extension\.test\.mjs$'
+            variants: lagging
+          - shard: guard-set-proxy-prompt
             match: '/guard-set-proxy\.test\.mjs$'
+            variants: prompt
+          - shard: guard-set-proxy-lagging
+            match: '/guard-set-proxy\.test\.mjs$'
+            variants: lagging
           - shard: k4-link
             match: '/(k4[^/]*|link)\.test\.mjs$'
+          - shard: user-packages-keys-favicon
+            match: '/(user-packages|keys|favicon)\.test\.mjs$'
           - shard: rest
             match: ''
     env:
@@ -95,6 +105,7 @@ jobs:
       - name: Integration tests with coverage, CPU profiles, and screenshots
         env:
           MATCH: ${{ matrix.match }}
+          GUARD_VARIANTS: ${{ matrix.variants }}
         run: |
           all=$(ls test/integration/*.test.mjs)
           if [ -n "$MATCH" ]; then files=$(printf '%s\n' "$all" | grep -E "$MATCH" || true)
