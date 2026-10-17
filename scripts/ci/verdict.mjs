@@ -29,6 +29,13 @@ export function summary(text) {
   };
 }
 
+export function missingRequired(text, files = []) {
+  const clean = text.replace(ANSI, '');
+  return files
+    .filter((file) => REQUIRED[basename(file)] && !REQUIRED[basename(file)].test(clean))
+    .map((file) => `${basename(file)} printed no verdict line`);
+}
+
 export function shardVerdict(name, text, files = []) {
   const counts = summary(text);
   const why = [];
@@ -38,11 +45,7 @@ export function shardVerdict(name, text, files = []) {
     if (counts.cancelled) why.push(`${counts.cancelled} cancelled`);
     if (!counts.pass) why.push('0 tests passed');
   }
-  const clean = text.replace(ANSI, '');
-  for (const file of files) {
-    const line = REQUIRED[basename(file)];
-    if (line && !line.test(clean)) why.push(`${basename(file)} printed no verdict line`);
-  }
+  why.push(...missingRequired(text, files));
   if (why.length) return { ok: false, line: `shard ${name}: FAIL ${why.join(', ')}` };
   return { ok: true, line: `shard ${name}: PASS ${counts.pass} tests` };
 }
