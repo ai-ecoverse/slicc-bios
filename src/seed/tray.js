@@ -1,4 +1,4 @@
-import { device } from './link.js';
+import { device, failure, offerLink } from './link.js';
 
 export const SESSION_KEY = 'slicc-os.tray';
 export const TRAY_HUB_KEY = 'slicc-os.tray-hub';
@@ -9,6 +9,8 @@ export const FOLLOWER = 'slicc-link/1';
 export const ACCESS = ['view', 'control', 'terminal'];
 export const PING_MS = 30_000;
 export const JOIN_MS = 5_000;
+export const SEAT_LINKS = 4;
+export const NOT_LEADING = 'Seven isn’t connected to the tray hub yet, so it can’t invite guests.';
 const BACKOFF = [1_000, 2_000, 5_000, 10_000, 30_000];
 
 export function fingerprint(sdp) {
@@ -51,6 +53,10 @@ export function joinCommand(url) {
 
 export function followUrl(page, url) {
   return url && page ? `${page}/#follow=${encodeURIComponent(url)}` : null;
+}
+
+export function seatUrl(page, url) {
+  return url && page ? `${page}/#seat=${encodeURIComponent(url)}` : null;
 }
 
 function read(storage, key, fallback) {
@@ -107,17 +113,26 @@ export function trayHub(origin, fetcher) {
     };
   }
 
+  const api = (current, path, body) =>
+    fetcher(`${origin}/api/tray/${encodeURIComponent(current.trayId)}/${path}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${new URL(current.controllerUrl).pathname.split('/').at(-1)}`,
+      },
+      body: JSON.stringify(body),
+    });
+
   async function supersede(old, joinUrl) {
-    const token = new URL(old.controllerUrl).pathname.split('/').at(-1);
-    const response = await fetcher(
-      `${origin}/api/tray/${encodeURIComponent(old.trayId)}/supersede`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({ joinUrl }),
-      }
-    ).catch(() => null);
+    const response = await api(old, 'supersede', { joinUrl }).catch(() => null);
     return Boolean(response && response.status < 500);
+  }
+
+  async function seat(current, path, body) {
+    if (!current?.trayId || !current.controllerUrl) throw new Error(NOT_LEADING);
+    const response = await api(current, path, body);
+    const value = await response.json().catch(() => ({}));
+    return { status: response.status, ok: response.ok, value: value ?? {} };
   }
 
   async function point(current) {
@@ -146,20 +161,40 @@ export function trayHub(origin, fetcher) {
     return claimed;
   }
 
-  return { lead };
+  return { lead, seat };
 }
 
-function followers({ links, send, devices, unlinked, pinned }) {
-  const refuse = (message, code, text) =>
+const refusal = (send) => (message, code, text) =>
+  send({
+    type: 'bootstrap.failed',
+    controllerId: message.controllerId,
+    bootstrapId: message.bootstrapId,
+    code,
+    message: text,
+    retryable: false,
+    retryAfterMs: null,
+  });
+
+const relay = (send, controllerId, bootstrapId) => (out) => {
+  if (out.t === 'offer') {
     send({
-      type: 'bootstrap.failed',
-      controllerId: message.controllerId,
-      bootstrapId: message.bootstrapId,
-      code,
-      message: text,
-      retryable: false,
-      retryAfterMs: null,
+      type: 'bootstrap.offer',
+      controllerId,
+      bootstrapId,
+      offer: { type: 'offer', sdp: out.sdp },
     });
+  } else if (out.t === 'candidate' && out.candidate) {
+    send({
+      type: 'bootstrap.ice_candidate',
+      controllerId,
+      bootstrapId,
+      candidate: out.candidate,
+    });
+  }
+};
+
+function followers({ links, send, devices, unlinked, pinned }) {
+  const refuse = refusal(send);
 
   function join(message) {
     const { controllerId, bootstrapId } = message;
@@ -172,23 +207,7 @@ function followers({ links, send, devices, unlinked, pinned }) {
       mode: 'remote',
       kind: message.runtime === RUNTIME ? 'seven' : 'cli',
       iceServers: message.iceServers ?? [],
-      send: (out) => {
-        if (out.t === 'offer') {
-          send({
-            type: 'bootstrap.offer',
-            controllerId,
-            bootstrapId,
-            offer: { type: 'offer', sdp: out.sdp },
-          });
-        } else if (out.t === 'candidate' && out.candidate) {
-          send({
-            type: 'bootstrap.ice_candidate',
-            controllerId,
-            bootstrapId,
-            candidate: out.candidate,
-          });
-        }
-      },
+      send: relay(send, controllerId, bootstrapId),
     });
     link.bootstrapId = bootstrapId;
   }
@@ -221,6 +240,83 @@ function followers({ links, send, devices, unlinked, pinned }) {
   }
 
   return { join, answer, candidate };
+}
+
+function guests({ send, makePeer, serve, timers }) {
+  const refuse = refusal(send);
+  const live = new Map();
+  const close = (item, reason) => {
+    if (live.get(item.controllerId) === item) live.delete(item.controllerId);
+    item.offer.session.close(reason);
+  };
+
+  function accept(item, meta) {
+    if (meta.kind !== 'pi') return Promise.reject(failure('EOPNOTSUPP'));
+    if (item.open) return Promise.reject(failure('EBUSY'));
+    item.open = true;
+    return {
+      handle: async (stream) => {
+        try {
+          await serve(item.seat, stream);
+        } catch (error) {
+          stream.reset(`${error.code ?? 'EIO'}: ${error.message}`);
+        } finally {
+          item.open = false;
+        }
+      },
+    };
+  }
+
+  function join(message) {
+    const { controllerId, bootstrapId, biscotto } = message;
+    if (message.runtime !== RUNTIME)
+      return refuse(message, 'UNSUPPORTED_RUNTIME', 'a guest joins from a seven page');
+    const id = typeof biscotto?.id === 'string' ? biscotto.id : '';
+    const label = typeof biscotto?.label === 'string' ? biscotto.label : '';
+    if (!id || !label) return refuse(message, 'UNTRUSTED', 'a guest link needs its seat');
+    const before = live.get(controllerId);
+    if (before) close(before, 'replaced');
+    const same = [...live.values()].filter((item) => item.seat.id === id);
+    for (const old of same.slice(0, Math.max(0, same.length - SEAT_LINKS + 1)))
+      close(old, 'replaced');
+    const item = { controllerId, bootstrapId, seat: { id, label }, open: false };
+    item.offer = offerLink({
+      pc: makePeer({ iceServers: message.iceServers ?? [] }),
+      send: relay(send, controllerId, bootstrapId),
+      hello: () => ({
+        name: 'SLICC',
+        mode: 'remote',
+        caps: ['pi'],
+        permissions: { view: true, control: false, terminal: false },
+      }),
+      accept: (meta) => accept(item, meta),
+      timers,
+      onClose: () => {
+        if (live.get(controllerId) === item) live.delete(controllerId);
+      },
+    });
+    live.set(controllerId, item);
+  }
+
+  const mine = (message) => {
+    const item = live.get(message.controllerId);
+    return item?.bootstrapId === message.bootstrapId ? item : null;
+  };
+
+  return {
+    join,
+    has: (controllerId) => live.has(controllerId),
+    answer(message) {
+      if (message.answer?.sdp)
+        void mine(message)?.offer.receive({ t: 'answer', sdp: message.answer.sdp });
+    },
+    candidate(message) {
+      void mine(message)?.offer.receive({ t: 'candidate', candidate: message.candidate });
+    },
+    revoked(id) {
+      for (const item of [...live.values()]) if (item.seat.id === id) close(item, 'revoked');
+    },
+  };
 }
 
 function remember(links, devices, save) {
@@ -312,6 +408,41 @@ async function unlinkAll(links, id, notify) {
   for (const item of mine) links.drop(item.key, 'unlinked');
 }
 
+function joins(follower, seats) {
+  const pick = (message) => (seats?.has(message.controllerId) ? seats : follower);
+  return {
+    'follower.join_requested': (message) =>
+      seats && message.trust === 'biscotto' ? seats.join(message) : follower.join(message),
+    'bootstrap.answer': (message) => pick(message).answer(message),
+    'bootstrap.ice_candidate': (message) => pick(message).candidate(message),
+    'biscotto.revoked': (message) => seats?.revoked(message.biscottoId),
+  };
+}
+
+const failed = (answered) =>
+  new Error(answered.value.error ?? `the tray hub answered ${answered.status}`);
+
+function seatHub({ hub, storage, page, now, seats }) {
+  return {
+    async mint({ label, expiresAt, agentId }) {
+      const ttl = expiresAt == null ? {} : { ttlMs: Math.max(1, Math.round(expiresAt - now())) };
+      const minted = await hub.seat(read(storage, SESSION_KEY, null), 'biscotto', {
+        label,
+        unitJid: agentId,
+        ...ttl,
+      });
+      const url = typeof minted.value.url === 'string' ? minted.value.url : null;
+      if (!minted.ok || typeof minted.value.id !== 'string' || !url) throw failed(minted);
+      return { id: minted.value.id, url: seatUrl(page, url) };
+    },
+    async revoke(id) {
+      seats?.revoked(id);
+      const stopped = await hub.seat(read(storage, SESSION_KEY, null), 'biscotto/stop', { id });
+      if (!stopped.ok && stopped.status !== 404) throw failed(stopped);
+    },
+  };
+}
+
 export function createTray({
   links,
   origin = location.origin,
@@ -321,6 +452,9 @@ export function createTray({
   storage = localStorage,
   timers = globalThis,
   onWebhook = null,
+  onGuest = null,
+  makePeer = (config) => new RTCPeerConnection(config),
+  now = Date.now,
 }) {
   const listeners = new Set();
   let session = read(storage, SESSION_KEY, null);
@@ -352,6 +486,7 @@ export function createTray({
     unlinked,
     pinned: () => remember(links, devices, save),
   });
+  const seats = onGuest ? guests({ send, makePeer, serve: onGuest, timers }) : null;
   const handlers = {
     'leader.connected': () => {
       state = 'ready';
@@ -359,9 +494,7 @@ export function createTray({
       attempts = 0;
       changed();
     },
-    'follower.join_requested': follower.join,
-    'bootstrap.answer': follower.answer,
-    'bootstrap.ice_candidate': follower.candidate,
+    ...joins(follower, seats),
     'webhook.event': (message) => {
       const found = webhookDelivery(message);
       if (!found || !onWebhook) return;
@@ -469,6 +602,7 @@ export function createTray({
       state = 'idle';
       changed();
     },
+    guests: seatHub({ hub, storage, page, now, seats }),
     status: () => described(state, error, session, page),
     away: () => awayDevices(devices, links),
     known: (id) => id in devices,
