@@ -287,6 +287,8 @@ export async function leader(hubUrl) {
     hello: null,
     opens: [],
     resets: [],
+    fingerprints: [],
+    unlinked: [],
   };
   const waiting = new Map();
   let next = 1;
@@ -354,6 +356,23 @@ export async function leader(hubUrl) {
         })
       );
     } else if (message.type === 'bootstrap.answer') {
+      const found = /^a=fingerprint:sha-256 ([0-9A-F:]+)/im.exec(message.answer.sdp)?.[1];
+      const id = found?.replaceAll(':', '').toLowerCase() ?? null;
+      state.fingerprints.push(id);
+      if (state.unlinked.includes(id)) {
+        socket.send(
+          JSON.stringify({
+            type: 'bootstrap.failed',
+            ...ids,
+            code: 'UNLINKED',
+            message: 'this device was unlinked; run the join command again',
+            retryable: false,
+            retryAfterMs: null,
+          })
+        );
+        pc.close();
+        return;
+      }
       await pc.setRemoteDescription(message.answer);
     } else if (message.type === 'bootstrap.ice_candidate') {
       await pc.addIceCandidate(message.candidate).catch(() => {});
@@ -364,6 +383,10 @@ export async function leader(hubUrl) {
     const message = JSON.parse(data);
     queue = queue.then(() => handle(message)).catch(() => {});
   });
+  state.unlink = () => {
+    state.unlinked.push(state.fingerprints.at(-1));
+    pc?.close();
+  };
   state.open = (meta) =>
     new Promise((resolve) => {
       const id = next;

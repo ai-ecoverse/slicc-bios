@@ -393,7 +393,11 @@ test('in seven’s terminal a cone’s slicc prompts, watches and aborts another
         `the fake leader was never followed: ${error.message}\n${(await sh(page, 'cat /tmp/fake.json')).out}`
       );
     });
-  const seen = await owner.evaluate(() => ({ ...globalThis.fakeLeader, open: undefined }));
+  const seen = await owner.evaluate(() => ({
+    ...globalThis.fakeLeader,
+    open: undefined,
+    unlink: undefined,
+  }));
   assert.deepEqual(seen.runtimes, ['slicc-link/1']);
   assert.deepEqual([seen.hello.role, seen.hello.mode, seen.hello.caps], ['node', 'remote', []]);
   assert.deepEqual(seen.opens, [{ kind: 'agent', op: 'watch' }]);
@@ -428,8 +432,13 @@ test('in seven’s terminal a cone’s slicc prompts, watches and aborts another
   );
   assert.equal(unlinked.code, 3, unlinked.text);
   assert.match(unlinked.text, /unlinked this one/);
-  assert.equal(await certificate(page, hub.url), 'none');
-  assert.deepEqual((await followed(page)).keys, []);
+  assert.equal(await certificate(page, hub.url), 'kept');
+  const marked = Object.values(JSON.parse((await followed(page)).text));
+  assert.deepEqual(
+    marked.map((item) => item.unlinked === true).sort(),
+    [false, true],
+    'only the unlinking leader’s record is marked; the fake leader’s stays'
+  );
   assert.ok(!asked.some((body) => body.includes('After the unlink')));
   const again = await typed(page, `sudo -u cone slicc '${joinUrl}' abort`, 'relinked');
   assert.equal(again.code, 3, again.text);
