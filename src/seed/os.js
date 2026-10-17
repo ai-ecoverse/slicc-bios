@@ -85,6 +85,7 @@ import {
   write,
 } from './update.js';
 import { count, createUpdates, owners } from './updates.js';
+import { createUserPackages, MODULES as USER_MODULES } from './user.js';
 import {
   addCone,
   dropProtectedMounts,
@@ -131,6 +132,7 @@ export const skip = [
   '/node_modules',
   '/opt/agent/node_modules',
   '/opt/grammars/node_modules',
+  '/opt/user/node_modules',
   '/opt/slicc',
   '/home/.local/share/pnpm',
   '/usr/local/share/pnpm',
@@ -429,10 +431,18 @@ async function restart() {
 
 const layered = { agent: agentProject, grammars: grammarsProject };
 const UNDOING = { unpin: 'removing', remove: 'removing', retry: 'updating' };
+const yours = createUserPackages({
+  root,
+  kernel: () => kernel,
+  projects: layered,
+  strict: enforced,
+  notices,
+});
 
 async function listOwn() {
   const list = [];
   for (const project of Object.values(layered)) list.push(...(await userRows(root, project)));
+  list.push(...(await yours.rows()));
   updates.setUserPackages(list);
 }
 
@@ -463,6 +473,11 @@ async function actOwn(id, action) {
         row.id === id ? { ...row, state: UNDOING[action], error: null, actions: [] } : row
       )
   );
+  if (which === 'user') {
+    await yours.act(name, action);
+    await listOwn();
+    return;
+  }
   await change(layered[which], action === 'retry' ? null : name);
   await (which === 'agent' ? offerChat() : installGrammars());
 }
@@ -538,6 +553,7 @@ async function updateTailnet() {
 
 async function check() {
   await checkPackages();
+  await yours.tidy().catch((error) => console.warn(`your packages: ${error.message}`));
   await offerChat();
   await installGrammars();
   await updateTailnet();
@@ -617,6 +633,7 @@ async function own() {
     network: { transport, uplink: exits.uplink },
     cdp: control.hook,
     clipboard: clipboardHook(),
+    commands: { append: [USER_MODULES] },
     ...sealedOption((await versions(root, [KERNEL]))[KERNEL], vault),
     ...folders.options,
     ...kernelUsers(mode, { approve: approvals.approve, onDenial: denials }),
