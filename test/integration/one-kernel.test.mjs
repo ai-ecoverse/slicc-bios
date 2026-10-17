@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { actPackage, agentUp, boot } from './bios.mjs';
+import { actPackage, agentUp, boot, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch({ timeout: 120000, agent: true });
@@ -45,7 +45,7 @@ function watchKernels() {
   };
 }
 
-test('a cold agent install runs in the page’s one kernel, and an optional install started during it waits its turn on the pnpm store', async (t) => {
+test('a cold agent install runs in the page’s one kernel with no package scripts, and an optional install started during it waits its turn on the pnpm store', async (t) => {
   const page = await chrome.page(t);
   await page.init(watchKernels);
   await boot(page);
@@ -61,6 +61,21 @@ test('a cold agent install runs in the page’s one kernel, and an optional inst
         .model.updates.list()
         .find((item) => item.id === 'agent')?.progress
   );
+  await run(
+    page,
+    "clear; ps -e -o args | grep '^pnpm install' | sed 's/^/seen: /'; echo listed-$((40 + 2))"
+  );
+  await shows(page, 'listed-42', 120000);
+  const screen = await page.evaluate(() => {
+    const { dock } = document.querySelector('slicc-app');
+    return dock.content(
+      dock.api.panels.map((panel) => panel.id).findLast((id) => id.startsWith('terminal:'))
+    ).screen.textContent;
+  });
+  const seen = screen.match(/seen: (pnpm install[^\n]*?)(?=\s{2,}|seen:|listed-42)/)?.[1] ?? '';
+  assert.match(seen, /--frozen-lockfile/, screen);
+  assert.match(seen, /--ignore-scripts/, screen);
+  assert.match(seen, /--ignore-pnpmfile/, screen);
   const optional = actPackage(page, 'rsync', 'install');
   await agentUp(page);
   assert.equal(await optional, 'ok');
