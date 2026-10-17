@@ -284,18 +284,7 @@ export async function guardHost(t) {
 export const trace = (...parts) =>
   process.env.GUARD_TRACE && process.stderr.write(`guard-set ${Date.now()} ${parts.join(' ')}\n`);
 const only = (list) => (list ? list.split(',') : null);
-const failed = (row) => row.control === 'fail' || row.guarded === 'fail' || row.live === 'fail';
-const RACE =
-  'slicc-browsers 1.7.8’s post-trigger settle waits 1500 ms for a beacon from the refused init script, so a POST chain slower than that is observed unfinished on either leg; 1.7.9 settles on the served last hop';
-const KNOWN = { 'C2.post-307-308': RACE, 'C2.post-308-307': RACE };
-const known = (row) =>
-  KNOWN[row.id] &&
-  row.live !== 'fail' &&
-  (row.why ?? '')
-    .split('; ')
-    .every((part) => /^(control )?(loaded|hopped): got false, want true$/.test(part)) &&
-  KNOWN[row.id];
-const failing = (row) => failed(row) && !known(row);
+const failing = (row) => row.control === 'fail' || row.guarded === 'fail' || row.live === 'fail';
 export const ROW_MS = 3 * 60 * 1000;
 
 export function shared(path) {
@@ -388,9 +377,6 @@ export function shared(path) {
         (row) =>
           `informational ${row.id}@${row.target}/${row.variant}: ${JSON.stringify({ ran: row.ran, notes: row.notes })}`
       ),
-      ...results
-        .filter((row) => failed(row) && known(row))
-        .map((row) => `known ${row.id}@${row.target}/${row.variant}: ${known(row)} (${row.why})`),
     ];
     process.stdout.write(`${lines.join('\n')}\n`);
     if (process.env.GUARD_REPORT)
@@ -412,5 +398,10 @@ export function shared(path) {
     assert.deepEqual(report.missing, []);
     assert.equal(report.observerSkipped, 0);
     assert.equal(results.filter(failing).length, 0, report.line);
+    assert.match(
+      report.line,
+      /^GUARD-PASS /,
+      'the runner prints a passing verdict for the whole set'
+    );
   });
 }
