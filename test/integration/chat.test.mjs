@@ -778,12 +778,18 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
       )
     );
     await page.evaluate(() => {
+      window.monitorClicked = 0;
+    });
+    await page.until(() => {
+      if (window.monitorRows('processes').length > 0) return true;
+      if (Date.now() - window.monitorClicked < 1000) return false;
+      window.monitorClicked = Date.now();
       for (const id of ['tasks', 'processes']) {
         const toggle = window.monitorSection(id)?.querySelector('button.toggle');
         if (toggle?.getAttribute('aria-expanded') === 'false') toggle.click();
       }
+      return false;
     });
-    await page.until(() => window.monitorRows('processes').length > 0);
   };
   await expand();
   const watched = await page.evaluate(() => {
