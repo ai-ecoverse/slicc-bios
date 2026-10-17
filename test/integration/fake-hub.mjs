@@ -32,6 +32,11 @@ function bootstraps(hub) {
       }
     },
     follow(token, body) {
+      if (Number(token) < 1 || Number(token) > hub.trays)
+        return {
+          code: 'INVALID_JOIN_CAPABILITY',
+          error: 'The tray hub knows no such join capability.',
+        };
       const tray = { trayId: `t${token}`, controllerId: body.controllerId, role: 'follower' };
       const socket = leader(token);
       if (!body.action) {
@@ -248,6 +253,134 @@ export async function follower() {
   };
   globalThis.followerClose = () => pc?.close();
   globalThis.followerCandidate = (candidate) => pc?.addIceCandidate(candidate).catch(() => {});
+}
+
+export async function leader(hubUrl) {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const frame = (type, id, payload = '') => {
+    const bytes = encoder.encode(payload);
+    const out = new Uint8Array(5 + bytes.length);
+    out[0] = type;
+    new DataView(out.buffer).setUint32(1, id);
+    out.set(bytes, 5);
+    return out;
+  };
+  const post = async (url, body) =>
+    (
+      await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    ).json();
+  const tray = await post(`${hubUrl}/tray`, {});
+  const claim = await post(tray.capabilities.controller.url, {
+    controllerId: 'fake-leader',
+    runtime: 'slicc-seven/1',
+  });
+  const socket = new WebSocket(claim.websocket.url);
+  await new Promise((resolve) => socket.addEventListener('open', resolve, { once: true }));
+  const state = {
+    joinUrl: tray.capabilities.join.url,
+    runtimes: [],
+    hello: null,
+    opens: [],
+    resets: [],
+  };
+  const waiting = new Map();
+  let next = 1;
+  let pc = null;
+  let control = null;
+  const serve = (channel) => {
+    channel.binaryType = 'arraybuffer';
+    channel.addEventListener('message', ({ data }) => {
+      if (typeof data === 'string') {
+        state.hello = JSON.parse(data);
+        return;
+      }
+      const bytes = new Uint8Array(data);
+      const id = new DataView(bytes.buffer).getUint32(1);
+      const payload = decoder.decode(bytes.subarray(5));
+      if (bytes[0] === 1) {
+        const meta = JSON.parse(payload);
+        state.opens.push(meta);
+        channel.send(
+          frame(2, id, JSON.stringify(meta.op === 'abort' ? { aborted: false } : { head: 'h0' }))
+        );
+        if (meta.op === 'abort') channel.send(frame(4, id));
+      } else if (bytes[0] === 2 || bytes[0] === 5) {
+        if (bytes[0] === 5 && id % 2 === 0) state.resets.push(payload);
+        waiting.get(id)?.(bytes[0] === 2 ? 'opened' : payload);
+      }
+    });
+  };
+  const handle = async (message) => {
+    const ids = { controllerId: message.controllerId, bootstrapId: message.bootstrapId };
+    if (message.type === 'follower.join_requested') {
+      pc?.close();
+      pc = new RTCPeerConnection();
+      state.runtimes.push(message.runtime);
+      pc.addEventListener('icecandidate', ({ candidate }) => {
+        if (candidate)
+          socket.send(
+            JSON.stringify({
+              type: 'bootstrap.ice_candidate',
+              ...ids,
+              candidate: candidate.toJSON(),
+            })
+          );
+      });
+      pc.addEventListener('datachannel', ({ channel }) => serve(channel));
+      control = pc.createDataChannel('slicc.link.v1', { ordered: true });
+      serve(control);
+      control.addEventListener('open', () =>
+        control.send(
+          JSON.stringify({
+            v: 1,
+            role: 'page',
+            name: 'a fake leader',
+            mode: 'remote',
+            caps: ['agent'],
+          })
+        )
+      );
+      await pc.setLocalDescription(await pc.createOffer());
+      socket.send(
+        JSON.stringify({
+          type: 'bootstrap.offer',
+          ...ids,
+          offer: { type: 'offer', sdp: pc.localDescription.sdp },
+        })
+      );
+    } else if (message.type === 'bootstrap.answer') {
+      await pc.setRemoteDescription(message.answer);
+    } else if (message.type === 'bootstrap.ice_candidate') {
+      await pc.addIceCandidate(message.candidate).catch(() => {});
+    }
+  };
+  let queue = Promise.resolve();
+  socket.addEventListener('message', ({ data }) => {
+    const message = JSON.parse(data);
+    queue = queue.then(() => handle(message)).catch(() => {});
+  });
+  state.open = (meta) =>
+    new Promise((resolve) => {
+      const id = next;
+      next += 2;
+      const timer = setTimeout(() => {
+        waiting.delete(id);
+        resolve(`no answer to OPEN ${JSON.stringify(meta)} within 10 s`);
+      }, 10000);
+      waiting.set(id, (answer) => {
+        clearTimeout(timer);
+        waiting.delete(id);
+        resolve(answer);
+      });
+      control.send(frame(1, id, JSON.stringify(meta)));
+    });
+  globalThis.fakeLeader = state;
+  return state.joinUrl;
 }
 
 export const model = (page, fn, arg) =>

@@ -23,7 +23,8 @@ import { browserControl } from './cdp.js';
 import { clipboardHook } from './clipboard.js';
 import { denialLog, installCommand, watchProtected } from './denials.js';
 import { createExitRouter } from './exits.js';
-import { deviceName } from './follow.js';
+import { LINK_PORT, LINK_URL, linkFacade, permitted } from './facade.js';
+import { deviceName, hubClient } from './follow.js';
 import { createFollowers } from './followers.js';
 import {
   grammarBase,
@@ -34,6 +35,7 @@ import {
 } from './grammars.js';
 import { createJerk } from './jerk.js';
 import { change, userRows } from './layer.js';
+import { createLeaders, proxyOf } from './leaders.js';
 import { createLinks, installLocal, labelStore, trustHostKey } from './link.js';
 import { serveLoopback } from './loopback.js';
 import { createFolders, KEY, offTheRecord } from './mounts.js';
@@ -209,6 +211,13 @@ const links = createLinks({
 const hub = location.hostname.endsWith('.sliccy.ai')
   ? location.origin
   : localStorage.getItem(TRAY_HUB_KEY);
+const leaders = createLeaders({
+  post: hubClient({
+    origin: proxyOf(hub, location.origin),
+    fetch: (...args) => fetch(...args),
+  }),
+  name: `seven on ${location.host}`,
+});
 const tray = hub
   ? createTray({
       links,
@@ -625,6 +634,13 @@ async function own() {
   });
   approvals.own();
   const denials = denialLog({ root, users: () => kernel?.users, mode });
+  const link = linkFacade({
+    check: async (stamp) => permitted(stamp, await sudoGidOf(kernel).catch(() => undefined)),
+    leaders,
+    scrub: vault.scrubText,
+    refused: ({ pid, uid, tag }) =>
+      denials({ pid, uid, tag, op: 'connect', path: LINK_URL, errno: 'EACCES' }),
+  });
   kernel = await createKernel({
     root,
     users: 'off',
@@ -634,6 +650,7 @@ async function own() {
     cdp: control.hook,
     clipboard: clipboardHook(),
     commands: { append: [USER_MODULES] },
+    facades: { link: { port: LINK_PORT, hook: link } },
     ...sealedOption((await versions(root, [KERNEL]))[KERNEL], vault),
     ...folders.options,
     ...kernelUsers(mode, { approve: approvals.approve, onDenial: denials }),

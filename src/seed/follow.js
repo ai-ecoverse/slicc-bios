@@ -154,7 +154,7 @@ export function hubClient({ origin, fetch: fetcher }) {
 
 const clamp = (ms) => Math.min(Math.max(Number.isFinite(ms) ? ms : 1_000, 50), 30_000);
 
-function sleep(timers, ms, stop) {
+export function sleep(timers, ms, stop) {
   return new Promise((resolve) => {
     const wake = () => {
       timers.clearTimeout(timer);
@@ -168,7 +168,7 @@ function sleep(timers, ms, stop) {
 
 async function attach(ctx, controllerId) {
   for (let hops = 0; ; ) {
-    const answer = await ctx.post(ctx.url(), { controllerId, runtime: RUNTIME });
+    const answer = await ctx.post(ctx.url(), { controllerId, runtime: ctx.runtime ?? RUNTIME });
     if (answer.moved) {
       if (hubOrigin(answer.moved) !== ctx.hub)
         throw failure('EACCES: the tray moved to another hub');
@@ -269,6 +269,10 @@ async function signal(ctx, controllerId, attached) {
     throw failed;
   }
   return { linked, ended };
+}
+
+export async function dial(ctx, controllerId) {
+  return signal(ctx, controllerId, await attach(ctx, controllerId));
 }
 
 const NONE = { view: false, control: false, terminal: false };
@@ -389,7 +393,7 @@ export function createFollow({
     while (!over) {
       try {
         const controllerId = newId();
-        const { linked, ended } = await signal(ctx, controllerId, await attach(ctx, controllerId));
+        const { linked, ended } = await dial(ctx, controllerId);
         if (!over) await follow(await linked, ended);
       } catch (why) {
         if (!over) await fail(why);

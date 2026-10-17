@@ -32,10 +32,10 @@ async function pump(stream, events) {
   const watching = (async () => {
     try {
       while ((await stream.read()) !== null);
-    } catch {
-      gone = true;
-      await iterator.return?.();
-    }
+      if (!(await stream.settled)) return;
+    } catch {}
+    gone = true;
+    await iterator.return?.();
   })();
   try {
     for (let next = await iterator.next(); !next.done && !gone; next = await iterator.next()) {

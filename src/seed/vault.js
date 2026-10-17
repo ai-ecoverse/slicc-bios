@@ -395,6 +395,51 @@ function coreFrame(document) {
   return frame;
 }
 
+export function vaultScrubber({ frame, origin, pair }) {
+  let loaded = false;
+  let open = null;
+  frame.addEventListener('load', () => {
+    loaded = true;
+    if (!open) return;
+    open.port.close();
+    for (const item of open.pending.values())
+      item.reject(failure({ code: 'ENOTCONN', message: RECONNECTED }));
+    open = null;
+  });
+  const port = () => {
+    if (open) return open;
+    if (!loaded || !frame.contentWindow)
+      throw failure({ code: 'ENOTCONN', message: NOT_CONNECTED });
+    const { port1, port2 } = new MessageChannel();
+    frame.contentWindow.postMessage({ type: TYPE, v: 1, op: 'hello', role: 'agent' }, origin, [
+      port2,
+    ]);
+    const made = { port: port1, pending: new Map(), serial: 0 };
+    port1.onmessage = ({ data: reply }) => {
+      const item = made.pending.get(reply?.id);
+      if (!item) return;
+      made.pending.delete(reply.id);
+      if (reply.error) item.reject(failure(reply.error, item.text));
+      else if (typeof reply.texts?.[0] === 'string') item.resolve(reply.texts[0]);
+      else item.reject(failure({ code: 'EIO', message: 'the vault answered no text' }));
+    };
+    port1.start?.();
+    open = made;
+    return made;
+  };
+  return async (text) => {
+    const now = pair();
+    if (!now?.needed) return text;
+    if (!now.ready) throw failure({ code: 'EACCES', message: 'unlock the vault to continue' });
+    const made = port();
+    const id = ++made.serial;
+    return new Promise((resolve, reject) => {
+      made.pending.set(id, { resolve, reject, text });
+      made.port.postMessage({ v: 1, id, op: 'redact', texts: [text] });
+    });
+  };
+}
+
 export function createVault({
   origin,
   document = globalThis.document,
@@ -559,6 +604,7 @@ export function createVault({
     call,
     sealed: sealedRelay({ call, forward, users, onRequest, away: () => away(view, state) }),
     scrub: pair,
+    scrubText: vaultScrubber({ frame, origin, pair }),
     async seal(fields) {
       return data(await call('seal', fields, { value: fields.value }));
     },

@@ -260,6 +260,10 @@
     "integrity": "sha512-UYnMCCev7OQYAOGJ+sO/wbmZGg5mOlsaa8zJPtsrere2mrKHczvwMYmLnGeC1cqV3XW/AwRlMNk0j+S3pYUZ2A==",
     "sha256": "d7db54ccdade9379aff3fa90fd8b07bb48990d96097fde39691b0fa17bffe2fe"
   },
+  "@ai-ecoverse/wasi-slicc@1.41.0": {
+    "integrity": "sha512-uPFR8MkUZ5IeDF6EHEehG74ZXpS5imlxZLSxqevMtbPTeNUHOMl+jTHo4INnPE6avtT1aY5LQnAPs1EM8Nh8Aw==",
+    "sha256": "15d742df5303089573122181d510d9e8700fff6c72cb0f3cbed650ecccabf3a9"
+  },
   "@ai-ecoverse/wasix-gnupg@2.4.9-4": {
     "integrity": "sha512-O1V9mpj62CiI6gkKcD0YxBaHKRZ3pDLdwVB8hif2DBOin4bQsWaHgUn0P7jaoArIUjlD/Ak3Wk/u+wJawto/FA==",
     "sha256": "7b36fec5ff7585373c8f22482b245641e38d979d61c470383b030d678a3893ff"
