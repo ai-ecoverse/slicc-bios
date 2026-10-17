@@ -309,6 +309,18 @@ const KNOWN = {
     legs: ['control', 'guarded'],
     why: 'intermittent runner error on both legs, “settle: no beacon from {ordinary}”: the pre-trigger settle waits for a beacon from the page’s init script, which bios refuses. The observations show no exposure: the guarded leg’s protected document is never served (loaded false)',
   },
+  'C2.post-307-308': {
+    paths: ['extension', 'proxy'],
+    targets: null,
+    legs: ['control', 'guarded'],
+    why: 'the vector observes 1500 ms after the POST, while its settle waits for a beacon from the refused init script, so a slower chain is seen unfinished on either leg ("loaded/hopped: got false"); slicc-browsers 1.7.9 settles on the served last hop',
+  },
+  'C2.post-308-307': {
+    paths: ['extension', 'proxy'],
+    targets: null,
+    legs: ['control', 'guarded'],
+    why: 'the vector observes 1500 ms after the POST, while its settle waits for a beacon from the refused init script, so a slower chain is seen unfinished on either leg ("loaded/hopped: got false"); slicc-browsers 1.7.9 settles on the served last hop',
+  },
 };
 const failing = (row) => row.control === 'fail' || row.guarded === 'fail' || row.live === 'fail';
 const known = (row) => {
