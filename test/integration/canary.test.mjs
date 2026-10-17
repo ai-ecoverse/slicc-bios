@@ -709,10 +709,8 @@ test('the report job’s upload step returns the canary artifact’s id and dige
   assert.match(report, /id: process\.env\.ARTIFACT_ID \|\| ""/);
   assert.doesNotMatch(yml, /\n\s+pattern: /);
 
-  const done = await cli(BIND, ['manifest'], {
+  const done = await cli(BIND, ['manifest', '--bindings', '/nonexistent/bindings.json'], {
     PREFIX: 'candidate-',
-    JOBS: '[]',
-    BINDINGS: '{}',
     UPLOADS: '[]',
     REPORT_ID: '9001',
     REPORT_DIGEST: 'AB'.repeat(32),
@@ -722,11 +720,11 @@ test('the report job’s upload step returns the canary artifact’s id and dige
   assert.deepEqual(JSON.parse(done.outputs.artifacts), [
     { role: 'report', name: 'candidate-canary', id: '9001', digest: 'ab'.repeat(32), attempt: '2' },
   ]);
-  const none = await cli(BIND, ['manifest'], { PREFIX: 'base-', JOBS: '[]', BINDINGS: '{}' });
+  const none = await cli(BIND, ['manifest', '--bindings', '/nonexistent/bindings.json'], {
+    PREFIX: 'base-',
+  });
   assert.deepEqual(JSON.parse(none.outputs.artifacts), []);
-  const bad = await cli(BIND, ['manifest'], {
-    JOBS: '[]',
-    BINDINGS: '{}',
+  const bad = await cli(BIND, ['manifest', '--bindings', '/nonexistent/bindings.json'], {
     REPORT_ID: '9001',
     REPORT_DIGEST: 'not-a-digest',
   });
@@ -794,44 +792,100 @@ test('the manifest keeps both matrix shards’ upload ids and digests, each from
     assert.deepEqual(Object.keys(done.outputs), [`binding_${index}`]);
     Object.assign(outputs, done.outputs);
   }
-  const done = await cli(BIND, ['manifest'], {
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const repo = 'ai-ecoverse/slicc-cdp';
+  const uploaded = {
+    101: ['candidate-canary-shard-canary-packages-update-cdp', 'a1'.repeat(32)],
+    102: ['candidate-canary-files-canary-packages-update-cdp', 'a2'.repeat(32)],
+    201: ['candidate-canary-shard-canary-guard', 'b1'.repeat(32)],
+  };
+  const server = await fakeApi(
+    { [repo]: 7 },
+    Object.fromEntries(
+      Object.entries(uploaded).map(([id, [name, digest]]) => [
+        `${repo}#${id}`,
+        meta(id, name, 600, 7, digest),
+      ])
+    )
+  );
+  const dir = await mkdtemp(join(tmpdir(), 'canary-manifest-'));
+  const bindings = join(dir, 'bindings.json');
+  const api = {
+    GITHUB_API_URL: server.api,
+    GITHUB_RUN_ID: '600',
+    GITHUB_REPOSITORY: repo,
     PREFIX: 'candidate-',
     JOBS: JSON.stringify(planned),
-    BINDINGS: JSON.stringify(outputs),
-    UPLOADS: '[]',
-    REPORT_ID: '301',
-    REPORT_DIGEST: 'c1'.repeat(32),
-    GITHUB_RUN_ATTEMPT: '1',
-  });
-  assert.equal(done.code, 0, done.stdout);
-  assert.deepEqual(JSON.parse(done.outputs.artifacts), [
-    {
-      role: 'shard',
-      name: 'candidate-canary-shard-canary-packages-update-cdp',
-      id: '101',
-      digest: 'a1'.repeat(32),
-      attempt: '1',
-    },
-    {
-      role: 'files',
-      name: 'candidate-canary-files-canary-packages-update-cdp',
-      id: '102',
-      digest: 'a2'.repeat(32),
-      attempt: '1',
-    },
-    {
-      role: 'shard',
-      name: 'candidate-canary-shard-canary-guard',
-      id: '201',
-      digest: 'b1'.repeat(32),
-      attempt: '1',
-    },
-    { role: 'report', name: 'candidate-canary', id: '301', digest: 'c1'.repeat(32), attempt: '1' },
-  ]);
-  const proof = await cli(BIND, ['manifest'], {
+  };
+  try {
+    const bound = await cli(BIND, ['shards', '--out', bindings, '--dir', join(dir, 'shards')], {
+      ...api,
+      BINDINGS: JSON.stringify(outputs),
+    });
+    assert.equal(bound.code, 0, bound.stdout);
+    assert.match(bound.stdout, /^canary bindings: PASS 2 shards, 3 artifacts$/m);
+    assert.deepEqual(bound.outputs, { ids: '101,201', path: join(dir, 'shards') });
+    const done = await cli(BIND, ['manifest', '--bindings', bindings], {
+      PREFIX: 'candidate-',
+      UPLOADS: '[]',
+      REPORT_ID: '301',
+      REPORT_DIGEST: 'c1'.repeat(32),
+      GITHUB_RUN_ATTEMPT: '1',
+    });
+    assert.equal(done.code, 0, done.stdout);
+    assert.deepEqual(JSON.parse(done.outputs.artifacts), [
+      {
+        role: 'shard',
+        name: 'candidate-canary-shard-canary-packages-update-cdp',
+        id: '101',
+        digest: 'a1'.repeat(32),
+        attempt: '1',
+      },
+      {
+        role: 'files',
+        name: 'candidate-canary-files-canary-packages-update-cdp',
+        id: '102',
+        digest: 'a2'.repeat(32),
+        attempt: '1',
+      },
+      {
+        role: 'shard',
+        name: 'candidate-canary-shard-canary-guard',
+        id: '201',
+        digest: 'b1'.repeat(32),
+        attempt: '1',
+      },
+      {
+        role: 'report',
+        name: 'candidate-canary',
+        id: '301',
+        digest: 'c1'.repeat(32),
+        attempt: '1',
+      },
+    ]);
+    const tampered = JSON.parse(outputs.binding_0);
+    tampered.rows[1].digest = 'ff'.repeat(32);
+    const refused = await cli(BIND, ['shards', '--out', bindings, '--dir', join(dir, 'shards')], {
+      ...api,
+      BINDINGS: JSON.stringify({ ...outputs, binding_0: JSON.stringify(tampered) }),
+    });
+    assert.match(
+      refused.stdout,
+      /^canary bindings: FAIL candidate-canary-files-canary-packages-update-cdp: .*refusing it$/m
+    );
+    const partial = await cli(BIND, ['manifest', '--bindings', bindings], { PREFIX: 'candidate-' });
+    assert.deepEqual(
+      JSON.parse(partial.outputs.artifacts).map(({ name }) => name),
+      ['candidate-canary-shard-canary-packages-update-cdp', 'candidate-canary-shard-canary-guard']
+    );
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+  const proof = await cli(BIND, ['manifest', '--bindings', '/nonexistent/bindings.json'], {
     PREFIX: '',
-    JOBS: '[]',
-    BINDINGS: '{}',
     UPLOADS: JSON.stringify([{ name: 'canary-candidate-artifact', path: 'x' }]),
     PROOF_ID: '55',
     PROOF_DIGEST: ONE,
@@ -1028,7 +1082,7 @@ test('a forged shard artifact with an extra suffix, or one the API does not matc
       { outputs: honest, jobs: planned, prefix: 'candidate-', run: '600', repo },
       { api: server.api }
     );
-    assert.equal(ok.verdict, 'canary bindings: PASS 2 shard artifacts');
+    assert.equal(ok.verdict, 'canary bindings: PASS 2 shards, 2 artifacts');
     assert.deepEqual(
       ok.verified.map(({ name: n, id }) => [n, id]),
       [

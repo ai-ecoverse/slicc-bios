@@ -433,7 +433,7 @@ jobs:
           node-version: '24'
 
       - id: bind
-        name: Each planned shard's artifact, checked against its upload step's id and digest before it is downloaded
+        name: Each planned shard's artifacts, checked against their upload steps' ids and digests before the shard's is downloaded
         env:
           JOBS: ${{ needs.plan.outputs.jobs }}
           BINDINGS: ${{ toJSON(needs.shard.outputs) }}
@@ -498,8 +498,6 @@ jobs:
         name: Every artifact this call uploaded, with the id and digest its upload step returned
         if: ${{ !cancelled() }}
         env:
-          JOBS: ${{ needs.plan.outputs.jobs }}
-          BINDINGS: ${{ toJSON(needs.shard.outputs) }}
           PREFIX: ${{ needs.plan.outputs.prefix }}
           UPLOADS: ${{ needs.plan.outputs.uploads }}
           PLAN_ATTEMPT: ${{ needs.plan.outputs.attempt }}
@@ -509,7 +507,7 @@ jobs:
           PROOF_DIGEST: ${{ needs.plan.outputs.proof-digest }}
           REPORT_ID: ${{ steps.upload.outputs.artifact-id }}
           REPORT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
-        run: node scripts/canary/bind.mjs manifest
+        run: node scripts/canary/bind.mjs manifest --bindings bindings.json
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         if: ${{ !cancelled() && github.event_name == 'schedule' && needs.plan.outputs.inputs-id != '' }}

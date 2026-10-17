@@ -1,4 +1,4 @@
-import { appendFile, writeFile } from 'node:fs/promises';
+import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import { argv, env, exit } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -237,14 +237,17 @@ export function collect(outputs, jobs, prefix) {
 export async function verifyShards({ outputs, jobs, prefix, run, repo }, options = {}) {
   const found = collect(outputs, jobs, prefix);
   const verified = [];
+  const rows = [];
   const refused = [...found.refused];
-  for (const entry of found.shards) {
+  for (const entry of found.rows) {
     try {
       await verifyArtifact(
         { id: entry.id, name: entry.name, run, digest: entry.digest },
         { repo, ...options }
       );
-      verified.push(entry);
+      rows.push(entry);
+      const job = found.planned.find(({ name }) => entry.role === 'shard' && name === entry.name);
+      if (job) verified.push({ run: job.run, shard: job.shard, ...entry });
     } catch (error) {
       refused.push({ name: entry.name, reason: error.message });
     }
@@ -261,12 +264,12 @@ export async function verifyShards({ outputs, jobs, prefix, run, repo }, options
   return {
     ok,
     verdict: ok
-      ? `canary bindings: PASS ${verified.length} shard artifacts`
+      ? `canary bindings: PASS ${verified.length} shards, ${rows.length} artifacts`
       : `canary bindings: FAIL ${why.join('; ')}`,
     verified,
     refused,
     missing,
-    rows: found.rows,
+    rows,
   };
 }
 
@@ -308,6 +311,7 @@ async function main() {
     options: {
       out: { type: 'string', default: 'bindings.json' },
       dir: { type: 'string', default: 'shards' },
+      bindings: { type: 'string', default: 'bindings.json' },
     },
   });
   const [command] = positionals;
@@ -361,11 +365,8 @@ async function main() {
     return;
   }
   if (command === 'manifest') {
-    const { rows: shardRows } = collect(
-      JSON.parse(env.BINDINGS || '{}'),
-      list(env.JOBS),
-      env.PREFIX ?? ''
-    );
+    const bindings = JSON.parse(await readFile(values.bindings, 'utf8').catch(() => '{}'));
+    const shardRows = Array.isArray(bindings.rows) ? bindings.rows : [];
     const rows = manifest({
       prefix: env.PREFIX ?? '',
       uploads: list(env.UPLOADS),
