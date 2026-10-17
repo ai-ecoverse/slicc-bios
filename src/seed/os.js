@@ -72,7 +72,7 @@ import {
 } from './tailscale.js';
 import { serveTerminal } from './terminal.js';
 import { pickTransport } from './transport.js';
-import { createTray, TRAY_HUB_KEY, trayPort } from './tray.js';
+import { createTray, seatNotices, TRAY_HUB_KEY, trayPort } from './tray.js';
 import { openTunnel } from './tunnel.js';
 import {
   baseManifest,
@@ -757,7 +757,7 @@ async function follow() {
     versions: mine,
     chat: () => loadChat(),
     wrap: (agent) => onSend(browser.stopping(agent), keep.sent),
-    guests: tray?.guests ?? null,
+    guests: tray ? seatNotices(tray.guests, notices) : null,
     storage: localStorage,
     login,
     disk: () => biosHash(read),

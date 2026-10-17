@@ -10,7 +10,10 @@ export const ACCESS = ['view', 'control', 'terminal'];
 export const PING_MS = 30_000;
 export const JOIN_MS = 5_000;
 export const SEAT_LINKS = 4;
-export const NOT_LEADING = 'Seven isn’t connected to the tray hub yet, so it can’t invite guests.';
+export const NOT_LEADING = 'Seven isn’t connected to the tray hub yet.';
+export const DENIED_KEY = 'slicc-os.revoked-seats';
+export const DENY_MS = 7 * 24 * 60 * 60 * 1000;
+export const SEAT_STOP = 'guest-seat-stop';
 const BACKOFF = [1_000, 2_000, 5_000, 10_000, 30_000];
 
 export function fingerprint(sdp) {
@@ -242,7 +245,28 @@ function followers({ links, send, devices, unlinked, pinned }) {
   return { join, answer, candidate };
 }
 
-function guests({ send, makePeer, serve, timers }) {
+export function seatDenials(storage, now = Date.now) {
+  const load = () => {
+    const kept = read(storage, DENIED_KEY, {});
+    const at = now();
+    return Object.fromEntries(
+      Object.entries(kept && typeof kept === 'object' ? kept : {}).filter(
+        ([, until]) => Number.isFinite(until) && until > at
+      )
+    );
+  };
+  return {
+    has: (id) => Object.hasOwn(load(), id),
+    add(id, until) {
+      const all = load();
+      const end = Number.isFinite(until) && until > now() ? until : now() + DENY_MS;
+      all[id] = Math.max(all[id] ?? 0, end);
+      storage.setItem(DENIED_KEY, JSON.stringify(all));
+    },
+  };
+}
+
+function guests({ send, makePeer, serve, timers, denials, expiries }) {
   const refuse = refusal(send);
   const live = new Map();
   const close = (item, reason) => {
@@ -274,6 +298,9 @@ function guests({ send, makePeer, serve, timers }) {
     const id = typeof biscotto?.id === 'string' ? biscotto.id : '';
     const label = typeof biscotto?.label === 'string' ? biscotto.label : '';
     if (!id || !label) return refuse(message, 'UNTRUSTED', 'a guest link needs its seat');
+    if (denials.has(id)) return refuse(message, 'UNTRUSTED', 'this guest seat was revoked');
+    const expires = Date.parse(biscotto.expiresAt ?? '');
+    if (Number.isFinite(expires)) expiries.set(id, expires);
     const before = live.get(controllerId);
     if (before) close(before, 'replaced');
     const same = [...live.values()].filter((item) => item.seat.id === id);
@@ -314,6 +341,7 @@ function guests({ send, makePeer, serve, timers }) {
       void mine(message)?.offer.receive({ t: 'candidate', candidate: message.candidate });
     },
     revoked(id) {
+      denials.add(id, expiries.get(id));
       for (const item of [...live.values()]) if (item.seat.id === id) close(item, 'revoked');
     },
   };
@@ -422,7 +450,12 @@ function joins(follower, seats) {
 const failed = (answered) =>
   new Error(answered.value.error ?? `the tray hub answered ${answered.status}`);
 
-function seatHub({ hub, storage, page, now, seats }) {
+const unrevoked = (reason) =>
+  new Error(
+    `Seven refuses this guest from now on, but the tray hub didn’t revoke the link: ${reason}`
+  );
+
+function seatHub({ hub, storage, page, now, seats, denials, expiries }) {
   return {
     async mint({ label, expiresAt, agentId }) {
       const ttl = expiresAt == null ? {} : { ttlMs: Math.max(1, Math.round(expiresAt - now())) };
@@ -433,14 +466,62 @@ function seatHub({ hub, storage, page, now, seats }) {
       });
       const url = typeof minted.value.url === 'string' ? minted.value.url : null;
       if (!minted.ok || typeof minted.value.id !== 'string' || !url) throw failed(minted);
+      if (Number.isFinite(expiresAt)) expiries.set(minted.value.id, expiresAt);
       return { id: minted.value.id, url: seatUrl(page, url) };
     },
     async revoke(id) {
+      denials.add(id, expiries.get(id));
       seats?.revoked(id);
-      const stopped = await hub.seat(read(storage, SESSION_KEY, null), 'biscotto/stop', { id });
-      if (!stopped.ok && stopped.status !== 404) throw failed(stopped);
+      const stopped = await hub
+        .seat(read(storage, SESSION_KEY, null), 'biscotto/stop', { id })
+        .catch((error) => Promise.reject(unrevoked(error.message)));
+      if (!stopped.ok && stopped.status !== 404) throw unrevoked(failed(stopped).message);
     },
   };
+}
+
+const notifier =
+  (timers) =>
+  async (link, meta, cap = 'join') => {
+    if (!link.offer.session.caps().includes(cap)) return false;
+    const stream = await Promise.race([
+      link.offer.session.open(meta, { shared: true }),
+      new Promise((resolve) => timers.setTimeout(resolve, JOIN_MS, null)),
+    ]).catch(() => null);
+    stream?.closeWrite();
+    return Boolean(stream);
+  };
+
+function guestSide({ storage, now, send, makePeer, onGuest, timers, hub, page }) {
+  const denials = seatDenials(storage, now);
+  const expiries = new Map();
+  const seats = onGuest
+    ? guests({ send, makePeer, serve: onGuest, timers, denials, expiries })
+    : null;
+  return { seats, guestHub: seatHub({ hub, storage, page, now, seats, denials, expiries }) };
+}
+
+export function seatNotices(guests, notices) {
+  const revoke = async (id) => {
+    const notice = `${SEAT_STOP}:${id}`;
+    try {
+      await guests.revoke(id);
+      notices.remove(notice);
+    } catch (error) {
+      notices.show(
+        {
+          id: notice,
+          tone: 'warning',
+          title: 'A revoked guest’s link is still on the tray hub',
+          body: error.message,
+          actions: [{ id: 'retry', label: 'Try again' }],
+        },
+        () => revoke(id).catch(() => undefined)
+      );
+      throw error;
+    }
+  };
+  return { mint: (draft) => guests.mint(draft), revoke };
 }
 
 export function createTray({
@@ -486,7 +567,16 @@ export function createTray({
     unlinked,
     pinned: () => remember(links, devices, save),
   });
-  const seats = onGuest ? guests({ send, makePeer, serve: onGuest, timers }) : null;
+  const { seats, guestHub } = guestSide({
+    storage,
+    now,
+    send,
+    makePeer,
+    onGuest,
+    timers,
+    hub,
+    page,
+  });
   const handlers = {
     'leader.connected': () => {
       state = 'ready';
@@ -558,15 +648,7 @@ export function createTray({
     attempts += 1;
   }
 
-  const notify = async (link, meta, cap = 'join') => {
-    if (!link.offer.session.caps().includes(cap)) return false;
-    const stream = await Promise.race([
-      link.offer.session.open(meta, { shared: true }),
-      new Promise((resolve) => timers.setTimeout(resolve, JOIN_MS, null)),
-    ]).catch(() => null);
-    stream?.closeWrite();
-    return Boolean(stream);
-  };
+  const notify = notifier(timers);
 
   async function setAccess(id, name, allowed) {
     const now = permit(devices[id], name, allowed);
@@ -602,7 +684,7 @@ export function createTray({
       state = 'idle';
       changed();
     },
-    guests: seatHub({ hub, storage, page, now, seats }),
+    guests: guestHub,
     status: () => described(state, error, session, page),
     away: () => awayDevices(devices, links),
     known: (id) => id in devices,

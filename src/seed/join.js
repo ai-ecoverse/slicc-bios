@@ -28,6 +28,26 @@ export function takeSeat({
   return url ? { hub: hubOrigin(url), url } : null;
 }
 
+export function unlabeled(model) {
+  const { agent } = model;
+  const messages = (...args) =>
+    agent
+      .messages(...args)
+      .map((message) =>
+        message.role === 'assistant' && message.model ? { ...message, model: undefined } : message
+      );
+  return {
+    ...model,
+    agent: new Proxy(agent, {
+      get(target, key) {
+        if (key === 'messages') return messages;
+        const value = Reflect.get(target, key, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }),
+  };
+}
+
 export function freshCertificate() {
   return RTCPeerConnection.generateCertificate({ name: 'ECDSA', namedCurve: 'P-256' });
 }
@@ -40,7 +60,7 @@ export function joinSeat({
   makePeer,
   prepare = async () => undefined,
   connect = (open) => followGuest(open),
-  create = async (connection) => (await loadChat()).createAgentModel(connection, {}),
+  create = async (connection) => unlabeled((await loadChat()).createAgentModel(connection, {})),
   storage = sessionStorage,
   cert = freshCertificate,
   timers = globalThis,

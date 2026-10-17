@@ -505,6 +505,19 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
     );
   });
   assert.match(await guestSaid(guest), /Hello from the owner\./);
+  assert.equal(
+    await guest.evaluate(() => {
+      const text = (root) =>
+        [...root.querySelectorAll('*')]
+          .map((element) => `${element.shadowRoot ? text(element.shadowRoot) : ''}`)
+          .join(' ') + root.textContent;
+      return /amazon-bedrock|us\.anthropic/.test(
+        text(document.querySelector('slicc-chat').shadowRoot)
+      );
+    }),
+    false,
+    'the guest page shows the raw model id'
+  );
   await owner.until(
     () => window.netPanel()?.querySelector('li[data-seat="s1"]')?.dataset.connected === 'true'
   );
@@ -858,8 +871,11 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
     ),
     [[device, 'seven']]
   );
-  const stored = await owner.evaluate(() => JSON.stringify({ ...localStorage }));
-  assert.ok(!stored.includes('/join/g1') && !stored.includes('"s1"'), 'the owner kept the seat');
+  const stored = await owner.evaluate(() => ({ ...localStorage }));
+  assert.ok(!JSON.stringify(stored).includes('/join/g1'), 'the owner kept the seat’s link');
+  const denied = JSON.parse(stored['slicc-os.revoked-seats']);
+  assert.deepEqual(Object.keys(denied), ['s1']);
+  assert.ok(Math.abs(denied.s1 - minted.expiresAt) < 1000, `denied until ${denied.s1}`);
 
   const again = await guest.tab();
   await again.goto(`/${seatAt.hash}`);
@@ -870,6 +886,65 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
   );
   assert.equal(await again.evaluate(() => sessionStorage.getItem('slicc-os.seat')), null);
   t.diagnostic(`the guest's page showed the refusal ${closedIn} ms after Revoke`);
+
+  const ben = await owner.evaluate(async (agentId) => {
+    const { guests } = document.querySelector('slicc-app').model;
+    const expiresAt = Date.now() + 60 * 60 * 1000;
+    const made = await guests.mint(agentId, {
+      label: 'Ben',
+      expiresAt,
+      gates: { messages: 'user', tools: 'user' },
+    });
+    return { id: made.seat.id, url: made.url, expiresAt };
+  }, cone.id);
+  const benSeat = new URLSearchParams(new URL(ben.url).hash.slice(1)).get('seat');
+  await probe.evaluate(probeLink, benSeat, 'ben');
+  await probe.until(() => window.ben.status().link === 'connected');
+  hub.failStops = true;
+  const unstopped = await owner.evaluate(
+    (id) =>
+      document
+        .querySelector('slicc-app')
+        .model.guests.revoke(id)
+        .then(
+          () => 'revoked',
+          (error) => error.message
+        ),
+    ben.id
+  );
+  assert.equal(
+    unstopped,
+    'Seven refuses this guest from now on, but the tray hub didn’t revoke the link: biscotto request failed'
+  );
+  assert.equal(hub.seats.get(new URL(benSeat).pathname.split('/').at(-1)).revoked, false);
+  await probe.within(5000, () => window.ben.status().link !== 'connected');
+  await probe.within(60000, () => window.ben.status().link === 'failed');
+  assert.ok(
+    hub.fromLeader.some(
+      (m) =>
+        m.type === 'bootstrap.failed' &&
+        m.code === 'UNTRUSTED' &&
+        m.message === 'this guest seat was revoked'
+    ),
+    'the hub let a revoked seat re-dial and seven took it'
+  );
+  assert.deepEqual(
+    await owner.evaluate(
+      (id) =>
+        document
+          .querySelector('slicc-app')
+          .model.notices.list()
+          .filter((notice) => notice.id === `guest-seat-stop:${id}`)
+          .map((notice) => [notice.title, notice.body]),
+      ben.id
+    ),
+    [['A revoked guest’s link is still on the tray hub', unstopped]]
+  );
+  const kept = await owner.evaluate(() =>
+    JSON.parse(localStorage.getItem('slicc-os.revoked-seats'))
+  );
+  assert.ok(Math.abs(kept[ben.id] - ben.expiresAt) < 1000, `denied until ${kept[ben.id]}`);
+  hub.failStops = false;
 
   for (const page of [owner, guest, follower, probe, again]) assert.deepEqual(page.errors, []);
 });
