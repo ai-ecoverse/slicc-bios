@@ -64,7 +64,7 @@ jobs:
   integration:
     name: ci / integration (${{ matrix.shard }})
     needs: plan
-    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["push","schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_RUNNER) || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 75
     strategy:
       fail-fast: ${{ needs.plan.outputs.failfast == 'true' }}
