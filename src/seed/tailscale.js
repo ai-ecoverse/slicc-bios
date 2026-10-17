@@ -594,7 +594,7 @@ export function installTailscale(start, options = {}) {
     try {
       await pnpm(kernel, `/${FOLDER}`, report, JSON.parse(manifest).dependencies?.[PACKAGE]);
     } finally {
-      kernel.terminate();
+      if (!start.shared) kernel.terminate();
     }
     await write(dir, RECEIPT, lock);
     return true;

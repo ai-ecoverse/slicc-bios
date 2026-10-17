@@ -50,11 +50,12 @@ export const PROTECTED = [
 const INSTALLER = '/opt/slicc/.installer';
 export const BASE = 'opt/slicc/base';
 const SYSTEM = '/usr/local/share/pnpm';
+const STORE_DIR = '/opt/slicc/.store';
 const HYGIENE = [
   '--ignore-scripts',
   '--ignore-pnpmfile',
   '--config.userconfig=/dev/null',
-  '--config.store-dir=/opt/slicc/.store',
+  `--config.store-dir=${STORE_DIR}`,
   '--config.verify-store-integrity=true',
 ];
 const CLEAN = {
@@ -80,19 +81,34 @@ export function enforced() {
   return guard.enforce;
 }
 
-export function installing(kernel) {
-  return (guard.writing.get(kernel) ?? 0) > 0;
+export function installing(kernel, path = null) {
+  const held = guard.writing.get(kernel);
+  if (!held) return false;
+  if (path === null) return true;
+  return [...held.keys()].some((root) => path === root || path.startsWith(`${root}/`));
 }
 
-async function writing_(kernel, task) {
-  guard.writing.set(kernel, (guard.writing.get(kernel) ?? 0) + 1);
+async function writing_(kernel, roots, task) {
+  const held = guard.writing.get(kernel) ?? new Map();
+  guard.writing.set(kernel, held);
+  for (const root of roots) held.set(root, (held.get(root) ?? 0) + 1);
   try {
     return await task();
   } finally {
-    const left = guard.writing.get(kernel) - 1;
-    if (left) guard.writing.set(kernel, left);
-    else guard.writing.delete(kernel);
+    for (const root of roots) {
+      const left = held.get(root) - 1;
+      if (left) held.set(root, left);
+      else held.delete(root);
+    }
+    if (!held.size) guard.writing.delete(kernel);
   }
+}
+
+function writes(cwd, argv) {
+  const modules = argv
+    .filter((arg) => arg.startsWith('--modules-dir='))
+    .map((arg) => arg.slice('--modules-dir='.length));
+  return [cwd, ...modules, STORE_DIR, INSTALLER];
 }
 
 export function writing(cwd) {
@@ -154,7 +170,13 @@ export function installer(
   });
 }
 
-export async function pnpm(kernel, cwd, report, to = null, argv = INSTALL, writer = true) {
+export const STORE = 'slicc-pnpm-store';
+
+export function pnpm(kernel, cwd, report, to = null, argv = INSTALL, writer = true) {
+  return navigator.locks.request(STORE, () => pnpmAlone(kernel, cwd, report, to, argv, writer));
+}
+
+async function pnpmAlone(kernel, cwd, report, to, argv, writer) {
   let log = '';
   report({ progress: null, log });
   const onStdout = (chunk) => {
@@ -164,7 +186,7 @@ export async function pnpm(kernel, cwd, report, to = null, argv = INSTALL, write
   if (writer && guard.on) await fence(await navigator.storage.getDirectory(), cwd);
   const run = writer ? { ...writing(cwd), onStdout } : { cwd, onStdout };
   const ran = () => kernel.run(writer ? hygiene(argv) : argv, run);
-  const { status, stderr } = await (writer ? writing_(kernel, ran) : ran());
+  const { status, stderr } = await (writer ? writing_(kernel, writes(cwd, argv), ran) : ran());
   if (status) {
     const error = new Error(stderr.trim() || `pnpm exited with ${status}`);
     error.log = (log + stderr).slice(-LOG);
@@ -174,7 +196,7 @@ export async function pnpm(kernel, cwd, report, to = null, argv = INSTALL, write
 }
 
 export async function readable(kernel, path) {
-  const { status, stderr } = await writing_(kernel, () =>
+  const { status, stderr } = await writing_(kernel, [path], () =>
     kernel.run(['chmod', '-R', 'a+rX', path], writing('/'))
   );
   if (status) throw new Error(stderr.trim() || `chmod exited with ${status}`);

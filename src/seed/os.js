@@ -313,14 +313,7 @@ let serving = null;
 let optional = Promise.resolve(null);
 let coneIds = null;
 
-const start = () =>
-  createKernel({
-    root,
-    network: { transport },
-    media: false,
-    ...kernelUsers(mode),
-    ...protection(),
-  });
+const start = Object.assign(async () => kernel, { shared: true });
 
 function base(os) {
   const network = os ? mirrorNetwork(os, reach.port) : reach.port;
@@ -679,7 +672,7 @@ async function own() {
       attach: attachKernel,
       paths: PROTECTED,
       log: denials,
-      busy: () => installing(kernel),
+      busy: (path) => installing(kernel, path),
     }).catch((error) => console.warn(`protect watch: ${error.message}`));
   }
   await installProfile(root, { text, write }).catch((error) =>
