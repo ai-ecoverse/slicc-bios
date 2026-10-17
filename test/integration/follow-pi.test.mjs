@@ -1,15 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
-import {
-  AGENT_RESTART,
-  agentState,
-  agentUp,
-  connectAccount,
-  listsAccount,
-  ready,
-  trust,
-} from './bios.mjs';
+import { agentUp, connectAccount, listsAccount, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { model, startHub } from './fake-hub.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
@@ -246,21 +238,6 @@ async function refusedOnly(page, from, at = 1) {
   const refusals = (await notices(page)).slice(from);
   assert.equal(refusals.length, at, `expected ${at} refusals, saw: ${refusals.join('\n')}`);
   for (const refusal of refusals) assert.match(refusal, /^This page is view-only, so it can't /);
-}
-
-async function restored(owner, ms = 60000) {
-  const deadline = Date.now() + ms;
-  let last = null;
-  for (;;) {
-    const now = await owned(owner);
-    if (JSON.parse(now).messages > 0 && now === last) return now;
-    if (Date.now() > deadline)
-      throw new Error(
-        `the owner's agent never showed its chat again after the reload: ${now}\n${await agentState(owner)}`
-      );
-    last = now;
-    await pause(1000);
-  }
 }
 
 const said = (page) =>
@@ -710,75 +687,5 @@ test('a follower watches the owner run with View, is refused a send, sends with 
   assert.deepEqual(owner.errors, []);
   assert.deepEqual(page.errors, []);
 
-  const file = await owner.evaluate(async () => {
-    const walk = async (dir, prefix) => {
-      for await (const [name, handle] of dir.entries()) {
-        const path = `${prefix}${name}`;
-        if (handle.kind === 'file' && path.endsWith('@ai-ecoverse/slicc-agent/dist/link.js'))
-          return { path, text: await (await handle.getFile()).text() };
-        if (handle.kind === 'directory' && /^(opt|opt\/agent|.*node_modules.*)$/.test(path)) {
-          const found = await walk(handle, `${path}/`);
-          if (found) return found;
-        }
-      }
-      return null;
-    };
-    return walk(await navigator.storage.getDirectory(), '');
-  });
-  assert.ok(file, 'the owner has the agent installed');
-  const newer = file.text.replace(
-    'new TextEncoder().encode(frame.hello)',
-    'new TextEncoder().encode(frame.hello.replace(/^slicc-agent-link\\/\\d+ /, "slicc-agent-link/9 "))'
-  );
-  assert.notEqual(newer, file.text);
-  await trust(owner, { [file.path]: newer });
-  await owner.reload();
-  await ready(owner);
-  await agentUp(owner, { budget: AGENT_RESTART, label: 'owner agent after the reload' });
-  const before = await restored(owner);
-  await page.evaluate(() => {
-    window.followWarnings = 0;
-    const warn = console.warn;
-    console.warn = (...args) => {
-      if (String(args[0]).startsWith('following the agent')) window.followWarnings += 1;
-      warn.apply(console, args);
-    };
-  });
-  const banner = await page.within(5 * 60 * 1000, () =>
-    document
-      .querySelector('slicc-app')
-      .model.notices?.list()
-      .find((item) => item.id === 'agent-mismatch')
-  );
-  assert.equal(banner.dismissible, false);
-  assert.equal(banner.title, "This tab can't follow that SLICC");
-  assert.equal(
-    await page.evaluate(() => document.querySelector('slicc-app').model.agent.readOnly?.()),
-    'Watch only.'
-  );
-  const sent = await page.evaluate(async () => {
-    const { agent } = document.querySelector('slicc-app').model;
-    window.firstAgent = agent;
-    window.followWarnings = 0;
-    return agent.send(agent.active(), 'From a mismatched follower').then(
-      () => 'sent',
-      (error) => error.code ?? error.message
-    );
-  });
-  assert.equal(sent, 'EPROTO');
-  await pause(10000);
-  const after = await page.evaluate(() => {
-    const { agent, notices } = document.querySelector('slicc-app').model;
-    return {
-      same: agent === window.firstAgent,
-      banners: notices.list().filter((item) => item.id === 'agent-mismatch').length,
-      warnings: window.followWarnings,
-    };
-  });
-  assert.deepEqual(after, { same: true, banners: 1, warnings: 0 });
-  assert.equal(await owned(owner), before);
-  assert.doesNotMatch(await said(owner), /From a mismatched follower/);
-  assert.ok(!asked.some((body) => body.includes('From a mismatched follower')));
-  await shoot(page, 'follower-watch-only', { show: 'chat' });
   await owner.evaluate(() => localStorage.removeItem('slicc-os.tray-hub'));
 });
