@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { ready, run, screen, shows } from './bios.mjs';
+import { ready, run, screen, settled, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch();
@@ -583,6 +583,7 @@ test('enforce: tar unpacks hard-link members into a tmpfs mount as one inode, an
 test('enforce: a cone has no crontab until it installs one, and its @reboot line runs on the next load, logged under /var/log/cron/cone', async (t) => {
   const page = await chrome.page(t);
   await bootIn(page, 'enforce');
+  await settled(page);
   await run(
     page,
     "clear; cd /; sudo -u cone crontab -l; echo listed=$?; echo '@reboot echo cron-booted-$((40 + 2)) as $(id -un)' | sudo -u cone crontab -; echo installed=$?; sudo -u cone crontab -l; echo done-$((40 + 2))"
@@ -595,6 +596,7 @@ test('enforce: a cone has no crontab until it installs one, and its @reboot line
   assert.match(text, /@reboot echo cron-booted/);
   await page.reload();
   await ready(page, rootShell);
+  await settled(page);
   await run(
     page,
     "clear; for i in $(seq 1 60); do grep -qs 'cron-booted-42 as cone' /var/log/cron/cone/*.log && break; sleep 1; done; cat /var/log/cron/cone/*.log; stat -c '%U %a' /var/log/cron/cone; echo logged-$((40 + 2))"

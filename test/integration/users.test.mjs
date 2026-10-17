@@ -151,12 +151,18 @@ test('optional packages installed before the upgrade come back for root, in the 
   }, RSYNC);
   await page.reload();
   await ready(page);
-  await page.within(AGENT_BUDGET, () =>
-    document
-      .querySelector('slicc-app')
-      .model.updates.packages()
-      .some((item) => item.id === 'rsync' && item.state === 'installed')
-  );
+  await page
+    .within(AGENT_BUDGET, () =>
+      document
+        .querySelector('slicc-app')
+        .model.updates.packages()
+        .some((item) => item.id === 'rsync' && item.state === 'installed')
+    )
+    .catch(async (error) => {
+      throw new Error(
+        `${error.message}\nrsync waits for the pnpm store behind the agent's install\n${await agentState(page)}`
+      );
+    });
   assert.equal((await row(page, 'rsync')).version, RSYNC);
   assert.equal((await row(page, 'git')).state, 'available');
   await run(
