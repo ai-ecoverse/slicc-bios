@@ -24,8 +24,8 @@ importers:
         specifier: 1.77.0
         version: 1.77.0
       '@ai-ecoverse/wasi-pnpm':
-        specifier: 12.9.1-8
-        version: 12.9.1-8
+        specifier: 12.9.1-9
+        version: 12.9.1-9
       '@ai-ecoverse/wasi-ripgrep':
         specifier: 15.2.0-3
         version: 15.2.0-3
@@ -36,8 +36,8 @@ importers:
         specifier: 1.0.8-2
         version: 1.0.8-2
       '@ai-ecoverse/wasm-coreutils':
-        specifier: 9.12.0-7
-        version: 9.12.0-7
+        specifier: 9.12.0-8
+        version: 9.12.0-8
       '@ai-ecoverse/wasm-curl':
         specifier: 8.22.0-4
         version: 8.22.0-4
@@ -123,8 +123,8 @@ packages:
       '@shikijs/themes':
         optional: true
 
-  '@ai-ecoverse/wasi-pnpm@12.9.1-8':
-    resolution: {integrity: sha512-/3LRssC7T2t9HovusS9neuDg5+FNMhf90MkECauL1vZI/6BsQSadLyopnzn3ifYvY0LDC+Q8Src22oGCE+x1QA==}
+  '@ai-ecoverse/wasi-pnpm@12.9.1-9':
+    resolution: {integrity: sha512-OQLqanDwhIkr6NkwrdB5UonOqvDj4NZP/PPsxQI9z1OckX5drZXFj65un2IBOtRCjgxwR9o+mQCt8mw4qC9Y7g==}
     engines: {slicc-kernel: '>=1.7.2'}
 
   '@ai-ecoverse/wasi-ripgrep@15.2.0-3':
@@ -138,8 +138,8 @@ packages:
   '@ai-ecoverse/wasm-bzip2@1.0.8-2':
     resolution: {integrity: sha512-FzE8FE3sMzOQLwm3hV1SFW717mhSjjrchGOgFuZW8JCZ57oPs6gJ/915POb5DHsjv3luXKnd2uycKdlOsdZoEQ==}
 
-  '@ai-ecoverse/wasm-coreutils@9.12.0-7':
-    resolution: {integrity: sha512-lYZYVpddOr/BsmqYLTlj3pmrft3c+s8sXoW6kROrwfL/TSJP8TZslzGfmmNmK2ebd3+rjg6AX6tmZ3lyvsy5YQ==}
+  '@ai-ecoverse/wasm-coreutils@9.12.0-8':
+    resolution: {integrity: sha512-TVzd0Qrjb47zfMCseSNVIPEKmfofcCxbSNOKmuADfETuEx9bEnrTuMikMeah+laVfCy15YUq3C4FTZnaMeI0zQ==}
     engines: {slicc-kernel: '>=1.44.0'}
 
   '@ai-ecoverse/wasm-curl@8.22.0-4':
@@ -209,7 +209,7 @@ snapshots:
 
   '@ai-ecoverse/slicc-spectrum@1.77.0': {}
 
-  '@ai-ecoverse/wasi-pnpm@12.9.1-8': {}
+  '@ai-ecoverse/wasi-pnpm@12.9.1-9': {}
 
   '@ai-ecoverse/wasi-ripgrep@15.2.0-3': {}
 
@@ -217,7 +217,7 @@ snapshots:
 
   '@ai-ecoverse/wasm-bzip2@1.0.8-2': {}
 
-  '@ai-ecoverse/wasm-coreutils@9.12.0-7': {}
+  '@ai-ecoverse/wasm-coreutils@9.12.0-8': {}
 
   '@ai-ecoverse/wasm-curl@8.22.0-4': {}
 

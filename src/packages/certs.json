@@ -291,6 +291,10 @@
     "integrity": "sha512-5oIfngw8Ln2/ddCJ0wtqMoSnW+UO2zuih0+x1CNDbwKkB18TxuWoI60QFQySjd69N6eP+blL/stz/AZyoYpeuw==",
     "sha256": "25599e4317ec2e7ca9a447ff99ac01f271358cd06bd2d727e6b28b10c05bf44a"
   },
+  "@ai-ecoverse/wasi-biome@2.5.15-4": {
+    "integrity": "sha512-hTKxTKNCvvfzXoVp30xFe8o/iB3cZ+FxjxYPv4kvyTuvG9i6InbGmZH/IgPsfRgMIL3g0TYIZQcFNlaOHjCTCg==",
+    "sha256": "6e3c79623cb82067121e971e8fb4b879c64591cd756c89cea33a3487b7928c7f"
+  },
   "@ai-ecoverse/wasi-buf@1.73.0-2": {
     "integrity": "sha512-zkfuvCUoe8VbKicU1GbHnGFRx6S3EI2laW37y8fJdVxfU22L2vyBLHUfCe2wVq/DDKzoQRz7OA8FxJ0xH4zIFQ==",
     "sha256": "0499c7c91181aefd49e7b8838409f52241e344ef826a857ab131e41052a7753a"
@@ -318,6 +322,10 @@
   "@ai-ecoverse/wasi-pnpm@12.9.1-8": {
     "integrity": "sha512-/3LRssC7T2t9HovusS9neuDg5+FNMhf90MkECauL1vZI/6BsQSadLyopnzn3ifYvY0LDC+Q8Src22oGCE+x1QA==",
     "sha256": "08136a9292ec7a04ebda5bc23fa7b84f85a635f13b19c9512f6ad83ddde60766"
+  },
+  "@ai-ecoverse/wasi-pnpm@12.9.1-9": {
+    "integrity": "sha512-OQLqanDwhIkr6NkwrdB5UonOqvDj4NZP/PPsxQI9z1OckX5drZXFj65un2IBOtRCjgxwR9o+mQCt8mw4qC9Y7g==",
+    "sha256": "579501f6f766a5cecbc75749ac4e81084d07d138b78f801c35bd752c88ab9101"
   },
   "@ai-ecoverse/wasi-ripgrep@15.2.0-3": {
     "integrity": "sha512-UYnMCCev7OQYAOGJ+sO/wbmZGg5mOlsaa8zJPtsrere2mrKHczvwMYmLnGeC1cqV3XW/AwRlMNk0j+S3pYUZ2A==",
@@ -423,6 +431,10 @@
     "integrity": "sha512-lYZYVpddOr/BsmqYLTlj3pmrft3c+s8sXoW6kROrwfL/TSJP8TZslzGfmmNmK2ebd3+rjg6AX6tmZ3lyvsy5YQ==",
     "sha256": "748e8a435a8f0aea6eae019a9ddeeccc316c68739b4ddb520275a817774240fd"
   },
+  "@ai-ecoverse/wasm-coreutils@9.12.0-8": {
+    "integrity": "sha512-TVzd0Qrjb47zfMCseSNVIPEKmfofcCxbSNOKmuADfETuEx9bEnrTuMikMeah+laVfCy15YUq3C4FTZnaMeI0zQ==",
+    "sha256": "1ad0d0bdceea1c1a6ed8d508c55f66137358e9bcd44a2dd51609e631c360b2e3"
+  },
   "@ai-ecoverse/wasm-curl@8.22.0-4": {
     "integrity": "sha512-FYCuUOylMQ6iPLJUvCAMk0lqcdb764t+9xv8qrIAOyQJWtSJrnUNntP7APzHo4m6I3LYJqYDO1NrImqc29S6Yg==",
     "sha256": "95c4950dd8dfc2b8898fd4b56771025fc8b2e8fe4c69928a94748703e58e934d"
@@ -499,6 +511,10 @@
     "integrity": "sha512-DPv/rkHbdRAmDd/UnX+ZEQl7NE3+VDQv/GrkLgng/posngIo+75UyX9QejtDq6CMQrAKBd37301ixtWioekl3g==",
     "sha256": "dc44e327301397c51c12e525fd3ec86f2734c324875b007025cfe9b4e3ce013d"
   },
+  "@ai-ecoverse/wasm-rsync@3.5.1-3": {
+    "integrity": "sha512-+aZZCseE/FUlzMoQTgKn8ACxOj/8stfPOpxAWbjBxi77Rn49/Qo/BHm4zmbg+T36UiOqw8zbwSHT48ITdnyK0A==",
+    "sha256": "2dc6fab4d122784c238f92965bda7b944ee70275cbc22dd5dc7f00e23dea7c32"
+  },
   "@ai-ecoverse/wasm-screen@5.0.1-9": {
     "integrity": "sha512-k3wcAieBfWa28hHWGZuA6MqhgJtQi5n0j1eyzopjSzXia9lysv39yKYGDrf5AZz6sad9unZkXSuW6u3jgo1XYg==",
     "sha256": "c651146115130196965af1738fa08a7354e6887b4a9efc9703d99dc06a52a873"
@@ -506,6 +522,10 @@
   "@ai-ecoverse/wasm-screen@5.0.1-10": {
     "integrity": "sha512-uvijsh00d98MvuJwlMdI0WqJZrl7BpKlw3ucZzsa2nTcR+6W2YC8hEAjXkP8T4MV40Zne5QzKXFr7ezXLhz7ZA==",
     "sha256": "66b9aada10c3cee20eb2c5f6a882c68b75f6afc70dd2d34d90cf14f4fb341b35"
+  },
+  "@ai-ecoverse/wasm-screen@5.0.1-11": {
+    "integrity": "sha512-qojf2nHN7W3jnxEH7Y0RZ4R/IGaUGDX5UrgYKm1bbFA3KdkwAgm/Eg4OW7t+3FfXM4YqgsMtnfUuSPrzga6LGw==",
+    "sha256": "cedaa15b64767d421a03773ff98377d08d9aba87e10274f089f2b3f98a8ea6ce"
   },
   "@ai-ecoverse/wasm-sed@4.9.0-3": {
     "integrity": "sha512-t+sfLSgTzFW5tyysusEtV7D1xPY/qELvbNAqbNobp8/q898b0zFZrM2b2/PjNN5o1O6jEgjOTHuT1Z71tzb9bw=="

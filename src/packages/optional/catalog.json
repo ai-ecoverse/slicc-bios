@@ -92,7 +92,7 @@
     "label": "Biome",
     "description": "Formats and lints JavaScript, TypeScript, JSON and CSS.",
     "commands": ["biome"],
-    "size": 10522726
+    "size": 10593722
   },
   "@ai-ecoverse/wasm-poppler": {
     "id": "pdf",
@@ -120,7 +120,7 @@
     "label": "rsync",
     "description": "Copies and syncs folders, sending only what changed, also to rsync:// servers.",
     "commands": ["rsync"],
-    "size": 917492
+    "size": 984555
   },
   "@ai-ecoverse/wasm-sqlite3": {
     "id": "sqlite3",
@@ -141,7 +141,7 @@
     "label": "screen",
     "description": "Keeps a terminal session running to detach and reattach, from any terminal.",
     "commands": ["screen"],
-    "size": 715434
+    "size": 715750
   },
   "@ai-ecoverse/wasi-dig": {
     "id": "dig",

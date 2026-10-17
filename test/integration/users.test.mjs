@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { actPackage, agentUp, boot, ready, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch({ timeout: 120000, agent: true });
+const RSYNC = JSON.parse(
+  await readFile(new URL('../../src/packages/optional/package.json', import.meta.url), 'utf8')
+).dependencies['@ai-ecoverse/wasm-rsync'];
 after(() => chrome.close());
 
 const color = (page, value) =>
@@ -104,7 +108,7 @@ test('optional packages installed before the upgrade come back for root, in the 
       .model.updates.packages()
       .some((item) => item.id === 'rsync')
   );
-  await page.evaluate(async () => {
+  await page.evaluate(async (version) => {
     const put = async (path, text) => {
       let dir = await navigator.storage.getDirectory();
       const names = path.split('/');
@@ -117,13 +121,13 @@ test('optional packages installed before the upgrade come back for root, in the 
     const old = 'home/.local/share/pnpm/global/v11/1-before';
     await put(
       `${old}/package.json`,
-      JSON.stringify({ dependencies: { '@ai-ecoverse/wasm-rsync': '3.4.4-5' } })
+      JSON.stringify({ dependencies: { '@ai-ecoverse/wasm-rsync': version } })
     );
     await put(
       `${old}/node_modules/@ai-ecoverse/wasm-rsync/package.json`,
-      JSON.stringify({ name: '@ai-ecoverse/wasm-rsync', version: '3.4.4-5' })
+      JSON.stringify({ name: '@ai-ecoverse/wasm-rsync', version })
     );
-  });
+  }, RSYNC);
   await page.reload();
   await ready(page);
   await page.within(300000, () =>
@@ -132,9 +136,12 @@ test('optional packages installed before the upgrade come back for root, in the 
       .model.updates.packages()
       .some((item) => item.id === 'rsync' && item.state === 'installed')
   );
-  assert.equal((await row(page, 'rsync')).version, '3.4.4-5');
+  assert.equal((await row(page, 'rsync')).version, RSYNC);
   assert.equal((await row(page, 'git')).state, 'available');
-  await run(page, 'rsync --version | head -1 | grep -c "version 3.4.4" | sed "s/^/rsync ran /"');
+  await run(
+    page,
+    `rsync --version | head -1 | grep -c "version ${RSYNC.split('-')[0]}" | sed "s/^/rsync ran /"`
+  );
   await shows(page, 'rsync ran 1');
 
   const show = async () => {
