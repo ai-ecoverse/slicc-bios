@@ -15,16 +15,41 @@ export const layouts = {
   settings: { side: 'center', open: [] },
 };
 
+export function refusals() {
+  let text = null;
+  const listeners = new Set();
+  return {
+    text: () => text,
+    set(next) {
+      if (next === text) return;
+      text = next;
+      for (const listener of [...listeners]) listener();
+    },
+    on(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+}
+
 export function followPort(
   follow,
-  { reload = () => location.replace(new URL('../', location.href)) } = {}
+  { reload = () => location.replace(new URL('../', location.href)), refusal = null } = {}
 ) {
+  const state = () => {
+    const status = follow.status();
+    const refused = refusal?.text();
+    return refused ? { ...status, refused } : status;
+  };
   return {
     on(type, listener) {
       if (type !== 'follow') return () => undefined;
-      return follow.on(() => listener(follow.status()));
+      const offs = [follow.on(() => listener(state())), refusal?.on(() => listener(state()))];
+      return () => {
+        for (const off of offs) off?.();
+      };
     },
-    state: () => follow.status(),
+    state,
     async leave() {
       await follow.leave();
       reload();
@@ -82,6 +107,7 @@ export function agentFollower({
   connect = (open) => followAgent(open),
   create = async (connection) => (await loadChat()).createAgentModel(connection, {}),
   notices = null,
+  refusal = null,
   timers = globalThis,
 }) {
   let connection = null;
@@ -93,6 +119,7 @@ export function agentFollower({
   const refuse = (current, error) => {
     refused = current;
     timers.clearTimeout(retry);
+    refusal?.set(error.message);
     notices?.show(
       {
         id: OTHER_VERSION,
@@ -134,6 +161,7 @@ export function agentFollower({
     connection = joined;
     session = current;
     notices?.remove(OTHER_VERSION);
+    refusal?.set(null);
     show(agent);
     void joined.closed.then(() => {
       if (connection !== joined) return;
@@ -243,7 +271,8 @@ export function startFollower({
     ...surfaces.find((item) => item.id === id),
     ...layout,
   }));
-  const port = followPort(follow);
+  const refusal = refusals();
+  const port = followPort(follow, { refusal });
   const base = {
     ...createKernelModel({
       kernel: remoteKernel(follow),
@@ -263,6 +292,7 @@ export function startFollower({
     prepare: preparer(root),
     create: chatModel(storage, base.notices),
     notices: base.notices,
+    refusal,
   });
   document.documentElement.dataset.follow = 'on';
   void admit().then((yes) => yes && follow.start());

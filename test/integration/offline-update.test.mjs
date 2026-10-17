@@ -78,7 +78,7 @@ test('an update that finds the network down stops with its error, and a reload o
   );
 });
 
-test('an installed seven whose modes still need their repair boots offline, and repairs once the network is back', {
+test('an installed seven whose modes still need their repair boots offline with a working terminal, whose wasm comes from OPFS as application/wasm through the integrity check, and repairs once the network is back', {
   timeout: 30 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -107,6 +107,22 @@ test('an installed seven whose modes still need their repair boots offline, and 
   await ready(page);
   const pending = JSON.parse(await read(page, `var/lib/bios/${KERNEL}.json`));
   assert.equal(pending.modes, undefined);
+  const wasm = await page.evaluate(async () => {
+    const url = new URL(customElements.get('slicc-terminal').wasmUrl);
+    const response = await fetch(url);
+    const type = response.headers.get('content-type');
+    const module = await WebAssembly.compileStreaming(response).then(
+      (compiled) => WebAssembly.Module.exports(compiled).length > 0,
+      (error) => String(error)
+    );
+    return { path: url.pathname, status: response.status, type, module };
+  });
+  assert.deepEqual(wasm, {
+    path: '/node_modules/@ai-ecoverse/slicc-spectrum/dist/ghostty-vt.wasm',
+    status: 200,
+    type: 'application/wasm',
+    module: true,
+  });
   chrome.cdn.status = 0;
   await page.evaluate(() => location.assign('/'));
   await ready(page);

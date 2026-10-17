@@ -430,7 +430,7 @@ const tides =
 const lighthouse =
   '<!doctype html><title>Lighthouse log</title><style>body{font:16px system-ui;margin:0;color:#2b2416}header{background:#7a4b0b;color:#fff;padding:18px 32px;font-size:22px}main{padding:24px 32px}li{margin:8px 0}</style><header>lighthouse.example · Keeper’s log</header><main><h1>Lighthouse log</h1><ul><li>06:00 Lamp off, lens cleaned</li><li>12:00 Visibility 8 nm</li><li>18:30 Lamp on</li></ul></main>';
 
-test('screenshots of the browser panel: a driven tab live, two driven tabs, Stop and its last frame', async (t) => {
+test('screenshots of the browser panel: a driven tab live, two driven tabs, the All tabs view kept when the dock switches to phone, Stop and its last frame', async (t) => {
   const page = await chrome.page(t);
   const extension = await fakeExtension(page);
   t.after(extension.close);
@@ -517,10 +517,8 @@ test('screenshots of the browser panel: a driven tab live, two driven tabs, Stop
   });
   await page.until(() => document.querySelector('slicc-app').screen === 'phone');
   await page.evaluate(() => document.querySelector('slicc-app').show('browser'));
-  await page.within(20000, live);
-  await shot('live-420');
-  await pointer('[data-action="all-tabs"]');
   await page.until(() => window.panel()?.querySelectorAll('li[data-controlled]').length === 2);
+  assert.equal(await page.evaluate(live), false);
   await shot('overview-420');
   await page.evaluate(() =>
     [...window.panel().querySelectorAll('li[data-controlled]')]
@@ -528,6 +526,8 @@ test('screenshots of the browser panel: a driven tab live, two driven tabs, Stop
       .querySelector('.window')
       .click()
   );
+  await page.within(20000, live);
+  await shot('live-420');
   await page.until(() =>
     [...window.panel().querySelectorAll('[data-action="stop-agent"]')].some((button) =>
       button.textContent.includes('harbor')
