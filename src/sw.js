@@ -1,5 +1,6 @@
 import { appendLog, described, openIntegrity, sha256, treeOf } from './sw/integrity.js';
 import { kernelPort, loopback, Unreachable } from './sw/loopback.js';
+import { joined, opfsReader } from './sw/opfs.js';
 import { createResolver, NODE_STUBS } from './sw/resolve.js';
 import { nodeStub } from './sw/stubs.js';
 import { transform } from './sw/transform.js';
@@ -75,13 +76,7 @@ const markers = [
 ];
 const AGENT = '/opt/agent/';
 
-async function read(path) {
-  const names = path.split('/').filter(Boolean);
-  const name = path.endsWith('/') || names.length === 0 ? 'index.html' : names.pop();
-  let dir = await navigator.storage.getDirectory();
-  for (const part of names) dir = await dir.getDirectoryHandle(part);
-  return (await dir.getFileHandle(name)).getFile();
-}
+const read = opfsReader();
 
 class Changed extends Error {
   constructor(path, what, hashes = {}) {
@@ -198,7 +193,9 @@ let generation;
 let resolver;
 const transformed = new Map();
 
-async function currentResolver() {
+const currentResolver = joined(freshResolver);
+
+async function freshResolver() {
   const times = await Promise.all(
     markers.map((marker) =>
       read(marker).then(
