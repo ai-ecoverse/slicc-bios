@@ -13,11 +13,35 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  SHARDS: 'follow-chat remote-pydata users-agent-ui packages-update-cdp guard guard-set-extension-prompt guard-set-extension-lagging guard-set-proxy-prompt guard-set-proxy-lagging k4-link user-packages-keys-favicon rest'
-  SHARDED: '/(follow[^/]*|chat|remote|pydata|updates|users|agent-ui|packages|update|cdp|guard-vectors|guard-set-[a-z]+|serve|k4[^/]*|link|user-packages|keys|favicon)\.test\.mjs$'
-
 jobs:
+  plan:
+    name: ci / plan
+    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["push","schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_LIGHT_RUNNER) || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      shards: ${{ steps.plan.outputs.shards }}
+      arm: ${{ steps.plan.outputs.arm }}
+      pr: ${{ steps.plan.outputs.pr }}
+      failfast: ${{ steps.plan.outputs.failfast }}
+      retry: ${{ steps.plan.outputs.retry }}
+      seed: ${{ steps.plan.outputs.seed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+
+      - name: The experiment's arm and a random, duration-balanced shard assignment
+        id: plan
+        run: node scripts/ci/plan.mjs
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: experiment-plan
+          path: artifacts/experiment/plan.json
+
   lint:
     name: ci / lint
     runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["push","schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_LIGHT_RUNNER) || 'ubuntu-latest' }}
@@ -39,40 +63,12 @@ jobs:
 
   integration:
     name: ci / integration (${{ matrix.shard }})
+    needs: plan
     runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["push","schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 75
     strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - shard: follow-chat
-            match: '/(follow[^/]*|chat)\.test\.mjs$'
-          - shard: remote-pydata
-            match: '/(remote|pydata|updates)\.test\.mjs$'
-          - shard: users-agent-ui
-            match: '/(users|agent-ui)\.test\.mjs$'
-          - shard: packages-update-cdp
-            match: '/(packages|update|cdp)\.test\.mjs$'
-          - shard: guard
-            match: '/(guard-vectors|serve)\.test\.mjs$'
-          - shard: guard-set-extension-prompt
-            match: '/guard-set-extension\.test\.mjs$'
-            variants: prompt
-          - shard: guard-set-extension-lagging
-            match: '/guard-set-extension\.test\.mjs$'
-            variants: lagging
-          - shard: guard-set-proxy-prompt
-            match: '/guard-set-proxy\.test\.mjs$'
-            variants: prompt
-          - shard: guard-set-proxy-lagging
-            match: '/guard-set-proxy\.test\.mjs$'
-            variants: lagging
-          - shard: k4-link
-            match: '/(k4[^/]*|link)\.test\.mjs$'
-          - shard: user-packages-keys-favicon
-            match: '/(user-packages|keys|favicon)\.test\.mjs$'
-          - shard: rest
-            match: ''
+      fail-fast: ${{ needs.plan.outputs.failfast == 'true' }}
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
       LEFTHOOK: '0'
       SLICC_NO_UPDATE_CHECK: '1'
@@ -102,25 +98,17 @@ jobs:
             echo "No root on $RUNNER_NAME: the image's system libraries and fonts serve Chromium."
           fi
 
-      - name: Integration tests with coverage, CPU profiles, and screenshots
-        env:
-          MATCH: ${{ matrix.match }}
-          GUARD_VARIANTS: ${{ matrix.variants }}
-        run: |
-          all=$(ls test/integration/*.test.mjs)
-          if [ -n "$MATCH" ]; then files=$(printf '%s\n' "$all" | grep -E "$MATCH" || true)
-          else files=$(printf '%s\n' "$all" | grep -vE "$SHARDED" || true); fi
-          if [ -z "$files" ]; then echo "no test files in shard ${{ matrix.shard }}" >&2; exit 1; fi
-          printf 'shard ${{ matrix.shard }}:\n%s\n' "$files"
-          printf '%s\n' "$files" > "$RUNNER_TEMP/files.txt"
-          set -o pipefail
-          SLICC_TESTS="$(printf '%s\n' "$files" | tr '\n' ' ')" npm test 2>&1 | tee "$RUNNER_TEMP/test.log"
+      - run: npm run pretest
 
-      - name: The shard's verdict, from the test summary
-        if: always()
+      - name: Integration tests with coverage, CPU profiles, and screenshots, and the shard's verdict
         env:
           SHARD: ${{ matrix.shard }}
-        run: node scripts/ci/verdict.mjs shard --name "$SHARD" --log "$RUNNER_TEMP/test.log" --files "$(cat "$RUNNER_TEMP/files.txt" 2>/dev/null)" --out "artifacts/verdicts/$SHARD.txt"
+          ITEMS: ${{ matrix.items }}
+          RETRY: ${{ needs.plan.outputs.retry }}
+          EXPERIMENT_ARM: ${{ needs.plan.outputs.arm }}
+          EXPERIMENT_PR: ${{ needs.plan.outputs.pr }}
+          EXPERIMENT_SEED: ${{ needs.plan.outputs.seed }}
+        run: node scripts/ci/shard.mjs --name "$SHARD" --items "$ITEMS" --retry "$RETRY"
 
       - name: Crash dumps
         if: always()
@@ -148,7 +136,7 @@ jobs:
 
   ci:
     name: ci / test
-    needs: [lint, integration]
+    needs: [plan, lint, integration]
     if: always()
     runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["push","schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_LIGHT_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 20
@@ -169,6 +157,11 @@ jobs:
           pattern: integration-*
           merge-multiple: true
           path: .
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: experiment-plan
+          path: artifacts/experiment
 
       - name: Coverage and hotspots across the shards
         run: |
@@ -193,6 +186,8 @@ jobs:
       - name: Every shard and lint passed, each with its verdict
         if: always()
         env:
+          PLAN: ${{ needs.plan.result }}
           LINT: ${{ needs.lint.result }}
           INTEGRATION: ${{ needs.integration.result }}
-        run: node scripts/ci/verdict.mjs shards --dir artifacts/verdicts --expect "$SHARDS" --results "{\"lint\":\"$LINT\",\"integration\":\"$INTEGRATION\"}"
+          SHARDS: ${{ needs.plan.outputs.shards }}
+        run: node scripts/ci/verdict.mjs shards --dir artifacts/verdicts --expect "$SHARDS" --results "{\"plan\":\"$PLAN\",\"lint\":\"$LINT\",\"integration\":\"$INTEGRATION\"}"
