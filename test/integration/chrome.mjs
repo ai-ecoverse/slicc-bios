@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { serve, launch as start } from '@ai-ecoverse/slicc-shared-web/harness';
 import { startFakeVault } from './fake-vault.mjs';
 
+env.SLICC_CDP_PORTS ??= '9300-9309';
+
 const options = {
   roots: [['/', 'src/']],
   aliases: [['/os/', 'src/seed/']],

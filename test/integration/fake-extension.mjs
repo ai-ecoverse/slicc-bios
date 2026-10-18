@@ -11,7 +11,7 @@ const namesProtected = ({ urlPattern } = {}) => {
 };
 
 export function extensionOver(browser) {
-  return async function fakeExtension(page) {
+  return async function fakeExtension(page, { slow = {} } = {}) {
     const socket = new WebSocket(browser);
     await new Promise((resolve, reject) => {
       socket.onopen = resolve;
@@ -31,7 +31,9 @@ export function extensionOver(browser) {
         shielding.push(command.params.patterns);
         return deliver(JSON.stringify({ id: command.id, error: { message: SHIELD } }));
       }
-      socket.send(JSON.stringify(command));
+      const ms = slow[command.method];
+      if (ms) setTimeout(() => socket.send(JSON.stringify(command)), ms);
+      else socket.send(JSON.stringify(command));
     });
     await page.init(() => {
       const pending = new Map();

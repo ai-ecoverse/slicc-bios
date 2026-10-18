@@ -208,3 +208,13 @@ test('an uncertified pin fails unless its certs entry records an exception, and 
     'optional/package-lock.json @ai-ecoverse/wasm-git@2.55.0-15',
   ]);
 });
+
+test('every CI job and every test run keeps slicc-cdp off 127.0.0.1:9222-9229', async () => {
+  const root = new URL('../../', import.meta.url);
+  const harness = await readFile(new URL('test/integration/chrome.mjs', root), 'utf8');
+  assert.match(harness, /^env\.SLICC_CDP_PORTS \?\?= '9300-9309';$/m);
+  for (const file of ['ci.yml', 'canary.yml', 'cert-review.yml']) {
+    const yml = await readFile(new URL(`.github/workflows/${file}`, root), 'utf8');
+    assert.match(yml, /\nenv:\n(?: {2}\S[^\n]*\n)*? {2}SLICC_CDP_PORTS: '9300-9309'\n/, file);
+  }
+});
