@@ -634,7 +634,9 @@ test('the BIOS installer replaces a package in place while seven runs: the shell
   assert.ok(Number(runs) > 0, counted);
   const retried = await read(page, 'tmp/retried').catch(() => '');
   if (retried)
-    t.diagnostic(`an exec failed once and passed on its retry (${counted}): ${retried.trim()}`);
+    t.diagnostic(
+      `kernel#1075: an exec failed once while the installer swapped the package, and passed on its retry (${counted}): ${retried.trim()}`
+    );
   const errors = await read(page, 'tmp/errs').catch(() => '');
   assert.equal(Number(failures), 0, `${counted}\n${errors}`);
   const probe = await other.evaluate(() => {
