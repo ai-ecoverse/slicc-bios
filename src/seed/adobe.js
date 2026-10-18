@@ -251,7 +251,7 @@ export function sealedLogin(login, { vault, takes, now = Date.now }) {
         name: IMS_TOKEN,
         value: token,
         source: 'oauth:adobe',
-        ...(expiresIn ? { expiresAt: now() + expiresIn } : {}),
+        ...(expiresIn ? { expiresAt: now() + expiresIn * 1000 } : {}),
       });
       return { sealed: true };
     });
