@@ -24,8 +24,13 @@ export const targets = {
   log: origin('log.example.test'),
 };
 const PATHS = {
-  extension: { autoAttach: true, browserSession: false, browserContexts: true },
-  proxy: { autoAttach: true, browserSession: true, browserContexts: true },
+  extension: {
+    autoAttach: true,
+    browserSession: false,
+    browserContexts: true,
+    chromeUrlsAttach: false,
+  },
+  proxy: { autoAttach: true, browserSession: true, browserContexts: true, chromeUrlsAttach: true },
 };
 
 const port = await new Promise((resolve) => {
@@ -286,10 +291,13 @@ export const trace = (...parts) =>
 const only = (list) => (list ? list.split(',') : null);
 const failing = (row) => row.control === 'fail' || row.guarded === 'fail' || row.live === 'fail';
 export const ROW_MS = 3 * 60 * 1000;
+export const SCALE = { lagging: 3 };
 
 export function shared(path) {
   const chosen = {
-    targets: only(process.env.GUARD_TARGETS) ?? ['seven', 'vault', 'vault-x', 'apex', 'own'],
+    targets: only(process.env.GUARD_TARGETS) ?? [
+      ...new Set(set.vectors.flatMap((vector) => vector.targets)),
+    ],
     variants: only(process.env.GUARD_VARIANTS) ?? Object.keys(set.variants),
   };
   const results = [];
@@ -313,6 +321,7 @@ export function shared(path) {
         const execution = await run(subset(target), {
           clientFactory: clientFactory(path),
           rowTimeoutMs: ROW_MS,
+          settleScale: SCALE[variant] ?? 1,
           targets,
           capabilities: PATHS[path],
           variant,

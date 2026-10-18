@@ -256,6 +256,7 @@ class Guard {
     if (depth > 8) return true;
     const verdict = this.is.target({
       url: found.url,
+      type: found.type,
       previous: found.was,
       opener: await this.opener(found.openerId, depth),
     });
@@ -639,7 +640,19 @@ class Guard {
     if (method === 'Network.requestWillBeSent' && params.type === 'Document') {
       return !this.armed(sessionId) && this.is.url(params.request?.url);
     }
-    return method === 'Runtime.executionContextCreated' && this.is.url(params.context?.origin);
+    if (method !== 'Runtime.executionContextCreated') return false;
+    return this.is.url(params.context?.origin) && !this.precursor(params.context, sessionId);
+  }
+
+  precursor({ origin, auxData } = {}, sessionId) {
+    const found = this.targets.get(this.sessions.get(sessionId)?.targetId);
+    return (
+      /^chrome-extension:/i.test(origin) &&
+      auxData?.isDefault === true &&
+      (found?.url === '' || found?.url === 'about:blank') &&
+      !found.guarded &&
+      !found.openerId
+    );
   }
 
   hides(entry) {
