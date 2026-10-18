@@ -177,11 +177,38 @@ test('a follower that seven reloads to put back one of its changed files keeps f
   );
   assert.match((await follow(page)).owner, /^SLICC on /);
   assert.equal(await page.evaluate(() => location.hash), '');
+  const both = async () =>
+    `owner's devices: ${JSON.stringify(await devices(owner))}\nfollower: ${JSON.stringify(await follow(page))}, kept ${await page.evaluate(() => localStorage.getItem('slicc-os.follow'))}`;
+  await owner
+    .within(60000, () =>
+      document
+        .querySelector('slicc-app')
+        .model.network.status()
+        .links.devices.some(
+          (d) => d.kind === 'seven' && d.mode === 'remote' && d.state === 'connected'
+        )
+    )
+    .catch(async (error) => {
+      throw new Error(
+        `the owner never had the follower’s HELLO: ${error.message}\n${await both()}`
+      );
+    });
+  await page.until(
+    () => document.querySelector('slicc-app').model.follow.state().link === 'connected'
+  );
   await model(owner, (network) => network.rotateJoinUrl());
-  const moved = await page.until((url) => {
-    const kept = JSON.parse(localStorage.getItem('slicc-os.follow'));
-    return kept?.url !== url && kept?.url;
-  }, joinUrl);
+  const moved = await page
+    .within(
+      60000,
+      (url) => {
+        const kept = JSON.parse(localStorage.getItem('slicc-os.follow'));
+        return kept?.url !== url && kept?.url;
+      },
+      joinUrl
+    )
+    .catch(async (error) => {
+      throw new Error(`the follower never kept the moved link: ${error.message}\n${await both()}`);
+    });
 
   await page.evaluate(async () => {
     window.__before = true;
