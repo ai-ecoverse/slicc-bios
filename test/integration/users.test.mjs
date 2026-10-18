@@ -8,6 +8,7 @@ import {
   agentUp,
   boot,
   ready,
+  rowSettled,
   run,
   screen,
   shows,
@@ -74,6 +75,7 @@ test('the shell runs as root: whoami, id, ls -l and ps name the users, and git w
   assert.match(text, /(^|\s)\/usr\/local\/bin\/agent(\s|$)/);
   assert.doesNotMatch(text, /\/share\/pnpm\/(bin\/)?agent/);
 
+  await rowSettled(page, 'grammars');
   await run(
     page,
     `clear; for d in ${TREES.join(' ')}; do echo "unreadable $d $(find $d ! -perm -o=r | wc -l) $(find $d -type d ! -perm -o=x | wc -l)"; done; echo "checked $((6 * 7))"`
