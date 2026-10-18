@@ -44,6 +44,12 @@ function answer(body) {
   const content = sent.messages?.at(-1)?.content ?? [];
   const said = content.map((item) => item.text ?? '').join(' ');
   const result = content.find((item) => item.toolResult)?.toolResult?.toolUseId;
+  if (result === 'bytes-1') return text('The output came through.');
+  if (sent.toolConfig?.tools?.length && said.includes('Show the bytes'))
+    return bash(
+      'bytes-1',
+      `jq --version; echo '{"a":1}' | jq -c .; printf 'cat-said-hi\\n' > /tmp/c && cat /tmp/c; echo bytes-$((40 + 2))`
+    );
   if (result === 'sudo-1') return text('Seven said no, so I left /root alone.');
   if (result === 'rules-1') return text('Seven said no, so the secret rules are unchanged.');
   if (sent.toolConfig?.tools?.length && said.includes('Change the rules'))
@@ -234,5 +240,41 @@ test('enforce: a cone agent’s sudo asks the human through the agent’s approv
     }),
     /fnox/
   );
+  assert.deepEqual(page.errors, []);
+});
+
+test('kernel#1099: with a secret in the vault, the agent’s bash shows jq’s and cat’s output intact, as the vault scrubs it', {
+  timeout: 20 * 60 * 1000,
+}, async (t) => {
+  chrome.vault.set({ secrets: ['API_TOKEN'] });
+  t.after(() => chrome.vault.set({ secrets: [] }));
+  const page = await chrome.page(t);
+  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await ready(page, ['slicc:/home# ']);
+  await agentUp(page);
+  await listsAccount(page, 'amazon-bedrock');
+  await connectAccount(page, 'amazon-bedrock', KEY);
+  await page.evaluate(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    document.querySelector('slicc-app').show('chat');
+    void agent.send(agent.active(), 'Show the bytes');
+  });
+  await page.within(5 * 60 * 1000, () => {
+    const { agent } = document.querySelector('slicc-app').model;
+    const id = agent.active();
+    return (
+      !agent.busy(id) && JSON.stringify(agent.messages(id)).includes('The output came through')
+    );
+  });
+  const output = await page.evaluate(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    return JSON.stringify(agent.messages(agent.active()));
+  });
+  assert.doesNotMatch(output, /must be bytes/);
+  assert.match(output, /jq-1\.8/);
+  assert.match(output, /\{\\"a\\":1\}/);
+  assert.match(output, /cat-said-hi/);
+  assert.match(output, /bytes-42/);
+  assert.ok(chrome.vault.log.some((entry) => entry.role === 'agent' && entry.op === 'push'));
   assert.deepEqual(page.errors, []);
 });

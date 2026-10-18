@@ -225,6 +225,7 @@ addEventListener('message', (event) => {
       if (data.op === 'model') return prepare(['model']);
       if (data.op === 'mcp') return prepare(['mcp']);
       if (data.op === 'redactStream') return reply({ stream: data.stream, idleMs: 250, version });
+      if (data.op === 'push' && !(data.chunk instanceof Uint8Array)) return port.postMessage({ v: 1, id: data.id, op: data.op, error: { code: 'EINVAL', message: 'chunk must be bytes' } });
       if (data.op === 'push') return reply({ chunk: data.chunk });
       if (data.op === 'idle') return reply({ chunk: new Uint8Array() });
       if (data.op === 'end') return reply({ chunk: new Uint8Array(), hits: [] });
