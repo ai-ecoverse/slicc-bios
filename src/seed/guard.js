@@ -901,7 +901,11 @@ class Guard {
   }
 
   async create({ id, params }) {
-    const answer = await this.call('Target.createTarget', { ...params, url: 'about:blank' });
+    const answer = await this.call('Target.createTarget', {
+      ...params,
+      background: params.background ?? true,
+      url: 'about:blank',
+    });
     const targetId = answer.result?.targetId;
     if (!targetId) return this.deliver({ ...answer, id });
     this.learn({ targetId, url: 'about:blank', type: 'page' });

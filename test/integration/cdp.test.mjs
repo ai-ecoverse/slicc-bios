@@ -278,6 +278,89 @@ for (const extension of EXTENSIONS) {
   });
 }
 
+test(`real slicc-extension ${EXTENSIONS.at(-1).version}: seven keeps rendering while the agent opens and drives a tab, and the Browser panel's activate brings that tab forward`, {
+  timeout: 10 * 60 * 1000,
+}, async (t) => {
+  const real = await realExtension({ extension: EXTENSIONS.at(-1) });
+  t.after(() => real.close());
+  const page = await real.page(t);
+  await page.goto(SEVEN);
+  await ready(page);
+  assert.deepEqual(await automation(page), { via: 'extension' });
+  await page.evaluate(() => {
+    globalThis.painted = 0;
+    const tick = () => {
+      globalThis.painted += 1;
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  const sample = async () => ({
+    at: Date.now(),
+    ...(await page.evaluate(() => ({
+      painted: globalThis.painted,
+      shown: document.visibilityState,
+    }))),
+  });
+  real.overrides.set(
+    '/driven.html',
+    '<!doctype html><title>driven</title><h1>Driven behind seven</h1>'
+  );
+  const target = new URL('/driven.html', real.url);
+  target.hostname = 'localhost';
+  const samples = [await sample()];
+  let driving = true;
+  const sampler = (async () => {
+    while (driving) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      samples.push(await sample());
+    }
+  })();
+  await run(
+    page,
+    `playwright-cli open ${target.href} > /tmp/bg 2>&1 && playwright-cli snapshot >> /tmp/bg 2>&1 && playwright-cli click 'h1' >> /tmp/bg 2>&1; echo bg-$? >> /tmp/bg; echo "bg-""done"`
+  );
+  await shows(page, 'bg-done', 180000);
+  driving = false;
+  await sampler;
+  const bg = await read(page, '/tmp/bg');
+  assert.match(bg, /heading "Driven behind seven"/, bg);
+  assert.match(bg, /bg-0/, bg);
+  const stalled = samples
+    .slice(1)
+    .filter((now, i) => now.painted <= samples[i].painted || now.shown !== 'visible');
+  assert.deepEqual(
+    stalled,
+    [],
+    `seven stopped rendering while the agent drove: ${JSON.stringify(samples)}`
+  );
+  const id = await page.evaluate(
+    () =>
+      document
+        .querySelector('slicc-app')
+        .model.browser.list()
+        .find((tab) => tab.url?.endsWith('/driven.html'))?.id
+  );
+  assert.ok(id, 'the driven tab is in the Browser panel');
+  await page.evaluate((tab) => document.querySelector('slicc-app').model.browser.activate(tab), id);
+  const rate = (samples.at(-1).painted - samples[0].painted) / (samples.at(-1).at - samples[0].at);
+  const deadline = Date.now() + 30000;
+  const after = [await sample()];
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const now = await sample();
+    const before = after.at(-1);
+    after.push(now);
+    if (now.shown !== 'visible' || now.painted - before.painted < (rate * (now.at - before.at)) / 4)
+      break;
+    if (Date.now() > deadline)
+      throw new Error(
+        `activate never brought the driven tab forward over seven: ${JSON.stringify({ samples, after })}`
+      );
+  }
+  assert.deepEqual(page.errors, []);
+});
+
 test('the browser port lists only the tabs the agent drives, holds them for a while, and shows them', async (t) => {
   const page = await chrome.page(t);
   const extension = await fakeExtension(page);
