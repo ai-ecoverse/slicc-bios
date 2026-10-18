@@ -327,10 +327,8 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
   async function add(entry, action) {
     await run(entry, action, ['pnpm', 'add', '-g', `${entry.package}@${entry.offered}`]);
     const found = await refresh();
-    const mine = found.filter(
-      ({ name, version }) => name === entry.package && version === entry.offered
-    );
     const key = `${entry.package}@${entry.offered}`;
+    const mine = found.filter(({ name, version }) => `${name}@${version}` === key);
     if (!mine.length || mine.some(({ lock }) => !tested(lock, certified, key))) {
       await run(entry, 'remove', ['pnpm', 'remove', '-g', entry.package]);
       throw Object.assign(
