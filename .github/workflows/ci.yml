@@ -138,6 +138,9 @@ jobs:
     name: ci / test
     needs: [plan, lint, integration]
     if: always()
+    permissions:
+      contents: read
+      issues: write
     runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["push","schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_LIGHT_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 20
     env:
@@ -173,6 +176,20 @@ jobs:
             await harness.hotspots();
           "
           cat artifacts/hotspots.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: The run's experiment summary, and a flaky-test issue for each test a retry flipped
+        if: always()
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci/summary.mjs --dir artifacts/experiment --issues
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: experiment-summary
+          path: artifacts/experiment/summary.json
+          if-no-files-found: ignore
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
