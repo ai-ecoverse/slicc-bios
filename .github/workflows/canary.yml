@@ -130,7 +130,7 @@ on:
         description: 'true when the canary is green'
         value: ${{ jobs.report.outputs.ok }}
       result:
-        description: 'The JSON summary: ok, counts, regressions, both, flaky, failures, missingShards, candidates, and the canary artifact''s name and url'
+        description: 'The JSON summary: ok, counts, regressions, both, flaky, failures, missingShards, candidates, ambiguous, tests (every row as {shard, key, test, verdict, failed}, failed counting completed runs), and the canary artifact''s name and url; a summary over 512 KB is a FAIL verdict instead'
         value: ${{ jobs.report.outputs.result }}
       artifact-id:
         description: 'The canary artifact''s id, the artifact-id output of the report job''s upload step'
@@ -500,7 +500,13 @@ jobs:
               id: process.env.ARTIFACT_ID || "",
               digest: process.env.ARTIFACT_DIGEST || "",
             };
-            appendFileSync(process.env.GITHUB_OUTPUT, `result=${JSON.stringify(result)}\n`);
+            const output = `result=${JSON.stringify(result)}\n`;
+            const bytes = Buffer.byteLength(output);
+            if (bytes > 524288) {
+              console.log(`canary: FAIL the result is ${bytes} bytes with its artifact, over the 524288-byte bound for a job output`);
+              process.exit(1);
+            }
+            appendFileSync(process.env.GITHUB_OUTPUT, output);
             console.log(result.verdict);
           '
 

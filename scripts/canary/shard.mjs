@@ -82,6 +82,7 @@ async function run(files, { canary, log, jsonl }) {
         file,
         name: file,
         nesting: 0,
+        path: [],
         status: 'fail',
         durationMs: 0,
         log: `no results (exit ${code})`,
@@ -91,10 +92,14 @@ async function run(files, { canary, log, jsonl }) {
   return { code, ms: Date.now() - started, results };
 }
 
+function keyOf({ file, name, path }) {
+  return [file, ...(path ?? [name])].join(' › ');
+}
+
 function keyed(results) {
   const seen = new Map();
   return results.map((result) => {
-    const base = `${result.file}\u0000${result.name}`;
+    const base = keyOf(result);
     const n = seen.get(base) ?? 0;
     seen.set(base, n + 1);
     return [`${base}\u0000${n}`, result];
@@ -222,6 +227,7 @@ export async function shard({ name, overrides, out, candidate = null, dir = '', 
     const runs = seen.get(key) ?? [result.status];
     return {
       test: label(result),
+      key: keyOf(result),
       file: result.file,
       nesting: result.nesting,
       status: runs.includes('fail') ? 'fail' : result.status,

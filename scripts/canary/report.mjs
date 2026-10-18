@@ -7,6 +7,8 @@ import { names } from './bind.mjs';
 import { enforceNote } from './users.mjs';
 
 const ROWS = 150;
+const BOUND = 512 * 1024;
+const ROOM = 4096;
 
 export function classify(runs, baselines, overridden) {
   const failed = runs.filter((status) => status === 'fail').length;
@@ -29,6 +31,24 @@ export function verdict(result, overridden) {
 
 const failures = (list = []) =>
   `${list.filter((status) => status === 'fail').length}/${list.length}`;
+
+const completed = (list) =>
+  failures(list.filter((status) => status === 'pass' || status === 'fail'));
+
+function counted(result) {
+  const candidate = [...(result.runs ?? [result.status]), ...(result.retry ? [result.retry] : [])];
+  const baseline = result.baselines ?? (result.baseline ? [result.baseline] : []);
+  return { candidate: completed(candidate), baseline: completed(baseline) };
+}
+
+function ambiguities(tests) {
+  const seen = new Map();
+  for (const { shard, key } of tests) {
+    const at = `${shard}\u0000${key ?? ''}`;
+    seen.set(at, { shard, key: key || '', rows: (seen.get(at)?.rows ?? 0) + 1 });
+  }
+  return [...seen.values()].filter(({ key, rows }) => !key || rows > 1);
+}
 
 export async function readBindings(file) {
   const text = await readFile(file, 'utf8').catch(() => null);
@@ -89,8 +109,6 @@ export function found(docs, run) {
     .sort((a, b) => a.shard.localeCompare(b.shard));
 }
 
-const PARENT = /^\d+ subtests? failed$/;
-
 function hit(result, { test = '', log = '' }) {
   return result.test.includes(test) && (result.log ?? '').includes(log);
 }
@@ -99,23 +117,31 @@ export function merge({ run, biosRef, runner, url, found, expected, refused = []
   const pins = found.find((shard) => shard.pins?.overrides?.length)?.pins ?? found[0]?.pins;
   const kernels = found.find((shard) => shard.kernels)?.kernels ?? null;
   const overridden = run.overrides.length > 0 || (pins?.overrides?.length ?? 0) > 0;
-  const results = found.flatMap((shard) =>
-    shard.results
-      .filter((result) => !PARENT.test(result.log ?? ''))
-      .map((result) => ({
-        shard: shard.shard,
-        test: result.test,
-        status: result.status,
-        baseline: result.baseline,
-        retry: result.retry,
-        verdict: verdict(result, overridden),
-        ...(result.runs?.length > 1
-          ? { failed: { candidate: failures(result.runs), baseline: failures(result.baselines) } }
-          : {}),
-        durationMs: result.durationMs,
-        log: result.log,
-      }))
+  const rows = found.flatMap((shard) =>
+    shard.results.map((result) => ({ shard: shard.shard, result }))
   );
+  const results = rows.map(({ shard, result }) => ({
+    shard,
+    test: result.test,
+    key: result.key,
+    status: result.status,
+    baseline: result.baseline,
+    retry: result.retry,
+    verdict: verdict(result, overridden),
+    ...(result.runs?.length > 1
+      ? { failed: { candidate: failures(result.runs), baseline: failures(result.baselines) } }
+      : {}),
+    durationMs: result.durationMs,
+    log: result.log,
+  }));
+  const tests = rows.map(({ shard, result }, n) => ({
+    shard,
+    key: result.key,
+    test: result.test,
+    verdict: results[n].verdict,
+    failed: counted(result),
+  }));
+  const ambiguous = ambiguities(tests);
   const regressions = results.filter((r) => r.verdict === 'regression');
   const failed = results.filter((r) => r.verdict === 'fail');
   const expect = run.expect.map((wanted) => ({
@@ -130,6 +156,7 @@ export function merge({ run, biosRef, runner, url, found, expected, refused = []
     .map(({ shard, exit: code }) => ({ shard, exit: code }));
   const ok =
     refused.length === 0 &&
+    ambiguous.length === 0 &&
     missingShards.length === 0 &&
     unexplainedExits.length === 0 &&
     failed.length === 0 &&
@@ -169,6 +196,7 @@ export function merge({ run, biosRef, runner, url, found, expected, refused = []
     missingShards,
     unexplainedExits,
     refused,
+    ambiguous,
     counts: Object.fromEntries(
       ['pass', 'skip', 'fail', 'regression', 'both', 'flaky'].map((v) => [
         v,
@@ -178,6 +206,7 @@ export function merge({ run, biosRef, runner, url, found, expected, refused = []
     expect,
     ok,
     results,
+    tests,
   };
 }
 
@@ -190,6 +219,17 @@ export function verdictLine(result) {
   if (result.refused?.length) {
     const names = result.refused.map(({ name }) => name).join(', ');
     return { ok: false, line: `${id}: FAIL refused ${names}` };
+  }
+  if (result.ambiguous?.length) {
+    const named = result.ambiguous
+      .slice(0, 3)
+      .map(({ shard, key, rows }) =>
+        key
+          ? `${rows} rows in shard ${shard} share the key ${key}`
+          : `${rows} rows in shard ${shard} have no key`
+      );
+    if (result.ambiguous.length > 3) named.push(`and ${result.ambiguous.length - 3} more`);
+    return { ok: false, line: `${id}: FAIL ambiguous test keys: ${named.join('; ')}` };
   }
   const absent = result.missingShards?.length ? `, missing ${result.missingShards.join(', ')}` : '';
   if (!ran) return { ok: false, line: `${id}: FAIL 0 tests ran${absent}` };
@@ -236,6 +276,8 @@ export function summary(report, artifact = null) {
     missingShards: report.missingShards,
     unexplainedExits: report.unexplainedExits,
     refused: report.refused ?? [],
+    ambiguous: report.ambiguous ?? [],
+    tests: report.tests ?? [],
     ...(artifact ? { artifact } : {}),
   };
 }
@@ -269,6 +311,14 @@ function problems(report) {
     ({ name, reason }) => `- **refused** ${cell(name)}: ${cell(reason)}`
   );
   if (lines.length) lines.push('');
+  for (const { shard, key, rows: n } of report.ambiguous ?? []) {
+    lines.push(
+      key
+        ? `- **${shard}**: ${n} rows share the key ${cell(key)}, so they can't be told apart.`
+        : `- **${shard}**: ${n} rows have no key.`
+    );
+  }
+  if (report.ambiguous?.length) lines.push('');
   for (const { shard, exit: code } of report.unexplainedExits) {
     lines.push(
       `- **${shard}** exited ${code} with no failing test (a crash or a failing teardown).`
@@ -401,11 +451,19 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
     lines.push(why ? `canary: FAIL the plan refused: ${why}` : 'canary: FAIL no runs');
   }
   ok &&= runs.length > 0;
-  await writeFile(join(values.out, 'verdict.txt'), `${lines.join('\n')}\n`);
-  const result =
+  let result =
     runs.length === 1
       ? { ...summaries[0], ok }
       : { ok, verdict: lines.join('; '), runs: summaries, refused };
+  const bytes = Buffer.byteLength(`result=${JSON.stringify(result)}\n`);
+  if (bytes > BOUND - ROOM) {
+    const line = `canary: FAIL the result is ${bytes} bytes, over the ${BOUND - ROOM} that leave room for its artifact under the ${BOUND}-byte bound for a job output; canary.json holds every row`;
+    lines.push(line);
+    if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, `${line}\n`);
+    ok = false;
+    result = { ok, verdict: line, bytes, bound: BOUND, refused };
+  }
+  await writeFile(join(values.out, 'verdict.txt'), `${lines.join('\n')}\n`);
   await writeFile(join(values.out, 'result.json'), `${JSON.stringify(result)}\n`);
   console.log(lines.join('\n'));
   if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, `ok=${ok}\n`);
