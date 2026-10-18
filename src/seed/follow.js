@@ -67,7 +67,7 @@ export function takeFollow({
     params.delete('follow');
     const rest = params.toString();
     past.replaceState(past.state, '', `${at.pathname}${at.search}${rest ? `#${rest}` : ''}`);
-    taken = url ? { hub: hubOrigin(url), url, fresh: true } : taken;
+    taken = url ? { hub: hubOrigin(url), url, fresh: read(storage)?.url !== url } : taken;
   }
   return taken ?? read(storage);
 }
