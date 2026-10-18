@@ -201,7 +201,13 @@ test("a follower of a SLICC on another agent version shows the agent's sentence 
 }, async (t) => {
   const hub = await startHub();
   t.after(() => hub.close());
-  const diag = { at: {}, procs: {}, first: null, polls: 0 };
+  const diag = {
+    roles: { owner: new URL(owners.url).origin, follower: new URL(followers.url).origin },
+    at: {},
+    procs: {},
+    first: null,
+    polls: 0,
+  };
   let polling = null;
   let owner = null;
   let page = null;

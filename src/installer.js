@@ -13,7 +13,10 @@ function diag(event) {
   diagnosed = diagnosed
     .then(async () => {
       const { appendTo } = await import(INTEGRITY);
-      await appendTo(navigator.storage.getDirectory(), 'var/log/slicc/diag-installer.log', event);
+      await appendTo(navigator.storage.getDirectory(), 'var/log/slicc/diag-installer.log', {
+        origin: self.location.origin,
+        ...event,
+      });
     })
     .catch(() => undefined);
   return diagnosed;
@@ -75,6 +78,7 @@ async function clear(path) {
   const dir = await directory(path.split('/'));
   const names = [];
   for await (const name of dir.keys()) names.push(name);
+  await diag({ event: 'installer-clear', path, names });
   for (const name of names.filter((entry) => entry !== 'node_modules')) {
     await dir.removeEntry(name, { recursive: true });
     forget(`${path}/${name}`);
@@ -279,11 +283,19 @@ async function add([path, entry], changed, stamps, fresh = new Set()) {
   return bytes.byteLength;
 }
 
-async function prune(locked) {
+async function prune(locked, from = null) {
   const receipts = await list(await directory(['var', 'lib', 'bios']), '');
   const stale = receipts
     .map((receipt) => receipt.path.replace(/\.json$/, ''))
     .filter((path) => !locked.has(path));
+  await diag({
+    event: 'installer-prune',
+    step: 'start',
+    from,
+    locked: locked.size,
+    receipts: receipts.length,
+    stale,
+  });
   for (const path of stale) {
     await diag({ event: 'installer-prune', path });
     await remove(path);
@@ -331,7 +343,7 @@ async function replay(from, progress, base) {
     const queue = Object.entries(lock.packages).filter(
       ([path, entry]) => path && entry.resolved && !entry.os && !entry.cpu
     );
-    const removed = await prune(new Set(queue.map(([path]) => path)));
+    const removed = await prune(new Set(queue.map(([path]) => path)), from);
     const tampered = (await ledger.tampered()).filter((path) => path.startsWith('/node_modules/'));
     const names = queue.map(([path]) => path);
     const changed = new Set(tampered.map((path) => owner(path, names)).filter(Boolean));
