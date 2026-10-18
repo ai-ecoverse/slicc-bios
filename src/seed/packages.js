@@ -19,6 +19,10 @@ const LOCKED =
 export const RETIRED = 'No longer offered. Remove it, or keep using it as it is.';
 export const MOVED = 'var/lib/slicc/optional/moved';
 
+const COMMAND = /^[A-Za-z0-9][\w.+-]*$/;
+const UNSHADOW =
+  'b=$1; o=$2; shift 2; for n in "$@"; do f="$b/$n"; [ -e "$f" ] || [ -L "$f" ] || continue; case "$(readlink -f "$f" 2>/dev/null)" in *"$o"*) ;; *) grep -qsF -- "$o" "$f" || continue ;; esac; rm -f -- "$f" || exit 1; echo "$n"; done';
+
 export const MISMATCH =
   "This version doesn't match the tested build, so it was removed again. Retry later.";
 
@@ -141,10 +145,47 @@ export async function globals(root, dir = GLOBAL) {
       const installed = JSON.parse(
         (await text(root, `${at}/node_modules/${dependency}/package.json`)) ?? '{}'
       );
-      if (installed.version) found.push({ name: dependency, version: installed.version, lock });
+      if (installed.version)
+        found.push({ name: dependency, version: installed.version, lock, dir: at });
     }
   }
   return found;
+}
+
+export function shadowed(manifest) {
+  const bin =
+    typeof manifest?.bin === 'string'
+      ? { [String(manifest.name).split('/').pop()]: manifest.bin }
+      : (manifest?.bin ?? {});
+  return Object.keys(manifest?.slicc?.commands ?? {}).filter(
+    (name) => COMMAND.test(name) && Object.hasOwn(bin, name)
+  );
+}
+
+export function binDir(global) {
+  return `/${global.replace(/\/global\/v\d+$/, '')}/bin`;
+}
+
+export async function unshadow({ root, kernel, global, name, dir }) {
+  const manifest = JSON.parse(
+    (await text(root, `${dir}/node_modules/${name}/package.json`)) ?? '{}'
+  );
+  const names = shadowed(manifest);
+  if (!names.length) return [];
+  const owner = `/node_modules/${name}/`;
+  let out = '';
+  const { status, stderr } = await kernel.run(
+    ['bash', '-c', UNSHADOW, 'unshadow', binDir(global), owner, ...names],
+    {
+      cwd: '/',
+      onStdout: (chunk) => {
+        out += chunk;
+      },
+    }
+  );
+  if (status)
+    throw new Error(stderr?.trim() || `unlinking ${names.join(', ')} exited with ${status}`);
+  return out.split('\n').filter(Boolean);
 }
 
 export function tested(lock, certified, key) {
@@ -299,6 +340,7 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
         }
       );
     }
+    await unshadow({ root, kernel, global, name: entry.package, dir: mine[0].dir });
   }
 
   async function perform(entry, action) {
