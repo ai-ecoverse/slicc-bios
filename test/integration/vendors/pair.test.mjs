@@ -131,7 +131,7 @@ test('WebKit: an https seven may not reach http://127.0.0.1, so the attempt fail
   assert.equal(status.state, 'failed', JSON.stringify(status));
   assert.equal(
     status.error,
-    'This browser doesn’t let an https page reach slicc on this computer, so seven can’t pair here. Use the join command under Link another device, or open seven in Chrome, Edge or Firefox.'
+    'Safari doesn’t let an https page reach slicc on this computer, so seven can’t pair here. Use the join command under Link another device, or open seven in Chrome, Edge or Firefox.'
   );
   assert.ok(took < 20_000, `the attempt took ${took} ms`);
   assert.equal(row, null);
@@ -139,5 +139,9 @@ test('WebKit: an https seven may not reach http://127.0.0.1, so the attempt fail
     said.filter((line) => /paired with|refused a pairing/.test(line)),
     []
   );
-  assert.deepEqual(errors, []);
+  assert.deepEqual(
+    errors.filter((error) => !/127\.0\.0\.1:\d+\/slicc\/v1\/pair\b/.test(error)),
+    [],
+    'only WebKit’s report of the blocked request'
+  );
 });

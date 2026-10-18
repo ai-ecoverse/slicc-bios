@@ -108,7 +108,7 @@ export function localNetwork(
 const BLOCKED =
   'This browser blocks seven from reaching apps on this computer. Allow local network access in this site’s settings, then try again.';
 export const MIXED =
-  'This browser doesn’t let an https page reach slicc on this computer, so seven can’t pair here. Use the join command under Link another device, or open seven in Chrome, Edge or Firefox.';
+  'Safari doesn’t let an https page reach slicc on this computer, so seven can’t pair here. Use the join command under Link another device, or open seven in Chrome, Edge or Firefox.';
 const UNREACHABLE = (port) =>
   `Nothing answered on port ${port}, or slicc refused this page’s origin: is slicc still running on this computer?`;
 const UNPREPARED =
