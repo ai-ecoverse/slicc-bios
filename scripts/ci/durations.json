@@ -43,7 +43,7 @@
   "test/integration/packages.test.mjs": 145,
   "test/integration/perl.test.mjs": 68,
   "test/integration/pins.test.mjs": 1,
-  "test/integration/pydata.test.mjs": 12,
+  "test/integration/pydata.test.mjs": 600,
   "test/integration/remote.test.mjs": 579,
   "test/integration/reuse.test.mjs": 43,
   "test/integration/ruby.test.mjs": 128,
