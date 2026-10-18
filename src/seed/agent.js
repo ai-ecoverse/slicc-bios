@@ -53,7 +53,12 @@ export function loadChat({ load = (file) => import(new URL(file, modules)), fres
   }
   if (chat) return chat;
   const query = run ? `?run=${run}` : '';
-  const loading = Promise.all([load(`page.js${query}`), load(`spectrum/index.js${query}`)]).then(
+  const from = recorded().catch(() => null);
+  const loading = Promise.all([
+    load(`page.js${query}`),
+    load(`spectrum/index.js${query}`),
+    from,
+  ]).then(
     ([
       { startAgent, connectAgent, connectGuest, remoteControl, bridgePort, linkEndpoint },
       { createAgentModel },
@@ -68,7 +73,7 @@ export function loadChat({ load = (file) => import(new URL(file, modules)), fres
     })
   );
   chat = loading;
-  chatFrom = recorded();
+  chatFrom = from;
   loading.catch(() => {
     if (chat !== loading) return;
     chat = null;
