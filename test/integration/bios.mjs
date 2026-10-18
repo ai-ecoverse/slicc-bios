@@ -74,6 +74,26 @@ export async function ready(page, prompts = [prompt]) {
   }, prompts);
 }
 
+export async function rowSettled(page, id, ms = 10 * 60 * 1000) {
+  await page
+    .within(
+      ms,
+      (id) => {
+        const row = document
+          .querySelector('slicc-app')
+          ?.model?.updates?.list?.()
+          .find((item) => item.id === id);
+        window.sliccRowSeen = row?.state ?? 'absent';
+        return row && !/queued|starting|checking|downloading|linking/.test(row.state);
+      },
+      id
+    )
+    .catch(async (error) => {
+      const seen = await page.evaluate(() => window.sliccRowSeen).catch(() => 'unknown');
+      throw new Error(`the ${id} row didn't settle, last ${seen}: ${error.message}`);
+    });
+}
+
 export async function settled(page, ms = 120000) {
   await page.within(ms, () => {
     const app = document.querySelector('slicc-app');
