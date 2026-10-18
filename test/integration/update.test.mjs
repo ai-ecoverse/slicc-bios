@@ -7,6 +7,7 @@ import {
   eventually,
   installable,
   opfs,
+  prompt,
   ready,
   run,
   screen,
@@ -175,6 +176,21 @@ test('updates a running install from a bumped lockfile', async (t) => {
   await t.test(
     'reloads onto the new version through the BIOS without downloading it again',
     async () => {
+      await page
+        .within(10 * 60 * 1000, () => {
+          const grammars = document
+            .querySelector('slicc-app')
+            .model.updates.list()
+            .find((item) => item.id === 'grammars');
+          window.lastGrammars = grammars?.state ?? 'absent';
+          return grammars && !/queued|starting|checking|downloading|linking/.test(grammars.state);
+        })
+        .catch(async (error) => {
+          const seen = await page.evaluate(() => window.lastGrammars);
+          throw new Error(
+            `the grammars install didn't settle before the reload, last ${seen}: ${error.message}`
+          );
+        });
       chrome.cdn.requests.length = 0;
       const bios = await watch(page);
       await reload(page);
@@ -544,4 +560,85 @@ test("the user's pnpm add in /opt/agent moves to /opt/user, and a pnpm upgrade t
       assert.deepEqual(page.errors, []);
     }
   );
+});
+
+const EXEC_LOOP = [
+  '#!/bin/bash',
+  'n=0; f=0',
+  'while [ ! -e /tmp/stop ]; do',
+  "  if bash -c 'echo exec-ok' > /tmp/v 2>&1 && grep -q exec-ok /tmp/v; then :; else f=$((f+1)); cat /tmp/v >> /tmp/errs; fi",
+  '  n=$((n+1)); sleep 0.01',
+  'done',
+  'echo "loop n=$n fail=$f" > /tmp/loop',
+].join('\n');
+
+test('the BIOS installer replaces a package in place while seven runs: the shell execs it in a loop and a second tab reads its files throughout', async (t) => {
+  const page = await chrome.page(t);
+  await bootOlder(page);
+  chrome.overrides.set('/probe.html', '<!doctype html><title>probe</title>');
+  const other = await page.tab();
+  await other.goto('/probe.html');
+  await other.evaluate((bash) => {
+    window.probe = { reads: 0, missing: [] };
+    const look = async () => {
+      let dir = await navigator.storage.getDirectory();
+      for (const part of bash.split('/')) dir = await dir.getDirectoryHandle(part);
+      const names = [];
+      for await (const handle of dir.values()) names.push(handle.name);
+      if (!names.includes('package.json') || names.length < 2) {
+        throw new Error(`missing: ${names.join(',')}`);
+      }
+      await (await dir.getFileHandle('package.json')).getFile();
+    };
+    window.probe.running = true;
+    void (async () => {
+      while (window.probe.running) {
+        await look().catch((error) => window.probe.missing.push(error.message));
+        window.probe.reads += 1;
+      }
+    })();
+  }, bash);
+  await page.send('Page.bringToFront');
+  await shows(page, prompt);
+  const script = Buffer.from(`${EXEC_LOOP}\n`).toString('base64');
+  await run(
+    page,
+    `clear; rm -f /tmp/stop /tmp/loop /tmp/errs; echo ${script} | base64 -d > /usr/local/bin/exec-loop; chmod 755 /usr/local/bin/exec-loop; exec-loop > /dev/null 2>&1 & echo looping-$((40 + 2))`
+  );
+  await shows(page, 'looping-42');
+  deploy();
+  const result = await other.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const { port } = new SharedWorker('/installer.js', 'slicc-installer');
+        port.onmessage = ({ data }) => {
+          if ('progress' in data) return;
+          resolve(data);
+        };
+        port.postMessage({
+          id: 1,
+          op: 'packages',
+          args: {
+            from: new URL('/packages/package-lock.json', location.href).href,
+            base: 'opt/slicc/base',
+          },
+        });
+      })
+  );
+  assert.ok(result.result?.downloaded >= 1, JSON.stringify(result));
+  await run(page, 'clear; touch /tmp/stop; wait; cat /tmp/loop; echo stopped-$((40 + 2))');
+  await shows(page, 'stopped-42', 120000);
+  const counted = (await read(page, 'tmp/loop')).trim();
+  const [, runs, failures] = counted.match(/loop n=(\d+) fail=(\d+)/) ?? [];
+  assert.ok(Number(runs) > 0, counted);
+  const errors = await read(page, 'tmp/errs').catch(() => '');
+  assert.equal(Number(failures), 0, `${counted}\n${errors}`);
+  const probe = await other.evaluate(() => {
+    window.probe.running = false;
+    return { reads: window.probe.reads, missing: window.probe.missing.slice(0, 5) };
+  });
+  assert.ok(probe.reads > 0);
+  assert.deepEqual(probe.missing, []);
+  assert.equal(await version(page), '5.3.0-18');
+  assert.deepEqual(page.errors, []);
 });
