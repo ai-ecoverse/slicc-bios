@@ -55,6 +55,33 @@ async function remove(path) {
   forget(path);
 }
 
+async function settle(base, name) {
+  const parts = name.split('/');
+  const last = parts.pop();
+  let dir = await directory(base.split('/'));
+  let at = base;
+  for (const part of parts) {
+    at = `${at}/${part}`;
+    const parent = dir;
+    dir = await parent.getDirectoryHandle(part, { create: true }).catch(async () => {
+      await parent.removeEntry(part);
+      forget(at);
+      return parent.getDirectoryHandle(part, { create: true });
+    });
+  }
+  await dir.getFileHandle(last, { create: true }).catch(async () => {
+    await dir.removeEntry(last, { recursive: true });
+    forget(`${at}/${last}`);
+  });
+}
+
+async function place(base, name, data) {
+  await save(`${base}/${name}`, data).catch(async () => {
+    await settle(base, name);
+    await save(`${base}/${name}`, data);
+  });
+}
+
 async function sweep(path, keep) {
   const walk = async (dir, at) => {
     const handles = [];
@@ -173,7 +200,11 @@ function entryPoints(manifest) {
     return names;
   }
   const bin = typeof pkg.bin === 'string' ? [pkg.bin] : Object.values(pkg.bin ?? {});
-  for (const file of [...bin, pkg.main]) {
+  const targets = (value) =>
+    typeof value === 'string'
+      ? [value]
+      : Object.values(value && typeof value === 'object' ? value : {}).flatMap(targets);
+  for (const file of [...bin, pkg.main, ...targets(pkg.exports)]) {
     if (typeof file === 'string') names.add(entryName(`package/${file}`));
   }
   return names;
@@ -196,7 +227,7 @@ async function unpack(bytes, path, stamps = []) {
   read.sort((a, b) => Number(last.has(a.name)) - Number(last.has(b.name)));
   const files = new Map();
   for (const { name, mode, data } of read) {
-    await save(`${path}/${name}`, data);
+    await place(path, name, data);
     const at = `/${path}/${name}`;
     files.set(at, { path: at, size: data.byteLength, sha256: await sha256(data) });
     stamps.push({ path: at, mode: (mode ?? 0o644) & 0o7777, uid: 0, gid: 0 });

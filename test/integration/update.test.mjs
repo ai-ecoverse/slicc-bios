@@ -176,13 +176,21 @@ test('updates a running install from a bumped lockfile', async (t) => {
   await t.test(
     'reloads onto the new version through the BIOS without downloading it again',
     async () => {
-      await page.within(10 * 60 * 1000, () => {
-        const grammars = document
-          .querySelector('slicc-app')
-          .model.updates.list()
-          .find((item) => item.id === 'grammars');
-        return grammars && !/queued|starting|checking|downloading|linking/.test(grammars.state);
-      });
+      await page
+        .within(10 * 60 * 1000, () => {
+          const grammars = document
+            .querySelector('slicc-app')
+            .model.updates.list()
+            .find((item) => item.id === 'grammars');
+          window.lastGrammars = grammars?.state ?? 'absent';
+          return grammars && !/queued|starting|checking|downloading|linking/.test(grammars.state);
+        })
+        .catch(async (error) => {
+          const seen = await page.evaluate(() => window.lastGrammars);
+          throw new Error(
+            `the grammars install didn't settle before the reload, last ${seen}: ${error.message}`
+          );
+        });
       chrome.cdn.requests.length = 0;
       const bios = await watch(page);
       await reload(page);
