@@ -757,6 +757,8 @@ export function answerLink({ pc, send, hello, timers, onClose, accept }) {
 
 const RANK = { connected: 2, offline: 1 };
 
+const row = (link, describe) => ({ ...device(link), ...(link.peer ? describe(link) : {}) });
+
 export function mergeDevices(entries) {
   const byId = new Map();
   for (const entry of entries) {
@@ -864,8 +866,7 @@ export function createLinks({
       return () => listeners.delete(listener);
     },
     changed,
-    devices: () =>
-      mergeDevices([...links.values()].map((link) => ({ ...device(link), ...describe(link) }))),
+    devices: () => mergeDevices([...links.values()].map((link) => row(link, describe))),
     mounts: () =>
       [...links.values()].flatMap((link) =>
         link.peer && link.offer.session.caps().includes('fs')
