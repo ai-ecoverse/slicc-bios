@@ -291,22 +291,48 @@ export function vaultPort({ call, state, button }) {
 }
 
 const CONSUME = ['ticket', 'stamp', 'path', 'resolved', 'argv', 'cwd', 'interpreters', 'trusted'];
+const SESSION = [
+  'stamp',
+  'session',
+  'host',
+  'port',
+  'protocol',
+  'position',
+  'verified',
+  'handshakeAt',
+  'exit',
+  'placeholders',
+  'head',
+];
 
 const refusal = (code, message) => ({ v: 1, error: { code, message } });
+const picked = (req, keys) =>
+  Object.fromEntries(keys.filter((key) => key in req).map((key) => [key, req[key]]));
+
+async function materializeSession(call, req, { signal, away }) {
+  if (away()) return { v: 1, error: { code: 'ENOTCONN' } };
+  try {
+    const { values } = await call('sessionMaterialize', picked(req, SESSION), {
+      signal,
+      dropAway: true,
+    });
+    return { values };
+  } catch (error) {
+    return { v: 1, error: { code: typeof error?.code === 'string' ? error.code : 'EIO' } };
+  }
+}
 
 export function sealedRelay({ call, forward, users, onRequest, away = () => false }) {
   return async (req, { signal } = {}) => {
     const { caller, ...rest } = req ?? {};
+    if (rest.op === 'sessionMaterialize') return materializeSession(call, rest, { signal, away });
     if (away()) return refusal('ENOTCONN', NOT_CONNECTED);
     const exec = rest.op === 'materialize' || rest.op === 'materializeConsume';
     if (exec && users() !== 'enforce')
       return refusal('EACCES', 'secrets reach programs only when kernel users are enforce');
     try {
       if (rest.op === 'materializeConsume') {
-        const fields = Object.fromEntries(
-          CONSUME.filter((key) => key in rest).map((key) => [key, rest[key]])
-        );
-        const { values, placeholders } = await call('materializeConsume', fields, {
+        const { values, placeholders } = await call('materializeConsume', picked(rest, CONSUME), {
           signal,
           dropAway: true,
         });
