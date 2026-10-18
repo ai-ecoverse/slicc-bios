@@ -164,6 +164,14 @@ function parse(text) {
 const header = (headers, name) =>
   Object.entries(headers ?? {}).find(([key]) => key.toLowerCase() === name)?.[1];
 
+const inherits = (url) => {
+  try {
+    return new URL(url).protocol === 'about:';
+  } catch {
+    return false;
+  }
+};
+
 const owned = (own) => [own ?? []].flat().filter(Boolean);
 
 export const ARM = [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }];
@@ -860,7 +868,7 @@ class Guard {
     if (typeof method !== 'string') return null;
     if (method.startsWith('Fetch.') && sessionId === undefined) return FETCH;
     if (LATER.has(method)) return SCRIPTS;
-    if (method === 'Page.navigate' && /^about:/i.test(params.url ?? '')) return INHERITED;
+    if (method === 'Page.navigate' && inherits(params.url)) return INHERITED;
     if (FLAT.has(method) && params.flatten !== true) {
       const target = params.targetId !== undefined && (await this.current(params.targetId));
       return target ? PROTECTED : UNFLAT;
@@ -899,7 +907,7 @@ class Guard {
     this.touch(targetId);
     const nav = this.navs.get(targetId);
     await nav.ready;
-    if (!nav.failed && !/^about:/i.test(params.url))
+    if (!nav.failed && !inherits(params.url))
       void this.call('Page.navigate', { url: params.url }, nav.session);
     this.deliver({ id, result: answer.result });
   }
