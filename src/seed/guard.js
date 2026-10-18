@@ -12,6 +12,8 @@ export const FAILED =
   'slicc: refused: the CDP guard couldn’t check this answer, so it held it back';
 export const SCRIPTS =
   'slicc: refused: scripts and bindings for later documents could run in seven’s pages or the vault, so the guard doesn’t allow them; run a script in the page you see with Runtime.evaluate instead';
+export const INHERITED =
+  'slicc: refused: a browser-side navigation to about: gives the page the origin of whatever drives the browser, so the guard doesn’t send it; open a new tab on about:blank instead';
 export const UNFLAT =
   'slicc: refused: the guard only hands out flattened sessions, so attach with flatten: true and send commands with a sessionId';
 export const UNGUARDED =
@@ -858,6 +860,7 @@ class Guard {
     if (typeof method !== 'string') return null;
     if (method.startsWith('Fetch.') && sessionId === undefined) return FETCH;
     if (LATER.has(method)) return SCRIPTS;
+    if (method === 'Page.navigate' && /^about:/i.test(params.url ?? '')) return INHERITED;
     if (FLAT.has(method) && params.flatten !== true) {
       const target = params.targetId !== undefined && (await this.current(params.targetId));
       return target ? PROTECTED : UNFLAT;
