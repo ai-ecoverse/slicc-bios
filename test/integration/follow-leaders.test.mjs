@@ -142,19 +142,24 @@ const traces = (page, needles) =>
     const latin = new TextDecoder('latin1');
     let files = 0;
     const unread = [];
+    const read = async (handle, where) => {
+      try {
+        const bytes = await (await handle.getFile()).arrayBuffer();
+        hit(`opfs ${where}`, latin.decode(bytes));
+        files += 1;
+      } catch (error) {
+        unread.push(`${where}: ${error.name}`);
+      }
+    };
     const walk = async (dir, path) => {
-      for await (const [name, handle] of dir.entries()) {
-        if (handle.kind === 'directory') {
-          await walk(handle, `${path}${name}/`);
-          continue;
+      try {
+        for await (const [name, handle] of dir.entries()) {
+          if (handle.kind === 'directory') await walk(handle, `${path}${name}/`);
+          else await read(handle, `${path}${name}`);
         }
-        try {
-          const bytes = await (await handle.getFile()).arrayBuffer();
-          hit(`opfs ${path}${name}`, latin.decode(bytes));
-          files += 1;
-        } catch (error) {
-          unread.push(`${path}${name}: ${error.name}`);
-        }
+      } catch (error) {
+        if (error.name !== 'NotFoundError') throw error;
+        unread.push(`${path}: ${error.name}`);
       }
     };
     await walk(await navigator.storage.getDirectory(), '/');
