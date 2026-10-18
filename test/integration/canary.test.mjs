@@ -22,9 +22,18 @@ function shard(exit, results, name = 'rest') {
   };
 }
 
-const pass = (name) => ({ test: name, status: 'pass', baseline: null, retry: null, log: '' });
+const keyOf = (name) => `test/integration/x.test.mjs › ${name}`;
+const pass = (name) => ({
+  test: name,
+  key: keyOf(name),
+  status: 'pass',
+  baseline: null,
+  retry: null,
+  log: '',
+});
 const regression = (name, log) => ({
   test: name,
+  key: keyOf(name),
   status: 'fail',
   baseline: 'pass',
   retry: 'fail',
@@ -296,6 +305,7 @@ test('repeated runs: always failing only with the candidate is a regression, fai
   assert.equal(classify(['fail', 'pass'], [], false), 'fail');
   const repeated = (name, runs, baselines) => ({
     test: name,
+    key: keyOf(name),
     status: runs.includes('fail') ? 'fail' : 'pass',
     baseline: baselines[0] ?? null,
     retry: null,
@@ -1496,5 +1506,348 @@ test('a caller of the current canary.yml that passes no artifact id and digest i
     assert.match(digestOnly.stdout, /^canary plan: FAIL .*go together; refusing it$/m);
   } finally {
     await rm(tools.dir, { recursive: true, force: true });
+  }
+});
+
+const VECTORS = `import { test } from 'node:test';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+const counter = process.env.CANARY_FIXTURE_RUNS;
+const n = (existsSync(counter) ? Number(readFileSync(counter, 'utf8')) : 0) + 1;
+writeFileSync(counter, String(n));
+for (const detach of ['early', 'late']) {
+  test(\`C1–C4 and E1 at registration, \${detach} detach\`, async (t) => {
+    await t.test('C1.href.seven control', () => {});
+    await t.test('C1.href.seven protected', () => {});
+  });
+}
+test('steady', () => {});
+if (n < 3) test('partial', () => {});
+test('skipped once', { skip: n === 2 }, () => {});
+`;
+
+const TWINS = `import { test } from 'node:test';
+test('outer', async (t) => {
+  await t.test('same', () => {});
+  await t.test('same', () => {});
+});
+`;
+
+async function shardRoot() {
+  const { cp, mkdir, mkdtemp, realpath, writeFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const dir = await realpath(await mkdtemp(join(tmpdir(), 'canary-shard-')));
+  await cp(new URL('../../scripts/canary/', import.meta.url), join(dir, 'scripts/canary'), {
+    recursive: true,
+  });
+  await writeFile(
+    join(dir, 'scripts/canary/shards.json'),
+    JSON.stringify({
+      guard: { match: '/guard-vectors\\.test\\.mjs$' },
+      twins: { match: '/twins\\.test\\.mjs$' },
+    })
+  );
+  await writeFile(
+    join(dir, 'package.json'),
+    JSON.stringify({
+      type: 'module',
+      scripts: {
+        test: 'node --test --test-concurrency=1 ${SLICC_TESTS:-test/integration/*.test.mjs}',
+      },
+    })
+  );
+  await mkdir(join(dir, 'src/packages'), { recursive: true });
+  await writeFile(join(dir, 'src/packages/package.json'), '{}\n');
+  await mkdir(join(dir, 'test/integration'), { recursive: true });
+  await writeFile(join(dir, 'test/integration/guard-vectors.test.mjs'), VECTORS);
+  await writeFile(join(dir, 'test/integration/twins.test.mjs'), TWINS);
+  return {
+    dir,
+    shard: pathToFileURL(join(dir, 'scripts/canary/shard.mjs')),
+    report: pathToFileURL(join(dir, 'scripts/canary/report.mjs')),
+  };
+}
+
+async function reportShards(script, dir, docs, repeat = 1) {
+  const { mkdir, readFile, writeFile } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const verified = [];
+  for (const doc of docs) {
+    const name = `shard-${doc.shard}`;
+    await mkdir(join(dir, 'shards', name), { recursive: true });
+    await writeFile(join(dir, 'shards', name, 'shard.json'), JSON.stringify(doc));
+    verified.push({ run: 'canary', shard: doc.shard, name });
+  }
+  await writeFile(
+    join(dir, 'bindings.json'),
+    JSON.stringify({ verdict: 'canary bindings: PASS', verified, refused: [] })
+  );
+  const runs = [
+    {
+      id: 'canary',
+      ref: 'f'.repeat(40),
+      overrides: [],
+      shards: docs.map(({ shard: name }) => name),
+      expect: [],
+      repeat,
+    },
+  ];
+  const out = join(dir, 'canary');
+  const done = await cli(script, [
+    '--dir',
+    join(dir, 'shards'),
+    '--runs',
+    JSON.stringify(runs),
+    '--out',
+    out,
+    '--bindings',
+    join(dir, 'bindings.json'),
+    '--download',
+    'success',
+  ]);
+  const read = async (file) => JSON.parse(await readFile(join(out, file), 'utf8'));
+  return {
+    ...done,
+    result: await read('result.json'),
+    canary: await read('canary.json'),
+    verdicts: (await readFile(join(out, 'verdict.txt'), 'utf8')).trim().split('\n'),
+  };
+}
+
+test('a repeated shard reports every row in tests under its full node:test ancestry, so the guard vectors’ names under each detach are distinct keys, and a skipped or missing repeat counts no run', async () => {
+  const { readFile, rm } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const root = await shardRoot();
+  try {
+    const out = join(root.dir, 'out/guard');
+    const ran = await cli(root.shard, ['--shard', 'guard', '--repeat', '3', '--out', out], {
+      CANARY_FIXTURE_RUNS: join(root.dir, 'runs.txt'),
+      CWD: root.dir,
+    });
+    assert.equal(ran.code, 0, ran.stdout);
+    const doc = JSON.parse(await readFile(join(out, 'shard.json'), 'utf8'));
+    const file = 'test/integration/guard-vectors.test.mjs';
+    const parent = (detach) => `C1–C4 and E1 at registration, ${detach} detach`;
+    const row = (key, test, candidate) => ({
+      shard: 'guard',
+      key: [file, ...key].join(' › '),
+      test,
+      verdict: 'pass',
+      failed: { candidate, baseline: '0/0' },
+    });
+    const expected = ['early', 'late'].flatMap((detach) => [
+      row(
+        [parent(detach), 'C1.href.seven control'],
+        'guard-vectors.test.mjs › C1.href.seven control',
+        '0/3'
+      ),
+      row(
+        [parent(detach), 'C1.href.seven protected'],
+        'guard-vectors.test.mjs › C1.href.seven protected',
+        '0/3'
+      ),
+      row([parent(detach)], `guard-vectors.test.mjs › ${parent(detach)}`, '0/3'),
+    ]);
+    expected.push(
+      row(['steady'], 'guard-vectors.test.mjs › steady', '0/3'),
+      row(['partial'], 'guard-vectors.test.mjs › partial', '0/2'),
+      row(['skipped once'], 'guard-vectors.test.mjs › skipped once', '0/2')
+    );
+    const reported = await reportShards(root.report, root.dir, [doc], 3);
+    assert.equal(reported.code, 0, reported.stdout);
+    assert.equal(reported.result.verdict, 'canary canary: PASS 9 tests');
+    assert.deepEqual(reported.result.tests, expected);
+    assert.equal(reported.result.tests[0].test, reported.result.tests[3].test);
+    assert.notEqual(reported.result.tests[0].key, reported.result.tests[3].key);
+    assert.deepEqual(reported.result.ambiguous, []);
+    assert.deepEqual(reported.canary.tests, expected);
+    assert.deepEqual(
+      reported.canary.results.map(({ key }) => key),
+      expected.map(({ key }) => key)
+    );
+  } finally {
+    await rm(root.dir, { recursive: true, force: true });
+  }
+});
+
+test('two rows in one shard with the same key turn the report red and name the key', async () => {
+  const { readFile, rm } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const root = await shardRoot();
+  try {
+    const out = join(root.dir, 'out/twins');
+    const ran = await cli(root.shard, ['--shard', 'twins', '--out', out], { CWD: root.dir });
+    assert.equal(ran.code, 0, ran.stdout);
+    const doc = JSON.parse(await readFile(join(out, 'shard.json'), 'utf8'));
+    const key = 'test/integration/twins.test.mjs › outer › same';
+    const reported = await reportShards(root.report, root.dir, [doc]);
+    assert.equal(reported.code, 1);
+    assert.equal(reported.outputs.ok, 'false');
+    assert.equal(reported.result.ok, false);
+    assert.equal(
+      reported.result.verdict,
+      `canary canary: FAIL ambiguous test keys: 2 rows in shard twins share the key ${key}`
+    );
+    assert.deepEqual(reported.result.ambiguous, [{ shard: 'twins', key, rows: 2 }]);
+    assert.match(
+      markdown(reported.canary),
+      /\*\*twins\*\*: 2 rows share the key test\/integration\/twins\.test\.mjs › outer › same/
+    );
+    const keyless = await reportShards(root.report, root.dir, [
+      { ...doc, results: doc.results.map(({ key: _key, ...rest }) => rest) },
+    ]);
+    assert.equal(keyless.code, 1);
+    assert.equal(
+      keyless.result.verdict,
+      'canary canary: FAIL ambiguous test keys: 3 rows in shard twins have no key'
+    );
+  } finally {
+    await rm(root.dir, { recursive: true, force: true });
+  }
+});
+
+test('tests lists every row past the 100 the summaries keep, with its completed runs, and the summary’s other fields stay as they were', async () => {
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'canary-tests-'));
+  try {
+    const broken = (n) => ({ ...pass(`broken ${n}`), status: 'fail', log: `broken ${n} failed` });
+    const rows = [
+      ...Array.from({ length: 120 }, (_, n) => broken(n)),
+      ...Array.from({ length: 30 }, (_, n) => pass(`fine ${n}`)),
+    ];
+    const reported = await reportShards(REPORT, dir, [shard(1, rows)]);
+    assert.equal(reported.code, 1);
+    const { result } = reported;
+    assert.deepEqual(Object.keys(result), [
+      'ok',
+      'run',
+      'biosRef',
+      'url',
+      'repeat',
+      'overrides',
+      'candidates',
+      'counts',
+      'regressions',
+      'both',
+      'flaky',
+      'failures',
+      'missingShards',
+      'unexplainedExits',
+      'refused',
+      'ambiguous',
+      'tests',
+      'verdict',
+    ]);
+    assert.equal(result.ok, false);
+    assert.equal(result.verdict, 'canary canary: FAIL 120 regression');
+    assert.equal(result.repeat, 1);
+    assert.deepEqual(result.counts, {
+      pass: 30,
+      skip: 0,
+      fail: 0,
+      regression: 120,
+      both: 0,
+      flaky: 0,
+    });
+    assert.equal(result.regressions.length, 100);
+    assert.deepEqual(result.regressions[0], {
+      shard: 'rest',
+      test: 'broken 0',
+      log: 'broken 0 failed',
+    });
+    assert.deepEqual([result.missingShards, result.unexplainedExits, result.refused], [[], [], []]);
+    assert.equal(result.tests.length, 150);
+    assert.deepEqual(result.tests[119], {
+      shard: 'rest',
+      key: keyOf('broken 119'),
+      test: 'broken 119',
+      verdict: 'regression',
+      failed: { candidate: '1/1', baseline: '0/0' },
+    });
+    assert.deepEqual(result.tests[149], {
+      shard: 'rest',
+      key: keyOf('fine 29'),
+      test: 'fine 29',
+      verdict: 'pass',
+      failed: { candidate: '0/1', baseline: '0/0' },
+    });
+    assert.deepEqual(reported.canary.tests, result.tests);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('failed in tests counts only the runs that completed, the baseline rerun and the retry included', () => {
+  const row = (name, fields) => ({ ...pass(name), ...fields });
+  const merged = report(
+    [
+      shard(1, [
+        row('skips a run', { runs: ['pass', 'skip', 'pass'], baselines: [] }),
+        row('misses a run', {
+          status: 'fail',
+          runs: ['fail', 'pass'],
+          baselines: ['pass', 'pass'],
+        }),
+        row('never ran', { status: 'skip', runs: ['skip', 'skip', 'skip'], baselines: [] }),
+      ]),
+      shard(
+        1,
+        [
+          row('regression', { status: 'fail', baseline: 'pass', retry: 'fail' }),
+          row('flaky', { status: 'fail', baseline: 'pass', retry: 'pass' }),
+          row('both', { status: 'fail', baseline: 'fail' }),
+        ],
+        'once'
+      ),
+    ],
+    { repeat: 3, strict: false },
+    ['rest', 'once']
+  );
+  assert.deepEqual(
+    merged.tests.map(({ test, verdict, failed }) => [
+      test,
+      verdict,
+      failed.candidate,
+      failed.baseline,
+    ]),
+    [
+      ['skips a run', 'pass', '0/2', '0/0'],
+      ['misses a run', 'flaky', '1/2', '0/2'],
+      ['never ran', 'skip', '0/0', '0/0'],
+      ['regression', 'regression', '2/2', '0/1'],
+      ['flaky', 'flaky', '1/2', '0/1'],
+      ['both', 'both', '1/1', '1/1'],
+    ]
+  );
+});
+
+test('a result over 512 KB is a FAIL verdict, not a truncated list, and canary.json keeps every row', async () => {
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'canary-bound-'));
+  try {
+    const rows = Array.from({ length: 2000 }, (_, n) => pass(`${'a long name '.repeat(20)}${n}`));
+    const reported = await reportShards(REPORT, dir, [shard(0, rows)]);
+    assert.equal(reported.code, 1);
+    assert.equal(reported.outputs.ok, 'false');
+    const { result } = reported;
+    assert.equal(result.ok, false);
+    assert.match(
+      result.verdict,
+      /^canary: FAIL the result is \d+ bytes, over the 524288-byte bound for a job output; canary\.json holds every row$/
+    );
+    assert.ok(result.bytes > 524288);
+    assert.equal(result.tests, undefined);
+    assert.deepEqual(reported.verdicts, ['canary canary: PASS 2000 tests', result.verdict]);
+    assert.equal(reported.canary.tests.length, 2000);
+    const fits = await reportShards(REPORT, dir, [shard(0, rows.slice(0, 400))]);
+    assert.equal(fits.code, 0, fits.stdout);
+    assert.equal(fits.result.tests.length, 400);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });

@@ -13,16 +13,23 @@ function message(error) {
 }
 
 export default async function* canaryReporter(source) {
+  const open = new Map();
   for await (const { type, data } of source) {
-    if (type !== 'test:pass' && type !== 'test:fail') continue;
-    if (data.details?.type === 'suite' && type === 'test:pass') continue;
+    if (type !== 'test:start' && type !== 'test:pass' && type !== 'test:fail') continue;
     const file = data.file ? relative(cwd(), data.file) : '';
+    const path = [...(open.get(file) ?? []).slice(0, data.nesting), data.name];
+    if (type === 'test:start') {
+      open.set(file, path);
+      continue;
+    }
+    if (data.details?.type === 'suite' && type === 'test:pass') continue;
     const skipped = data.skip !== undefined || data.todo !== undefined;
     const status = type === 'test:fail' ? 'fail' : skipped ? 'skip' : 'pass';
     yield `${JSON.stringify({
       file,
       name: data.name,
       nesting: data.nesting,
+      path,
       status,
       durationMs: Math.round(data.details?.duration_ms ?? 0),
       log: status === 'fail' ? message(data.details?.error) : '',
