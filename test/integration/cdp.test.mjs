@@ -318,7 +318,7 @@ test(`real slicc-extension ${EXTENSIONS.at(-1).version}: seven keeps rendering w
   })();
   await run(
     page,
-    `playwright-cli open ${target.href} > /tmp/bg 2>&1 && playwright-cli snapshot >> /tmp/bg 2>&1 && playwright-cli click 'h1' >> /tmp/bg 2>&1; echo bg-$? >> /tmp/bg; echo "bg-""done"`
+    `playwright-cli open ${target.href} > /tmp/bg 2>&1 && playwright-cli snapshot >> /tmp/bg 2>&1 && playwright-cli click e1 >> /tmp/bg 2>&1; echo bg-$? >> /tmp/bg; echo "bg-""done"`
   );
   await shows(page, 'bg-done', 180000);
   driving = false;
