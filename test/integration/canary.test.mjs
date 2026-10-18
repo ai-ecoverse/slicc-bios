@@ -1221,6 +1221,9 @@ test('a call the plan refuses still gets a red report that names the refusal, un
     CANDIDATE_ARTIFACT: 'cdp-pack',
     CANDIDATE_RUN: '500',
     CANDIDATE_SHA256: 'f'.repeat(64),
+    CANDIDATE_ARTIFACT_ID: '',
+    CANDIDATE_ARTIFACT_DIGEST: '',
+    CANDIDATE_BINDING: '',
     GITHUB_REPOSITORY: 'ai-ecoverse/slicc-cdp',
   });
   assert.equal(refused.code, 1);
@@ -1250,5 +1253,248 @@ test('a call the plan refuses still gets a red report that names the refusal, un
     assert.match(result.verdict, /^canary: FAIL the plan refused: a strict candidate needs /);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+function stepsOf(yml) {
+  return yml.split(/\n(?= {6}- )/).filter((step) => /^ {6}- /.test(step));
+}
+
+const field = (step, name) => step.match(new RegExp(`\\n {8,10}${name}: (.*)`))?.[1] ?? null;
+
+test('every checkout of the canary’s own tools is the workflow’s own commit, never main, so a caller pinned to a commit runs that commit’s scripts', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const yml = await readFile(
+    new URL('../../.github/workflows/canary.yml', import.meta.url),
+    'utf8'
+  );
+  const own = '${{ job.workflow_sha }}';
+  const checkouts = stepsOf(yml).filter((step) => /uses: actions\/checkout@/.test(step));
+  assert.equal(checkouts.length, 4);
+  for (const step of checkouts) {
+    assert.equal(field(step, 'repository'), 'ai-ecoverse/slicc-bios', step);
+    assert.doesNotMatch(field(step, 'ref'), /main|github\.|needs\.|inputs\./, step);
+  }
+  assert.deepEqual(checkouts.map((step) => field(step, 'ref')).sort(), [
+    own,
+    own,
+    own,
+    '${{ matrix.job.ref }}',
+  ]);
+  const job = (name, next) => yml.slice(yml.indexOf(`\n  ${name}:`), yml.indexOf(`\n  ${next}:`));
+  const plan = stepsOf(job('plan', 'shard'));
+  assert.equal(field(plan[0], 'ref'), own);
+  const ref = plan.find((step) => /^ {6}- id: ref\n/.test(step));
+  assert.match(ref, /WORKFLOW_SHA: \$\{\{ job\.workflow_sha \}\}/);
+  assert.match(ref, /"\$sha" != "\$WORKFLOW_SHA"/);
+  assert.match(ref, /canary tools: FAIL /);
+  assert.match(ref, /canary tools: PASS /);
+  const decide = plan.find((step) => /^ {6}- id: plan\n/.test(step));
+  assert.equal(field(decide, 'TOOLS_SHA'), '${{ steps.ref.outputs.sha }}');
+  assert.equal(field(decide, 'BIOS_REF'), '${{ inputs.bios-ref }}');
+  assert.equal(field(decide, 'CANDIDATE_BINDING'), '${{ inputs.candidate-binding }}');
+  const shard = stepsOf(job('shard', 'report'));
+  assert.equal(field(shard[0], 'ref'), '${{ matrix.job.ref }}');
+  const overlay = shard.filter((step) => /\.canary-tools/.test(step));
+  assert.equal(overlay.length, 2);
+  for (const step of overlay) assert.equal(field(step, 'if'), 'matrix.job.ref != job.workflow_sha');
+  assert.equal(field(overlay[0], 'ref'), own);
+  const report = stepsOf(yml.slice(yml.indexOf('\n  report:')));
+  assert.equal(field(report[0], 'ref'), own);
+  const run = report.find((step) => /^ {6}- id: report\n/.test(step));
+  assert.match(run, /report\.mjs .*--bindings bindings\.json --download "\$DOWNLOAD"/);
+  assert.doesNotMatch(run, /--prefix/);
+});
+
+const OLD_PIN = '4025d6aabc2c06add216183064d81914a171cd64';
+const OLD_RUN = '39086144658';
+
+function oldPlanEnv(label, sha256) {
+  return {
+    EVENT: 'workflow_call',
+    OVERRIDES: '[]',
+    CANDIDATE_PACKAGE: CDP,
+    CANDIDATE_ARTIFACT: `cert-pr-pack-340-${'0c157b25'.repeat(5)}-1-${label}`,
+    CANDIDATE_RUN: OLD_RUN,
+    CANDIDATE_SHA256: sha256,
+    CANDIDATE_REPO: 'ai-ecoverse/slicc-cdp',
+    REPEAT: '3',
+    LABEL: label,
+    EXPECT: '',
+    SHARDS: '["packages-update-cdp","guard"]',
+    BIOS_REF: OLD_PIN,
+    TOOLS_SHA: '85a0dc54cb0cb3d75cd56c842d04888895de57bd',
+    GITHUB_REPOSITORY: 'ai-ecoverse/slicc-cdp',
+    GITHUB_RUN_ID: OLD_RUN,
+  };
+}
+
+async function toolsCopy() {
+  const { cp, mkdtemp, realpath } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const dir = await realpath(await mkdtemp(join(tmpdir(), 'canary-old-call-')));
+  await cp(new URL('../../scripts/canary/', import.meta.url), join(dir, 'scripts/canary'), {
+    recursive: true,
+  });
+  return {
+    dir,
+    plan: pathToFileURL(join(dir, 'scripts/canary/plan.mjs')),
+    report: pathToFileURL(join(dir, 'scripts/canary/report.mjs')),
+  };
+}
+
+function cdpShard(name, env) {
+  const version = '1.27.0-pr.340.1';
+  return {
+    ...shard(0, [pass(`${name} passes`)], name),
+    pins: {
+      overrides: [{ name: CDP, version, sha256: env.CANDIDATE_SHA256 }],
+      candidates: {
+        [`${CDP}@${version}`]: {
+          via: 'artifact',
+          files: ['package.json'],
+          source: { run: env.CANDIDATE_RUN, artifact: env.CANDIDATE_ARTIFACT },
+          sha256: env.CANDIDATE_SHA256,
+        },
+      },
+      held: [],
+    },
+  };
+}
+
+test('main’s scripts take a call from canary.yml@4025d6a: its plan binds the candidate by name, and its --prefix report reads the shards it downloaded', async () => {
+  const { mkdir, readFile, rm, writeFile } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const tools = await toolsCopy();
+  try {
+    for (const label of ['base', 'candidate']) {
+      const env = oldPlanEnv(label, (label === 'base' ? 'e' : 'f').repeat(64));
+      const planned = await cli(tools.plan, [], { ...env, CWD: tools.dir });
+      assert.equal(planned.code, 0, planned.stdout);
+      assert.doesNotMatch(planned.stdout, /strict candidate|refusing/);
+      assert.match(
+        planned.stdout,
+        /^canary plan: legacy binding, the calling canary.yml passes no candidate-binding$/m
+      );
+      assert.match(planned.stdout, /^canary plan: PASS 1 runs$/m);
+      assert.equal(planned.outputs.prefix, `${label}-`);
+      assert.equal(planned.outputs.refused, undefined);
+      const runs = JSON.parse(planned.outputs.runs);
+      assert.equal(runs[0].ref, OLD_PIN);
+      assert.equal(runs[0].repeat, 3);
+      assert.deepEqual(runs[0].candidate, {
+        package: CDP,
+        artifact: env.CANDIDATE_ARTIFACT,
+        run: OLD_RUN,
+        sha256: env.CANDIDATE_SHA256,
+        repo: 'ai-ecoverse/slicc-cdp',
+        binding: 'legacy',
+      });
+      assert.deepEqual(
+        JSON.parse(planned.outputs.jobs).map(({ shard: name }) => name),
+        ['packages-update-cdp', 'guard']
+      );
+
+      const work = join(tools.dir, label);
+      for (const name of runs[0].shards) {
+        const at = join(work, 'shards', `${label}-canary-shard-canary-${name}`);
+        await mkdir(at, { recursive: true });
+        await writeFile(join(at, 'shard.json'), JSON.stringify(cdpShard(name, env)));
+      }
+      const url = `https://github.com/ai-ecoverse/slicc-cdp/actions/runs/${OLD_RUN}`;
+      const call = {
+        RUNS: planned.outputs.runs,
+        CANARY_RUNNER: 'ubuntu-latest',
+        RUN_URL: url,
+        PREFIX: planned.outputs.prefix,
+        CWD: work,
+      };
+      const args = ['--dir', 'shards', '--runs', call.RUNS, '--out', 'canary', '--prefix'];
+      const reported = await cli(tools.report, [...args, call.PREFIX], call);
+      assert.equal(reported.code, 0, reported.stdout);
+      assert.doesNotMatch(reported.stdout, /ERR_PARSE_ARGS|Unknown option/);
+      assert.match(
+        reported.stdout,
+        /^canary report: legacy shards, read by name under the prefix /m
+      );
+      assert.equal(reported.outputs.ok, 'true');
+      const result = JSON.parse(await readFile(join(work, 'canary/result.json'), 'utf8'));
+      assert.equal(result.ok, true);
+      assert.equal(result.verdict, 'canary canary: PASS 2 tests');
+      assert.equal(result.biosRef, OLD_PIN);
+      assert.equal(result.run, 'canary');
+      assert.equal(result.repeat, 3);
+      assert.equal(result.url, url);
+      assert.deepEqual(result.refused, []);
+      assert.deepEqual(result.candidates, [
+        {
+          package: `${CDP}@1.27.0-pr.340.1`,
+          status: `candidate (artifact ${OLD_RUN}/${env.CANDIDATE_ARTIFACT}, sha256 ${env.CANDIDATE_SHA256})`,
+          via: 'artifact',
+        },
+      ]);
+
+      const stray = join(work, 'shards', `${label}-canary-shard-canary-guard-extra`);
+      await mkdir(stray, { recursive: true });
+      await writeFile(join(stray, 'shard.json'), JSON.stringify(cdpShard('guard', env)));
+      const forged = await cli(tools.report, [...args, call.PREFIX], call);
+      assert.equal(forged.code, 1);
+      assert.match(
+        JSON.parse(await readFile(join(work, 'canary/result.json'), 'utf8')).verdict,
+        new RegExp(`FAIL refused ${label}-canary-shard-canary-guard-extra`)
+      );
+      const mixed = await cli(
+        tools.report,
+        [...args, call.PREFIX, '--bindings', 'bindings.json'],
+        call
+      );
+      assert.equal(mixed.code, 1);
+      assert.equal(mixed.outputs.ok, undefined);
+    }
+  } finally {
+    await rm(tools.dir, { recursive: true, force: true });
+  }
+});
+
+test('a caller of the current canary.yml that passes no artifact id and digest is still refused as strict', async () => {
+  const { rm } = await import('node:fs/promises');
+  const { bindingOf } = await import('../../scripts/canary/plan.mjs');
+  assert.equal(bindingOf({}), 'legacy');
+  assert.equal(bindingOf({ CANDIDATE_BINDING: '' }), '');
+  assert.equal(bindingOf({ CANDIDATE_ARTIFACT_ID: '' }), '');
+  assert.equal(bindingOf({ CANDIDATE_ARTIFACT_DIGEST: '' }), '');
+  assert.equal(bindingOf({ CANDIDATE_BINDING: 'legacy' }), 'legacy');
+  const tools = await toolsCopy();
+  try {
+    const old = oldPlanEnv('candidate', 'f'.repeat(64));
+    const current = {
+      ...old,
+      CANDIDATE_ARTIFACT_ID: '',
+      CANDIDATE_ARTIFACT_DIGEST: '',
+      CANDIDATE_BINDING: '',
+      CWD: tools.dir,
+    };
+    const refused = await cli(tools.plan, [], current);
+    assert.equal(refused.code, 1);
+    assert.match(
+      refused.stdout,
+      /^canary plan: FAIL a strict candidate needs candidate-artifact-id and candidate-artifact-digest .*refusing it$/m
+    );
+    assert.equal(refused.outputs.jobs, undefined);
+    const { CANDIDATE_BINDING: _unset, ...partial } = current;
+    const half = await cli(tools.plan, [], partial);
+    assert.equal(half.code, 1);
+    assert.match(half.stdout, /^canary plan: FAIL a strict candidate needs /m);
+    const digestOnly = await cli(tools.plan, [], {
+      ...old,
+      CANDIDATE_ARTIFACT_DIGEST: ONE,
+      CWD: tools.dir,
+    });
+    assert.equal(digestOnly.code, 1);
+    assert.match(digestOnly.stdout, /^canary plan: FAIL .*go together; refusing it$/m);
+  } finally {
+    await rm(tools.dir, { recursive: true, force: true });
   }
 });

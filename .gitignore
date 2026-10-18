@@ -2,3 +2,4 @@ node_modules/
 coverage/
 artifacts/
 test/unit/
+canary-inputs.json
