@@ -24,8 +24,8 @@ importers:
         specifier: 1.86.4
         version: 1.86.4
       '@ai-ecoverse/wasi-pnpm':
-        specifier: 12.9.1-9
-        version: 12.9.1-9
+        specifier: 12.9.1-10
+        version: 12.9.1-10
       '@ai-ecoverse/wasi-ripgrep':
         specifier: 15.2.0-3
         version: 15.2.0-3
@@ -124,8 +124,8 @@ packages:
       '@shikijs/themes':
         optional: true
 
-  '@ai-ecoverse/wasi-pnpm@12.9.1-9':
-    resolution: {integrity: sha512-OQLqanDwhIkr6NkwrdB5UonOqvDj4NZP/PPsxQI9z1OckX5drZXFj65un2IBOtRCjgxwR9o+mQCt8mw4qC9Y7g==}
+  '@ai-ecoverse/wasi-pnpm@12.9.1-10':
+    resolution: {integrity: sha512-9uTIklwdhPpn2lfpbUO4iNb+a9teRX1smXbf/0yr9ag41/IRLb7LD8Y9ywhm5aJq0pMHysbvp4WCYL+Di2Seqg==}
     engines: {slicc-kernel: '>=1.7.2'}
 
   '@ai-ecoverse/wasi-ripgrep@15.2.0-3':
@@ -210,7 +210,7 @@ snapshots:
 
   '@ai-ecoverse/slicc-spectrum@1.86.4': {}
 
-  '@ai-ecoverse/wasi-pnpm@12.9.1-9': {}
+  '@ai-ecoverse/wasi-pnpm@12.9.1-10': {}
 
   '@ai-ecoverse/wasi-ripgrep@15.2.0-3': {}
 

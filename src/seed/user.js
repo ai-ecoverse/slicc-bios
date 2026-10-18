@@ -17,6 +17,7 @@ const CLEAN = {
   PNPM_HOME: SYSTEM,
   PATH: `${SYSTEM}/bin:/usr/local/bin:/usr/bin:/bin`,
   NODE_OPTIONS: '',
+  SLICC_WASM_BACKTRACE: '1',
 };
 const READABLE = ['chmod', '-R', 'u=rwX,go=rX', `/${folder}`];
 const REQUIRED = ['dependencies', 'devDependencies'];
