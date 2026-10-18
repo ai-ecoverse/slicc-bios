@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
-import { ready } from './bios.mjs';
+import { agentUp, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch({ timeout: 120000 });
@@ -98,6 +99,11 @@ test('Install / Update opens at boot until the agent is installed, and a failed 
       /^Couldn't download the agent: the registry wasn't reachable .*Retry, or check the network\.$/
     );
     assert.match(row.log, /ERR_PNPM_/);
+    const failure = await agentUp(page, { log: () => {} }).catch((error) => error);
+    assert.match(failure.message, /the agent install failed/);
+    const kept = await readFile(new URL('agent-failed.log', page.dir), 'utf8');
+    assert.ok(row.log.trim().split('\n').length > 6);
+    assert.ok(kept.includes(`install log:\n${row.log}`));
     const grammars = await page.evaluate(() =>
       window
         .app()

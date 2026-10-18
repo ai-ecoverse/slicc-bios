@@ -58,6 +58,7 @@ const HYGIENE = [
   `--config.store-dir=${STORE_DIR}`,
   '--config.verify-store-integrity=true',
 ];
+const TRAPS = { SLICC_WASM_BACKTRACE: '1' };
 const CLEAN = {
   HOME: INSTALLER,
   XDG_CONFIG_HOME: `${INSTALLER}/.config`,
@@ -65,6 +66,7 @@ const CLEAN = {
   PNPM_HOME: SYSTEM,
   PATH: `${SYSTEM}/bin:/usr/local/bin:/usr/bin:/bin`,
   NODE_OPTIONS: '',
+  ...TRAPS,
 };
 const guard = { on: false, enforce: false, writing: new Map() };
 
@@ -112,7 +114,7 @@ function writes(cwd, argv) {
 }
 
 export function writing(cwd) {
-  return guard.on ? { cwd, tag: WRITER, env: CLEAN } : { cwd };
+  return guard.on ? { cwd, tag: WRITER, env: CLEAN } : { cwd, env: TRAPS };
 }
 
 export function hygiene(argv) {
@@ -184,7 +186,7 @@ async function pnpmAlone(kernel, cwd, report, to, argv, writer) {
     report({ progress: progress(log), log });
   };
   if (writer && guard.on) await fence(await navigator.storage.getDirectory(), cwd);
-  const run = writer ? { ...writing(cwd), onStdout } : { cwd, onStdout };
+  const run = writer ? { ...writing(cwd), onStdout } : { cwd, env: TRAPS, onStdout };
   const ran = () => kernel.run(writer ? hygiene(argv) : argv, run);
   const { status, stderr } = await (writer ? writing_(kernel, writes(cwd, argv), ran) : ran());
   if (status) {

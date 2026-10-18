@@ -252,6 +252,20 @@ function describe(probe, page) {
   ].join('\n');
 }
 
+function agentLog() {
+  const model = document.querySelector('slicc-app')?.model ?? {};
+  return model.updates?.list?.().find((item) => item.id === 'agent')?.log ?? '';
+}
+
+async function keepFailedInstall(page, label, message) {
+  if (!page.dir) return;
+  const log = await page.evaluate(agentLog).catch((error) => `no install log: ${error.message}`);
+  await writeFile(
+    new URL(`${label.replace(/[^\w-]+/g, '-')}-failed.log`, page.dir),
+    `${message}\ninstall log:\n${log}\n`
+  ).catch(() => {});
+}
+
 export async function agentState(page) {
   return describe(await probeAgent(page), page);
 }
@@ -415,7 +429,9 @@ export async function agentUp(
               : null;
       if (why) {
         outcome = why;
-        throw new Error(`${at}: ${why}\n${describe(probe, page)}`);
+        const message = `${at}: ${why}\n${describe(probe, page)}`;
+        await keepFailedInstall(page, label, message);
+        throw new Error(message);
       }
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
