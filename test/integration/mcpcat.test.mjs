@@ -91,6 +91,7 @@ test('mcpcat from the catalog lists and calls a stdio and an HTTP MCP server, an
   timeout: 25 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
+  await page.init('() => { globalThis.sliccKernelDebug = true; }');
   await boot(page);
   await install(page, 'mcpcat');
   const row = await page.evaluate(() =>
