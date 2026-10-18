@@ -138,6 +138,6 @@
     "label": "GnuPG",
     "description": "Signs, verifies and encrypts files and commits with OpenPGP keys.",
     "commands": ["gpg", "gpgv", "gpg-agent", "gpgconf", "gpg-connect-agent", "gpg2"],
-    "size": 3317873
+    "size": 3326205
   }
 }
