@@ -270,6 +270,13 @@ const knownHosts = (page, name) =>
     `known-${name}`
   );
 
+const linked = (page) =>
+  page.evaluate(() =>
+    (document.querySelector('slicc-app').model.network.status().links?.devices ?? []).map(
+      (d) => d.id
+    )
+  );
+
 async function shell(page, command, name, ms) {
   await run(page, `${command} > /home/${name}.txt 2>&1; echo $? > /home/${name}.done`);
   const wait = ms ? (fn, arg) => page.within(ms, fn, arg) : (fn, arg) => page.until(fn, arg);
@@ -677,6 +684,7 @@ test('the real slicc CLI: ssh into it with its pinned host key, and as the exit,
     current?.stdin.write(`${JSON.stringify(message)}\n`)
   );
   const relink = async (extra) => {
+    const before = await linked(page);
     current?.kill();
     const node = attach(
       cli,
@@ -690,11 +698,13 @@ test('the real slicc CLI: ssh into it with its pinned host key, and as the exit,
     createInterface({ input: node.stdout }).on('line', (line) =>
       page.evaluate((line) => globalThis.sliccLinkReceive(line), line).catch(() => {})
     );
-    await page.until(() =>
-      document
-        .querySelector('slicc-app')
-        .model.network.status()
-        .links?.devices.some((d) => d.state === 'connected')
+    await page.until(
+      (before) =>
+        document
+          .querySelector('slicc-app')
+          .model.network.status()
+          .links?.devices.some((d) => d.state === 'connected' && !before.includes(d.id)),
+      before
     );
   };
   await relink(['--runner', 'sh', '-c']);
@@ -1216,6 +1226,7 @@ test('the real slicc CLI carries a program WebSocket over the link: text, binary
     current?.stdin.write(`${JSON.stringify(message)}\n`)
   );
   const relink = async (extra) => {
+    const before = await linked(page);
     current?.kill();
     const node = attach(cli, ['--signal', 'stdio', '--name', 'ref-node', '--no-kernel', ...extra], {
       stdio: ['pipe', 'pipe', 'inherit'],
@@ -1225,11 +1236,13 @@ test('the real slicc CLI carries a program WebSocket over the link: text, binary
     createInterface({ input: node.stdout }).on('line', (line) =>
       page.evaluate((line) => globalThis.sliccLinkReceive(line), line).catch(() => {})
     );
-    await page.until(() =>
-      document
-        .querySelector('slicc-app')
-        .model.network.status()
-        .links?.devices.some((d) => d.state === 'connected')
+    await page.until(
+      (before) =>
+        document
+          .querySelector('slicc-app')
+          .model.network.status()
+          .links?.devices.some((d) => d.state === 'connected' && !before.includes(d.id)),
+      before
     );
   };
   await relink([]);
