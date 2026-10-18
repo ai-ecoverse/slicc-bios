@@ -4,6 +4,7 @@ import { after, test } from 'node:test';
 import { actPackage, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { leader, model, startHub } from './fake-hub.mjs';
+import { PEER_TRACE, peerTrace } from './peer-trace.mjs';
 import { shoot } from './shots.mjs';
 
 const STEP = 3 * 60 * 1000;
@@ -164,9 +165,11 @@ test('Leaders: Disconnect holds across a reload with no dial, Reconnect keeps th
   timeout: 30 * 60 * 1000,
 }, async (t) => {
   const owner = await owners.page(t);
+  await owner.init(PEER_TRACE);
   await boot(owner, hub.url);
   const page = await followers.page(t);
   await page.init('() => { globalThis.sliccKernelDebug = true; }');
+  await page.init(PEER_TRACE);
   await boot(page, hub.url);
   await page.within(5 * 60 * 1000, () =>
     document
@@ -180,7 +183,11 @@ test('Leaders: Disconnect holds across a reload with no dial, Reconnect keeps th
   const { joinUrl } = await model(owner, (network) => network.status().links);
   const real = keyOf(joinUrl);
   const first = await slicc(page, joinUrl);
-  assert.equal(first.status, 3, first.out);
+  assert.equal(
+    first.status,
+    3,
+    `${first.out}\n${await peerTrace({ leader: owner, follower: page })}`
+  );
   assert.match(first.out, /doesn't allow remote control from this one/);
   let found = [];
   for (let i = 0; i < 240 && found.length !== 1; i += 1) {
