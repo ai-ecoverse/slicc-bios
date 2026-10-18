@@ -1,4 +1,12 @@
-import { appendLog, described, openIntegrity, sha256, treeOf } from './sw/integrity.js';
+import {
+  appendLog,
+  appendTo,
+  described,
+  listModules,
+  openIntegrity,
+  sha256,
+  treeOf,
+} from './sw/integrity.js';
 import { kernelPort, loopback, Unreachable } from './sw/loopback.js';
 import { joined, opfsReader } from './sw/opfs.js';
 import { createResolver, NODE_STUBS } from './sw/resolve.js';
@@ -96,6 +104,14 @@ const healed = new Map();
 function integrity() {
   ledger ??= openIntegrity();
   return ledger;
+}
+
+let diagnosed = Promise.resolve();
+function diag(event) {
+  diagnosed = diagnosed
+    .then(() => appendTo(navigator.storage.getDirectory(), 'var/log/slicc/diag-sw.log', event))
+    .catch(() => undefined);
+  return diagnosed;
 }
 
 async function checked(path, file) {
@@ -343,7 +359,7 @@ async function serve(request, controller) {
   let file;
   try {
     file = await read(path);
-  } catch {
+  } catch (failure) {
     const gone =
       served === 'live'
         ? await missing(at).then(
@@ -351,6 +367,17 @@ async function serve(request, controller) {
             (error) => error
           )
         : null;
+    if (gone) {
+      const modules = await listModules(navigator.storage.getDirectory()).catch((error) => ({
+        error: String(error),
+      }));
+      await diag({
+        event: 'sw-missing',
+        path: at,
+        read: `${failure?.name}: ${failure?.message}`,
+        modules,
+      });
+    }
     return gone ? refuse(gone, request, scope) : network();
   }
   const extension = file.name.split('.').pop();

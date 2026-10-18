@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
 import {
@@ -127,6 +128,55 @@ const confirmDialog = () => {
 
 const attempts = (page) => page.console.filter((line) => line.includes('following the agent:'));
 
+const opfsLog = async (name) => {
+  try {
+    let dir = await navigator.storage.getDirectory();
+    for (const part of ['var', 'log', 'slicc']) dir = await dir.getDirectoryHandle(part);
+    return (await (await dir.getFileHandle(name)).getFile()).text();
+  } catch {
+    return '';
+  }
+};
+
+const modulesListing = async () => {
+  const listing = { at: new Date().toISOString(), names: [], packages: {} };
+  let modules;
+  try {
+    modules = await (await navigator.storage.getDirectory()).getDirectoryHandle('node_modules');
+  } catch (error) {
+    return { ...listing, error: `${error.name}: ${error.message}` };
+  }
+  const look = async (name, dir) => {
+    try {
+      await dir.getFileHandle('package.json');
+      listing.packages[name] = true;
+    } catch (error) {
+      listing.packages[name] = error.name;
+    }
+  };
+  for await (const [name, handle] of modules.entries()) {
+    listing.names.push(name);
+    if (handle.kind !== 'directory' || name.startsWith('.')) continue;
+    if (!name.startsWith('@')) {
+      await look(name, handle);
+      continue;
+    }
+    for await (const [inner, child] of handle.entries()) {
+      if (child.kind === 'directory') await look(`${name}/${inner}`, child);
+    }
+  }
+  return listing;
+};
+
+async function procs(page) {
+  await run(
+    page,
+    `clear; echo "shared_root=$(cat /proc/sys/kernel/slicc_shared_root 2>&1)"; echo "opfs_calls=$(cat /proc/sys/kernel/slicc_opfs_calls 2>&1)"; echo procs-$((6 * 7))`
+  );
+  await shows(page, 'procs-42');
+  return (await screen(page)).replace(/\s+/g, ' ').trim();
+}
+
 const integrityLog = async () => {
   try {
     let dir = await navigator.storage.getDirectory();
@@ -151,8 +201,49 @@ test("a follower of a SLICC on another agent version shows the agent's sentence 
 }, async (t) => {
   const hub = await startHub();
   t.after(() => hub.close());
-  const owner = await owners.page(t);
-  const page = await followers.page(t);
+  const diag = { at: {}, procs: {}, first: null, polls: 0 };
+  let polling = null;
+  let owner = null;
+  let page = null;
+  t.after(async () => {
+    clearInterval(polling);
+    const grab = async (who, fn, ...args) => {
+      try {
+        return await who?.evaluate(fn, ...args);
+      } catch (error) {
+        return `unavailable: ${error.message}`;
+      }
+    };
+    diag.at.end = new Date().toISOString();
+    diag.end = {
+      followerModules: await grab(page, modulesListing),
+      ownerModules: await grab(owner, modulesListing),
+    };
+    try {
+      if (owner) diag.procs.ownerAtEnd = await procs(owner);
+    } catch (error) {
+      diag.procs.ownerAtEnd = `unavailable: ${error.message}`;
+    }
+    const dir = page?.dir ?? owner?.dir;
+    if (!dir) return;
+    const logs = {
+      'diag-follower-sw.log': await grab(page, opfsLog, 'diag-sw.log'),
+      'diag-follower-installer.log': await grab(page, opfsLog, 'diag-installer.log'),
+      'diag-follower-integrity.log': await grab(page, opfsLog, 'integrity.log'),
+      'diag-owner-sw.log': await grab(owner, opfsLog, 'diag-sw.log'),
+      'diag-owner-installer.log': await grab(owner, opfsLog, 'diag-installer.log'),
+      'diag-owner-integrity.log': await grab(owner, opfsLog, 'integrity.log'),
+    };
+    for (const [name, text] of Object.entries(logs))
+      await writeFile(new URL(name, dir), String(text ?? ''));
+    await writeFile(new URL('diag.json', dir), JSON.stringify(diag, null, 2));
+    const missing = String(logs['diag-follower-sw.log']).split('\n').filter(Boolean).length;
+    console.log(
+      `DIAG follow-version: follower sw-missing events ${missing}, first ${diag.first?.at ?? 'none'}, owner installer lines ${String(logs['diag-owner-installer.log']).split('\n').filter(Boolean).length}, follower installer lines ${String(logs['diag-follower-installer.log']).split('\n').filter(Boolean).length}`
+    );
+  });
+  owner = await owners.page(t);
+  page = await followers.page(t);
   for (const [path, body] of Object.entries(OLD_AGENT)) owners.overrides.set(path, body);
   await owner.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
   await ready(owner);
@@ -167,6 +258,9 @@ test("a follower of a SLICC on another agent version shows the agent's sentence 
   ]);
   assert.equal(await agentVersion(owner), '5.0.3');
   assert.notEqual(await agentVersion(page), '5.0.3');
+  diag.at.beforeFollowing = new Date().toISOString();
+  diag.procs.followerBeforeFollowing = await procs(page);
+  diag.procs.ownerBeforeFollowing = await procs(owner);
   await listsAccount(owner, 'amazon-bedrock');
   await connectAccount(owner, 'amazon-bedrock', KEY);
   const { joinUrl } = await model(owner, (network) => network.status().links);
@@ -285,6 +379,29 @@ test("a follower of a SLICC on another agent version shows the agent's sentence 
     /approval denied/
   );
 
+  diag.at.beforeUpgrade = new Date().toISOString();
+  diag.procs.ownerBeforeUpgrade = await procs(owner);
+  diag.procs.followerBeforeUpgrade =
+    'none: in follower mode the follower runs no kernel of its own, its terminal is the owner’s';
+  diag.followerModulesBeforeUpgrade = await page.evaluate(modulesListing);
+  let busy = false;
+  polling = setInterval(async () => {
+    if (diag.first || busy) return;
+    busy = true;
+    diag.polls += 1;
+    try {
+      const log = await page.evaluate(opfsLog, 'diag-sw.log');
+      if (!log || diag.first) return;
+      diag.first = { at: new Date().toISOString(), log };
+      diag.first.modules = await page.evaluate(modulesListing);
+      diag.first.integrity = await page.evaluate(opfsLog, 'integrity.log');
+      diag.first.ownerInstaller = await owner.evaluate(opfsLog, 'diag-installer.log');
+    } catch (error) {
+      diag.lastPollError = error.message;
+    } finally {
+      busy = false;
+    }
+  }, 500);
   for (const file of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'])
     owners.overrides.set(
       `/packages/agent/${file}`,

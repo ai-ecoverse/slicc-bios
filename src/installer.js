@@ -6,6 +6,22 @@ function integrity() {
   ledger ??= import(INTEGRITY).then(({ openIntegrity }) => openIntegrity());
   return ledger;
 }
+
+let diagnosed = Promise.resolve();
+const reasons = new Map();
+function diag(event) {
+  diagnosed = diagnosed
+    .then(async () => {
+      const { appendTo } = await import(INTEGRITY);
+      await appendTo(navigator.storage.getDirectory(), 'var/log/slicc/diag-installer.log', event);
+    })
+    .catch(() => undefined);
+  return diagnosed;
+}
+function why(path, reason) {
+  reasons.set(path, reason);
+  return false;
+}
 const root = navigator.storage.getDirectory();
 let connections = 0;
 let handles = new Map();
@@ -180,12 +196,23 @@ function owner(path, packages) {
 }
 
 async function current(path, entry, changed) {
-  if (changed.has(path)) return false;
-  await read(`${path}/package.json`);
+  if (changed.has(path)) return why(path, 'tampered');
+  try {
+    await read(`${path}/package.json`);
+  } catch (error) {
+    return why(path, `package.json ${error.name}`);
+  }
   const ledger = await integrity();
-  if ((await ledger.source(path))?.integrity !== entry.integrity) return false;
+  if ((await ledger.source(path))?.integrity !== entry.integrity)
+    return why(path, 'integrity differs');
   for (const { path: at, size } of await ledger.files(path)) {
-    if ((await read(at.slice(1))).size !== size) return false;
+    let found;
+    try {
+      found = (await read(at.slice(1))).size;
+    } catch (error) {
+      return why(path, `${at} ${error.name}`);
+    }
+    if (found !== size) return why(path, `${at} size ${found} not ${size}`);
   }
   return true;
 }
@@ -238,11 +265,14 @@ async function repair(entries, fresh) {
 
 async function add([path, entry], changed, stamps, fresh = new Set()) {
   const { resolved, integrity: expected } = entry;
-  if (await current(path, entry, changed).catch(() => false)) return 0;
+  if (await current(path, entry, changed).catch((error) => why(path, String(error)))) return 0;
+  await diag({ event: 'installer-add', path, step: 'replace', why: reasons.get(path) ?? null });
   const bytes = await download(resolved);
   await verify(bytes, expected, path);
+  await diag({ event: 'installer-add', path, step: 'clear' });
   await clear(path);
   const files = await unpack(bytes, path, stamps);
+  await diag({ event: 'installer-add', path, step: 'unpacked', files: files.length });
   await (await integrity()).record(path, files, expected);
   await save(`var/lib/bios/${path}.json`, JSON.stringify({ resolved, integrity: expected }));
   fresh.add(path);
@@ -255,6 +285,7 @@ async function prune(locked) {
     .map((receipt) => receipt.path.replace(/\.json$/, ''))
     .filter((path) => !locked.has(path));
   for (const path of stale) {
+    await diag({ event: 'installer-prune', path });
     await remove(path);
     await remove(`var/lib/bios/${path}.json`);
     await (await integrity()).forget(path);
@@ -293,6 +324,7 @@ async function outcome(ledger, prefix, task) {
 }
 
 async function replay(from, progress, base) {
+  await diag({ event: 'installer-replay', step: 'start', from });
   const ledger = await integrity();
   return outcome(ledger, '/node_modules/', async () => {
     const lock = JSON.parse(new TextDecoder().decode(await download(from)));

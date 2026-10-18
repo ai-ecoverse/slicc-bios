@@ -28,8 +28,42 @@ export async function sha256(bytes) {
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export async function appendLog(root, event, now = Date.now()) {
-  const names = LOG.split('/');
+export function appendLog(root, event, now = Date.now()) {
+  return appendTo(root, LOG, event, now);
+}
+
+export async function listModules(root) {
+  const listing = { at: new Date().toISOString(), names: [], packages: {} };
+  let modules;
+  try {
+    modules = await (await root).getDirectoryHandle('node_modules');
+  } catch (error) {
+    return { ...listing, error: `${error.name}: ${error.message}` };
+  }
+  const look = async (name, dir) => {
+    try {
+      await dir.getFileHandle('package.json');
+      listing.packages[name] = true;
+    } catch (error) {
+      listing.packages[name] = `${error.name}`;
+    }
+  };
+  for await (const [name, handle] of modules.entries()) {
+    listing.names.push(name);
+    if (handle.kind !== 'directory' || name.startsWith('.')) continue;
+    if (!name.startsWith('@')) {
+      await look(name, handle);
+      continue;
+    }
+    for await (const [inner, child] of handle.entries()) {
+      if (child.kind === 'directory') await look(`${name}/${inner}`, child);
+    }
+  }
+  return listing;
+}
+
+export async function appendTo(root, log, event, now = Date.now()) {
+  const names = log.split('/');
   const name = names.pop();
   let dir = await root;
   for (const part of names) dir = await dir.getDirectoryHandle(part, { create: true });
