@@ -136,9 +136,35 @@ jobs:
             node_modules/.cache/slicc-harness/hotspots/
           if-no-files-found: ignore
 
+  vendors:
+    name: ci / vendors
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      LEFTHOOK: '0'
+      SLICC_NO_UPDATE_CHECK: '1'
+      SLICC_CLI: ${{ github.workspace }}/node_modules/.bin/slicc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Firefox and WebKit, with their system libraries
+        run: npx playwright-core install --with-deps firefox webkit
+
+      - name: Pairing in Firefox and WebKit through the real slicc pair, and the verdict
+        run: |
+          node --test --test-concurrency=1 --test-timeout=600000 test/integration/vendors/*.test.mjs 2>&1 | tee "$RUNNER_TEMP/vendors.log" || true
+          node scripts/ci/verdict.mjs shard --name vendors --log "$RUNNER_TEMP/vendors.log"
+
   ci:
     name: ci / test
-    needs: [plan, lint, integration]
+    needs: [plan, lint, integration, vendors]
     if: always()
     permissions:
       contents: read
@@ -206,5 +232,6 @@ jobs:
           PLAN: ${{ needs.plan.result }}
           LINT: ${{ needs.lint.result }}
           INTEGRATION: ${{ needs.integration.result }}
+          VENDORS: ${{ needs.vendors.result }}
           SHARDS: ${{ needs.plan.outputs.shards }}
-        run: node scripts/ci/verdict.mjs shards --dir artifacts/verdicts --expect "$SHARDS" --results "{\"plan\":\"$PLAN\",\"lint\":\"$LINT\",\"integration\":\"$INTEGRATION\"}"
+        run: node scripts/ci/verdict.mjs shards --dir artifacts/verdicts --expect "$SHARDS" --results "{\"plan\":\"$PLAN\",\"lint\":\"$LINT\",\"integration\":\"$INTEGRATION\",\"vendors\":\"$VENDORS\"}"

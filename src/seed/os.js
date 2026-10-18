@@ -110,7 +110,7 @@ import {
 } from './vault.js';
 
 const prompts = installPrompts();
-const arrived = takePairing();
+let unoffered = takePairing();
 
 export const layouts = {
   agents: { side: 'left', open: ['tablet', 'desktop'] },
@@ -338,15 +338,36 @@ function base(os) {
   };
 }
 
-async function offerPairing(text) {
-  if (!text) return;
-  await app.model.network
-    ?.pairComputer?.(text, { arrived: true })
-    .catch((error) => console.warn(`pairing: ${error.message}`));
+export const SKEWED =
+  'Another SLICC tab runs a different version, so this tab can’t link slicc. Reload the SLICC tabs, then open the pairing link again.';
+export const UNATTACHED =
+  'This tab couldn’t reach the tab running SLICC, so it can’t link slicc. Open the pairing link in that tab.';
+
+function pairingTab(failed) {
+  const { role, skew } = tabs.state();
+  if (claimed.owner || role === 'owner') return 'here';
+  if (skew) return SKEWED;
+  return role === 'follower' ? 'here' : failed ? UNATTACHED : null;
+}
+
+async function offerPairing(failed = false) {
+  const text = unoffered;
+  const where = pairingTab(failed);
+  if (!text || !where) return;
+  unoffered = null;
+  if (where !== 'here') pairing.refuse(where);
+  else
+    await app.model.network
+      ?.pairComputer?.(text, { arrived: true })
+      .catch((error) => console.warn(`pairing: ${error.message}`));
   app.show('network');
 }
 
-globalThis.addEventListener?.('hashchange', () => void offerPairing(takePairing()));
+tabs.on('tabs', () => void offerPairing());
+globalThis.addEventListener?.('hashchange', () => {
+  unoffered = takePairing() ?? unoffered;
+  void offerPairing();
+});
 
 async function followerShell(link, meta, stream) {
   const client = await attachKernel(await kernel.connect({ tag: followerTag(link.id) }));
@@ -782,7 +803,8 @@ async function follow() {
   });
   const attached = presentation.next();
   void presentation.attach();
-  void (claimed.owner ? Promise.resolve() : attached).then(() => offerPairing(arrived));
+  void offerPairing();
+  void Promise.resolve(attached).then(() => offerPairing(true));
 }
 
 async function alone() {

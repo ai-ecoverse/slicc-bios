@@ -27,6 +27,7 @@ test('seven leads a tray: a follower joins and links, rotation moves it to a new
     permission: null,
     webhookUrl: `${hub.url}/webhook/w1`,
     sync: 'ready',
+    pairing: { state: 'idle' },
   });
   assert.deepEqual(
     await page.evaluate(() => {

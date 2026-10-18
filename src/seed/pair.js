@@ -8,6 +8,9 @@ export const FIRST_PORT = 17117;
 export const LAST_PORT = 17126;
 export const CERT = 'loopback';
 export const UNLINK_MS = 5_000;
+export const GATHER_MS = 10_000;
+export const POST_MS = 15_000;
+export const PROMPT_MS = 120_000;
 export const BACKOFF_MIN = 1_000;
 export const BACKOFF_MAX = 30_000;
 export const NOT_A_LINK = 'That isn’t a pairing link from slicc pair.';
@@ -104,14 +107,28 @@ export function localNetwork(
 
 const BLOCKED =
   'This browser blocks seven from reaching apps on this computer. Allow local network access in this site’s settings, then try again.';
+export const MIXED =
+  'This browser doesn’t let an https page reach slicc on this computer, so seven can’t pair here. Use the join command under Link another device, or open seven in Chrome, Edge or Firefox.';
 const UNREACHABLE = (port) =>
   `Nothing answered on port ${port}, or slicc refused this page’s origin: is slicc still running on this computer?`;
+const UNPREPARED =
+  'Seven couldn’t prepare the link: this browser gave it no network addresses for it.';
 const REFUSED =
   'slicc refused this pairing link: it’s wrong, already used or expired. Press Enter in slicc for a new one.';
 
-export function loopbackPost({ fetcher, lna, waiting }) {
-  return async (port, path, body, signal) => {
+export function mixedBlocked(scope = globalThis) {
+  return scope.location?.protocol === 'https:' && /^Apple/.test(scope.navigator?.vendor ?? '');
+}
+
+export function loopbackPost({ fetcher, lna, waiting, timers, mixed = () => false }) {
+  return async (port, path, body, cancel) => {
     waiting(1);
+    const deadline = new AbortController();
+    const timer = timers.setTimeout(
+      () => deadline.abort(new Error('no answer in time')),
+      lna.state() === 'prompt' ? PROMPT_MS : POST_MS
+    );
+    const signal = cancel ? AbortSignal.any([cancel, deadline.signal]) : deadline.signal;
     let response;
     try {
       response = await fetcher(`http://127.0.0.1:${port}${path}`, {
@@ -124,10 +141,12 @@ export function loopbackPost({ fetcher, lna, waiting }) {
         signal,
       });
     } catch {
-      if (signal?.aborted) throw signal.reason;
+      if (cancel?.aborted) throw cancel.reason;
       if (lna.state() === 'denied') throw refusal('blocked', BLOCKED);
+      if (mixed()) throw refusal('blocked', MIXED);
       throw refusal('unreachable', UNREACHABLE(port));
     } finally {
+      timers.clearTimeout(timer);
       waiting(-1);
     }
     if (!response.ok) throw refusal('refused', REFUSED);
@@ -148,6 +167,10 @@ export function answeredBy(fp, port, value) {
 
 const key = (fp) => `pair:${fp}`;
 
+const dropped = (links, link, reason) => {
+  if (links.links.get(link.key) === link) links.drop(link.key, reason);
+};
+
 function until(links, link) {
   return new Promise((resolve) => {
     const check = () => {
@@ -160,7 +183,7 @@ function until(links, link) {
   });
 }
 
-export function loopbackOffer({ links, mint, address }) {
+export function loopbackOffer({ links, mint, address, timers }) {
   return async (fp) => {
     const certificates = [await mint()];
     let gathered;
@@ -182,7 +205,17 @@ export function loopbackOffer({ links, mint, address }) {
       throw refusal('gone', 'The link closed before it was set up.');
     });
     gone.catch(() => {});
-    return { link, sdp: await Promise.race([sdp, gone]), gone };
+    const timer = timers.setTimeout(() => gathered(link.pc.localDescription?.sdp), GATHER_MS);
+    try {
+      const offered = await Promise.race([sdp, gone]);
+      if (!offered) throw refusal('gathering', UNPREPARED);
+      return { link, sdp: offered, gone };
+    } catch (error) {
+      dropped(links, link, 'no offer');
+      throw error;
+    } finally {
+      timers.clearTimeout(timer);
+    }
   };
 }
 
@@ -283,6 +316,11 @@ function attempts({ show, shown, pairWith, lna }) {
       pending = { pairing: found };
       show({ state: 'confirm', code: short(found.fingerprint) });
     },
+    refuse(error) {
+      if (shown().state === 'linking') return;
+      pending = null;
+      show({ state: 'failed', error });
+    },
     async confirm() {
       if (shown().state !== 'confirm' || !pending) throw new Error(NOTHING);
       const attempt = pending;
@@ -315,6 +353,7 @@ export function createPairing({
   timers = globalThis,
   scope = globalThis,
   lna = localNetwork(),
+  mixed = () => mixedBlocked(),
 }) {
   const pins = load(storage);
   const listeners = new Set();
@@ -333,12 +372,14 @@ export function createPairing({
   const post = loopbackPost({
     fetcher,
     lna,
+    timers,
+    mixed,
     waiting: (n) => {
       waiting += n;
       changed();
     },
   });
-  const offer = loopbackOffer({ links, mint, address: (fp) => pins[fp]?.address });
+  const offer = loopbackOffer({ links, mint, timers, address: (fp) => pins[fp]?.address });
 
   async function pairWith({ port, token, fingerprint: fp }, signal) {
     const { link, sdp } = await offer(fp);
@@ -347,7 +388,7 @@ export function createPairing({
       value = await post(port, PAIR_PATH, { token, offer: sdp }, signal);
       answeredBy(fp, port, value);
     } catch (error) {
-      links.drop(key(fp), 'not paired');
+      dropped(links, link, 'not paired');
       throw error;
     }
     const name = typeof value.name === 'string' && value.name ? value.name : pins[fp]?.name;
@@ -381,7 +422,7 @@ export function createPairing({
         if (port === pin.port && error.code === 'refused') refused = true;
       }
     }
-    links.drop(key(fp), 'no slicc answered');
+    dropped(links, link, 'no slicc answered');
     if (refused && !pin.forgotten) {
       pin.forgotten = true;
       save();
@@ -435,6 +476,8 @@ export function createPairing({
     start() {
       if (running) return;
       running = true;
+      for (const fp of Object.keys(pins)) delete pins[fp];
+      Object.assign(pins, load(storage));
       for (const fp of Object.keys(pins)) keep(fp);
       scope.addEventListener?.('online', wake);
       scope.document?.addEventListener?.('visibilitychange', () => {

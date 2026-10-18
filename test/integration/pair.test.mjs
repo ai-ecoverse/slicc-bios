@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { after, test } from 'node:test';
-import { boot, ready, run } from './bios.mjs';
+import { boot, ready, run, trust } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { cliEnv, HOST_CDP } from './cli.mjs';
 
@@ -366,7 +366,7 @@ test('seven refuses a wrong code, a used link, a stopped slicc and a debugging p
   assert.deepEqual(page.errors, []);
 });
 
-test('slicc open with seven already open: the new tab hands the pairing to the tab running SLICC, and both show it', {
+test('slicc open with seven already open: the new tab hands the pairing to the tab running SLICC, both show it, and the new tab keeps the device once the first one closes', {
   skip: !cli,
   timeout: 10 * 60 * 1000,
 }, async (t) => {
@@ -393,7 +393,57 @@ test('slicc open with seven already open: the new tab hands the pairing to the t
   await deviceIs(owner, fp, 'connected');
   await deviceIs(fresh, fp, 'connected');
   assert.deepEqual(owner.errors, []);
+  await owner.close();
+  await fresh.within(
+    STEP,
+    () => document.querySelector('slicc-app').model.tabs?.state().role === 'owner'
+  );
+  await deviceIs(fresh, fp, 'connected');
+  assert.equal(
+    await fresh.evaluate(
+      (id) => Object.keys(JSON.parse(localStorage.getItem('slicc-os.paired'))).includes(id),
+      fp
+    ),
+    true
+  );
+  assert.equal(node.urls.length, 1);
   assert.deepEqual(fresh.errors, []);
+});
+
+test('a new tab whose seven version differs from the running tab’s says why it can’t pair, and nothing pairs', {
+  skip: !cli,
+  timeout: 10 * 60 * 1000,
+}, async (t) => {
+  const home = await scratch(t, 'pair-skew-');
+  const owner = await chrome.page(t);
+  await boot(owner);
+  await owner.until(() => document.querySelector('slicc-app').model.tabs?.state().role === 'owner');
+  const switchboard = await owner.evaluate(async () => {
+    const os = await (await navigator.storage.getDirectory()).getDirectoryHandle('os');
+    return (await (await os.getFileHandle('switchboard.js')).getFile()).text();
+  });
+  await trust(owner, { 'os/switchboard.js': `${switchboard}\n` });
+  const node = slicc(t, pairArgs('quay-studio'), { home });
+  const url = await node.url();
+  const fresh = await owner.tab();
+  await fresh.goto(`/os/${new URL(url).hash}`);
+  await pairingIs(fresh, 'failed');
+  assert.deepEqual(await pairing(fresh), {
+    state: 'failed',
+    error:
+      'Another SLICC tab runs a different version, so this tab can’t link slicc. Reload the SLICC tabs, then open the pairing link again.',
+  });
+  assert.notEqual(
+    await fresh.evaluate(() => document.querySelector('slicc-app').model.tabs.state().skew),
+    null
+  );
+  assert.equal(await fresh.evaluate(() => location.hash), '');
+  assert.equal((await pairing(owner)).state, 'idle');
+  assert.deepEqual(await devices(owner), []);
+  assert.deepEqual(
+    node.said.filter((line) => /pairing|paired/.test(line) && !/to link seven/.test(line)),
+    []
+  );
 });
 
 test('a slicc that forgot this seven: its offline row says so, and pairing again clears it', {
