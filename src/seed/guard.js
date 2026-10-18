@@ -12,6 +12,8 @@ export const FAILED =
   'slicc: refused: the CDP guard couldn’t check this answer, so it held it back';
 export const SCRIPTS =
   'slicc: refused: scripts and bindings for later documents could run in seven’s pages or the vault, so the guard doesn’t allow them; run a script in the page you see with Runtime.evaluate instead';
+export const INHERITED =
+  'slicc: refused: a browser-side navigation to about: gives the page the origin of whatever drives the browser, so the guard doesn’t send it; open a new tab on about:blank instead';
 export const UNFLAT =
   'slicc: refused: the guard only hands out flattened sessions, so attach with flatten: true and send commands with a sessionId';
 export const UNGUARDED =
@@ -161,6 +163,14 @@ function parse(text) {
 
 const header = (headers, name) =>
   Object.entries(headers ?? {}).find(([key]) => key.toLowerCase() === name)?.[1];
+
+const inherits = (url) => {
+  try {
+    return new URL(url).protocol === 'about:';
+  } catch {
+    return true;
+  }
+};
 
 const owned = (own) => [own ?? []].flat().filter(Boolean);
 
@@ -641,19 +651,7 @@ class Guard {
     if (method === 'Network.requestWillBeSent' && params.type === 'Document') {
       return !this.armed(sessionId) && this.is.url(params.request?.url);
     }
-    if (method !== 'Runtime.executionContextCreated') return false;
-    return this.is.url(params.context?.origin) && !this.precursor(params.context, sessionId);
-  }
-
-  precursor({ origin, auxData } = {}, sessionId) {
-    const found = this.targets.get(this.sessions.get(sessionId)?.targetId);
-    return (
-      /^chrome-extension:/i.test(origin) &&
-      auxData?.isDefault === true &&
-      (found?.url === '' || found?.url === 'about:blank') &&
-      !found.guarded &&
-      !found.openerId
-    );
+    return method === 'Runtime.executionContextCreated' && this.is.url(params.context?.origin);
   }
 
   hides(entry) {
@@ -871,6 +869,7 @@ class Guard {
     if (typeof method !== 'string') return null;
     if (method.startsWith('Fetch.') && sessionId === undefined) return FETCH;
     if (LATER.has(method)) return SCRIPTS;
+    if (method === 'Page.navigate' && inherits(params.url)) return INHERITED;
     if (FLAT.has(method) && params.flatten !== true) {
       const target = params.targetId !== undefined && (await this.current(params.targetId));
       return target ? PROTECTED : UNFLAT;
@@ -909,7 +908,8 @@ class Guard {
     this.touch(targetId);
     const nav = this.navs.get(targetId);
     await nav.ready;
-    if (!nav.failed) void this.call('Page.navigate', { url: params.url }, nav.session);
+    if (!nav.failed && !inherits(params.url))
+      void this.call('Page.navigate', { url: params.url }, nav.session);
     this.deliver({ id, result: answer.result });
   }
 
