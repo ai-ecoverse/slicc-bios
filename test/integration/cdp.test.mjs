@@ -1094,3 +1094,27 @@ test('a cone runs playwright-cli from a directory it cannot write, and it drives
   assert.doesNotMatch(text, /Permission denied/);
   assert.deepEqual(page.errors, []);
 });
+
+test('slicc-cdp#252: a guard setup step that answers after 12 s still arms the tab, inside the shared budget, and the page opens', async (t) => {
+  const page = await chrome.page(t);
+  const extension = await fakeExtension(page, { slow: { 'Target.setDiscoverTargets': 12000 } });
+  t.after(extension.close);
+  await boot(page);
+  chrome.overrides.set(
+    '/slow-guard.html',
+    '<!doctype html><title>slow guard</title><h1>Armed late</h1>'
+  );
+  const target = elsewhere('/slow-guard.html');
+  await run(
+    page,
+    `clear; playwright-cli open ${target} > /tmp/slow-guard 2>&1; echo opened=$?; playwright-cli tab-list | grep -c 'slow guard' | sed 's/^/listed=/'; echo slow-$((40 + 2))`
+  );
+  await shows(page, 'slow-42', 180000);
+  const text = await read(page, '/tmp/slow-guard');
+  assert.doesNotMatch(text, /refused/, text);
+  assert.match(text, /Opened /, text);
+  await shows(page, 'opened=0');
+  await shows(page, 'listed=1');
+  assert.ok(extension.sent.includes('Target.setDiscoverTargets'));
+  assert.deepEqual(page.errors, []);
+});
