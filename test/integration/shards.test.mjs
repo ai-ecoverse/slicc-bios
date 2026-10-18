@@ -14,7 +14,15 @@ import {
   SPLIT,
   VARIANTS,
 } from '../../scripts/ci/plan.mjs';
-import { decide, failing, flips, groups, itemOf, timings } from '../../scripts/ci/shard.mjs';
+import {
+  attribute,
+  decide,
+  failing,
+  flips,
+  groups,
+  itemOf,
+  timings,
+} from '../../scripts/ci/shard.mjs';
 import { body, combine, key, occurrence, title } from '../../scripts/ci/summary.mjs';
 
 const root = new URL('../../', import.meta.url);
@@ -141,19 +149,38 @@ test('ci.yml takes its matrix, fail-fast and retry from the plan', () => {
   assert.match(ci, /--expect "\$SHARDS"/);
 });
 
-test("a shard runs a guard-set file's variants with GUARD_VARIANTS, and its other files with the first group", () => {
+test('a shard runs each guard-set file on its own with its variants, and its other files with the first one', () => {
   const p = 'test/integration/guard-set-proxy.test.mjs';
   const e = 'test/integration/guard-set-extension.test.mjs';
-  assert.deepEqual(groups(['test/integration/a.test.mjs']), [
-    { env: {}, files: ['test/integration/a.test.mjs'] },
-  ]);
-  assert.deepEqual(groups([`${p}#lagging`, 'test/integration/a.test.mjs', `${e}#lagging`]), [
-    { env: { GUARD_VARIANTS: 'lagging' }, files: ['test/integration/a.test.mjs', p, e] },
+  const a = 'test/integration/a.test.mjs';
+  assert.deepEqual(groups([a]), [{ env: {}, files: [a] }]);
+  assert.deepEqual(groups([`${p}#lagging`, a, `${e}#lagging`]), [
+    { env: { GUARD_VARIANTS: 'lagging' }, files: [a, p] },
+    { env: { GUARD_VARIANTS: 'lagging' }, files: [e] },
   ]);
   assert.deepEqual(groups([`${p}#lagging`, `${e}#prompt`, `${p}#prompt`]), [
     { env: { GUARD_VARIANTS: 'lagging,prompt' }, files: [p] },
     { env: { GUARD_VARIANTS: 'prompt' }, files: [e] },
   ]);
+});
+
+test("a guard-set test reported from its helper module counts for the run's guard-set file", () => {
+  const p = 'test/integration/guard-set-proxy.test.mjs';
+  const a = 'test/integration/a.test.mjs';
+  const results = [
+    { file: a, name: 'x', status: 'fail' },
+    {
+      file: 'test/integration/guard-set.mjs',
+      name: 'on the proxy path, lagging detach',
+      status: 'pass',
+    },
+  ];
+  assert.deepEqual(
+    attribute(results, [a, p]).map(({ file }) => file),
+    [a, p]
+  );
+  assert.deepEqual(failing(attribute(results, [a, p]), [a, p], 1), [a]);
+  assert.deepEqual(attribute(results, [a]), results);
 });
 
 test('a shard retries the files with a failing test, and the ones a crash left without results', () => {

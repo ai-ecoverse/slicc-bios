@@ -24,15 +24,21 @@ export function groups(list) {
     if (variant) variants.set(file, [...(variants.get(file) ?? []), variant]);
     else whole.push(file);
   }
-  const byEnv = new Map();
-  for (const [file, chosen] of variants) {
-    const key = [...chosen].sort().join(',');
-    byEnv.set(key, [...(byEnv.get(key) ?? []), file]);
-  }
-  const out = [...byEnv].map(([key, files]) => ({ env: { GUARD_VARIANTS: key }, files }));
+  const out = [...variants].map(([file, chosen]) => ({
+    env: { GUARD_VARIANTS: [...chosen].sort().join(',') },
+    files: [file],
+  }));
   if (!out.length) return whole.length ? [{ env: {}, files: whole }] : [];
   out[0].files = [...whole, ...out[0].files];
   return out;
+}
+
+export function attribute(results, files) {
+  const split = files.filter((file) => SPLIT.test(file));
+  if (split.length !== 1) return results;
+  return results.map((result) =>
+    files.includes(result.file) ? result : { ...result, file: split[0] }
+  );
 }
 
 export function failing(results, files, code) {
@@ -113,10 +119,13 @@ async function run(files, extra, tag, dir) {
     child.on('close', (status, signal) => resolve(status ?? signal));
   });
   await new Promise((resolve) => out.end(resolve));
-  const results = (await readFile(jsonl, 'utf8').catch(() => ''))
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => JSON.parse(line));
+  const results = attribute(
+    (await readFile(jsonl, 'utf8').catch(() => ''))
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line)),
+    files
+  );
   return { files, code, ms: Date.now() - started, log: await readFile(log, 'utf8'), results };
 }
 
