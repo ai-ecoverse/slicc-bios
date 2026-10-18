@@ -1582,3 +1582,126 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   await page.screenshot(new URL('panel-refused-light-1280.png', page.dir));
   assert.deepEqual(page.errors, []);
 });
+
+const persisted = () => {
+  try {
+    localStorage.setItem('test.storage', '{"persisted":true,"persist":true}');
+  } catch {}
+};
+
+test('an agent that failed to start at boot loads the new page adapter once an update installs one, and Retry recovers it without a reload', {
+  timeout: 35 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  await page.init(helpers);
+  await page.init(persisted);
+  await page.init(storageStub);
+  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await ready(page);
+  await agentUp(page);
+  await connectAccount(page, 'amazon-bedrock', KEY);
+  const dist = '/opt/agent/node_modules/@ai-ecoverse/slicc-agent/dist';
+  const original = await page.evaluate((dist) => window.readFile(`${dist}/page.js`), dist);
+  const owner = /\bstartAgent\n\} from "\.\/owner\.js";/;
+  assert.match(original, owner);
+  const broken = original.replace(
+    owner,
+    'startAgent as ownerStart\n} from "./owner.js";\nglobalThis.sevenAdapters = [...(globalThis.sevenAdapters ?? []), "old"];\nconst startAgent = () => Promise.reject(new Error("this build does not start"));'
+  );
+  await page.evaluate((dist, text) => window.writeFile(`${dist}/page.js`, text), dist, broken);
+  await page.reload();
+  await ready(page);
+  const row = () =>
+    page.evaluate(() => {
+      const item = document
+        .querySelector('slicc-app')
+        .model.updates.list()
+        .find((entry) => entry.id === 'agent');
+      return { state: item.state, error: item.error ?? null, adapters: globalThis.sevenAdapters };
+    });
+  await page
+    .within(UPDATE, () => {
+      const item = document
+        .querySelector('slicc-app')
+        .model.updates.list()
+        .find((entry) => entry.id === 'agent');
+      return item.state === 'failed' && globalThis.sevenAdapters?.[0] === 'old';
+    })
+    .catch(async (error) => {
+      throw new Error(`${error.message}\n${JSON.stringify(await row())}`);
+    });
+  assert.match((await row()).error, /Couldn't start the agent/);
+
+  const fresh = original.replace(
+    owner,
+    'startAgent as ownerStart\n} from "./owner.js";\nglobalThis.sevenAdapters = [...(globalThis.sevenAdapters ?? []), "new"];\nlet sevenTries = 0;\nconst startAgent = (...args) => (sevenTries++ === 0 ? Promise.reject(new Error("the first start fails")) : ownerStart(...args));'
+  );
+  await page.evaluate((dist, text) => window.writeFile(`${dist}/page.js`, text), dist, fresh);
+  const lock = await readFile(
+    new URL('../../src/packages/agent/pnpm-lock.yaml', import.meta.url),
+    'utf8'
+  );
+  chrome.overrides.set('/packages/agent/pnpm-lock.yaml', `${lock}# updated\n`);
+  t.after(() => chrome.overrides.delete('/packages/agent/pnpm-lock.yaml'));
+  await page.evaluate(() => {
+    const { updates } = document.querySelector('slicc-app').model;
+    window.agentStates = [];
+    updates.on('items', () =>
+      window.agentStates.push(updates.list().find((entry) => entry.id === 'agent').state)
+    );
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  const settled = () => {
+    const { updates } = document.querySelector('slicc-app').model;
+    const { state } = updates.list().find((entry) => entry.id === 'agent');
+    return updates.ready() || (window.agentStates.includes('installed') && state === 'failed');
+  };
+  await page.within(UPDATE, settled).catch(async (error) => {
+    throw new Error(`${error.message}\n${JSON.stringify(await row())}`);
+  });
+  const installed = await row();
+  assert.deepEqual(installed.adapters, ['old', 'new'], JSON.stringify(installed));
+  assert.equal(installed.state, 'failed', JSON.stringify(installed));
+
+  await page.evaluate(() => {
+    window.agentStates = [];
+    document.querySelector('slicc-app').show('updates');
+  });
+  const retry = () =>
+    document
+      .querySelector('slicc-app')
+      .dock.content('updates')
+      ?.shadowRoot?.querySelector('article[data-id="agent"] swc-button[data-action="retry"]');
+  await page.until(new Function(`return !!(${retry})()`));
+  await page.evaluate(new Function(`(${retry})().click()`));
+  await page
+    .within(UPDATE, () => document.querySelector('slicc-app').model.updates.ready())
+    .catch(async (error) => {
+      throw new Error(`${error.message}\n${JSON.stringify(await row())}`);
+    });
+  const recovered = await row();
+  assert.deepEqual(recovered.adapters, ['old', 'new'], JSON.stringify(recovered));
+  assert.notEqual(recovered.state, 'failed', JSON.stringify(recovered));
+
+  const seen = async (error) => {
+    const chat = await page.evaluate(() =>
+      window.chatView()
+        ? window.deepText(window.chatView().shadowRoot).slice(-600)
+        : 'no chat panel'
+    );
+    throw new Error(`${error.message}\n${JSON.stringify(await row())}\nchat: ${chat}`);
+  };
+  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
+  await page
+    .until(() => !!window.chatView() && !!window.deep(window.chatView().shadowRoot, 'textarea'))
+    .catch(seen);
+  await page.evaluate(() => window.deep(window.chatView().shadowRoot, 'textarea').focus());
+  await page.insert('Say hello');
+  await page.enter();
+  await page
+    .until(() =>
+      window.deepText(window.chatView().shadowRoot).includes('Hello from Bedrock in seven.')
+    )
+    .catch(seen);
+  assert.deepEqual(page.errors, []);
+});
