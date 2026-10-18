@@ -3,6 +3,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import set from '@ai-ecoverse/slicc-browsers/guard-vectors.json' with { type: 'json' };
 import { SHARDS } from '../../scripts/canary/plan.mjs';
+import { refresh } from '../../scripts/ci/durations.mjs';
 import {
   arm,
   assign,
@@ -13,7 +14,16 @@ import {
   SPLIT,
   VARIANTS,
 } from '../../scripts/ci/plan.mjs';
-import { decide, failing, groups } from '../../scripts/ci/shard.mjs';
+import {
+  attribute,
+  decide,
+  failing,
+  flips,
+  groups,
+  itemOf,
+  timings,
+} from '../../scripts/ci/shard.mjs';
+import { body, combine, key, occurrence, title } from '../../scripts/ci/summary.mjs';
 
 const root = new URL('../../', import.meta.url);
 const ci = await readFile(new URL('.github/workflows/ci.yml', root), 'utf8');
@@ -139,19 +149,38 @@ test('ci.yml takes its matrix, fail-fast and retry from the plan', () => {
   assert.match(ci, /--expect "\$SHARDS"/);
 });
 
-test("a shard runs a guard-set file's variants with GUARD_VARIANTS, and its other files with the first group", () => {
+test('a shard runs each guard-set file on its own with its variants, and its other files with the first one', () => {
   const p = 'test/integration/guard-set-proxy.test.mjs';
   const e = 'test/integration/guard-set-extension.test.mjs';
-  assert.deepEqual(groups(['test/integration/a.test.mjs']), [
-    { env: {}, files: ['test/integration/a.test.mjs'] },
-  ]);
-  assert.deepEqual(groups([`${p}#lagging`, 'test/integration/a.test.mjs', `${e}#lagging`]), [
-    { env: { GUARD_VARIANTS: 'lagging' }, files: ['test/integration/a.test.mjs', p, e] },
+  const a = 'test/integration/a.test.mjs';
+  assert.deepEqual(groups([a]), [{ env: {}, files: [a] }]);
+  assert.deepEqual(groups([`${p}#lagging`, a, `${e}#lagging`]), [
+    { env: { GUARD_VARIANTS: 'lagging' }, files: [a, p] },
+    { env: { GUARD_VARIANTS: 'lagging' }, files: [e] },
   ]);
   assert.deepEqual(groups([`${p}#lagging`, `${e}#prompt`, `${p}#prompt`]), [
     { env: { GUARD_VARIANTS: 'lagging,prompt' }, files: [p] },
     { env: { GUARD_VARIANTS: 'prompt' }, files: [e] },
   ]);
+});
+
+test("a guard-set test reported from its helper module counts for the run's guard-set file", () => {
+  const p = 'test/integration/guard-set-proxy.test.mjs';
+  const a = 'test/integration/a.test.mjs';
+  const results = [
+    { file: a, name: 'x', status: 'fail' },
+    {
+      file: 'test/integration/guard-set.mjs',
+      name: 'on the proxy path, lagging detach',
+      status: 'pass',
+    },
+  ];
+  assert.deepEqual(
+    attribute(results, [a, p]).map(({ file }) => file),
+    [a, p]
+  );
+  assert.deepEqual(failing(attribute(results, [a, p]), [a, p], 1), [a]);
+  assert.deepEqual(attribute(results, [a]), results);
 });
 
 test('a shard retries the files with a failing test, and the ones a crash left without results', () => {
@@ -188,4 +217,137 @@ test('a shard passes on a retry only when the retried files pass and the rest pr
     decide({ name: 's01', first: silent, retried: { files: [flaky], log: log(1, 0) } }).ok,
     false
   );
+});
+
+test("a shard times each item from its top-level tests, a guard-set file's by the variant in the test's name", () => {
+  const p = 'test/integration/guard-set-proxy.test.mjs';
+  const extra = { GUARD_VARIANTS: 'lagging,prompt' };
+  assert.equal(itemOf('test/integration/a.test.mjs', 'x', extra), 'test/integration/a.test.mjs');
+  assert.equal(
+    itemOf(p, 'the shared guard vectors … on the proxy path, prompt detach', extra),
+    `${p}#prompt`
+  );
+  assert.equal(itemOf(p, 'the shared set is complete on the proxy path', extra), `${p}#lagging`);
+  assert.equal(itemOf(p, 'anything', {}), p);
+  assert.deepEqual(
+    timings(
+      [
+        { file: 'test/integration/a.test.mjs', name: 'one', nesting: 0, durationMs: 100 },
+        { file: 'test/integration/a.test.mjs', name: 'sub', nesting: 1, durationMs: 60 },
+        { file: 'test/integration/a.test.mjs', name: 'two', nesting: 0, durationMs: 50 },
+        { file: p, name: 'on the proxy path, lagging detach', nesting: 0, durationMs: 900 },
+      ],
+      extra
+    ),
+    { 'test/integration/a.test.mjs': 150, [`${p}#lagging`]: 900 }
+  );
+});
+
+test('a flip is a top-level test that failed on the first run and passed on the retry', () => {
+  const first = {
+    results: [
+      { file: 'a.test.mjs', name: 'flaky', nesting: 0, status: 'fail', log: 'boom' },
+      { file: 'a.test.mjs', name: 'broken', nesting: 0, status: 'fail', log: 'always' },
+      { file: 'a.test.mjs', name: 'inner', nesting: 1, status: 'fail', log: 'inner' },
+      { file: 'a.test.mjs', name: 'fine', nesting: 0, status: 'pass', log: '' },
+    ],
+  };
+  const retried = {
+    results: [
+      { file: 'a.test.mjs', name: 'flaky', nesting: 0, status: 'pass', log: '' },
+      { file: 'a.test.mjs', name: 'broken', nesting: 0, status: 'fail', log: 'always' },
+      { file: 'a.test.mjs', name: 'inner', nesting: 1, status: 'pass', log: '' },
+    ],
+  };
+  assert.deepEqual(flips(first, retried), [{ file: 'a.test.mjs', name: 'flaky', log: 'boom' }]);
+  assert.deepEqual(flips(first, null), []);
+});
+
+test("a run's summary joins the plan and the shard records, with every shard's timings and flips", () => {
+  const summary = combine(
+    {
+      event: 'merge_group',
+      pr: 514,
+      arm: 'retry',
+      seed: 9,
+      shards: [{ shard: 's01' }, { shard: 's02' }],
+    },
+    [
+      {
+        shard: 's02',
+        run: '7',
+        attempt: '1',
+        sha: 'abc',
+        ok: true,
+        wallMs: 5,
+        items: ['b'],
+        timings: { b: 20 },
+        flips: [],
+        groups: [],
+      },
+      {
+        shard: 's01',
+        run: '7',
+        attempt: '1',
+        sha: 'abc',
+        ok: true,
+        wallMs: 9,
+        items: ['a'],
+        timings: { a: 10 },
+        flips: [{ file: 'a', name: 'flaky', log: 'boom' }],
+        groups: [{ retry: { files: ['a'] } }],
+      },
+    ]
+  );
+  assert.equal(summary.run, '7');
+  assert.equal(summary.arm, 'retry');
+  assert.deepEqual(summary.planned, ['s01', 's02']);
+  assert.deepEqual(summary.timings, { a: 10, b: 20 });
+  assert.deepEqual(
+    summary.shards.map(({ shard, retried, flips: n }) => [shard, retried, n]),
+    [
+      ['s01', ['a'], 1],
+      ['s02', [], 0],
+    ]
+  );
+  assert.deepEqual(summary.flips, [{ file: 'a', name: 'flaky', log: 'boom', shard: 's01' }]);
+});
+
+test('a flaky-test issue names the test, links the run, quotes the error, and carries a stable key', () => {
+  const flip = {
+    file: 'test/integration/shell.test.mjs',
+    name: 'pipes ```work```',
+    log: 'Error: ~~~~ boom',
+    shard: 's03',
+  };
+  const summary = {
+    run: '7',
+    attempt: '2',
+    event: 'merge_group',
+    pr: 514,
+    arm: 'retry',
+    sha: 'abc',
+  };
+  assert.equal(key(flip), key({ ...flip, log: 'other', shard: 's09' }));
+  assert.notEqual(key(flip), key({ ...flip, name: 'other' }));
+  assert.equal(title(flip), 'flaky: shell.test.mjs › pipes ```work```');
+  assert.ok(title({ file: 'a', name: 'x'.repeat(400) }).length <= 240);
+  const text = body(flip, summary, 'https://github.com', 'ai-ecoverse/slicc-bios');
+  assert.match(
+    text,
+    /https:\/\/github\.com\/ai-ecoverse\/slicc-bios\/actions\/runs\/7\/attempts\/2/
+  );
+  assert.match(text, /PR #514, arm retry, shard s03/);
+  assert.ok(text.includes(`Key: \`${key(flip)}\``));
+  assert.equal(text.split('\n~~~~').length, 3, 'the error sits in one fence that it cannot close');
+  assert.ok(!occurrence(flip, summary, 'https://github.com', 'r').includes('Key:'));
+});
+
+test('durations take the median of the recorded runs, keep the rest, and drop items that are gone', () => {
+  const updated = refresh(
+    { a: 30, b: 40, gone: 50 },
+    [{ timings: { a: 10000, c: 4000 } }, { timings: { a: 20000 } }, { timings: { a: 60000 } }, {}],
+    ['a', 'b', 'c', 'd']
+  );
+  assert.deepEqual(updated, { a: 20, b: 40, c: 4 });
 });

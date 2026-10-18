@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { argv, env, exit, stderr, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { cost, ROOT } from './plan.mjs';
+import { cost, ROOT, SPLIT } from './plan.mjs';
 import { missingRequired, summary } from './verdict.mjs';
 
 const REPORTER = './scripts/canary/reporter.mjs';
@@ -24,15 +24,21 @@ export function groups(list) {
     if (variant) variants.set(file, [...(variants.get(file) ?? []), variant]);
     else whole.push(file);
   }
-  const byEnv = new Map();
-  for (const [file, chosen] of variants) {
-    const key = [...chosen].sort().join(',');
-    byEnv.set(key, [...(byEnv.get(key) ?? []), file]);
-  }
-  const out = [...byEnv].map(([key, files]) => ({ env: { GUARD_VARIANTS: key }, files }));
+  const out = [...variants].map(([file, chosen]) => ({
+    env: { GUARD_VARIANTS: [...chosen].sort().join(',') },
+    files: [file],
+  }));
   if (!out.length) return whole.length ? [{ env: {}, files: whole }] : [];
   out[0].files = [...whole, ...out[0].files];
   return out;
+}
+
+export function attribute(results, files) {
+  const split = files.filter((file) => SPLIT.test(file));
+  if (split.length !== 1) return results;
+  return results.map((result) =>
+    files.includes(result.file) ? result : { ...result, file: split[0] }
+  );
 }
 
 export function failing(results, files, code) {
@@ -113,10 +119,13 @@ async function run(files, extra, tag, dir) {
     child.on('close', (status, signal) => resolve(status ?? signal));
   });
   await new Promise((resolve) => out.end(resolve));
-  const results = (await readFile(jsonl, 'utf8').catch(() => ''))
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => JSON.parse(line));
+  const results = attribute(
+    (await readFile(jsonl, 'utf8').catch(() => ''))
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line)),
+    files
+  );
   return { files, code, ms: Date.now() - started, log: await readFile(log, 'utf8'), results };
 }
 
@@ -140,7 +149,41 @@ async function restore(dirs) {
   }
 }
 
-function brief(attempt) {
+export function itemOf(file, name, extra = {}) {
+  if (!SPLIT.test(file) || !extra.GUARD_VARIANTS) return file;
+  const chosen = extra.GUARD_VARIANTS.split(',');
+  const variant = chosen.find((v) => name.includes(` ${v} detach`)) ?? chosen[0];
+  return `${file}#${variant}`;
+}
+
+export function timings(results, extra = {}) {
+  const out = {};
+  for (const { file, name, nesting, durationMs } of results) {
+    if (nesting !== 0 || !file) continue;
+    const item = itemOf(file, name, extra);
+    out[item] = (out[item] ?? 0) + durationMs;
+  }
+  return out;
+}
+
+export function flips(first, retried) {
+  if (!retried) return [];
+  const passed = new Set(
+    retried.results
+      .filter(({ nesting, status }) => nesting === 0 && status === 'pass')
+      .map(({ file, name }) => `${file}\u0000${name}`)
+  );
+  const out = new Map();
+  for (const { file, name, nesting, status, log } of first.results) {
+    const key = `${file}\u0000${name}`;
+    if (nesting === 0 && status === 'fail' && passed.has(key) && !out.has(key)) {
+      out.set(key, { file, name, log });
+    }
+  }
+  return [...out.values()];
+}
+
+function brief(attempt, extra) {
   if (!attempt) return null;
   return {
     files: attempt.files,
@@ -148,6 +191,10 @@ function brief(attempt) {
     ms: attempt.ms,
     counts: summary(attempt.log),
     failed: failing(attempt.results, attempt.files, attempt.code),
+    failedTests: attempt.results
+      .filter(({ nesting, status }) => nesting === 0 && status === 'fail')
+      .map(({ file, name, log }) => ({ file, name, log })),
+    timings: timings(attempt.results, extra),
   };
 }
 
@@ -204,13 +251,16 @@ export async function shard({ name, items: list, retry, budgetMs, scratch, recor
     wallMs: Date.now() - started,
     groups: done.map(({ env: extra, first, retried, skipped, verdict }) => ({
       env: extra,
-      first: brief(first),
-      retry: brief(retried),
+      first: brief(first, extra),
+      retry: brief(retried, extra),
+      flips: flips(first, retried),
       skipped,
       ok: verdict.ok,
       why: verdict.why,
     })),
   };
+  report.timings = Object.assign({}, ...report.groups.map(({ first }) => first.timings));
+  report.flips = report.groups.flatMap(({ flips: flipped }) => flipped);
   return report;
 }
 
@@ -254,6 +304,7 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
   for (const group of retried) {
     console.log(`retried ${group.retry.files.join(' ')}: ${group.ok ? 'passed' : 'failed again'}`);
   }
+  for (const { file, name } of report.flips) console.log(`flipped ${file} › ${name}`);
   if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, `${report.line}\n`);
   if (!report.ok) exit(1);
 }
