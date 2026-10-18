@@ -288,6 +288,10 @@
     "integrity": "sha512-fJhOwmqLaRUP2aojjM5kqYBHEZNtWLwRn0DCwDvWfhfY8qjWJQFKU5Frk6PkvYNXo/xZNdbjvmpCZ7QJvLyKqw==",
     "sha256": "1c454b01709527166e7a2633c9f927b218da3ea992b1710feef82269e66e7c58"
   },
+  "@ai-ecoverse/wasix-gnupg@2.4.9-11": {
+    "integrity": "sha512-urq5NdBeiHXZ22+cPjcwr49grwYxdW5dIx6BHvyWmkcDbUseCakG5b0tIw3gpb3hmGbf/Xb+IyqE7pZvyZsGzQ==",
+    "sha256": "d9268fde1b724a9f5d697055484c975cf43e50c00da384f6175537520dd2b1c9"
+  },
   "@ai-ecoverse/wasix-openssh@10.6.0-5": {
     "integrity": "sha512-reI3IU82MFVeAQWWcAlKYvo4W909UZZJt0SrgHkyr6EkbRgcbkKwZNWQH3vHG06t/GRCr+EneoNPS6Yu0sz1rg==",
     "sha256": "e29ae47e9dc7742b0f7e58d4108d98d23f2d9d0b39e719ce8dab3725fd203f1d"
