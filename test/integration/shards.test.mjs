@@ -123,7 +123,7 @@ test("ci's plan keeps every shard within the longest item or 1.5 times the even 
   }
 });
 
-test("ci's arm comes from the pull request's number, mod 4, for its runs and its merge queue runs", () => {
+test("ci's arm comes from the pull request's number, mod 2, for its runs and its merge queue runs, and every arm retries", () => {
   assert.equal(prNumber('pull_request', { pull_request: { number: 513 } }), 513);
   assert.equal(
     prNumber('merge_group', {
@@ -135,11 +135,10 @@ test("ci's arm comes from the pull request's number, mod 4, for its runs and its
     505
   );
   assert.equal(prNumber('push', {}), null);
-  assert.deepEqual(arm(null), { pr: null, arm: 'control', failFast: false, retry: false });
-  assert.deepEqual(arm(512), { pr: 512, arm: 'control', failFast: false, retry: false });
-  assert.deepEqual(arm(513), { pr: 513, arm: 'fail-fast', failFast: true, retry: false });
+  assert.deepEqual(arm(null), { pr: null, arm: 'retry', failFast: false, retry: true });
+  assert.deepEqual(arm(512), { pr: 512, arm: 'retry', failFast: false, retry: true });
+  assert.deepEqual(arm(513), { pr: 513, arm: 'fail-fast+retry', failFast: true, retry: true });
   assert.deepEqual(arm(514), { pr: 514, arm: 'retry', failFast: false, retry: true });
-  assert.deepEqual(arm(515), { pr: 515, arm: 'fail-fast+retry', failFast: true, retry: true });
 });
 
 test('ci.yml takes its matrix, fail-fast and retry from the plan', () => {

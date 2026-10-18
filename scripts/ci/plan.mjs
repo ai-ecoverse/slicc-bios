@@ -8,7 +8,7 @@ export const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 export const SHARDS = 14;
 export const VARIANTS = ['prompt', 'lagging'];
 export const SPLIT = /\/guard-set-[a-z]+\.test\.mjs$/;
-export const ARMS = ['control', 'fail-fast', 'retry', 'fail-fast+retry'];
+export const ARMS = ['retry', 'fail-fast+retry'];
 
 export function prNumber(event, payload) {
   if (event === 'pull_request') return payload.pull_request?.number ?? null;
@@ -24,8 +24,8 @@ export function arm(pr) {
   return {
     pr: Number.isInteger(pr) ? pr : null,
     arm: ARMS[index],
-    failFast: (index & 1) === 1,
-    retry: (index & 2) === 2,
+    failFast: index === 1,
+    retry: true,
   };
 }
 
