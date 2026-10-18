@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { argv, env, exit } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { names } from './bind.mjs';
 import { enforceNote } from './users.mjs';
 
 const ROWS = 150;
@@ -44,6 +45,15 @@ export async function readBindings(file) {
     };
   }
   return { verified: bindings.verified ?? [], refused: bindings.refused ?? [] };
+}
+
+export function legacyBindings(runs, prefix) {
+  return {
+    verified: runs.flatMap((run) =>
+      run.shards.map((shard) => ({ run: run.id, shard, name: names(prefix, run.id, shard).shard }))
+    ),
+    refused: [],
+  };
 }
 
 export async function readShards(dir, verified, { download = 'success' } = {}) {
@@ -333,13 +343,32 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
       dir: { type: 'string' },
       runs: { type: 'string', default: '' },
       out: { type: 'string', default: 'canary' },
-      bindings: { type: 'string', default: 'bindings.json' },
-      download: { type: 'string', default: '' },
+      bindings: { type: 'string' },
+      download: { type: 'string' },
+      prefix: { type: 'string' },
     },
   });
+  const legacy = values.prefix !== undefined;
+  if (legacy && (values.bindings !== undefined || values.download !== undefined)) {
+    throw new Error(
+      '--prefix is the old canary.yml call, which passes no --bindings or --download'
+    );
+  }
+  if (legacy && !/^(?:[A-Za-z0-9][\w.-]{0,39}-)?$/.test(values.prefix)) {
+    throw new Error(`--prefix is not a label and a dash: ${values.prefix}`);
+  }
   const runs = values.runs.trim() ? JSON.parse(values.runs) : [];
-  const bindings = await readBindings(values.bindings);
-  const read = await readShards(values.dir, bindings.verified, { download: values.download });
+  const bindings = legacy
+    ? legacyBindings(runs, values.prefix)
+    : await readBindings(values.bindings ?? 'bindings.json');
+  if (legacy) {
+    console.log(
+      `canary report: legacy shards, read by name under the prefix "${values.prefix}" from a canary.yml that binds no shard artifacts`
+    );
+  }
+  const read = await readShards(values.dir, bindings.verified, {
+    download: legacy ? 'success' : (values.download ?? ''),
+  });
   const refused = [...bindings.refused, ...read.refused];
   let ok = true;
   const summaries = [];

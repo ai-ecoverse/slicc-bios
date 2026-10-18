@@ -174,6 +174,18 @@ export function candidateOf(
   };
 }
 
+const BINDING_ENV = ['CANDIDATE_BINDING', 'CANDIDATE_ARTIFACT_ID', 'CANDIDATE_ARTIFACT_DIGEST'];
+
+export function bindingOf(values) {
+  if (values.CANDIDATE_BINDING !== undefined) return values.CANDIDATE_BINDING;
+  return BINDING_ENV.every((name) => values[name] === undefined) ? 'legacy' : '';
+}
+
+function bindingNote(values, runs) {
+  if (values.CANDIDATE_BINDING !== undefined || !runs.some(({ candidate }) => candidate)) return '';
+  return `canary plan: ${bindingOf(values) || 'strict'} binding, the calling canary.yml passes no candidate-binding`;
+}
+
 export function repeatOf(text) {
   const n = Number(text === '' || text === undefined || text === null ? 1 : text);
   if (!Number.isInteger(n) || n < 1 || n > 10) throw new Error(`repeat must be 1 to 10: ${text}`);
@@ -314,7 +326,7 @@ async function main() {
       repo: env.CANDIDATE_REPO ?? '',
       id: env.CANDIDATE_ARTIFACT_ID ?? '',
       digest: env.CANDIDATE_ARTIFACT_DIGEST ?? '',
-      binding: env.CANDIDATE_BINDING ?? '',
+      binding: bindingOf(env),
     },
     repeat: env.REPEAT ?? '',
     runId: env.GITHUB_RUN_ID ?? '',
@@ -333,6 +345,8 @@ async function main() {
   ];
   if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, `${lines.join('\n')}\n`);
   console.log(lines.join('\n'));
+  const note = bindingNote(env, result.runs);
+  if (note) console.log(note);
   for (const { name, pinned: at, latest: newer } of result.inputs?.checked ?? []) {
     console.log(`${name}: pinned ${at.join(', ')}, latest ${newer}`);
   }

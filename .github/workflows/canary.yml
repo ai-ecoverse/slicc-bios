@@ -16,7 +16,7 @@ on:
         type: string
         default: ''
       bios-ref:
-        description: 'slicc-bios ref to test; empty means the dispatched ref'
+        description: 'slicc-bios ref to test; empty means the commit of this canary.yml'
         type: string
         default: ''
       shards:
@@ -172,7 +172,6 @@ jobs:
       jobs: ${{ steps.decide.outputs.jobs }}
       key: ${{ steps.plan.outputs.key }}
       uploads: ${{ steps.plan.outputs.uploads }}
-      tools: ${{ steps.ref.outputs.sha }}
       cli: ${{ steps.cli.outputs.version }}
       prefix: ${{ steps.plan.outputs.prefix }}
       refused: ${{ steps.plan.outputs.refused }}
@@ -186,10 +185,21 @@ jobs:
         with:
           persist-credentials: false
           repository: ai-ecoverse/slicc-bios
-          ref: ${{ (github.repository == 'ai-ecoverse/slicc-bios' && github.sha) || 'main' }}
+          ref: ${{ job.workflow_sha }}
 
       - id: ref
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        name: The canary's tools are this workflow's own commit
+        env:
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+          WORKFLOW_REF: ${{ job.workflow_ref }}
+        run: |
+          sha="$(git rev-parse HEAD)"
+          if [ -z "$WORKFLOW_SHA" ] || [ "$sha" != "$WORKFLOW_SHA" ]; then
+            echo "canary tools: FAIL checked out $sha, not the workflow's own commit ${WORKFLOW_SHA:-(none)}"
+            exit 1
+          fi
+          echo "canary tools: PASS $sha, the commit of $WORKFLOW_REF"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -295,15 +305,15 @@ jobs:
           ref: ${{ matrix.job.ref }}
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        if: matrix.job.ref != needs.plan.outputs.tools
+        if: matrix.job.ref != job.workflow_sha
         with:
           persist-credentials: false
           repository: ai-ecoverse/slicc-bios
-          ref: ${{ needs.plan.outputs.tools }}
+          ref: ${{ job.workflow_sha }}
           path: .canary-tools
 
       - name: The canary's scripts and sweep on the tested ref
-        if: matrix.job.ref != needs.plan.outputs.tools
+        if: matrix.job.ref != job.workflow_sha
         run: |
           rm -rf scripts/canary
           mkdir -p scripts
@@ -426,7 +436,7 @@ jobs:
         with:
           persist-credentials: false
           repository: ai-ecoverse/slicc-bios
-          ref: ${{ needs.plan.outputs.tools }}
+          ref: ${{ job.workflow_sha }}
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
