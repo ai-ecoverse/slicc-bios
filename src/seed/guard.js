@@ -168,7 +168,7 @@ const inherits = (url) => {
   try {
     return new URL(url).protocol === 'about:';
   } catch {
-    return false;
+    return true;
   }
 };
 
