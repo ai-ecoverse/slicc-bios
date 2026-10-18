@@ -13,7 +13,7 @@ after(() => chrome.close());
 
 const KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGZha2Ugbm9kZSBob3N0IGtleSBmb3IgdGVzdHM=';
 
-function fakeNode(key) {
+function fakeNode(key, hello = {}) {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const frame = (type, id, payload = new Uint8Array(0)) => {
@@ -146,6 +146,7 @@ function fakeNode(key) {
             caps: ['net', 'http', 'ssh', 'ws', 'udp'],
             routes: { prefixes: [], exit: true },
             sshHostKey: key,
+            ...hello,
           })
         );
         return;
@@ -421,6 +422,37 @@ test('a node whose OPEN on a stream channel overtakes its HELLO stays linked, an
   assert.equal(row.state, 'connected');
   assert.deepEqual(row.folders, [{ name: 'early', source: 'early-node/early', readonly: true }]);
   assert.ok(!(await page.evaluate(() => globalThis.earlyLog.includes('closed'))));
+});
+
+function grantProbe() {
+  const post = Worker.prototype.postMessage;
+  globalThis.hostfsGrants = [];
+  Worker.prototype.postMessage = function (message, ...rest) {
+    const grant = message?.hostfsGrant?.grant;
+    if (grant) globalThis.hostfsGrants.push(structuredClone(grant.capabilities));
+    return post.call(this, message, ...rest);
+  };
+}
+
+test('a folder’s capabilities from the node’s HELLO reach the kernel’s hostfs grant as the node sent them, unknown keys included', async (t) => {
+  const capabilities = { ranges: true, maxIo: 4096, extra: 1 };
+  const page = await chrome.page(t);
+  await page.init(grantProbe);
+  await boot(page);
+  await ready(page);
+  await page.evaluate(fakeNode, KEY, {
+    host: 'Caps-Node',
+    caps: ['fs'],
+    mounts: [{ name: 'caps', capabilities }],
+  });
+  await page.until(
+    () =>
+      document.querySelector('slicc-app').model.network.status().links?.devices[0]?.folders
+        ?.length === 1
+  );
+  await run(page, 'mkdir -p /mnt/caps && mount -t hostfs caps-node/caps /mnt/caps');
+  await page.until(() => globalThis.hostfsGrants.length > 0);
+  assert.deepEqual(await page.evaluate(() => globalThis.hostfsGrants), [capabilities]);
 });
 
 const PYTHON = '@ai-ecoverse/wasix-python@3.14.2-18';
