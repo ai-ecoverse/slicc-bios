@@ -15,8 +15,10 @@ const cli = process.env.SLICC_CLI;
 const BOUND = 30;
 
 const ONE = 'echo data > MNT/w.txt';
+const QUIET =
+  '( for i in $(seq 1 20000); do echo line-$i; if [ $i = 200 ]; then touch /tmp/streaming; fi; done ) | cat > MNT/w.txt';
 const STREAM =
-  '( for i in $(seq 1 200000); do echo line-$i || exit 3; [ $i = 200 ] && touch /tmp/streaming; done ) > MNT/w.txt';
+  '( for i in $(seq 1 200000); do echo line-$i || exit 3; if [ $i = 200 ]; then touch /tmp/streaming; fi; done ) > MNT/w.txt';
 
 async function folder() {
   const dir = await mkdtemp(join(tmpdir(), 'lost-folder-'));
@@ -179,6 +181,19 @@ for (const [name, open, skip] of ways) {
       `the writer reported success although its folder went away mid-write:\n${text}`
     );
     await nomedium(page, since);
+    assert.deepEqual(page.errors, []);
+  });
+
+  test(`kernel#1062: when ${name} goes away under cat, which checks its writes and its close, cat exits non-zero within ${BOUND} s`, {
+    skip,
+  }, async (t) => {
+    const { page, lose } = await open(t);
+    await writer(page, QUIET);
+    await streaming(page);
+    await lose();
+    const since = Date.now();
+    const { rc, text } = await ended(page, since);
+    assert.notEqual(rc, 0, `cat exited 0 although its data never reached the host:\n${text}`);
     assert.deepEqual(page.errors, []);
   });
 }
