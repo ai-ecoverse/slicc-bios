@@ -21,6 +21,18 @@ export const emptyAgent = {
 
 export const VAULT_KEY = 'slicc-os.vault-origin';
 
+export async function debuggerUrl(port, ms = 30000) {
+  const end = Date.now() + ms;
+  for (;;) {
+    const body = await fetch(`http://127.0.0.1:${port}/json/version`)
+      .then((response) => response.json())
+      .catch(() => null);
+    if (body?.webSocketDebuggerUrl) return body.webSocketDebuggerUrl;
+    if (Date.now() > end) throw new Error(`Chrome's DevTools endpoint on ${port} never answered`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 const NOISE = /Spectrum Web Components is in dev mode|The legal slot is empty/;
 const KEEP = 40;
 

@@ -5,7 +5,7 @@ import { after, test } from 'node:test';
 import { crc32, deflateSync } from 'node:zlib';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
 import { agentUp, connectAccount, listsAccount, ready } from './bios.mjs';
-import { launch } from './chrome.mjs';
+import { debuggerUrl, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
 import { shoot } from './shots.mjs';
@@ -170,8 +170,7 @@ const proxy = await fakeProxy({
     };
   },
 });
-const browser = (await (await fetch(`http://127.0.0.1:${port}/json/version`)).json())
-  .webSocketDebuggerUrl;
+const browser = await debuggerUrl(port);
 const fakeExtension = extensionOver(browser);
 after(async () => {
   await proxy.close();

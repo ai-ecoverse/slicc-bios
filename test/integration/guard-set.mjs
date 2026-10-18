@@ -7,7 +7,7 @@ import { run, summary } from '@ai-ecoverse/slicc-browsers/guard-runner';
 import set from '@ai-ecoverse/slicc-browsers/guard-vectors.json' with { type: 'json' };
 import { startProxy } from '@ai-ecoverse/slicc-node';
 import { boot } from './bios.mjs';
-import { launch } from './chrome.mjs';
+import { debuggerUrl, launch } from './chrome.mjs';
 
 export const fixture = await fixtureServer();
 const origin = (host) => `http://${host}:${fixture.port}`;
@@ -50,8 +50,7 @@ after(async () => {
   chrome.close();
   await fixture.close();
 });
-const browser = (await (await fetch(`http://127.0.0.1:${port}/json/version`)).json())
-  .webSocketDebuggerUrl;
+const browser = await debuggerUrl(port);
 
 const COMMAND_MS = 20000;
 

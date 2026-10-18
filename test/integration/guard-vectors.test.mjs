@@ -4,7 +4,7 @@ import { createServer } from 'node:net';
 import { after, test } from 'node:test';
 import { startProxy } from '@ai-ecoverse/slicc-node';
 import { boot } from './bios.mjs';
-import { launch } from './chrome.mjs';
+import { debuggerUrl, launch } from './chrome.mjs';
 
 const LAG = 8000;
 const DETACH = [
@@ -121,8 +121,7 @@ after(() => {
   chrome.close();
   stand.close();
 });
-const browser = (await (await fetch(`http://127.0.0.1:${port}/json/version`)).json())
-  .webSocketDebuggerUrl;
+const browser = await debuggerUrl(port);
 
 function cdp() {
   const socket = new WebSocket(browser);
