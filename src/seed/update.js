@@ -221,7 +221,11 @@ export async function readable(kernel, path) {
   const { status, stderr } = await writing_(kernel, [path], () =>
     kernel.run(['find', path, ...UNREADABLE, '-exec', 'chmod', 'a+rX', '{}', '+'], writing('/'))
   );
-  if (status) throw new Error(stderr.trim() || `chmod exited with ${status}`);
+  if (status) {
+    throw new Error(
+      `making ${path} readable failed: ${stderr.trim() || `find exited with ${status}`}`
+    );
+  }
 }
 
 export async function baseManifest(root) {
