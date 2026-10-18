@@ -46,7 +46,7 @@ test('an update that finds the network down stops with its error, and a reload o
   chrome.cdn.status = 503;
   const offline = await watch(page);
   const started = Date.now();
-  await page.evaluate(() => location.assign('/'));
+  await page.goto('/');
   await page.within(
     120000,
     () => document.querySelector('[data-step="packages"]')?.dataset.state === 'failed'
@@ -103,7 +103,7 @@ test('an installed seven whose modes still need their repair boots offline with 
     await walk(bios);
   });
   chrome.cdn.status = 503;
-  await page.evaluate(() => location.assign('/'));
+  await page.goto('/');
   await ready(page);
   const pending = JSON.parse(await read(page, `var/lib/bios/${KERNEL}.json`));
   assert.equal(pending.modes, undefined);
@@ -124,7 +124,7 @@ test('an installed seven whose modes still need their repair boots offline with 
     module: true,
   });
   chrome.cdn.status = 0;
-  await page.evaluate(() => location.assign('/'));
+  await page.goto('/');
   await ready(page);
   const repaired = JSON.parse(await read(page, `var/lib/bios/${KERNEL}.json`));
   assert.equal(repaired.modes, true);
