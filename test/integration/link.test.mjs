@@ -549,15 +549,30 @@ test('links the real slicc CLI over stdio signaling, and kernel curl reaches its
     seen.push(message.t);
     node.stdin.write(`${JSON.stringify(message)}\n`);
   });
-  for await (const line of createInterface({ input: node.stdout })) {
-    const message = JSON.parse(line);
-    seen.push(`node:${message.t}`);
-    await page.evaluate((line) => globalThis.sliccLinkReceive(line), line);
-    if (message.t === 'answer') break;
-  }
-  createInterface({ input: node.stdout }).on('line', (line) =>
-    page.evaluate((line) => globalThis.sliccLinkReceive(line), line).catch(() => {})
-  );
+  const refused = [];
+  let relayed = Promise.resolve();
+  await new Promise((answered) => {
+    createInterface({ input: node.stdout }).on('line', (line) => {
+      const message = JSON.parse(line);
+      seen.push(`node:${message.t}`);
+      relayed = relayed.then(() =>
+        page
+          .evaluate((line) => globalThis.sliccLinkReceive(line), line)
+          .catch((error) => refused.push(`${message.t}: ${error.message}`))
+      );
+      if (message.t === 'answer') answered();
+    });
+  });
+  const linked = () =>
+    document
+      .querySelector('slicc-app')
+      .model.network.status()
+      .links?.devices.some((d) => d.name === 'ref-node' && d.state === 'connected');
+  await page.within(60000, linked).catch(async (error) => {
+    throw new Error(
+      `the CLI never linked: ${error.message}\nrelayed ${seen.join(' ')}, refused ${JSON.stringify(refused)}\ndevices ${JSON.stringify(await page.evaluate(() => document.querySelector('slicc-app').model.network.status().links?.devices))}`
+    );
+  });
   const url = `http://ref-node.slicc.internal:${port}`;
   const raw = await shell(
     page,
