@@ -600,5 +600,9 @@
   "@ai-ecoverse/wasm-xz@5.8.4-1": {
     "integrity": "sha512-Y8AHpR0+RGfoneyERltFK4jt3P8EfsQzvKMrSFfaLWgtWk7dIC28GuHBK76+IsbE9+fbfs4m9ItcpqjlQckH4Q==",
     "sha256": "63fe14fc128ba70aeed95c57a9bca8f72f37f11a3af63f6bd859c93c89fd9149"
+  },
+  "@ai-ecoverse/mcpcat@0.16.3": {
+    "integrity": "sha512-Sah/qC/1x31WKsVK+tyHYSdV8StFLpZEmuNyWqu2inbK19IL7ZyZyOb+85CGVAG1+ZRdXfE1y0eUAQuu0jnm3w==",
+    "sha256": "d492f978d7f0925378369feaddb2925f9220169b965c3a7b0a2854acd6668bc3"
   }
 }
