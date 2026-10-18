@@ -70,16 +70,29 @@ async function sh(page, command) {
   }, command);
 }
 
-async function install(page, id) {
-  await page.until(
-    (id) =>
-      document
-        .querySelector('slicc-app')
-        .model.updates.packages()
-        .some((item) => item.id === id && item.state === 'available'),
-    id
+const rows = (page) =>
+  page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.updates.packages()
+      .map(({ id, state, version, offered, error }) => ({ id, state, version, offered, error }))
   );
-  assert.equal(await actPackage(page, id, 'install'), 'ok', id);
+
+async function install(page, id) {
+  await page
+    .within(
+      300000,
+      (id) =>
+        document
+          .querySelector('slicc-app')
+          .model.updates.packages()
+          .some((item) => item.id === id && item.state === 'available'),
+      id
+    )
+    .catch(async (error) => {
+      throw new Error(`${error.message}\nrows: ${JSON.stringify(await rows(page))}`);
+    });
+  assert.equal(await actPackage(page, id, 'install'), 'ok', JSON.stringify(await rows(page)));
 }
 
 test('a catalog package’s kernel command wins over the same package’s Node bin, and a package with only a bin keeps it', {
