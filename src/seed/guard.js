@@ -445,11 +445,12 @@ class Guard {
     this.targets.delete(info.targetId);
     this.learn(info);
     if (await this.watch(sessionId, info.targetId, parent)) {
-      if (nav?.taken || nav?.failed) return this.cut(sessionId, parent);
+      const guarded = await this.target(info.targetId);
+      if (guarded || nav?.taken || nav?.failed) return this.cut(sessionId, parent);
       if (nav) nav.held = false;
       this.deliver({
         ...message,
-        params: { ...params, targetInfo: info, waitingForDebugger: false },
+        params: { ...params, targetInfo: this.masked(info), waitingForDebugger: false },
       });
     }
   }
