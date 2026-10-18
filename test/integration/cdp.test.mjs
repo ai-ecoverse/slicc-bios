@@ -1118,3 +1118,36 @@ test('slicc-cdp#252: a guard setup step that answers after 12 s still arms the t
   assert.ok(extension.sent.includes('Target.setDiscoverTargets'));
   assert.deepEqual(page.errors, []);
 });
+
+test('playwright-cli’s saved session keeps no planted cookie, auth header, token query, console token or request body, while its output still shows what it captured', async (t) => {
+  const page = await chrome.page(t);
+  const extension = await fakeExtension(page);
+  t.after(extension.close);
+  await boot(page);
+  chrome.overrides.set(
+    '/planted.html',
+    `<!doctype html><title>planted</title><script>
+      const s = (x) => ['PLAN', 'TED', x].join('');
+      console.log('token=' + s('CONSOLE1234'));
+      fetch('/planted.json?token=' + s('QUERY5678'), {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + s('AUTH9012'), 'X-Api-Key': s('KEY7890') },
+        body: s('BODY3456'),
+      });
+    </script>`
+  );
+  chrome.overrides.set('/planted.json', '{"ok":1}');
+  const target = elsewhere('/planted.html');
+  const planted = ['CONSOLE1234', 'QUERY5678', 'AUTH9012', 'KEY7890', 'BODY3456'];
+  await run(
+    page,
+    `clear; cd; playwright-cli open ${target} > /dev/null 2>&1; sleep 2; playwright-cli requests > /tmp/planted 2>&1; for id in $(grep -oE '^[0-9]+' /tmp/planted); do playwright-cli request-headers $id >> /tmp/planted 2>&1; done; playwright-cli console >> /tmp/planted 2>&1; for s in ${planted.join(' ')}; do echo "$s on-disk=$(cat ~/.config/slicc/playwright-cli/sessions/*.json | grep -c PLANTED$s)"; done; ls ~/.config/slicc/playwright-cli/sessions/ | grep -c json | sed 's/^/sessions=/'; echo saved-$((40 + 2))`
+  );
+  await shows(page, 'saved-42', 180000);
+  await shows(page, 'sessions=1');
+  for (const secret of planted) await shows(page, `${secret} on-disk=0`);
+  const output = await read(page, '/tmp/planted');
+  assert.match(output, /\[POST\] .*\/planted\.json/, output);
+  assert.match(output, /authorization: \[redacted\]/, output);
+  assert.deepEqual(page.errors, []);
+});
