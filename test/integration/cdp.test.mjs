@@ -29,6 +29,17 @@ const stand = createHttp((req, res) => {
     '/plain': '<!doctype html><title>PLAIN-MARK</title><h1>Plain</h1>',
     '/walker': '<!doctype html><title>WALKER-MARK</title><h1>Walker</h1>',
   };
+  if (url.pathname === '/hop') {
+    res.writeHead(302, {
+      location: `/landed?token=${['PLAN', 'TED', 'LOCATION4321'].join('')}`,
+      'access-control-allow-origin': '*',
+    });
+    return res.end();
+  }
+  if (url.pathname === '/landed') {
+    res.writeHead(200, { 'content-type': 'text/plain', 'access-control-allow-origin': '*' });
+    return res.end('landed');
+  }
   if (url.pathname === '/data') {
     res.writeHead(200, { 'content-type': 'text/plain', 'access-control-allow-origin': '*' });
     return res.end(`data for ${url.searchParams.get('from')}`);
@@ -1196,5 +1207,43 @@ test('playwright-cli’s saved session keeps no planted cookie, auth header, tok
   const output = await read(page, '/tmp/planted');
   assert.match(output, /\[POST\] .*\/planted\.json/, output);
   assert.match(output, /authorization: \[redacted\]/, output);
+  assert.deepEqual(page.errors, []);
+});
+
+test('slicc-cdp#333: the saved session also keeps no bare sk-, ghp_ or AKIA token in a console message, no query value in a relative Location, and no page-load body', async (t) => {
+  const page = await chrome.page(t);
+  const extension = await fakeExtension(page);
+  t.after(extension.close);
+  await boot(page);
+  chrome.overrides.set(
+    '/bare.html',
+    `<!doctype html><title>bare</title><p>PLANTEDPAGEBODY8765</p><script>
+      const s = (x) => ['PLAN', 'TED', x].join('');
+      console.log('openai sk-' + s('OPENAI1234567890abcdef'));
+      console.log('github ghp_' + s('GITHUB1234567890abcdefghij'));
+      console.log('aws AKIA' + s('AWS123456'));
+      fetch('http://localhost:${standPort}/hop', { mode: 'no-cors' });
+    </script>`
+  );
+  const target = elsewhere('/bare.html');
+  const planted = [
+    'OPENAI1234567890abcdef',
+    'GITHUB1234567890abcdefghij',
+    'AWS123456',
+    'LOCATION4321',
+    'PAGEBODY8765',
+  ];
+  await run(
+    page,
+    `clear; cd; rm -rf ~/.config/slicc/playwright-cli/sessions; playwright-cli open ${target} > /dev/null 2>&1; sleep 2; playwright-cli requests > /tmp/bare 2>&1; for id in $(grep -oE '^[0-9]+' /tmp/bare); do playwright-cli request-headers $id >> /tmp/bare 2>&1; playwright-cli request $id >> /tmp/bare 2>&1; done; playwright-cli console >> /tmp/bare 2>&1; for s in ${planted.join(' ')}; do echo "$s on-disk=$(cat ~/.config/slicc/playwright-cli/sessions/*.json | grep -c PLANTED$s)"; done > /tmp/bare-disk; ls ~/.config/slicc/playwright-cli/sessions/ | grep -c json | sed 's/^/sessions=/'; echo bare-$((40 + 2))`
+  );
+  await shows(page, 'bare-42', 180000);
+  await shows(page, 'sessions=1');
+  assert.deepEqual(
+    (await read(page, '/tmp/bare-disk')).trim().split('\n'),
+    planted.map((secret) => `${secret} on-disk=0`)
+  );
+  const output = await read(page, '/tmp/bare');
+  assert.match(output, /\/hop/, output);
   assert.deepEqual(page.errors, []);
 });
