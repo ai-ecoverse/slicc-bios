@@ -15,6 +15,7 @@ import {
 import { launch } from './chrome.mjs';
 import { leader, model, startHub } from './fake-hub.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
+import { PEER_TRACE, peerTrace } from './peer-trace.mjs';
 
 const KEY = 'dummy-bedrock-key-0000';
 const SECRET = 'dummy-secret-value-4242';
@@ -89,21 +90,6 @@ const proxy = await fakeProxy({
   },
 });
 const hub = await startHub();
-const CLOSES = `() => {
-  const close = RTCPeerConnection.prototype.close;
-  globalThis.peerCloses = [];
-  RTCPeerConnection.prototype.close = function () {
-    globalThis.peerCloses.push(new Error('close').stack.split('\\n').slice(2, 9).map((line) => line.trim()).join(' < '));
-    return close.call(this);
-  };
-}`;
-const closes = async (...pages) =>
-  (await Promise.all(pages.map((page) => page.evaluate(() => globalThis.peerCloses ?? []))))
-    .map(
-      (stacks, i) =>
-        `${i ? 'follower' : 'leader'} closed a peer connection: ${JSON.stringify(stacks)}`
-    )
-    .join('\n');
 after(async () => {
   hub.close();
   await proxy.close();
@@ -230,7 +216,7 @@ test('in seven’s terminal a cone’s slicc prompts, watches and aborts another
   timeout: 40 * 60 * 1000,
 }, async (t) => {
   const owner = await leaders.page(t);
-  await owner.init(CLOSES);
+  await owner.init(PEER_TRACE);
   await owner.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
   await ready(owner);
   await owner.evaluate((url) => localStorage.setItem('slicc-os.tray-hub', url), hub.url);
@@ -238,7 +224,7 @@ test('in seven’s terminal a cone’s slicc prompts, watches and aborts another
   await ready(owner);
   const page = await followers.page(t);
   await page.init('() => { globalThis.sliccKernelDebug = true; }');
-  await page.init(CLOSES);
+  await page.init(PEER_TRACE);
   await page.goto('/');
   await ready(page);
   await page.evaluate((url) => localStorage.setItem('slicc-os.tray-hub', url), hub.url);
@@ -268,7 +254,11 @@ test('in seven’s terminal a cone’s slicc prompts, watches and aborts another
   );
 
   const first = await typed(page, `sudo -u cone slicc '${joinUrl}' prompt "Say hello"`, 'refused');
-  assert.equal(first.code, 3, `${first.text}\n${await closes(owner, page)}`);
+  assert.equal(
+    first.code,
+    3,
+    `${first.text}\n${await peerTrace({ leader: owner, follower: page })}`
+  );
   assert.match(first.text, /doesn't allow remote control from this one/);
   const linked = await device(owner, []);
   assert.equal(linked.name, `seven on ${new URL(followers.url).host}`);
