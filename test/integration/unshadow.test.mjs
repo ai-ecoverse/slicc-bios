@@ -79,6 +79,7 @@ const rows = (page) =>
   );
 
 async function install(page, id) {
+  const started = Date.now();
   await page
     .within(
       300000,
@@ -92,7 +93,10 @@ async function install(page, id) {
     .catch(async (error) => {
       throw new Error(`${error.message}\nrows: ${JSON.stringify(await rows(page))}`);
     });
+  console.log(`unshadow: the ${id} row was available after ${Date.now() - started} ms`);
+  const installing = Date.now();
   assert.equal(await actPackage(page, id, 'install'), 'ok', JSON.stringify(await rows(page)));
+  console.log(`unshadow: ${id} installed in ${Date.now() - installing} ms`);
 }
 
 test('a catalog package’s kernel command wins over the same package’s Node bin, and a package with only a bin keeps it', {
@@ -105,7 +109,9 @@ test('a catalog package’s kernel command wins over the same package’s Node b
   offer();
   const page = await chrome.page(t);
   await page.init('() => { globalThis.sliccKernelDebug = true; }');
+  const booting = Date.now();
   await boot(page);
+  console.log(`unshadow: booted in ${Date.now() - booting} ms`);
 
   await install(page, 'mcpcat');
   const found = await sh(page, 'command -v mcpcat');
