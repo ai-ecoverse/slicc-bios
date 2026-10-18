@@ -5,9 +5,10 @@ import { env } from 'node:process';
 import { after, test } from 'node:test';
 import { launch } from './chrome.mjs';
 
-const RUNS = Number(env.BOOT_RUNS ?? 3);
+const RUNS = Number(env.BOOT_RUNS ?? 1);
+const WARM = 2;
 const BOUND = 25 * 60 * 1000;
-const chrome = await launch({ timeout: 120000, agent: true });
+const chrome = await launch({ timeout: 120000, agent: true, profile: true });
 after(() => chrome.close());
 
 function milestones() {
@@ -58,6 +59,100 @@ function milestones() {
       if (!marks.chat && chat(app)) marks.chat = Date.now();
     }
     if (!marks.terminal || !marks.chat) setTimeout(tick, 50);
+  };
+  tick();
+}
+
+function tracer() {
+  globalThis.sliccKernelDebug = true;
+  const events = [];
+  window.sliccBootTrace = events;
+  const note = (kind, detail) => events.push({ t: Date.now(), kind, ...detail });
+  note('document', { path: location.pathname });
+  const request = LockManager.prototype.request;
+  LockManager.prototype.request = function (name, ...rest) {
+    const callback = rest.pop();
+    const options = rest[0] ?? {};
+    const asked = Date.now();
+    if (options.ifAvailable || options.steal)
+      note('lock-ask', { name, options: Object.keys(options) });
+    return request.call(this, name, ...rest, async (lock) => {
+      note('lock', { name, waited: Date.now() - asked, got: Boolean(lock) });
+      try {
+        return await callback(lock);
+      } finally {
+        note('unlock', { name, held: Date.now() - asked });
+      }
+    });
+  };
+  for (const Kind of ['Worker', 'SharedWorker']) {
+    const Original = globalThis[Kind];
+    globalThis[Kind] = class extends Original {
+      constructor(url, options) {
+        super(url, options);
+        note('worker', { kind: Kind, url: String(url).slice(-80), name: options?.name ?? null });
+      }
+    };
+  }
+  let text = '';
+  let rows = '';
+  let tabs = '';
+  let client = null;
+  let seen = new Map();
+  let polling = false;
+  const last = (app, prefix) =>
+    app.dock?.api.panels.map((panel) => panel.id).findLast((id) => id.startsWith(prefix));
+  const ps = async () => {
+    if (polling || !client) return;
+    polling = true;
+    try {
+      const now = new Map((await client.ps()).map((entry) => [entry.pid, entry]));
+      for (const [pid, entry] of now)
+        if (!seen.has(pid))
+          note('spawn', {
+            pid,
+            ppid: entry.ppid,
+            argv: entry.argv.join(' ').slice(0, 160),
+            started: entry.started,
+          });
+      for (const [pid, entry] of seen)
+        if (!now.has(pid)) note('exit', { pid, argv: entry.argv.join(' ').slice(0, 80) });
+      seen = now;
+    } catch (error) {
+      note('ps-failed', { error: error.message });
+    } finally {
+      polling = false;
+    }
+  };
+  const tick = () => {
+    const app = document.querySelector('slicc-app');
+    if (app?.dock && location.pathname === '/os/') {
+      const id = last(app, 'terminal:');
+      const now = id ? (app.dock.content(id)?.screen?.textContent ?? '').trim().slice(-160) : '';
+      if (now !== text) note('screen', { text: now });
+      text = now;
+      const listed = (app.model?.updates?.list?.() ?? [])
+        .map((row) => `${row.id}:${row.state}`)
+        .join(' ');
+      if (listed !== rows) note('rows', { rows: listed });
+      rows = listed;
+      const state = JSON.stringify(app.model?.tabs?.state?.() ?? null);
+      if (state !== tabs) note('tabs', { state });
+      tabs = state;
+    }
+    if (!client && typeof globalThis.sliccKernelClient === 'function') {
+      note('kernel', {});
+      client = 'pending';
+      globalThis.sliccKernelClient().then(
+        (attached) => {
+          client = attached;
+          note('client', {});
+        },
+        (error) => note('client-failed', { error: error.message })
+      );
+    }
+    if (client && client !== 'pending') void ps();
+    if (events.length < 5000 && !window.sliccBootMarks?.chat) setTimeout(tick, 100);
   };
   tick();
 }
@@ -180,6 +275,7 @@ async function measure(page, label, go) {
   const list = watched.stop();
   const result = {
     label,
+    start,
     terminal: marks.terminal - start,
     chat: marks.chat - start,
     agent: marks.agent - start,
@@ -221,9 +317,25 @@ test(`boot weight: ${RUNS} cold boots and warm reloads to the first terminal pro
     await t.test(`run ${run}`, async (s) => {
       const page = await chrome.page(s);
       await page.init(milestones);
+      await page.init(tracer);
       results.push(await measure(page, `cold ${run}`, () => page.goto('/')));
-      await idle(page);
-      results.push(await measure(page, `warm ${run}`, () => page.reload()));
+      for (let warm = 1; warm <= WARM; warm++) {
+        await idle(page);
+        const label = `warm ${run}.${warm}`;
+        results.push(await measure(page, label, () => page.reload()));
+        const trace = await page.evaluate(() => window.sliccBootTrace);
+        await writeFile(
+          new URL(`${label.replace(/\W+/g, '-')}-trace.json`, page.dir),
+          JSON.stringify(trace, null, 2)
+        );
+        const start = results.at(-1).start;
+        for (const event of trace.slice(0, 800)) {
+          const { t, kind, ...detail } = event;
+          console.log(
+            `BOOT-TRACE ${label} +${t - start} ${kind} ${JSON.stringify(detail).slice(0, 300)}`
+          );
+        }
+      }
       const compiled = await page.evaluate(async () => {
         const url = customElements.get('slicc-terminal')?.wasmUrl;
         if (!url) return { url: null };
