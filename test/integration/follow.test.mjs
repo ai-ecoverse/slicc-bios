@@ -41,8 +41,9 @@ const dialog = () => {
   return deep(document)?.shadowRoot?.querySelector('dialog[open]') ?? null;
 };
 
-async function join(t, joinUrl, hub) {
+async function join(t, joinUrl, hub, init) {
   const page = await followers.page(t);
+  if (init) await page.init(init);
   await page.goto(`/#follow=${encodeURIComponent(joinUrl)}`);
   await page.until(
     () => location.pathname === '/os/' && document.documentElement.dataset.follow === 'on'
@@ -59,6 +60,58 @@ async function join(t, joinUrl, hub) {
   );
   return page;
 }
+
+const CHROME_DROPS = `() => {
+  const announced = new WeakSet();
+  const opened = new WeakSet();
+  globalThis.droppedBeforeOpen = [];
+  const listen = RTCPeerConnection.prototype.addEventListener;
+  RTCPeerConnection.prototype.addEventListener = function (type, listener, options) {
+    if (type !== 'datachannel') return listen.call(this, type, listener, options);
+    const pc = this;
+    return listen.call(pc, type, (event) => {
+      announced.add(event.channel);
+      event.channel.addEventListener('open', () => opened.add(event.channel));
+      return listener.call(pc, event);
+    }, options);
+  };
+  const send = RTCDataChannel.prototype.send;
+  RTCDataChannel.prototype.send = function (data) {
+    if (announced.has(this) && !opened.has(this)) {
+      globalThis.droppedBeforeOpen.push(typeof data === 'string' ? data.slice(0, 60) : 'binary');
+      return;
+    }
+    return send.call(this, data);
+  };
+}`;
+
+test('a follower says HELLO only once its announced control channel opens, since Chrome can drop a send before that, so the owner hears it at once', async (t) => {
+  const hub = await startHub();
+  t.after(() => hub.close());
+  const owner = await lead(t, hub);
+  const { joinUrl } = await model(owner, (network) => network.status().links);
+  const page = await join(t, joinUrl, hub, CHROME_DROPS);
+  await page.until(
+    () => document.querySelector('slicc-app').model.follow.state().link === 'connected'
+  );
+  const dropped = () => page.evaluate(() => globalThis.droppedBeforeOpen);
+  await owner
+    .within(5000, () =>
+      document
+        .querySelector('slicc-app')
+        .model.network.status()
+        .links.devices.some((d) => d.kind === 'seven' && d.state === 'connected')
+    )
+    .catch(async (error) => {
+      throw new Error(
+        `${error.message}\nsent before the channel opened: ${JSON.stringify(await dropped())}`
+      );
+    });
+  assert.deepEqual(await dropped(), []);
+  await owner.evaluate(() => {
+    localStorage.removeItem('slicc-os.tray-hub');
+  });
+});
 
 test('a seven follows another: it asks first, follows once allowed, keeps its certificate across reloads, and unlink ends it', async (t) => {
   const hub = await startHub();

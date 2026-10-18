@@ -57,17 +57,7 @@ const json = (bytes) => {
   }
 };
 
-function opened(channel) {
-  if (channel.readyState === 'open') return Promise.resolve(channel);
-  return new Promise((resolve, reject) => {
-    channel.addEventListener('open', () => resolve(channel), { once: true });
-    channel.addEventListener('close', () => reject(failure('ECONNRESET: the channel closed')), {
-      once: true,
-    });
-  });
-}
-
-function stream(streams, id, channel, own) {
+function stream(streams, id, channel, own, post) {
   const state = { opened: false, sentEnd: false, gotEnd: false, unacked: 0, held: 0 };
   const chunks = [];
   const waiting = new Set();
@@ -94,7 +84,7 @@ function stream(streams, id, channel, own) {
       waiting.add(resume);
     });
   const send = (type, payload) => {
-    if (channel.readyState === 'open') channel.send(frame(type, id, payload));
+    if (channel.readyState === 'open') post(channel, frame(type, id, payload));
   };
   const done = () => {
     streams.delete(id);
@@ -229,6 +219,51 @@ export async function pipe(stream, socket) {
   socket.close();
 }
 
+function openGates(fail) {
+  const unopened = new Map();
+  const opens = new Map();
+  const flush = (channel) => {
+    const queue = unopened.get(channel) ?? [];
+    unopened.delete(channel);
+    try {
+      for (const data of queue) channel.send(data);
+    } catch (error) {
+      fail(`a send on ${channel.label} failed once it opened: ${error.message}`);
+    }
+  };
+  return {
+    post(channel, data) {
+      const queue = unopened.get(channel);
+      if (queue) queue.push(data);
+      else channel.send(data);
+    },
+    watch(channel) {
+      unopened.set(channel, []);
+      const open = new Promise((resolve, reject) => {
+        channel.addEventListener(
+          'open',
+          () => {
+            flush(channel);
+            resolve(channel);
+          },
+          { once: true }
+        );
+        channel.addEventListener(
+          'close',
+          () => {
+            unopened.delete(channel);
+            reject(failure('ECONNRESET: the channel closed'));
+          },
+          { once: true }
+        );
+      });
+      open.catch(() => {});
+      opens.set(channel, open);
+    },
+    opened: (channel) => opens.get(channel),
+  };
+}
+
 export function createSession({
   control,
   createChannel,
@@ -243,6 +278,8 @@ export function createSession({
   const streams = new Map();
   const peerIds = new Set();
   const channels = new Set();
+  const gates = openGates((reason) => close(reason));
+  const post = gates.post;
   const early = [];
   let held = 0;
   let next = 2 - parity;
@@ -269,9 +306,9 @@ export function createSession({
     if (id % 2 === parity || peerIds.has(id)) return close('an OPEN with a bad stream id');
     peerIds.add(id);
     const meta = json(payload);
-    if (typeof meta?.kind !== 'string') return channel.send(frame(RESET, id, 'EPROTO'));
-    if (!accept) return channel.send(frame(RESET, id, 'EOPNOTSUPP'));
-    const s = stream(streams, id, channel, false);
+    if (typeof meta?.kind !== 'string') return post(channel, frame(RESET, id, 'EPROTO'));
+    if (!accept) return post(channel, frame(RESET, id, 'EOPNOTSUPP'));
+    const s = stream(streams, id, channel, false, post);
     streams.set(id, s);
     Promise.resolve()
       .then(() => (closed ? Promise.reject(failure(`ECONNRESET: ${closed}`)) : accept(meta)))
@@ -286,7 +323,7 @@ export function createSession({
         },
         (error) => {
           streams.delete(id);
-          if (channel.readyState === 'open') channel.send(frame(RESET, id, error.code ?? 'EIO'));
+          if (channel.readyState === 'open') post(channel, frame(RESET, id, error.code ?? 'EIO'));
         }
       );
   }
@@ -325,8 +362,21 @@ export function createSession({
     streams.get(id)?.receive(type, payload);
   }
 
+  function greet() {
+    if (closed) return;
+    try {
+      control.send(JSON.stringify({ v: 1, role, ...hello() }));
+    } catch (error) {
+      close(`the HELLO could not be sent: ${error.message}`);
+      return;
+    }
+    if (!peer)
+      timer = timers.setTimeout(() => close(`no HELLO from the ${other} within 10 s`), HELLO_MS);
+  }
+
   function adopt(channel) {
     channels.add(channel);
+    gates.watch(channel);
     channel.binaryType = 'arraybuffer';
     channel.addEventListener('message', (event) => receive(channel, event.data));
     channel.addEventListener('close', () => {
@@ -340,14 +390,7 @@ export function createSession({
   }
 
   adopt(control);
-  opened(control).then(
-    () => {
-      if (closed) return;
-      control.send(JSON.stringify({ v: 1, role, ...hello() }));
-      timer = timers.setTimeout(() => close(`no HELLO from the ${other} within 10 s`), HELLO_MS);
-    },
-    () => {}
-  );
+  gates.opened(control).then(greet, () => {});
 
   return {
     ready,
@@ -360,11 +403,12 @@ export function createSession({
       await ready;
       const id = next;
       next += 2;
-      const channel = shared ? control : await opened(adopt(createChannel(STREAM)));
+      const channel = shared ? control : adopt(createChannel(STREAM));
+      if (!shared) await gates.opened(channel);
       if (closed) throw failure(`ECONNRESET: ${closed}`);
-      const s = stream(streams, id, channel, !shared);
+      const s = stream(streams, id, channel, !shared, post);
       streams.set(id, s);
-      channel.send(frame(OPEN, id, JSON.stringify(meta)));
+      post(channel, frame(OPEN, id, JSON.stringify(meta)));
       return s.answered;
     },
   };
