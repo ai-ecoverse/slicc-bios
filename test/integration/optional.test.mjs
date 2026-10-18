@@ -128,22 +128,40 @@ test('HEIF and AVIF images installs from the catalog, and heif-convert runs', {
   assert.deepEqual(page.errors, []);
 });
 
-test('Python data tools are withdrawn until numpy and pandas come from verified CI builds: no row, no lock, no certified numpy 2.3.2-4 to -10 or pandas 2.3.2-5 to -11, and a retired row so an install can be removed', async () => {
+test('Python data tools are back as homescoop’s attested CI builds: one project of numpy, pandas and matplotlib that locks a single numpy, at least 2.3.2-12 (homescoop#1082), and no Python of its own, with scipy neither locked nor certified and no decertified numpy or pandas certified', async () => {
   const catalog = await read('catalog.json');
-  assert.ok(!Object.values(catalog).some((entry) => entry.id === 'pydata'));
-  assert.ok(Object.values(catalog).some((entry) => entry.id === 'python'));
+  const entry = catalog['slicc-py-datatools'];
+  assert.equal(entry.id, 'pydata');
+  assert.equal(entry.kind, 'project');
+  assert.deepEqual(entry.requires, ['python']);
   const retired = await read('retired.json');
-  assert.deepEqual(retired['slicc-py-datatools'], {
-    id: 'pydata',
-    kind: 'project',
-    label: 'Python data tools',
-    commands: [],
-  });
+  assert.equal(retired['slicc-py-datatools'], undefined);
+  const manifest = await read('projects/pydata/package.json');
+  assert.deepEqual(Object.keys(manifest.dependencies).sort(), [
+    '@ai-ecoverse/py-matplotlib',
+    '@ai-ecoverse/py-numpy',
+    '@ai-ecoverse/py-pandas',
+  ]);
+  const lock = await readFile(new URL('projects/pydata/pnpm-lock.yaml', optional), 'utf8');
+  const packages = lock.slice(lock.indexOf('\npackages:\n'), lock.indexOf('\nsnapshots:\n'));
+  const locked = [...packages.matchAll(/^ {2}'(@ai-ecoverse\/[^@']+)@([^']+)':$/gm)].map(
+    ([, name, version]) => [name, version]
+  );
+  const numpys = locked.filter(([name]) => name === '@ai-ecoverse/py-numpy');
+  assert.deepEqual(numpys, [
+    ['@ai-ecoverse/py-numpy', manifest.dependencies['@ai-ecoverse/py-numpy']],
+  ]);
+  assert.ok(+numpys[0][1].match(/^2\.3\.2-(\d+)$/)[1] >= 12, 'numpy has the LinAlgError fix');
+  assert.deepEqual(lock.match(/@ai-ecoverse\/wasix-python.*/g), [
+    "@ai-ecoverse/wasix-python': '-'",
+  ]);
+  assert.ok(!lock.includes('py-scipy'), 'scipy stays out until it is certified');
   const certs = JSON.parse(await readFile(new URL('../certs.json', optional), 'utf8'));
   const withdrawn = Object.keys(certs).filter((key) => {
     const numpy = key.match(/^@ai-ecoverse\/py-numpy@2\.3\.2-(\d+)$/);
     const pandas = key.match(/^@ai-ecoverse\/py-pandas@2\.3\.2-(\d+)$/);
     return (
+      key.startsWith('@ai-ecoverse/py-scipy@') ||
       (numpy && +numpy[1] >= 4 && +numpy[1] <= 10) ||
       (pandas && +pandas[1] >= 5 && +pandas[1] <= 11)
     );

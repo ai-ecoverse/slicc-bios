@@ -1,0 +1,4 @@
+minimumReleaseAgeExclude:
+  - '@ai-ecoverse/*'
+overrides:
+  '@ai-ecoverse/wasix-python': '-'

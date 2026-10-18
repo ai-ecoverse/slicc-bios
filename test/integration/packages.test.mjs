@@ -374,6 +374,7 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
       'ssh available',
       'slicc available',
       'python available',
+      'pydata available',
       'node installed',
       'jsh-browser installed',
       'ruby available',

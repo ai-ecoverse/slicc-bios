@@ -32,7 +32,16 @@
     "label": "Python",
     "description": "Python 3.14 with pip (pip, pip3 or python3 -m pip), for scripts and data work.",
     "commands": ["python3", "pip", "pip3"],
-    "size": 49598727
+    "size": 57417828
+  },
+  "slicc-py-datatools": {
+    "id": "pydata",
+    "kind": "project",
+    "label": "Python data tools",
+    "description": "numpy, pandas and matplotlib for Python, about 160 MB on disk.",
+    "commands": [],
+    "requires": ["python"],
+    "size": 46014414
   },
   "@ai-ecoverse/slicc-jsh": {
     "id": "node",
