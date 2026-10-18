@@ -24,7 +24,24 @@ test('an install from before users boots fresh under enforce: the agent works as
 }, async (t) => {
   const chrome = await launch({ timeout: 120000, agent: true });
   t.after(() => chrome.close());
-  const page = await chrome.page(t);
+  const off = await chrome.page(t);
+  const hash = (mode) => `/#users=${mode}`;
+
+  await off.goto(hash('off'));
+  await ready(off, rootShell);
+  await agentUp(off, { label: 'agent under users off' });
+  assert.deepEqual(off.errors, []);
+  const sevens = () =>
+    navigator.locks
+      .query()
+      .then(({ held }) =>
+        held
+          .map(({ name }) => name)
+          .filter((name) => name === 'slicc-agent' || name.startsWith('slicc-tab:'))
+      );
+  assert.ok((await off.evaluate(sevens)).includes('slicc-agent'));
+  const page = await off.tab();
+  await off.close();
   await page.init(() => {
     window.showDirectoryPicker = async () => {
       const root = await navigator.storage.getDirectory();
@@ -32,11 +49,18 @@ test('an install from before users boots fresh under enforce: the agent works as
       return tmp.getDirectoryHandle('picked', { create: true });
     };
   });
-  const hash = (mode) => `/#users=${mode}`;
-
-  await page.goto(hash('off'));
-  await ready(page, rootShell);
-  await agentUp(page, { label: 'agent under users off' });
+  await page.goto('/manifest.json');
+  await page
+    .within(60000, async () =>
+      (await navigator.locks.query()).held.every(
+        ({ name }) => name !== 'slicc-agent' && !name.startsWith('slicc-tab:')
+      )
+    )
+    .catch(async (error) => {
+      throw new Error(
+        `the closed users-off tab still holds seven's locks: ${error.message}\n${await page.evaluate(sevens)}`
+      );
+    });
   await page.evaluate(async () => {
     const root = await navigator.storage.getDirectory();
     const put = async (path, data) => {
@@ -54,12 +78,6 @@ test('an install from before users boots fresh under enforce: the agent works as
     await put('home/.slicc/crontab', '* * * * * cone echo hi\n');
     await put('home/notes.txt', 'mine\n');
   });
-  await run(
-    page,
-    'clear; ls /home/.pi/agent/mcp.json /scoops/old/workspace/notes.md; echo populated-$((40 + 2))'
-  );
-  await shows(page, 'populated-42');
-  assert.doesNotMatch(await screen(page), /No such file/);
 
   await page.goto(hash('enforce'));
   await ready(page, rootShell);
