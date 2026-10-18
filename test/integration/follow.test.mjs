@@ -166,7 +166,7 @@ test('a seven follows another: it asks first, follows once allowed, keeps its ce
   });
 });
 
-test('a follower that seven reloads to put back one of its changed files keeps following and doesn’t ask again', async (t) => {
+test('a follower that seven reloads to put back one of its changed files keeps following, also after the owner moved its link, and doesn’t ask again', async (t) => {
   const hub = await startHub();
   t.after(() => hub.close());
   const owner = await lead(t, hub);
@@ -177,6 +177,11 @@ test('a follower that seven reloads to put back one of its changed files keeps f
   );
   assert.match((await follow(page)).owner, /^SLICC on /);
   assert.equal(await page.evaluate(() => location.hash), '');
+  await model(owner, (network) => network.rotateJoinUrl());
+  const moved = await page.until((url) => {
+    const kept = JSON.parse(localStorage.getItem('slicc-os.follow'));
+    return kept?.url !== url && kept?.url;
+  }, joinUrl);
 
   await page.evaluate(async () => {
     window.__before = true;
@@ -214,7 +219,8 @@ test('a follower that seven reloads to put back one of its changed files keeps f
   assert.equal(await page.evaluate(() => location.hash), '');
   assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('slicc-os.follow'))), {
     hub: hub.url,
-    url: joinUrl,
+    url: moved,
+    from: joinUrl,
   });
   assert.doesNotMatch(
     await page.evaluate(async () => (await fetch('/os/callback.js')).text()),
