@@ -220,8 +220,8 @@ export async function pipe(stream, socket) {
 }
 
 function openGates(fail) {
-  const unopened = new Map();
-  const opens = new Map();
+  const unopened = new WeakMap();
+  const opens = new WeakMap();
   const flush = (channel) => {
     const queue = unopened.get(channel) ?? [];
     unopened.delete(channel);
