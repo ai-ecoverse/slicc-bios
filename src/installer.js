@@ -55,14 +55,25 @@ async function remove(path) {
   forget(path);
 }
 
-async function clear(path) {
-  const dir = await directory(path.split('/'));
-  const names = [];
-  for await (const name of dir.keys()) names.push(name);
-  for (const name of names.filter((entry) => entry !== 'node_modules')) {
-    await dir.removeEntry(name, { recursive: true });
-    forget(`${path}/${name}`);
-  }
+async function sweep(path, keep) {
+  const walk = async (dir, at) => {
+    const handles = [];
+    for await (const handle of dir.values()) handles.push(handle);
+    let kept = false;
+    for (const handle of handles) {
+      const { name } = handle;
+      const full = `${at}/${name}`;
+      if (at === path && name === 'node_modules') kept = true;
+      else if (handle.kind === 'directory' ? await walk(handle, full) : keep.has(`/${full}`))
+        kept = true;
+      else {
+        await dir.removeEntry(name, { recursive: true });
+        forget(full);
+      }
+    }
+    return kept;
+  };
+  await walk(await directory(path.split('/')), path);
 }
 
 const IDLE = 30000;
@@ -153,22 +164,42 @@ async function stamp(entries) {
   }
 }
 
+function entryPoints(manifest) {
+  const names = new Set(['package.json']);
+  let pkg = {};
+  try {
+    pkg = JSON.parse(new TextDecoder().decode(manifest ?? new ArrayBuffer(0)));
+  } catch {
+    return names;
+  }
+  const bin = typeof pkg.bin === 'string' ? [pkg.bin] : Object.values(pkg.bin ?? {});
+  for (const file of [...bin, pkg.main]) {
+    if (typeof file === 'string') names.add(entryName(`package/${file}`));
+  }
+  return names;
+}
+
 async function unpack(bytes, path, stamps = []) {
   const { createTarDecoder } = await import(TAR);
   const { sha256 } = await import(INTEGRITY);
   const gzip = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
-  const files = new Map();
+  const read = [];
   for await (const { header, body } of gzip.pipeThrough(createTarDecoder())) {
     const name = entryName(header.name);
     if (header.type === 'file' && name) {
-      const data = await new Response(body).arrayBuffer();
-      await save(`${path}/${name}`, data);
-      const at = `/${path}/${name}`;
-      files.set(at, { path: at, size: data.byteLength, sha256: await sha256(data) });
-      stamps.push({ path: at, mode: (header.mode ?? 0o644) & 0o7777, uid: 0, gid: 0 });
+      read.push({ name, mode: header.mode, data: await new Response(body).arrayBuffer() });
     } else {
       await body.cancel();
     }
+  }
+  const last = entryPoints(read.find(({ name }) => name === 'package.json')?.data);
+  read.sort((a, b) => Number(last.has(a.name)) - Number(last.has(b.name)));
+  const files = new Map();
+  for (const { name, mode, data } of read) {
+    await save(`${path}/${name}`, data);
+    const at = `/${path}/${name}`;
+    files.set(at, { path: at, size: data.byteLength, sha256: await sha256(data) });
+    stamps.push({ path: at, mode: (mode ?? 0o644) & 0o7777, uid: 0, gid: 0 });
   }
   return [...files.values()];
 }
@@ -241,8 +272,8 @@ async function add([path, entry], changed, stamps, fresh = new Set()) {
   if (await current(path, entry, changed).catch(() => false)) return 0;
   const bytes = await download(resolved);
   await verify(bytes, expected, path);
-  await clear(path);
   const files = await unpack(bytes, path, stamps);
+  await sweep(path, new Set(files.map((file) => file.path)));
   await (await integrity()).record(path, files, expected);
   await save(`var/lib/bios/${path}.json`, JSON.stringify({ resolved, integrity: expected }));
   fresh.add(path);
