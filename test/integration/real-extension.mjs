@@ -11,23 +11,28 @@ import { launch } from './chrome.mjs';
 
 const run = promisify(execFile);
 
-export const EXTENSION = {
-  version: '7.5.1',
-  url: 'https://github.com/ai-ecoverse/slicc-extension/releases/download/v7.5.1/slicc-extension.zip',
-  sha256: 'bdcd08b945cf69baa554cf01072d88436c3f8b97b05376cd369746598cf84a75',
-};
+const release = (version, sha256) => ({
+  version,
+  url: `https://github.com/ai-ecoverse/slicc-extension/releases/download/v${version}/slicc-extension.zip`,
+  sha256,
+});
+export const EXTENSIONS = [
+  release('7.5.1', 'bdcd08b945cf69baa554cf01072d88436c3f8b97b05376cd369746598cf84a75'),
+  release('7.6.2', '0871897fe03e96bddb16ab1c2712437e99835d01ca4566049a61ae888277c20e'),
+];
+export const [EXTENSION] = EXTENSIONS;
 export const SEVEN = 'https://seven.sliccy.ai/';
 
-async function unpacked() {
-  const dir = join(process.cwd(), 'node_modules', '.cache', `slicc-extension-${EXTENSION.version}`);
+async function unpacked(extension) {
+  const dir = join(process.cwd(), 'node_modules', '.cache', `slicc-extension-${extension.version}`);
   const root = join(dir, 'unpacked');
   if (existsSync(join(root, 'manifest.json'))) return root;
-  const response = await fetch(EXTENSION.url);
-  if (!response.ok) throw new Error(`${EXTENSION.url}: HTTP ${response.status}`);
+  const response = await fetch(extension.url);
+  if (!response.ok) throw new Error(`${extension.url}: HTTP ${response.status}`);
   const zip = Buffer.from(await response.arrayBuffer());
   const sum = createHash('sha256').update(zip).digest('hex');
-  if (sum !== EXTENSION.sha256)
-    throw new Error(`${EXTENSION.url}: sha256 ${sum}, want ${EXTENSION.sha256}`);
+  if (sum !== extension.sha256)
+    throw new Error(`${extension.url}: sha256 ${sum}, want ${extension.sha256}`);
   await rm(dir, { recursive: true, force: true });
   await mkdir(root, { recursive: true });
   await writeFile(join(dir, 'slicc-extension.zip'), zip);
@@ -87,8 +92,8 @@ async function front(upstream) {
   };
 }
 
-export async function realExtension({ rules = [], args = [] } = {}) {
-  const root = await unpacked();
+export async function realExtension({ rules = [], args = [], extension = EXTENSION } = {}) {
+  const root = await unpacked(extension);
   const upstream = { url: null };
   const tls = await front(upstream);
   const chrome = await launch({
