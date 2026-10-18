@@ -43,6 +43,7 @@ export function installAgent(start, { from = deployed, ...options } = {}) {
 }
 
 let chat = null;
+let chatFrom = null;
 let run = 0;
 
 export function loadChat({ load = (file) => import(new URL(file, modules)), fresh = false } = {}) {
@@ -67,6 +68,7 @@ export function loadChat({ load = (file) => import(new URL(file, modules)), fres
     })
   );
   chat = loading;
+  chatFrom = recorded();
   loading.catch(() => {
     if (chat !== loading) return;
     chat = null;
@@ -96,8 +98,13 @@ export function useVault(vault) {
   chatVault = vault;
 }
 
+async function outdated() {
+  return chat !== null && (await chatFrom) !== (await recorded());
+}
+
 export async function startChat(kernel, { vault = chatVault, ...options } = {}) {
-  const { startAgent } = await loadChat(options);
+  const fresh = options.fresh || (await outdated());
+  const { startAgent } = await loadChat({ ...options, fresh });
   const takes = vault && takesVault(await version());
   return startAgent({
     worker: vaultWorker(
