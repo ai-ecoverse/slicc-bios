@@ -35,6 +35,9 @@ test('Node.js (jsh) installs from the catalog, runs node with CommonJS and ESM a
   assert.equal(installed.state, 'installed');
   assert.equal(installed.version, '0.27.2');
 
+  await run(page, 'clear; echo "resolved $(command -v jsh) $(command -v node)"');
+  await shows(page, 'resolved /usr/bin/jsh /usr/bin/node');
+
   await run(
     page,
     `clear; node -e "console.log('joined', require('node:path').posix.join('a', 'b').length * 14)"`
