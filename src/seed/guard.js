@@ -640,19 +640,7 @@ class Guard {
     if (method === 'Network.requestWillBeSent' && params.type === 'Document') {
       return !this.armed(sessionId) && this.is.url(params.request?.url);
     }
-    if (method !== 'Runtime.executionContextCreated') return false;
-    return this.is.url(params.context?.origin) && !this.precursor(params.context, sessionId);
-  }
-
-  precursor({ origin, auxData } = {}, sessionId) {
-    const found = this.targets.get(this.sessions.get(sessionId)?.targetId);
-    return (
-      /^chrome-extension:/i.test(origin) &&
-      auxData?.isDefault === true &&
-      (found?.url === '' || found?.url === 'about:blank') &&
-      !found.guarded &&
-      !found.openerId
-    );
+    return method === 'Runtime.executionContextCreated' && this.is.url(params.context?.origin);
   }
 
   hides(entry) {
@@ -908,7 +896,8 @@ class Guard {
     this.touch(targetId);
     const nav = this.navs.get(targetId);
     await nav.ready;
-    if (!nav.failed) void this.call('Page.navigate', { url: params.url }, nav.session);
+    if (!nav.failed && !/^about:/i.test(params.url))
+      void this.call('Page.navigate', { url: params.url }, nav.session);
     this.deliver({ id, result: answer.result });
   }
 
