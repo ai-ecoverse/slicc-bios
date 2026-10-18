@@ -551,8 +551,17 @@ test('links the real slicc CLI over stdio signaling, and kernel curl reaches its
   });
   const refused = [];
   let relayed = Promise.resolve();
-  await new Promise((answered) => {
-    createInterface({ input: node.stdout }).on('line', (line) => {
+  await new Promise((answered, failed) => {
+    const lines = createInterface({ input: node.stdout });
+    const timer = setTimeout(
+      () => failed(new Error(`no answer from the CLI within 60 s; relayed ${seen.join(' ')}`)),
+      60000
+    );
+    lines.on('close', () => {
+      clearTimeout(timer);
+      failed(new Error(`the CLI closed its output before an answer; relayed ${seen.join(' ')}`));
+    });
+    lines.on('line', (line) => {
       const message = JSON.parse(line);
       seen.push(`node:${message.t}`);
       relayed = relayed.then(() =>
@@ -560,7 +569,9 @@ test('links the real slicc CLI over stdio signaling, and kernel curl reaches its
           .evaluate((line) => globalThis.sliccLinkReceive(line), line)
           .catch((error) => refused.push(`${message.t}: ${error.message}`))
       );
-      if (message.t === 'answer') answered();
+      if (message.t !== 'answer') return;
+      clearTimeout(timer);
+      answered();
     });
   });
   const linked = () =>
