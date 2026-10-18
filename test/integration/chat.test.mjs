@@ -1589,7 +1589,7 @@ const persisted = () => {
   } catch {}
 };
 
-test('an agent that failed to start at boot starts after an update installs a new one, with the new page adapter', {
+test('an agent that failed to start at boot loads the new page adapter once an update installs one, and Retry recovers it without a reload', {
   timeout: 35 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -1619,20 +1619,24 @@ test('an agent that failed to start at boot starts after an update installs a ne
         .find((entry) => entry.id === 'agent');
       return { state: item.state, error: item.error ?? null, adapters: globalThis.sevenAdapters };
     });
-  await page.within(UPDATE, () => {
-    const item = document
-      .querySelector('slicc-app')
-      .model.updates.list()
-      .find((entry) => entry.id === 'agent');
-    return item.state === 'failed' && globalThis.sevenAdapters?.[0] === 'old';
-  });
+  await page
+    .within(UPDATE, () => {
+      const item = document
+        .querySelector('slicc-app')
+        .model.updates.list()
+        .find((entry) => entry.id === 'agent');
+      return item.state === 'failed' && globalThis.sevenAdapters?.[0] === 'old';
+    })
+    .catch(async (error) => {
+      throw new Error(`${error.message}\n${JSON.stringify(await row())}`);
+    });
   assert.match((await row()).error, /Couldn't start the agent/);
 
-  await page.evaluate(
-    (dist, text) => window.writeFile(`${dist}/page.js`, text),
-    dist,
-    `${original}\nglobalThis.sevenAdapters = [...(globalThis.sevenAdapters ?? []), "new"];\n`
+  const fresh = original.replace(
+    owner,
+    'startAgent as ownerStart\n} from "./owner.js";\nglobalThis.sevenAdapters = [...(globalThis.sevenAdapters ?? []), "new"];\nlet sevenTries = 0;\nconst startAgent = (...args) => (sevenTries++ === 0 ? Promise.reject(new Error("the first start fails")) : ownerStart(...args));'
   );
+  await page.evaluate((dist, text) => window.writeFile(`${dist}/page.js`, text), dist, fresh);
   const lock = await readFile(
     new URL('../../src/packages/agent/pnpm-lock.yaml', import.meta.url),
     'utf8'
@@ -1647,29 +1651,57 @@ test('an agent that failed to start at boot starts after an update installs a ne
     );
     document.dispatchEvent(new Event('visibilitychange'));
   });
+  const settled = () => {
+    const { updates } = document.querySelector('slicc-app').model;
+    const { state } = updates.list().find((entry) => entry.id === 'agent');
+    return updates.ready() || (window.agentStates.includes('installed') && state === 'failed');
+  };
+  await page.within(UPDATE, settled).catch(async (error) => {
+    throw new Error(`${error.message}\n${JSON.stringify(await row())}`);
+  });
+  const installed = await row();
+  assert.deepEqual(installed.adapters, ['old', 'new'], JSON.stringify(installed));
+  assert.equal(installed.state, 'failed', JSON.stringify(installed));
+
+  await page.evaluate(() => {
+    window.agentStates = [];
+    document.querySelector('slicc-app').show('updates');
+  });
+  const retry = () =>
+    document
+      .querySelector('slicc-app')
+      .dock.content('updates')
+      ?.shadowRoot?.querySelector('article[data-id="agent"] swc-button[data-action="retry"]');
+  await page.until(new Function(`return !!(${retry})()`));
+  await page.evaluate(new Function(`(${retry})().click()`));
   await page
-    .within(UPDATE, () => {
-      const { updates } = document.querySelector('slicc-app').model;
-      const { state } = updates.list().find((entry) => entry.id === 'agent');
-      return updates.ready() || (window.agentStates.includes('installed') && state === 'failed');
-    })
+    .within(UPDATE, () => document.querySelector('slicc-app').model.updates.ready())
     .catch(async (error) => {
       throw new Error(`${error.message}\n${JSON.stringify(await row())}`);
     });
-  const started = await row();
-  assert.equal(started.state, 'installed', JSON.stringify(started));
-  assert.equal(started.adapters.at(-1), 'new', JSON.stringify(started));
-  assert.ok(!started.adapters.slice(1).includes('old'), JSON.stringify(started));
+  const recovered = await row();
+  assert.deepEqual(recovered.adapters, ['old', 'new'], JSON.stringify(recovered));
+  assert.notEqual(recovered.state, 'failed', JSON.stringify(recovered));
 
+  const seen = async (error) => {
+    const chat = await page.evaluate(() =>
+      window.chatView()
+        ? window.deepText(window.chatView().shadowRoot).slice(-600)
+        : 'no chat panel'
+    );
+    throw new Error(`${error.message}\n${JSON.stringify(await row())}\nchat: ${chat}`);
+  };
   await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
-  await page.until(
-    () => !!window.chatView() && !!window.deep(window.chatView().shadowRoot, 'textarea')
-  );
+  await page
+    .until(() => !!window.chatView() && !!window.deep(window.chatView().shadowRoot, 'textarea'))
+    .catch(seen);
   await page.evaluate(() => window.deep(window.chatView().shadowRoot, 'textarea').focus());
   await page.insert('Say hello');
   await page.enter();
-  await page.until(() =>
-    window.deepText(window.chatView().shadowRoot).includes('Hello from Bedrock in seven.')
-  );
+  await page
+    .until(() =>
+      window.deepText(window.chatView().shadowRoot).includes('Hello from Bedrock in seven.')
+    )
+    .catch(seen);
   assert.deepEqual(page.errors, []);
 });
