@@ -7,6 +7,8 @@ const chrome = await launch({ timeout: 120000, persistent: true });
 after(() => chrome.close());
 
 const PLOT = 5 * 60 * 1000;
+const HAND = 10 * 60 * 1000;
+const EARLIER = '@ai-ecoverse/wasix-python@3.14.2-20';
 const REMOVE = 5 * 60 * 1000;
 const PTH = 'opt/slicc/python/slicc-pydata.pth';
 const RECEIPT = 'var/lib/slicc/optional/pydata/package.json';
@@ -142,7 +144,7 @@ describe('Python data tools are back as attested builds: they install as one pro
     await boot(page);
   });
 
-  test('the catalog offers them, and they install as one project with a single numpy and no Python of their own, readable by every user', async () => {
+  test('the catalog offers them, next to a Python from before them, which shows as outdated', async () => {
     await page.until(() =>
       document
         .querySelector('slicc-app')
@@ -155,9 +157,21 @@ describe('Python data tools are back as attested builds: they install as one pro
     assert.equal(listed.label, 'Python data tools');
     assert.match(listed.description, /^numpy, pandas and matplotlib for Python/);
     assert.deepEqual(listed.requires, ['python']);
-    assert.equal((await row(page, 'python')).state, 'available');
+    await run(page, `clear; pnpm add -g ${EARLIER} >/dev/null 2>&1; echo "by hand $((40 + $?))"`);
+    await shows(page, 'by hand 4', HAND);
+    assert.match(await screen(page), /by hand 40/);
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await page.until(
+      () =>
+        document
+          .querySelector('slicc-app')
+          .model.updates.packages()
+          .find((item) => item.id === 'python').state === 'outdated'
+    );
     await shots(page, 'pydata-before');
+  });
 
+  test('installing them updates that Python first, then installs one project with a single numpy and no Python of its own, readable by every user', async () => {
     const result = await actPackage(page, 'pydata', 'install', {
       budget: 14 * 60 * 1000,
       stall: 8 * 60 * 1000,
@@ -179,13 +193,14 @@ describe('Python data tools are back as attested builds: they install as one pro
     assert.ok(await exists(page, 'opt/slicc/python/sitecustomize.py'));
     await run(
       page,
-      `clear; echo "unreadable $(find /opt/slicc ! -perm -o=r | wc -l) $(find /opt/slicc -type d ! -perm -o=x | wc -l)"; echo "numpy [$(find /opt/slicc/pydata -path '*/py-numpy/package.json' | xargs jq -r .version | sort -u | tr '\\n' ' ')]"; echo "python [$(find /opt/slicc/pydata -name 'wasix-python*' | wc -l)]"; echo "checked $((6 * 7))"`
+      `clear; echo "unreadable $(find /opt/slicc ! -perm -o=r | wc -l) $(find /opt/slicc -type d ! -perm -o=x | wc -l)"; echo "numpy [$(find /opt/slicc/pydata -path '*/py-numpy/package.json' | xargs jq -r .version | sort -u | tr '\\n' ' ')]"; echo "python [$(find /opt/slicc/pydata -name 'wasix-python*' | wc -l)]"; echo "pythons [$(cat "$PNPM_HOME"/global/v11/*/node_modules/@ai-ecoverse/wasix-python/package.json | jq -r .version | sort -u | tr '\\n' ' ')]"; echo "checked $((6 * 7))"`
     );
     await shows(page, 'checked 42');
     const text = await screen(page);
     assert.match(text, /unreadable 0 0/);
     assert.match(text, /numpy \[2\.3\.2-\d+ \]/);
     assert.match(text, /python \[0\]/);
+    assert.ok(text.includes(`pythons [${python.offered} ]`), text);
     await shots(page, 'pydata-after');
   });
 
