@@ -247,6 +247,18 @@ for (const extension of EXTENSIONS) {
       !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
       `the vault was served after a hop: ${hits.join(' ')}`
     );
+    await run(
+      page,
+      `playwright-cli goto about:blank > /tmp/inherit 2>&1; playwright-cli goto ' about:blank' >> /tmp/inherit 2>&1; playwright-cli eval 'self.origin' >> /tmp/inherit 2>&1; echo "inherit-""done"`
+    );
+    await shows(page, 'inherit-done', 60000);
+    const inherit = await read(page, '/tmp/inherit');
+    assert.match(
+      inherit,
+      /slicc: refused: a browser-side navigation to about: gives the page the origin of whatever drives the browser/,
+      inherit
+    );
+    assert.doesNotMatch(inherit, /chrome-extension:/, inherit);
     const origins = await page.evaluate(() => globalThis.contextOrigins);
     assert.deepEqual(
       origins.filter((each) => /^chrome-extension:/i.test(each)),
