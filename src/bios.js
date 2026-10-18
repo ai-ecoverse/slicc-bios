@@ -1,5 +1,9 @@
 import { usersMode } from './seed/users.js';
 
+export function uiPage(hash) {
+  return new URLSearchParams(hash.slice(1)).has('seat') ? 'os/join.html' : 'os/';
+}
+
 const units = ['B', 'kB', 'MB', 'GB'];
 
 function size(bytes) {
@@ -125,6 +129,9 @@ await step('seed', async () => {
     'guard.js',
     'index.html',
     'jerk.js',
+    'join.css',
+    'join.html',
+    'join.js',
     'layer.js',
     'leaders.js',
     'link-udp.js',
@@ -188,7 +195,7 @@ await step('intercept', async () => {
 await step('navigate', async () => {
   remember('slicc-bios.repaired', repaired);
   remember('slicc-bios.stopped', stopped);
-  const ui = new URL('os/', import.meta.url);
+  const ui = new URL(uiPage(location.hash), import.meta.url);
   ui.hash = location.hash;
   location.replace(ui);
   return ui.pathname;

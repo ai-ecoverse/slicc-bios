@@ -33,7 +33,7 @@ function bootstraps(hub) {
         b.failure = { code: message.code, message: message.message, retryable: false };
       }
     },
-    follow(token, body) {
+    follow(token, body, seat = null) {
       if (!body.action) hub.dials[token] = (hub.dials[token] ?? 0) + 1;
       if (hub.expired.has(token)) return { code: 'TRAY_EXPIRED', error: 'The tray has expired.' };
       if (Number(token) < 1 || Number(token) > hub.trays)
@@ -70,6 +70,17 @@ function bootstraps(hub) {
             bootstrapId: b.bootstrapId,
             attempt: 1,
             iceServers: [],
+            trust: seat ? 'biscotto' : 'full',
+            ...(seat
+              ? {
+                  biscotto: {
+                    id: seat.id,
+                    label: seat.label,
+                    unitJid: seat.unitJid,
+                    gates: { message: { approver: 'user' }, tool: { approver: 'user' } },
+                  },
+                }
+              : {}),
           })
         );
         return {
@@ -113,18 +124,75 @@ async function body(request) {
   }
 }
 
+function biscotti(hub, followers) {
+  const seats = new Map();
+  hub.seats = seats;
+  hub.minted = [];
+  const owner = (request, trayId) =>
+    request.headers.authorization === `Bearer c${trayId.slice(1)}` ? trayId.slice(1) : null;
+  return {
+    async api(request, url, body) {
+      const route = /^\/api\/tray\/(t\d+)\/(biscotto|biscotto\/stop)$/.exec(url.pathname);
+      if (!route) return null;
+      const tray = owner(request, route[1]);
+      if (!tray) return [403, { error: 'Invalid controller capability' }];
+      if (route[2] === 'biscotto') {
+        if (typeof body.label !== 'string' || !body.unitJid) return [400, { error: 'invalid' }];
+        const n = seats.size + 1;
+        const seat = {
+          id: `s${n}`,
+          token: `g${n}`,
+          tray,
+          label: body.label,
+          unitJid: body.unitJid,
+          ttlMs: body.ttlMs,
+          revoked: false,
+        };
+        seats.set(seat.token, seat);
+        hub.minted.push(body);
+        return [200, { id: seat.id, url: `${hub.url}/join/${seat.token}`, label: seat.label }];
+      }
+      const seat = [...seats.values()].find((item) => item.id === body.id && item.tray === tray);
+      if (!seat) return [404, { error: `no biscotto with id ${body.id}` }];
+      if (hub.failStops) return [500, { error: 'biscotto request failed' }];
+      seat.revoked = true;
+      const socket = hub.sockets.findLast((s) => s.path.startsWith(`/controller/c${tray}`));
+      socket?.socket.send(
+        JSON.stringify({ type: 'biscotto.revoked', trayId: `t${tray}`, biscottoId: seat.id })
+      );
+      return [200, { id: seat.id, revokedAt: new Date().toISOString(), evicted: Boolean(socket) }];
+    },
+    join(token, body) {
+      const seat = seats.get(token);
+      if (!seat) return null;
+      if (seat.revoked)
+        return [404, { code: 'INVALID_JOIN_CAPABILITY', error: 'Invalid join capability' }];
+      const answer = followers.follow(seat.tray, body, seat);
+      return [answer.role ? 200 : 404, answer];
+    },
+  };
+}
+
 export function startHub() {
   const hub = { trays: 0, sockets: [], fromLeader: [], waiters: [] };
   const followers = bootstraps(hub);
+  const guests = biscotti(hub, followers);
   const server = createServer(async (request, response) => {
     const cors = {
       'access-control-allow-origin': '*',
-      'access-control-allow-headers': 'content-type',
+      'access-control-allow-headers': 'content-type, authorization',
       'access-control-allow-methods': 'POST, OPTIONS',
       'content-type': 'application/json',
     };
     if (request.method === 'OPTIONS') return response.writeHead(204, cors).end();
     const url = new URL(request.url, hub.url);
+    const api = url.pathname.startsWith('/api/tray/')
+      ? await guests.api(request, url, await body(request))
+      : null;
+    if (api) return response.writeHead(api[0], cors).end(JSON.stringify(api[1]));
+    const seated = /^\/join\/(g\d+)$/.exec(url.pathname);
+    const guest = seated ? guests.join(seated[1], await body(request)) : null;
+    if (guest) return response.writeHead(guest[0], cors).end(JSON.stringify(guest[1]));
     const joining = /^\/join\/j(\d+)$/.exec(url.pathname);
     if (joining) {
       const answer = followers.follow(joining[1], await body(request));

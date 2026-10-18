@@ -54,11 +54,12 @@ export function loadChat({ load = (file) => import(new URL(file, modules)), fres
   const query = run ? `?run=${run}` : '';
   const loading = Promise.all([load(`page.js${query}`), load(`spectrum/index.js${query}`)]).then(
     ([
-      { startAgent, connectAgent, remoteControl, bridgePort, linkEndpoint },
+      { startAgent, connectAgent, connectGuest, remoteControl, bridgePort, linkEndpoint },
       { createAgentModel },
     ]) => ({
       startAgent,
       connectAgent,
+      connectGuest,
       remoteControl,
       bridgePort,
       linkEndpoint,
@@ -174,20 +175,39 @@ export async function pumpLink(stream, end) {
   }
 }
 
-export async function bridgeAgent(owner, stream, { readOnly, device, load = loadChat } = {}) {
+export async function bridgeAgent(
+  owner,
+  stream,
+  { readOnly, device, guest, load = loadChat } = {}
+) {
   if (!owner) throw failure('EAGAIN: the agent is not running');
   const { bridgePort } = await load();
   if (!bridgePort) throw failure('EOPNOTSUPP: this agent cannot be followed');
-  const port = await owner.port({ readOnly, pages: false, ...(device ? { device } : {}) });
+  const port = await owner.port({
+    readOnly,
+    pages: false,
+    ...(device ? { device } : {}),
+    ...(guest ? { guest: { id: guest.id, label: guest.label } } : {}),
+  });
   stream.accepted({});
   await pumpLink(stream, bridgePort(port, streamSink(stream)));
+}
+
+async function dial(open, linkEndpoint, connect) {
+  const stream = await open({ kind: 'pi' });
+  const endpoint = linkEndpoint(streamSink(stream));
+  void pumpLink(stream, endpoint);
+  return connect(endpoint);
 }
 
 export async function followAgent(open, { load = loadChat } = {}) {
   const { connectAgent, linkEndpoint } = await load();
   if (!linkEndpoint) throw failure('EOPNOTSUPP: this agent cannot follow');
-  const stream = await open({ kind: 'pi' });
-  const endpoint = linkEndpoint(streamSink(stream));
-  void pumpLink(stream, endpoint);
-  return connectAgent(endpoint);
+  return dial(open, linkEndpoint, connectAgent);
+}
+
+export async function followGuest(open, { load = loadChat } = {}) {
+  const { connectGuest, linkEndpoint } = await load();
+  if (!linkEndpoint || !connectGuest) throw failure('EOPNOTSUPP: this agent has no guest seats');
+  return dial(open, linkEndpoint, connectGuest);
 }
