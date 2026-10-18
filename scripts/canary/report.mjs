@@ -108,8 +108,6 @@ export function found(docs, run) {
     .sort((a, b) => a.shard.localeCompare(b.shard));
 }
 
-const PARENT = /^\d+ subtests? failed$/;
-
 function hit(result, { test = '', log = '' }) {
   return result.test.includes(test) && (result.log ?? '').includes(log);
 }
@@ -119,9 +117,7 @@ export function merge({ run, biosRef, runner, url, found, expected, refused = []
   const kernels = found.find((shard) => shard.kernels)?.kernels ?? null;
   const overridden = run.overrides.length > 0 || (pins?.overrides?.length ?? 0) > 0;
   const rows = found.flatMap((shard) =>
-    shard.results
-      .filter((result) => !PARENT.test(result.log ?? ''))
-      .map((result) => ({ shard: shard.shard, result }))
+    shard.results.map((result) => ({ shard: shard.shard, result }))
   );
   const results = rows.map(({ shard, result }) => ({
     shard,

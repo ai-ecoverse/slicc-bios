@@ -1516,7 +1516,9 @@ const n = (existsSync(counter) ? Number(readFileSync(counter, 'utf8')) : 0) + 1;
 writeFileSync(counter, String(n));
 for (const detach of ['early', 'late']) {
   test(\`C1–C4 and E1 at registration, \${detach} detach\`, async (t) => {
-    await t.test('C1.href.seven control', () => {});
+    await t.test('C1.href.seven control', () => {
+      if (process.env.CANARY_FIXTURE_FAIL === detach) throw new Error('control broke');
+    });
     await t.test('C1.href.seven protected', () => {});
   });
 }
@@ -1849,5 +1851,76 @@ test('a result over 512 KB is a FAIL verdict, not a truncated list, and canary.j
     assert.equal(fits.result.tests.length, 400);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a failing leaf changes only its own row: its parents keep their rows, so the keys are those of the all-pass run', async () => {
+  const { readFile, rm } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const root = await shardRoot();
+  try {
+    const side = async (name, extra) => {
+      const out = join(root.dir, name, 'out');
+      const ran = await cli(root.shard, ['--shard', 'guard', '--out', out], {
+        CANARY_FIXTURE_RUNS: join(root.dir, `${name}.txt`),
+        CWD: root.dir,
+        ...extra,
+      });
+      const doc = JSON.parse(await readFile(join(out, 'shard.json'), 'utf8'));
+      return { ran, ...(await reportShards(root.report, join(root.dir, name), [doc])) };
+    };
+    const green = await side('green', {});
+    const red = await side('red', { CANARY_FIXTURE_FAIL: 'late' });
+    assert.equal(green.code, 0, green.stdout);
+    assert.equal(red.ran.code, 0, red.ran.stdout);
+    assert.equal(red.code, 1);
+    const keys = (side) => side.result.tests.map(({ key }) => key);
+    assert.equal(keys(green).length, 9);
+    assert.deepEqual(keys(red), keys(green));
+    assert.deepEqual(
+      red.canary.results.map(({ key }) => key),
+      green.canary.results.map(({ key }) => key)
+    );
+    const leaf =
+      'test/integration/guard-vectors.test.mjs › C1–C4 and E1 at registration, late detach › C1.href.seven control';
+    const changed = red.result.tests.filter(
+      (row, n) => JSON.stringify(row) !== JSON.stringify(green.result.tests[n])
+    );
+    assert.deepEqual(changed, [
+      {
+        shard: 'guard',
+        key: leaf,
+        test: 'guard-vectors.test.mjs › C1.href.seven control',
+        verdict: 'fail',
+        failed: { candidate: '1/1', baseline: '0/0' },
+      },
+    ]);
+    assert.equal(
+      red.result.tests.find(({ key }) => key === leaf.slice(0, leaf.lastIndexOf(' › '))).verdict,
+      'pass'
+    );
+    assert.deepEqual(green.result.counts, {
+      pass: 9,
+      skip: 0,
+      fail: 0,
+      regression: 0,
+      both: 0,
+      flaky: 0,
+    });
+    assert.deepEqual(red.result.counts, {
+      pass: 8,
+      skip: 0,
+      fail: 1,
+      regression: 0,
+      both: 0,
+      flaky: 0,
+    });
+    assert.deepEqual(
+      red.result.failures.map(({ test, log }) => [test, log.split('\n')[0]]),
+      [['guard-vectors.test.mjs › C1.href.seven control', 'control broke']]
+    );
+    assert.equal(red.result.verdict, 'canary canary: FAIL 1 fail');
+  } finally {
+    await rm(root.dir, { recursive: true, force: true });
   }
 });

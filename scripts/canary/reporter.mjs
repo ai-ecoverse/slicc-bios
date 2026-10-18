@@ -22,9 +22,10 @@ export default async function* canaryReporter(source) {
       open.set(file, path);
       continue;
     }
-    if (data.details?.type === 'suite' && type === 'test:pass') continue;
+    const passed = type === 'test:pass' || data.details?.error?.failureType === 'subtestsFailed';
+    if (data.details?.type === 'suite' && passed) continue;
     const skipped = data.skip !== undefined || data.todo !== undefined;
-    const status = type === 'test:fail' ? 'fail' : skipped ? 'skip' : 'pass';
+    const status = !passed ? 'fail' : skipped ? 'skip' : 'pass';
     yield `${JSON.stringify({
       file,
       name: data.name,
