@@ -529,12 +529,29 @@ test('screenshots of the browser panel: a driven tab live, two driven tabs, the 
       await page.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
     }
   };
+  const pick = async (title) => {
+    await page.until(
+      () => !!window.panel()?.querySelector('[data-action="all-tabs"], li[data-id] .window')
+    );
+    if (await page.evaluate(() => !!window.panel().querySelector('[data-action="all-tabs"]')))
+      await pointer('[data-action="all-tabs"]');
+    await page.until(() => window.panel().querySelectorAll('li[data-id] .window').length === 2);
+    await page.evaluate(
+      (title) =>
+        [...window.panel().querySelectorAll('li[data-id]')]
+          .find((card) => card.textContent.includes(title))
+          .querySelector('.window')
+          .click(),
+      title
+    );
+  };
 
   await page.evaluate(() => {
     window.panel = () => document.querySelector('slicc-app').dock.content('browser')?.shadowRoot;
     document.querySelector('slicc-app').show('browser');
   });
   await color('light');
+  await pick('Tide tables');
   await page.within(20000, live);
   await page.until(() => window.panel().textContent.includes('harbor is using this tab'));
   await page.until(() => !!window.panel().querySelector('li[data-status="failed"]'));
@@ -652,15 +669,7 @@ test('screenshots of the browser panel: a driven tab live, two driven tabs, the 
   await page.send('Emulation.clearDeviceMetricsOverride');
   await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
   await page.evaluate(() => document.querySelector('slicc-app').show('browser'));
-  await page.until(() => !!window.panel()?.querySelector('[data-action="all-tabs"]'));
-  await pointer('[data-action="all-tabs"]');
-  await page.until(() => window.panel().querySelectorAll('li[data-id] .window').length === 2);
-  await page.evaluate(() =>
-    [...window.panel().querySelectorAll('li[data-id]')]
-      .find((card) => card.textContent.includes('Tide tables'))
-      .querySelector('.window')
-      .click()
-  );
+  await pick('Tide tables');
   await page.until(() => window.panel()?.textContent.includes('No agent is using this tab'));
   await shot('stopped-light');
   await color('dark');
