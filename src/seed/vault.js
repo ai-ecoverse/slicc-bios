@@ -663,7 +663,37 @@ const FNOX_SEED = [
   'chmod 0644 "$1/config.toml"',
 ].join('; ');
 
-export async function seedFnox(kernel) {
+export const FNOX_FILE = `${FNOX_DIR}/config.toml`;
+
+const rooted = (stat, kind, mode) =>
+  stat?.[kind] === true &&
+  stat.isSymbolicLink !== true &&
+  stat.uid === 0 &&
+  stat.gid === 0 &&
+  (stat.mode & 0o7777) === mode;
+
+export async function fnoxSeeded(client) {
+  const [dir, file] = await Promise.all([
+    client.fs.lstat(FNOX_DIR),
+    client.fs.lstat(FNOX_FILE),
+  ]).catch(() => []);
+  return rooted(dir, 'isDirectory', 0o755) && rooted(file, 'isFile', 0o644) && file.size > 0;
+}
+
+async function fnoxChecked(kernel, attach) {
+  let client;
+  try {
+    client = await attach(await kernel.connect());
+    return await fnoxSeeded(client);
+  } catch {
+    return false;
+  } finally {
+    await client?.close().catch(() => undefined);
+  }
+}
+
+export async function seedFnox(kernel, attach) {
+  if (attach && (await fnoxChecked(kernel, attach))) return false;
   const { status, stderr } = await kernel.run(
     ['bash', '-c', FNOX_SEED, 'fnox', FNOX_DIR, FNOX_CONFIG],
     {
@@ -671,4 +701,5 @@ export async function seedFnox(kernel) {
     }
   );
   if (status) throw new Error(stderr.trim() || `the fnox config setup exited with ${status}`);
+  return true;
 }
