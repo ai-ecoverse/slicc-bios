@@ -2,7 +2,9 @@ import {
   appendLog,
   appendTo,
   described,
+  idbCounts,
   listModules,
+  listTree,
   openIntegrity,
   sha256,
   treeOf,
@@ -383,8 +385,24 @@ async function serve(request, controller) {
           return { readable: false, error: `${error?.name}: ${error?.message}` };
         }
       })();
+      const parts = at.split('/').filter(Boolean);
+      const packageDir = `/${parts.slice(0, parts[1]?.startsWith('@') ? 3 : 2).join('/')}`;
+      const opfs = navigator.storage.getDirectory();
+      const [packageTree, parentTree, rootTree, databases] = await Promise.all([
+        listTree(opfs, packageDir, 3).catch((error) => ({ error: String(error) })),
+        listTree(opfs, parts.slice(0, -1).join('/'), 0).catch((error) => ({
+          error: String(error),
+        })),
+        listTree(opfs, '/', 0).catch((error) => ({ error: String(error) })),
+        idbCounts().catch((error) => ({ error: String(error) })),
+      ]);
       await diag({
         event: 'sw-missing',
+        packageDir,
+        packageTree,
+        parentTree,
+        rootTree,
+        databases,
         path: at,
         read: `${failure?.name}: ${failure?.message}`,
         cached: failure?.first ? `${failure.first.name}: ${failure.first.message}` : null,

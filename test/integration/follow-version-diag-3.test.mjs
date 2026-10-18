@@ -168,10 +168,36 @@ const modulesListing = async () => {
   return listing;
 };
 
+const databases = async () => {
+  const out = {};
+  for (const { name, version } of (await indexedDB.databases?.()) ?? []) {
+    try {
+      const db = await new Promise((resolve, reject) => {
+        const opening = indexedDB.open(name);
+        opening.onsuccess = () => resolve(opening.result);
+        opening.onerror = () => reject(opening.error);
+      });
+      const counts = {};
+      for (const store of db.objectStoreNames) {
+        counts[store] = await new Promise((resolve, reject) => {
+          const counting = db.transaction(store).objectStore(store).count();
+          counting.onsuccess = () => resolve(counting.result);
+          counting.onerror = () => reject(counting.error);
+        });
+      }
+      db.close();
+      out[name] = { version, counts };
+    } catch (error) {
+      out[name] = { version, error: `${error.name}: ${error.message}` };
+    }
+  }
+  return out;
+};
+
 async function procs(page) {
   await run(
     page,
-    `clear; echo "shared_root=$(cat /proc/sys/kernel/slicc_shared_root 2>&1)"; echo "opfs_calls=$(cat /proc/sys/kernel/slicc_opfs_calls 2>&1)"; echo procs-$((6 * 7))`
+    `clear; echo "shared_root=$(cat /proc/sys/kernel/slicc_shared_root 2>&1)"; echo "opfs_calls=$(cat /proc/sys/kernel/slicc_opfs_calls 2>&1)"; echo "fs_calls=$(cat /proc/sys/kernel/slicc_fs_calls 2>&1)"; ps 2>&1 | head -40; echo procs-$((6 * 7))`
   );
   await shows(page, 'procs-42');
   return (await screen(page)).replace(/\s+/g, ' ').trim();
@@ -224,6 +250,8 @@ test("a follower of a SLICC on another agent version shows the agent's sentence 
     diag.end = {
       followerModules: await grab(page, modulesListing),
       ownerModules: await grab(owner, modulesListing),
+      followerDatabases: await grab(page, databases),
+      ownerDatabases: await grab(owner, databases),
     };
     try {
       if (owner) diag.procs.ownerAtEnd = await procs(owner);
@@ -390,6 +418,7 @@ test("a follower of a SLICC on another agent version shows the agent's sentence 
   diag.procs.followerBeforeUpgrade =
     'none: in follower mode the follower runs no kernel of its own, its terminal is the owner’s';
   diag.followerModulesBeforeUpgrade = await page.evaluate(modulesListing);
+  diag.followerDatabasesBeforeUpgrade = await page.evaluate(databases);
   let busy = false;
   polling = setInterval(async () => {
     if (diag.first || busy) return;
@@ -400,6 +429,11 @@ test("a follower of a SLICC on another agent version shows the agent's sentence 
       if (!log || diag.first) return;
       diag.first = { at: new Date().toISOString(), log };
       diag.first.modules = await page.evaluate(modulesListing);
+      diag.first.databases = await page.evaluate(databases);
+      diag.first.kernel = await page.evaluate(() => ({
+        follow: document.documentElement.dataset.follow ?? null,
+        path: location.pathname,
+      }));
       diag.first.integrity = await page.evaluate(opfsLog, 'integrity.log');
       diag.first.ownerInstaller = await owner.evaluate(opfsLog, 'diag-installer.log');
     } catch (error) {

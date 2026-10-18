@@ -62,6 +62,49 @@ export async function listModules(root) {
   return listing;
 }
 
+export async function listTree(root, path, depth = 3) {
+  const walk = async (dir, left) => {
+    const out = {};
+    for await (const [name, handle] of dir.entries()) {
+      if (handle.kind === 'file') {
+        out[name] = (await handle.getFile().catch(() => null))?.size ?? 'unreadable';
+      } else {
+        out[name] = left > 0 ? await walk(handle, left - 1) : 'dir';
+      }
+    }
+    return out;
+  };
+  let dir = await root;
+  try {
+    for (const part of path.split('/').filter(Boolean)) dir = await dir.getDirectoryHandle(part);
+  } catch (error) {
+    return { path, error: `${error.name}: ${error.message}` };
+  }
+  return { path, tree: await walk(dir, depth) };
+}
+
+export async function idbCounts(factory = indexedDB) {
+  const out = {};
+  const listed = (await factory.databases?.()) ?? [];
+  for (const { name, version } of listed) {
+    try {
+      const db = await Promise.race([
+        done(factory.open(name)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('open timed out')), 5000)),
+      ]);
+      const counts = {};
+      for (const store of db.objectStoreNames) {
+        counts[store] = await done(db.transaction(store).objectStore(store).count());
+      }
+      db.close();
+      out[name] = { version, counts };
+    } catch (error) {
+      out[name] = { version, error: `${error.name}: ${error.message}` };
+    }
+  }
+  return out;
+}
+
 export async function appendTo(root, log, event, now = Date.now()) {
   const names = log.split('/');
   const name = names.pop();
