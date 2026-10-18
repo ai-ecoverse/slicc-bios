@@ -860,6 +860,9 @@ for (const [detach, lag] of DETACH) {
           const targetId = await tab(`${PLAIN}/doc`);
           try {
             const { send, sessionId } = await harness(targetId);
+            await send('Page.addScriptToEvaluateOnNewDocument', {
+              source: "addEventListener('DOMContentLoaded', () => {})",
+            });
             await send('Debugger.enable');
             const condition = `document.documentElement.setAttribute('data-k', 'E4'), false`;
             await send('Debugger.setBreakpointByUrl', {
