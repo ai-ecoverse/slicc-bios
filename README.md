@@ -521,7 +521,7 @@ npm run lint
 
 `npm test` runs the integration tests with `node --test` against Chromium (fetched by `playwright-core`), driven directly over the DevTools protocol by the [harness from slicc-shared-web](https://github.com/ai-ecoverse/slicc-shared-web#integration-test-harness); `test/integration/chrome.mjs` only says what to serve and which CDN requests to intercept. Every run leaves behind:
 
-- `coverage/` – V8 coverage of the page, the shared worker, and the service worker as `lcov.info` plus an HTML report.
+- `coverage/` (with `SLICC_COVERAGE=1` only) – V8 coverage of the page, the shared worker, and the service worker as `lcov.info` plus an HTML report. Without it the harness attaches no coverage recorder, and CI doesn't turn it on: nothing reads integration coverage, and without the recorder CI runs pages and workers as production does.
 - `artifacts/<suite>/<test>/` – a screenshot of each tab at the end of the test, a `console.log` of every page and worker, and the minidump of any renderer or browser crash.
 - `artifacts/hotspots.md` – added to the CI job summary. It says that profiling is off unless you turned it on.
 
@@ -554,4 +554,4 @@ The Biome, lefthook, Renovate and CI configuration comes from [slicc-shared-web]
 - **No comments.** `slicc-lint-comments` runs the [slicc no-comment checker](https://github.com/ai-ecoverse/slicc/tree/main/packages/dev-tools/no-comment) over the tree.
 - **Unit tests stay out of git.** Write them in `test/unit/`, which is gitignored, and run them with `npm run test:unit`. `slicc-no-unit-tests` fails if a unit test gets committed anyway.
 - **Changed code must be covered.** When a commit touches JavaScript in `src/`, lefthook runs the local unit tests with coverage and [`diff-cover`](https://github.com/Bachmann1234/diff_cover) requires every staged line to be executed. Files that no unit test loads count as 0%. This needs [uv](https://docs.astral.sh/uv/) for `uvx`.
-- **Integration tests run in CI.** `test/integration/` is committed and runs on every push and pull request; run it locally with `npm test`. Their coverage report, screenshots and crash dumps are uploaded as CI artifacts for inspection, not used as a gate.
+- **Integration tests run in CI.** `test/integration/` is committed and runs on every push and pull request; run it locally with `npm test`. Their screenshots and crash dumps are uploaded as CI artifacts for inspection. CI records no integration coverage; `SLICC_COVERAGE=1 npm test` does, locally, for inspection, never as a gate.

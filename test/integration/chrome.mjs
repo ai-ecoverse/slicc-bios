@@ -9,6 +9,7 @@ const options = {
   aliases: [['/os/', 'src/seed/']],
   intercept: ['https://cdn.jsdelivr.net/', 'https://registry.npmjs.org/'],
   timeout: 60000,
+  ...(env.SLICC_COVERAGE === '1' ? {} : { coverage: [] }),
 };
 
 export const emptyAgent = {
