@@ -103,7 +103,7 @@ jobs:
 
       - run: npm run pretest
 
-      - name: Integration tests with coverage, CPU profiles, and screenshots, and the shard's verdict
+      - name: Integration tests with screenshots, and the shard's verdict
         env:
           SHARD: ${{ matrix.shard }}
           ITEMS: ${{ matrix.items }}
@@ -133,7 +133,6 @@ jobs:
           include-hidden-files: true
           path: |
             artifacts/
-            node_modules/.cache/slicc-harness/coverage/
             node_modules/.cache/slicc-harness/hotspots/
           if-no-files-found: ignore
 
@@ -169,13 +168,12 @@ jobs:
           name: experiment-plan
           path: artifacts/experiment
 
-      - name: Coverage and hotspots across the shards
+      - name: Hotspots across the shards
         run: |
-          rm -rf artifacts/hotspots.md coverage
+          rm -rf artifacts/hotspots.md
           node --input-type=module -e "
             const { pathToFileURL } = await import('node:url');
             const harness = await import(pathToFileURL('node_modules/@ai-ecoverse/slicc-shared-web/harness/global.mjs'));
-            await harness.report();
             await harness.hotspots();
           "
           cat artifacts/hotspots.md >> "$GITHUB_STEP_SUMMARY" || true
@@ -199,7 +197,6 @@ jobs:
         with:
           name: coverage-profiles-screenshots
           path: |
-            coverage/
             artifacts/
           if-no-files-found: ignore
 

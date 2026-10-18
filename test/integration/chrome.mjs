@@ -11,6 +11,7 @@ const options = {
   aliases: [['/os/', 'src/seed/']],
   intercept: ['https://cdn.jsdelivr.net/', 'https://registry.npmjs.org/'],
   timeout: 60000,
+  ...(env.SLICC_COVERAGE === '1' ? {} : { coverage: [] }),
 };
 
 export const emptyAgent = {
@@ -21,6 +22,33 @@ export const emptyAgent = {
 };
 
 export const VAULT_KEY = 'slicc-os.vault-origin';
+
+export async function debuggerUrl(port, ms = 30000) {
+  const end = Date.now() + ms;
+  let last = 'nothing yet';
+  let seen = false;
+  for (;;) {
+    const signal = AbortSignal.timeout(Math.max(1, end - Date.now()));
+    const body = await fetch(`http://127.0.0.1:${port}/json/version`, { signal })
+      .then(async (response) => {
+        const text = await response.text();
+        seen = true;
+        last = `${response.status} ${text.slice(0, 200) || '(empty body)'}`;
+        return JSON.parse(text);
+      })
+      .catch((error) => {
+        const stale = error instanceof SyntaxError || (error.name === 'TimeoutError' && seen);
+        if (!stale) last = error.cause?.message ?? error.message;
+        return null;
+      });
+    if (body?.webSocketDebuggerUrl) return body.webSocketDebuggerUrl;
+    if (Date.now() >= end)
+      throw new Error(
+        `Chrome's DevTools endpoint on ${port} gave no webSocketDebuggerUrl in ${ms} ms; last saw: ${last}`
+      );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
 
 const NOISE = /Spectrum Web Components is in dev mode|The legal slot is empty/;
 const KEEP = 40;

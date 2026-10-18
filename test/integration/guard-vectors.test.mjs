@@ -4,7 +4,7 @@ import { createServer } from 'node:net';
 import { after, test } from 'node:test';
 import { startProxy } from '@ai-ecoverse/slicc-node';
 import { boot } from './bios.mjs';
-import { launch } from './chrome.mjs';
+import { debuggerUrl, launch } from './chrome.mjs';
 
 const LAG = 8000;
 const DETACH = [
@@ -121,8 +121,7 @@ after(() => {
   chrome.close();
   stand.close();
 });
-const browser = (await (await fetch(`http://127.0.0.1:${port}/json/version`)).json())
-  .webSocketDebuggerUrl;
+const browser = await debuggerUrl(port);
 
 function cdp() {
   const socket = new WebSocket(browser);
@@ -860,6 +859,9 @@ for (const [detach, lag] of DETACH) {
           const targetId = await tab(`${PLAIN}/doc`);
           try {
             const { send, sessionId } = await harness(targetId);
+            await send('Page.addScriptToEvaluateOnNewDocument', {
+              source: "addEventListener('DOMContentLoaded', () => {})",
+            });
             await send('Debugger.enable');
             const condition = `document.documentElement.setAttribute('data-k', 'E4'), false`;
             await send('Debugger.setBreakpointByUrl', {

@@ -4,7 +4,7 @@ import { createServer } from 'node:net';
 import { after, test } from 'node:test';
 import { startProxy } from '@ai-ecoverse/slicc-node';
 import { actPackage, boot, ready, run, shows } from './bios.mjs';
-import { launch } from './chrome.mjs';
+import { debuggerUrl, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
 import { EXTENSIONS, realExtension, SEVEN } from './real-extension.mjs';
 
@@ -52,8 +52,7 @@ after(() => {
   chrome.close();
   stand.close();
 });
-const browser = (await (await fetch(`http://127.0.0.1:${port}/json/version`)).json())
-  .webSocketDebuggerUrl;
+const browser = await debuggerUrl(port);
 
 const fakeExtension = extensionOver(browser);
 
