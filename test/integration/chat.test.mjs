@@ -122,7 +122,7 @@ const ims = createServer(
       state.source === 'origin'
         ? `${state.origin}/auth/callback`
         : `http://localhost:${state.port}${state.path}`;
-    const target = `${back}?nonce=${state.nonce}#access_token=${ADOBE_TOKEN}&token_type=bearer&expires_in=86399000`;
+    const target = `${back}?nonce=${state.nonce}#access_token=${ADOBE_TOKEN}&token_type=bearer&expires_in=86399`;
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end(
       hold ? 'Sign in to Adobe' : `<script>location.replace(${JSON.stringify(target)});</script>`
