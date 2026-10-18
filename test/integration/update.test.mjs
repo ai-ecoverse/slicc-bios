@@ -642,3 +642,83 @@ test('the BIOS installer replaces a package in place while seven runs: the shell
   assert.equal(await version(page), '5.3.0-18');
   assert.deepEqual(page.errors, []);
 });
+
+test('the BIOS installer updates a command’s wasm before its glue and its package.json last, so another tab never sees new glue beside old wasm', async (t) => {
+  const page = await chrome.page(t);
+  await bootOlder(page);
+  chrome.overrides.set('/order.html', '<!doctype html><title>order</title>');
+  const other = await page.tab();
+  await other.goto('/order.html');
+  await other.evaluate((bash) => {
+    const names = ['bin/bash.wasm', 'bin/bash', 'package.json'];
+    const stamp = async () => {
+      let dir = await navigator.storage.getDirectory();
+      for (const part of bash.split('/')) dir = await dir.getDirectoryHandle(part);
+      const out = [];
+      for (const name of names) {
+        let at = dir;
+        const parts = name.split('/');
+        const file = parts.pop();
+        for (const part of parts) at = await at.getDirectoryHandle(part);
+        out.push((await (await at.getFileHandle(file)).getFile()).lastModified);
+      }
+      return out;
+    };
+    window.order = { samples: 0, seen: [], wrong: [] };
+    window.order.running = true;
+    void (async () => {
+      const first = await stamp();
+      while (window.order.running) {
+        const now = await stamp().catch(() => null);
+        window.order.samples += 1;
+        if (!now) continue;
+        const changed = now.map((at, i) => at !== first[i]);
+        const key = changed.map(Number).join('');
+        if (!window.order.seen.includes(key)) window.order.seen.push(key);
+        const [wasm, glue, manifest] = changed;
+        if ((glue && !wasm) || (manifest && !(wasm && glue))) window.order.wrong.push(key);
+      }
+    })();
+  }, bash);
+  deploy();
+  const result = await other.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const { port } = new SharedWorker('/installer.js', 'slicc-installer');
+        port.onmessage = ({ data }) => {
+          if ('progress' in data) return;
+          resolve(data);
+        };
+        port.postMessage({
+          id: 1,
+          op: 'packages',
+          args: {
+            from: new URL('/packages/package-lock.json', location.href).href,
+            base: 'opt/slicc/base',
+          },
+        });
+      })
+  );
+  assert.ok(result.result?.downloaded >= 1, JSON.stringify(result));
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const order = await other.evaluate(() => {
+    window.order.running = false;
+    return {
+      samples: window.order.samples,
+      seen: window.order.seen,
+      wrong: window.order.wrong.slice(0, 5),
+    };
+  });
+  assert.ok(order.samples > 0);
+  assert.ok(
+    order.seen.includes('111'),
+    `the three files never all changed: ${JSON.stringify(order)}`
+  );
+  assert.deepEqual(
+    order.wrong,
+    [],
+    `new glue or manifest beside old wasm: ${JSON.stringify(order)}`
+  );
+  assert.equal(await version(page), '5.3.0-18');
+  assert.deepEqual(page.errors, []);
+});
