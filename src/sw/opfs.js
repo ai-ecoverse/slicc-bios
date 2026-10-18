@@ -16,8 +16,15 @@ export function opfsReader(root = () => navigator.storage.getDirectory()) {
     const name = path.endsWith('/') || names.length === 0 ? 'index.html' : names.pop();
     try {
       return await (await (await folder(names, true)).getFileHandle(name)).getFile();
-    } catch {
-      return (await (await folder(names, false)).getFileHandle(name)).getFile();
+    } catch (first) {
+      try {
+        return await (await (await folder(names, false)).getFileHandle(name)).getFile();
+      } catch (second) {
+        try {
+          second.first = first;
+        } catch {}
+        throw second;
+      }
     }
   };
 }

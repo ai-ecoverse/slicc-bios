@@ -371,10 +371,24 @@ async function serve(request, controller) {
       const modules = await listModules(navigator.storage.getDirectory()).catch((error) => ({
         error: String(error),
       }));
+      const again = await (async () => {
+        try {
+          let dir = await navigator.storage.getDirectory();
+          const names = at.split('/').filter(Boolean);
+          const name = names.pop();
+          for (const part of names) dir = await dir.getDirectoryHandle(part);
+          const found = await (await dir.getFileHandle(name)).getFile();
+          return { readable: true, size: found.size };
+        } catch (error) {
+          return { readable: false, error: `${error?.name}: ${error?.message}` };
+        }
+      })();
       await diag({
         event: 'sw-missing',
         path: at,
         read: `${failure?.name}: ${failure?.message}`,
+        cached: failure?.first ? `${failure.first.name}: ${failure.first.message}` : null,
+        again,
         modules,
       });
     }
