@@ -192,22 +192,33 @@ async function stamp(entries) {
 }
 
 function entryPoints(manifest) {
-  const names = new Set(['package.json']);
+  const ranks = new Map([['package.json', 3]]);
   let pkg = {};
   try {
     pkg = JSON.parse(new TextDecoder().decode(manifest ?? new ArrayBuffer(0)));
   } catch {
-    return names;
+    return ranks;
   }
-  const bin = typeof pkg.bin === 'string' ? [pkg.bin] : Object.values(pkg.bin ?? {});
+  const rank = (file, value) => {
+    if (typeof file !== 'string') return;
+    const name = entryName(`package/${file}`);
+    ranks.set(name, Math.max(ranks.get(name) ?? 0, value));
+  };
   const targets = (value) =>
     typeof value === 'string'
       ? [value]
       : Object.values(value && typeof value === 'object' ? value : {}).flatMap(targets);
-  for (const file of [...bin, pkg.main, ...targets(pkg.exports)]) {
-    if (typeof file === 'string') names.add(entryName(`package/${file}`));
+  const bin = typeof pkg.bin === 'string' ? [pkg.bin] : Object.values(pkg.bin ?? {});
+  for (const file of [...bin, pkg.main, ...targets(pkg.exports)]) rank(file, 2);
+  const commands = pkg.slicc?.commands;
+  for (const command of Object.values(commands && typeof commands === 'object' ? commands : {})) {
+    if (!command || typeof command !== 'object') continue;
+    const variants = Array.isArray(command.variants) ? command.variants : [];
+    for (const file of [command.wasm, ...variants.map((variant) => variant?.wasm)]) rank(file, 1);
+    rank(command.glue, 2);
+    rank(command.script, 2);
   }
-  return names;
+  return ranks;
 }
 
 async function unpack(bytes, path, stamps = []) {
@@ -223,8 +234,8 @@ async function unpack(bytes, path, stamps = []) {
       await body.cancel();
     }
   }
-  const last = entryPoints(read.find(({ name }) => name === 'package.json')?.data);
-  read.sort((a, b) => Number(last.has(a.name)) - Number(last.has(b.name)));
+  const ranks = entryPoints(read.find(({ name }) => name === 'package.json')?.data);
+  read.sort((a, b) => (ranks.get(a.name) ?? 0) - (ranks.get(b.name) ?? 0));
   const files = new Map();
   for (const { name, mode, data } of read) {
     await place(path, name, data);
