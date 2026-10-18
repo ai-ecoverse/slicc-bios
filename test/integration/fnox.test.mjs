@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:net';
 import { after, test } from 'node:test';
-import { boot } from './bios.mjs';
+import { boot, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const VALUE = 'dummy-fnox-value-0123456789';
@@ -190,5 +190,78 @@ test('without the vault, fnox’s sealed operations fail closed with ENOTCONN', 
   assert.notEqual(set.code, '0');
   assert.match(set.out, /ENOTCONN|isn.t connected/, set.out);
   assert.doesNotMatch((await config(page)).out, /HARBOR_TOKEN/);
+  assert.deepEqual(page.errors, []);
+});
+
+function watchSeeds() {
+  globalThis.sliccKernelDebug = true;
+  const found = [];
+  window.fnoxSeeds = found;
+  window.fnoxWatching = true;
+  let client;
+  const look = async () => {
+    for (const entry of await client.ps().catch(() => []))
+      if (entry.argv.join(' ').includes('"$1/config.toml"') && !found.includes(entry.pid))
+        found.push(entry.pid);
+  };
+  const wait = setInterval(async () => {
+    if (client !== undefined || typeof globalThis.sliccKernelClient !== 'function') return;
+    clearInterval(wait);
+    client = null;
+    client = await globalThis.sliccKernelClient();
+    const until = Date.now() + 8000;
+    const tick = async () => {
+      await look();
+      if (Date.now() < until) setTimeout(tick, 20);
+      else window.fnoxWatching = false;
+    };
+    void tick();
+  }, 10);
+}
+
+async function seeds(page) {
+  await page.within(60000, () => window.fnoxWatching === false);
+  return page.evaluate(() => window.fnoxSeeds);
+}
+
+const modes = (page, label) =>
+  sh(
+    page,
+    'stat -c "%u %g %a %F" /etc/fnox /etc/fnox/config.toml; grep -c "^DOCK_NOTE = " /etc/fnox/config.toml',
+    label
+  );
+
+test('a reload skips the fnox seed while /etc/fnox is root’s 0755 and config.toml root’s 0644, keeps what root wrote there, and reseeds after a chmod or chown', {
+  timeout: 20 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  await page.init(watchSeeds);
+  await boot(page);
+  assert.notDeepEqual(await seeds(page), [], 'the first boot runs the seed');
+  const appended = await sh(page, "printf 'DOCK_NOTE = 1\\n' >> /etc/fnox/config.toml", 'append');
+  assert.equal(appended.code, '0', appended.out);
+  const expected = { code: '0', out: '0 0 755 directory\n0 0 644 regular file\n1' };
+  assert.deepEqual(await modes(page, 'appended'), expected);
+
+  await page.reload();
+  await ready(page);
+  assert.deepEqual(await seeds(page), [], 'a reload with root’s /etc/fnox runs no seed');
+  assert.deepEqual(await modes(page, 'kept'), expected);
+
+  for (const [label, broken] of [
+    ['chmod', 'chmod 0600 /etc/fnox/config.toml'],
+    ['chown', 'chown 1000:1000 /etc/fnox/config.toml'],
+    ['dir', 'chmod 0775 /etc/fnox'],
+  ]) {
+    const broke = await sh(page, broken, `${label}-break`);
+    assert.equal(broke.code, '0', broke.out);
+    await page.reload();
+    await ready(page);
+    assert.notDeepEqual(await seeds(page), [], `${label}: a broken /etc/fnox is reseeded`);
+    assert.deepEqual(await modes(page, `${label}-fixed`), expected, label);
+  }
+  await page.reload();
+  await ready(page);
+  assert.deepEqual(await seeds(page), [], 'the repaired /etc/fnox is not seeded again');
   assert.deepEqual(page.errors, []);
 });

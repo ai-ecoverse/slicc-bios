@@ -687,7 +687,9 @@ async function own() {
   exits.attach(kernel);
   if (globalThis.sliccKernelDebug === true)
     globalThis.sliccKernelClient = async () => attachKernel(await kernel.connect());
-  await seedFnox(kernel).catch((error) => console.warn(`fnox config: ${error.message}`));
+  await seedFnox(kernel, attachKernel).catch((error) =>
+    console.warn(`fnox config: ${error.message}`)
+  );
   const gid = await sudoGidOf(kernel).catch(() => undefined);
   keepSudoGid(localStorage, gid);
   void vault.sudoGid(gid);
