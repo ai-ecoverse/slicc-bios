@@ -1840,9 +1840,9 @@ test('a result over 512 KB is a FAIL verdict, not a truncated list, and canary.j
     assert.equal(result.ok, false);
     assert.match(
       result.verdict,
-      /^canary: FAIL the result is \d+ bytes, over the 524288-byte bound for a job output; canary\.json holds every row$/
+      /^canary: FAIL the result is \d+ bytes, over the 520192 that leave room for its artifact under the 524288-byte bound for a job output; canary\.json holds every row$/
     );
-    assert.ok(result.bytes > 524288);
+    assert.ok(result.bytes > 520192);
     assert.equal(result.tests, undefined);
     assert.deepEqual(reported.verdicts, ['canary canary: PASS 2000 tests', result.verdict]);
     assert.equal(reported.canary.tests.length, 2000);
@@ -1922,5 +1922,56 @@ test('a failing leaf changes only its own row: its parents keep their rows, so t
     assert.equal(red.result.verdict, 'canary canary: FAIL 1 fail');
   } finally {
     await rm(root.dir, { recursive: true, force: true });
+  }
+});
+
+test('the result step never writes a job output over 512 KB once it adds the artifact block', async () => {
+  const { mkdir, mkdtemp, readFile, rm, writeFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
+  const yml = await readFile(
+    new URL('../../.github/workflows/canary.yml', import.meta.url),
+    'utf8'
+  );
+  const step = stepsOf(yml.slice(yml.indexOf('\n  report:'))).find((one) =>
+    /^ {6}- id: result\n/.test(one)
+  );
+  const script = step.match(/node -e '\n([\s\S]*?)\n\s*'\n?$/)[1];
+  const dir = await mkdtemp(join(tmpdir(), 'canary-step-'));
+  try {
+    await mkdir(join(dir, 'canary'));
+    const file = join(dir, 'step.cjs');
+    await writeFile(file, script);
+    const env = {
+      CWD: dir,
+      ARTIFACT_NAME: 'candidate-canary',
+      ARTIFACT_URL: 'https://example.test/a',
+      ARTIFACT_ID: '9001',
+      ARTIFACT_DIGEST: 'ab'.repeat(32),
+    };
+    const verdict = 'canary canary: PASS 1 tests';
+    const write = (result) => writeFile(join(dir, 'canary/result.json'), JSON.stringify(result));
+    await write({ ok: true, verdict, tests: [] });
+    const fits = await cli(pathToFileURL(file), [], env);
+    assert.equal(fits.code, 0, fits.stdout);
+    assert.equal(fits.stdout.trim(), verdict);
+    assert.deepEqual(JSON.parse(fits.outputs.result).artifact, {
+      name: 'candidate-canary',
+      url: 'https://example.test/a',
+      id: '9001',
+      digest: 'ab'.repeat(32),
+    });
+    const full = `result=${JSON.stringify({ ok: true, verdict, tests: [], artifact: JSON.parse(fits.outputs.result).artifact })}\n`;
+    await write({ ok: true, verdict, tests: [], pad: 'x'.repeat(524288 - full.length) });
+    const over = await cli(pathToFileURL(file), [], env);
+    assert.equal(over.code, 1);
+    assert.match(
+      over.stdout,
+      /^canary: FAIL the result is 524\d{3} bytes with its artifact, over the 524288-byte bound for a job output$/m
+    );
+    assert.equal(over.outputs.result, undefined);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });

@@ -8,6 +8,7 @@ import { enforceNote } from './users.mjs';
 
 const ROWS = 150;
 const BOUND = 512 * 1024;
+const ROOM = 4096;
 
 export function classify(runs, baselines, overridden) {
   const failed = runs.filter((status) => status === 'fail').length;
@@ -454,9 +455,9 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
     runs.length === 1
       ? { ...summaries[0], ok }
       : { ok, verdict: lines.join('; '), runs: summaries, refused };
-  const bytes = Buffer.byteLength(JSON.stringify(result));
-  if (bytes > BOUND) {
-    const line = `canary: FAIL the result is ${bytes} bytes, over the ${BOUND}-byte bound for a job output; canary.json holds every row`;
+  const bytes = Buffer.byteLength(`result=${JSON.stringify(result)}\n`);
+  if (bytes > BOUND - ROOM) {
+    const line = `canary: FAIL the result is ${bytes} bytes, over the ${BOUND - ROOM} that leave room for its artifact under the ${BOUND}-byte bound for a job output; canary.json holds every row`;
     lines.push(line);
     if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, `${line}\n`);
     ok = false;

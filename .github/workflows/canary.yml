@@ -500,7 +500,13 @@ jobs:
               id: process.env.ARTIFACT_ID || "",
               digest: process.env.ARTIFACT_DIGEST || "",
             };
-            appendFileSync(process.env.GITHUB_OUTPUT, `result=${JSON.stringify(result)}\n`);
+            const output = `result=${JSON.stringify(result)}\n`;
+            const bytes = Buffer.byteLength(output);
+            if (bytes > 524288) {
+              console.log(`canary: FAIL the result is ${bytes} bytes with its artifact, over the 524288-byte bound for a job output`);
+              process.exit(1);
+            }
+            appendFileSync(process.env.GITHUB_OUTPUT, output);
             console.log(result.verdict);
           '
 
