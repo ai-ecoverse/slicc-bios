@@ -42,9 +42,11 @@ export function hubOrigin(url) {
 function read(storage) {
   try {
     const kept = JSON.parse(storage.getItem(FOLLOW_KEY));
-    return joinUrl(kept?.url, hubs(storage)) && kept.hub === hubOrigin(kept.url)
-      ? { hub: kept.hub, url: kept.url }
-      : null;
+    if (!joinUrl(kept?.url, hubs(storage)) || kept.hub !== hubOrigin(kept.url)) return null;
+    const from = joinUrl(kept.from, hubs(storage));
+    return from && hubOrigin(from) === kept.hub
+      ? { hub: kept.hub, url: kept.url, from }
+      : { hub: kept.hub, url: kept.url };
   } catch {
     return null;
   }
@@ -67,7 +69,9 @@ export function takeFollow({
     params.delete('follow');
     const rest = params.toString();
     past.replaceState(past.state, '', `${at.pathname}${at.search}${rest ? `#${rest}` : ''}`);
-    taken = url ? { hub: hubOrigin(url), url, fresh: true } : taken;
+    const known = read(storage);
+    if (known && (url === known.url || url === known.from)) taken = known;
+    else if (url) taken = { hub: hubOrigin(url), url, fresh: true };
   }
   return taken ?? read(storage);
 }
@@ -312,7 +316,10 @@ export function createFollow({
   };
   const keep = (next) => {
     url = next;
-    storage.setItem(FOLLOW_KEY, JSON.stringify({ hub: kept.hub, url }));
+    storage.setItem(
+      FOLLOW_KEY,
+      JSON.stringify({ hub: kept.hub, url, from: kept.from ?? kept.url })
+    );
   };
   const halt = () => {
     over = true;

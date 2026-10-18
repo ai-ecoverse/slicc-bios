@@ -165,3 +165,68 @@ test('a seven follows another: it asks first, follows once allowed, keeps its ce
     localStorage.removeItem('slicc-os.tray-hub');
   });
 });
+
+test('a follower that seven reloads to put back one of its changed files keeps following, also after the owner moved its link, and doesn’t ask again', async (t) => {
+  const hub = await startHub();
+  t.after(() => hub.close());
+  const owner = await lead(t, hub);
+  const { joinUrl } = await model(owner, (network) => network.status().links);
+  const page = await join(t, joinUrl, hub);
+  await page.until(
+    () => document.querySelector('slicc-app').model.follow.state().link === 'connected'
+  );
+  assert.match((await follow(page)).owner, /^SLICC on /);
+  assert.equal(await page.evaluate(() => location.hash), '');
+  await model(owner, (network) => network.rotateJoinUrl());
+  const moved = await page.until((url) => {
+    const kept = JSON.parse(localStorage.getItem('slicc-os.follow'));
+    return kept?.url !== url && kept?.url;
+  }, joinUrl);
+
+  await page.evaluate(async () => {
+    window.__before = true;
+    const os = await (await navigator.storage.getDirectory()).getDirectoryHandle('os');
+    const handle = await os.getFileHandle('callback.js');
+    const writable = await handle.createWritable({ keepExistingData: true });
+    await writable.seek((await handle.getFile()).size);
+    await writable.write('\nglobalThis.__changed = 1;\n');
+    await writable.close();
+    void fetch('/os/callback.js');
+  });
+  await page.until(
+    () =>
+      !window.__before &&
+      location.pathname === '/os/' &&
+      document.documentElement.dataset.follow === 'on' &&
+      !!document.querySelector('slicc-app')?.model?.follow
+  );
+  const settled = await page
+    .within(
+      60000,
+      new Function(`
+        if ((${dialog})()) return { asked: (${dialog})().textContent.replace(/\\s+/g, ' ').trim() };
+        const state = document.querySelector('slicc-app').model.follow.state();
+        return state.link === 'connected' ? { state } : null;
+      `)
+    )
+    .catch(async (error) => {
+      throw new Error(
+        `the follower neither followed nor asked after seven put its file back: ${error.message}\n${JSON.stringify(await follow(page))}`
+      );
+    });
+  assert.equal(settled.asked, undefined, `the follower asked again: ${settled.asked}`);
+  assert.match(settled.state.owner, /^SLICC on /);
+  assert.equal(await page.evaluate(() => location.hash), '');
+  assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('slicc-os.follow'))), {
+    hub: hub.url,
+    url: moved,
+    from: joinUrl,
+  });
+  assert.doesNotMatch(
+    await page.evaluate(async () => (await fetch('/os/callback.js')).text()),
+    /__changed/
+  );
+  await owner.evaluate(() => {
+    localStorage.removeItem('slicc-os.tray-hub');
+  });
+});

@@ -127,6 +127,16 @@ const confirmDialog = () => {
 
 const attempts = (page) => page.console.filter((line) => line.includes('following the agent:'));
 
+const integrityLog = async () => {
+  try {
+    let dir = await navigator.storage.getDirectory();
+    for (const part of ['var', 'log', 'slicc']) dir = await dir.getDirectoryHandle(part);
+    return (await (await dir.getFileHandle('integrity.log')).getFile()).text();
+  } catch {
+    return '';
+  }
+};
+
 async function agentVersion(page) {
   await run(
     page,
@@ -302,24 +312,26 @@ test("a follower of a SLICC on another agent version shows the agent's sentence 
   await ready(owner);
   await agentUp(owner, { label: 'owner agent after the upgrade' });
   assert.notEqual(await agentVersion(owner), '5.0.3');
-  await page
+  const following = await page
     .within(
       5 * 60 * 1000,
-      (id) => {
-        const { model } = document.querySelector('slicc-app');
-        return !model.notices.list().some((notice) => notice.id === id) && !!model.agent;
-      },
+      new Function(
+        'id',
+        `const { model } = document.querySelector('slicc-app');
+        const state = model.follow.state();
+        if (state.link !== 'connected' || state.refused) return null;
+        if (model.notices.list().some((notice) => notice.id === id)) return null;
+        const light = (${find})('[data-follow="connected"]')?.textContent.replace(/\\s+/g, ' ').trim();
+        return light?.includes('Following ' + state.owner) ? { owner: state.owner, light } : null;`
+      ),
       NOTICE
     )
     .catch(async (error) => {
       throw new Error(
-        `the follower kept the other-version warning after the owner upgraded: ${error.message}\nfollower attempts: ${attempts(page).join('\n')}\nfollower console:\n${page.console.slice(-15).join('\n')}`
+        `the follower didn't follow the owner again after it upgraded: ${error.message}\nfollower top: ${JSON.stringify(await top())}\nfollower state: ${JSON.stringify(await page.evaluate(() => document.querySelector('slicc-app').model.follow.state()))}\nfollower notices: ${JSON.stringify(await page.evaluate(() => document.querySelector('slicc-app').model.notices.list()))}\nfollower asks: ${await page.evaluate(new Function(`return (${confirmDialog})()?.textContent.replace(/\\s+/g, ' ').trim() ?? null`))}\nfollower integrity log: ${await page.evaluate(integrityLog)}\nfollower attempts: ${attempts(page).join('\n')}\nfollower console:\n${page.console.slice(-15).join('\n')}`
       );
     });
-  const after = await top();
-  assert.equal(
-    await page.evaluate(() => document.querySelector('slicc-app').model.follow.state().refused),
-    undefined
-  );
-  assert.ok(after.light?.includes(`Following ${after.owner}`), JSON.stringify(after));
+  assert.match(following.owner, /^SLICC on /);
+  const log = await page.evaluate(integrityLog);
+  if (log) t.diagnostic(`follower integrity log:\n${log}`);
 });
