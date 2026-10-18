@@ -936,7 +936,7 @@ export function createLinks({
       link.served.push(serveFs(port2, transport));
       return { port: port1, token, capabilities: mount.capabilities };
     },
-    start({ key, send, mode, kind = 'cli', iceServers, address }) {
+    start({ key, send, mode, kind = 'cli', iceServers, address, certificates }) {
       manager.drop(key, 'replaced');
       serial += 1;
       const seven = kind === 'seven';
@@ -950,7 +950,8 @@ export function createLinks({
         serial,
         served: [],
       };
-      const pc = makePeer({ iceServers });
+      const pc = makePeer(certificates ? { iceServers, certificates } : { iceServers });
+      link.pc = pc;
       link.offer = offerLink({
         pc,
         send,

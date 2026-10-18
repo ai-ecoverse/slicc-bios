@@ -144,6 +144,7 @@ await step('seed', async () => {
     'os.css',
     'os.js',
     'packages.js',
+    'pair.js',
     'projects.js',
     'present.js',
     'profile.js',
