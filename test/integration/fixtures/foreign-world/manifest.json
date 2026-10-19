@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "Guard vectors foreign extension world",
   "version": "1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtijyxGxZi2jKhXS+8Le/kCpxmybs7P7tulmwdGG4pERze0UAJ1d95NwzZ3vXoND/sC+BdxPdstIBg7RvBFdFZKSOZFPqBTDHNiE40HHo+jpxjT3o1sFZQGtUIQpY9PFblnfWs0mhD0tslY4a3TVDusoMlnhZ49TWLumeShEiSgUcwDYzAaWx/PYhfl6WrvbRh4KbYPjcyVhjzvazxU+4QThzqgNr1GI/zcIBAGySiJv9P0VfJ7yg+iR/Yjmmoxz0XIZlp2vhqqICcSl884pUDYjbO9np10+887iMM0g0z9+X3CmxXNLLwIu3CVdV5ZvgEh6eOrwfRjczXlEoZkR+UwIDAQAB",
   "content_scripts": [
     {
       "matches": ["http://*.example.test/*", "https://*.example.test/*"],
