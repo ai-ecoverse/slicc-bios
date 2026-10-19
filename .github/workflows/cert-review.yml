@@ -137,8 +137,6 @@ jobs:
       actions: write
       contents: write
     env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
       PR_NUMBER: ${{ needs.plan.outputs.number }}
       BRANCH: ${{ needs.plan.outputs.branch }}
       HEAD: ${{ needs.plan.outputs.head }}
@@ -178,9 +176,13 @@ jobs:
           git push origin "HEAD:refs/heads/$BRANCH"
 
       - name: CI on the branch's head again, whose ci / test now finds the certified verdict
-        run: |
-          gh workflow run ci.yml --ref "$BRANCH" -f pr="$PR_NUMBER"
-          echo "cert-queue: CI dispatched on $BRANCH for #$PR_NUMBER"
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const { BRANCH: ref, PR_NUMBER: pr } = process.env;
+            await github.rest.actions.createWorkflowDispatch({ owner, repo, workflow_id: 'ci.yml', ref, inputs: { pr } });
+            core.info(`cert-queue: CI dispatched on ${ref} for pull request ${pr}`);
 
   certify:
     name: cert / review

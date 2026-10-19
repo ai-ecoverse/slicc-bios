@@ -251,7 +251,11 @@ test('ci / test runs the gate on every run, CI can be dispatched for a PR, and c
     /node base\/scripts\/cert\/apply\.mjs evidence\/cert-review\/comment\.md pr\/src\/packages/
   );
   assert.match(queue, /git push origin "HEAD:refs\/heads\/\$BRANCH"/);
-  assert.match(queue, /gh workflow run ci\.yml --ref "\$BRANCH" -f pr="\$PR_NUMBER"/);
+  assert.match(
+    queue,
+    /createWorkflowDispatch\(\{ owner, repo, workflow_id: 'ci\.yml', ref, inputs: \{ pr \} \}\)/
+  );
+  assert.doesNotMatch(queue, /\bgh /, 'the queue needs no gh on the runner');
   const email = queue.match(/git config user\.email '([^']+)'/)[1];
   assert.deepEqual(
     config.gitIgnoredAuthors,
