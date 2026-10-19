@@ -3,10 +3,10 @@ import { createServer as createHttp } from 'node:http';
 import { createServer } from 'node:net';
 import { after, test } from 'node:test';
 import { startProxy } from '@ai-ecoverse/slicc-node';
-import { actPackage, boot, ready, run, shows } from './bios.mjs';
+import { actPackage, boot, ready, run, screen, shows } from './bios.mjs';
 import { debuggerUrl, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
-import { EXTENSIONS, realExtension, SEVEN } from './real-extension.mjs';
+import { display, EXTENSIONS, realExtension, SEVEN } from './real-extension.mjs';
 
 const port = await new Promise((resolve) => {
   const server = createServer().listen(0, '127.0.0.1', () => {
@@ -275,6 +275,197 @@ for (const extension of EXTENSIONS) {
       [],
       `a driven tab's context had the extension's origin: ${JSON.stringify(origins)}`
     );
+  });
+}
+
+for (const extension of EXTENSIONS.filter(
+  ({ version }) => version.localeCompare('7.6.3', undefined, { numeric: true }) >= 0
+)) {
+  test(`headed, real slicc-extension ${extension.version}: an agent tab or window opens behind seven, which keeps rendering, the tab still screencasts and screenshots, and activate brings it forward`, {
+    timeout: 10 * 60 * 1000,
+  }, async (t) => {
+    const real = await realExtension({ extension, realistic: true });
+    t.after(() => real.close());
+    const page = await real.page(t);
+    await page.goto(SEVEN);
+    await ready(page);
+    assert.deepEqual(await automation(page), { via: 'extension' });
+    await page.evaluate(() => {
+      globalThis.painted = 0;
+      const tick = () => {
+        globalThis.painted += 1;
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+    const sample = async () => ({
+      at: Date.now(),
+      ...(await page.evaluate(() => ({
+        painted: globalThis.painted,
+        shown: document.visibilityState,
+        focused: document.hasFocus(),
+      }))),
+    });
+    const behind = (list) =>
+      list
+        .slice(1)
+        .filter(
+          (now, i) => now.painted <= list[i].painted || now.shown !== 'visible' || !now.focused
+        );
+    real.overrides.set(
+      '/driven.html',
+      '<!doctype html><title>driven</title><h1>Driven behind seven</h1><p id="n">0</p><script>let n = 0; setInterval(() => (document.getElementById("n").textContent = ++n), 100)</script>'
+    );
+    const target = new URL('/driven.html', real.url);
+    target.hostname = 'localhost';
+    await page.evaluate(async () => {
+      const { guardProtected } = await import(new URL('guard.js', location.href).href);
+      const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
+      const connection = guardProtected(
+        extensionConnection(globalThis.sliccExtension.cdp),
+        location.origin
+      );
+      const pending = new Map();
+      let next = 0;
+      connection.onmessage = (text) => {
+        const message = JSON.parse(text);
+        if (message.id === undefined) return;
+        pending.get(message.id)?.(message);
+        pending.delete(message.id);
+      };
+      window.guarded = (method, params = {}) =>
+        new Promise((resolve) => {
+          next += 1;
+          const id = next;
+          const timer = setTimeout(() => {
+            pending.delete(id);
+            resolve({ error: { message: `${method} got no answer` } });
+          }, 20000);
+          pending.set(id, (message) => {
+            clearTimeout(timer);
+            resolve(message);
+          });
+          connection.send(JSON.stringify({ id, method, params }));
+        });
+    });
+    const opening = [await sample()];
+    assert.ok(
+      opening[0].focused && opening[0].shown === 'visible',
+      `seven is in front before the test: ${JSON.stringify(opening)}`
+    );
+    const created = await page.evaluate(
+      (url) => window.guarded('Target.createTarget', { url, newWindow: true }),
+      target.href
+    );
+    assert.ok(created.result?.targetId, JSON.stringify(created));
+    for (let i = 0; i < 5; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      opening.push(await sample());
+    }
+    await page.evaluate(
+      (targetId) => window.guarded('Target.closeTarget', { targetId }),
+      created.result.targetId
+    );
+    assert.deepEqual(
+      opening.filter(({ focused }) => !focused),
+      [],
+      `a new window the guard created took the focus from seven (without a window manager it covers seven whatever its focus, so focus is what this checks): ${JSON.stringify(opening)}`
+    );
+    const uncovered = Date.now() + 15000;
+    let shown = await sample();
+    while (shown.shown !== 'visible' || !shown.focused) {
+      if (Date.now() > uncovered)
+        throw new Error(
+          `seven stayed behind after the new window closed: ${JSON.stringify({ opening, shown })}`
+        );
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      shown = await sample();
+    }
+    const samples = [await sample()];
+    let driving = true;
+    const sampler = (async () => {
+      while (driving) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        samples.push(await sample());
+      }
+    })();
+    await run(
+      page,
+      `{ playwright-cli open ${target.href} && playwright-cli snapshot && playwright-cli click e1 && playwright-cli screenshot --filename=/tmp/s1.png && sleep 2 && playwright-cli screenshot --filename=/tmp/s2.png; echo pw-$?; } > /tmp/bg 2>&1; cmp -s /tmp/s1.png /tmp/s2.png; echo same-$? >> /tmp/bg; echo "bytes $(wc -c < /tmp/s1.png)" >> /tmp/bg; for i in $(seq 1 240); do playwright-cli eval "fetch('/release?' + Date.now()).then((r) => r.status)" 2>/dev/null | grep -q 200 && break; sleep 0.5; done; echo held-$i >> /tmp/bg; echo "bg-""done"`
+    );
+    const id = await page.within(
+      120000,
+      () =>
+        document
+          .querySelector('slicc-app')
+          .model.browser.list()
+          .find((tab) => tab.url?.endsWith('/driven.html') && tab.controlled)?.id
+    );
+    await page.evaluate((tab) => {
+      const { browser } = document.querySelector('slicc-app').model;
+      window.liveFrames = [];
+      browser.on('frame', (frame) => frame.tabId === tab && window.liveFrames.push(frame.src));
+      window.stopLive = browser.watch(tab, { width: 480, height: 300 });
+    }, id);
+    const frames = () =>
+      page.evaluate(() => ({
+        frames: window.liveFrames.length,
+        distinct: new Set(window.liveFrames).size,
+      }));
+    const watching = Date.now() + 60000;
+    let live = await frames();
+    while (!(live.frames >= 3 && live.distinct >= 2)) {
+      if (Date.now() > watching)
+        throw new Error(
+          `the panel's live view of the background tab got too few frames in 60 s: ${JSON.stringify(live)}\n${await screen(page)}`
+        );
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      live = await frames();
+    }
+    real.overrides.set('/release', 'released');
+    await shows(page, 'bg-done', 180000);
+    await page.evaluate(() => window.stopLive());
+    driving = false;
+    await sampler;
+    const bg = await read(page, '/tmp/bg');
+    assert.match(bg, /heading "Driven behind seven"/, bg);
+    assert.match(bg, /pw-0/, bg);
+    assert.match(
+      bg,
+      /same-1/,
+      `two screenshots of the background tab 2 s apart are identical: ${bg}`
+    );
+    assert.ok(Number(bg.match(/bytes\s+(\d+)/)?.[1]) > 1000, bg);
+    assert.doesNotMatch(bg, /held-240/, `the shell never saw the release: ${bg}`);
+    assert.deepEqual(
+      behind(samples),
+      [],
+      `seven stopped rendering while the agent drove: ${JSON.stringify(samples)}`
+    );
+    const rate =
+      (samples.at(-1).painted - samples[0].painted) / (samples.at(-1).at - samples[0].at);
+    await page.evaluate(
+      (tab) => document.querySelector('slicc-app').model.browser.activate(tab),
+      id
+    );
+    const deadline = Date.now() + 30000;
+    const after = [await sample()];
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      const now = await sample();
+      const before = after.at(-1);
+      after.push(now);
+      if (
+        now.shown !== 'visible' ||
+        now.painted - before.painted < (rate * (now.at - before.at)) / 4
+      )
+        break;
+      if (Date.now() > deadline)
+        throw new Error(
+          `activate never brought the driven tab forward over seven: ${JSON.stringify({ samples, after })}`
+        );
+    }
+    assert.deepEqual(page.errors, []);
   });
 }
 
@@ -1004,6 +1195,95 @@ async function launched(t, proxy) {
   await ready(page);
   return page;
 }
+
+test('headed, on the proxy path: a tab created through the guard with an empty URL opens blank behind seven, which keeps the focus', {
+  timeout: 5 * 60 * 1000,
+}, async (t) => {
+  const undisplay = await display();
+  const cleanup = [];
+  t.after(async () => {
+    for (const step of cleanup.reverse()) await step().catch(() => undefined);
+    undisplay();
+  });
+  const debugging = await new Promise((resolve) => {
+    const server = createServer().listen(0, '127.0.0.1', () => {
+      const { port: free } = server.address();
+      server.close(() => resolve(free));
+    });
+  });
+  const headed = await launch({ realistic: true, args: [`--remote-debugging-port=${debugging}`] });
+  cleanup.push(() => headed.close());
+  await debuggerUrl(debugging);
+  const proxy = await startProxy({
+    port: 0,
+    origins: [new URL(headed.url).origin],
+    cdp: `http://127.0.0.1:${debugging}`,
+    kernelPort: null,
+    log: () => {},
+  });
+  cleanup.push(async () => proxy.close());
+  const page = await headed.page(t);
+  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}`);
+  await ready(page);
+  await page.evaluate(
+    async (proxy) => {
+      const { guardProtected } = await import(new URL('guard.js', location.href).href);
+      const { proxyHost } = await import(new URL('cdp.js', location.href).href);
+      const connection = guardProtected(await proxyHost(proxy)(), location.origin);
+      const pending = new Map();
+      let next = 0;
+      connection.onmessage = (text) => {
+        const message = JSON.parse(text);
+        if (message.id === undefined) return;
+        pending.get(message.id)?.(message);
+        pending.delete(message.id);
+      };
+      window.guarded = (method, params = {}) =>
+        new Promise((resolve) => {
+          next += 1;
+          const id = next;
+          const timer = setTimeout(() => {
+            pending.delete(id);
+            resolve({ error: { message: `${method} got no answer` } });
+          }, 20000);
+          pending.set(id, (message) => {
+            clearTimeout(timer);
+            resolve(message);
+          });
+          connection.send(JSON.stringify({ id, method, params }));
+        });
+    },
+    { url: proxy.url, key: proxy.key }
+  );
+  const sample = () =>
+    page.evaluate(() => ({ shown: document.visibilityState, focused: document.hasFocus() }));
+  const before = await sample();
+  assert.deepEqual(before, { shown: 'visible', focused: true });
+  const created = await page.evaluate(() => window.guarded('Target.createTarget', { url: '' }));
+  assert.ok(created.result?.targetId, JSON.stringify(created));
+  cleanup.push(() =>
+    page.evaluate(
+      (targetId) => window.guarded('Target.closeTarget', { targetId }),
+      created.result.targetId
+    )
+  );
+  const info = await page.evaluate(
+    (targetId) => window.guarded('Target.getTargetInfo', { targetId }),
+    created.result.targetId
+  );
+  assert.equal(info.result?.targetInfo?.url, 'about:blank', JSON.stringify(info));
+  const seen = [];
+  for (let i = 0; i < 4; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    seen.push(await sample());
+  }
+  assert.deepEqual(
+    seen,
+    Array(4).fill(before),
+    `seven after an empty-URL tab: ${JSON.stringify(seen)}`
+  );
+  assert.deepEqual(page.errors, []);
+});
 
 test('playwright-cli drives a page through slicc-node’s /cdp, on one shared socket', async (t) => {
   const proxy = await viaProxy(t);

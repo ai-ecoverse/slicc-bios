@@ -901,7 +901,11 @@ class Guard {
   }
 
   async create({ id, params }) {
-    const answer = await this.call('Target.createTarget', { ...params, url: 'about:blank' });
+    const answer = await this.call('Target.createTarget', {
+      ...params,
+      background: params.background ?? true,
+      url: 'about:blank',
+    });
     const targetId = answer.result?.targetId;
     if (!targetId) return this.deliver({ ...answer, id });
     this.learn({ targetId, url: 'about:blank', type: 'page' });
@@ -962,7 +966,7 @@ class Guard {
         async () => {
           const why = await this.check(message);
           if (why) return this.refuse(message, why);
-          if (message.method === 'Target.createTarget' && message.params?.url) {
+          if (message.method === 'Target.createTarget' && typeof message.params?.url === 'string') {
             return this.create(message);
           }
           return this.pass(message);
