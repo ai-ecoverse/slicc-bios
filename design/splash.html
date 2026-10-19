@@ -1,0 +1,1909 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0b0a0f">
+    <title>SLICC seven · splash prototype</title>
+    <style>
+    @view-transition {
+      navigation: auto;
+    }
+
+    :root {
+      color-scheme: dark;
+      --ink: #f3eff7;
+      --dim: #a49db0;
+      --faint: #6c6577;
+      --pink: #f7a1bd;
+      --orange: #ff7a2c;
+      --bad: #ff5a64;
+      --warn: #ffc04a;
+      --ok: #7ee0b5;
+      --bg: #0b0a0f;
+      --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      font: 15px / 1.5 "Adobe Clean", "Source Sans 3", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      min-height: 100dvh;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+    }
+
+    /* the page: a soft, blurred reflection of what the card shows */
+
+    .ambient {
+      position: fixed;
+      inset: -10%;
+      width: 120%;
+      height: 120%;
+      z-index: -1;
+      filter: blur(56px) saturate(1.25);
+      opacity: 0.42;
+      pointer-events: none;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      background: radial-gradient(70% 70% at 50% 50%, transparent 30%, rgb(11 10 15 / 0.75) 100%);
+    }
+
+    button {
+      font: inherit;
+      color: inherit;
+    }
+
+    /* ---------- the splash card ---------- */
+
+    .splash {
+      position: relative;
+      width: min(1120px, 94vw, 86vh * 1.6);
+      aspect-ratio: 16 / 10;
+      border-radius: 16px;
+      overflow: hidden;
+      background: #0d0b12;
+      box-shadow:
+        0 50px 140px -30px rgb(0 0 0 / 0.85),
+        0 0 0 1px rgb(255 255 255 / 0.06);
+      isolation: isolate;
+      container-type: inline-size;
+    }
+
+    .splash canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .splash.no-gl {
+      background:
+        radial-gradient(40% 50% at 70% 45%, rgb(247 161 189 / 0.25), transparent 70%),
+        linear-gradient(#120f19, #0b0a0f);
+    }
+
+    .splash.no-gl::after {
+      content: "";
+      position: absolute;
+      right: 14%;
+      top: 18%;
+      width: 30%;
+      aspect-ratio: 1;
+      background: url("../src/icons/icon-512.png") center / contain no-repeat;
+      z-index: 0;
+    }
+
+    .scrim {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        linear-gradient(90deg, rgb(11 9 15 / 0.88) 0%, rgb(11 9 15 / 0.6) 30%, rgb(11 9 15 / 0) 56%),
+        linear-gradient(0deg, rgb(11 9 15 / 0.9) 0%, rgb(11 9 15 / 0) 30%);
+    }
+
+    .mast {
+      position: absolute;
+      left: 6cqi;
+      top: 6.5cqi;
+      pointer-events: none;
+    }
+
+    .brand {
+      view-transition-name: brand;
+      display: flex;
+      align-items: center;
+      gap: 0.18em;
+      margin: 0;
+      line-height: 1;
+      font-size: clamp(40px, 6.8cqi, 76px);
+      font-weight: 800;
+      letter-spacing: 0.14em;
+    }
+
+    .mark {
+      display: block;
+      width: 1em;
+      height: 1em;
+      margin-left: -0.08em;
+    }
+
+    .wordmark {
+      background: linear-gradient(95deg, var(--pink) 10%, var(--orange) 90%);
+      background-clip: text;
+      -webkit-background-clip: text;
+      color: transparent;
+    }
+
+    .kicker {
+      margin: 14px 0 0;
+      font-size: 11.5px;
+      letter-spacing: 0.24em;
+      text-transform: uppercase;
+      color: var(--dim);
+    }
+
+    /* the story: a pitch on first install, tips afterwards */
+
+    .story {
+      position: absolute;
+      left: 6cqi;
+      top: 47%;
+      width: min(36ch, 40cqi);
+    }
+
+    .story .slide {
+      transition:
+        opacity 0.5s ease,
+        translate 0.5s ease;
+    }
+
+    .story .slide.out {
+      opacity: 0;
+      translate: 0 8px;
+    }
+
+    .headline {
+      margin: 0;
+      font-size: clamp(20px, 2.5cqi, 28px);
+      font-weight: 650;
+      line-height: 1.2;
+      text-wrap: balance;
+    }
+
+    .body {
+      margin: 10px 0 0;
+      color: var(--dim);
+      font-size: 15px;
+      text-wrap: pretty;
+      min-height: 4.5em;
+    }
+
+    .body code,
+    .headline code {
+      font-family: var(--mono);
+      font-size: 0.88em;
+      color: var(--ink);
+      background: rgb(255 255 255 / 0.07);
+      padding: 0.05em 0.35em;
+      border-radius: 4px;
+    }
+
+    .dots {
+      display: flex;
+      gap: 6px;
+      margin-top: 14px;
+    }
+
+    .dots button {
+      width: 18px;
+      height: 18px;
+      padding: 6px;
+      border: 0;
+      background: none;
+      cursor: pointer;
+    }
+
+    .dots button::before {
+      content: "";
+      display: block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--faint);
+      transition: background 0.3s, scale 0.3s;
+    }
+
+    .dots button[aria-current="true"]::before {
+      background: var(--pink);
+      scale: 1.4;
+    }
+
+    /* status, progress and credits along the bottom */
+
+    .status {
+      position: absolute;
+      left: 6cqi;
+      right: 6cqi;
+      bottom: 3.6cqi;
+    }
+
+    .line {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .verb {
+      flex: none;
+      font-weight: 650;
+      font-size: 14px;
+    }
+
+    .detail {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--dim);
+    }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex: none;
+    }
+
+    .chip {
+      border: 1px solid rgb(255 255 255 / 0.14);
+      background: rgb(255 255 255 / 0.04);
+      border-radius: 999px;
+      padding: 3px 12px;
+      font-size: 12px;
+      cursor: pointer;
+      color: var(--dim);
+      transition: background 0.2s, color 0.2s, border-color 0.2s;
+    }
+
+    .chip:hover,
+    .chip[aria-expanded="true"] {
+      color: var(--ink);
+      background: rgb(255 255 255 / 0.1);
+    }
+
+    .chip kbd {
+      font-family: var(--mono);
+      font-size: 10.5px;
+      color: var(--faint);
+      margin-left: 6px;
+    }
+
+    .chip.primary {
+      color: #1a0f0a;
+      background: var(--orange);
+      border-color: transparent;
+      font-weight: 650;
+    }
+
+    .bar {
+      display: flex;
+      gap: 3px;
+      height: 3px;
+      margin: 10px 0 0;
+    }
+
+    .bar span {
+      position: relative;
+      flex: var(--w) 1 0;
+      background: rgb(255 255 255 / 0.09);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .bar span::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      transform-origin: left;
+      transform: scaleX(var(--fill, 0));
+      background: linear-gradient(90deg, var(--pink), var(--orange));
+    }
+
+    .bar span[data-state="failed"]::after {
+      background: var(--bad);
+    }
+
+    .credits {
+      margin: 12px 0 0;
+      max-width: 92ch;
+      font-size: 10.5px;
+      line-height: 1.5;
+      color: var(--faint);
+    }
+
+    .credits .pkg {
+      transition: color 0.4s;
+    }
+
+    .credits .pkg.done {
+      color: var(--dim);
+    }
+
+    .credits .pkg.active {
+      color: var(--pink);
+    }
+
+    .splash[data-state="failed"] .verb {
+      color: var(--bad);
+    }
+
+    .splash[data-state="failed"] .detail {
+      color: #ffb3b8;
+    }
+
+    .splash[data-state="ready"] .verb {
+      color: var(--ok);
+    }
+
+    /* ---------- diagnostics drawer ---------- */
+
+    .diag {
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: min(480px, 48%);
+      display: flex;
+      flex-direction: column;
+      background: rgb(13 11 18 / 0.9);
+      backdrop-filter: blur(16px) saturate(1.2);
+      border-left: 1px solid rgb(255 255 255 / 0.08);
+      transform: translateX(102%);
+      transition: transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
+      z-index: 2;
+      font-size: 12.5px;
+    }
+
+    .diag.open {
+      transform: none;
+    }
+
+    .diag header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 20px 10px;
+    }
+
+    .diag h2 {
+      margin: 0;
+      font-size: 11px;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--dim);
+    }
+
+    .diag .close {
+      border: 0;
+      background: none;
+      color: var(--dim);
+      font-size: 18px;
+      cursor: pointer;
+      line-height: 1;
+    }
+
+    .env {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 2px 14px;
+      margin: 0;
+      padding: 0 20px 12px;
+      font-family: var(--mono);
+      font-size: 11px;
+      border-bottom: 1px solid rgb(255 255 255 / 0.06);
+    }
+
+    .env dt {
+      color: var(--faint);
+    }
+
+    .env dd {
+      margin: 0;
+      color: var(--dim);
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .steps {
+      list-style: none;
+      margin: 0;
+      padding: 12px 20px;
+      border-bottom: 1px solid rgb(255 255 255 / 0.06);
+    }
+
+    .steps li {
+      position: relative;
+      padding-left: 1.6em;
+      color: var(--faint);
+      line-height: 1.45;
+      margin-bottom: 4px;
+    }
+
+    .steps li::before {
+      position: absolute;
+      left: 0;
+      content: "○";
+    }
+
+    .steps li[data-state="active"] {
+      color: var(--ink);
+    }
+
+    .steps li[data-state="active"]::before {
+      content: "◐";
+      color: var(--pink);
+      animation: spin 1s steps(4) infinite;
+    }
+
+    .steps li[data-state="done"] {
+      color: var(--ink);
+    }
+
+    .steps li[data-state="done"]::before {
+      content: "●";
+      color: var(--orange);
+    }
+
+    .steps li[data-state="failed"] {
+      color: var(--bad);
+    }
+
+    .steps li[data-state="failed"]::before {
+      content: "✕";
+    }
+
+    .steps output {
+      display: block;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--dim);
+      overflow-wrap: anywhere;
+    }
+
+    .steps li[data-state="failed"] output {
+      color: #ffb3b8;
+    }
+
+    @keyframes spin {
+      25% {
+        content: "◓";
+      }
+      50% {
+        content: "◑";
+      }
+      75% {
+        content: "◒";
+      }
+    }
+
+    .log {
+      flex: 1;
+      overflow: auto;
+      margin: 0;
+      padding: 10px 20px;
+      list-style: none;
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.55;
+      color: var(--dim);
+      scrollbar-width: thin;
+    }
+
+    .log li {
+      display: grid;
+      grid-template-columns: 4.6em 5.6em 1fr auto;
+      gap: 8px;
+    }
+
+    .log time {
+      color: var(--faint);
+      text-align: right;
+    }
+
+    .log .tag,
+    .log .ms {
+      color: var(--faint);
+    }
+
+    .log .ms {
+      text-align: right;
+    }
+
+    .log li[data-level="warn"] {
+      color: var(--warn);
+    }
+
+    .log li[data-level="error"] {
+      color: var(--bad);
+    }
+
+    .log li[data-level="ok"] .msg {
+      color: var(--ink);
+    }
+
+    .log .msg {
+      overflow-wrap: anywhere;
+    }
+
+    .diag footer {
+      display: flex;
+      gap: 8px;
+      padding: 12px 20px 18px;
+      border-top: 1px solid rgb(255 255 255 / 0.06);
+    }
+
+    /* ---------- prototype-only review controls ---------- */
+
+    .review {
+      position: fixed;
+      top: 12px;
+      left: 50%;
+      translate: -50% 0;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: rgb(255 255 255 / 0.05);
+      border: 1px solid rgb(255 255 255 / 0.08);
+      font-size: 12px;
+      color: var(--dim);
+      z-index: 10;
+      white-space: nowrap;
+    }
+
+    .review b {
+      font-weight: 600;
+      color: var(--faint);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      font-size: 10px;
+    }
+
+    .review select,
+    .review button {
+      font-size: 12px;
+      background: rgb(255 255 255 / 0.06);
+      border: 1px solid rgb(255 255 255 / 0.1);
+      border-radius: 6px;
+      color: var(--ink);
+      padding: 2px 6px;
+    }
+
+    .review input[type="range"] {
+      width: 140px;
+      accent-color: var(--orange);
+    }
+
+    .review output {
+      font-family: var(--mono);
+      width: 3.5em;
+      color: var(--ink);
+    }
+
+    .review.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    /* ---------- small screens: the card becomes the screen ---------- */
+
+    @container (max-width: 720px) {
+      .mast {
+        top: 7cqi;
+      }
+
+      .story {
+        top: auto;
+        bottom: 150px;
+        width: auto;
+        right: 6cqi;
+      }
+
+      .credits {
+        display: none;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .splash {
+        width: 100vw;
+        height: 100dvh;
+        aspect-ratio: auto;
+        border-radius: 0;
+      }
+
+      .scrim {
+        background:
+          linear-gradient(180deg, rgb(11 9 15 / 0.75) 0%, rgb(11 9 15 / 0) 26%),
+          linear-gradient(0deg, rgb(11 9 15 / 0.95) 0%, rgb(11 9 15 / 0.75) 34%, rgb(11 9 15 / 0) 55%);
+      }
+
+      .diag {
+        width: 100%;
+      }
+
+      .review {
+        top: auto;
+        bottom: 8px;
+        flex-wrap: wrap;
+        justify-content: center;
+        border-radius: 12px;
+        width: calc(100vw - 32px);
+        white-space: normal;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .story .slide {
+        transition: opacity 0.3s ease;
+        translate: none !important;
+      }
+
+      .steps li[data-state="active"]::before {
+        animation: none;
+      }
+
+      .diag {
+        transition: none;
+      }
+    }
+    </style>
+  </head>
+  <body>
+    <canvas class="ambient" aria-hidden="true"></canvas>
+    <div class="review" role="toolbar" aria-label="Prototype controls">
+      <b>Prototype</b>
+      <select id="scenario" aria-label="Scenario">
+        <option value="first">First install</option>
+        <option value="repeat">Repeat visit</option>
+        <option value="repaired">Repeat, files repaired</option>
+        <option value="offline">Fails: network</option>
+        <option value="sw">Fails: service worker</option>
+      </select>
+      <select id="speed" aria-label="Speed">
+        <option value="0.5">0.5×</option>
+        <option value="1" selected>1×</option>
+        <option value="2">2×</option>
+        <option value="4">4×</option>
+      </select>
+      <button id="restart" type="button">Restart</button>
+      <input id="scrub" type="range" min="0" max="1" step="0.001" value="0" aria-label="Scrub progress">
+      <output id="scrubOut">auto</output>
+      <button id="auto" type="button" title="Hand progress back to the simulated boot">Auto</button>
+    </div>
+
+    <article class="splash" data-state="booting" aria-labelledby="brand">
+      <canvas class="scene" aria-hidden="true"></canvas>
+      <div class="scrim"></div>
+
+      <header class="mast">
+        <h1 class="brand" id="brand">
+          <img class="mark" src="../src/icons/icon-192.png" alt="" onerror="this.remove()">
+          <span class="wordmark">SLICC</span>
+        </h1>
+        <p class="kicker">The agentic operating system in your browser</p>
+      </header>
+
+      <section class="story" aria-roledescription="carousel" aria-label="About seven">
+        <div class="slide">
+          <p class="headline"></p>
+          <p class="body"></p>
+        </div>
+        <div class="dots" role="tablist" aria-label="Choose a message"></div>
+      </section>
+
+      <footer class="status">
+        <div class="line">
+          <span class="verb" role="status" aria-live="polite">Starting</span>
+          <span class="detail"></span>
+          <span class="actions">
+            <button class="chip primary" type="button" id="retry" hidden>Try again</button>
+            <button class="chip" type="button" id="diagToggle" aria-expanded="false" aria-controls="diag">
+              Details<kbd>D</kbd>
+            </button>
+          </span>
+        </div>
+        <div class="bar" aria-hidden="true"></div>
+        <p class="credits"></p>
+      </footer>
+
+      <aside class="diag" id="diag" aria-label="Diagnostics" inert>
+        <header>
+          <h2>Diagnostics</h2>
+          <button class="close" type="button" aria-label="Close diagnostics">×</button>
+        </header>
+        <dl class="env"></dl>
+        <ol class="steps"></ol>
+        <ol class="log" aria-label="Boot log"></ol>
+        <footer>
+          <button class="chip" type="button" id="copy">Copy diagnostics</button>
+          <button class="chip primary" type="button" id="retry2" hidden>Try again</button>
+        </footer>
+      </aside>
+    </article>
+
+    <script type="module">
+    // ===================================================================
+    // Content
+    // ===================================================================
+
+    const STEPS = [
+      { id: 'opfs', label: 'Acquire OPFS', verb: 'Opening private storage', weight: 0.05 },
+      { id: 'installer', label: 'Create installer worker', verb: 'Starting the installer', weight: 0.04 },
+      { id: 'packages', label: 'Install packages from npm into OPFS', verb: 'Installing packages', weight: 0.63 },
+      { id: 'seed', label: 'Add UI page to OPFS', verb: 'Placing the interface', weight: 0.12 },
+      { id: 'intercept', label: 'Intercept same-origin requests', verb: 'Sealing the sandbox', weight: 0.1 },
+      { id: 'navigate', label: 'Serve UI from OPFS', verb: 'Starting seven', weight: 0.06 },
+    ];
+
+    // name, version, approximate tarball size in MB (only drives the simulation)
+    const PACKAGES = [
+      ['@ai-ecoverse/slicc-browsers', '1.8.5', 0.3],
+      ['@ai-ecoverse/slicc-cdp', '1.30.0', 1.1],
+      ['@ai-ecoverse/slicc-clipboard', '1.0.2', 0.05],
+      ['@ai-ecoverse/slicc-kernel', '1.125.12', 3.2],
+      ['@ai-ecoverse/slicc-spectrum', '1.86.4', 2.4],
+      ['@ai-ecoverse/wasi-pnpm', '12.9.1-10', 9.8],
+      ['@ai-ecoverse/wasi-ripgrep', '15.2.0-3', 2.2],
+      ['@ai-ecoverse/wasm-bash', '5.3.0-18', 1.9],
+      ['@ai-ecoverse/wasm-bzip2', '1.0.8-2', 0.2],
+      ['@ai-ecoverse/wasm-coreutils', '9.12.0-8', 4.1],
+      ['@ai-ecoverse/wasm-curl', '8.22.0-4', 2.6],
+      ['@ai-ecoverse/wasm-diffutils', '3.12.0-1', 0.6],
+      ['@ai-ecoverse/wasm-findutils', '4.11.0-1', 0.5],
+      ['@ai-ecoverse/wasm-gawk', '5.4.1-2', 1.1],
+      ['@ai-ecoverse/wasm-grep', '3.12.0-3', 0.4],
+      ['@ai-ecoverse/wasm-gzip', '1.15.0-2', 0.2],
+      ['@ai-ecoverse/wasm-jq', '1.8.2-2', 0.5],
+      ['@ai-ecoverse/wasm-less', '668.0.0-2', 0.3],
+      ['@ai-ecoverse/wasm-mount', '1.0.0-1', 0.1],
+      ['@ai-ecoverse/wasm-ncurses-utils', '6.5.0-1', 0.6],
+      ['@ai-ecoverse/wasm-patch', '2.8.0-1', 0.2],
+      ['@ai-ecoverse/wasm-procps', '4.0.5-3', 0.5],
+      ['@ai-ecoverse/wasm-sed', '4.9.0-3', 0.3],
+      ['@ai-ecoverse/wasm-tar', '1.35.0-6', 0.7],
+      ['@ai-ecoverse/wasm-tls-engine', '3.6.5-1', 3.9],
+      ['@ai-ecoverse/wasm-tree', '2.3.2-1', 0.1],
+      ['@ai-ecoverse/wasm-which', '2.23.0-1', 0.05],
+      ['@ai-ecoverse/wasm-xz', '5.8.4-1', 0.4],
+    ];
+
+    const short = (name) => name.replace(/^@ai-ecoverse\/(wasm-|wasi-|slicc-)?/, '');
+
+    // First install: what seven is. Four beats that follow the build-up.
+    const PITCH = [
+      {
+        headline: 'An operating system that works for you.',
+        body: 'Agents (we call them cones and scoops) run shells, read and write files and use the web on your behalf.',
+      },
+      {
+        headline: 'It runs right here, in this tab.',
+        body: 'No download, no server. A kernel, a shell and 28 packages are unpacking into your browser’s private storage as you read this.',
+      },
+      {
+        headline: 'Sandboxed by default.',
+        body: 'Nothing in seven can reach your computer, your tabs or your accounts. Every file it serves is checked against what it installed.',
+      },
+      {
+        headline: 'Powerful when you say so.',
+        body: 'Mount a folder, connect an account, sign in to a tool, and seven goes to work on your world. You decide what it can reach.',
+      },
+    ];
+
+    // Repeat visits: tips and tricks, a different one each boot.
+    const TIPS = [
+      { headline: 'Start a scoop that reports back.', body: '<code>agent --async …</code> runs a scoop in the background and licks its cone when it’s done.' },
+      { headline: 'Hand over a folder, and only that.', body: 'Mount a folder from Files. The agent can work in it and nowhere else on your computer.' },
+      { headline: 'Keep seven’s files.', body: 'Install seven as an app. Chrome then keeps your files and chats when disk space runs low.' },
+      { headline: 'Bring back an old conversation.', body: 'The Freezer keeps every chat. <strong>Thaw</strong> turns one back into a cone.' },
+      { headline: 'Switch models from the shell.', body: '<code>models</code> lists the models of your connected accounts and switches the one you’re talking to.' },
+      { headline: 'See what agents changed.', body: '<code>pnpm add -g @ai-ecoverse/wasm-git</code>, then open Changes to accept or revert each edit.' },
+      { headline: 'The agent’s memory is plain text.', body: 'Memory shows the <code>MEMORY.md</code> files the agent writes. Edit them by hand or with <strong>Forget</strong>.' },
+      { headline: 'You’re root. Agents aren’t.', body: 'Cones and scoops run as their own users, and <code>sudo</code> asks you before they get more.' },
+      { headline: 'Real HTTPS from the terminal.', body: '<code>curl https://…</code> works: TLS ends inside the kernel, in this tab.' },
+      { headline: 'Connect an MCP server.', body: 'Servers in <code>~/.pi/agent/mcp.json</code> show up under Settings › MCP servers, with <strong>Connect</strong> or <strong>Sign in</strong>.' },
+      { headline: 'Edit and save in place.', body: '<strong>Edit</strong> turns a file tab into a text area; <kbd>Mod</kbd>+<kbd>S</kbd> writes it back.' },
+      { headline: 'Your shell survives reloads.', body: 'Whatever the terminal writes stays in private storage. Open as many terminals as you like with <strong>+</strong>.' },
+    ];
+
+    // ===================================================================
+    // Splash model: the API bios.js would drive
+    // ===================================================================
+
+    const $ = (selector, root = document) => root.querySelector(selector);
+    const card = $('.splash');
+    const verbEl = $('.verb');
+    const detailEl = $('.detail');
+    const barEl = $('.bar');
+    const creditsEl = $('.credits');
+    const stepsEl = $('.steps');
+    const logEl = $('.log');
+    const diag = $('#diag');
+    const diagToggle = $('#diagToggle');
+    const retryButtons = [$('#retry'), $('#retry2')];
+
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+
+    const model = {
+      t0: performance.now(),
+      steps: {},
+      target: 0,
+      shown: 0,
+      failed: false,
+      ready: false,
+      manual: null,
+      log: [],
+      lastReport: 0,
+    };
+
+    for (const s of STEPS) {
+      const seg = document.createElement('span');
+      seg.style.setProperty('--w', s.weight);
+      seg.dataset.step = s.id;
+      barEl.append(seg);
+      const li = document.createElement('li');
+      li.dataset.step = s.id;
+      li.textContent = s.label;
+      li.append(document.createElement('output'));
+      stepsEl.append(li);
+    }
+
+    creditsEl.innerHTML =
+      '© 2026 ai-ecoverse. SLICC seven · kernel 1.125.12 · spectrum 1.86.4. Built in the open on ' +
+      PACKAGES.map(([name]) => `<span class="pkg" data-pkg="${name}">${short(name)}</span>`).join(', ') +
+      ', and the people who make them.';
+
+    function stamp() {
+      return ((performance.now() - model.t0) / 1000).toFixed(2) + 's';
+    }
+
+    function log(level, tag, text, ms = '') {
+      const entry = { t: stamp(), level, tag, text, ms };
+      model.log.push(entry);
+      const li = document.createElement('li');
+      li.dataset.level = level;
+      li.innerHTML = '<time></time><span class="tag"></span><span class="msg"></span><span class="ms"></span>';
+      li.children[0].textContent = entry.t;
+      li.children[1].textContent = tag;
+      li.children[2].textContent = text;
+      li.children[3].textContent = ms;
+      const stick = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 8;
+      logEl.append(li);
+      if (stick) logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function setStep(id, state, text) {
+      const s = model.steps[id];
+      s.state = state;
+      const li = stepsEl.querySelector(`[data-step="${id}"]`);
+      li.dataset.state = state;
+      if (text !== undefined) li.querySelector('output').value = text;
+      barEl.querySelector(`[data-step="${id}"]`).dataset.state = state;
+    }
+
+    const splash = {
+      reset({ repeat }) {
+        model.t0 = performance.now();
+        model.target = 0;
+        model.shown = 0;
+        model.failed = false;
+        model.ready = false;
+        model.log = [];
+        logEl.textContent = '';
+        for (const s of STEPS) {
+          model.steps[s.id] = { state: 'pending', fraction: null, started: 0 };
+          setStep(s.id, 'pending', '');
+        }
+        for (const el of creditsEl.querySelectorAll('.pkg')) el.className = 'pkg';
+        card.dataset.state = 'booting';
+        retryButtons.forEach((b) => (b.hidden = true));
+        verbEl.textContent = 'Starting';
+        detailEl.textContent = '';
+        story.start(repeat);
+        log('info', 'bios', `boot ${repeat ? '(repeat visit)' : '(first install)'} · ${location.origin}`);
+      },
+
+      begin(id) {
+        const s = model.steps[id];
+        s.started = performance.now();
+        s.fraction = null;
+        setStep(id, 'active', '');
+        const meta = STEPS.find((x) => x.id === id);
+        verbEl.textContent = meta.verb;
+        detailEl.textContent = '';
+        model.lastReport = performance.now();
+        log('info', id, meta.label);
+      },
+
+      report(id, text, fraction) {
+        const s = model.steps[id];
+        if (fraction !== undefined) s.fraction = fraction;
+        detailEl.textContent = text;
+        stepsEl.querySelector(`[data-step="${id}"] output`).value = text;
+        const now = performance.now();
+        log('info', id, text, `${Math.round(now - model.lastReport)}ms`);
+        model.lastReport = now;
+      },
+
+      done(id, text) {
+        setStep(id, 'done', text);
+        detailEl.textContent = text;
+        log('ok', id, text);
+      },
+
+      warn(id, text) {
+        log('warn', id, text);
+      },
+
+      fail(id, message) {
+        setStep(id, 'failed', message);
+        model.failed = true;
+        card.dataset.state = 'failed';
+        verbEl.textContent = FAIL[id];
+        detailEl.textContent = message;
+        retryButtons.forEach((b) => (b.hidden = false));
+        log('error', id, message);
+        openDiag(true);
+      },
+
+      ready(path) {
+        model.ready = true;
+        card.dataset.state = 'ready';
+        verbEl.textContent = 'Ready';
+        detailEl.textContent = `${path}, with a view transition`;
+      },
+
+      package(name, state) {
+        const el = creditsEl.querySelector(`[data-pkg="${CSS.escape(name)}"]`);
+        if (el) el.className = `pkg ${state}`;
+      },
+    };
+
+    const FAIL = {
+      opfs: 'Couldn’t open private storage',
+      installer: 'Couldn’t start the installer',
+      packages: 'Couldn’t install packages',
+      seed: 'Couldn’t place the interface',
+      intercept: 'Couldn’t seal the sandbox',
+      navigate: 'Couldn’t start seven',
+    };
+
+    // Where the boot is, 0..1, from the step weights. A step that reports
+    // done/total moves by that; one that doesn't creeps towards 85% of its share
+    // so the scene never freezes on a slow step.
+    function targetProgress(now) {
+      let p = 0;
+      for (const s of STEPS) {
+        const st = model.steps[s.id];
+        if (!st) continue;
+        if (st.state === 'done') p += s.weight;
+        else if (st.state === 'active' || st.state === 'failed') {
+          const f = st.fraction ?? 0.85 * (1 - Math.exp(-(now - st.started) / 1400));
+          p += s.weight * f;
+        }
+      }
+      return Math.min(1, p);
+    }
+
+    // ===================================================================
+    // Story: pitch (first install) or tips (repeat)
+    // ===================================================================
+
+    const story = (() => {
+      const slide = $('.story .slide');
+      const dots = $('.story .dots');
+      let items = PITCH;
+      let index = 0;
+      let timer = 0;
+      let paused = false;
+
+      function render(i, animate = true) {
+        index = (i + items.length) % items.length;
+        const item = items[index];
+        const apply = () => {
+          $('.headline', slide).innerHTML = item.headline;
+          $('.body', slide).innerHTML = item.body;
+          slide.classList.remove('out');
+          dots.querySelectorAll('button').forEach((b, k) => b.setAttribute('aria-current', String(k === index)));
+        };
+        if (!animate) return apply();
+        slide.classList.add('out');
+        setTimeout(apply, 380);
+      }
+
+      function schedule() {
+        clearInterval(timer);
+        timer = setInterval(() => !paused && render(index + 1), items === PITCH ? 5200 : 6500);
+      }
+
+      $('.story').addEventListener('pointerenter', () => (paused = true));
+      $('.story').addEventListener('pointerleave', () => (paused = false));
+
+      return {
+        start(repeat) {
+          if (repeat) {
+            const visits = Number(localStorage.getItem('slicc-splash.visits') ?? 0) + 1;
+            localStorage.setItem('slicc-splash.visits', visits);
+            items = TIPS;
+            index = visits % TIPS.length;
+          } else {
+            items = PITCH;
+            index = 0;
+          }
+          dots.textContent = '';
+          items.forEach((_, k) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.role = 'tab';
+            b.setAttribute('aria-label', `Message ${k + 1}`);
+            b.addEventListener('click', () => {
+              render(k);
+              schedule();
+            });
+            dots.append(b);
+          });
+          render(index, false);
+          schedule();
+        },
+        next: (d) => {
+          render(index + d);
+          schedule();
+        },
+      };
+    })();
+
+    // ===================================================================
+    // Diagnostics drawer
+    // ===================================================================
+
+    function openDiag(open = !diag.classList.contains('open')) {
+      diag.classList.toggle('open', open);
+      diag.inert = !open;
+      diagToggle.setAttribute('aria-expanded', String(open));
+    }
+
+    diagToggle.addEventListener('click', () => openDiag());
+    $('.diag .close').addEventListener('click', () => openDiag(false));
+
+    $('#copy').addEventListener('click', async (event) => {
+      const env = [...document.querySelectorAll('.env dt')].map((dt) => `${dt.textContent}: ${dt.nextElementSibling.textContent}`);
+      const steps = STEPS.map((s) => `${model.steps[s.id].state.padEnd(8)} ${s.label}: ${stepsEl.querySelector(`[data-step="${s.id}"] output`).value}`);
+      const lines = model.log.map((e) => `[${e.t.padStart(7)}] ${e.level.padEnd(5)} ${e.tag.padEnd(10)} ${e.text}${e.ms ? ` (${e.ms})` : ''}`);
+      const text = ['SLICC seven boot diagnostics', ...env, '', ...steps, '', ...lines].join('\n');
+      try {
+        await navigator.clipboard.writeText(text);
+        event.target.textContent = 'Copied';
+      } catch {
+        event.target.textContent = 'Copy failed';
+      }
+      setTimeout(() => (event.target.textContent = 'Copy diagnostics'), 1500);
+    });
+
+    function environment(gl) {
+      const ua = navigator.userAgentData?.brands?.find((b) => /Chrom|Edge|Brave|Opera/.test(b.brand));
+      const rows = [
+        ['browser', ua ? `${ua.brand} ${ua.version}` : navigator.userAgent.split(') ').pop()],
+        ['origin', location.origin],
+        ['isolated', String(globalThis.crossOriginIsolated)],
+        ['cores', String(navigator.hardwareConcurrency ?? '?')],
+        ['gpu', gl ? gl.getParameter(gl.RENDERER) : 'no WebGL2, static artwork'],
+        ['storage', '…'],
+        ['render', '…'],
+      ];
+      const env = $('.env');
+      for (const [k, v] of rows) {
+        const dt = document.createElement('dt');
+        dt.textContent = k;
+        const dd = document.createElement('dd');
+        dd.textContent = v;
+        dd.dataset.key = k;
+        env.append(dt, dd);
+      }
+      navigator.storage?.estimate?.().then(async ({ quota, usage }) => {
+        const persisted = await navigator.storage.persisted?.();
+        $('[data-key="storage"]').textContent = `${persisted ? 'persistent' : 'best effort'}, ${(usage / 1e6).toFixed(1)}MB of ${(quota / 1e9).toFixed(1)}GB`;
+      });
+    }
+
+    // ===================================================================
+    // The scene: a raymarched cone that builds itself inside a sandbox
+    // ===================================================================
+
+    const SCENE = `#version 300 es
+    precision highp float;
+    out vec4 fragColor;
+    uniform vec2 uRes;
+    uniform float uTime, uFloor, uBox, uCone, uScoop, uEyes, uSeal, uFail, uBlink, uYaw, uAz, uP, uPoke;
+    uniform vec2 uShift, uMouse;
+    uniform float uZoom;
+
+    #define PI 3.14159265
+    const vec3 SC = vec3(0., .56, 0.);
+    const float TIP = -1.05, TOP = .38;
+    const vec3 BC = vec3(0., -.12, 0.);
+    const vec3 BH = vec3(.88, 1.33, .88);
+    const float SLAB = -1.52;
+
+    const vec3 PINK = vec3(.98, .55, .68);
+    const vec3 ORANGE = vec3(1., .46, .15);
+    const vec3 CONE_A = vec3(1., .56, .18);
+    const vec3 CONE_B = vec3(.66, .22, .04);
+
+    float gId;
+
+    mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
+    float smin(float a, float b, float k) { float h = clamp(.5 + .5 * (b - a) / k, 0., 1.); return mix(b, a, h) - k * h * (1. - h); }
+    float hash(vec3 p) { p = fract(p * .3183099 + .1); p *= 17.; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+    float sdBox(vec3 p, vec3 b) { vec3 q = abs(p) - b; return length(max(q, 0.)) + min(max(q.x, max(q.y, q.z)), 0.); }
+    float sdEllipsoid(vec3 p, vec3 r) { float k0 = length(p / r); float k1 = length(p / (r * r)); return k0 * (k0 - 1.) / k1; }
+    float sdBoxFrame(vec3 p, vec3 b, float e) {
+      p = abs(p) - b; vec3 q = abs(p + e) - e;
+      return min(min(
+        length(max(vec3(p.x, q.y, q.z), 0.)) + min(max(p.x, max(q.y, q.z)), 0.),
+        length(max(vec3(q.x, p.y, q.z), 0.)) + min(max(q.x, max(p.y, q.z)), 0.)),
+        length(max(vec3(q.x, q.y, p.z), 0.)) + min(max(q.x, max(q.y, p.z)), 0.));
+    }
+    float sdCappedCone(vec3 p, float h, float r1, float r2) {
+      vec2 q = vec2(length(p.xz), p.y);
+      vec2 k1 = vec2(r2, h), k2 = vec2(r2 - r1, 2. * h);
+      vec2 ca = vec2(q.x - min(q.x, (q.y < 0.) ? r1 : r2), abs(q.y) - h);
+      vec2 cb = q - k1 + k2 * clamp(dot(k1 - q, k2) / dot(k2, k2), 0., 1.);
+      float s = (cb.x < 0. && ca.y < 0.) ? -1. : 1.;
+      return s * sqrt(min(dot(ca, ca), dot(cb, cb)));
+    }
+
+    float coneCut() { return mix(TIP - .03, TOP + .03, uCone); }
+    float coneBody(vec3 q) { return sdCappedCone(q - vec3(0., (TIP + TOP) * .5, 0.), (TOP - TIP) * .5, .012, .37); }
+    float lattice(vec3 q) {
+      float a = atan(q.z, q.x) / (2. * PI);
+      float u = a * 14., v = q.y * 4.4;
+      return min(abs(fract(u + v) - .5), abs(fract(u - v) - .5));
+    }
+
+    vec3 obj(vec3 p) { vec3 q = p; q.xz = rot(uYaw) * q.xz; return q; }
+
+    float scoopShape(vec3 q) {
+      float d = sdEllipsoid(q - vec3(0., .03, 0.), vec3(.40, .36, .40));
+      for (int i = 0; i < 7; i++) {
+        float a = float(i) * .8976 + .2;
+        vec3 c = vec3(cos(a) * .335, -.17 + .03 * sin(float(i) * 2.3), sin(a) * .335);
+        d = smin(d, length(q - c) - .15, .07);
+      }
+      d = smin(d, length(q - vec3(.10, .24, .04)) - .21, .12);
+      d = smin(d, length(q - vec3(-.14, .21, -.06)) - .2, .12);
+      return d;
+    }
+
+    // packages: blobs that fly in from outside the box and merge into the scoop
+    float scoopSDF(vec3 q) {
+      float d = 1e5;
+      float g = smoothstep(.0, 1., uScoop);
+      float s = mix(.22, 1., g);
+      if (uScoop > .02) {
+        vec3 r = q - SC;
+        r.y *= 1. + .14 * uPoke; r.xz *= 1. - .07 * uPoke;
+        d = scoopShape(r / s) * s * min(1., uScoop / .06);
+        d += (1. - min(1., uScoop / .06)) * .2;
+      }
+      if (uScoop > 0. && uScoop < 1.) {
+        for (int i = 0; i < 9; i++) {
+          float fi = float(i);
+          float arrive = .08 + .9 * (fi + 1.) / 9.;
+          float t = clamp((uScoop - (arrive - .32)) / .32, 0., 1.);
+          if (t <= 0. || t >= 1.) continue;
+          float e = t * t * (3. - 2. * t);
+          float ang = fi * 2.39996 + uTime * .45 + e * 3.5;
+          float R = mix(1.9, .0, e);
+          vec3 pos = vec3(cos(ang) * R, mix(-.95 + .3 * mod(fi, 4.), SC.y + .08, e), sin(ang) * R);
+          float rad = .12 * smoothstep(0., .15, t) * (1. - .55 * smoothstep(.7, 1., t));
+          d = smin(d, length(q - pos) - rad, .12 * e + .02);
+        }
+      }
+      return d;
+    }
+
+    float frameD(vec3 p) {
+      if (uBox <= 0.) return 1e5;
+      vec3 b = p - BC;
+      float d = sdBoxFrame(b, BH, .004);
+      return max(d, b.y - mix(-BH.y - .1, BH.y + .1, uBox));
+    }
+
+    float ghostD(vec3 q) {
+      if (uCone >= 1.) return 1e5;
+      float d = abs(coneBody(q));
+      d = max(d, coneCut() - q.y);
+      return max(d, (lattice(q) - .015) * .25);
+    }
+
+    float map(vec3 p) {
+      gId = 0.;
+      float r = 1e5;
+      // the browser window the sandbox stands on
+      if (uFloor > 0.) {
+        vec3 s = p - vec3(0., SLAB, 0.);
+        float d = sdBox(s, vec3(1.36, .05, .98) - .04) - .04;
+        d = max(d, s.x - mix(-1.5, 1.5, uFloor));
+        if (d < r) { r = d; gId = 1.; }
+      }
+      vec3 q = obj(p);
+      // the cone, printed from the tip up
+      if (uCone > 0.) {
+        float d = coneBody(q);
+        if (d < .05) d += .008 * smoothstep(.07, 0., lattice(q));
+        d = max(d, q.y - coneCut());
+        if (d < r) { r = d; gId = 2.; }
+      }
+      // the scoop
+      {
+        float d = scoopSDF(q);
+        if (d < r) { r = d; gId = 3.; }
+      }
+      // eyes
+      float open = uEyes * uBlink;
+      if (open > .03 && length(q - SC) < .7) {
+        for (int i = 0; i < 2; i++) {
+          float side = i == 0 ? -1. : 1.;
+          vec3 e = SC + vec3(side * .15, .12, .325);
+          float de = sdEllipsoid(q - e, vec3(.094, .094 * open + .002, .07));
+          if (de < r) { r = de; gId = 4.; }
+          vec3 pp = e + vec3(uMouse.x * .03, uMouse.y * .024 * open, .05);
+          float dp = sdEllipsoid(q - pp, vec3(.046, .046 * open + .002, .028));
+          if (dp < r) { r = dp; gId = 5.; }
+        }
+      }
+      // three scoops at work once seven is up
+      if (uSeal > 0.) {
+        for (int i = 0; i < 3; i++) {
+          float fi = float(i);
+          float a = uTime * (.55 + .12 * fi) + fi * 2.094;
+          vec3 c = vec3(cos(a) * .74, -.55 + .32 * fi + .08 * sin(uTime * .9 + fi * 1.7), sin(a) * .74);
+          float d = length(p - c) - .07 * smoothstep(0., 1., uSeal);
+          if (d < r) { r = d; gId = 7. + fi; }
+        }
+      }
+      return r;
+    }
+
+    vec3 calcNormal(vec3 p) {
+      const vec2 k = vec2(1, -1); const float h = .0015;
+      return normalize(k.xyy * map(p + k.xyy * h) + k.yyx * map(p + k.yyx * h) + k.yxy * map(p + k.yxy * h) + k.xxx * map(p + k.xxx * h));
+    }
+    float shadow(vec3 ro, vec3 rd) {
+      float res = 1., t = .02;
+      for (int i = 0; i < 26; i++) {
+        float h = map(ro + rd * t);
+        res = min(res, 9. * h / t);
+        t += clamp(h, .02, .25);
+        if (res < .01 || t > 4.) break;
+      }
+      return clamp(res, 0., 1.);
+    }
+    float occlusion(vec3 p, vec3 n) {
+      float o = 0., s = 1.;
+      for (int i = 0; i < 5; i++) { float h = .01 + .07 * float(i); o += (h - map(p + n * h)) * s; s *= .7; }
+      return clamp(1. - 1.8 * o, 0., 1.);
+    }
+
+    vec3 background(vec3 ro, vec3 rd) {
+      vec3 c = mix(vec3(.022, .019, .034), vec3(.07, .045, .1), clamp(rd.y * .6 + .55, 0., 1.));
+      vec3 toS = normalize(SC - vec3(0., .5, 0.) - ro);
+      float h = max(dot(rd, toS), 0.);
+      c += PINK * pow(h, 70.) * .16 * (.25 + .75 * uP) + ORANGE * pow(h, 10.) * .03 * (.25 + .75 * uP);
+      // the web, as a grid fading into the distance
+      float t = (SLAB - .055 - ro.y) / min(rd.y, -1e-4);
+      vec3 g = ro + rd * t;
+      vec2 gc = g.xz * 2.;
+      vec2 f = abs(fract(gc - .5) - .5) / max(fwidth(gc), vec2(1e-4));
+      float line = 1. - min(min(f.x, f.y), 1.);
+      float reveal = smoothstep(uFloor * 9., uFloor * 9. - 2., length(g.xz));
+      if (rd.y < 0.) c += mix(vec3(.35, .2, .5), ORANGE, .25) * line * exp(-t * .3) * .45 * reveal;
+      return c;
+    }
+
+    vec2 boxHit(vec3 ro, vec3 rd, out vec3 n0, out vec3 n1) {
+      vec3 m = 1. / rd, o = ro - BC;
+      vec3 n = m * o, k = abs(m) * BH;
+      vec3 t1 = -n - k, t2 = -n + k;
+      float tN = max(max(t1.x, t1.y), t1.z), tF = min(min(t2.x, t2.y), t2.z);
+      n0 = -sign(rd) * step(t1.yzx, t1.xyz) * step(t1.zxy, t1.xyz);
+      n1 = sign(rd) * step(t2.xyz, t2.yzx) * step(t2.xyz, t2.zxy);
+      return (tN > tF || tF < 0.) ? vec2(-1.) : vec2(tN, tF);
+    }
+
+    vec3 glass(vec3 col, vec3 p, vec3 n, vec3 rd, float k) {
+      vec3 b = p - BC;
+      if (b.y > mix(-BH.y - .1, BH.y + .1, uBox)) return col;
+      float fre = pow(1. - abs(dot(n, rd)), 4.);
+      vec2 uv = abs(n.x) > .5 ? b.zy : abs(n.y) > .5 ? b.xz : b.xy;
+      vec2 gc = fract(uv * 10.) - .5;
+      float dots = smoothstep(.06, .03, length(gc));
+      float front = mix(-BH.y - .4, BH.y + .4, uSeal);
+      float wave = exp(-pow((b.y - front) * 5., 2.)) * step(uSeal, .999) * step(.001, uSeal);
+      float a = (fre * .14 + dots * .035) * (.2 + .8 * uSeal) + wave * (.12 + dots * .8);
+      vec3 tint = mix(vec3(.8, .68, 1.), vec3(1., .3, .3), uFail);
+      return col * (1. - .03 * uSeal * k) + tint * a * k;
+    }
+
+    vec3 shade(vec3 p, vec3 rd, float id) {
+      vec3 n = calcNormal(p);
+      vec3 q = obj(p);
+      vec3 alb = vec3(.5); vec3 emi = vec3(0.);
+      float spec = .2, rough = 16., wrap = 0.;
+      if (id == 1.) {
+        vec3 s = p - vec3(0., SLAB, 0.);
+        alb = vec3(.085, .08, .11); spec = .6; rough = 70.;
+        if (n.y > .7) {
+          if (s.z < -.68) alb = vec3(.15, .14, .18);
+          vec2 ab = abs(s.xz - vec2(.08, -.83)) - vec2(.78, .035);
+          if (length(max(ab, 0.)) + min(max(ab.x, ab.y), 0.) - .02 < 0.) alb = vec3(.23, .22, .27);
+          for (int i = 0; i < 3; i++) {
+            vec3 dc = i == 0 ? vec3(1., .37, .34) : i == 1 ? vec3(1., .74, .2) : vec3(.2, .8, .38);
+            if (length(s.xz - vec2(-1.18 + .1 * float(i), -.83)) < .03) { alb = dc; emi = dc * .25; }
+          }
+          float r = length(s.xz);
+          emi += PINK * exp(-r * r * 5.) * .3 * (.2 + .8 * max(uScoop, uSeal));
+        }
+        emi += ORANGE * 2. * exp(-abs(s.x - mix(-1.5, 1.5, uFloor)) * 40.) * (1. - step(1., uFloor));
+      } else if (id == 2.) {
+        float g = smoothstep(.075, 0., lattice(q));
+        alb = mix(CONE_A, CONE_B, g * .85) * (.9 + .2 * hash(floor(q * 90.)));
+        spec = .15; rough = 10.;
+        emi = ORANGE * 2.2 * exp(-abs(q.y - coneCut()) * 45.) * (1. - step(1., uCone));
+      } else if (id == 3.) {
+        alb = PINK * (.85 + .15 * smoothstep(-.3, .4, q.y - SC.y));
+        wrap = .5; spec = .35; rough = 22.;
+      } else if (id == 4.) {
+        alb = vec3(.97); spec = .9; rough = 90.; emi = vec3(.22);
+      } else if (id == 5.) {
+        alb = vec3(.02); spec = 1.4; rough = 140.;
+      } else if (id == 7.) { alb = vec3(.6, .9, .76); wrap = .5; spec = .3;
+      } else if (id == 8.) { alb = vec3(.98, .9, .66); wrap = .5; spec = .3;
+      } else if (id == 9.) { alb = vec3(.55, .33, .24); wrap = .5; spec = .4; }
+
+      vec3 L = normalize(vec3(-.6, .9, .55));
+      float dif = clamp((dot(n, L) + wrap) / (1. + wrap), 0., 1.);
+      float sh = dif > 0. ? shadow(p + n * .004, L) : 0.;
+      vec3 H = normalize(L - rd);
+      float sp = pow(clamp(dot(n, H), 0., 1.), rough) * spec;
+      float fre = pow(1. - clamp(dot(n, -rd), 0., 1.), 3.);
+      float occ = occlusion(p, n);
+      vec3 col = alb * (vec3(1., .93, .86) * 1.5 * dif * mix(.25, 1., sh) + vec3(.33, .36, .55) * .4 * occ * (.6 + .4 * n.y));
+      col += vec3(1.) * sp * sh;
+      col += fre * vec3(.65, .45, .95) * .3 * occ;
+      col += alb * PINK * .18 * clamp(-n.y, 0., 1.) * occ;
+      col += emi;
+      return col;
+    }
+
+    void main() {
+      vec2 uv = (gl_FragCoord.xy - .5 * uRes) / uRes.y - uShift;
+      vec3 ro = vec3(sin(uAz) * 5.5, .75, cos(uAz) * 5.5);
+      vec3 ta = vec3(0., -.18, 0.);
+      vec3 ww = normalize(ta - ro), uu = normalize(cross(ww, vec3(0, 1, 0))), vv = cross(uu, ww);
+      vec3 rd = normalize(uv.x * uu + uv.y * vv + 1.55 * uZoom * ww);
+
+      float t = 1., hit = -1., gF = 0., gG = 0.;
+      for (int i = 0; i < 120; i++) {
+        vec3 p = ro + rd * t;
+        float d = map(p);
+        float df = frameD(p);
+        float dg = ghostD(obj(p));
+        if (d < .001 * t) { hit = t; break; }
+        float st = min(d, max(min(df, dg) * .8, .01));
+        gF += exp(-df * 160.) * st;
+        gG += exp(-dg * 120.) * st;
+        t += st;
+        if (t > 11.) break;
+      }
+
+      vec3 col = background(ro, rd);
+      if (hit > 0.) {
+        vec3 p = ro + rd * hit;
+        map(p);
+        col = mix(shade(p, rd, gId), col, 1. - exp(-.0009 * hit * hit * hit));
+      }
+
+      vec3 n0, n1;
+      vec2 bt = boxHit(ro, rd, n0, n1);
+      if (bt.y > 0. && (hit < 0. || bt.y < hit)) col = glass(col, ro + rd * bt.y, n1, rd, .5);
+      if (bt.x > 0. && (hit < 0. || bt.x < hit)) col = glass(col, ro + rd * bt.x, n0, rd, 1.);
+
+      vec3 frameCol = mix(mix(ORANGE, PINK, .45), vec3(1., .85, .95), .35 * uSeal);
+      frameCol = mix(frameCol, vec3(1., .2, .22), uFail);
+      col += frameCol * gF * (12. + 8. * uSeal);
+      col += ORANGE * gG * 18. * smoothstep(0., .6, uBox) * (1. - uCone * uCone);
+
+      col = 1. - exp(-col * 1.15);
+      col = pow(col, vec3(.4545));
+      fragColor = vec4(col, 1.);
+    }`;
+
+    // Obscurity to clarity: big pixels, 1-bit dither in two inks, then a
+    // posterised palette, then the plain render. Like a progressive JPEG on a
+    // dial-up line, in reverse order of how computers learned to draw.
+    const POST = `#version 300 es
+    precision highp float;
+    out vec4 fragColor;
+    uniform sampler2D uTex;
+    uniform vec2 uRes, uSRes, uTexSize;
+    uniform float uClarity, uTime, uFail, uMotion;
+
+    float hash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+    float bayer(vec2 p) {
+      ivec2 i = ivec2(mod(p, 4.));
+      float m[16] = float[16](0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.);
+      return (m[i.x + i.y * 4] + .5) / 16.;
+    }
+    vec3 samp(vec2 fc) {
+      vec2 s = fc / uRes * uSRes;
+      if (uSRes.x < uRes.x * .97) s = floor(s) + .5;
+      return texture(uTex, s / uTexSize).rgb;
+    }
+    void main() {
+      vec2 fc = gl_FragCoord.xy;
+      float c = uClarity;
+      if (uFail > 0.) {
+        float row = floor(fc.y / uRes.y * 46.);
+        float g = hash(vec2(row, floor(uTime * 7.)));
+        if (g > .88) fc.x += (g - .94) * uRes.x * .14 * uFail * uMotion;
+      }
+      vec2 dir = (fc - .5 * uRes) / uRes.y;
+      float ab = ((1. - c) * (1. - c) * 14. + 3. * uFail) * uRes.y / 900.;
+      vec3 col = vec3(samp(fc + dir * ab).r, samp(fc).g, samp(fc - dir * ab).b);
+
+      float th = bayer(floor(fc / uRes * uSRes));
+      float lum = dot(col, vec3(.299, .587, .114));
+      vec3 duo = mix(vec3(.045, .035, .075), vec3(1., .8, .87), step(th, smoothstep(.3, .85, lum)));
+      float lv = mix(2., 20., smoothstep(.3, .85, c));
+      vec3 poster = floor(col * lv + th) / lv;
+      vec3 res = mix(duo, poster, smoothstep(.14, .42, c));
+      res = mix(res, col, smoothstep(.78, .97, c));
+
+      res *= 1. - (1. - c) * .16 * (.5 + .5 * sin(fc.y * 1.5708));
+      res += (hash(fc + fract(uTime * 7.) * 91.) - .5) * (.012 + .05 * (1. - c));
+      vec2 v = fc / uRes - .5;
+      res *= 1. - dot(v, v) * .5;
+      res = mix(res, vec3(dot(res, vec3(.33))) * vec3(1.1, .55, .55), uFail * .55);
+      fragColor = vec4(res, 1.);
+    }`;
+
+    const VERT = `#version 300 es
+    void main() { vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Position = vec4(p * 2. - 1., 0., 1.); }`;
+
+    // Discrete resolution steps: each one is a visible "click" into focus.
+    const SCALES = [0.07, 0.1, 0.14, 0.2, 0.28, 0.38, 0.52, 0.7, 1];
+
+    const smooth = (a, b, x) => {
+      const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+      return t * t * (3 - 2 * t);
+    };
+
+    function stage(P) {
+      return {
+        uFloor: smooth(0, 0.07, P),
+        uBox: smooth(0.03, 0.15, P),
+        uCone: smooth(0.09, 0.5, P),
+        uScoop: smooth(0.24, 0.84, P),
+        uEyes: smooth(0.84, 0.91, P),
+        uSeal: smooth(0.86, 0.99, P),
+        uP: P,
+        clarity: Math.pow(P, 0.9),
+      };
+    }
+
+    function createRenderer(canvas) {
+      const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, powerPreference: 'low-power', preserveDrawingBuffer: false });
+      if (!gl) return null;
+
+      function program(fs) {
+        const p = gl.createProgram();
+        for (const [type, src] of [[gl.VERTEX_SHADER, VERT], [gl.FRAGMENT_SHADER, fs]]) {
+          const s = gl.createShader(type);
+          gl.shaderSource(s, src);
+          gl.compileShader(s);
+          if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+          gl.attachShader(p, s);
+        }
+        gl.linkProgram(p);
+        if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+        const loc = {};
+        const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+        for (let i = 0; i < n; i++) {
+          const { name } = gl.getActiveUniform(p, i);
+          loc[name] = gl.getUniformLocation(p, name);
+        }
+        return { p, loc };
+      }
+
+      const scene = program(SCENE);
+      const post = program(POST);
+      gl.bindVertexArray(gl.createVertexArray());
+
+      const tex = gl.createTexture();
+      const fb = gl.createFramebuffer();
+      let W = 0;
+      let H = 0;
+      let quality = 1;
+      const frames = [];
+
+      function resize() {
+        const dpr = Math.min(devicePixelRatio || 1, 1.5);
+        const w = Math.max(1, Math.round(canvas.clientWidth * dpr));
+        const h = Math.max(1, Math.round(canvas.clientHeight * dpr));
+        if (w === W && h === H) return;
+        W = canvas.width = w;
+        H = canvas.height = h;
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+      }
+
+      function set(prog, name, ...v) {
+        const l = prog.loc[name];
+        if (l == null) return;
+        if (v.length === 1) gl.uniform1f(l, v[0]);
+        else gl.uniform2f(l, v[0], v[1]);
+      }
+
+      return {
+        gl,
+        get stats() {
+          const avg = frames.length ? frames.reduce((a, b) => a + b, 0) / frames.length : 0;
+          return { fps: avg ? Math.round(1000 / avg) : 0, quality };
+        },
+        frame(u, dt) {
+          resize();
+          // Adapt to the machine: drop resolution when frames run long, so the
+          // installer never competes with the artwork.
+          frames.push(dt);
+          if (frames.length > 40) frames.shift();
+          if (frames.length === 40) {
+            const avg = frames.reduce((a, b) => a + b, 0) / 40;
+            if (avg > 26 && quality > 0.45) {
+              quality *= 0.85;
+              frames.length = 0;
+            } else if (avg < 15 && quality < 1) {
+              quality = Math.min(1, quality * 1.08);
+              frames.length = 0;
+            }
+          }
+          const level = Math.min(SCALES.length - 1, Math.floor(u.clarity * (SCALES.length - 1) + 0.001));
+          const scale = Math.min(1, SCALES[level] * (level === SCALES.length - 1 ? quality : 1));
+          const sw = Math.max(1, Math.round(W * scale));
+          const sh = Math.max(1, Math.round(H * scale));
+
+          gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+          gl.viewport(0, 0, sw, sh);
+          gl.useProgram(scene.p);
+          set(scene, 'uRes', sw, sh);
+          for (const k of ['uTime', 'uFloor', 'uBox', 'uCone', 'uScoop', 'uEyes', 'uSeal', 'uFail', 'uBlink', 'uYaw', 'uAz', 'uP', 'uPoke']) set(scene, k, u[k]);
+          set(scene, 'uShift', u.shift[0], u.shift[1]);
+          set(scene, 'uZoom', u.zoom);
+          set(scene, 'uMouse', u.mouse[0], u.mouse[1]);
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          gl.viewport(0, 0, W, H);
+          gl.useProgram(post.p);
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, tex);
+          gl.uniform1i(post.loc.uTex, 0);
+          set(post, 'uRes', W, H);
+          set(post, 'uSRes', sw, sh);
+          set(post, 'uTexSize', W, H);
+          set(post, 'uClarity', u.clarity);
+          set(post, 'uTime', u.uTime);
+          set(post, 'uFail', u.uFail);
+          set(post, 'uMotion', u.motion);
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+          return scale;
+        },
+      };
+    }
+
+    // ===================================================================
+    // Frame loop
+    // ===================================================================
+
+    const canvas = $('canvas.scene');
+    let renderer = null;
+    try {
+      renderer = createRenderer(canvas);
+    } catch (error) {
+      console.error(error);
+    }
+    if (!renderer) card.classList.add('no-gl');
+    environment(renderer?.gl);
+
+    // The page behind the card reflects it: right after each frame, the scene
+    // is copied into a tiny canvas that covers the page, mirrored outwards
+    // from the card's edges like tiles, and CSS blurs it. The card's scrim
+    // goes along, so the text side stays dark in the reflection too.
+    const ambient = $('canvas.ambient');
+    const ambientCtx = ambient.getContext('2d', { alpha: false });
+    ambient.width = 96;
+    ambient.height = 60;
+    function reflect() {
+      const page = ambient.getBoundingClientRect();
+      const box = card.getBoundingClientRect();
+      if (box.width >= innerWidth - 1) return;
+      const sx = ambient.width / page.width;
+      const sy = ambient.height / page.height;
+      const x = (box.left - page.left) * sx;
+      const y = (box.top - page.top) * sy;
+      const w = box.width * sx;
+      const h = box.height * sy;
+      const scrim = ambientCtx.createLinearGradient(0, 0, w, 0);
+      scrim.addColorStop(0, 'rgb(11 9 15 / 0.88)');
+      scrim.addColorStop(0.3, 'rgb(11 9 15 / 0.6)');
+      scrim.addColorStop(0.56, 'rgb(11 9 15 / 0)');
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          ambientCtx.setTransform(dx ? -1 : 1, 0, 0, dy ? -1 : 1, x + dx * w + (dx ? w : 0), y + dy * h + (dy ? h : 0));
+          ambientCtx.drawImage(canvas, 0, 0, w, h);
+          ambientCtx.fillStyle = scrim;
+          ambientCtx.fillRect(0, 0, w, h);
+        }
+      }
+      ambientCtx.setTransform(1, 0, 0, 1, 0, 0);
+    }
+
+    const pointer = { x: 0, y: 0, tx: 0, ty: 0, seen: 0 };
+    addEventListener('pointermove', (e) => {
+      const r = card.getBoundingClientRect();
+      pointer.tx = Math.max(-1, Math.min(1, ((e.clientX - r.left) / r.width) * 2 - 1.3));
+      pointer.ty = Math.max(-1, Math.min(1, -(((e.clientY - r.top) / r.height) * 2 - 0.8)));
+      pointer.seen = performance.now();
+    });
+
+    let poke = -10;
+    canvas.addEventListener('pointerdown', () => {
+      poke = performance.now();
+      blink.next = performance.now();
+    });
+
+    const blink = { next: performance.now() + 2500, start: -1 };
+    let fail = 0;
+    let last = performance.now();
+    let renderStats = 0;
+
+    function frame(now) {
+      const dt = Math.min(100, now - last);
+      last = now;
+      const motion = reduced.matches ? 0 : 1;
+      const t = now / 1000;
+
+      model.target = targetProgress(now);
+      if (model.ready) model.target = 1;
+      const rate = model.target > model.shown ? 2.6 : 10;
+      model.shown += (model.target - model.shown) * (1 - Math.exp((-dt / 1000) * rate));
+      const P = model.manual ?? model.shown;
+
+      // the bar follows the smoothed progress, segment by segment
+      let acc = 0;
+      barEl.querySelectorAll('span').forEach((seg, i) => {
+        const w = STEPS[i].weight;
+        const st = model.steps[STEPS[i].id]?.state;
+        const f = st === 'done' ? 1 : Math.min(1, Math.max(0, (P - acc) / w));
+        acc += w;
+        seg.style.setProperty('--fill', f.toFixed(4));
+      });
+
+      fail += ((model.failed ? 1 : 0) - fail) * (1 - Math.exp(-dt / 250));
+
+      // eyes: blink now and then, follow the pointer, wander when it's idle
+      if (now > blink.next) {
+        blink.start = now;
+        blink.next = now + 2400 + Math.random() * 4200;
+      }
+      const bt = (now - blink.start) / 170;
+      const blinkOpen = bt >= 0 && bt < 1 ? Math.abs(Math.cos(bt * Math.PI)) : 1;
+      const idle = now - pointer.seen > 3500;
+      const gx = idle ? Math.sin(t * 0.6) * 0.6 : pointer.tx;
+      const gy = idle ? Math.cos(t * 0.45) * 0.4 : pointer.ty;
+      pointer.x += (gx - pointer.x) * Math.min(1, dt / 120);
+      pointer.y += (gy - pointer.y) * Math.min(1, dt / 120);
+
+      const pt = (now - poke) / 1000;
+      const pokeAmt = pt < 1.2 ? Math.sin(pt * 22) * Math.exp(-pt * 4.5) : 0;
+
+      const s = stage(P);
+      const aspect = canvas.clientWidth / Math.max(1, canvas.clientHeight);
+      const wide = aspect > 1.15;
+      const az = 0.62 + motion * 0.12 * Math.sin(t * 0.09);
+      const u = {
+        ...s,
+        uTime: motion ? t : 4,
+        uFail: fail,
+        uBlink: blinkOpen,
+        uAz: az,
+        uYaw: az + motion * 0.28 * Math.sin(t * 0.21) - 0.05,
+        uPoke: pokeAmt * motion,
+        shift: wide ? [Math.min(0.42, aspect * 0.21), 0] : [0, 0.07],
+        // portrait: pull back until the sandbox fits the width
+        zoom: wide ? 1 : Math.max(0.5, Math.min(1, aspect * 1.25)),
+        mouse: [pointer.x, pointer.y],
+        motion,
+      };
+      if (model.ready) u.clarity = 1;
+      if (renderer && !document.hidden) {
+        const scale = renderer.frame(u, dt);
+        reflect();
+        if (now - renderStats > 1000) {
+          renderStats = now;
+          const { fps, quality } = renderer.stats;
+          const dd = $('[data-key="render"]');
+          if (dd) dd.textContent = `${fps}fps, scene at ${Math.round(scale * 100)}% (quality ${quality.toFixed(2)})`;
+        }
+      }
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+
+    // ===================================================================
+    // Simulated boot, shaped like bios.js (step / report / result)
+    // ===================================================================
+
+    let generation = 0;
+    const speedEl = $('#speed');
+    const scenarioEl = $('#scenario');
+    const params = new URLSearchParams(location.search);
+    if (params.has('scenario')) scenarioEl.value = params.get('scenario');
+    if (params.has('speed')) speedEl.value = params.get('speed');
+
+    function sleep(ms, gen) {
+      return new Promise((resolve, reject) =>
+        setTimeout(() => (gen === generation ? resolve() : reject(new Error('cancelled'))), ms / Number(speedEl.value))
+      );
+    }
+
+    async function boot(scenario, { resume = 0 } = {}) {
+      const gen = ++generation;
+      const repeat = scenario !== 'first' && scenario !== 'offline';
+      splash.reset({ repeat });
+
+      async function step(name, task) {
+        splash.begin(name);
+        try {
+          const out = await task((text, fraction) => gen === generation && splash.report(name, text, fraction));
+          if (gen === generation) splash.done(name, out);
+        } catch (error) {
+          if (gen === generation) splash.fail(name, error.message);
+          throw error;
+        }
+      }
+
+      try {
+        await step('opfs', async () => {
+          await sleep(repeat ? 120 : 650, gen);
+          return 'persistent, 41.2GB free';
+        });
+        await step('installer', async () => {
+          await sleep(repeat ? 90 : 420, gen);
+          return `connection #${repeat ? 2 : 1}`;
+        });
+        await step('packages', async (report) => {
+          let downloaded = 0;
+          let bytes = 0;
+          for (let i = 0; i < PACKAGES.length; i++) {
+            const [name, version, mb] = PACKAGES[i];
+            splash.package(name, 'active');
+            const cached = repeat || i < resume;
+            await sleep(cached ? 70 : 160 + mb * 260, gen);
+            if (scenario === 'offline' && i === 13 && !resume) {
+              splash.package(name, '');
+              throw new Error(`registry.npmjs.org: ${short(name)}-${version}.tgz: Failed to fetch (net::ERR_INTERNET_DISCONNECTED)`);
+            }
+            if (!cached) {
+              downloaded += 1;
+              bytes += mb * 1e6;
+            }
+            splash.package(name, 'done');
+            report(`${i + 1}/${PACKAGES.length} node_modules/${name}`, (i + 1) / PACKAGES.length);
+          }
+          let fixed = '';
+          if (scenario === 'repaired') {
+            splash.warn('packages', 'node_modules/@ai-ecoverse/wasm-jq/jq.wasm was changed after seven installed it');
+            fixed = ', 1 changed file put back';
+          }
+          return `${downloaded}/${PACKAGES.length} downloaded from npm, ${(bytes / 1e6).toFixed(1)}MB${fixed}`;
+        });
+        await step('seed', async () => {
+          await sleep(repeat ? 260 : 1300, gen);
+          return `os/{adobe.js,agent.js,…,vault.js} 812.3kB${scenario === 'repaired' ? ', 1 changed file put back' : ''}`;
+        });
+        await step('intercept', async () => {
+          await sleep(repeat ? 220 : 1100, gen);
+          if (scenario === 'sw') throw new Error(`${location.origin}/sw.js failed to install`);
+          return `${location.origin}/`;
+        });
+        await step('navigate', async () => {
+          await sleep(repeat ? 200 : 500, gen);
+          return '/os/';
+        });
+        splash.ready('/os/');
+      } catch (error) {
+        if (error.message !== 'cancelled') console.warn(error);
+      }
+    }
+
+    function restart() {
+      model.manual = null;
+      $('#scrubOut').value = 'auto';
+      boot(scenarioEl.value);
+    }
+
+    for (const b of retryButtons) {
+      b.addEventListener('click', () => {
+        const scenario = scenarioEl.value;
+        // a retry after a network failure resumes: what's in OPFS is kept
+        boot(scenario === 'offline' ? 'first' : scenario === 'sw' ? 'repeat' : scenario, { resume: scenario === 'offline' ? 13 : 0 });
+        openDiag(false);
+      });
+    }
+
+    $('#restart').addEventListener('click', restart);
+    scenarioEl.addEventListener('change', restart);
+    $('#scrub').addEventListener('input', (e) => {
+      model.manual = Number(e.target.value);
+      $('#scrubOut').value = `${Math.round(model.manual * 100)}%`;
+    });
+    $('#auto').addEventListener('click', () => {
+      model.manual = null;
+      $('#scrubOut').value = 'auto';
+    });
+
+    addEventListener('keydown', (e) => {
+      if (e.target.closest('select, input')) return;
+      if (e.key === 'd' || e.key === 'D') openDiag();
+      else if (e.key === 'Escape') openDiag(false);
+      else if (e.key === 'ArrowRight') story.next(1);
+      else if (e.key === 'ArrowLeft') story.next(-1);
+      else if (e.key === 'r' || e.key === 'R') restart();
+      else if (e.key === 'h' || e.key === 'H') $('.review').classList.toggle('hidden');
+    });
+
+    if (params.has('p')) {
+      model.manual = Number(params.get('p'));
+      $('#scrub').value = model.manual;
+      $('#scrubOut').value = `${Math.round(model.manual * 100)}%`;
+    }
+    if (params.has('clean')) $('.review').classList.add('hidden');
+    boot(scenarioEl.value);
+    if (params.has('diag')) openDiag(true);
+    </script>
+  </body>
+</html>
