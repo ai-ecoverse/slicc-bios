@@ -772,5 +772,13 @@
   "@ai-ecoverse/wasm-imagemagick-heif@7.1.2-34-9.1": {
     "integrity": "sha512-0z9FTPGFcO/8cFvCHkBI8kBQLvtjts3WFrhVzI5FQSVeRyZwMCKJZWHmAgiGUiS5q/UbsJF2AI9ocwGgIaJXjw==",
     "sha256": "f8e80e2aa2486a1658e0cdc6eb9c6b675b5615f3ce87b7e609d3e33f66752da5"
+  },
+  "@ai-ecoverse/wasm-xxd@9.2.1192-3": {
+    "integrity": "sha512-CJKX6isuCrz3ZFoKLGQqeqj20aiWNSR8BsbgWtRTmCP4bvlZefmvz8vGIsD4rOdZybdfgIfhPnEEnBdsqiNn4g==",
+    "sha256": "c52394bde7c6d7c531e4d531faf8bcd1911ae1c2ff3b50688ee02ba562c386cd"
+  },
+  "@ai-ecoverse/wasm-zip@3.0.0-7": {
+    "integrity": "sha512-q92s+O0EaT+uGHZZ2ZCffoYfb7ZzlRHd3K+wvXDh2l0V+uBJUZE7VeC+5AZQ5KZ2v80w5h7jZbOiw34EWKW4Dw==",
+    "sha256": "07cf0bd10794be1e5076ab495ff7011484385a1997c6b88fb250581dc48bfc95"
   }
 }

@@ -169,5 +169,19 @@
     "description": "Convert, resize and inspect images (magick, convert, mogrify, identify), including HEIC/AVIF.",
     "commands": ["magick", "convert", "mogrify", "identify", "magick-open"],
     "size": 11420934
+  },
+  "@ai-ecoverse/wasm-zip": {
+    "id": "zip",
+    "label": "zip",
+    "description": "Create and extract .zip archives (zip, unzip, zipinfo).",
+    "commands": ["zip", "unzip", "zipinfo"],
+    "size": 869325
+  },
+  "@ai-ecoverse/wasm-xxd": {
+    "id": "xxd",
+    "label": "xxd",
+    "description": "Hex dump and reverse (xxd, from vim).",
+    "commands": ["xxd"],
+    "size": 124869
   }
 }
