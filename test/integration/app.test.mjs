@@ -11,7 +11,7 @@ const manifest = JSON.parse(
   await readFile(new URL('../../src/manifest.json', import.meta.url), 'utf8')
 );
 
-test('seven is installable as an app from the UI, and stays cross-origin isolated', async (t) => {
+test('seven is installable as an app from the UI and stays cross-origin isolated', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
   assert.equal(await page.evaluate(() => location.pathname), '/os/');
