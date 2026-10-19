@@ -349,7 +349,8 @@ jobs:
           show_full_output: ${{ github.event_name == 'workflow_dispatch' }}
           claude_args: |
             --model ${{ vars.CERT_BEDROCK_MODEL || 'global.anthropic.claude-opus-5-5' }}
-            --allowedTools "Bash,Read,Write,Edit,Glob,Grep,WebFetch"
+            --allowedTools "Bash,Read,Write,Edit,Glob,Grep"
+            --disallowedTools "WebFetch,WebSearch"
             --max-turns 200
           prompt: |
             You are the certification reviewer for slicc-bios, the loader that installs seven (seven.sliccy.ai) into the browser. Decide, from evidence, whether the package versions pull request ${{ env.PR_NUMBER }} of ${{ github.repository }} moves to are fit for seven. Run: ${{ env.RUN_URL }}.

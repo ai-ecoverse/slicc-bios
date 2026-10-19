@@ -172,4 +172,6 @@ test('no step that runs pull-request code holds a token that can write: the revi
   assert.match(post, /digest-mismatch: error/);
   assert.doesNotMatch(post, /ref: \$\{\{ needs\.plan\.outputs\.head \}\}/);
   assert.doesNotMatch(post, /npm (ci|install|test|run)/);
+  assert.doesNotMatch(certify, /--allowedTools "[^"]*WebFetch/);
+  assert.match(certify, /--disallowedTools "WebFetch,WebSearch"/);
 });
