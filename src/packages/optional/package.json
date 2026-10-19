@@ -4,7 +4,7 @@
   "description": "The certified versions of the optional packages that seven's Install / Update panel offers. Never installed as a project: the panel runs pnpm add -g for each one.",
   "dependencies": {
     "@ai-ecoverse/mcpcat": "0.16.3",
-    "@ai-ecoverse/slicc-jsh": "0.43.0",
+    "@ai-ecoverse/slicc-jsh": "0.45.4",
     "@ai-ecoverse/sliccy-browser": "0.1.22",
     "@ai-ecoverse/wasi-biome": "2.5.15-4",
     "@ai-ecoverse/wasi-dig": "0.1.0-4",

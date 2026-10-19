@@ -16,7 +16,7 @@ const row = (page, id) =>
     id
   );
 
-test('Node.js (jsh) installs from the catalog, runs node with CommonJS, ESM and fs.watch and jsh with child_process, and removes cleanly', async (t) => {
+test('Node.js (jsh) installs from the catalog, runs node with CommonJS, ESM, fs.watch, v8.serialize, ESM class fields named like an import and a data: module importing a file: URL, and jsh with child_process, and removes cleanly', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
   await page.until(() =>
@@ -33,7 +33,7 @@ test('Node.js (jsh) installs from the catalog, runs node with CommonJS, ESM and 
   assert.equal(result, 'ok', (await row(page, 'node')).log);
   const installed = await row(page, 'node');
   assert.equal(installed.state, 'installed');
-  assert.equal(installed.version, '0.43.0');
+  assert.equal(installed.version, '0.45.4');
 
   await run(page, 'clear; echo "resolved $(command -v jsh) $(command -v node)"');
   await shows(page, 'resolved /usr/bin/jsh /usr/bin/node');
@@ -68,6 +68,21 @@ test('Node.js (jsh) installs from the catalog, runs node with CommonJS, ESM and 
     `clear; node -e "console.log('sync', require('node:child_process').execSync('echo 6').toString().trim() * 7)"`
   );
   await shows(page, 'sync 42');
+  await run(
+    page,
+    `clear; node -e "const v8 = require('node:v8'); const back = v8.deserialize(v8.serialize({ n: [6], m: new Map([['k', 7]]) })); console.log('v8', back.n[0] * back.m.get('k'))"`
+  );
+  await shows(page, 'v8 42');
+  await run(
+    page,
+    `clear; printf '%s\\n' 'import { readFileSync } from "node:fs";' 'class Box { readFileSync = 6; }' 'console.log("field", Object.keys(new Box()).join(), new Box().readFileSync * 7);' > /home/fields.mjs && node /home/fields.mjs`
+  );
+  await shows(page, 'field readFileSync 42');
+  await run(
+    page,
+    `clear; echo 'export default 6;' > /home/dep.mjs && printf '%s\\n' 'const src = "import x from " + JSON.stringify("file:///home/dep.mjs") + "; console.log(\\"data\\", x * 7);";' 'await import("data:text/javascript," + encodeURIComponent(src));' > /home/data.mjs && node /home/data.mjs`
+  );
+  await shows(page, 'data 42');
 
   assert.equal(await actPackage(page, 'node', 'remove'), 'ok');
   assert.equal((await row(page, 'node')).state, 'available');
