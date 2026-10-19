@@ -108,13 +108,14 @@ function waiting({ popup, signal, timeout, start, abandon = () => {} }) {
   });
 }
 
-async function prepare(open, options, address) {
+async function prepare(open, options, address, signal) {
+  if (signal?.aborted) throw cancelled();
   const popup = open('about:blank');
   if (!popup) throw new Error('the browser blocked the sign-in window');
   try {
-    const config = await options();
+    const config = await abortable(Promise.resolve(options()), signal);
     if (!config) throw new Error('this account has no sign-in');
-    popup.location.href = await address(config);
+    popup.location.href = await abortable(Promise.resolve(address(config)), signal);
   } catch (error) {
     popup.close();
     throw error;
@@ -125,7 +126,7 @@ async function prepare(open, options, address) {
 function viaRelay({ open, origin, listen, timeout }) {
   return async (_providerId, options, signal) => {
     const value = nonce();
-    const popup = await prepare(open, options, (config) => relayUrl(config, origin, value));
+    const popup = await prepare(open, options, (config) => relayUrl(config, origin, value), signal);
     return waiting({
       popup,
       signal,
@@ -154,27 +155,35 @@ function viaProxy({ proxy, open, fetcher, every, timeout }) {
     if (!proxy) throw new Error(NEEDS_PROXY);
     const value = nonce();
     const headers = { 'X-Bridge-Token': proxy.key };
-    const popup = await prepare(open, options, async (config) => {
-      const registered = await fetcher(`${proxy.url}/api/oauth-state`, {
+    const abandon = () =>
+      fetcher(`${proxy.url}/api/oauth-state?nonce=${value}`, { method: 'DELETE', headers }).catch(
+        () => {}
+      );
+    let registering = null;
+    const register = (config) => {
+      registering = fetcher(`${proxy.url}/api/oauth-state`, {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ nonce: value }),
       });
-      if (!registered.ok) {
-        throw new Error(
-          `slicc-node refused the sign-in (${registered.status}); update it with npx @ai-ecoverse/slicc-node@latest`
-        );
-      }
-      return authorizeUrl(config, Number(new URL(proxy.url).port), value);
+      return registering.then((registered) => {
+        if (!registered.ok) {
+          throw new Error(
+            `slicc-node refused the sign-in (${registered.status}); update it with npx @ai-ecoverse/slicc-node@latest`
+          );
+        }
+        return authorizeUrl(config, Number(new URL(proxy.url).port), value);
+      });
+    };
+    const popup = await prepare(open, options, register, signal).catch((error) => {
+      if (error?.name === 'AbortError') registering?.then(abandon, () => {});
+      throw error;
     });
     return waiting({
       popup,
       signal,
       timeout,
-      abandon: () =>
-        fetcher(`${proxy.url}/api/oauth-state?nonce=${value}`, { method: 'DELETE', headers }).catch(
-          () => {}
-        ),
+      abandon,
       start: (ok, fail) => {
         let stopped = false;
         let timer;
@@ -224,7 +233,8 @@ export function signIn({
   const proxy = network?.kind === 'local-proxy' ? network.proxy : null;
   const direct = extension?.signIn
     ? async (_providerId, options, signal) => {
-        const config = await options();
+        if (signal?.aborted) throw cancelled();
+        const config = await abortable(Promise.resolve(options()), signal);
         if (!config) throw new Error('this account has no sign-in');
         const token = await abortable(extension.signIn(config), signal);
         return typeof token === 'string' ? { token } : token;
