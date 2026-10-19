@@ -18,15 +18,16 @@ export const MNT_REPAIRED = '/var/lib/slicc/mnt-mode';
 const LAYOUT = [
   'umask 022',
   '[ -e /mnt ] || [ -L /mnt ] || mkdir -m 0755 /mnt || exit',
-  '[ -e "$1" ] && exit 0',
+  '{ [ -e "$1" ] || [ -L "$1" ]; } && exit 0',
   'if [ -d /mnt ] && [ ! -L /mnt ] && [ "$(stat -c %u /mnt)" = 0 ]; then case "$(stat -c %a /mnt)" in *[1357]) ;; *) chmod 0755 /mnt || exit ;; esac; fi',
   'mkdir -p "${1%/*}" && date -u +%Y-%m-%dT%H:%M:%SZ > "$1"',
 ].join('\n');
 const POINT = [
   'umask 022',
+  'case "$1/" in */../*|*/./*|*//*|[!/]*) echo "bios: $1 is not a plain absolute path" >&2; exit 1 ;; esac',
   '[ -d "$1" ] && exit 0',
   'mkdir -p -- "$1" || exit',
-  'case "$1" in /mnt/*) chown -- "$2" "$1" ;; esac',
+  'case "$1" in /mnt/*/*/*) ;; /mnt/*) chown -h -- "$2" "$1" ;; esac',
 ].join('\n');
 
 async function script(kernel, text, args) {
