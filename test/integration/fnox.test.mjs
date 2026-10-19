@@ -1,12 +1,59 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { after, test } from 'node:test';
-import { boot, ready } from './bios.mjs';
+import { actPackage, boot, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const VALUE = 'dummy-fnox-value-0123456789';
 const chrome = await launch({ timeout: 120000 });
 after(() => chrome.close());
+
+const FNOX = '@ai-ecoverse/wasi-fnox';
+const packages = new URL('../../src/packages/', import.meta.url);
+const text = (file) => readFileSync(new URL(file, packages), 'utf8');
+const json = (file) => JSON.parse(text(file));
+
+function beforeTheMove() {
+  const base = json('package.json');
+  const version = base.dependencies[FNOX];
+  delete base.dependencies[FNOX];
+  const lock = json('package-lock.json');
+  const entry = lock.packages[`node_modules/${FNOX}`];
+  delete lock.packages[`node_modules/${FNOX}`];
+  delete lock.packages[''].dependencies[FNOX];
+  const pnpm = text('pnpm-lock.yaml')
+    .replace(
+      new RegExp(`\n      '${FNOX}':\n        specifier: [^\n]+\n        version: [^\n]+`),
+      ''
+    )
+    .replace(new RegExp(`\n  '${FNOX}@${version}':\n(    [^\n]+\n)+`), '\n')
+    .replace(new RegExp(`\n  '${FNOX}@${version}': \\{\\}\n`), '\n');
+  const optional = json('optional/package.json');
+  optional.dependencies = Object.fromEntries(
+    Object.entries({ ...optional.dependencies, [FNOX]: version }).sort(([a], [b]) =>
+      a.localeCompare(b)
+    )
+  );
+  const optionalLock = json('optional/package-lock.json');
+  optionalLock.packages[''].dependencies = optional.dependencies;
+  optionalLock.packages[`node_modules/${FNOX}`] = entry;
+  const retired = json('optional/retired.json');
+  const { [FNOX]: row, ...kept } = retired;
+  const catalog = {
+    ...json('optional/catalog.json'),
+    [FNOX]: { ...row, description: 'fnox', size: 2156061 },
+  };
+  return {
+    'package.json': JSON.stringify(base),
+    'package-lock.json': JSON.stringify(lock),
+    'pnpm-lock.yaml': pnpm,
+    'optional/package.json': JSON.stringify(optional),
+    'optional/package-lock.json': JSON.stringify(optionalLock),
+    'optional/catalog.json': JSON.stringify(catalog),
+    'optional/retired.json': JSON.stringify(kept),
+  };
+}
 
 async function client(page) {
   await page.until(() => typeof globalThis.sliccKernelClient === 'function');
@@ -43,12 +90,24 @@ async function sh(page, command, label) {
 }
 
 async function install(page) {
-  await page.within(300000, () =>
-    document
-      .querySelector('slicc-app')
-      .model.updates.packages()
-      .some((item) => item.id === 'fnox' && item.state === 'available')
-  );
+  await page
+    .within(300000, () =>
+      document
+        .querySelector('slicc-app')
+        .model.updates.packages()
+        .some((item) => item.id === 'fnox' && item.state === 'available')
+    )
+    .catch(async (error) => {
+      const rows = await page.evaluate(() =>
+        document
+          .querySelector('slicc-app')
+          .model.updates.packages()
+          .map((item) => `${item.id}:${item.state}`)
+      );
+      throw new Error(
+        `${error.message}\nrows: ${rows.join(' ')}\n${page.console.join('\n').slice(-1500)}`
+      );
+    });
   const result = await page.evaluate(() =>
     document
       .querySelector('slicc-app')
@@ -82,7 +141,6 @@ test('fnox in seven: its config is root’s /etc/fnox, a cone reads it and can�
   const page = await chrome.page(t);
   await page.init('() => { globalThis.sliccKernelDebug = true; }');
   await boot(page);
-  await install(page);
   const seeded = await config(page);
   assert.equal(seeded.code, '0', seeded.out);
   assert.match(seeded.out, /default_provider = "seven"/);
@@ -177,7 +235,6 @@ test('without the vault, fnox’s sealed operations fail closed with ENOTCONN', 
   );
   await page.init('() => { globalThis.sliccKernelDebug = true; }');
   await boot(page);
-  await install(page);
   await page.within(
     30000,
     () => document.querySelector('slicc-app').model.vault.availability() === 'waiting'
@@ -263,5 +320,108 @@ test('a reload skips the fnox seed while /etc/fnox is root’s 0755 and config.t
   await page.reload();
   await ready(page);
   assert.deepEqual(await seeds(page), [], 'the repaired /etc/fnox is not seeded again');
+  assert.deepEqual(page.errors, []);
+});
+
+test('fnox is in the base set: on a fresh profile, without any install, fnox env and fnox proxy rules answer as root and as the cone, and login shells and sudo keep FNOX_CONFIG_DIR', {
+  timeout: 20 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  await page.init('() => { globalThis.sliccKernelDebug = true; }');
+  await boot(page);
+  const row = await page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.updates.packages()
+      .find((item) => item.id === 'fnox')
+  );
+  assert.equal(row, undefined, JSON.stringify(row));
+  for (const [who, prefix] of [
+    ['root', ''],
+    ['cone', 'sudo -u cone '],
+  ]) {
+    const env = await sh(page, `cd /tmp && ${prefix}fnox env --json --describe`, `env-${who}`);
+    assert.equal(env.code, '0', `${who}: ${env.out}`);
+    assert.doesNotThrow(() => JSON.parse(env.out), `${who}: ${env.out}`);
+    const rules = await sh(page, `cd /tmp && ${prefix}fnox proxy rules --json`, `rules-${who}`);
+    if (rules.code === '0')
+      assert.doesNotThrow(() => JSON.parse(rules.out), `${who}: ${rules.out}`);
+    else
+      assert.match(
+        rules.out,
+        /No \[proxy\] configuration found|no rules are configured/,
+        `${who}: ${rules.out}`
+      );
+  }
+  const dirs = await sh(
+    page,
+    `bash -lc 'printenv FNOX_CONFIG_DIR'; sudo -u cone bash -lc 'printenv FNOX_CONFIG_DIR'; sudo -u cone printenv FNOX_CONFIG_DIR`,
+    'dirs'
+  );
+  assert.deepEqual(dirs, { code: '0', out: '/etc/fnox\n/etc/fnox\n/etc/fnox' });
+  const seeded = await config(page);
+  assert.match(seeded.out, /default_provider = "seven"/);
+  assert.match(seeded.out, /\n0 644$/);
+  assert.deepEqual(page.errors, []);
+});
+
+test('a profile that installed fnox from the catalog keeps a working fnox once fnox moves into the base set, its catalog row is retired, not installed again, and removing it leaves the base set’s fnox', {
+  timeout: 25 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  const old = beforeTheMove();
+  for (const [file, body] of Object.entries(old)) chrome.overrides.set(`/packages/${file}`, body);
+  t.after(() => {
+    for (const file of Object.keys(old)) chrome.overrides.delete(`/packages/${file}`);
+  });
+  await page.init('() => { globalThis.sliccKernelDebug = true; }');
+  await boot(page);
+  await install(page);
+  const before = await sh(page, 'cd /tmp && fnox --version', 'before');
+  assert.equal(before.code, '0', before.out);
+
+  for (const file of Object.keys(old)) chrome.overrides.delete(`/packages/${file}`);
+  await page.reload();
+  await ready(page);
+  await page.within(600000, () => {
+    const { updates } = document.querySelector('slicc-app').model;
+    const fnox = updates.packages().find((item) => item.id === 'fnox');
+    return (
+      updates.ready() &&
+      fnox?.state === 'installed' &&
+      fnox.offered === null &&
+      updates.list().every((row) => !/queued|starting|checking|downloading|linking/.test(row.state))
+    );
+  });
+  const row = await page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.updates.packages()
+      .find((item) => item.id === 'fnox')
+  );
+  assert.deepEqual([row.state, row.actions], ['installed', ['remove']]);
+  const after = await sh(
+    page,
+    'cd /tmp && fnox --version && sudo -u cone fnox env --json --describe > /dev/null',
+    'after'
+  );
+  assert.equal(after.code, '0', after.out);
+  assert.equal(await actPackage(page, 'fnox', 'remove'), 'ok');
+  assert.equal(
+    await page.evaluate(() =>
+      document
+        .querySelector('slicc-app')
+        .model.updates.packages()
+        .some((item) => item.id === 'fnox')
+    ),
+    false
+  );
+  const removed = await sh(
+    page,
+    'cd /tmp && fnox --version && sudo -u cone fnox env --json --describe > /dev/null && test ! -e /usr/local/share/pnpm/bin/fnox && command -v fnox',
+    'removed'
+  );
+  assert.equal(removed.code, '0', removed.out);
+  assert.match(removed.out, /\n\/usr\/bin\/fnox$/, removed.out);
   assert.deepEqual(page.errors, []);
 });
