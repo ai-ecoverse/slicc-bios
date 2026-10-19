@@ -1198,7 +1198,11 @@ test('headed, on the proxy path: a tab created through the guard with an empty U
   timeout: 5 * 60 * 1000,
 }, async (t) => {
   const undisplay = await display();
-  t.after(undisplay);
+  const cleanup = [];
+  t.after(async () => {
+    for (const step of cleanup.reverse()) await step().catch(() => undefined);
+    undisplay();
+  });
   const debugging = await new Promise((resolve) => {
     const server = createServer().listen(0, '127.0.0.1', () => {
       const { port: free } = server.address();
@@ -1206,7 +1210,7 @@ test('headed, on the proxy path: a tab created through the guard with an empty U
     });
   });
   const headed = await launch({ realistic: true, args: [`--remote-debugging-port=${debugging}`] });
-  t.after(() => headed.close());
+  cleanup.push(() => headed.close());
   await debuggerUrl(debugging);
   const proxy = await startProxy({
     port: 0,
@@ -1215,7 +1219,7 @@ test('headed, on the proxy path: a tab created through the guard with an empty U
     kernelPort: null,
     log: () => {},
   });
-  t.after(() => proxy.close());
+  cleanup.push(async () => proxy.close());
   const page = await headed.page(t);
   await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}`);
   await ready(page);
@@ -1255,7 +1259,7 @@ test('headed, on the proxy path: a tab created through the guard with an empty U
   assert.deepEqual(before, { shown: 'visible', focused: true });
   const created = await page.evaluate(() => window.guarded('Target.createTarget', { url: '' }));
   assert.ok(created.result?.targetId, JSON.stringify(created));
-  t.after(() =>
+  cleanup.push(() =>
     page.evaluate(
       (targetId) => window.guarded('Target.closeTarget', { targetId }),
       created.result.targetId
