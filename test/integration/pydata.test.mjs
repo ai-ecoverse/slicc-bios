@@ -40,6 +40,22 @@ const SCRIPT = [
   "        print(name, 'returned', call().tolist())",
   '    except np.linalg.LinAlgError:',
   "        print(name, 'raised LinAlgError')",
+  'import scipy',
+  'import scipy.linalg',
+  'import scipy.optimize',
+  'import scipy.stats',
+  '',
+  "print('scipy', scipy.__version__, scipy.__file__.startswith('/opt/slicc/pydata/'))",
+  "print('linalg', scipy.linalg.solve([[3.0, 1.0], [1.0, 2.0]], [9.0, 8.0]).round(6).tolist())",
+  'found = scipy.optimize.minimize(lambda x: (x[0] - 3) ** 2 + (x[1] + 1) ** 2 + 2, [0.0, 0.0])',
+  "print('minimize', bool(found.success), (found.x.round(4) + 0.0).tolist(), round(float(found.fun), 6))",
+  'fit = scipy.stats.linregress([0, 1, 2, 3], [1, 3, 5, 7])',
+  "print('stats', round(fit.slope, 6), round(fit.intercept, 6), round(float(scipy.stats.norm.ppf(0.975)), 4))",
+  'try:',
+  '    import scipy.odr',
+  "    print('odr present')",
+  'except ImportError:',
+  "    print('odr missing')",
   '',
 ].join('\n');
 
@@ -155,7 +171,8 @@ describe('Python data tools are back as attested builds: they install as one pro
     assert.equal(listed.state, 'available');
     assert.deepEqual(listed.actions, ['install']);
     assert.equal(listed.label, 'Python data tools');
-    assert.match(listed.description, /^numpy, pandas and matplotlib for Python/);
+    assert.match(listed.description, /^numpy, pandas, matplotlib and scipy for Python/);
+    assert.match(listed.description, /scipy\.odr/);
     assert.deepEqual(listed.requires, ['python']);
     await run(page, `clear; pnpm add -g ${EARLIER} >/dev/null 2>&1; echo "by hand $((40 + $?))"`);
     await shows(page, 'by hand 4', HAND);
@@ -204,7 +221,7 @@ describe('Python data tools are back as attested builds: they install as one pro
     await shots(page, 'pydata-after');
   });
 
-  test('numpy, pandas and matplotlib compute (an array op, a groupby and a PNG plot), and numpy.linalg raises LinAlgError on a singular matrix (homescoop#1082)', async () => {
+  test('numpy, pandas, matplotlib and scipy compute (an array op, a groupby, a PNG plot, a linear solve, a minimum and a regression), numpy.linalg raises LinAlgError on a singular matrix (homescoop#1082), and scipy.odr is the one module missing', async () => {
     await run(
       page,
       `clear; cd /home && echo ${Buffer.from(SCRIPT).toString('base64')} | base64 -d > /home/pydata.py && python3 /home/pydata.py; echo "pydata exit $((40 + $?))"`
@@ -218,14 +235,19 @@ describe('Python data tools are back as attested builds: they install as one pro
     for (const name of ['solve', 'inv', 'cholesky'])
       assert.match(text, new RegExp(`${name} raised LinAlgError`), text);
     assert.doesNotMatch(text, /returned/);
+    assert.match(text, /scipy 1\.18\.1 True/);
+    assert.match(text, /linalg \[2\.0, 3\.0\]/);
+    assert.match(text, /minimize True \[3\.0, -1\.0\] 2\.0/);
+    assert.match(text, /stats 2\.0 1\.0 1\.96/);
+    assert.match(text, /odr missing/);
     await color(page, 'light');
     await page.screenshot(new URL('pydata-terminal-light.png', page.dir));
   });
 
-  test('an install from before the withdrawal (2026.10.12) shows as outdated, with Update', async () => {
+  test('an install from before scipy (2026.10.18) shows as outdated, with Update', async () => {
     const receipt = await file(page, RECEIPT, null);
     const current = JSON.parse(receipt).version;
-    await file(page, RECEIPT, receipt.replace(`"version":"${current}"`, '"version":"2026.10.12"'));
+    await file(page, RECEIPT, receipt.replace(`"version":"${current}"`, '"version":"2026.10.18"'));
     await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
     await page.until(
       () =>
@@ -235,7 +257,7 @@ describe('Python data tools are back as attested builds: they install as one pro
           .find((item) => item.id === 'pydata').state === 'outdated'
     );
     const outdated = await row(page, 'pydata');
-    assert.equal(outdated.version, '2026.10.12');
+    assert.equal(outdated.version, '2026.10.18');
     assert.deepEqual(outdated.actions, ['update', 'remove']);
     await file(page, RECEIPT, receipt);
     await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
