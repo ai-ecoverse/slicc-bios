@@ -256,9 +256,27 @@ test("slicc-agent 3.26.0, which ignores held, isn't started at boot: seven's age
   await page.until(
     () => document.querySelector('slicc-app').dock.api.getPanel('updates')?.api.isVisible
   );
+  const other = await page.tab();
+  await other.init(helpers);
+  await other.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await ready(other);
+  await other.until(
+    () => document.querySelector('slicc-app').model.tabs?.state().role === 'follower'
+  );
+  await other.evaluate(() => document.querySelector('slicc-app').show('chat'));
+  await other.until(() => {
+    const root = window.chatView()?.shadowRoot;
+    return (
+      !!root &&
+      !window.deep(root, 'slicc-composer') &&
+      window.deep(root, '[data-follow="watch"]')?.textContent.trim() ===
+        'You can send messages once the agent starts.'
+    );
+  });
 
   await agentUp(page, { label: 'agent after 3.26.0' });
   const up = Date.now();
+  await other.until(() => !!window.deep(window.chatView().shadowRoot, 'textarea'));
   const row = await page.evaluate(agentRow);
   assert.equal(await page.evaluate(() => window.installedAgent()), NEW_VERSION);
   assert.equal(row.state, 'installed');
@@ -276,6 +294,7 @@ test("slicc-agent 3.26.0, which ignores held, isn't started at boot: seven's age
     null
   );
   assert.deepEqual(page.errors, []);
+  assert.deepEqual(other.errors, []);
 });
 
 test("slicc-agent 5.0.3, which honours held, answers while seven's agent installs in place, without the updating notice, and Restart agent puts the chat on the new agent without a reload", {
