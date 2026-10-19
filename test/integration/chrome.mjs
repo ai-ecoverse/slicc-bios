@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import { argv, env, pid } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { serve, launch as start } from '@ai-ecoverse/slicc-shared-web/harness';
+import { startFakeGitHub } from './fake-github.mjs';
 import { startFakeVault } from './fake-vault.mjs';
 
 env.SLICC_CDP_PORTS ??= '9300-9309';
@@ -22,6 +23,7 @@ export const emptyAgent = {
 };
 
 export const VAULT_KEY = 'slicc-os.vault-origin';
+export const RELEASES_KEY = 'slicc-os.releases-origin';
 
 export async function debuggerUrl(port, ms = 30000) {
   const end = Date.now() + ms;
@@ -160,15 +162,18 @@ function networkTrace(cdp, origin) {
 export async function launch({ agent = false, vault = true, ...overrides } = {}) {
   const chrome = await start({ ...options, ...overrides });
   const fake = vault ? await startFakeVault({ agentReal: true }) : null;
+  const github = await startFakeGitHub();
   const page = chrome.page;
   const close = chrome.close;
   chrome.vault = fake;
+  chrome.github = github;
   const messages = consoleTail(chrome.cdp);
   let current = null;
   trapRecorder(chrome.cdp, () => current);
   const traced = TRACE ? networkTrace(chrome.cdp, new URL(chrome.url).origin) : null;
   chrome.close = (...args) => {
     fake?.close();
+    void github.close();
     return close.apply(chrome, args);
   };
   chrome.page = async (t) => {
@@ -180,6 +185,10 @@ export async function launch({ agent = false, vault = true, ...overrides } = {})
     opened.forceTraps = () => {
       test.forced = true;
     };
+    github.reset();
+    await opened.init(
+      `() => { if (location.origin === ${JSON.stringify(new URL(chrome.url).origin)}) localStorage.setItem(${JSON.stringify(RELEASES_KEY)}, ${JSON.stringify(github.origin)}); }`
+    );
     if (traced) {
       traced.reset();
       opened.trace = {

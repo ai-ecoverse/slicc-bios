@@ -59,7 +59,18 @@ function extras(item, beta) {
   ];
 }
 
-export function createUpdates({ ready = false, now = Date.now, developer = false } = {}) {
+function noted(item, notes) {
+  const { releases: _, ...rest } = item;
+  const list = notes?.pick(item.id, item.from, item.to);
+  return list ? { ...rest, releases: list } : rest;
+}
+
+export function createUpdates({
+  ready = false,
+  now = Date.now,
+  developer = false,
+  notes = null,
+} = {}) {
   const listeners = { items: new Set(), packages: new Set() };
   const handlers = new Map();
   let packages = [];
@@ -109,7 +120,7 @@ export function createUpdates({ ready = false, now = Date.now, developer = false
     list: all,
     packages: () => [...own, ...packages],
     setPackages(list) {
-      packages = list;
+      packages = notes ? notes.annotate(list) : list;
       listed();
     },
     userPackages: () => own,
@@ -146,7 +157,7 @@ export function createUpdates({ ready = false, now = Date.now, developer = false
       emit();
     },
     set(id, patch) {
-      items = items.map((item) => (item.id === id ? { ...item, ...patch } : item));
+      items = items.map((item) => (item.id === id ? noted({ ...item, ...patch }, notes) : item));
       emit();
     },
     setReady(value) {
