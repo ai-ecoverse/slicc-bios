@@ -95,6 +95,8 @@ export async function publishBranch(branch, { fetcher = fetch, token, parallel =
   };
   const { files: before } = await call('manifest');
   const current = files();
+  const pending = [...new Set([...before, ...current])].sort();
+  await call('manifest', { method: 'PUT', body: JSON.stringify({ files: pending }) });
   const queue = [...current];
   const put = async () => {
     for (let file = queue.shift(); file; file = queue.shift()) {
