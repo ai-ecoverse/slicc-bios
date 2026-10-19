@@ -16,17 +16,71 @@
     <script type="module" src="bios.js"></script>
   </head>
   <body>
-    <main>
-      <h1 class="brand">SLICC</h1>
-      <progress max="6" value="0"></progress>
-      <ol aria-live="polite">
-        <li data-step="opfs">Acquire OPFS <output></output></li>
-        <li data-step="installer">Create installer worker <output></output></li>
-        <li data-step="packages">Install packages from npm into OPFS <output></output></li>
-        <li data-step="seed">Add UI page to OPFS <output></output></li>
-        <li data-step="intercept">Intercept same-origin requests <output></output></li>
-        <li data-step="navigate">Serve UI from OPFS <output></output></li>
-      </ol>
+    <canvas class="ambient" aria-hidden="true"></canvas>
+    <main class="splash" data-state="booting" data-scene="static" aria-labelledby="brand">
+      <canvas class="scene" aria-hidden="true"></canvas>
+      <div class="scrim"></div>
+      <header class="mast">
+        <h1 class="brand" id="brand">
+          <img class="mark" src="icons/icon-192.png" alt="">
+          <span class="wordmark">SLICC</span>
+        </h1>
+        <p class="kicker">The agentic operating system in your browser</p>
+      </header>
+      <section class="story" aria-roledescription="carousel" aria-label="About seven">
+        <div class="slide">
+          <p class="headline"></p>
+          <p class="body"></p>
+        </div>
+        <div class="dots" role="tablist" aria-label="Choose a message"></div>
+      </section>
+      <footer class="status">
+        <div class="line">
+          <span class="verb" role="status" aria-live="polite">Starting</span>
+          <span class="detail"></span>
+          <span class="actions">
+            <button class="chip primary retry" type="button" hidden>Try again</button>
+            <button
+              class="chip details"
+              type="button"
+              aria-expanded="false"
+              aria-controls="diagnostics"
+            >
+              Details<kbd>D</kbd>
+            </button>
+          </span>
+        </div>
+        <progress max="6" value="0"></progress>
+        <div class="bar" aria-hidden="true">
+          <span data-segment="opfs"></span>
+          <span data-segment="installer"></span>
+          <span data-segment="packages"></span>
+          <span data-segment="seed"></span>
+          <span data-segment="intercept"></span>
+          <span data-segment="navigate"></span>
+        </div>
+        <p class="credits"></p>
+      </footer>
+      <aside class="diagnostics" id="diagnostics" aria-label="Diagnostics" inert>
+        <header>
+          <h2>Diagnostics</h2>
+          <button class="close" type="button" aria-label="Close diagnostics">×</button>
+        </header>
+        <dl class="env"></dl>
+        <ol class="steps">
+          <li data-step="opfs">Acquire OPFS <output></output></li>
+          <li data-step="installer">Create installer worker <output></output></li>
+          <li data-step="packages">Install packages from npm into OPFS <output></output></li>
+          <li data-step="seed">Add UI page to OPFS <output></output></li>
+          <li data-step="intercept">Intercept same-origin requests <output></output></li>
+          <li data-step="navigate">Serve UI from OPFS <output></output></li>
+        </ol>
+        <ol class="log" aria-label="Boot log"></ol>
+        <footer>
+          <button class="chip copy" type="button">Copy diagnostics</button>
+          <button class="chip primary retry" type="button" hidden>Try again</button>
+        </footer>
+      </aside>
     </main>
   </body>
 </html>

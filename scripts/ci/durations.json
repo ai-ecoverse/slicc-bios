@@ -60,6 +60,7 @@
   "test/integration/serve.test.mjs": 55,
   "test/integration/shards.test.mjs": 1,
   "test/integration/shell.test.mjs": 191,
+  "test/integration/splash.test.mjs": 60,
   "test/integration/sqlite.test.mjs": 80,
   "test/integration/sweep.test.mjs": 63,
   "test/integration/tabs.test.mjs": 52,
