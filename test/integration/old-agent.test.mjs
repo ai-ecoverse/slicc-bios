@@ -223,16 +223,39 @@ test("slicc-agent 3.26.0, which ignores held, isn't started at boot: seven's age
   await page.until(() => !!window.chatView()?.shadowRoot && !!window.installNotice());
   const notice = await page.evaluate(() => window.installNotice());
   assert.equal(notice.title, 'Seven is updating its agent');
-  assert.equal(
-    notice.body,
-    `The chat starts once agent ${NEW_VERSION} is installed. Install / Update shows how far it is.`
-  );
+  assert.equal(notice.body, `The chat starts once agent ${NEW_VERSION} is installed.`);
+  assert.deepEqual(notice.actions, [{ id: 'show-updates', label: 'Open Install / Update' }]);
   const shown = await page.until(() => {
-    const text = window.deepText(window.chatView().shadowRoot);
-    return text.includes('Seven is updating its agent') && text;
+    const root = window.chatView().shadowRoot;
+    const text = window.deepText(root);
+    return (
+      text.includes('Seven is updating its agent') &&
+      !window.deep(root, 'slicc-composer') &&
+      window.deep(root, '[data-follow="watch"]')?.textContent.trim() ===
+        'You can send messages once the agent starts.' &&
+      text
+    );
   });
-  assert.doesNotMatch(shown, /Couldn|failed|error/i);
+  assert.doesNotMatch(shown, /Couldn|failed|error|Ask the agent something/i);
   await shoot(page, 'updating-from-3.26.0', { show: 'chat' });
+  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
+  assert.equal(
+    await page.evaluate(
+      () => document.querySelector('slicc-app').dock.api.getPanel('updates')?.api.isVisible ?? false
+    ),
+    false
+  );
+  await page.evaluate(() =>
+    window
+      .deep(
+        window.chatView().shadowRoot,
+        '[data-notice^="agent:installing:"] [data-action="show-updates"]'
+      )
+      .click()
+  );
+  await page.until(
+    () => document.querySelector('slicc-app').dock.api.getPanel('updates')?.api.isVisible
+  );
 
   await agentUp(page, { label: 'agent after 3.26.0' });
   const up = Date.now();
@@ -248,6 +271,10 @@ test("slicc-agent 3.26.0, which ignores held, isn't started at boot: seven's age
   );
   await connectAccount(page, 'amazon-bedrock', KEY);
   await say(page, 'Say hello', 1);
+  assert.equal(
+    await page.evaluate(() => window.deep(window.chatView().shadowRoot, '[data-follow="watch"]')),
+    null
+  );
   assert.deepEqual(page.errors, []);
 });
 
