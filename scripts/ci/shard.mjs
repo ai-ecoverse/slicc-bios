@@ -3,13 +3,14 @@ import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { appendFile, cp, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { argv, env, exit, stderr, stdout } from 'node:process';
+import process, { argv, env, exit, stderr, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { cost, ROOT, SPLIT } from './plan.mjs';
 import { missingRequired, summary } from './verdict.mjs';
 
-const REPORTER = './scripts/canary/reporter.mjs';
+const REPORTER = fileURLToPath(new URL('../canary/reporter.mjs', import.meta.url));
+export const FIRST = 'artifacts/attempt-1';
 const OUTPUTS = [
   'artifacts',
   'node_modules/.cache/slicc-harness/coverage',
@@ -75,16 +76,16 @@ export function decide({ name, first, retried }) {
   return { ok: true, pass: firstPass + again.pass, why: [] };
 }
 
-async function command() {
-  const manifest = JSON.parse(await readFile(join(ROOT, 'package.json'), 'utf8'));
+async function command(root) {
+  const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
   return manifest.scripts.test
     .replace(/\$\{SLICC_TESTS[^}]*\}/, '')
     .trim()
     .split(/\s+/);
 }
 
-async function run(files, extra, tag, dir) {
-  const [node, ...args] = await command();
+async function run(files, extra, tag, dir, { root, signal, quiet }) {
+  const [node, ...args] = await command(root);
   const log = join(dir, `${tag}.log`);
   const jsonl = join(dir, `${tag}.jsonl`);
   const reporters = [
@@ -95,25 +96,33 @@ async function run(files, extra, tag, dir) {
   ];
   const started = Date.now();
   const out = createWriteStream(log);
-  console.log(
-    `shard: ${tag}: ${files.join(' ')}${extra.GUARD_VARIANTS ? ` (GUARD_VARIANTS=${extra.GUARD_VARIANTS})` : ''}`
-  );
+  if (!quiet)
+    console.log(
+      `shard: ${tag}: ${files.join(' ')}${extra.GUARD_VARIANTS ? ` (GUARD_VARIANTS=${extra.GUARD_VARIANTS})` : ''}`
+    );
   const code = await new Promise((resolve) => {
     const child = spawn(
       node === 'node' ? process.execPath : node,
       [...args, ...reporters, ...files],
       {
-        cwd: ROOT,
-        env: { ...env, ...extra },
+        cwd: root,
+        env: {
+          ...Object.fromEntries(Object.entries(env).filter(([key]) => key !== 'NODE_TEST_CONTEXT')),
+          ...extra,
+        },
         stdio: ['ignore', 'pipe', 'pipe'],
       }
     );
+    const stop = () => child.kill('SIGKILL');
+    if (signal?.aborted) stop();
+    signal?.addEventListener('abort', stop, { once: true });
+    child.on('close', () => signal?.removeEventListener('abort', stop));
     child.stdout.on('data', (chunk) => {
-      stdout.write(chunk);
+      if (!quiet) stdout.write(chunk);
       out.write(chunk);
     });
     child.stderr.on('data', (chunk) => {
-      stderr.write(chunk);
+      if (!quiet) stderr.write(chunk);
       out.write(chunk);
     });
     child.on('close', (status, signal) => resolve(status ?? signal));
@@ -129,22 +138,23 @@ async function run(files, extra, tag, dir) {
   return { files, code, ms: Date.now() - started, log: await readFile(log, 'utf8'), results };
 }
 
-async function stash(dir) {
+async function stash(dir, root) {
   for (const path of OUTPUTS) {
     await mkdir(join(dir, path, '..'), { recursive: true });
-    await rename(join(ROOT, path), join(dir, path)).catch(async (error) => {
+    await rename(join(root, path), join(dir, path)).catch(async (error) => {
       if (error.code === 'ENOENT') return;
       if (error.code !== 'EXDEV') throw error;
-      await cp(join(ROOT, path), join(dir, path), { recursive: true });
-      await rm(join(ROOT, path), { recursive: true, force: true });
+      await cp(join(root, path), join(dir, path), { recursive: true });
+      await rm(join(root, path), { recursive: true, force: true });
     });
   }
 }
 
-async function restore(dirs) {
-  for (const dir of dirs) {
+export async function restore(stashes, root) {
+  for (const { dir, retried } of stashes) {
     for (const path of OUTPUTS) {
-      await cp(join(dir, path), join(ROOT, path), { recursive: true, force: true }).catch(() => {});
+      const to = retried && path === 'artifacts' ? FIRST : path;
+      await cp(join(dir, path), join(root, to), { recursive: true, force: true }).catch(() => {});
     }
   }
 }
@@ -215,9 +225,41 @@ function brief(attempt, extra) {
   };
 }
 
-export async function shard({ name, items: list, retry, budgetMs, scratch, record }) {
+export function failures(report) {
+  const out = [];
+  for (const group of report.groups ?? []) {
+    const flipped = new Set((group.flips ?? []).map(({ file, name }) => `${file}\u0000${name}`));
+    const why = group.cancelled
+      ? 'cancelled'
+      : group.retry
+        ? 'failed again'
+        : group.skipped
+          ? 'not retried'
+          : 'failed';
+    for (const { file, name, log } of group.first?.failedTests ?? []) {
+      if (flipped.has(`${file}\u0000${name}`)) continue;
+      out.push({ shard: report.shard, file, name, log, why });
+    }
+  }
+  return out;
+}
+
+export const failureLine = ({ shard: name, file, name: test, log, why }) =>
+  `failed (${why}) in ${name}: ${file} › ${test}: ${(log || 'no error message').split('\n')[0].slice(0, 300)}`;
+
+export async function shard({
+  name,
+  items: list,
+  retry,
+  budgetMs,
+  scratch,
+  record,
+  root = ROOT,
+  signal,
+  quiet = false,
+}) {
   const started = Date.now();
-  const seconds = cost(JSON.parse(await readFile(join(ROOT, 'scripts/ci/durations.json'), 'utf8')));
+  const seconds = cost(JSON.parse(await readFile(join(root, 'scripts/ci/durations.json'), 'utf8')));
   const estimate = (files) =>
     files.reduce((sum, file) => {
       const own = list.filter((item) => item.split('#')[0] === file);
@@ -226,21 +268,25 @@ export async function shard({ name, items: list, retry, budgetMs, scratch, recor
   const stashes = [];
   const done = [];
   let n = 0;
+  const options = { root, signal, quiet };
   for (const group of groups(list)) {
+    if (signal?.aborted) break;
     const tag = `run-${++n}`;
-    const first = await run(group.files, group.env, tag, scratch);
-    stashes.push(join(scratch, `${tag}-outputs`));
-    await stash(stashes.at(-1));
+    const first = await run(group.files, group.env, tag, scratch, options);
+    const kept = { dir: join(scratch, `${tag}-outputs`), retried: false };
+    stashes.push(kept);
+    await stash(kept.dir, root);
     let retried = null;
     let skipped = null;
     const verdict = decide({ name, first, retried: null });
     const failed = failing(first.results, group.files, first.code);
-    if (!verdict.ok && retry && failed.length) {
+    if (!verdict.ok && retry && failed.length && !signal?.aborted) {
       const need = estimate(failed) * 1.2;
       if (Date.now() - started + need < budgetMs) {
-        retried = await run(failed, group.env, `${tag}-retry`, scratch);
-        stashes.push(join(scratch, `${tag}-retry-outputs`));
-        await stash(stashes.at(-1));
+        kept.retried = true;
+        retried = await run(failed, group.env, `${tag}-retry`, scratch, options);
+        stashes.push({ dir: join(scratch, `${tag}-retry-outputs`), retried: false });
+        await stash(stashes.at(-1).dir, root);
       } else
         skipped = `retry of ${failed.join(' ')} needs ~${Math.round(need / 60000)} min, past the budget`;
     }
@@ -249,13 +295,18 @@ export async function shard({ name, items: list, retry, budgetMs, scratch, recor
       first,
       retried,
       skipped,
+      cancelled: Boolean(signal?.aborted),
       verdict: decide({ name, first, retried }),
     });
   }
-  await restore(stashes);
-  const ok = done.length > 0 && done.every(({ verdict }) => verdict.ok);
+  await restore(stashes, root);
+  const cancelled = Boolean(signal?.aborted);
+  const ok = !cancelled && done.length > 0 && done.every(({ verdict }) => verdict.ok);
   const pass = done.reduce((sum, { verdict }) => sum + verdict.pass, 0);
-  const why = done.length ? done.flatMap(({ verdict }) => verdict.why) : ['no test files'];
+  const why = [
+    ...(cancelled ? ['cancelled'] : []),
+    ...(done.length ? done.flatMap(({ verdict }) => verdict.why) : ['no test files']),
+  ];
   const line = ok ? `shard ${name}: PASS ${pass} tests` : `shard ${name}: FAIL ${why.join(', ')}`;
   const report = {
     ...record,
@@ -266,12 +317,14 @@ export async function shard({ name, items: list, retry, budgetMs, scratch, recor
     line,
     startedAt: new Date(started).toISOString(),
     wallMs: Date.now() - started,
-    groups: done.map(({ env: extra, first, retried, skipped, verdict }) => ({
+    cancelled,
+    groups: done.map(({ env: extra, first, retried, skipped, cancelled: stopped, verdict }) => ({
       env: extra,
       first: brief(first, extra),
       retry: brief(retried, extra),
       flips: flips(first, retried),
       skipped,
+      cancelled: stopped,
       ok: verdict.ok,
       why: verdict.why,
     })),
@@ -294,7 +347,10 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
   const scratch = join(env.RUNNER_TEMP || '/tmp', `slicc-shard-${values.name}`);
   await rm(scratch, { recursive: true, force: true });
   await mkdir(scratch, { recursive: true });
+  const cancel = new AbortController();
+  for (const sig of ['SIGINT', 'SIGTERM']) process.once(sig, () => cancel.abort());
   const report = await shard({
+    signal: cancel.signal,
     name: values.name,
     items: values.items.split(/\s+/).filter(Boolean),
     retry: values.retry === 'true',
@@ -324,11 +380,8 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
   }
   for (const { file, name } of report.flips) console.log(`flipped ${file} › ${name}`);
   const traps = trapLine(values.name, report.traps);
-  if (traps) console.log(traps);
-  if (env.GITHUB_STEP_SUMMARY)
-    await appendFile(
-      env.GITHUB_STEP_SUMMARY,
-      `${[report.line, traps].filter(Boolean).join('\n')}\n`
-    );
+  const lines = [report.line, traps, ...failures(report).map(failureLine)].filter(Boolean);
+  for (const line of lines.slice(1)) console.log(line);
+  if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, `${lines.join('\n')}\n`);
   if (!report.ok) exit(1);
 }

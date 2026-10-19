@@ -5,6 +5,7 @@ import { basename, join } from 'node:path';
 import { argv, env } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { failureLine, failures } from './shard.mjs';
 
 export const LABEL = 'flaky-test';
 
@@ -20,17 +21,21 @@ export function combine(plan, records) {
     arm: plan?.arm ?? first.arm ?? null,
     seed: plan?.seed ?? first.seed ?? null,
     planned: (plan?.shards ?? []).map(({ shard }) => shard),
-    shards: shards.map(({ shard, ok, wallMs, items, groups = [], flips = [] }) => ({
-      shard,
-      ok,
-      wallMs,
-      items,
-      retried: groups.filter(({ retry }) => retry).flatMap(({ retry }) => retry.files),
-      flips: flips.length,
-    })),
+    shards: shards.map(
+      ({ shard, ok, cancelled = false, wallMs, items, groups = [], flips = [] }) => ({
+        shard,
+        ok,
+        cancelled,
+        wallMs,
+        items,
+        retried: groups.filter(({ retry }) => retry).flatMap(({ retry }) => retry.files),
+        flips: flips.length,
+      })
+    ),
     timings: Object.assign({}, ...shards.map(({ timings = {} }) => timings)),
     flips: shards.flatMap(({ shard, flips = [] }) => flips.map((flip) => ({ ...flip, shard }))),
     traps: shards.flatMap(({ shard, traps = [] }) => traps.map((trap) => ({ ...trap, shard }))),
+    failures: shards.flatMap((record) => failures(record)),
   };
 }
 
@@ -171,6 +176,7 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
   const summary = combine(plan, records);
   const lines = [
     `experiment: arm ${summary.arm} (PR ${summary.pr ?? 'none'}), ${records.length} shard records${summary.planned.length ? ` of ${summary.planned.length} planned` : ''}, ${summary.flips.length} flipped tests, ${summary.traps.length} pnpm wasm traps retried`,
+    ...summary.failures.map(failureLine),
   ];
   for (const { shard, file, name } of summary.traps)
     lines.push(
