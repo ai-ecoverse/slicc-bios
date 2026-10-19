@@ -297,6 +297,12 @@ test("slicc-agent 3.26.0, which ignores held, isn't started at boot: seven's age
   assert.equal(row.state, 'installed');
   assert.deepEqual([row.from, row.to], [NEW_VERSION, NEW_VERSION]);
   const { started, done } = await installs(page, '3.26.0');
+  assert.deepEqual(other.errors, []);
+  await other.close();
+  await page.until(async () => {
+    const { pending } = await navigator.locks.query();
+    return !pending.some(({ name }) => name === 'slicc-agent');
+  });
   await oneHolder(page);
   await page.until(() => window.installNotice() === null);
   t.diagnostic(
@@ -309,7 +315,6 @@ test("slicc-agent 3.26.0, which ignores held, isn't started at boot: seven's age
     null
   );
   assert.deepEqual(page.errors, []);
-  assert.deepEqual(other.errors, []);
 });
 
 test("slicc-agent 5.0.3, which honours held, answers while seven's agent installs in place, without the updating notice, and Restart agent puts the chat on the new agent without a reload", {
