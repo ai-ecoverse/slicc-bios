@@ -115,7 +115,7 @@ test('the range check reads the forms the packages use', () => {
 });
 
 const GATED =
-  /^@ai-ecoverse\/(slicc-kernel|slicc-cdp|slicc-clipboard|slicc-jsh|wasi-|wasix-|wasm-|py-)/;
+  /^@ai-ecoverse\/(slicc-kernel|slicc-cdp|slicc-clipboard|slicc-jsh|mcpcat$|wasi-|wasix-|wasm-|py-)/;
 
 async function lockedGated() {
   const found = new Map();

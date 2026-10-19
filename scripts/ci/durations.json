@@ -34,6 +34,7 @@
   "test/integration/leaders.test.mjs": 133,
   "test/integration/link.test.mjs": 526,
   "test/integration/loopback.test.mjs": 24,
+  "test/integration/mcpcat.test.mjs": 120,
   "test/integration/modes.test.mjs": 33,
   "test/integration/modules.test.mjs": 26,
   "test/integration/mounts.test.mjs": 46,
