@@ -259,7 +259,9 @@ export function createExitRouter() {
         if (!exit) throw unreachable(`no exit carries ${host}`);
         signal?.throwIfAborted();
         const conn = await exit.dial({ host, port, signal });
+        const named = exit.exitName?.() ?? null;
         return {
+          ...(named ? { exit: named } : {}),
           localAddr: conn.localAddr,
           remoteAddr: conn.remoteAddr,
           read: () => conn.read(),
@@ -274,5 +276,6 @@ export function createExitRouter() {
       },
     },
   };
+  if (globalThis.sliccUplinkDebug === true) globalThis.sliccUplink = router.uplink;
   return router;
 }
