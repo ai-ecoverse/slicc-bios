@@ -30,7 +30,7 @@
     "src/packages/optional/catalog.json"
   ],
   "engines": {
-    "node": ">=24"
+    "node": ">=26"
   },
   "scripts": {
     "start": "node test/integration/chrome.mjs",
