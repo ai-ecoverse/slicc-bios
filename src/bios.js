@@ -1,4 +1,5 @@
 import { usersMode } from './seed/users.js';
+import { splash } from './splash.js';
 
 export function uiPage(hash) {
   return new URLSearchParams(hash.slice(1)).has('seat') ? 'os/join.html' : 'os/';
@@ -45,17 +46,21 @@ async function step(name, task) {
   const item = document.querySelector(`[data-step="${name}"]`);
   const output = item.querySelector('output');
   item.dataset.state = 'active';
+  splash.begin(name);
   try {
-    output.value = await task((text) => {
+    output.value = await task((text, counted) => {
       output.value = text;
+      splash.report(name, text, counted);
     });
   } catch (error) {
     item.dataset.state = 'failed';
     output.value = error.message;
+    splash.fail(name, error.message);
     throw error;
   }
   item.dataset.state = 'done';
   document.querySelector('progress').value += 1;
+  splash.done(name, output.value);
 }
 
 let installer;
@@ -101,7 +106,7 @@ await step('packages', async (report) => {
     repaired: changed,
     stopped: kept,
   } = await installer('packages', { from, ...baseProject() }, (progress) =>
-    report(`${progress.done}/${progress.total} ${progress.path}`)
+    report(`${progress.done}/${progress.total} ${progress.path}`, progress)
   );
   const pruned = removed ? `, ${removed} removed` : '';
   repaired.push(...changed);

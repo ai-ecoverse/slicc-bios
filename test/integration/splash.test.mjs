@@ -1,10 +1,139 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { ready } from './bios.mjs';
+import { boot, booted, ready, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch();
 after(() => chrome.close());
+
+async function observe(page) {
+  const seen = [];
+  await page.expose('splash', (event) => seen.push(event));
+  await page.init(() => {
+    const observer = new MutationObserver((records) => {
+      for (const { target } of records) {
+        const card = target.closest?.('.splash');
+        if (!card || location.pathname !== '/') continue;
+        const render = card.querySelector('[data-key="render"]')?.textContent ?? '';
+        window.splash(JSON.stringify({ scene: card.dataset.scene, render }));
+      }
+    });
+    observer.observe(document, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributeFilter: ['data-scene'],
+    });
+  });
+  return {
+    scenes: () => [...new Set(seen.map((event) => event.scene))],
+    renders: () => [...new Set(seen.map((event) => event.render))],
+  };
+}
+
+function fakeClipboard() {
+  window.copied = [];
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: {
+      writeText: async (text) => {
+        window.copied.push(text);
+      },
+    },
+  });
+}
+
+function loaded(page, path) {
+  return page.responses.some((response) => new URL(response.url).pathname === path);
+}
+
+test('the steps report as before while the scene loads beside them, after the first paint', async (t) => {
+  const page = await chrome.page(t);
+  const bios = await watch(page);
+  const splash = await observe(page);
+  await boot(page);
+
+  assert.deepEqual(bios.states(), booted);
+  assert.ok(loaded(page, '/splash.js'));
+  assert.ok(loaded(page, '/scene.js'));
+  t.diagnostic(`scene: ${splash.scenes().join(' → ')}; render: ${splash.renders().join(' | ')}`);
+  assert.deepEqual(page.errors, []);
+});
+
+test('without WebGL2 the card shows the static artwork, and the boot still reports and finishes', async (t) => {
+  const page = await chrome.page(t);
+  await page.init(() => {
+    const context = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (kind, ...rest) {
+      return kind === 'webgl2' ? null : context.call(this, kind, ...rest);
+    };
+  });
+  const bios = await watch(page);
+  const splash = await observe(page);
+  await boot(page);
+
+  assert.deepEqual(bios.states(), booted);
+  assert.deepEqual(splash.scenes(), ['static']);
+  assert.ok(splash.renders().includes('static artwork, no WebGL2'), splash.renders().join(' | '));
+  assert.deepEqual(page.errors, []);
+});
+
+test('with reduced motion the scene never loads, and the boot still reports and finishes', async (t) => {
+  const page = await chrome.page(t);
+  await page.send('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
+  });
+  const bios = await watch(page);
+  const splash = await observe(page);
+  await boot(page);
+
+  assert.deepEqual(bios.states(), booted);
+  assert.ok(!loaded(page, '/scene.js'));
+  assert.ok(
+    splash.renders().includes('static artwork, reduced motion'),
+    splash.renders().join(' | ')
+  );
+  assert.deepEqual(page.errors, []);
+});
+
+test('a failing boot opens the diagnostics, copies them without the join link, and Try again boots', async (t) => {
+  const page = await chrome.page(t);
+  await page.init(fakeClipboard);
+  chrome.cdn.status = 404;
+  await page.goto(`/#seat=${encodeURIComponent('https://example.test/join?token=s3cr3t')}`);
+  await page.until(
+    () => document.querySelector('[data-step="packages"]').dataset.state === 'failed'
+  );
+
+  const shown = await page.evaluate(() => {
+    const drawer = document.querySelector('.diagnostics');
+    return {
+      open: drawer.classList.contains('open') && !drawer.inert,
+      state: document.querySelector('.splash').dataset.state,
+      verb: document.querySelector('.verb').textContent,
+      retry: [...document.querySelectorAll('.retry')].every((button) => !button.hidden),
+      progress: document.querySelector('progress').value,
+    };
+  });
+  assert.deepEqual(shown, {
+    open: true,
+    state: 'failed',
+    verb: 'Couldn’t install packages',
+    retry: true,
+    progress: 2,
+  });
+
+  await page.evaluate(() => document.querySelector('.copy').click());
+  const [copied] = await page.until(() => window.copied.length && window.copied);
+  assert.match(copied, /^SLICC seven boot diagnostics\n/);
+  assert.match(copied, /^failed {3}packages: 404 https:\/\/registry\.npmjs\.org\/\S+\.tgz$/m);
+  assert.match(copied, /^done {5}installer: connection #\d+$/m);
+  assert.doesNotMatch(copied, /s3cr3t|seat|example\.test/);
+
+  chrome.cdn.status = 0;
+  await page.evaluate(() => document.querySelector('.diagnostics .retry').click());
+  await page.until(() => location.pathname === '/os/join.html');
+});
 
 async function timed(page) {
   const start = Date.now();

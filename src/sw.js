@@ -57,6 +57,8 @@ const own = new Set([
   '/index.html',
   '/bios.js',
   '/bios.css',
+  '/splash.js',
+  '/scene.js',
   '/installer.js',
   '/sw.js',
   '/manifest.json',
