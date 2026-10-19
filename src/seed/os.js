@@ -40,7 +40,7 @@ import { createLinks, installLocal, labelStore, trustHostKey } from './link.js';
 import { serveLoopback } from './loopback.js';
 import { createFolders, KEY, layoutMnt, offTheRecord } from './mounts.js';
 import { createNetwork } from './network.js';
-import { createNotices, reportRepairs, reportStopped } from './notices.js';
+import { agentInstalling, createNotices, reportRepairs, reportStopped } from './notices.js';
 import { createPackages, globalDir, loadCatalog, writeListing } from './packages.js';
 import { createPairing, takePairing } from './pair.js';
 import {
@@ -535,9 +535,23 @@ async function actOwn(id, action) {
   await (which === 'agent' ? offerChat() : installGrammars());
 }
 
+let installNotice = null;
+
+function agentReport() {
+  const track = updates.track('agent');
+  const { from } = updates.get('agent');
+  return (step) => {
+    track(step);
+    if (agent !== null) return;
+    const notice = agentInstalling(from, step.to);
+    installNotice = notice.id;
+    notices.show(notice);
+  };
+}
+
 async function offerChat() {
   try {
-    const changed = await installAgent(start, { report: updates.track('agent'), refuse });
+    const changed = await installAgent(start, { report: agentReport(), refuse });
     await listOwn();
     const at = await agentVersion();
     if (changed)
@@ -561,6 +575,9 @@ async function offerChat() {
   } catch (error) {
     updates.fail('agent', error);
     await listOwn();
+  } finally {
+    if (installNotice) notices.remove(installNotice);
+    installNotice = null;
   }
 }
 

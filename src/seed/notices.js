@@ -48,6 +48,16 @@ export function createNotices({ storage = localStorage } = {}) {
   };
 }
 
+export function agentInstalling(from, to) {
+  return {
+    id: `agent:installing:${to ?? ''}`,
+    tone: 'info',
+    title: from ? 'Seven is updating its agent' : 'Seven is installing its agent',
+    body: `The chat starts once ${to ? `agent ${to}` : 'the agent'} is installed. Install / Update shows how far it is.`,
+    actions: [],
+  };
+}
+
 export const REPAIRED = 'slicc-bios.repaired';
 
 export function reportRepairs(notices, storage = localStorage) {
