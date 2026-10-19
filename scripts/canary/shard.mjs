@@ -10,6 +10,7 @@ import { findPacked, OUT, overridePins, PACKAGES, ROOT, specs } from './override
 import { usersModes } from './users.mjs';
 
 const REPORTER = './scripts/canary/reporter.mjs';
+const PACKUMENTS = './scripts/canary/packuments.mjs';
 
 export async function picked(name) {
   const shards = JSON.parse(await readFile(join(ROOT, 'scripts/canary/shards.json'), 'utf8'));
@@ -52,7 +53,7 @@ async function run(files, { canary, log, jsonl }) {
   const code = await new Promise((resolve) => {
     const child = spawn(
       node === 'node' ? process.execPath : node,
-      [...args, ...reporters, ...files],
+      [...(canary ? [`--import=${PACKUMENTS}`] : []), ...args, ...reporters, ...files],
       {
         cwd: ROOT,
         env: childEnv,
