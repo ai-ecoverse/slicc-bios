@@ -17,12 +17,19 @@ export const HOMESCOOP = {
   },
 };
 
+const MAIN = {
+  'slicc-kernel': 'slicc-kernel',
+  'slicc-jsh': 'slicc-jsh',
+  mcpcat: 'mcpcat',
+  'wasi-slicc': 'slicc-cli',
+};
+const TAGGED_TOO = new Set(['slicc-kernel', 'wasi-slicc']);
+
 export function writerOf(name) {
-  if (/^@ai-ecoverse\/(wasm-tailscale|wasi-slicc|slicc-cdp|slicc-clipboard)$/.test(name))
-    return { kind: 'tag' };
-  if (/^@ai-ecoverse\/(wasm|wasi|wasix|py)-/.test(name)) return { kind: 'homescoop' };
-  const repo = /^@ai-ecoverse\/(slicc-kernel|slicc-jsh|mcpcat)$/.exec(name)?.[1];
-  if (repo) return { kind: 'main', repo, tag: repo === 'slicc-kernel' };
+  const short = name.replace(/^@ai-ecoverse\//, '');
+  if (MAIN[short]) return { kind: 'main', repo: MAIN[short], tag: TAGGED_TOO.has(short) };
+  if (/^(wasm-tailscale|slicc-cdp|slicc-clipboard)$/.test(short)) return { kind: 'tag' };
+  if (/^(wasm|wasi|wasix|py)-/.test(short)) return { kind: 'homescoop' };
   return { kind: 'none' };
 }
 

@@ -71,7 +71,7 @@ const status = (o = {}) => ({
 const KERNEL = '@ai-ecoverse/slicc-kernel@1.200.0';
 const kernelProv = statement({ repository: 'https://github.com/ai-ecoverse/slicc-kernel' });
 
-test('writers: kernel, jsh and mcpcat by their main commit, cdp, clipboard, tailscale and wasi-slicc by the certified tag, homescoop by its ladder', () => {
+test('writers: kernel, jsh, mcpcat and wasi-slicc (slicc-cli) by their main commit, cdp, clipboard and tailscale by the certified tag, homescoop by its ladder', () => {
   assert.deepEqual(
     [
       'slicc-kernel',
@@ -94,7 +94,7 @@ test('writers: kernel, jsh and mcpcat by their main commit, cdp, clipboard, tail
       'tag',
       'tag',
       'tag',
-      'tag',
+      'main',
       'homescoop',
       'homescoop',
       'homescoop',
@@ -683,5 +683,32 @@ test('the homescoop exceptions file is read at a pinned commit, never a branch',
   assert.ok(
     HOMESCOOP.exceptions.ref === null || /^[0-9a-f]{40}$/.test(HOMESCOOP.exceptions.ref),
     'a sha, or none yet (every homescoop pin change then fails closed)'
+  );
+});
+
+test('wasi-slicc is slicc-cli’s: its release commit’s cert-review status, or (for older pins) its certified tag', async () => {
+  assert.deepEqual(writerOf('@ai-ecoverse/wasi-slicc'), {
+    kind: 'main',
+    repo: 'slicc-cli',
+    tag: true,
+  });
+  const cli = statement({ repository: 'https://github.com/ai-ecoverse/slicc-cli' });
+  const key = '@ai-ecoverse/wasi-slicc@1.44.7';
+  assert.equal(
+    (await judge(fake({ attestations: cli, statuses: { [COMMIT]: [status()] } }), key, INTEGRITY))
+      .ok,
+    true
+  );
+  assert.equal((await judge(fake({ tags: { certified: '1.44.7' } }), key, INTEGRITY)).ok, true);
+  assert.equal(
+    (
+      await judge(
+        fake({ attestations: kernelProv, statuses: { [COMMIT]: [status()] } }),
+        key,
+        INTEGRITY
+      )
+    ).ok,
+    false,
+    'another repository’s provenance'
   );
 });
