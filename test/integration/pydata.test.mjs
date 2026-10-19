@@ -223,7 +223,7 @@ describe('Python data tools are back as attested builds: they install as one pro
     await shows(page, 'checked 42');
     const text = await screen(page);
     assert.match(text, /unreadable 0 0/);
-    assert.match(text, /numpy \[2\.3\.2-\d+ \]/);
+    assert.match(text, /numpy \[2\.5\.4-\d+ \]/);
     assert.match(text, /python \[0\]/);
     assert.ok(text.includes(`pythons [${python.offered} ]`), text);
     await shots(page, 'pydata-after');
