@@ -38,10 +38,10 @@
     "id": "pydata",
     "kind": "project",
     "label": "Python data tools",
-    "description": "numpy, pandas and matplotlib for Python, about 160 MB on disk.",
+    "description": "numpy, pandas, matplotlib and scipy for Python, about 240 MB on disk. scipy lacks only the deprecated scipy.odr.",
     "commands": [],
     "requires": ["python"],
-    "size": 46014414
+    "size": 67796756
   },
   "@ai-ecoverse/slicc-jsh": {
     "id": "node",
