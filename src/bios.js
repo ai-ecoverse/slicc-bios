@@ -192,6 +192,7 @@ await step('seed', async () => {
     'projects.js',
     'present.js',
     'profile.js',
+    'releases.js',
     'remote.js',
     'site.js',
     'skills.js',
