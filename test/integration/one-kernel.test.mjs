@@ -45,10 +45,12 @@ function watchKernels() {
 }
 
 const WARM_PROMPT = 11000;
+const FIRST_UI = 2000;
 
 function promptStamp() {
   const tick = () => {
     const app = document.querySelector('slicc-app');
+    if (app?.dock && location.pathname === '/os/') window.sliccUiAt ??= Date.now();
     const id = app?.dock?.api.panels
       .map((panel) => panel.id)
       .findLast((name) => name.startsWith('terminal:'));
@@ -76,7 +78,7 @@ async function idle(page) {
   });
 }
 
-test('a cold agent install runs in the page’s one kernel with no package scripts, and an optional install started during it waits its turn on the pnpm store, and a steady-state warm reload reaches the terminal prompt within 11 s', async (t) => {
+test('a cold agent install runs in the page’s one kernel with no package scripts, an optional install waits on the pnpm store, the next reload shows the UI about as fast as a steady one, and a steady reload the prompt within 11 s', async (t) => {
   const page = await chrome.page(t);
   await page.init(watchKernels);
   await page.init(promptStamp);
@@ -127,13 +129,25 @@ test('a cold agent install runs in the page’s one kernel with no package scrip
     `rsync installed at sample ${done}, the agent's pnpm last moved at ${busy}: ${JSON.stringify(samples.slice(Math.max(0, Math.min(done, busy) - 3), Math.max(done, busy) + 2))}`
   );
   await idle(page);
+  const first = Date.now();
   await page.reload();
+  const ui = (await page.within(120000, () => window.sliccUiAt)) - first;
   await page.within(120000, () => window.sliccPromptAt);
+  assert.ok(ui < FIRST_UI, `the first reload after the agent install took ${ui} ms to the UI`);
   await idle(page);
   const start = Date.now();
   await page.reload();
+  const steady = (await page.within(120000, () => window.sliccUiAt)) - start;
   const took = (await page.within(120000, () => window.sliccPromptAt)) - start;
+  const near = Math.round(1.5 * steady + 200);
+  t.diagnostic(
+    `first reload after the agent install to the UI: ${ui} ms (bounds ${FIRST_UI} ms and ${near} ms, 1.5 × the steady reload's ${steady} ms + 200)`
+  );
   t.diagnostic(`warm reload to the terminal prompt: ${took} ms (bound ${WARM_PROMPT} ms)`);
+  assert.ok(
+    ui < near,
+    `the first reload after the agent install took ${ui} ms to the UI, a steady one ${steady} ms`
+  );
   assert.ok(
     took < WARM_PROMPT,
     `a steady-state warm reload took ${took} ms to the terminal prompt`
