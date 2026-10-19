@@ -276,7 +276,22 @@ test("slicc-agent 3.26.0, which ignores held, isn't started at boot: seven's age
 
   await agentUp(page, { label: 'agent after 3.26.0' });
   const up = Date.now();
-  await other.until(() => !!window.deep(window.chatView().shadowRoot, 'textarea'));
+  const follower = await other.within(60000, () => {
+    const root = window.chatView()?.shadowRoot;
+    if (!root) return false;
+    if (window.deep(root, 'textarea')) return 'composer';
+    return !!window.deep(root, '[data-tabs-notice="skew"]') && 'skew';
+  });
+  if (follower === 'skew') {
+    await other.reload();
+    await ready(other);
+    await other.evaluate(() => document.querySelector('slicc-app').show('chat'));
+    await other.within(60000, () => {
+      const root = window.chatView()?.shadowRoot;
+      return !!root && !!window.deep(root, 'textarea');
+    });
+  }
+  t.diagnostic(`the follower tab after the install: ${follower}`);
   const row = await page.evaluate(agentRow);
   assert.equal(await page.evaluate(() => window.installedAgent()), NEW_VERSION);
   assert.equal(row.state, 'installed');
