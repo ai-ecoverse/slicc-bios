@@ -3,19 +3,58 @@
   "extends": ["github>ai-ecoverse/slicc-shared-web"],
   "packageRules": [
     {
-      "description": "The kernel, pnpm, slicc-cdp, slicc-jsh, the py-* Python packages and the wasm, wasi and wasix command packages (the base set's and the optional catalog's) go to seven only after the homescoop coordinator certifies them, often as a set. slicc-agent and slicc-spectrum are held too: agent releases can carry a newer kernel client, both change the UI and follow the spectrum ordering rule, and their automerges kept conflicting with bios PRs that change the neighbouring pins. bios takes all of these by hand, with their certs.json lines, so Renovate lists them on the dependency dashboard and opens a PR only when one is ticked there, instead of a PR per release that runs the whole suite.",
+      "description": "Seven's pins: every @ai-ecoverse package in the base set (src/packages), the optional catalog (src/packages/optional) and /opt/agent (src/packages/agent) bumps by itself, with its npm and pnpm lockfiles. The automerge goes through the merge queue, and ci / test passes on a Renovate PR only once cert review certified every package it changes (scripts/ci/certified.mjs). For a gated package, cert review's queue job adds the certified certs.json lines to the PR and runs CI again.",
+      "matchFileNames": [
+        "src/packages/package.json",
+        "src/packages/optional/package.json",
+        "src/packages/agent/package.json"
+      ],
+      "matchPackageNames": ["@ai-ecoverse/**"],
+      "automerge": true,
+      "dependencyDashboardApproval": false
+    },
+    {
+      "description": "homescoop's packages (wasi-*, wasix-*, wasm-*, py-*, wasi-pnpm included) come as one PR a day, which cert review certifies package by package.",
+      "matchFileNames": [
+        "src/packages/package.json",
+        "src/packages/optional/package.json",
+        "src/packages/agent/package.json"
+      ],
       "matchPackageNames": [
-        "@ai-ecoverse/py-*",
-        "@ai-ecoverse/slicc-agent",
-        "@ai-ecoverse/slicc-cdp",
-        "@ai-ecoverse/slicc-clipboard",
-        "@ai-ecoverse/slicc-jsh",
-        "@ai-ecoverse/slicc-kernel",
-        "@ai-ecoverse/slicc-spectrum",
         "@ai-ecoverse/wasi-*",
         "@ai-ecoverse/wasix-*",
-        "@ai-ecoverse/wasm-*"
+        "@ai-ecoverse/wasm-*",
+        "@ai-ecoverse/py-*"
       ],
+      "groupName": "homescoop packages",
+      "groupSlug": "homescoop",
+      "separateMajorMinor": false,
+      "schedule": ["* 0-5 * * *"]
+    },
+    {
+      "description": "The kernel gets its own PR, the base set's and /opt/agent's pins together (pins.test wants them equal), not grouped with pnpm as the shared preset does.",
+      "matchPackageNames": ["@ai-ecoverse/slicc-kernel"],
+      "groupName": "slicc-kernel",
+      "groupSlug": "slicc-kernel",
+      "separateMajorMinor": false
+    },
+    {
+      "description": "Held: wasm-bash 5.3.0-20 and later need a kernel with slicc-kernel#1146 (ai-ecoverse/slicc-kernel#1146). Drop this rule in the PR that pins that kernel.",
+      "matchPackageNames": ["@ai-ecoverse/wasm-bash"],
+      "allowedVersions": "<5.3.0-20"
+    },
+    {
+      "description": "Skipped: wasi-pnpm 12.9.1-11 and 12.9.1-12 are deprecated, since installs can fail with rename timeouts on OPFS (ai-ecoverse/homescoop#1128). Use 12.9.1-13 or later.",
+      "matchPackageNames": ["@ai-ecoverse/wasi-pnpm"],
+      "allowedVersions": "!/^12\\.9\\.1-1[12]$/"
+    },
+    {
+      "description": "The grammars and Tailscale projects (src/packages/grammars, src/packages/tailscale) are pinned by hand: Renovate lists them on the dependency dashboard and opens a PR only when one is ticked there.",
+      "matchFileNames": [
+        "src/packages/grammars/package.json",
+        "src/packages/tailscale/package.json"
+      ],
+      "matchPackageNames": ["@ai-ecoverse/**"],
       "automerge": false,
       "dependencyDashboardApproval": true
     }
