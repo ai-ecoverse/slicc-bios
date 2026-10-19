@@ -341,12 +341,53 @@ async function packages({ from, held = false, base = '' }, progress) {
 }
 
 const ROOTED = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc'];
+const RECEIPT = 'var/lib/slicc/rooted.json';
+
+async function bytesAt(path) {
+  try {
+    return await (await read(path)).arrayBuffer();
+  } catch {
+    return null;
+  }
+}
+
+const named = (hashed) =>
+  Object.fromEntries(hashed.map(({ path, sha256 }) => [path.split('/').pop(), sha256]));
 
 async function project(from, base) {
-  if (!base) return install({ from, files: ['package.json', 'pnpm-lock.yaml'] }, () => {});
+  if (!base) {
+    const { hashed } = await copy(
+      { from, to: '', files: ['package.json', 'pnpm-lock.yaml'] },
+      () => {}
+    );
+    await save(RECEIPT, JSON.stringify(named(hashed)));
+    return [];
+  }
   const files = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'];
-  await install({ from, to: `${base}/`, files }, () => {});
-  for (const name of ROOTED) await remove(name);
+  const { hashed } = await copy({ from, to: `${base}/`, files }, () => {});
+  return retireRoot(named(hashed));
+}
+
+async function retireRoot(deployed) {
+  const { sha256 } = await import(INTEGRITY);
+  const kept = await bytesAt(RECEIPT);
+  let receipt = {};
+  try {
+    receipt = kept ? JSON.parse(new TextDecoder().decode(kept)) : {};
+  } catch {
+    receipt = {};
+  }
+  const retired = [];
+  for (const name of ROOTED) {
+    const bytes = await bytesAt(name);
+    if (!bytes) continue;
+    const hash = await sha256(bytes);
+    if (hash !== deployed[name] && hash !== receipt[name]) continue;
+    await remove(name);
+    retired.push(`/${name}`);
+  }
+  if (kept) await remove(RECEIPT);
+  return retired;
 }
 
 async function outcome(ledger, prefix, task) {
@@ -406,10 +447,10 @@ async function replay(from, progress, base) {
     if (await stamp(stamps)) await marked([...fresh]);
     const restamped = await repair(entries, fresh);
     const deployed = new URL('./', from);
-    await project(deployed, base);
+    const retired = await project(deployed, base);
     await install({ from: deployed, to: 'var/lib/slicc/', files: ['pnpm-lock.yaml'] }, () => {});
     await ledger.bump('node_modules');
-    return { packages: total, downloaded, removed, bytes, restamped: restamped.length };
+    return { packages: total, downloaded, removed, bytes, restamped: restamped.length, retired };
   });
 }
 
