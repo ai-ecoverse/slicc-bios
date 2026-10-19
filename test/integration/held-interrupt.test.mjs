@@ -7,17 +7,20 @@ const chrome = await launch({ timeout: 120000 });
 after(() => chrome.close());
 
 const HOOK = `(() => {
-  const state = (globalThis.sliccHeld = { armed: false, shell: undefined, child: undefined, open: 0, closed: 0 });
+  const state = (globalThis.sliccHeld = { armed: false, shell: undefined, child: undefined, forking: 0, release: false, open: 0, closed: 0 });
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   globalThis[Symbol.for('slicc-kernel.test.syscall')] = async ({ pid, op }) => {
     if (!state.armed) return;
     if (op === 'proc-fork' && state.shell === undefined) {
       state.shell = pid;
+      state.forking = Date.now();
+      for (let waited = 0; !state.release && waited < 10000; waited += 10) await sleep(10);
       return;
     }
     if (state.shell !== undefined && pid !== state.shell && state.child === undefined && op === 'proc-setpgid') {
       state.child = pid;
       state.open = Date.now();
-      await new Promise((resolve) => setTimeout(resolve, 3000));
+      await sleep(300);
       state.closed = Date.now();
     }
   };
@@ -60,15 +63,14 @@ test('a ^C held while bash forks a foreground job stays with that job: the shell
   await shows(page, 'ready-42', 60000);
   await inWorker(session, 'globalThis.sliccHeld.armed = true');
   await run(page, 'sleep 1 && echo ran-$((40 + 2))');
-  const opened = await (async () => {
-    for (let tries = 0; tries < 200; tries += 1) {
-      const held = await inWorker(session, 'JSON.stringify(globalThis.sliccHeld)');
-      if (JSON.parse(held).open) return JSON.parse(held);
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    return JSON.parse(await inWorker(session, 'JSON.stringify(globalThis.sliccHeld)'));
-  })();
-  assert.ok(opened.open, `the forked child reached setpgid: ${JSON.stringify(opened)}`);
+  const held = async () =>
+    JSON.parse(await inWorker(session, 'JSON.stringify(globalThis.sliccHeld)'));
+  let forking = await held();
+  for (let tries = 0; tries < 400 && !forking.forking; tries += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    forking = await held();
+  }
+  assert.ok(forking.forking, `bash reached proc-fork: ${JSON.stringify(forking)}`);
   for (const type of ['keyDown', 'keyUp'])
     await page.send('Input.dispatchKeyEvent', {
       type,
@@ -77,7 +79,10 @@ test('a ^C held while bash forks a foreground job stays with that job: the shell
       modifiers: 2,
       windowsVirtualKeyCode: 67,
     });
-  await new Promise((resolve) => setTimeout(resolve, 3500));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await inWorker(session, 'globalThis.sliccHeld.release = true');
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+  t.diagnostic(JSON.stringify(await held()));
   await inWorker(session, 'globalThis.sliccHeld.armed = false');
   await run(page, 'echo after-$((40 + 2))');
   await shows(page, 'after-42', 60000).catch(async (error) => {
