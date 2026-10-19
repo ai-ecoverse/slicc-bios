@@ -100,10 +100,12 @@ test('seven stops restoring a file that changes again right after it put it back
   await run(page, `echo 'globalThis.__changed = 1;' >> /os/callback.js && echo first-$((40 + 2))`);
   await shows(page, 'first-42');
   await page.evaluate(() => {
+    window.stale = true;
     void fetch('/os/callback.js');
   });
-  await eventually(() => assert.ok(bios.states().includes('navigate:done')));
+  await page.until(() => !window.stale && location.pathname === '/os/');
   await ready(page);
+  await eventually(() => assert.ok(bios.states().includes('navigate:done')));
   assert.doesNotMatch(await read(page, 'os/callback.js'), /__changed/);
 
   await run(page, `echo 'globalThis.__changed = 2;' >> /os/callback.js && echo second-$((40 + 2))`);
