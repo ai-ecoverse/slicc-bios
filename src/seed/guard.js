@@ -966,7 +966,7 @@ class Guard {
         async () => {
           const why = await this.check(message);
           if (why) return this.refuse(message, why);
-          if (message.method === 'Target.createTarget' && message.params?.url) {
+          if (message.method === 'Target.createTarget' && typeof message.params?.url === 'string') {
             return this.create(message);
           }
           return this.pass(message);

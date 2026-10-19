@@ -135,16 +135,24 @@ export async function realExtension({
   const root = await unpacked(extension);
   const undisplay = realistic ? await display() : () => {};
   const upstream = { url: null };
-  const tls = await front(upstream);
-  const chrome = await launch({
-    realistic,
-    extensions: [root],
-    args: [
-      ...args,
-      '--ignore-certificate-errors',
-      `--host-resolver-rules=${[`MAP seven.sliccy.ai 127.0.0.1:${tls.port}`, ...rules].join(', ')}`,
-    ],
-  });
+  let tls;
+  let chrome;
+  try {
+    tls = await front(upstream);
+    chrome = await launch({
+      realistic,
+      extensions: [root],
+      args: [
+        ...args,
+        '--ignore-certificate-errors',
+        `--host-resolver-rules=${[`MAP seven.sliccy.ai 127.0.0.1:${tls.port}`, ...rules].join(', ')}`,
+      ],
+    });
+  } catch (error) {
+    tls?.close();
+    undisplay();
+    throw error;
+  }
   upstream.url = new URL(chrome.url);
   const close = chrome.close;
   chrome.close = async (...rest) => {
