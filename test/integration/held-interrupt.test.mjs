@@ -7,11 +7,11 @@ const chrome = await launch({ timeout: 120000 });
 after(() => chrome.close());
 
 const HOOK = `(() => {
-  const state = (globalThis.sliccHeld = { armed: false, shell: undefined, child: undefined, forking: 0, release: false, open: 0, closed: 0 });
+  const state = (globalThis.sliccHeld = { armed: false, bash: 0, shell: undefined, child: undefined, forking: 0, release: false, open: 0, closed: 0 });
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   globalThis[Symbol.for('slicc-kernel.test.syscall')] = async ({ pid, op }) => {
     if (!state.armed) return;
-    if (op === 'proc-fork' && state.shell === undefined) {
+    if (op === 'proc-fork' && pid === state.bash && state.shell === undefined) {
       state.shell = pid;
       state.forking = Date.now();
       for (let waited = 0; !state.release && waited < 10000; waited += 10) await sleep(10);
@@ -59,9 +59,11 @@ test('a ^C held while bash forks a foreground job stays with that job: the shell
   await boot(page);
   const session = await kernelWorker();
   assert.equal(await inWorker(session, HOOK), 'hooked');
-  await run(page, 'clear; echo ready-$((40 + 2))');
-  await shows(page, 'ready-42', 60000);
-  await inWorker(session, 'globalThis.sliccHeld.armed = true');
+  await run(page, 'clear; echo "bash-pid=[$$]-$((40 + 2))"');
+  await shows(page, ']-42', 60000);
+  const bash = Number((await screen(page)).match(/bash-pid=\[(\d+)\]/)?.[1]);
+  assert.ok(bash > 0, 'the terminal shell printed its pid');
+  await inWorker(session, `globalThis.sliccHeld.bash = ${bash}; globalThis.sliccHeld.armed = true`);
   await run(page, 'sleep 1 && echo ran-$((40 + 2))');
   const held = async () =>
     JSON.parse(await inWorker(session, 'JSON.stringify(globalThis.sliccHeld)'));
