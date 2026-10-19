@@ -657,3 +657,46 @@ test('a program WebSocket goes through the Tailscale exit to a tailnet peer, a s
     false
   );
 });
+
+const HOP = ['proxy-authorization', 'te', 'x-hop-secret'];
+
+test('hop-by-hop headers never reach a tailnet peer, through ipn.fetch or ipn.websocket: Proxy-Authorization, TE and a header named in Connection are dropped, others pass (wasm-tailscale#12)', {
+  skip: !(tailnetAvailable && (usable || online)),
+}, async (t) => {
+  const { tailnet, page } = await joinLocal(t, { handshakeMs: 5000 });
+  const sent = tailnet.peer.webSeen.length;
+  const fetched = await curled(
+    page,
+    `-H 'Proxy-Authorization: Basic aG9wOmhvcA==' -H 'TE: trailers' -H 'Connection: X-Hop-Secret' -H 'X-Hop-Secret: tide' -H 'X-Kept: harbor' ${tailnet.peer.web}hop`,
+    'ts-hop'
+  );
+  assert.match(fetched.body, /hello from the local tailnet/);
+  const http = tailnet.peer.webSeen.slice(sent).find((seen) => seen.url === '/hop');
+  assert.ok(http, JSON.stringify(tailnet.peer.webSeen.slice(sent)));
+  console.log(JSON.stringify({ hopHttp: Object.keys(http.headers) }));
+  for (const name of HOP)
+    assert.equal(http.headers[name], undefined, `${name} reached the peer over ipn.fetch`);
+  assert.equal(http.headers['x-kept'], 'harbor');
+
+  await page.evaluate(async (script) => {
+    const home = await (await navigator.storage.getDirectory()).getDirectoryHandle('home');
+    const writable = await (await home.getFileHandle('ws.sh', { create: true })).createWritable();
+    await writable.write(script);
+    await writable.close();
+  }, WS_SCRIPT);
+  const before = tailnet.peer.wsSeen.length;
+  const opened = await curled(
+    page,
+    '',
+    'ts-ws-hop',
+    `bash /home/ws.sh '${tailnet.peer.ws}' '' 'Proxy-Authorization: Basic aG9wOmhvcA==\\r\\nTE: trailers\\r\\nConnection: X-Hop-Secret\\r\\nX-Hop-Secret: tide\\r\\nX-Kept: harbor\\r\\n' '' '' 10 > /home/ts-ws-hop.txt`
+  );
+  assert.ok(opened.body.startsWith(hex('HTTP/1.1 101 Switching Protocols')), opened.body);
+  const ws = tailnet.peer.wsSeen[before];
+  assert.ok(ws, 'the handshake reached the peer');
+  console.log(JSON.stringify({ hopWs: Object.keys(ws.headers) }));
+  for (const name of HOP)
+    assert.equal(ws.headers[name], undefined, `${name} reached the peer over ipn.websocket`);
+  assert.equal(ws.headers['x-kept'], 'harbor');
+  assert.deepEqual(page.errors, []);
+});
