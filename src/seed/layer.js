@@ -208,9 +208,10 @@ async function install(root, project, found, { start, report, certs }) {
     await write(root, `${folder}/pnpm-workspace.yaml`, workspace);
   }
   const to = base.dependencies?.[project.primary];
+  const step = (progress) => report(to ? { ...progress, to } : progress);
   const kernel = await start();
   try {
-    const error = plain ? null : await relaxed(kernel, root, project, report, to, lock, certs);
+    const error = plain ? null : await relaxed(kernel, root, project, step, to, lock, certs);
     if (!plain && !error) {
       await readable(kernel, `/${folder}`);
       return { wanted, error };
@@ -219,7 +220,7 @@ async function install(root, project, found, { start, report, certs }) {
       await write(root, `${folder}/package.json`, baseText);
       await write(root, `${folder}/pnpm-lock.yaml`, lock);
     }
-    await pnpm(kernel, `/${folder}`, report, to);
+    await pnpm(kernel, `/${folder}`, step, to);
     await readable(kernel, `/${folder}`);
     return { wanted: error ? baseText : wanted, error };
   } finally {

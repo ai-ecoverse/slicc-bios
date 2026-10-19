@@ -128,13 +128,14 @@ export function createUpdates({ ready = false, now = Date.now } = {}) {
       await handler(id);
     },
     track(id) {
-      return ({ progress, log }) =>
+      return ({ progress, log, to }) =>
         port.set(id, {
           state: progress ? RUNNING[progress.phase] : 'checking',
           progress,
           log: log || undefined,
           error: null,
           actions: [],
+          ...(to ? { to } : {}),
         });
     },
     checked(id, patch = {}) {

@@ -3,8 +3,8 @@ import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
 import { confirm, secretRules, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
 import { sealedLogin, signIn } from './adobe.js';
 import {
-  installed as agentInstalled,
   project as agentProject,
+  startable as agentStartable,
   version as agentVersion,
   bridgeAgent,
   deliverWebhook,
@@ -540,6 +540,12 @@ async function offerChat() {
     const changed = await installAgent(start, { report: updates.track('agent'), refuse });
     await listOwn();
     const at = await agentVersion();
+    if (changed)
+      updates.checked('agent', {
+        state: 'installed',
+        from: agent === null ? at : updates.get('agent').from,
+        to: at,
+      });
     const running = agent && (await agent);
     if (running && (await recorded()) !== startedWith) {
       updates.checked('agent', {
@@ -550,7 +556,7 @@ async function offerChat() {
       });
       return;
     }
-    updates.checked('agent', changed ? { state: 'installed', from: at, to: at } : {});
+    if (!changed) updates.checked('agent', {});
     await startOnce();
   } catch (error) {
     updates.fail('agent', error);
@@ -757,7 +763,7 @@ async function own() {
     traits: reach.transport.traits,
     install: installTailnet,
   });
-  if (await agentInstalled()) void startOnce();
+  if (await agentStartable()) void startOnce();
   if (await installed()) app.grammarBase = grammarBase;
   optional = offerPackages();
   document.addEventListener('visibilitychange', () => {

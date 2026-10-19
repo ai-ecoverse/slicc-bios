@@ -1,12 +1,14 @@
 import { apply } from './layer.js';
 import { failure } from './link.js';
+import { compare } from './packages.js';
 import { BIOS } from './site.js';
-import { text, versions } from './update.js';
+import { fetchText, text, versions } from './update.js';
 import { kernelSource } from './users.js';
 import { takesVault } from './vault.js';
 
 const deployed = new URL('packages/agent/', BIOS);
 const PACKAGE = '@ai-ecoverse/slicc-agent';
+const HELD = '3.27.0';
 export const folder = 'opt/agent';
 const state = 'var/lib/slicc/agent';
 const receipt = `${state}/pnpm-lock.yaml`;
@@ -28,8 +30,11 @@ export async function recorded() {
   return lock === null ? null : lock + ((await text(root, `${state}/applied.json`)) ?? '');
 }
 
-export async function installed() {
-  return (await recorded()) !== null;
+export async function startable() {
+  const lock = await text(await navigator.storage.getDirectory(), receipt);
+  const at = await version();
+  if (lock === null || at === null || compare(at, HELD) < 0) return false;
+  return (await fetchText('pnpm-lock.yaml', deployed).catch(() => lock)) === lock;
 }
 
 export async function version() {
