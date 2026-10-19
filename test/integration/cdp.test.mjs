@@ -278,7 +278,9 @@ for (const extension of EXTENSIONS) {
   });
 }
 
-for (const extension of EXTENSIONS.filter(({ version }) => version >= '7.6.3')) {
+for (const extension of EXTENSIONS.filter(
+  ({ version }) => version.localeCompare('7.6.3', undefined, { numeric: true }) >= 0
+)) {
   test(`headed, real slicc-extension ${extension.version}: an agent tab or window opens behind seven, which keeps rendering, the tab still screencasts and screenshots, and activate brings it forward`, {
     timeout: 10 * 60 * 1000,
   }, async (t) => {
