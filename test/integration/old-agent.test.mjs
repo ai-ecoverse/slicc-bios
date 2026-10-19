@@ -5,17 +5,17 @@ import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harne
 import { agentUp, connectAccount, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
+import { shoot } from './shots.mjs';
 
 const KEY = 'dummy-bedrock-key-0000';
 const BEDROCK = 'https://bedrock-runtime.us-west-2.amazonaws.com/';
-const OLD_VERSION = '3.26.0';
-const OLD = new URL(`fixtures/agent-${OLD_VERSION}/`, import.meta.url);
-const OLD_AGENT = Object.fromEntries(
-  ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'].map((file) => [
-    `/packages/agent/${file}`,
-    readFileSync(new URL(file, OLD), 'utf8'),
-  ])
-);
+const deployed = (version) =>
+  Object.fromEntries(
+    ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'].map((file) => [
+      `/packages/agent/${file}`,
+      readFileSync(new URL(`fixtures/agent-${version}/${file}`, import.meta.url), 'utf8'),
+    ])
+  );
 const NEW_VERSION = JSON.parse(
   readFileSync(new URL('../../src/packages/agent/package.json', import.meta.url), 'utf8')
 ).dependencies['@ai-ecoverse/slicc-agent'];
@@ -76,9 +76,14 @@ const helpers = () => {
       .join('');
   window.chatView = () => {
     const dock = document.querySelector('slicc-app').dock;
-    const id = dock.api.panels.map((panel) => panel.id).find((panel) => panel.startsWith('chat:'));
-    return id ? dock.content(id) : null;
+    const ids = dock.api.panels.map((panel) => panel.id);
+    const chats = [
+      ...ids.filter((id) => id.startsWith('chat:')),
+      ...ids.filter((id) => id === 'chat'),
+    ];
+    return chats.map((id) => dock.content(id)).find((view) => view?.shadowRoot) ?? null;
   };
+
   window.readOpfs = async (path) => {
     const parts = path.split('/').filter(Boolean);
     const name = parts.pop();
@@ -96,6 +101,11 @@ const helpers = () => {
         '{}'
     ).version ?? null;
   window.agentRows = [];
+  window.installNotice = () =>
+    document
+      .querySelector('slicc-app')
+      ?.model?.notices?.list?.()
+      .find((notice) => notice.id.startsWith('agent:installing:')) ?? null;
   const watch = () => {
     const updates = document.querySelector('slicc-app')?.model?.updates;
     if (!updates?.on) return setTimeout(watch, 20);
@@ -103,7 +113,7 @@ const helpers = () => {
       const { state, from, to } = updates.list().find((item) => item.id === 'agent');
       const last = window.agentRows.at(-1);
       if (last?.state !== state || last?.from !== from || last?.to !== to)
-        window.agentRows.push({ state, from, to });
+        window.agentRows.push({ state, from, to, at: Date.now() });
     };
     note();
     updates.on('items', note);
@@ -111,35 +121,61 @@ const helpers = () => {
   watch();
 };
 
-test(`a profile whose /opt/agent holds slicc-agent ${OLD_VERSION}, which takes the slicc-agent lock itself and ignores held, updates to seven's agent and starts its chat without a reload, and the row shows ${OLD_VERSION} → the new version while it installs`, {
-  timeout: 40 * 60 * 1000,
-}, async (t) => {
+async function updated(t, old) {
   const page = await chrome.page(t);
   await page.init(helpers);
-  for (const [path, body] of Object.entries(OLD_AGENT)) chrome.overrides.set(path, body);
+  const fixture = deployed(old);
+  for (const [path, body] of Object.entries(fixture)) chrome.overrides.set(path, body);
   t.after(() => {
-    for (const path of Object.keys(OLD_AGENT)) chrome.overrides.delete(path);
+    for (const path of Object.keys(fixture)) chrome.overrides.delete(path);
   });
   await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
   await ready(page);
-  const oldLock = OLD_AGENT['/packages/agent/pnpm-lock.yaml'];
   await page.within(
     INSTALL,
-    async (lock) =>
-      (await window.installedAgent()) === '3.26.0' &&
+    async (old, lock) =>
+      (await window.installedAgent()) === old &&
       (await window.readOpfs('/var/lib/slicc/agent/pnpm-lock.yaml')) === lock,
-    oldLock
+    old,
+    fixture['/packages/agent/pnpm-lock.yaml']
   );
   const owner = await page.evaluate(() =>
     window.readOpfs('/opt/agent/node_modules/@ai-ecoverse/slicc-agent/dist/owner.js')
   );
-  assert.match(owner, /const release = await holdLock\(/);
-  assert.doesNotMatch(owner, /options\.held/);
 
-  for (const path of Object.keys(OLD_AGENT)) chrome.overrides.delete(path);
+  for (const path of Object.keys(fixture)) chrome.overrides.delete(path);
+  const reloaded = Date.now();
   await page.reload();
   await ready(page);
-  await agentUp(page, { label: `agent after ${OLD_VERSION}` });
+  await page.within(INSTALL, () =>
+    ['downloading', 'linking'].includes(
+      document
+        .querySelector('slicc-app')
+        .model.updates.list()
+        .find((item) => item.id === 'agent').state
+    )
+  );
+  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
+  await page.until(() => !!window.chatView()?.shadowRoot && !!window.installNotice());
+  const notice = await page.evaluate(() => window.installNotice());
+  assert.equal(notice.title, 'Seven is updating its agent');
+  assert.equal(
+    notice.body,
+    `The chat starts once agent ${NEW_VERSION} is installed. Install / Update shows how far it is.`
+  );
+  const shown = await page.until(() => {
+    const text = window.deepText(window.chatView().shadowRoot);
+    return text.includes('Seven is updating its agent') && text;
+  });
+  assert.match(
+    shown,
+    new RegExp(`The chat starts once agent ${NEW_VERSION.replaceAll('.', '\\.')} is installed`)
+  );
+  assert.doesNotMatch(shown, /Couldn|failed|error/i);
+  await shoot(page, `updating-from-${old}`, { show: 'chat' });
+
+  await agentUp(page, { label: `agent after ${old}` });
+  const up = Date.now();
   const row = await page.evaluate(() =>
     document
       .querySelector('slicc-app')
@@ -155,7 +191,7 @@ test(`a profile whose /opt/agent holds slicc-agent ${OLD_VERSION}, which takes t
   );
   assert.ok(installing.length > 0, JSON.stringify(seen));
   assert.ok(
-    installing.some(({ from, to }) => from === OLD_VERSION && to === NEW_VERSION),
+    installing.some(({ from, to }) => from === old && to === NEW_VERSION),
     JSON.stringify(seen)
   );
   const locks = await page.evaluate(async () => {
@@ -166,12 +202,19 @@ test(`a profile whose /opt/agent holds slicc-agent ${OLD_VERSION}, which takes t
     };
   });
   assert.deepEqual(locks, { held: 1, pending: 0 });
+  await page.until(() => window.installNotice() === null);
+  const started = installing[0].at;
+  const done = seen.find(({ state, at }) => state === 'installed' && at >= started)?.at ?? up;
+  t.diagnostic(
+    `agent ${old} → ${NEW_VERSION} in place: chat up ${up - reloaded} ms after the reload, the install took ${done - started} ms`
+  );
 
   await connectAccount(page, 'amazon-bedrock', KEY);
   await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
-  await page.until(
-    () => !!window.chatView() && !!window.deep(window.chatView().shadowRoot, 'textarea')
-  );
+  await page.until(() => {
+    const chat = window.chatView();
+    return !!chat?.shadowRoot && !!window.deep(chat.shadowRoot, 'textarea');
+  });
   await page.evaluate(() => window.deep(window.chatView().shadowRoot, 'textarea').focus());
   await page.insert('Say hello');
   await page.enter();
@@ -179,4 +222,20 @@ test(`a profile whose /opt/agent holds slicc-agent ${OLD_VERSION}, which takes t
     window.deepText(window.chatView().shadowRoot).includes('Hello from the new agent.')
   );
   assert.deepEqual(page.errors, []);
+  return { owner };
+}
+
+test("slicc-agent 3.26.0, which ignores held, updates to seven's agent and its chat starts without a reload; meanwhile the row shows 3.26.0 → new and the chat says it's updating", {
+  timeout: 40 * 60 * 1000,
+}, async (t) => {
+  const { owner } = await updated(t, '3.26.0');
+  assert.match(owner, /const release = await holdLock\(/);
+  assert.doesNotMatch(owner, /options\.held/);
+});
+
+test("an in-place update from slicc-agent 5.0.3, which honours held, starts the chat on seven's agent, and the chat says it's updating meanwhile", {
+  timeout: 40 * 60 * 1000,
+}, async (t) => {
+  const { owner } = await updated(t, '5.0.3');
+  assert.match(owner, /options\.held/);
 });
