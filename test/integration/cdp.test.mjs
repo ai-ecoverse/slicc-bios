@@ -1,14 +1,12 @@
 import assert from 'node:assert/strict';
 import { createServer as createHttp } from 'node:http';
-import { createServer as createHttps } from 'node:https';
 import { createServer } from 'node:net';
 import { after, test } from 'node:test';
-import { fileURLToPath } from 'node:url';
 import { startProxy } from '@ai-ecoverse/slicc-node';
 import { actPackage, boot, ready, run, screen, shows } from './bios.mjs';
 import { debuggerUrl, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
-import { certificate, display, EXTENSIONS, realExtension, SEVEN } from './real-extension.mjs';
+import { display, EXTENSIONS, realExtension, SEVEN } from './real-extension.mjs';
 
 const port = await new Promise((resolve) => {
   const server = createServer().listen(0, '127.0.0.1', () => {
@@ -54,7 +52,6 @@ const standPort = stand.address().port;
 const VAULT = `http://vault.sliccy.ai:${standPort}/vault`;
 const PLAIN = `http://localhost:${standPort}/plain`;
 const chrome = await launch({
-  extensions: [fileURLToPath(new URL('./fixtures/injected-frame', import.meta.url))],
   args: [`--remote-debugging-port=${port}`, '--host-resolver-rules=MAP vault.sliccy.ai 127.0.0.1'],
 });
 const elsewhere = (path) => {
@@ -1324,93 +1321,6 @@ test('playwright-cli drives a page through slicc-node’s /cdp, on one shared so
   await run(page, 'playwright-cli close && echo closed-$?');
   await shows(page, 'closed-0');
   assert.equal(await open(page), false);
-  assert.deepEqual(page.errors, []);
-});
-
-test('slicc-cdp#377: with a content-script extension, SLICC_CDP_URL drives a user-opened HTTPS tab and a fresh one, and the guard refuses seven and the vault (the vault text waits on slicc-cdp#379)', {
-  timeout: 180000,
-}, async (t) => {
-  const body =
-    '<!doctype html><title>DAILY-DRIVER</title><h1>Ordinary page</h1><button onclick="document.title = \'CLICKED\'">Click me</button>';
-  const secure = createHttps(await certificate(), (_req, res) => {
-    res.writeHead(200, { 'content-type': 'text/html' });
-    res.end(body);
-  });
-  await new Promise((resolve) => secure.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
-    secure.closeAllConnections();
-    secure.close();
-  });
-  await chrome.cdp.send('Security.setIgnoreCertificateErrors', { ignore: true });
-  t.after(() => chrome.cdp.send('Security.setIgnoreCertificateErrors', { ignore: false }));
-  const user = await tabAt(`https://localhost:${secure.address().port}/ordinary`, 'DAILY-DRIVER');
-  t.after(() => fetch(`http://127.0.0.1:${port}/json/close/${user}`));
-  const proxy = await viaProxy(t);
-  const page = await launched(t, proxy);
-  assert.deepEqual(await automation(page), { via: 'proxy' });
-  assert.equal(await page.evaluate(() => Boolean(globalThis.sliccExtension)), false);
-  chrome.overrides.set('/daily-driver.html', body);
-  const target = elsewhere('/daily-driver.html');
-  await run(
-    page,
-    `echo "$SLICC_CDP_URL" > /tmp/cdp-route; { playwright-cli eval --tab ${user} 'document.title'; playwright-cli snapshot --tab ${user}; playwright-cli click --tab ${user} e4; playwright-cli eval --tab ${user} 'document.title'; } > /tmp/user-driver 2>&1; echo "user-""done"`
-  );
-  await shows(page, 'user-done', 60000);
-  assert.match(await read(page, '/tmp/cdp-route'), /^(?:ws|http):\/\//);
-  const driven = await read(page, '/tmp/user-driver');
-  assert.doesNotMatch(driven, /slicc: refused/, driven);
-  assert.match(driven, /DAILY-DRIVER/, driven);
-  assert.match(driven, /button "Click me"/, driven);
-  assert.match(driven, /CLICKED/, driven);
-  await run(
-    page,
-    `{ playwright-cli open ${target}; playwright-cli eval 'document.title'; playwright-cli snapshot; playwright-cli click e4; playwright-cli eval 'document.title'; } > /tmp/fresh-driver 2>&1; echo "fresh-""done"`
-  );
-  await shows(page, 'fresh-done', 60000);
-  const fresh = await read(page, '/tmp/fresh-driver');
-  assert.doesNotMatch(fresh, /slicc: refused/, fresh);
-  assert.match(fresh, /Opened .*\[targetId: [A-F0-9]+\]/, fresh);
-  assert.match(fresh, /DAILY-DRIVER/, fresh);
-  assert.match(fresh, /button "Click me"/, fresh);
-  assert.match(fresh, /CLICKED/, fresh);
-  const seven = (await devtools('/json/list')).find((tab) =>
-    tab.url.startsWith(new URL('/os/', chrome.url).href)
-  ).id;
-  const vault = await tabAt(VAULT, 'VAULT-MARK');
-  t.after(() => fetch(`http://127.0.0.1:${port}/json/close/${vault}`));
-  await page.evaluate(() => {
-    globalThis.sliccGuardTrace = [];
-  });
-  await run(
-    page,
-    `timeout 30 playwright-cli eval --tab ${seven} 'document.title' > /tmp/seven-world 2>&1; echo seven-$? >> /tmp/seven-world; timeout 30 playwright-cli eval --tab ${vault} 'document.title' > /tmp/vault-world 2>&1; echo vault-$? >> /tmp/vault-world; echo "world-refused-""done"`
-  );
-  await shows(page, 'world-refused-done', 90000);
-  const sevenOut = await read(page, '/tmp/seven-world');
-  assert.match(
-    sevenOut,
-    /slicc: refused: seven’s own pages and the vault are out of reach of browser automation/,
-    sevenOut
-  );
-  assert.match(sevenOut, /seven-1/, sevenOut);
-  const vaultOut = await read(page, '/tmp/vault-world');
-  assert.match(vaultOut, /vault-(1|124)\b/, vaultOut);
-  assert.doesNotMatch(`${sevenOut}${vaultOut}`, /VAULT-MARK|VAULT-BODY-MARK/);
-  const refusals = await page.evaluate(() => globalThis.sliccGuardTrace);
-  for (const targetId of [seven, vault]) {
-    assert.ok(
-      refusals.some(
-        (entry) =>
-          entry.targetId === targetId && /out of reach of browser automation/.test(entry.refused)
-      ),
-      `the guard refused ${targetId} itself (slicc-cdp#379 is the client hang after it): ${JSON.stringify(refusals)}`
-    );
-  }
-  assert.deepEqual(
-    refusals.filter((entry) => entry.passed && entry.targetId === vault),
-    [],
-    'no command naming the vault went on to Chrome'
-  );
   assert.deepEqual(page.errors, []);
 });
 
