@@ -390,7 +390,7 @@ test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback
   assert.deepEqual(through, { code: '0', out: 'raw 203.0.113.7:80 /far' });
   await page.reload();
   await ready(page);
-  assert.deepEqual(await network(), { exit: { kind: 'link', id: 'local' } });
+  assert.deepEqual(await network(), { exit: { kind: 'link', id: 'local' }, devices: [] });
   const heldBack = await shell(
     page,
     "curl -s --noproxy '*' --max-time 5 http://far.example/far",

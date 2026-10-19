@@ -69,6 +69,9 @@ const NETWORK = [
   'disconnectLeader',
   'reconnectLeader',
   'forgetLeader',
+  'pairComputer',
+  'confirmPairing',
+  'cancelPairing',
 ];
 
 export function serveNetwork(port) {

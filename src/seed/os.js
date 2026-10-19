@@ -42,6 +42,7 @@ import { createFolders, KEY, offTheRecord } from './mounts.js';
 import { createNetwork } from './network.js';
 import { createNotices, reportRepairs, reportStopped } from './notices.js';
 import { createPackages, globalDir, loadCatalog, writeListing } from './packages.js';
+import { createPairing, takePairing } from './pair.js';
 import {
   biosHash,
   mirrorNetwork,
@@ -111,6 +112,7 @@ import {
 } from './vault.js';
 
 const prompts = installPrompts();
+let unoffered = takePairing();
 
 export const layouts = {
   agents: { side: 'left', open: ['tablet', 'desktop'] },
@@ -176,7 +178,8 @@ function linkFolders(link) {
     });
   return list.length ? { folders: list } : {};
 }
-const allowedRemotely = (link) => link.mode === 'local' || Boolean(tray?.controlAllowed(link.id));
+const allowedRemotely = (link) =>
+  (link.mode === 'local' && !link.paired) || Boolean(tray?.controlAllowed(link.id));
 let followers = null;
 const links = createLinks({
   router: exits,
@@ -189,19 +192,21 @@ const links = createLinks({
   describe: (link) =>
     link.kind === 'seven'
       ? followers.describe(link)
-      : {
-          kind: 'cli',
-          access:
-            link.mode === 'local'
-              ? { control: true, fixed: true }
-              : { control: allowedRemotely(link) },
-          control:
-            link.mode === 'local'
-              ? { allowed: true, fixed: true }
-              : { allowed: allowedRemotely(link) },
-          ...(remote.controlling(link) ? { controlling: remote.controlling(link) } : {}),
-          ...linkFolders(link),
-        },
+      : link.paired
+        ? { kind: 'cli', ...pairing.describe(link), ...linkFolders(link) }
+        : {
+            kind: 'cli',
+            access:
+              link.mode === 'local'
+                ? { control: true, fixed: true }
+                : { control: allowedRemotely(link) },
+            control:
+              link.mode === 'local'
+                ? { allowed: true, fixed: true }
+                : { allowed: allowedRemotely(link) },
+            ...(remote.controlling(link) ? { controlling: remote.controlling(link) } : {}),
+            ...linkFolders(link),
+          },
   name: `seven on ${location.host}`,
   makePeer: (config) => new RTCPeerConnection(config),
   kernel: () => kernel,
@@ -210,6 +215,7 @@ const links = createLinks({
     trustHostKey(kernel, link, peer).catch((error) => console.warn(`link: ${error.message}`));
   },
 });
+const pairing = createPairing({ links });
 const hub = location.hostname.endsWith('.sliccy.ai')
   ? location.origin
   : localStorage.getItem(TRAY_HUB_KEY);
@@ -247,6 +253,7 @@ const reach = createNetwork(network, {
   router: exits,
   links,
   tray,
+  pairing,
   leaders,
   linkedFolders: {
     mount: (source) => folders.mountLinked(source),
@@ -332,6 +339,37 @@ function base(os) {
     tray: trayPort(network, { name: `seven on ${location.host}` }),
   };
 }
+
+export const SKEWED =
+  'Another SLICC tab runs a different version, so this tab can’t link slicc. Reload the SLICC tabs, then open the pairing link again.';
+export const UNATTACHED =
+  'This tab couldn’t reach the tab running SLICC, so it can’t link slicc. Open the pairing link in that tab.';
+
+function pairingTab(failed) {
+  const { role, skew } = tabs.state();
+  if (claimed.owner || role === 'owner') return 'here';
+  if (skew) return SKEWED;
+  return role === 'follower' ? 'here' : failed ? UNATTACHED : null;
+}
+
+async function offerPairing(failed = false) {
+  const text = unoffered;
+  const where = pairingTab(failed);
+  if (!text || !where) return;
+  unoffered = null;
+  if (where !== 'here') pairing.refuse(where);
+  else
+    await app.model.network
+      ?.pairComputer?.(text, { arrived: true })
+      .catch((error) => console.warn(`pairing: ${error.message}`));
+  app.show('network');
+}
+
+tabs.on('tabs', () => void offerPairing());
+globalThis.addEventListener?.('hashchange', () => {
+  unoffered = takePairing() ?? unoffered;
+  void offerPairing();
+});
 
 async function followerShell(link, meta, stream) {
   const client = await attachKernel(await kernel.connect({ tag: followerTag(link.id) }));
@@ -697,6 +735,7 @@ async function own() {
   keepSudoGid(localStorage, gid);
   void vault.sudoGid(gid);
   installLocal(links);
+  pairing.start();
   tray?.start();
   leaders.start();
   if (network.status?.probe?.kernelTunnel) openTunnel(kernel, network.proxy);
@@ -767,7 +806,10 @@ async function follow() {
     login,
     disk: () => biosHash(read),
   });
+  const attached = presentation.next();
   void presentation.attach();
+  void offerPairing();
+  void Promise.resolve(attached).then(() => offerPairing(true));
 }
 
 async function alone() {

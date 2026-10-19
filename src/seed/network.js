@@ -90,7 +90,7 @@ function leaderActions(leaders, emit) {
   };
 }
 
-function exitActions({ router, links, tray, tailnet, storage, linkedFolders }, emit) {
+function exitActions({ router, links, tray, pairing, tailnet, storage, linkedFolders }, emit) {
   if (!router || !links) return {};
   const remember = (id) => {
     if (id) storage.setItem(EXIT_KEY, id);
@@ -120,7 +120,8 @@ function exitActions({ router, links, tray, tailnet, storage, linkedFolders }, e
       emit();
     },
     async unlink(id) {
-      if (tray?.known(id)) await tray.forget(id);
+      if (pairing?.known(id)) await pairing.forget(id);
+      else if (tray?.known(id)) await tray.forget(id);
       else links.drop(id, 'unlinked');
       if (router.chosen() === `link:${id}`) {
         router.choose(null);
@@ -150,6 +151,7 @@ function exitActions({ router, links, tray, tailnet, storage, linkedFolders }, e
           retryLinks: async () => {
             tray.stop();
             tray.start();
+            pairing?.wake();
           },
           stopLinks: async () => {
             tray.stop();
@@ -165,6 +167,25 @@ function exitActions({ router, links, tray, tailnet, storage, linkedFolders }, e
           },
         }
       : {}),
+    ...(pairing ? pairingActions(pairing, emit, tray) : {}),
+  };
+}
+
+function pairingActions(pairing, emit, tray) {
+  return {
+    pairComputer: async (url, options) => {
+      await pairing.begin(url, options);
+      emit();
+    },
+    confirmPairing: async () => {
+      await pairing.confirm();
+      emit();
+    },
+    cancelPairing: async () => {
+      await pairing.cancel();
+      emit();
+    },
+    ...(tray ? {} : { retryLinks: async () => pairing.wake() }),
   };
 }
 
@@ -186,6 +207,7 @@ export function createNetwork(choice, options = {}) {
   let failures = [];
   let failing = false;
   let state = choice;
+  const away = () => [...(options.tray?.away() ?? []), ...(options.pairing?.away() ?? [])];
 
   const status = () => {
     const route = ROUTE[state.kind];
@@ -218,30 +240,29 @@ export function createNetwork(choice, options = {}) {
     const exit = options.router ? currentExit(options.router, null) : null;
     if (exit?.kind !== 'link' || !options.links) return {};
     const { id } = exit;
-    const devices = [...options.links.devices(), ...(options.tray?.away() ?? [])];
+    const devices = [...options.links.devices(), ...away()];
     const connected = devices.some((item) => item.id === id && item.state === 'connected');
     return { route: 'link', health: connected ? 'ok' : 'failing', detail: null };
   };
   const linkStatus = () => {
     if (!options.links || !options.router) return {};
-    const devices = distinct(
-      mergeDevices([...options.links.devices(), ...(options.tray?.away() ?? [])])
-    );
+    const devices = distinct(mergeDevices([...options.links.devices(), ...away()]));
     const exit = currentExit(options.router, options.tailnet?.status());
     const sync = options.tray?.status() ?? {};
     const { joinUrl = null, joinCommand = null, webhookUrl = null, followUrl } = sync;
+    const { pairing } = options;
     return {
       exit,
-      ...(devices.length || options.tray
+      ...(devices.length || options.tray || pairing
         ? {
             links: {
-              joinUrl,
-              joinCommand,
+              ...(options.tray ? { joinUrl, joinCommand } : {}),
               ...(followUrl !== undefined ? { followUrl } : {}),
               devices,
-              permission: null,
+              permission: pairing?.permission() ?? null,
               webhookUrl,
               ...(options.tray ? { sync: sync.state } : {}),
+              ...(pairing ? { pairing: pairing.status() } : {}),
             },
           }
         : {}),
@@ -311,6 +332,7 @@ export function createNetwork(choice, options = {}) {
   options.tailnet?.on(emit);
   options.links?.on(emit);
   options.tray?.on(emit);
+  options.pairing?.on(emit);
   options.leaders?.on(emit);
   return { port, transport };
 }
