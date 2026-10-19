@@ -284,6 +284,9 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   await page.init(helpers);
   await page.init(storageStub);
   await page.init(signInWindows);
+  await page.init(() => {
+    globalThis.sliccKernelDebug = true;
+  });
   await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
   await ready(page);
   await page.evaluate(
@@ -560,9 +563,27 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     new URL('../../src/packages/agent/pnpm-lock.yaml', import.meta.url),
     'utf8'
   );
+  await page.evaluate(async () => {
+    const client = await globalThis.sliccKernelClient();
+    window.kernelSaw = [];
+    await client.fs.watch(['/var/lib/slicc/agent'], { recursive: true }, ({ paths = [] }) =>
+      window.kernelSaw.push(...paths)
+    );
+  });
   chrome.overrides.set('/packages/agent/pnpm-lock.yaml', `${lock}# updated\n`);
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await page.within(UPDATE, () => window.agentRow().state === 'ready');
+  await page
+    .within(5000, () =>
+      ['applied.json', 'pnpm-lock.yaml'].every((name) =>
+        window.kernelSaw.some((path) => path.endsWith(`/var/lib/slicc/agent/${name}`))
+      )
+    )
+    .catch(async (error) => {
+      throw new Error(
+        `the running kernel never saw seven's own writes under /var/lib/slicc/agent: ${error.message}\nsaw ${JSON.stringify(await page.evaluate(() => window.kernelSaw))}`
+      );
+    });
   assert.deepEqual(await page.evaluate(() => [window.agentRow().actions, window.updatesOpen()]), [
     ['restart-agent'],
     false,
