@@ -505,6 +505,18 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
     );
   });
   assert.match(await guestSaid(guest), /Hello from the owner\./);
+  assert.deepEqual(
+    await guest.evaluate(() => {
+      const { model } = document.querySelector('slicc-chat');
+      return {
+        updates: typeof model.updates,
+        developer: localStorage.getItem('slicc-os.developer'),
+        beta: localStorage.getItem('slicc-os.beta'),
+      };
+    }),
+    { updates: 'undefined', developer: null, beta: null },
+    'a guest has no updates port, so it can’t turn on developer mode or install a beta'
+  );
   assert.equal(
     await guest.evaluate(() => {
       const text = (root) =>

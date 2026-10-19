@@ -3,6 +3,7 @@ import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
 import { confirm, secretRules, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
 import { sealedLogin, signIn } from './adobe.js';
 import {
+  deployed as agentDeployed,
   project as agentProject,
   startable as agentStartable,
   version as agentVersion,
@@ -18,6 +19,7 @@ import {
   whenIdle,
 } from './agent.js';
 import { createApprovals, rootChecked, routeSudo, useSecretRules } from './approvals.js';
+import { createBetas } from './beta.js';
 import { createBrowser } from './browser.js';
 import { browserControl } from './cdp.js';
 import { clipboardHook } from './clipboard.js';
@@ -297,7 +299,7 @@ const board = shared
   : localBoard({ versions: mine });
 document.addEventListener('visibilitychange', () => board.show(visible()));
 const claimed = await claim();
-const updates = createUpdates();
+const updates = createUpdates({ developer: true });
 const notices = createNotices();
 reportRepairs(notices);
 reportStopped(notices);
@@ -332,6 +334,16 @@ let optional = Promise.resolve(null);
 let coneIds = null;
 
 const start = Object.assign(async () => kernel, { shared: true });
+const betas = createBetas({
+  root,
+  kernel: start,
+  updates,
+  notices,
+  ask: confirm,
+  reinstall: offerChat,
+  installed: agentVersion,
+  from: agentDeployed,
+});
 
 function base(os) {
   const network = os ? mirrorNetwork(os, reach.port) : reach.port;
@@ -561,7 +573,9 @@ function agentReport() {
 
 async function offerChat() {
   try {
-    const changed = await installAgent(start, { report: agentReport(), refuse });
+    const changed = await betas.apply((source) =>
+      installAgent(start, { report: agentReport(), refuse, ...source })
+    );
     await listOwn();
     const at = await agentVersion();
     if (changed)
@@ -642,6 +656,7 @@ async function check() {
   await checkPackages();
   await yours.tidy().catch((error) => console.warn(`your packages: ${error.message}`));
   await offerChat();
+  await betas.check();
   await installGrammars();
   await updateTailnet();
   await (await optional)?.refresh().catch(() => undefined);
@@ -696,6 +711,7 @@ async function rows() {
   updates.set('bios', { from: others, to: others });
   const waiting = (at) => ({ from: at, to: at, state: at ? 'current' : 'queued' });
   updates.set('agent', waiting(await agentVersion()));
+  betas.show();
   updates.set('grammars', waiting(await grammarsVersion()));
   const tailscaleAt = await tailscaleVersion();
   updates.set('tailscale', { from: tailscaleAt, to: tailscaleAt });

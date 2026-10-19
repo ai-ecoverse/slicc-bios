@@ -1,0 +1,322 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
+import { after, test } from 'node:test';
+import { agentUp, boot, ready, rowSettled, run, screen, shows } from './bios.mjs';
+import { debuggerUrl, launch } from './chrome.mjs';
+import { extensionOver } from './fake-extension.mjs';
+import { fakeRegistry, fakeRelease } from './fake-npm.mjs';
+
+const AGENT = '@ai-ecoverse/slicc-agent';
+const PINNED = JSON.parse(
+  await readFile(new URL('../../src/packages/agent/package.json', import.meta.url), 'utf8')
+).dependencies[AGENT];
+const BETA = '6.99.0';
+const ELSEWHERE = 'Only the tab running SLICC can install a beta or leave one.';
+
+const port = await new Promise((resolve) => {
+  const server = createServer().listen(0, '127.0.0.1', () => {
+    const { port } = server.address();
+    server.close(() => resolve(port));
+  });
+});
+const release = await fakeRelease({
+  name: AGENT,
+  from: PINNED,
+  version: BETA,
+  repository: 'https://github.com/ai-ecoverse/slicc-agent',
+});
+const chrome = await launch({
+  agent: true,
+  timeout: 120000,
+  intercept: [],
+  args: [`--remote-debugging-port=${port}`],
+});
+after(() => chrome.close());
+const registry = await fakeRegistry(chrome.cdp, [release]);
+const fakeExtension = extensionOver(await debuggerUrl(port));
+
+const agentRow = (page) =>
+  page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.updates.list()
+      .find((item) => item.id === 'agent')
+  );
+
+const installedAgent = (page) =>
+  page.evaluate(async (name) => {
+    let dir = await navigator.storage.getDirectory();
+    for (const part of ['opt', 'agent', 'node_modules', ...name.split('/')])
+      dir = await dir.getDirectoryHandle(part);
+    const file = await (await dir.getFileHandle('package.json')).getFile();
+    return JSON.parse(await file.text()).version;
+  }, AGENT);
+
+const notice = (page, id) =>
+  page.evaluate(
+    (id) =>
+      document
+        .querySelector('slicc-app')
+        .model.notices.list()
+        .find((item) => item.id === id) ?? null,
+    id
+  );
+
+async function npmSays(page, state, ms = 10 * 60 * 1000) {
+  await page
+    .within(
+      ms,
+      (state) => {
+        const row = document
+          .querySelector('slicc-app')
+          .model.updates.list()
+          .find((item) => item.id === 'agent');
+        window.sliccNpm = JSON.stringify(row?.npm ?? null);
+        return row?.npm?.state === state;
+      },
+      state
+    )
+    .catch(async (error) => {
+      const seen = await page.evaluate(() => window.sliccNpm).catch(() => 'unknown');
+      throw new Error(`npm never said ${state}, last ${seen}: ${error.message}`);
+    });
+}
+
+async function confirmWith(page, label) {
+  await page.until(() => {
+    const app = document.querySelector('slicc-app');
+    return !!app.shadowRoot
+      .querySelector('slicc-confirm')
+      ?.shadowRoot?.querySelector('dialog[open]');
+  });
+  const body = await page.evaluate(
+    () =>
+      document.querySelector('slicc-app').shadowRoot.querySelector('slicc-confirm').shadowRoot
+        .textContent
+  );
+  await page.evaluate((label) => {
+    const dialog = document.querySelector('slicc-app').shadowRoot.querySelector('slicc-confirm');
+    [...dialog.shadowRoot.querySelectorAll('swc-button')]
+      .find((button) => button.textContent.trim() === label)
+      .click();
+  }, label);
+  return body;
+}
+
+const act = (page, action) =>
+  page.evaluate(
+    (action) => document.querySelector('slicc-app').model.updates.act('agent', action),
+    action
+  );
+
+test('the owner turns on developer mode, npm’s newer agent is offered as a beta, Install beta installs it marked Beta, it survives the next check, and Back to certified returns to the certified pin', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await agentUp(page);
+  await rowSettled(page, 'agent');
+
+  await t.test('with developer mode off, npm is never asked and nothing is offered', async () => {
+    const row = await agentRow(page);
+    assert.equal(row.npm, null);
+    assert.equal(row.beta, null);
+    assert.ok(!row.actions.includes('install-beta'));
+    assert.equal(
+      await page.evaluate(() => document.querySelector('slicc-app').model.updates.developer()),
+      false
+    );
+    assert.ok(!registry.asked.some((url) => url.endsWith(`/${AGENT}/latest`)));
+  });
+
+  await t.test('turning it on offers the newer release, with what it changes', async () => {
+    await page.evaluate(() => document.querySelector('slicc-app').model.updates.setDeveloper(true));
+    await npmSays(page, 'offered');
+    const row = await agentRow(page);
+    assert.equal(row.npm.latest, BETA);
+    assert.ok(row.npm.changes.count >= 1, JSON.stringify(row.npm));
+    assert.deepEqual(row.npm.changes.gated, []);
+    assert.ok(row.actions.includes('install-beta'), row.actions.join());
+    assert.equal(row.beta, null);
+    assert.equal(await installedAgent(page), PINNED);
+  });
+
+  await t.test('Install beta asks first; Cancel installs nothing', async () => {
+    const acting = act(page, 'install-beta');
+    const body = await confirmWith(page, 'Cancel');
+    await acting;
+    assert.match(body, new RegExp(`slicc-agent ${BETA.replaceAll('.', '\\.')} isn’t certified`));
+    assert.match(body, /packages? changes? in \/opt\/agent’s lockfile; no gated package changes/);
+    assert.equal((await agentRow(page)).beta, null);
+    assert.equal(await installedAgent(page), PINNED);
+  });
+
+  await t.test('Install beta installs it into /opt/agent and marks it as a beta', async () => {
+    const acting = act(page, 'install-beta');
+    await confirmWith(page, 'Install beta');
+    await acting;
+    await rowSettled(page, 'agent');
+    const row = await agentRow(page);
+    assert.deepEqual(row.beta, { version: BETA, certified: PINNED });
+    assert.notEqual(row.state, 'failed', row.error);
+    assert.ok(row.actions.includes('back-to-certified'), row.actions.join());
+    assert.equal(await installedAgent(page), BETA);
+    assert.ok(registry.asked.some((url) => url.endsWith(`slicc-agent-${BETA}.tgz`)));
+    const shown = await notice(page, 'beta:agent');
+    assert.equal(shown?.tone, 'warning');
+    assert.match(
+      shown.body,
+      new RegExp(`slicc-agent ${BETA.replaceAll('.', '\\.')} isn’t certified`)
+    );
+  });
+
+  await t.test('the next update check keeps the beta instead of repairing it', async () => {
+    await act(page, 'retry');
+    await rowSettled(page, 'agent');
+    assert.equal(await installedAgent(page), BETA);
+    assert.deepEqual((await agentRow(page)).beta, { version: BETA, certified: PINNED });
+  });
+
+  await t.test('dismissing the beta notice hides it for this session only', async () => {
+    await page.evaluate(() =>
+      document.querySelector('slicc-app').model.notices.dismiss('beta:agent')
+    );
+    assert.equal(await notice(page, 'beta:agent'), null);
+    await act(page, 'retry');
+    await rowSettled(page, 'agent');
+    assert.equal(await notice(page, 'beta:agent'), null);
+    await page.goto('/');
+    await ready(page);
+    await page.until(
+      () =>
+        !!document
+          .querySelector('slicc-app')
+          .model.notices?.list()
+          .some((item) => item.id === 'beta:agent')
+    );
+    await rowSettled(page, 'agent');
+    assert.equal(await installedAgent(page), BETA);
+  });
+
+  await t.test('Back to certified returns /opt/agent to the certified pin', async () => {
+    await act(page, 'back-to-certified');
+    await rowSettled(page, 'agent');
+    const row = await agentRow(page);
+    assert.equal(row.beta, null);
+    assert.equal(await installedAgent(page), PINNED);
+    assert.equal(await notice(page, 'beta:agent'), null);
+    await npmSays(page, 'offered');
+  });
+
+  await t.test('a release without provenance is listed but not offered', async () => {
+    release.provenance = false;
+    t.after(() => {
+      release.provenance = true;
+    });
+    await page.evaluate(() =>
+      document.querySelector('slicc-app').model.updates.setDeveloper(false)
+    );
+    assert.equal((await agentRow(page)).npm, null);
+    await page.evaluate(() => document.querySelector('slicc-app').model.updates.setDeveloper(true));
+    await npmSays(page, 'not-offered');
+    const row = await agentRow(page);
+    assert.equal(row.npm.reason, 'no provenance');
+    assert.ok(!row.actions.includes('install-beta'));
+    assert.deepEqual(page.errors, []);
+  });
+});
+
+test('nobody but the owner tab can turn developer mode on or install a beta: not another tab, not the kernel’s processes, not the agent’s CDP', async (t) => {
+  registry.asked.length = 0;
+  const page = await chrome.page(t);
+  const extension = await fakeExtension(page);
+  t.after(extension.close);
+  await boot(page);
+  await agentUp(page);
+  await rowSettled(page, 'agent');
+
+  await t.test('another tab has no switch, and its Install beta is refused', async () => {
+    const other = await page.tab();
+    await other.goto('/');
+    await ready(other);
+    await other.until(
+      () => document.querySelector('slicc-app').model.tabs?.state().role === 'follower'
+    );
+    const seen = await other.evaluate(async () => {
+      const { updates } = document.querySelector('slicc-app').model;
+      const tries = [];
+      for (const action of ['install-beta', 'back-to-certified'])
+        tries.push(
+          await updates.act('agent', action).then(
+            () => 'done',
+            (error) => error.message
+          )
+        );
+      return {
+        developer: typeof updates.developer,
+        setDeveloper: typeof updates.setDeveloper,
+        tries,
+      };
+    });
+    assert.deepEqual(seen, {
+      developer: 'undefined',
+      setDeveloper: 'undefined',
+      tries: [ELSEWHERE, ELSEWHERE],
+    });
+    assert.deepEqual(other.errors, []);
+    await other.close();
+  });
+
+  await t.test('the kernel’s root processes can’t turn it on or pin a beta', async () => {
+    await run(
+      page,
+      `for f in /var/lib/slicc/beta.json /etc/slicc/developer /opt/slicc/beta/agent/package.json; do mkdir -p "$(dirname $f)" 2>/dev/null; echo '{"agent":{"name":"${AGENT}","version":"${BETA}"},"developer":"on"}' > $f 2>/dev/null; done; jq '.dependencies["${AGENT}"] = "${BETA}"' /opt/agent/package.json > /tmp/p 2>/dev/null && cp /tmp/p /opt/agent/package.json 2>/dev/null; echo "wrote-""done"`
+    );
+    await shows(page, 'wrote-done');
+    await act(page, 'retry');
+    await rowSettled(page, 'agent');
+    const row = await agentRow(page);
+    assert.equal(row.npm, null);
+    assert.equal(row.beta, null);
+    assert.equal(await installedAgent(page), PINNED);
+    assert.equal(
+      await page
+        .evaluate(() => [
+          document.querySelector('slicc-app').model.updates.developer(),
+          localStorage.getItem('slicc-os.developer'),
+          localStorage.getItem('slicc-os.beta'),
+        ])
+        .then(JSON.stringify),
+      JSON.stringify([false, null, null])
+    );
+  });
+
+  await t.test('the agent’s CDP can’t reach seven’s tab to flip the setting', async () => {
+    const seven = new URL('/os/', chrome.url).href;
+    await run(
+      page,
+      `curl -sf http://127.0.0.1:9222/json/list | jq -r '[.[] | select(.url | startswith("${new URL(chrome.url).origin}"))] | "seven listed " + (length | tostring)'`
+    );
+    await shows(page, 'seven listed 0');
+    await run(
+      page,
+      `playwright-cli open ${seven} > /tmp/pw 2>&1; playwright-cli eval "localStorage.setItem('slicc-os.developer', 'on')" >> /tmp/pw 2>&1; echo "pw-$?"; echo "cdp-""done"`
+    );
+    await shows(page, 'cdp-done', 120000);
+    assert.match(await screen(page), /pw-[1-9]/);
+    await act(page, 'retry');
+    await rowSettled(page, 'agent');
+    assert.equal(
+      await page
+        .evaluate(() => [
+          document.querySelector('slicc-app').model.updates.developer(),
+          localStorage.getItem('slicc-os.developer'),
+        ])
+        .then(JSON.stringify),
+      JSON.stringify([false, null])
+    );
+    assert.equal((await agentRow(page)).npm, null);
+    assert.equal(await installedAgent(page), PINNED);
+    assert.ok(!registry.asked.some((url) => url.endsWith(`/${AGENT}/latest`)));
+  });
+  assert.deepEqual(page.errors, []);
+});

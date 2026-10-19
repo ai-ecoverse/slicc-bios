@@ -4,6 +4,7 @@ export function createNotices({ storage = localStorage } = {}) {
   const listeners = new Set();
   const handlers = new Map();
   let notices = [];
+  const session = new Set();
   const dismissed = () => {
     try {
       return new Set(JSON.parse(storage.getItem(DISMISSED) ?? '[]'));
@@ -28,7 +29,7 @@ export function createNotices({ storage = localStorage } = {}) {
     },
     list: () => notices,
     show(notice, handler) {
-      if (dismissed().has(notice.id)) return false;
+      if (session.has(notice.id) || dismissed().has(notice.id)) return false;
       const at = notices.findIndex((item) => item.id === notice.id);
       notices = at < 0 ? [...notices, notice] : notices.with(at, notice);
       handlers.set(notice.id, handler);
@@ -42,7 +43,8 @@ export function createNotices({ storage = localStorage } = {}) {
       await handler(action);
     },
     dismiss(id) {
-      storage.setItem(DISMISSED, JSON.stringify([...dismissed(), id]));
+      if (notices.find((notice) => notice.id === id)?.session) session.add(id);
+      else storage.setItem(DISMISSED, JSON.stringify([...dismissed(), id]));
       remove(id);
     },
   };
