@@ -267,6 +267,19 @@ async function quiet(page) {
   );
 }
 
+async function reached(page, held) {
+  let timer;
+  const late = new Promise((resolve) => {
+    timer = setTimeout(resolve, STEP, 'late');
+  });
+  const seen = await Promise.race([held.arrived.then(() => 'arrived'), late]);
+  clearTimeout(timer);
+  if (seen === 'late')
+    assert.fail(
+      `the pairing POST never reached the relay within ${STEP} ms: ${JSON.stringify(await pairing(page))}`
+    );
+}
+
 async function relay(t, port) {
   let release;
   const gate = new Promise((resolve) => {
@@ -752,7 +765,7 @@ test('the Link this computer block in each state, as the PM reviews it: start, a
   await shoot(page, 'pairing-confirm', view);
   await confirm(page);
   await block(page, 'linking');
-  await held.arrived;
+  await reached(page, held);
   assert.match(
     await blockText(page),
     new RegExp(`Linking SLICC on this computer \\(${short(fp)}\\)…`)
