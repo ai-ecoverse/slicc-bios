@@ -6,7 +6,7 @@ import { startProxy } from '@ai-ecoverse/slicc-node';
 import { actPackage, boot, ready, run, screen, shows } from './bios.mjs';
 import { debuggerUrl, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
-import { EXTENSIONS, realExtension, SEVEN } from './real-extension.mjs';
+import { display, EXTENSIONS, realExtension, SEVEN } from './real-extension.mjs';
 
 const port = await new Promise((resolve) => {
   const server = createServer().listen(0, '127.0.0.1', () => {
@@ -1193,6 +1193,91 @@ async function launched(t, proxy) {
   await ready(page);
   return page;
 }
+
+test('headed, on the proxy path: a tab created through the guard with an empty URL opens blank behind seven, which keeps the focus', {
+  timeout: 5 * 60 * 1000,
+}, async (t) => {
+  const undisplay = await display();
+  t.after(undisplay);
+  const debugging = await new Promise((resolve) => {
+    const server = createServer().listen(0, '127.0.0.1', () => {
+      const { port: free } = server.address();
+      server.close(() => resolve(free));
+    });
+  });
+  const headed = await launch({ realistic: true, args: [`--remote-debugging-port=${debugging}`] });
+  t.after(() => headed.close());
+  await debuggerUrl(debugging);
+  const proxy = await startProxy({
+    port: 0,
+    origins: [new URL(headed.url).origin],
+    cdp: `http://127.0.0.1:${debugging}`,
+    kernelPort: null,
+    log: () => {},
+  });
+  t.after(() => proxy.close());
+  const page = await headed.page(t);
+  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}`);
+  await ready(page);
+  await page.evaluate(
+    async (proxy) => {
+      const { guardProtected } = await import(new URL('guard.js', location.href).href);
+      const { proxyHost } = await import(new URL('cdp.js', location.href).href);
+      const connection = guardProtected(await proxyHost(proxy)(), location.origin);
+      const pending = new Map();
+      let next = 0;
+      connection.onmessage = (text) => {
+        const message = JSON.parse(text);
+        if (message.id === undefined) return;
+        pending.get(message.id)?.(message);
+        pending.delete(message.id);
+      };
+      window.guarded = (method, params = {}) =>
+        new Promise((resolve) => {
+          next += 1;
+          const id = next;
+          const timer = setTimeout(() => {
+            pending.delete(id);
+            resolve({ error: { message: `${method} got no answer` } });
+          }, 20000);
+          pending.set(id, (message) => {
+            clearTimeout(timer);
+            resolve(message);
+          });
+          connection.send(JSON.stringify({ id, method, params }));
+        });
+    },
+    { url: proxy.url, key: proxy.key }
+  );
+  const sample = () =>
+    page.evaluate(() => ({ shown: document.visibilityState, focused: document.hasFocus() }));
+  const before = await sample();
+  assert.deepEqual(before, { shown: 'visible', focused: true });
+  const created = await page.evaluate(() => window.guarded('Target.createTarget', { url: '' }));
+  assert.ok(created.result?.targetId, JSON.stringify(created));
+  t.after(() =>
+    page.evaluate(
+      (targetId) => window.guarded('Target.closeTarget', { targetId }),
+      created.result.targetId
+    )
+  );
+  const info = await page.evaluate(
+    (targetId) => window.guarded('Target.getTargetInfo', { targetId }),
+    created.result.targetId
+  );
+  assert.equal(info.result?.targetInfo?.url, 'about:blank', JSON.stringify(info));
+  const seen = [];
+  for (let i = 0; i < 4; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    seen.push(await sample());
+  }
+  assert.deepEqual(
+    seen,
+    Array(4).fill(before),
+    `seven after an empty-URL tab: ${JSON.stringify(seen)}`
+  );
+  assert.deepEqual(page.errors, []);
+});
 
 test('playwright-cli drives a page through slicc-node’s /cdp, on one shared socket', async (t) => {
   const proxy = await viaProxy(t);

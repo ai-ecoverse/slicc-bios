@@ -94,7 +94,7 @@ async function front(upstream) {
   };
 }
 
-async function display() {
+export async function display() {
   if (process.platform !== 'linux' || process.env.DISPLAY) return () => {};
   for (let n = 90; n < 120; n += 1) {
     if (existsSync(`/tmp/.X11-unix/X${n}`) || existsSync(`/tmp/.X${n}-lock`)) continue;
