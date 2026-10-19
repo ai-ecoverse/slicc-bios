@@ -1,5 +1,5 @@
 import { usersMode } from './seed/users.js';
-import { splash } from './splash.js';
+import { splash } from './sw/splash.js';
 
 export function uiPage(hash) {
   return new URLSearchParams(hash.slice(1)).has('seat') ? 'os/join.html' : 'os/';

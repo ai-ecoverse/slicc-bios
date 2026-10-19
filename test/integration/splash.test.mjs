@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { boot, booted, ready, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
@@ -68,8 +69,8 @@ test('the steps report as before while the scene loads beside them, after the fi
   await boot(page);
 
   assert.deepEqual(bios.states(), booted);
-  assert.ok(loaded(page, '/splash.js'));
-  assert.ok(loaded(page, '/scene.js'));
+  assert.ok(loaded(page, '/sw/splash.js'));
+  assert.ok(loaded(page, '/sw/scene.js'));
   t.diagnostic(`scene: ${splash.scenes().join(' → ')}; render: ${splash.renders().join(' | ')}`);
   assert.deepEqual(page.errors, []);
 });
@@ -102,7 +103,7 @@ test('with reduced motion the scene never loads, and the boot still reports and 
   await boot(page);
 
   assert.deepEqual(bios.states(), booted);
-  assert.ok(!loaded(page, '/scene.js'));
+  assert.ok(!loaded(page, '/sw/scene.js'));
   assert.ok(
     splash.renders().includes('static artwork, reduced motion'),
     splash.renders().join(' | ')
@@ -172,6 +173,38 @@ test('the scene keeps running across a tab that is hidden for longer than its fr
   }));
   assert.equal(shown.scene, 'running', shown.render);
   assert.match(shown.render, /^\d+fps, scene at \d+%$/);
+});
+
+const deployed = [
+  '/',
+  '/index.html',
+  '/bios.js',
+  '/bios.css',
+  '/installer.js',
+  '/sw.js',
+  '/manifest.json',
+];
+
+test('an install whose worker predates the splash loads the new BIOS page and updates the worker', async (t) => {
+  const page = await chrome.page(t);
+  const current = await readFile(new URL('../../src/sw.js', import.meta.url), 'utf8');
+  const older = current.replace(
+    /const own = new Set\(\[[^\]]*\]\);/,
+    `const own = new Set(${JSON.stringify(deployed)});`
+  );
+  assert.ok(older.includes(JSON.stringify(deployed)));
+  chrome.overrides.set('/sw.js', older);
+  await boot(page);
+  chrome.overrides.delete('/sw.js');
+
+  const bios = await watch(page);
+  const mark = page.responses.length;
+  await boot(page);
+  assert.deepEqual(bios.states(), booted);
+  const later = page.responses.slice(mark).map((response) => new URL(response.url).pathname);
+  assert.ok(later.includes('/sw/splash.js'), later.join(' '));
+  assert.ok(later.includes('/sw/card.js'), later.join(' '));
+  assert.deepEqual(page.errors, []);
 });
 
 async function timed(page) {
