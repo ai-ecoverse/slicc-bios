@@ -1,3 +1,5 @@
+import { BIOS } from './site.js';
+
 export const REFUSED =
   'Seven didn’t load its own code: one of its files changed after seven installed it, or is missing. Reloading goes through the BIOS, which puts seven’s files back.';
 
@@ -28,7 +30,7 @@ export function refused(doc = document, go = (url) => location.replace(url), sto
   const button = doc.createElement('button');
   button.type = 'button';
   button.textContent = 'Reload';
-  button.addEventListener('click', () => go(`/${doc.location?.hash ?? ''}`));
+  button.addEventListener('click', () => go(`${BIOS}${doc.location?.hash ?? ''}`));
   box.append(title, text, button);
   doc.body.replaceChildren(box);
   return box;

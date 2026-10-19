@@ -6,9 +6,10 @@ import {
   projectVersion,
   removeProject,
 } from './projects.js';
+import { BIOS } from './site.js';
 import { fetchText, pnpm, text, write } from './update.js';
 
-const deployed = new URL('../packages/optional/', import.meta.url);
+const deployed = new URL('packages/optional/', BIOS);
 export const GLOBAL = 'home/.local/share/pnpm/global/v11';
 const HOME = /^\/[^\0]*[^/]$/;
 export const LISTING = 'etc/slicc/optional.json';

@@ -1,10 +1,10 @@
+import { production } from './site.js';
 import { agentTag } from './tags.js';
 
 const MODES = ['off', 'report', 'enforce'];
 const KEY = 'slicc-os.users';
 const CONE = /^cone(-[1-9]\d*)?$/;
 const SCOOP = /^scoop-[a-z0-9][a-z0-9._-]*$/;
-export const PRODUCTION = 'seven.sliccy.ai';
 export const PRODUCTION_USERS = 'enforce';
 
 export function usersMode({
@@ -14,7 +14,7 @@ export function usersMode({
   warn = console.warn,
 } = {}) {
   const asked = new URLSearchParams(hash.slice(1)).get('users');
-  if (host === PRODUCTION) {
+  if (production(host)) {
     if (asked !== null || storage.getItem(KEY) !== null) {
       storage.removeItem(KEY);
       warn(`seven runs kernel users '${PRODUCTION_USERS}' and ignores any other mode`);

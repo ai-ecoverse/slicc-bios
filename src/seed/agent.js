@@ -1,10 +1,11 @@
 import { apply } from './layer.js';
 import { failure } from './link.js';
+import { BIOS } from './site.js';
 import { text, versions } from './update.js';
 import { kernelSource } from './users.js';
 import { takesVault } from './vault.js';
 
-const deployed = new URL('../packages/agent/', import.meta.url);
+const deployed = new URL('packages/agent/', BIOS);
 const PACKAGE = '@ai-ecoverse/slicc-agent';
 export const folder = 'opt/agent';
 const state = 'var/lib/slicc/agent';

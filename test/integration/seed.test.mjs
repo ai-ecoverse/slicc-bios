@@ -6,6 +6,7 @@ import { seedFiles as installed } from './seed.mjs';
 
 const src = new URL('../../src/', import.meta.url);
 const seed = new URL('seed/', src);
+const aliased = new Set(['manifest.json']);
 
 function local(specifier, from) {
   if (specifier.startsWith('/os/')) return specifier.slice('/os/'.length);
@@ -25,7 +26,7 @@ test('every page, script and import the seed reaches is installed with it', asyn
     const html = await readFile(new URL(page, seed), 'utf8');
     for (const [, target] of html.matchAll(/(?:src|href)="([^"]+)"/g)) {
       const name = local(target.startsWith('/') ? target : `./${target}`, page);
-      if (name) queue.push([name, page]);
+      if (name && !aliased.has(name)) queue.push([name, page]);
     }
   }
   const seen = new Set();

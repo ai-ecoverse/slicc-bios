@@ -2,6 +2,7 @@ import { attachKernel } from '@ai-ecoverse/slicc-kernel';
 import { createExitRouter, loopback } from './exits.js';
 import { datagrams, fitsFamily, UDP_MAX, udpCode } from './link-udp.js';
 import { cut, inbox, sendable, WS_MAX } from './link-ws.js';
+import { BIOS } from './site.js';
 import { stored } from './transport.js';
 import { fetchText, pnpm, text, versions, write } from './update.js';
 
@@ -10,7 +11,7 @@ const STATE = 'tailscale-state';
 const PACKAGE = '@ai-ecoverse/wasm-tailscale';
 const FOLDER = 'opt/tailscale';
 const RECEIPT = 'var/lib/slicc/tailscale/pnpm-lock.yaml';
-const deployed = new URL('../packages/tailscale/', import.meta.url);
+const deployed = new URL('packages/tailscale/', BIOS);
 const SOURCES = ['/mnt/tailscale', `/${FOLDER}/node_modules/${PACKAGE}/dist`, `/${FOLDER}`];
 const IDLE_MS = 30000;
 const HEAD_MS = 60000;

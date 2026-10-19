@@ -74,7 +74,8 @@ export function trayHub(origin, fetcher) {
   const here = (url, protocol) => {
     const at = new URL(url);
     const base = new URL(origin);
-    return `${protocol ?? base.protocol}//${base.host}${at.pathname}${at.search}`;
+    const prefix = base.pathname.replace(/\/$/, '');
+    return `${protocol ?? base.protocol}//${base.host}${prefix}${at.pathname}${at.search}`;
   };
   const post = async (url, body) => {
     const response = await fetcher(url, {
