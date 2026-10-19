@@ -125,3 +125,23 @@ test('xxd dumps a file and xxd -r gives it back byte for byte', async (t) => {
   assert.match(text, /first=4142/);
   assert.deepEqual(page.errors, []);
 });
+
+test('sudo for xxd writing under /etc is offered once, never always, since xxd writes files', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await install(page, 'xxd', '9.2.1192-3');
+  const command = 'xxd -r /etc/group /etc/group';
+  await run(page, `clear; cd /tmp; sudo -u cone sudo ${command}; echo asked-$((40 + 2))`);
+  const [asked] = await page.within(60000, () => {
+    const list = document.querySelector('slicc-app').model.approvals.list();
+    return list.length ? list : null;
+  });
+  assert.ok(asked.command.endsWith(`/${command}`), asked.command);
+  assert.equal(asked.always, false, asked.command);
+  await page.evaluate(
+    (id) => document.querySelector('slicc-app').model.approvals.decide(id, 'deny'),
+    asked.id
+  );
+  await shows(page, 'asked-42', 60000);
+  assert.deepEqual(page.errors, []);
+});
