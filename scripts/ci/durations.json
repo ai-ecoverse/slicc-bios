@@ -72,6 +72,6 @@
   "test/integration/updates.test.mjs": 199,
   "test/integration/user-packages.test.mjs": 446,
   "test/integration/users.test.mjs": 1180,
-  "test/integration/vault.test.mjs": 166,
+  "test/integration/vault.test.mjs": 196,
   "test/integration/zip.test.mjs": 40
 }
