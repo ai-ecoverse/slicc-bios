@@ -14,7 +14,8 @@ export const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 export const PACKAGES = join(ROOT, 'src/packages');
 export const OUT = join(ROOT, 'node_modules/.cache/slicc-canary/pins.json');
 export const CDN = join(ROOT, 'node_modules/.cache/slicc-harness/cdn');
-const NPM = 'https://registry.npmjs.org/';
+export const NPM = 'https://registry.npmjs.org/';
+const PUBLISHED = '2000-01-01T00:00:00.000Z';
 export const GATED =
   /^@ai-ecoverse\/(slicc-kernel|slicc-cdp|slicc-clipboard|slicc-jsh|wasi-|wasix-|wasm-|py-)/;
 const REGISTRY = env.CANARY_REGISTRY ?? 'https://registry.npmjs.org/';
@@ -122,9 +123,13 @@ export async function findPacked(dir, name) {
   return join(dir, found[0]);
 }
 
+export function seeded(tarball, cdn = CDN) {
+  const { host, pathname } = new URL(tarball);
+  return join(cdn, host, pathname.replaceAll('%', '%25'));
+}
+
 export async function seed(candidate, cdn = CDN) {
-  const { host, pathname } = new URL(candidate.tarball);
-  const file = join(cdn, host, pathname.replaceAll('%', '%25'));
+  const file = seeded(candidate.tarball, cdn);
   await mkdir(dirname(file), { recursive: true });
   await writeFile(file, candidate.bytes);
   return file;
@@ -137,6 +142,64 @@ function relocate(packument, from, to) {
     }
   }
   return packument;
+}
+
+export function withCandidate(packument, { name, version, manifest, integrity }, tarball) {
+  return {
+    ...packument,
+    versions: {
+      ...packument.versions,
+      [version]: { ...manifest, _id: `${name}@${version}`, dist: { tarball, integrity } },
+    },
+    time: { ...packument.time, [version]: packument.time?.[version] ?? PUBLISHED },
+  };
+}
+
+export async function servedCandidates(pins, cdn = CDN) {
+  const { overrides = [] } = JSON.parse(await readFile(pins, 'utf8'));
+  const found = new Map();
+  for (const pinned of overrides.filter(({ via }) => via === 'artifact')) {
+    const file = seeded(tarballUrl(pinned.name, pinned.version), cdn);
+    const verified = await artifactPackage({ file, sha256: pinned.sha256, package: pinned.name });
+    if (verified.version !== pinned.version || verified.integrity !== pinned.integrity) {
+      throw new Error(
+        `candidate ${basename(file)} is not the ${pinned.name}@${pinned.version} that ${basename(pins)} names; refusing it`
+      );
+    }
+    found.set(pinned.name, verified);
+  }
+  return found;
+}
+
+function packumentName(input) {
+  const url = URL.parse(input instanceof Request ? input.url : String(input));
+  if (!url || `${url.origin}/` !== NPM) return null;
+  try {
+    return decodeURIComponent(url.pathname.slice(1));
+  } catch {
+    return null;
+  }
+}
+
+export function servingFetch(upstream, candidates) {
+  return async (input, init) => {
+    const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
+    const name = packumentName(input);
+    const candidate = method.toUpperCase() === 'GET' && candidates.get(name);
+    if (!candidate) return upstream(input, init);
+    const found = await upstream(input, init);
+    if (!found.ok && found.status !== 404) return found;
+    const packument = found.ok
+      ? await found.json()
+      : { name, 'dist-tags': {}, versions: {}, time: {} };
+    return Response.json(withCandidate(packument, candidate, candidate.tarball));
+  };
+}
+
+export async function serveCandidates(pins, { cdn = CDN, target = globalThis } = {}) {
+  const candidates = await servedCandidates(pins, cdn);
+  if (candidates.size) target.fetch = servingFetch(target.fetch, candidates);
+  return candidates;
 }
 
 export async function registry(candidates, upstream = REGISTRY) {
@@ -166,26 +229,16 @@ export async function registry(candidates, upstream = REGISTRY) {
         response.writeHead(200, { 'content-type': 'application/octet-stream' });
         return response.end(Buffer.from(await found.arrayBuffer()));
       }
-      const packument = found.ok
-        ? await found.json()
-        : { name, 'dist-tags': {}, versions: {}, time: {} };
-      relocate(packument, upstream, `${origin}/`);
-      if (candidate) {
-        const { manifest, version, integrity } = candidate;
-        packument.versions = { ...packument.versions };
-        packument.versions[version] = {
-          ...manifest,
-          _id: `${name}@${version}`,
-          dist: { tarball: `${origin}/${candidate.tarball.slice(NPM.length)}`, integrity },
-        };
-        packument.time = {
-          ...packument.time,
-          [version]: packument.time?.[version] ?? '2000-01-01T00:00:00.000Z',
-        };
-        packument['dist-tags'] = { latest: version, ...packument['dist-tags'] };
-      }
+      const packument = relocate(
+        found.ok ? await found.json() : { name, 'dist-tags': {}, versions: {}, time: {} },
+        upstream,
+        `${origin}/`
+      );
+      const served = candidate
+        ? withCandidate(packument, candidate, `${origin}/${candidate.tarball.slice(NPM.length)}`)
+        : packument;
       response.writeHead(200, { 'content-type': 'application/json' });
-      return response.end(JSON.stringify(packument));
+      return response.end(JSON.stringify(served));
     } catch (error) {
       response.writeHead(502);
       response.end(String(error.message));
