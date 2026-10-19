@@ -37,6 +37,8 @@
   "test/integration/modes.test.mjs": 33,
   "test/integration/modules.test.mjs": 26,
   "test/integration/mounts.test.mjs": 46,
+  "test/integration/ntfy-agent.test.mjs": 1200,
+  "test/integration/ntfy.test.mjs": 300,
   "test/integration/offline-update.test.mjs": 38,
   "test/integration/one-kernel.test.mjs": 439,
   "test/integration/optional.test.mjs": 17,
