@@ -53,8 +53,37 @@ export function agentInstalling(from, to) {
     id: `agent:installing:${to}`,
     tone: 'info',
     title: from ? 'Seven is updating its agent' : 'Seven is installing its agent',
-    body: `The chat starts once agent ${to} is installed. Install / Update shows how far it is.`,
-    actions: [],
+    body: `The chat starts once agent ${to} is installed.`,
+    actions: [{ id: 'show-updates', label: 'Open Install / Update' }],
+  };
+}
+
+export const NO_SENDING = 'You can send messages once the agent starts.';
+
+export function holdComposer() {
+  const listeners = new Set();
+  let line = null;
+  return {
+    hold(on) {
+      const next = on ? NO_SENDING : null;
+      if (next === line) return;
+      line = next;
+      for (const listener of [...listeners]) listener(line);
+    },
+    wrap: (agent) =>
+      new Proxy(agent, {
+        get(target, key) {
+          if (key === 'readOnly') return () => line;
+          if (key === 'on')
+            return (type, listener) => {
+              if (type !== 'readOnly') return target.on(type, listener);
+              listeners.add(listener);
+              return () => listeners.delete(listener);
+            };
+          const value = Reflect.get(target, key, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      }),
   };
 }
 

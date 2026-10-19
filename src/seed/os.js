@@ -40,7 +40,13 @@ import { createLinks, installLocal, labelStore, trustHostKey } from './link.js';
 import { serveLoopback } from './loopback.js';
 import { createFolders, KEY, layoutMnt, offTheRecord } from './mounts.js';
 import { createNetwork } from './network.js';
-import { agentInstalling, createNotices, reportRepairs, reportStopped } from './notices.js';
+import {
+  agentInstalling,
+  createNotices,
+  holdComposer,
+  reportRepairs,
+  reportStopped,
+} from './notices.js';
 import { createPackages, globalDir, loadCatalog, writeListing } from './packages.js';
 import { createPairing, takePairing } from './pair.js';
 import {
@@ -311,6 +317,7 @@ document.documentElement.dataset.users = mode;
 const keep = keepStorage({ notices, prompts });
 let model = null;
 let files = null;
+const composer = holdComposer();
 let presentation = null;
 let kernel = null;
 let folders = null;
@@ -328,7 +335,7 @@ function base(os) {
   const network = os ? mirrorNetwork(os, reach.port) : reach.port;
   return {
     ...files,
-    agent: browser.stopping(files.agent),
+    agent: browser.stopping(composer.wrap(files.agent)),
     updates: os ? mirrorUpdates(os) : updates,
     notices,
     approvals: approvals.port,
@@ -543,9 +550,10 @@ function agentReport() {
   return (step) => {
     track(step);
     if (agent !== null || !step.to) return;
+    composer.hold(true);
     const notice = agentInstalling(from, step.to);
     installNotice = notice.id;
-    notices.show(notice);
+    notices.show(notice, () => app.show('updates'));
   };
 }
 
@@ -576,6 +584,7 @@ async function offerChat() {
     updates.fail('agent', error);
     await listOwn();
   } finally {
+    composer.hold(false);
     if (installNotice) notices.remove(installNotice);
     installNotice = null;
   }
