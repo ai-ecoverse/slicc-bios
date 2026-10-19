@@ -59,15 +59,36 @@ export async function fetchText(name, from) {
   return response.text();
 }
 
-export function progress(output) {
+const UNITS = { B: 1, kB: 1e3, MB: 1e6, GB: 1e9 };
+const DOWNLOADING = /Downloading (\S+): ([\d.]+) (B|kB|MB|GB)\/([\d.]+) (B|kB|MB|GB)(, done)?/g;
+
+export function progress(output, downloads = new Map()) {
+  for (const [, name, done, unit, total, of, finished] of output.matchAll(DOWNLOADING))
+    downloads.set(name, {
+      done: Math.round(done * UNITS[unit]),
+      total: Math.round(total * UNITS[of]),
+      finished: Boolean(finished),
+    });
   const last = [
     ...output.matchAll(/resolved (\d+), reused (\d+), downloaded (\d+), added (\d+)/g),
   ].at(-1);
+  const [resolved, reused, downloaded, added] = last ? last.slice(1).map(Number) : [0, 0, 0, 0];
+  if (added > 0) return { phase: 'link', done: added, total: resolved };
+  if (downloads.size) {
+    const all = [...downloads.values()];
+    const bytes = {
+      done: all.reduce((sum, item) => sum + item.done, 0),
+      total: all.reduce((sum, item) => sum + item.total, 0),
+    };
+    const total = Math.max(resolved, all.length);
+    const done = Math.min(
+      Math.max(reused + downloaded, all.filter((item) => item.finished).length),
+      total
+    );
+    return { phase: 'download', done, total, bytes };
+  }
   if (!last) return null;
-  const [resolved, reused, downloaded, added] = last.slice(1).map(Number);
-  return added > 0
-    ? { phase: 'link', done: added, total: resolved }
-    : { phase: 'download', done: reused + downloaded, total: resolved };
+  return { phase: 'download', done: reused + downloaded, total: resolved };
 }
 
 export const WRITER = 'bios-installer';
@@ -276,10 +297,11 @@ export function pnpm(kernel, cwd, report, to = null, argv = INSTALL, writer = tr
 
 async function pnpmAlone(kernel, cwd, report, to, argv, writer) {
   let log = '';
+  const downloads = new Map();
   report({ progress: null, log });
   const onStdout = (chunk) => {
     log = (log + chunk).slice(-LOG);
-    report({ progress: progress(log), log });
+    report({ progress: progress(log, downloads), log });
   };
   if (writer && guard.on) await fence(await navigator.storage.getDirectory(), cwd);
   const run = writer ? { ...writing(cwd), onStdout } : { cwd, env: TRAPS, onStdout };

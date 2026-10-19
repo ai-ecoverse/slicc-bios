@@ -298,7 +298,7 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
     ({ progress, log }) => {
       live.set(entry.id, {
         state: RUNNING[action],
-        progress: progress && progress.total > 1 ? progress : null,
+        progress: progress && (progress.total > 1 || progress.bytes) ? progress : null,
         log: `${entry.package}@${entry.offered}\n${log}`,
       });
       changed();
