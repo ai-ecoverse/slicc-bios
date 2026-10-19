@@ -2,7 +2,7 @@ import { apply } from './layer.js';
 import { failure } from './link.js';
 import { compare } from './packages.js';
 import { BIOS } from './site.js';
-import { fetchText, text, versions } from './update.js';
+import { text, versions } from './update.js';
 import { kernelSource } from './users.js';
 import { takesVault } from './vault.js';
 
@@ -31,10 +31,8 @@ export async function recorded() {
 }
 
 export async function startable() {
-  const lock = await text(await navigator.storage.getDirectory(), receipt);
   const at = await version();
-  if (lock === null || at === null || compare(at, HELD) < 0) return false;
-  return (await fetchText('pnpm-lock.yaml', deployed).catch(() => lock)) === lock;
+  return (await recorded()) !== null && at !== null && compare(at, HELD) >= 0;
 }
 
 export async function version() {
