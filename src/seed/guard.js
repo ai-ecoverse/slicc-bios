@@ -20,6 +20,9 @@ export const UNGUARDED =
   'slicc: refused: the guard couldn’t keep seven’s pages and the vault out of this tab, so it refuses commands there';
 export const HEADERS =
   'slicc: refused: settings for a whole session (headers, user agent, locale, time zone, cache, network conditions, blocked URLs, emulation) could reach seven’s pages or the vault, so the guard doesn’t allow them; change a request through Fetch instead';
+export const WORLD = 'slicc: refused: that execution context belongs to a browser extension';
+export const UNSEEN_CONTEXT =
+  'slicc: refused: the guard hasn’t seen this execution context or object in this page, so it could be a browser extension’s; use one from Runtime.enable or an earlier answer';
 export const DEBUGGER =
   'slicc: refused: breakpoints could run in seven’s pages or the vault, so the guard doesn’t offer the Debugger domains';
 
@@ -148,6 +151,28 @@ const STORED = [
 ];
 const WORKERS = ['registrationId', 'versionId'];
 const PAUSES = new Set(['Fetch.requestPaused', 'Fetch.authRequired']);
+const EXTENSIONS = /^(chrome-extension|moz-extension|safari-web-extension|ms-browser-extension):/i;
+const CONTEXT_KEYS = new Set(['contextId', 'executionContextId']);
+const UNIQUE_KEYS = new Set(['uniqueContextId', 'executionContextUniqueId']);
+const OBJECT_KEYS = new Set(['objectId', 'prototypeObjectId']);
+const OBJECT_ID = /^-?\d+\.(\d+)\.\d+$/;
+
+function selected(value, found = []) {
+  if (value === null || typeof value !== 'object') return found;
+  if (Array.isArray(value)) {
+    for (const item of value) selected(item, found);
+    return found;
+  }
+  for (const [key, item] of Object.entries(value)) {
+    if (CONTEXT_KEYS.has(key)) found.push(['ids', item]);
+    else if (UNIQUE_KEYS.has(key)) found.push(['uniques', item]);
+    else if (OBJECT_KEYS.has(key) && typeof item === 'string') {
+      const [, context] = item.match(OBJECT_ID) ?? [];
+      found.push(context === undefined ? ['unreadable', item] : ['ids', Number(context)]);
+    } else selected(item, found);
+  }
+  return found;
+}
 
 function parse(text) {
   let message;
@@ -191,6 +216,9 @@ class Guard {
     this.errored = new Map();
     this.offered = new Set();
     this.contexts = new Set();
+    this.worlds = new Map();
+    this.runtimes = new Set();
+    this.primed = new Set();
     this.targets = new Map();
     this.sessions = new Map();
     this.shown = new Set();
@@ -627,6 +655,9 @@ class Guard {
       return this.targets.get(params.targetId)?.guarded === true;
     }
     if (method === 'Target.detachedFromTarget') {
+      this.worlds.delete(params.sessionId);
+      this.runtimes.delete(params.sessionId);
+      this.primed.delete(params.sessionId);
       if (this.navSessions.has(params.sessionId)) {
         this.lost(params.sessionId);
         return true;
@@ -652,6 +683,47 @@ class Guard {
       return !this.armed(sessionId) && this.is.url(params.request?.url);
     }
     return method === 'Runtime.executionContextCreated' && this.is.url(params.context?.origin);
+  }
+
+  world(sessionId) {
+    let world = this.worlds.get(sessionId);
+    if (!world) {
+      world = { ids: new Map(), uniques: new Map() };
+      this.worlds.set(sessionId, world);
+    }
+    return world;
+  }
+
+  foreign({ method, params = {}, sessionId }) {
+    if (method === 'Runtime.executionContextCreated' && params.context) {
+      const { id, uniqueId, origin, auxData } = params.context;
+      const hidden = auxData?.type === 'isolated' && EXTENSIONS.test(origin ?? '');
+      const world = this.world(sessionId);
+      world.ids.set(id, hidden);
+      if (uniqueId !== undefined) world.uniques.set(uniqueId, hidden);
+      if (hidden) return true;
+    }
+    const world = this.worlds.get(sessionId);
+    if (!world || !method.startsWith('Runtime.')) return false;
+    return selected(params).some(([kind, value]) => world[kind]?.get(value) === true);
+  }
+
+  verdict(found, sessionId) {
+    const world = this.worlds.get(sessionId);
+    const known = found.map(([kind, value]) => world?.[kind]?.get(value));
+    if (known.includes(true)) return WORLD;
+    return known.includes(undefined) ? UNSEEN_CONTEXT : null;
+  }
+
+  async selecting(params, sessionId) {
+    const found = selected(params);
+    if (!found.length) return null;
+    const first = this.verdict(found, sessionId);
+    if (first !== UNSEEN_CONTEXT || !sessionId) return first;
+    if (!this.runtimes.has(sessionId)) this.primed.add(sessionId);
+    await this.call('Runtime.enable', {}, sessionId);
+    await this.queues.get(sessionId);
+    return this.verdict(found, sessionId);
   }
 
   hides(entry) {
@@ -715,7 +787,9 @@ class Guard {
     if (method.startsWith('Target.') && (await this.targetEvent(message))) return;
     if (this.blocked.has(sessionId) && PAUSES.has(method)) return this.release(message);
     if (this.hidden(sessionId)) return;
+    if (this.foreign({ ...message, method })) return;
     if (this.walked({ ...message, method })) return this.cut(sessionId);
+    if (sessionId && method.startsWith('Runtime.') && !this.runtimes.has(sessionId)) return;
     if (await this.swallowed({ ...message, method })) return;
     if (this.stored({ ...message, method })) return;
     if (sessionId && this.naming({ ...message, method })) return;
@@ -876,6 +950,8 @@ class Guard {
     }
     if (STICKY.has(method) || EMULATION.test(method)) return HEADERS;
     if (DEBUGGERS.some((domain) => method.startsWith(domain))) return DEBUGGER;
+    const world = await this.selecting(params, sessionId);
+    if (world) return world;
     if (this.plainly(method, params, sessionId)) return PROTECTED;
     const unguarded = await this.guarding(method, sessionId);
     if (unguarded) return unguarded;
@@ -919,6 +995,8 @@ class Guard {
 
   pass(message) {
     const { id, method, sessionId } = message;
+    if (sessionId && method === 'Runtime.enable') this.runtimes.add(sessionId);
+    if (sessionId && method === 'Runtime.disable') this.runtimes.delete(sessionId);
     if (sessionId && method === 'Page.enable') this.pages.add(sessionId);
     if (sessionId && method === 'Page.disable' && this.shown.has(sessionId)) {
       this.pages.delete(sessionId);
@@ -966,6 +1044,9 @@ class Guard {
         async () => {
           const why = await this.check(message);
           if (why) return this.refuse(message, why);
+          if (message.method === 'Runtime.enable' && this.primed.delete(message.sessionId)) {
+            await this.call('Runtime.disable', {}, message.sessionId);
+          }
           if (message.method === 'Target.createTarget' && typeof message.params?.url === 'string') {
             return this.create(message);
           }
