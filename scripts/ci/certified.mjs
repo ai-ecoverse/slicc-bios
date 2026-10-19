@@ -35,7 +35,16 @@ export function changed(base, head, keep = () => true) {
   return [...found].sort();
 }
 
-export function gate(pins, comments, none = 'no pinned @ai-ecoverse package changes') {
+export const LABEL = 'label the PR cert-review';
+export const FORK =
+  'cert review never runs fork code: push the change to a branch of this repository and open the PR from there';
+
+export function gate(
+  pins,
+  comments,
+  none = 'no pinned @ai-ecoverse package changes',
+  hint = LABEL
+) {
   if (!pins.length) return { ok: true, line: `cert-gate: PASS ${none}` };
   const reviews = comments.filter((comment) => comment.user === BOT);
   const why = [];
@@ -49,7 +58,7 @@ export function gate(pins, comments, none = 'no pinned @ai-ecoverse package chan
       latest &&
       CHECKED.test(latest.body) &&
       [...latest.body.matchAll(PASSED)].some(([, name, version]) => `${name}@${version}` === id);
-    if (!latest) why.push(`${id} has no cert review (label the PR cert-review)`);
+    if (!latest) why.push(`${id} has no cert review (${hint})`);
     else if (!passed) why.push(`${id} is not certified by its latest cert review`);
   }
   if (why.length) return { ok: false, line: `cert-gate: FAIL ${why.join(', ')}` };
@@ -112,7 +121,8 @@ async function main() {
   const keep = renovate ? () => true : (name) => GATED.test(name);
   const pins = changed(await manifests(repo, base.sha), await manifests(repo, pr.head.sha), keep);
   const none = renovate ? 'no pinned @ai-ecoverse package changes' : 'no gated pin changes';
-  return gate(pins, await comments(repo, number), none);
+  const fork = pr.head.repo?.full_name !== repo;
+  return gate(pins, await comments(repo, number), none, fork ? FORK : LABEL);
 }
 
 if (import.meta.url === `file://${argv[1]}`) {

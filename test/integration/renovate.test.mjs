@@ -231,6 +231,17 @@ test('outside Renovate the gate holds every PR to the gated pins it changes, the
     changed(base, spectrumOnly, (name) => GATED.test(name)),
     []
   );
+  const { FORK } = await import('../../scripts/ci/certified.mjs');
+  assert.match(
+    gate(gated.slice(0, 1), [], 'no gated pin changes', FORK).line,
+    /has no cert review \(cert review never runs fork code: push the change to a branch of this repository/
+  );
+  const cert = await read('.github/workflows/cert-review.yml');
+  assert.match(
+    cert,
+    /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/,
+    'the label path stays same-repo only'
+  );
   const ci = await read('scripts/ci/certified.mjs');
   assert.doesNotMatch(ci, /is not a Renovate PR/, 'every PR is gated, not only Renovate’s');
 });
