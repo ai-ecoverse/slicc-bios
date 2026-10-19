@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Guard vectors foreign extension world",
+  "version": "1.0",
+  "content_scripts": [
+    {
+      "matches": ["http://*.example.test/*", "https://*.example.test/*"],
+      "js": ["world.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

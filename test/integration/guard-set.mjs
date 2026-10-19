@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { after, test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { fixtureServer } from '@ai-ecoverse/slicc-browsers/fixture';
 import { run, summary } from '@ai-ecoverse/slicc-browsers/guard-runner';
 import set from '@ai-ecoverse/slicc-browsers/guard-vectors.json' with { type: 'json' };
@@ -29,8 +30,15 @@ const PATHS = {
     browserSession: false,
     browserContexts: true,
     chromeUrlsAttach: false,
+    extensionWorld: true,
   },
-  proxy: { autoAttach: true, browserSession: true, browserContexts: true, chromeUrlsAttach: true },
+  proxy: {
+    autoAttach: true,
+    browserSession: true,
+    browserContexts: true,
+    chromeUrlsAttach: true,
+    extensionWorld: true,
+  },
 };
 
 const port = await new Promise((resolve) => {
@@ -41,6 +49,7 @@ const port = await new Promise((resolve) => {
   });
 });
 const chrome = await launch({
+  extensions: [fileURLToPath(new URL('./fixtures/foreign-world', import.meta.url))],
   args: [
     `--remote-debugging-port=${port}`,
     '--host-resolver-rules=MAP *.sliccy.ai 127.0.0.1, MAP sliccy.ai 127.0.0.1, MAP *.example.test 127.0.0.1',
