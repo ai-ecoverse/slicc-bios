@@ -788,5 +788,9 @@
   "@ai-ecoverse/slicc-kernel@1.129.0": {
     "integrity": "sha512-/R8aDxfhTQNsloF9Z/zVS+4nhykFF8lhu6rJ3nPTPjHs+wi3hnaRQE/Rj9ceZuLf4J/bDdoyxzYIAZsBdzHe8g==",
     "sha256": "797bb9b2d5a296d0170a469be09a6a58bc8a2793338fe51c1f97b4299e800633"
+  },
+  "@ai-ecoverse/slicc-cdp@1.30.10": {
+    "integrity": "sha512-VakByvxkHaUtVRPQaB3o9UOS587H5XewCUDJen/jCmgH0nMxZT1EXPZ/fLyZhgAPtfO28+qaIvnbCisTviPE4g==",
+    "sha256": "b68103109a3ace10bdf0c6ecbc7670998fb6e7de26857f553c17126a60c7b647"
   }
 }
