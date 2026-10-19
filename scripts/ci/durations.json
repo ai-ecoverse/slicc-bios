@@ -24,6 +24,7 @@
   "test/integration/guard-set-proxy.test.mjs#lagging": 2753,
   "test/integration/guard-set-proxy.test.mjs#prompt": 1164,
   "test/integration/guard-vectors.test.mjs": 1734,
+  "test/integration/imagemagick.test.mjs": 40,
   "test/integration/integrity.test.mjs": 58,
   "test/integration/jsh.test.mjs": 52,
   "test/integration/k4-agent.test.mjs": 308,
