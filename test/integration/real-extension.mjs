@@ -6,6 +6,7 @@ import { request } from 'node:http';
 import { createServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { launch } from './chrome.mjs';
 
@@ -17,6 +18,7 @@ const release = (version, sha256) => ({
   sha256,
 });
 export const EXTENSIONS = [
+  release('7.7.0', '85a3ae130dc1cdfffe39063d95586f98ba637e065b18ee83a9a438a81580564b'),
   release('7.5.1', 'bdcd08b945cf69baa554cf01072d88436c3f8b97b05376cd369746598cf84a75'),
   release('7.6.2', '0871897fe03e96bddb16ab1c2712437e99835d01ca4566049a61ae888277c20e'),
   release('7.6.3', '17f0e53dd5d11465ea60d7ae4409cfbb9f48859501119d62dd5e5d4673a79426'),
@@ -24,6 +26,7 @@ export const EXTENSIONS = [
 ];
 export const [EXTENSION] = EXTENSIONS;
 export const SEVEN = 'https://seven.sliccy.ai/';
+export const FOREIGN = fileURLToPath(new URL('./fixtures/injected-frame', import.meta.url));
 
 async function unpacked(extension) {
   const dir = join(process.cwd(), 'node_modules', '.cache', `slicc-extension-${extension.version}`);
@@ -131,8 +134,15 @@ export async function realExtension({
   args = [],
   extension = EXTENSION,
   realistic = false,
+  foreign = false,
 } = {}) {
   const root = await unpacked(extension);
+  const { version } = JSON.parse(await readFile(join(root, 'manifest.json'), 'utf8'));
+  if (version !== extension.version)
+    throw new Error(`${root} holds slicc-extension ${version}, want ${extension.version}`);
+  console.log(
+    `real-extension: slicc-extension ${version}${foreign ? ' with a foreign content script' : ''}`
+  );
   const undisplay = realistic ? await display() : () => {};
   const upstream = { url: null };
   let tls;
@@ -141,7 +151,7 @@ export async function realExtension({
     tls = await front(upstream);
     chrome = await launch({
       realistic,
-      extensions: [root],
+      extensions: foreign ? [root, FOREIGN] : [root],
       args: [
         ...args,
         '--ignore-certificate-errors',

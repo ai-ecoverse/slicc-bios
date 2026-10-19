@@ -198,11 +198,18 @@ test('over the extension’s shield, the guard arms every driven tab with no pro
   assert.deepEqual(page.errors, []);
 });
 
-for (const extension of EXTENSIONS) {
-  test(`real slicc-extension ${extension.version}: playwright-cli opens about:blank on an opaque origin, drives an ordinary page, the vault stays out, and no driven document has the extension's origin`, {
+for (const [extension, foreign] of EXTENSIONS.flatMap((each) => [
+  [each, false],
+  [each, true],
+])) {
+  test(`real slicc-extension ${extension.version}${foreign ? ', with a foreign content script in every page' : ''}: playwright-cli opens about:blank on an opaque origin, drives an ordinary page with eval, snapshot and click, the vault stays out, and no driven document has an extension's origin`, {
     timeout: 10 * 60 * 1000,
   }, async (t) => {
-    const real = await realExtension({ extension, rules: ['MAP vault.sliccy.ai 127.0.0.1'] });
+    const real = await realExtension({
+      extension,
+      foreign,
+      rules: ['MAP vault.sliccy.ai 127.0.0.1'],
+    });
     t.after(() => real.close());
     const page = await real.page(t);
     await page.goto(SEVEN);
@@ -220,7 +227,7 @@ for (const extension of EXTENSIONS) {
     });
     real.overrides.set(
       '/driven.html',
-      '<!doctype html><title>driven</title><h1>Driven past the real shield</h1>'
+      '<!doctype html><title>driven</title><h1>Driven past the real shield</h1><a href="#clicked">go</a>'
     );
     const target = new URL('/driven.html', real.url);
     target.hostname = 'localhost';
@@ -236,6 +243,15 @@ for (const extension of EXTENSIONS) {
     const origin = await read(page, '/tmp/origin');
     assert.match(origin, /null/, `the opened about:blank's self.origin: ${origin}`);
     assert.doesNotMatch(origin, /chrome-extension:/, origin);
+    await run(
+      page,
+      `playwright-cli click "$(grep -o 'link "go" \\[ref=e[0-9]*' /tmp/pw | grep -o 'ref=e[0-9]*' | head -1 | cut -d= -f2)" > /tmp/click 2>&1; playwright-cli eval 'location.hash + " " + (document.documentElement.dataset.extensionFixture ?? "none")' >> /tmp/click 2>&1; echo click-$? >> /tmp/click; echo "click-""done"`
+    );
+    await shows(page, 'click-done', 60000);
+    const clicked = await read(page, '/tmp/click');
+    assert.doesNotMatch(clicked, /slicc: refused/, clicked);
+    assert.match(clicked, foreign ? /#clicked [a-p]{32}/ : /#clicked none/, clicked);
+    assert.match(clicked, /click-0/, clicked);
     hits.length = 0;
     await run(
       page,
