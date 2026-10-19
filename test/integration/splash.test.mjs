@@ -43,6 +43,20 @@ function fakeClipboard() {
   });
 }
 
+function parallelCompile() {
+  const COMPLETION = 0x91b1;
+  const { getExtension, getProgramParameter } = WebGL2RenderingContext.prototype;
+  WebGL2RenderingContext.prototype.getExtension = function (name) {
+    const found = getExtension.call(this, name);
+    if (found || name !== 'KHR_parallel_shader_compile') return found;
+    return { COMPLETION_STATUS_KHR: COMPLETION };
+  };
+  WebGL2RenderingContext.prototype.getProgramParameter = function (program, name) {
+    if (name === COMPLETION) return true;
+    return getProgramParameter.call(this, program, name);
+  };
+}
+
 function loaded(page, path) {
   return page.responses.some((response) => new URL(response.url).pathname === path);
 }
@@ -137,6 +151,7 @@ test('a failing boot opens the diagnostics, copies them without the join link, a
 
 test('the scene keeps running across a tab that is hidden for longer than its frame budget', async (t) => {
   const page = await chrome.page(t);
+  await page.init(parallelCompile);
   chrome.cdn.status = 404;
   await page.goto('/');
   await page.until(() => document.querySelector('.splash').dataset.scene === 'running');
