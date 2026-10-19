@@ -82,7 +82,7 @@ async function install(page, id) {
   const started = Date.now();
   await page
     .within(
-      300000,
+      120000,
       (id) =>
         document
           .querySelector('slicc-app')
@@ -102,12 +102,8 @@ async function install(page, id) {
 test('a catalog package’s kernel command wins over the same package’s Node bin, and a package with only a bin keeps it', {
   timeout: 20 * 60 * 1000,
 }, async (t) => {
-  t.after(() => {
-    for (const path of ['catalog.json', 'package.json', 'package-lock.json'])
-      chrome.overrides.delete(`/packages/optional/${path}`);
-  });
-  offer();
   const page = await chrome.page(t);
+  offer();
   await page.init('() => { globalThis.sliccKernelDebug = true; }');
   const booting = Date.now();
   await boot(page);
