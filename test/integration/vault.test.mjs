@@ -6,6 +6,7 @@ import { boot, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { attach } from './cli.mjs';
 import { startFakeVault } from './fake-vault.mjs';
+import { shoot } from './shots.mjs';
 
 const fake = await startFakeVault({
   locked: true,
@@ -1017,4 +1018,80 @@ test('the live vault answers on vault.sliccy.ai (smoke)', async (t) => {
     /frame-ancestors[^;]*https:\/\/seven\.sliccy\.ai/
   );
   t.diagnostic('the hello itself is answered only for seven’s origins, which the harness can’t be');
+});
+
+test('the vault’s endpoints entries show in Activity as named hosts, never "undefined", and Unpin is hidden while seven has no unpin relay', async (t) => {
+  const now = Date.now();
+  const entry = (seq, minutes, fields) => ({
+    type: 'endpoints',
+    seq,
+    id: `endpoints-${seq}`,
+    at: now - minutes * 60000,
+    uid: null,
+    tag: null,
+    ...fields,
+  });
+  t.after(() => fake.set({ audit: [] }));
+  fake.set({
+    locked: false,
+    secrets: ['HARBOR_MCP_TOKEN', 'TIDE_STATION_TOKEN'],
+    audit: [
+      entry(14, 2, {
+        unpinned: { name: 'TIDE_STATION_TOKEN', server: 'tide-mcp', host: 'mcp.tide.example' },
+      }),
+      entry(13, 9, {
+        pinned: { name: 'HARBOR_MCP_TOKEN', server: 'harbor-mcp', host: 'mcp.harbor.example' },
+      }),
+      entry(12, 30, { adopted: [{ server: 'harbor-mcp', host: 'mcp.harbor.example' }] }),
+      entry(11, 95, {
+        purged: [
+          {
+            provider: 'tide-models',
+            host: 'models.tide.example',
+            url: 'https://models.tide.example/v1',
+          },
+        ],
+      }),
+    ],
+  });
+  const page = await chrome.page(t);
+  await page.init(override(fake.origin));
+  await boot(page);
+  await page.evaluate(() => document.querySelector('slicc-app').show('settings'));
+  const rows = await page.within(60000, () => {
+    const deep = (root) => {
+      const found = root.querySelector('slicc-secrets');
+      if (found) return found;
+      for (const element of root.querySelectorAll('*')) {
+        const inner = element.shadowRoot && deep(element.shadowRoot);
+        if (inner) return inner;
+      }
+      return null;
+    };
+    const items = [
+      ...(deep(document)?.shadowRoot?.querySelectorAll('ol.audit li[data-type=endpoints]') ?? []),
+    ];
+    return items.length === 4
+      ? items.map((item) => ({
+          seq: Number(item.dataset.seq),
+          text: item.querySelector('.what').textContent.replace(/\s+/g, ' ').trim(),
+          unpin: !!item.querySelector('[data-action=unpin]'),
+        }))
+      : null;
+  });
+  assert.deepEqual(
+    rows.map(({ seq }) => seq),
+    [14, 13, 12, 11]
+  );
+  for (const row of rows) {
+    assert.doesNotMatch(row.text, /undefined/, row.text);
+    assert.equal(row.unpin, false, `no Unpin without a relay: ${row.text}`);
+  }
+  assert.match(rows[0].text, /mcp\.tide\.example/);
+  assert.match(rows[1].text, /mcp\.harbor\.example/);
+  assert.match(rows[2].text, /mcp\.harbor\.example/);
+  assert.match(rows[3].text, /models\.tide\.example/);
+  t.diagnostic(JSON.stringify(rows));
+  await shoot(page, 'vault-endpoints-activity', { show: 'settings', target: '#secrets-audit' });
+  assert.deepEqual(page.errors, []);
 });
