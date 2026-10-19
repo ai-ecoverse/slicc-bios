@@ -23,7 +23,7 @@ const LINK = [
   '    t=$(realpath -e "$s") || continue',
   '    case "$t/" in "$real/"*) ;; *) echo "skipped $n: leaves the package"; continue ;; esac',
   '    case "$t/" in "$home/"*) ;; *) echo "skipped $n: not under $home"; continue ;; esac',
-  '    printf "%s\\n" "$n" | grep -qxE "[a-z0-9][a-z0-9-]*" || { echo "skipped $n: not a skill name"; continue; }',
+  '    case "$n" in ""|-*|*[!a-z0-9-]*) echo "skipped $n: not a skill name"; continue ;; esac',
   '    f=$(sed -n "1{/^---[[:space:]]*\\$/!q;};2,/^---[[:space:]]*\\$/{s/^name:[[:space:]]*//p;}" "$t/SKILL.md" | head -1 | tr -d "\\"\' \\r")',
   '    [ "$f" = "$n" ] || { echo "skipped $n: its SKILL.md names ${f:-nothing}"; continue; }',
   '    [ -e "$builtin/$n" ] && { echo "skipped $n: a built-in skill"; continue; }',
