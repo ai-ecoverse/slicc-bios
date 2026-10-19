@@ -68,12 +68,10 @@ function kind(path) {
   if (path.startsWith(NODE_STUBS)) return 'stub';
   return live.some((dir) => path.startsWith(dir)) ? 'live' : 'sandboxed';
 }
-const markers = [
-  '/var/lib/slicc/pnpm-lock.yaml',
-  '/node_modules/.modules.yaml',
-  '/var/lib/slicc/agent/pnpm-lock.yaml',
-  '/opt/agent/node_modules/.modules.yaml',
-];
+const markers = {
+  base: ['/var/lib/slicc/pnpm-lock.yaml', '/node_modules/.modules.yaml'],
+  agent: ['/var/lib/slicc/agent/pnpm-lock.yaml', '/opt/agent/node_modules/.modules.yaml'],
+};
 const AGENT = '/opt/agent/';
 
 const read = opfsReader();
@@ -189,32 +187,40 @@ const opfs = {
     ),
 };
 
-let generation;
-let resolver;
+const stamps = { base: null, agent: null };
+const resolvers = { base: null, agent: null };
 const transformed = new Map();
 
-const currentResolver = joined(freshResolver);
+const currentResolvers = joined(freshResolvers);
 
-async function freshResolver() {
+async function stamp(list) {
   const times = await Promise.all(
-    markers.map((marker) =>
+    list.map((marker) =>
       read(marker).then(
         (file) => file.lastModified,
         () => 0
       )
     )
   );
-  const stamp = times.join(':');
-  if (stamp !== generation) {
-    generation = stamp;
-    resolver = createResolver(opfs);
+  return times.join(':');
+}
+
+async function freshResolvers() {
+  const [base, agent] = await Promise.all([stamp(markers.base), stamp(markers.agent)]);
+  if (base !== stamps.base) {
+    resolvers.base = createResolver(opfs);
+    resolvers.agent = createResolver(opfs);
     transformed.clear();
+  } else if (agent !== stamps.agent) {
+    resolvers.agent = createResolver(opfs);
+    for (const key of transformed.keys()) if (key.startsWith(AGENT)) transformed.delete(key);
   }
-  return resolver;
+  Object.assign(stamps, { base, agent });
+  return resolvers;
 }
 
 async function rewrite(path, file, base, run) {
-  const resolve = await currentResolver();
+  const resolve = (await currentResolvers())[path.startsWith(AGENT) ? 'agent' : 'base'];
   const query = run ? `?run=${encodeURIComponent(run)}` : '';
   const key = `${path}${query}`;
   const cached = transformed.get(key);
