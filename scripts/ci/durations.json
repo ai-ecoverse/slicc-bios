@@ -49,6 +49,7 @@
   "test/integration/path-spawn.test.mjs": 25,
   "test/integration/perl.test.mjs": 68,
   "test/integration/pins.test.mjs": 1,
+  "test/integration/pnpm-trap.test.mjs": 90,
   "test/integration/progress.test.mjs": 100,
   "test/integration/pydata.test.mjs": 600,
   "test/integration/quiet-body.test.mjs": 160,

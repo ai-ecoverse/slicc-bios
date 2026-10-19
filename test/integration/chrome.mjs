@@ -1,5 +1,5 @@
-import { existsSync } from 'node:fs';
-import { argv, env } from 'node:process';
+import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
+import { argv, env, pid } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { serve, launch as start } from '@ai-ecoverse/slicc-shared-web/harness';
 import { startFakeVault } from './fake-vault.mjs';
@@ -52,6 +52,23 @@ export async function debuggerUrl(port, ms = 30000) {
 
 const NOISE = /Spectrum Web Components is in dev mode|The legal slot is empty/;
 const KEEP = 40;
+export const TRAPS = new URL('../../artifacts/pnpm-traps/', import.meta.url);
+const TRAPPED = /^(?:bios: )?pnpm(?: trapped \(| trapped twice|'s retry after the wasm trap)/;
+
+export function trapRecorder(cdp, current, write = appendFileSync) {
+  const file = new URL(`${pid}.jsonl`, TRAPS);
+  cdp.on(({ method, params }) => {
+    if (method !== 'Runtime.consoleAPICalled' || params.type !== 'warning') return;
+    const line = params.args.map((arg) => arg.value ?? arg.description).join(' ');
+    const test = current();
+    if (!TRAPPED.test(line) || !test || test.forced) return;
+    mkdirSync(TRAPS, { recursive: true });
+    write(
+      file,
+      `${JSON.stringify({ file: test.file, name: test.name, line, at: new Date().toISOString() })}\n`
+    );
+  });
+}
 
 function consoleTail(cdp) {
   const lines = [];
@@ -147,6 +164,8 @@ export async function launch({ agent = false, vault = true, ...overrides } = {})
   const close = chrome.close;
   chrome.vault = fake;
   const messages = consoleTail(chrome.cdp);
+  let current = null;
+  trapRecorder(chrome.cdp, () => current);
   const traced = TRACE ? networkTrace(chrome.cdp, new URL(chrome.url).origin) : null;
   chrome.close = (...args) => {
     fake?.close();
@@ -156,6 +175,11 @@ export async function launch({ agent = false, vault = true, ...overrides } = {})
     const opened = await page(t);
     messages.length = 0;
     opened.console = messages;
+    current = { file: t.filePath ?? null, name: t.name, forced: false };
+    const test = current;
+    opened.forceTraps = () => {
+      test.forced = true;
+    };
     if (traced) {
       traced.reset();
       opened.trace = {

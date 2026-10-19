@@ -322,7 +322,7 @@ export function pnpm(kernel, cwd, report, to = null, argv = INSTALL, writer = tr
   return navigator.locks.request(STORE, () => pnpmAlone(kernel, cwd, report, to, argv, writer));
 }
 
-const TRAP = /^[^\n]*: wasm trap(?: in thread \d+)?: memory access out of bounds$/m;
+const TRAP = /^[^\n]*: wasm trap in thread \d+: memory access out of bounds$/m;
 const TRAP_ISSUES = 'homescoop#1127, slicc-kernel#1172';
 export const TRAP_LOG = 'var/log/slicc/pnpm-traps.log';
 const TRAP_CAP = 64 * 1024;
