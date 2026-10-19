@@ -53,13 +53,13 @@ async function probe(page, mark) {
   ].join('\n');
   await run(
     page,
-    `clear; python3 -c "${script}"; echo "builds [$(find /opt/slicc/pydata -name '*cpython-314*' | wc -l) $(find /opt/slicc/pydata -name '*cpython-315*' | wc -l)]"; echo "pth [$(tr '\\n' ' ' < /opt/slicc/python/slicc-pydata.pth)]"; echo "${mark} $((6 * 7))"`
+    `clear; python3 -c "${script}"; echo "builds [$(find /opt/slicc/pydata -name '*.cpython-314*.so' | wc -l) $(find /opt/slicc/pydata -name '*.cpython-315*.so' | wc -l)]"; echo "pth [$(tr '\\n' ' ' < /opt/slicc/python/slicc-pydata.pth)]"; echo "${mark} $((6 * 7))"`
   );
   await shows(page, `${mark} 42`, PROBE);
   return (await screen(page)).replace(/\s+/g, ' ');
 }
 
-test('a profile with the Python 3.14 data tools updates to 3.15 with Update: Python first, then the project, with no 3.14 build or old version left, pytz gone, and one dateutil, tzdata and six, the pure packages that keep their python3.14 folder', async (t) => {
+test('a profile with the Python 3.14 data tools updates to 3.15 with Update: Python first, then the project, with no cp314 module or old version left, pytz gone, and one dateutil, tzdata and six, the pure packages that keep their python3.14 folder', async (t) => {
   const page = await chrome.page(t);
   const files = await earlier();
   for (const [path, body] of Object.entries(files)) chrome.overrides.set(path, body);
@@ -110,11 +110,11 @@ test('a profile with the Python 3.14 data tools updates to 3.15 with Update: Pyt
 
   await run(
     page,
-    `clear; echo "left [$(find /opt/slicc/pydata /opt/slicc/python -name '*cpython-314*' | wc -l)] [$(find /opt/slicc/pydata -path '*/lib/python3.14/*' -name '*.so' | wc -l)]"; echo "pytz [$(find /opt/slicc/pydata -path '*py-pytz*' | wc -l)]"; for p in py-python-dateutil py-tzdata py-six py-numpy py-pandas py-pillow py-scipy; do echo "$p [$(find /opt/slicc/pydata -path "*/@ai-ecoverse/$p/package.json" | xargs jq -r .version | sort -u | tr '\\n' ' ')] locked $(grep -o "^  '@ai-ecoverse/$p@[^']*'" /opt/slicc/pydata/pnpm-lock.yaml | sort -u | wc -l)"; done; echo "pythons [$(cat "$PNPM_HOME"/global/v11/*/node_modules/${PYTHON}/package.json | jq -r .version | sort -u | tr '\\n' ' ')]"; echo "checked $((6 * 7))"`
+    `clear; echo "left [$(find /opt/slicc/pydata /opt/slicc/python -name '*.cpython-314*.so' | wc -l)] [$(find /opt/slicc/pydata -path '*/lib/python3.14/*' -name '*.so' | wc -l)] [$(find /opt/slicc/pydata -path '*/lib/python3.14/*' -name '*.py' | sed 's|/lib/python3.14/.*||' | sed 's|.*/||' | sort -u | tr '\\n' ' ')]"; echo "pytz [$(find /opt/slicc/pydata -path '*py-pytz*' | wc -l)]"; for p in py-python-dateutil py-tzdata py-six py-numpy py-pandas py-pillow py-scipy; do echo "$p [$(find /opt/slicc/pydata -path "*/@ai-ecoverse/$p/package.json" | xargs jq -r .version | sort -u | tr '\\n' ' ')] locked $(grep -o "^  '@ai-ecoverse/$p@[^']*'" /opt/slicc/pydata/pnpm-lock.yaml | sort -u | wc -l)"; done; echo "pythons [$(cat "$PNPM_HOME"/global/v11/*/node_modules/${PYTHON}/package.json | jq -r .version | sort -u | tr '\\n' ' ')]"; echo "checked $((6 * 7))"`
   );
   await shows(page, 'checked 42', PROBE);
   const left = (await screen(page)).replace(/\s+/g, ' ');
-  assert.match(left, /left \[0\] \[0\]/);
+  assert.match(left, new RegExp(`left \\[0\\] \\[0\\] \\[${PURE.join(' ')} \\]`));
   assert.match(left, /pytz \[0\]/);
   assert.match(left, /py-python-dateutil \[2\.9\.0-post0\.3 \] locked 1/);
   assert.match(left, /py-tzdata \[2026\.4\.0-3 \] locked 1/);
