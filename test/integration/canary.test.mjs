@@ -294,6 +294,173 @@ test('a candidate artifact replaces the package in every pin and lock, and the h
   }
 });
 
+const NPM = 'https://registry.npmjs.org/';
+
+function upstreamPackument() {
+  return {
+    name: CDP,
+    'dist-tags': { latest: '1.25.0', certified: '1.24.0' },
+    versions: {
+      '1.25.0': {
+        name: CDP,
+        version: '1.25.0',
+        dist: { tarball: `${NPM}${CDP}/-/slicc-cdp-1.25.0.tgz`, integrity: 'sha512-upstream' },
+      },
+    },
+    time: { '1.25.0': '2026-10-01T00:00:00.000Z' },
+  };
+}
+
+async function candidatePins(dir, version, cdn = null) {
+  const { createHash } = await import('node:crypto');
+  const { readFile } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const { overridePins } = await import('../../scripts/canary/override-pins.mjs');
+  const file = await packCandidate(version, dir);
+  const bytes = await readFile(file);
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const integrity = `sha512-${createHash('sha512').update(bytes).digest('base64')}`;
+  const pins = join(dir, 'pins.json');
+  await overridePins([], {
+    out: pins,
+    packages: join(dir, 'packages'),
+    cdn: cdn ?? join(dir, 'cdn'),
+    artifacts: [
+      { file, sha256, package: CDP, repo: 'ai-ecoverse/slicc-cdp', run: '42', artifact: 'packed' },
+    ],
+  });
+  return { pins, cdn: cdn ?? join(dir, 'cdn'), bytes, integrity };
+}
+
+test('the harness gets a candidate artifact’s packument: the real one plus the candidate’s manifest from its tarball, at the served tarball with its sha512, and dist-tags as they were; every other request passes through', async () => {
+  const { createHash } = await import('node:crypto');
+  const { readFile, rm } = await import('node:fs/promises');
+  const { fetched } = await import(
+    '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs'
+  );
+  const { seeded, serveCandidates } = await import('../../scripts/canary/override-pins.mjs');
+  const version = '1.25.1-pr.7.3';
+  const dir = await scratch();
+  try {
+    const { pins, cdn, integrity } = await candidatePins(dir, version);
+    const asked = [];
+    const target = {
+      fetch: async (input, init) => {
+        asked.push(input instanceof Request ? input.url : String(input));
+        return Response.json(upstreamPackument());
+      },
+    };
+    await serveCandidates(pins, { cdn, target });
+    const tarball = `${NPM}${CDP}/-/slicc-cdp-${version}.tgz`;
+    const forms = [
+      `${NPM}@ai-ecoverse%2fslicc-cdp`,
+      `${NPM}@ai-ecoverse%2Fslicc-cdp`,
+      `${NPM}${CDP}`,
+    ];
+    for (const url of forms) {
+      const served = JSON.parse(await fetched(url, { fetcher: target.fetch }));
+      const real = upstreamPackument();
+      assert.deepEqual(served['dist-tags'], real['dist-tags']);
+      assert.deepEqual(Object.keys(served.versions).sort(), ['1.25.0', version]);
+      assert.deepEqual(served.versions['1.25.0'], real.versions['1.25.0']);
+      assert.deepEqual(served.versions[version], {
+        name: CDP,
+        version,
+        type: 'module',
+        main: 'src/index.js',
+        _id: `${CDP}@${version}`,
+        dist: { tarball, integrity },
+      });
+      assert.equal(served.time['1.25.0'], real.time['1.25.0']);
+      assert.match(served.time[version], /^\d{4}-\d\d-\d\dT/);
+    }
+    assert.deepEqual(asked, forms);
+    const fromRequest = await (await target.fetch(new Request(forms[0]))).json();
+    assert.deepEqual(fromRequest.versions[version].dist, { tarball, integrity });
+    const bytes = await readFile(seeded(tarball, cdn));
+    assert.equal(`sha512-${createHash('sha512').update(bytes).digest('base64')}`, integrity);
+    for (const [url, init] of [
+      [`${NPM}@ai-ecoverse%2fslicc-kernel`],
+      [tarball],
+      [`https://cdn.jsdelivr.net/${CDP}`],
+      [forms[0], { method: 'PUT' }],
+    ]) {
+      assert.deepEqual(await (await target.fetch(url, init)).json(), upstreamPackument());
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a candidate’s packument comes only from its verified tarball: changed bytes in the harness cache, or a pins.json naming another integrity, are refused and nothing is served', async () => {
+  const { readFile, rm, writeFile } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const { seeded, serveCandidates } = await import('../../scripts/canary/override-pins.mjs');
+  const version = '1.25.1-pr.7.4';
+  const dir = await scratch();
+  try {
+    const { pins, cdn, bytes } = await candidatePins(dir, version);
+    const upstream = async () => Response.json(upstreamPackument());
+    const target = { fetch: upstream };
+    const pinned = JSON.parse(await readFile(pins, 'utf8'));
+    const other = join(dir, 'other.json');
+    await writeFile(
+      other,
+      JSON.stringify({
+        ...pinned,
+        overrides: pinned.overrides.map((entry) => ({ ...entry, integrity: 'sha512-other' })),
+      })
+    );
+    await assert.rejects(serveCandidates(other, { cdn, target }), /refusing it/);
+    await writeFile(
+      seeded(`${NPM}${CDP}/-/slicc-cdp-${version}.tgz`, cdn),
+      Buffer.concat([bytes, Buffer.from('x')])
+    );
+    await assert.rejects(
+      serveCandidates(pins, { cdn, target }),
+      /its sha256 is [0-9a-f]{64}, not [0-9a-f]{64}; refusing it/
+    );
+    assert.equal(target.fetch, upstream);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('in a canary test process, the harness serves the candidate’s packument from npm’s with the candidate added, and without the canary npm’s alone', async () => {
+  const { execFile } = await import('node:child_process');
+  const { rm } = await import('node:fs/promises');
+  const { promisify } = await import('node:util');
+  const { CDN, ROOT, seeded } = await import('../../scripts/canary/override-pins.mjs');
+  const version = `0.0.0-canary.${process.pid}`;
+  const tarball = `${NPM}${CDP}/-/slicc-cdp-${version}.tgz`;
+  const script = [
+    "import { fetched } from './node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';",
+    `const packument = JSON.parse(await fetched('${NPM}@ai-ecoverse%2fslicc-cdp'));`,
+    `console.log(JSON.stringify({ dist: packument.versions['${version}']?.dist ?? null, latest: packument['dist-tags'].latest, versions: Object.keys(packument.versions).length }));`,
+  ].join('\n');
+  const probe = async (env) => {
+    const { stdout } = await promisify(execFile)(
+      process.execPath,
+      ['--import=./scripts/canary/packuments.mjs', '--input-type=module', '-e', script],
+      { cwd: ROOT, env: { PATH: process.env.PATH, HOME: process.env.HOME, ...env } }
+    );
+    return JSON.parse(stdout);
+  };
+  const dir = await scratch();
+  try {
+    const { pins, integrity } = await candidatePins(dir, version, CDN);
+    const [canary, plain] = await Promise.all([probe({ SLICC_CANARY: pins }), probe({})]);
+    assert.deepEqual(canary.dist, { tarball, integrity });
+    assert.equal(plain.dist, null);
+    assert.equal(canary.latest, plain.latest);
+    assert.notEqual(canary.latest, version);
+    assert.equal(canary.versions, plain.versions + 1);
+  } finally {
+    await rm(seeded(tarball, CDN), { force: true });
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('repeated runs: always failing only with the candidate is a regression, failing on both is both, anything mixed is flaky', async () => {
   const { classify } = await import('../../scripts/canary/report.mjs');
   assert.equal(classify(['fail', 'fail', 'fail'], ['pass', 'pass', 'pass'], true), 'regression');

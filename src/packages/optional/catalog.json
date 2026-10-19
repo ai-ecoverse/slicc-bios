@@ -135,6 +135,13 @@
     "commands": ["websocat"],
     "size": 1266828
   },
+  "@ai-ecoverse/wasi-ntfy": {
+    "id": "ntfy",
+    "label": "ntfy",
+    "description": "Publishes and subscribes to notifications, and runs a command for every message: ntfy sub <topic> '<command>', with the message in $NTFY_MESSAGE and $NTFY_RAW. Works with ntfy.sh, any ntfy server and the tray's webhook gateway, ntfy.sliccy.ai.",
+    "commands": ["ntfy"],
+    "size": 4751117
+  },
   "@ai-ecoverse/wasi-fnox": {
     "id": "fnox",
     "label": "fnox",

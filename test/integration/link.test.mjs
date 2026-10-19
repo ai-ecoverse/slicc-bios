@@ -13,7 +13,7 @@ after(() => chrome.close());
 
 const KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGZha2Ugbm9kZSBob3N0IGtleSBmb3IgdGVzdHM=';
 
-function fakeNode(key, hello = {}) {
+function fakeNode(key, hello = {}, signal = {}) {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const frame = (type, id, payload = new Uint8Array(0)) => {
@@ -177,7 +177,7 @@ function fakeNode(key, hello = {}) {
       await pc.addIceCandidate(message.candidate).catch(() => {});
     }
   };
-  globalThis.sliccLinkReceive(JSON.stringify({ t: 'hello', v: 1, nonce }));
+  globalThis.sliccLinkReceive(JSON.stringify({ t: 'hello', v: 1, nonce, ...signal }));
 }
 
 function earlyNode() {
@@ -461,6 +461,51 @@ test('a folder’s capabilities from the node’s HELLO reach the kernel’s hos
   await page.until(() => globalThis.hostfsGrants.length > 0);
   assert.deepEqual(await page.evaluate(() => globalThis.hostfsGrants), [capabilities]);
 });
+
+const dialled = (page) =>
+  page.evaluate(async () => {
+    const conn = await globalThis.sliccUplink.dial({ host: '203.0.113.20', port: 443 });
+    const named = { exit: conn.exit ?? null, has: 'exit' in conn, remote: conn.remoteAddr };
+    conn.close();
+    return named;
+  });
+
+for (const [said, signal, expected] of [
+  ['names the linked device as its exit', {}, (id) => `device:${id}`],
+  [
+    'names device:local:<node> for a slicc CLI on this computer',
+    { node: 'H-FuXm3ZyTMQF_kkC0Y_qQ' },
+    (id) => `device:${id}`,
+  ],
+  ['names no exit when the device id isn’t an exit id', { node: 'not a device id' }, () => null],
+]) {
+  test(`a connection the uplink dials through a linked device ${said}`, async (t) => {
+    const page = await chrome.page(t);
+    await page.init(() => {
+      globalThis.sliccUplinkDebug = true;
+    });
+    await boot(page);
+    await ready(page);
+    await page.evaluate(fakeNode, KEY, {}, signal);
+    await page.until(() =>
+      document
+        .querySelector('slicc-app')
+        .model.network.status()
+        .links?.devices.some((d) => d.state === 'connected')
+    );
+    const [device] = await page.evaluate(
+      () => document.querySelector('slicc-app').model.network.status().links.devices
+    );
+    const conn = await dialled(page);
+    assert.equal(conn.remote, '203.0.113.20:443');
+    const want = expected(device.id);
+    assert.deepEqual(
+      { exit: conn.exit, has: conn.has },
+      { exit: want, has: want !== null },
+      JSON.stringify({ device: device.id, conn })
+    );
+  });
+}
 
 const PYTHON = '@ai-ecoverse/wasix-python@3.14.2-18';
 

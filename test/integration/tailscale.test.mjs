@@ -456,6 +456,20 @@ test('stage B on a tailnet of its own: raw TCP to a peer and through an exit nod
   }, tailnet.peer.echo);
   console.log(JSON.stringify({ halfClose: half }));
   assert.equal(half, 'got hello then EOF');
+  const named = await page.evaluate(async (addr) => {
+    const at = addr.lastIndexOf(':');
+    const conn = await globalThis.sliccTailscaleUplink.dial({
+      host: addr.slice(0, at).replace(/^\[|\]$/g, ''),
+      port: Number(addr.slice(at + 1)),
+    });
+    conn.close();
+    return conn.exit ?? null;
+  }, tailnet.peer.echo);
+  assert.equal(
+    named,
+    'tailscale',
+    'a raw TCP connection over the tailnet names tailscale as its exit'
+  );
 
   const host = await curled(page, `--noproxy '*' --max-time 10 http://10.0.2.2:5711/`, 'raw-host');
   console.log(JSON.stringify({ rawHost: host.code }));

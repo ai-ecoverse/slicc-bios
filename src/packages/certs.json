@@ -344,6 +344,10 @@
     "sha256": "134acd4ccc67ba48e98102e5a6b4ee995a21eb87b628e2b683b750437319a631",
     "exception": "unverifiable build (homescoop#864): kept because gh is core; bump when its reproduce check or a CI-built gh is certified"
   },
+  "@ai-ecoverse/wasi-ntfy@2.32.0-2": {
+    "integrity": "sha512-gPaK5pptREyvSsfnog3PqxDYAiZ9Qeo3S0llnB5UVzOeQTLT222SecJ5Xm7d6ldB2//3iILp3wxqV24TItpwMg==",
+    "sha256": "12267d1463082fd86f7315a41c3f1c905ba320496ae5078cc56487246f884a05"
+  },
   "@ai-ecoverse/wasi-pnpm@12.9.1-8": {
     "integrity": "sha512-/3LRssC7T2t9HovusS9neuDg5+FNMhf90MkECauL1vZI/6BsQSadLyopnzn3ifYvY0LDC+Q8Src22oGCE+x1QA==",
     "sha256": "08136a9292ec7a04ebda5bc23fa7b84f85a635f13b19c9512f6ad83ddde60766"

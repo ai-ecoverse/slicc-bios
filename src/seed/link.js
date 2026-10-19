@@ -466,7 +466,12 @@ function bodySource(body) {
 const mapped = (error) =>
   error.code === 'ENOTFOUND' ? Object.assign(error, { code: 'EHOSTUNREACH' }) : error;
 
-export function linkExit(session, { id, address, label, browsers = () => [], automatic = false }) {
+const DEVICE_ID = /^[A-Za-z0-9._:-]+$/;
+
+export function linkExit(
+  session,
+  { id, device = () => null, address, label, browsers = () => [], automatic = false }
+) {
   const name = () => `${label()}.slicc.internal`;
   const mine = (host) => {
     const bare = bareHost(host).replace(/\.$/, '');
@@ -476,6 +481,10 @@ export function linkExit(session, { id, address, label, browsers = () => [], aut
   return {
     id,
     kind: 'link',
+    exitName: () => {
+      const named = device();
+      return typeof named === 'string' && DEVICE_ID.test(named) ? `device:${named}` : null;
+    },
     chosenOnly: true,
     automatic,
     hostLoopback: () => automatic && session.caps().includes('http'),
@@ -984,6 +993,7 @@ export function createLinks({
       });
       link.exit = linkExit(link.offer.session, {
         id: `link:${key}`,
+        device: () => link.id ?? key,
         address: () => link.address,
         label: () => link.label,
         browsers: () => link.browsers,

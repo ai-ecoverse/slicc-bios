@@ -559,6 +559,7 @@ export function tailnetExit(slot) {
   return {
     id: 'tailscale',
     kind: 'tailnet',
+    exitName: () => 'tailscale',
     active: () => status()?.state === 'Running',
     offersDefault: () => Boolean(status()?.exitNode),
     claims: (host) => claimsHost(host, status()),
