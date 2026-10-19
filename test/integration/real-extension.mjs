@@ -42,7 +42,7 @@ async function unpacked(extension) {
   return root;
 }
 
-async function certificate() {
+export async function certificate() {
   const dir = await mkdtemp(join(tmpdir(), 'seven-front-'));
   const key = join(dir, 'key.pem');
   const cert = join(dir, 'cert.pem');
