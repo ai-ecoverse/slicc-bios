@@ -6,6 +6,7 @@ import { agentUp, boot, ready, rowSettled, run, screen, shows } from './bios.mjs
 import { debuggerUrl, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
 import { fakeRegistry, fakeRelease } from './fake-npm.mjs';
+import { shoot } from './shots.mjs';
 
 const AGENT = '@ai-ecoverse/slicc-agent';
 const PINNED = JSON.parse(
@@ -138,10 +139,20 @@ test('the owner turns on developer mode, npm’s newer agent is offered as a bet
     assert.ok(row.actions.includes('install-beta'), row.actions.join());
     assert.equal(row.beta, null);
     assert.equal(await installedAgent(page), PINNED);
+    await shoot(page, 'beta-settings', { show: 'settings', target: '[data-setting="developer"]' });
+    await shoot(page, 'beta-offered', { show: 'updates', target: '[data-npm]' });
   });
 
   await t.test('Install beta asks first; Cancel installs nothing', async () => {
     const acting = act(page, 'install-beta');
+    await page.until(
+      () =>
+        !!document
+          .querySelector('slicc-app')
+          .shadowRoot.querySelector('slicc-confirm')
+          ?.shadowRoot?.querySelector('dialog[open]')
+    );
+    await shoot(page, 'beta-confirm', {});
     const body = await confirmWith(page, 'Cancel');
     await acting;
     assert.match(body, new RegExp(`slicc-agent ${BETA.replaceAll('.', '\\.')} isn’t certified`));
@@ -163,6 +174,8 @@ test('the owner turns on developer mode, npm’s newer agent is offered as a bet
     assert.ok(registry.asked.some((url) => url.endsWith(`slicc-agent-${BETA}.tgz`)));
     const shown = await notice(page, 'beta:agent');
     assert.equal(shown?.tone, 'warning');
+    await shoot(page, 'beta-installed', { show: 'updates', target: '[data-beta]' });
+    await shoot(page, 'beta-notice', { show: 'chat' });
     assert.match(
       shown.body,
       new RegExp(`slicc-agent ${BETA.replaceAll('.', '\\.')} isn’t certified`)
@@ -243,6 +256,7 @@ test('the owner turns on developer mode, npm’s newer agent is offered as a bet
       const row = await agentRow(page);
       assert.equal(row.npm.reason, 'no provenance');
       assert.ok(!row.actions.includes('install-beta'));
+      await shoot(page, 'beta-not-offered', { show: 'updates', target: '[data-npm]' });
       release.provenance = true;
       release.workflow = { ref: 'refs/heads/main', path: '.github/workflows/ci.yml' };
       t.after(() => {
