@@ -189,10 +189,10 @@ function linkedActions(state, update, owner) {
       const parts = String(source).split('/');
       if (parts.length !== 2 || !parts.every(plainName))
         throw new Error(`${source} is not a linked folder`);
-      const { kernel } = state();
+      const { fs, kernel } = state();
       const target = `/mnt/${source}`;
       const user = owner();
-      await mountPoint(kernel, target, user);
+      if (!(await fs.exists(target))) await mountPoint(kernel, target, user);
       await kernel.mount({ type: 'hostfs', source, target, options: owned({}, user) });
       await update(await kernel.mounts());
       return target;
@@ -352,7 +352,7 @@ export function createFolders({
       if (!handle) return null;
       const target = mountName(handle.name, new Set(table.map((entry) => entry.target)));
       const user = owner();
-      await mountPoint(kernel, target, user);
+      if (!(await fs.exists(target))) await mountPoint(kernel, target, user);
       inserting.add(target);
       try {
         await kernel.mount({ type: 'fsa', source: 'none', target, options: owned({}, user) });
@@ -386,12 +386,12 @@ export function createFolders({
       setInterval(() => void refresh(), POLL_MS);
       return { ...model, files: port };
     },
-    ...linkedActions(() => ({ kernel, table }), update, owner),
+    ...linkedActions(() => ({ fs, kernel, table }), update, owner),
     async restore() {
       for (const { type, source, target, options } of remembered(storage, secret)) {
         try {
           const user = owner();
-          await mountPoint(kernel, target, user);
+          if (!(await fs.exists(target))) await mountPoint(kernel, target, user);
           await kernel.mount({ type, source, target, options: owned(options, user) });
         } catch (error) {
           console.warn(`${target} was not mounted again: ${error.message}`);

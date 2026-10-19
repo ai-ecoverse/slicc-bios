@@ -1160,6 +1160,9 @@ test('a remembered linked folder mounted before its CLI links fills in when the 
   );
   await page.reload();
   await ready(page);
+  await page.until(() =>
+    document.querySelector('slicc-app').model.files.mounts().includes('/mnt/proj')
+  );
   const before = await shell(page, 'grep -c " /mnt/proj " /proc/mounts', 'fs-later-before');
   assert.equal(before.out, '1');
   const node = attach(
