@@ -68,6 +68,18 @@ function promptStamp() {
   tick();
 }
 
+const transforms = (page) =>
+  page.evaluate(() => {
+    const out = { cached: 0, redone: [] };
+    for (const entry of performance.getEntriesByType('resource')) {
+      const timing = entry.serverTiming.find(({ name }) => name === 'transform');
+      if (!timing) continue;
+      if (timing.description === 'cached') out.cached += 1;
+      else out.redone.push(new URL(entry.name).pathname);
+    }
+    return out;
+  });
+
 async function idle(page) {
   await page.within(AGENT_BUDGET, () => {
     const rows = document.querySelector('slicc-app')?.model?.updates?.list?.() ?? [];
@@ -78,10 +90,11 @@ async function idle(page) {
   });
 }
 
-test('a cold agent install runs in the page’s one kernel with no package scripts, an optional install waits on the pnpm store, the next reload shows the UI about as fast as a steady one, and a steady reload the prompt within 11 s', async (t) => {
+test('a cold agent install runs in the page’s one kernel with no package scripts, an optional install waits on the pnpm store, the next reload re-transforms none of seven’s own modules, and a steady reload shows the prompt within 11 s', async (t) => {
   const page = await chrome.page(t);
   await page.init(watchKernels);
   await page.init(promptStamp);
+  await page.init(() => performance.setResourceTimingBufferSize(20000));
   await boot(page);
   await page.within(
     300000,
@@ -134,20 +147,22 @@ test('a cold agent install runs in the page’s one kernel with no package scrip
   const ui = (await page.within(120000, () => window.sliccUiAt)) - first;
   await page.within(120000, () => window.sliccPromptAt);
   assert.ok(ui < FIRST_UI, `the first reload after the agent install took ${ui} ms to the UI`);
+  const kept = await transforms(page);
+  assert.ok(kept.cached > 0, 'the first reload after the agent install served no cached transform');
+  assert.deepEqual(
+    kept.redone.filter((path) => !path.startsWith('/opt/agent/')),
+    [],
+    'the agent install dropped transforms of modules outside /opt/agent/'
+  );
   await idle(page);
   const start = Date.now();
   await page.reload();
   const steady = (await page.within(120000, () => window.sliccUiAt)) - start;
   const took = (await page.within(120000, () => window.sliccPromptAt)) - start;
-  const near = Math.round(1.5 * steady + 200);
   t.diagnostic(
-    `first reload after the agent install to the UI: ${ui} ms (bounds ${FIRST_UI} ms and ${near} ms, 1.5 × the steady reload's ${steady} ms + 200)`
+    `first reload after the agent install to the UI: ${ui} ms (bound ${FIRST_UI} ms; a steady reload ${steady} ms), ${kept.cached} transforms cached`
   );
   t.diagnostic(`warm reload to the terminal prompt: ${took} ms (bound ${WARM_PROMPT} ms)`);
-  assert.ok(
-    ui < near,
-    `the first reload after the agent install took ${ui} ms to the UI, a steady one ${steady} ms`
-  );
   assert.ok(
     took < WARM_PROMPT,
     `a steady-state warm reload took ${took} ms to the terminal prompt`
