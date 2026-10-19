@@ -3,7 +3,7 @@
     "match": "/(follow[^/]*|chat)\\.test\\.mjs$"
   },
   "remote-pydata": {
-    "match": "/(remote|pydata|updates)\\.test\\.mjs$"
+    "match": "/(remote|pydata[^/]*|updates)\\.test\\.mjs$"
   },
   "users-agent-ui": {
     "match": "/(users|agent-ui)\\.test\\.mjs$"
@@ -37,7 +37,7 @@
     "match": "/(user-packages|keys|favicon)\\.test\\.mjs$"
   },
   "rest": {
-    "exclude": "/(follow[^/]*|chat|remote|pydata|updates|users|agent-ui|packages|update|cdp|guard-vectors|guard-set-[a-z]+|serve|k4[^/]*|link|user-packages|keys|favicon)\\.test\\.mjs$"
+    "exclude": "/(follow[^/]*|chat|remote|pydata[^/]*|updates|users|agent-ui|packages|update|cdp|guard-vectors|guard-set-[a-z]+|serve|k4[^/]*|link|user-packages|keys|favicon)\\.test\\.mjs$"
   },
   "sweep": {
     "match": "/(sweep|pins)\\.test\\.mjs$"

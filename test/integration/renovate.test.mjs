@@ -10,6 +10,8 @@ const root = new URL('../../', import.meta.url);
 const read = (path) => readFile(new URL(path, root), 'utf8');
 const config = JSON.parse(await read('renovate.json'));
 const HOMESCOOP = /^@ai-ecoverse\/(wasi|wasix|wasm|py)-/;
+const PYTHON = '@ai-ecoverse/wasix-python';
+const DATA_TOOLS = 'src/packages/optional/projects/pydata/package.json';
 const OWN = [
   '@ai-ecoverse/slicc-kernel',
   '@ai-ecoverse/slicc-cdp',
@@ -58,7 +60,7 @@ test('renovate.json parses, extends the shared preset and names the three pinned
     assert.ok(rule.description?.length > 20, JSON.stringify(rule));
 });
 
-test('every @ai-ecoverse pin in the base set, the optional catalog and /opt/agent bumps by itself and automerges', async () => {
+test('every @ai-ecoverse pin in the base set, the optional catalog and /opt/agent but Python bumps by itself and automerges', async () => {
   const found = await pins();
   assert.ok(found.length > 40, `${found.length} pins`);
   for (const file of PINNED)
@@ -66,7 +68,7 @@ test('every @ai-ecoverse pin in the base set, the optional catalog and /opt/agen
       found.some(([, at]) => at === file),
       file
     );
-  for (const [name, file] of found) {
+  for (const [name, file] of found.filter(([name]) => name !== PYTHON)) {
     const rule = effective(name, file);
     assert.equal(rule.automerge, true, `${name} in ${file}`);
     assert.equal(rule.dependencyDashboardApproval, false, `${name} in ${file}`);
@@ -74,9 +76,9 @@ test('every @ai-ecoverse pin in the base set, the optional catalog and /opt/agen
   }
 });
 
-test('homescoop packages are one daily PR; the kernel, slicc-cdp, slicc-agent, spectrum and slicc-jsh each get their own', async () => {
+test('homescoop packages but Python are one daily PR; the kernel, slicc-cdp, slicc-agent, spectrum and slicc-jsh each get their own', async () => {
   const found = await pins();
-  for (const [name, file] of found.filter(([name]) => HOMESCOOP.test(name))) {
+  for (const [name, file] of found.filter(([name]) => HOMESCOOP.test(name) && name !== PYTHON)) {
     const rule = effective(name, file);
     assert.equal(rule.groupName, 'homescoop packages', name);
     assert.deepEqual(rule.schedule, ['* 0-5 * * *'], name);
@@ -94,6 +96,25 @@ test('homescoop packages are one daily PR; the kernel, slicc-cdp, slicc-agent, s
   }
   assert.ok(found.some(([name]) => name === '@ai-ecoverse/wasi-pnpm'));
   assert.equal(effective('@ai-ecoverse/wasi-pnpm', PINNED[0]).groupName, 'homescoop packages');
+});
+
+test('the catalog’s Python and every py-* of the Python data tools are one PR, opened from the dependency dashboard and never automerged, so 3.14 and 3.15 builds never mix', async () => {
+  const found = await pins();
+  assert.ok(found.some(([name, file]) => name === PYTHON && file === PINNED[1]));
+  const tools = Object.keys(JSON.parse(await read(DATA_TOOLS)).dependencies);
+  assert.ok(
+    tools.length >= 4 && tools.every((name) => name.startsWith('@ai-ecoverse/py-')),
+    tools.join()
+  );
+  for (const [name, file] of [[PYTHON, PINNED[1]], ...tools.map((name) => [name, DATA_TOOLS])]) {
+    const rule = effective(name, file);
+    assert.equal(rule.groupName, 'python and py-*', `${name} in ${file}`);
+    assert.equal(rule.groupSlug, 'python', name);
+    assert.equal(rule.automerge, false, name);
+    assert.equal(rule.dependencyDashboardApproval, true, name);
+    assert.deepEqual(rule.schedule, ['at any time'], name);
+  }
+  assert.equal(effective('@ai-ecoverse/wasix-perl', PINNED[1]).groupName, 'homescoop packages');
 });
 
 test('known breaks are holds with a reason and an issue: wasm-bash below 5.3.0-20, wasi-pnpm without 12.9.1-11 and -12', () => {
