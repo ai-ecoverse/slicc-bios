@@ -254,6 +254,16 @@ const storageStub = () => {
   window.storageNotice = () => window.deep(window.chatView().shadowRoot, '[data-notice="storage"]');
 };
 
+const signInWindows = () => {
+  globalThis.sliccLoginDebug = true;
+  window.signInWindows = [];
+  const open = window.open;
+  window.open = function (...args) {
+    if (args[1] === 'slicc-sign-in') window.signInWindows.push(String(args[0]));
+    return open.apply(this, args);
+  };
+};
+
 const SHOWN = 5 * 60 * 1000;
 
 async function eventually(check, ms = 30000) {
@@ -273,6 +283,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   const page = await chrome.page(t);
   await page.init(helpers);
   await page.init(storageStub);
+  await page.init(signInWindows);
   await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
   await ready(page);
   await page.evaluate(
@@ -707,6 +718,32 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   await page.evaluate(() => window.adobeCancel().click());
   await page.until(() => window.adobeStatus() === 'disconnected');
   await eventually(() => proxy.dropped.length === 1 && authorized.length === 1);
+  const quiet = {
+    windows: await page.evaluate(() => window.signInWindows.length),
+    registered: proxy.registered.length,
+    authorized: authorized.length,
+  };
+  assert.equal(
+    await page.evaluate(() =>
+      globalThis
+        .sliccLogin('adobe', async () => ({ clientId: 'test-client', scopes: 'openid,AdobeID' }), {
+          signal: AbortSignal.abort(),
+        })
+        .then(
+          () => 'resolved',
+          (error) => error.name
+        )
+    ),
+    'AbortError'
+  );
+  assert.deepEqual(
+    {
+      windows: await page.evaluate(() => window.signInWindows.length),
+      registered: proxy.registered.length,
+      authorized: authorized.length,
+    },
+    quiet
+  );
   hold = false;
   authorized.length = 0;
   await page.evaluate(() => localStorage.setItem('slicc-os.sign-in', 'relay'));

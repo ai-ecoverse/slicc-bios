@@ -248,6 +248,7 @@ export function signIn({
   const login = (providerId, options, context) =>
     grant(providerId, options, context).then((got) => got.token);
   login.grant = grant;
+  if (globalThis.sliccLoginDebug === true) globalThis.sliccLogin = login;
   return login;
 }
 
