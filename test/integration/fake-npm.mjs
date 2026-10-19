@@ -62,7 +62,7 @@ export async function fakeRelease({ name, from, version, repository }) {
     predicate: {
       buildDefinition: {
         externalParameters: {
-          workflow: { ref: 'refs/heads/main', repository: release.repository, path: 'release.yml' },
+          workflow: { ...release.workflow, repository: release.repository },
         },
       },
     },

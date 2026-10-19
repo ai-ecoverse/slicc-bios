@@ -225,22 +225,42 @@ test('the owner turns on developer mode, npm’s newer agent is offered as a bet
     assert.equal(await notice(page, 'beta:agent'), null);
   });
 
-  await t.test('a release without provenance is listed but not offered', async () => {
-    release.provenance = false;
-    t.after(() => {
+  await t.test(
+    'a release without provenance, or built outside the release workflow, is listed but not offered',
+    async () => {
+      release.provenance = false;
+      t.after(() => {
+        release.provenance = true;
+      });
+      await page.evaluate(() =>
+        document.querySelector('slicc-app').model.updates.setDeveloper(false)
+      );
+      assert.equal((await agentRow(page)).npm, null);
+      await page.evaluate(() =>
+        document.querySelector('slicc-app').model.updates.setDeveloper(true)
+      );
+      await npmSays(page, 'not-offered');
+      const row = await agentRow(page);
+      assert.equal(row.npm.reason, 'no provenance');
+      assert.ok(!row.actions.includes('install-beta'));
       release.provenance = true;
-    });
-    await page.evaluate(() =>
-      document.querySelector('slicc-app').model.updates.setDeveloper(false)
-    );
-    assert.equal((await agentRow(page)).npm, null);
-    await page.evaluate(() => document.querySelector('slicc-app').model.updates.setDeveloper(true));
-    await npmSays(page, 'not-offered');
-    const row = await agentRow(page);
-    assert.equal(row.npm.reason, 'no provenance');
-    assert.ok(!row.actions.includes('install-beta'));
-    assert.deepEqual(page.errors, []);
-  });
+      release.workflow = { ref: 'refs/heads/main', path: '.github/workflows/ci.yml' };
+      t.after(() => {
+        release.workflow = { ref: 'refs/heads/main', path: '.github/workflows/release.yml' };
+      });
+      await page.evaluate(() =>
+        document.querySelector('slicc-app').model.updates.setDeveloper(false)
+      );
+      await page.evaluate(() =>
+        document.querySelector('slicc-app').model.updates.setDeveloper(true)
+      );
+      await npmSays(page, 'not-offered');
+      const outside = await agentRow(page);
+      assert.equal(outside.npm.reason, 'built outside the release workflow');
+      assert.ok(!outside.actions.includes('install-beta'));
+      assert.deepEqual(page.errors, []);
+    }
+  );
 });
 
 test('nobody but the owner tab can turn developer mode on or install a beta: not another tab, not the kernel’s processes, not the agent’s CDP', async (t) => {

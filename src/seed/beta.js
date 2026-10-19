@@ -12,6 +12,7 @@ export const AGENT = {
   id: 'agent',
   name: '@ai-ecoverse/slicc-agent',
   repository: 'https://github.com/ai-ecoverse/slicc-agent',
+  workflow: '.github/workflows/release.yml',
   folder: 'opt/agent',
   scratch: 'opt/slicc/beta/agent',
 };
@@ -109,7 +110,7 @@ function sha512hex(integrity) {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export async function provenance(doc, { name, repository }, fetcher = fetch) {
+export async function provenance(doc, { name, repository, workflow }, fetcher = fetch) {
   const { integrity, attestations } = doc.dist ?? {};
   if (typeof integrity !== 'string' || !integrity.startsWith('sha512-')) return 'no integrity';
   if (attestations?.provenance?.predicateType !== SLSA || typeof attestations.url !== 'string')
@@ -134,8 +135,12 @@ export async function provenance(doc, { name, repository }, fetcher = fetch) {
   const matches = (statement?.subject ?? []).some(
     (one) => one?.name === subject && one?.digest?.sha512 === hex
   );
-  const source = statement?.predicate?.buildDefinition?.externalParameters?.workflow?.repository;
-  if (!matches || source !== repository) return 'its provenance doesn’t match this release';
+  const built = statement?.predicate?.buildDefinition?.externalParameters?.workflow;
+  if (!matches || built?.repository !== repository)
+    return 'its provenance doesn’t match this release';
+  const refs = ['refs/heads/main', `refs/tags/v${doc.version}`];
+  if (built.path !== workflow || !refs.includes(built.ref))
+    return 'built outside the release workflow';
   return null;
 }
 
