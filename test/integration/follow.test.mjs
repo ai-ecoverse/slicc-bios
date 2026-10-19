@@ -113,6 +113,58 @@ test('a follower says HELLO only once its announced control channel opens, since
   });
 });
 
+const CHROME_LOSES = `() => {
+  const announced = new WeakSet();
+  const heard = new WeakSet();
+  globalThis.lostBeforeHeard = [];
+  const listen = RTCPeerConnection.prototype.addEventListener;
+  RTCPeerConnection.prototype.addEventListener = function (type, listener, options) {
+    if (type !== 'datachannel') return listen.call(this, type, listener, options);
+    const pc = this;
+    return listen.call(pc, type, (event) => {
+      announced.add(event.channel);
+      event.channel.addEventListener('message', () => heard.add(event.channel));
+      return listener.call(pc, event);
+    }, options);
+  };
+  const send = RTCDataChannel.prototype.send;
+  RTCDataChannel.prototype.send = function (data) {
+    if (announced.has(this) && !heard.has(this)) {
+      globalThis.lostBeforeHeard.push(typeof data === 'string' ? data.slice(0, 60) : 'binary');
+      return;
+    }
+    return send.call(this, data);
+  };
+}`;
+
+test('a follower says HELLO only after the owner’s, since Chrome can lose a first send on an announced channel even after its open event, so the owner hears it at once', async (t) => {
+  const hub = await startHub();
+  t.after(() => hub.close());
+  const owner = await lead(t, hub);
+  const { joinUrl } = await model(owner, (network) => network.status().links);
+  const page = await join(t, joinUrl, hub, CHROME_LOSES);
+  const lost = () => page.evaluate(() => globalThis.lostBeforeHeard);
+  await owner
+    .within(5000, () =>
+      document
+        .querySelector('slicc-app')
+        .model.network.status()
+        .links.devices.some((d) => d.kind === 'seven' && d.state === 'connected')
+    )
+    .catch(async (error) => {
+      throw new Error(
+        `${error.message}\nlost before the owner spoke: ${JSON.stringify(await lost())}`
+      );
+    });
+  await page.until(
+    () => document.querySelector('slicc-app').model.follow.state().link === 'connected'
+  );
+  assert.deepEqual(await lost(), []);
+  await owner.evaluate(() => {
+    localStorage.removeItem('slicc-os.tray-hub');
+  });
+});
+
 test('a seven follows another: it asks first, follows once allowed, keeps its certificate across reloads, and unlink ends it', async (t) => {
   const hub = await startHub();
   t.after(() => hub.close());
