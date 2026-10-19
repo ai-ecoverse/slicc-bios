@@ -1235,6 +1235,14 @@ test('the real slicc CLI lists its folders on its device row, and Mount and Ejec
     code: '0',
     out: 'from the row',
   });
+  assert.deepEqual(
+    await shell(
+      page,
+      "{ sudo -u cone cat /mnt/ref-node/proj/hello.txt && stat -c '%a %U' /mnt /mnt/ref-node; }",
+      'row-cone'
+    ),
+    { code: '0', out: 'from the row\n755 root\n755 root' }
+  );
   await page.until(
     () =>
       document.querySelector('slicc-app').model.network.status().links.devices[0].folders[0].mounted
@@ -1258,6 +1266,10 @@ test('the real slicc CLI lists its folders on its device row, and Mount and Ejec
     ),
     /not mounted/
   );
+  assert.deepEqual(await shell(page, "stat -c '%a %U %G' /mnt/ref-node/proj", 'row-point'), {
+    code: '0',
+    out: '755 cone cone',
+  });
 });
 
 const WS_SCRIPT = (port) =>
