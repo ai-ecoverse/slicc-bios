@@ -542,7 +542,7 @@ function agentReport() {
   const { from } = updates.get('agent');
   return (step) => {
     track(step);
-    if (agent !== null) return;
+    if (agent !== null || !step.to) return;
     const notice = agentInstalling(from, step.to);
     installNotice = notice.id;
     notices.show(notice);
