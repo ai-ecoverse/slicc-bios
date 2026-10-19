@@ -18,11 +18,11 @@ importers:
         specifier: 1.0.2
         version: 1.0.2
       '@ai-ecoverse/slicc-kernel':
-        specifier: 1.125.12
-        version: 1.125.12
+        specifier: 1.128.0
+        version: 1.128.0
       '@ai-ecoverse/slicc-spectrum':
-        specifier: 1.89.1
-        version: 1.89.1
+        specifier: 1.89.2
+        version: 1.89.2
       '@ai-ecoverse/wasi-pnpm':
         specifier: 12.9.1-13
         version: 12.9.1-13
@@ -108,12 +108,12 @@ packages:
     resolution: {integrity: sha512-p7b1h85qkiU0LKjNLCLiU7GVXjGigkyR2+VUCInM1cZo2yjLFxr7tGAOO09e6OG9nB7XKiQn3W88wb3s0gxy+g==}
     engines: {node: '>=24', slicc-kernel: '>=1.75.0'}
 
-  '@ai-ecoverse/slicc-kernel@1.125.12':
-    resolution: {integrity: sha512-V9qpj4wwqC0/gz2loI6mrbOqRxhLqW4YJ0xFjXV3BreFx6As0HsBe/1xYZGt3+wRGc/NbCa/qsuMWlpz31B5jQ==}
+  '@ai-ecoverse/slicc-kernel@1.128.0':
+    resolution: {integrity: sha512-zj4hVv8H0cNrwbMs8NcFX2jFQ9mFE1uK+Yv0+4cTzHS6ploQH4HSySv62oWjAyBl+XRfhXJZNyZoXE5hL+d8nA==}
     engines: {node: '>=24'}
 
-  '@ai-ecoverse/slicc-spectrum@1.89.1':
-    resolution: {integrity: sha512-UUwKMRJZjbHy8IBZmGoe2mLIp0NMBFdXe37wTS9W8er/4YjABaQYKVCtBxlZUEcGXN3DZEAbG4eGKi+FC/L76A==}
+  '@ai-ecoverse/slicc-spectrum@1.89.2':
+    resolution: {integrity: sha512-4jaRJwFp+KmqW5mDjbYd9MInkxh/KwkfWrNyHrDwnn4YRJ2R1cq+eV3Cbhwposj75u+rVh/NlPnexBeJp1d9FA==}
     engines: {node: '>=24'}
     peerDependencies:
       '@shikijs/langs': 4.5.0
@@ -206,9 +206,9 @@ snapshots:
 
   '@ai-ecoverse/slicc-clipboard@1.0.2': {}
 
-  '@ai-ecoverse/slicc-kernel@1.125.12': {}
+  '@ai-ecoverse/slicc-kernel@1.128.0': {}
 
-  '@ai-ecoverse/slicc-spectrum@1.89.1': {}
+  '@ai-ecoverse/slicc-spectrum@1.89.2': {}
 
   '@ai-ecoverse/wasi-pnpm@12.9.1-13': {}
 
