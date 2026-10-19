@@ -771,6 +771,35 @@ test('the kernel’s sessionAnchors reaches the vault with exactly its fields an
   assert.deepEqual(refused.reply, { v: 1, error: { code: 'EACCES' } });
   await logged(() => own.log.filter((entry) => entry.op === 'anchors').length === 2);
 
+  const scram = {
+    clientFirstBare: 'n=harbor,r=fyko+d2lbbFgONRv9qkxdawL',
+    serverFirst: 'r=fyko+d2lbbFgONRv9qkxdawL3rfcNHYJY1ZVvWVs7j,s=QSXCR+Q6sek8bf92,i=4096',
+    clientFinalBare: 'c=biws,r=fyko+d2lbbFgONRv9qkxdawL3rfcNHYJY1ZVvWVs7j',
+    proof: 'v0X8v3Bz2T0CJGbJQyF0X+HI4Ts=',
+  };
+  const login = {
+    ...ask,
+    position: 'scram-sha-256',
+    verified: true,
+    verifiedBy: 'anchored',
+    anchor,
+    handshakeAt: Date.now(),
+    scram,
+  };
+  await page.evaluate((req) => globalThis.askLikeTheKernel(req), {
+    v: 1,
+    op: 'sessionMaterialize',
+    caller: stamp,
+    ...login,
+  });
+  await logged(() => own.log.some((entry) => entry.op === 'session'));
+  const carried = own.log.find((entry) => entry.op === 'session');
+  assert.deepEqual(carried.fields, [...Object.keys(login), 'id', 'op', 'v'].sort());
+  assert.deepEqual(
+    { verifiedBy: carried.verifiedBy, anchor: carried.anchor, scram: carried.scram },
+    { verifiedBy: 'anchored', anchor, scram }
+  );
+
   const request = JSON.stringify({ v: 1, op: 'sessionAnchors', ...ask });
   await run(
     page,
@@ -787,7 +816,7 @@ test('the kernel’s sessionAnchors reaches the vault with exactly its fields an
   assert.match(screen, /PROGRAM-REFUSED/);
   assert.equal(own.log.filter((entry) => entry.op === 'anchors').length, 2);
 
-  const left = await leftovers(page, [anchor, pin]);
+  const left = await leftovers(page, [anchor, pin, scram.proof]);
   assert.deepEqual(left.found, [], JSON.stringify(left));
   assert.ok(left.files > 100 && left.stores > 0, JSON.stringify(left));
   assert.ok(

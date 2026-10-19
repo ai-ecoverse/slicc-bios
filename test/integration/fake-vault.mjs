@@ -144,7 +144,7 @@ const page = (port) => (event) => {
     return reply({ anchors: known.anchors, pins: known.pins });
   }
   if (op === 'sessionMaterialize') {
-    log({ role: 'page', op: 'session', fields: Object.keys(event.data).sort(), stamp: event.data.stamp, session: event.data.session, host: event.data.host, head: event.data.head ?? null });
+    log({ role: 'page', op: 'session', fields: Object.keys(event.data).sort(), stamp: event.data.stamp, session: event.data.session, host: event.data.host, head: event.data.head ?? null, verifiedBy: event.data.verifiedBy ?? null, anchor: event.data.anchor ?? null, scram: event.data.scram ?? null });
     if (locked) return refuse();
     const asked = Array.isArray(event.data.placeholders) ? event.data.placeholders : [];
     const found = live().filter((record) => record.kind === 'secret' && asked.includes(record.placeholder));
