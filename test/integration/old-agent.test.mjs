@@ -116,7 +116,9 @@ const helpers = () => {
     seen(notices.list());
     notices.on('notices', seen);
     const note = () => {
-      const { state, from, to } = updates.list().find((item) => item.id === 'agent');
+      const row = updates.list().find((item) => item.id === 'agent');
+      if (!row) return;
+      const { state, from, to } = row;
       const last = window.agentRows.at(-1);
       if (last?.state !== state || last?.from !== from || last?.to !== to)
         window.agentRows.push({ state, from, to, at: Date.now() });
