@@ -22,7 +22,9 @@ export const HEADERS =
   'slicc: refused: settings for a whole session (headers, user agent, locale, time zone, cache, network conditions, blocked URLs, emulation) could reach seven’s pages or the vault, so the guard doesn’t allow them; change a request through Fetch instead';
 export const WORLD = 'slicc: refused: that execution context belongs to a browser extension';
 export const UNSEEN_CONTEXT =
-  'slicc: refused: the guard hasn’t seen this execution context or object in this page, so it could be a browser extension’s; use one from Runtime.enable or an earlier answer';
+  'slicc: refused: that execution context or object is not exposed to browser automation';
+export const PROFILED =
+  'slicc: refused: a browser extension runs scripts in this page, and profiling it would expose them';
 export const DEBUGGER =
   'slicc: refused: breakpoints could run in seven’s pages or the vault, so the guard doesn’t offer the Debugger domains';
 
@@ -156,20 +158,43 @@ const CONTEXT_KEYS = new Set(['contextId', 'executionContextId']);
 const UNIQUE_KEYS = new Set(['uniqueContextId', 'executionContextUniqueId']);
 const OBJECT_KEYS = new Set(['objectId', 'prototypeObjectId']);
 const OBJECT_ID = /^-?\d+\.(\d+)\.\d+$/;
+const PROFILERS = ['HeapProfiler.', 'Profiler.'];
 
-function selected(value, found = []) {
+function objectIds(value, found) {
+  if (typeof value !== 'string') return;
+  const [, context] = value.match(OBJECT_ID) ?? [];
+  found.push(context === undefined ? ['unreadable', value] : ['ids', Number(context)]);
+}
+
+function selected(method, params) {
+  const found = [];
+  if (params === null || typeof params !== 'object') return found;
+  for (const key of OBJECT_KEYS) objectIds(params[key], found);
+  if (method.startsWith('Runtime.') || method.startsWith('DOM.')) {
+    for (const key of CONTEXT_KEYS) {
+      if (params[key] !== undefined && (key !== 'contextId' || method.startsWith('Runtime.')))
+        found.push(['ids', params[key]]);
+    }
+    for (const key of UNIQUE_KEYS)
+      if (params[key] !== undefined) found.push(['uniques', params[key]]);
+  }
+  if (Array.isArray(params.arguments))
+    for (const item of params.arguments) objectIds(item?.objectId, found);
+  return found;
+}
+
+function mentioned(value, found = []) {
   if (value === null || typeof value !== 'object') return found;
   if (Array.isArray(value)) {
-    for (const item of value) selected(item, found);
+    for (const item of value) mentioned(item, found);
     return found;
   }
   for (const [key, item] of Object.entries(value)) {
+    if (key === 'value') continue;
     if (CONTEXT_KEYS.has(key)) found.push(['ids', item]);
     else if (UNIQUE_KEYS.has(key)) found.push(['uniques', item]);
-    else if (OBJECT_KEYS.has(key) && typeof item === 'string') {
-      const [, context] = item.match(OBJECT_ID) ?? [];
-      found.push(context === undefined ? ['unreadable', item] : ['ids', Number(context)]);
-    } else selected(item, found);
+    else if (OBJECT_KEYS.has(key)) objectIds(item, found);
+    else mentioned(item, found);
   }
   return found;
 }
@@ -257,7 +282,13 @@ class Guard {
     });
   }
 
-  refuse({ id, sessionId }, message = PROTECTED) {
+  refuse({ id, sessionId, method, params }, message = PROTECTED) {
+    globalThis.sliccGuardTrace?.push({
+      method,
+      targetId: params?.targetId,
+      sessionId,
+      refused: message,
+    });
     this.deliver({ id, ...(sessionId ? { sessionId } : {}), error: { code: -32000, message } });
   }
 
@@ -705,7 +736,7 @@ class Guard {
     }
     const world = this.worlds.get(sessionId);
     if (!world || !method.startsWith('Runtime.')) return false;
-    return selected(params).some(([kind, value]) => world[kind]?.get(value) === true);
+    return mentioned(params).some(([kind, value]) => world[kind]?.get(value) === true);
   }
 
   verdict(found, sessionId) {
@@ -715,14 +746,23 @@ class Guard {
     return known.includes(undefined) ? UNSEEN_CONTEXT : null;
   }
 
-  async selecting(params, sessionId) {
-    const found = selected(params);
-    if (!found.length) return null;
-    const first = this.verdict(found, sessionId);
-    if (first !== UNSEEN_CONTEXT || !sessionId) return first;
+  async prime(sessionId) {
     if (!this.runtimes.has(sessionId)) this.primed.add(sessionId);
     await this.call('Runtime.enable', {}, sessionId);
     await this.queues.get(sessionId);
+  }
+
+  async selecting(method, params, sessionId) {
+    if (sessionId && PROFILERS.some((domain) => method.startsWith(domain))) {
+      if (!this.runtimes.has(sessionId) && !this.primed.has(sessionId)) await this.prime(sessionId);
+      const world = this.worlds.get(sessionId);
+      if (world && [...world.ids.values()].includes(true)) return PROFILED;
+    }
+    const found = selected(method, params);
+    if (!found.length) return null;
+    const first = this.verdict(found, sessionId);
+    if (first !== UNSEEN_CONTEXT || !sessionId) return first;
+    await this.prime(sessionId);
     return this.verdict(found, sessionId);
   }
 
@@ -950,7 +990,7 @@ class Guard {
     }
     if (STICKY.has(method) || EMULATION.test(method)) return HEADERS;
     if (DEBUGGERS.some((domain) => method.startsWith(domain))) return DEBUGGER;
-    const world = await this.selecting(params, sessionId);
+    const world = await this.selecting(method, params, sessionId);
     if (world) return world;
     if (this.plainly(method, params, sessionId)) return PROTECTED;
     const unguarded = await this.guarding(method, sessionId);
@@ -995,6 +1035,12 @@ class Guard {
 
   pass(message) {
     const { id, method, sessionId } = message;
+    globalThis.sliccGuardTrace?.push({
+      method,
+      targetId: message.params?.targetId,
+      sessionId,
+      passed: true,
+    });
     if (sessionId && method === 'Runtime.enable') this.runtimes.add(sessionId);
     if (sessionId && method === 'Runtime.disable') this.runtimes.delete(sessionId);
     if (sessionId && method === 'Page.enable') this.pages.add(sessionId);

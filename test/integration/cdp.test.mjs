@@ -1378,20 +1378,39 @@ test('slicc-cdp#377: without an extension, SLICC_CDP_URL drives a user-opened HT
   ).id;
   const vault = await tabAt(VAULT, 'VAULT-MARK');
   t.after(() => fetch(`http://127.0.0.1:${port}/json/close/${vault}`));
+  await page.evaluate(() => {
+    globalThis.sliccGuardTrace = [];
+  });
   await run(
     page,
-    `playwright-cli eval --tab ${seven} 'document.title' > /tmp/seven-world 2>&1; echo seven-$? >> /tmp/seven-world; playwright-cli eval --tab ${vault} 'document.title' > /tmp/vault-world 2>&1; echo vault-$? >> /tmp/vault-world; echo "world-refused-""done"`
+    `timeout 30 playwright-cli eval --tab ${seven} 'document.title' > /tmp/seven-world 2>&1; echo seven-$? >> /tmp/seven-world; timeout 30 playwright-cli eval --tab ${vault} 'document.title' > /tmp/vault-world 2>&1; echo vault-$? >> /tmp/vault-world; echo "world-refused-""done"`
   );
-  await shows(page, 'world-refused-done', 60000);
-  for (const [name, file] of [
-    ['seven', '/tmp/seven-world'],
-    ['vault', '/tmp/vault-world'],
-  ]) {
-    const output = await read(page, file);
-    assert.match(output, /slicc: refused:/, output);
-    assert.match(output, new RegExp(`${name}-1`), output);
-    assert.doesNotMatch(output, /VAULT-MARK|EXTENSION-SECRET/, output);
+  await shows(page, 'world-refused-done', 90000);
+  const sevenOut = await read(page, '/tmp/seven-world');
+  assert.match(
+    sevenOut,
+    /slicc: refused: seven’s own pages and the vault are out of reach of browser automation/,
+    sevenOut
+  );
+  assert.match(sevenOut, /seven-1/, sevenOut);
+  const vaultOut = await read(page, '/tmp/vault-world');
+  assert.match(vaultOut, /vault-(1|124)\b/, vaultOut);
+  assert.doesNotMatch(`${sevenOut}${vaultOut}`, /VAULT-MARK|VAULT-BODY-MARK/);
+  const refusals = await page.evaluate(() => globalThis.sliccGuardTrace);
+  for (const targetId of [seven, vault]) {
+    assert.ok(
+      refusals.some(
+        (entry) =>
+          entry.targetId === targetId && /out of reach of browser automation/.test(entry.refused)
+      ),
+      `the guard refused ${targetId} itself (slicc-cdp#379 is the client hang after it): ${JSON.stringify(refusals)}`
+    );
   }
+  assert.deepEqual(
+    refusals.filter((entry) => entry.passed && entry.targetId === vault),
+    [],
+    'no command naming the vault went on to Chrome'
+  );
   assert.deepEqual(page.errors, []);
 });
 
