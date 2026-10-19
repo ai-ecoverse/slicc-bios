@@ -137,10 +137,39 @@ test('the cert review job ends with the verdict check, so a review that writes n
     new URL('../../.github/workflows/cert-review.yml', import.meta.url),
     'utf8'
   );
-  const last = yml.trimEnd().split('\n      - ').at(-1);
+  const certify = yml.slice(yml.indexOf('\n  certify:'), yml.indexOf('\n  post:'));
+  const last = certify.trimEnd().split('\n      - ').at(-1);
   assert.match(last, /if: always\(\)/);
   assert.match(
     last,
     /node base\/scripts\/cert\/verify\.mjs --verdict "\$RUNNER_TEMP\/cert-review\/comment\.md"/
   );
+});
+
+test('no step that runs pull-request code holds a token that can write: the review job is read-only, CI evidence is fetched before npm ci, and a separate job posts the verdict', async () => {
+  const yml = await readFile(
+    new URL('../../.github/workflows/cert-review.yml', import.meta.url),
+    'utf8'
+  );
+  const certify = yml.slice(yml.indexOf('\n  certify:'), yml.indexOf('\n  post:'));
+  const post = yml.slice(yml.indexOf('\n  post:'));
+  assert.match(certify, /\n {4}permissions:\n {6}actions: read\n {6}contents: read\n {4}outputs:/);
+  assert.doesNotMatch(certify, /: write/);
+  assert.doesNotMatch(certify, /\n {6}GH_TOKEN:/);
+  assert.doesNotMatch(certify, /gh pr comment/);
+  const fetch = certify.indexOf(
+    "- name: gh, and CI's results on the head and on main, fetched before any pull-request code runs"
+  );
+  const install = certify.indexOf("- name: Install both trees and the harness's Chromium");
+  assert.ok(fetch > 0 && install > fetch, 'the token step comes before npm ci');
+  assert.equal(
+    certify.split('GH_TOKEN: ${{ github.token }}').length - 1,
+    1,
+    'only the fetch step gets the token'
+  );
+  assert.match(post, /\n {4}permissions:\n {6}contents: read\n {6}pull-requests: write\n/);
+  assert.match(post, /artifact-ids: \$\{\{ needs\.certify\.outputs\.evidence_id \}\}/);
+  assert.match(post, /digest-mismatch: error/);
+  assert.doesNotMatch(post, /ref: \$\{\{ needs\.plan\.outputs\.head \}\}/);
+  assert.doesNotMatch(post, /npm (ci|install|test|run)/);
 });
