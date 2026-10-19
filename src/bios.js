@@ -154,6 +154,7 @@ await step('seed', async () => {
     'present.js',
     'profile.js',
     'remote.js',
+    'site.js',
     'start.js',
     'storage.js',
     'switchboard-worker.js',
@@ -188,10 +189,15 @@ await step('seed', async () => {
   return `os/{${files.join(',')}} ${size(bytes)}${fixed(changed)}`;
 });
 
+const root = new URL('/', import.meta.url);
+let scope = root.href;
+
 await step('intercept', async () => {
   const registration = await navigator.serviceWorker.register(new URL('sw.js', import.meta.url), {
     type: 'module',
+    scope: root.pathname,
   });
+  scope = registration.scope;
   if (!registration.installing && !registration.waiting) await registration.update();
   const update = registration.installing ?? registration.waiting;
   if (update) await activated(update);
@@ -201,7 +207,7 @@ await step('intercept', async () => {
 await step('navigate', async () => {
   remember('slicc-bios.repaired', repaired);
   remember('slicc-bios.stopped', stopped);
-  const ui = new URL(uiPage(location.hash), import.meta.url);
+  const ui = new URL(uiPage(location.hash), scope);
   ui.hash = location.hash;
   location.replace(ui);
   return ui.pathname;

@@ -1,4 +1,5 @@
-export const PRODUCTION = 'https://seven.sliccy.ai';
+import { production } from './site.js';
+
 export const VAULT = 'https://vault.sliccy.ai';
 export const PREVIEW = 'https://vault-preview.sliccy.ai';
 export const ORIGIN_KEY = 'slicc-os.vault-origin';
@@ -21,8 +22,8 @@ export function vaultOrigin({
   report = (message) => console.error(message),
 } = {}) {
   const wanted = storage?.getItem(ORIGIN_KEY) ?? null;
-  if (origin === PRODUCTION) {
-    if (wanted !== null) report(`vault: ${ORIGIN_KEY} is refused on ${PRODUCTION}; using ${VAULT}`);
+  if (production(URL.parse(origin ?? '')?.host)) {
+    if (wanted !== null) report(`vault: ${ORIGIN_KEY} is refused on ${origin}; using ${VAULT}`);
     return VAULT;
   }
   if (wanted === null) return PREVIEW;

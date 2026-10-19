@@ -54,6 +54,7 @@ import {
 import { installProfile } from './profile.js';
 import { PYTHON } from './projects.js';
 import { createRemote } from './remote.js';
+import { BIOS, home, sharesOrigin } from './site.js';
 import { installPrompts, keepStorage, onSend } from './storage.js';
 import {
   claim,
@@ -216,12 +217,10 @@ const links = createLinks({
   },
 });
 const pairing = createPairing({ links });
-const hub = location.hostname.endsWith('.sliccy.ai')
-  ? location.origin
-  : localStorage.getItem(TRAY_HUB_KEY);
+const hub = location.hostname.endsWith('.sliccy.ai') ? home() : localStorage.getItem(TRAY_HUB_KEY);
 const leaders = createLeaders({
   post: hubClient({
-    origin: proxyOf(hub, location.origin),
+    origin: proxyOf(hub, home()),
     fetch: (...args) => fetch(...args),
   }),
   name: `seven on ${location.host}`,
@@ -230,7 +229,7 @@ const tray = hub
   ? createTray({
       links,
       origin: hub,
-      page: location.origin,
+      page: home(),
       onWebhook: (name, delivery) => deliverWebhook(owner, name, delivery),
       onGuest: (seat, stream) => bridgeAgent(owner, stream, { guest: seat }),
     })
@@ -271,7 +270,7 @@ const vault = createVault({
 });
 const jerk = createJerk({ links: () => links, vault });
 useVault(vault);
-const login = sealedLogin(signIn({ network }), {
+const login = sealedLogin(signIn({ network, shared: sharesOrigin() }), {
   vault,
   takes: () => takesVault(mine.agent),
 });
@@ -649,7 +648,7 @@ updates.handleUserPackages(actOwn);
 updates.handle('retry', (id) => retry[id]());
 updates.handle('update-now', (id) => retry[id]());
 updates.handle('restart-agent', restart);
-updates.handle('reload', () => location.replace(new URL('../', location.href)));
+updates.handle('reload', () => location.replace(BIOS));
 
 async function rows() {
   owned = new Map(Object.entries(owners).map(([id, name]) => [name, id]));

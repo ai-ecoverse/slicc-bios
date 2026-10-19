@@ -1,4 +1,6 @@
-const deployed = new URL('../packages/', import.meta.url);
+import { BIOS } from './site.js';
+
+const deployed = new URL('packages/', BIOS);
 const LOG = 8192;
 
 export async function text(dir, path) {
@@ -275,7 +277,7 @@ const INSTALL = ['pnpm', 'install', '--frozen-lockfile', '--trust-lockfile'];
 export function installer(
   op,
   args,
-  connect = () => new SharedWorker(new URL('../installer.js', import.meta.url), 'slicc-installer')
+  connect = () => new SharedWorker(new URL('installer.js', BIOS), 'slicc-installer')
 ) {
   const { port } = connect();
   return new Promise((resolve, reject) => {

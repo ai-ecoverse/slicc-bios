@@ -28,20 +28,20 @@ test('seven is installable as an app from the UI, and stays cross-origin isolate
   );
 
   const icons = await page.evaluate(
-    (icons) =>
+    ({ base, icons }) =>
       Promise.all(
         icons.map(async ({ src }) => {
           const image = new Image();
-          image.src = src;
+          image.src = new URL(src, base).href;
           await image.decode();
-          return `${src} ${image.naturalWidth}x${image.naturalHeight}`;
+          return `${new URL(image.src).pathname} ${image.naturalWidth}x${image.naturalHeight}`;
         })
       ),
-    manifest.icons
+    { base: app.url, icons: manifest.icons }
   );
   assert.deepEqual(
     icons,
-    manifest.icons.map(({ src, sizes }) => `${src} ${sizes}`)
+    manifest.icons.map(({ src, sizes }) => `/${src} ${sizes}`)
   );
   assert.deepEqual(
     await page.evaluate(async () => {

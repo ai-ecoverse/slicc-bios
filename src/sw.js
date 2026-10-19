@@ -52,19 +52,30 @@ const code = new Set([
   'xslt',
 ]);
 const live = ['/os/', '/node_modules/', '/opt/agent/', '/opt/grammars/'];
-const own = new Set([
-  '/',
-  '/index.html',
-  '/bios.js',
-  '/bios.css',
-  '/splash.js',
-  '/card.js',
-  '/scene.js',
-  '/installer.js',
-  '/sw.js',
-  '/manifest.json',
-]);
-const ownDirs = ['/sw/', '/seed/', '/packages/', '/icons/', '/fonts/'];
+const SCOPE = new URL(self.registration.scope).pathname;
+const BIOS = `/${new URL('./', self.location).pathname.slice(SCOPE.length)}`;
+const BIOS_URL = new URL('./', self.location).href;
+const SHARED = BIOS !== '/';
+const own = new Set(
+  [
+    '',
+    'index.html',
+    'bios.js',
+    'bios.css',
+    'splash.js',
+    'card.js',
+    'scene.js',
+    'installer.js',
+    'sw.js',
+    'manifest.json',
+  ].map((name) => `${BIOS}${name}`)
+);
+const ownDirs = [
+  ...['sw/', 'seed/', 'packages/', 'icons/'].map((dir) => `${BIOS}${dir}`),
+  '/fonts/',
+];
+const passed = new Set(SHARED ? ['/auth/callback'] : []);
+const MANIFEST = '/os/manifest.json';
 
 function kind(path) {
   if (own.has(path) || ownDirs.some((dir) => path.startsWith(dir))) return 'bios';
@@ -141,7 +152,7 @@ async function heal(scope, path) {
   for (const client of windows) {
     const { pathname, hash } = new URL(client.url);
     if (pathname === `${scope}os/` || pathname === `${scope}os/index.html`) {
-      client.navigate(`${self.registration.scope}${hash}`).catch(() => {});
+      client.navigate(`${BIOS_URL}${hash}`).catch(() => {});
     }
   }
 }
@@ -167,7 +178,7 @@ async function refuse(error, request, scope) {
       return failed(500, `sw: ${error.path} keeps changing, so seven stopped restoring it`);
     }
   }
-  if (request.mode === 'navigate') return Response.redirect(self.registration.scope, 302);
+  if (request.mode === 'navigate') return Response.redirect(BIOS_URL, 302);
   await heal(scope, error.path);
   return failed(500, error.message);
 }
@@ -319,7 +330,7 @@ async function kernel(request, controller, port, clientId) {
 }
 
 const aliases = new Map([
-  ['/auth/callback', '/os/callback.html'],
+  ...(SHARED ? [] : [['/auth/callback', '/os/callback.html']]),
   [
     '/oauth/mcp-callback',
     '/opt/agent/node_modules/@ai-ecoverse/slicc-agent/dist/oauth/mcp-callback.html',
@@ -334,6 +345,8 @@ async function serve(request, controller) {
   const base = scope.replace(/\/$/, '');
   const network = async () =>
     watched(await fetch(request, { signal: controller.signal }), url.pathname, controller);
+  if (passed.has(asked)) return network();
+  if (asked === MANIFEST) return Response.redirect(`${BIOS_URL}manifest.json`, 302);
   const served = kind(path);
   if (served === 'bios') return network();
   if (path === STATUS) {
@@ -345,9 +358,10 @@ async function serve(request, controller) {
     const wanted = url.searchParams.get('names')?.split(',') ?? [];
     return respond(nodeStub(name, wanted), types.js, 'stub');
   }
-  if (served === 'sandboxed' && code.has(request.destination)) {
-    return sandboxed(`sw: ${path} is not served as code\n`, 'text/plain; charset=utf-8', 403);
-  }
+  const notCode = () =>
+    sandboxed(`sw: ${path} is not served as code\n`, 'text/plain; charset=utf-8', 403);
+  const asCode = served === 'sandboxed' && code.has(request.destination);
+  if (asCode && !SHARED) return notCode();
   const at = path.endsWith('/') ? `${path}index.html` : path;
   let file;
   try {
@@ -363,6 +377,7 @@ async function serve(request, controller) {
     return gone ? refuse(gone, request, scope) : network();
   }
   const extension = file.name.split('.').pop();
+  if (asCode) return notCode();
   if (served === 'sandboxed') {
     return sandboxed(file, inert[extension] ?? types[extension] ?? 'application/octet-stream');
   }

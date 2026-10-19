@@ -1,11 +1,12 @@
 import { compare, locked } from './packages.js';
+import { BIOS } from './site.js';
 import { baseManifest, enforced, fetchText, pnpm, readable, text, write } from './update.js';
 
 export const FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies'];
 const EXACT = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const GATED = /^@ai-ecoverse\/(?:slicc-kernel|slicc-cdp|slicc-jsh|wasi-|wasix-|wasm-|py-)/;
 const RELAXED = ['pnpm', 'install', '--no-frozen-lockfile'];
-const CERTS = new URL('../packages/certs.json', import.meta.url);
+const CERTS = new URL('packages/certs.json', BIOS);
 const seen = new Map();
 
 const exact = (spec) => typeof spec === 'string' && EXACT.test(spec);
