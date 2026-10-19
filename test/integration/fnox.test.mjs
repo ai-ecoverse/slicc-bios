@@ -383,16 +383,31 @@ test('a profile that installed fnox from the catalog keeps a working fnox once f
   for (const file of Object.keys(old)) chrome.overrides.delete(`/packages/${file}`);
   await page.reload();
   await ready(page);
-  await page.within(600000, () => {
-    const { updates } = document.querySelector('slicc-app').model;
-    const fnox = updates.packages().find((item) => item.id === 'fnox');
-    return (
-      updates.ready() &&
-      fnox?.state === 'installed' &&
-      fnox.offered === null &&
-      updates.list().every((row) => !/queued|starting|checking|downloading|linking/.test(row.state))
-    );
-  });
+  await page
+    .within(600000, () => {
+      const { updates } = document.querySelector('slicc-app').model;
+      const fnox = updates.packages().find((item) => item.id === 'fnox');
+      return (
+        updates.ready() &&
+        fnox?.state === 'installed' &&
+        fnox.offered === null &&
+        updates
+          .list()
+          .every((row) => !/queued|starting|checking|downloading|linking/.test(row.state))
+      );
+    })
+    .catch(async (error) => {
+      const seen = await page.evaluate(() => {
+        const { updates } = document.querySelector('slicc-app').model;
+        const fnox = updates.packages().find((item) => item.id === 'fnox');
+        return {
+          ready: updates.ready(),
+          fnox: fnox && { state: fnox.state, offered: fnox.offered },
+          rows: updates.list().map((row) => `${row.id}:${row.state}`),
+        };
+      });
+      throw new Error(`${error.message}\n${JSON.stringify(seen)}`);
+    });
   const row = await page.evaluate(() =>
     document
       .querySelector('slicc-app')

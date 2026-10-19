@@ -395,18 +395,34 @@ test('slicc-agent#459: on a fresh profile the agent lists a sealed fnox secret w
     const { agent } = document.querySelector('slicc-app').model;
     void agent.send(agent.active(), 'Use the harbor token');
   });
-  await page.within(
-    5 * 60 * 1000,
-    (count) => {
-      const { agent } = document.querySelector('slicc-app').model;
-      return (
-        !agent.busy(agent.active()) &&
-        JSON.stringify(agent.messages(agent.active())).split('The harbor token reached the command')
-          .length > count
+  const outputs = await page
+    .within(
+      5 * 60 * 1000,
+      (count) => {
+        const { agent } = document.querySelector('slicc-app').model;
+        const messages = agent.messages(agent.active());
+        const runs = messages
+          .flatMap((message) => message.parts ?? [])
+          .filter((part) => part.type === 'tool' && part.tool?.id === 'grant-1')
+          .map((part) => part.tool.output);
+        const done =
+          JSON.stringify(messages).split('The harbor token reached the command').length > count;
+        return !agent.busy(agent.active()) && done && runs;
+      },
+      2
+    )
+    .catch(async (error) => {
+      const seen = await page.evaluate(() => {
+        const { agent } = document.querySelector('slicc-app').model;
+        return JSON.stringify(agent.messages(agent.active())).slice(-3000);
+      });
+      throw new Error(
+        `${error.message}\nwaited for a second "The harbor token reached the command" from an idle agent, in: ${seen}`
       );
-    },
-    2
-  );
+    });
+  const ungranted = outputs.at(-1);
+  assert.doesNotMatch(ungranted, new RegExp(`${HARBOR_SEALED}|\\b${HARBOR.length}\\b`), ungranted);
+  assert.match(ungranted, /^\s*0\s*$/, ungranted);
   const later = bodies.slice(before).join('\n');
   assert.match(later, /Shell grants are off[^"]*LOOSE_TOKEN/);
   assert.ok(!later.includes(HARBOR), 'an unsealed value reached the prompt');
