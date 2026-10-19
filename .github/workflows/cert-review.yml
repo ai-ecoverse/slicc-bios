@@ -156,10 +156,11 @@ jobs:
         with:
           node-version: '24'
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          name: cert-review-${{ needs.plan.outputs.number }}
+          artifact-ids: ${{ needs.certify.outputs.evidence_id }}
           path: evidence
+          digest-mismatch: error
 
       - name: The certified certs.json lines that the PR's lockfiles pin, added to its certs.json
         id: apply
@@ -227,6 +228,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_CI: ${{ needs.plan.outputs.head_ci }}
+          HEAD_SHA: ${{ needs.plan.outputs.head }}
           BASE_CI: ${{ needs.plan.outputs.base_ci }}
         run: |
           set -euo pipefail
@@ -251,7 +253,12 @@ jobs:
             mkdir -p "$dir"
             if [ -z "$run" ]; then echo "none found" > "$dir/run.txt"; continue; fi
             echo "$run" > "$dir/run.txt"
-            gh run view "$run" --json jobs,conclusion,headSha,url > "$dir/run.json"
+            gh run view "$run" --json jobs,status,conclusion,headSha,url > "$dir/run.json"
+            if [ "$name" = head ]; then
+              read -r status sha < <(jq -r '"\(.status) \(.headSha)"' "$dir/run.json")
+              [ "$status" = completed ] || { echo "::error::CI run $run on the head is $status, not completed: no review on unfinished CI"; exit 1; }
+              [ "$sha" = "$HEAD_SHA" ] || { echo "::error::CI run $run is on $sha, not the head $HEAD_SHA"; exit 1; }
+            fi
             gh run view "$run" --log-failed > "$dir/failed.log" 2>&1 || true
             jq -r '.jobs[] | select(.conclusion == "failure") | .name | capture("^ci / integration \\((?<s>[^)]+)\\)$").s' "$dir/run.json" | while read -r shard; do
               gh run download "$run" -n "integration-$shard" -D "$dir/integration-$shard" || echo "integration-$shard: no artifact" >> "$dir/missing.txt"
@@ -262,7 +269,7 @@ jobs:
       - name: Install both trees and the harness's Chromium
         run: |
           (cd base && npm ci --no-audit --no-fund)
-          (cd head && npm ci --no-audit --no-fund && npx playwright-core install --no-shell chromium)
+          (cd head && npm ci --no-audit --no-fund --ignore-scripts && npx playwright-core install --no-shell chromium)
 
       - name: Each tree's slicc CLI (the released binary where a tree has none)
         run: |
@@ -407,6 +414,9 @@ jobs:
     if: always() && needs.plan.outputs.go == 'true'
     runs-on: ${{ vars.CERT_LIGHT_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
+    concurrency:
+      group: cert-post-${{ needs.plan.outputs.number }}
+      cancel-in-progress: true
     permissions:
       contents: read
       pull-requests: write
@@ -428,7 +438,7 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         id: download
-        if: needs.certify.outputs.evidence_id != ''
+        if: needs.certify.outputs.evidence_id != '' && (needs.certify.result == 'success' || needs.certify.result == 'failure')
         continue-on-error: true
         with:
           artifact-ids: ${{ needs.certify.outputs.evidence_id }}
@@ -439,12 +449,15 @@ jobs:
         env:
           DOWNLOAD: ${{ steps.download.outcome }}
           DIGEST: ${{ needs.certify.outputs.evidence_digest }}
+          REVIEW: ${{ needs.certify.result }}
         run: |
           file="$RUNNER_TEMP/evidence/cert-review/comment.md"
           if [ "$DOWNLOAD" = success ] && [ -n "$DIGEST" ] && [ -s "$file" ]; then
+            grep -v '<sub>sha check' "$file" > "$RUNNER_TEMP/comment.md" || true
+            file="$RUNNER_TEMP/comment.md"
             if check=$(node base/scripts/cert/verify.mjs "$file" 2>&1); then mark=ok; else mark='**mismatch**'; fi
             { cat "$file"; printf '\n\n<sub>sha check %s: %s · [run](%s)</sub>\n' "$mark" "$(echo "$check" | tr '\n' ' ')" "$RUN_URL"; } > "$RUNNER_TEMP/body.md"
           else
-            echo "**Cert review:** no verdict (evidence ${DOWNLOAD:-missing}). See $RUN_URL" > "$RUNNER_TEMP/body.md"
+            echo "**Cert review:** no verdict (review ${REVIEW:-missing}, evidence ${DOWNLOAD:-skipped}). See $RUN_URL" > "$RUNNER_TEMP/body.md"
           fi
           gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/body.md"
