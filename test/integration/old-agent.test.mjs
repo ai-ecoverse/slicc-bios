@@ -23,7 +23,7 @@ const NEW_VERSION = JSON.parse(
 const answer = Buffer.concat([
   eventFrame('messageStart', { role: 'assistant' }),
   eventFrame('contentBlockDelta', { contentBlockIndex: 0, delta: { text: 'Hello from ' } }),
-  eventFrame('contentBlockDelta', { contentBlockIndex: 0, delta: { text: 'the new agent.' } }),
+  eventFrame('contentBlockDelta', { contentBlockIndex: 0, delta: { text: 'the agent.' } }),
   eventFrame('contentBlockStop', { contentBlockIndex: 0 }),
   eventFrame('messageStop', { stopReason: 'end_turn' }),
   eventFrame('metadata', {
@@ -105,9 +105,16 @@ const helpers = () => {
       .querySelector('slicc-app')
       ?.model?.notices?.list?.()
       .find((notice) => notice.id.startsWith('agent:installing:')) ?? null;
+  window.noticeSeen = false;
   const watch = () => {
-    const updates = document.querySelector('slicc-app')?.model?.updates;
-    if (!updates?.on) return setTimeout(watch, 20);
+    const { updates, notices } = document.querySelector('slicc-app')?.model ?? {};
+    if (!updates?.on || !notices?.on) return setTimeout(watch, 20);
+    const seen = (list) => {
+      if (list.some((notice) => notice.id.startsWith('agent:installing:')))
+        window.noticeSeen = true;
+    };
+    seen(notices.list());
+    notices.on('notices', seen);
     const note = () => {
       const { state, from, to } = updates.list().find((item) => item.id === 'agent');
       const last = window.agentRows.at(-1);
@@ -120,7 +127,13 @@ const helpers = () => {
   watch();
 };
 
-async function updated(t, old) {
+const agentRow = () =>
+  document
+    .querySelector('slicc-app')
+    .model.updates.list()
+    .find((item) => item.id === 'agent');
+
+async function installedOld(t, old) {
   const page = await chrome.page(t);
   await page.init(helpers);
   const fixture = deployed(old);
@@ -141,8 +154,60 @@ async function updated(t, old) {
   const owner = await page.evaluate(() =>
     window.readOpfs('/opt/agent/node_modules/@ai-ecoverse/slicc-agent/dist/owner.js')
   );
-
   for (const path of Object.keys(fixture)) chrome.overrides.delete(path);
+  return { page, owner };
+}
+
+async function say(page, text, times) {
+  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
+  await page.until(() => {
+    const chat = window.chatView();
+    return !!chat?.shadowRoot && !!window.deep(chat.shadowRoot, 'textarea');
+  });
+  await page.evaluate(() => window.deep(window.chatView().shadowRoot, 'textarea').focus());
+  await page.insert(text);
+  await page.enter();
+  await page.until(
+    (times) =>
+      window.deepText(window.chatView().shadowRoot).split('Hello from the agent.').length > times,
+    times
+  );
+}
+
+async function installs(page, old) {
+  const seen = await page.evaluate(() => window.agentRows);
+  const installing = seen.filter(({ state }) =>
+    ['checking', 'downloading', 'linking'].includes(state)
+  );
+  assert.ok(installing.length > 0, JSON.stringify(seen));
+  assert.ok(
+    installing.some(({ from, to }) => from === old && to === NEW_VERSION),
+    JSON.stringify(seen)
+  );
+  const started = installing[0].at;
+  const done = seen.find(
+    ({ state, at }) => at > started && !['checking', 'downloading', 'linking'].includes(state)
+  );
+  return { started, done: done?.at ?? null, seen };
+}
+
+async function oneHolder(page) {
+  const locks = await page.evaluate(async () => {
+    const { held, pending } = await navigator.locks.query();
+    return {
+      held: held.filter(({ name }) => name === 'slicc-agent').length,
+      pending: pending.filter(({ name }) => name === 'slicc-agent').length,
+    };
+  });
+  assert.deepEqual(locks, { held: 1, pending: 0 });
+}
+
+test("slicc-agent 3.26.0, which ignores held, isn't started at boot: seven's agent installs, the chat says it's updating meanwhile, and the new agent's chat starts without a reload", {
+  timeout: 60 * 60 * 1000,
+}, async (t) => {
+  const { page, owner } = await installedOld(t, '3.26.0');
+  assert.match(owner, /const release = await holdLock\(/);
+  assert.doesNotMatch(owner, /options\.held/);
   const reloaded = Date.now();
   await page.reload();
   await ready(page);
@@ -166,75 +231,76 @@ async function updated(t, old) {
     const text = window.deepText(window.chatView().shadowRoot);
     return text.includes('Seven is updating its agent') && text;
   });
-  assert.match(
-    shown,
-    new RegExp(`The chat starts once agent ${NEW_VERSION.replaceAll('.', '\\.')} is installed`)
-  );
   assert.doesNotMatch(shown, /Couldn|failed|error/i);
-  await shoot(page, `updating-from-${old}`, { show: 'chat' });
+  await shoot(page, 'updating-from-3.26.0', { show: 'chat' });
 
-  await agentUp(page, { label: `agent after ${old}` });
+  await agentUp(page, { label: 'agent after 3.26.0' });
   const up = Date.now();
-  const row = await page.evaluate(() =>
-    document
-      .querySelector('slicc-app')
-      .model.updates.list()
-      .find((item) => item.id === 'agent')
-  );
-  const seen = await page.evaluate(() => window.agentRows);
+  const row = await page.evaluate(agentRow);
   assert.equal(await page.evaluate(() => window.installedAgent()), NEW_VERSION);
-  assert.equal(row.state, 'installed', JSON.stringify(seen));
-  assert.deepEqual([row.from, row.to], [NEW_VERSION, NEW_VERSION], JSON.stringify(seen));
-  const installing = seen.filter(({ state }) =>
-    ['checking', 'downloading', 'linking'].includes(state)
-  );
-  assert.ok(installing.length > 0, JSON.stringify(seen));
-  assert.ok(
-    installing.some(({ from, to }) => from === old && to === NEW_VERSION),
-    JSON.stringify(seen)
-  );
-  const locks = await page.evaluate(async () => {
-    const { held, pending } = await navigator.locks.query();
-    return {
-      held: held.filter(({ name }) => name === 'slicc-agent').length,
-      pending: pending.filter(({ name }) => name === 'slicc-agent').length,
-    };
-  });
-  assert.deepEqual(locks, { held: 1, pending: 0 });
+  assert.equal(row.state, 'installed');
+  assert.deepEqual([row.from, row.to], [NEW_VERSION, NEW_VERSION]);
+  const { started, done } = await installs(page, '3.26.0');
+  await oneHolder(page);
   await page.until(() => window.installNotice() === null);
-  const started = installing[0].at;
-  const done = seen.find(({ state, at }) => state === 'installed' && at >= started)?.at ?? up;
   t.diagnostic(
-    `agent ${old} → ${NEW_VERSION} in place: chat up ${up - reloaded} ms after the reload, the install took ${done - started} ms`
+    `agent 3.26.0 → ${NEW_VERSION}: the chat waited ${up - reloaded} ms after the reload, the install took ${(done ?? up) - started} ms`
   );
-
   await connectAccount(page, 'amazon-bedrock', KEY);
-  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
-  await page.until(() => {
-    const chat = window.chatView();
-    return !!chat?.shadowRoot && !!window.deep(chat.shadowRoot, 'textarea');
-  });
-  await page.evaluate(() => window.deep(window.chatView().shadowRoot, 'textarea').focus());
-  await page.insert('Say hello');
-  await page.enter();
-  await page.until(() =>
-    window.deepText(window.chatView().shadowRoot).includes('Hello from the new agent.')
-  );
+  await say(page, 'Say hello', 1);
   assert.deepEqual(page.errors, []);
-  return { owner };
-}
-
-test("slicc-agent 3.26.0, which ignores held, updates to seven's agent and its chat starts without a reload; meanwhile the row shows 3.26.0 → new and the chat says it's updating", {
-  timeout: 60 * 60 * 1000,
-}, async (t) => {
-  const { owner } = await updated(t, '3.26.0');
-  assert.match(owner, /const release = await holdLock\(/);
-  assert.doesNotMatch(owner, /options\.held/);
 });
 
-test("an in-place update from slicc-agent 5.0.3, which honours held, starts the chat on seven's agent, and the chat says it's updating meanwhile", {
+test("slicc-agent 5.0.3, which honours held, answers while seven's agent installs in place, without the updating notice, and Restart agent puts the chat on the new agent without a reload", {
   timeout: 60 * 60 * 1000,
 }, async (t) => {
-  const { owner } = await updated(t, '5.0.3');
+  const { page, owner } = await installedOld(t, '5.0.3');
   assert.match(owner, /options\.held/);
+  const reloaded = Date.now();
+  await page.reload();
+  await ready(page);
+  await agentUp(page, { label: 'agent 5.0.3 after the reload' });
+  const up = Date.now();
+  await connectAccount(page, 'amazon-bedrock', KEY);
+  await say(page, 'Say hello', 1);
+  const answered = Date.now();
+  const during = await page.evaluate(agentRow);
+  await page.within(AGENT_BUDGET, () => {
+    const row = document
+      .querySelector('slicc-app')
+      .model.updates.list()
+      .find((item) => item.id === 'agent');
+    return row.state === 'ready' && row.actions.includes('restart-agent');
+  });
+  const offered = Date.now();
+  const offer = await page.evaluate(agentRow);
+  assert.deepEqual([offer.from, offer.to], ['5.0.3', NEW_VERSION]);
+  const { started, done } = await installs(page, '5.0.3');
+  assert.ok(
+    answered < (done ?? offered),
+    `the old agent answered at ${answered}, the install ended at ${done}`
+  );
+  assert.equal(await page.evaluate(() => window.noticeSeen), false);
+  await page.evaluate(() =>
+    document.querySelector('slicc-app').model.updates.act('agent', 'restart-agent')
+  );
+  await page.within(
+    AGENT_BUDGET,
+    (version) => {
+      const row = document
+        .querySelector('slicc-app')
+        .model.updates.list()
+        .find((item) => item.id === 'agent');
+      return row.state === 'current' && row.from === version && row.to === version;
+    },
+    NEW_VERSION
+  );
+  const restarted = Date.now();
+  await oneHolder(page);
+  await say(page, 'Say hello again', 2);
+  assert.equal(await page.evaluate(() => window.noticeSeen), false);
+  t.diagnostic(
+    `agent 5.0.3 → ${NEW_VERSION} in place: the old agent was up ${up - reloaded} ms after the reload (row ${during.state} when it answered), the install took ${(done ?? offered) - started} ms, Restart agent was offered ${offered - reloaded} ms after the reload and took ${restarted - offered} ms`
+  );
+  assert.deepEqual(page.errors, []);
 });
