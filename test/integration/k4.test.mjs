@@ -7,6 +7,7 @@ const chrome = await launch();
 after(() => chrome.close());
 
 const rootShell = ['slicc:/home# '];
+const PLANTED = 400;
 
 const EPOLL = `import asyncio
 import select
@@ -574,47 +575,69 @@ test('enforce: a cone’s denial is in the log when the page reloads right after
 test('enforce: slicc-denials run as root leaves a file a cone links into /tmp alone', async (t) => {
   const page = await chrome.page(t);
   await bootIn(page, 'enforce');
+  await run(page, `clear; echo "pid=$(sh -c 'echo $$')-$((40 + 2))"`);
+  await shows(page, '-42');
+  const pid = Number(/pid=(\d+)-42/.exec(await screen(page))[1]);
+  const names = Array.from({ length: PLANTED }, (_, i) => `slicc-denials.${pid + 1 + i}`);
+  await page.evaluate(async (encoded) => {
+    let dir = await navigator.storage.getDirectory();
+    dir = await dir.getDirectoryHandle('root', { create: true });
+    const writable = await (
+      await dir.getFileHandle('links.tar', { create: true })
+    ).createWritable();
+    await writable.write(Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0)));
+    await writable.close();
+  }, linksTar(names, '/root/target').toString('base64'));
   await run(
     page,
-    "clear; echo intact > /root/target; chmod 600 /root/target; sudo -u cone bash -c 'p=$$; for i in $(seq 150 249); do ln -s /root/target /tmp/slicc-denials.$((p + i)); done'; slicc-denials > /dev/null; echo summary=$?; echo target=$(cat /root/target); echo planted=$(ls /tmp | grep -c slicc-denials); echo done-$((40 + 2))"
+    "clear; echo intact > /root/target; chmod 600 /root/target; sudo -u cone tar xf - -C /tmp < /root/links.tar; echo untar=$?; slicc-denials > /dev/null; echo summary=$?; echo target=$(cat /root/target); echo planted=$(ls /tmp | grep -c '^slicc-denials[.]'); echo done-$((40 + 2))"
   );
   await shows(page, 'done-42');
   const text = await screen(page);
+  assert.match(text, /untar=0/);
   assert.match(text, /summary=0/);
   assert.match(text, /target=intact/);
-  assert.match(text, /planted=100/);
+  assert.match(text, new RegExp(`planted=${PLANTED}\\b`));
   assert.deepEqual(page.errors, []);
 });
 
+function tarHeader(name, { type = '0', size = 0, link = '' } = {}) {
+  const block = Buffer.alloc(512);
+  const field = (offset, length, value) => block.write(value, offset, length, 'ascii');
+  const octal = (offset, length, value) =>
+    field(offset, length, `${value.toString(8).padStart(length - 1, '0')}\0`);
+  field(0, 100, name);
+  octal(100, 8, type === '2' ? 0o777 : 0o644);
+  octal(108, 8, 0);
+  octal(116, 8, 0);
+  octal(124, 12, size);
+  octal(136, 12, 1700000000);
+  field(148, 8, '        ');
+  field(156, 1, type);
+  field(157, 100, link);
+  field(257, 6, 'ustar\0');
+  field(263, 2, '00');
+  let sum = 0;
+  for (const byte of block) sum += byte;
+  field(148, 8, `${sum.toString(8).padStart(6, '0')}\0 `);
+  return block;
+}
+
+function linksTar(names, target) {
+  return Buffer.concat([
+    ...names.map((name) => tarHeader(name, { type: '2', link: target })),
+    Buffer.alloc(1024),
+  ]);
+}
+
 function hardLinkTar() {
-  const header = (name, { type = '0', size = 0, link = '' } = {}) => {
-    const block = Buffer.alloc(512);
-    const field = (offset, length, value) => block.write(value, offset, length, 'ascii');
-    const octal = (offset, length, value) =>
-      field(offset, length, `${value.toString(8).padStart(length - 1, '0')}\0`);
-    field(0, 100, name);
-    octal(100, 8, 0o644);
-    octal(108, 8, 0);
-    octal(116, 8, 0);
-    octal(124, 12, size);
-    octal(136, 12, 1700000000);
-    field(148, 8, '        ');
-    field(156, 1, type);
-    field(157, 100, link);
-    field(257, 6, 'ustar\0');
-    field(263, 2, '00');
-    let sum = 0;
-    for (const byte of block) sum += byte;
-    field(148, 8, `${sum.toString(8).padStart(6, '0')}\0 `);
-    return block;
-  };
   const body = Buffer.alloc(512);
   body.write('linked 42\n');
   return Buffer.concat([
-    header('d/', { type: '5' }),
-    header('d/a', { size: 10 }),
+    tarHeader('d/', { type: '5' }),
+    tarHeader('d/a', { size: 10 }),
     body,
-    header('d/b', { type: '1', link: 'd/a' }),
+    tarHeader('d/b', { type: '1', link: 'd/a' }),
     Buffer.alloc(1024),
   ]);
 }
