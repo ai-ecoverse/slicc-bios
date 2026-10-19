@@ -365,10 +365,20 @@ for (const extension of EXTENSIONS.filter(({ version }) => version >= '7.6.3')) 
       created.result.targetId
     );
     assert.deepEqual(
-      behind(opening),
+      opening.filter(({ focused }) => !focused),
       [],
-      `a new window the guard created took seven's place: ${JSON.stringify(opening)}`
+      `a new window the guard created took the focus from seven (without a window manager it covers seven whatever its focus, so focus is what this checks): ${JSON.stringify(opening)}`
     );
+    const uncovered = Date.now() + 15000;
+    let shown = await sample();
+    while (shown.shown !== 'visible' || !shown.focused) {
+      if (Date.now() > uncovered)
+        throw new Error(
+          `seven stayed behind after the new window closed: ${JSON.stringify({ opening, shown })}`
+        );
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      shown = await sample();
+    }
     const samples = [await sample()];
     let driving = true;
     const sampler = (async () => {
