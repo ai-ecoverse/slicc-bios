@@ -58,6 +58,7 @@ const own = new Set([
   '/bios.js',
   '/bios.css',
   '/splash.js',
+  '/card.js',
   '/scene.js',
   '/installer.js',
   '/sw.js',

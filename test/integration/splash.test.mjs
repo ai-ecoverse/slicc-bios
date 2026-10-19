@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { boot, booted, ready, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
@@ -160,4 +161,39 @@ test('a cold boot and repeat boots through the BIOS reach the terminal prompt', 
   t.diagnostic(line);
   assert.ok(cold.prompt > 0 && warm.prompt > 0);
   assert.deepEqual(page.errors, []);
+});
+
+test('against main’s BIOS page, served alternately, the splash adds little to a repeat boot', async (t) => {
+  const page = await chrome.page(t);
+  const main = {};
+  for (const name of ['index.html', 'bios.css', 'bios.js'])
+    main[name] = await readFile(new URL(`fixtures/bios-main/${name}`, import.meta.url), 'utf8');
+  const visit = async () => {
+    const start = Date.now();
+    await page.goto('/index.html');
+    await page.until(() => location.pathname === '/os/');
+    const ui = Date.now() - start;
+    await ready(page);
+    return { ui, prompt: Date.now() - start };
+  };
+  await visit();
+  const runs = { main: [], splash: [] };
+  for (let round = 0; round < 6; round++) {
+    for (const arm of round % 2 ? ['splash', 'main'] : ['main', 'splash']) {
+      chrome.overrides.clear();
+      if (arm === 'main')
+        for (const [name, body] of Object.entries(main)) chrome.overrides.set(`/${name}`, body);
+      runs[arm].push(await visit());
+    }
+  }
+  chrome.overrides.clear();
+  const line = ['main', 'splash']
+    .map(
+      (arm) =>
+        `${arm} ui=${median(runs[arm].map((run) => run.ui))} prompt=${median(runs[arm].map((run) => run.prompt))}`
+    )
+    .join(' ');
+  console.log(`SPLASH-AB ${line} runs=${JSON.stringify(runs)}`);
+  t.diagnostic(`SPLASH-AB ${line}`);
+  assert.equal(runs.splash.length, 6);
 });

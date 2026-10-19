@@ -334,12 +334,15 @@ void main() {
 
   float th = bayer(floor(fc / uRes * uSRes));
   float lum = dot(col, vec3(.299, .587, .114));
-  vec3 duo = mix(mix(vec3(.045, .035, .075), vec3(.34, .19, .4), uLight), mix(vec3(1., .8, .87), vec3(.97, .96, .98), uLight), step(th, smoothstep(.3, .85, lum)));
+  vec3 duo = mix(mix(vec3(.045, .035, .075), vec3(.66, .58, .7), uLight), mix(vec3(1., .8, .87), vec3(.97, .96, .98), uLight), step(th, smoothstep(.3, .85, lum)));
   float lv = mix(2., 20., smoothstep(.3, .85, c));
   vec3 base = mix(col, 1. - col, uLight);
   vec3 poster = floor(base * lv + th) / lv;
   poster = mix(poster, 1. - poster, uLight);
   vec3 res = mix(duo, poster, smoothstep(.14, .42, c));
+  res = mix(res, mix(col, res, .5), uLight);
+  vec3 soft = texture(uTex, clamp(fc / uRes * uSRes, vec2(.5), uSRes - .5) / uTexSize).rgb;
+  res = mix(res, soft, uLight * (1. - smoothstep(0., .45, fc.x / uRes.x)));
   res = mix(res, col, smoothstep(.78, .97, c));
 
   res *= 1. - (1. - c) * .16 * (.5 + .5 * sin(fc.y * 1.5708));

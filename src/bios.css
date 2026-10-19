@@ -58,7 +58,6 @@ body::before {
   width: 120%;
   height: 120%;
   z-index: -2;
-  filter: blur(56px) saturate(1.25);
   opacity: 0;
   pointer-events: none;
   background:
@@ -72,6 +71,7 @@ body:has(.splash[data-scene="static"]) .ambient {
 }
 
 body:has(.splash[data-scene="running"]) .ambient {
+  filter: blur(56px) saturate(1.25);
   opacity: var(--haze);
 }
 
@@ -180,6 +180,7 @@ button {
 }
 
 .story {
+  contain: layout paint;
   position: absolute;
   left: 6cqi;
   top: 47%;
@@ -255,6 +256,7 @@ button {
 }
 
 .status {
+  contain: layout paint;
   position: absolute;
   left: 6cqi;
   right: 6cqi;
@@ -441,7 +443,6 @@ button {
   display: flex;
   flex-direction: column;
   background: light-dark(rgb(250 249 252 / 0.92), rgb(13 11 18 / 0.9));
-  backdrop-filter: blur(16px) saturate(1.2);
   border-left: 1px solid var(--line);
   transform: translateX(102%);
   transition: transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -451,6 +452,7 @@ button {
 
 .diagnostics.open {
   transform: none;
+  backdrop-filter: blur(16px) saturate(1.2);
 }
 
 .diagnostics header {
