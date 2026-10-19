@@ -567,6 +567,7 @@ test("the user's pnpm add in /opt/agent moves to /opt/user, and a pnpm upgrade t
 
 const EXEC_LOOP = [
   '#!/bin/bash',
+  "{ cat /proc/mounts; stat -c 'tmp %d %i' /tmp; } > /root/loop-start.txt 2>&1",
   'n=0; f=0',
   "ok() { bash -c 'echo exec-ok' > /tmp/v 2>&1 && grep -q exec-ok /tmp/v; }",
   'while [ ! -e /tmp/stop ]; do',
@@ -575,6 +576,33 @@ const EXEC_LOOP = [
   'done',
   'echo "loop n=$n fail=$f" > /tmp/loop',
 ].join('\n');
+
+async function lostLoop(page, error) {
+  const opfs = await page.evaluate(async () => {
+    const root = await navigator.storage.getDirectory();
+    const tmp = await root.getDirectoryHandle('tmp');
+    const names = [];
+    for await (const handle of tmp.values()) names.push(handle.name);
+    return { same: await globalThis.tmpAtStart.isSameEntry(tmp), names: names.sort() };
+  });
+  const loopStart = await read(page, 'root/loop-start.txt').catch((failed) => failed.name);
+  await run(
+    page,
+    `clear; echo "now: $(stat -c 'tmp %d %i' /tmp) $(ls -a /tmp | tr '\\n' ' ')"; sleep 2; echo "later: $(sh -c 'ls -a /tmp' | tr '\\n' ' ')"; echo seen-$((40 + 2))`
+  );
+  await shows(page, 'seen-42');
+  const kernel = (page.console ?? []).filter((line) => line.includes('slicc-kernel:')).slice(0, 10);
+  throw new Error(
+    [
+      `tmp/loop isn't in OPFS (${error.name}), though the shell cat it (#663)`,
+      `the OPFS /tmp is the one from the loop's start: ${opfs.same}`,
+      `OPFS /tmp: ${opfs.names.join(' ')}`,
+      `the loop's mounts at its start:\n${loopStart}`,
+      `the kernel's view: ${(await screen(page)).replace(/\s+/g, ' ')}`,
+      `kernel console: ${kernel.join(' | ') || 'none'}`,
+    ].join('\n')
+  );
+}
 
 test('the BIOS installer replaces a package in place while seven runs: the shell execs it in a loop and a second tab reads its files throughout', async (t) => {
   const page = await chrome.page(t);
@@ -610,6 +638,11 @@ test('the BIOS installer replaces a package in place while seven runs: the shell
     `clear; rm -f /tmp/stop /tmp/loop /tmp/errs; echo ${script} | base64 -d > /usr/local/bin/exec-loop; chmod 755 /usr/local/bin/exec-loop; exec-loop > /dev/null 2>&1 & echo looping-$((40 + 2))`
   );
   await shows(page, 'looping-42');
+  await page.evaluate(async () => {
+    globalThis.tmpAtStart = await (await navigator.storage.getDirectory()).getDirectoryHandle(
+      'tmp'
+    );
+  });
   deploy();
   const result = await other.evaluate(
     () =>
@@ -632,7 +665,7 @@ test('the BIOS installer replaces a package in place while seven runs: the shell
   assert.ok(result.result?.downloaded >= 1, JSON.stringify(result));
   await run(page, 'clear; touch /tmp/stop; wait; cat /tmp/loop; echo stopped-$((40 + 2))');
   await shows(page, 'stopped-42', 120000);
-  const counted = (await read(page, 'tmp/loop')).trim();
+  const counted = (await read(page, 'tmp/loop').catch((error) => lostLoop(page, error))).trim();
   const [, runs, failures] = counted.match(/loop n=(\d+) fail=(\d+)/) ?? [];
   assert.ok(Number(runs) > 0, counted);
   const errors = await read(page, 'tmp/errs').catch(() => '');
