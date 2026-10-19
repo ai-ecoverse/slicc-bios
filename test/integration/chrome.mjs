@@ -53,7 +53,7 @@ export async function debuggerUrl(port, ms = 30000) {
 const NOISE = /Spectrum Web Components is in dev mode|The legal slot is empty/;
 const KEEP = 40;
 export const TRAPS = new URL('../../artifacts/pnpm-traps/', import.meta.url);
-const TRAPPED = /^(?:bios: )?pnpm(?: trapped \(| trapped twice|'s retry after the wasm trap)/;
+const TRAPPED = /^bios: pnpm trapped \(/;
 
 export function trapRecorder(cdp, current, write = appendFileSync) {
   const file = new URL(`${pid}.jsonl`, TRAPS);

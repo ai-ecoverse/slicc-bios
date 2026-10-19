@@ -326,7 +326,7 @@ test("a run's summary joins the plan and the shard records, with every shard's t
   assert.deepEqual(summary.traps, []);
 });
 
-test('a page’s pnpm wasm trap warnings are recorded with their test, unless the test forces the trap itself', () => {
+test('each pnpm wasm trap retry a page warns about is recorded once, with its test, unless the test forces the trap itself', () => {
   const listeners = [];
   const cdp = { on: (listener) => listeners.push(listener) };
   const written = [];
@@ -350,15 +350,11 @@ test('a page’s pnpm wasm trap warnings are recorded with their test, unless th
   warn('bios: pnpm trapped (forced)');
   current = null;
   warn('bios: pnpm trapped (no test)');
-  assert.equal(written.length, 3);
+  assert.equal(written.length, 1, 'one line per retry, not one per warning');
   assert.match(written[0][0], /\/artifacts\/pnpm-traps\/\d+\.jsonl$/);
   assert.deepEqual(
     written.map(([, { file, name, line }]) => [file, name, line.slice(0, 22)]),
-    [
-      ['test/integration/agent.test.mjs', 'installs', 'bios: pnpm trapped (pn'],
-      ['test/integration/agent.test.mjs', 'installs', "bios: pnpm's retry aft"],
-      ['test/integration/agent.test.mjs', 'installs', 'pnpm trapped twice wit'],
-    ]
+    [['test/integration/agent.test.mjs', 'installs', 'bios: pnpm trapped (pn']]
   );
   assert.match(written[0][1].at, /^\d{4}-/);
 });
