@@ -1,3 +1,5 @@
+import { kernelSink, rooted } from './update.js';
+
 export const LOG = 'var/log/slicc/denials.log';
 export const CAP = 1024 * 1024;
 export const SPOOL = 'slicc.denials.spool.';
@@ -11,6 +13,7 @@ async function folder(root) {
 }
 
 async function append(root, text, cap) {
+  if (await rooted(root)) return kernelSink().append(LOG, text, cap);
   const name = LOG.split('/').pop();
   const dir = await folder(root);
   const handle = await dir.getFileHandle(name, { create: true });

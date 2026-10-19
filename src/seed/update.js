@@ -12,7 +12,39 @@ export async function text(dir, path) {
   }
 }
 
+const sink = { files: null };
+
+export function useKernelFiles(files) {
+  sink.files = files;
+}
+
+export async function rooted(dir) {
+  if (!sink.files || typeof dir?.isSameEntry !== 'function') return false;
+  return dir.isSameEntry(await navigator.storage.getDirectory()).catch(() => false);
+}
+
+export function kernelSink() {
+  return sink.files;
+}
+
+export async function remove(dir, path) {
+  if (await rooted(dir)) return sink.files.rm(path);
+  const names = path.split('/');
+  const name = names.pop();
+  try {
+    for (const part of names) dir = await dir.getDirectoryHandle(part);
+    await dir.removeEntry(name, { recursive: true });
+  } catch {}
+}
+
+export async function makeDir(dir, path) {
+  if (await rooted(dir)) return sink.files.mkdir(path);
+  for (const part of path.split('/').filter(Boolean))
+    dir = await dir.getDirectoryHandle(part, { create: true });
+}
+
 export async function write(dir, path, data) {
+  if (await rooted(dir)) return sink.files.write(path, data);
   const names = path.split('/');
   const name = names.pop();
   for (const part of names) dir = await dir.getDirectoryHandle(part, { create: true });
@@ -68,7 +100,7 @@ const CLEAN = {
   NODE_OPTIONS: '',
   ...TRAPS,
 };
-const guard = { on: false, enforce: false, writing: new Map() };
+const guard = { on: false, enforce: false, writing: new Map(), expected: new Map() };
 
 export function protectInstalls(on, enforce = on) {
   guard.on = on;
@@ -84,6 +116,7 @@ export function enforced() {
 }
 
 export function installing(kernel, path = null) {
+  if (path !== null && guard.expected.get(kernel)?.delete(path)) return true;
   const held = guard.writing.get(kernel);
   if (!held) return false;
   if (path === null) return true;
@@ -144,7 +177,59 @@ export async function fence(root, cwd) {
 }
 
 export async function retire(root) {
-  for (const name of ROOTED) await root.removeEntry(name).catch(() => {});
+  for (const name of ROOTED) await remove(root, name);
+}
+
+const joined = (chunks) => {
+  const out = new Uint8Array(chunks.reduce((n, chunk) => n + chunk.length, 0));
+  let at = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, at);
+    at += chunk.length;
+  }
+  return out;
+};
+
+export async function kernelFiles(kernel, attach) {
+  const client = await attach(await kernel.connect(guard.on ? { tag: WRITER } : {}));
+  let held = guard.expected.get(kernel);
+  if (!held) guard.expected.set(kernel, (held = new Set()));
+  const parents = async (at) => {
+    const parts = at.split('/').filter(Boolean);
+    parts.pop();
+    let path = '';
+    for (const part of parts) {
+      path += `/${part}`;
+      if (await client.fs.exists(path)) continue;
+      held.add(path);
+      await client.fs.mkdir(path);
+    }
+  };
+  const put = async (at, data) => {
+    await parents(at);
+    held.add(at);
+    await client.fs.writeFile(at, data);
+  };
+  return {
+    write: (path, data) => put(`/${path}`, data),
+    async rm(path) {
+      const at = `/${path}`;
+      if (!(await client.fs.exists(at))) return;
+      held.add(at);
+      await client.fs.rm(at, { force: true });
+    },
+    mkdir: (path) => parents(`/${path}/x`),
+    async append(path, text, cap) {
+      const at = `/${path}`;
+      const old = (await client.fs.exists(at)) ? await client.fs.readFile(at) : new Uint8Array(0);
+      const added = new TextEncoder().encode(text);
+      if (old.length && old.length + added.length > cap) {
+        await put(`${at}.1`, old);
+        return put(at, added);
+      }
+      return put(at, joined([old, added]));
+    },
+  };
 }
 
 export function project() {
