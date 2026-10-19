@@ -32,14 +32,23 @@
     "label": "Python",
     "description": "Python 3.14 with pip (pip, pip3 or python3 -m pip), for scripts and data work.",
     "commands": ["python3", "pip", "pip3"],
-    "size": 49598727
+    "size": 57417828
+  },
+  "slicc-py-datatools": {
+    "id": "pydata",
+    "kind": "project",
+    "label": "Python data tools",
+    "description": "numpy, pandas and matplotlib for Python, about 160 MB on disk.",
+    "commands": [],
+    "requires": ["python"],
+    "size": 46014414
   },
   "@ai-ecoverse/slicc-jsh": {
     "id": "node",
     "label": "Node.js (jsh)",
-    "description": "Node.js 22-compatible node and jsh commands: fs (chmod included), streams, http, fetch, WebSocket, zlib, crypto and child_process, the sync calls (spawnSync, execSync, execFileSync) and detached spawns included, without fork, tls, worker or asymmetric crypto yet. fetch() reaches servers inside seven (localhost, <port>.kernel.localhost) and streams their responses. An http server's headersTimeout and requestTimeout are ignored. node with no arguments opens the REPL.",
+    "description": "Node.js 22-compatible node and jsh commands: fs (chmod included), streams, http, fetch, WebSocket, zlib, crypto and child_process, the sync calls (spawnSync, execSync, execFileSync) and detached spawns included, tls on the kernel's own handshake and Brotli and zstd decompression in zlib, without fork, worker or asymmetric crypto yet. fetch() reaches servers inside seven (localhost, <port>.kernel.localhost) and streams their responses. node with no arguments opens the REPL.",
     "commands": ["node", "jsh"],
-    "size": 1093431
+    "size": 1456683
   },
   "@ai-ecoverse/sliccy-browser": {
     "id": "jsh-browser",

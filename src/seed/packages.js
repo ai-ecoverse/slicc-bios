@@ -309,10 +309,18 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
     }
     for (const id of entry.requires) {
       const needed = byId.get(id);
-      if (!needed || installed.has(needed.package)) continue;
-      await attempt(needed, 'install').catch((error) => {
+      if (!needed) continue;
+      const version = installed.get(needed.package);
+      const step =
+        version === undefined
+          ? 'install'
+          : entry.kind === 'project' && !needed.retired && compare(needed.offered, version) > 0
+            ? 'update'
+            : null;
+      if (!step) continue;
+      await attempt(needed, step).catch((error) => {
         throw Object.assign(error, {
-          plain: `Couldn't install ${needed.label}, which ${entry.label} needs. Retry.`,
+          plain: `Couldn't ${step} ${needed.label}, which ${entry.label} needs. Retry.`,
         });
       });
     }

@@ -16,7 +16,7 @@ const row = (page, id) =>
     id
   );
 
-test('Node.js (jsh) installs from the catalog, runs node with CommonJS and ESM and jsh with child_process, and removes cleanly', async (t) => {
+test('Node.js (jsh) installs from the catalog, runs node with CommonJS, ESM and fs.watch and jsh with child_process, and removes cleanly', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
   await page.until(() =>
@@ -33,7 +33,7 @@ test('Node.js (jsh) installs from the catalog, runs node with CommonJS and ESM a
   assert.equal(result, 'ok', (await row(page, 'node')).log);
   const installed = await row(page, 'node');
   assert.equal(installed.state, 'installed');
-  assert.equal(installed.version, '0.27.2');
+  assert.equal(installed.version, '0.43.0');
 
   await run(
     page,
@@ -45,6 +45,11 @@ test('Node.js (jsh) installs from the catalog, runs node with CommonJS and ESM a
     `clear; echo greetings > /home/hello.txt && printf '%s\\n' 'import { readFileSync } from "node:fs";' 'console.log("read", readFileSync("/home/hello.txt", "utf8").trim().length * 6);' > /home/read.mjs && node /home/read.mjs`
   );
   await shows(page, 'read 54');
+  await run(
+    page,
+    `clear; mkdir -p /home/watched && node -e "const fs = require('node:fs'); const w = fs.watch('/home/watched', (event, name) => { console.log('watched-' + name.length * 7); w.close(); }); setTimeout(() => fs.writeFileSync('/home/watched/f.txt', 'x'), 200)"`
+  );
+  await shows(page, 'watched-35');
   await run(
     page,
     `clear; printf '%s\\n' 'const { readFileSync } = require("node:fs");' 'console.log("jsh read", readFileSync("/home/hello.txt", "utf8").trim().length * 6);' > /home/read.jsh && jsh /home/read.jsh`

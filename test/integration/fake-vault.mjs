@@ -137,6 +137,14 @@ const page = (port) => (event) => {
       placeholders: Object.fromEntries(found.map((record) => [record.name, record.placeholder])),
     });
   }
+  if (op === 'sessionMaterialize') {
+    log({ role: 'page', op: 'session', fields: Object.keys(event.data).sort(), stamp: event.data.stamp, session: event.data.session, host: event.data.host, head: event.data.head ?? null });
+    if (locked) return refuse();
+    const asked = Array.isArray(event.data.placeholders) ? event.data.placeholders : [];
+    const found = live().filter((record) => record.kind === 'secret' && asked.includes(record.placeholder));
+    if (!found.length) return port.postMessage({ v: 1, id, error: { code: 'EACCES', message: 'a placeholder of no record of this vault' } });
+    return reply({ values: Object.fromEntries(found.map((record) => [record.placeholder, record.value])) });
+  }
   if (op === 'sealed' && event.data.req?.op === 'request') {
     const id = 'req-' + String(requests.size + 1);
     requests.set(id, { kind: event.data.req.kind, state: 'pending' });
@@ -225,6 +233,7 @@ addEventListener('message', (event) => {
       if (data.op === 'model') return prepare(['model']);
       if (data.op === 'mcp') return prepare(['mcp']);
       if (data.op === 'redactStream') return reply({ stream: data.stream, idleMs: 250, version });
+      if (data.op === 'push' && !(data.chunk instanceof Uint8Array)) return port.postMessage({ v: 1, id: data.id, op: data.op, error: { code: 'EINVAL', message: 'chunk must be bytes' } });
       if (data.op === 'push') return reply({ chunk: data.chunk });
       if (data.op === 'idle') return reply({ chunk: new Uint8Array() });
       if (data.op === 'end') return reply({ chunk: new Uint8Array(), hits: [] });

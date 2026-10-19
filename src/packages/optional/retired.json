@@ -9,12 +9,6 @@
     "label": "tar",
     "commands": ["tar"]
   },
-  "slicc-py-datatools": {
-    "id": "pydata",
-    "kind": "project",
-    "label": "Python data tools",
-    "commands": []
-  },
   "@ai-ecoverse/wasix-uv-shim": {
     "id": "uv",
     "label": "uv",
