@@ -575,6 +575,155 @@ test('/dev/sealed relays to the vault with the kernel stamp', async (t) => {
   assert.deepEqual(page.errors, []);
 });
 
+const KERNEL_HOOK = `() => {
+  const Native = globalThis.Worker;
+  const replies = new Map();
+  globalThis.Worker = class extends Native {
+    constructor(url, options) {
+      super(url, options);
+      if (options?.name !== 'slicc-kernel') return;
+      globalThis.kernelWorker = this;
+      const post = this.postMessage.bind(this);
+      this.postMessage = (message, transfer) => {
+        const answer = message?.sealedReply;
+        if (answer && replies.has(answer.id)) {
+          replies.get(answer.id)(answer);
+          replies.delete(answer.id);
+          return;
+        }
+        return post(message, transfer);
+      };
+    }
+  };
+  globalThis.askLikeTheKernel = (req) =>
+    new Promise((resolve) => {
+      const id = 'kernel-like-' + replies.size + '-' + performance.now();
+      replies.set(id, resolve);
+      globalThis.kernelWorker.dispatchEvent(new MessageEvent('message', { data: { sealedAsk: { id, req } } }));
+    });
+}`;
+
+const leftovers = (page, needles) =>
+  page.evaluate(async (needles) => {
+    const found = [];
+    const hit = (where, text) => {
+      if (needles.some((needle) => text.includes(needle))) found.push(where);
+    };
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      hit(`localStorage ${key}`, `${key}\n${localStorage.getItem(key)}`);
+    }
+    const ask = (request) =>
+      new Promise((resolve, reject) => {
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    let stores = 0;
+    for (const { name } of await indexedDB.databases()) {
+      const db = await ask(indexedDB.open(name));
+      for (const store of db.objectStoreNames) {
+        const items = db.transaction(store).objectStore(store);
+        const [keys, values] = [await ask(items.getAllKeys()), await ask(items.getAll())];
+        hit(`indexedDB ${name}/${store}`, JSON.stringify([keys, values]));
+        stores += 1;
+      }
+      db.close();
+    }
+    const latin = new TextDecoder('latin1');
+    let files = 0;
+    const walk = async (dir, path) => {
+      try {
+        for await (const [name, handle] of dir.entries()) {
+          if (handle.kind === 'directory') await walk(handle, `${path}${name}/`);
+          else {
+            hit(`opfs ${path}${name}`, latin.decode(await (await handle.getFile()).arrayBuffer()));
+            files += 1;
+          }
+        }
+      } catch (error) {
+        if (error.name !== 'NotFoundError') throw error;
+      }
+    };
+    await walk(await navigator.storage.getDirectory(), '/');
+    return { found, stores, files };
+  }, needles);
+
+test('the kernel’s sessionMaterialize reaches the vault with exactly its fields and its values go back only to the kernel; a program’s is refused, and no value is left in a log or in storage', async (t) => {
+  const own = await startFakeVault({ secrets: ['HARBOR_API_KEY'] });
+  t.after(() => own.close());
+  const page = await chrome.page(t);
+  await page.init(override(own.origin));
+  await page.init(KERNEL_HOOK);
+  await boot(page);
+  await page.until(() => {
+    const vault = document.querySelector('slicc-app').model.vault;
+    return vault?.availability() === 'ready' && vault.list()?.secrets.length === 1;
+  });
+  await page.until(() => !!globalThis.kernelWorker);
+  const value = 'dummy-value-harbor_api_key';
+  const placeholder = await page.evaluate(
+    () => document.querySelector('slicc-app').model.vault.list().secrets[0].placeholder
+  );
+  const stamp = { pid: 77, ppid: 1, uid: 0, gid: 0, users: 'enforce', groups: [0], tag: 'curl' };
+  const session = {
+    stamp,
+    session: 'sess_kernel_0123456789',
+    host: 'api.harbor.test',
+    port: 443,
+    protocol: 'http1',
+    position: 'header:authorization',
+    verified: true,
+    handshakeAt: Date.now(),
+    exit: 'page',
+    placeholders: [placeholder],
+    head: { method: 'GET', path: '/v1/forecast' },
+  };
+  const reply = await page.evaluate((req) => globalThis.askLikeTheKernel(req), {
+    v: 1,
+    op: 'sessionMaterialize',
+    caller: stamp,
+    ...session,
+  });
+  assert.deepEqual(reply.reply, { values: { [placeholder]: value } });
+  await logged(() => own.log.some((entry) => entry.op === 'session'));
+  const relayed = own.log.filter((entry) => entry.op === 'session');
+  assert.equal(relayed.length, 1);
+  assert.deepEqual(relayed[0].fields, [...Object.keys(session), 'id', 'op', 'v'].sort());
+  assert.deepEqual([relayed[0].stamp, relayed[0].head], [stamp, session.head]);
+  const refused = await page.evaluate((req) => globalThis.askLikeTheKernel(req), {
+    v: 1,
+    op: 'sessionMaterialize',
+    caller: stamp,
+    ...session,
+    placeholders: ['fnox_proxy_unknown'],
+  });
+  assert.deepEqual(refused.reply, { v: 1, error: { code: 'EACCES' } });
+  await logged(() => own.log.filter((entry) => entry.op === 'session').length === 2);
+
+  const request = JSON.stringify({ v: 1, op: 'sessionMaterialize', ...session });
+  await run(
+    page,
+    `clear; exec 3<>/dev/sealed; printf '%s' '${request}' >&3 || echo "PROGRAM-REFUSED"; echo PROGRAM-DONE`
+  );
+  await shows(page, 'PROGRAM-DONE');
+  const screen = await page.evaluate(() => {
+    const { dock } = document.querySelector('slicc-app');
+    const id = dock.api.panels
+      .map((panel) => panel.id)
+      .findLast((id) => id.startsWith('terminal:'));
+    return dock.content(id).screen.textContent;
+  });
+  assert.match(screen, /PROGRAM-REFUSED/);
+  assert.equal(own.log.filter((entry) => entry.op === 'session').length, 2);
+
+  const left = await leftovers(page, [value]);
+  assert.deepEqual(left.found, [], JSON.stringify(left));
+  assert.ok(left.files > 100 && left.stores > 0, JSON.stringify(left));
+  assert.ok(!page.console.some((line) => line.includes(value)), page.console.join('\n'));
+  assert.ok(!page.errors.some((line) => line.includes(value)));
+  assert.ok(!JSON.stringify(own.log).includes(value));
+});
+
 test('under users enforce, a cone’s /dev/sealed request reaches the vault with the cone’s stamp, and seven names the sudo group in its hello', async (t) => {
   const page = await chrome.page(t);
   await page.init(override(fake.origin));
