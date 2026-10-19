@@ -5,6 +5,12 @@ on:
   push:
     branches: [main]
   merge_group:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: The Renovate pull request whose head this run checks, as cert review's queue job dispatches it
+        required: false
+        type: number
 
 permissions:
   contents: read
@@ -19,7 +25,7 @@ env:
 jobs:
   plan:
     name: ci / plan
-    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["push","schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_LIGHT_RUNNER) || 'ubuntu-latest' }}
+    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || github.event_name == 'workflow_dispatch' || (contains(fromJSON('["push","schedule","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_LIGHT_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 5
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
@@ -47,7 +53,7 @@ jobs:
 
   lint:
     name: ci / lint
-    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["push","schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_LIGHT_RUNNER) || 'ubuntu-latest' }}
+    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || github.event_name == 'workflow_dispatch' || (contains(fromJSON('["push","schedule","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_LIGHT_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 15
     env:
       LEFTHOOK: '0'
@@ -67,7 +73,7 @@ jobs:
   integration:
     name: ci / integration (${{ matrix.shard }})
     needs: plan
-    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["push","schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_RUNNER) || 'ubuntu-latest' }}
+    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || github.event_name == 'workflow_dispatch' || (contains(fromJSON('["push","schedule","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 75
     strategy:
       fail-fast: ${{ needs.plan.outputs.failfast == 'true' }}
@@ -169,7 +175,8 @@ jobs:
     permissions:
       contents: read
       issues: write
-    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["push","schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_LIGHT_RUNNER) || 'ubuntu-latest' }}
+      pull-requests: read
+    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || github.event_name == 'workflow_dispatch' || (contains(fromJSON('["push","schedule","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_LIGHT_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 20
     env:
       LEFTHOOK: '0'
@@ -235,3 +242,9 @@ jobs:
           VENDORS: ${{ needs.vendors.result }}
           SHARDS: ${{ needs.plan.outputs.shards }}
         run: node scripts/ci/verdict.mjs shards --dir artifacts/verdicts --expect "$SHARDS" --results "{\"plan\":\"$PLAN\",\"lint\":\"$LINT\",\"integration\":\"$INTEGRATION\",\"vendors\":\"$VENDORS\"}"
+
+      - name: A Renovate PR passes only with cert review's certified verdict for every package it pins anew
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/certified.mjs
