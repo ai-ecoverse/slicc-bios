@@ -70,9 +70,10 @@ on:
         required: false
         default: '[]'
       runner:
+        description: 'Runner label for the plan and the shards; honoured only on the caller''s merge_group or push to main in an ai-ecoverse repository, otherwise ubuntu-latest'
         type: string
         required: false
-        default: ''
+        default: 'ubuntu-latest'
       expect:
         type: string
         required: false
@@ -165,7 +166,7 @@ concurrency:
 jobs:
   plan:
     name: canary / plan
-    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_LIGHT_RUNNER) || 'ubuntu-latest' }}
+    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_LIGHT_RUNNER) || (!startsWith(github.workflow_ref, 'ai-ecoverse/slicc-bios/.github/workflows/canary.yml@') && startsWith(github.workflow_ref, 'ai-ecoverse/') && startsWith(github.repository, 'ai-ecoverse/') && (github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && inputs.runner) || 'ubuntu-latest' }}
     timeout-minutes: 10
     outputs:
       runs: ${{ steps.decide.outputs.runs }}
@@ -271,7 +272,7 @@ jobs:
     name: canary / ${{ matrix.job.run }} (${{ matrix.job.shard }})
     needs: plan
     if: needs.plan.outputs.jobs != '[]'
-    runs-on: ${{ (startsWith(github.workflow_ref, 'ai-ecoverse/slicc-bios/.github/workflows/canary.yml@') && ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && (inputs.runner || vars.CERT_RUNNER)) || 'ubuntu-latest' }}
+    runs-on: ${{ (startsWith(github.workflow_ref, 'ai-ecoverse/slicc-bios/.github/workflows/canary.yml@') && ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && (inputs.runner || vars.CERT_RUNNER)) || (!startsWith(github.workflow_ref, 'ai-ecoverse/slicc-bios/.github/workflows/canary.yml@') && startsWith(github.workflow_ref, 'ai-ecoverse/') && startsWith(github.repository, 'ai-ecoverse/') && (github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && inputs.runner) || 'ubuntu-latest' }}
     timeout-minutes: 180
     outputs:
       binding_0: ${{ steps.bind.outputs.binding_0 }}
@@ -464,7 +465,7 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           RUNS: ${{ needs.plan.outputs.runs }}
-          CANARY_RUNNER: ${{ (startsWith(github.workflow_ref, 'ai-ecoverse/slicc-bios/.github/workflows/canary.yml@') && ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && (inputs.runner || vars.CERT_RUNNER)) || 'ubuntu-latest' }}
+          CANARY_RUNNER: ${{ (startsWith(github.workflow_ref, 'ai-ecoverse/slicc-bios/.github/workflows/canary.yml@') && ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (contains(fromJSON('["schedule","workflow_dispatch","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && (inputs.runner || vars.CERT_RUNNER)) || (!startsWith(github.workflow_ref, 'ai-ecoverse/slicc-bios/.github/workflows/canary.yml@') && startsWith(github.workflow_ref, 'ai-ecoverse/') && startsWith(github.repository, 'ai-ecoverse/') && (github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && inputs.runner) || 'ubuntu-latest' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           DOWNLOAD: ${{ steps.download.outcome }}
           PLAN_REFUSED: ${{ needs.plan.outputs.refused }}

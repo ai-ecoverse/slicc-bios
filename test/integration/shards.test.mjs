@@ -75,16 +75,19 @@ test("every test file runs in one of the canary's shards, and rest takes exactly
   );
 });
 
-test("the canary's shards that split a guard-set file run every variant of the pinned set once", () => {
+const VARIANTS_SPLIT = /\/(?:guard-set-[a-z]+|guard-vectors)\.test\.mjs$/;
+
+test("the canary's shards that split a guard-set or guard-vectors file run every variant of the pinned set once", () => {
   const variants = Object.keys(set.variants).sort();
   const split = new Map();
   for (const shard of named.filter(({ variants: list }) => list)) {
     for (const file of runs(shard)) {
-      assert.match(file, SPLIT, shard.shard);
+      assert.match(file, VARIANTS_SPLIT, shard.shard);
       split.set(file, [...(split.get(file) ?? []), ...shard.variants.split(',')]);
     }
   }
   assert.ok(split.size > 0, 'no shard splits a guard-set file');
+  assert.ok(split.has('test/integration/guard-vectors.test.mjs'), 'no shard splits guard-vectors');
   for (const [file, ran] of split) {
     assert.deepEqual([...ran].sort(), variants, file);
     for (const shard of named.filter(({ variants: list }) => !list)) {

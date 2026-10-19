@@ -39,7 +39,7 @@
     "id": "artifact",
     "pack": "@ai-ecoverse/slicc-cdp@1.26.2",
     "sha256": "67fa941ce0afe790b60ade22c0014658fb5d0ef993e35437c43144361f3f82b3",
-    "shards": ["packages-update-cdp", "guard"],
+    "shards": ["packages-update-cdp", "guard-prompt", "guard-lagging"],
     "repeat": 3,
     "strict": false,
     "expect": []
