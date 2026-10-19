@@ -155,5 +155,12 @@
     "description": "Signs, verifies and encrypts files and commits with OpenPGP keys.",
     "commands": ["gpg", "gpgv", "gpg-agent", "gpgconf", "gpg-connect-agent", "gpg2"],
     "size": 3328285
+  },
+  "@ai-ecoverse/mcpcat": {
+    "id": "mcpcat",
+    "label": "mcpcat (MCP client)",
+    "description": "Calls MCP servers from the terminal: lists and calls their tools, resources and prompts, over HTTP or a stdio command. In a header, -H 'Authorization: Bearer ${NAME}' (single quotes) sends the vault's placeholder, which the vault fills in where a secret rule allows that host; mcpcat never prints the value.",
+    "commands": ["mcpcat"],
+    "size": 589050
   }
 }

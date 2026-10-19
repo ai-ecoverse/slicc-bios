@@ -391,6 +391,7 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
       'ntfy available',
       'fnox available',
       'gpg available',
+      'mcpcat available',
     ]
   );
 
