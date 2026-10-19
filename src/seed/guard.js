@@ -903,7 +903,6 @@ class Guard {
   async create({ id, params }) {
     const answer = await this.call('Target.createTarget', {
       ...params,
-      background: params.background ?? true,
       url: 'about:blank',
     });
     const targetId = answer.result?.targetId;
