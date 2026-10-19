@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:http';
+import { createServer, request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -9,6 +9,8 @@ import { after, test } from 'node:test';
 import { boot, ready, run, trust } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { cliEnv, HOST_CDP } from './cli.mjs';
+import { startHub } from './fake-hub.mjs';
+import { shoot } from './shots.mjs';
 
 const cli = process.env.SLICC_CLI;
 const chrome = await launch();
@@ -131,20 +133,181 @@ async function deviceIs(page, id, state, ms = STEP) {
     });
 }
 
-async function enter(page, url) {
-  return network(
-    page,
-    (n, url) =>
-      n.pairComputer(url).then(
-        () => null,
-        (error) => error.message
-      ),
-    url
+async function openNetwork(page) {
+  await page.evaluate(() => document.querySelector('slicc-app').show('network'));
+  await page.until(
+    () =>
+      !!document
+        .querySelector('slicc-app')
+        .dock.content('network')
+        ?.shadowRoot?.querySelector('section[data-pairing]')
   );
 }
 
-async function confirm(page) {
-  await network(page, (n) => void n.confirmPairing());
+async function block(page, state, ms = STEP) {
+  await page
+    .within(
+      ms,
+      (state) =>
+        !!document
+          .querySelector('slicc-app')
+          ?.dock?.content('network')
+          ?.shadowRoot?.querySelector(`section[data-pairing="${state}"]`),
+      state
+    )
+    .catch(async (error) => {
+      throw new Error(
+        `the pairing block never showed ${state}: ${error.message}\n${JSON.stringify(await pairing(page))}`
+      );
+    });
+}
+
+const blockText = (page) =>
+  page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .dock.content('network')
+      .shadowRoot.querySelector('section[data-pairing]')
+      .textContent.replace(/\s+/g, ' ')
+      .trim()
+  );
+
+async function enter(page, url) {
+  await openNetwork(page);
+  await block(page, 'idle');
+  await page.evaluate(async (url) => {
+    const panel = document.querySelector('slicc-app').dock.content('network');
+    const section = panel.shadowRoot.querySelector('section[data-pairing="idle"]');
+    const details = section.closest('details');
+    if (details) details.open = true;
+    const field = section.querySelector('#pair-url');
+    field.value = url;
+    field.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    await panel.updateComplete;
+    section.querySelector('[data-action="pair"]').click();
+  }, url);
+  return page
+    .until(() => {
+      const root = document.querySelector('slicc-app').dock.content('network').shadowRoot;
+      if (root.querySelector('section[data-pairing]:not([data-pairing="idle"])')) return 'shown';
+      return root
+        .querySelector('section[data-pairing="idle"] [data-error="pairing"]')
+        ?.textContent.trim();
+    })
+    .then((seen) => (seen === 'shown' ? null : seen));
+}
+
+async function press(page, action) {
+  await page.until((action) => {
+    const button = document
+      .querySelector('slicc-app')
+      .dock.content('network')
+      ?.shadowRoot?.querySelector(`section[data-pairing] [data-action="${action}"]`);
+    if (!button || button.disabled || button.hasAttribute('pending')) return false;
+    button.click();
+    return true;
+  }, action);
+}
+
+const confirm = (page) => press(page, 'confirm-pairing');
+
+const rowOf = (page, id) =>
+  page.evaluate((id) => {
+    const item = document
+      .querySelector('slicc-app')
+      .dock.content('network')
+      ?.shadowRoot?.querySelector(`li[data-device="${id}"]`);
+    if (!item) return null;
+    return {
+      state: item.dataset.state,
+      mode: item.dataset.mode,
+      kind: item.dataset.kind,
+      switches: item.querySelectorAll('[data-action^="access-"], [data-action="remote-control"]')
+        .length,
+      note: item.querySelector('[data-note]')?.textContent.trim() ?? null,
+    };
+  }, id);
+
+async function confirmDialog(page, label) {
+  const find = () => {
+    const deep = (root) => {
+      const found = root.querySelector('slicc-confirm');
+      if (found) return found;
+      for (const element of root.querySelectorAll('*')) {
+        const inner = element.shadowRoot && deep(element.shadowRoot);
+        if (inner) return inner;
+      }
+      return null;
+    };
+    return deep(document);
+  };
+  await page.until(
+    ([find, label]) => {
+      const dialog = new Function(`return (${find})()`)()?.shadowRoot;
+      const button = dialog?.querySelector('dialog[open]')
+        ? [...dialog.querySelectorAll('swc-button')].find(
+            (item) => item.textContent.trim() === label
+          )
+        : null;
+      button?.click();
+      return Boolean(button);
+    },
+    [find.toString(), label]
+  );
+}
+
+async function quiet(page) {
+  await page.within(
+    5 * STEP,
+    () =>
+      !document
+        .querySelector('slicc-app')
+        .model.updates.list()
+        .some((item) => /^(queued|checking|downloading|linking)$/.test(item.state))
+  );
+}
+
+async function relay(t, port) {
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  let arrive;
+  const arrived = new Promise((resolve) => {
+    arrive = resolve;
+  });
+  const server = createServer((incoming, outgoing) => {
+    const chunks = [];
+    incoming.on('data', (chunk) => chunks.push(chunk));
+    incoming.on('end', async () => {
+      if (incoming.method === 'POST') {
+        arrive();
+        await gate;
+      }
+      const forward = request(
+        {
+          host: '127.0.0.1',
+          port,
+          path: incoming.url,
+          method: incoming.method,
+          headers: { ...incoming.headers, host: `127.0.0.1:${port}` },
+        },
+        (answer) => {
+          outgoing.writeHead(answer.statusCode, answer.headers);
+          answer.pipe(outgoing);
+        }
+      );
+      forward.on('error', () => outgoing.destroy());
+      forward.end(Buffer.concat(chunks));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    release();
+    server.closeAllConnections();
+    server.close();
+  });
+  return { port: server.address().port, release, arrived };
 }
 
 async function kernelFile(page, name) {
@@ -210,10 +373,18 @@ test('seven pairs slicc pair on this computer without CDP: the link carries kern
   );
   assert.equal(await pairing(page).then((p) => p?.state), 'idle');
   assert.equal(await enter(page, url), null);
+  await block(page, 'confirm');
   assert.deepEqual(await pairing(page), { state: 'confirm', code: short(fp) });
+  assert.match(
+    await blockText(page),
+    new RegExp(`^Link SLICC on this computer\\? Code ${short(fp)} `)
+  );
   await confirm(page);
-  await pairingIs(page, 'linked');
+  await block(page, 'linked');
   assert.deepEqual(await pairing(page), { state: 'linked', code: short(fp), name: 'quay-studio' });
+  assert.match(await blockText(page), new RegExp(`Linked quay-studio \\(${short(fp)}\\)\\.`));
+  await press(page, 'done-pairing');
+  await block(page, 'idle');
   await node.saw(new RegExp(`paired with seven on ${origin.replaceAll('.', '\\.')} \\(`));
   await deviceIs(page, fp, 'connected');
   const row = (await devices(page)).find((d) => d.id === fp);
@@ -224,6 +395,13 @@ test('seven pairs slicc pair on this computer without CDP: the link carries kern
   assert.equal('control' in row, false);
   assert.equal('access' in row, false);
   assert.deepEqual(row.folders, [{ name: 'proj', source: 'quay-studio/proj', readonly: false }]);
+  assert.deepEqual(await rowOf(page, fp), {
+    state: 'connected',
+    mode: 'local',
+    kind: 'cli',
+    switches: 0,
+    note: null,
+  });
   assert.deepEqual(
     await shell(
       page,
@@ -241,9 +419,19 @@ test('seven pairs slicc pair on this computer without CDP: the link carries kern
     assert.notEqual(refused.code, '0', `${blocked} answered: ${refused.out}`);
     assert.deepEqual(hits, [], `${blocked} saw a connection`);
   }
-  assert.equal(
-    await network(page, (n) => n.mountFolder('quay-studio/proj')),
-    '/mnt/quay-studio/proj'
+  await page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .dock.content('network')
+      .shadowRoot.querySelector('[data-action="mount-folder"][data-id="quay-studio/proj"]')
+      .click()
+  );
+  await page.until(
+    () =>
+      document
+        .querySelector('slicc-app')
+        .dock.content('network')
+        .shadowRoot.querySelector('li[data-folder="quay-studio/proj"]')?.dataset.mounted === 'yes'
   );
   assert.deepEqual(await shell(page, 'cat /mnt/quay-studio/proj/hello.txt', 'pair-read'), {
     code: '0',
@@ -270,8 +458,26 @@ test('seven pairs slicc pair on this computer without CDP: the link carries kern
   await node.saw(/this computer: quay-studio/);
   await deviceIs(page, fp, 'connected');
 
-  await network(page, (n, id) => n.unlink(id), fp);
+  await openNetwork(page);
+  await page.evaluate(
+    (id) =>
+      document
+        .querySelector('slicc-app')
+        .dock.content('network')
+        .shadowRoot.querySelector(`li[data-device="${id}"] [data-action="unlink"]`)
+        .click(),
+    fp
+  );
+  await confirmDialog(page, 'Unlink');
   await node.saw(/unlinked by seven on .*; it must pair again to link/);
+  await page.until(
+    (id) =>
+      !document
+        .querySelector('slicc-app')
+        .dock.content('network')
+        .shadowRoot.querySelector(`li[data-device="${id}"]`),
+    fp
+  );
   assert.deepEqual(
     (await devices(page)).filter((d) => d.id === fp),
     []
@@ -302,16 +508,18 @@ test('seven refuses a wrong code, a used link, a stopped slicc and a debugging p
   const wrong = `${origin}/#slicc-pair=${port}.${token.slice(0, -1)}${token.endsWith('A') ? 'B' : 'A'}.${fp}`;
   assert.equal(await enter(page, wrong), null);
   await confirm(page);
-  await pairingIs(page, 'failed');
+  await block(page, 'failed');
   assert.deepEqual(await pairing(page), {
     state: 'failed',
     code: short(fp),
     error:
       'slicc refused this pairing link: it’s wrong, already used or expired. Press Enter in slicc for a new one.',
   });
+  assert.match(await blockText(page), /Error: slicc refused this pairing link: it’s wrong/);
   await node.saw(/refused a pairing request from .*: the token is wrong, used or expired/);
   assert.deepEqual(await devices(page), []);
-  await network(page, (n) => n.cancelPairing());
+  await press(page, 'retry-pairing');
+  await block(page, 'idle');
 
   for (const blocked of [9222, 9229, 80]) {
     const message = await enter(page, `${origin}/#slicc-pair=${blocked}.${token}.${fp}`);
@@ -324,7 +532,7 @@ test('seven refuses a wrong code, a used link, a stopped slicc and a debugging p
   );
 
   await page.goto(`/#slicc-pair=9222.${token}.${fp}`);
-  await pairingIs(page, 'failed');
+  await block(page, 'failed');
   assert.equal(
     (await pairing(page)).error,
     'Seven never pairs over port 9222: it’s a browser’s debugging port.'
@@ -333,8 +541,9 @@ test('seven refuses a wrong code, a used link, a stopped slicc and a debugging p
   for (const { port: watchedPort, hits } of watched)
     assert.deepEqual(hits, [], `${watchedPort} saw a connection`);
 
+  await press(page, 'dismiss-pairing');
   await page.goto(`/#slicc-pair=${port}.${token}.${fp}`);
-  await pairingIs(page, 'confirm');
+  await block(page, 'confirm');
   assert.equal(await page.evaluate(() => location.hash), '');
   assert.equal(
     await page.evaluate(() =>
@@ -343,21 +552,22 @@ test('seven refuses a wrong code, a used link, a stopped slicc and a debugging p
     true
   );
   await confirm(page);
-  await pairingIs(page, 'linked');
+  await block(page, 'linked');
   await deviceIs(page, fp, 'connected');
 
+  await press(page, 'done-pairing');
   assert.equal(await enter(page, url), null);
   await confirm(page);
-  await pairingIs(page, 'failed');
+  await block(page, 'failed');
   assert.match((await pairing(page)).error, /^slicc refused this pairing link/);
-  await network(page, (n) => n.cancelPairing());
+  await press(page, 'dismiss-pairing');
 
   node.node.stdin.write('\n');
   const fresh = await node.url(2);
   await node.stop();
   assert.equal(await enter(page, fresh), null);
   await confirm(page);
-  await pairingIs(page, 'failed');
+  await block(page, 'failed');
   assert.equal(
     (await pairing(page)).error,
     `Nothing answered on port ${port}, or slicc refused this page’s origin: is slicc still running on this computer?`
@@ -386,10 +596,10 @@ test('slicc open with seven already open: the new tab hands the pairing to the t
   await fresh.until(
     () => document.querySelector('slicc-app').model.tabs?.state().role === 'follower'
   );
-  await pairingIs(fresh, 'confirm');
+  await block(fresh, 'confirm');
   await pairingIs(owner, 'confirm');
   await confirm(fresh);
-  await pairingIs(fresh, 'linked');
+  await block(fresh, 'linked');
   await deviceIs(owner, fp, 'connected');
   await deviceIs(fresh, fp, 'connected');
   assert.deepEqual(owner.errors, []);
@@ -427,7 +637,8 @@ test('a new tab whose seven version differs from the running tab’s says why it
   const url = await node.url();
   const fresh = await owner.tab();
   await fresh.goto(`/os/${new URL(url).hash}`);
-  await pairingIs(fresh, 'failed');
+  await block(fresh, 'failed');
+  assert.match(await blockText(fresh), /Error: Another SLICC tab runs a different version/);
   assert.deepEqual(await pairing(fresh), {
     state: 'failed',
     error:
@@ -476,10 +687,89 @@ test('a slicc that forgot this seven: its offline row says so, and pairing again
   const row = (await devices(page)).find((d) => d.id === fp);
   assert.equal(row.state, 'offline');
   assert.equal(row.note, 'quay-studio no longer knows this seven. Pair it again.');
+  await openNetwork(page);
+  assert.deepEqual(await rowOf(page, fp), {
+    state: 'offline',
+    mode: 'local',
+    kind: 'cli',
+    switches: 0,
+    note: 'Warning: quay-studio no longer knows this seven. Pair it again.',
+  });
+  await press(page, 'done-pairing');
   node.node.stdin.write('\n');
   assert.equal(await enter(page, await node.url(2)), null);
   await confirm(page);
   await deviceIs(page, fp, 'connected');
   assert.equal((await devices(page)).find((d) => d.id === fp).note, undefined);
+  await page.until(
+    (id) =>
+      document
+        .querySelector('slicc-app')
+        .dock.content('network')
+        .shadowRoot.querySelector(`li[data-device="${id}"]`)?.dataset.state === 'connected',
+    fp
+  );
+  assert.equal((await rowOf(page, fp)).note, null);
+  assert.deepEqual(page.errors, []);
+});
+
+test('the Link this computer block in each state, as the PM reviews it: start, a refused link, confirm, linking and linked with its row', {
+  skip: !cli,
+  timeout: 15 * 60 * 1000,
+}, async (t) => {
+  const hub = await startHub();
+  t.after(() => hub.close());
+  const home = await scratch(t, 'pair-shots-');
+  const page = await chrome.page(t);
+  await boot(page);
+  await page.evaluate((url) => localStorage.setItem('slicc-os.tray-hub', url), hub.url);
+  await page.reload();
+  await ready(page);
+  await page.until(() => document.querySelector('slicc-app').model.network.status().links?.joinUrl);
+  const node = slicc(t, pairArgs('quay-studio'), { home });
+  const url = await node.url();
+  const [port, token, fp] = fragment(url);
+  const view = { show: 'network', target: 'section[data-pairing]' };
+  await quiet(page);
+  await openNetwork(page);
+  await block(page, 'idle');
+  assert.match(
+    await blockText(page),
+    /^Link this computer Run slicc pair on this computer and paste the link it prints\./
+  );
+  await shoot(page, 'pairing-start', view);
+
+  const wrong = `${origin}/#slicc-pair=${port}.${token.slice(0, -1)}${token.endsWith('A') ? 'B' : 'A'}.${fp}`;
+  assert.equal(await enter(page, wrong), null);
+  await confirm(page);
+  await block(page, 'failed');
+  await shoot(page, 'pairing-error', view);
+  await press(page, 'dismiss-pairing');
+
+  const held = await relay(t, Number(port));
+  assert.equal(await enter(page, `${origin}/#slicc-pair=${held.port}.${token}.${fp}`), null);
+  await block(page, 'confirm');
+  await shoot(page, 'pairing-confirm', view);
+  await confirm(page);
+  await block(page, 'linking');
+  await held.arrived;
+  assert.match(
+    await blockText(page),
+    new RegExp(`Linking SLICC on this computer \\(${short(fp)}\\)…`)
+  );
+  await shoot(page, 'pairing-waiting', view);
+  assert.equal((await pairing(page)).state, 'linking', 'the shots of linking took too long');
+  held.release();
+  await block(page, 'linked');
+  await deviceIs(page, fp, 'connected');
+  await shoot(page, 'pairing-success', view);
+  await shoot(page, 'pairing-device', { show: 'network', target: `li[data-device="${fp}"]` });
+  assert.deepEqual(await rowOf(page, fp), {
+    state: 'connected',
+    mode: 'local',
+    kind: 'cli',
+    switches: 0,
+    note: null,
+  });
   assert.deepEqual(page.errors, []);
 });
