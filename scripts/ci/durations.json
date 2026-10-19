@@ -46,6 +46,7 @@
   "test/integration/one-kernel.test.mjs": 439,
   "test/integration/optional.test.mjs": 17,
   "test/integration/packages.test.mjs": 145,
+  "test/integration/path-spawn.test.mjs": 25,
   "test/integration/perl.test.mjs": 68,
   "test/integration/pins.test.mjs": 1,
   "test/integration/progress.test.mjs": 100,
