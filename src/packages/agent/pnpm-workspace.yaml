@@ -1,4 +1,6 @@
 minimumReleaseAgeExclude:
   - '@ai-ecoverse/*'
 overrides:
-  '@google/genai': '-'
+  '@google/genai>google-auth-library': '-'
+  '@google/genai>protobufjs': '-'
+  '@google/genai>ws': '-'

@@ -8,7 +8,6 @@
     "@ai-ecoverse/sliccy-browser": "0.1.22",
     "@ai-ecoverse/wasi-biome": "2.5.15-4",
     "@ai-ecoverse/wasi-dig": "0.1.0-4",
-    "@ai-ecoverse/wasi-fnox": "1.39.0-5",
     "@ai-ecoverse/wasi-gh": "2.102.0-2",
     "@ai-ecoverse/wasi-ntfy": "2.32.0-2",
     "@ai-ecoverse/wasi-slicc": "1.44.7",

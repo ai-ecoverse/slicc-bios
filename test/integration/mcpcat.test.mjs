@@ -101,7 +101,6 @@ test('mcpcat from the catalog lists and calls a stdio and an HTTP MCP server, an
       .find((item) => item.id === 'mcpcat')
   );
   assert.equal(row.version, optional.dependencies['@ai-ecoverse/mcpcat']);
-  await install(page, 'fnox');
   await installFixture(page);
 
   const version = await sh(page, 'mcpcat --version', 'version');
