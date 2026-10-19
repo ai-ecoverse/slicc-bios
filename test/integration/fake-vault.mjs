@@ -137,8 +137,14 @@ const page = (port) => (event) => {
       placeholders: Object.fromEntries(found.map((record) => [record.name, record.placeholder])),
     });
   }
+  if (op === 'sessionAnchors') {
+    log({ role: 'page', op: 'anchors', fields: Object.keys(event.data).sort(), stamp: event.data.stamp, host: event.data.host, exit: event.data.exit });
+    const known = (state.anchors ?? {})[event.data.host];
+    if (!known) return port.postMessage({ v: 1, id, error: { code: 'EACCES', message: 'no session rule for ' + event.data.host } });
+    return reply({ anchors: known.anchors, pins: known.pins });
+  }
   if (op === 'sessionMaterialize') {
-    log({ role: 'page', op: 'session', fields: Object.keys(event.data).sort(), stamp: event.data.stamp, session: event.data.session, host: event.data.host, head: event.data.head ?? null });
+    log({ role: 'page', op: 'session', fields: Object.keys(event.data).sort(), stamp: event.data.stamp, session: event.data.session, host: event.data.host, head: event.data.head ?? null, verifiedBy: event.data.verifiedBy ?? null, anchor: event.data.anchor ?? null, scram: event.data.scram ?? null });
     if (locked) return refuse();
     const asked = Array.isArray(event.data.placeholders) ? event.data.placeholders : [];
     const found = live().filter((record) => record.kind === 'secret' && asked.includes(record.placeholder));
