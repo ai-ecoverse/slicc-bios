@@ -41,6 +41,7 @@ const NAV_MS = 10000;
 const NAV_TYPES = new Set(['page', 'iframe', 'background_page', 'webview']);
 const UNWAITED = new Set(['Target.getTargetInfo', 'Target.detachFromTarget']);
 const POLL_MS = 100;
+const CONTEXT_MS = 2000;
 const REMEMBERED = 10000;
 
 const UNSAFE = new Set([
@@ -760,10 +761,16 @@ class Guard {
     }
     const found = selected(method, params);
     if (!found.length) return null;
-    const first = this.verdict(found, sessionId);
-    if (first !== UNSEEN_CONTEXT || !sessionId) return first;
-    await this.prime(sessionId);
-    return this.verdict(found, sessionId);
+    let verdict = this.verdict(found, sessionId);
+    if (verdict !== UNSEEN_CONTEXT || !sessionId) return verdict;
+    if (!this.runtimes.has(sessionId) && !this.primed.has(sessionId)) await this.prime(sessionId);
+    const until = Date.now() + CONTEXT_MS;
+    for (;;) {
+      await this.queues.get(sessionId);
+      verdict = this.verdict(found, sessionId);
+      if (verdict !== UNSEEN_CONTEXT || Date.now() >= until) return verdict;
+      await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+    }
   }
 
   hides(entry) {
@@ -851,6 +858,9 @@ class Guard {
     if (was?.sessionId && this.blocked.has(was.sessionId)) return this.refuse(was);
     const { method, params = {} } = was ?? {};
     const { result } = message;
+    if (method === 'Page.createIsolatedWorld' && result?.executionContextId !== undefined) {
+      this.world(was.sessionId).ids.set(result.executionContextId, false);
+    }
     if (method === 'Target.attachToTarget' && result?.sessionId) {
       const ok = await this.watch(result.sessionId, params.targetId);
       if (!ok) return this.refuse(was);

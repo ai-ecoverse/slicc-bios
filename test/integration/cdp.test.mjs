@@ -1327,7 +1327,7 @@ test('playwright-cli drives a page through slicc-node’s /cdp, on one shared so
   assert.deepEqual(page.errors, []);
 });
 
-test('slicc-cdp#377: without an extension, SLICC_CDP_URL drives a user-opened HTTPS tab and a fresh HTTP tab', {
+test('slicc-cdp#377: with a content-script extension, SLICC_CDP_URL drives a user-opened HTTPS tab and a fresh one, and the guard refuses seven and the vault (the vault text waits on slicc-cdp#379)', {
   timeout: 180000,
 }, async (t) => {
   const body =
