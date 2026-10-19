@@ -143,30 +143,20 @@ async function lockedGated() {
   return found;
 }
 
-export function judge(found, certs, candidates = {}) {
-  const missing = [];
-  const listed = [];
-  const exceptions = [];
-  for (const [key, [file, integrity]] of found) {
-    const entry = certs[key];
-    if (entry?.integrity === integrity) {
-      if (entry.exception) exceptions.push(`${file} ${key}: exception, ${entry.exception}`);
-      continue;
-    }
-    if (candidates[key]?.integrity === integrity)
-      listed.push(`${file} ${key}: candidate, not certified`);
-    else missing.push(`${file} ${key}`);
-  }
-  return { missing, candidates: listed, exceptions };
-}
+const SERVED = new URL('../../src/', import.meta.url);
+const served = (name) => readFile(new URL(name, SERVED), 'utf8');
 
-test('every gated package in every lockfile is certified, with the certified integrity, or a recorded exception', async (t) => {
-  const certs = JSON.parse(await read('certs.json'));
+test('seven certifies a gated package by the committed certs.json or by its own shipped lockfiles, so every gated pin is certified with its integrity', async (t) => {
+  const { certifiedSet } = await import('../../src/seed/layer.js');
+  const certified = await certifiedSet(served);
   const found = await lockedGated();
   assert.ok(found.size >= 30, `found ${found.size} gated packages`);
-  const { missing, candidates, exceptions } = judge(found, certs, canary);
-  for (const line of [...candidates, ...exceptions]) t.diagnostic(line);
-  assert.deepEqual(missing, [], 'not in src/packages/certs.json with this integrity');
+  const missing = [...found]
+    .filter(([key, [, integrity]]) => certified[key]?.integrity !== integrity)
+    .map(([key, [file]]) => `${file} ${key}`);
+  assert.deepEqual(missing, [], 'neither in src/packages/certs.json nor in a lockfile seven ships');
+  for (const key of Object.keys(canary)) t.diagnostic(`${key}: canary candidate`);
+  const certs = JSON.parse(await read('certs.json'));
   for (const [key, entry] of Object.entries(certs)) {
     assert.match(key, /^@ai-ecoverse\/[\w.-]+@\d+\.\d+\.\d+(-[\w.-]+)?$/, key);
     assert.match(entry.integrity, /^sha512-/, key);
@@ -176,41 +166,52 @@ test('every gated package in every lockfile is certified, with the certified int
   t.diagnostic(`pins: PASS ${found.size} packages`);
 });
 
-test('an uncertified pin fails unless its certs entry records an exception, and no pin needs one now that git and gh are CI builds', async () => {
-  const integrity = 'sha512-x';
-  const found = new Map([
-    ['@ai-ecoverse/wasm-a@1.0.0', ['package-lock.json', integrity]],
-    ['@ai-ecoverse/wasm-b@1.0.0', ['package-lock.json', integrity]],
-    ['@ai-ecoverse/wasm-c@1.0.0', ['package-lock.json', integrity]],
-    ['@ai-ecoverse/wasm-d@1.0.0', ['package-lock.json', 'sha512-other']],
-  ]);
-  const certs = {
-    '@ai-ecoverse/wasm-a@1.0.0': { integrity },
-    '@ai-ecoverse/wasm-c@1.0.0': { integrity, exception: 'kept (homescoop#1)' },
-    '@ai-ecoverse/wasm-d@1.0.0': { integrity, exception: 'kept (homescoop#1)' },
+test("a user's gated version is untested unless certs.json or seven's own lockfiles carry it with that integrity", async () => {
+  const { untested } = await import('../../src/seed/layer.js');
+  const lock = (rows) =>
+    `lockfileVersion: '9.0'\n\npackages:\n\n${rows.map(([key, integrity]) => `  '${key}':\n    resolution: {integrity: ${integrity}}\n`).join('\n')}`;
+  const files = {
+    'packages/certs.json': JSON.stringify({
+      '@ai-ecoverse/wasm-a@1.0.0': { integrity: 'sha512-a' },
+    }),
+    'packages/pnpm-lock.yaml': lock([['@ai-ecoverse/wasm-b@2.0.0', 'sha512-b']]),
+    'packages/package-lock.json': JSON.stringify({
+      packages: {
+        '': {},
+        'node_modules/@ai-ecoverse/wasm-c': { version: '3.0.0', integrity: 'sha512-c' },
+      },
+    }),
   };
-  assert.deepEqual(judge(found, certs), {
-    missing: [
-      'package-lock.json @ai-ecoverse/wasm-b@1.0.0',
-      'package-lock.json @ai-ecoverse/wasm-d@1.0.0',
-    ],
-    candidates: [],
-    exceptions: ['package-lock.json @ai-ecoverse/wasm-c@1.0.0: exception, kept (homescoop#1)'],
-  });
-  const real = JSON.parse(await read('certs.json'));
+  const { certifiedSet } = await import('../../src/seed/layer.js');
+  const certs = () =>
+    certifiedSet(async (name) => {
+      if (!(name in files)) throw new Error(`404 ${name}`);
+      return files[name];
+    });
+  const user = lock([
+    ['@ai-ecoverse/wasm-a@1.0.0', 'sha512-a'],
+    ['@ai-ecoverse/wasm-b@2.0.0', 'sha512-b'],
+    ['@ai-ecoverse/wasm-c@3.0.0', 'sha512-c'],
+    ['@ai-ecoverse/wasm-b@2.0.1', 'sha512-b1'],
+    ['@ai-ecoverse/wasm-c@3.0.0-x', 'sha512-other'],
+  ]);
+  assert.deepEqual(await untested(user, lock([]), certs), [
+    '@ai-ecoverse/wasm-b@2.0.1',
+    '@ai-ecoverse/wasm-c@3.0.0-x',
+  ]);
+  const swapped = lock([['@ai-ecoverse/wasm-b@2.0.0', 'sha512-forged']]);
   assert.deepEqual(
-    Object.keys(real).filter((key) => real[key].exception),
-    ['@ai-ecoverse/wasi-gh@2.102.0-1', '@ai-ecoverse/wasm-git@2.55.0-15']
+    await untested(swapped, lock([]), certs),
+    ['@ai-ecoverse/wasm-b@2.0.0'],
+    'the same version with other bytes is untested'
   );
-  const { exceptions } = judge(await lockedGated(), real);
-  assert.deepEqual(exceptions, []);
 });
 
 test('every CI job and every test run keeps slicc-cdp off 127.0.0.1:9222-9229', async () => {
   const root = new URL('../../', import.meta.url);
   const harness = await readFile(new URL('test/integration/chrome.mjs', root), 'utf8');
   assert.match(harness, /^env\.SLICC_CDP_PORTS \?\?= '9300-9309';$/m);
-  for (const file of ['ci.yml', 'canary.yml', 'cert-review.yml']) {
+  for (const file of ['ci.yml', 'canary.yml']) {
     const yml = await readFile(new URL(`.github/workflows/${file}`, root), 'utf8');
     assert.match(yml, /\nenv:\n(?: {2}\S[^\n]*\n)*? {2}SLICC_CDP_PORTS: '9300-9309'\n/, file);
   }
