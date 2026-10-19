@@ -15,7 +15,7 @@ export function createNotices({ storage = localStorage } = {}) {
   const emit = () => {
     for (const listener of [...listeners]) listener(notices);
   };
-  const remove = (id) => {
+  const drop = (id) => {
     if (!notices.some((notice) => notice.id === id)) return;
     notices = notices.filter((notice) => notice.id !== id);
     handlers.delete(id);
@@ -36,7 +36,10 @@ export function createNotices({ storage = localStorage } = {}) {
       emit();
       return true;
     },
-    remove,
+    remove(id) {
+      session.delete(id);
+      drop(id);
+    },
     async act(id, action) {
       const handler = handlers.get(id);
       if (!handler) throw new Error('This notice is gone.');
@@ -45,7 +48,7 @@ export function createNotices({ storage = localStorage } = {}) {
     dismiss(id) {
       if (notices.find((notice) => notice.id === id)?.session) session.add(id);
       else storage.setItem(DISMISSED, JSON.stringify([...dismissed(), id]));
-      remove(id);
+      drop(id);
     },
   };
 }

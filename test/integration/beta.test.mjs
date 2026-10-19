@@ -59,7 +59,7 @@ const notice = (page, id) =>
       document
         .querySelector('slicc-app')
         .model.notices.list()
-        .find((item) => item.id === id) ?? null,
+        .find((item) => item.id === id || item.id.startsWith(`${id}:`)) ?? null,
     id
   );
 
@@ -177,8 +177,9 @@ test('the owner turns on developer mode, npm’s newer agent is offered as a bet
   });
 
   await t.test('dismissing the beta notice hides it for this session only', async () => {
-    await page.evaluate(() =>
-      document.querySelector('slicc-app').model.notices.dismiss('beta:agent')
+    await page.evaluate(
+      (id) => document.querySelector('slicc-app').model.notices.dismiss(id),
+      `beta:agent:${BETA}`
     );
     assert.equal(await notice(page, 'beta:agent'), null);
     await act(page, 'retry');
@@ -191,13 +192,17 @@ test('the owner turns on developer mode, npm’s newer agent is offered as a bet
         !!document
           .querySelector('slicc-app')
           .model.notices?.list()
-          .some((item) => item.id === 'beta:agent')
+          .some((item) => item.id.startsWith('beta:agent:'))
     );
     await rowSettled(page, 'agent');
     assert.equal(await installedAgent(page), BETA);
   });
 
   await t.test('Back to certified returns /opt/agent to the certified pin', async () => {
+    await page.evaluate(
+      (id) => document.querySelector('slicc-app').model.notices.dismiss(id),
+      `beta:agent:${BETA}`
+    );
     await act(page, 'back-to-certified');
     await rowSettled(page, 'agent');
     const row = await agentRow(page);
@@ -205,6 +210,19 @@ test('the owner turns on developer mode, npm’s newer agent is offered as a bet
     assert.equal(await installedAgent(page), PINNED);
     assert.equal(await notice(page, 'beta:agent'), null);
     await npmSays(page, 'offered');
+  });
+
+  await t.test('the next Install beta in the same session shows the notice again', async () => {
+    const acting = act(page, 'install-beta');
+    await confirmWith(page, 'Install beta');
+    await acting;
+    await rowSettled(page, 'agent');
+    assert.equal(await installedAgent(page), BETA);
+    assert.equal((await notice(page, 'beta:agent'))?.id, `beta:agent:${BETA}`);
+    await act(page, 'back-to-certified');
+    await rowSettled(page, 'agent');
+    assert.equal(await installedAgent(page), PINNED);
+    assert.equal(await notice(page, 'beta:agent'), null);
   });
 
   await t.test('a release without provenance is listed but not offered', async () => {

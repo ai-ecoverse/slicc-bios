@@ -312,7 +312,7 @@ function recordOf(chosen, now) {
 
 function betaNotice(record) {
   return {
-    id: NOTICE,
+    id: `${NOTICE}:${record.version}`,
     tone: 'warning',
     title: 'The agent runs a beta',
     body: `slicc-agent ${record.version} isn’t certified. You installed it in developer mode; seven’s certified version is ${record.certified}.`,
@@ -377,6 +377,7 @@ export function createBetas({
   let offer = null;
   let npm = null;
   let checking = null;
+  let shownNotice = null;
   const ctx = {
     storage,
     root,
@@ -400,8 +401,10 @@ export function createBetas({
       beta: record ? { version: record.version, certified: record.certified } : null,
       npm: developerOn(storage) ? npm : null,
     });
-    if (record) notices.show(betaNotice(record), () => leave());
-    else notices.remove(NOTICE);
+    const notice = record && betaNotice(record);
+    if (shownNotice && shownNotice !== notice?.id) notices.remove(shownNotice);
+    shownNotice = notice?.id ?? null;
+    if (notice) notices.show(notice, () => leave());
   };
 
   const tell = (key, title, body) =>
