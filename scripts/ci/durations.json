@@ -8,6 +8,7 @@
   "test/integration/cert.test.mjs": 1,
   "test/integration/chat.test.mjs": 668,
   "test/integration/clipboard.test.mjs": 17,
+  "test/integration/deployed.test.mjs": 60,
   "test/integration/favicon.test.mjs": 337,
   "test/integration/fnox.test.mjs": 64,
   "test/integration/follow-guests.test.mjs": 780,

@@ -139,5 +139,10 @@ write(
   `boot (${navigator.serviceWorker?.controller ? 'repeat visit' : 'first install'})`
 );
 requestAnimationFrame(() =>
-  setTimeout(() => import('./card.js').then(({ attach }) => attach(boot)))
+  setTimeout(() =>
+    import('./card.js').then(
+      ({ attach }) => attach(boot),
+      (error) => write('warn', 'card', error.message)
+    )
+  )
 );

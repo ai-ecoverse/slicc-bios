@@ -1,5 +1,10 @@
 import { usersMode } from './seed/users.js';
-import { splash } from './sw/splash.js';
+
+const quiet = { begin() {}, report() {}, done() {}, fail() {} };
+const { splash } = await import('./sw/splash.js').catch((error) => {
+  console.warn(`bios: booting without the splash, ${error.message}`);
+  return { splash: quiet };
+});
 
 export function uiPage(hash) {
   return new URLSearchParams(hash.slice(1)).has('seat') ? 'os/join.html' : 'os/';

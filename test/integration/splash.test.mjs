@@ -175,6 +175,73 @@ test('the scene keeps running across a tab that is hidden for longer than its fr
   assert.match(shown.render, /^\d+fps, scene at \d+%$/);
 });
 
+async function refuse(page, status) {
+  const seen = [];
+  const pattern = { patterns: [{ urlPattern: '*/sw/splash.js*' }] };
+  const off = chrome.cdp.on(({ method, params, sessionId }) => {
+    if (method !== 'Fetch.requestPaused' || !params.request.url.includes('/sw/splash.js')) return;
+    seen.push(params.request.url);
+    chrome.cdp
+      .send(
+        'Fetch.fulfillRequest',
+        { requestId: params.requestId, responseCode: status, body: '' },
+        sessionId
+      )
+      .catch(() => undefined);
+  });
+  const { targetInfos } = await chrome.cdp.send('Target.getTargets');
+  const sessions = [];
+  for (const { targetId, type, url } of targetInfos) {
+    if (type !== 'service_worker' || !url.startsWith(chrome.url)) continue;
+    const { sessionId } = await chrome.cdp.send('Target.attachToTarget', {
+      targetId,
+      flatten: true,
+    });
+    await chrome.cdp.send('Fetch.enable', pattern, sessionId);
+    sessions.push(sessionId);
+  }
+  await page.send('Fetch.enable', pattern);
+  return {
+    seen,
+    workers: sessions.length,
+    stop: async () => {
+      off();
+      await page.send('Fetch.disable');
+      for (const sessionId of sessions)
+        await chrome.cdp.send('Target.detachFromTarget', { sessionId }).catch(() => undefined);
+    },
+  };
+}
+
+for (const status of [404, 500]) {
+  test(`an installed seven boots to the UI with npm unreachable and the splash answering ${status}`, async (t) => {
+    const page = await chrome.page(t);
+    await boot(page);
+    const warnings = [];
+    const off = chrome.cdp.on(({ method, params }) => {
+      if (method === 'Runtime.consoleAPICalled' && params.type === 'warning')
+        warnings.push(params.args.map((arg) => arg.value).join(' '));
+    });
+    chrome.cdn.status = 503;
+    const blocked = await refuse(page, status);
+    const bios = await watch(page);
+    await boot(page);
+    await blocked.stop();
+    off();
+    chrome.cdn.status = 0;
+    assert.ok(blocked.workers > 0);
+    assert.ok(blocked.seen.length > 0);
+    assert.deepEqual(bios.states(), booted);
+    assert.deepEqual(
+      warnings.filter((text) => text.startsWith('bios:')),
+      [
+        `bios: booting without the splash, Failed to fetch dynamically imported module: ${chrome.url}sw/splash.js`,
+      ]
+    );
+    assert.deepEqual(page.errors, []);
+  });
+}
+
 const deployed = [
   '/',
   '/index.html',
