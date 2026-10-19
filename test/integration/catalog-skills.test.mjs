@@ -131,9 +131,9 @@ test('a certified catalog package’s pi.skills reach every cone’s agent throu
   assert.equal((await row(page)).version, '0.17.0');
 
   await listed(page, true);
-  const found = JSON.stringify(await skill(page));
-  assert.match(found, /package/, found);
-  assert.match(found, /mcpcat@0\.17\.0/, found);
+  const found = await skill(page);
+  assert.equal(found.source, 'package', JSON.stringify(found));
+  assert.deepEqual(found.package, { name: MCPCAT, version: '0.17.0' }, JSON.stringify(found));
 
   const linked = await command(
     page,
