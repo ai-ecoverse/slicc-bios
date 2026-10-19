@@ -322,6 +322,24 @@ export function pnpm(kernel, cwd, report, to = null, argv = INSTALL, writer = tr
   return navigator.locks.request(STORE, () => pnpmAlone(kernel, cwd, report, to, argv, writer));
 }
 
+const TRAP = /^[^\n]*: wasm trap(?: in thread \d+)?: memory access out of bounds$/m;
+const TRAP_ISSUES = 'homescoop#1127, slicc-kernel#1172';
+export const TRAP_LOG = 'var/log/slicc/pnpm-traps.log';
+const TRAP_CAP = 64 * 1024;
+
+async function noteTrap(cwd, argv, line, outcome) {
+  const files = kernelSink();
+  if (!files) return;
+  const entry = { at: new Date().toISOString(), cwd, argv: argv.join(' '), line, outcome };
+  await files
+    .append(TRAP_LOG, `${JSON.stringify(entry)}\n`, TRAP_CAP)
+    .catch((error) => console.warn(`${TRAP_LOG}: ${error.message}`));
+}
+
+export function trapLine(status, stderr) {
+  return status === 134 ? (stderr.match(TRAP)?.[0] ?? null) : null;
+}
+
 async function pnpmAlone(kernel, cwd, report, to, argv, writer) {
   let log = '';
   const downloads = new Map();
@@ -333,7 +351,38 @@ async function pnpmAlone(kernel, cwd, report, to, argv, writer) {
   if (writer && guard.on) await fence(await navigator.storage.getDirectory(), cwd);
   const run = writer ? { ...writing(cwd), onStdout } : { cwd, env: TRAPS, onStdout };
   const ran = () => kernel.run(writer ? hygiene(argv) : argv, run);
-  const { status, stderr } = await (writer ? writing_(kernel, writes(cwd, argv), ran) : ran());
+  const attempt = () => (writer ? writing_(kernel, writes(cwd, argv), ran) : ran());
+  let { status, stderr } = await attempt();
+  const first = trapLine(status, stderr);
+  if (first) {
+    const note = `bios: pnpm trapped (${first}), the wasm trap of ${TRAP_ISSUES}; retrying once`;
+    console.warn(note);
+    log = `${log}${stderr}\n${note}\n`.slice(-LOG);
+    report({ progress: null, log });
+    ({ status, stderr } = await attempt());
+    const again = trapLine(status, stderr);
+    await noteTrap(
+      cwd,
+      argv,
+      first,
+      again ? 'trapped again' : status ? 'failed otherwise' : 'recovered'
+    );
+    if (again) {
+      const error = new Error(
+        `pnpm trapped twice with the wasm trap of ${TRAP_ISSUES} (${again}); bios retries it only once`
+      );
+      error.log = `${log}${stderr}`.slice(-LOG);
+      error.to = to;
+      console.warn(error.message);
+      throw error;
+    }
+    if (!status) {
+      const done = `bios: pnpm's retry after the wasm trap succeeded (${TRAP_ISSUES})`;
+      console.warn(done);
+      log = `${log}${done}\n`.slice(-LOG);
+      report({ progress: null, log });
+    }
+  }
   if (status) {
     const error = new Error(stderr.trim() || `pnpm exited with ${status}`);
     error.log = (log + stderr).slice(-LOG);
