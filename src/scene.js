@@ -667,6 +667,9 @@ async function loop(options) {
   let shown = 0;
   let fail = 0;
   let last = 0;
+  document.addEventListener('visibilitychange', () => {
+    last = 0;
+  });
   for (;;) {
     const now = await frame();
     if (gl.isContextLost()) return 'GPU context lost';

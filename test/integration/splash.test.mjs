@@ -135,6 +135,30 @@ test('a failing boot opens the diagnostics, copies them without the join link, a
   await page.until(() => location.pathname === '/os/join.html');
 });
 
+test('the scene keeps running across a tab that is hidden for longer than its frame budget', async (t) => {
+  const page = await chrome.page(t);
+  chrome.cdn.status = 404;
+  await page.goto('/');
+  await page.until(() => document.querySelector('.splash').dataset.scene === 'running');
+  const other = await page.tab();
+  const hold = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  for (let round = 0; round < 2; round++) {
+    await other.send('Page.bringToFront');
+    await page.until(() => document.visibilityState === 'hidden');
+    await hold(1500);
+    await page.send('Page.bringToFront');
+    await page.until(() => document.visibilityState === 'visible');
+    await hold(300);
+  }
+  chrome.cdn.status = 0;
+  const shown = await page.evaluate(() => ({
+    scene: document.querySelector('.splash').dataset.scene,
+    render: document.querySelector('[data-key="render"]').textContent,
+  }));
+  assert.equal(shown.scene, 'running', shown.render);
+  assert.match(shown.render, /^\d+fps, scene at \d+%$/);
+});
+
 async function timed(page) {
   const start = Date.now();
   await page.goto('/');
