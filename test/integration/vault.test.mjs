@@ -756,7 +756,10 @@ test('the kernel’s sessionAnchors reaches the vault with exactly its fields an
     ...ask,
   });
   assert.deepEqual(answered.reply, { anchors: [anchor], pins: [pin] });
-  await logged(() => own.log.some((entry) => entry.op === 'anchors'));
+  assert.ok(
+    await logged(() => own.log.some((entry) => entry.op === 'anchors')),
+    JSON.stringify(own.log.map((entry) => entry.op))
+  );
   const relayed = own.log.filter((entry) => entry.op === 'anchors');
   assert.equal(relayed.length, 1);
   assert.deepEqual(relayed[0].fields, [...Object.keys(ask), 'id', 'op', 'v'].sort());
@@ -769,7 +772,10 @@ test('the kernel’s sessionAnchors reaches the vault with exactly its fields an
     host: 'other.harbor.test',
   });
   assert.deepEqual(refused.reply, { v: 1, error: { code: 'EACCES' } });
-  await logged(() => own.log.filter((entry) => entry.op === 'anchors').length === 2);
+  assert.ok(
+    await logged(() => own.log.filter((entry) => entry.op === 'anchors').length === 2),
+    JSON.stringify(own.log.map((entry) => entry.op))
+  );
 
   const scram = {
     clientFirstBare: 'n=harbor,r=fyko+d2lbbFgONRv9qkxdawL',
@@ -792,7 +798,10 @@ test('the kernel’s sessionAnchors reaches the vault with exactly its fields an
     caller: stamp,
     ...login,
   });
-  await logged(() => own.log.some((entry) => entry.op === 'session'));
+  assert.ok(
+    await logged(() => own.log.some((entry) => entry.op === 'session')),
+    JSON.stringify(own.log.map((entry) => entry.op))
+  );
   const carried = own.log.find((entry) => entry.op === 'session');
   assert.deepEqual(carried.fields, [...Object.keys(login), 'id', 'op', 'v'].sort());
   assert.deepEqual(
