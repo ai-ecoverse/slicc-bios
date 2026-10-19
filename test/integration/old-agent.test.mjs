@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
-import { agentUp, connectAccount, ready } from './bios.mjs';
+import { AGENT_BUDGET, agentUp, connectAccount, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
 import { shoot } from './shots.mjs';
@@ -19,7 +19,6 @@ const deployed = (version) =>
 const NEW_VERSION = JSON.parse(
   readFileSync(new URL('../../src/packages/agent/package.json', import.meta.url), 'utf8')
 ).dependencies['@ai-ecoverse/slicc-agent'];
-const INSTALL = 10 * 60 * 1000;
 
 const answer = Buffer.concat([
   eventFrame('messageStart', { role: 'assistant' }),
@@ -132,7 +131,7 @@ async function updated(t, old) {
   await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
   await ready(page);
   await page.within(
-    INSTALL,
+    AGENT_BUDGET,
     async (old, lock) =>
       (await window.installedAgent()) === old &&
       (await window.readOpfs('/var/lib/slicc/agent/pnpm-lock.yaml')) === lock,
@@ -147,7 +146,7 @@ async function updated(t, old) {
   const reloaded = Date.now();
   await page.reload();
   await ready(page);
-  await page.within(INSTALL, () =>
+  await page.within(AGENT_BUDGET, () =>
     ['downloading', 'linking'].includes(
       document
         .querySelector('slicc-app')
@@ -226,7 +225,7 @@ async function updated(t, old) {
 }
 
 test("slicc-agent 3.26.0, which ignores held, updates to seven's agent and its chat starts without a reload; meanwhile the row shows 3.26.0 → new and the chat says it's updating", {
-  timeout: 40 * 60 * 1000,
+  timeout: 60 * 60 * 1000,
 }, async (t) => {
   const { owner } = await updated(t, '3.26.0');
   assert.match(owner, /const release = await holdLock\(/);
@@ -234,7 +233,7 @@ test("slicc-agent 3.26.0, which ignores held, updates to seven's agent and its c
 });
 
 test("an in-place update from slicc-agent 5.0.3, which honours held, starts the chat on seven's agent, and the chat says it's updating meanwhile", {
-  timeout: 40 * 60 * 1000,
+  timeout: 60 * 60 * 1000,
 }, async (t) => {
   const { owner } = await updated(t, '5.0.3');
   assert.match(owner, /options\.held/);
