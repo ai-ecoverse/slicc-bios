@@ -562,27 +562,26 @@ test('a shard killed during its retry has already left the first attempt’s art
     join(root, 't/flaky.test.mjs'),
     flaky('await new Promise((resolve) => setTimeout(resolve, 120000));')
   );
-  for (const file of ['shard.mjs', 'plan.mjs', 'verdict.mjs', 'summary.mjs'])
-    await cp(new URL(`../../scripts/ci/${file}`, import.meta.url), join(root, 'scripts/ci', file));
-  await mkdir(join(root, 'scripts/canary'), { recursive: true });
-  await cp(
-    new URL('../../scripts/canary/reporter.mjs', import.meta.url),
-    join(root, 'scripts/canary/reporter.mjs')
-  );
+  for (const dir of ['scripts/ci', 'scripts/canary'])
+    await cp(new URL(`../../${dir}/`, import.meta.url), join(root, dir), { recursive: true });
   const child = spawn(
     process.execPath,
     ['scripts/ci/shard.mjs', '--name', 's03', '--items', 't/flaky.test.mjs', '--retry', 'true'],
     {
       cwd: root,
       detached: true,
-      stdio: 'ignore',
+      stdio: ['ignore', 'ignore', 'pipe'],
       env: { ...process.env, RUNNER_TEMP: join(root, 'tmp'), GITHUB_STEP_SUMMARY: '' },
     }
   );
+  let errors = '';
+  child.stderr.on('data', (chunk) => {
+    errors += chunk;
+  });
   const gone = new Promise((resolve) => child.on('exit', resolve));
   const deadline = Date.now() + 60000;
   while ((await read('count')) !== '2') {
-    assert.ok(Date.now() < deadline, 'the retry never started');
+    assert.ok(Date.now() < deadline, `the retry never started:\n${errors.slice(-2000)}`);
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   process.kill(-child.pid, 'SIGKILL');
