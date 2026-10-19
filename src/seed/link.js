@@ -334,6 +334,7 @@ export function createSession({
     if (parsed?.role !== other) return close('a malformed HELLO');
     peer = parsed;
     timers.clearTimeout(timer);
+    if (role === 'node' && !say()) return;
     settle.resolve(peer);
     for (const [from, bytes] of early.splice(0)) if (channels.has(from)) framed(from, bytes);
   }
@@ -362,14 +363,19 @@ export function createSession({
     streams.get(id)?.receive(type, payload);
   }
 
-  function greet() {
-    if (closed) return;
+  function say() {
     try {
-      control.send(JSON.stringify({ v: 1, role, ...hello() }));
+      post(control, JSON.stringify({ v: 1, role, ...hello() }));
+      return true;
     } catch (error) {
       close(`the HELLO could not be sent: ${error.message}`);
-      return;
+      return false;
     }
+  }
+
+  function greet() {
+    if (closed) return;
+    if (role === 'page' && !say()) return;
     if (!peer)
       timer = timers.setTimeout(() => close(`no HELLO from the ${other} within 10 s`), HELLO_MS);
   }
