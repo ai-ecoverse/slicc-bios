@@ -564,13 +564,13 @@ test("the user's pnpm add in /opt/agent moves to /opt/user, and a pnpm upgrade t
 
 const EXEC_LOOP = [
   '#!/bin/bash',
-  'n=0; f=0; r=0',
+  'n=0; f=0',
   "ok() { bash -c 'echo exec-ok' > /tmp/v 2>&1 && grep -q exec-ok /tmp/v; }",
   'while [ ! -e /tmp/stop ]; do',
-  '  if ok; then :; else r=$((r+1)); cat /tmp/v >> /tmp/retried; sleep 0.5; ok || { f=$((f+1)); cat /tmp/v >> /tmp/errs; }; fi',
+  '  ok || { f=$((f+1)); cat /tmp/v >> /tmp/errs; }',
   '  n=$((n+1)); sleep 0.01',
   'done',
-  'echo "loop n=$n fail=$f retried=$r" > /tmp/loop',
+  'echo "loop n=$n fail=$f" > /tmp/loop',
 ].join('\n');
 
 test('the BIOS installer replaces a package in place while seven runs: the shell execs it in a loop and a second tab reads its files throughout', async (t) => {
@@ -604,7 +604,7 @@ test('the BIOS installer replaces a package in place while seven runs: the shell
   const script = Buffer.from(`${EXEC_LOOP}\n`).toString('base64');
   await run(
     page,
-    `clear; rm -f /tmp/stop /tmp/loop /tmp/errs /tmp/retried; echo ${script} | base64 -d > /usr/local/bin/exec-loop; chmod 755 /usr/local/bin/exec-loop; exec-loop > /dev/null 2>&1 & echo looping-$((40 + 2))`
+    `clear; rm -f /tmp/stop /tmp/loop /tmp/errs; echo ${script} | base64 -d > /usr/local/bin/exec-loop; chmod 755 /usr/local/bin/exec-loop; exec-loop > /dev/null 2>&1 & echo looping-$((40 + 2))`
   );
   await shows(page, 'looping-42');
   deploy();
@@ -630,13 +630,8 @@ test('the BIOS installer replaces a package in place while seven runs: the shell
   await run(page, 'clear; touch /tmp/stop; wait; cat /tmp/loop; echo stopped-$((40 + 2))');
   await shows(page, 'stopped-42', 120000);
   const counted = (await read(page, 'tmp/loop')).trim();
-  const [, runs, failures] = counted.match(/loop n=(\d+) fail=(\d+) retried=\d+/) ?? [];
+  const [, runs, failures] = counted.match(/loop n=(\d+) fail=(\d+)/) ?? [];
   assert.ok(Number(runs) > 0, counted);
-  const retried = await read(page, 'tmp/retried').catch(() => '');
-  if (retried)
-    t.diagnostic(
-      `kernel#1075: an exec failed once while the installer swapped the package, and passed on its retry (${counted}): ${retried.trim()}`
-    );
   const errors = await read(page, 'tmp/errs').catch(() => '');
   assert.equal(Number(failures), 0, `${counted}\n${errors}`);
   const probe = await other.evaluate(() => {
