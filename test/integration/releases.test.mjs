@@ -90,8 +90,8 @@ const kernelCalls = () =>
 test("a check gives each row its GitHub releases: the installed one and the newer ones up to the offered version, at most 30 and 64 KB of notes each, revalidated with the cache's ETag, never with a cookie or a token", {
   timeout: 20 * 60 * 1000,
 }, async (t) => {
-  await downgrade();
   const page = await chrome.page(t);
+  await downgrade();
   const huge = `${VERIFY}${'x'.repeat(MAX_NOTES * 2)}`;
   const between = Array.from({ length: 40 }, (_, i) =>
     release(`v${SHIPPED}-rc.${40 - i}`, i === 0 ? `${VERIFY}rc notes` : `notes ${40 - i}`)
@@ -147,15 +147,21 @@ test("a check gives each row its GitHub releases: the installed one and the newe
   await t.test(
     'an optional package from GitHub gets its release, and one from elsewhere gets none',
     async () => {
-      await eventually(async () => {
-        assert.deepEqual((await packageRow(page, 'mcpcat'))?.releases, [
-          {
-            version: mcpcat,
-            url: `https://github.com/ai-ecoverse/mcpcat/releases/tag/v${mcpcat}`,
-            notes: 'mcpcat notes',
-          },
-        ]);
-      });
+      await page.within(
+        10 * 60 * 1000,
+        () =>
+          !!document
+            .querySelector('slicc-app')
+            .model.updates.packages()
+            .find((item) => item.id === 'mcpcat')?.releases
+      );
+      assert.deepEqual((await packageRow(page, 'mcpcat')).releases, [
+        {
+          version: mcpcat,
+          url: `https://github.com/ai-ecoverse/mcpcat/releases/tag/v${mcpcat}`,
+          notes: 'mcpcat notes',
+        },
+      ]);
       const gitlab = await packageRow(page, 'gitlab-ui');
       assert.equal(gitlab.offered, '138.6.2');
       assert.equal('releases' in gitlab, false);
