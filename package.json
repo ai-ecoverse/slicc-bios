@@ -47,7 +47,7 @@
     "@ai-ecoverse/slicc-node": "2.5.1",
     "@ai-ecoverse/slicc-shared-web": "1.24.2",
     "@ai-ecoverse/slicc-spectrum": "1.88.0",
-    "@ai-ecoverse/slicc-vault": "1.10.0",
+    "@ai-ecoverse/slicc-vault": "1.10.1",
     "@biomejs/biome": "2.5.15",
     "es-module-lexer": "3.0.3",
     "fake-indexeddb": "6.2.5",
