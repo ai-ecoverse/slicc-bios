@@ -339,6 +339,8 @@ test("slicc-agent 3.26.0, which ignores held, isn't started at boot: seven's age
         window.composer()?.placeholder === 'Reload this tab to reach the new agent.' &&
         window.composer().queued.length === 1
     );
+    await shoot(other, 'follower-reload-line', { show: 'chat' });
+    await other.evaluate(() => document.querySelector('slicc-app').show('chat'));
     await other.reload();
     await ready(other);
     await other.evaluate(() => document.querySelector('slicc-app').show('chat'));
