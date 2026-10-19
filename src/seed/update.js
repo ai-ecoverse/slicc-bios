@@ -116,7 +116,8 @@ export function enforced() {
 }
 
 export function installing(kernel, path = null) {
-  if (path !== null && guard.expected.get(kernel)?.delete(path)) return true;
+  if (path === null) guard.expected.get(kernel)?.clear();
+  else if (guard.expected.get(kernel)?.delete(path)) return true;
   const held = guard.writing.get(kernel);
   if (!held) return false;
   if (path === null) return true;
@@ -180,20 +181,22 @@ export async function retire(root) {
   for (const name of ROOTED) await remove(root, name);
 }
 
-const joined = (chunks) => {
-  const out = new Uint8Array(chunks.reduce((n, chunk) => n + chunk.length, 0));
-  let at = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, at);
-    at += chunk.length;
-  }
-  return out;
-};
+const shielded = (path) => PROTECTED.some((root) => path === root || path.startsWith(`${root}/`));
 
 export async function kernelFiles(kernel, attach) {
   const client = await attach(await kernel.connect(guard.on ? { tag: WRITER } : {}));
   let held = guard.expected.get(kernel);
   if (!held) guard.expected.set(kernel, (held = new Set()));
+  const expect = async (paths, task) => {
+    const mine = paths.filter((path) => shielded(path) && !held.has(path));
+    for (const path of mine) held.add(path);
+    try {
+      return await task();
+    } catch (error) {
+      for (const path of mine) held.delete(path);
+      throw error;
+    }
+  };
   const parents = async (at) => {
     const parts = at.split('/').filter(Boolean);
     parts.pop();
@@ -201,33 +204,41 @@ export async function kernelFiles(kernel, attach) {
     for (const part of parts) {
       path += `/${part}`;
       if (await client.fs.exists(path)) continue;
-      held.add(path);
-      await client.fs.mkdir(path);
+      const made = path;
+      await expect([made], () => client.fs.mkdir(made));
     }
   };
   const put = async (at, data) => {
     await parents(at);
-    held.add(at);
-    await client.fs.writeFile(at, data);
+    await expect([at], () => client.fs.writeFile(at, data));
   };
   return {
     write: (path, data) => put(`/${path}`, data),
     async rm(path) {
       const at = `/${path}`;
       if (!(await client.fs.exists(at))) return;
-      held.add(at);
-      await client.fs.rm(at, { force: true });
+      await expect([at], () => client.fs.rm(at, { force: true }));
     },
     mkdir: (path) => parents(`/${path}/x`),
     async append(path, text, cap) {
       const at = `/${path}`;
-      const old = (await client.fs.exists(at)) ? await client.fs.readFile(at) : new Uint8Array(0);
-      const added = new TextEncoder().encode(text);
-      if (old.length && old.length + added.length > cap) {
-        await put(`${at}.1`, old);
-        return put(at, added);
+      const size = (await client.fs.exists(at)) ? (await client.fs.stat(at)).size : 0;
+      const added = new TextEncoder().encode(text).length;
+      if (!size) return put(at, text);
+      if (size + added > cap) {
+        const old = `${at}.1`;
+        if (await client.fs.exists(old))
+          await expect([old], () => client.fs.rm(old, { force: true }));
+        await expect([at, old], () => client.fs.rename(at, old));
+        return put(at, text);
       }
-      return put(at, joined([old, added]));
+      await expect([at], async () => {
+        const { status, stderr } = await client.run(['sh', '-c', 'cat >> "$1"', 'sh', at], {
+          cwd: '/',
+          stdin: text,
+        });
+        if (status) throw new Error(stderr.trim() || `appending to ${at} exited with ${status}`);
+      });
     },
   };
 }
