@@ -466,7 +466,7 @@ function bodySource(body) {
 const mapped = (error) =>
   error.code === 'ENOTFOUND' ? Object.assign(error, { code: 'EHOSTUNREACH' }) : error;
 
-const PRINTABLE = /^[\x21-\x7e]+$/;
+const DEVICE_ID = /^[A-Za-z0-9._:-]+$/;
 
 export function linkExit(
   session,
@@ -483,7 +483,7 @@ export function linkExit(
     kind: 'link',
     exitName: () => {
       const named = device();
-      return typeof named === 'string' && PRINTABLE.test(named) ? `device:${named}` : null;
+      return typeof named === 'string' && DEVICE_ID.test(named) ? `device:${named}` : null;
     },
     chosenOnly: true,
     automatic,

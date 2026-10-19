@@ -276,5 +276,6 @@ export function createExitRouter() {
       },
     },
   };
+  if (globalThis.sliccUplinkDebug === true) globalThis.sliccUplink = router.uplink;
   return router;
 }
