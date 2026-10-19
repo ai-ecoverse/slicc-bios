@@ -14,6 +14,35 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const folders = (table) => table.filter((entry) => FOLDERS.has(entry.type));
 const same = (a, b) => a.target === b.target && a.source === b.source;
 const ROOT = { uid: 0, gid: 0 };
+export const MNT_REPAIRED = '/var/lib/slicc/mnt-mode';
+const LAYOUT = [
+  'umask 022',
+  '[ -e /mnt ] || [ -L /mnt ] || mkdir -m 0755 /mnt || exit',
+  '{ [ -e "$1" ] || [ -L "$1" ]; } && exit 0',
+  'if [ -d /mnt ] && [ ! -L /mnt ] && [ "$(stat -c %u /mnt)" = 0 ]; then case "$(stat -c %a /mnt)" in *[1357]) ;; *) chmod 0755 /mnt || exit ;; esac; fi',
+  'mkdir -p "${1%/*}" && date -u +%Y-%m-%dT%H:%M:%SZ > "$1"',
+].join('\n');
+const POINT = [
+  'umask 022',
+  'case "$1/" in */../*|*/./*|*//*|[!/]*) echo "bios: $1 is not a plain absolute path" >&2; exit 1 ;; esac',
+  '[ -d "$1" ] && exit 0',
+  'mkdir -p -- "$1" || exit',
+  'case "$1" in /mnt/*/*/*) ;; /mnt/*) chown -h -- "$2" "$1" ;; esac',
+].join('\n');
+
+async function script(kernel, text, args) {
+  const { status, stderr } = await kernel.run(['bash', '-c', text, 'bios', ...args], { cwd: '/' });
+  if (status) throw new Error(stderr.trim() || `${args[0]}: exited with ${status}`);
+}
+
+export async function layoutMnt(kernel) {
+  if (!kernel.users || kernel.users.mode === 'off') return;
+  await script(kernel, LAYOUT, [MNT_REPAIRED]);
+}
+
+export function mountPoint(kernel, target, user = ROOT) {
+  return script(kernel, POINT, [target, `${user.uid}:${user.gid}`]);
+}
 
 export function owned(options = {}, user = ROOT) {
   return { ...options, uid: String(user.uid), gid: String(user.gid) };
@@ -163,8 +192,9 @@ function linkedActions(state, update, owner) {
         throw new Error(`${source} is not a linked folder`);
       const { fs, kernel } = state();
       const target = `/mnt/${source}`;
-      await fs.mkdir(target, { recursive: true });
-      await kernel.mount({ type: 'hostfs', source, target, options: owned({}, owner()) });
+      const user = owner();
+      if (!(await fs.exists(target))) await mountPoint(kernel, target, user);
+      await kernel.mount({ type: 'hostfs', source, target, options: owned({}, user) });
       await update(await kernel.mounts());
       return target;
     },
@@ -322,10 +352,11 @@ export function createFolders({
       const handle = await chosen(pick());
       if (!handle) return null;
       const target = mountName(handle.name, new Set(table.map((entry) => entry.target)));
-      await fs.mkdir(target);
+      const user = owner();
+      if (!(await fs.exists(target))) await mountPoint(kernel, target, user);
       inserting.add(target);
       try {
-        await kernel.mount({ type: 'fsa', source: 'none', target, options: owned({}, owner()) });
+        await kernel.mount({ type: 'fsa', source: 'none', target, options: owned({}, user) });
         await kernel.insert(target, handle);
       } finally {
         inserting.delete(target);
@@ -360,8 +391,9 @@ export function createFolders({
     async restore() {
       for (const { type, source, target, options } of remembered(storage, secret)) {
         try {
-          await fs.mkdir(target);
-          await kernel.mount({ type, source, target, options: owned(options, owner()) });
+          const user = owner();
+          if (!(await fs.exists(target))) await mountPoint(kernel, target, user);
+          await kernel.mount({ type, source, target, options: owned(options, user) });
         } catch (error) {
           console.warn(`${target} was not mounted again: ${error.message}`);
         }
