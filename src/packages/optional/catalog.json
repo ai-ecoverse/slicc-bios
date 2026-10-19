@@ -68,7 +68,7 @@
   "@ai-ecoverse/wasix-perl": {
     "id": "perl",
     "label": "Perl",
-    "description": "Perl 5.42 with cpan, perldoc and prove, for scripts and text processing.",
+    "description": "Perl 5.42 with cpan, perldoc and prove, for scripts and for text processing.",
     "commands": ["perl", "cpan", "perldoc", "prove", "pod2html", "pod2man", "pod2text"],
     "size": 19663059
   },
