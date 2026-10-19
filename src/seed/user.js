@@ -1,5 +1,5 @@
 import { edit, entries, FIELDS, readLayer } from './layer.js';
-import { fence, STORE, text, write } from './update.js';
+import { fence, makeDir, STORE, text, write } from './update.js';
 
 export const folder = 'opt/user';
 export const MODULES = `/${folder}/node_modules`;
@@ -52,10 +52,7 @@ export function droppedNotice(grammars) {
   };
 }
 
-async function directory(root, path) {
-  let dir = root;
-  for (const part of path.split('/')) dir = await dir.getDirectoryHandle(part, { create: true });
-}
+const directory = (root, path) => makeDir(root, path);
 
 export async function ensure(root) {
   if ((await text(root, `${folder}/package.json`)) === null)

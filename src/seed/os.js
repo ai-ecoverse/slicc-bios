@@ -78,11 +78,13 @@ import {
   baseManifest,
   enforced,
   installing,
+  kernelFiles,
   PROTECTED,
   protectInstalls,
   protection,
   text,
   update,
+  useKernelFiles,
   versions,
   write,
 } from './update.js';
@@ -660,6 +662,7 @@ async function own() {
     ...folders.options,
     ...kernelUsers(mode, { approve: sudo, onDenial: denials }),
   });
+  useKernelFiles(await kernelFiles(kernel, attachKernel));
   approvals.verify((req) => rootChecked((argv) => kernel.run(argv, { cwd: '/' }), req));
   const cone = await addCone(kernel);
   coneIds = cone && { uid: cone.uid, gid: cone.gid };

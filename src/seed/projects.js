@@ -1,4 +1,4 @@
-import { fetchText, pnpm, readable, text, write } from './update.js';
+import { fetchText, pnpm, readable, remove, text, write } from './update.js';
 
 export const FILES = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'];
 
@@ -65,13 +65,7 @@ export async function writePth(root, id) {
   return path;
 }
 
-async function removeIn(root, path) {
-  const names = path.split('/');
-  const name = names.pop();
-  try {
-    await (await handle(root, names.join('/'))).removeEntry(name, { recursive: true });
-  } catch {}
-}
+const removeIn = (root, path) => remove(root, path);
 
 export async function installProject({ root, kernel, id, project, report, to }) {
   for (const name of FILES) await write(root, `${folder(id)}/${name}`, project.files[name]);
