@@ -780,5 +780,9 @@
   "@ai-ecoverse/wasm-zip@3.0.0-7": {
     "integrity": "sha512-q92s+O0EaT+uGHZZ2ZCffoYfb7ZzlRHd3K+wvXDh2l0V+uBJUZE7VeC+5AZQ5KZ2v80w5h7jZbOiw34EWKW4Dw==",
     "sha256": "07cf0bd10794be1e5076ab495ff7011484385a1997c6b88fb250581dc48bfc95"
+  },
+  "@ai-ecoverse/slicc-kernel@1.129.0": {
+    "integrity": "sha512-/R8aDxfhTQNsloF9Z/zVS+4nhykFF8lhu6rJ3nPTPjHs+wi3hnaRQE/Rj9ceZuLf4J/bDdoyxzYIAZsBdzHe8g==",
+    "sha256": "797bb9b2d5a296d0170a469be09a6a58bc8a2793338fe51c1f97b4299e800633"
   }
 }
