@@ -158,7 +158,7 @@ test('the gate finds only the pins a PR changes, and passes them only on their l
   });
   assert.deepEqual(gate(pins, both.slice(0, 1)), {
     ok: false,
-    line: 'cert-gate: FAIL @ai-ecoverse/slicc-agent@7.0.0 has no cert review',
+    line: 'cert-gate: FAIL @ai-ecoverse/slicc-agent@7.0.0 has no cert review (label the PR cert-review)',
   });
   const spoofed = both.map((comment) => ({ ...comment, user: 'someone' }));
   assert.equal(gate(pins, spoofed).ok, false);
@@ -174,6 +174,76 @@ test('the gate finds only the pins a PR changes, and passes them only on their l
     ),
   ];
   assert.equal(gate(pins, failedLater).ok, false);
+});
+
+test('outside Renovate the gate holds every PR to the gated pins it changes, the Tailscale and grammars projects included', async () => {
+  const { GATED } = await import('../../scripts/cert/apply.mjs');
+  const { GATE_FILES } = await import('../../scripts/ci/certified.mjs');
+  assert.deepEqual(GATE_FILES, [
+    ...PINNED,
+    'src/packages/tailscale/package.json',
+    'src/packages/grammars/package.json',
+  ]);
+  const base = {
+    [PINNED[0]]: {
+      dependencies: {
+        '@ai-ecoverse/wasi-pnpm': '12.9.1-10',
+        '@ai-ecoverse/slicc-spectrum': '1.89.2',
+      },
+    },
+    [GATE_FILES[3]]: { dependencies: { '@ai-ecoverse/wasm-tailscale': '1.104.1-9' } },
+  };
+  const head = {
+    [PINNED[0]]: {
+      dependencies: {
+        '@ai-ecoverse/wasi-pnpm': '12.9.1-13',
+        '@ai-ecoverse/slicc-spectrum': '1.90.0',
+      },
+    },
+    [GATE_FILES[3]]: { dependencies: { '@ai-ecoverse/wasm-tailscale': '1.104.1-10' } },
+  };
+  const gated = changed(base, head, (name) => GATED.test(name));
+  assert.deepEqual(gated, [
+    '@ai-ecoverse/wasi-pnpm@12.9.1-13',
+    '@ai-ecoverse/wasm-tailscale@1.104.1-10',
+  ]);
+  assert.deepEqual(gate(gated, []), {
+    ok: false,
+    line: 'cert-gate: FAIL @ai-ecoverse/wasi-pnpm@12.9.1-13 has no cert review (label the PR cert-review), @ai-ecoverse/wasm-tailscale@1.104.1-10 has no cert review (label the PR cert-review)',
+  });
+  assert.deepEqual(
+    gate(
+      changed(base, base, (name) => GATED.test(name)),
+      [],
+      'no gated pin changes'
+    ),
+    {
+      ok: true,
+      line: 'cert-gate: PASS no gated pin changes',
+    }
+  );
+  const spectrumOnly = {
+    [PINNED[0]]: {
+      dependencies: { ...base[PINNED[0]].dependencies, '@ai-ecoverse/slicc-spectrum': '1.90.0' },
+    },
+  };
+  assert.deepEqual(
+    changed(base, spectrumOnly, (name) => GATED.test(name)),
+    []
+  );
+  const { FORK } = await import('../../scripts/ci/certified.mjs');
+  assert.match(
+    gate(gated.slice(0, 1), [], 'no gated pin changes', FORK).line,
+    /has no cert review \(cert review never runs fork code: push the change to a branch of this repository/
+  );
+  const cert = await read('.github/workflows/cert-review.yml');
+  assert.match(
+    cert,
+    /github\.event\.pull_request\.head\.repo\.full_name == github\.repository/,
+    'the label path stays same-repo only'
+  );
+  const ci = await read('scripts/ci/certified.mjs');
+  assert.doesNotMatch(ci, /is not a Renovate PR/, 'every PR is gated, not only Renovate’s');
 });
 
 test('the queue adds a certified certs.json line only for a gated package the PR locks with that integrity, after the sha check', async (t) => {
@@ -237,7 +307,7 @@ test('ci / test runs the gate on every run, CI can be dispatched for a PR, and c
   assert.match(job, /\n {6}pull-requests: read\n/);
   assert.match(
     job,
-    /- name: A Renovate PR passes only[^\n]*\n {8}if: always\(\)\n(?: {8}.*\n)*? {8}run: node scripts\/ci\/certified\.mjs\n/
+    /- name: A PR passes only[^\n]*\n {8}if: always\(\)\n(?: {8}.*\n)*? {8}run: node scripts\/ci\/certified\.mjs\n/
   );
   const cert = await read('.github/workflows/cert-review.yml');
   const queue = cert.slice(cert.indexOf('\n  queue:'), cert.indexOf('\n  certify:'));
