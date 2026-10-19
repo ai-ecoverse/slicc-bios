@@ -60,6 +60,7 @@
   "test/integration/transport.test.mjs": 76,
   "test/integration/tray.test.mjs": 14,
   "test/integration/typescript.test.mjs": 26,
+  "test/integration/unshadow.test.mjs": 90,
   "test/integration/update.test.mjs": 272,
   "test/integration/updates.test.mjs": 199,
   "test/integration/user-packages.test.mjs": 446,
