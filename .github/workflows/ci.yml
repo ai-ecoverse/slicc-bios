@@ -35,14 +35,19 @@ jobs:
       failfast: ${{ steps.plan.outputs.failfast }}
       retry: ${{ steps.plan.outputs.retry }}
       seed: ${{ steps.plan.outputs.seed }}
+      mode: ${{ steps.plan.outputs.mode }}
+      vendors: ${{ steps.plan.outputs.vendors }}
+      skip: ${{ steps.plan.outputs.skip }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 2
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '26'
 
-      - name: The experiment's arm and a random, duration-balanced shard assignment
+      - name: The changed files' mode, the experiment's arm and a random, duration-balanced shard assignment
         id: plan
         run: node scripts/ci/plan.mjs
 
@@ -73,6 +78,7 @@ jobs:
   integration:
     name: ci / integration (${{ matrix.shard }})
     needs: plan
+    if: needs.plan.outputs.shards != ''
     runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || github.event_name == 'workflow_dispatch' || (contains(fromJSON('["push","schedule","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 75
     strategy:
@@ -144,6 +150,8 @@ jobs:
 
   vendors:
     name: ci / vendors
+    needs: plan
+    if: needs.plan.outputs.vendors == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -241,7 +249,9 @@ jobs:
           INTEGRATION: ${{ needs.integration.result }}
           VENDORS: ${{ needs.vendors.result }}
           SHARDS: ${{ needs.plan.outputs.shards }}
-        run: node scripts/ci/verdict.mjs shards --dir artifacts/verdicts --expect "$SHARDS" --results "{\"plan\":\"$PLAN\",\"lint\":\"$LINT\",\"integration\":\"$INTEGRATION\",\"vendors\":\"$VENDORS\"}"
+          MODE: ${{ needs.plan.outputs.mode }}
+          SKIP: ${{ needs.plan.outputs.skip }}
+        run: node scripts/ci/verdict.mjs shards --dir artifacts/verdicts --expect "$SHARDS" --results "{\"plan\":\"$PLAN\",\"lint\":\"$LINT\",\"integration\":\"$INTEGRATION\",\"vendors\":\"$VENDORS\"}" --mode "$MODE" --skip "$SKIP"
 
       - name: A PR passes only with cert review's certified verdict for every gated pin it changes, and a Renovate PR for every pin
         if: always()

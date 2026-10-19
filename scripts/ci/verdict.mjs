@@ -52,7 +52,19 @@ export function shardVerdict(name, text, files = []) {
 
 const SHARD_LINE = /^shard (\S+): (PASS \d+ tests|FAIL .*)$/;
 
-export function shardsVerdict(expected, lines, results = {}) {
+function jobProblems(results, mode, skip) {
+  const why = [];
+  for (const [job, result] of Object.entries(results)) {
+    const want = skip.includes(job) ? 'skipped' : 'success';
+    if (result === want) continue;
+    const note = want === 'skipped' ? `, but the ${mode} plan skips it` : '';
+    why.push(`${job}: ${result || 'no result'}${note}`);
+  }
+  if (mode === 'full' && skip.length) why.push(`a full plan skips ${skip.join(' and ')}`);
+  return why;
+}
+
+export function shardsVerdict(expected, lines, results = {}, { mode = 'full', skip = [] } = {}) {
   const seen = new Map();
   for (const line of lines) {
     const match = line.trim().match(SHARD_LINE);
@@ -64,12 +76,14 @@ export function shardsVerdict(expected, lines, results = {}) {
     if (!verdict) why.push(`${name}: no verdict`);
     else if (!verdict.startsWith('PASS')) why.push(`${name}: ${verdict}`);
   }
-  for (const [job, result] of Object.entries(results)) {
-    if (result !== 'success') why.push(`${job}: ${result || 'no result'}`);
-  }
-  if (!expected.length) why.push('no shards expected');
+  why.push(...jobProblems(results, mode, skip));
+  const skipsShards = skip.includes('integration');
+  if (!expected.length && !skipsShards) why.push('no shards expected');
+  if (expected.length && skipsShards) why.push('shards expected, but the plan skips integration');
   if (why.length) return { ok: false, line: `ci: FAIL ${why.join('; ')}` };
-  return { ok: true, line: `ci: PASS ${expected.length} shards` };
+  if (mode === 'full') return { ok: true, line: `ci: PASS ${expected.length} shards` };
+  const skipped = skip.length ? `, skipped ${skip.join(' and ')}` : '';
+  return { ok: true, line: `ci: PASS ${mode} plan, ${expected.length} shards${skipped}` };
 }
 
 export function releaseVerdict(text, tag) {
@@ -120,6 +134,8 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
       dir: { type: 'string', default: '' },
       expect: { type: 'string', default: '' },
       results: { type: 'string', default: '{}' },
+      mode: { type: 'string', default: 'full' },
+      skip: { type: 'string', default: '' },
       tag: { type: 'string', default: '' },
       version: { type: 'string', default: '' },
       published: { type: 'string', default: '' },
@@ -135,7 +151,10 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
     const lines = [];
     for (const name of expected)
       lines.push(...(await text(join(values.dir, `${name}.txt`))).split('\n'));
-    await say(shardsVerdict(expected, lines, JSON.parse(values.results)));
+    const skip = values.skip.split(/\s+/).filter(Boolean);
+    await say(
+      shardsVerdict(expected, lines, JSON.parse(values.results), { mode: values.mode, skip })
+    );
   } else if (command === 'release') {
     await say(releaseVerdict(await text(values.log), values.tag));
   } else if (command === 'publish') {

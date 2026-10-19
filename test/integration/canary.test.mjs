@@ -777,6 +777,9 @@ test('every gate in the workflows prints a verdict and its caller fails without 
     job,
     /scripts\/ci\/verdict\.mjs shards --dir artifacts\/verdicts --expect "\$SHARDS" --results "\{\\"plan\\":\\"\$PLAN\\"/
   );
+  assert.match(job, /--mode "\$MODE" --skip "\$SKIP"$/m);
+  assert.match(job, /MODE: \$\{\{ needs\.plan\.outputs\.mode \}\}/);
+  assert.match(job, /SKIP: \$\{\{ needs\.plan\.outputs\.skip \}\}/);
   const release = await read('release.yml');
   assert.match(release, /scripts\/ci\/verdict\.mjs release --log/);
   assert.match(release, /scripts\/ci\/verdict\.mjs publish /);
