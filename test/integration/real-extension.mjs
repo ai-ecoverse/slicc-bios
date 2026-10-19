@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -20,6 +20,7 @@ export const EXTENSIONS = [
   release('7.5.1', 'bdcd08b945cf69baa554cf01072d88436c3f8b97b05376cd369746598cf84a75'),
   release('7.6.2', '0871897fe03e96bddb16ab1c2712437e99835d01ca4566049a61ae888277c20e'),
   release('7.6.3', '17f0e53dd5d11465ea60d7ae4409cfbb9f48859501119d62dd5e5d4673a79426'),
+  release('7.6.4', 'd3523ce49e61b8db4c84d4470c5a1248b5765b3a9967b91c2a4e0f60a7f578f5'),
 ];
 export const [EXTENSION] = EXTENSIONS;
 export const SEVEN = 'https://seven.sliccy.ai/';
@@ -93,23 +94,74 @@ async function front(upstream) {
   };
 }
 
-export async function realExtension({ rules = [], args = [], extension = EXTENSION } = {}) {
+export async function display() {
+  if (process.platform !== 'linux' || process.env.DISPLAY) return () => {};
+  for (let n = 90; n < 120; n += 1) {
+    if (existsSync(`/tmp/.X11-unix/X${n}`) || existsSync(`/tmp/.X${n}-lock`)) continue;
+    const child = spawn('Xvfb', [`:${n}`, '-screen', '0', '1280x800x24', '-nolisten', 'tcp'], {
+      stdio: 'ignore',
+    });
+    let failed = null;
+    child.once('error', (error) => {
+      failed = error;
+    });
+    child.once('exit', (code) => {
+      failed ??= new Error(`Xvfb :${n} exited with ${code}`);
+    });
+    const deadline = Date.now() + 15000;
+    while (!existsSync(`/tmp/.X11-unix/X${n}`)) {
+      if (failed) throw new Error(`headed Chrome needs Xvfb on Linux: ${failed.message}`);
+      if (Date.now() > deadline) {
+        child.kill();
+        throw new Error(`Xvfb :${n} made no socket within 15 s`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    process.env.DISPLAY = `:${n}`;
+    return () => {
+      delete process.env.DISPLAY;
+      child.kill();
+    };
+  }
+  throw new Error('no free X display between :90 and :119');
+}
+
+export async function realExtension({
+  rules = [],
+  args = [],
+  extension = EXTENSION,
+  realistic = false,
+} = {}) {
   const root = await unpacked(extension);
+  const undisplay = realistic ? await display() : () => {};
   const upstream = { url: null };
-  const tls = await front(upstream);
-  const chrome = await launch({
-    extensions: [root],
-    args: [
-      ...args,
-      '--ignore-certificate-errors',
-      `--host-resolver-rules=${[`MAP seven.sliccy.ai 127.0.0.1:${tls.port}`, ...rules].join(', ')}`,
-    ],
-  });
+  let tls;
+  let chrome;
+  try {
+    tls = await front(upstream);
+    chrome = await launch({
+      realistic,
+      extensions: [root],
+      args: [
+        ...args,
+        '--ignore-certificate-errors',
+        `--host-resolver-rules=${[`MAP seven.sliccy.ai 127.0.0.1:${tls.port}`, ...rules].join(', ')}`,
+      ],
+    });
+  } catch (error) {
+    tls?.close();
+    undisplay();
+    throw error;
+  }
   upstream.url = new URL(chrome.url);
   const close = chrome.close;
-  chrome.close = (...rest) => {
+  chrome.close = async (...rest) => {
     tls.close();
-    return close.apply(chrome, rest);
+    try {
+      return await close.apply(chrome, rest);
+    } finally {
+      undisplay();
+    }
   };
   return chrome;
 }
