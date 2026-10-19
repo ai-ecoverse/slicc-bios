@@ -14,6 +14,8 @@ const PTH = 'opt/slicc/python/slicc-pydata.pth';
 const RECEIPT = 'var/lib/slicc/optional/pydata/package.json';
 
 const SCRIPT = [
+  'import sys',
+  "print('python %d.%d' % sys.version_info[:2])",
   'import numpy as np',
   'import pandas as pd',
   'import matplotlib',
@@ -24,7 +26,7 @@ const SCRIPT = [
   'a = np.arange(12).reshape(3, 4)',
   "print('numpy', np.__version__, int((a @ a.T).trace()), np.__file__.startswith('/opt/slicc/pydata/'))",
   "df = pd.DataFrame({'k': ['a', 'b', 'a', 'b'], 'v': [1, 2, 3, 4]})",
-  "print('pandas', pd.__version__, df.groupby('k')['v'].sum().to_dict())",
+  "print('pandas', pd.__version__, df.groupby('k')['v'].sum().to_dict(), df['k'].dtype)",
   'fig, ax = plt.subplots()',
   'ax.plot([1, 4, 9])',
   "fig.savefig('/home/plot.png')",
@@ -40,6 +42,12 @@ const SCRIPT = [
   "        print(name, 'returned', call().tolist())",
   '    except np.linalg.LinAlgError:',
   "        print(name, 'raised LinAlgError')",
+  'import PIL',
+  'from PIL import Image',
+  '',
+  "Image.new('RGB', (4, 3), (10, 20, 30)).save('/home/pixel.png')",
+  "with Image.open('/home/pixel.png') as back:",
+  "    print('pillow', PIL.__version__, back.format, back.size, back.getpixel((1, 1)))",
   'import scipy',
   'import scipy.linalg',
   'import scipy.optimize',
@@ -221,7 +229,7 @@ describe('Python data tools are back as attested builds: they install as one pro
     await shots(page, 'pydata-after');
   });
 
-  test('numpy, pandas, matplotlib and scipy compute (an array op, a groupby, a PNG plot, a linear solve, a minimum and a regression), numpy.linalg raises LinAlgError on a singular matrix (homescoop#1082), and scipy.odr is the one module missing', async () => {
+  test('on Python 3.15, numpy, pandas 3.0, matplotlib, pillow 13 and scipy compute (an array op, a groupby with pandas 3’s str dtype, a PNG plot, a PNG saved and opened again, a linear solve, a minimum and a regression), numpy.linalg raises LinAlgError on a singular matrix (homescoop#1082), and scipy.odr is the one module missing', async () => {
     await run(
       page,
       `clear; cd /home && echo ${Buffer.from(SCRIPT).toString('base64')} | base64 -d > /home/pydata.py && python3 /home/pydata.py; echo "pydata exit $((40 + $?))"`
@@ -229,8 +237,10 @@ describe('Python data tools are back as attested builds: they install as one pro
     await shows(page, 'pydata exit 4', PLOT);
     const text = await screen(page);
     assert.match(text, /pydata exit 40/, text);
-    assert.match(text, /numpy 2\.3\.2 506 True/);
-    assert.match(text, /pandas 2\.3\.2 \{'a': 4, 'b': 6\}/);
+    assert.match(text, /python 3\.15/);
+    assert.match(text, /numpy 2\.5\.4 506 True/);
+    assert.match(text, /pandas 3\.0\.6 \{'a': 4, 'b': 6\} str/);
+    assert.match(text, /pillow 13\.0\.0 PNG \(4, 3\) \(10, 20, 30\)/);
     assert.match(text, /matplotlib 3\.11\.2 True/);
     for (const name of ['solve', 'inv', 'cholesky'])
       assert.match(text, new RegExp(`${name} raised LinAlgError`), text);
@@ -244,10 +254,10 @@ describe('Python data tools are back as attested builds: they install as one pro
     await page.screenshot(new URL('pydata-terminal-light.png', page.dir));
   });
 
-  test('an install from before scipy (2026.10.18) shows as outdated, with Update', async () => {
+  test('an install of the Python 3.14 data tools (2026.10.19) shows as outdated, with Update', async () => {
     const receipt = await file(page, RECEIPT, null);
     const current = JSON.parse(receipt).version;
-    await file(page, RECEIPT, receipt.replace(`"version":"${current}"`, '"version":"2026.10.18"'));
+    await file(page, RECEIPT, receipt.replace(`"version":"${current}"`, '"version":"2026.10.19"'));
     await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
     await page.until(
       () =>
@@ -257,7 +267,7 @@ describe('Python data tools are back as attested builds: they install as one pro
           .find((item) => item.id === 'pydata').state === 'outdated'
     );
     const outdated = await row(page, 'pydata');
-    assert.equal(outdated.version, '2026.10.18');
+    assert.equal(outdated.version, '2026.10.19');
     assert.deepEqual(outdated.actions, ['update', 'remove']);
     await file(page, RECEIPT, receipt);
     await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));

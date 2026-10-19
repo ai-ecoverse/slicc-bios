@@ -30,9 +30,9 @@
   "@ai-ecoverse/wasix-python": {
     "id": "python",
     "label": "Python",
-    "description": "Python 3.14 with pip (pip, pip3 or python3 -m pip), for scripts and data work.",
+    "description": "Python 3.15 with pip (pip, pip3 or python3 -m pip), for scripts and data work.",
     "commands": ["python3", "pip", "pip3"],
-    "size": 57417828
+    "size": 61095245
   },
   "slicc-py-datatools": {
     "id": "pydata",
@@ -41,7 +41,7 @@
     "description": "numpy, pandas, matplotlib and scipy for Python, about 240 MB on disk. scipy lacks only the deprecated scipy.odr.",
     "commands": [],
     "requires": ["python"],
-    "size": 67796756
+    "size": 67207958
   },
   "@ai-ecoverse/slicc-jsh": {
     "id": "node",

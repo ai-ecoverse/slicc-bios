@@ -142,7 +142,7 @@ test('HEIF and AVIF images installs from the catalog, and heif-convert runs', {
   assert.deepEqual(page.errors, []);
 });
 
-test('Python data tools are back as homescoop’s attested CI builds: one project of numpy, pandas, matplotlib and scipy that locks a single numpy, at least 2.3.2-12 (homescoop#1082), and no Python of its own, with scipy 1.18.1-1 locked on that numpy and certified, and no decertified numpy or pandas certified', async () => {
+test('Python data tools are homescoop’s attested CI builds for the catalog’s Python 3.15: one project of numpy, pandas, matplotlib and scipy that locks a single numpy, dateutil and tzdata, no pytz and no Python of its own, every package certified, and no decertified numpy or pandas certified', async () => {
   const catalog = await read('catalog.json');
   const entry = catalog['slicc-py-datatools'];
   assert.equal(entry.id, 'pydata');
@@ -151,40 +151,44 @@ test('Python data tools are back as homescoop’s attested CI builds: one projec
   const retired = await read('retired.json');
   assert.equal(retired['slicc-py-datatools'], undefined);
   const manifest = await read('projects/pydata/package.json');
-  assert.deepEqual(Object.keys(manifest.dependencies).sort(), [
-    '@ai-ecoverse/py-matplotlib',
-    '@ai-ecoverse/py-numpy',
-    '@ai-ecoverse/py-pandas',
-    '@ai-ecoverse/py-scipy',
-  ]);
+  assert.deepEqual(manifest.dependencies, {
+    '@ai-ecoverse/py-matplotlib': '3.11.2-11',
+    '@ai-ecoverse/py-numpy': '2.5.4-1',
+    '@ai-ecoverse/py-pandas': '3.0.6-1',
+    '@ai-ecoverse/py-scipy': '1.18.1-2',
+  });
+  const { dependencies } = await read('package.json');
+  assert.equal(dependencies['@ai-ecoverse/wasix-python'], '3.15.0-2');
+  assert.match(catalog['@ai-ecoverse/wasix-python'].description, /^Python 3\.15 /);
   const lock = await readFile(new URL('projects/pydata/pnpm-lock.yaml', optional), 'utf8');
   const packages = lock.slice(lock.indexOf('\npackages:\n'), lock.indexOf('\nsnapshots:\n'));
   const locked = [...packages.matchAll(/^ {2}'(@ai-ecoverse\/[^@']+)@([^']+)':$/gm)].map(
     ([, name, version]) => [name, version]
   );
-  const numpys = locked.filter(([name]) => name === '@ai-ecoverse/py-numpy');
-  assert.deepEqual(numpys, [
-    ['@ai-ecoverse/py-numpy', manifest.dependencies['@ai-ecoverse/py-numpy']],
-  ]);
-  assert.ok(+numpys[0][1].match(/^2\.3\.2-(\d+)$/)[1] >= 12, 'numpy has the LinAlgError fix');
+  const only = (name) =>
+    locked.filter(([found]) => found === `@ai-ecoverse/${name}`).map(([, v]) => v);
+  assert.deepEqual(only('py-numpy'), ['2.5.4-1']);
+  assert.deepEqual(only('py-python-dateutil'), ['2.9.0-post0.3']);
+  assert.deepEqual(only('py-tzdata'), ['2026.4.0-3']);
+  assert.deepEqual(only('py-pytz'), []);
   assert.deepEqual(lock.match(/@ai-ecoverse\/wasix-python.*/g), [
     "@ai-ecoverse/wasix-python': '-'",
   ]);
-  assert.deepEqual(
-    locked.filter(([name]) => name === '@ai-ecoverse/py-scipy'),
-    [['@ai-ecoverse/py-scipy', '1.18.1-1']]
-  );
-  assert.ok(
-    lock.includes(
-      "'@ai-ecoverse/py-scipy@1.18.1-1':\n    dependencies:\n      '@ai-ecoverse/py-numpy': 2.3.2-12\n"
-    ),
-    'scipy is locked on the one numpy'
-  );
+  for (const name of ['py-scipy@1.18.1-2', 'py-pandas@3.0.6-1', 'py-matplotlib@3.11.2-11'])
+    assert.match(
+      lock,
+      new RegExp(
+        `'@ai-ecoverse/${name}':\\n {4}dependencies:\\n(?: {6}.*\\n)*? {6}'@ai-ecoverse/py-numpy': 2\\.5\\.4-1\\n`
+      ),
+      `${name} is locked on the one numpy`
+    );
   const certs = JSON.parse(await readFile(new URL('../certs.json', optional), 'utf8'));
-  assert.equal(
-    certs['@ai-ecoverse/py-scipy@1.18.1-1']?.sha256,
-    '656cdceb2c122caf491e55a926195163b27750219de0c92f7379784a4a0488b2'
-  );
+  for (const [name, version] of [...locked, ['@ai-ecoverse/wasix-python', '3.15.0-2']])
+    assert.match(
+      certs[`${name}@${version}`]?.sha256 ?? '',
+      /^[0-9a-f]{64}$/,
+      `${name}@${version} is certified`
+    );
   const withdrawn = Object.keys(certs).filter((key) => {
     const numpy = key.match(/^@ai-ecoverse\/py-numpy@2\.3\.2-(\d+)$/);
     const pandas = key.match(/^@ai-ecoverse\/py-pandas@2\.3\.2-(\d+)$/);

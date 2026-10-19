@@ -11,13 +11,25 @@
     "integrity": "sha512-Oy3FiC/o8LuUVf+iIapErmPX+oTCfBsYtRTz0ErLbjLfNE3dD8c8AKfmk3SramaKskhEICsLKpR6tB2l2fyMgA==",
     "sha256": "ffbbb748115e6ec0385ebd83e3d9867e3cf9b5062786b4e265f0b9f71a85eb3a"
   },
+  "@ai-ecoverse/py-contourpy@1.4.0-10": {
+    "integrity": "sha512-0jxZ7mJTCmdNBP6mw8DmUsjwH+54/EVhq0tF4aazBZxOVNrIAhkxzyFO+axC03ruqeBmxqO7xrRjLXi4U8TrjQ==",
+    "sha256": "22d1972202793750c0482d103cbfd21706a5b5e29a4db994089e495318009582"
+  },
   "@ai-ecoverse/py-cycler@0.12.1-8": {
     "integrity": "sha512-pEQtaxKH+Wl7CFTh3Ib1yv7zBPyJwjp5J3w6uIcXCZ9rou6DsyTkArur8dV2MTTwWSeBSyA5Ab+lTKg1vynS8Q==",
     "sha256": "58a03a4c2edd71ac981b38618fabcf7871dde8772fabbe5067dd784fc2c6f02d"
   },
+  "@ai-ecoverse/py-cycler@0.12.1-9": {
+    "integrity": "sha512-dpDtTrDfvQoX7IGcpqedDqL8HnZr6EynEgfWgTU/oDSh5HIGYWFy8ZIzJVvWLNC91s4sRuR7f4pNhQcTljqBLA==",
+    "sha256": "9a933ed573e8e6ac0d36382982a922a23cd544d4274fe95ab517e417f2e0e74b"
+  },
   "@ai-ecoverse/py-fonttools@4.66.1-8": {
     "integrity": "sha512-JDnfWy47fB2DKIlXUL9F2kPiP3fk+88nRJ2vsG/PWS3HvJiXC3cBcH3EaofQ1IQkM8hYITC5vEbKcs52i1AqHQ==",
     "sha256": "8319843b69aa82c28533256413116bba91b823f8839da836d3bf9ad78e16761e"
+  },
+  "@ai-ecoverse/py-fonttools@4.66.1-9": {
+    "integrity": "sha512-Iwq6OLXjbCEWy4Mp5JNVQbGcorqCOdM1caS5cKqZHtFWQLsc08osdfjvxgp9UATsTCxHEFtaDsPNcR0dt6vtbg==",
+    "sha256": "9e804981303c852f52179443115c646b533fa46ffe189091cc3c9ffaf83a0361"
   },
   "@ai-ecoverse/py-kiwisolver@1.5.1-5": {
     "integrity": "sha512-iPlyNsJP6gLptvS6YwMm32zRCTrZiJjTDmJWDMtalQ6xNorR0Hvx+DW2WGaktsb92RuggbTQmJhrVY85j3UO2A==",
@@ -31,21 +43,41 @@
     "integrity": "sha512-g8FYJbiJibagE/8EiXkHW1h/C3Mro3XBrPbryVjx0SRia1J8TSU/dLUMsCZsLFjhJIQ8BHgVJau1zRV8FOQTVw==",
     "sha256": "fc6034fc17ddc085fe3813d933caeb72845697474d550168bcf5a37fa10f5c9a"
   },
+  "@ai-ecoverse/py-kiwisolver@1.5.1-10": {
+    "integrity": "sha512-TZlFtzbVOIrfpc00OrW0geJKUEXvTtzkEthMPNgdxZL1Nu7ZPj0FlkDUZBe3mT+H38wHSf680uyQNnEQFGUmtw==",
+    "sha256": "ff450c4e07b5e18dd9fd3d2f09af78709c1425fbb3b0e4036fe6cde409db1b87"
+  },
   "@ai-ecoverse/py-matplotlib@3.11.2-10": {
     "integrity": "sha512-qPnMD//gTB3opOji5058b0Sxm20rFBqYJU+ryb72v57NbUcFtJjFwsKLIn9KWSQtDadTwXosy6OKJLuueGcGog==",
     "sha256": "ff8cbb8c321e89638986a0a2b7ab0463e716bb645b968557d0a36ce91cb716ee"
+  },
+  "@ai-ecoverse/py-matplotlib@3.11.2-11": {
+    "integrity": "sha512-WL4C1xMt4Np1YSGL6lA/Rnew7QY+KFb4bYqkklemqpixuMVKDsSjhNu44kH9sYy1Pv9TKdL1NMlm8ek506yrDA==",
+    "sha256": "e5088258cfd5caf96b7181780740db2ce8c8ace0f5f9572dd49ef7699163741e"
   },
   "@ai-ecoverse/py-numpy@2.3.2-12": {
     "integrity": "sha512-HTF1ZU/OnvHGB/yMh3rM0hOEg0WSPhZY3zwA9j9lP1rTw/dRx7HjgA5BLbOkb1CDcXUqIpzzuj8brBBXebqJqQ==",
     "sha256": "dc967993af49e0b14b9e921dc8f5787cb1847f1ec4648716d7ba00b1a0c50add"
   },
+  "@ai-ecoverse/py-numpy@2.5.4-1": {
+    "integrity": "sha512-jroJrpdiNCDBCh28XQUQ5o9yhnzdLi4atsmneTT/3fckF2RqD7yXPBPsQFSclEzI65XLoXxr01d3HhwbOpVw1g==",
+    "sha256": "9e983a3c6d6edbbdc34cdfbcd49710aa17c5f67161ac19c99a3e2d38cd4c0a6c"
+  },
   "@ai-ecoverse/py-packaging@26.3.0-8": {
     "integrity": "sha512-72/USkmgBx2nynrvsN/NDcxF3Fo3dLfrDm38hd3CrwY1F0DiWFb/K5rABgPJqL4dXlswmMCbh5yeq4SqDHdp6w==",
     "sha256": "a6ec815468b4d7671ed0348d257ecd4d3ce01158d4ed807f4afe01a5a41df7d7"
   },
+  "@ai-ecoverse/py-packaging@26.3.0-9": {
+    "integrity": "sha512-zO27IYtbxXR2EzC2iRcwFCjpKuq+2YehL+j1jZTw5pa2kIpfmnqPiq9VpWsW0KZEdtR8HSaOzRCSCMjdaEWcRQ==",
+    "sha256": "f6f428c41087905c63dd734529caeaba42c115c82647e75e500f4b2c0272aff7"
+  },
   "@ai-ecoverse/py-pandas@2.3.2-12": {
     "integrity": "sha512-nqsI28oT7QqY7hZaPQk4dyduoH5d9XyIo+ySHsl48y3NN//PBeJccLGvh1Oy3eFX/A20affs2LgeHtNW7Tq3jw==",
     "sha256": "bd93c7a9410a0203a3aab79e109cb4c6695638471fa8898ab5e7bfae3b204f7e"
+  },
+  "@ai-ecoverse/py-pandas@3.0.6-1": {
+    "integrity": "sha512-YZsaCKm8sWw8l+tNJHxlMsrLv85Pnr6JN4sJbarbE0HD7yaDJKfAT1nRxqK+WDeBJeOxLEV35txPZUU1v9zTUQ==",
+    "sha256": "bde59722c75faab81ec20565dcf68e4bf90672c0963d3f690520fda1d2a511ff"
   },
   "@ai-ecoverse/py-pillow@12.3.0-6": {
     "integrity": "sha512-oyuDfimQshBOfzQzWycwqxm4/a9FRojIHkPL/buwyyKE9zbGXdR7NRNFvmoNyOayNcgmUct0/sGXRVGXl4e7SA==",
@@ -59,9 +91,17 @@
     "integrity": "sha512-F8aRhrIEaV+UsD4NE+nPsSPVzecwwY0KVigKWYLGm8hrwj0GkUVGBm3G8mZ4q35d0gS5cgRUHaVTC4OVfd2Jmw==",
     "sha256": "0f18b1f9af0524ad9976f941931bd436e85c0087e00db598075274bf63ff51b1"
   },
+  "@ai-ecoverse/py-pillow@13.0.0-1": {
+    "integrity": "sha512-wEPGCPhqRV71C96UBOoFtyQ9AOMjcPlY+ENLdJ/w/jKCL2POxg96I25r/ivGIKu39czB9SDbw+v9FYPYpbAPbg==",
+    "sha256": "c0c1576184994545261fb2b6afa2d8d41375662d8b9b89d1bc4b2d93982fb256"
+  },
   "@ai-ecoverse/py-pyparsing@3.3.3-8": {
     "integrity": "sha512-vNSPczlRvzU3fcAH8c3GerZIm1LTOO8xijkDSe0NfBIXibJwdSHoq8Uzln5ikSnKx9nPBCWBwQF1B9XZ0UVJGQ==",
     "sha256": "56a9fc027288e0f7d7ab56f10de2f6bfc9913a139489174d0c3cdee942eb4d16"
+  },
+  "@ai-ecoverse/py-pyparsing@3.3.3-9": {
+    "integrity": "sha512-lw4vEDWDXCq5/xtljJ6UyWWNN9SBgWmOxEh18gqEkfnHMO7x0+znktkafypZHBZurmCgC/0L93M91Np9Cvnnlw==",
+    "sha256": "5e848d736032e4ec66722f2e42dc0f61ab81bf202bbf57bb5214b7b5830359b5"
   },
   "@ai-ecoverse/py-python-dateutil@2.9.0-post0.2": {
     "integrity": "sha512-RCa4x3MbuASOiDFxmiK6vmstyUvl8KffqQWJarGQa4MAHvtoT8tM3vl3iPTqbgGIPPUVfYSTy0bMKLNWx7uG9w==",
@@ -82,6 +122,10 @@
   "@ai-ecoverse/py-scipy@1.18.1-1": {
     "integrity": "sha512-cTMwklMN+Y0LgPyZvlfSEElzkkgP1fkrSGQGs3d3TOeATJmuP7CEBjpJBgkXOn1BFWsFUY6s2jPOaJKc3s9Thg==",
     "sha256": "656cdceb2c122caf491e55a926195163b27750219de0c92f7379784a4a0488b2"
+  },
+  "@ai-ecoverse/py-scipy@1.18.1-2": {
+    "integrity": "sha512-0OYAxms267R9M9nrfdhcptk3T7AUnW6la4hsp54JVybLpEqa26cCi2KK43UUjjW/xmjLNQBBHIOFT+5A14KKug==",
+    "sha256": "e8b9ea8b0f4dc9aec1dc7132991ad2e7f95a1e369c034b8b11224b69c7262450"
   },
   "@ai-ecoverse/py-six@1.17.0-2": {
     "integrity": "sha512-BNEgSp4l+y5dhmvKqqId7TO2Krchq/uw5vg/Q6bB6UKj+dfmr8ad42vGs4VFzTCnmqpGSgNRVg+TYeRi50t3yg==",
@@ -471,6 +515,10 @@
   "@ai-ecoverse/wasix-python@3.14.2-28": {
     "integrity": "sha512-hXJFFUR4/K1WMMjXjqng5jrv5YsMt4R4tqc0LA5zwMzivPbU62Ba9P0FFsLWsuFPYCPGcpHCR9iNUD4bCkzC8A==",
     "sha256": "f8fc4224a524c55fdeddf91fcb6d103ceb134907440137758b67696417c8cec1"
+  },
+  "@ai-ecoverse/wasix-python@3.15.0-2": {
+    "integrity": "sha512-vmq/gfnaicQHkVsrJqHjt5j+iNC3xuFh9RWkJo2wId/cWCykOJICKS1EE4OPNCYi3NoMfud7y++BFP+oSJ/djg==",
+    "sha256": "1c256bbc490a7c434187b8f444a7df662a4a9e080ac8a5bcce85287958b01a8b"
   },
   "@ai-ecoverse/wasix-ruby@3.4.11-10": {
     "integrity": "sha512-HY2DH3Mgvcpmn0icZqrv7oivk3eb4jcuf+HDCUuYq9YP1+rdQ/auyZpfVhu7UOQsTc+xkVyTsxHvLKifWxNVBw==",
