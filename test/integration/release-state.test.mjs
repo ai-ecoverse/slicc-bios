@@ -681,7 +681,7 @@ test('release-state fails a lockfile entry it can’t bind to a registry tarball
 test('the homescoop exceptions file is read at a pinned commit, never a branch', async () => {
   const { HOMESCOOP } = await import('../../scripts/cert/release-state.mjs');
   assert.ok(
-    HOMESCOOP.exceptions.ref === null || /^[0-9a-f]{40}$/.test(HOMESCOOP.exceptions.ref),
+    /^[0-9a-f]{40}$/.test(HOMESCOOP.exceptions.ref),
     'a sha, or none yet (every homescoop pin change then fails closed)'
   );
 });
@@ -700,6 +700,29 @@ test('wasi-slicc is slicc-cli’s: its release commit’s cert-review status, or
     true
   );
   assert.equal((await judge(fake({ tags: { certified: '1.44.7' } }), key, INTEGRITY)).ok, true);
+  const denied = await judge(
+    fake({ attestations: cli, statuses: { [COMMIT]: [status()] } }),
+    '@ai-ecoverse/wasi-slicc@1.44.4',
+    INTEGRITY
+  );
+  assert.equal(denied.ok, false, '1.44.4 never certified, though its commit carries a status');
+  assert.match(denied.line, /release run failed/);
+  const early = await judge(
+    fake({ attestations: cli, statuses: { [COMMIT]: [status()] } }),
+    '@ai-ecoverse/wasi-slicc@1.44.0',
+    INTEGRITY
+  );
+  assert.equal(early.ok, false, 'before 1.44.1 only the certified tag counts');
+  assert.equal(
+    (
+      await judge(
+        fake({ tags: { certified: '1.44.0' } }),
+        '@ai-ecoverse/wasi-slicc@1.44.0',
+        INTEGRITY
+      )
+    ).ok,
+    true
+  );
   assert.equal(
     (
       await judge(

@@ -13,7 +13,7 @@ export const HOMESCOOP = {
   exceptions: {
     repo: 'ai-ecoverse/homescoop',
     path: 'certification-exceptions.json',
-    ref: null,
+    ref: '78d41d0ab6757deba5db295fffa6e3f358cd1a9e',
   },
 };
 
@@ -22,6 +22,16 @@ const MAIN = {
   'slicc-jsh': 'slicc-jsh',
   mcpcat: 'mcpcat',
   'wasi-slicc': 'slicc-cli',
+};
+
+export const STATUS_RULES = {
+  'wasi-slicc': {
+    since: '1.44.1',
+    deny: {
+      '1.44.4': 'its release run failed, so it was never certified (slicc-cli coordinator, 10-19)',
+    },
+    why: 'slicc-cli certifies by PR from 1.44.1 (slicc-cli coordinator, 10-19)',
+  },
 };
 const TAGGED_TOO = new Set(['slicc-kernel', 'wasi-slicc']);
 
@@ -180,8 +190,12 @@ async function certifiedOrParent(src, repo, commit) {
 }
 
 async function byMain(src, { name, version, writer, prov, bound }) {
+  const rule = STATUS_RULES[name.replace(/^@ai-ecoverse\//, '')];
+  if (rule?.deny?.[version]) return no(`not certified: ${rule.deny[version]}`);
   if (writer.tag && (await byTag(src, name, version)).ok)
     return ok('certified (npm dist-tag certified), integrity bound');
+  if (rule?.since && semver.lt(version, rule.since, SEMVER))
+    return no(`not certified by PR: ${rule.why}, and its certified tag isn't this version`);
   if (!prov) return no('no npm provenance');
   if (!bound) return no('the provenance names another tarball');
   const repoUrl = `https://github.com/ai-ecoverse/${writer.repo}`;
