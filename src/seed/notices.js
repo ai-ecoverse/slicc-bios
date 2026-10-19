@@ -60,31 +60,46 @@ export function agentInstalling(from, to) {
 
 export const NO_SENDING = 'You can send messages once the agent starts.';
 
-export function holdComposer() {
+function lines() {
   const listeners = new Set();
   let line = null;
   return {
-    hold(on) {
-      const next = on ? NO_SENDING : null;
+    held: () => line,
+    on(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    take(next) {
       if (next === line) return;
       line = next;
       for (const listener of [...listeners]) listener(line);
     },
-    wrap: (agent) =>
-      new Proxy(agent, {
-        get(target, key) {
-          if (key === 'readOnly') return () => line;
-          if (key === 'on')
-            return (type, listener) => {
-              if (type !== 'readOnly') return target.on(type, listener);
-              listeners.add(listener);
-              return () => listeners.delete(listener);
-            };
-          const value = Reflect.get(target, key, target);
-          return typeof value === 'function' ? value.bind(target) : value;
-        },
-      }),
   };
+}
+
+export function holdComposer() {
+  const { take, ...source } = lines();
+  return { ...source, hold: (on) => take(on ? NO_SENDING : null) };
+}
+
+export function mirrorHold(os) {
+  const { take, ...source } = lines();
+  os.on('held', take);
+  void os.call('held').then(take, () => undefined);
+  return source;
+}
+
+export function heldAgent(agent, source) {
+  return new Proxy(agent, {
+    get(target, key) {
+      if (key === 'readOnly') return () => source.held();
+      if (key === 'on')
+        return (type, listener) =>
+          type === 'readOnly' ? source.on(listener) : target.on(type, listener);
+      const value = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
 }
 
 export const REPAIRED = 'slicc-bios.repaired';

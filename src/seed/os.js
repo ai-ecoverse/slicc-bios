@@ -43,7 +43,9 @@ import { createNetwork } from './network.js';
 import {
   agentInstalling,
   createNotices,
+  heldAgent,
   holdComposer,
+  mirrorHold,
   reportRepairs,
   reportStopped,
 } from './notices.js';
@@ -335,7 +337,7 @@ function base(os) {
   const network = os ? mirrorNetwork(os, reach.port) : reach.port;
   return {
     ...files,
-    agent: browser.stopping(composer.wrap(files.agent)),
+    agent: browser.stopping(heldAgent(files.agent, os ? mirrorHold(os) : composer)),
     updates: os ? mirrorUpdates(os) : updates,
     notices,
     approvals: approvals.port,
@@ -775,7 +777,8 @@ async function own() {
   files.files.on('mounts', links.changed);
   const served = serveUpdates(updates);
   const routes = serveNetwork(reach.port);
-  serving = createOs({ ...served.handlers, ...routes.handlers });
+  serving = createOs({ ...served.handlers, ...routes.handlers, held: () => composer.held() });
+  composer.on((line) => serving.emit('held', line));
   served.forward(serving);
   routes.forward(serving);
   await rows();
