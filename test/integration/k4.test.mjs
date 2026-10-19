@@ -425,9 +425,74 @@ test('enforce: the base set installs from /opt/slicc/base, whatever a root proce
   assert.notEqual(bios.state, 'failed', bios.error);
   assert.equal(await bash(), before);
   assert.equal(await read(page, 'node_modules/evil/package.json'), '');
-  for (const name of ['package.json', 'pnpm-lock.yaml', '.npmrc', 'pnpm-workspace.yaml']) {
-    assert.equal(await read(page, name), '', name);
+  assert.equal(await read(page, 'package.json'), '{"dependencies":{"evil":"1.0.0"}}\n');
+  assert.equal(await read(page, '.npmrc'), 'registry=https://evil.invalid/\n');
+  assert.match(await read(page, 'pnpm-lock.yaml'), /evil/);
+  assert.match(await read(page, 'pnpm-workspace.yaml'), /overrides/);
+});
+
+test('enforce: a package.json root makes at / survives another tab loading seven', async (t) => {
+  const page = await chrome.page(t);
+  await bootIn(page, 'enforce');
+  await run(
+    page,
+    'clear; cd / && echo \'{"name":"mine"}\' > /package.json && echo made-$((40 + 2))'
+  );
+  await shows(page, 'made-42');
+  const other = await page.tab();
+  await bootIn(other, 'enforce');
+  assert.equal(await read(page, 'package.json'), '{"name":"mine"}\n');
+  assert.deepEqual(page.errors, []);
+});
+
+test('enforce: pnpm add at / as root succeeds while other tabs load seven', {
+  timeout: 15 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  await bootIn(page, 'enforce');
+  await run(
+    page,
+    'clear; rm -f /package.json /pnpm-lock.yaml /tmp/adds; for n in 1 2 3 4 5 6; do mkdir -p /tmp/dep$n && echo "{\\"name\\":\\"dep$n\\",\\"version\\":\\"1.0.0\\"}" > /tmp/dep$n/package.json; done; cd / && (for n in 1 2 3 4 5 6; do pnpm add --lockfile-only file:/tmp/dep$n > /tmp/add$n.log 2>&1; echo "add$n=$?" >> /tmp/adds; done; echo adds-done >> /tmp/adds) & echo started-$((40 + 2))'
+  );
+  await shows(page, 'started-42');
+  const loads = [];
+  for (let i = 0; i < 3; i += 1) {
+    const other = await page.tab();
+    await bootIn(other, 'enforce');
+    loads.push(i);
+    if ((await read(page, 'tmp/adds')).includes('adds-done')) break;
   }
+  await page.within(10 * 60 * 1000, async () => {
+    let dir = await navigator.storage.getDirectory();
+    try {
+      dir = await dir.getDirectoryHandle('tmp');
+      return (await (await dir.getFileHandle('adds')).getFile())
+        .text()
+        .then((text) => text.includes('adds-done'));
+    } catch {
+      return false;
+    }
+  });
+  const last = await page.tab();
+  await bootIn(last, 'enforce');
+  const adds = await read(page, 'tmp/adds');
+  const logs = [];
+  for (let n = 1; n <= 6; n += 1)
+    logs.push(`add${n}: ${(await read(page, `tmp/add${n}.log`)).slice(-400)}`);
+  assert.deepEqual(
+    adds.match(/add\d=\d+/g),
+    ['add1=0', 'add2=0', 'add3=0', 'add4=0', 'add5=0', 'add6=0'],
+    `${adds}\n${logs.join('\n')}`
+  );
+  assert.ok(loads.length > 0);
+  const manifest = JSON.parse((await read(page, 'package.json')) || '{}');
+  assert.deepEqual(
+    Object.keys(manifest.dependencies ?? {}).sort(),
+    ['dep1', 'dep2', 'dep3', 'dep4', 'dep5', 'dep6'],
+    JSON.stringify(manifest)
+  );
+  assert.doesNotMatch(logs.join('\n'), /ENOENT/);
+  assert.deepEqual(page.errors, []);
 });
 
 test('an install from before users boots with them, its legacy files locked once, root still reading them', async (t) => {

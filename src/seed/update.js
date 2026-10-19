@@ -198,8 +198,35 @@ export async function fence(root, cwd) {
   }
 }
 
-export async function retire(root) {
-  for (const name of ROOTED) await remove(root, name);
+export const RECEIPT = 'var/lib/slicc/rooted.json';
+
+export async function digest(data) {
+  const bytes = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(data))
+  );
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function receipt(root) {
+  try {
+    return JSON.parse((await text(root, RECEIPT)) ?? '{}');
+  } catch {
+    return {};
+  }
+}
+
+export async function retire(root, deployed = {}) {
+  const kept = await receipt(root);
+  const retired = [];
+  for (const name of ROOTED) {
+    const data = await text(root, name);
+    if (data === null) continue;
+    if (data !== deployed[name] && (await digest(data)) !== kept[name]) continue;
+    await remove(root, name);
+    retired.push(`/${name}`);
+  }
+  if ((await text(root, RECEIPT)) !== null) await remove(root, RECEIPT);
+  return retired;
 }
 
 const shielded = (path) => PROTECTED.some((root) => path === root || path.startsWith(`${root}/`));
@@ -375,8 +402,19 @@ async function install(kernel, from, report, record) {
   await write(root, `${folder}package.json`, manifest);
   await write(root, `${folder}pnpm-lock.yaml`, lock);
   if (guard.on) {
-    await write(root, `${folder}pnpm-workspace.yaml`, await fetchText('pnpm-workspace.yaml', from));
-    await retire(root);
+    const workspace = await fetchText('pnpm-workspace.yaml', from);
+    await write(root, `${folder}pnpm-workspace.yaml`, workspace);
+    await retire(root, {
+      'package.json': manifest,
+      'pnpm-lock.yaml': lock,
+      'pnpm-workspace.yaml': workspace,
+    });
+  } else {
+    const written = {
+      'package.json': await digest(manifest),
+      'pnpm-lock.yaml': await digest(lock),
+    };
+    await write(root, RECEIPT, JSON.stringify(written));
   }
   await pnpm(kernel, cwd, report, null, [...INSTALL, ...flags]);
   const base = guard.on ? { base: BASE } : {};
