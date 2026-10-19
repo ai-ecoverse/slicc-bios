@@ -65,7 +65,7 @@ const view = (record) => ({
 const list = () => ({
   secrets: live().map(view),
   refused: [],
-  audit: [],
+  audit: state.audit ?? [],
   auditMore: false,
   exits: { file: '/etc/slicc/secrets-policy.toml', sha256: null, restricted: [] },
 });
@@ -101,7 +101,7 @@ const page = (port) => (event) => {
   const result = (record) => ({ name: record.name, placeholder: record.placeholder, state: record.removedAt ? 'removed' : 'inert' });
   if (op === 'status') return reply({ status: status() });
   if (op === 'list') return reply({ list: list() });
-  if (op === 'audit') return reply({ audit: [], more: false });
+  if (op === 'audit') return reply({ audit: state.audit ?? [], more: false });
   if (op === 'placeholders') return reply({ placeholders: placeholders(), scrub: scrub() });
   if (op === 'sealed' && event.data.req?.op === 'seal') {
     if (locked) return reply({ reply: { v: 1, error: { code: 'EACCES', message: 'vault is locked' } } });
