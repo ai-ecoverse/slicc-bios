@@ -58,6 +58,20 @@ test('every catalog entry has a unique id, a label, a description, commands and 
   for (const id of ids) visit(id, []);
 });
 
+test('no two catalog entries provide the same command, so installing one never silently shadows another', async () => {
+  const owners = new Map();
+  for (const [name, entry] of Object.entries(await read('catalog.json')))
+    for (const command of entry.commands ?? []) {
+      assert.equal(
+        owners.get(command),
+        undefined,
+        `${command}: ${owners.get(command)} and ${name}`
+      );
+      owners.set(command, name);
+    }
+  assert.equal(owners.get('magick'), '@ai-ecoverse/wasm-imagemagick-heif');
+});
+
 test('a project entry ships its manifest, a lockfile and a workspace that overrides Python away', async () => {
   const catalog = await read('catalog.json');
   const projects = Object.entries(catalog).filter(([, entry]) => entry.kind === 'project');
