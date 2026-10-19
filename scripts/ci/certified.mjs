@@ -1,11 +1,17 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises';
 import { argv, env, exit } from 'node:process';
+import { GATED } from '../cert/apply.mjs';
 
 export const PINNED = [
   'src/packages/package.json',
   'src/packages/optional/package.json',
   'src/packages/agent/package.json',
+];
+export const GATE_FILES = [
+  ...PINNED,
+  'src/packages/tailscale/package.json',
+  'src/packages/grammars/package.json',
 ];
 export const BOT = 'github-actions[bot]';
 export const RENOVATE = 'renovate[bot]';
@@ -18,20 +24,19 @@ const NAMED = new RegExp(
 );
 const CHECKED = /<sub>sha check ok:/;
 
-export function changed(base, head) {
+export function changed(base, head, keep = () => true) {
   const found = new Set();
-  for (const path of PINNED) {
+  for (const path of GATE_FILES) {
     const before = base[path]?.dependencies ?? {};
     for (const [name, version] of Object.entries(head[path]?.dependencies ?? {}))
-      if (name.startsWith('@ai-ecoverse/') && before[name] !== version)
+      if (name.startsWith('@ai-ecoverse/') && keep(name) && before[name] !== version)
         found.add(`${name}@${version}`);
   }
   return [...found].sort();
 }
 
-export function gate(pins, comments) {
-  if (!pins.length)
-    return { ok: true, line: 'cert-gate: PASS no pinned @ai-ecoverse package changes' };
+export function gate(pins, comments, none = 'no pinned @ai-ecoverse package changes') {
+  if (!pins.length) return { ok: true, line: `cert-gate: PASS ${none}` };
   const reviews = comments.filter((comment) => comment.user === BOT);
   const why = [];
   for (const id of pins) {
@@ -44,7 +49,7 @@ export function gate(pins, comments) {
       latest &&
       CHECKED.test(latest.body) &&
       [...latest.body.matchAll(PASSED)].some(([, name, version]) => `${name}@${version}` === id);
-    if (!latest) why.push(`${id} has no cert review`);
+    if (!latest) why.push(`${id} has no cert review (label the PR cert-review)`);
     else if (!passed) why.push(`${id} is not certified by its latest cert review`);
   }
   if (why.length) return { ok: false, line: `cert-gate: FAIL ${why.join(', ')}` };
@@ -66,7 +71,7 @@ async function api(path, accept = 'application/vnd.github+json') {
 
 async function manifests(repo, ref) {
   const found = {};
-  for (const path of PINNED) {
+  for (const path of GATE_FILES) {
     const text = await api(
       `/repos/${repo}/contents/${path}?ref=${ref}`,
       'application/vnd.github.raw'
@@ -95,8 +100,7 @@ async function main() {
   if (!number)
     return { ok: true, line: `cert-gate: PASS ${event || 'this run'} is not for a pull request` };
   const pr = await api(`/repos/${repo}/pulls/${number}`);
-  if (pr.user?.login !== RENOVATE)
-    return { ok: true, line: `cert-gate: PASS #${number} is not a Renovate PR` };
+  const renovate = pr.user?.login === RENOVATE;
   if (event === 'workflow_dispatch' && pr.head.sha !== env.GITHUB_SHA)
     return {
       ok: false,
@@ -105,8 +109,10 @@ async function main() {
   const { merge_base_commit: base } = await api(
     `/repos/${repo}/compare/${pr.base.ref}...${pr.head.sha}`
   );
-  const pins = changed(await manifests(repo, base.sha), await manifests(repo, pr.head.sha));
-  return gate(pins, await comments(repo, number));
+  const keep = renovate ? () => true : (name) => GATED.test(name);
+  const pins = changed(await manifests(repo, base.sha), await manifests(repo, pr.head.sha), keep);
+  const none = renovate ? 'no pinned @ai-ecoverse package changes' : 'no gated pin changes';
+  return gate(pins, await comments(repo, number), none);
 }
 
 if (import.meta.url === `file://${argv[1]}`) {

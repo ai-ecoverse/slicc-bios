@@ -243,7 +243,7 @@ jobs:
           SHARDS: ${{ needs.plan.outputs.shards }}
         run: node scripts/ci/verdict.mjs shards --dir artifacts/verdicts --expect "$SHARDS" --results "{\"plan\":\"$PLAN\",\"lint\":\"$LINT\",\"integration\":\"$INTEGRATION\",\"vendors\":\"$VENDORS\"}"
 
-      - name: A Renovate PR passes only with cert review's certified verdict for every package it pins anew
+      - name: A PR passes only with cert review's certified verdict for every gated pin it changes, and a Renovate PR for every pin
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
