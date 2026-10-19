@@ -1,4 +1,5 @@
 import { compare } from './packages.js';
+import { production } from './site.js';
 
 export const API = 'https://api.github.com';
 export const REGISTRY = 'https://registry.npmjs.org';
@@ -96,15 +97,28 @@ export function idbStore(idb = globalThis.indexedDB) {
   };
 }
 
-export function apiOrigin(storage) {
+export function apiOrigin({
+  origin = globalThis.location?.origin,
+  storage = globalThis.localStorage,
+  report = (message) => console.error(message),
+} = {}) {
+  let wanted = null;
   try {
-    const kept = (storage ?? globalThis.localStorage)?.getItem(ORIGIN_KEY);
-    if (!kept) return API;
-    const url = new URL(kept);
-    return /^https?:$/.test(url.protocol) ? url.origin : API;
+    wanted = storage?.getItem(ORIGIN_KEY) ?? null;
   } catch {
+    wanted = null;
+  }
+  if (production(URL.parse(origin ?? '')?.host)) {
+    if (wanted !== null) report(`releases: ${ORIGIN_KEY} is refused on ${origin}; using ${API}`);
     return API;
   }
+  if (wanted === null) return API;
+  const parsed = URL.parse(wanted);
+  if (!parsed || !/^https?:$/.test(parsed.protocol) || parsed.origin !== wanted) {
+    report(`releases: ${ORIGIN_KEY} must be an http(s) origin; using ${API}`);
+    return API;
+  }
+  return parsed.origin;
 }
 
 const plain = { credentials: 'omit', referrerPolicy: 'no-referrer', cache: 'no-store' };
