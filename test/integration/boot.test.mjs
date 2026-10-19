@@ -101,3 +101,34 @@ test('halts at the packages step when a tarball fails its integrity check', asyn
   });
   assert.ok(!opfs.includes('node_modules'));
 });
+
+test('goes on under the active worker when an updated one waits and never activates', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  const current = await readFile(new URL('../../src/sw.js', import.meta.url), 'utf8');
+  const stuck = current.replace(
+    "self.addEventListener('install', () => self.skipWaiting());",
+    "self.addEventListener('install', () => {});"
+  );
+  assert.notEqual(stuck, current);
+  chrome.overrides.set('/sw.js', stuck);
+  const bios = await watch(page);
+  const warnings = [];
+  const off = chrome.cdp.on(({ method, params }) => {
+    if (method === 'Runtime.consoleAPICalled' && params.type === 'warning')
+      warnings.push(params.args.map((arg) => arg.value).join(' '));
+  });
+  const started = Date.now();
+  await boot(page);
+  off();
+  chrome.overrides.delete('/sw.js');
+  assert.deepEqual(bios.states(), booted);
+  assert.ok(Date.now() - started < 60000);
+  assert.deepEqual(
+    warnings.filter((text) => text.startsWith('bios:')),
+    [
+      `bios: ${new URL('sw.js', chrome.url).href} is still installed, going on under the active worker`,
+    ]
+  );
+  assert.deepEqual(page.errors, []);
+});
