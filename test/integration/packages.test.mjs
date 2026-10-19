@@ -393,6 +393,8 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
       'gpg available',
       'mcpcat available',
       'imagemagick available',
+      'zip available',
+      'xxd available',
     ]
   );
 

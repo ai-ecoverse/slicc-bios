@@ -210,6 +210,7 @@ const WRITERS = new Set([
   'rsync',
   'unzip',
   'zip',
+  'xxd',
   'magick',
   'magick-open',
   'convert',
