@@ -4,7 +4,7 @@
     "label": "git",
     "description": "Version control for your projects.",
     "commands": ["git"],
-    "size": 18836262
+    "size": 18814699
   },
   "@ai-ecoverse/wasi-gh": {
     "id": "gh",
@@ -18,14 +18,14 @@
     "label": "OpenSSH",
     "description": "Connects to servers and copies files with ssh, scp and sftp; git over ssh too.",
     "commands": ["ssh", "scp", "sftp", "ssh-keygen", "ssh-add"],
-    "size": 3355615
+    "size": 3360417
   },
   "@ai-ecoverse/wasi-slicc": {
     "id": "slicc",
     "label": "slicc",
     "description": "Prompts, watches and aborts another seven's agent from this terminal: slicc <join-url> prompt, watch or abort. For root and cones; the other seven must allow remote control from this one in its Linked devices.",
     "commands": ["slicc"],
-    "size": 1324902
+    "size": 1349790
   },
   "@ai-ecoverse/wasix-python": {
     "id": "python",
@@ -56,21 +56,21 @@
     "description": "sliccy:browser for .jsh scripts: find and open tabs, run code in them, read cookies and localStorage, and fetch as the page, through seven's browser automation. Seven's own tab and the vault stay out of reach.",
     "commands": [],
     "requires": ["node"],
-    "size": 1451643
+    "size": 1525841
   },
   "@ai-ecoverse/wasix-ruby": {
     "id": "ruby",
     "label": "Ruby",
     "description": "Ruby 3.4 with gem, bundler, rake, irb and erb, for scripts and gems. Commands from gem install run by name in a login shell.",
     "commands": ["ruby", "gem", "bundle", "rake", "irb", "erb"],
-    "size": 9758294
+    "size": 9762412
   },
   "@ai-ecoverse/wasix-perl": {
     "id": "perl",
     "label": "Perl",
     "description": "Perl 5.42 with cpan, perldoc and prove, for scripts and text processing.",
     "commands": ["perl", "cpan", "perldoc", "prove", "pod2html", "pod2man", "pod2text"],
-    "size": 15533777
+    "size": 19663059
   },
   "@ai-ecoverse/wasi-biome": {
     "id": "biome",
@@ -84,56 +84,56 @@
     "label": "PDF tools",
     "description": "Reads PDFs: text, page images, and splitting or joining files.",
     "commands": ["pdftotext", "pdfinfo", "pdftoppm", "pdfimages", "pdfunite", "pdfseparate"],
-    "size": 2583976
+    "size": 2584619
   },
   "@ai-ecoverse/wasm-qpdf": {
     "id": "qpdf",
     "label": "qpdf",
     "description": "Merges, splits, rotates and encrypts PDF files.",
     "commands": ["qpdf"],
-    "size": 992082
+    "size": 975365
   },
   "@ai-ecoverse/wasm-libheif": {
     "id": "heif",
     "label": "HEIF and AVIF images",
     "description": "HEIC/HEIF and AVIF image decoder (heif-convert, heif-info). Includes an HEVC decoder (libde265); HEVC is patent-encumbered. LGPL-3.0-or-later.",
     "commands": ["heif-convert", "heif-dec", "heif-info"],
-    "size": 4541841
+    "size": 4190759
   },
   "@ai-ecoverse/wasm-rsync": {
     "id": "rsync",
     "label": "rsync",
     "description": "Copies and syncs folders, sending only what changed, also to rsync:// servers.",
     "commands": ["rsync"],
-    "size": 984555
+    "size": 376423
   },
   "@ai-ecoverse/wasm-sqlite3": {
     "id": "sqlite3",
     "label": "SQLite",
     "description": "The sqlite3 shell 3.54, for SQLite databases. journal_mode=WAL falls back to delete, and a WAL database made elsewhere opens as \"file is not a database\".",
     "commands": ["sqlite3"],
-    "size": 668627
+    "size": 678323
   },
   "@ai-ecoverse/wasm-screen": {
     "id": "screen",
     "label": "screen",
     "description": "Keeps a terminal session running to detach and reattach, from any terminal.",
     "commands": ["screen"],
-    "size": 715750
+    "size": 715907
   },
   "@ai-ecoverse/wasi-dig": {
     "id": "dig",
     "label": "dig",
     "description": "Looks up DNS records, tailnet names included.",
     "commands": ["dig"],
-    "size": 207317
+    "size": 214326
   },
   "@ai-ecoverse/wasix-websocat": {
     "id": "websocat",
     "label": "websocat",
     "description": "Connects to WebSocket servers (ws:// and wss://) from the terminal. An upstream alpha (websocat 4). It speaks raw TCP, so hosts outside seven need an exit: a linked slicc CLI or a Tailscale exit node. A listener that can't bind still exits 0.",
     "commands": ["websocat"],
-    "size": 1266828
+    "size": 1267173
   },
   "@ai-ecoverse/wasi-ntfy": {
     "id": "ntfy",
@@ -147,7 +147,7 @@
     "label": "fnox",
     "description": "Secrets by name: fnox keeps placeholders and seven's vault keeps the values. Pipe a value into fnox set NAME to add or change one; fnox exec hands a program the values the secret rules allow.",
     "commands": ["fnox"],
-    "size": 2154238
+    "size": 2156061
   },
   "@ai-ecoverse/wasix-gnupg": {
     "id": "gpg",

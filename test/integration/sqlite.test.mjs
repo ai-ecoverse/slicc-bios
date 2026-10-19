@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { after, test } from 'node:test';
 import { actPackage, boot, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
+
+const PINNED = JSON.parse(
+  readFileSync(new URL('../../src/packages/optional/package.json', import.meta.url), 'utf8')
+).dependencies['@ai-ecoverse/wasm-sqlite3'];
 
 const chrome = await launch({ timeout: 120000 });
 after(() => chrome.close());
@@ -36,7 +41,7 @@ test('a cone makes a SQLite database, writes and reads it, and journal_mode=WAL 
     'sqlite3'
   );
   assert.equal(await actPackage(page, 'sqlite3', 'install'), 'ok');
-  assert.equal((await row(page, 'sqlite3')).version, '3.54.0-3');
+  assert.equal((await row(page, 'sqlite3')).version, PINNED);
   await run(
     page,
     `clear; cd /; sudo -u cone bash -c 'cd && echo first=$(sqlite3 tides.db "create table tide(height); insert into tide values (42); select height from tide;") && echo journal=$(sqlite3 tides.db "pragma journal_mode=wal;") && echo rows=$(sqlite3 tides.db "insert into tide values (43); select count(*) from tide;") && echo check=$(sqlite3 tides.db "pragma integrity_check;")'; echo done-$((40 + 2))`
