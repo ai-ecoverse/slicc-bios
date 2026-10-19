@@ -154,6 +154,7 @@ export async function fakeProxy({ origin, key, port = 0, answer, exports = {} })
   const cors = { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' };
   const nonces = new Map();
   const dropped = [];
+  const registered = [];
   const server = createServer((req, res) => {
     const path = new URL(req.url, 'http://x');
     const nonce = path.searchParams.get('nonce');
@@ -215,6 +216,7 @@ export async function fakeProxy({ origin, key, port = 0, answer, exports = {} })
         return;
       }
       void readBody(req).then((body) => {
+        registered.push(JSON.parse(body.toString()).nonce);
         nonces.set(JSON.parse(body.toString()).nonce, { visited: false, result: null });
         res.writeHead(204, cors);
         res.end();
@@ -268,6 +270,7 @@ export async function fakeProxy({ origin, key, port = 0, answer, exports = {} })
     probes,
     grants,
     dropped,
+    registered,
     requests,
     close: () =>
       new Promise((resolve) => {
