@@ -346,7 +346,7 @@ function attach() {
       () =>
         setTimeout(
           () => scene().catch((error) => set('render', `static artwork, ${error.message}`)),
-          repeat ? 600 : 0
+          repeat ? 1500 : 0
         ),
       { timeout: 300 }
     )

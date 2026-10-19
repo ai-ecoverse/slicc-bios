@@ -150,7 +150,7 @@ test('a cold boot and repeat boots through the BIOS reach the terminal prompt', 
   const page = await chrome.page(t);
   const cold = await timed(page);
   const repeats = [];
-  for (let run = 0; run < 3; run++) repeats.push(await timed(page));
+  for (let run = 0; run < 5; run++) repeats.push(await timed(page));
   const warm = {
     ui: median(repeats.map((run) => run.ui)),
     prompt: median(repeats.map((run) => run.prompt)),
