@@ -46,7 +46,7 @@
   "test/integration/packages.test.mjs": 145,
   "test/integration/perl.test.mjs": 68,
   "test/integration/pins.test.mjs": 1,
-  "test/integration/progress.test.mjs": 50,
+  "test/integration/progress.test.mjs": 100,
   "test/integration/pydata.test.mjs": 600,
   "test/integration/quiet-body.test.mjs": 160,
   "test/integration/remote.test.mjs": 579,
