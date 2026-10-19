@@ -229,17 +229,20 @@ async function rewrite(path, file, base, run) {
   const query = run ? `?run=${encodeURIComponent(run)}` : '';
   const key = `${path}${query}`;
   const cached = transformed.get(key);
-  if (cached?.stamp === file.lastModified) return cached.text;
+  if (cached?.stamp === file.lastModified) return { text: cached.text, timing: CACHED };
   const suffix = (target) => (target.startsWith(AGENT) ? query : '');
+  const started = performance.now();
   const text = await transform(path, await file.text(), { resolve, base, suffix });
   transformed.set(key, { stamp: file.lastModified, text });
-  return text;
+  return { text, timing: `transform;dur=${(performance.now() - started).toFixed(1)}` };
 }
 
-function respond(body, type, origin, status = 200) {
+const CACHED = 'transform;desc="cached"';
+
+function respond(body, type, origin, status = 200, extra = {}) {
   return new Response(body, {
     status,
-    headers: { ...isolation, 'content-type': type, 'x-served-from': origin },
+    headers: { ...isolation, 'content-type': type, 'x-served-from': origin, ...extra },
   });
 }
 
@@ -377,7 +380,8 @@ async function serve(request, controller) {
     file = await checked(at, file);
     if (!script.test(file.name)) return respond(file, type, 'opfs');
     const run = path.startsWith(AGENT) ? url.searchParams.get('run') : null;
-    return respond(await rewrite(path, file, base, run), type, 'opfs');
+    const { text, timing } = await rewrite(path, file, base, run);
+    return respond(text, type, 'opfs', 200, { 'server-timing': timing });
   } catch (error) {
     return refuse(error, request, scope);
   }
