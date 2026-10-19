@@ -38,7 +38,7 @@ import { change, userRows } from './layer.js';
 import { createLeaders, proxyOf } from './leaders.js';
 import { createLinks, installLocal, labelStore, trustHostKey } from './link.js';
 import { serveLoopback } from './loopback.js';
-import { createFolders, KEY, offTheRecord } from './mounts.js';
+import { createFolders, KEY, layoutMnt, offTheRecord } from './mounts.js';
 import { createNetwork } from './network.js';
 import { createNotices, reportRepairs, reportStopped } from './notices.js';
 import { createPackages, globalDir, loadCatalog, writeListing } from './packages.js';
@@ -707,6 +707,7 @@ async function own() {
   await lockLegacy(kernel, { text, write, root }).catch((error) =>
     console.warn(`legacy files: ${error.message}`)
   );
+  await layoutMnt(kernel).catch((error) => console.warn(`/mnt: ${error.message}`));
   if (mode === 'report') {
     await watchProtected({
       kernel,

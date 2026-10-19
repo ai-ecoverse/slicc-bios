@@ -142,7 +142,7 @@ test('HEIF and AVIF images installs from the catalog, and heif-convert runs', {
   assert.deepEqual(page.errors, []);
 });
 
-test('Python data tools are back as homescoop’s attested CI builds: one project of numpy, pandas and matplotlib that locks a single numpy, at least 2.3.2-12 (homescoop#1082), and no Python of its own, with scipy neither locked nor certified and no decertified numpy or pandas certified', async () => {
+test('Python data tools are back as homescoop’s attested CI builds: one project of numpy, pandas, matplotlib and scipy that locks a single numpy, at least 2.3.2-12 (homescoop#1082), and no Python of its own, with scipy 1.18.1-1 locked on that numpy and certified, and no decertified numpy or pandas certified', async () => {
   const catalog = await read('catalog.json');
   const entry = catalog['slicc-py-datatools'];
   assert.equal(entry.id, 'pydata');
@@ -155,6 +155,7 @@ test('Python data tools are back as homescoop’s attested CI builds: one projec
     '@ai-ecoverse/py-matplotlib',
     '@ai-ecoverse/py-numpy',
     '@ai-ecoverse/py-pandas',
+    '@ai-ecoverse/py-scipy',
   ]);
   const lock = await readFile(new URL('projects/pydata/pnpm-lock.yaml', optional), 'utf8');
   const packages = lock.slice(lock.indexOf('\npackages:\n'), lock.indexOf('\nsnapshots:\n'));
@@ -169,13 +170,25 @@ test('Python data tools are back as homescoop’s attested CI builds: one projec
   assert.deepEqual(lock.match(/@ai-ecoverse\/wasix-python.*/g), [
     "@ai-ecoverse/wasix-python': '-'",
   ]);
-  assert.ok(!lock.includes('py-scipy'), 'scipy stays out until it is certified');
+  assert.deepEqual(
+    locked.filter(([name]) => name === '@ai-ecoverse/py-scipy'),
+    [['@ai-ecoverse/py-scipy', '1.18.1-1']]
+  );
+  assert.ok(
+    lock.includes(
+      "'@ai-ecoverse/py-scipy@1.18.1-1':\n    dependencies:\n      '@ai-ecoverse/py-numpy': 2.3.2-12\n"
+    ),
+    'scipy is locked on the one numpy'
+  );
   const certs = JSON.parse(await readFile(new URL('../certs.json', optional), 'utf8'));
+  assert.equal(
+    certs['@ai-ecoverse/py-scipy@1.18.1-1']?.sha256,
+    '656cdceb2c122caf491e55a926195163b27750219de0c92f7379784a4a0488b2'
+  );
   const withdrawn = Object.keys(certs).filter((key) => {
     const numpy = key.match(/^@ai-ecoverse\/py-numpy@2\.3\.2-(\d+)$/);
     const pandas = key.match(/^@ai-ecoverse\/py-pandas@2\.3\.2-(\d+)$/);
     return (
-      key.startsWith('@ai-ecoverse/py-scipy@') ||
       (numpy && +numpy[1] >= 4 && +numpy[1] <= 10) ||
       (pandas && +pandas[1] >= 5 && +pandas[1] <= 11)
     );

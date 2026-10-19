@@ -20,6 +20,9 @@ importers:
       '@ai-ecoverse/py-pandas':
         specifier: 2.3.2-12
         version: 2.3.2-12
+      '@ai-ecoverse/py-scipy':
+        specifier: 1.18.1-1
+        version: 1.18.1-1
 
 packages:
 
@@ -58,6 +61,9 @@ packages:
 
   '@ai-ecoverse/py-pytz@2026.4.0-3':
     resolution: {integrity: sha512-9MSaqY1ib8QPFsJsdgHVbmefztHru1q9EGoBEVq3jrcLRDWEIl5d2nFGgM5f6kVxzuAbVnOwrznY1yV1HjBLJQ==}
+
+  '@ai-ecoverse/py-scipy@1.18.1-1':
+    resolution: {integrity: sha512-cTMwklMN+Y0LgPyZvlfSEElzkkgP1fkrSGQGs3d3TOeATJmuP7CEBjpJBgkXOn1BFWsFUY6s2jPOaJKc3s9Thg==}
 
   '@ai-ecoverse/py-six@1.17.0-3':
     resolution: {integrity: sha512-9Ej+52JMzsWScBSqR4K95DgXlrhY5i+UAEwST3/7CMWjx8ENOK/PYIBsmlxI9p4AKJ8U5p3ckHqQgyi9Sf6xDg==}
@@ -110,6 +116,10 @@ snapshots:
       '@ai-ecoverse/py-six': 1.17.0-3
 
   '@ai-ecoverse/py-pytz@2026.4.0-3': {}
+
+  '@ai-ecoverse/py-scipy@1.18.1-1':
+    dependencies:
+      '@ai-ecoverse/py-numpy': 2.3.2-12
 
   '@ai-ecoverse/py-six@1.17.0-3': {}
 

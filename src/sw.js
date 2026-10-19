@@ -57,18 +57,9 @@ const BIOS = `/${new URL('./', self.location).pathname.slice(SCOPE.length)}`;
 const BIOS_URL = new URL('./', self.location).href;
 const SHARED = BIOS !== '/';
 const own = new Set(
-  [
-    '',
-    'index.html',
-    'bios.js',
-    'bios.css',
-    'splash.js',
-    'card.js',
-    'scene.js',
-    'installer.js',
-    'sw.js',
-    'manifest.json',
-  ].map((name) => `${BIOS}${name}`)
+  ['', 'index.html', 'bios.js', 'bios.css', 'installer.js', 'sw.js', 'manifest.json'].map(
+    (name) => `${BIOS}${name}`
+  )
 );
 const ownDirs = [
   ...['sw/', 'seed/', 'packages/', 'icons/'].map((dir) => `${BIOS}${dir}`),
