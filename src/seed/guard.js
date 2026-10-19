@@ -829,12 +829,13 @@ class Guard {
   async event(message) {
     const method = message.method ?? '';
     const { sessionId } = message;
+    const foreign = this.foreign({ ...message, method });
     if (this.navSessions.has(sessionId))
       return this.navEvent(message, this.navSessions.get(sessionId));
     if (method.startsWith('Target.') && (await this.targetEvent(message))) return;
     if (this.blocked.has(sessionId) && PAUSES.has(method)) return this.release(message);
     if (this.hidden(sessionId)) return;
-    if (this.foreign({ ...message, method })) return;
+    if (foreign) return;
     if (this.walked({ ...message, method })) return this.cut(sessionId);
     if (sessionId && method.startsWith('Runtime.') && !this.runtimes.has(sessionId)) return;
     if (await this.swallowed({ ...message, method })) return;
