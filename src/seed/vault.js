@@ -299,24 +299,29 @@ const SESSION = [
   'protocol',
   'position',
   'verified',
+  'verifiedBy',
+  'anchor',
   'handshakeAt',
   'exit',
   'placeholders',
   'head',
+  'scram',
 ];
+const ANCHORS = ['stamp', 'session', 'host', 'port', 'protocol', 'exit'];
+const KERNEL_OPS = {
+  sessionMaterialize: { fields: SESSION, reply: ({ values }) => ({ values }) },
+  sessionAnchors: { fields: ANCHORS, reply: ({ anchors, pins }) => ({ anchors, pins }) },
+};
 
 const refusal = (code, message) => ({ v: 1, error: { code, message } });
 const picked = (req, keys) =>
   Object.fromEntries(keys.filter((key) => key in req).map((key) => [key, req[key]]));
 
-async function materializeSession(call, req, { signal, away }) {
+async function kernelOp(call, req, { signal, away }) {
+  const { fields, reply } = KERNEL_OPS[req.op];
   if (away()) return { v: 1, error: { code: 'ENOTCONN' } };
   try {
-    const { values } = await call('sessionMaterialize', picked(req, SESSION), {
-      signal,
-      dropAway: true,
-    });
-    return { values };
+    return reply(await call(req.op, picked(req, fields), { signal, dropAway: true }));
   } catch (error) {
     return { v: 1, error: { code: typeof error?.code === 'string' ? error.code : 'EIO' } };
   }
@@ -325,7 +330,7 @@ async function materializeSession(call, req, { signal, away }) {
 export function sealedRelay({ call, forward, users, onRequest, away = () => false }) {
   return async (req, { signal } = {}) => {
     const { caller, ...rest } = req ?? {};
-    if (rest.op === 'sessionMaterialize') return materializeSession(call, rest, { signal, away });
+    if (Object.hasOwn(KERNEL_OPS, rest.op ?? '')) return kernelOp(call, rest, { signal, away });
     if (away()) return refusal('ENOTCONN', NOT_CONNECTED);
     const exec = rest.op === 'materialize' || rest.op === 'materializeConsume';
     if (exec && users() !== 'enforce')

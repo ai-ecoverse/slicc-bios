@@ -724,6 +724,79 @@ test('the kernel’s sessionMaterialize reaches the vault with exactly its field
   assert.ok(!JSON.stringify(own.log).includes(value));
 });
 
+test('the kernel’s sessionAnchors reaches the vault with exactly its fields and only the anchors and pins come back; a program’s is refused, and no anchor is left in a log or in storage', async (t) => {
+  const anchor = 'TUlJQmtUQ0NBVHVnQXdJQkFnSVVhbmNob3ItZm9yLWJpb3MtdGVzdA==';
+  const pin = '47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=';
+  const own = await startFakeVault({
+    secrets: ['HARBOR_DB_PASSWORD'],
+    anchors: { 'db.harbor.test': { anchors: [anchor], pins: [pin] } },
+  });
+  t.after(() => own.close());
+  const page = await chrome.page(t);
+  await page.init(override(own.origin));
+  await page.init(KERNEL_HOOK);
+  await boot(page);
+  await page.until(
+    () => document.querySelector('slicc-app').model.vault?.availability() === 'ready'
+  );
+  await page.until(() => !!globalThis.kernelWorker);
+  const stamp = { pid: 81, ppid: 1, uid: 0, gid: 0, users: 'enforce', groups: [0], tag: 'psql' };
+  const ask = {
+    stamp,
+    session: 'sess_kernel_anchor_0123456789',
+    host: 'db.harbor.test',
+    port: 5432,
+    protocol: 'pg',
+    exit: 'device:local:H-FuXm3ZyTMQF_kkC0Y_qQ',
+  };
+  const answered = await page.evaluate((req) => globalThis.askLikeTheKernel(req), {
+    v: 1,
+    op: 'sessionAnchors',
+    caller: stamp,
+    ...ask,
+  });
+  assert.deepEqual(answered.reply, { anchors: [anchor], pins: [pin] });
+  await logged(() => own.log.some((entry) => entry.op === 'anchors'));
+  const relayed = own.log.filter((entry) => entry.op === 'anchors');
+  assert.equal(relayed.length, 1);
+  assert.deepEqual(relayed[0].fields, [...Object.keys(ask), 'id', 'op', 'v'].sort());
+  assert.deepEqual([relayed[0].stamp, relayed[0].exit], [stamp, ask.exit]);
+  const refused = await page.evaluate((req) => globalThis.askLikeTheKernel(req), {
+    v: 1,
+    op: 'sessionAnchors',
+    caller: stamp,
+    ...ask,
+    host: 'other.harbor.test',
+  });
+  assert.deepEqual(refused.reply, { v: 1, error: { code: 'EACCES' } });
+  await logged(() => own.log.filter((entry) => entry.op === 'anchors').length === 2);
+
+  const request = JSON.stringify({ v: 1, op: 'sessionAnchors', ...ask });
+  await run(
+    page,
+    `clear; exec 3<>/dev/sealed; printf '%s' '${request}' >&3 || echo "PROGRAM-REFUSED"; echo PROGRAM-DONE`
+  );
+  await shows(page, 'PROGRAM-DONE');
+  const screen = await page.evaluate(() => {
+    const { dock } = document.querySelector('slicc-app');
+    const id = dock.api.panels
+      .map((panel) => panel.id)
+      .findLast((id) => id.startsWith('terminal:'));
+    return dock.content(id).screen.textContent;
+  });
+  assert.match(screen, /PROGRAM-REFUSED/);
+  assert.equal(own.log.filter((entry) => entry.op === 'anchors').length, 2);
+
+  const left = await leftovers(page, [anchor, pin]);
+  assert.deepEqual(left.found, [], JSON.stringify(left));
+  assert.ok(left.files > 100 && left.stores > 0, JSON.stringify(left));
+  assert.ok(
+    !page.console.some((line) => line.includes(anchor) || line.includes(pin)),
+    page.console.join('\n')
+  );
+  assert.ok(!page.errors.some((line) => line.includes(anchor) || line.includes(pin)));
+});
+
 test('under users enforce, a cone’s /dev/sealed request reaches the vault with the cone’s stamp, and seven names the sudo group in its hello', async (t) => {
   const page = await chrome.page(t);
   await page.init(override(fake.origin));
