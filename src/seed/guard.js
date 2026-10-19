@@ -41,7 +41,6 @@ const NAV_MS = 10000;
 const NAV_TYPES = new Set(['page', 'iframe', 'background_page', 'webview']);
 const UNWAITED = new Set(['Target.getTargetInfo', 'Target.detachFromTarget']);
 const POLL_MS = 100;
-const CONTEXT_MS = 2000;
 const REMEMBERED = 10000;
 
 const UNSAFE = new Set([
@@ -157,7 +156,9 @@ const PAUSES = new Set(['Fetch.requestPaused', 'Fetch.authRequired']);
 const EXTENSIONS = /^(chrome-extension|moz-extension|safari-web-extension|ms-browser-extension):/i;
 const CONTEXT_KEYS = new Set(['contextId', 'executionContextId']);
 const UNIQUE_KEYS = new Set(['uniqueContextId', 'executionContextUniqueId']);
-const OBJECT_KEYS = new Set(['objectId', 'prototypeObjectId']);
+const objectKey = (key) => key === 'objectId' || key.endsWith('ObjectId');
+const PROBE =
+  "typeof chrome === 'object' && chrome !== null && Boolean(chrome.runtime && chrome.runtime.id)";
 const OBJECT_ID = /^-?\d+\.(\d+)\.\d+$/;
 const PROFILERS = ['HeapProfiler.', 'Profiler.'];
 
@@ -170,7 +171,7 @@ function objectIds(value, found) {
 function selected(method, params) {
   const found = [];
   if (params === null || typeof params !== 'object') return found;
-  for (const key of OBJECT_KEYS) objectIds(params[key], found);
+  for (const [key, item] of Object.entries(params)) if (objectKey(key)) objectIds(item, found);
   if (method.startsWith('Runtime.') || method.startsWith('DOM.')) {
     for (const key of CONTEXT_KEYS) {
       if (params[key] !== undefined && (key !== 'contextId' || method.startsWith('Runtime.')))
@@ -194,7 +195,7 @@ function mentioned(value, found = []) {
     if (key === 'value') continue;
     if (CONTEXT_KEYS.has(key)) found.push(['ids', item]);
     else if (UNIQUE_KEYS.has(key)) found.push(['uniques', item]);
-    else if (OBJECT_KEYS.has(key)) objectIds(item, found);
+    else if (objectKey(key)) objectIds(item, found);
     else mentioned(item, found);
   }
   return found;
@@ -761,16 +762,24 @@ class Guard {
     }
     const found = selected(method, params);
     if (!found.length) return null;
-    let verdict = this.verdict(found, sessionId);
+    const verdict = this.verdict(found, sessionId);
     if (verdict !== UNSEEN_CONTEXT || !sessionId) return verdict;
     if (!this.runtimes.has(sessionId) && !this.primed.has(sessionId)) await this.prime(sessionId);
-    const until = Date.now() + CONTEXT_MS;
-    for (;;) {
-      await this.queues.get(sessionId);
-      verdict = this.verdict(found, sessionId);
-      if (verdict !== UNSEEN_CONTEXT || Date.now() >= until) return verdict;
-      await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+    if (this.verdict(found, sessionId) !== UNSEEN_CONTEXT) return this.verdict(found, sessionId);
+    const world = this.world(sessionId);
+    for (const [kind, value] of found) {
+      if (kind === 'unreadable' || world[kind].has(value)) continue;
+      const where = kind === 'ids' ? { contextId: value } : { uniqueContextId: value };
+      const probed = await this.call(
+        'Runtime.evaluate',
+        { expression: PROBE, returnByValue: true, silent: true, ...where },
+        sessionId
+      );
+      const extension = probed.result?.result?.value;
+      if (typeof extension === 'boolean' && !probed.result.exceptionDetails)
+        world[kind].set(value, extension);
     }
+    return this.verdict(found, sessionId);
   }
 
   hides(entry) {
