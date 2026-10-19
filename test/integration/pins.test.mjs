@@ -146,7 +146,7 @@ async function lockedGated() {
 const SERVED = new URL('../../src/', import.meta.url);
 const served = (name) => readFile(new URL(name, SERVED), 'utf8');
 
-test('seven certifies a gated package by the committed certs.json or by its own shipped lockfiles, so every gated pin is certified with its integrity', async (t) => {
+test('the runtime union (certs.json and every lockfile seven ships, Tailscale and the catalog projects included) covers every gated pin with its integrity; release-state judges each new pin', async (t) => {
   const { certifiedSet } = await import('../../src/seed/layer.js');
   const certified = await certifiedSet(served);
   const found = await lockedGated();

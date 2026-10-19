@@ -507,7 +507,7 @@ Seven certifies a gated package (slicc-kernel, slicc-cdp, slicc-clipboard, slicc
 - **slicc-kernel, slicc-jsh, mcpcat:** npm provenance names the tarball and `<repo>/.github/workflows/release.yml` at `refs/heads/main`; that commit is on main and carries `cert-review` success, either a check run from app 15368 whose suite is a `merge_group` run of `.github/workflows/cert-review.yml` on that commit (cert-review v2), or, until the repo is on v2, a `cert-review` commit status from `github-actions[bot]`. A version-only release commit is judged by its parent. The kernel also passes on its npm `certified` tag.
 - **slicc-cdp, slicc-clipboard, wasm-tailscale, wasi-slicc:** the npm `certified` dist-tag is this version.
 - **homescoop (`wasm-*`, `wasi-*`, `wasix-*`, `py-*`):** npm provenance names the tarball and homescoop's `ladder-build.yml` (or `publish.yml`) at `refs/heads/main`, any version, and homescoop's `certification-exceptions.json`, read at the commit pinned in `release-state.mjs`, neither fails the version (`verdict: fail`) nor requires a kernel bios doesn't pin (`verdict: requires`). An unreadable or unknown-shaped file fails closed.
-A failure names the package and why, and the PR stays red until it pins a certified version.
+It runs twice: in `ci / test` for quick feedback, and as cert-review's code check, from main's tree with the pull request's head as data, so the pull request's own code can't make it pass. A failure names the package and why, and the PR stays red until it pins a certified version. An `@ai-ecoverse` lockfile entry that doesn't resolve to a registry tarball with its integrity (a `tarball:` resolution, an alias, a link) fails it.
 
 ### Renovate keeps the pins current
 

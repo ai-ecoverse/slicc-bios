@@ -31,7 +31,19 @@ export function hexOf(integrity) {
   return m ? Buffer.from(m[1], 'base64').toString('hex') : null;
 }
 
-const VERSION_ONLY = /^(package\.json|package-lock\.json|CHANGELOG\.md|npm-shrinkwrap\.json)$/;
+const VERSION_FILES = /^(package\.json|package-lock\.json|npm-shrinkwrap\.json)$/;
+const RELEASERS = new Set(['github-actions[bot]', 'semantic-release-bot']);
+
+export function versionOnly(c) {
+  const files = c?.files ?? [];
+  if (!files.length || !RELEASERS.has(c.author?.login)) return false;
+  return files.every((f) => {
+    if (f.filename === 'CHANGELOG.md') return true;
+    if (!VERSION_FILES.test(f.filename) || typeof f.patch !== 'string') return false;
+    const changed = f.patch.split('\n').filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---) /.test(l));
+    return changed.length > 0 && changed.every((l) => /^[+-]\s*"version": "[^"]+",?$/.test(l));
+  });
+}
 
 export function source(gh = {}) {
   const npm = env.NPM_REGISTRY ?? 'https://registry.npmjs.org';
@@ -62,6 +74,7 @@ export function source(gh = {}) {
       github(
         `/repos/ai-ecoverse/${repo}/commits/${commit}/check-runs?check_name=cert-review&per_page=100`
       ),
+    run: (repo, id) => github(`/repos/ai-ecoverse/${repo}/actions/runs/${id}`),
     suiteRuns: (repo, suite) =>
       github(`/repos/ai-ecoverse/${repo}/actions/runs?check_suite_id=${suite}`),
     exceptions: async () => {
@@ -99,14 +112,12 @@ export async function provenanceOf(src, name, version) {
 async function certifiedCommit(src, repo, commit) {
   for (const check of (await src.checks(repo, commit))?.check_runs ?? []) {
     if (check.app?.id !== 15368 || check.conclusion !== 'success') continue;
-    const runs = (await src.suiteRuns(repo, check.check_suite?.id))?.workflow_runs ?? [];
+    const id = new RegExp(`^v2:[^:]+:${commit}:(\\d+):(\\d+)$`).exec(check.external_id ?? '')?.[1];
+    const run = id ? await src.run(repo, id) : null;
     if (
-      runs.some(
-        (r) =>
-          r.path === '.github/workflows/cert-review.yml' &&
-          r.event === 'merge_group' &&
-          r.head_sha === commit
-      )
+      run?.path === '.github/workflows/cert-review.yml' &&
+      run.event === 'merge_group' &&
+      run.head_sha === commit
     )
       return `cert-review check ${check.id}: ${check.output?.title ?? 'success'}`;
   }
@@ -157,9 +168,7 @@ async function certifiedOrParent(src, repo, commit) {
   if (found) return { found, where: commit };
   const c = await src.commit(repo, commit);
   const parent = c?.parents?.[0]?.sha;
-  const versionOnly =
-    (c?.files ?? []).length && c.files.every((f) => VERSION_ONLY.test(f.filename));
-  if (!parent || !versionOnly) return {};
+  if (!parent || c.parents.length !== 1 || !versionOnly(c)) return {};
   return { found: await certifiedCommit(src, repo, parent), where: parent };
 }
 
@@ -291,13 +300,20 @@ export function changes(baseLocked, headLocked, baseCerts, headCerts) {
 }
 
 export async function releaseState({ cwd, base, head, src = source() }) {
-  const headLocked = await lockedAt(cwd, head);
+  const problems = [];
+  const headLocked = await lockedAt(cwd, head, problems);
   const found = changes(
     await lockedAt(cwd, base),
     headLocked,
     certsAt(cwd, base),
     certsAt(cwd, head)
   );
+  if (problems.length)
+    return {
+      ok: false,
+      line: `release-state: FAIL ${problems.slice(0, 10).join('; ')} (an @ai-ecoverse lockfile entry must resolve to a registry tarball with its integrity)`,
+      rows: [],
+    };
   if (!found.size)
     return {
       ok: true,

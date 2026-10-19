@@ -137,15 +137,30 @@ export function importers(lock) {
   return manifest;
 }
 
-const SHIPPED_PNPM = ['packages/pnpm-lock.yaml', 'packages/agent/pnpm-lock.yaml'];
-const SHIPPED_NPM = ['packages/package-lock.json', 'packages/optional/package-lock.json'];
+const SHIPPED_PNPM = [
+  'packages/pnpm-lock.yaml',
+  'packages/agent/pnpm-lock.yaml',
+  'packages/tailscale/pnpm-lock.yaml',
+];
+const SHIPPED_NPM = [
+  'packages/package-lock.json',
+  'packages/agent/package-lock.json',
+  'packages/optional/package-lock.json',
+];
+
+async function projectLocks(get) {
+  const catalog = parse(await get('packages/optional/catalog.json').catch(() => null)) ?? {};
+  return Object.values(catalog)
+    .filter((entry) => entry?.kind === 'project' && /^[\w-]+$/.test(entry.id ?? ''))
+    .map((entry) => `packages/optional/projects/${entry.id}/pnpm-lock.yaml`);
+}
 
 export async function certifiedSet(get = (name) => fetchText(name, BIOS)) {
   const found = { ...JSON.parse(await get('packages/certs.json')) };
   const add = (key, integrity) => {
     if (!found[key] && integrity) found[key] = { integrity };
   };
-  for (const name of SHIPPED_PNPM) {
+  for (const name of [...SHIPPED_PNPM, ...(await projectLocks(get))]) {
     const lock = await get(name).catch(() => '');
     for (const [key, integrity] of locked(lock)) add(key, integrity);
   }

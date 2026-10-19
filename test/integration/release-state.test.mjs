@@ -56,7 +56,7 @@ function fake(o = {}) {
       o.commit ?? { parents: [{ sha: PARENT }], files: [{ filename: 'src/x.rs' }] },
     statuses: async (repo, sha) => o.statuses?.[sha] ?? [],
     checks: async (repo, sha) => ({ check_runs: o.checks?.[sha] ?? [] }),
-    suiteRuns: async (repo, suite) => ({ workflow_runs: o.suites?.[suite] ?? [] }),
+    run: async (repo, id) => o.runs?.[id] ?? null,
     exceptions: async () => o.exceptions ?? null,
   };
 }
@@ -179,10 +179,15 @@ test('a main-writer pin passes on its release commit’s cert-review status from
   }
 });
 
-test('a version-only release commit is judged by its parent; a code commit never is', async () => {
+test('a version-only release commit by the release bot is judged by its parent; a code commit, another author or a package.json that changes more than its version never is', async () => {
+  const bump = {
+    filename: 'package.json',
+    patch: '@@ -1,3 +1,3 @@\n-  "version": "1.199.0",\n+  "version": "1.200.0",\n',
+  };
   const versionOnly = {
+    author: { login: 'github-actions[bot]' },
     parents: [{ sha: PARENT }],
-    files: [{ filename: 'package.json' }, { filename: 'CHANGELOG.md' }],
+    files: [bump, { filename: 'CHANGELOG.md', patch: '+x' }],
   };
   const r = await judge(
     fake({ attestations: kernelProv, commit: versionOnly, statuses: { [PARENT]: [status()] } }),
@@ -197,14 +202,29 @@ test('a version-only release commit is judged by its parent; a code commit never
     INTEGRITY
   );
   assert.equal(code.ok, false);
+  for (const [why, c] of [
+    ['another author', { ...versionOnly, author: { login: 'someone' } }],
+    [
+      'a dependency change in package.json',
+      { ...versionOnly, files: [{ filename: 'package.json', patch: '+    "evil": "1.0.0",\n' }] },
+    ],
+    ['a merge commit', { ...versionOnly, parents: [{ sha: PARENT }, { sha: COMMIT }] }],
+  ]) {
+    const got = await judge(
+      fake({ attestations: kernelProv, commit: c, statuses: { [PARENT]: [status()] } }),
+      KERNEL,
+      INTEGRITY
+    );
+    assert.equal(got.ok, false, why);
+  }
 });
 
-test('v2: a cert-review check run counts only from app 15368 and a merge_group run of cert-review.yml on that commit', async () => {
+test('v2: a cert-review check run counts only from app 15368, with an external_id naming a merge_group run of cert-review.yml on that commit', async () => {
   const check = (o = {}) => ({
     id: 9,
     app: { id: 15368 },
     conclusion: 'success',
-    check_suite: { id: 5 },
+    external_id: `v2:group:${COMMIT}:77:1`,
     output: { title: 'group: #1 certified' },
     ...o,
   });
@@ -215,7 +235,7 @@ test('v2: a cert-review check run counts only from app 15368 and a merge_group r
     ...o,
   });
   const pass = await judge(
-    fake({ attestations: kernelProv, checks: { [COMMIT]: [check()] }, suites: { 5: [run()] } }),
+    fake({ attestations: kernelProv, checks: { [COMMIT]: [check()] }, runs: { 77: run() } }),
     KERNEL,
     INTEGRITY
   );
@@ -227,9 +247,15 @@ test('v2: a cert-review check run counts only from app 15368 and a merge_group r
     ['a pull_request_target run', check(), run({ event: 'pull_request_target' })],
     ['another workflow', check(), run({ path: '.github/workflows/spoof.yml' })],
     ['another head', check(), run({ head_sha: 'e'.repeat(40) })],
+    ['no external_id', check({ external_id: null }), run()],
+    [
+      'an external_id for another commit',
+      check({ external_id: `v2:group:${'e'.repeat(40)}:77:1` }),
+      run(),
+    ],
   ]) {
     const got = await judge(
-      fake({ attestations: kernelProv, checks: { [COMMIT]: [c] }, suites: { 5: [r] } }),
+      fake({ attestations: kernelProv, checks: { [COMMIT]: [c] }, runs: { 77: r } }),
       KERNEL,
       INTEGRITY
     );
@@ -550,6 +576,10 @@ test('the cert-review caller: shared v2 pinned by sha with the same tools-ref, C
   assert.ok(uses);
   assert.match(caller, new RegExp(`\\n {6}tools-ref: ${uses}\\n`));
   assert.match(caller, /\n {6}evidence-workflow: ci\.yml\n/);
+  assert.match(
+    caller,
+    /\n {6}code-check: node scripts\/cert\/release-state\.mjs --base "\$BASE_SHA" --head "\$HEAD_SHA"\n/
+  );
   assert.match(caller, /\n {6}evidence-artifacts: \|\n {8}cert-evidence\n {8}integration-\*\n/);
   for (const path of ['.github/workflows/**', 'scripts/cert/**', 'scripts/ci/**'])
     assert.ok(caller.includes(`\n        ${path}\n`), path);
@@ -586,4 +616,72 @@ test('no workflow pushes certs.json lines or reads a review comment any more', (
       /scripts\/cert\/apply\.mjs|scripts\/ci\/certified\.mjs|git push origin/,
       f
     );
+});
+
+test('release-state fails a lockfile entry it can’t bind to a registry tarball: a tarball resolution, an aliased or linked gated package', async () => {
+  const { dir, git, write } = repo();
+  write('src/packages/package-lock.json', npmLock([]));
+  git('add', '-A');
+  git('commit', '-q', '-m', 'base');
+  const base = git('rev-parse', 'HEAD');
+  let n = 0;
+  for (const [why, files] of [
+    [
+      'a pnpm tarball resolution',
+      {
+        'src/packages/pnpm-lock.yaml':
+          "lockfileVersion: '9.0'\n\npackages:\n\n  '@ai-ecoverse/wasm-bash@5.3.0-30':\n    resolution: {tarball: https://evil.example/x.tgz, integrity: sha512-x}\n",
+      },
+    ],
+    [
+      'a pnpm entry with no integrity',
+      {
+        'src/packages/pnpm-lock.yaml':
+          'lockfileVersion: \'9.0\'\n\npackages:\n\n  "@ai-ecoverse/wasm-bash@5.3.0-30":\n    resolution: {directory: ../x}\n',
+      },
+    ],
+    [
+      'an npm alias',
+      {
+        'src/packages/package-lock.json': JSON.stringify({
+          packages: {
+            '': {},
+            'node_modules/bash': {
+              name: '@ai-ecoverse/wasm-bash',
+              version: '5.3.0-30',
+              resolved: 'https://evil.example/x.tgz',
+              integrity: 'sha512-x',
+            },
+          },
+        }),
+      },
+    ],
+    [
+      'an npm link',
+      {
+        'src/packages/package-lock.json': JSON.stringify({
+          packages: {
+            '': {},
+            'node_modules/@ai-ecoverse/wasm-bash': { link: true, resolved: '../x' },
+          },
+        }),
+      },
+    ],
+  ]) {
+    git('checkout', '-q', '-B', `t${n++}`, base);
+    for (const [path, text] of Object.entries(files)) write(path, text);
+    git('add', '-A');
+    git('commit', '-q', '-m', why);
+    const r = await releaseState({ cwd: dir, base, head: 'HEAD', src: fake() });
+    assert.equal(r.ok, false, why);
+    assert.match(r.line, /must resolve to a registry tarball with its integrity/, why);
+  }
+});
+
+test('the homescoop exceptions file is read at a pinned commit, never a branch', async () => {
+  const { HOMESCOOP } = await import('../../scripts/cert/release-state.mjs');
+  assert.ok(
+    HOMESCOOP.exceptions.ref === null || /^[0-9a-f]{40}$/.test(HOMESCOOP.exceptions.ref),
+    'a sha, or none yet (every homescoop pin change then fails closed)'
+  );
 });
