@@ -58,7 +58,10 @@ export function agentInstalling(from, to) {
   };
 }
 
-export const NO_SENDING = 'You can send messages once the agent starts.';
+export const startingLine = (from) =>
+  from ? 'Seven is updating its agent.' : 'Seven is installing its agent.';
+
+export const RELOAD_FIRST = 'Reload this tab to reach the new agent.';
 
 function lines() {
   const listeners = new Set();
@@ -79,23 +82,30 @@ function lines() {
 
 export function holdComposer() {
   const { take, ...source } = lines();
-  return { ...source, hold: (on) => take(on ? NO_SENDING : null) };
+  return { ...source, hold: (line) => take(line) };
 }
 
-export function mirrorHold(os) {
+export function mirrorHold(os, tabs) {
   const { take, ...source } = lines();
-  os.on('held', take);
-  void os.call('held').then(take, () => undefined);
+  let held = null;
+  const settle = () => take(held && tabs.state().skew ? RELOAD_FIRST : held);
+  const heard = (line) => {
+    held = line;
+    settle();
+  };
+  os.on('held', heard);
+  tabs.on('tabs', settle);
+  void os.call('held').then(heard, () => undefined);
   return source;
 }
 
 export function heldAgent(agent, source) {
   return new Proxy(agent, {
     get(target, key) {
-      if (key === 'readOnly') return () => source.held();
+      if (key === 'starting') return () => source.held();
       if (key === 'on')
         return (type, listener) =>
-          type === 'readOnly' ? source.on(listener) : target.on(type, listener);
+          type === 'starting' ? source.on(listener) : target.on(type, listener);
       const value = Reflect.get(target, key, target);
       return typeof value === 'function' ? value.bind(target) : value;
     },
