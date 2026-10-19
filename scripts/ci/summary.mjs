@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
-import { appendFile, readdir, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { argv, env } from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -165,6 +165,7 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
   const { values } = parseArgs({
     options: {
       dir: { type: 'string', default: 'artifacts/experiment' },
+      unfinished: { type: 'string', default: 'attempts/experiment' },
       issues: { type: 'boolean', default: false },
     },
   });
@@ -173,6 +174,12 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
   const plan = names.includes('plan.json') ? await read('plan.json') : null;
   const records = [];
   for (const name of names.filter((n) => /^s\d+\.json$/.test(n))) records.push(await read(name));
+  for (const name of (await readdir(values.unfinished).catch(() => [])).filter((n) =>
+    /^s\d+\.json$/.test(n)
+  )) {
+    if (!names.includes(name))
+      records.push(JSON.parse(await readFile(join(values.unfinished, name), 'utf8')));
+  }
   const summary = combine(plan, records);
   const lines = [
     `experiment: arm ${summary.arm} (PR ${summary.pr ?? 'none'}), ${records.length} shard records${summary.planned.length ? ` of ${summary.planned.length} planned` : ''}, ${summary.flips.length} flipped tests, ${summary.traps.length} pnpm wasm traps retried`,
@@ -206,6 +213,7 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
       }
     }
   }
+  await mkdir(values.dir, { recursive: true });
   await writeFile(join(values.dir, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
   console.log(lines.join('\n'));
   if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, `${lines.join('\n')}\n`);

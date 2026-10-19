@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -507,10 +508,10 @@ test("a shard keeps a retried file's first-attempt artifacts under attempt-1, be
     report.flips.map(({ file, name }) => [file, name]),
     [['t/flaky.test.mjs', 'flaky']]
   );
-  assert.equal(FIRST, 'artifacts/attempt-1');
+  assert.equal(FIRST, 'attempts/attempt-1');
   assert.equal(await read('artifacts/flaky/shot.txt'), 'attempt 2');
-  assert.equal(await read('artifacts/attempt-1/flaky/shot.txt'), 'attempt 1');
-  assert.equal(await read('artifacts/attempt-1/fine/shot.txt'), 'fine');
+  assert.equal(await read('attempts/attempt-1/flaky/shot.txt'), 'attempt 1');
+  assert.equal(await read('attempts/attempt-1/fine/shot.txt'), 'fine');
   assert.equal(await read('artifacts/fine/shot.txt'), null);
   assert.deepEqual(failures(report), []);
 });
@@ -549,8 +550,61 @@ test("a shard cancelled during a retry keeps the first attempt's error and artif
     ['s02', 't/flaky.test.mjs', 'flaky', 'cancelled']
   );
   assert.match(failed.log, /the first attempt saw boom/);
-  assert.equal(await read('artifacts/attempt-1/flaky/shot.txt'), 'attempt 1');
+  assert.equal(await read('attempts/attempt-1/flaky/shot.txt'), 'attempt 1');
   const summary = combine(null, [report]);
   assert.equal(summary.shards[0].cancelled, true);
   assert.match(summary.failures[0].log, /the first attempt saw boom/);
+});
+
+test('a shard killed during its retry has already left the first attempt’s artifacts and failure where the run’s summary finds them', async (t) => {
+  const { root, read, flaky } = await project(t);
+  await writeFile(
+    join(root, 't/flaky.test.mjs'),
+    flaky('await new Promise((resolve) => setTimeout(resolve, 120000));')
+  );
+  for (const file of ['shard.mjs', 'plan.mjs', 'verdict.mjs', 'summary.mjs'])
+    await cp(new URL(`../../scripts/ci/${file}`, import.meta.url), join(root, 'scripts/ci', file));
+  await mkdir(join(root, 'scripts/canary'), { recursive: true });
+  await cp(
+    new URL('../../scripts/canary/reporter.mjs', import.meta.url),
+    join(root, 'scripts/canary/reporter.mjs')
+  );
+  const child = spawn(
+    process.execPath,
+    ['scripts/ci/shard.mjs', '--name', 's03', '--items', 't/flaky.test.mjs', '--retry', 'true'],
+    {
+      cwd: root,
+      detached: true,
+      stdio: 'ignore',
+      env: { ...process.env, RUNNER_TEMP: join(root, 'tmp'), GITHUB_STEP_SUMMARY: '' },
+    }
+  );
+  const gone = new Promise((resolve) => child.on('exit', resolve));
+  const deadline = Date.now() + 60000;
+  while ((await read('count')) !== '2') {
+    assert.ok(Date.now() < deadline, 'the retry never started');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  process.kill(-child.pid, 'SIGKILL');
+  await gone;
+  assert.equal(await read('artifacts/experiment/s03.json'), null);
+  assert.equal(await read('attempts/attempt-1/flaky/shot.txt'), 'attempt 1');
+  const out = await new Promise((resolve) => {
+    const summary = spawn(process.execPath, ['scripts/ci/summary.mjs'], {
+      cwd: root,
+      env: { ...process.env, GITHUB_STEP_SUMMARY: '' },
+    });
+    let text = '';
+    summary.stdout.on('data', (chunk) => {
+      text += chunk;
+    });
+    summary.on('exit', () => resolve(text));
+  });
+  assert.match(out, /1 shard records/);
+  assert.match(
+    out,
+    /failed \(cancelled\) in s03: t\/flaky\.test\.mjs › flaky: the first attempt saw boom/
+  );
+  const summary = JSON.parse(await read('artifacts/experiment/summary.json'));
+  assert.equal(summary.shards[0].cancelled, true);
 });

@@ -10,7 +10,8 @@ import { cost, ROOT, SPLIT } from './plan.mjs';
 import { missingRequired, summary } from './verdict.mjs';
 
 const REPORTER = fileURLToPath(new URL('../canary/reporter.mjs', import.meta.url));
-export const FIRST = 'artifacts/attempt-1';
+export const ATTEMPTS = 'attempts';
+export const FIRST = `${ATTEMPTS}/attempt-1`;
 const OUTPUTS = [
   'artifacts',
   'node_modules/.cache/slicc-harness/coverage',
@@ -247,60 +248,7 @@ export function failures(report) {
 export const failureLine = ({ shard: name, file, name: test, log, why }) =>
   `failed (${why}) in ${name}: ${file} › ${test}: ${(log || 'no error message').split('\n')[0].slice(0, 300)}`;
 
-export async function shard({
-  name,
-  items: list,
-  retry,
-  budgetMs,
-  scratch,
-  record,
-  root = ROOT,
-  signal,
-  quiet = false,
-}) {
-  const started = Date.now();
-  const seconds = cost(JSON.parse(await readFile(join(root, 'scripts/ci/durations.json'), 'utf8')));
-  const estimate = (files) =>
-    files.reduce((sum, file) => {
-      const own = list.filter((item) => item.split('#')[0] === file);
-      return sum + own.reduce((s, item) => s + seconds(item), 0) * 1000;
-    }, 0);
-  const stashes = [];
-  const done = [];
-  let n = 0;
-  const options = { root, signal, quiet };
-  for (const group of groups(list)) {
-    if (signal?.aborted) break;
-    const tag = `run-${++n}`;
-    const first = await run(group.files, group.env, tag, scratch, options);
-    const kept = { dir: join(scratch, `${tag}-outputs`), retried: false };
-    stashes.push(kept);
-    await stash(kept.dir, root);
-    let retried = null;
-    let skipped = null;
-    const verdict = decide({ name, first, retried: null });
-    const failed = failing(first.results, group.files, first.code);
-    if (!verdict.ok && retry && failed.length && !signal?.aborted) {
-      const need = estimate(failed) * 1.2;
-      if (Date.now() - started + need < budgetMs) {
-        kept.retried = true;
-        retried = await run(failed, group.env, `${tag}-retry`, scratch, options);
-        stashes.push({ dir: join(scratch, `${tag}-retry-outputs`), retried: false });
-        await stash(stashes.at(-1).dir, root);
-      } else
-        skipped = `retry of ${failed.join(' ')} needs ~${Math.round(need / 60000)} min, past the budget`;
-    }
-    done.push({
-      env: group.env,
-      first,
-      retried,
-      skipped,
-      cancelled: Boolean(signal?.aborted),
-      verdict: decide({ name, first, retried }),
-    });
-  }
-  await restore(stashes, root);
-  const cancelled = Boolean(signal?.aborted);
+function compose(done, { name, list, retry, record, started, cancelled }) {
   const ok = !cancelled && done.length > 0 && done.every(({ verdict }) => verdict.ok);
   const pass = done.reduce((sum, { verdict }) => sum + verdict.pass, 0);
   const why = [
@@ -335,6 +283,73 @@ export async function shard({
   return report;
 }
 
+export async function shard({
+  name,
+  items: list,
+  retry,
+  budgetMs,
+  scratch,
+  record,
+  root = ROOT,
+  signal,
+  quiet = false,
+  progress = async () => {},
+}) {
+  const started = Date.now();
+  const seconds = cost(JSON.parse(await readFile(join(root, 'scripts/ci/durations.json'), 'utf8')));
+  const estimate = (files) =>
+    files.reduce((sum, file) => {
+      const own = list.filter((item) => item.split('#')[0] === file);
+      return sum + own.reduce((s, item) => s + seconds(item), 0) * 1000;
+    }, 0);
+  const stashes = [];
+  const done = [];
+  const context = { name, list, retry, record, started };
+  const unfinished = (extra = []) =>
+    progress(compose([...done, ...extra], { ...context, cancelled: true }));
+  let n = 0;
+  const options = { root, signal, quiet };
+  for (const group of groups(list)) {
+    if (signal?.aborted) break;
+    const tag = `run-${++n}`;
+    const first = await run(group.files, group.env, tag, scratch, options);
+    const kept = { dir: join(scratch, `${tag}-outputs`), retried: false };
+    stashes.push(kept);
+    await stash(kept.dir, root);
+    let retried = null;
+    let skipped = null;
+    const verdict = decide({ name, first, retried: null });
+    const failed = failing(first.results, group.files, first.code);
+    const pending = { env: group.env, first, retried: null, skipped, cancelled: true, verdict };
+    if (!verdict.ok && retry && failed.length && !signal?.aborted) {
+      const need = estimate(failed) * 1.2;
+      if (Date.now() - started + need < budgetMs) {
+        kept.retried = true;
+        await cp(join(kept.dir, 'artifacts'), join(root, FIRST), {
+          recursive: true,
+          force: true,
+        }).catch(() => {});
+        await unfinished([pending]);
+        retried = await run(failed, group.env, `${tag}-retry`, scratch, options);
+        stashes.push({ dir: join(scratch, `${tag}-retry-outputs`), retried: false });
+        await stash(stashes.at(-1).dir, root);
+      } else
+        skipped = `retry of ${failed.join(' ')} needs ~${Math.round(need / 60000)} min, past the budget`;
+    }
+    done.push({
+      env: group.env,
+      first,
+      retried,
+      skipped,
+      cancelled: Boolean(signal?.aborted),
+      verdict: decide({ name, first, retried }),
+    });
+    await unfinished();
+  }
+  await restore(stashes, root);
+  return compose(done, { ...context, cancelled: Boolean(signal?.aborted) });
+}
+
 if (argv[1] === fileURLToPath(import.meta.url)) {
   const { values } = parseArgs({
     options: {
@@ -351,6 +366,13 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
   for (const sig of ['SIGINT', 'SIGTERM']) process.once(sig, () => cancel.abort());
   const report = await shard({
     signal: cancel.signal,
+    progress: async (partial) => {
+      await mkdir(join(ROOT, ATTEMPTS, 'experiment'), { recursive: true });
+      await writeFile(
+        join(ROOT, ATTEMPTS, `experiment/${values.name}.json`),
+        `${JSON.stringify(partial, null, 2)}\n`
+      );
+    },
     name: values.name,
     items: values.items.split(/\s+/).filter(Boolean),
     retry: values.retry === 'true',
@@ -371,6 +393,7 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
     join(ROOT, `artifacts/experiment/${values.name}.json`),
     `${JSON.stringify(report, null, 2)}\n`
   );
+  await rm(join(ROOT, ATTEMPTS, `experiment/${values.name}.json`), { force: true });
   await mkdir(join(ROOT, 'artifacts/verdicts'), { recursive: true });
   await writeFile(join(ROOT, `artifacts/verdicts/${values.name}.txt`), `${report.line}\n`);
   console.log(report.line);
