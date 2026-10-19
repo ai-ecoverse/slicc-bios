@@ -18,8 +18,8 @@ importers:
         specifier: 2.3.2-12
         version: 2.3.2-12
       '@ai-ecoverse/py-pandas':
-        specifier: 2.3.2-12
-        version: 2.3.2-12
+        specifier: 3.0.6-1
+        version: 3.0.6-1
       '@ai-ecoverse/py-scipy':
         specifier: 1.18.1-1
         version: 1.18.1-1
@@ -44,11 +44,14 @@ packages:
   '@ai-ecoverse/py-numpy@2.3.2-12':
     resolution: {integrity: sha512-HTF1ZU/OnvHGB/yMh3rM0hOEg0WSPhZY3zwA9j9lP1rTw/dRx7HjgA5BLbOkb1CDcXUqIpzzuj8brBBXebqJqQ==}
 
+  '@ai-ecoverse/py-numpy@2.5.4-1':
+    resolution: {integrity: sha512-jroJrpdiNCDBCh28XQUQ5o9yhnzdLi4atsmneTT/3fckF2RqD7yXPBPsQFSclEzI65XLoXxr01d3HhwbOpVw1g==}
+
   '@ai-ecoverse/py-packaging@26.3.0-8':
     resolution: {integrity: sha512-72/USkmgBx2nynrvsN/NDcxF3Fo3dLfrDm38hd3CrwY1F0DiWFb/K5rABgPJqL4dXlswmMCbh5yeq4SqDHdp6w==}
 
-  '@ai-ecoverse/py-pandas@2.3.2-12':
-    resolution: {integrity: sha512-nqsI28oT7QqY7hZaPQk4dyduoH5d9XyIo+ySHsl48y3NN//PBeJccLGvh1Oy3eFX/A20affs2LgeHtNW7Tq3jw==}
+  '@ai-ecoverse/py-pandas@3.0.6-1':
+    resolution: {integrity: sha512-YZsaCKm8sWw8l+tNJHxlMsrLv85Pnr6JN4sJbarbE0HD7yaDJKfAT1nRxqK+WDeBJeOxLEV35txPZUU1v9zTUQ==}
 
   '@ai-ecoverse/py-pillow@12.3.0-10':
     resolution: {integrity: sha512-F8aRhrIEaV+UsD4NE+nPsSPVzecwwY0KVigKWYLGm8hrwj0GkUVGBm3G8mZ4q35d0gS5cgRUHaVTC4OVfd2Jmw==}
@@ -58,9 +61,6 @@ packages:
 
   '@ai-ecoverse/py-python-dateutil@2.9.0-post0.3':
     resolution: {integrity: sha512-UE+iXaPKAjr+g5/8WJHv20DZNp/iGPiHuhPJ6HUidU02bW3fIysw5irE+0bNnPUPYeY/UzIBX8fVPxCTx7i4kw==}
-
-  '@ai-ecoverse/py-pytz@2026.4.0-3':
-    resolution: {integrity: sha512-9MSaqY1ib8QPFsJsdgHVbmefztHru1q9EGoBEVq3jrcLRDWEIl5d2nFGgM5f6kVxzuAbVnOwrznY1yV1HjBLJQ==}
 
   '@ai-ecoverse/py-scipy@1.18.1-1':
     resolution: {integrity: sha512-cTMwklMN+Y0LgPyZvlfSEElzkkgP1fkrSGQGs3d3TOeATJmuP7CEBjpJBgkXOn1BFWsFUY6s2jPOaJKc3s9Thg==}
@@ -97,14 +97,14 @@ snapshots:
 
   '@ai-ecoverse/py-numpy@2.3.2-12': {}
 
+  '@ai-ecoverse/py-numpy@2.5.4-1': {}
+
   '@ai-ecoverse/py-packaging@26.3.0-8': {}
 
-  '@ai-ecoverse/py-pandas@2.3.2-12':
+  '@ai-ecoverse/py-pandas@3.0.6-1':
     dependencies:
-      '@ai-ecoverse/py-numpy': 2.3.2-12
+      '@ai-ecoverse/py-numpy': 2.5.4-1
       '@ai-ecoverse/py-python-dateutil': 2.9.0-post0.3
-      '@ai-ecoverse/py-pytz': 2026.4.0-3
-      '@ai-ecoverse/py-six': 1.17.0-3
       '@ai-ecoverse/py-tzdata': 2026.4.0-3
 
   '@ai-ecoverse/py-pillow@12.3.0-10': {}
@@ -114,8 +114,6 @@ snapshots:
   '@ai-ecoverse/py-python-dateutil@2.9.0-post0.3':
     dependencies:
       '@ai-ecoverse/py-six': 1.17.0-3
-
-  '@ai-ecoverse/py-pytz@2026.4.0-3': {}
 
   '@ai-ecoverse/py-scipy@1.18.1-1':
     dependencies:

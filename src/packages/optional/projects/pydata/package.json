@@ -6,7 +6,7 @@
   "dependencies": {
     "@ai-ecoverse/py-matplotlib": "3.11.2-10",
     "@ai-ecoverse/py-numpy": "2.3.2-12",
-    "@ai-ecoverse/py-pandas": "2.3.2-12",
+    "@ai-ecoverse/py-pandas": "3.0.6-1",
     "@ai-ecoverse/py-scipy": "1.18.1-1"
   }
 }
