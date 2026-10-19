@@ -44,9 +44,42 @@ function watchKernels() {
   };
 }
 
-test('a cold agent install runs in the page’s one kernel with no package scripts, and an optional install started during it waits its turn on the pnpm store', async (t) => {
+const WARM_PROMPT = 11000;
+
+function promptStamp() {
+  const tick = () => {
+    const app = document.querySelector('slicc-app');
+    const id = app?.dock?.api.panels
+      .map((panel) => panel.id)
+      .findLast((name) => name.startsWith('terminal:'));
+    const text = id ? (app.dock.content(id)?.screen?.textContent ?? '') : '';
+    if (/slicc:(~\$|\/home#) /.test(text)) {
+      window.sliccPromptAt = Date.now();
+      return;
+    }
+    if (id && !window.sliccTerminalShown) {
+      window.sliccTerminalShown = true;
+      app.dock.api.getPanel(id)?.api.setActive();
+    }
+    setTimeout(tick, 50);
+  };
+  tick();
+}
+
+async function idle(page) {
+  await page.within(AGENT_BUDGET, () => {
+    const rows = document.querySelector('slicc-app')?.model?.updates?.list?.() ?? [];
+    return (
+      rows.length > 0 &&
+      rows.every((row) => !/queued|starting|checking|downloading|linking/.test(row.state))
+    );
+  });
+}
+
+test('a cold agent install runs in the page’s one kernel with no package scripts, and an optional install started during it waits its turn on the pnpm store, and a steady-state warm reload reaches the terminal prompt within 11 s', async (t) => {
   const page = await chrome.page(t);
   await page.init(watchKernels);
+  await page.init(promptStamp);
   await boot(page);
   await page.within(
     300000,
@@ -92,6 +125,18 @@ test('a cold agent install runs in the page’s one kernel with no package scrip
   assert.ok(
     busy >= 0 && done > busy,
     `rsync installed at sample ${done}, the agent's pnpm last moved at ${busy}: ${JSON.stringify(samples.slice(Math.max(0, Math.min(done, busy) - 3), Math.max(done, busy) + 2))}`
+  );
+  await idle(page);
+  await page.reload();
+  await page.within(120000, () => window.sliccPromptAt);
+  await idle(page);
+  const start = Date.now();
+  await page.reload();
+  const took = (await page.within(120000, () => window.sliccPromptAt)) - start;
+  t.diagnostic(`warm reload to the terminal prompt: ${took} ms (bound ${WARM_PROMPT} ms)`);
+  assert.ok(
+    took < WARM_PROMPT,
+    `a steady-state warm reload took ${took} ms to the terminal prompt`
   );
   assert.deepEqual(page.errors, []);
 });
