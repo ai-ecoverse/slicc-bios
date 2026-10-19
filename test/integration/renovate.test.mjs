@@ -252,5 +252,11 @@ test('ci / test runs the gate on every run, CI can be dispatched for a PR, and c
   );
   assert.match(queue, /git push origin "HEAD:refs\/heads\/\$BRANCH"/);
   assert.match(queue, /gh workflow run ci\.yml --ref "\$BRANCH" -f pr="\$PR_NUMBER"/);
+  const email = queue.match(/git config user\.email '([^']+)'/)[1];
+  assert.deepEqual(
+    config.gitIgnoredAuthors,
+    [email],
+    'Renovate keeps rebasing after the queue commit'
+  );
   assert.doesNotMatch(queue, /npm (ci|install|test)|npx /, 'the queue runs no code from the PR');
 });

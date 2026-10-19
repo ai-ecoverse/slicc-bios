@@ -1,6 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["github>ai-ecoverse/slicc-shared-web"],
+  "gitIgnoredAuthors": ["41898282+github-actions[bot]@users.noreply.github.com"],
   "packageRules": [
     {
       "description": "Seven's pins: every @ai-ecoverse package in the base set (src/packages), the optional catalog (src/packages/optional) and /opt/agent (src/packages/agent) bumps by itself, with its npm and pnpm lockfiles. The automerge goes through the merge queue, and ci / test passes on a Renovate PR only once cert review certified every package it changes (scripts/ci/certified.mjs). For a gated package, cert review's queue job adds the certified certs.json lines to the PR and runs CI again.",
