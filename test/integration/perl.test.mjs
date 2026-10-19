@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { after, test } from 'node:test';
 import { actPackage, boot, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
+
+const PINNED = JSON.parse(
+  readFileSync(new URL('../../src/packages/optional/package.json', import.meta.url), 'utf8')
+).dependencies['@ai-ecoverse/wasix-perl'];
 
 const chrome = await launch({ timeout: 120000 });
 after(() => chrome.close());
@@ -36,7 +41,7 @@ test('prove runs a cone’s Perl tests through TAP::Harness', async (t) => {
     'perl'
   );
   assert.equal(await actPackage(page, 'perl', 'install'), 'ok');
-  assert.equal((await row(page, 'perl')).version, '5.42.0-11');
+  assert.equal((await row(page, 'perl')).version, PINNED);
   const tap = Buffer.from(
     'use strict;\nuse Test::More tests => 2;\nok(1, "one");\nis(6 * 7, 42, "answer");\n'
   ).toString('base64');

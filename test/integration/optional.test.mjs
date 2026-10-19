@@ -119,7 +119,7 @@ test('HEIF and AVIF images installs from the catalog, and heif-convert runs', {
       )
   );
   assert.equal(result, 'ok', (await heif())?.log);
-  assert.equal((await heif()).version, '1.23.6-1');
+  assert.equal((await heif()).version, '1.23.6-6');
   await run(
     page,
     'clear; heif-convert --version 2>&1 | head -1 | grep -c 1.23.6 | sed "s/^/heif ran /"'
@@ -169,7 +169,7 @@ test('Python data tools are back as homescoop’s attested CI builds: one projec
   assert.deepEqual(withdrawn, []);
 });
 
-test('uv, esbuild, tsc and buf are withdrawn until attested rebuilds (homescoop#864): retired rows, no pins and no certs, while git and gh stay as recorded exceptions', async () => {
+test('uv, esbuild, tsc and buf are withdrawn until attested rebuilds (homescoop#864): retired rows, no pins and no certs, while git and gh are certified CI builds with no exception', async () => {
   const catalog = await read('catalog.json');
   const { dependencies } = await read('package.json');
   const retired = await read('retired.json');
@@ -191,9 +191,8 @@ test('uv, esbuild, tsc and buf are withdrawn until attested rebuilds (homescoop#
   }
   for (const name of ['@ai-ecoverse/wasm-git', '@ai-ecoverse/wasi-gh']) {
     assert.ok(catalog[name], name);
-    assert.match(
-      certs[`${name}@${dependencies[name]}`].exception,
-      /unverifiable build \(homescoop#/
-    );
+    const entry = certs[`${name}@${dependencies[name]}`];
+    assert.match(entry?.sha256 ?? '', /^[0-9a-f]{64}$/, name);
+    assert.equal(entry.exception, undefined, name);
   }
 });

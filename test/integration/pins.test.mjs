@@ -176,7 +176,7 @@ test('every gated package in every lockfile is certified, with the certified int
   t.diagnostic(`pins: PASS ${found.size} packages`);
 });
 
-test('an uncertified pin fails unless its certs entry records an exception, and git and gh are the recorded exceptions', async () => {
+test('an uncertified pin fails unless its certs entry records an exception, and no pin needs one now that git and gh are CI builds', async () => {
   const integrity = 'sha512-x';
   const found = new Map([
     ['@ai-ecoverse/wasm-a@1.0.0', ['package-lock.json', integrity]],
@@ -203,10 +203,7 @@ test('an uncertified pin fails unless its certs entry records an exception, and 
     ['@ai-ecoverse/wasi-gh@2.102.0-1', '@ai-ecoverse/wasm-git@2.55.0-15']
   );
   const { exceptions } = judge(await lockedGated(), real);
-  assert.deepEqual(exceptions.map((line) => line.split(':')[0]).sort(), [
-    'optional/package-lock.json @ai-ecoverse/wasi-gh@2.102.0-1',
-    'optional/package-lock.json @ai-ecoverse/wasm-git@2.55.0-15',
-  ]);
+  assert.deepEqual(exceptions, []);
 });
 
 test('every CI job and every test run keeps slicc-cdp off 127.0.0.1:9222-9229', async () => {

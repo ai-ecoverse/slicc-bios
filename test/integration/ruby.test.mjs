@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { after, test } from 'node:test';
 import { actPackage, boot, ready, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
+
+const PINNED = JSON.parse(
+  readFileSync(new URL('../../src/packages/optional/package.json', import.meta.url), 'utf8')
+).dependencies['@ai-ecoverse/wasix-ruby'];
 
 const chrome = await launch({ timeout: 120000 });
 after(() => chrome.close());
@@ -49,7 +54,7 @@ test('a cone’s gem install puts a command on PATH, and a fresh login shell run
     'ruby'
   );
   assert.equal(await actPackage(page, 'ruby', 'install'), 'ok');
-  assert.equal((await row(page, 'ruby')).version, '3.4.11-12');
+  assert.equal((await row(page, 'ruby')).version, PINNED);
   await run(
     page,
     `clear; cd /; sudo -u cone bash -c 'cd && mkdir -p gem42/exe && echo ${b64(EXE)} | base64 -d > gem42/exe/hello42 && echo ${b64(SPEC)} | base64 -d > gem42/hello42.gemspec && cd gem42 && gem build hello42.gemspec > /dev/null 2>&1 && gem install --local ./hello42-0.1.0.gem 2>&1 | tail -1'; echo built-$((40 + 2))`
