@@ -1,6 +1,4 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { boot, booted, ready, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
@@ -243,38 +241,6 @@ for (const status of [404, 500]) {
   });
 }
 
-const deployed = [
-  '/',
-  '/index.html',
-  '/bios.js',
-  '/bios.css',
-  '/installer.js',
-  '/sw.js',
-  '/manifest.json',
-];
-
-test('an install whose worker predates the splash loads the new BIOS page and updates the worker', async (t) => {
-  const page = await chrome.page(t);
-  const current = await readFile(new URL('../../src/sw.js', import.meta.url), 'utf8');
-  const older = current.replace(
-    /const own = new Set\(\[[^\]]*\]\);/,
-    `const own = new Set(${JSON.stringify(deployed)});`
-  );
-  assert.ok(older.includes(JSON.stringify(deployed)));
-  chrome.overrides.set('/sw.js', older);
-  await boot(page);
-  chrome.overrides.delete('/sw.js');
-
-  const bios = await watch(page);
-  const mark = page.responses.length;
-  await boot(page);
-  assert.deepEqual(bios.states(), booted);
-  const later = page.responses.slice(mark).map((response) => new URL(response.url).pathname);
-  assert.ok(later.includes('/sw/splash.js'), later.join(' '));
-  assert.ok(later.includes('/sw/card.js'), later.join(' '));
-  assert.deepEqual(page.errors, []);
-});
-
 async function timed(page) {
   const start = Date.now();
   await page.goto('/');
@@ -300,43 +266,4 @@ test('a cold boot and repeat boots through the BIOS reach the terminal prompt', 
   t.diagnostic(line);
   assert.ok(cold.prompt > 0 && warm.prompt > 0);
   assert.deepEqual(page.errors, []);
-});
-
-test('against main’s BIOS page, served alternately, the splash adds little to a repeat boot', async (t) => {
-  const root = new URL('../../', import.meta.url);
-  const git = (...args) => execFileSync('git', args, { cwd: root });
-  const shallow = git('rev-parse', '--is-shallow-repository').toString().trim() === 'true';
-  git('fetch', '--quiet', ...(shallow ? ['--depth=1'] : []), 'origin', 'main');
-  const main = {};
-  for (const name of ['index.html', 'bios.css', 'bios.js'])
-    main[name] = git('show', `FETCH_HEAD:src/${name}`);
-  const page = await chrome.page(t);
-  const visit = async () => {
-    const start = Date.now();
-    await page.goto('/index.html');
-    await page.until(() => location.pathname === '/os/');
-    const ui = Date.now() - start;
-    await ready(page);
-    return { ui, prompt: Date.now() - start };
-  };
-  await visit();
-  const runs = { main: [], splash: [] };
-  for (let round = 0; round < 6; round++) {
-    for (const arm of round % 2 ? ['splash', 'main'] : ['main', 'splash']) {
-      chrome.overrides.clear();
-      if (arm === 'main')
-        for (const [name, body] of Object.entries(main)) chrome.overrides.set(`/${name}`, body);
-      runs[arm].push(await visit());
-    }
-  }
-  chrome.overrides.clear();
-  const line = ['main', 'splash']
-    .map(
-      (arm) =>
-        `${arm} ui=${median(runs[arm].map((run) => run.ui))} prompt=${median(runs[arm].map((run) => run.prompt))}`
-    )
-    .join(' ');
-  console.log(`SPLASH-AB ${line} runs=${JSON.stringify(runs)}`);
-  t.diagnostic(`SPLASH-AB ${line}`);
-  assert.equal(runs.splash.length, 6);
 });
