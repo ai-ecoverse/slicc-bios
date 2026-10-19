@@ -3,6 +3,7 @@
   "test/integration/app.test.mjs": 9,
   "test/integration/boot.test.mjs": 18,
   "test/integration/canary.test.mjs": 5,
+  "test/integration/catalog-skills.test.mjs": 360,
   "test/integration/cdp.test.mjs": 391,
   "test/integration/cert-tools.test.mjs": 4,
   "test/integration/cert.test.mjs": 1,

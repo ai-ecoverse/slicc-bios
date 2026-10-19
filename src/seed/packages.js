@@ -7,6 +7,7 @@ import {
   removeProject,
 } from './projects.js';
 import { BIOS } from './site.js';
+import { linkSkills, unlinkSkills } from './skills.js';
 import { fetchText, pnpm, text, write } from './update.js';
 
 const deployed = new URL('packages/optional/', BIOS);
@@ -340,13 +341,14 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
       );
     }
     await unshadow({ root, kernel, global, name: entry.package, dir: mine[0].dir });
+    await linkSkills({ root, kernel, global, entry, dir: mine[0].dir });
   }
 
   async function perform(entry, action) {
     if (entry.kind === 'project' && action === 'remove') return project(entry, action);
     if (action === 'remove') {
       await run(entry, action, ['pnpm', 'remove', '-g', entry.package]);
-      return;
+      return unlinkSkills({ kernel, entry });
     }
     for (const id of entry.requires) {
       const needed = byId.get(id);

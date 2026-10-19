@@ -154,7 +154,7 @@
     "label": "mcpcat (MCP client)",
     "description": "Calls MCP servers from the terminal: lists and calls their tools, resources and prompts, over HTTP or a stdio command. In a header, -H 'Authorization: Bearer ${NAME}' (single quotes) sends the vault's placeholder, which the vault fills in where a secret rule allows that host; mcpcat never prints the value.",
     "commands": ["mcpcat"],
-    "size": 589050
+    "size": 595379
   },
   "@ai-ecoverse/wasm-imagemagick-heif": {
     "id": "imagemagick",
