@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   SLICC_CDP_PORTS: '9300-9309'
@@ -144,7 +144,7 @@ jobs:
 
   vendors:
     name: ci / vendors
-    runs-on: ubuntu-latest
+    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || github.event_name == 'workflow_dispatch' || (contains(fromJSON('["push","schedule","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 20
     env:
       LEFTHOOK: '0'
@@ -160,8 +160,16 @@ jobs:
 
       - run: npm ci
 
-      - name: Firefox and WebKit, with their system libraries
-        run: npx playwright-core install --with-deps firefox webkit
+      - name: Firefox and WebKit
+        run: npx playwright-core install firefox webkit
+
+      - name: Firefox and WebKit system dependencies
+        run: |
+          if sudo -n true 2>/dev/null; then
+            npx playwright-core install-deps firefox webkit
+          else
+            echo "No root on $RUNNER_NAME: the image's system libraries and fonts serve Firefox and WebKit."
+          fi
 
       - name: Pairing in Firefox and WebKit through the real slicc pair, and the verdict
         run: |
