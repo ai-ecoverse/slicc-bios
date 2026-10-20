@@ -436,12 +436,7 @@ class Guard {
         void this.call('Fetch.continueRequest', { requestId }, nav.session);
         return;
       }
-      void this.call(
-        'Fetch.failRequest',
-        { requestId, errorReason: 'BlockedByClient' },
-        nav.session
-      );
-      this.failed(nav.targetId, params);
+      this.blocking(nav.targetId, params, nav.session);
       return;
     }
     void this.call('Fetch.continueRequest', { requestId }, nav.session);
@@ -591,11 +586,23 @@ class Guard {
     return true;
   }
 
+  blocking(targetId, params, session) {
+    try {
+      this.failed(targetId, params);
+    } finally {
+      const failing = { requestId: params.requestId, errorReason: 'BlockedByClient' };
+      void this.call('Fetch.failRequest', failing, session);
+    }
+  }
+
   failed(targetId, { frameId, request }) {
     if (!targetId || frameId !== targetId) return;
     this.errored.set(targetId, bare(request.url));
     const nav = this.navs.get(targetId);
-    if (nav?.session && !nav.scrub) nav.scrub = this.scrubbing(nav);
+    if (!nav?.session) return;
+    if (!nav.scrub) nav.scrub = this.scrubbing(nav);
+    nav.erred = true;
+    this.wipe(nav);
   }
 
   scrubbing(nav) {
@@ -635,8 +642,7 @@ class Guard {
       params.resourceType === 'Document' &&
       this.is.url(params.request?.url)
     ) {
-      void this.call('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' }, sessionId);
-      this.failed(this.sessions.get(sessionId)?.targetId, params);
+      this.blocking(this.sessions.get(sessionId)?.targetId, params, sessionId);
       return;
     }
     if (method === 'Fetch.authRequired') {

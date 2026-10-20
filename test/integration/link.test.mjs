@@ -972,7 +972,7 @@ test('the real slicc CLI carries <port>.kernel.localhost into the page, and the 
   assert.notEqual(facade[0], 200);
 });
 
-test('the real slicc CLI shares another browser over cdp: the 9222 facade reaches it as <device>/<browser>', {
+test('the real slicc CLI shares another browser over cdp: the 9222 facade reaches it as <device>/<browser>, and a walk to seven’s origin never commits there and leaves the tab the agent’s', {
   skip: !cli,
 }, async (t) => {
   const { chromium } = await import('playwright-core');
@@ -1062,7 +1062,7 @@ test('the real slicc CLI shares another browser over cdp: the 9222 facade reache
   assert.doesNotMatch(opened.out, /open 0$/, opened.out);
   const walked = await shell(
     page,
-    `{ playwright-cli --runtime ${runtime} open 'data:text/html,<title>start</title>' > /dev/null; playwright-cli --runtime ${runtime} eval 'location.href = ${JSON.stringify(`${own}/`)}' > /dev/null 2>&1; sleep 2; playwright-cli --runtime ${runtime} eval 'location.href' 2>&1; playwright-cli --runtime ${runtime} close > /dev/null 2>&1; }`,
+    `{ playwright-cli --runtime ${runtime} open 'data:text/html,<title>start</title>' > /dev/null; playwright-cli --runtime ${runtime} eval 'location.href = ${JSON.stringify(`${own}/`)}' > /dev/null 2>&1; sleep 2; playwright-cli --runtime ${runtime} eval 'location.href' 2>&1; }`,
     'cdp-own-walk'
   );
   assert.ok(!walked.out.includes(own), walked.out);
@@ -1071,8 +1071,35 @@ test('the real slicc CLI shares another browser over cdp: the 9222 facade reache
     /about:blank#blocked/,
     `the walk to seven’s origin was failed in the other browser, and the guard left a blank page: ${walked.out}`
   );
+  const blank = (await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) => r.json())).find(
+    (tab) => tab.url === 'about:blank#blocked'
+  );
+  assert.ok(blank, 'the walked tab is on the blank page');
+  const history = await new Promise((resolve, reject) => {
+    const socket = new WebSocket(blank.webSocketDebuggerUrl);
+    socket.onopen = () =>
+      socket.send(JSON.stringify({ id: 1, method: 'Page.getNavigationHistory' }));
+    socket.onmessage = ({ data }) => {
+      socket.close();
+      resolve(JSON.parse(data).result.entries.map(({ url }) => url));
+    };
+    socket.onerror = reject;
+  });
+  assert.deepEqual(
+    history.filter((url) => url.startsWith(own) || url.startsWith('chrome-error:')),
+    [],
+    `seven’s document never committed there, not even as Chrome’s error page: ${history.join(' > ')}`
+  );
+  const kept = await shell(
+    page,
+    `{ playwright-cli --runtime ${runtime} eval 'location.href = "data:text/html,<title>after-walk</title>"' > /dev/null 2>&1; sleep 1; playwright-cli --runtime ${runtime} eval 'document.title' 2>&1; playwright-cli --runtime ${runtime} close 2>&1; echo "close $?"; }`,
+    'cdp-own-kept'
+  );
+  assert.match(kept.out, /after-walk/, `the agent can still drive the walked tab: ${kept.out}`);
+  assert.match(kept.out, /close 0$/, `the agent can still close the walked tab: ${kept.out}`);
   const tabs = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) => r.json());
   assert.ok(!tabs.some((tab) => tab.url.startsWith(own)), 'seven’s page never loaded there');
+  assert.ok(!tabs.some((tab) => tab.id === blank.id), 'the walked tab is closed');
   const hidden = await shell(
     page,
     `curl -s 'http://127.0.0.1:9222/json/list?runtime=${runtime}'`,
