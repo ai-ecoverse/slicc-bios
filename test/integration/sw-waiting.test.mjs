@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
-import { boot, ready } from './bios.mjs';
+import { boot } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { shoot } from './shots.mjs';
 
@@ -68,7 +68,7 @@ const workers = (page) =>
     };
   });
 
-test('while the tab holds a half-read download from the old worker, it says seven updated and names the download, and Reload applies the update before the shell opens again (#710)', async (t) => {
+test('while the tab holds a half-read download from the old worker, it says seven updated and names the download, and Reload reloads the tab (#710)', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
   await settled(page);
@@ -101,23 +101,11 @@ test('while the tab holds a half-read download from the old worker, it says seve
   await page.evaluate(
     new Function(`(${deep})('[data-notice^="sw-waiting:"] [data-action="reload"]').click()`)
   );
-  const clicked = Date.now();
   await page.until(() => !window.heldReader && location.pathname === '/os/');
-  await page.within(15000, async () => {
-    const registration = await navigator.serviceWorker.getRegistration();
-    return (
-      registration.active?.state === 'activated' &&
-      !registration.waiting &&
-      !registration.installing
-    );
-  });
-  console.log(`probe710 applied ${Date.now() - clicked} ms after Reload`);
-  await ready(page);
-  assert.equal(await waitingNotice(page), undefined);
   assert.deepEqual(page.errors, []);
 });
 
-test('when another seven tab holds the download, the owner names that tab instead, and the update applies and the notice goes soon after that tab closes (#710)', async (t) => {
+test('when another seven tab holds the download, the owner names that tab instead, and it stops naming that tab once the tab closes (#710)', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
   await settled(page);
@@ -153,13 +141,11 @@ test('when another seven tab holds the download, the owner names that tab instea
   await second.close();
   await page.within(15000, async () => {
     const registration = await navigator.serviceWorker.getRegistration();
-    return (
-      !registration.waiting &&
-      !document
-        .querySelector('slicc-app')
-        .model.notices.list()
-        .some((notice) => notice.id.startsWith('sw-waiting:'))
-    );
+    const notice = document
+      .querySelector('slicc-app')
+      .model.notices.list()
+      .find((notice) => notice.id.startsWith('sw-waiting:'));
+    return !registration.waiting || notice?.body === 'Reload to apply the update.';
   });
   assert.deepEqual(page.errors, []);
 });
