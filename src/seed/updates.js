@@ -74,6 +74,7 @@ export function createUpdates({
   const listeners = { items: new Set(), packages: new Set() };
   const handlers = new Map();
   let packages = [];
+  let offered = [];
   let own = [];
   let packageHandler = null;
   let ownHandler = null;
@@ -120,8 +121,15 @@ export function createUpdates({
     list: all,
     packages: () => [...own, ...packages],
     setPackages(list) {
+      offered = list;
       packages = notes ? notes.annotate(list) : list;
       listed();
+    },
+    renote() {
+      packages = notes ? notes.annotate(offered) : offered;
+      items = items.map((item) => noted(item, notes));
+      listed();
+      emit();
     },
     userPackages: () => own,
     setUserPackages(list) {

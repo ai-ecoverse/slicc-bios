@@ -4,13 +4,13 @@ import { createServer } from 'node:http';
 const PATH = /^\/repos\/([^/]+\/[^/]+)\/releases$/;
 
 export async function startFakeGitHub() {
-  const state = { repos: new Map(), status: 0, requests: [] };
+  const state = { repos: new Map(), status: 0, delay: 0, requests: [] };
   const cors = {
     'access-control-allow-origin': '*',
     'access-control-allow-headers': 'accept, if-none-match',
     'access-control-expose-headers': 'etag, retry-after, x-ratelimit-remaining, x-ratelimit-reset',
   };
-  const server = createServer((request, response) => {
+  const server = createServer(async (request, response) => {
     if (request.method === 'OPTIONS') {
       response.writeHead(204, cors);
       response.end();
@@ -25,6 +25,7 @@ export async function startFakeGitHub() {
       etag: null,
     };
     state.requests.push(seen);
+    if (state.delay) await new Promise((resolve) => setTimeout(resolve, state.delay));
     if (state.status) {
       seen.status = state.status;
       response.writeHead(state.status, { ...cors, 'content-type': 'application/json' });
@@ -69,6 +70,7 @@ export async function startFakeGitHub() {
     reset() {
       state.repos.clear();
       state.status = 0;
+      state.delay = 0;
       state.requests.length = 0;
     },
     close: () => new Promise((resolve) => server.close(resolve)),

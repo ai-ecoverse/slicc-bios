@@ -241,3 +241,39 @@ test('a rate-limited GitHub leaves releases out, shows no error, and is not aske
   assert.equal(chrome.github.state.requests.length, asked);
   assert.equal('releases' in (await row(page, 'kernel')), false);
 });
+
+test('a GitHub that answers slowly does not hold the update check up, and its releases reach the row once they arrive', {
+  timeout: 10 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  chrome.github.releases('ai-ecoverse/slicc-kernel', [release(`v${SHIPPED}`, 'late notes')]);
+  chrome.github.state.delay = 30000;
+  await boot(page);
+  await page.until(() => {
+    const kernel = document
+      .querySelector('slicc-app')
+      .model.updates.list()
+      .find((item) => item.id === 'kernel');
+    return kernel?.checkedAt !== null && kernel?.checkedAt !== undefined;
+  });
+  const early = await row(page, 'kernel');
+  assert.equal('releases' in early, false);
+  assert.ok(kernelCalls().some(({ status }) => status === 0));
+  await page.within(
+    2 * 60 * 1000,
+    () =>
+      !!document
+        .querySelector('slicc-app')
+        .model.updates.list()
+        .find((item) => item.id === 'kernel')?.releases
+  );
+  const late = await row(page, 'kernel');
+  assert.equal(late.checkedAt, early.checkedAt);
+  assert.deepEqual(late.releases, [
+    {
+      version: SHIPPED,
+      url: `https://github.com/ai-ecoverse/slicc-kernel/releases/tag/v${SHIPPED}`,
+      notes: 'late notes',
+    },
+  ]);
+});

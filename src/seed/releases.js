@@ -275,15 +275,37 @@ function picked(kept, from, to) {
   return list.length ? list : undefined;
 }
 
-export function createNotes({ releases, repos = REPOS }) {
+export const WAIT = 3000;
+export const OWNER = 'ai-ecoverse';
+
+function bounded(work, wait, late) {
+  let timer = null;
+  let slow = false;
+  const done = work.then(() => {
+    clearTimeout(timer);
+    if (slow) late();
+  });
+  const deadline = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      slow = true;
+      resolve();
+    }, wait);
+  });
+  return Promise.race([done, deadline]);
+}
+
+export function createNotes({ releases, repos = REPOS, wait = WAIT }) {
   const rows = new Map();
   let known = new Map();
   let current = null;
+  let port = null;
+  const renote = () => port?.renote();
   return {
-    async prepare(updates) {
+    prepare(updates) {
+      port = updates;
       const round = releases.round();
       current = round;
-      await Promise.all(
+      const work = Promise.all(
         Object.entries(repos).map(async ([id, repo]) => {
           const { from = null, to = null } = updates.get(id) ?? {};
           if (!to) return;
@@ -293,25 +315,29 @@ export function createNotes({ releases, repos = REPOS }) {
           else rows.delete(id);
         })
       );
+      return bounded(work, wait, renote);
     },
     pick(id, from, to) {
       return picked(rows.get(id), from, to);
     },
-    async packages(list) {
+    packages(list) {
       const round = current ?? releases.round();
-      const found = new Map();
-      for (const row of list) {
-        const to = row.offered ?? row.version;
-        if (!to) continue;
-        const repo = await round.repository(row.package, row.version ?? to).catch(() => null);
-        if (!repo) continue;
-        const short = shortName(row.package);
-        const own = shortName(repo).toLowerCase() === short.toLowerCase();
-        const want = { from: row.version, to, short, own };
-        const items = await round.items(repo, want).catch(() => null);
-        if (items) found.set(row.id, { items, short, own });
-      }
-      known = found;
+      const work = (async () => {
+        const found = new Map();
+        for (const row of list) {
+          const to = row.offered ?? row.version;
+          if (!to) continue;
+          const repo = await round.repository(row.package, row.version ?? to).catch(() => null);
+          if (!repo?.startsWith(`${OWNER}/`)) continue;
+          const short = shortName(row.package);
+          const own = shortName(repo).toLowerCase() === short.toLowerCase();
+          const want = { from: row.version, to, short, own };
+          const items = await round.items(repo, want).catch(() => null);
+          if (items) found.set(row.id, { items, short, own });
+        }
+        known = found;
+      })();
+      return bounded(work, wait, renote);
     },
     annotate(list) {
       return list.map((row) => {
