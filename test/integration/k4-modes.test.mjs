@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { agentUp, ready, run, screen, shows } from './bios.mjs';
+import { AGENT_BUDGET, agentUp, ready, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const KERNEL = 'node_modules/@ai-ecoverse/slicc-kernel';
@@ -30,6 +30,7 @@ async function read(page, path) {
 
 const OLD_STEP = { stall: 150 * 1000 };
 const OLD_TOTAL = 20 * 60 * 1000;
+const BINS = 5 * 60 * 1000;
 const STUCK = /the agent made no progress for|the agent was not up within/;
 
 function reached(message) {
@@ -81,7 +82,7 @@ function olderLock(shipped) {
 }
 
 test('a profile whose /opt/agent was installed on kernel 1.67.1 keeps its bin scripts runnable under enforce on a /meta kernel', {
-  timeout: 35 * 60 * 1000,
+  timeout: OLD_TOTAL + AGENT_BUDGET + BINS + 5 * 60 * 1000,
 }, async (t) => {
   const { readFileSync } = await import('node:fs');
   const shipped = JSON.parse(
@@ -110,7 +111,7 @@ test('a profile whose /opt/agent was installed on kernel 1.67.1 keeps its bin sc
     page,
     'clear; ls /opt/agent/node_modules/.bin | head -3; for b in /opt/agent/node_modules/.bin/*; do [ -x "$b" ] || echo "noexec $b"; done; b=$(ls /opt/agent/node_modules/.bin | head -1); stat -L -c \'%a %n\' "/opt/agent/node_modules/.bin/$b"; sudo -u cone "/opt/agent/node_modules/.bin/$b" --version > /dev/null 2>&1; echo ran=$?; i --help > /dev/null 2>&1; echo i=$?; echo bins-$((40 + 2))'
   );
-  await shows(page, 'bins-42', 5 * 60 * 1000);
+  await shows(page, 'bins-42', BINS);
   const text = await screen(page);
   t.diagnostic(text.replace(/\s+/g, ' ').slice(0, 600));
   assert.doesNotMatch(text, /noexec/);
