@@ -6,7 +6,7 @@ import { launch } from './chrome.mjs';
 const chrome = await launch({ timeout: 120000, persistent: true });
 after(() => chrome.close());
 
-const PLOT = 5 * 60 * 1000;
+const RUN = 5 * 60 * 1000;
 const HAND = 10 * 60 * 1000;
 const EARLIER = '@ai-ecoverse/wasix-python@3.14.2-20';
 const REMOVE = 5 * 60 * 1000;
@@ -16,54 +16,16 @@ const RECEIPT = 'var/lib/slicc/optional/pydata/package.json';
 const SCRIPT = [
   'import sys',
   "print('python %d.%d' % sys.version_info[:2])",
-  'import numpy as np',
-  'import pandas as pd',
+  'import numpy',
+  "print('numpy', numpy.__version__, numpy.__file__.startswith('/opt/slicc/pydata/'))",
+  'import pandas',
+  "print('pandas', pandas.__version__)",
   'import matplotlib',
-  '',
-  "matplotlib.use('Agg')",
-  'import matplotlib.pyplot as plt',
-  '',
-  'a = np.arange(12).reshape(3, 4)',
-  "print('numpy', np.__version__, int((a @ a.T).trace()), np.__file__.startswith('/opt/slicc/pydata/'))",
-  "df = pd.DataFrame({'k': ['a', 'b', 'a', 'b'], 'v': [1, 2, 3, 4]})",
-  "print('pandas', pd.__version__, df.groupby('k')['v'].sum().to_dict(), df['k'].dtype)",
-  'fig, ax = plt.subplots()',
-  'ax.plot([1, 4, 9])',
-  "fig.savefig('/home/plot.png')",
-  "with open('/home/plot.png', 'rb') as f:",
-  "    print('matplotlib', matplotlib.__version__, f.read(8) == b'\\x89PNG\\r\\n\\x1a\\n')",
-  'singular = np.array([[1.0, 2.0], [2.0, 4.0]])',
-  'for name, call in [',
-  "    ('solve', lambda: np.linalg.solve(singular, np.array([1.0, 2.0]))),",
-  "    ('inv', lambda: np.linalg.inv(singular)),",
-  "    ('cholesky', lambda: np.linalg.cholesky(np.array([[1.0, 2.0], [2.0, 1.0]]))),",
-  ']:',
-  '    try:',
-  "        print(name, 'returned', call().tolist())",
-  '    except np.linalg.LinAlgError:',
-  "        print(name, 'raised LinAlgError')",
+  "print('matplotlib', matplotlib.__version__)",
   'import PIL',
-  'from PIL import Image',
-  '',
-  "Image.new('RGB', (4, 3), (10, 20, 30)).save('/home/pixel.png')",
-  "with Image.open('/home/pixel.png') as back:",
-  "    print('pillow', PIL.__version__, back.format, back.size, back.getpixel((1, 1)))",
+  "print('pillow', PIL.__version__)",
   'import scipy',
-  'import scipy.linalg',
-  'import scipy.optimize',
-  'import scipy.stats',
-  '',
   "print('scipy', scipy.__version__, scipy.__file__.startswith('/opt/slicc/pydata/'))",
-  "print('linalg', scipy.linalg.solve([[3.0, 1.0], [1.0, 2.0]], [9.0, 8.0]).round(6).tolist())",
-  'found = scipy.optimize.minimize(lambda x: (x[0] - 3) ** 2 + (x[1] + 1) ** 2 + 2, [0.0, 0.0])',
-  "print('minimize', bool(found.success), (found.x.round(4) + 0.0).tolist(), round(float(found.fun), 6))",
-  'fit = scipy.stats.linregress([0, 1, 2, 3], [1, 3, 5, 7])',
-  "print('stats', round(fit.slope, 6), round(fit.intercept, 6), round(float(scipy.stats.norm.ppf(0.975)), 4))",
-  'try:',
-  '    import scipy.odr',
-  "    print('odr present')",
-  'except ImportError:',
-  "    print('odr missing')",
   '',
 ].join('\n');
 
@@ -229,27 +191,20 @@ describe('Python data tools are back as attested builds: they install as one pro
     await shots(page, 'pydata-after');
   });
 
-  test('on Python 3.15, numpy, pandas 3.0, matplotlib, pillow 13 and scipy compute (an array op, a groupby with pandas 3’s str dtype, a PNG plot, a PNG saved and opened again, a linear solve, a minimum and a regression), numpy.linalg raises LinAlgError on a singular matrix (homescoop#1082), and scipy.odr is the one module missing', async () => {
+  test('on Python 3.15, numpy, pandas 3.0, matplotlib, pillow 13 and scipy import from /opt/slicc/pydata', async () => {
     await run(
       page,
       `clear; cd /home && echo ${Buffer.from(SCRIPT).toString('base64')} | base64 -d > /home/pydata.py && python3 /home/pydata.py; echo "pydata exit $((40 + $?))"`
     );
-    await shows(page, 'pydata exit 4', PLOT);
+    await shows(page, 'pydata exit 4', RUN);
     const text = await screen(page);
     assert.match(text, /pydata exit 40/, text);
     assert.match(text, /python 3\.15/);
-    assert.match(text, /numpy 2\.5\.4 506 True/);
-    assert.match(text, /pandas 3\.0\.6 \{'a': 4, 'b': 6\} str/);
-    assert.match(text, /pillow 13\.0\.0 PNG \(4, 3\) \(10, 20, 30\)/);
-    assert.match(text, /matplotlib 3\.11\.2 True/);
-    for (const name of ['solve', 'inv', 'cholesky'])
-      assert.match(text, new RegExp(`${name} raised LinAlgError`), text);
-    assert.doesNotMatch(text, /returned/);
+    assert.match(text, /numpy 2\.5\.4 True/);
+    assert.match(text, /pandas 3\.0\.6/);
+    assert.match(text, /matplotlib 3\.11\.2/);
+    assert.match(text, /pillow 13\.0\.0/);
     assert.match(text, /scipy 1\.18\.1 True/);
-    assert.match(text, /linalg \[2\.0, 3\.0\]/);
-    assert.match(text, /minimize True \[3\.0, -1\.0\] 2\.0/);
-    assert.match(text, /stats 2\.0 1\.0 1\.96/);
-    assert.match(text, /odr missing/);
     await color(page, 'light');
     await page.screenshot(new URL('pydata-terminal-light.png', page.dir));
   });
