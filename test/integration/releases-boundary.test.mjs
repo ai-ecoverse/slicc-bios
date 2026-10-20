@@ -168,10 +168,12 @@ test('a component installed for the first time during a check gets its releases 
   });
   await notes.prepare(updates);
   assert.deepEqual(asked, []);
+  const prepared = renoted;
   items.agent = { from: '6.14.3', to: '6.14.3' };
   assert.equal(notes.pick('agent', '6.14.3', '6.14.3'), undefined);
-  for (let i = 0; i < 50 && !renoted; i++) await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(renoted, 1);
+  for (let i = 0; i < 50 && renoted === prepared; i++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(renoted, prepared + 1);
   assert.deepEqual(notes.pick('agent', '6.14.3', '6.14.3'), [
     {
       version: '6.14.3',
