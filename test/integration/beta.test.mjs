@@ -312,6 +312,36 @@ test('the owner turns on developer mode, npm’s newer agent is offered as a bet
   });
 
   await t.test(
+    'when seven’s certified agent lock changes under a beta, the beta goes and a notice says so',
+    async () => {
+      await npmSays(page, 'offered');
+      const acting = act(page, 'install-beta');
+      await confirmWith(page, 'Install beta');
+      await acting;
+      await rowSettled(page, 'agent');
+      assert.equal(await installedAgent(page), BETA);
+      const lock = await readFile(
+        new URL('../../src/packages/agent/pnpm-lock.yaml', import.meta.url),
+        'utf8'
+      );
+      chrome.overrides.set('/packages/agent/pnpm-lock.yaml', `${lock}\n`);
+      t.after(() => chrome.overrides.delete('/packages/agent/pnpm-lock.yaml'));
+      await act(page, 'retry');
+      await rowSettled(page, 'agent');
+      assert.equal(await installedAgent(page), PINNED);
+      assert.equal((await agentRow(page)).beta, null);
+      assert.equal(await notice(page, 'beta:agent'), null);
+      const replaced = await notice(page, 'beta:replaced');
+      assert.equal(replaced?.title, 'The agent went back to certified');
+      assert.match(replaced.body, new RegExp(`removed the beta ${BETA.replaceAll('.', '\\.')}`));
+      chrome.overrides.delete('/packages/agent/pnpm-lock.yaml');
+      await act(page, 'retry');
+      await rowSettled(page, 'agent');
+      assert.equal(await installedAgent(page), PINNED);
+    }
+  );
+
+  await t.test(
     'a release without provenance, or built outside the release workflow, is listed but not offered',
     async () => {
       release.provenance = false;
