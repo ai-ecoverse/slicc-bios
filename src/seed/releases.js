@@ -65,13 +65,8 @@ export function within(items, { from, to, short, own }) {
 }
 
 function covered(items, want) {
-  if (want.from === null || want.from === undefined) {
-    return items.some((item) => versionOf(item.tag, want) === want.to);
-  }
-  return items.some((item) => {
-    const version = versionOf(item.tag, want);
-    return version !== null && compare(version, want.from) <= 0;
-  });
+  const until = want.from === null || want.from === undefined ? want.to : want.from;
+  return items.some((item) => versionOf(item.tag, want) === until);
 }
 
 function request(req) {

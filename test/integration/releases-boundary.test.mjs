@@ -122,3 +122,27 @@ test('a release whose page is not on github.com, or a package whose repository i
   assert.equal('releases' in shown[1], false);
   assert.equal('releases' in shown[2], false);
 });
+
+test('an out-of-order backport below the installed release on page 1 does not stop the paging, so in-range releases on page 2 still reach the row', async () => {
+  const page = (versions) =>
+    versions.map((version) => ({
+      tag_name: `v${version}`,
+      html_url: `https://github.com/ai-ecoverse/slicc-kernel/releases/tag/v${version}`,
+      body: `notes ${version}`,
+    }));
+  const first = page(['1.0.1', ...Array.from({ length: 99 }, (_, i) => `2.0.${200 - i}`)]);
+  const second = page(['2.0.101', '2.0.100', '2.0.99']);
+  const asked = [];
+  const fetcher = async (url) => {
+    asked.push(String(url));
+    const n = Number(new URL(String(url)).searchParams.get('page'));
+    return Response.json(n === 1 ? first : n === 2 ? second : []);
+  };
+  const items = await createReleases({ fetcher, store: memory(), origin: API })
+    .round()
+    .items('ai-ecoverse/slicc-kernel', { from: '2.0.99', to: '2.0.200', own: true, short: null });
+  assert.equal(asked.length, 2);
+  const versions = items.map(({ tag }) => tag);
+  assert.ok(versions.includes('v2.0.100'));
+  assert.ok(versions.includes('v2.0.99'));
+});
