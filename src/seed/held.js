@@ -6,9 +6,24 @@ export const KEY = 'slicc-os.held-targets';
 export const MARK = 'slicc-sign-in-';
 export const KEEP = 32;
 export const WAIT = 5000;
+export const FLIGHT = 11 * 60 * 1000;
+export const UNHELD =
+  "Seven couldn't keep the sign-in window out of reach of browser automation, so it didn't open the sign-in. Try again.";
 const EVERY = 200;
 
 const held = new Set();
+const flights = [];
+
+export function flying(now = Date.now) {
+  flights.push(now() + FLIGHT);
+}
+
+export function inFlight(now = Date.now) {
+  while (flights.length && flights[0] <= now()) flights.shift();
+  return flights.length > 0;
+}
+
+export const guardOf = (own) => protectedOrigins(catalog.protectedOrigins, own ? [own] : []);
 
 function stored(storage) {
   try {
@@ -54,19 +69,22 @@ function ask(connection, method, params = {}) {
   });
 }
 
-async function find(open, url, deadline, now, sleep) {
+async function find(open, url, { deadline, now, sleep, storage }) {
   let connection;
   try {
     connection = await open();
   } catch {
-    return null;
+    return 'absent';
   }
   try {
     for (;;) {
       const result = await ask(connection, 'Target.getTargets');
       const found = result?.targetInfos?.find((info) => info.type === 'page' && info.url === url);
-      if (found) return found.targetId;
-      if (!result || now() >= deadline) return null;
+      if (found) {
+        hold(found.targetId, storage);
+        return 'held';
+      }
+      if (!result || now() >= deadline) return 'missing';
       await sleep(EVERY);
     }
   } finally {
@@ -88,17 +106,31 @@ export function watchSignIns({
     const url = markerUrl(data.marker);
     const deadline = now() + wait;
     const opens = Object.values(hosts() ?? {}).filter((open) => typeof open === 'function');
-    const found = await Promise.all(opens.map((open) => find(open, url, deadline, now, sleep)));
-    const ids = found.filter(Boolean);
-    for (const id of ids) hold(id, storage);
-    channel.postMessage({ type: ids.length ? 'held' : 'none', marker: data.marker });
+    const found = (
+      await Promise.all(opens.map((open) => find(open, url, { deadline, now, sleep, storage })))
+    ).filter((state) => state !== 'absent');
+    const type = !found.length
+      ? 'none'
+      : found.every((state) => state === 'held')
+        ? 'held'
+        : 'unheld';
+    if (type === 'none') flying(now);
+    channel.postMessage({ type, marker: data.marker });
   };
   return () => channel.close();
 }
 
+const ANSWERS = new Set(['held', 'none', 'unheld']);
+
 export function askHold(
   marker,
-  { listen = (name) => new BroadcastChannel(name), wait = WAIT + 1000, signal } = {}
+  {
+    listen = (name) => new BroadcastChannel(name),
+    wait = WAIT + 1000,
+    signal,
+    present = () => false,
+    now = Date.now,
+  } = {}
 ) {
   return new Promise((resolve) => {
     const channel = listen(CHANNEL);
@@ -106,28 +138,55 @@ export function askHold(
       clearTimeout(timer);
       signal?.removeEventListener('abort', stop);
       channel.close();
+      if (answer === 'none') flying(now);
       resolve(answer);
     };
     const stop = () => finish('aborted');
-    const timer = setTimeout(() => finish('none'), wait);
+    const timer = setTimeout(() => finish(present() ? 'unheld' : 'none'), wait);
     signal?.addEventListener('abort', stop, { once: true });
     channel.onmessage = ({ data }) => {
-      if (data?.marker === marker && (data.type === 'held' || data.type === 'none'))
-        finish(data.type);
+      if (data?.marker === marker && ANSWERS.has(data.type)) finish(data.type);
     };
     channel.postMessage({ type: 'hold', marker });
   });
 }
 
-function opened(connection, { is, storage }) {
+function considering({ is, storage, now }) {
   const urls = new Map();
-  const consider = (info) => {
-    if (info.type !== 'page' || !info.openerId || !/^about:blank(?:#|$)/.test(info.url ?? ''))
-      return;
-    const opener = urls.get(info.openerId);
-    if (isHeld(info.openerId, storage) || (opener !== undefined && is.url(opener)))
-      hold(info.targetId, storage);
+  return (infos) => {
+    const known = infos.filter((info) => info?.targetId);
+    for (const info of known) urls.set(info.targetId, info.url ?? '');
+    const all = inFlight(now);
+    for (const info of known) {
+      if (info.type !== 'page' || !info.openerId) continue;
+      if (!all && !/^about:blank(?:#|$)/.test(info.url ?? '')) continue;
+      const opener = urls.get(info.openerId);
+      if (isHeld(info.openerId, storage) || (opener !== undefined && is.url(opener)))
+        hold(info.targetId, storage);
+    }
   };
+}
+
+export async function sweep({ hosts, own, is = guardOf(own), storage, now = Date.now }) {
+  const consider = considering({ is, storage, now });
+  for (const open of Object.values(hosts() ?? {})) {
+    if (typeof open !== 'function') continue;
+    let connection;
+    try {
+      connection = await open();
+    } catch {
+      continue;
+    }
+    try {
+      consider((await ask(connection, 'Target.getTargets'))?.targetInfos ?? []);
+    } finally {
+      connection.close();
+    }
+  }
+}
+
+function opened(connection, { is, storage, now }) {
+  const consider = considering({ is, storage, now });
   let next = 0;
   connection.onmessage = (text) => {
     let message;
@@ -136,11 +195,7 @@ function opened(connection, { is, storage }) {
     } catch {
       return;
     }
-    const infos = (message.result?.targetInfos ?? [message.params?.targetInfo]).filter(
-      (info) => info?.targetId
-    );
-    for (const info of infos) urls.set(info.targetId, info.url ?? '');
-    for (const info of infos) consider(info);
+    consider(message.result?.targetInfos ?? [message.params?.targetInfo]);
   };
   const send = (method, params = {}) => {
     next += 1;
@@ -155,10 +210,11 @@ function opened(connection, { is, storage }) {
 export function watchOpened({
   hosts,
   own,
-  is = protectedOrigins(catalog.protectedOrigins, own ? [own] : []),
+  is = guardOf(own),
   storage = globalThis.localStorage,
   every = 250,
   timers = globalThis,
+  now = Date.now,
 }) {
   const live = new Map();
   const ended = new Set();
@@ -172,7 +228,7 @@ export function watchOpened({
       live.set(name, null);
       try {
         const connection = await open();
-        const poll = opened(connection, { is, storage });
+        const poll = opened(connection, { is, storage, now });
         live.set(name, { connection, poll });
         connection.onclose = () => {
           live.delete(name);

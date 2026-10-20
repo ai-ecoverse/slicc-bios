@@ -33,12 +33,13 @@ execFileSync(
   ],
   { stdio: 'ignore' }
 );
-const idp = { finish: false };
+const idp = { finish: false, authorized: 0 };
 const ims = createHttps(
   { key: readFileSync(join(certs, 'key.pem')), cert: readFileSync(join(certs, 'cert.pem')) },
   (req, res) => {
     const url = new URL(req.url, 'https://ims-na1.adobelogin.com');
     if (url.pathname === '/ims/authorize/v2') {
+      idp.authorized += 1;
       const state = JSON.parse(Buffer.from(url.searchParams.get('state'), 'base64').toString());
       const back = `${state.origin}/auth/callback?nonce=${state.nonce}#access_token=${MARK}-callback&token_type=bearer&expires_in=60`;
       const next = new URLSearchParams(idp.finish ? { back } : { child: '1' });
@@ -145,13 +146,7 @@ async function navigate(targetId, url) {
 async function guarded(page, via, name) {
   await page.evaluate(
     async ([via, name]) => {
-      const { guardProtected } = await import(new URL('guard.js', location.href).href);
-      const cdp = await import(new URL('cdp.js', location.href).href);
-      const raw =
-        via === 'extension'
-          ? cdp.extensionConnection(globalThis.sliccExtension.cdp)
-          : await globalThis.sliccBrowserHosts().proxy();
-      const connection = guardProtected(raw, location.origin);
+      const connection = await globalThis.sliccBrowserHook({ runtime: via });
       const pending = new Map();
       const events = [];
       let next = 0;
@@ -435,4 +430,85 @@ test('through slicc-node, sign-in tabs and their lineage are held from creation 
     () => document.querySelector('slicc-app').model.network.status().browser?.via === 'proxy'
   );
   await rows(t, page, 'proxy');
+});
+
+const UNHELD =
+  "Seven couldn't keep the sign-in window out of reach of browser automation, so it didn't open the sign-in. Try again.";
+
+async function ended(page, ms = 30000) {
+  const end = Date.now() + ms;
+  for (;;) {
+    const answer = await page.evaluate(() => window.signInAnswer);
+    if (answer) return answer;
+    if (Date.now() > end) throw new Error('the sign-in never ended');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+}
+
+function startSignIn(page) {
+  return page.evaluate(() => {
+    window.signInAnswer = null;
+    void globalThis
+      .sliccLogin('adobe', async () => ({ clientId: 'test-client', scopes: 'openid' }))
+      .then(
+        (token) => `resolved ${typeof token}`,
+        (error) => error.message
+      )
+      .then((answer) => {
+        window.signInAnswer = answer;
+      });
+  });
+}
+
+test('with a browser host connected, a sign-in whose window seven can’t hold never goes to the IdP', {
+  timeout: 5 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  const extension = await fakeExtension(page);
+  t.after(extension.close);
+  await page.init(debugSignIn);
+  await boot(page);
+  await page.evaluate(() => {
+    const post = BroadcastChannel.prototype.postMessage;
+    BroadcastChannel.prototype.postMessage = function (data) {
+      if (data?.type === 'hold') return;
+      return post.call(this, data);
+    };
+  });
+  const asked = idp.authorized;
+  const before = new Set((await devtools('/json/list')).map((tab) => tab.id));
+  await startSignIn(page);
+  assert.equal(await ended(page), UNHELD);
+  assert.equal(idp.authorized, asked, 'the IdP was asked');
+  const left = (await devtools('/json/list')).filter((tab) => !before.has(tab.id));
+  assert.ok(
+    left.every((tab) => !tab.url.includes('adobelogin') && !tab.url.includes(MARK)),
+    JSON.stringify(left.map((tab) => tab.url))
+  );
+  assert.deepEqual(page.errors, []);
+});
+
+test('with no browser host at the start, a host that connects in the middle of a sign-in never sees the sign-in tab', {
+  timeout: 5 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  await page.init(debugSignIn);
+  await boot(page);
+  const before = new Set((await devtools('/json/list')).map((tab) => tab.id));
+  await startSignIn(page);
+  const popup = await tabWhere(
+    (tab) => !before.has(tab.id) && tab.url.startsWith('https://ims-na1.adobelogin.com/landing')
+  );
+  t.after(() => close([popup]));
+  assert.equal(await page.evaluate(() => window.signInAnswer), null);
+  const extension = await fakeExtension(page);
+  t.after(extension.close);
+  await extension.install();
+  const agent = await guarded(page, 'extension', 'midway');
+  t.after(() => agent.close().catch(() => {}));
+  await agent.send('Target.setDiscoverTargets', { discover: true });
+  await unreachable(agent, { 'the sign-in tab': popup });
+  await navigate(popup, ordinary(`/midway#access_token=${MARK}-midway`));
+  await unreachable(agent, { 'the sign-in tab': popup });
+  assert.deepEqual(page.errors, []);
 });

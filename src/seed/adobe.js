@@ -1,4 +1,5 @@
-import { askHold, markerUrl } from './held.js';
+import { browserHosts } from './cdp.js';
+import { askHold, markerUrl, UNHELD } from './held.js';
 import { IMS_TOKEN } from './vault.js';
 
 const imsHosts = {
@@ -146,7 +147,7 @@ async function prepare(open, options, address, signal, hold) {
     const held = abortable(Promise.resolve(hold(marker, signal)), signal);
     held.catch(() => {});
     const config = await abortable(Promise.resolve(options()), signal);
-    await held;
+    if ((await held) === 'unheld') throw new Error(UNHELD);
     if (!config) throw new Error('this account has no sign-in');
     popup.location.href = await abortable(Promise.resolve(address(config)), signal);
   } catch (error) {
@@ -260,7 +261,7 @@ function viaProxy({ proxy, open, hold, fetcher, every, timeout }) {
 }
 
 export function signIn({
-  network,
+  network = {},
   open = (url) => window.open(url, 'slicc-sign-in', 'popup,width=520,height=720'),
   fetch: fetcher = (input, init) => globalThis.fetch(input, init),
   every = 1000,
@@ -270,7 +271,14 @@ export function signIn({
   force,
   shared = false,
   listen = (name) => new BroadcastChannel(name),
-  hold = (marker, signal) => askHold(marker, { listen, signal }),
+  holdWait,
+  hold = (marker, signal) =>
+    askHold(marker, {
+      listen,
+      signal,
+      wait: holdWait,
+      present: () => Object.values(browserHosts(network)).some(Boolean),
+    }),
 }) {
   const relay = shared
     ? viaRelay({ open, hold, listen, timeout, address: openerUrl, channel: OPENER_CHANNEL })

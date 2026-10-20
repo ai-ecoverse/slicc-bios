@@ -264,9 +264,13 @@ export function browserHook(
   network,
   observe = (connection) => connection,
   links,
-  own = globalThis.location?.origin
+  own = globalThis.location?.origin,
+  before = async () => {}
 ) {
-  const guard = (connection) => observe(guardProtected(connection, own));
+  const guard = async (connection) => {
+    await before().catch(() => {});
+    return observe(guardProtected(connection, own));
+  };
   return async ({ runtime } = {}) => {
     const linked = linkedBrowsers(links);
     const hosts = browserHosts(network);
@@ -285,9 +289,9 @@ export function browserHook(
   };
 }
 
-export function browserControl(network, { observe, links } = {}) {
+export function browserControl(network, { observe, links, before } = {}) {
   return {
-    hook: browserHook(network, observe, links),
+    hook: browserHook(network, observe, links, undefined, before),
     status: () => ({ via: browserVia(network, links) }),
   };
 }

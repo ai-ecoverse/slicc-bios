@@ -36,7 +36,7 @@ import {
   installed,
 } from './grammars.js';
 import { clearHandOff } from './handoff.js';
-import { watchOpened, watchSignIns } from './held.js';
+import { sweep, watchOpened, watchSignIns } from './held.js';
 import { createJerk } from './jerk.js';
 import { change, userRows } from './layer.js';
 import { createLeaders, proxyOf } from './leaders.js';
@@ -179,6 +179,7 @@ const control = browserControl(network, {
     return browser.observe(connection);
   },
   links: () => links,
+  before: () => sweep({ hosts: () => browserHosts(network), own: location.origin }),
 });
 const exits = createExitRouter();
 const tailscale = createTailscale(await tailscaleConfig(), { router: exits });
@@ -775,7 +776,7 @@ async function own() {
   const hosts = () => browserHosts(network);
   watchSignIns({ hosts });
   ({ poke } = watchOpened({ hosts, own: location.origin }));
-  if (globalThis.sliccKernelDebug === true) globalThis.sliccBrowserHosts = hosts;
+  if (globalThis.sliccKernelDebug === true) globalThis.sliccBrowserHook = control.hook;
   const denials = denialLog({ root, users: () => kernel?.users, mode });
   const link = linkFacade({
     check: async (stamp) => permitted(stamp, await sudoGidOf(kernel).catch(() => undefined)),

@@ -36,7 +36,7 @@ export function extensionOver(browser) {
       if (ms) setTimeout(() => socket.send(JSON.stringify(command)), ms);
       else socket.send(JSON.stringify(command));
     });
-    await page.init(() => {
+    const bridge = () => {
       const pending = new Map();
       const listeners = new Set();
       let next = 0;
@@ -69,7 +69,8 @@ export function extensionOver(browser) {
           }),
         }),
       });
-    });
-    return { sent, shielding, close: () => socket.close() };
+    };
+    await page.init(bridge);
+    return { sent, shielding, close: () => socket.close(), install: () => page.evaluate(bridge) };
   };
 }
