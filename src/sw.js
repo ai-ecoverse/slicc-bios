@@ -267,17 +267,25 @@ function deadline(text) {
   return { late, clear: () => clearTimeout(timer) };
 }
 
-function watched(response, pathname, controller) {
+const streaming = new Set();
+
+function watched(response, request, controller, client) {
   if (!response.body) return response;
+  const { origin, pathname } = new URL(request.url);
+  const open = { client, url: `${origin}${pathname}`, since: Date.now() };
   const reader = response.body.getReader();
+  streaming.add(open);
   const body = new ReadableStream({
     async pull(stream) {
       const idle = deadline(`sw: no data for ${pathname} in ${PATIENCE / 1000} s`);
       try {
         const { done, value } = await Promise.race([reader.read(), idle.late]);
-        if (done) stream.close();
-        else stream.enqueue(value);
+        if (done) {
+          streaming.delete(open);
+          stream.close();
+        } else stream.enqueue(value);
       } catch (error) {
+        streaming.delete(open);
         controller.abort();
         reader.cancel(error).catch(() => {});
         stream.error(error);
@@ -285,9 +293,19 @@ function watched(response, pathname, controller) {
         idle.clear();
       }
     },
-    cancel: (reason) => reader.cancel(reason),
+    cancel: (reason) => {
+      streaming.delete(open);
+      return reader.cancel(reason);
+    },
   });
   return new Response(body, response);
+}
+
+function streamsOf(client) {
+  const now = Date.now();
+  return [...streaming]
+    .filter((open) => open.client === client)
+    .map(({ url, since }) => ({ url, age: now - since }));
 }
 
 function answer(request, work, from = '') {
@@ -309,7 +327,6 @@ function answer(request, work, from = '') {
 }
 
 async function kernel(request, controller, port, clientId) {
-  const { pathname } = new URL(request.url);
   const response = await loopback(request, port, {
     clients: self.clients,
     clientId,
@@ -320,7 +337,7 @@ async function kernel(request, controller, port, clientId) {
     await response.body?.cancel();
     return response;
   }
-  return watched(response, pathname, controller);
+  return watched(response, request, controller, clientId);
 }
 
 const aliases = new Map([
@@ -331,14 +348,14 @@ const aliases = new Map([
   ],
 ]);
 
-async function serve(request, controller) {
+async function serve(request, controller, client) {
   const scope = new URL(self.registration.scope).pathname;
   const url = new URL(request.url);
   const asked = `/${url.pathname.slice(scope.length)}`;
   const path = aliases.get(asked) ?? asked;
   const base = scope.replace(/\/$/, '');
   const network = async () =>
-    watched(await fetch(request, { signal: controller.signal }), url.pathname, controller);
+    watched(await fetch(request, { signal: controller.signal }), request, controller, client);
   if (passed.has(asked)) return network();
   if (asked === MANIFEST) return Response.redirect(`${BIOS_URL}manifest.json`, 302);
   const served = kind(path);
@@ -401,6 +418,18 @@ self.addEventListener('fetch', (event) => {
       )
     );
   } else if (request.method === 'GET' && request.url.startsWith(self.registration.scope)) {
-    event.respondWith(answer(request, serve));
+    const client = clientId || event.resultingClientId;
+    event.respondWith(answer(request, (asked, controller) => serve(asked, controller, client)));
   }
+});
+async function prune() {
+  for (const open of [...streaming]) {
+    if (open.client && !(await self.clients.get(open.client))) streaming.delete(open);
+  }
+}
+
+self.addEventListener('message', (event) => {
+  if (event.data?.streams !== 'mine' || !event.source) return;
+  const { source } = event;
+  event.waitUntil(prune().then(() => source.postMessage({ streams: streamsOf(source.id) })));
 });

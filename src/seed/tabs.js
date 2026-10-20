@@ -45,17 +45,23 @@ function pick(given, names) {
 
 export function localBoard({ id = crypto.randomUUID(), versions = null } = {}) {
   const listeners = new Set();
+  const holding = new Set();
   let serving = null;
   let owner = { tab: null, versions: null };
   return {
     id,
     owner: () => owner,
     on(type, listener) {
-      if (type !== 'owner') return () => undefined;
-      listeners.add(listener);
-      return () => listeners.delete(listener);
+      const into = type === 'owner' ? listeners : type === 'holders' ? holding : null;
+      if (!into) return () => undefined;
+      into.add(listener);
+      return () => into.delete(listener);
     },
     show() {},
+    hold(holds) {
+      const holders = holds.length ? [{ tab: id, holds }] : [];
+      for (const listener of [...holding]) listener(holders);
+    },
     own(give, next = versions) {
       serving = give;
       versions = next;
@@ -103,6 +109,7 @@ export async function joinSwitchboard({
   let owner = null;
   let serving = null;
   let shown = visible;
+  let holds = [];
   let next = 0;
 
   const emit = (type, value) => {
@@ -157,6 +164,7 @@ export async function joinSwitchboard({
     else if (data.stalled) emit('stalled', data.stalled);
     else if (data.unstalled) emit('unstalled', true);
     else if (data.replaced) emit('replaced', true);
+    else if (data.holders) emit('holders', data.holders);
   }
 
   function connect() {
@@ -169,6 +177,7 @@ export async function joinSwitchboard({
       send({ hello: { tab: id, visible: shown, versions } });
     }).then(() => {
       if (serving) send({ own: { versions } });
+      if (holds.length) send({ holds });
       void locks.request(SWITCHBOARD_LOCK, () => {
         fail(new Moved());
         void connect().then(() => emit('owner', owner));
@@ -197,6 +206,10 @@ export async function joinSwitchboard({
     show(value) {
       shown = Boolean(value);
       send({ visible: shown });
+    },
+    hold(list) {
+      holds = list;
+      send({ holds });
     },
     own(give, next = versions) {
       serving = give;

@@ -22,6 +22,11 @@ export function createSwitchboard({
     for (const tab of tabs.values()) send(tab.port, frame);
   };
   const ownerFrame = () => ({ tab: owner, versions: owner ? tabs.get(owner).versions : null });
+  const holders = () =>
+    [...tabs].filter(([, { holds }]) => holds?.length).map(([tab, { holds }]) => ({ tab, holds }));
+  const tellHolders = () => {
+    if (owner) send(tabs.get(owner).port, { holders: holders() });
+  };
 
   function unstall() {
     if (!stalled) return;
@@ -30,8 +35,12 @@ export function createSwitchboard({
   }
 
   function drop(id) {
+    const held = tabs.get(id)?.holds?.length;
     tabs.delete(id);
-    if (owner !== id) return;
+    if (owner !== id) {
+      if (held) tellHolders();
+      return;
+    }
     owner = null;
     unstall();
     broadcast({ owner: ownerFrame() });
@@ -46,6 +55,7 @@ export function createSwitchboard({
     unstall();
     if (previous && previous !== id) send(tabs.get(previous).port, { replaced: true });
     broadcast({ owner: ownerFrame() });
+    tellHolders();
   }
 
   function hello(port, { tab, visible, versions }) {
@@ -88,7 +98,10 @@ export function createSwitchboard({
     if (!tab) return from;
     const owning = from === owner;
     if ('visible' in data) tab.visible = Boolean(data.visible);
-    else if (data.own) own(from, data.own.versions ?? null);
+    else if ('holds' in data) {
+      tab.holds = Array.isArray(data.holds) ? data.holds : [];
+      tellHolders();
+    } else if (data.own) own(from, data.own.versions ?? null);
     else if (data.want) want(port, from, data.want);
     else if (data.give && owning) give(data.give, ports);
     else if ('pong' in data && owning) pong();
