@@ -723,7 +723,7 @@ class Guard {
   world(sessionId) {
     let world = this.worlds.get(sessionId);
     if (!world) {
-      world = { ids: new Map(), uniques: new Map() };
+      world = { ids: new Map(), uniques: new Map(), names: new Set() };
       this.worlds.set(sessionId, world);
     }
     return world;
@@ -731,11 +731,12 @@ class Guard {
 
   foreign({ method, params = {}, sessionId }) {
     if (method === 'Runtime.executionContextCreated' && params.context) {
-      const { id, uniqueId, origin, auxData } = params.context;
+      const { id, uniqueId, name, origin, auxData } = params.context;
       const hidden = auxData?.type === 'isolated' && EXTENSIONS.test(origin ?? '');
       const world = this.world(sessionId);
       world.ids.set(id, hidden);
       if (uniqueId !== undefined) world.uniques.set(uniqueId, hidden);
+      if (hidden && name) world.names.add(name);
       if (hidden) return true;
     }
     const world = this.worlds.get(sessionId);
@@ -756,18 +757,23 @@ class Guard {
     await this.queues.get(sessionId);
   }
 
-  async selecting(method, params, sessionId) {
-    if (sessionId && PROFILERS.some((domain) => method.startsWith(domain))) {
-      if (!this.runtimes.has(sessionId) && !this.primed.has(sessionId)) await this.prime(sessionId);
-      const world = this.worlds.get(sessionId);
-      if (world && [...world.ids.values()].includes(true)) return PROFILED;
-    }
-    const found = selected(method, params);
-    if (!found.length) return null;
-    const verdict = this.verdict(found, sessionId);
-    if (verdict !== UNSEEN_CONTEXT || !sessionId) return verdict;
+  async learned(sessionId) {
     if (!this.runtimes.has(sessionId) && !this.primed.has(sessionId)) await this.prime(sessionId);
-    if (this.verdict(found, sessionId) !== UNSEEN_CONTEXT) return this.verdict(found, sessionId);
+    return this.world(sessionId);
+  }
+
+  async gating(method, params, sessionId) {
+    if (!sessionId) return null;
+    if (method === 'Page.createIsolatedWorld' && typeof params.worldName === 'string') {
+      return (await this.learned(sessionId)).names.has(params.worldName) ? WORLD : null;
+    }
+    if (PROFILERS.some((domain) => method.startsWith(domain))) {
+      return [...(await this.learned(sessionId)).ids.values()].includes(true) ? PROFILED : null;
+    }
+    return null;
+  }
+
+  async probe(found, sessionId) {
     const world = this.world(sessionId);
     for (const [kind, value] of found) {
       if (kind === 'unreadable' || world[kind].has(value)) continue;
@@ -781,6 +787,18 @@ class Guard {
       if (typeof extension === 'boolean' && !probed.result.exceptionDetails)
         world[kind].set(value, extension);
     }
+  }
+
+  async selecting(method, params, sessionId) {
+    const gated = await this.gating(method, params, sessionId);
+    if (gated) return gated;
+    const found = selected(method, params);
+    if (!found.length) return null;
+    const verdict = this.verdict(found, sessionId);
+    if (verdict !== UNSEEN_CONTEXT || !sessionId) return verdict;
+    await this.learned(sessionId);
+    if (this.verdict(found, sessionId) !== UNSEEN_CONTEXT) return this.verdict(found, sessionId);
+    await this.probe(found, sessionId);
     return this.verdict(found, sessionId);
   }
 
@@ -871,7 +889,9 @@ class Guard {
     const { method, params = {} } = was ?? {};
     const { result } = message;
     if (method === 'Page.createIsolatedWorld' && result?.executionContextId !== undefined) {
-      this.world(was.sessionId).ids.set(result.executionContextId, false);
+      const world = this.world(was.sessionId);
+      if (!world.ids.has(result.executionContextId))
+        world.ids.set(result.executionContextId, false);
     }
     if (method === 'Target.attachToTarget' && result?.sessionId) {
       const ok = await this.watch(result.sessionId, params.targetId);

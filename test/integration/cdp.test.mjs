@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer as createHttp } from 'node:http';
 import { createServer } from 'node:net';
 import { after, test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { startProxy } from '@ai-ecoverse/slicc-node';
 import { actPackage, boot, ready, run, screen, shows } from './bios.mjs';
 import { debuggerUrl, launch } from './chrome.mjs';
@@ -1283,6 +1284,167 @@ test('headed, on the proxy path: a tab created through the guard with an empty U
     `seven after an empty-URL tab: ${JSON.stringify(seen)}`
   );
   assert.deepEqual(page.errors, []);
+});
+
+test('a browser extension’s hidden world stays out of reach through the guard: a world named like it, its id and a binding into it are refused, and its mark is never readable', {
+  timeout: 5 * 60 * 1000,
+}, async (t) => {
+  const debugging = await new Promise((resolve) => {
+    const server = createServer().listen(0, '127.0.0.1', () => {
+      const { port: free } = server.address();
+      server.close(() => resolve(free));
+    });
+  });
+  const worlds = await launch({
+    extensions: [fileURLToPath(new URL('./fixtures/injected-frame', import.meta.url))],
+    args: [`--remote-debugging-port=${debugging}`],
+  });
+  t.after(() => worlds.close());
+  await debuggerUrl(debugging);
+  const proxy = await startProxy({
+    port: 0,
+    origins: [new URL(worlds.url).origin],
+    cdp: `http://127.0.0.1:${debugging}`,
+    kernelPort: null,
+    log: () => {},
+  });
+  t.after(() => proxy.close());
+  worlds.overrides.set('/marked.html', '<!doctype html><title>marked</title><h1>Ordinary</h1>');
+  const url = new URL('/marked.html', worlds.url);
+  url.hostname = 'localhost';
+  const { targetId } = await worlds.cdp.send('Target.createTarget', { url: url.href });
+  t.after(() => worlds.cdp.send('Target.closeTarget', { targetId }).catch(() => {}));
+  const { sessionId: watching } = await worlds.cdp.send('Target.attachToTarget', {
+    targetId,
+    flatten: true,
+  });
+  const contexts = [];
+  const off = worlds.cdp.on((event) => {
+    if (event.sessionId === watching && event.method === 'Runtime.executionContextCreated')
+      contexts.push(event.params.context);
+  });
+  t.after(off);
+  await worlds.cdp.send('Runtime.enable', {}, watching);
+  const deadline = Date.now() + 15000;
+  let hidden;
+  while (
+    !(hidden = contexts.find(
+      (context) =>
+        context.auxData?.type === 'isolated' && context.origin.startsWith('chrome-extension://')
+    ))
+  ) {
+    if (Date.now() > deadline)
+      throw new Error(`no extension world on the page: ${JSON.stringify(contexts)}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const MARK =
+    'typeof chrome === "object" && Boolean(chrome.runtime && chrome.runtime.id) && document.documentElement.dataset.extensionFixture === chrome.runtime.id';
+  const control = await worlds.cdp.send(
+    'Runtime.evaluate',
+    { contextId: hidden.id, expression: MARK, returnByValue: true },
+    watching
+  );
+  assert.equal(control.result?.value, true, 'the observer reads the mark in the extension world');
+  const page = await worlds.page(t);
+  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}`);
+  await ready(page);
+  const results = await page.evaluate(
+    async ({ targetId, hidden, MARK, proxy }) => {
+      const { guardProtected } = await import(new URL('guard.js', location.href).href);
+      const { proxyHost } = await import(new URL('cdp.js', location.href).href);
+      const connection = guardProtected(await proxyHost(proxy)(), location.origin);
+      const pending = new Map();
+      const events = [];
+      let next = 0;
+      connection.onmessage = (text) => {
+        const message = JSON.parse(text);
+        if (message.id === undefined) return events.push(message);
+        pending.get(message.id)?.(message);
+        pending.delete(message.id);
+      };
+      const send = (method, params = {}, sessionId) =>
+        new Promise((resolve) => {
+          next += 1;
+          const id = next;
+          const timer = setTimeout(
+            () => resolve({ error: { message: `${method} got no answer` } }),
+            20000
+          );
+          pending.set(id, (message) => {
+            clearTimeout(timer);
+            resolve(message);
+          });
+          connection.send(
+            JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })
+          );
+        });
+      const attached = await send('Target.attachToTarget', { targetId, flatten: true });
+      const session = attached.result?.sessionId;
+      if (!session) return { attach: JSON.stringify(attached) };
+      const frameId = targetId;
+      const named = await send(
+        'Page.createIsolatedWorld',
+        { frameId, worldName: hidden.name },
+        session
+      );
+      await send('Runtime.enable', {}, session);
+      const byId = await send(
+        'Runtime.evaluate',
+        { contextId: hidden.id, expression: MARK, returnByValue: true },
+        session
+      );
+      const byUnique = await send(
+        'Runtime.evaluate',
+        { uniqueContextId: hidden.uniqueId, expression: MARK, returnByValue: true },
+        session
+      );
+      const binding = await send(
+        'Runtime.addBinding',
+        { name: 'leak', executionContextName: hidden.name },
+        session
+      );
+      const marks = [];
+      for (let id = 1; id <= 32; id += 1) {
+        const out = await send(
+          'Runtime.evaluate',
+          { contextId: id, expression: MARK, returnByValue: true },
+          session
+        );
+        if (out.result?.result?.value === true) marks.push(id);
+      }
+      const own = await send(
+        'Runtime.evaluate',
+        { expression: MARK, returnByValue: true },
+        session
+      );
+      return {
+        named: named.error?.message ?? null,
+        byId: byId.error?.message ?? null,
+        byUnique: byUnique.error?.message ?? null,
+        binding: binding.error?.message ?? null,
+        marks,
+        own: own.result?.result?.value ?? null,
+        leaked: JSON.stringify(events).includes('chrome-extension://'),
+      };
+    },
+    {
+      targetId,
+      hidden: { id: hidden.id, uniqueId: hidden.uniqueId, name: hidden.name },
+      MARK,
+      proxy: { url: proxy.url, key: proxy.key },
+    }
+  );
+  assert.match(results.named ?? '', /belongs to a browser extension/, JSON.stringify(results));
+  assert.match(results.byId ?? '', /belongs to a browser extension/, JSON.stringify(results));
+  assert.match(results.byUnique ?? '', /belongs to a browser extension/, JSON.stringify(results));
+  assert.match(results.binding ?? '', /^slicc: refused:/, JSON.stringify(results));
+  assert.deepEqual(
+    results.marks,
+    [],
+    `the extension's mark was readable in contexts ${results.marks}`
+  );
+  assert.equal(results.own, false);
+  assert.equal(results.leaked, false, 'no event named the extension');
 });
 
 test('playwright-cli drives a page through slicc-node’s /cdp, on one shared socket', async (t) => {
