@@ -145,6 +145,7 @@ jobs:
           include-hidden-files: true
           path: |
             artifacts/
+            attempts/
             node_modules/.cache/slicc-harness/hotspots/
           if-no-files-found: ignore
 
@@ -333,6 +334,7 @@ jobs:
           name: coverage-profiles-screenshots
           path: |
             artifacts/
+            attempts/
           if-no-files-found: ignore
 
       - name: Every shard and lint passed, each with its verdict

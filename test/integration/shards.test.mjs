@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -19,10 +20,13 @@ import {
 import {
   attribute,
   decide,
+  FIRST,
   failing,
+  failures,
   flips,
   groups,
   itemOf,
+  shard as runShard,
   timings,
   trapLine,
   trapped,
@@ -449,4 +453,157 @@ test('durations take the median of the recorded runs, keep the rest, and drop it
     ['a', 'b', 'c', 'd']
   );
   assert.deepEqual(updated, { a: 20, b: 40, c: 4 });
+});
+
+async function project(t) {
+  const root = await mkdtemp(join(tmpdir(), 'shard-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, 'scripts/ci'), { recursive: true });
+  await mkdir(join(root, 't'), { recursive: true });
+  await writeFile(join(root, 'package.json'), JSON.stringify({ scripts: { test: 'node --test' } }));
+  await writeFile(join(root, 'scripts/ci/durations.json'), '{}');
+  const flaky = (second) => `
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { test } from 'node:test';
+test('flaky', async () => {
+  const n = Number(await readFile('count', 'utf8').catch(() => '0')) + 1;
+  await writeFile('count', String(n));
+  await mkdir('artifacts/flaky', { recursive: true });
+  await writeFile('artifacts/flaky/shot.txt', 'attempt ' + n);
+  if (n === 1) throw new Error('the first attempt saw boom');
+  ${second}
+});
+`;
+  await writeFile(
+    join(root, 't/fine.test.mjs'),
+    `import { mkdir, writeFile } from 'node:fs/promises';
+import { test } from 'node:test';
+test('fine', async () => {
+  await mkdir('artifacts/fine', { recursive: true });
+  await writeFile('artifacts/fine/shot.txt', 'fine');
+});
+`
+  );
+  const scratch = join(root, 'scratch');
+  await mkdir(scratch);
+  const read = (path) => readFile(join(root, path), 'utf8').catch(() => null);
+  return { root, scratch, read, flaky };
+}
+
+test("a shard keeps a retried file's first-attempt artifacts under attempt-1, beside its retry's", async (t) => {
+  const { root, scratch, read, flaky } = await project(t);
+  await writeFile(join(root, 't/flaky.test.mjs'), flaky(''));
+  const report = await runShard({
+    name: 's01',
+    items: ['t/fine.test.mjs', 't/flaky.test.mjs'],
+    retry: true,
+    budgetMs: 10 * 60 * 1000,
+    scratch,
+    record: {},
+    root,
+    quiet: true,
+  });
+  assert.equal(report.ok, true, report.line);
+  assert.deepEqual(
+    report.flips.map(({ file, name }) => [file, name]),
+    [['t/flaky.test.mjs', 'flaky']]
+  );
+  assert.equal(FIRST, 'attempts/attempt-1');
+  assert.equal(await read('artifacts/flaky/shot.txt'), 'attempt 2');
+  assert.equal(await read('attempts/attempt-1/flaky/shot.txt'), 'attempt 1');
+  assert.equal(await read('attempts/attempt-1/fine/shot.txt'), 'fine');
+  assert.equal(await read('artifacts/fine/shot.txt'), null);
+  assert.deepEqual(failures(report), []);
+});
+
+test("a shard cancelled during a retry keeps the first attempt's error and artifacts, and its summary lists the failure", async (t) => {
+  const { root, scratch, read, flaky } = await project(t);
+  await writeFile(
+    join(root, 't/flaky.test.mjs'),
+    flaky('await new Promise((resolve) => setTimeout(resolve, 120000));')
+  );
+  const cancel = new AbortController();
+  const watching = (async () => {
+    while ((await read('count')) !== '2') await new Promise((resolve) => setTimeout(resolve, 50));
+    cancel.abort();
+  })();
+  const began = Date.now();
+  const report = await runShard({
+    name: 's02',
+    items: ['t/flaky.test.mjs'],
+    retry: true,
+    budgetMs: 10 * 60 * 1000,
+    scratch,
+    record: {},
+    root,
+    quiet: true,
+    signal: cancel.signal,
+  });
+  await watching;
+  assert.ok(Date.now() - began < 60000, 'the retry was stopped, not waited out');
+  assert.equal(report.ok, false);
+  assert.equal(report.cancelled, true);
+  assert.match(report.line, /^shard s02: FAIL cancelled/);
+  const [failed] = failures(report);
+  assert.deepEqual(
+    [failed.shard, failed.file, failed.name, failed.why],
+    ['s02', 't/flaky.test.mjs', 'flaky', 'cancelled']
+  );
+  assert.match(failed.log, /the first attempt saw boom/);
+  assert.equal(await read('attempts/attempt-1/flaky/shot.txt'), 'attempt 1');
+  const summary = combine(null, [report]);
+  assert.equal(summary.shards[0].cancelled, true);
+  assert.match(summary.failures[0].log, /the first attempt saw boom/);
+});
+
+test('a shard killed during its retry has already left the first attempt’s artifacts and failure where the run’s summary finds them', async (t) => {
+  const { root, read, flaky } = await project(t);
+  await writeFile(
+    join(root, 't/flaky.test.mjs'),
+    flaky('await new Promise((resolve) => setTimeout(resolve, 120000));')
+  );
+  for (const dir of ['scripts/ci', 'scripts/canary'])
+    await cp(new URL(`../../${dir}/`, import.meta.url), join(root, dir), { recursive: true });
+  const child = spawn(
+    process.execPath,
+    ['scripts/ci/shard.mjs', '--name', 's03', '--items', 't/flaky.test.mjs', '--retry', 'true'],
+    {
+      cwd: root,
+      detached: true,
+      stdio: ['ignore', 'ignore', 'pipe'],
+      env: { ...process.env, RUNNER_TEMP: join(root, 'tmp'), GITHUB_STEP_SUMMARY: '' },
+    }
+  );
+  let errors = '';
+  child.stderr.on('data', (chunk) => {
+    errors += chunk;
+  });
+  const gone = new Promise((resolve) => child.on('exit', resolve));
+  const deadline = Date.now() + 60000;
+  while ((await read('count')) !== '2') {
+    assert.ok(Date.now() < deadline, `the retry never started:\n${errors.slice(-2000)}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  process.kill(-child.pid, 'SIGKILL');
+  await gone;
+  assert.equal(await read('artifacts/experiment/s03.json'), null);
+  assert.equal(await read('attempts/attempt-1/flaky/shot.txt'), 'attempt 1');
+  const out = await new Promise((resolve) => {
+    const summary = spawn(process.execPath, ['scripts/ci/summary.mjs'], {
+      cwd: root,
+      env: { ...process.env, GITHUB_STEP_SUMMARY: '' },
+    });
+    let text = '';
+    summary.stdout.on('data', (chunk) => {
+      text += chunk;
+    });
+    summary.on('exit', () => resolve(text));
+  });
+  assert.match(out, /1 shard records/);
+  assert.match(
+    out,
+    /failed \(cancelled\) in s03: t\/flaky\.test\.mjs › flaky: the first attempt saw boom/
+  );
+  const summary = JSON.parse(await read('artifacts/experiment/summary.json'));
+  assert.equal(summary.shards[0].cancelled, true);
 });
