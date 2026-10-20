@@ -4,9 +4,6 @@ on:
   pull_request_target:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled, edited]
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled, edited]
   merge_group:
 
 permissions:
@@ -19,7 +16,7 @@ concurrency:
 jobs:
   cert:
     name: cert
-    uses: ai-ecoverse/slicc-shared-web/.github/workflows/cert-review.yml@98bfc9139dd3e11ca172051a314b53b706841646
+    uses: ai-ecoverse/slicc-shared-web/.github/workflows/cert-review.yml@d6905ade35cae4418fde21cb7d947cad7ea96b1d
     permissions:
       contents: read
       actions: read
@@ -28,7 +25,7 @@ jobs:
       issues: write
       pull-requests: write
     with:
-      tools-ref: 98bfc9139dd3e11ca172051a314b53b706841646
+      tools-ref: d6905ade35cae4418fde21cb7d947cad7ea96b1d
       rules: scripts/cert/review.txt
       loud: |
         src/**

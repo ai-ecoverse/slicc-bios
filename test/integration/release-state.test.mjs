@@ -627,6 +627,20 @@ test('the cert-review caller: shared v2 pinned by sha with the same tools-ref, C
   );
   assert.match(caller, /^ {2}pull_request_target:\n/m);
   assert.match(caller, /^ {2}merge_group:\n/m);
+  assert.doesNotMatch(caller, /^ {2}pull_request:\n/m, 'the bootstrap leg is gone');
+  const rerun = read('.github/workflows/cert-rerun.yml');
+  assert.match(rerun, /^name: cert-rerun\n/);
+  assert.match(rerun, /^ {2}pull_request_target:\n {4}branches: \[main\]\n/m);
+  assert.doesNotMatch(rerun, /^ {2}pull_request:\n/m);
+  assert.match(rerun, /\n {4}types: \[ready_for_review, labeled, unlabeled, edited\]\n/);
+  assert.match(rerun, /\npermissions: \{\}\n/);
+  assert.match(
+    rerun,
+    new RegExp(
+      `uses: ai-ecoverse/slicc-shared-web/\\.github/workflows/cert-rerun\\.yml@${uses}\\n {4}permissions:\\n {6}actions: write\\n {4}with:\\n {6}tools-ref: ${uses}\\n`
+    )
+  );
+  assert.doesNotMatch(rerun, /secrets\.|contents:|statuses:|checks:|pull-requests:/);
   assert.match(caller, /\n {6}checks: read\n {6}statuses: write\n/);
   assert.doesNotMatch(caller, /checks: write/);
   assert.doesNotMatch(caller, /workflow_run|claude-code-action|certs\.json/);
@@ -1083,4 +1097,47 @@ test('#705: a stale-branch PR that touches only a test passes against the merge 
     /if \[ "\$GITHUB_EVENT_NAME" = pull_request \]; then\n {12}git fetch -q --no-tags --depth=2 origin "\$GITHUB_SHA"\n {12}BASE=\$\(git rev-parse "\$GITHUB_SHA\^1"\)/
   );
   assert.doesNotMatch(step, /pull_request\.base\.sha/);
+});
+
+test('#693: inspect and the evidence read main as GitHub merged it (the merge ref’s first parent), so main’s own package moves since a stale base.sha are never the PR’s', () => {
+  const jobOf = (name) => {
+    const start = ci.indexOf(`\n  ${name}:\n`);
+    const next = ci.slice(start + 1).search(/\n {2}[a-z][\w-]*:\n/);
+    return ci.slice(start, start + 1 + next);
+  };
+  for (const job of ['inspect', 'evidence']) {
+    const body = jobOf(job);
+    assert.match(body, /ref: \$\{\{ github\.sha \}\}\n {10}fetch-depth: 2\n {10}path: base\n/, job);
+    assert.match(body, /run: git -C base checkout -q --detach HEAD\^1\n/, job);
+    assert.doesNotMatch(body, /pull_request\.base\.sha|pull_request\.head\.sha/, job);
+  }
+  assert.match(
+    jobOf('inspect'),
+    /\(cd base && node scripts\/cert\/release-state\.mjs --base HEAD --head "\$GITHUB_SHA" --out "\$out\/release-state\.json" --no-fail\)/
+  );
+});
+
+test('#693: a PR whose base is behind main, with no package changes, is not judged on main’s package changes (changedPins on the merge ref and its first parent)', () => {
+  const { dir, git, write } = repo();
+  const pkg = (v) => JSON.stringify({ dependencies: { '@ai-ecoverse/slicc-browsers': v } });
+  write('src/packages/package.json', pkg('1.9.0'));
+  write('test/integration/a.test.mjs', '\n');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'main 1');
+  const stale = git('rev-parse', 'HEAD');
+  git('checkout', '-q', '-b', 'pr');
+  write('test/integration/a.test.mjs', 'export {};\n');
+  git('commit', '-q', '-am', 'only a test');
+  git('checkout', '-q', '-');
+  write('src/packages/package.json', pkg('1.10.3'));
+  git('commit', '-q', '-am', 'main 2: browsers 1.10.3');
+  git('merge', '-q', '--no-ff', '-m', 'the merge ref', 'pr');
+  const at = (ref) => {
+    const wt = mkdtempSync(join(scratch, 'wt-'));
+    git('worktree', 'add', '-q', '--detach', wt, ref);
+    return wt;
+  };
+  const merged = at('HEAD');
+  assert.equal(changedPins(at(stale), merged).length, 1, 'a stale base sees main’s own move');
+  assert.deepEqual(changedPins(at('HEAD^1'), merged), []);
 });
