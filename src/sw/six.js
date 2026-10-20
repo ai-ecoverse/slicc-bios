@@ -117,14 +117,12 @@ export function exportSix({ doc = document, win = window, report, settle, quiet 
   });
 }
 
+const count = (value) => value.toLocaleString('en-US');
+
 export function progressLine({ phase, done, total }) {
-  if (phase === 'stopping') {
-    return done >= total && total > 0
-      ? 'SLICC 6 stopped in this browser'
-      : 'Waiting for SLICC 6 tabs to stop';
-  }
-  const verb = phase === 'reading' ? 'Reading' : 'Writing';
-  return total ? `${verb} ${done} of ${total}` : verb;
+  if (phase === 'stopping') return 'Stopping SLICC 6 tabs…';
+  const what = phase === 'reading' ? 'Reading files' : 'Writing the export';
+  return total ? `${what}: ${count(done)} of ${count(total)}` : what;
 }
 
 export function sixDialog(doc = document) {

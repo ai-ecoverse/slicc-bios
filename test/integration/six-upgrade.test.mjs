@@ -260,10 +260,10 @@ test('moving SLICC 6 into seven from a cross-origin isolated BIOS: asked once, p
   assert.deepEqual(six.states(), ['asking', 'moving', 'closed']);
   assert.deepEqual(six.framed(), [{ type: 'framed', src: `${origin}/upgrade-to-seven.html` }]);
   const lines = six.progress();
-  assert.ok(lines.includes('Waiting for SLICC 6 tabs to stop'), lines.join('\n'));
-  assert.ok(lines.includes('SLICC 6 stopped in this browser'), lines.join('\n'));
-  assert.ok(lines.includes('Reading 0 of 1'), lines.join('\n'));
-  assert.ok(lines.includes('Writing 1 of 1'), lines.join('\n'));
+  assert.ok(lines.includes('Stopping SLICC 6 tabs…'), lines.join('\n'));
+  assert.ok(lines.includes('Reading files: 0 of 1'), lines.join('\n'));
+  assert.ok(lines.includes('Reading files: 1 of 1'), lines.join('\n'));
+  assert.ok(lines.includes('Writing the export: 1 of 1'), lines.join('\n'));
   const [removed] = six.removed();
   assert.equal(removed.marker, 'upgraded');
   assert.match(removed.pending, /^\/slicc-v6-upgrade\/[0-9a-f-]{36}\/$/);
@@ -405,7 +405,9 @@ test('the question, the progress and the failure, in light and dark and on a pho
   await showing(page, 'asking');
   await shots(page, 'asking');
   await page.evaluate(() => document.querySelector('.six-move').click());
-  await page.until(() => document.querySelector('.six-progress')?.textContent === 'Writing 0 of 1');
+  await page.until(
+    () => document.querySelector('.six-progress')?.textContent === 'Writing the export: 0 of 1'
+  );
   assert.equal(await page.evaluate(() => document.querySelector('.six-bar').value), 0);
   await shots(page, 'moving');
   assert.deepEqual(await storage(page), { marker: null, pending: null });
