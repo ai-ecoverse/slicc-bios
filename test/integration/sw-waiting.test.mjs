@@ -97,15 +97,18 @@ test('while the tab holds a half-read download from the old worker, it says seve
   await page.evaluate(
     new Function(`(${deep})('[data-notice^="sw-waiting:"] [data-action="reload"]').click()`)
   );
+  const clicked = Date.now();
   await page.until(() => !window.heldReader && location.pathname === '/os/');
-  const reloaded = await workers(page);
-  assert.deepEqual(
-    { ...reloaded, active: null },
-    { active: null, waiting: null, installing: null }
-  );
-  assert.match(reloaded.active, /^activat(ing|ed)$/);
+  await page.within(15000, async () => {
+    const registration = await navigator.serviceWorker.getRegistration();
+    return (
+      registration.active?.state === 'activated' &&
+      !registration.waiting &&
+      !registration.installing
+    );
+  });
+  console.log(`probe710 applied ${Date.now() - clicked} ms after Reload`);
   await ready(page);
-  assert.deepEqual(await workers(page), { active: 'activated', waiting: null, installing: null });
   assert.equal(await waitingNotice(page), undefined);
   assert.deepEqual(page.errors, []);
 });

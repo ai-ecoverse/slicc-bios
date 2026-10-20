@@ -268,41 +268,14 @@ function deadline(text) {
 }
 
 const streaming = new Set();
-const SWEEP = 2000;
-let sweeping = null;
-
-async function sweep() {
-  for (const open of [...streaming]) {
-    if (open.client && !(await self.clients.get(open.client)))
-      open.end(new Error(`sw: the page reading ${open.url} went away`));
-  }
-  if (streaming.size) return;
-  clearInterval(sweeping);
-  sweeping = null;
-}
 
 function watched(response, request, controller, client) {
   if (!response.body) return response;
   const { pathname } = new URL(request.url);
+  const open = { client, url: request.url, since: Date.now() };
   const reader = response.body.getReader();
-  let source;
-  const open = {
-    client,
-    url: request.url,
-    since: Date.now(),
-    end(error) {
-      streaming.delete(open);
-      controller.abort();
-      reader.cancel(error).catch(() => {});
-      source.error(error);
-    },
-  };
   streaming.add(open);
-  sweeping ??= setInterval(sweep, SWEEP);
   const body = new ReadableStream({
-    start(stream) {
-      source = stream;
-    },
     async pull(stream) {
       const idle = deadline(`sw: no data for ${pathname} in ${PATIENCE / 1000} s`);
       try {
@@ -312,7 +285,10 @@ function watched(response, request, controller, client) {
           stream.close();
         } else stream.enqueue(value);
       } catch (error) {
-        open.end(error);
+        streaming.delete(open);
+        controller.abort();
+        reader.cancel(error).catch(() => {});
+        stream.error(error);
       } finally {
         idle.clear();
       }
