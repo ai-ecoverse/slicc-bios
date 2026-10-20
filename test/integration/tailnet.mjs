@@ -161,10 +161,13 @@ function silentServer(port) {
 }
 
 function webServer(port, body) {
-  const server = createServer((_req, res) => {
+  const seen = [];
+  const server = createServer((req, res) => {
+    seen.push({ url: req.url, headers: req.headers });
     res.writeHead(200, { 'content-type': 'text/plain' });
     res.end(body);
   });
+  server.seen = seen;
   return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));
 }
 
@@ -262,7 +265,8 @@ unix_socket_permission: "0770"
     .split('\n')
     .at(-1);
   servers.push(await corsProxy(hsPort, proxyPort));
-  servers.push(await webServer(webPort, `hello from the local tailnet ${Date.now()}`));
+  const web = await webServer(webPort, `hello from the local tailnet ${Date.now()}`);
+  servers.push(web);
   servers.push(await halfCloseServer(echoPort));
   servers.push(await gitServer(gitPort, dir));
   const wsEcho = await wsEchoServer(wsPort);
@@ -325,6 +329,7 @@ unix_socket_permission: "0770"
     peer: {
       ...peer,
       web: `http://${peer.ip}:${webPort}/`,
+      webSeen: web.seen,
       echo: `${peer.ip}:${echoPort}`,
       git: `http://peer:${gitPort}/repo.git`,
       ws: `${peer.ip}:${wsPort}`,
