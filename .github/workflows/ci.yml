@@ -138,6 +138,10 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           done
 
+      - name: Screenshots and traces only for suites that failed (each dropped file is listed in artifacts/pruned.json)
+        if: always()
+        run: node scripts/ci/prune.mjs artifacts
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
