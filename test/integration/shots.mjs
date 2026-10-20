@@ -15,12 +15,21 @@ const reveal = (selector) => {
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export const DESKTOP = [
-  { name: 'pointer', value: 'fine' },
-  { name: 'any-pointer', value: 'fine' },
-  { name: 'hover', value: 'hover' },
-  { name: 'any-hover', value: 'hover' },
-];
+const desktop = (on) => {
+  const real = window.sliccRealMatchMedia ?? window.matchMedia.bind(window);
+  window.sliccRealMatchMedia = real;
+  if (!on) {
+    window.matchMedia = real;
+    return;
+  }
+  const wanted = { pointer: 'fine', 'any-pointer': 'fine', hover: 'hover', 'any-hover': 'hover' };
+  window.matchMedia = (query) => {
+    const list = real(query);
+    const found = query.trim().match(/^\((any-pointer|pointer|any-hover|hover):\s*([a-z]+)\)$/);
+    if (found) Object.defineProperty(list, 'matches', { value: wanted[found[1]] === found[2] });
+    return list;
+  };
+};
 
 export async function shoot(page, name, { show, target, before } = {}) {
   const app = (fn, arg) =>
@@ -44,7 +53,7 @@ export async function shoot(page, name, { show, target, before } = {}) {
     app((el, wanted) => {
       if (el.color !== wanted) el.toggleColor();
     }, wanted);
-  await page.send('Emulation.setEmulatedMedia', { features: DESKTOP });
+  await page.evaluate(desktop, true);
   await page.send('Emulation.setDeviceMetricsOverride', {
     width: 1280,
     height: 800,
@@ -68,6 +77,6 @@ export async function shoot(page, name, { show, target, before } = {}) {
   if (show) await app((el, id) => el.show(id), show);
   await capture(`${name}-light-420.png`, { x: 0, y: 0, width: 420, height: 800, scale: 1 });
   await page.send('Emulation.clearDeviceMetricsOverride');
-  await page.send('Emulation.setEmulatedMedia', { features: [] });
+  await page.evaluate(desktop, false);
   await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
 }
