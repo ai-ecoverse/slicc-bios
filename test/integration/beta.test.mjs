@@ -182,11 +182,28 @@ async function confirmWith(page, label) {
   return body;
 }
 
-const act = (page, action) =>
-  page.evaluate(
-    (action) => document.querySelector('slicc-app').model.updates.act('agent', action),
-    action
-  );
+async function act(page, action, ms = 10 * 60 * 1000) {
+  const id = await page.evaluate((action) => {
+    window.sliccActs ??= [];
+    const n = window.sliccActs.length;
+    window.sliccActs.push({ done: false });
+    document
+      .querySelector('slicc-app')
+      .model.updates.act('agent', action)
+      .then(
+        () => {
+          window.sliccActs[n] = { done: true };
+        },
+        (error) => {
+          window.sliccActs[n] = { done: true, error: error.message };
+        }
+      );
+    return n;
+  }, action);
+  await page.within(ms, (n) => window.sliccActs?.[n]?.done === true, id);
+  const { error } = await page.evaluate((n) => window.sliccActs[n], id);
+  if (error) throw new Error(error);
+}
 
 test('the owner turns on developer mode, npm’s newer agent is offered as a beta, Install beta installs it marked Beta, it survives the next check, and Back to certified returns to the certified pin', async (t) => {
   const page = await chrome.page(t);
