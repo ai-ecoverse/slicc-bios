@@ -279,7 +279,7 @@ function compose(done, { name, list, retry, record, started, cancelled }) {
   };
   report.timings = Object.assign({}, ...report.groups.map(({ first }) => first.timings));
   report.flips = report.groups.flatMap(({ flips: flipped }) => flipped);
-  report.traps = await trapped();
+  report.traps = [];
   return report;
 }
 
@@ -347,7 +347,9 @@ export async function shard({
     await unfinished();
   }
   await restore(stashes, root);
-  return compose(done, { ...context, cancelled: Boolean(signal?.aborted) });
+  const report = compose(done, { ...context, cancelled: Boolean(signal?.aborted) });
+  report.traps = await trapped();
+  return report;
 }
 
 if (argv[1] === fileURLToPath(import.meta.url)) {
