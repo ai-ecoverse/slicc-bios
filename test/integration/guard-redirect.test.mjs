@@ -175,6 +175,7 @@ async function rig({ transport, proxy, port, override }) {
     return false;
   };
   const answers = {
+    doms: [],
     sheets: [],
     infos: [],
     reads: [],
@@ -191,6 +192,14 @@ async function rig({ transport, proxy, port, override }) {
   const state = {};
   const frame = async () =>
     (await send('Page.getFrameTree', {}, state.session)).result?.frameTree?.frame ?? {};
+  const expect = async (what, check) => {
+    if (await wait(check, 10000)) return;
+    answers.stuck.push({
+      what,
+      frame: await frame(),
+      last: seen.slice(-3).map((text) => text.slice(0, 200)),
+    });
+  };
   const pump = async () => {
     while (state.pumping) {
       for (const message of paused.splice(0)) {
@@ -220,7 +229,7 @@ async function rig({ transport, proxy, port, override }) {
         await send('Target.attachToTarget', { targetId: state.targetId, flatten: true })
       ).result?.sessionId;
       if (!state.session) return `attach: ${JSON.stringify(created)}`;
-      for (const domain of ['Page', 'Network', 'Runtime', 'Log', 'DOM', 'CSS']) {
+      for (const domain of ['Page', 'Network', 'Runtime', 'Log', 'Console', 'DOM', 'CSS']) {
         await send(`${domain}.enable`, {}, state.session);
       }
       state.pumping = true;
@@ -234,7 +243,7 @@ async function rig({ transport, proxy, port, override }) {
       }
       if (fetching === 'Request') {
         await send('Page.navigate', { url: `${origin}/override` }, state.session);
-        await wait(async () => (await frame()).url?.includes('/override'), 8000);
+        await expect('override', async () => answers.overrides.length > 0);
       }
       return null;
     },
@@ -248,7 +257,7 @@ async function rig({ transport, proxy, port, override }) {
       if (fresh) return fresh;
       const { session, targetId } = state;
       await send('Page.navigate', { url: `${origin}/start` }, session);
-      await wait(async () => (await frame()).url === `${origin}/start`, 8000);
+      await expect('start', async () => (await frame()).url === `${origin}/start`);
       const before = seen.length;
       const url = `${origin}${step.path}`;
       if (step.how === 'navigate') void send('Page.navigate', { url }, session);
@@ -258,16 +267,46 @@ async function rig({ transport, proxy, port, override }) {
           { expression: `location.href=${JSON.stringify(url)}` },
           session
         );
-      const settled = await wait(async () => {
+      await expect(`${step.path} commit`, async () => {
         const f = await frame();
         return Boolean(f.url) && f.url !== `${origin}/start`;
-      }, 10000);
-      if (!settled) answers.stuck.push({ step, frame: await frame() });
-      await wait(async () => {
-        const count = seen.length;
-        await new Promise((resolve) => setTimeout(resolve, 300));
-        return seen.length === count;
-      }, 4000);
+      });
+      const since = () => seen.slice(before).map((text) => JSON.parse(text));
+      const document = () =>
+        since()
+          .filter((m) => m.method === 'Network.requestWillBeSent' && m.params?.request?.url === url)
+          .map((m) => m.params.requestId);
+      const kind = step.path.split('/')[1];
+      if (kind !== 'hop') {
+        await expect(`${step.path} loaded`, async () =>
+          since().some(
+            (m) => m.method === 'Network.loadingFinished' && document().includes(m.params.requestId)
+          )
+        );
+      }
+      if (kind === 'talk') {
+        const count = (method) => since().filter((m) => m.method === method).length;
+        await expect(
+          '/talk/ console, exception and log',
+          async () =>
+            count('Runtime.consoleAPICalled') >= 2 &&
+            count('Console.messageAdded') >= 2 &&
+            count('Runtime.exceptionThrown') >= 1
+        );
+      }
+      if (kind === 'styled') {
+        await expect('/styled/ sheet', async () =>
+          since().some(
+            (m) =>
+              m.method === 'CSS.styleSheetAdded' && /sliccy\.ai/.test(m.params.header.sourceURL)
+          )
+        );
+      }
+      if (kind === 'framed') {
+        await expect('/framed/ child frame', async () =>
+          since().some((m) => m.method === 'Page.frameAttached')
+        );
+      }
       const hop = `${origin}/hop/${step.path.split('/').pop()}`;
       const requestIds = seen
         .slice(before)
@@ -309,6 +348,13 @@ async function rig({ transport, proxy, port, override }) {
         await send('Page.getResourceContent', { frameId: top.id, url: hop }, session)
       );
       answers.snapshots.push(await send('Page.captureSnapshot', {}, session));
+      answers.doms.push({
+        kind,
+        answers: [
+          await send('DOMSnapshot.captureSnapshot', { computedStyles: [] }, session),
+          await send('DOM.getDocument', { depth: -1, pierce: true }, session),
+        ],
+      });
       for (const added of seen
         .slice(before)
         .map((text) => JSON.parse(text))
@@ -331,7 +377,9 @@ async function rig({ transport, proxy, port, override }) {
     async end(fetching) {
       const before = seen.length;
       await send('Page.navigate', { url: `${origin}/start` }, state.session);
-      await wait(async () => (await frame()).url === `${origin}/start`, 8000);
+      await expect('end start', async () =>
+        seen.slice(before).some((text) => text.includes('"Network.loadingFinished"'))
+      );
       const ids = seen
         .slice(before)
         .map((text) => JSON.parse(text))
@@ -344,7 +392,7 @@ async function rig({ transport, proxy, port, override }) {
         answers.plain.push(await send('Network.getResponseBody', { requestId }, state.session));
       }
       await send('Page.navigate', { url: `${origin}/plain` }, state.session);
-      await wait(async () => (await frame()).url?.includes('/landing'), 8000);
+      await expect('landing', async () => (await frame()).url?.includes('/landing'));
       state.pumping = false;
       await state.pumped;
       if (fetching !== 'none') await send('Fetch.disable', {}, state.session);
@@ -476,7 +524,17 @@ async function check(t, transport) {
       );
     }
   }
-  assert.ok(answers.replays.every(refused), JSON.stringify(answers.replays));
+  for (const kind of ['form']) {
+    const doms = answers.doms.filter((dom) => dom.kind === kind).flatMap((dom) => dom.answers);
+    assert.ok(
+      doms.length > 0 && doms.some(refused),
+      `${kind}: ${JSON.stringify(doms).slice(0, 300)}`
+    );
+  }
+  assert.ok(
+    answers.replays.every((answer) => answer.error),
+    JSON.stringify(answers.replays)
+  );
   assert.ok(answers.loads.every(refused), JSON.stringify(answers.loads.slice(0, 2)));
   assert.ok(answers.overrides.length > 0 && answers.overrides.every(refused));
   for (const answer of [...answers.resources, ...answers.snapshots]) {

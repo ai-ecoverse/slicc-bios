@@ -136,6 +136,12 @@ const CONTENTS = new Set([
   'Fetch.getResponseBody',
   'IO.read',
   'CSS.getStyleSheetText',
+  'DOM.getDocument',
+  'DOM.getFlattenedDocument',
+  'DOM.getOuterHTML',
+  'DOM.describeNode',
+  'DOMSnapshot.captureSnapshot',
+  'DOMSnapshot.getSnapshot',
 ]);
 const CLOSED = new Set(['url', 'scopeURL', 'scriptURL']);
 const FREE = new Set([
@@ -242,7 +248,7 @@ const ENCODED_STARTS = /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*%(?:25)*3a%(?:25)*2f%(?
 const STOPS = /[\s"'<>\\`]/g;
 const ENCODED_STOPS = /[\s"'<>\\`&]/g;
 const AUTHORITY = 4096;
-const SPOKEN = /^(?:Network|Fetch|Log|Audits|Page|CSS)\./;
+const SPOKEN = /^(?:Network|Fetch|Log|Audits|Page|CSS|Console|DOM)\./;
 const CONSOLE = new Set(['Runtime.exceptionThrown', 'Runtime.consoleAPICalled']);
 const ANSWERED = new Set([
   'headers',
@@ -404,6 +410,7 @@ class Guard {
       this.sheets.add(params.header.styleSheetId);
     }
     const { params: redacted, changed, answered } = this.redact(params);
+    if (changed.length && method.startsWith('DOM.')) return undefined;
     if (!changed.length) return this.deliver(message);
     if (answered && /^(?:Network|Fetch)\./.test(method)) {
       for (const id of [params.requestId, params.networkId])
