@@ -15,6 +15,13 @@ const reveal = (selector) => {
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+export const DESKTOP = [
+  { name: 'pointer', value: 'fine' },
+  { name: 'any-pointer', value: 'fine' },
+  { name: 'hover', value: 'hover' },
+  { name: 'any-hover', value: 'hover' },
+];
+
 export async function shoot(page, name, { show, target, before } = {}) {
   const app = (fn, arg) =>
     page.evaluate(
@@ -37,6 +44,7 @@ export async function shoot(page, name, { show, target, before } = {}) {
     app((el, wanted) => {
       if (el.color !== wanted) el.toggleColor();
     }, wanted);
+  await page.send('Emulation.setEmulatedMedia', { features: DESKTOP });
   await page.send('Emulation.setDeviceMetricsOverride', {
     width: 1280,
     height: 800,
@@ -60,5 +68,6 @@ export async function shoot(page, name, { show, target, before } = {}) {
   if (show) await app((el, id) => el.show(id), show);
   await capture(`${name}-light-420.png`, { x: 0, y: 0, width: 420, height: 800, scale: 1 });
   await page.send('Emulation.clearDeviceMetricsOverride');
+  await page.send('Emulation.setEmulatedMedia', { features: [] });
   await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
 }
