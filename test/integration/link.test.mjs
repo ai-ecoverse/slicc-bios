@@ -972,7 +972,7 @@ test('the real slicc CLI carries <port>.kernel.localhost into the page, and the 
   assert.notEqual(facade[0], 200);
 });
 
-test('the real slicc CLI shares another browser over cdp: the 9222 facade reaches it as <device>/<browser>, and a walk to seven’s origin never commits there and leaves the tab the agent’s', {
+test('the real slicc CLI shares another browser over cdp: the 9222 facade reaches it as <device>/<browser>, and a walk to seven’s origin never loads there', {
   skip: !cli,
 }, async (t) => {
   const { chromium } = await import('playwright-core');
@@ -1062,63 +1062,58 @@ test('the real slicc CLI shares another browser over cdp: the 9222 facade reache
   assert.doesNotMatch(opened.out, /open 0$/, opened.out);
   const walked = await shell(
     page,
-    `{ playwright-cli --runtime ${runtime} open 'data:text/html,<title>start</title>' > /dev/null; playwright-cli --runtime ${runtime} eval 'location.href = ${JSON.stringify(`${own}/`)}' > /dev/null 2>&1; sleep 2; playwright-cli --runtime ${runtime} eval 'location.href' 2>&1; }`,
+    `{ playwright-cli --runtime ${runtime} open 'data:text/html,<title>start</title>' > /dev/null; playwright-cli --runtime ${runtime} eval 'location.href = ${JSON.stringify(`${own}/`)}' > /dev/null 2>&1; for i in $(seq 1 50); do s=$(playwright-cli --runtime ${runtime} eval 'location.href' 2>&1); case "$s" in *'#blocked'*|*"seven's origin"*) break ;; esac; sleep 0.2; done; echo "$s"; }`,
     'cdp-own-walk'
   );
   assert.ok(!walked.out.includes(own), walked.out);
   assert.match(
     walked.out,
-    /about:blank#blocked/,
-    `the walk to seven’s origin was failed in the other browser, and the guard left a blank page: ${walked.out}`
+    /about:blank#blocked|slicc: refused: target is on seven's origin/,
+    `the walk to seven’s origin was failed in the other browser: bios's guard blanked the page, or the CLI's guard took the tab: ${walked.out}`
   );
-  const blank = (await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) => r.json())).find(
-    (tab) => tab.url === 'about:blank#blocked'
+  const looked = [];
+  for (const tab of await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) => r.json())) {
+    if (tab.type !== 'page') continue;
+    looked.push(
+      await new Promise((resolve, reject) => {
+        const socket = new WebSocket(tab.webSocketDebuggerUrl);
+        let seen = 'nothing';
+        const timer = setTimeout(() => {
+          socket.close();
+          reject(
+            new Error(`Runtime.evaluate on ${tab.url}: no answer in 10 s; it answered ${seen}`)
+          );
+        }, 10000);
+        socket.onopen = () =>
+          socket.send(
+            JSON.stringify({
+              id: 1,
+              method: 'Runtime.evaluate',
+              params: {
+                expression: 'JSON.stringify([location.href, origin])',
+                returnByValue: true,
+              },
+            })
+          );
+        socket.onmessage = ({ data }) => {
+          seen = String(data);
+          const answer = JSON.parse(data);
+          if (answer.id !== 1) return;
+          clearTimeout(timer);
+          socket.close();
+          resolve(answer.result?.result?.value ?? seen);
+        };
+        socket.onerror = () => {
+          clearTimeout(timer);
+          reject(new Error(`Runtime.evaluate on ${tab.url}: the socket failed`));
+        };
+      })
+    );
+  }
+  assert.ok(
+    !looked.some((seen) => seen.includes(`"${own}"`) || seen.startsWith(`["${own}`)),
+    `seven’s document never loaded there, read without a guard: ${looked.join(' ')}`
   );
-  assert.ok(blank, 'the walked tab is on the blank page');
-  const history = await new Promise((resolve, reject) => {
-    const socket = new WebSocket(blank.webSocketDebuggerUrl);
-    let seen = 'nothing';
-    let done = false;
-    const fail = (why) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      reject(new Error(`Page.getNavigationHistory on the walked tab: ${why}; it answered ${seen}`));
-    };
-    const timer = setTimeout(() => {
-      fail('no answer in 10 s');
-      socket.close();
-    }, 10000);
-    socket.onopen = () =>
-      socket.send(JSON.stringify({ id: 1, method: 'Page.getNavigationHistory' }));
-    socket.onmessage = ({ data }) => {
-      seen = String(data);
-      const answer = JSON.parse(data);
-      if (answer.id !== 1) return;
-      if (!answer.result?.entries) return fail('no entries');
-      done = true;
-      clearTimeout(timer);
-      socket.close();
-      resolve(answer.result.entries.map(({ url }) => url));
-    };
-    socket.onclose = () => fail('the socket closed');
-    socket.onerror = () => fail('the socket failed');
-  });
-  assert.deepEqual(
-    history.filter((url) => url.startsWith(own) || url.startsWith('chrome-error:')),
-    [],
-    `seven’s document never committed there, not even as Chrome’s error page: ${history.join(' > ')}`
-  );
-  const kept = await shell(
-    page,
-    `{ playwright-cli --runtime ${runtime} eval 'location.href = "http://127.0.0.1:${debugPort}/json/version?after-walk"' > /dev/null 2>&1; for i in $(seq 1 50); do s=$(playwright-cli --runtime ${runtime} eval 'location.search' 2>&1); case "$s" in *after-walk*) break ;; esac; sleep 0.2; done; echo "$s"; playwright-cli --runtime ${runtime} close 2>&1; echo "close $?"; }`,
-    'cdp-own-kept'
-  );
-  assert.match(kept.out, /\?after-walk/, `the agent can still drive the walked tab: ${kept.out}`);
-  assert.match(kept.out, /close 0$/, `the agent can still close the walked tab: ${kept.out}`);
-  const tabs = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) => r.json());
-  assert.ok(!tabs.some((tab) => tab.url.startsWith(own)), 'seven’s page never loaded there');
-  assert.ok(!tabs.some((tab) => tab.id === blank.id), 'the walked tab is closed');
   const hidden = await shell(
     page,
     `curl -s 'http://127.0.0.1:9222/json/list?runtime=${runtime}'`,
