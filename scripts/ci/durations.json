@@ -75,6 +75,7 @@
   "test/integration/unshadow.test.mjs": 90,
   "test/integration/update.test.mjs": 272,
   "test/integration/updates.test.mjs": 199,
+  "test/integration/user-installs.test.mjs": 180,
   "test/integration/user-packages.test.mjs": 446,
   "test/integration/users.test.mjs": 1180,
   "test/integration/vault.test.mjs": 196,

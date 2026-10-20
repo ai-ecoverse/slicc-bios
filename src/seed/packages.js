@@ -1,4 +1,5 @@
 import {
+  folder,
   installProject,
   loadProject,
   movePth,
@@ -8,7 +9,7 @@ import {
 } from './projects.js';
 import { BIOS } from './site.js';
 import { linkSkills, unlinkSkills } from './skills.js';
-import { fetchText, pnpm, text, write } from './update.js';
+import { fetchText, pnpm, pnpmAs, text, write } from './update.js';
 
 const deployed = new URL('packages/optional/', BIOS);
 export const GLOBAL = 'home/.local/share/pnpm/global/v11';
@@ -27,6 +28,21 @@ const UNSHADOW =
 
 export const MISMATCH =
   "This version doesn't match the tested build, so it was removed again. Retry later.";
+export const kept = (user, version) =>
+  `This version doesn't match the tested build, so ${user} keeps ${version}. Retry later.`;
+export function foreign(entry, action, installed, owned) {
+  if (action !== 'remove' || installed.has(entry.package) || !owned.has(entry.package)) return null;
+  const users = owned.get(entry.package).map(({ user }) => user);
+  return `${entry.label} is installed for ${users.join(' and ')} with pnpm. Remove it there with pnpm remove -g.`;
+}
+const LOGIN = /^[a-z_][a-z0-9_.-]*$/;
+const OWN = /^\/home\/(?!\.\.?$)[^/]+$/;
+const USER_FLAGS = [
+  '--ignore-scripts',
+  '--ignore-pnpmfile',
+  '--config.verify-store-integrity=true',
+  '--config.minimum-release-age=0',
+];
 
 function parts(version) {
   const [main, ...rest] = version.split('-');
@@ -154,6 +170,43 @@ export async function globals(root, dir = GLOBAL) {
   return found;
 }
 
+export function homes(passwd) {
+  return (passwd ?? '')
+    .split('\n')
+    .map((line) => line.split(':'))
+    .filter(
+      ([name, , uid, , , home]) => LOGIN.test(name) && Number(uid) > 0 && OWN.test(home ?? '')
+    )
+    .map(([name, , , , , home]) => ({ user: name, home }));
+}
+
+export async function userGlobals(root) {
+  const found = [];
+  for (const { user, home } of homes(await text(root, 'etc/passwd'))) {
+    const where = `${home}/.local/share/pnpm`;
+    for (const install of await globals(root, `${where.slice(1)}/global/v11`))
+      found.push({ ...install, user, home, where });
+  }
+  return found;
+}
+
+export function byUser(found) {
+  const owned = new Map();
+  for (const install of found) {
+    const list = owned.get(install.name) ?? [];
+    const same = list.find(({ user }) => user === install.user);
+    if (same && compare(install.version, same.version) <= 0) continue;
+    owned.set(install.name, [...list.filter(({ user }) => user !== install.user), install]);
+  }
+  return owned;
+}
+
+const newest = (installs) =>
+  installs.reduce(
+    (best, { version }) => (best === null || compare(version, best) > 0 ? version : best),
+    null
+  );
+
 export function shadowed(manifest) {
   const bin =
     typeof manifest?.bin === 'string'
@@ -217,7 +270,9 @@ function plain(action, label, error) {
   return `Couldn't ${verb} ${label}: pnpm stopped with an error, shown in the install log. Retry.`;
 }
 
-export function describe(entry, version, running) {
+export function describe(entry, panel, running, installs = []) {
+  const theirs = panel === null && installs.length > 0;
+  const version = theirs ? newest(installs) : panel;
   const outdated = version !== null && !entry.retired && compare(entry.offered, version) > 0;
   const base = {
     id: entry.id,
@@ -227,6 +282,7 @@ export function describe(entry, version, running) {
     commands: entry.commands,
     requires: entry.requires,
     version,
+    installs,
     offered: entry.offered,
     size: entry.size,
     progress: null,
@@ -238,59 +294,137 @@ export function describe(entry, version, running) {
       state: 'failed',
       error: running.error,
       log: running.log,
-      actions: version === null ? ['retry'] : ['retry', 'remove'],
+      actions: version === null || theirs ? ['retry'] : ['retry', 'remove'],
     };
   }
   if (running) return { ...base, ...running, actions: [] };
   if (version === null) return { ...base, state: 'available', actions: ['install'] };
+  if (theirs)
+    return {
+      ...base,
+      state: outdated ? 'outdated' : 'installed',
+      actions: outdated ? ['update'] : [],
+    };
   if (entry.retired) return { ...base, state: 'installed', actions: ['remove'] };
   if (outdated) return { ...base, state: 'outdated', actions: ['update', 'remove'] };
   return { ...base, state: 'installed', actions: ['remove'] };
+}
+
+async function panelVersions({ root, kernel, entries, retired, found }) {
+  const installed = new Map();
+  for (const { name, version } of found) {
+    const before = installed.get(name);
+    if (!before || compare(version, before) > 0) installed.set(name, version);
+  }
+  for (const entry of entries.filter((entry) => entry.kind === 'project')) {
+    const version = await projectVersion(root, entry.id);
+    if (version) installed.set(entry.package, version);
+    if (version) await movePth(root, entry.id);
+    if (version) await normalizeProject(root, kernel, entry.id);
+  }
+  for (const entry of retired.filter((entry) => entry.kind === 'project')) {
+    const version = await projectVersion(root, entry.id);
+    if (version) installed.set(entry.package, version);
+  }
+  return installed;
+}
+
+export function installsOf(entry, { installed, owned, global }) {
+  const where =
+    entry.kind === 'project' ? `/${folder(entry.id)}` : `/${global.replace(/\/global\/v\d+$/, '')}`;
+  return [
+    ...(installed.has(entry.package)
+      ? [{ version: installed.get(entry.package), where, manager: 'panel' }]
+      : []),
+    ...(owned.get(entry.package) ?? []).map(({ version, where, user }) => ({
+      version,
+      where,
+      user,
+      manager: 'pnpm',
+    })),
+  ];
+}
+
+export function satisfied(entry, needed, installed, owned) {
+  if (installed.has(needed.package)) return true;
+  if (installed.has(entry.package)) return false;
+  const theirs = new Set((owned.get(needed.package) ?? []).map(({ user }) => user));
+  const users = (owned.get(entry.package) ?? []).map(({ user }) => user);
+  return users.length > 0 && users.every((user) => theirs.has(user));
+}
+
+function needs(entry, needed, installed) {
+  const version = installed.get(needed.package);
+  if (version === undefined) return 'install';
+  return entry.kind === 'project' && !needed.retired && compare(needed.offered, version) > 0
+    ? 'update'
+    : null;
+}
+
+export async function updateFor({ kernel, entry, certified, owned, start, rescan }) {
+  const key = `${entry.package}@${entry.offered}`;
+  const stale = (owned.get(entry.package) ?? []).filter(
+    ({ version }) => compare(entry.offered, version) > 0
+  );
+  for (const install of stale) {
+    const report = start();
+    const add = (to) =>
+      pnpmAs(kernel, install, report, to, [
+        'pnpm',
+        'add',
+        '-g',
+        `${entry.package}@${to}`,
+        ...USER_FLAGS,
+      ]);
+    await add(entry.offered);
+    const now = ((await rescan()).get(entry.package) ?? []).find(
+      ({ user }) => user === install.user
+    );
+    if (now?.version === entry.offered && tested(now.lock, certified, key)) continue;
+    await add(install.version).catch(() => undefined);
+    throw Object.assign(new Error(`${key} failed the integrity check for ${install.user}`), {
+      plain: kept(install.user, install.version),
+    });
+  }
 }
 
 export function createPackages({ catalog, root, kernel, ask, emit, global = GLOBAL }) {
   const { entries, certified, retired = [] } = catalog;
   const byId = new Map([...retired, ...entries].map((entry) => [entry.id, entry]));
   const live = new Map();
-  let installed = new Map();
+  let [installed, owned] = [new Map(), new Map()];
+  const users = Boolean(kernel?.users) && kernel.users.mode !== 'off';
+  const present = (name) => installed.has(name) || owned.has(name);
 
   const missing = (entry) =>
     entry.requires
       .map((id) => byId.get(id))
-      .filter((needed) => needed && !installed.has(needed.package))
+      .filter((needed) => needed && !satisfied(entry, needed, installed, owned))
       .map(
         (needed) =>
           `Needs ${needed.label}, which isn't installed. Install ${needed.label} again to use it.`
       );
   const item = (entry) => {
-    const described = describe(entry, installed.get(entry.package) ?? null, live.get(entry.id));
+    const described = describe(
+      entry,
+      installed.get(entry.package) ?? null,
+      live.get(entry.id),
+      installsOf(entry, { installed, owned, global })
+    );
     const warnings = described.version === null ? [] : missing(entry);
     return warnings.length ? { ...described, warnings } : described;
   };
 
   const list = () => [
     ...entries.map(item),
-    ...retired.filter((entry) => installed.has(entry.package) || live.has(entry.id)).map(item),
+    ...retired.filter((entry) => present(entry.package) || live.has(entry.id)).map(item),
   ];
   const changed = () => emit(list());
 
   async function refresh() {
     const found = await globals(root, global);
-    installed = new Map();
-    for (const { name, version } of found) {
-      const before = installed.get(name);
-      if (!before || compare(version, before) > 0) installed.set(name, version);
-    }
-    for (const entry of entries.filter((entry) => entry.kind === 'project')) {
-      const version = await projectVersion(root, entry.id);
-      if (version) installed.set(entry.package, version);
-      if (version) await movePth(root, entry.id);
-      if (version) await normalizeProject(root, kernel, entry.id);
-    }
-    for (const entry of retired.filter((entry) => entry.kind === 'project')) {
-      const version = await projectVersion(root, entry.id);
-      if (version) installed.set(entry.package, version);
-    }
+    owned = byUser(users ? await userGlobals(root) : []);
+    installed = await panelVersions({ root, kernel, entries, retired, found });
     changed();
     return found;
   }
@@ -345,6 +479,15 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
   }
 
   async function perform(entry, action) {
+    if (action === 'update' && entry.kind !== 'project' && !installed.has(entry.package)) {
+      const start = () => {
+        live.set(entry.id, { state: RUNNING.update, progress: null, log: '' });
+        changed();
+        return reporter(entry, 'update');
+      };
+      const rescan = () => refresh().then(() => owned);
+      return updateFor({ kernel, entry, certified, owned, start, rescan });
+    }
     if (entry.kind === 'project' && action === 'remove') return project(entry, action);
     if (action === 'remove') {
       await run(entry, action, ['pnpm', 'remove', '-g', entry.package]);
@@ -353,13 +496,7 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
     for (const id of entry.requires) {
       const needed = byId.get(id);
       if (!needed) continue;
-      const version = installed.get(needed.package);
-      const step =
-        version === undefined
-          ? 'install'
-          : entry.kind === 'project' && !needed.retired && compare(needed.offered, version) > 0
-            ? 'update'
-            : null;
+      const step = needs(entry, needed, installed);
       if (!step) continue;
       await attempt(needed, step).catch((error) => {
         throw Object.assign(error, {
@@ -389,7 +526,7 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
 
   function removable(entry) {
     const users = entries.filter(
-      (other) => other.requires.includes(entry.id) && installed.has(other.package)
+      (other) => other.requires.includes(entry.id) && present(other.package)
     );
     if (!users.length) return true;
     const one = users.length === 1;
@@ -407,6 +544,8 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
     const action = requested === 'retry' ? (live.get(id)?.action ?? 'install') : requested;
     if (entry.retired && action !== 'remove')
       throw new Error(`${entry.label} is no longer offered.`);
+    const refused = foreign(entry, action, installed, owned);
+    if (refused) throw new Error(refused);
     live.set(id, { state: 'queued', progress: null });
     changed();
     let failed = null;
@@ -439,7 +578,7 @@ export async function moveFrom({ root, global, entries, packages, legacy = GLOBA
   const present = new Set(
     packages
       .list()
-      .filter(({ version }) => version !== null)
+      .filter(({ installs = [] }) => installs.some(({ manager }) => manager === 'panel'))
       .map(({ id }) => id)
   );
   const ids = entries

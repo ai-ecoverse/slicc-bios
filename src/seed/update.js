@@ -342,7 +342,12 @@ export function trapLine(status, stderr) {
   return status === 134 ? (stderr.match(TRAP)?.[0] ?? null) : null;
 }
 
-async function pnpmAlone(kernel, cwd, report, to, argv, writer) {
+export function pnpmAs(kernel, { user, home, where }, report, to, argv) {
+  const env = { HOME: home, PNPM_HOME: where, PATH: `${where}/bin:/usr/local/bin:/usr/bin:/bin` };
+  return pnpmAlone(kernel, home, report, to, argv, false, { user, env: { ...env, ...TRAPS } });
+}
+
+async function pnpmAlone(kernel, cwd, report, to, argv, writer, as = null) {
   let log = '';
   const downloads = new Map();
   report({ progress: null, log });
@@ -351,7 +356,11 @@ async function pnpmAlone(kernel, cwd, report, to, argv, writer) {
     report({ progress: progress(log, downloads), log });
   };
   if (writer && guard.on) await fence(await navigator.storage.getDirectory(), cwd);
-  const run = writer ? { ...writing(cwd), onStdout } : { cwd, env: TRAPS, onStdout };
+  const run = as
+    ? { cwd, ...as, onStdout }
+    : writer
+      ? { ...writing(cwd), onStdout }
+      : { cwd, env: TRAPS, onStdout };
   const ran = () => kernel.run(writer ? hygiene(argv) : argv, run);
   const attempt = () => (writer ? writing_(kernel, writes(cwd, argv), ran) : ran());
   let { status, stderr } = await attempt();
