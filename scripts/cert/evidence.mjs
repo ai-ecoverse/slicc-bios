@@ -54,6 +54,19 @@ function walk(dir) {
   );
 }
 
+export function shardFlips(shards) {
+  const files = new Set();
+  for (const file of walk(shards).filter((f) => /experiment\/[^/]+\.json$/.test(f))) {
+    for (const group of json(file)?.groups ?? []) {
+      if (!group.retry) continue;
+      const still = new Set(group.retry.failed ?? []);
+      for (const f of group.first?.failed ?? [])
+        if (!still.has(f) && /^test\/integration\/[\w./-]+\.test\.mjs$/.test(f)) files.add(f);
+    }
+  }
+  return [...files].sort();
+}
+
 export function failedFiles(shards) {
   const files = new Set();
   for (const file of walk(shards).filter((f) => /experiment\/[^/]+\.json$/.test(f))) {
@@ -85,7 +98,11 @@ const count = (text, name) => {
 
 function sh(cmd, args, opts) {
   const r = spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, ...opts });
-  return { code: r.status ?? (r.signal ? 128 : 1), out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+  return {
+    code: r.status ?? (r.signal ? 128 : 1),
+    timedOut: r.error?.code === 'ETIMEDOUT' || Boolean(r.signal),
+    out: `${r.stdout ?? ''}${r.stderr ?? ''}`,
+  };
 }
 
 export const CLASSES = {
@@ -104,6 +121,10 @@ export const CLASSES = {
     'pins',
     'release-state',
     'ci-scope',
+    'renovate',
+    'shards',
+    'pnpm-root',
+    'cdp-link-worlds',
   ],
   security: [
     'vault',
@@ -124,6 +145,7 @@ export const CLASSES = {
     'framing',
     'tailscale',
     'users',
+    'sw-activation',
   ],
   'data integrity': [
     'integrity',
@@ -141,6 +163,47 @@ export const CLASSES = {
     'reuse',
   ],
 };
+
+export const UNCLASSIFIED = [
+  'agent-code',
+  'agent-ui',
+  'app',
+  'boot',
+  'canary',
+  'catalog-skills',
+  'cdp',
+  'chat',
+  'clipboard',
+  'favicon',
+  'imagemagick',
+  'jsh',
+  'k4-agent',
+  'k4-modes',
+  'k4',
+  'leaders',
+  'mcpcat',
+  'modes',
+  'modules',
+  'ntfy-agent',
+  'ntfy',
+  'old-agent',
+  'one-kernel',
+  'optional',
+  'packages',
+  'perl',
+  'preview-publish',
+  'progress',
+  'pydata',
+  'quiet-body',
+  'ruby',
+  'serve',
+  'shell',
+  'sweep',
+  'tabs',
+  'tray',
+  'typescript',
+  'zip',
+];
 
 export function classOf(file) {
   const name = basename(file).replace(/\.test\.mjs$/, '');
@@ -173,6 +236,7 @@ async function plan({ head, base, shards, out, budget }) {
   mkdirSync(out, { recursive: true });
   const pins = changedPins(base, head);
   const failed = failedFiles(shards);
+  const flips = shardFlips(shards).filter((f) => !failed.includes(f));
   const scenarios = pins
     .filter((p) => p.gated)
     .map((p) => ({
@@ -182,12 +246,17 @@ async function plan({ head, base, shards, out, budget }) {
     }));
   const known = await flakyFiles();
   const flaky = Object.fromEntries(
-    failed.filter((f) => known.has(basename(f))).map((f) => [f, known.get(basename(f))])
+    [...failed, ...flips]
+      .filter((f) => known.has(basename(f)))
+      .map((f) => [f, known.get(basename(f))])
   );
-  const critical = Object.fromEntries(failed.filter(classOf).map((f) => [f, classOf(f)]));
+  const critical = Object.fromEntries(
+    [...failed, ...flips].filter(classOf).map((f) => [f, classOf(f)])
+  );
   const result = {
     pins,
     failed,
+    flips,
     scenarios,
     flaky,
     critical,
@@ -196,6 +265,7 @@ async function plan({ head, base, shards, out, budget }) {
   writeFileSync(join(out, 'plan.json'), `${JSON.stringify(result, null, 2)}\n`);
   const outputs = {
     pins: String(pins.length > 0),
+    reruns: String(failed.length + flips.length > 0),
     browser: String(
       failed.some((f) => !flaky[f] || critical[f]) || scenarios.some((s) => s.present)
     ),
@@ -233,25 +303,40 @@ function inspect({ base, out }) {
 }
 
 export function readingOf(row, times) {
+  const cut = (runs) => runs.some((x) => x.timedOut);
   const headFails = row.head.filter((x) => x.exit !== 0).length;
-  const baseFails = row.base.filter((x) => x.exit !== 0).length;
+  const baseFails = row.base.filter((x) => x.exit !== 0 && !x.timedOut).length;
   const cls = row.class ? `it covers ${row.class}: a fail` : 'a finding';
   if (headFails < row.head.length)
     return {
       outcome: row.class ? 'fail' : 'finding',
       reading: `head flake: failed in its shard, then passed ${row.head.length - headFails} of ${row.head.length} re-runs (${cls})`,
     };
-  if (row.head.length < times)
+  if (row.head.length < times || cut(row.head))
     return {
       outcome: 'incomplete',
       reading: 'incomplete: the evidence budget ran out on the head',
     };
   if (!row.base.length && !row.inBase)
     return { outcome: 'fail', reading: 'fails every time on the head; not in main' };
+  if (cut(row.base))
+    return { outcome: 'incomplete', reading: 'incomplete: the evidence budget ran out on main' };
   if (baseFails) return { outcome: 'main-alike', reading: 'fails on main alike' };
   if (row.base.length < times)
     return { outcome: 'incomplete', reading: 'incomplete: the evidence budget ran out on main' };
   return { outcome: 'fail', reading: 'regression: fails every time on the head, passes on main' };
+}
+
+export function flipOf(file, cls, issue) {
+  if (issue && !cls)
+    return {
+      outcome: 'known-flaky',
+      reading: `known flaky (issue #${issue}); failed, then passed on its shard's retry`,
+    };
+  return {
+    outcome: cls ? 'fail' : 'finding',
+    reading: `head flake: failed in its shard, then passed on the shard's retry (${cls ? `it covers ${cls}: a fail` : 'a finding'})`,
+  };
 }
 
 function retried(times, once) {
@@ -266,7 +351,12 @@ function retried(times, once) {
 }
 
 function reruns({ head, base, out, times }) {
-  const { failed, flaky = {}, deadline = Number.POSITIVE_INFINITY } = json(join(out, 'plan.json'));
+  const {
+    failed,
+    flips = [],
+    flaky = {},
+    deadline = Number.POSITIVE_INFINITY,
+  } = json(join(out, 'plan.json'));
   const rows = [];
   const once = (dir, cli, file, side, i) => {
     const left = deadline - Date.now();
@@ -282,6 +372,7 @@ function reruns({ head, base, out, times }) {
     writeFileSync(log, r.out.slice(-2_000_000));
     return {
       exit: r.code,
+      ...(r.timedOut ? { timedOut: true } : {}),
       pass: count(r.out, 'pass'),
       fail: count(r.out, 'fail'),
       ms: Date.now() - started,
@@ -307,15 +398,28 @@ function reruns({ head, base, out, times }) {
     }
     row.head = retried(times, (i) => {
       const got = once(head, env.SLICC_CLI_HEAD, file, 'head', i);
-      return got && { ...got, stop: got.exit === 0 };
+      return got && { ...got, stop: got.exit === 0 || got.timedOut };
     });
     const allFailed = row.head.length === times && row.head.every((x) => x.exit !== 0);
     if (allFailed && row.inBase)
       row.base = retried(times, (i) => {
         const got = once(base, env.SLICC_CLI_BASE, file, 'base', i);
-        return got && { ...got, stop: got.exit !== 0 };
+        return got && { ...got, stop: got.exit !== 0 || got.timedOut };
       });
+    for (const x of [...row.head, ...row.base]) delete x.stop;
     Object.assign(row, readingOf(row, times));
+  }
+  for (const file of flips) {
+    const cls = classOf(file);
+    rows.push({
+      file,
+      head: [],
+      base: [],
+      shardRetry: 'passed',
+      class: cls,
+      ...(flaky[file] ? { issue: flaky[file] } : {}),
+      ...flipOf(file, cls, flaky[file]),
+    });
   }
   const incomplete = rows.some((r) => r.outcome === 'incomplete');
   writeFileSync(
@@ -327,21 +431,42 @@ function reruns({ head, base, out, times }) {
   );
 }
 
-function check({ out }) {
+const OUTCOMES = new Set(['fail', 'finding', 'main-alike', 'known-flaky', 'removed', 'incomplete']);
+
+function missingReruns(plan, reruns) {
+  const want = [...plan.failed, ...(plan.flips ?? [])];
+  if (want.length && !reruns) return ['reruns.json is missing'];
   const why = [];
-  const reruns = existsSync(join(out, 'reruns.json')) ? json(join(out, 'reruns.json')) : null;
-  for (const r of reruns?.rows ?? [])
-    if (r.outcome === 'incomplete') why.push(`${r.file}: ${r.reading}`);
-  const scen = existsSync(join(out, 'scenarios.json')) ? json(join(out, 'scenarios.json')) : [];
-  for (const r of scen)
-    if (r.incomplete) why.push(`${r.package}: scenario not run, the evidence budget ran out`);
+  for (const f of want) {
+    const row = reruns.rows?.find((r) => r.file === f);
+    if (!row) why.push(`${f}: no re-run row`);
+    else if (!OUTCOMES.has(row.outcome)) why.push(`${f}: no known outcome`);
+    else if (row.outcome === 'incomplete') why.push(`${f}: ${row.reading}`);
+  }
+  return why;
+}
+
+function missingScenarios(plan, scen) {
+  const present = plan.scenarios.filter((s) => s.present);
+  if (present.length && !scen) return ['scenarios.json is missing'];
+  const why = [];
+  for (const s of present) {
+    const name = `${s.name}@${s.version}`;
+    const row = scen.find((r) => r.package === name);
+    if (!row) why.push(`${name}: no scenario row`);
+    else if (row.incomplete || !row.head || !row.base)
+      why.push(`${name}: scenario not run on both trees (the evidence budget ran out)`);
+  }
+  return why;
+}
+
+function check({ out }) {
   const plan = json(join(out, 'plan.json'));
-  const browser =
-    plan.failed.some((f) => !plan.flaky?.[f] || plan.critical?.[f]) ||
-    plan.scenarios.some((s) => s.present);
-  if (browser && plan.failed.length && !reruns) why.push('reruns.json is missing');
-  if (browser && plan.scenarios.some((s) => s.present) && !existsSync(join(out, 'scenarios.json')))
-    why.push('scenarios.json is missing');
+  const maybe = (f) => (existsSync(join(out, f)) ? json(join(out, f)) : null);
+  const why = [
+    ...missingReruns(plan, maybe('reruns.json')),
+    ...missingScenarios(plan, maybe('scenarios.json')),
+  ];
   if (why.length) {
     console.log(`cert evidence: INCOMPLETE ${why.join('; ')}`);
     process.exitCode = 1;
@@ -392,6 +517,10 @@ function scenarios({ head, base, out }) {
         r.out.slice(-2_000_000)
       );
       row[side] = { exit: r.code, results: existsSync(seven) };
+      if (r.timedOut) {
+        row[side].timedOut = true;
+        row.incomplete = true;
+      }
     }
     rows.push(row);
   }

@@ -1,17 +1,21 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
+  CLASSES,
   changedPins,
   classOf,
   failedFiles,
+  flipOf,
   readingOf,
   scenario,
   scenarioOf,
+  shardFlips,
+  UNCLASSIFIED,
 } from '../../scripts/cert/evidence.mjs';
 import { exceptionsFor, judge, releaseState, writerOf } from '../../scripts/cert/release-state.mjs';
 
@@ -583,6 +587,11 @@ test('evidence: the pins a PR changes, the files its shards failed (after the re
     ['test/integration/k4.test.mjs'],
     'a retry that passed clears the file, and a name that is not a test path is dropped'
   );
+  assert.deepEqual(
+    shardFlips(shards),
+    ['test/integration/boot.test.mjs'],
+    'the retry flip is kept'
+  );
   assert.equal(scenarioOf('@ai-ecoverse/slicc-kernel'), 'scripts/cert/scenarios/slicc-kernel.txt');
   assert.deepEqual(scenario('# kernel boots\n# pass: prints ok\necho ok\n\nuname -a\n'), {
     pass: ['prints ok'],
@@ -919,6 +928,9 @@ test('reruns (2a): a shard failure then a passing re-run is a head flake, a find
   assert.doesNotMatch(flake.reading, /^passes/);
   const later = rerun(counting('(n) => n === 1'), never);
   assert.deepEqual([later.head.length, later.outcome], [2, 'finding']);
+  assert.deepEqual(flipOf('test/integration/ruby.test.mjs', null, undefined).outcome, 'finding');
+  assert.deepEqual(flipOf('test/integration/vault.test.mjs', 'security', 3).outcome, 'fail');
+  assert.deepEqual(flipOf('test/integration/ruby.test.mjs', null, 3).outcome, 'known-flaky');
   const vault = rerun(never, never, {}, 'test/integration/vault.test.mjs');
   assert.deepEqual([vault.class, vault.outcome], ['security', 'fail']);
   assert.match(vault.reading, /it covers security: a fail/);
@@ -947,6 +959,13 @@ test('reruns (4): a spent budget is incomplete, and `check` fails the evidence j
     /cert evidence: INCOMPLETE test\/integration\/a\.test\.mjs: incomplete: the evidence budget ran out on the head/
   );
   const f = { exit: 1 };
+  const cut = { exit: 128, timedOut: true };
+  assert.equal(
+    readingOf({ head: [f, f, f], base: [cut], inBase: true }, 3).outcome,
+    'incomplete',
+    'a main run the budget killed is not "fails on main alike"'
+  );
+  assert.equal(readingOf({ head: [f, cut], base: [], inBase: true }, 3).outcome, 'incomplete');
   assert.equal(
     readingOf({ head: [f, f, f], base: [{ exit: 0 }], inBase: true }, 3).outcome,
     'incomplete'
@@ -959,6 +978,13 @@ test('reruns (4): a spent budget is incomplete, and `check` fails the evidence j
   );
   const missing = evidenceCmd('check', head, head, out);
   assert.equal(missing.code, 1, 'no reruns.json is incomplete too');
+  writeFileSync(join(out, 'reruns.json'), JSON.stringify({ rows: [] }));
+  assert.match(evidenceCmd('check', head, head, out).out, /a\.test\.mjs: no re-run row/);
+  writeFileSync(
+    join(out, 'reruns.json'),
+    JSON.stringify({ rows: [{ file: 'test/integration/a.test.mjs', outcome: 'pass' }] })
+  );
+  assert.match(evidenceCmd('check', head, head, out).out, /no known outcome/);
   writeFileSync(
     join(out, 'plan.json'),
     JSON.stringify({ failed: [], scenarios: [{ name: 'x', present: true }], deadline: 0 })
@@ -971,9 +997,15 @@ test('reruns (4): a spent budget is incomplete, and `check` fails the evidence j
   );
   assert.equal(evidenceCmd('check', head, head, out).code, 1, 'a skipped scenario is incomplete');
   const job = ci.slice(ci.indexOf('\n  evidence:\n'), ci.indexOf('\n  ci:\n'));
+  assert.match(job, /\n {8}if: \$\{\{ !cancelled\(\) \}\}\n {8}run: \|\n/);
   assert.match(
     job,
-    /\n {8}if: \$\{\{ !cancelled\(\) \}\}\n {8}run: node head\/scripts\/cert\/evidence\.mjs check /
+    /if grep -q "reruns, scenarios, check }" base\/scripts\/cert\/evidence\.mjs; then t=base; else t=head; fi\n {10}node "\$t\/scripts\/cert\/evidence\.mjs" check /
+  );
+  assert.match(
+    read('scripts/cert/evidence.mjs'),
+    /const run = \{ plan, inspect, reruns, scenarios, check \}\[command\];/,
+    'main’s check is found once this merges'
   );
   const test_ = ci.slice(ci.indexOf('\n  ci:\n'));
   assert.match(test_, /needs: \[plan, lint, integration, vendors, evidence\]/);
@@ -1006,4 +1038,12 @@ test('#684: the inspect diffs (wasm strings with bidi and zero-width controls) s
     !notes.some((g) => glob(g).test('cert-evidence/inspect/x.diff')),
     'nothing in the job that runs pull-request code'
   );
+});
+
+test('every integration test file is in a class (data integrity, security, guard) or on the unclassified list', () => {
+  const listed = new Set([...Object.values(CLASSES).flat(), ...UNCLASSIFIED]);
+  const files = readdirSync(new URL('./', import.meta.url)).filter((f) => f.endsWith('.test.mjs'));
+  const missing = files.map((f) => f.replace(/\.test\.mjs$/, '')).filter((n) => !listed.has(n));
+  assert.deepEqual(missing, [], 'classify each new test file in scripts/cert/evidence.mjs');
+  for (const n of UNCLASSIFIED) assert.equal(classOf(`test/integration/${n}.test.mjs`), null, n);
 });
