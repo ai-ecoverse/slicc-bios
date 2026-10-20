@@ -43,7 +43,8 @@ const SVG = (width) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="1"><rect width="${width}" height="1"/></svg>`;
 const CSP = `<meta http-equiv="Content-Security-Policy" content="script-src 'none'">`;
 const stand = createHttp((req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
+  const base = `http://${req.headers.host}`;
+  const url = new URL(req.url, URL.canParse(base) ? base : 'http://unparseable.invalid');
   heard.push({
     host: url.host,
     path: `${url.pathname}${url.search}`,
@@ -52,6 +53,15 @@ const stand = createHttp((req, res) => {
     lang: req.headers['accept-language'] ?? '',
     cache: req.headers['cache-control'] ?? '',
   });
+  if (url.pathname.startsWith('/odd-sw/')) {
+    const script = url.pathname.endsWith('.js');
+    res.writeHead(200, { 'content-type': script ? 'text/javascript' : 'text/html' });
+    return res.end(
+      script
+        ? "self.addEventListener('install', () => self.skipWaiting());"
+        : "<!doctype html><title>registering</title><script>navigator.serviceWorker.register('/odd-sw/sw.js', { scope: '/odd-sw/' }).then(() => navigator.serviceWorker.ready).then(() => { document.title = 'ready'; }, (error) => { document.title = 'failed ' + error.message; });</script>"
+    );
+  }
   if (url.pathname === '/beacon') {
     beacons.push({ id: url.searchParams.get('id'), host: url.searchParams.get('host') });
     res.writeHead(204, { 'access-control-allow-origin': '*' });
@@ -112,11 +122,13 @@ const PLAIN = `http://localhost:${standPort}`;
 const OTHER = `http://plain.test:${standPort}`;
 const VAULT = `http://vault.sliccy.ai:${standPort}`;
 const ABC = `http://abc.sliccy.ai:${standPort}`;
+const ODD = `http://exa%20mple.sliccy.ai:${standPort}`;
 
 const chrome = await launch({
   args: [
     `--remote-debugging-port=${port}`,
-    '--host-resolver-rules=MAP vault.sliccy.ai 127.0.0.1, MAP plain.test 127.0.0.1, MAP abc.sliccy.ai 127.0.0.1',
+    '--host-resolver-rules=MAP vault.sliccy.ai 127.0.0.1, MAP plain.test 127.0.0.1, MAP abc.sliccy.ai 127.0.0.1, MAP exa%20mple.sliccy.ai 127.0.0.1',
+    `--unsafely-treat-insecure-origin-as-secure=${ODD}`,
   ],
 });
 const SEVEN = new URL(chrome.url).origin;
@@ -2591,4 +2603,72 @@ test('a console message and an exception from code with a relative sourceURL rea
       );
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
+});
+
+test('on the proxy path, a service worker registered on a sliccy.ai host the URL parser rejects is hidden from the client, and its version stays refused', {
+  timeout: 5 * 60 * 1000,
+}, async (t) => {
+  const proxy = await startProxy({
+    port: 0,
+    origins: [SEVEN],
+    cdp: `http://127.0.0.1:${port}`,
+    kernelPort: null,
+    log: () => {},
+  });
+  t.after(() => proxy.close());
+  const guard = await guardPage(t, 0, { url: proxy.url, key: proxy.key });
+  const registering = (
+    await own.send('Target.createTarget', { url: `${ODD}/odd-sw/register.html` })
+  ).result.targetId;
+  t.after(() => closeAll([registering]));
+  const { result: watched } = await own.send('Target.attachToTarget', {
+    targetId: registering,
+    flatten: true,
+  });
+  await own.send('ServiceWorker.enable', {}, watched.sessionId);
+  let state = null;
+  const until = Date.now() + 20000;
+  for (;;) {
+    state = (
+      await own.send(
+        'Runtime.evaluate',
+        { expression: 'document.title + " " + location.host', returnByValue: true },
+        watched.sessionId
+      )
+    ).result?.result?.value;
+    if (/^ready /.test(state ?? '')) break;
+    if (Date.now() > until)
+      throw new Error(`the worker on the odd host never registered: ${state}`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  const version = own.events
+    .find(
+      (event) =>
+        event.method === 'ServiceWorker.workerVersionUpdated' &&
+        event.params.versions?.some((v) => /exa%20mple/.test(v.scriptURL))
+    )
+    ?.params.versions.find((v) => /exa%20mple/.test(v.scriptURL));
+  assert.ok(version?.versionId, `the control sees the worker: ${state}`);
+  const plain = await tab(`${PLAIN}/doc?odd-sw`);
+  t.after(() => closeAll([plain]));
+  const session = await guard.attach(plain);
+  const before = (await guard.events()).length;
+  assert.equal((await guard.send('ServiceWorker.enable', {}, session)).error, undefined);
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  const shown = JSON.stringify((await guard.events()).slice(before));
+  assert.equal(
+    shown.includes('exa%20mple'),
+    false,
+    `the client saw the odd host's worker: ${shown.slice(0, 600)}`
+  );
+  assert.equal(
+    (await guard.send('ServiceWorker.inspectWorker', { versionId: version.versionId }, session))
+      .error?.message,
+    PROTECTED
+  );
+  assert.equal(
+    (await guard.send('ServiceWorker.unregister', { scopeURL: `${ODD}/odd-sw/` }, session)).error
+      ?.message,
+    PROTECTED
+  );
 });

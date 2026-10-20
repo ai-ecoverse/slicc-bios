@@ -127,6 +127,7 @@ const ORIGINS = new Set([
   'documentURL',
   'unreachableUrl',
 ]);
+const CLOSED = new Set(['url', 'scopeURL', 'scriptURL']);
 const FREE = new Set([
   'expression',
   'arguments',
@@ -922,7 +923,7 @@ class Guard {
       );
     }
     if (typeof value !== 'string') return false;
-    if (ORIGINS.has(key)) return is.url(value, { readOnly: readOnly || key !== 'url' });
+    if (ORIGINS.has(key)) return is.url(value, { readOnly: readOnly || !CLOSED.has(key) });
     if (key === 'storageKey') return is.storageKey(value);
     if (key === 'cacheId') return is.storageKey(value.split('|')[0]);
     if (key === 'domain') return is.cookieDomain(value);
@@ -966,7 +967,7 @@ class Guard {
   }
 
   worker(item) {
-    if (this.valued(item, 0, true) || this.blockedWorkers.has(item.registrationId)) {
+    if (this.valued(item) || this.blockedWorkers.has(item.registrationId)) {
       if (item.registrationId !== undefined) this.blockedWorkers.add(item.registrationId);
       return false;
     }
