@@ -21,11 +21,53 @@ const sh = (page, command) =>
     command
   );
 
-async function typed(page, command, label) {
-  await run(
+const start = (page, command, label) =>
+  run(
     page,
     `clear; ${command} > /tmp/${label}.out 2> /tmp/${label}.err; echo "${label}-$((40 + 2)) $?"`
   );
+
+const asked = (page, op) =>
+  page.within(
+    STEP,
+    (op) => {
+      const item = document
+        .querySelector('slicc-app')
+        .model.approvals.list()
+        .find((entry) => entry.kind === 'tray' && entry.op === op);
+      return item && JSON.parse(JSON.stringify(item));
+    },
+    op
+  );
+
+const decide = (page, id, decision) =>
+  page.evaluate(
+    ([id, decision]) => document.querySelector('slicc-app').model.approvals.decide(id, decision),
+    [id, decision]
+  );
+
+const trays = (page) =>
+  page.evaluate(
+    () =>
+      document
+        .querySelector('slicc-app')
+        .model.approvals.list()
+        .filter((entry) => entry.kind === 'tray').length
+  );
+
+async function approved(page, command, label, op, decision = 'once') {
+  await start(page, command, label);
+  const item = await asked(page, op);
+  await decide(page, item.id, decision);
+  return { item, ...(await finished(page, label)) };
+}
+
+async function typed(page, command, label) {
+  await start(page, command, label);
+  return finished(page, label);
+}
+
+async function finished(page, label) {
   const code = await page
     .within(
       STEP,
@@ -91,7 +133,7 @@ const raw = (op) => {
   return `exec 3<>/dev/tcp/127.0.0.1/7400; printf '${head}%s' '${hello}' >&3; timeout 10 cat <&3 | tr -c '[:print:]' '.'`;
 };
 
-test('a cone’s slicc tray in seven’s terminal lists, hands out, rotates, unlinks and retries this seven’s tray; a scoop is refused, and status never carries a join or webhook URL', {
+test('a cone’s slicc tray in seven’s terminal lists and retries this seven’s tray, and hands out, rotates and unlinks only once the owner approves; root isn’t asked, a scoop is refused, and status never carries a join or webhook URL', {
   timeout: 30 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -166,11 +208,23 @@ test('a cone’s slicc tray in seven’s terminal lists, hands out, rotates, unl
       `the status answer carries ${secret}: ${answered.out}`
     );
 
-  const url = await typed(page, 'sudo -u cone slicc tray url', 'url');
+  const own = await typed(page, 'slicc tray url', 'own');
+  assert.deepEqual([own.code, own.out], [0, `${joinUrl}\n`]);
+  assert.equal(await trays(page), 0);
+  const url = await approved(page, 'sudo -u cone slicc tray url', 'url', 'url');
   assert.deepEqual([url.code, url.out], [0, `${joinUrl}\n`]);
+  assert.deepEqual(
+    [url.item.requester.name, url.item.expiresAt - url.item.createdAt, 'always' in url.item],
+    ['cone', 5 * 60 * 1000, false]
+  );
+  const denied = await approved(page, 'sudo -u cone slicc tray url', 'denied', 'url', 'deny');
+  assert.equal(denied.code, 3, `${denied.out}\n${denied.err}`);
+  assert.match(denied.err, /the owner didn't approve this/);
+  assert.equal(denied.out, '');
+  assert.doesNotMatch(denied.err, /\/join\//);
 
   const sockets = hub.sockets.length;
-  const rotated = await typed(page, 'sudo -u cone slicc tray rotate', 'rotated');
+  const rotated = await approved(page, 'sudo -u cone slicc tray rotate', 'rotated', 'rotate');
   assert.equal(rotated.code, 0, rotated.err);
   assert.equal(rotated.out, '');
   assert.match(rotated.err, /made a new join URL/);
@@ -182,7 +236,7 @@ test('a cone’s slicc tray in seven’s terminal lists, hands out, rotates, unl
   await page.until(() =>
     document.querySelector('slicc-app').model.network.status().links?.joinUrl?.endsWith('/j2')
   );
-  const moved = await typed(page, 'sudo -u cone slicc tray url', 'moved');
+  const moved = await typed(page, 'slicc tray url', 'moved');
   assert.deepEqual([moved.code, moved.out], [0, `${hub.url}/join/j2\n`]);
 
   const retried = await typed(page, 'sudo -u cone slicc tray retry', 'retried');
@@ -205,16 +259,19 @@ test('a cone’s slicc tray in seven’s terminal lists, hands out, rotates, unl
   assert.match(made.out, /uid=1100\(scoop-probe\).*1000\(cone\)/, made.out);
   for (const op of ['url', '']) {
     const scoop = await typed(page, `sudo -u scoop-probe slicc tray ${op}`, `scoop${op}`);
+    assert.equal(await trays(page), 0);
     assert.equal(scoop.code, 3, `${scoop.out}\n${scoop.err}`);
     assert.match(scoop.err, /only root and members of sudo may reach another seven/);
     assert.doesNotMatch(`${scoop.out}${scoop.err}`, /\/join\//);
   }
 
-  const unlinked = await typed(
+  const unlinked = await approved(
     page,
     `sudo -u cone slicc tray unlink ${device.id.slice(0, 8)}`,
-    'unlinked'
+    'unlinked',
+    'unlink'
   );
+  assert.deepEqual(unlinked.item.device, { id: device.id, name: 'slicc on far' });
   assert.equal(unlinked.code, 0, unlinked.err);
   assert.deepEqual((await page.evaluate(() => globalThis.followerLog)).at(-1), { kind: 'unlink' });
   assert.deepEqual(await model(page, (network) => network.status().links.devices), []);
