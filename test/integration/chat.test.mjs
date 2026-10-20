@@ -1469,18 +1469,23 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     );
   };
   const openLastTool = async () => {
-    await page.evaluate(() => {
+    await page.evaluate(async () => {
       const found = [];
       const walk = (root) => {
-        found.push(...root.querySelectorAll('details.tool'));
+        found.push(...root.querySelectorAll('swc-response-status-step[data-target]'));
         for (const element of root.querySelectorAll('*'))
           if (element.shadowRoot) walk(element.shadowRoot);
       };
       walk(window.chatView().shadowRoot);
       window.deep(window.chatView().shadowRoot, 'textarea').blur();
-      const last = found.at(-1);
-      last.open = true;
-      last.scrollIntoView({ block: 'center' });
+      const last = found.filter((step) => step.querySelector('.run-toggle')).at(-1);
+      const status = last.closest('swc-response-status');
+      if (status && !status.open) status.click();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      if (!last.hasAttribute('data-open')) last.querySelector('.run-toggle').click();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const detail = last.getRootNode().querySelector(`[id="detail-${last.dataset.target}"]`);
+      (detail ?? last).scrollIntoView({ block: 'center' });
     });
     await new Promise((resolve) => setTimeout(resolve, 500));
   };

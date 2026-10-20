@@ -192,11 +192,17 @@ test("the agent's UI: vault hold, tool-run clusters, a failed bash card's notes,
   await shoot(page, 'failed-bash-card', {
     show: 'chat',
     before: new Function(`
-      const card = (${deep})('details.tool[data-status="error"]');
-      if (card) {
-        card.open = true;
-        card.querySelector('.notes')?.scrollIntoView({ block: 'center' });
-      }
+      return (async () => {
+        const step = (${deep})('swc-response-status-step[data-status="error"]');
+        if (!step) return;
+        const status = step.closest('swc-response-status');
+        if (status && !status.open) status.click();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        if (!step.hasAttribute('data-open')) step.querySelector('.run-toggle')?.click();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        const detail = step.getRootNode().querySelector('[id="detail-' + step.dataset.target + '"]');
+        (detail?.querySelector('.notes') ?? detail)?.scrollIntoView({ block: 'center' });
+      })();
     `),
   });
 
@@ -307,6 +313,46 @@ test("the agent's UI: vault hold, tool-run clusters, a failed bash card's notes,
     const app = document.querySelector('slicc-app');
     app.model = { ...app.model, vault: window.realVault };
   });
+
+  await page.evaluate(async () => {
+    const at = new URL(
+      '../node_modules/@ai-ecoverse/slicc-spectrum/dist/slicc-dummy.js',
+      location.href
+    );
+    const { createDummyModel } = await import(at.href);
+    const app = document.querySelector('slicc-app');
+    window.realSettings = app.model.settings;
+    const dummy = createDummyModel({ delay: 6000, login: 'code' });
+    app.model = { ...app.model, settings: dummy.settings };
+    void dummy.settings.connect('openai-codex');
+  });
+  await page.evaluate(() => document.querySelector('slicc-app').show('settings'));
+  await page.within(
+    30000,
+    () =>
+      document
+        .querySelector('slicc-app')
+        .model.settings.accounts()
+        .find((account) => account.id === 'openai-codex')?.signIn?.code === 'WDJB-MJHT'
+  );
+  await quiet(page);
+  await shoot(page, 'settings-sign-in-code', {
+    show: 'settings',
+    target: '.account[data-id="openai-codex"]',
+  });
+  await page.evaluate(() => {
+    const app = document.querySelector('slicc-app');
+    app.model.settings.cancel?.('openai-codex');
+    app.model = { ...app.model, settings: window.realSettings };
+  });
+
+  await page.evaluate(() => document.querySelector('slicc-app').show('updates'));
+  await page.within(
+    60000,
+    () => document.querySelector('slicc-app').model.updates.packages().length > 0
+  );
+  await quiet(page);
+  await shoot(page, 'install-update', { show: 'updates' });
 
   await page.evaluate(() => document.querySelector('slicc-app').show('terminal'));
   await run(
