@@ -1,5 +1,6 @@
 import { panelCommand } from '@ai-ecoverse/slicc-spectrum/ui';
 import { osClient, skew } from './tabs.js';
+import { OWNER_ACTIONS } from './updates.js';
 
 export function mirrorUpdates(os) {
   const listeners = { items: new Set(), packages: new Set() };
@@ -39,20 +40,33 @@ export function mirrorUpdates(os) {
   };
 }
 
+export const ELSEWHERE = 'Only the tab running SLICC can install a beta or leave one.';
+
+const served = (items) =>
+  items.map((item) => ({
+    ...item,
+    actions: item.actions.filter((action) => !OWNER_ACTIONS.has(action)),
+  }));
+
 export function serveUpdates(updates) {
   return {
     handlers: {
       updates: () => ({
-        items: updates.list(),
+        items: served(updates.list()),
         ready: updates.ready(),
         packages: updates.packages(),
       }),
-      act: (id, action) => updates.act(id, action),
+      act: (id, action) => {
+        if (OWNER_ACTIONS.has(action)) throw new Error(ELSEWHERE);
+        return updates.act(id, action);
+      },
       actPackage: (id, action) => updates.actPackage(id, action),
     },
     forward(os) {
       updates.on('packages', (list) => os.emit('packages', list));
-      return updates.on('items', (items) => os.emit('updates', { items, ready: updates.ready() }));
+      return updates.on('items', (items) =>
+        os.emit('updates', { items: served(items), ready: updates.ready() })
+      );
     },
   };
 }

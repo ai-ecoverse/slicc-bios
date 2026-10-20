@@ -4,6 +4,7 @@ export function createNotices({ storage = localStorage } = {}) {
   const listeners = new Set();
   const handlers = new Map();
   let notices = [];
+  const session = new Set();
   const dismissed = () => {
     try {
       return new Set(JSON.parse(storage.getItem(DISMISSED) ?? '[]'));
@@ -14,7 +15,7 @@ export function createNotices({ storage = localStorage } = {}) {
   const emit = () => {
     for (const listener of [...listeners]) listener(notices);
   };
-  const remove = (id) => {
+  const drop = (id) => {
     if (!notices.some((notice) => notice.id === id)) return;
     notices = notices.filter((notice) => notice.id !== id);
     handlers.delete(id);
@@ -28,22 +29,26 @@ export function createNotices({ storage = localStorage } = {}) {
     },
     list: () => notices,
     show(notice, handler) {
-      if (dismissed().has(notice.id)) return false;
+      if (session.has(notice.id) || dismissed().has(notice.id)) return false;
       const at = notices.findIndex((item) => item.id === notice.id);
       notices = at < 0 ? [...notices, notice] : notices.with(at, notice);
       handlers.set(notice.id, handler);
       emit();
       return true;
     },
-    remove,
+    remove(id) {
+      session.delete(id);
+      drop(id);
+    },
     async act(id, action) {
       const handler = handlers.get(id);
       if (!handler) throw new Error('This notice is gone.');
       await handler(action);
     },
     dismiss(id) {
-      storage.setItem(DISMISSED, JSON.stringify([...dismissed(), id]));
-      remove(id);
+      if (notices.find((notice) => notice.id === id)?.session) session.add(id);
+      else storage.setItem(DISMISSED, JSON.stringify([...dismissed(), id]));
+      drop(id);
     },
   };
 }

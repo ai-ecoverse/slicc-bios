@@ -4,9 +4,13 @@ import { baseManifest, enforced, fetchText, pnpm, readable, text, write } from '
 
 export const FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies'];
 const EXACT = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
-const GATED = /^@ai-ecoverse\/(?:slicc-kernel|slicc-cdp|slicc-jsh|wasi-|wasix-|wasm-|py-)/;
+export const GATED =
+  /^@ai-ecoverse\/(?:slicc-kernel|slicc-cdp|slicc-clipboard|slicc-jsh|mcpcat$|wasi-|wasix-|wasm-|py-)/;
 const RELAXED = ['pnpm', 'install', '--no-frozen-lockfile'];
 const seen = new Map();
+
+const source = (project, name) =>
+  project.read ? project.read(name) : fetchText(name, project.from);
 
 const exact = (spec) => typeof spec === 'string' && EXACT.test(spec);
 
@@ -212,8 +216,8 @@ async function relaxed(kernel, root, project, report, to, lock, certs) {
 }
 
 async function inspect(root, project, force) {
-  const { folder, state, from } = project;
-  const lock = await fetchText('pnpm-lock.yaml', from);
+  const { folder, state } = project;
+  const lock = await source(project, 'pnpm-lock.yaml');
   const receipt = await text(root, `${state}/pnpm-lock.yaml`);
   const currentText = await text(root, `${folder}/package.json`);
   const saved = sealed(readLayer(await text(root, `${state}/user.json`)));
@@ -223,7 +227,7 @@ async function inspect(root, project, force) {
   const current = parse(currentText);
   const recordedBase = await text(root, `${state}/package.json`);
   const baseText =
-    changed || recordedBase === null ? await fetchText('package.json', from) : recordedBase;
+    changed || recordedBase === null ? await source(project, 'package.json') : recordedBase;
   const base = JSON.parse(baseText);
   let before = parse(recordedBase);
   if (!before && receipt !== null) before = changed ? importers(receipt) : base;
@@ -235,14 +239,14 @@ async function inspect(root, project, force) {
 }
 
 async function install(root, project, found, { start, report, certs }) {
-  const { folder, from } = project;
+  const { folder } = project;
   const { lock, changed, baseText, base, layer } = found;
   const plain = empty(layer);
   const wanted = plain ? baseText : json(merge(base, layer));
   await write(root, `${folder}/package.json`, wanted);
   if (changed || plain) await write(root, `${folder}/pnpm-lock.yaml`, lock);
   if (project.workspace && changed) {
-    const workspace = await fetchText('pnpm-workspace.yaml', from).catch(() => '{}\n');
+    const workspace = await source(project, 'pnpm-workspace.yaml').catch(() => '{}\n');
     await write(root, `${folder}/pnpm-workspace.yaml`, workspace);
   }
   const to = base.dependencies?.[project.primary];

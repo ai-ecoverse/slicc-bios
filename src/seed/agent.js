@@ -6,7 +6,7 @@ import { text, versions } from './update.js';
 import { kernelSource } from './users.js';
 import { takesVault } from './vault.js';
 
-const deployed = new URL('packages/agent/', BIOS);
+export const deployed = new URL('packages/agent/', BIOS);
 const PACKAGE = '@ai-ecoverse/slicc-agent';
 const HELD = '3.27.0';
 export const folder = 'opt/agent';
@@ -40,9 +40,9 @@ export async function version() {
   return (await versions(root, [PACKAGE], `${folder}/`))[PACKAGE];
 }
 
-export function installAgent(start, { from = deployed, ...options } = {}) {
+export function installAgent(start, { from = deployed, read, ...options } = {}) {
   return navigator.locks.request(project.lock, async () =>
-    apply(await navigator.storage.getDirectory(), { ...project, from }, { start, ...options })
+    apply(await navigator.storage.getDirectory(), { ...project, from, read }, { start, ...options })
   );
 }
 

@@ -13,6 +13,8 @@ export const owners = {
 };
 
 const RUNNING = { download: 'downloading', link: 'linking' };
+export const OWNER_ACTIONS = new Set(['install-beta', 'back-to-certified']);
+const BUSY = new Set(['queued', 'starting', 'checking', 'downloading', 'linking']);
 const SETTLE = new Set(['queued', 'starting', 'checking', 'downloading', 'linking', 'failed']);
 
 const NAMES = {
@@ -49,13 +51,23 @@ export function count(n) {
   return `${n} ${n === 1 ? 'package' : 'packages'}`;
 }
 
-export function createUpdates({ ready = false, now = Date.now } = {}) {
+function extras(item, beta) {
+  if (!beta || BUSY.has(item.state)) return [];
+  return [
+    ...(beta.npm?.state === 'offered' ? ['install-beta'] : []),
+    ...(beta.beta ? ['back-to-certified'] : []),
+  ];
+}
+
+export function createUpdates({ ready = false, now = Date.now, developer = false } = {}) {
   const listeners = { items: new Set(), packages: new Set() };
   const handlers = new Map();
   let packages = [];
   let own = [];
   let packageHandler = null;
   let ownHandler = null;
+  let developerHandler = null;
+  const betas = new Map();
   const listed = () => {
     const all = [...own, ...packages];
     for (const listener of [...listeners.packages]) listener(all);
@@ -72,8 +84,20 @@ export function createUpdates({ ready = false, now = Date.now } = {}) {
     error: null,
     actions: [],
   }));
+  const shown = (item) => {
+    const beta = betas.get(item.id);
+    if (!beta) return item;
+    return {
+      ...item,
+      beta: beta.beta ?? null,
+      npm: beta.npm ?? null,
+      actions: [...item.actions, ...extras(item, beta)],
+    };
+  };
+  const all = () => items.map(shown);
   const emit = () => {
-    for (const listener of [...listeners.items]) listener(items);
+    const list = all();
+    for (const listener of [...listeners.items]) listener(list);
   };
   const port = {
     on(type, listener) {
@@ -82,7 +106,7 @@ export function createUpdates({ ready = false, now = Date.now } = {}) {
       set.add(listener);
       return () => set.delete(listener);
     },
-    list: () => items,
+    list: all,
     packages: () => [...own, ...packages],
     setPackages(list) {
       packages = list;
@@ -109,7 +133,18 @@ export function createUpdates({ ready = false, now = Date.now } = {}) {
       await packageHandler(id, action);
     },
     ready: () => ready,
-    get: (id) => items.find((item) => item.id === id),
+    get(id) {
+      const item = items.find((one) => one.id === id);
+      return item && shown(item);
+    },
+    setBeta(id, patch) {
+      betas.set(id, { ...betas.get(id), ...patch });
+      emit();
+    },
+    handleDeveloper(handler) {
+      developerHandler = handler;
+      emit();
+    },
     set(id, patch) {
       items = items.map((item) => (item.id === id ? { ...item, ...patch } : item));
       emit();
@@ -158,5 +193,12 @@ export function createUpdates({ ready = false, now = Date.now } = {}) {
       });
     },
   };
+  if (developer) {
+    port.developer = () => developerHandler?.on() ?? false;
+    port.setDeveloper = async (on) => {
+      if (!developerHandler) throw new Error('Developer mode is not available yet.');
+      await developerHandler.set(on);
+    };
+  }
   return port;
 }
