@@ -606,6 +606,8 @@ test('the cert-review caller: shared v2 pinned by sha with the same tools-ref, C
   );
   assert.match(caller, /^ {2}pull_request_target:\n/m);
   assert.match(caller, /^ {2}merge_group:\n/m);
+  assert.match(caller, /\n {6}checks: read\n {6}statuses: write\n/);
+  assert.doesNotMatch(caller, /checks: write/);
   assert.doesNotMatch(caller, /workflow_run|claude-code-action|certs\.json/);
 });
 
