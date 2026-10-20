@@ -26,7 +26,7 @@ case "$1 $2" in
   "version "*) exit 0;;
   "pack --dry-run") echo "[{\\"integrity\\":\\"${PACKED}\\"}]"; exit 0;;
   "pack --pack-destination") cp "$d/ours.tgz" "$last/x.tgz"; exit 0;;
-  "pack @"*) n=$(count fetches); if [ "$n" -le "$(cat "$d/unfetched")" ]; then echo "npm error code E404" >&2; exit 1; fi; cp "$d/theirs.tgz" "$last/x.tgz"; exit 0;;
+  "pack @"*) case "$*" in *"--prefer-online --cache "*) ;; *) echo "fake npm: a remote pack without a fresh cache" >&2; exit 3;; esac; n=$(count fetches); if [ "$n" -le "$(cat "$d/unfetched")" ]; then echo "npm error code E404" >&2; exit 1; fi; cp "$d/theirs.tgz" "$last/x.tgz"; exit 0;;
   "view @"*)
     if [ "$3" = version ]; then [ -e "$d/listed" ] && { echo 1.31.10; exit 0; }; exit 1; fi
     n=$(count views); if [ ! -e "$d/listed" ] || [ "$n" -le "$(cat "$d/unlisted")" ]; then echo "npm error code E404" >&2; echo "npm error 404 '${ID}' is not in this registry." >&2; exit 1; fi
@@ -120,6 +120,10 @@ test('a version npm lists late passes once it serves the packed integrity and it
   );
   assert.match(stdout, /stderr: npm error code E404/);
   assert.equal((await fetches(fake)).length, 1);
+  assert.match(
+    (await fetches(fake))[0],
+    new RegExp(`^pack ${ID} --prefer-online --cache \\S+/\\.npm-cache --pack-destination `)
+  );
 });
 
 test("matching metadata whose tarball can't be fetched yet is waited for, and never served fails after the wait", async (t) => {

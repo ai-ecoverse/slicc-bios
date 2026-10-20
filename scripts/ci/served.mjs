@@ -50,7 +50,8 @@ export async function packed({ run: exec = run, log = console.log } = {}) {
 async function contents(exec, args, log) {
   const dir = await mkdtemp(join(tmpdir(), 'served-'));
   try {
-    const result = await exec('npm', [...args, '--pack-destination', dir]);
+    const fresh = args.length > 1 ? ['--prefer-online', '--cache', join(dir, '.npm-cache')] : [];
+    const result = await exec('npm', [...args, ...fresh, '--pack-destination', dir]);
     log(`npm ${args.join(' ')}: ${shown(result)}`);
     const [file] = (await readdir(dir)).filter((name) => name.endsWith('.tgz'));
     if (result.code !== 0 || !file) return null;
