@@ -1336,7 +1336,9 @@ test('a browser extension’s hidden world stays out of reach through the guard:
   while (
     !(hidden = contexts.find(
       (context) =>
-        context.auxData?.type === 'isolated' && context.origin.startsWith('chrome-extension://')
+        context.auxData?.type === 'isolated' &&
+        context.origin.startsWith('chrome-extension://') &&
+        context.origin !== `chrome-extension://${worlds.extension?.id}`
     ))
   ) {
     if (Date.now() > deadline)
