@@ -597,7 +597,11 @@ test('the cert-review caller: shared v2 pinned by sha with the same tools-ref, C
     caller,
     /\n {6}code-check: node scripts\/cert\/release-state\.mjs --base "\$BASE_SHA" --head "\$HEAD_SHA"\n/
   );
-  assert.match(caller, /\n {6}evidence-artifacts: \|\n {8}cert-evidence\n {8}integration-\*\n/);
+  assert.match(
+    caller,
+    /\n {6}evidence-artifacts: \|\n {8}cert-evidence\n {8}cert-inspect\n {8}integration-\*\n/
+  );
+  assert.match(caller, /\n {6}evidence-notes: \|\n {8}cert-inspect\/inspect\/\*\*\n/);
   for (const path of ['.github/workflows/**', 'scripts/cert/**', 'scripts/ci/**'])
     assert.ok(caller.includes(`\n        ${path}\n`), path);
   assert.deepEqual(
@@ -816,4 +820,20 @@ test('a v2 status (target_url = a run attempt) counts only for a merge_group run
   } finally {
     V2_STATUS.delete('slicc-kernel');
   }
+});
+
+test('ci / cert inspect runs main’s scripts only: the head is checked out as data, never installed or run', () => {
+  const job = ci.slice(ci.indexOf('\n  inspect:\n'), ci.indexOf('\n  evidence:\n'));
+  assert.match(job, /\n {4}permissions:\n {6}contents: read\n {4}env:/);
+  assert.doesNotMatch(job, /secrets\.|: write|persist-credentials: true/);
+  assert.doesNotMatch(job, /\(cd head|node head\/|head\/scripts|npx/);
+  assert.match(job, /node base\/scripts\/cert\/evidence\.mjs inspect --head head --base base/);
+  assert.match(job, /\(cd base && npm ci --ignore-scripts/);
+  assert.match(job, /name: cert-inspect\n/);
+  const evidence = ci.slice(ci.indexOf('\n  evidence:\n'), ci.indexOf('\n  ci:\n'));
+  assert.doesNotMatch(
+    evidence,
+    /evidence\.mjs inspect|release-state/,
+    'nothing upstream-marked is written next to pull-request code'
+  );
 });

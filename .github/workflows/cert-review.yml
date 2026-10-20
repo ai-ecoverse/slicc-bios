@@ -44,9 +44,12 @@ jobs:
       evidence-workflow: ci.yml
       evidence-artifacts: |
         cert-evidence
+        cert-inspect
         integration-*
         experiment-summary
       evidence-wait-minutes: 180
+      evidence-notes: |
+        cert-inspect/inspect/**
       code-check: node scripts/cert/release-state.mjs --base "$BASE_SHA" --head "$HEAD_SHA"
     secrets:
       AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}

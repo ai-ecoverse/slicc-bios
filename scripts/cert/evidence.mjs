@@ -117,24 +117,24 @@ function plan({ head, base, shards, out }) {
   );
 }
 
-function inspect({ head, out }) {
+function inspect({ base, out }) {
   const { pins } = json(join(out, 'plan.json'));
   mkdirSync(join(out, 'inspect'), { recursive: true });
   for (const p of pins) {
     const args = [
-      join(head, 'scripts/cert/inspect.mjs'),
+      join(base, 'scripts/cert/inspect.mjs'),
       `${p.name}@${p.version}`,
       ...(p.from ? ['--against', p.from] : []),
     ];
-    const r = sh(process.execPath, args, { cwd: head, timeout: 900000 });
+    const r = sh(process.execPath, args, { cwd: base, timeout: 900000 });
     const file = join(out, 'inspect', `${basename(p.name)}.json`);
     writeFileSync(
       file,
       r.code === 0 ? r.out : `${JSON.stringify({ error: r.out.slice(-4000), exit: r.code })}\n`
     );
   }
-  if (existsSync(join(head, 'artifacts/cert')))
-    cpSync(join(head, 'artifacts/cert'), join(out, 'inspect'), { recursive: true });
+  if (existsSync(join(base, 'artifacts/cert')))
+    cpSync(join(base, 'artifacts/cert'), join(out, 'inspect'), { recursive: true });
 }
 
 function reruns({ head, base, out, times }) {
