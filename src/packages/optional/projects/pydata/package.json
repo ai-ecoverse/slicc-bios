@@ -4,9 +4,9 @@
   "private": true,
   "description": "Python data tools for seven's optional catalog: numpy, pandas, matplotlib and scipy, homescoop's attested CI builds for wasix-python 3.15.0-2, installed into /opt/slicc/pydata. The catalog's own Python runs them, so wasix-python is overridden away here.",
   "dependencies": {
-    "@ai-ecoverse/py-matplotlib": "3.11.2-11",
-    "@ai-ecoverse/py-numpy": "2.5.4-1",
-    "@ai-ecoverse/py-pandas": "3.0.6-1",
-    "@ai-ecoverse/py-scipy": "1.18.1-2"
+    "@ai-ecoverse/py-matplotlib": "3.11.2-12",
+    "@ai-ecoverse/py-numpy": "2.5.4-2",
+    "@ai-ecoverse/py-pandas": "3.0.6-2",
+    "@ai-ecoverse/py-scipy": "1.18.1-3"
   }
 }
