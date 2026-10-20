@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { markdown, merge } from '../../scripts/canary/report.mjs';
 import { atLeast, enforceNote, kernelCalls } from '../../scripts/canary/users.mjs';
@@ -2146,4 +2147,122 @@ test('the result step never writes a job output over 512 KB once it adds the art
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('the scheduled canary watches what the optional catalog offers: npm latest, or the highest in an entry’s range, and runs the catalog shards when only that moved', async () => {
+  const { CATALOG_SHARDS, catalogLatest, offeredOf } = await import(
+    '../../scripts/canary/plan.mjs'
+  );
+  const versions = Object.fromEntries(
+    ['3.15.0-2', '3.15.0-3', '3.15.0-4', '3.15.1-1', '3.16.0-1'].map((v) => [
+      v,
+      v === '3.15.0-4' ? { deprecated: 'no' } : {},
+    ])
+  );
+  const doc = { 'dist-tags': { latest: '3.16.0-1' }, versions };
+  assert.equal(offeredOf({ range: '3.15.0' }, doc), '3.15.0-3');
+  assert.equal(offeredOf({}, doc), '3.16.0-1');
+  assert.equal(offeredOf({ range: '3.17.0' }, doc), null);
+  const { within } = await import('../../scripts/canary/plan.mjs');
+  const page = await import('../../src/seed/packages.js');
+  for (const version of ['3.15.0-3', '3.15.1-1', '3.16.0', '0.2.5', 'x'])
+    for (const range of [
+      '3.15.0',
+      '3.15',
+      '~3.15.0',
+      '^3.15.0',
+      '^0.2.1',
+      '>=3.15.1',
+      '>=3.15.0 <3.16.0',
+      '3.14.2 || 3.15.0',
+      'nope',
+    ])
+      assert.equal(within(version, range), page.within(version, range), `${version} ${range}`);
+  const asked = [];
+  const fetcher = async (url, init) => {
+    asked.push([url, init.headers.accept]);
+    return new Response(JSON.stringify(doc));
+  };
+  const found = await catalogLatest(fetcher);
+  const catalog = JSON.parse(
+    readFileSync(new URL('../../src/packages/optional/catalog.json', import.meta.url), 'utf8')
+  );
+  const { dependencies: pins } = JSON.parse(
+    readFileSync(new URL('../../src/packages/optional/package.json', import.meta.url), 'utf8')
+  );
+  const listed = Object.keys(catalog).filter(
+    (name) => catalog[name].kind !== 'project' && !Object.hasOwn(pins, name)
+  );
+  assert.ok(
+    !listed.includes('@ai-ecoverse/mcpcat'),
+    'a pinned entry is the pins’ schedule, not the catalog’s'
+  );
+  assert.deepEqual(Object.keys(found), [...listed].sort());
+  assert.equal(found['@ai-ecoverse/wasix-python'], '3.15.0-3');
+  assert.equal(found['@ai-ecoverse/wasm-git'], '3.16.0-1');
+  assert.ok(asked.every(([, accept]) => accept === 'application/vnd.npm.install-v1+json'));
+  assert.deepEqual(CATALOG_SHARDS, ['packages-update-cdp', 'remote-pydata', 'rest']);
+  const { SHARDS } = await import('../../scripts/canary/plan.mjs');
+  for (const shard of CATALOG_SHARDS) assert.ok(SHARDS.includes(shard), shard);
+  const plan = readFileSync(new URL('../../scripts/canary/plan.mjs', import.meta.url), 'utf8');
+  assert.match(
+    plan,
+    /const watched = \{ overrides: inputs\.overrides, catalog: inputs\.catalog \};/
+  );
+});
+
+test('a red scheduled canary files one known-issue, and comments on it while it stays open; a green one files nothing', async () => {
+  const { file, issueText, LABEL, TITLE } = await import('../../scripts/canary/issue.mjs');
+  const inputs = { overrides: [], catalog: { '@ai-ecoverse/wasm-zip': '3.0.0-9' } };
+  const red = { ok: false, verdict: 'canary (catalog): FAIL 1 failing test' };
+  const text = issueText(red, inputs, 'https://example.test/run/1');
+  assert.equal(text.title, TITLE);
+  assert.match(text.body, /\*\*canary \(catalog\): FAIL 1 failing test\*\*/);
+  assert.match(text.body, /`@ai-ecoverse\/wasm-zip@3\.0\.0-9`/);
+  assert.match(text.body, /Run: https:\/\/example\.test\/run\/1/);
+  const calls = [];
+  const fake = (open) => async (args) => {
+    calls.push(args);
+    if (args[1] === 'list') return JSON.stringify(open);
+    return 'https://github.com/o/r/issues/9';
+  };
+  const green = await file({ result: { ok: true }, inputs, url: '', repo: 'o/r', run: fake([]) });
+  assert.match(green, /nothing to file/);
+  assert.equal(calls.length, 0);
+  assert.equal(
+    await file({ result: red, inputs, url: '', repo: 'o/r', run: fake([]) }),
+    'canary issue: filed https://github.com/o/r/issues/9'
+  );
+  const create = calls.at(-1);
+  assert.deepEqual(create.slice(0, 2), ['issue', 'create']);
+  assert.equal(create[create.indexOf('--label') + 1], LABEL);
+  assert.equal(LABEL, 'known-issue');
+  calls.length = 0;
+  const open = [{ number: 7, title: TITLE }];
+  assert.equal(
+    await file({ result: red, inputs, url: '', repo: 'o/r', run: fake(open) }),
+    'canary issue: commented on #7'
+  );
+  assert.deepEqual(calls.at(-1).slice(0, 3), ['issue', 'comment', '7']);
+});
+
+test('only the separate canary-issue workflow may write issues, and only for a failed scheduled canary on main, so the reusable canary asks its callers for nothing more', () => {
+  const read = (name) =>
+    readFileSync(new URL(`../../.github/workflows/${name}`, import.meta.url), 'utf8');
+  const issue = read('canary-issue.yml');
+  assert.match(issue, /\n {2}workflow_run:\n {4}workflows: \[Canary\]\n {4}types: \[completed\]\n/);
+  assert.match(issue, /\npermissions:\n {2}contents: read\n {2}actions: read\n {2}issues: write\n/);
+  assert.match(
+    issue,
+    /if: github\.event\.workflow_run\.event == 'schedule' && github\.event\.workflow_run\.head_branch == 'main' && github\.event\.workflow_run\.conclusion == 'failure'/
+  );
+  assert.match(issue, /run-id: \$\{\{ github\.event\.workflow_run\.id \}\}/);
+  assert.match(
+    issue,
+    /node scripts\/canary\/issue\.mjs --dir canary --inputs inputs\/canary-inputs\.json/
+  );
+  for (const uses of issue.matchAll(/uses: ([^\s]+)/g)) assert.match(uses[1], /@[0-9a-f]{40}$/);
+  const canary = read('canary.yml');
+  assert.match(canary, /^name: Canary$/m);
+  assert.doesNotMatch(canary, /issues: write/);
 });
