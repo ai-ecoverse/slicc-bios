@@ -28,6 +28,23 @@ export async function sha256(bytes) {
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+export const NOTICES = 'slicc-kernel-dirs:slicc-kernel';
+
+export function written(path) {
+  const parts = path.split('/').filter(Boolean);
+  return parts.map((_, at) => `/${parts.slice(0, at + 1).join('/')}`);
+}
+
+export function postNotice({ paths = [], trees = [] }) {
+  if (!paths.length && !trees.length) return;
+  const channel = new BroadcastChannel(NOTICES);
+  try {
+    channel.postMessage({ paths: [...paths], trees: [...trees] });
+  } finally {
+    channel.close();
+  }
+}
+
 export async function appendLog(root, event, now = Date.now()) {
   const names = LOG.split('/');
   const name = names.pop();
@@ -39,6 +56,7 @@ export async function appendLog(root, event, now = Date.now()) {
   await writable.seek(size);
   await writable.write(`${JSON.stringify({ time: new Date(now).toISOString(), ...event })}\n`);
   await writable.close();
+  postNotice({ paths: written(LOG) });
 }
 
 export function described(entry, event) {
