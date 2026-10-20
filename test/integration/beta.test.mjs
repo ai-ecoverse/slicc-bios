@@ -64,6 +64,26 @@ const notice = (page, id) =>
     id
   );
 
+async function runsAgent(page, version, ms = 5 * 60 * 1000) {
+  await page
+    .within(
+      ms,
+      (version) => {
+        const row = document
+          .querySelector('slicc-app')
+          .model.updates.list()
+          .find((item) => item.id === 'agent');
+        window.sliccRuns = JSON.stringify([row?.state, row?.from, row?.to]);
+        return row?.state !== 'ready' && row?.from === version && row?.to === version;
+      },
+      version
+    )
+    .catch(async (error) => {
+      const seen = await page.evaluate(() => window.sliccRuns).catch(() => 'unknown');
+      throw new Error(`the agent never ran ${version}, last ${seen}: ${error.message}`);
+    });
+}
+
 async function npmSays(page, state, ms = 10 * 60 * 1000) {
   await page
     .within(
@@ -174,6 +194,11 @@ test('the owner turns on developer mode, npm’s newer agent is offered as a bet
     assert.ok(registry.asked.some((url) => url.endsWith(`slicc-agent-${BETA}.tgz`)));
     const shown = await notice(page, 'beta:agent');
     assert.equal(shown?.tone, 'warning');
+    await shoot(page, 'beta-ready', { show: 'updates', target: '[data-beta]' });
+    if ((await agentRow(page)).actions.includes('restart-agent')) {
+      await act(page, 'restart-agent');
+      await runsAgent(page, BETA);
+    }
     await shoot(page, 'beta-installed', { show: 'updates', target: '[data-beta]' });
     await shoot(page, 'beta-notice', { show: 'chat' });
     assert.match(
@@ -222,6 +247,7 @@ test('the owner turns on developer mode, npm’s newer agent is offered as a bet
     assert.equal(row.beta, null);
     assert.equal(await installedAgent(page), PINNED);
     assert.equal(await notice(page, 'beta:agent'), null);
+    await runsAgent(page, PINNED);
     await npmSays(page, 'offered');
   });
 

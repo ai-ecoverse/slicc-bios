@@ -163,9 +163,11 @@ export function changes(before, after) {
   const next = locked(after);
   const added = [...next].filter(([key, integrity]) => old.get(key) !== integrity);
   const removed = [...old.keys()].filter((key) => !next.has(key));
-  const gated = added.filter(([key]) => GATED.test(key.slice(0, key.lastIndexOf('@'))));
+  const nameOf = (key) => key.slice(0, key.lastIndexOf('@'));
+  const gated = added.filter(([key]) => GATED.test(nameOf(key)));
+  const names = new Set([...added.map(([key]) => nameOf(key)), ...removed.map(nameOf)]);
   return {
-    count: added.length + removed.length,
+    count: names.size,
     added: added.map(([key]) => key),
     removed,
     gated: gated.map(([key, integrity]) => ({ key, integrity })),
@@ -491,6 +493,8 @@ export function createBetas({
     show();
     if (!had) return;
     await reinstall();
+    if (updates.get(AGENT.id)?.actions.includes('restart-agent'))
+      void updates.act(AGENT.id, 'restart-agent').catch(() => undefined);
     await check();
   }
 
