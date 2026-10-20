@@ -848,5 +848,8 @@
   "@ai-ecoverse/slicc-cdp@1.30.10": {
     "integrity": "sha512-VakByvxkHaUtVRPQaB3o9UOS587H5XewCUDJen/jCmgH0nMxZT1EXPZ/fLyZhgAPtfO28+qaIvnbCisTviPE4g==",
     "sha256": "b68103109a3ace10bdf0c6ecbc7670998fb6e7de26857f553c17126a60c7b647"
+  },
+  "@ai-ecoverse/slicc-kernel@1.133.3": {
+    "integrity": "sha512-1rAacHHi4+xAHkM97dC6LmHTCaloobplCmOIhTqyCWGJrHdJlOCewidZTgY2EdCVINXpLNv4wbu7MhYV9iBeqg=="
   }
 }
