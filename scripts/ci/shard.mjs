@@ -208,7 +208,7 @@ export function clean(attempts) {
       const top = path[0] ?? name;
       const key = `${file}\0${top}`;
       if (status === 'fail') kept.add(key);
-      else if (!path.length || path.length === 1) passed.set(key, { file, name: top });
+      else if (status === 'pass' && path.length <= 1) passed.set(key, { file, name: top });
     }
   }
   return [...passed.entries()]
@@ -229,6 +229,17 @@ export async function trim(tests, root = join(ROOT, 'artifacts')) {
     }
   }
   return dropped;
+}
+
+export async function trimShard(done, root = ROOT) {
+  const eligible = clean(done.flatMap(({ first, retried }) => [first, retried]));
+  const trimmed = [];
+  for (const tree of ['artifacts', FIRST]) {
+    for (const entry of await trim(eligible, join(root, tree))) {
+      trimmed.push({ ...entry, path: `${tree}/${entry.path}` });
+    }
+  }
+  return trimmed;
 }
 
 export function itemOf(file, name, extra = {}) {
@@ -401,10 +412,7 @@ export async function shard({
     await unfinished();
   }
   await restore(stashes, root);
-  const trimmed = await trim(
-    clean(done.flatMap(({ first, retried }) => [first, retried])),
-    join(root, 'artifacts')
-  );
+  const trimmed = await trimShard(done, root);
   const report = compose(done, { ...context, cancelled: Boolean(signal?.aborted) });
   report.traps = await trapped();
   report.trimmed = trimmed;

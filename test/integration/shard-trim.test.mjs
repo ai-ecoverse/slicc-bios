@@ -90,3 +90,48 @@ test("every file in cert review's CLASSES keeps every artifact even when every t
     assert.equal(clean(pass(`test/integration/${name}.test.mjs`)).length, 1, name);
   }
 });
+
+test('a skipped test keeps its traces, and a retried shard trims the passing tests of its first-attempt copy too', async (t) => {
+  const { FIRST, trimShard } = await import('../../scripts/ci/shard.mjs');
+  const root = await mkdtemp(join(tmpdir(), 'trim-shard-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const suite = slug(UNCLASSIFIED[0]);
+  for (const tree of ['artifacts', FIRST]) {
+    for (const name of ['passes', 'is skipped', 'flips']) {
+      const dir = join(root, tree, suite, slug(name));
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'stall-1-trace.json'), 'x'.repeat(10));
+      await writeFile(join(dir, 'tab-1.png'), 'png');
+    }
+  }
+  const skip = (name) => ({ file: FILE, name, path: [name], status: 'skip' });
+  const first = {
+    files: [FILE],
+    code: 1,
+    results: [pass('passes'), skip('is skipped'), fail('flips')],
+  };
+  const retried = { files: [FILE], code: 0, results: [pass('passes'), pass('flips')] };
+  const trimmed = await trimShard(
+    [
+      { first, retried },
+      { first: null, retried: null },
+    ],
+    root
+  );
+  assert.deepEqual(
+    trimmed.map(({ path }) => path).sort(),
+    [
+      `${FIRST}/${suite}/passes/stall-1-trace.json`,
+      `artifacts/${suite}/passes/stall-1-trace.json`,
+    ].sort()
+  );
+  for (const tree of ['artifacts', FIRST]) {
+    for (const name of ['is skipped', 'flips']) {
+      assert.ok(
+        (await readdir(join(root, tree, suite, slug(name)))).includes('stall-1-trace.json'),
+        `${tree} ${name}`
+      );
+    }
+    assert.deepEqual(await readdir(join(root, tree, suite, 'passes')), ['tab-1.png']);
+  }
+});
