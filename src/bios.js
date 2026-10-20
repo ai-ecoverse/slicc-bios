@@ -1,5 +1,6 @@
 import { clearHandOff, dropped, droppedLine } from './seed/handoff.js';
 import { usersMode } from './seed/users.js';
+import { sixStep } from './sw/six.js';
 
 const quiet = {
   begin() {},
@@ -200,6 +201,7 @@ await step('seed', async () => {
     'releases.js',
     'remote.js',
     'site.js',
+    'six.js',
     'skills.js',
     'start.js',
     'storage.js',
@@ -249,6 +251,10 @@ await step('intercept', async () => {
   if (update) await activated(registration, update);
   return registration.scope;
 });
+
+if (root.pathname !== new URL('./', import.meta.url).pathname) {
+  await sixStep({ root: await navigator.storage.getDirectory() });
+}
 
 await step('navigate', async () => {
   const lost = dropped();

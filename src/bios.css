@@ -422,6 +422,101 @@ button {
   color: var(--pink);
 }
 
+.six {
+  position: absolute;
+  left: 6cqi;
+  top: 40%;
+  width: min(44ch, 46cqi);
+  padding: 20px 22px 18px;
+  border-radius: 14px;
+  background: rgb(var(--veil) / 0.92);
+  box-shadow:
+    0 24px 60px -24px light-dark(rgb(40 20 50 / 0.3), rgb(0 0 0 / 0.8)),
+    0 0 0 1px var(--line);
+  backdrop-filter: blur(12px);
+}
+
+.splash:is([data-six="asking"], [data-six="moving"], [data-six="failed"]) .story {
+  visibility: hidden;
+}
+
+.six-title {
+  margin: 0;
+  font-size: clamp(18px, 2cqi, 22px);
+  font-weight: 650;
+  line-height: 1.25;
+  text-wrap: balance;
+}
+
+.six-body {
+  margin: 10px 0 0;
+  color: var(--dim);
+  font-size: 14px;
+  text-wrap: pretty;
+}
+
+.six[data-state="failed"] .six-title {
+  color: var(--bad);
+}
+
+.six-progress {
+  margin: 14px 0 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.six-bar {
+  display: block;
+  width: 100%;
+  height: 3px;
+  margin: 8px 0 0;
+  border: 0;
+  border-radius: 2px;
+  appearance: none;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.six-bar::-webkit-progress-bar {
+  background: var(--line);
+}
+
+.six-bar::-webkit-progress-value {
+  background: linear-gradient(90deg, var(--pink), var(--orange));
+  transition: width 0.3s ease-out;
+}
+
+.six-bar:indeterminate {
+  background: linear-gradient(90deg, var(--line), var(--pink), var(--line)) 0 0 / 200% 100%;
+  animation: sweep 1.6s linear infinite;
+}
+
+@keyframes sweep {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.six-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.six-actions .chip {
+  padding: 6px 16px;
+  font-size: 13px;
+}
+
+.six-actions .chip[hidden] {
+  display: none;
+}
+
+.six-exporter {
+  display: none;
+}
+
 .splash[data-state="failed"] .verb {
   color: var(--bad);
 }
@@ -636,6 +731,13 @@ button {
     right: 6cqi;
   }
 
+  .six {
+    top: auto;
+    bottom: 110px;
+    width: auto;
+    right: 6cqi;
+  }
+
   .credits {
     display: none;
   }
@@ -682,7 +784,8 @@ button {
   }
 
   .steps li[data-state="active"]::before,
-  .bar span::after {
+  .bar span::after,
+  .six-bar:indeterminate {
     animation: none;
   }
 
