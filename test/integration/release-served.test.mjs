@@ -266,8 +266,17 @@ test('the real npm CLI against a local registry: served.mjs reads what npm view 
     JSON.stringify({ name: NAME, version: '1.31.10', files: ['index.js'] })
   );
   await writeFile(join(project, 'index.js'), 'export {};\n');
+  const inherited = Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) =>
+        !/^(?:npm_config_)?(?:https?|all)[-_]?proxy$|^(?:npm_config_)?no[-_]?proxy$/i.test(key)
+    )
+  );
   const env = {
-    ...process.env,
+    ...inherited,
+    NO_PROXY: '127.0.0.1,localhost',
+    no_proxy: '127.0.0.1,localhost',
+    npm_config_noproxy: '127.0.0.1,localhost',
     HOME: join(dir, 'home'),
     npm_config_cache: join(dir, 'cache'),
     npm_config_update_notifier: 'false',
