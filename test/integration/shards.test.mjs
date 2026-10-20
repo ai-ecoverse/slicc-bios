@@ -161,6 +161,21 @@ test("ci's arm comes from the pull request's number, mod 2, for its runs and its
   assert.deepEqual(arm(514), { pr: 514, arm: 'retry', failFast: false, retry: true });
 });
 
+test('every ci.yml job on the Cloud Run pools runs there for the merge queue too, and forks stay on ubuntu-latest', () => {
+  const pools = [...ci.matchAll(/^ {4}runs-on: (.*)$/gm)]
+    .map(([, value]) => value)
+    .filter((value) => value.includes('vars.CERT_'));
+  assert.ok(pools.length >= 5, `${pools.length} jobs on the pools`);
+  for (const value of pools) {
+    assert.ok(value.includes("github.event_name == 'merge_group'"), value);
+    assert.ok(
+      value.includes('github.event.pull_request.head.repo.full_name == github.repository'),
+      value
+    );
+    assert.ok(value.endsWith("|| 'ubuntu-latest' }}"), value);
+  }
+});
+
 test('ci.yml takes its matrix, fail-fast and retry from the plan', () => {
   assert.match(ci, /fail-fast: \$\{\{ needs\.plan\.outputs\.failfast == 'true' \}\}/);
   assert.match(ci, /matrix: \$\{\{ fromJSON\(needs\.plan\.outputs\.matrix\) \}\}/);
