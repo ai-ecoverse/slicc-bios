@@ -280,20 +280,16 @@ function picked(kept, from, to) {
 export const WAIT = 3000;
 export const OWNER = 'ai-ecoverse';
 
-function bounded(work, wait, late) {
+function bounded(work, wait, done) {
   let timer = null;
-  let slow = false;
-  const done = work.then(() => {
+  const finished = work.then(() => {
     clearTimeout(timer);
-    if (slow) late();
+    done();
   });
   const deadline = new Promise((resolve) => {
-    timer = setTimeout(() => {
-      slow = true;
-      resolve();
-    }, wait);
+    timer = setTimeout(resolve, wait);
   });
-  return Promise.race([done, deadline]);
+  return Promise.race([finished, deadline]);
 }
 
 export function createNotes({ releases, repos = REPOS, wait = WAIT }) {
@@ -302,7 +298,7 @@ export function createNotes({ releases, repos = REPOS, wait = WAIT }) {
   let known = new Map();
   let current = null;
   let port = null;
-  const renote = () => port?.renote();
+  const renote = () => port?.renote?.();
   const load = async (round, id, from, to) => {
     const want = { from, to, own: true, short: null };
     const found = await round.items(repos[id], want).catch(() => null);

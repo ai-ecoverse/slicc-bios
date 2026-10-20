@@ -216,3 +216,32 @@ test('when page 1 is unchanged, a release edited on page 2 still reaches the row
   ]);
   assert.equal(items.find(({ tag }) => tag === 'v2.0.100').body, 'edited 2.0.100');
 });
+
+test('when GitHub answers within the wait, a row the check never rewrites, like an inactive Tailscale, still shows its releases', async () => {
+  const { createNotes } = await import('../../src/seed/releases.js');
+  const { createUpdates } = await import('../../src/seed/updates.js');
+  const fetcher = async (url) =>
+    String(url).includes('/wasm-tailscale/')
+      ? Response.json([
+          {
+            tag_name: 'v1.104.1-9',
+            html_url: 'https://github.com/ai-ecoverse/wasm-tailscale/releases/tag/v1.104.1-9',
+            body: 'tailscale notes',
+          },
+        ])
+      : Response.json([]);
+  const notes = createNotes({
+    releases: createReleases({ fetcher, store: memory(), origin: API }),
+  });
+  const updates = createUpdates({ notes });
+  updates.set('tailscale', { from: '1.104.1-9', to: '1.104.1-9' });
+  assert.equal('releases' in updates.get('tailscale'), false);
+  await notes.prepare(updates);
+  assert.deepEqual(updates.get('tailscale').releases, [
+    {
+      version: '1.104.1-9',
+      url: 'https://github.com/ai-ecoverse/wasm-tailscale/releases/tag/v1.104.1-9',
+      notes: 'tailscale notes',
+    },
+  ]);
+});
