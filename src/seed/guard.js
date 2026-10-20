@@ -915,7 +915,7 @@ class Guard {
   keyed(key, value) {
     const { is } = this;
     if (key === 'urls' && Array.isArray(value)) {
-      return value.some((url) => typeof url === 'string' && is.url(url));
+      return value.length > 0 && value.every((url) => typeof url === 'string' && is.url(url));
     }
     if (typeof value !== 'string') return false;
     if (ORIGINS.has(key)) return is.url(value);
