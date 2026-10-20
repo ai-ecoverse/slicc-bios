@@ -104,7 +104,7 @@ test('while the tab holds a half-read download from the old worker, it says seve
   assert.deepEqual(page.errors, []);
 });
 
-test('when another seven tab holds the download, the owner names that tab instead, and the notice goes once it lets go (#710)', async (t) => {
+test('when another seven tab holds the download, the owner names that tab instead, and the update applies and the notice goes soon after that tab closes (#710)', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
   const second = await page.tab();
@@ -135,8 +135,9 @@ test('when another seven tab holds the download, the owner names that tab instea
     ),
     false
   );
-  await second.evaluate(() => window.heldReader.cancel());
-  await page.within(30000, async () => {
+  assert.deepEqual(second.errors, []);
+  await second.close();
+  await page.within(15000, async () => {
     const registration = await navigator.serviceWorker.getRegistration();
     return (
       !registration.waiting &&
@@ -147,7 +148,6 @@ test('when another seven tab holds the download, the owner names that tab instea
     );
   });
   assert.deepEqual(page.errors, []);
-  assert.deepEqual(second.errors, []);
 });
 
 test('an ordinary update shows no notice: the updated worker activates and nothing says seven updated (#710)', async (t) => {
