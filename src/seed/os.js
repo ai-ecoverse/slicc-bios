@@ -65,6 +65,7 @@ import {
 } from './present.js';
 import { installProfile } from './profile.js';
 import { PYTHON } from './projects.js';
+import { createNotes, createReleases } from './releases.js';
 import { createRemote } from './remote.js';
 import { BIOS, home, sharesOrigin } from './site.js';
 import { installPrompts, keepStorage, onSend } from './storage.js';
@@ -302,7 +303,8 @@ const board = shared
   : localBoard({ versions: mine });
 document.addEventListener('visibilitychange', () => board.show(visible()));
 const claimed = await claim();
-const updates = createUpdates({ developer: true });
+const notes = createNotes({ releases: createReleases() });
+const updates = createUpdates({ developer: true, notes });
 const notices = createNotices();
 reportRepairs(notices);
 reportStopped(notices);
@@ -656,13 +658,16 @@ async function updateTailnet() {
 }
 
 async function check() {
+  await notes.prepare(updates);
   await checkPackages();
   await yours.tidy().catch((error) => console.warn(`your packages: ${error.message}`));
   await offerChat();
   await betas.check();
   await installGrammars();
   await updateTailnet();
-  await (await optional)?.refresh().catch(() => undefined);
+  const packages = await optional;
+  if (packages) await notes.packages(packages.list());
+  await packages?.refresh().catch(() => undefined);
 }
 
 function offerPackages() {
