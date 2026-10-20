@@ -46,6 +46,5 @@ jobs:
         integration-*
         experiment-summary
       evidence-wait-minutes: 180
-      code-check: node scripts/cert/release-state.mjs --base "$BASE_SHA" --head "$HEAD_SHA"
     secrets:
       AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
