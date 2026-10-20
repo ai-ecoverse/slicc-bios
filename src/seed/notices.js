@@ -184,3 +184,106 @@ export function reportStopped(notices, storage = localStorage, worker = navigato
   });
   for (const path of known()) show(path);
 }
+
+export const WAITING = 'sw-waiting';
+export const SETTLE_MS = 10000;
+export const POLL_MS = 2000;
+
+export function ownStreams(container = navigator.serviceWorker, ms = 2000) {
+  const controller = container?.controller;
+  if (!controller) return Promise.resolve([]);
+  return new Promise((resolve) => {
+    const done = (list) => {
+      clearTimeout(timer);
+      container.removeEventListener('message', listen);
+      resolve(list);
+    };
+    const listen = ({ data }) => {
+      if (Array.isArray(data?.streams)) done(data.streams.map(({ url }) => url));
+    };
+    const timer = setTimeout(() => done([]), ms);
+    container.addEventListener('message', listen);
+    controller.postMessage({ streams: 'mine' });
+  });
+}
+
+function shown(href, origin) {
+  const url = new URL(href);
+  return url.origin === origin ? url.pathname : `${url.host}${url.pathname}`;
+}
+
+export function waitingNotice({ here, others, origin }) {
+  const body = here.length
+    ? `This tab is still loading ${shown(here[0], origin)} with the old version. Reload to apply the update.`
+    : others.length
+      ? `Another seven tab is still loading ${shown(others[0], origin)} with the old version. Close or reload that tab to apply the update.`
+      : 'Reload to apply the update.';
+  return {
+    tone: 'info',
+    title: 'Seven updated',
+    body,
+    actions: here.length || !others.length ? [{ id: 'reload', label: 'Reload' }] : [],
+  };
+}
+
+export function watchWaiting({
+  registration,
+  board,
+  notices,
+  reload,
+  streams = ownStreams,
+  origin = location.origin,
+  every = setInterval,
+  now = Date.now,
+  settle = SETTLE_MS,
+  poll = POLL_MS,
+}) {
+  let worker = null;
+  let since = null;
+  let mine = [];
+  let holders = [];
+  let showing = null;
+  const owning = () => board.owner()?.tab === board.id;
+  const held = () => since !== null && now() - since >= settle;
+  const hide = () => {
+    if (showing) notices.remove(showing);
+    showing = null;
+  };
+  const render = () => {
+    if (!held() || !owning()) return hide();
+    const others = holders.filter(({ tab }) => tab !== board.id).flatMap(({ holds }) => holds);
+    const id = `${WAITING}:${since}`;
+    if (showing && showing !== id) hide();
+    showing = id;
+    notices.show({ id, ...waitingNotice({ here: mine, others, origin }) }, (action) => {
+      if (action === 'reload') reload();
+    });
+  };
+  const report = (list) => {
+    if (list.length === mine.length && list.every((url, i) => url === mine[i])) return;
+    mine = list;
+    board.hold(list);
+  };
+  board.on('holders', (list) => {
+    holders = list;
+    render();
+  });
+  let busy = false;
+  const tick = async () => {
+    if (busy) return;
+    busy = true;
+    try {
+      const waiting = registration.waiting;
+      if (waiting !== worker) {
+        worker = waiting;
+        since = waiting ? now() : null;
+      }
+      report(held() ? await streams() : []);
+      render();
+    } finally {
+      busy = false;
+    }
+  };
+  every(() => void tick(), poll);
+  return { tick };
+}

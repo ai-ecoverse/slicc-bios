@@ -52,6 +52,7 @@ import {
   reportRepairs,
   reportStopped,
   startingLine,
+  watchWaiting,
 } from './notices.js';
 import { createPackages, globalDir, loadCatalog, writeListing } from './packages.js';
 import { createPairing, takePairing } from './pair.js';
@@ -306,6 +307,9 @@ const updates = createUpdates({ developer: true });
 const notices = createNotices();
 reportRepairs(notices);
 reportStopped(notices);
+const registration = await navigator.serviceWorker?.getRegistration();
+if (registration)
+  watchWaiting({ registration, board, notices, reload: () => location.replace(BIOS) });
 useSecretRules(secretRules);
 const approvals = createApprovals();
 const sudo = routeSudo({
