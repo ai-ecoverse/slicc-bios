@@ -65,7 +65,7 @@ const workers = (page) =>
     };
   });
 
-test('while the tab holds a half-read download from the old worker, it says seven updated and names the download, and Reload applies the update (#710)', async (t) => {
+test('while the tab holds a half-read download from the old worker, it says seven updated and names the download, and Reload applies the update before the shell opens again (#710)', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
   chrome.overrides.set('/os/held.bin', Buffer.alloc(SIZE, 7));
@@ -97,9 +97,9 @@ test('while the tab holds a half-read download from the old worker, it says seve
   await page.evaluate(
     new Function(`(${deep})('[data-notice^="sw-waiting:"] [data-action="reload"]').click()`)
   );
-  await page.until(() => !window.heldReader);
-  await ready(page);
+  await page.until(() => !window.heldReader && location.pathname === '/os/');
   assert.deepEqual(await workers(page), { active: 'activated', waiting: null, installing: null });
+  await ready(page);
   assert.equal(await waitingNotice(page), undefined);
   assert.deepEqual(page.errors, []);
 });
