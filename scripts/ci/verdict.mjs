@@ -102,16 +102,6 @@ export function releaseVerdict(text, tag) {
   };
 }
 
-export function publishVerdict(name, version, published, already) {
-  if (published !== version) {
-    return {
-      ok: false,
-      line: `published: FAIL npm has ${published || 'nothing'} for ${name}@${version}`,
-    };
-  }
-  return { ok: true, line: `published: ${name}@${version}${already ? ' (already on npm)' : ''}` };
-}
-
 async function say({ ok, line }, out) {
   console.log(line);
   if (out) {
@@ -137,9 +127,6 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
       mode: { type: 'string', default: 'full' },
       skip: { type: 'string', default: '' },
       tag: { type: 'string', default: '' },
-      version: { type: 'string', default: '' },
-      published: { type: 'string', default: '' },
-      already: { type: 'boolean', default: false },
     },
   });
   const text = (path) => (path ? readFile(path, 'utf8').catch(() => '') : '');
@@ -157,8 +144,6 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
     );
   } else if (command === 'release') {
     await say(releaseVerdict(await text(values.log), values.tag));
-  } else if (command === 'publish') {
-    await say(publishVerdict(values.name, values.version, values.published, values.already));
   } else {
     console.error(`verdict: unknown command ${command ?? ''}`);
     exit(2);

@@ -703,8 +703,8 @@ test('ci / test fails for a shard with no verdict, a failing verdict, or a cance
   assert.equal(shardsVerdict([], [], ok).ok, false);
 });
 
-test('a release says which tag it made, or that nothing was releasable, and publishing names the version npm has', async () => {
-  const { releaseVerdict, publishVerdict } = await import('../../scripts/ci/verdict.mjs');
+test('a release says which tag it made, or that nothing was releasable', async () => {
+  const { releaseVerdict } = await import('../../scripts/ci/verdict.mjs');
   assert.deepEqual(releaseVerdict('', 'v1.84.0'), { ok: true, line: 'release: v1.84.0' });
   assert.deepEqual(
     releaseVerdict(
@@ -715,11 +715,6 @@ test('a release says which tag it made, or that nothing was releasable, and publ
   );
   assert.equal(releaseVerdict('', '').ok, false);
   assert.equal(releaseVerdict('[semantic-release] something else', '').ok, false);
-  assert.deepEqual(publishVerdict('@ai-ecoverse/slicc-bios', '1.84.0', '1.84.0', false), {
-    ok: true,
-    line: 'published: @ai-ecoverse/slicc-bios@1.84.0',
-  });
-  assert.equal(publishVerdict('@ai-ecoverse/slicc-bios', '1.84.0', '', false).ok, false);
 });
 
 test('the canary report names a verdict, and zero tests or a missing shard is a fail', async () => {
@@ -782,7 +777,7 @@ test('every gate in the workflows prints a verdict and its caller fails without 
   assert.match(job, /SKIP: \$\{\{ needs\.plan\.outputs\.skip \}\}/);
   const release = await read('release.yml');
   assert.match(release, /scripts\/ci\/verdict\.mjs release --log/);
-  assert.match(release, /scripts\/ci\/verdict\.mjs publish /);
+  assert.match(release, /\n {8}run: bash scripts\/ci\/publish\.sh\n/);
   assert.doesNotMatch(release, /npm already has \$version"\n\s+exit 0/);
   const canary = await read('canary.yml');
   assert.match(canary, /canary: FAIL the report wrote no verdict/);
