@@ -27,8 +27,8 @@ importers:
         specifier: 1.39.0-5
         version: 1.39.0-5
       '@ai-ecoverse/wasi-pnpm':
-        specifier: 12.9.1-13
-        version: 12.9.1-13
+        specifier: 12.9.1-17
+        version: 12.9.1-17
       '@ai-ecoverse/wasi-ripgrep':
         specifier: 15.2.0-5
         version: 15.2.0-5
@@ -131,8 +131,8 @@ packages:
     resolution: {integrity: sha512-i5EjOav/o7l1oexodKLLr33ZohDD9bjtNzj7tmJIctREUy/7jcn6IMp8hvBv/H+pxeNs+bZ82gZ6kSRSOxwKXw==}
     engines: {slicc-kernel: '>=1.83.0'}
 
-  '@ai-ecoverse/wasi-pnpm@12.9.1-13':
-    resolution: {integrity: sha512-i7LkdU+BMahJHdgI+BK6WlWDL0t8ZB66HuMFP17zV5uNs+glZAd0vGuV4ZZubRuPwCBMXm4LklwmZm7qd3kV7A==}
+  '@ai-ecoverse/wasi-pnpm@12.9.1-17':
+    resolution: {integrity: sha512-Jhu0X7y5tB8/tmp7ZziTTfCaNVr7GMPYfZmLkFmdyj9kOiG28BNOJWsVRXrjRaA1wQOKKLgxgylcGpeGT5hstA==}
     engines: {slicc-kernel: '>=1.7.2'}
 
   '@ai-ecoverse/wasi-ripgrep@15.2.0-5':
@@ -219,7 +219,7 @@ snapshots:
 
   '@ai-ecoverse/wasi-fnox@1.39.0-5': {}
 
-  '@ai-ecoverse/wasi-pnpm@12.9.1-13': {}
+  '@ai-ecoverse/wasi-pnpm@12.9.1-17': {}
 
   '@ai-ecoverse/wasi-ripgrep@15.2.0-5': {}
 
