@@ -1,11 +1,22 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
-import { appendFile, cp, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import {
+  appendFile,
+  cp,
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import process, { argv, env, exit, stderr, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { classOf } from '../cert/evidence.mjs';
 import { cost, ROOT, SPLIT } from './plan.mjs';
 import { missingRequired, summary } from './verdict.mjs';
 
@@ -175,6 +186,49 @@ export function trapLine(name, traps) {
   if (!traps.length) return null;
   const where = [...new Set(traps.map(({ file, name: test }) => `${file} › ${test}`))];
   return `shard ${name}: pnpm hit the wasm trap ${traps.length}x (homescoop#1127), retried in ${where.join('; ')}`;
+}
+
+const TRACE = /^stall-\d+-trace\.json$/;
+
+export function slug(text) {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+export function clean(attempts) {
+  const kept = new Set();
+  const passed = new Map();
+  for (const attempt of attempts.filter(Boolean)) {
+    const reported = new Set(attempt.results.map(({ file }) => file));
+    if (attempt.code !== 0)
+      for (const file of attempt.files) if (!reported.has(file)) kept.add(file);
+    for (const { file, path = [], name, status } of attempt.results) {
+      const top = path[0] ?? name;
+      const key = `${file}\0${top}`;
+      if (status === 'fail') kept.add(key);
+      else if (!path.length || path.length === 1) passed.set(key, { file, name: top });
+    }
+  }
+  return [...passed.entries()]
+    .filter(([key, { file }]) => !kept.has(key) && !kept.has(file) && classOf(file) === null)
+    .map(([, test]) => test);
+}
+
+export async function trim(tests, root = join(ROOT, 'artifacts')) {
+  const dropped = [];
+  for (const { file, name } of tests) {
+    const dir = join(root, slug(basename(file, '.test.mjs')), slug(name));
+    for (const entry of await readdir(dir).catch(() => [])) {
+      if (!TRACE.test(entry)) continue;
+      const path = join(dir, entry);
+      const { size } = await stat(path);
+      await rm(path, { force: true });
+      dropped.push({ path: path.slice(root.length + 1), bytes: size });
+    }
+  }
+  return dropped;
 }
 
 export function itemOf(file, name, extra = {}) {
@@ -347,8 +401,13 @@ export async function shard({
     await unfinished();
   }
   await restore(stashes, root);
+  const trimmed = await trim(
+    clean(done.flatMap(({ first, retried }) => [first, retried])),
+    join(root, 'artifacts')
+  );
   const report = compose(done, { ...context, cancelled: Boolean(signal?.aborted) });
   report.traps = await trapped();
+  report.trimmed = trimmed;
   return report;
 }
 
@@ -404,6 +463,12 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
     console.log(`retried ${group.retry.files.join(' ')}: ${group.ok ? 'passed' : 'failed again'}`);
   }
   for (const { file, name } of report.flips) console.log(`flipped ${file} › ${name}`);
+  if (report.trimmed.length) {
+    const mb = report.trimmed.reduce((sum, { bytes }) => sum + bytes, 0) / 1048576;
+    console.log(
+      `trimmed ${report.trimmed.length} stall traces of passing tests (${mb.toFixed(1)} MB): ${report.trimmed.map(({ path }) => path).join(' ')}`
+    );
+  }
   const traps = trapLine(values.name, report.traps);
   const lines = [report.line, traps, ...failures(report).map(failureLine)].filter(Boolean);
   for (const line of lines.slice(1)) console.log(line);
