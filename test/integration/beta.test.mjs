@@ -47,7 +47,20 @@ const tainted = await fakeRelease({
   repository: 'https://github.com/ai-ecoverse/slicc-agent',
   dependencies: { '@ai-ecoverse/slicc-clipboard': '1.0.99' },
 });
-const releases = [release, clipboard];
+const mcpcat = await fakeRelease({
+  name: '@ai-ecoverse/mcpcat',
+  from: '0.17.2',
+  version: '0.99.0',
+  repository: 'https://github.com/ai-ecoverse/mcpcat',
+});
+const pinned = await fakeRelease({
+  name: AGENT,
+  from: PINNED,
+  version: '7.0.1',
+  repository: 'https://github.com/ai-ecoverse/slicc-agent',
+  dependencies: { '@ai-ecoverse/mcpcat': '0.99.0' },
+});
+const releases = [release, clipboard, mcpcat];
 const registry = await fakeRegistry(chrome.cdp, releases);
 const fakeExtension = extensionOver(await debuggerUrl(port));
 
@@ -485,5 +498,46 @@ test('nobody but the owner tab can turn developer mode on or install a beta: not
     assert.equal(await installedAgent(page), PINNED);
     assert.ok(!registry.asked.some((url) => url.endsWith(`/${AGENT}/latest`)));
   });
+  assert.deepEqual(page.errors, []);
+});
+
+test('under report, a user’s pnpm pin in /opt/agent that brings an uncertified mcpcat is refused, and seven goes back to its own agent', async (t) => {
+  releases.unshift(pinned);
+  t.after(() => releases.splice(releases.indexOf(pinned), 1));
+  const page = await chrome.page(t);
+  await page.goto('/#users=report');
+  await ready(page);
+  await agentUp(page);
+  await rowSettled(page, 'agent');
+  await run(
+    page,
+    `cd /opt/agent && pnpm add ${AGENT}@7.0.1 --save-exact > /tmp/add.log 2>&1; echo "add-""done-$?"; cd /home`
+  );
+  await shows(page, 'add-done-', 5 * 60 * 1000);
+  assert.match(await screen(page), /add-done-0/);
+  await act(page, 'retry');
+  await rowSettled(page, 'agent');
+  const id = `user:agent:${AGENT}`;
+  const own = await page
+    .within(
+      5 * 60 * 1000,
+      (id) =>
+        document
+          .querySelector('slicc-app')
+          .model.updates.userPackages()
+          .find((row) => row.id === id && row.error) ?? null,
+      id
+    )
+    .catch(async (error) => {
+      const rows = await page.evaluate(() =>
+        JSON.stringify(document.querySelector('slicc-app').model.updates.userPackages())
+      );
+      throw new Error(`the pin was never refused, rows ${rows}: ${error.message}`);
+    });
+  assert.equal(
+    own.error,
+    "Needs @ai-ecoverse/mcpcat@0.99.0, which seven hasn't tested. Seven went back to its own versions."
+  );
+  assert.equal(await installedAgent(page), PINNED);
   assert.deepEqual(page.errors, []);
 });
