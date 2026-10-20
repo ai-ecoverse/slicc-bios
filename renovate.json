@@ -47,6 +47,11 @@
       "dependencyDashboardApproval": true
     },
     {
+      "description": "The agent is bumped by hand with the pins it needs (spectrum, vault, the genai override), so Renovate opens its PR but never merges it.",
+      "matchPackageNames": ["@ai-ecoverse/slicc-agent"],
+      "automerge": false
+    },
+    {
       "description": "The kernel gets its own PR, the base set's and /opt/agent's pins together (pins.test wants them equal), not grouped with pnpm as the shared preset does.",
       "matchPackageNames": ["@ai-ecoverse/slicc-kernel"],
       "groupName": "slicc-kernel",

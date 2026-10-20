@@ -119,7 +119,8 @@ const page = (port) => (event) => {
     });
   }
   if (op === 'sealed' && event.data.req?.op === 'materialize') {
-    const names = event.data.req.names ?? [];
+    const granted = event.data.req.shellGrants ? live().filter((record) => record.kind === 'secret' && record.exec === 'shell').map((record) => record.name) : [];
+    const names = [...new Set([...(event.data.req.names ?? []), ...granted])];
     const ticket = String(tickets.size + 1).padStart(32, '0');
     tickets.set(ticket, names);
     log({ role: 'page', op: 'materialized', names, path: event.data.req.path, uid: event.data.stamp?.uid });
@@ -173,7 +174,7 @@ const page = (port) => (event) => {
     if (event.data.state === 'done') found.state = 'done';
     return reply({ state: found.state });
   }
-  if (op === 'sealed') return reply({ reply: { v: 1, secrets: live().filter((record) => record.kind === 'secret').map((record) => ({ name: record.name, placeholder: record.placeholder, state: 'inert', exec: false, rules: [] })) } });
+  if (op === 'sealed') return reply({ reply: { v: 1, secrets: live().filter((record) => record.kind === 'secret').map((record) => ({ name: record.name, placeholder: record.placeholder, state: 'inert', exec: record.exec ?? false, rules: [] })) } });
   if (op === 'remove' || op === 'restore') {
     const record = records.get(key(event.data.kind ?? 'secret', event.data.name));
     if (!record) return port.postMessage({ v: 1, id, error: { code: 'ENOENT', message: 'no record named ' + event.data.name } });
@@ -240,7 +241,11 @@ addEventListener('message', (event) => {
       if (data.op === 'mcp') return prepare(['mcp']);
       if (data.op === 'redactStream') return reply({ stream: data.stream, idleMs: 250, version });
       if (data.op === 'push' && !(data.chunk instanceof Uint8Array)) return port.postMessage({ v: 1, id: data.id, op: data.op, error: { code: 'EINVAL', message: 'chunk must be bytes' } });
-      if (data.op === 'push') return reply({ chunk: data.chunk });
+      if (data.op === 'push') {
+        const text = new TextDecoder().decode(data.chunk);
+        const hidden = hide(text);
+        return reply({ chunk: hidden === text ? data.chunk : new TextEncoder().encode(hidden) });
+      }
       if (data.op === 'idle') return reply({ chunk: new Uint8Array() });
       if (data.op === 'end') return reply({ chunk: new Uint8Array(), hits: [] });
       if (data.op === 'drop') return reply({});

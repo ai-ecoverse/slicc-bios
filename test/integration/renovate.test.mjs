@@ -61,7 +61,7 @@ test('renovate.json parses, extends the shared preset and names the three pinned
     assert.ok(rule.description?.length > 20, JSON.stringify(rule));
 });
 
-test('every @ai-ecoverse pin in the base set, the optional catalog and /opt/agent but Python bumps by itself and automerges', async () => {
+test('every @ai-ecoverse pin in the base set, the optional catalog and /opt/agent but Python and slicc-agent bumps by itself and automerges; slicc-agent waits for its coordinated pins', async () => {
   const found = await pins();
   assert.ok(found.length > 40, `${found.length} pins`);
   for (const file of PINNED)
@@ -71,7 +71,7 @@ test('every @ai-ecoverse pin in the base set, the optional catalog and /opt/agen
     );
   for (const [name, file] of found.filter(([name]) => name !== PYTHON)) {
     const rule = effective(name, file);
-    assert.equal(rule.automerge, true, `${name} in ${file}`);
+    assert.equal(rule.automerge, name !== '@ai-ecoverse/slicc-agent', `${name} in ${file}`);
     assert.equal(rule.dependencyDashboardApproval, false, `${name} in ${file}`);
     assert.notEqual(rule.enabled, false, `${name} in ${file}`);
   }

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { readdir, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import set from '@ai-ecoverse/slicc-browsers/guard-vectors.json' with { type: 'json' };
 import { SHARDS } from '../../scripts/canary/plan.mjs';
@@ -22,8 +24,19 @@ import {
   groups,
   itemOf,
   timings,
+  trapLine,
+  trapped,
 } from '../../scripts/ci/shard.mjs';
-import { body, combine, key, occurrence, title } from '../../scripts/ci/summary.mjs';
+import {
+  body,
+  combine,
+  key,
+  occurrence,
+  TRAP_TEST,
+  title,
+  trapFlips,
+} from '../../scripts/ci/summary.mjs';
+import { trapRecorder } from './chrome.mjs';
 
 const root = new URL('../../', import.meta.url);
 const ci = await readFile(new URL('.github/workflows/ci.yml', root), 'utf8');
@@ -310,6 +323,90 @@ test("a run's summary joins the plan and the shard records, with every shard's t
     ]
   );
   assert.deepEqual(summary.flips, [{ file: 'a', name: 'flaky', log: 'boom', shard: 's01' }]);
+  assert.deepEqual(summary.traps, []);
+});
+
+test('each pnpm wasm trap retry a page warns about is recorded once, with its test, unless the test forces the trap itself', () => {
+  const listeners = [];
+  const cdp = { on: (listener) => listeners.push(listener) };
+  const written = [];
+  let current = { file: 'test/integration/agent.test.mjs', name: 'installs', forced: false };
+  trapRecorder(
+    cdp,
+    () => current,
+    (file, text) => written.push([String(file), JSON.parse(text)])
+  );
+  const warn = (value, type = 'warning') =>
+    listeners[0]({ method: 'Runtime.consoleAPICalled', params: { type, args: [{ value }] } });
+  warn(
+    'bios: pnpm trapped (pnpm: wasm trap in thread 4: memory access out of bounds), the wasm trap of homescoop#1127, slicc-kernel#1172; retrying once'
+  );
+  warn("bios: pnpm's retry after the wasm trap succeeded (homescoop#1127, slicc-kernel#1172)");
+  warn('pnpm trapped twice with the wasm trap of homescoop#1127, slicc-kernel#1172 (x)');
+  warn('bios: pnpm trapped (x)', 'log');
+  warn('something else');
+  listeners[0]({ method: 'Runtime.exceptionThrown', params: {} });
+  current = { ...current, forced: true };
+  warn('bios: pnpm trapped (forced)');
+  current = null;
+  warn('bios: pnpm trapped (no test)');
+  assert.equal(written.length, 1, 'one line per retry, not one per warning');
+  assert.match(written[0][0], /\/artifacts\/pnpm-traps\/\d+\.jsonl$/);
+  assert.deepEqual(
+    written.map(([, { file, name, line }]) => [file, name, line.slice(0, 22)]),
+    [['test/integration/agent.test.mjs', 'installs', 'bios: pnpm trapped (pn']]
+  );
+  assert.match(written[0][1].at, /^\d{4}-/);
+});
+
+test('a shard collects its recorded pnpm traps in time order, says so in a line of its own, and the summary files them as one flaky issue', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'traps-'));
+  try {
+    assert.deepEqual(await trapped(join(dir, 'missing')), []);
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, '2.jsonl'),
+      `${JSON.stringify({ file: 'b', name: 'y', line: 'l2', at: '2026-10-19T02:00:00Z' })}\n`
+    );
+    await writeFile(
+      join(dir, '1.jsonl'),
+      `${JSON.stringify({ file: 'a', name: 'x', line: 'l1', at: '2026-10-19T01:00:00Z' })}\n\n`
+    );
+    await writeFile(join(dir, 'notes.txt'), 'ignored');
+    const traps = await trapped(dir);
+    assert.deepEqual(
+      traps.map(({ line }) => line),
+      ['l1', 'l2']
+    );
+    assert.equal(trapLine('s03', []), null);
+    assert.equal(
+      trapLine('s03', [...traps, traps[0]]),
+      'shard s03: pnpm hit the wasm trap 3x (homescoop#1127), retried in a › x; b › y'
+    );
+    const summary = combine(null, [
+      { shard: 's02', traps: [traps[1]] },
+      { shard: 's01', traps: [traps[0]] },
+      { shard: 's03' },
+    ]);
+    assert.deepEqual(
+      summary.traps.map(({ shard, line }) => [shard, line]),
+      [
+        ['s01', 'l1'],
+        ['s02', 'l2'],
+      ]
+    );
+    const [flip] = trapFlips(summary);
+    assert.equal(key(flip), key(TRAP_TEST));
+    assert.equal(flip.shard, 's01 s02');
+    assert.equal(flip.log, 's01 a › x: l1\ns02 b › y: l2');
+    assert.deepEqual(trapFlips(combine(null, [{ shard: 's01' }])), []);
+    assert.equal(
+      title(flip),
+      'flaky: update.js › pnpm hit the wasm trap and was retried (homescoop#1127)'
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test('a flaky-test issue names the test, links the run, quotes the error, and carries a stable key', () => {

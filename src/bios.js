@@ -150,6 +150,7 @@ await step('seed', async () => {
     'profile.js',
     'remote.js',
     'site.js',
+    'skills.js',
     'start.js',
     'storage.js',
     'switchboard-worker.js',

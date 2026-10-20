@@ -36,7 +36,10 @@ const bash = (id, command) =>
     usage,
   ]);
 
+const bodies = [];
+
 function answer(body) {
+  bodies.push(body.toString());
   let sent = {};
   try {
     sent = JSON.parse(body.toString());
@@ -44,6 +47,9 @@ function answer(body) {
   const content = sent.messages?.at(-1)?.content ?? [];
   const said = content.map((item) => item.text ?? '').join(' ');
   const result = content.find((item) => item.toolResult)?.toolResult?.toolUseId;
+  if (result === 'grant-1') return text('The harbor token reached the command.');
+  if (sent.toolConfig?.tools?.length && said.includes('Use the harbor token'))
+    return bash('grant-1', 'printenv HARBOR_TOKEN; printf "%s" "$HARBOR_TOKEN" | wc -c');
   if (result === 'bytes-1') return text('The output came through.');
   if (sent.toolConfig?.tools?.length && said.includes('Show the bytes'))
     return bash(
@@ -276,5 +282,149 @@ test('kernel#1099: with a secret in the vault, the agent’s bash shows jq’s a
   assert.match(output, /cat-said-hi/);
   assert.match(output, /bytes-42/);
   assert.ok(chrome.vault.log.some((entry) => entry.role === 'agent' && entry.op === 'push'));
+  assert.deepEqual(page.errors, []);
+});
+
+const HARBOR = 'dummy-harbor-value-0123456789';
+const HARBOR_SEALED = 'fnox_proxy_00000000000000000000beef';
+const fnoxConfig = (extra = '') =>
+  `default_provider = "seven"\n\n[providers.seven]\ntype = "sealed"\n\n[providers.plain]\ntype = "plain"\n\n[secrets]\nHARBOR_TOKEN = { provider = "seven", value = "${HARBOR_SEALED}" }\n${extra}`;
+
+async function secretsListed(page, needle) {
+  return page
+    .within(
+      5 * 60 * 1000,
+      (needle) => {
+        const { agent } = document.querySelector('slicc-app').model;
+        const id = agent.active();
+        const text = JSON.stringify(agent.messages(id));
+        return !agent.busy(id) && text.includes(needle) && text;
+      },
+      needle
+    )
+    .catch(async (error) => {
+      const seen = await page.evaluate(() => {
+        const { agent } = document.querySelector('slicc-app').model;
+        return JSON.stringify(agent.messages(agent.active())).slice(-3000);
+      });
+      throw new Error(
+        `${error.message}\nno ${needle} in: ${seen}\nconsole: ${page.console.join('\n').slice(-2000)}`
+      );
+    });
+}
+
+test('slicc-agent#459: on a fresh profile the agent lists a sealed fnox secret with its placeholder, a shell-granted one reaches a command, no value reaches the prompt or the output, and an unsealed env secret turns shell grants off by name', {
+  timeout: 35 * 60 * 1000,
+}, async (t) => {
+  chrome.vault.set({
+    records: [
+      {
+        kind: 'secret',
+        name: 'HARBOR_TOKEN',
+        value: HARBOR,
+        source: 'settings',
+        placeholder: HARBOR_SEALED,
+        exec: 'shell',
+      },
+    ],
+    version: 1,
+  });
+  t.after(() => chrome.vault.set({ secrets: [] }));
+  const page = await chrome.page(t);
+  await page.init('() => { globalThis.sliccKernelDebug = true; }');
+  await page.goto(
+    `/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key', users: 'enforce' })}`
+  );
+  await ready(page, ['slicc:/home# ']);
+  const write = (config) =>
+    page.evaluate(async (config) => {
+      const client = await globalThis.sliccKernelClient();
+      const { status, stderr } = await client.run(
+        ['bash', '-c', 'printf "%s" "$1" > /etc/fnox/config.toml', 'fnox', config],
+        { cwd: '/' }
+      );
+      return status === 0 ? 'ok' : stderr;
+    }, config);
+  assert.equal(await write(fnoxConfig()), 'ok');
+  await agentUp(page);
+  await listsAccount(page, 'amazon-bedrock');
+  await connectAccount(page, 'amazon-bedrock', KEY);
+  const asked = bodies.length;
+  await page.evaluate(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    document.querySelector('slicc-app').show('chat');
+    void agent.send(agent.active(), '/secrets');
+  });
+  const listed = await secretsListed(page, 'The user listed secrets: HARBOR_TOKEN.');
+  assert.doesNotMatch(listed, /Secrets are unavailable/);
+
+  await page.evaluate(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    void agent.send(agent.active(), 'Use the harbor token');
+  });
+  const used = await secretsListed(page, 'The harbor token reached the command');
+  assert.match(
+    used,
+    new RegExp(`${HARBOR_SEALED}\\\\n${HARBOR.length}\\\\n`),
+    `${used.slice(-1500)}\nvault: ${JSON.stringify(chrome.vault.log.filter((entry) => /materiali|consum|sealed|stamp/.test(entry.op)).slice(-12))}`
+  );
+  const prompts = bodies.slice(asked).join('\n');
+  assert.ok(prompts.includes(HARBOR_SEALED), 'the prompt never named the placeholder');
+  assert.doesNotMatch(prompts, /Secrets are unavailable/);
+  assert.ok(!prompts.includes(HARBOR), 'an unsealed value reached the prompt');
+  assert.ok(!used.includes(HARBOR), 'an unsealed value reached a command’s output');
+
+  assert.equal(
+    await write(fnoxConfig('LOOSE_TOKEN = { provider = "plain", value = "loose-value" }\n')),
+    'ok'
+  );
+  await page.reload();
+  await ready(page, ['slicc:/home# ']);
+  await agentUp(page);
+  const before = bodies.length;
+  await page.evaluate(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    void agent.send(agent.active(), '/secrets');
+  });
+  const off = await secretsListed(page, 'LOOSE_TOKEN');
+  assert.match(
+    off,
+    /Shell grants are off: fnox exec would also give every command the unsealed fnox secrets LOOSE_TOKEN/
+  );
+  await page.evaluate(() => {
+    const { agent } = document.querySelector('slicc-app').model;
+    void agent.send(agent.active(), 'Use the harbor token');
+  });
+  const outputs = await page
+    .within(
+      5 * 60 * 1000,
+      (count) => {
+        const { agent } = document.querySelector('slicc-app').model;
+        const messages = agent.messages(agent.active());
+        const runs = messages
+          .flatMap((message) => message.parts ?? [])
+          .filter((part) => part.type === 'tool' && part.tool?.id === 'grant-1')
+          .map((part) => part.tool.output);
+        const done =
+          JSON.stringify(messages).split('The harbor token reached the command').length > count;
+        return !agent.busy(agent.active()) && done && runs;
+      },
+      2
+    )
+    .catch(async (error) => {
+      const seen = await page.evaluate(() => {
+        const { agent } = document.querySelector('slicc-app').model;
+        return JSON.stringify(agent.messages(agent.active())).slice(-3000);
+      });
+      throw new Error(
+        `${error.message}\nwaited for a second "The harbor token reached the command" from an idle agent, in: ${seen}`
+      );
+    });
+  const ungranted = outputs.at(-1);
+  assert.doesNotMatch(ungranted, new RegExp(`${HARBOR_SEALED}|\\b${HARBOR.length}\\b`), ungranted);
+  assert.match(ungranted, /^\s*0\s*$/, ungranted);
+  const later = bodies.slice(before).join('\n');
+  assert.match(later, /Shell grants are off[^"]*LOOSE_TOKEN/);
+  assert.ok(!later.includes(HARBOR), 'an unsealed value reached the prompt');
   assert.deepEqual(page.errors, []);
 });

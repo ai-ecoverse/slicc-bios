@@ -825,6 +825,10 @@
     "integrity": "sha512-Sah/qC/1x31WKsVK+tyHYSdV8StFLpZEmuNyWqu2inbK19IL7ZyZyOb+85CGVAG1+ZRdXfE1y0eUAQuu0jnm3w==",
     "sha256": "d492f978d7f0925378369feaddb2925f9220169b965c3a7b0a2854acd6668bc3"
   },
+  "@ai-ecoverse/mcpcat@0.17.0": {
+    "integrity": "sha512-LmiT/Ecom6SiUl9sR+4WVg6CYS+CpunXlL0Qvf1r01fuT06J08K5G3e6dO9wQXRYz4ST9Vp4firKIQM230GCiw==",
+    "sha256": "0fc7cb4c0d62631aaa63a2ab3b2f1d64c5e5a3f039faa110be2b21bc8e62cdde"
+  },
   "@ai-ecoverse/wasm-imagemagick-heif@7.1.2-34-9.1": {
     "integrity": "sha512-0z9FTPGFcO/8cFvCHkBI8kBQLvtjts3WFrhVzI5FQSVeRyZwMCKJZWHmAgiGUiS5q/UbsJF2AI9ocwGgIaJXjw==",
     "sha256": "f8e80e2aa2486a1658e0cdc6eb9c6b675b5615f3ce87b7e609d3e33f66752da5"
@@ -840,5 +844,9 @@
   "@ai-ecoverse/slicc-kernel@1.129.0": {
     "integrity": "sha512-/R8aDxfhTQNsloF9Z/zVS+4nhykFF8lhu6rJ3nPTPjHs+wi3hnaRQE/Rj9ceZuLf4J/bDdoyxzYIAZsBdzHe8g==",
     "sha256": "797bb9b2d5a296d0170a469be09a6a58bc8a2793338fe51c1f97b4299e800633"
+  },
+  "@ai-ecoverse/slicc-cdp@1.30.10": {
+    "integrity": "sha512-VakByvxkHaUtVRPQaB3o9UOS587H5XewCUDJen/jCmgH0nMxZT1EXPZ/fLyZhgAPtfO28+qaIvnbCisTviPE4g==",
+    "sha256": "b68103109a3ace10bdf0c6ecbc7670998fb6e7de26857f553c17126a60c7b647"
   }
 }

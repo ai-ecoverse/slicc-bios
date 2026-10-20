@@ -28,5 +28,10 @@
     "id": "buf",
     "label": "buf",
     "commands": ["buf"]
+  },
+  "@ai-ecoverse/wasi-fnox": {
+    "id": "fnox",
+    "label": "fnox",
+    "commands": ["fnox"]
   }
 }
