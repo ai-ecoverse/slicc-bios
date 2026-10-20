@@ -15,6 +15,7 @@ import {
 const chrome = await launch();
 const seven = new URL(chrome.url);
 let mode = 'ok';
+let isolate = false;
 const asked = [];
 const www = createServer(async (request, response) => {
   const url = new URL(request.url, 'http://www');
@@ -29,6 +30,10 @@ const www = createServer(async (request, response) => {
       )
     );
     if (url.pathname === '/7/sw.js') headers['service-worker-allowed'] = '/';
+    if (isolate && headers['content-type']?.startsWith('text/html')) {
+      headers['cross-origin-opener-policy'] = 'same-origin';
+      headers['cross-origin-embedder-policy'] = 'require-corp';
+    }
     return response
       .writeHead(upstream.status, headers)
       .end(Buffer.from(await upstream.arrayBuffer()));
@@ -92,7 +97,7 @@ async function open(t) {
 
 async function dialog(page) {
   const seen = [];
-  await page.expose('six', (event) => seen.push(JSON.parse(event)));
+  await page.expose('six', (event) => seen.push(event));
   await page.init(() => {
     if (!location.pathname.startsWith('/7/')) return;
     const tell = (event) => window.six(JSON.stringify(event));
@@ -212,6 +217,10 @@ test('without a SLICC 6 profile seven never asks, and its service worker passes 
 
 test('moving SLICC 6 into seven from a cross-origin isolated BIOS: asked once, progress shown, the marker set before the frame goes, six stopped, /preview/ unregistered, / and the extension URLs land on /os/, and the export is handed to the agent', async (t) => {
   mode = 'ok';
+  isolate = true;
+  t.after(() => {
+    isolate = false;
+  });
   const page = await open(t);
   const six = await dialog(page);
   await runSix(page);

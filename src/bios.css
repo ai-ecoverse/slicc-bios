@@ -509,7 +509,7 @@ button {
   font-size: 13px;
 }
 
-.six-actions .chip[hidden] {
+.six [hidden] {
   display: none;
 }
 
