@@ -1077,13 +1077,32 @@ test('the real slicc CLI shares another browser over cdp: the 9222 facade reache
   assert.ok(blank, 'the walked tab is on the blank page');
   const history = await new Promise((resolve, reject) => {
     const socket = new WebSocket(blank.webSocketDebuggerUrl);
+    let seen = 'nothing';
+    let done = false;
+    const fail = (why) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      reject(new Error(`Page.getNavigationHistory on the walked tab: ${why}; it answered ${seen}`));
+    };
+    const timer = setTimeout(() => {
+      fail('no answer in 10 s');
+      socket.close();
+    }, 10000);
     socket.onopen = () =>
       socket.send(JSON.stringify({ id: 1, method: 'Page.getNavigationHistory' }));
     socket.onmessage = ({ data }) => {
+      seen = String(data);
+      const answer = JSON.parse(data);
+      if (answer.id !== 1) return;
+      if (!answer.result?.entries) return fail('no entries');
+      done = true;
+      clearTimeout(timer);
       socket.close();
-      resolve(JSON.parse(data).result.entries.map(({ url }) => url));
+      resolve(answer.result.entries.map(({ url }) => url));
     };
-    socket.onerror = reject;
+    socket.onclose = () => fail('the socket closed');
+    socket.onerror = () => fail('the socket failed');
   });
   assert.deepEqual(
     history.filter((url) => url.startsWith(own) || url.startsWith('chrome-error:')),
@@ -1092,7 +1111,7 @@ test('the real slicc CLI shares another browser over cdp: the 9222 facade reache
   );
   const kept = await shell(
     page,
-    `{ playwright-cli --runtime ${runtime} eval 'location.href = "http://127.0.0.1:${debugPort}/json/version?after-walk"' > /dev/null 2>&1; sleep 1; playwright-cli --runtime ${runtime} eval 'location.search' 2>&1; playwright-cli --runtime ${runtime} close 2>&1; echo "close $?"; }`,
+    `{ playwright-cli --runtime ${runtime} eval 'location.href = "http://127.0.0.1:${debugPort}/json/version?after-walk"' > /dev/null 2>&1; for i in $(seq 1 50); do s=$(playwright-cli --runtime ${runtime} eval 'location.search' 2>&1); case "$s" in *after-walk*) break ;; esac; sleep 0.2; done; echo "$s"; playwright-cli --runtime ${runtime} close 2>&1; echo "close $?"; }`,
     'cdp-own-kept'
   );
   assert.match(kept.out, /\?after-walk/, `the agent can still drive the walked tab: ${kept.out}`);
