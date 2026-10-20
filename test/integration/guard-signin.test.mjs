@@ -10,8 +10,26 @@ import { extensionOver } from './fake-extension.mjs';
 const RELAY = 'https://www.sliccy.ai/auth/callback';
 const CLIENT = 'seven-sign-in-client';
 const hits = [];
+let SIGNING_IN = {};
 const site = createHttp((req, res) => {
   hits.push(`${req.headers.host}${req.url}`);
+  const url = new URL(req.url, 'http://x');
+  const [, via, key] = url.pathname.split('/');
+  const to = Object.values(SIGNING_IN)[Number(key)];
+  if (via === 'go' && to) {
+    res.writeHead(302, { location: to });
+    return res.end();
+  }
+  if (via === 'framing' && to) {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end(`<title>framing</title><iframe src="${to}"></iframe>`);
+  }
+  if (via === 'clicking' && to) {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end(
+      `<title>clicking</title><a id="go" href="${to}">sign in</a><script>document.getElementById('go').click()</script>`
+    );
+  }
   res.writeHead(200, { 'content-type': 'text/html' });
   res.end('<title>idp</title><h1>Sign in</h1>');
 });
@@ -36,7 +54,7 @@ const fakeExtension = extensionOver(await debuggerUrl(debugging));
 
 const authorize = (params) =>
   `http://idp.test:${port}/ims/authorize/v2?${new URLSearchParams(params)}`;
-const SIGNING_IN = {
+SIGNING_IN = {
   'with seven’s callback': authorize({
     client_id: 'any',
     redirect_uri: RELAY,
@@ -105,7 +123,27 @@ async function rig({ transport, proxy, port, client, signing, drivable }) {
     return false;
   };
   const start = `http://ordinary.test:${port}/start`;
-  const out = { signing: {}, drivable: {} };
+  const out = { signing: {}, drivable: {}, indirect: {} };
+  window.indirectly = async (name, key) => {
+    const { targetId } = (await send('Target.createTarget', { url: start })).result ?? {};
+    const session = (await send('Target.attachToTarget', { targetId, flatten: true })).result
+      ?.sessionId;
+    await send('Page.enable', {}, session);
+    await until(async () => (await frame(session)).url === start);
+    for (const via of ['go', 'framing', 'clicking']) {
+      const url = `http://ordinary.test:${port}/${via}/${key}`;
+      const answer = await send('Page.navigate', { url }, session);
+      const settled = await until(async () => (await frame(session)).url !== start);
+      out.indirect[`${name} via ${via}`] = {
+        answer: answer.error?.message ?? 'navigated',
+        settled,
+      };
+      await send('Page.navigate', { url: start }, session);
+      await until(async () => (await frame(session)).url === start);
+    }
+    await send('Target.closeTarget', { targetId });
+    return out.indirect;
+  };
   for (const [name, url] of Object.entries({ ...signing, ...drivable })) {
     const row = {};
     row.created = (await send('Target.createTarget', { url })).error?.message ?? 'created';
@@ -159,6 +197,9 @@ async function check(t, transport) {
     signing: SIGNING_IN,
     drivable: DRIVABLE,
   });
+  for (const [key, name] of Object.keys(SIGNING_IN).entries()) {
+    out.indirect = await page.evaluate(([n, k]) => window.indirectly(n, k), [name, key]);
+  }
   for (const [name, row] of Object.entries(out.signing)) {
     assert.match(row.created, /^slicc: refused:/, `${name}: createTarget ${JSON.stringify(row)}`);
     assert.match(
@@ -181,6 +222,10 @@ async function check(t, transport) {
       name
     );
   }
+  for (const [name, row] of Object.entries(out.indirect)) {
+    assert.equal(row.settled, true, `${name}: ${JSON.stringify(row)}`);
+  }
+  assert.equal(Object.keys(out.indirect).length, Object.keys(SIGNING_IN).length * 3);
   const served = new Set(Object.values(DRIVABLE).map((url) => url.replace(/^http:\/\//, '')));
   const reached = hits.filter(
     (hit) => /^idp\.test:\d+\/(?:ims|login)/.test(hit) && !served.has(hit)
@@ -199,3 +244,36 @@ test(
   { timeout: 5 * 60 * 1000 },
   (t) => check(t, 'extension')
 );
+
+test('after a reload, seven’s last sign-in client id still makes its authorize page protected', {
+  timeout: 5 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  const extension = await fakeExtension(page);
+  t.after(() => extension.close());
+  await page.goto('/');
+  await ready(page);
+  await page.evaluate(async (client) => {
+    const { authorizeUrl } = await import(new URL('adobe.js', location.href).href);
+    authorizeUrl({ clientId: client, scopes: 'openid' }, 1, 'n');
+  }, CLIENT);
+  await page.goto('/');
+  await ready(page);
+  const url = SIGNING_IN['with seven’s client id and no callback'];
+  const answer = await page.evaluate(async (url) => {
+    const { guardProtected } = await import(new URL('guard.js', location.href).href);
+    const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
+    const connection = guardProtected(
+      extensionConnection(globalThis.sliccExtension.cdp),
+      self.origin
+    );
+    return new Promise((resolve) => {
+      connection.onmessage = (text) => {
+        const message = JSON.parse(text);
+        if (message.id === 1) resolve(message);
+      };
+      connection.send(JSON.stringify({ id: 1, method: 'Target.createTarget', params: { url } }));
+    });
+  }, url);
+  assert.match(answer.error?.message ?? '', /^slicc: refused:/, JSON.stringify(answer));
+});
