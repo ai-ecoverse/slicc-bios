@@ -15,7 +15,6 @@
         "k4-agent",
         "one-kernel",
         "shell",
-        "path-spawn",
         "modes",
         "mnt-modes",
         "mounts",
@@ -144,10 +143,7 @@
     ["@ai-ecoverse/wasm-screen", []],
     ["@ai-ecoverse/sliccy-browser", []],
     ["@ai-ecoverse/wasi-ripgrep", ["shell"]],
-    [
-      "@ai-ecoverse/wasm-*",
-      ["shell", "path-spawn", "seed", "sweep", "modules", "typescript", "zip"]
-    ],
+    ["@ai-ecoverse/wasm-*", ["shell", "seed", "sweep", "modules", "typescript", "zip"]],
     ["@biomejs/biome", []],
     ["lefthook", []],
     ["semantic-release", []],

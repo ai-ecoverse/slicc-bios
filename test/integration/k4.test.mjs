@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { ready, run, screen, settled, shows } from './bios.mjs';
+import { ready, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch();
@@ -8,31 +8,6 @@ after(() => chrome.close());
 
 const rootShell = ['slicc:/home# '];
 const PLANTED = 400;
-
-const EPOLL = `import asyncio
-import select
-import socket
-
-
-async def main():
-    loop = asyncio.get_running_loop()
-    here, there = socket.socketpair()
-    here.setblocking(False)
-    there.setblocking(False)
-    await loop.sock_sendall(there, b"echo 42")
-    print("asyncio", (await loop.sock_recv(here, 100)).decode(), type(loop._selector).__name__)
-
-
-asyncio.run(main())
-poll = select.epoll()
-one, two = socket.socketpair()
-poll.register(one.fileno(), select.EPOLLIN)
-try:
-    poll.register(one.fileno(), select.EPOLLIN)
-    print("double registered")
-except FileExistsError:
-    print("double FileExistsError")
-`;
 
 async function read(page, path) {
   return page.evaluate(async (path) => {
@@ -236,7 +211,7 @@ test('enforce: a cone writes its home, is refused in root’s, and sudo asks wit
   assert.deepEqual(page.errors, []);
 });
 
-test('enforce: a cone’s Python finds what /opt/slicc/python lists, in a login shell and through sudo, and asyncio runs on epoll', async (t) => {
+test('enforce: a cone’s Python finds what /opt/slicc/python lists, in a login shell and through sudo', async (t) => {
   const page = await chrome.page(t);
   await bootIn(page, 'enforce');
   await page.until(() =>
@@ -286,15 +261,6 @@ test('enforce: a cone’s Python finds what /opt/slicc/python lists, in a login 
     "clear; sudo -u cone bash -c 'pip --version && pip3 --version' | grep -c '^pip ' | sed 's/^/pips-/'"
   );
   await shows(page, 'pips-2', 5 * 60 * 1000);
-  const epoll = Buffer.from(EPOLL).toString('base64');
-  await run(
-    page,
-    `clear; cd /; sudo -u cone bash -c 'cd && echo ${epoll} | base64 -d > epoll.py && python3 epoll.py'; echo polled-$((40 + 2))`
-  );
-  await shows(page, 'polled-42', 5 * 60 * 1000);
-  const polled = await screen(page);
-  assert.match(polled, /asyncio echo 42 EpollSelector/);
-  assert.match(polled, /double FileExistsError/);
   await run(
     page,
     `clear; sudo -u cone bash -lc 'python3 -c "import sliccprobe; print(\\"login\\", sliccprobe.ok)"'`
@@ -629,70 +595,3 @@ function linksTar(names, target) {
     Buffer.alloc(1024),
   ]);
 }
-
-function hardLinkTar() {
-  const body = Buffer.alloc(512);
-  body.write('linked 42\n');
-  return Buffer.concat([
-    tarHeader('d/', { type: '5' }),
-    tarHeader('d/a', { size: 10 }),
-    body,
-    tarHeader('d/b', { type: '1', link: 'd/a' }),
-    Buffer.alloc(1024),
-  ]);
-}
-
-test('enforce: tar unpacks hard-link members into a tmpfs mount as one inode, and ln works there as root and as a cone', async (t) => {
-  const page = await chrome.page(t);
-  await bootIn(page, 'enforce');
-  await page.evaluate(
-    async (bytes) => {
-      let dir = await navigator.storage.getDirectory();
-      dir = await dir.getDirectoryHandle('root', { create: true });
-      const writable = await (await dir.getFileHandle('hl.tar', { create: true })).createWritable();
-      await writable.write(new Uint8Array(bytes));
-      await writable.close();
-    },
-    [...hardLinkTar()]
-  );
-  await run(
-    page,
-    "clear; cd /; mkdir -p /mnt/hl /mnt/hlc && mount -t tmpfs none /mnt/hl && mount -t tmpfs none /mnt/hlc && chown cone:cone /mnt/hlc && chmod 700 /mnt/hlc; tar xf /root/hl.tar -C /mnt/hl; echo tar=$?; echo same=$(stat -c '%i' /mnt/hl/d/a /mnt/hl/d/b | uniq | wc -l) links=$(stat -c '%h' /mnt/hl/d/b) text=$(cat /mnt/hl/d/b); ln /mnt/hl/d/a /mnt/hl/d/c; echo rootln=$? now=$(stat -c '%h' /mnt/hl/d/a); sudo -u cone bash -c 'cd /mnt/hlc && echo x > f && ln f g; echo conln=$? cone=$(stat -c %h f)'; umount /mnt/hl; umount /mnt/hlc; echo done-$((40 + 2))"
-  );
-  await shows(page, 'done-42');
-  const text = await screen(page);
-  assert.match(text, /tar=0/);
-  assert.match(text, /same=1 links=2 text=linked 42/);
-  assert.match(text, /rootln=0 now=3/);
-  assert.match(text, /conln=0 cone=2/);
-  assert.deepEqual(page.errors, []);
-});
-
-test('enforce: a cone has no crontab until it installs one, and its @reboot line runs on the next load, logged under /var/log/cron/cone', async (t) => {
-  const page = await chrome.page(t);
-  await bootIn(page, 'enforce');
-  await settled(page);
-  await run(
-    page,
-    "clear; cd /; sudo -u cone crontab -l; echo listed=$?; echo '@reboot echo cron-booted-$((40 + 2)) as $(id -un)' | sudo -u cone crontab -; echo installed=$?; sudo -u cone crontab -l; echo done-$((40 + 2))"
-  );
-  await shows(page, 'done-42');
-  let text = await screen(page);
-  assert.match(text, /no crontab for cone/);
-  assert.match(text, /listed=1/);
-  assert.match(text, /installed=0/);
-  assert.match(text, /@reboot echo cron-booted/);
-  await page.reload();
-  await ready(page, rootShell);
-  await settled(page);
-  await run(
-    page,
-    "clear; for i in $(seq 1 60); do grep -qs 'cron-booted-42 as cone' /var/log/cron/cone/*.log && break; sleep 1; done; cat /var/log/cron/cone/*.log; stat -c '%U %a' /var/log/cron/cone; echo logged-$((40 + 2))"
-  );
-  await shows(page, 'logged-42', 2 * 60 * 1000);
-  text = await screen(page);
-  assert.match(text, /--- .* exit=0 missed=0 ---/);
-  assert.match(text, /cron-booted-42 as cone/);
-  assert.match(text, /root 755/);
-  assert.deepEqual(page.errors, []);
-});

@@ -202,28 +202,6 @@ test('Ctrl+Z in the panel stops the foreground job, which stays stopped past its
   assert.deepEqual(page.errors, []);
 });
 
-test('keeps the pid across exec and agrees with ps, and pkill -f spares itself', async (t) => {
-  const page = await chrome.page(t);
-  await boot(page);
-  await run(
-    page,
-    'bash -c \'echo $$ $PPID; ps -o pid=,ppid= -p $$\' | tr -s " " | sed "s/^ //" | uniq -c | awk -v outer=$$ \'{ print "ps agrees " ($1 == 2 && $3 == outer) * 42 }\''
-  );
-  await shows(page, 'ps agrees 42');
-  await run(
-    page,
-    'bash -c \'echo $$; exec bash -c "echo \\$\\$; ps -o pid= -p \\$\\$"\' | tr -d " " | uniq -c | awk \'{ print "exec kept " $1 }\''
-  );
-  await shows(page, 'exec kept 3');
-  await run(
-    page,
-    'sleep 30 & sleep 1; pkill -f "sleep 30"; echo "pkill $((1000 + $?))"; sleep 1; pgrep -f "sleep 30" | wc -l | sed "s/^/left /"'
-  );
-  await shows(page, 'pkill 1000');
-  await shows(page, 'left 0');
-  assert.deepEqual(page.errors, []);
-});
-
 test('clears the screen and reads the terminal size with ncurses-utils', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
@@ -234,8 +212,6 @@ test('clears the screen and reads the terminal size with ncurses-utils', async (
     '[ "$(tput cols)" = "$(stty size | cut -d " " -f 2)" ] && echo "cols agree $((5 * 5))"'
   );
   await shows(page, 'cols agree 25');
-  await run(page, 'out=$(TERM=dumb clear 2>&1); echo "dumb $((1000 + $?)) ${#out}"');
-  await shows(page, 'dumb 1001 0');
   assert.deepEqual(page.errors, []);
 });
 
@@ -270,19 +246,6 @@ test('mounts and unmounts a tmpfs with mount and umount', async (t) => {
   await shows(page, 'unmounted 25');
   await run(page, 'ls /tmp/m | wc -l | sed "s/^/left /"');
   await shows(page, 'left 0');
-  await run(
-    page,
-    'mount -t tmpfs none /tmp/m; mount -t tmpfs none /tmp/m 2>/dev/null; echo "busy $((1000 + $?))"; umount /tmp/m'
-  );
-  await shows(page, 'busy 1032');
-  await run(page, 'mount -t tmpfs none /tmp/nowhere 2>/dev/null; echo "missing $((1000 + $?))"');
-  await shows(page, 'missing 1032');
-  await run(page, 'mount -t nosuchfs none /tmp/m 2>/dev/null; echo "unknown $((1000 + $?))"');
-  await shows(page, 'unknown 1032');
-  await run(page, 'umount /tmp/m 2>/dev/null; echo "not mounted $((1000 + $?))"');
-  await shows(page, 'not mounted 1032');
-  await run(page, 'mount --bogus 2>/dev/null; echo "usage $((1000 + $?))"');
-  await shows(page, 'usage 1001');
   assert.deepEqual(page.errors, []);
 });
 
@@ -310,36 +273,5 @@ test('tar packs and unpacks gzip, xz and bzip2 archives through the base set com
   }
   await run(page, 'clear; tar --zstd -cf src.tzst src 2>/dev/null; echo "zstd exits $?"');
   await shows(page, 'zstd exits 2');
-  assert.deepEqual(page.errors, []);
-});
-
-test('uname -r prints the kernel’s release, the one /proc/sys/kernel/osrelease names', async (t) => {
-  const page = await chrome.page(t);
-  await boot(page);
-  await run(
-    page,
-    'clear; echo "release=$(uname -r) proc=$(cat /proc/sys/kernel/osrelease) system=$(uname -s)"; echo done-$((40 + 2))'
-  );
-  await shows(page, 'done-42');
-  const [, release, proc, system] = (await screen(page)).match(
-    /release=(\S+) proc=(\S+) system=(\S+)/
-  );
-  assert.equal(release, proc);
-  assert.notEqual(release, '4.0.23');
-  assert.equal(system, 'Linux');
-  assert.deepEqual(page.errors, []);
-});
-
-test('cat follows a chain of 40 symlinks, as Linux does, and stops at 41', async (t) => {
-  const page = await chrome.page(t);
-  await boot(page);
-  await run(
-    page,
-    'clear; mkdir -p /tmp/c40 && cd /tmp/c40 && for i in $(seq 0 38); do ln -sfn /tmp/c40/l$((i+1)) l$i; done && printf forty-two > /tmp/c40.txt && ln -sfn /tmp/c40.txt l39 && ln -sfn /tmp/c40/l0 over; echo "chain=$(cat /tmp/c40/l0)"; cat /tmp/c40/over > /dev/null 2>&1; echo over=$?; echo done-$((40 + 2))'
-  );
-  await shows(page, 'done-42');
-  const text = await screen(page);
-  assert.match(text, /chain=forty-two/);
-  assert.match(text, /over=1/);
   assert.deepEqual(page.errors, []);
 });

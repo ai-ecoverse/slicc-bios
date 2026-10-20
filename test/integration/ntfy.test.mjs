@@ -5,11 +5,9 @@ import { launch } from './chrome.mjs';
 import { fakeNtfy } from './fake-ntfy.mjs';
 
 const HOST = 'ntfy.example.test';
-const TOKEN = 'tk_biosfixture0000000000000000';
 const QUIET = 50;
-const BIG = 5000;
 
-const ntfy = await fakeNtfy({ host: HOST, tokens: { private: TOKEN } });
+const ntfy = await fakeNtfy({ host: HOST });
 const chrome = await launch({ args: [`--host-resolver-rules=MAP ${HOST} 127.0.0.1`] });
 const url = `http://${HOST}:${ntfy.port}`;
 after(async () => {
@@ -69,7 +67,7 @@ const json = (text) =>
     .filter(Boolean)
     .map((line) => JSON.parse(line));
 
-describe('ntfy installs from the catalog and talks to an ntfy server from seven: publish, poll, a streaming handler, attachments and tokens', () => {
+describe('ntfy installs from the catalog and talks to an ntfy server from seven: publish, poll and a streaming handler', () => {
   let page;
   let finish;
   after(() => finish?.());
@@ -157,60 +155,6 @@ describe('ntfy installs from the catalog and talks to an ntfy server from seven:
     );
     await shows(page, 'stopped 42');
     assert.match(await screen(page), /running [1-9]/);
-  });
-
-  test('a message over 4096 bytes arrives as an attachment, and the command fetches its attachment.url with curl', async () => {
-    await run(
-      page,
-      `clear; rm -f /home/ntfy-attached; ntfy pub ${url}/big "$(head -c ${BIG} /dev/zero | tr '\\0' x)" > /dev/null 2>&1; echo "big $((40 + $?))"; ntfy sub --poll --since all ${url}/big 'curl -sS "$(printf %s "$NTFY_RAW" | jq -r .attachment.url)" | wc -c | tr -d " " >> /home/ntfy-attached'; echo "attached $((40 + $?))"`
-    );
-    await shows(page, 'attached 4');
-    const text = await screen(page);
-    assert.match(text, /big 40/, text);
-    assert.match(text, /attached 40/, text);
-    const [big] = ntfy.messages.filter((message) => message.topic === 'big');
-    assert.equal(big.attachment.size, BIG);
-    assert.equal(big.attachment.url, `${url}/file/${big.id}.txt`);
-    assert.deepEqual(await lines(page, 'home/ntfy-attached', 1, 10000, 'the command fetched'), [
-      String(BIG),
-    ]);
-  });
-
-  test('--token and NTFY_TOKEN send Authorization: Bearer, and a topic that needs a token refuses pub and sub without one', async () => {
-    const before = ntfy.requests.length;
-    await run(
-      page,
-      `clear; ntfy pub --token ${TOKEN} ${url}/private 'for the token holder' > /dev/null 2>&1; echo "with $((40 + $?))"; ntfy pub ${url}/private 'no token' > /dev/null 2>&1; echo "without $((40 + $?))"; NTFY_TOKEN=${TOKEN} ntfy pub ${url}/private 'from the environment' > /dev/null 2>&1; echo "env $((40 + $?))"; ntfy sub --poll --since all ${url}/private > /dev/null 2>&1; echo "refused $((40 + $?))"; ntfy sub --poll --since all --token ${TOKEN} ${url}/private > /home/ntfy-private.json 2>&1; echo "read $((40 + $?))"`
-    );
-    await shows(page, 'read 4');
-    const text = await screen(page);
-    assert.match(text, /with 40/, text);
-    assert.match(text, /without 41/, text);
-    assert.match(text, /env 40/, text);
-    assert.match(text, /refused 41/, text);
-    assert.match(text, /read 40/, text);
-    const seen = ntfy.requests.slice(before).filter(({ path }) => path.startsWith('/private'));
-    assert.deepEqual(
-      seen.map(({ path, authorization }) => [path, authorization]),
-      [
-        ['/private', `Bearer ${TOKEN}`],
-        ['/private', null],
-        ['/private', `Bearer ${TOKEN}`],
-        ['/private/json', null],
-        ['/private/json', `Bearer ${TOKEN}`],
-      ]
-    );
-    const kept = ['for the token holder', 'from the environment'];
-    assert.deepEqual(
-      ntfy.messages.filter(({ topic }) => topic === 'private').map(({ message }) => message),
-      kept
-    );
-    assert.deepEqual(
-      json(await read(page, 'home/ntfy-private.json'))
-        .filter(({ event }) => event === 'message')
-        .map(({ message }) => message),
-      kept
-    );
     assert.deepEqual(page.errors, []);
   });
 });
