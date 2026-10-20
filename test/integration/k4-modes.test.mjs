@@ -28,6 +28,29 @@ async function read(page, path) {
   }, path);
 }
 
+const OLD_STEP = { budget: 10 * 60 * 1000, stall: 150 * 1000 };
+const STUCK = /the agent made no progress for|the agent was not up within/;
+
+async function oldAgent(page, t) {
+  const label = 'agent on kernel 1.67.1';
+  try {
+    return await agentUp(page, { ...OLD_STEP, label });
+  } catch (error) {
+    if (!STUCK.test(error.message)) throw error;
+    const first = error.message.split('\n')[0];
+    t.diagnostic(
+      `${first}; kernel 1.67.1's downloads stall at times (#711), so the page reloads and the install goes on once more`
+    );
+    await page.reload();
+    await ready(page, ['slicc:/home# ']);
+    return agentUp(page, { ...OLD_STEP, label: `${label}, after a reload` }).catch((again) => {
+      throw new Error(
+        `kernel 1.67.1's agent install stalled twice, before and after a reload (#711). First: ${first}\nThen: ${again.message}`
+      );
+    });
+  }
+}
+
 function olderLock(shipped) {
   const lock = structuredClone(shipped);
   lock.packages[KERNEL] = { ...lock.packages[KERNEL], ...OLD };
@@ -35,7 +58,7 @@ function olderLock(shipped) {
 }
 
 test('a profile whose /opt/agent was installed on kernel 1.67.1 keeps its bin scripts runnable under enforce on a /meta kernel', {
-  timeout: 45 * 60 * 1000,
+  timeout: 35 * 60 * 1000,
 }, async (t) => {
   const { readFileSync } = await import('node:fs');
   const shipped = JSON.parse(
@@ -46,7 +69,7 @@ test('a profile whose /opt/agent was installed on kernel 1.67.1 keeps its bin sc
   chrome.overrides.set('/packages/package-lock.json', JSON.stringify(olderLock(shipped)));
   await page.goto('/#users=off');
   await ready(page, ['slicc:/home# ']);
-  await agentUp(page, { label: 'agent on kernel 1.67.1' });
+  await oldAgent(page, t);
   if (current) chrome.overrides.set('/packages/package-lock.json', current);
   else chrome.overrides.delete('/packages/package-lock.json');
   chrome.cdn.requests.length = 0;
