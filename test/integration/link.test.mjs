@@ -1092,10 +1092,10 @@ test('the real slicc CLI shares another browser over cdp: the 9222 facade reache
   );
   const kept = await shell(
     page,
-    `{ playwright-cli --runtime ${runtime} eval 'location.href = "data:text/html,<title>after-walk</title>"' > /dev/null 2>&1; sleep 1; playwright-cli --runtime ${runtime} eval 'document.title' 2>&1; playwright-cli --runtime ${runtime} close 2>&1; echo "close $?"; }`,
+    `{ playwright-cli --runtime ${runtime} eval 'location.href = "http://127.0.0.1:${debugPort}/json/version?after-walk"' > /dev/null 2>&1; sleep 1; playwright-cli --runtime ${runtime} eval 'location.search' 2>&1; playwright-cli --runtime ${runtime} close 2>&1; echo "close $?"; }`,
     'cdp-own-kept'
   );
-  assert.match(kept.out, /after-walk/, `the agent can still drive the walked tab: ${kept.out}`);
+  assert.match(kept.out, /\?after-walk/, `the agent can still drive the walked tab: ${kept.out}`);
   assert.match(kept.out, /close 0$/, `the agent can still close the walked tab: ${kept.out}`);
   const tabs = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) => r.json());
   assert.ok(!tabs.some((tab) => tab.url.startsWith(own)), 'seven’s page never loaded there');
