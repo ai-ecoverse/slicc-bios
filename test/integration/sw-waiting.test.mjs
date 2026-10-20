@@ -117,7 +117,7 @@ test('when another seven tab holds the download, the owner names that tab instea
     document
       .querySelector('slicc-app')
       .model.notices.list()
-      .find((notice) => notice.id.startsWith('sw-waiting:'))
+      .find((notice) => notice.id.startsWith('sw-waiting:') && notice.body.startsWith('Another'))
   );
   assert.deepEqual(
     { body: notice.body, actions: notice.actions },

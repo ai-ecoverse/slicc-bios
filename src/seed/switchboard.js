@@ -37,8 +37,10 @@ export function createSwitchboard({
   function drop(id) {
     const held = tabs.get(id)?.holds?.length;
     tabs.delete(id);
-    if (held) tellHolders();
-    if (owner !== id) return;
+    if (owner !== id) {
+      if (held) tellHolders();
+      return;
+    }
     owner = null;
     unstall();
     broadcast({ owner: ownerFrame() });
