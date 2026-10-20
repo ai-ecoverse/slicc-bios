@@ -2,6 +2,7 @@ import { compare } from './packages.js';
 import { production } from './site.js';
 
 export const API = 'https://api.github.com';
+export const GITHUB_PAGES = 'https://github.com/';
 export const REGISTRY = 'https://registry.npmjs.org';
 export const ORIGIN_KEY = 'slicc-os.releases-origin';
 export const MAX_RELEASES = 30;
@@ -50,7 +51,7 @@ export function within(items, { from, to, short, own }) {
   const picked = [];
   for (const item of items) {
     const version = versionOf(item.tag, { short, own });
-    if (!version) continue;
+    if (!version || typeof item.url !== 'string' || !item.url.startsWith(GITHUB_PAGES)) continue;
     const fits =
       from === null || from === undefined
         ? version === to
