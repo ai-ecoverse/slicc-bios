@@ -34,7 +34,21 @@ const chrome = await launch({
   args: [`--remote-debugging-port=${port}`],
 });
 after(() => chrome.close());
-const registry = await fakeRegistry(chrome.cdp, [release]);
+const clipboard = await fakeRelease({
+  name: '@ai-ecoverse/slicc-clipboard',
+  from: '1.0.2',
+  version: '1.0.99',
+  repository: 'https://github.com/ai-ecoverse/slicc-clipboard',
+});
+const tainted = await fakeRelease({
+  name: AGENT,
+  from: PINNED,
+  version: '7.0.0',
+  repository: 'https://github.com/ai-ecoverse/slicc-agent',
+  dependencies: { '@ai-ecoverse/slicc-clipboard': '1.0.99' },
+});
+const releases = [release, clipboard];
+const registry = await fakeRegistry(chrome.cdp, releases);
 const fakeExtension = extensionOver(await debuggerUrl(port));
 
 const agentRow = (page) =>
@@ -81,6 +95,36 @@ async function runsAgent(page, version, ms = 5 * 60 * 1000) {
     .catch(async (error) => {
       const seen = await page.evaluate(() => window.sliccRuns).catch(() => 'unknown');
       throw new Error(`the agent never ran ${version}, last ${seen}: ${error.message}`);
+    });
+}
+
+async function developer(page, on, ms = 10 * 60 * 1000) {
+  await page.evaluate((on) => {
+    window.sliccDeveloper = document
+      .querySelector('slicc-app')
+      .model.updates.setDeveloper(on)
+      .then(
+        () => 'done',
+        (error) => error.message
+      );
+  }, on);
+  await page
+    .within(
+      ms,
+      (on) => {
+        const { updates } = document.querySelector('slicc-app').model;
+        const npm = updates.list().find((item) => item.id === 'agent')?.npm ?? null;
+        window.sliccNpm = JSON.stringify(npm);
+        if (updates.developer() !== on) return false;
+        return on ? npm !== null && npm.state !== 'checking' : npm === null;
+      },
+      on
+    )
+    .catch(async (error) => {
+      const seen = await page.evaluate(() => window.sliccNpm).catch(() => 'unknown');
+      throw new Error(
+        `developer mode never settled ${on ? 'on' : 'off'}, last ${seen}: ${error.message}`
+      );
     });
 }
 
@@ -150,7 +194,7 @@ test('the owner turns on developer mode, npm’s newer agent is offered as a bet
   });
 
   await t.test('turning it on offers the newer release, with what it changes', async () => {
-    await page.evaluate(() => document.querySelector('slicc-app').model.updates.setDeveloper(true));
+    await developer(page, true);
     await npmSays(page, 'offered');
     const row = await agentRow(page);
     assert.equal(row.npm.latest, BETA);
@@ -274,13 +318,9 @@ test('the owner turns on developer mode, npm’s newer agent is offered as a bet
       t.after(() => {
         release.provenance = true;
       });
-      await page.evaluate(() =>
-        document.querySelector('slicc-app').model.updates.setDeveloper(false)
-      );
+      await developer(page, false);
       assert.equal((await agentRow(page)).npm, null);
-      await page.evaluate(() =>
-        document.querySelector('slicc-app').model.updates.setDeveloper(true)
-      );
+      await developer(page, true);
       await npmSays(page, 'not-offered');
       const row = await agentRow(page);
       assert.equal(row.npm.reason, 'no provenance');
@@ -291,16 +331,31 @@ test('the owner turns on developer mode, npm’s newer agent is offered as a bet
       t.after(() => {
         release.workflow = { ref: 'refs/heads/main', path: '.github/workflows/release.yml' };
       });
-      await page.evaluate(() =>
-        document.querySelector('slicc-app').model.updates.setDeveloper(false)
-      );
-      await page.evaluate(() =>
-        document.querySelector('slicc-app').model.updates.setDeveloper(true)
-      );
+      await developer(page, false);
+      await developer(page, true);
       await npmSays(page, 'not-offered');
       const outside = await agentRow(page);
       assert.equal(outside.npm.reason, 'built outside the release workflow');
       assert.ok(!outside.actions.includes('install-beta'));
+    }
+  );
+
+  await t.test(
+    'a release that brings an uncertified slicc-clipboard is listed but not offered',
+    async () => {
+      releases.unshift(tainted);
+      t.after(() => releases.splice(releases.indexOf(tainted), 1));
+      await developer(page, false);
+      await developer(page, true);
+      await npmSays(page, 'not-offered');
+      const row = await agentRow(page);
+      assert.equal(row.npm.latest, '7.0.0');
+      assert.equal(
+        row.npm.reason,
+        'needs @ai-ecoverse/slicc-clipboard@1.0.99, which isn’t certified'
+      );
+      assert.ok(!row.actions.includes('install-beta'));
+      assert.equal(await installedAgent(page), PINNED);
       assert.deepEqual(page.errors, []);
     }
   );

@@ -466,6 +466,7 @@ export function createBetas({
 
   async function install() {
     if (!developerOn(storage)) throw new Error('Turn on developer mode in Settings first.');
+    await checking;
     const chosen = offer;
     if (!chosen) throw new Error('There is no beta to install.');
     const yes = await ask({

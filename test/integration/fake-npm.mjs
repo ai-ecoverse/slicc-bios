@@ -8,13 +8,16 @@ export const REMOTES = ['https://cdn.jsdelivr.net/', 'https://registry.npmjs.org
 const REGISTRY = 'https://registry.npmjs.org/';
 const SLSA = 'https://slsa.dev/provenance/v1';
 
-async function repack(tarball, version) {
+async function repack(tarball, version, dependencies) {
   const entries = await unpackTar(gunzipSync(tarball));
   const encoder = new TextEncoder();
   const out = entries.map(({ header, data }) => {
     if (header.name !== 'package/package.json') return { header, data };
     const manifest = JSON.parse(new TextDecoder().decode(data));
-    const body = encoder.encode(`${JSON.stringify({ ...manifest, version }, null, 2)}\n`);
+    const deps = { ...manifest.dependencies, ...dependencies };
+    const body = encoder.encode(
+      `${JSON.stringify({ ...manifest, version, dependencies: deps }, null, 2)}\n`
+    );
     return { header: { ...header, size: body.byteLength }, data: body };
   });
   return gzipSync(await packTar(out));
@@ -22,9 +25,13 @@ async function repack(tarball, version) {
 
 const short = (name) => name.split('/').pop();
 
-export async function fakeRelease({ name, from, version, repository }) {
+export async function fakeRelease({ name, from, version, repository, dependencies = {} }) {
   const base = `${REGISTRY}${name}`;
-  const tarball = await repack(await download(`${base}/-/${short(name)}-${from}.tgz`), version);
+  const tarball = await repack(
+    await download(`${base}/-/${short(name)}-${from}.tgz`),
+    version,
+    dependencies
+  );
   const sha512 = createHash('sha512').update(tarball).digest();
   const integrity = `sha512-${sha512.toString('base64')}`;
   const url = `${REGISTRY}-/npm/v1/attestations/${name.replace('/', '%2f')}@${version}`;
@@ -40,6 +47,7 @@ export async function fakeRelease({ name, from, version, repository }) {
     const real = JSON.parse((await download(base)).toString());
     const doc = structuredClone(real.versions[from]);
     doc.version = version;
+    doc.dependencies = { ...doc.dependencies, ...dependencies };
     doc._id = `${name}@${version}`;
     doc.dist = {
       ...doc.dist,
