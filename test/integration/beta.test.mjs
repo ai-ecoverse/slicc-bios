@@ -501,7 +501,7 @@ test('nobody but the owner tab can turn developer mode on or install a beta: not
   assert.deepEqual(page.errors, []);
 });
 
-test('under report, a user’s pnpm pin in /opt/agent that brings an uncertified mcpcat is refused, and seven goes back to its own agent', async (t) => {
+test('under report, a user’s pnpm pin in /opt/agent that brings an uncertified mcpcat is refused at seven’s next agent update, and seven goes back to its own agent', async (t) => {
   releases.unshift(pinned);
   t.after(() => releases.splice(releases.indexOf(pinned), 1));
   const page = await chrome.page(t);
@@ -515,6 +515,12 @@ test('under report, a user’s pnpm pin in /opt/agent that brings an uncertified
   );
   await shows(page, 'add-done-', 5 * 60 * 1000);
   assert.match(await screen(page), /add-done-0/);
+  const lock = await readFile(
+    new URL('../../src/packages/agent/pnpm-lock.yaml', import.meta.url),
+    'utf8'
+  );
+  chrome.overrides.set('/packages/agent/pnpm-lock.yaml', `${lock}\n`);
+  t.after(() => chrome.overrides.delete('/packages/agent/pnpm-lock.yaml'));
   await act(page, 'retry');
   await rowSettled(page, 'agent');
   const id = `user:agent:${AGENT}`;
