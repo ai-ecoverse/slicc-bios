@@ -145,7 +145,7 @@ export function sixDialog(doc = document) {
       later.hidden = false;
       move.onclick = () => resolve(true);
       later.onclick = () => resolve(false);
-      move.focus();
+      later.focus();
     });
   return {
     async ask() {

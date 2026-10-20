@@ -248,7 +248,7 @@ test('moving SLICC 6 into seven from a cross-origin isolated BIOS: asked once, p
     title: 'Move SLICC 6 into seven in this browser?',
     body: 'Your cones, files and skills from SLICC 6 move into seven. After that, SLICC 6 and its Chrome extension stop working in this browser.',
     buttons: ['Move to seven', 'Not now'],
-    focused: 'Move to seven',
+    focused: 'Not now',
     framed: 0,
   });
   await page.evaluate(() => document.querySelector('.six-move').click());
@@ -314,12 +314,14 @@ test("when SLICC 6's exporter fails, seven sets no marker, six keeps working, an
   await page.evaluate(() => document.querySelector('.six-move').click());
   await showing(page, 'failed');
   const failed = await page.evaluate(() => ({
+    focused: document.activeElement?.textContent,
     title: document.querySelector('.six-title').textContent,
     body: document.querySelector('.six-body').textContent,
     buttons: [...document.querySelectorAll('.six .chip')].map((chip) => chip.textContent),
     frames: document.querySelectorAll('iframe').length,
   }));
   assert.deepEqual(failed, {
+    focused: 'Not now',
     title: 'Couldn’t move SLICC 6',
     body: `${STOP_ERROR} SLICC 6 still works in this browser.`,
     buttons: ['Try again', 'Not now'],
@@ -338,14 +340,15 @@ test("when SLICC 6's exporter fails, seven sets no marker, six keeps working, an
   assert.deepEqual(page.errors, []);
 });
 
-test('messages from another frame or another origin are ignored, and declining asks again on the next boot', async (t) => {
+test('Enter at the question declines, the next boot asks again, and messages from another frame or another origin are ignored', async (t) => {
   mode = 'spoof';
   const page = await open(t);
   const six = await dialog(page);
   await runSix(page);
   await page.goto(`${origin}/7/`);
   await showing(page, 'asking');
-  await page.evaluate(() => document.querySelector('.six-later').click());
+  assert.equal(await page.evaluate(() => document.activeElement?.textContent), 'Not now');
+  await page.enter();
   await ready(page);
   assert.deepEqual(six.states(), ['asking', 'closed']);
   assert.deepEqual(await storage(page), { marker: null, pending: null });
