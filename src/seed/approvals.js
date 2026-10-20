@@ -362,6 +362,22 @@ export function approval(req) {
   };
 }
 
+export const TRAY_WAIT = 5 * 60 * 1000;
+let trays = 0;
+
+export function trayApproval({ op, stamp, device }, now = Date.now()) {
+  trays += 1;
+  return {
+    id: `tray:${now}:${trays}`,
+    kind: 'tray',
+    op,
+    requester: requester(stamp ?? {}),
+    ...(device ? { device: { id: device.id, name: device.name } } : {}),
+    createdAt: now,
+    expiresAt: now + TRAY_WAIT,
+  };
+}
+
 function emitter() {
   const listeners = new Map();
   return {
@@ -416,6 +432,15 @@ export function createApprovals({
     else if (!owning && data?.list) show(data.list);
     else if (!owning && data?.ended) end(data.ended.id, data.ended.reason);
   };
+  const wait = (item, signal) =>
+    new Promise((resolve) => {
+      waiting.set(item.id, { item, resolve });
+      publish();
+      const stop = () =>
+        settle(item.id, 'deny', signal.reason === 'expired' ? 'expired' : 'withdrawn');
+      if (signal?.aborted) stop();
+      else signal?.addEventListener('abort', stop);
+    });
   channel.postMessage({ hello: true });
   return {
     port: {
@@ -440,17 +465,18 @@ export function createApprovals({
     async approve(req, { signal } = {}) {
       const item = approval(req);
       if (item.always) item.always = await check(req).catch(() => false);
-      return new Promise((resolve) => {
-        waiting.set(item.id, {
-          item,
-          resolve: (decision) => resolve(decision === 'always' && !item.always ? 'once' : decision),
-        });
-        publish();
-        const stop = () =>
-          settle(item.id, 'deny', signal.reason === 'expired' ? 'expired' : 'withdrawn');
-        if (signal?.aborted) stop();
-        else signal?.addEventListener('abort', stop);
-      });
+      const decision = await wait(item, signal);
+      return decision === 'always' && !item.always ? 'once' : decision;
+    },
+    async askTray(request, { timers = globalThis } = {}) {
+      const item = trayApproval(request);
+      const timeout = new AbortController();
+      const timer = timers.setTimeout(() => timeout.abort('expired'), TRAY_WAIT);
+      try {
+        return (await wait(item, timeout.signal)) === 'once';
+      } finally {
+        timers.clearTimeout(timer);
+      }
     },
   };
 }
