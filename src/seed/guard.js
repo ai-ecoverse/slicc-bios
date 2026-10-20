@@ -1079,10 +1079,9 @@ class Guard {
     const coded = [result.body, result.data, result.content].find(
       (item) => typeof item === 'string'
     );
-    const plain = result.base64Encoded && coded !== undefined ? decodedBytes(coded) : '';
-    const text = unescaped(
-      `${JSON.stringify(result)}\n${plain}`.replace(/=\r?\n/g, '').replace(/=3D/gi, '=')
-    );
+    const unfolded = (text) => text.replace(/=\r?\n/g, '').replace(/=3D/gi, '=');
+    const plain = result.base64Encoded && coded !== undefined ? decodedBytes(coded) : (coded ?? '');
+    const text = unescaped(`${unfolded(plain)}\n${JSON.stringify(result)}`);
     return this.redact({ text }).named;
   }
 
