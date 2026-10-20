@@ -298,8 +298,8 @@ function described(diff) {
   const gated = diff.gated.map(({ key }) => key);
   const count = `${diff.count} ${diff.count === 1 ? 'package changes' : 'packages change'}`;
   return gated.length
-    ? `${count} in /opt/agent’s lockfile, including the gated ${gated.join(', ')} (certified).`
-    : `${count} in /opt/agent’s lockfile; no gated package changes.`;
+    ? `${count} in /opt/agent’s lockfile, including the certified ${gated.join(', ')}, at certified versions.`
+    : `${count} in /opt/agent’s lockfile. No certified packages change.`;
 }
 
 function recordOf(chosen, now) {

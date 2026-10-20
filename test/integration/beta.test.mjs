@@ -176,7 +176,10 @@ test('the owner turns on developer mode, npm’s newer agent is offered as a bet
     const body = await confirmWith(page, 'Cancel');
     await acting;
     assert.match(body, new RegExp(`slicc-agent ${BETA.replaceAll('.', '\\.')} isn’t certified`));
-    assert.match(body, /packages? changes? in \/opt\/agent’s lockfile; no gated package changes/);
+    assert.match(
+      body,
+      /packages? changes? in \/opt\/agent’s lockfile\. No certified packages change\./
+    );
     assert.equal((await agentRow(page)).beta, null);
     assert.equal(await installedAgent(page), PINNED);
   });
