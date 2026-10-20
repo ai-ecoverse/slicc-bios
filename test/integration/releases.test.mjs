@@ -21,9 +21,19 @@ const older = (a, b) => {
 const floor = [...(await source('pnpm-lock.yaml')).matchAll(/slicc-kernel: '>=(\d+\.\d+\.\d+)'/g)]
   .map(([, version]) => version)
   .reduce((high, version) => (older(high, version) ? version : high), '0.0.0');
-const packument = await (
-  await fetch(`https://registry.npmjs.org/${KERNEL.replace('/', '%2F')}`)
-).json();
+async function registry(url) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(30000) });
+      if (response.ok) return response.json();
+      if (attempt >= 3) throw new Error(`${response.status} ${url}`);
+    } catch (error) {
+      if (attempt >= 3) throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, attempt * 2000));
+  }
+}
+const packument = await registry(`https://registry.npmjs.org/${KERNEL.replace('/', '%2F')}`);
 const PREVIOUS = Object.keys(packument.versions)
   .filter((version) => /^\d+\.\d+\.\d+$/.test(version))
   .filter((version) => older(version, SHIPPED) && !older(version, floor))

@@ -282,10 +282,12 @@ export const OWNER = 'ai-ecoverse';
 
 function bounded(work, wait, done) {
   let timer = null;
-  const finished = work.then(() => {
-    clearTimeout(timer);
-    done();
-  });
+  const finished = work
+    .catch(() => undefined)
+    .then(() => {
+      clearTimeout(timer);
+      done();
+    });
   const deadline = new Promise((resolve) => {
     timer = setTimeout(resolve, wait);
   });
