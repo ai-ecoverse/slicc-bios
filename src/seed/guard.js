@@ -89,7 +89,6 @@ const BODIES = new Set([
   'Network.getResponseBody',
   'Network.getRequestPostData',
   'Network.searchInResponseBody',
-  'Network.streamResourceContent',
   'Network.replayXHR',
   'Network.getResponseBodyForInterception',
   'Network.takeResponseBodyForInterceptionAsStream',
@@ -136,6 +135,9 @@ const CONTENTS = new Set([
   'Fetch.getResponseBody',
   'IO.read',
   'CSS.getStyleSheetText',
+  'Audits.getEncodedResponse',
+  'Network.getResponseBodyForInterception',
+  'Network.getRequestPostData',
   'DOM.getDocument',
   'DOM.getFlattenedDocument',
   'DOM.getOuterHTML',
@@ -143,6 +145,17 @@ const CONTENTS = new Set([
   'DOMSnapshot.captureSnapshot',
   'DOMSnapshot.getSnapshot',
 ]);
+const STREAMED = new Set([
+  'Network.streamResourceContent',
+  'Fetch.takeResponseBodyAsStream',
+  'Network.takeResponseBodyForInterceptionAsStream',
+]);
+const SEARCHES = {
+  'Network.searchInResponseBody': ({ requestId }) => ['Network.getResponseBody', { requestId }],
+  'Page.searchInResource': ({ frameId, url }) => ['Page.getResourceContent', { frameId, url }],
+};
+export const STREAMING =
+  'slicc: refused: a streamed body can’t be checked for seven’s or the vault’s URLs, so the guard doesn’t stream bodies; read the whole body instead';
 const CLOSED = new Set(['url', 'scopeURL', 'scriptURL']);
 const FREE = new Set([
   'expression',
@@ -263,6 +276,18 @@ const HOSTS = new RegExp(
   'gi'
 );
 
+const ENTITIES = { colon: ':', sol: '/', amp: '&', quest: '?', num: '#', equals: '=', period: '.' };
+
+function unescaped(text) {
+  return text.replace(/&(?:#x([0-9a-f]{1,6})|#(\d{1,7})|([a-z]+));?/gi, (found, hex, dec, name) => {
+    if (hex || dec) {
+      const code = hex ? Number.parseInt(hex, 16) : Number(dec);
+      return code <= 0x10ffff ? String.fromCodePoint(code) : found;
+    }
+    return ENTITIES[name.toLowerCase()] ?? found;
+  });
+}
+
 function decodedBytes(text) {
   try {
     return atob(text);
@@ -312,10 +337,16 @@ function scanned(value, starts, stops, swap) {
 }
 
 export function redacting(is) {
+  let webs = 0;
+  const past = (text, shown) => {
+    if (/^(?:https?|wss?):/i.test(text) && /^\/?[^/]/.test(text.slice(shown.length))) webs += 1;
+  };
   const origin = (text) => {
     const shown = authority(text);
     if (shown === null) return text.slice(0, text.indexOf('://') + 3);
-    return is.url(`${shown}/`) ? shown : null;
+    if (!is.url(`${shown}/`)) return null;
+    past(text, shown);
+    return shown;
   };
   const encoded = (text) => {
     const plain = decoded(text.slice(0, AUTHORITY * 3));
@@ -328,7 +359,13 @@ export function redacting(is) {
       return value;
     }
     const raw = scanned(value, STARTS, STOPS, origin);
-    return scanned(raw, ENCODED_STARTS, ENCODED_STOPS, encoded).replace(HOSTS, '$1$2');
+    return scanned(raw, ENCODED_STARTS, ENCODED_STOPS, encoded).replace(
+      HOSTS,
+      (found, host, port) => {
+        if (/^(?:\/|%2f)?[^/%]/i.test(found.slice(host.length + port.length))) webs += 1;
+        return `${host}${port}`;
+      }
+    );
   };
   const walk = (value, path, changed) => {
     if (typeof value === 'string') {
@@ -353,8 +390,14 @@ export function redacting(is) {
   };
   return (params) => {
     const changed = [];
+    webs = 0;
     const out = walk(params, [], changed);
-    return { params: out, changed, answered: changed.some((path) => path.length > 0) };
+    return {
+      params: out,
+      changed,
+      named: webs > 0,
+      answered: changed.some((path) => path.length > 0),
+    };
   };
 }
 
@@ -410,7 +453,6 @@ class Guard {
       this.sheets.add(params.header.styleSheetId);
     }
     const { params: redacted, changed, answered } = this.redact(params);
-    if (changed.length && method.startsWith('DOM.')) return undefined;
     if (!changed.length) return this.deliver(message);
     if (answered && /^(?:Network|Fetch)\./.test(method)) {
       for (const id of [params.requestId, params.networkId])
@@ -1026,16 +1068,26 @@ class Guard {
     this.redacted(message);
   }
 
-  contents(message, was) {
-    const { method } = was ?? {};
-    const { result } = message;
-    if (!CONTENTS.has(method) || !result || typeof result !== 'object') return false;
+  async searched(method, params, sessionId) {
+    const [read, args] = SEARCHES[method](params);
+    const { result } = await this.call(read, args, sessionId);
+    return this.mentions(result);
+  }
+
+  mentions(result) {
+    if (!result || typeof result !== 'object') return false;
     const coded = [result.body, result.data, result.content].find(
       (item) => typeof item === 'string'
     );
     const plain = result.base64Encoded && coded !== undefined ? decodedBytes(coded) : '';
-    const text = `${JSON.stringify(result)}\n${plain}`.replace(/=\r?\n/g, '').replace(/=3D/gi, '=');
-    if (this.redact({ text }).changed.length === 0) return false;
+    const text = unescaped(
+      `${JSON.stringify(result)}\n${plain}`.replace(/=\r?\n/g, '').replace(/=3D/gi, '=')
+    );
+    return this.redact({ text }).named;
+  }
+
+  contents(message, was) {
+    if (!CONTENTS.has(was?.method) || !this.mentions(message.result)) return false;
     this.refuse(was);
     return true;
   }
@@ -1207,6 +1259,8 @@ class Guard {
     }
     if (STICKY.has(method) || EMULATION.test(method)) return HEADERS;
     if (DEBUGGERS.some((domain) => method.startsWith(domain))) return DEBUGGER;
+    if (STREAMED.has(method)) return STREAMING;
+    if (SEARCHES[method] && (await this.searched(method, params, sessionId))) return PROTECTED;
     const world = await this.selecting(method, params, sessionId);
     if (world) return world;
     if (this.plainly(method, params, sessionId)) return PROTECTED;

@@ -62,11 +62,25 @@ const site = createHttp((req, res) => {
     res.writeHead(200, { 'content-type': 'text/html' });
     return res.end(`<title>meta</title><meta http-equiv="refresh" content="9999;url=${hop}">`);
   }
+  if (url.pathname.startsWith('/entity/') && hop) {
+    const encoded = hop.replace(/:/g, '&colon;').replace(/\//g, '&#x2f;').replace(/\?/g, '&#63;');
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end(
+      `<title>entity</title><meta http-equiv="refresh" content="9999;url=${encoded}">`
+    );
+  }
   if (url.pathname.startsWith('/form/') && hop) {
     const target = new URL(hop);
     res.writeHead(200, { 'content-type': 'text/html' });
     return res.end(
-      `<title>form</title><form method="post" action="${target.origin}${target.pathname}">${[...target.searchParams].map(([name, value]) => `<input type="hidden" name="${name}" value="${value}">`).join('')}</form>`
+      [
+        '<title>form</title>',
+        `<form method="post" action="${target.origin}${target.pathname}">`,
+        ...[...target.searchParams].map(
+          ([name, value]) => `<input type="hidden" name="${name}" value="${value}">`
+        ),
+        '</form>',
+      ].join('\n')
     );
   }
   if (url.pathname.startsWith('/framed/')) {
@@ -126,6 +140,7 @@ const plan = () => {
     steps.push({ fetching, kind: 'seven', how: 'navigate', path: `/talk/${hopTo('seven')}` });
     steps.push({ fetching, kind: 'vault', how: 'navigate', path: `/framed/${hopTo('vault')}` });
     steps.push({ fetching, kind: 'seven', how: 'navigate', path: `/meta/${hopTo('seven')}` });
+    steps.push({ fetching, kind: 'seven', how: 'navigate', path: `/entity/${hopTo('seven')}` });
     steps.push({ fetching, kind: 'sheet', how: 'navigate', path: `/styled/${hopTo('sheet')}` });
     steps.push({ fetching, kind: 'vault', how: 'navigate', path: `/form/${hopTo('vault')}` });
   }
@@ -175,6 +190,8 @@ async function rig({ transport, proxy, port, override }) {
     return false;
   };
   const answers = {
+    searches: [],
+    streams: [],
     doms: [],
     sheets: [],
     infos: [],
@@ -204,6 +221,11 @@ async function rig({ transport, proxy, port, override }) {
     while (state.pumping) {
       for (const message of paused.splice(0)) {
         const { requestId, request, responseStatusCode } = message.params;
+        if (responseStatusCode !== undefined && request.url.includes('/form/')) {
+          answers.streams.push(
+            await send('Fetch.takeResponseBodyAsStream', { requestId }, state.session)
+          );
+        }
         if (responseStatusCode !== undefined) {
           answers.bodies.push({
             url: request.url,
@@ -331,6 +353,10 @@ async function rig({ transport, proxy, port, override }) {
         answers.reads.push(
           await send('Network.searchInResponseBody', { requestId, query: 'M' }, session)
         );
+        answers.searches.push(
+          await send('Network.searchInResponseBody', { requestId, query: 'name="code"' }, session)
+        );
+        answers.streams.push(await send('Network.streamResourceContent', { requestId }, session));
       }
       answers.reads.push(await send('Page.getResourceContent', { frameId: top.id, url }, session));
       answers.reads.push(
@@ -524,6 +550,15 @@ async function check(t, transport) {
       );
     }
   }
+  assert.ok(
+    answers.streams.length > 0 && answers.streams.every(refused),
+    JSON.stringify(answers.streams).slice(0, 300)
+  );
+  assert.ok(answers.searches.length > 0);
+  assert.ok(
+    answers.searches.every((answer) => !JSON.stringify(answer).includes('value=')),
+    JSON.stringify(answers.searches).slice(0, 300)
+  );
   for (const kind of ['form']) {
     const doms = answers.doms.filter((dom) => dom.kind === kind).flatMap((dom) => dom.answers);
     assert.ok(
