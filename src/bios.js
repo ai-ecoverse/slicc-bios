@@ -1,6 +1,21 @@
 import { usersMode } from './seed/users.js';
 
-const quiet = { begin() {}, report() {}, done() {}, fail() {} };
+const quiet = {
+  begin() {},
+  report() {},
+  done() {},
+  fail(name, message) {
+    const drawer = document.querySelector('.diagnostics');
+    document.querySelector('.splash').dataset.state = 'failed';
+    document.querySelector('.verb').textContent = `${name}: ${message}`;
+    drawer.classList.add('open');
+    drawer.inert = false;
+    for (const button of document.querySelectorAll('.retry')) {
+      button.hidden = false;
+      button.onclick = () => location.reload();
+    }
+  },
+};
 const { splash } = await import('./sw/splash.js').catch((error) => {
   console.warn(`bios: booting without the splash, ${error.message}`);
   return { splash: quiet };

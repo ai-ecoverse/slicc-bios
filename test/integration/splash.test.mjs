@@ -241,6 +241,34 @@ for (const status of [404, 500]) {
   });
 }
 
+test('without the splash a failing boot still shows the failed step, opens the diagnostics, and Try again boots', async (t) => {
+  const page = await chrome.page(t);
+  const blocked = await refuse(page, 404);
+  chrome.cdn.status = 404;
+  await page.goto('/');
+  await page.until(
+    () => document.querySelector('[data-step="packages"]').dataset.state === 'failed'
+  );
+  const shown = await page.evaluate(() => {
+    const drawer = document.querySelector('.diagnostics');
+    return {
+      open: drawer.classList.contains('open') && !drawer.inert,
+      state: document.querySelector('.splash').dataset.state,
+      verb: document.querySelector('.verb').textContent,
+      retry: [...document.querySelectorAll('.retry')].every((button) => !button.hidden),
+    };
+  });
+  assert.equal(shown.open, true);
+  assert.equal(shown.state, 'failed');
+  assert.match(shown.verb, /^packages: 404 https:\/\/registry\.npmjs\.org\/\S+\.tgz$/);
+  assert.equal(shown.retry, true);
+  chrome.cdn.status = 0;
+  await page.evaluate(() => document.querySelector('.diagnostics .retry').click());
+  await page.until(() => location.pathname === '/os/');
+  await blocked.stop();
+  assert.ok(blocked.seen.length > 1);
+});
+
 async function timed(page) {
   const start = Date.now();
   await page.goto('/');
