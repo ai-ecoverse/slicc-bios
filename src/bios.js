@@ -176,6 +176,7 @@ await step('seed', async () => {
     'grammars.js',
     'guard.js',
     'handoff.js',
+    'held.js',
     'index.html',
     'jerk.js',
     'join.css',

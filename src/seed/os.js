@@ -21,7 +21,7 @@ import {
 import { createApprovals, rootChecked, routeSudo, useSecretRules } from './approvals.js';
 import { createBetas } from './beta.js';
 import { createBrowser } from './browser.js';
-import { browserControl, linkedBrowsers } from './cdp.js';
+import { browserControl, browserHosts, linkedBrowsers } from './cdp.js';
 import { clipboardHook } from './clipboard.js';
 import { denialLog, installCommand, watchProtected } from './denials.js';
 import { createExitRouter } from './exits.js';
@@ -36,6 +36,7 @@ import {
   installed,
 } from './grammars.js';
 import { clearHandOff } from './handoff.js';
+import { watchOpened, watchSignIns } from './held.js';
 import { createJerk } from './jerk.js';
 import { change, userRows } from './layer.js';
 import { createLeaders, proxyOf } from './leaders.js';
@@ -171,7 +172,14 @@ export function offered(all) {
 const network = await pickTransport();
 const { kind } = network;
 const browser = createBrowser(network);
-const control = browserControl(network, { observe: browser.observe, links: () => links });
+let poke = () => {};
+const control = browserControl(network, {
+  observe: (connection) => {
+    poke();
+    return browser.observe(connection);
+  },
+  links: () => links,
+});
 const exits = createExitRouter();
 const tailscale = createTailscale(await tailscaleConfig(), { router: exits });
 clearHandOff();
@@ -764,6 +772,10 @@ async function own() {
     owner: () => coneIds ?? { uid: 0, gid: 0 },
   });
   approvals.own();
+  const hosts = () => browserHosts(network);
+  watchSignIns({ hosts });
+  ({ poke } = watchOpened({ hosts, own: location.origin }));
+  if (globalThis.sliccKernelDebug === true) globalThis.sliccBrowserHosts = hosts;
   const denials = denialLog({ root, users: () => kernel?.users, mode });
   const link = linkFacade({
     check: async (stamp) => permitted(stamp, await sudoGidOf(kernel).catch(() => undefined)),
