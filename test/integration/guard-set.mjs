@@ -15,6 +15,8 @@ import { known as knownRow, listedWrong, stale } from './guard-known.mjs';
 const exposure = { listed: false, sample: null };
 const known = (row) => knownRow(row, exposure);
 
+import { linkNode } from './linked-node.mjs';
+
 export const fixture = await fixtureServer();
 const origin = (host) => `http://${host}:${fixture.port}`;
 export const targets = {
@@ -44,6 +46,13 @@ const PATHS = {
     browserContexts: true,
     chromeUrlsAttach: true,
     discovery: true,
+    extensionWorld: true,
+  },
+  link: {
+    autoAttach: true,
+    browserSession: true,
+    browserContexts: true,
+    chromeUrlsAttach: true,
     extensionWorld: true,
   },
 };
@@ -139,7 +148,7 @@ async function unguardedClient() {
   };
 }
 
-export async function guardHost(t) {
+export async function guardHost(t, path) {
   const proxy = await startProxy({
     port: 0,
     origins: [new URL(chrome.url).origin],
@@ -170,6 +179,7 @@ export async function guardHost(t) {
     rows.get(row)?.messages.push(text);
   });
   await seven.init(() => {
+    globalThis.sliccKernelDebug = true;
     const every = window.setInterval;
     window.setInterval = (callback, ms, ...rest) =>
       ms === 15 * 60 * 1000 ? 0 : every(callback, ms, ...rest);
@@ -207,12 +217,18 @@ export async function guardHost(t) {
     });
   });
   await boot(seven);
+  if (path === 'link') trace('link', (await linkNode(t, seven, port)).join(' '));
   const setup = async (proxy) => {
     const { guardProtected } = await import(new URL('guard.js', location.href).href);
     const { extensionConnection, proxyHost } = await import(new URL('cdp.js', location.href).href);
     const hosts = {
       extension: async () => extensionConnection(globalThis.sliccExtension.cdp),
       proxy: proxyHost(proxy),
+      link: async () => {
+        const [linked] = globalThis.sliccLinkedBrowsers();
+        if (!linked) throw new Error('no linked browser');
+        return linked.open();
+      },
     };
     const lagged = (connection, lag) => {
       const send = connection.send.bind(connection);
@@ -347,7 +363,7 @@ export function shared(path, { variants, except = [], group } = {}) {
     test(`the shared guard vectors (@ai-ecoverse/slicc-browsers@${set.setVersion}) against bios's guard on the ${path} path, ${variant} detach${where}`, {
       timeout: 60 * 60 * 1000,
     }, async (t) => {
-      const { clientFactory } = await guardHost(t);
+      const { clientFactory } = await guardHost(t, path);
       for (const target of chosen.targets) {
         trace('run', path, target, variant);
         const execution = await run(subset(target), {
@@ -409,7 +425,7 @@ export function shared(path, { variants, except = [], group } = {}) {
       })),
   };
   test(`the shared set is complete on the ${path} path${scope}${where}: no row missing, none skipped for a missing observer`, async () => {
-    const report = summary({ set: covered, results, guard: 'slicc-bios', sha: SHA });
+    const report = summary({ set: covered, results, guard: `slicc-bios/${path}`, sha: SHA });
     const informed = results.filter((row) => row.ran || row.notes);
     const skips = {};
     for (const row of results) {

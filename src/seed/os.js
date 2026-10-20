@@ -21,7 +21,7 @@ import {
 import { createApprovals, rootChecked, routeSudo, useSecretRules } from './approvals.js';
 import { createBetas } from './beta.js';
 import { createBrowser } from './browser.js';
-import { browserControl } from './cdp.js';
+import { browserControl, linkedBrowsers } from './cdp.js';
 import { clipboardHook } from './clipboard.js';
 import { denialLog, installCommand, watchProtected } from './denials.js';
 import { createExitRouter } from './exits.js';
@@ -797,8 +797,10 @@ async function own() {
     );
   }
   exits.attach(kernel);
-  if (globalThis.sliccKernelDebug === true)
+  if (globalThis.sliccKernelDebug === true) {
     globalThis.sliccKernelClient = async () => attachKernel(await kernel.connect());
+    globalThis.sliccLinkedBrowsers = () => linkedBrowsers(() => links);
+  }
   await seedFnox(kernel, attachKernel).catch((error) =>
     console.warn(`fnox config: ${error.message}`)
   );
