@@ -12,14 +12,17 @@ import { launch } from './chrome.mjs';
 
 const run = promisify(execFile);
 
-const release = (version, sha256) => ({
+const release = (version, sha256, { foreignWorld = false } = {}) => ({
   version,
+  foreignWorld,
   url: `https://github.com/ai-ecoverse/slicc-extension/releases/download/v${version}/slicc-extension.zip`,
   sha256,
 });
 export const EXTENSIONS = [
   release('7.7.0', '85a3ae130dc1cdfffe39063d95586f98ba637e065b18ee83a9a438a81580564b'),
-  release('7.5.1', 'bdcd08b945cf69baa554cf01072d88436c3f8b97b05376cd369746598cf84a75'),
+  release('7.5.1', 'bdcd08b945cf69baa554cf01072d88436c3f8b97b05376cd369746598cf84a75', {
+    foreignWorld: true,
+  }),
   release('7.6.2', '0871897fe03e96bddb16ab1c2712437e99835d01ca4566049a61ae888277c20e'),
   release('7.6.3', '17f0e53dd5d11465ea60d7ae4409cfbb9f48859501119d62dd5e5d4673a79426'),
   release('7.6.4', 'd3523ce49e61b8db4c84d4470c5a1248b5765b3a9967b91c2a4e0f60a7f578f5'),
