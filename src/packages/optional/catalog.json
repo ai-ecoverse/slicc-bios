@@ -41,7 +41,7 @@
     "description": "numpy, pandas, matplotlib and scipy for Python, about 240 MB on disk. scipy lacks only the deprecated scipy.odr.",
     "commands": [],
     "requires": ["python"],
-    "size": 67206959
+    "size": 67059175
   },
   "@ai-ecoverse/slicc-jsh": {
     "id": "node",
