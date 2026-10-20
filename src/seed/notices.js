@@ -214,7 +214,7 @@ function shown(href, origin) {
 
 export function waitingNotice({ here, others, origin }) {
   const body = here.length
-    ? `This tab is still loading ${shown(here[0], origin)} with the old version. Reload to apply the update.`
+    ? `This tab is still loading ${shown(here[0], origin)} with the old version. Reload to apply the update; that load stops.`
     : others.length
       ? `Another seven tab is still loading ${shown(others[0], origin)} with the old version. Close or reload that tab to apply the update.`
       : 'Reload to apply the update.';

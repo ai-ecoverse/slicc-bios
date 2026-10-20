@@ -86,7 +86,7 @@ test('while the tab holds a half-read download from the old worker, it says seve
     { title: notice.title, body: notice.body, actions: notice.actions },
     {
       title: 'Seven updated',
-      body: 'This tab is still loading /os/held.bin with the old version. Reload to apply the update.',
+      body: 'This tab is still loading /os/held.bin with the old version. Reload to apply the update; that load stops.',
       actions: [{ id: 'reload', label: 'Reload' }],
     }
   );
