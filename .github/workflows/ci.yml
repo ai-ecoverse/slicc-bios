@@ -407,11 +407,18 @@ jobs:
           SKIP: ${{ needs.plan.outputs.skip }}
         run: node scripts/ci/verdict.mjs shards --dir artifacts/verdicts --expect "$SHARDS" --results "{\"plan\":\"$PLAN\",\"lint\":\"$LINT\",\"integration\":\"$INTEGRATION\",\"vendors\":\"$VENDORS\"}" --mode "$MODE" --skip "$SKIP"
 
-      - name: Every gated pin or certs.json line a PR or merge group changes is a release its own repository certified (release-state)
+      - name: Every gated pin or certs.json line a PR or merge group changes against main is a release its own repository certified (release-state)
         if: always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
         env:
           GH_TOKEN: ${{ github.token }}
-          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          GROUP_BASE: ${{ github.event.merge_group.base_sha }}
         run: |
-          git fetch -q --no-tags --depth=1 origin "$BASE"
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            git fetch -q --no-tags --depth=2 origin "$GITHUB_SHA"
+            BASE=$(git rev-parse "$GITHUB_SHA^1")
+          else
+            BASE="$GROUP_BASE"
+            git fetch -q --no-tags --depth=1 origin "$BASE"
+          fi
+          echo "release-state base: $BASE (on a pull request, the merge ref's first parent: main as GitHub merged it, not the payload's base.sha, which goes stale when main moves)"
           node scripts/cert/release-state.mjs --base "$BASE" --head HEAD --out artifacts/cert/release-state.json

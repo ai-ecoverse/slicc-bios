@@ -1052,3 +1052,35 @@ test('a test file in no class and not on the unclassified list (a new one) count
   const fresh = files.map((f) => f.replace(/\.test\.mjs$/, '')).filter((n) => !listed.has(n));
   if (fresh.length) console.log(`not yet classified (treated as a class): ${fresh.join(', ')}`);
 });
+
+test('#705: a stale-branch PR that touches only a test passes against the merge ref’s first parent, and the cdp tag moving past main’s own pin never fails it', async () => {
+  const { dir, git, write } = repo();
+  const lock = (v) => npmLock([['@ai-ecoverse/slicc-cdp', v, INTEGRITY]]);
+  write('src/packages/package-lock.json', lock('1.30.9'));
+  write('src/packages/certs.json', '{}\n');
+  write('test/integration/a.test.mjs', '\n');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'main 1');
+  const stale = git('rev-parse', 'HEAD');
+  git('checkout', '-q', '-b', 'pr');
+  write('test/integration/a.test.mjs', 'export {};\n');
+  git('commit', '-q', '-am', 'only a test');
+  git('checkout', '-q', '-');
+  write('src/packages/package-lock.json', lock('1.30.10'));
+  git('commit', '-q', '-am', 'main 2: cdp 1.30.10, certified then');
+  git('merge', '-q', '--no-ff', '-m', 'the merge ref', 'pr');
+  const src = fake({ tags: { certified: '1.30.14' } });
+  const old = await releaseState({ cwd: dir, base: stale, head: 'HEAD', src });
+  assert.equal(old.ok, false, 'the payload’s stale base.sha sees main’s own move as the PR’s');
+  const r = await releaseState({ cwd: dir, base: git('rev-parse', 'HEAD^1'), head: 'HEAD', src });
+  assert.deepEqual(
+    [r.ok, r.line],
+    [true, 'release-state: PASS no gated pin or certs.json line changes']
+  );
+  const step = ci.slice(ci.indexOf('(release-state)'), ci.indexOf('(release-state)') + 1200);
+  assert.match(
+    step,
+    /if \[ "\$GITHUB_EVENT_NAME" = pull_request \]; then\n {12}git fetch -q --no-tags --depth=2 origin "\$GITHUB_SHA"\n {12}BASE=\$\(git rev-parse "\$GITHUB_SHA\^1"\)/
+  );
+  assert.doesNotMatch(step, /pull_request\.base\.sha/);
+});
