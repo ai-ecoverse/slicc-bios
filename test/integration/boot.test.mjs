@@ -132,3 +132,49 @@ test('goes on under the active worker when an updated one waits and never activa
   );
   assert.deepEqual(page.errors, []);
 });
+
+async function uncontrolledReload(page, marker) {
+  const os = new URL('../../src/seed/', import.meta.url);
+  for (const name of ['index.html', 'os.css', 'start.js'])
+    chrome.overrides.set(`/os/${name}`, await readFile(new URL(name, os), 'utf8'));
+  await page.evaluate(async (marker) => {
+    if (marker) sessionStorage.setItem('slicc-os.uncontrolled', String(Date.now()));
+    else sessionStorage.removeItem('slicc-os.uncontrolled');
+    for (const registration of await navigator.serviceWorker.getRegistrations())
+      await registration.unregister();
+    window.before765 = true;
+  }, marker);
+  const before = chrome.requests.length;
+  await page.send('Page.navigate', { url: new URL('/os/index.html', chrome.url).href });
+  return before;
+}
+
+test('an /os/ page that loads without seven’s service worker goes back through the BIOS once and ends booted, not stalled (#765)', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  const before = await uncontrolledReload(page, false);
+  await page.within(
+    60000,
+    () =>
+      !window.before765 &&
+      location.pathname.startsWith('/os/') &&
+      !!navigator.serviceWorker.controller &&
+      !!document
+        .querySelector('slicc-app')
+        ?.dock?.api.panels.some((panel) => panel.id.startsWith('terminal:'))
+  );
+  const seen = chrome.requests.slice(before);
+  assert.ok(seen.includes('/os/start.js'), 'seven’s start loaded without the worker');
+  assert.ok(seen.includes('/bios.js'), 'the page went back through the BIOS');
+  assert.equal(await page.evaluate(() => sessionStorage.getItem('slicc-os.uncontrolled')), null);
+  assert.deepEqual(page.errors, []);
+});
+
+test('an /os/ page that is still without its service worker after one trip through the BIOS stops there and says why, with no second trip (#765)', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  const before = await uncontrolledReload(page, true);
+  await page.within(30000, () => !window.before765 && !!document.querySelector('[data-refused]'));
+  assert.equal(await page.evaluate(() => location.pathname), '/os/index.html');
+  assert.equal(chrome.requests.slice(before).includes('/bios.js'), false, 'no second trip');
+});
