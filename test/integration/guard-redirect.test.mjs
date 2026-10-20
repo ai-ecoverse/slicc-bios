@@ -16,6 +16,8 @@ const free = () =>
     });
   });
 
+const ordinary = (path) =>
+  `<title>ordinary</title>${path}<script>void \`http://localhost:\${location.port}/x\`;</script>`;
 const marks = [];
 const mark = () => {
   const value = `M${randomBytes(6).toString('hex')}`;
@@ -94,7 +96,7 @@ const site = createHttp((req, res) => {
     return res.end();
   }
   res.writeHead(200, { 'content-type': 'text/html' });
-  return res.end(`<title>ordinary</title>${url.pathname}`);
+  return res.end(ordinary(url.pathname));
 });
 await new Promise((resolve) => site.listen(0, '127.0.0.1', resolve));
 port = site.address().port;
@@ -527,7 +529,7 @@ async function check(t, transport) {
   );
   assert.ok(
     answers.plain.length > 0 &&
-      answers.plain.every((answer) => answer.result?.body === '<title>ordinary</title>/start'),
+      answers.plain.every((answer) => answer.result?.body === ordinary('/start')),
     `an ordinary page's body reads unchanged: ${JSON.stringify(answers.plain).slice(0, 300)}`
   );
   const sheets = answers.sheets.filter(({ url }) => url.includes('sliccy.ai'));

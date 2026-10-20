@@ -345,7 +345,7 @@ export function redacting(is) {
     const shown = authority(text);
     if (shown === null) return text.slice(0, text.indexOf('://') + 3);
     if (!is.url(`${shown}/`)) return null;
-    past(text, shown);
+    if (URL.canParse(`${shown}/`)) past(text, shown);
     return shown;
   };
   const encoded = (text) => {
