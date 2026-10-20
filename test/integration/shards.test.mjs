@@ -576,7 +576,7 @@ test('a shard killed during its retry has already left the first attempt’s art
     join(root, 't/flaky.test.mjs'),
     flaky('await new Promise((resolve) => setTimeout(resolve, 120000));')
   );
-  for (const dir of ['scripts/ci', 'scripts/canary'])
+  for (const dir of ['scripts/ci', 'scripts/canary', 'scripts/cert'])
     await cp(new URL(`../../${dir}/`, import.meta.url), join(root, dir), { recursive: true });
   const child = spawn(
     process.execPath,
