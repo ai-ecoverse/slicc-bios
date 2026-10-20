@@ -152,3 +152,108 @@ test('the default wait covers several minutes of registry lag with a growing bac
   assert.ok(total >= 5 * 60, `${total} s`);
   assert.ok(WAITS.every((seconds, i) => i === 0 || seconds >= WAITS[i - 1]));
 });
+
+test("a tarball npm lists but can't hand out yet is waited for, not failed", async (t) => {
+  const fake = await npm('');
+  t.after(fake.done);
+  await writeFile(
+    join(fake.dir, 'npm'),
+    `#!/bin/sh\necho "$*" >> "${fake.dir}/calls"\nn=$(cat "${fake.dir}/state"); n=$((n + 1)); echo "$n" > "${fake.dir}/state"\nif [ "$1" = view ]; then echo "${OTHER}"; exit 0; fi\nfor last; do :; done\ncase "$2" in @*) if [ "$n" -lt 4 ]; then echo "npm error code E404" >&2; exit 1; fi; cp "${fake.dir}/theirs.tgz" "$last/x.tgz";; *) cp "${fake.dir}/ours.tgz" "$last/x.tgz";; esac\n`
+  );
+  const tar = Buffer.from('the same tar');
+  await tarballs(fake.dir, tar, tar);
+  const { code, stdout } = await served(fake, wait());
+  assert.equal(code, 0, stdout);
+  assert.match(stdout, /serves the packed contents/);
+  const calls = await fake.calls();
+  assert.equal(
+    calls.filter((call) => call.startsWith(`pack ${NAME}@`)).length,
+    2,
+    calls.join('\n')
+  );
+  const never = await npm('');
+  t.after(never.done);
+  await writeFile(
+    join(never.dir, 'npm'),
+    `#!/bin/sh\nif [ "$1" = view ]; then echo "${OTHER}"; exit 0; fi\necho "npm error code E404" >&2; exit 1\n`
+  );
+  const late = await served(never, wait());
+  assert.equal(late.code, 1);
+  assert.match(
+    late.stdout,
+    /^published: FAIL npm doesn't serve @ai-ecoverse\/slicc-bios@1\.31\.10's tarball after 0 min$/m
+  );
+});
+
+async function publish(script) {
+  const fake = await npm('');
+  await writeFile(
+    join(fake.dir, 'npm'),
+    `#!/bin/sh\necho "$*" >> "${fake.dir}/calls"\ncase "$1" in\n  version) exit 0;;\n  pack) echo '[{"integrity":"${PACKED}"}]'; exit 0;;\nesac\n${script}\n`
+  );
+  await chmod(join(fake.dir, 'npm'), 0o755);
+  const script_ = new URL('../../scripts/ci/publish.sh', import.meta.url).pathname;
+  const result = await promisify(execFile)('bash', [script_], {
+    env: {
+      ...process.env,
+      PATH: `${fake.dir}:${process.env.PATH}`,
+      TAG: 'v1.31.10',
+      RUNNER_TEMP: fake.dir,
+      SERVED_WAITS: '0,0',
+      PUBLISH_BACKOFF: '0',
+      GITHUB_STEP_SUMMARY: '',
+    },
+  }).then(
+    ({ stdout }) => ({ code: 0, stdout }),
+    (error) => ({ code: error.code, stdout: error.stdout })
+  );
+  return { ...result, calls: await fake.calls(), done: fake.done };
+}
+
+const listing = (when) =>
+  `if [ "$1" = view ] && [ "$3" = version ]; then ${when}; fi\nif [ "$1" = view ] && [ "$3" = dist.integrity ]; then if [ -e "$(dirname "$0")/published" ]; then echo "${PACKED}"; exit 0; fi; exit 1; fi`;
+
+test("release.yml's publish step: a version npm already lists is only waited for, never published again", async (t) => {
+  const run = await publish(
+    `${listing('echo 1.31.10; exit 0')}\nif [ "$1" = publish ]; then exit 99; fi\n`
+  );
+  t.after(run.done);
+  assert.equal(
+    run.calls.some((call) => call.startsWith('publish')),
+    false
+  );
+  assert.match(run.stdout, /npm already lists @ai-ecoverse\/slicc-bios@1\.31\.10/);
+});
+
+test("release.yml's publish step: a publish npm takes ends in the wait for the packed tarball, with npm's output logged", async (t) => {
+  const run = await publish(
+    `${listing('exit 1')}\nif [ "$1" = publish ]; then touch "$(dirname "$0")/published"; echo "npm notice Publishing"; echo "+ @ai-ecoverse/slicc-bios@1.31.10"; exit 0; fi\n`
+  );
+  t.after(run.done);
+  assert.equal(run.code, 0, run.stdout);
+  assert.match(run.stdout, /npm notice Publishing/);
+  assert.match(
+    run.stdout,
+    /^published: @ai-ecoverse\/slicc-bios@1\.31\.10 serves the packed sha512-/m
+  );
+  assert.equal(run.calls.filter((call) => call.startsWith('publish')).length, 1);
+});
+
+test("release.yml's publish step: a publish that errors but npm then lists is waited for, and one npm never takes fails after three attempts", async (t) => {
+  const taken = await publish(
+    `if [ "$1" = view ] && [ "$3" = version ]; then if [ -e "$(dirname "$0")/published" ]; then echo 1.31.10; exit 0; fi; exit 1; fi\nif [ "$1" = view ] && [ "$3" = dist.integrity ]; then echo "${PACKED}"; exit 0; fi\nif [ "$1" = publish ]; then touch "$(dirname "$0")/published"; echo "npm error code E409" >&2; exit 1; fi\n`
+  );
+  t.after(taken.done);
+  assert.equal(taken.code, 0, taken.stdout);
+  assert.match(taken.stdout, /npm error code E409/);
+  assert.match(taken.stdout, /^published: .* serves the packed sha512-/m);
+  assert.equal(taken.calls.filter((call) => call.startsWith('publish')).length, 1);
+  const refused = await publish(
+    `${listing('exit 1')}\nif [ "$1" = publish ]; then echo "npm error code E403" >&2; exit 1; fi\n`
+  );
+  t.after(refused.done);
+  assert.equal(refused.code, 1);
+  assert.equal(refused.calls.filter((call) => call.startsWith('publish')).length, 3);
+  assert.match(refused.stdout, /::error::v1\.31\.10 is tagged but not on npm/);
+  assert.match(refused.stdout, /npm publish failed \(attempt 3\)/);
+});

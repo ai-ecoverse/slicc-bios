@@ -72,30 +72,4 @@ jobs:
         if: steps.release.outputs.tag != ''
         env:
           TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          set -o pipefail
-          version="${TAG#v}"
-          name=@ai-ecoverse/slicc-bios
-          npm version --no-git-tag-version --allow-same-version "$version"
-          integrity=$(node scripts/ci/served.mjs pack)
-          echo "packed $name@$version: $integrity"
-          listed() { [ "$(npm view "$name@$version" version --prefer-online 2> /dev/null)" = "$version" ]; }
-          if listed; then
-            echo "npm already lists $name@$version"
-            node scripts/ci/served.mjs wait --name "$name" --version "$version" --integrity "$integrity"
-            exit
-          fi
-          for attempt in 1 2 3; do
-            if npm publish --provenance --access public 2>&1 | tee "$RUNNER_TEMP/publish-$attempt.log"; then
-              node scripts/ci/served.mjs wait --name "$name" --version "$version" --integrity "$integrity"
-              exit
-            fi
-            if listed; then
-              node scripts/ci/served.mjs wait --name "$name" --version "$version" --integrity "$integrity"
-              exit
-            fi
-            echo "npm publish failed (attempt $attempt)"
-            sleep $((attempt * 30))
-          done
-          echo "::error::$TAG is tagged but not on npm. Re-run this workflow on main: it publishes the tag at HEAD if npm doesn't have it."
-          exit 1
+        run: scripts/ci/publish.sh

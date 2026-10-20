@@ -66,8 +66,10 @@ async function contents(exec, args, log) {
 
 export async function sameContents({ id, run: exec = run, log = console.log }) {
   const theirs = await contents(exec, ['pack', id], log);
+  if (theirs === null) return 'unfetched';
   const ours = await contents(exec, ['pack'], log);
-  return theirs !== null && theirs === ours;
+  if (ours === null) return 'unpacked';
+  return theirs === ours ? 'same' : 'other';
 }
 
 export async function served({
@@ -91,22 +93,27 @@ export async function served({
     if (found === integrity) {
       return { ok: true, line: `published: ${id} serves the packed ${integrity.slice(0, 19)}…` };
     }
-    if (found && (await sameContents({ id, run: exec, log }))) {
+    const same = found ? await sameContents({ id, run: exec, log }) : null;
+    if (same === 'same') {
       return {
         ok: true,
         line: `published: ${id} serves the packed contents (npm's ${found.slice(0, 19)}… is another gzip of the same tar)`,
       };
     }
-    if (found) {
+    if (same === 'other') {
       return {
         ok: false,
         line: `published: FAIL npm serves ${id} with ${found}, not the packed ${integrity}`,
       };
     }
+    if (same === 'unpacked') {
+      return { ok: false, line: `published: FAIL npm pack can't pack ${id} here to compare` };
+    }
     if (round >= waits.length) {
+      const why = same === 'unfetched' ? `serve ${id}'s tarball` : `serve ${id}`;
       return {
         ok: false,
-        line: `published: FAIL npm doesn't serve ${id} after ${Math.round(waited / 60)} min`,
+        line: `published: FAIL npm doesn't ${why} after ${Math.round(waited / 60)} min`,
       };
     }
     await sleep(waits[round]);

@@ -777,14 +777,7 @@ test('every gate in the workflows prints a verdict and its caller fails without 
   assert.match(job, /SKIP: \$\{\{ needs\.plan\.outputs\.skip \}\}/);
   const release = await read('release.yml');
   assert.match(release, /scripts\/ci\/verdict\.mjs release --log/);
-  assert.match(release, /integrity=\$\(node scripts\/ci\/served\.mjs pack\)/);
-  assert.equal(
-    release.match(
-      /node scripts\/ci\/served\.mjs wait --name "\$name" --version "\$version" --integrity "\$integrity"\n/g
-    )?.length,
-    3
-  );
-  assert.match(release, /npm publish --provenance --access public 2>&1 \| tee /);
+  assert.match(release, /\n {8}run: scripts\/ci\/publish\.sh\n/);
   assert.doesNotMatch(release, /npm already has \$version"\n\s+exit 0/);
   const canary = await read('canary.yml');
   assert.match(canary, /canary: FAIL the report wrote no verdict/);
