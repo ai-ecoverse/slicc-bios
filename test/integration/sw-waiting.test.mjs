@@ -33,6 +33,9 @@ function bumpWorker() {
   );
 }
 
+const settled = (page) =>
+  page.within(5 * 60 * 1000, () => document.querySelector('slicc-app').model.updates.ready());
+
 const hold = (page) =>
   page.evaluate(async () => {
     const reader = (await fetch('/os/held.bin')).body.getReader();
@@ -68,6 +71,7 @@ const workers = (page) =>
 test('while the tab holds a half-read download from the old worker, it says seven updated and names the download, and Reload applies the update before the shell opens again (#710)', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
+  await settled(page);
   chrome.overrides.set('/os/held.bin', Buffer.alloc(SIZE, 7));
   await hold(page);
   bumpWorker();
@@ -116,6 +120,7 @@ test('while the tab holds a half-read download from the old worker, it says seve
 test('when another seven tab holds the download, the owner names that tab instead, and the update applies and the notice goes soon after that tab closes (#710)', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
+  await settled(page);
   const second = await page.tab();
   await boot(second);
   chrome.overrides.set('/os/held.bin', Buffer.alloc(SIZE, 7));
@@ -162,6 +167,7 @@ test('when another seven tab holds the download, the owner names that tab instea
 test('an ordinary update shows no notice: the updated worker activates and nothing says seven updated (#710)', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
+  await settled(page);
   await page.evaluate(() => {
     window.noticed = [];
     document
