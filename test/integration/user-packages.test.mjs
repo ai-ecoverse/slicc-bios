@@ -173,9 +173,10 @@ async function decide(page, decision) {
       };
       const list = document.querySelector('slicc-app').model.approvals.list();
       if (!list.some((item) => item.id === id)) return true;
-      find(document)
-        ?.shadowRoot?.querySelector(`dialog[data-approval="${id}"] [data-action="${decision}"]`)
-        ?.click();
+      const dialog = find(document)?.shadowRoot?.querySelector(`dialog[data-approval="${id}"]`);
+      dialog?.querySelector('[data-action="full-command"][aria-expanded="false"]')?.click();
+      dialog?.querySelector('[data-command], [data-summary]')?.scrollIntoView({ block: 'end' });
+      dialog?.querySelector(`[data-action="${decision}"]`)?.click();
       return false;
     },
     approval.id,

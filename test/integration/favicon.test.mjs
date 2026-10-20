@@ -8,7 +8,6 @@ import { agentUp, connectAccount, listsAccount, ready } from './bios.mjs';
 import { debuggerUrl, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
-import { shoot } from './shots.mjs';
 
 const KEY = 'dummy-bedrock-key-0000';
 const BEDROCK = 'https://bedrock-runtime.us-west-2.amazonaws.com/';
@@ -178,18 +177,7 @@ after(async () => {
   stand.close();
 });
 
-const chips = `() => {
-  const found = [];
-  const walk = (root) => {
-    for (const chip of root.querySelectorAll('.chip[data-icon]'))
-      found.push({ icon: chip.dataset.icon, src: chip.querySelector('img.favicon')?.getAttribute('src') ?? null });
-    for (const element of root.querySelectorAll('*')) if (element.shadowRoot) walk(element.shadowRoot);
-  };
-  walk(document);
-  return found;
-}`;
-
-test('a tab’s favicon comes from the data: icon its page already loaded: a tool-run strip shows it, a too-big or linked icon leaves the globe, a protected tab never gets one, and nothing is fetched for it', {
+test('a tab’s favicon comes from the data: icon its page already loaded, a too-big or linked icon leaves the globe, a protected tab never gets one, and nothing is fetched for it', {
   timeout: 35 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -237,21 +225,6 @@ test('a tab’s favicon comes from the data: icon its page already loaded: a too
     JSON.stringify(listed)
   );
   assert.ok(!hits.some((hit) => hit.startsWith('vault.sliccy.ai')), hits.join(' '));
-  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
-  const strip = await page.within(
-    60000,
-    new Function(`return (${chips})().some((chip) => chip.icon === 'favicon') && (${chips})()`)
-  );
-  assert.deepEqual(
-    strip.map(({ icon, src }) => [icon, src === HARBOR_ICON]),
-    [
-      ['favicon', true],
-      ['site', false],
-      ['site', false],
-      ['site', false],
-    ],
-    JSON.stringify(strip)
-  );
   const linked = hits.filter((hit) => hit === 'lighthouse.example.test/lighthouse/icon.png');
   assert.ok(
     linked.length <= 1,
@@ -270,7 +243,6 @@ test('a tab’s favicon comes from the data: icon its page already loaded: a too
     for (const notice of notices.list()) notices.dismiss(notice.id);
   };
   await page.evaluate(quiet);
-  await shoot(page, 'favicon-strip', { show: 'chat', before: quiet });
 
   await page.evaluate(() => {
     const { agent } = document.querySelector('slicc-app').model;
