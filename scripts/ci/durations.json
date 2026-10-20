@@ -2,6 +2,8 @@
   "test/integration/address.test.mjs": 60,
   "test/integration/agent-ui.test.mjs": 347,
   "test/integration/app.test.mjs": 9,
+  "test/integration/beta-boundary.test.mjs": 500,
+  "test/integration/beta.test.mjs": 900,
   "test/integration/boot.test.mjs": 18,
   "test/integration/canary.test.mjs": 5,
   "test/integration/catalog-skills.test.mjs": 360,
