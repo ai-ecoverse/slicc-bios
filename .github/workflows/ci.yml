@@ -177,14 +177,62 @@ jobs:
           node --test --test-concurrency=1 --test-timeout=600000 test/integration/vendors/*.test.mjs 2>&1 | tee "$RUNNER_TEMP/vendors.log" || true
           node scripts/ci/verdict.mjs shard --name vendors --log "$RUNNER_TEMP/vendors.log"
 
+  inspect:
+    name: ci / cert inspect
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || github.event_name == 'workflow_dispatch' || (contains(fromJSON('["push","schedule","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_LIGHT_RUNNER) || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      LEFTHOOK: '0'
+    steps:
+      - name: Main's tree runs; the pull request's head is only data (its manifests and lockfiles)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: head
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '26'
+
+      - name: Each changed pin's registry tarball, provenance and diff, and the release state of the gated ones, all from main's scripts (no pull-request code runs here)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          out="$RUNNER_TEMP/cert-inspect"
+          (cd base && npm ci --ignore-scripts --no-audit --no-fund)
+          node base/scripts/cert/evidence.mjs plan --head head --base base --shards none --out "$out"
+          node base/scripts/cert/evidence.mjs inspect --head head --base base --out "$out"
+          git -C base fetch -q --no-tags origin "$HEAD_SHA"
+          base_sha=$(git -C base merge-base HEAD "$HEAD_SHA")
+          (cd base && node scripts/cert/release-state.mjs --base "$base_sha" --head "$HEAD_SHA" --out "$out/release-state.json" --no-fail)
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: cert-inspect
+          path: ${{ runner.temp }}/cert-inspect/
+          if-no-files-found: error
+
   evidence:
     name: ci / cert evidence
     needs: [plan, integration]
     if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || github.event_name == 'workflow_dispatch' || (contains(fromJSON('["push","schedule","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_RUNNER) || 'ubuntu-latest' }}
-    timeout-minutes: 170
+    timeout-minutes: 45
     permissions:
       contents: read
+      issues: read
     env:
       LEFTHOOK: '0'
       SLICC_NO_TELEMETRY: '1'
@@ -213,26 +261,18 @@ jobs:
 
       - id: plan
         name: The pins this PR changes, the test files its shards failed, and the gated pins' scenarios
-        run: node head/scripts/cert/evidence.mjs plan --head head --base base --shards "$RUNNER_TEMP/shards" --out "$RUNNER_TEMP/cert-evidence"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node head/scripts/cert/evidence.mjs plan --head head --base base --shards "$RUNNER_TEMP/shards" --out "$RUNNER_TEMP/cert-evidence" --budget-min 20
 
       - name: Install both trees, and the harness's Chromium when a browser runs
-        if: steps.plan.outputs.pins == 'true' || steps.plan.outputs.browser == 'true'
+        if: steps.plan.outputs.browser == 'true'
         env:
           BROWSER: ${{ steps.plan.outputs.browser }}
         run: |
           (cd base && npm ci --no-audit --no-fund)
           (cd head && npm ci --no-audit --no-fund)
           if [ "$BROWSER" = true ]; then (cd head && npx playwright-core install --no-shell chromium); fi
-
-      - name: Each changed pin's tarball, provenance and diff, and the release state of the gated ones
-        if: steps.plan.outputs.pins == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BASE: ${{ github.event.pull_request.base.sha }}
-        run: |
-          node head/scripts/cert/evidence.mjs inspect --head head --base base --out "$RUNNER_TEMP/cert-evidence"
-          git -C head fetch -q --no-tags --depth=1 origin "$BASE"
-          (cd head && node scripts/cert/release-state.mjs --base "$BASE" --head HEAD --out "$RUNNER_TEMP/cert-evidence/release-state.json" --no-fail)
 
       - name: Each tree's slicc CLI (the released binary where a tree has none)
         if: steps.plan.outputs.browser == 'true'
@@ -256,13 +296,19 @@ jobs:
             echo "$tree: $("$cli" --version) ($cli)"
           done
 
-      - name: Each failed test file three times on the head's tree and on main's, each with its own slicc CLI
-        if: steps.plan.outputs.browser == 'true'
+      - name: Each failed test file up to three times on the head's tree (until it passes) and, if it never did, on main's, within the 20-minute budget, and each file a shard's retry flipped (a head flake); known flaky files are skipped unless they cover data integrity, security or the guard
+        if: steps.plan.outputs.reruns == 'true'
         run: node head/scripts/cert/evidence.mjs reruns --head head --base base --out "$RUNNER_TEMP/cert-evidence" --times 3
 
       - name: Each changed gated pin's cert scenario in seven, on the head's pins and on main's
         if: steps.plan.outputs.browser == 'true'
         run: node head/scripts/cert/evidence.mjs scenarios --head head --base base --out "$RUNNER_TEMP/cert-evidence"
+
+      - name: The evidence is complete, by main's check (it reads only JSON; the head's only while main has none); a spent budget or a missing result fails here, and so ci / test
+        if: ${{ !cancelled() }}
+        run: |
+          if grep -q "reruns, scenarios, check }" base/scripts/cert/evidence.mjs; then t=base; else t=head; fi
+          node "$t/scripts/cert/evidence.mjs" check --head head --base base --out "$RUNNER_TEMP/cert-evidence"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
@@ -273,7 +319,7 @@ jobs:
 
   ci:
     name: ci / test
-    needs: [plan, lint, integration, vendors]
+    needs: [plan, lint, integration, vendors, evidence]
     if: always()
     permissions:
       contents: read
@@ -336,6 +382,18 @@ jobs:
             artifacts/
             attempts/
           if-no-files-found: ignore
+
+      - name: The cert evidence finished inside its budget (skipped only off pull requests and for forks)
+        if: always()
+        env:
+          EVIDENCE: ${{ needs.evidence.result }}
+          SAME_REPO: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          case "$EVIDENCE" in
+            success) ;;
+            skipped) [ "$GITHUB_EVENT_NAME" != pull_request ] || [ "$SAME_REPO" != true ] || { echo "ci / cert evidence was skipped on a same-repo pull request"; exit 1; } ;;
+            *) echo "ci / cert evidence: $EVIDENCE (incomplete evidence is not a pass)"; exit 1 ;;
+          esac
 
       - name: Every shard and lint passed, each with its verdict
         if: always()

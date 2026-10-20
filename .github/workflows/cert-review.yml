@@ -19,15 +19,16 @@ concurrency:
 jobs:
   cert:
     name: cert
-    uses: ai-ecoverse/slicc-shared-web/.github/workflows/cert-review.yml@0bf804703e1469ddb4413ef41a5bf6001f2411b9
+    uses: ai-ecoverse/slicc-shared-web/.github/workflows/cert-review.yml@98bfc9139dd3e11ca172051a314b53b706841646
     permissions:
       contents: read
       actions: read
-      checks: write
+      checks: read
+      statuses: write
       issues: write
       pull-requests: write
     with:
-      tools-ref: 0bf804703e1469ddb4413ef41a5bf6001f2411b9
+      tools-ref: 98bfc9139dd3e11ca172051a314b53b706841646
       rules: scripts/cert/review.txt
       loud: |
         src/**
@@ -43,9 +44,12 @@ jobs:
       evidence-workflow: ci.yml
       evidence-artifacts: |
         cert-evidence
+        cert-inspect
         integration-*
         experiment-summary
       evidence-wait-minutes: 180
+      evidence-notes: |
+        cert-inspect/inspect/**
       code-check: node scripts/cert/release-state.mjs --base "$BASE_SHA" --head "$HEAD_SHA"
     secrets:
       AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
