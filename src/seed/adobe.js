@@ -36,6 +36,12 @@ export function relayUrl(config, origin, value) {
   return authorize(config, { source: 'origin', origin, nonce: value });
 }
 
+export const OPENER_CHANNEL = 'slicc-oauth-relay';
+
+export function openerUrl(config, value) {
+  return authorize(config, { source: 'opener', nonce: value });
+}
+
 const SLICCY = /^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.sliccy\.ai$/;
 export const CHANNEL = 'slicc-sign-in';
 export const FORCE_RELAY = 'slicc-os.sign-in';
@@ -123,16 +129,23 @@ async function prepare(open, options, address, signal) {
   return popup;
 }
 
-function viaRelay({ open, origin, listen, timeout }) {
+function viaRelay({
+  open,
+  origin,
+  listen,
+  timeout,
+  address = (config, value) => relayUrl(config, origin, value),
+  channel: name = CHANNEL,
+}) {
   return async (_providerId, options, signal) => {
     const value = nonce();
-    const popup = await prepare(open, options, (config) => relayUrl(config, origin, value), signal);
+    const popup = await prepare(open, options, (config) => address(config, value), signal);
     return waiting({
       popup,
       signal,
       timeout,
       start: (ok, fail) => {
-        const channel = listen(CHANNEL);
+        const channel = listen(name);
         channel.onmessage = ({ data }) => {
           if (data?.type !== 'oauth-callback' || data.nonce !== value) return;
           let token;
@@ -227,9 +240,12 @@ export function signIn({
   extension = globalThis.sliccExtension,
   origin = globalThis.location?.origin,
   force,
+  shared = false,
   listen = (name) => new BroadcastChannel(name),
 }) {
-  const relay = viaRelay({ open, origin, listen, timeout });
+  const relay = shared
+    ? viaRelay({ open, listen, timeout, address: openerUrl, channel: OPENER_CHANNEL })
+    : viaRelay({ open, origin, listen, timeout });
   const proxy = network?.kind === 'local-proxy' ? network.proxy : null;
   const direct = extension?.signIn
     ? async (_providerId, options, signal) => {
@@ -242,7 +258,7 @@ export function signIn({
     : viaProxy({ proxy, open, fetcher, every, timeout });
   const forced = () => force ?? globalThis.localStorage?.getItem(FORCE_RELAY) === 'relay';
   const grant = (providerId, options, { signal } = {}) =>
-    relayed(origin) || forced()
+    shared || relayed(origin) || forced()
       ? relay(providerId, options, signal)
       : direct(providerId, options, signal);
   const login = (providerId, options, context) =>

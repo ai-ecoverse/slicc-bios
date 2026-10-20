@@ -1,7 +1,8 @@
 import { apply } from './layer.js';
+import { BIOS } from './site.js';
 import { text, versions } from './update.js';
 
-const deployed = new URL('../packages/grammars/', import.meta.url);
+const deployed = new URL('packages/grammars/', BIOS);
 export const folder = 'opt/grammars';
 export const grammarBase = new URL(`../${folder}/node_modules/@shikijs/`, import.meta.url).href;
 const state = 'var/lib/slicc/grammars';

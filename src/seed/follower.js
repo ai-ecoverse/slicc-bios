@@ -5,6 +5,7 @@ import { followAgent, installAgent, loadChat } from './agent.js';
 import { createFollow, deviceName, hubClient, keepFollow, takeFollow } from './follow.js';
 import { createNotices } from './notices.js';
 import { joinTray } from './present.js';
+import { BIOS, home } from './site.js';
 import { remoteTerminal } from './terminal.js';
 import { createUpdates } from './updates.js';
 
@@ -33,10 +34,7 @@ export function refusals() {
   };
 }
 
-export function followPort(
-  follow,
-  { reload = () => location.replace(new URL('../', location.href)), refusal = null } = {}
-) {
+export function followPort(follow, { reload = () => location.replace(BIOS), refusal = null } = {}) {
   const state = () => {
     const status = follow.status();
     const refused = refusal?.text();
@@ -217,7 +215,7 @@ export const chatModel =
   async (connection) =>
     (await load()).createAgentModel(connection, { storage, notices });
 
-export const proxied = (at) => (at.hostname.endsWith('.sliccy.ai') ? at.origin : null);
+export const proxied = (at) => (at.hostname.endsWith('.sliccy.ai') ? home() : null);
 
 export const ASK = {
   title: 'Follow a SLICC on another computer?',
@@ -229,11 +227,7 @@ export const ASK = {
 
 export async function admitted(
   kept,
-  {
-    ask = confirm,
-    storage = localStorage,
-    leave = () => location.replace(new URL('../', location.href)),
-  } = {}
+  { ask = confirm, storage = localStorage, leave = () => location.replace(BIOS) } = {}
 ) {
   if (!kept.fresh) return true;
   if (!(await ask(ASK))) {

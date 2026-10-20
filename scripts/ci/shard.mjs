@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
-import { appendFile, cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { appendFile, cp, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { argv, env, exit, stderr, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -149,6 +149,23 @@ async function restore(dirs) {
   }
 }
 
+export async function trapped(dir = join(ROOT, 'artifacts/pnpm-traps')) {
+  const names = (await readdir(dir).catch(() => []))
+    .filter((name) => name.endsWith('.jsonl'))
+    .sort();
+  const found = [];
+  for (const name of names)
+    for (const line of (await readFile(join(dir, name), 'utf8')).split('\n'))
+      if (line.trim()) found.push(JSON.parse(line));
+  return found.sort((a, b) => (a.at ?? '').localeCompare(b.at ?? ''));
+}
+
+export function trapLine(name, traps) {
+  if (!traps.length) return null;
+  const where = [...new Set(traps.map(({ file, name: test }) => `${file} › ${test}`))];
+  return `shard ${name}: pnpm hit the wasm trap ${traps.length}x (homescoop#1127), retried in ${where.join('; ')}`;
+}
+
 export function itemOf(file, name, extra = {}) {
   if (!SPLIT.test(file) || !extra.GUARD_VARIANTS) return file;
   const chosen = extra.GUARD_VARIANTS.split(',');
@@ -261,6 +278,7 @@ export async function shard({ name, items: list, retry, budgetMs, scratch, recor
   };
   report.timings = Object.assign({}, ...report.groups.map(({ first }) => first.timings));
   report.flips = report.groups.flatMap(({ flips: flipped }) => flipped);
+  report.traps = await trapped();
   return report;
 }
 
@@ -305,6 +323,12 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
     console.log(`retried ${group.retry.files.join(' ')}: ${group.ok ? 'passed' : 'failed again'}`);
   }
   for (const { file, name } of report.flips) console.log(`flipped ${file} › ${name}`);
-  if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, `${report.line}\n`);
+  const traps = trapLine(values.name, report.traps);
+  if (traps) console.log(traps);
+  if (env.GITHUB_STEP_SUMMARY)
+    await appendFile(
+      env.GITHUB_STEP_SUMMARY,
+      `${[report.line, traps].filter(Boolean).join('\n')}\n`
+    );
   if (!report.ok) exit(1);
 }

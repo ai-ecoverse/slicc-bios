@@ -398,7 +398,11 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
       .find((item) => item.id === 'amazon-bedrock')
   );
   assert.equal(account.status, 'disconnected');
-  assert.equal(account.needs, 'cors-free-transport');
+  assert.equal(
+    account.needs ?? null,
+    null,
+    'Bedrock’s listing no longer asks for a CORS-free transport'
+  );
 
   const connect = (key) => connectAccount(page, 'amazon-bedrock', key);
   const sendChat = async (text) => {

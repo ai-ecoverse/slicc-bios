@@ -7,10 +7,13 @@ import { boot } from './bios.mjs';
 import { debuggerUrl, launch } from './chrome.mjs';
 
 const LAG = 8000;
+const CHOSEN = process.env.GUARD_VARIANTS?.split(',').filter(Boolean) ?? null;
+const chosen = (detach) => !CHOSEN?.length || CHOSEN.includes(detach);
 const DETACH = [
   ['prompt', 0],
   ['lagging', LAG],
-];
+].filter(([detach]) => chosen(detach));
+const once = chosen('prompt') ? test : () => {};
 const SETTINGS =
   /^slicc: refused: settings for a whole session \(headers, user agent, locale, time zone, cache, network conditions, blocked URLs, emulation\)/;
 const SCRIPTS =
@@ -2357,184 +2360,194 @@ for (const [detach, lag] of DETACH) {
   });
 }
 
-test('PRE-1b on the proxy path, which forwards browser-level events: a popup the client auto-attaches is armed before it runs, so the client never holds a session to it while it loads a protected page, even when the guard is slow to arm', {
-  timeout: 10 * 60 * 1000,
-}, async (t) => {
-  const proxy = await startProxy({
-    port: 0,
-    origins: [SEVEN],
-    cdp: `http://127.0.0.1:${port}`,
-    kernelPort: null,
-    log: () => {},
-  });
-  t.after(() => proxy.close());
-  const guard = await guardPage(t, 0, { url: proxy.url, key: proxy.key });
-  const opened = [];
-  t.after(() => closeAll(opened));
-  for (let round = 0; round < 3; round += 1) {
-    const id = `armed-${round}-${Date.now()}`;
-    const opener = await tab(`${PLAIN}/doc?opener-${id}`);
-    opened.push(opener);
-    const session = await guard.attach(opener);
-    const auto = { autoAttach: true, waitForDebuggerOnStart: true, flatten: true };
-    assert.equal((await guard.send('Target.setAutoAttach', auto)).error, undefined);
-    try {
-      const before = (await guard.events()).length;
-      const vault = `${VAULT}/doc?${id}`;
-      await guard.slowArm(6000);
-      await guard.go(
-        TRIGGERS.popup(`${OTHER}/bounce?ms=1000&to=${encodeURIComponent(vault)}`),
-        session
-      );
-      let popup = null;
-      for (const end = Date.now() + 8000; !popup && Date.now() < end; ) {
-        const { result } = await own.send('Target.getTargets');
-        popup = (result?.targetInfos ?? []).find(
-          (info) => info.type === 'page' && info.openerId === opener
+once(
+  'PRE-1b on the proxy path, which forwards browser-level events: a popup the client auto-attaches is armed before it runs, so the client never holds a session to it while it loads a protected page, even when the guard is slow to arm',
+  {
+    timeout: 10 * 60 * 1000,
+  },
+  async (t) => {
+    const proxy = await startProxy({
+      port: 0,
+      origins: [SEVEN],
+      cdp: `http://127.0.0.1:${port}`,
+      kernelPort: null,
+      log: () => {},
+    });
+    t.after(() => proxy.close());
+    const guard = await guardPage(t, 0, { url: proxy.url, key: proxy.key });
+    const opened = [];
+    t.after(() => closeAll(opened));
+    for (let round = 0; round < 3; round += 1) {
+      const id = `armed-${round}-${Date.now()}`;
+      const opener = await tab(`${PLAIN}/doc?opener-${id}`);
+      opened.push(opener);
+      const session = await guard.attach(opener);
+      const auto = { autoAttach: true, waitForDebuggerOnStart: true, flatten: true };
+      assert.equal((await guard.send('Target.setAutoAttach', auto)).error, undefined);
+      try {
+        const before = (await guard.events()).length;
+        const vault = `${VAULT}/doc?${id}`;
+        await guard.slowArm(6000);
+        await guard.go(
+          TRIGGERS.popup(`${OTHER}/bounce?ms=1000&to=${encodeURIComponent(vault)}`),
+          session
         );
-        if (!popup) await pause(200);
-      }
-      assert.ok(popup, `${id}: the popup opened, found through the harness’s own CDP`);
-      opened.push(popup.targetId);
-      await pause(9000);
-      const later = (await guard.events()).slice(before);
-      const shown = later.some(
-        (event) =>
-          event.method === 'Target.attachedToTarget' &&
-          event.params.targetInfo.targetId === popup.targetId
-      );
-      const servedVault = served(vault, 0);
-      assert.ok(
-        !(shown && servedVault),
-        `${id}: the client got a session to the popup, and its navigation into the vault was still served`
-      );
-      if (!shown) {
+        let popup = null;
+        for (const end = Date.now() + 8000; !popup && Date.now() < end; ) {
+          const { result } = await own.send('Target.getTargets');
+          popup = (result?.targetInfos ?? []).find(
+            (info) => info.type === 'page' && info.openerId === opener
+          );
+          if (!popup) await pause(200);
+        }
+        assert.ok(popup, `${id}: the popup opened, found through the harness’s own CDP`);
+        opened.push(popup.targetId);
+        await pause(9000);
+        const later = (await guard.events()).slice(before);
+        const shown = later.some(
+          (event) =>
+            event.method === 'Target.attachedToTarget' &&
+            event.params.targetInfo.targetId === popup.targetId
+        );
+        const servedVault = served(vault, 0);
         assert.ok(
-          !JSON.stringify(later).includes(`${new URL(VAULT).host}/doc?${id}`),
-          `${id}: the client never got the popup, and nothing naming its vault document`
+          !(shown && servedVault),
+          `${id}: the client got a session to the popup, and its navigation into the vault was still served`
         );
+        if (!shown) {
+          assert.ok(
+            !JSON.stringify(later).includes(`${new URL(VAULT).host}/doc?${id}`),
+            `${id}: the client never got the popup, and nothing naming its vault document`
+          );
+        }
+      } finally {
+        await guard.send('Target.setAutoAttach', {
+          autoAttach: false,
+          waitForDebuggerOnStart: false,
+          flatten: true,
+        });
+      }
+    }
+  }
+);
+
+once(
+  'privileged browser pages through the guard: a browser_ui target that reports a web URL stays out of reach, and a new tab with its chrome-untrusted frame is attached and driven',
+  {
+    timeout: 5 * 60 * 1000,
+  },
+  async (t) => {
+    const listed = (await own.send('Target.getTargets')).result.targetInfos;
+    const ui = listed.filter((info) => info.type === 'browser_ui').map((info) => info.targetId);
+    assert.ok(
+      ui.length > 0,
+      `Chrome lists a browser_ui target: ${JSON.stringify(listed.map((info) => info.type))}`
+    );
+    const NTP_FRAME = 'chrome-untrusted://new-tab-page/one-google-bar?paramsencoded=';
+    const newTabs = new Map();
+    const web = (info) => {
+      if (info?.type === 'browser_ui') return { ...info, url: `${PLAIN}/doc?browser-ui` };
+      if (newTabs.has(info?.targetId) && info.url === 'about:blank')
+        return { ...info, url: newTabs.get(info.targetId) };
+      return info;
+    };
+    const lens = (message, method) => {
+      const result = message.result;
+      if (result?.targetInfos) result.targetInfos = result.targetInfos.map(web);
+      if (result?.targetInfo) result.targetInfo = web(result.targetInfo);
+      if (message.params?.targetInfo) message.params.targetInfo = web(message.params.targetInfo);
+      const top = result?.frameTree?.frame;
+      const framed = (tree) => [tree, ...(tree?.childFrames ?? []).flatMap(framed)];
+      if (
+        method === 'Page.getFrameTree' &&
+        newTabs.has(top?.id) &&
+        !framed(result.frameTree).some((tree) => tree?.frame?.url === NTP_FRAME)
+      ) {
+        if (top.url === 'about:blank') top.url = newTabs.get(top.id);
+        result.frameTree.childFrames = [
+          ...(result.frameTree.childFrames ?? []),
+          {
+            frame: {
+              id: `${top.id}-bar`,
+              parentId: top.id,
+              loaderId: top.loaderId,
+              url: NTP_FRAME,
+              securityOrigin: 'chrome-untrusted://new-tab-page',
+              mimeType: 'text/html',
+            },
+          },
+        ];
+      }
+      return message;
+    };
+    const guard = await guardPage(t, 0, null, lens);
+    const shown = (await guard.send('Target.getTargets')).result.targetInfos;
+    assert.deepEqual(
+      shown.filter((info) => ui.includes(info.targetId)),
+      [],
+      'the guard lists no browser_ui target, though the lens gave each a web URL'
+    );
+    for (const targetId of ui) {
+      for (const method of ['Target.attachToTarget', 'Target.getTargetInfo']) {
+        assert.equal(
+          (await guard.send(method, { targetId, flatten: true })).error?.message,
+          PROTECTED,
+          `${method} on browser_ui ${targetId}`
+        );
+      }
+    }
+    const opened = [];
+    try {
+      for (const url of ['chrome://newtab/', 'chrome://new-tab-page/']) {
+        const { result } = await own.send('Target.createTarget', { url });
+        opened.push(result.targetId);
+        newTabs.set(result.targetId, url);
+        let seen = '';
+        for (let n = 0; n < 100 && !seen.startsWith('chrome://'); n += 1) {
+          seen = (await own.send('Target.getTargetInfo', { targetId: result.targetId })).result
+            ?.targetInfo?.url;
+          seen ??= '';
+          if (!seen.startsWith('chrome://')) await pause(100);
+        }
+        assert.match(
+          seen,
+          /^chrome:\/\//,
+          `${url}: the new tab committed a chrome:// page; last seen ${seen}`
+        );
+        const answer = await guard.send('Target.attachToTarget', {
+          targetId: result.targetId,
+          flatten: true,
+        });
+        assert.equal(
+          answer.error,
+          undefined,
+          `${url}: the client attaches to the new tab: ${JSON.stringify(answer.error)}`
+        );
+        const sessionId = answer.result.sessionId;
+        const tree = await guard.send('Page.getFrameTree', {}, sessionId);
+        assert.ok(
+          (tree.result?.frameTree?.childFrames ?? []).some(
+            (child) => child.frame.url === NTP_FRAME
+          ),
+          `${url}: the tab holds the chrome-untrusted frame: ${JSON.stringify(tree)}`
+        );
+        const target = `${PLAIN}/doc?ntp=${encodeURIComponent(url)}`;
+        const navigated = await guard.send('Page.navigate', { url: target }, sessionId);
+        assert.equal(
+          navigated.error,
+          undefined,
+          `${url}: Page.navigate goes through: ${JSON.stringify(navigated.error)}`
+        );
+        let now = '';
+        for (let n = 0; n < 50 && now !== target; n += 1) {
+          now = (await own.send('Target.getTargetInfo', { targetId: result.targetId })).result
+            ?.targetInfo?.url;
+          if (now !== target) await pause(100);
+        }
+        assert.equal(now, target, `${url}: the same tab reached the plain page`);
       }
     } finally {
-      await guard.send('Target.setAutoAttach', {
-        autoAttach: false,
-        waitForDebuggerOnStart: false,
-        flatten: true,
-      });
+      await closeAll(opened);
     }
   }
-});
-
-test('privileged browser pages through the guard: a browser_ui target that reports a web URL stays out of reach, and a new tab with its chrome-untrusted frame is attached and driven', {
-  timeout: 5 * 60 * 1000,
-}, async (t) => {
-  const listed = (await own.send('Target.getTargets')).result.targetInfos;
-  const ui = listed.filter((info) => info.type === 'browser_ui').map((info) => info.targetId);
-  assert.ok(
-    ui.length > 0,
-    `Chrome lists a browser_ui target: ${JSON.stringify(listed.map((info) => info.type))}`
-  );
-  const NTP_FRAME = 'chrome-untrusted://new-tab-page/one-google-bar?paramsencoded=';
-  const newTabs = new Map();
-  const web = (info) => {
-    if (info?.type === 'browser_ui') return { ...info, url: `${PLAIN}/doc?browser-ui` };
-    if (newTabs.has(info?.targetId) && info.url === 'about:blank')
-      return { ...info, url: newTabs.get(info.targetId) };
-    return info;
-  };
-  const lens = (message, method) => {
-    const result = message.result;
-    if (result?.targetInfos) result.targetInfos = result.targetInfos.map(web);
-    if (result?.targetInfo) result.targetInfo = web(result.targetInfo);
-    if (message.params?.targetInfo) message.params.targetInfo = web(message.params.targetInfo);
-    const top = result?.frameTree?.frame;
-    const framed = (tree) => [tree, ...(tree?.childFrames ?? []).flatMap(framed)];
-    if (
-      method === 'Page.getFrameTree' &&
-      newTabs.has(top?.id) &&
-      !framed(result.frameTree).some((tree) => tree?.frame?.url === NTP_FRAME)
-    ) {
-      if (top.url === 'about:blank') top.url = newTabs.get(top.id);
-      result.frameTree.childFrames = [
-        ...(result.frameTree.childFrames ?? []),
-        {
-          frame: {
-            id: `${top.id}-bar`,
-            parentId: top.id,
-            loaderId: top.loaderId,
-            url: NTP_FRAME,
-            securityOrigin: 'chrome-untrusted://new-tab-page',
-            mimeType: 'text/html',
-          },
-        },
-      ];
-    }
-    return message;
-  };
-  const guard = await guardPage(t, 0, null, lens);
-  const shown = (await guard.send('Target.getTargets')).result.targetInfos;
-  assert.deepEqual(
-    shown.filter((info) => ui.includes(info.targetId)),
-    [],
-    'the guard lists no browser_ui target, though the lens gave each a web URL'
-  );
-  for (const targetId of ui) {
-    for (const method of ['Target.attachToTarget', 'Target.getTargetInfo']) {
-      assert.equal(
-        (await guard.send(method, { targetId, flatten: true })).error?.message,
-        PROTECTED,
-        `${method} on browser_ui ${targetId}`
-      );
-    }
-  }
-  const opened = [];
-  try {
-    for (const url of ['chrome://newtab/', 'chrome://new-tab-page/']) {
-      const { result } = await own.send('Target.createTarget', { url });
-      opened.push(result.targetId);
-      newTabs.set(result.targetId, url);
-      let seen = '';
-      for (let n = 0; n < 100 && !seen.startsWith('chrome://'); n += 1) {
-        seen = (await own.send('Target.getTargetInfo', { targetId: result.targetId })).result
-          ?.targetInfo?.url;
-        seen ??= '';
-        if (!seen.startsWith('chrome://')) await pause(100);
-      }
-      assert.match(
-        seen,
-        /^chrome:\/\//,
-        `${url}: the new tab committed a chrome:// page; last seen ${seen}`
-      );
-      const answer = await guard.send('Target.attachToTarget', {
-        targetId: result.targetId,
-        flatten: true,
-      });
-      assert.equal(
-        answer.error,
-        undefined,
-        `${url}: the client attaches to the new tab: ${JSON.stringify(answer.error)}`
-      );
-      const sessionId = answer.result.sessionId;
-      const tree = await guard.send('Page.getFrameTree', {}, sessionId);
-      assert.ok(
-        (tree.result?.frameTree?.childFrames ?? []).some((child) => child.frame.url === NTP_FRAME),
-        `${url}: the tab holds the chrome-untrusted frame: ${JSON.stringify(tree)}`
-      );
-      const target = `${PLAIN}/doc?ntp=${encodeURIComponent(url)}`;
-      const navigated = await guard.send('Page.navigate', { url: target }, sessionId);
-      assert.equal(
-        navigated.error,
-        undefined,
-        `${url}: Page.navigate goes through: ${JSON.stringify(navigated.error)}`
-      );
-      let now = '';
-      for (let n = 0; n < 50 && now !== target; n += 1) {
-        now = (await own.send('Target.getTargetInfo', { targetId: result.targetId })).result
-          ?.targetInfo?.url;
-        if (now !== target) await pause(100);
-      }
-      assert.equal(now, target, `${url}: the same tab reached the plain page`);
-    }
-  } finally {
-    await closeAll(opened);
-  }
-});
+);

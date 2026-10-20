@@ -42,12 +42,12 @@
     "format": "biome check --write ."
   },
   "devDependencies": {
-    "@ai-ecoverse/slicc": "1.44.7",
-    "@ai-ecoverse/slicc-browsers": "1.8.5",
+    "@ai-ecoverse/slicc": "1.46.3",
+    "@ai-ecoverse/slicc-browsers": "1.9.0",
     "@ai-ecoverse/slicc-node": "2.5.1",
     "@ai-ecoverse/slicc-shared-web": "1.24.2",
-    "@ai-ecoverse/slicc-spectrum": "1.90.0",
-    "@ai-ecoverse/slicc-vault": "1.12.2",
+    "@ai-ecoverse/slicc-spectrum": "1.100.0",
+    "@ai-ecoverse/slicc-vault": "1.15.0",
     "@biomejs/biome": "2.5.15",
     "es-module-lexer": "3.0.3",
     "fake-indexeddb": "6.2.5",
@@ -56,6 +56,7 @@
     "monocart-coverage-reports": "2.13.2",
     "playwright-core": "1.64.0",
     "semantic-release": "25.0.9",
+    "semver": "7.8.5",
     "wrangler": "4.149.0",
     "ws": "8.22.0"
   }

@@ -7,6 +7,14 @@ import { follower, model, startHub } from './fake-hub.mjs';
 const chrome = await launch();
 after(() => chrome.close());
 
+async function dialed(hub, path) {
+  const end = Date.now() + 60000;
+  while (!hub.sockets.some((socket) => socket.path.startsWith(path))) {
+    assert.ok(Date.now() < end, `no socket on ${path}: ${hub.sockets.map((s) => s.path)}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 test('seven leads a tray: a follower joins and links, rotation moves it to a new URL, unlink refuses it after', async (t) => {
   const hub = await startHub();
   t.after(() => hub.close());
@@ -197,6 +205,7 @@ test('seven leads a tray: a follower joins and links, rotation moves it to a new
   await page.until(() =>
     document.querySelector('slicc-app').model.network.status().links?.joinUrl?.endsWith('/j2')
   );
+  await dialed(hub, '/controller/c2');
   assert.equal(hub.sockets.at(-1).path, '/controller/c2?leaderKey=lk');
 
   await model(page, (network, id) => network.unlink(id), device.id);

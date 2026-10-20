@@ -1,4 +1,6 @@
-const deployed = new URL('../packages/', import.meta.url);
+import { BIOS } from './site.js';
+
+const deployed = new URL('packages/', BIOS);
 const LOG = 8192;
 
 export async function text(dir, path) {
@@ -198,8 +200,35 @@ export async function fence(root, cwd) {
   }
 }
 
-export async function retire(root) {
-  for (const name of ROOTED) await remove(root, name);
+export const RECEIPT = 'var/lib/slicc/rooted.json';
+
+export async function digest(data) {
+  const bytes = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(data))
+  );
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function receipt(root) {
+  try {
+    return JSON.parse((await text(root, RECEIPT)) ?? '{}');
+  } catch {
+    return {};
+  }
+}
+
+export async function retire(root, deployed = {}) {
+  const kept = await receipt(root);
+  const retired = [];
+  for (const name of ROOTED) {
+    const data = await text(root, name);
+    if (data === null) continue;
+    if (data !== deployed[name] && (await digest(data)) !== kept[name]) continue;
+    await remove(root, name);
+    retired.push(`/${name}`);
+  }
+  if ((await text(root, RECEIPT)) !== null) await remove(root, RECEIPT);
+  return retired;
 }
 
 const shielded = (path) => PROTECTED.some((root) => path === root || path.startsWith(`${root}/`));
@@ -275,7 +304,7 @@ const INSTALL = ['pnpm', 'install', '--frozen-lockfile', '--trust-lockfile'];
 export function installer(
   op,
   args,
-  connect = () => new SharedWorker(new URL('../installer.js', import.meta.url), 'slicc-installer')
+  connect = () => new SharedWorker(new URL('installer.js', BIOS), 'slicc-installer')
 ) {
   const { port } = connect();
   return new Promise((resolve, reject) => {
@@ -295,7 +324,30 @@ export function pnpm(kernel, cwd, report, to = null, argv = INSTALL, writer = tr
   return navigator.locks.request(STORE, () => pnpmAlone(kernel, cwd, report, to, argv, writer));
 }
 
-async function pnpmAlone(kernel, cwd, report, to, argv, writer) {
+const TRAP = /^[^\n]*: wasm trap in thread \d+: memory access out of bounds$/m;
+const TRAP_ISSUES = 'homescoop#1127, slicc-kernel#1172';
+export const TRAP_LOG = 'var/log/slicc/pnpm-traps.log';
+const TRAP_CAP = 64 * 1024;
+
+async function noteTrap(cwd, argv, line, outcome) {
+  const files = kernelSink();
+  if (!files) return;
+  const entry = { at: new Date().toISOString(), cwd, argv: argv.join(' '), line, outcome };
+  await files
+    .append(TRAP_LOG, `${JSON.stringify(entry)}\n`, TRAP_CAP)
+    .catch((error) => console.warn(`${TRAP_LOG}: ${error.message}`));
+}
+
+export function trapLine(status, stderr) {
+  return status === 134 ? (stderr.match(TRAP)?.[0] ?? null) : null;
+}
+
+export function pnpmAs(kernel, { user, home, where }, report, to, argv) {
+  const env = { HOME: home, PNPM_HOME: where, PATH: `${where}/bin:/usr/local/bin:/usr/bin:/bin` };
+  return pnpmAlone(kernel, home, report, to, argv, false, { user, env: { ...env, ...TRAPS } });
+}
+
+async function pnpmAlone(kernel, cwd, report, to, argv, writer, as = null) {
   let log = '';
   const downloads = new Map();
   report({ progress: null, log });
@@ -304,9 +356,44 @@ async function pnpmAlone(kernel, cwd, report, to, argv, writer) {
     report({ progress: progress(log, downloads), log });
   };
   if (writer && guard.on) await fence(await navigator.storage.getDirectory(), cwd);
-  const run = writer ? { ...writing(cwd), onStdout } : { cwd, env: TRAPS, onStdout };
+  const run = as
+    ? { cwd, ...as, onStdout }
+    : writer
+      ? { ...writing(cwd), onStdout }
+      : { cwd, env: TRAPS, onStdout };
   const ran = () => kernel.run(writer ? hygiene(argv) : argv, run);
-  const { status, stderr } = await (writer ? writing_(kernel, writes(cwd, argv), ran) : ran());
+  const attempt = () => (writer ? writing_(kernel, writes(cwd, argv), ran) : ran());
+  let { status, stderr } = await attempt();
+  const first = trapLine(status, stderr);
+  if (first) {
+    const note = `bios: pnpm trapped (${first}), the wasm trap of ${TRAP_ISSUES}; retrying once`;
+    console.warn(note);
+    log = `${log}${stderr}\n${note}\n`.slice(-LOG);
+    report({ progress: null, log });
+    ({ status, stderr } = await attempt());
+    const again = trapLine(status, stderr);
+    await noteTrap(
+      cwd,
+      argv,
+      first,
+      again ? 'trapped again' : status ? 'failed otherwise' : 'recovered'
+    );
+    if (again) {
+      const error = new Error(
+        `pnpm trapped twice with the wasm trap of ${TRAP_ISSUES} (${again}); bios retries it only once`
+      );
+      error.log = `${log}${stderr}`.slice(-LOG);
+      error.to = to;
+      console.warn(error.message);
+      throw error;
+    }
+    if (!status) {
+      const done = `bios: pnpm's retry after the wasm trap succeeded (${TRAP_ISSUES})`;
+      console.warn(done);
+      log = `${log}${done}\n`.slice(-LOG);
+      report({ progress: null, log });
+    }
+  }
   if (status) {
     const error = new Error(stderr.trim() || `pnpm exited with ${status}`);
     error.log = (log + stderr).slice(-LOG);
@@ -375,8 +462,19 @@ async function install(kernel, from, report, record) {
   await write(root, `${folder}package.json`, manifest);
   await write(root, `${folder}pnpm-lock.yaml`, lock);
   if (guard.on) {
-    await write(root, `${folder}pnpm-workspace.yaml`, await fetchText('pnpm-workspace.yaml', from));
-    await retire(root);
+    const workspace = await fetchText('pnpm-workspace.yaml', from);
+    await write(root, `${folder}pnpm-workspace.yaml`, workspace);
+    await retire(root, {
+      'package.json': manifest,
+      'pnpm-lock.yaml': lock,
+      'pnpm-workspace.yaml': workspace,
+    });
+  } else {
+    const written = {
+      'package.json': await digest(manifest),
+      'pnpm-lock.yaml': await digest(lock),
+    };
+    await write(root, RECEIPT, JSON.stringify(written));
   }
   await pnpm(kernel, cwd, report, null, [...INSTALL, ...flags]);
   const base = guard.on ? { base: BASE } : {};

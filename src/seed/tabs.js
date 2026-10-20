@@ -1,3 +1,4 @@
+import { BIOS } from './site.js';
 import { SWITCHBOARD_LOCK, TAB_LOCK, VERSION } from './switchboard.js';
 
 export const OWNER_LOCK = 'slicc-agent';
@@ -68,9 +69,7 @@ export function localBoard({ id = crypto.randomUUID(), versions = null } = {}) {
   };
 }
 
-export function createTabs({
-  reload = () => location.replace(new URL('../', location.href)),
-} = {}) {
+export function createTabs({ reload = () => location.replace(BIOS) } = {}) {
   const listeners = new Set();
   let state = { role: 'connecting', stalled: false, skew: null };
   return {

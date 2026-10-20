@@ -30,7 +30,23 @@ export function combine(plan, records) {
     })),
     timings: Object.assign({}, ...shards.map(({ timings = {} }) => timings)),
     flips: shards.flatMap(({ shard, flips = [] }) => flips.map((flip) => ({ ...flip, shard }))),
+    traps: shards.flatMap(({ shard, traps = [] }) => traps.map((trap) => ({ ...trap, shard }))),
   };
+}
+
+export const TRAP_TEST = {
+  file: 'src/seed/update.js',
+  name: 'pnpm hit the wasm trap and was retried (homescoop#1127)',
+};
+
+export function trapFlips(summary) {
+  if (!summary.traps?.length) return [];
+  const log = summary.traps
+    .map(({ shard, file, name, line }) => `${shard} ${file} › ${name}: ${line}`)
+    .join('\n');
+  return [
+    { ...TRAP_TEST, shard: [...new Set(summary.traps.map(({ shard }) => shard))].join(' '), log },
+  ];
 }
 
 export function key({ file, name }) {
@@ -106,7 +122,8 @@ async function openIssues(repo) {
 
 export async function report(summary, { repo, server }) {
   const unique = new Map();
-  for (const flip of summary.flips) if (!unique.has(key(flip))) unique.set(key(flip), flip);
+  for (const flip of [...summary.flips, ...trapFlips(summary)])
+    if (!unique.has(key(flip))) unique.set(key(flip), flip);
   if (!unique.size) return [];
   await api(`/repos/${repo}/labels`, {
     method: 'POST',
@@ -153,9 +170,13 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
   for (const name of names.filter((n) => /^s\d+\.json$/.test(n))) records.push(await read(name));
   const summary = combine(plan, records);
   const lines = [
-    `experiment: arm ${summary.arm} (PR ${summary.pr ?? 'none'}), ${records.length} shard records${summary.planned.length ? ` of ${summary.planned.length} planned` : ''}, ${summary.flips.length} flipped tests`,
+    `experiment: arm ${summary.arm} (PR ${summary.pr ?? 'none'}), ${records.length} shard records${summary.planned.length ? ` of ${summary.planned.length} planned` : ''}, ${summary.flips.length} flipped tests, ${summary.traps.length} pnpm wasm traps retried`,
   ];
-  if (values.issues && summary.flips.length) {
+  for (const { shard, file, name } of summary.traps)
+    lines.push(
+      `flaky: pnpm hit the wasm trap (homescoop#1127) in ${shard} ${basename(file ?? '')} › ${name}, retried`
+    );
+  if (values.issues && (summary.flips.length || summary.traps.length)) {
     if (!env.GITHUB_TOKEN || !env.GITHUB_REPOSITORY) lines.push('flaky: no token, no issues filed');
     else {
       try {

@@ -3,7 +3,7 @@
     "match": "/(follow[^/]*|chat)\\.test\\.mjs$"
   },
   "remote-pydata": {
-    "match": "/(remote|pydata|updates)\\.test\\.mjs$"
+    "match": "/(remote|pydata[^/]*|updates)\\.test\\.mjs$"
   },
   "users-agent-ui": {
     "match": "/(users|agent-ui)\\.test\\.mjs$"
@@ -11,8 +11,13 @@
   "packages-update-cdp": {
     "match": "/(packages|update|cdp)\\.test\\.mjs$"
   },
-  "guard": {
-    "match": "/(guard-vectors|serve)\\.test\\.mjs$"
+  "guard-prompt": {
+    "match": "/guard-vectors\\.test\\.mjs$",
+    "env": { "GUARD_VARIANTS": "prompt" }
+  },
+  "guard-lagging": {
+    "match": "/guard-vectors\\.test\\.mjs$",
+    "env": { "GUARD_VARIANTS": "lagging" }
   },
   "guard-set-extension-prompt": {
     "match": "/guard-set-extension\\.test\\.mjs$",
@@ -30,14 +35,20 @@
     "match": "/guard-set-proxy\\.test\\.mjs$",
     "env": { "GUARD_VARIANTS": "lagging" }
   },
-  "k4-link": {
-    "match": "/(k4[^/]*|link)\\.test\\.mjs$"
+  "k4-upgrade": {
+    "match": "/(k4|k4-upgrade)\\.test\\.mjs$"
+  },
+  "k4-agent-modes": {
+    "match": "/(k4-agent|k4-modes)\\.test\\.mjs$"
+  },
+  "link-serve": {
+    "match": "/(link|serve)\\.test\\.mjs$"
   },
   "user-packages-keys-favicon": {
     "match": "/(user-packages|keys|favicon)\\.test\\.mjs$"
   },
   "rest": {
-    "exclude": "/(follow[^/]*|chat|remote|pydata|updates|users|agent-ui|packages|update|cdp|guard-vectors|guard-set-[a-z]+|serve|k4[^/]*|link|user-packages|keys|favicon)\\.test\\.mjs$"
+    "exclude": "/(follow[^/]*|chat|remote|pydata[^/]*|updates|users|agent-ui|packages|update|cdp|guard-vectors|guard-set-[a-z]+|serve|k4[^/]*|link|user-packages|keys|favicon)\\.test\\.mjs$"
   },
   "sweep": {
     "match": "/(sweep|pins)\\.test\\.mjs$"

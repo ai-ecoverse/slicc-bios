@@ -7,6 +7,7 @@ const chrome = await launch();
 after(() => chrome.close());
 
 const rootShell = ['slicc:/home# '];
+const PLANTED = 400;
 
 const EPOLL = `import asyncio
 import select
@@ -425,9 +426,74 @@ test('enforce: the base set installs from /opt/slicc/base, whatever a root proce
   assert.notEqual(bios.state, 'failed', bios.error);
   assert.equal(await bash(), before);
   assert.equal(await read(page, 'node_modules/evil/package.json'), '');
-  for (const name of ['package.json', 'pnpm-lock.yaml', '.npmrc', 'pnpm-workspace.yaml']) {
-    assert.equal(await read(page, name), '', name);
+  assert.equal(await read(page, 'package.json'), '{"dependencies":{"evil":"1.0.0"}}\n');
+  assert.equal(await read(page, '.npmrc'), 'registry=https://evil.invalid/\n');
+  assert.match(await read(page, 'pnpm-lock.yaml'), /evil/);
+  assert.match(await read(page, 'pnpm-workspace.yaml'), /overrides/);
+});
+
+test('enforce: a package.json root makes at / survives another tab loading seven', async (t) => {
+  const page = await chrome.page(t);
+  await bootIn(page, 'enforce');
+  await run(
+    page,
+    'clear; cd / && echo \'{"name":"mine"}\' > /package.json && echo made-$((40 + 2))'
+  );
+  await shows(page, 'made-42');
+  const other = await page.tab();
+  await bootIn(other, 'enforce');
+  assert.equal(await read(page, 'package.json'), '{"name":"mine"}\n');
+  assert.deepEqual(page.errors, []);
+});
+
+test('enforce: pnpm add at / as root succeeds while other tabs load seven', {
+  timeout: 15 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  await bootIn(page, 'enforce');
+  await run(
+    page,
+    'clear; rm -f /package.json /pnpm-lock.yaml /tmp/adds; for n in 1 2 3 4 5 6; do mkdir -p /tmp/dep$n && echo "{\\"name\\":\\"dep$n\\",\\"version\\":\\"1.0.0\\"}" > /tmp/dep$n/package.json; done; cd / && (for n in 1 2 3 4 5 6; do pnpm add --lockfile-only file:/tmp/dep$n > /tmp/add$n.log 2>&1; echo "add$n=$?" >> /tmp/adds; done; echo adds-done >> /tmp/adds) & echo started-$((40 + 2))'
+  );
+  await shows(page, 'started-42');
+  const loads = [];
+  for (let i = 0; i < 3; i += 1) {
+    const other = await page.tab();
+    await bootIn(other, 'enforce');
+    loads.push(i);
+    if ((await read(page, 'tmp/adds')).includes('adds-done')) break;
   }
+  await page.within(10 * 60 * 1000, async () => {
+    let dir = await navigator.storage.getDirectory();
+    try {
+      dir = await dir.getDirectoryHandle('tmp');
+      return (await (await dir.getFileHandle('adds')).getFile())
+        .text()
+        .then((text) => text.includes('adds-done'));
+    } catch {
+      return false;
+    }
+  });
+  const last = await page.tab();
+  await bootIn(last, 'enforce');
+  const adds = await read(page, 'tmp/adds');
+  const logs = [];
+  for (let n = 1; n <= 6; n += 1)
+    logs.push(`add${n}: ${(await read(page, `tmp/add${n}.log`)).slice(-400)}`);
+  assert.deepEqual(
+    adds.match(/add\d=\d+/g),
+    ['add1=0', 'add2=0', 'add3=0', 'add4=0', 'add5=0', 'add6=0'],
+    `${adds}\n${logs.join('\n')}`
+  );
+  assert.ok(loads.length > 0);
+  const manifest = JSON.parse((await read(page, 'package.json')) || '{}');
+  assert.deepEqual(
+    Object.keys(manifest.dependencies ?? {}).sort(),
+    ['dep1', 'dep2', 'dep3', 'dep4', 'dep5', 'dep6'],
+    JSON.stringify(manifest)
+  );
+  assert.doesNotMatch(logs.join('\n'), /ENOENT/);
+  assert.deepEqual(page.errors, []);
 });
 
 test('an install from before users boots with them, its legacy files locked once, root still reading them', async (t) => {
@@ -509,47 +575,69 @@ test('enforce: a cone’s denial is in the log when the page reloads right after
 test('enforce: slicc-denials run as root leaves a file a cone links into /tmp alone', async (t) => {
   const page = await chrome.page(t);
   await bootIn(page, 'enforce');
+  await run(page, `clear; echo "pid=$(sh -c 'echo $$')-$((40 + 2))"`);
+  await shows(page, '-42');
+  const pid = Number(/pid=(\d+)-42/.exec(await screen(page))[1]);
+  const names = Array.from({ length: PLANTED }, (_, i) => `slicc-denials.${pid + 1 + i}`);
+  await page.evaluate(async (encoded) => {
+    let dir = await navigator.storage.getDirectory();
+    dir = await dir.getDirectoryHandle('root', { create: true });
+    const writable = await (
+      await dir.getFileHandle('links.tar', { create: true })
+    ).createWritable();
+    await writable.write(Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0)));
+    await writable.close();
+  }, linksTar(names, '/root/target').toString('base64'));
   await run(
     page,
-    "clear; echo intact > /root/target; chmod 600 /root/target; sudo -u cone bash -c 'p=$$; for i in $(seq 150 249); do ln -s /root/target /tmp/slicc-denials.$((p + i)); done'; slicc-denials > /dev/null; echo summary=$?; echo target=$(cat /root/target); echo planted=$(ls /tmp | grep -c slicc-denials); echo done-$((40 + 2))"
+    "clear; echo intact > /root/target; chmod 600 /root/target; sudo -u cone tar xf - -C /tmp < /root/links.tar; echo untar=$?; slicc-denials > /dev/null; echo summary=$?; echo target=$(cat /root/target); echo planted=$(ls /tmp | grep -c '^slicc-denials[.]'); echo done-$((40 + 2))"
   );
   await shows(page, 'done-42');
   const text = await screen(page);
+  assert.match(text, /untar=0/);
   assert.match(text, /summary=0/);
   assert.match(text, /target=intact/);
-  assert.match(text, /planted=100/);
+  assert.match(text, new RegExp(`planted=${PLANTED}\\b`));
   assert.deepEqual(page.errors, []);
 });
 
+function tarHeader(name, { type = '0', size = 0, link = '' } = {}) {
+  const block = Buffer.alloc(512);
+  const field = (offset, length, value) => block.write(value, offset, length, 'ascii');
+  const octal = (offset, length, value) =>
+    field(offset, length, `${value.toString(8).padStart(length - 1, '0')}\0`);
+  field(0, 100, name);
+  octal(100, 8, type === '2' ? 0o777 : 0o644);
+  octal(108, 8, 0);
+  octal(116, 8, 0);
+  octal(124, 12, size);
+  octal(136, 12, 1700000000);
+  field(148, 8, '        ');
+  field(156, 1, type);
+  field(157, 100, link);
+  field(257, 6, 'ustar\0');
+  field(263, 2, '00');
+  let sum = 0;
+  for (const byte of block) sum += byte;
+  field(148, 8, `${sum.toString(8).padStart(6, '0')}\0 `);
+  return block;
+}
+
+function linksTar(names, target) {
+  return Buffer.concat([
+    ...names.map((name) => tarHeader(name, { type: '2', link: target })),
+    Buffer.alloc(1024),
+  ]);
+}
+
 function hardLinkTar() {
-  const header = (name, { type = '0', size = 0, link = '' } = {}) => {
-    const block = Buffer.alloc(512);
-    const field = (offset, length, value) => block.write(value, offset, length, 'ascii');
-    const octal = (offset, length, value) =>
-      field(offset, length, `${value.toString(8).padStart(length - 1, '0')}\0`);
-    field(0, 100, name);
-    octal(100, 8, 0o644);
-    octal(108, 8, 0);
-    octal(116, 8, 0);
-    octal(124, 12, size);
-    octal(136, 12, 1700000000);
-    field(148, 8, '        ');
-    field(156, 1, type);
-    field(157, 100, link);
-    field(257, 6, 'ustar\0');
-    field(263, 2, '00');
-    let sum = 0;
-    for (const byte of block) sum += byte;
-    field(148, 8, `${sum.toString(8).padStart(6, '0')}\0 `);
-    return block;
-  };
   const body = Buffer.alloc(512);
   body.write('linked 42\n');
   return Buffer.concat([
-    header('d/', { type: '5' }),
-    header('d/a', { size: 10 }),
+    tarHeader('d/', { type: '5' }),
+    tarHeader('d/a', { size: 10 }),
     body,
-    header('d/b', { type: '1', link: 'd/a' }),
+    tarHeader('d/b', { type: '1', link: 'd/a' }),
     Buffer.alloc(1024),
   ]);
 }

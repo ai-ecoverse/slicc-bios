@@ -77,13 +77,31 @@ function baseProject() {
 const repaired = [];
 const stopped = [];
 
-function activated(worker) {
+const SETTLE = 15000;
+
+function activated(registration, worker) {
   return new Promise((resolve, reject) => {
-    const check = () => {
-      if (worker.state === 'activated') resolve();
-      if (worker.state === 'redundant') reject(new Error(`${worker.scriptURL} failed to install`));
+    const finish = (error) => {
+      clearTimeout(timer);
+      worker.removeEventListener('statechange', check);
+      navigator.serviceWorker.removeEventListener('controllerchange', check);
+      if (error) reject(error);
+      else resolve();
     };
+    const check = () => {
+      if (worker.state === 'activated') finish();
+      else if (worker.state === 'redundant')
+        finish(new Error(`${worker.scriptURL} failed to install`));
+    };
+    const timer = setTimeout(() => {
+      if (!registration.active) return finish(new Error(`${worker.scriptURL} didn't activate`));
+      console.warn(
+        `bios: ${worker.scriptURL} is still ${worker.state}, going on under the active worker`
+      );
+      finish();
+    }, SETTLE);
     worker.addEventListener('statechange', check);
+    navigator.serviceWorker.addEventListener('controllerchange', check);
     check();
   });
 }
@@ -159,6 +177,8 @@ await step('seed', async () => {
     'present.js',
     'profile.js',
     'remote.js',
+    'site.js',
+    'skills.js',
     'start.js',
     'storage.js',
     'switchboard-worker.js',
@@ -193,20 +213,25 @@ await step('seed', async () => {
   return `os/{${files.join(',')}} ${size(bytes)}${fixed(changed)}`;
 });
 
+const root = new URL('/', import.meta.url);
+let scope = root.href;
+
 await step('intercept', async () => {
   const registration = await navigator.serviceWorker.register(new URL('sw.js', import.meta.url), {
     type: 'module',
+    scope: root.pathname,
   });
+  scope = registration.scope;
   if (!registration.installing && !registration.waiting) await registration.update();
   const update = registration.installing ?? registration.waiting;
-  if (update) await activated(update);
+  if (update) await activated(registration, update);
   return registration.scope;
 });
 
 await step('navigate', async () => {
   remember('slicc-bios.repaired', repaired);
   remember('slicc-bios.stopped', stopped);
-  const ui = new URL(uiPage(location.hash), import.meta.url);
+  const ui = new URL(uiPage(location.hash), scope);
   ui.hash = location.hash;
   location.replace(ui);
   return ui.pathname;

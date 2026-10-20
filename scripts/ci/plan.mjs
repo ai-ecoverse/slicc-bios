@@ -3,6 +3,7 @@ import { appendFile, mkdir, readdir, readFile, writeFile } from 'node:fs/promise
 import { join } from 'node:path';
 import { argv, env } from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { changes, scope, scopes } from './scope.mjs';
 
 export const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 export const SHARDS = 14;
@@ -89,18 +90,47 @@ export function assign(list, durations, { shards = SHARDS, seed }) {
     .filter(({ items: group }) => group.length);
 }
 
-export async function plan({ event, payload, seed }) {
+export function narrow(files, scoped) {
+  if (scoped.rows === null) return files;
+  const wanted = new Set(scoped.rows.map((row) => `test/integration/${row}`));
+  const picked = files.filter((file) => wanted.has(file));
+  if (picked.length || scoped.mode === 'docs') return picked;
+  return files.filter((file) => file === 'test/integration/boot.test.mjs');
+}
+
+export async function plan({
+  event,
+  payload,
+  seed,
+  scoped = { mode: 'full', rows: null, vendors: true },
+}) {
   const files = (await readdir(join(ROOT, 'test/integration')))
     .filter((file) => file.endsWith('.test.mjs'))
     .sort()
     .map((file) => `test/integration/${file}`);
   const durations = JSON.parse(await readFile(join(ROOT, 'scripts/ci/durations.json'), 'utf8'));
+  const chosen = narrow(files, scoped);
+  const shards = chosen.length ? assign(items(chosen), durations, { seed }) : [];
+  const skip = [...(shards.length ? [] : ['integration']), ...(scoped.vendors ? [] : ['vendors'])];
   return {
     event,
     seed,
+    mode: scoped.mode,
+    reason: scoped.reason ?? '',
+    vendors: scoped.vendors,
+    skip,
     ...arm(prNumber(event, payload)),
-    shards: assign(items(files), durations, { seed }),
+    shards,
   };
+}
+
+export async function scoping(event) {
+  if (event !== 'pull_request') return scope({ event });
+  try {
+    return scope({ event, ...changes(), map: await scopes() });
+  } catch (error) {
+    return { mode: 'full', reason: `scoping failed: ${error.message}`, rows: null, vendors: true };
+  }
 }
 
 if (argv[1] === fileURLToPath(import.meta.url)) {
@@ -108,7 +138,8 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
     ? JSON.parse(await readFile(env.GITHUB_EVENT_PATH, 'utf8'))
     : {};
   const seed = Number(env.GITHUB_RUN_ID) || Date.now();
-  const planned = await plan({ event: env.GITHUB_EVENT_NAME ?? '', payload, seed });
+  const event = env.GITHUB_EVENT_NAME ?? '';
+  const planned = await plan({ event, payload, seed, scoped: await scoping(event) });
   const out = join(ROOT, 'artifacts/experiment');
   await mkdir(out, { recursive: true });
   await writeFile(join(out, 'plan.json'), `${JSON.stringify(planned, null, 2)}\n`);
@@ -123,6 +154,9 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
     failfast: String(planned.failFast),
     retry: String(planned.retry),
     seed: String(seed),
+    mode: planned.mode,
+    vendors: String(planned.vendors),
+    skip: planned.skip.join(' '),
   };
   const lines = Object.entries(outputs).map(([key, value]) => `${key}=${value}`);
   if (env.GITHUB_OUTPUT) await appendFile(env.GITHUB_OUTPUT, `${lines.join('\n')}\n`);
@@ -131,6 +165,7 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
       `| ${shard} | ${Math.round(seconds / 60)} min | ${list.map((item) => item.replace('test/integration/', '')).join(', ')} |`
   );
   const summary = [
+    `plan: mode ${planned.mode} (${planned.reason}), ${planned.shards.length} shards${planned.skip.length ? `, skips ${planned.skip.join(' and ')}` : ''}`,
     `plan: arm ${planned.arm} (PR ${planned.pr ?? 'none'}), seed ${seed}, ${planned.shards.length} shards`,
     '',
     '| shard | estimate | tests |',

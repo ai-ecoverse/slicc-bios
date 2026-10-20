@@ -37,6 +37,14 @@ const helpers = () => {
   });
 };
 
+const transformed = (page) =>
+  page.evaluate(() =>
+    performance.getEntriesByType('resource').flatMap((entry) => {
+      const timing = entry.serverTiming.find(({ name }) => name === 'transform');
+      return timing ? [{ url: entry.name, cached: timing.description === 'cached' }] : [];
+    })
+  );
+
 async function upgrade(page) {
   return page.evaluate(async (agent) => {
     const candidates = [
@@ -76,16 +84,24 @@ async function upgrade(page) {
   }, AGENT);
 }
 
-test("after an agent update that changes a module and a dependency's entry, Restart agent and the next load both run the new agent code", {
+test("after an agent update that changes a module and a dependency's entry, Restart agent re-transforms the agent's modules, and Restart and the next load both run the new agent code while seven's own transforms stay cached", {
   timeout: 35 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
   await page.init(helpers);
+  await page.init(() => performance.setResourceTimingBufferSize(20000));
   await page.goto('/');
   await ready(page);
   await agentUp(page);
   assert.deepEqual(await page.evaluate(() => window.agentBuild()), { adapter: null, chord: null });
 
+  const before = await transformed(page);
+  const served = new Set(
+    before
+      .filter(({ url }) => new URL(url).pathname.startsWith('/opt/agent/'))
+      .map(({ url }) => url)
+  );
+  assert.ok(served.size > 0, 'the agent served no transformed module before the update');
   const entry = await upgrade(page);
   assert.match(entry, /^\.\/dist\/context\/.+\.js$/);
   await page.evaluate(() =>
@@ -95,10 +111,24 @@ test("after an agent update that changes a module and a dependency's entry, Rest
     const build = window.agentBuild();
     return build.adapter === 'next' && build.chord === 'next';
   });
+  const again = (await transformed(page)).slice(before.length).filter(({ url }) => served.has(url));
+  assert.ok(again.length > 0, 'Restart agent fetched none of the modules the agent had served');
+  assert.deepEqual(
+    again.filter(({ cached }) => cached).map(({ url }) => new URL(url).pathname),
+    [],
+    'the agent update kept cached transforms of agent modules'
+  );
 
   await page.reload();
   await ready(page);
   await agentUp(page, { label: 'agent on the next load' });
+  assert.deepEqual(
+    (await transformed(page))
+      .filter(({ url, cached }) => !cached && !new URL(url).pathname.startsWith('/opt/agent/'))
+      .map(({ url }) => new URL(url).pathname),
+    [],
+    'the agent update dropped transforms of modules outside /opt/agent/'
+  );
   await page.until(() => {
     const build = window.agentBuild();
     return build.adapter === 'next' && build.chord === 'next';

@@ -30,9 +30,9 @@
   "@ai-ecoverse/wasix-python": {
     "id": "python",
     "label": "Python",
-    "description": "Python 3.14 with pip (pip, pip3 or python3 -m pip), for scripts and data work.",
+    "description": "Python 3.15 with pip (pip, pip3 or python3 -m pip), for scripts and data work.",
     "commands": ["python3", "pip", "pip3"],
-    "size": 57417828
+    "size": 61095245
   },
   "slicc-py-datatools": {
     "id": "pydata",
@@ -41,7 +41,7 @@
     "description": "numpy, pandas, matplotlib and scipy for Python, about 240 MB on disk. scipy lacks only the deprecated scipy.odr.",
     "commands": [],
     "requires": ["python"],
-    "size": 67796756
+    "size": 67207958
   },
   "@ai-ecoverse/slicc-jsh": {
     "id": "node",
@@ -142,13 +142,6 @@
     "commands": ["ntfy"],
     "size": 4751117
   },
-  "@ai-ecoverse/wasi-fnox": {
-    "id": "fnox",
-    "label": "fnox",
-    "description": "Secrets by name: fnox keeps placeholders and seven's vault keeps the values. Pipe a value into fnox set NAME to add or change one; fnox exec hands a program the values the secret rules allow.",
-    "commands": ["fnox"],
-    "size": 2156061
-  },
   "@ai-ecoverse/wasix-gnupg": {
     "id": "gpg",
     "label": "GnuPG",
@@ -161,7 +154,7 @@
     "label": "mcpcat (MCP client)",
     "description": "Calls MCP servers from the terminal: lists and calls their tools, resources and prompts, over HTTP or a stdio command. In a header, -H 'Authorization: Bearer ${NAME}' (single quotes) sends the vault's placeholder, which the vault fills in where a secret rule allows that host; mcpcat never prints the value.",
     "commands": ["mcpcat"],
-    "size": 589050
+    "size": 595379
   },
   "@ai-ecoverse/wasm-imagemagick-heif": {
     "id": "imagemagick",

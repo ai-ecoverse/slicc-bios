@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   SLICC_CDP_PORTS: '9300-9309'
@@ -35,14 +35,19 @@ jobs:
       failfast: ${{ steps.plan.outputs.failfast }}
       retry: ${{ steps.plan.outputs.retry }}
       seed: ${{ steps.plan.outputs.seed }}
+      mode: ${{ steps.plan.outputs.mode }}
+      vendors: ${{ steps.plan.outputs.vendors }}
+      skip: ${{ steps.plan.outputs.skip }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 2
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '26'
 
-      - name: The experiment's arm and a random, duration-balanced shard assignment
+      - name: The changed files' mode, the experiment's arm and a random, duration-balanced shard assignment
         id: plan
         run: node scripts/ci/plan.mjs
 
@@ -73,6 +78,7 @@ jobs:
   integration:
     name: ci / integration (${{ matrix.shard }})
     needs: plan
+    if: needs.plan.outputs.shards != ''
     runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || github.event_name == 'workflow_dispatch' || (contains(fromJSON('["push","schedule","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 75
     strategy:
@@ -144,6 +150,8 @@ jobs:
 
   vendors:
     name: ci / vendors
+    needs: plan
+    if: needs.plan.outputs.vendors == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -167,6 +175,100 @@ jobs:
         run: |
           node --test --test-concurrency=1 --test-timeout=600000 test/integration/vendors/*.test.mjs 2>&1 | tee "$RUNNER_TEMP/vendors.log" || true
           node scripts/ci/verdict.mjs shard --name vendors --log "$RUNNER_TEMP/vendors.log"
+
+  evidence:
+    name: ci / cert evidence
+    needs: [plan, integration]
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || github.event_name == 'workflow_dispatch' || (contains(fromJSON('["push","schedule","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_RUNNER) || 'ubuntu-latest' }}
+    timeout-minutes: 170
+    permissions:
+      contents: read
+    env:
+      LEFTHOOK: '0'
+      SLICC_NO_TELEMETRY: '1'
+      SLICC_NO_UPDATE_CHECK: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: head
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '26'
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        continue-on-error: true
+        with:
+          pattern: integration-*
+          path: ${{ runner.temp }}/shards
+
+      - id: plan
+        name: The pins this PR changes, the test files its shards failed, and the gated pins' scenarios
+        run: node head/scripts/cert/evidence.mjs plan --head head --base base --shards "$RUNNER_TEMP/shards" --out "$RUNNER_TEMP/cert-evidence"
+
+      - name: Install both trees, and the harness's Chromium when a browser runs
+        if: steps.plan.outputs.pins == 'true' || steps.plan.outputs.browser == 'true'
+        env:
+          BROWSER: ${{ steps.plan.outputs.browser }}
+        run: |
+          (cd base && npm ci --no-audit --no-fund)
+          (cd head && npm ci --no-audit --no-fund)
+          if [ "$BROWSER" = true ]; then (cd head && npx playwright-core install --no-shell chromium); fi
+
+      - name: Each changed pin's tarball, provenance and diff, and the release state of the gated ones
+        if: steps.plan.outputs.pins == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          node head/scripts/cert/evidence.mjs inspect --head head --base base --out "$RUNNER_TEMP/cert-evidence"
+          git -C head fetch -q --no-tags --depth=1 origin "$BASE"
+          (cd head && node scripts/cert/release-state.mjs --base "$BASE" --head HEAD --out "$RUNNER_TEMP/cert-evidence/release-state.json" --no-fail)
+
+      - name: Each tree's slicc CLI (the released binary where a tree has none)
+        if: steps.plan.outputs.browser == 'true'
+        run: |
+          case "$(uname -m)" in
+            x86_64) arch=amd64 ;;
+            aarch64 | arm64) arch=arm64 ;;
+            *) echo "::error::no release for $(uname -m)"; exit 1 ;;
+          esac
+          mkdir -p "$RUNNER_TEMP/bin"
+          for tree in base head; do
+            cli="$GITHUB_WORKSPACE/$tree/node_modules/.bin/slicc"
+            if [ ! -x "$cli" ]; then
+              if [ ! -x "$RUNNER_TEMP/bin/slicc-release" ]; then
+                release=https://github.com/ai-ecoverse/slicc-cli/releases/latest/download
+                (cd "$RUNNER_TEMP/bin" && curl -fsSL -O "$release/slicc-linux-$arch" -O "$release/SHA256SUMS" && sha256sum -c SHA256SUMS --ignore-missing && mv "slicc-linux-$arch" slicc-release && chmod +x slicc-release)
+              fi
+              cli="$RUNNER_TEMP/bin/slicc-release"
+            fi
+            echo "SLICC_CLI_${tree^^}=$cli" >> "$GITHUB_ENV"
+            echo "$tree: $("$cli" --version) ($cli)"
+          done
+
+      - name: Each failed test file three times on the head's tree and on main's, each with its own slicc CLI
+        if: steps.plan.outputs.browser == 'true'
+        run: node head/scripts/cert/evidence.mjs reruns --head head --base base --out "$RUNNER_TEMP/cert-evidence" --times 3
+
+      - name: Each changed gated pin's cert scenario in seven, on the head's pins and on main's
+        if: steps.plan.outputs.browser == 'true'
+        run: node head/scripts/cert/evidence.mjs scenarios --head head --base base --out "$RUNNER_TEMP/cert-evidence"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: cert-evidence
+          path: ${{ runner.temp }}/cert-evidence/
+          if-no-files-found: error
 
   ci:
     name: ci / test
@@ -241,10 +343,15 @@ jobs:
           INTEGRATION: ${{ needs.integration.result }}
           VENDORS: ${{ needs.vendors.result }}
           SHARDS: ${{ needs.plan.outputs.shards }}
-        run: node scripts/ci/verdict.mjs shards --dir artifacts/verdicts --expect "$SHARDS" --results "{\"plan\":\"$PLAN\",\"lint\":\"$LINT\",\"integration\":\"$INTEGRATION\",\"vendors\":\"$VENDORS\"}"
+          MODE: ${{ needs.plan.outputs.mode }}
+          SKIP: ${{ needs.plan.outputs.skip }}
+        run: node scripts/ci/verdict.mjs shards --dir artifacts/verdicts --expect "$SHARDS" --results "{\"plan\":\"$PLAN\",\"lint\":\"$LINT\",\"integration\":\"$INTEGRATION\",\"vendors\":\"$VENDORS\"}" --mode "$MODE" --skip "$SKIP"
 
-      - name: A PR passes only with cert review's certified verdict for every gated pin it changes, and a Renovate PR for every pin
-        if: always()
+      - name: Every gated pin or certs.json line a PR or merge group changes is a release its own repository certified (release-state)
+        if: always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/ci/certified.mjs
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: |
+          git fetch -q --no-tags --depth=1 origin "$BASE"
+          node scripts/cert/release-state.mjs --base "$BASE" --head HEAD --out artifacts/cert/release-state.json
