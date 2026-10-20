@@ -98,8 +98,14 @@ test('while the tab holds a half-read download from the old worker, it says seve
     new Function(`(${deep})('[data-notice^="sw-waiting:"] [data-action="reload"]').click()`)
   );
   await page.until(() => !window.heldReader && location.pathname === '/os/');
-  assert.deepEqual(await workers(page), { active: 'activated', waiting: null, installing: null });
+  const reloaded = await workers(page);
+  assert.deepEqual(
+    { ...reloaded, active: null },
+    { active: null, waiting: null, installing: null }
+  );
+  assert.match(reloaded.active, /^activat(ing|ed)$/);
   await ready(page);
+  assert.deepEqual(await workers(page), { active: 'activated', waiting: null, installing: null });
   assert.equal(await waitingNotice(page), undefined);
   assert.deepEqual(page.errors, []);
 });
