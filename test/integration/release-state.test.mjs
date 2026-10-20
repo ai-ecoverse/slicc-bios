@@ -232,6 +232,8 @@ test('v2: a cert-review check run counts only from app 15368, with an external_i
     path: '.github/workflows/cert-review.yml',
     event: 'merge_group',
     head_sha: COMMIT,
+    repository: { full_name: 'ai-ecoverse/slicc-kernel' },
+    workflow_url: 'https://api.github.com/repos/ai-ecoverse/slicc-kernel/actions/workflows/1',
     ...o,
   });
   const pass = await judge(
@@ -248,6 +250,21 @@ test('v2: a cert-review check run counts only from app 15368, with an external_i
     ['another workflow', check(), run({ path: '.github/workflows/spoof.yml' })],
     ['another head', check(), run({ head_sha: 'e'.repeat(40) })],
     ['no external_id', check({ external_id: null }), run()],
+    [
+      'an org-required run of another repository',
+      check(),
+      run({ repository: { full_name: 'ai-ecoverse/evil' } }),
+    ],
+    [
+      'another repository’s workflow url',
+      check(),
+      run({ workflow_url: 'https://api.github.com/repos/ai-ecoverse/evil/actions/workflows/1' }),
+    ],
+    [
+      'another ref of the caller',
+      check(),
+      run({ path: '.github/workflows/cert-review.yml@refs/heads/pr' }),
+    ],
     [
       'an external_id for another commit',
       check({ external_id: `v2:group:${'e'.repeat(40)}:77:1` }),
@@ -719,4 +736,29 @@ test('wasi-slicc is slicc-cli’s: its release commit’s cert-review status fro
     false,
     'another repository’s provenance'
   );
+});
+
+test('an upstream org-required merge-group run counts: the ref-pinned path and a required_workflows url', async () => {
+  const check = {
+    id: 9,
+    app: { id: 15368 },
+    conclusion: 'success',
+    external_id: `v2:group:${COMMIT}:78:1`,
+    output: { title: 'group: ok' },
+  };
+  const run = {
+    path: '.github/workflows/cert-review.yml@refs/heads/main',
+    event: 'merge_group',
+    head_sha: COMMIT,
+    name: '',
+    repository: { full_name: 'ai-ecoverse/slicc-kernel' },
+    workflow_url:
+      'https://api.github.com/repos/ai-ecoverse/slicc-kernel/actions/required_workflows/4',
+  };
+  const r = await judge(
+    fake({ attestations: kernelProv, checks: { [COMMIT]: [check] }, runs: { 78: run } }),
+    KERNEL,
+    INTEGRITY
+  );
+  assert.equal(r.ok, true, r.line);
 });
