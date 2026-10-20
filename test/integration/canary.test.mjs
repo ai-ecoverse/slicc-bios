@@ -763,7 +763,7 @@ test('every gate in the workflows prints a verdict and its caller fails without 
   const ci = await read('ci.yml');
   assert.match(ci, /run: node scripts\/ci\/shard\.mjs --name "\$SHARD" --items "\$ITEMS"/);
   const job = ci.slice(ci.indexOf('\n  ci:'));
-  assert.match(job, /^ {4}needs: \[plan, lint, integration, vendors\]$/m);
+  assert.match(job, /^ {4}needs: \[plan, lint, integration, vendors, evidence\]$/m);
   assert.match(job, /VENDORS: \$\{\{ needs\.vendors\.result \}\}/);
   assert.match(job, /\\"vendors\\":\\"\$VENDORS\\"\}"/);
   const vendors = ci.slice(ci.indexOf('\n  vendors:'), ci.indexOf('\n  ci:'));

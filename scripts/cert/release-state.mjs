@@ -127,24 +127,47 @@ export async function provenanceOf(src, name, version) {
   return null;
 }
 
+const CALLER = '.github/workflows/cert-review.yml';
+
+export const V2_STATUS = new Set([]);
+
+export function upstreamRun(run, repo) {
+  const full = `ai-ecoverse/${repo}`;
+  const url = String(run?.workflow_url ?? '');
+  const api = env.GITHUB_API_URL ?? 'https://api.github.com';
+  return (
+    (run?.path === CALLER || run?.path === `${CALLER}@refs/heads/main`) &&
+    run.repository?.full_name === full &&
+    [
+      `${api}/repos/${full}/actions/workflows/`,
+      `${api}/repos/${full}/actions/required_workflows/`,
+    ].some((p) => url.startsWith(p))
+  );
+}
+
 async function certifiedCommit(src, repo, commit) {
   for (const check of (await src.checks(repo, commit))?.check_runs ?? []) {
     if (check.app?.id !== 15368 || check.conclusion !== 'success') continue;
     const id = new RegExp(`^v2:[^:]+:${commit}:(\\d+):(\\d+)$`).exec(check.external_id ?? '')?.[1];
     const run = id ? await src.run(repo, id) : null;
-    if (
-      run?.path === '.github/workflows/cert-review.yml' &&
-      run.event === 'merge_group' &&
-      run.head_sha === commit
-    )
+    if (upstreamRun(run, repo) && run.event === 'merge_group' && run.head_sha === commit)
       return `cert-review check ${check.id}: ${check.output?.title ?? 'success'}`;
   }
   const status = ((await src.statuses(repo, commit)) ?? []).find(
     (s) => s.context === 'cert-review'
   );
-  if (status?.state === 'success' && status.creator?.login === 'github-actions[bot]')
-    return `cert-review status: ${status.description ?? 'success'}`;
-  return null;
+  if (status?.state !== 'success' || status.creator?.login !== 'github-actions[bot]') return null;
+  const attempt = new RegExp(
+    `^https://github\\.com/ai-ecoverse/${repo}/actions/runs/([1-9]\\d*)/attempts/([1-9]\\d*)$`
+  ).exec(status.target_url ?? '');
+  if (attempt) {
+    const run = await src.run(repo, attempt[1]);
+    if (!(upstreamRun(run, repo) && run.event === 'merge_group' && run.head_sha === commit))
+      return null;
+    return `cert-review status from merge group run ${attempt[1]}: ${status.description ?? 'success'}`;
+  }
+  if (V2_STATUS.has(repo)) return null;
+  return `cert-review status: ${status.description ?? 'success'}`;
 }
 
 const ok = (why) => ({ ok: true, why });

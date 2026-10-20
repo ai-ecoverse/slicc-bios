@@ -27,6 +27,7 @@ const keep = (fields) => {
     placeholder: found?.placeholder ?? mint(),
     ...(fields.provider ? { provider: fields.provider } : {}),
     ...(fields.server ? { server: fields.server } : {}),
+    ...(fields.settings ? { settings: fields.settings } : {}),
     ...(fields.expiresAt ? { expiresAt: fields.expiresAt } : {}),
   };
   delete record.removedAt;
@@ -57,15 +58,20 @@ const view = (record) => ({
   sourceDevice: null,
   ...(record.provider ? { provider: record.provider } : {}),
   ...(record.server ? { server: record.server } : {}),
+  ...(record.url ? { url: record.url } : {}),
+  ...(record.pinned ? { pinned: true } : {}),
+  ...(record.settings ? { settings: record.settings } : {}),
   domains: [],
   rules: [],
   exec: false,
   createdAt: 1767225600000,
 });
+const audit = [...(state.audit ?? [])];
+const audited = (entry) => audit.unshift({ seq: Math.max(0, ...audit.map((each) => each.seq ?? 0)) + 1, id: 'audit-' + Date.now(), at: Date.now(), uid: null, tag: null, ...entry });
 const list = () => ({
   secrets: live().map(view),
   refused: [],
-  audit: state.audit ?? [],
+  audit,
   auditMore: false,
   exits: { file: '/etc/slicc/secrets-policy.toml', sha256: null, restricted: [] },
 });
@@ -101,7 +107,7 @@ const page = (port) => (event) => {
   const result = (record) => ({ name: record.name, placeholder: record.placeholder, state: record.removedAt ? 'removed' : 'inert' });
   if (op === 'status') return reply({ status: status() });
   if (op === 'list') return reply({ list: list() });
-  if (op === 'audit') return reply({ audit: state.audit ?? [], more: false });
+  if (op === 'audit') return reply({ audit, more: false });
   if (op === 'placeholders') return reply({ placeholders: placeholders(), scrub: scrub() });
   if (op === 'sealed' && event.data.req?.op === 'seal') {
     if (locked) return reply({ reply: { v: 1, error: { code: 'EACCES', message: 'vault is locked' } } });
@@ -184,8 +190,47 @@ const page = (port) => (event) => {
     reply(result(record));
     return announce();
   }
+  if (op === 'endpoints') {
+    const { v: _v, id: _id, op: _op, ...fields } = event.data;
+    log({ role: 'page', op: 'endpoints-fields', fields });
+    const unknown = Object.keys(fields).find((field) => !['model', 'mcp', 'remove', 'unpin'].includes(field));
+    if (unknown) return port.postMessage({ v: 1, id, error: { code: 'EINVAL', message: 'endpoints has no field ' + unknown } });
+    const entries = [...(fields.model ?? []), ...(fields.mcp ?? []), ...(fields.remove?.model ?? []), ...(fields.remove?.mcp ?? [])];
+    const bad = entries.find((entry) => {
+      try {
+        const url = new URL(entry.url);
+        return url.protocol !== 'https:' || (url.port && url.port !== '443') || url.username || url.password || url.hostname.includes('*');
+      } catch {
+        return true;
+      }
+    });
+    if (bad) return port.postMessage({ v: 1, id, error: { code: 'EINVAL', message: bad.url + ' must be an https: URL on port 443 without credentials or wildcards' } });
+    for (const { server, url } of fields.mcp ?? [])
+      for (const record of live()) if (record.kind === 'mcp' && record.server === server) Object.assign(record, { url, pinned: false });
+    for (const name of fields.unpin ?? []) {
+      const record = records.get(key('mcp', name));
+      if (record) {
+        record.pinned = false;
+        delete record.url;
+      }
+      audited({ type: 'endpoints', unpinned: { name, server: record?.server ?? null, host: null } });
+    }
+    if (fields.mcp?.length) audited({ type: 'endpoints', adopted: fields.mcp.map(({ server, url }) => ({ server, host: new URL(url).host })) });
+    reply({ ok: true });
+    return announce();
+  }
   if ((op === 'import' || op === 'export') && locked) return refuse();
   if (op === 'dismissBackupReminder') return reply({ backupReminder: 'dismissed' });
+  if (op === 'put' && !('value' in event.data)) {
+    if (locked) return refuse();
+    log({ role: 'page', op: 'settings-put', fields: Object.keys(event.data).filter((field) => !['v', 'id', 'op'].includes(field)).sort() });
+    const found = records.get(key(event.data.kind ?? 'secret', event.data.name));
+    if (!found || found.removedAt || !['model', 'mcp'].includes(found.kind)) return port.postMessage({ v: 1, id, error: { code: 'ENOENT', message: 'no live model or mcp record named ' + event.data.name } });
+    for (const field of ['provider', 'server', 'settings']) if (field in event.data) found[field] = event.data[field];
+    save();
+    reply(result(found));
+    return announce();
+  }
   if (op === 'put' || op === 'seal') {
     if (locked) return refuse();
     const record = keep(event.data);

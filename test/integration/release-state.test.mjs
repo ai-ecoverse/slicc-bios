@@ -1,10 +1,22 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { changedPins, failedFiles, scenario, scenarioOf } from '../../scripts/cert/evidence.mjs';
+import { fileURLToPath } from 'node:url';
+import {
+  CLASSES,
+  changedPins,
+  classOf,
+  failedFiles,
+  flipOf,
+  readingOf,
+  scenario,
+  scenarioOf,
+  shardFlips,
+  UNCLASSIFIED,
+} from '../../scripts/cert/evidence.mjs';
 import { exceptionsFor, judge, releaseState, writerOf } from '../../scripts/cert/release-state.mjs';
 
 const root = new URL('../../', import.meta.url);
@@ -232,6 +244,8 @@ test('v2: a cert-review check run counts only from app 15368, with an external_i
     path: '.github/workflows/cert-review.yml',
     event: 'merge_group',
     head_sha: COMMIT,
+    repository: { full_name: 'ai-ecoverse/slicc-kernel' },
+    workflow_url: 'https://api.github.com/repos/ai-ecoverse/slicc-kernel/actions/workflows/1',
     ...o,
   });
   const pass = await judge(
@@ -248,6 +262,21 @@ test('v2: a cert-review check run counts only from app 15368, with an external_i
     ['another workflow', check(), run({ path: '.github/workflows/spoof.yml' })],
     ['another head', check(), run({ head_sha: 'e'.repeat(40) })],
     ['no external_id', check({ external_id: null }), run()],
+    [
+      'an org-required run of another repository',
+      check(),
+      run({ repository: { full_name: 'ai-ecoverse/evil' } }),
+    ],
+    [
+      'another repository’s workflow url',
+      check(),
+      run({ workflow_url: 'https://api.github.com/repos/ai-ecoverse/evil/actions/workflows/1' }),
+    ],
+    [
+      'another ref of the caller',
+      check(),
+      run({ path: '.github/workflows/cert-review.yml@refs/heads/pr' }),
+    ],
     [
       'an external_id for another commit',
       check({ external_id: `v2:group:${'e'.repeat(40)}:77:1` }),
@@ -558,6 +587,11 @@ test('evidence: the pins a PR changes, the files its shards failed (after the re
     ['test/integration/k4.test.mjs'],
     'a retry that passed clears the file, and a name that is not a test path is dropped'
   );
+  assert.deepEqual(
+    shardFlips(shards),
+    ['test/integration/boot.test.mjs'],
+    'the retry flip is kept'
+  );
   assert.equal(scenarioOf('@ai-ecoverse/slicc-kernel'), 'scripts/cert/scenarios/slicc-kernel.txt');
   assert.deepEqual(scenario('# kernel boots\n# pass: prints ok\necho ok\n\nuname -a\n'), {
     pass: ['prints ok'],
@@ -580,7 +614,11 @@ test('the cert-review caller: shared v2 pinned by sha with the same tools-ref, C
     caller,
     /\n {6}code-check: node scripts\/cert\/release-state\.mjs --base "\$BASE_SHA" --head "\$HEAD_SHA"\n/
   );
-  assert.match(caller, /\n {6}evidence-artifacts: \|\n {8}cert-evidence\n {8}integration-\*\n/);
+  assert.match(
+    caller,
+    /\n {6}evidence-artifacts: \|\n {8}cert-evidence\n {8}cert-inspect\n {8}integration-\*\n/
+  );
+  assert.match(caller, /\n {6}evidence-notes: \|\n {8}cert-inspect\/inspect\/\*\*\n/);
   for (const path of ['.github/workflows/**', 'scripts/cert/**', 'scripts/ci/**'])
     assert.ok(caller.includes(`\n        ${path}\n`), path);
   assert.deepEqual(
@@ -589,13 +627,16 @@ test('the cert-review caller: shared v2 pinned by sha with the same tools-ref, C
   );
   assert.match(caller, /^ {2}pull_request_target:\n/m);
   assert.match(caller, /^ {2}merge_group:\n/m);
+  assert.match(caller, /\n {6}checks: read\n {6}statuses: write\n/);
+  assert.doesNotMatch(caller, /checks: write/);
   assert.doesNotMatch(caller, /workflow_run|claude-code-action|certs\.json/);
 });
 
 test('ci / cert evidence runs pull-request code with a read-only token and no secret, and ci / test runs release-state in code', () => {
   const job = ci.slice(ci.indexOf('\n  evidence:\n'), ci.indexOf('\n  ci:\n'));
-  assert.match(job, /\n {4}permissions:\n {6}contents: read\n {4}env:/);
+  assert.match(job, /\n {4}permissions:\n {6}contents: read\n {6}issues: read\n {4}env:/);
   assert.doesNotMatch(job, /secrets\.|: write|persist-credentials: true/);
+  assert.match(job, /timeout-minutes: 45\n/);
   assert.equal([...job.matchAll(/persist-credentials: false/g)].length, 2);
   assert.match(
     job,
@@ -719,4 +760,295 @@ test('wasi-slicc is slicc-cli’s: its release commit’s cert-review status fro
     false,
     'another repository’s provenance'
   );
+});
+
+test('an upstream org-required merge-group run counts: the ref-pinned path and a required_workflows url', async () => {
+  const check = {
+    id: 9,
+    app: { id: 15368 },
+    conclusion: 'success',
+    external_id: `v2:group:${COMMIT}:78:1`,
+    output: { title: 'group: ok' },
+  };
+  const run = {
+    path: '.github/workflows/cert-review.yml@refs/heads/main',
+    event: 'merge_group',
+    head_sha: COMMIT,
+    name: '',
+    repository: { full_name: 'ai-ecoverse/slicc-kernel' },
+    workflow_url:
+      'https://api.github.com/repos/ai-ecoverse/slicc-kernel/actions/required_workflows/4',
+  };
+  const r = await judge(
+    fake({ attestations: kernelProv, checks: { [COMMIT]: [check] }, runs: { 78: run } }),
+    KERNEL,
+    INTEGRITY
+  );
+  assert.equal(r.ok, true, r.line);
+});
+
+test('a v2 status (target_url = a run attempt) counts only for a merge_group run of the caller on that commit; a bare status counts only for a repository not yet listed as v2', async () => {
+  const { V2_STATUS } = await import('../../scripts/cert/release-state.mjs');
+  const url = (id) => `https://github.com/ai-ecoverse/slicc-kernel/actions/runs/${id}/attempts/1`;
+  const run = (o = {}) => ({
+    path: '.github/workflows/cert-review.yml@refs/heads/main',
+    event: 'merge_group',
+    head_sha: COMMIT,
+    repository: { full_name: 'ai-ecoverse/slicc-kernel' },
+    workflow_url:
+      'https://api.github.com/repos/ai-ecoverse/slicc-kernel/actions/required_workflows/4',
+    ...o,
+  });
+  const ok = await judge(
+    fake({
+      attestations: kernelProv,
+      statuses: { [COMMIT]: [status({ target_url: url(80) })] },
+      runs: { 80: run() },
+    }),
+    KERNEL,
+    INTEGRITY
+  );
+  assert.equal(ok.ok, true, ok.line);
+  assert.match(ok.line, /from merge group run 80/);
+  for (const [why, r] of [
+    ['a pull_request_target run', run({ event: 'pull_request_target' })],
+    ['another workflow', run({ path: '.github/workflows/spoof.yml' })],
+    ['another commit', run({ head_sha: 'e'.repeat(40) })],
+    ['no such run', null],
+  ]) {
+    const got = await judge(
+      fake({
+        attestations: kernelProv,
+        statuses: { [COMMIT]: [status({ target_url: url(81) })] },
+        runs: { 81: r },
+      }),
+      KERNEL,
+      INTEGRITY
+    );
+    assert.equal(got.ok, false, why);
+  }
+  V2_STATUS.add('slicc-kernel');
+  try {
+    const bare = await judge(
+      fake({ attestations: kernelProv, statuses: { [COMMIT]: [status()] } }),
+      KERNEL,
+      INTEGRITY
+    );
+    assert.equal(bare.ok, false, 'a repository on v2 needs the run-attempt binding');
+  } finally {
+    V2_STATUS.delete('slicc-kernel');
+  }
+});
+
+test('ci / cert inspect runs main’s scripts only: the head is checked out as data, never installed or run', () => {
+  const job = ci.slice(ci.indexOf('\n  inspect:\n'), ci.indexOf('\n  evidence:\n'));
+  assert.match(job, /\n {4}permissions:\n {6}contents: read\n {4}env:/);
+  assert.doesNotMatch(job, /secrets\.|: write|persist-credentials: true/);
+  assert.doesNotMatch(job, /\(cd head|node head\/|head\/scripts|npx/);
+  assert.match(job, /node base\/scripts\/cert\/evidence\.mjs inspect --head head --base base/);
+  assert.match(job, /\(cd base && npm ci --ignore-scripts/);
+  assert.match(job, /name: cert-inspect\n/);
+  const evidence = ci.slice(ci.indexOf('\n  evidence:\n'), ci.indexOf('\n  ci:\n'));
+  assert.doesNotMatch(
+    evidence,
+    /evidence\.mjs inspect|release-state/,
+    'nothing upstream-marked is written next to pull-request code'
+  );
+});
+
+const evidenceScript = fileURLToPath(new URL('../../scripts/cert/evidence.mjs', import.meta.url));
+
+function tree(name, script, file) {
+  const dir = mkdtempSync(join(scratch, `${name}-`));
+  mkdirSync(join(dir, 'test/integration'), { recursive: true });
+  writeFileSync(join(dir, file), '');
+  writeFileSync(join(dir, 'runs.js'), script);
+  writeFileSync(
+    join(dir, 'package.json'),
+    JSON.stringify({ name, private: true, scripts: { test: 'node runs.js' } })
+  );
+  return dir;
+}
+const counting = (fails) =>
+  `const fs=require('fs');const n=Number(fs.existsSync('n')?fs.readFileSync('n','utf8'):0)+1;fs.writeFileSync('n',String(n));process.exit((${fails})(n)?1:0);`;
+
+function evidenceCmd(cmd, head, base, out) {
+  const r = spawnSync(
+    process.execPath,
+    [evidenceScript, cmd, '--head', head, '--base', base, '--out', out, '--times', '3'],
+    { encoding: 'utf8' }
+  );
+  return { code: r.status, out: r.stdout + r.stderr };
+}
+
+function rerun(headScript, baseScript, planExtra = {}, file = 'test/integration/ruby.test.mjs') {
+  const head = tree('head', headScript, file);
+  const base = tree('base', baseScript, file);
+  const out = mkdtempSync(join(scratch, 'out-'));
+  writeFileSync(
+    join(out, 'plan.json'),
+    JSON.stringify({
+      failed: [file],
+      scenarios: [],
+      deadline: Date.now() + 600000,
+      ...planExtra,
+    })
+  );
+  evidenceCmd('reruns', head, base, out);
+  const row = JSON.parse(readFileSync(join(out, 'reruns.json'), 'utf8')).rows[0];
+  return { ...row, check: evidenceCmd('check', head, base, out) };
+}
+
+const always = counting('() => true');
+const never = counting('() => false');
+
+test('reruns: the head until it passes, main only when the head failed every time, and a known flaky file skipped', () => {
+  const regression = rerun(always, never);
+  assert.deepEqual(
+    [regression.head.length, regression.base.length, regression.outcome, regression.reading],
+    [3, 3, 'fail', 'regression: fails every time on the head, passes on main']
+  );
+  const both = rerun(always, always);
+  assert.deepEqual([both.base.length, both.outcome], [1, 'main-alike']);
+  const known = rerun(always, never, { flaky: { 'test/integration/ruby.test.mjs': 42 } });
+  assert.deepEqual(
+    [known.head.length, known.outcome, known.reading],
+    [0, 'known-flaky', 'known flaky (issue #42), not re-run']
+  );
+  assert.equal(regression.check.code, 0, regression.check.out);
+});
+
+test('reruns (2a): a shard failure then a passing re-run is a head flake, a finding, and a fail when the file covers data integrity, security or the guard', () => {
+  const flake = rerun(never, never);
+  assert.deepEqual([flake.head.length, flake.base.length, flake.outcome], [1, 0, 'finding']);
+  assert.match(
+    flake.reading,
+    /^head flake: failed in its shard, then passed 1 of 1 re-runs \(a finding\)$/
+  );
+  assert.doesNotMatch(flake.reading, /^passes/);
+  const later = rerun(counting('(n) => n === 1'), never);
+  assert.deepEqual([later.head.length, later.outcome], [2, 'finding']);
+  assert.deepEqual(flipOf('test/integration/ruby.test.mjs', null, undefined).outcome, 'finding');
+  assert.deepEqual(flipOf('test/integration/vault.test.mjs', 'security', 3).outcome, 'fail');
+  assert.deepEqual(flipOf('test/integration/ruby.test.mjs', null, 3).outcome, 'known-flaky');
+  const vault = rerun(never, never, {}, 'test/integration/vault.test.mjs');
+  assert.deepEqual([vault.class, vault.outcome], ['security', 'fail']);
+  assert.match(vault.reading, /it covers security: a fail/);
+  for (const [f, c] of [
+    ['guard-vectors', 'guard'],
+    ['pins', 'guard'],
+    ['update', 'data integrity'],
+    ['link', 'security'],
+  ])
+    assert.equal(classOf(`test/integration/${f}.test.mjs`), c);
+  assert.equal(classOf('test/integration/ruby.test.mjs'), null);
+});
+
+test('reruns (2c): a known flaky-test issue does not skip a file that covers data integrity, security or the guard; the issue is still listed', () => {
+  const file = 'test/integration/guard-vectors.test.mjs';
+  const row = rerun(always, never, { flaky: { [file]: 7 } }, file);
+  assert.deepEqual([row.issue, row.head.length, row.outcome], [7, 3, 'fail']);
+});
+
+test('reruns (4): a spent budget is incomplete, and `check` fails the evidence job on it; ci / test needs the evidence job and fails unless it succeeded', () => {
+  const late = rerun(always, never, { deadline: Date.now() - 1 });
+  assert.deepEqual([late.head.length, late.outcome], [0, 'incomplete']);
+  assert.equal(late.check.code, 1);
+  assert.match(
+    late.check.out,
+    /cert evidence: INCOMPLETE test\/integration\/ruby\.test\.mjs: incomplete: the evidence budget ran out on the head/
+  );
+  const f = { exit: 1 };
+  const cut = { exit: 128, timedOut: true };
+  assert.equal(
+    readingOf({ head: [f, f, f], base: [cut], inBase: true }, 3).outcome,
+    'incomplete',
+    'a main run the budget killed is not "fails on main alike"'
+  );
+  assert.equal(readingOf({ head: [f, cut], base: [], inBase: true }, 3).outcome, 'incomplete');
+  assert.equal(
+    readingOf({ head: [f, f, f], base: [{ exit: 0 }], inBase: true }, 3).outcome,
+    'incomplete'
+  );
+  const head = tree('head', always, 'test/integration/ruby.test.mjs');
+  const out = mkdtempSync(join(scratch, 'out-'));
+  writeFileSync(
+    join(out, 'plan.json'),
+    JSON.stringify({ failed: ['test/integration/ruby.test.mjs'], scenarios: [], deadline: 0 })
+  );
+  const missing = evidenceCmd('check', head, head, out);
+  assert.equal(missing.code, 1, 'no reruns.json is incomplete too');
+  writeFileSync(join(out, 'reruns.json'), JSON.stringify({ rows: [] }));
+  assert.match(evidenceCmd('check', head, head, out).out, /ruby\.test\.mjs: no re-run row/);
+  writeFileSync(
+    join(out, 'reruns.json'),
+    JSON.stringify({ rows: [{ file: 'test/integration/ruby.test.mjs', outcome: 'pass' }] })
+  );
+  assert.match(evidenceCmd('check', head, head, out).out, /no known outcome/);
+  writeFileSync(
+    join(out, 'plan.json'),
+    JSON.stringify({ failed: [], scenarios: [{ name: 'x', present: true }], deadline: 0 })
+  );
+  writeFileSync(
+    join(out, 'scenarios.json'),
+    JSON.stringify([
+      { package: 'x@1', head: { skipped: 'the evidence budget ran out' }, incomplete: true },
+    ])
+  );
+  assert.equal(evidenceCmd('check', head, head, out).code, 1, 'a skipped scenario is incomplete');
+  const job = ci.slice(ci.indexOf('\n  evidence:\n'), ci.indexOf('\n  ci:\n'));
+  assert.match(job, /\n {8}if: \$\{\{ !cancelled\(\) \}\}\n {8}run: \|\n/);
+  assert.match(
+    job,
+    /if grep -q "reruns, scenarios, check }" base\/scripts\/cert\/evidence\.mjs; then t=base; else t=head; fi\n {10}node "\$t\/scripts\/cert\/evidence\.mjs" check /
+  );
+  assert.match(
+    read('scripts/cert/evidence.mjs'),
+    /const run = \{ plan, inspect, reruns, scenarios, check \}\[command\];/,
+    'main’s check is found once this merges'
+  );
+  const test_ = ci.slice(ci.indexOf('\n  ci:\n'));
+  assert.match(test_, /needs: \[plan, lint, integration, vendors, evidence\]/);
+  assert.match(test_, /EVIDENCE: \$\{\{ needs\.evidence\.result \}\}/);
+  assert.match(
+    test_,
+    /\*\) echo "ci \/ cert evidence: \$EVIDENCE \(incomplete evidence is not a pass\)"; exit 1 ;;/
+  );
+});
+
+test('#684: the inspect diffs (wasm strings with bidi and zero-width controls) sit under the caller’s evidence-notes, in cert-inspect, which runs no pull-request code', () => {
+  const notes = caller
+    .match(/\n {6}evidence-notes: \|\n((?: {8}.+\n)+)/)[1]
+    .trim()
+    .split(/\s+/);
+  const glob = (g) =>
+    new RegExp(
+      `^${g
+        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+        .replace(/\*\*/g, '\u0000')
+        .replace(/\*/g, '[^/]*')
+        .replace(/\u0000/g, '.*')}$`
+    );
+  const path = 'cert-inspect/inspect/_ai-ecoverse_wasm-tailscale-1.104.1-9-1.104.1-11.diff';
+  assert.ok(
+    notes.some((g) => glob(g).test(path)),
+    notes.join(' ')
+  );
+  assert.ok(
+    !notes.some((g) => glob(g).test('cert-evidence/inspect/x.diff')),
+    'nothing in the job that runs pull-request code'
+  );
+});
+
+test('a test file in no class and not on the unclassified list (a new one) counts as a class until the bios coordinator places it: never skipped, a flake is a fail', () => {
+  assert.equal(classOf('test/integration/brand-new.test.mjs'), 'an unclassified new file');
+  for (const n of UNCLASSIFIED) assert.equal(classOf(`test/integration/${n}.test.mjs`), null, n);
+  const both = Object.values(CLASSES)
+    .flat()
+    .filter((n) => UNCLASSIFIED.includes(n));
+  assert.deepEqual(both, []);
+  const listed = new Set([...Object.values(CLASSES).flat(), ...UNCLASSIFIED]);
+  const files = readdirSync(new URL('./', import.meta.url)).filter((f) => f.endsWith('.test.mjs'));
+  const fresh = files.map((f) => f.replace(/\.test\.mjs$/, '')).filter((n) => !listed.has(n));
+  if (fresh.length) console.log(`not yet classified (treated as a class): ${fresh.join(', ')}`);
 });
