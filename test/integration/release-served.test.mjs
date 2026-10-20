@@ -1,149 +1,197 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
+import { gzipSync } from 'node:zlib';
 
 const SERVED = new URL('../../scripts/ci/served.mjs', import.meta.url).pathname;
+const PUBLISH = new URL('../../scripts/ci/publish.sh', import.meta.url).pathname;
 const NAME = '@ai-ecoverse/slicc-bios';
-const PACKED = `sha512-${'A'.repeat(86)}==`;
-const OTHER = `sha512-${'B'.repeat(86)}==`;
+const ID = `${NAME}@1.31.10`;
+const sri = (bytes) => `sha512-${createHash('sha512').update(bytes).digest('base64')}`;
+const TAR = Buffer.from('the tar of slicc-bios 1.31.10');
+const OURS = gzipSync(TAR, { level: 9 });
+const PACKED = sri(OURS);
 
-async function npm(script) {
+const FAKE = (dir) => `#!/bin/sh
+d="${dir}"
+echo "$*" >> "$d/calls"
+count() { n=$(cat "$d/$1" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$d/$1"; echo "$n"; }
+for last; do :; done
+case "$1 $2" in
+  "version "*) exit 0;;
+  "pack --dry-run") echo "[{\\"integrity\\":\\"${PACKED}\\"}]"; exit 0;;
+  "pack --pack-destination") cp "$d/ours.tgz" "$last/x.tgz"; exit 0;;
+  "pack @"*) n=$(count fetches); if [ "$n" -le "$(cat "$d/unfetched")" ]; then echo "npm error code E404" >&2; exit 1; fi; cp "$d/theirs.tgz" "$last/x.tgz"; exit 0;;
+  "view @"*)
+    if [ "$3" = version ]; then [ -e "$d/listed" ] && { echo 1.31.10; exit 0; }; exit 1; fi
+    n=$(count views); if [ ! -e "$d/listed" ] || [ "$n" -le "$(cat "$d/unlisted")" ]; then echo "npm error code E404" >&2; echo "npm error 404 '${ID}' is not in this registry." >&2; exit 1; fi
+    cat "$d/integrity"; exit 0;;
+  "publish "*)
+    case "$(cat "$d/publish")" in
+      ok) touch "$d/listed"; echo "npm notice Publishing to https://registry.npmjs.org/"; echo "+ ${ID}"; exit 0;;
+      e409) touch "$d/listed"; echo "npm error code E409" >&2; exit 1;;
+      *) echo "npm error code E403" >&2; exit 1;;
+    esac;;
+esac
+echo "fake npm: unexpected $*" >&2
+exit 2
+`;
+
+async function registry({
+  served: theirs = OURS,
+  listedAs = null,
+  listed = true,
+  unlisted = 0,
+  unfetched = 0,
+  publish = 'ok',
+} = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'served-'));
-  await writeFile(join(dir, 'state'), '0');
-  await writeFile(
-    join(dir, 'npm'),
-    `#!/bin/sh\nn=$(cat "${dir}/state"); n=$((n + 1)); echo "$n" > "${dir}/state"\necho "$*" >> "${dir}/calls"\n${script}\n`
-  );
+  await writeFile(join(dir, 'ours.tgz'), OURS);
+  await writeFile(join(dir, 'theirs.tgz'), theirs);
+  await writeFile(join(dir, 'integrity'), `${listedAs ?? sri(theirs)}\n`);
+  await writeFile(join(dir, 'unlisted'), String(unlisted));
+  await writeFile(join(dir, 'unfetched'), String(unfetched));
+  await writeFile(join(dir, 'publish'), publish);
+  if (listed) await writeFile(join(dir, 'listed'), '');
+  await writeFile(join(dir, 'npm'), FAKE(dir));
   await chmod(join(dir, 'npm'), 0o755);
   return {
     dir,
     calls: async () =>
-      (await readFile(join(dir, 'calls'), 'utf8').catch(() => '')).trim().split('\n'),
+      (await readFile(join(dir, 'calls'), 'utf8').catch(() => ''))
+        .trim()
+        .split('\n')
+        .filter(Boolean),
     done: () => rm(dir, { recursive: true, force: true }),
   };
 }
 
-async function served(fake, args) {
+async function exec(fake, command, args, extra = {}) {
   try {
-    const { stdout } = await promisify(execFile)(process.execPath, [SERVED, ...args], {
-      env: { ...process.env, PATH: `${fake.dir}:${process.env.PATH}`, GITHUB_STEP_SUMMARY: '' },
+    const { stdout, stderr } = await promisify(execFile)(command, args, {
+      env: {
+        ...process.env,
+        PATH: `${fake.dir}:${process.env.PATH}`,
+        GITHUB_STEP_SUMMARY: '',
+        ...extra,
+      },
     });
-    return { code: 0, stdout };
+    return { code: 0, stdout, stderr };
   } catch (error) {
-    return { code: error.code, stdout: error.stdout };
+    return { code: error.code, stdout: error.stdout, stderr: error.stderr };
   }
 }
 
-const wait = (integrity = PACKED, waits = '0,0,0') => [
-  'wait',
-  '--name',
-  NAME,
-  '--version',
-  '1.31.10',
-  '--integrity',
-  integrity,
-  '--waits',
-  waits,
-];
+const wait = (fake, integrity = PACKED) =>
+  exec(fake, process.execPath, [
+    SERVED,
+    'wait',
+    '--name',
+    NAME,
+    '--version',
+    '1.31.10',
+    '--integrity',
+    integrity,
+    '--waits',
+    '0,0,0',
+  ]);
 
-test('a version npm lists late passes once it serves the packed integrity, and every npm answer is in the log', async (t) => {
-  const fake = await npm(
-    `if [ "$n" -lt 3 ]; then echo "npm error code E404" >&2; echo "npm error 404 '${NAME}@1.31.10' is not in this registry." >&2; exit 1; fi\necho "${PACKED}"`
-  );
+const fetches = async (fake) =>
+  (await fake.calls()).filter((call) => call.startsWith(`pack ${ID}`));
+
+test('a version npm lists late passes once it serves the packed integrity and its tarball fetches with it, and every npm answer is in the log', async (t) => {
+  const fake = await registry({ unlisted: 2 });
   t.after(fake.done);
-  const { code, stdout } = await served(fake, wait());
+  const { code, stdout } = await wait(fake);
   assert.equal(code, 0, stdout);
-  assert.match(stdout, /^published: @ai-ecoverse\/slicc-bios@1\.31\.10 serves the packed sha512-/m);
+  assert.match(
+    stdout,
+    /^published: @ai-ecoverse\/slicc-bios@1\.31\.10 serves the packed tarball, fetched and checked$/m
+  );
   assert.equal(
     (stdout.match(/^npm view .* \(round \d+, \d+ s\): exit 1/gm) ?? []).length,
     2,
     stdout
   );
   assert.match(stdout, /stderr: npm error code E404/);
-  assert.deepEqual(
-    await fake.calls(),
-    Array(3).fill(`view ${NAME}@1.31.10 dist.integrity --prefer-online`)
+  assert.equal((await fetches(fake)).length, 1);
+});
+
+test("matching metadata whose tarball can't be fetched yet is waited for, and never served fails after the wait", async (t) => {
+  const late = await registry({ unfetched: 2 });
+  t.after(late.done);
+  const ok = await wait(late);
+  assert.equal(ok.code, 0, ok.stdout);
+  assert.equal((await fetches(late)).length, 3);
+  const never = await registry({ unfetched: 99 });
+  t.after(never.done);
+  const failed = await wait(never);
+  assert.equal(failed.code, 1);
+  assert.match(
+    failed.stdout,
+    /^published: FAIL npm doesn't serve @ai-ecoverse\/slicc-bios@1\.31\.10's tarball after 0 min$/m
   );
 });
 
-async function tarballs(dir, theirs, ours) {
-  const { gzipSync } = await import('node:zlib');
-  await writeFile(join(dir, 'theirs.tgz'), gzipSync(theirs, { level: 1 }));
-  await writeFile(join(dir, 'ours.tgz'), gzipSync(ours, { level: 9 }));
-}
-
-const packing = (dir) =>
-  `if [ "$1" = view ]; then echo "${OTHER}"; exit 0; fi\nfor last; do :; done\ncase "$2" in @*) cp "${dir}/theirs.tgz" "$last/x.tgz";; *) cp "${dir}/ours.tgz" "$last/x.tgz";; esac`;
-
-test('a version npm serves with another integrity and other contents fails at once, without waiting for it to change', async (t) => {
-  const fake = await npm('');
+test('a tarball whose bytes are not the integrity npm lists fails at once, even when the listing matches the packed one', async (t) => {
+  const fake = await registry({ served: gzipSync(Buffer.from('other bytes')), listedAs: PACKED });
   t.after(fake.done);
-  await writeFile(
-    join(fake.dir, 'npm'),
-    `#!/bin/sh\necho "$*" >> "${fake.dir}/calls"\n${packing(fake.dir)}\n`
-  );
-  await tarballs(fake.dir, Buffer.from('published tar'), Buffer.from('packed tar'));
-  const { code, stdout } = await served(fake, wait());
+  const { code, stdout } = await wait(fake);
   assert.equal(code, 1, stdout);
   assert.match(
     stdout,
-    new RegExp(
-      `^published: FAIL npm serves ${NAME}@1\\.31\\.10 with ${OTHER.replace(/[+/]/g, '\\$&')}, not the packed`,
-      'm'
-    )
+    /^published: FAIL npm serves @ai-ecoverse\/slicc-bios@1\.31\.10 with sha512-/m
   );
-  const calls = await fake.calls();
-  assert.equal(calls.filter((call) => call.startsWith('view ')).length, 1);
-  assert.match(calls[1], new RegExp(`^pack ${NAME}@1\\.31\\.10 --pack-destination `));
-  assert.match(calls[2], /^pack --pack-destination /);
+  assert.equal((await fetches(fake)).length, 1);
 });
 
-test('a version npm serves with another gzip of the same tar passes, since only the compression differs between runners', async (t) => {
-  const fake = await npm('');
-  t.after(fake.done);
-  await writeFile(
-    join(fake.dir, 'npm'),
-    `#!/bin/sh\necho "$*" >> "${fake.dir}/calls"\n${packing(fake.dir)}\n`
-  );
-  const tar = Buffer.from('the same tar, byte for byte');
-  await tarballs(fake.dir, tar, tar);
-  const { code, stdout } = await served(fake, wait());
-  assert.equal(code, 0, stdout);
+test('another gzip of the same tar passes, and other contents fail at once without waiting', async (t) => {
+  const regzipped = await registry({ served: gzipSync(TAR, { level: 1 }) });
+  t.after(regzipped.done);
+  const same = await wait(regzipped);
+  assert.equal(same.code, 0, same.stdout);
   assert.match(
-    stdout,
-    /^published: @ai-ecoverse\/slicc-bios@1\.31\.10 serves the packed contents \(npm's sha512-/m
+    same.stdout,
+    /serves npm's sha512-.*…, another gzip of the packed tar, tarball, fetched and checked/
   );
+  const other = await registry({ served: gzipSync(Buffer.from('a different tar')) });
+  t.after(other.done);
+  const failed = await wait(other);
+  assert.equal(failed.code, 1);
+  assert.match(failed.stdout, /^published: FAIL npm serves .* not the packed /m);
+  assert.equal((await other.calls()).filter((call) => call.startsWith('view ')).length, 1);
 });
 
-test('a version npm never serves fails after the whole wait, and no packed integrity is never a pass', async (t) => {
-  const fake = await npm('echo "npm error code E404" >&2; exit 1');
+test('a version npm never lists fails after the whole wait, and no packed integrity is never a pass', async (t) => {
+  const fake = await registry({ listed: false });
   t.after(fake.done);
-  const never = await served(fake, wait());
+  const never = await wait(fake);
   assert.equal(never.code, 1);
   assert.match(
     never.stdout,
     /^published: FAIL npm doesn't serve @ai-ecoverse\/slicc-bios@1\.31\.10 after 0 min$/m
   );
   assert.equal((await fake.calls()).length, 4);
-  const empty = await served(fake, wait(''));
+  const empty = await wait(fake, '');
   assert.equal(empty.code, 1);
   assert.match(empty.stdout, /^published: FAIL no packed integrity for /m);
 });
 
 test('pack prints the integrity npm pack --dry-run reports, and fails without one', async (t) => {
-  const good = await npm(`echo '[{"integrity":"${PACKED}","filename":"x.tgz"}]'`);
-  t.after(good.done);
-  const packed = await served(good, ['pack']);
+  const fake = await registry();
+  t.after(fake.done);
+  const packed = await exec(fake, process.execPath, [SERVED, 'pack']);
   assert.equal(packed.code, 0);
   assert.equal(packed.stdout.trim(), PACKED);
-  assert.deepEqual(await good.calls(), ['pack --dry-run --json']);
-  const bad = await npm('echo "not json"');
+  const bad = await registry();
   t.after(bad.done);
-  assert.equal((await served(bad, ['pack'])).code, 1);
+  await writeFile(join(bad.dir, 'npm'), '#!/bin/sh\necho "not json"\n');
+  assert.equal((await exec(bad, process.execPath, [SERVED, 'pack'])).code, 1);
 });
 
 test('the default wait covers several minutes of registry lag with a growing backoff', async () => {
@@ -153,107 +201,49 @@ test('the default wait covers several minutes of registry lag with a growing bac
   assert.ok(WAITS.every((seconds, i) => i === 0 || seconds >= WAITS[i - 1]));
 });
 
-test("a tarball npm lists but can't hand out yet is waited for, not failed", async (t) => {
-  const fake = await npm('');
-  t.after(fake.done);
-  await writeFile(
-    join(fake.dir, 'npm'),
-    `#!/bin/sh\necho "$*" >> "${fake.dir}/calls"\nn=$(cat "${fake.dir}/state"); n=$((n + 1)); echo "$n" > "${fake.dir}/state"\nif [ "$1" = view ]; then echo "${OTHER}"; exit 0; fi\nfor last; do :; done\ncase "$2" in @*) if [ "$n" -lt 4 ]; then echo "npm error code E404" >&2; exit 1; fi; cp "${fake.dir}/theirs.tgz" "$last/x.tgz";; *) cp "${fake.dir}/ours.tgz" "$last/x.tgz";; esac\n`
-  );
-  const tar = Buffer.from('the same tar');
-  await tarballs(fake.dir, tar, tar);
-  const { code, stdout } = await served(fake, wait());
-  assert.equal(code, 0, stdout);
-  assert.match(stdout, /serves the packed contents/);
-  const calls = await fake.calls();
-  assert.equal(
-    calls.filter((call) => call.startsWith(`pack ${NAME}@`)).length,
-    2,
-    calls.join('\n')
-  );
-  const never = await npm('');
-  t.after(never.done);
-  await writeFile(
-    join(never.dir, 'npm'),
-    `#!/bin/sh\nif [ "$1" = view ]; then echo "${OTHER}"; exit 0; fi\necho "npm error code E404" >&2; exit 1\n`
-  );
-  const late = await served(never, wait());
-  assert.equal(late.code, 1);
-  assert.match(
-    late.stdout,
-    /^published: FAIL npm doesn't serve @ai-ecoverse\/slicc-bios@1\.31\.10's tarball after 0 min$/m
-  );
-});
-
-async function publish(script) {
-  const fake = await npm('');
-  await writeFile(
-    join(fake.dir, 'npm'),
-    `#!/bin/sh\necho "$*" >> "${fake.dir}/calls"\ncase "$1" in\n  version) exit 0;;\n  pack) echo '[{"integrity":"${PACKED}"}]'; exit 0;;\nesac\n${script}\n`
-  );
-  await chmod(join(fake.dir, 'npm'), 0o755);
-  const script_ = new URL('../../scripts/ci/publish.sh', import.meta.url).pathname;
-  const result = await promisify(execFile)('bash', [script_], {
-    env: {
-      ...process.env,
-      PATH: `${fake.dir}:${process.env.PATH}`,
-      TAG: 'v1.31.10',
-      RUNNER_TEMP: fake.dir,
-      SERVED_WAITS: '0,0',
-      PUBLISH_BACKOFF: '0',
-      GITHUB_STEP_SUMMARY: '',
-    },
-  }).then(
-    ({ stdout }) => ({ code: 0, stdout }),
-    (error) => ({ code: error.code, stdout: error.stdout })
-  );
-  return { ...result, calls: await fake.calls(), done: fake.done };
-}
-
-const listing = (when) =>
-  `if [ "$1" = view ] && [ "$3" = version ]; then ${when}; fi\nif [ "$1" = view ] && [ "$3" = dist.integrity ]; then if [ -e "$(dirname "$0")/published" ]; then echo "${PACKED}"; exit 0; fi; exit 1; fi`;
+const publish = (fake) =>
+  exec(fake, 'bash', [PUBLISH], {
+    TAG: 'v1.31.10',
+    RUNNER_TEMP: fake.dir,
+    SERVED_WAITS: '0,0',
+    PUBLISH_BACKOFF: '0',
+  });
 
 test("release.yml's publish step: a version npm already lists is only waited for, never published again", async (t) => {
-  const run = await publish(
-    `${listing('echo 1.31.10; exit 0')}\nif [ "$1" = publish ]; then exit 99; fi\n`
-  );
-  t.after(run.done);
+  const fake = await registry({ publish: 'refuse' });
+  t.after(fake.done);
+  const run = await publish(fake);
+  assert.equal(run.code, 0, run.stdout);
+  assert.match(run.stdout, /npm already lists @ai-ecoverse\/slicc-bios@1\.31\.10/);
   assert.equal(
-    run.calls.some((call) => call.startsWith('publish')),
+    (await fake.calls()).some((call) => call.startsWith('publish')),
     false
   );
-  assert.match(run.stdout, /npm already lists @ai-ecoverse\/slicc-bios@1\.31\.10/);
 });
 
 test("release.yml's publish step: a publish npm takes ends in the wait for the packed tarball, with npm's output logged", async (t) => {
-  const run = await publish(
-    `${listing('exit 1')}\nif [ "$1" = publish ]; then touch "$(dirname "$0")/published"; echo "npm notice Publishing"; echo "+ @ai-ecoverse/slicc-bios@1.31.10"; exit 0; fi\n`
-  );
-  t.after(run.done);
+  const fake = await registry({ listed: false, unlisted: 1 });
+  t.after(fake.done);
+  const run = await publish(fake);
   assert.equal(run.code, 0, run.stdout);
   assert.match(run.stdout, /npm notice Publishing/);
-  assert.match(
-    run.stdout,
-    /^published: @ai-ecoverse\/slicc-bios@1\.31\.10 serves the packed sha512-/m
-  );
-  assert.equal(run.calls.filter((call) => call.startsWith('publish')).length, 1);
+  assert.match(run.stdout, /^published: .* serves the packed tarball, fetched and checked$/m);
+  assert.equal((await fake.calls()).filter((call) => call.startsWith('publish')).length, 1);
 });
 
 test("release.yml's publish step: a publish that errors but npm then lists is waited for, and one npm never takes fails after three attempts", async (t) => {
-  const taken = await publish(
-    `if [ "$1" = view ] && [ "$3" = version ]; then if [ -e "$(dirname "$0")/published" ]; then echo 1.31.10; exit 0; fi; exit 1; fi\nif [ "$1" = view ] && [ "$3" = dist.integrity ]; then echo "${PACKED}"; exit 0; fi\nif [ "$1" = publish ]; then touch "$(dirname "$0")/published"; echo "npm error code E409" >&2; exit 1; fi\n`
-  );
+  const taken = await registry({ listed: false, publish: 'e409' });
   t.after(taken.done);
-  assert.equal(taken.code, 0, taken.stdout);
-  assert.match(taken.stdout, /npm error code E409/);
-  assert.match(taken.stdout, /^published: .* serves the packed sha512-/m);
-  assert.equal(taken.calls.filter((call) => call.startsWith('publish')).length, 1);
-  const refused = await publish(
-    `${listing('exit 1')}\nif [ "$1" = publish ]; then echo "npm error code E403" >&2; exit 1; fi\n`
-  );
+  const ok = await publish(taken);
+  assert.equal(ok.code, 0, ok.stdout);
+  assert.match(ok.stdout, /npm error code E409/);
+  assert.match(ok.stdout, /^published: .* fetched and checked$/m);
+  assert.equal((await taken.calls()).filter((call) => call.startsWith('publish')).length, 1);
+  const refused = await registry({ listed: false, publish: 'refuse' });
   t.after(refused.done);
-  assert.equal(refused.code, 1);
-  assert.equal(refused.calls.filter((call) => call.startsWith('publish')).length, 3);
-  assert.match(refused.stdout, /::error::v1\.31\.10 is tagged but not on npm/);
-  assert.match(refused.stdout, /npm publish failed \(attempt 3\)/);
+  const failed = await publish(refused);
+  assert.equal(failed.code, 1);
+  assert.equal((await refused.calls()).filter((call) => call.startsWith('publish')).length, 3);
+  assert.match(failed.stdout, /::error::v1\.31\.10 is tagged but not on npm/);
+  assert.match(failed.stdout, /npm publish failed \(attempt 3\)/);
 });

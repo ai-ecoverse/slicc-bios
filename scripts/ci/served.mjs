@@ -54,9 +54,11 @@ async function contents(exec, args, log) {
     log(`npm ${args.join(' ')}: ${shown(result)}`);
     const [file] = (await readdir(dir)).filter((name) => name.endsWith('.tgz'));
     if (result.code !== 0 || !file) return null;
-    return createHash('sha256')
-      .update(gunzipSync(await readFile(join(dir, file))))
-      .digest('hex');
+    const bytes = await readFile(join(dir, file));
+    return {
+      integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}`,
+      tar: createHash('sha256').update(gunzipSync(bytes)).digest('hex'),
+    };
   } catch {
     return null;
   } finally {
@@ -64,12 +66,13 @@ async function contents(exec, args, log) {
   }
 }
 
-export async function sameContents({ id, run: exec = run, log = console.log }) {
+export async function sameContents({ id, listed, run: exec = run, log = console.log }) {
   const theirs = await contents(exec, ['pack', id], log);
   if (theirs === null) return 'unfetched';
+  if (theirs.integrity !== listed) return 'other';
   const ours = await contents(exec, ['pack'], log);
   if (ours === null) return 'unpacked';
-  return theirs === ours ? 'same' : 'other';
+  return theirs.tar === ours.tar ? 'same' : 'other';
 }
 
 export async function served({
@@ -90,15 +93,13 @@ export async function served({
     const result = await exec('npm', ['view', id, 'dist.integrity', '--prefer-online']);
     log(`npm view ${id} dist.integrity (round ${round + 1}, ${waited} s): ${shown(result)}`);
     const found = result.code === 0 ? result.stdout.trim() : '';
-    if (found === integrity) {
-      return { ok: true, line: `published: ${id} serves the packed ${integrity.slice(0, 19)}…` };
-    }
-    const same = found ? await sameContents({ id, run: exec, log }) : null;
+    const same = found ? await sameContents({ id, listed: found, run: exec, log }) : null;
     if (same === 'same') {
-      return {
-        ok: true,
-        line: `published: ${id} serves the packed contents (npm's ${found.slice(0, 19)}… is another gzip of the same tar)`,
-      };
+      const how =
+        found === integrity
+          ? 'the packed'
+          : `npm's ${found.slice(0, 19)}…, another gzip of the packed tar,`;
+      return { ok: true, line: `published: ${id} serves ${how} tarball, fetched and checked` };
     }
     if (same === 'other') {
       return {
