@@ -18,8 +18,8 @@ importers:
         specifier: 1.0.2
         version: 1.0.2
       '@ai-ecoverse/slicc-kernel':
-        specifier: 1.129.0
-        version: 1.129.0
+        specifier: 1.135.2
+        version: 1.135.2
       '@ai-ecoverse/slicc-spectrum':
         specifier: 1.100.0
         version: 1.100.0
@@ -33,8 +33,8 @@ importers:
         specifier: 15.2.0-5
         version: 15.2.0-5
       '@ai-ecoverse/wasm-bash':
-        specifier: 5.3.0-19
-        version: 5.3.0-19
+        specifier: 5.3.0-21
+        version: 5.3.0-21
       '@ai-ecoverse/wasm-bzip2':
         specifier: 1.0.8-5
         version: 1.0.8-5
@@ -111,8 +111,8 @@ packages:
     resolution: {integrity: sha512-p7b1h85qkiU0LKjNLCLiU7GVXjGigkyR2+VUCInM1cZo2yjLFxr7tGAOO09e6OG9nB7XKiQn3W88wb3s0gxy+g==}
     engines: {node: '>=24', slicc-kernel: '>=1.75.0'}
 
-  '@ai-ecoverse/slicc-kernel@1.129.0':
-    resolution: {integrity: sha512-/R8aDxfhTQNsloF9Z/zVS+4nhykFF8lhu6rJ3nPTPjHs+wi3hnaRQE/Rj9ceZuLf4J/bDdoyxzYIAZsBdzHe8g==}
+  '@ai-ecoverse/slicc-kernel@1.135.2':
+    resolution: {integrity: sha512-sx5+B0smhHows4ZH7bZWUdY+bsdEWmBfK50FMNYZQldVzWh3es8j3I/af68W63pJYsqxegfkM+5OuBZRSxMlSw==}
     engines: {node: '>=24'}
 
   '@ai-ecoverse/slicc-spectrum@1.100.0':
@@ -139,9 +139,9 @@ packages:
     resolution: {integrity: sha512-QtSi35Zr2Cbb7tg2DM4CCJ1gM/KtNrcJA0YgqiVrnSQ1fuXDi5rYnv9tIXqzpqGPRaLg/JOzhG7qklmksNn4cg==}
     engines: {slicc-kernel: '>=1.34.1'}
 
-  '@ai-ecoverse/wasm-bash@5.3.0-19':
-    resolution: {integrity: sha512-svL9HAGz74mj8OaQaiA7uv7Wv0JnGQKryJk0zdkZBglDg2WIxX0ez+IKmR5lfLo9boFHopGQJ9rw6UeWBZypZw==}
-    engines: {slicc-kernel: '>=1.48.3'}
+  '@ai-ecoverse/wasm-bash@5.3.0-21':
+    resolution: {integrity: sha512-iXnDmUQdlVBH+amBwWxaDBmCefTkr2iYV+ZdqimdWgltX/GDlNRb/z6AfrDUP8K27ySp46ePSvN4BDnRSP0QiQ==}
+    engines: {slicc-kernel: '>=1.130.2'}
 
   '@ai-ecoverse/wasm-bzip2@1.0.8-5':
     resolution: {integrity: sha512-oBIckNRPeNYklYPdetrQ4NOjCUVXxwJXVo+xf2dvHZDBDxlkRa3piNUQ1iPDEWyEp1sSOfgn7geTX/SoKyAfhQ==}
@@ -213,7 +213,7 @@ snapshots:
 
   '@ai-ecoverse/slicc-clipboard@1.0.2': {}
 
-  '@ai-ecoverse/slicc-kernel@1.129.0': {}
+  '@ai-ecoverse/slicc-kernel@1.135.2': {}
 
   '@ai-ecoverse/slicc-spectrum@1.100.0': {}
 
@@ -223,7 +223,7 @@ snapshots:
 
   '@ai-ecoverse/wasi-ripgrep@15.2.0-5': {}
 
-  '@ai-ecoverse/wasm-bash@5.3.0-19': {}
+  '@ai-ecoverse/wasm-bash@5.3.0-21': {}
 
   '@ai-ecoverse/wasm-bzip2@1.0.8-5': {}
 
