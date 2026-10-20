@@ -227,6 +227,113 @@ const inherits = (url) => {
 
 const owned = (own) => [own ?? []].flat().filter(Boolean);
 
+const STARTS = /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\//gi;
+const ENCODED_STARTS = /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*%(?:25)*3a%(?:25)*2f%(?:25)*2f/gi;
+const STOPS = /[\s"'<>\\`]/g;
+const ENCODED_STOPS = /[\s"'<>\\`&]/g;
+const AUTHORITY = 4096;
+const SPOKEN = /^(?:Network|Fetch|Log|Audits|Page)\./;
+const CONSOLE = new Set(['Runtime.exceptionThrown', 'Runtime.consoleAPICalled']);
+const ANSWERED = new Set([
+  'headers',
+  'headersText',
+  'responseHeaders',
+  'redirectResponse',
+  'response',
+]);
+const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const HOSTS = new RegExp(
+  `(${[...catalog.protectedOrigins.domains, ...catalog.protectedOrigins.hosts].map(escaped).join('|')})(\\.?(?::\\d+|%3a\\d+)?)(?:[/?#\\\\][^\\s"'<>\`]*|(?:%2f|%3f|%23|%5c)[^\\s"'<>\`&]*)`,
+  'gi'
+);
+
+function decoded(text) {
+  let out = text.replace(/%[0-9a-f]?$/i, '');
+  for (let i = 0; i < 4 && /%[0-9a-f]{2}/i.test(out); i += 1) {
+    try {
+      out = decodeURIComponent(out);
+    } catch {
+      return out;
+    }
+  }
+  return out;
+}
+
+function authority(text) {
+  const start = text.indexOf('://') + 3;
+  const rest = text.slice(start, start + AUTHORITY + 1);
+  const end = rest.search(/[/?#\\]/);
+  const whole = end < 0 ? rest : rest.slice(0, end);
+  if (whole.length > AUTHORITY) return null;
+  return `${text.slice(0, start)}${whole.slice(whole.lastIndexOf('@') + 1)}`;
+}
+
+function scanned(value, starts, stops, swap) {
+  let out = '';
+  let last = 0;
+  let stop = -1;
+  starts.lastIndex = 0;
+  for (let found = starts.exec(value); found; found = starts.exec(value)) {
+    if (found.index >= stop) {
+      stops.lastIndex = found.index;
+      stop = stops.exec(value)?.index ?? value.length;
+    }
+    const swapped = swap(value.slice(found.index, stop));
+    if (swapped === null) continue;
+    out += value.slice(last, found.index) + swapped;
+    last = stop;
+    starts.lastIndex = stop;
+  }
+  return out + value.slice(last);
+}
+
+export function redacting(is) {
+  const origin = (text) => {
+    const shown = authority(text);
+    if (shown === null) return text.slice(0, text.indexOf('://') + 3);
+    return is.url(`${shown}/`) ? shown : null;
+  };
+  const encoded = (text) => {
+    const plain = decoded(text.slice(0, AUTHORITY * 3));
+    if (!plain.includes('://')) return null;
+    const shown = origin(plain);
+    return shown === null ? null : encodeURIComponent(shown);
+  };
+  const text = (value) => {
+    if (!value.includes('://') && !/%(?:25)*3a/i.test(value) && !/sliccy\.ai/i.test(value)) {
+      return value;
+    }
+    const raw = scanned(value, STARTS, STOPS, origin);
+    return scanned(raw, ENCODED_STARTS, ENCODED_STOPS, encoded).replace(HOSTS, '$1$2');
+  };
+  const walk = (value, path, changed) => {
+    if (typeof value === 'string') {
+      const out = text(value);
+      if (out !== value) changed.push(path);
+      return out;
+    }
+    if (Array.isArray(value)) return value.map((item) => walk(item, path, changed));
+    if (!value || typeof value !== 'object') return value;
+    const out = {};
+    const before = changed.length;
+    for (const [key, item] of Object.entries(value)) {
+      out[text(key)] = walk(item, ANSWERED.has(key) ? [...path, key] : path, changed);
+    }
+    const sibling = Object.entries(value).some(
+      ([key, item]) => typeof item === 'string' && out[text(key)] !== item
+    );
+    if (sibling && changed.length > before && typeof out.urlFragment === 'string') {
+      out.urlFragment = '';
+    }
+    return out;
+  };
+  return (params) => {
+    const changed = [];
+    const out = walk(params, [], changed);
+    return { params: out, changed, answered: changed.some((path) => path.length > 0) };
+  };
+}
+
 export const ARM = [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }];
 
 export function protection(own) {
@@ -240,6 +347,8 @@ class Guard {
   constructor(connection, own) {
     this.connection = connection;
     this.is = protection(own);
+    this.redact = redacting(this.is);
+    this.redirected = new Set();
     this.navs = new Map();
     this.navSessions = new Map();
     this.errored = new Map();
@@ -266,6 +375,19 @@ class Guard {
     this.blockedWorkers = new Set();
     this.next = GUARD_IDS;
     this.guarded = { onmessage: null, onclose: null };
+  }
+
+  redacted(message) {
+    const { method, params } = message;
+    if (!params || !(SPOKEN.test(method ?? '') || CONSOLE.has(method)))
+      return this.deliver(message);
+    const { params: redacted, changed, answered } = this.redact(params);
+    if (!changed.length) return this.deliver(message);
+    if (answered && /^(?:Network|Fetch)\./.test(method)) {
+      for (const id of [params.requestId, params.networkId])
+        if (id !== undefined) this.redirected.add(id);
+    }
+    return this.deliver({ ...message, params: redacted });
   }
 
   deliver(message) {
@@ -572,8 +694,8 @@ class Guard {
       const marked = this.requests.get(requestId) === true || (await this.request(params));
       const waiting = this.settle(requestId, marked);
       if (marked) return true;
-      this.deliver(message);
-      for (const held of waiting) this.deliver(held);
+      this.redacted(message);
+      for (const held of waiting) this.redacted(held);
       return true;
     }
     if (!this.requests.has(requestId)) {
@@ -872,7 +994,15 @@ class Guard {
     if (sessionId && this.naming({ ...message, method })) return;
     if (sessionId && method.startsWith('Page.') && !this.pages.has(sessionId)) return;
     if (PAUSES.has(method)) this.offered.add(message.params?.requestId);
-    this.deliver(message);
+    this.redacted(message);
+  }
+
+  snapshotted(method, result) {
+    if (method !== 'Page.captureSnapshot' || typeof result?.data !== 'string') return false;
+    return (
+      this.redact({ data: result.data.replace(/=\r?\n/g, '').replace(/=3D/gi, '=') }).changed
+        .length > 0
+    );
   }
 
   async listed(message, result) {
@@ -912,6 +1042,7 @@ class Guard {
         result: { ...result, frameTree: this.tree(result.frameTree) },
       });
     }
+    if (this.snapshotted(method, result)) return this.refuse(was);
     if (method === 'Target.getTargetInfo' && result?.targetInfo) {
       return this.deliver({ ...message, result: { targetInfo: this.masked(result.targetInfo) } });
     }
@@ -1019,6 +1150,7 @@ class Guard {
   unseen(method, params) {
     if (!BODIES.has(method) && !REQUESTS.has(method)) return null;
     const id = params.requestId ?? params.interceptionId;
+    if (this.redirected.has(id) && BODIES.has(method)) return PROTECTED;
     if (!this.requests.has(id)) return UNSEEN;
     if (this.requests.get(id)) return PROTECTED;
     if (!REQUESTS.has(method)) return null;
