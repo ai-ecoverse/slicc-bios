@@ -59,11 +59,6 @@
       "separateMajorMinor": false
     },
     {
-      "description": "Held: wasm-bash 5.3.0-20 and later need a kernel with slicc-kernel#1146 (ai-ecoverse/slicc-kernel#1146). Drop this rule in the PR that pins that kernel.",
-      "matchPackageNames": ["@ai-ecoverse/wasm-bash"],
-      "allowedVersions": "<5.3.0-20"
-    },
-    {
       "description": "Skipped: wasi-pnpm 12.9.1-11 and 12.9.1-12 are deprecated, since installs can fail with rename timeouts on OPFS (ai-ecoverse/homescoop#1128). Use 12.9.1-13 or later.",
       "matchPackageNames": ["@ai-ecoverse/wasi-pnpm"],
       "allowedVersions": "!/^12\\.9\\.1-1[12]$/"

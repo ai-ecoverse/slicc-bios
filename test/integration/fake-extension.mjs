@@ -7,7 +7,8 @@ const namesProtected = ({ urlPattern } = {}) => {
   const text = typeof urlPattern === 'string' ? urlPattern : '*';
   if (catalog.protectedOrigins.domains.some((domain) => text.toLowerCase().includes(domain)))
     return true;
-  return shielded.url(text.replace(/\\(.)/g, '$1').replace(/\*/g, '').replace(/\?/g, 'a'));
+  const url = text.replace(/\\(.)/g, '$1').replace(/\*/g, '').replace(/\?/g, 'a');
+  return URL.canParse(url) && shielded.url(url);
 };
 
 export function extensionOver(browser) {
