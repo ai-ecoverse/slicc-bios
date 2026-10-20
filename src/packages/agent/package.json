@@ -4,6 +4,6 @@
   "description": "SLICC's agent, which the UI installs with pnpm in the background into /opt/agent in OPFS",
   "dependencies": {
     "@ai-ecoverse/slicc-agent": "6.11.3",
-    "@ai-ecoverse/slicc-kernel": "1.129.0"
+    "@ai-ecoverse/slicc-kernel": "1.135.2"
   }
 }

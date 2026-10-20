@@ -104,7 +104,10 @@ test('installs a package again when its directory is gone', async (t) => {
     await scope.removeEntry('wasm-bash', { recursive: true });
   });
 
-  assert.match(await reboot(page), new RegExp(`^1/${installable} downloaded from npm, [\\d.]+MB$`));
+  assert.match(
+    await reboot(page),
+    new RegExp(`^1/${installable} downloaded from npm, [\\d.]+(kB|MB)$`)
+  );
   assert.deepEqual(downloads(), [
     `https://registry.npmjs.org/@ai-ecoverse/wasm-bash/-/wasm-bash-${shipped.packages[bash].version}.tgz`,
   ]);
@@ -126,7 +129,10 @@ test('replaces a package when the lockfile pins another version', async (t) => {
     })
   );
 
-  assert.match(await reboot(page), new RegExp(`^1/${installable} downloaded from npm, [\\d.]+MB$`));
+  assert.match(
+    await reboot(page),
+    new RegExp(`^1/${installable} downloaded from npm, [\\d.]+(kB|MB)$`)
+  );
   assert.equal(JSON.parse(await opfs(page, `${bash}/package.json`)).version, '5.3.0-6');
   const receipt = JSON.parse(await opfs(page, `var/lib/bios/${bash}.json`));
   assert.equal(
