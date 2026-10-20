@@ -1,3 +1,4 @@
+import { clearHandOff, dropped, droppedLine } from './seed/handoff.js';
 import { usersMode } from './seed/users.js';
 
 const quiet = {
@@ -77,6 +78,8 @@ async function step(name, task) {
     output.value = error.message;
     splash.fail(name, error.message);
     throw error;
+  } finally {
+    if (item.dataset.state === 'failed') clearHandOff();
   }
   item.dataset.state = 'done';
   document.querySelector('progress').value += 1;
@@ -171,6 +174,7 @@ await step('seed', async () => {
     'followers.js',
     'grammars.js',
     'guard.js',
+    'handoff.js',
     'index.html',
     'jerk.js',
     'join.css',
@@ -245,6 +249,8 @@ await step('intercept', async () => {
 });
 
 await step('navigate', async () => {
+  const lost = dropped();
+  if (lost) throw new Error(droppedLine(lost));
   remember('slicc-bios.repaired', repaired);
   remember('slicc-bios.stopped', stopped);
   const ui = new URL(uiPage(location.hash), scope);

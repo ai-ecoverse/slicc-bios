@@ -1,5 +1,6 @@
 import { attachKernel } from '@ai-ecoverse/slicc-kernel';
 import { createExitRouter, loopback } from './exits.js';
+import { take } from './handoff.js';
 import { datagrams, fitsFamily, UDP_MAX, udpCode } from './link-udp.js';
 import { cut, inbox, sendable, WS_MAX } from './link-ws.js';
 import { BIOS } from './site.js';
@@ -21,19 +22,10 @@ const DOH = 'https://1.1.1.1/dns-query';
 const NAME_TTL = 60;
 const AUTH_KEY = /^(tskey|hskey)-/;
 
-export function takeTailscale(location, history) {
-  const params = new URLSearchParams(location.hash.slice(1));
-  if (!params.has('tailscale')) return null;
-  const value = params.get('tailscale');
-  const exit = params.get('exit');
-  params.delete('tailscale');
-  params.delete('exit');
-  const rest = params.toString();
-  history.replaceState(
-    history.state,
-    '',
-    `${location.pathname}${location.search}${rest ? `#${rest}` : ''}`
-  );
+export function takeTailscale(location, history, storage) {
+  const given = take(['tailscale', 'exit'], { location, history, storage, needs: 'tailscale' });
+  if (!('tailscale' in given)) return null;
+  const { tailscale: value, exit = null } = given;
   if (value === 'off') return { enabled: false };
   if (AUTH_KEY.test(value))
     console.warn(

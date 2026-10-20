@@ -35,6 +35,7 @@ import {
   version as grammarsVersion,
   installed,
 } from './grammars.js';
+import { clearHandOff } from './handoff.js';
 import { createJerk } from './jerk.js';
 import { change, userRows } from './layer.js';
 import { createLeaders, proxyOf } from './leaders.js';
@@ -170,6 +171,7 @@ const browser = createBrowser(network);
 const control = browserControl(network, { observe: browser.observe, links: () => links });
 const exits = createExitRouter();
 const tailscale = createTailscale(await tailscaleConfig(), { router: exits });
+clearHandOff();
 const remote = createRemote({
   control: () => remoteAgent(owner, { cone: () => app.model?.agent?.active?.() }),
   onChange: () => links.changed(),

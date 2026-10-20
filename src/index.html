@@ -2,6 +2,51 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
+    <script>
+    (() => {
+      const params = new URLSearchParams(location.hash.slice(1));
+      const names = ['proxy', 'key', 'slicc-pair', 'tailscale'];
+      if (params.has('tailscale')) names.push('exit');
+      const taken = names.filter((name) => params.has(name));
+      if (!taken.length) return;
+      const values = {};
+      for (const name of taken) {
+        values[name] = params.get(name);
+        params.delete(name);
+      }
+      try {
+        const id = params.get('handoff') || crypto.randomUUID();
+        const key = `slicc-os.handoff.${id}`;
+        const kept = JSON.parse(localStorage.getItem(key) || '{}').values || {};
+        localStorage.setItem(
+          key,
+          JSON.stringify({ at: Date.now(), values: { ...kept, ...values } })
+        );
+        params.set('handoff', id);
+      } catch {
+        params.delete('handoff');
+        const labels = {
+          proxy: 'proxy',
+          key: 'proxy',
+          tailscale: 'Tailscale',
+          'slicc-pair': 'pairing',
+        };
+        const lost = new Set([
+          ...(globalThis.sliccDropped || []),
+          ...taken.map((name) => labels[name]),
+        ]);
+        globalThis.sliccDropped = ['proxy', 'Tailscale', 'pairing'].filter((label) =>
+          lost.has(label)
+        );
+      }
+      const rest = params.toString();
+      history.replaceState(
+        history.state,
+        '',
+        `${location.pathname}${location.search}${rest ? `#${rest}` : ''}`
+      );
+    })();
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f8f8f8">
     <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1b1b1b">

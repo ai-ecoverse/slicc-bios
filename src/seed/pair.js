@@ -1,4 +1,5 @@
 import { certificate } from './follow.js';
+import { take } from './handoff.js';
 
 export const PAIR_KEY = 'slicc-pair';
 export const PAIRED_KEY = 'slicc-os.paired';
@@ -41,14 +42,9 @@ export function parsePairing(text) {
   return { port, token: found[2], fingerprint: found[3] };
 }
 
-export function takePairing({ location: at = location, history: past = history } = {}) {
-  const params = new URLSearchParams(at.hash.slice(1));
-  if (!params.has(PAIR_KEY)) return null;
-  const value = params.get(PAIR_KEY);
-  params.delete(PAIR_KEY);
-  const rest = params.toString();
-  past.replaceState(past.state, '', `${at.pathname}${at.search}${rest ? `#${rest}` : ''}`);
-  return `#${PAIR_KEY}=${value}`;
+export function takePairing({ location: at = location, history: past = history, storage } = {}) {
+  const found = take([PAIR_KEY], { location: at, history: past, storage });
+  return PAIR_KEY in found ? `#${PAIR_KEY}=${found[PAIR_KEY]}` : null;
 }
 
 export function sdpFingerprint(sdp) {
