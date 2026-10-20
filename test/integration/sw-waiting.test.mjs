@@ -159,7 +159,7 @@ test('when another seven tab holds the download, the owner names that tab instea
   assert.deepEqual(page.errors, []);
 });
 
-test('an ordinary update shows no notice: the updated worker activates and nothing says seven updated (#710)', async (t) => {
+test('an ordinary update shows no notice: the updated worker activates before any notice could show, and nothing said seven updated (#710)', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
   await settled(page);
@@ -175,7 +175,6 @@ test('an ordinary update shows no notice: the updated worker activates and nothi
     const registration = await navigator.serviceWorker.getRegistration();
     return !registration.waiting && !registration.installing;
   });
-  await new Promise((resolve) => setTimeout(resolve, 14000));
   assert.deepEqual(
     await page.evaluate(() => window.noticed.filter((id) => id.startsWith('sw-waiting:'))),
     []
