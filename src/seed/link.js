@@ -1274,6 +1274,18 @@ export function cdpConnection(stream) {
   return connection;
 }
 
+export const KERNEL_PORT = 80;
+
+export function kernelPortOf(peer) {
+  const port = peer?.kernel?.port;
+  return Number.isInteger(port) && port > 0 && port < 65536 ? port : KERNEL_PORT;
+}
+
+export function pageLoopback(port = KERNEL_PORT) {
+  const host = port === KERNEL_PORT ? 'kernel.localhost' : `kernel.localhost:${port}`;
+  return { SLICC_PAGE_LOOPBACK: host, SLICC_PAGE_LOOPBACK_URL: `http://{port}.${host}` };
+}
+
 export async function kernelIn(kernel, meta) {
   if (meta.kind !== 'kernel') throw failure('EOPNOTSUPP');
   const { port } = meta;

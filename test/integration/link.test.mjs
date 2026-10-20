@@ -1740,3 +1740,66 @@ test('a connected kernel client learns the exit when a linked CLI comes up, and 
   await page.evaluate(() => document.querySelector('slicc-app').model.network.setExit(null));
   await page.until(() => globalThis.traitsSeen.at(-1) === null);
 });
+
+test('a local node’s HELLO names the kernel port of SLICC_PAGE_LOOPBACK: 80 without the field and for 80, and :17180 for 17180, in login shells at once and in every program after a reload', async (t) => {
+  const page = await chrome.page(t);
+  await page.init('() => { globalThis.sliccKernelDebug = true; }');
+  await boot(page);
+  const loopback = async (flag) => {
+    await page.until(() => typeof globalThis.sliccKernelClient === 'function');
+    return page.evaluate(async (flag) => {
+      const client = await globalThis.sliccKernelClient();
+      const line = 'echo "$SLICC_PAGE_LOOPBACK $SLICC_PAGE_LOOPBACK_URL"';
+      const { stdout } = await client.run(['bash', flag, line], { cwd: '/' });
+      return stdout.trim();
+    }, flag);
+  };
+  const stored = (port) =>
+    page.until((port) => localStorage.getItem('slicc-kernel-port') === port, port);
+  const DEFAULT = 'kernel.localhost http://{port}.kernel.localhost';
+  const SPARE = 'kernel.localhost:17180 http://{port}.kernel.localhost:17180';
+
+  await page.evaluate(fakeNode, KEY);
+  await page.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.network.status()
+      .links?.devices.some((d) => d.state === 'connected')
+  );
+  assert.equal(await page.evaluate(() => localStorage.getItem('slicc-kernel-port')), null);
+  assert.equal(await loopback('-lc'), DEFAULT);
+  assert.equal(await loopback('-c'), DEFAULT);
+
+  await page.evaluate(fakeNode, KEY, { kernel: { port: 17180 } });
+  await stored('17180');
+  await page.until(async () => {
+    const etc = await (await navigator.storage.getDirectory()).getDirectoryHandle('etc');
+    const dir = await etc.getDirectoryHandle('profile.d');
+    return dir.getFileHandle('slicc-kernel.sh').then(
+      () => true,
+      () => false
+    );
+  });
+  assert.equal(await loopback('-lc'), SPARE);
+  assert.equal(await loopback('-c'), DEFAULT);
+
+  await page.reload();
+  await ready(page);
+  assert.equal(await loopback('-c'), SPARE);
+  assert.equal(await loopback('-lc'), SPARE);
+
+  await page.evaluate(fakeNode, KEY, { kernel: { port: 80 } });
+  await stored('80');
+  await page.until(async () => {
+    const etc = await (await navigator.storage.getDirectory()).getDirectoryHandle('etc');
+    const dir = await etc.getDirectoryHandle('profile.d');
+    const file = await (await dir.getFileHandle('slicc-kernel.sh')).getFile();
+    return !(await file.text()).includes('17180');
+  });
+  assert.equal(await loopback('-lc'), DEFAULT);
+
+  await page.evaluate(fakeNode, KEY, { kernel: { port: 17180 } });
+  await stored('17180');
+  await page.evaluate(fakeNode, KEY);
+  await stored('80');
+});
