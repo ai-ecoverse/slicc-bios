@@ -17,7 +17,7 @@ jobs:
     name: release / npm
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: write
       issues: write
@@ -68,27 +68,30 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           node scripts/ci/verdict.mjs release --log "$RUNNER_TEMP/release.log" --tag "$tag"
 
-      - name: Publish the tag to npm with provenance, unless npm already has it
+      - name: Publish the tag to npm with provenance, unless npm already has it, and wait until npm serves the packed tarball
         if: steps.release.outputs.tag != ''
         env:
           TAG: ${{ steps.release.outputs.tag }}
         run: |
+          set -o pipefail
           version="${TAG#v}"
-          published() { [ "$(npm view "@ai-ecoverse/slicc-bios@$version" version 2> /dev/null)" = "$version" ]; }
-          verdict() { node scripts/ci/verdict.mjs publish --name @ai-ecoverse/slicc-bios --version "$version" --published "$(npm view "@ai-ecoverse/slicc-bios@$version" version 2> /dev/null)" "$@"; }
-          if published; then
-            verdict --already
+          name=@ai-ecoverse/slicc-bios
+          npm version --no-git-tag-version --allow-same-version "$version"
+          integrity=$(node scripts/ci/served.mjs pack)
+          echo "packed $name@$version: $integrity"
+          listed() { [ "$(npm view "$name@$version" version --prefer-online 2> /dev/null)" = "$version" ]; }
+          if listed; then
+            echo "npm already lists $name@$version"
+            node scripts/ci/served.mjs wait --name "$name" --version "$version" --integrity "$integrity"
             exit
           fi
-          npm version --no-git-tag-version --allow-same-version "$version"
           for attempt in 1 2 3; do
-            if npm publish --provenance --access public; then
-              for _ in $(seq 10); do published && break; sleep 6; done
-              verdict
+            if npm publish --provenance --access public 2>&1 | tee "$RUNNER_TEMP/publish-$attempt.log"; then
+              node scripts/ci/served.mjs wait --name "$name" --version "$version" --integrity "$integrity"
               exit
             fi
-            if published; then
-              verdict
+            if listed; then
+              node scripts/ci/served.mjs wait --name "$name" --version "$version" --integrity "$integrity"
               exit
             fi
             echo "npm publish failed (attempt $attempt)"
