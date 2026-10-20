@@ -392,8 +392,7 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
   const { entries, certified, retired = [] } = catalog;
   const byId = new Map([...retired, ...entries].map((entry) => [entry.id, entry]));
   const live = new Map();
-  let installed = new Map();
-  let owned = new Map();
+  let [installed, owned] = [new Map(), new Map()];
   const users = Boolean(kernel?.users) && kernel.users.mode !== 'off';
   const present = (name) => installed.has(name) || owned.has(name);
 
