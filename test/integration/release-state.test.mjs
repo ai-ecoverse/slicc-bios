@@ -630,6 +630,8 @@ test('the cert-review caller: shared v2 pinned by sha with the same tools-ref, C
   assert.doesNotMatch(caller, /^ {2}pull_request:\n/m, 'the bootstrap leg is gone');
   const rerun = read('.github/workflows/cert-rerun.yml');
   assert.match(rerun, /^name: cert-rerun\n/);
+  assert.match(rerun, /^ {2}pull_request_target:\n {4}branches: \[main\]\n/m);
+  assert.doesNotMatch(rerun, /^ {2}pull_request:\n/m);
   assert.match(rerun, /\n {4}types: \[ready_for_review, labeled, unlabeled, edited\]\n/);
   assert.match(rerun, /\npermissions: \{\}\n/);
   assert.match(
