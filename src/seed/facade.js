@@ -104,9 +104,21 @@ function redacted(text, secrets) {
   return out;
 }
 
-export function trayRequests({ tray, network, hub }) {
+export const UNAPPROVED = "the owner didn't approve this";
+const ASKED = ['url', 'rotate', 'unlink'];
+
+export function trayRequests({ tray, network, hub, ask }) {
   if (!tray) return null;
   const devices = () => (network.status().links?.devices ?? []).map(shown);
+  const ready = () => {
+    if (tray.status().state !== 'ready' || !tray.status().joinUrl)
+      throw failure('ENOTCONN', "this seven's tray isn't connected");
+  };
+  const device = (id) => {
+    const found = devices().find((item) => item.id === id);
+    if (!found) throw failure('ENOENT', 'no linked device has that id');
+    return found;
+  };
   const answers = {
     status() {
       const { state, error, joinUrl, joinCommand, webhookUrl, followUrl } = tray.status();
@@ -120,18 +132,14 @@ export function trayRequests({ tray, network, hub }) {
       };
     },
     url() {
-      const { state, joinUrl } = tray.status();
-      if (state !== 'ready' || !joinUrl)
-        throw failure('ENOTCONN', "this seven's tray isn't connected");
-      return { url: joinUrl };
+      ready();
+      return { url: tray.status().joinUrl };
     },
     async rotate() {
       await network.rotateJoinUrl();
       return {};
     },
     async unlink({ id }) {
-      if (!devices().some((device) => device.id === id))
-        throw failure('ENOENT', 'no linked device has that id');
       await network.unlink(id);
       return {};
     },
@@ -140,11 +148,16 @@ export function trayRequests({ tray, network, hub }) {
       return {};
     },
   };
-  return (open) => {
+  return async (open, stamp) => {
     if (!TRAY_OPS.includes(open?.op))
       throw failure('EINVAL', 'a tray request is status, url, rotate, unlink or retry');
     if (open.op === 'unlink' && (typeof open.id !== 'string' || !open.id))
       throw failure('EINVAL', 'unlink needs the id of a linked device');
+    const found = open.op === 'unlink' ? device(open.id) : undefined;
+    if (open.op === 'url') ready();
+    const asked = ASKED.includes(open.op) && stamp?.uid !== 0;
+    if (asked && !(await ask({ op: open.op, stamp, device: found })))
+      throw failure('EACCES', UNAPPROVED);
     return answers[open.op](open);
   };
 }
@@ -239,7 +252,7 @@ export function linkFacade({ check, leaders, scrub, trays = null, refused = () =
     async function request(hello) {
       if (!trays) return reset(NO_TRAY);
       if ('join' in hello) return reset('EINVAL: a tray request takes no join URL');
-      const result = await trays(hello.open);
+      const result = await trays(hello.open, stamp);
       out(CONTROL, JSON.stringify({ opened: result }));
       finish();
     }

@@ -746,7 +746,7 @@ async function own() {
     check: async (stamp) => permitted(stamp, await sudoGidOf(kernel).catch(() => undefined)),
     leaders,
     scrub: vault.scrubText,
-    trays: trayRequests({ tray, network: reach.port, hub }),
+    trays: trayRequests({ tray, network: reach.port, hub, ask: approvals.askTray }),
     refused: ({ pid, uid, tag }) =>
       denials({ pid, uid, tag, op: 'connect', path: LINK_URL, errno: 'EACCES' }),
   });
