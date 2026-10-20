@@ -202,7 +202,7 @@ for (const [extension, foreign] of EXTENSIONS.flatMap((each) => [
   [each, false],
   [each, true],
 ])) {
-  test(`real slicc-extension ${extension.version}${foreign ? ', with a foreign content script in every page' : ''}: playwright-cli opens about:blank on an opaque origin, drives an ordinary page with eval, snapshot and click, the vault stays out, and ${foreign && extension.foreignWorld ? 'the foreign world is still reachable (slicc-extension#110, fixed in 7.7.0)' : 'no driven document has an extension’s origin'}`, {
+  test(`real slicc-extension ${extension.version}${foreign ? ', with a foreign content script in every page' : ''}: playwright-cli opens about:blank on an opaque origin, drives an ordinary page with eval, snapshot and click, the vault stays out, and ${foreign && extension.foreignWorld ? 'still reaches the foreign world (#110)' : 'no driven document has an extension’s origin'}`, {
     timeout: 10 * 60 * 1000,
   }, async (t) => {
     const real = await realExtension({
