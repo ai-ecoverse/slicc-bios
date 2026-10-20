@@ -145,6 +145,7 @@ await step('seed', async () => {
     'followers.js',
     'grammars.js',
     'guard.js',
+    'handoff.js',
     'index.html',
     'jerk.js',
     'join.css',

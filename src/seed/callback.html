@@ -2,6 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
+    <meta name="referrer" content="no-referrer">
+    <script>
+    globalThis.sliccCallback = location.href;
+    history.replaceState(null, '', location.pathname);
+    </script>
     <title>SLICC</title>
     <script type="module" src="/os/callback.js"></script>
   </head>

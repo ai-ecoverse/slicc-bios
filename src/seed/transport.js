@@ -1,4 +1,5 @@
 import { checkLocalProxy, fetchTransport, localProxyTransport } from '@ai-ecoverse/slicc-kernel';
+import { take } from './handoff.js';
 
 const DATABASE = 'slicc-os';
 const STORE = 'transport';
@@ -17,19 +18,10 @@ function isLoopback(url) {
   }
 }
 
-export function takeFragment() {
-  const params = new URLSearchParams(location.hash.slice(1));
-  if (!params.has('proxy') && !params.has('key')) return null;
-  const url = params.get('proxy');
-  const key = params.get('key');
-  params.delete('proxy');
-  params.delete('key');
-  const rest = params.toString();
-  history.replaceState(
-    history.state,
-    '',
-    `${location.pathname}${location.search}${rest ? `#${rest}` : ''}`
-  );
+export function takeFragment(options) {
+  const found = take(['proxy', 'key'], options);
+  if (!('proxy' in found) && !('key' in found)) return null;
+  const { proxy: url = null, key = null } = found;
   return key && isLoopback(url) ? { url, key } : null;
 }
 

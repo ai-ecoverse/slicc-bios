@@ -1,5 +1,6 @@
 import { checkLocalProxy } from '@ai-ecoverse/slicc-kernel';
 import { DIRECT } from './exits.js';
+import { handOff } from './handoff.js';
 import { mergeDevices } from './link.js';
 
 export const EXTENSION_URL =
@@ -317,10 +318,7 @@ export function createNetwork(choice, options = {}) {
       }
       const checked = await probe(choice.proxy);
       if (checked.state === 'ready' && choice.kind !== 'local-proxy') {
-        location.hash = new URLSearchParams({
-          proxy: choice.proxy.url,
-          key: choice.proxy.key,
-        }).toString();
+        handOff({ proxy: choice.proxy.url, key: choice.proxy.key }, { storage: options.handoff });
         reload();
         return;
       }

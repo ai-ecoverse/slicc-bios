@@ -2,6 +2,29 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
+    <script>
+    (() => {
+      const params = new URLSearchParams(location.hash.slice(1));
+      const names = ['proxy', 'key', 'slicc-pair', 'tailscale'];
+      if (params.has('tailscale')) names.push('exit');
+      const taken = names.filter((name) => params.has(name));
+      if (!taken.length) return;
+      try {
+        const kept = JSON.parse(sessionStorage.getItem('slicc-os.handoff') || '{}');
+        for (const name of taken) kept[name] = params.get(name);
+        sessionStorage.setItem('slicc-os.handoff', JSON.stringify(kept));
+      } catch {
+        return;
+      }
+      for (const name of taken) params.delete(name);
+      const rest = params.toString();
+      history.replaceState(
+        history.state,
+        '',
+        `${location.pathname}${location.search}${rest ? `#${rest}` : ''}`
+      );
+    })();
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f8f8f8">
     <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1b1b1b">
