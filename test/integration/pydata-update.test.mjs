@@ -12,8 +12,33 @@ const PROBE = 5 * 60 * 1000;
 const PYTHON = '@ai-ecoverse/wasix-python';
 const OLD = '3.14.2-28';
 const PURE = ['py-python-dateutil', 'py-six', 'py-tzdata'];
+const PACKAGES = [
+  'py-python-dateutil',
+  'py-tzdata',
+  'py-six',
+  'py-numpy',
+  'py-pandas',
+  'py-pillow',
+  'py-scipy',
+];
 const repo = new URL('../../', import.meta.url);
 const read = (path) => readFile(new URL(path, repo), 'utf8');
+
+async function shipped() {
+  const python = JSON.parse(await read('src/packages/optional/package.json')).dependencies[PYTHON];
+  const project = JSON.parse(await read('src/packages/optional/projects/pydata/package.json'));
+  const lock = await read('src/packages/optional/projects/pydata/pnpm-lock.yaml');
+  const block = lock.slice(lock.indexOf('\npackages:\n'), lock.indexOf('\nsnapshots:\n'));
+  const locked = Object.fromEntries(
+    [...block.matchAll(/^ {2}'@ai-ecoverse\/([^@']+)@([^']+)':$/gm)].map(([, name, at]) => [
+      name,
+      at,
+    ])
+  );
+  return { python, version: project.version, locked };
+}
+
+const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 async function earlier() {
   const certs = JSON.parse(await read('src/packages/certs.json'));
@@ -90,14 +115,15 @@ test('a profile with the Python 3.14 data tools updates to 3.15 with Update: Pyt
   });
   const offered = await row(page, 'pydata');
   assert.deepEqual(offered.actions, ['update', 'remove']);
-  assert.equal(offered.offered, '2026.10.20');
+  const now = await shipped();
+  assert.equal(offered.offered, now.version);
 
   assert.equal(await actPackage(page, 'pydata', 'update', INSTALL), 'ok');
   const python = await row(page, 'python');
   const tools = await row(page, 'pydata');
   assert.deepEqual(
     [python.state, python.version, tools.state, tools.version],
-    ['installed', '3.15.0-2', 'installed', '2026.10.20']
+    ['installed', now.python, 'installed', now.version]
   );
   const after = await probe(page, 'after');
   assert.match(after, /runs 3\.15 2\.5\.4 3\.0\.6 True/);
@@ -110,19 +136,14 @@ test('a profile with the Python 3.14 data tools updates to 3.15 with Update: Pyt
 
   await run(
     page,
-    `clear; echo "left [$(find /opt/slicc/pydata /opt/slicc/python -name '*.cpython-314*.so' | wc -l)] [$(find /opt/slicc/pydata -path '*/lib/python3.14/*' -name '*.so' | wc -l)] [$(find /opt/slicc/pydata -path '*/lib/python3.14/*' -name '*.py' | sed 's|/lib/python3.14/.*||' | sed 's|.*/||' | sort -u | tr '\\n' ' ')]"; echo "pytz [$(find /opt/slicc/pydata -path '*py-pytz*' | wc -l)]"; for p in py-python-dateutil py-tzdata py-six py-numpy py-pandas py-pillow py-scipy; do echo "$p [$(find /opt/slicc/pydata -path "*/@ai-ecoverse/$p/package.json" | xargs jq -r .version | sort -u | tr '\\n' ' ')] locked $(grep -o "^  '@ai-ecoverse/$p@[^']*'" /opt/slicc/pydata/pnpm-lock.yaml | sort -u | wc -l)"; done; echo "pythons [$(cat "$PNPM_HOME"/global/v11/*/node_modules/${PYTHON}/package.json | jq -r .version | sort -u | tr '\\n' ' ')]"; echo "checked $((6 * 7))"`
+    `clear; echo "left [$(find /opt/slicc/pydata /opt/slicc/python -name '*.cpython-314*.so' | wc -l)] [$(find /opt/slicc/pydata -path '*/lib/python3.14/*' -name '*.so' | wc -l)] [$(find /opt/slicc/pydata -path '*/lib/python3.14/*' -name '*.py' | sed 's|/lib/python3.14/.*||' | sed 's|.*/||' | sort -u | tr '\\n' ' ')]"; echo "pytz [$(find /opt/slicc/pydata -path '*py-pytz*' | wc -l)]"; for p in ${PACKAGES.join(' ')}; do echo "$p [$(find /opt/slicc/pydata -path "*/@ai-ecoverse/$p/package.json" | xargs jq -r .version | sort -u | tr '\\n' ' ')] locked $(grep -o "^  '@ai-ecoverse/$p@[^']*'" /opt/slicc/pydata/pnpm-lock.yaml | sort -u | wc -l)"; done; echo "pythons [$(cat "$PNPM_HOME"/global/v11/*/node_modules/${PYTHON}/package.json | jq -r .version | sort -u | tr '\\n' ' ')]"; echo "checked $((6 * 7))"`
   );
   await shows(page, 'checked 42', PROBE);
   const left = (await screen(page)).replace(/\s+/g, ' ');
   assert.match(left, new RegExp(`left \\[0\\] \\[0\\] \\[${PURE.join(' ')} \\]`));
   assert.match(left, /pytz \[0\]/);
-  assert.match(left, /py-python-dateutil \[2\.9\.0-post0\.3 \] locked 1/);
-  assert.match(left, /py-tzdata \[2026\.4\.0-3 \] locked 1/);
-  assert.match(left, /py-six \[1\.17\.0-3 \] locked 1/);
-  assert.match(left, /py-numpy \[2\.5\.4-1 \] locked 1/);
-  assert.match(left, /py-pandas \[3\.0\.6-1 \] locked 1/);
-  assert.match(left, /py-pillow \[13\.0\.0-1 \] locked 1/);
-  assert.match(left, /py-scipy \[1\.18\.1-2 \] locked 1/);
-  assert.match(left, /pythons \[3\.15\.0-2 \]/);
+  for (const name of PACKAGES)
+    assert.match(left, new RegExp(`${name} \\[${escaped(now.locked[name])} \\] locked 1`), name);
+  assert.match(left, new RegExp(`pythons \\[${escaped(now.python)} \\]`));
   assert.deepEqual(page.errors, []);
 });

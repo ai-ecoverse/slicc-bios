@@ -1,8 +1,8 @@
 {
   "name": "slicc-py-datatools",
-  "version": "2026.10.20",
+  "version": "2026.10.21",
   "private": true,
-  "description": "Python data tools for seven's optional catalog: numpy, pandas, matplotlib and scipy, homescoop's attested CI builds for wasix-python 3.15.0-2, installed into /opt/slicc/pydata. The catalog's own Python runs them, so wasix-python is overridden away here.",
+  "description": "Python data tools for seven's optional catalog: numpy, pandas, matplotlib and scipy, homescoop's attested CI builds for wasix-python 3.15.0-3, installed into /opt/slicc/pydata. The catalog's own Python runs them, so wasix-python is overridden away here.",
   "dependencies": {
     "@ai-ecoverse/py-matplotlib": "3.11.2-12",
     "@ai-ecoverse/py-numpy": "2.5.4-2",
