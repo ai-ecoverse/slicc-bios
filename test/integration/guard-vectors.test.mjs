@@ -2557,3 +2557,38 @@ once(
     }
   }
 );
+
+test('a console message and an exception from code with a relative sourceURL reach the client through the guard', {
+  timeout: 5 * 60 * 1000,
+}, async (t) => {
+  const guard = await guardPage(t, 0);
+  const targetId = await tab(`${PLAIN}/doc?relative-source`);
+  t.after(() => closeAll([targetId]));
+  const session = await guard.attach(targetId);
+  await guard.go("console.log('relative-' + (40 + 2))\n//# sourceURL=foo.js", session);
+  await guard.go(
+    "setTimeout(() => { throw new Error('thrown-' + (40 + 3)); })\n//# sourceURL=bar.js",
+    session
+  );
+  const deadline = Date.now() + 15000;
+  let seen = [];
+  for (;;) {
+    seen = (await guard.events()).filter((event) => event.sessionId === session);
+    const logged = seen.some(
+      (event) =>
+        event.method === 'Runtime.consoleAPICalled' &&
+        event.params.args?.[0]?.value === 'relative-42'
+    );
+    const thrown = seen.some(
+      (event) =>
+        event.method === 'Runtime.exceptionThrown' &&
+        /thrown-43/.test(event.params.exceptionDetails?.exception?.description ?? '')
+    );
+    if (logged && thrown) break;
+    if (Date.now() > deadline)
+      throw new Error(
+        `the guard held back events from relative-sourceURL code: ${JSON.stringify(seen.map((event) => event.method))}`
+      );
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+});
