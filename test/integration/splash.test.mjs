@@ -242,9 +242,9 @@ for (const status of [404, 500]) {
   });
 }
 
-async function timed(page) {
+async function timed(page, path = '/') {
   const start = Date.now();
-  await page.goto('/');
+  await page.goto(path);
   await page.until(() => location.pathname === '/os/');
   const ui = Date.now() - start;
   await ready(page);
@@ -277,9 +277,8 @@ test('against main’s BIOS page, served alternately, the splash adds little to 
   const main = {};
   for (const name of ['index.html', 'bios.css', 'bios.js'])
     main[`/${name}`] = git('show', `FETCH_HEAD:src/${name}`);
-  main['/'] = main['/index.html'];
   const page = await chrome.page(t);
-  await timed(page);
+  await timed(page, '/index.html');
   const runs = { main: [], splash: [] };
   for (let round = 0; round < 6; round++) {
     for (const arm of round % 2 ? ['splash', 'main'] : ['main', 'splash']) {
@@ -287,7 +286,7 @@ test('against main’s BIOS page, served alternately, the splash adds little to 
         if (arm === 'main') chrome.overrides.set(path, body);
         else chrome.overrides.delete(path);
       }
-      runs[arm].push(await timed(page));
+      runs[arm].push(await timed(page, '/index.html'));
     }
   }
   for (const path of Object.keys(main)) chrome.overrides.delete(path);
