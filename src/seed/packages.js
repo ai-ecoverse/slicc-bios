@@ -345,9 +345,17 @@ export function installsOf(entry, { installed, owned, global }) {
   ];
 }
 
-function needs(entry, needed, installed, present) {
+export function satisfied(entry, needed, installed, owned) {
+  if (installed.has(needed.package)) return true;
+  if (installed.has(entry.package)) return false;
+  const theirs = new Set((owned.get(needed.package) ?? []).map(({ user }) => user));
+  const users = (owned.get(entry.package) ?? []).map(({ user }) => user);
+  return users.length > 0 && users.every((user) => theirs.has(user));
+}
+
+function needs(entry, needed, installed) {
   const version = installed.get(needed.package);
-  if (version === undefined) return present ? null : 'install';
+  if (version === undefined) return 'install';
   return entry.kind === 'project' && !needed.retired && compare(needed.offered, version) > 0
     ? 'update'
     : null;
@@ -392,7 +400,7 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
   const missing = (entry) =>
     entry.requires
       .map((id) => byId.get(id))
-      .filter((needed) => needed && !present(needed.package))
+      .filter((needed) => needed && !satisfied(entry, needed, installed, owned))
       .map(
         (needed) =>
           `Needs ${needed.label}, which isn't installed. Install ${needed.label} again to use it.`
@@ -489,7 +497,7 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
     for (const id of entry.requires) {
       const needed = byId.get(id);
       if (!needed) continue;
-      const step = needs(entry, needed, installed, present(needed.package));
+      const step = needs(entry, needed, installed);
       if (!step) continue;
       await attempt(needed, step).catch((error) => {
         throw Object.assign(error, {
@@ -571,7 +579,7 @@ export async function moveFrom({ root, global, entries, packages, legacy = GLOBA
   const present = new Set(
     packages
       .list()
-      .filter(({ version }) => version !== null)
+      .filter(({ installs = [] }) => installs.some(({ manager }) => manager === 'panel'))
       .map(({ id }) => id)
   );
   const ids = entries

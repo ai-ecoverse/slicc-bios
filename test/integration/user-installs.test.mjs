@@ -102,7 +102,7 @@ const shape = ({ installs }) =>
 const systemCopy = (name) =>
   `ls -d ${SYSTEM_PNPM}/global/v11/*/node_modules/${name} 2>/dev/null | wc -l | sed 's/^ */system=/'`;
 
-test('cone’s own pnpm add -g shows as installed for cone, satisfies a requirement, and updates as cone without a system copy', {
+test('cone’s own pnpm add -g shows as installed for cone, counts for cone’s own copies, updates as cone without a system copy, and a panel install still brings the system requirement', {
   timeout: 45 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -111,22 +111,19 @@ test('cone’s own pnpm add -g shows as installed for cone, satisfies a requirem
   await page.goto('/#users=enforce');
   await ready(page, ROOT_SHELL);
 
-  const added = await sh(page, `pnpm add -g ${DIG}@0.1.0-2 >/dev/null 2>&1; echo add=$?`, 'cone');
-  assert.match(added, /add=0/, added);
+  const added = await sh(
+    page,
+    `pnpm add -g ${DIG}@0.1.0-2 >/dev/null 2>&1; echo dig=$?; pnpm add -g ${XXD}@9.2.1192-1 >/dev/null 2>&1; echo xxd=$?`,
+    'cone'
+  );
+  assert.match(added, /dig=0\nxxd=0/, added);
   const dig = await until(page, 'dig', ({ version }) => version === '0.1.0-2');
   assert.equal(dig.state, 'outdated');
   assert.deepEqual(dig.actions, ['update']);
   assert.deepEqual(shape(dig), [['pnpm', 'cone', '0.1.0-2', CONE_PNPM]]);
-
-  assert.equal(
-    await actPackage(page, 'xxd', 'install'),
-    'ok',
-    JSON.stringify(await row(page, 'xxd'))
-  );
-  const xxd = await row(page, 'xxd');
-  assert.equal(xxd.warnings, undefined, JSON.stringify(xxd));
-  assert.deepEqual(shape(xxd), [['panel', null, '9.2.1192-1', SYSTEM_PNPM]]);
-  assert.match(await sh(page, systemCopy(DIG)), /system=0/);
+  const theirs = await until(page, 'xxd', ({ version }) => version === '9.2.1192-1');
+  assert.equal(theirs.warnings, undefined, JSON.stringify(theirs));
+  assert.deepEqual(theirs.actions, []);
 
   assert.equal(
     await actPackage(page, 'dig', 'update'),
@@ -147,6 +144,23 @@ test('cone’s own pnpm add -g shows as installed for cone, satisfies a requirem
   assert.match(files, /"version": "0\.1\.0-4"/, files);
   const runs = await sh(page, 'dig -v >/dev/null 2>&1; echo ran=$?', 'cone');
   assert.match(runs, /ran=(?!127\b)\d+/, runs);
+
+  assert.equal(
+    await actPackage(page, 'xxd', 'install'),
+    'ok',
+    JSON.stringify(await row(page, 'xxd'))
+  );
+  const xxd = await row(page, 'xxd');
+  assert.equal(xxd.warnings, undefined, JSON.stringify(xxd));
+  assert.deepEqual(shape(xxd), [
+    ['panel', null, '9.2.1192-1', SYSTEM_PNPM],
+    ['pnpm', 'cone', '9.2.1192-1', CONE_PNPM],
+  ]);
+  assert.deepEqual(shape(await row(page, 'dig')), [
+    ['panel', null, '0.1.0-4', SYSTEM_PNPM],
+    ['pnpm', 'cone', '0.1.0-4', CONE_PNPM],
+  ]);
+  assert.match(await sh(page, systemCopy(DIG)), /system=[1-9]/);
   assert.deepEqual(page.errors, []);
 });
 
