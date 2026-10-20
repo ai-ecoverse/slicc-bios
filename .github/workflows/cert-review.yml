@@ -1,463 +1,51 @@
-name: Cert review
+name: cert-review
 
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled, edited]
   pull_request:
-    types: [labeled]
-    paths:
-      - 'src/packages/**'
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: Pull request to certify
-        required: true
-        type: number
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled, edited]
+  merge_group:
 
 permissions:
   contents: read
 
-env:
-  SLICC_CDP_PORTS: '9300-9309'
+concurrency:
+  group: ${{ (((github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'cert-review-approved') || (github.event.action == 'edited' && !github.event.changes.base)) && format('cert-review-noop-{0}', github.run_id) || format('cert-review-{0}-{1}', github.event_name == 'pull_request' && 'leg' || 'pr', github.event.pull_request.number || github.event.merge_group.head_sha) }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 jobs:
-  plan:
-    name: cert / plan
-    if: >-
-      github.event_name == 'workflow_dispatch' || (
-        github.event_name == 'workflow_run' &&
-        github.event.workflow_run.event == 'pull_request' &&
-        github.event.workflow_run.conclusion != 'cancelled' &&
-        github.event.workflow_run.actor.login == 'renovate[bot]' &&
-        github.event.workflow_run.head_repository.full_name == github.repository
-      ) || (
-        github.event_name == 'pull_request' &&
-        github.event.label.name == 'cert-review' &&
-        github.event.pull_request.head.repo.full_name == github.repository
-      )
-    runs-on: ${{ vars.CERT_LIGHT_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 150
+  cert:
+    name: cert
+    uses: ai-ecoverse/slicc-shared-web/.github/workflows/cert-review.yml@0bf804703e1469ddb4413ef41a5bf6001f2411b9
     permissions:
+      contents: read
       actions: read
-      contents: read
-      pull-requests: read
-    outputs:
-      go: ${{ steps.plan.outputs.go }}
-      number: ${{ steps.plan.outputs.number }}
-      head: ${{ steps.plan.outputs.head }}
-      base: ${{ steps.plan.outputs.base }}
-      head_ci: ${{ steps.plan.outputs.head_ci }}
-      base_ci: ${{ steps.plan.outputs.base_ci }}
-      base_ci_sha: ${{ steps.plan.outputs.base_ci_sha }}
-      branch: ${{ steps.plan.outputs.branch }}
-      renovate: ${{ steps.plan.outputs.renovate }}
-    steps:
-      - name: The pull request, and CI's runs on its head and base
-        id: plan
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
-        env:
-          NUMBER: ${{ github.event.workflow_run.pull_requests[0].number || github.event.pull_request.number || inputs.pr_number }}
-          CI_RUN: ${{ github.event.workflow_run.id }}
-          CI_HEAD: ${{ github.event.workflow_run.head_sha }}
-        with:
-          script: |
-            const { owner, repo } = context.repo;
-            const number = Number(process.env.NUMBER);
-            if (!number) {
-              core.setOutput('go', 'false');
-              return;
-            }
-            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: number });
-            const files = await github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number: number });
-            const packages = files.some(({ filename }) => filename.startsWith('src/packages/'));
-            const current = !process.env.CI_HEAD || process.env.CI_HEAD === pr.head.sha;
-            if (!current) core.info(`the pull request moved on from ${process.env.CI_HEAD}; CI on ${pr.head.sha} starts its own review`);
-            const go = context.eventName !== 'workflow_run' || (!pr.draft && packages && current);
-            const runs = async (params) =>
-              (await github.rest.actions.listWorkflowRuns({ owner, repo, workflow_id: 'ci.yml', ...params })).data.workflow_runs;
-            let headCi = process.env.CI_RUN;
-            if (!headCi && go) {
-              for (let minute = 0; minute < 120; minute++) {
-                const [run] = await runs({ head_sha: pr.head.sha, event: 'pull_request', per_page: 1 });
-                headCi = run?.id;
-                if (run?.status === 'completed') break;
-                core.info(`CI on ${pr.head.sha}: ${run?.status ?? 'not started'}`);
-                await new Promise((resolve) => setTimeout(resolve, 60000));
-              }
-            }
-            let baseCi;
-            const candidates = [
-              ...(await runs({ head_sha: pr.base.sha, per_page: 5 })),
-              ...(await runs({ branch: 'main', event: 'push', per_page: 30 })),
-            ];
-            const lost = async ({ id }) =>
-              (await github.rest.checks.listAnnotations({ owner, repo, check_run_id: id })).data.some(({ message }) =>
-                /lost communication with the server/i.test(message ?? '')
-              );
-            for (const run of candidates) {
-              const { data } = await github.rest.actions.listJobsForWorkflowRun({ owner, repo, run_id: run.id });
-              const shards = data.jobs.filter(({ name }) => name.startsWith('ci / integration'));
-              if (!shards.length || !shards.every(({ conclusion }) => conclusion === 'success' || conclusion === 'failure')) continue;
-              let usable = true;
-              for (const shard of shards) {
-                if (shard.conclusion === 'failure' && (await lost(shard))) usable = false;
-              }
-              if (usable) {
-                baseCi = run;
-                break;
-              }
-            }
-            const outputs = {
-              go: String(go),
-              number,
-              head: pr.head.sha,
-              base: pr.base.sha,
-              head_ci: headCi ?? '',
-              base_ci: baseCi?.id ?? '',
-              base_ci_sha: baseCi?.head_sha ?? '',
-              branch: pr.head.ref,
-              renovate: String(pr.user.login === 'renovate[bot]' && pr.head.repo.full_name === `${owner}/${repo}`),
-            };
-            for (const [key, value] of Object.entries(outputs)) {
-              core.info(`${key}=${value}`);
-              core.setOutput(key, String(value));
-            }
-
-  queue:
-    name: cert / queue
-    needs: [plan, certify]
-    if: needs.certify.result == 'success' && needs.plan.outputs.renovate == 'true' && github.event_name == 'workflow_run'
-    runs-on: ${{ vars.CERT_LIGHT_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 15
-    concurrency:
-      group: cert-queue-${{ needs.plan.outputs.number }}
-      cancel-in-progress: false
-    permissions:
-      actions: write
-      contents: write
-    env:
-      PR_NUMBER: ${{ needs.plan.outputs.number }}
-      BRANCH: ${{ needs.plan.outputs.branch }}
-      HEAD: ${{ needs.plan.outputs.head }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ needs.plan.outputs.base }}
-          path: base
-          persist-credentials: false
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ needs.plan.outputs.head }}
-          path: pr
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version: '24'
-
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
-        with:
-          artifact-ids: ${{ needs.certify.outputs.evidence_id }}
-          path: evidence
-          digest-mismatch: error
-
-      - name: The certified certs.json lines that the PR's lockfiles pin, added to its certs.json
-        id: apply
-        run: node base/scripts/cert/apply.mjs evidence/cert-review/comment.md pr/src/packages
-
-      - name: Commit them to the Renovate branch
-        if: steps.apply.outputs.added == 'true'
-        working-directory: pr
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/packages/certs.json
-          git commit -q -m "fix(deps): certs.json lines from cert review's certified verdict on $HEAD"
-          git push origin "HEAD:refs/heads/$BRANCH"
-
-      - name: CI on the branch's head again, whose ci / test now finds the certified verdict
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
-        with:
-          script: |
-            const { owner, repo } = context.repo;
-            const { BRANCH: ref, PR_NUMBER: pr } = process.env;
-            await github.rest.actions.createWorkflowDispatch({ owner, repo, workflow_id: 'ci.yml', ref, inputs: { pr } });
-            core.info(`cert-queue: CI dispatched on ${ref} for pull request ${pr}`);
-
-  certify:
-    name: cert / review
-    needs: plan
-    if: needs.plan.outputs.go == 'true'
-    runs-on: ${{ vars.CERT_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 180
-    concurrency:
-      group: cert-review-${{ needs.plan.outputs.number }}
-      cancel-in-progress: true
-    permissions:
-      actions: read
-      contents: read
-    outputs:
-      evidence_id: ${{ steps.evidence.outputs.artifact-id }}
-      evidence_digest: ${{ steps.evidence.outputs.artifact-digest }}
-    env:
-      LEFTHOOK: '0'
-      SLICC_NO_TELEMETRY: '1'
-      SLICC_NO_UPDATE_CHECK: '1'
-      GH_REPO: ${{ github.repository }}
-      PR_NUMBER: ${{ needs.plan.outputs.number }}
-      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ needs.plan.outputs.base }}
-          path: base
-          persist-credentials: false
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ needs.plan.outputs.head }}
-          path: head
-          persist-credentials: false
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version: '26'
-
-      - name: gh, and CI's results on the head and on main, fetched before any pull-request code runs
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HEAD_CI: ${{ needs.plan.outputs.head_ci }}
-          HEAD_SHA: ${{ needs.plan.outputs.head }}
-          BASE_CI: ${{ needs.plan.outputs.base_ci }}
-        run: |
-          set -euo pipefail
-          case "$(uname -m)" in
-            x86_64) arch=amd64 ;;
-            aarch64 | arm64) arch=arm64 ;;
-            *) echo "::error::no release for $(uname -m)"; exit 1 ;;
-          esac
-          mkdir -p "$RUNNER_TEMP/gh-bin" "$RUNNER_TEMP/ci"
-          if ! command -v gh > /dev/null; then
-            (cd "$RUNNER_TEMP/gh-bin"
-              v=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/cli/cli/releases/latest | jq -r '.tag_name | ltrimstr("v")')
-              curl -fsSL -O "https://github.com/cli/cli/releases/download/v$v/gh_${v}_linux_$arch.tar.gz" \
-                -O "https://github.com/cli/cli/releases/download/v$v/gh_${v}_checksums.txt"
-              sha256sum -c "gh_${v}_checksums.txt" --ignore-missing
-              tar -xzf "gh_${v}_linux_$arch.tar.gz" --strip-components=2 "gh_${v}_linux_$arch/bin/gh")
-            PATH="$RUNNER_TEMP/gh-bin:$PATH"
-          fi
-          for side in head:"$HEAD_CI" base:"$BASE_CI"; do
-            name=${side%%:*} run=${side#*:}
-            dir="$RUNNER_TEMP/ci/$name"
-            mkdir -p "$dir"
-            if [ -z "$run" ]; then echo "none found" > "$dir/run.txt"; continue; fi
-            echo "$run" > "$dir/run.txt"
-            gh run view "$run" --json jobs,status,conclusion,headSha,url > "$dir/run.json"
-            if [ "$name" = head ]; then
-              read -r status sha < <(jq -r '"\(.status) \(.headSha)"' "$dir/run.json")
-              [ "$status" = completed ] || { echo "::error::CI run $run on the head is $status, not completed: no review on unfinished CI"; exit 1; }
-              [ "$sha" = "$HEAD_SHA" ] || { echo "::error::CI run $run is on $sha, not the head $HEAD_SHA"; exit 1; }
-            fi
-            gh run view "$run" --log-failed > "$dir/failed.log" 2>&1 || true
-            jq -r '.jobs[] | select(.conclusion == "failure") | .name | capture("^ci / integration \\((?<s>[^)]+)\\)$").s' "$dir/run.json" | while read -r shard; do
-              gh run download "$run" -n "integration-$shard" -D "$dir/integration-$shard" || echo "integration-$shard: no artifact" >> "$dir/missing.txt"
-            done
-          done
-          find "$RUNNER_TEMP/ci" -maxdepth 2 | sort
-
-      - name: Install both trees and the harness's Chromium
-        run: |
-          (cd base && npm ci --no-audit --no-fund)
-          (cd head && npm ci --no-audit --no-fund --ignore-scripts && npx playwright-core install --no-shell chromium)
-
-      - name: Each tree's slicc CLI (the released binary where a tree has none)
-        run: |
-          case "$(uname -m)" in
-            x86_64) arch=amd64 ;;
-            aarch64 | arm64) arch=arm64 ;;
-            *) echo "::error::no release for $(uname -m)"; exit 1 ;;
-          esac
-          mkdir -p "$RUNNER_TEMP/bin"
-          cd "$RUNNER_TEMP/bin"
-          for tree in base head; do
-            cli="$GITHUB_WORKSPACE/$tree/node_modules/.bin/slicc"
-            if [ ! -x "$cli" ]; then
-              if [ ! -x slicc-release ]; then
-                release=https://github.com/ai-ecoverse/slicc-cli/releases/latest/download
-                curl -fsSL -O "$release/slicc-linux-$arch" -O "$release/SHA256SUMS"
-                sha256sum -c SHA256SUMS --ignore-missing
-                mv "slicc-linux-$arch" slicc-release
-                chmod +x slicc-release
-              fi
-              cli="$RUNNER_TEMP/bin/slicc-release"
-            fi
-            echo "SLICC_CLI_${tree^^}=$cli" >> "$GITHUB_ENV"
-            echo "$tree: $("$cli" --version) ($cli)"
-            [ "$tree" = head ] && ln -sf "$cli" slicc && echo "SLICC_CLI=$cli" >> "$GITHUB_ENV"
-          done
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-
-      - name: Two Chromes with windows, the base on CDP 9222 and the head on CDP 9223
-        run: |
-          chrome=$(command -v google-chrome || command -v google-chrome-stable || true)
-          if [ -z "$chrome" ]; then
-            chrome=$(cd head && node -e "console.log(require('playwright-core').chromium.executablePath())")
-          fi
-          headless=
-          if [ -z "${DISPLAY:-}" ]; then
-            if command -v Xvfb > /dev/null; then
-              nohup Xvfb :99 -screen 0 1440x900x24 -nolisten tcp > "$RUNNER_TEMP/xvfb.log" 2>&1 &
-              export DISPLAY=:99
-              echo "DISPLAY=:99" >> "$GITHUB_ENV"
-              sleep 2
-            else
-              echo "::warning::no display and no Xvfb on $RUNNER_NAME, so both Chromes run headless"
-              headless=--headless=new
-            fi
-          fi
-          echo "chrome: $chrome ($("$chrome" --version)), display: ${DISPLAY:-none}"
-          for tree in base:9222:8080 head:9223:8081; do
-            IFS=: read -r name cdp port <<< "$tree"
-            (cd "$name" && PORT=$port nohup node test/integration/chrome.mjs > "$RUNNER_TEMP/serve-$name.log" 2>&1 &)
-            nohup "$chrome" $headless --no-sandbox --no-first-run --no-default-browser-check \
-              --remote-debugging-port="$cdp" --user-data-dir="$RUNNER_TEMP/chrome-$name" --window-size=1440,900 \
-              "http://127.0.0.1:$port/" > "$RUNNER_TEMP/chrome-$name.log" 2>&1 &
-          done
-          for cdp in 9222 9223; do
-            for _ in $(seq 30); do curl -fs "http://127.0.0.1:$cdp/json/version" > /dev/null && break; sleep 1; done
-            curl -fsS "http://127.0.0.1:$cdp/json/version"
-          done
-
-      - name: A git repository at the workspace root with the repo as origin, which claude-code-action configures, fetches the base from and diffs
-        run: |
-          git init -q "$GITHUB_WORKSPACE"
-          git -C "$GITHUB_WORKSPACE" -c user.name=cert -c user.email=cert@invalid commit -q --allow-empty -m workspace
-          git -C "$GITHUB_WORKSPACE" remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
-          printf '%s\n' base/ head/ >> "$GITHUB_WORKSPACE/.git/info/exclude"
-
-      - name: Certify
-        id: certify
-        uses: anthropics/claude-code-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8
-        env:
-          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
-          AWS_REGION: ${{ vars.CERT_AWS_REGION || 'us-west-2' }}
-        with:
-          use_bedrock: 'true'
-          github_token: ${{ github.token }}
-          allowed_bots: 'renovate[bot]'
-          show_full_output: ${{ github.event_name == 'workflow_dispatch' }}
-          claude_args: |
-            --model ${{ vars.CERT_BEDROCK_MODEL || 'global.anthropic.claude-opus-5-5' }}
-            --allowedTools "Bash,Read,Write,Edit,Glob,Grep,WebFetch"
-            --max-turns 200
-          prompt: |
-            You are the certification reviewer for slicc-bios, the loader that installs seven (seven.sliccy.ai) into the browser. Decide, from evidence, whether the package versions pull request ${{ env.PR_NUMBER }} of ${{ github.repository }} moves to are fit for seven. Run: ${{ env.RUN_URL }}.
-
-            WHAT'S SET UP
-            - `base/` is the base (${{ needs.plan.outputs.base }}) and `head/` the pull request (${{ needs.plan.outputs.head }}), both with `npm ci` done.
-            - CI has already run the integration suite in its `ci / integration (<shard>)` jobs: on the pull request in run `${{ needs.plan.outputs.head_ci || 'none found' }}`, and on main in run `${{ needs.plan.outputs.base_ci || 'none found' }}` (commit ${{ needs.plan.outputs.base_ci_sha }}, the base or the closest main commit whose shards finished). Don't run the suite again. Both runs' results were fetched before any pull-request code ran, into `${{ runner.temp }}/ci/<head|base>/`: `run.json` (jobs and conclusions), `failed.log` (the failed jobs' logs) and, for each failed shard, `integration-<shard>/` (its `artifacts/`: screenshots, `chrome-stderr.log`, crash dumps). This job holds no GitHub token that can write, and nothing here may call the GitHub API. Look only at what failed. A run whose shards all finished can still say "cancelled" when the final `ci / test` job was superseded: judge by the shard jobs. A shard that ended with "The self-hosted runner lost communication with the server" lost its machine, not a test: re-run its files here if they matter.
-            - For a test that fails on the pull request but not on main, re-run just that file in both trees, each with its own slicc CLI as CI uses it, to tell a flake from a regression: `cd head && SLICC_CLI="$SLICC_CLI_HEAD" SLICC_TESTS='test/integration/<file>' npm test`, and the same in `base` with `$SLICC_CLI_BASE`. Each file takes 2 to 15 minutes.
-            - Two Chromes with windows are running, each with bios open: the base's on CDP `http://127.0.0.1:9222` (page `http://127.0.0.1:8080/`) and the head's on CDP `http://127.0.0.1:9223` (page `http://127.0.0.1:8081/`). Their logs are `${{ runner.temp }}/chrome-<base|head>.log`. Drive them over CDP (`playwright-core` is in both trees' `node_modules`: `chromium.connectOverCDP`), or with the slicc CLI on `PATH` (`slicc --help`; for example `slicc attach --cdp http://127.0.0.1:9223 --origin http://127.0.0.1:8081` links the head's seven to this machine, as a user's CLI would).
-            - `node base/scripts/cert/inspect.mjs <name>@<new> --against <old>` prints a package's tarball sha256 and integrity (computed from the registry's tarball), gitHead, repository, install scripts and npm provenance, and writes the diff against the old version to `base/artifacts/cert/`.
-            - `cd head && CERT_COMMANDS="$PWD/cmds.txt" npm run test:cert` boots seven and runs each line of `cmds.txt` in its terminal, writing every exit status and output to `artifacts/cert/seven.json`.
-
-            WHAT TO CHECK
-            1. Every package whose pinned version changes in `src/packages/**`, old and new.
-            2. For each changed gated package (slicc-kernel, slicc-jsh, slicc-cdp, slicc-clipboard, wasm-*, wasi-*, wasix-*, py-*): the lockfiles' integrity equals the registry's; provenance points at that ai-ecoverse repository's release workflow with the commit matching gitHead (homescoop's wasm-*, wasi-*, wasix-*, py-* have none today: record that, don't fail on it); no install scripts; and the diff doesn't widen what a kernel program or the page can reach without reason.
-            3. CI's results, and whatever else the change calls for in the two browsers. `pins.test.mjs` fails for a gated package until it is in `src/packages/certs.json`: that's expected, report it but don't count it.
-
-            YOUR ANSWER
-            Write the verdict to `${{ runner.temp }}/cert-review/comment.md` (a later job posts it). Don't edit, commit or push anything, and don't comment on the pull request yourself. One table and result line per package whose pin changes, gated or not (slicc-agent and slicc-spectrum included): on a Renovate PR, `ci / test` passes only with a certified line for each:
-
-            **Cert review: <name>@<version>** (from <old>)
-            | Check | Result |
-            |---|---|
-            | Integrity and sha256 | ... |
-            | Provenance | ... |
-            | Install scripts | ... |
-            | Diff review | ... |
-            | Tests | CI on the head and on main, and what you re-ran |
-            | Regressions vs base | none, or each one |
-
-            <a few sentences: what changed, what you checked, what a human should look at, and anything about this setup that got in your way>
-
-            Then, for a pass: `certified @ai-ecoverse/<name>@<version> sha256=<sha256> (ci: <run url>)` and `certs.json: "@ai-ecoverse/<name>@<version>": { "integrity": "<integrity>", "sha256": "<sha256>" }`, with both hashes copied from inspect.mjs. For a fail: `cert-ci: FAIL @ai-ecoverse/<name>@<version>: <the blocking reason>`, and no certs.json line.
-
-      - name: Evidence
-        if: always()
-        env:
-          EXECUTION: ${{ steps.certify.outputs.execution_file }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/evidence"
-          cp "${EXECUTION:-$RUNNER_TEMP/claude-execution-output.json}" "$RUNNER_TEMP/evidence/claude-turns.json" 2>/dev/null || true
-          cp "$RUNNER_TEMP"/*.log "$RUNNER_TEMP/evidence/" 2>/dev/null || true
-          cp -r "$RUNNER_TEMP/cert-review" "$RUNNER_TEMP/evidence/" 2>/dev/null || true
-          cp -r base/artifacts "$RUNNER_TEMP/evidence/base-artifacts" 2>/dev/null || true
-          cp -r head/artifacts "$RUNNER_TEMP/evidence/head-artifacts" 2>/dev/null || true
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        id: evidence
-        if: always()
-        with:
-          name: cert-review-${{ env.PR_NUMBER }}
-          path: ${{ runner.temp }}/evidence/
-          if-no-files-found: ignore
-
-      - name: The verdict, which fails this check unless every package is certified
-        if: always()
-        run: node base/scripts/cert/verify.mjs --verdict "$RUNNER_TEMP/cert-review/comment.md"
-
-  post:
-    name: cert / post
-    needs: [plan, certify]
-    if: always() && needs.plan.outputs.go == 'true'
-    runs-on: ${{ vars.CERT_LIGHT_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 10
-    concurrency:
-      group: cert-post-${{ needs.plan.outputs.number }}
-      cancel-in-progress: true
-    permissions:
-      contents: read
+      checks: write
+      issues: write
       pull-requests: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      PR_NUMBER: ${{ needs.plan.outputs.number }}
-      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ needs.plan.outputs.base }}
-          path: base
-          persist-credentials: false
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version: '26'
-
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
-        id: download
-        if: needs.certify.outputs.evidence_id != '' && (needs.certify.result == 'success' || needs.certify.result == 'failure')
-        continue-on-error: true
-        with:
-          artifact-ids: ${{ needs.certify.outputs.evidence_id }}
-          path: ${{ runner.temp }}/evidence
-          digest-mismatch: error
-
-      - name: Post the verdict, from main's code and the review's evidence bound by id and digest
-        env:
-          DOWNLOAD: ${{ steps.download.outcome }}
-          DIGEST: ${{ needs.certify.outputs.evidence_digest }}
-          REVIEW: ${{ needs.certify.result }}
-        run: |
-          file="$RUNNER_TEMP/evidence/cert-review/comment.md"
-          if [ "$DOWNLOAD" = success ] && [ -n "$DIGEST" ] && [ -s "$file" ]; then
-            grep -v '<sub>sha check' "$file" > "$RUNNER_TEMP/comment.md" || true
-            file="$RUNNER_TEMP/comment.md"
-            if check=$(node base/scripts/cert/verify.mjs "$file" 2>&1); then mark=ok; else mark='**mismatch**'; fi
-            { cat "$file"; printf '\n\n<sub>sha check %s: %s · [run](%s)</sub>\n' "$mark" "$(echo "$check" | tr '\n' ' ')" "$RUN_URL"; } > "$RUNNER_TEMP/body.md"
-          else
-            echo "**Cert review:** no verdict (review ${REVIEW:-missing}, evidence ${DOWNLOAD:-skipped}). See $RUN_URL" > "$RUNNER_TEMP/body.md"
-          fi
-          gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/body.md"
+    with:
+      tools-ref: 0bf804703e1469ddb4413ef41a5bf6001f2411b9
+      rules: scripts/cert/review.txt
+      loud: |
+        src/**
+        edge/**
+      guard-paths: |
+        .github/workflows/**
+        .github/actions/**
+        scripts/cert/**
+        scripts/ci/**
+        test/integration/cert.test.mjs
+      injection-allow: |
+        test/integration/fixtures/**
+      evidence-workflow: ci.yml
+      evidence-artifacts: |
+        cert-evidence
+        integration-*
+        experiment-summary
+      evidence-wait-minutes: 180
+      code-check: node scripts/cert/release-state.mjs --base "$BASE_SHA" --head "$HEAD_SHA"
+    secrets:
+      AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}

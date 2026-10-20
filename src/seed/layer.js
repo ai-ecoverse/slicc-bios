@@ -6,7 +6,6 @@ export const FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies'
 const EXACT = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const GATED = /^@ai-ecoverse\/(?:slicc-kernel|slicc-cdp|slicc-jsh|wasi-|wasix-|wasm-|py-)/;
 const RELAXED = ['pnpm', 'install', '--no-frozen-lockfile'];
-const CERTS = new URL('packages/certs.json', BIOS);
 const seen = new Map();
 
 const exact = (spec) => typeof spec === 'string' && EXACT.test(spec);
@@ -138,7 +137,46 @@ export function importers(lock) {
   return manifest;
 }
 
-export async function untested(lock, base, certs = () => fetchText('', CERTS).then(JSON.parse)) {
+const SHIPPED_PNPM = [
+  'packages/pnpm-lock.yaml',
+  'packages/agent/pnpm-lock.yaml',
+  'packages/tailscale/pnpm-lock.yaml',
+];
+const SHIPPED_NPM = [
+  'packages/package-lock.json',
+  'packages/agent/package-lock.json',
+  'packages/optional/package-lock.json',
+];
+
+async function projectLocks(get) {
+  const catalog = parse(await get('packages/optional/catalog.json').catch(() => null)) ?? {};
+  return Object.values(catalog)
+    .filter((entry) => entry?.kind === 'project' && /^[\w-]+$/.test(entry.id ?? ''))
+    .map((entry) => `packages/optional/projects/${entry.id}/pnpm-lock.yaml`);
+}
+
+export async function certifiedSet(get = (name) => fetchText(name, BIOS)) {
+  const found = { ...JSON.parse(await get('packages/certs.json')) };
+  const add = (key, integrity) => {
+    if (!found[key] && integrity) found[key] = { integrity };
+  };
+  for (const name of [...SHIPPED_PNPM, ...(await projectLocks(get))]) {
+    const lock = await get(name).catch(() => '');
+    for (const [key, integrity] of locked(lock)) add(key, integrity);
+  }
+  for (const name of SHIPPED_NPM) {
+    const lock = parse(await get(name).catch(() => null));
+    for (const [path, entry] of Object.entries(lock?.packages ?? {}))
+      if (path)
+        add(
+          `${path.slice(path.lastIndexOf('node_modules/') + 13)}@${entry.version}`,
+          entry.integrity
+        );
+  }
+  return found;
+}
+
+export async function untested(lock, base, certs = () => certifiedSet()) {
   const shipped = locked(base);
   const found = [...locked(lock)].filter(
     ([key, integrity]) =>

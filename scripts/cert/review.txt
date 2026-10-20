@@ -1,0 +1,16 @@
+slicc-bios is the loader that installs seven (seven.sliccy.ai) into the browser: it boots the kernel, the base package set (src/packages), the optional catalog (src/packages/optional) and /opt/agent (src/packages/agent) into OPFS and serves the UI from there. Every merge to main releases bios, and seven's users get it on their next load.
+
+WHAT TO CERTIFY
+1. Behaviour changes in src/** and edge/**: the boot path, the service worker, OPFS layout, the update and install flows, and the guard sets that limit what a kernel program or the page can reach. A change that widens what a program or the page can reach (a new origin, a CDP domain, a filesystem path, a header) needs a reason in the change itself and a test that pins the boundary.
+2. Pin changes in src/packages/** (package.json and the npm and pnpm lockfiles). For each package whose pinned version changes, old and new:
+   - A gated package (slicc-kernel, slicc-cdp, slicc-clipboard, slicc-jsh, mcpcat, wasm-*, wasi-*, wasix-*, py-*) reaches seven only as a release its own repository certified. ci / test checks that in code (scripts/cert/release-state.mjs: lockfile integrity, provenance, the commit on main, its cert-review). Read its result in the evidence (release-state.json in the head's cert-evidence artifact; the CI EVIDENCE section names each artifact's directory) and don't repeat it; a failure there fails ci / test on its own.
+   - Read inspect.mjs's output in the cert-evidence artifact (inspect/<name>.json and the diff it wrote): install scripts, repository, gitHead, and what the new version changes. A new install script, a widened reach without reason, or a package from another repository is a fail.
+   - Read the package's scenario results (scenarios/<name>/<head|base>.json in the cert-evidence artifact: each command's exit status and output in seven, on the head's pins and on main's). A command that worked on main and fails on the head is a regression. A package without a scenario file is a known gap: say "can't judge <name> in seven: no scenario".
+3. CI's results (the evidence's head and base runs): the integration shards' verdicts and, for a failed test file, its re-runs (reruns.json in the cert-evidence artifact: the same file N times on the head's tree and on main's, each with its tree's slicc CLI). A file that fails on the head every time and passes on main is a regression of this change; one that fails on both alike is not this change's; one that flips is a flake, a known issue at most. A shard that lost its runner is not a test result.
+
+THE COORDINATOR'S READ
+A change to the guard sets, the vault, authentication, linking (os/link, follow, pair), secrets, the service worker (sw.js) or CI paths needs the bios coordinator's read as well as yours: certify what you can judge, and say in the summary that it touches <area> and needs the coordinator's read.
+
+WHAT IS NOT YOURS
+- The pins.test.mjs certificate rows, provenance and integrity are code checks in ci / test; don't re-derive hashes.
+- Docs and tests alone are certified without you.
