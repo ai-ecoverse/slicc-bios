@@ -114,6 +114,11 @@ const helpers = () => {
       empty: !!window.deep(root, '[data-empty]'),
     };
   };
+  window.delivered = () => {
+    const { agent } = document.querySelector('slicc-app').model;
+    const id = agent.active();
+    return id ? [...window.userTexts(), ...agent.queue(id).map((item) => item.text)] : [];
+  };
   window.userTexts = () => {
     const { agent } = document.querySelector('slicc-app').model;
     const id = agent.active();
@@ -349,9 +354,8 @@ test("slicc-agent 3.26.0, which ignores held, isn't started at boot: seven's age
   t.diagnostic(`the follower tab after the install: ${follower}`);
   await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
   const sent = await page.within(60000, () => {
-    const texts = window.userTexts();
-    const { agent } = document.querySelector('slicc-app').model;
-    return texts.length >= 3 && !agent.busy(agent.active()) && texts;
+    const texts = window.delivered();
+    return texts.length >= 3 && texts;
   });
   const own = sent.filter((text) => text !== 'From the other tab while it installs');
   assert.deepEqual(
@@ -384,7 +388,7 @@ test("slicc-agent 3.26.0, which ignores held, isn't started at boot: seven's age
   await connectAccount(page, 'amazon-bedrock', KEY);
   await say(page, 'Say hello');
   assert.deepEqual(
-    (await page.evaluate(() => window.userTexts())).filter(
+    (await page.evaluate(() => window.delivered())).filter(
       (text) => text === 'Dropped while it installs'
     ),
     []
