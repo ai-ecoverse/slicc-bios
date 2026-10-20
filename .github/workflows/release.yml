@@ -72,4 +72,4 @@ jobs:
         if: steps.release.outputs.tag != ''
         env:
           TAG: ${{ steps.release.outputs.tag }}
-        run: scripts/ci/publish.sh
+        run: bash scripts/ci/publish.sh

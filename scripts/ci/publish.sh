@@ -9,7 +9,7 @@ npm version --no-git-tag-version --allow-same-version "$version" || exit 1
 integrity=$(node "$here/served.mjs" pack) || exit 1
 echo "packed $name@$version: $integrity"
 listed() { [ "$(npm view "$name@$version" version --prefer-online 2> /dev/null)" = "$version" ]; }
-wait_served() { node "$here/served.mjs" wait --name "$name" --version "$version" --integrity "$integrity" "${waits[@]}"; }
+wait_served() { node "$here/served.mjs" wait --name "$name" --version "$version" --integrity "$integrity" ${waits[@]+"${waits[@]}"}; }
 if listed; then
   echo "npm already lists $name@$version"
   wait_served
