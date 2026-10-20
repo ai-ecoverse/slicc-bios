@@ -30,10 +30,11 @@ export const STATUS_RULES = {
     deny: {
       '1.44.4': 'its release run failed, so it was never certified (slicc-cli coordinator, 10-19)',
     },
-    why: 'slicc-cli certifies by PR from 1.44.1 (slicc-cli coordinator, 10-19)',
+    before:
+      'pre-PR-cert wasi-slicc (before 1.44.1), not certified by tag any more (cert lane, 10-19)',
   },
 };
-const TAGGED_TOO = new Set(['slicc-kernel', 'wasi-slicc']);
+const TAGGED_TOO = new Set(['slicc-kernel']);
 
 export function writerOf(name) {
   const short = name.replace(/^@ai-ecoverse\//, '');
@@ -195,7 +196,7 @@ async function byMain(src, { name, version, writer, prov, bound }) {
   if (writer.tag && (await byTag(src, name, version)).ok)
     return ok('certified (npm dist-tag certified), integrity bound');
   if (rule?.since && semver.lt(version, rule.since, SEMVER))
-    return no(`not certified by PR: ${rule.why}, and its certified tag isn't this version`);
+    return no(`not certified: ${rule.before}`);
   if (!prov) return no('no npm provenance');
   if (!bound) return no('the provenance names another tarball');
   const repoUrl = `https://github.com/ai-ecoverse/${writer.repo}`;

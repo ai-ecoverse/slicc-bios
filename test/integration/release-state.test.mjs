@@ -686,48 +686,33 @@ test('the homescoop exceptions file is read at a pinned commit, never a branch',
   );
 });
 
-test('wasi-slicc is slicc-cli’s: its release commit’s cert-review status, or (for older pins) its certified tag', async () => {
+test('wasi-slicc is slicc-cli’s: its release commit’s cert-review status from 1.44.1, never 1.44.4, and nothing before 1.44.1 (its stale tag is gone)', async () => {
   assert.deepEqual(writerOf('@ai-ecoverse/wasi-slicc'), {
     kind: 'main',
     repo: 'slicc-cli',
-    tag: true,
+    tag: false,
   });
   const cli = statement({ repository: 'https://github.com/ai-ecoverse/slicc-cli' });
-  const key = '@ai-ecoverse/wasi-slicc@1.44.7';
-  assert.equal(
-    (await judge(fake({ attestations: cli, statuses: { [COMMIT]: [status()] } }), key, INTEGRITY))
-      .ok,
-    true
-  );
-  assert.equal((await judge(fake({ tags: { certified: '1.44.7' } }), key, INTEGRITY)).ok, true);
-  const denied = await judge(
-    fake({ attestations: cli, statuses: { [COMMIT]: [status()] } }),
-    '@ai-ecoverse/wasi-slicc@1.44.4',
-    INTEGRITY
-  );
+  const src = fake({
+    attestations: cli,
+    statuses: { [COMMIT]: [status()] },
+    tags: { certified: '1.44.0' },
+  });
+  assert.equal((await judge(src, '@ai-ecoverse/wasi-slicc@1.44.7', INTEGRITY)).ok, true);
+  const denied = await judge(src, '@ai-ecoverse/wasi-slicc@1.44.4', INTEGRITY);
   assert.equal(denied.ok, false, '1.44.4 never certified, though its commit carries a status');
   assert.match(denied.line, /release run failed/);
-  const early = await judge(
-    fake({ attestations: cli, statuses: { [COMMIT]: [status()] } }),
-    '@ai-ecoverse/wasi-slicc@1.44.0',
-    INTEGRITY
-  );
-  assert.equal(early.ok, false, 'before 1.44.1 only the certified tag counts');
-  assert.equal(
-    (
-      await judge(
-        fake({ tags: { certified: '1.44.0' } }),
-        '@ai-ecoverse/wasi-slicc@1.44.0',
-        INTEGRITY
-      )
-    ).ok,
-    true
+  const early = await judge(src, '@ai-ecoverse/wasi-slicc@1.44.0', INTEGRITY);
+  assert.equal(early.ok, false, 'before 1.44.1 nothing counts, not even a tag');
+  assert.match(
+    early.line,
+    /pre-PR-cert wasi-slicc \(before 1\.44\.1\), not certified by tag any more/
   );
   assert.equal(
     (
       await judge(
         fake({ attestations: kernelProv, statuses: { [COMMIT]: [status()] } }),
-        key,
+        '@ai-ecoverse/wasi-slicc@1.44.7',
         INTEGRITY
       )
     ).ok,
