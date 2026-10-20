@@ -292,29 +292,39 @@ function bounded(work, wait, late) {
 
 export function createNotes({ releases, repos = REPOS, wait = WAIT }) {
   const rows = new Map();
+  const later = new Set();
   let known = new Map();
   let current = null;
   let port = null;
   const renote = () => port?.renote();
+  const load = async (round, id, from, to) => {
+    const want = { from, to, own: true, short: null };
+    const found = await round.items(repos[id], want).catch(() => null);
+    if (found) rows.set(id, { items: found, own: true, short: null });
+    else rows.delete(id);
+  };
   return {
     prepare(updates) {
       port = updates;
+      later.clear();
       const round = releases.round();
       current = round;
       const work = Promise.all(
-        Object.entries(repos).map(async ([id, repo]) => {
+        Object.keys(repos).map(async (id) => {
           const { from = null, to = null } = updates.get(id) ?? {};
-          if (!to) return;
-          const want = { from, to, own: true, short: null };
-          const found = await round.items(repo, want).catch(() => null);
-          if (found) rows.set(id, { items: found, own: true, short: null });
+          if (to) await load(round, id, from, to);
           else rows.delete(id);
         })
       );
       return bounded(work, wait, renote);
     },
     pick(id, from, to) {
-      return picked(rows.get(id), from, to);
+      const kept = rows.get(id);
+      if (!kept && to && repos[id] && current && !later.has(id)) {
+        later.add(id);
+        void load(current, id, from, to).then(() => rows.has(id) && renote());
+      }
+      return picked(kept, from, to);
     },
     packages(list) {
       const round = current ?? releases.round();

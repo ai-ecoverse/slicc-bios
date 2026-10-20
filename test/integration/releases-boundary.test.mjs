@@ -146,3 +146,38 @@ test('an out-of-order backport below the installed release on page 1 does not st
   assert.ok(versions.includes('v2.0.100'));
   assert.ok(versions.includes('v2.0.99'));
 });
+
+test('a component installed for the first time during a check gets its releases in that same check', async () => {
+  const { createNotes } = await import('../../src/seed/releases.js');
+  const asked = [];
+  const fetcher = async (url) => {
+    asked.push(String(url));
+    return Response.json([
+      {
+        tag_name: 'v6.14.3',
+        html_url: 'https://github.com/ai-ecoverse/slicc-agent/releases/tag/v6.14.3',
+        body: 'agent notes',
+      },
+    ]);
+  };
+  const items = { agent: { from: null, to: null } };
+  let renoted = 0;
+  const updates = { get: (id) => items[id], renote: () => (renoted += 1) };
+  const notes = createNotes({
+    releases: createReleases({ fetcher, store: memory(), origin: API }),
+  });
+  await notes.prepare(updates);
+  assert.deepEqual(asked, []);
+  items.agent = { from: '6.14.3', to: '6.14.3' };
+  assert.equal(notes.pick('agent', '6.14.3', '6.14.3'), undefined);
+  for (let i = 0; i < 50 && !renoted; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(renoted, 1);
+  assert.deepEqual(notes.pick('agent', '6.14.3', '6.14.3'), [
+    {
+      version: '6.14.3',
+      url: 'https://github.com/ai-ecoverse/slicc-agent/releases/tag/v6.14.3',
+      notes: 'agent notes',
+    },
+  ]);
+  assert.deepEqual(asked, [`${API}/repos/ai-ecoverse/slicc-agent/releases?per_page=100&page=1`]);
+});
