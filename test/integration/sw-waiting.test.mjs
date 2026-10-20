@@ -38,7 +38,7 @@ const settled = (page) =>
 
 const hold = (page) =>
   page.evaluate(async () => {
-    const reader = (await fetch('/os/held.bin')).body.getReader();
+    const reader = (await fetch('/os/held.bin?token=<b>s3cret</b>#frag')).body.getReader();
     await reader.read();
     window.heldReader = reader;
   });
@@ -97,6 +97,15 @@ test('while the tab holds a half-read download from the old worker, it says seve
   });
   await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
   await page.within(30000, new Function(`return !!(${deep})('[data-notice^="sw-waiting:"]')`));
+  assert.deepEqual(
+    await page.evaluate(
+      new Function(
+        `const p = (${deep})('[data-notice^="sw-waiting:"] p'); return [p.textContent, p.children.length];`
+      )
+    ),
+    [notice.body, 0],
+    'the notice names the stream by its path as plain text, without its query or fragment'
+  );
   await shoot(page, 'sw-waiting', { show: 'chat', target: '[data-notice^="sw-waiting:"]' });
   await page.evaluate(
     new Function(`(${deep})('[data-notice^="sw-waiting:"] [data-action="reload"]').click()`)

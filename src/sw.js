@@ -271,8 +271,8 @@ const streaming = new Set();
 
 function watched(response, request, controller, client) {
   if (!response.body) return response;
-  const { pathname } = new URL(request.url);
-  const open = { client, url: request.url, since: Date.now() };
+  const { origin, pathname } = new URL(request.url);
+  const open = { client, url: `${origin}${pathname}`, since: Date.now() };
   const reader = response.body.getReader();
   streaming.add(open);
   const body = new ReadableStream({
@@ -422,7 +422,14 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(answer(request, (asked, controller) => serve(asked, controller, client)));
   }
 });
+async function prune() {
+  for (const open of [...streaming]) {
+    if (open.client && !(await self.clients.get(open.client))) streaming.delete(open);
+  }
+}
+
 self.addEventListener('message', (event) => {
   if (event.data?.streams !== 'mine' || !event.source) return;
-  event.source.postMessage({ streams: streamsOf(event.source.id) });
+  const { source } = event;
+  event.waitUntil(prune().then(() => source.postMessage({ streams: streamsOf(source.id) })));
 });
