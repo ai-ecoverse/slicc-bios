@@ -26,6 +26,24 @@ function directory(names, create = true) {
   return dir;
 }
 
+const changed = { paths: new Set(), trees: new Set() };
+
+async function wrote(path, tree = false) {
+  const { written } = await import(INTEGRITY);
+  const at = written(path);
+  for (const name of at) changed.paths.add(name);
+  if (tree) changed.trees.add(at.at(-1));
+}
+
+async function announce() {
+  if (!changed.paths.size) return;
+  const { postNotice } = await import(INTEGRITY);
+  const notice = { paths: [...changed.paths], trees: [...changed.trees] };
+  changed.paths.clear();
+  changed.trees.clear();
+  postNotice(notice);
+}
+
 function forget(path) {
   for (const key of handles.keys()) {
     if (key === path || key.startsWith(`${path}/`)) handles.delete(key);
@@ -46,6 +64,7 @@ async function save(path, data) {
   const writable = await (await open(path, true)).createWritable();
   await writable.write(data);
   await writable.close();
+  await wrote(path);
 }
 
 async function remove(path) {
@@ -53,6 +72,7 @@ async function remove(path) {
   const name = names.pop();
   await (await directory(names)).removeEntry(name, { recursive: true }).catch(() => {});
   forget(path);
+  await wrote(path, true);
 }
 
 async function settle(base, name) {
@@ -66,12 +86,14 @@ async function settle(base, name) {
     dir = await parent.getDirectoryHandle(part, { create: true }).catch(async () => {
       await parent.removeEntry(part);
       forget(at);
+      await wrote(at, true);
       return parent.getDirectoryHandle(part, { create: true });
     });
   }
   await dir.getFileHandle(last, { create: true }).catch(async () => {
     await dir.removeEntry(last, { recursive: true });
     forget(`${at}/${last}`);
+    await wrote(`${at}/${last}`, true);
   });
 }
 
@@ -96,6 +118,7 @@ async function sweep(path, keep) {
       else {
         await dir.removeEntry(name, { recursive: true });
         forget(full);
+        await wrote(full, true);
       }
     }
     return kept;
@@ -511,8 +534,10 @@ self.onconnect = ({ ports: [port] }) => {
     handles = new Map();
     try {
       const result = await ops[op](args, (progress) => port.postMessage({ id, progress }));
+      await announce();
       port.postMessage({ id, result });
     } catch (error) {
+      await announce();
       port.postMessage({ id, error: error.message });
     }
   };
