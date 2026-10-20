@@ -308,8 +308,7 @@ const notices = createNotices();
 reportRepairs(notices);
 reportStopped(notices);
 const registration = await navigator.serviceWorker?.getRegistration();
-if (registration)
-  watchWaiting({ registration, board, notices, reload: () => location.replace(BIOS) });
+if (registration) watchWaiting({ registration, board, notices, reload: () => location.reload() });
 useSecretRules(secretRules);
 const approvals = createApprovals();
 const sudo = routeSudo({
