@@ -230,7 +230,8 @@ export const ARM = [{ urlPattern: '*', resourceType: 'Document', requestStage: '
 
 export function protection(own) {
   const matcher = protectedOrigins(catalog.protectedOrigins, owned(own));
-  const web = (url) => typeof url === 'string' && matcher.url(url.replace(/^ws(s?):/i, 'http$1:'));
+  const web = (url, options) =>
+    typeof url === 'string' && matcher.url(url.replace(/^ws(s?):/i, 'http$1:'), options);
   return { ...matcher, url: web };
 }
 
@@ -821,7 +822,7 @@ class Guard {
   naming(message) {
     const { method, params } = message;
     if (method.startsWith('Network.') || method.startsWith('Fetch.')) return false;
-    return this.valued(params);
+    return this.valued(params, 0, true);
   }
 
   swallowed(message) {
@@ -912,25 +913,29 @@ class Guard {
     );
   }
 
-  keyed(key, value) {
+  keyed(key, value, readOnly) {
     const { is } = this;
     if (key === 'urls' && Array.isArray(value)) {
-      return value.length > 0 && value.every((url) => typeof url === 'string' && is.url(url));
+      return (
+        value.length > 0 &&
+        value.every((url) => typeof url === 'string' && is.url(url, { readOnly }))
+      );
     }
     if (typeof value !== 'string') return false;
-    if (ORIGINS.has(key)) return is.url(value);
+    if (ORIGINS.has(key)) return is.url(value, { readOnly: readOnly || key !== 'url' });
     if (key === 'storageKey') return is.storageKey(value);
     if (key === 'cacheId') return is.storageKey(value.split('|')[0]);
     if (key === 'domain') return is.cookieDomain(value);
     return false;
   }
 
-  valued(params, depth = 0) {
+  valued(params, depth = 0, readOnly = false) {
     if (!params || typeof params !== 'object' || depth > 6) return false;
     return Object.entries(params).some(
       ([key, value]) =>
         !FREE.has(key) &&
-        (this.keyed(key, value) || (typeof value === 'object' && this.valued(value, depth + 1)))
+        (this.keyed(key, value, readOnly) ||
+          (typeof value === 'object' && this.valued(value, depth + 1, readOnly)))
     );
   }
 
@@ -957,11 +962,11 @@ class Guard {
       if (versions.length) this.deliver({ ...message, params: { ...params, versions } });
       return true;
     }
-    return this.valued(params);
+    return this.valued(params, 0, true);
   }
 
   worker(item) {
-    if (this.valued(item) || this.blockedWorkers.has(item.registrationId)) {
+    if (this.valued(item, 0, true) || this.blockedWorkers.has(item.registrationId)) {
       if (item.registrationId !== undefined) this.blockedWorkers.add(item.registrationId);
       return false;
     }
