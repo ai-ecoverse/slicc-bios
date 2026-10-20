@@ -88,7 +88,29 @@ function sh(cmd, args, opts) {
   return { code: r.status ?? (r.signal ? 128 : 1), out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
 }
 
-function plan({ head, base, shards, out }) {
+async function flakyFiles() {
+  const repo = env.GITHUB_REPOSITORY;
+  if (!repo || !env.GH_TOKEN) return new Map();
+  const found = new Map();
+  for (let page = 1; page <= 5; page++) {
+    const r = await fetch(
+      `${env.GITHUB_API_URL ?? 'https://api.github.com'}/repos/${repo}/issues?labels=flaky-test&state=open&per_page=100&page=${page}`,
+      {
+        headers: { authorization: `Bearer ${env.GH_TOKEN}`, accept: 'application/vnd.github+json' },
+      }
+    ).catch(() => null);
+    if (!r?.ok) break;
+    const list = await r.json();
+    for (const i of list) {
+      const m = /^flaky: ([\w.-]+\.test\.mjs) › /.exec(i.title ?? '');
+      if (m && !found.has(m[1])) found.set(m[1], i.number);
+    }
+    if (list.length < 100) break;
+  }
+  return found;
+}
+
+async function plan({ head, base, shards, out, budget }) {
   mkdirSync(out, { recursive: true });
   const pins = changedPins(base, head);
   const failed = failedFiles(shards);
@@ -99,11 +121,15 @@ function plan({ head, base, shards, out }) {
       file: scenarioOf(p.name),
       present: existsSync(join(head, scenarioOf(p.name))),
     }));
-  const result = { pins, failed, scenarios };
+  const known = await flakyFiles();
+  const flaky = Object.fromEntries(
+    failed.filter((f) => known.has(basename(f))).map((f) => [f, known.get(basename(f))])
+  );
+  const result = { pins, failed, scenarios, flaky, deadline: Date.now() + budget * 60000 };
   writeFileSync(join(out, 'plan.json'), `${JSON.stringify(result, null, 2)}\n`);
   const outputs = {
     pins: String(pins.length > 0),
-    browser: String(failed.length > 0 || scenarios.some((s) => s.present)),
+    browser: String(failed.some((f) => !flaky[f]) || scenarios.some((s) => s.present)),
   };
   if (env.GITHUB_OUTPUT)
     appendFileSync(
@@ -137,48 +163,76 @@ function inspect({ base, out }) {
     cpSync(join(base, 'artifacts/cert'), join(out, 'inspect'), { recursive: true });
 }
 
+export function readingOf(row, times) {
+  const headFails = row.head.filter((x) => x.exit !== 0).length;
+  const baseFails = row.base.filter((x) => x.exit !== 0).length;
+  if (row.head.length < times && headFails === row.head.length)
+    return 'not judged: the evidence budget ran out';
+  if (headFails < row.head.length)
+    return headFails ? 'flaky: failed, then passed on the head' : 'passes on the head';
+  if (!row.base.length)
+    return 'fails every time on the head; main not re-run (budget or not in main)';
+  if (baseFails) return 'fails on main alike';
+  if (row.base.length === times) return 'regression: fails every time on the head, passes on main';
+  return 'fails every time on the head; main not fully re-run (budget)';
+}
+
+function retried(times, once) {
+  const runs = [];
+  for (let i = 0; i < times; i++) {
+    const got = once(i);
+    if (!got) break;
+    runs.push(got);
+    if (got.stop) break;
+  }
+  return runs;
+}
+
 function reruns({ head, base, out, times }) {
-  const { failed } = json(join(out, 'plan.json'));
+  const { failed, flaky = {}, deadline = Number.POSITIVE_INFINITY } = json(join(out, 'plan.json'));
   const rows = [];
+  const once = (dir, cli, file, side, i) => {
+    const left = deadline - Date.now();
+    if (left < 60000) return null;
+    const started = Date.now();
+    const r = sh('npm', ['test'], {
+      cwd: dir,
+      timeout: Math.min(1800000, left),
+      env: { ...env, SLICC_CLI: cli, SLICC_TESTS: file },
+    });
+    const log = join(out, 'reruns', `${basename(file)}.${side}.${i + 1}.log`);
+    mkdirSync(join(out, 'reruns'), { recursive: true });
+    writeFileSync(log, r.out.slice(-2_000_000));
+    return {
+      exit: r.code,
+      pass: count(r.out, 'pass'),
+      fail: count(r.out, 'fail'),
+      ms: Date.now() - started,
+      log: basename(log),
+    };
+  };
   for (const file of failed) {
     const row = { file, head: [], base: [] };
-    for (const [side, dir, cli] of [
-      ['head', head, env.SLICC_CLI_HEAD],
-      ['base', base, env.SLICC_CLI_BASE],
-    ]) {
-      if (!existsSync(join(dir, file))) {
-        row[side] = 'not in this tree';
-        continue;
-      }
-      for (let i = 0; i < times; i++) {
-        const started = Date.now();
-        const r = sh('npm', ['test'], {
-          cwd: dir,
-          timeout: 1800000,
-          env: { ...env, SLICC_CLI: cli, SLICC_TESTS: file },
-        });
-        const log = join(out, 'reruns', `${basename(file)}.${side}.${i + 1}.log`);
-        mkdirSync(join(out, 'reruns'), { recursive: true });
-        writeFileSync(log, r.out.slice(-2_000_000));
-        row[side].push({
-          exit: r.code,
-          pass: count(r.out, 'pass'),
-          fail: count(r.out, 'fail'),
-          ms: Date.now() - started,
-          log: basename(log),
-        });
-      }
-    }
-    const fails = (s) => (Array.isArray(row[s]) ? row[s].filter((x) => x.exit !== 0).length : null);
-    row.reading =
-      fails('head') === times && fails('base') === 0
-        ? 'regression: fails every time on the head, passes on main'
-        : fails('head') === 0
-          ? 'passes on the head every time'
-          : fails('head') === times && fails('base') === times
-            ? 'fails on main alike'
-            : 'flaky';
     rows.push(row);
+    if (flaky[file]) {
+      row.reading = `known flaky (issue #${flaky[file]}), not re-run`;
+      continue;
+    }
+    if (!existsSync(join(head, file))) {
+      row.reading = 'not in the head tree';
+      continue;
+    }
+    row.head = retried(times, (i) => {
+      const got = once(head, env.SLICC_CLI_HEAD, file, 'head', i);
+      return got && { ...got, stop: got.exit === 0 };
+    });
+    const allFailed = row.head.length === times && row.head.every((x) => x.exit !== 0);
+    if (allFailed && existsSync(join(base, file)))
+      row.base = retried(times, (i) => {
+        const got = once(base, env.SLICC_CLI_BASE, file, 'base', i);
+        return got && { ...got, stop: got.exit !== 0 };
+      });
+    row.reading = readingOf(row, times);
   }
   writeFileSync(join(out, 'reruns.json'), `${JSON.stringify({ times, rows }, null, 2)}\n`);
   console.log(
@@ -187,7 +241,7 @@ function reruns({ head, base, out, times }) {
 }
 
 function scenarios({ head, base, out }) {
-  const { scenarios: list } = json(join(out, 'plan.json'));
+  const { scenarios: list, deadline = Number.POSITIVE_INFINITY } = json(join(out, 'plan.json'));
   const rows = [];
   for (const s of list) {
     if (!s.present) {
@@ -211,9 +265,14 @@ function scenarios({ head, base, out }) {
       ['head', head, env.SLICC_CLI_HEAD],
       ['base', base, env.SLICC_CLI_BASE],
     ]) {
+      const left = deadline - Date.now();
+      if (left < 60000) {
+        row[side] = { skipped: 'the evidence budget ran out' };
+        continue;
+      }
       const r = sh('npm', ['run', 'test:cert'], {
         cwd: dir,
-        timeout: 3600000,
+        timeout: Math.min(3600000, left),
         env: { ...env, SLICC_CLI: cli, CERT_COMMANDS: resolve(cmds) },
       });
       const seven = join(dir, 'artifacts/cert/seven.json');
@@ -240,6 +299,7 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
       shards: { type: 'string', default: '' },
       out: { type: 'string' },
       times: { type: 'string', default: '3' },
+      'budget-min': { type: 'string', default: '20' },
     },
   });
   const o = {
@@ -248,6 +308,7 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
     base: resolve(values.base),
     out: resolve(values.out),
     times: Number(values.times),
+    budget: Number(values['budget-min']),
   };
   const run = { plan, inspect, reruns, scenarios }[command];
   if (!run) {
@@ -256,5 +317,5 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
     );
     exit(2);
   }
-  run(o);
+  await run(o);
 }

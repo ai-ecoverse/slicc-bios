@@ -228,9 +228,10 @@ jobs:
     needs: [plan, integration]
     if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ (((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || github.event_name == 'workflow_dispatch' || (contains(fromJSON('["push","schedule","workflow_run","release"]'), github.event_name) && github.ref == 'refs/heads/main')) && vars.CERT_RUNNER) || 'ubuntu-latest' }}
-    timeout-minutes: 170
+    timeout-minutes: 45
     permissions:
       contents: read
+      issues: read
     env:
       LEFTHOOK: '0'
       SLICC_NO_TELEMETRY: '1'
@@ -259,7 +260,9 @@ jobs:
 
       - id: plan
         name: The pins this PR changes, the test files its shards failed, and the gated pins' scenarios
-        run: node head/scripts/cert/evidence.mjs plan --head head --base base --shards "$RUNNER_TEMP/shards" --out "$RUNNER_TEMP/cert-evidence"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node head/scripts/cert/evidence.mjs plan --head head --base base --shards "$RUNNER_TEMP/shards" --out "$RUNNER_TEMP/cert-evidence" --budget-min 20
 
       - name: Install both trees, and the harness's Chromium when a browser runs
         if: steps.plan.outputs.browser == 'true'
@@ -292,7 +295,7 @@ jobs:
             echo "$tree: $("$cli" --version) ($cli)"
           done
 
-      - name: Each failed test file three times on the head's tree and on main's, each with its own slicc CLI
+      - name: Each failed test file up to three times on the head's tree (until it passes) and, if it never did, on main's, within the 20-minute budget; known flaky files are skipped
         if: steps.plan.outputs.browser == 'true'
         run: node head/scripts/cert/evidence.mjs reruns --head head --base base --out "$RUNNER_TEMP/cert-evidence" --times 3
 

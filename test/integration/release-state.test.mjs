@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { changedPins, failedFiles, scenario, scenarioOf } from '../../scripts/cert/evidence.mjs';
 import { exceptionsFor, judge, releaseState, writerOf } from '../../scripts/cert/release-state.mjs';
 
@@ -617,8 +618,9 @@ test('the cert-review caller: shared v2 pinned by sha with the same tools-ref, C
 
 test('ci / cert evidence runs pull-request code with a read-only token and no secret, and ci / test runs release-state in code', () => {
   const job = ci.slice(ci.indexOf('\n  evidence:\n'), ci.indexOf('\n  ci:\n'));
-  assert.match(job, /\n {4}permissions:\n {6}contents: read\n {4}env:/);
+  assert.match(job, /\n {4}permissions:\n {6}contents: read\n {6}issues: read\n {4}env:/);
   assert.doesNotMatch(job, /secrets\.|: write|persist-credentials: true/);
+  assert.match(job, /timeout-minutes: 45\n/);
   assert.equal([...job.matchAll(/persist-credentials: false/g)].length, 2);
   assert.match(
     job,
@@ -835,5 +837,74 @@ test('ci / cert inspect runs main’s scripts only: the head is checked out as d
     evidence,
     /evidence\.mjs inspect|release-state/,
     'nothing upstream-marked is written next to pull-request code'
+  );
+});
+
+function tree(name, script) {
+  const dir = mkdtempSync(join(scratch, `${name}-`));
+  mkdirSync(join(dir, 'test/integration'), { recursive: true });
+  writeFileSync(join(dir, 'test/integration/a.test.mjs'), '');
+  writeFileSync(join(dir, 'runs.js'), script);
+  writeFileSync(
+    join(dir, 'package.json'),
+    JSON.stringify({ name, private: true, scripts: { test: 'node runs.js' } })
+  );
+  return dir;
+}
+const counting = (fails) =>
+  `const fs=require('fs');const n=Number(fs.existsSync('n')?fs.readFileSync('n','utf8'):0)+1;fs.writeFileSync('n',String(n));process.exit((${fails})(n)?1:0);`;
+
+async function rerun(headScript, baseScript, planExtra = {}) {
+  const head = tree('head', headScript);
+  const base = tree('base', baseScript);
+  const out = mkdtempSync(join(scratch, 'out-'));
+  writeFileSync(
+    join(out, 'plan.json'),
+    JSON.stringify({
+      failed: ['test/integration/a.test.mjs'],
+      deadline: Date.now() + 600000,
+      ...planExtra,
+    })
+  );
+  execFileSync(
+    process.execPath,
+    [
+      fileURLToPath(new URL('../../scripts/cert/evidence.mjs', import.meta.url)),
+      'reruns',
+      '--head',
+      head,
+      '--base',
+      base,
+      '--out',
+      out,
+      '--times',
+      '3',
+    ],
+    { encoding: 'utf8' }
+  );
+  return JSON.parse(readFileSync(join(out, 'reruns.json'), 'utf8')).rows[0];
+}
+
+test('reruns: the head until it passes, main only when the head failed every time, and nothing past the budget or for a known flaky file', async () => {
+  const always = counting('() => true');
+  const never = counting('() => false');
+  const regression = await rerun(always, never);
+  assert.deepEqual(
+    [regression.head.length, regression.base.length, regression.reading],
+    [3, 3, 'regression: fails every time on the head, passes on main']
+  );
+  const flaky = await rerun(counting('(n) => n === 1'), never);
+  assert.deepEqual(
+    [flaky.head.length, flaky.base.length, flaky.reading],
+    [2, 0, 'flaky: failed, then passed on the head']
+  );
+  const both = await rerun(always, always);
+  assert.deepEqual([both.base.length, both.reading], [1, 'fails on main alike']);
+  const known = await rerun(always, never, { flaky: { 'test/integration/a.test.mjs': 42 } });
+  assert.deepEqual([known.head.length, known.reading], [0, 'known flaky (issue #42), not re-run']);
+  const late = await rerun(always, never, { deadline: Date.now() - 1 });
+  assert.deepEqual(
+    [late.head.length, late.reading],
+    [0, 'not judged: the evidence budget ran out']
   );
 });
