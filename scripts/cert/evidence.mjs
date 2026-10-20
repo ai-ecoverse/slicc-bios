@@ -146,6 +146,8 @@ export const CLASSES = {
     'tailscale',
     'users',
     'sw-activation',
+    'mcpcat-users',
+    'user-installs',
   ],
   'data integrity': [
     'integrity',
@@ -207,7 +209,9 @@ export const UNCLASSIFIED = [
 
 export function classOf(file) {
   const name = basename(file).replace(/\.test\.mjs$/, '');
-  return Object.keys(CLASSES).find((c) => CLASSES[c].includes(name)) ?? null;
+  const found = Object.keys(CLASSES).find((c) => CLASSES[c].includes(name));
+  if (found) return found;
+  return UNCLASSIFIED.includes(name) ? null : 'an unclassified new file';
 }
 
 async function flakyFiles() {

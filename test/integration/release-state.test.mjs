@@ -881,7 +881,7 @@ function evidenceCmd(cmd, head, base, out) {
   return { code: r.status, out: r.stdout + r.stderr };
 }
 
-function rerun(headScript, baseScript, planExtra = {}, file = 'test/integration/a.test.mjs') {
+function rerun(headScript, baseScript, planExtra = {}, file = 'test/integration/ruby.test.mjs') {
   const head = tree('head', headScript, file);
   const base = tree('base', baseScript, file);
   const out = mkdtempSync(join(scratch, 'out-'));
@@ -910,7 +910,7 @@ test('reruns: the head until it passes, main only when the head failed every tim
   );
   const both = rerun(always, always);
   assert.deepEqual([both.base.length, both.outcome], [1, 'main-alike']);
-  const known = rerun(always, never, { flaky: { 'test/integration/a.test.mjs': 42 } });
+  const known = rerun(always, never, { flaky: { 'test/integration/ruby.test.mjs': 42 } });
   assert.deepEqual(
     [known.head.length, known.outcome, known.reading],
     [0, 'known-flaky', 'known flaky (issue #42), not re-run']
@@ -956,7 +956,7 @@ test('reruns (4): a spent budget is incomplete, and `check` fails the evidence j
   assert.equal(late.check.code, 1);
   assert.match(
     late.check.out,
-    /cert evidence: INCOMPLETE test\/integration\/a\.test\.mjs: incomplete: the evidence budget ran out on the head/
+    /cert evidence: INCOMPLETE test\/integration\/ruby\.test\.mjs: incomplete: the evidence budget ran out on the head/
   );
   const f = { exit: 1 };
   const cut = { exit: 128, timedOut: true };
@@ -970,19 +970,19 @@ test('reruns (4): a spent budget is incomplete, and `check` fails the evidence j
     readingOf({ head: [f, f, f], base: [{ exit: 0 }], inBase: true }, 3).outcome,
     'incomplete'
   );
-  const head = tree('head', always, 'test/integration/a.test.mjs');
+  const head = tree('head', always, 'test/integration/ruby.test.mjs');
   const out = mkdtempSync(join(scratch, 'out-'));
   writeFileSync(
     join(out, 'plan.json'),
-    JSON.stringify({ failed: ['test/integration/a.test.mjs'], scenarios: [], deadline: 0 })
+    JSON.stringify({ failed: ['test/integration/ruby.test.mjs'], scenarios: [], deadline: 0 })
   );
   const missing = evidenceCmd('check', head, head, out);
   assert.equal(missing.code, 1, 'no reruns.json is incomplete too');
   writeFileSync(join(out, 'reruns.json'), JSON.stringify({ rows: [] }));
-  assert.match(evidenceCmd('check', head, head, out).out, /a\.test\.mjs: no re-run row/);
+  assert.match(evidenceCmd('check', head, head, out).out, /ruby\.test\.mjs: no re-run row/);
   writeFileSync(
     join(out, 'reruns.json'),
-    JSON.stringify({ rows: [{ file: 'test/integration/a.test.mjs', outcome: 'pass' }] })
+    JSON.stringify({ rows: [{ file: 'test/integration/ruby.test.mjs', outcome: 'pass' }] })
   );
   assert.match(evidenceCmd('check', head, head, out).out, /no known outcome/);
   writeFileSync(
@@ -1040,10 +1040,15 @@ test('#684: the inspect diffs (wasm strings with bidi and zero-width controls) s
   );
 });
 
-test('every integration test file is in a class (data integrity, security, guard) or on the unclassified list', () => {
+test('a test file in no class and not on the unclassified list (a new one) counts as a class until the bios coordinator places it: never skipped, a flake is a fail', () => {
+  assert.equal(classOf('test/integration/brand-new.test.mjs'), 'an unclassified new file');
+  for (const n of UNCLASSIFIED) assert.equal(classOf(`test/integration/${n}.test.mjs`), null, n);
+  const both = Object.values(CLASSES)
+    .flat()
+    .filter((n) => UNCLASSIFIED.includes(n));
+  assert.deepEqual(both, []);
   const listed = new Set([...Object.values(CLASSES).flat(), ...UNCLASSIFIED]);
   const files = readdirSync(new URL('./', import.meta.url)).filter((f) => f.endsWith('.test.mjs'));
-  const missing = files.map((f) => f.replace(/\.test\.mjs$/, '')).filter((n) => !listed.has(n));
-  assert.deepEqual(missing, [], 'classify each new test file in scripts/cert/evidence.mjs');
-  for (const n of UNCLASSIFIED) assert.equal(classOf(`test/integration/${n}.test.mjs`), null, n);
+  const fresh = files.map((f) => f.replace(/\.test\.mjs$/, '')).filter((n) => !listed.has(n));
+  if (fresh.length) console.log(`not yet classified (treated as a class): ${fresh.join(', ')}`);
 });
