@@ -63,7 +63,10 @@ export function agentInstalling(from, to) {
   };
 }
 
-export const NO_SENDING = 'You can send messages once the agent starts.';
+export const startingLine = (from) =>
+  from ? 'Seven is updating its agent.' : 'Seven is installing its agent.';
+
+export const RELOAD_FIRST = 'Reload this tab to reach the new agent.';
 
 function lines() {
   const listeners = new Set();
@@ -84,23 +87,52 @@ function lines() {
 
 export function holdComposer() {
   const { take, ...source } = lines();
-  return { ...source, hold: (on) => take(on ? NO_SENDING : null) };
+  return { ...source, hold: (line) => take(line) };
 }
 
-export function mirrorHold(os) {
-  const { take, ...source } = lines();
-  os.on('held', take);
-  void os.call('held').then(take, () => undefined);
-  return source;
+export function mirrorHold(os, tabs) {
+  const listeners = new Set();
+  let held = null;
+  let shown = null;
+  let off = null;
+  const line = () => (held && tabs.state().skew ? RELOAD_FIRST : held);
+  const settle = () => {
+    const next = line();
+    if (next === shown) return;
+    shown = next;
+    for (const listener of [...listeners]) listener(next);
+  };
+  const heard = (next) => {
+    held = next;
+    settle();
+  };
+  os.on('held', heard);
+  void os.call('held').then(heard, () => undefined);
+  return {
+    held: line,
+    on(listener) {
+      if (!off) {
+        shown = line();
+        off = tabs.on('tabs', settle);
+      }
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+        if (listeners.size || !off) return;
+        off();
+        off = null;
+      };
+    },
+  };
 }
 
 export function heldAgent(agent, source) {
   return new Proxy(agent, {
     get(target, key) {
-      if (key === 'readOnly') return () => source.held();
+      if (key === 'starting') return () => source.held();
       if (key === 'on')
         return (type, listener) =>
-          type === 'readOnly' ? source.on(listener) : target.on(type, listener);
+          type === 'starting' ? source.on(listener) : target.on(type, listener);
       const value = Reflect.get(target, key, target);
       return typeof value === 'function' ? value.bind(target) : value;
     },

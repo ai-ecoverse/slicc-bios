@@ -51,6 +51,7 @@ import {
   mirrorHold,
   reportRepairs,
   reportStopped,
+  startingLine,
 } from './notices.js';
 import { createPackages, globalDir, loadCatalog, writeListing } from './packages.js';
 import { createPairing, takePairing } from './pair.js';
@@ -351,7 +352,7 @@ function base(os) {
   const network = os ? mirrorNetwork(os, reach.port) : reach.port;
   return {
     ...files,
-    agent: browser.stopping(heldAgent(files.agent, os ? mirrorHold(os) : composer)),
+    agent: browser.stopping(heldAgent(files.agent, os ? mirrorHold(os, tabs) : composer)),
     updates: os ? mirrorUpdates(os) : updates,
     notices,
     approvals: approvals.port,
@@ -566,7 +567,7 @@ function agentReport() {
   return (step) => {
     track(step);
     if (agent !== null || !step.to) return;
-    composer.hold(true);
+    composer.hold(startingLine(from));
     const notice = agentInstalling(from, step.to);
     installNotice = notice.id;
     notices.show(notice, () => app.show('updates'));
@@ -602,7 +603,7 @@ async function offerChat() {
     updates.fail('agent', error);
     await listOwn();
   } finally {
-    composer.hold(false);
+    composer.hold(null);
     if (installNotice) notices.remove(installNotice);
     installNotice = null;
   }

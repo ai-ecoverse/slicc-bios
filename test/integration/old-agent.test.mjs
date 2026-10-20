@@ -100,6 +100,35 @@ const helpers = () => {
         '{}'
     ).version ?? null;
   window.agentRows = [];
+  window.composer = () => {
+    const root = window.chatView()?.shadowRoot;
+    const composer = root && window.deep(root, 'slicc-composer');
+    if (!composer) return null;
+    return {
+      placeholder: window
+        .deep(composer.shadowRoot, 'swc-prompt-field')
+        ?.getAttribute('placeholder'),
+      queued: [...composer.shadowRoot.querySelectorAll('li.queued[data-mode="starting"]')].map(
+        (row) => row.textContent.replace(/\s+/g, ' ').trim()
+      ),
+      empty: !!window.deep(root, '[data-empty]'),
+    };
+  };
+  window.delivered = () => {
+    const { agent } = document.querySelector('slicc-app').model;
+    const id = agent.active();
+    return id ? [...window.userTexts(), ...agent.queue(id).map((item) => item.text)] : [];
+  };
+  window.userTexts = () => {
+    const { agent } = document.querySelector('slicc-app').model;
+    const id = agent.active();
+    return id
+      ? agent
+          .messages(id)
+          .filter((message) => message.role === 'user')
+          .map((message) => message.text)
+      : [];
+  };
   window.installNotice = () =>
     document
       .querySelector('slicc-app')
@@ -160,19 +189,30 @@ async function installedOld(t, old) {
   return { page, owner };
 }
 
-async function say(page, text, times) {
+async function queue(page, text) {
+  const before = await page.evaluate(() => window.composer().queued.length);
+  await page.evaluate(() => window.deep(window.chatView().shadowRoot, 'textarea').focus());
+  await page.insert(text);
+  await page.enter();
+  await page.until((before) => window.composer()?.queued.length === before + 1, before);
+}
+
+async function say(page, text) {
   await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
   await page.until(() => {
     const chat = window.chatView();
     return !!chat?.shadowRoot && !!window.deep(chat.shadowRoot, 'textarea');
   });
+  const answers = () =>
+    window.deepText(window.chatView().shadowRoot).split('Hello from the agent.').length;
+  const before = await page.evaluate(answers);
   await page.evaluate(() => window.deep(window.chatView().shadowRoot, 'textarea').focus());
   await page.insert(text);
   await page.enter();
   await page.until(
-    (times) =>
-      window.deepText(window.chatView().shadowRoot).split('Hello from the agent.').length > times,
-    times
+    (before) =>
+      window.deepText(window.chatView().shadowRoot).split('Hello from the agent.').length > before,
+    before
   );
 }
 
@@ -204,7 +244,7 @@ async function oneHolder(page) {
   assert.deepEqual(locks, { held: 1, pending: 0 });
 }
 
-test("slicc-agent 3.26.0, which ignores held, isn't started at boot: seven's agent installs, the chat says it's updating meanwhile, and the new agent's chat starts without a reload", {
+test("slicc-agent 3.26.0, which ignores held, isn't started at boot: seven's agent installs, the chat queues what's sent here and in another tab, and the new agent gets it once, without a reload", {
   timeout: 60 * 60 * 1000,
 }, async (t) => {
   const { page, owner } = await installedOld(t, '3.26.0');
@@ -228,18 +268,36 @@ test("slicc-agent 3.26.0, which ignores held, isn't started at boot: seven's age
   assert.equal(notice.body, `The chat starts once agent ${NEW_VERSION} is installed.`);
   assert.deepEqual(notice.actions, [{ id: 'show-updates', label: 'Open Install / Update' }]);
   const shown = await page.until(() => {
-    const root = window.chatView().shadowRoot;
-    const text = window.deepText(root);
-    return (
-      text.includes('Seven is updating its agent') &&
-      !window.deep(root, 'slicc-composer') &&
-      window.deep(root, '[data-follow="watch"]')?.textContent.trim() ===
-        'You can send messages once the agent starts.' &&
-      text
-    );
+    const text = window.deepText(window.chatView().shadowRoot);
+    return text.includes('Seven is updating its agent') && window.composer() && text;
   });
-  assert.doesNotMatch(shown, /Couldn|failed|error|Ask the agent something/i);
+  assert.doesNotMatch(shown, /Couldn|failed|error|No messages yet/i);
+  assert.deepEqual(await page.evaluate(() => window.composer()), {
+    placeholder: 'Seven is updating its agent.',
+    queued: [],
+    empty: false,
+  });
   await shoot(page, 'updating-from-3.26.0', { show: 'chat' });
+  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
+  await queue(page, 'First while it installs');
+  await queue(page, 'Second while it installs');
+  await queue(page, 'Dropped while it installs');
+  const rows = await page.evaluate(() => window.composer().queued);
+  assert.equal(rows.length, 3);
+  assert.ok(
+    rows.every((row) => row.includes('Sent when the agent starts')),
+    JSON.stringify(rows)
+  );
+  await page.evaluate(() => {
+    const composer = window.deep(window.chatView().shadowRoot, 'slicc-composer');
+    const rows = composer.shadowRoot.querySelectorAll('li.queued[data-mode="starting"]');
+    rows[rows.length - 1].querySelector('[data-action="unqueue"]').click();
+  });
+  await page.until(() => window.composer().queued.length === 2);
+  const kept = await page.evaluate(() => window.composer().queued);
+  assert.match(kept[0], /First while it installs/);
+  assert.match(kept[1], /Second while it installs/);
+  await shoot(page, 'queued-while-updating', { show: 'chat' });
   await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
   assert.equal(
     await page.evaluate(
@@ -266,34 +324,51 @@ test("slicc-agent 3.26.0, which ignores held, isn't started at boot: seven's age
     () => document.querySelector('slicc-app').model.tabs?.state().role === 'follower'
   );
   await other.evaluate(() => document.querySelector('slicc-app').show('chat'));
-  await other.until(() => {
-    const root = window.chatView()?.shadowRoot;
-    return (
-      !!root &&
-      !window.deep(root, 'slicc-composer') &&
-      window.deep(root, '[data-follow="watch"]')?.textContent.trim() ===
-        'You can send messages once the agent starts.'
-    );
-  });
+  await other.until(
+    () =>
+      window.composer()?.placeholder === 'Seven is updating its agent.' && !window.composer().empty
+  );
+  await queue(other, 'From the other tab while it installs');
 
   await agentUp(page, { label: 'agent after 3.26.0' });
   const up = Date.now();
   const follower = await other.within(60000, () => {
     const root = window.chatView()?.shadowRoot;
     if (!root) return false;
-    if (window.deep(root, 'textarea')) return 'composer';
-    return !!window.deep(root, '[data-tabs-notice="skew"]') && 'skew';
+    if (window.deep(root, '[data-tabs-notice="skew"]')) return 'skew';
+    return window.composer()?.queued.length === 0 && 'sent';
   });
   if (follower === 'skew') {
+    await other.until(
+      () =>
+        window.composer()?.placeholder === 'Reload this tab to reach the new agent.' &&
+        window.composer().queued.length === 1
+    );
+    await shoot(other, 'follower-reload-line', { show: 'chat' });
+    await other.evaluate(() => document.querySelector('slicc-app').show('chat'));
     await other.reload();
     await ready(other);
     await other.evaluate(() => document.querySelector('slicc-app').show('chat'));
-    await other.within(60000, () => {
-      const root = window.chatView()?.shadowRoot;
-      return !!root && !!window.deep(root, 'textarea');
-    });
+    await other.within(60000, () => window.composer()?.queued.length === 0);
   }
   t.diagnostic(`the follower tab after the install: ${follower}`);
+  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
+  const sent = await page.within(60000, () => {
+    const texts = window.delivered();
+    return texts.length >= 3 && texts;
+  });
+  const own = sent.filter((text) => text !== 'From the other tab while it installs');
+  assert.deepEqual(
+    own,
+    ['First while it installs', 'Second while it installs'],
+    JSON.stringify(sent)
+  );
+  assert.equal(
+    sent.filter((text) => text === 'From the other tab while it installs').length,
+    1,
+    JSON.stringify(sent)
+  );
+  assert.deepEqual(await page.evaluate(() => window.composer().queued), []);
   const row = await page.evaluate(agentRow);
   assert.equal(await page.evaluate(() => window.installedAgent()), NEW_VERSION);
   assert.equal(row.state, 'installed');
@@ -311,10 +386,12 @@ test("slicc-agent 3.26.0, which ignores held, isn't started at boot: seven's age
     `agent 3.26.0 → ${NEW_VERSION}: the chat waited ${up - reloaded} ms after the reload, the install took ${(done ?? up) - started} ms`
   );
   await connectAccount(page, 'amazon-bedrock', KEY);
-  await say(page, 'Say hello', 1);
-  assert.equal(
-    await page.evaluate(() => window.deep(window.chatView().shadowRoot, '[data-follow="watch"]')),
-    null
+  await say(page, 'Say hello');
+  assert.deepEqual(
+    (await page.evaluate(() => window.delivered())).filter(
+      (text) => text === 'Dropped while it installs'
+    ),
+    []
   );
   assert.deepEqual(page.errors, []);
 });
@@ -330,7 +407,7 @@ test("slicc-agent 5.0.3, which honours held, answers while seven's agent install
   await agentUp(page, { label: 'agent 5.0.3 after the reload' });
   const up = Date.now();
   await connectAccount(page, 'amazon-bedrock', KEY);
-  await say(page, 'Say hello', 1);
+  await say(page, 'Say hello');
   const answered = Date.now();
   const during = await page.evaluate(agentRow);
   await page.within(AGENT_BUDGET, () => {
@@ -365,7 +442,7 @@ test("slicc-agent 5.0.3, which honours held, answers while seven's agent install
   );
   const restarted = Date.now();
   await oneHolder(page);
-  await say(page, 'Say hello again', 2);
+  await say(page, 'Say hello again');
   assert.equal(await page.evaluate(() => window.noticeSeen), false);
   t.diagnostic(
     `agent 5.0.3 → ${NEW_VERSION} in place: the old agent was up ${up - reloaded} ms after the reload (row ${during.state} when it answered), the install took ${(done ?? offered) - started} ms, Restart agent was offered ${offered - reloaded} ms after the reload and took ${restarted - offered} ms`
