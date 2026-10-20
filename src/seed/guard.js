@@ -1,5 +1,6 @@
 import catalog from '@ai-ecoverse/slicc-browsers/catalog.json' with { type: 'json' };
 import { protectedOrigins } from '@ai-ecoverse/slicc-browsers/protected.mjs';
+import { RELAY, SIGN_IN_CLIENTS } from './adobe.js';
 
 export const PROTECTED =
   'slicc: refused: seven’s own pages and the vault are out of reach of browser automation';
@@ -453,10 +454,29 @@ const kept = (set, value) => {
 
 export const ARM = [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }];
 
+const CALLBACK_NAMED = RELAY.replace(/^https?:\/\//, '').toLowerCase();
+
+export function signsIn(url) {
+  if (typeof url !== 'string' || !/^https?:/i.test(url)) return false;
+  let text = url;
+  for (let i = 0; i < 5; i += 1) {
+    const lower = text.toLowerCase();
+    if (lower.includes(CALLBACK_NAMED)) return true;
+    for (const [, id] of lower.matchAll(/[?&#]client_id=([^&#\s]*)/g)) {
+      if ([...SIGN_IN_CLIENTS].some((client) => client.toLowerCase() === id)) return true;
+    }
+    const next = decoded(text.replace(/\+/g, ' '));
+    if (next === text) return false;
+    text = next;
+  }
+  return false;
+}
+
 export function protection(own) {
   const matcher = protectedOrigins(catalog.protectedOrigins, owned(own));
   const web = (url, options) =>
-    typeof url === 'string' && matcher.url(url.replace(/^ws(s?):/i, 'http$1:'), options);
+    typeof url === 'string' &&
+    (matcher.url(url.replace(/^ws(s?):/i, 'http$1:'), options) || signsIn(url));
   return { ...matcher, url: web };
 }
 

@@ -1,0 +1,201 @@
+import assert from 'node:assert/strict';
+import { createServer as createHttp } from 'node:http';
+import { createServer } from 'node:net';
+import { after, test } from 'node:test';
+import { startProxy } from '@ai-ecoverse/slicc-node';
+import { ready } from './bios.mjs';
+import { debuggerUrl, launch } from './chrome.mjs';
+import { extensionOver } from './fake-extension.mjs';
+
+const RELAY = 'https://www.sliccy.ai/auth/callback';
+const CLIENT = 'seven-sign-in-client';
+const hits = [];
+const site = createHttp((req, res) => {
+  hits.push(`${req.headers.host}${req.url}`);
+  res.writeHead(200, { 'content-type': 'text/html' });
+  res.end('<title>idp</title><h1>Sign in</h1>');
+});
+await new Promise((resolve) => site.listen(0, '127.0.0.1', resolve));
+const port = site.address().port;
+after(() => site.close());
+
+const debugging = await new Promise((resolve) => {
+  const server = createServer().listen(0, '127.0.0.1', () => {
+    const { port: free } = server.address();
+    server.close(() => resolve(free));
+  });
+});
+const chrome = await launch({
+  args: [
+    `--remote-debugging-port=${debugging}`,
+    '--host-resolver-rules=MAP idp.test 127.0.0.1, MAP ordinary.test 127.0.0.1',
+  ],
+});
+after(() => chrome.close());
+const fakeExtension = extensionOver(await debuggerUrl(debugging));
+
+const authorize = (params) =>
+  `http://idp.test:${port}/ims/authorize/v2?${new URLSearchParams(params)}`;
+const SIGNING_IN = {
+  'with seven’s callback': authorize({
+    client_id: 'any',
+    redirect_uri: RELAY,
+    response_type: 'token',
+  }),
+  'with seven’s client id and no callback': authorize({ client_id: CLIENT, response_type: 'code' }),
+  'as a form_post': authorize({
+    client_id: CLIENT,
+    redirect_uri: RELAY,
+    response_mode: 'form_post',
+  }),
+  'with the callback encoded twice': `http://idp.test:${port}/ims/authorize/v2?client_id=any&redirect_uri=${encodeURIComponent(encodeURIComponent(RELAY))}`,
+  'nested in another URL': `http://idp.test:${port}/login?next=${encodeURIComponent(authorize({ client_id: CLIENT, response_type: 'token' }))}`,
+};
+const DRIVABLE = {
+  'another client and callback': authorize({
+    client_id: 'other',
+    redirect_uri: 'https://other.test/cb',
+    response_type: 'code',
+  }),
+  'the vault’s callback': authorize({
+    client_id: 'other',
+    redirect_uri: 'https://vault.sliccy.ai/oauth/mcp-callback',
+  }),
+};
+
+async function rig({ transport, proxy, port, client, signing, drivable }) {
+  const { guardProtected } = await import(new URL('guard.js', location.href).href);
+  const { proxyHost, extensionConnection } = await import(new URL('cdp.js', location.href).href);
+  const { authorizeUrl } = await import(new URL('adobe.js', location.href).href);
+  authorizeUrl({ clientId: client, scopes: 'openid' }, 1, 'n');
+  const raw =
+    transport === 'proxy'
+      ? await proxyHost(proxy)()
+      : extensionConnection(globalThis.sliccExtension.cdp);
+  const connection = guardProtected(raw, self.origin);
+  const pending = new Map();
+  let next = 0;
+  connection.onmessage = (text) => {
+    const message = JSON.parse(text);
+    pending.get(message.id)?.(message);
+    pending.delete(message.id);
+  };
+  const send = (method, params = {}, sessionId) =>
+    new Promise((resolve) => {
+      next += 1;
+      const id = next;
+      const timer = setTimeout(
+        () => resolve({ error: { message: `${method} got no answer` } }),
+        8000
+      );
+      pending.set(id, (message) => {
+        clearTimeout(timer);
+        resolve(message);
+      });
+      connection.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+  const frame = async (session) =>
+    (await send('Page.getFrameTree', {}, session)).result?.frameTree?.frame ?? {};
+  const until = async (check) => {
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      if (await check()) return true;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return false;
+  };
+  const start = `http://ordinary.test:${port}/start`;
+  const out = { signing: {}, drivable: {} };
+  for (const [name, url] of Object.entries({ ...signing, ...drivable })) {
+    const row = {};
+    row.created = (await send('Target.createTarget', { url })).error?.message ?? 'created';
+    const { targetId } = (await send('Target.createTarget', { url: start })).result ?? {};
+    const session = (await send('Target.attachToTarget', { targetId, flatten: true })).result
+      ?.sessionId;
+    await send('Page.enable', {}, session);
+    row.started = await until(async () => (await frame(session)).url === start);
+    row.navigated = (await send('Page.navigate', { url }, session)).error?.message ?? 'navigated';
+    if (row.navigated === 'navigated') {
+      row.loaded = await until(async () => (await frame(session)).url === url);
+    } else {
+      void send(
+        'Runtime.evaluate',
+        { expression: `location.href=${JSON.stringify(url)}` },
+        session
+      );
+      row.left = await until(async () => (await frame(session)).url !== start);
+      row.landed = (await frame(session)).url ?? null;
+    }
+    await send('Target.closeTarget', { targetId });
+    out[name in signing ? 'signing' : 'drivable'][name] = row;
+  }
+  return out;
+}
+
+async function check(t, transport) {
+  const page = await chrome.page(t);
+  let proxy;
+  if (transport === 'proxy') {
+    proxy = await startProxy({
+      port: 0,
+      origins: [new URL(chrome.url).origin],
+      cdp: `http://127.0.0.1:${debugging}`,
+      kernelPort: null,
+      log: () => {},
+    });
+    t.after(() => proxy.close());
+  } else {
+    const extension = await fakeExtension(page);
+    t.after(() => extension.close());
+  }
+  await page.goto(proxy ? `/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}` : '/');
+  await ready(page);
+  hits.length = 0;
+  const out = await page.evaluate(rig, {
+    transport,
+    proxy: proxy && { url: proxy.url, key: proxy.key },
+    port,
+    client: CLIENT,
+    signing: SIGNING_IN,
+    drivable: DRIVABLE,
+  });
+  for (const [name, row] of Object.entries(out.signing)) {
+    assert.match(row.created, /^slicc: refused:/, `${name}: createTarget ${JSON.stringify(row)}`);
+    assert.match(
+      row.navigated,
+      /^slicc: refused:/,
+      `${name}: Page.navigate ${JSON.stringify(row)}`
+    );
+    assert.equal(row.started, true, name);
+    assert.equal(
+      row.left,
+      true,
+      `${name}: the page's own navigation ended somewhere ${JSON.stringify(row)}`
+    );
+    assert.notEqual(row.landed, SIGNING_IN[name], `${name}: the page reached the sign-in page`);
+  }
+  for (const [name, row] of Object.entries(out.drivable)) {
+    assert.deepEqual(
+      { created: row.created, navigated: row.navigated, loaded: row.loaded },
+      { created: 'created', navigated: 'navigated', loaded: true },
+      name
+    );
+  }
+  const served = new Set(Object.values(DRIVABLE).map((url) => url.replace(/^http:\/\//, '')));
+  const reached = hits.filter(
+    (hit) => /^idp\.test:\d+\/(?:ims|login)/.test(hit) && !served.has(hit)
+  );
+  assert.deepEqual(reached, [], 'no sign-in page was served to a guarded tab');
+}
+
+test(
+  'seven’s own sign-in pages can’t be driven through the guard, on the proxy path',
+  { timeout: 5 * 60 * 1000 },
+  (t) => check(t, 'proxy')
+);
+
+test(
+  'seven’s own sign-in pages can’t be driven through the guard, on the extension path',
+  { timeout: 5 * 60 * 1000 },
+  (t) => check(t, 'extension')
+);

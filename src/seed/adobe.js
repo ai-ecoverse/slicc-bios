@@ -6,6 +6,7 @@ const imsHosts = {
 };
 export const RELAY = 'https://www.sliccy.ai/auth/callback';
 export const CALLBACK = '/auth/callback';
+export const SIGN_IN_CLIENTS = new Set();
 export const NEEDS_PROXY =
   'signing in to Adobe needs slicc-node or slicc-extension: run npx @ai-ecoverse/slicc-node or install slicc-extension';
 
@@ -18,6 +19,7 @@ export function nonce(random = (bytes) => crypto.getRandomValues(bytes)) {
 }
 
 function authorize({ clientId, scopes, imsEnvironment }, state) {
+  if (clientId) SIGN_IN_CLIENTS.add(clientId);
   const params = new URLSearchParams({
     client_id: clientId,
     scope: scopes,
