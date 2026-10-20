@@ -347,6 +347,7 @@ test("slicc-agent 3.26.0, which ignores held, isn't started at boot: seven's age
     await other.within(60000, () => window.composer()?.queued.length === 0);
   }
   t.diagnostic(`the follower tab after the install: ${follower}`);
+  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
   const sent = await page.within(60000, () => {
     const texts = window.userTexts();
     const { agent } = document.querySelector('slicc-app').model;
