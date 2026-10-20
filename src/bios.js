@@ -1,4 +1,4 @@
-import { clearHandOff } from './seed/handoff.js';
+import { clearHandOff, dropped, droppedLine } from './seed/handoff.js';
 import { usersMode } from './seed/users.js';
 
 export function uiPage(hash) {
@@ -223,6 +223,8 @@ await step('intercept', async () => {
 });
 
 await step('navigate', async () => {
+  const lost = dropped();
+  if (lost) throw new Error(droppedLine(lost));
   remember('slicc-bios.repaired', repaired);
   remember('slicc-bios.stopped', stopped);
   const ui = new URL(uiPage(location.hash), scope);

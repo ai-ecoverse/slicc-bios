@@ -1,4 +1,4 @@
-import { clearHandOff } from './handoff.js';
+import { clearHandOff, dropped, droppedLine } from './handoff.js';
 import { BIOS } from './site.js';
 
 export const REFUSED =
@@ -37,6 +37,16 @@ export function refused(doc = document, go = (url) => location.replace(url), sto
   return box;
 }
 
+export function droppedPage(doc, names) {
+  const box = doc.createElement('main');
+  box.dataset.dropped = '';
+  const text = doc.createElement('p');
+  text.textContent = droppedLine(names);
+  box.append(text);
+  doc.body.replaceChildren(box);
+  return box;
+}
+
 export function seatPage(at = location) {
   if (!new URLSearchParams(at.hash.slice(1)).has('seat')) return null;
   return new URL(`join.html${at.hash}`, import.meta.url).href;
@@ -51,7 +61,14 @@ export async function start({
   fail = refused,
   check = stoppedPath,
   clear = clearHandOff,
+  lost = dropped,
+  doc = globalThis.document,
 } = {}) {
+  const names = lost();
+  if (names) {
+    clear();
+    return droppedPage(doc, names);
+  }
   const guest = seat();
   if (guest) {
     clear();

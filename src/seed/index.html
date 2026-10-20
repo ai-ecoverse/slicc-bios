@@ -25,6 +25,19 @@
         params.set('handoff', id);
       } catch {
         params.delete('handoff');
+        const labels = {
+          proxy: 'proxy',
+          key: 'proxy',
+          tailscale: 'Tailscale',
+          'slicc-pair': 'pairing',
+        };
+        const lost = new Set([
+          ...(globalThis.sliccDropped || []),
+          ...taken.map((name) => labels[name]),
+        ]);
+        globalThis.sliccDropped = ['proxy', 'Tailscale', 'pairing'].filter((label) =>
+          lost.has(label)
+        );
       }
       const rest = params.toString();
       history.replaceState(

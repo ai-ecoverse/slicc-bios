@@ -141,7 +141,7 @@ test('the sign-in callback tidies its address before its module loads, sends no 
   });
   const popup = await page.tab();
   await popup.init(() => {
-    window.seenAt = location.href;
+    window.close = () => {};
   });
   const secret = 'callback-token-0123456789';
   await popup.goto(
@@ -155,20 +155,16 @@ test('the sign-in callback tidies its address before its module loads, sends no 
     nonce: 'n-tidy',
     redirectUrl: `${origin}/auth/callback?nonce=n-tidy#access_token=${secret}&expires_in=60`,
   });
-  const shown = await popup
-    .evaluate(() => ({
-      href: location.href,
-      referrer: document.querySelector('meta[name="referrer"]')?.content ?? null,
-      kept: 'sliccCallback' in globalThis,
-    }))
-    .catch(() => null);
-  if (shown) {
-    assert.equal(shown.href, `${origin}/auth/callback`);
-    assert.equal(shown.referrer, 'no-referrer');
-    assert.equal(shown.kept, false);
-    const { entries } = await popup.send('Page.getNavigationHistory');
-    for (const { url } of entries) assert.ok(!url.includes(secret), url);
-  }
+  const shown = await popup.evaluate(() => ({
+    href: location.href,
+    referrer: document.querySelector('meta[name="referrer"]')?.content ?? null,
+    kept: 'sliccCallback' in globalThis,
+  }));
+  assert.equal(shown.href, `${origin}/auth/callback`);
+  assert.equal(shown.referrer, 'no-referrer');
+  assert.equal(shown.kept, false);
+  const { entries } = await popup.send('Page.getNavigationHistory');
+  for (const { url } of entries) assert.ok(!url.includes(secret), url);
   const { targetInfos } = await chrome.cdp.send('Target.getTargets');
   for (const { url } of targetInfos) assert.ok(!url.includes(secret), url);
   assert.deepEqual(page.errors, []);
@@ -229,7 +225,7 @@ test('the handoff is cleared at the end of a boot whose UI fails to load, and of
   assert.ok(!href.includes(KEY) && !href.includes('handoff='), href);
 });
 
-test('when the handoff can’t be stored, the address is tidied anyway and the value is lost, not kept in the URL', async (t) => {
+test('when the settings from the link can’t be stored, the address is tidied anyway, nothing holds them, and the BIOS says in one line which it lost', async (t) => {
   const page = await watched(t);
   const proxy = await fakeProxy({ origin: new URL(chrome.url).origin, key: KEY });
   t.after(() => proxy.close());
@@ -241,17 +237,99 @@ test('when the handoff can’t be stored, the address is tidied anyway and the v
       return set.call(this, key, value);
     };
   });
-  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: KEY, users: 'enforce' })}`);
-  await ready(page);
+  await page.goto(
+    `/#${new URLSearchParams({ proxy: proxy.url, key: KEY, tailscale: 'off', exit: 'node-tidy', users: 'enforce' })}`
+  );
+  await page.until(
+    () => document.querySelector('[data-step="navigate"]')?.dataset.state === 'failed'
+  );
+  const line = await page.evaluate(
+    () => document.querySelector('[data-step="navigate"] output').value
+  );
+  assert.equal(
+    line,
+    'Seven couldn’t store the settings from the link (proxy, Tailscale). Allow site storage and open the link again.'
+  );
   const where = await addresses(page);
-  const at = where.seen.findIndex((url) => new URL(url).pathname === '/os/');
-  assert.ok(at > 0, where.seen.join(' '));
-  for (const url of [where.href, ...where.history, ...where.targets, ...where.seen.slice(at)])
-    assert.ok(!url.includes(KEY), `${KEY} in ${url}`);
   assert.equal(where.hash, '#users=enforce');
-  assert.notEqual((await network(page)).detail, `Local proxy at ${new URL(proxy.url).host}`);
-  assert.equal(await idb(page, 'proxy'), null);
-  assert.deepEqual(proxy.probes, []);
+  for (const url of [where.href, ...where.history, ...where.targets, ...where.seen.slice(1)]) {
+    assert.ok(!url.includes(KEY) && !url.includes('node-tidy'), url);
+    assert.equal(new URL(url).pathname === '/os/', false, `the BIOS went on to ${url}`);
+  }
   assert.deepEqual(where.handoff, []);
+  assert.deepEqual(await page.evaluate(() => globalThis.sliccDropped), ['proxy', 'Tailscale']);
+  assert.deepEqual(proxy.probes, []);
+  assert.deepEqual(
+    page.errors.filter((error) => !error.includes('couldn’t store')),
+    []
+  );
+});
+
+const PRODUCTION = [
+  { name: 'content-security-policy', value: "frame-ancestors 'self'" },
+  { name: 'x-frame-options', value: 'SAMEORIGIN' },
+];
+
+test('with the production headers on the boot page the tidying script runs, no policy blocks it, and /os/ and the callback have the same policy', async (t) => {
+  const page = await watched(t);
+  const origin = new URL(chrome.url).origin;
+  await page.init(() => {
+    document.addEventListener('securitypolicyviolation', (event) => {
+      const seen = JSON.parse(localStorage.getItem('test.violations') ?? '[]');
+      localStorage.setItem(
+        'test.violations',
+        JSON.stringify([...seen, `${event.violatedDirective} ${event.blockedURI}`])
+      );
+    });
+  });
+  const served = [];
+  const stop = chrome.cdp.on(async ({ method, params }) => {
+    if (method !== 'Fetch.requestPaused' || new URL(params.request.url).pathname !== '/') return;
+    const { body, base64Encoded } = await page.send('Fetch.getResponseBody', {
+      requestId: params.requestId,
+    });
+    const kept = (params.responseHeaders ?? []).filter(
+      ({ name }) => !PRODUCTION.some((header) => header.name === name.toLowerCase())
+    );
+    served.push(params.request.url);
+    await page.send('Fetch.fulfillRequest', {
+      requestId: params.requestId,
+      responseCode: params.responseStatusCode,
+      responseHeaders: [...kept, ...PRODUCTION],
+      body: base64Encoded ? body : Buffer.from(body).toString('base64'),
+    });
+  });
+  t.after(() => stop?.());
+  await page.send('Fetch.enable', {
+    patterns: [{ urlPattern: `${origin}/`, resourceType: 'Document', requestStage: 'Response' }],
+  });
+  await page.goto(`/#${new URLSearchParams({ key: KEY, users: 'enforce' })}`);
+  await ready(page);
+  await page.send('Fetch.disable');
+  assert.ok(served.length >= 1, 'the boot page came with the production headers');
+  const where = await addresses(page);
+  for (const url of [where.href, ...where.history, ...where.seen.slice(1)])
+    assert.ok(!url.includes(KEY), url);
+  assert.equal(where.hash, '#users=enforce');
+  const policy = (url) =>
+    page.responses
+      .filter((response) => new URL(response.url).pathname === url)
+      .map(
+        (response) =>
+          Object.entries(response.headers).find(
+            ([name]) => name.toLowerCase() === 'content-security-policy'
+          )?.[1]
+      );
+  assert.equal(policy('/')[0], "frame-ancestors 'self'", `the boot page: ${policy('/')}`);
+  assert.equal(policy('/os/')[0], "frame-ancestors 'self'", `/os/: ${policy('/os/')}`);
+  const callback = await page.evaluate(async () => {
+    const response = await fetch('/auth/callback?nonce=n');
+    return response.headers.get('content-security-policy');
+  });
+  assert.equal(callback, "frame-ancestors 'self'");
+  assert.deepEqual(
+    await page.evaluate(() => JSON.parse(localStorage.getItem('test.violations') ?? '[]')),
+    []
+  );
   assert.deepEqual(page.errors, []);
 });

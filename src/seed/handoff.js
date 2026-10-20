@@ -1,4 +1,5 @@
 export const PREFIX = 'slicc-os.handoff.';
+export const DROPPED = 'sliccDropped';
 export const STALE_MS = 10 * 60 * 1000;
 const ID = 'handoff';
 
@@ -99,4 +100,13 @@ export function clearHandOff({
       if (now - at > STALE_MS) store.removeItem(key);
     }
   });
+}
+
+export function dropped(scope = globalThis) {
+  const names = scope[DROPPED];
+  return Array.isArray(names) && names.length ? names.map(String) : null;
+}
+
+export function droppedLine(names) {
+  return `Seven couldn’t store the settings from the link (${names.join(', ')}). Allow site storage and open the link again.`;
 }
