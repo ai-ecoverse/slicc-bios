@@ -252,6 +252,9 @@ test('moving SLICC 6 into seven from a cross-origin isolated BIOS: asked once, p
     framed: 0,
   });
   await page.evaluate(() => document.querySelector('.six-move').click());
+  await page.until(() => location.pathname === '/os/');
+  await other.until(() => document.getElementById('six').dataset.moved === 'yes');
+  await page.send('Page.bringToFront');
   await ready(page);
 
   assert.deepEqual(six.states(), ['asking', 'moving', 'closed']);
@@ -297,7 +300,6 @@ test('moving SLICC 6 into seven from a cross-origin isolated BIOS: asked once, p
     await tab.goto(`${origin}${path}`);
     await tab.until(() => location.pathname === '/os/' && !!document.querySelector('slicc-app'));
     assert.equal(await tab.evaluate(() => document.getElementById('six')), null, path);
-    await tab.close();
   }
   assert.deepEqual(page.errors, []);
 });
@@ -367,5 +369,51 @@ test('messages from another frame or another origin are ignored, and declining a
   assert.equal(marker, 'upgraded');
   assert.match(pending, /^\/slicc-v6-upgrade\/[0-9a-f-]{36}\/$/);
   assert.deepEqual(six.states(), ['asking', 'closed', 'asking', 'moving', 'closed']);
+  assert.deepEqual(page.errors, []);
+});
+
+async function shots(page, name) {
+  const dark = (value) =>
+    page.send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-color-scheme', value }],
+    });
+  await dark('light');
+  await page.screenshot(new URL(`six-${name}-light.png`, page.dir));
+  await dark('dark');
+  await page.screenshot(new URL(`six-${name}-dark.png`, page.dir));
+  await dark('light');
+  await page.send('Emulation.setDeviceMetricsOverride', {
+    width: 420,
+    height: 800,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.until(() => innerWidth === 420);
+  await page.screenshot(new URL(`six-${name}-420.png`, page.dir));
+  await page.send('Emulation.clearDeviceMetricsOverride');
+  await page.until(() => innerWidth !== 420);
+}
+
+test('the question, the progress and the failure, in light and dark and on a phone', async (t) => {
+  mode = 'slow';
+  const page = await open(t);
+  await runSix(page);
+  await page.goto(`${origin}/7/`);
+  await showing(page, 'asking');
+  await shots(page, 'asking');
+  await page.evaluate(() => document.querySelector('.six-move').click());
+  await page.until(() => document.querySelector('.six-progress')?.textContent === 'Writing 0 of 1');
+  assert.equal(await page.evaluate(() => document.querySelector('.six-bar').value), 0);
+  await shots(page, 'moving');
+  assert.deepEqual(await storage(page), { marker: null, pending: null });
+
+  mode = 'error';
+  const failing = await page.tab();
+  await page.close();
+  await failing.goto(`${origin}/7/`);
+  await showing(failing, 'asking');
+  await failing.evaluate(() => document.querySelector('.six-move').click());
+  await showing(failing, 'failed');
+  await shots(failing, 'failed');
   assert.deepEqual(page.errors, []);
 });
