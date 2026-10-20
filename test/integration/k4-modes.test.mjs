@@ -28,26 +28,49 @@ async function read(page, path) {
   }, path);
 }
 
-const OLD_STEP = { budget: 10 * 60 * 1000, stall: 150 * 1000 };
+const OLD_STEP = { stall: 150 * 1000 };
+const OLD_TOTAL = 20 * 60 * 1000;
 const STUCK = /the agent made no progress for|the agent was not up within/;
+
+function reached(message) {
+  const [, state, kind, done] =
+    message.match(
+      /, agent (checking|downloading|linking|starting)(?: \((download|link) (\d+) of \d+\))?/
+    ) ?? [];
+  const phase = ['checking', 'downloading', 'linking', 'starting'].indexOf(state);
+  return phase < 0 ? null : phase * 1000 + (kind ? Number(done) : 0);
+}
 
 async function oldAgent(page, t) {
   const label = 'agent on kernel 1.67.1';
-  try {
-    return await agentUp(page, { ...OLD_STEP, label });
-  } catch (error) {
-    if (!STUCK.test(error.message)) throw error;
-    const first = error.message.split('\n')[0];
-    t.diagnostic(
-      `${first}; kernel 1.67.1's downloads stall at times (#711), so the page reloads and the install goes on once more`
-    );
-    await page.reload();
-    await ready(page, ['slicc:/home# ']);
-    return agentUp(page, { ...OLD_STEP, label: `${label}, after a reload` }).catch((again) => {
-      throw new Error(
-        `kernel 1.67.1's agent install stalled twice, before and after a reload (#711). First: ${first}\nThen: ${again.message}`
+  const end = Date.now() + OLD_TOTAL;
+  const stalls = [];
+  let best = -1;
+  for (let attempt = 1; ; attempt += 1) {
+    const left = end - Date.now();
+    try {
+      return await agentUp(page, {
+        ...OLD_STEP,
+        budget: Math.max(left, OLD_STEP.stall),
+        label: attempt === 1 ? label : `${label}, after reload ${attempt - 1}`,
+      });
+    } catch (error) {
+      if (!STUCK.test(error.message)) throw error;
+      const first = error.message.split('\n')[0];
+      stalls.push(first);
+      const at = reached(error.message) ?? -1;
+      const moved = at > best;
+      best = Math.max(best, at);
+      if (!moved || Date.now() + OLD_STEP.stall >= end)
+        throw new Error(
+          `kernel 1.67.1's agent install stalled ${stalls.length === 1 ? 'once' : `${stalls.length} times`} (#711)${moved ? ` and is past its ${OLD_TOTAL / 60000} min` : ', the last without getting further than the one before'}: ${stalls.join(' | ')}\n${error.message}`
+        );
+      t.diagnostic(
+        `${first}; kernel 1.67.1's downloads stall at times (#711), and this attempt got further, so the page reloads and the install goes on from the store`
       );
-    });
+      await page.reload();
+      await ready(page, ['slicc:/home# ']);
+    }
   }
 }
 
