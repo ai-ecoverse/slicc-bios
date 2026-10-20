@@ -246,6 +246,25 @@ const data = (reply) => {
 
 const maybe = (key, value) => (value === undefined || value === null ? {} : { [key]: value });
 
+const QUERY = /(\b[a-z][\w+.-]*:\/\/[^\s?#'"`]*)[?#][^\s'"`]*/gi;
+
+export function unqueried(text) {
+  return String(text ?? '').replace(QUERY, '$1');
+}
+
+export const ENDPOINTS_PAGE_ONLY = "endpoints are set only by seven's own Settings on this device";
+
+export const SETTINGS_PAGE_ONLY =
+  "settings are changed only by seven's own Settings on this device";
+
+async function named(call, op, fields) {
+  try {
+    return data(await call(op, fields));
+  } catch (error) {
+    throw Object.assign(new Error(unqueried(error.message)), { code: error.code });
+  }
+}
+
 export function vaultPort({ call, state, button }) {
   return {
     on: state.on,
@@ -286,6 +305,20 @@ export function vaultPort({ call, state, button }) {
     },
     async dismissBackupReminder() {
       await call('dismissBackupReminder');
+    },
+    async endpoints(change = {}) {
+      const add = change.add ?? {};
+      return named(call, 'endpoints', {
+        ...maybe('model', add.model),
+        ...maybe('mcp', add.mcp),
+        ...maybe('remove', change.remove),
+      });
+    },
+    async unpin(names) {
+      return named(call, 'endpoints', { unpin: names });
+    },
+    async settings(name, kind, settings) {
+      return named(call, 'put', { name, kind, settings });
     },
     button,
   };
@@ -331,6 +364,9 @@ async function kernelOp(call, req, { signal, away }) {
 export function sealedRelay({ call, forward, users, onRequest, away = () => false }) {
   return async (req, { signal } = {}) => {
     const { caller, ...rest } = req ?? {};
+    if (rest.op === 'endpoints') return refusal('EACCES', ENDPOINTS_PAGE_ONLY);
+    if (rest.op === 'put' && !Object.hasOwn(rest, 'value'))
+      return refusal('EACCES', SETTINGS_PAGE_ONLY);
     if (Object.hasOwn(KERNEL_OPS, rest.op ?? '')) return kernelOp(call, rest, { signal, away });
     if (away()) return refusal('ENOTCONN', NOT_CONNECTED);
     const exec = rest.op === 'materialize' || rest.op === 'materializeConsume';

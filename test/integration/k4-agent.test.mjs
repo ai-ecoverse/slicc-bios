@@ -249,7 +249,7 @@ test('enforce: a cone agent’s sudo asks the human through the agent’s approv
   assert.deepEqual(page.errors, []);
 });
 
-test('kernel#1099: with a secret in the vault, the agent’s bash shows jq’s and cat’s output intact, as the vault scrubs it', {
+test('kernel#1099: with a secret in the vault, the agent’s bash shows jq’s and cat’s output intact, as the vault scrubs it, and whatever endpoints the agent’s worker sets go only to its own agent port', {
   timeout: 20 * 60 * 1000,
 }, async (t) => {
   chrome.vault.set({ secrets: ['API_TOKEN'] });
@@ -282,6 +282,12 @@ test('kernel#1099: with a secret in the vault, the agent’s bash shows jq’s a
   assert.match(output, /cat-said-hi/);
   assert.match(output, /bytes-42/);
   assert.ok(chrome.vault.log.some((entry) => entry.role === 'agent' && entry.op === 'push'));
+  const sent = chrome.vault.log.filter((entry) => /^endpoints/.test(entry.op));
+  assert.deepEqual(
+    sent.filter((entry) => entry.role !== 'agent'),
+    [],
+    'endpoints reached the vault on a port other than the agent’s'
+  );
   assert.deepEqual(page.errors, []);
 });
 
@@ -426,5 +432,26 @@ test('slicc-agent#459: on a fresh profile the agent lists a sealed fnox secret w
   const later = bodies.slice(before).join('\n');
   assert.match(later, /Shell grants are off[^"]*LOOSE_TOKEN/);
   assert.ok(!later.includes(HARBOR), 'an unsealed value reached the prompt');
+  assert.deepEqual(page.errors, []);
+});
+
+test('slicc-agent 6.12+: without a CORS-free route, a provider that needs one shows as blocked, neither missing nor failing, and one that doesn’t stays open', {
+  timeout: 20 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  await page.goto('/');
+  await ready(page, ['slicc:/home# ']);
+  await agentUp(page);
+  const offered = await page.within(5 * 60 * 1000, () => {
+    const providers = document.querySelector('slicc-app').model.settings.providers?.() ?? [];
+    return (
+      providers.length > 10 &&
+      providers.map(({ id, blocked }) => ({ id, blocked: blocked ?? null }))
+    );
+  });
+  const by = Object.fromEntries(offered.map(({ id, blocked }) => [id, blocked]));
+  assert.equal(by.cerebras, 'cors-free-transport', JSON.stringify(offered));
+  assert.equal(by.anthropic, null, JSON.stringify(offered));
+  assert.equal(by['amazon-bedrock'], null, JSON.stringify(offered));
   assert.deepEqual(page.errors, []);
 });

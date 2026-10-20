@@ -1020,7 +1020,7 @@ test('the live vault answers on vault.sliccy.ai (smoke)', async (t) => {
   t.diagnostic('the hello itself is answered only for seven’s origins, which the harness can’t be');
 });
 
-test('the vault’s endpoints entries show in Activity as named hosts, never "undefined", and Unpin is hidden while seven has no unpin relay', async (t) => {
+test('the vault’s endpoints entries show in Activity as named hosts, never "undefined", and Unpin shows on a live pin and sends the vault one unpin for its name', async (t) => {
   const now = Date.now();
   const entry = (seq, minutes, fields) => ({
     type: 'endpoints',
@@ -1083,15 +1083,47 @@ test('the vault’s endpoints entries show in Activity as named hosts, never "un
     rows.map(({ seq }) => seq),
     [14, 13, 12, 11]
   );
-  for (const row of rows) {
-    assert.doesNotMatch(row.text, /undefined/, row.text);
-    assert.equal(row.unpin, false, `no Unpin without a relay: ${row.text}`);
-  }
+  for (const row of rows) assert.doesNotMatch(row.text, /undefined/, row.text);
+  assert.deepEqual(
+    rows.map(({ unpin }) => unpin),
+    [false, true, false, false]
+  );
   assert.match(rows[0].text, /mcp\.tide\.example/);
   assert.match(rows[1].text, /mcp\.harbor\.example/);
   assert.match(rows[2].text, /mcp\.harbor\.example/);
   assert.match(rows[3].text, /models\.tide\.example/);
   t.diagnostic(JSON.stringify(rows));
   await shoot(page, 'vault-endpoints-activity', { show: 'settings', target: '#secrets-audit' });
+  const before = fake.log.length;
+  await page.evaluate(() => {
+    const deep = (root) => {
+      const found = root.querySelector('slicc-secrets');
+      if (found) return found;
+      for (const element of root.querySelectorAll('*')) {
+        const inner = element.shadowRoot && deep(element.shadowRoot);
+        if (inner) return inner;
+      }
+      return null;
+    };
+    deep(document).shadowRoot.querySelector('li[data-seq="13"] [data-action=unpin]').click();
+  });
+  await logged(() => fake.log.slice(before).some((entry) => entry.op === 'endpoints-fields'));
+  const sent = fake.log
+    .slice(before)
+    .filter((entry) => entry.op === 'endpoints-fields')
+    .map((entry) => entry.fields);
+  assert.deepEqual(sent, [{ unpin: ['HARBOR_MCP_TOKEN'] }]);
+  await page.within(30000, () => {
+    const deep = (root) => {
+      const found = root.querySelector('slicc-secrets');
+      if (found) return found;
+      for (const element of root.querySelectorAll('*')) {
+        const inner = element.shadowRoot && deep(element.shadowRoot);
+        if (inner) return inner;
+      }
+      return null;
+    };
+    return !deep(document)?.shadowRoot?.querySelector('li[data-seq="13"] [data-action=unpin]');
+  });
   assert.deepEqual(page.errors, []);
 });

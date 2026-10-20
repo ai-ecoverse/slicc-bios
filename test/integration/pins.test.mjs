@@ -53,10 +53,20 @@ function compare(a, b) {
   return x[3] < y[3] ? -1 : 1;
 }
 
+const caret = (clause) => {
+  const match = /^\^(\d+)\.(\d+)\.(\d+)$/.exec(clause);
+  if (!match) return [clause];
+  const [, major, minor, patch] = match.map(Number);
+  const upper =
+    major > 0 ? `${major + 1}.0.0` : minor > 0 ? `0.${minor + 1}.0` : `0.0.${patch + 1}`;
+  return [`>=${major}.${minor}.${patch}`, `<${upper}`];
+};
+
 export function satisfies(version, range) {
   return range
     .trim()
     .split(/\s+/)
+    .flatMap(caret)
     .every((clause) => {
       const match = /^(>=|<=|>|<|=)?(\d+(?:\.\d+){0,2}(?:-[\w.]+)?)$/.exec(clause);
       assert.ok(match, `unsupported range clause "${clause}" in "${range}"`);
@@ -101,8 +111,28 @@ test('the pinned slicc-kernel satisfies every pinned package’s engines and pee
   assert.deepEqual(unmet, [], `slicc-kernel ${kernel} doesn't satisfy these`);
 });
 
+const SPECTRUM = '@ai-ecoverse/slicc-spectrum';
+
+test('the agent’s slicc-spectrum peer range accepts the base set’s slicc-spectrum, so page and agent agree on one spectrum', async () => {
+  const spectrum = JSON.parse(await read('package.json')).dependencies[SPECTRUM];
+  const agent = JSON.parse(await read('agent/package-lock.json')).packages[
+    'node_modules/@ai-ecoverse/slicc-agent'
+  ];
+  const range = agent.peerDependencies?.[SPECTRUM];
+  assert.ok(range, `slicc-agent ${agent.version} names a slicc-spectrum peer`);
+  assert.ok(
+    satisfies(spectrum, range),
+    `slicc-agent ${agent.version} wants slicc-spectrum ${range}, the base set has ${spectrum}`
+  );
+});
+
 test('the range check reads the forms the packages use', () => {
   assert.equal(satisfies('1.47.1', '>=1.44.0'), true);
+  assert.equal(satisfies('1.100.0', '^1.98.0'), true);
+  assert.equal(satisfies('1.96.1', '^1.98.0'), false);
+  assert.equal(satisfies('2.0.0', '^1.98.0'), false);
+  assert.equal(satisfies('0.3.1', '^0.3.0'), true);
+  assert.equal(satisfies('0.4.0', '^0.3.0'), false);
   assert.equal(satisfies('1.43.1', '>=1.44.0'), false);
   assert.equal(satisfies('1.47.1', '>=1.26.3 <2'), true);
   assert.equal(satisfies('2.0.0', '>=1.26.3 <2'), false);
@@ -111,7 +141,7 @@ test('the range check reads the forms the packages use', () => {
   assert.equal(satisfies('1.48.0', '>=1.48.0-rc.1'), true);
   assert.equal(satisfies('1.48.0-rc.2', '>=1.48.0-rc.1'), true);
   assert.equal(satisfies('1.48.0-rc.1', '1.48.0-rc.1'), true);
-  assert.throws(() => satisfies('1.0.0', '^1.0.0'), /unsupported range clause/);
+  assert.throws(() => satisfies('1.0.0', '~1.0.0'), /unsupported range clause/);
 });
 
 const GATED =
