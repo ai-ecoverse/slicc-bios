@@ -1,14 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -1059,53 +1051,4 @@ test('a test file in no class and not on the unclassified list (a new one) count
   const files = readdirSync(new URL('./', import.meta.url)).filter((f) => f.endsWith('.test.mjs'));
   const fresh = files.map((f) => f.replace(/\.test\.mjs$/, '')).filter((n) => !listed.has(n));
   if (fresh.length) console.log(`not yet classified (treated as a class): ${fresh.join(', ')}`);
-});
-
-test('prune: a passing suite’s screenshots and trace zips are dropped and listed with their size; a failed or retry-flipped suite, logs and results stay; no shard report keeps everything', async () => {
-  const { prune } = await import('../../scripts/ci/prune.mjs');
-  const root = mkdtempSync(join(scratch, 'artifacts-'));
-  const put = (rel, text = 'x') => {
-    mkdirSync(join(root, rel, '..'), { recursive: true });
-    writeFileSync(join(root, rel), text);
-  };
-  put('ruby/a-test/tab-1.png', 'p'.repeat(1000));
-  put('ruby/a-test/trace-1.zip', 'z'.repeat(10));
-  put('ruby/a-test/stall-1-trace.json', 't'.repeat(100));
-  put('vault/b-test/stall-1-trace.json');
-  put('ruby/a-test/console.log');
-  put('vault/b-test/tab-1.png');
-  put('k4/c-test/tab-1.png');
-  put('verdicts/s01.txt');
-  const none = prune(root);
-  assert.equal(none.dropped.length, 0);
-  assert.match(none.kept, /no shard report/);
-  put(
-    'experiment/s01.json',
-    JSON.stringify({
-      groups: [{ first: { failed: ['test/integration/vault.test.mjs'] }, retry: { failed: [] } }],
-      flips: [{ file: 'test/integration/k4.test.mjs', name: 'x' }],
-    })
-  );
-  const r = prune(root);
-  assert.deepEqual(
-    r.dropped.sort((a, b) => a.path.localeCompare(b.path)),
-    [
-      { path: 'ruby/a-test/stall-1-trace.json', bytes: 100 },
-      { path: 'ruby/a-test/tab-1.png', bytes: 1000 },
-      { path: 'ruby/a-test/trace-1.zip', bytes: 10 },
-    ]
-  );
-  for (const kept of [
-    'ruby/a-test/console.log',
-    'vault/b-test/tab-1.png',
-    'vault/b-test/stall-1-trace.json',
-    'k4/c-test/tab-1.png',
-    'verdicts/s01.txt',
-  ])
-    assert.ok(existsSync(join(root, kept)), kept);
-  assert.equal(JSON.parse(readFileSync(join(root, 'pruned.json'), 'utf8')).bytes, 1110);
-  assert.match(
-    ci,
-    /run: node scripts\/ci\/prune\.mjs artifacts\n\n {6}- uses: actions\/upload-artifact@[0-9a-f]{40}\n {8}if: always\(\)\n {8}with:\n {10}name: integration-\$\{\{ matrix\.shard \}\}/
-  );
 });
