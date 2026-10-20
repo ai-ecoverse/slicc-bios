@@ -350,9 +350,10 @@ test('nobody but the owner tab can turn developer mode on or install a beta: not
   await t.test('the kernel’s root processes can’t turn it on or pin a beta', async () => {
     await run(
       page,
-      `for f in /var/lib/slicc/beta.json /etc/slicc/developer /opt/slicc/beta/agent/package.json; do mkdir -p "$(dirname $f)" 2>/dev/null; echo '{"agent":{"name":"${AGENT}","version":"${BETA}"},"developer":"on"}' > $f 2>/dev/null; done; jq '.dependencies["${AGENT}"] = "${BETA}"' /opt/agent/package.json > /tmp/p 2>/dev/null && cp /tmp/p /opt/agent/package.json 2>/dev/null; echo "wrote-""done"`
+      `for f in /var/lib/slicc/beta.json /etc/slicc/developer /opt/slicc/beta/agent/package.json; do mkdir -p "$(dirname $f)" 2>/dev/null; echo '{"agent":{"name":"${AGENT}","version":"${BETA}"},"developer":"on"}' > $f 2>/dev/null; done; jq '.dependencies["${AGENT}"] = "${BETA}"' /opt/agent/package.json > /tmp/p 2>/dev/null && cp /tmp/p /opt/agent/package.json 2>/dev/null; echo lock > /opt/slicc/beta/agent/pnpm-lock.yaml 2>/dev/null; echo "scratch-$?"; echo "wrote-""done"`
     );
     await shows(page, 'wrote-done');
+    assert.match(await screen(page), /scratch-[1-9]/);
     await act(page, 'retry');
     await rowSettled(page, 'agent');
     const row = await agentRow(page);
