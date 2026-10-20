@@ -284,7 +284,7 @@ test('no other channel offers the vault: a follower’s os channel to the owner 
   await shows(page, 'facade-42', 60000);
   assert.match(
     await screen(page),
-    /\{"reset":"EOPNOTSUPP: the link facade opens only agent prompt, watch and abort streams"\}/
+    /\{"reset":"EOPNOTSUPP: the link facade opens only agent prompt, watch and abort streams and tray requests"\}/
   );
   const reached = chrome.vault.log.slice(before).filter((entry) => entry.op === 'endpoints-fields');
   assert.deepEqual(reached, []);
