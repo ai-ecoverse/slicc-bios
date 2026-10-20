@@ -193,10 +193,12 @@ export function createReleases({
         )
       ) {
         if (await isBlocked()) return;
-        const got = await page(repo, state.pages.length + 1, null);
-        if (got.failed || got.same) return;
-        state.pages.push({ etag: got.etag, items: got.items });
-        state.end = got.items.length < PER_PAGE;
+        const stale = state.stale?.[state.pages.length - 1] ?? null;
+        const got = await page(repo, state.pages.length + 1, stale?.etag ?? null);
+        if (got.failed || (got.same && !stale)) return;
+        const fresh = got.same ? stale : { etag: got.etag, items: got.items };
+        state.pages.push(fresh);
+        state.end = fresh.items.length < PER_PAGE;
         state.dirty = true;
       }
     }
@@ -206,7 +208,11 @@ export function createReleases({
       const kept = await load(repo);
       const got = await page(repo, 1, kept.pages[0]?.etag ?? null);
       if (got.failed) return null;
-      if (got.same) return { pages: kept.pages, end: kept.end, dirty: true };
+      if (got.same) {
+        const [validated, ...stale] = kept.pages;
+        if (!validated) return null;
+        return { pages: [validated], stale, end: !stale.length && kept.end, dirty: true };
+      }
       return {
         pages: [{ etag: got.etag, items: got.items }],
         end: got.items.length < PER_PAGE,

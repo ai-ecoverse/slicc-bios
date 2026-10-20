@@ -181,3 +181,38 @@ test('a component installed for the first time during a check gets its releases 
   ]);
   assert.deepEqual(asked, [`${API}/repos/ai-ecoverse/slicc-agent/releases?per_page=100&page=1`]);
 });
+
+test('when page 1 is unchanged, a release edited on page 2 still reaches the row: every later page is revalidated with its own ETag', async () => {
+  const page = (versions, body) =>
+    versions.map((version) => ({
+      tag_name: `v${version}`,
+      html_url: `https://github.com/ai-ecoverse/slicc-kernel/releases/tag/v${version}`,
+      body: `${body} ${version}`,
+    }));
+  const first = page(
+    Array.from({ length: 100 }, (_, i) => `2.0.${200 - i}`),
+    'notes'
+  );
+  const pages = [first, page(['2.0.100', '2.0.99'], 'notes')];
+  const tags = ['"one"', '"two"'];
+  const sent = [];
+  const fetcher = async (url, init) => {
+    const n = Number(new URL(String(url)).searchParams.get('page'));
+    sent.push([n, init.headers['if-none-match'] ?? null]);
+    if (init.headers['if-none-match'] === tags[n - 1]) return new Response(null, { status: 304 });
+    return Response.json(pages[n - 1], { headers: { etag: tags[n - 1] } });
+  };
+  const releases = createReleases({ fetcher, store: memory(), origin: API });
+  const want = { from: '2.0.99', to: '2.0.200', own: true, short: null };
+  await releases.round().items('ai-ecoverse/slicc-kernel', want);
+  pages[1] = page(['2.0.100', '2.0.99'], 'edited');
+  tags[1] = '"two-edited"';
+  const items = await releases.round().items('ai-ecoverse/slicc-kernel', want);
+  assert.deepEqual(sent, [
+    [1, null],
+    [2, null],
+    [1, '"one"'],
+    [2, '"two"'],
+  ]);
+  assert.equal(items.find(({ tag }) => tag === 'v2.0.100').body, 'edited 2.0.100');
+});
