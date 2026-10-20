@@ -1,3 +1,4 @@
+import { clearHandOff } from './handoff.js';
 import { BIOS } from './site.js';
 
 export const REFUSED =
@@ -49,13 +50,21 @@ export async function start({
   os = () => import('./os.js'),
   fail = refused,
   check = stoppedPath,
+  clear = clearHandOff,
 } = {}) {
   const guest = seat();
-  if (guest) return go(guest);
+  if (guest) {
+    clear();
+    return go(guest);
+  }
   try {
     const { takeFollow } = await follow();
-    await (takeFollow() ? follower() : os());
+    if (takeFollow()) {
+      clear();
+      await follower();
+    } else await os();
   } catch (error) {
+    clear();
     console.error(error);
     fail(undefined, undefined, await check());
   }

@@ -1,7 +1,7 @@
 import { checkLocalProxy } from '@ai-ecoverse/slicc-kernel';
 import { DIRECT } from './exits.js';
-import { handOff } from './handoff.js';
 import { mergeDevices } from './link.js';
+import { keepProxy } from './transport.js';
 
 export const EXTENSION_URL =
   'https://chromewebstore.google.com/detail/slicc/akjjllgokmbgpbdbmafpiefnhidlmbgf';
@@ -203,6 +203,7 @@ export function distinct(devices) {
 export function createNetwork(choice, options = {}) {
   const probe = options.check ?? checkLocalProxy;
   const reload = options.reload ?? (() => location.reload());
+  const keep = options.keep ?? keepProxy;
   const now = options.now ?? Date.now;
   const listeners = new Set();
   let failures = [];
@@ -318,7 +319,7 @@ export function createNetwork(choice, options = {}) {
       }
       const checked = await probe(choice.proxy);
       if (checked.state === 'ready' && choice.kind !== 'local-proxy') {
-        handOff({ proxy: choice.proxy.url, key: choice.proxy.key }, { storage: options.handoff });
+        await keep(choice.proxy);
         reload();
         return;
       }

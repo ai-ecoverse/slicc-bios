@@ -43,9 +43,11 @@ export async function stored(mode, act) {
   }
 }
 
+export const keepProxy = (proxy) => stored('readwrite', (store) => store.put(proxy, PROXY));
+
 export async function pickTransport() {
   const given = takeFragment();
-  if (given) await stored('readwrite', (store) => store.put(given, PROXY));
+  if (given) await keepProxy(given);
   const proxy = given ?? (await stored('readonly', (store) => store.get(PROXY)));
   const status = proxy ? await checkLocalProxy(proxy) : undefined;
   if (status?.state === 'ready') {

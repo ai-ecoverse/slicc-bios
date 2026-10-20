@@ -14,8 +14,8 @@ const FP = 'ab'.repeat(32);
 async function watched(t) {
   const page = await chrome.page(t);
   await page.init(() => {
-    const seen = JSON.parse(sessionStorage.getItem('test.seen') ?? '[]');
-    sessionStorage.setItem('test.seen', JSON.stringify([...seen, location.href]));
+    const seen = JSON.parse(localStorage.getItem('test.seen') ?? '[]');
+    localStorage.setItem('test.seen', JSON.stringify([...seen, location.href]));
   });
   return page;
 }
@@ -27,8 +27,8 @@ async function addresses(page) {
     href: location.href,
     hash: location.hash,
     length: history.length,
-    seen: JSON.parse(sessionStorage.getItem('test.seen') ?? '[]'),
-    handoff: sessionStorage.getItem('slicc-os.handoff'),
+    seen: JSON.parse(localStorage.getItem('test.seen') ?? '[]'),
+    handoff: Object.keys(localStorage).filter((key) => key.startsWith('slicc-os.handoff.')),
   }));
   return {
     ...here,
@@ -46,7 +46,8 @@ function clean(where, secrets, names) {
     const params = new URLSearchParams(new URL(url, 'http://x').hash.slice(1));
     for (const name of names) assert.equal(params.has(name), false, `${name} in ${url}`);
   }
-  assert.equal(where.handoff, null);
+  assert.deepEqual(where.handoff, []);
+  assert.equal(new URLSearchParams(where.hash.slice(1)).has('handoff'), false, where.hash);
 }
 
 const network = (page) =>
@@ -170,5 +171,87 @@ test('the sign-in callback tidies its address before its module loads, sends no 
   }
   const { targetInfos } = await chrome.cdp.send('Target.getTargets');
   for (const { url } of targetInfos) assert.ok(!url.includes(secret), url);
+  assert.deepEqual(page.errors, []);
+});
+
+const handoffs = (page) =>
+  page.evaluate(() =>
+    Object.keys(localStorage).filter((key) => key.startsWith('slicc-os.handoff.'))
+  );
+
+async function leftover(page) {
+  await page.init(() => {
+    if (localStorage.getItem('test.armed')) return;
+    localStorage.setItem('test.armed', '1');
+    localStorage.setItem(
+      'slicc-os.handoff.stale',
+      JSON.stringify({ at: Date.now() - 11 * 60 * 1000, values: { key: 'stale-key' } })
+    );
+  });
+}
+
+test('the handoff is cleared at the end of a boot that succeeds: its own entry, its id in the address, and an entry left from before', async (t) => {
+  const page = await watched(t);
+  await leftover(page);
+  await page.goto('/#tailscale=off&users=enforce');
+  await ready(page);
+  await page.until(() => !location.hash.includes('handoff='));
+  assert.deepEqual(await handoffs(page), []);
+  const where = await addresses(page);
+  assert.equal(where.hash, '#users=enforce');
+  assert.ok(
+    where.seen.some((url) => /\/os\/#users=enforce&handoff=[0-9a-f-]{36}$/.test(url)),
+    `seven's UI got only the handoff's id: ${where.seen.join(' ')}`
+  );
+  assert.deepEqual(await idb(page, 'tailscale'), { enabled: false });
+  assert.deepEqual(page.errors, []);
+});
+
+test('the handoff is cleared at the end of a boot whose UI fails to load, and of one whose BIOS step fails', async (t) => {
+  const page = await watched(t);
+  chrome.overrides.set('/seed/os.js', "throw new Error('the UI failed on purpose');\n");
+  await page.goto(`/#${new URLSearchParams({ proxy: 'http://127.0.0.1:9', key: KEY })}`);
+  await page.until(() => !!document.querySelector('main[data-refused]'));
+  await page.until(() => !location.hash.includes('handoff='));
+  assert.deepEqual(await handoffs(page), []);
+  const where = await addresses(page);
+  for (const url of [where.href, ...where.history, ...where.seen.slice(1)])
+    assert.ok(!url.includes(KEY), url);
+
+  const bios = await page.tab();
+  chrome.overrides.set('/packages/package-lock.json', '{');
+  await bios.goto(`/#${new URLSearchParams({ key: KEY })}`);
+  await bios.until(
+    () => document.querySelector('[data-step="packages"]')?.dataset.state === 'failed'
+  );
+  assert.deepEqual(await handoffs(bios), []);
+  const href = await bios.evaluate(() => location.href);
+  assert.ok(!href.includes(KEY) && !href.includes('handoff='), href);
+});
+
+test('when the handoff can’t be stored, the address is tidied anyway and the value is lost, not kept in the URL', async (t) => {
+  const page = await watched(t);
+  const proxy = await fakeProxy({ origin: new URL(chrome.url).origin, key: KEY });
+  t.after(() => proxy.close());
+  await page.init(() => {
+    const set = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (String(key).startsWith('slicc-os.handoff.'))
+        throw new DOMException('storage is full', 'QuotaExceededError');
+      return set.call(this, key, value);
+    };
+  });
+  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: KEY, users: 'enforce' })}`);
+  await ready(page);
+  const where = await addresses(page);
+  const at = where.seen.findIndex((url) => new URL(url).pathname === '/os/');
+  assert.ok(at > 0, where.seen.join(' '));
+  for (const url of [where.href, ...where.history, ...where.targets, ...where.seen.slice(at)])
+    assert.ok(!url.includes(KEY), `${KEY} in ${url}`);
+  assert.equal(where.hash, '#users=enforce');
+  assert.notEqual((await network(page)).detail, `Local proxy at ${new URL(proxy.url).host}`);
+  assert.equal(await idb(page, 'proxy'), null);
+  assert.deepEqual(proxy.probes, []);
+  assert.deepEqual(where.handoff, []);
   assert.deepEqual(page.errors, []);
 });

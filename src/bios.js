@@ -1,3 +1,4 @@
+import { clearHandOff } from './seed/handoff.js';
 import { usersMode } from './seed/users.js';
 
 export function uiPage(hash) {
@@ -53,6 +54,8 @@ async function step(name, task) {
     item.dataset.state = 'failed';
     output.value = error.message;
     throw error;
+  } finally {
+    if (item.dataset.state === 'failed') clearHandOff();
   }
   item.dataset.state = 'done';
   document.querySelector('progress').value += 1;

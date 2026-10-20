@@ -9,14 +9,23 @@
       if (params.has('tailscale')) names.push('exit');
       const taken = names.filter((name) => params.has(name));
       if (!taken.length) return;
-      try {
-        const kept = JSON.parse(sessionStorage.getItem('slicc-os.handoff') || '{}');
-        for (const name of taken) kept[name] = params.get(name);
-        sessionStorage.setItem('slicc-os.handoff', JSON.stringify(kept));
-      } catch {
-        return;
+      const values = {};
+      for (const name of taken) {
+        values[name] = params.get(name);
+        params.delete(name);
       }
-      for (const name of taken) params.delete(name);
+      try {
+        const id = params.get('handoff') || crypto.randomUUID();
+        const key = `slicc-os.handoff.${id}`;
+        const kept = JSON.parse(localStorage.getItem(key) || '{}').values || {};
+        localStorage.setItem(
+          key,
+          JSON.stringify({ at: Date.now(), values: { ...kept, ...values } })
+        );
+        params.set('handoff', id);
+      } catch {
+        params.delete('handoff');
+      }
       const rest = params.toString();
       history.replaceState(
         history.state,
