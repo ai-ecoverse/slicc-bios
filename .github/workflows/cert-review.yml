@@ -19,7 +19,7 @@ concurrency:
 jobs:
   cert:
     name: cert
-    uses: ai-ecoverse/slicc-shared-web/.github/workflows/cert-review.yml@a7aa412d4cd5dabe186750d2faac398a6ece73e5
+    uses: ai-ecoverse/slicc-shared-web/.github/workflows/cert-review.yml@98bfc9139dd3e11ca172051a314b53b706841646
     permissions:
       contents: read
       actions: read
@@ -28,7 +28,7 @@ jobs:
       issues: write
       pull-requests: write
     with:
-      tools-ref: a7aa412d4cd5dabe186750d2faac398a6ece73e5
+      tools-ref: 98bfc9139dd3e11ca172051a314b53b706841646
       rules: scripts/cert/review.txt
       loud: |
         src/**
