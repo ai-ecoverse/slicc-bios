@@ -96,6 +96,26 @@ async function until(page, id, check) {
   }
 }
 
+async function rendered(page, label) {
+  await page.evaluate(() => document.querySelector('slicc-app').show('updates'));
+  return page.within(
+    60000,
+    (label) => {
+      const section = document
+        .querySelector('slicc-app')
+        .dock.content('updates')
+        ?.shadowRoot?.querySelector('section[data-section="packages"]');
+      const item = [...(section?.querySelectorAll('li') ?? [])].find((li) =>
+        li.textContent.includes(label)
+      );
+      if (!item) return null;
+      const buttons = [...item.querySelectorAll('button')].map((b) => b.textContent.trim());
+      return { text: item.textContent.replace(/\s+/g, ' ').trim(), buttons };
+    },
+    label
+  );
+}
+
 const shape = ({ installs }) =>
   installs.map(({ manager, user, version, where }) => [manager, user ?? null, version, where]);
 
@@ -227,6 +247,10 @@ test('the panel installs, updates and removes only its own copy while cone has t
   assert.deepEqual(shape(left), [['pnpm', 'cone', '9.2.1192-2', CONE_PNPM]]);
   assert.equal(left.state, 'installed');
   assert.deepEqual(left.actions, []);
+  const shown = await rendered(page, 'Hex dumps of any file.');
+  assert.match(shown.text, /for cone, via pnpm/, JSON.stringify(shown));
+  assert.ok(!shown.buttons.some((b) => /^Install/.test(b)), JSON.stringify(shown));
+  await page.screenshot(new URL('cone-only.png', page.dir));
   assert.match(await sh(page, systemCopy(XXD)), /system=0/);
   const still = await sh(page, 'echo hi | xxd; echo ran=$?', 'cone');
   assert.match(still, /00000000: 6869 0a/, still);
