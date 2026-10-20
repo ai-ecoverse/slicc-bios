@@ -303,6 +303,10 @@ jobs:
         if: steps.plan.outputs.browser == 'true'
         run: node head/scripts/cert/evidence.mjs scenarios --head head --base base --out "$RUNNER_TEMP/cert-evidence"
 
+      - name: The evidence is complete (a spent budget or a missing result fails here, and so ci / test)
+        if: ${{ !cancelled() }}
+        run: node head/scripts/cert/evidence.mjs check --head head --base base --out "$RUNNER_TEMP/cert-evidence"
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
@@ -312,7 +316,7 @@ jobs:
 
   ci:
     name: ci / test
-    needs: [plan, lint, integration, vendors]
+    needs: [plan, lint, integration, vendors, evidence]
     if: always()
     permissions:
       contents: read
@@ -374,6 +378,18 @@ jobs:
           path: |
             artifacts/
           if-no-files-found: ignore
+
+      - name: The cert evidence finished inside its budget (skipped only off pull requests and for forks)
+        if: always()
+        env:
+          EVIDENCE: ${{ needs.evidence.result }}
+          SAME_REPO: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          case "$EVIDENCE" in
+            success) ;;
+            skipped) [ "$GITHUB_EVENT_NAME" != pull_request ] || [ "$SAME_REPO" != true ] || { echo "ci / cert evidence was skipped on a same-repo pull request"; exit 1; } ;;
+            *) echo "ci / cert evidence: $EVIDENCE (incomplete evidence is not a pass)"; exit 1 ;;
+          esac
 
       - name: Every shard and lint passed, each with its verdict
         if: always()
