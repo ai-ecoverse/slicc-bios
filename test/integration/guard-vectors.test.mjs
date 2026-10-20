@@ -1311,8 +1311,14 @@ for (const [detach, lag] of DETACH)
             1,
             'C6: pk=1 planted'
           );
+          assert.equal(
+            (await guard.send('Network.getCookies', { urls: [`${origin}/`] }, session)).error
+              ?.message,
+            PROTECTED,
+            'C6: a read naming only the protected origin is refused'
+          );
           for (const [method, params, at] of [
-            ['Network.getCookies', { urls: [`${origin}/`] }, session],
+            ['Network.getCookies', { urls: [`${origin}/`, `${PLAIN}/`] }, session],
             ['Network.getAllCookies', {}, session],
             ['Storage.getCookies', {}, undefined],
           ]) {
