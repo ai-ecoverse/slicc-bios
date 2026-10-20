@@ -1,7 +1,7 @@
 import { GATED } from './layer.js';
 import { compare, locked } from './packages.js';
 import { BIOS } from './site.js';
-import { fetchText, pnpm, text, versions, write } from './update.js';
+import { fetchText, pnpm, remove, text, versions, write } from './update.js';
 
 export const DEVELOPER = 'slicc-os.developer';
 export const BETAS = 'slicc-os.beta';
@@ -231,7 +231,9 @@ async function resolve(ctx, deployed, doc) {
   await write(root, `${scratch}/package.json`, manifest);
   await write(root, `${scratch}/pnpm-lock.yaml`, deployed.lock);
   await write(root, `${scratch}/pnpm-workspace.yaml`, workspace);
-  await pnpm(await ctx.kernel(), `/${scratch}`, () => {}, doc.version, LOCK_ONLY);
+  await remove(root, `${scratch}/.cache`);
+  const argv = [...LOCK_ONLY, `--config.cache-dir=/${scratch}/.cache`];
+  await pnpm(await ctx.kernel(), `/${scratch}`, () => {}, doc.version, argv);
   const lock = await text(root, `${scratch}/pnpm-lock.yaml`);
   if (!lock || locked(lock).get(`${AGENT.name}@${doc.version}`) !== doc.dist.integrity)
     throw new Error('npm’s integrity doesn’t match the resolved lockfile');
