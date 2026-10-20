@@ -197,7 +197,7 @@ function linkFolders(link) {
 const allowedRemotely = (link) =>
   (link.mode === 'local' && !link.paired) || Boolean(tray?.controlAllowed(link.id));
 let followers = null;
-const kernelPort = kernelPorts({ storage: localStorage, write });
+const kernelPort = kernelPorts({ storage: localStorage, text, write });
 const links = createLinks({
   router: exits,
   labels: labelStore(localStorage),

@@ -1741,7 +1741,7 @@ test('a connected kernel client learns the exit when a linked CLI comes up, and 
   await page.until(() => globalThis.traitsSeen.at(-1) === null);
 });
 
-test('a local node’s HELLO names the kernel port of SLICC_PAGE_LOOPBACK: 80 without the field and for 80, and :17180 for 17180, in login shells at once and in every program after a reload', async (t) => {
+test('a local node’s HELLO kernel port sets SLICC_PAGE_LOOPBACK: 80 or none is the default, 17180 adds :17180, in login shells at once, in every program after a reload, and after storage is cleared', async (t) => {
   const page = await chrome.page(t);
   await page.init('() => { globalThis.sliccKernelDebug = true; }');
   await boot(page);
@@ -1766,7 +1766,7 @@ test('a local node’s HELLO names the kernel port of SLICC_PAGE_LOOPBACK: 80 wi
       .model.network.status()
       .links?.devices.some((d) => d.state === 'connected')
   );
-  assert.equal(await page.evaluate(() => localStorage.getItem('slicc-kernel-port')), null);
+  await stored('80');
   assert.equal(await loopback('-lc'), DEFAULT);
   assert.equal(await loopback('-c'), DEFAULT);
 
@@ -1802,4 +1802,16 @@ test('a local node’s HELLO names the kernel port of SLICC_PAGE_LOOPBACK: 80 wi
   await stored('17180');
   await page.evaluate(fakeNode, KEY);
   await stored('80');
+  assert.equal(await loopback('-lc'), DEFAULT);
+
+  await page.evaluate(fakeNode, KEY, { kernel: { port: 17180 } });
+  await stored('17180');
+  await page.evaluate(() => localStorage.removeItem('slicc-kernel-port'));
+  await page.reload();
+  await ready(page);
+  assert.equal(await loopback('-c'), DEFAULT);
+  assert.equal(await loopback('-lc'), SPARE);
+  await page.evaluate(fakeNode, KEY, { kernel: { port: 80 } });
+  await stored('80');
+  assert.equal(await loopback('-lc'), DEFAULT);
 });

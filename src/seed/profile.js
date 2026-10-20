@@ -1,4 +1,4 @@
-import { kernelPortOf, pageLoopback } from './link.js';
+import { KERNEL_PORT, kernelPortOf, pageLoopback } from './link.js';
 
 export const PROFILE = 'etc/profile';
 export const SCRIPT = 'etc/profile.d/slicc.sh';
@@ -37,15 +37,23 @@ export function kernelScript(env) {
     .join('');
 }
 
-export function kernelPorts({ storage, write }) {
+export function kernelPorts({ storage, text, write }) {
   const stored = () => kernelPortOf({ kernel: { port: Number(storage.getItem(KERNEL_PORT_KEY)) } });
+  let queue = Promise.resolve();
   return {
     env: () => pageLoopback(stored()),
-    async use(root, peer) {
+    use(root, peer) {
       const port = kernelPortOf(peer);
-      if (port === stored()) return;
-      storage.setItem(KERNEL_PORT_KEY, String(port));
-      await write(root, KERNEL_SCRIPT, kernelScript(pageLoopback(port)));
+      const script = kernelScript(pageLoopback(port));
+      const done = queue.then(async () => {
+        const current = await text(root, KERNEL_SCRIPT);
+        if (current !== script && (current !== null || port !== KERNEL_PORT)) {
+          await write(root, KERNEL_SCRIPT, script);
+        }
+        storage.setItem(KERNEL_PORT_KEY, String(port));
+      });
+      queue = done.catch(() => {});
+      return done;
     },
   };
 }

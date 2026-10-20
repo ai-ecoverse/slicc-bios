@@ -497,7 +497,7 @@ What doesn't work through the service worker:
 
 **The kernel port.** A local slicc names the port its kernel listener uses in its HELLO, as `"kernel": { "port": <n> }`: 80 on macOS and Windows, a spare port in 17180–17189 where it can't have 80 (Linux for a normal user, or 80 taken), or its `--kernel-port`. A HELLO without the field (an older slicc, slicc-node) means 80. Kernel URLs then carry any port but 80: `http://8400.kernel.localhost:17180/`. seven keeps the last port a local node named, in `localStorage` (`slicc-kernel-port`), and:
 
-- writes it to `/etc/profile.d/slicc-kernel.sh`, which sets `SLICC_PAGE_LOOPBACK` and `SLICC_PAGE_LOOPBACK_URL`, so every login shell opened after the HELLO gets it;
+- writes it to `/etc/profile.d/slicc-kernel.sh`, which sets `SLICC_PAGE_LOOPBACK` and `SLICC_PAGE_LOOPBACK_URL`, so every login shell opened after the HELLO gets it. Every HELLO checks the script itself and rewrites it when it names another port, one HELLO at a time, and the port is kept only once the script is written;
 - hands it to the kernel's `env` when the kernel starts, so every program gets it after a reload. A shell that is already open keeps what it started with.
 
 **slicc-node's kernel tunnel** carries what the service worker can't. slicc-node names no kernel port, so it's 80: it listens on `127.0.0.1:80`, or on the port `--kernel-port` gives it, and the URLs then carry that port: `http://8400.kernel.localhost:8080/`. It hands every connection to `*.kernel.localhost` to the page through a WebSocket, as raw bytes, so navigations, keep-alive and WebSocket upgrades (vite HMR) work. A page opened this way is its own origin, isolated from seven's.
