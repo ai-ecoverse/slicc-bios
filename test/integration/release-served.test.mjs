@@ -251,3 +251,89 @@ test("release.yml's publish step: a publish that errors but npm then lists is wa
   assert.match(failed.stdout, /::error::v1\.31\.10 is tagged but not on npm/);
   assert.match(failed.stdout, /npm publish failed \(attempt 3\)/);
 });
+
+test('the real npm CLI against a local registry: served.mjs reads what npm view and npm pack really print, and passes on the published tarball', async (t) => {
+  const { createServer } = await import('node:http');
+  const { mkdir, readdir } = await import('node:fs/promises');
+  const dir = await mkdtemp(join(tmpdir(), 'served-real-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const project = join(dir, 'project');
+  const out = join(dir, 'out');
+  await mkdir(project, { recursive: true });
+  await mkdir(out, { recursive: true });
+  await writeFile(
+    join(project, 'package.json'),
+    JSON.stringify({ name: NAME, version: '1.31.10', files: ['index.js'] })
+  );
+  await writeFile(join(project, 'index.js'), 'export {};\n');
+  const env = {
+    ...process.env,
+    HOME: join(dir, 'home'),
+    npm_config_cache: join(dir, 'cache'),
+    npm_config_update_notifier: 'false',
+    GITHUB_STEP_SUMMARY: '',
+  };
+  await promisify(execFile)('npm', ['pack', '--pack-destination', out], { cwd: project, env });
+  const [file] = await readdir(out);
+  const tarball = await readFile(join(out, file));
+  const integrity = sri(tarball);
+  const server = createServer((request, response) => {
+    if (request.url.endsWith('.tgz')) {
+      response.writeHead(200, { 'content-type': 'application/octet-stream' });
+      response.end(tarball);
+      return;
+    }
+    if (decodeURIComponent(request.url).startsWith(`/${NAME}`)) {
+      const at = `http://127.0.0.1:${server.address().port}`;
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(
+        JSON.stringify({
+          name: NAME,
+          'dist-tags': { latest: '1.31.10' },
+          versions: {
+            '1.31.10': {
+              name: NAME,
+              version: '1.31.10',
+              dist: { integrity, tarball: `${at}/slicc-bios-1.31.10.tgz` },
+            },
+          },
+        })
+      );
+      return;
+    }
+    response.writeHead(404);
+    response.end('{}');
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const registry = { ...env, npm_config_registry: `http://127.0.0.1:${server.address().port}/` };
+  const packed = await promisify(execFile)(process.execPath, [SERVED, 'pack'], {
+    cwd: project,
+    env: registry,
+  });
+  assert.equal(packed.stdout.trim(), integrity);
+  const { stdout } = await promisify(execFile)(
+    process.execPath,
+    [
+      SERVED,
+      'wait',
+      '--name',
+      NAME,
+      '--version',
+      '1.31.10',
+      '--integrity',
+      integrity,
+      '--waits',
+      '0',
+    ],
+    { cwd: project, env: registry }
+  );
+  assert.match(
+    stdout,
+    /^npm view @ai-ecoverse\/slicc-bios@1\.31\.10 dist\.integrity \(round 1, 0 s\): exit 0\n {2}stdout: sha512-/m
+  );
+  assert.match(
+    stdout,
+    /^published: @ai-ecoverse\/slicc-bios@1\.31\.10 serves the packed tarball, fetched and checked$/m
+  );
+});
