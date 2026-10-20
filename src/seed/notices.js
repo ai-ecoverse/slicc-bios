@@ -86,17 +86,39 @@ export function holdComposer() {
 }
 
 export function mirrorHold(os, tabs) {
-  const { take, ...source } = lines();
+  const listeners = new Set();
   let held = null;
-  const settle = () => take(held && tabs.state().skew ? RELOAD_FIRST : held);
-  const heard = (line) => {
-    held = line;
+  let shown = null;
+  let off = null;
+  const line = () => (held && tabs.state().skew ? RELOAD_FIRST : held);
+  const settle = () => {
+    const next = line();
+    if (next === shown) return;
+    shown = next;
+    for (const listener of [...listeners]) listener(next);
+  };
+  const heard = (next) => {
+    held = next;
     settle();
   };
   os.on('held', heard);
-  tabs.on('tabs', settle);
   void os.call('held').then(heard, () => undefined);
-  return source;
+  return {
+    held: line,
+    on(listener) {
+      if (!off) {
+        shown = line();
+        off = tabs.on('tabs', settle);
+      }
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+        if (listeners.size || !off) return;
+        off();
+        off = null;
+      };
+    },
+  };
 }
 
 export function heldAgent(agent, source) {
