@@ -764,3 +764,56 @@ test('an upstream org-required merge-group run counts: the ref-pinned path and a
   );
   assert.equal(r.ok, true, r.line);
 });
+
+test('a v2 status (target_url = a run attempt) counts only for a merge_group run of the caller on that commit; a bare status counts only for a repository not yet listed as v2', async () => {
+  const { V2_STATUS } = await import('../../scripts/cert/release-state.mjs');
+  const url = (id) => `https://github.com/ai-ecoverse/slicc-kernel/actions/runs/${id}/attempts/1`;
+  const run = (o = {}) => ({
+    path: '.github/workflows/cert-review.yml@refs/heads/main',
+    event: 'merge_group',
+    head_sha: COMMIT,
+    repository: { full_name: 'ai-ecoverse/slicc-kernel' },
+    workflow_url:
+      'https://api.github.com/repos/ai-ecoverse/slicc-kernel/actions/required_workflows/4',
+    ...o,
+  });
+  const ok = await judge(
+    fake({
+      attestations: kernelProv,
+      statuses: { [COMMIT]: [status({ target_url: url(80) })] },
+      runs: { 80: run() },
+    }),
+    KERNEL,
+    INTEGRITY
+  );
+  assert.equal(ok.ok, true, ok.line);
+  assert.match(ok.line, /from merge group run 80/);
+  for (const [why, r] of [
+    ['a pull_request_target run', run({ event: 'pull_request_target' })],
+    ['another workflow', run({ path: '.github/workflows/spoof.yml' })],
+    ['another commit', run({ head_sha: 'e'.repeat(40) })],
+    ['no such run', null],
+  ]) {
+    const got = await judge(
+      fake({
+        attestations: kernelProv,
+        statuses: { [COMMIT]: [status({ target_url: url(81) })] },
+        runs: { 81: r },
+      }),
+      KERNEL,
+      INTEGRITY
+    );
+    assert.equal(got.ok, false, why);
+  }
+  V2_STATUS.add('slicc-kernel');
+  try {
+    const bare = await judge(
+      fake({ attestations: kernelProv, statuses: { [COMMIT]: [status()] } }),
+      KERNEL,
+      INTEGRITY
+    );
+    assert.equal(bare.ok, false, 'a repository on v2 needs the run-attempt binding');
+  } finally {
+    V2_STATUS.delete('slicc-kernel');
+  }
+});
