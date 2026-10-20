@@ -12,19 +12,24 @@ const KERNEL = '@ai-ecoverse/slicc-kernel';
 const lock = JSON.parse(await source('package-lock.json'));
 const SHIPPED = lock.packages[`node_modules/${KERNEL}`].version;
 const shippedIntegrity = lock.packages[`node_modules/${KERNEL}`].integrity;
-const certs = JSON.parse(await source('certs.json'));
 const parts = (version) => version.split('.').map(Number);
 const older = (a, b) => {
   const [x, y] = [parts(a), parts(b)];
   for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] < y[i];
   return false;
 };
-const PREVIOUS = Object.keys(certs)
-  .filter((key) => key.startsWith(`${KERNEL}@`))
-  .map((key) => key.slice(KERNEL.length + 1))
-  .filter((version) => /^\d+\.\d+\.\d+$/.test(version) && older(version, SHIPPED))
+const floor = [...(await source('pnpm-lock.yaml')).matchAll(/slicc-kernel: '>=(\d+\.\d+\.\d+)'/g)]
+  .map(([, version]) => version)
+  .reduce((high, version) => (older(high, version) ? version : high), '0.0.0');
+const packument = await (
+  await fetch(`https://registry.npmjs.org/${KERNEL.replace('/', '%2F')}`)
+).json();
+const PREVIOUS = Object.keys(packument.versions)
+  .filter((version) => /^\d+\.\d+\.\d+$/.test(version))
+  .filter((version) => older(version, SHIPPED) && !older(version, floor))
   .sort((a, b) => (older(a, b) ? 1 : -1))[0];
-const previousIntegrity = certs[`${KERNEL}@${PREVIOUS}`].integrity;
+assert.ok(PREVIOUS, `no published kernel between ${floor} and ${SHIPPED}`);
+const previousIntegrity = packument.versions[PREVIOUS].dist.integrity;
 const files = ['package.json', 'package-lock.json', 'pnpm-lock.yaml'];
 const VERIFY = '<!-- cert-verify -->\ncertified @ai-ecoverse/slicc-kernel\n<!-- /cert-verify -->\n';
 const MAX_NOTES = 64 * 1024;
