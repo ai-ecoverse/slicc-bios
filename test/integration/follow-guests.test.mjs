@@ -246,6 +246,7 @@ function probeStreams() {
       'join',
       'permissions',
       'unlink',
+      'vault',
     ])
       refused[kind] = await outcome(window.probe.open({ kind }));
     const { linkEndpoint, connectAgent } = await import(
