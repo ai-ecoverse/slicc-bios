@@ -127,6 +127,16 @@ const ORIGINS = new Set([
   'documentURL',
   'unreachableUrl',
 ]);
+const CONTENTS = new Set([
+  'Page.captureSnapshot',
+  'Page.getResourceContent',
+  'Page.searchInResource',
+  'Network.getResponseBody',
+  'Network.searchInResponseBody',
+  'Fetch.getResponseBody',
+  'IO.read',
+  'CSS.getStyleSheetText',
+]);
 const CLOSED = new Set(['url', 'scopeURL', 'scriptURL']);
 const FREE = new Set([
   'expression',
@@ -232,7 +242,7 @@ const ENCODED_STARTS = /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*%(?:25)*3a%(?:25)*2f%(?
 const STOPS = /[\s"'<>\\`]/g;
 const ENCODED_STOPS = /[\s"'<>\\`&]/g;
 const AUTHORITY = 4096;
-const SPOKEN = /^(?:Network|Fetch|Log|Audits|Page)\./;
+const SPOKEN = /^(?:Network|Fetch|Log|Audits|Page|CSS)\./;
 const CONSOLE = new Set(['Runtime.exceptionThrown', 'Runtime.consoleAPICalled']);
 const ANSWERED = new Set([
   'headers',
@@ -246,6 +256,14 @@ const HOSTS = new RegExp(
   `(${[...catalog.protectedOrigins.domains, ...catalog.protectedOrigins.hosts].map(escaped).join('|')})(\\.?(?::\\d+|%3a\\d+)?)(?:[/?#\\\\][^\\s"'<>\`]*|(?:%2f|%3f|%23|%5c)[^\\s"'<>\`&]*)`,
   'gi'
 );
+
+function decodedBytes(text) {
+  try {
+    return atob(text);
+  } catch {
+    return '';
+  }
+}
 
 function decoded(text) {
   let out = text.replace(/%[0-9a-f]?$/i, '');
@@ -349,6 +367,7 @@ class Guard {
     this.is = protection(own);
     this.redact = redacting(this.is);
     this.redirected = new Set();
+    this.sheets = new Set();
     this.navs = new Map();
     this.navSessions = new Map();
     this.errored = new Map();
@@ -381,6 +400,9 @@ class Guard {
     const { method, params } = message;
     if (!params || !(SPOKEN.test(method ?? '') || CONSOLE.has(method)))
       return this.deliver(message);
+    if (method === 'CSS.styleSheetAdded' && this.is.url(params.header?.sourceURL)) {
+      this.sheets.add(params.header.styleSheetId);
+    }
     const { params: redacted, changed, answered } = this.redact(params);
     if (!changed.length) return this.deliver(message);
     if (answered && /^(?:Network|Fetch)\./.test(method)) {
@@ -997,12 +1019,18 @@ class Guard {
     this.redacted(message);
   }
 
-  snapshotted(method, result) {
-    if (method !== 'Page.captureSnapshot' || typeof result?.data !== 'string') return false;
-    return (
-      this.redact({ data: result.data.replace(/=\r?\n/g, '').replace(/=3D/gi, '=') }).changed
-        .length > 0
+  contents(message, was) {
+    const { method } = was ?? {};
+    const { result } = message;
+    if (!CONTENTS.has(method) || !result || typeof result !== 'object') return false;
+    const coded = [result.body, result.data, result.content].find(
+      (item) => typeof item === 'string'
     );
+    const plain = result.base64Encoded && coded !== undefined ? decodedBytes(coded) : '';
+    const text = `${JSON.stringify(result)}\n${plain}`.replace(/=\r?\n/g, '').replace(/=3D/gi, '=');
+    if (this.redact({ text }).changed.length === 0) return false;
+    this.refuse(was);
+    return true;
   }
 
   async listed(message, result) {
@@ -1042,7 +1070,7 @@ class Guard {
         result: { ...result, frameTree: this.tree(result.frameTree) },
       });
     }
-    if (this.snapshotted(method, result)) return this.refuse(was);
+    if (this.contents(message, was)) return;
     if (method === 'Target.getTargetInfo' && result?.targetInfo) {
       return this.deliver({ ...message, result: { targetInfo: this.masked(result.targetInfo) } });
     }
@@ -1140,6 +1168,7 @@ class Guard {
       (sessionId !== undefined && this.hidden(sessionId)) ||
       (UNSAFE.has(method) && !this.clearing(method, params, sessionId)) ||
       this.valued(params) ||
+      this.sheets.has(params.styleSheetId) ||
       this.workers(method, params) ||
       (method === 'Target.detachFromTarget' &&
         params.sessionId !== undefined &&

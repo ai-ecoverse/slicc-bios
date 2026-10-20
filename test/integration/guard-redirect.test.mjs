@@ -30,6 +30,16 @@ const site = createHttp((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   hits.set(`${host}${url.pathname}`, (hits.get(`${host}${url.pathname}`) ?? 0) + 1);
   const hop = hops.get(url.pathname.split('/').pop());
+  if (host.endsWith('sliccy.ai') && url.pathname.endsWith('.css')) {
+    res.writeHead(200, { 'content-type': 'text/css', 'access-control-allow-origin': '*' });
+    return res.end('body { color: rgb(1, 2, 3); }');
+  }
+  if (url.pathname.startsWith('/styled/')) {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end(
+      `<title>styled</title><link rel="stylesheet" href="/hop/${url.pathname.split('/').pop()}">styled`
+    );
+  }
   if (url.pathname.startsWith('/hop/') && hop) {
     res.writeHead(302, { location: hop });
     return res.end(`<a href="${hop}">moved</a>`);
@@ -46,6 +56,17 @@ const site = createHttp((req, res) => {
     res.writeHead(200, { 'content-type': 'text/html' });
     return res.end(
       `<title>talk</title><script>const u=${JSON.stringify(hop)};console.log("seen "+u);console.error(u);setTimeout(()=>{throw new Error("at "+u)});fetch(${JSON.stringify(`/hop/${url.pathname.split('/').pop()}`)}).catch(()=>{});</script>`
+    );
+  }
+  if (url.pathname.startsWith('/meta/') && hop) {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end(`<title>meta</title><meta http-equiv="refresh" content="9999;url=${hop}">`);
+  }
+  if (url.pathname.startsWith('/form/') && hop) {
+    const target = new URL(hop);
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end(
+      `<title>form</title><form method="post" action="${target.origin}${target.pathname}">${[...target.searchParams].map(([name, value]) => `<input type="hidden" name="${name}" value="${value}">`).join('')}</form>`
     );
   }
   if (url.pathname.startsWith('/framed/')) {
@@ -68,6 +89,7 @@ after(() => site.close());
 const PROTECTED = {
   seven: (code, state, token) =>
     `http://seven.sliccy.ai:${port}/auth/callback?code=${code}&state=${state}#access_token=${token}`,
+  sheet: (code, state) => `http://seven.sliccy.ai:${port}/style.css?code=${code}&state=${state}`,
   vault: (code, state) =>
     `http://vault.sliccy.ai:${port}/oauth/mcp-callback?code=${code}&state=${state}`,
 };
@@ -103,6 +125,9 @@ const plan = () => {
     steps.push({ fetching, kind: 'seven', how: 'navigate', path: `/linked/${hopTo('seven')}` });
     steps.push({ fetching, kind: 'seven', how: 'navigate', path: `/talk/${hopTo('seven')}` });
     steps.push({ fetching, kind: 'vault', how: 'navigate', path: `/framed/${hopTo('vault')}` });
+    steps.push({ fetching, kind: 'seven', how: 'navigate', path: `/meta/${hopTo('seven')}` });
+    steps.push({ fetching, kind: 'sheet', how: 'navigate', path: `/styled/${hopTo('sheet')}` });
+    steps.push({ fetching, kind: 'vault', how: 'navigate', path: `/form/${hopTo('vault')}` });
   }
   return steps;
 };
@@ -150,6 +175,10 @@ async function rig({ transport, proxy, port, override }) {
     return false;
   };
   const answers = {
+    sheets: [],
+    infos: [],
+    reads: [],
+    plain: [],
     bodies: [],
     replays: [],
     loads: [],
@@ -191,7 +220,7 @@ async function rig({ transport, proxy, port, override }) {
         await send('Target.attachToTarget', { targetId: state.targetId, flatten: true })
       ).result?.sessionId;
       if (!state.session) return `attach: ${JSON.stringify(created)}`;
-      for (const domain of ['Page', 'Network', 'Runtime', 'Log']) {
+      for (const domain of ['Page', 'Network', 'Runtime', 'Log', 'DOM', 'CSS']) {
         await send(`${domain}.enable`, {}, state.session);
       }
       state.pumping = true;
@@ -253,6 +282,22 @@ async function rig({ transport, proxy, port, override }) {
         answers.replays.push(await send('Network.replayXHR', { requestId }, session));
       }
       const top = await frame();
+      const own = seen
+        .slice(before)
+        .map((text) => JSON.parse(text))
+        .filter((m) => m.method === 'Network.requestWillBeSent' && m.params?.request?.url === url)
+        .map((m) => m.params.requestId);
+      for (const requestId of new Set(own)) {
+        answers.reads.push(await send('Network.getResponseBody', { requestId }, session));
+        answers.reads.push(
+          await send('Network.searchInResponseBody', { requestId, query: 'M' }, session)
+        );
+      }
+      answers.reads.push(await send('Page.getResourceContent', { frameId: top.id, url }, session));
+      answers.reads.push(
+        await send('Page.searchInResource', { frameId: top.id, url, query: 'M' }, session)
+      );
+      answers.reads.push(await send('IO.read', { handle: 'not-handed-out' }, session));
       answers.loads.push(
         await send(
           'Network.loadNetworkResource',
@@ -264,19 +309,55 @@ async function rig({ transport, proxy, port, override }) {
         await send('Page.getResourceContent', { frameId: top.id, url: hop }, session)
       );
       answers.snapshots.push(await send('Page.captureSnapshot', {}, session));
-      await send('Target.getTargetInfo', { targetId });
+      for (const added of seen
+        .slice(before)
+        .map((text) => JSON.parse(text))
+        .filter((m) => m.method === 'CSS.styleSheetAdded')) {
+        answers.sheets.push({
+          url: added.params.header.sourceURL,
+          answer: await send(
+            'CSS.getStyleSheetText',
+            { styleSheetId: added.params.header.styleSheetId },
+            session
+          ),
+        });
+      }
+      answers.infos.push(await send('Target.getTargetInfo', { targetId }));
       await send('Target.getTargets');
       await send('Page.getNavigationHistory', {}, session);
       await send('Page.getResourceTree', {}, session);
       return requestIds.length;
     },
     async end(fetching) {
+      const before = seen.length;
+      await send('Page.navigate', { url: `${origin}/start` }, state.session);
+      await wait(async () => (await frame()).url === `${origin}/start`, 8000);
+      const ids = seen
+        .slice(before)
+        .map((text) => JSON.parse(text))
+        .filter(
+          (m) =>
+            m.method === 'Network.requestWillBeSent' && m.params?.request?.url === `${origin}/start`
+        )
+        .map((m) => m.params.requestId);
+      for (const requestId of new Set(ids)) {
+        answers.plain.push(await send('Network.getResponseBody', { requestId }, state.session));
+      }
       await send('Page.navigate', { url: `${origin}/plain` }, state.session);
       await wait(async () => (await frame()).url?.includes('/landing'), 8000);
       state.pumping = false;
       await state.pumped;
       if (fetching !== 'none') await send('Fetch.disable', {}, state.session);
       await send('Target.closeTarget', { targetId: state.targetId });
+    },
+    async own(targetIds) {
+      const out = [];
+      for (const targetId of targetIds) {
+        out.push(await send('Target.getTargetInfo', { targetId }));
+        out.push(await send('Target.attachToTarget', { targetId, flatten: true }));
+      }
+      out.push(await send('Target.getTargets'));
+      return out.map((answer) => JSON.stringify(answer).slice(0, 300));
     },
     collect: () => ({ seen: seen.splice(0), answers }),
   };
@@ -322,6 +403,23 @@ async function check(t, transport) {
     override: PROTECTED.seven(mark(), mark(), mark()),
   });
   const seen = [];
+  if (proxy) marks.push(proxy.key);
+  const own = [
+    `${chrome.url}#tailscale=${mark()}&proxy=http://127.0.0.1:1&key=${mark()}`,
+    `${chrome.url}#access_token=${mark()}&expires_in=3600`,
+  ];
+  const tabs = [];
+  for (const url of own)
+    tabs.push((await chrome.cdp.send('Target.createTarget', { url })).targetId);
+  t.after(async () => {
+    for (const targetId of tabs)
+      await chrome.cdp.send('Target.closeTarget', { targetId }).catch(() => {});
+  });
+  const answered = await page.evaluate((ids) => window.rig.own(ids), tabs);
+  assert.ok(
+    answered.filter((answer) => answer.includes('"error"')).length >= tabs.length,
+    `seven's own tabs can't be attached: ${answered}`
+  );
   for (const fetching of ['none', 'Request', 'Response']) {
     assert.equal(await page.evaluate((f) => window.rig.begin(f), fetching), null);
     for (const step of steps.filter((s) => s.fetching === fetching)) {
@@ -349,6 +447,35 @@ async function check(t, transport) {
     answers.bodies.some(({ url, answer }) => url.includes('/hop/') && refused(answer)),
     'a hop the guard saw name seven or the vault has its body refused'
   );
+  assert.ok(
+    answers.reads.some(refused),
+    'a body or resource that names seven or the vault is refused'
+  );
+  assert.ok(
+    answers.plain.length > 0 &&
+      answers.plain.every((answer) => answer.result?.body === '<title>ordinary</title>/start'),
+    `an ordinary page's body reads unchanged: ${JSON.stringify(answers.plain).slice(0, 300)}`
+  );
+  const sheets = answers.sheets.filter(({ url }) => url.includes('sliccy.ai'));
+  assert.ok(
+    sheets.length > 0,
+    `a stylesheet came through a hop: ${JSON.stringify(answers.sheets).slice(0, 300)}`
+  );
+  assert.ok(
+    sheets.every(({ answer }) => refused(answer)),
+    JSON.stringify(sheets).slice(0, 300)
+  );
+  for (const { result } of answers.infos) {
+    const { url = '', title = '' } = result?.targetInfo ?? {};
+    for (const shown of [url, title]) {
+      if (!/sliccy\.ai/.test(shown)) continue;
+      assert.match(
+        shown,
+        /^(?:https?:\/\/)?[a-z.]*sliccy\.ai(?::\d+)?$/,
+        `tab info shows at most an origin: ${shown}`
+      );
+    }
+  }
   assert.ok(answers.replays.every(refused), JSON.stringify(answers.replays));
   assert.ok(answers.loads.every(refused), JSON.stringify(answers.loads.slice(0, 2)));
   assert.ok(answers.overrides.length > 0 && answers.overrides.every(refused));
