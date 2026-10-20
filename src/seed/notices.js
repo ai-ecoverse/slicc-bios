@@ -48,6 +48,60 @@ export function createNotices({ storage = localStorage } = {}) {
   };
 }
 
+export function agentInstalling(from, to) {
+  return {
+    id: `agent:installing:${to}`,
+    tone: 'info',
+    title: from ? 'Seven is updating its agent' : 'Seven is installing its agent',
+    body: `The chat starts once agent ${to} is installed.`,
+    actions: [{ id: 'show-updates', label: 'Open Install / Update' }],
+  };
+}
+
+export const NO_SENDING = 'You can send messages once the agent starts.';
+
+function lines() {
+  const listeners = new Set();
+  let line = null;
+  return {
+    held: () => line,
+    on(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    take(next) {
+      if (next === line) return;
+      line = next;
+      for (const listener of [...listeners]) listener(line);
+    },
+  };
+}
+
+export function holdComposer() {
+  const { take, ...source } = lines();
+  return { ...source, hold: (on) => take(on ? NO_SENDING : null) };
+}
+
+export function mirrorHold(os) {
+  const { take, ...source } = lines();
+  os.on('held', take);
+  void os.call('held').then(take, () => undefined);
+  return source;
+}
+
+export function heldAgent(agent, source) {
+  return new Proxy(agent, {
+    get(target, key) {
+      if (key === 'readOnly') return () => source.held();
+      if (key === 'on')
+        return (type, listener) =>
+          type === 'readOnly' ? source.on(listener) : target.on(type, listener);
+      const value = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
 export const REPAIRED = 'slicc-bios.repaired';
 
 export function reportRepairs(notices, storage = localStorage) {

@@ -3,8 +3,8 @@ import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
 import { confirm, secretRules, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
 import { sealedLogin, signIn } from './adobe.js';
 import {
-  installed as agentInstalled,
   project as agentProject,
+  startable as agentStartable,
   version as agentVersion,
   bridgeAgent,
   deliverWebhook,
@@ -40,7 +40,15 @@ import { createLinks, installLocal, labelStore, trustHostKey } from './link.js';
 import { serveLoopback } from './loopback.js';
 import { createFolders, KEY, layoutMnt, offTheRecord } from './mounts.js';
 import { createNetwork } from './network.js';
-import { createNotices, reportRepairs, reportStopped } from './notices.js';
+import {
+  agentInstalling,
+  createNotices,
+  heldAgent,
+  holdComposer,
+  mirrorHold,
+  reportRepairs,
+  reportStopped,
+} from './notices.js';
 import { createPackages, globalDir, loadCatalog, writeListing } from './packages.js';
 import { createPairing, takePairing } from './pair.js';
 import {
@@ -311,6 +319,7 @@ document.documentElement.dataset.users = mode;
 const keep = keepStorage({ notices, prompts });
 let model = null;
 let files = null;
+const composer = holdComposer();
 let presentation = null;
 let kernel = null;
 let folders = null;
@@ -328,7 +337,7 @@ function base(os) {
   const network = os ? mirrorNetwork(os, reach.port) : reach.port;
   return {
     ...files,
-    agent: browser.stopping(files.agent),
+    agent: browser.stopping(heldAgent(files.agent, os ? mirrorHold(os) : composer)),
     updates: os ? mirrorUpdates(os) : updates,
     notices,
     approvals: approvals.port,
@@ -535,11 +544,32 @@ async function actOwn(id, action) {
   await (which === 'agent' ? offerChat() : installGrammars());
 }
 
+let installNotice = null;
+
+function agentReport() {
+  const track = updates.track('agent');
+  const { from } = updates.get('agent');
+  return (step) => {
+    track(step);
+    if (agent !== null || !step.to) return;
+    composer.hold(true);
+    const notice = agentInstalling(from, step.to);
+    installNotice = notice.id;
+    notices.show(notice, () => app.show('updates'));
+  };
+}
+
 async function offerChat() {
   try {
-    const changed = await installAgent(start, { report: updates.track('agent'), refuse });
+    const changed = await installAgent(start, { report: agentReport(), refuse });
     await listOwn();
     const at = await agentVersion();
+    if (changed)
+      updates.checked('agent', {
+        state: 'installed',
+        from: agent === null ? at : updates.get('agent').from,
+        to: at,
+      });
     const running = agent && (await agent);
     if (running && (await recorded()) !== startedWith) {
       updates.checked('agent', {
@@ -550,11 +580,15 @@ async function offerChat() {
       });
       return;
     }
-    updates.checked('agent', changed ? { state: 'installed', from: at, to: at } : {});
+    if (!changed) updates.checked('agent', {});
     await startOnce();
   } catch (error) {
     updates.fail('agent', error);
     await listOwn();
+  } finally {
+    composer.hold(false);
+    if (installNotice) notices.remove(installNotice);
+    installNotice = null;
   }
 }
 
@@ -743,7 +777,8 @@ async function own() {
   files.files.on('mounts', links.changed);
   const served = serveUpdates(updates);
   const routes = serveNetwork(reach.port);
-  serving = createOs({ ...served.handlers, ...routes.handlers });
+  serving = createOs({ ...served.handlers, ...routes.handlers, held: () => composer.held() });
+  composer.on((line) => serving.emit('held', line));
   served.forward(serving);
   routes.forward(serving);
   await rows();
@@ -757,7 +792,7 @@ async function own() {
     traits: reach.transport.traits,
     install: installTailnet,
   });
-  if (await agentInstalled()) void startOnce();
+  if (await agentStartable()) void startOnce();
   if (await installed()) app.grammarBase = grammarBase;
   optional = offerPackages();
   document.addEventListener('visibilitychange', () => {
