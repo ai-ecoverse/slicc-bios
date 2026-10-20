@@ -852,5 +852,9 @@
   "@ai-ecoverse/wasm-tailscale@1.104.1-11": {
     "integrity": "sha512-+4+qKJoMqHM0SuKohndej4eR8ripV2SIyF/WLgnml9OXVwKxwiUzTsjebQEZecR5fIzfh/4PUmwuZfsw55+Rlw==",
     "sha256": "90f793f2f037024cb0d596239b5f63112ef0dde5fce9db98df4bc1c57def263e"
+  },
+  "@ai-ecoverse/wasi-fnox@1.39.0-6": {
+    "integrity": "sha512-/Rp81mTkzwpe0+soNvLqqXhOJ3xosXo6V5ViKinvEX7/U8JUG7aUUsrQXltBffOX1AN+n1dWr0ukw2/TBFJHXw==",
+    "sha256": "607fa254cba66c7196f4782c9f4a6224cde3ea5d423e27deca2832ca1f1f9944"
   }
 }
