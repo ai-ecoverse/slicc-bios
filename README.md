@@ -35,7 +35,7 @@ Seven can share its origin with another app: on `www.sliccy.ai` the BIOS is `/7/
 
 #### Moving SLICC 6 into seven
 
-On a shared origin, the BIOS moves SLICC 6 into seven in this browser once, after **Intercept** and before **Serve UI** (`sw/six.js`). Six's side is ai-ecoverse/slicc#4051 (the exporter page) and #4056 (`slicc-profile` version 2, the directory form); the agent's side is `freezer import --in-place` (slicc-agent#487).
+On a shared origin, the BIOS moves SLICC 6 into seven in this browser once, after **Intercept** and before **Serve UI** (`sw/six.js`). Six's side is ai-ecoverse/slicc#4066 (the exporter page, for slicc#4051) and slicc#4056 (`slicc-profile` version 2, the directory form); the agent's side is `freezer import --in-place` (slicc-agent#525, for slicc-agent#487).
 
 - **When it asks:** `/slicc-fs` in OPFS has an entry, `localStorage['slicc-os.six']` isn't `upgraded`, and `/upgrade-to-seven.html` answers without a redirect and carries `<meta name="slicc-six-upgrade">`. Without the meta (www's fallback answers unknown paths with six's own page) nothing is framed and nobody is asked. One tab asks at a time (Web Lock `slicc-six-upgrade`).
 - **The question:** *Move SLICC 6 into seven in this browser?*, saying that files move as they are, including any keys or passwords written inside them, and that SLICC 6 and its Chrome extension then stop working in this browser. **Not now** leaves both alone and boots seven; the next boot asks again. There's no setting.
@@ -43,7 +43,7 @@ On a shared origin, the BIOS moves SLICC 6 into seven in this browser once, afte
 - **Success** (`done: true`, `exportId`, `dir = /slicc-v6-upgrade/<exportId>/`): while the frame still holds six's `slicc-six-kernel` lock, the BIOS sets `slicc-os.six = upgraded` and `slicc-os.six-import = <dir>`, creates the cache `slicc-bios.six-retired`, unregisters every service worker under `/preview/`, and removes every other directory under `/slicc-v6-upgrade/` (interrupted runs). Only then does the frame go, so a six tab opened in between sees the marker and stays down.
 - **Failure** (`error`) removes the frame and sets nothing, so six keeps working. The BIOS shows the error with **Try again** and **Not now**.
 - **Retired:** every later boot opens the cache and unregisters `/preview/` again. The service worker answers a navigation to `/` (whatever its query, so six's extension's `?slicc=leader&ext=…` and `?cherry=1&ui-only=1` too) with a redirect to `/os/` once the cache exists. The extension's leader tab then shows seven; its side panel can't show `/os/` in its frame, so it just stops working. It always passes `/upgrade-to-seven.html` and `/assets/*` to the network on a shared origin, even when OPFS has files there.
-- **The import:** once the agent runs on `/os/`, `os/six.js` hands `slicc-os.six-import` to it with `control.importProfile({ inPlace })`. The agent moves the files out of `/slicc-fs`, and deletes the directory on success; the key goes then. A failed import keeps the key and shows a notice, and the next start tries again. A key whose directory has no `manifest.json` is dropped.
+- **The import:** once the agent runs on `/os/`, `os/six.js` hands `slicc-os.six-import` to it with `control.importProfile({ inPlace })`. The agent moves the files out of `/slicc-fs`, and deletes the directory on success; the key goes then. An import that fails or throws keeps the key and shows a notice, and the next start tries again. A key whose directory has no `manifest.json` is dropped.
 
 ### Integrity
 
