@@ -18,8 +18,8 @@ importers:
         specifier: 1.0.2
         version: 1.0.2
       '@ai-ecoverse/slicc-kernel':
-        specifier: 1.142.1
-        version: 1.142.1
+        specifier: 1.143.1
+        version: 1.143.1
       '@ai-ecoverse/slicc-spectrum':
         specifier: 1.104.1
         version: 1.104.1
@@ -111,9 +111,9 @@ packages:
     resolution: {integrity: sha512-p7b1h85qkiU0LKjNLCLiU7GVXjGigkyR2+VUCInM1cZo2yjLFxr7tGAOO09e6OG9nB7XKiQn3W88wb3s0gxy+g==}
     engines: {node: '>=24', slicc-kernel: '>=1.75.0'}
 
-  '@ai-ecoverse/slicc-kernel@1.142.1':
-    resolution: {integrity: sha512-550IVyx0dAOXTVTiOzqC4/D0gud98tvf/N827z+tV6gtwjv993jv65LlgMk/fcJv82ITK79gDSOkF5reD7UF7g==}
-    engines: {node: '>=24'}
+  '@ai-ecoverse/slicc-kernel@1.143.1':
+    resolution: {integrity: sha512-QP9muGser6K9eQSX2SOnSPeU5FcGA7UVWT3Ou2VoaOKO5epx28ntukHMU6UQYj49gg12aDruHrwf3594wjVZFQ==}
+    engines: {node: '>=26'}
 
   '@ai-ecoverse/slicc-spectrum@1.104.1':
     resolution: {integrity: sha512-/NNo3NmWc8l4+fcVKlynOKzRFbi2N/1H1w8Hkn4N8B51UgjvAW+Y3oykgp0kePQPb11zjithkKmZjC22CdXMkw==}
@@ -213,7 +213,7 @@ snapshots:
 
   '@ai-ecoverse/slicc-clipboard@1.0.2': {}
 
-  '@ai-ecoverse/slicc-kernel@1.142.1': {}
+  '@ai-ecoverse/slicc-kernel@1.143.1': {}
 
   '@ai-ecoverse/slicc-spectrum@1.104.1': {}
 
