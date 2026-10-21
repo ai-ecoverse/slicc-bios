@@ -659,11 +659,12 @@ class Guard {
     return found.guarded;
   }
 
-  async frame(frameId) {
+  async frame(frameId, strict = false) {
     if (frameId === undefined) return false;
     if (this.targets.has(frameId)) return this.target(frameId);
     if (this.frames.has(frameId)) return this.is.url(this.frames.get(frameId));
     if (await this.lookup(frameId)) return this.target(frameId);
+    if (strict) return true;
     this.frames.set(frameId, '');
     return false;
   }
@@ -1100,6 +1101,9 @@ class Guard {
       }
       return this.is.url(params.frame.url) || this.is.url(params.frame.securityOrigin);
     }
+    if (method === 'Page.frameAttached' && params.frameId && !this.frames.has(params.frameId)) {
+      this.frames.set(params.frameId, '');
+    }
     if (NAVIGATED.has(method)) return !this.armed(sessionId) && this.is.url(params.url);
     if (method === 'Network.requestWillBeSent' && params.type === 'Document') {
       return !this.armed(sessionId) && this.is.url(params.request?.url);
@@ -1199,6 +1203,7 @@ class Guard {
   }
 
   tree({ frame, childFrames, resources, ...rest }) {
+    if (frame.id !== undefined && !this.targets.has(frame.id)) this.frames.set(frame.id, frame.url);
     const hidden = this.is.url(frame.url) || this.is.url(frame.unreachableUrl);
     const { unreachableUrl, urlFragment, ...shown } = frame;
     return {
@@ -1495,7 +1500,7 @@ class Guard {
       if (nav) await nav.ready;
       if (nav?.failed) return UNGUARDED;
     }
-    if (await this.frame(params.frameId)) return PROTECTED;
+    if (await this.frame(params.frameId, true)) return PROTECTED;
     if (method === 'Page.navigateToHistoryEntry' && (await this.back(params, sessionId))) {
       return PROTECTED;
     }
