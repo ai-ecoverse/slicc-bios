@@ -1,3 +1,5 @@
+import { createServer } from 'node:http';
+
 export const SIX_TYPE = 'slicc-six-upgrade';
 export const STOP_ERROR = "A SLICC 6 tab didn't stop. Close your SLICC 6 tabs and try again.";
 
@@ -9,8 +11,9 @@ export const sixPage = `<!doctype html>
   const six = document.getElementById('six');
   const root = await navigator.storage.getDirectory();
   const fs = await root.getDirectoryHandle('slicc-fs', { create: true });
-  const work = await fs.getDirectoryHandle('workspace', { create: true });
-  const file = await work.getFileHandle('notes.txt', { create: true });
+  const home = await fs.getDirectoryHandle('home', { create: true });
+  const user = await home.getDirectoryHandle('user', { create: true });
+  const file = await user.getFileHandle('notes.txt', { create: true });
   const writable = await file.createWritable();
   await writable.write('six notes\\n');
   await writable.close();
@@ -115,7 +118,7 @@ async function run() {
   for (const [at, { path, handle }] of files.entries()) {
     post({ type, phase: 'reading', done: at, total: files.length });
     const bytes = await (await handle.getFile()).arrayBuffer();
-    rows.push({ path: 'files' + path, size: bytes.byteLength, sha256: await sha256(bytes), source: '/slicc-fs' + path });
+    rows.push({ path: 'files' + (path.startsWith('/home/user/') ? '/home-user/' + path.slice(11) : path), size: bytes.byteLength, sha256: await sha256(bytes), source: '/slicc-fs' + path });
     await pause(150);
   }
   post({ type, phase: 'reading', done: files.length, total: files.length });
@@ -130,6 +133,8 @@ async function run() {
     exportId,
     producer: { slicc: '6.0.0-test', origin: location.origin },
     createdAt: new Date().toISOString(),
+    licks: null,
+    gitconfig: null,
     cones: [],
     frozen: [],
     skills: [],
@@ -157,3 +162,79 @@ parent.parent.postMessage({ type: '${SIX_TYPE}', done: true, exportId: 'foreign'
 parent.postMessage('spoofed', '*');
 </script>
 `;
+
+export async function startWww(seven) {
+  const state = { mode: 'ok', isolate: false, asked: [] };
+  let foreign = '';
+  const www = createServer(async (request, response) => {
+    const url = new URL(request.url, 'http://www');
+    state.asked.push(url.pathname);
+    if (url.pathname === '/7') return response.writeHead(301, { location: '/7/' }).end();
+    if (url.pathname.startsWith('/7/') || url.pathname.startsWith('/fonts/')) {
+      const path = url.pathname.startsWith('/7/') ? url.pathname.slice(2) : url.pathname;
+      const upstream = await fetch(new URL(`${path}${url.search}`, seven));
+      const headers = Object.fromEntries(
+        [...upstream.headers].filter(
+          ([name]) => !['content-encoding', 'transfer-encoding'].includes(name)
+        )
+      );
+      if (url.pathname === '/7/sw.js') headers['service-worker-allowed'] = '/';
+      if (state.isolate && headers['content-type']?.startsWith('text/html')) {
+        headers['cross-origin-opener-policy'] = 'same-origin';
+        headers['cross-origin-embedder-policy'] = 'require-corp';
+      }
+      return response
+        .writeHead(upstream.status, headers)
+        .end(Buffer.from(await upstream.arrayBuffer()));
+    }
+    if (url.pathname.startsWith('/os/')) {
+      return request.headers['sec-fetch-mode'] === 'navigate'
+        ? response.writeHead(302, { location: '/7/' }).end()
+        : response.writeHead(404).end();
+    }
+    const html = { 'content-type': 'text/html; charset=utf-8' };
+    const js = { 'content-type': 'text/javascript; charset=utf-8' };
+    const corp = {
+      'cross-origin-embedder-policy': 'require-corp',
+      'cross-origin-resource-policy': 'same-origin',
+    };
+    const framed = {
+      ...corp,
+      'content-security-policy': "frame-ancestors 'self'",
+      'x-frame-options': 'SAMEORIGIN',
+      'cache-control': 'no-store',
+    };
+    if (url.pathname === '/') return response.writeHead(200, html).end(sixPage);
+    if (url.pathname === '/preview-sw.js') return response.writeHead(200, js).end(previewWorker);
+    if (url.pathname === '/spoof.html') {
+      return response
+        .writeHead(200, {
+          ...html,
+          'cross-origin-embedder-policy': 'require-corp',
+          'cross-origin-resource-policy': 'cross-origin',
+        })
+        .end(spoofPage);
+    }
+    if (url.pathname === '/upgrade-to-seven.html') {
+      return response.writeHead(200, { ...html, ...framed }).end(exporterPage);
+    }
+    if (url.pathname === '/assets/upgrade-to-seven-f1x7.js') {
+      return response
+        .writeHead(200, { ...js, ...corp, 'cache-control': 'no-store' })
+        .end(exporterScript(state.mode, foreign));
+    }
+    response.writeHead(404).end();
+  });
+  await new Promise((done) => www.listen(0, '127.0.0.1', done));
+  const origin = `http://127.0.0.1:${www.address().port}`;
+  foreign = `http://localhost:${www.address().port}`;
+  return {
+    state,
+    origin,
+    close: () =>
+      new Promise((done) => {
+        www.close(done);
+        www.closeAllConnections();
+      }),
+  };
+}

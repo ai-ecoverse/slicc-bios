@@ -1,89 +1,15 @@
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
 import { after, test } from 'node:test';
 import { booted, ready, watch } from './bios.mjs';
 import { launch, VAULT_KEY } from './chrome.mjs';
-import {
-  exporterPage,
-  exporterScript,
-  previewWorker,
-  STOP_ERROR,
-  sixPage,
-  spoofPage,
-} from './fake-six.mjs';
+import { STOP_ERROR, startWww } from './fake-six.mjs';
 
 const chrome = await launch();
-const seven = new URL(chrome.url);
-let mode = 'ok';
-let isolate = false;
-const asked = [];
-const www = createServer(async (request, response) => {
-  const url = new URL(request.url, 'http://www');
-  asked.push(url.pathname);
-  if (url.pathname === '/7') return response.writeHead(301, { location: '/7/' }).end();
-  if (url.pathname.startsWith('/7/') || url.pathname.startsWith('/fonts/')) {
-    const path = url.pathname.startsWith('/7/') ? url.pathname.slice(2) : url.pathname;
-    const upstream = await fetch(new URL(`${path}${url.search}`, seven));
-    const headers = Object.fromEntries(
-      [...upstream.headers].filter(
-        ([name]) => !['content-encoding', 'transfer-encoding'].includes(name)
-      )
-    );
-    if (url.pathname === '/7/sw.js') headers['service-worker-allowed'] = '/';
-    if (isolate && headers['content-type']?.startsWith('text/html')) {
-      headers['cross-origin-opener-policy'] = 'same-origin';
-      headers['cross-origin-embedder-policy'] = 'require-corp';
-    }
-    return response
-      .writeHead(upstream.status, headers)
-      .end(Buffer.from(await upstream.arrayBuffer()));
-  }
-  if (url.pathname.startsWith('/os/')) {
-    return request.headers['sec-fetch-mode'] === 'navigate'
-      ? response.writeHead(302, { location: '/7/' }).end()
-      : response.writeHead(404).end();
-  }
-  const html = { 'content-type': 'text/html; charset=utf-8' };
-  const js = { 'content-type': 'text/javascript; charset=utf-8' };
-  const corp = {
-    'cross-origin-embedder-policy': 'require-corp',
-    'cross-origin-resource-policy': 'same-origin',
-  };
-  const framed = {
-    ...corp,
-    'content-security-policy': "frame-ancestors 'self'",
-    'x-frame-options': 'SAMEORIGIN',
-    'cache-control': 'no-store',
-  };
-  if (url.pathname === '/') return response.writeHead(200, html).end(sixPage);
-  if (url.pathname === '/preview-sw.js') return response.writeHead(200, js).end(previewWorker);
-  if (url.pathname === '/spoof.html') {
-    return response
-      .writeHead(200, {
-        ...html,
-        'cross-origin-embedder-policy': 'require-corp',
-        'cross-origin-resource-policy': 'cross-origin',
-      })
-      .end(spoofPage);
-  }
-  if (url.pathname === '/upgrade-to-seven.html') {
-    return response.writeHead(200, { ...html, ...framed }).end(exporterPage);
-  }
-  if (url.pathname === '/assets/upgrade-to-seven-f1x7.js') {
-    return response
-      .writeHead(200, { ...js, ...corp, 'cache-control': 'no-store' })
-      .end(exporterScript(mode, foreign));
-  }
-  response.writeHead(404).end();
-});
-await new Promise((done) => www.listen(0, '127.0.0.1', done));
-const origin = `http://127.0.0.1:${www.address().port}`;
-const foreign = `http://localhost:${www.address().port}`;
+const www = await startWww(new URL(chrome.url));
+const { origin, state } = www;
+const asked = state.asked;
 after(async () => {
-  await new Promise((done) => {
-    www.close(done);
-    www.closeAllConnections();
-  });
+  await www.close();
   await chrome.close();
 });
 
@@ -171,7 +97,7 @@ const storage = (page) =>
   }));
 
 test('without a SLICC 6 profile seven never asks, and its service worker passes the upgrade page and /assets/ to the network even when OPFS has files there', async (t) => {
-  mode = 'ok';
+  state.mode = 'ok';
   const page = await open(t);
   const bios = await watch(page);
   const six = await dialog(page);
@@ -216,10 +142,10 @@ test('without a SLICC 6 profile seven never asks, and its service worker passes 
 });
 
 test('moving SLICC 6 into seven from a cross-origin isolated BIOS: asked once, progress shown, the marker set before the frame goes, six stopped, /preview/ unregistered, / and the extension URLs land on /os/, and the export is handed to the agent', async (t) => {
-  mode = 'ok';
-  isolate = true;
+  state.mode = 'ok';
+  state.isolate = true;
   t.after(() => {
-    isolate = false;
+    state.isolate = false;
   });
   const page = await open(t);
   const six = await dialog(page);
@@ -286,7 +212,7 @@ test('moving SLICC 6 into seven from a cross-origin isolated BIOS: asked once, p
     return { names, id, files: manifest.files.map(({ path, source }) => `${path} ${source}`) };
   });
   assert.deepEqual(kept.names, [kept.id]);
-  assert.deepEqual(kept.files, ['files/workspace/notes.txt /slicc-fs/workspace/notes.txt']);
+  assert.deepEqual(kept.files, ['files/home-user/notes.txt /slicc-fs/home/user/notes.txt']);
   assert.deepEqual(await storage(page), {
     marker: 'upgraded',
     pending: `/slicc-v6-upgrade/${kept.id}/`,
@@ -305,7 +231,7 @@ test('moving SLICC 6 into seven from a cross-origin isolated BIOS: asked once, p
 });
 
 test("when SLICC 6's exporter fails, seven sets no marker, six keeps working, and Not now boots seven", async (t) => {
-  mode = 'error';
+  state.mode = 'error';
   const page = await open(t);
   const six = await dialog(page);
   await runSix(page);
@@ -341,7 +267,7 @@ test("when SLICC 6's exporter fails, seven sets no marker, six keeps working, an
 });
 
 test('Enter at the question declines, the next boot asks again, and messages from another frame or another origin are ignored', async (t) => {
-  mode = 'spoof';
+  state.mode = 'spoof';
   const page = await open(t);
   const six = await dialog(page);
   await runSix(page);
@@ -398,7 +324,7 @@ async function shots(page, name) {
 }
 
 test('the question, the progress and the failure, in light and dark and on a phone', async (t) => {
-  mode = 'slow';
+  state.mode = 'slow';
   const page = await open(t);
   await runSix(page);
   await page.goto(`${origin}/7/`);
@@ -412,7 +338,7 @@ test('the question, the progress and the failure, in light and dark and on a pho
   await shots(page, 'moving');
   assert.deepEqual(await storage(page), { marker: null, pending: null });
 
-  mode = 'error';
+  state.mode = 'error';
   const failing = await page.tab();
   await page.close();
   await failing.goto(`${origin}/7/`);
