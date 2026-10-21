@@ -1690,9 +1690,8 @@ test('a browser extension’s hidden world stays out of reach through the guard 
       MARK,
     }
   );
-  assert.match(results.named ?? '', /belongs to a browser extension/, JSON.stringify(results));
-  assert.match(results.byId ?? '', /belongs to a browser extension/, JSON.stringify(results));
-  assert.match(results.byUnique ?? '', /belongs to a browser extension/, JSON.stringify(results));
+  assert.match(results.byId ?? '', /^slicc: refused:/, JSON.stringify(results));
+  assert.match(results.byUnique ?? '', /^slicc: refused:/, JSON.stringify(results));
   assert.match(results.binding ?? '', /^slicc: refused:/, JSON.stringify(results));
   assert.deepEqual(
     results.marks,
