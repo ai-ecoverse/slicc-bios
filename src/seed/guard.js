@@ -401,6 +401,11 @@ export function redacting(is) {
   };
 }
 
+const kept = (set, value) => {
+  set.add(value);
+  if (set.size > REMEMBERED) set.delete(set.values().next().value);
+};
+
 export const ARM = [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }];
 
 export function protection(own) {
@@ -457,18 +462,18 @@ class Guard {
       params.statusCode >= 300 &&
       params.statusCode < 400
     ) {
-      this.extras.add(params.requestId);
+      kept(this.extras, params.requestId);
     }
     if (method === 'CSS.styleSheetAdded' && this.is.url(params.header?.sourceURL)) {
-      this.sheets.add(params.header.styleSheetId);
+      kept(this.sheets, params.header.styleSheetId);
     }
     const { params: redacted, changed, answered } = this.redact(params);
     if (!changed.length) return this.deliver(message);
     if (answered && /^(?:Network|Fetch)\./.test(method)) {
       for (const id of [params.requestId, params.networkId])
-        if (id !== undefined) this.redirected.add(id);
+        if (id !== undefined) kept(this.redirected, id);
       for (const url of [params.request?.url, params.response?.url])
-        if (typeof url === 'string') this.hops.add(bare(url));
+        if (typeof url === 'string') kept(this.hops, bare(url));
     }
     return this.deliver({ ...message, params: redacted });
   }
@@ -796,9 +801,9 @@ class Guard {
 
   hopped(message) {
     const { requestId, redirectResponse } = message.params;
-    this.continued.add(requestId);
-    if (redirectResponse.url) this.hops.add(bare(redirectResponse.url));
-    this.redirected.add(requestId);
+    kept(this.continued, requestId);
+    if (redirectResponse.url) kept(this.hops, bare(redirectResponse.url));
+    kept(this.redirected, requestId);
     this.redacted(message);
     return true;
   }
@@ -813,7 +818,7 @@ class Guard {
     const redirect = params.statusCode >= 300 && params.statusCode < 400;
     if (!redirect || this.extras.has(params.requestId)) return true;
     if (!this.redact({ headers: params.headers ?? {} }).changed.length) return true;
-    this.extras.add(params.requestId);
+    kept(this.extras, params.requestId);
     this.redacted(message);
     return true;
   }
