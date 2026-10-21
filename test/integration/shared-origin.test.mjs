@@ -133,7 +133,7 @@ test('seven boots from /7/ of an origin it shares with six: the UI is /os/, ever
   assert.deepEqual(page.errors, []);
 });
 
-test("on a shared origin, sign-in goes through six's relay, the tray hub through the BIOS's folder, and Reload through the BIOS", async (t) => {
+test("on a shared origin, sign-in goes through six's relay, the tray hub through the BIOS's folder, and Reload and the uncontrolled trip through the BIOS", async (t) => {
   const page = await open(t);
   await page.goto(`${origin}/7/`);
   await ready(page);
@@ -197,13 +197,35 @@ test("on a shared origin, sign-in goes through six's relay, the tray hub through
 
   const reload = await page.evaluate(async () => {
     const { refused } = await import('/os/start.js');
-    let went = null;
-    const box = refused(document.implementation.createHTMLDocument(''), (url) => {
-      went = url;
+    return new Promise((resolve) => {
+      const box = refused(document.implementation.createHTMLDocument(''), resolve);
+      box.querySelector('button').click();
     });
-    box.querySelector('button').click();
-    return went;
   });
   assert.equal(reload, `${origin}/7/`);
+  const trip = await page.evaluate(async () => {
+    const { start } = await import('/os/start.js');
+    const kept = new Map();
+    let went = null;
+    await start({
+      seat: () => null,
+      go: (url) => {
+        went = url;
+      },
+      worker: () => false,
+      storage: () => ({
+        getItem: (key) => kept.get(key) ?? null,
+        setItem: (key, value) => kept.set(key, value),
+        removeItem: (key) => kept.delete(key),
+      }),
+      at: { hash: '#x' },
+    });
+    return went;
+  });
+  assert.equal(
+    trip,
+    `${origin}/7/#x`,
+    'a page that lost its worker goes back through seven’s BIOS, not six'
+  );
   assert.deepEqual(page.errors, []);
 });

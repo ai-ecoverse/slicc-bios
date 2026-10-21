@@ -1,5 +1,16 @@
-import { clearHandOff, dropped, droppedLine } from './handoff.js';
-import { BIOS } from './site.js';
+export const RETRIED = 'slicc-os.uncontrolled';
+
+export function biosOf(
+  controller = globalThis.navigator?.serviceWorker?.controller,
+  here = import.meta.url
+) {
+  return new URL(controller?.scriptURL ? './' : '../', controller?.scriptURL ?? here).href;
+}
+
+export async function tripTarget(container = globalThis.navigator?.serviceWorker) {
+  const registration = await Promise.resolve(container?.getRegistration?.()).catch(() => null);
+  return biosOf(registration?.active ?? registration?.waiting ?? registration?.installing);
+}
 
 export const REFUSED =
   'Seven didn’t load its own code: one of its files changed after seven installed it, or is missing. Reloading goes through the BIOS, which puts seven’s files back.';
@@ -31,13 +42,15 @@ export function refused(doc = document, go = (url) => location.replace(url), sto
   const button = doc.createElement('button');
   button.type = 'button';
   button.textContent = 'Reload';
-  button.addEventListener('click', () => go(`${BIOS}${doc.location?.hash ?? ''}`));
+  button.addEventListener('click', async () =>
+    go(`${await tripTarget()}${doc.location?.hash ?? ''}`)
+  );
   box.append(title, text, button);
   doc.body.replaceChildren(box);
   return box;
 }
 
-export function droppedPage(doc, names) {
+export function droppedPage(doc, names, droppedLine) {
   const box = doc.createElement('main');
   box.dataset.dropped = '';
   const text = doc.createElement('p');
@@ -52,22 +65,53 @@ export function seatPage(at = location) {
   return new URL(`join.html${at.hash}`, import.meta.url).href;
 }
 
+export function controlled(container = globalThis.navigator?.serviceWorker) {
+  return !container || Boolean(container.controller);
+}
+
+export function tripped(worker, storage) {
+  try {
+    const store = storage();
+    if (worker()) {
+      store.removeItem(RETRIED);
+      return false;
+    }
+    if (store.getItem(RETRIED)) return false;
+    store.setItem(RETRIED, String(Date.now()));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function start({
   seat = seatPage,
   go = (url) => location.replace(url),
+  worker = () => controlled(),
+  storage = () => sessionStorage,
+  at = location,
+  target = () => tripTarget(),
+  handoff = () => import('./handoff.js'),
   follow = () => import('./follow.js'),
   follower = () => import('./follower.js'),
   os = () => import('./os.js'),
   fail = refused,
   check = stoppedPath,
-  clear = clearHandOff,
-  lost = dropped,
   doc = globalThis.document,
 } = {}) {
-  const names = lost();
+  if (tripped(worker, storage)) return go(`${await target()}${at.hash}`);
+  let hand;
+  try {
+    hand = await handoff();
+  } catch (error) {
+    console.error(error);
+    return fail(undefined, undefined, await check());
+  }
+  const clear = () => hand.clearHandOff();
+  const names = hand.dropped();
   if (names) {
     clear();
-    return droppedPage(doc, names);
+    return droppedPage(doc, names, hand.droppedLine);
   }
   const guest = seat();
   if (guest) {
