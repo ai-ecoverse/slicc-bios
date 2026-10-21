@@ -145,11 +145,6 @@ const CONTENTS = new Set([
   'DOMSnapshot.captureSnapshot',
   'DOMSnapshot.getSnapshot',
 ]);
-const CONTINUED = new Set([
-  'Network.requestWillBeSent',
-  'Network.loadingFailed',
-  'Network.loadingFinished',
-]);
 const STREAMED = new Set([
   'Network.streamResourceContent',
   'Fetch.takeResponseBodyAsStream',
@@ -422,6 +417,7 @@ class Guard {
     this.redact = redacting(this.is);
     this.redirected = new Set();
     this.continued = new Set();
+    this.extras = new Set();
     this.hops = new Set();
     this.sheets = new Set();
     this.navs = new Map();
@@ -456,6 +452,13 @@ class Guard {
     const { method, params } = message;
     if (!params || !(SPOKEN.test(method ?? '') || CONSOLE.has(method)))
       return this.deliver(message);
+    if (
+      method === 'Network.responseReceivedExtraInfo' &&
+      params.statusCode >= 300 &&
+      params.statusCode < 400
+    ) {
+      this.extras.add(params.requestId);
+    }
     if (method === 'CSS.styleSheetAdded' && this.is.url(params.header?.sourceURL)) {
       this.sheets.add(params.header.styleSheetId);
     }
@@ -802,11 +805,16 @@ class Guard {
 
   continuing(message) {
     const { method, params = {} } = message;
-    const redirect = params.statusCode >= 300 && params.statusCode < 400;
-    if (method === 'Network.responseReceivedExtraInfo' && !redirect) return true;
-    if (CONTINUED.has(method) || method === 'Network.responseReceivedExtraInfo') {
+    if (method === 'Network.loadingFailed' || method === 'Network.loadingFinished') {
       this.redacted(message);
+      return true;
     }
+    if (method !== 'Network.responseReceivedExtraInfo') return true;
+    const redirect = params.statusCode >= 300 && params.statusCode < 400;
+    if (!redirect || this.extras.has(params.requestId)) return true;
+    if (!this.redact({ headers: params.headers ?? {} }).changed.length) return true;
+    this.extras.add(params.requestId);
+    this.redacted(message);
     return true;
   }
 
