@@ -631,7 +631,15 @@ export function binDir(global) {
   return `/${global.replace(/\/global\/v\d+$/, '')}/bin`;
 }
 
-export async function unshadow({ root, kernel, global, name, dir }) {
+let unshadowing = Promise.resolve();
+
+export function unshadow(options) {
+  const next = unshadowing.then(() => unshadowOnce(options));
+  unshadowing = next.catch(() => undefined);
+  return next;
+}
+
+async function unshadowOnce({ root, kernel, global, name, dir, user = 'root' }) {
   const manifest = JSON.parse(
     (await text(root, `${dir}/node_modules/${name}/package.json`)) ?? '{}'
   );
@@ -643,6 +651,7 @@ export async function unshadow({ root, kernel, global, name, dir }) {
     ['bash', '-c', UNSHADOW, 'unshadow', binDir(global), owner, ...names],
     {
       cwd: '/',
+      user,
       onStdout: (chunk) => {
         out += chunk;
       },
@@ -651,6 +660,81 @@ export async function unshadow({ root, kernel, global, name, dir }) {
   if (status)
     throw new Error(stderr?.trim() || `unlinking ${names.join(', ')} exited with ${status}`);
   return out.split('\n').filter(Boolean);
+}
+
+const PASSWD = '/etc/passwd';
+const SHELL_HOME = /^\/home\/[^/]+\/\.local\/share\/pnpm(?=\/(?:bin|global)(?:\/|$))/;
+
+export function pnpmHome(path, system) {
+  if (path === `${system}/bin` || path.startsWith(`${system}/bin/`)) return system;
+  if (path === `${system}/global` || path.startsWith(`${system}/global/`)) return system;
+  return SHELL_HOME.exec(path)?.[0] ?? null;
+}
+
+export async function shellUnshadow({ root, kernel, global, home }) {
+  const system = binDir(global).slice(0, -'/bin'.length);
+  const owner =
+    home === system
+      ? { user: 'root', global }
+      : homes(await text(root, 'etc/passwd'))
+          .filter((found) => home === `${found.home}/.local/share/pnpm`)
+          .map(({ user }) => ({ user, global: `${home.slice(1)}/global/v11` }))[0];
+  if (!owner) return [];
+  const removed = [];
+  for (const { name, dir } of await globals(root, owner.global))
+    removed.push(...(await unshadow({ root, kernel, name, dir, ...owner })));
+  return removed;
+}
+
+export async function watchShadows({ root, kernel, attach, global, wait = 50, report }) {
+  const system = binDir(global).slice(0, -'/bin'.length);
+  const client = await attach(await kernel.connect());
+  const timers = new Map();
+  const pass = (home) => {
+    timers.delete(home);
+    void shellUnshadow({ root, kernel, global, home }).catch((error) =>
+      report(`unshadow ${home}: ${error.message}`)
+    );
+  };
+  const all = async () => [
+    system,
+    ...homes(await text(root, 'etc/passwd')).map(({ home }) => `${home}/.local/share/pnpm`),
+  ];
+  const onChange = ({ paths, overflow }) => {
+    if (overflow || paths.includes(PASSWD))
+      void rewatch().catch((error) => report(`unshadow watch: ${error.message}`));
+    const found = overflow ? all() : paths.map((path) => pnpmHome(path, system));
+    void Promise.resolve(found).then((list) => {
+      for (const home of new Set(list.filter(Boolean))) {
+        clearTimeout(timers.get(home));
+        timers.set(
+          home,
+          setTimeout(() => pass(home), wait)
+        );
+      }
+    });
+  };
+  let watching = null;
+  let watched = '';
+  let chain = Promise.resolve();
+  const rewatch = () => {
+    const next = chain.then(async () => {
+      const paths = [PASSWD, ...(await all()).flatMap((home) => [`${home}/bin`, `${home}/global`])];
+      if (paths.join('\n') === watched) return;
+      const before = watching;
+      watching = await client.fs.watch(paths, { recursive: true }, onChange);
+      watched = paths.join('\n');
+      before?.close();
+    });
+    chain = next.catch(() => undefined);
+    return next;
+  };
+  await rewatch();
+  for (const home of await all()) pass(home);
+  return {
+    paths: () => watched.split('\n'),
+    close: () => chain.then(() => watching.close()),
+  };
 }
 
 export function refusal(refused, label, previous) {

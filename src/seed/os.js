@@ -54,7 +54,7 @@ import {
   startingLine,
   watchWaiting,
 } from './notices.js';
-import { createPackages, globalDir, loadCatalog, writeListing } from './packages.js';
+import { createPackages, globalDir, loadCatalog, watchShadows, writeListing } from './packages.js';
 import { createPairing, takePairing } from './pair.js';
 import {
   biosHash,
@@ -769,6 +769,13 @@ async function own() {
     console.warn(`legacy files: ${error.message}`)
   );
   await layoutMnt(kernel).catch((error) => console.warn(`/mnt: ${error.message}`));
+  await watchShadows({
+    root,
+    kernel,
+    attach: attachKernel,
+    global: await globalDir(kernel),
+    report: (message) => console.warn(message),
+  }).catch((error) => console.warn(`unshadow watch: ${error.message}`));
   if (mode === 'report') {
     await watchProtected({
       kernel,

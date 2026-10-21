@@ -1,7 +1,7 @@
 # mcpcat in seven, as root and as cone: the version seven offers (npm's latest that passes its gate, from /etc/slicc/optional.json), its skill, a stdio MCP server and an HTTP one on the kernel's loopback, a vault secret in a header, and cone's private mcp.json.
-# The catalog's install removes pnpm's Node bin link, so mcpcat runs /usr/bin/mcpcat, the kernel command; a shell pnpm add -g doesn't, so the first command removes it the same way.
+# A shell pnpm add -g, like the catalog's install, leaves the kernel command first on PATH (bios#715): seven removes pnpm's Node bin link within moments, so mcpcat runs /usr/bin/mcpcat.
 # pass: every command exits 0.
-for i in $(seq 1 60); do v=$(grep -A3 '"id": "mcpcat"' /etc/slicc/optional.json | sed -n 's/^ *"version": "\([^"]*\)".*/\1/p'); [ -n "$v" ] && break; sleep 1; done; [ -n "$v" ] || { echo "no mcpcat version in /etc/slicc/optional.json after 60 s"; false; } && pnpm add -g "@ai-ecoverse/mcpcat@$v" >/dev/null 2>&1; rm -f /usr/local/share/pnpm/bin/mcpcat; hash -r; test "$(mcpcat --version)" = "$v" && echo "version $v"
+for i in $(seq 1 60); do v=$(grep -A3 '"id": "mcpcat"' /etc/slicc/optional.json | sed -n 's/^ *"version": "\([^"]*\)".*/\1/p'); [ -n "$v" ] && break; sleep 1; done; [ -n "$v" ] || { echo "no mcpcat version in /etc/slicc/optional.json after 60 s"; false; } && pnpm add -g "@ai-ecoverse/mcpcat@$v" >/dev/null 2>&1; n=0; while head -c 19 /usr/local/share/pnpm/bin/mcpcat 2>/dev/null | grep -q /usr/bin/env && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done; hash -r; test "$(mcpcat --version)" = "$v" && echo "version $v"
 # pass: mcpcat --version prints the offered version, as root and as cone.
 test "$(sudo -u cone mcpcat --version)" = "$(mcpcat --version)" && echo "cone runs $(sudo -u cone mcpcat --version)"
 # pass: help --skill prints the agent skill named mcpcat.

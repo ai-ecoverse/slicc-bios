@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
-import { actPackage, boot } from './bios.mjs';
+import { actPackage, boot, ready, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { fakeCatalog } from './fake-catalog.mjs';
 
@@ -8,6 +9,9 @@ const MCPCAT = '@ai-ecoverse/mcpcat';
 const GLUE = '@ai-ecoverse/hot-glue';
 const pins = { [MCPCAT]: '0.16.3', [GLUE]: '0.3.0' };
 const BIN = '/usr/local/share/pnpm/bin';
+const SHIPPED = JSON.parse(
+  await readFile(new URL('../../src/packages/optional/package.json', import.meta.url), 'utf8')
+).dependencies[MCPCAT];
 
 const chrome = await launch({ timeout: 120000, intercept: [] });
 const registry = await fakeCatalog(chrome.cdp);
@@ -129,5 +133,66 @@ test('a catalog package’s kernel command wins over the same package’s Node b
   const listed = await sh(page, `ls ${BIN}`);
   assert.doesNotMatch(listed.out, /^mcpcat$/m);
   assert.match(listed.out, /^hotglue$/m);
+  assert.deepEqual(page.errors, []);
+});
+
+test('bios#715: a shell pnpm add -g, as root and as cone, leaves the package’s kernel command first on PATH, a package with only a bin keeps its link, and a Node link left from before goes at the next boot', {
+  timeout: 20 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  offer();
+  await page.init('() => { globalThis.sliccKernelDebug = true; }');
+  await page.goto(`/#${new URLSearchParams({ users: 'enforce' })}`);
+  await ready(page);
+  const pnpm = `pnpm add -g --config.minimum-release-age=0 ${MCPCAT}@${SHIPPED} ${GLUE}@${pins[GLUE]}`;
+  const node = 'head -c 19 "$PNPM_HOME/bin/mcpcat" 2>/dev/null | grep -q /usr/bin/env';
+  const settle = `n=0; while ${node} && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done; ${node} && echo still-node || echo settled-after-$n`;
+  const look =
+    'echo "found $(command -v mcpcat) $(command -v hotglue)"; echo "first $(head -n 1 "$(command -v mcpcat)" | cut -c1-19)"; mcpcat --version';
+  const check = (text, bin) => {
+    t.diagnostic(`${bin}: ${text.match(/settled-after-\d+|still-node/)?.[0]}`);
+    assert.match(text, /added-0/, text);
+    assert.match(text, /\nsettled-after-\d+\n/, text);
+    assert.match(text, new RegExp(`found \\S+/mcpcat ${bin}/hotglue`), text);
+    assert.doesNotMatch(text, /first #!\/usr\/bin\/env node/, text);
+    assert.match(text, new RegExp(`\\n${SHIPPED.replaceAll('.', '\\.')}\\s`), text);
+    assert.doesNotMatch(text, /bad interpreter/, text);
+  };
+  await run(
+    page,
+    `clear; ${pnpm} > /tmp/add.log 2>&1; echo added-$?; tail -c 300 /tmp/add.log; ${settle}; ${look}; echo root-$((40 + 2))`
+  );
+  await shows(page, 'root-42', 10 * 60 * 1000).catch(async (error) => {
+    throw new Error(`${error.message}\n${await screen(page)}`);
+  });
+  const log = await sh(page, 'cat /tmp/add.log');
+  check((await screen(page)).replace(/ {2,}/g, '\n') + log.out, BIN);
+
+  const cone = '/home/cone/.local/share/pnpm/bin';
+  const asCone = `PATH=$PNPM_HOME/bin:$PATH; ${pnpm} > /tmp/cone.log 2>&1; echo added-$?; ${settle}; ${look}`;
+  await run(
+    page,
+    `clear; sudo -u cone bash -c '${asCone.replaceAll("'", "'\\''")}'; echo cone-$((40 + 2))`
+  );
+  await shows(page, 'cone-42', 10 * 60 * 1000);
+  const coneLog = await sh(page, 'cat /tmp/cone.log');
+  check((await screen(page)).replace(/ {2,}/g, '\n') + coneLog.out, cone);
+
+  await page.evaluate(async (owner) => {
+    let dir = await navigator.storage.getDirectory();
+    for (const part of ['usr', 'local', 'share', 'pnpm', 'bin'])
+      dir = await dir.getDirectoryHandle(part);
+    const writable = await (await dir.getFileHandle('mcpcat', { create: true })).createWritable();
+    await writable.write(`#!/usr/bin/env node\nimport '${owner}dist/host/mcpcat.mjs';\n`);
+    await writable.close();
+  }, '/usr/local/share/pnpm/global/v11/x/node_modules/@ai-ecoverse/mcpcat/');
+  assert.equal((await sh(page, `head -c 19 ${BIN}/mcpcat`)).out, '#!/usr/bin/env node');
+  await page.reload();
+  await ready(page);
+  const left = await sh(
+    page,
+    `n=0; while [ -e ${BIN}/mcpcat ] && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done; [ -e ${BIN}/mcpcat ] && echo left || echo gone; command -v mcpcat`
+  );
+  assert.deepEqual(left, { code: '0', out: 'gone\n/usr/bin/mcpcat' });
   assert.deepEqual(page.errors, []);
 });
