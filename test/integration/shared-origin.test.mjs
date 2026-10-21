@@ -54,6 +54,61 @@ const manifest = JSON.parse(
   await readFile(new URL('../../src/manifest.json', import.meta.url), 'utf8')
 );
 
+function watchSteps(page, t) {
+  const start = Date.now();
+  const trail = [];
+  const vault = new Set();
+  const note = (line) => trail.push(`${Date.now() - start} ${line}`);
+  const off = chrome.cdp.on(({ method, params = {}, sessionId }) => {
+    const url = params.request?.url ?? params.response?.url ?? '';
+    const ours = url.startsWith(chrome.vault.origin) || vault.has(params.requestId);
+    if (method === 'Network.requestWillBeSent' && url.startsWith(chrome.vault.origin))
+      vault.add(params.requestId);
+    if (!ours && !(method.startsWith('Fetch.') && url.startsWith(chrome.vault.origin))) return;
+    if (!/^(Fetch|Network)\./.test(method) || method === 'Network.dataReceived') return;
+    const status = params.responseStatusCode ?? params.response?.status ?? '';
+    note(
+      `${method} ${sessionId?.slice(0, 8) ?? '-'} ${params.requestId ?? ''} ${url.slice(0, 80)} ${status}`
+    );
+  });
+  t.after(off);
+  const dump = async (name) => {
+    const tree = await page
+      .send('Page.getFrameTree')
+      .then(({ frameTree }) =>
+        JSON.stringify(frameTree, (key, value) => (key === 'adFrameStatus' ? undefined : value))
+      )
+      .catch((error) => `frame tree failed: ${error.message}`);
+    const { targetInfos } = await chrome.cdp.send('Target.getTargets');
+    const signIn = await Promise.race([
+      page.evaluate(() => JSON.stringify(globalThis.signInTrail ?? null)),
+      new Promise((resolve) => setTimeout(() => resolve('page evaluate hangs 5 s'), 5000)),
+    ]).catch((error) => `page evaluate failed: ${error.message}`);
+    const lines = [
+      `shared-origin step "${name}" has no answer after 20 s`,
+      `sign-in trail: ${signIn}`,
+      `frames: ${tree.slice(0, 3000)}`,
+      `targets: ${targetInfos.map(({ type, url, attached }) => `${type} ${url.slice(0, 80)} ${attached}`).join(' | ')}`,
+      ...trail.map((line) => `vault request: ${line}`),
+    ];
+    for (const line of lines) t.diagnostic(line);
+    console.log(lines.join('\n'));
+  };
+  return async (name, fn) => {
+    note(`step ${name}`);
+    let timer;
+    const late = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(dump(name)), 20000);
+    });
+    try {
+      return await fn();
+    } finally {
+      clearTimeout(timer);
+      void late;
+    }
+  };
+}
+
 async function open(t) {
   const page = await chrome.page(t);
   await page.init(
@@ -135,93 +190,115 @@ test('seven boots from /7/ of an origin it shares with six: the UI is /os/, ever
 
 test("on a shared origin, sign-in goes through six's relay, the tray hub through the BIOS's folder, and Reload and the uncontrolled trip through the BIOS", async (t) => {
   const page = await open(t);
+  const step = watchSteps(page, t);
   await page.goto(`${origin}/7/`);
   await ready(page);
 
-  const signedIn = await page.evaluate(async () => {
-    const { signIn } = await import('/os/adobe.js');
-    let state = null;
-    const popup = {
-      set location(_) {},
-      get location() {
-        return {
-          set href(url) {
-            state = JSON.parse(atob(new URL(url).searchParams.get('state')));
-            const redirectUrl = `${location.origin}/auth/callback?nonce=${state.nonce}#access_token=tok-1`;
-            setTimeout(() => {
-              const relay = new BroadcastChannel('slicc-oauth-relay');
-              relay.postMessage({ type: 'oauth-callback', redirectUrl, nonce: state.nonce });
-              relay.close();
-            }, 100);
-          },
-        };
-      },
-      close() {},
-    };
-    const login = signIn({ shared: true, open: () => popup });
-    const token = await login('adobe', () => ({ clientId: 'c', scopes: 's' }));
-    return { token, source: state.source, origin: state.origin ?? null };
-  });
+  const signedIn = await step('sign-in', () =>
+    page.evaluate(async () => {
+      globalThis.signInTrail = [];
+      const trail = (line) =>
+        globalThis.signInTrail.push(`${Math.round(performance.now())} ${line}`);
+      const { signIn } = await import('/os/adobe.js');
+      let state = null;
+      const popup = {
+        set location(_) {},
+        get location() {
+          return {
+            set href(url) {
+              trail('href');
+              state = JSON.parse(atob(new URL(url).searchParams.get('state')));
+              const redirectUrl = `${location.origin}/auth/callback?nonce=${state.nonce}#access_token=tok-1`;
+              setTimeout(() => {
+                const relay = new BroadcastChannel('slicc-oauth-relay');
+                trail('post');
+                relay.postMessage({ type: 'oauth-callback', redirectUrl, nonce: state.nonce });
+                relay.close();
+              }, 100);
+            },
+          };
+        },
+        close() {},
+      };
+      const listen = (name) => {
+        trail(`listen ${name}`);
+        const channel = new BroadcastChannel(name);
+        channel.addEventListener('message', ({ data }) => trail(`heard ${data?.type}`));
+        return channel;
+      };
+      trail('import done');
+      const login = signIn({ shared: true, open: () => popup, listen });
+      const token = await login('adobe', () => ({ clientId: 'c', scopes: 's' }));
+      trail('token');
+      return { token, source: state.source, origin: state.origin ?? null };
+    })
+  );
   assert.deepEqual(signedIn, { token: 'tok-1', source: 'opener', origin: null });
 
-  const hub = await page.evaluate(async () => {
-    const { trayHub } = await import('/os/tray.js');
-    const { home } = await import('/os/site.js');
-    const posted = [];
-    const answers = [
-      {
-        trayId: 't1',
-        capabilities: {
-          controller: { url: 'https://www.sliccy.ai/controller/c1' },
-          join: { url: 'https://www.sliccy.ai/join/j1' },
-          webhook: { url: 'https://www.sliccy.ai/webhook/w1' },
+  const hub = await step('hub', () =>
+    page.evaluate(async () => {
+      const { trayHub } = await import('/os/tray.js');
+      const { home } = await import('/os/site.js');
+      const posted = [];
+      const answers = [
+        {
+          trayId: 't1',
+          capabilities: {
+            controller: { url: 'https://www.sliccy.ai/controller/c1' },
+            join: { url: 'https://www.sliccy.ai/join/j1' },
+            webhook: { url: 'https://www.sliccy.ai/webhook/w1' },
+          },
         },
-      },
-      {
-        role: 'leader',
-        leaderKey: 'k1',
-        websocket: { url: 'wss://www.sliccy.ai/controller/c1/ws' },
-      },
-    ];
-    const fake = async (url) => {
-      posted.push(url);
-      return new Response(JSON.stringify(answers.shift()), { status: 200 });
-    };
-    const claimed = await trayHub(home(), fake).lead(null, true);
-    return { posted, socket: claimed.url };
-  });
+        {
+          role: 'leader',
+          leaderKey: 'k1',
+          websocket: { url: 'wss://www.sliccy.ai/controller/c1/ws' },
+        },
+      ];
+      const fake = async (url) => {
+        posted.push(url);
+        return new Response(JSON.stringify(answers.shift()), { status: 200 });
+      };
+      const claimed = await trayHub(home(), fake).lead(null, true);
+      return { posted, socket: claimed.url };
+    })
+  );
   assert.deepEqual(hub, {
     posted: [`${origin}/7/tray`, `${origin}/7/controller/c1`],
     socket: `${origin.replace('http:', 'ws:')}/7/controller/c1/ws`,
   });
 
-  const reload = await page.evaluate(async () => {
-    const { refused } = await import('/os/start.js');
-    return new Promise((resolve) => {
-      const box = refused(document.implementation.createHTMLDocument(''), resolve);
-      box.querySelector('button').click();
-    });
-  });
+  const reload = await step('reload', () =>
+    page.evaluate(async () => {
+      const { refused } = await import('/os/start.js');
+      return new Promise((resolve) => {
+        const box = refused(document.implementation.createHTMLDocument(''), resolve);
+        box.querySelector('button').click();
+      });
+    })
+  );
   assert.equal(reload, `${origin}/7/`);
-  const trip = await page.evaluate(async () => {
-    const { start } = await import('/os/start.js');
-    const kept = new Map();
-    let went = null;
-    await start({
-      seat: () => null,
-      go: (url) => {
-        went = url;
-      },
-      worker: () => false,
-      storage: () => ({
-        getItem: (key) => kept.get(key) ?? null,
-        setItem: (key, value) => kept.set(key, value),
-        removeItem: (key) => kept.delete(key),
-      }),
-      at: { hash: '#x' },
-    });
-    return went;
-  });
+  const trip = await step('trip', () =>
+    page.evaluate(async () => {
+      const { start } = await import('/os/start.js');
+      const kept = new Map();
+      let went = null;
+      await start({
+        seat: () => null,
+        go: (url) => {
+          went = url;
+        },
+        worker: () => false,
+        storage: () => ({
+          getItem: (key) => kept.get(key) ?? null,
+          setItem: (key, value) => kept.set(key, value),
+          removeItem: (key) => kept.delete(key),
+        }),
+        at: { hash: '#x' },
+      });
+      return went;
+    })
+  );
   assert.equal(
     trip,
     `${origin}/7/#x`,
