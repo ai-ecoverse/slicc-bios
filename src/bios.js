@@ -83,7 +83,7 @@ async function step(name, task) {
     if (item.dataset.state === 'failed') clearHandOff();
   }
   item.dataset.state = 'done';
-  document.querySelector('progress').value += 1;
+  document.querySelector('.status progress').value += 1;
   splash.done(name, output.value);
 }
 

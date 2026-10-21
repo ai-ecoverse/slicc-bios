@@ -64,6 +64,7 @@ async function attempt({
 export function importSix(options) {
   return attempt(options).catch((error) => {
     console.warn(`SLICC 6 import: ${error.message}`);
+    options.notices.show(failedNotice(error.message), () => {});
     return null;
   });
 }

@@ -118,7 +118,7 @@ async function run() {
   for (const [at, { path, handle }] of files.entries()) {
     post({ type, phase: 'reading', done: at, total: files.length });
     const bytes = await (await handle.getFile()).arrayBuffer();
-    rows.push({ path: 'files' + (path.startsWith('/home/user/') ? '/home-user/' + path.slice(11) : path), size: bytes.byteLength, sha256: await sha256(bytes), source: '/slicc-fs' + path });
+    rows.push({ path: 'files' + (path.startsWith('/home/user/') ? '/home-user/' + path.slice(11) : path), size: bytes.byteLength, sha256: mode === 'tamper' ? '0'.repeat(64) : await sha256(bytes), source: '/slicc-fs' + path });
     await pause(150);
   }
   post({ type, phase: 'reading', done: files.length, total: files.length });

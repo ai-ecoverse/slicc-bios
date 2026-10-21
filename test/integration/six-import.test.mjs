@@ -8,7 +8,7 @@ import { startWww } from './fake-six.mjs';
 
 const chrome = await launch({ agent: true, timeout: 60000 });
 const www = await startWww(new URL(chrome.url));
-const { origin } = www;
+const { origin, state } = www;
 const proxy = await fakeProxy({
   origin,
   key: 'the-key',
@@ -32,9 +32,7 @@ const sh = (page, command) =>
     return { status, out: `${stdout}${stderr}` };
   }, command);
 
-test('after the move, the agent imports the export in place: the files leave /slicc-fs, the export directory is deleted and the hand-off key goes', {
-  timeout: 30 * 60 * 1000,
-}, async (t) => {
+async function moved(t) {
   const page = await chrome.page(t);
   await page.init(
     `() => { globalThis.sliccKernelDebug = true; if (location.origin === ${JSON.stringify(origin)} && !localStorage.getItem(${JSON.stringify(VAULT_KEY)})) localStorage.setItem(${JSON.stringify(VAULT_KEY)}, ${JSON.stringify(chrome.vault.origin)}); }`
@@ -53,22 +51,58 @@ test('after the move, the agent imports the export in place: the files leave /sl
   const dir = await page.evaluate(() => localStorage.getItem('slicc-os.six-import'));
   assert.match(dir, /^\/slicc-v6-upgrade\/[0-9a-f-]{36}\/$/);
   await agentUp(page);
-  await page.within(5 * 60 * 1000, () => localStorage.getItem('slicc-os.six-import') === null);
+  return { page, dir };
+}
 
-  const moved = await sh(
-    page,
-    `cat /root/v6/home-user/notes.txt; test ! -e /slicc-fs/home/user/notes.txt && echo gone-from-slicc-fs; test ! -e ${dir} && echo export-removed`
-  );
-  assert.equal(moved.out, 'six notes\ngone-from-slicc-fs\nexport-removed\n', moved.out);
-  assert.equal(
-    await page.evaluate(() =>
+const notice = (page) =>
+  page.evaluate(
+    () =>
       document
         .querySelector('slicc-app')
         ?.model?.notices?.list()
-        .some(({ id }) => id === 'six-import')
-    ),
-    false
+        .find(({ id }) => id === 'six-import') ?? null
   );
+
+test('after the move, the agent imports the export in place: the files leave /slicc-fs, the export directory is deleted and the hand-off key goes', {
+  timeout: 30 * 60 * 1000,
+}, async (t) => {
+  state.mode = 'ok';
+  const { page, dir } = await moved(t);
+  await page.within(5 * 60 * 1000, () => localStorage.getItem('slicc-os.six-import') === null);
+
+  const after = await sh(
+    page,
+    `cat /root/v6/home-user/notes.txt; test ! -e /slicc-fs/home/user/notes.txt && echo gone-from-slicc-fs; test ! -e ${dir} && echo export-removed`
+  );
+  assert.equal(after.out, 'six notes\ngone-from-slicc-fs\nexport-removed\n', after.out);
+  assert.equal(await notice(page), null);
   assert.equal(await page.evaluate(() => localStorage.getItem('slicc-os.six')), 'upgraded');
+  assert.deepEqual(page.errors, []);
+});
+
+test('when the agent refuses the export, seven keeps the hand-off key, says so, and leaves the files in /slicc-fs', {
+  timeout: 30 * 60 * 1000,
+}, async (t) => {
+  state.mode = 'tamper';
+  const { page, dir } = await moved(t);
+  const shown = await page.within(5 * 60 * 1000, () => {
+    const found = document
+      .querySelector('slicc-app')
+      ?.model?.notices?.list()
+      .find(({ id }) => id === 'six-import');
+    return found ? { tone: found.tone, title: found.title, body: found.body } : null;
+  });
+  assert.equal(shown.tone, 'warning');
+  assert.equal(shown.title, 'Your SLICC 6 cones aren’t in seven yet');
+  assert.match(
+    shown.body,
+    /^Seven couldn’t import what SLICC 6 left in this browser: .+\. Seven tries again the next time it starts\.$/
+  );
+  assert.equal(await page.evaluate(() => localStorage.getItem('slicc-os.six-import')), dir);
+  const kept = await sh(
+    page,
+    `cat /slicc-fs/home/user/notes.txt; test -e ${dir}manifest.json && echo export-kept; test ! -e /root/v6/home-user/notes.txt && echo not-moved`
+  );
+  assert.equal(kept.out, 'six notes\nexport-kept\nnot-moved\n', kept.out);
   assert.deepEqual(page.errors, []);
 });
