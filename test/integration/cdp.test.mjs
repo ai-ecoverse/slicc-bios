@@ -37,6 +37,10 @@ const stand = createHttp((req, res) => {
     });
     return res.end();
   }
+  if (url.pathname === '/to-vault') {
+    res.writeHead(302, { location: `${VAULT}?code=${['HOP', 'MARK', '77'].join('')}` });
+    return res.end();
+  }
   if (url.pathname === '/landed') {
     res.writeHead(200, { 'content-type': 'text/plain', 'access-control-allow-origin': '*' });
     return res.end('landed');
@@ -1491,6 +1495,30 @@ test('playwright-cli drives a page through slicc-node’s /cdp, on one shared so
   await run(page, 'playwright-cli close && echo closed-$?');
   await shows(page, 'closed-0');
   assert.equal(await open(page), false);
+  assert.deepEqual(page.errors, []);
+});
+
+test('playwright-cli: a goto that redirects into the vault fails cleanly, and a page whose own URL names a vault redirect_uri stays drivable', async (t) => {
+  const proxy = await viaProxy(t);
+  const page = await launched(t, proxy);
+  await run(page, 'playwright-cli open about:blank');
+  await shows(page, 'Opened about:blank');
+  hits.length = 0;
+  const started = Date.now();
+  await run(
+    page,
+    `playwright-cli goto http://localhost:${standPort}/to-vault > /tmp/hop 2>&1; echo "status $?" >> /tmp/hop; echo "hop-""done"`
+  );
+  await shows(page, 'hop-done', 60000);
+  const hop = await read(page, '/tmp/hop');
+  assert.ok(Date.now() - started < 60000, hop);
+  assert.doesNotMatch(hop, /HOPMARK77|VAULT-MARK/, hop);
+  assert.ok(!hits.some((hit) => hit.startsWith('vault.sliccy.ai')), hits.join(' '));
+  const idp = `http://localhost:${standPort}/plain?redirect_uri=${encodeURIComponent(`${VAULT}/cb`)}&state=s`;
+  await run(page, `playwright-cli goto '${idp}' && playwright-cli snapshot`);
+  await shows(page, 'heading "Plain"');
+  await run(page, 'playwright-cli close && echo closed-$?');
+  await shows(page, 'closed-0');
   assert.deepEqual(page.errors, []);
 });
 

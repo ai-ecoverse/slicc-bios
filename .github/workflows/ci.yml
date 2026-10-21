@@ -119,6 +119,7 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}
           ITEMS: ${{ matrix.items }}
+          GUARD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           RETRY: ${{ needs.plan.outputs.retry }}
           EXPERIMENT_ARM: ${{ needs.plan.outputs.arm }}
           EXPERIMENT_PR: ${{ needs.plan.outputs.pr }}

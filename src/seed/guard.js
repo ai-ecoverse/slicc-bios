@@ -89,7 +89,6 @@ const BODIES = new Set([
   'Network.getResponseBody',
   'Network.getRequestPostData',
   'Network.searchInResponseBody',
-  'Network.streamResourceContent',
   'Network.replayXHR',
   'Network.getResponseBodyForInterception',
   'Network.takeResponseBodyForInterceptionAsStream',
@@ -127,6 +126,36 @@ const ORIGINS = new Set([
   'documentURL',
   'unreachableUrl',
 ]);
+const CONTENTS = new Set([
+  'Page.captureSnapshot',
+  'Page.getResourceContent',
+  'Page.searchInResource',
+  'Network.getResponseBody',
+  'Network.searchInResponseBody',
+  'Fetch.getResponseBody',
+  'IO.read',
+  'CSS.getStyleSheetText',
+  'Audits.getEncodedResponse',
+  'Network.getResponseBodyForInterception',
+  'Network.getRequestPostData',
+  'DOM.getDocument',
+  'DOM.getFlattenedDocument',
+  'DOM.getOuterHTML',
+  'DOM.describeNode',
+  'DOMSnapshot.captureSnapshot',
+  'DOMSnapshot.getSnapshot',
+]);
+const STREAMED = new Set([
+  'Network.streamResourceContent',
+  'Fetch.takeResponseBodyAsStream',
+  'Network.takeResponseBodyForInterceptionAsStream',
+]);
+const SEARCHES = {
+  'Network.searchInResponseBody': ({ requestId }) => ['Network.getResponseBody', { requestId }],
+  'Page.searchInResource': ({ frameId, url }) => ['Page.getResourceContent', { frameId, url }],
+};
+export const STREAMING =
+  'slicc: refused: a streamed body can’t be checked for seven’s or the vault’s URLs, so the guard doesn’t stream bodies; read the whole body instead';
 const CLOSED = new Set(['url', 'scopeURL', 'scriptURL']);
 const FREE = new Set([
   'expression',
@@ -227,6 +256,156 @@ const inherits = (url) => {
 
 const owned = (own) => [own ?? []].flat().filter(Boolean);
 
+const STARTS = /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\//gi;
+const ENCODED_STARTS = /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*%(?:25)*3a%(?:25)*2f%(?:25)*2f/gi;
+const STOPS = /[\s"'<>\\`]/g;
+const ENCODED_STOPS = /[\s"'<>\\`&]/g;
+const AUTHORITY = 4096;
+const SPOKEN = /^(?:Network|Fetch|Log|Audits|Page|CSS|Console|DOM)\./;
+const CONSOLE = new Set(['Runtime.exceptionThrown', 'Runtime.consoleAPICalled']);
+const ANSWERED = new Set([
+  'headers',
+  'headersText',
+  'responseHeaders',
+  'redirectResponse',
+  'response',
+]);
+const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const HOSTS = new RegExp(
+  `(${[...catalog.protectedOrigins.domains, ...catalog.protectedOrigins.hosts].map(escaped).join('|')})(\\.?(?::\\d+|%3a\\d+)?)(?:[/?#\\\\][^\\s"'<>\`]*|(?:%2f|%3f|%23|%5c)[^\\s"'<>\`&]*)`,
+  'gi'
+);
+
+const ENTITIES = { colon: ':', sol: '/', amp: '&', quest: '?', num: '#', equals: '=', period: '.' };
+
+function unescaped(text) {
+  return text.replace(/&(?:#x([0-9a-f]{1,6})|#(\d{1,7})|([a-z]+));?/gi, (found, hex, dec, name) => {
+    if (hex || dec) {
+      const code = hex ? Number.parseInt(hex, 16) : Number(dec);
+      return code <= 0x10ffff ? String.fromCodePoint(code) : found;
+    }
+    return ENTITIES[name.toLowerCase()] ?? found;
+  });
+}
+
+function decodedBytes(text) {
+  try {
+    return atob(text);
+  } catch {
+    return '';
+  }
+}
+
+function decoded(text) {
+  let out = text.replace(/%[0-9a-f]?$/i, '');
+  for (let i = 0; i < 4 && /%[0-9a-f]{2}/i.test(out); i += 1) {
+    try {
+      out = decodeURIComponent(out);
+    } catch {
+      return out;
+    }
+  }
+  return out;
+}
+
+function authority(text) {
+  const start = text.indexOf('://') + 3;
+  const rest = text.slice(start, start + AUTHORITY + 1);
+  const end = rest.search(/[/?#\\]/);
+  const whole = end < 0 ? rest : rest.slice(0, end);
+  if (whole.length > AUTHORITY) return null;
+  return `${text.slice(0, start)}${whole.slice(whole.lastIndexOf('@') + 1)}`;
+}
+
+function scanned(value, starts, stops, swap) {
+  let out = '';
+  let last = 0;
+  let stop = -1;
+  starts.lastIndex = 0;
+  for (let found = starts.exec(value); found; found = starts.exec(value)) {
+    if (found.index >= stop) {
+      stops.lastIndex = found.index;
+      stop = stops.exec(value)?.index ?? value.length;
+    }
+    const swapped = swap(value.slice(found.index, stop));
+    if (swapped === null) continue;
+    out += value.slice(last, found.index) + swapped;
+    last = stop;
+    starts.lastIndex = stop;
+  }
+  return out + value.slice(last);
+}
+
+export function redacting(is) {
+  let webs = 0;
+  const past = (text, shown) => {
+    if (/^(?:https?|wss?):/i.test(text) && /^\/?[^/]/.test(text.slice(shown.length))) webs += 1;
+  };
+  const origin = (text) => {
+    const shown = authority(text);
+    if (shown === null) return text.slice(0, text.indexOf('://') + 3);
+    if (!is.url(`${shown}/`)) return null;
+    if (URL.canParse(`${shown}/`)) past(text, shown);
+    return shown;
+  };
+  const encoded = (text) => {
+    const plain = decoded(text.slice(0, AUTHORITY * 3));
+    if (!plain.includes('://')) return null;
+    const shown = origin(plain);
+    return shown === null ? null : encodeURIComponent(shown);
+  };
+  const text = (value) => {
+    if (!value.includes('://') && !/%(?:25)*3a/i.test(value) && !/sliccy\.ai/i.test(value)) {
+      return value;
+    }
+    const raw = scanned(value, STARTS, STOPS, origin);
+    return scanned(raw, ENCODED_STARTS, ENCODED_STOPS, encoded).replace(
+      HOSTS,
+      (found, host, port) => {
+        if (/^(?:\/|%2f)?[^/%]/i.test(found.slice(host.length + port.length))) webs += 1;
+        return `${host}${port}`;
+      }
+    );
+  };
+  const walk = (value, path, changed) => {
+    if (typeof value === 'string') {
+      const out = text(value);
+      if (out !== value) changed.push(path);
+      return out;
+    }
+    if (Array.isArray(value)) return value.map((item) => walk(item, path, changed));
+    if (!value || typeof value !== 'object') return value;
+    const out = {};
+    const before = changed.length;
+    for (const [key, item] of Object.entries(value)) {
+      out[text(key)] = walk(item, ANSWERED.has(key) ? [...path, key] : path, changed);
+    }
+    const sibling = Object.entries(value).some(
+      ([key, item]) => typeof item === 'string' && out[text(key)] !== item
+    );
+    if (sibling && changed.length > before && typeof out.urlFragment === 'string') {
+      out.urlFragment = '';
+    }
+    return out;
+  };
+  return (params) => {
+    const changed = [];
+    webs = 0;
+    const out = walk(params, [], changed);
+    return {
+      params: out,
+      changed,
+      named: webs > 0,
+      answered: changed.some((path) => path.length > 0),
+    };
+  };
+}
+
+const kept = (set, value) => {
+  set.add(value);
+  if (set.size > REMEMBERED) set.delete(set.values().next().value);
+};
+
 export const ARM = [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }];
 
 export function protection(own) {
@@ -240,6 +419,13 @@ class Guard {
   constructor(connection, own) {
     this.connection = connection;
     this.is = protection(own);
+    this.redact = redacting(this.is);
+    this.redirected = new Set();
+    this.continued = new Set();
+    this.delivered = new Set();
+    this.extras = new Set();
+    this.hops = new Set();
+    this.sheets = new Set();
     this.navs = new Map();
     this.navSessions = new Map();
     this.errored = new Map();
@@ -266,6 +452,31 @@ class Guard {
     this.blockedWorkers = new Set();
     this.next = GUARD_IDS;
     this.guarded = { onmessage: null, onclose: null };
+  }
+
+  redacted(message) {
+    const { method, params } = message;
+    if (!params || !(SPOKEN.test(method ?? '') || CONSOLE.has(method)))
+      return this.deliver(message);
+    if (
+      method === 'Network.responseReceivedExtraInfo' &&
+      params.statusCode >= 300 &&
+      params.statusCode < 400
+    ) {
+      kept(this.extras, params.requestId);
+    }
+    if (method === 'CSS.styleSheetAdded' && this.is.url(params.header?.sourceURL)) {
+      kept(this.sheets, params.header.styleSheetId);
+    }
+    const { params: redacted, changed, answered } = this.redact(params);
+    if (!changed.length) return this.deliver(message);
+    if (answered && /^(?:Network|Fetch)\./.test(method)) {
+      for (const id of [params.requestId, params.networkId])
+        if (id !== undefined) kept(this.redirected, id);
+      for (const url of [params.request?.url, params.response?.url])
+        if (typeof url === 'string') kept(this.hops, bare(url));
+    }
+    return this.deliver({ ...message, params: redacted });
   }
 
   deliver(message) {
@@ -425,9 +636,12 @@ class Guard {
 
   navEvent({ method, params = {} }, nav) {
     if (method === 'Page.frameNavigated' && params.frame && !params.frame.parentId) {
-      return this.wiping(nav, `${params.frame.url}${params.frame.urlFragment ?? ''}`);
+      nav.last = `${params.frame.url}${params.frame.urlFragment ?? ''}`;
+      nav.stopped = false;
+      return this.wiping(nav, nav.last);
     }
     if (method === 'Page.frameStoppedLoading' && params.frameId === nav.targetId) {
+      nav.stopped = true;
       return this.wipe(nav);
     }
     if (method !== 'Fetch.requestPaused') return;
@@ -569,18 +783,61 @@ class Guard {
     const { method, params = {} } = message;
     const { requestId } = params;
     if (method === 'Network.requestWillBeSent' || method === 'Network.webSocketCreated') {
+      const shown = this.delivered.has(requestId);
       const marked = this.requests.get(requestId) === true || (await this.request(params));
       const waiting = this.settle(requestId, marked);
-      if (marked) return true;
-      this.deliver(message);
-      for (const held of waiting) this.deliver(held);
+      if (marked && shown && params.redirectResponse && !this.continued.has(requestId)) {
+        return this.hopped(message);
+      }
+      if (marked) return !shown || this.continuing(message);
+      kept(this.delivered, requestId);
+      this.redacted(message);
+      for (const held of waiting) this.redacted(held);
       return true;
     }
     if (!this.requests.has(requestId)) {
       this.hold(requestId, message);
       return true;
     }
+    if (this.requests.get(requestId) && this.delivered.has(requestId)) {
+      return this.continuing(message);
+    }
     return this.requests.get(requestId);
+  }
+
+  hopped(message) {
+    const { requestId, redirectResponse } = message.params;
+    kept(this.continued, requestId);
+    if (redirectResponse.url) kept(this.hops, bare(redirectResponse.url));
+    kept(this.redirected, requestId);
+    this.redacted(message);
+    return true;
+  }
+
+  continuing(message) {
+    const { method, params = {} } = message;
+    if (method === 'Network.loadingFailed' || method === 'Network.loadingFinished') {
+      this.redacted({
+        method: 'Network.loadingFailed',
+        sessionId: message.sessionId,
+        params: {
+          requestId: params.requestId,
+          timestamp: params.timestamp,
+          type: params.type ?? 'Other',
+          errorText: 'net::ERR_BLOCKED_BY_CLIENT',
+          canceled: false,
+          blockedReason: 'inspector',
+        },
+      });
+      return true;
+    }
+    if (method !== 'Network.responseReceivedExtraInfo') return true;
+    const redirect = params.statusCode >= 300 && params.statusCode < 400;
+    if (!redirect || this.extras.has(params.requestId)) return true;
+    if (!this.redact({ headers: params.headers ?? {} }).changed.length) return true;
+    kept(this.extras, params.requestId);
+    this.redacted(message);
+    return true;
   }
 
   async paused(message) {
@@ -597,24 +854,42 @@ class Guard {
     if (!targetId || frameId !== targetId) return;
     this.errored.set(targetId, bare(request.url));
     const nav = this.navs.get(targetId);
-    if (nav?.session && !nav.scrub) nav.scrub = this.scrubbing(nav);
+    if (!nav?.session || nav.scrub) return;
+    nav.scrub = this.scrubbing(nav);
+    if (!nav.last?.startsWith('chrome-error:')) return;
+    nav.erred = true;
+    if (nav.stopped) this.wipe(nav);
   }
 
   scrubbing(nav) {
     return new Promise((resolve) => {
-      const timer = setTimeout(() => {
+      const done = () => {
+        clearTimeout(nav.scrubTimer);
         nav.wiped = null;
         nav.scrub = null;
-        this.cutTarget(nav.targetId);
-        resolve();
-      }, SCRUB_MS);
-      timer.unref?.();
-      nav.wiped = () => {
-        clearTimeout(timer);
-        nav.wiped = null;
-        nav.scrub = null;
+        nav.retried = false;
         resolve();
       };
+      const expire = async () => {
+        const answer = nav.session ? await this.call('Page.getFrameTree', {}, nav.session) : {};
+        const url = answer.result?.frameTree?.frame;
+        const shown = url ? `${url.url}${url.urlFragment ?? ''}` : undefined;
+        if (shown !== undefined && !shown.startsWith('chrome-error:') && !this.is.url(shown)) {
+          return done();
+        }
+        if (!nav.retried && shown?.startsWith('chrome-error:')) {
+          nav.retried = true;
+          void this.call('Page.navigate', { url: BLANKED }, nav.session);
+          nav.scrubTimer = setTimeout(expire, SCRUB_MS);
+          nav.scrubTimer.unref?.();
+          return;
+        }
+        done();
+        this.cutTarget(nav.targetId);
+      };
+      nav.scrubTimer = setTimeout(expire, SCRUB_MS);
+      nav.scrubTimer.unref?.();
+      nav.wiped = done;
     });
   }
 
@@ -622,6 +897,7 @@ class Guard {
     if (!nav.wiped) return;
     if (url === BLANKED) return nav.wiped();
     nav.erred = url.startsWith('chrome-error:');
+    if (!nav.erred && !inherits(url) && !this.is.url(url)) nav.wiped();
   }
 
   wipe(nav) {
@@ -829,8 +1105,11 @@ class Guard {
   }
 
   masked(info) {
-    if (info.url === undefined || this.errored.get(info.targetId) !== bare(info.url)) return info;
-    return { ...info, url: ERROR_PAGE, title: ERROR_PAGE };
+    const failed = this.errored.get(info.targetId);
+    if (info.url === undefined || failed === undefined) return info;
+    if (![failed, '', ERROR_PAGE].includes(bare(info.url))) return info;
+    const origin = URL.canParse(failed) ? new URL(failed).origin : ERROR_PAGE;
+    return { ...info, url: origin, title: origin };
   }
 
   armed(sessionId) {
@@ -872,7 +1151,30 @@ class Guard {
     if (sessionId && this.naming({ ...message, method })) return;
     if (sessionId && method.startsWith('Page.') && !this.pages.has(sessionId)) return;
     if (PAUSES.has(method)) this.offered.add(message.params?.requestId);
-    this.deliver(message);
+    this.redacted(message);
+  }
+
+  async searched(method, params, sessionId) {
+    const [read, args] = SEARCHES[method](params);
+    const { result } = await this.call(read, args, sessionId);
+    return this.mentions(result);
+  }
+
+  mentions(result) {
+    if (!result || typeof result !== 'object') return false;
+    const coded = [result.body, result.data, result.content].find(
+      (item) => typeof item === 'string'
+    );
+    const unfolded = (text) => text.replace(/=\r?\n/g, '').replace(/=3D/gi, '=');
+    const plain = result.base64Encoded && coded !== undefined ? decodedBytes(coded) : (coded ?? '');
+    const text = unescaped(`${unfolded(plain)}\n${JSON.stringify(result)}`);
+    return this.redact({ text }).named;
+  }
+
+  contents(message, was) {
+    if (!CONTENTS.has(was?.method) || !this.mentions(message.result)) return false;
+    this.refuse(was);
+    return true;
   }
 
   async listed(message, result) {
@@ -912,6 +1214,7 @@ class Guard {
         result: { ...result, frameTree: this.tree(result.frameTree) },
       });
     }
+    if (this.contents(message, was)) return;
     if (method === 'Target.getTargetInfo' && result?.targetInfo) {
       return this.deliver({ ...message, result: { targetInfo: this.masked(result.targetInfo) } });
     }
@@ -1009,6 +1312,8 @@ class Guard {
       (sessionId !== undefined && this.hidden(sessionId)) ||
       (UNSAFE.has(method) && !this.clearing(method, params, sessionId)) ||
       this.valued(params) ||
+      (REQUESTS.has(method) && typeof params.url === 'string' && this.hops.has(bare(params.url))) ||
+      this.sheets.has(params.styleSheetId) ||
       this.workers(method, params) ||
       (method === 'Target.detachFromTarget' &&
         params.sessionId !== undefined &&
@@ -1019,6 +1324,7 @@ class Guard {
   unseen(method, params) {
     if (!BODIES.has(method) && !REQUESTS.has(method)) return null;
     const id = params.requestId ?? params.interceptionId;
+    if (this.redirected.has(id) && BODIES.has(method)) return PROTECTED;
     if (!this.requests.has(id)) return UNSEEN;
     if (this.requests.get(id)) return PROTECTED;
     if (!REQUESTS.has(method)) return null;
@@ -1039,6 +1345,8 @@ class Guard {
     }
     if (STICKY.has(method) || EMULATION.test(method)) return HEADERS;
     if (DEBUGGERS.some((domain) => method.startsWith(domain))) return DEBUGGER;
+    if (STREAMED.has(method)) return STREAMING;
+    if (SEARCHES[method] && (await this.searched(method, params, sessionId))) return PROTECTED;
     const world = await this.selecting(method, params, sessionId);
     if (world) return world;
     if (this.plainly(method, params, sessionId)) return PROTECTED;

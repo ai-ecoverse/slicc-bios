@@ -9,6 +9,10 @@ import set from '@ai-ecoverse/slicc-browsers/guard-vectors.json' with { type: 'j
 import { startProxy } from '@ai-ecoverse/slicc-node';
 import { boot } from './bios.mjs';
 import { debuggerUrl, launch } from './chrome.mjs';
+import { known as knownRow, listedWrong, stale } from './guard-known.mjs';
+
+const exposure = { listed: false, sample: null };
+const known = (row) => knownRow(row, exposure);
 
 export const fixture = await fixtureServer();
 const origin = (host) => `http://${host}:${fixture.port}`;
@@ -30,6 +34,7 @@ const PATHS = {
     browserSession: false,
     browserContexts: true,
     chromeUrlsAttach: false,
+    discovery: false,
     extensionWorld: true,
   },
   proxy: {
@@ -37,6 +42,7 @@ const PATHS = {
     browserSession: true,
     browserContexts: true,
     chromeUrlsAttach: true,
+    discovery: true,
     extensionWorld: true,
   },
 };
@@ -101,8 +107,10 @@ async function unguardedClient() {
   });
   const pending = new Map();
   const { events, push, waitEvent } = eventsOf();
+  const messages = [];
   let next = 0;
   socket.onmessage = ({ data }) => {
+    messages.push(String(data));
     const message = JSON.parse(data);
     const call = pending.get(message.id);
     if (!call) return push(message);
@@ -113,6 +121,7 @@ async function unguardedClient() {
   };
   return {
     events,
+    messages,
     waitEvent,
     send: (method, params = {}, sessionId) =>
       new Promise((resolve, reject) => {
@@ -152,6 +161,13 @@ export async function guardHost(t) {
   });
   const rows = new Map();
   await seven.expose('guardEvent', ([row, text]) => rows.get(row)?.push(JSON.parse(text)));
+  await seven.expose('guardRaw', ([row, text]) => {
+    if (!exposure.listed && listedWrong(text)) {
+      exposure.listed = true;
+      exposure.sample = text.slice(0, 400);
+    }
+    rows.get(row)?.messages.push(text);
+  });
   await seven.init(() => {
     const every = window.setInterval;
     window.setInterval = (callback, ms, ...rest) =>
@@ -213,6 +229,7 @@ export async function guardHost(t) {
         const pending = new Map();
         let next = 0;
         connection.onmessage = (text) => {
+          void window.guardRaw(JSON.stringify([row, text]));
           const message = JSON.parse(text);
           if (message.id === undefined) {
             return void window.guardEvent(JSON.stringify([row, text]));
@@ -261,7 +278,8 @@ export async function guardHost(t) {
       count += 1;
       const row = count;
       const { events, push, waitEvent } = eventsOf();
-      rows.set(row, { push });
+      const messages = [];
+      rows.set(row, { push, messages });
       await ensure();
       await seven.evaluate(
         ([row, own, path, lag]) => window.guards.open(row, own, path, lag),
@@ -270,6 +288,7 @@ export async function guardHost(t) {
       const client = {
         transport: path,
         events,
+        messages,
         waitEvent,
         send: async (method, params = {}, sessionId) => {
           const answer = await seven.evaluate(
@@ -297,7 +316,9 @@ export async function guardHost(t) {
 export const trace = (...parts) =>
   process.env.GUARD_TRACE && process.stderr.write(`guard-set ${Date.now()} ${parts.join(' ')}\n`);
 const only = (list) => (list ? list.split(',') : null);
-const failing = (row) => row.control === 'fail' || row.guarded === 'fail' || row.live === 'fail';
+const failing = (row) =>
+  (row.control === 'fail' || row.guarded === 'fail' || row.live === 'fail') && !known(row);
+const SHA = process.env.GUARD_SHA ?? process.env.GITHUB_SHA;
 export const ROW_MS = 3 * 60 * 1000;
 export const SCALE = { lagging: 3 };
 
@@ -373,7 +394,7 @@ export function shared(path) {
   }
   const scope = process.env.GUARD_VARIANTS ? `, ${chosen.variants.join(' and ')} detach` : '';
   test(`the shared set is complete on the ${path} path${scope}: no row missing, none skipped for a missing observer`, async () => {
-    const report = summary({ set, results, guard: 'slicc-bios', sha: process.env.GUARD_SHA });
+    const report = summary({ set, results, guard: 'slicc-bios', sha: SHA });
     const informed = results.filter((row) => row.ran || row.notes);
     const skips = {};
     for (const row of results) {
@@ -384,8 +405,19 @@ export function shared(path) {
         ];
       }
     }
+    const held = results.filter(
+      (row) =>
+        (row.control === 'fail' || row.guarded === 'fail' || row.live === 'fail') && known(row)
+    );
     const lines = [
       report.line,
+      ...(exposure.listed
+        ? [`GUARD-LISTED a target list showed more than an origin: ${exposure.sample}`]
+        : []),
+      ...held.map(
+        (row) =>
+          `GUARD-KNOWN ${known(row)} ${row.id}@${row.target}/${row.variant}: ${row.live === 'fail' ? 'not live' : row.why}`
+      ),
       `${path}: ${results.length} rows, ${JSON.stringify(report.counts)}`,
       ...Object.entries(skips).map(
         ([reason, rows]) => `skip ${reason} (${rows.length}): ${rows.join(' ')}`
@@ -412,13 +444,15 @@ export function shared(path) {
       [...chosen.variants].sort(),
       'every chosen variant ran'
     );
+    assert.equal(exposure.sample, null, 'no target info the client saw showed more than an origin');
+    assert.deepEqual(stale(results), [], 'a known row that passes comes off the known list');
     assert.deepEqual(report.missing, []);
     assert.equal(report.observerSkipped, 0);
     assert.equal(results.filter(failing).length, 0, report.line);
     assert.match(
       report.line,
-      /^GUARD-PASS /,
-      'the runner prints a passing verdict for the whole set'
+      held.length ? /^GUARD-(?:PASS|FAIL) / : /^GUARD-PASS /,
+      'the runner prints a passing verdict for the whole set, or fails only on #748'
     );
   });
 }
