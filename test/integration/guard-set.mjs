@@ -9,6 +9,7 @@ import set from '@ai-ecoverse/slicc-browsers/guard-vectors.json' with { type: 'j
 import { startProxy } from '@ai-ecoverse/slicc-node';
 import { boot } from './bios.mjs';
 import { debuggerUrl, launch } from './chrome.mjs';
+import { known, stale } from './guard-known.mjs';
 
 export const fixture = await fixtureServer();
 const origin = (host) => `http://${host}:${fixture.port}`;
@@ -306,14 +307,9 @@ export async function guardHost(t) {
 export const trace = (...parts) =>
   process.env.GUARD_TRACE && process.stderr.write(`guard-set ${Date.now()} ${parts.join(' ')}\n`);
 const only = (list) => (list ? list.split(',') : null);
-const RECOVERY = /^(?:reload|blank|close|attachRedacted): got false, want true$/;
-const known = (row) =>
-  /^C8\.protected-(?:error-page|document-restore)/.test(row.id) &&
-  row.control === 'pass' &&
-  ((row.transport === 'proxy' && row.live === 'fail') ||
-    (row.live === 'pass' && row.why.split('; ').every((item) => RECOVERY.test(item))));
 const failing = (row) =>
   (row.control === 'fail' || row.guarded === 'fail' || row.live === 'fail') && !known(row);
+const SHA = process.env.GUARD_SHA ?? process.env.GITHUB_SHA;
 export const ROW_MS = 3 * 60 * 1000;
 export const SCALE = { lagging: 3 };
 
@@ -389,7 +385,7 @@ export function shared(path) {
   }
   const scope = process.env.GUARD_VARIANTS ? `, ${chosen.variants.join(' and ')} detach` : '';
   test(`the shared set is complete on the ${path} path${scope}: no row missing, none skipped for a missing observer`, async () => {
-    const report = summary({ set, results, guard: 'slicc-bios', sha: process.env.GUARD_SHA });
+    const report = summary({ set, results, guard: 'slicc-bios', sha: SHA });
     const informed = results.filter((row) => row.ran || row.notes);
     const skips = {};
     for (const row of results) {
@@ -406,11 +402,10 @@ export function shared(path) {
     );
     const lines = [
       report.line,
-      ...(held.length
-        ? [
-            `GUARD-KNOWN #748 (${held.length}): ${held.map((row) => `${row.id}@${row.variant}${row.live === 'fail' ? ' not live' : ''}`).join(' ')}`,
-          ]
-        : []),
+      ...held.map(
+        (row) =>
+          `GUARD-KNOWN ${known(row)} ${row.id}@${row.target}/${row.variant}: ${row.live === 'fail' ? 'not live' : row.why}`
+      ),
       `${path}: ${results.length} rows, ${JSON.stringify(report.counts)}`,
       ...Object.entries(skips).map(
         ([reason, rows]) => `skip ${reason} (${rows.length}): ${rows.join(' ')}`
@@ -437,6 +432,7 @@ export function shared(path) {
       [...chosen.variants].sort(),
       'every chosen variant ran'
     );
+    assert.deepEqual(stale(results), [], 'a known row that passes comes off the known list');
     assert.deepEqual(report.missing, []);
     assert.equal(report.observerSkipped, 0);
     assert.equal(results.filter(failing).length, 0, report.line);
