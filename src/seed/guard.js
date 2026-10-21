@@ -458,6 +458,7 @@ const kept = (set, value) => {
 
 const INHERITING = /^(?:$|about:|javascript:)/i;
 const ORDINARY = /^(?:https?|data):/i;
+const BLANK = /^about:blank(?:#|$)/i;
 
 export const ARM = [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }];
 
@@ -600,6 +601,7 @@ class Guard {
       was: known?.was || known?.guarded || false,
       guarded: known?.guarded || false,
       real: known?.real || false,
+      access: known?.access || info.canAccessOpener === true,
       context: info.browserContextId ?? known?.context,
     });
   }
@@ -626,11 +628,18 @@ class Guard {
       return true;
     }
     if (depth > 8) return true;
+    const opener = await this.opener(found.openerId, depth);
+    const lent = found.type === 'page' && (found.access || BLANK.test(found.url));
+    if (isHeld(found.openerId) || (opener === 'protected' && lent)) {
+      hold(targetId);
+      found.guarded = true;
+      return true;
+    }
     const verdict = this.is.target({
       url: found.url,
       type: found.type,
       previous: found.was,
-      opener: await this.opener(found.openerId, depth),
+      opener,
     });
     if (verdict && !INHERITING.test(found.url)) found.real = true;
     if (!found.real && ORDINARY.test(found.url) && !this.is.url(found.url)) {

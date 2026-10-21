@@ -159,7 +159,7 @@ function considering({ is, storage, now }) {
     const all = inFlight(now);
     for (const info of known) {
       if (info.type !== 'page' || !info.openerId) continue;
-      if (!all && !/^about:blank(?:#|$)/.test(info.url ?? '')) continue;
+      if (!all && !info.canAccessOpener && !/^about:blank(?:#|$)/.test(info.url ?? '')) continue;
       const opener = urls.get(info.openerId);
       if (isHeld(info.openerId, storage) || (opener !== undefined && is.url(opener)))
         hold(info.targetId, storage);
