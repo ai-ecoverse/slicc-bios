@@ -17,7 +17,7 @@ const free = () =>
   });
 
 const ordinary = (path) =>
-  `<title>ordinary</title>${path}<script>void \`http://localhost:\${location.port}/x\`;</script><a href="https://www.sliccy.ai/7/">seven</a> <a href="https://ntfy.sliccy.ai/github">ntfy</a> curl -fsSL https://www.sliccy.ai/install.sh <a href="https://www.sliccy.ai/blog/post">blog</a>`;
+  `<title>ordinary</title>${path}<script>void \`http://localhost:\${location.port}/x\`;</script><a href="https://www.sliccy.ai/7/">seven</a> <a href="https://ntfy.sliccy.ai/github">ntfy</a> curl -fsSL https://www.sliccy.ai/install.sh <a href="https://www.sliccy.ai/blog/post">blog</a> <code>curl -fsSL www.sliccy.ai/install.sh | sh</code> Visit www.sliccy.ai/7/ now`;
 const marks = [];
 const mark = () => {
   const value = `M${randomBytes(6).toString('hex')}`;
@@ -97,6 +97,7 @@ const site = createHttp((req, res) => {
         `<a href="https://seven.sliccy.ai/#slicc-pair=1.P${m}.fp">pair</a>`,
         `<p>https://vault.sliccy.ai./V${m}</p>`,
         `<p>https://user:U${m}@vault.sliccy.ai/</p>`,
+        `<p>see \`sliccy.ai/join/B${m}\` or *sliccy.ai/join/S${m}*</p>`,
       ].join('\n')
     );
   }
