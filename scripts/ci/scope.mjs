@@ -13,7 +13,7 @@ export const PINS =
   /^(?:package\.json|package-lock\.json|src\/packages\/(?:(?:agent|grammars|tailscale|optional|optional\/projects\/[^/]+)\/)?(?:package\.json|package-lock\.json|pnpm-lock\.yaml))$/;
 const MANIFEST = /(?:^|\/)package\.json$/;
 const LOCK = /(?:^|\/)(?:package-lock\.json|pnpm-lock\.yaml)$/;
-const KEYED = /^src\/packages\/(?:optional\/(?:catalog|retired)\.json|certs\.json)$/;
+const KEYED = /^src\/packages\/(?:optional\/(?:catalog|retired|sources)\.json|certs\.json)$/;
 const FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
 
 const full = (reason) => ({ mode: 'full', reason, rows: null, vendors: true });

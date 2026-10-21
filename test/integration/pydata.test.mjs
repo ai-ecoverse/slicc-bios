@@ -142,7 +142,7 @@ describe('Python data tools are back as attested builds: they install as one pro
     assert.deepEqual(listed.actions, ['install']);
     assert.equal(listed.label, 'Python data tools');
     assert.match(listed.description, /^numpy, pandas, matplotlib and scipy for Python/);
-    assert.match(listed.description, /scipy\.odr/);
+    assert.match(listed.notes.join(' '), /scipy\.odr/);
     assert.deepEqual(listed.requires, ['python']);
     await run(page, `clear; pnpm add -g ${EARLIER} >/dev/null 2>&1; echo "by hand $((40 + $?))"`);
     await shows(page, 'by hand 4', HAND);

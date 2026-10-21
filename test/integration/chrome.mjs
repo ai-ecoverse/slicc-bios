@@ -10,7 +10,11 @@ env.SLICC_CDP_PORTS ??= '9300-9309';
 const options = {
   roots: [['/', 'src/']],
   aliases: [['/os/', 'src/seed/']],
-  intercept: ['https://cdn.jsdelivr.net/', 'https://registry.npmjs.org/'],
+  intercept: [
+    'https://cdn.jsdelivr.net/',
+    'https://registry.npmjs.org/',
+    'https://raw.githubusercontent.com/',
+  ],
   timeout: 60000,
   ...(env.SLICC_COVERAGE === '1' ? {} : { coverage: [] }),
 };

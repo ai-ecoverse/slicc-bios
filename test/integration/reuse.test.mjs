@@ -67,7 +67,9 @@ async function reboot(page) {
 }
 
 function downloads() {
-  return chrome.cdn.requests.filter((url) => url.startsWith('https://registry.npmjs.org/'));
+  return chrome.cdn.requests.filter(
+    (url) => url.startsWith('https://registry.npmjs.org/') && /\/-\/[^/]+\.tgz$/.test(url)
+  );
 }
 
 function lockfile(packages) {

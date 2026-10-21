@@ -1,4 +1,4 @@
-import { compare, locked } from './packages.js';
+import { compare, loadCatalog, locked } from './packages.js';
 import { BIOS } from './site.js';
 import { baseManifest, enforced, fetchText, pnpm, readable, text, write } from './update.js';
 
@@ -180,16 +180,43 @@ export async function certifiedSet(get = (name) => fetchText(name, BIOS)) {
   return found;
 }
 
-export async function untested(lock, base, certs = () => certifiedSet()) {
+export async function viaCatalog(left, lock) {
+  const catalog = await loadCatalog();
+  const names = new Set(
+    catalog.entries.filter((entry) => entry.kind !== 'project').map((entry) => entry.package)
+  );
+  if (!left.some(([key]) => names.has(key.slice(0, key.lastIndexOf('@'))))) return new Set();
+  return catalog.npm.admitted(left, lock, names);
+}
+
+export async function ruledViaCatalog(keys, lock) {
+  return (await loadCatalog()).npm.denied(keys, lock);
+}
+
+export async function untested(
+  lock,
+  base,
+  certs = () => certifiedSet(),
+  npm = viaCatalog,
+  rule = ruledViaCatalog
+) {
   const shipped = locked(base);
-  const found = [...locked(lock)].filter(
+  const all = locked(lock);
+  const found = [...all].filter(
     ([key, integrity]) =>
       GATED.test(key.slice(0, key.lastIndexOf('@'))) && shipped.get(key) !== integrity
   );
   if (!found.length) return [];
   const certified = await certs();
+  const exact = found.filter(([key, integrity]) => certified[key]?.integrity === integrity);
+  const left = found.filter(([key, integrity]) => certified[key]?.integrity !== integrity);
+  const keys = exact.map(([key]) => key);
+  const refused = new Set(keys.length ? await rule(keys, all).catch(() => keys) : []);
+  const admitted = left.length ? await npm(left, all).catch(() => new Set()) : new Set();
   return found
-    .filter(([key, integrity]) => certified[key]?.integrity !== integrity)
+    .filter(
+      ([key]) => refused.has(key) || (!admitted.has(key) && !exact.some(([one]) => one === key))
+    )
     .map(([key]) => key);
 }
 

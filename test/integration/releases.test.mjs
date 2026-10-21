@@ -131,13 +131,26 @@ test("a check gives each row its GitHub releases: the installed one and the newe
   catalog['@gitlab/ui'] = {
     id: 'gitlab-ui',
     label: 'GitLab UI',
-    description: 'A package whose repository is on GitLab.',
-    commands: ['gitlab-ui'],
-    size: 1,
+    notes: ['A package whose repository is on GitLab.'],
   };
   optional.dependencies['@gitlab/ui'] = '138.6.2';
+  const optionalLock = JSON.parse(await source('optional/package-lock.json'));
+  const gitlab = await registry('https://registry.npmjs.org/@gitlab%2Fui/138.6.2');
+
+  const pinnedDeps = Object.entries(gitlab.dependencies).filter(([, spec]) =>
+    /^\d+\.\d+\.\d+$/.test(spec)
+  );
+  for (const [dep, version] of [['@gitlab/ui', '138.6.2'], ...pinnedDeps]) {
+    const doc = await registry(`https://registry.npmjs.org/${dep.replace('/', '%2F')}/${version}`);
+    optionalLock.packages[`node_modules/${dep}`] = {
+      version,
+      resolved: doc.dist.tarball,
+      integrity: doc.dist.integrity,
+    };
+  }
   chrome.overrides.set('/packages/optional/catalog.json', JSON.stringify(catalog));
   chrome.overrides.set('/packages/optional/package.json', JSON.stringify(optional));
+  chrome.overrides.set('/packages/optional/package-lock.json', JSON.stringify(optionalLock));
   await boot(page, [prompt, 'slicc:/home$ ']);
 
   await t.test('an up-to-date kernel row links its installed release', async () => {

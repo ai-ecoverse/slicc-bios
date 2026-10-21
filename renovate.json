@@ -4,7 +4,7 @@
   "gitIgnoredAuthors": ["41898282+github-actions[bot]@users.noreply.github.com"],
   "packageRules": [
     {
-      "description": "Seven's pins: every @ai-ecoverse package in the base set (src/packages), the optional catalog (src/packages/optional) and /opt/agent (src/packages/agent) bumps by itself, with its npm and pnpm lockfiles. The automerge goes through the merge queue once ci / test (with release-state for every gated pin, scripts/cert/release-state.mjs) and cert-review pass; no bot writes to the branch.",
+      "description": "Seven's pins: every @ai-ecoverse package in the base set (src/packages), the optional catalog's non-homescoop entries (src/packages/optional/package.json: slicc-jsh, mcpcat, wasi-slicc and sliccy-browser) and /opt/agent (src/packages/agent) bumps by itself, with its npm and pnpm lockfiles. The catalog's homescoop entries aren't pinned: seven offers each one's npm latest at runtime, behind the gate in src/seed/packages.js. The automerge goes through the merge queue once ci / test (with release-state for every gated pin, scripts/cert/release-state.mjs) and cert-review pass; no bot writes to the branch.",
       "matchFileNames": [
         "src/packages/package.json",
         "src/packages/optional/package.json",
@@ -33,11 +33,8 @@
       "schedule": ["* 0-5 * * *"]
     },
     {
-      "description": "Python and its packages move as one: the catalog's wasix-python (src/packages/optional) and every py-* of the Python data tools (src/packages/optional/projects/pydata) are builds for one Python ABI, and seven never mixes two Pythons' builds. bios takes them by hand, in one PR that also bumps the project's version so installs show Update, so Renovate lists the group on the dependency dashboard and opens its one PR only when it is ticked there.",
-      "matchFileNames": [
-        "src/packages/optional/package.json",
-        "src/packages/optional/projects/pydata/package.json"
-      ],
+      "description": "Python's packages move as one: every py-* of the Python data tools (src/packages/optional/projects/pydata) is a build for one Python ABI, the one the catalog's python range (src/packages/optional/catalog.json, the upstream X.Y.Z with homescoop's -N ignored) offers, and seven never mixes two Pythons' builds. bios takes them by hand, in one PR that also bumps the project's version so installs show Update and moves the catalog's python range when the ABI moves, so Renovate lists the group on the dependency dashboard and opens its one PR only when it is ticked there.",
+      "matchFileNames": ["src/packages/optional/projects/pydata/package.json"],
       "matchPackageNames": ["@ai-ecoverse/wasix-python", "@ai-ecoverse/py-*"],
       "groupName": "python and py-*",
       "groupSlug": "python",

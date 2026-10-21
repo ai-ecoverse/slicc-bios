@@ -225,13 +225,25 @@ test("a user's gated version is untested unless certs.json or seven's own lockfi
     ['@ai-ecoverse/wasm-b@2.0.1', 'sha512-b1'],
     ['@ai-ecoverse/wasm-c@3.0.0-x', 'sha512-other'],
   ]);
-  assert.deepEqual(await untested(user, lock([]), certs), [
-    '@ai-ecoverse/wasm-b@2.0.1',
-    '@ai-ecoverse/wasm-c@3.0.0-x',
-  ]);
+  assert.deepEqual(
+    await untested(
+      user,
+      lock([]),
+      certs,
+      async () => new Set(),
+      async () => []
+    ),
+    ['@ai-ecoverse/wasm-b@2.0.1', '@ai-ecoverse/wasm-c@3.0.0-x']
+  );
   const swapped = lock([['@ai-ecoverse/wasm-b@2.0.0', 'sha512-forged']]);
   assert.deepEqual(
-    await untested(swapped, lock([]), certs),
+    await untested(
+      swapped,
+      lock([]),
+      certs,
+      async () => new Set(),
+      async () => []
+    ),
     ['@ai-ecoverse/wasm-b@2.0.0'],
     'the same version with other bytes is untested'
   );
@@ -245,4 +257,21 @@ test('every CI job and every test run keeps slicc-cdp off 127.0.0.1:9222-9229', 
     const yml = await readFile(new URL(`.github/workflows/${file}`, root), 'utf8');
     assert.match(yml, /\nenv:\n(?: {2}\S[^\n]*\n)*? {2}SLICC_CDP_PORTS: '9300-9309'\n/, file);
   }
+});
+
+test("the bundled copy of homescoop's certification exceptions is byte for byte the one release-state pins", async () => {
+  const { HOMESCOOP } = await import('../../scripts/cert/release-state.mjs');
+  const { repo, path, ref } = HOMESCOOP.exceptions;
+  assert.match(ref, /^[0-9a-f]{40}$/);
+  const bundled = await read('optional/exceptions.json');
+  const url = `https://raw.githubusercontent.com/${repo}/${ref}/${path}`;
+  const response = await fetch(url, { signal: AbortSignal.timeout(60000) });
+  assert.equal(response.status, 200, url);
+  assert.equal(
+    bundled,
+    await response.text(),
+    `bump src/packages/optional/exceptions.json to ${url}`
+  );
+  const { exceptionsOf } = await import('../../src/seed/packages.js');
+  assert.ok(exceptionsOf(JSON.parse(bundled))?.length > 10, 'and the page reads it as schema 1');
 });

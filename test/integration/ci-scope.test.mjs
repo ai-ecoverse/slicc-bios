@@ -100,17 +100,25 @@ test("a test-only pull request runs only its changed test files' shards, and a h
   assert.equal(helper.rows, null);
 });
 
-test("a catalog-only pull request runs the pins, optional, catalog and packages rows plus the changed package's own", async () => {
+test("a catalog-only pull request runs the pins, optional, npm and packages rows plus the changed package's own", async () => {
   const catalog = JSON.parse(base['src/packages/optional/catalog.json']);
-  catalog['@ai-ecoverse/wasix-perl'].description = 'Perl, described again.';
+  catalog['@ai-ecoverse/wasix-perl'].notes = ['Perl, with a caveat.'];
   const result = await scoped({
     'src/packages/optional/catalog.json': `${JSON.stringify(catalog, null, 2)}\n`,
   });
   assert.equal(result.mode, 'catalog');
-  for (const row of ['pins', 'optional', 'packages', 'unshadow', 'perl']) {
+  for (const row of ['pins', 'optional', 'npm', 'packages', 'unshadow', 'perl']) {
     assert.ok(result.rows.includes(`${row}.test.mjs`), row);
   }
   assert.ok(!result.rows.includes('boot.test.mjs'));
+  const exceptions = await scoped({ 'src/packages/optional/exceptions.json': '{"schema":1}\n' });
+  assert.equal(exceptions.mode, 'catalog');
+  assert.ok(exceptions.rows.includes('npm.test.mjs'));
+  const sources = await scoped({
+    'src/packages/optional/sources.json': '{ "@ai-ecoverse/slicc-cdp": {} }\n',
+  });
+  assert.equal(sources.mode, 'catalog');
+  assert.ok(sources.rows.includes('cdp.test.mjs'), 'a changed source runs that package’s rows');
 });
 
 test("a pin bump runs pins and the boot smoke plus the bumped package's rows, and anything unmapped or beyond the pins runs everything", async () => {

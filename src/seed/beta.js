@@ -110,7 +110,7 @@ function sha512hex(integrity) {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export async function provenance(doc, { name, repository, workflow }, fetcher = fetch) {
+export async function provenance(doc, { name, repository, workflow, refs }, fetcher = fetch) {
   const { integrity, attestations } = doc.dist ?? {};
   if (typeof integrity !== 'string' || !integrity.startsWith('sha512-')) return 'no integrity';
   if (attestations?.provenance?.predicateType !== SLSA || typeof attestations.url !== 'string')
@@ -138,8 +138,8 @@ export async function provenance(doc, { name, repository, workflow }, fetcher = 
   const built = statement?.predicate?.buildDefinition?.externalParameters?.workflow;
   if (!matches || built?.repository !== repository)
     return 'its provenance doesn’t match this release';
-  const refs = ['refs/heads/main', `refs/tags/v${doc.version}`];
-  if (built.path !== workflow || !refs.includes(built.ref))
+  const from = refs ?? ['refs/heads/main', `refs/tags/v${doc.version}`];
+  if (![workflow].flat().includes(built.path) || !from.includes(built.ref))
     return 'built outside the release workflow';
   return null;
 }

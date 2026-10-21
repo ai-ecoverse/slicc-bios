@@ -7,9 +7,6 @@ import { launch } from './chrome.mjs';
 const ROOT_SHELL = ['slicc:/home# '];
 const URL_HTTP = 'http://127.0.0.1:8470/mcp';
 const fixture = new URL('fixtures/mcp-fixture/', import.meta.url);
-const optional = JSON.parse(
-  await readFile(new URL('../../src/packages/optional/package.json', import.meta.url), 'utf8')
-);
 const chrome = await launch({ timeout: 120000 });
 after(() => chrome.close());
 

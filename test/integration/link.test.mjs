@@ -1414,10 +1414,8 @@ const WEBSOCAT_S = 20;
 const ECHO = 'wss://echo.sliccy.ai/';
 
 async function installWebsocat(page) {
-  const { readFile } = await import('node:fs/promises');
-  const { dependencies } = JSON.parse(
-    await readFile(new URL('../../src/packages/optional/package.json', import.meta.url), 'utf8')
-  );
+  const { offered } = await import('./catalog.mjs');
+  const version = await offered('@ai-ecoverse/wasix-websocat');
   await page.within(300000, () =>
     document
       .querySelector('slicc-app')
@@ -1440,7 +1438,7 @@ async function installWebsocat(page) {
       .model.updates.packages()
       .find((item) => item.id === 'websocat')
   );
-  assert.equal(row.version, dependencies['@ai-ecoverse/wasix-websocat']);
+  assert.equal(row.version, version);
 }
 
 async function websocat(page, url, name) {

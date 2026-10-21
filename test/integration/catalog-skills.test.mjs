@@ -2,48 +2,53 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { actPackage, agentUp, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
+import { fakeCatalog } from './fake-catalog.mjs';
 
 const MCPCAT = '@ai-ecoverse/mcpcat';
-const integrity = {
-  '0.16.3':
-    'sha512-Sah/qC/1x31WKsVK+tyHYSdV8StFLpZEmuNyWqu2inbK19IL7ZyZyOb+85CGVAG1+ZRdXfE1y0eUAQuu0jnm3w==',
-  '0.17.0':
-    'sha512-LmiT/Ecom6SiUl9sR+4WVg6CYS+CpunXlL0Qvf1r01fuT06J08K5G3e6dO9wQXRYz4ST9Vp4firKIQM230GCiw==',
-};
 const ROOT_SHELL = ['slicc:/home# '];
 const MOVE = 5 * 60 * 1000;
 
-const chrome = await launch({ agent: true, timeout: 120000 });
+const chrome = await launch({ agent: true, timeout: 120000, intercept: [] });
+const registry = await fakeCatalog(chrome.cdp);
 after(() => chrome.close());
 
-function offer(version) {
-  const pins = { [MCPCAT]: version };
-  chrome.overrides.set(
-    '/packages/optional/catalog.json',
-    JSON.stringify({
-      [MCPCAT]: {
-        id: 'mcpcat',
-        label: 'mcpcat',
-        description: 'An MCP client.',
-        commands: ['mcpcat'],
-        size: 595379,
-      },
-    })
-  );
-  chrome.overrides.set(
-    '/packages/optional/package.json',
-    JSON.stringify({ name: 'slicc-bios-optional', private: true, dependencies: pins })
-  );
-  chrome.overrides.set(
-    '/packages/optional/package-lock.json',
-    JSON.stringify({
+const integrity = {
+  '@ai-ecoverse/mcpcat@0.16.3':
+    'sha512-Sah/qC/1x31WKsVK+tyHYSdV8StFLpZEmuNyWqu2inbK19IL7ZyZyOb+85CGVAG1+ZRdXfE1y0eUAQuu0jnm3w==',
+  '@ai-ecoverse/mcpcat@0.17.0':
+    'sha512-LmiT/Ecom6SiUl9sR+4WVg6CYS+CpunXlL0Qvf1r01fuT06J08K5G3e6dO9wQXRYz4ST9Vp4firKIQM230GCiw==',
+};
+
+function pinned(pins, integrity) {
+  return {
+    '/packages/optional/package.json': JSON.stringify({
+      name: 'slicc-bios-optional',
+      private: true,
+      dependencies: pins,
+    }),
+    '/packages/optional/package-lock.json': JSON.stringify({
       lockfileVersion: 3,
       packages: {
         '': { dependencies: pins },
-        [`node_modules/${MCPCAT}`]: { version, integrity: integrity[version] },
+        ...Object.fromEntries(
+          Object.entries(pins).map(([name, version]) => [
+            `node_modules/${name}`,
+            { version, integrity: integrity[`${name}@${version}`] },
+          ])
+        ),
       },
-    })
+    }),
+  };
+}
+
+function offer(version) {
+  registry.names.add(MCPCAT);
+  chrome.overrides.set(
+    '/packages/optional/catalog.json',
+    JSON.stringify({ [MCPCAT]: { id: 'mcpcat', label: 'mcpcat' } })
   );
+  for (const [path, body] of Object.entries(pinned({ [MCPCAT]: version }, integrity)))
+    chrome.overrides.set(path, body);
 }
 
 async function command(page, line) {

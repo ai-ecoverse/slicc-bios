@@ -37,6 +37,7 @@ export function mirrorUpdates(os) {
     get: (id) => items.find((item) => item.id === id),
     act: (id, action) => os.call('act', id, action),
     actPackage: (id, action) => os.call('actPackage', id, action),
+    refreshPackages: () => os.call('refreshPackages'),
   };
 }
 
@@ -61,6 +62,7 @@ export function serveUpdates(updates) {
         return updates.act(id, action);
       },
       actPackage: (id, action) => updates.actPackage(id, action),
+      refreshPackages: () => updates.refreshPackages(),
     },
     forward(os) {
       updates.on('packages', (list) => os.emit('packages', list));

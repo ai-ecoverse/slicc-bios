@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { actPackage, boot, run, screen, shows } from './bios.mjs';
+import { offered } from './catalog.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch({ timeout: 120000 });
@@ -16,7 +17,12 @@ const row = (page, id) =>
     id
   );
 
-async function install(page, id, version) {
+const VERSIONS = {
+  zip: await offered('@ai-ecoverse/wasm-zip'),
+  xxd: await offered('@ai-ecoverse/wasm-xxd'),
+};
+
+async function install(page, id) {
   await page.until(
     (id) =>
       document
@@ -26,13 +32,13 @@ async function install(page, id, version) {
     id
   );
   assert.equal(await actPackage(page, id, 'install'), 'ok');
-  assert.equal((await row(page, id)).version, version);
+  assert.equal((await row(page, id)).version, VERSIONS[id]);
 }
 
 test('zip packs a tree and unzip gives it back unchanged, and zipinfo lists it', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
-  await install(page, 'zip', '3.0.0-7');
+  await install(page, 'zip');
   await run(
     page,
     `clear; rm -rf /tmp/zt && mkdir -p /tmp/zt/src/sub && cd /tmp/zt && printf 'tide %s\\n' 1 2 3 > src/a.txt && head -c 3000 /dev/urandom > src/sub/b.bin && zip -qr a.zip src; echo zip=$?; unzip -q a.zip -d out; echo unzip=$?; diff -r src out/src && echo same-$((0))-tree; echo "entries=[$(zipinfo -1 a.zip | sort | tr '\\n' ,)]"; echo done-$((40 + 2))`
@@ -49,7 +55,7 @@ test('zip packs a tree and unzip gives it back unchanged, and zipinfo lists it',
 test('xxd dumps a file and xxd -r gives it back byte for byte', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
-  await install(page, 'xxd', '9.2.1192-3');
+  await install(page, 'xxd');
   await run(
     page,
     `clear; rm -rf /tmp/xt && mkdir -p /tmp/xt && cd /tmp/xt && head -c 4096 /dev/urandom > r.bin && printf '\\000\\377tide\\n' >> r.bin && xxd r.bin > r.hex; echo xxd=$?; xxd -r r.hex > back.bin; echo rev=$?; cmp r.bin back.bin && echo identical-$((1 + 1)); echo first=$(printf 'AB' | xxd -p); echo done-$((40 + 2))`
@@ -66,7 +72,7 @@ test('xxd dumps a file and xxd -r gives it back byte for byte', async (t) => {
 test('sudo for xxd writing under /etc is offered once, never always, since xxd writes files', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
-  await install(page, 'xxd', '9.2.1192-3');
+  await install(page, 'xxd');
   const command = 'xxd -r /etc/group /etc/group';
   await run(page, `clear; cd /tmp; sudo -u cone sudo ${command}; echo asked-$((40 + 2))`);
   const [asked] = await page.within(60000, () => {

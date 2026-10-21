@@ -2,51 +2,79 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { boot, run, shows } from './bios.mjs';
+import { offered as latest } from './catalog.mjs';
 import { launch } from './chrome.mjs';
 
 const optional = new URL('../../src/packages/optional/', import.meta.url);
 const read = async (path) => JSON.parse(await readFile(new URL(path, optional), 'utf8'));
 
-test('the optional catalog describes exactly the pinned packages, each locked with its integrity', async () => {
+const KEYS = new Set([
+  'id',
+  'label',
+  'kind',
+  'requires',
+  'notes',
+  'range',
+  'abi',
+  'helpers',
+  'description',
+  'commands',
+  'size',
+]);
+
+const HOMESCOOPED = /^@ai-ecoverse\/(?:wasm|wasi|wasix|py)-/;
+const PINNED = [
+  '@ai-ecoverse/mcpcat',
+  '@ai-ecoverse/slicc-jsh',
+  '@ai-ecoverse/sliccy-browser',
+  '@ai-ecoverse/wasi-slicc',
+];
+
+test('the optional catalog pins only what homescoop’s ladder doesn’t publish, each locked with its integrity, and every other entry keeps only what npm can’t tell', async () => {
   const catalog = await read('catalog.json');
   const { dependencies } = await read('package.json');
   const lock = await read('package-lock.json');
-  const packages = Object.entries(catalog).filter(([, entry]) => entry.kind !== 'project');
-  assert.deepEqual(packages.map(([name]) => name).sort(), Object.keys(dependencies).sort());
+  assert.deepEqual(Object.keys(dependencies).sort(), PINNED);
   for (const [name, version] of Object.entries(dependencies)) {
+    assert.ok(catalog[name], `${name} is a catalog entry`);
     assert.match(version, /^\d+\.\d+\.\d+(-[\w.-]+)?$/, `${name} is pinned exactly`);
     const entry = lock.packages[`node_modules/${name}`];
     assert.equal(entry?.version, version, `${name} is locked at ${version}`);
     assert.match(entry.integrity, /^sha512-/, `${name} has an integrity`);
   }
-  for (const [path, entry] of Object.entries(lock.packages)) {
+  for (const [path, entry] of Object.entries(lock.packages))
     if (path) assert.match(entry.integrity ?? '', /^sha512-/, `${path} has an integrity`);
-  }
-  const text = await readFile(new URL('package-lock.json', optional), 'utf8');
-  const keys = [...text.matchAll(/^ {4}"(node_modules\/[^"]+)": \{$/gm)].map(([, key]) => key);
-  assert.deepEqual(keys, [...new Set(keys)], 'each locked path appears once');
-  for (const path of keys.filter((key) => key.includes('/node_modules/', 1))) {
-    const name = path.slice(path.lastIndexOf('node_modules/') + 'node_modules/'.length);
-    assert.notEqual(
-      lock.packages[path].version,
-      lock.packages[`node_modules/${name}`]?.version,
-      `${path} duplicates the top-level ${name}`
+  for (const [name, entry] of Object.entries(catalog)) {
+    for (const key of Object.keys(entry)) assert.ok(KEYS.has(key), `${name}: ${key}`);
+    if (entry.kind === 'project') continue;
+    assert.match(name, /^@ai-ecoverse\/[a-z0-9][\w.-]*$/, name);
+    assert.equal(
+      Object.hasOwn(dependencies, name),
+      PINNED.includes(name),
+      `${name}: bios pins exactly what homescoop's ladder doesn't publish`
     );
+    if (!PINNED.includes(name)) assert.match(name, HOMESCOOPED, `${name} is homescoop's`);
+    for (const key of ['description', 'commands', 'size', 'version', 'source'])
+      assert.equal(entry[key], undefined, `${name}: no ${key} in the catalog`);
+    for (const note of entry.notes ?? [])
+      assert.ok(typeof note === 'string' && note.length > 10 && note.length <= 300, name);
+    for (const helper of entry.helpers ?? []) assert.match(helper, /^[\w.+-]+$/, name);
   }
+  assert.deepEqual(await read('sources.json'), { '@ai-ecoverse/slicc-cdp': { certified: 'tag' } });
 });
 
-test('every catalog entry has a unique id, a label, a description, commands and a size, and requires only other entries without cycles', async () => {
+test('every catalog entry has a unique id and a label, and requires only other entries without cycles; a project keeps its description, commands and size', async () => {
   const entries = Object.values(await read('catalog.json'));
   const ids = entries.map(({ id }) => id);
   assert.equal(new Set(ids).size, ids.length);
   for (const entry of entries) {
     assert.match(entry.id, /^[a-z][a-z0-9-]*$/);
-    assert.ok(entry.label && entry.description, entry.id);
-    assert.ok(
-      entry.kind === 'project' || entry.commands.length || entry.requires?.length,
-      `${entry.id} has commands or extends what it requires`
-    );
-    assert.ok(Number.isInteger(entry.size) && entry.size > 0, entry.id);
+    assert.ok(entry.label, entry.id);
+    if (entry.kind === 'project') {
+      assert.ok(entry.description, entry.id);
+      assert.deepEqual(entry.commands, [], entry.id);
+      assert.ok(Number.isInteger(entry.size) && entry.size > 0, entry.id);
+    }
     for (const id of entry.requires ?? [])
       assert.ok(ids.includes(id), `${entry.id} requires ${id}`);
   }
@@ -58,18 +86,16 @@ test('every catalog entry has a unique id, a label, a description, commands and 
   for (const id of ids) visit(id, []);
 });
 
-test('no two catalog entries provide the same command, so installing one never silently shadows another', async () => {
-  const owners = new Map();
-  for (const [name, entry] of Object.entries(await read('catalog.json')))
-    for (const command of entry.commands ?? []) {
-      assert.equal(
-        owners.get(command),
-        undefined,
-        `${command}: ${owners.get(command)} and ${name}`
-      );
-      owners.set(command, name);
-    }
-  assert.equal(owners.get('magick'), '@ai-ecoverse/wasm-imagemagick-heif');
+test('the published package carries the catalog, its pins, its sources and the bundled exceptions', async () => {
+  const { files } = JSON.parse(await readFile(new URL('../../../package.json', optional), 'utf8'));
+  for (const file of [
+    'package.json',
+    'package-lock.json',
+    'catalog.json',
+    'sources.json',
+    'exceptions.json',
+  ])
+    assert.ok(files.includes(`src/packages/optional/${file}`), file);
 });
 
 test('a project entry ships its manifest, a lockfile and a workspace that overrides Python away', async () => {
@@ -133,7 +159,8 @@ test('HEIF and AVIF images installs from the catalog, and heif-convert runs', {
       )
   );
   assert.equal(result, 'ok', (await heif())?.log);
-  assert.equal((await heif()).version, '1.23.6-6');
+  const offered = await latest('@ai-ecoverse/wasm-libheif');
+  assert.equal((await heif()).version, offered);
   await run(
     page,
     'clear; heif-convert --version 2>&1 | head -1 | grep -c 1.23.6 | sed "s/^/heif ran /"'
@@ -159,9 +186,8 @@ test('Python data tools are homescoop’s attested CI builds for the catalog’s
   ]);
   assert.match(manifest.dependencies['@ai-ecoverse/py-numpy'], /^2\.5\.4-\d+$/);
   assert.match(manifest.dependencies['@ai-ecoverse/py-pandas'], /^3\.0\.\d+-\d+$/);
-  const { dependencies } = await read('package.json');
-  assert.match(dependencies['@ai-ecoverse/wasix-python'], /^3\.15\.\d+-\d+$/);
-  assert.match(catalog['@ai-ecoverse/wasix-python'].description, /^Python 3\.15 /);
+  assert.equal(catalog['@ai-ecoverse/wasix-python'].range, '3.15.0');
+  assert.equal(catalog['@ai-ecoverse/wasix-python'].abi, 'cp315');
   const lock = await readFile(new URL('projects/pydata/pnpm-lock.yaml', optional), 'utf8');
   const packages = lock.slice(lock.indexOf('\npackages:\n'), lock.indexOf('\nsnapshots:\n'));
   const locked = [...packages.matchAll(/^ {2}'(@ai-ecoverse\/[^@']+)@([^']+)':$/gm)].map(
@@ -216,9 +242,8 @@ test('Python data tools are homescoop’s attested CI builds for the catalog’s
   assert.deepEqual(withdrawn, []);
 });
 
-test('uv, esbuild, tsc and buf are withdrawn until attested rebuilds (homescoop#864): retired rows, no pins and no certs, while git and gh are certified CI builds with no exception', async () => {
+test('uv, esbuild, tsc and buf are withdrawn until attested rebuilds (homescoop#864): retired rows, not listed and no certs, while git and gh are homescoop’s, gated as its ladder builds', async () => {
   const catalog = await read('catalog.json');
-  const { dependencies } = await read('package.json');
   const retired = await read('retired.json');
   const certs = JSON.parse(await readFile(new URL('../certs.json', optional), 'utf8'));
   for (const [name, id] of [
@@ -228,7 +253,6 @@ test('uv, esbuild, tsc and buf are withdrawn until attested rebuilds (homescoop#
     ['@ai-ecoverse/wasi-buf', 'buf'],
   ]) {
     assert.equal(catalog[name], undefined, name);
-    assert.equal(dependencies[name], undefined, name);
     assert.equal(retired[name]?.id, id, name);
     assert.deepEqual(
       Object.keys(certs).filter((key) => key.startsWith(`${name}@`)),
@@ -238,8 +262,6 @@ test('uv, esbuild, tsc and buf are withdrawn until attested rebuilds (homescoop#
   }
   for (const name of ['@ai-ecoverse/wasm-git', '@ai-ecoverse/wasi-gh']) {
     assert.ok(catalog[name], name);
-    const entry = certs[`${name}@${dependencies[name]}`];
-    assert.match(entry?.sha256 ?? '', /^[0-9a-f]{64}$/, name);
-    assert.equal(entry.exception, undefined, name);
+    assert.equal(catalog[name].source, undefined, `${name} is homescoop's`);
   }
 });
