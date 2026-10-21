@@ -23,7 +23,11 @@ export function known(row) {
   const reason = issue(row.id);
   if (!reason || row.control !== 'pass' || row.guarded !== 'fail') return null;
   if (row.transport === 'proxy') {
-    return row.live === 'fail' && /(?:^|; )not live$/.test(row.why ?? '') ? reason : null;
+    const items = (row.why ?? '').split('; ');
+    const absent = items
+      .slice(0, -1)
+      .every((item) => /^[A-Za-z]+: got (?:false|undefined), want true$/.test(item));
+    return row.live === 'fail' && items.at(-1) === 'not live' && absent ? reason : null;
   }
   const failed = checks(row.why);
   return row.live === 'pass' && failed.length > 0 && failed.every((check) => RECOVERY.has(check))
