@@ -296,26 +296,25 @@ test('a candidate artifact replaces the package in every pin and lock, and the h
 });
 
 test('a candidate for a direct pin that other locked packages also depend on replaces every copy, so the project still locks one: py-numpy with pandas and matplotlib in the data tools, as in canary #827', async () => {
-  const { readFile, rm } = await import('node:fs/promises');
+  const { cp, readFile, rm } = await import('node:fs/promises');
   const { join } = await import('node:path');
   const { overridePins } = await import('../../scripts/canary/override-pins.mjs');
   const dir = await scratch();
   try {
     const project = join(dir, 'packages/optional/projects/pydata');
+    await cp(new URL('fixtures/pydata-numpy-2/', import.meta.url), project, { recursive: true });
     const before = await readFile(join(project, 'pnpm-lock.yaml'), 'utf8');
     const numpys = (text) =>
       [...text.matchAll(/^ {2}'@ai-ecoverse\/py-numpy@([^']+)':\n {4}resolution:/gm)].map(
         ([, version]) => version
       );
-    const [shipped] = numpys(before);
-    assert.equal(numpys(before).length, 1);
+    assert.deepEqual(numpys(before), ['2.5.4-2']);
     assert.match(
       before,
       /^ {6}'@ai-ecoverse\/py-numpy': /m,
       'pandas and scipy depend on numpy too'
     );
     const candidate = '2.5.4-3';
-    assert.notEqual(shipped, candidate);
     const result = await overridePins(
       [
         `@ai-ecoverse/py-numpy@${candidate}`,
