@@ -148,7 +148,7 @@ export function trayRequests({ tray, network, hub, ask }) {
       return {};
     },
   };
-  return async (open, stamp) => {
+  return async (open, stamp, signal) => {
     if (!TRAY_OPS.includes(open?.op))
       throw failure('EINVAL', 'a tray request is status, url, rotate, unlink or retry');
     if (open.op === 'unlink' && (typeof open.id !== 'string' || !open.id))
@@ -156,8 +156,9 @@ export function trayRequests({ tray, network, hub, ask }) {
     const found = open.op === 'unlink' ? device(open.id) : undefined;
     if (open.op === 'url') ready();
     const asked = ASKED.includes(open.op) && stamp?.uid !== 0;
-    if (asked && !(await ask({ op: open.op, stamp, device: found })))
+    if (asked && !(await ask({ op: open.op, stamp, device: found, signal })))
       throw failure('EACCES', UNAPPROVED);
+    if (signal?.aborted) throw failure('ECONNRESET', 'the caller went away');
     return answers[open.op](open);
   };
 }
@@ -186,6 +187,7 @@ export function linkFacade({ check, leaders, scrub, trays = null, refused = () =
     let gotEnd = false;
     let sentEnd = false;
     let broken = false;
+    const gone = new AbortController();
 
     const out = (type, payload) => {
       if (!finished) conn.onmessage?.(record(type, payload));
@@ -252,7 +254,7 @@ export function linkFacade({ check, leaders, scrub, trays = null, refused = () =
     async function request(hello) {
       if (!trays) return reset(NO_TRAY);
       if ('join' in hello) return reset('EINVAL: a tray request takes no join URL');
-      const result = await trays(hello.open, stamp);
+      const result = await trays(hello.open, stamp, gone.signal);
       out(CONTROL, JSON.stringify({ opened: result }));
       finish();
     }
@@ -324,6 +326,7 @@ export function linkFacade({ check, leaders, scrub, trays = null, refused = () =
       }
     };
     conn.close = () => {
+      gone.abort('withdrawn');
       if (finished) return;
       finished = true;
       stream?.reset('ECONNRESET');
