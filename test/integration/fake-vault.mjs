@@ -66,6 +66,7 @@ const view = (record) => ({
   ...(record.url ? { url: record.url } : {}),
   ...(record.pinned ? { pinned: true } : {}),
   ...(record.settings ? { settings: record.settings } : {}),
+  ...(record.expiresAt ? { expiresAt: record.expiresAt } : {}),
   domains: [],
   rules: [],
   exec: false,
@@ -285,8 +286,24 @@ addEventListener('message', (event) => {
         return reply({ request, hits: [], version });
       };
       if (data.op === 'redact') return reply({ texts: data.texts.map((text) => (typeof text === 'string' ? hide(text) : text)), hits: [], version });
-      if (data.op === 'records') return reply({ records: live().filter((record) => record.kind === 'model' || record.kind === 'mcp').map((record) => ({ kind: record.kind, name: record.name, placeholder: record.placeholder, state: 'ready', ...(record.provider ? { provider: record.provider } : {}), ...(record.server ? { server: record.server } : {}) })) });
+      if (data.op === 'records') return reply({ records: live().filter((record) => record.kind === 'model' || record.kind === 'mcp').map((record) => ({ kind: record.kind, name: record.name, placeholder: record.placeholder, state: 'ready', ...(record.provider ? { provider: record.provider } : {}), ...(record.server ? { server: record.server } : {}), ...(record.expiresAt ? { expiresAt: record.expiresAt } : {}) })) });
       if (data.op === 'endpoints') return reply({ ok: true });
+      if (data.op === 'grant' && data.provider) {
+        log({ role: 'agent', op: 'grant-fields', provider: data.provider, name: data.name, fields: Object.keys(data).filter((field) => !['v', 'id', 'op'].includes(field)).sort(), bytes: data.response instanceof Uint8Array });
+        if (!(data.response instanceof Uint8Array)) return port.postMessage({ v: 1, id: data.id, op: data.op, error: { code: 'EINVAL', message: 'response must be bytes' } });
+        let token;
+        try {
+          token = JSON.parse(new TextDecoder().decode(data.response));
+        } catch {
+          return port.postMessage({ v: 1, id: data.id, op: data.op, error: { code: 'EINVAL', message: 'response is not a token response' } });
+        }
+        if (typeof token.access_token !== 'string') return port.postMessage({ v: 1, id: data.id, op: data.op, error: { code: 'EINVAL', message: 'response has no access_token' } });
+        const expiresAt = Number.isFinite(token.expires_in) ? Date.now() + token.expires_in * 1000 : undefined;
+        keep({ kind: 'model', name: data.name, value: token.access_token, provider: data.provider, source: 'oauth:' + data.provider, ...(expiresAt ? { expiresAt } : {}), ...(data.settings ? { settings: data.settings } : {}) });
+        changed();
+        announce();
+        return reply({ records: live().filter((record) => record.kind === 'model' || record.kind === 'mcp').map((record) => ({ kind: record.kind, name: record.name, placeholder: record.placeholder, state: 'ready', ...(record.provider ? { provider: record.provider } : {}), ...(record.expiresAt ? { expiresAt: record.expiresAt } : {}) })), ...(expiresAt ? { expiresAt } : {}) });
+      }
       if (data.op === 'model') return prepare(['model']);
       if (data.op === 'mcp') return prepare(['mcp']);
       if (data.op === 'redactStream') return reply({ stream: data.stream, idleMs: 250, version });

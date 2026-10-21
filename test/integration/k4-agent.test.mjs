@@ -65,11 +65,50 @@ function answer(body) {
   return text('Done.');
 }
 
+const KIMI = 'https://auth.kimi.com/api/oauth/';
+const DEVICE = {
+  device: 'dev-code-4f1c2b9e7a',
+  user: 'HRBR-7K2Q',
+  access: 'kimi-access-token-9c3e1d5f',
+  refresh: 'kimi-refresh-token-2a8b6e0d',
+  approved: false,
+};
+const asked = [];
+const json = (status, value) => ({
+  status,
+  headers: [['content-type', 'application/json']],
+  body: Buffer.from(JSON.stringify(value)),
+});
+
+function kimi(url, body) {
+  const form = new URLSearchParams(body);
+  if (url === `${KIMI}device_authorization`)
+    return json(200, {
+      device_code: DEVICE.device,
+      user_code: DEVICE.user,
+      verification_uri: 'https://auth.kimi.example/device',
+      verification_uri_complete: 'https://auth.kimi.example/device',
+      interval: 1,
+      expires_in: 600,
+    });
+  if (url !== `${KIMI}token` || form.get('device_code') !== DEVICE.device)
+    return json(400, { error: 'invalid_request' });
+  if (!DEVICE.approved) return json(400, { error: 'authorization_pending' });
+  return json(200, {
+    access_token: DEVICE.access,
+    refresh_token: DEVICE.refresh,
+    token_type: 'Bearer',
+    expires_in: 3600,
+  });
+}
+
 const chrome = await launch({ agent: true, timeout: 60000 });
 const proxy = await fakeProxy({
   origin: new URL(chrome.url).origin,
   key: 'the-key',
   answer: async (request, body) => {
+    asked.push({ url: request.url, body: body.toString() });
+    if (request.url.startsWith(KIMI)) return kimi(request.url, body.toString());
     if (request.url.startsWith('https://registry.npmjs.org/')) {
       const type = request.url.endsWith('.tgz') ? 'application/octet-stream' : 'application/json';
       return { status: 200, headers: [['content-type', type]], body: await download(request.url) };
@@ -456,5 +495,100 @@ test('slicc-agent 6.12+: without a CORS-free route, a provider that needs one sh
   assert.equal(by.cerebras, 'cors-free-transport', JSON.stringify(offered));
   assert.equal(by.anthropic, null, JSON.stringify(offered));
   assert.equal(by['amazon-bedrock'], null, JSON.stringify(offered));
+  assert.deepEqual(page.errors, []);
+});
+
+test('slicc-agent 6.16+: a Kimi device-code sign-in shows its user code, ends with the token sealed in the vault by the agent’s grant, and no device code or token reaches a URL, the page, its console or the vault log', {
+  timeout: 25 * 60 * 1000,
+}, async (t) => {
+  t.after(() => {
+    DEVICE.approved = false;
+  });
+  const page = await chrome.page(t);
+  await page.init('() => { window.open = () => null; }');
+  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await ready(page, ['slicc:/home# ']);
+  await agentUp(page);
+  await page.within(5 * 60 * 1000, () =>
+    (document.querySelector('slicc-app').model.settings.providers?.() ?? []).some(
+      (provider) => provider.id === 'kimi-coding' && !provider.blocked
+    )
+  );
+  const before = asked.length;
+  const logged = chrome.vault.log.length;
+  await page.evaluate(() => {
+    window.signedIn = document
+      .querySelector('slicc-app')
+      .model.settings.connect('kimi-coding')
+      .then(
+        () => 'ok',
+        (error) => error.message
+      );
+  });
+  const prompt = await page.within(5 * 60 * 1000, () => {
+    const account = document
+      .querySelector('slicc-app')
+      .model.settings.accounts()
+      .find((item) => item.id === 'kimi-coding');
+    return account?.status === 'signing-in' && account.signIn?.code && account.signIn;
+  });
+  assert.deepEqual(prompt, { url: 'https://auth.kimi.example/device', code: DEVICE.user });
+  for (
+    let tries = 0;
+    tries < 120 && !asked.slice(before).some((item) => item.url === `${KIMI}token`);
+    tries += 1
+  )
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  DEVICE.approved = true;
+  assert.equal(await page.within(5 * 60 * 1000, () => window.signedIn), 'ok');
+  const account = await page.within(60000, () =>
+    document
+      .querySelector('slicc-app')
+      .model.settings.accounts()
+      .find((item) => item.id === 'kimi-coding' && item.status === 'connected')
+  );
+  assert.equal(account.identity, 'Signed in');
+
+  const grants = chrome.vault.log.slice(logged).filter((entry) => entry.op === 'grant-fields');
+  assert.equal(grants.length, 1, JSON.stringify(grants));
+  assert.equal(grants[0].role, 'agent');
+  assert.equal(grants[0].provider, 'kimi-coding');
+  const record = chrome.vault.state.records?.find((item) => item.name === grants[0].name);
+  assert.equal(record?.value, DEVICE.access);
+  assert.equal(record.kind, 'model');
+  const listed = await page.evaluate(
+    (name) =>
+      document
+        .querySelector('slicc-app')
+        .model.vault.list()
+        ?.secrets.find((item) => item.name === name),
+    grants[0].name
+  );
+  assert.match(listed?.placeholder ?? '', /^fnox_proxy_/);
+
+  const calls = asked.slice(before).filter((item) => item.url.startsWith(KIMI));
+  assert.ok(
+    calls.some((item) => item.url === `${KIMI}token`),
+    JSON.stringify(calls)
+  );
+  const urls = asked.slice(before).map((item) => item.url);
+  const page_ = JSON.stringify(
+    await page.evaluate(() => ({
+      href: location.href,
+      accounts: document.querySelector('slicc-app').model.settings.accounts(),
+      vault: document.querySelector('slicc-app').model.vault.list(),
+      storage: { ...localStorage },
+    }))
+  );
+  for (const secret of [DEVICE.device, DEVICE.access, DEVICE.refresh]) {
+    assert.ok(!urls.some((url) => url.includes(secret)), `${secret} reached a URL`);
+    assert.ok(!page.console.join('\n').includes(secret), `${secret} reached the console`);
+    assert.ok(
+      !JSON.stringify(chrome.vault.log).includes(secret),
+      `${secret} reached the vault log`
+    );
+    assert.ok(!page_.includes(secret), `${secret} reached the page`);
+  }
+  assert.ok(!urls.some((url) => url.includes(DEVICE.user)), 'the user code reached a URL');
   assert.deepEqual(page.errors, []);
 });
