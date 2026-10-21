@@ -138,8 +138,9 @@ export function sixDialog(doc = document) {
     box.dataset.state = name;
     doc.querySelector('.splash').dataset.six = name;
   };
-  box.addEventListener('keydown', (event) => event.stopPropagation());
-  box.addEventListener('cancel', (event) => {
+  box.addEventListener('keydown', (event) => {
+    event.stopPropagation();
+    if (event.key !== 'Escape') return;
     event.preventDefault();
     answer?.(false);
   });
