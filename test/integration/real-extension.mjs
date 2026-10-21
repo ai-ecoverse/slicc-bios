@@ -19,6 +19,7 @@ const release = (version, sha256, { foreignWorld = false } = {}) => ({
   sha256,
 });
 export const EXTENSIONS = [
+  release('7.9.5', '526763b3d575f8d2301c253ffb9ec8eb62c073b2440cf63cae5a11200f338dff'),
   release('7.9.4', '1ecf6c60b1dfa327e0ecedb97d4b4d2a8f6e0cf84a35fac112a32bdae3dcc99a'),
   release('7.7.5', '040827f96f005d4035bd59440d056768dc07e5b6bd323afc3c11c0251ea3669d'),
   release('7.7.0', '85a3ae130dc1cdfffe39063d95586f98ba637e065b18ee83a9a438a81580564b'),
