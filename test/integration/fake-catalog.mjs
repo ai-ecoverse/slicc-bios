@@ -26,6 +26,7 @@ export async function fakeCatalog(cdp) {
     down: false,
     status: 0,
     tarballs: 0,
+    only: null,
     asked: [],
     names: new Set(),
     reset() {
@@ -35,6 +36,7 @@ export async function fakeCatalog(cdp) {
       state.down = false;
       state.status = 0;
       state.tarballs = 0;
+      state.only = null;
       state.asked.length = 0;
     },
   };
@@ -53,7 +55,9 @@ export async function fakeCatalog(cdp) {
     const { requestId, request } = params;
     state.asked.push(request.url);
     const names = new Set([...state.names, ...state.latest.keys()]);
-    const tarball = state.tarballs && TARBALL.test(new URL(request.url).pathname);
+    const { pathname } = new URL(request.url);
+    const tarball =
+      state.tarballs && TARBALL.test(pathname) && (!state.only || state.only.test(pathname));
     const failing = state.status || tarball || (state.down && metadataOf(request.url, names));
     if (failing) {
       const responseCode = state.status || (tarball ? state.tarballs : 503);

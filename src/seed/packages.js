@@ -1069,11 +1069,14 @@ export async function install(entry, byId, panel, { remove, add, restore }) {
   return gone.map(({ old }) => old);
 }
 
-export function replacer(attempt, run) {
+export function replacer(attempt, run, live, changed) {
   return {
     remove: (old) => attempt(old, 'remove'),
     restore: (old, version) =>
-      run(old, 'install', ['pnpm', 'add', '-g', `${old.package}@${version}`]),
+      run(old, 'install', ['pnpm', 'add', '-g', `${old.package}@${version}`]).finally(() => {
+        live.delete(old.id);
+        changed();
+      }),
   };
 }
 
@@ -1165,7 +1168,7 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
   }
 
   const swap = (entry, next) =>
-    install(entry, state.byId, installed, { ...replacer(attempt, run), add: next });
+    install(entry, state.byId, installed, { ...replacer(attempt, run, live, changed), add: next });
 
   async function perform(listed, action) {
     const entry = await freshFor(npm, listed, action);
