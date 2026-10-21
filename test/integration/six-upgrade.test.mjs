@@ -150,6 +150,8 @@ test("when www never answers for SLICC 6's upgrade page, the BIOS stops waiting 
   asked.length = 0;
   await page.goto(`${origin}/7/`);
   await page.within(60000, () => location.pathname === '/os/');
+  const waited = Date.now() - state.stalled;
+  assert.ok(waited < 20000, `the BIOS waited ${waited} ms for the upgrade page`);
   await ready(page);
   assert.deepEqual(bios.states(), booted);
   assert.ok(asked.includes('/upgrade-to-seven.html'), asked.join(' '));
