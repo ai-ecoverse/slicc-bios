@@ -49,7 +49,11 @@ const ims = createHttps(
       return res.end();
     }
     res.writeHead(200, { 'content-type': 'text/html' });
-    res.end(`<!doctype html><title>Sign in to Adobe</title><h1>Sign in</h1><script>
+    const frame =
+      url.pathname === '/landing'
+        ? `<iframe src="http://localhost:${plain.address().port}/frame#access_token=${MARK}-frame"></iframe>`
+        : '';
+    res.end(`<!doctype html><title>Sign in to Adobe</title><h1>Sign in</h1>${frame}<script>
 const asked = new URLSearchParams(location.search);
 if (asked.get('child')) window.open('/idp-child?grand=1#access_token=${MARK}-child', 'idp-child', 'popup');
 if (asked.get('grand')) window.open('/idp-grandchild#access_token=${MARK}-grandchild', 'idp-grandchild', 'popup');
@@ -265,6 +269,9 @@ async function rows(t, page, via) {
   const child = await tabWhere((tab) =>
     tab.url.startsWith('https://ims-na1.adobelogin.com/idp-child')
   );
+  const { targetInfos: raw } = await chrome.cdp.send('Target.getTargets');
+  const frame = raw.find((info) => info.type === 'iframe' && info.url.includes('/frame'))?.targetId;
+  assert.ok(frame, 'the sign-in page’s cross-site iframe is its own target');
   const grandchild = await tabWhere((tab) =>
     tab.url.startsWith('https://ims-na1.adobelogin.com/idp-grandchild')
   );
@@ -315,6 +322,7 @@ async function rows(t, page, via) {
           'the sign-in tab': popup,
           'the IdP’s popup': child,
           'the IdP popup’s own popup': grandchild,
+          'the sign-in page’s iframe': frame,
           'the blob tab': blob,
           'an MCP sign-in tab': mcp,
           'the vault’s sign-in tab': vaultChild,
@@ -517,5 +525,28 @@ test('with no browser host at the start, a host that connects in the middle of a
   await unreachable(agent, { 'the sign-in tab': popup });
   await navigate(popup, ordinary(`/midway#access_token=${MARK}-midway`));
   await unreachable(agent, { 'the sign-in tab': popup });
+  assert.deepEqual(page.errors, []);
+});
+
+test('with a browser host connected, a none answer to the hold does not send the sign-in to the IdP', {
+  timeout: 5 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  const extension = await fakeExtension(page);
+  t.after(extension.close);
+  await page.init(debugSignIn);
+  await boot(page);
+  await page.evaluate(() => {
+    const post = BroadcastChannel.prototype.postMessage;
+    BroadcastChannel.prototype.postMessage = function (data) {
+      if (data?.type !== 'hold') return post.call(this, data);
+      const answer = new MessageEvent('message', { data: { type: 'none', marker: data.marker } });
+      queueMicrotask(() => this.dispatchEvent(answer));
+    };
+  });
+  const asked = idp.authorized;
+  await startSignIn(page);
+  assert.equal(await ended(page), UNHELD);
+  assert.equal(idp.authorized, asked, 'the IdP was asked');
   assert.deepEqual(page.errors, []);
 });

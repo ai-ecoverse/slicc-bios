@@ -12,15 +12,16 @@ export const UNHELD =
 const EVERY = 200;
 
 const held = new Set();
-const flights = [];
+export const FLIGHT_KEY = 'slicc-os.sign-in-flight';
 
-export function flying(now = Date.now) {
-  flights.push(now() + FLIGHT);
+export function flying(now = Date.now, storage = globalThis.localStorage) {
+  try {
+    storage?.setItem(FLIGHT_KEY, String(now() + FLIGHT));
+  } catch {}
 }
 
-export function inFlight(now = Date.now) {
-  while (flights.length && flights[0] <= now()) flights.shift();
-  return flights.length > 0;
+export function inFlight(now = Date.now, storage = globalThis.localStorage) {
+  return Number(storage?.getItem(FLIGHT_KEY) ?? 0) > now();
 }
 
 export const guardOf = (own) => protectedOrigins(catalog.protectedOrigins, own ? [own] : []);
@@ -40,9 +41,10 @@ export function isHeld(targetId, storage = globalThis.localStorage) {
 }
 
 export function hold(targetId, storage = globalThis.localStorage) {
-  if (held.has(targetId)) return;
   held.add(targetId);
-  const list = [...stored(storage).filter((id) => id !== targetId), targetId].slice(-KEEP);
+  const now = stored(storage);
+  if (now.at(-1) === targetId) return;
+  const list = [...now.filter((id) => id !== targetId), targetId].slice(-KEEP);
   try {
     storage?.setItem(KEY, JSON.stringify(list));
   } catch {}
@@ -74,7 +76,7 @@ async function find(open, url, { deadline, now, sleep, storage }) {
   try {
     connection = await open();
   } catch {
-    return 'absent';
+    return 'missing';
   }
   try {
     for (;;) {
@@ -106,15 +108,15 @@ export function watchSignIns({
     const url = markerUrl(data.marker);
     const deadline = now() + wait;
     const opens = Object.values(hosts() ?? {}).filter((open) => typeof open === 'function');
-    const found = (
-      await Promise.all(opens.map((open) => find(open, url, { deadline, now, sleep, storage })))
-    ).filter((state) => state !== 'absent');
+    const found = await Promise.all(
+      opens.map((open) => find(open, url, { deadline, now, sleep, storage }))
+    );
     const type = !found.length
       ? 'none'
       : found.every((state) => state === 'held')
         ? 'held'
         : 'unheld';
-    if (type === 'none') flying(now);
+    if (type === 'none') flying(now, storage);
     channel.postMessage({ type, marker: data.marker });
   };
   return () => channel.close();
@@ -138,8 +140,9 @@ export function askHold(
       clearTimeout(timer);
       signal?.removeEventListener('abort', stop);
       channel.close();
-      if (answer === 'none') flying(now);
-      resolve(answer);
+      const sure = answer === 'none' && present() ? 'unheld' : answer;
+      if (sure === 'none') flying(now);
+      resolve(sure);
     };
     const stop = () => finish('aborted');
     const timer = setTimeout(() => finish(present() ? 'unheld' : 'none'), wait);
@@ -153,16 +156,25 @@ export function askHold(
 
 function considering({ is, storage, now }) {
   const urls = new Map();
+  const holds = (info, all) => {
+    if (isHeld(info.targetId, storage)) return false;
+    if (isHeld(info.parentId, storage) || isHeld(info.openerId, storage)) return true;
+    if (info.type !== 'page' || !info.openerId) return false;
+    if (!all && !info.canAccessOpener && !/^about:blank(?:#|$)/.test(info.url ?? '')) return false;
+    const opener = urls.get(info.openerId);
+    return opener !== undefined && is.url(opener);
+  };
   return (infos) => {
     const known = infos.filter((info) => info?.targetId);
     for (const info of known) urls.set(info.targetId, info.url ?? '');
-    const all = inFlight(now);
-    for (const info of known) {
-      if (info.type !== 'page' || !info.openerId) continue;
-      if (!all && !info.canAccessOpener && !/^about:blank(?:#|$)/.test(info.url ?? '')) continue;
-      const opener = urls.get(info.openerId);
-      if (isHeld(info.openerId, storage) || (opener !== undefined && is.url(opener)))
+    const all = inFlight(now, storage);
+    for (let added = true; added; ) {
+      added = false;
+      for (const info of known) {
+        if (!holds(info, all)) continue;
         hold(info.targetId, storage);
+        added = true;
+      }
     }
   };
 }

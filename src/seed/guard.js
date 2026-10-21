@@ -598,6 +598,7 @@ class Guard {
       url: failed ? ERROR_PAGE : (info.url ?? ''),
       type: info.type ?? known?.type,
       openerId: info.openerId,
+      parentId: info.parentId ?? known?.parentId,
       was: known?.was || known?.guarded || false,
       guarded: known?.guarded || false,
       real: known?.real || false,
@@ -628,6 +629,14 @@ class Guard {
       return true;
     }
     if (depth > 8) return true;
+    if (found.parentId && found.parentId !== targetId) {
+      await this.target(found.parentId, depth + 1);
+      if (isHeld(found.parentId)) {
+        hold(targetId);
+        found.guarded = true;
+        return true;
+      }
+    }
     const opener = await this.opener(found.openerId, depth);
     const lent = found.type === 'page' && (found.access || BLANK.test(found.url));
     if (isHeld(found.openerId) || (opener === 'protected' && lent)) {
