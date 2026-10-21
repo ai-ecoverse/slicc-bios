@@ -42,8 +42,25 @@ const asked = (page, op) =>
   );
 
 const decide = (page, id, decision) =>
-  page.evaluate(
-    ([id, decision]) => document.querySelector('slicc-app').model.approvals.decide(id, decision),
+  page.until(
+    ([id, decision]) => {
+      const deep = (root) => {
+        const found = root.querySelector(`dialog[data-approval="${id}"]`);
+        if (found) return found;
+        for (const element of root.querySelectorAll('*')) {
+          const inner = element.shadowRoot && deep(element.shadowRoot);
+          if (inner) return inner;
+        }
+        return null;
+      };
+      const listed = document
+        .querySelector('slicc-app')
+        .model.approvals.list()
+        .some((entry) => entry.id === id);
+      if (!listed) return true;
+      deep(document)?.querySelector(`[data-action="${decision}"]`)?.click();
+      return false;
+    },
     [id, decision]
   );
 
@@ -56,8 +73,8 @@ const trays = (page) =>
         .filter((entry) => entry.kind === 'tray').length
   );
 
-const dialog = (page, op) =>
-  page.until((op) => {
+const dialog = (page, open) =>
+  page.until((open) => {
     const deep = (root) => {
       const found = root.querySelector('dialog[data-approval][data-kind="tray"]');
       if (found) return found;
@@ -67,16 +84,16 @@ const dialog = (page, op) =>
       }
       return null;
     };
-    const shown = deep(document);
-    return shown?.open && shown.textContent.replace(/\s+/g, ' ').trim() && op;
-  }, op);
+    return Boolean(deep(document)?.open) === open;
+  }, open);
 
 async function approved(page, command, label, op, decision = 'once', shot = null) {
   await start(page, command, label);
   const item = await asked(page, op);
-  await dialog(page, op);
+  await dialog(page, true);
   if (shot) await shoot(page, shot);
   await decide(page, item.id, decision);
+  await dialog(page, false);
   return { item, ...(await finished(page, label)) };
 }
 
