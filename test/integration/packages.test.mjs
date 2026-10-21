@@ -457,7 +457,7 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
   await state(page, 'pdf', 'outdated');
   assert.equal(await act(page, 'rsync', 'install'), 'ok');
   registry.tarballs = 404;
-  assert.match(await act(page, 'dig', 'install'), /^Couldn't install dig/);
+  assert.match(await act(page, 'bind', 'install'), /^Couldn't install BIND tools/);
   registry.tarballs = 0;
 
   await start(page, 'jsh-browser', 'install');
@@ -502,7 +502,7 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
       'rsync installed',
       'sqlite3 available',
       'screen available',
-      'dig failed',
+      'bind failed',
       'websocat available',
       'ntfy available',
       'gpg available',
@@ -520,7 +520,7 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
     document
       .querySelector('slicc-app')
       .dock.content('updates')
-      .shadowRoot.querySelector('li[data-id="dig"]')
+      .shadowRoot.querySelector('li[data-id="bind"]')
       .scrollIntoView({ block: 'start' })
   );
   await page.screenshot(new URL('packages-failed-outdated-light.png', page.dir));

@@ -1054,6 +1054,32 @@ function missingOf(entry, byId, installed, owned) {
     );
 }
 
+export async function install(entry, byId, panel, { remove, add, restore }) {
+  const gone = (entry.replaces ?? [])
+    .map((name) => [...byId.values()].find((one) => one.package === name))
+    .filter((old) => old && panel.has(old.package))
+    .map((old) => ({ old, version: panel.get(old.package) }));
+  for (const { old } of gone) await remove(old);
+  try {
+    await add();
+  } catch (error) {
+    for (const { old, version } of gone) await restore(old, version).catch(() => undefined);
+    throw error;
+  }
+  return gone.map(({ old }) => old);
+}
+
+export function replacer(attempt, run, live, changed) {
+  return {
+    remove: (old) => attempt(old, 'remove'),
+    restore: (old, version) =>
+      run(old, 'install', ['pnpm', 'add', '-g', `${old.package}@${version}`]).finally(() => {
+        live.delete(old.id);
+        changed();
+      }),
+  };
+}
+
 export function createPackages({ catalog, root, kernel, ask, emit, global = GLOBAL }) {
   const { retired = [], npm } = catalog;
   const { state, ready, check } = npmListing({ catalog, root, changed: () => changed() });
@@ -1141,6 +1167,9 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
     await linkSkills({ root, kernel, global, entry, dir: mine[0].dir });
   }
 
+  const swap = (entry, next) =>
+    install(entry, state.byId, installed, { ...replacer(attempt, run, live, changed), add: next });
+
   async function perform(listed, action) {
     const entry = await freshFor(npm, listed, action);
     if (action === 'update' && entry.kind !== 'project' && !installed.has(entry.package)) {
@@ -1150,7 +1179,7 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
         return reporter(entry, 'update');
       };
       const rescan = () => refresh().then(() => owned);
-      return updateFor({ kernel, entry, gate: npm.gate, owned, start, rescan });
+      return swap(entry, () => updateFor({ kernel, entry, gate: npm.gate, owned, start, rescan }));
     }
     if (entry.kind === 'project' && action === 'remove') return project(entry, action);
     if (action === 'remove') {
@@ -1173,7 +1202,7 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
       });
     }
     if (entry.kind === 'project') return project(entry, action);
-    await add(entry, action);
+    await swap(entry, () => add(entry, action));
   }
 
   async function attempt(entry, action) {

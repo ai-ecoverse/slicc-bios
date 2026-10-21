@@ -20,6 +20,7 @@ const KEYS = new Set([
   'description',
   'commands',
   'size',
+  'replaces',
 ]);
 
 const HOMESCOOPED = /^@ai-ecoverse\/(?:wasm|wasi|wasix|py)-/;
@@ -34,6 +35,7 @@ test('the optional catalog pins only what homescoop’s ladder doesn’t publish
   const catalog = await read('catalog.json');
   const { dependencies } = await read('package.json');
   const lock = await read('package-lock.json');
+  const retired = await read('retired.json');
   assert.deepEqual(Object.keys(dependencies).sort(), PINNED);
   for (const [name, version] of Object.entries(dependencies)) {
     assert.ok(catalog[name], `${name} is a catalog entry`);
@@ -59,6 +61,8 @@ test('the optional catalog pins only what homescoop’s ladder doesn’t publish
     for (const note of entry.notes ?? [])
       assert.ok(typeof note === 'string' && note.length > 10 && note.length <= 300, name);
     for (const helper of entry.helpers ?? []) assert.match(helper, /^[\w.+-]+$/, name);
+    for (const gone of entry.replaces ?? [])
+      assert.ok(Object.hasOwn(retired, gone), `${name} replaces ${gone}, which isn't retired`);
   }
   assert.deepEqual(await read('sources.json'), { '@ai-ecoverse/slicc-cdp': { certified: 'tag' } });
 });

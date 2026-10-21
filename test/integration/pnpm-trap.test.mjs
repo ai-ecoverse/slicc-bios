@@ -159,9 +159,9 @@ test('a pnpm run that hits the wasm trap once is retried once and the install su
   assert.ok(page.console.some((line) => /retry after the wasm trap succeeded/.test(line)));
 
   await said(page, 'echo 2 > /tmp/pnpm-trap/left && : > /tmp/pnpm-trap/runs', 'rearmed');
-  const failed = await actPackage(page, 'dig', 'install');
-  assert.match(failed, /^Couldn't install dig: /);
-  const dig = await row(page, 'dig');
+  const failed = await actPackage(page, 'bind', 'install');
+  assert.match(failed, /^Couldn't install BIND tools \(dig, host, nslookup\): /);
+  const dig = await row(page, 'bind');
   assert.equal(dig.state, 'failed');
   assert.match(
     `${failed}\n${dig.log}`,
@@ -170,7 +170,7 @@ test('a pnpm run that hits the wasm trap once is retried once and the install su
   assert.ok(dig.log.includes(TRAP), dig.log);
   const twice = await said(
     page,
-    'echo "runs $(grep -c "^add -g @ai-ecoverse/wasi-dig@" /tmp/pnpm-trap/runs) all $(wc -l < /tmp/pnpm-trap/runs) left $(cat /tmp/pnpm-trap/left)"; command -v dig || echo no-dig; ls "$PNPM_HOME"/global/v11/*/node_modules/@ai-ecoverse 2>/dev/null | grep -cx wasi-dig | sed "s/^/dig-projects /"',
+    'echo "runs $(grep -c "^add -g @ai-ecoverse/wasix-bind@" /tmp/pnpm-trap/runs) all $(wc -l < /tmp/pnpm-trap/runs) left $(cat /tmp/pnpm-trap/left)"; command -v dig || echo no-dig; ls "$PNPM_HOME"/global/v11/*/node_modules/@ai-ecoverse 2>/dev/null | grep -cx wasix-bind | sed "s/^/dig-projects /"',
     'twice'
   );
   assert.match(twice, /runs 2 all 2 left 0 /);

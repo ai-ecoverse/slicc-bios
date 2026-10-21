@@ -33,5 +33,10 @@
     "id": "fnox",
     "label": "fnox",
     "commands": ["fnox"]
+  },
+  "@ai-ecoverse/wasi-dig": {
+    "id": "dig",
+    "label": "dig",
+    "commands": ["dig"]
   }
 }
