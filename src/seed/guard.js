@@ -857,19 +857,33 @@ class Guard {
 
   scrubbing(nav) {
     return new Promise((resolve) => {
-      const timer = setTimeout(() => {
+      const done = () => {
+        clearTimeout(nav.scrubTimer);
         nav.wiped = null;
         nav.scrub = null;
-        this.cutTarget(nav.targetId);
-        resolve();
-      }, SCRUB_MS);
-      timer.unref?.();
-      nav.wiped = () => {
-        clearTimeout(timer);
-        nav.wiped = null;
-        nav.scrub = null;
+        nav.retried = false;
         resolve();
       };
+      const expire = async () => {
+        const answer = nav.session ? await this.call('Page.getFrameTree', {}, nav.session) : {};
+        const url = answer.result?.frameTree?.frame;
+        const shown = url ? `${url.url}${url.urlFragment ?? ''}` : undefined;
+        if (shown !== undefined && !shown.startsWith('chrome-error:') && !this.is.url(shown)) {
+          return done();
+        }
+        if (!nav.retried && shown?.startsWith('chrome-error:')) {
+          nav.retried = true;
+          void this.call('Page.navigate', { url: BLANKED }, nav.session);
+          nav.scrubTimer = setTimeout(expire, SCRUB_MS);
+          nav.scrubTimer.unref?.();
+          return;
+        }
+        done();
+        this.cutTarget(nav.targetId);
+      };
+      nav.scrubTimer = setTimeout(expire, SCRUB_MS);
+      nav.scrubTimer.unref?.();
+      nav.wiped = done;
     });
   }
 
