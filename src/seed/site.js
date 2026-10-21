@@ -15,3 +15,10 @@ export const BIOS = biosOf();
 export const sharesOrigin = (bios = biosOf()) => new URL(bios).pathname !== '/';
 
 export const home = (bios = biosOf()) => bios.replace(/\/$/, '');
+
+export function neverCached(target = globalThis) {
+  target.addEventListener('unload', () => {});
+  target.addEventListener('pageshow', (event) => {
+    if (event.persisted) target.location.reload();
+  });
+}
