@@ -791,6 +791,19 @@ test('wasi-slicc 1.44.4, which its source denies, and anything before its since 
   assert.deepEqual(await npm.gate(new Map([[old, exact.get(old)]]), old), {
     why: "wasi-slicc 1.41.0 isn't certified: releases before 1.44.1 weren't reviewed",
   });
+  const row = describe(withNpm(byName.get(name), info), '1.41.0', null);
+  assert.deepEqual(
+    [row.state, row.version, row.offered, row.actions],
+    ['outdated', '1.41.0', '1.44.3', ['update', 'remove']],
+    'a profile on the pre-review 1.41.0 is offered the newest certified release as its update'
+  );
+  const theirs = describe(withNpm(byName.get(name), info), null, null, [
+    { version: '1.41.0', where: '/home/.local/share/pnpm', user: 'cone', manager: 'pnpm' },
+  ]);
+  assert.deepEqual(
+    [theirs.state, theirs.offered, theirs.actions],
+    ['outdated', '1.44.3', ['update']]
+  );
 });
 
 test('sliccy-browser is offered only with a slicc-cdp at its certified tag, and only from slicc-cdp’s sliccy-browser workflow; the new publishers meet homescoop’s exceptions and the kernel’s engines too', async () => {
