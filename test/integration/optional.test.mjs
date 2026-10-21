@@ -127,7 +127,7 @@ test('a project entry ships its manifest, a lockfile and a workspace that overri
       'utf8'
     );
     assert.match(workspace, /'@ai-ecoverse\/wasix-python': '-'/);
-    assert.match(lock, /^overrides:\n {2}'@ai-ecoverse\/wasix-python': '-'$/m);
+    assert.match(lock, /^overrides:\n(?: {2}.+\n)*? {2}'@ai-ecoverse\/wasix-python': '-'$/m);
     assert.ok(entry.requires.includes('python'), `${entry.id} needs the catalog's Python`);
   }
 });
