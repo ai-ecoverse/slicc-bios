@@ -42,7 +42,9 @@ export function refused(doc = document, go = (url) => location.replace(url), sto
   const button = doc.createElement('button');
   button.type = 'button';
   button.textContent = 'Reload';
-  button.addEventListener('click', () => go(`${biosOf()}${doc.location?.hash ?? ''}`));
+  button.addEventListener('click', async () =>
+    go(`${await tripTarget()}${doc.location?.hash ?? ''}`)
+  );
   box.append(title, text, button);
   doc.body.replaceChildren(box);
   return box;

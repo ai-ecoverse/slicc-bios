@@ -197,12 +197,10 @@ test("on a shared origin, sign-in goes through six's relay, the tray hub through
 
   const reload = await page.evaluate(async () => {
     const { refused } = await import('/os/start.js');
-    let went = null;
-    const box = refused(document.implementation.createHTMLDocument(''), (url) => {
-      went = url;
+    return new Promise((resolve) => {
+      const box = refused(document.implementation.createHTMLDocument(''), resolve);
+      box.querySelector('button').click();
     });
-    box.querySelector('button').click();
-    return went;
   });
   assert.equal(reload, `${origin}/7/`);
   const trip = await page.evaluate(async () => {
