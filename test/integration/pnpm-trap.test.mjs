@@ -133,6 +133,11 @@ test('a pnpm run that hits the wasm trap once is retried once and the install su
       .model.updates.packages()
       .some((item) => item.id === 'xxd')
   );
+  await page.within(5 * 60 * 1000, () => {
+    const { updates } = document.querySelector('slicc-app').model;
+    const rows = [...updates.list(), ...updates.packages()];
+    return rows.every((row) => !/queued|starting|checking|downloading|linking/.test(row.state));
+  });
 
   await said(
     page,
@@ -146,7 +151,8 @@ test('a pnpm run that hits the wasm trap once is retried once and the install su
     'echo "runs $(grep -c "^add -g @ai-ecoverse/wasm-xxd@" /tmp/pnpm-trap/runs)"; xxd -v 2>&1 | head -1',
     'once'
   );
-  assert.match(once, /runs 2 /);
+  if (!/runs 2 /.test(once))
+    assert.fail(`${once}\n${await said(page, 'cat /tmp/pnpm-trap/runs', 'dumped')}`);
   assert.deepEqual(await traps(page), ['recovered', TRAP]);
   assert.ok(
     page.console.some((line) =>
