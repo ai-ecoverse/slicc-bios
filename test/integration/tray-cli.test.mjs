@@ -168,7 +168,7 @@ const raw = (op) => {
   return `exec 3<>/dev/tcp/127.0.0.1/7400; printf '${head}%s' '${hello}' >&3; timeout 10 cat <&3 | tr -c '[:print:]' '.'`;
 };
 
-test('a cone’s slicc tray in seven’s terminal lists and retries this seven’s tray, and hands out, rotates and unlinks only once the owner approves; root isn’t asked, a scoop is refused, and status never carries a join or webhook URL', {
+test('slicc tray in seven: a cone’s url, rotate and unlink wait for approval, a hung-up one is withdrawn, root isn’t asked, a scoop is refused, status leaks no URL', {
   timeout: 30 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -287,6 +287,18 @@ test('a cone’s slicc tray in seven’s terminal lists and retries this seven�
   );
   const moved = await typed(page, 'slicc tray url', 'moved');
   assert.deepEqual([moved.code, moved.out], [0, `${hub.url}/join/j2\n`]);
+
+  const killed = sh(page, 'sudo -u cone timeout 5 slicc tray rotate; echo "exit=$?"');
+  await asked(page, 'rotate');
+  assert.match((await killed).out, /exit=124/);
+  await page.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.approvals.list()
+      .every((entry) => entry.kind !== 'tray')
+  );
+  await dialog(page, false);
+  assert.equal(hub.trays, 2);
 
   const retried = await typed(page, 'sudo -u cone slicc tray retry', 'retried');
   assert.equal(retried.code, 0, retried.err);
