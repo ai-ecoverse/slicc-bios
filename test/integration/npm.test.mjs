@@ -561,6 +561,28 @@ test('in Your packages, a certs.json exact match that homescoop’s bundled or l
   );
 });
 
+test('in Your packages, a certs.json exact match its source denies, such as the pre-review wasi-slicc 1.41.0, is untested too', async () => {
+  const old = { name: '@ai-ecoverse/wasi-slicc', version: '1.41.0' };
+  const fine = { name: '@ai-ecoverse/wasi-slicc', version: '1.44.7' };
+  const lock = (rows) =>
+    `lockfileVersion: '9.0'\n\npackages:\n\n${rows.map(([one, integrity]) => `  '${one}':\n    resolution: {integrity: ${integrity}}\n`).join('\n')}`;
+  const certs = async () => ({
+    [key(old)]: { integrity: integrityOf(key(old)) },
+    [key(fine)]: { integrity: integrityOf(key(fine)) },
+  });
+  const catalog = JSON.parse(await readFile(new URL('catalog.json', OPTIONAL), 'utf8'));
+  const { npm } = gate([], { sources: { [old.name]: catalog[old.name].source } });
+  const user = lock([
+    [key(old), integrityOf(key(old))],
+    [key(fine), integrityOf(key(fine))],
+  ]);
+  const none = async () => new Set();
+  assert.deepEqual(
+    await untested(user, lock([]), certs, none, (keys, all) => npm.denied(keys, all)),
+    [key(old)]
+  );
+});
+
 function fakeRoot(files = {}) {
   const dir = (prefix) => ({
     getDirectoryHandle: async (name) => dir(`${prefix}${name}/`),

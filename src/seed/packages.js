@@ -273,6 +273,8 @@ export function denied(source, name, version) {
   return null;
 }
 
+const bySource = (...args) => denied(...args);
+
 async function published(name, version, doc, source, ctx) {
   const it = `${short(name)} ${version}`;
   if (source.certified === 'tag') {
@@ -444,7 +446,13 @@ export function createNpm({ base, shipped = base, sources, bundled, have, fetche
   async function denied(keys, lock) {
     const ctx = await context();
     const pins = [...lock.keys(), ...shipped.keys()];
-    return keys.filter((key) => ruled(ctx.exceptions, nameOf(key), versionOf(key), pins));
+    return keys.filter((key) => {
+      const name = nameOf(key);
+      const source = OURS.test(name) ? sourceOf(name, sources) : null;
+      return (
+        bySource(source, name, versionOf(key)) || ruled(ctx.exceptions, name, versionOf(key), pins)
+      );
+    });
   }
 
   async function admitted(left, lock, names) {
