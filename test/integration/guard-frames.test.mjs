@@ -68,7 +68,7 @@ async function framed() {
   }
 }
 
-async function reads({ transport, proxy, targetId, frameId }) {
+async function reads({ transport, proxy, targetId, frameId, plain, vaultChild }) {
   const { guardProtected } = await import(new URL('guard.js', location.href).href);
   const { proxyHost, extensionConnection } = await import(new URL('cdp.js', location.href).href);
   const raw =
@@ -102,7 +102,13 @@ async function reads({ transport, proxy, targetId, frameId }) {
   const out = {};
   const attached = await send('Target.attachToTarget', { targetId, flatten: true });
   out.attach = attached.error?.message ?? 'attached';
-  const session = attached.result?.sessionId;
+  const created = await send('Target.createTarget', { url: plain });
+  const granted = await send('Target.attachToTarget', {
+    targetId: created.result?.targetId,
+    flatten: true,
+  });
+  const session = granted.result?.sessionId;
+  out.granted = Boolean(session);
   const world = await send('Page.createIsolatedWorld', { frameId, worldName: 'probe' }, session);
   const contextId = world.result?.executionContextId;
   const calls = {
@@ -110,10 +116,7 @@ async function reads({ transport, proxy, targetId, frameId }) {
     'DOM.getDocument': ['DOM.getDocument', { depth: -1, pierce: true }],
     'DOM.describeNode': ['DOM.describeNode', { backendNodeId: 1, depth: -1, pierce: true }],
     'DOMSnapshot.captureSnapshot': ['DOMSnapshot.captureSnapshot', { computedStyles: [] }],
-    'Page.getResourceContent': [
-      'Page.getResourceContent',
-      { frameId, url: `http://vault.sliccy.ai:${new URL(location.href).port}/child` },
-    ],
+    'Page.getResourceContent': ['Page.getResourceContent', { frameId, url: vaultChild }],
     'Page.createIsolatedWorld': null,
     'Runtime.evaluate in that world': [
       'Runtime.evaluate',
@@ -127,6 +130,7 @@ async function reads({ transport, proxy, targetId, frameId }) {
     out[name] = answer.error?.message ?? 'answered';
   }
   out.leaked = seen.some((text) => text.includes('FRAME-MARK') || text.includes('VAULT-FRAME'));
+  await send('Target.closeTarget', { targetId: created.result?.targetId });
   connection.close?.();
   return out;
 }
@@ -157,12 +161,22 @@ async function check(t, transport) {
     proxy: proxy && { url: proxy.url, key: proxy.key },
     targetId,
     frameId,
+    plain: `http://ordinary.test:${port}/plain`,
+    vaultChild: `http://vault.sliccy.ai:${port}/child`,
   });
   assert.equal(out.leaked, false, JSON.stringify(out));
   assert.match(out.attach, /^slicc: refused:/, 'the tab holding the vault frame is refused whole');
-  for (const [name, answer] of Object.entries(out)) {
-    if (name === 'leaked' || name === 'attach') continue;
-    assert.notEqual(answer, 'answered', `${name} with the vault frame's id is never answered`);
+  assert.equal(
+    out.granted,
+    true,
+    'an ordinary tab is attached, so its session carries the frame-scoped reads'
+  );
+  for (const name of [
+    'Accessibility.getFullAXTree',
+    'Page.getResourceContent',
+    'Page.createIsolatedWorld',
+  ]) {
+    assert.match(out[name], /^slicc: refused:/, `${name} with the vault frame's id: ${out[name]}`);
   }
 }
 
@@ -209,21 +223,25 @@ async function fresh({ transport, proxy, port }) {
       });
       connection.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
     });
-  const until = async (check) => {
+  const until = async (check, what, saw) => {
     const deadline = Date.now() + 10000;
     while (Date.now() < deadline) {
       if (await check()) return true;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    return false;
+    throw new Error(`${what} never happened; saw ${JSON.stringify(await saw()).slice(0, 400)}`);
   };
+  const heard = () => events.map((event) => event.method);
   const created = await send('Target.createTarget', { url: `http://ordinary.test:${port}/plain` });
   const targetId = created.result?.targetId;
   const session = (await send('Target.attachToTarget', { targetId, flatten: true })).result
     ?.sessionId;
   await send('Page.enable', {}, session);
-  await until(async () =>
-    (await send('Page.getFrameTree', {}, session)).result?.frameTree?.frame?.url?.endsWith('/plain')
+  const tree = async () => (await send('Page.getFrameTree', {}, session)).result?.frameTree;
+  await until(
+    async () => (await tree())?.frame?.url?.endsWith('/plain'),
+    'the tab committing /plain',
+    tree
   );
   const out = {};
   out.unknown =
@@ -241,9 +259,16 @@ async function fresh({ transport, proxy, port }) {
     },
     session
   );
-  out.attached = await until(() => events.some((event) => event.method === 'Page.frameAttached'));
-  out.navigated = await until(() =>
-    events.some((event) => event.method === 'Page.frameNavigated' && event.params.frame.parentId)
+  out.attached = await until(
+    () => events.some((event) => event.method === 'Page.frameAttached'),
+    'Page.frameAttached for the new iframe',
+    heard
+  );
+  out.navigated = await until(
+    () =>
+      events.some((event) => event.method === 'Page.frameNavigated' && event.params.frame.parentId),
+    'Page.frameNavigated for the new iframe',
+    heard
   );
   const child = events.find(
     (event) => event.method === 'Page.frameNavigated' && event.params.frame.parentId
