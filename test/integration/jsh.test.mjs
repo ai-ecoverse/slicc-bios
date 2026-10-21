@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { actPackage, boot, run, shows } from './bios.mjs';
+import { offered } from './catalog.mjs';
 import { launch } from './chrome.mjs';
+
+const JSH = await offered('@ai-ecoverse/slicc-jsh');
 
 const chrome = await launch({ timeout: 120000 });
 after(() => chrome.close());
@@ -33,7 +36,7 @@ test('Node.js (jsh) installs from the catalog, runs node with CommonJS and ESM, 
   assert.equal(result, 'ok', (await row(page, 'node')).log);
   const installed = await row(page, 'node');
   assert.equal(installed.state, 'installed');
-  assert.equal(installed.version, '0.45.4');
+  assert.equal(installed.version, JSH);
 
   await run(page, 'clear; echo "resolved $(command -v jsh) $(command -v node)"');
   await shows(page, 'resolved /usr/bin/jsh /usr/bin/node');

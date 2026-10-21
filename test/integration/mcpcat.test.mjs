@@ -2,14 +2,13 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { actPackage, boot, ready } from './bios.mjs';
+import { offered } from './catalog.mjs';
 import { launch } from './chrome.mjs';
 
 const VALUE = 'dummy-mcp-value-0123456789';
 const URL_HTTP = 'http://127.0.0.1:8470/mcp';
 const fixture = new URL('fixtures/mcp-fixture/', import.meta.url);
-const optional = JSON.parse(
-  await readFile(new URL('../../src/packages/optional/package.json', import.meta.url), 'utf8')
-);
+const MCPCAT = await offered('@ai-ecoverse/mcpcat');
 const chrome = await launch({ timeout: 120000 });
 after(() => chrome.close());
 
@@ -100,12 +99,12 @@ test('mcpcat from the catalog lists and calls a stdio and an HTTP MCP server, an
       .model.updates.packages()
       .find((item) => item.id === 'mcpcat')
   );
-  assert.equal(row.version, optional.dependencies['@ai-ecoverse/mcpcat']);
+  assert.equal(row.version, MCPCAT);
   await installFixture(page);
 
   const version = await sh(page, 'mcpcat --version', 'version');
   assert.equal(version.code, '0', version.out);
-  assert.match(version.out, new RegExp(optional.dependencies['@ai-ecoverse/mcpcat']));
+  assert.match(version.out, new RegExp(MCPCAT));
 
   const stdioTools = await sh(page, 'cd /tmp && mcpcat tools stdio:mcp-fixture', 'stdio-tools');
   assert.deepEqual(stdioTools, { code: '0', out: 'add  Adds two numbers' });

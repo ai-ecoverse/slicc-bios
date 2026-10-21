@@ -2,58 +2,61 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { actPackage, boot } from './bios.mjs';
 import { launch } from './chrome.mjs';
+import { fakeCatalog } from './fake-catalog.mjs';
 
 const MCPCAT = '@ai-ecoverse/mcpcat';
-const SEMVER = 'semver';
-const pins = { [MCPCAT]: '0.16.3', [SEMVER]: '7.7.3' };
-const integrity = {
-  [MCPCAT]:
-    'sha512-Sah/qC/1x31WKsVK+tyHYSdV8StFLpZEmuNyWqu2inbK19IL7ZyZyOb+85CGVAG1+ZRdXfE1y0eUAQuu0jnm3w==',
-  [SEMVER]:
-    'sha512-SdsKMrI9TdgjdweUSR9MweHA4EJ8YxHn8DFaDisvhVlUOe4BF1tLD7GAj0lIqWVl+dPb/rExr0Btby5loQm20Q==',
-};
+const GLUE = '@ai-ecoverse/hot-glue';
+const pins = { [MCPCAT]: '0.16.3', [GLUE]: '0.3.0' };
 const BIN = '/usr/local/share/pnpm/bin';
 
-const chrome = await launch({ timeout: 120000 });
+const chrome = await launch({ timeout: 120000, intercept: [] });
+const registry = await fakeCatalog(chrome.cdp);
 after(() => chrome.close());
 
-function offer() {
-  const catalog = {
-    [MCPCAT]: {
-      id: 'mcpcat',
-      label: 'mcpcat',
-      description: 'An MCP client.',
-      commands: ['mcpcat'],
-      size: 589050,
-    },
-    [SEMVER]: {
-      id: 'semver',
-      label: 'semver',
-      description: 'A package with only a Node bin.',
-      commands: ['semver'],
-      size: 28442,
-    },
-  };
-  chrome.overrides.set('/packages/optional/catalog.json', JSON.stringify(catalog));
-  chrome.overrides.set(
-    '/packages/optional/package.json',
-    JSON.stringify({ name: 'slicc-bios-optional', private: true, dependencies: pins })
-  );
-  chrome.overrides.set(
-    '/packages/optional/package-lock.json',
-    JSON.stringify({
+const integrity = {
+  '@ai-ecoverse/mcpcat@0.16.3':
+    'sha512-Sah/qC/1x31WKsVK+tyHYSdV8StFLpZEmuNyWqu2inbK19IL7ZyZyOb+85CGVAG1+ZRdXfE1y0eUAQuu0jnm3w==',
+};
+
+function pinned(pins, integrity) {
+  return {
+    '/packages/optional/package.json': JSON.stringify({
+      name: 'slicc-bios-optional',
+      private: true,
+      dependencies: pins,
+    }),
+    '/packages/optional/package-lock.json': JSON.stringify({
       lockfileVersion: 3,
       packages: {
         '': { dependencies: pins },
         ...Object.fromEntries(
           Object.entries(pins).map(([name, version]) => [
             `node_modules/${name}`,
-            { version, integrity: integrity[name] },
+            { version, integrity: integrity[`${name}@${version}`] },
           ])
         ),
       },
-    })
-  );
+    }),
+  };
+}
+
+function offer() {
+  const release = '.github/workflows/release.yml';
+  const catalog = {
+    [MCPCAT]: { id: 'mcpcat', label: 'mcpcat' },
+    [GLUE]: {
+      id: 'hot-glue',
+      label: 'hot-glue',
+      notes: ['A package with only a Node bin.'],
+      source: { repo: 'ai-ecoverse/hot-glue', workflow: release },
+    },
+  };
+  registry.reset();
+  registry.names.add(MCPCAT);
+  registry.latest.set(GLUE, pins[GLUE]);
+  chrome.overrides.set('/packages/optional/catalog.json', JSON.stringify(catalog));
+  for (const [path, body] of Object.entries(pinned({ [MCPCAT]: pins[MCPCAT] }, integrity)))
+    chrome.overrides.set(path, body);
 }
 
 async function sh(page, command) {
@@ -118,13 +121,13 @@ test('a catalog package’s kernel command wins over the same package’s Node b
   const gone = await sh(page, `test -e ${BIN}/mcpcat || test -L ${BIN}/mcpcat; echo $?`);
   assert.equal(gone.out, '1');
 
-  await install(page, 'semver');
-  const kept = await sh(page, `test -e ${BIN}/semver || test -L ${BIN}/semver; echo $?`);
+  await install(page, 'hot-glue');
+  const kept = await sh(page, `test -e ${BIN}/hotglue || test -L ${BIN}/hotglue; echo $?`);
   assert.equal(kept.out, '0');
-  assert.deepEqual(await sh(page, 'command -v semver'), { code: '0', out: `${BIN}/semver` });
+  assert.deepEqual(await sh(page, 'command -v hotglue'), { code: '0', out: `${BIN}/hotglue` });
 
   const listed = await sh(page, `ls ${BIN}`);
   assert.doesNotMatch(listed.out, /^mcpcat$/m);
-  assert.match(listed.out, /^semver$/m);
+  assert.match(listed.out, /^hotglue$/m);
   assert.deepEqual(page.errors, []);
 });

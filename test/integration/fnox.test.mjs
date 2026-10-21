@@ -4,9 +4,11 @@ import { createServer } from 'node:net';
 import { after, test } from 'node:test';
 import { actPackage, boot, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
+import { fakeCatalog } from './fake-catalog.mjs';
 
 const VALUE = 'dummy-fnox-value-0123456789';
-const chrome = await launch({ timeout: 120000 });
+const chrome = await launch({ timeout: 120000, intercept: [] });
+const registry = await fakeCatalog(chrome.cdp);
 after(() => chrome.close());
 
 const FNOX = '@ai-ecoverse/wasi-fnox';
@@ -19,7 +21,6 @@ function beforeTheMove() {
   const version = base.dependencies[FNOX];
   delete base.dependencies[FNOX];
   const lock = json('package-lock.json');
-  const entry = lock.packages[`node_modules/${FNOX}`];
   delete lock.packages[`node_modules/${FNOX}`];
   delete lock.packages[''].dependencies[FNOX];
   const pnpm = text('pnpm-lock.yaml')
@@ -29,27 +30,17 @@ function beforeTheMove() {
     )
     .replace(new RegExp(`\n  '${FNOX}@${version}':\n(    [^\n]+\n)+`), '\n')
     .replace(new RegExp(`\n  '${FNOX}@${version}': \\{\\}\n`), '\n');
-  const optional = json('optional/package.json');
-  optional.dependencies = Object.fromEntries(
-    Object.entries({ ...optional.dependencies, [FNOX]: version }).sort(([a], [b]) =>
-      a.localeCompare(b)
-    )
-  );
-  const optionalLock = json('optional/package-lock.json');
-  optionalLock.packages[''].dependencies = optional.dependencies;
-  optionalLock.packages[`node_modules/${FNOX}`] = entry;
+  registry.latest.set(FNOX, version);
   const retired = json('optional/retired.json');
   const { [FNOX]: row, ...kept } = retired;
   const catalog = {
     ...json('optional/catalog.json'),
-    [FNOX]: { ...row, description: 'fnox', size: 2156061 },
+    [FNOX]: { id: row.id, label: row.label },
   };
   return {
     'package.json': JSON.stringify(base),
     'package-lock.json': JSON.stringify(lock),
     'pnpm-lock.yaml': pnpm,
-    'optional/package.json': JSON.stringify(optional),
-    'optional/package-lock.json': JSON.stringify(optionalLock),
     'optional/catalog.json': JSON.stringify(catalog),
     'optional/retired.json': JSON.stringify(kept),
   };

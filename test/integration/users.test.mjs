@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import {
   AGENT_BUDGET,
@@ -13,12 +12,11 @@ import {
   screen,
   shows,
 } from './bios.mjs';
+import { offered } from './catalog.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch({ timeout: 120000, agent: true });
-const RSYNC = JSON.parse(
-  await readFile(new URL('../../src/packages/optional/package.json', import.meta.url), 'utf8')
-).dependencies['@ai-ecoverse/wasm-rsync'];
+const RSYNC = await offered('@ai-ecoverse/wasm-rsync');
 const TREES = ['/opt/agent', '/opt/grammars', '/node_modules'];
 const SCAN = 5 * 60 * 1000;
 after(() => chrome.close());

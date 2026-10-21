@@ -66,7 +66,7 @@ await chrome.cdp.send('Fetch.enable', {
 test('a catalog install of one large package reports its download in bytes, summed from pnpm’s Downloading lines, and the bar shows them (#619)', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
-  const size = await page
+  const offered = await page
     .within(300000, () => {
       const updates = document.querySelector('slicc-app').model.updates;
       const item = updates.packages().find((entry) => entry.id === 'python');
@@ -78,12 +78,14 @@ test('a catalog install of one large package reports its download in bytes, summ
         if (row?.progress) window.sliccSeen.push(row.progress);
         if (row?.log) window.sliccLog = row.log;
       }, 50);
-      return item.size;
+      return item.offered;
     })
     .catch(async (error) => {
       const seen = await page.evaluate(() => window.sliccRow);
       throw new Error(`the python row was never available, last ${seen}: ${error.message}`);
     });
+  const tarball = `https://registry.npmjs.org/@ai-ecoverse/wasix-python/-/wasix-python-${offered}.tgz`;
+  const size = (await download(tarball)).length;
   const installing = actPackage(page, 'python', 'install');
   const shown = await page
     .within(5 * 60 * 1000, () => {

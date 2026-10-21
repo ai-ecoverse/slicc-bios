@@ -2,179 +2,146 @@
   "@ai-ecoverse/wasm-git": {
     "id": "git",
     "label": "git",
-    "description": "Version control for your projects.",
-    "commands": ["git"],
-    "size": 18814699
+    "helpers": [
+      "git-shell",
+      "git-remote-http",
+      "git-remote-https",
+      "git-upload-pack",
+      "git-receive-pack"
+    ]
   },
   "@ai-ecoverse/wasi-gh": {
     "id": "gh",
     "label": "GitHub CLI",
-    "description": "GitHub CLI. In seven, use GH_TOKEN from the vault; gh auth login stores a plain-text token. gh auth login -c (clipboard) needs slicc-clipboard. A git credential helper using gh auth git-credential gets no token.",
-    "commands": ["gh"],
-    "size": 16248809
+    "notes": [
+      "In seven, use GH_TOKEN from the vault: gh auth login stores a plain-text token.",
+      "gh auth login -c (clipboard) needs slicc-clipboard.",
+      "A git credential helper using gh auth git-credential gets no token."
+    ]
   },
   "@ai-ecoverse/wasix-openssh": {
     "id": "ssh",
-    "label": "OpenSSH",
-    "description": "Connects to servers and copies files with ssh, scp and sftp; git over ssh too.",
-    "commands": ["ssh", "scp", "sftp", "ssh-keygen", "ssh-add"],
-    "size": 3360417
+    "label": "OpenSSH"
   },
   "@ai-ecoverse/wasi-slicc": {
     "id": "slicc",
     "label": "slicc",
-    "description": "Prompts, watches and aborts another seven's agent from this terminal: slicc <join-url> prompt, watch or abort. For root and cones; the other seven must allow remote control from this one in its Linked devices.",
-    "commands": ["slicc"],
-    "size": 1349790
+    "notes": [
+      "For root and cones. The other seven must allow remote control from this one in its Linked devices."
+    ]
   },
   "@ai-ecoverse/wasix-python": {
     "id": "python",
     "label": "Python",
-    "description": "Python 3.15 with pip (pip, pip3 or python3 -m pip), for scripts and data work.",
-    "commands": ["python3", "pip", "pip3"],
-    "size": 61095391
+    "range": "3.15.0",
+    "abi": "cp315"
   },
   "slicc-py-datatools": {
     "id": "pydata",
-    "kind": "project",
     "label": "Python data tools",
-    "description": "numpy, pandas, matplotlib and scipy for Python, about 240 MB on disk. scipy lacks only the deprecated scipy.odr.",
+    "kind": "project",
+    "description": "numpy, pandas, matplotlib and scipy for Python, about 240 MB on disk.",
     "commands": [],
+    "size": 67059175,
     "requires": ["python"],
-    "size": 67059175
+    "notes": ["scipy lacks only the deprecated scipy.odr."]
   },
   "@ai-ecoverse/slicc-jsh": {
     "id": "node",
     "label": "Node.js (jsh)",
-    "description": "Node.js 22-compatible node and jsh commands: fs (chmod included), streams, http, fetch, WebSocket, zlib, crypto, v8.serialize and child_process, the sync calls (spawnSync, execSync, execFileSync) and detached spawns included, tls on the kernel's own handshake and Brotli and zstd decompression in zlib, without fork, worker or asymmetric crypto yet. fetch() reaches servers inside seven (localhost, <port>.kernel.localhost) and streams their responses. node with no arguments opens the REPL.",
-    "commands": ["node", "jsh"],
-    "size": 1478434
+    "notes": [
+      "No fork, worker or asymmetric crypto yet.",
+      "fetch() reaches servers inside seven (localhost, <port>.kernel.localhost)."
+    ]
   },
   "@ai-ecoverse/sliccy-browser": {
     "id": "jsh-browser",
     "label": "Browser for jsh scripts",
-    "description": "sliccy:browser for .jsh scripts: find and open tabs, run code in them, read cookies and localStorage, and fetch as the page, through seven's browser automation. Seven's own tab and the vault stay out of reach.",
-    "commands": [],
     "requires": ["node"],
-    "size": 1525841
+    "notes": ["Seven's own tab and the vault stay out of reach."]
   },
   "@ai-ecoverse/wasix-ruby": {
     "id": "ruby",
     "label": "Ruby",
-    "description": "Ruby 3.4 with gem, bundler, rake, irb and erb, for scripts and gems. Commands from gem install run by name in a login shell.",
-    "commands": ["ruby", "gem", "bundle", "rake", "irb", "erb"],
-    "size": 9762412
+    "notes": ["Commands from gem install run by name in a login shell."]
   },
   "@ai-ecoverse/wasix-perl": {
     "id": "perl",
-    "label": "Perl",
-    "description": "Perl 5.42 with cpan, perldoc and prove, for scripts and text processing.",
-    "commands": ["perl", "cpan", "perldoc", "prove", "pod2html", "pod2man", "pod2text"],
-    "size": 19663059
+    "label": "Perl"
   },
   "@ai-ecoverse/wasi-biome": {
     "id": "biome",
-    "label": "Biome",
-    "description": "Formats and lints JavaScript, TypeScript, JSON and CSS.",
-    "commands": ["biome"],
-    "size": 10593722
+    "label": "Biome"
   },
   "@ai-ecoverse/wasm-poppler": {
     "id": "pdf",
-    "label": "PDF tools",
-    "description": "Reads PDFs: text, page images, and splitting or joining files.",
-    "commands": ["pdftotext", "pdfinfo", "pdftoppm", "pdfimages", "pdfunite", "pdfseparate"],
-    "size": 2584619
+    "label": "PDF tools"
   },
   "@ai-ecoverse/wasm-qpdf": {
     "id": "qpdf",
     "label": "qpdf",
-    "description": "Merges, splits, rotates and encrypts PDF files.",
-    "commands": ["qpdf"],
-    "size": 975365
+    "helpers": ["fix-qdf", "zlib-flate"]
   },
   "@ai-ecoverse/wasm-libheif": {
     "id": "heif",
-    "label": "HEIF and AVIF images",
-    "description": "HEIC/HEIF and AVIF image decoder (heif-convert, heif-info). Includes an HEVC decoder (libde265); HEVC is patent-encumbered. LGPL-3.0-or-later.",
-    "commands": ["heif-convert", "heif-dec", "heif-info"],
-    "size": 4190759
+    "label": "HEIF and AVIF images"
   },
   "@ai-ecoverse/wasm-rsync": {
     "id": "rsync",
-    "label": "rsync",
-    "description": "Copies and syncs folders, sending only what changed, also to rsync:// servers.",
-    "commands": ["rsync"],
-    "size": 376423
+    "label": "rsync"
   },
   "@ai-ecoverse/wasm-sqlite3": {
     "id": "sqlite3",
     "label": "SQLite",
-    "description": "The sqlite3 shell 3.54, for SQLite databases. journal_mode=WAL falls back to delete, and a WAL database made elsewhere opens as \"file is not a database\".",
-    "commands": ["sqlite3"],
-    "size": 678323
+    "notes": [
+      "journal_mode=WAL falls back to delete, and a WAL database made elsewhere opens as \"file is not a database\"."
+    ]
   },
   "@ai-ecoverse/wasm-screen": {
     "id": "screen",
-    "label": "screen",
-    "description": "Keeps a terminal session running to detach and reattach, from any terminal.",
-    "commands": ["screen"],
-    "size": 715907
+    "label": "screen"
   },
   "@ai-ecoverse/wasi-dig": {
     "id": "dig",
-    "label": "dig",
-    "description": "Looks up DNS records, tailnet names included.",
-    "commands": ["dig"],
-    "size": 214326
+    "label": "dig"
   },
   "@ai-ecoverse/wasix-websocat": {
     "id": "websocat",
     "label": "websocat",
-    "description": "Connects to WebSocket servers (ws:// and wss://) from the terminal. An upstream alpha (websocat 4). It speaks raw TCP, so hosts outside seven need an exit: a linked slicc CLI or a Tailscale exit node. A listener that can't bind still exits 0.",
-    "commands": ["websocat"],
-    "size": 1267173
+    "notes": [
+      "An upstream alpha. It speaks raw TCP, so hosts outside seven need an exit: a linked slicc CLI or a Tailscale exit node.",
+      "A listener that can't bind still exits 0."
+    ]
   },
   "@ai-ecoverse/wasi-ntfy": {
     "id": "ntfy",
     "label": "ntfy",
-    "description": "Publishes and subscribes to notifications, and runs a command for every message: ntfy sub <topic> '<command>', with the message in $NTFY_MESSAGE and $NTFY_RAW. Works with ntfy.sh, any ntfy server and the tray's webhook gateway, ntfy.sliccy.ai.",
-    "commands": ["ntfy"],
-    "size": 4751117
+    "notes": ["Works with ntfy.sh, any ntfy server and the tray's webhook gateway, ntfy.sliccy.ai."]
   },
   "@ai-ecoverse/wasix-gnupg": {
     "id": "gpg",
-    "label": "GnuPG",
-    "description": "Signs, verifies and encrypts files and commits with OpenPGP keys.",
-    "commands": ["gpg", "gpgv", "gpg-agent", "gpgconf", "gpg-connect-agent", "gpg2"],
-    "size": 3328285
+    "label": "GnuPG"
   },
   "@ai-ecoverse/mcpcat": {
     "id": "mcpcat",
     "label": "mcpcat (MCP client)",
-    "description": "Calls MCP servers from the terminal: lists and calls their tools, resources and prompts, over HTTP or a stdio command. In a header, -H 'Authorization: Bearer ${NAME}' (single quotes) sends the vault's placeholder, which the vault fills in where a secret rule allows that host; mcpcat never prints the value.",
-    "commands": ["mcpcat"],
-    "size": 595379
+    "notes": [
+      "-H 'Authorization: Bearer ${NAME}' (single quotes) sends the vault's placeholder, which the vault fills in where a secret rule allows that host; mcpcat never prints the value."
+    ]
   },
   "@ai-ecoverse/wasm-imagemagick-heif": {
     "id": "imagemagick",
-    "label": "ImageMagick",
-    "description": "Convert, resize and inspect images (magick, convert, mogrify, identify), including HEIC/AVIF.",
-    "commands": ["magick", "convert", "mogrify", "identify", "magick-open"],
-    "size": 11420934
+    "label": "ImageMagick"
   },
   "@ai-ecoverse/wasm-zip": {
     "id": "zip",
     "label": "zip",
-    "description": "Create and extract .zip archives (zip, unzip, zipinfo).",
-    "commands": ["zip", "unzip", "zipinfo"],
-    "size": 869325
+    "notes": [
+      "unzip refuses an entry whose name isn't UTF-8 (an old Latin-1 or CP437 archive) and extracts the rest (homescoop#1174)."
+    ]
   },
   "@ai-ecoverse/wasm-xxd": {
     "id": "xxd",
-    "label": "xxd",
-    "description": "Hex dump and reverse (xxd, from vim).",
-    "commands": ["xxd"],
-    "size": 124869
+    "label": "xxd"
   }
 }

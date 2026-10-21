@@ -49,21 +49,21 @@ async function pins() {
   return found;
 }
 
-test('renovate.json parses, extends the shared preset and names the three pinned package files', () => {
+test('renovate.json parses, extends the shared preset and names the three pinned package files; the optional catalog pins only its non-homescoop entries', async () => {
   assert.deepEqual(config.extends, ['github>ai-ecoverse/slicc-shared-web']);
-  assert.deepEqual(PINNED, [
-    'src/packages/package.json',
-    'src/packages/optional/package.json',
-    'src/packages/agent/package.json',
-  ]);
+  const optional = Object.keys(JSON.parse(await read(PINNED[1])).dependencies);
+  assert.ok(
+    optional.every((name) => !/^@ai-ecoverse\/(wasm|wasix|py)-/.test(name)),
+    optional.join()
+  );
   assert.equal(config.ignoreDeps, undefined, 'holds are packageRules with a description');
   for (const rule of config.packageRules)
     assert.ok(rule.description?.length > 20, JSON.stringify(rule));
 });
 
-test('every @ai-ecoverse pin in the base set, the optional catalog and /opt/agent but Python and slicc-agent bumps by itself and automerges; slicc-agent waits for its coordinated pins', async () => {
+test('every @ai-ecoverse pin in the base set, the optional catalog and /opt/agent but slicc-agent bumps by itself and automerges; slicc-agent waits for its coordinated pins', async () => {
   const found = await pins();
-  assert.ok(found.length > 40, `${found.length} pins`);
+  assert.ok(found.length > 20, `${found.length} pins`);
   for (const file of PINNED)
     assert.ok(
       found.some(([, at]) => at === file),
@@ -99,15 +99,16 @@ test('homescoop packages but Python are one daily PR; the kernel, slicc-cdp, sli
   assert.equal(effective('@ai-ecoverse/wasi-pnpm', PINNED[0]).groupName, 'homescoop packages');
 });
 
-test('the catalog’s Python and every py-* of the Python data tools are one PR, opened from the dependency dashboard and never automerged, so 3.14 and 3.15 builds never mix', async () => {
-  const found = await pins();
-  assert.ok(found.some(([name, file]) => name === PYTHON && file === PINNED[1]));
+test('every py-* of the Python data tools is one PR, opened from the dependency dashboard and never automerged, so 3.14 and 3.15 builds never mix; the catalog’s Python follows its range', async () => {
+  const catalog = JSON.parse(await read('src/packages/optional/catalog.json'));
+  assert.equal(catalog[PYTHON].range, '3.15.0');
+  assert.equal(catalog[PYTHON].abi, 'cp315');
   const tools = Object.keys(JSON.parse(await read(DATA_TOOLS)).dependencies);
   assert.ok(
     tools.length >= 4 && tools.every((name) => name.startsWith('@ai-ecoverse/py-')),
     tools.join()
   );
-  for (const [name, file] of [[PYTHON, PINNED[1]], ...tools.map((name) => [name, DATA_TOOLS])]) {
+  for (const [name, file] of tools.map((name) => [name, DATA_TOOLS])) {
     const rule = effective(name, file);
     assert.equal(rule.groupName, 'python and py-*', `${name} in ${file}`);
     assert.equal(rule.groupSlug, 'python', name);
@@ -115,7 +116,7 @@ test('the catalog’s Python and every py-* of the Python data tools are one PR,
     assert.equal(rule.dependencyDashboardApproval, true, name);
     assert.deepEqual(rule.schedule, ['at any time'], name);
   }
-  assert.equal(effective('@ai-ecoverse/wasix-perl', PINNED[1]).groupName, 'homescoop packages');
+  assert.equal(effective('@ai-ecoverse/wasm-bash', PINNED[0]).groupName, 'homescoop packages');
 });
 
 test('known breaks are holds with a reason and an issue: wasi-pnpm without 12.9.1-11 and -12; wasm-bash moves freely now that kernel 1.135.2 has slicc-kernel#1146', () => {

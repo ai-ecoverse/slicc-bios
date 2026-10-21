@@ -27,7 +27,9 @@
     "src/packages/agent/pnpm-lock.yaml",
     "src/packages/optional/package.json",
     "src/packages/optional/package-lock.json",
-    "src/packages/optional/catalog.json"
+    "src/packages/optional/catalog.json",
+    "src/packages/optional/sources.json",
+    "src/packages/optional/exceptions.json"
   ],
   "engines": {
     "node": ">=26"

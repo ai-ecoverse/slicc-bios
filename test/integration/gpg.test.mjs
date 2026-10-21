@@ -1,15 +1,13 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { actPackage, boot, run, shows } from './bios.mjs';
+import { offered } from './catalog.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch({ timeout: 120000 });
 after(() => chrome.close());
 
-const GNUPG = JSON.parse(
-  await readFile(new URL('../../src/packages/optional/package.json', import.meta.url), 'utf8')
-).dependencies['@ai-ecoverse/wasix-gnupg'];
+const GNUPG = await offered('@ai-ecoverse/wasix-gnupg');
 
 const KEY =
   'mDMEatLmsRYJKwYBBAHaRw8BAQdAiDCbQOSC0Xc6rQkWqIujObTt18i6mynEBwO/U3nZjBG0GnRpZGUxIDx0aWRlMUBleGFtcGxlLnRlc3Q+iK8EExYKAFcWIQTba55gObOBN7QIhcH1JvwrzalrzgUCatLmsRsUgAAAAAAEAA5tYW51MiwyLjUrMS4xMiwwLDMCGwMFCwkIBwICIgIGFQoJCAsCBBYCAwECHgcCF4AACgkQ9Sb8K82pa87QjgEAl/hGXBUUqAiv/m4jdJmrSN77lGGkMHtjf8fFjIhsd2MBAI0TmPzv3oYpbKL5LioOo17ejCv4ksiBDlJnG3BMDAwF';

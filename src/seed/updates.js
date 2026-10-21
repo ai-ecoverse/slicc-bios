@@ -139,6 +139,9 @@ export function createUpdates({
     handlePackages(handler) {
       packageHandler = handler;
     },
+    async refreshPackages() {
+      await packageHandler?.('', 'refresh');
+    },
     handleUserPackages(handler) {
       ownHandler = handler;
     },

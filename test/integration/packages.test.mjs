@@ -1,57 +1,30 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
+import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
 import { boot, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
+import { fakeCatalog } from './fake-catalog.mjs';
 
-const chrome = await launch({ timeout: 120000 });
+const chrome = await launch({ timeout: 120000, intercept: [] });
+const registry = await fakeCatalog(chrome.cdp);
 after(() => chrome.close());
 
 const XXD = '@ai-ecoverse/wasm-xxd';
 const RSYNC = '@ai-ecoverse/wasm-rsync';
-const integrity = {
-  [`${XXD}@9.2.1172-1`]:
-    'sha512-8FuxzvfiBOHmQDya1crvnSRav6zG2hA4lo+bX2/LJT17YYT0yNZ445t7p5PhlsUFUy9ZiBEVFRV7nl0C2BANow==',
-  [`${XXD}@9.2.1167-1`]:
-    'sha512-jW15CFJsttJMquG2v61IUHrdBUmivOLgqwX9s7e6ex3sI3Sh8/Kn8we8VJweAVF49HgSsjamDGRnUTGrXnZd0Q==',
-  [`${RSYNC}@3.4.4-1`]:
-    'sha512-SBtC+qgNGGWMoZ1kCO8jbwgLcg4/douU/xLOuxKbOJTwl5hGQ0SOWTBXkZrO4Fp9jPDnXEkkX+KkfLdslI6nGw==',
-};
+const REGISTRY = 'https://registry.npmjs.org/';
+const doc = async (name, version) =>
+  JSON.parse(await download(`${REGISTRY}${name}/${encodeURIComponent(version)}`));
 
-function offer(pins, locks = integrity) {
+function offer(latest) {
   const catalog = {
-    [XXD]: {
-      id: 'xxd',
-      label: 'xxd',
-      description: 'Hex dumps of any file.',
-      commands: ['xxd'],
-      size: 30000,
-    },
-    [RSYNC]: {
-      id: 'rsync',
-      label: 'rsync',
-      description: 'Copies and syncs folders.',
-      commands: ['rsync'],
-      requires: ['xxd'],
-      size: 921609,
-    },
+    [XXD]: { id: 'xxd', label: 'xxd', notes: ['Hex dumps of any file.'] },
+    [RSYNC]: { id: 'rsync', label: 'rsync', requires: ['xxd'] },
   };
-  const packages = Object.fromEntries(
-    Object.entries(pins).map(([name, version]) => [
-      `node_modules/${name}`,
-      { version, integrity: locks[`${name}@${version}`] },
-    ])
-  );
+  registry.reset();
+  for (const [name, version] of Object.entries(latest)) registry.latest.set(name, version);
   chrome.overrides.set(
     '/packages/optional/catalog.json',
-    JSON.stringify(Object.fromEntries(Object.keys(pins).map((name) => [name, catalog[name]])))
-  );
-  chrome.overrides.set(
-    '/packages/optional/package.json',
-    JSON.stringify({ name: 'slicc-bios-optional', private: true, dependencies: pins })
-  );
-  chrome.overrides.set(
-    '/packages/optional/package-lock.json',
-    JSON.stringify({ lockfileVersion: 3, packages: { '': { dependencies: pins }, ...packages } })
+    JSON.stringify(Object.fromEntries(Object.keys(latest).map((name) => [name, catalog[name]])))
   );
 }
 
@@ -77,7 +50,7 @@ const state = (page, id, wanted) =>
       document
         .querySelector('slicc-app')
         .model.updates.packages()
-        .find((item) => item.id === id)?.state === wanted,
+        .some((item) => item.id === id && item.state === wanted && !item.registry),
     [id, wanted]
   );
 
@@ -132,6 +105,17 @@ const answer = (page, button) =>
       .click();
   }, button);
 
+async function settled(page, path, done) {
+  const end = Date.now() + 60000;
+  for (;;) {
+    const found = await read(page, path)
+      .then(JSON.parse)
+      .catch(() => null);
+    if ((found && done(found)) || Date.now() > end) return found;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+
 async function read(page, path) {
   return page.evaluate(async (path) => {
     let dir = await navigator.storage.getDirectory();
@@ -142,9 +126,15 @@ async function read(page, path) {
   }, path);
 }
 
-test('the optional packages install, update and remove with pnpm add -g, and a hand install shows', async (t) => {
+const LATEST = { [XXD]: '9.2.1172-1', [RSYNC]: '3.5.1-4' };
+
+const packageItems = (page) =>
+  page.evaluate(() => document.querySelector('slicc-app').model.updates.packages());
+
+test('the optional packages take npm’s latest, install, update and remove with pnpm add -g, and a hand install shows', async (t) => {
   const page = await chrome.page(t);
-  offer({ [XXD]: '9.2.1172-1', [RSYNC]: '3.4.4-1' });
+  offer(LATEST);
+  const [xxd, rsync] = await Promise.all([doc(XXD, LATEST[XXD]), doc(RSYNC, LATEST[RSYNC])]);
   await boot(page);
   await state(page, 'rsync', 'available');
   assert.deepEqual(await items(page), [
@@ -160,27 +150,33 @@ test('the optional packages install, update and remove with pnpm add -g, and a h
       id: 'rsync',
       state: 'available',
       version: null,
-      offered: '3.4.4-1',
+      offered: '3.5.1-4',
       actions: ['install'],
       error: null,
     },
   ]);
-  assert.deepEqual(JSON.parse(await read(page, 'etc/slicc/optional.json')), [
+  const [row] = await packageItems(page);
+  assert.deepEqual(
+    [row.description, row.commands, row.size, row.unpacked, row.notes, row.registry],
+    [xxd.description, ['xxd'], xxd.dist.unpackedSize, true, ['Hex dumps of any file.'], undefined]
+  );
+  const listing = await settled(page, 'etc/slicc/optional.json', ([one]) => one.version);
+  assert.deepEqual(listing, [
     {
       id: 'xxd',
       package: XXD,
       version: '9.2.1172-1',
       label: 'xxd',
-      description: 'Hex dumps of any file.',
+      description: xxd.description,
       commands: ['xxd'],
       requires: [],
     },
     {
       id: 'rsync',
       package: RSYNC,
-      version: '3.4.4-1',
+      version: '3.5.1-4',
       label: 'rsync',
-      description: 'Copies and syncs folders.',
+      description: rsync.description,
       commands: ['rsync'],
       requires: ['xxd'],
     },
@@ -204,10 +200,10 @@ test('the optional packages install, update and remove with pnpm add -g, and a h
     (await items(page)).map(({ id, state, version }) => [id, state, version]),
     [
       ['xxd', 'outdated', '9.2.1167-1'],
-      ['rsync', 'installed', '3.4.4-1'],
+      ['rsync', 'installed', '3.5.1-4'],
     ]
   );
-  await run(page, 'rsync --version | head -1 | grep -c "version 3.4.4" | sed "s/^/rsync ran /"');
+  await run(page, 'rsync --version | head -1 | grep -c "version 3.5.1" | sed "s/^/rsync ran /"');
   await shows(page, 'rsync ran 1');
 
   assert.equal(await act(page, 'xxd', 'update'), 'ok');
@@ -239,12 +235,101 @@ test('the optional packages install, update and remove with pnpm add -g, and a h
   assert.deepEqual(page.errors, []);
 });
 
-test('a build that does not match the catalog is removed again', async (t) => {
+const unreachable = (page) =>
+  page.within(120000, () => {
+    const rows = document.querySelector('slicc-app').model.updates.packages();
+    return rows.length === 2 && rows.every((item) => item.registry === 'unreachable');
+  });
+
+test('npm’s data is cached in OPFS, so offline the rows still offer it after a reload', async (t) => {
   const page = await chrome.page(t);
-  offer(
-    { [XXD]: '9.2.1172-1', [RSYNC]: '3.4.4-1' },
-    { ...integrity, [`${XXD}@9.2.1172-1`]: integrity[`${XXD}@9.2.1167-1`] }
+  offer(LATEST);
+  await boot(page);
+  await state(page, 'rsync', 'available');
+  const cache = await settled(
+    page,
+    'var/lib/slicc/optional/npm.json',
+    (found) => found.entries[XXD]
   );
+  assert.equal(cache.entries[XXD].version, '9.2.1172-1');
+
+  registry.down = true;
+  await boot(page);
+  await state(page, 'rsync', 'available');
+  assert.deepEqual(
+    (await items(page)).map(({ id, offered, actions }) => [id, offered, actions]),
+    [
+      ['xxd', '9.2.1172-1', ['install']],
+      ['rsync', '3.5.1-4', ['install']],
+    ]
+  );
+  assert.ok(
+    registry.asked.some((url) => url.endsWith(`${XXD}/latest`)),
+    'it still asked npm'
+  );
+  assert.deepEqual(page.errors, []);
+});
+
+test('offline with no cache, the rows never block boot: unreachable with no Install, no version or description for the agent, and the panel’s refresh fetches again', async (t) => {
+  const page = await chrome.page(t);
+  offer(LATEST);
+  registry.down = true;
+  await boot(page);
+  await unreachable(page);
+  const offline = await packageItems(page);
+  assert.deepEqual(
+    offline.map(({ id, state, offered, description, actions, error, registry: why }) => [
+      id,
+      state,
+      offered,
+      description,
+      actions,
+      error,
+      why,
+    ]),
+    [
+      ['xxd', 'available', null, '', ['retry'], null, 'unreachable'],
+      ['rsync', 'available', null, '', ['retry'], null, 'unreachable'],
+    ]
+  );
+  const listing = await settled(page, 'etc/slicc/optional.json', () => true);
+  assert.deepEqual(listing, [
+    { id: 'xxd', package: XXD, label: 'xxd', commands: [], requires: [] },
+    { id: 'rsync', package: RSYNC, label: 'rsync', commands: [], requires: ['xxd'] },
+  ]);
+  registry.down = false;
+  await page.evaluate(() => document.querySelector('slicc-app').model.updates.refreshPackages());
+  assert.deepEqual(
+    (await items(page)).map(({ id, offered, actions }) => [id, offered, actions]),
+    [
+      ['xxd', '9.2.1172-1', ['install']],
+      ['rsync', '3.5.1-4', ['install']],
+    ]
+  );
+  assert.deepEqual(page.errors, []);
+});
+
+test('offline with no cache, a row’s Retry (as today’s spectrum sends it) fetches npm again', async (t) => {
+  const page = await chrome.page(t);
+  offer(LATEST);
+  registry.down = true;
+  await boot(page);
+  await unreachable(page);
+  registry.down = false;
+  assert.equal(await act(page, 'xxd', 'retry'), 'ok');
+  assert.equal((await items(page))[0].offered, '9.2.1172-1');
+  assert.equal(await act(page, 'xxd', 'install'), 'ok');
+  assert.equal((await items(page))[0].state, 'installed');
+  assert.deepEqual(page.errors, []);
+});
+
+test('a tarball whose integrity isn’t what npm serves for that version is removed again', async (t) => {
+  const page = await chrome.page(t);
+  offer(LATEST);
+  const packument = JSON.parse(await download(`${REGISTRY}${XXD}`));
+  packument.versions[LATEST[XXD]].dist = packument.versions['9.2.1167-1'].dist;
+  for (const path of [XXD, XXD.replace('/', '%2f'), XXD.replace('/', '%2F')])
+    registry.docs.set(`${REGISTRY}${path}`, JSON.stringify(packument));
   await boot(page);
   await state(page, 'xxd', 'available');
 
@@ -267,15 +352,36 @@ test('a build that does not match the catalog is removed again', async (t) => {
   assert.deepEqual(page.errors, []);
 });
 
+test('when npm’s latest fails the gate, the newest older version that passes is offered, and the row names latest’s blocker', async (t) => {
+  const page = await chrome.page(t);
+  offer({ [XXD]: '9.2.1186-1' });
+  await boot(page);
+  await run(page, `pnpm add -g ${XXD}@9.2.1172-1 >/dev/null 2>&1; echo "by hand $((40+$?))"`);
+  await shows(page, 'by hand 40', 300000);
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await page.within(120000, () => {
+    const [xxd] = document.querySelector('slicc-app').model.updates.packages();
+    return xxd?.version === '9.2.1172-1';
+  });
+  const [row] = await packageItems(page);
+  assert.equal(row.state, 'installed', 'its latest has no provenance, so 9.2.1172-1 is the offer');
+  assert.equal(row.offered, '9.2.1172-1');
+  assert.deepEqual(row.newer, {
+    version: '9.2.1186-1',
+    reason: 'wasm-xxd 9.2.1186-1 has no build provenance',
+  });
+  assert.deepEqual(page.errors, []);
+});
+
 test('a failed download shows Retry, and Retry installs it', async (t) => {
   const page = await chrome.page(t);
-  offer({ [XXD]: '9.2.1172-1' });
+  offer({ [XXD]: LATEST[XXD] });
   await boot(page);
   await state(page, 'xxd', 'available');
 
-  chrome.cdn.status = 404;
+  registry.tarballs = 404;
   const failed = await act(page, 'xxd', 'install');
-  chrome.cdn.status = 0;
+  registry.tarballs = 0;
   assert.equal(
     failed,
     "Couldn't install xxd: pnpm stopped with an error, shown in the install log. Retry."
@@ -295,6 +401,8 @@ test('a failed download shows Retry, and Retry installs it', async (t) => {
 
 test('the Install / Update panel offers the catalog, in every state', async (t) => {
   const page = await chrome.page(t);
+  registry.reset();
+  chrome.overrides.delete('/packages/optional/catalog.json');
   await boot(page);
   await state(page, 'git', 'available');
   const color = (value) =>
@@ -348,9 +456,9 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await state(page, 'pdf', 'outdated');
   assert.equal(await act(page, 'rsync', 'install'), 'ok');
-  chrome.cdn.status = 404;
+  registry.tarballs = 404;
   assert.match(await act(page, 'dig', 'install'), /^Couldn't install dig/);
-  chrome.cdn.status = 0;
+  registry.tarballs = 0;
 
   await start(page, 'jsh-browser', 'install');
   await state(page, 'node', 'installing');
@@ -366,6 +474,14 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
   );
   await shots('packages');
   assert.equal(await page.within(600000, () => window.acted), 'ok');
+  const owners = new Map();
+  for (const { id, commands } of await packageItems(page))
+    for (const command of commands) {
+      assert.equal(owners.get(command), undefined, `${command}: ${owners.get(command)} and ${id}`);
+      owners.set(command, id);
+    }
+  assert.equal(owners.get('magick'), 'imagemagick');
+  assert.equal(owners.get('git-upload-pack'), undefined, 'a helper isn’t listed');
   assert.deepEqual(
     (await items(page)).map(({ id, state }) => `${id} ${state}`),
     [

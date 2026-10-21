@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, before, describe, test } from 'node:test';
+import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
+import { compare } from '../../src/seed/packages.js';
 import { actPackage, boot, ready, run, screen, shows } from './bios.mjs';
+import { offered as latest } from './catalog.mjs';
 import { launch } from './chrome.mjs';
+import { fakeCatalog } from './fake-catalog.mjs';
 
-const chrome = await launch({ timeout: 120000, persistent: true });
+const chrome = await launch({ timeout: 120000, persistent: true, intercept: [] });
+const registry = await fakeCatalog(chrome.cdp);
 after(() => chrome.close());
 
 const INSTALL = { budget: 14 * 60 * 1000, stall: 8 * 60 * 1000 };
@@ -24,7 +29,7 @@ const repo = new URL('../../', import.meta.url);
 const read = (path) => readFile(new URL(path, repo), 'utf8');
 
 async function shipped() {
-  const python = JSON.parse(await read('src/packages/optional/package.json')).dependencies[PYTHON];
+  const python = await latest(PYTHON);
   const project = JSON.parse(await read('src/packages/optional/projects/pydata/package.json'));
   const lock = await read('src/packages/optional/projects/pydata/pnpm-lock.yaml');
   const block = lock.slice(lock.indexOf('\npackages:\n'), lock.indexOf('\nsnapshots:\n'));
@@ -40,19 +45,16 @@ async function shipped() {
 const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 async function earlier() {
-  const certs = JSON.parse(await read('src/packages/certs.json'));
-  const manifest = JSON.parse(await read('src/packages/optional/package.json'));
-  manifest.dependencies[PYTHON] = OLD;
-  const lock = JSON.parse(await read('src/packages/optional/package-lock.json'));
-  lock.packages[''].dependencies[PYTHON] = OLD;
-  Object.assign(lock.packages[`node_modules/${PYTHON}`], {
-    version: OLD,
-    resolved: `https://registry.npmjs.org/${PYTHON}/-/wasix-python-${OLD}.tgz`,
-    integrity: certs[`${PYTHON}@${OLD}`].integrity,
-  });
+  const catalog = JSON.parse(await read('src/packages/optional/catalog.json'));
+  Object.assign(catalog[PYTHON], { range: '3.14.2', abi: 'cp314' });
+  const url = `https://registry.npmjs.org/${PYTHON}`;
+  const packument = JSON.parse(await download(url));
+  for (const version of Object.keys(packument.versions))
+    if (compare(version, OLD) > 0) delete packument.versions[version];
+  packument['dist-tags'] = { latest: OLD };
+  registry.docs.set(url, JSON.stringify(packument));
   const files = {
-    '/packages/optional/package.json': `${JSON.stringify(manifest, null, 2)}\n`,
-    '/packages/optional/package-lock.json': `${JSON.stringify(lock, null, 2)}\n`,
+    '/packages/optional/catalog.json': `${JSON.stringify(catalog, null, 2)}\n`,
   };
   for (const name of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'])
     files[`/packages/optional/projects/pydata/${name}`] = await read(
@@ -122,6 +124,7 @@ describe('a profile with the Python 3.14 data tools updates to 3.15 with Update:
 
   test('on the 3.15 catalog Python and the data tools show as outdated, and Update moves Python first, then the project', async () => {
     for (const path of Object.keys(files)) chrome.overrides.delete(path);
+    registry.reset();
     await page.reload();
     await ready(page);
     await page.until(() => {

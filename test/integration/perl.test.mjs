@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { after, test } from 'node:test';
 import { actPackage, boot, run, shows } from './bios.mjs';
+import { offered } from './catalog.mjs';
 import { launch } from './chrome.mjs';
 
-const PINNED = JSON.parse(
-  readFileSync(new URL('../../src/packages/optional/package.json', import.meta.url), 'utf8')
-).dependencies['@ai-ecoverse/wasix-perl'];
+const PINNED = await offered('@ai-ecoverse/wasix-perl');
 
 const chrome = await launch({ timeout: 120000 });
 after(() => chrome.close());

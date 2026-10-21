@@ -1,5 +1,5 @@
 {
-  "catalog": ["pins", "optional", "packages", "unshadow", "renovate"],
+  "catalog": ["pins", "optional", "npm", "packages", "unshadow", "renovate"],
   "bump": ["pins", "boot", "renovate"],
   "durations": ["shards"],
   "packages": [

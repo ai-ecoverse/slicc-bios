@@ -2,60 +2,28 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { actPackage, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
+import { fakeCatalog } from './fake-catalog.mjs';
 
 const XXD = '@ai-ecoverse/wasm-xxd';
 const DIG = '@ai-ecoverse/wasi-dig';
-const integrity = {
-  [`${XXD}@9.2.1192-1`]:
-    'sha512-3yU7xVU/fCrryy91GOJDcYOrvToeYATUQ26XQfSL30URhohHUOAwUrlWCESNsPYhKU3FGIginKfWqSQpkOS54A==',
-  [`${XXD}@9.2.1192-2`]:
-    'sha512-LXSqT8z9jLCjvOKDsVQMZ5q42vhQcY1wwOwlw6cDcgzwAkx7d4oW13St8EJ2IHX5x4KRYJMu6co2BLTPC0rrBw==',
-  [`${DIG}@0.1.0-4`]:
-    'sha512-zWKTPKPoJ27Jndc1gpHSGmGovisg8mXD6hkPYm14ccVlqtVpNTDdGgdY+5QAqzqYdTzyiVAbkhqFMDo75vxVOg==',
-};
 const ROOT_SHELL = ['slicc:/home# '];
 const WAIT = 5 * 60 * 1000;
 const CONE_PNPM = '/home/cone/.local/share/pnpm';
 const SYSTEM_PNPM = '/usr/local/share/pnpm';
 
-const chrome = await launch({ timeout: 120000 });
+const chrome = await launch({ timeout: 120000, intercept: [] });
+const registry = await fakeCatalog(chrome.cdp);
 after(() => chrome.close());
 
 function offer(xxd) {
-  const pins = { [XXD]: xxd, [DIG]: '0.1.0-4' };
+  registry.latest.set(XXD, xxd);
+  registry.latest.set(DIG, '0.1.0-4');
   chrome.overrides.set(
     '/packages/optional/catalog.json',
     JSON.stringify({
-      [XXD]: {
-        id: 'xxd',
-        label: 'xxd',
-        description: 'Hex dumps of any file.',
-        commands: ['xxd'],
-        requires: ['dig'],
-        size: 30000,
-      },
-      [DIG]: {
-        id: 'dig',
-        label: 'dig',
-        description: 'Looks up DNS records.',
-        commands: ['dig'],
-        size: 214326,
-      },
+      [XXD]: { id: 'xxd', label: 'xxd', requires: ['dig'], notes: ['Hex dumps of any file.'] },
+      [DIG]: { id: 'dig', label: 'dig' },
     })
-  );
-  chrome.overrides.set(
-    '/packages/optional/package.json',
-    JSON.stringify({ name: 'slicc-bios-optional', private: true, dependencies: pins })
-  );
-  const packages = Object.fromEntries(
-    Object.entries(pins).map(([name, version]) => [
-      `node_modules/${name}`,
-      { version, integrity: integrity[`${name}@${version}`] },
-    ])
-  );
-  chrome.overrides.set(
-    '/packages/optional/package-lock.json',
-    JSON.stringify({ lockfileVersion: 3, packages: { '': { dependencies: pins }, ...packages } })
   );
 }
 

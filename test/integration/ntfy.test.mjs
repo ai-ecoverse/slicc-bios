@@ -87,7 +87,7 @@ describe('ntfy installs from the catalog and talks to an ntfy server from seven:
       document
         .querySelector('slicc-app')
         .model.updates.packages()
-        .some((item) => item.id === 'ntfy')
+        .some((item) => item.id === 'ntfy' && item.offered && !item.registry)
     );
     const listed = await row(page, 'ntfy');
     assert.equal(listed.state, 'available');

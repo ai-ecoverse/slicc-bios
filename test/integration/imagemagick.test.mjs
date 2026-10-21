@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { actPackage, boot, run, screen, shows } from './bios.mjs';
+import { offered } from './catalog.mjs';
 import { launch } from './chrome.mjs';
+
+const MAGICK = await offered('@ai-ecoverse/wasm-imagemagick-heif');
 
 const chrome = await launch({ timeout: 120000 });
 after(() => chrome.close());
@@ -23,7 +26,7 @@ async function installed(page) {
       .model.updates.packages()
       .find((item) => item.id === 'imagemagick')
   );
-  assert.equal(row.version, '7.1.2-34-9.1');
+  assert.equal(row.version, MAGICK);
 }
 
 test('ImageMagick installs from the catalog, makes a PNG, converts it to JPEG and identifies it', async (t) => {
