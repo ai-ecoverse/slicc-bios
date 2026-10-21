@@ -17,7 +17,7 @@ const free = () =>
   });
 
 const ordinary = (path) =>
-  `<title>ordinary</title>${path}<script>void \`http://localhost:\${location.port}/x\`;</script><a href="https://www.sliccy.ai/7/">seven</a> <a href="https://ntfy.sliccy.ai/github">ntfy</a> curl -fsSL https://www.sliccy.ai/install.sh <a href="https://seven.sliccy.ai/docs">docs</a>`;
+  `<title>ordinary</title>${path}<script>void \`http://localhost:\${location.port}/x\`;</script><a href="https://www.sliccy.ai/7/">seven</a> <a href="https://ntfy.sliccy.ai/github">ntfy</a> curl -fsSL https://www.sliccy.ai/install.sh <a href="https://www.sliccy.ai/blog/post">blog</a>`;
 const marks = [];
 const mark = () => {
   const value = `M${randomBytes(6).toString('hex')}`;
@@ -85,6 +85,21 @@ const site = createHttp((req, res) => {
       ].join('\n')
     );
   }
+  if (url.pathname.startsWith('/capability/') && hop) {
+    const m = hop;
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end(
+      [
+        '<title>capability</title>',
+        `<a href="https://www.sliccy.ai/join/J${m}">join</a>`,
+        `<p>Payload URL https://www.sliccy.ai/webhook/W${m}</p>`,
+        `<p>wss://www.sliccy.ai/controller/C${m}</p>`,
+        `<a href="https://seven.sliccy.ai/#slicc-pair=1.P${m}.fp">pair</a>`,
+        `<p>https://vault.sliccy.ai./V${m}</p>`,
+        `<p>https://user:U${m}@vault.sliccy.ai/</p>`,
+      ].join('\n')
+    );
+  }
   if (url.pathname.startsWith('/framed/')) {
     res.writeHead(200, { 'content-type': 'text/html' });
     return res.end(
@@ -144,6 +159,9 @@ const plan = () => {
     steps.push({ fetching, kind: 'seven', how: 'navigate', path: `/meta/${hopTo('seven')}` });
     steps.push({ fetching, kind: 'seven', how: 'navigate', path: `/entity/${hopTo('seven')}` });
     steps.push({ fetching, kind: 'sheet', how: 'navigate', path: `/styled/${hopTo('sheet')}` });
+    counter += 1;
+    hops.set(String(counter), mark());
+    steps.push({ fetching, kind: 'capability', how: 'navigate', path: `/capability/${counter}` });
     steps.push({ fetching, kind: 'vault', how: 'navigate', path: `/form/${hopTo('vault')}` });
   }
   return steps;
@@ -192,6 +210,7 @@ async function rig({ transport, proxy, port, override }) {
     return false;
   };
   const answers = {
+    caps: [],
     dom: [],
     searches: [],
     streams: [],
@@ -243,6 +262,15 @@ async function rig({ transport, proxy, port, override }) {
             await send(
               'Fetch.continueRequest',
               { requestId, url: `${state.hop}?extra=1` },
+              state.session
+            )
+          );
+          const dotted = new URL(state.hop);
+          dotted.hostname = `${dotted.hostname}.`;
+          answers.overrides.push(
+            await send(
+              'Fetch.continueRequest',
+              { requestId, url: `${dotted.href}?extra=2` },
               state.session
             )
           );
@@ -360,6 +388,13 @@ async function rig({ transport, proxy, port, override }) {
         .map((text) => JSON.parse(text))
         .filter((m) => m.method === 'Network.requestWillBeSent' && m.params?.request?.url === url)
         .map((m) => m.params.requestId);
+      if (kind === 'capability') {
+        for (const requestId of new Set(own)) {
+          answers.caps.push(await send('Network.getResponseBody', { requestId }, session));
+        }
+        answers.caps.push(await send('DOM.getDocument', { depth: -1 }, session));
+        answers.caps.push(await send('Page.captureSnapshot', {}, session));
+      }
       for (const requestId of new Set(own)) {
         answers.reads.push(await send('Network.getResponseBody', { requestId }, session));
         answers.reads.push(
@@ -561,6 +596,10 @@ async function check(t, transport) {
   assert.ok(
     answers.reads.some(refused),
     'a body or resource that names seven or the vault is refused'
+  );
+  assert.ok(
+    answers.caps.length > 0 && answers.caps.every(refused),
+    `a page showing a join, webhook, controller or pairing capability, or a dotted or userinfo vault URL, is not readable: ${JSON.stringify(answers.caps.map((answer) => answer.error?.message ?? 'read'))}`
   );
   assert.ok(
     answers.dom.length > 0 && answers.dom.every((answer) => !answer.error),

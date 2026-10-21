@@ -272,7 +272,7 @@ const ANSWERED = new Set([
 ]);
 const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const HOSTS = new RegExp(
-  `(?<![a-z0-9-])(${[...catalog.protectedOrigins.domains, ...catalog.protectedOrigins.hosts].map(escaped).join('|')})(\\.?(?::\\d+|%3a\\d+)?)(?:[/?#\\\\][^\\s"'<>\`]*|(?:%2f|%3f|%23|%5c)[^\\s"'<>\`&]*)`,
+  `(?<=^|[\\s"'<>/@.:=(\\[,;\\\\])(${[...catalog.protectedOrigins.domains, ...catalog.protectedOrigins.hosts].map(escaped).join('|')})(\\.?(?::\\d+|%3a\\d+)?)(?:[/?#\\\\][^\\s"'<>\`]*|(?:%2f|%3f|%23|%5c)[^\\s"'<>\`&]*)`,
   'gi'
 );
 
@@ -336,27 +336,32 @@ function scanned(value, starts, stops, swap) {
   return out + value.slice(last);
 }
 
-const CALLBACKS = /\/(?:auth\/callback|oauth\/mcp-callback)(?:[/?#]|$)/i;
-const SECRETS =
-  /[?#&](?:code|state|access_token|id_token|refresh_token|token|key|seat|follow|tailscale|secret|password|nonce)=/i;
-const VAULTS = new Set(catalog.protectedOrigins.hosts.map((host) => host.toLowerCase()));
+const PUBLIC = {
+  'www.sliccy.ai': /^\/(?:7\/?|install\.sh|docs(?:\/[a-z0-9-]+)*\/?|blog(?:\/[a-z0-9-]+)*\/?)?$/,
+  'sliccy.ai': /^\/?$/,
+  'ntfy.sliccy.ai': /^\/github\/?$/,
+};
 
-function secretive(url) {
-  if (CALLBACKS.test(url) || SECRETS.test(url)) return true;
-  const host = URL.canParse(url) ? new URL(url).hostname.toLowerCase() : '';
-  return VAULTS.has(host) && /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*[/?#]./i.test(url);
+const normalHost = (host) => host.toLowerCase().replace(/\.$/, '');
+
+function readable(url) {
+  if (!URL.canParse(url)) return false;
+  const parsed = new URL(url);
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) return false;
+  if (parsed.pathname === '/' || parsed.pathname === '') return true;
+  return PUBLIC[normalHost(parsed.hostname)]?.test(parsed.pathname) === true;
 }
 
 const hopKey = (url) => {
-  if (!URL.canParse(url)) return bare(url);
+  if (!URL.canParse(url)) return bare(url).split('?')[0];
   const parsed = new URL(url);
-  return `${parsed.origin}${parsed.pathname}`;
+  return `${parsed.protocol}//${normalHost(parsed.hostname)}${parsed.port ? `:${parsed.port}` : ''}${parsed.pathname}`;
 };
 
 export function redacting(is) {
   let webs = 0;
   const past = (text, shown) => {
-    if (/^(?:https?|wss?):/i.test(text) && text.length > shown.length && secretive(text)) {
+    if (/^(?:https?|wss?):/i.test(text) && text.length > shown.length && !readable(text)) {
       webs += 1;
     }
   };
@@ -381,7 +386,7 @@ export function redacting(is) {
     return scanned(raw, ENCODED_STARTS, ENCODED_STOPS, encoded).replace(
       HOSTS,
       (found, host, port) => {
-        if (secretive(`http://${decoded(found)}`)) webs += 1;
+        if (!readable(`http://${decoded(found)}`)) webs += 1;
         return `${host}${port}`;
       }
     );
@@ -1181,12 +1186,18 @@ class Guard {
 
   mentions(result) {
     if (!result || typeof result !== 'object') return false;
-    const coded = [result.body, result.data, result.content].find(
-      (item) => typeof item === 'string'
-    );
-    const unfolded = (text) => text.replace(/=\r?\n/g, '').replace(/=3D/gi, '=');
-    const plain = result.base64Encoded && coded !== undefined ? decodedBytes(coded) : (coded ?? '');
-    const text = unescaped(`${unfolded(plain)}\n${JSON.stringify(result)}`);
+    const field = ['body', 'data', 'content'].find((key) => typeof result[key] === 'string');
+    const coded = field ? result[field] : '';
+    const plain = result.base64Encoded ? decodedBytes(coded) : coded;
+    const printable = /content-transfer-encoding:\s*quoted-printable|=\r?\n|=3d/i.test(plain)
+      ? plain
+          .replace(/=\r?\n/g, '')
+          .replace(/=([0-9a-f]{2})/gi, (found, hex) =>
+            String.fromCharCode(Number.parseInt(hex, 16))
+          )
+      : plain;
+    const rest = field ? { ...result, [field]: undefined } : result;
+    const text = unescaped(`${printable}\n${JSON.stringify(rest)}`);
     return this.redact({ text }).named;
   }
 
