@@ -92,11 +92,13 @@ test('each tab sizes its own shell: the owner at 1280, a follower at 420 with Ch
   await b.until(settled);
   const check = async (page, sum) => {
     await page.send('Page.bringToFront');
-    await run(page, `stty size; echo sum-$((${sum}))`);
     const [x, y] = sum.split('+').map(Number);
-    await shows(page, `sum-${x + y}`);
-    const reported = (await screen(page)).match(new RegExp(`(\\d+ \\d+)\\s+sum-${x + y}`))[1];
-    assert.equal(reported, await size(page));
+    const mark = `size-${x + y}`;
+    await run(page, `echo "size-$((${x}+${y})):$(stty size):end"`);
+    await shows(page, `${mark}:`);
+    const text = await screen(page);
+    const reported = text.match(new RegExp(`${mark}:(\\d+ \\d+):end`))?.[1];
+    assert.equal(reported, await size(page), text);
     return reported;
   };
   const wide = await check(a, '1+1');
