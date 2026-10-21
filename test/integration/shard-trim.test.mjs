@@ -175,3 +175,42 @@ test('a test that passed in one attempt and was skipped in another keeps its tra
     );
   }
 });
+
+test('every stall trace a shard keeps is gzipped in place, listed with both sizes, and still reads back as the same trace', async (t) => {
+  const { FIRST, compress } = await import('../../scripts/ci/shard.mjs');
+  const { gunzipSync } = await import('node:zlib');
+  const { readFile } = await import('node:fs/promises');
+  const root = await mkdtemp(join(tmpdir(), 'trim-gzip-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const trace = JSON.stringify({
+    traceEvents: Array.from({ length: 2000 }, (_, i) => ({ ts: i, name: 'x' })),
+  });
+  for (const tree of ['artifacts', FIRST]) {
+    const dir = join(root, tree, 'guard-vectors', 'a-row');
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'stall-1-trace.json'), trace);
+    await writeFile(join(dir, 'agent-install-trace.json'), 'kept as is');
+    await writeFile(join(dir, 'tab-1.png'), 'png');
+  }
+  const packed = await compress(root);
+  assert.deepEqual(
+    packed.map(({ path }) => path).sort(),
+    [
+      `${FIRST}/guard-vectors/a-row/stall-1-trace.json.gz`,
+      'artifacts/guard-vectors/a-row/stall-1-trace.json.gz',
+    ].sort()
+  );
+  for (const entry of packed) {
+    assert.equal(entry.bytes, trace.length);
+    assert.ok(entry.gzipped < entry.bytes / 4, JSON.stringify(entry));
+    assert.equal(gunzipSync(await readFile(join(root, entry.path))).toString(), trace);
+  }
+  for (const tree of ['artifacts', FIRST]) {
+    assert.deepEqual((await readdir(join(root, tree, 'guard-vectors', 'a-row'))).sort(), [
+      'agent-install-trace.json',
+      'stall-1-trace.json.gz',
+      'tab-1.png',
+    ]);
+  }
+  assert.deepEqual(await compress(join(root, 'nothing-here')), []);
+});
