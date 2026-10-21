@@ -51,7 +51,8 @@ const ims = createHttps(
     res.writeHead(200, { 'content-type': 'text/html' });
     res.end(`<!doctype html><title>Sign in to Adobe</title><h1>Sign in</h1><script>
 const asked = new URLSearchParams(location.search);
-if (asked.get('child')) window.open('/idp-child#access_token=${MARK}-child', 'idp-child', 'popup');
+if (asked.get('child')) window.open('/idp-child?grand=1#access_token=${MARK}-child', 'idp-child', 'popup');
+if (asked.get('grand')) window.open('/idp-grandchild#access_token=${MARK}-grandchild', 'idp-grandchild', 'popup');
 if (asked.get('back')) setTimeout(() => location.replace(asked.get('back')), 3000);
 </script>`);
   }
@@ -64,7 +65,7 @@ const plain = createHttp((req, res) => {
   const script = open
     ? `window.open(${JSON.stringify(`/${open}`)}, 'opened', 'popup');`
     : later
-      ? `const w = window.open('about:blank', 'later', 'popup'); setTimeout(() => { w.location = ${JSON.stringify(later)}; }, 1000);`
+      ? `const w = window.open('about:blank', 'later', 'popup'); w.location = ${JSON.stringify(later)};`
       : '';
   res.writeHead(200, { 'content-type': 'text/html' });
   res.end(`<!doctype html><title>plain ${url.pathname}</title><script>${script}</script>`);
@@ -264,6 +265,9 @@ async function rows(t, page, via) {
   const child = await tabWhere((tab) =>
     tab.url.startsWith('https://ims-na1.adobelogin.com/idp-child')
   );
+  const grandchild = await tabWhere((tab) =>
+    tab.url.startsWith('https://ims-na1.adobelogin.com/idp-grandchild')
+  );
   const noopener = ordinary(`/noopener-${via}`);
   await page.evaluate((url) => window.open(url, '_blank', 'noopener'), noopener);
   await page.evaluate(() => {
@@ -274,10 +278,13 @@ async function rows(t, page, via) {
   const blob = await tabWhere((tab) => tab.url.startsWith(`blob:${new URL(chrome.url).origin}`));
   const [plainHost, plainChild] = await popupFrom(`/opener-${via}`, `opened-${via}`);
   const known = new Set((await devtools('/json/list')).map((tab) => tab.id));
-  await page.evaluate(() => {
+  await page.evaluate((MARK) => {
     window.mcpTab = window.open('about:blank', 'slicc-mcp-oauth', 'popup,width=520,height=720');
-  });
-  const mcp = await tabWhere((tab) => tab.url === 'about:blank' && !known.has(tab.id));
+    window.mcpTab.location.href = `https://ims-na1.adobelogin.com/mcp#access_token=${MARK}-mcp`;
+  }, MARK);
+  const mcp = await tabWhere(
+    (tab) => tab.url.startsWith('https://ims-na1.adobelogin.com/mcp') && !known.has(tab.id)
+  );
   const idpLater = 'https://ims-na1.adobelogin.com/vault-idp';
   const vaultPage = `http://vault.sliccy.ai:${plain.address().port}/vault-${via}?later=${encodeURIComponent(idpLater)}`;
   const vaultHost = (
@@ -286,11 +293,10 @@ async function rows(t, page, via) {
     )
   ).id;
   const vaultChild = await tabWhere((tab) => tab.url.startsWith(idpLater.split('#')[0]));
-  await navigate(mcp, `https://ims-na1.adobelogin.com/mcp#access_token=${MARK}-mcp`);
   await navigate(mcp, ordinary(`/mcp-elsewhere#access_token=${MARK}-mcp-elsewhere`));
   await navigate(vaultChild, ordinary(`/vault-elsewhere#access_token=${MARK}-vault-elsewhere`));
   t.after(() =>
-    close([popup, child, free, blob, plainHost, plainChild, mcp, vaultHost, vaultChild])
+    close([popup, child, grandchild, free, blob, plainHost, plainChild, mcp, vaultHost, vaultChild])
   );
   await navigate(popup, `https://ims-na1.adobelogin.com/landing#access_token=${MARK}-again`);
   await navigate(popup, ordinary(`/elsewhere#access_token=${MARK}-elsewhere`));
@@ -308,6 +314,7 @@ async function rows(t, page, via) {
         unreachable(agent, {
           'the sign-in tab': popup,
           'the IdP’s popup': child,
+          'the IdP popup’s own popup': grandchild,
           'the blob tab': blob,
           'an MCP sign-in tab': mcp,
           'the vault’s sign-in tab': vaultChild,
