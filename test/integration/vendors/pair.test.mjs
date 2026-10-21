@@ -55,6 +55,7 @@ async function slicc(t) {
     ['pair', '--page', PAGE, '--name', 'quay-studio', '--no-kernel', '--no-jerk'],
     {
       stdio: ['pipe', 'pipe', 'pipe'],
+      detached: true,
       env: cliEnv({
         ...process.env,
         HOME: home,
@@ -65,9 +66,48 @@ async function slicc(t) {
       }),
     }
   );
-  t.after(() => node.kill('SIGTERM'));
+  const exited = new Promise((resolve) => node.once('exit', resolve));
+  const signal = (name) => {
+    try {
+      process.kill(-node.pid, name);
+    } catch {}
+  };
+  t.after(async () => {
+    signal('SIGTERM');
+    let timer;
+    const gone = await Promise.race([
+      exited.then(() => true),
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, 5000, false);
+      }),
+    ]);
+    clearTimeout(timer);
+    if (!gone) signal('SIGKILL');
+    await exited;
+    node.stdout.destroy();
+    node.stderr.destroy();
+  });
   const said = [];
-  createInterface({ input: node.stderr }).on('line', (line) => said.push(line));
+  const heard = new Set();
+  createInterface({ input: node.stderr }).on('line', (line) => {
+    said.push(line);
+    for (const wait of heard) wait(line);
+  });
+  const hear = (text) =>
+    new Promise((resolve) => {
+      if (said.some((line) => line.includes(text))) return resolve(true);
+      const timer = setTimeout(() => {
+        heard.delete(wait);
+        resolve(false);
+      }, STEP);
+      const wait = (line) => {
+        if (!line.includes(text)) return;
+        clearTimeout(timer);
+        heard.delete(wait);
+        resolve(true);
+      };
+      heard.add(wait);
+    });
   const url = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`no pairing URL: ${said.join('\n')}`)), STEP);
     createInterface({ input: node.stdout }).on('line', (line) => {
@@ -76,7 +116,7 @@ async function slicc(t) {
       resolve(line.trim());
     });
   });
-  return { url, said };
+  return { url, said, hear };
 }
 
 async function attempt(tab, url) {
@@ -107,16 +147,13 @@ test('Firefox: an https seven pairs slicc pair over loopback and links', {
   timeout: 5 * 60 * 1000,
 }, async (t) => {
   const { tab, errors } = await page(t, firefox);
-  const { url, said } = await slicc(t);
+  const { url, said, hear } = await slicc(t);
   const { status, row, took } = await attempt(tab, url);
   t.diagnostic(`Firefox: ${JSON.stringify({ status, row })} in ${took} ms`);
   assert.equal(status.state, 'linked', JSON.stringify(status));
   assert.equal(status.name, 'quay-studio');
   assert.deepEqual(row, { state: 'connected', mode: 'local' }, said.join('\n'));
-  assert.ok(
-    said.some((line) => line.includes('paired with seven on https://seven.pair.test (')),
-    said.join('\n')
-  );
+  assert.ok(await hear('paired with seven on https://seven.pair.test ('), said.join('\n'));
   assert.deepEqual(errors, []);
 });
 
