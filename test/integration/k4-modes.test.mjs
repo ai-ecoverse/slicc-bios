@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { after, test } from 'node:test';
-import { AGENT_BUDGET, agentUp, ready, run, screen, shows } from './bios.mjs';
+import { ready, rowSettled, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const KERNEL = 'node_modules/@ai-ecoverse/slicc-kernel';
@@ -28,52 +29,8 @@ async function read(page, path) {
   }, path);
 }
 
-const OLD_STEP = { stall: 150 * 1000 };
-const OLD_TOTAL = 20 * 60 * 1000;
 const BINS = 5 * 60 * 1000;
-const STUCK = /the agent made no progress for|the agent was not up within/;
-
-function reached(message) {
-  const [, state, kind, done] =
-    message.match(
-      /, agent (checking|downloading|linking|starting)(?: \((download|link) (\d+) of \d+\))?/
-    ) ?? [];
-  const phase = ['checking', 'downloading', 'linking', 'starting'].indexOf(state);
-  return phase < 0 ? null : phase * 1000 + (kind ? Number(done) : 0);
-}
-
-async function oldAgent(page, t) {
-  const label = 'agent on kernel 1.67.1';
-  const end = Date.now() + OLD_TOTAL;
-  const stalls = [];
-  let best = -1;
-  for (let attempt = 1; ; attempt += 1) {
-    const left = end - Date.now();
-    try {
-      return await agentUp(page, {
-        ...OLD_STEP,
-        budget: Math.max(left, OLD_STEP.stall),
-        label: attempt === 1 ? label : `${label}, after reload ${attempt - 1}`,
-      });
-    } catch (error) {
-      if (!STUCK.test(error.message)) throw error;
-      const first = error.message.split('\n')[0];
-      stalls.push(first);
-      const at = reached(error.message) ?? -1;
-      const moved = at > best;
-      best = Math.max(best, at);
-      if (!moved || Date.now() + OLD_STEP.stall >= end)
-        throw new Error(
-          `kernel 1.67.1's agent install stalled ${stalls.length === 1 ? 'once' : `${stalls.length} times`} (#711)${moved ? ` and is past its ${OLD_TOTAL / 60000} min` : ', the last without getting further than the one before'}: ${stalls.join(' | ')}\n${error.message}`
-        );
-      t.diagnostic(
-        `${first}; kernel 1.67.1's downloads stall at times (#711), and this attempt got further, so the page reloads and the install goes on from the store`
-      );
-      await page.reload();
-      await ready(page, ['slicc:/home# ']);
-    }
-  }
-}
+const FIXTURE = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'];
 
 function olderLock(shipped) {
   const lock = structuredClone(shipped);
@@ -81,21 +38,48 @@ function olderLock(shipped) {
   return lock;
 }
 
-test('a profile whose /opt/agent was installed on kernel 1.67.1 keeps its bin scripts runnable under enforce on a /meta kernel', {
-  timeout: OLD_TOTAL + AGENT_BUDGET + BINS + 5 * 60 * 1000,
-}, async (t) => {
-  const { readFileSync } = await import('node:fs');
+const agentRow = (page) =>
+  page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.updates.list()
+      .find((item) => item.id === 'agent')
+  );
+
+async function said(page, command, mark) {
+  await run(page, `clear; ${command}; echo ${mark}-$((40 + 2))`);
+  await shows(page, `${mark}-42`, BINS);
+  return (await screen(page)).replace(/\s+/g, ' ');
+}
+
+test('a profile whose /opt/agent was installed on kernel 1.67.1 keeps its bin scripts runnable under enforce on a /meta kernel', async (t) => {
   const shipped = JSON.parse(
     readFileSync(new URL('../../src/packages/package-lock.json', import.meta.url), 'utf8')
   );
   const page = await chrome.page(t);
-  const current = chrome.overrides.get('/packages/package-lock.json');
+  for (const name of FIXTURE)
+    chrome.overrides.set(
+      `/packages/agent/${name}`,
+      readFileSync(new URL(`fixtures/agent-bins/${name}`, import.meta.url), 'utf8')
+    );
   chrome.overrides.set('/packages/package-lock.json', JSON.stringify(olderLock(shipped)));
   await page.goto('/#users=off');
   await ready(page, ['slicc:/home# ']);
-  await oldAgent(page, t);
-  if (current) chrome.overrides.set('/packages/package-lock.json', current);
-  else chrome.overrides.delete('/packages/package-lock.json');
+  await rowSettled(page, 'agent', BINS);
+  const installed = await agentRow(page);
+  assert.equal(installed.state, 'installed', installed.log);
+  assert.match(installed.log, /\+ n 10\.2\.0/);
+  const old = await said(
+    page,
+    "chmod 644 /opt/agent/node_modules/semver/bin/semver.js; stat -L -c 'old %a %n' /opt/agent/node_modules/.bin/n /opt/agent/node_modules/.bin/semver; jq -r '\"kernel \" + .version' /node_modules/@ai-ecoverse/slicc-kernel/package.json; md5sum /opt/agent/node_modules/.modules.yaml",
+    'old'
+  );
+  assert.match(old, /kernel 1\.67\.1 /);
+  assert.match(old, /old 755 \/opt\/agent\/node_modules\/\.bin\/n /);
+  assert.match(old, /old 644 \/opt\/agent\/node_modules\/\.bin\/semver /);
+  const [modules] = old.match(/[0-9a-f]{32}(?=\s+\/opt\/agent\/node_modules\/\.modules\.yaml)/);
+
+  chrome.overrides.set('/packages/package-lock.json', JSON.stringify(shipped));
   chrome.cdn.requests.length = 0;
   await page.goto('/#users=enforce');
   await ready(page, ['slicc:/home# ']);
@@ -106,16 +90,21 @@ test('a profile whose /opt/agent was installed on kernel 1.67.1 keeps its bin sc
   }
   const fetched = chrome.cdn.requests.filter((url) => url.endsWith('.tgz'));
   t.diagnostic(`the repair fetched ${fetched.length} tarballs: ${fetched.join(' ')}`);
-  await agentUp(page, { label: 'agent after the repair' });
-  await run(
+  await rowSettled(page, 'agent', BINS);
+  assert.equal((await agentRow(page)).state, 'current');
+  const now = await said(
     page,
-    'clear; ls /opt/agent/node_modules/.bin | head -3; for b in /opt/agent/node_modules/.bin/*; do [ -x "$b" ] || echo "noexec $b"; done; b=$(ls /opt/agent/node_modules/.bin | head -1); stat -L -c \'%a %n\' "/opt/agent/node_modules/.bin/$b"; sudo -u cone "/opt/agent/node_modules/.bin/$b" --version > /dev/null 2>&1; echo ran=$?; i --help > /dev/null 2>&1; echo i=$?; echo bins-$((40 + 2))'
+    'for b in /opt/agent/node_modules/.bin/*; do [ -x "$b" ] || echo "noexec $b"; done; stat -L -c \'now %a %n\' /opt/agent/node_modules/.bin/n /opt/agent/node_modules/.bin/semver; sudo -u cone bash -c "/opt/agent/node_modules/.bin/n --version"; echo n=$?; sudo -u cone bash -c "/opt/agent/node_modules/.bin/semver 1.2.3"; echo semver=$?; i --help > /dev/null 2>&1; echo i=$?; md5sum /opt/agent/node_modules/.modules.yaml',
+    'bins'
   );
-  await shows(page, 'bins-42', BINS);
-  const text = await screen(page);
-  t.diagnostic(text.replace(/\s+/g, ' ').slice(0, 600));
-  assert.doesNotMatch(text, /noexec/);
-  assert.doesNotMatch(text, /ran=126/);
-  assert.match(text, /i=0/);
+  t.diagnostic(now.slice(0, 600));
+  assert.ok(now.includes(`${modules} `), 'the current kernel ran no pnpm in /opt/agent');
+  assert.match(now, /now 755 \/opt\/agent\/node_modules\/\.bin\/n /);
+  assert.match(now, /10\.2\.0 n=0/);
+  assert.doesNotMatch(now, /noexec \/opt\/agent\/node_modules\/\.bin\/n /);
+  assert.match(now, /now 644 \/opt\/agent\/node_modules\/\.bin\/semver /);
+  assert.match(now, /noexec \/opt\/agent\/node_modules\/\.bin\/semver /);
+  assert.match(now, /semver=126/);
+  assert.match(now, /i=0/);
   assert.deepEqual(page.errors, []);
 });

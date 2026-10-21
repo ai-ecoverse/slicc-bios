@@ -1,0 +1,34 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      n:
+        specifier: 10.2.0
+        version: 10.2.0
+      semver:
+        specifier: 7.7.3
+        version: 7.7.3
+
+packages:
+
+  n@10.2.0:
+    resolution: {integrity: sha512-zlLXwSEMQgAHmsXtcZwNuA2W5rLdAJyg51DI47ubDWE0Bss0ji9sbK3eD6vM7kKgRLTFm/i4+FvE4SXvphaSHg==}
+    os: ['!win32']
+    hasBin: true
+
+  semver@7.7.3:
+    resolution: {integrity: sha512-SdsKMrI9TdgjdweUSR9MweHA4EJ8YxHn8DFaDisvhVlUOe4BF1tLD7GAj0lIqWVl+dPb/rExr0Btby5loQm20Q==}
+    engines: {node: '>=10'}
+    hasBin: true
+
+snapshots:
+
+  n@10.2.0: {}
+
+  semver@7.7.3: {}
