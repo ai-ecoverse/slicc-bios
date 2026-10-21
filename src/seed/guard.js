@@ -422,6 +422,7 @@ class Guard {
     this.redact = redacting(this.is);
     this.redirected = new Set();
     this.continued = new Set();
+    this.delivered = new Set();
     this.extras = new Set();
     this.hops = new Set();
     this.sheets = new Set();
@@ -782,11 +783,14 @@ class Guard {
     const { method, params = {} } = message;
     const { requestId } = params;
     if (method === 'Network.requestWillBeSent' || method === 'Network.webSocketCreated') {
-      const shown = this.requests.get(requestId) === false;
+      const shown = this.delivered.has(requestId);
       const marked = this.requests.get(requestId) === true || (await this.request(params));
       const waiting = this.settle(requestId, marked);
-      if (marked && shown && params.redirectResponse) return this.hopped(message);
-      if (marked) return !this.continued.has(requestId) || this.continuing(message);
+      if (marked && shown && params.redirectResponse && !this.continued.has(requestId)) {
+        return this.hopped(message);
+      }
+      if (marked) return !shown || this.continuing(message);
+      kept(this.delivered, requestId);
       this.redacted(message);
       for (const held of waiting) this.redacted(held);
       return true;
@@ -795,7 +799,9 @@ class Guard {
       this.hold(requestId, message);
       return true;
     }
-    if (this.continued.has(requestId)) return this.continuing(message);
+    if (this.requests.get(requestId) && this.delivered.has(requestId)) {
+      return this.continuing(message);
+    }
     return this.requests.get(requestId);
   }
 
