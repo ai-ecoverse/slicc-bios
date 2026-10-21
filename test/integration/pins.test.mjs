@@ -75,7 +75,7 @@ export function satisfies(version, range) {
 test('the pinned slicc-kernel satisfies every pinned package’s engines and peers', async () => {
   const kernel = JSON.parse(await read('package.json')).dependencies[KERNEL];
   const wanted = [];
-  for (const file of ['package-lock.json', 'optional/package-lock.json']) {
+  for (const file of ['package-lock.json']) {
     for (const [path, entry] of Object.entries(JSON.parse(await read(file)).packages)) {
       if (!path) continue;
       const name = `${file} ${path.split('node_modules/').at(-1)}@${entry.version}`;
@@ -145,7 +145,7 @@ const GATED =
 
 async function lockedGated() {
   const found = new Map();
-  for (const file of ['package-lock.json', 'optional/package-lock.json']) {
+  for (const file of ['package-lock.json']) {
     for (const [path, entry] of Object.entries(JSON.parse(await read(file)).packages)) {
       const name = path.split('node_modules/').at(-1);
       if (path && GATED.test(name)) found.set(`${name}@${entry.version}`, [file, entry.integrity]);

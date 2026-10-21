@@ -17,37 +17,14 @@ const chrome = await launch({ timeout: 120000, intercept: [] });
 const registry = await fakeCatalog(chrome.cdp);
 after(() => chrome.close());
 
-const integrity = {
-  '@ai-ecoverse/mcpcat@0.16.3':
-    'sha512-Sah/qC/1x31WKsVK+tyHYSdV8StFLpZEmuNyWqu2inbK19IL7ZyZyOb+85CGVAG1+ZRdXfE1y0eUAQuu0jnm3w==',
-};
-
-function pinned(pins, integrity) {
-  return {
-    '/packages/optional/package.json': JSON.stringify({
-      name: 'slicc-bios-optional',
-      private: true,
-      dependencies: pins,
-    }),
-    '/packages/optional/package-lock.json': JSON.stringify({
-      lockfileVersion: 3,
-      packages: {
-        '': { dependencies: pins },
-        ...Object.fromEntries(
-          Object.entries(pins).map(([name, version]) => [
-            `node_modules/${name}`,
-            { version, integrity: integrity[`${name}@${version}`] },
-          ])
-        ),
-      },
-    }),
-  };
-}
-
 function offer() {
   const release = '.github/workflows/release.yml';
   const catalog = {
-    [MCPCAT]: { id: 'mcpcat', label: 'mcpcat' },
+    [MCPCAT]: {
+      id: 'mcpcat',
+      label: 'mcpcat',
+      source: { repo: 'ai-ecoverse/mcpcat', workflow: release },
+    },
     [GLUE]: {
       id: 'hot-glue',
       label: 'hot-glue',
@@ -56,11 +33,8 @@ function offer() {
     },
   };
   registry.reset();
-  registry.names.add(MCPCAT);
-  registry.latest.set(GLUE, pins[GLUE]);
+  for (const [name, version] of Object.entries(pins)) registry.latest.set(name, version);
   chrome.overrides.set('/packages/optional/catalog.json', JSON.stringify(catalog));
-  for (const [path, body] of Object.entries(pinned({ [MCPCAT]: pins[MCPCAT] }, integrity)))
-    chrome.overrides.set(path, body);
 }
 
 async function sh(page, command) {

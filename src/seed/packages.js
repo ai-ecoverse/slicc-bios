@@ -264,6 +264,15 @@ const PROVENANCE = {
     `${it} wasn't built by ${repo}'s release workflow on main`,
 };
 
+export function denied(source, name, version) {
+  const it = `${short(name)} ${version}`;
+  if (Object.hasOwn(source?.deny ?? {}, version))
+    return `${it} isn't certified: ${source.deny[version]}`;
+  if (source?.since && compare(version, source.since) < 0)
+    return `${it} isn't certified: releases before ${source.since} weren't reviewed`;
+  return null;
+}
+
 async function published(name, version, doc, source, ctx) {
   const it = `${short(name)} ${version}`;
   if (source.certified === 'tag') {
@@ -287,8 +296,10 @@ export async function judge(key, integrity, ctx) {
   const name = nameOf(key);
   const version = versionOf(key);
   if (!integrity) return no(`${key} isn't a registry tarball with an integrity`);
+  const source = OURS.test(name) ? sourceOf(name, ctx.sources) : null;
   if (ctx.base.get(key) === integrity) {
-    const why = ruled(ctx.exceptions, name, version, ctx.pins ?? []);
+    const why =
+      denied(source, name, version) ?? ruled(ctx.exceptions, name, version, ctx.pins ?? []);
     return why ? no(why) : null;
   }
   if (!OURS.test(name)) return no(`${key} isn't one of seven's own packages`);
@@ -296,9 +307,9 @@ export async function judge(key, integrity, ctx) {
   if (!doc) return no(`npm doesn't have ${short(name)} ${version}`);
   if (doc.dist?.integrity !== integrity)
     return no(`${short(name)} ${version} doesn't match npm's build`, true);
-  const source = sourceOf(name, ctx.sources);
   if (!source) return no(`${short(name)} has no publisher seven knows`);
   const why =
+    denied(source, name, version) ??
     (await published(name, version, doc, source, ctx)) ??
     ruled(ctx.exceptions, name, version, ctx.pins ?? []) ??
     fits(doc, ctx.have);
@@ -319,7 +330,6 @@ async function exactDeps(doc, ctx) {
 }
 
 async function chosen(entry, npm) {
-  if (entry.pin) return npm.version(entry.package, entry.pin);
   if (!entry.range) return npm.latest(entry.package);
   const all = await npm.packument(entry.package);
   const best = Object.entries(all?.versions ?? {})
@@ -381,7 +391,7 @@ export async function look(entry, ctx) {
   const doc = checked(entry.package, found);
   const refused = await refusedFor(entry, doc, ctx);
   if (!refused) return infoOf(entry, doc);
-  const fallback = entry.pin ? null : await older(entry, doc.version, ctx).catch(() => null);
+  const fallback = await older(entry, doc.version, ctx).catch(() => null);
   const newer = { version: doc.version, reason: refused.why };
   if (fallback) return { ...infoOf(entry, fallback), newer };
   return { ...infoOf(entry, doc), withheld: refused.why };
@@ -491,30 +501,25 @@ function lockKeys(lock) {
 
 export async function loadCatalog(from = deployed, { fetcher } = {}) {
   const read = async (name) => JSON.parse(await fetchText(name, from));
-  const [catalog, base, bundled, extra, certs, manifest, lock] = await Promise.all([
+  const [catalog, base, bundled, extra, certs] = await Promise.all([
     read('catalog.json'),
     read('../package-lock.json'),
     read('exceptions.json'),
     read('sources.json').catch(() => ({})),
     read('../certs.json').catch(() => ({})),
-    read('package.json').catch(() => ({})),
-    read('package-lock.json').catch(() => ({})),
   ]);
   const shipped = lockKeys(base);
   const certified = new Map();
   for (const [key, { integrity }] of Object.entries(certs))
     if (typeof integrity === 'string') certified.set(key, integrity);
   for (const [key, integrity] of shipped) certified.set(key, integrity);
-  for (const [key, integrity] of lockKeys(lock)) certified.set(key, integrity);
-  const pins = manifest.dependencies ?? {};
   const sources = { ...extra };
   for (const [name, entry] of Object.entries(catalog))
     if (entry.source && entry.kind !== 'project') sources[name] = entry.source;
   const entries = await Promise.all(
     Object.entries(catalog).map(async ([name, entry]) => {
       if (entry.kind !== 'project') {
-        const pin = Object.hasOwn(pins, name) ? { pin: pins[name] } : {};
-        return { ...entry, ...pin, package: name, requires: entry.requires ?? [], offered: null };
+        return { ...entry, package: name, requires: entry.requires ?? [], offered: null };
       }
       const project = await loadProject(entry.id, from);
       return {

@@ -26,6 +26,14 @@
   "@ai-ecoverse/wasi-slicc": {
     "id": "slicc",
     "label": "slicc",
+    "source": {
+      "repo": "ai-ecoverse/slicc-cli",
+      "workflow": ".github/workflows/release.yml",
+      "since": "1.44.1",
+      "deny": {
+        "1.44.4": "its release run failed, so it was never certified (slicc-cli coordinator, 10-19)"
+      }
+    },
     "notes": [
       "For root and cones. The other seven must allow remote control from this one in its Linked devices."
     ]
@@ -49,6 +57,10 @@
   "@ai-ecoverse/slicc-jsh": {
     "id": "node",
     "label": "Node.js (jsh)",
+    "source": {
+      "repo": "ai-ecoverse/slicc-jsh",
+      "workflow": ".github/workflows/release.yml"
+    },
     "notes": [
       "No fork, worker or asymmetric crypto yet.",
       "fetch() reaches servers inside seven (localhost, <port>.kernel.localhost)."
@@ -58,6 +70,10 @@
     "id": "jsh-browser",
     "label": "Browser for jsh scripts",
     "requires": ["node"],
+    "source": {
+      "repo": "ai-ecoverse/slicc-cdp",
+      "workflow": ".github/workflows/publish-sliccy-browser.yml"
+    },
     "notes": ["Seven's own tab and the vault stay out of reach."]
   },
   "@ai-ecoverse/wasix-ruby": {
@@ -126,6 +142,10 @@
   "@ai-ecoverse/mcpcat": {
     "id": "mcpcat",
     "label": "mcpcat (MCP client)",
+    "source": {
+      "repo": "ai-ecoverse/mcpcat",
+      "workflow": ".github/workflows/release.yml"
+    },
     "notes": [
       "-H 'Authorization: Bearer ${NAME}' (single quotes) sends the vault's placeholder, which the vault fills in where a secret rule allows that host; mcpcat never prints the value."
     ]

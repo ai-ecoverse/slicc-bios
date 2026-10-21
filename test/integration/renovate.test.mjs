@@ -2,11 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
-const PINNED = [
-  'src/packages/package.json',
-  'src/packages/optional/package.json',
-  'src/packages/agent/package.json',
-];
+const PINNED = ['src/packages/package.json', 'src/packages/agent/package.json'];
 const root = new URL('../../', import.meta.url);
 const read = (path) => readFile(new URL(path, root), 'utf8');
 const config = JSON.parse(await read('renovate.json'));
@@ -18,7 +14,6 @@ const OWN = [
   '@ai-ecoverse/slicc-cdp',
   '@ai-ecoverse/slicc-agent',
   '@ai-ecoverse/slicc-spectrum',
-  '@ai-ecoverse/slicc-jsh',
 ];
 
 const glob = (pattern) =>
@@ -49,19 +44,17 @@ async function pins() {
   return found;
 }
 
-test('renovate.json parses, extends the shared preset and names the three pinned package files; the optional catalog pins only its non-homescoop entries', async () => {
+test('renovate.json parses, extends the shared preset and names the two pinned package files; the optional catalog pins nothing', async () => {
   assert.deepEqual(config.extends, ['github>ai-ecoverse/slicc-shared-web']);
-  const optional = Object.keys(JSON.parse(await read(PINNED[1])).dependencies);
-  assert.ok(
-    optional.every((name) => !/^@ai-ecoverse\/(wasm|wasix|py)-/.test(name)),
-    optional.join()
-  );
+  assert.ok(!JSON.stringify(config).includes('src/packages/optional/package.json'));
+  await assert.rejects(read('src/packages/optional/package.json'), { code: 'ENOENT' });
+  await assert.rejects(read('src/packages/optional/package-lock.json'), { code: 'ENOENT' });
   assert.equal(config.ignoreDeps, undefined, 'holds are packageRules with a description');
   for (const rule of config.packageRules)
     assert.ok(rule.description?.length > 20, JSON.stringify(rule));
 });
 
-test('every @ai-ecoverse pin in the base set, the optional catalog and /opt/agent but slicc-agent bumps by itself and automerges; slicc-agent waits for its coordinated pins', async () => {
+test('every @ai-ecoverse pin in the base set and /opt/agent but slicc-agent bumps by itself and automerges; slicc-agent waits for its coordinated pins', async () => {
   const found = await pins();
   assert.ok(found.length > 20, `${found.length} pins`);
   for (const file of PINNED)
@@ -77,7 +70,7 @@ test('every @ai-ecoverse pin in the base set, the optional catalog and /opt/agen
   }
 });
 
-test('homescoop packages but Python are one daily PR; the kernel, slicc-cdp, slicc-agent, spectrum and slicc-jsh each get their own', async () => {
+test('homescoop packages but Python are one daily PR; the kernel, slicc-cdp, slicc-agent and spectrum each get their own', async () => {
   const found = await pins();
   for (const [name, file] of found.filter(([name]) => HOMESCOOP.test(name) && name !== PYTHON)) {
     const rule = effective(name, file);

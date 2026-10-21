@@ -4,23 +4,15 @@
   "gitIgnoredAuthors": ["41898282+github-actions[bot]@users.noreply.github.com"],
   "packageRules": [
     {
-      "description": "Seven's pins: every @ai-ecoverse package in the base set (src/packages), the optional catalog's non-homescoop entries (src/packages/optional/package.json: slicc-jsh, mcpcat, wasi-slicc and sliccy-browser) and /opt/agent (src/packages/agent) bumps by itself, with its npm and pnpm lockfiles. The catalog's homescoop entries aren't pinned: seven offers each one's npm latest at runtime, behind the gate in src/seed/packages.js. The automerge goes through the merge queue once ci / integration (pins.test.mjs included: every gated pin is its own repository's release from main) and ci / review pass; no bot writes to the branch.",
-      "matchFileNames": [
-        "src/packages/package.json",
-        "src/packages/optional/package.json",
-        "src/packages/agent/package.json"
-      ],
+      "description": "Seven's pins: every @ai-ecoverse package in the base set (src/packages) and /opt/agent (src/packages/agent) bumps by itself, with its npm and pnpm lockfiles. The optional catalog (src/packages/optional/catalog.json) pins nothing: seven offers each package's npm latest at runtime, behind the gate in src/seed/packages.js. The automerge goes through the merge queue once ci / integration (pins.test.mjs included: every gated pin is its own repository's release from main) and ci / review pass; no bot writes to the branch.",
+      "matchFileNames": ["src/packages/package.json", "src/packages/agent/package.json"],
       "matchPackageNames": ["@ai-ecoverse/**"],
       "automerge": true,
       "dependencyDashboardApproval": false
     },
     {
       "description": "homescoop's packages (wasi-*, wasix-*, wasm-*, py-*, wasi-pnpm included) come as one PR a day.",
-      "matchFileNames": [
-        "src/packages/package.json",
-        "src/packages/optional/package.json",
-        "src/packages/agent/package.json"
-      ],
+      "matchFileNames": ["src/packages/package.json", "src/packages/agent/package.json"],
       "matchPackageNames": [
         "@ai-ecoverse/wasi-*",
         "@ai-ecoverse/wasix-*",
