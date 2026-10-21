@@ -295,6 +295,65 @@ test('a candidate artifact replaces the package in every pin and lock, and the h
   }
 });
 
+test('a candidate for a direct pin that other locked packages also depend on replaces every copy, so the project still locks one: py-numpy with pandas and matplotlib in the data tools, as in canary #827', async () => {
+  const { readFile, rm } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const { overridePins } = await import('../../scripts/canary/override-pins.mjs');
+  const dir = await scratch();
+  try {
+    const project = join(dir, 'packages/optional/projects/pydata');
+    const before = await readFile(join(project, 'pnpm-lock.yaml'), 'utf8');
+    const numpys = (text) =>
+      [...text.matchAll(/^ {2}'@ai-ecoverse\/py-numpy@([^']+)':\n {4}resolution:/gm)].map(
+        ([, version]) => version
+      );
+    const [shipped] = numpys(before);
+    assert.equal(numpys(before).length, 1);
+    assert.match(
+      before,
+      /^ {6}'@ai-ecoverse\/py-numpy': /m,
+      'pandas and scipy depend on numpy too'
+    );
+    const candidate = '2.5.4-3';
+    assert.notEqual(shipped, candidate);
+    const result = await overridePins(
+      [
+        `@ai-ecoverse/py-numpy@${candidate}`,
+        '@ai-ecoverse/py-pandas@3.0.6-4',
+        '@ai-ecoverse/py-matplotlib@3.11.2-14',
+      ],
+      {
+        out: join(dir, 'pins.json'),
+        packages: join(dir, 'packages'),
+        cdn: join(dir, 'cdn'),
+      }
+    );
+    const after = await readFile(join(project, 'pnpm-lock.yaml'), 'utf8');
+    assert.deepEqual(numpys(after), [candidate]);
+    const snapshots = after.slice(after.indexOf('\nsnapshots:\n'));
+    assert.deepEqual(
+      [
+        ...new Set(
+          [...snapshots.matchAll(/^ {6}'@ai-ecoverse\/py-numpy': (\S+)$/gm)].map(([, v]) => v)
+        ),
+      ],
+      [candidate]
+    );
+    const manifest = JSON.parse(await readFile(join(project, 'package.json'), 'utf8'));
+    assert.equal(manifest.dependencies['@ai-ecoverse/py-numpy'], candidate);
+    assert.match(
+      await readFile(join(project, 'pnpm-workspace.yaml'), 'utf8'),
+      new RegExp(`^ {2}'@ai-ecoverse/py-numpy': ${candidate.replaceAll('.', '\\.')}$`, 'm')
+    );
+    assert.ok(
+      result.changed.includes('optional/projects/pydata/pnpm-lock.yaml'),
+      result.changed.join()
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 const NPM = 'https://registry.npmjs.org/';
 
 function upstreamPackument() {

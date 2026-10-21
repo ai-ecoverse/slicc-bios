@@ -370,6 +370,12 @@ function checkPnpm(text, file, direct, forced) {
   }
 }
 
+function force(yaml, overrides) {
+  let out = yaml;
+  for (const { name, version } of overrides) out = addOverride(out, name, version);
+  return out;
+}
+
 async function rewritePnpm(dir, overrides, direct, report, { packages, local }) {
   const at = (file) => join(dir, file);
   const file = relative(packages, at('pnpm-lock.yaml'));
@@ -385,22 +391,47 @@ async function rewritePnpm(dir, overrides, direct, report, { packages, local }) 
       report.held.push({ file, name, version, by: ['no pnpm-workspace.yaml for an override'] });
     }
   }
+  const install = () =>
+    isolated(
+      dir,
+      PNPM_LOCK,
+      'npx',
+      [...PNPM, 'install', '--lockfile-only', '--ignore-scripts'],
+      local
+    );
   if (forced.length) {
-    let yaml = await readFile(at('pnpm-workspace.yaml'), 'utf8');
-    for (const { name, version } of forced) yaml = addOverride(yaml, name, version);
-    await writeFile(at('pnpm-workspace.yaml'), yaml);
+    await writeFile(
+      at('pnpm-workspace.yaml'),
+      force(await readFile(at('pnpm-workspace.yaml'), 'utf8'), forced)
+    );
     report.changed.add(relative(packages, at('pnpm-workspace.yaml')));
   }
   if (!direct.length && !forced.length) return;
-  await isolated(
-    dir,
-    PNPM_LOCK,
-    'npx',
-    [...PNPM, 'install', '--lockfile-only', '--ignore-scripts'],
-    local
-  );
+  await install();
   report.changed.add(file);
-  checkPnpm(await readFile(at('pnpm-lock.yaml'), 'utf8'), file, direct, forced);
+  const locked = await readFile(at('pnpm-lock.yaml'), 'utf8');
+  const doubled = direct.filter(({ name }) => pnpmVersions(locked, name).length > 1);
+  for (const { name, version } of workspace ? [] : doubled) {
+    for (const found of pnpmVersions(locked, name).filter((entry) => entry.version !== version))
+      report.held.push({
+        file,
+        name,
+        version: found.version,
+        by: ['no pnpm-workspace.yaml for an override'],
+      });
+  }
+  if (doubled.length && workspace) {
+    await writeFile(
+      at('pnpm-workspace.yaml'),
+      force(await readFile(at('pnpm-workspace.yaml'), 'utf8'), doubled)
+    );
+    report.changed.add(relative(packages, at('pnpm-workspace.yaml')));
+    await install();
+  }
+  checkPnpm(await readFile(at('pnpm-lock.yaml'), 'utf8'), file, direct, [
+    ...forced,
+    ...(workspace ? doubled : []),
+  ]);
 }
 
 async function rewrite(dir, overrides, report, options) {
