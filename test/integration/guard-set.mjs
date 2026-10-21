@@ -30,6 +30,7 @@ const PATHS = {
     browserSession: false,
     browserContexts: true,
     chromeUrlsAttach: false,
+    discovery: false,
     extensionWorld: true,
   },
   proxy: {
@@ -37,6 +38,7 @@ const PATHS = {
     browserSession: true,
     browserContexts: true,
     chromeUrlsAttach: true,
+    discovery: true,
     extensionWorld: true,
   },
 };
@@ -101,8 +103,10 @@ async function unguardedClient() {
   });
   const pending = new Map();
   const { events, push, waitEvent } = eventsOf();
+  const messages = [];
   let next = 0;
   socket.onmessage = ({ data }) => {
+    messages.push(String(data));
     const message = JSON.parse(data);
     const call = pending.get(message.id);
     if (!call) return push(message);
@@ -113,6 +117,7 @@ async function unguardedClient() {
   };
   return {
     events,
+    messages,
     waitEvent,
     send: (method, params = {}, sessionId) =>
       new Promise((resolve, reject) => {
@@ -152,6 +157,7 @@ export async function guardHost(t) {
   });
   const rows = new Map();
   await seven.expose('guardEvent', ([row, text]) => rows.get(row)?.push(JSON.parse(text)));
+  await seven.expose('guardRaw', ([row, text]) => rows.get(row)?.messages.push(text));
   await seven.init(() => {
     const every = window.setInterval;
     window.setInterval = (callback, ms, ...rest) =>
@@ -213,6 +219,7 @@ export async function guardHost(t) {
         const pending = new Map();
         let next = 0;
         connection.onmessage = (text) => {
+          void window.guardRaw(JSON.stringify([row, text]));
           const message = JSON.parse(text);
           if (message.id === undefined) {
             return void window.guardEvent(JSON.stringify([row, text]));
@@ -261,7 +268,8 @@ export async function guardHost(t) {
       count += 1;
       const row = count;
       const { events, push, waitEvent } = eventsOf();
-      rows.set(row, { push });
+      const messages = [];
+      rows.set(row, { push, messages });
       await ensure();
       await seven.evaluate(
         ([row, own, path, lag]) => window.guards.open(row, own, path, lag),
@@ -270,6 +278,7 @@ export async function guardHost(t) {
       const client = {
         transport: path,
         events,
+        messages,
         waitEvent,
         send: async (method, params = {}, sessionId) => {
           const answer = await seven.evaluate(

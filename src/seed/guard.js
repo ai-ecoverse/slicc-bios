@@ -145,6 +145,11 @@ const CONTENTS = new Set([
   'DOMSnapshot.captureSnapshot',
   'DOMSnapshot.getSnapshot',
 ]);
+const CONTINUED = new Set([
+  'Network.requestWillBeSent',
+  'Network.loadingFailed',
+  'Network.loadingFinished',
+]);
 const STREAMED = new Set([
   'Network.streamResourceContent',
   'Fetch.takeResponseBodyAsStream',
@@ -416,6 +421,8 @@ class Guard {
     this.is = protection(own);
     this.redact = redacting(this.is);
     this.redirected = new Set();
+    this.continued = new Set();
+    this.hops = new Set();
     this.sheets = new Set();
     this.navs = new Map();
     this.navSessions = new Map();
@@ -457,6 +464,8 @@ class Guard {
     if (answered && /^(?:Network|Fetch)\./.test(method)) {
       for (const id of [params.requestId, params.networkId])
         if (id !== undefined) this.redirected.add(id);
+      for (const url of [params.request?.url, params.response?.url])
+        if (typeof url === 'string') this.hops.add(bare(url));
     }
     return this.deliver({ ...message, params: redacted });
   }
@@ -618,9 +627,12 @@ class Guard {
 
   navEvent({ method, params = {} }, nav) {
     if (method === 'Page.frameNavigated' && params.frame && !params.frame.parentId) {
-      return this.wiping(nav, `${params.frame.url}${params.frame.urlFragment ?? ''}`);
+      nav.last = `${params.frame.url}${params.frame.urlFragment ?? ''}`;
+      nav.stopped = false;
+      return this.wiping(nav, nav.last);
     }
     if (method === 'Page.frameStoppedLoading' && params.frameId === nav.targetId) {
+      nav.stopped = true;
       return this.wipe(nav);
     }
     if (method !== 'Fetch.requestPaused') return;
@@ -762,9 +774,11 @@ class Guard {
     const { method, params = {} } = message;
     const { requestId } = params;
     if (method === 'Network.requestWillBeSent' || method === 'Network.webSocketCreated') {
+      const shown = this.requests.get(requestId) === false;
       const marked = this.requests.get(requestId) === true || (await this.request(params));
       const waiting = this.settle(requestId, marked);
-      if (marked) return true;
+      if (marked && shown && params.redirectResponse) return this.hopped(message);
+      if (marked) return !this.continued.has(requestId) || this.continuing(message);
       this.redacted(message);
       for (const held of waiting) this.redacted(held);
       return true;
@@ -773,7 +787,27 @@ class Guard {
       this.hold(requestId, message);
       return true;
     }
+    if (this.continued.has(requestId)) return this.continuing(message);
     return this.requests.get(requestId);
+  }
+
+  hopped(message) {
+    const { requestId, redirectResponse } = message.params;
+    this.continued.add(requestId);
+    if (redirectResponse.url) this.hops.add(bare(redirectResponse.url));
+    this.redirected.add(requestId);
+    this.redacted(message);
+    return true;
+  }
+
+  continuing(message) {
+    const { method, params = {} } = message;
+    const redirect = params.statusCode >= 300 && params.statusCode < 400;
+    if (method === 'Network.responseReceivedExtraInfo' && !redirect) return true;
+    if (CONTINUED.has(method) || method === 'Network.responseReceivedExtraInfo') {
+      this.redacted(message);
+    }
+    return true;
   }
 
   async paused(message) {
@@ -790,7 +824,11 @@ class Guard {
     if (!targetId || frameId !== targetId) return;
     this.errored.set(targetId, bare(request.url));
     const nav = this.navs.get(targetId);
-    if (nav?.session && !nav.scrub) nav.scrub = this.scrubbing(nav);
+    if (!nav?.session || nav.scrub) return;
+    nav.scrub = this.scrubbing(nav);
+    if (!nav.last?.startsWith('chrome-error:')) return;
+    nav.erred = true;
+    if (nav.stopped) this.wipe(nav);
   }
 
   scrubbing(nav) {
@@ -815,6 +853,7 @@ class Guard {
     if (!nav.wiped) return;
     if (url === BLANKED) return nav.wiped();
     nav.erred = url.startsWith('chrome-error:');
+    if (!nav.erred && !inherits(url) && !this.is.url(url)) nav.wiped();
   }
 
   wipe(nav) {
@@ -1022,8 +1061,11 @@ class Guard {
   }
 
   masked(info) {
-    if (info.url === undefined || this.errored.get(info.targetId) !== bare(info.url)) return info;
-    return { ...info, url: ERROR_PAGE, title: ERROR_PAGE };
+    const failed = this.errored.get(info.targetId);
+    if (info.url === undefined || failed === undefined) return info;
+    if (![failed, '', ERROR_PAGE].includes(bare(info.url))) return info;
+    const origin = URL.canParse(failed) ? new URL(failed).origin : ERROR_PAGE;
+    return { ...info, url: origin, title: origin };
   }
 
   armed(sessionId) {
@@ -1226,6 +1268,7 @@ class Guard {
       (sessionId !== undefined && this.hidden(sessionId)) ||
       (UNSAFE.has(method) && !this.clearing(method, params, sessionId)) ||
       this.valued(params) ||
+      (REQUESTS.has(method) && typeof params.url === 'string' && this.hops.has(bare(params.url))) ||
       this.sheets.has(params.styleSheetId) ||
       this.workers(method, params) ||
       (method === 'Target.detachFromTarget' &&
