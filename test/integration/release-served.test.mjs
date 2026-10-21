@@ -138,7 +138,7 @@ test("matching metadata whose tarball can't be fetched yet is waited for, and ne
   assert.equal(failed.code, 1);
   assert.match(
     failed.stdout,
-    /^published: FAIL npm doesn't serve @ai-ecoverse\/slicc-bios@1\.31\.10's tarball after 0 min; a re-run of the workflow on main only waits, it never publishes the version again$/m
+    /^published: FAIL npm doesn't serve @ai-ecoverse\/slicc-bios@1\.31\.10's tarball after 0 min; npm lists it, so a re-run of the workflow on main only waits$/m
   );
 });
 
@@ -181,7 +181,7 @@ test('a version npm never lists fails after the whole wait, and no packed integr
   assert.equal(never.code, 1);
   assert.match(
     never.stdout,
-    /^published: FAIL npm doesn't serve @ai-ecoverse\/slicc-bios@1\.31\.10 after 0 min; a re-run of the workflow on main only waits, it never publishes the version again$/m
+    /^published: FAIL npm doesn't serve @ai-ecoverse\/slicc-bios@1\.31\.10 after 0 min; a re-run of the workflow on main publishes it again if npm still doesn't list it$/m
   );
   assert.equal((await fake.calls()).length, 4);
   const empty = await wait(fake, '');

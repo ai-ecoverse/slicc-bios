@@ -112,10 +112,13 @@ export async function served({
       return { ok: false, line: `published: FAIL npm pack can't pack ${id} here to compare` };
     }
     if (round >= waits.length) {
-      const why = same === 'unfetched' ? `serve ${id}'s tarball` : `serve ${id}`;
+      const minutes = Math.round(waited / 60);
       return {
         ok: false,
-        line: `published: FAIL npm doesn't ${why} after ${Math.round(waited / 60)} min; a re-run of the workflow on main only waits, it never publishes the version again`,
+        line:
+          same === 'unfetched'
+            ? `published: FAIL npm doesn't serve ${id}'s tarball after ${minutes} min; npm lists it, so a re-run of the workflow on main only waits`
+            : `published: FAIL npm doesn't serve ${id} after ${minutes} min; a re-run of the workflow on main publishes it again if npm still doesn't list it`,
       };
     }
     await sleep(waits[round]);
