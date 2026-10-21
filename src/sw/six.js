@@ -151,7 +151,7 @@ export function sixDialog(doc = document) {
       box.hidden = false;
       title.textContent = 'Move SLICC 6 into seven in this browser?';
       body.textContent =
-        'Your cones, files and skills from SLICC 6 move into seven. Your files move as they are. After that, SLICC 6 and its Chrome extension stop working in this browser.';
+        'Your cones, files and skills from SLICC 6 move into seven. Files move as they are, including any keys or passwords written inside them. After that, SLICC 6 and its Chrome extension stop working in this browser.';
       line.hidden = true;
       bar.hidden = true;
       move.textContent = 'Move to seven';
