@@ -470,12 +470,16 @@ export function createApprovals({
     },
     async askTray(request, { timers = globalThis } = {}) {
       const item = trayApproval(request);
-      const timeout = new AbortController();
-      const timer = timers.setTimeout(() => timeout.abort('expired'), TRAY_WAIT);
+      const ended = new AbortController();
+      const timer = timers.setTimeout(() => ended.abort('expired'), TRAY_WAIT);
+      const gone = () => ended.abort('withdrawn');
+      request.signal?.addEventListener('abort', gone);
+      if (request.signal?.aborted) gone();
       try {
-        return (await wait(item, timeout.signal)) === 'once';
+        return (await wait(item, ended.signal)) === 'once';
       } finally {
         timers.clearTimeout(timer);
+        request.signal?.removeEventListener('abort', gone);
       }
     },
   };
