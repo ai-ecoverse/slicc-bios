@@ -237,3 +237,59 @@ test('seven leads a tray: a follower joins and links, rotation moves it to a new
     localStorage.removeItem('slicc-os.tray-hub');
   });
 });
+
+test('a remote follower’s HELLO kernel port leaves SLICC_PAGE_LOOPBACK, the stored port and the profile script alone', async (t) => {
+  const hub = await startHub();
+  t.after(() => hub.close());
+  const page = await chrome.page(t);
+  await page.init('() => { globalThis.sliccKernelDebug = true; }');
+  await boot(page);
+  await page.evaluate((url) => {
+    localStorage.setItem('slicc-os.tray-hub', url);
+  }, hub.url);
+  await page.reload();
+  await ready(page);
+  await page.until(() => document.querySelector('slicc-app').model.network.status().links?.joinUrl);
+  await page.evaluate(follower, { kernel: { port: 17180 } });
+  hub.send({
+    type: 'follower.join_requested',
+    trayId: 't1',
+    controllerId: 'dev1',
+    bootstrapId: 'b1',
+    attempt: 1,
+    runtime: 'slicc-link/1',
+    iceServers: [],
+  });
+  const offer = await hub.next('bootstrap.offer');
+  const answer = await page.evaluate((sdp) => globalThis.followerAccept(sdp), offer.offer.sdp);
+  hub.send({
+    type: 'bootstrap.answer',
+    trayId: 't1',
+    controllerId: 'dev1',
+    bootstrapId: 'b1',
+    answer: { type: 'answer', sdp: answer },
+  });
+  const relay = setInterval(() => {
+    const found = hub.fromLeader.filter((m) => m.type === 'bootstrap.ice_candidate');
+    hub.fromLeader = hub.fromLeader.filter((m) => m.type !== 'bootstrap.ice_candidate');
+    for (const m of found)
+      page.evaluate((c) => globalThis.followerCandidate(c), m.candidate).catch(() => {});
+  }, 50);
+  t.after(() => clearInterval(relay));
+  await page.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.network.status()
+      .links?.devices.some((d) => d.state === 'connected' && d.mode === 'remote')
+  );
+  await page.until(() => typeof globalThis.sliccKernelClient === 'function');
+  const seen = await page.evaluate(async () => {
+    const client = await globalThis.sliccKernelClient();
+    const line =
+      'echo "$SLICC_PAGE_LOOPBACK"; [ -e /etc/profile.d/slicc-kernel.sh ] && echo script';
+    const login = await client.run(['bash', '-lc', line], { cwd: '/' });
+    return { login: login.stdout.trim(), stored: localStorage.getItem('slicc-kernel-port') };
+  });
+  assert.deepEqual(seen, { login: 'kernel.localhost', stored: null });
+  assert.deepEqual(page.errors, []);
+});

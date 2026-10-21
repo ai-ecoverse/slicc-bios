@@ -33,7 +33,7 @@ export async function installProfile(root, { text, write }) {
 
 export function kernelScript(env) {
   return Object.entries(env)
-    .map(([name, value]) => `export ${name}='${value}'\n`)
+    .map(([name, value]) => `export ${name}='${String(value).replaceAll("'", "'\\''")}'\n`)
     .join('');
 }
 
