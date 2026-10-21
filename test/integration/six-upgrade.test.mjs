@@ -246,7 +246,7 @@ test('moving SLICC 6 into seven from a cross-origin isolated BIOS: asked once, p
   }));
   assert.deepEqual(asking, {
     title: 'Move SLICC 6 into seven in this browser?',
-    body: 'Your cones, files and skills from SLICC 6 move into seven. After that, SLICC 6 and its Chrome extension stop working in this browser.',
+    body: 'Your cones, files and skills from SLICC 6 move into seven. Your files move as they are. After that, SLICC 6 and its Chrome extension stop working in this browser.',
     buttons: ['Move to seven', 'Not now'],
     focused: 'Not now',
     framed: 0,
