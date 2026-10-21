@@ -689,16 +689,12 @@ export async function shellUnshadow({ root, kernel, global, home }) {
 export async function watchShadows({ root, kernel, attach, global, wait = 50, report }) {
   const system = binDir(global).slice(0, -'/bin'.length);
   const client = await attach(await kernel.connect());
-  const due = new Set();
-  let timer = null;
-  const pass = () => {
-    timer = null;
-    const homesDue = [...due];
-    due.clear();
-    for (const home of homesDue)
-      void shellUnshadow({ root, kernel, global, home }).catch((error) =>
-        report(`unshadow ${home}: ${error.message}`)
-      );
+  const timers = new Map();
+  const pass = (home) => {
+    timers.delete(home);
+    void shellUnshadow({ root, kernel, global, home }).catch((error) =>
+      report(`unshadow ${home}: ${error.message}`)
+    );
   };
   const all = async () => [
     system,
@@ -709,10 +705,13 @@ export async function watchShadows({ root, kernel, attach, global, wait = 50, re
       void rewatch().catch((error) => report(`unshadow watch: ${error.message}`));
     const found = overflow ? all() : paths.map((path) => pnpmHome(path, system));
     void Promise.resolve(found).then((list) => {
-      for (const home of list) if (home) due.add(home);
-      if (!due.size) return;
-      clearTimeout(timer);
-      timer = setTimeout(pass, wait);
+      for (const home of new Set(list.filter(Boolean))) {
+        clearTimeout(timers.get(home));
+        timers.set(
+          home,
+          setTimeout(() => pass(home), wait)
+        );
+      }
     });
   };
   let watching = null;
