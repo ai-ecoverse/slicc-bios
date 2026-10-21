@@ -101,9 +101,10 @@
     "id": "screen",
     "label": "screen"
   },
-  "@ai-ecoverse/wasi-dig": {
-    "id": "dig",
-    "label": "dig"
+  "@ai-ecoverse/wasix-bind": {
+    "id": "bind",
+    "label": "BIND tools (dig, host, nslookup)",
+    "replaces": ["@ai-ecoverse/wasi-dig"]
   },
   "@ai-ecoverse/wasix-websocat": {
     "id": "websocat",

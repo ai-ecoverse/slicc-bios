@@ -1054,6 +1054,15 @@ function missingOf(entry, byId, installed, owned) {
     );
 }
 
+export async function install(entry, byId, present, { remove, add }) {
+  const gone = (entry.replaces ?? [])
+    .map((name) => [...byId.values()].find((one) => one.package === name))
+    .filter((old) => old && present(old.package));
+  for (const old of gone) await remove(old);
+  await add();
+  return gone;
+}
+
 export function createPackages({ catalog, root, kernel, ask, emit, global = GLOBAL }) {
   const { retired = [], npm } = catalog;
   const { state, ready, check } = npmListing({ catalog, root, changed: () => changed() });
@@ -1173,7 +1182,10 @@ export function createPackages({ catalog, root, kernel, ask, emit, global = GLOB
       });
     }
     if (entry.kind === 'project') return project(entry, action);
-    await add(entry, action);
+    await install(entry, state.byId, present, {
+      remove: (old) => attempt(old, 'remove'),
+      add: () => add(entry, action),
+    });
   }
 
   async function attempt(entry, action) {
