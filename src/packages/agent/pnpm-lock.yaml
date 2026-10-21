@@ -14,16 +14,16 @@ importers:
   .:
     dependencies:
       '@ai-ecoverse/slicc-agent':
-        specifier: 6.18.3
-        version: 6.18.3(@ai-ecoverse/slicc-kernel@1.138.0)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
+        specifier: 6.18.12
+        version: 6.18.12(@ai-ecoverse/slicc-kernel@1.138.0)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@ai-ecoverse/slicc-kernel':
         specifier: 1.138.0
         version: 1.138.0
 
 packages:
 
-  '@ai-ecoverse/slicc-agent@6.18.3':
-    resolution: {integrity: sha512-CeWbIv/Ysf62MapzUlUyPGVRL/1+2fgaE0icotkF85Nqbap4PFPApbowG953r+MapsxfC9i/FUa4+3tMlJUXGA==}
+  '@ai-ecoverse/slicc-agent@6.18.12':
+    resolution: {integrity: sha512-EW/QaZK+R8OBIKVmf44bcICHjnavcSdqnrW2cjvwniZRjpSEfwfk3mLOR3mMF77DwUhJnU7hUqCHihZDMjgjPw==}
     engines: {node: '>=24'}
     peerDependencies:
       '@ai-ecoverse/slicc-kernel': '>=1.110.0 <2'
@@ -32,8 +32,8 @@ packages:
       '@ai-ecoverse/slicc-spectrum':
         optional: true
 
-  '@ai-ecoverse/slicc-browsers@1.9.2':
-    resolution: {integrity: sha512-WVaDUiZbd5nwG03+2WoQ8YA8ATC2mkx1DRCWpLuMFBNnyN0cd5IRoGF6KYNjMkXvBQCvZZxP+gwffrpmHYJ/cQ==}
+  '@ai-ecoverse/slicc-browsers@1.14.5':
+    resolution: {integrity: sha512-jlX0TbpX7zTxyMSdJJUlKyCNl9A+H+oxqRejK/39LK1ho3xmUY+nbEEHsQ3x3SjCCKsNyVj/0rerDRvPsfdJ3w==}
     engines: {node: '>=24'}
 
   '@ai-ecoverse/slicc-kernel@1.138.0':
@@ -346,9 +346,9 @@ packages:
 
 snapshots:
 
-  '@ai-ecoverse/slicc-agent@6.18.3(@ai-ecoverse/slicc-kernel@1.138.0)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)':
+  '@ai-ecoverse/slicc-agent@6.18.12(@ai-ecoverse/slicc-kernel@1.138.0)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)':
     dependencies:
-      '@ai-ecoverse/slicc-browsers': 1.9.2
+      '@ai-ecoverse/slicc-browsers': 1.14.5
       '@ai-ecoverse/slicc-kernel': 1.138.0
       '@ai-ecoverse/slicc-vault': 1.15.1
       '@aws-sdk/middleware-websocket': 3.972.54
@@ -370,7 +370,7 @@ snapshots:
       - ws
       - zod
 
-  '@ai-ecoverse/slicc-browsers@1.9.2': {}
+  '@ai-ecoverse/slicc-browsers@1.14.5': {}
 
   '@ai-ecoverse/slicc-kernel@1.138.0': {}
 
