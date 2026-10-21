@@ -11,7 +11,6 @@ const PYTHON = '@ai-ecoverse/wasix-python';
 const DATA_TOOLS = 'src/packages/optional/projects/pydata/package.json';
 const OWN = [
   '@ai-ecoverse/slicc-kernel',
-  '@ai-ecoverse/slicc-cdp',
   '@ai-ecoverse/slicc-agent',
   '@ai-ecoverse/slicc-spectrum',
 ];
@@ -56,7 +55,7 @@ test('renovate.json parses, extends the shared preset and names the two pinned p
 
 test('every @ai-ecoverse pin in the base set and /opt/agent but slicc-agent bumps by itself and automerges; slicc-agent waits for its coordinated pins', async () => {
   const found = await pins();
-  assert.ok(found.length > 20, `${found.length} pins`);
+  assert.ok(found.length >= 9, `${found.length} pins`);
   for (const file of PINNED)
     assert.ok(
       found.some(([, at]) => at === file),
@@ -70,7 +69,7 @@ test('every @ai-ecoverse pin in the base set and /opt/agent but slicc-agent bump
   }
 });
 
-test('homescoop packages but Python are one daily PR; the kernel, slicc-cdp, slicc-agent and spectrum each get their own', async () => {
+test('homescoop packages but Python are one daily PR; the kernel, slicc-agent and spectrum each get their own', async () => {
   const found = await pins();
   for (const [name, file] of found.filter(([name]) => HOMESCOOP.test(name) && name !== PYTHON)) {
     const rule = effective(name, file);

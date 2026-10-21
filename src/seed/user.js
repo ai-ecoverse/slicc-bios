@@ -104,7 +104,9 @@ export async function rows(root, errors = new Map()) {
   const out = [];
   for (const [name, { spec }] of entries(manifest)) {
     const installed = parse(await text(root, `${folder}/node_modules/${name}/package.json`));
-    const shipped = (await text(root, `node_modules/${name}/package.json`)) !== null;
+    const shipped =
+      (await text(root, `node_modules/${name}/package.json`)) !== null ||
+      (await text(root, `opt/slicc/tools/node_modules/${name}/package.json`)) !== null;
     const error = errors.get(name) ?? (installed ? null : UNINSTALLED);
     out.push({
       id: `user:user:${name}`,
