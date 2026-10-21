@@ -272,7 +272,7 @@ const ANSWERED = new Set([
 ]);
 const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const HOSTS = new RegExp(
-  `(${[...catalog.protectedOrigins.domains, ...catalog.protectedOrigins.hosts].map(escaped).join('|')})(\\.?(?::\\d+|%3a\\d+)?)(?:[/?#\\\\][^\\s"'<>\`]*|(?:%2f|%3f|%23|%5c)[^\\s"'<>\`&]*)`,
+  `(?<![a-z0-9-])(${[...catalog.protectedOrigins.domains, ...catalog.protectedOrigins.hosts].map(escaped).join('|')})(\\.?(?::\\d+|%3a\\d+)?)(?:[/?#\\\\][^\\s"'<>\`]*|(?:%2f|%3f|%23|%5c)[^\\s"'<>\`&]*)`,
   'gi'
 );
 
@@ -336,10 +336,29 @@ function scanned(value, starts, stops, swap) {
   return out + value.slice(last);
 }
 
+const CALLBACKS = /\/(?:auth\/callback|oauth\/mcp-callback)(?:[/?#]|$)/i;
+const SECRETS =
+  /[?#&](?:code|state|access_token|id_token|refresh_token|token|key|seat|follow|tailscale|secret|password|nonce)=/i;
+const VAULTS = new Set(catalog.protectedOrigins.hosts.map((host) => host.toLowerCase()));
+
+function secretive(url) {
+  if (CALLBACKS.test(url) || SECRETS.test(url)) return true;
+  const host = URL.canParse(url) ? new URL(url).hostname.toLowerCase() : '';
+  return VAULTS.has(host) && /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*[/?#]./i.test(url);
+}
+
+const hopKey = (url) => {
+  if (!URL.canParse(url)) return bare(url);
+  const parsed = new URL(url);
+  return `${parsed.origin}${parsed.pathname}`;
+};
+
 export function redacting(is) {
   let webs = 0;
   const past = (text, shown) => {
-    if (/^(?:https?|wss?):/i.test(text) && /^\/?[^/]/.test(text.slice(shown.length))) webs += 1;
+    if (/^(?:https?|wss?):/i.test(text) && text.length > shown.length && secretive(text)) {
+      webs += 1;
+    }
   };
   const origin = (text) => {
     const shown = authority(text);
@@ -362,7 +381,7 @@ export function redacting(is) {
     return scanned(raw, ENCODED_STARTS, ENCODED_STOPS, encoded).replace(
       HOSTS,
       (found, host, port) => {
-        if (/^(?:\/|%2f)?[^/%]/i.test(found.slice(host.length + port.length))) webs += 1;
+        if (secretive(`http://${decoded(found)}`)) webs += 1;
         return `${host}${port}`;
       }
     );
@@ -474,7 +493,7 @@ class Guard {
       for (const id of [params.requestId, params.networkId])
         if (id !== undefined) kept(this.redirected, id);
       for (const url of [params.request?.url, params.response?.url])
-        if (typeof url === 'string') kept(this.hops, bare(url));
+        if (typeof url === 'string') kept(this.hops, hopKey(url));
     }
     return this.deliver({ ...message, params: redacted });
   }
@@ -808,7 +827,7 @@ class Guard {
   hopped(message) {
     const { requestId, redirectResponse } = message.params;
     kept(this.continued, requestId);
-    if (redirectResponse.url) kept(this.hops, bare(redirectResponse.url));
+    if (redirectResponse.url) kept(this.hops, hopKey(redirectResponse.url));
     kept(this.redirected, requestId);
     this.redacted(message);
     return true;
@@ -1312,7 +1331,9 @@ class Guard {
       (sessionId !== undefined && this.hidden(sessionId)) ||
       (UNSAFE.has(method) && !this.clearing(method, params, sessionId)) ||
       this.valued(params) ||
-      (REQUESTS.has(method) && typeof params.url === 'string' && this.hops.has(bare(params.url))) ||
+      (REQUESTS.has(method) &&
+        typeof params.url === 'string' &&
+        this.hops.has(hopKey(params.url))) ||
       this.sheets.has(params.styleSheetId) ||
       this.workers(method, params) ||
       (method === 'Target.detachFromTarget' &&

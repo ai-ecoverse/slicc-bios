@@ -17,7 +17,7 @@ const free = () =>
   });
 
 const ordinary = (path) =>
-  `<title>ordinary</title>${path}<script>void \`http://localhost:\${location.port}/x\`;</script>`;
+  `<title>ordinary</title>${path}<script>void \`http://localhost:\${location.port}/x\`;</script><a href="https://www.sliccy.ai/7/">seven</a> <a href="https://ntfy.sliccy.ai/github">ntfy</a> curl -fsSL https://www.sliccy.ai/install.sh <a href="https://seven.sliccy.ai/docs">docs</a>`;
 const marks = [];
 const mark = () => {
   const value = `M${randomBytes(6).toString('hex')}`;
@@ -192,6 +192,7 @@ async function rig({ transport, proxy, port, override }) {
     return false;
   };
   const answers = {
+    dom: [],
     searches: [],
     streams: [],
     doms: [],
@@ -236,6 +237,14 @@ async function rig({ transport, proxy, port, override }) {
         } else if (request.url.endsWith('/override')) {
           answers.overrides.push(
             await send('Fetch.continueRequest', { requestId, url: override }, state.session)
+          );
+        } else if (request.url.endsWith('/again') && state.hop) {
+          answers.overrides.push(
+            await send(
+              'Fetch.continueRequest',
+              { requestId, url: `${state.hop}?extra=1` },
+              state.session
+            )
           );
         }
         await send('Fetch.continueRequest', { requestId }, state.session);
@@ -332,6 +341,7 @@ async function rig({ transport, proxy, port, override }) {
         );
       }
       const hop = `${origin}/hop/${step.path.split('/').pop()}`;
+      if (step.path.startsWith('/hop/')) state.hop = hop;
       const requestIds = seen
         .slice(before)
         .map((text) => JSON.parse(text))
@@ -403,6 +413,11 @@ async function rig({ transport, proxy, port, override }) {
       return requestIds.length;
     },
     async end(fetching) {
+      if (fetching === 'Request' && state.hop) {
+        const before = answers.overrides.length;
+        await send('Page.navigate', { url: `${origin}/again` }, state.session);
+        await expect('again', async () => answers.overrides.length > before);
+      }
       const before = seen.length;
       await send('Page.navigate', { url: `${origin}/start` }, state.session);
       await expect('end start', async () =>
@@ -419,6 +434,8 @@ async function rig({ transport, proxy, port, override }) {
       for (const requestId of new Set(ids)) {
         answers.plain.push(await send('Network.getResponseBody', { requestId }, state.session));
       }
+      answers.dom.push(await send('DOM.getDocument', { depth: -1 }, state.session));
+      answers.dom.push(await send('Page.captureSnapshot', {}, state.session));
       await send('Page.navigate', { url: `${origin}/plain` }, state.session);
       await expect('landing', async () => (await frame()).url?.includes('/landing'));
       state.pumping = false;
@@ -544,6 +561,10 @@ async function check(t, transport) {
   assert.ok(
     answers.reads.some(refused),
     'a body or resource that names seven or the vault is refused'
+  );
+  assert.ok(
+    answers.dom.length > 0 && answers.dom.every((answer) => !answer.error),
+    `an ordinary page that links into sliccy.ai stays readable: ${JSON.stringify(answers.dom.map((answer) => answer.error ?? 'ok'))}`
   );
   assert.ok(
     answers.plain.length > 0 &&
