@@ -217,6 +217,7 @@ export async function startWww(seven) {
         })
         .end(spoofPage);
     }
+    if (url.pathname === '/upgrade-to-seven.html' && state.mode === 'stall') return;
     if (url.pathname === '/upgrade-to-seven.html') {
       return response.writeHead(200, { ...html, ...framed }).end(exporterPage);
     }

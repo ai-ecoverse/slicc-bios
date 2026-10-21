@@ -8,6 +8,7 @@ export const EXPORTS = 'slicc-v6-upgrade';
 export const PROFILE = 'slicc-fs';
 export const TYPE = 'slicc-six-upgrade';
 export const QUIET = 120000;
+export const OFFER_WAIT = 10000;
 export const SILENT = 'SLICC 6’s upgrade page stopped answering. Try again.';
 export const BAD = 'SLICC 6’s upgrade page gave no export to import. Try again.';
 const PHASES = ['stopping', 'reading', 'writing'];
@@ -31,9 +32,12 @@ export async function hasProfile(root) {
   }
 }
 
-export async function offered(origin = location.origin, get = fetch) {
+export async function offered(origin = location.origin, get = fetch, wait = OFFER_WAIT) {
   try {
-    const response = await get(new URL(EXPORTER, origin), { cache: 'no-store' });
+    const response = await get(new URL(EXPORTER, origin), {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(wait),
+    });
     if (!response.ok || new URL(response.url).pathname !== EXPORTER) return false;
     const page = new DOMParser().parseFromString(await response.text(), 'text/html');
     return page.querySelector(`meta[name="${TYPE}"]`) !== null;

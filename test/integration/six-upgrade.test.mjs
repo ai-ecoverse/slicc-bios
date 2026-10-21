@@ -141,6 +141,25 @@ test('without a SLICC 6 profile seven never asks, and its service worker passes 
   assert.deepEqual(page.errors, []);
 });
 
+test("when www never answers for SLICC 6's upgrade page, the BIOS stops waiting and boots seven without asking", async (t) => {
+  state.mode = 'stall';
+  const page = await open(t);
+  const bios = await watch(page);
+  const six = await dialog(page);
+  await runSix(page);
+  asked.length = 0;
+  await page.goto(`${origin}/7/`);
+  await page.within(60000, () => location.pathname === '/os/');
+  await ready(page);
+  assert.deepEqual(bios.states(), booted);
+  assert.ok(asked.includes('/upgrade-to-seven.html'), asked.join(' '));
+  assert.deepEqual(six.states(), []);
+  assert.deepEqual(six.framed(), []);
+  assert.deepEqual(await storage(page), { marker: null, pending: null });
+  assert.deepEqual(await previews(page), ['/preview/']);
+  assert.deepEqual(page.errors, []);
+});
+
 test('moving SLICC 6 into seven from a cross-origin isolated BIOS: asked once, progress shown, the marker set before the frame goes, six stopped, /preview/ unregistered, / and the extension URLs land on /os/, and the export is handed to the agent', async (t) => {
   state.mode = 'ok';
   state.isolate = true;
