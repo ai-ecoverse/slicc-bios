@@ -51,7 +51,9 @@ export function known(row, { listed = false } = {}) {
     const absent = items
       .slice(0, -1)
       .every((item) => /^[A-Za-z]+: got (?:false|undefined), want true$/.test(item));
-    return !listed && row.live === 'fail' && items.at(-1) === 'not live' && absent ? reason : null;
+    if (row.live === 'fail') {
+      return !listed && items.at(-1) === 'not live' && absent ? reason : null;
+    }
   }
   const failed = checks(row.why);
   const allowed = (check) => RECOVERY.has(check) || ABSENT.has(check);
