@@ -10,6 +10,24 @@ export const KNOWN = {
   ],
 };
 const RECOVERY = new Set(['reload', 'blank', 'close', 'attachRedacted']);
+const ABSENT = 'listRedacted';
+
+export function listedWrong(text) {
+  let message;
+  try {
+    message = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  const infos = message?.result?.targetInfos;
+  if (!Array.isArray(infos)) return false;
+  return infos.some((info) => {
+    const shown = `${info.url ?? ''} ${info.title ?? ''}`;
+    if (!/sliccy\.ai/i.test(shown)) return false;
+    const origin = URL.canParse(info.url) ? new URL(info.url).origin : null;
+    return info.url !== origin || info.title !== origin;
+  });
+}
 
 const checks = (why = '') =>
   why
@@ -19,7 +37,7 @@ const checks = (why = '') =>
 
 const issue = (id) => Object.keys(KNOWN).find((key) => KNOWN[key].includes(id));
 
-export function known(row) {
+export function known(row, { listed = false } = {}) {
   const reason = issue(row.id);
   if (!reason || row.control !== 'pass' || row.guarded !== 'fail') return null;
   if (row.transport === 'proxy') {
@@ -30,9 +48,8 @@ export function known(row) {
     return row.live === 'fail' && items.at(-1) === 'not live' && absent ? reason : null;
   }
   const failed = checks(row.why);
-  return row.live === 'pass' && failed.length > 0 && failed.every((check) => RECOVERY.has(check))
-    ? reason
-    : null;
+  const allowed = (check) => RECOVERY.has(check) || (check === ABSENT && !listed);
+  return row.live === 'pass' && failed.length > 0 && failed.every(allowed) ? reason : null;
 }
 
 export function stale(results) {

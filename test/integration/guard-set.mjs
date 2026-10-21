@@ -9,7 +9,10 @@ import set from '@ai-ecoverse/slicc-browsers/guard-vectors.json' with { type: 'j
 import { startProxy } from '@ai-ecoverse/slicc-node';
 import { boot } from './bios.mjs';
 import { debuggerUrl, launch } from './chrome.mjs';
-import { known, stale } from './guard-known.mjs';
+import { known as knownRow, listedWrong, stale } from './guard-known.mjs';
+
+const exposure = { listed: false, sample: null };
+const known = (row) => knownRow(row, exposure);
 
 export const fixture = await fixtureServer();
 const origin = (host) => `http://${host}:${fixture.port}`;
@@ -158,7 +161,13 @@ export async function guardHost(t) {
   });
   const rows = new Map();
   await seven.expose('guardEvent', ([row, text]) => rows.get(row)?.push(JSON.parse(text)));
-  await seven.expose('guardRaw', ([row, text]) => rows.get(row)?.messages.push(text));
+  await seven.expose('guardRaw', ([row, text]) => {
+    if (!exposure.listed && listedWrong(text)) {
+      exposure.listed = true;
+      exposure.sample = text.slice(0, 400);
+    }
+    rows.get(row)?.messages.push(text);
+  });
   await seven.init(() => {
     const every = window.setInterval;
     window.setInterval = (callback, ms, ...rest) =>
@@ -402,6 +411,9 @@ export function shared(path) {
     );
     const lines = [
       report.line,
+      ...(exposure.listed
+        ? [`GUARD-LISTED a target list showed more than an origin: ${exposure.sample}`]
+        : []),
       ...held.map(
         (row) =>
           `GUARD-KNOWN ${known(row)} ${row.id}@${row.target}/${row.variant}: ${row.live === 'fail' ? 'not live' : row.why}`
