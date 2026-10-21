@@ -17,7 +17,8 @@ export function storedClients(storage = globalThis.localStorage) {
   }
 }
 
-export const SIGN_IN_CLIENTS = new Set(storedClients());
+export const SEVEN_CLIENT = 'experience-catalyst-prod';
+export const SIGN_IN_CLIENTS = new Set([SEVEN_CLIENT, ...storedClients()]);
 
 export function rememberClient(id) {
   if (!id || SIGN_IN_CLIENTS.has(id)) return;
