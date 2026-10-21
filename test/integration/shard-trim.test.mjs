@@ -135,3 +135,43 @@ test('a skipped test keeps its traces, and a retried shard trims the passing tes
     assert.deepEqual(await readdir(join(root, tree, suite, 'passes')), ['tab-1.png']);
   }
 });
+
+test('a test that passed in one attempt and was skipped in another keeps its traces', async (t) => {
+  const { FIRST, trimShard } = await import('../../scripts/ci/shard.mjs');
+  const root = await mkdtemp(join(tmpdir(), 'trim-skip-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const suite = slug(UNCLASSIFIED[0]);
+  for (const tree of ['artifacts', FIRST]) {
+    for (const name of ['passes twice', 'skipped later']) {
+      const dir = join(root, tree, suite, slug(name));
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'stall-1-trace.json'), 'x');
+    }
+  }
+  const skip = (name) => ({ file: FILE, name, path: [name], status: 'skip' });
+  const first = {
+    files: [FILE],
+    code: 1,
+    results: [pass('passes twice'), pass('skipped later'), fail('other')],
+  };
+  const retried = {
+    files: [FILE],
+    code: 0,
+    results: [pass('passes twice'), skip('skipped later'), pass('other')],
+  };
+  const trimmed = await trimShard([{ first, retried }], root);
+  assert.deepEqual(
+    trimmed.map(({ path }) => path).sort(),
+    [
+      `${FIRST}/${suite}/passes-twice/stall-1-trace.json`,
+      `artifacts/${suite}/passes-twice/stall-1-trace.json`,
+    ].sort()
+  );
+  for (const tree of ['artifacts', FIRST]) {
+    assert.deepEqual(
+      await readdir(join(root, tree, suite, 'skipped-later')),
+      ['stall-1-trace.json'],
+      tree
+    );
+  }
+});
