@@ -37,6 +37,29 @@ export function parse(data) {
   return { type: bytes[0], id, payload: bytes.subarray(5) };
 }
 
+export const CDP_MIN = '1.47.0';
+
+const semver = (version) =>
+  /^(\d+)\.(\d+)\.(\d+)(?:-.*)?$/
+    .exec(typeof version === 'string' ? version : '')
+    ?.slice(1)
+    .map(Number);
+
+export function recentCli(version) {
+  if (version === 'dev') return true;
+  const have = semver(version);
+  if (!have) return false;
+  const want = semver(CDP_MIN);
+  const at = have.findIndex((part, i) => part !== want[i]);
+  return at < 0 || have[at] > want[at];
+}
+
+export function sharesBrowsers(peer) {
+  return Array.isArray(peer?.caps) && peer.caps.includes('cdp') && recentCli(peer.version);
+}
+
+export const CDP_UPDATE = `Update slicc to ${CDP_MIN} or later to share this computer's browsers.`;
+
 export function failure(text) {
   const at = text.indexOf(': ');
   const code = at < 0 ? text : text.slice(0, at);
@@ -528,8 +551,12 @@ export function linkExit(
         close: () => s.close(),
       };
     },
-    browsers: () => (session.peer() && session.caps().includes('cdp') ? browsers() : []),
+    browsers: () => (sharesBrowsers(session.peer()) ? browsers() : []),
     async cdp(browser) {
+      if (!sharesBrowsers(session.peer()))
+        throw failure(
+          `EACCES: ${label()} runs a slicc older than ${CDP_MIN}; update it to share its browsers`
+        );
       const s = await session.open({ kind: 'cdp', browser });
       return cdpConnection(s);
     },
@@ -984,7 +1011,7 @@ export function createLinks({
           }
           if (meta.kind !== 'browsers')
             return kernel ? kernelIn(kernel, meta) : Promise.reject(failure('EOPNOTSUPP'));
-          link.browsers = browserList(meta.browsers);
+          link.browsers = sharedBrowsers(link.offer.session.peer(), meta.browsers);
           changed();
           return null;
         },
@@ -1019,7 +1046,7 @@ export function createLinks({
               manager.drop(other, 'reconnected');
           }
           link.peer = peer;
-          link.browsers = browserList(peer.browsers);
+          link.browsers = sharedBrowsers(peer, peer.browsers);
           link.mounts = mountList(peer.mounts);
           if (!seven && Array.isArray(peer.caps) && peer.caps.length) {
             link.identity = `${link.id ?? key}|${node ?? ''}`;
@@ -1194,6 +1221,8 @@ export function browserList(list) {
     }));
 }
 
+const sharedBrowsers = (peer, list) => (sharesBrowsers(peer) ? browserList(list) : []);
+
 export function cdpConnection(stream) {
   let ended = false;
   let writes = Promise.resolve();
@@ -1270,7 +1299,8 @@ export function device(link) {
     ...(typeof peer?.policy?.summary === 'string' ? { policy: peer.policy.summary } : {}),
     exit: Boolean(peer?.routes?.exit) && caps.includes('net'),
     state: peer ? 'connected' : 'connecting',
-    ...(caps.includes('cdp') && link.browsers?.length
+    ...(caps.includes('cdp') && !sharesBrowsers(peer) ? { note: CDP_UPDATE } : {}),
+    ...(sharesBrowsers(peer) && link.browsers?.length
       ? {
           browsers: link.browsers.map(({ id, name }) => ({ runtime: `${link.label}/${id}`, name })),
         }

@@ -136,6 +136,10 @@ function fakeNode(key, hello = {}, signal = {}) {
     channel.onmessage = ({ data }) => {
       if (typeof data === 'string') {
         log.push(JSON.parse(data));
+        globalThis.fakeNodeOpen = (id, meta) => {
+          streams.set(id, (type) => log.push({ answered: id, type }));
+          channel.send(frame(1, id, JSON.stringify(meta)));
+        };
         channel.send(
           JSON.stringify({
             v: 1,
@@ -1121,6 +1125,128 @@ test('the real slicc CLI shares another browser over cdp: the 9222 facade reache
   );
   assert.doesNotMatch(hidden.out, new RegExp(own.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 });
+
+const CDP_NOTE = "Update slicc to 1.47.0 or later to share this computer's browsers.";
+
+const fakeRow = (page) =>
+  page.evaluate(
+    () =>
+      document
+        .querySelector('slicc-app')
+        .model.network.status()
+        .links?.devices.find((d) => d.state === 'connected') ?? null
+  );
+
+async function cdpNode(page, version) {
+  await page.evaluate(fakeNode, KEY, {
+    caps: ['net', 'http', 'ssh', 'ws', 'udp', 'fs', 'cdp'],
+    ...(version === undefined ? {} : { version }),
+    browsers: [{ id: 'chrome', name: 'Chrome' }],
+    mounts: [{ name: 'proj', capabilities: {} }],
+  });
+  await page.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.network.status()
+      .links?.devices.some((d) => d.state === 'connected' && d.folders?.length === 1)
+  );
+}
+
+for (const [said, version] of [
+  ['1.46.9', '1.46.9'],
+  ['no version', undefined],
+]) {
+  test(`a node that offers cdp with ${said} in its HELLO shares no browsers: none on its device row, which says to update slicc, none on the 9222 facade, none after a browsers update, and no cdp opens, while net and its folders still work`, async (t) => {
+    const page = await chrome.page(t);
+    await page.init(grantProbe);
+    await boot(page);
+    await ready(page);
+    await cdpNode(page, version);
+    const row = await fakeRow(page);
+    assert.equal(row.browsers, undefined, JSON.stringify(row));
+    assert.equal(row.note, CDP_NOTE);
+    const listed = await shell(
+      page,
+      "curl -s 'http://127.0.0.1:9222/json/list?runtime=nope'",
+      'old-cdp-nope'
+    );
+    assert.match(listed.out, /unknown runtime/);
+    assert.doesNotMatch(listed.out, /fake-node\//);
+    const driven = await shell(
+      page,
+      "playwright-cli --runtime fake-node/chrome open 'data:text/html,<title>x</title>'",
+      'old-cdp-open'
+    );
+    assert.notEqual(driven.code, '0', driven.out);
+    assert.match(driven.out, /unknown runtime/);
+    await page.evaluate(() =>
+      globalThis.fakeNodeOpen(2, { kind: 'browsers', browsers: [{ id: 'edge', name: 'Edge' }] })
+    );
+    await page.until(() => globalThis.fakeNodeLog.some((m) => m.answered === 2 && m.type === 4));
+    const raw = await shell(
+      page,
+      "curl -s --noproxy '*' http://fake-node.slicc.internal:8080/raw",
+      'old-cdp-raw'
+    );
+    assert.deepEqual(raw, { code: '0', out: 'raw 127.0.0.1:8080 /raw' });
+    const after = await fakeRow(page);
+    assert.equal(after.browsers, undefined, JSON.stringify(after));
+    assert.equal(after.note, CDP_NOTE);
+    assert.deepEqual(
+      after.folders.map((f) => f.source),
+      ['fake-node/proj']
+    );
+    await run(page, 'mkdir -p /mnt/proj && mount -t hostfs fake-node/proj /mnt/proj');
+    await page.until(() => globalThis.hostfsGrants.length > 0);
+    const kinds = await page.evaluate(() =>
+      globalThis.fakeNodeLog.filter((m) => m.kind).map((m) => m.kind)
+    );
+    assert.ok(!kinds.includes('cdp'), JSON.stringify(kinds));
+    if (version) {
+      await page.until(() => {
+        const walk = (root) =>
+          [...root.querySelectorAll('*')].flatMap((el) => [
+            ...(el.matches('[data-note]') ? [el.textContent] : []),
+            ...(el.shadowRoot ? walk(el.shadowRoot) : []),
+          ]);
+        document.querySelector('slicc-app').show('network');
+        return walk(document).some((text) => text.includes('Update slicc to 1.47.0'));
+      });
+      await shoot(page, 'network-cli-cdp-min', { show: 'network', target: '[data-note]' });
+    }
+    assert.deepEqual(page.errors, []);
+  });
+}
+
+for (const version of ['1.47.0', 'dev', '1.47.1-0.20261021120000-abc123def456']) {
+  test(`a node that offers cdp with ${version} in its HELLO shares its browsers on its device row and the 9222 facade, and a browsers update replaces them`, async (t) => {
+    const page = await chrome.page(t);
+    await boot(page);
+    await ready(page);
+    await cdpNode(page, version);
+    const row = await fakeRow(page);
+    assert.deepEqual(row.browsers, [{ runtime: 'fake-node/chrome', name: 'Chrome' }]);
+    assert.equal(row.note, undefined);
+    const listed = await shell(
+      page,
+      "curl -s 'http://127.0.0.1:9222/json/list?runtime=nope'",
+      'new-cdp-nope'
+    );
+    assert.match(listed.out, /fake-node\/chrome/);
+    await page.evaluate(() =>
+      globalThis.fakeNodeOpen(2, { kind: 'browsers', browsers: [{ id: 'edge', name: 'Edge' }] })
+    );
+    await page.until(
+      () =>
+        document
+          .querySelector('slicc-app')
+          .model.network.status()
+          .links?.devices.find((d) => d.state === 'connected')?.browsers?.[0]?.runtime ===
+        'fake-node/edge'
+    );
+    assert.deepEqual(page.errors, []);
+  });
+}
 
 test('the real slicc CLI shares a folder: the kernel mounts <device>/<name> over the link, reads, writes, and sees host edits', {
   skip: !cli,
