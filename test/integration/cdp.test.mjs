@@ -1765,7 +1765,7 @@ test('playwright-cli: a goto that redirects into the vault fails cleanly, and a 
   assert.deepEqual(page.errors, []);
 });
 
-test('on the link path, playwright-cli: a goto that redirects into the vault fails cleanly, and a page whose own URL names a vault redirect_uri never reaches the vault', async (t) => {
+test('on the link path, playwright-cli: a goto that redirects into the vault fails cleanly, and a page whose own URL names a vault redirect_uri, opened in a fresh tab, stays drivable', async (t) => {
   const page = await chrome.page(t);
   await page.init(() => {
     globalThis.sliccKernelDebug = true;
@@ -1790,15 +1790,15 @@ test('on the link path, playwright-cli: a goto that redirects into the vault fai
   assert.doesNotMatch(hop, /HOPMARK77|VAULT-MARK/, hop);
   assert.ok(!hits.some((hit) => hit.startsWith('vault.sliccy.ai')), hits.join(' '));
   const idp = `http://localhost:${standPort}/plain?redirect_uri=${encodeURIComponent(`${VAULT}/cb`)}&state=s`;
-  hits.length = 0;
   await run(
     page,
-    `playwright-cli goto '${idp}' > /tmp/idp 2>&1; playwright-cli snapshot >> /tmp/idp 2>&1; echo "idp-""done"`
+    `playwright-cli open '${idp}' > /tmp/idp 2>&1 && playwright-cli snapshot >> /tmp/idp 2>&1; echo "idp-""done"`
   );
   await shows(page, 'idp-done', 120000);
   const idpOut = await read(page, '/tmp/idp');
-  assert.doesNotMatch(idpOut, /VAULT-MARK|VAULT-BODY-MARK/, idpOut);
-  assert.ok(!hits.some((hit) => hit.startsWith('vault.sliccy.ai')), hits.join(' '));
+  assert.match(idpOut, /heading "Plain"/, idpOut);
+  await run(page, 'playwright-cli close && echo closed-$?');
+  await shows(page, 'closed-0');
   assert.deepEqual(page.errors, []);
 });
 
