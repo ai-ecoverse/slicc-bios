@@ -3,6 +3,7 @@ import { after, test } from 'node:test';
 import { actPackage, ready, run, screen } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { follower, model, startHub } from './fake-hub.mjs';
+import { shoot } from './shots.mjs';
 
 const STEP = 3 * 60 * 1000;
 const chrome = await launch({ timeout: 120000 });
@@ -55,9 +56,26 @@ const trays = (page) =>
         .filter((entry) => entry.kind === 'tray').length
   );
 
-async function approved(page, command, label, op, decision = 'once') {
+const dialog = (page, op) =>
+  page.until((op) => {
+    const deep = (root) => {
+      const found = root.querySelector('dialog[data-approval][data-kind="tray"]');
+      if (found) return found;
+      for (const element of root.querySelectorAll('*')) {
+        const inner = element.shadowRoot && deep(element.shadowRoot);
+        if (inner) return inner;
+      }
+      return null;
+    };
+    const shown = deep(document);
+    return shown?.open && shown.textContent.replace(/\s+/g, ' ').trim() && op;
+  }, op);
+
+async function approved(page, command, label, op, decision = 'once', shot = null) {
   await start(page, command, label);
   const item = await asked(page, op);
+  await dialog(page, op);
+  if (shot) await shoot(page, shot);
   await decide(page, item.id, decision);
   return { item, ...(await finished(page, label)) };
 }
@@ -211,7 +229,14 @@ test('a cone’s slicc tray in seven’s terminal lists and retries this seven�
   const own = await typed(page, 'slicc tray url', 'own');
   assert.deepEqual([own.code, own.out], [0, `${joinUrl}\n`]);
   assert.equal(await trays(page), 0);
-  const url = await approved(page, 'sudo -u cone slicc tray url', 'url', 'url');
+  const url = await approved(
+    page,
+    'sudo -u cone slicc tray url',
+    'url',
+    'url',
+    'once',
+    'tray-approval-url'
+  );
   assert.deepEqual([url.code, url.out], [0, `${joinUrl}\n`]);
   assert.deepEqual(
     [url.item.requester.name, url.item.expiresAt - url.item.createdAt, 'always' in url.item],
@@ -224,7 +249,14 @@ test('a cone’s slicc tray in seven’s terminal lists and retries this seven�
   assert.doesNotMatch(denied.err, /\/join\//);
 
   const sockets = hub.sockets.length;
-  const rotated = await approved(page, 'sudo -u cone slicc tray rotate', 'rotated', 'rotate');
+  const rotated = await approved(
+    page,
+    'sudo -u cone slicc tray rotate',
+    'rotated',
+    'rotate',
+    'once',
+    'tray-approval-rotate'
+  );
   assert.equal(rotated.code, 0, rotated.err);
   assert.equal(rotated.out, '');
   assert.match(rotated.err, /made a new join URL/);
@@ -269,7 +301,9 @@ test('a cone’s slicc tray in seven’s terminal lists and retries this seven�
     page,
     `sudo -u cone slicc tray unlink ${device.id.slice(0, 8)}`,
     'unlinked',
-    'unlink'
+    'unlink',
+    'once',
+    'tray-approval-unlink'
   );
   assert.deepEqual(unlinked.item.device, { id: device.id, name: 'slicc on far' });
   assert.equal(unlinked.code, 0, unlinked.err);
