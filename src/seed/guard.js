@@ -44,6 +44,7 @@ const POLL_MS = 100;
 const REMEMBERED = 10000;
 const HISTORY_WAIT = 5000;
 const HISTORY_POLL = 40;
+const FRAME_MS = 300;
 const HISTORY_KIND = /history\s*(?:\.\s*|\[["']\s*)(back|forward|go)\b/;
 const HISTORY_DELTA = /history\s*(?:\.\s*go\s*\(\s*|\[\s*['"]go['"]\s*\]\s*\(\s*)(-?\d+)/;
 const RUNTIME_META = new Set([
@@ -1208,16 +1209,23 @@ class Guard {
     return move.kind === 'go' && move.delta === 0;
   }
 
-  async surface(sessionId) {
-    const targetId = this.sessions.get(sessionId)?.targetId;
-    const [info, tree, history] = await Promise.all([
-      targetId ? this.call('Target.getTargetInfo', { targetId }) : Promise.resolve(null),
-      this.call('Page.getFrameTree', {}, sessionId),
-      this.call('Page.getNavigationHistory', {}, sessionId),
+  racedTree(sessionId) {
+    let timer;
+    const late = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(undefined), FRAME_MS);
+    });
+    const tree = this.call('Page.getFrameTree', {}, sessionId);
+    const raced = Promise.race([
+      tree.then((value) => {
+        clearTimeout(timer);
+        return value;
+      }),
+      late,
     ]);
-    if (!info || info.error || !tree || tree.error || !history || history.error) return null;
-    const frames = framed(tree.result?.frameTree);
-    if (!frames.length || !Number.isInteger(history.result?.currentIndex)) return null;
+    return { tree, raced };
+  }
+
+  view(info, frames, history) {
     const entries = history.result.entries ?? [];
     const index = history.result.currentIndex;
     const entry = entries[index];
@@ -1225,13 +1233,48 @@ class Guard {
     const named = [infoUrl, entry?.url, entry?.userTypedURL];
     for (const frame of frames) named.push(frame.url, frame.securityOrigin, frame.unreachableUrl);
     return {
-      url: infoUrl || frames[0].url || '',
+      url: infoUrl || frames[0]?.url || '',
       index,
       length: entries.length,
       protected: named.some((url) => this.is.url(url)),
       frames,
       info: info.result?.targetInfo,
     };
+  }
+
+  lateTree(sessionId, tree) {
+    if (tree.error) return;
+    const frames = framed(tree.result?.frameTree);
+    const hidden = frames.some((frame) => this.frameHidden(frame));
+    if (!hidden) return;
+    this.note(sessionId, { frames, info: null });
+    this.cut(sessionId);
+  }
+
+  frameHidden(frame) {
+    return (
+      this.is.url(frame.url) ||
+      this.is.url(frame.securityOrigin) ||
+      this.is.url(frame.unreachableUrl)
+    );
+  }
+
+  async surface(sessionId) {
+    const targetId = this.sessions.get(sessionId)?.targetId;
+    const { tree, raced } = this.racedTree(sessionId);
+    const [info, treeNow, history] = await Promise.all([
+      targetId ? this.call('Target.getTargetInfo', { targetId }) : Promise.resolve(null),
+      raced,
+      this.call('Page.getNavigationHistory', {}, sessionId),
+    ]);
+    if (treeNow === undefined) void tree.then((late) => this.lateTree(sessionId, late));
+    if (!info || info.error || !history || history.error) return null;
+    if (!Number.isInteger(history.result?.currentIndex)) return null;
+    if (treeNow === undefined) return this.view(info, [], history);
+    if (treeNow.error) return null;
+    const frames = framed(treeNow.result?.frameTree);
+    if (!frames.length) return null;
+    return this.view(info, frames, history);
   }
 
   note(sessionId, now) {
