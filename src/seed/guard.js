@@ -42,6 +42,42 @@ const NAV_TYPES = new Set(['page', 'iframe', 'background_page', 'webview']);
 const UNWAITED = new Set(['Target.getTargetInfo', 'Target.detachFromTarget']);
 const POLL_MS = 100;
 const REMEMBERED = 10000;
+const HISTORY_WAIT = 5000;
+const HISTORY_POLL = 40;
+const HISTORY_KIND = /history\s*(?:\.\s*|\[["']\s*)(back|forward|go)\b/;
+const HISTORY_DELTA = /history\s*(?:\.\s*go\s*\(\s*|\[\s*['"]go['"]\s*\]\s*\(\s*)(-?\d+)/;
+const RUNTIME_META = new Set([
+  'Runtime.enable',
+  'Runtime.disable',
+  'Runtime.discardConsoleEntries',
+  'Runtime.runIfWaitingForDebugger',
+  'Runtime.terminateExecution',
+]);
+const PAGE_CONTENT = new Set([
+  'Page.createIsolatedWorld',
+  'Page.captureScreenshot',
+  'Page.captureSnapshot',
+  'Page.printToPDF',
+  'Page.getLayoutMetrics',
+  'Page.getFrameTree',
+  'Page.getResourceTree',
+  'Page.getResourceContent',
+  'Page.searchInResource',
+  'Page.getAppManifest',
+  'Page.getNavigationHistory',
+  'Page.getCookies',
+  'Page.setDocumentContent',
+  'Page.startScreencast',
+  'Page.stopScreencast',
+  'Page.screencastFrameAck',
+  'Page.handleJavaScriptDialog',
+  'Page.navigate',
+  'Page.navigateToHistoryEntry',
+  'Page.reload',
+  'Page.stopLoading',
+]);
+const REACHES = /^(?:DOMSnapshot|Input|Accessibility|IO)\./;
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const UNSAFE = new Set([
   'Target.sendMessageToTarget',
@@ -495,6 +531,7 @@ class Guard {
     this.streams = new Set();
     this.allowed = new Set();
     this.blockedWorkers = new Set();
+    this.pendingHistory = new Set();
     this.next = GUARD_IDS;
     this.guarded = { onmessage: null, onclose: null };
   }
@@ -1143,6 +1180,106 @@ class Guard {
     };
   }
 
+  reaches(method) {
+    if (typeof method !== 'string') return false;
+    if (PAGE_CONTENT.has(method) || REACHES.test(method)) return true;
+    if (method.startsWith('DOM.')) return method !== 'DOM.enable' && method !== 'DOM.disable';
+    return method.startsWith('Runtime.') && !RUNTIME_META.has(method);
+  }
+
+  moveFrom(message) {
+    const { method, params = {}, sessionId } = message;
+    if (!sessionId) return null;
+    if (method === 'Page.navigateToHistoryEntry') return { kind: 'entry' };
+    if (method !== 'Runtime.evaluate' && method !== 'Runtime.callFunctionOn') return null;
+    const source = `${params.expression ?? ''}\n${params.functionDeclaration ?? ''}`;
+    const kind = HISTORY_KIND.exec(source)?.[1];
+    if (!kind) return null;
+    if (kind === 'go') {
+      const delta = HISTORY_DELTA.exec(source);
+      return { kind, delta: delta ? Number(delta[1]) : null };
+    }
+    return { kind };
+  }
+
+  idle(move, now) {
+    if (move.kind === 'back') return now.index <= 0;
+    if (move.kind === 'forward') return now.index < 0 || now.index >= now.length - 1;
+    return move.kind === 'go' && move.delta === 0;
+  }
+
+  async surface(sessionId) {
+    const targetId = this.sessions.get(sessionId)?.targetId;
+    const [info, tree, history] = await Promise.all([
+      targetId ? this.call('Target.getTargetInfo', { targetId }) : Promise.resolve(null),
+      this.call('Page.getFrameTree', {}, sessionId),
+      this.call('Page.getNavigationHistory', {}, sessionId),
+    ]);
+    if (!info || info.error || !tree || tree.error || !history || history.error) return null;
+    const frames = framed(tree.result?.frameTree);
+    if (!frames.length || !Number.isInteger(history.result?.currentIndex)) return null;
+    const entries = history.result.entries ?? [];
+    const index = history.result.currentIndex;
+    const entry = entries[index];
+    const infoUrl = info.result?.targetInfo?.url;
+    const named = [infoUrl, entry?.url, entry?.userTypedURL];
+    for (const frame of frames) named.push(frame.url, frame.securityOrigin, frame.unreachableUrl);
+    return {
+      url: infoUrl || frames[0].url || '',
+      index,
+      length: entries.length,
+      protected: named.some((url) => this.is.url(url)),
+      frames,
+      info: info.result?.targetInfo,
+    };
+  }
+
+  note(sessionId, now) {
+    for (const frame of now.frames) {
+      if (!frame.id) continue;
+      this.frames.set(frame.id, `${frame.url ?? ''}${frame.urlFragment ?? ''}`);
+    }
+    if (now.info) this.learn(now.info);
+    void sessionId;
+  }
+
+  async untilSettled(sessionId, before) {
+    const deadline = Date.now() + HISTORY_WAIT;
+    while (Date.now() < deadline) {
+      const now = await this.surface(sessionId);
+      if (now?.protected) {
+        this.pendingHistory.delete(sessionId);
+        this.note(sessionId, now);
+        this.cut(sessionId);
+        return;
+      }
+      if (now && (now.url !== before.url || now.index !== before.index)) {
+        this.pendingHistory.delete(sessionId);
+        this.note(sessionId, now);
+        return;
+      }
+      await pause(HISTORY_POLL);
+    }
+    const now = await this.surface(sessionId);
+    this.pendingHistory.delete(sessionId);
+    if (!now) {
+      this.pendingHistory.add(sessionId);
+      return;
+    }
+    this.note(sessionId, now);
+    if (now.protected) this.cut(sessionId);
+  }
+
+  async confirmed(sessionId) {
+    if (this.pendingHistory.has(sessionId) || this.blocked.has(sessionId)) return PROTECTED;
+    const now = await this.surface(sessionId);
+    if (!now) return PROTECTED;
+    this.note(sessionId, now);
+    if (!now.protected) return null;
+    this.cut(sessionId);
+    return PROTECTED;
+  }
+
   async back(params, sessionId) {
     const history = (await this.call('Page.getNavigationHistory', {}, sessionId)).result;
     const entry = history?.entries?.find((item) => item.id === params.entryId);
@@ -1499,6 +1636,36 @@ class Guard {
     });
   }
 
+  async recheck(message) {
+    const move = this.moveFrom(message);
+    if (move) {
+      const now = await this.surface(message.sessionId);
+      if (!now || now.protected) {
+        if (now?.protected) {
+          this.note(message.sessionId, now);
+          this.cut(message.sessionId);
+        }
+        this.refuse(message);
+        return true;
+      }
+      if (!this.idle(move, now)) {
+        this.pendingHistory.add(message.sessionId);
+        this.pass(message);
+        await this.untilSettled(message.sessionId, now);
+        return true;
+      }
+    }
+    if (!this.reaches(message.method)) return false;
+    if (!message.sessionId) {
+      this.refuse(message);
+      return true;
+    }
+    const blocked = await this.confirmed(message.sessionId);
+    if (!blocked) return false;
+    this.refuse(message, blocked);
+    return true;
+  }
+
   start() {
     const { connection, guarded } = this;
     connection.onmessage = (text) => this.received(text);
@@ -1516,6 +1683,7 @@ class Guard {
           if (message.method === 'Target.createTarget' && typeof message.params?.url === 'string') {
             return this.create(message);
           }
+          if (await this.recheck(message)) return;
           return this.pass(message);
         },
         (error) => {

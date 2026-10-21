@@ -17,6 +17,25 @@ function command(text) {
   }
 }
 
+export function browserTargetEvent(event) {
+  return (
+    event?.sessionId === undefined &&
+    typeof event?.method === 'string' &&
+    event.method.startsWith('Target.')
+  );
+}
+
+export function ordered(send) {
+  let tail = Promise.resolve();
+  return (text) => {
+    const run = tail.then(() => send(text));
+    tail = run.then(
+      () => {},
+      () => {}
+    );
+  };
+}
+
 export function extensionConnection(cdp) {
   const sessions = new Map();
   let closed = false;
@@ -29,9 +48,10 @@ export function extensionConnection(cdp) {
     else sessions.delete(sessionId);
   };
   const off = cdp.on((event) => {
-    if (!sessions.has(event.sessionId)) return;
-    if (event.method === 'Target.detachedFromTarget') sessions.delete(event.sessionId);
-    if (event.method === 'Target.attachedToTarget' && event.params?.sessionId) {
+    const tracked = sessions.has(event.sessionId);
+    if (!tracked && !browserTargetEvent(event)) return;
+    if (tracked && event.method === 'Target.detachedFromTarget') sessions.delete(event.sessionId);
+    if (tracked && event.method === 'Target.attachedToTarget' && event.params?.sessionId) {
       attached(event.params.sessionId, 1);
     }
     deliver(event);
@@ -75,6 +95,7 @@ export function extensionConnection(cdp) {
       sessions.clear();
     },
   };
+  connection.send = ordered(connection.send.bind(connection));
   return connection;
 }
 
@@ -204,7 +225,7 @@ export function proxyHost(proxy) {
                 else owners.set(reply.result.sessionId, connection);
               }
             : undefined;
-        post(message, { connection, id: message.id, done }).catch((error) =>
+        return post(message, { connection, id: message.id, done }).catch((error) =>
           connection.deliver({ id: message.id, error: { code: -32000, message: error.message } })
         );
       },
@@ -227,6 +248,7 @@ export function proxyHost(proxy) {
         }
       },
     };
+    connection.send = ordered(connection.send.bind(connection));
     connections.add(connection);
     return connection;
   };
