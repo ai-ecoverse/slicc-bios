@@ -811,7 +811,18 @@ class Guard {
   continuing(message) {
     const { method, params = {} } = message;
     if (method === 'Network.loadingFailed' || method === 'Network.loadingFinished') {
-      this.redacted(message);
+      this.redacted({
+        method: 'Network.loadingFailed',
+        sessionId: message.sessionId,
+        params: {
+          requestId: params.requestId,
+          timestamp: params.timestamp,
+          type: params.type ?? 'Other',
+          errorText: 'net::ERR_BLOCKED_BY_CLIENT',
+          canceled: false,
+          blockedReason: 'inspector',
+        },
+      });
       return true;
     }
     if (method !== 'Network.responseReceivedExtraInfo') return true;

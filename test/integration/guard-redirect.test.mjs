@@ -515,6 +515,24 @@ async function check(t, transport) {
     'an ordinary redirect still shows its Location'
   );
   assert.deepEqual(leaks(seen), [], 'no protected URL past its origin reached the client');
+  const hopped = new Set(
+    seen
+      .map((text) => JSON.parse(text))
+      .filter(
+        (message) =>
+          message.method === 'Network.requestWillBeSent' &&
+          message.params?.redirectResponse &&
+          /sliccy\.ai/.test(message.params.request?.url ?? '')
+      )
+      .map((message) => message.params.requestId)
+  );
+  const sized = seen
+    .map((text) => JSON.parse(text))
+    .filter(
+      (message) =>
+        message.method === 'Network.loadingFinished' && hopped.has(message.params.requestId)
+    );
+  assert.deepEqual(sized, [], 'no hop into seven or the vault reports its response size');
   const bodies = answers.bodies.filter(
     ({ url, answer }) => url.includes('/hop/') && answer.result !== undefined
   );
