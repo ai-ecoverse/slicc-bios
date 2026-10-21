@@ -394,7 +394,7 @@ test('when npm’s latest fails the gate, the newest older version that passes i
   assert.equal(row.offered, '9.2.1172-1');
   assert.deepEqual(row.newer, {
     version: '9.2.1186-1',
-    reason: 'wasm-xxd 9.2.1186-1 has no build provenance',
+    reason: 'npm has no record of where it was built',
   });
   assert.deepEqual(page.errors, []);
 });

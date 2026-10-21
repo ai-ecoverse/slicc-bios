@@ -195,7 +195,7 @@ test('seven never takes a tool back to an older npm latest, and a newer release 
   const row = await jqRow(page);
   assert.equal(row.version, '1.8.2-4', JSON.stringify(row));
   assert.equal(row.newer?.version, '1.8.2-99', JSON.stringify(row));
-  assert.match(row.newer.reason, /release workflow on main/);
+  assert.equal(row.newer.reason, "it didn't come from SLICC's own build");
   assert.equal(await versionOf(page, `${TOOLS}/${JQ}`), '1.8.2-4', 'the refused release stays out');
   await shoot(page, 'tools-newer', { show: 'updates', target: '[data-id="tools:jq"]' });
   assert.deepEqual(page.errors, []);
