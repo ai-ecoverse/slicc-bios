@@ -1,0 +1,9 @@
+{
+  "name": "slicc-bios-agent",
+  "private": true,
+  "description": "An /opt/agent with two bin scripts, a bash one and a node one, for k4-modes",
+  "dependencies": {
+    "n": "10.2.0",
+    "semver": "7.7.3"
+  }
+}
