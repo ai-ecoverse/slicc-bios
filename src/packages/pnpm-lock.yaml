@@ -24,8 +24,8 @@ importers:
         specifier: 1.104.1
         version: 1.104.1
       '@ai-ecoverse/wasi-fnox':
-        specifier: 1.39.0-5
-        version: 1.39.0-5
+        specifier: 1.39.0-6
+        version: 1.39.0-6
       '@ai-ecoverse/wasi-pnpm':
         specifier: 12.9.1-19
         version: 12.9.1-19
@@ -33,17 +33,17 @@ importers:
         specifier: 15.2.0-5
         version: 15.2.0-5
       '@ai-ecoverse/wasm-bash':
-        specifier: 5.3.0-21
-        version: 5.3.0-21
+        specifier: 5.3.0-22
+        version: 5.3.0-22
       '@ai-ecoverse/wasm-bzip2':
         specifier: 1.0.8-5
         version: 1.0.8-5
       '@ai-ecoverse/wasm-coreutils':
-        specifier: 9.12.0-11
-        version: 9.12.0-11
+        specifier: 9.12.0-12
+        version: 9.12.0-12
       '@ai-ecoverse/wasm-curl':
-        specifier: 8.22.0-7
-        version: 8.22.0-7
+        specifier: 8.22.0-8
+        version: 8.22.0-8
       '@ai-ecoverse/wasm-diffutils':
         specifier: 3.12.0-3
         version: 3.12.0-3
@@ -51,11 +51,11 @@ importers:
         specifier: 4.11.0-4
         version: 4.11.0-4
       '@ai-ecoverse/wasm-gawk':
-        specifier: 5.4.1-4
-        version: 5.4.1-4
+        specifier: 5.4.1-5
+        version: 5.4.1-5
       '@ai-ecoverse/wasm-grep':
-        specifier: 3.12.0-6
-        version: 3.12.0-6
+        specifier: 3.12.0-7
+        version: 3.12.0-7
       '@ai-ecoverse/wasm-gzip':
         specifier: 1.15.0-5
         version: 1.15.0-5
@@ -66,11 +66,11 @@ importers:
         specifier: 668.0.0-5
         version: 668.0.0-5
       '@ai-ecoverse/wasm-mount':
-        specifier: 1.0.0-4
-        version: 1.0.0-4
+        specifier: 1.0.0-5
+        version: 1.0.0-5
       '@ai-ecoverse/wasm-ncurses-utils':
-        specifier: 6.5.0-4
-        version: 6.5.0-4
+        specifier: 6.5.0-5
+        version: 6.5.0-5
       '@ai-ecoverse/wasm-patch':
         specifier: 2.8.0-4
         version: 2.8.0-4
@@ -78,23 +78,23 @@ importers:
         specifier: 4.0.7-4
         version: 4.0.7-4
       '@ai-ecoverse/wasm-sed':
-        specifier: 4.10.0-4
-        version: 4.10.0-4
+        specifier: 4.10.0-5
+        version: 4.10.0-5
       '@ai-ecoverse/wasm-tar':
         specifier: 1.35.0-8
         version: 1.35.0-8
       '@ai-ecoverse/wasm-tls-engine':
-        specifier: 4.2.0-4
-        version: 4.2.0-4
+        specifier: 4.2.0-6
+        version: 4.2.0-6
       '@ai-ecoverse/wasm-tree':
-        specifier: 2.3.2-5
-        version: 2.3.2-5
+        specifier: 2.3.2-6
+        version: 2.3.2-6
       '@ai-ecoverse/wasm-which':
         specifier: 2.23.0-4
         version: 2.23.0-4
       '@ai-ecoverse/wasm-xz':
-        specifier: 5.8.4-4
-        version: 5.8.4-4
+        specifier: 5.8.4-5
+        version: 5.8.4-5
 
 packages:
 
@@ -127,8 +127,8 @@ packages:
       '@shikijs/themes':
         optional: true
 
-  '@ai-ecoverse/wasi-fnox@1.39.0-5':
-    resolution: {integrity: sha512-i5EjOav/o7l1oexodKLLr33ZohDD9bjtNzj7tmJIctREUy/7jcn6IMp8hvBv/H+pxeNs+bZ82gZ6kSRSOxwKXw==}
+  '@ai-ecoverse/wasi-fnox@1.39.0-6':
+    resolution: {integrity: sha512-/Rp81mTkzwpe0+soNvLqqXhOJ3xosXo6V5ViKinvEX7/U8JUG7aUUsrQXltBffOX1AN+n1dWr0ukw2/TBFJHXw==}
     engines: {slicc-kernel: '>=1.83.0'}
 
   '@ai-ecoverse/wasi-pnpm@12.9.1-19':
@@ -139,19 +139,19 @@ packages:
     resolution: {integrity: sha512-QtSi35Zr2Cbb7tg2DM4CCJ1gM/KtNrcJA0YgqiVrnSQ1fuXDi5rYnv9tIXqzpqGPRaLg/JOzhG7qklmksNn4cg==}
     engines: {slicc-kernel: '>=1.34.1'}
 
-  '@ai-ecoverse/wasm-bash@5.3.0-21':
-    resolution: {integrity: sha512-iXnDmUQdlVBH+amBwWxaDBmCefTkr2iYV+ZdqimdWgltX/GDlNRb/z6AfrDUP8K27ySp46ePSvN4BDnRSP0QiQ==}
+  '@ai-ecoverse/wasm-bash@5.3.0-22':
+    resolution: {integrity: sha512-CbaswY64PCWYB60Kr/p8f8w0v1Hu0ssCz27fK+6HXf1bLJVzXoP+A+NeqtQCdaYnVHeY/WEe7LQzmDqJKhDj/g==}
     engines: {slicc-kernel: '>=1.130.2'}
 
   '@ai-ecoverse/wasm-bzip2@1.0.8-5':
     resolution: {integrity: sha512-oBIckNRPeNYklYPdetrQ4NOjCUVXxwJXVo+xf2dvHZDBDxlkRa3piNUQ1iPDEWyEp1sSOfgn7geTX/SoKyAfhQ==}
 
-  '@ai-ecoverse/wasm-coreutils@9.12.0-11':
-    resolution: {integrity: sha512-mYiw7lLWiEiLYK0spv9YVV4Ez8B24oLNPLtJmjYsQAN1dQvjWf6HbGQFEwg4wkemT4eej8IbDhg0pxh0RyKA9w==}
+  '@ai-ecoverse/wasm-coreutils@9.12.0-12':
+    resolution: {integrity: sha512-ne+u1IdDn6JM7iPsF5qiQjWWkwd9rbjHLRZbOA2hCiWg4RiW9Oe09/bhqAQijK1Q5K2IjdsWcLIH9ADihAA4pQ==}
     engines: {slicc-kernel: '>=1.44.0'}
 
-  '@ai-ecoverse/wasm-curl@8.22.0-7':
-    resolution: {integrity: sha512-slOa6f6b1/0+HI7XEEzv84jZ9RjH1nu7DW03m5ZyvcXyuo5vQXlxqNru9jbY+daUIykqrlyHqM4VsKJ05iP79A==}
+  '@ai-ecoverse/wasm-curl@8.22.0-8':
+    resolution: {integrity: sha512-8b+ZqE3ih2cLmJipQqXM6c+6cBimXm2BUp7eQF4G7+I/s32CC2SPHrduOmguupuHOXjBvK6YvpdSk+zWdtuXyw==}
 
   '@ai-ecoverse/wasm-diffutils@3.12.0-3':
     resolution: {integrity: sha512-7NiecGX/aYM8m5w5//z9DrifrSPFC8oxa0Q14jRTnrnY7LQZJqjhm+AILK69/8CknTRkeyQNCxvAtyS6Q4TBeQ==}
@@ -159,11 +159,11 @@ packages:
   '@ai-ecoverse/wasm-findutils@4.11.0-4':
     resolution: {integrity: sha512-rMMV8cmhRhHm+4kvDMtV1fRbYZohrtX+mMTRJP3vyv653kJ9sVI/lyI50DggJfEHjs88v2mG8xOvUjNIk6a6xg==}
 
-  '@ai-ecoverse/wasm-gawk@5.4.1-4':
-    resolution: {integrity: sha512-xeut1AGIIai63xC+yEPKXWI+zTDxMubCV2wSQYKkO8FqbYuR5EKa8zBlxd1IcdAyTSAJJWo8aNK3AYBofZra7A==}
+  '@ai-ecoverse/wasm-gawk@5.4.1-5':
+    resolution: {integrity: sha512-ngzGlvkhG6AfoMdXcjW1scJ3mjaJFnQCsM4TKIRBYLQa7kJde6SANDKv4jSHzPScl9TvDJAfmCwHyY4YV5LTxw==}
 
-  '@ai-ecoverse/wasm-grep@3.12.0-6':
-    resolution: {integrity: sha512-HAZQ1lhYFEnFqTd/nuIj+2ldkD33t8Ks/e1socraB83o9lCYTgmD21nH+kE+f81MD2RyXVdx9PQbOa7vqRx5SQ==}
+  '@ai-ecoverse/wasm-grep@3.12.0-7':
+    resolution: {integrity: sha512-IHI90hgmbnXIrbbPEs+Q0tSk62JUfESInP+fxnN1s32U2o7Bry9Gp9bYq0nT52wC5hzHKYpSJJDfaswbLTkS6Q==}
 
   '@ai-ecoverse/wasm-gzip@1.15.0-5':
     resolution: {integrity: sha512-e1XFfdt2Rx0i/ZYJxWMjbdOnEcj+W2E6iHEoEDBSmCV8S0Tc3IbAGc4STcv8k50m0dhtEfeantB6/MxUYuXiJA==}
@@ -174,11 +174,11 @@ packages:
   '@ai-ecoverse/wasm-less@668.0.0-5':
     resolution: {integrity: sha512-51iFDCcWrE3t2YaU7PmnhkyRvIQjITGXg7DiBOvNB7LzNegaAvSdVhvxdruPfz1fv/sO4tsFrNs+gpSeHR9StQ==}
 
-  '@ai-ecoverse/wasm-mount@1.0.0-4':
-    resolution: {integrity: sha512-iAsZ7etm/1fmZmUck6xJxjM39ElQfqIM5X7yH6R2zy7enXtBHP3CvjkQx8O/h+xFtxHGmZtPCxZ9gW5cS0DgBQ==}
+  '@ai-ecoverse/wasm-mount@1.0.0-5':
+    resolution: {integrity: sha512-WkowzMrTZAOPY15XxJ7LtVyyboUelvJlPFQ4HQUswmyXsIEDeOKP1wn1rv6dLp6d8Hax51+QJkOLAMWbDoSkdw==}
 
-  '@ai-ecoverse/wasm-ncurses-utils@6.5.0-4':
-    resolution: {integrity: sha512-sIhjmXfKzLlUpGFZ94IWySj4W64P3MiB64cNBBcy9eDqHJ0hcT83e74tt2CzNI5206rXsTmUFYJ6PtpvdO4cIQ==}
+  '@ai-ecoverse/wasm-ncurses-utils@6.5.0-5':
+    resolution: {integrity: sha512-aIai1uEFMkDffHxycl0aFCxuCRy4V3p51vsahN9ENdHuGzZ7H3tQ8f6Gt4FS/g5qxH8nFP5+8MHGfkyM4GmVtQ==}
 
   '@ai-ecoverse/wasm-patch@2.8.0-4':
     resolution: {integrity: sha512-qQWB4e28Fbktm6WkLNdu45bNAMrlUTnI620WtmQdwRJyE0pTyEEQ09dALYWHNFhFhlNw2wJtpRW4C3blGWlQSQ==}
@@ -187,23 +187,23 @@ packages:
     resolution: {integrity: sha512-aTLwoYEvUQ8z5TP6tVFEqF18E8i2Zx0S3UZB+3gRn9NY2j7qgTNzYKtDVFjwoyk2cFMQmRgSf9PFjOCAH618Hg==}
     engines: {slicc-kernel: '>=1.44.0'}
 
-  '@ai-ecoverse/wasm-sed@4.10.0-4':
-    resolution: {integrity: sha512-T5mYWvRlYPc/WqRMqmB45VBCn4nT1q1smr5G+lQ73S25WrikR4W/Nc/N8p9eCmJ9xbrZ9xI08ClTg8JfogAo8A==}
+  '@ai-ecoverse/wasm-sed@4.10.0-5':
+    resolution: {integrity: sha512-cxddniS6aQM1/jBjtInp3SMx6HqIHVxtdvo+tALaArz7LG1V+SYAQNi/BZ0Ypi7Z+hzaCc9TJF/AuXqDfT8sIw==}
 
   '@ai-ecoverse/wasm-tar@1.35.0-8':
     resolution: {integrity: sha512-d4GeDmL+fAmN7pTPftsN/yeZxUL97QuyC1FaDX7JwxAL3qgzPHFnqcHpioJFCTrsbeKrqITV138Jy1Y4D3tymw==}
 
-  '@ai-ecoverse/wasm-tls-engine@4.2.0-4':
-    resolution: {integrity: sha512-JZV7L1X3egEThjE/pKQISZSIC0kxcpcqEnhU8uqDxGoY3LujsznemkNzxR9tA/PnI05qpGWkcz8fMssgunFezw==}
+  '@ai-ecoverse/wasm-tls-engine@4.2.0-6':
+    resolution: {integrity: sha512-Gp0slajVxztCnsjy2iaQe8nmc3J7ZFzfGLkJSxC9OX+W/645AOSsXIZ7jtnF4SH2DhvCZ0BFwpSt1HZ1oinJtQ==}
 
-  '@ai-ecoverse/wasm-tree@2.3.2-5':
-    resolution: {integrity: sha512-F22vZ3SyJKRJKROkYM2dmGGgA2VxGDio5QUhAIVVWyFhEKwsJ8G+d36M4e+mh4o5TnBbvuoJ9zgLHMOGFMlCLA==}
+  '@ai-ecoverse/wasm-tree@2.3.2-6':
+    resolution: {integrity: sha512-Ic415+I1CgVtW591IC4GUFRxHfemqZ/adybDb+xIZVSf/XWVM2LHoIYmqaocxlJPBS5z4I9E1XPopGe0x53JVw==}
 
   '@ai-ecoverse/wasm-which@2.23.0-4':
     resolution: {integrity: sha512-Zjmd4vqHbunhZEFYRkuBREwvZddMnXjz7znZSb2fVZ5QLkOaAxA2yzt1XYsHTTu92lzl/f8Y4s8/CUsvOsrg3g==}
 
-  '@ai-ecoverse/wasm-xz@5.8.4-4':
-    resolution: {integrity: sha512-BUgND+sJzalC3K280V2wf45lolCMQhSPvVrbFMlUAi6oD5us2OFjNkOb3mZ5uhteOCouRVxSg9WbVboYlWUbdQ==}
+  '@ai-ecoverse/wasm-xz@5.8.4-5':
+    resolution: {integrity: sha512-E7bdH1Oiqkf5bmu8ErqSo2kaNZftukkFE2T4RnZ+Ekgf5vpjCQELRpkGnUtDUZYhNzlyKxHghpocPJceXVuhmw==}
 
 snapshots:
 
@@ -217,27 +217,27 @@ snapshots:
 
   '@ai-ecoverse/slicc-spectrum@1.104.1': {}
 
-  '@ai-ecoverse/wasi-fnox@1.39.0-5': {}
+  '@ai-ecoverse/wasi-fnox@1.39.0-6': {}
 
   '@ai-ecoverse/wasi-pnpm@12.9.1-19': {}
 
   '@ai-ecoverse/wasi-ripgrep@15.2.0-5': {}
 
-  '@ai-ecoverse/wasm-bash@5.3.0-21': {}
+  '@ai-ecoverse/wasm-bash@5.3.0-22': {}
 
   '@ai-ecoverse/wasm-bzip2@1.0.8-5': {}
 
-  '@ai-ecoverse/wasm-coreutils@9.12.0-11': {}
+  '@ai-ecoverse/wasm-coreutils@9.12.0-12': {}
 
-  '@ai-ecoverse/wasm-curl@8.22.0-7': {}
+  '@ai-ecoverse/wasm-curl@8.22.0-8': {}
 
   '@ai-ecoverse/wasm-diffutils@3.12.0-3': {}
 
   '@ai-ecoverse/wasm-findutils@4.11.0-4': {}
 
-  '@ai-ecoverse/wasm-gawk@5.4.1-4': {}
+  '@ai-ecoverse/wasm-gawk@5.4.1-5': {}
 
-  '@ai-ecoverse/wasm-grep@3.12.0-6': {}
+  '@ai-ecoverse/wasm-grep@3.12.0-7': {}
 
   '@ai-ecoverse/wasm-gzip@1.15.0-5': {}
 
@@ -245,22 +245,22 @@ snapshots:
 
   '@ai-ecoverse/wasm-less@668.0.0-5': {}
 
-  '@ai-ecoverse/wasm-mount@1.0.0-4': {}
+  '@ai-ecoverse/wasm-mount@1.0.0-5': {}
 
-  '@ai-ecoverse/wasm-ncurses-utils@6.5.0-4': {}
+  '@ai-ecoverse/wasm-ncurses-utils@6.5.0-5': {}
 
   '@ai-ecoverse/wasm-patch@2.8.0-4': {}
 
   '@ai-ecoverse/wasm-procps@4.0.7-4': {}
 
-  '@ai-ecoverse/wasm-sed@4.10.0-4': {}
+  '@ai-ecoverse/wasm-sed@4.10.0-5': {}
 
   '@ai-ecoverse/wasm-tar@1.35.0-8': {}
 
-  '@ai-ecoverse/wasm-tls-engine@4.2.0-4': {}
+  '@ai-ecoverse/wasm-tls-engine@4.2.0-6': {}
 
-  '@ai-ecoverse/wasm-tree@2.3.2-5': {}
+  '@ai-ecoverse/wasm-tree@2.3.2-6': {}
 
   '@ai-ecoverse/wasm-which@2.23.0-4': {}
 
-  '@ai-ecoverse/wasm-xz@5.8.4-4': {}
+  '@ai-ecoverse/wasm-xz@5.8.4-5': {}
