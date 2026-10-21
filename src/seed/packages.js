@@ -730,6 +730,7 @@ export async function watchShadows({ root, kernel, attach, global, wait = 50, re
     return next;
   };
   await rewatch();
+  for (const home of await all()) pass(home);
   return {
     paths: () => watched.split('\n'),
     close: () => chain.then(() => watching.close()),

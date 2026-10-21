@@ -136,7 +136,7 @@ test('a catalog package’s kernel command wins over the same package’s Node b
   assert.deepEqual(page.errors, []);
 });
 
-test('bios#715: a shell pnpm add -g, as root and as cone, leaves the package’s kernel command first on PATH, and a package with only a bin keeps its link', {
+test('bios#715: a shell pnpm add -g, as root and as cone, leaves the package’s kernel command first on PATH, a package with only a bin keeps its link, and a Node link left from before goes at the next boot', {
   timeout: 20 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -177,5 +177,22 @@ test('bios#715: a shell pnpm add -g, as root and as cone, leaves the package’s
   await shows(page, 'cone-42', 10 * 60 * 1000);
   const coneLog = await sh(page, 'cat /tmp/cone.log');
   check((await screen(page)).replace(/ {2,}/g, '\n') + coneLog.out, cone);
+
+  await page.evaluate(async (owner) => {
+    let dir = await navigator.storage.getDirectory();
+    for (const part of ['usr', 'local', 'share', 'pnpm', 'bin'])
+      dir = await dir.getDirectoryHandle(part);
+    const writable = await (await dir.getFileHandle('mcpcat', { create: true })).createWritable();
+    await writable.write(`#!/usr/bin/env node\nimport '${owner}dist/host/mcpcat.mjs';\n`);
+    await writable.close();
+  }, '/usr/local/share/pnpm/global/v11/x/node_modules/@ai-ecoverse/mcpcat/');
+  assert.equal((await sh(page, `head -c 19 ${BIN}/mcpcat`)).out, '#!/usr/bin/env node');
+  await page.reload();
+  await ready(page);
+  const left = await sh(
+    page,
+    `n=0; while [ -e ${BIN}/mcpcat ] && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done; [ -e ${BIN}/mcpcat ] && echo left || echo gone; command -v mcpcat`
+  );
+  assert.deepEqual(left, { code: '0', out: 'gone\n/usr/bin/mcpcat' });
   assert.deepEqual(page.errors, []);
 });
