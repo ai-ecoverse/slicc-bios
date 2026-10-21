@@ -13,6 +13,11 @@ const site = createHttp((req, res) => {
   if (url.pathname === '/plain') {
     return res.end('<title>plain</title><h1>plain</h1>');
   }
+  if (url.pathname === '/late') {
+    return res.end(
+      `<title>late</title><script>setTimeout(()=>{const f=document.createElement('iframe');f.src='http://vault.sliccy.ai:${port}/child';document.body.append(f)},300)</script>`
+    );
+  }
   if (url.pathname === '/inner') {
     return res.end('<title>inner</title><p id="inner">INNER-OK</p>');
   }
@@ -334,4 +339,131 @@ test(
   'a frame id the guard never saw is refused, and a new ordinary frame is readable once it commits, on the extension path',
   { timeout: 3 * 60 * 1000 },
   (t) => freshCheck(t, 'extension')
+);
+
+async function late({ transport, proxy, port }) {
+  const { guardProtected } = await import(new URL('guard.js', location.href).href);
+  const { proxyHost, extensionConnection } = await import(new URL('cdp.js', location.href).href);
+  const raw =
+    transport === 'proxy'
+      ? await proxyHost(proxy)()
+      : extensionConnection(globalThis.sliccExtension.cdp);
+  const connection = guardProtected(raw, self.origin);
+  const pending = new Map();
+  const seen = [];
+  const out = { early: {}, after: {} };
+  let next = 0;
+  let session;
+  const send = (method, params = {}, sessionId) =>
+    new Promise((resolve) => {
+      next += 1;
+      const id = next;
+      const timer = setTimeout(
+        () => resolve({ error: { message: `${method} got no answer` } }),
+        10000
+      );
+      pending.set(id, (message) => {
+        clearTimeout(timer);
+        resolve(message);
+      });
+      connection.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+  const reads = (frameId) => ({
+    'Accessibility.getFullAXTree': ['Accessibility.getFullAXTree', { frameId }],
+    'Page.createIsolatedWorld': [
+      'Page.createIsolatedWorld',
+      { frameId, worldName: 'w', grantUniveralAccess: true },
+    ],
+    'Page.getResourceContent': [
+      'Page.getResourceContent',
+      { frameId, url: `http://vault.sliccy.ai:${port}/child` },
+    ],
+  });
+  let attached;
+  const early = new Promise((resolve) => {
+    attached = resolve;
+  });
+  connection.onmessage = (text) => {
+    seen.push(text);
+    const message = JSON.parse(text);
+    if (message.method === 'Page.frameAttached' && message.params.parentFrameId) {
+      const frameId = message.params.frameId;
+      void Promise.all(
+        Object.entries(reads(frameId)).map(async ([name, [method, params]]) => {
+          const answer = await send(method, params, session);
+          out.early[name] = answer.error?.message ?? 'answered';
+        })
+      ).then(() => attached(frameId));
+    }
+    pending.get(message.id)?.(message);
+    pending.delete(message.id);
+  };
+  const created = await send('Target.createTarget', { url: `http://ordinary.test:${port}/late` });
+  const targetId = created.result?.targetId;
+  session = (await send('Target.attachToTarget', { targetId, flatten: true })).result?.sessionId;
+  out.granted = Boolean(session);
+  await send('Page.enable', {}, session);
+  const frameId = await Promise.race([
+    early,
+    new Promise((resolve) => setTimeout(() => resolve(null), 10000)),
+  ]);
+  out.frameAttached = Boolean(frameId);
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  const after = {
+    ...reads(frameId),
+    'DOM.getDocument': ['DOM.getDocument', { depth: -1, pierce: true }],
+    'DOMSnapshot.captureSnapshot': ['DOMSnapshot.captureSnapshot', { computedStyles: [] }],
+  };
+  for (const [name, [method, params]] of Object.entries(after)) {
+    const answer = await send(method, params, session);
+    out.after[name] = answer.error?.message ?? 'answered';
+  }
+  out.leaked = seen.some((text) => text.includes('FRAME-MARK') || text.includes('VAULT-FRAME'));
+  await send('Target.closeTarget', { targetId });
+  return out;
+}
+
+async function lateCheck(t, transport) {
+  const page = await chrome.page(t);
+  let proxy;
+  if (transport === 'proxy') {
+    proxy = await startProxy({
+      port: 0,
+      origins: [new URL(chrome.url).origin],
+      cdp: `http://127.0.0.1:${debugging}`,
+      kernelPort: null,
+      log: () => {},
+    });
+    t.after(() => proxy.close());
+  } else {
+    const extension = await fakeExtension(page);
+    t.after(() => extension.close());
+  }
+  await page.goto(proxy ? `/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}` : '/');
+  await ready(page);
+  const out = await page.evaluate(late, {
+    transport,
+    proxy: proxy && { url: proxy.url, key: proxy.key },
+    port,
+  });
+  assert.equal(out.granted, true, JSON.stringify(out));
+  assert.equal(out.frameAttached, true, JSON.stringify(out));
+  for (const [stage, answers] of Object.entries({ early: out.early, after: out.after })) {
+    for (const [name, answer] of Object.entries(answers)) {
+      assert.notEqual(answer, 'answered', `${stage} ${name}: ${JSON.stringify(out)}`);
+    }
+  }
+  assert.equal(out.leaked, false, JSON.stringify(out));
+}
+
+test(
+  'frame commits a protected URL after attach: reads refused, on the proxy path',
+  { timeout: 3 * 60 * 1000 },
+  (t) => lateCheck(t, 'proxy')
+);
+
+test(
+  'frame commits a protected URL after attach: reads refused, on the extension path',
+  { timeout: 3 * 60 * 1000 },
+  (t) => lateCheck(t, 'extension')
 );
