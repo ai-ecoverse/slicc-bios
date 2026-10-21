@@ -352,6 +352,7 @@ test('fnox is in the base set: on a fresh profile, without any install, fnox env
   assert.deepEqual(dirs, { code: '0', out: '/etc/fnox\n/etc/fnox\n/etc/fnox' });
   const seeded = await config(page);
   assert.match(seeded.out, /default_provider = "seven"/);
+  assert.match(seeded.out, /\n0 644$/);
   assert.deepEqual(page.errors, []);
 });
 
