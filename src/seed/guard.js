@@ -140,6 +140,10 @@ const CONTENTS = new Set([
   'Audits.getEncodedResponse',
   'Network.getResponseBodyForInterception',
   'Network.getRequestPostData',
+  'Accessibility.getFullAXTree',
+  'Accessibility.getPartialAXTree',
+  'Accessibility.getChildAXNodes',
+  'Accessibility.queryAXTree',
   'DOM.getDocument',
   'DOM.getFlattenedDocument',
   'DOM.getOuterHTML',
@@ -662,7 +666,10 @@ class Guard {
   async frame(frameId, strict = false) {
     if (frameId === undefined) return false;
     if (this.targets.has(frameId)) return this.target(frameId);
-    if (this.frames.has(frameId)) return this.is.url(this.frames.get(frameId));
+    if (this.frames.has(frameId)) {
+      const url = this.frames.get(frameId);
+      return this.is.url(url) || (strict && (url === '' || inherits(url)));
+    }
     if (await this.lookup(frameId)) return this.target(frameId);
     if (strict) return true;
     this.frames.set(frameId, '');
@@ -797,7 +804,7 @@ class Guard {
     const tree = (await this.call('Page.getFrameTree', {}, sessionId)).result?.frameTree;
     const all = framed(tree);
     for (const frame of all) this.frames.set(frame.id, frame.url);
-    return !all.some((frame) => this.is.url(frame.url));
+    return !all.some((frame) => this.is.url(frame.url) || this.is.url(frame.securityOrigin));
   }
 
   async inspect(sessionId, targetId, parent) {
@@ -1094,7 +1101,7 @@ class Guard {
 
   walked({ method, params = {}, sessionId }) {
     if (method === 'Page.frameNavigated' && params.frame) {
-      this.frames.set(params.frame.id, params.frame.url);
+      this.frames.set(params.frame.id, this.framed(params.frame));
       const targetId = this.sessions.get(sessionId)?.targetId;
       if (!params.frame.parentId && targetId && this.targets.has(targetId)) {
         this.targets.get(targetId).url = params.frame.url;
@@ -1202,8 +1209,14 @@ class Guard {
     return { ...entry, url: ERROR_PAGE, userTypedURL: ERROR_PAGE, title: '' };
   }
 
+  framed(frame) {
+    const named = [frame.unreachableUrl, frame.securityOrigin].find((url) => this.is.url(url));
+    return named ?? frame.url ?? '';
+  }
+
   tree({ frame, childFrames, resources, ...rest }) {
-    if (frame.id !== undefined && !this.targets.has(frame.id)) this.frames.set(frame.id, frame.url);
+    if (frame.id !== undefined && !this.targets.has(frame.id))
+      this.frames.set(frame.id, this.framed(frame));
     const hidden = this.is.url(frame.url) || this.is.url(frame.unreachableUrl);
     const { unreachableUrl, urlFragment, ...shown } = frame;
     return {
