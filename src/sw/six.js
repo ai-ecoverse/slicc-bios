@@ -133,22 +133,32 @@ export function sixDialog(doc = document) {
   const bar = box.querySelector('.six-bar');
   const move = box.querySelector('.six-move');
   const later = box.querySelector('.six-later');
+  let answer = null;
   const state = (name) => {
     box.dataset.state = name;
     doc.querySelector('.splash').dataset.six = name;
   };
+  box.addEventListener('keydown', (event) => event.stopPropagation());
+  box.addEventListener('cancel', (event) => {
+    event.preventDefault();
+    answer?.(false);
+  });
   const choose = () =>
     new Promise((resolve) => {
+      answer = (value) => {
+        answer = null;
+        resolve(value);
+      };
       move.hidden = false;
       later.hidden = false;
-      move.onclick = () => resolve(true);
-      later.onclick = () => resolve(false);
+      move.onclick = () => answer?.(true);
+      later.onclick = () => answer?.(false);
+      if (!box.open) box.showModal();
       later.focus();
     });
   return {
     async ask() {
       state('asking');
-      box.hidden = false;
       title.textContent = 'Move SLICC 6 into seven in this browser?';
       body.textContent =
         'Your cones, files and skills from SLICC 6 move into seven. Files move as they are, including any keys or passwords written inside them. After that, SLICC 6 and its Chrome extension stop working in this browser.';
@@ -186,7 +196,7 @@ export function sixDialog(doc = document) {
     },
     close() {
       state('closed');
-      box.hidden = true;
+      box.close();
     },
   };
 }

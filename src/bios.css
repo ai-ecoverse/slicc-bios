@@ -423,17 +423,26 @@ button {
 }
 
 .six {
-  position: absolute;
-  left: 6cqi;
-  top: 40%;
-  width: min(44ch, 46cqi);
+  width: min(44ch, calc(100vw - 48px));
+  margin: auto;
   padding: 20px 22px 18px;
+  border: 0;
   border-radius: 14px;
-  background: rgb(var(--veil) / 0.92);
+  color: var(--ink);
+  background: rgb(var(--veil) / 0.94);
   box-shadow:
     0 24px 60px -24px light-dark(rgb(40 20 50 / 0.3), rgb(0 0 0 / 0.8)),
     0 0 0 1px var(--line);
   backdrop-filter: blur(12px);
+}
+
+.six::backdrop {
+  background: rgb(11 9 15 / 0.32);
+  backdrop-filter: blur(2px);
+}
+
+.six:focus-visible {
+  outline: none;
 }
 
 .splash:is([data-six="asking"], [data-six="moving"], [data-six="failed"]) .story {
@@ -442,7 +451,7 @@ button {
 
 .six-title {
   margin: 0;
-  font-size: clamp(18px, 2cqi, 22px);
+  font-size: 20px;
   font-weight: 650;
   line-height: 1.25;
   text-wrap: balance;
@@ -727,13 +736,6 @@ button {
   .story {
     top: auto;
     bottom: 150px;
-    width: auto;
-    right: 6cqi;
-  }
-
-  .six {
-    top: auto;
-    bottom: 110px;
     width: auto;
     right: 6cqi;
   }

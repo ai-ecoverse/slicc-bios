@@ -143,9 +143,11 @@ async function run() {
     skipped: [],
     flagged: [],
   };
-  const writable = await (await dir.getFileHandle('manifest.json', { create: true })).createWritable();
-  await writable.write(JSON.stringify(manifest));
-  await writable.close();
+  if (mode !== 'lost') {
+    const writable = await (await dir.getFileHandle('manifest.json', { create: true })).createWritable();
+    await writable.write(JSON.stringify(manifest));
+    await writable.close();
+  }
   post({ type, phase: 'writing', done: 1, total: 1 });
   post({ type, done: true, exportId, dir: '/slicc-v6-upgrade/' + exportId + '/' });
 }

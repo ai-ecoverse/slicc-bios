@@ -44,7 +44,7 @@ async function moved(t) {
     15 * 60 * 1000,
     () =>
       document.querySelector('.six')?.dataset.state === 'asking' &&
-      !document.querySelector('.six').hidden
+      document.querySelector('.six').open
   );
   await page.evaluate(() => document.querySelector('.six-move').click());
   await ready(page);
@@ -104,5 +104,30 @@ test('when the agent refuses the export, seven keeps the hand-off key, says so, 
     `cat /slicc-fs/home/user/notes.txt; test -e ${dir}manifest.json && echo export-kept; test ! -e /root/v6/home-user/notes.txt && echo not-moved`
   );
   assert.equal(kept.out, 'six notes\nexport-kept\nnot-moved\n', kept.out);
+  assert.deepEqual(page.errors, []);
+});
+
+test('when the export named by the hand-off key has no manifest.json, seven keeps the key, says so, and moves nothing', {
+  timeout: 30 * 60 * 1000,
+}, async (t) => {
+  state.mode = 'lost';
+  const { page, dir } = await moved(t);
+  const shown = await page.within(5 * 60 * 1000, () => {
+    const found = document
+      .querySelector('slicc-app')
+      ?.model?.notices?.list()
+      .find(({ id }) => id === 'six-import');
+    return found?.body ?? null;
+  });
+  assert.equal(
+    shown,
+    'Seven couldn’t import what SLICC 6 left in this browser: SLICC 6’s export has no readable manifest.json. Seven tries again the next time it starts.'
+  );
+  assert.equal(await page.evaluate(() => localStorage.getItem('slicc-os.six-import')), dir);
+  const kept = await sh(
+    page,
+    `cat /slicc-fs/home/user/notes.txt; test -d ${dir} && test ! -e ${dir}manifest.json && echo no-manifest; test ! -e /root/v6 && echo not-moved`
+  );
+  assert.equal(kept.out, 'six notes\nno-manifest\nnot-moved\n', kept.out);
   assert.deepEqual(page.errors, []);
 });

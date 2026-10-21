@@ -84,7 +84,7 @@ function showing(page, state) {
   return page.until(
     (state) =>
       document.querySelector('.six')?.dataset.state === state &&
-      !document.querySelector('.six').hidden &&
+      document.querySelector('.six').matches(':modal') &&
       [...document.querySelectorAll('.six .chip')].some((chip) => !chip.hidden),
     state
   );
@@ -169,13 +169,23 @@ test('moving SLICC 6 into seven from a cross-origin isolated BIOS: asked once, p
     buttons: [...document.querySelectorAll('.six .chip')].map((chip) => chip.textContent),
     focused: document.activeElement?.textContent,
     framed: document.querySelectorAll('iframe').length,
+    outside: (() => {
+      document.querySelector('.details').focus();
+      return document.activeElement?.textContent;
+    })(),
   }));
+  await page.press('d');
+  assert.equal(
+    await page.evaluate(() => document.querySelector('.diagnostics').classList.contains('open')),
+    false
+  );
   assert.deepEqual(asking, {
     title: 'Move SLICC 6 into seven in this browser?',
     body: 'Your cones, files and skills from SLICC 6 move into seven. Files move as they are, including any keys or passwords written inside them. After that, SLICC 6 and its Chrome extension stop working in this browser.',
     buttons: ['Move to seven', 'Not now'],
     focused: 'Not now',
     framed: 0,
+    outside: 'Not now',
   });
   await page.evaluate(() => document.querySelector('.six-move').click());
   await page.until(() => location.pathname === '/os/');
@@ -221,16 +231,34 @@ test('moving SLICC 6 into seven from a cross-origin isolated BIOS: asked once, p
   assert.equal(await other.evaluate(() => document.getElementById('six').dataset.moved), 'yes');
   assert.deepEqual(await previews(page), []);
 
+  await page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.register('/preview-sw.js', {
+      scope: '/preview/',
+    });
+    const worker = registration.installing ?? registration.waiting ?? registration.active;
+    if (worker.state !== 'activated') {
+      await new Promise((done) =>
+        worker.addEventListener('statechange', () => worker.state === 'activated' && done())
+      );
+    }
+  });
+  assert.deepEqual(await previews(page), ['/preview/']);
   for (const path of ['/', '/?slicc=leader&ext=x', '/?cherry=1&ui-only=1']) {
     const tab = await page.tab();
     await tab.goto(`${origin}${path}`);
     await tab.until(() => location.pathname === '/os/' && !!document.querySelector('slicc-app'));
     assert.equal(await tab.evaluate(() => document.getElementById('six')), null, path);
   }
+  await page.within(30000, async () => {
+    const left = await navigator.serviceWorker.getRegistrations();
+    return left.every(
+      (registration) => !new URL(registration.scope).pathname.startsWith('/preview/')
+    );
+  });
   assert.deepEqual(page.errors, []);
 });
 
-test("when SLICC 6's exporter fails, seven sets no marker, six keeps working, and Not now boots seven", async (t) => {
+test("when SLICC 6's exporter fails, seven sets no marker, six keeps working, and Escape boots seven", async (t) => {
   state.mode = 'error';
   const page = await open(t);
   const six = await dialog(page);
@@ -254,7 +282,7 @@ test("when SLICC 6's exporter fails, seven sets no marker, six keeps working, an
     frames: 0,
   });
   assert.deepEqual(await storage(page), { marker: null, pending: null });
-  await page.evaluate(() => document.querySelector('.six-later').click());
+  await page.press('Escape');
   await ready(page);
   assert.deepEqual(six.states(), ['asking', 'moving', 'failed', 'closed']);
   assert.deepEqual(await storage(page), { marker: null, pending: null });
@@ -335,6 +363,14 @@ test('the question, the progress and the failure, in light and dark and on a pho
     () => document.querySelector('.six-progress')?.textContent === 'Writing the export: 0 of 1'
   );
   assert.equal(await page.evaluate(() => document.querySelector('.six-bar').value), 0);
+  await page.press('Escape');
+  assert.equal(
+    await page.evaluate(() => {
+      const box = document.querySelector('.six');
+      return `${box.dataset.state} ${box.matches(':modal')}`;
+    }),
+    'moving true'
+  );
   await shots(page, 'moving');
   assert.deepEqual(await storage(page), { marker: null, pending: null });
 

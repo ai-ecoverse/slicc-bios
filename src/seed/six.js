@@ -2,16 +2,36 @@ export const PENDING = 'slicc-os.six-import';
 export const NOTICE = 'six-import';
 const EXPORT = /^\/slicc-v6-upgrade\/([\w-]+)\/?$/;
 
+export const MARKER = 'slicc-os.six';
+export const NO_MANIFEST = 'SLICC 6’s export has no readable manifest.json';
+
 async function exported(root, dir) {
   const id = EXPORT.exec(dir)?.[1];
   if (!id) return false;
   try {
     const exports = await root.getDirectoryHandle('slicc-v6-upgrade');
-    await (await exports.getDirectoryHandle(id)).getFileHandle('manifest.json');
+    await (await (await exports.getDirectoryHandle(id)).getFileHandle('manifest.json')).getFile();
     return true;
   } catch {
     return false;
   }
+}
+
+export const said = (error) => String(error?.message ?? error);
+
+export async function retirePreview({
+  storage = localStorage,
+  container = navigator.serviceWorker,
+  origin = location.origin,
+} = {}) {
+  if (storage.getItem(MARKER) !== 'upgraded') return [];
+  const gone = [];
+  for (const registration of await container.getRegistrations()) {
+    if (!registration.scope.startsWith(`${origin}/preview/`)) continue;
+    await registration.unregister();
+    gone.push(registration.scope);
+  }
+  return gone;
 }
 
 export function failedNotice(error) {
@@ -31,14 +51,14 @@ async function attempt({
   notices,
   locks = navigator.locks,
 }) {
-  const dir = storage.getItem(PENDING);
-  if (!dir) return null;
-  if (!(await exported(root, dir))) {
-    storage.removeItem(PENDING);
-    return null;
-  }
-  return locks.request(PENDING, { ifAvailable: true }, async (lock) => {
-    if (!lock) return null;
+  if (!storage.getItem(PENDING)) return null;
+  return locks.request(PENDING, async () => {
+    const dir = storage.getItem(PENDING);
+    if (!dir) return null;
+    if (!(await exported(root, dir))) {
+      notices.show(failedNotice(NO_MANIFEST), () => {});
+      return null;
+    }
     const connection = await connect();
     try {
       const result = await connection.control.importProfile({
@@ -63,8 +83,8 @@ async function attempt({
 
 export function importSix(options) {
   return attempt(options).catch((error) => {
-    console.warn(`SLICC 6 import: ${error.message}`);
-    options.notices.show(failedNotice(error.message), () => {});
+    console.warn(`SLICC 6 import: ${said(error)}`);
+    options.notices.show(failedNotice(said(error)), () => {});
     return null;
   });
 }

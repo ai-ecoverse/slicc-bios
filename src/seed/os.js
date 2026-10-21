@@ -69,7 +69,7 @@ import { PYTHON } from './projects.js';
 import { createNotes, createReleases } from './releases.js';
 import { createRemote } from './remote.js';
 import { BIOS, home, sharesOrigin } from './site.js';
-import { importSix } from './six.js';
+import { importSix, retirePreview, said } from './six.js';
 import { installPrompts, keepStorage, onSend } from './storage.js';
 import {
   claim,
@@ -128,6 +128,7 @@ import {
 } from './vault.js';
 
 const prompts = installPrompts();
+void retirePreview().catch((error) => console.warn(`SLICC 6 preview: ${said(error)}`));
 let unoffered = takePairing();
 
 export const layouts = {
