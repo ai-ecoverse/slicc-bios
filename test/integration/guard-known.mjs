@@ -10,7 +10,7 @@ export const KNOWN = {
   ],
 };
 const RECOVERY = new Set(['reload', 'blank', 'close', 'attachRedacted']);
-const ABSENT = 'listRedacted';
+const ABSENT = new Set(['listRedacted', 'infoRedacted']);
 
 export function listedWrong(text) {
   let message;
@@ -54,7 +54,7 @@ export function known(row, { listed = false } = {}) {
     return !listed && row.live === 'fail' && items.at(-1) === 'not live' && absent ? reason : null;
   }
   const failed = checks(row.why);
-  const allowed = (check) => RECOVERY.has(check) || check === ABSENT;
+  const allowed = (check) => RECOVERY.has(check) || ABSENT.has(check);
   return !listed && row.live === 'pass' && failed.length > 0 && failed.every(allowed)
     ? reason
     : null;
