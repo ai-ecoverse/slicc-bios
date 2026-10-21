@@ -6,6 +6,7 @@ import { boot, toolsSettled } from './bios.mjs';
 import { emptyAgent, launch } from './chrome.mjs';
 import { fakeCatalog } from './fake-catalog.mjs';
 import { fakeRelease } from './fake-npm.mjs';
+import { shoot } from './shots.mjs';
 
 const JQ = '@ai-ecoverse/wasm-jq';
 const TOOLS = '/opt/slicc/tools/node_modules';
@@ -81,9 +82,17 @@ async function act(page, id, action) {
   );
 }
 
-const versionOf = async (page, path) =>
-  (await sh(page, `sed -n 's/^ *"version": "\\([^"]*\\)".*/\\1/p' ${path}/package.json | head -1`))
-    .out;
+const versionOf = (page, path) =>
+  page.evaluate(async (path) => {
+    let dir = await navigator.storage.getDirectory();
+    try {
+      for (const part of path.split('/').filter(Boolean)) dir = await dir.getDirectoryHandle(part);
+      const file = await (await dir.getFileHandle('package.json')).getFile();
+      return JSON.parse(await file.text()).version;
+    } catch {
+      return null;
+    }
+  }, path);
 
 test('a fresh profile gets every tool after boot, from npm, into /opt/slicc/tools and not /node_modules, and lists each one', {
   timeout: 20 * 60 * 1000,
@@ -112,6 +121,7 @@ test('a fresh profile gets every tool after boot, from npm, into /opt/slicc/tool
     `test -e ${TOOLS}/${JQ}/package.json && test ! -e /node_modules/${JQ} && test -e /node_modules/@ai-ecoverse/wasm-bash/package.json && echo split`
   );
   assert.equal(where.out, 'split');
+  await shoot(page, 'tools-installed', { show: 'updates', target: '[data-id="tools:tls-engine"]' });
   assert.deepEqual(page.errors, []);
 });
 
@@ -187,5 +197,6 @@ test('seven never takes a tool back to an older npm latest, and a newer release 
   assert.equal(row.newer?.version, '1.8.2-99', JSON.stringify(row));
   assert.match(row.newer.reason, /release workflow on main/);
   assert.equal(await versionOf(page, `${TOOLS}/${JQ}`), '1.8.2-4', 'the refused release stays out');
+  await shoot(page, 'tools-newer', { show: 'updates', target: '[data-id="tools:jq"]' });
   assert.deepEqual(page.errors, []);
 });
