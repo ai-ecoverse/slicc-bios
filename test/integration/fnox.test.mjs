@@ -356,6 +356,29 @@ test('fnox is in the base set: on a fresh profile, without any install, fnox env
   assert.deepEqual(page.errors, []);
 });
 
+test('fnox exec runs in a project with an as_file secret: the plain secret reaches the command, the as_file one is left unset with a warning (homescoop#945)', {
+  timeout: 20 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  await page.init('() => { globalThis.sliccKernelDebug = true; }');
+  await boot(page);
+  const project = [
+    'mkdir -p /tmp/fnox-asfile && cd /tmp/fnox-asfile',
+    `printf '[secrets]\\nHARBOR_PLAIN = { provider = "plain", value = "tide-plain-42" }\\nCERT = { provider = "plain", value = "pem-data", as_file = true }\\n\\n[providers.plain]\\ntype = "plain"\\n' > fnox.toml`,
+  ].join(' && ');
+  const ran = await sh(
+    page,
+    `${project} && fnox exec -- /bin/sh -c 'echo "plain=$HARBOR_PLAIN"; echo "cert=\${CERT-unset}"' 2>&1`,
+    'asfile'
+  );
+  assert.equal(ran.code, '0', ran.out);
+  assert.match(ran.out, /plain=tide-plain-42/, ran.out);
+  assert.match(ran.out, /cert=unset/, ran.out);
+  assert.match(ran.out, /CERT is not set: it is an as_file secret/, ran.out);
+  assert.doesNotMatch(ran.out, /pem-data/, ran.out);
+  assert.deepEqual(page.errors, []);
+});
+
 test('a profile that installed fnox from the catalog keeps a working fnox once fnox moves into the base set, its catalog row is retired, not installed again, and removing it leaves the base set’s fnox', {
   timeout: 25 * 60 * 1000,
 }, async (t) => {
