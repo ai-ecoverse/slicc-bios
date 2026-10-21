@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { after, test } from 'node:test';
+import { after, before, describe, test } from 'node:test';
 import { AGENT_BUDGET, actPackage, agentUp, boot, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
@@ -90,82 +90,108 @@ async function idle(page) {
   });
 }
 
-test('a cold agent install runs in the page’s one kernel with no package scripts, an optional install waits on the pnpm store, the next reload re-transforms none of seven’s own modules, and a steady reload shows the prompt within 11 s', async (t) => {
-  const page = await chrome.page(t);
-  await page.init(watchKernels);
-  await page.init(promptStamp);
-  await page.init(() => performance.setResourceTimingBufferSize(20000));
-  await boot(page);
-  await page.within(
-    300000,
-    () =>
-      document
-        .querySelector('slicc-app')
-        .model.updates.packages()
-        .some((item) => item.id === 'rsync') &&
-      document
-        .querySelector('slicc-app')
-        .model.updates.list()
-        .find((item) => item.id === 'agent')?.progress
-  );
-  await run(
-    page,
-    "clear; ps -e -o args | grep '^pnpm install' | sed 's/^/seen: /'; echo listed-$((40 + 2))"
-  );
-  await shows(page, 'listed-42', 120000);
-  const screen = await page.evaluate(() => {
-    const { dock } = document.querySelector('slicc-app');
-    return dock.content(
-      dock.api.panels.map((panel) => panel.id).findLast((id) => id.startsWith('terminal:'))
-    ).screen.textContent;
+describe('a cold agent install runs in the page’s one kernel with no package scripts, an optional install waits on the pnpm store, the next reload re-transforms none of seven’s own modules, and a steady reload shows the prompt within 11 s', () => {
+  let page;
+  let finish;
+  let ui;
+  let kept;
+  after(() => finish?.());
+  before(async () => {
+    page = await chrome.page({
+      name: 'one kernel',
+      filePath: import.meta.filename,
+      after: (fn) => {
+        finish = fn;
+      },
+    });
   });
-  const seen = screen.match(/seen: (pnpm install[^\n]*?)(?=\s{2,}|seen:|listed-42)/)?.[1] ?? '';
-  assert.match(seen, /--frozen-lockfile/, screen);
-  assert.match(seen, /--ignore-scripts/, screen);
-  assert.match(seen, /--ignore-pnpmfile/, screen);
-  const optional = actPackage(page, 'rsync', 'install', {
-    budget: AGENT_BUDGET,
-    stall: AGENT_BUDGET,
+
+  test('a cold agent install runs in the page’s one kernel with no package scripts, and an optional install waits on the pnpm store', async () => {
+    await page.init(watchKernels);
+    await page.init(promptStamp);
+    await page.init(() => performance.setResourceTimingBufferSize(20000));
+    await boot(page);
+    await page.within(
+      300000,
+      () =>
+        document
+          .querySelector('slicc-app')
+          .model.updates.packages()
+          .some((item) => item.id === 'rsync') &&
+        document
+          .querySelector('slicc-app')
+          .model.updates.list()
+          .find((item) => item.id === 'agent')?.progress
+    );
+    await run(
+      page,
+      "clear; ps -e -o args | grep '^pnpm install' | sed 's/^/seen: /'; echo listed-$((40 + 2))"
+    );
+    await shows(page, 'listed-42', 120000);
+    const screen = await page.evaluate(() => {
+      const { dock } = document.querySelector('slicc-app');
+      return dock.content(
+        dock.api.panels.map((panel) => panel.id).findLast((id) => id.startsWith('terminal:'))
+      ).screen.textContent;
+    });
+    const seen = screen.match(/seen: (pnpm install[^\n]*?)(?=\s{2,}|seen:|listed-42)/)?.[1] ?? '';
+    assert.match(seen, /--frozen-lockfile/, screen);
+    assert.match(seen, /--ignore-scripts/, screen);
+    assert.match(seen, /--ignore-pnpmfile/, screen);
+    const optional = actPackage(page, 'rsync', 'install', {
+      budget: AGENT_BUDGET,
+      stall: AGENT_BUDGET,
+    });
+    await agentUp(page);
+    assert.equal(await optional, 'ok');
+    const kernels = await page.evaluate(() => window.sliccKernelWorkers);
+    const samples = await page.evaluate(() => window.sliccSamples);
+    assert.equal(kernels.peak, 1, `kernels on the root at once: ${JSON.stringify(kernels)}`);
+    assert.equal(kernels.made, 1, `kernels made: ${JSON.stringify(kernels)}`);
+    const done = samples.findIndex((s) => s.rsync === 'installed');
+    const busy = samples.findLastIndex(
+      (s, i) => s.agentProgress && i > 0 && s.agentProgress !== samples[i - 1].agentProgress
+    );
+    assert.ok(
+      busy >= 0 && done > busy,
+      `rsync installed at sample ${done}, the agent's pnpm last moved at ${busy}: ${JSON.stringify(samples.slice(Math.max(0, Math.min(done, busy) - 3), Math.max(done, busy) + 2))}`
+    );
   });
-  await agentUp(page);
-  assert.equal(await optional, 'ok');
-  const kernels = await page.evaluate(() => window.sliccKernelWorkers);
-  const samples = await page.evaluate(() => window.sliccSamples);
-  assert.equal(kernels.peak, 1, `kernels on the root at once: ${JSON.stringify(kernels)}`);
-  assert.equal(kernels.made, 1, `kernels made: ${JSON.stringify(kernels)}`);
-  const done = samples.findIndex((s) => s.rsync === 'installed');
-  const busy = samples.findLastIndex(
-    (s, i) => s.agentProgress && i > 0 && s.agentProgress !== samples[i - 1].agentProgress
-  );
-  assert.ok(
-    busy >= 0 && done > busy,
-    `rsync installed at sample ${done}, the agent's pnpm last moved at ${busy}: ${JSON.stringify(samples.slice(Math.max(0, Math.min(done, busy) - 3), Math.max(done, busy) + 2))}`
-  );
-  await idle(page);
-  const first = Date.now();
-  await page.reload();
-  const ui = (await page.within(120000, () => window.sliccUiAt)) - first;
-  await page.within(120000, () => window.sliccPromptAt);
-  assert.ok(ui < FIRST_UI, `the first reload after the agent install took ${ui} ms to the UI`);
-  const kept = await transforms(page);
-  assert.ok(kept.cached > 0, 'the first reload after the agent install served no cached transform');
-  assert.deepEqual(
-    kept.redone.filter((path) => !path.startsWith('/opt/agent/')),
-    [],
-    'the agent install dropped transforms of modules outside /opt/agent/'
-  );
-  await idle(page);
-  const start = Date.now();
-  await page.reload();
-  const steady = (await page.within(120000, () => window.sliccUiAt)) - start;
-  const took = (await page.within(120000, () => window.sliccPromptAt)) - start;
-  t.diagnostic(
-    `first reload after the agent install to the UI: ${ui} ms (bound ${FIRST_UI} ms; a steady reload ${steady} ms), ${kept.cached} transforms cached`
-  );
-  t.diagnostic(`warm reload to the terminal prompt: ${took} ms (bound ${WARM_PROMPT} ms)`);
-  assert.ok(
-    took < WARM_PROMPT,
-    `a steady-state warm reload took ${took} ms to the terminal prompt`
-  );
-  assert.deepEqual(page.errors, []);
+
+  test('the first reload after the agent install re-transforms none of seven’s own modules', async () => {
+    await idle(page);
+    const first = Date.now();
+    await page.reload();
+    ui = (await page.within(120000, () => window.sliccUiAt)) - first;
+    await page.within(120000, () => window.sliccPromptAt);
+    assert.ok(ui < FIRST_UI, `the first reload after the agent install took ${ui} ms to the UI`);
+    kept = await transforms(page);
+    assert.ok(
+      kept.cached > 0,
+      'the first reload after the agent install served no cached transform'
+    );
+    assert.deepEqual(
+      kept.redone.filter((path) => !path.startsWith('/opt/agent/')),
+      [],
+      'the agent install dropped transforms of modules outside /opt/agent/'
+    );
+    assert.deepEqual(page.errors, []);
+  });
+
+  test('a steady reload shows the prompt within 11 s', async (t) => {
+    await idle(page);
+    const start = Date.now();
+    await page.reload();
+    const steady = (await page.within(120000, () => window.sliccUiAt)) - start;
+    const took = (await page.within(120000, () => window.sliccPromptAt)) - start;
+    t.diagnostic(
+      `first reload after the agent install to the UI: ${ui} ms (bound ${FIRST_UI} ms; a steady reload ${steady} ms), ${kept.cached} transforms cached`
+    );
+    t.diagnostic(`warm reload to the terminal prompt: ${took} ms (bound ${WARM_PROMPT} ms)`);
+    assert.ok(
+      took < WARM_PROMPT,
+      `a steady-state warm reload took ${took} ms to the terminal prompt`
+    );
+    assert.deepEqual(page.errors, []);
+  });
 });
