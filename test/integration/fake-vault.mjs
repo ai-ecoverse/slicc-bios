@@ -2,7 +2,12 @@ import { createServer } from 'node:http';
 
 const frame = (state) => `
 const state = ${JSON.stringify(state)};
-const log = (entry) => fetch('/log', { method: 'POST', body: JSON.stringify(entry) });
+let logging = Promise.resolve();
+const log = (entry) => {
+  const body = JSON.stringify(entry);
+  logging = logging.then(() => fetch('/log', { method: 'POST', body })).catch(() => null);
+  return logging;
+};
 let version = state.version;
 let locked = state.locked;
 let serial = 0;
