@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { createWriteStream } from 'node:fs';
+import { createReadStream, createWriteStream } from 'node:fs';
 import {
   appendFile,
   cp,
@@ -14,8 +14,10 @@ import {
 } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import process, { argv, env, exit, stderr, stdout } from 'node:process';
+import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { createGzip } from 'node:zlib';
 import { classOf } from '../cert/evidence.mjs';
 import { cost, ROOT, SPLIT } from './plan.mjs';
 import { missingRequired, summary } from './verdict.mjs';
@@ -242,6 +244,32 @@ export async function trimShard(done, root = ROOT) {
   return trimmed;
 }
 
+async function walk(dir) {
+  const found = [];
+  for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) found.push(...(await walk(path)));
+    else if (entry.isFile()) found.push(path);
+  }
+  return found;
+}
+
+export async function compress(root = ROOT) {
+  const packed = [];
+  for (const tree of ['artifacts', FIRST]) {
+    const base = join(root, tree);
+    for (const path of await walk(base)) {
+      if (!TRACE.test(basename(path))) continue;
+      const { size } = await stat(path);
+      await pipeline(createReadStream(path), createGzip(), createWriteStream(`${path}.gz`));
+      const { size: gzipped } = await stat(`${path}.gz`);
+      await rm(path, { force: true });
+      packed.push({ path: `${tree}/${path.slice(base.length + 1)}.gz`, bytes: size, gzipped });
+    }
+  }
+  return packed;
+}
+
 export function itemOf(file, name, extra = {}) {
   if (!SPLIT.test(file) || !extra.GUARD_VARIANTS) return file;
   const chosen = extra.GUARD_VARIANTS.split(',');
@@ -416,6 +444,7 @@ export async function shard({
   const report = compose(done, { ...context, cancelled: Boolean(signal?.aborted) });
   report.traps = await trapped();
   report.trimmed = trimmed;
+  report.compressed = await compress(root);
   return report;
 }
 
@@ -471,6 +500,13 @@ if (argv[1] === fileURLToPath(import.meta.url)) {
     console.log(`retried ${group.retry.files.join(' ')}: ${group.ok ? 'passed' : 'failed again'}`);
   }
   for (const { file, name } of report.flips) console.log(`flipped ${file} › ${name}`);
+  if (report.compressed.length) {
+    const before = report.compressed.reduce((sum, { bytes }) => sum + bytes, 0) / 1048576;
+    const after = report.compressed.reduce((sum, { gzipped }) => sum + gzipped, 0) / 1048576;
+    console.log(
+      `compressed ${report.compressed.length} kept stall traces (${before.toFixed(1)} MB to ${after.toFixed(1)} MB): ${report.compressed.map(({ path }) => path).join(' ')}`
+    );
+  }
   if (report.trimmed.length) {
     const mb = report.trimmed.reduce((sum, { bytes }) => sum + bytes, 0) / 1048576;
     console.log(
