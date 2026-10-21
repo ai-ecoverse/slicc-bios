@@ -315,6 +315,51 @@ for (const [extension, foreign] of EXTENSIONS.flatMap((each) => [
   });
 }
 
+for (const extension of EXTENSIONS) {
+  test(`real slicc-extension ${extension.version}: after a blocked hop toward a protected origin, a goto to an ordinary page works and the tab is drivable again`, {
+    timeout: 10 * 60 * 1000,
+  }, async (t) => {
+    const real = await realExtension({ extension, rules: ['MAP vault.sliccy.ai 127.0.0.1'] });
+    t.after(() => real.close());
+    const page = await real.page(t);
+    await page.goto(SEVEN);
+    await ready(page);
+    const ordinary = (path) => {
+      const at = new URL(path, real.url);
+      at.hostname = 'localhost';
+      return at.href;
+    };
+    real.overrides.set(
+      '/after.html',
+      '<!doctype html><title>after</title><h1>Drivable again</h1><a href="#again">again</a>'
+    );
+    real.overrides.set(
+      '/hop.html',
+      `<!doctype html><title>hop</title><meta http-equiv="refresh" content="0;url=${VAULT}">`
+    );
+    hits.length = 0;
+    await run(
+      page,
+      `playwright-cli open about:blank > /tmp/hop 2>&1; playwright-cli goto ${ordinary('/hop.html')} >> /tmp/hop 2>&1; sleep 2; echo "hop-""done"`
+    );
+    await shows(page, 'hop-done', 120000);
+    assert.ok(
+      !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
+      `the vault was served after a hop: ${hits.join(' ')}`
+    );
+    await run(
+      page,
+      `playwright-cli goto ${ordinary('/after.html')} > /tmp/after 2>&1; playwright-cli eval 'document.title' >> /tmp/after 2>&1; playwright-cli snapshot >> /tmp/after 2>&1; playwright-cli click "$(grep -o 'link "again" \\[ref=e[0-9]*' /tmp/after | grep -o 'ref=e[0-9]*' | head -1 | cut -d= -f2)" >> /tmp/after 2>&1; playwright-cli eval 'location.hash' >> /tmp/after 2>&1; echo after-$? >> /tmp/after; echo "after-""done"`
+    );
+    await shows(page, 'after-done', 120000);
+    const after = await read(page, '/tmp/after');
+    assert.doesNotMatch(after, /slicc: refused/, after);
+    assert.match(after, /heading "Drivable again"/, after);
+    assert.match(after, /#again/, after);
+    assert.match(after, /after-0/, after);
+  });
+}
+
 for (const extension of EXTENSIONS.filter(
   ({ version }) => version.localeCompare('7.6.3', undefined, { numeric: true }) >= 0
 )) {
