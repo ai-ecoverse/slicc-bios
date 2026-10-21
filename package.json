@@ -35,6 +35,7 @@
     "node": ">=26"
   },
   "scripts": {
+    "prepare": "slicc-install-hooks",
     "start": "node test/integration/chrome.mjs",
     "pretest": "playwright-core install --no-shell chromium",
     "test": "node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs ${SLICC_TESTS:-test/integration/*.test.mjs}",
@@ -47,7 +48,7 @@
     "@ai-ecoverse/slicc": "1.47.0",
     "@ai-ecoverse/slicc-browsers": "1.10.3",
     "@ai-ecoverse/slicc-node": "2.5.1",
-    "@ai-ecoverse/slicc-shared-web": "1.24.2",
+    "@ai-ecoverse/slicc-shared-web": "1.29.8",
     "@ai-ecoverse/slicc-spectrum": "1.104.1",
     "@ai-ecoverse/slicc-vault": "1.15.1",
     "@biomejs/biome": "2.5.15",
