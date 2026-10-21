@@ -146,7 +146,7 @@ test('a running kernel program sees an installer update at once: a file the new 
   assert.deepEqual(page.errors, []);
 });
 
-test('a running kernel program reads the service worker’s integrity.log append at once', {
+test('a running kernel program reads the service worker’s integrity.log append at once, and sees it newer', {
   timeout: 10 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -173,8 +173,8 @@ test('a running kernel program reads the service worker’s integrity.log append
   await page.evaluate(
     (script) => window.watcher(script),
     watching(
-      `lines() { n=0; while IFS= read -r l; do n=$((n + 1)); last=$l; done < ${log}; }; lines; before=$n`,
-      `lines && [ "$n" -gt "$before" ] && [ -z "\${last##*'"event":"stopped"'*}" ]`
+      `lines() { n=0; while IFS= read -r l; do n=$((n + 1)); last=$l; done < ${log}; }; lines; before=$n; : > /home/nt/ref; [ ${log} -nt /home/nt/ref ]`,
+      `lines && [ "$n" -gt "$before" ] && [ -z "\${last##*'"event":"stopped"'*}" ] && [ ${log} -nt /home/nt/ref ]`
     )
   );
   await polled(page);
