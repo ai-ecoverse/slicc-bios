@@ -1,10 +1,36 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { after, test } from 'node:test';
-import { boot } from './bios.mjs';
-import { launch } from './chrome.mjs';
+import { boot, ready } from './bios.mjs';
+import { launch, VAULT_KEY } from './chrome.mjs';
 
 const chrome = await launch();
+const seven = new URL(chrome.url);
+const www = createServer(async (request, response) => {
+  const url = new URL(request.url, 'http://www');
+  if (url.pathname === '/7/index.html') return response.writeHead(302, { location: '/7/' }).end();
+  if (url.pathname.startsWith('/7/') || url.pathname.startsWith('/fonts/')) {
+    const path = url.pathname.startsWith('/7/') ? url.pathname.slice(2) : url.pathname;
+    const upstream = await fetch(new URL(`${path}${url.search}`, seven));
+    const headers = Object.fromEntries(
+      [...upstream.headers].filter(
+        ([name]) => !['content-encoding', 'transfer-encoding'].includes(name)
+      )
+    );
+    if (url.pathname === '/7/sw.js') headers['service-worker-allowed'] = '/';
+    return response
+      .writeHead(upstream.status, headers)
+      .end(Buffer.from(await upstream.arrayBuffer()));
+  }
+  if (url.pathname.startsWith('/os/')) {
+    return request.headers['sec-fetch-mode'] === 'navigate'
+      ? response.writeHead(302, { location: '/7/' }).end()
+      : response.writeHead(404).end();
+  }
+  response.writeHead(404).end();
+});
+await new Promise((done) => www.listen(0, '127.0.0.1', done));
+const shared = `http://127.0.0.1:${www.address().port}`;
 const away = createServer((request, response) => {
   response
     .writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
@@ -13,14 +39,16 @@ const away = createServer((request, response) => {
 await new Promise((done) => away.listen(0, '127.0.0.1', done));
 const elsewhere = `http://localhost:${away.address().port}/`;
 after(async () => {
-  await new Promise((done) => {
-    away.close(done);
-    away.closeAllConnections();
-  });
+  for (const server of [away, www]) {
+    await new Promise((done) => {
+      server.close(done);
+      server.closeAllConnections();
+    });
+  }
   await chrome.close();
 });
 
-const LAG = 3000;
+const AWAY = 3000;
 const LOST = 'BFCache exclusion lost: only the guard protects seven now';
 
 function reasons(tree) {
@@ -46,7 +74,7 @@ test("Back to seven's /os/ from another page loads a fresh document, because Chr
   });
   await page.goto(elsewhere);
   await page.until(() => document.getElementById('elsewhere'));
-  await new Promise((done) => setTimeout(done, LAG));
+  await new Promise((done) => setTimeout(done, AWAY));
   await page.evaluate(() => setTimeout(() => history.back()));
   await page.until(() => location.pathname === '/os/' && !!document.querySelector('slicc-app'));
   const back = await page.evaluate(() => ({
@@ -66,5 +94,22 @@ test("Back to seven's /os/ from another page loads a fresh document, because Chr
     ),
     LOST
   );
+  assert.deepEqual(page.errors, []);
+});
+
+test("a navigation to a BIOS path that the host redirects still follows the redirect under seven's service worker", async (t) => {
+  const page = await chrome.page(t);
+  await page.init(
+    `() => { if (location.origin === ${JSON.stringify(shared)} && !localStorage.getItem(${JSON.stringify(VAULT_KEY)})) localStorage.setItem(${JSON.stringify(VAULT_KEY)}, ${JSON.stringify(chrome.vault.origin)}); }`
+  );
+  await page.goto(`${shared}/7/`);
+  await ready(page);
+  assert.equal(
+    await page.evaluate(() => navigator.serviceWorker.controller?.scriptURL),
+    `${shared}/7/sw.js`
+  );
+  await page.goto(`${shared}/7/index.html`);
+  await ready(page);
+  assert.equal(await page.evaluate(() => location.href), `${shared}/os/`);
   assert.deepEqual(page.errors, []);
 });

@@ -257,7 +257,7 @@ function respond(body, type, origin, status = 200, extra = {}) {
 }
 
 function unkeptDocument(response, request) {
-  if (request.destination !== 'document') return response;
+  if (request.destination !== 'document' || response.type === 'opaqueredirect') return response;
   const headers = new Headers(response.headers);
   for (const [name, value] of Object.entries(UNKEPT)) headers.set(name, value);
   return new Response(response.body, {
