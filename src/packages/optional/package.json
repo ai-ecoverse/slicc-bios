@@ -3,7 +3,7 @@
   "private": true,
   "description": "The optional packages that seven pins because their publisher isn't homescoop's ladder: slicc-jsh, mcpcat, wasi-slicc (slicc-cli) and sliccy-browser (slicc-cdp). Release-state and cert review certify these pins; every other catalog entry is npm's latest behind the runtime gate. Never installed as a project: the panel runs pnpm add -g for each one.",
   "dependencies": {
-    "@ai-ecoverse/mcpcat": "0.17.4",
+    "@ai-ecoverse/mcpcat": "0.17.7",
     "@ai-ecoverse/slicc-jsh": "0.45.4",
     "@ai-ecoverse/sliccy-browser": "0.1.29",
     "@ai-ecoverse/wasi-slicc": "1.47.0"
