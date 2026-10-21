@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { actPackage, boot, ready, run, screen, shows } from './bios.mjs';
+import { offered } from './catalog.mjs';
 import { launch } from './chrome.mjs';
 import { fakeCatalog } from './fake-catalog.mjs';
 
@@ -9,9 +9,7 @@ const MCPCAT = '@ai-ecoverse/mcpcat';
 const GLUE = '@ai-ecoverse/hot-glue';
 const pins = { [MCPCAT]: '0.16.3', [GLUE]: '0.3.0' };
 const BIN = '/usr/local/share/pnpm/bin';
-const SHIPPED = JSON.parse(
-  await readFile(new URL('../../src/packages/optional/package.json', import.meta.url), 'utf8')
-).dependencies[MCPCAT];
+const SHIPPED = await offered(MCPCAT);
 
 const chrome = await launch({ timeout: 120000, intercept: [] });
 const registry = await fakeCatalog(chrome.cdp);
