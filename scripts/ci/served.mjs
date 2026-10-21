@@ -105,7 +105,7 @@ export async function served({
     if (same === 'other') {
       return {
         ok: false,
-        line: `published: FAIL npm serves ${id} with ${found}, not the packed ${integrity}`,
+        line: `published: FAIL npm serves ${id} with ${found}, not the packed ${integrity}: other contents, not a flake`,
       };
     }
     if (same === 'unpacked') {
@@ -115,7 +115,7 @@ export async function served({
       const why = same === 'unfetched' ? `serve ${id}'s tarball` : `serve ${id}`;
       return {
         ok: false,
-        line: `published: FAIL npm doesn't ${why} after ${Math.round(waited / 60)} min`,
+        line: `published: FAIL npm doesn't ${why} after ${Math.round(waited / 60)} min; a re-run of the workflow on main only waits, it never publishes the version again`,
       };
     }
     await sleep(waits[round]);
