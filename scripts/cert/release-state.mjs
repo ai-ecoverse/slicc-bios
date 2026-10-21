@@ -88,9 +88,9 @@ export function source(gh = {}) {
     commit: (repo, commit) => github(`/repos/ai-ecoverse/${repo}/commits/${commit}`),
     statuses: (repo, commit) =>
       github(`/repos/ai-ecoverse/${repo}/commits/${commit}/statuses?per_page=100`),
-    checks: (repo, commit) =>
+    checks: (repo, commit, name = 'cert-review') =>
       github(
-        `/repos/ai-ecoverse/${repo}/commits/${commit}/check-runs?check_name=cert-review&per_page=100`
+        `/repos/ai-ecoverse/${repo}/commits/${commit}/check-runs?check_name=${encodeURIComponent(name)}&per_page=100`
       ),
     run: (repo, id) => github(`/repos/ai-ecoverse/${repo}/actions/runs/${id}`),
     suiteRuns: (repo, suite) =>
@@ -170,6 +170,57 @@ async function certifiedCommit(src, repo, commit) {
   return `cert-review status: ${status.description ?? 'success'}`;
 }
 
+export const PIPELINE = { 'slicc-kernel': '.github/workflows/ci.yml' };
+export const PIPELINE_CHECKS = ['ci / integration', 'ci / review'];
+
+export function queueRun(run, repo, path, commit) {
+  return (
+    run?.path === path &&
+    run.event === 'merge_group' &&
+    run.head_sha === commit &&
+    run.repository?.full_name === `ai-ecoverse/${repo}`
+  );
+}
+
+async function passedQueue(src, repo, path, commit) {
+  const missing = [];
+  for (const name of PIPELINE_CHECKS) {
+    let found = false;
+    for (const check of (await src.checks(repo, commit, name))?.check_runs ?? []) {
+      if (check.name !== name || check.app?.id !== 15368 || check.conclusion !== 'success')
+        continue;
+      const id = new RegExp(
+        `^https://github\\.com/ai-ecoverse/${repo}/actions/runs/([1-9]\\d*)/job/\\d+$`
+      ).exec(check.details_url ?? '')?.[1];
+      if (id && queueRun(await src.run(repo, id), repo, path, commit)) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) missing.push(name);
+  }
+  return missing;
+}
+
+async function byPipeline(src, { writer, prov }) {
+  const path = PIPELINE[writer.repo];
+  if (prov.ref !== 'refs/heads/main')
+    return no(`provenance is ${prov.repository} ${prov.path} @ ${prov.ref}, not main`);
+  const commit = prov.commit;
+  if (!/^[0-9a-f]{40}$/.test(commit ?? '')) return no('the provenance names no commit');
+  const cmp = await src.compare(writer.repo, commit);
+  if (!['identical', 'behind'].includes(cmp?.status))
+    return no(`${writer.repo} ${commit.slice(0, 12)} is not on main (${cmp?.status ?? 'unknown'})`);
+  const missing = await passedQueue(src, writer.repo, path, commit);
+  if (missing.length)
+    return no(
+      `${writer.repo} ${commit.slice(0, 12)} on main has no successful ${missing.join(' and ')} from a merge_group run of ${path} on that commit`
+    );
+  return ok(
+    `certified at ${writer.repo} ${commit.slice(0, 12)}: released by ${path} after the merge queue's ${PIPELINE_CHECKS.join(' and ')}`
+  );
+}
+
 const ok = (why) => ({ ok: true, why });
 const no = (why) => ({ ok: false, why });
 
@@ -223,6 +274,8 @@ async function byMain(src, { name, version, writer, prov, bound }) {
   if (!prov) return no('no npm provenance');
   if (!bound) return no('the provenance names another tarball');
   const repoUrl = `https://github.com/ai-ecoverse/${writer.repo}`;
+  if (prov.repository === repoUrl && PIPELINE[writer.repo] && prov.path === PIPELINE[writer.repo])
+    return byPipeline(src, { writer, prov });
   if (
     prov.repository !== repoUrl ||
     prov.path !== '.github/workflows/release.yml' ||
