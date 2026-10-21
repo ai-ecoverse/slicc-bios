@@ -207,7 +207,10 @@ for (const extension of EXTENSIONS) {
       globalThis.contextOrigins = [];
       globalThis.sliccExtension.cdp.on((message) => {
         if (message.method === 'Runtime.executionContextCreated')
-          globalThis.contextOrigins.push(message.params.context.origin);
+          globalThis.contextOrigins.push({
+            origin: message.params.context.origin,
+            type: message.params.context.auxData?.type ?? null,
+          });
       });
     });
     real.overrides.set(
@@ -271,8 +274,11 @@ for (const extension of EXTENSIONS) {
     );
     assert.doesNotMatch(inherit, /chrome-extension:/, inherit);
     const origins = await page.evaluate(() => globalThis.contextOrigins);
+    assert.ok(real.extension, 'the harness extension is loaded');
+    const harness = ({ origin, type }) =>
+      type === 'isolated' && origin === `chrome-extension://${real.extension.id}`;
     assert.deepEqual(
-      origins.filter((each) => /^chrome-extension:/i.test(each)),
+      origins.filter((each) => !harness(each) && /^chrome-extension:/i.test(each.origin)),
       [],
       `a driven tab's context had the extension's origin: ${JSON.stringify(origins)}`
     );
@@ -1330,7 +1336,9 @@ test('a browser extension’s hidden world stays out of reach through the guard:
   while (
     !(hidden = contexts.find(
       (context) =>
-        context.auxData?.type === 'isolated' && context.origin.startsWith('chrome-extension://')
+        context.auxData?.type === 'isolated' &&
+        context.origin.startsWith('chrome-extension://') &&
+        context.origin !== `chrome-extension://${worlds.extension?.id}`
     ))
   ) {
     if (Date.now() > deadline)

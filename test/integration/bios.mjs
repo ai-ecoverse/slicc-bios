@@ -109,7 +109,14 @@ function showing(needle) {
     .screen.textContent.includes(needle);
 }
 
+async function front(page) {
+  if (await page.evaluate(() => document.visibilityState === 'hidden')) {
+    await page.send('Page.bringToFront');
+  }
+}
+
 export async function screen(page) {
+  await front(page);
   return page.evaluate(() => {
     const { dock } = document.querySelector('slicc-app');
     return dock.content(
@@ -118,9 +125,23 @@ export async function screen(page) {
   });
 }
 
-export async function shows(page, text, ms) {
-  if (ms) await page.within(ms, showing, text);
-  else await page.until(showing, text);
+const SLICE = 2000;
+const SHOWS = 120000;
+
+export async function shows(page, text, ms = SHOWS) {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    await front(page);
+    const left = deadline - Date.now();
+    try {
+      await page.within(Math.max(1, Math.min(SLICE, left)), showing, text);
+      return;
+    } catch (error) {
+      if (error.fatal || Date.now() >= deadline) {
+        throw new Error(`${text} never showed in ${ms} ms: ${error.message}`);
+      }
+    }
+  }
 }
 
 export async function run(page, command) {
