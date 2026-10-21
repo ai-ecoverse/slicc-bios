@@ -57,25 +57,37 @@ const PATHS = {
   },
 };
 
-const port = await new Promise((resolve) => {
-  const server = createServer();
-  server.listen(0, '127.0.0.1', () => {
-    const { port } = server.address();
-    server.close(() => resolve(port));
+const freePort = () =>
+  new Promise((resolve) => {
+    const server = createServer();
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
   });
-});
-const chrome = await launch({
-  extensions: [fileURLToPath(new URL('./fixtures/foreign-world', import.meta.url))],
-  args: [
-    `--remote-debugging-port=${port}`,
-    '--host-resolver-rules=MAP *.sliccy.ai 127.0.0.1, MAP sliccy.ai 127.0.0.1, MAP *.example.test 127.0.0.1',
-  ],
-});
+const browserAt = (port) =>
+  launch({
+    extensions: [fileURLToPath(new URL('./fixtures/foreign-world', import.meta.url))],
+    args: [
+      `--remote-debugging-port=${port}`,
+      '--host-resolver-rules=MAP *.sliccy.ai 127.0.0.1, MAP sliccy.ai 127.0.0.1, MAP *.example.test 127.0.0.1',
+    ],
+  });
+const port = await freePort();
+const chrome = await browserAt(port);
 after(async () => {
   chrome.close();
   await fixture.close();
 });
 const browser = await debuggerUrl(port);
+
+async function tabsBrowser(t, path) {
+  if (path !== 'link') return { port, browser };
+  const own = await freePort();
+  const other = await browserAt(own);
+  t.after(() => other.close());
+  return { port: own, browser: await debuggerUrl(own) };
+}
 
 const COMMAND_MS = 20000;
 
@@ -109,7 +121,7 @@ function eventsOf() {
   return { events, push, waitEvent };
 }
 
-async function unguardedClient() {
+async function unguardedClient(browser) {
   const socket = new WebSocket(browser);
   await new Promise((resolve, reject) => {
     socket.onopen = resolve;
@@ -217,7 +229,8 @@ export async function guardHost(t, path) {
     });
   });
   await boot(seven);
-  if (path === 'link') trace('link', (await linkNode(t, seven, port)).join(' '));
+  const tabs = await tabsBrowser(t, path);
+  if (path === 'link') trace('link', (await linkNode(t, seven, tabs.port)).join(' '));
   const setup = async (proxy) => {
     const { guardProtected } = await import(new URL('guard.js', location.href).href);
     const { extensionConnection, proxyHost } = await import(new URL('cdp.js', location.href).href);
@@ -287,7 +300,7 @@ export async function guardHost(t, path) {
   };
   await ensure();
   let count = 0;
-  const unguarded = await unguardedClient();
+  const unguarded = await unguardedClient(tabs.browser);
   t.after(() => unguarded.close());
   const clientFactory =
     (path) =>
