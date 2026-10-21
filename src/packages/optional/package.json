@@ -10,7 +10,7 @@
     "@ai-ecoverse/wasi-dig": "0.1.0-4",
     "@ai-ecoverse/wasi-gh": "2.102.0-2",
     "@ai-ecoverse/wasi-ntfy": "2.32.0-2",
-    "@ai-ecoverse/wasi-slicc": "1.44.7",
+    "@ai-ecoverse/wasi-slicc": "1.47.0",
     "@ai-ecoverse/wasix-gnupg": "2.4.9-11",
     "@ai-ecoverse/wasix-openssh": "10.6.0-11",
     "@ai-ecoverse/wasix-perl": "5.42.0-20",
