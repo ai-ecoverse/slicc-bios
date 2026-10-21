@@ -25,9 +25,12 @@ export function listedWrong(text) {
     message?.params?.targetInfo,
   ].filter((info) => info && typeof info === 'object');
   return infos.some((info) => {
-    const shown = `${info.url ?? ''} ${info.title ?? ''}`;
-    if (!/sliccy\.ai/i.test(shown)) return false;
-    const origin = URL.canParse(info.url) ? new URL(info.url).origin : null;
+    const parsed = URL.canParse(info.url) ? new URL(info.url) : null;
+    const protectedHost = parsed
+      ? /(?:^|\.)sliccy\.ai\.?$/i.test(parsed.hostname)
+      : /sliccy\.ai/i.test(`${info.url ?? ''}`);
+    if (!protectedHost) return false;
+    const origin = parsed?.origin ?? null;
     return info.url !== origin || info.title !== origin;
   });
 }
