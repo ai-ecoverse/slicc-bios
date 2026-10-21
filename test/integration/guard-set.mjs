@@ -444,6 +444,7 @@ export function shared(path) {
       [...chosen.variants].sort(),
       'every chosen variant ran'
     );
+    assert.equal(exposure.sample, null, 'no target info the client saw showed more than an origin');
     assert.deepEqual(stale(results), [], 'a known row that passes comes off the known list');
     assert.deepEqual(report.missing, []);
     assert.equal(report.observerSkipped, 0);

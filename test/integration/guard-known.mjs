@@ -19,8 +19,11 @@ export function listedWrong(text) {
   } catch {
     return false;
   }
-  const infos = message?.result?.targetInfos;
-  if (!Array.isArray(infos)) return false;
+  const infos = [
+    ...(message?.result?.targetInfos ?? []),
+    message?.result?.targetInfo,
+    message?.params?.targetInfo,
+  ].filter((info) => info && typeof info === 'object');
   return infos.some((info) => {
     const shown = `${info.url ?? ''} ${info.title ?? ''}`;
     if (!/sliccy\.ai/i.test(shown)) return false;
@@ -45,11 +48,13 @@ export function known(row, { listed = false } = {}) {
     const absent = items
       .slice(0, -1)
       .every((item) => /^[A-Za-z]+: got (?:false|undefined), want true$/.test(item));
-    return row.live === 'fail' && items.at(-1) === 'not live' && absent ? reason : null;
+    return !listed && row.live === 'fail' && items.at(-1) === 'not live' && absent ? reason : null;
   }
   const failed = checks(row.why);
-  const allowed = (check) => RECOVERY.has(check) || (check === ABSENT && !listed);
-  return row.live === 'pass' && failed.length > 0 && failed.every(allowed) ? reason : null;
+  const allowed = (check) => RECOVERY.has(check) || check === ABSENT;
+  return !listed && row.live === 'pass' && failed.length > 0 && failed.every(allowed)
+    ? reason
+    : null;
 }
 
 export function stale(results) {
