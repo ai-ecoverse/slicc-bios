@@ -52,14 +52,99 @@ export async function pinned() {
   return found;
 }
 
-async function latest(name) {
-  const response = await fetch(registryUrl(name), {
+async function packument(name, fetcher = fetch) {
+  const response = await fetcher(registryUrl(name), {
     headers: { accept: 'application/vnd.npm.install-v1+json' },
     signal: AbortSignal.timeout(60000),
   });
   if (!response.ok) throw new Error(`${response.status} ${name}`);
-  return (await response.json())['dist-tags']?.latest;
+  return response.json();
 }
+
+async function latest(name) {
+  return (await packument(name))['dist-tags']?.latest;
+}
+
+const triple = (version) => version.split('.').map(Number);
+
+function bounds(op, raw) {
+  const parts = raw.split('.').length;
+  const at = [...triple(raw), 0, 0].slice(0, 3).join('.');
+  const next = (i) => {
+    const t = triple(at);
+    t[i] += 1;
+    return t.map((n, j) => (j > i ? 0 : n)).join('.');
+  };
+  if (op === '~')
+    return [
+      ['>=', at],
+      ['<', next(parts === 1 ? 0 : 1)],
+    ];
+  if (op === '^') {
+    const [major, minor] = triple(at);
+    return [
+      ['>=', at],
+      ['<', next(major > 0 ? 0 : minor > 0 ? 1 : 2)],
+    ];
+  }
+  if (op === '=' && parts < 3)
+    return [
+      ['>=', at],
+      ['<', next(parts - 1)],
+    ];
+  return [[op, at]];
+}
+
+const CHECKS = {
+  '=': (d) => d === 0,
+  '>=': (d) => d >= 0,
+  '<=': (d) => d <= 0,
+  '>': (d) => d > 0,
+  '<': (d) => d < 0,
+};
+
+export function within(version, range) {
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) return false;
+  const base = version.split('-')[0];
+  return range.split('||').some((set) =>
+    set
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .every((token) => {
+        const found = token.match(/^(~|\^|>=|<=|>|<|=)?v?(\d+(?:\.\d+){0,2})$/);
+        if (!found) return false;
+        return bounds(found[1] ?? '=', found[2]).every(([op, at]) => CHECKS[op](compare(base, at)));
+      })
+  );
+}
+
+export function offeredOf(entry, doc) {
+  if (!entry.range) return doc['dist-tags']?.latest ?? null;
+  return (
+    Object.entries(doc.versions ?? {})
+      .filter(([version, one]) => within(version, entry.range) && !one?.deprecated)
+      .map(([version]) => version)
+      .sort(compare)
+      .at(-1) ?? null
+  );
+}
+
+export async function catalogLatest(fetcher = fetch) {
+  const file = join(PACKAGES, 'optional/catalog.json');
+  const catalog = JSON.parse(await readFile(file, 'utf8'));
+  const manifest = JSON.parse(await readFile(join(PACKAGES, 'optional/package.json'), 'utf8'));
+  const pins = manifest.dependencies ?? {};
+  const listed = Object.entries(catalog)
+    .filter(([name, entry]) => entry.kind !== 'project' && !Object.hasOwn(pins, name))
+    .sort(([a], [b]) => a.localeCompare(b));
+  const found = await Promise.all(
+    listed.map(async ([name, entry]) => [name, offeredOf(entry, await packument(name, fetcher))])
+  );
+  return Object.fromEntries(found);
+}
+
+export const CATALOG_SHARDS = ['packages-update-cdp', 'remote-pydata', 'rest'];
 
 export async function newest() {
   const pins = await pinned();
@@ -276,11 +361,12 @@ export async function plan(
     return { runs, key: '', inputs: null, uploads, prefix };
   }
   if (event === 'schedule') {
-    const inputs = await newest();
-    const digest = createHash('sha256').update(JSON.stringify(inputs.overrides)).digest('hex');
+    const inputs = { ...(await newest()), catalog: await catalogLatest() };
+    const watched = { overrides: inputs.overrides, catalog: inputs.catalog };
+    const digest = createHash('sha256').update(JSON.stringify(watched)).digest('hex');
     const runs = inputs.overrides.length
       ? [{ id: 'canary', overrides: inputs.overrides, shards: SHARDS, expect: [] }]
-      : [];
+      : [{ id: 'catalog', overrides: [], shards: CATALOG_SHARDS, expect: [] }];
     return {
       runs,
       key: `canary-inputs-${digest.slice(0, 32)}`,
@@ -313,6 +399,16 @@ export async function plan(
     uploads: [],
     prefix: prefixOf(label, { called: event === 'workflow_call', candidate: run.candidate }),
   };
+}
+
+export function inputLines(inputs) {
+  const pinned = (inputs?.checked ?? []).map(
+    ({ name, pinned: at, latest: newer }) => `${name}: pinned ${at.join(', ')}, latest ${newer}`
+  );
+  const offered = Object.entries(inputs?.catalog ?? {}).map(
+    ([name, version]) => `${name}: the optional catalog offers ${version ?? 'nothing'}`
+  );
+  return [...pinned, ...offered];
 }
 
 async function main() {
@@ -350,9 +446,7 @@ async function main() {
   console.log(lines.join('\n'));
   const note = bindingNote(env, result.runs);
   if (note) console.log(note);
-  for (const { name, pinned: at, latest: newer } of result.inputs?.checked ?? []) {
-    console.log(`${name}: pinned ${at.join(', ')}, latest ${newer}`);
-  }
+  for (const line of inputLines(result.inputs)) console.log(line);
   console.log(`canary plan: PASS ${result.runs.length} runs`);
 }
 
