@@ -2346,6 +2346,21 @@ for (const [detach, lag] of DETACH) {
             ),
             'its Network event'
           );
+          const pixel = `/pixel?own-${id}`;
+          for (const end = Date.now() + lag + 15000; ; await pause(100)) {
+            const answered = (await guard.events())
+              .slice(before)
+              .some(
+                (event) =>
+                  event.method === 'Network.responseReceived' &&
+                  event.params.response.url.endsWith(pixel)
+              );
+            if (answered) break;
+            assert.ok(
+              Date.now() < end,
+              'the allowed page’s own pixel answers under the client’s Network'
+            );
+          }
           const url = `${SEVEN}/probe-doc.html?${id}`;
           const mark = (await guard.events()).length;
           const requests = chrome.requests.length;
