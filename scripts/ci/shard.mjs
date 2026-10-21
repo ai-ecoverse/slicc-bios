@@ -207,7 +207,7 @@ export function clean(attempts) {
     for (const { file, path = [], name, status } of attempt.results) {
       const top = path[0] ?? name;
       const key = `${file}\0${top}`;
-      if (status === 'fail') kept.add(key);
+      if (status !== 'pass') kept.add(key);
       else if (status === 'pass' && path.length <= 1) passed.set(key, { file, name: top });
     }
   }
