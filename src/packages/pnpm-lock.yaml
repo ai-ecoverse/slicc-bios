@@ -8,570 +8,69 @@ importers:
 
   .:
     dependencies:
-      '@ai-ecoverse/slicc-audio':
-        specifier: 1.1.6
-        version: 1.1.6
       '@ai-ecoverse/slicc-browsers':
         specifier: 1.18.14
         version: 1.18.14
-      '@ai-ecoverse/slicc-capture':
-        specifier: 1.4.1
-        version: 1.4.1
-      '@ai-ecoverse/slicc-cdp':
-        specifier: 1.42.2
-        version: 1.42.2
-      '@ai-ecoverse/slicc-clipboard':
-        specifier: 1.1.1
-        version: 1.1.1
       '@ai-ecoverse/slicc-kernel':
         specifier: 1.167.4
         version: 1.167.4
       '@ai-ecoverse/slicc-spectrum':
         specifier: 1.107.2
         version: 1.107.2
-      '@ai-ecoverse/wasi-fnox':
-        specifier: 1.40.0-1
-        version: 1.40.0-1
       '@ai-ecoverse/wasi-pnpm':
         specifier: 12.9.1-21
         version: 12.9.1-21
-      '@ai-ecoverse/wasi-ripgrep':
-        specifier: 15.2.0-5
-        version: 15.2.0-5
       '@ai-ecoverse/wasm-bash':
         specifier: 5.3.0-23
         version: 5.3.0-23
-      '@ai-ecoverse/wasm-bzip2':
-        specifier: 1.0.8-6
-        version: 1.0.8-6
       '@ai-ecoverse/wasm-coreutils':
         specifier: 9.12.0-15
         version: 9.12.0-15
-      '@ai-ecoverse/wasm-curl':
-        specifier: 8.22.0-10
-        version: 8.22.0-10
-      '@ai-ecoverse/wasm-diffutils':
-        specifier: 3.12.0-4
-        version: 3.12.0-4
       '@ai-ecoverse/wasm-findutils':
         specifier: 4.11.0-5
         version: 4.11.0-5
-      '@ai-ecoverse/wasm-gawk':
-        specifier: 5.4.1-6
-        version: 5.4.1-6
-      '@ai-ecoverse/wasm-grep':
-        specifier: 3.12.0-8
-        version: 3.12.0-8
-      '@ai-ecoverse/wasm-gzip':
-        specifier: 1.15.0-6
-        version: 1.15.0-6
-      '@ai-ecoverse/wasm-jq':
-        specifier: 1.8.2-6
-        version: 1.8.2-6
-      '@ai-ecoverse/wasm-less':
-        specifier: 668.0.0-7
-        version: 668.0.0-7
-      '@ai-ecoverse/wasm-mount':
-        specifier: 1.0.0-5
-        version: 1.0.0-5
-      '@ai-ecoverse/wasm-ncurses-utils':
-        specifier: 6.5.0-6
-        version: 6.5.0-6
-      '@ai-ecoverse/wasm-patch':
-        specifier: 2.8.0-5
-        version: 2.8.0-5
-      '@ai-ecoverse/wasm-procps':
-        specifier: 4.0.7-6
-        version: 4.0.7-6
-      '@ai-ecoverse/wasm-sed':
-        specifier: 4.10.0-6
-        version: 4.10.0-6
-      '@ai-ecoverse/wasm-tar':
-        specifier: 1.35.0-9
-        version: 1.35.0-9
-      '@ai-ecoverse/wasm-tls-engine':
-        specifier: 4.2.0-12
-        version: 4.2.0-12
-      '@ai-ecoverse/wasm-tree':
-        specifier: 2.3.2-7
-        version: 2.3.2-7
-      '@ai-ecoverse/wasm-which':
-        specifier: 2.23.0-5
-        version: 2.23.0-5
-      '@ai-ecoverse/wasm-xz':
-        specifier: 5.8.4-8
-        version: 5.8.4-8(@ai-ecoverse/wasm-bash@5.3.0-23)(@ai-ecoverse/wasm-coreutils@9.12.0-15)(@ai-ecoverse/wasm-diffutils@3.12.0-4)(@ai-ecoverse/wasm-grep@3.12.0-8)(@ai-ecoverse/wasm-less@668.0.0-7)(@ai-ecoverse/wasm-sed@4.10.0-6)
 
 packages:
-
-  '@ai-ecoverse/slicc-audio@1.1.6':
-    resolution: {integrity: sha512-C3isgqwWA0ItGlZAhbi51zzRYKV3d23VHhGNBM6LzDh8Kikd3j7zdcjkzZOydK3JGfOJ22c1mQWjAm/o1wZo0A==}
-    engines: {node: '>=24', slicc-kernel: '>=1.153.0'}
-    hasBin: true
 
   '@ai-ecoverse/slicc-browsers@1.18.14':
     resolution: {integrity: sha512-BJAYu1tPJETsQFJEWdCyxWYU5oYaRwMdH1u4sJMvtBLVegkoRrEo5ruEAbIfzx63OJryzTylVYQ8FPVSVomxNA==}
     engines: {node: '>=24'}
 
-  '@ai-ecoverse/slicc-capture@1.4.1':
-    resolution: {integrity: sha512-CmuOwKYV6VPN7vR3+GEdUfiPSgqI6XWDz+CUMOTGJcPPLSH/r2/SZ7zSIwFsDSFK+JS/Xu5k9b23B4qdjqJxPw==}
-    engines: {node: '>=24', slicc-kernel: '>=1.153.0'}
-    hasBin: true
-
-  '@ai-ecoverse/slicc-cdp@1.42.2':
-    resolution: {integrity: sha512-1dRpeDcSNAv8qYTGCo0Y+hXDSILOO7mnB7hudfaw+rvhyCUei4E5XsdMFV1sVrlTxNOYmqQRNJyQEfc3LkOPMg==}
-    engines: {node: '>=24'}
-    hasBin: true
-
-  '@ai-ecoverse/slicc-clipboard@1.1.1':
-    resolution: {integrity: sha512-MggIwJR4jDNNxN5y9bsnNkYuEeVQeUqeYaenIgDRRKWSN/yKIiCx4OujpsIkLE6iF4k1rGnD2zVg6FbS0nR1ug==}
-    engines: {node: '>=24', slicc-kernel: '>=1.75.0'}
-    hasBin: true
-
   '@ai-ecoverse/slicc-kernel@1.167.4':
     resolution: {integrity: sha512-IOIqooRxVT/IoPjQ5SLlKPfqRtyZuyoxjeVCXRiY0x4qPB1OwKZYeBMFpYh0om/5aUoizrHD2QZqLmppO/1yrw==}
     engines: {node: '>=26'}
-
-  '@ai-ecoverse/slicc-ortllama@1.28.0':
-    resolution: {integrity: sha512-OlnUW6tHnU/xgH4vfMbFCHHW2pc/go/Zvn3g0/r9+ManBicA/Z4+OehYEWpw79QDiy5D0ia6jPqVcjKVs04PDQ==}
-    engines: {node: '>=24'}
-    hasBin: true
-    peerDependencies:
-      '@ai-ecoverse/jev-omni.js': 0.2.0
-      '@ai-ecoverse/kev.js': 1.2.0
-      '@audio/decode-aac': 1.6.0
-      '@audio/encode-aac': 1.2.1
-      '@mediabunny/aac-encoder': 1.62.0
-      '@wllama/wllama': 3.8.1
-      espeak-ng: 1.0.2
-      mediabunny: 1.62.0
-      onnxruntime-node: 1.30.0
-      phonemize: 2.0.1
-      phonemizer: 1.2.1
-      webgpu: 0.6.2
-    peerDependenciesMeta:
-      '@ai-ecoverse/jev-omni.js':
-        optional: true
-      '@ai-ecoverse/kev.js':
-        optional: true
-      '@audio/decode-aac':
-        optional: true
-      '@audio/encode-aac':
-        optional: true
-      '@mediabunny/aac-encoder':
-        optional: true
-      '@wllama/wllama':
-        optional: true
-      espeak-ng:
-        optional: true
-      mediabunny:
-        optional: true
-      onnxruntime-node:
-        optional: true
-      phonemize:
-        optional: true
-      phonemizer:
-        optional: true
-      webgpu:
-        optional: true
 
   '@ai-ecoverse/slicc-spectrum@1.107.2':
     resolution: {integrity: sha512-zN4kW/Ss8X9sAbszs2uwv1dO4UpSfqWutd8Sc4BD3EfmUekYJcPSsqVuKzlkhPtIBlWDVpQu/pgLDYPzQ3r+PA==}
     engines: {node: '>=24'}
 
-  '@ai-ecoverse/wasi-fnox@1.40.0-1':
-    resolution: {integrity: sha512-/1c/ueKiqih0NfgQdQ96Re/LKYQx6vWz31Od7V3YWAgvAxGr9+BBfWhseM/VP7+bUzSPw0ZmD+CqAQ/vJhihog==}
-    engines: {slicc-kernel: '>=1.83.0'}
-
   '@ai-ecoverse/wasi-pnpm@12.9.1-21':
     resolution: {integrity: sha512-9UmGRnBXtZpRSH+9+X5LUeafqURymTnP0OZuN3h3Tf4bdin6H103zYnvMjiXm9I7XKi0CcfHlDOtLeHwxDTtnQ==}
     engines: {slicc-kernel: '>=1.7.2'}
-
-  '@ai-ecoverse/wasi-ripgrep@15.2.0-5':
-    resolution: {integrity: sha512-QtSi35Zr2Cbb7tg2DM4CCJ1gM/KtNrcJA0YgqiVrnSQ1fuXDi5rYnv9tIXqzpqGPRaLg/JOzhG7qklmksNn4cg==}
-    engines: {slicc-kernel: '>=1.34.1'}
 
   '@ai-ecoverse/wasm-bash@5.3.0-23':
     resolution: {integrity: sha512-x9YvgzzebSguzCJCDG8JSG8b+q1uWMQ3jheZwG+IyAPwXH3Eo2jVbzfHQmu67QDXR2qxjjRpxwaGDKyVUyQrEQ==}
     engines: {slicc-kernel: '>=1.130.2'}
 
-  '@ai-ecoverse/wasm-bzip2@1.0.8-6':
-    resolution: {integrity: sha512-AEdXJvs2D2ujNgTFHKp7MuCF2o2e1WFPvSxvgwwWqcakXiiijHlkwEOFu1jAclRbWKOwtwWAHjgvG2mupO+BKQ==}
-
   '@ai-ecoverse/wasm-coreutils@9.12.0-15':
     resolution: {integrity: sha512-Q+0LQ6vtym8MKvBZ/02h/FvrorXLu4SNX/IvreJ+BIX3MxZHwpzcOxP38xpUd1dLdUDx7YGNwqWmXIziw+kfsw==}
     engines: {slicc-kernel: '>=1.44.0'}
 
-  '@ai-ecoverse/wasm-curl@8.22.0-10':
-    resolution: {integrity: sha512-7PkpUNHfuCt3GPzB/UpmRoJtEyXA/5csXd220yWndBCB0x5dL5EU4enGtaAMpm7rQuTVWHUroiHnYdQzvZ/nlg==}
-
-  '@ai-ecoverse/wasm-diffutils@3.12.0-4':
-    resolution: {integrity: sha512-aW0FuJ47vI+PhMnxtZaHUFyQBrEMzgc7HE7cB6x+vbhB+vgaRL5mGMyjFkvDj2LYPfgmhPEr5mgS6wegARaP/w==}
-
   '@ai-ecoverse/wasm-findutils@4.11.0-5':
     resolution: {integrity: sha512-UNQgX1BFtHUa8HE5M7D1gSZmfl9HztvamvhrZbQENVlKcqZdCiQo/Bzi8WPhklU7+SpglSVe5PFVggLrfKQ1Tw==}
 
-  '@ai-ecoverse/wasm-gawk@5.4.1-6':
-    resolution: {integrity: sha512-7S6fKVNCusNoq47kQb/TkflKVYQ8fGP2D9Ykm0tGHDroZ2h2wGF13Y59+cfHv9UxWKp1FJO6qnxn5I7pBHXBiA==}
-
-  '@ai-ecoverse/wasm-grep@3.12.0-8':
-    resolution: {integrity: sha512-49mo+01fE+gPcH8SX7vs5xZ/SnqpWNcFQrsmNvmTezufdeITf+0qPmXhtSGmqzVF1CEMXIdQlOloYk2/MDzYSw==}
-
-  '@ai-ecoverse/wasm-gzip@1.15.0-6':
-    resolution: {integrity: sha512-9JDnyEE7aZL6s4iHhTNaygGbLcsUzmihL29f/Ps8rVUCd8MVnF3dksEZ02Ir/Lc/vpQeskvKxC/4YK5j4nZOGQ==}
-
-  '@ai-ecoverse/wasm-jq@1.8.2-6':
-    resolution: {integrity: sha512-zjDAtViArXdy68A9UXADP0NhIPu/qY4tusOnNCv+Cl9KK+oJN4dECrirmxhdoWOORxOpko8TxlF6+GOdb+QDbA==}
-
-  '@ai-ecoverse/wasm-less@668.0.0-7':
-    resolution: {integrity: sha512-0okQPLTmhF9PKVuzcmIaBvEhVmSC0CZuji8lXPI3+gReulNUA8qx1xB6KrtTAk74Ak6ea0d0LQ6AmPa1g9BKDw==}
-
-  '@ai-ecoverse/wasm-mount@1.0.0-5':
-    resolution: {integrity: sha512-WkowzMrTZAOPY15XxJ7LtVyyboUelvJlPFQ4HQUswmyXsIEDeOKP1wn1rv6dLp6d8Hax51+QJkOLAMWbDoSkdw==}
-
-  '@ai-ecoverse/wasm-ncurses-utils@6.5.0-6':
-    resolution: {integrity: sha512-gasKlSpf0mt1Y/JjFNAFs/iQH3ACoHv3jiowrrGaRa1WPYgK9qmNkYuPCeX8QG3ASd5F854DEO2WywiWPIeBTA==}
-
-  '@ai-ecoverse/wasm-patch@2.8.0-5':
-    resolution: {integrity: sha512-xoMrYGOwbD43O46JQaQsIQkv7hcP/oVMsDH1F3kgaAFMko0KZXUURm0xtnZVEQMy9JLPlN+dwalKZf93gx17sg==}
-
-  '@ai-ecoverse/wasm-procps@4.0.7-6':
-    resolution: {integrity: sha512-pFRV/plLnZ9bYVIHl2TIDl6bhiqJ32HJn0/UDnsik28JiCWy4sZ1fZjZvsP1l1MaxLscelovaaRzOiQf1QnFkQ==}
-    engines: {slicc-kernel: '>=1.44.0'}
-
-  '@ai-ecoverse/wasm-sed@4.10.0-6':
-    resolution: {integrity: sha512-Gj0vkj1krEK76XvdZqfTLOL5QOdC6hEFuLSo8OYKdcq5/4pwYf45q66CimIVb8ueujpsqlqhXvPn90GmgcBA3w==}
-
-  '@ai-ecoverse/wasm-tar@1.35.0-9':
-    resolution: {integrity: sha512-dcGWf9lUS79Z38+TBnK894n1UGBgQkiefuQLHKPmi24I0wBXbzS63g/IyioMZY7Se1afmx1OOrrZkYiT9Fnilg==}
-
-  '@ai-ecoverse/wasm-tls-engine@4.2.0-12':
-    resolution: {integrity: sha512-s/BeMGFK4SmaoG3l2e7eV9H3iXH2GjHxZzMqKhPufE3WfjaTuL8BziZGCcfA/gd7VtqTldMAXErAQWwpvhG2pg==}
-
-  '@ai-ecoverse/wasm-tree@2.3.2-7':
-    resolution: {integrity: sha512-PUuA1uUboZ3xCfH9ZuQp0ioLe0YzC7WnuiArxwDdDXs7BllmZER/LjxmugSUpx/tbK9+PzNjN8m1YDOFrXPbYg==}
-
-  '@ai-ecoverse/wasm-which@2.23.0-5':
-    resolution: {integrity: sha512-Lrb8NitymJqzsjW7AVYoe+sOtnwX8GOD0cEsxemd3qQrU3OGz8ViuJ1si3RJbkQPvQ1Bga7pt4VJbMVvFpZn2w==}
-
-  '@ai-ecoverse/wasm-xz@5.8.4-8':
-    resolution: {integrity: sha512-AXR23vZMhWmvjFqay8O3v805XoaeFuY9QJBw0g5H1H21iy6YUUtbLutfLuBWg8CLiVg2aDQeqPOoRYr4xd/mLA==}
-    peerDependencies:
-      '@ai-ecoverse/wasm-bash': '*'
-      '@ai-ecoverse/wasm-coreutils': '*'
-      '@ai-ecoverse/wasm-diffutils': '*'
-      '@ai-ecoverse/wasm-grep': '*'
-      '@ai-ecoverse/wasm-less': '*'
-      '@ai-ecoverse/wasm-sed': '*'
-
-  '@huggingface/jinja@0.5.10':
-    resolution: {integrity: sha512-SgS1D1bglQ94ceD4ZCL6eayUDy9uV1xuyk61OjgSxU5GJh7upqZCKII0JoTYMc6wWsg3JUgaPRX0ElQzXPk3Cw==}
-    engines: {node: '>=18'}
-
-  '@huggingface/tokenizers@0.2.0':
-    resolution: {integrity: sha512-LidMHe1FpcSYH4vcSjXooda34pC0M8m1gmDOv7SQi6Iv+ib1zX7J3sHBCC9/3FPCkn2k1b55FneVqMRxrr99pg==}
-
-  '@jsquash/webp@1.5.0':
-    resolution: {integrity: sha512-KggLoj2MnRSfIqTeKe1EmbljTX2vuV7mh79k89PCL1pyqiDULcPM1L47twxXt0hkb68F70bXiL31MxsuoZtKFw==}
-
-  '@protobufjs/aspromise@1.1.2':
-    resolution: {integrity: sha512-j+gKExEuLmKwvz3OgROXtrJ2UG2x8Ch2YZUxahh+s1F2HZ+wAceUNLkvy6zKCPVRkU++ZWQrdxsUeQXmcg4uoQ==}
-
-  '@protobufjs/base64@1.1.2':
-    resolution: {integrity: sha512-AZkcAA5vnN/v4PDqKyMR5lx7hZttPDgClv83E//FMNhR2TMcLUhfRUBHCmSl0oi9zMgDDqRUJkSxO3wm85+XLg==}
-
-  '@protobufjs/codegen@2.0.5':
-    resolution: {integrity: sha512-zgXFLzW3Ap33e6d0Wlj4MGIm6Ce8O89n/apUaGNB/jx+hw+ruWEp7EwGUshdLKVRCxZW12fp9r40E1mQrf/34g==}
-
-  '@protobufjs/eventemitter@1.1.1':
-    resolution: {integrity: sha512-vW1GmwMZNnL+gMRaovlh9yZX74kc+TTU3FObkkurpMaRtBfLP3ldjS9KQWlwZgraRE0+dheEEoAxdzcJQ8eXZg==}
-
-  '@protobufjs/fetch@1.1.1':
-    resolution: {integrity: sha512-GpptLrs57adMSuHi3VNj0mAF8dwh36LMaYF6XyJ6JMWlVsc+t42tm1HSEDmOs3A8fC9yyeisgLhsTVQokOZ0zw==}
-
-  '@protobufjs/float@1.0.2':
-    resolution: {integrity: sha512-Ddb+kVXlXst9d+R9PfTIxh1EdNkgoRe5tOX6t01f1lYWOvJnSPDBlG241QLzcyPdoNTsblLUdujGSE4RzrTZGQ==}
-
-  '@protobufjs/path@1.1.2':
-    resolution: {integrity: sha512-6JOcJ5Tm08dOHAbdR3GrvP+yUUfkjG5ePsHYczMFLq3ZmMkAD98cDgcT2iA1lJ9NVwFd4tH/iSSoe44YWkltEA==}
-
-  '@protobufjs/pool@1.1.0':
-    resolution: {integrity: sha512-0kELaGSIDBKvcgS4zkjz1PeddatrjYcmMWOlAuAPwAeccUrPHdUqo/J6LiymHHEiJT5NrF1UVwxY14f+fy4WQw==}
-
-  '@protobufjs/utf8@1.1.2':
-    resolution: {integrity: sha512-b1UQwcEZ4yCnMCD8DAL1VlbvBJE9/IX4FTIp7BG1xYpf29SLazLSrqUkj4w7Y5y7cCVP6E5tcqqcI0xemPkHug==}
-
-  '@types/node@26.6.5':
-    resolution: {integrity: sha512-uMzsv9stDdofIZBx4UGh4Z9ZgXnGC9seRDscilBcTHAeOFk67MZg/k9bWVfO+bk4qZmG+l52hRnLwUiH2LnJTg==}
-
-  fast-png@8.0.0:
-    resolution: {integrity: sha512-gCysNasJ8KEMgfdYIKd/wTDo6ENK1PWT0RJO7O+0pgmuHPw2O6tA1WvdxFRJoLf9V8yFYpG0FA1YgI8X97OhJA==}
-
-  fflate@0.8.3:
-    resolution: {integrity: sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA==}
-
-  flatbuffers@25.9.23:
-    resolution: {integrity: sha512-MI1qs7Lo4Syw0EOzUl0xjs2lsoeqFku44KpngfIduHBYvzm8h2+7K8YMQh1JtVVVrUvhLpNwqVi4DERegUJhPQ==}
-
-  guid-typescript@1.0.9:
-    resolution: {integrity: sha512-Y8T4vYhEfwJOTbouREvG+3XDsjr8E3kIr7uf+JZ0BYloFsttiHU0WfvANVsR7TxNUJa/WpCnw/Ino/p+DeBhBQ==}
-
-  iobuffer@6.0.1:
-    resolution: {integrity: sha512-SZWYkWNfjIXIBYSDpXDYIgshqtbOPsi4lviawAEceR1Kqk+sHDlcQjWrzNQsii80AyBY0q5c8HCTNjqo74ul+Q==}
-
-  jpeg-js@0.4.4:
-    resolution: {integrity: sha512-WZzeDOEtTOBK4Mdsar0IqEU5sMr3vSV2RqkAIzUEV2BHnUfKGyswWFPFwK5EeDo93K3FohSHbLAjj0s1Wzd+dg==}
-
-  libopus-wasm@0.4.1:
-    resolution: {integrity: sha512-dt2u6KyBe1IONzZA2Q9TXQbmLsZ6l1vLqgt4n9XC/sE70BegLgwC/hcbZp41aJgURAqalYdnPg0wGSI2IwHyvA==}
-    engines: {node: '>=22'}
-
-  long@5.3.2:
-    resolution: {integrity: sha512-mNAgZ1GmyNhD7AuqnTG3/VQ26o760+ZYBPKjPvugO8+nLbYfX6TVpJPseBvopbdY+qpZ/lKUnmEc1LeZYS3QAA==}
-
-  onnxruntime-common@1.30.0:
-    resolution: {integrity: sha512-7fdVWjAID1dVhH/G8qK3APARunV4VkBFoCQAP7qp4Wkab0mrorvmc+sqiT+mKXOzDqdjN5j+/Z9nb4gzNPWcyA==}
-
-  onnxruntime-web@1.30.0:
-    resolution: {integrity: sha512-q0y+JrrtukXSzsBWEMccVfqX25LRmosXHF+CaRJmg8pZClzcV7svNc4rKY3jL02Vb7QmRMDs1SigqR4CXAfKYQ==}
-
-  platform@1.3.6:
-    resolution: {integrity: sha512-fnWVljUchTro6RiCFvCXBbNhJc2NijN7oIQxbwsyL0buWJPG85v81ehlHI9fXrJsMNgTofEoWIQeClKpgxFLrg==}
-
-  protobufjs@7.6.6:
-    resolution: {integrity: sha512-dYDWdjSl5RNb7SgPxGQcRU+GtvP7s2fpkrY0r432PcOIaZ0/rBcxEZnQN67iJhFuQiVw754JDoPruPCNdGsbjg==}
-    engines: {node: '>=12.0.0'}
-
-  undici-types@8.9.0:
-    resolution: {integrity: sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg==}
-
-  wasm-feature-detect@1.9.0:
-    resolution: {integrity: sha512-zonE+xlIIYtxPy++L24ow0hAD8CICb4+FgPyROd3buyXIqsJvUEDkBgfCCoXOd1Hu3DUr0GOfnPIdcGV+YpNaA==}
-
-  ws@8.22.0:
-    resolution: {integrity: sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg==}
-    engines: {node: '>=10.0.0'}
-    peerDependencies:
-      bufferutil: ^4.0.1
-      utf-8-validate: '>=5.0.2'
-    peerDependenciesMeta:
-      bufferutil:
-        optional: true
-      utf-8-validate:
-        optional: true
-
 snapshots:
-
-  '@ai-ecoverse/slicc-audio@1.1.6':
-    optionalDependencies:
-      '@ai-ecoverse/slicc-ortllama': 1.28.0
-    transitivePeerDependencies:
-      - '@ai-ecoverse/jev-omni.js'
-      - '@ai-ecoverse/kev.js'
-      - '@audio/decode-aac'
-      - '@audio/encode-aac'
-      - '@mediabunny/aac-encoder'
-      - '@wllama/wllama'
-      - bufferutil
-      - espeak-ng
-      - mediabunny
-      - onnxruntime-node
-      - phonemize
-      - phonemizer
-      - utf-8-validate
-      - webgpu
 
   '@ai-ecoverse/slicc-browsers@1.18.14': {}
 
-  '@ai-ecoverse/slicc-capture@1.4.1': {}
-
-  '@ai-ecoverse/slicc-cdp@1.42.2': {}
-
-  '@ai-ecoverse/slicc-clipboard@1.1.1': {}
-
   '@ai-ecoverse/slicc-kernel@1.167.4': {}
-
-  '@ai-ecoverse/slicc-ortllama@1.28.0':
-    dependencies:
-      '@huggingface/jinja': 0.5.10
-      '@huggingface/tokenizers': 0.2.0
-      '@jsquash/webp': 1.5.0
-      fast-png: 8.0.0
-      fflate: 0.8.3
-      jpeg-js: 0.4.4
-      libopus-wasm: 0.4.1
-      onnxruntime-web: 1.30.0
-      ws: 8.22.0
-    transitivePeerDependencies:
-      - bufferutil
-      - utf-8-validate
-    optional: true
 
   '@ai-ecoverse/slicc-spectrum@1.107.2': {}
 
-  '@ai-ecoverse/wasi-fnox@1.40.0-1': {}
-
   '@ai-ecoverse/wasi-pnpm@12.9.1-21': {}
-
-  '@ai-ecoverse/wasi-ripgrep@15.2.0-5': {}
 
   '@ai-ecoverse/wasm-bash@5.3.0-23': {}
 
-  '@ai-ecoverse/wasm-bzip2@1.0.8-6': {}
-
   '@ai-ecoverse/wasm-coreutils@9.12.0-15': {}
 
-  '@ai-ecoverse/wasm-curl@8.22.0-10': {}
-
-  '@ai-ecoverse/wasm-diffutils@3.12.0-4': {}
-
   '@ai-ecoverse/wasm-findutils@4.11.0-5': {}
-
-  '@ai-ecoverse/wasm-gawk@5.4.1-6': {}
-
-  '@ai-ecoverse/wasm-grep@3.12.0-8': {}
-
-  '@ai-ecoverse/wasm-gzip@1.15.0-6': {}
-
-  '@ai-ecoverse/wasm-jq@1.8.2-6': {}
-
-  '@ai-ecoverse/wasm-less@668.0.0-7': {}
-
-  '@ai-ecoverse/wasm-mount@1.0.0-5': {}
-
-  '@ai-ecoverse/wasm-ncurses-utils@6.5.0-6': {}
-
-  '@ai-ecoverse/wasm-patch@2.8.0-5': {}
-
-  '@ai-ecoverse/wasm-procps@4.0.7-6': {}
-
-  '@ai-ecoverse/wasm-sed@4.10.0-6': {}
-
-  '@ai-ecoverse/wasm-tar@1.35.0-9': {}
-
-  '@ai-ecoverse/wasm-tls-engine@4.2.0-12': {}
-
-  '@ai-ecoverse/wasm-tree@2.3.2-7': {}
-
-  '@ai-ecoverse/wasm-which@2.23.0-5': {}
-
-  '@ai-ecoverse/wasm-xz@5.8.4-8(@ai-ecoverse/wasm-bash@5.3.0-23)(@ai-ecoverse/wasm-coreutils@9.12.0-15)(@ai-ecoverse/wasm-diffutils@3.12.0-4)(@ai-ecoverse/wasm-grep@3.12.0-8)(@ai-ecoverse/wasm-less@668.0.0-7)(@ai-ecoverse/wasm-sed@4.10.0-6)':
-    dependencies:
-      '@ai-ecoverse/wasm-bash': 5.3.0-23
-      '@ai-ecoverse/wasm-coreutils': 9.12.0-15
-      '@ai-ecoverse/wasm-diffutils': 3.12.0-4
-      '@ai-ecoverse/wasm-grep': 3.12.0-8
-      '@ai-ecoverse/wasm-less': 668.0.0-7
-      '@ai-ecoverse/wasm-sed': 4.10.0-6
-
-  '@huggingface/jinja@0.5.10':
-    optional: true
-
-  '@huggingface/tokenizers@0.2.0':
-    optional: true
-
-  '@jsquash/webp@1.5.0':
-    dependencies:
-      wasm-feature-detect: 1.9.0
-    optional: true
-
-  '@protobufjs/aspromise@1.1.2':
-    optional: true
-
-  '@protobufjs/base64@1.1.2':
-    optional: true
-
-  '@protobufjs/codegen@2.0.5':
-    optional: true
-
-  '@protobufjs/eventemitter@1.1.1':
-    optional: true
-
-  '@protobufjs/fetch@1.1.1':
-    dependencies:
-      '@protobufjs/aspromise': 1.1.2
-    optional: true
-
-  '@protobufjs/float@1.0.2':
-    optional: true
-
-  '@protobufjs/path@1.1.2':
-    optional: true
-
-  '@protobufjs/pool@1.1.0':
-    optional: true
-
-  '@protobufjs/utf8@1.1.2':
-    optional: true
-
-  '@types/node@26.6.5':
-    dependencies:
-      undici-types: 8.9.0
-    optional: true
-
-  fast-png@8.0.0:
-    dependencies:
-      fflate: 0.8.3
-      iobuffer: 6.0.1
-    optional: true
-
-  fflate@0.8.3:
-    optional: true
-
-  flatbuffers@25.9.23:
-    optional: true
-
-  guid-typescript@1.0.9:
-    optional: true
-
-  iobuffer@6.0.1:
-    optional: true
-
-  jpeg-js@0.4.4:
-    optional: true
-
-  libopus-wasm@0.4.1:
-    optional: true
-
-  long@5.3.2:
-    optional: true
-
-  onnxruntime-common@1.30.0:
-    optional: true
-
-  onnxruntime-web@1.30.0:
-    dependencies:
-      flatbuffers: 25.9.23
-      guid-typescript: 1.0.9
-      long: 5.3.2
-      onnxruntime-common: 1.30.0
-      platform: 1.3.6
-      protobufjs: 7.6.6
-    optional: true
-
-  platform@1.3.6:
-    optional: true
-
-  protobufjs@7.6.6:
-    dependencies:
-      '@protobufjs/aspromise': 1.1.2
-      '@protobufjs/base64': 1.1.2
-      '@protobufjs/codegen': 2.0.5
-      '@protobufjs/eventemitter': 1.1.1
-      '@protobufjs/fetch': 1.1.1
-      '@protobufjs/float': 1.0.2
-      '@protobufjs/path': 1.1.2
-      '@protobufjs/pool': 1.1.0
-      '@protobufjs/utf8': 1.1.2
-      '@types/node': 26.6.5
-      long: 5.3.2
-    optional: true
-
-  undici-types@8.9.0:
-    optional: true
-
-  wasm-feature-detect@1.9.0:
-    optional: true
-
-  ws@8.22.0:
-    optional: true

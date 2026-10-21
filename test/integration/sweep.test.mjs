@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { after, test } from 'node:test';
 import { boot, run, shows } from './bios.mjs';
+import { offered } from './catalog.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch();
@@ -10,9 +11,28 @@ after(() => chrome.close());
 const lock = JSON.parse(
   readFileSync(new URL('../../src/packages/package-lock.json', import.meta.url), 'utf8')
 );
-const base = Object.entries(lock.packages)
-  .filter(([path, entry]) => path && entry.resolved && !entry.os && !entry.cpu && !entry.optional)
-  .map(([path, entry]) => ({ name: path.split('node_modules/').at(-1), version: entry.version }));
+const tools = JSON.parse(
+  readFileSync(new URL('../../src/packages/tools.json', import.meta.url), 'utf8')
+);
+const TOOLS = 'opt/slicc/tools/node_modules';
+const base = [
+  ...Object.entries(lock.packages)
+    .filter(([path, entry]) => path && entry.resolved && !entry.os && !entry.cpu && !entry.optional)
+    .map(([path, entry]) => ({
+      name: path.split('node_modules/').at(-1),
+      version: entry.version,
+      at: 'node_modules',
+    })),
+  ...(
+    await Promise.all(
+      Object.keys(tools).map(async (name) => ({
+        name,
+        version: await offered(name).catch(() => null),
+        at: TOOLS,
+      }))
+    )
+  ).filter(({ version }) => version),
+];
 
 const present = (command) => `command -v ${command}`;
 const CALLS = {
@@ -130,31 +150,30 @@ function script(commands) {
 }
 
 async function installed(page) {
-  return page.evaluate(async (names) => {
-    const root = await navigator.storage.getDirectory();
-    const found = {};
-    for (const name of names) {
-      try {
-        let dir = root;
-        for (const part of ['node_modules', ...name.split('/')]) {
-          dir = await dir.getDirectoryHandle(part);
+  return page.evaluate(
+    async (list) => {
+      const root = await navigator.storage.getDirectory();
+      const found = {};
+      for (const { name, at } of list) {
+        try {
+          let dir = root;
+          for (const part of [...at.split('/'), ...name.split('/')]) {
+            dir = await dir.getDirectoryHandle(part);
+          }
+          const file = await (await dir.getFileHandle('package.json')).getFile();
+          const manifest = JSON.parse(await file.text());
+          found[name] = {
+            version: manifest.version,
+            commands: Object.keys(manifest.slicc?.commands ?? {}),
+          };
+        } catch (error) {
+          found[name] = { error: error.message };
         }
-        const file = await (await dir.getFileHandle('package.json')).getFile();
-        const manifest = JSON.parse(await file.text());
-        found[name] = {
-          version: manifest.version,
-          commands: Object.keys(manifest.slicc?.commands ?? {}),
-        };
-      } catch (error) {
-        found[name] = { error: error.message };
       }
-    }
-    return found;
-  }, names(base));
-}
-
-function names(list) {
-  return list.map(({ name }) => name);
+      return found;
+    },
+    base.map(({ name, at }) => ({ name, at }))
+  );
 }
 
 async function put(page, path, text) {
@@ -186,7 +205,7 @@ async function get(page, path) {
   }, path);
 }
 
-test('every base-set command answers --version or a trivial call, and grep, sed, xz, jq, find, diff and patch do real work', async (t) => {
+test('every base-set and tool command answers --version or a trivial call, each tool at the version seven offers, and grep, sed, xz, jq, find, diff and patch do real work', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
   const found = await installed(page);
@@ -196,7 +215,7 @@ test('every base-set command answers --version or a trivial call, and grep, sed,
     const pkg = name.split('/').at(-1);
     for (const command of found[name].commands) commands.push({ pkg, command });
   }
-  assert.ok(commands.length >= 100, `found ${commands.length} base-set commands`);
+  assert.ok(commands.length >= 100, `found ${commands.length} base-set and tool commands`);
   await put(page, `${DIR.slice(1)}/sweep.sh`, script(commands));
   await run(page, `clear; bash ${DIR}/sweep.sh >/dev/null 2>&1; echo "@@SWEEP""-DONE@@"`);
   await shows(page, '@@SWEEP-DONE@@', 840000);

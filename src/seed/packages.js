@@ -330,6 +330,7 @@ async function exactDeps(doc, ctx) {
 }
 
 async function chosen(entry, npm) {
+  if (entry.pin) return npm.version(entry.package, entry.pin);
   if (!entry.range) return npm.latest(entry.package);
   const all = await npm.packument(entry.package);
   const best = Object.entries(all?.versions ?? {})
@@ -392,7 +393,7 @@ export async function look(entry, ctx) {
   const doc = checked(entry.package, found);
   const refused = await refusedFor(entry, doc, ctx);
   if (!refused) return infoOf(entry, doc);
-  const fallback = await older(entry, doc.version, ctx).catch(() => null);
+  const fallback = entry.pin ? null : await older(entry, doc.version, ctx).catch(() => null);
   const newer = { version: doc.version, reason: refused.why };
   if (fallback) return { ...infoOf(entry, fallback), newer };
   return { ...infoOf(entry, doc), withheld: refused.why };
@@ -442,6 +443,20 @@ export function createNpm({ base, shipped = base, sources, bundled, have, fetche
     return found.find(Boolean) ?? null;
   }
 
+  async function judged(lock) {
+    const ctx = await context();
+    ctx.pins = [...lock.keys(), ...shipped.keys()];
+    const found = await Promise.all(
+      [...lock].map(async ([one, integrity]) => [
+        one,
+        await judge(one, integrity, ctx).catch((error) =>
+          no(`couldn't check ${one} on npm (${error.message.split('\n')[0]})`)
+        ),
+      ])
+    );
+    return new Map(found);
+  }
+
   async function denied(keys, lock) {
     const ctx = await context();
     const pins = [...lock.keys(), ...shipped.keys()];
@@ -473,11 +488,11 @@ export function createNpm({ base, shipped = base, sources, bundled, have, fetche
     return ok;
   }
 
-  async function offer(entry) {
-    return look(entry, await context());
+  async function offer(entry, verdicts = null) {
+    return look(entry, await context(verdicts));
   }
 
-  return { lookAll, gate, admitted, denied, offer };
+  return { lookAll, gate, judged, admitted, denied, offer };
 }
 
 export async function readCache(root) {

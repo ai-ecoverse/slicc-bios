@@ -397,10 +397,11 @@ export async function versions(dir, names, prefix = '') {
   return found;
 }
 
-async function install(kernel, from, report, record) {
+async function install(kernel, from, report, record, ready) {
   const root = await navigator.storage.getDirectory();
   const lock = await fetchText('pnpm-lock.yaml', from);
   if (lock === (await text(root, 'var/lib/slicc/pnpm-lock.yaml'))) return null;
+  await ready();
   const manifest = await fetchText('package.json', from);
   const names = Object.keys(JSON.parse(manifest).dependencies ?? {});
   const before = await versions(root, names);
@@ -432,6 +433,11 @@ async function install(kernel, from, report, record) {
     .map((name) => ({ name, from: before[name], to: after[name] }));
 }
 
-export function update(kernel, { from = deployed, report = () => {}, record = installer } = {}) {
-  return navigator.locks.request('slicc-packages', () => install(kernel, from, report, record));
+export function update(
+  kernel,
+  { from = deployed, report = () => {}, record = installer, ready = async () => {} } = {}
+) {
+  return navigator.locks.request('slicc-packages', () =>
+    install(kernel, from, report, record, ready)
+  );
 }

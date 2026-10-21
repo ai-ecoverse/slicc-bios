@@ -345,17 +345,46 @@ async function add([path, entry], changed, stamps, fresh = new Set()) {
   return bytes.byteLength;
 }
 
-async function prune(locked) {
+const TOOLS = 'opt/slicc/tools/node_modules';
+
+async function moved(from) {
+  const response = await fetch(new URL('tools.json', from)).catch(() => null);
+  if (!response?.ok) return new Set();
+  const names = Object.keys(await response.json().catch(() => ({})));
+  const waiting = new Set();
+  for (const name of names) {
+    const there = await read(`${TOOLS}/${name}/package.json`).catch(() => null);
+    if (!there) waiting.add(`node_modules/${name}`);
+  }
+  return waiting;
+}
+
+async function drop(path) {
+  await remove(path);
+  await remove(`var/lib/bios/${path}.json`);
+  await (await integrity()).forget(path);
+}
+
+async function prune(locked, kept = new Set()) {
   const receipts = await list(await directory(['var', 'lib', 'bios']), '');
   const stale = receipts
     .map((receipt) => receipt.path.replace(/\.json$/, ''))
-    .filter((path) => !locked.has(path));
-  for (const path of stale) {
-    await remove(path);
-    await remove(`var/lib/bios/${path}.json`);
-    await (await integrity()).forget(path);
-  }
+    .filter((path) => !locked.has(path) && !kept.has(path));
+  for (const path of stale) await drop(path);
   return stale.length;
+}
+
+async function retire({ names }) {
+  const gone = [];
+  for (const name of names) {
+    const path = `node_modules/${name}`;
+    const there = await read(`${TOOLS}/${name}/package.json`).catch(() => null);
+    const receipt = await read(`var/lib/bios/${path}.json`).catch(() => null);
+    if (!there || !receipt) continue;
+    await drop(path);
+    gone.push(name);
+  }
+  return { retired: gone };
 }
 
 async function packages({ from, held = false, base = '' }, progress) {
@@ -436,7 +465,7 @@ async function replay(from, progress, base) {
     const queue = Object.entries(lock.packages).filter(
       ([path, entry]) => path && entry.resolved && !entry.os && !entry.cpu && !entry.optional
     );
-    const removed = await prune(new Set(queue.map(([path]) => path)));
+    const removed = await prune(new Set(queue.map(([path]) => path)), await moved(from));
     const tampered = (await ledger.tampered()).filter((path) => path.startsWith('/node_modules/'));
     const names = queue.map(([path]) => path);
     const changed = new Set(tampered.map((path) => owner(path, names)).filter(Boolean));
@@ -526,6 +555,7 @@ const ops = {
   install,
   list: async () => (await list(await root, '')).sort((a, b) => (a.path < b.path ? -1 : 1)),
   packages,
+  retire,
 };
 
 self.onconnect = ({ ports: [port] }) => {

@@ -50,7 +50,7 @@ export async function boot(page, prompts = [prompt]) {
 
 export const prompt = 'slicc:/home# ';
 
-export async function ready(page, prompts = [prompt]) {
+export async function ready(page, prompts = [prompt], { tools = true } = {}) {
   await page.until(
     () =>
       location.pathname === '/os/' &&
@@ -74,6 +74,14 @@ export async function ready(page, prompts = [prompt]) {
     )?.screen?.textContent;
     return !!text && prompts.some((wanted) => text.includes(wanted));
   }, prompts);
+  if (tools) await toolsSettled(page);
+}
+
+export async function toolsSettled(page, ms = 10 * 60 * 1000) {
+  await page.within(ms, () => {
+    const at = document.documentElement.dataset.tools;
+    return !!at && at !== 'installing';
+  });
 }
 
 export async function rowSettled(page, id, ms = 10 * 60 * 1000) {

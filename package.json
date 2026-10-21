@@ -23,6 +23,7 @@
     "src/packages/package-lock.json",
     "src/packages/pnpm-lock.yaml",
     "src/packages/certs.json",
+    "src/packages/tools.json",
     "src/packages/agent/package.json",
     "src/packages/agent/pnpm-lock.yaml",
     "src/packages/optional/catalog.json",
