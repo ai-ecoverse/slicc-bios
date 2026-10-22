@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@ai-ecoverse/slicc-browsers':
-        specifier: 1.13.5
-        version: 1.13.5
+        specifier: 1.18.1
+        version: 1.18.1
       '@ai-ecoverse/slicc-cdp':
         specifier: 1.30.18
         version: 1.30.18
@@ -98,8 +98,8 @@ importers:
 
 packages:
 
-  '@ai-ecoverse/slicc-browsers@1.13.5':
-    resolution: {integrity: sha512-g1sNUBWX53Rkc26GtYJ2muKQ79nyQ+dK+AJExNBcYqI5JfTF6Ra2q5LSrlFDPFZqKDqDc7q2LIXrFg5ebwvWQg==}
+  '@ai-ecoverse/slicc-browsers@1.18.1':
+    resolution: {integrity: sha512-D5C6nZlDnLhnFwPUc7sYKSvzFLJLgl++DNSit/Pq4IHTC/gsDQd7aQuQmseWyJcR23ma/nQRAezPie2D+A3oHQ==}
     engines: {node: '>=24'}
 
   '@ai-ecoverse/slicc-cdp@1.30.18':
@@ -207,7 +207,7 @@ packages:
 
 snapshots:
 
-  '@ai-ecoverse/slicc-browsers@1.13.5': {}
+  '@ai-ecoverse/slicc-browsers@1.18.1': {}
 
   '@ai-ecoverse/slicc-cdp@1.30.18': {}
 
