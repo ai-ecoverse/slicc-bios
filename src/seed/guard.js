@@ -350,7 +350,11 @@ const PUBLIC = {
 
 const normalHost = (host) => host.toLowerCase().replace(/\.$/, '');
 
-function readable(url) {
+const PROSE = /[.,;:!?)\]}'"]+$/;
+const ENCODED_DOT = /(?:%(?:25)*2e|\\x2e|\\u002e|&#0*46;?|&#x0*2e;?)$/i;
+
+function readable(text) {
+  const url = text.replace(PROSE, '');
   if (!URL.canParse(url)) return false;
   const parsed = new URL(url);
   if (parsed.username || parsed.password || parsed.search || parsed.hash) return false;
@@ -408,7 +412,8 @@ export function redacting(is) {
     const coded = scanned(raw, ENCODED_STARTS, ENCODED_STOPS, encoded);
     return coded.replace(HOSTS, (found, host, port, offset) => {
       const labels = labelsBefore(coded, offset);
-      if (!readable(`http://${labels}${decoded(found)}`)) webs += 1;
+      const before = coded.slice(Math.max(0, offset - labels.length - 12), offset - labels.length);
+      if (ENCODED_DOT.test(before) || !readable(`http://${labels}${decoded(found)}`)) webs += 1;
       return `${host}${port}`;
     });
   };

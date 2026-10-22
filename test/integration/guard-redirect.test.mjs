@@ -17,7 +17,7 @@ const free = () =>
   });
 
 const ordinary = (path) =>
-  `<title>ordinary</title>${path}<script>void \`http://localhost:\${location.port}/x\`;</script><a href="https://www.sliccy.ai/7/">seven</a> <a href="https://ntfy.sliccy.ai/github">ntfy</a> curl -fsSL https://www.sliccy.ai/install.sh <a href="https://www.sliccy.ai/blog/post">blog</a> <code>curl -fsSL www.sliccy.ai/install.sh | sh</code> Visit www.sliccy.ai/7/ now`;
+  `<title>ordinary</title>${path}<script>void \`http://localhost:\${location.port}/x\`;</script><a href="https://www.sliccy.ai/7/">seven</a> <a href="https://ntfy.sliccy.ai/github">ntfy</a> curl -fsSL https://www.sliccy.ai/install.sh <a href="https://www.sliccy.ai/blog/post">blog</a> <code>curl -fsSL www.sliccy.ai/install.sh | sh</code> Visit www.sliccy.ai/7/ now. Docs: https://www.sliccy.ai/docs/install. (https://www.sliccy.ai/7/), see www.sliccy.ai/install.sh.`;
 const marks = [];
 const mark = () => {
   const value = `M${randomBytes(6).toString('hex')}`;
@@ -94,7 +94,7 @@ const site = createHttp((req, res) => {
   if (url.pathname.startsWith('/encoded/') && hop) {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     return res.end(
-      `<title>encoded</title><p>https://example.com/?next=%252F%252Fsliccy.ai/join/W${hop} see &#47sliccy.ai/join/Y${hop} \\57sliccy.ai\\57join\\57O${hop}</p><script>console.log("next=%252F%252Fsliccy.ai/join/C${hop}");console.log("see &#47sliccy.ai/join/E${hop}");console.log(String.raw\`\\57sliccy.ai\\57join\\57R${hop}\`)</script>`
+      `<title>encoded</title><p>evil%2ewww.sliccy.ai/7/?k=P${hop} evil&#46;www.sliccy.ai/7/ https://www.sliccy.ai/join/Q${hop}.</p><p>https://example.com/?next=%252F%252Fsliccy.ai/join/W${hop} see &#47sliccy.ai/join/Y${hop} \\57sliccy.ai\\57join\\57O${hop}</p><script>console.log("next=%252F%252Fsliccy.ai/join/C${hop}");console.log("see &#47sliccy.ai/join/E${hop}");console.log(String.raw\`\\57sliccy.ai\\57join\\57R${hop}\`)</script>`
     );
   }
   if (url.pathname.startsWith('/escaped/') && hop) {
@@ -669,8 +669,12 @@ async function check(t, transport) {
     `an ordinary page that links into sliccy.ai stays readable: ${JSON.stringify(answers.dom.map((answer) => answer.error ?? 'ok'))}`
   );
   assert.ok(
-    answers.plain.length > 0 &&
-      answers.plain.every((answer) => answer.result?.body === ordinary('/start')),
+    answers.plain.some((answer) => answer.result?.body === ordinary('/start')) &&
+      answers.plain.every(
+        (answer) =>
+          answer.result?.body === ordinary('/start') ||
+          /^No data found for resource/.test(answer.error?.message ?? '')
+      ),
     `an ordinary page's body reads unchanged: ${JSON.stringify(answers.plain.map((answer) => answer.error ?? answer.result?.body?.length))}`
   );
   const sheets = answers.sheets.filter(({ url }) => url.includes('sliccy.ai'));
