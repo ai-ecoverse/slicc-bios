@@ -10,6 +10,12 @@ export const KNOWN = {
   ],
 };
 const RECOVERY = new Set(['reload', 'blank', 'close', 'attachRedacted']);
+const NOT_LIVE_ON_EXTENSION = new Set([
+  'C8.protected-error-page-sticky.query',
+  'C8.protected-error-page-sticky.fragment',
+]);
+const unmet = (items) =>
+  items.every((item) => /^[A-Za-z]+: got (?:false|undefined), want true$/.test(item));
 const ABSENT = new Set(['listRedacted', 'infoRedacted']);
 
 export function listedWrong(text) {
@@ -46,14 +52,12 @@ const issue = (id) => Object.keys(KNOWN).find((key) => KNOWN[key].includes(id));
 export function known(row, { listed = false } = {}) {
   const reason = issue(row.id);
   if (!reason || row.control !== 'pass' || row.guarded !== 'fail') return null;
-  if (row.transport === 'proxy') {
-    const items = (row.why ?? '').split('; ');
-    const absent = items
-      .slice(0, -1)
-      .every((item) => /^[A-Za-z]+: got (?:false|undefined), want true$/.test(item));
-    if (row.live === 'fail') {
-      return !listed && items.at(-1) === 'not live' && absent ? reason : null;
-    }
+  const items = (row.why ?? '').split('; ');
+  if (row.live === 'fail') {
+    const tolerated = row.transport === 'proxy' || NOT_LIVE_ON_EXTENSION.has(row.id);
+    return tolerated && !listed && items.at(-1) === 'not live' && unmet(items.slice(0, -1))
+      ? reason
+      : null;
   }
   const failed = checks(row.why);
   const allowed = (check) => RECOVERY.has(check) || ABSENT.has(check);
