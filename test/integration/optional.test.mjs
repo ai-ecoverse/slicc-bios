@@ -44,17 +44,22 @@ test('the optional catalog lists packages and pins none: no package.json or lock
       assert.ok(Object.hasOwn(retired, gone), `${name} replaces ${gone}, which isn't retired`);
     if (entry.source) {
       assert.match(entry.source.repo, /^ai-ecoverse\/[\w.-]+$/, name);
-      assert.match(entry.source.workflow, /^\.github\/workflows\/[\w.-]+\.ya?ml$/, name);
+      for (const workflow of [entry.source.workflow].flat())
+        assert.match(workflow, /^\.github\/workflows\/[\w.-]+\.ya?ml$/, name);
     } else assert.match(name, HOMESCOOPED, `${name} is homescoop's, from its ladder at main`);
   }
   assert.deepEqual(await read('sources.json'), { '@ai-ecoverse/slicc-cdp': { certified: 'tag' } });
   const named = Object.entries(catalog).filter(([, entry]) => entry.source);
   assert.deepEqual(
     Object.fromEntries(
-      named.map(([name, entry]) => [name, `${entry.source.repo} ${entry.source.workflow}`])
+      named.map(([name, entry]) => [
+        name,
+        `${entry.source.repo} ${[entry.source.workflow].flat().join(' ')}`,
+      ])
     ),
     {
-      '@ai-ecoverse/wasi-slicc': 'ai-ecoverse/slicc-cli .github/workflows/release.yml',
+      '@ai-ecoverse/wasi-slicc':
+        'ai-ecoverse/slicc-cli .github/workflows/release.yml .github/workflows/ci.yml',
       '@ai-ecoverse/slicc-jsh': 'ai-ecoverse/slicc-jsh .github/workflows/release.yml',
       '@ai-ecoverse/sliccy-browser':
         'ai-ecoverse/slicc-cdp .github/workflows/publish-sliccy-browser.yml',

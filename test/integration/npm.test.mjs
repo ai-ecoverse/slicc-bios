@@ -789,6 +789,26 @@ test('a new publisher’s release built by another repo, another workflow or a m
   }
 });
 
+test('wasi-slicc built by slicc-cli’s ci.yml on main, its pipeline after #903, is offered after the release.yml builds, while slicc-jsh from its own ci.yml isn’t', async () => {
+  const cli = '@ai-ecoverse/wasi-slicc';
+  const pipeline = { ...CLI, path: '.github/workflows/ci.yml' };
+  const releases = [
+    { name: cli, version: '1.47.2', built: CLI },
+    { name: cli, version: '1.47.3', built: pipeline },
+  ];
+  const { npm, byName } = await shipped(releases);
+  const info = (await npm.lookAll([byName.get(cli)], new Map())).get(cli);
+  assert.deepEqual([info.version, info.newer], ['1.47.3', undefined]);
+  assert.equal(await npm.gate(lockOf(`${cli}@1.47.3`), `${cli}@1.47.3`), null);
+  const jsh = '@ai-ecoverse/slicc-jsh';
+  const own = { ...PUBLISHERS[jsh].built, path: '.github/workflows/ci.yml' };
+  const other = await shipped(releasesOf(jsh, { built: own }));
+  const found = (await other.npm.lookAll([other.byName.get(jsh)], new Map())).get(jsh);
+  const reason =
+    "slicc-jsh 0.52.2 wasn't built by ai-ecoverse/slicc-jsh's release workflow on main";
+  assert.deepEqual([found.version, found.newer], ['0.52.1', { version: '0.52.2', reason }]);
+});
+
 test('wasi-slicc 1.44.4, which its source denies, and anything before its since are never offered, from npm or as an exact match in certs.json', async () => {
   const name = '@ai-ecoverse/wasi-slicc';
   const releases = ['1.44.0', '1.44.3', '1.44.4'].map((version) => ({ name, version, built: CLI }));
