@@ -245,6 +245,34 @@ test('the gate refuses a version npm marks deprecated, whoever built it, and adm
   }
 });
 
+test('a throw anywhere in the check refuses, never passes: npm’s version answer, the attestation fetch, and a certs.json match whose npm answer throws', async () => {
+  const it = key(GIT);
+  const version = `${REGISTRY}${GIT.name}/${encodeURIComponent(GIT.version)}`;
+  const attestation = `${REGISTRY}-/npm/v1/attestations/${GIT.name.replace('/', '%2f')}@${GIT.version}`;
+  for (const url of [version, attestation]) {
+    const { npm } = gate([GIT], { failing: new Set([url]) });
+    assert.deepEqual(await npm.gate(lockOf(it), it), {
+      why: `couldn't check ${it} on npm (Failed to fetch)`,
+    });
+  }
+  const entry = { id: 'git', label: 'git', package: GIT.name };
+  const listing = gate([GIT], { failing: new Set([attestation]) }).npm;
+  const info = (await listing.lookAll([entry], new Map())).get(GIT.name);
+  assert.ok(!info || info.withheld, 'a listing whose attestation fetch throws offers nothing');
+  const exact = { name: '@ai-ecoverse/wasi-slicc', version: '1.44.7' };
+  const at = `${REGISTRY}${exact.name}/${exact.version}`;
+  const { npm } = gate([exact], { failing: new Set([at]) });
+  const lock = `lockfileVersion: '9.0'\n\npackages:\n\n  '${key(exact)}':\n    resolution: {integrity: ${integrityOf(key(exact))}}\n`;
+  const certs = async () => ({ [key(exact)]: { integrity: integrityOf(key(exact)) } });
+  const none = async () => new Set();
+  assert.deepEqual(
+    await untested(lock, `lockfileVersion: '9.0'\n`, certs, none, (keys, all) =>
+      npm.denied(keys, all)
+    ),
+    [key(exact)]
+  );
+});
+
 test('homescoop’s certification exceptions deny: the bundled copy always, the live one too, and a live file can never grant', async () => {
   const numpy = { name: '@ai-ecoverse/py-numpy', version: '2.3.2-5' };
   const fresh = { name: '@ai-ecoverse/py-numpy', version: '2.5.4-1' };
