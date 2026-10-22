@@ -166,27 +166,27 @@ test("a second tab whose check for SLICC 6's upgrade page answers after the firs
   state.mode = 'ok';
   const page = await open(t);
   await runSix(page);
+  const other = await page.tab();
+  const six = await dialog(other);
+  await page.send('Page.bringToFront');
   await page.goto(`${origin}/7/`);
   await showing(page, 'asking');
   let release;
   state.hold = new Promise((done) => {
     release = done;
   });
-  const other = await page.tab();
-  const six = await dialog(other);
   const late = other.goto(`${origin}/7/`);
   for (const until = Date.now() + 60000; state.hold !== null; ) {
     assert.ok(Date.now() < until, 'the second tab never asked for the upgrade page');
     await new Promise((done) => setTimeout(done, 50));
   }
-  await page.send('Page.bringToFront');
   await page.evaluate(() => document.querySelector('.six-move').click());
   await ready(page);
   const moved = await storage(page);
   assert.equal(moved.marker, 'upgraded');
+  await other.send('Page.bringToFront');
   release();
   await late;
-  await other.send('Page.bringToFront');
   await ready(other);
   assert.deepEqual(six.states(), []);
   assert.deepEqual(six.framed(), []);
