@@ -1,6 +1,6 @@
 {
   "@ai-ecoverse/slicc-cdp": {
     "repo": "ai-ecoverse/slicc-cdp",
-    "workflow": ".github/workflows/release.yml"
+    "workflow": [".github/workflows/release.yml", ".github/workflows/ci.yml"]
   }
 }

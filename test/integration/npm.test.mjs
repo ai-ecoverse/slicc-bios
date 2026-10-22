@@ -128,7 +128,7 @@ function gate(releases, options = {}) {
   const sources = {
     '@ai-ecoverse/slicc-cdp': {
       repo: 'ai-ecoverse/slicc-cdp',
-      workflow: '.github/workflows/release.yml',
+      workflow: ['.github/workflows/release.yml', '.github/workflows/ci.yml'],
     },
     '@ai-ecoverse/sliccy-browser': {
       repo: 'ai-ecoverse/slicc-cdp',
@@ -798,6 +798,39 @@ test('with no optional pins, the catalog names the publishers of slicc-jsh, mcpc
     const lock = name.endsWith('sliccy-browser') ? lockOf(it, key(CDP)) : lockOf(it);
     assert.equal(await npm.gate(lock, it), null, name);
   }
+});
+
+test('a publisher on shared-web’s pipeline releases from ci.yml: a ci.yml build at refs/heads/main is offered, from a branch or under another name it isn’t', async () => {
+  const PIPELINE = '.github/workflows/ci.yml';
+  for (const [name, { versions, built }] of Object.entries(PUBLISHERS)) {
+    const [good, latest] = versions;
+    const repo = built.repository;
+    const fresh = await shipped([
+      CDP,
+      ...releasesOf(name, { built: { ...built, path: PIPELINE } }),
+    ]);
+    const info = (await fresh.npm.lookAll([fresh.byName.get(name)], new Map())).get(name);
+    assert.deepEqual([info.version, info.newer], [latest, undefined], name);
+    for (const change of [{ ref: 'refs/heads/next' }, { path: '.github/workflows/ci.yaml' }]) {
+      const bad = await shipped([
+        CDP,
+        ...releasesOf(name, { built: { ...built, path: PIPELINE, ...change } }),
+      ]);
+      const row = (await bad.npm.lookAll([bad.byName.get(name)], new Map())).get(name);
+      assert.deepEqual(
+        [row.version, row.newer?.reason],
+        [good, `${name.slice(13)} ${latest} wasn't built by ${repo}'s release workflow on main`],
+        `${name} ${JSON.stringify(change)}`
+      );
+    }
+  }
+  const browser = '@ai-ecoverse/sliccy-browser';
+  const piped = await shipped([
+    { ...CDP, built: { ...CDP_RELEASE, path: PIPELINE } },
+    ...releasesOf(browser),
+  ]);
+  const row = (await piped.npm.lookAll([piped.byName.get(browser)], new Map())).get(browser);
+  assert.deepEqual([row.version, row.withheld], ['0.1.41', undefined], 'a slicc-cdp from ci.yml');
 });
 
 test('a new publisher’s release built by another repo, another workflow or a maintenance branch isn’t offered: the row lists it and offers the newest release that passes', async () => {

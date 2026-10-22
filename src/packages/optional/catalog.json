@@ -68,7 +68,7 @@
     "requires": ["node"],
     "source": {
       "repo": "ai-ecoverse/slicc-cdp",
-      "workflow": ".github/workflows/publish-sliccy-browser.yml"
+      "workflow": [".github/workflows/publish-sliccy-browser.yml", ".github/workflows/ci.yml"]
     },
     "notes": ["Seven's own tab and the vault stay out of reach."]
   },
