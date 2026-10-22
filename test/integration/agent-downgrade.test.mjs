@@ -4,7 +4,7 @@ import { agentUp, boot, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const OLDER =
-  'This profile was opened by a newer agent, and its sessions can’t be opened by the agent seven runs now. Seven didn’t start it. Install the newer agent again from Install / Update, or wait until seven ships it.';
+  'This profile was opened by a newer agent, and its sessions can’t be opened by the agent seven runs now. Seven didn’t start it. Turn on Developer mode and install the newer agent from Install / Update, or wait until seven ships it.';
 
 const chrome = await launch({ agent: true, timeout: 120000 });
 after(() => chrome.close());
@@ -58,6 +58,21 @@ test('seven never starts a 6.x agent on a profile a 7.x agent opened, by the age
   await t.test('an unreadable marker refuses it too', async () => {
     await marker(page, 'not json');
     assert.equal((await refused(page)).error, OLDER);
+  });
+
+  await t.test('a marker that exists but can’t be read as a file refuses it', async () => {
+    await marker(page, null);
+    await page.evaluate(async () => {
+      const root = await navigator.storage.getDirectory();
+      const dir = await root.getDirectoryHandle('.slicc', { create: true });
+      await dir.getDirectoryHandle('agent-profile.json', { create: true });
+    });
+    assert.equal((await refused(page)).error, OLDER);
+    await page.evaluate(async () => {
+      const root = await navigator.storage.getDirectory();
+      const dir = await root.getDirectoryHandle('.slicc');
+      await dir.removeEntry('agent-profile.json', { recursive: true });
+    });
   });
 
   await t.test('seven’s own record of a 7.x agent refuses it with no marker', async () => {

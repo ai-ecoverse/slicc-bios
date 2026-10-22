@@ -1,32 +1,38 @@
-import { text } from './update.js';
-
-export const MARKER = '.slicc/agent-profile.json';
+export const MARKER = ['.slicc', 'agent-profile.json'];
 export const STARTED = 'slicc-os.agent-schema';
+export const KNOWN = 2;
 export const OLDER =
-  'This profile was opened by a newer agent, and its sessions can’t be opened by the agent seven runs now. Seven didn’t start it. Install the newer agent again from Install / Update, or wait until seven ships it.';
+  'This profile was opened by a newer agent, and its sessions can’t be opened by the agent seven runs now. Seven didn’t start it. Turn on Developer mode and install the newer agent from Install / Update, or wait until seven ships it.';
 
 export function schemaOf(version) {
   const major = Number(String(version ?? '').split('.')[0]);
   return Number.isInteger(major) && major >= 7 ? 2 : 1;
 }
 
-export async function profileSchema(root, storage = globalThis.localStorage) {
-  const kept = Number(storage?.getItem(STARTED) ?? 0) || 0;
-  const data = await text(root, MARKER);
-  if (data === null) return kept;
+async function marker(root) {
+  let data;
+  try {
+    const dir = await root.getDirectoryHandle(MARKER[0]);
+    data = await (await (await dir.getFileHandle(MARKER[1])).getFile()).text();
+  } catch (error) {
+    return error?.name === 'NotFoundError' ? 0 : KNOWN;
+  }
   try {
     const schema = JSON.parse(data)?.durableSchema;
-    if (!Number.isInteger(schema) || schema < 1) return Number.POSITIVE_INFINITY;
-    return Math.max(kept, schema);
+    return Number.isInteger(schema) && schema >= 1 ? schema : KNOWN;
   } catch {
-    return Number.POSITIVE_INFINITY;
+    return KNOWN;
   }
+}
+
+export async function profileSchema(root, storage = globalThis.localStorage) {
+  const kept = Number(storage?.getItem(STARTED) ?? 0) || 0;
+  return Math.max(kept, await marker(root));
 }
 
 export async function mayStart(version, { root, storage = globalThis.localStorage } = {}) {
   const wanted = schemaOf(version);
-  const profile = await profileSchema(root, storage);
-  if (wanted < profile)
+  if (wanted < (await profileSchema(root, storage)))
     throw Object.assign(new Error(`agent ${version} is older than this profile`), {
       plain: OLDER,
       older: true,
