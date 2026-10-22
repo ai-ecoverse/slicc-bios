@@ -189,6 +189,8 @@ test('slicc-cdp#377: the kernel facade and slicc-cli link drive ordinary tabs wi
   assert.match(userSnapshot, /LINK-DRIVEN/);
   assert.match(userSnapshot, /[a-p]{32}/);
   assert.match(userSnapshot, /exit-0/);
+  const activated = await fetch(`http://127.0.0.1:${port}/json/activate/${user}`);
+  assert.equal(activated.status, 200, 'the user tab comes to the front for the click');
   const clicked = await shell(
     page,
     `playwright-cli click --tab ${user} ${ref(userSnapshot, 'Click me')} && playwright-cli eval --tab ${user} 'document.title'`,
@@ -206,6 +208,8 @@ test('slicc-cdp#377: the kernel facade and slicc-cli link drive ordinary tabs wi
   assert.match(fresh, /LINK-DRIVEN/);
   assert.match(fresh, /[a-p]{32}/);
   assert.match(fresh, /exit-0/);
+  const front = await fetch(`http://127.0.0.1:${port}/json/activate/${freshId}`);
+  assert.equal(front.status, 200, 'the fresh tab comes to the front for the click');
   const driven = await shell(
     page,
     `playwright-cli click ${ref(fresh, 'Click me')} && playwright-cli eval 'document.title'`,

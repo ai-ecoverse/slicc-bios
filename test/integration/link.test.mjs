@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { createServer, request } from 'node:http';
 import { createInterface } from 'node:readline';
 import { after, test } from 'node:test';
 import { boot, ready, run } from './bios.mjs';
-import { launch } from './chrome.mjs';
+import { debuggerUrl, launch } from './chrome.mjs';
 import { attach, CLI, HOST_CDP } from './cli.mjs';
 import { shoot } from './shots.mjs';
 
@@ -979,39 +978,13 @@ test('the real slicc CLI carries <port>.kernel.localhost into the page, and the 
 test('the real slicc CLI shares another browser over cdp: the 9222 facade reaches it as <device>/<browser>, and a walk to seven’s origin never loads there', {
   skip: !cli,
 }, async (t) => {
-  const { findBrowser } = await import('@ai-ecoverse/slicc-cdp');
-  const browser = await findBrowser();
-  assert.ok(browser, 'slicc-cdp finds the Chrome for Testing that npm test installs');
-  const { mkdtemp } = await import('node:fs/promises');
-  const { tmpdir } = await import('node:os');
-  const { join } = await import('node:path');
   const probe = createServer();
   await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
   const debugPort = probe.address().port;
   await new Promise((resolve) => probe.close(resolve));
-  const profile = await mkdtemp(join(tmpdir(), 'link-cdp-'));
-  const other = spawn(
-    browser.executable,
-    [
-      '--headless=new',
-      `--remote-debugging-port=${debugPort}`,
-      `--user-data-dir=${profile}`,
-      '--no-first-run',
-      ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
-      'about:blank',
-    ],
-    { stdio: 'ignore' }
-  );
-  t.after(() => other.kill());
-  let up = false;
-  for (let i = 0; i < 120 && !up; i += 1) {
-    up = await fetch(`http://127.0.0.1:${debugPort}/json/version`).then(
-      (r) => r.ok,
-      () => false
-    );
-    if (!up) await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  assert.ok(up, 'the second Chromium answers on its debugging port');
+  const other = await launch({ vault: false, args: [`--remote-debugging-port=${debugPort}`] });
+  t.after(() => other.close());
+  await debuggerUrl(debugPort);
   const page = await chrome.page(t);
   await boot(page);
   await ready(page);
