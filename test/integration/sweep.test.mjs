@@ -56,6 +56,8 @@ const CALLS = {
   xsel: 'xsel --help',
   'wl-copy': 'wl-copy --help',
   'wl-paste': 'wl-paste --help',
+  sccopy: 'sccopy --help',
+  scpaste: 'scpaste --help',
 };
 const SHELL = new Set(['yes', '[']);
 const EXITS = {
