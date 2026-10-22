@@ -25,7 +25,7 @@ import { browserControl } from './cdp.js';
 import { clipboardHook } from './clipboard.js';
 import { denialLog, installCommand, watchProtected } from './denials.js';
 import { createExitRouter } from './exits.js';
-import { LINK_PORT, LINK_URL, linkFacade, permitted } from './facade.js';
+import { LINK_PORT, LINK_URL, linkFacade, permitted, trayRequests } from './facade.js';
 import { deviceName, hubClient } from './follow.js';
 import { createFollowers } from './followers.js';
 import {
@@ -746,6 +746,7 @@ async function own() {
     check: async (stamp) => permitted(stamp, await sudoGidOf(kernel).catch(() => undefined)),
     leaders,
     scrub: vault.scrubText,
+    trays: trayRequests({ tray, network: reach.port, hub, ask: approvals.askTray }),
     refused: ({ pid, uid, tag }) =>
       denials({ pid, uid, tag, op: 'connect', path: LINK_URL, errno: 'EACCES' }),
   });
