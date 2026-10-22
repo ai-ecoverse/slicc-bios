@@ -25,9 +25,9 @@ export const MOVED = 'var/lib/slicc/optional/moved';
 
 const COMMAND = /^[A-Za-z0-9][\w.+-]*$/;
 const UNSHADOW =
-  'b=$1; o=$2; l=$3; shift 3; for n in "$@"; do f="$b/$n"; [ -e "$f" ] || [ -L "$f" ] || continue; [ "$(readlink "$f" 2>/dev/null)" = "/usr/bin/$n" ] && continue; case "$(readlink -f "$f" 2>/dev/null)" in *"$o"*) ;; *) grep -qsF -- "$o" "$f" || continue ;; esac; if [ "$l" = link ]; then t="$b/.$n.slicc"; rm -f -- "$t"; ln -s -- "/usr/bin/$n" "$t" && mv -f -- "$t" "$f" || { rm -f -- "$t"; exit 1; }; else rm -f -- "$f" || exit 1; fi; echo "$n"; done';
+  'b=$1; o=$2; l=$3; shift 3; for n in "$@"; do f="$b/$n"; [ -e "$f" ] || [ -L "$f" ] || continue; [ "$(readlink "$f" 2>/dev/null)" = "/usr/bin/$n" ] && continue; case "$(readlink -f "$f" 2>/dev/null)" in *"$o"*) ;; *) grep -qsF -- "$o" "$f" || continue ;; esac; if [ "$l" = link ]; then t="$b/.$n.slicc"; rm -f -- "$t"; ln -s -- "/usr/bin/$n" "$t" && mv -f -- "$t" "$f" || { rm -f -- "$t"; exit 1; }; : > "$b/.$n.slicc-link"; else rm -f -- "$f" || exit 1; fi; echo "$n"; done';
 const DANGLING =
-  'b=$1; shift; for f in "$b"/*; do [ -L "$f" ] || continue; n=${f##*/}; [ "$(readlink "$f")" = "/usr/bin/$n" ] || continue; case " $* " in *" $n "*) continue ;; esac; rm -f -- "$f" || exit 1; echo "$n"; done';
+  'b=$1; shift; for m in "$b"/.*.slicc-link; do [ -e "$m" ] || continue; n=${m##*/.}; n=${n%.slicc-link}; f="$b/$n"; case " $* " in *" $n "*) continue ;; esac; if [ -L "$f" ] && [ "$(readlink "$f")" = "/usr/bin/$n" ]; then [ -e "$f" ] && continue; rm -f -- "$f" || exit 1; echo "$n"; fi; rm -f -- "$m"; done';
 
 export const MISMATCH =
   "This version doesn't match the tested build, so it was removed again. Retry later.";
@@ -658,9 +658,9 @@ async function lines(kernel, argv, user, what) {
   return out.split('\n').filter(Boolean);
 }
 
-export function tidyBins({ kernel, bin, user = 'root', keep = [] }) {
+export function tidyBins({ kernel, bin, keep = [] }) {
   return queued(() =>
-    lines(kernel, ['bash', '-c', DANGLING, 'tidy', bin, ...keep], user, `tidying ${bin}`)
+    lines(kernel, ['bash', '-c', DANGLING, 'tidy', bin, ...keep], 'root', `tidying ${bin}`)
   );
 }
 
@@ -713,7 +713,7 @@ export async function shellUnshadow({ root, kernel, global, home }) {
     keep.push(...shadowed(JSON.parse(manifest)));
     removed.push(...(await unshadow({ root, kernel, name, dir, ...owner })));
   }
-  await tidyBins({ kernel, bin: binDir(owner.global), user: owner.user, keep });
+  if (owner.user === 'root') await tidyBins({ kernel, bin: binDir(owner.global), keep });
   return removed;
 }
 

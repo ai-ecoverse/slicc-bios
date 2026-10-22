@@ -197,7 +197,7 @@ test('bios#715: a shell pnpm add -g, as root and as cone, leaves the package’s
   assert.deepEqual(page.errors, []);
 });
 
-test('bios#823: after pnpm add -g mcpcat && mcpcat --version in one shell command, the hashed path runs the kernel command once seven replaces the Node link, and pnpm remove -g leaves no link behind, as root and as cone', {
+test('bios#823: after pnpm add -g mcpcat && mcpcat --version in one shell command, the hashed path runs the kernel command once seven replaces the Node link, pnpm remove -g leaves no link behind, and a link someone else made stays, as root and as cone', {
   timeout: 20 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -209,10 +209,12 @@ test('bios#823: after pnpm add -g mcpcat && mcpcat --version in one shell comman
   const steps = [
     `pnpm add -g --config.minimum-release-age=0 ${at} > /tmp/add-$(id -u).log 2>&1 && mcpcat --version`,
     'echo "hashed $(hash -t mcpcat)"',
+    'ln -sf /usr/bin/bash "$PNPM_HOME/bin/bash"',
     'n=0; while head -c 19 "$PNPM_HOME/bin/mcpcat" 2>/dev/null | grep -q /usr/bin/env && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done; echo "settled $(readlink "$PNPM_HOME/bin/mcpcat" || echo kernel)"',
     'mcpcat --version',
     `pnpm remove -g ${MCPCAT} > /tmp/remove-$(id -u).log 2>&1; echo removed-$?`,
     'n=0; while { [ -e "$PNPM_HOME/bin/mcpcat" ] || [ -L "$PNPM_HOME/bin/mcpcat" ]; } && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done; ls -la "$PNPM_HOME/bin"; { [ -e "$PNPM_HOME/bin/mcpcat" ] || [ -L "$PNPM_HOME/bin/mcpcat" ]; } && echo link-left || echo no-link',
+    'sleep 0.5; echo "kept $(readlink "$PNPM_HOME/bin/bash")"',
   ].join('; ');
   const version = SHIPPED.replaceAll('.', '\\.');
   const check = (text, bin, log) => {
@@ -225,6 +227,7 @@ test('bios#823: after pnpm add -g mcpcat && mcpcat --version in one shell comman
     assert.match(after, new RegExp(`^${version}$`, 'm'), text);
     assert.match(after, /removed-0/, text);
     assert.match(after, /no-link/, text);
+    assert.match(after, /kept \/usr\/bin\/bash/, text);
     assert.doesNotMatch(after, /bad interpreter|No such file or directory|link-left/, text);
   };
   await run(page, `clear; ${steps}; echo root-$((40 + 2))`);
@@ -244,5 +247,34 @@ test('bios#823: after pnpm add -g mcpcat && mcpcat --version in one shell comman
   });
   const coneLog = await sh(page, 'cat /tmp/add-1000.log /tmp/remove-1000.log');
   check((await screen(page)).replace(/ {2,}/g, '\n'), cone, coneLog.out);
+  assert.deepEqual(page.errors, []);
+});
+
+test('bios#795: a user added after boot, whose pnpm home already holds a Node link, gets the kernel command without another write or a reload', {
+  timeout: 20 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  offer();
+  await page.init('() => { globalThis.sliccKernelDebug = true; }');
+  await page.goto(`/#${new URLSearchParams({ users: 'enforce' })}`);
+  await ready(page);
+  const home = '/home/ada/.local/share/pnpm';
+  const node = `head -c 19 ${home}/bin/mcpcat 2>/dev/null | grep -q /usr/bin/env`;
+  const prepared = await sh(
+    page,
+    `mkdir -p ${home} && HOME=/home/ada PNPM_HOME=${home} PATH=${home}/bin:$PATH pnpm add -g --config.minimum-release-age=0 ${MCPCAT}@${SHIPPED} > /tmp/ada.log 2>&1; echo added-$?; ${node} && echo node-before; chown -R 1001:1001 /home/ada && chmod 710 /home/ada && echo owned`
+  );
+  assert.match(
+    prepared.out,
+    /added-0\nnode-before\nowned/,
+    `${prepared.out}\n${(await sh(page, 'cat /tmp/ada.log')).out}`
+  );
+  const added = await sh(
+    page,
+    `echo 'ada:x:1001:1001::/home/ada:/bin/bash' >> /etc/passwd; n=0; while ${node} && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done; ${node} && echo still-node || echo settled-after-$n; sudo -u ada bash -c 'PATH=$PNPM_HOME/bin:$PATH; mcpcat --version'`
+  );
+  t.diagnostic(added.out);
+  assert.match(added.out, /^settled-after-\d+\n/, added.out);
+  assert.match(added.out, new RegExp(`\\n${SHIPPED.replaceAll('.', '\\.')}$`), added.out);
   assert.deepEqual(page.errors, []);
 });
