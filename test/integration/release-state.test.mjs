@@ -292,6 +292,134 @@ test('v2: a cert-review check run counts only from app 15368, with an external_i
   }
 });
 
+test('slicc-kernel from ci.yml passes on its commit’s ci / integration and ci / review from a merge_group run of ci.yml on that commit, with no cert-review status', async () => {
+  const prov = statement({
+    repository: 'https://github.com/ai-ecoverse/slicc-kernel',
+    path: '.github/workflows/ci.yml',
+  });
+  const queued = {
+    path: '.github/workflows/ci.yml',
+    event: 'merge_group',
+    head_sha: COMMIT,
+    repository: { full_name: 'ai-ecoverse/slicc-kernel' },
+  };
+  const check = (name, o = {}) => ({
+    name,
+    app: { id: 15368 },
+    conclusion: 'success',
+    details_url: 'https://github.com/ai-ecoverse/slicc-kernel/actions/runs/7/job/70',
+    ...o,
+  });
+  const both = [check('ci / integration'), check('ci / review')];
+  const ok = await judge(
+    fake({ attestations: prov, checks: { [COMMIT]: both }, runs: { 7: queued } }),
+    KERNEL,
+    INTEGRITY
+  );
+  assert.equal(ok.ok, true, ok.line);
+  assert.match(
+    ok.line,
+    /certified at slicc-kernel cccccccccccc: released by \.github\/workflows\/ci\.yml after the merge queue's ci \/ integration and ci \/ review/
+  );
+  for (const [why, o, re] of [
+    ['no checks', { checks: {} }, /has no successful ci \/ integration and ci \/ review/],
+    [
+      'only ci / integration',
+      { checks: { [COMMIT]: [check('ci / integration')] } },
+      /has no successful ci \/ review from a merge_group run/,
+    ],
+    [
+      'a failed ci / integration',
+      {
+        checks: {
+          [COMMIT]: [check('ci / integration', { conclusion: 'failure' }), check('ci / review')],
+        },
+      },
+      /has no successful ci \/ integration from/,
+    ],
+    [
+      'a skipped ci / integration from the push run',
+      {
+        checks: {
+          [COMMIT]: [check('ci / integration', { conclusion: 'skipped' }), check('ci / review')],
+        },
+      },
+      /has no successful ci \/ integration from/,
+    ],
+    [
+      'checks from another app',
+      { checks: { [COMMIT]: both.map((c) => ({ ...c, app: { id: 1 } })) } },
+      /has no successful/,
+    ],
+    [
+      'a pull_request run',
+      { runs: { 7: { ...queued, event: 'pull_request' } } },
+      /has no successful/,
+    ],
+    [
+      'a run of another commit',
+      { runs: { 7: { ...queued, head_sha: PARENT } } },
+      /has no successful/,
+    ],
+    [
+      'a run of another workflow',
+      { runs: { 7: { ...queued, path: '.github/workflows/x.yml' } } },
+      /has no successful/,
+    ],
+    [
+      'a run in another repository',
+      { runs: { 7: { ...queued, repository: { full_name: 'ai-ecoverse/slicc-jsh' } } } },
+      /has no successful/,
+    ],
+    [
+      'a details url of another repository',
+      {
+        checks: {
+          [COMMIT]: both.map((c) => ({
+            ...c,
+            details_url: 'https://github.com/ai-ecoverse/slicc-jsh/actions/runs/7/job/70',
+          })),
+        },
+      },
+      /has no successful/,
+    ],
+    ['a commit off main', { compare: 'diverged' }, /is not on main \(diverged\)/],
+    [
+      'provenance from a branch',
+      {
+        attestations: statement({
+          repository: 'https://github.com/ai-ecoverse/slicc-kernel',
+          path: '.github/workflows/ci.yml',
+          ref: 'refs/heads/x',
+        }),
+      },
+      /not main/,
+    ],
+  ]) {
+    const r = await judge(
+      fake({ attestations: prov, checks: { [COMMIT]: both }, runs: { 7: queued }, ...o }),
+      KERNEL,
+      INTEGRITY
+    );
+    assert.equal(r.ok, false, why);
+    assert.match(r.line, re, why);
+  }
+  const jsh = await judge(
+    fake({
+      attestations: statement({
+        repository: 'https://github.com/ai-ecoverse/slicc-jsh',
+        path: '.github/workflows/ci.yml',
+      }),
+      checks: { [COMMIT]: both },
+      runs: { 7: { ...queued, repository: { full_name: 'ai-ecoverse/slicc-jsh' } } },
+    }),
+    '@ai-ecoverse/slicc-jsh@1.0.0',
+    INTEGRITY
+  );
+  assert.equal(jsh.ok, false);
+  assert.match(jsh.line, /not slicc-jsh's release\.yml at main/);
+});
+
 test('kernel also passes on its certified tag; cdp, clipboard, tailscale and wasi-slicc only on it', async () => {
   assert.equal((await judge(fake({ tags: { certified: '1.200.0' } }), KERNEL, INTEGRITY)).ok, true);
   assert.equal(
