@@ -248,7 +248,7 @@ async function guardPage(t, proxy = null) {
         String(message.params?.expression ?? '').includes('BFHOLD')
       ) {
         parkedSockets.push([this, data]);
-        window.holdSeen();
+        window.holdSeen('{}');
         return;
       }
       return socketSend.call(this, data);
