@@ -38,7 +38,10 @@ test('Node.js (jsh) installs from the catalog, runs node with CommonJS and ESM, 
   assert.equal(installed.state, 'installed');
   assert.equal(installed.version, JSH);
 
-  await run(page, 'clear; echo "resolved $(command -v jsh) $(command -v node)"');
+  await run(
+    page,
+    'clear; echo "resolved $(readlink -f "$(command -v jsh)") $(readlink -f "$(command -v node)")"'
+  );
   await shows(page, 'resolved /usr/bin/jsh /usr/bin/node');
 
   await run(
