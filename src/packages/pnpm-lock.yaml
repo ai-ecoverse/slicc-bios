@@ -12,8 +12,8 @@ importers:
         specifier: 1.18.1
         version: 1.18.1
       '@ai-ecoverse/slicc-cdp':
-        specifier: 1.30.18
-        version: 1.30.18
+        specifier: 1.31.9
+        version: 1.31.9
       '@ai-ecoverse/slicc-clipboard':
         specifier: 1.0.2
         version: 1.0.2
@@ -102,8 +102,8 @@ packages:
     resolution: {integrity: sha512-D5C6nZlDnLhnFwPUc7sYKSvzFLJLgl++DNSit/Pq4IHTC/gsDQd7aQuQmseWyJcR23ma/nQRAezPie2D+A3oHQ==}
     engines: {node: '>=24'}
 
-  '@ai-ecoverse/slicc-cdp@1.30.18':
-    resolution: {integrity: sha512-8aty5CgO3hPiZ0H8ikx60j1QzTWJmr6MGRKAFy9DMDrU/nwqPnifx1UXLX6AW6GdvDsZdRR9NpAV2A4hWfj4ZA==}
+  '@ai-ecoverse/slicc-cdp@1.31.9':
+    resolution: {integrity: sha512-RxXjn6T1nw9MkwJd0H7mfRQnm82SI+Q+FEO+0lNRgAyCg0Q6EpBIzaY48mkh/vRRFBXxKzshMNALOHpykfEYHQ==}
     engines: {node: '>=24'}
     hasBin: true
 
@@ -209,7 +209,7 @@ snapshots:
 
   '@ai-ecoverse/slicc-browsers@1.18.1': {}
 
-  '@ai-ecoverse/slicc-cdp@1.30.18': {}
+  '@ai-ecoverse/slicc-cdp@1.31.9': {}
 
   '@ai-ecoverse/slicc-clipboard@1.0.2': {}
 
