@@ -6,6 +6,6 @@
     "@ai-ecoverse/mcpcat": "0.18.2",
     "@ai-ecoverse/slicc-jsh": "0.52.5",
     "@ai-ecoverse/sliccy-browser": "0.1.34",
-    "@ai-ecoverse/wasi-slicc": "1.47.0"
+    "@ai-ecoverse/wasi-slicc": "1.47.2"
   }
 }
