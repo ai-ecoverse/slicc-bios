@@ -1101,7 +1101,7 @@ test('the real slicc CLI shares another browser over cdp: the 9222 facade reache
   assert.doesNotMatch(hidden.out, new RegExp(own.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 });
 
-const CDP_NOTE = "Update slicc to 1.47.0 or later to share this computer's browsers.";
+const CDP_NOTE = "Update slicc to 1.47.3 or later to share this computer's browsers.";
 
 const fakeRow = (page) =>
   page.evaluate(
@@ -1128,7 +1128,7 @@ async function cdpNode(page, version) {
 }
 
 for (const [said, version] of [
-  ['1.46.9', '1.46.9'],
+  ['1.47.2', '1.47.2'],
   ['no version', undefined],
 ]) {
   test(`a node that offers cdp with ${said} in its HELLO shares no browsers: none on its device row, which says to update slicc, none on the 9222 facade, none after a browsers update, and no cdp opens, while net and its folders still work`, async (t) => {
@@ -1185,7 +1185,7 @@ for (const [said, version] of [
             ...(el.shadowRoot ? walk(el.shadowRoot) : []),
           ]);
         document.querySelector('slicc-app').show('network');
-        return walk(document).some((text) => text.includes('Update slicc to 1.47.0'));
+        return walk(document).some((text) => text.includes('Update slicc to 1.47.3'));
       });
       await shoot(page, 'network-cli-cdp-min', { show: 'network', target: '[data-note]' });
     }
@@ -1193,7 +1193,7 @@ for (const [said, version] of [
   });
 }
 
-for (const version of ['1.47.0', 'dev', '1.47.1-0.20261021120000-abc123def456']) {
+for (const version of ['1.47.3', 'dev', '1.47.4-0.20261021120000-abc123def456']) {
   test(`a node that offers cdp with ${version} in its HELLO shares its browsers on its device row and the 9222 facade, and a browsers update replaces them`, async (t) => {
     const page = await chrome.page(t);
     await boot(page);
