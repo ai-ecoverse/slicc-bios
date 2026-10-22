@@ -40,7 +40,7 @@ export const clipboard = await fakeRelease({
 export const tainted = await fakeRelease({
   name: AGENT,
   from: PINNED,
-  version: '7.0.0',
+  version: '6.98.0',
   repository: 'https://github.com/ai-ecoverse/slicc-agent',
   dependencies: { '@ai-ecoverse/slicc-clipboard': '1.0.99' },
 });
@@ -53,9 +53,15 @@ export const mcpcat = await fakeRelease({
 export const pinned = await fakeRelease({
   name: AGENT,
   from: PINNED,
-  version: '7.0.1',
+  version: '6.97.0',
   repository: 'https://github.com/ai-ecoverse/slicc-agent',
   dependencies: { '@ai-ecoverse/mcpcat': '0.99.0' },
+});
+export const major = await fakeRelease({
+  name: AGENT,
+  from: PINNED,
+  version: '7.0.0',
+  repository: 'https://github.com/ai-ecoverse/slicc-agent',
 });
 export const releases = [release, clipboard, mcpcat];
 export const registry = await fakeRegistry(chrome.cdp, releases);

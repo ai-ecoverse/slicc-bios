@@ -12,7 +12,7 @@ export const AGENT = {
   id: 'agent',
   name: '@ai-ecoverse/slicc-agent',
   repository: 'https://github.com/ai-ecoverse/slicc-agent',
-  workflow: '.github/workflows/release.yml',
+  workflow: ['.github/workflows/release.yml', '.github/workflows/ci.yml'],
   folder: 'opt/agent',
   scratch: 'opt/slicc/beta/agent',
 };
@@ -270,6 +270,11 @@ async function look(ctx) {
   const running = record?.version ?? (await ctx.installed()) ?? deployed.pin;
   if (compare(latest, deployed.pin) <= 0 || compare(latest, running) <= 0)
     return { npm: { state: 'current', latest }, offer: null };
+  const [from, to] = [deployed.pin, latest].map((version) => Number(version.split('.')[0]));
+  if (to > from) {
+    const reason = `a new major version; seven ships ${from}.x`;
+    return { npm: { state: 'not-offered', latest, reason }, offer: null };
+  }
   const refused =
     (await provenance(doc, AGENT, ctx.fetcher)) ?? compatible(doc, await have(ctx.root, deployed));
   if (refused) return { npm: { state: 'not-offered', latest, reason: refused }, offer: null };

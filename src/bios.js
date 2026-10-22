@@ -167,6 +167,7 @@ await step('seed', async () => {
     'cdp.js',
     'clipboard.js',
     'denials.js',
+    'durable.js',
     'exits.js',
     'facade.js',
     'follow.js',
