@@ -194,13 +194,70 @@ async function guardPage(t, proxy = null) {
   socket.onmessage = ({ data }) => {
     void seven.evaluate((message) => window.cdpIn(message), data).catch(() => false);
   };
+  let holding = false;
+  let sawHold = false;
+  const parked = [];
+  let captured = null;
+  const noteHold = () => {
+    sawHold = true;
+    captured?.();
+    captured = null;
+  };
+  const heldCommand = (command) => {
+    let message = command;
+    if (typeof command === 'string') {
+      try {
+        message = JSON.parse(command);
+      } catch {
+        return false;
+      }
+    }
+    return (
+      holding &&
+      message?.method === 'Runtime.evaluate' &&
+      String(message.params?.expression ?? '').includes('BFHOLD')
+    );
+  };
+  await seven.expose('holdSeen', () => {
+    noteHold();
+  });
   await seven.expose('cdpOut', (command) => {
+    if (heldCommand(command)) {
+      parked.push(command);
+      noteHold();
+      return;
+    }
     if (socket.readyState === 1) socket.send(JSON.stringify(command));
   });
   await seven.init(() => {
     const pending = new Map();
     const listeners = new Set();
     let next = 0;
+    const socketSend = WebSocket.prototype.send;
+    const parkedSockets = [];
+    WebSocket.prototype.send = function (data) {
+      let message = null;
+      try {
+        message = JSON.parse(String(data));
+      } catch {
+        message = null;
+      }
+      if (
+        window.holdReads &&
+        message?.method === 'Runtime.evaluate' &&
+        String(message.params?.expression ?? '').includes('BFHOLD')
+      ) {
+        parkedSockets.push([this, data]);
+        window.holdSeen();
+        return;
+      }
+      return socketSend.call(this, data);
+    };
+    window.releaseProxyHeld = () => {
+      window.holdReads = false;
+      const queued = parkedSockets.splice(0);
+      for (const [socket, data] of queued) socketSend.call(socket, data);
+    };
     window.cdpIn = (text) => {
       const message = JSON.parse(text);
       const call = pending.get(message.id);
@@ -305,7 +362,33 @@ async function guardPage(t, proxy = null) {
     );
   const events = () => seven.evaluate(() => window.guarded.events);
   const lag = (ms) => seven.evaluate((ms) => window.readLag(ms), ms);
-  return { seven, send, events, lag };
+  return {
+    seven,
+    send,
+    events,
+    lag,
+    hold() {
+      holding = true;
+      return seven.evaluate(() => {
+        window.holdReads = true;
+      });
+    },
+    held() {
+      return sawHold
+        ? Promise.resolve()
+        : new Promise((resolve) => {
+            captured = resolve;
+          });
+    },
+    release() {
+      holding = false;
+      const queued = parked.splice(0);
+      for (const command of queued) {
+        if (socket.readyState === 1) socket.send(JSON.stringify(command));
+      }
+      return seven.evaluate(() => window.releaseProxyHeld?.());
+    },
+  };
 }
 
 const marker = (id) =>
@@ -487,14 +570,90 @@ async function runOnce(guard, path, variant, origin, direction, n) {
   }
 }
 
+async function runHeld(guard, path, variant, origin) {
+  const id = `bf-held-${path}-${variant}-${origin}-${Date.now()}`;
+  const { targetId, protectedUrl } = await prepare(origin, 'back', id);
+  const host = new URL(protectedUrl).host;
+  try {
+    const attached = await guard.send('Target.attachToTarget', { targetId, flatten: true });
+    assert.equal(attached.error, undefined, clipped(attached));
+    const session = attached.result.sessionId;
+    await guard.send('Page.enable', {}, session);
+    await guard.send('Runtime.enable', {}, session);
+    const control = await guard.send(
+      'Runtime.evaluate',
+      { expression: '1+1', returnByValue: true },
+      session
+    );
+    assert.equal(control.result?.result?.value, 2, `ordinary evaluate: ${clipped(control)}`);
+    await guard.lag(variant === 'lagging' ? READ_LAG : 0);
+    await guard.hold();
+    const pending = guard.send(
+      'Runtime.evaluate',
+      { expression: '(() => "BFHOLD " + location.href)()', returnByValue: true },
+      session
+    );
+    const forwarded = await Promise.race([
+      guard.held().then(() => 'held'),
+      pending.then(() => 'answered'),
+      pause(8000).then(() => 'timeout'),
+    ]);
+    if (forwarded !== 'held') {
+      throw new Error(`${id}: the read was ${forwarded} before the restore`);
+    }
+    await guard.send(
+      'Runtime.evaluate',
+      { expression: 'history.back()', userGesture: true, returnByValue: true },
+      session
+    );
+    await waitUrl(targetId, protectedUrl);
+    const restoredAt = Date.now();
+    await pause(400);
+    const after = Date.now() - restoredAt;
+    await guard.release();
+    const answer = await pending;
+    const text = JSON.stringify(answer) ?? '';
+    const kind = verdict(answer);
+    const leaked = text.includes(host);
+    const closed =
+      kind === 'refused' || /no answer|session|detached|target closed|not found/i.test(text);
+    const line = [
+      'BFHELD',
+      path,
+      variant,
+      origin,
+      'back',
+      `eval=${kind}`,
+      `after=${after}`,
+      leaked ? 'doc=protected' : 'closed',
+      closed && !leaked ? 'pass' : 'GAP',
+    ].join(' ');
+    console.log(line);
+    if (leaked || !closed) {
+      throw new Error(`${line}\nanswer=${clipped(answer)}`);
+    }
+  } finally {
+    await guard.release().catch(() => undefined);
+    await guard.lag(0);
+    await own.send('Target.closeTarget', { targetId });
+  }
+}
+
 async function matrix(t, path, proxy) {
   const guard = await guardPage(t, proxy);
+  if (process.env.BF_HELD !== 'only') {
+    for (const variant of ['prompt', 'lagging']) {
+      await t.test(`${path} ${variant}`, async () => {
+        for (let n = 0; n < RUNS; n += 1) {
+          const [origin, direction] = CASES[n % CASES.length];
+          await runOnce(guard, path, variant, origin, direction, n);
+        }
+      });
+    }
+  }
   for (const variant of ['prompt', 'lagging']) {
-    await t.test(`${path} ${variant}`, async () => {
-      for (let n = 0; n < RUNS; n += 1) {
-        const [origin, direction] = CASES[n % CASES.length];
-        await runOnce(guard, path, variant, origin, direction, n);
-      }
+    await t.test(`${path} ${variant} held`, async () => {
+      await runHeld(guard, path, variant, 'seven');
     });
   }
 }
@@ -643,7 +802,32 @@ async function guardLink(t) {
     socket.close();
     streams.peer.close();
   });
+  let holding = false;
+  let sawHold = false;
+  const parked = [];
+  let captured = null;
+  const noteHold = () => {
+    sawHold = true;
+    captured?.();
+    captured = null;
+  };
   const toChrome = reorder((text) => {
+    if (holding) {
+      let message = null;
+      try {
+        message = JSON.parse(text);
+      } catch {
+        message = null;
+      }
+      if (
+        message?.method === 'Runtime.evaluate' &&
+        String(message.params?.expression ?? '').includes('BFHOLD')
+      ) {
+        parked.push(text);
+        noteHold();
+        return;
+      }
+    }
     if (socket.readyState === 1) socket.send(text);
   });
   const toGuard = reorder((text) => {
@@ -709,6 +893,25 @@ async function guardLink(t) {
       lag = ms;
     },
     burst: burst(send),
+    hold() {
+      holding = true;
+      return Promise.resolve();
+    },
+    held() {
+      return sawHold
+        ? Promise.resolve()
+        : new Promise((resolve) => {
+            captured = resolve;
+          });
+    },
+    release() {
+      holding = false;
+      const queued = parked.splice(0);
+      for (const text of queued) {
+        if (socket.readyState === 1) socket.send(text);
+      }
+      return Promise.resolve();
+    },
   };
 }
 
@@ -743,12 +946,19 @@ if (ONLY === '' || ONLY === 'link') {
     timeout: 20 * 60 * 1000,
   }, async (t) => {
     const guard = await guardLink(t);
+    if (process.env.BF_HELD !== 'only') {
+      for (const variant of ['prompt', 'lagging']) {
+        await t.test(`link ${variant}`, async () => {
+          for (let n = 0; n < RUNS; n += 1) {
+            const [origin, direction] = CASES[n % CASES.length];
+            await runOnce(guard, 'link', variant, origin, direction, n);
+          }
+        });
+      }
+    }
     for (const variant of ['prompt', 'lagging']) {
-      await t.test(`link ${variant}`, async () => {
-        for (let n = 0; n < RUNS; n += 1) {
-          const [origin, direction] = CASES[n % CASES.length];
-          await runOnce(guard, 'link', variant, origin, direction, n);
-        }
+      await t.test(`link ${variant} held`, async () => {
+        await runHeld(guard, 'link', variant, 'seven');
       });
     }
   });
