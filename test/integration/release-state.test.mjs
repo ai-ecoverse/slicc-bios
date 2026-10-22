@@ -472,6 +472,85 @@ test('any writer that releases from its own ci.yml passes on that commit’s mer
   assert.match(old.line, /carries no cert-review success/);
 });
 
+test('slicc-cdp passes on its certified tag, or from its own ci.yml at main after the merge queue, and on nothing else (from #902)', async () => {
+  const CDP = '@ai-ecoverse/slicc-cdp@1.31.0';
+  const repository = 'https://github.com/ai-ecoverse/slicc-cdp';
+  const prov = statement({ repository, path: '.github/workflows/ci.yml' });
+  const queued = {
+    path: '.github/workflows/ci.yml',
+    event: 'merge_group',
+    head_sha: COMMIT,
+    repository: { full_name: 'ai-ecoverse/slicc-cdp' },
+  };
+  const check = (name) => ({
+    name,
+    app: { id: 15368 },
+    conclusion: 'success',
+    details_url: 'https://github.com/ai-ecoverse/slicc-cdp/actions/runs/7/job/70',
+  });
+  const both = [check('ci / integration'), check('ci / review')];
+  const base = { attestations: prov, checks: { [COMMIT]: both }, runs: { 7: queued } };
+  const ok = await judge(fake(base), CDP, INTEGRITY);
+  assert.equal(ok.ok, true, ok.line);
+  assert.match(
+    ok.line,
+    /certified at slicc-cdp cccccccccccc: released by \.github\/workflows\/ci\.yml after the merge queue's ci \/ integration and ci \/ review/
+  );
+  const tagged = await judge(fake({ tags: { certified: '1.31.0' } }), CDP, INTEGRITY);
+  assert.equal(tagged.ok, true, tagged.line);
+  for (const [why, o, re] of [
+    ['no checks', { checks: {} }, /has no successful ci \/ integration and ci \/ review/],
+    [
+      'a pull_request run',
+      { runs: { 7: { ...queued, event: 'pull_request' } } },
+      /has no successful/,
+    ],
+    ['no provenance', { attestations: null }, /npm dist-tag certified is unset, not 1\.31\.0/],
+    [
+      'provenance for another tarball',
+      {
+        attestations: statement({
+          repository,
+          path: '.github/workflows/ci.yml',
+          digest: 'f'.repeat(128),
+        }),
+      },
+      /npm dist-tag certified is unset, not 1\.31\.0/,
+    ],
+    [
+      'release.yml with a cert-review status',
+      { attestations: statement({ repository }), statuses: { [COMMIT]: [status()] } },
+      /npm dist-tag certified is unset, not 1\.31\.0/,
+    ],
+    [
+      'ci.yml of another repository',
+      {
+        attestations: statement({
+          repository: 'https://github.com/ai-ecoverse/slicc-kernel',
+          path: '.github/workflows/ci.yml',
+        }),
+      },
+      /npm dist-tag certified is unset, not 1\.31\.0/,
+    ],
+    [
+      'provenance from a branch',
+      {
+        attestations: statement({
+          repository,
+          path: '.github/workflows/ci.yml',
+          ref: 'refs/heads/x',
+        }),
+      },
+      /not main/,
+    ],
+    ['a commit off main', { compare: 'diverged' }, /is not on main \(diverged\)/],
+  ]) {
+    const r = await judge(fake({ ...base, ...o }), CDP, INTEGRITY);
+    assert.equal(r.ok, false, why);
+    assert.match(r.line, re, why);
+  }
+});
+
 test('kernel also passes on its certified tag; cdp, clipboard, tailscale and wasi-slicc only on it', async () => {
   assert.equal((await judge(fake({ tags: { certified: '1.200.0' } }), KERNEL, INTEGRITY)).ok, true);
   assert.equal(
