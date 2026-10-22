@@ -3,29 +3,13 @@ import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { boot, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
+import { withoutWorkerPause } from './sw-pause.mjs';
 
 const chrome = await launch();
 after(() => chrome.close());
 
-const paused = { autoAttach: true, waitForDebuggerOnStart: true, flatten: true };
-
-function withoutWorkerPause() {
-  return chrome.cdp.send('Target.setAutoAttach', {
-    ...paused,
-    filter: [
-      { type: 'service_worker', exclude: true },
-      { type: 'shared_worker', exclude: true },
-      { type: 'worker', exclude: true },
-      { type: 'browser', exclude: true },
-      { type: 'tab', exclude: true },
-      {},
-    ],
-  });
-}
-
 test('an update with no debugger pause on workers opens the shell', async (t) => {
   const pausedWorkers = [];
-  t.after(() => chrome.cdp.send('Target.setAutoAttach', paused).catch(() => {}));
   t.after(
     chrome.cdp.on(({ method, params = {} }) => {
       if (method !== 'Target.attachedToTarget' || params.targetInfo?.type !== 'service_worker')
@@ -33,7 +17,7 @@ test('an update with no debugger pause on workers opens the shell', async (t) =>
       if (params.waitingForDebugger) pausedWorkers.push(params.targetInfo.url ?? '');
     })
   );
-  await withoutWorkerPause();
+  t.after(await withoutWorkerPause(chrome));
   const page = await chrome.page(t);
   const current = await readFile(new URL('../../src/sw.js', import.meta.url), 'utf8');
   chrome.overrides.set('/sw.js', current.replace('...isolation, ', ''));
