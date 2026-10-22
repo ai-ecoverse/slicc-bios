@@ -64,7 +64,7 @@ import {
   serveNetwork,
   serveUpdates,
 } from './present.js';
-import { installProfile } from './profile.js';
+import { installProfile, kernelPorts } from './profile.js';
 import { PYTHON } from './projects.js';
 import { createNotes, createReleases } from './releases.js';
 import { createRemote } from './remote.js';
@@ -197,6 +197,7 @@ function linkFolders(link) {
 const allowedRemotely = (link) =>
   (link.mode === 'local' && !link.paired) || Boolean(tray?.controlAllowed(link.id));
 let followers = null;
+const kernelPort = kernelPorts({ storage: localStorage, text, write });
 const links = createLinks({
   router: exits,
   labels: labelStore(localStorage),
@@ -229,6 +230,8 @@ const links = createLinks({
   serveFs: serveHostfsPort,
   onLink: (link, peer) => {
     trustHostKey(kernel, link, peer).catch((error) => console.warn(`link: ${error.message}`));
+    if (link.mode === 'local' && link.kind !== 'seven')
+      kernelPort.use(root, peer).catch((error) => console.warn(`kernel port: ${error.message}`));
   },
 });
 const pairing = createPairing({ links });
@@ -749,7 +752,7 @@ async function own() {
   kernel = await createKernel({
     root,
     users: 'off',
-    env: { PYTHONPATH: `/${PYTHON}`, FNOX_CONFIG_DIR: FNOX_DIR },
+    env: { PYTHONPATH: `/${PYTHON}`, FNOX_CONFIG_DIR: FNOX_DIR, ...kernelPort.env() },
     ...protection(),
     network: { transport, uplink: exits.uplink },
     cdp: control.hook,

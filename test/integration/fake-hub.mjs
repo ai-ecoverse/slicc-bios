@@ -252,7 +252,7 @@ export function startHub() {
   );
 }
 
-export async function follower() {
+export async function follower(hello = {}) {
   const certificate = await RTCPeerConnection.generateCertificate({
     name: 'ECDSA',
     namedCurve: 'P-256',
@@ -283,6 +283,7 @@ export async function follower() {
             mode: 'remote',
             caps: ['net', 'join'],
             routes: { prefixes: [], exit: true },
+            ...hello,
           })
         );
         return;
