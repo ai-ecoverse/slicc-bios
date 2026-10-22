@@ -272,7 +272,7 @@ const ANSWERED = new Set([
 ]);
 const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const HOSTS = new RegExp(
-  `((?:[a-z0-9-]{1,63}\\.){0,8}(?:${[...catalog.protectedOrigins.domains, ...catalog.protectedOrigins.hosts].map(escaped).join('|')}))(\\.?(?::\\d+|%3a\\d+)?)(?:[/?#\\\\][^\\s"'<>\`]*|(?:%2f|%3f|%23|%5c)[^\\s"'<>\`&]*)`,
+  `((?:${[...catalog.protectedOrigins.domains, ...catalog.protectedOrigins.hosts].map(escaped).join('|')}))(\\.?(?::\\d+|%3a\\d+)?)(?:[/?#\\\\][^\\s"'<>\`]*|(?:%2f|%3f|%23|%5c)[^\\s"'<>\`&]*)`,
   'giu'
 );
 
@@ -361,6 +361,19 @@ function readable(url) {
   return PUBLIC[normalHost(parsed.hostname)]?.test(parsed.pathname) === true;
 }
 
+const HOST_CHAR = /[a-z0-9-]/i;
+
+function labelsBefore(text, end) {
+  let start = end;
+  for (let count = 0; count < 8 && text[start - 1] === '.'; count += 1) {
+    let at = start - 1;
+    while (at > 0 && start - 1 - at < 63 && HOST_CHAR.test(text[at - 1])) at -= 1;
+    if (at === start - 1) break;
+    start = at;
+  }
+  return text.slice(start, end);
+}
+
 const hopKey = (url) => {
   if (!URL.canParse(url)) return bare(url).split('?')[0];
   const parsed = new URL(url);
@@ -392,13 +405,12 @@ export function redacting(is) {
       return value;
     }
     const raw = scanned(value, STARTS, STOPS, origin);
-    return scanned(raw, ENCODED_STARTS, ENCODED_STOPS, encoded).replace(
-      HOSTS,
-      (found, host, port) => {
-        if (!readable(`http://${decoded(found)}`)) webs += 1;
-        return `${host}${port}`;
-      }
-    );
+    const coded = scanned(raw, ENCODED_STARTS, ENCODED_STOPS, encoded);
+    return coded.replace(HOSTS, (found, host, port, offset) => {
+      const labels = labelsBefore(coded, offset);
+      if (!readable(`http://${labels}${decoded(found)}`)) webs += 1;
+      return `${host}${port}`;
+    });
   };
   const walk = (value, path, changed) => {
     if (typeof value === 'string') {

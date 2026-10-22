@@ -656,7 +656,11 @@ async function check(t, transport) {
   assert.ok(
     answers.caps.length > 0 &&
       answers.caps.every(
-        (answer) => refused(answer) || (answer.kind === 'escaped' && answer.read === 'snapshot')
+        (answer) =>
+          refused(answer) ||
+          (answer.kind === 'escaped' &&
+            answer.read === 'snapshot' &&
+            !marks.some((value) => JSON.stringify(answer).includes(value)))
       ),
     `a page showing a join, webhook, controller or pairing capability, or a dotted or userinfo vault URL, is not readable: ${JSON.stringify(answers.caps.filter((answer) => !refused(answer)).map((answer) => [answer.kind, answer.read]))}`
   );
