@@ -1,4 +1,4 @@
-import { profileSchema, schemaOf } from './durable.js';
+import { KNOWN, profileSchema, schemaOf } from './durable.js';
 import { GATED } from './layer.js';
 import { compare, locked } from './packages.js';
 import { BIOS } from './site.js';
@@ -272,7 +272,8 @@ async function look(ctx) {
   if (compare(latest, deployed.pin) <= 0 || compare(latest, running) <= 0)
     return { npm: { state: 'current', latest }, offer: null };
   const [from, to] = [deployed.pin, latest].map((version) => Number(version.split('.')[0]));
-  if (to > from && (await profileSchema(ctx.root, ctx.storage)) < schemaOf(latest)) {
+  const needed = await profileSchema(await navigator.storage.getDirectory(), ctx.storage);
+  if (to > from && needed < schemaOf(latest) && needed <= KNOWN) {
     const reason = `a new major version; seven ships ${from}.x`;
     return { npm: { state: 'not-offered', latest, reason }, offer: null };
   }

@@ -6,8 +6,25 @@ import { launch } from './chrome.mjs';
 const OLDER =
   'This profile was opened by a newer agent, and its sessions can’t be opened by the agent seven runs now. Seven didn’t start it. Turn on Developer mode and install the newer agent from Install / Update, or wait until seven ships it.';
 
+const UNRECORDED =
+  'Seven couldn’t record this agent’s profile version (storage full?), so it didn’t start it.';
+
 const chrome = await launch({ agent: true, timeout: 120000 });
 after(() => chrome.close());
+
+const relabel = (page, version) =>
+  page.evaluate(async (version) => {
+    let dir = await navigator.storage.getDirectory();
+    for (const part of ['opt', 'agent', 'node_modules', '@ai-ecoverse', 'slicc-agent'])
+      dir = await dir.getDirectoryHandle(part);
+    const handle = await dir.getFileHandle('package.json');
+    const manifest = JSON.parse(await (await handle.getFile()).text());
+    const was = manifest.version;
+    const writable = await handle.createWritable();
+    await writable.write(JSON.stringify({ ...manifest, version }, null, 2));
+    await writable.close();
+    return was;
+  }, version);
 
 const marker = (page, data) =>
   page.evaluate(async (data) => {
@@ -45,6 +62,18 @@ test('seven never starts a 6.x agent on a profile a 7.x agent opened, by the age
   timeout: 20 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
+  await page.init(() => {
+    try {
+      if (!sessionStorage.getItem('slicc-test.full')) return;
+    } catch {
+      return;
+    }
+    const set = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (key === 'slicc-os.agent-schema') throw new DOMException('full', 'QuotaExceededError');
+      return set.call(this, key, value);
+    };
+  });
   await boot(page);
   await agentUp(page);
 
@@ -79,6 +108,25 @@ test('seven never starts a 6.x agent on a profile a 7.x agent opened, by the age
     await marker(page, null);
     await page.evaluate(() => localStorage.setItem('slicc-os.agent-schema', '2'));
     assert.equal((await refused(page)).error, OLDER);
+  });
+
+  await t.test('a marker above 2 refuses a 7.x agent too', async () => {
+    await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
+    await marker(page, JSON.stringify({ durableSchema: 3, agent: '8.0.0' }));
+    const was = await relabel(page, '7.0.0');
+    assert.equal((await refused(page)).error, OLDER);
+    await relabel(page, was);
+    await marker(page, null);
+  });
+
+  await t.test('a 7.x first start whose profile version can’t be recorded is refused', async () => {
+    await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
+    const was = await relabel(page, '7.0.0');
+    await page.evaluate(() => sessionStorage.setItem('slicc-test.full', '1'));
+    assert.equal((await refused(page)).error, UNRECORDED);
+    assert.equal(await page.evaluate(() => localStorage.getItem('slicc-os.agent-schema')), null);
+    await page.evaluate(() => sessionStorage.removeItem('slicc-test.full'));
+    await relabel(page, was);
   });
 
   await t.test(

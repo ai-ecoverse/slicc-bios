@@ -4,6 +4,9 @@ export const KNOWN = 2;
 export const OLDER =
   'This profile was opened by a newer agent, and its sessions can’t be opened by the agent seven runs now. Seven didn’t start it. Turn on Developer mode and install the newer agent from Install / Update, or wait until seven ships it.';
 
+export const UNRECORDED =
+  'Seven couldn’t record this agent’s profile version (storage full?), so it didn’t start it.';
+
 export function schemaOf(version) {
   const major = Number(String(version ?? '').split('.')[0]);
   return Number.isInteger(major) && major >= 7 ? 2 : 1;
@@ -32,14 +35,21 @@ export async function profileSchema(root, storage = globalThis.localStorage) {
 
 export async function mayStart(version, { root, storage = globalThis.localStorage } = {}) {
   const wanted = schemaOf(version);
-  if (wanted < (await profileSchema(root, storage)))
+  const kept = Number(storage?.getItem(STARTED) ?? 0) || 0;
+  const found = await marker(root);
+  if (wanted < Math.max(kept, found))
     throw Object.assign(new Error(`agent ${version} is older than this profile`), {
       plain: OLDER,
       older: true,
     });
-  if (wanted > (Number(storage?.getItem(STARTED) ?? 0) || 0)) {
-    try {
-      storage?.setItem(STARTED, String(wanted));
-    } catch {}
+  if (wanted <= kept) return;
+  try {
+    storage.setItem(STARTED, String(wanted));
+  } catch (error) {
+    if (wanted > 1 && wanted > found)
+      throw Object.assign(new Error(`couldn't record schema ${wanted}: ${error.message}`), {
+        plain: UNRECORDED,
+        older: true,
+      });
   }
 }

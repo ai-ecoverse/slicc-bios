@@ -9,6 +9,7 @@ import {
   chrome,
   confirmWith,
   developer,
+  future,
   installedAgent,
   major,
   notice,
@@ -237,15 +238,35 @@ test('a release without provenance or with an uncertified gated dependency isnâ€
       assert.equal(row.npm.latest, '7.0.0');
       assert.equal(row.npm.reason, `a new major version; seven ships ${PINNED.split('.')[0]}.x`);
       assert.ok(!row.actions.includes('install-beta'));
-      await page.evaluate(() => localStorage.setItem('slicc-os.agent-schema', '2'));
-      t.after(() =>
-        page.evaluate(() => localStorage.setItem('slicc-os.agent-schema', '1')).catch(() => {})
-      );
+      const marker = (data) =>
+        page.evaluate(async (data) => {
+          const root = await navigator.storage.getDirectory();
+          const dir = await root.getDirectoryHandle('.slicc', { create: true });
+          if (data === null) return dir.removeEntry('agent-profile.json').catch(() => {});
+          const writable = await (
+            await dir.getFileHandle('agent-profile.json', { create: true })
+          ).createWritable();
+          await writable.write(data);
+          await writable.close();
+        }, data);
+      assert.equal(await page.evaluate(() => localStorage.getItem('slicc-os.agent-schema')), '1');
+      await marker(JSON.stringify({ durableSchema: 2, agent: '7.0.0' }));
+      t.after(() => marker(null).catch(() => {}));
       await developer(page, false);
       await developer(page, true);
       await npmSays(page, 'offered');
       assert.equal((await agentRow(page)).npm.latest, '7.0.0');
-      await page.evaluate(() => localStorage.setItem('slicc-os.agent-schema', '1'));
+      releases.unshift(future);
+      t.after(() => {
+        if (releases.includes(future)) releases.splice(releases.indexOf(future), 1);
+      });
+      await marker(JSON.stringify({ durableSchema: 3, agent: '8.0.0' }));
+      await developer(page, false);
+      await developer(page, true);
+      await npmSays(page, 'offered');
+      assert.equal((await agentRow(page)).npm.latest, '8.0.0');
+      releases.splice(releases.indexOf(future), 1);
+      await marker(null);
       releases.splice(releases.indexOf(major), 1);
       await developer(page, false);
       await developer(page, true);
