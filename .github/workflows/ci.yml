@@ -26,7 +26,7 @@ jobs:
     with:
       node-version: '26'
       test-glob: test/integration/*.test.mjs
-      shards: 10
+      shards: 12
       timeout-minutes: 90
       review-timeout-minutes: 90
       review-prompt: |

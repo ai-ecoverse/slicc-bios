@@ -579,7 +579,7 @@ No test calls a real model. Every test serves an empty `packages/agent/` project
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) is one caller of [slicc-shared-web's pipeline](https://github.com/ai-ecoverse/slicc-shared-web#pipeline), pinned to the release `@ai-ecoverse/slicc-shared-web` has in `devDependencies` (Renovate moves both in one PR). It runs on pull requests, the merge queue and pushes to `main`:
 
-- **Pull requests and the merge queue:** lint, then every `test/integration/*.test.mjs` split by the last runs' JUnit timings over 10 pool shards (`ci / integration`), then on a pull request the Claude and Codex reviews (`ci / review`) with this repository's `review-prompt`. Each `guard-set-*` path has two files, one for the `lagging` detach variant and one for the rest, so the split can balance them. The slicc CLI tests use `node_modules/.bin/slicc` (or `SLICC_CLI`).
+- **Pull requests and the merge queue:** lint, then every `test/integration/*.test.mjs` split by the last runs' JUnit timings over 12 pool shards (`ci / integration`), then on a pull request the Claude and Codex reviews (`ci / review`) with this repository's `review-prompt`. Each `guard-set-*` path has two files, one for the `lagging` detach variant and one for the rest, so the split can balance them. The slicc CLI tests use `node_modules/.bin/slicc` (or `SLICC_CLI`).
 - **`main`:** semantic-release publishes the npm package (see [The npm package](#the-npm-package)). [`deploy.yml`](.github/workflows/deploy.yml) deploys every push to `main` and `bb/**` (see [Hosting](#hosting)).
 
 Require `ci / integration` and `ci / review`. There is no retry: a flaky test fails the run.

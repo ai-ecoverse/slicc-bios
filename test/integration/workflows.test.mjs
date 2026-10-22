@@ -54,7 +54,7 @@ test('the pipeline picks its runners, reviews no Renovate pull request, and noth
   assert.doesNotMatch(ci, /vars\./);
   assert.doesNotMatch(deploy, /vars\./);
   assert.match(deploy, /\n {4}runs-on: ubuntu-latest\n/);
-  assert.equal(input('shards'), '10');
+  assert.equal(input('shards'), '12');
   assert.equal(input('timeout-minutes'), '90');
   assert.match(input('review-prompt'), /^\|$/);
 });
