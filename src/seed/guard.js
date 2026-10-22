@@ -528,6 +528,7 @@ class Guard {
     this.waiting = new Set();
     this.pages = new Set();
     this.frames = new Map();
+    this.parents = new Map();
     this.requests = new Map();
     this.held = new Map();
     this.internal = new Map();
@@ -668,11 +669,23 @@ class Guard {
     if (this.targets.has(frameId)) return this.target(frameId);
     if (this.frames.has(frameId)) {
       const url = this.frames.get(frameId);
-      return this.is.url(url) || (strict && (url === '' || inherits(url)));
+      if (this.is.url(url)) return true;
+      return strict && (url === '' || inherits(url)) && (await this.inherited(frameId, 0));
     }
     if (await this.lookup(frameId)) return this.target(frameId);
     if (strict) return true;
     this.frames.set(frameId, '');
+    return false;
+  }
+
+  async inherited(frameId, depth) {
+    const parent = this.parents.get(frameId);
+    if (parent === undefined || depth > 16) return true;
+    if (this.targets.has(parent)) return this.target(parent);
+    if (!this.frames.has(parent)) return true;
+    const url = this.frames.get(parent);
+    if (this.is.url(url)) return true;
+    if (url === '' || inherits(url)) return this.inherited(parent, depth + 1);
     return false;
   }
 
@@ -803,7 +816,10 @@ class Guard {
     void this.call('Page.enable', {}, sessionId);
     const tree = (await this.call('Page.getFrameTree', {}, sessionId)).result?.frameTree;
     const all = framed(tree);
-    for (const frame of all) this.frames.set(frame.id, frame.url);
+    for (const frame of all) {
+      this.frames.set(frame.id, frame.url);
+      if (frame.parentId) this.parents.set(frame.id, frame.parentId);
+    }
     return !all.some((frame) => this.is.url(frame.url) || this.is.url(frame.securityOrigin));
   }
 
@@ -1102,14 +1118,16 @@ class Guard {
   walked({ method, params = {}, sessionId }) {
     if (method === 'Page.frameNavigated' && params.frame) {
       this.frames.set(params.frame.id, this.framed(params.frame));
+      if (params.frame.parentId) this.parents.set(params.frame.id, params.frame.parentId);
       const targetId = this.sessions.get(sessionId)?.targetId;
       if (!params.frame.parentId && targetId && this.targets.has(targetId)) {
         this.targets.get(targetId).url = params.frame.url;
       }
       return this.is.url(params.frame.url) || this.is.url(params.frame.securityOrigin);
     }
-    if (method === 'Page.frameAttached' && params.frameId && !this.frames.has(params.frameId)) {
-      this.frames.set(params.frameId, '');
+    if (method === 'Page.frameAttached' && params.frameId) {
+      if (!this.frames.has(params.frameId)) this.frames.set(params.frameId, '');
+      if (params.parentFrameId) this.parents.set(params.frameId, params.parentFrameId);
     }
     if (NAVIGATED.has(method)) return !this.armed(sessionId) && this.is.url(params.url);
     if (method === 'Network.requestWillBeSent' && params.type === 'Document') {
@@ -1215,8 +1233,10 @@ class Guard {
   }
 
   tree({ frame, childFrames, resources, ...rest }) {
-    if (frame.id !== undefined && !this.targets.has(frame.id))
+    if (frame.id !== undefined && !this.targets.has(frame.id)) {
       this.frames.set(frame.id, this.framed(frame));
+      if (frame.parentId) this.parents.set(frame.id, frame.parentId);
+    }
     const hidden = this.is.url(frame.url) || this.is.url(frame.unreachableUrl);
     const { unreachableUrl, urlFragment, ...shown } = frame;
     return {

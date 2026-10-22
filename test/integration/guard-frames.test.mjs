@@ -13,9 +13,14 @@ const site = createHttp((req, res) => {
   if (url.pathname === '/plain') {
     return res.end('<title>plain</title><h1>plain</h1>');
   }
+  if (url.pathname === '/editors') {
+    return res.end(
+      `<title>editors</title><iframe id="blank"></iframe><iframe id="srcdoc" srcdoc="<body contenteditable></body>"></iframe><script>const d=document.getElementById('blank').contentDocument;d.open();d.write('<body contenteditable></body>');d.close();</script>`
+    );
+  }
   if (url.pathname === '/late') {
     return res.end(
-      `<title>late</title><script>setTimeout(()=>{const f=document.createElement('iframe');f.src='http://vault.sliccy.ai:${port}/child';document.body.append(f)},300)</script>`
+      `<title>late</title><script>window.go=()=>{const f=document.createElement('iframe');f.src='http://vault.sliccy.ai:${port}/child';document.body.append(f);return 'going'}</script>`
     );
   }
   if (url.pathname === '/inner') {
@@ -341,7 +346,7 @@ test(
   (t) => freshCheck(t, 'extension')
 );
 
-async function late({ transport, proxy, port }) {
+async function late({ transport, proxy, port, targetId }) {
   const { guardProtected } = await import(new URL('guard.js', location.href).href);
   const { proxyHost, extensionConnection } = await import(new URL('cdp.js', location.href).href);
   const raw =
@@ -398,29 +403,63 @@ async function late({ transport, proxy, port }) {
     pending.get(message.id)?.(message);
     pending.delete(message.id);
   };
-  const created = await send('Target.createTarget', { url: `http://ordinary.test:${port}/late` });
-  const targetId = created.result?.targetId;
   session = (await send('Target.attachToTarget', { targetId, flatten: true })).result?.sessionId;
   out.granted = Boolean(session);
   await send('Page.enable', {}, session);
+  out.go = (
+    await send('Runtime.evaluate', { expression: 'go()', returnByValue: true }, session)
+  ).result?.result?.value;
   const frameId = await Promise.race([
     early,
     new Promise((resolve) => setTimeout(() => resolve(null), 10000)),
   ]);
   out.frameAttached = Boolean(frameId);
-  await new Promise((resolve) => setTimeout(resolve, 1500));
-  const after = {
-    ...reads(frameId),
-    'DOM.getDocument': ['DOM.getDocument', { depth: -1, pierce: true }],
-    'DOMSnapshot.captureSnapshot': ['DOMSnapshot.captureSnapshot', { computedStyles: [] }],
-  };
-  for (const [name, [method, params]] of Object.entries(after)) {
-    const answer = await send(method, params, session);
-    out.after[name] = answer.error?.message ?? 'answered';
+  if (!frameId) {
+    out.events = seen.map((text) => JSON.parse(text).method).filter(Boolean);
+    return out;
   }
-  out.leaked = seen.some((text) => text.includes('FRAME-MARK') || text.includes('VAULT-FRAME'));
-  await send('Target.closeTarget', { targetId });
+  out.targetId = targetId;
+  window.lateRig = async (frameTarget) => {
+    if (frameTarget) {
+      const own = await send('Target.attachToTarget', { targetId: frameTarget, flatten: true });
+      out.frameTarget = own.error?.message ?? 'attached';
+    }
+    const after = {
+      ...reads(frameId),
+      'DOM.getDocument': ['DOM.getDocument', { depth: -1, pierce: true }],
+      'DOMSnapshot.captureSnapshot': ['DOMSnapshot.captureSnapshot', { computedStyles: [] }],
+    };
+    for (const [name, [method, params]] of Object.entries(after)) {
+      const answer = await send(method, params, session);
+      out.after[name] = answer.error?.message ?? 'answered';
+    }
+    out.leaked = seen.some((text) => text.includes('FRAME-MARK') || text.includes('VAULT-FRAME'));
+    await send('Target.closeTarget', { targetId });
+    return out;
+  };
   return out;
+}
+
+async function committed(targetId) {
+  const { sessionId } = await chrome.cdp.send('Target.attachToTarget', { targetId, flatten: true });
+  const deadline = Date.now() + 15000;
+  let tree;
+  try {
+    while (Date.now() < deadline) {
+      ({ frameTree: tree } = await chrome.cdp.send('Page.getFrameTree', {}, sessionId));
+      if (tree.childFrames?.some((child) => child.frame.url.includes('vault.sliccy.ai')))
+        return null;
+      const { targetInfos } = await chrome.cdp.send('Target.getTargets');
+      const own = targetInfos.find(
+        (info) => info.type === 'iframe' && info.url.includes('vault.sliccy.ai')
+      );
+      if (own) return own.targetId;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  } finally {
+    await chrome.cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {});
+  }
+  throw new Error(`the vault frame never committed: ${JSON.stringify(tree)}`);
 }
 
 async function lateCheck(t, transport) {
@@ -441,17 +480,37 @@ async function lateCheck(t, transport) {
   }
   await page.goto(proxy ? `/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}` : '/');
   await ready(page);
-  const out = await page.evaluate(late, {
+  const { targetId } = await chrome.cdp.send('Target.createTarget', {
+    url: `http://ordinary.test:${port}/late`,
+  });
+  t.after(() => chrome.cdp.send('Target.closeTarget', { targetId }).catch(() => {}));
+  const early = await page.evaluate(late, {
     transport,
     proxy: proxy && { url: proxy.url, key: proxy.key },
     port,
+    targetId,
   });
-  assert.equal(out.granted, true, JSON.stringify(out));
-  assert.equal(out.frameAttached, true, JSON.stringify(out));
-  for (const [stage, answers] of Object.entries({ early: out.early, after: out.after })) {
-    for (const [name, answer] of Object.entries(answers)) {
-      assert.notEqual(answer, 'answered', `${stage} ${name}: ${JSON.stringify(out)}`);
-    }
+  assert.equal(early.granted, true, JSON.stringify(early));
+  assert.equal(
+    early.frameAttached,
+    true,
+    `no frameAttached for the new iframe: ${JSON.stringify(early)}`
+  );
+  const frameTarget = await committed(targetId);
+  const out = await page.evaluate((own) => window.lateRig(own), frameTarget);
+  if (frameTarget) {
+    assert.match(
+      out.frameTarget,
+      /^slicc: refused:/,
+      `the vault frame's own target: ${JSON.stringify(out)}`
+    );
+  }
+  for (const [name, answer] of Object.entries(out.after)) {
+    assert.match(
+      answer,
+      /^slicc: refused:|not found|No frame for given id/i,
+      `after the vault commit, ${name}: ${JSON.stringify(out)}`
+    );
   }
   assert.equal(out.leaked, false, JSON.stringify(out));
 }
@@ -466,4 +525,123 @@ test(
   'frame commits a protected URL after attach: reads refused, on the extension path',
   { timeout: 3 * 60 * 1000 },
   (t) => lateCheck(t, 'extension')
+);
+
+async function editors({ transport, proxy, port }) {
+  const { guardProtected } = await import(new URL('guard.js', location.href).href);
+  const { proxyHost, extensionConnection } = await import(new URL('cdp.js', location.href).href);
+  const raw =
+    transport === 'proxy'
+      ? await proxyHost(proxy)()
+      : extensionConnection(globalThis.sliccExtension.cdp);
+  const connection = guardProtected(raw, self.origin);
+  const pending = new Map();
+  let next = 0;
+  connection.onmessage = (text) => {
+    const message = JSON.parse(text);
+    pending.get(message.id)?.(message);
+    pending.delete(message.id);
+  };
+  const send = (method, params = {}, sessionId) =>
+    new Promise((resolve) => {
+      next += 1;
+      const id = next;
+      const timer = setTimeout(
+        () => resolve({ error: { message: `${method} got no answer` } }),
+        10000
+      );
+      pending.set(id, (message) => {
+        clearTimeout(timer);
+        resolve(message);
+      });
+      connection.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+  const created = await send('Target.createTarget', {
+    url: `http://ordinary.test:${port}/editors`,
+  });
+  const targetId = created.result?.targetId;
+  const session = (await send('Target.attachToTarget', { targetId, flatten: true })).result
+    ?.sessionId;
+  await send('Page.enable', {}, session);
+  const deadline = Date.now() + 10000;
+  let children = [];
+  let tree;
+  while (Date.now() < deadline) {
+    tree = (await send('Page.getFrameTree', {}, session)).result?.frameTree;
+    children = (tree?.childFrames ?? []).map((child) => child.frame);
+    if (children.length === 2 && children.every((child) => child.url)) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (children.length !== 2)
+    throw new Error(`the editor frames never committed: ${JSON.stringify(tree)}`);
+  const out = {};
+  for (const [index, child] of children.entries()) {
+    const world = await send(
+      'Page.createIsolatedWorld',
+      { frameId: child.id, worldName: 'utility' },
+      session
+    );
+    const contextId = world.result?.executionContextId;
+    const value = `FILLED-${index}`;
+    const filled = await send(
+      'Runtime.evaluate',
+      {
+        expression: `document.body.textContent = ${JSON.stringify(value)}; document.body.textContent`,
+        contextId,
+        returnByValue: true,
+      },
+      session
+    );
+    out[index === 0 ? 'blank' : 'srcdoc'] = {
+      world: world.error?.message ?? 'world',
+      value: filled.result?.result?.value ?? filled.error?.message,
+    };
+  }
+  await send('Target.closeTarget', { targetId });
+  return out;
+}
+
+async function editorsCheck(t, transport) {
+  const page = await chrome.page(t);
+  let proxy;
+  if (transport === 'proxy') {
+    proxy = await startProxy({
+      port: 0,
+      origins: [new URL(chrome.url).origin],
+      cdp: `http://127.0.0.1:${debugging}`,
+      kernelPort: null,
+      log: () => {},
+    });
+    t.after(() => proxy.close());
+  } else {
+    const extension = await fakeExtension(page);
+    t.after(() => extension.close());
+  }
+  await page.goto(proxy ? `/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}` : '/');
+  await ready(page);
+  const out = await page.evaluate(editors, {
+    transport,
+    proxy: proxy && { url: proxy.url, key: proxy.key },
+    port,
+  });
+  assert.deepEqual(
+    out,
+    {
+      blank: { world: 'world', value: 'FILLED-0' },
+      srcdoc: { world: 'world', value: 'FILLED-1' },
+    },
+    'an editor in an about:blank and a srcdoc frame of an ordinary page gets a utility world and is filled'
+  );
+}
+
+test(
+  'an ordinary page’s about:blank and srcdoc editors get a utility world and are filled, on the proxy path',
+  { timeout: 3 * 60 * 1000 },
+  (t) => editorsCheck(t, 'proxy')
+);
+
+test(
+  'an ordinary page’s about:blank and srcdoc editors get a utility world and are filled, on the extension path',
+  { timeout: 3 * 60 * 1000 },
+  (t) => editorsCheck(t, 'extension')
 );
