@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { boot, opfs, ready, run, screen, shows, ui } from './bios.mjs';
 import { launch } from './chrome.mjs';
-import { retryReplacedWorker } from './sw-activate.mjs';
+import { withoutWorkerPause } from './sw-pause.mjs';
 
 const chrome = await launch();
 after(() => chrome.close());
@@ -90,8 +90,8 @@ test('reaches npm over HTTPS with curl and the everyday tools', async (t) => {
 });
 
 test('waits for an updated service worker before opening the shell', async (t) => {
+  t.after(await withoutWorkerPause(chrome));
   const page = await chrome.page(t);
-  t.after(retryReplacedWorker(chrome));
   const current = await readFile(new URL('../../src/sw.js', import.meta.url), 'utf8');
   chrome.overrides.set('/sw.js', current.replace('...isolation, ', ''));
   await page.goto('/');
