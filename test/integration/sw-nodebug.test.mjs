@@ -1,0 +1,50 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { after, test } from 'node:test';
+import { boot, run, shows } from './bios.mjs';
+import { launch } from './chrome.mjs';
+
+const chrome = await launch();
+after(() => chrome.close());
+
+const paused = { autoAttach: true, waitForDebuggerOnStart: true, flatten: true };
+
+function withoutWorkerPause() {
+  return chrome.cdp.send('Target.setAutoAttach', {
+    ...paused,
+    filter: [
+      { type: 'service_worker', exclude: true },
+      { type: 'shared_worker', exclude: true },
+      { type: 'worker', exclude: true },
+      { type: 'browser', exclude: true },
+      { type: 'tab', exclude: true },
+      {},
+    ],
+  });
+}
+
+test('an update with no debugger pause on workers opens the shell', async (t) => {
+  const pausedWorkers = [];
+  t.after(() => chrome.cdp.send('Target.setAutoAttach', paused).catch(() => {}));
+  t.after(
+    chrome.cdp.on(({ method, params = {} }) => {
+      if (method !== 'Target.attachedToTarget' || params.targetInfo?.type !== 'service_worker')
+        return;
+      if (params.waitingForDebugger) pausedWorkers.push(params.targetInfo.url ?? '');
+    })
+  );
+  await withoutWorkerPause();
+  const page = await chrome.page(t);
+  const current = await readFile(new URL('../../src/sw.js', import.meta.url), 'utf8');
+  chrome.overrides.set('/sw.js', current.replace('...isolation, ', ''));
+  await page.goto('/');
+  await page.until(() => location.pathname === '/os/');
+  assert.equal(await page.evaluate(() => crossOriginIsolated), false);
+  chrome.overrides.delete('/sw.js');
+
+  await boot(page);
+  assert.equal(await page.evaluate(() => crossOriginIsolated), true);
+  assert.deepEqual(pausedWorkers, []);
+  await run(page, 'echo "upgraded $((1 + 1))"');
+  await shows(page, 'upgraded 2');
+});
