@@ -125,6 +125,22 @@ async function waitUrl(targetId, url, ms = 8000) {
   throw new Error(`tab stayed on ${last}, wanted ${url}`);
 }
 
+async function committed(sessionId, url) {
+  const end = Date.now() + 8000;
+  let index = 0;
+  let count = 0;
+  while (Date.now() < end) {
+    const history = await own.send('Page.getNavigationHistory', {}, sessionId);
+    const entries = history.result?.entries ?? [];
+    index = history.result?.currentIndex ?? 0;
+    count = entries.length;
+    const current = entries[index]?.url ?? '';
+    if (entries.length > index && current.split('#')[0] === url) return;
+    await pause(20);
+  }
+  throw new Error(`document was not committed index=${index} entries=${count}`);
+}
+
 async function seed(targetId, sessionId, url) {
   const answer = await own.send('Page.navigate', { url }, sessionId);
   if (answer.error) throw new Error(`${url}: ${answer.error.message}`);
@@ -140,6 +156,20 @@ async function seed(targetId, sessionId, url) {
 async function historyTo(targetId, sessionId, expression, url) {
   const from = heard.length;
   const pages = chrome.requests.length;
+  const end = Date.now() + 8000;
+  let ready = false;
+  while (Date.now() < end) {
+    const history = await own.send('Page.getNavigationHistory', {}, sessionId);
+    const entries = history.result?.entries ?? [];
+    const index = history.result?.currentIndex ?? 0;
+    const current = entries[index]?.url ?? '';
+    if (entries.length > index && index > 0 && current.split('#')[0] !== url) {
+      ready = true;
+      break;
+    }
+    await pause(20);
+  }
+  if (!ready) throw new Error(`no earlier document before ${expression}`);
   const answer = await own.send(
     'Runtime.evaluate',
     { expression, userGesture: true, returnByValue: true },
@@ -326,6 +356,7 @@ async function prepare(origin, direction, id) {
   if (!sessionId) throw new Error(`no seed session: ${clipped(attached)}`);
   await own.send('Page.enable', {}, sessionId);
   await own.send('Runtime.enable', {}, sessionId);
+  await committed(sessionId, first);
   if (direction === 'back') {
     await own.send(
       'Runtime.evaluate',

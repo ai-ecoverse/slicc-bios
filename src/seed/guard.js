@@ -46,6 +46,7 @@ const REMEMBERED = 10000;
 const HISTORY_WAIT = 5000;
 const HISTORY_POLL = 40;
 const FRAME_MS = 300;
+const ANSWER_MS = 1000;
 const HISTORY_KIND = /history\s*(?:\.\s*|\[["']\s*)(back|forward|go)\b/;
 const HISTORY_DELTA = /history\s*(?:\.\s*go\s*\(\s*|\[\s*['"]go['"]\s*\]\s*\(\s*)(-?\d+)/;
 const RUNTIME_META = new Set([
@@ -578,13 +579,7 @@ class Guard {
     });
   }
 
-  refuse({ id, sessionId, method, params }, message = PROTECTED) {
-    globalThis.sliccGuardTrace?.push({
-      method,
-      targetId: params?.targetId,
-      sessionId,
-      refused: message,
-    });
+  refuse({ id, sessionId }, message = PROTECTED) {
     this.deliver({ id, ...(sessionId ? { sessionId } : {}), error: { code: -32000, message } });
   }
 
@@ -619,14 +614,19 @@ class Guard {
     const found = await this.lookup(targetId);
     if (!found) return false;
     if (depth > 8) return true;
-    const verdict = this.is.target({
-      url: found.url,
+    const failed = this.errored.get(targetId);
+    const onError = found.url === ERROR_PAGE && typeof failed === 'string';
+    let verdict = this.is.target({
+      url: onError ? failed : found.url,
       type: found.type,
-      previous: found.was,
+      previous: found.was || found.guarded,
       opener: await this.opener(found.openerId, depth),
+      documentURL: onError ? found.url : undefined,
+      unreachableURL: onError ? failed : undefined,
     });
-    found.guarded = found.guarded || verdict;
-    return found.guarded;
+    if (onError && !verdict) verdict = this.is.url(failed);
+    found.guarded = verdict;
+    return verdict;
   }
 
   async frame(frameId) {
@@ -715,6 +715,13 @@ class Guard {
     nav.settle(steps.some((step) => step.error));
   }
 
+  external(params) {
+    const initiator = params.initiator;
+    if (initiator && (initiator.type !== 'other' || initiator.stack !== undefined)) return false;
+    const site = header(params.request?.headers, 'sec-fetch-site');
+    return typeof site !== 'string' || site === 'none';
+  }
+
   navEvent({ method, params = {} }, nav) {
     if (method === 'Page.frameNavigated' && params.frame && !params.frame.parentId) {
       nav.last = `${params.frame.url}${params.frame.urlFragment ?? ''}`;
@@ -723,16 +730,34 @@ class Guard {
     }
     if (method === 'Page.frameStoppedLoading' && params.frameId === nav.targetId) {
       nav.stopped = true;
+      if (nav.scrub) return;
       return this.wipe(nav);
     }
-    if (method !== 'Fetch.requestPaused') return;
+    if (method === 'Page.frameRequestedNavigation' && this.is.url(params.url)) {
+      const frames = (this.scriptedFrames ??= new Set());
+      frames.add(params.frameId);
+      frames.add(nav.targetId);
+    }
+    if (method === 'Fetch.requestPaused') this.pausedDocument(params, nav);
+  }
+
+  pausedDocument(params, nav) {
     const { requestId } = params;
-    if (params.resourceType === 'Document' && this.is.url(params.request?.url)) {
-      if (nav.held) {
-        nav.taken = true;
-        void this.call('Fetch.continueRequest', { requestId }, nav.session);
-        return;
-      }
+    if (params.resourceType !== 'Document' || !this.is.url(params.request?.url)) {
+      void this.call('Fetch.continueRequest', { requestId }, nav.session);
+      return;
+    }
+    const frames = this.scriptedFrames;
+    const byFrame = frames?.has(params.frameId) === true;
+    const byTarget = frames?.has(nav.targetId) === true;
+    if (byFrame) frames.delete(params.frameId);
+    if (byTarget) frames.delete(nav.targetId);
+    if (nav.held) {
+      nav.taken = true;
+      void this.call('Fetch.continueRequest', { requestId }, nav.session);
+      return;
+    }
+    if (byFrame || byTarget || !this.external(params)) {
       void this.call(
         'Fetch.failRequest',
         { requestId, errorReason: 'BlockedByClient' },
@@ -939,7 +964,6 @@ class Guard {
     nav.scrub = this.scrubbing(nav);
     if (!nav.last?.startsWith('chrome-error:')) return;
     nav.erred = true;
-    if (nav.stopped) this.wipe(nav);
   }
 
   scrubbing(nav) {
@@ -1023,7 +1047,10 @@ class Guard {
       this.learn(info);
       if (await this.watch(params.sessionId, info.targetId, sessionId)) {
         this.touch(info.targetId);
-        this.deliver(message);
+        this.deliver({
+          ...message,
+          params: { ...params, targetInfo: this.masked(info) },
+        });
       }
       return true;
     }
@@ -1207,6 +1234,20 @@ class Guard {
     return move.kind === 'go' && move.delta === 0;
   }
 
+  answered(work) {
+    let timer;
+    const late = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(undefined), ANSWER_MS);
+    });
+    return Promise.race([
+      work.then((value) => {
+        clearTimeout(timer);
+        return value;
+      }),
+      late,
+    ]);
+  }
+
   racedTree(sessionId) {
     let timer;
     const late = new Promise((resolve) => {
@@ -1261,18 +1302,44 @@ class Guard {
     const targetId = this.sessions.get(sessionId)?.targetId;
     const { tree, raced } = this.racedTree(sessionId);
     const [info, treeNow, history] = await Promise.all([
-      targetId ? this.call('Target.getTargetInfo', { targetId }) : Promise.resolve(null),
+      targetId
+        ? this.answered(this.call('Target.getTargetInfo', { targetId }))
+        : Promise.resolve(null),
       raced,
-      this.call('Page.getNavigationHistory', {}, sessionId),
+      this.answered(this.call('Page.getNavigationHistory', {}, sessionId)),
     ]);
     if (treeNow === undefined) void tree.then((late) => this.lateTree(sessionId, late));
+    const frames = treeNow && !treeNow.error ? framed(treeNow.result?.frameTree) : [];
+    if (
+      history?.error?.message === 'Not attached to an active page' &&
+      !this.pendingHistory.has(sessionId)
+    ) {
+      const judged = this.viewInfo(info, frames);
+      if (judged) return judged;
+    }
     if (!info || info.error || !history || history.error) return null;
     if (!Number.isInteger(history.result?.currentIndex)) return null;
-    if (treeNow === undefined) return this.view(info, [], history);
-    if (treeNow.error) return null;
-    const frames = framed(treeNow.result?.frameTree);
-    if (!frames.length) return null;
+    if (treeNow === undefined || treeNow?.error || !frames.length) {
+      if (this.pendingHistory.has(sessionId) && treeNow !== undefined) return null;
+      return this.view(info, [], history);
+    }
     return this.view(info, frames, history);
+  }
+
+  viewInfo(info, frames) {
+    if (!info || info.error) return null;
+    const infoUrl = info.result?.targetInfo?.url ?? '';
+    const named = [infoUrl];
+    for (const frame of frames) named.push(frame.url, frame.securityOrigin, frame.unreachableUrl);
+    if (!named.some((url) => typeof url === 'string' && url !== '')) return null;
+    return {
+      url: infoUrl || frames[0]?.url || '',
+      index: 0,
+      length: 1,
+      protected: named.some((url) => this.is.url(url)),
+      frames,
+      info: info?.result?.targetInfo ?? null,
+    };
   }
 
   note(sessionId, now) {
@@ -1322,9 +1389,13 @@ class Guard {
   }
 
   async back(params, sessionId) {
-    const history = (await this.call('Page.getNavigationHistory', {}, sessionId)).result;
-    const entry = history?.entries?.find((item) => item.id === params.entryId);
-    return Boolean(entry && this.hides(entry));
+    const history = await this.answered(this.call('Page.getNavigationHistory', {}, sessionId));
+    if (!history || history.error) return true;
+    const entries = history.result.entries;
+    if (!Array.isArray(entries)) return true;
+    const entry = entries.find((item) => item.id === params.entryId);
+    if (!entry) return true;
+    return this.hides(entry);
   }
 
   masked(info) {
@@ -1635,12 +1706,6 @@ class Guard {
 
   pass(message) {
     const { id, method, sessionId } = message;
-    globalThis.sliccGuardTrace?.push({
-      method,
-      targetId: message.params?.targetId,
-      sessionId,
-      passed: true,
-    });
     if (sessionId && method === 'Runtime.enable') this.runtimes.add(sessionId);
     if (sessionId && method === 'Runtime.disable') this.runtimes.delete(sessionId);
     if (sessionId && method === 'Page.enable') this.pages.add(sessionId);
