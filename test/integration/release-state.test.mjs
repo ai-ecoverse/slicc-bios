@@ -869,6 +869,81 @@ test('the homescoop exceptions file is read at a pinned commit, never a branch',
   );
 });
 
+test('wasi-slicc from slicc-cli’s ci.yml passes on the merge queue’s ci / integration and ci / review, and only as slicc-cli’s', async () => {
+  const prov = statement({
+    repository: 'https://github.com/ai-ecoverse/slicc-cli',
+    path: '.github/workflows/ci.yml',
+  });
+  const queued = {
+    path: '.github/workflows/ci.yml',
+    event: 'merge_group',
+    head_sha: COMMIT,
+    repository: { full_name: 'ai-ecoverse/slicc-cli' },
+  };
+  const check = (name, o = {}) => ({
+    name,
+    app: { id: 15368 },
+    conclusion: 'success',
+    details_url: 'https://github.com/ai-ecoverse/slicc-cli/actions/runs/9/job/90',
+    ...o,
+  });
+  const both = [check('ci / integration'), check('ci / review')];
+  const ok = await judge(
+    fake({ attestations: prov, checks: { [COMMIT]: both }, runs: { 9: queued } }),
+    '@ai-ecoverse/wasi-slicc@1.46.0',
+    INTEGRITY
+  );
+  assert.equal(ok.ok, true, ok.line);
+  assert.match(
+    ok.line,
+    /certified at slicc-cli cccccccccccc: released by \.github\/workflows\/ci\.yml after the merge queue's ci \/ integration and ci \/ review/
+  );
+  for (const [why, o, re] of [
+    ['no checks', { checks: {} }, /has no successful ci \/ integration and ci \/ review/],
+    [
+      'checks from a push run',
+      { runs: { 9: { ...queued, event: 'push' } } },
+      /has no successful ci \/ integration and ci \/ review from a merge_group run/,
+    ],
+    [
+      'checks from another repository’s run',
+      {
+        checks: {
+          [COMMIT]: both.map((c) => ({
+            ...c,
+            details_url: 'https://github.com/ai-ecoverse/slicc-kernel/actions/runs/9/job/90',
+          })),
+        },
+      },
+      /has no successful ci \/ integration and ci \/ review/,
+    ],
+  ]) {
+    const r = await judge(
+      fake({ attestations: prov, checks: { [COMMIT]: both }, runs: { 9: queued }, ...o }),
+      '@ai-ecoverse/wasi-slicc@1.46.0',
+      INTEGRITY
+    );
+    assert.equal(r.ok, false, why);
+    assert.match(r.line, re, why);
+  }
+  const denied = await judge(
+    fake({ attestations: prov, checks: { [COMMIT]: both }, runs: { 9: queued } }),
+    '@ai-ecoverse/wasi-slicc@1.44.4',
+    INTEGRITY
+  );
+  assert.equal(denied.ok, false, '1.44.4 stays denied');
+  const kernelCi = statement({
+    repository: 'https://github.com/ai-ecoverse/slicc-kernel',
+    path: '.github/workflows/ci.yml',
+  });
+  const other = await judge(
+    fake({ attestations: kernelCi, checks: { [COMMIT]: both }, runs: { 9: queued } }),
+    '@ai-ecoverse/wasi-slicc@1.46.0',
+    INTEGRITY
+  );
+  assert.equal(other.ok, false, 'another repository’s ci.yml');
+});
+
 test('wasi-slicc is slicc-cli’s: its release commit’s cert-review status from 1.44.1, never 1.44.4, and nothing before 1.44.1 (its stale tag is gone)', async () => {
   assert.deepEqual(writerOf('@ai-ecoverse/wasi-slicc'), {
     kind: 'main',

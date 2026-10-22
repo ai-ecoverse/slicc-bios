@@ -170,7 +170,10 @@ async function certifiedCommit(src, repo, commit) {
   return `cert-review status: ${status.description ?? 'success'}`;
 }
 
-export const PIPELINE = { 'slicc-kernel': '.github/workflows/ci.yml' };
+export const PIPELINE = {
+  'slicc-kernel': '.github/workflows/ci.yml',
+  'slicc-cli': '.github/workflows/ci.yml',
+};
 export const PIPELINE_CHECKS = ['ci / integration', 'ci / review'];
 
 export function queueRun(run, repo, path, commit) {
