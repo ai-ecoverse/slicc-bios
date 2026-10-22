@@ -1515,7 +1515,7 @@ test('playwright-cli: a goto that redirects into the vault fails cleanly, and a 
   assert.doesNotMatch(hop, /HOPMARK77|VAULT-MARK/, hop);
   assert.ok(!hits.some((hit) => hit.startsWith('vault.sliccy.ai')), hits.join(' '));
   const idp = `http://localhost:${standPort}/plain?redirect_uri=${encodeURIComponent(`${VAULT}/cb`)}&state=s`;
-  await run(page, `playwright-cli goto '${idp}' && playwright-cli snapshot`);
+  await run(page, `playwright-cli open '${idp}' && playwright-cli snapshot`);
   await shows(page, 'heading "Plain"');
   await run(page, 'playwright-cli close && echo closed-$?');
   await shows(page, 'closed-0');
