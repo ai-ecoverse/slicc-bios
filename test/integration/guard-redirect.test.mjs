@@ -85,6 +85,10 @@ const site = createHttp((req, res) => {
       ].join('\n')
     );
   }
+  if (url.pathname.startsWith('/newline/') && hop) {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end(`<title>newline</title><pre>Join:\nsliccy.ai/join/N${hop}</pre>`);
+  }
   if (url.pathname.startsWith('/capability/') && hop) {
     const m = hop;
     res.writeHead(200, { 'content-type': 'text/html' });
@@ -163,6 +167,9 @@ const plan = () => {
     counter += 1;
     hops.set(String(counter), mark());
     steps.push({ fetching, kind: 'capability', how: 'navigate', path: `/capability/${counter}` });
+    counter += 1;
+    hops.set(String(counter), mark());
+    steps.push({ fetching, kind: 'newline', how: 'navigate', path: `/newline/${counter}` });
     steps.push({ fetching, kind: 'vault', how: 'navigate', path: `/form/${hopTo('vault')}` });
   }
   return steps;
@@ -389,7 +396,7 @@ async function rig({ transport, proxy, port, override }) {
         .map((text) => JSON.parse(text))
         .filter((m) => m.method === 'Network.requestWillBeSent' && m.params?.request?.url === url)
         .map((m) => m.params.requestId);
-      if (kind === 'capability') {
+      if (kind === 'capability' || kind === 'newline') {
         for (const requestId of new Set(own)) {
           answers.caps.push(await send('Network.getResponseBody', { requestId }, session));
         }

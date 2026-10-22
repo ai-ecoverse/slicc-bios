@@ -272,7 +272,7 @@ const ANSWERED = new Set([
 ]);
 const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const HOSTS = new RegExp(
-  `(?<![\\p{L}\\p{N}_.-])((?:[a-z0-9-]+\\.)*(?:${[...catalog.protectedOrigins.domains, ...catalog.protectedOrigins.hosts].map(escaped).join('|')}))(\\.?(?::\\d+|%3a\\d+)?)(?:[/?#\\\\][^\\s"'<>\`]*|(?:%2f|%3f|%23|%5c)[^\\s"'<>\`&]*)`,
+  `(?<!(?<!\\\\)[\\p{L}\\p{N}_.-])((?:[a-z0-9-]+\\.)*(?:${[...catalog.protectedOrigins.domains, ...catalog.protectedOrigins.hosts].map(escaped).join('|')}))(\\.?(?::\\d+|%3a\\d+)?)(?:[/?#\\\\][^\\s"'<>\`]*|(?:%2f|%3f|%23|%5c)[^\\s"'<>\`&]*)`,
   'giu'
 );
 
@@ -1197,8 +1197,18 @@ class Guard {
           )
       : plain;
     const rest = field ? { ...result, [field]: undefined } : result;
-    const text = unescaped(`${printable}\n${JSON.stringify(rest)}`);
-    return this.redact({ text }).named;
+    const strings = [];
+    const collect = (value) => {
+      if (typeof value === 'string') strings.push(unescaped(value));
+      else if (value && typeof value === 'object') {
+        for (const [key, item] of Object.entries(value)) {
+          strings.push(key);
+          collect(item);
+        }
+      }
+    };
+    collect(rest);
+    return this.redact({ text: unescaped(printable), strings }).named;
   }
 
   contents(message, was) {
