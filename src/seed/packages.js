@@ -143,22 +143,40 @@ export function commandsOf(doc, helpers = []) {
     .map(([name]) => name);
 }
 
-async function json(fetcher, url, init = {}) {
-  const response = await fetcher(url, {
-    cache: 'no-cache',
-    signal: AbortSignal.timeout(TIMEOUT),
-    ...init,
-  });
-  if (response.status === 404) return null;
-  if (!response.ok) throw new Error(`${response.status} for ${url}`);
-  return response.json();
+export const RETRIES = [500, 1500];
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const gaveUp = (error) => error?.name === 'TimeoutError' || error?.name === 'AbortError';
+
+async function json(fetcher, url, init = {}, { waits = [], sleep = pause } = {}) {
+  for (let attempt = 0; ; attempt += 1) {
+    const again = attempt < waits.length;
+    let response;
+    try {
+      response = await fetcher(url, {
+        cache: 'no-cache',
+        signal: AbortSignal.timeout(TIMEOUT),
+        ...init,
+      });
+    } catch (error) {
+      if (!again || gaveUp(error)) throw error;
+      await sleep(waits[attempt]);
+      continue;
+    }
+    if (response.status === 404) return null;
+    if (response.ok) return response.json();
+    if (response.status < 500 || !again) throw new Error(`${response.status} for ${url}`);
+    await sleep(waits[attempt]);
+  }
 }
 
-export function registry(fetcher = (url, init) => fetch(url, init)) {
+export function registry(
+  fetcher = (url, init) => fetch(url, init),
+  { waits = RETRIES, sleep = pause } = {}
+) {
   const memo = new Map();
   const once = (url, init) => {
     if (!memo.has(url)) {
-      const pending = json(fetcher, url, init);
+      const pending = json(fetcher, url, init, { waits, sleep });
       memo.set(url, pending);
       pending.catch(() => memo.delete(url));
     }
