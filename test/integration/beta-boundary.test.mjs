@@ -7,6 +7,7 @@ import {
   agentRow,
   BETA,
   chrome,
+  DEPRECATED,
   ELSEWHERE,
   fakeExtension,
   installedAgent,
@@ -116,12 +117,13 @@ test('nobody but the owner tab can turn developer mode on or install a beta: not
   assert.deepEqual(page.errors, []);
 });
 
-test('under report, a user’s pnpm pin in /opt/agent that brings an uncertified mcpcat is refused at seven’s next agent update, and seven goes back to its own agent', {
+test('under report, a user’s pnpm pin in /opt/agent that brings an uncertified mcpcat and a certs.json py-six npm deprecates is refused at seven’s next agent update, and seven goes back to its own agent', {
   timeout: 30 * 60 * 1000,
 }, async (t) => {
-  releases.unshift(pinned);
+  releases.unshift(pinned, DEPRECATED);
   t.after(() => {
-    if (releases.includes(pinned)) releases.splice(releases.indexOf(pinned), 1);
+    for (const one of [pinned, DEPRECATED])
+      if (releases.includes(one)) releases.splice(releases.indexOf(one), 1);
   });
   const page = await chrome.page(t);
   await page.goto('/#users=report');
@@ -159,9 +161,16 @@ test('under report, a user’s pnpm pin in /opt/agent that brings an uncertified
       );
       throw new Error(`the pin was never refused, rows ${rows}: ${error.message}`);
     });
+  const certs = JSON.parse(
+    await readFile(new URL('../../src/packages/certs.json', import.meta.url), 'utf8')
+  );
+  assert.ok(
+    certs[`${DEPRECATED.name}@${DEPRECATED.version}`],
+    'certs.json has the py-six npm now deprecates'
+  );
   assert.equal(
     own.error,
-    "Needs @ai-ecoverse/mcpcat@0.99.0, which seven hasn't tested. Seven went back to its own versions."
+    `Needs @ai-ecoverse/mcpcat@0.99.0, ${DEPRECATED.name}@${DEPRECATED.version}, which seven hasn't tested. Seven went back to its own versions.`
   );
   assert.equal(await installedAgent(page), PINNED);
   assert.deepEqual(page.errors, []);
