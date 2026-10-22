@@ -25,9 +25,9 @@ export const MOVED = 'var/lib/slicc/optional/moved';
 
 const COMMAND = /^[A-Za-z0-9][\w.+-]*$/;
 const UNSHADOW =
-  'b=$1; o=$2; shift 2; for n in "$@"; do f="$b/$n"; [ -e "$f" ] || [ -L "$f" ] || continue; [ "$(readlink "$f" 2>/dev/null)" = "/usr/bin/$n" ] && continue; case "$(readlink -f "$f" 2>/dev/null)" in *"$o"*) ;; *) grep -qsF -- "$o" "$f" || continue ;; esac; t="$b/.$n.slicc"; rm -f -- "$t"; ln -s -- "/usr/bin/$n" "$t" && mv -f -- "$t" "$f" || { rm -f -- "$t"; exit 1; }; echo "$n"; done';
+  'b=$1; o=$2; l=$3; shift 3; for n in "$@"; do f="$b/$n"; [ -e "$f" ] || [ -L "$f" ] || continue; [ "$(readlink "$f" 2>/dev/null)" = "/usr/bin/$n" ] && continue; case "$(readlink -f "$f" 2>/dev/null)" in *"$o"*) ;; *) grep -qsF -- "$o" "$f" || continue ;; esac; if [ "$l" = link ]; then t="$b/.$n.slicc"; rm -f -- "$t"; ln -s -- "/usr/bin/$n" "$t" && mv -f -- "$t" "$f" || { rm -f -- "$t"; exit 1; }; else rm -f -- "$f" || exit 1; fi; echo "$n"; done';
 const DANGLING =
-  'for f in "$1"/*; do [ -L "$f" ] || continue; n=${f##*/}; [ "$(readlink "$f")" = "/usr/bin/$n" ] || continue; [ -e "$f" ] && continue; rm -f -- "$f" || exit 1; echo "$n"; done';
+  'b=$1; shift; for f in "$b"/*; do [ -L "$f" ] || continue; n=${f##*/}; [ "$(readlink "$f")" = "/usr/bin/$n" ] || continue; case " $* " in *" $n "*) continue ;; esac; rm -f -- "$f" || exit 1; echo "$n"; done';
 
 export const MISMATCH =
   "This version doesn't match the tested build, so it was removed again. Retry later.";
@@ -658,8 +658,10 @@ async function lines(kernel, argv, user, what) {
   return out.split('\n').filter(Boolean);
 }
 
-export function tidyBins({ kernel, bin, user = 'root' }) {
-  return queued(() => lines(kernel, ['bash', '-c', DANGLING, 'tidy', bin], user, `tidying ${bin}`));
+export function tidyBins({ kernel, bin, user = 'root', keep = [] }) {
+  return queued(() =>
+    lines(kernel, ['bash', '-c', DANGLING, 'tidy', bin, ...keep], user, `tidying ${bin}`)
+  );
 }
 
 async function unshadowOnce({ root, kernel, global, name, dir, user = 'root' }) {
@@ -671,7 +673,16 @@ async function unshadowOnce({ root, kernel, global, name, dir, user = 'root' }) 
   const owner = `/node_modules/${name}/`;
   return lines(
     kernel,
-    ['bash', '-c', UNSHADOW, 'unshadow', binDir(global), owner, ...names],
+    [
+      'bash',
+      '-c',
+      UNSHADOW,
+      'unshadow',
+      binDir(global),
+      owner,
+      user === 'root' ? 'link' : 'remove',
+      ...names,
+    ],
     user,
     `unlinking ${names.join(', ')}`
   );
@@ -696,9 +707,13 @@ export async function shellUnshadow({ root, kernel, global, home }) {
           .map(({ user }) => ({ user, global: `${home.slice(1)}/global/v11` }))[0];
   if (!owner) return [];
   const removed = [];
-  for (const { name, dir } of await globals(root, owner.global))
+  const keep = [];
+  for (const { name, dir } of await globals(root, owner.global)) {
+    const manifest = (await text(root, `${dir}/node_modules/${name}/package.json`)) ?? '{}';
+    keep.push(...shadowed(JSON.parse(manifest)));
     removed.push(...(await unshadow({ root, kernel, name, dir, ...owner })));
-  await tidyBins({ kernel, bin: binDir(owner.global), user: owner.user });
+  }
+  await tidyBins({ kernel, bin: binDir(owner.global), user: owner.user, keep });
   return removed;
 }
 

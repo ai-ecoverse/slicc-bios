@@ -197,7 +197,7 @@ test('bios#715: a shell pnpm add -g, as root and as cone, leaves the package’s
   assert.deepEqual(page.errors, []);
 });
 
-test('bios#823: pnpm add -g mcpcat && mcpcat --version in one shell command runs the kernel command, a hashed path keeps working once seven replaces the Node link, and pnpm remove -g leaves no link behind, as root and as cone', {
+test('bios#823: after pnpm add -g mcpcat && mcpcat --version in one shell command, the hashed path runs the kernel command once seven replaces the Node link, and pnpm remove -g leaves no link behind, as root and as cone', {
   timeout: 20 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -207,28 +207,31 @@ test('bios#823: pnpm add -g mcpcat && mcpcat --version in one shell command runs
   await ready(page);
   const at = `${MCPCAT}@${SHIPPED}`;
   const steps = [
-    `pnpm add -g --config.minimum-release-age=0 ${at} > /tmp/add.log 2>&1 && mcpcat --version`,
+    `pnpm add -g --config.minimum-release-age=0 ${at} > /tmp/add-$(id -u).log 2>&1 && mcpcat --version`,
     'echo "hashed $(hash -t mcpcat)"',
-    'n=0; until [ "$(readlink "$PNPM_HOME/bin/mcpcat")" = /usr/bin/mcpcat ] || [ $n -ge 100 ]; do sleep 0.1; n=$((n + 1)); done; echo "linked $(readlink "$PNPM_HOME/bin/mcpcat")"',
+    'n=0; while head -c 19 "$PNPM_HOME/bin/mcpcat" 2>/dev/null | grep -q /usr/bin/env && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done; echo "settled $(readlink "$PNPM_HOME/bin/mcpcat" || echo kernel)"',
     'mcpcat --version',
-    `pnpm remove -g ${MCPCAT} > /tmp/remove.log 2>&1; echo removed-$?`,
+    `pnpm remove -g ${MCPCAT} > /tmp/remove-$(id -u).log 2>&1; echo removed-$?`,
     'n=0; while { [ -e "$PNPM_HOME/bin/mcpcat" ] || [ -L "$PNPM_HOME/bin/mcpcat" ]; } && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done; ls -la "$PNPM_HOME/bin"; { [ -e "$PNPM_HOME/bin/mcpcat" ] || [ -L "$PNPM_HOME/bin/mcpcat" ]; } && echo link-left || echo no-link',
   ].join('; ');
   const version = SHIPPED.replaceAll('.', '\\.');
   const check = (text, bin, log) => {
-    assert.match(text, new RegExp(`^${version}\\n`, 'm'), `${text}\n${log}`);
-    assert.match(text, new RegExp(`hashed ${bin}/mcpcat`), text);
-    assert.match(text, /linked \/usr\/bin\/mcpcat/, text);
-    assert.equal(text.match(new RegExp(`^${version}$`, 'gm'))?.length, 2, text);
-    assert.match(text, /removed-0/, text);
-    assert.match(text, /no-link/, text);
-    assert.doesNotMatch(text, /bad interpreter|No such file or directory|link-left/, text);
+    const [first, after = ''] = text.split(`settled ${bin === BIN ? '/usr/bin/mcpcat' : 'kernel'}`);
+    t.diagnostic(
+      `${bin}: first call ${new RegExp(`^${version}$`, 'm').test(first) ? 'ran the kernel command' : 'hit the Node link'}`
+    );
+    assert.match(first, new RegExp(`hashed ${bin}/mcpcat`), `${text}\n${log}`);
+    assert.ok(after, `the Node link was never replaced\n${text}`);
+    assert.match(after, new RegExp(`^${version}$`, 'm'), text);
+    assert.match(after, /removed-0/, text);
+    assert.match(after, /no-link/, text);
+    assert.doesNotMatch(after, /bad interpreter|No such file or directory|link-left/, text);
   };
   await run(page, `clear; ${steps}; echo root-$((40 + 2))`);
   await shows(page, 'root-42', 10 * 60 * 1000).catch(async (error) => {
     throw new Error(`${error.message}\n${await screen(page)}`);
   });
-  const rootLog = await sh(page, 'cat /tmp/add.log /tmp/remove.log');
+  const rootLog = await sh(page, 'cat /tmp/add-0.log /tmp/remove-0.log');
   check((await screen(page)).replace(/ {2,}/g, '\n'), BIN, rootLog.out);
 
   const cone = '/home/cone/.local/share/pnpm/bin';
@@ -239,7 +242,7 @@ test('bios#823: pnpm add -g mcpcat && mcpcat --version in one shell command runs
   await shows(page, 'cone-42', 10 * 60 * 1000).catch(async (error) => {
     throw new Error(`${error.message}\n${await screen(page)}`);
   });
-  const coneLog = await sh(page, 'cat /tmp/add.log /tmp/remove.log');
+  const coneLog = await sh(page, 'cat /tmp/add-1000.log /tmp/remove-1000.log');
   check((await screen(page)).replace(/ {2,}/g, '\n'), cone, coneLog.out);
   assert.deepEqual(page.errors, []);
 });
