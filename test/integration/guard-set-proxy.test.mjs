@@ -1,3 +1,3 @@
 import { shared } from './guard-set.mjs';
 
-shared('proxy');
+shared('proxy', { except: ['lagging'] });

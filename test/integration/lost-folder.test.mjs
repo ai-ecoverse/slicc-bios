@@ -7,11 +7,11 @@ import { after, test } from 'node:test';
 import { startProxy } from '@ai-ecoverse/slicc-node';
 import { boot, ready, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
-import { attach } from './cli.mjs';
+import { attach, CLI } from './cli.mjs';
 
 const chrome = await launch();
 after(() => chrome.close());
-const cli = process.env.SLICC_CLI;
+const cli = CLI;
 const BOUND = 30;
 
 const ONE = 'echo data > MNT/w.txt';

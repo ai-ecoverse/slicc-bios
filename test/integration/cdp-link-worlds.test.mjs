@@ -10,10 +10,10 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { boot, ready, run, shows } from './bios.mjs';
 import { debuggerUrl, launch } from './chrome.mjs';
-import { attach, cliEnv } from './cli.mjs';
+import { attach, CLI, cliEnv } from './cli.mjs';
 import { certificate } from './real-extension.mjs';
 
-const cli = process.env.SLICC_CLI;
+const cli = CLI;
 const candidate = process.env.SLICC_CDP_CANDIDATE;
 const body = `<!doctype html><title>LINK-DRIVEN</title><h1>Ordinary page</h1><button onclick="document.title='CLICKED'">Click me</button><input aria-label="Name"><select aria-label="Flavor"><option value="a">Apple</option><option value="b">Berry</option></select><input type="file" aria-label="Attachment"><button draggable="true">Drag source</button><button ondragover="event.preventDefault()" ondrop="document.body.dataset.dropped='yes'">Drop target</button><script>Object.defineProperty(document,'modelContext',{value:{getTools:()=>[{name:'echo',description:'Echo a value',inputSchema:{type:'object',properties:{value:{type:'string'}}}}],executeTool:async(_name,input)=>(typeof input==='string'?JSON.parse(input):input).value}});</script>`;
 

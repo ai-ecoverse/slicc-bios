@@ -10,7 +10,7 @@
   },
   "fledgling": {
     "provider": "github",
-    "workflow": "release.yml",
+    "workflow": "ci.yml",
     "repo": "ai-ecoverse/slicc-bios",
     "publish": true
   },
@@ -37,9 +37,8 @@
   "scripts": {
     "prepare": "slicc-install-hooks",
     "start": "node test/integration/chrome.mjs",
-    "pretest": "playwright-core install --no-shell chromium",
-    "test": "node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs ${SLICC_TESTS:-test/integration/*.test.mjs}",
-    "test:cert": "node --test --test-concurrency=1 --test-timeout=${CERT_BUDGET:-8400000} --test-global-setup=node_modules/@ai-ecoverse/slicc-shared-web/harness/global.mjs test/integration/cert.test.mjs",
+    "pretest": "slicc-cdp install-browser",
+    "test": "node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs 'test/integration/*.test.mjs'",
     "test:unit": "mcr -c node_modules/@ai-ecoverse/slicc-shared-web/mcr.config.mjs node --test 'test/unit/**/*.test.mjs'",
     "lint": "slicc-lint",
     "format": "biome check --write ."
@@ -47,8 +46,9 @@
   "devDependencies": {
     "@ai-ecoverse/slicc": "1.47.2",
     "@ai-ecoverse/slicc-browsers": "1.18.1",
+    "@ai-ecoverse/slicc-cdp": "1.30.25",
     "@ai-ecoverse/slicc-node": "2.5.1",
-    "@ai-ecoverse/slicc-shared-web": "1.30.8",
+    "@ai-ecoverse/slicc-shared-web": "2.7.9",
     "@ai-ecoverse/slicc-spectrum": "1.104.1",
     "@ai-ecoverse/slicc-vault": "1.15.1",
     "@biomejs/biome": "2.5.15",
@@ -57,9 +57,7 @@
     "lefthook": "2.2.1",
     "modern-tar": "0.8.5",
     "monocart-coverage-reports": "2.13.2",
-    "playwright-core": "1.64.1",
     "semantic-release": "25.0.9",
-    "semver": "7.8.5",
     "wrangler": "4.151.0",
     "ws": "8.22.0"
   }

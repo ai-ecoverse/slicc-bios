@@ -2,10 +2,6 @@ import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
-const canary = process.env.SLICC_CANARY
-  ? JSON.parse(await readFile(process.env.SLICC_CANARY, 'utf8')).candidates
-  : {};
-
 const packages = new URL('../../src/packages/', import.meta.url);
 const read = async (path) => readFile(new URL(path, packages), 'utf8');
 const KERNEL = '@ai-ecoverse/slicc-kernel';
@@ -176,7 +172,7 @@ async function lockedGated() {
 const SERVED = new URL('../../src/', import.meta.url);
 const served = (name) => readFile(new URL(name, SERVED), 'utf8');
 
-test('the runtime union (certs.json and every lockfile seven ships, Tailscale and the catalog projects included) covers every gated pin with its integrity; release-state judges each new pin', async (t) => {
+test('the runtime union (certs.json and every lockfile seven ships, Tailscale and the catalog projects included) covers every gated pin with its integrity', async (t) => {
   const { certifiedSet } = await import('../../src/seed/layer.js');
   const certified = await certifiedSet(served);
   const found = await lockedGated();
@@ -185,7 +181,6 @@ test('the runtime union (certs.json and every lockfile seven ships, Tailscale an
     .filter(([key, [, integrity]]) => certified[key]?.integrity !== integrity)
     .map(([key, [file]]) => `${file} ${key}`);
   assert.deepEqual(missing, [], 'neither in src/packages/certs.json nor in a lockfile seven ships');
-  for (const key of Object.keys(canary)) t.diagnostic(`${key}: canary candidate`);
   const certs = JSON.parse(await read('certs.json'));
   for (const [key, entry] of Object.entries(certs)) {
     assert.match(key, /^@ai-ecoverse\/[\w.-]+@\d+\.\d+\.\d+(-[\w.-]+)?$/, key);
@@ -249,19 +244,22 @@ test("a user's gated version is untested unless certs.json or seven's own lockfi
   );
 });
 
-test('every CI job and every test run keeps slicc-cdp off 127.0.0.1:9222-9229', async () => {
-  const root = new URL('../../', import.meta.url);
-  const harness = await readFile(new URL('test/integration/chrome.mjs', root), 'utf8');
+test('every test run keeps slicc-cdp off 127.0.0.1:9222-9229', async () => {
+  const harness = await readFile(
+    new URL('../../test/integration/chrome.mjs', import.meta.url),
+    'utf8'
+  );
   assert.match(harness, /^env\.SLICC_CDP_PORTS \?\?= '9300-9309';$/m);
-  for (const file of ['ci.yml', 'canary.yml']) {
-    const yml = await readFile(new URL(`.github/workflows/${file}`, root), 'utf8');
-    assert.match(yml, /\nenv:\n(?: {2}\S[^\n]*\n)*? {2}SLICC_CDP_PORTS: '9300-9309'\n/, file);
-  }
 });
 
-test("the bundled copy of homescoop's certification exceptions is byte for byte the one release-state pins", async () => {
-  const { HOMESCOOP } = await import('../../scripts/cert/release-state.mjs');
-  const { repo, path, ref } = HOMESCOOP.exceptions;
+const EXCEPTIONS = {
+  repo: 'ai-ecoverse/homescoop',
+  path: 'certification-exceptions.json',
+  ref: '78d41d0ab6757deba5db295fffa6e3f358cd1a9e',
+};
+
+test("the bundled copy of homescoop's certification exceptions is byte for byte homescoop's at the pinned commit", async () => {
+  const { repo, path, ref } = EXCEPTIONS;
   assert.match(ref, /^[0-9a-f]{40}$/);
   const bundled = await read('optional/exceptions.json');
   const url = `https://raw.githubusercontent.com/${repo}/${ref}/${path}`;
@@ -274,4 +272,73 @@ test("the bundled copy of homescoop's certification exceptions is byte for byte 
   );
   const { exceptionsOf } = await import('../../src/seed/packages.js');
   assert.ok(exceptionsOf(JSON.parse(bundled))?.length > 10, 'and the page reads it as schema 1');
+});
+
+const BUILDERS = {
+  'slicc-kernel': 'slicc-kernel',
+  'slicc-jsh': 'slicc-jsh',
+  'slicc-cdp': 'slicc-cdp',
+  'slicc-clipboard': 'slicc-clipboard',
+  mcpcat: 'mcpcat',
+  'wasi-slicc': 'slicc-cli',
+  'wasm-tailscale': 'wasm-tailscale',
+};
+
+function builderOf(name) {
+  const short = name.replace(/^@ai-ecoverse\//, '');
+  return BUILDERS[short] ?? (/^(wasm|wasi|wasix|py)-/.test(short) ? 'homescoop' : null);
+}
+
+async function provenanceOf(name, version) {
+  const url = `https://registry.npmjs.org/-/npm/v1/attestations/${name.replace('/', '%2f')}@${encodeURIComponent(version)}`;
+  const response = await fetch(url, { signal: AbortSignal.timeout(60000) });
+  if (response.status === 404) return null;
+  assert.equal(response.status, 200, url);
+  for (const attestation of (await response.json()).attestations ?? []) {
+    if (!/slsa\.dev\/provenance/.test(attestation.predicateType ?? '')) continue;
+    const statement = JSON.parse(
+      Buffer.from(attestation.bundle.dsseEnvelope.payload, 'base64').toString('utf8')
+    );
+    const workflow = statement.predicate?.buildDefinition?.externalParameters?.workflow ?? {};
+    return {
+      repository: workflow.repository,
+      path: workflow.path,
+      ref: workflow.ref,
+      subjects: (statement.subject ?? []).map((subject) => subject.digest?.sha512),
+    };
+  }
+  return null;
+}
+
+test('every gated pin is a release its own repository built from main, with npm provenance for that tarball, and homescoop withdrew none', async (t) => {
+  const { exceptionsOf, ruled } = await import('../../src/seed/packages.js');
+  const exceptions = exceptionsOf(JSON.parse(await read('optional/exceptions.json')));
+  assert.ok(exceptions, "bios's copy of homescoop's certification exceptions is schema 1");
+  const found = await lockedGated();
+  const pins = new Set(found.keys());
+  const wrong = [];
+  await Promise.all(
+    [...found].map(async ([key, [file, integrity]]) => {
+      const at = key.lastIndexOf('@');
+      const [name, version] = [key.slice(0, at), key.slice(at + 1)];
+      const repo = builderOf(name);
+      if (!repo) return wrong.push(`${file} ${key}: no repository is known to build it`);
+      const built = await provenanceOf(name, version);
+      const hex = Buffer.from(integrity.replace(/^sha512-/, ''), 'base64').toString('hex');
+      if (!built) wrong.push(`${file} ${key}: no npm provenance`);
+      else if (
+        built.repository !== `https://github.com/ai-ecoverse/${repo}` ||
+        built.ref !== 'refs/heads/main'
+      )
+        wrong.push(
+          `${file} ${key}: built by ${built.repository} ${built.path} at ${built.ref}, not ai-ecoverse/${repo} at main`
+        );
+      else if (!built.subjects.includes(hex))
+        wrong.push(`${file} ${key}: the provenance names another tarball than the lockfile's`);
+      const withdrawn = repo === 'homescoop' && ruled(exceptions, name, version, pins);
+      if (withdrawn) wrong.push(`${file} ${key}: ${withdrawn}`);
+    })
+  );
+  assert.deepEqual(wrong.sort(), []);
+  t.diagnostic(`provenance: PASS ${found.size} gated pins`);
 });

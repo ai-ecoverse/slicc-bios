@@ -5,7 +5,7 @@ import { createInterface } from 'node:readline';
 import { after, test } from 'node:test';
 import { boot, ready, run } from './bios.mjs';
 import { launch } from './chrome.mjs';
-import { attach, HOST_CDP } from './cli.mjs';
+import { attach, CLI, HOST_CDP } from './cli.mjs';
 import { shoot } from './shots.mjs';
 
 const chrome = await launch();
@@ -572,7 +572,7 @@ test('a linked node with cap udp carries a kernel program datagram as the automa
   ]);
 });
 
-const cli = process.env.SLICC_CLI;
+const cli = CLI;
 
 test('links the real slicc CLI over stdio signaling, and kernel curl reaches its loopback over raw TCP and the http kind, also as host.slicc.internal', {
   skip: !cli,
@@ -979,7 +979,9 @@ test('the real slicc CLI carries <port>.kernel.localhost into the page, and the 
 test('the real slicc CLI shares another browser over cdp: the 9222 facade reaches it as <device>/<browser>, and a walk to seven’s origin never loads there', {
   skip: !cli,
 }, async (t) => {
-  const { chromium } = await import('playwright-core');
+  const { findBrowser } = await import('@ai-ecoverse/slicc-cdp');
+  const browser = await findBrowser();
+  assert.ok(browser, 'slicc-cdp finds the Chrome for Testing that npm test installs');
   const { mkdtemp } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
@@ -989,7 +991,7 @@ test('the real slicc CLI shares another browser over cdp: the 9222 facade reache
   await new Promise((resolve) => probe.close(resolve));
   const profile = await mkdtemp(join(tmpdir(), 'link-cdp-'));
   const other = spawn(
-    chromium.executablePath(),
+    browser.executable,
     [
       '--headless=new',
       `--remote-debugging-port=${debugPort}`,

@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { after, test } from 'node:test';
 import { boot, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
-import { attach } from './cli.mjs';
+import { attach, CLI } from './cli.mjs';
 import { startFakeVault } from './fake-vault.mjs';
 import { shoot } from './shots.mjs';
 
@@ -917,7 +917,7 @@ test('a tab that takes over from the owner says hello again with the sudo group 
   assert.deepEqual(second.errors, []);
 });
 
-const cli = process.env.SLICC_CLI;
+const cli = CLI;
 const native = (() => {
   const target = {
     'darwin arm64': 'darwin-arm64',

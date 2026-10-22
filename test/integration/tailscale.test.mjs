@@ -4,11 +4,11 @@ import { existsSync } from 'node:fs';
 import { after, test } from 'node:test';
 import { ready, run } from './bios.mjs';
 import { launch } from './chrome.mjs';
-import { startTailnet, tailnetAvailable } from './tailnet.mjs';
+import { startTailnet, tailnetAvailable, tailnetWanted } from './tailnet.mjs';
 
 const dist = process.env.TAILSCALE_DIST;
 const usable = dist && existsSync(`${dist}/main.wasm`);
-const online = process.env.TAILSCALE_E2E === '1';
+const online = tailnetWanted;
 
 const chrome =
   usable || online

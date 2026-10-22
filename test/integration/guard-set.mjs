@@ -322,12 +322,14 @@ const SHA = process.env.GUARD_SHA ?? process.env.GITHUB_SHA;
 export const ROW_MS = 3 * 60 * 1000;
 export const SCALE = { lagging: 3 };
 
-export function shared(path) {
+export function shared(path, { variants, except = [] } = {}) {
   const chosen = {
     targets: only(process.env.GUARD_TARGETS) ?? [
       ...new Set(set.vectors.flatMap((vector) => vector.targets)),
     ],
-    variants: only(process.env.GUARD_VARIANTS) ?? Object.keys(set.variants),
+    variants:
+      only(process.env.GUARD_VARIANTS) ??
+      (variants ?? Object.keys(set.variants)).filter((variant) => !except.includes(variant)),
   };
   const results = [];
   const subset = (target) => ({
@@ -392,7 +394,10 @@ export function shared(path) {
       );
     });
   }
-  const scope = process.env.GUARD_VARIANTS ? `, ${chosen.variants.join(' and ')} detach` : '';
+  const scope =
+    process.env.GUARD_VARIANTS || variants || except.length
+      ? `, ${chosen.variants.join(' and ')} detach`
+      : '';
   test(`the shared set is complete on the ${path} path${scope}: no row missing, none skipped for a missing observer`, async () => {
     const report = summary({ set, results, guard: 'slicc-bios', sha: SHA });
     const informed = results.filter((row) => row.ran || row.notes);

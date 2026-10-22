@@ -4,7 +4,7 @@
   "gitIgnoredAuthors": ["41898282+github-actions[bot]@users.noreply.github.com"],
   "packageRules": [
     {
-      "description": "Seven's pins: every @ai-ecoverse package in the base set (src/packages), the optional catalog's non-homescoop entries (src/packages/optional/package.json: slicc-jsh, mcpcat, wasi-slicc and sliccy-browser) and /opt/agent (src/packages/agent) bumps by itself, with its npm and pnpm lockfiles. The catalog's homescoop entries aren't pinned: seven offers each one's npm latest at runtime, behind the gate in src/seed/packages.js. The automerge goes through the merge queue once ci / test (with release-state for every gated pin, scripts/cert/release-state.mjs) and cert-review pass; no bot writes to the branch.",
+      "description": "Seven's pins: every @ai-ecoverse package in the base set (src/packages), the optional catalog's non-homescoop entries (src/packages/optional/package.json: slicc-jsh, mcpcat, wasi-slicc and sliccy-browser) and /opt/agent (src/packages/agent) bumps by itself, with its npm and pnpm lockfiles. The catalog's homescoop entries aren't pinned: seven offers each one's npm latest at runtime, behind the gate in src/seed/packages.js. The automerge goes through the merge queue once ci / integration (pins.test.mjs included: every gated pin is its own repository's release from main) and ci / review pass; no bot writes to the branch.",
       "matchFileNames": [
         "src/packages/package.json",
         "src/packages/optional/package.json",
@@ -15,7 +15,7 @@
       "dependencyDashboardApproval": false
     },
     {
-      "description": "homescoop's packages (wasi-*, wasix-*, wasm-*, py-*, wasi-pnpm included) come as one PR a day, which cert review certifies package by package.",
+      "description": "homescoop's packages (wasi-*, wasix-*, wasm-*, py-*, wasi-pnpm included) come as one PR a day.",
       "matchFileNames": [
         "src/packages/package.json",
         "src/packages/optional/package.json",
@@ -69,6 +69,12 @@
       "matchPackageNames": ["@ai-ecoverse/**"],
       "automerge": false,
       "dependencyDashboardApproval": true
+    },
+    {
+      "description": "The slicc-shared-web npm package and the pipeline.yml ref in ci.yml move together, in one PR, so the harness and the pipeline stay at one release (workflows.test.mjs holds them equal).",
+      "matchPackageNames": ["@ai-ecoverse/slicc-shared-web", "ai-ecoverse/slicc-shared-web"],
+      "groupName": "slicc-shared-web",
+      "groupSlug": "slicc-shared-web"
     }
   ]
 }
