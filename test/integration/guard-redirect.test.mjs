@@ -85,6 +85,12 @@ const site = createHttp((req, res) => {
       ].join('\n')
     );
   }
+  if (url.pathname.startsWith('/dotted/') && hop) {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    return res.end(
+      `<title>dotted</title><p>sliccy.ai/join/A${hop}/../../ and https://www.sliccy.ai/join/B${hop}/../../7/</p><script>console.log("https://www.sliccy.ai/join/C${hop}/../../7/")</script>`
+    );
+  }
   if (url.pathname.startsWith('/encoded/') && hop) {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     return res.end(
@@ -197,6 +203,9 @@ const plan = () => {
     counter += 1;
     hops.set(String(counter), mark());
     steps.push({ fetching, kind: 'encoded', how: 'navigate', path: `/encoded/${counter}` });
+    counter += 1;
+    hops.set(String(counter), mark());
+    steps.push({ fetching, kind: 'dotted', how: 'navigate', path: `/dotted/${counter}` });
     steps.push({ fetching, kind: 'vault', how: 'navigate', path: `/form/${hopTo('vault')}` });
   }
   return steps;
@@ -423,7 +432,7 @@ async function rig({ transport, proxy, port, override }) {
         .map((text) => JSON.parse(text))
         .filter((m) => m.method === 'Network.requestWillBeSent' && m.params?.request?.url === url)
         .map((m) => m.params.requestId);
-      if (['capability', 'newline', 'wrapped', 'escaped', 'encoded'].includes(kind)) {
+      if (['capability', 'newline', 'wrapped', 'escaped', 'encoded', 'dotted'].includes(kind)) {
         for (const requestId of new Set(own)) {
           answers.caps.push({
             kind,

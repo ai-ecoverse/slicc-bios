@@ -354,7 +354,10 @@ function readable(url) {
   if (!URL.canParse(url)) return false;
   const parsed = new URL(url);
   if (parsed.username || parsed.password || parsed.search || parsed.hash) return false;
-  if (parsed.pathname === '/' || parsed.pathname === '') return true;
+  const rest = url.slice(url.indexOf('://') + 3);
+  const raw = /[/\\?#]/.test(rest) ? rest.slice(rest.search(/[/\\?#]/)) : '';
+  if (raw !== parsed.pathname && !(raw === '' && parsed.pathname === '/')) return false;
+  if (parsed.pathname === '/') return true;
   return PUBLIC[normalHost(parsed.hostname)]?.test(parsed.pathname) === true;
 }
 
