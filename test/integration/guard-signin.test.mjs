@@ -67,6 +67,7 @@ SIGNING_IN = {
     response_mode: 'form_post',
   }),
   'with the callback encoded twice': `http://idp.test:${port}/ims/authorize/v2?client_id=any&redirect_uri=${encodeURIComponent(encodeURIComponent(RELAY))}`,
+  'with a bad escape next to the encoded callback': `http://idp.test:${port}/ims/authorize/v2?client_id=any&redirect_uri=${encodeURIComponent(RELAY)}&x=%C3%28&y=%ZZ`,
   'nested in another URL': `http://idp.test:${port}/login?next=${encodeURIComponent(authorize({ client_id: CLIENT, response_type: 'token' }))}`,
 };
 const DRIVABLE = {
@@ -112,15 +113,19 @@ async function rig({ transport, proxy, port, client, signing, drivable }) {
       });
       connection.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
     });
-  const frame = async (session) =>
-    (await send('Page.getFrameTree', {}, session)).result?.frameTree?.frame ?? {};
+  const frame = async (session) => {
+    const found = (await send('Page.getFrameTree', {}, session)).result?.frameTree?.frame ?? {};
+    seen.url = found.url ?? null;
+    return found;
+  };
+  const seen = { url: null };
   const until = async (check) => {
     const deadline = Date.now() + 10000;
     while (Date.now() < deadline) {
       if (await check()) return true;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    return false;
+    return `timed out; the frame was at ${seen.url}`;
   };
   const start = `http://ordinary.test:${port}/start`;
   const out = { signing: {}, drivable: {}, indirect: {} };
@@ -207,7 +212,7 @@ async function check(t, transport) {
       /^slicc: refused:/,
       `${name}: Page.navigate ${JSON.stringify(row)}`
     );
-    assert.equal(row.started, true, name);
+    assert.equal(row.started, true, `${name}: ${JSON.stringify(row)}`);
     assert.equal(
       row.left,
       true,

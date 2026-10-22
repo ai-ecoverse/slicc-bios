@@ -465,7 +465,15 @@ export function signsIn(url) {
     for (const [, id] of lower.matchAll(/[?&#]client_id=([^&#\s]*)/g)) {
       if ([...SIGN_IN_CLIENTS].some((client) => client.toLowerCase() === id)) return true;
     }
-    const next = decoded(text.replace(/\+/g, ' '));
+    const next = text.replace(/\+/g, ' ').replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
+      try {
+        return decodeURIComponent(run);
+      } catch {
+        return run.replace(/%([0-9a-f]{2})/gi, (found, hex) =>
+          String.fromCharCode(Number.parseInt(hex, 16))
+        );
+      }
+    });
     if (next === text) return false;
     text = next;
   }
