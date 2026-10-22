@@ -70,6 +70,7 @@ const workers = (page) =>
   });
 
 test('while the tab holds a half-read download from the old worker, it says seven updated and names the download, and Reload reloads the tab (#710)', async (t) => {
+  t.after(await withoutWorkerPause(chrome));
   const page = await chrome.page(t);
   await boot(page);
   await settled(page);
