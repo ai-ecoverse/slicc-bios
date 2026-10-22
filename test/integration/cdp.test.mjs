@@ -1527,11 +1527,12 @@ test('when another page takes over slicc-node’s /cdp, the first page’s conne
   const first = await launched(t, proxy);
   await run(first, 'playwright-cli open about:blank');
   await shows(first, 'Opened about:blank');
+  const second = await first.tab();
+  await second.goto('/packages/agent/package.json');
+  await first.send('Page.bringToFront');
   await run(first, `playwright-cli eval 'new Promise(() => {})' > /tmp/held 2>&1; echo "held-$?"`);
   await new Promise((resolve) => setTimeout(resolve, 2000));
 
-  const second = await first.tab();
-  await second.goto('/packages/agent/package.json');
   assert.equal(
     await second.evaluate(
       ({ url, key }) =>
