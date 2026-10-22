@@ -272,20 +272,26 @@ const ANSWERED = new Set([
 ]);
 const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const HOSTS = new RegExp(
-  `(?<!(?<!\\\\|%[0-9a-f])[a-z0-9])((?:[a-z0-9-]+\\.)*(?:${[...catalog.protectedOrigins.domains, ...catalog.protectedOrigins.hosts].map(escaped).join('|')}))(\\.?(?::\\d+|%3a\\d+)?)(?:[/?#\\\\][^\\s"'<>\`]*|(?:%2f|%3f|%23|%5c)[^\\s"'<>\`&]*)`,
+  `(?<!(?<!\\\\|%[0-9a-f]|\\\\u[0-9a-f]{3}|\\\\x[0-9a-f])[a-z0-9])((?:[a-z0-9-]+\\.)*(?:${[...catalog.protectedOrigins.domains, ...catalog.protectedOrigins.hosts].map(escaped).join('|')}))(\\.?(?::\\d+|%3a\\d+)?)(?:[/?#\\\\][^\\s"'<>\`]*|(?:%2f|%3f|%23|%5c)[^\\s"'<>\`&]*)`,
   'giu'
 );
 
 const ENTITIES = { colon: ':', sol: '/', amp: '&', quest: '?', num: '#', equals: '=', period: '.' };
 
 function unescaped(text) {
-  return text.replace(/&(?:#x([0-9a-f]{1,6})|#(\d{1,7})|([a-z]+));?/gi, (found, hex, dec, name) => {
-    if (hex || dec) {
-      const code = hex ? Number.parseInt(hex, 16) : Number(dec);
-      return code <= 0x10ffff ? String.fromCodePoint(code) : found;
-    }
-    return ENTITIES[name.toLowerCase()] ?? found;
-  });
+  return text
+    .replace(
+      /\\u([0-9a-f]{4})|\\x([0-9a-f]{2})|\\(\/)/gi,
+      (found, unicode, hex, slash) =>
+        slash ?? String.fromCharCode(Number.parseInt(unicode ?? hex, 16))
+    )
+    .replace(/&(?:#x([0-9a-f]{1,6})|#(\d{1,7})|([a-z]+));?/gi, (found, hex, dec, name) => {
+      if (hex || dec) {
+        const code = hex ? Number.parseInt(hex, 16) : Number(dec);
+        return code <= 0x10ffff ? String.fromCodePoint(code) : found;
+      }
+      return ENTITIES[name.toLowerCase()] ?? found;
+    });
 }
 
 function decodedBytes(text) {
