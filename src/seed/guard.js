@@ -56,6 +56,7 @@ const RUNTIME_META = new Set([
   'Runtime.runIfWaitingForDebugger',
   'Runtime.terminateExecution',
 ]);
+const NAVIGATES = new Set(['Page.navigate', 'Page.reload', 'Page.stopLoading']);
 const PAGE_CONTENT = new Set([
   'Page.createIsolatedWorld',
   'Page.captureScreenshot',
@@ -615,17 +616,12 @@ class Guard {
     const found = await this.lookup(targetId);
     if (!found) return false;
     if (depth > 8) return true;
-    const failed = this.errored.get(targetId);
-    const onError = found.url === ERROR_PAGE && typeof failed === 'string';
-    let verdict = this.is.target({
-      url: onError ? failed : found.url,
+    const verdict = this.is.target({
+      url: found.url,
       type: found.type,
-      previous: found.was || found.guarded,
+      previous: found.was,
       opener: await this.opener(found.openerId, depth),
-      documentURL: onError ? found.url : undefined,
-      unreachableURL: onError ? failed : undefined,
     });
-    if (onError && !verdict) verdict = this.is.url(failed);
     found.guarded = found.guarded || verdict;
     return found.guarded;
   }
@@ -724,7 +720,6 @@ class Guard {
     }
     if (method === 'Page.frameStoppedLoading' && params.frameId === nav.targetId) {
       nav.stopped = true;
-      if (nav.scrub) return;
       return this.wipe(nav);
     }
     if (method === 'Fetch.requestPaused') this.pausedDocument(params, nav);
@@ -940,6 +935,7 @@ class Guard {
     nav.scrub = this.scrubbing(nav);
     if (!nav.last?.startsWith('chrome-error:')) return;
     nav.erred = true;
+    if (nav.stopped) this.wipe(nav);
   }
 
   scrubbing(nav) {
@@ -1245,13 +1241,19 @@ class Guard {
     const index = history.result.currentIndex;
     const entry = entries[index];
     const infoUrl = info.result?.targetInfo?.url;
-    const named = [infoUrl, entry?.url, entry?.userTypedURL];
-    for (const frame of frames) named.push(frame.url, frame.securityOrigin, frame.unreachableUrl);
+    const shown = [infoUrl, entry?.url];
+    const hinted = [entry?.userTypedURL];
+    for (const frame of frames) {
+      shown.push(frame.url, frame.securityOrigin);
+      hinted.push(frame.unreachableUrl);
+    }
+    const live = shown.some((url) => this.is.url(url));
     return {
       url: infoUrl || frames[0]?.url || '',
       index,
       length: entries.length,
-      protected: named.some((url) => this.is.url(url)),
+      live,
+      protected: live || hinted.some((url) => this.is.url(url)),
       frames,
       info: info.result?.targetInfo,
     };
@@ -1260,18 +1262,20 @@ class Guard {
   lateTree(sessionId, tree) {
     if (tree.error) return;
     const frames = framed(tree.result?.frameTree);
-    const hidden = frames.some((frame) => this.frameHidden(frame));
+    const hidden = frames.some((frame) => this.frameLive(frame));
     if (!hidden) return;
     this.note(sessionId, { frames, info: null });
     this.cut(sessionId);
   }
 
-  frameHidden(frame) {
-    return (
-      this.is.url(frame.url) ||
-      this.is.url(frame.securityOrigin) ||
-      this.is.url(frame.unreachableUrl)
-    );
+  frameLive(frame) {
+    return this.is.url(frame.url) || this.is.url(frame.securityOrigin);
+  }
+
+  async openDocument(sessionId) {
+    const tree = await this.answered(this.call('Page.getFrameTree', {}, sessionId));
+    const frames = tree && !tree.error ? framed(tree.result?.frameTree) : [];
+    return frames.length > 0 && !frames.some((frame) => this.frameLive(frame));
   }
 
   async surface(sessionId) {
@@ -1286,10 +1290,23 @@ class Guard {
     ]);
     if (treeNow === undefined) void tree.then((late) => this.lateTree(sessionId, late));
     const frames = treeNow && !treeNow.error ? framed(treeNow.result?.frameTree) : [];
-    if (!info || info.error || !history || history.error) return null;
-    if (!Number.isInteger(history.result?.currentIndex)) return null;
-    if (treeNow === undefined || (this.pendingHistory.has(sessionId) && !frames.length))
-      return null;
+    const historyKnown =
+      history && !history.error && Number.isInteger(history.result?.currentIndex);
+    if (!info || info.error) return null;
+    if (!historyKnown) {
+      const child = info.result?.targetInfo?.type === 'iframe';
+      const readable = child && treeNow && !treeNow.error && frames.length;
+      if (!readable) return null;
+      const listed = { result: { currentIndex: 0, entries: [] } };
+      if (frames.some((frame) => this.frameLive(frame))) return this.view(info, frames, listed);
+      if (!frames.some((frame) => /^https?:/i.test(frame.url ?? ''))) return null;
+      return this.view(info, frames, listed);
+    }
+    if (this.pendingHistory.has(sessionId) && !frames.length) return null;
+    if (treeNow === undefined) {
+      const now = this.view(info, [], history);
+      return now.protected ? now : { ...now, pendingTree: true };
+    }
     if (treeNow.error || !frames.length) return this.view(info, [], history);
     return this.view(info, frames, history);
   }
@@ -1307,7 +1324,7 @@ class Guard {
     const deadline = Date.now() + HISTORY_WAIT;
     while (Date.now() < deadline) {
       const now = await this.surface(sessionId);
-      if (now?.protected) {
+      if (now?.live) {
         this.pendingHistory.delete(sessionId);
         this.note(sessionId, now);
         this.cut(sessionId);
@@ -1315,7 +1332,7 @@ class Guard {
       }
       if (
         now?.frames?.length &&
-        !now.protected &&
+        !now.live &&
         (now.url !== before.url || now.index !== before.index)
       ) {
         this.pendingHistory.delete(sessionId);
@@ -1328,17 +1345,28 @@ class Guard {
     if (!now?.frames?.length) return;
     this.pendingHistory.delete(sessionId);
     this.note(sessionId, now);
-    if (now.protected) this.cut(sessionId);
+    if (now.live) this.cut(sessionId);
   }
 
-  async confirmed(sessionId) {
+  async confirmed(sessionId, method) {
     if (this.pendingHistory.has(sessionId) || this.blocked.has(sessionId)) return PROTECTED;
     const now = await this.surface(sessionId);
-    if (!now) return PROTECTED;
+    const navigating = NAVIGATES.has(method);
+    if (!now) return navigating && (await this.openDocument(sessionId)) ? null : PROTECTED;
+    if (now.pendingTree) return navigating ? null : PROTECTED;
     this.note(sessionId, now);
     if (!now.protected) return null;
-    this.cut(sessionId);
+    if (now.live) this.cut(sessionId);
+    if (!now.live && navigating) return null;
+    if (!now.live && method === 'Page.captureScreenshot' && this.blankShown(now)) return null;
     return PROTECTED;
+  }
+
+  blankShown(now) {
+    const urls = [now.url, now.info?.url, ...now.frames.map((frame) => frame.url)].filter(
+      (url) => typeof url === 'string' && url
+    );
+    return urls.length > 0 && urls.every((url) => url === BLANKED || url.startsWith('about:blank'));
   }
 
   async back(params, sessionId) {
@@ -1734,25 +1762,23 @@ class Guard {
       return true;
     }
     const now = await this.surface(sessionId);
-    if (!now) {
+    if (!now || now.pendingTree) {
       this.refuse(message);
       return true;
     }
     this.note(sessionId, now);
-    if (now.protected) {
-      this.cut(sessionId);
-      this.standIn(message);
-      return true;
-    }
-    return false;
+    if (!now.live) return false;
+    this.cut(sessionId);
+    this.standIn(message);
+    return true;
   }
 
   async recheck(message) {
     const move = this.moveFrom(message);
     if (move) {
       const now = await this.surface(message.sessionId);
-      if (!now || now.protected) {
-        if (now?.protected) {
+      if (!now || now.live) {
+        if (now?.live) {
           this.note(message.sessionId, now);
           this.cut(message.sessionId);
         }
@@ -1773,7 +1799,7 @@ class Guard {
       this.refuse(message);
       return true;
     }
-    const blocked = await this.confirmed(message.sessionId);
+    const blocked = await this.confirmed(message.sessionId, message.method);
     if (!blocked) return false;
     this.refuse(message, blocked);
     return true;
