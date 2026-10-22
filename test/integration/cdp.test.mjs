@@ -1531,7 +1531,12 @@ test('when another page takes over slicc-node’s /cdp, the first page’s conne
   await second.goto('/packages/agent/package.json');
   await first.send('Page.bringToFront');
   await run(first, `playwright-cli eval 'new Promise(() => {})' > /tmp/held 2>&1; echo "held-$?"`);
-  await new Promise((resolve) => setTimeout(resolve, 2000));
+  await first.within(60000, () =>
+    document
+      .querySelector('slicc-app')
+      .model.browser.actions()
+      .some(({ kind, status }) => kind === 'eval' && status === 'running')
+  );
 
   assert.equal(
     await second.evaluate(
