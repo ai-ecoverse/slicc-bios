@@ -217,6 +217,11 @@ export async function startWww(seven) {
         })
         .end(spoofPage);
     }
+    if (url.pathname === '/upgrade-to-seven.html' && state.hold) {
+      const release = state.hold;
+      state.hold = null;
+      await release;
+    }
     if (url.pathname === '/upgrade-to-seven.html' && state.mode === 'stall') {
       state.stalled = Date.now();
       return;

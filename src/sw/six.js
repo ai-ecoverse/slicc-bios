@@ -240,18 +240,21 @@ export async function upgradeSix({
   }
 }
 
+async function retireHere({ caches, container, origin }) {
+  await retire({
+    caches: caches ?? globalThis.caches,
+    container: container ?? navigator.serviceWorker,
+    origin: origin ?? location.origin,
+  });
+  return 'retired';
+}
+
 async function step({ root, storage, locks, ...rest }) {
-  if (upgraded(storage)) {
-    await retire({
-      caches: rest.caches ?? globalThis.caches,
-      container: rest.container ?? navigator.serviceWorker,
-      origin: rest.origin ?? location.origin,
-    });
-    return 'retired';
-  }
+  if (upgraded(storage)) return retireHere(rest);
   if (!(await hasProfile(root)) || !(await offered(rest.origin))) return 'none';
   return locks.request(TYPE, { ifAvailable: true }, async (lock) => {
     if (!lock) return 'busy';
+    if (upgraded(storage)) return retireHere(rest);
     const result = await upgradeSix({ root, storage, ...rest });
     return result ? 'upgraded' : 'declined';
   });

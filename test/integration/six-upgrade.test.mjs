@@ -162,6 +162,39 @@ test("when www never answers for SLICC 6's upgrade page, the BIOS stops waiting 
   assert.deepEqual(page.errors, []);
 });
 
+test("a second tab whose check for SLICC 6's upgrade page answers after the first tab's move doesn't ask again", async (t) => {
+  state.mode = 'ok';
+  const page = await open(t);
+  await runSix(page);
+  await page.goto(`${origin}/7/`);
+  await showing(page, 'asking');
+  let release;
+  state.hold = new Promise((done) => {
+    release = done;
+  });
+  const other = await page.tab();
+  const six = await dialog(other);
+  const late = other.goto(`${origin}/7/`);
+  for (const until = Date.now() + 60000; state.hold !== null; ) {
+    assert.ok(Date.now() < until, 'the second tab never asked for the upgrade page');
+    await new Promise((done) => setTimeout(done, 50));
+  }
+  await page.send('Page.bringToFront');
+  await page.evaluate(() => document.querySelector('.six-move').click());
+  await ready(page);
+  const moved = await storage(page);
+  assert.equal(moved.marker, 'upgraded');
+  release();
+  await late;
+  await other.send('Page.bringToFront');
+  await ready(other);
+  assert.deepEqual(six.states(), []);
+  assert.deepEqual(six.framed(), []);
+  assert.deepEqual(await storage(other), moved);
+  assert.deepEqual(page.errors, []);
+  assert.deepEqual(other.errors, []);
+});
+
 test('moving SLICC 6 into seven from a cross-origin isolated BIOS: asked once, progress shown, the marker set before the frame goes, six stopped, /preview/ unregistered, / and the extension URLs land on /os/, and the export is handed to the agent', async (t) => {
   state.mode = 'ok';
   state.isolate = true;
