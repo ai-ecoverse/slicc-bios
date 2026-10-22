@@ -113,14 +113,8 @@ const row = (page, id) =>
     id
   );
 
-const traps = async (page) =>
-  (await said(page, `tail -n 1 ${LOG} | jq -r '"trap " + .outcome + " " + .line'`, 'logged'))
-    .match(/trap (.*?) (pnpm: .*?) logged-42/)
-    ?.slice(1);
-
-test('a pnpm run that hits the wasm trap once is retried once and the install succeeds; one that traps twice fails naming the trap, with no third run and nothing installed', async (t) => {
+test('a pnpm run that hits the wasm trap fails the install at once, naming the trap: no retry, nothing installed and no trap log', async (t) => {
   const page = await chrome.page(t);
-  page.forceTraps();
   for (const [path, body] of Object.entries(files)) chrome.overrides.set(path, body);
   await boot(page);
   assert.match(
@@ -144,44 +138,22 @@ test('a pnpm run that hits the wasm trap once is retried once and the install su
     'mkdir -p /tmp/pnpm-trap && echo 1 > /tmp/pnpm-trap/left && : > /tmp/pnpm-trap/runs',
     'armed'
   );
-  assert.equal(await actPackage(page, 'xxd', 'install'), 'ok', (await row(page, 'xxd')).log);
-  assert.equal((await row(page, 'xxd')).state, 'installed');
+  const failed = await actPackage(page, 'xxd', 'install');
+  const xxd = await row(page, 'xxd');
+  assert.match(failed, /^Couldn't install xxd: /, xxd.log);
+  assert.equal(xxd.state, 'failed');
+  assert.ok(`${failed}\n${xxd.log}`.includes(TRAP), `${failed}\n${xxd.log}`);
   const once = await said(
     page,
-    'echo "runs $(grep -c "^add -g @ai-ecoverse/wasm-xxd@" /tmp/pnpm-trap/runs)"; xxd -v 2>&1 | head -1',
+    `echo "runs $(grep -c "^add -g @ai-ecoverse/wasm-xxd@" /tmp/pnpm-trap/runs) all $(wc -l < /tmp/pnpm-trap/runs) left $(cat /tmp/pnpm-trap/left)"; command -v xxd || echo no-xxd; test -e ${LOG} && echo trap-log || echo no-trap-log`,
     'once'
   );
-  if (!/runs 2 /.test(once))
-    assert.fail(`${once}\n${await said(page, 'cat /tmp/pnpm-trap/runs', 'dumped')}`);
-  assert.deepEqual(await traps(page), ['recovered', TRAP]);
+  assert.match(once, /runs 1 all 1 left 0 /);
+  assert.match(once, /no-xxd/);
+  assert.match(once, /no-trap-log/);
   assert.ok(
-    page.console.some((line) =>
-      /^warning bios: pnpm trapped \(pnpm: wasm trap in thread 4: memory access out of bounds\).*homescoop#1127.*retrying once/.test(
-        line
-      )
-    ),
+    !page.console.some((line) => /pnpm trapped|retry after the wasm trap/.test(line)),
     page.console.join('\n')
   );
-  assert.ok(page.console.some((line) => /retry after the wasm trap succeeded/.test(line)));
-
-  await said(page, 'echo 2 > /tmp/pnpm-trap/left && : > /tmp/pnpm-trap/runs', 'rearmed');
-  const failed = await actPackage(page, 'bind', 'install');
-  assert.match(failed, /^Couldn't install BIND tools \(dig, host, nslookup\): /);
-  const dig = await row(page, 'bind');
-  assert.equal(dig.state, 'failed');
-  assert.match(
-    `${failed}\n${dig.log}`,
-    /trapped twice with the wasm trap of homescoop#1127, slicc-kernel#1172/
-  );
-  assert.ok(dig.log.includes(TRAP), dig.log);
-  const twice = await said(
-    page,
-    'echo "runs $(grep -c "^add -g @ai-ecoverse/wasix-bind@" /tmp/pnpm-trap/runs) all $(wc -l < /tmp/pnpm-trap/runs) left $(cat /tmp/pnpm-trap/left)"; command -v dig || echo no-dig; ls "$PNPM_HOME"/global/v11/*/node_modules/@ai-ecoverse 2>/dev/null | grep -cx wasix-bind | sed "s/^/dig-projects /"',
-    'twice'
-  );
-  assert.match(twice, /runs 2 all 2 left 0 /);
-  assert.match(twice, /no-dig/);
-  assert.match(twice, /dig-projects 0/);
-  assert.deepEqual(await traps(page), ['trapped again', TRAP]);
   assert.deepEqual(page.errors, []);
 });
