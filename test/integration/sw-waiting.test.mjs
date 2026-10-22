@@ -4,7 +4,6 @@ import { after, test } from 'node:test';
 import { boot } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { shoot } from './shots.mjs';
-import { withoutWorkerPause } from './sw-pause.mjs';
 
 const chrome = await launch();
 after(() => chrome.close());
@@ -70,7 +69,6 @@ const workers = (page) =>
   });
 
 test('while the tab holds a half-read download from the old worker, it says seven updated and names the download, and Reload reloads the tab (#710)', async (t) => {
-  t.after(await withoutWorkerPause(chrome));
   const page = await chrome.page(t);
   await boot(page);
   await settled(page);
@@ -162,7 +160,6 @@ test('when another seven tab holds the download, the owner names that tab instea
 });
 
 test('an ordinary update shows no notice: the updated worker activates before any notice could show, and nothing said seven updated (#710)', async (t) => {
-  t.after(await withoutWorkerPause(chrome));
   const page = await chrome.page(t);
   await boot(page);
   await settled(page);

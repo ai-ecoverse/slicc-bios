@@ -4,7 +4,6 @@ import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { boot, booted, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
-import { withoutWorkerPause } from './sw-pause.mjs';
 
 const chrome = await launch();
 after(() => chrome.close());
@@ -37,7 +36,6 @@ test('a seven installed from main’s build loads this build’s BIOS page under
   const main = mainBuild();
   const changed = await differing(main);
   t.diagnostic(`main ${main.commit.slice(0, 8)}, ${changed.size} files differ`);
-  t.after(await withoutWorkerPause(chrome));
   const page = await chrome.page(t);
   for (const [path, body] of changed) chrome.overrides.set(path, body);
   await boot(page);
