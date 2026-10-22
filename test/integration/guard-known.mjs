@@ -16,15 +16,11 @@ const ABSENT = new Set(['listRedacted', 'infoRedacted']);
 export const LINK = {
   'slicc-cli#366 (fail-closed)': {
     ids: KNOWN['#748'],
-    allowed: new Set([...RECOVERY, ...ABSENT, 'attached']),
+    allowed: new Set([...RECOVERY, ...ABSENT]),
   },
   'slicc-cli ends the session (fail-closed)': {
     ids: ['C2.redirect-secret', 'C2.redirect-secret-mix'],
-    allowed: new Set(['sessionSurvives', 'extraLocation']),
-  },
-  'slicc-cli ends the session before the Fetch override (fail-closed)': {
-    ids: ['C2.redirect-body'],
-    ended: 'redirectSecret: redirect body: Fetch override pause missing',
+    allowed: new Set(['extraLocation']),
   },
 };
 
@@ -63,14 +59,7 @@ function linked(row, listed) {
   if (listed) return null;
   const found = Object.entries(LINK).find(([, { ids }]) => ids.includes(row.id));
   if (!found) return null;
-  const [reason, { allowed, ended }] = found;
-  if (ended) {
-    const errors = row.errors ?? [];
-    const controlled = row.observations?.control?.live === true;
-    return controlled && errors.length > 0 && errors.every((error) => error === ended)
-      ? reason
-      : null;
-  }
+  const [reason, { allowed }] = found;
   if (row.control !== 'pass' || row.guarded !== 'fail' || row.live !== 'pass') return null;
   const failed = checks(row.why);
   return failed.length > 0 && failed.every((check) => allowed.has(check)) ? reason : null;
