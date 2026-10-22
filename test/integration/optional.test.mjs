@@ -48,7 +48,24 @@ test('the optional catalog lists packages and pins none: no package.json or lock
         assert.match(workflow, /^\.github\/workflows\/[\w.-]+\.ya?ml$/, name);
     } else assert.match(name, HOMESCOOPED, `${name} is homescoop's, from its ladder at main`);
   }
-  assert.deepEqual(await read('sources.json'), { '@ai-ecoverse/slicc-cdp': { certified: 'tag' } });
+  assert.deepEqual(await read('sources.json'), {
+    '@ai-ecoverse/slicc-cdp': {
+      repo: 'ai-ecoverse/slicc-cdp',
+      workflow: '.github/workflows/release.yml',
+    },
+  });
+  const publishers = [
+    ...Object.entries(catalog)
+      .filter(([, entry]) => entry.source)
+      .map(([name, entry]) => [name, entry.source]),
+    ...Object.entries(await read('sources.json')),
+  ];
+  for (const [name, source] of publishers)
+    assert.deepEqual(
+      Object.keys(source).sort(),
+      ['repo', 'workflow'],
+      `${name} names only its repo and workflow: no certified tag, no since or deny`
+    );
   const named = Object.entries(catalog).filter(([, entry]) => entry.source);
   assert.deepEqual(
     Object.fromEntries(

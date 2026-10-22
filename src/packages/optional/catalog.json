@@ -28,11 +28,7 @@
     "label": "slicc",
     "source": {
       "repo": "ai-ecoverse/slicc-cli",
-      "workflow": [".github/workflows/release.yml", ".github/workflows/ci.yml"],
-      "since": "1.44.1",
-      "deny": {
-        "1.44.4": "its release run failed, so it was never certified (slicc-cli coordinator, 10-19)"
-      }
+      "workflow": [".github/workflows/release.yml", ".github/workflows/ci.yml"]
     },
     "notes": [
       "For root and cones. The other seven must allow remote control from this one in its Linked devices."
