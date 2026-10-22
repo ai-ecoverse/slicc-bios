@@ -447,6 +447,7 @@ test('any writer that releases from its own ci.yml passes on that commit’s mer
     ['slicc-clipboard', 'slicc-clipboard'],
     ['mcpcat', 'mcpcat'],
     ['slicc-jsh', 'slicc-jsh'],
+    ['wasm-tailscale', 'wasm-tailscale'],
   ]) {
     const r = await released(name, repo);
     assert.equal(r.ok, true, r.line);
