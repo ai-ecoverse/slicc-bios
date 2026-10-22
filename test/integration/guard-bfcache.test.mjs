@@ -4,6 +4,8 @@ import { createServer as createHttp } from 'node:http';
 import { createServer } from 'node:net';
 import { after, test } from 'node:test';
 import { startProxy } from '@ai-ecoverse/slicc-node';
+import { guardProtected } from '../../src/seed/guard.js';
+import { cdpConnection } from '../../src/seed/link.js';
 import { boot } from './bios.mjs';
 import { debuggerUrl, launch } from './chrome.mjs';
 
@@ -406,32 +408,34 @@ async function runOnce(guard, path, variant, origin, direction, n) {
       chrome.requests.slice(pagesAt).includes('/probe-bf.html');
     if (fetched) throw new Error(`${id}: restore requested the document again (${shown})`);
     const before = (await guard.events()).length;
-    const answers = await guard.seven.evaluate(
-      async ({ session, frameId, expression, worldName }) => {
-        const send = window.guarded.send;
-        const evaluate = send(
-          'Runtime.evaluate',
-          { expression, returnByValue: true, userGesture: true },
-          session,
-          8000
+    const answers = guard.burst
+      ? await guard.burst(session, frameId, marker(id), `bf${n}`)
+      : await guard.seven.evaluate(
+          async ({ session, frameId, expression, worldName }) => {
+            const send = window.guarded.send;
+            const evaluate = send(
+              'Runtime.evaluate',
+              { expression, returnByValue: true, userGesture: true },
+              session,
+              8000
+            );
+            const document = send('DOM.getDocument', { depth: 0 }, session, 8000);
+            const world = send('Page.createIsolatedWorld', { frameId, worldName }, session, 8000);
+            const [evaluateA, documentA, worldA] = await Promise.all([evaluate, document, world]);
+            const contextId = worldA.result?.executionContextId;
+            const worldEval =
+              contextId === undefined
+                ? null
+                : await send(
+                    'Runtime.evaluate',
+                    { expression, contextId, returnByValue: true },
+                    session,
+                    8000
+                  );
+            return { evaluate: evaluateA, document: documentA, world: worldA, worldEval };
+          },
+          { session, frameId, expression: marker(id), worldName: `bf${n}` }
         );
-        const document = send('DOM.getDocument', { depth: 0 }, session, 8000);
-        const world = send('Page.createIsolatedWorld', { frameId, worldName }, session, 8000);
-        const [evaluateA, documentA, worldA] = await Promise.all([evaluate, document, world]);
-        const contextId = worldA.result?.executionContextId;
-        const worldEval =
-          contextId === undefined
-            ? null
-            : await send(
-                'Runtime.evaluate',
-                { expression, contextId, returnByValue: true },
-                session,
-                8000
-              );
-        return { evaluate: evaluateA, document: documentA, world: worldA, worldEval };
-      },
-      { session, frameId, expression: marker(id), worldName: `bf${n}` }
-    );
     await pause(100);
     const restored = await readRestored(targetId);
     const beacon = beacons.find((hit) => hit.id === id);
@@ -495,22 +499,257 @@ async function matrix(t, path, proxy) {
   }
 }
 
-test('bfcache restore refuses evaluate, document and isolated world on the extension path', {
-  timeout: 20 * 60 * 1000,
-}, async (t) => {
-  await matrix(t, 'extension', null);
-});
+function bytePipe() {
+  const chunks = [];
+  let waiting = null;
+  let closed = false;
+  return {
+    write(chunk) {
+      if (closed) return Promise.resolve();
+      if (waiting) {
+        const resolve = waiting;
+        waiting = null;
+        resolve(chunk);
+      } else chunks.push(chunk);
+      return Promise.resolve();
+    },
+    read() {
+      if (chunks.length) return Promise.resolve(chunks.shift());
+      if (closed) return Promise.resolve(null);
+      return new Promise((resolve) => {
+        waiting = resolve;
+      });
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      if (waiting) {
+        const resolve = waiting;
+        waiting = null;
+        resolve(null);
+      }
+    },
+  };
+}
 
-test('bfcache restore refuses evaluate, document and isolated world on the proxy path', {
-  timeout: 20 * 60 * 1000,
-}, async (t) => {
-  const proxy = await startProxy({
-    port: 0,
-    origins: [SEVEN],
-    cdp: `http://127.0.0.1:${port}`,
-    kernelPort: null,
-    log: () => {},
+function linkStreams() {
+  const toPeer = bytePipe();
+  const toGuard = bytePipe();
+  return {
+    guard: {
+      write: (chunk) => toPeer.write(chunk),
+      read: () => toGuard.read(),
+      close() {
+        toPeer.close();
+        toGuard.close();
+      },
+      closeWrite: () => toPeer.close(),
+    },
+    peer: {
+      write: (chunk) => toGuard.write(chunk),
+      read: () => toPeer.read(),
+      close() {
+        toPeer.close();
+        toGuard.close();
+      },
+      closeWrite: () => toGuard.close(),
+    },
+  };
+}
+
+function frameText(text) {
+  const body = new TextEncoder().encode(text);
+  const framed = new Uint8Array(4 + body.length);
+  new DataView(framed.buffer).setUint32(0, body.length);
+  framed.set(body, 4);
+  return framed;
+}
+
+function reorder(emit) {
+  let held = null;
+  let generation = 0;
+  return (payload) => {
+    if (held === null) {
+      held = payload;
+      const generationNow = ++generation;
+      queueMicrotask(() => {
+        if (generation !== generationNow || held === null) return;
+        const first = held;
+        held = null;
+        emit(first);
+      });
+      return;
+    }
+    const first = held;
+    held = null;
+    generation += 1;
+    emit(payload);
+    emit(first);
+  };
+}
+
+async function readFrames(stream, onText) {
+  const decoder = new TextDecoder();
+  let buffer = new Uint8Array(0);
+  const size = () => new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength).getUint32(0);
+  for (;;) {
+    while (buffer.length < 4 || buffer.length < 4 + size()) {
+      const chunk = await stream.read();
+      if (chunk === null) return;
+      const merged = new Uint8Array(buffer.length + chunk.length);
+      merged.set(buffer);
+      merged.set(chunk, buffer.length);
+      buffer = merged;
+    }
+    const length = size();
+    onText(decoder.decode(buffer.subarray(4, 4 + length)));
+    buffer = buffer.subarray(4 + length);
+  }
+}
+
+function burst(send) {
+  return async (session, frameId, expression, worldName) => {
+    const evaluate = send(
+      'Runtime.evaluate',
+      { expression, returnByValue: true, userGesture: true },
+      session,
+      8000
+    );
+    const document = send('DOM.getDocument', { depth: 0 }, session, 8000);
+    const world = send('Page.createIsolatedWorld', { frameId, worldName }, session, 8000);
+    const [evaluateA, documentA, worldA] = await Promise.all([evaluate, document, world]);
+    const contextId = worldA.result?.executionContextId;
+    const worldEval =
+      contextId === undefined
+        ? null
+        : await send(
+            'Runtime.evaluate',
+            { expression, contextId, returnByValue: true },
+            session,
+            8000
+          );
+    return { evaluate: evaluateA, document: documentA, world: worldA, worldEval };
+  };
+}
+
+async function guardLink(t) {
+  const streams = linkStreams();
+  const socket = new WebSocket(browser);
+  await new Promise((resolve, reject) => {
+    socket.onopen = resolve;
+    socket.onerror = reject;
   });
-  t.after(() => proxy.close());
-  await matrix(t, 'proxy', { url: proxy.url, key: proxy.key });
-});
+  t.after(() => {
+    socket.close();
+    streams.peer.close();
+  });
+  const toChrome = reorder((text) => {
+    if (socket.readyState === 1) socket.send(text);
+  });
+  const toGuard = reorder((text) => {
+    void streams.peer.write(frameText(text));
+  });
+  socket.onmessage = ({ data }) => toGuard(String(data));
+  void readFrames(streams.peer, (text) => toChrome(text)).catch(() => {});
+  const raw = cdpConnection(streams.guard);
+  let lag = 0;
+  let handler = null;
+  Object.defineProperty(raw, 'onmessage', {
+    configurable: true,
+    get() {
+      return handler;
+    },
+    set(next) {
+      handler = (text) => {
+        let delay = false;
+        if (lag) {
+          try {
+            const message = JSON.parse(text);
+            delay = message.id === undefined && typeof message.method === 'string';
+          } catch {
+            delay = false;
+          }
+        }
+        if (delay) setTimeout(() => next(text), lag);
+        else next(text);
+      };
+    },
+  });
+  const connection = guardProtected(raw, SEVEN);
+  const pending = new Map();
+  const seen = [];
+  let next = 0;
+  connection.onmessage = (text) => {
+    const message = JSON.parse(text);
+    if (message.id !== undefined) {
+      pending.get(message.id)?.(message);
+      pending.delete(message.id);
+      return;
+    }
+    seen.push(message);
+  };
+  const send = (method, params = {}, sessionId = undefined, wait = 8000) =>
+    new Promise((resolve) => {
+      next += 1;
+      const id = next;
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        resolve({ error: { message: `${method} got no answer` } });
+      }, wait);
+      pending.set(id, (message) => {
+        clearTimeout(timer);
+        resolve(message);
+      });
+      connection.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+  return {
+    send,
+    events: () => seen,
+    lag: (ms) => {
+      lag = ms;
+    },
+    burst: burst(send),
+  };
+}
+
+const ONLY = process.env.BF_ONLY ?? '';
+
+if (ONLY === '' || ONLY === 'extension') {
+  test('bfcache restore refuses evaluate, document and isolated world on the extension path', {
+    timeout: 20 * 60 * 1000,
+  }, async (t) => {
+    await matrix(t, 'extension', null);
+  });
+}
+
+if (ONLY === '' || ONLY === 'proxy') {
+  test('bfcache restore refuses evaluate, document and isolated world on the proxy path', {
+    timeout: 20 * 60 * 1000,
+  }, async (t) => {
+    const proxy = await startProxy({
+      port: 0,
+      origins: [SEVEN],
+      cdp: `http://127.0.0.1:${port}`,
+      kernelPort: null,
+      log: () => {},
+    });
+    t.after(() => proxy.close());
+    await matrix(t, 'proxy', { url: proxy.url, key: proxy.key });
+  });
+}
+
+if (ONLY === '' || ONLY === 'link') {
+  test('bfcache restore refuses evaluate, document and isolated world on the link path', {
+    timeout: 20 * 60 * 1000,
+  }, async (t) => {
+    const guard = await guardLink(t);
+    for (const variant of ['prompt', 'lagging']) {
+      await t.test(`link ${variant}`, async () => {
+        for (let n = 0; n < RUNS; n += 1) {
+          const [origin, direction] = CASES[n % CASES.length];
+          await runOnce(guard, 'link', variant, origin, direction, n);
+        }
+      });
+    }
+  });
+}

@@ -532,6 +532,7 @@ class Guard {
     this.allowed = new Set();
     this.blockedWorkers = new Set();
     this.pendingHistory = new Set();
+    this.moved = new Set();
     this.next = GUARD_IDS;
     this.guarded = { onmessage: null, onclose: null };
   }
@@ -625,8 +626,8 @@ class Guard {
       unreachableURL: onError ? failed : undefined,
     });
     if (onError && !verdict) verdict = this.is.url(failed);
-    found.guarded = verdict;
-    return verdict;
+    found.guarded = found.guarded || verdict;
+    return found.guarded;
   }
 
   async frame(frameId) {
@@ -715,13 +716,6 @@ class Guard {
     nav.settle(steps.some((step) => step.error));
   }
 
-  external(params) {
-    const initiator = params.initiator;
-    if (initiator && (initiator.type !== 'other' || initiator.stack !== undefined)) return false;
-    const site = header(params.request?.headers, 'sec-fetch-site');
-    return typeof site !== 'string' || site === 'none';
-  }
-
   navEvent({ method, params = {} }, nav) {
     if (method === 'Page.frameNavigated' && params.frame && !params.frame.parentId) {
       nav.last = `${params.frame.url}${params.frame.urlFragment ?? ''}`;
@@ -733,11 +727,6 @@ class Guard {
       if (nav.scrub) return;
       return this.wipe(nav);
     }
-    if (method === 'Page.frameRequestedNavigation' && this.is.url(params.url)) {
-      const frames = (this.scriptedFrames ??= new Set());
-      frames.add(params.frameId);
-      frames.add(nav.targetId);
-    }
     if (method === 'Fetch.requestPaused') this.pausedDocument(params, nav);
   }
 
@@ -747,26 +736,13 @@ class Guard {
       void this.call('Fetch.continueRequest', { requestId }, nav.session);
       return;
     }
-    const frames = this.scriptedFrames;
-    const byFrame = frames?.has(params.frameId) === true;
-    const byTarget = frames?.has(nav.targetId) === true;
-    if (byFrame) frames.delete(params.frameId);
-    if (byTarget) frames.delete(nav.targetId);
     if (nav.held) {
       nav.taken = true;
       void this.call('Fetch.continueRequest', { requestId }, nav.session);
       return;
     }
-    if (byFrame || byTarget || !this.external(params)) {
-      void this.call(
-        'Fetch.failRequest',
-        { requestId, errorReason: 'BlockedByClient' },
-        nav.session
-      );
-      this.failed(nav.targetId, params);
-      return;
-    }
-    void this.call('Fetch.continueRequest', { requestId }, nav.session);
+    void this.call('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' }, nav.session);
+    this.failed(nav.targetId, params);
   }
 
   lost(session) {
@@ -1310,36 +1286,12 @@ class Guard {
     ]);
     if (treeNow === undefined) void tree.then((late) => this.lateTree(sessionId, late));
     const frames = treeNow && !treeNow.error ? framed(treeNow.result?.frameTree) : [];
-    if (
-      history?.error?.message === 'Not attached to an active page' &&
-      !this.pendingHistory.has(sessionId)
-    ) {
-      const judged = this.viewInfo(info, frames);
-      if (judged) return judged;
-    }
     if (!info || info.error || !history || history.error) return null;
     if (!Number.isInteger(history.result?.currentIndex)) return null;
-    if (treeNow === undefined || treeNow?.error || !frames.length) {
-      if (this.pendingHistory.has(sessionId) && treeNow !== undefined) return null;
-      return this.view(info, [], history);
-    }
+    if (treeNow === undefined || (this.pendingHistory.has(sessionId) && !frames.length))
+      return null;
+    if (treeNow.error || !frames.length) return this.view(info, [], history);
     return this.view(info, frames, history);
-  }
-
-  viewInfo(info, frames) {
-    if (!info || info.error) return null;
-    const infoUrl = info.result?.targetInfo?.url ?? '';
-    const named = [infoUrl];
-    for (const frame of frames) named.push(frame.url, frame.securityOrigin, frame.unreachableUrl);
-    if (!named.some((url) => typeof url === 'string' && url !== '')) return null;
-    return {
-      url: infoUrl || frames[0]?.url || '',
-      index: 0,
-      length: 1,
-      protected: named.some((url) => this.is.url(url)),
-      frames,
-      info: info?.result?.targetInfo ?? null,
-    };
   }
 
   note(sessionId, now) {
@@ -1361,7 +1313,11 @@ class Guard {
         this.cut(sessionId);
         return;
       }
-      if (now && (now.url !== before.url || now.index !== before.index)) {
+      if (
+        now?.frames?.length &&
+        !now.protected &&
+        (now.url !== before.url || now.index !== before.index)
+      ) {
         this.pendingHistory.delete(sessionId);
         this.note(sessionId, now);
         return;
@@ -1369,11 +1325,8 @@ class Guard {
       await pause(HISTORY_POLL);
     }
     const now = await this.surface(sessionId);
+    if (!now?.frames?.length) return;
     this.pendingHistory.delete(sessionId);
-    if (!now) {
-      this.pendingHistory.add(sessionId);
-      return;
-    }
     this.note(sessionId, now);
     if (now.protected) this.cut(sessionId);
   }
@@ -1496,8 +1449,13 @@ class Guard {
     return this.deliver({ ...message, result: { ...result, targetInfos } });
   }
 
+  sealed(was) {
+    if (was && this.moved.delete(was.id)) return true;
+    return Boolean(was?.sessionId && this.blocked.has(was.sessionId));
+  }
+
   async answer(message, was) {
-    if (was?.sessionId && this.blocked.has(was.sessionId)) return this.refuse(was);
+    if (this.sealed(was)) return this.refuse(was);
     const { method, params = {} } = was ?? {};
     const { result } = message;
     if (method === 'Page.createIsolatedWorld' && result?.executionContextId !== undefined) {
@@ -1781,6 +1739,11 @@ class Guard {
       return true;
     }
     this.note(sessionId, now);
+    if (now.protected) {
+      this.cut(sessionId);
+      this.standIn(message);
+      return true;
+    }
     return false;
   }
 
@@ -1798,6 +1761,7 @@ class Guard {
       }
       if (!this.idle(move, now)) {
         this.pendingHistory.add(message.sessionId);
+        this.moved.add(message.id);
         this.pass(message);
         await this.untilSettled(message.sessionId, now);
         return true;
