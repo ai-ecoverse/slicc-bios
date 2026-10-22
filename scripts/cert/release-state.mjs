@@ -173,6 +173,7 @@ async function certifiedCommit(src, repo, commit) {
 export const PIPELINE = {
   'slicc-kernel': '.github/workflows/ci.yml',
   'slicc-cli': '.github/workflows/ci.yml',
+  'slicc-jsh': '.github/workflows/ci.yml',
 };
 export const PIPELINE_CHECKS = ['ci / integration', 'ci / review'];
 

@@ -292,7 +292,7 @@ test('v2: a cert-review check run counts only from app 15368, with an external_i
   }
 });
 
-test('slicc-kernel from ci.yml passes on its commit’s ci / integration and ci / review from a merge_group run of ci.yml on that commit, with no cert-review status', async () => {
+test('slicc-kernel and slicc-jsh from their own ci.yml pass on the commit’s ci / integration and ci / review from a merge_group run of ci.yml on that commit, with no cert-review status', async () => {
   const prov = statement({
     repository: 'https://github.com/ai-ecoverse/slicc-kernel',
     path: '.github/workflows/ci.yml',
@@ -410,14 +410,32 @@ test('slicc-kernel from ci.yml passes on its commit’s ci / integration and ci 
         repository: 'https://github.com/ai-ecoverse/slicc-jsh',
         path: '.github/workflows/ci.yml',
       }),
-      checks: { [COMMIT]: both },
+      checks: {
+        [COMMIT]: both.map((c) => ({
+          ...c,
+          details_url: 'https://github.com/ai-ecoverse/slicc-jsh/actions/runs/7/job/70',
+        })),
+      },
       runs: { 7: { ...queued, repository: { full_name: 'ai-ecoverse/slicc-jsh' } } },
     }),
     '@ai-ecoverse/slicc-jsh@1.0.0',
     INTEGRITY
   );
-  assert.equal(jsh.ok, false);
-  assert.match(jsh.line, /not slicc-jsh's release\.yml at main/);
+  assert.equal(jsh.ok, true, jsh.line);
+  assert.match(
+    jsh.line,
+    /certified at slicc-jsh cccccccccccc: released by \.github\/workflows\/ci\.yml after the merge queue's ci \/ integration and ci \/ review/
+  );
+  const kernelCi = await judge(
+    fake({
+      attestations: prov,
+      checks: { [COMMIT]: both },
+      runs: { 7: queued },
+    }),
+    '@ai-ecoverse/slicc-jsh@1.0.0',
+    INTEGRITY
+  );
+  assert.equal(kernelCi.ok, false, 'slicc-kernel’s ci.yml is not slicc-jsh’s');
 });
 
 test('kernel also passes on its certified tag; cdp, clipboard, tailscale and wasi-slicc only on it', async () => {
