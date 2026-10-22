@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
-import { boot, run, shows } from './bios.mjs';
+import { actPackage, boot, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { fakeCatalog } from './fake-catalog.mjs';
 
@@ -54,18 +54,7 @@ const state = (page, id, wanted) =>
     [id, wanted]
   );
 
-const act = (page, id, action) =>
-  page.evaluate(
-    ([id, action]) =>
-      document
-        .querySelector('slicc-app')
-        .model.updates.actPackage(id, action)
-        .then(
-          () => 'ok',
-          (error) => error.message
-        ),
-    [id, action]
-  );
+const act = (page, id, action) => actPackage(page, id, action);
 
 const start = (page, id, action) =>
   page.evaluate(
