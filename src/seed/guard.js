@@ -49,6 +49,14 @@ const FRAME_MS = 300;
 const ANSWER_MS = 1000;
 const HISTORY_KIND = /history\s*(?:\.\s*|\[["']\s*)(back|forward|go)\b/;
 const HISTORY_DELTA = /history\s*(?:\.\s*go\s*\(\s*|\[\s*['"]go['"]\s*\]\s*\(\s*)(-?\d+)/;
+const HISTORY_NAV = new Set([
+  'restore',
+  'restoreWithPost',
+  'historySameDocument',
+  'historyDifferentDocument',
+  'backForward',
+  'back_forward',
+]);
 const RUNTIME_META = new Set([
   'Runtime.enable',
   'Runtime.disable',
@@ -533,6 +541,7 @@ class Guard {
     this.allowed = new Set();
     this.blockedWorkers = new Set();
     this.pendingHistory = new Set();
+    this.uncommitted = new Set();
     this.moved = new Set();
     this.next = GUARD_IDS;
     this.guarded = { onmessage: null, onclose: null };
@@ -1348,8 +1357,32 @@ class Guard {
     if (now.live) this.cut(sessionId);
   }
 
+  boundSessions(sessionId) {
+    const targetId =
+      this.sessions.get(sessionId)?.targetId ?? this.navSessions.get(sessionId)?.targetId;
+    const ids = new Set(sessionId ? [sessionId] : []);
+    if (!targetId) return ids;
+    for (const [id, entry] of this.sessions) if (entry.targetId === targetId) ids.add(id);
+    for (const [id, nav] of this.navSessions) if (nav.targetId === targetId) ids.add(id);
+    return ids;
+  }
+
+  noteNavigation(sessionId, method, params = {}) {
+    const started =
+      method === 'Page.frameStartedNavigating' && HISTORY_NAV.has(params.navigationType);
+    const committed =
+      (method === 'Page.frameNavigated' && !params.frame?.parentId) ||
+      method === 'Page.navigatedWithinDocument';
+    if (!started && !committed) return;
+    for (const id of this.boundSessions(sessionId)) {
+      if (started) this.uncommitted.add(id);
+      else this.uncommitted.delete(id);
+    }
+  }
+
   async confirmed(sessionId, method) {
     if (this.pendingHistory.has(sessionId) || this.blocked.has(sessionId)) return PROTECTED;
+    if (method.startsWith('Input.') && this.uncommitted.has(sessionId)) return PROTECTED;
     const now = await this.surface(sessionId);
     const navigating = NAVIGATES.has(method);
     if (!now) return navigating && (await this.openDocument(sessionId)) ? null : PROTECTED;
@@ -1412,6 +1445,7 @@ class Guard {
   async event(message) {
     const method = message.method ?? '';
     const { sessionId } = message;
+    this.noteNavigation(sessionId, method, message.params);
     const foreign = this.foreign({ ...message, method });
     if (this.navSessions.has(sessionId))
       return this.navEvent(message, this.navSessions.get(sessionId));
@@ -1787,6 +1821,7 @@ class Guard {
       }
       if (!this.idle(move, now)) {
         this.pendingHistory.add(message.sessionId);
+        this.uncommitted.add(message.sessionId);
         this.moved.add(message.id);
         this.pass(message);
         await this.untilSettled(message.sessionId, now);

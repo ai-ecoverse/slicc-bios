@@ -316,6 +316,7 @@ async function guardPage(t, proxy = null) {
           if (delay) setTimeout(() => next(text), lag);
           else next(text);
         };
+        window.injectGuard = (text) => handler(text);
       },
     });
     window.readLag = (ms) => {
@@ -362,11 +363,13 @@ async function guardPage(t, proxy = null) {
     );
   const events = () => seven.evaluate(() => window.guarded.events);
   const lag = (ms) => seven.evaluate((ms) => window.readLag(ms), ms);
+  const inject = (text) => seven.evaluate((text) => window.injectGuard(text), text);
   return {
     seven,
     send,
     events,
     lag,
+    inject,
     hold() {
       holding = true;
       return seven.evaluate(() => {
@@ -639,9 +642,79 @@ async function runHeld(guard, path, variant, origin) {
   }
 }
 
+async function runInput(guard, path, variant, origin) {
+  const id = `bf-input-${path}-${variant}-${origin}-${Date.now()}`;
+  const { targetId } = await prepare(origin, 'back', id);
+  try {
+    const attached = await guard.send('Target.attachToTarget', { targetId, flatten: true });
+    assert.equal(attached.error, undefined, clipped(attached));
+    const session = attached.result.sessionId;
+    await guard.send('Page.enable', {}, session);
+    await guard.send('Runtime.enable', {}, session);
+    const control = await guard.send(
+      'Runtime.evaluate',
+      { expression: 'location.href', returnByValue: true },
+      session
+    );
+    const href = control.result?.result?.value;
+    assert.equal(typeof href, 'string', `ordinary page: ${clipped(control)}`);
+    await guard.lag(variant === 'lagging' ? READ_LAG : 0);
+    await guard.inject(
+      JSON.stringify({
+        method: 'Page.frameStartedNavigating',
+        sessionId: session,
+        params: {
+          frameId: targetId,
+          url: href,
+          loaderId: id,
+          navigationType: 'historyDifferentDocument',
+        },
+      })
+    );
+    await pause(variant === 'lagging' ? READ_LAG + 400 : 200);
+    const answer = await guard.send(
+      'Input.dispatchKeyEvent',
+      { type: 'keyDown', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65 },
+      session
+    );
+    const kind = verdict(answer);
+    await guard.inject(
+      JSON.stringify({
+        method: 'Page.frameNavigated',
+        sessionId: session,
+        params: { frame: { id: targetId, url: href } },
+      })
+    );
+    await pause(variant === 'lagging' ? READ_LAG + 400 : 200);
+    const after = await guard.send(
+      'Input.dispatchMouseEvent',
+      { type: 'mouseMoved', x: 1, y: 1 },
+      session
+    );
+    const opened = verdict(after);
+    const line = [
+      'BFINPUT',
+      path,
+      variant,
+      origin,
+      'back',
+      `input=${kind}`,
+      `after=${opened}`,
+      kind === 'refused' && opened === 'answered' ? 'pass' : 'GAP',
+    ].join(' ');
+    console.log(line);
+    if (kind !== 'refused' || opened !== 'answered') {
+      throw new Error(`${line}\nheld=${clipped(answer)}\nopened=${clipped(after)}`);
+    }
+  } finally {
+    await guard.lag(0);
+    await own.send('Target.closeTarget', { targetId });
+  }
+}
+
 async function matrix(t, path, proxy) {
   const guard = await guardPage(t, proxy);
-  if (process.env.BF_HELD !== 'only') {
+  if (process.env.BF_HELD !== 'only' && process.env.BF_INPUT !== 'only') {
     for (const variant of ['prompt', 'lagging']) {
       await t.test(`${path} ${variant}`, async () => {
         for (let n = 0; n < RUNS; n += 1) {
@@ -651,9 +724,16 @@ async function matrix(t, path, proxy) {
       });
     }
   }
+  if (process.env.BF_INPUT !== 'only') {
+    for (const variant of ['prompt', 'lagging']) {
+      await t.test(`${path} ${variant} held`, async () => {
+        await runHeld(guard, path, variant, 'seven');
+      });
+    }
+  }
   for (const variant of ['prompt', 'lagging']) {
-    await t.test(`${path} ${variant} held`, async () => {
-      await runHeld(guard, path, variant, 'seven');
+    await t.test(`${path} ${variant} input`, async () => {
+      await runInput(guard, path, variant, 'seven');
     });
   }
 }
@@ -893,6 +973,10 @@ async function guardLink(t) {
       lag = ms;
     },
     burst: burst(send),
+    inject(text) {
+      handler?.(text);
+      return Promise.resolve();
+    },
     hold() {
       holding = true;
       return Promise.resolve();
@@ -946,7 +1030,7 @@ if (ONLY === '' || ONLY === 'link') {
     timeout: 20 * 60 * 1000,
   }, async (t) => {
     const guard = await guardLink(t);
-    if (process.env.BF_HELD !== 'only') {
+    if (process.env.BF_HELD !== 'only' && process.env.BF_INPUT !== 'only') {
       for (const variant of ['prompt', 'lagging']) {
         await t.test(`link ${variant}`, async () => {
           for (let n = 0; n < RUNS; n += 1) {
@@ -956,9 +1040,16 @@ if (ONLY === '' || ONLY === 'link') {
         });
       }
     }
+    if (process.env.BF_INPUT !== 'only') {
+      for (const variant of ['prompt', 'lagging']) {
+        await t.test(`link ${variant} held`, async () => {
+          await runHeld(guard, 'link', variant, 'seven');
+        });
+      }
+    }
     for (const variant of ['prompt', 'lagging']) {
-      await t.test(`link ${variant} held`, async () => {
-        await runHeld(guard, 'link', variant, 'seven');
+      await t.test(`link ${variant} input`, async () => {
+        await runInput(guard, 'link', variant, 'seven');
       });
     }
   });
