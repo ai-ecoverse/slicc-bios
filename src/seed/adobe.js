@@ -274,6 +274,7 @@ export function signIn({
         if (signal?.aborted) throw cancelled();
         const config = await abortable(Promise.resolve(options()), signal);
         if (!config) throw new Error('this account has no sign-in');
+        rememberClient(config?.clientId);
         const token = await abortable(extension.signIn(config), signal);
         return typeof token === 'string' ? { token } : token;
       }

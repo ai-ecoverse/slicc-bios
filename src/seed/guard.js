@@ -485,7 +485,9 @@ export function protection(own) {
   const web = (url, options) =>
     typeof url === 'string' &&
     (matcher.url(url.replace(/^ws(s?):/i, 'http$1:'), options) || signsIn(url));
-  return { ...matcher, url: web };
+  const target = (info) =>
+    matcher.target(info) || (!info.type?.endsWith('worker') && signsIn(info.url));
+  return { ...matcher, url: web, target };
 }
 
 class Guard {

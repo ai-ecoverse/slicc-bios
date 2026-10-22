@@ -312,3 +312,64 @@ test('a fresh profile that has never signed in still treats seven’s built-in s
   }, url);
   assert.match(answer.error?.message ?? '', /^slicc: refused:/, JSON.stringify(answer));
 });
+
+test('a sign-in tab already open before the client connects is neither listed nor reachable through the guard', {
+  timeout: 5 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  const extension = await fakeExtension(page);
+  t.after(() => extension.close());
+  await page.goto('/');
+  await ready(page);
+  const open = authorize({ client_id: 'experience-catalyst-prod', response_type: 'token' });
+  const { targetId } = await chrome.cdp.send('Target.createTarget', { url: open });
+  t.after(() => chrome.cdp.send('Target.closeTarget', { targetId }).catch(() => {}));
+  const out = await page.evaluate(
+    async ({ targetId }) => {
+      const { guardProtected } = await import(new URL('guard.js', location.href).href);
+      const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
+      const connection = guardProtected(
+        extensionConnection(globalThis.sliccExtension.cdp),
+        self.origin
+      );
+      const pending = new Map();
+      const seen = [];
+      let next = 0;
+      connection.onmessage = (text) => {
+        seen.push(text);
+        const message = JSON.parse(text);
+        pending.get(message.id)?.(message);
+        pending.delete(message.id);
+      };
+      const send = (method, params = {}) =>
+        new Promise((resolve) => {
+          next += 1;
+          const id = next;
+          pending.set(id, resolve);
+          connection.send(JSON.stringify({ id, method, params }));
+        });
+      const list = await send('Target.getTargets');
+      return {
+        listed: (list.result?.targetInfos ?? []).some((info) => info.targetId === targetId),
+        info: (await send('Target.getTargetInfo', { targetId })).error?.message ?? 'answered',
+        attach:
+          (await send('Target.attachToTarget', { targetId, flatten: true })).error?.message ??
+          'attached',
+        close: (await send('Target.closeTarget', { targetId })).error?.message ?? 'closed',
+        named: seen.some((text) => text.includes('experience-catalyst-prod')),
+      };
+    },
+    { targetId }
+  );
+  assert.equal(out.listed, false, JSON.stringify(out));
+  for (const name of ['info', 'attach', 'close']) {
+    assert.match(out[name], /^slicc: refused:/, `${name}: ${JSON.stringify(out)}`);
+  }
+  assert.equal(out.named, false, JSON.stringify(out));
+  assert.ok(
+    (await chrome.cdp.send('Target.getTargets')).targetInfos.some(
+      (info) => info.targetId === targetId
+    ),
+    'the sign-in tab is still open'
+  );
+});
