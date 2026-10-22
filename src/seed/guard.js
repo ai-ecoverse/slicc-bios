@@ -477,7 +477,7 @@ export function signsIn(url) {
     if (next === text) return false;
     text = next;
   }
-  return false;
+  return true;
 }
 
 export function protection(own) {
