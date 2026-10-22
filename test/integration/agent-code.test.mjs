@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { agentUp, ready } from './bios.mjs';
+import { AGENT_BUDGET, agentUp, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch({ agent: true, timeout: 60000 });
@@ -104,9 +104,20 @@ test("after an agent update that changes a module and a dependency's entry, Rest
   assert.ok(served.size > 0, 'the agent served no transformed module before the update');
   const entry = await upgrade(page);
   assert.match(entry, /^\.\/dist\/context\/.+\.js$/);
-  await page.evaluate(() =>
-    document.querySelector('slicc-app').model.updates.act('agent', 'restart-agent')
-  );
+  await page.evaluate(() => {
+    window.restarted = undefined;
+    document
+      .querySelector('slicc-app')
+      .model.updates.act('agent', 'restart-agent')
+      .then(
+        () => 'ok',
+        (error) => error.message
+      )
+      .then((result) => {
+        window.restarted = result;
+      });
+  });
+  assert.equal(await page.within(AGENT_BUDGET, () => window.restarted), 'ok');
   await page.until(() => {
     const build = window.agentBuild();
     return build.adapter === 'next' && build.chord === 'next';
