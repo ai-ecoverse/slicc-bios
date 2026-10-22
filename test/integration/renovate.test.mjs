@@ -139,19 +139,12 @@ test('known breaks are holds with a reason and an issue: wasi-pnpm without 12.9.
   );
 });
 
-const NAME = '@ai-ecoverse/wasm-bzip2';
-const SHA = 'eff7f59d50f541f9a1abd352893255de875859b4b58928148799af8ff7c3150d';
-const INTEGRITY =
-  'sha512-FzE8FE3sMzOQLwm3hV1SFW717mhSjjrchGOgFuZW8JCZ57oPs6gJ/915POb5DHsjv3luXKnd2uycKdlOsdZoEQ==';
-const verdict = (name, version, body = '') =>
-  [
-    `**Cert review: ${name}@${version}** (from 1.0.0)`,
-    '| Check | Result |',
-    `certified ${name}@${version} sha256=${SHA} (ci: x)`,
-    `certs.json: "${name}@${version}": { "integrity": "${INTEGRITY}", "sha256": "${SHA}" }`,
-    body,
-  ].join('\n');
-const posted = (text, check = 'ok') => ({
-  user: 'github-actions[bot]',
-  body: `${text}\n\n<sub>sha check ${check}: checked · [run](x)</sub>\n`,
+test('the slicc-shared-web npm package and the pipeline ref in ci.yml move together in one PR, so the harness and the pipeline stay one release', () => {
+  const rule = config.packageRules.find((rule) => rule.groupSlug === 'slicc-shared-web');
+  assert.deepEqual(rule?.matchPackageNames, [
+    '@ai-ecoverse/slicc-shared-web',
+    'ai-ecoverse/slicc-shared-web',
+  ]);
+  assert.equal(rule.groupName, 'slicc-shared-web');
+  assert.doesNotMatch(JSON.stringify(config), /cert-review|release-state|ci \/ test/);
 });

@@ -10,10 +10,10 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { boot, ready, run, shows } from './bios.mjs';
 import { debuggerUrl, launch } from './chrome.mjs';
-import { attach, cliEnv } from './cli.mjs';
+import { attach, CLI, cliEnv } from './cli.mjs';
 import { certificate } from './real-extension.mjs';
 
-const cli = process.env.SLICC_CLI;
+const cli = CLI;
 const candidate = process.env.SLICC_CDP_CANDIDATE;
 const body = `<!doctype html><title>LINK-DRIVEN</title><h1>Ordinary page</h1><button onclick="document.title='CLICKED'">Click me</button><input aria-label="Name"><select aria-label="Flavor"><option value="a">Apple</option><option value="b">Berry</option></select><input type="file" aria-label="Attachment"><button draggable="true">Drag source</button><button ondragover="event.preventDefault()" ondrop="document.body.dataset.dropped='yes'">Drop target</button><script>Object.defineProperty(document,'modelContext',{value:{getTools:()=>[{name:'echo',description:'Echo a value',inputSchema:{type:'object',properties:{value:{type:'string'}}}}],executeTool:async(_name,input)=>(typeof input==='string'?JSON.parse(input):input).value}});</script>`;
 
@@ -189,6 +189,8 @@ test('slicc-cdp#377: the kernel facade and slicc-cli link drive ordinary tabs wi
   assert.match(userSnapshot, /LINK-DRIVEN/);
   assert.match(userSnapshot, /[a-p]{32}/);
   assert.match(userSnapshot, /exit-0/);
+  const activated = await fetch(`http://127.0.0.1:${port}/json/activate/${user}`);
+  assert.equal(activated.status, 200, 'the user tab comes to the front for the click');
   const clicked = await shell(
     page,
     `playwright-cli click --tab ${user} ${ref(userSnapshot, 'Click me')} && playwright-cli eval --tab ${user} 'document.title'`,
@@ -206,6 +208,8 @@ test('slicc-cdp#377: the kernel facade and slicc-cli link drive ordinary tabs wi
   assert.match(fresh, /LINK-DRIVEN/);
   assert.match(fresh, /[a-p]{32}/);
   assert.match(fresh, /exit-0/);
+  const front = await fetch(`http://127.0.0.1:${port}/json/activate/${freshId}`);
+  assert.equal(front.status, 200, 'the fresh tab comes to the front for the click');
   const driven = await shell(
     page,
     `playwright-cli click ${ref(fresh, 'Click me')} && playwright-cli eval 'document.title'`,

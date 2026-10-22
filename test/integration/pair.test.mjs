@@ -8,11 +8,11 @@ import { createInterface } from 'node:readline';
 import { after, test } from 'node:test';
 import { boot, ready, run, trust } from './bios.mjs';
 import { launch } from './chrome.mjs';
-import { cliEnv, HOST_CDP } from './cli.mjs';
+import { CLI, cliEnv, HOST_CDP } from './cli.mjs';
 import { startHub } from './fake-hub.mjs';
 import { shoot } from './shots.mjs';
 
-const cli = process.env.SLICC_CLI;
+const cli = CLI;
 const chrome = await launch();
 after(() => chrome.close());
 

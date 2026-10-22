@@ -14,11 +14,11 @@ import {
   shows,
 } from './bios.mjs';
 import { launch } from './chrome.mjs';
-import { cliEnv } from './cli.mjs';
+import { CLI, cliEnv } from './cli.mjs';
 import { startHub } from './fake-hub.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
 
-const cli = process.env.SLICC_CLI;
+const cli = CLI;
 const KEY = 'dummy-bedrock-key-0000';
 const BEDROCK = 'https://bedrock-runtime.us-west-2.amazonaws.com/';
 const stream = Buffer.concat([

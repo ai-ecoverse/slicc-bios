@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   publish:
-    runs-on: ${{ (github.event_name == 'push' && github.repository == 'ai-ecoverse/slicc-bios' && vars.CERT_LIGHT_RUNNER) || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: ${{ github.ref_name == 'main' && 'production' || 'preview' }}
     permissions:

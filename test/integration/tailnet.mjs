@@ -1,16 +1,74 @@
 import { execFile, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createServer, request } from 'node:http';
 import { connect, createServer as createTcpServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 const run = promisify(execFile);
-const HEADSCALE = process.env.HEADSCALE;
-const TAILSCALED = process.env.TAILSCALED;
-const TAILSCALE = process.env.TAILSCALE;
+
+export const tailnetWanted = process.env.TAILSCALE_E2E
+  ? process.env.TAILSCALE_E2E === '1'
+  : Boolean(process.env.CI);
+
+const RELEASES = {
+  x64: {
+    headscale: '212ed0a884c0d3541e094c4bebbe94397df6f4e01bd3d7f059c520cb55e0d757',
+    tailscale: '108d1d96ecf410d305571e173516f27038f870919a9b89c914a167c6d33a4528',
+    arch: 'amd64',
+  },
+  arm64: {
+    headscale: 'cbad8f02524cc6a94955a107a72e1d4cc652ae3f22e740d5c60884e7f384d60e',
+    tailscale: 'f60294374967f3dfd8cf57bbbd474d6cfce32d123e3a8ddeab82a87940daa806',
+    arch: 'arm64',
+  },
+};
+const HEADSCALE_VERSION = '0.29.4';
+const TAILSCALE_VERSION = '1.104.1';
+
+async function fetched(url, sha256, file) {
+  if (existsSync(file)) return file;
+  const response = await fetch(url, { signal: AbortSignal.timeout(120000) });
+  if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
+  const body = Buffer.from(await response.arrayBuffer());
+  const got = createHash('sha256').update(body).digest('hex');
+  if (got !== sha256) throw new Error(`${url}: sha256 ${got}, not the pinned ${sha256}`);
+  await writeFile(`${file}.part`, body, { mode: 0o755 });
+  await rename(`${file}.part`, file);
+  return file;
+}
+
+async function downloaded() {
+  const release = process.platform === 'linux' && RELEASES[process.arch];
+  if (!release) return null;
+  const dir = fileURLToPath(new URL('../../node_modules/.cache/tailnet/', import.meta.url));
+  await mkdir(dir, { recursive: true });
+  const headscale = await fetched(
+    `https://github.com/juanfont/headscale/releases/download/v${HEADSCALE_VERSION}/headscale_${HEADSCALE_VERSION}_linux_${release.arch}`,
+    release.headscale,
+    join(dir, `headscale-${HEADSCALE_VERSION}`)
+  );
+  const tgz = await fetched(
+    `https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_${release.arch}.tgz`,
+    release.tailscale,
+    join(dir, `tailscale-${TAILSCALE_VERSION}.tgz`)
+  );
+  const unpacked = join(dir, `tailscale-${TAILSCALE_VERSION}`);
+  if (!existsSync(join(unpacked, 'tailscaled'))) {
+    await mkdir(unpacked, { recursive: true });
+    await run('tar', ['-xzf', tgz, '-C', unpacked, '--strip-components=1']);
+  }
+  return [headscale, join(unpacked, 'tailscaled'), join(unpacked, 'tailscale')];
+}
+
+const [HEADSCALE, TAILSCALED, TAILSCALE] =
+  process.env.HEADSCALE || !tailnetWanted
+    ? [process.env.HEADSCALE, process.env.TAILSCALED, process.env.TAILSCALE]
+    : ((await downloaded()) ?? []);
 
 export const tailnetAvailable = [HEADSCALE, TAILSCALED, TAILSCALE].every(
   (bin) => bin && existsSync(bin)
