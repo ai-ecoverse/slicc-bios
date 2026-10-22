@@ -289,6 +289,13 @@ function builderOf(name) {
   return BUILDERS[short] ?? (/^(wasm|wasi|wasix|py)-/.test(short) ? 'homescoop' : null);
 }
 
+async function deprecationOf(name, version) {
+  const url = `https://registry.npmjs.org/${name.replace('/', '%2f')}/${encodeURIComponent(version)}`;
+  const response = await fetch(url, { signal: AbortSignal.timeout(60000) });
+  assert.equal(response.status, 200, url);
+  return (await response.json()).deprecated ?? null;
+}
+
 async function provenanceOf(name, version) {
   const url = `https://registry.npmjs.org/-/npm/v1/attestations/${name.replace('/', '%2f')}@${encodeURIComponent(version)}`;
   const response = await fetch(url, { signal: AbortSignal.timeout(60000) });
@@ -310,7 +317,7 @@ async function provenanceOf(name, version) {
   return null;
 }
 
-test('every gated pin is a release its own repository built from main, with npm provenance for that tarball, and homescoop withdrew none', async (t) => {
+test('every gated pin is a release its own repository built from main, with npm provenance for that tarball, not deprecated on npm, and homescoop withdrew none', async (t) => {
   const { exceptionsOf, ruled } = await import('../../src/seed/packages.js');
   const exceptions = exceptionsOf(JSON.parse(await read('optional/exceptions.json')));
   assert.ok(exceptions, "bios's copy of homescoop's certification exceptions is schema 1");
@@ -335,6 +342,8 @@ test('every gated pin is a release its own repository built from main, with npm 
         );
       else if (!built.subjects.includes(hex))
         wrong.push(`${file} ${key}: the provenance names another tarball than the lockfile's`);
+      const deprecated = await deprecationOf(name, version);
+      if (deprecated) wrong.push(`${file} ${key}: deprecated on npm: ${deprecated}`);
       const withdrawn = repo === 'homescoop' && ruled(exceptions, name, version, pins);
       if (withdrawn) wrong.push(`${file} ${key}: ${withdrawn}`);
     })
