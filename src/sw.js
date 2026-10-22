@@ -244,16 +244,8 @@ const UNKEPT = { 'cache-control': 'no-store', 'permissions-policy': 'unload=(sel
 const unkept = (type) => (type === types.html ? UNKEPT : {});
 
 function respond(body, type, origin, status = 200, extra = {}) {
-  return new Response(body, {
-    status,
-    headers: {
-      ...isolation,
-      ...unkept(type),
-      'content-type': type,
-      'x-served-from': origin,
-      ...extra,
-    },
-  });
+  const headers = { ...isolation, 'content-type': type, 'x-served-from': origin };
+  return new Response(body, { status, headers: { ...headers, ...unkept(type), ...extra } });
 }
 
 function unkeptDocument(response, request) {
