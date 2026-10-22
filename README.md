@@ -208,7 +208,7 @@ Below the system rows, Install / Update offers **Optional packages** (spectrum â
 - **The gate** (one function, `gate()` in `os/packages.js`, for the panel's Install and Update, a user's Update and [Your packages](#your-packages)) checks every package in the lock pnpm made. Each must be one of:
   - an exact `name@version` with that integrity in the base set's lockfile (`src/packages/package-lock.json`) or `src/packages/certs.json`; or
   - an `@ai-ecoverse/*` package whose locked integrity equals the registry's `dist.integrity` for that exact version, and that npm's stored SLSA v1 provenance (`dist.attestations`, which bios trusts as npm stores it) binds to that integrity (its subject's sha512) and to its publisher's repository and release workflow at `refs/heads/main`. The publisher is bios's own, never read from npm:
-    - a catalog entry's `source`: slicc-jsh's and mcpcat's own `release.yml`, slicc-cli's `release.yml` or, after #903, its `ci.yml` for wasi-slicc, and slicc-cdp's `publish-sliccy-browser.yml` for sliccy-browser;
+    - a catalog entry's `source`: slicc-jsh's, mcpcat's and slicc-cli's (for wasi-slicc) own `release.yml`, or their `ci.yml` since they moved onto slicc-shared-web's pipeline, and slicc-cdp's `publish-sliccy-browser.yml` for sliccy-browser;
     - otherwise homescoop's `ladder-build.yml` or `publish.yml` for the `wasm-*`, `wasi-*`, `wasix-*` and `py-*` packages;
     - and [`sources.json`](src/packages/optional/sources.json) for a dependency-only publisher: slicc-cdp, under sliccy-browser, whose rule is `certified: "tag"`, its npm dist-tag `certified` (from the abbreviated packument), since its main released versions its cert-review didn't pass.
     

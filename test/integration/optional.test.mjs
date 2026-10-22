@@ -60,10 +60,12 @@ test('the optional catalog lists packages and pins none: no package.json or lock
     {
       '@ai-ecoverse/wasi-slicc':
         'ai-ecoverse/slicc-cli .github/workflows/release.yml .github/workflows/ci.yml',
-      '@ai-ecoverse/slicc-jsh': 'ai-ecoverse/slicc-jsh .github/workflows/release.yml',
+      '@ai-ecoverse/slicc-jsh':
+        'ai-ecoverse/slicc-jsh .github/workflows/release.yml .github/workflows/ci.yml',
       '@ai-ecoverse/sliccy-browser':
         'ai-ecoverse/slicc-cdp .github/workflows/publish-sliccy-browser.yml',
-      '@ai-ecoverse/mcpcat': 'ai-ecoverse/mcpcat .github/workflows/release.yml',
+      '@ai-ecoverse/mcpcat':
+        'ai-ecoverse/mcpcat .github/workflows/release.yml .github/workflows/ci.yml',
     },
     'every other package is homescoop’s, from its ladder at main'
   );

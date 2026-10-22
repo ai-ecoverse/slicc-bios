@@ -59,7 +59,7 @@
     "label": "Node.js (jsh)",
     "source": {
       "repo": "ai-ecoverse/slicc-jsh",
-      "workflow": ".github/workflows/release.yml"
+      "workflow": [".github/workflows/release.yml", ".github/workflows/ci.yml"]
     },
     "notes": [
       "No fork, worker or asymmetric crypto yet.",
@@ -144,7 +144,7 @@
     "label": "mcpcat (MCP client)",
     "source": {
       "repo": "ai-ecoverse/mcpcat",
-      "workflow": ".github/workflows/release.yml"
+      "workflow": [".github/workflows/release.yml", ".github/workflows/ci.yml"]
     },
     "notes": [
       "-H 'Authorization: Bearer ${NAME}' (single quotes) sends the vault's placeholder, which the vault fills in where a secret rule allows that host; mcpcat never prints the value."
