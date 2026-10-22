@@ -85,3 +85,21 @@ test('the workflows have no comments but renovate annotations', () => {
   for (const line of `${ci}\n${deploy}`.split('\n'))
     if (/^\s*#/.test(line)) assert.match(line, /^\s*# renovate:/);
 });
+
+test('the guard-set vectors run as one file per path, target group and detach variant, so the shards can balance them', async () => {
+  const { ALL_TARGETS, GROUPS, groupTargets } = await import('./guard-groups.mjs');
+  const groups = [...Object.keys(GROUPS), 'rest'];
+  assert.deepEqual(groups.flatMap(groupTargets).sort(), [...ALL_TARGETS].sort());
+  const files = (await readdir(new URL('./', import.meta.url)))
+    .filter((name) => name.startsWith('guard-set-'))
+    .sort();
+  const want = ['extension', 'proxy']
+    .flatMap((path) =>
+      groups.flatMap((group) => [
+        `guard-set-${path}-${group}-lagging.test.mjs`,
+        `guard-set-${path}-${group}.test.mjs`,
+      ])
+    )
+    .sort();
+  assert.deepEqual(files, want);
+});

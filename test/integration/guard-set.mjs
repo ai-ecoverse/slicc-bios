@@ -9,6 +9,7 @@ import set from '@ai-ecoverse/slicc-browsers/guard-vectors.json' with { type: 'j
 import { startProxy } from '@ai-ecoverse/slicc-node';
 import { boot } from './bios.mjs';
 import { debuggerUrl, launch } from './chrome.mjs';
+import { ALL_TARGETS, groupTargets } from './guard-groups.mjs';
 import { known as knownRow, listedWrong, stale } from './guard-known.mjs';
 
 const exposure = { listed: false, sample: null };
@@ -322,15 +323,15 @@ const SHA = process.env.GUARD_SHA ?? process.env.GITHUB_SHA;
 export const ROW_MS = 3 * 60 * 1000;
 export const SCALE = { lagging: 3 };
 
-export function shared(path, { variants, except = [] } = {}) {
+export function shared(path, { variants, except = [], group } = {}) {
+  const grouped = group ? groupTargets(group) : ALL_TARGETS;
   const chosen = {
-    targets: only(process.env.GUARD_TARGETS) ?? [
-      ...new Set(set.vectors.flatMap((vector) => vector.targets)),
-    ],
+    targets: only(process.env.GUARD_TARGETS) ?? grouped,
     variants:
       only(process.env.GUARD_VARIANTS) ??
       (variants ?? Object.keys(set.variants)).filter((variant) => !except.includes(variant)),
   };
+  const where = group ? `, ${group === 'rest' ? 'the other targets' : `target ${group}`}` : '';
   const results = [];
   const subset = (target) => ({
     ...set,
@@ -343,7 +344,7 @@ export function shared(path, { variants, except = [] } = {}) {
       .map((vector) => ({ ...vector, targets: [target] })),
   });
   for (const variant of chosen.variants) {
-    test(`the shared guard vectors (@ai-ecoverse/slicc-browsers@${set.setVersion}) against bios's guard on the ${path} path, ${variant} detach`, {
+    test(`the shared guard vectors (@ai-ecoverse/slicc-browsers@${set.setVersion}) against bios's guard on the ${path} path, ${variant} detach${where}`, {
       timeout: 60 * 60 * 1000,
     }, async (t) => {
       const { clientFactory } = await guardHost(t);
@@ -398,8 +399,17 @@ export function shared(path, { variants, except = [] } = {}) {
     process.env.GUARD_VARIANTS || variants || except.length
       ? `, ${chosen.variants.join(' and ')} detach`
       : '';
-  test(`the shared set is complete on the ${path} path${scope}: no row missing, none skipped for a missing observer`, async () => {
-    const report = summary({ set, results, guard: 'slicc-bios', sha: SHA });
+  const covered = {
+    ...set,
+    vectors: set.vectors
+      .filter((vector) => vector.targets.some((target) => grouped.includes(target)))
+      .map((vector) => ({
+        ...vector,
+        targets: vector.targets.filter((target) => grouped.includes(target)),
+      })),
+  };
+  test(`the shared set is complete on the ${path} path${scope}${where}: no row missing, none skipped for a missing observer`, async () => {
+    const report = summary({ set: covered, results, guard: 'slicc-bios', sha: SHA });
     const informed = results.filter((row) => row.ran || row.notes);
     const skips = {};
     for (const row of results) {
