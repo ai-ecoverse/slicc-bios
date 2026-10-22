@@ -55,7 +55,10 @@ export function known(row, { listed = false } = {}) {
   const items = (row.why ?? '').split('; ');
   if (row.live === 'fail') {
     const tolerated = row.transport === 'proxy' || NOT_LIVE_ON_EXTENSION.has(row.id);
-    return tolerated && !listed && items.at(-1) === 'not live' && unmet(items.slice(0, -1))
+    return tolerated &&
+      !listed &&
+      /^not live(?::|$)/.test(items.at(-1)) &&
+      unmet(items.slice(0, -1))
       ? reason
       : null;
   }
