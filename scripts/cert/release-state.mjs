@@ -22,6 +22,12 @@ const MAIN = {
   'slicc-jsh': 'slicc-jsh',
   mcpcat: 'mcpcat',
   'wasi-slicc': 'slicc-cli',
+  'slicc-agent': 'slicc-agent',
+};
+const TAG = {
+  'slicc-cdp': 'slicc-cdp',
+  'slicc-clipboard': 'slicc-clipboard',
+  'wasm-tailscale': 'wasm-tailscale',
 };
 
 export const STATUS_RULES = {
@@ -39,7 +45,7 @@ const TAGGED_TOO = new Set(['slicc-kernel']);
 export function writerOf(name) {
   const short = name.replace(/^@ai-ecoverse\//, '');
   if (MAIN[short]) return { kind: 'main', repo: MAIN[short], tag: TAGGED_TOO.has(short) };
-  if (/^(wasm-tailscale|slicc-cdp|slicc-clipboard)$/.test(short)) return { kind: 'tag' };
+  if (TAG[short]) return { kind: 'tag', repo: TAG[short] };
   if (/^(wasm|wasi|wasix|py)-/.test(short)) return { kind: 'homescoop' };
   return { kind: 'none' };
 }
@@ -170,10 +176,7 @@ async function certifiedCommit(src, repo, commit) {
   return `cert-review status: ${status.description ?? 'success'}`;
 }
 
-export const PIPELINE = {
-  'slicc-kernel': '.github/workflows/ci.yml',
-  'slicc-cli': '.github/workflows/ci.yml',
-};
+export const PIPELINE = '.github/workflows/ci.yml';
 export const PIPELINE_CHECKS = ['ci / integration', 'ci / review'];
 
 export function queueRun(run, repo, path, commit) {
@@ -205,8 +208,16 @@ async function passedQueue(src, repo, path, commit) {
   return missing;
 }
 
+export function fromPipeline(writer, prov, bound) {
+  return (
+    Boolean(writer.repo && prov && bound) &&
+    prov.repository === `https://github.com/ai-ecoverse/${writer.repo}` &&
+    prov.path === PIPELINE
+  );
+}
+
 async function byPipeline(src, { writer, prov }) {
-  const path = PIPELINE[writer.repo];
+  const path = PIPELINE;
   if (prov.ref !== 'refs/heads/main')
     return no(`provenance is ${prov.repository} ${prov.path} @ ${prov.ref}, not main`);
   const commit = prov.commit;
@@ -276,9 +287,8 @@ async function byMain(src, { name, version, writer, prov, bound }) {
     return no(`not certified: ${rule.before}`);
   if (!prov) return no('no npm provenance');
   if (!bound) return no('the provenance names another tarball');
+  if (fromPipeline(writer, prov, bound)) return byPipeline(src, { writer, prov });
   const repoUrl = `https://github.com/ai-ecoverse/${writer.repo}`;
-  if (prov.repository === repoUrl && PIPELINE[writer.repo] && prov.path === PIPELINE[writer.repo])
-    return byPipeline(src, { writer, prov });
   if (
     prov.repository !== repoUrl ||
     prov.path !== '.github/workflows/release.yml' ||
@@ -313,9 +323,14 @@ export async function judge(src, key, integrity, exceptions, pins = new Map()) {
     return done(
       no(`the registry's integrity ${meta.dist?.integrity} is not the lockfile's ${integrity}`)
     );
-  if (writer.kind === 'tag') return done(await byTag(src, name, version));
+  const tagged = writer.kind === 'tag' ? await byTag(src, name, version) : null;
+  if (tagged?.ok) return done(tagged);
   const prov = await provenanceOf(src, name, version);
   const bound = Boolean(prov?.subjects.includes(hexOf(integrity)));
+  if (tagged)
+    return done(
+      fromPipeline(writer, prov, bound) ? await byPipeline(src, { writer, prov }) : tagged
+    );
   const ctx = { name, version, writer, prov, bound, exceptions, pins };
   return done(writer.kind === 'homescoop' ? byHomescoop(ctx) : await byMain(src, ctx));
 }

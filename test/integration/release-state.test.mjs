@@ -98,6 +98,7 @@ test('writers: kernel, jsh, mcpcat and wasi-slicc (slicc-cli) by their main comm
       'wasix-perl',
       'wasi-pnpm',
       'slicc-agent',
+      'slicc-browsers',
     ].map((n) => writerOf(`@ai-ecoverse/${n}`).kind),
     [
       'main',
@@ -111,6 +112,7 @@ test('writers: kernel, jsh, mcpcat and wasi-slicc (slicc-cli) by their main comm
       'homescoop',
       'homescoop',
       'homescoop',
+      'main',
       'none',
     ]
   );
@@ -404,20 +406,70 @@ test('slicc-kernel from ci.yml passes on its commit’s ci / integration and ci 
     assert.equal(r.ok, false, why);
     assert.match(r.line, re, why);
   }
-  const jsh = await judge(
-    fake({
-      attestations: statement({
-        repository: 'https://github.com/ai-ecoverse/slicc-jsh',
-        path: '.github/workflows/ci.yml',
+});
+
+test('any writer that releases from its own ci.yml passes on that commit’s merge-queue ci / integration and ci / review, with no cert-review status and no certified tag; release.yml releases still need cert-review', async () => {
+  const pipeline = (repo) => {
+    const checks = ['ci / integration', 'ci / review'].map((name) => ({
+      name,
+      app: { id: 15368 },
+      conclusion: 'success',
+      details_url: `https://github.com/ai-ecoverse/${repo}/actions/runs/7/job/70`,
+    }));
+    const run = {
+      path: '.github/workflows/ci.yml',
+      event: 'merge_group',
+      head_sha: COMMIT,
+      repository: { full_name: `ai-ecoverse/${repo}` },
+    };
+    return { checks, run };
+  };
+  const released = (name, repo, o = {}) => {
+    const { checks, run } = pipeline(repo);
+    return judge(
+      fake({
+        attestations: statement({
+          repository: `https://github.com/ai-ecoverse/${repo}`,
+          path: '.github/workflows/ci.yml',
+        }),
+        checks: { [COMMIT]: checks },
+        runs: { 7: run },
+        ...o,
       }),
-      checks: { [COMMIT]: both },
-      runs: { 7: { ...queued, repository: { full_name: 'ai-ecoverse/slicc-jsh' } } },
-    }),
+      `@ai-ecoverse/${name}@1.0.0`,
+      INTEGRITY
+    );
+  };
+  for (const [name, repo] of [
+    ['slicc-kernel', 'slicc-kernel'],
+    ['slicc-agent', 'slicc-agent'],
+    ['slicc-cdp', 'slicc-cdp'],
+    ['slicc-clipboard', 'slicc-clipboard'],
+    ['mcpcat', 'mcpcat'],
+    ['slicc-jsh', 'slicc-jsh'],
+  ]) {
+    const r = await released(name, repo);
+    assert.equal(r.ok, true, r.line);
+    assert.match(
+      r.line,
+      new RegExp(`certified at ${repo} cccccccccccc: released by \\.github/workflows/ci\\.yml`)
+    );
+    const without = await released(name, repo, { checks: {} });
+    assert.equal(without.ok, false, name);
+    assert.match(without.line, /has no successful ci \/ integration and ci \/ review/, name);
+  }
+  const cdpTag = await released('slicc-cdp', 'slicc-cdp', {
+    checks: {},
+    tags: { certified: '1.0.0' },
+  });
+  assert.equal(cdpTag.ok, true, 'the certified tag still certifies a cdp release on its own');
+  const old = await judge(
+    fake({ attestations: statement({ repository: 'https://github.com/ai-ecoverse/slicc-jsh' }) }),
     '@ai-ecoverse/slicc-jsh@1.0.0',
     INTEGRITY
   );
-  assert.equal(jsh.ok, false);
-  assert.match(jsh.line, /not slicc-jsh's release\.yml at main/);
+  assert.equal(old.ok, false);
+  assert.match(old.line, /carries no cert-review success/);
 });
 
 test('kernel also passes on its certified tag; cdp, clipboard, tailscale and wasi-slicc only on it', async () => {
