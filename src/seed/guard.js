@@ -37,6 +37,7 @@ const SCRUB_MS = 5000;
 export const BLANKED = 'about:blank#blocked';
 const HISTORY = new Set(['Page.getNavigationHistory']);
 const TREES = new Set(['Page.getFrameTree', 'Page.getResourceTree']);
+const OBSERVED = new Set([...TREES, ...HISTORY]);
 const NAV_MS = 10000;
 const NAV_TYPES = new Set(['page', 'iframe', 'background_page', 'webview']);
 const UNWAITED = new Set(['Target.getTargetInfo', 'Target.detachFromTarget']);
@@ -60,12 +61,9 @@ const PAGE_CONTENT = new Set([
   'Page.captureSnapshot',
   'Page.printToPDF',
   'Page.getLayoutMetrics',
-  'Page.getFrameTree',
-  'Page.getResourceTree',
   'Page.getResourceContent',
   'Page.searchInResource',
   'Page.getAppManifest',
-  'Page.getNavigationHistory',
   'Page.getCookies',
   'Page.setDocumentContent',
   'Page.startScreencast',
@@ -1549,8 +1547,10 @@ class Guard {
   }
 
   plainly(method, params, sessionId) {
+    if (sessionId !== undefined && this.hidden(sessionId)) {
+      return !(this.blocked.has(sessionId) && OBSERVED.has(method));
+    }
     return (
-      (sessionId !== undefined && this.hidden(sessionId)) ||
       (UNSAFE.has(method) && !this.clearing(method, params, sessionId)) ||
       this.valued(params) ||
       (REQUESTS.has(method) &&
@@ -1679,6 +1679,46 @@ class Guard {
     });
   }
 
+  standIn(message) {
+    const { id, sessionId } = message;
+    if (TREES.has(message.method)) {
+      this.deliver({
+        id,
+        sessionId,
+        result: { frameTree: { frame: { id: '0', url: ERROR_PAGE, securityOrigin: '://' } } },
+      });
+      return;
+    }
+    this.deliver({
+      id,
+      sessionId,
+      result: {
+        currentIndex: 0,
+        entries: [{ id: 0, url: ERROR_PAGE, userTypedURL: ERROR_PAGE, title: '' }],
+      },
+    });
+  }
+
+  async observing(message) {
+    if (!OBSERVED.has(message.method)) return false;
+    const { sessionId } = message;
+    if (!sessionId || this.pendingHistory.has(sessionId)) {
+      this.refuse(message);
+      return true;
+    }
+    if (this.blocked.has(sessionId)) {
+      this.standIn(message);
+      return true;
+    }
+    const now = await this.surface(sessionId);
+    if (!now) {
+      this.refuse(message);
+      return true;
+    }
+    this.note(sessionId, now);
+    return false;
+  }
+
   async recheck(message) {
     const move = this.moveFrom(message);
     if (move) {
@@ -1698,6 +1738,7 @@ class Guard {
         return true;
       }
     }
+    if (await this.observing(message)) return true;
     if (!this.reaches(message.method)) return false;
     if (!message.sessionId) {
       this.refuse(message);
