@@ -96,13 +96,13 @@ test('Install / Update opens at boot until the agent is installed, and a failed 
     assert.deepEqual(row.actions, ['retry']);
     assert.match(
       row.error,
-      /^Couldn't download the agent: the registry wasn't reachable .*Retry, or check the network\.$/
+      /^Couldn't download the agent: the registry doesn't have it \(404\)\. Retry later\.$/
     );
-    assert.match(row.log, /ERR_PNPM_/);
+    assert.match(row.log, /ERR_PNPM_TARBALL_HTTP_STATUS/);
     const failure = await agentUp(page, { log: () => {} }).catch((error) => error);
     assert.match(failure.message, /the agent install failed/);
     const kept = await readFile(new URL('agent-failed.log', page.dir), 'utf8');
-    assert.ok(row.log.trim().split('\n').length > 6);
+    assert.match(row.log.trim(), /^Progress: resolved[\s\S]*\n[\s\S]*is-number-99\.0\.0\.tgz$/);
     assert.ok(kept.includes(`install log:\n${row.log}`));
     const grammars = await page.evaluate(() =>
       window
@@ -145,7 +145,7 @@ test('Install / Update opens at boot until the agent is installed, and a failed 
     await page.within(INSTALL, () => window.agentRow().state === 'failed');
     await page.until(() => window.updatesOpen() && !!window.updatesButton('agent', 'retry'));
     const row = await page.evaluate(() => window.agentRow());
-    assert.match(row.error, /^Couldn't download the agent: the registry wasn't reachable/);
+    assert.match(row.error, /^Couldn't download the agent: the registry doesn't have it \(404\)/);
     assert.match(
       await page.evaluate(() => window.app().shadowRoot.querySelector('#updates')?.textContent),
       /1 failed/
