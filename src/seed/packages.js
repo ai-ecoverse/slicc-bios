@@ -250,7 +250,8 @@ async function published(name, version, doc, source, ctx) {
   const it = `${short(name)} ${version}`;
   if (source.certified === 'tag') {
     const tags = (await ctx.npm.packument(name))?.['dist-tags'] ?? {};
-    return tags.certified === version ? null : `needs ${it}, which isn't certified`;
+    if (tags.certified === version) return null;
+    if (!source.repo) return `needs ${it}, which isn't certified`;
   }
   const memo = `${name}@${version} ${doc.dist.integrity}`;
   if (ctx.verdicts?.has(memo)) return ctx.verdicts.get(memo);

@@ -64,7 +64,13 @@ test('the optional catalog pins only what homescoop’s ladder doesn’t publish
     for (const gone of entry.replaces ?? [])
       assert.ok(Object.hasOwn(retired, gone), `${name} replaces ${gone}, which isn't retired`);
   }
-  assert.deepEqual(await read('sources.json'), { '@ai-ecoverse/slicc-cdp': { certified: 'tag' } });
+  assert.deepEqual(await read('sources.json'), {
+    '@ai-ecoverse/slicc-cdp': {
+      certified: 'tag',
+      repo: 'ai-ecoverse/slicc-cdp',
+      workflow: '.github/workflows/ci.yml',
+    },
+  });
 });
 
 test('every catalog entry has a unique id and a label, and requires only other entries without cycles; a project keeps its description, commands and size', async () => {

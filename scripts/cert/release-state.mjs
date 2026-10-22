@@ -39,7 +39,8 @@ const TAGGED_TOO = new Set(['slicc-kernel']);
 export function writerOf(name) {
   const short = name.replace(/^@ai-ecoverse\//, '');
   if (MAIN[short]) return { kind: 'main', repo: MAIN[short], tag: TAGGED_TOO.has(short) };
-  if (/^(wasm-tailscale|slicc-cdp|slicc-clipboard)$/.test(short)) return { kind: 'tag' };
+  if (short === 'slicc-cdp') return { kind: 'tag', repo: short };
+  if (/^(wasm-tailscale|slicc-clipboard)$/.test(short)) return { kind: 'tag' };
   if (/^(wasm|wasi|wasix|py)-/.test(short)) return { kind: 'homescoop' };
   return { kind: 'none' };
 }
@@ -170,7 +171,10 @@ async function certifiedCommit(src, repo, commit) {
   return `cert-review status: ${status.description ?? 'success'}`;
 }
 
-export const PIPELINE = { 'slicc-kernel': '.github/workflows/ci.yml' };
+export const PIPELINE = {
+  'slicc-kernel': '.github/workflows/ci.yml',
+  'slicc-cdp': '.github/workflows/ci.yml',
+};
 export const PIPELINE_CHECKS = ['ci / integration', 'ci / review'];
 
 export function queueRun(run, repo, path, commit) {
@@ -255,6 +259,19 @@ function byHomescoop({ name, version, prov, bound, exceptions, pins }) {
   );
 }
 
+async function byTagOrPipeline(src, { name, version, writer, prov, bound }) {
+  const tagged = await byTag(src, name, version);
+  if (tagged.ok || !PIPELINE[writer.repo]) return tagged;
+  const repoUrl = `https://github.com/ai-ecoverse/${writer.repo}`;
+  if (!prov) return no(`${tagged.why}, and it has no npm provenance`);
+  if (!bound) return no(`${tagged.why}, and its provenance names another tarball`);
+  if (prov.repository !== repoUrl || prov.path !== PIPELINE[writer.repo])
+    return no(
+      `${tagged.why}, and its provenance is ${prov.repository} ${prov.path} @ ${prov.ref}, not ${writer.repo}'s ${PIPELINE[writer.repo]}`
+    );
+  return byPipeline(src, { writer, prov });
+}
+
 async function certifiedOrParent(src, repo, commit) {
   const found = await certifiedCommit(src, repo, commit);
   if (found) return { found, where: commit };
@@ -310,10 +327,11 @@ export async function judge(src, key, integrity, exceptions, pins = new Map()) {
     return done(
       no(`the registry's integrity ${meta.dist?.integrity} is not the lockfile's ${integrity}`)
     );
-  if (writer.kind === 'tag') return done(await byTag(src, name, version));
+  if (writer.kind === 'tag' && !writer.repo) return done(await byTag(src, name, version));
   const prov = await provenanceOf(src, name, version);
   const bound = Boolean(prov?.subjects.includes(hexOf(integrity)));
   const ctx = { name, version, writer, prov, bound, exceptions, pins };
+  if (writer.kind === 'tag') return done(await byTagOrPipeline(src, ctx));
   return done(writer.kind === 'homescoop' ? byHomescoop(ctx) : await byMain(src, ctx));
 }
 

@@ -227,6 +227,43 @@ test('the gate refuses a package whose publisher seven doesn’t know, and a sli
   });
 });
 
+test('with the shipped sources.json, a slicc-cdp off its certified tag passes when its ci.yml built it at main, and on no other provenance', async () => {
+  const sources = JSON.parse(
+    await readFile(new URL('../../src/packages/optional/sources.json', import.meta.url), 'utf8')
+  );
+  const cdp = { name: '@ai-ecoverse/slicc-cdp', version: '1.31.0' };
+  const tags = { [cdp.name]: { certified: '1.30.25' } };
+  const built = (o = {}) => ({
+    ...cdp,
+    built: { repository: 'ai-ecoverse/slicc-cdp', path: '.github/workflows/ci.yml', ...o },
+  });
+  const ok = gate([built()], { tags, sources });
+  assert.equal(await ok.npm.gate(lockOf(key(cdp)), key(cdp)), null);
+  const tagged = gate([{ ...cdp, provenance: false }], {
+    tags: { [cdp.name]: { certified: cdp.version } },
+    sources,
+  });
+  assert.equal(await tagged.npm.gate(lockOf(key(cdp)), key(cdp)), null, 'the tag still certifies');
+  for (const [release, why] of [
+    [{ ...cdp, provenance: false }, 'slicc-cdp 1.31.0 has no build provenance'],
+    [
+      built({ path: '.github/workflows/release.yml' }),
+      "slicc-cdp 1.31.0 wasn't built by ai-ecoverse/slicc-cdp's release workflow on main",
+    ],
+    [
+      built({ ref: 'refs/heads/try-this' }),
+      "slicc-cdp 1.31.0 wasn't built by ai-ecoverse/slicc-cdp's release workflow on main",
+    ],
+    [
+      built({ repository: 'ai-ecoverse/slicc-kernel' }),
+      "slicc-cdp 1.31.0 wasn't built by ai-ecoverse/slicc-cdp",
+    ],
+  ]) {
+    const { npm } = gate([release], { tags, sources });
+    assert.deepEqual(await npm.gate(lockOf(key(cdp)), key(cdp)), { why }, JSON.stringify(release));
+  }
+});
+
 test('homescoop’s certification exceptions deny: the bundled copy always, the live one too, and a live file can never grant', async () => {
   const numpy = { name: '@ai-ecoverse/py-numpy', version: '2.3.2-5' };
   const fresh = { name: '@ai-ecoverse/py-numpy', version: '2.5.4-1' };
