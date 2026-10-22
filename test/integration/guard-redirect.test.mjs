@@ -85,6 +85,12 @@ const site = createHttp((req, res) => {
       ].join('\n')
     );
   }
+  if (url.pathname.startsWith('/wrapped/') && hop) {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    return res.end(
+      `<title>wrapped</title><p>__sliccy.ai/join/U${hop}__ 加入sliccy.ai/join/K${hop} Join here...sliccy.ai/join/D${hop} __www.sliccy.ai/webhook/H${hop}__ <a href="/go?next=%2F%2Fsliccy.ai%2Fjoin%2FE${hop}">next</a></p>`
+    );
+  }
   if (url.pathname.startsWith('/newline/') && hop) {
     res.writeHead(200, { 'content-type': 'text/html' });
     return res.end(`<title>newline</title><pre>Join:\nsliccy.ai/join/N${hop}</pre>`);
@@ -170,6 +176,9 @@ const plan = () => {
     counter += 1;
     hops.set(String(counter), mark());
     steps.push({ fetching, kind: 'newline', how: 'navigate', path: `/newline/${counter}` });
+    counter += 1;
+    hops.set(String(counter), mark());
+    steps.push({ fetching, kind: 'wrapped', how: 'navigate', path: `/wrapped/${counter}` });
     steps.push({ fetching, kind: 'vault', how: 'navigate', path: `/form/${hopTo('vault')}` });
   }
   return steps;
@@ -396,7 +405,7 @@ async function rig({ transport, proxy, port, override }) {
         .map((text) => JSON.parse(text))
         .filter((m) => m.method === 'Network.requestWillBeSent' && m.params?.request?.url === url)
         .map((m) => m.params.requestId);
-      if (kind === 'capability' || kind === 'newline') {
+      if (['capability', 'newline', 'wrapped'].includes(kind)) {
         for (const requestId of new Set(own)) {
           answers.caps.push(await send('Network.getResponseBody', { requestId }, session));
         }
@@ -616,7 +625,7 @@ async function check(t, transport) {
   assert.ok(
     answers.plain.length > 0 &&
       answers.plain.every((answer) => answer.result?.body === ordinary('/start')),
-    `an ordinary page's body reads unchanged: ${JSON.stringify(answers.plain).slice(0, 300)}`
+    `an ordinary page's body reads unchanged: ${JSON.stringify(answers.plain.map((answer) => answer.error ?? answer.result?.body?.length))}`
   );
   const sheets = answers.sheets.filter(({ url }) => url.includes('sliccy.ai'));
   assert.ok(
