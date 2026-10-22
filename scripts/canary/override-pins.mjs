@@ -19,7 +19,7 @@ const PUBLISHED = '2000-01-01T00:00:00.000Z';
 export const GATED =
   /^@ai-ecoverse\/(slicc-kernel|slicc-cdp|slicc-clipboard|slicc-jsh|wasi-|wasix-|wasm-|py-)/;
 const REGISTRY = env.CANARY_REGISTRY ?? 'https://registry.npmjs.org/';
-const PNPM = ['--yes', 'pnpm@12'];
+const PNPM = ['--yes', 'pnpm@12.14.0'];
 const PNPM_LOCK_ENTRY =
   /^ {2}'?(@[^/\s']+\/[^@'\s]+)@([^'(\s]+)'?:\n {4}resolution: \{integrity: ([^,}\s]+)/gm;
 
