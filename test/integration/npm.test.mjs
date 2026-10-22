@@ -885,6 +885,25 @@ test('sliccy-browser is offered only with a slicc-cdp from slicc-cdp’s release
   const off = await shipped([bare, ...releasesOf(browser)], tagged);
   const info = (await off.npm.lookAll([off.byName.get(browser)], new Map())).get(browser);
   assert.equal(info.withheld, 'slicc-cdp 1.30.30 has no build provenance');
+  const elsewhere = [
+    [
+      { ref: `refs/tags/v${CDP.version}` },
+      "wasn't built by ai-ecoverse/slicc-cdp's release workflow on main",
+    ],
+    [
+      { path: '.github/workflows/manual.yml' },
+      "wasn't built by ai-ecoverse/slicc-cdp's release workflow on main",
+    ],
+    [{ repository: 'someone/slicc-cdp' }, "wasn't built by ai-ecoverse/slicc-cdp"],
+  ];
+  for (const [change, why] of elsewhere) {
+    const moved = await shipped(
+      [{ ...CDP, built: { ...CDP_RELEASE, ...change } }, ...releasesOf(browser)],
+      tagged
+    );
+    const row = (await moved.npm.lookAll([moved.byName.get(browser)], new Map())).get(browser);
+    assert.equal(row.withheld, `slicc-cdp 1.30.30 ${why}`, JSON.stringify(change));
+  }
   const old = await shipped([{ ...CDP, deprecated: 'use 1.31' }, ...releasesOf(browser)], tagged);
   const held = (await old.npm.lookAll([old.byName.get(browser)], new Map())).get(browser);
   assert.equal(held.withheld, 'slicc-cdp 1.30.30 is deprecated on npm: use 1.31');
