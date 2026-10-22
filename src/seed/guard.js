@@ -272,7 +272,7 @@ const ANSWERED = new Set([
 ]);
 const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const HOSTS = new RegExp(
-  `(?<!(?<!\\\\|%[0-9a-f]|\\\\u[0-9a-f]{3}|\\\\x[0-9a-f])[a-z0-9])((?:[a-z0-9-]{1,63}\\.){0,8}(?:${[...catalog.protectedOrigins.domains, ...catalog.protectedOrigins.hosts].map(escaped).join('|')}))(\\.?(?::\\d+|%3a\\d+)?)(?:[/?#\\\\][^\\s"'<>\`]*|(?:%2f|%3f|%23|%5c)[^\\s"'<>\`&]*)`,
+  `((?:[a-z0-9-]{1,63}\\.){0,8}(?:${[...catalog.protectedOrigins.domains, ...catalog.protectedOrigins.hosts].map(escaped).join('|')}))(\\.?(?::\\d+|%3a\\d+)?)(?:[/?#\\\\][^\\s"'<>\`]*|(?:%2f|%3f|%23|%5c)[^\\s"'<>\`&]*)`,
   'giu'
 );
 

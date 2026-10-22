@@ -17,7 +17,7 @@ const free = () =>
   });
 
 const ordinary = (path) =>
-  `<title>ordinary</title>${path}<script>void \`http://localhost:\${location.port}/x\`;</script><a href="https://www.sliccy.ai/7/">seven</a> <a href="https://ntfy.sliccy.ai/github">ntfy</a> curl -fsSL https://www.sliccy.ai/install.sh <a href="https://www.sliccy.ai/blog/post">blog</a> <a href="https://notsliccy.ai/page">look-alike</a> notsliccy.ai/page <code>curl -fsSL www.sliccy.ai/install.sh | sh</code> Visit www.sliccy.ai/7/ now`;
+  `<title>ordinary</title>${path}<script>void \`http://localhost:\${location.port}/x\`;</script><a href="https://www.sliccy.ai/7/">seven</a> <a href="https://ntfy.sliccy.ai/github">ntfy</a> curl -fsSL https://www.sliccy.ai/install.sh <a href="https://www.sliccy.ai/blog/post">blog</a> <code>curl -fsSL www.sliccy.ai/install.sh | sh</code> Visit www.sliccy.ai/7/ now`;
 const marks = [];
 const mark = () => {
   const value = `M${randomBytes(6).toString('hex')}`;
@@ -83,6 +83,12 @@ const site = createHttp((req, res) => {
         ),
         '</form>',
       ].join('\n')
+    );
+  }
+  if (url.pathname.startsWith('/encoded/') && hop) {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    return res.end(
+      `<title>encoded</title><p>https://example.com/?next=%252F%252Fsliccy.ai/join/W${hop} see &#47sliccy.ai/join/Y${hop} \\57sliccy.ai\\57join\\57O${hop}</p><script>console.log("next=%252F%252Fsliccy.ai/join/C${hop}");console.log("see &#47sliccy.ai/join/E${hop}");console.log(String.raw\`\\57sliccy.ai\\57join\\57R${hop}\`)</script>`
     );
   }
   if (url.pathname.startsWith('/escaped/') && hop) {
@@ -188,6 +194,9 @@ const plan = () => {
     counter += 1;
     hops.set(String(counter), mark());
     steps.push({ fetching, kind: 'escaped', how: 'navigate', path: `/escaped/${counter}` });
+    counter += 1;
+    hops.set(String(counter), mark());
+    steps.push({ fetching, kind: 'encoded', how: 'navigate', path: `/encoded/${counter}` });
     steps.push({ fetching, kind: 'vault', how: 'navigate', path: `/form/${hopTo('vault')}` });
   }
   return steps;
@@ -414,7 +423,7 @@ async function rig({ transport, proxy, port, override }) {
         .map((text) => JSON.parse(text))
         .filter((m) => m.method === 'Network.requestWillBeSent' && m.params?.request?.url === url)
         .map((m) => m.params.requestId);
-      if (['capability', 'newline', 'wrapped', 'escaped'].includes(kind)) {
+      if (['capability', 'newline', 'wrapped', 'escaped', 'encoded'].includes(kind)) {
         for (const requestId of new Set(own)) {
           answers.caps.push({
             kind,
