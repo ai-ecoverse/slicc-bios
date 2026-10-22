@@ -9,12 +9,12 @@ const chrome = await launch();
 after(() => chrome.close());
 
 test('an update with no debugger pause on workers opens the shell', async (t) => {
-  const pausedWorkers = [];
+  const attachedWorkers = [];
   t.after(
     chrome.cdp.on(({ method, params = {} }) => {
       if (method !== 'Target.attachedToTarget' || params.targetInfo?.type !== 'service_worker')
         return;
-      if (params.waitingForDebugger) pausedWorkers.push(params.targetInfo.url ?? '');
+      attachedWorkers.push(params.targetInfo.url ?? '');
     })
   );
   t.after(await withoutWorkerPause(chrome));
@@ -28,7 +28,7 @@ test('an update with no debugger pause on workers opens the shell', async (t) =>
 
   await boot(page);
   assert.equal(await page.evaluate(() => crossOriginIsolated), true);
-  assert.deepEqual(pausedWorkers, []);
+  assert.deepEqual(attachedWorkers, []);
   await run(page, 'echo "upgraded $((1 + 1))"');
   await shows(page, 'upgraded 2');
 });
