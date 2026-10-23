@@ -34,7 +34,7 @@ export function explain(item, error) {
   }
   const subject = `${NAMES[item.id]}${item.from === null ? '' : ' update'}${error.to ? ` ${error.to}` : ''}`;
   const raw = `${error.message}\n${error.log}`;
-  if (/ERR_PNPM_FETCH_404|ERR_PNPM_NO_MATCHING_VERSION/.test(raw)) {
+  if (/ERR_PNPM_FETCH_404|ERR_PNPM_NO_MATCHING_VERSION|returned HTTP 404 for/.test(raw)) {
     return `Couldn't download ${subject}: the registry doesn't have it (404). Retry later.`;
   }
   if (/INTEGRITY|EINTEGRITY/i.test(raw)) {

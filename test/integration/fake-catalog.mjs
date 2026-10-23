@@ -65,7 +65,15 @@ export async function fakeCatalog(cdp) {
         .send('Fetch.fulfillRequest', { requestId, responseCode, responseHeaders: [cors] })
         .catch(() => {});
     }
-    const found = await body(request.url).catch(() => null);
+    let refused = 0;
+    const found = await body(request.url).catch((error) => {
+      refused = Number(/^(4\d\d) /.exec(error.message)?.[1] ?? 0);
+      return null;
+    });
+    if (refused)
+      return cdp
+        .send('Fetch.fulfillRequest', { requestId, responseCode: refused, responseHeaders: [cors] })
+        .catch(() => {});
     if (found === null || found === undefined)
       return cdp.send('Fetch.failRequest', { requestId, errorReason: 'Failed' }).catch(() => {});
     const bytes = Buffer.from(found);

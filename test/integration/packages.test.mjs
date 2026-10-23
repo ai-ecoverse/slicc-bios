@@ -480,6 +480,38 @@ test('seven’s page withholds sliccy-browser when the slicc-cdp it pins has no 
   );
 });
 
+test('a release npm serves no attestation for yet, as in the minutes after homescoop publishes, is withheld, and the newest older attested version is offered (#910)', async (t) => {
+  const page = await chrome.page(t);
+  offer({ [XXD]: LATEST[XXD] });
+  const fresh = '9.2.1172-2';
+  const real = await doc(XXD, LATEST[XXD]);
+  const published = {
+    ...real,
+    version: fresh,
+    dist: {
+      ...real.dist,
+      attestations: {
+        ...real.dist.attestations,
+        url: `${REGISTRY}-/npm/v1/attestations/${XXD.replace('/', '%2f')}@${fresh}`,
+      },
+    },
+  };
+  registry.docs.set(`${REGISTRY}${XXD}/latest`, JSON.stringify(published));
+  await boot(page);
+  const [row] = await page.within(120000, () => {
+    const rows = document.querySelector('slicc-app').model.updates.packages();
+    return (rows[0]?.offered || rows[0]?.registry === 'unreachable') && rows;
+  });
+  assert.equal(row.registry, undefined, JSON.stringify(row));
+  assert.equal(row.offered, LATEST[XXD]);
+  assert.deepEqual(row.newer, {
+    version: fresh,
+    reason: `wasm-xxd ${fresh} has no build provenance`,
+  });
+  assert.equal(row.state, 'available');
+  assert.deepEqual(page.errors, []);
+});
+
 test('a failed download shows Retry, and Retry installs it', async (t) => {
   const page = await chrome.page(t);
   offer({ [XXD]: LATEST[XXD] });
