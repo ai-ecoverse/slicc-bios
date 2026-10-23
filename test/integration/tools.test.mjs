@@ -157,6 +157,33 @@ test('an old profile keeps its base-set copy of a tool until seven has installed
   assert.deepEqual(page.errors, []);
 });
 
+test('seven judges every package pnpm resolved for the tools before pnpm downloads any of them: each tool’s version doc is asked for before its tarball', {
+  timeout: 20 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  prepare();
+  registry.asked.length = 0;
+  await boot(page);
+  const asked = [...registry.asked];
+  const order = [];
+  for (const name of Object.keys(listed)) {
+    const version = await versionOf(page, `${TOOLS}/${name}`);
+    assert.ok(version, `${name} is installed`);
+    const short = name.split('/').pop();
+    const judged = asked.indexOf(
+      `https://registry.npmjs.org/${name}/${encodeURIComponent(version)}`
+    );
+    const fetched = asked.indexOf(`https://registry.npmjs.org/${name}/-/${short}-${version}.tgz`);
+    order.push(`${short}@${version} doc ${judged} tarball ${fetched}`);
+    if (fetched >= 0) assert.ok(judged >= 0 && judged < fetched, order.at(-1));
+  }
+  assert.ok(
+    order.some((line) => !/tarball -1$/.test(line)),
+    `pnpm downloaded the tools through the page: ${order.join(', ')}`
+  );
+  assert.deepEqual(page.errors, []);
+});
+
 test('seven never takes a tool back to an older npm latest, and a newer release that fails the gate leaves the installed one in place', {
   timeout: 25 * 60 * 1000,
 }, async (t) => {

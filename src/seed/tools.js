@@ -8,7 +8,11 @@ export const CAP = 2 * 60 * 1000;
 export const NOTE = 'Seven installs it after boot, at the newest version that passes its checks.';
 const deployed = new URL('packages/', BIOS);
 const WORKSPACE = "minimumReleaseAgeExclude:\n  - '@ai-ecoverse/*'\n";
-const INSTALL = ['pnpm', 'install', '--no-frozen-lockfile'];
+const SAFE = ['--ignore-scripts', '--ignore-pnpmfile'];
+export const RESOLVE = ['pnpm', 'install', '--lockfile-only', ...SAFE];
+export const INSTALL = ['pnpm', 'install', '--frozen-lockfile', ...SAFE];
+const MANIFEST = `${FOLDER}/package.json`;
+const LOCK = `${FOLDER}/pnpm-lock.yaml`;
 
 export async function loadTools(from = deployed) {
   const listed = JSON.parse(await fetchText('tools.json', from));
@@ -87,6 +91,57 @@ export function row(entry, { version, offer, state, error, log }) {
   };
 }
 
+async function put(root, path, body) {
+  if (body === null) await remove(root, path);
+  else await write(root, path, body);
+}
+
+async function installTools({ root, kernel, npm }, wanted, batch) {
+  const before = [await text(root, MANIFEST), await text(root, LOCK)];
+  const back = () => Promise.all([put(root, MANIFEST, before[0]), put(root, LOCK, before[1])]);
+  await write(root, MANIFEST, manifest(wanted));
+  if ((await text(root, `${FOLDER}/pnpm-workspace.yaml`)) === null)
+    await write(root, `${FOLDER}/pnpm-workspace.yaml`, WORKSPACE);
+  let log = '';
+  const run = (argv) =>
+    pnpm(
+      kernel,
+      `/${FOLDER}`,
+      (step) => {
+        log = step.log ?? log;
+      },
+      null,
+      argv
+    ).catch((error) => {
+      throw Object.assign(error, { log: error.log ?? log });
+    });
+  try {
+    await run(RESOLVE);
+    const lock = installedLock((await text(root, LOCK)) ?? '');
+    const verdicts = await npm.judged(lock);
+    const refused = new Map();
+    for (const entry of batch) {
+      const key = `${entry.package}@${wanted[entry.package]}`;
+      if (!Object.hasOwn(wanted, entry.package)) continue;
+      const own = verdicts.get(key);
+      const other = [...verdicts].find(
+        ([one, why]) => why && !Object.keys(wanted).some((name) => one.startsWith(`${name}@`))
+      );
+      if (!lock.has(key)) refused.set(entry.package, { why: `pnpm didn't resolve ${key}` });
+      else if (own || other) refused.set(entry.package, own ?? other[1]);
+    }
+    if (refused.size) {
+      await back();
+      return refused;
+    }
+    await run(INSTALL);
+    return refused;
+  } catch (error) {
+    await back();
+    throw error;
+  }
+}
+
 export function createTools({
   root,
   kernel,
@@ -119,37 +174,7 @@ export function createTools({
     changed();
   };
 
-  async function install(wanted, batch) {
-    await write(root, `${FOLDER}/package.json`, manifest(wanted));
-    if ((await text(root, `${FOLDER}/pnpm-workspace.yaml`)) === null)
-      await write(root, `${FOLDER}/pnpm-workspace.yaml`, WORKSPACE);
-    let log = '';
-    await pnpm(
-      kernel,
-      `/${FOLDER}`,
-      (step) => {
-        log = step.log ?? log;
-      },
-      null,
-      INSTALL
-    ).catch((error) => {
-      throw Object.assign(error, { log: error.log ?? log });
-    });
-    const lock = installedLock((await text(root, `${FOLDER}/pnpm-lock.yaml`)) ?? '');
-    const verdicts = await npm.judged(lock);
-    const refused = new Map();
-    for (const entry of batch) {
-      const key = `${entry.package}@${wanted[entry.package]}`;
-      if (!Object.hasOwn(wanted, entry.package)) continue;
-      const own = verdicts.get(key);
-      const other = [...verdicts].find(
-        ([one, why]) => why && !Object.keys(wanted).some((name) => one.startsWith(`${name}@`))
-      );
-      if (!lock.has(key)) refused.set(entry.package, { why: `pnpm didn't install ${key}` });
-      else if (own || other) refused.set(entry.package, own ?? other[1]);
-    }
-    return refused;
-  }
+  const install = (wanted, batch) => installTools({ root, kernel, npm }, wanted, batch);
 
   async function plan(batch) {
     found = await present(root, entries);
