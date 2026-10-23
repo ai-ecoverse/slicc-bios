@@ -774,8 +774,8 @@ async function own() {
   });
   approvals.own();
   const hosts = () => browserHosts(network);
-  watchSignIns({ hosts });
   ({ poke } = watchOpened({ hosts, own: location.origin }));
+  watchSignIns({ hosts, asked: () => poke() });
   if (globalThis.sliccKernelDebug === true) globalThis.sliccBrowserHook = control.hook;
   const denials = denialLog({ root, users: () => kernel?.users, mode });
   const link = linkFacade({

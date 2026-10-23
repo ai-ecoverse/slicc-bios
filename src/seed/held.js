@@ -101,10 +101,12 @@ export function watchSignIns({
   now = Date.now,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   wait = WAIT,
+  asked = () => {},
 }) {
   const channel = listen(CHANNEL);
   channel.onmessage = async ({ data }) => {
     if (data?.type !== 'hold' || typeof data.marker !== 'string' || !data.marker) return;
+    asked();
     const url = markerUrl(data.marker);
     const deadline = now() + wait;
     const opens = Object.values(hosts() ?? {}).filter((open) => typeof open === 'function');
@@ -230,7 +232,9 @@ export function watchOpened({
 }) {
   const live = new Map();
   const ended = new Set();
+  let wanted = false;
   const look = async () => {
+    if (!wanted) return;
     for (const [name, open] of Object.entries(hosts() ?? {})) {
       if (typeof open !== 'function' || ended.has(name)) continue;
       if (live.has(name)) {
@@ -251,11 +255,12 @@ export function watchOpened({
       }
     }
   };
-  void look();
   const timer = timers.setInterval(() => void look(), every);
   return {
     poke() {
+      wanted = true;
       ended.clear();
+      void look();
     },
     stop() {
       timers.clearInterval(timer);
