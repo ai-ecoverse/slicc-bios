@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:https';
 import { createServer as createTcp } from 'node:net';
@@ -19,7 +18,6 @@ const TYPES = ['fetch', 'xhr', 'img', 'script', 'stylesheet', 'iframe', 'beacon'
 const HOWS = ['direct', '302', '307'];
 const ORIGINS = ['seven', 'vault'];
 const GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
-const TOKEN = `Bearer m${randomBytes(8).toString('hex')}`;
 
 async function debuggingPort() {
   for (let port = 9300; port <= 9309; port += 1) {
@@ -91,13 +89,15 @@ const site = createServer(await certificate(), (req, res) => {
     const tag = host.startsWith('vault.') ? 'vault' : 'seven';
     res.writeHead(200, {
       'content-type': 'text/html',
-      'set-cookie': [
-        `none=${tag}-none; Path=/; Secure; SameSite=None`,
-        `lax=${tag}-lax; Path=/; SameSite=Lax`,
-        `def=${tag}-def; Path=/`,
-      ],
+      'set-cookie': [`lax=${tag}-lax; Path=/; SameSite=Lax`, `def=${tag}-def; Path=/`],
     });
     return res.end('<title>armed</title>');
+  }
+  if (host === 'ordinary.test' && parts[0] === 'bounce') {
+    res.writeHead(302, {
+      location: `https://ordinary.test:${site.address().port}/land${url.search}`,
+    });
+    return res.end();
   }
   if (host === 'ordinary.test' && parts[0] === 'go') {
     const [, how, type, origin] = parts;
@@ -143,7 +143,6 @@ after(() => site.close());
 
 const drive = `<!doctype html><title>drive</title><body><script>
 const port = ${JSON.stringify(String(port))};
-const auth = ${JSON.stringify(TOKEN)};
 const origins = {
   seven: 'https://seven.sliccy.ai:' + port,
   vault: 'https://vault.sliccy.ai:' + port,
@@ -163,7 +162,7 @@ const finish = (el) => new Promise((resolve) => {
 async function load(origin, type, how) {
   const url = target(origin, type, how);
   if (type === 'fetch') {
-    const response = await fetch(url, { credentials: 'include', headers: { Authorization: auth }, cache: 'no-store' }).catch(() => null);
+    const response = await fetch(url, { credentials: 'include', cache: 'no-store' }).catch(() => null);
     return response && response.ok === true;
   }
   if (type === 'xhr') {
@@ -171,7 +170,6 @@ async function load(origin, type, how) {
       const xhr = new XMLHttpRequest();
       xhr.open('GET', url);
       xhr.withCredentials = true;
-      xhr.setRequestHeader('Authorization', auth);
       xhr.onload = () => resolve(xhr.status === 200);
       xhr.onerror = () => resolve(false);
       xhr.send();
@@ -242,7 +240,6 @@ const chrome = await launch({
     `--remote-debugging-port=${debugging}`,
     '--remote-allow-origins=*',
     '--ignore-certificate-errors',
-    '--disable-features=ThirdPartyStoragePartitioning,ThirdPartyCookiePhaseout,TrackingProtection3pcd',
     `--host-resolver-rules=MAP seven.sliccy.ai 127.0.0.1, MAP vault.sliccy.ai 127.0.0.1, MAP ordinary.test 127.0.0.1, MAP other.test 127.0.0.1`,
   ],
 });
@@ -265,7 +262,6 @@ async function until(check, ms, label) {
   throw new Error(`${label}: ${JSON.stringify(last)}`);
 }
 
-const stored = {};
 for (const origin of ORIGINS) {
   const host = origin === 'vault' ? 'vault.sliccy.ai' : 'seven.sliccy.ai';
   const url = `https://${host}:${port}/arm`;
@@ -278,12 +274,6 @@ for (const origin of ORIGINS) {
   );
   await pause(200);
   await chrome.cdp.send('Target.closeTarget', { targetId: created.targetId });
-  stored[origin] = await chrome.cdp
-    .send('Network.getCookies', { urls: [`https://${host}:${port}/`] })
-    .then((result) =>
-      result.cookies.map((cookie) => `${cookie.name}=${cookie.value};${cookie.sameSite}`)
-    )
-    .catch((error) => error.message);
 }
 hits.length = 0;
 
@@ -496,6 +486,196 @@ async function rig({ transport, proxy, runtime, url }) {
   return { title, report: report.result?.result?.value ?? '', error: created.error?.message };
 }
 
+async function clients({ transport, proxy, runtime, port }) {
+  const { guardProtected } = await import(new URL('guard.js', location.href).href);
+  const { proxyHost, extensionConnection } = await import(new URL('cdp.js', location.href).href);
+  const opened =
+    transport === 'link'
+      ? await globalThis.sliccCdp({ runtime })
+      : guardProtected(
+          transport === 'proxy'
+            ? await proxyHost(proxy)()
+            : extensionConnection(globalThis.sliccExtension.cdp),
+          self.origin
+        );
+  const pending = new Map();
+  const pauses = [];
+  let next = 0;
+  opened.onmessage = (text) => {
+    const message = JSON.parse(text);
+    if (message.method === 'Fetch.requestPaused') pauses.push(message);
+    if (message.id !== undefined) {
+      pending.get(message.id)?.(message);
+      pending.delete(message.id);
+    }
+  };
+  const send = (method, params = {}, sessionId) =>
+    new Promise((resolve) => {
+      next += 1;
+      const id = next;
+      const timer = setTimeout(
+        () => resolve({ error: { message: `${method} got no answer` } }),
+        15000
+      );
+      pending.set(id, (message) => {
+        clearTimeout(timer);
+        resolve(message);
+      });
+      opened.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+  const seven = (path) => `https://seven.sliccy.ai:${port}${path}`;
+  const vault = (path) => `https://vault.sliccy.ai:${port}${path}`;
+  const ordinary = (path) => `https://ordinary.test:${port}${path}`;
+  const rows = [];
+  const note = (name, origin, answer) =>
+    rows.push({ name, origin, error: answer?.error?.message ?? '' });
+  for (const [origin, url] of [
+    ['seven', seven('/c/create')],
+    ['vault', vault('/c/create')],
+  ]) {
+    note('Target.createTarget', origin, await send('Target.createTarget', { url }));
+  }
+  const created = await send('Target.createTarget', { url: ordinary('/idle') });
+  const targetId = created.result?.targetId;
+  const session = (await send('Target.attachToTarget', { targetId, flatten: true })).result
+    ?.sessionId;
+  if (!session) return { error: `attach: ${JSON.stringify(created)}`, rows };
+  await send('Page.enable', {}, session);
+  await send('Network.enable', {}, session);
+  await send('Runtime.enable', {}, session);
+  await send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] }, session);
+  const frame = (await send('Page.getFrameTree', {}, session)).result?.frameTree?.frame?.id;
+  for (const [origin, url] of [
+    ['seven', seven('/c/load')],
+    ['vault', vault('/c/load')],
+  ]) {
+    note(
+      'Network.loadNetworkResource',
+      origin,
+      await send(
+        'Network.loadNetworkResource',
+        { frameId: frame, url, options: { disableCache: true, includeCredentials: true } },
+        session
+      )
+    );
+  }
+  for (const [origin, url] of [
+    ['seven', seven('/c/navigate')],
+    ['vault', vault('/c/navigate')],
+  ]) {
+    note('Page.navigate', origin, await send('Page.navigate', { url }, session));
+  }
+  const take = async (match) => {
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      const found = pauses.findIndex(match);
+      if (found >= 0) return pauses.splice(found, 1)[0];
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return null;
+  };
+  const pauseFor = async (path) => {
+    await send(
+      'Runtime.evaluate',
+      {
+        expression: `fetch(${JSON.stringify(ordinary(path))}, {cache:'no-store'})`,
+        returnByValue: true,
+      },
+      session
+    );
+    return take(
+      (message) =>
+        message.params.request?.url?.includes(path) &&
+        message.params.responseStatusCode === undefined
+    );
+  };
+  for (const [origin, url] of [
+    ['seven', seven('/c/override')],
+    ['vault', vault('/c/override')],
+  ]) {
+    const paused = await pauseFor(`/ping-${origin}`);
+    note(
+      'Fetch.continueRequest',
+      origin,
+      paused
+        ? await send('Fetch.continueRequest', { requestId: paused.params.requestId, url }, session)
+        : { error: { message: 'no pause' } }
+    );
+  }
+  for (const [origin, url] of [
+    ['seven', seven('/c/hop')],
+    ['vault', vault('/c/hop')],
+  ]) {
+    const started = await pauseFor(`/bounce?${origin}`);
+    if (started)
+      await send('Fetch.continueRequest', { requestId: started.params.requestId }, session);
+    const hop = await take((message) => message.params.redirectedRequestId !== undefined);
+    note(
+      'Fetch.continueRequest hop',
+      origin,
+      hop
+        ? await send('Fetch.continueRequest', { requestId: hop.params.requestId, url }, session)
+        : { error: { message: 'no hop' } }
+    );
+  }
+  for (const [origin, url] of [
+    ['seven', seven('/c/fulfill')],
+    ['vault', vault('/c/fulfill')],
+  ]) {
+    const paused = await pauseFor(`/fulfill-${origin}`);
+    note(
+      'Fetch.fulfillRequest',
+      origin,
+      paused
+        ? await send(
+            'Fetch.fulfillRequest',
+            {
+              requestId: paused.params.requestId,
+              responseCode: 302,
+              responseHeaders: [{ name: 'Location', value: url }],
+            },
+            session
+          )
+        : { error: { message: 'no pause' } }
+    );
+  }
+  const authPaused = await pauseFor('/auth-src');
+  note(
+    'Fetch.continueWithAuth',
+    'seven',
+    authPaused
+      ? await send(
+          'Fetch.continueWithAuth',
+          {
+            requestId: authPaused.params.requestId,
+            authChallengeResponse: { response: 'Default', url: seven('/c/auth') },
+          },
+          session
+        )
+      : { error: { message: 'no pause' } }
+  );
+  await send(
+    'Runtime.evaluate',
+    { expression: `location.href=${JSON.stringify(seven('/c/history'))}`, returnByValue: true },
+    session
+  );
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  const history = await send('Page.getNavigationHistory', {}, session);
+  const entries = history.result?.entries ?? [];
+  for (const entry of entries) {
+    note(
+      'Page.navigateToHistoryEntry',
+      entry.url ?? '',
+      await send('Page.navigateToHistoryEntry', { entryId: entry.id }, session)
+    );
+  }
+  if (!entries.length)
+    note('Page.navigateToHistoryEntry', 'seven', { error: { message: 'no entries' } });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  await send('Target.closeTarget', { targetId });
+  return { rows };
+}
+
 function rows(route) {
   const lines = [];
   let credentialed = false;
@@ -565,38 +745,76 @@ async function check(t, transport) {
     );
     runtime = 'fake-node/chrome';
   }
-  const report = await page.evaluate(rig, {
+  const args = {
     transport,
     proxy: proxy && { url: proxy.url, key: proxy.key },
     runtime,
+  };
+  const report = await page.evaluate(rig, {
+    ...args,
     url: `https://ordinary.test:${port}/drive`,
   });
   const built = rows(transport);
-  const head = built.credentialed
-    ? 'P0: a request to a protected origin landed with a cookie or Authorization'
-    : 'no landed protected request carried a cookie or Authorization';
+  const client = await page.evaluate(clients, { ...args, port });
+  const clientHits = hits.filter((hit) => hit.path.startsWith('/c/'));
   const text = [
-    head,
-    `stored ${JSON.stringify(stored)}`,
+    'C5: a page may request a protected origin, and the request carries no cookie',
     ...built.lines,
     ...built.ordinary,
     `page ${JSON.stringify(report)}`,
+    `client ${JSON.stringify(client)}`,
+    ...clientHits.map(
+      (hit) => `HIT ${hit.method} ${hit.host} ${hit.path} cookie=${hit.cookie || '-'}`
+    ),
   ].join('\n');
   assert.equal(report.title, 'DROVE', text);
   assert.ok(
     built.ordinary.every((line) => Number(line.split(' ').at(-1)) > 0),
     text
   );
-  assert.deepEqual(
-    built.lines.filter((line) => !line.includes(' no ')),
-    [],
+  assert.ok(
+    built.lines.some(
+      (line) => line.includes(' fetch direct seven yes ') && line.includes('cookie=-')
+    ),
     text
   );
+  assert.ok(
+    built.lines.some(
+      (line) => line.includes(' fetch direct vault yes ') && line.includes('cookie=-')
+    ),
+    text
+  );
+  assert.ok(
+    built.lines.filter((line) => line.includes(' yes ')).every((line) => line.includes('cookie=-')),
+    text
+  );
+  assert.ok(
+    built.lines.filter((line) => line.includes(' iframe ')).every((line) => line.includes(' no ')),
+    text
+  );
+  assert.equal(client.error, undefined, text);
+  assert.ok(
+    client.rows.some(
+      (row) => row.name === 'Page.navigateToHistoryEntry' && /refused/.test(row.error)
+    ),
+    text
+  );
+  for (const row of client.rows) {
+    if (row.name === 'Fetch.continueWithAuth') {
+      assert.match(row.error, /refused/, text);
+      continue;
+    }
+    if (row.name === 'Page.navigateToHistoryEntry' && !/sliccy\.ai|chrome-error/.test(row.origin)) {
+      continue;
+    }
+    assert.match(row.error, /refused/, `${row.name} ${row.origin}\n${text}`);
+  }
+  assert.deepEqual(clientHits, [], text);
 }
 
 for (const transport of ['extension', 'proxy', 'link']) {
   test(
-    `a guarded ordinary page's subresources do not reach seven or the vault, on the ${transport} path`,
+    `C5: a page may request a protected origin with no cookie, and a guarded client cannot name one, on the ${transport} path`,
     { timeout: 10 * 60 * 1000 },
     (t) => check(t, transport)
   );

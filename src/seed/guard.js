@@ -455,7 +455,7 @@ const kept = (set, value) => {
   if (set.size > REMEMBERED) set.delete(set.values().next().value);
 };
 
-export const ARM = [{ urlPattern: '*', requestStage: 'Request' }];
+export const ARM = [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }];
 
 const CALLBACK_NAMED = RELAY.replace(/^https?:\/\//, '').toLowerCase();
 
@@ -738,14 +738,6 @@ class Guard {
       this.failed(nav.targetId, params);
       return;
     }
-    if (this.is.url(params.request?.url)) {
-      void this.call(
-        'Fetch.failRequest',
-        { requestId, errorReason: 'BlockedByClient' },
-        nav.session
-      );
-      return;
-    }
     void this.call('Fetch.continueRequest', { requestId }, nav.session);
   }
 
@@ -994,10 +986,13 @@ class Guard {
 
   release({ method, params = {}, sessionId }) {
     const { requestId } = params;
-    if (method === 'Fetch.requestPaused' && this.is.url(params.request?.url)) {
+    if (
+      method === 'Fetch.requestPaused' &&
+      params.resourceType === 'Document' &&
+      this.is.url(params.request?.url)
+    ) {
       void this.call('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' }, sessionId);
-      if (params.resourceType === 'Document')
-        this.failed(this.sessions.get(sessionId)?.targetId, params);
+      this.failed(this.sessions.get(sessionId)?.targetId, params);
       return;
     }
     if (method === 'Fetch.authRequired') {
@@ -1434,10 +1429,21 @@ class Guard {
     return null;
   }
 
+  fulfilledRedirect(params) {
+    const code = params.responseCode;
+    if (typeof code !== 'number' || code < 300 || code >= 400) return false;
+    if (!Array.isArray(params.responseHeaders)) return false;
+    return params.responseHeaders.some((entry) => {
+      const name = String(entry?.name ?? '').toLowerCase();
+      return name === 'location' && this.is.url(entry?.value);
+    });
+  }
+
   async check(message) {
     const { method, params = {}, sessionId } = message;
     if (typeof method !== 'string') return null;
     if (method.startsWith('Fetch.') && sessionId === undefined) return FETCH;
+    if (method === 'Fetch.fulfillRequest' && this.fulfilledRedirect(params)) return PROTECTED;
     if (LATER.has(method)) return SCRIPTS;
     if (method === 'Page.navigate' && inherits(params.url)) return INHERITED;
     if (FLAT.has(method) && params.flatten !== true) {
