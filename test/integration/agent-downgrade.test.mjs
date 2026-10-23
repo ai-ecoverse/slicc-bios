@@ -119,15 +119,46 @@ test('seven never starts a 6.x agent on a profile a 7.x agent opened, by the age
     await marker(page, null);
   });
 
-  await t.test('a 7.x first start whose profile version can’t be recorded is refused', async () => {
-    await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
-    const was = await relabel(page, '7.0.0');
-    await page.evaluate(() => sessionStorage.setItem('slicc-test.full', '1'));
-    assert.equal((await refused(page)).error, UNRECORDED);
-    assert.equal(await page.evaluate(() => localStorage.getItem('slicc-os.agent-schema')), null);
-    await page.evaluate(() => sessionStorage.removeItem('slicc-test.full'));
-    await relabel(page, was);
-  });
+  await t.test(
+    'a 7.x first start whose profile version can’t be recorded is refused',
+    async (t) => {
+      await page.evaluate(() => {
+        localStorage.removeItem('slicc-os.agent-schema');
+        sessionStorage.setItem('slicc-test.full', '1');
+      });
+      let was = null;
+      t.after(async () => {
+        await page.evaluate(() => sessionStorage.removeItem('slicc-test.full')).catch(() => {});
+        if (was) await relabel(page, was).catch(() => {});
+        await page.goto('/');
+        await ready(page);
+        assert.equal(
+          await page.evaluate(() => {
+            localStorage.setItem('slicc-os.probe', 'x');
+            localStorage.removeItem('slicc-os.probe');
+            return sessionStorage.getItem('slicc-test.full');
+          }),
+          null
+        );
+      });
+      await page.goto('/');
+      await ready(page);
+      assert.equal(
+        await page.evaluate(() => {
+          try {
+            localStorage.setItem('slicc-os.agent-schema', '0');
+            return 'written';
+          } catch (error) {
+            return error.name;
+          }
+        }),
+        'QuotaExceededError'
+      );
+      was = await relabel(page, '7.0.0');
+      assert.equal((await refused(page)).error, UNRECORDED);
+      assert.equal(await page.evaluate(() => localStorage.getItem('slicc-os.agent-schema')), null);
+    }
+  );
 
   await t.test(
     'with no marker and no record, the 6.x agent starts and seven records it',

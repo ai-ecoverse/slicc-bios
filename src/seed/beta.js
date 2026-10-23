@@ -273,7 +273,8 @@ async function look(ctx) {
     return { npm: { state: 'current', latest }, offer: null };
   const [from, to] = [deployed.pin, latest].map((version) => Number(version.split('.')[0]));
   const needed = await profileSchema(await navigator.storage.getDirectory(), ctx.storage);
-  if (to > from && needed < schemaOf(latest) && needed <= KNOWN) {
+  const opens = schemaOf(latest) === needed || (needed > KNOWN && schemaOf(latest) > KNOWN);
+  if (to > from && !(needed > schemaOf(deployed.pin) && opens)) {
     const reason = `a new major version; seven ships ${from}.x`;
     return { npm: { state: 'not-offered', latest, reason }, offer: null };
   }

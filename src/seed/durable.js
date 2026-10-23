@@ -9,7 +9,8 @@ export const UNRECORDED =
 
 export function schemaOf(version) {
   const major = Number(String(version ?? '').split('.')[0]);
-  return Number.isInteger(major) && major >= 7 ? 2 : 1;
+  if (!Number.isInteger(major) || major < 7) return 1;
+  return major === 7 ? KNOWN : Number.POSITIVE_INFINITY;
 }
 
 async function marker(root) {
@@ -44,7 +45,7 @@ export async function mayStart(version, { root, storage = globalThis.localStorag
     });
   if (wanted <= kept) return;
   try {
-    storage.setItem(STARTED, String(wanted));
+    storage.setItem(STARTED, String(Math.min(wanted, KNOWN + 1)));
   } catch (error) {
     if (wanted > 1 && wanted > found)
       throw Object.assign(new Error(`couldn't record schema ${wanted}: ${error.message}`), {
