@@ -1,3 +1,5 @@
+import { UNGUARDED } from '../../src/seed/guard.js';
+
 export const KNOWN = {
   '#748': [
     'C8.protected-error-page',
@@ -17,6 +19,7 @@ export const LINK = {
   'slicc-cli#366 (fail-closed)': {
     ids: KNOWN['#748'],
     allowed: new Set([...RECOVERY, ...ABSENT]),
+    notLive: `not live: client attach refused: ${UNGUARDED}`,
   },
   'slicc-cli ends the session (fail-closed)': {
     ids: ['C2.redirect-secret', 'C2.redirect-secret-mix'],
@@ -59,8 +62,13 @@ function linked(row, listed) {
   if (listed) return null;
   const found = Object.entries(LINK).find(([, { ids }]) => ids.includes(row.id));
   if (!found) return null;
-  const [reason, { allowed }] = found;
-  if (row.control !== 'pass' || row.guarded !== 'fail' || row.live !== 'pass') return null;
+  const [reason, { allowed, notLive }] = found;
+  if (row.control !== 'pass' || row.guarded !== 'fail') return null;
+  if (row.live === 'fail') {
+    const items = (row.why ?? '').split('; ');
+    return notLive && items.at(-1) === notLive && unmet(items.slice(0, -1)) ? reason : null;
+  }
+  if (row.live !== 'pass') return null;
   const failed = checks(row.why);
   return failed.length > 0 && failed.every((check) => allowed.has(check)) ? reason : null;
 }
