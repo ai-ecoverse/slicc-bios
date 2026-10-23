@@ -140,10 +140,6 @@ const CONTENTS = new Set([
   'Audits.getEncodedResponse',
   'Network.getResponseBodyForInterception',
   'Network.getRequestPostData',
-  'Accessibility.getFullAXTree',
-  'Accessibility.getPartialAXTree',
-  'Accessibility.getChildAXNodes',
-  'Accessibility.queryAXTree',
   'DOM.getDocument',
   'DOM.getFlattenedDocument',
   'DOM.getOuterHTML',
@@ -151,6 +147,13 @@ const CONTENTS = new Set([
   'DOMSnapshot.captureSnapshot',
   'DOMSnapshot.getSnapshot',
 ]);
+const TREED = new Set([
+  'Accessibility.getFullAXTree',
+  'Accessibility.getPartialAXTree',
+  'Accessibility.getChildAXNodes',
+  'Accessibility.queryAXTree',
+]);
+const LEAVING = new Set(['Page.navigate', 'Page.reload', 'Page.stopLoading']);
 const STREAMED = new Set([
   'Network.streamResourceContent',
   'Fetch.takeResponseBodyAsStream',
@@ -529,6 +532,7 @@ class Guard {
     this.pages = new Set();
     this.frames = new Map();
     this.parents = new Map();
+    this.failedFrames = new Set();
     this.requests = new Map();
     this.held = new Map();
     this.internal = new Map();
@@ -664,12 +668,12 @@ class Guard {
     return found.guarded;
   }
 
-  async frame(frameId, strict = false) {
+  async frame(frameId, strict = false, method = '') {
     if (frameId === undefined) return false;
     if (this.targets.has(frameId)) return this.target(frameId);
     if (this.frames.has(frameId)) {
       const url = this.frames.get(frameId);
-      if (this.is.url(url)) return true;
+      if (this.is.url(url)) return !(LEAVING.has(method) && this.failedFrames.has(frameId));
       return strict && (url === '' || inherits(url)) && (await this.inherited(frameId, 0));
     }
     if (await this.lookup(frameId)) return this.target(frameId);
@@ -1228,6 +1232,9 @@ class Guard {
   }
 
   framed(frame) {
+    const failed = this.is.url(frame.unreachableUrl) && !this.is.url(frame.url);
+    if (failed) kept(this.failedFrames, frame.id);
+    else this.failedFrames.delete(frame.id);
     const named = [frame.unreachableUrl, frame.securityOrigin].find((url) => this.is.url(url));
     return named ?? frame.url ?? '';
   }
@@ -1337,6 +1344,10 @@ class Guard {
   }
 
   contents(message, was) {
+    if (TREED.has(was?.method) && message.result && typeof message.result === 'object') {
+      this.deliver({ ...message, result: this.redact(message.result).params });
+      return true;
+    }
     if (!CONTENTS.has(was?.method) || !this.mentions(message.result)) return false;
     this.refuse(was);
     return true;
@@ -1533,7 +1544,7 @@ class Guard {
       if (nav) await nav.ready;
       if (nav?.failed) return UNGUARDED;
     }
-    if (await this.frame(params.frameId, true)) return PROTECTED;
+    if (await this.frame(params.frameId, true, method)) return PROTECTED;
     if (method === 'Page.navigateToHistoryEntry' && (await this.back(params, sessionId))) {
       return PROTECTED;
     }
