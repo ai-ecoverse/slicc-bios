@@ -216,7 +216,7 @@ test('the gate refuses a package whose publisher seven doesn’t know, and a sli
     why: 'new-thing has no publisher seven knows',
   });
   assert.deepEqual(await npm.gate(lockOf(key(cdp)), key(cdp)), {
-    why: 'slicc-cdp 1.30.13 has no build provenance',
+    why: 'npm has no record of where it was built',
   });
 });
 
@@ -350,7 +350,10 @@ test('the listing takes the version, description, commands without helpers and t
     size: 55748565,
   });
   assert.equal(found.get(browser.name).version, '0.1.30');
-  assert.equal(found.get(browser.name).withheld, 'slicc-cdp 1.30.13 has no build provenance');
+  assert.equal(
+    found.get(browser.name).withheld,
+    'npm has no record of where its slicc-cdp 1.30.13 was built'
+  );
   assert.equal(found.get('@ai-ecoverse/wasm-gone'), null, 'a failed row is null, the rest load');
   assert.ok(fetcher, 'the fake answered');
 });
@@ -544,7 +547,7 @@ test('when latest fails the gate, the listing offers the newest older version th
   assert.equal(found.withheld, undefined);
   assert.deepEqual(found.newer, {
     version: '0.1.30',
-    reason: 'slicc-cdp 1.30.13 has no build provenance',
+    reason: 'npm has no record of where its slicc-cdp 1.30.13 was built',
   });
   const blocked = [
     { ...cdp, version: '1.30.13' },
@@ -556,7 +559,7 @@ test('when latest fails the gate, the listing offers the newest older version th
   ];
   const none = (await gate(blocked, tags).npm.lookAll([entry], new Map())).get(entry.package);
   assert.equal(none.version, '0.1.30');
-  assert.equal(none.withheld, 'slicc-cdp 1.30.13 has no build provenance');
+  assert.equal(none.withheld, 'npm has no record of where its slicc-cdp 1.30.13 was built');
   assert.equal(none.newer, undefined, '0.1.23 is past the five it checks');
 });
 
@@ -840,7 +843,6 @@ test('a publisher on shared-web’s pipeline releases from ci.yml: a ci.yml buil
   const PIPELINE = '.github/workflows/ci.yml';
   for (const [name, { versions, built }] of Object.entries(PUBLISHERS)) {
     const [good, latest] = versions;
-    const repo = built.repository;
     const fresh = await shipped([
       CDP,
       ...releasesOf(name, { built: { ...built, path: PIPELINE } }),
@@ -855,7 +857,7 @@ test('a publisher on shared-web’s pipeline releases from ci.yml: a ci.yml buil
       const row = (await bad.npm.lookAll([bad.byName.get(name)], new Map())).get(name);
       assert.deepEqual(
         [row.version, row.newer?.reason],
-        [good, `${name.slice(13)} ${latest} wasn't built by ${repo}'s release workflow on main`],
+        [good, "it didn't come from SLICC's own build"],
         `${name} ${JSON.stringify(change)}`
       );
     }
@@ -975,25 +977,23 @@ test('sliccy-browser is offered only with a slicc-cdp from slicc-cdp’s release
   const bare = { ...CDP, built: undefined, provenance: false };
   const off = await shipped([bare, ...releasesOf(browser)], tagged);
   const info = (await off.npm.lookAll([off.byName.get(browser)], new Map())).get(browser);
-  assert.equal(info.withheld, 'slicc-cdp 1.30.30 has no build provenance');
+  assert.equal(info.withheld, 'npm has no record of where its slicc-cdp 1.30.30 was built');
   const elsewhere = [
-    [
-      { ref: `refs/tags/v${CDP.version}` },
-      "wasn't built by ai-ecoverse/slicc-cdp's release workflow on main",
-    ],
-    [
-      { path: '.github/workflows/manual.yml' },
-      "wasn't built by ai-ecoverse/slicc-cdp's release workflow on main",
-    ],
-    [{ repository: 'someone/slicc-cdp' }, "wasn't built by ai-ecoverse/slicc-cdp"],
+    { ref: `refs/tags/v${CDP.version}` },
+    { path: '.github/workflows/manual.yml' },
+    { repository: 'someone/slicc-cdp' },
   ];
-  for (const [change, why] of elsewhere) {
+  for (const change of elsewhere) {
     const moved = await shipped(
       [{ ...CDP, built: { ...CDP_RELEASE, ...change } }, ...releasesOf(browser)],
       tagged
     );
     const row = (await moved.npm.lookAll([moved.byName.get(browser)], new Map())).get(browser);
-    assert.equal(row.withheld, `slicc-cdp 1.30.30 ${why}`, JSON.stringify(change));
+    assert.equal(
+      row.withheld,
+      "its slicc-cdp 1.30.30 didn't come from SLICC's own build",
+      JSON.stringify(change)
+    );
   }
   const old = await shipped([{ ...CDP, deprecated: 'use 1.31' }, ...releasesOf(browser)], tagged);
   const held = (await old.npm.lookAll([old.byName.get(browser)], new Map())).get(browser);
