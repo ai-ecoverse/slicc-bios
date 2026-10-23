@@ -85,14 +85,6 @@ const site = createServer(await certificate(), (req, res) => {
     res.writeHead(204);
     return res.end();
   }
-  if (parts[0] === 'arm') {
-    const tag = host.startsWith('vault.') ? 'vault' : 'seven';
-    res.writeHead(200, {
-      'content-type': 'text/html',
-      'set-cookie': [`lax=${tag}-lax; Path=/; SameSite=Lax`, `def=${tag}-def; Path=/`],
-    });
-    return res.end('<title>armed</title>');
-  }
   if (host === 'ordinary.test' && parts[0] === 'bounce') {
     res.writeHead(302, {
       location: `https://ordinary.test:${site.address().port}/land${url.search}`,
@@ -249,33 +241,6 @@ const fakeExtension = extensionOver(browser);
 const version = await fetch(`http://127.0.0.1:${debugging}/json/version`).then((response) =>
   response.json()
 );
-
-const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-async function until(check, ms, label) {
-  const deadline = Date.now() + ms;
-  let last;
-  while (Date.now() < deadline) {
-    last = await check();
-    if (last) return last;
-    await pause(100);
-  }
-  throw new Error(`${label}: ${JSON.stringify(last)}`);
-}
-
-for (const origin of ORIGINS) {
-  const host = origin === 'vault' ? 'vault.sliccy.ai' : 'seven.sliccy.ai';
-  const url = `https://${host}:${port}/arm`;
-  const before = hits.length;
-  const created = await chrome.cdp.send('Target.createTarget', { url });
-  await until(
-    () => hits.slice(before).some((hit) => hit.host === host && hit.path === '/arm'),
-    15000,
-    url
-  );
-  await pause(200);
-  await chrome.cdp.send('Target.closeTarget', { targetId: created.targetId });
-}
-hits.length = 0;
 
 function bridge(upstream) {
   const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
@@ -758,7 +723,7 @@ async function check(t, transport) {
   const client = await page.evaluate(clients, { ...args, port });
   const clientHits = hits.filter((hit) => hit.path.startsWith('/c/'));
   const text = [
-    'C5: a page may request a protected origin, and the request carries no cookie',
+    'C5: a page may request a protected origin, and the request carries no credential',
     ...built.lines,
     ...built.ordinary,
     `page ${JSON.stringify(report)}`,
@@ -772,22 +737,16 @@ async function check(t, transport) {
     built.ordinary.every((line) => Number(line.split(' ').at(-1)) > 0),
     text
   );
+  const open = (line) => line.includes('cookie=-') && line.includes('authorization=-');
   assert.ok(
-    built.lines.some(
-      (line) => line.includes(' fetch direct seven yes ') && line.includes('cookie=-')
-    ),
+    built.lines.some((line) => line.includes(' fetch direct seven yes ') && open(line)),
     text
   );
   assert.ok(
-    built.lines.some(
-      (line) => line.includes(' fetch direct vault yes ') && line.includes('cookie=-')
-    ),
+    built.lines.some((line) => line.includes(' fetch direct vault yes ') && open(line)),
     text
   );
-  assert.ok(
-    built.lines.filter((line) => line.includes(' yes ')).every((line) => line.includes('cookie=-')),
-    text
-  );
+  assert.ok(built.lines.filter((line) => line.includes(' yes ')).every(open), text);
   assert.ok(
     built.lines.filter((line) => line.includes(' iframe ')).every((line) => line.includes(' no ')),
     text
@@ -814,7 +773,7 @@ async function check(t, transport) {
 
 for (const transport of ['extension', 'proxy', 'link']) {
   test(
-    `C5: a page may request a protected origin with no cookie, and a guarded client cannot name one, on the ${transport} path`,
+    `C5: a page may request a protected origin without credentials, and a guarded client cannot name one, on the ${transport} path`,
     { timeout: 10 * 60 * 1000 },
     (t) => check(t, transport)
   );

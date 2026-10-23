@@ -384,6 +384,14 @@ const hopKey = (url) => {
   return `${parsed.protocol}//${normalHost(parsed.hostname)}${parsed.port ? `:${parsed.port}` : ''}${parsed.pathname}`;
 };
 
+const resolveTo = (value, base) => {
+  try {
+    return new URL(value, base).href;
+  } catch {
+    return null;
+  }
+};
+
 export function redacting(is) {
   let webs = 0;
   const past = (text, shown) => {
@@ -520,6 +528,7 @@ class Guard {
     this.pages = new Set();
     this.frames = new Map();
     this.requests = new Map();
+    this.bases = new Map();
     this.held = new Map();
     this.internal = new Map();
     this.asked = new Map();
@@ -918,8 +927,20 @@ class Guard {
     return true;
   }
 
+  notePause(params = {}) {
+    const { requestId } = params;
+    const url = params.request?.url;
+    if (typeof requestId !== 'string' || typeof url !== 'string') return;
+    this.bases.set(requestId, {
+      url,
+      status: typeof params.responseStatusCode === 'number' ? params.responseStatusCode : undefined,
+    });
+    if (this.bases.size > REMEMBERED) this.bases.delete(this.bases.keys().next().value);
+  }
+
   async paused(message) {
     const { params = {} } = message;
+    this.notePause(params);
     const marked = this.requests.get(params.networkId) === true || (await this.request(params));
     this.remember(params.requestId, marked);
     if (params.networkId !== undefined && marked) this.settle(params.networkId, true);
@@ -1429,13 +1450,68 @@ class Guard {
     return null;
   }
 
+  namedHeaders(list, rows) {
+    if (!Array.isArray(list)) return false;
+    for (const entry of list) {
+      if (!entry || typeof entry.name !== 'string' || typeof entry.value !== 'string') return false;
+      if (entry.name.trim() === '') return false;
+      rows.push([entry.name, entry.value]);
+    }
+    return true;
+  }
+
+  binaryHeaders(encoded, rows) {
+    if (typeof encoded !== 'string' || encoded.length === 0 || encoded.length % 4 !== 0)
+      return false;
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) return false;
+    const text = atob(encoded);
+    const parts = text.split('\0');
+    if (parts.at(-1) === '') parts.pop();
+    if (parts.length === 0) return false;
+    for (const part of parts) {
+      const colon = part.indexOf(':');
+      if (colon <= 0) return false;
+      const name = part.slice(0, colon).trim();
+      const value = part.slice(colon + 1).trim();
+      if (name === '') return false;
+      rows.push([name, value]);
+    }
+    return true;
+  }
+
+  headerList(params) {
+    const rows = [];
+    if (params.responseHeaders !== undefined && !this.namedHeaders(params.responseHeaders, rows)) {
+      return null;
+    }
+    if (
+      params.binaryResponseHeaders !== undefined &&
+      !this.binaryHeaders(params.binaryResponseHeaders, rows)
+    ) {
+      return null;
+    }
+    return rows;
+  }
+
+  servedRedirect(method, params) {
+    if (method !== 'Fetch.fulfillRequest' && method !== 'Fetch.continueResponse') return false;
+    return this.fulfilledRedirect(params);
+  }
+
   fulfilledRedirect(params) {
-    const code = params.responseCode;
+    const headers = this.headerList(params);
+    if (headers === null) return true;
+    if (params.responseCode !== undefined && typeof params.responseCode !== 'number') return true;
+    const code =
+      typeof params.responseCode === 'number'
+        ? params.responseCode
+        : this.bases.get(params.requestId)?.status;
     if (typeof code !== 'number' || code < 300 || code >= 400) return false;
-    if (!Array.isArray(params.responseHeaders)) return false;
-    return params.responseHeaders.some((entry) => {
-      const name = String(entry?.name ?? '').toLowerCase();
-      return name === 'location' && this.is.url(entry?.value);
+    const base = this.bases.get(params.requestId)?.url;
+    return headers.some(([name, value]) => {
+      if (name.toLowerCase().trim() !== 'location') return false;
+      const next = resolveTo(value, base);
+      return next === null || this.is.url(next);
     });
   }
 
@@ -1443,7 +1519,7 @@ class Guard {
     const { method, params = {}, sessionId } = message;
     if (typeof method !== 'string') return null;
     if (method.startsWith('Fetch.') && sessionId === undefined) return FETCH;
-    if (method === 'Fetch.fulfillRequest' && this.fulfilledRedirect(params)) return PROTECTED;
+    if (this.servedRedirect(method, params)) return PROTECTED;
     if (LATER.has(method)) return SCRIPTS;
     if (method === 'Page.navigate' && inherits(params.url)) return INHERITED;
     if (FLAT.has(method) && params.flatten !== true) {
