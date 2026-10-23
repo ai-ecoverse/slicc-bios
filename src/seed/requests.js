@@ -55,10 +55,21 @@ export function dialogs(root = globalThis.document) {
   return root ? within(root, 'slicc-confirm', []) : [];
 }
 
-export function shown(options, { show, find = dialogs }) {
+export const WRAP = '#body { overflow-wrap: anywhere; }';
+
+export function wrapped(element, make = () => new CSSStyleSheet()) {
+  const root = element.shadowRoot;
+  if (!root) return;
+  const sheet = make();
+  sheet.replaceSync(WRAP);
+  root.adoptedStyleSheets = [...root.adoptedStyleSheets, sheet];
+}
+
+export function shown(options, { show, find = dialogs, wrap = wrapped }) {
   const before = new Set(find());
   const result = show(options);
   const added = find().filter((element) => !before.has(element));
+  for (const element of added) wrap(element);
   return {
     result,
     close: () => {

@@ -35,6 +35,31 @@ async function eventually(check, ms = 30000) {
   }
 }
 
+async function box(page) {
+  return page.until(() => {
+    const element = window.findConfirm();
+    const dialog = element?.shadowRoot?.querySelector('dialog[open]');
+    const body = element?.shadowRoot?.querySelector('#body');
+    if (!dialog || !body) return null;
+    const { left, right, width } = dialog.getBoundingClientRect();
+    if (!width) return null;
+    return {
+      left,
+      right,
+      width,
+      viewport: document.documentElement.clientWidth,
+      fits: body.scrollWidth <= body.clientWidth + 1,
+    };
+  }, undefined);
+}
+
+function inside(found, what) {
+  assert.ok(found.left >= 0 && found.right <= found.viewport, `${what}: ${JSON.stringify(found)}`);
+  assert.ok(found.fits, `${what} doesn't wrap: ${JSON.stringify(found)}`);
+}
+
+const LONG = `https://example.test/${'a'.repeat(280)}`;
+
 async function press(page, which) {
   await page.until(
     (which) => !!window.findConfirm()?.shadowRoot?.querySelector(`[data-${which}]`),
@@ -86,6 +111,8 @@ test('a program opens an http(s) URL in a new tab through /dev/embedder, and a j
     await page.evaluate(() => window.findConfirm().shadowRoot.textContent),
     /A program asks seven to open https:\/\/example\.test\/late/
   );
+  const short1280 = await box(page);
+  inside(short1280, 'the short URL at 1280');
   await page.screenshot(new URL('open-url-prompt-light.png', page.dir));
   await page.evaluate(() => {
     const app = document.querySelector('slicc-app');
@@ -98,6 +125,32 @@ test('a program opens an http(s) URL in a new tab through /dev/embedder, and a j
   await shows(page, 'late 1');
   assert.deepEqual(await opened('https://example.test/late'), []);
 
+  await run(page, `sleep 8; ${ask(LONG)}; echo "long $?"`);
+  await page.until(() => !!window.findConfirm(), undefined);
+  const long1280 = await box(page);
+  inside(long1280, 'the long URL at 1280');
+  t.diagnostic(`dialog width at 1280: ${short1280.width} short, ${long1280.width} long`);
+  assert.ok(
+    long1280.width <= short1280.width + 100,
+    `the long URL widens the dialog: ${short1280.width} → ${long1280.width}`
+  );
+  await page.screenshot(new URL('open-url-prompt-long-light.png', page.dir));
+  await page.send('Emulation.setDeviceMetricsOverride', {
+    width: 420,
+    height: 800,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await page.until(() => document.querySelector('slicc-app').screen === 'phone');
+  await page.until(() => document.documentElement.clientWidth === 420);
+  const long420 = await box(page);
+  inside(long420, 'the long URL at 420');
+  await page.screenshot(new URL('open-url-prompt-long-420.png', page.dir));
+  await page.send('Emulation.clearDeviceMetricsOverride');
+  await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
+  await press(page, 'cancel');
+  await shows(page, 'long 1');
+
   await run(page, `sleep 8; ${ask('https://example.test/clicked')}; echo "clicked $?"`);
   await page.send('Emulation.setDeviceMetricsOverride', {
     width: 420,
@@ -108,6 +161,13 @@ test('a program opens an http(s) URL in a new tab through /dev/embedder, and a j
   await page.until(() => document.querySelector('slicc-app').screen === 'phone');
   await page.until(() => !!window.findConfirm(), undefined);
   await page.screenshot(new URL('open-url-prompt-420.png', page.dir));
+  const short420 = await box(page);
+  inside(short420, 'the short URL at 420');
+  t.diagnostic(`dialog width at 420: ${short420.width} short, ${long420.width} long`);
+  assert.ok(
+    Math.abs(long420.width - short420.width) <= 1,
+    `the long URL changes the dialog's width at 420: ${short420.width} → ${long420.width}`
+  );
   await page.send('Emulation.clearDeviceMetricsOverride');
   await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
   await press(page, 'action');
