@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer as createHttp } from 'node:http';
 import { createServer } from 'node:net';
 import { after, test } from 'node:test';
-import { guardProtected, PROTECTED } from '../../src/seed/guard.js';
+import { guardProtected, INHERITED, PROTECTED } from '../../src/seed/guard.js';
 import { debuggerUrl, launch } from './chrome.mjs';
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -26,6 +26,9 @@ const pages = {
   '/shared.js': 'onconnect = () => {};',
   '/page': '<!doctype html><title>page</title><p>page</p>',
   '/next': '<!doctype html><title>next</title><p>next</p>',
+  '/ask': `<!doctype html><title>ask</title><script>
+    setTimeout(() => { document.title = String(confirm('stay')); }, 200);
+  </script>`,
 };
 
 const stand = createHttp((req, res) => {
@@ -281,4 +284,206 @@ test('an ordinary service worker is answered and a seven or vault worker is refu
     const refused = await attach(targetId);
     assert.equal(refused.error?.message, PROTECTED, JSON.stringify(refused));
   }
+});
+
+test('a quoted history call on an ordinary page is answered and about:blank stays inherited', {
+  timeout: 60000,
+}, async () => {
+  const targetId = await open(`${ORDINARY}/page`);
+  const attached = await attach(targetId);
+  assert.equal(attached.error, undefined, JSON.stringify(attached.error));
+  const sessionId = attached.result.sessionId;
+  const quoted = await guard.send(
+    'Runtime.evaluate',
+    { expression: '"history.back()"', returnByValue: true },
+    sessionId
+  );
+  assert.equal(quoted.error, undefined, JSON.stringify(quoted.error));
+  assert.equal(quoted.result?.result?.value, 'history.back()');
+  const follow = await guard.send(
+    'Runtime.evaluate',
+    { expression: '1+1', returnByValue: true },
+    sessionId
+  );
+  assert.equal(follow.result?.result?.value, 2);
+  const vault = await guard.send('Page.navigate', { url: `${VAULT}/page` }, sessionId);
+  assert.equal(vault.error?.message, PROTECTED);
+  const blank = await guard.send('Page.navigate', { url: 'about:blank' }, sessionId);
+  assert.equal(blank.error?.message, INHERITED);
+  const spaced = await guard.send('Page.navigate', { url: ' about:blank' }, sessionId);
+  assert.equal(spaced.error?.message, INHERITED);
+  const again = await guard.send(
+    'Runtime.evaluate',
+    { expression: 'location.pathname', returnByValue: true },
+    sessionId
+  );
+  assert.equal(again.result?.result?.value, '/page');
+});
+
+test('a javascript dialog on an ordinary page is accepted and the next read is answered', {
+  timeout: 60000,
+}, async () => {
+  const targetId = await open(`${ORDINARY}/ask`);
+  const attached = await attach(targetId);
+  assert.equal(attached.error, undefined, JSON.stringify(attached.error));
+  const sessionId = attached.result.sessionId;
+  let dialog;
+  for (const end = Date.now() + 5000; Date.now() < end; ) {
+    dialog = await guard.send('Page.handleJavaScriptDialog', { accept: true }, sessionId);
+    if (!dialog.error || dialog.error.message === PROTECTED) break;
+    await pause(100);
+  }
+  assert.equal(dialog.error, undefined, JSON.stringify(dialog.error));
+  let title;
+  for (const end = Date.now() + 5000; Date.now() < end; ) {
+    title = await guard.send(
+      'Runtime.evaluate',
+      { expression: 'document.title', returnByValue: true },
+      sessionId
+    );
+    if (title.result?.result?.value === 'true') break;
+    await pause(100);
+  }
+  assert.equal(title.error, undefined, JSON.stringify(title.error));
+  assert.equal(title.result?.result?.value, 'true');
+});
+
+test('a vault page stays refused', { timeout: 60000 }, async () => {
+  const targetId = await open(`${VAULT}/page`);
+  const refused = await attach(targetId);
+  assert.equal(refused.error?.message, PROTECTED, JSON.stringify(refused));
+});
+
+test('a lost probe keeps the last ordinary document and a protected commit stays refused', async () => {
+  const urls = new Map([['ordinary', ORDINARY]]);
+  let failInfo = false;
+  let historyError = null;
+  let hang = false;
+  const sent = [];
+  let incoming = null;
+  const connection = {
+    set onmessage(fn) {
+      incoming = fn;
+    },
+    get onmessage() {
+      return incoming;
+    },
+    send(text) {
+      const message = JSON.parse(text);
+      sent.push(message);
+      if (hang && message.id >= 2 ** 30) return;
+      queueMicrotask(() => {
+        const answer = (payload) =>
+          incoming?.(
+            JSON.stringify({
+              id: message.id,
+              ...(message.sessionId ? { sessionId: message.sessionId } : {}),
+              ...payload,
+            })
+          );
+        if (message.method === 'Target.getTargetInfo') {
+          if (failInfo) return answer({ error: { code: -32000, message: 'info' } });
+          const url = urls.get(message.params?.targetId) ?? ORDINARY;
+          return answer({
+            result: { targetInfo: { targetId: message.params?.targetId, type: 'page', url } },
+          });
+        }
+        if (message.method === 'Target.attachToTarget') {
+          return answer({ result: { sessionId: `client-${message.params?.targetId}` } });
+        }
+        if (message.method === 'Page.getFrameTree') {
+          return answer({
+            result: {
+              frameTree: {
+                frame: { id: 'frame-1', url: ORDINARY, securityOrigin: new URL(ORDINARY).origin },
+              },
+            },
+          });
+        }
+        if (message.method === 'Page.getNavigationHistory') {
+          if (historyError) return answer({ error: { code: -32000, message: historyError } });
+          return answer({
+            result: {
+              currentIndex: 0,
+              entries: [{ id: 1, url: ORDINARY, userTypedURL: ORDINARY, title: 'o' }],
+            },
+          });
+        }
+        return answer({
+          result: message.method === 'Runtime.evaluate' ? { result: { value: 2 } } : {},
+        });
+      });
+    },
+    close() {},
+  };
+  const guarded = guardProtected(connection, SEVEN);
+  const pending = new Map();
+  guarded.onmessage = (text) => {
+    const message = JSON.parse(text);
+    pending.get(message.id)?.(message);
+    pending.delete(message.id);
+  };
+  let next = 0;
+  const send = (method, params = {}, sessionId) =>
+    new Promise((resolve) => {
+      const id = ++next;
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        resolve({ error: { message: `${method} timed out` } });
+      }, 8000);
+      pending.set(id, (message) => {
+        clearTimeout(timer);
+        resolve(message);
+      });
+      guarded.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+  const attached = await send('Target.attachToTarget', { targetId: 'ordinary', flatten: true });
+  assert.equal(attached.error, undefined, JSON.stringify(attached.error));
+  const sessionId = attached.result.sessionId;
+  hang = true;
+  const started = Date.now();
+  const dialog = await send('Page.handleJavaScriptDialog', { accept: true }, sessionId);
+  assert.ok(Date.now() - started < 500);
+  assert.equal(dialog.error, undefined, JSON.stringify(dialog.error));
+  hang = false;
+  assert.equal(
+    (await send('Runtime.evaluate', { expression: '1+1' }, sessionId)).result?.result?.value,
+    2
+  );
+  failInfo = true;
+  const again = await send('Runtime.evaluate', { expression: '3+3' }, sessionId);
+  assert.equal(again.result?.result?.value, 2);
+  failInfo = false;
+  historyError = 'Not attached to an active page';
+  urls.set('ordinary', VAULT);
+  const refusedRead = await send('Runtime.evaluate', { expression: '1+1' }, sessionId);
+  assert.equal(refusedRead.error?.message, PROTECTED);
+  assert.equal(
+    sent.some((message) => message.method === 'Target.detachFromTarget'),
+    false
+  );
+  historyError = null;
+  urls.set('ordinary', ORDINARY);
+  connection.onmessage(
+    JSON.stringify({
+      method: 'Page.frameStartedNavigating',
+      sessionId,
+      params: { navigationType: 'restore', url: VAULT },
+    })
+  );
+  await pause(50);
+  const pendingRead = await send('Runtime.evaluate', { expression: '1+1' }, sessionId);
+  assert.equal(pendingRead.error?.message, PROTECTED);
+  connection.onmessage(
+    JSON.stringify({
+      method: 'Page.navigatedWithinDocument',
+      sessionId,
+      params: { url: ORDINARY },
+    })
+  );
+  await pause(50);
+  assert.equal(
+    (await send('Runtime.evaluate', { expression: '1+1' }, sessionId)).result?.result?.value,
+    2
+  );
 });

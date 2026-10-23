@@ -47,10 +47,9 @@ const HISTORY_WAIT = 5000;
 const HISTORY_POLL = 40;
 const FRAME_MS = 300;
 const TREE_WAIT = 2000;
+const PROBE_WAIT = 2000;
 const ANSWER_MS = 1000;
 const WORKER_TYPES = new Set(['service_worker', 'shared_worker', 'worker']);
-const HISTORY_KIND = /history\s*(?:\.\s*|\[["']\s*)(back|forward|go)\b/;
-const HISTORY_DELTA = /history\s*(?:\.\s*go\s*\(\s*|\[\s*['"]go['"]\s*\]\s*\(\s*)(-?\d+)/;
 const HISTORY_NAV = new Set([
   'restore',
   'restoreWithPost',
@@ -544,6 +543,8 @@ class Guard {
     this.allowed = new Set();
     this.blockedWorkers = new Set();
     this.pendingHistory = new Set();
+    this.pendingCommit = new Set();
+    this.settled = new Map();
     this.uncommitted = new Set();
     this.moved = new Set();
     this.next = GUARD_IDS;
@@ -1202,18 +1203,9 @@ class Guard {
   }
 
   moveFrom(message) {
-    const { method, params = {}, sessionId } = message;
-    if (!sessionId) return null;
-    if (method === 'Page.navigateToHistoryEntry') return { kind: 'entry' };
-    if (method !== 'Runtime.evaluate' && method !== 'Runtime.callFunctionOn') return null;
-    const source = `${params.expression ?? ''}\n${params.functionDeclaration ?? ''}`;
-    const kind = HISTORY_KIND.exec(source)?.[1];
-    if (!kind) return null;
-    if (kind === 'go') {
-      const delta = HISTORY_DELTA.exec(source);
-      return { kind, delta: delta ? Number(delta[1]) : null };
-    }
-    return { kind };
+    if (!message.sessionId) return null;
+    if (message.method === 'Page.navigateToHistoryEntry') return { kind: 'entry' };
+    return null;
   }
 
   idle(move, now) {
@@ -1222,10 +1214,10 @@ class Guard {
     return move.kind === 'go' && move.delta === 0;
   }
 
-  answered(work) {
+  within(work, limit) {
     let timer;
     const late = new Promise((resolve) => {
-      timer = setTimeout(() => resolve(undefined), ANSWER_MS);
+      timer = setTimeout(() => resolve(undefined), limit);
     });
     return Promise.race([
       work.then((value) => {
@@ -1234,6 +1226,10 @@ class Guard {
       }),
       late,
     ]);
+  }
+
+  answered(work) {
+    return this.within(work, ANSWER_MS);
   }
 
   racedTree(sessionId) {
@@ -1294,12 +1290,47 @@ class Guard {
     return frames.length > 0 && !frames.some((frame) => this.frameLive(frame));
   }
 
-  async surface(sessionId) {
+  blankHistory() {
+    return { result: { currentIndex: 0, entries: [] } };
+  }
+
+  unattached(info, frames, treeNow) {
+    const child = info.result?.targetInfo?.type === 'iframe';
+    const readable = child && treeNow && !treeNow.error && frames.length;
+    const history = this.blankHistory();
+    if (child && !readable) return null;
+    if (readable) {
+      if (frames.some((frame) => this.frameLive(frame))) {
+        return { ...this.view(info, frames, history), probed: true };
+      }
+      if (!frames.some((frame) => /^https?:/i.test(frame.url ?? ''))) return null;
+      return this.view(info, frames, history);
+    }
+    const infoUrl = info.result?.targetInfo?.url ?? '';
+    if (frames.some((frame) => this.frameLive(frame)) || this.is.url(infoUrl)) {
+      return { ...this.view(info, frames, history), probed: true };
+    }
+    if (/^https?:/i.test(infoUrl) || infoUrl.startsWith('about:blank')) {
+      return {
+        url: infoUrl,
+        index: 0,
+        length: 0,
+        live: false,
+        protected: false,
+        frames: [],
+        info: info.result?.targetInfo,
+        probed: true,
+      };
+    }
+    return undefined;
+  }
+
+  async once(sessionId) {
     const targetId = this.sessions.get(sessionId)?.targetId;
     const { tree, raced } = this.racedTree(sessionId);
     const [info, treeNow, history] = await Promise.all([
       targetId
-        ? this.answered(this.call('Target.getTargetInfo', { targetId }))
+        ? this.within(this.call('Target.getTargetInfo', { targetId }), PROBE_WAIT)
         : Promise.resolve(null),
       raced,
       this.answered(this.call('Page.getNavigationHistory', {}, sessionId)),
@@ -1308,20 +1339,36 @@ class Guard {
     const frames = treeNow && !treeNow.error ? framed(treeNow.result?.frameTree) : [];
     const historyKnown =
       history && !history.error && Number.isInteger(history.result?.currentIndex);
-    if (!info || info.error) return null;
-    if (!historyKnown) {
-      const child = info.result?.targetInfo?.type === 'iframe';
-      const readable = child && treeNow && !treeNow.error && frames.length;
-      if (!readable) return null;
-      const listed = { result: { currentIndex: 0, entries: [] } };
-      if (frames.some((frame) => this.frameLive(frame))) return this.view(info, frames, listed);
-      if (!frames.some((frame) => /^https?:/i.test(frame.url ?? ''))) return null;
-      return this.view(info, frames, listed);
-    }
+    if (!info || info.error) return undefined;
+    if (!historyKnown) return this.unattached(info, frames, treeNow);
     if (this.pendingHistory.has(sessionId) && !frames.length) return null;
     if (treeNow === undefined) return this.slowTree(sessionId, info, history, tree);
     if (treeNow.error || !frames.length) return this.view(info, [], history);
     return this.view(info, frames, history);
+  }
+
+  async surface(sessionId) {
+    const now = await this.once(sessionId);
+    if (now) {
+      if (!now.probed && !now.pendingTree) this.settled.set(sessionId, now);
+      return now;
+    }
+    if (now === null) return null;
+    if (this.pendingCommit.has(sessionId)) {
+      return {
+        url: '',
+        index: 0,
+        length: 0,
+        live: true,
+        protected: true,
+        frames: [],
+        info: null,
+        probed: true,
+      };
+    }
+    const last = this.settled.get(sessionId);
+    if (last && !last.protected) return { ...last, probed: true };
+    return null;
   }
 
   async slowTree(sessionId, info, history, tree) {
@@ -1402,9 +1449,13 @@ class Guard {
       method === 'Page.navigatedWithinDocument';
     if (!started && !committed) return;
     for (const id of this.boundSessions(sessionId)) {
-      if (started) this.uncommitted.add(id);
-      else {
+      if (started) {
+        this.uncommitted.add(id);
+        if (this.is.url(params.url)) this.pendingCommit.add(id);
+        else this.pendingCommit.delete(id);
+      } else {
         this.uncommitted.delete(id);
+        this.pendingCommit.delete(id);
         this.worlds.delete(id);
       }
     }
@@ -1418,13 +1469,27 @@ class Guard {
     return (await this.target(targetId)) ? PROTECTED : null;
   }
 
+  prelude(sessionId, method) {
+    if (method.startsWith('Input.') && this.uncommitted.has(sessionId)) return PROTECTED;
+    if (
+      method === 'Page.handleJavaScriptDialog' &&
+      !this.pendingCommit.has(sessionId) &&
+      !this.settled.get(sessionId)?.protected
+    ) {
+      return null;
+    }
+    if (this.pendingCommit.has(sessionId) && !NAVIGATES.has(method)) return PROTECTED;
+    return false;
+  }
+
   async confirmed(sessionId, method) {
     const shot = method === 'Page.captureScreenshot';
     if (this.pendingHistory.has(sessionId) || this.blocked.has(sessionId)) {
       if (shot && this.blocked.has(sessionId) && (await this.blankShot(sessionId))) return null;
       return PROTECTED;
     }
-    if (method.startsWith('Input.') && this.uncommitted.has(sessionId)) return PROTECTED;
+    const early = this.prelude(sessionId, method);
+    if (early !== false) return early;
     const worker = await this.workerSession(sessionId);
     if (worker !== undefined) return worker;
     const now = await this.surface(sessionId);
@@ -1434,7 +1499,7 @@ class Guard {
     this.note(sessionId, now);
     if (!now.protected) return null;
     if (shot && this.blankFrames(now)) return null;
-    if (now.live && !this.blankFrames(now)) this.cut(sessionId);
+    if (now.live && !this.blankFrames(now) && !now.probed) this.cut(sessionId);
     if (!now.live && navigating) return null;
     if (!now.live && shot && this.blankShown(now)) return null;
     return PROTECTED;
@@ -1909,7 +1974,7 @@ class Guard {
     }
     this.note(sessionId, now);
     if (!now.live || this.blankFrames(now)) return false;
-    this.cut(sessionId);
+    if (!now.probed) this.cut(sessionId);
     this.standIn(message);
     return true;
   }
