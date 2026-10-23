@@ -37,7 +37,7 @@ export function parse(data) {
   return { type: bytes[0], id, payload: bytes.subarray(5) };
 }
 
-export const CDP_MIN = '1.47.0';
+export const CDP_MIN = '1.47.3';
 
 const semver = (version) =>
   /^(\d+)\.(\d+)\.(\d+)(?:-.*)?$/
