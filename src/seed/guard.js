@@ -1253,18 +1253,18 @@ class Guard {
     const index = history.result.currentIndex;
     const entry = entries[index];
     const infoUrl = info.result?.targetInfo?.url;
-    const shown = [infoUrl, entry?.url];
     const hinted = [entry?.userTypedURL];
-    for (const frame of frames) {
-      shown.push(frame.url, frame.securityOrigin);
-      hinted.push(frame.unreachableUrl);
-    }
-    const live = shown.some((url) => this.is.url(url));
+    for (const frame of frames) hinted.push(frame.unreachableUrl);
+    const visible = [infoUrl, ...frames.flatMap((frame) => [frame.url, frame.securityOrigin])].some(
+      (url) => this.is.url(url)
+    );
+    const live = visible || this.is.url(entry?.url);
     return {
       url: infoUrl || frames[0]?.url || '',
       index,
       length: entries.length,
       live,
+      visible,
       protected: live || hinted.some((url) => this.is.url(url)),
       frames,
       info: info.result?.targetInfo,
@@ -1499,7 +1499,7 @@ class Guard {
     this.note(sessionId, now);
     if (!now.protected) return null;
     if (shot && this.blankFrames(now)) return null;
-    if (now.live && !this.blankFrames(now) && !now.probed) this.cut(sessionId);
+    if (now.visible && !this.blankFrames(now) && !now.probed) this.cut(sessionId);
     if (!now.live && navigating) return null;
     if (!now.live && shot && this.blankShown(now)) return null;
     return PROTECTED;
@@ -1974,7 +1974,7 @@ class Guard {
     }
     this.note(sessionId, now);
     if (!now.live || this.blankFrames(now)) return false;
-    if (!now.probed) this.cut(sessionId);
+    if (now.visible && !now.probed) this.cut(sessionId);
     this.standIn(message);
     return true;
   }
