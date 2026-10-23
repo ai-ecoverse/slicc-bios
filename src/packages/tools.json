@@ -1,9 +1,4 @@
 {
-  "@ai-ecoverse/wasm-tls-engine": {
-    "id": "tls-engine",
-    "label": "TLS engine",
-    "first": true
-  },
   "@ai-ecoverse/wasm-grep": {
     "id": "grep",
     "label": "grep",
