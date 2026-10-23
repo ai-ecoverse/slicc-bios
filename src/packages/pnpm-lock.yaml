@@ -15,8 +15,8 @@ importers:
         specifier: 1.34.1
         version: 1.34.1
       '@ai-ecoverse/slicc-clipboard':
-        specifier: 1.0.2
-        version: 1.0.2
+        specifier: 1.1.1
+        version: 1.1.1
       '@ai-ecoverse/slicc-kernel':
         specifier: 1.153.0
         version: 1.153.0
@@ -107,9 +107,10 @@ packages:
     engines: {node: '>=24'}
     hasBin: true
 
-  '@ai-ecoverse/slicc-clipboard@1.0.2':
-    resolution: {integrity: sha512-p7b1h85qkiU0LKjNLCLiU7GVXjGigkyR2+VUCInM1cZo2yjLFxr7tGAOO09e6OG9nB7XKiQn3W88wb3s0gxy+g==}
+  '@ai-ecoverse/slicc-clipboard@1.1.1':
+    resolution: {integrity: sha512-MggIwJR4jDNNxN5y9bsnNkYuEeVQeUqeYaenIgDRRKWSN/yKIiCx4OujpsIkLE6iF4k1rGnD2zVg6FbS0nR1ug==}
     engines: {node: '>=24', slicc-kernel: '>=1.75.0'}
+    hasBin: true
 
   '@ai-ecoverse/slicc-kernel@1.153.0':
     resolution: {integrity: sha512-t3HYo8sUNqStArqjdmIeI3HHM2+99xUE+AtepQuZiGmCZjyj9nWZ6cX9R3DZGTv/S24ypUZXTJ0mYDBfQ3X1NQ==}
@@ -211,7 +212,7 @@ snapshots:
 
   '@ai-ecoverse/slicc-cdp@1.34.1': {}
 
-  '@ai-ecoverse/slicc-clipboard@1.0.2': {}
+  '@ai-ecoverse/slicc-clipboard@1.1.1': {}
 
   '@ai-ecoverse/slicc-kernel@1.153.0': {}
 
