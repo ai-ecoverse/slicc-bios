@@ -7,8 +7,9 @@ const ci = await read('.github/workflows/ci.yml');
 const deploy = await read('.github/workflows/deploy.yml');
 const pkg = JSON.parse(await read('package.json'));
 const input = (name) => ci.match(new RegExp(`\\n {6}${name}: (.+)\\n`))?.[1];
+const block = (name) => ci.match(new RegExp(`\\n {6}${name}: \\|\\n((?: {8}.*\\n)+)`))?.[1];
 
-test('CI is one caller of slicc-shared-web pipeline.yml, at the release of the harness the tests use; the only other workflow is the deploy to sliccy.ai', async () => {
+test('CI is one caller of slicc-shared-web pipeline.yml, at the release of the harness the tests use; the only other workflow is the branch previews', async () => {
   assert.deepEqual(await readdir(new URL('../../.github/workflows/', import.meta.url)), [
     'ci.yml',
     'deploy.yml',
@@ -42,14 +43,8 @@ test('CI runs on pull requests, merge groups and pushes to main, and cancels a s
   );
 });
 
-test('the pipeline picks its runners, reviews no Renovate pull request, and nothing runs after a release; the deploy runs on a hosted runner', () => {
-  for (const name of [
-    'runs-on',
-    'after-release',
-    'review-renovate',
-    'release-environment',
-    'deploy',
-  ])
+test('the pipeline picks its runners, reviews no Renovate pull request and deploys nothing to staging; the previews run on a hosted runner', () => {
+  for (const name of ['runs-on', 'review-renovate', 'deploy', 'deploy-secrets'])
     assert.equal(input(name), undefined, name);
   assert.doesNotMatch(ci, /vars\./);
   assert.doesNotMatch(deploy, /vars\./);
@@ -69,6 +64,31 @@ test('the shards split exactly the files npm test runs, on the Node the package 
   assert.ok(pkg.devDependencies['@ai-ecoverse/slicc-cdp']);
   assert.equal(pkg.devDependencies['playwright-core'], undefined);
   assert.equal(pkg.devDependencies.puppeteer, undefined);
+});
+
+test('seven is published only after a release, from the production environment, with the deploy token and nothing else', () => {
+  assert.equal(input('release-environment'), 'production');
+  assert.equal(input('release-secrets'), 'SLICC_BIOS_DEPLOY_TOKEN');
+  const after = block('after-release');
+  assert.ok(after, 'after-release is a block');
+  assert.match(after, /\$RELEASE_VERSION/);
+  assert.match(after, /: "\$\{SLICC_BIOS_DEPLOY_TOKEN:\?/);
+  assert.match(
+    after,
+    /\n {8}CLOUDFLARE_API_TOKEN="\$SLICC_BIOS_DEPLOY_TOKEN" node edge\/publish\.mjs main >> "\$GITHUB_STEP_SUMMARY"\n$/
+  );
+  assert.doesNotMatch(ci, /secrets\./);
+});
+
+test('the previews publish bb/** pushes through the OIDC route, never main, and hold no secret', () => {
+  assert.match(deploy, /\non:\n {2}push:\n {4}branches: \['bb\/\*\*'\]\n\n/);
+  assert.match(deploy, /\n {4}environment: preview\n/);
+  assert.match(deploy, /\n {6}id-token: write\n/);
+  assert.doesNotMatch(deploy, /secrets\.|production|main/);
+  assert.match(
+    deploy,
+    /\n {8}run: node edge\/publish\.mjs "\$GITHUB_REF_NAME" >> "\$GITHUB_STEP_SUMMARY"\n/
+  );
 });
 
 test('semantic-release publishes to npm from the trusted ci.yml, with provenance', async () => {

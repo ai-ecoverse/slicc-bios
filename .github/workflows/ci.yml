@@ -29,12 +29,18 @@ jobs:
       shards: 12
       timeout-minutes: 90
       review-timeout-minutes: 90
+      release-environment: production
+      release-secrets: SLICC_BIOS_DEPLOY_TOKEN
+      after-release: |
+        : "${SLICC_BIOS_DEPLOY_TOKEN:?SLICC_BIOS_DEPLOY_TOKEN is not set in the production environment}"
+        echo "Publishing v$RELEASE_VERSION to seven" >> "$GITHUB_STEP_SUMMARY"
+        CLOUDFLARE_API_TOKEN="$SLICC_BIOS_DEPLOY_TOKEN" node edge/publish.mjs main >> "$GITHUB_STEP_SUMMARY"
       review-prompt: |
         SLICC-BIOS
 
         This repository is slicc-bios (`@ai-ecoverse/slicc-bios`): the loader that installs seven (seven.sliccy.ai) into the browser, a WebAssembly kernel, its shell and packages, the agent, and the page around them. The README is the contract: read the sections the change touches first. `git diff origin/main...HEAD`, or `$RUNNER_TEMP/review/context/pr.diff`, is the change.
 
-        There is no certification after you: once this pull request passes the merge queue, `main` deploys to seven.sliccy.ai and semantic-release publishes the npm package, whose lockfiles mcpcat and homescoop test against. Review it as the last check before it ships.
+        There is no certification after you: once this pull request passes the merge queue and its commits make a release, semantic-release publishes the npm package, whose lockfiles mcpcat and homescoop test against, and that release deploys to seven.sliccy.ai. Review it as the last check before it ships.
 
         Look for real defects, in this order:
         1. Correctness: logic errors, races, missed error paths, and state that a reload, a reconnect, a second tab or a service worker update breaks.
