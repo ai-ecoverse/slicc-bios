@@ -59,6 +59,20 @@ test('the pipeline picks its runners, reviews no Renovate pull request, and noth
   assert.match(input('review-prompt'), /^\|$/);
 });
 
+test('the review prompt judges a dependency-only pull request on the suite and provenance, denying only a concrete defect', () => {
+  const prompt = ci.slice(ci.indexOf('review-prompt: |'));
+  assert.match(
+    prompt,
+    / {8}Dependency-only pull requests \(Renovate's, or a pin bump that changes only package\.json and lockfiles\): bios tests how seven wires a dependency in, not the dependency's own features \(#771\)\./
+  );
+  assert.match(prompt, /Don't ask for new tests of what the dependency does;/);
+  assert.match(
+    prompt,
+    /Deny one only for a concrete defect: a test that fails, or is flaky, on the head because of the bump; a bios call site the bump breaks \(an API bios uses that was removed or changed\); a provenance or integrity mismatch; or a new install script\./
+  );
+  assert.match(prompt, /Notes, and anything you can't judge, are comments, never a denial\./);
+});
+
 test('the shards split exactly the files npm test runs, on the Node the package asks for, with Chrome for Testing and no Playwright', () => {
   assert.equal(input('test'), undefined);
   assert.equal(input('test-glob'), 'test/integration/*.test.mjs');
