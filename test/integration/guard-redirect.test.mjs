@@ -91,6 +91,12 @@ const site = createHttp((req, res) => {
       `<title>dotted</title><p>sliccy.ai/join/A${hop}/../../ and https://www.sliccy.ai/join/B${hop}/../../7/</p><script>console.log("https://www.sliccy.ai/join/C${hop}/../../7/")</script>`
     );
   }
+  if (url.pathname.startsWith('/entitydot/')) {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    return res.end(
+      '<title>entitydot</title><script>window.links = ["evil&#46;www.sliccy.ai/7/", "evil&#x2e;www.sliccy.ai/7/"];</script>'
+    );
+  }
   if (url.pathname.startsWith('/encoded/') && hop) {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     return res.end(
@@ -203,6 +209,8 @@ const plan = () => {
     counter += 1;
     hops.set(String(counter), mark());
     steps.push({ fetching, kind: 'encoded', how: 'navigate', path: `/encoded/${counter}` });
+    counter += 1;
+    steps.push({ fetching, kind: 'entitydot', how: 'navigate', path: `/entitydot/${counter}` });
     counter += 1;
     hops.set(String(counter), mark());
     steps.push({ fetching, kind: 'dotted', how: 'navigate', path: `/dotted/${counter}` });
@@ -432,7 +440,11 @@ async function rig({ transport, proxy, port, override }) {
         .map((text) => JSON.parse(text))
         .filter((m) => m.method === 'Network.requestWillBeSent' && m.params?.request?.url === url)
         .map((m) => m.params.requestId);
-      if (['capability', 'newline', 'wrapped', 'escaped', 'encoded', 'dotted'].includes(kind)) {
+      if (
+        ['capability', 'newline', 'wrapped', 'escaped', 'encoded', 'dotted', 'entitydot'].includes(
+          kind
+        )
+      ) {
         for (const requestId of new Set(own)) {
           answers.caps.push({
             kind,
@@ -658,7 +670,7 @@ async function check(t, transport) {
       answers.caps.every(
         (answer) =>
           refused(answer) ||
-          (answer.kind === 'escaped' &&
+          (['escaped', 'entitydot'].includes(answer.kind) &&
             answer.read === 'snapshot' &&
             !marks.some((value) => JSON.stringify(answer).includes(value)))
       ),

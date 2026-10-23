@@ -351,7 +351,6 @@ const PUBLIC = {
 const normalHost = (host) => host.toLowerCase().replace(/\.$/, '');
 
 const PROSE = /[.,;:!?)\]}'"]+$/;
-const ENCODED_DOT = /(?:%(?:25)*2e|\\x2e|\\u002e|&#0*46;?|&#x0*2e;?)$/i;
 
 function readable(text) {
   const url = text.replace(PROSE, '');
@@ -412,8 +411,7 @@ export function redacting(is) {
     const coded = scanned(raw, ENCODED_STARTS, ENCODED_STOPS, encoded);
     return coded.replace(HOSTS, (found, host, port, offset) => {
       const labels = labelsBefore(coded, offset);
-      const before = coded.slice(Math.max(0, offset - labels.length - 12), offset - labels.length);
-      if (ENCODED_DOT.test(before) || !readable(`http://${labels}${decoded(found)}`)) webs += 1;
+      if (!readable(`http://${labels}${decoded(found)}`)) webs += 1;
       return `${host}${port}`;
     });
   };
