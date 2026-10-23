@@ -25,7 +25,9 @@ export const MOVED = 'var/lib/slicc/optional/moved';
 
 const COMMAND = /^[A-Za-z0-9][\w.+-]*$/;
 const UNSHADOW =
-  'b=$1; o=$2; shift 2; for n in "$@"; do f="$b/$n"; [ -e "$f" ] || [ -L "$f" ] || continue; case "$(readlink -f "$f" 2>/dev/null)" in *"$o"*) ;; *) grep -qsF -- "$o" "$f" || continue ;; esac; rm -f -- "$f" || exit 1; echo "$n"; done';
+  'b=$1; o=$2; l=$3; shift 3; for n in "$@"; do f="$b/$n"; [ -e "$f" ] || [ -L "$f" ] || continue; [ "$(readlink "$f" 2>/dev/null)" = "/usr/bin/$n" ] && continue; case "$(readlink -f "$f" 2>/dev/null)" in *"$o"*) ;; *) grep -qsF -- "$o" "$f" || continue ;; esac; if [ "$l" = link ]; then t="$b/.$n.slicc"; rm -f -- "$t"; ln -s -- "/usr/bin/$n" "$t" && mv -f -- "$t" "$f" || { rm -f -- "$t"; exit 1; }; : > "$b/.$n.slicc-link"; else rm -f -- "$f" || exit 1; fi; echo "$n"; done';
+const DANGLING =
+  'b=$1; shift; for m in "$b"/.*.slicc-link; do [ -e "$m" ] || continue; n=${m##*/.}; n=${n%.slicc-link}; f="$b/$n"; case " $* " in *" $n "*) continue ;; esac; if [ -L "$f" ] && [ "$(readlink "$f")" = "/usr/bin/$n" ]; then [ -e "$f" ] && continue; rm -f -- "$f" || exit 1; echo "$n"; fi; rm -f -- "$m"; done';
 
 export const MISMATCH =
   "This version doesn't match the tested build, so it was removed again. Retry later.";
@@ -662,10 +664,33 @@ export function binDir(global) {
 
 let unshadowing = Promise.resolve();
 
-export function unshadow(options) {
-  const next = unshadowing.then(() => unshadowOnce(options));
+function queued(step) {
+  const next = unshadowing.then(step);
   unshadowing = next.catch(() => undefined);
   return next;
+}
+
+export function unshadow(options) {
+  return queued(() => unshadowOnce(options));
+}
+
+async function lines(kernel, argv, user, what) {
+  let out = '';
+  const { status, stderr } = await kernel.run(argv, {
+    cwd: '/',
+    user,
+    onStdout: (chunk) => {
+      out += chunk;
+    },
+  });
+  if (status) throw new Error(stderr?.trim() || `${what} exited with ${status}`);
+  return out.split('\n').filter(Boolean);
+}
+
+export function tidyBins({ kernel, bin, keep = [] }) {
+  return queued(() =>
+    lines(kernel, ['bash', '-c', DANGLING, 'tidy', bin, ...keep], 'root', `tidying ${bin}`)
+  );
 }
 
 async function unshadowOnce({ root, kernel, global, name, dir, user = 'root' }) {
@@ -675,20 +700,21 @@ async function unshadowOnce({ root, kernel, global, name, dir, user = 'root' }) 
   const names = shadowed(manifest);
   if (!names.length) return [];
   const owner = `/node_modules/${name}/`;
-  let out = '';
-  const { status, stderr } = await kernel.run(
-    ['bash', '-c', UNSHADOW, 'unshadow', binDir(global), owner, ...names],
-    {
-      cwd: '/',
-      user,
-      onStdout: (chunk) => {
-        out += chunk;
-      },
-    }
+  return lines(
+    kernel,
+    [
+      'bash',
+      '-c',
+      UNSHADOW,
+      'unshadow',
+      binDir(global),
+      owner,
+      user === 'root' ? 'link' : 'remove',
+      ...names,
+    ],
+    user,
+    `unlinking ${names.join(', ')}`
   );
-  if (status)
-    throw new Error(stderr?.trim() || `unlinking ${names.join(', ')} exited with ${status}`);
-  return out.split('\n').filter(Boolean);
 }
 
 const PASSWD = '/etc/passwd';
@@ -710,8 +736,13 @@ export async function shellUnshadow({ root, kernel, global, home }) {
           .map(({ user }) => ({ user, global: `${home.slice(1)}/global/v11` }))[0];
   if (!owner) return [];
   const removed = [];
-  for (const { name, dir } of await globals(root, owner.global))
+  const keep = [];
+  for (const { name, dir } of await globals(root, owner.global)) {
+    const manifest = (await text(root, `${dir}/node_modules/${name}/package.json`)) ?? '{}';
+    keep.push(...shadowed(JSON.parse(manifest)));
     removed.push(...(await unshadow({ root, kernel, name, dir, ...owner })));
+  }
+  if (owner.user === 'root') await tidyBins({ kernel, bin: binDir(owner.global), keep });
   return removed;
 }
 
@@ -746,20 +777,25 @@ export async function watchShadows({ root, kernel, attach, global, wait = 50, re
   let watching = null;
   let watched = '';
   let chain = Promise.resolve();
+  const known = new Set();
   const rewatch = () => {
     const next = chain.then(async () => {
-      const paths = [PASSWD, ...(await all()).flatMap((home) => [`${home}/bin`, `${home}/global`])];
+      const found = await all();
+      const paths = [PASSWD, ...found.flatMap((home) => [`${home}/bin`, `${home}/global`])];
       if (paths.join('\n') === watched) return;
       const before = watching;
       watching = await client.fs.watch(paths, { recursive: true }, onChange);
       watched = paths.join('\n');
       before?.close();
+      for (const home of found.filter((home) => !known.has(home))) {
+        known.add(home);
+        pass(home);
+      }
     });
     chain = next.catch(() => undefined);
     return next;
   };
   await rewatch();
-  for (const home of await all()) pass(home);
   return {
     paths: () => watched.split('\n'),
     close: () => chain.then(() => watching.close()),
