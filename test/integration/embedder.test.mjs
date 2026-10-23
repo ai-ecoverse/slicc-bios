@@ -58,6 +58,31 @@ function inside(found, what) {
   assert.ok(found.fits, `${what} doesn't wrap: ${JSON.stringify(found)}`);
 }
 
+let probes = 0;
+
+async function settled(page, wide) {
+  await page.until((wide) => innerWidth === wide, wide);
+  for (;;) {
+    const token = `zq${(probes += 1)}`;
+    await page.evaluate(() => {
+      const { dock } = document.querySelector('slicc-app');
+      const id = dock.api.panels
+        .map((panel) => panel.id)
+        .findLast((id) => id.startsWith('terminal:'));
+      dock.api.getPanel(id)?.api.setActive();
+      dock.content(id).screen.focus();
+    });
+    await page.insert(token);
+    try {
+      await shows(page, token, 5000);
+      break;
+    } catch (error) {
+      if (probes > 10) throw error;
+    }
+  }
+  await page.press('u', 'ctrl');
+}
+
 const LONG = `https://example.test/${'a'.repeat(280)}`;
 
 async function press(page, which) {
@@ -84,6 +109,7 @@ test('a program opens an http(s) URL in a new tab through /dev/embedder, and a j
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source: finder });
   await boot(page);
   const seven = await page.evaluate(() => location.origin);
+  const wide = await page.evaluate(() => innerWidth);
 
   await run(page, `${ask('https://example.test/typed')}; echo "typed $?"`);
   await shows(page, 'typed 0');
@@ -148,9 +174,9 @@ test('a program opens an http(s) URL in a new tab through /dev/embedder, and a j
   await page.screenshot(new URL('open-url-prompt-long-420.png', page.dir));
   await page.send('Emulation.clearDeviceMetricsOverride');
   await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
-  await new Promise((resolve) => setTimeout(resolve, 2000));
   await press(page, 'cancel');
   await shows(page, 'long 1');
+  await settled(page, wide);
 
   await run(page, `sleep 8; ${ask('https://example.test/clicked')}; echo "clicked $?"`);
   await page.send('Emulation.setDeviceMetricsOverride', {
@@ -171,10 +197,10 @@ test('a program opens an http(s) URL in a new tab through /dev/embedder, and a j
   );
   await page.send('Emulation.clearDeviceMetricsOverride');
   await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
-  await new Promise((resolve) => setTimeout(resolve, 2000));
   await press(page, 'action');
   await shows(page, 'clicked 0');
   await eventually(() => opened('https://example.test/clicked'));
+  await settled(page, wide);
 
   const header = (url) => `'{"kind":"open.url","url":"${url}"}'`;
   await run(
