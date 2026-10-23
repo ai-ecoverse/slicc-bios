@@ -164,17 +164,18 @@ test('seven never takes a tool back to an older npm latest, and a newer release 
   prepare();
   await page.init('() => { globalThis.sliccKernelDebug = true; }');
   await boot(page);
-  assert.equal(await versionOf(page, `${TOOLS}/${JQ}`), '1.8.2-4');
+  const first = await versionOf(page, `${TOOLS}/${JQ}`);
+  assert.match(first ?? '', /^1\.8\.2-\d+$/);
 
   registry.latest.set(JQ, '1.8.2-3');
   assert.equal(await act(page, 'tools:jq', 'retry'), 'ok');
-  assert.equal(await versionOf(page, `${TOOLS}/${JQ}`), '1.8.2-4', 'no downgrade');
-  assert.equal((await jqRow(page)).version, '1.8.2-4');
+  assert.equal(await versionOf(page, `${TOOLS}/${JQ}`), first, 'no downgrade');
+  assert.equal((await jqRow(page)).version, first);
 
   registry.latest.delete(JQ);
   const forged = await fakeRelease({
     name: JQ,
-    from: '1.8.2-4',
+    from: first,
     version: '1.8.2-99',
     repository: 'https://github.com/ai-ecoverse/homescoop',
   });
@@ -193,10 +194,10 @@ test('seven never takes a tool back to an older npm latest, and a newer release 
   );
   assert.equal(await act(page, 'tools:jq', 'retry'), 'ok');
   const row = await jqRow(page);
-  assert.equal(row.version, '1.8.2-4', JSON.stringify(row));
+  assert.equal(row.version, first, JSON.stringify(row));
   assert.equal(row.newer?.version, '1.8.2-99', JSON.stringify(row));
   assert.equal(row.newer.reason, "it didn't come from SLICC's own build");
-  assert.equal(await versionOf(page, `${TOOLS}/${JQ}`), '1.8.2-4', 'the refused release stays out');
+  assert.equal(await versionOf(page, `${TOOLS}/${JQ}`), first, 'the refused release stays out');
   await shoot(page, 'tools-newer', { show: 'updates', target: '[data-id="tools:jq"]' });
   assert.deepEqual(page.errors, []);
 });

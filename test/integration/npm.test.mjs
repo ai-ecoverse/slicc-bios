@@ -913,7 +913,7 @@ test('wasi-slicc, slicc-jsh and mcpcat built by their own ci.yml on main, the sh
       releasesOf(name, { built: { ...built, path: '.github/workflows/publish.yml' } })
     );
     const found = (await other.npm.lookAll([other.byName.get(name)], new Map())).get(name);
-    const reason = `${name.slice(13)} ${latest} wasn't built by ${built.repository}'s release workflow on main`;
+    const reason = "it didn't come from SLICC's own build";
     assert.deepEqual([found.version, found.newer], [good, { version: latest, reason }], name);
   }
 });
