@@ -4,16 +4,12 @@ import { test } from 'node:test';
 
 const read = (path) => readFile(new URL(`../../${path}`, import.meta.url), 'utf8');
 const ci = await read('.github/workflows/ci.yml');
-const deploy = await read('.github/workflows/deploy.yml');
 const pkg = JSON.parse(await read('package.json'));
 const input = (name) => ci.match(new RegExp(`\\n {6}${name}: (.+)\\n`))?.[1];
 const block = (name) => ci.match(new RegExp(`\\n {6}${name}: \\|\\n((?: {8}.*\\n)+)`))?.[1];
 
-test('CI is one caller of slicc-shared-web pipeline.yml, at the release of the harness the tests use; the only other workflow is the branch previews', async () => {
-  assert.deepEqual(await readdir(new URL('../../.github/workflows/', import.meta.url)), [
-    'ci.yml',
-    'deploy.yml',
-  ]);
+test('CI is one caller of slicc-shared-web pipeline.yml, at the release of the harness the tests use; and the only workflow', async () => {
+  assert.deepEqual(await readdir(new URL('../../.github/workflows/', import.meta.url)), ['ci.yml']);
   assert.deepEqual(await readdir(new URL('../../.github/', import.meta.url)), ['workflows']);
   const version = pkg.devDependencies['@ai-ecoverse/slicc-shared-web'];
   assert.match(version, /^2\.\d+\.\d+$/);
@@ -24,7 +20,6 @@ test('CI is one caller of slicc-shared-web pipeline.yml, at the release of the h
     )
   );
   assert.deepEqual(ci.split('\njobs:\n')[1].match(/^ {2}[a-z-]+:$/gm), ['  ci:']);
-  assert.doesNotMatch(deploy, /pipeline\.yml|workflow_call|workflow_dispatch|schedule:/);
 });
 
 test('CI runs on pull requests, merge groups and pushes to main, and cancels a superseded run only on a pull request', () => {
@@ -43,12 +38,9 @@ test('CI runs on pull requests, merge groups and pushes to main, and cancels a s
   );
 });
 
-test('the pipeline picks its runners, reviews no Renovate pull request and deploys nothing to staging; the previews run on a hosted runner', () => {
-  for (const name of ['runs-on', 'review-renovate', 'deploy', 'deploy-secrets'])
-    assert.equal(input(name), undefined, name);
+test('the pipeline picks its runners and reviews no Renovate pull request', () => {
+  for (const name of ['runs-on', 'review-renovate']) assert.equal(input(name), undefined, name);
   assert.doesNotMatch(ci, /vars\./);
-  assert.doesNotMatch(deploy, /vars\./);
-  assert.match(deploy, /\n {4}runs-on: ubuntu-latest\n/);
   assert.equal(input('shards'), '12');
   assert.equal(input('timeout-minutes'), '90');
   assert.match(input('review-prompt'), /^\|$/);
@@ -94,15 +86,9 @@ test('seven is published only after a release, from the production environment, 
   assert.doesNotMatch(ci, /secrets\./);
 });
 
-test('the previews publish bb/** pushes through the OIDC route, never main, and hold no secret', () => {
-  assert.match(deploy, /\non:\n {2}push:\n {4}branches: \['bb\/\*\*'\]\n\n/);
-  assert.match(deploy, /\n {4}environment: preview\n/);
-  assert.match(deploy, /\n {6}id-token: write\n/);
-  assert.doesNotMatch(deploy, /secrets\.|production|main/);
-  assert.match(
-    deploy,
-    /\n {8}run: node edge\/publish\.mjs "\$GITHUB_REF_NAME" >> "\$GITHUB_STEP_SUMMARY"\n/
-  );
+test('a pull request publishes its preview through the OIDC route in the pipeline’s deploy job, which gets no secret', () => {
+  assert.equal(input('deploy'), 'node edge/publish.mjs preview >> "$GITHUB_STEP_SUMMARY"');
+  assert.equal(input('deploy-secrets'), 'NONE');
 });
 
 test('semantic-release publishes to npm from the trusted ci.yml, with provenance', async () => {
@@ -116,8 +102,7 @@ test('semantic-release publishes to npm from the trusted ci.yml, with provenance
 });
 
 test('the workflows have no comments but renovate annotations', () => {
-  for (const line of `${ci}\n${deploy}`.split('\n'))
-    if (/^\s*#/.test(line)) assert.match(line, /^\s*# renovate:/);
+  for (const line of ci.split('\n')) if (/^\s*#/.test(line)) assert.match(line, /^\s*# renovate:/);
 });
 
 test('the guard-set vectors run as one file per path, target group and detach variant, so the shards can balance them', async () => {

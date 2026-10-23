@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { argv, env, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -115,7 +115,26 @@ export async function publishBranch(branch, { fetcher = fetch, token, parallel =
   return (await call('manifest', { method: 'PUT', body: JSON.stringify({ files: current }) })).url;
 }
 
+export async function preview(vars = env, options = {}) {
+  const branch = vars.GITHUB_HEAD_REF ?? '';
+  if (!branch.startsWith('bb/')) {
+    return { skipped: `${branch || 'this run'} gets no preview, only bb/** branches do` };
+  }
+  if (!vars.ACTIONS_ID_TOKEN_REQUEST_URL) {
+    return { skipped: `${branch} has no OIDC token, so it gets no preview` };
+  }
+  return { url: await publishBranch(branch, options) };
+}
+
 if (argv[1] === fileURLToPath(import.meta.url)) {
-  const branch = argv[2];
-  stdout.write(`${branch === 'main' ? publish(branch) : await publishBranch(branch)}\n`);
+  const mode = argv[2];
+  if (mode === 'main') stdout.write(`${publish(mode)}\n`);
+  else if (mode === 'preview') {
+    const { url, skipped } = await preview();
+    if (skipped) stdout.write(`${skipped}\n`);
+    else {
+      appendFileSync(env.GITHUB_OUTPUT, `url=${url}\n`);
+      stdout.write(`${url}\n`);
+    }
+  } else throw new Error(`usage: publish.mjs main | preview, not ${mode}`);
 }
