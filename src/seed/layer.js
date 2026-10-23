@@ -146,11 +146,7 @@ const SHIPPED_PNPM = [
   'packages/agent/pnpm-lock.yaml',
   'packages/tailscale/pnpm-lock.yaml',
 ];
-const SHIPPED_NPM = [
-  'packages/package-lock.json',
-  'packages/agent/package-lock.json',
-  'packages/optional/package-lock.json',
-];
+const SHIPPED_NPM = ['packages/package-lock.json', 'packages/agent/package-lock.json'];
 
 async function projectLocks(get) {
   const catalog = parse(await get('packages/optional/catalog.json').catch(() => null)) ?? {};

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { boot, eventually, prompt } from './bios.mjs';
+import { offered } from './catalog.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch({ timeout: 120000 });
@@ -118,8 +119,7 @@ test("a check gives each row its GitHub releases: the installed one and the newe
     release(`v${PREVIOUS}`, 'the installed one'),
     release('v1.0.0', 'too old'),
   ]);
-  const optional = JSON.parse(await source('optional/package.json'));
-  const mcpcat = optional.dependencies['@ai-ecoverse/mcpcat'];
+  const mcpcat = await offered('@ai-ecoverse/mcpcat');
   chrome.github.releases('ai-ecoverse/mcpcat', [
     {
       tag_name: `v${mcpcat}`,
@@ -133,24 +133,18 @@ test("a check gives each row its GitHub releases: the installed one and the newe
     label: 'GitLab UI',
     notes: ['A package whose repository is on GitLab.'],
   };
-  optional.dependencies['@gitlab/ui'] = '138.6.2';
-  const optionalLock = JSON.parse(await source('optional/package-lock.json'));
-  const gitlab = await registry('https://registry.npmjs.org/@gitlab%2Fui/138.6.2');
-
-  const pinnedDeps = Object.entries(gitlab.dependencies).filter(([, spec]) =>
+  const certs = JSON.parse(await source('certs.json'));
+  const gitlab = await registry('https://registry.npmjs.org/@gitlab%2Fui/latest');
+  const gitlabVersion = gitlab.version;
+  const pinnedDeps = Object.entries(gitlab.dependencies ?? {}).filter(([, spec]) =>
     /^\d+\.\d+\.\d+$/.test(spec)
   );
-  for (const [dep, version] of [['@gitlab/ui', '138.6.2'], ...pinnedDeps]) {
+  for (const [dep, version] of [['@gitlab/ui', gitlab.version], ...pinnedDeps]) {
     const doc = await registry(`https://registry.npmjs.org/${dep.replace('/', '%2F')}/${version}`);
-    optionalLock.packages[`node_modules/${dep}`] = {
-      version,
-      resolved: doc.dist.tarball,
-      integrity: doc.dist.integrity,
-    };
+    certs[`${dep}@${version}`] = { integrity: doc.dist.integrity };
   }
   chrome.overrides.set('/packages/optional/catalog.json', JSON.stringify(catalog));
-  chrome.overrides.set('/packages/optional/package.json', JSON.stringify(optional));
-  chrome.overrides.set('/packages/optional/package-lock.json', JSON.stringify(optionalLock));
+  chrome.overrides.set('/packages/certs.json', JSON.stringify(certs));
   await boot(page, [prompt, 'slicc:/home$ ']);
 
   await t.test('an up-to-date kernel row links its installed release', async () => {
@@ -191,7 +185,7 @@ test("a check gives each row its GitHub releases: the installed one and the newe
         },
       ]);
       const gitlab = await packageRow(page, 'gitlab-ui');
-      assert.equal(gitlab.offered, '138.6.2');
+      assert.equal(gitlab.offered, gitlabVersion);
       assert.equal('releases' in gitlab, false);
     }
   );

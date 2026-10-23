@@ -17,6 +17,7 @@ const KEYS = new Set([
   'range',
   'abi',
   'helpers',
+  'source',
   'description',
   'commands',
   'size',
@@ -24,47 +25,50 @@ const KEYS = new Set([
 ]);
 
 const HOMESCOOPED = /^@ai-ecoverse\/(?:wasm|wasi|wasix|py)-/;
-const PINNED = [
-  '@ai-ecoverse/mcpcat',
-  '@ai-ecoverse/slicc-jsh',
-  '@ai-ecoverse/sliccy-browser',
-  '@ai-ecoverse/wasi-slicc',
-];
 
-test('the optional catalog pins only what homescoop’s ladder doesn’t publish, each locked with its integrity, and every other entry keeps only what npm can’t tell', async () => {
+test('the optional catalog lists packages and pins none: no package.json or lockfile, and each package entry keeps only what npm can’t tell', async () => {
+  for (const file of ['package.json', 'package-lock.json'])
+    await assert.rejects(readFile(new URL(file, optional)), { code: 'ENOENT' }, file);
   const catalog = await read('catalog.json');
-  const { dependencies } = await read('package.json');
-  const lock = await read('package-lock.json');
   const retired = await read('retired.json');
-  assert.deepEqual(Object.keys(dependencies).sort(), PINNED);
-  for (const [name, version] of Object.entries(dependencies)) {
-    assert.ok(catalog[name], `${name} is a catalog entry`);
-    assert.match(version, /^\d+\.\d+\.\d+(-[\w.-]+)?$/, `${name} is pinned exactly`);
-    const entry = lock.packages[`node_modules/${name}`];
-    assert.equal(entry?.version, version, `${name} is locked at ${version}`);
-    assert.match(entry.integrity, /^sha512-/, `${name} has an integrity`);
-  }
-  for (const [path, entry] of Object.entries(lock.packages))
-    if (path) assert.match(entry.integrity ?? '', /^sha512-/, `${path} has an integrity`);
   for (const [name, entry] of Object.entries(catalog)) {
     for (const key of Object.keys(entry)) assert.ok(KEYS.has(key), `${name}: ${key}`);
     if (entry.kind === 'project') continue;
     assert.match(name, /^@ai-ecoverse\/[a-z0-9][\w.-]*$/, name);
-    assert.equal(
-      Object.hasOwn(dependencies, name),
-      PINNED.includes(name),
-      `${name}: bios pins exactly what homescoop's ladder doesn't publish`
-    );
-    if (!PINNED.includes(name)) assert.match(name, HOMESCOOPED, `${name} is homescoop's`);
-    for (const key of ['description', 'commands', 'size', 'version', 'source'])
-      assert.equal(entry[key], undefined, `${name}: no ${key} in the catalog`);
+    for (const key of ['description', 'commands', 'size', 'version'])
+      assert.equal(entry[key], undefined, `${name}: npm gives its ${key}`);
     for (const note of entry.notes ?? [])
       assert.ok(typeof note === 'string' && note.length > 10 && note.length <= 300, name);
     for (const helper of entry.helpers ?? []) assert.match(helper, /^[\w.+-]+$/, name);
     for (const gone of entry.replaces ?? [])
       assert.ok(Object.hasOwn(retired, gone), `${name} replaces ${gone}, which isn't retired`);
+    if (entry.source) {
+      assert.match(entry.source.repo, /^ai-ecoverse\/[\w.-]+$/, name);
+      for (const workflow of [entry.source.workflow].flat())
+        assert.match(workflow, /^\.github\/workflows\/[\w.-]+\.ya?ml$/, name);
+    } else assert.match(name, HOMESCOOPED, `${name} is homescoop's, from its ladder at main`);
   }
   assert.deepEqual(await read('sources.json'), { '@ai-ecoverse/slicc-cdp': { certified: 'tag' } });
+  const named = Object.entries(catalog).filter(([, entry]) => entry.source);
+  assert.deepEqual(
+    Object.fromEntries(
+      named.map(([name, entry]) => [
+        name,
+        `${entry.source.repo} ${[entry.source.workflow].flat().join(' ')}`,
+      ])
+    ),
+    {
+      '@ai-ecoverse/wasi-slicc':
+        'ai-ecoverse/slicc-cli .github/workflows/release.yml .github/workflows/ci.yml',
+      '@ai-ecoverse/slicc-jsh':
+        'ai-ecoverse/slicc-jsh .github/workflows/release.yml .github/workflows/ci.yml',
+      '@ai-ecoverse/sliccy-browser':
+        'ai-ecoverse/slicc-cdp .github/workflows/publish-sliccy-browser.yml',
+      '@ai-ecoverse/mcpcat':
+        'ai-ecoverse/mcpcat .github/workflows/release.yml .github/workflows/ci.yml',
+    },
+    'every other package is homescoop’s, from its ladder at main'
+  );
 });
 
 test('every catalog entry has a unique id and a label, and requires only other entries without cycles; a project keeps its description, commands and size', async () => {
@@ -90,16 +94,11 @@ test('every catalog entry has a unique id and a label, and requires only other e
   for (const id of ids) visit(id, []);
 });
 
-test('the published package carries the catalog, its pins, its sources and the bundled exceptions', async () => {
+test('the published package carries the catalog, its sources and the bundled exceptions, and no optional pins', async () => {
   const { files } = JSON.parse(await readFile(new URL('../../../package.json', optional), 'utf8'));
-  for (const file of [
-    'package.json',
-    'package-lock.json',
-    'catalog.json',
-    'sources.json',
-    'exceptions.json',
-  ])
+  for (const file of ['catalog.json', 'sources.json', 'exceptions.json'])
     assert.ok(files.includes(`src/packages/optional/${file}`), file);
+  assert.ok(!files.some((file) => /optional\/package(-lock)?\.json$/.test(file)));
 });
 
 test('a project entry ships its manifest, a lockfile and a workspace that overrides Python away', async () => {
