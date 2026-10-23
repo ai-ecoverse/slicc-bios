@@ -93,7 +93,7 @@ test('the guard-set vectors run as one file per path, target group and detach va
   const files = (await readdir(new URL('./', import.meta.url)))
     .filter((name) => name.startsWith('guard-set-'))
     .sort();
-  const want = ['extension', 'proxy']
+  const want = ['extension', 'proxy', 'link']
     .flatMap((path) =>
       groups.flatMap((group) => [
         `guard-set-${path}-${group}-lagging.test.mjs`,

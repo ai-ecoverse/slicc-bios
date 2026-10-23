@@ -5,6 +5,7 @@ import { after, test } from 'node:test';
 import { startProxy } from '@ai-ecoverse/slicc-node';
 import { boot } from './bios.mjs';
 import { debuggerUrl, launch } from './chrome.mjs';
+import { linkNode } from './linked-node.mjs';
 
 const LAG = 8000;
 const CHOSEN = process.env.GUARD_VARIANTS?.split(',').filter(Boolean) ?? null;
@@ -352,6 +353,7 @@ async function guardPage(t, lag, proxy = null, lens = null) {
     else send();
   });
   await seven.init(() => {
+    globalThis.sliccKernelDebug = true;
     const pending = new Map();
     const listeners = new Set();
     let next = 0;
@@ -386,6 +388,7 @@ async function guardPage(t, lag, proxy = null, lens = null) {
     });
   });
   await boot(seven);
+  if (proxy === 'link') await linkNode(t, seven, port);
   await seven.evaluate(async (proxy) => {
     const { guardProtected } = await import(new URL('guard.js', location.href).href);
     const { extensionConnection, proxyHost } = await import(new URL('cdp.js', location.href).href);
@@ -402,10 +405,12 @@ async function guardPage(t, lag, proxy = null, lens = null) {
       };
       return connection;
     };
-    const connection = guardProtected(
-      proxy ? slowed(await proxyHost(proxy)()) : extensionConnection(globalThis.sliccExtension.cdp),
-      location.origin
-    );
+    const routed = async () => {
+      if (proxy === 'link') return slowed(await globalThis.sliccLinkedBrowsers()[0].open());
+      if (proxy) return slowed(await proxyHost(proxy)());
+      return extensionConnection(globalThis.sliccExtension.cdp);
+    };
+    const connection = guardProtected(await routed(), location.origin);
     const pending = new Map();
     const events = [];
     let next = 0;
@@ -2396,6 +2401,69 @@ once(
     });
     t.after(() => proxy.close());
     const guard = await guardPage(t, 0, { url: proxy.url, key: proxy.key });
+    const opened = [];
+    t.after(() => closeAll(opened));
+    for (let round = 0; round < 3; round += 1) {
+      const id = `armed-${round}-${Date.now()}`;
+      const opener = await tab(`${PLAIN}/doc?opener-${id}`);
+      opened.push(opener);
+      const session = await guard.attach(opener);
+      const auto = { autoAttach: true, waitForDebuggerOnStart: true, flatten: true };
+      assert.equal((await guard.send('Target.setAutoAttach', auto)).error, undefined);
+      try {
+        const before = (await guard.events()).length;
+        const vault = `${VAULT}/doc?${id}`;
+        await guard.slowArm(6000);
+        await guard.go(
+          TRIGGERS.popup(`${OTHER}/bounce?ms=1000&to=${encodeURIComponent(vault)}`),
+          session
+        );
+        let popup = null;
+        for (const end = Date.now() + 8000; !popup && Date.now() < end; ) {
+          const { result } = await own.send('Target.getTargets');
+          popup = (result?.targetInfos ?? []).find(
+            (info) => info.type === 'page' && info.openerId === opener
+          );
+          if (!popup) await pause(200);
+        }
+        assert.ok(popup, `${id}: the popup opened, found through the harness’s own CDP`);
+        opened.push(popup.targetId);
+        await pause(9000);
+        const later = (await guard.events()).slice(before);
+        const shown = later.some(
+          (event) =>
+            event.method === 'Target.attachedToTarget' &&
+            event.params.targetInfo.targetId === popup.targetId
+        );
+        const servedVault = served(vault, 0);
+        assert.ok(
+          !(shown && servedVault),
+          `${id}: the client got a session to the popup, and its navigation into the vault was still served`
+        );
+        if (!shown) {
+          assert.ok(
+            !JSON.stringify(later).includes(`${new URL(VAULT).host}/doc?${id}`),
+            `${id}: the client never got the popup, and nothing naming its vault document`
+          );
+        }
+      } finally {
+        await guard.send('Target.setAutoAttach', {
+          autoAttach: false,
+          waitForDebuggerOnStart: false,
+          flatten: true,
+        });
+      }
+    }
+  }
+);
+
+once(
+  'PRE-1b on the link path, which forwards browser-level events: a popup the client auto-attaches is armed before it runs, so the client never holds a session to it while it loads a protected page, even when the guard is slow to arm',
+  {
+    timeout: 10 * 60 * 1000,
+  },
+  async (t) => {
+    const guard = await guardPage(t, 0, 'link');
     const opened = [];
     t.after(() => closeAll(opened));
     for (let round = 0; round < 3; round += 1) {
