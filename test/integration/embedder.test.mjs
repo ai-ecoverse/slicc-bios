@@ -114,13 +114,55 @@ test('a program opens an http(s) URL in a new tab through /dev/embedder, and a j
   await shows(page, 'clicked 0');
   await eventually(() => opened('https://example.test/clicked'));
 
+  const header = (url) => `'{"kind":"open.url","url":"${url}"}'`;
   await run(
     page,
-    `{ sleep 8; printf '%s\\n' '{"kind":"open.url","url":"https://example.test/withdrawn"}'; } | timeout 12 cat > /dev/embedder; echo "withdrawn $?"`
+    `{ sleep 8; printf '%s\\n' ${header('https://example.test/withdrawn')}; } | cat > /dev/embedder & p=$!; sleep 14; kill $p; wait $p; echo "withdrawn $?"`
   );
   await page.until(() => !!window.findConfirm(), undefined);
-  await shows(page, 'withdrawn 124');
+  await shows(page, 'withdrawn 143');
   await page.until(() => !window.findConfirm(), undefined);
   assert.deepEqual(await opened('https://example.test/withdrawn'), []);
+
+  await run(
+    page,
+    `{ sleep 8; printf '%s\\n' ${header('https://example.test/first')}; } | cat > /dev/embedder & p=$!; sleep 12; printf '%s\\n' ${header('https://example.test/second')} | cat > /dev/embedder; echo "second $?"; wait $p; echo "first $?"`
+  );
+  await page.until(() => !!window.findConfirm(), undefined);
+  await shows(page, 'another request is waiting for you');
+  await shows(page, 'second 1');
+  assert.match(
+    await page.evaluate(() => window.findConfirm().shadowRoot.textContent),
+    /open https:\/\/example\.test\/first/
+  );
+  await shows(page, 'nobody answered the request to open the page within 60 s');
+  await shows(page, 'first 1');
+  await page.until(() => !window.findConfirm(), undefined);
+  assert.deepEqual(await opened('https://example.test/first'), []);
+  assert.deepEqual(await opened('https://example.test/second'), []);
   assert.deepEqual(page.errors, []);
+});
+
+test('a second tab answers its own terminal’s requests: the prompt shows there, not in the owner', async (t) => {
+  const a = await chrome.page(t);
+  await a.send('Page.addScriptToEvaluateOnNewDocument', { source: finder });
+  await boot(a);
+  const b = await a.tab();
+  await b.send('Page.addScriptToEvaluateOnNewDocument', { source: finder });
+  await boot(b);
+  await a.until(() => document.querySelector('slicc-app').model.tabs?.state().role === 'owner');
+  await b.until(() => document.querySelector('slicc-app').model.tabs?.state().role === 'follower');
+  await b.send('Page.bringToFront');
+  await run(b, `${ask('https://example.test/from-b')}; echo "b typed $?"`);
+  await shows(b, 'b typed 0');
+  await eventually(() => opened('https://example.test/from-b'));
+  await run(b, `sleep 8; ${ask('https://example.test/b-late')}; echo "b late $?"`);
+  await b.until(() => !!window.findConfirm(), undefined);
+  assert.equal(await a.evaluate(() => window.findConfirm()), null);
+  await press(b, 'cancel');
+  await shows(b, 'the request to open the page was dismissed');
+  await shows(b, 'b late 1');
+  assert.deepEqual(await opened('https://example.test/b-late'), []);
+  assert.deepEqual(a.errors, []);
+  assert.deepEqual(b.errors, []);
 });

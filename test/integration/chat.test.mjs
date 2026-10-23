@@ -1538,6 +1538,45 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     /SLICC's own pages can't be opened or driven from the browser tools\./
   );
 
+  const confirmOf = () => {
+    const walk = (root) => {
+      for (const element of root.querySelectorAll('*')) {
+        if (element.localName === 'slicc-confirm') return element;
+        const inner = element.shadowRoot && walk(element.shadowRoot);
+        if (inner) return inner;
+      }
+      return null;
+    };
+    return walk(document);
+  };
+  const asking = agentRun(
+    `printf '{"kind":"open.url","url":"%s"}\\n' https://example.test/agent | cat > /dev/embedder; echo "agent open $?"`
+  );
+  await page.until(
+    (find) => !!new Function(`return (${find})()`)()?.shadowRoot?.querySelector('[data-cancel]'),
+    confirmOf.toString()
+  );
+  assert.match(
+    await page.evaluate(
+      (find) => new Function(`return (${find})()`)().shadowRoot.textContent,
+      confirmOf.toString()
+    ),
+    /The agent \S+ asks seven to open https:\/\/example\.test\/agent/
+  );
+  await page.evaluate(
+    (find) =>
+      new Function(`return (${find})()`)().shadowRoot.querySelector('[data-cancel]').click(),
+    confirmOf.toString()
+  );
+  const refusedOpen = await asking;
+  assert.match(refusedOpen.text, /the request to open the page was dismissed/);
+  assert.match(refusedOpen.text, /agent open 1/);
+  const { targetInfos: agentTabs } = await chrome.cdp.send('Target.getTargets');
+  assert.deepEqual(
+    agentTabs.filter(({ url }) => url.startsWith('https://example.test/agent')),
+    []
+  );
+
   await run(page, 'echo "tab=$SLICC_TAB"');
   await page.until(() =>
     /tab=[0-9a-f-]{36}/.test(
