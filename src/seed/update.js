@@ -168,7 +168,9 @@ export function writing(cwd) {
 }
 
 export function hygiene(argv) {
-  return guard.on && argv[0] === 'pnpm' ? [...argv, ...HYGIENE] : argv;
+  return guard.on && argv[0] === 'pnpm'
+    ? [...argv, ...HYGIENE.filter((flag) => !argv.includes(flag))]
+    : argv;
 }
 
 export function guarded() {
