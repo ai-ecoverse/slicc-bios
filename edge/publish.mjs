@@ -123,7 +123,11 @@ export async function preview(vars = env, options = {}) {
   if (!vars.ACTIONS_ID_TOKEN_REQUEST_URL) {
     return { skipped: `${branch} has no OIDC token, so it gets no preview` };
   }
-  return { url: await publishBranch(branch, options) };
+  try {
+    return { url: await publishBranch(branch, options) };
+  } catch (error) {
+    return { skipped: `preview failed: ${error.message}` };
+  }
 }
 
 if (argv[1] === fileURLToPath(import.meta.url)) {

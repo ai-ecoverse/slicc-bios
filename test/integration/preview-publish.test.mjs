@@ -83,3 +83,20 @@ test('a pull request from a bb/** branch publishes its preview and gets its URL,
   });
   assert.deepEqual([...route.bucket.objects].sort(), tree);
 });
+
+test('a preview the route refuses or can’t reach reports why and sets no URL, so the pull request’s CI goes on', async () => {
+  const refused = async () => Response.json({ error: 'not a branch' }, { status: 403 });
+  const down = async () => {
+    throw new Error('fetch failed');
+  };
+  const vars = {
+    ACTIONS_ID_TOKEN_REQUEST_URL: 'https://token.actions.example/',
+    GITHUB_HEAD_REF: 'bb/x',
+  };
+  assert.deepEqual(await preview(vars, { fetcher: refused, token: 't' }), {
+    skipped: 'preview failed: manifest: 403 not a branch',
+  });
+  assert.deepEqual(await preview(vars, { fetcher: down, token: 't' }), {
+    skipped: 'preview failed: fetch failed',
+  });
+});
