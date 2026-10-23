@@ -489,7 +489,7 @@ test('seven’s page withholds sliccy-browser when the slicc-cdp it pins has no 
   assert.notEqual(row.offered, version);
   assert.equal(
     row.newer?.reason ?? row.withheld,
-    `slicc-cdp ${PIPELINE_CDP} has no build provenance`
+    `npm has no record of where its slicc-cdp ${PIPELINE_CDP} was built`
   );
 });
 
