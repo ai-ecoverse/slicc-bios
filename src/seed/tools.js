@@ -17,7 +17,6 @@ export async function loadTools(from = deployed) {
     label: entry.label,
     package: name,
     first: entry.first === true,
-    ...(typeof entry.pin === 'string' ? { pin: entry.pin } : {}),
     requires: [],
   }));
 }

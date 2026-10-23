@@ -331,7 +331,6 @@ async function exactDeps(doc, ctx) {
 }
 
 async function chosen(entry, npm) {
-  if (entry.pin) return npm.version(entry.package, entry.pin);
   if (!entry.range) return npm.latest(entry.package);
   const all = await npm.packument(entry.package);
   const best = Object.entries(all?.versions ?? {})
@@ -394,7 +393,7 @@ export async function look(entry, ctx) {
   const doc = checked(entry.package, found);
   const refused = await refusedFor(entry, doc, ctx);
   if (!refused) return infoOf(entry, doc);
-  const fallback = entry.pin ? null : await older(entry, doc.version, ctx).catch(() => null);
+  const fallback = await older(entry, doc.version, ctx).catch(() => null);
   const newer = { version: doc.version, reason: refused.why };
   if (fallback) return { ...infoOf(entry, fallback), newer };
   return { ...infoOf(entry, doc), withheld: refused.why };

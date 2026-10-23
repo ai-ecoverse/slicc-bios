@@ -33,10 +33,6 @@ The other 22 tools are listed in [`src/packages/tools.json`](src/packages/tools.
 - **Moving an old profile over:** an existing profile has the tools in `/node_modules`. The installer keeps each one there until `/opt/slicc/tools` has it. Then seven removes the old copy through the kernel, and its receipt and ledger entry through the installer (`retire`). A tool therefore never disappears, offline or not.
 - **Install / Update:** each tool has a row (`tools:<id>`, `preinstalled: true`), with the version it has, what npm offers, and why a newer one isn't offered. Retry or Update checks again. There's no Remove.
 - **Your packages:** a user's own add of one of these packages goes through the gate like a catalog package.
-- **The canary:**
-  - the hourly key covers `tools.json` like the catalog;
-  - an override or candidate for a tool pins it in the working copy's `tools.json` (`pin`) and `certs.json`, and the harness serves the candidate's version doc;
-  - the sweep runs every tool at the version seven offers, so the negative proof (kernel 1.78.0 regressing grep, sed, jq, xz, findutils, diffutils and patch) still holds.
 
 ## What the service worker serves
 
