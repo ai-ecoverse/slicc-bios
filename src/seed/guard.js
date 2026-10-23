@@ -48,6 +48,8 @@ const HISTORY_POLL = 40;
 const FRAME_MS = 300;
 const TREE_WAIT = 2000;
 const PROBE_WAIT = 2000;
+const PROBE_TRIES = 3;
+const PROBE_BUDGET = 1000;
 const ANSWER_MS = 1000;
 const WORKER_TYPES = new Set(['service_worker', 'shared_worker', 'worker']);
 const HISTORY_NAV = new Set([
@@ -1310,30 +1312,22 @@ class Guard {
     if (frames.some((frame) => this.frameLive(frame)) || this.is.url(infoUrl)) {
       return { ...this.view(info, frames, history), probed: true };
     }
-    if (/^https?:/i.test(infoUrl) || infoUrl.startsWith('about:blank')) {
-      return {
-        url: infoUrl,
-        index: 0,
-        length: 0,
-        live: false,
-        protected: false,
-        frames: [],
-        info: info.result?.targetInfo,
-        probed: true,
-      };
-    }
     return undefined;
   }
 
-  async once(sessionId) {
+  async once(sessionId, budget) {
     const targetId = this.sessions.get(sessionId)?.targetId;
     const { tree, raced } = this.racedTree(sessionId);
+    const limit = Math.max(0, budget);
     const [info, treeNow, history] = await Promise.all([
       targetId
-        ? this.within(this.call('Target.getTargetInfo', { targetId }), PROBE_WAIT)
+        ? this.within(this.call('Target.getTargetInfo', { targetId }), Math.min(PROBE_WAIT, limit))
         : Promise.resolve(null),
       raced,
-      this.answered(this.call('Page.getNavigationHistory', {}, sessionId)),
+      this.within(
+        this.call('Page.getNavigationHistory', {}, sessionId),
+        Math.min(ANSWER_MS, limit)
+      ),
     ]);
     if (treeNow === undefined) void tree.then((late) => this.lateTree(sessionId, late));
     const frames = treeNow && !treeNow.error ? framed(treeNow.result?.frameTree) : [];
@@ -1348,12 +1342,21 @@ class Guard {
   }
 
   async surface(sessionId) {
-    const now = await this.once(sessionId);
+    const started = Date.now();
+    let now;
+    for (let attempt = 0; attempt < PROBE_TRIES; attempt += 1) {
+      const left = PROBE_BUDGET - (Date.now() - started);
+      if (left <= 0) break;
+      now = await this.once(sessionId, left);
+      if (now !== undefined) break;
+      const slot = Math.floor(((attempt + 1) * PROBE_BUDGET) / PROBE_TRIES);
+      const wait = slot - (Date.now() - started);
+      if (wait > 0 && attempt + 1 < PROBE_TRIES) await pause(wait);
+    }
     if (now) {
       if (!now.probed && !now.pendingTree) this.settled.set(sessionId, now);
       return now;
     }
-    if (now === null) return null;
     if (this.pendingCommit.has(sessionId)) {
       return {
         url: '',
@@ -1366,8 +1369,6 @@ class Guard {
         probed: true,
       };
     }
-    const last = this.settled.get(sessionId);
-    if (last && !last.protected) return { ...last, probed: true };
     return null;
   }
 

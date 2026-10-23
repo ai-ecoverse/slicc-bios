@@ -354,7 +354,7 @@ test('a vault page stays refused', { timeout: 60000 }, async () => {
   assert.equal(refused.error?.message, PROTECTED, JSON.stringify(refused));
 });
 
-test('a lost probe keeps the last ordinary document and a protected commit stays refused', async () => {
+test('a lost probe retries closed and a protected commit stays refused', async () => {
   const urls = new Map([['ordinary', ORDINARY]]);
   let failInfo = false;
   let historyError = null;
@@ -451,8 +451,10 @@ test('a lost probe keeps the last ordinary document and a protected commit stays
     2
   );
   failInfo = true;
+  const before = sent.filter((message) => message.method === 'Runtime.evaluate').length;
   const again = await send('Runtime.evaluate', { expression: '3+3' }, sessionId);
-  assert.equal(again.result?.result?.value, 2);
+  assert.equal(again.error?.message, PROTECTED);
+  assert.equal(sent.filter((message) => message.method === 'Runtime.evaluate').length, before);
   failInfo = false;
   historyError = 'Not attached to an active page';
   urls.set('ordinary', VAULT);
