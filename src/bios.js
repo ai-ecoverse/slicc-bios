@@ -211,7 +211,6 @@ await step('seed', async () => {
     'terminal.js',
     'transport.js',
     'tray.js',
-    'tunnel.js',
     'update.js',
     'updates.js',
     'user.js',

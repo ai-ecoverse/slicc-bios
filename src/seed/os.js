@@ -89,7 +89,6 @@ import {
 import { serveTerminal } from './terminal.js';
 import { pickTransport } from './transport.js';
 import { createTray, seatNotices, TRAY_HUB_KEY, trayPort } from './tray.js';
-import { openTunnel } from './tunnel.js';
 import {
   baseManifest,
   enforced,
@@ -171,7 +170,7 @@ export function offered(all) {
 const network = await pickTransport();
 const { kind } = network;
 const browser = createBrowser(network);
-const control = browserControl(network, { observe: browser.observe, links: () => links });
+const control = browserControl({ observe: browser.observe, links: () => links });
 const exits = createExitRouter();
 const tailscale = createTailscale(await tailscaleConfig(), { router: exits });
 clearHandOff();
@@ -288,7 +287,7 @@ const vault = createVault({
 });
 const jerk = createJerk({ links: () => links, vault });
 useVault(vault);
-const login = sealedLogin(signIn({ network, shared: sharesOrigin() }), {
+const login = sealedLogin(signIn({ shared: sharesOrigin() }), {
   vault,
   takes: () => takesVault(mine.agent),
 });
@@ -735,7 +734,6 @@ async function rows() {
 async function own() {
   folders = createFolders({
     storage: localStorage,
-    network,
     secret: await offTheRecord(),
     linked: links,
     owner: () => coneIds ?? { uid: 0, gid: 0 },
@@ -809,7 +807,6 @@ async function own() {
   pairing.start();
   tray?.start();
   leaders.start();
-  if (network.status?.probe?.kernelTunnel) openTunnel(kernel, network.proxy);
   files = await folders.attach(kernel, model);
   files.files.on('mounts', links.changed);
   const served = serveUpdates(updates);
