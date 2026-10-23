@@ -528,6 +528,7 @@ class Guard {
     this.sessions = new Map();
     this.shown = new Set();
     this.blocked = new Set();
+    this.shots = new Set();
     this.waiting = new Set();
     this.pages = new Set();
     this.frames = new Map();
@@ -1028,20 +1029,14 @@ class Guard {
       this.learn(info);
       if (await this.watch(params.sessionId, info.targetId, sessionId)) {
         this.touch(info.targetId);
-        this.deliver({
-          ...message,
-          params: { ...params, targetInfo: this.masked(info) },
-        });
+        this.deliver(message);
       }
       return true;
     }
     if (method === 'Target.targetCreated' || method === 'Target.targetInfoChanged') {
       this.learn(params.targetInfo);
       if (!(await this.target(params.targetInfo?.targetId))) {
-        this.deliver({
-          ...message,
-          params: { ...params, targetInfo: this.masked(params.targetInfo) },
-        });
+        this.shownTarget(message, params.targetInfo);
         return true;
       }
       this.cutTarget(params.targetInfo.targetId);
@@ -1095,6 +1090,10 @@ class Guard {
   }
 
   foreign({ method, params = {}, sessionId }) {
+    if (method === 'Runtime.executionContextsCleared') {
+      this.worlds.delete(sessionId);
+      return false;
+    }
     if (method === 'Runtime.executionContextCreated' && params.context) {
       const { id, uniqueId, name, origin, auxData } = params.context;
       const hidden = auxData?.type === 'isolated' && EXTENSIONS.test(origin ?? '');
@@ -1102,6 +1101,12 @@ class Guard {
       world.ids.set(id, hidden);
       if (uniqueId !== undefined) world.uniques.set(uniqueId, hidden);
       if (hidden && name) world.names.add(name);
+      const judgedMain =
+        !hidden &&
+        uniqueId &&
+        !world.main &&
+        (auxData?.isDefault === true || (auxData?.type === 'default' && !name));
+      if (judgedMain) world.main = uniqueId;
       if (hidden) return true;
     }
     const world = this.worlds.get(sessionId);
@@ -1381,7 +1386,11 @@ class Guard {
   }
 
   async confirmed(sessionId, method) {
-    if (this.pendingHistory.has(sessionId) || this.blocked.has(sessionId)) return PROTECTED;
+    const shot = method === 'Page.captureScreenshot';
+    if (this.pendingHistory.has(sessionId) || this.blocked.has(sessionId)) {
+      if (shot && this.blocked.has(sessionId) && (await this.blankShot(sessionId))) return null;
+      return PROTECTED;
+    }
     if (method.startsWith('Input.') && this.uncommitted.has(sessionId)) return PROTECTED;
     const now = await this.surface(sessionId);
     const navigating = NAVIGATES.has(method);
@@ -1389,10 +1398,27 @@ class Guard {
     if (now.pendingTree) return navigating ? null : PROTECTED;
     this.note(sessionId, now);
     if (!now.protected) return null;
-    if (now.live) this.cut(sessionId);
+    if (shot && this.blankFrames(now)) return null;
+    if (now.live && !this.blankFrames(now)) this.cut(sessionId);
     if (!now.live && navigating) return null;
-    if (!now.live && method === 'Page.captureScreenshot' && this.blankShown(now)) return null;
+    if (!now.live && shot && this.blankShown(now)) return null;
     return PROTECTED;
+  }
+
+  blankFrames(now) {
+    const frames = now?.frames ?? [];
+    return (
+      frames.length > 0 &&
+      frames.every((frame) => {
+        const url = frame?.url;
+        return url === BLANKED || (typeof url === 'string' && url.startsWith('about:blank'));
+      })
+    );
+  }
+
+  async blankShot(sessionId) {
+    const now = await this.surface(sessionId);
+    return Boolean(now && this.blankFrames(now));
   }
 
   blankShown(now) {
@@ -1410,6 +1436,15 @@ class Guard {
     const entry = entries.find((item) => item.id === params.entryId);
     if (!entry) return true;
     return this.hides(entry);
+  }
+
+  shownTarget(message, info) {
+    const shown = this.masked(info ?? {});
+    if (shown !== info && this.is.url(shown.url)) return;
+    this.deliver({
+      ...message,
+      params: { ...message.params, targetInfo: shown },
+    });
   }
 
   masked(info) {
@@ -1516,7 +1551,14 @@ class Guard {
     return Boolean(was?.sessionId && this.blocked.has(was.sessionId));
   }
 
+  keptShot(was) {
+    return (
+      was?.method === 'Page.captureScreenshot' && this.shots.delete(was.id) && this.sealed(was)
+    );
+  }
+
   async answer(message, was) {
+    if (this.keptShot(was)) return this.deliver(message);
     if (this.sealed(was)) return this.refuse(was);
     const { method, params = {} } = was ?? {};
     const { result } = message;
@@ -1639,6 +1681,7 @@ class Guard {
 
   plainly(method, params, sessionId) {
     if (sessionId !== undefined && this.hidden(sessionId)) {
+      if (method === 'Page.captureScreenshot' && this.blocked.has(sessionId)) return false;
       return !(this.blocked.has(sessionId) && OBSERVED.has(method));
     }
     return (
@@ -1724,8 +1767,28 @@ class Guard {
     this.deliver({ id, result: answer.result });
   }
 
-  pass(message) {
-    const { id, method, sessionId } = message;
+  async withMainWorld(message) {
+    const { method, params = {}, sessionId } = message;
+    if (method !== 'Runtime.evaluate' && method !== 'Runtime.callFunctionOn') return message;
+    if (
+      params.contextId !== undefined ||
+      params.executionContextId !== undefined ||
+      params.uniqueContextId !== undefined ||
+      params.executionContextUniqueId !== undefined ||
+      params.objectId !== undefined ||
+      params.nodeId !== undefined
+    ) {
+      return message;
+    }
+    await this.queues.get(sessionId);
+    const uniqueContextId = this.worlds.get(sessionId)?.main;
+    if (!uniqueContextId) return message;
+    return { ...message, params: { ...params, uniqueContextId } };
+  }
+
+  async pass(message) {
+    const outgoing = await this.withMainWorld(message);
+    const { id, method, sessionId } = outgoing;
     if (sessionId && method === 'Runtime.enable') this.runtimes.add(sessionId);
     if (sessionId && method === 'Runtime.disable') this.runtimes.delete(sessionId);
     if (sessionId && method === 'Page.enable') this.pages.add(sessionId);
@@ -1734,7 +1797,7 @@ class Guard {
       return this.deliver({ id, sessionId, result: {} });
     }
     this.asked.set(id, message);
-    this.connection.send(JSON.stringify(message));
+    this.connection.send(JSON.stringify(outgoing));
   }
 
   received(text) {
@@ -1801,7 +1864,7 @@ class Guard {
       return true;
     }
     this.note(sessionId, now);
-    if (!now.live) return false;
+    if (!now.live || this.blankFrames(now)) return false;
     this.cut(sessionId);
     this.standIn(message);
     return true;
@@ -1823,7 +1886,7 @@ class Guard {
         this.pendingHistory.add(message.sessionId);
         this.uncommitted.add(message.sessionId);
         this.moved.add(message.id);
-        this.pass(message);
+        await this.pass(message);
         await this.untilSettled(message.sessionId, now);
         return true;
       }
@@ -1835,7 +1898,10 @@ class Guard {
       return true;
     }
     const blocked = await this.confirmed(message.sessionId, message.method);
-    if (!blocked) return false;
+    if (!blocked) {
+      if (message.method === 'Page.captureScreenshot') this.shots.add(message.id);
+      return false;
+    }
     this.refuse(message, blocked);
     return true;
   }
