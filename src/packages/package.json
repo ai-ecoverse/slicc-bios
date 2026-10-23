@@ -31,6 +31,6 @@
     "@ai-ecoverse/wasm-tls-engine": "4.2.0-8",
     "@ai-ecoverse/wasm-tree": "2.3.2-7",
     "@ai-ecoverse/wasm-which": "2.23.0-5",
-    "@ai-ecoverse/wasm-xz": "5.8.4-7"
+    "@ai-ecoverse/wasm-xz": "5.8.4-6"
   }
 }
