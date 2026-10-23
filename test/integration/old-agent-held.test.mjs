@@ -15,7 +15,7 @@ import {
 } from './old-agent-fixture.mjs';
 import { shoot } from './shots.mjs';
 
-test("slicc-agent 3.26.0, which ignores held, isn't started at boot: seven's agent installs, the chat queues what's sent here and in another tab, and the new agent gets it once, without a reload", {
+test("slicc-agent 3.26.0, which ignores held, isn't started at boot: seven's agent installs, the chat queues what's sent here and in another tab, and the new agent gets it once, with Install / Update open and without a reload", {
   timeout: 60 * 60 * 1000,
 }, async (t) => {
   const { page, owner } = await installedOld(t, '3.26.0');
@@ -123,11 +123,15 @@ test("slicc-agent 3.26.0, which ignores held, isn't started at boot: seven's age
     await other.within(60000, () => window.composer()?.queued.length === 0);
   }
   t.diagnostic(`the follower tab after the install: ${follower}`);
-  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
+  const updatesShown = () =>
+    document.querySelector('slicc-app').dock.api.getPanel('updates')?.api.isVisible === true;
+  assert.equal(await page.evaluate(updatesShown), true);
   const sent = await page.within(60000, () => {
     const texts = window.delivered();
     return texts.length >= 3 && texts;
   });
+  assert.equal(await page.evaluate(updatesShown), true);
+  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
   const own = sent.filter((text) => text !== 'From the other tab while it installs');
   assert.deepEqual(
     own,
