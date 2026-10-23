@@ -373,3 +373,42 @@ test('a sign-in tab already open before the client connects is neither listed no
     'the sign-in tab is still open'
   );
 });
+
+test('a sign-in through the extension records its client id, so that id’s authorize page is protected after a reload', {
+  timeout: 5 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  const extension = await fakeExtension(page);
+  t.after(() => extension.close());
+  await page.goto('/');
+  await ready(page);
+  const token = await page.evaluate(async () => {
+    localStorage.removeItem('slicc-os.sign-in-clients');
+    const { signIn } = await import('/os/adobe.js');
+    const login = signIn({
+      extension: { signIn: async () => 'extension-token' },
+      open: () => null,
+    });
+    return login('adobe', () => ({ clientId: 'extension-path-client', scopes: 'openid' }));
+  });
+  assert.equal(token, 'extension-token');
+  await page.goto('/');
+  await ready(page);
+  const url = authorize({ client_id: 'extension-path-client', response_type: 'token' });
+  const answer = await page.evaluate(async (url) => {
+    const { guardProtected } = await import(new URL('guard.js', location.href).href);
+    const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
+    const connection = guardProtected(
+      extensionConnection(globalThis.sliccExtension.cdp),
+      self.origin
+    );
+    return new Promise((resolve) => {
+      connection.onmessage = (text) => {
+        const message = JSON.parse(text);
+        if (message.id === 1) resolve(message);
+      };
+      connection.send(JSON.stringify({ id: 1, method: 'Target.createTarget', params: { url } }));
+    });
+  }, url);
+  assert.match(answer.error?.message ?? '', /^slicc: refused:/, JSON.stringify(answer));
+});
