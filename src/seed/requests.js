@@ -6,6 +6,7 @@ export const OWN = "seven doesn't open its own pages or the vault for a program"
 export const DISMISSED = 'the request to open the page was dismissed';
 export const LATE = 'nobody answered the request to open the page within 60 s';
 export const WAIT_MS = 60_000;
+export const BUSY = 'another request is waiting for you';
 
 export const refused = (message) => new DOMException(message, 'NotAllowedError');
 
@@ -19,6 +20,10 @@ function parsed(tag) {
 
 export function tagsOf(stamp) {
   return [stamp?.tag, ...(stamp?.tags ?? [])].filter((tag) => typeof tag === 'string').map(parsed);
+}
+
+export function session(stamp) {
+  return JSON.stringify([stamp?.uid ?? null, stamp?.tag ?? null, stamp?.tags ?? []]);
 }
 
 export function typed(stamp) {
@@ -69,10 +74,14 @@ export function gestures({
   timers = globalThis,
   wait = WAIT_MS,
 } = {}) {
+  const waiting = new Set();
   return async (stamp, { dismissed, late, ...prompt }, signal) => {
     if (signal.aborted) throw signal.reason;
     if (typed(stamp) && active()) return;
+    const key = session(stamp);
+    if (waiting.has(key)) throw refused(BUSY);
     const asked = ask(prompt);
+    waiting.add(key);
     let why = dismissed;
     const stop = (reason) => {
       why = reason;
@@ -85,6 +94,7 @@ export function gestures({
     try {
       yes = await asked.result;
     } finally {
+      waiting.delete(key);
       timers.clearTimeout(timer);
       signal.removeEventListener('abort', withdraw);
     }
