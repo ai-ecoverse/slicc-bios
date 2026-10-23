@@ -1768,9 +1768,8 @@ test('an agent that failed to start at boot loads the new page adapter once an u
     .within(UPDATE, () => {
       const list = document.querySelector('slicc-app').model.updates.list();
       const item = list.find((entry) => entry.id === 'agent');
-      const checked = !!list.find((entry) => entry.id === 'grammars')?.checkedAt;
       return (
-        checked &&
+        !!item.checkedAt &&
         item.state === 'failed' &&
         /Couldn't start the agent/.test(item.error ?? '') &&
         globalThis.sevenAdapters?.[0] === 'old'
