@@ -360,6 +360,7 @@ async function older(entry, latest, ctx) {
     .filter(([version, doc]) => EXACT.test(version) && !doc?.deprecated)
     .filter(([version]) => compare(version, latest) < 0)
     .filter(([version]) => !entry.range || within(version, entry.range))
+    .filter(([, doc]) => !fits(doc ?? {}, ctx.have))
     .map(([version]) => version)
     .sort(compare)
     .reverse()
