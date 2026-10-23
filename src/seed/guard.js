@@ -46,7 +46,9 @@ const REMEMBERED = 10000;
 const HISTORY_WAIT = 5000;
 const HISTORY_POLL = 40;
 const FRAME_MS = 300;
+const TREE_WAIT = 2000;
 const ANSWER_MS = 1000;
+const WORKER_TYPES = new Set(['service_worker', 'shared_worker', 'worker']);
 const HISTORY_KIND = /history\s*(?:\.\s*|\[["']\s*)(back|forward|go)\b/;
 const HISTORY_DELTA = /history\s*(?:\.\s*go\s*\(\s*|\[\s*['"]go['"]\s*\]\s*\(\s*)(-?\d+)/;
 const HISTORY_NAV = new Set([
@@ -1317,12 +1319,32 @@ class Guard {
       return this.view(info, frames, listed);
     }
     if (this.pendingHistory.has(sessionId) && !frames.length) return null;
-    if (treeNow === undefined) {
-      const now = this.view(info, [], history);
-      return now.protected ? now : { ...now, pendingTree: true };
-    }
+    if (treeNow === undefined) return this.slowTree(sessionId, info, history, tree);
     if (treeNow.error || !frames.length) return this.view(info, [], history);
     return this.view(info, frames, history);
+  }
+
+  async slowTree(sessionId, info, history, tree) {
+    const preview = this.view(info, [], history);
+    if (preview.protected) return preview;
+    if (this.uncommitted.has(sessionId)) return { ...preview, pendingTree: true };
+    let timer;
+    const late = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(undefined), TREE_WAIT);
+    });
+    const arrived = await Promise.race([
+      tree.then((value) => {
+        clearTimeout(timer);
+        return value;
+      }),
+      late,
+    ]);
+    const frames = arrived && !arrived.error ? framed(arrived.result?.frameTree) : [];
+    if (!frames.length) return { ...preview, pendingTree: true };
+    const now = this.view(info, frames, history);
+    if (now.protected) return now;
+    if (frames.some((frame) => /^https?:/i.test(frame.url ?? ''))) return now;
+    return { ...preview, pendingTree: true };
   }
 
   note(sessionId, now) {
@@ -1381,8 +1403,19 @@ class Guard {
     if (!started && !committed) return;
     for (const id of this.boundSessions(sessionId)) {
       if (started) this.uncommitted.add(id);
-      else this.uncommitted.delete(id);
+      else {
+        this.uncommitted.delete(id);
+        this.worlds.delete(id);
+      }
     }
+  }
+
+  async workerSession(sessionId) {
+    const targetId = this.sessions.get(sessionId)?.targetId;
+    if (!targetId) return undefined;
+    const kind = (await this.lookup(targetId))?.type;
+    if (!WORKER_TYPES.has(kind)) return undefined;
+    return (await this.target(targetId)) ? PROTECTED : null;
   }
 
   async confirmed(sessionId, method) {
@@ -1392,6 +1425,8 @@ class Guard {
       return PROTECTED;
     }
     if (method.startsWith('Input.') && this.uncommitted.has(sessionId)) return PROTECTED;
+    const worker = await this.workerSession(sessionId);
+    if (worker !== undefined) return worker;
     const now = await this.surface(sessionId);
     const navigating = NAVIGATES.has(method);
     if (!now) return navigating && (await this.openDocument(sessionId)) ? null : PROTECTED;
@@ -1796,7 +1831,10 @@ class Guard {
     const outgoing = await this.withMainWorld(message);
     const { id, method, sessionId } = outgoing;
     if (sessionId && method === 'Runtime.enable') this.runtimes.add(sessionId);
-    if (sessionId && method === 'Runtime.disable') this.runtimes.delete(sessionId);
+    if (sessionId && method === 'Runtime.disable') {
+      this.runtimes.delete(sessionId);
+      this.worlds.delete(sessionId);
+    }
     if (sessionId && method === 'Page.enable') this.pages.add(sessionId);
     if (sessionId && method === 'Page.disable' && this.shown.has(sessionId)) {
       this.pages.delete(sessionId);
