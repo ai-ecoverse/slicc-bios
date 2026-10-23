@@ -27,6 +27,7 @@ export async function fakeCatalog(cdp) {
     status: 0,
     tarballs: 0,
     only: null,
+    hold: null,
     asked: [],
     names: new Set(),
     reset() {
@@ -37,6 +38,7 @@ export async function fakeCatalog(cdp) {
       state.status = 0;
       state.tarballs = 0;
       state.only = null;
+      state.hold = null;
       state.asked.length = 0;
     },
   };
@@ -54,6 +56,7 @@ export async function fakeCatalog(cdp) {
     if (method !== 'Fetch.requestPaused') return;
     const { requestId, request } = params;
     state.asked.push(request.url);
+    if (state.hold?.test(request.url)) return;
     const names = new Set([...state.names, ...state.latest.keys()]);
     const { pathname } = new URL(request.url);
     const tarball =

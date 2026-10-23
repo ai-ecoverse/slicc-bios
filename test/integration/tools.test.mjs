@@ -121,7 +121,7 @@ test('a fresh profile gets every tool after boot, from npm, into /opt/slicc/tool
     `test -e ${TOOLS}/${JQ}/package.json && test ! -e /node_modules/${JQ} && test -e /node_modules/@ai-ecoverse/wasm-bash/package.json && echo split`
   );
   assert.equal(where.out, 'split');
-  await shoot(page, 'tools-installed', { show: 'updates', target: '[data-id="tools:tls-engine"]' });
+  await shoot(page, 'tools-installed', { show: 'updates', target: '[data-id="tools:grep"]' });
   assert.deepEqual(page.errors, []);
 });
 
@@ -181,6 +181,157 @@ test('seven judges every package pnpm resolved for the tools before pnpm downloa
     order.some((line) => !/tarball -1$/.test(line)),
     `pnpm downloaded the tools through the page: ${order.join(', ')}`
   );
+  assert.deepEqual(page.errors, []);
+});
+
+const HOMESCOOP = 'https://github.com/ai-ecoverse/homescoop';
+const at = (path) => `https://registry.npmjs.org${path}`;
+const latestOf = async (name) =>
+  JSON.parse((await download(at(`/${name}/latest`))).toString()).version;
+const both = (name) => [at(`/${name}`), at(`/${name.replace('/', '%2F')}`)];
+
+test('a lock entry the gate refuses keeps its tool out, even another version of a listed tool reached as a dependency: sed’s new release needs a jq with no build record, so sed isn’t installed, neither tarball is fetched, and the other tools are', {
+  timeout: 20 * 60 * 1000,
+}, async (t) => {
+  const SED = '@ai-ecoverse/wasm-sed';
+  const page = await chrome.page(t);
+  prepare();
+  const [realJq, realSed] = await Promise.all([latestOf(JQ), latestOf(SED)]);
+  const loose = await fakeRelease({
+    name: JQ,
+    from: realJq,
+    version: '1.8.2-99',
+    repository: HOMESCOOP,
+  });
+  loose.provenance = false;
+  const needing = await fakeRelease({
+    name: SED,
+    from: realSed,
+    version: '4.10.0-99',
+    repository: HOMESCOOP,
+    dependencies: { [JQ]: '^1.8.2-99' },
+  });
+  needing.workflow = { ref: 'refs/heads/main', path: '.github/workflows/publish.yml' };
+  const tarballs = [at(`/${SED}/-/wasm-sed-4.10.0-99.tgz`), at(`/${JQ}/-/wasm-jq-1.8.2-99.tgz`)];
+  const sedDoc = await needing.serve(at(`/${SED}/latest`));
+  for (const url of both(SED)) registry.docs.set(url, await needing.serve(at(`/${SED}`)));
+  registry.docs.set(at(`/${SED}/latest`), sedDoc);
+  registry.docs.set(at(`/${SED}/4.10.0-99`), sedDoc);
+  registry.docs.set(tarballs[0], await needing.serve(tarballs[0]));
+  registry.docs.set(
+    at(`/-/npm/v1/attestations/${SED.replace('/', '%2f')}@4.10.0-99`),
+    await needing.serve(at(`/-/npm/v1/attestations/${SED}@4.10.0-99`))
+  );
+  const jqAll = JSON.parse(await loose.serve(at(`/${JQ}`)));
+  jqAll['dist-tags'].latest = realJq;
+  for (const url of both(JQ)) registry.docs.set(url, JSON.stringify(jqAll));
+  registry.docs.set(at(`/${JQ}/1.8.2-99`), await loose.serve(at(`/${JQ}/latest`)));
+  registry.docs.set(tarballs[1], await loose.serve(tarballs[1]));
+  registry.asked.length = 0;
+  await boot(page);
+  const all = await rows(page);
+  const sed = all.find((row) => row.name === SED);
+  assert.equal(sed.state, 'failed', JSON.stringify(sed));
+  assert.match(sed.error ?? '', /wasm-jq 1\.8\.2-99/, JSON.stringify(sed));
+  assert.equal(await versionOf(page, `${TOOLS}/${SED}`), null, 'sed stays out');
+  assert.equal(await versionOf(page, `${TOOLS}/${JQ}`), realJq, 'jq is the one seven chose');
+  assert.deepEqual(
+    registry.asked.filter((url) => tarballs.includes(url)),
+    [],
+    'neither the refused jq nor the sed that needs it is downloaded'
+  );
+  const others = all.filter((row) => row.name !== SED && listed[row.name]?.first);
+  assert.ok(
+    others.every((row) => row.state === 'installed'),
+    `the other first tools install: ${JSON.stringify(others)}`
+  );
+  assert.deepEqual(page.errors, []);
+});
+
+test('a refused lock entry of a tool outside the batch blocks the install: with the installed tar withdrawn, gzip’s update isn’t downloaded and gzip keeps its version', {
+  timeout: 20 * 60 * 1000,
+}, async (t) => {
+  const GZIP = '@ai-ecoverse/wasm-gzip';
+  const TAR = '@ai-ecoverse/wasm-tar';
+  const page = await chrome.page(t);
+  prepare();
+  const all = JSON.parse((await download(at(`/${GZIP}`))).toString());
+  const latest = all['dist-tags'].latest;
+  const versions = Object.keys(all.versions);
+  const older = versions[versions.indexOf(latest) - 1];
+  assert.ok(older, `gzip has a release before ${latest}`);
+  registry.latest.set(GZIP, older);
+  await boot(page);
+  assert.equal(await versionOf(page, `${TOOLS}/${GZIP}`), older);
+  const tar = await versionOf(page, `${TOOLS}/${TAR}`);
+  assert.ok(tar, 'tar is installed');
+  registry.latest.delete(GZIP);
+  registry.docs.set(
+    'https://raw.githubusercontent.com/ai-ecoverse/homescoop/main/certification-exceptions.json',
+    JSON.stringify({
+      schema: 1,
+      entries: [
+        { package: TAR, versions: [tar], verdict: 'fail', issue: 'https://example.test/1' },
+      ],
+    })
+  );
+  registry.asked.length = 0;
+  const result = await act(page, 'tools:gzip', 'retry');
+  const gzip = (await rows(page)).find((row) => row.name === GZIP);
+  assert.notEqual(result, 'ok', JSON.stringify(gzip));
+  assert.equal(gzip.state, 'failed', JSON.stringify(gzip));
+  assert.equal(await versionOf(page, `${TOOLS}/${GZIP}`), older, 'gzip keeps its version');
+  const log = await page.evaluate(
+    () =>
+      document
+        .querySelector('slicc-app')
+        .model.updates.packages()
+        .find((row) => row.id === 'tools:gzip')?.log ?? ''
+  );
+  assert.match(log, new RegExp(`wasm-tar@${tar.replace(/\./g, '\\.')} fails the checks`), log);
+  assert.deepEqual(
+    registry.asked.filter((url) => url === at(`/${GZIP}/-/wasm-gzip-${latest}.tgz`)),
+    [],
+    'gzip’s update is never downloaded'
+  );
+  assert.deepEqual(page.errors, []);
+});
+
+test('a tools round whose pnpm hangs gives up after its limit and releases the pnpm store, so the tools settle and the agent install still finishes', {
+  timeout: 25 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  prepare();
+  registry.hold = /\/@ai-ecoverse\/wasm-jq\/-\/wasm-jq-[^/]+\.tgz$/;
+  await page.goto('/');
+  await toolsSettled(page, 12 * 60 * 1000);
+  const jq = await jqRow(page);
+  assert.equal(jq.state, 'failed', JSON.stringify(jq));
+  const log = await page.evaluate(
+    () =>
+      document
+        .querySelector('slicc-app')
+        .model.updates.packages()
+        .find((row) => row.id === 'tools:jq')?.log ?? ''
+  );
+  assert.match(log, /pnpm didn't finish within \d+ s/, log);
+  const later = (await rows(page)).filter((row) => !listed[row.name]?.first);
+  assert.ok(
+    later.every((row) => row.state === 'installed'),
+    `the second round still installs: ${JSON.stringify(later)}`
+  );
+  await page.within(10 * 60 * 1000, () => {
+    const agent = document
+      .querySelector('slicc-app')
+      .model.updates.list()
+      .find((item) => item.id === 'agent');
+    window.sliccAgentSeen = agent?.state ?? 'absent';
+    return !!agent && !/queued|starting|checking|downloading|linking|installing/.test(agent.state);
+  });
+  const held = await page.evaluate(async () =>
+    ((await navigator.locks.query()).held ?? []).map((lock) => lock.name)
+  );
+  assert.ok(!held.includes('slicc-pnpm-store'), `the pnpm store is free: ${held.join(', ')}`);
   assert.deepEqual(page.errors, []);
 });
 

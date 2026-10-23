@@ -317,8 +317,15 @@ export function installer(
 
 export const STORE = 'slicc-pnpm-store';
 
-export function pnpm(kernel, cwd, report, to = null, argv = INSTALL, writer = true) {
-  return navigator.locks.request(STORE, () => pnpmAlone(kernel, cwd, report, to, argv, writer));
+export function pnpm(kernel, cwd, report, to = null, argv = INSTALL, writer = true, limit = 0) {
+  const run = () => pnpmAlone(kernel, cwd, report, to, argv, writer, null, limit);
+  if (!limit) return navigator.locks.request(STORE, run);
+  return navigator.locks
+    .request(STORE, { signal: AbortSignal.timeout(limit * 1000) }, run)
+    .catch((error) => {
+      if (error?.name !== 'TimeoutError' && error?.name !== 'AbortError') throw error;
+      throw Object.assign(new Error(`the pnpm store stayed busy for ${limit} s`), { to });
+    });
 }
 
 export function pnpmAs(kernel, { user, home, where }, report, to, argv) {
@@ -326,7 +333,7 @@ export function pnpmAs(kernel, { user, home, where }, report, to, argv) {
   return pnpmAlone(kernel, home, report, to, argv, false, { user, env: { ...env, ...TRAPS } });
 }
 
-async function pnpmAlone(kernel, cwd, report, to, argv, writer, as = null) {
+async function pnpmAlone(kernel, cwd, report, to, argv, writer, as = null, limit = 0) {
   let log = '';
   const downloads = new Map();
   report({ progress: null, log });
@@ -340,10 +347,15 @@ async function pnpmAlone(kernel, cwd, report, to, argv, writer, as = null) {
     : writer
       ? { ...writing(cwd), onStdout }
       : { cwd, env: TRAPS, onStdout };
-  const ran = () => kernel.run(writer ? hygiene(argv) : argv, run);
+  const line = writer ? hygiene(argv) : argv;
+  const command = limit ? ['timeout', '-k', '10', String(limit), ...line] : line;
+  const ran = () => kernel.run(command, run);
   const { status, stderr } = await (writer ? writing_(kernel, writes(cwd, argv), ran) : ran());
   if (status) {
-    const error = new Error(stderr.trim() || `pnpm exited with ${status}`);
+    const late = limit && (status === 124 || status === 137);
+    const error = new Error(
+      late ? `pnpm didn't finish within ${limit} s` : stderr.trim() || `pnpm exited with ${status}`
+    );
     error.log = (log + stderr).slice(-LOG);
     error.to = to;
     throw error;
