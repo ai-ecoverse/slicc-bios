@@ -431,7 +431,7 @@ async function readRestored(targetId) {
   }
 }
 
-async function prepare(origin, direction, id) {
+async function prepare(origin, direction, id, beforeLeave = '') {
   const protectedUrl = origin === 'seven' ? `${SEVEN}/probe-bf.html?${id}` : `${VAULT}/page?${id}`;
   const ordinaryUrl = `${ORDINARY}/page?${id}`;
   const first = direction === 'back' ? protectedUrl : ordinaryUrl;
@@ -448,7 +448,7 @@ async function prepare(origin, direction, id) {
   if (direction === 'back') {
     await own.send(
       'Runtime.evaluate',
-      { expression: 'window.__bf = "live"', returnByValue: true },
+      { expression: `window.__bf = "live"; ${beforeLeave}`, returnByValue: true },
       sessionId
     );
     await own.send('Page.navigate', { url: ordinaryUrl }, sessionId);
@@ -642,6 +642,122 @@ async function runHeld(guard, path, variant, origin) {
   }
 }
 
+const leaveCounter =
+  'window.__n = 0; window.__shownAt = 0; window.addEventListener("pageshow", (event) => { if (event.persisted) window.__shownAt = Date.now(); });';
+
+function effectExpression(id) {
+  const beacon = `http://127.0.0.1:${standPort}/beacon?id=${encodeURIComponent(id)}`;
+  return `(() => { const el = document.documentElement; if (el) el.setAttribute("data-bf", ${JSON.stringify(id)}); window.__n = (window.__n || 0) + 1; fetch(${JSON.stringify(beacon)}, { mode: "no-cors", cache: "no-store" }); return "BFHOLD " + location.host; })()`;
+}
+
+async function readEffect(targetId) {
+  const attached = await own.send('Target.attachToTarget', { targetId, flatten: true });
+  const sessionId = attached.result?.sessionId;
+  if (!sessionId) return { mark: null, n: null, shown: 0, href: attached.error?.message ?? '' };
+  const answer = await own.send(
+    'Runtime.evaluate',
+    {
+      expression:
+        'JSON.stringify({mark:document.documentElement&&document.documentElement.getAttribute("data-bf"),n:window.__n??0,shown:window.__shownAt??0,href:location.href})',
+      returnByValue: true,
+    },
+    sessionId
+  );
+  await own.send('Target.detachFromTarget', { sessionId });
+  try {
+    return JSON.parse(answer.result?.result?.value ?? '{}');
+  } catch {
+    return { mark: null, n: null, shown: 0, href: clipped(answer) };
+  }
+}
+
+async function waitPageshow(targetId) {
+  const end = Date.now() + 8000;
+  while (Date.now() < end) {
+    const read = await readEffect(targetId);
+    if (read.shown) return Date.now();
+    await pause(50);
+  }
+  return null;
+}
+
+async function runAbsent(guard, path, variant, origin) {
+  const id = `bf-effect-${path}-${variant}-${origin}-${Date.now()}`;
+  const { targetId, protectedUrl } = await prepare(origin, 'back', id, leaveCounter);
+  const host = new URL(protectedUrl).host;
+  try {
+    const attached = await guard.send('Target.attachToTarget', { targetId, flatten: true });
+    assert.equal(attached.error, undefined, clipped(attached));
+    const session = attached.result.sessionId;
+    await guard.send('Page.enable', {}, session);
+    await guard.send('Runtime.enable', {}, session);
+    const control = await guard.send(
+      'Runtime.evaluate',
+      { expression: '1+1', returnByValue: true },
+      session
+    );
+    assert.equal(control.result?.result?.value, 2, `ordinary evaluate: ${clipped(control)}`);
+    await guard.lag(variant === 'lagging' ? READ_LAG : 0);
+    await guard.hold();
+    const pending = guard.send(
+      'Runtime.evaluate',
+      { expression: effectExpression(id), returnByValue: true },
+      session
+    );
+    const forwarded = await Promise.race([
+      guard.held().then(() => 'held'),
+      pending.then(() => 'answered'),
+      pause(8000).then(() => 'timeout'),
+    ]);
+    if (forwarded !== 'held') {
+      throw new Error(`${id}: the read was ${forwarded} before the restore`);
+    }
+    await guard.send(
+      'Runtime.evaluate',
+      { expression: 'history.back()', userGesture: true, returnByValue: true },
+      session
+    );
+    const shownAt = await waitPageshow(targetId);
+    if (!shownAt) throw new Error(`${id}: pageshow did not run on the restored page`);
+    await pause(400);
+    const after = Date.now() - shownAt;
+    await guard.release();
+    const answer = await pending;
+    const page = await readEffect(targetId);
+    const hits = beacons.filter((hit) => hit.id === id).length;
+    const text = JSON.stringify(answer) ?? '';
+    const kind = verdict(answer);
+    const leaked = text.includes(host) || text.includes(id);
+    const markerAbsent = page.mark !== id;
+    const counter = page.n;
+    const closed =
+      kind === 'refused' || /no answer|session|detached|target closed|not found/i.test(text);
+    const line = [
+      'BFEFFECT',
+      path,
+      variant,
+      origin,
+      'back',
+      `eval=${kind}`,
+      `after=${after}`,
+      `marker=${markerAbsent ? 'absent' : 'hit'}`,
+      `counter=${counter}`,
+      `beacons=${hits}`,
+      markerAbsent && counter === 0 && hits === 0 && !leaked && closed && after >= 350
+        ? 'pass'
+        : 'GAP',
+    ].join(' ');
+    console.log(line);
+    if (!markerAbsent || counter !== 0 || hits !== 0 || leaked || !closed || after < 350) {
+      throw new Error(`${line}\nanswer=${clipped(answer)}\npage=${clipped(page)}`);
+    }
+  } finally {
+    await guard.release().catch(() => undefined);
+    await guard.lag(0);
+    await own.send('Target.closeTarget', { targetId });
+  }
+}
+
 async function runInput(guard, path, variant, origin) {
   const id = `bf-input-${path}-${variant}-${origin}-${Date.now()}`;
   const { targetId } = await prepare(origin, 'back', id);
@@ -714,7 +830,11 @@ async function runInput(guard, path, variant, origin) {
 
 async function matrix(t, path, proxy) {
   const guard = await guardPage(t, proxy);
-  if (process.env.BF_HELD !== 'only' && process.env.BF_INPUT !== 'only') {
+  const wide =
+    process.env.BF_HELD !== 'only' &&
+    process.env.BF_INPUT !== 'only' &&
+    process.env.BF_EFFECT !== 'only';
+  if (wide) {
     for (const variant of ['prompt', 'lagging']) {
       await t.test(`${path} ${variant}`, async () => {
         for (let n = 0; n < RUNS; n += 1) {
@@ -724,17 +844,26 @@ async function matrix(t, path, proxy) {
       });
     }
   }
-  if (process.env.BF_INPUT !== 'only') {
+  if (process.env.BF_INPUT !== 'only' && process.env.BF_EFFECT !== 'only') {
     for (const variant of ['prompt', 'lagging']) {
       await t.test(`${path} ${variant} held`, async () => {
         await runHeld(guard, path, variant, 'seven');
       });
     }
   }
-  for (const variant of ['prompt', 'lagging']) {
-    await t.test(`${path} ${variant} input`, async () => {
-      await runInput(guard, path, variant, 'seven');
-    });
+  if (process.env.BF_EFFECT !== 'only') {
+    for (const variant of ['prompt', 'lagging']) {
+      await t.test(`${path} ${variant} input`, async () => {
+        await runInput(guard, path, variant, 'seven');
+      });
+    }
+  }
+  if (process.env.BF_HELD !== 'only' && process.env.BF_INPUT !== 'only') {
+    for (const variant of ['prompt', 'lagging']) {
+      await t.test(`${path} ${variant} effect`, async () => {
+        await runAbsent(guard, path, variant, 'seven');
+      });
+    }
   }
 }
 
@@ -1030,7 +1159,11 @@ if (ONLY === '' || ONLY === 'link') {
     timeout: 20 * 60 * 1000,
   }, async (t) => {
     const guard = await guardLink(t);
-    if (process.env.BF_HELD !== 'only' && process.env.BF_INPUT !== 'only') {
+    const wide =
+      process.env.BF_HELD !== 'only' &&
+      process.env.BF_INPUT !== 'only' &&
+      process.env.BF_EFFECT !== 'only';
+    if (wide) {
       for (const variant of ['prompt', 'lagging']) {
         await t.test(`link ${variant}`, async () => {
           for (let n = 0; n < RUNS; n += 1) {
@@ -1040,17 +1173,26 @@ if (ONLY === '' || ONLY === 'link') {
         });
       }
     }
-    if (process.env.BF_INPUT !== 'only') {
+    if (process.env.BF_INPUT !== 'only' && process.env.BF_EFFECT !== 'only') {
       for (const variant of ['prompt', 'lagging']) {
         await t.test(`link ${variant} held`, async () => {
           await runHeld(guard, 'link', variant, 'seven');
         });
       }
     }
-    for (const variant of ['prompt', 'lagging']) {
-      await t.test(`link ${variant} input`, async () => {
-        await runInput(guard, 'link', variant, 'seven');
-      });
+    if (process.env.BF_EFFECT !== 'only') {
+      for (const variant of ['prompt', 'lagging']) {
+        await t.test(`link ${variant} input`, async () => {
+          await runInput(guard, 'link', variant, 'seven');
+        });
+      }
+    }
+    if (process.env.BF_HELD !== 'only' && process.env.BF_INPUT !== 'only') {
+      for (const variant of ['prompt', 'lagging']) {
+        await t.test(`link ${variant} effect`, async () => {
+          await runAbsent(guard, 'link', variant, 'seven');
+        });
+      }
     }
   });
 }
