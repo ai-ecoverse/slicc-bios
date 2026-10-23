@@ -430,6 +430,7 @@ test('the base set pins exactly what UI boot and the agent install need, and eve
     '@ai-ecoverse/wasm-bash',
     '@ai-ecoverse/wasm-coreutils',
     '@ai-ecoverse/wasm-findutils',
+    '@ai-ecoverse/wasm-tls-engine',
   ]);
   const lock = JSON.parse(await read('package-lock.json'));
   assert.deepEqual(
@@ -440,21 +441,12 @@ test('the base set pins exactly what UI boot and the agent install need, and eve
     base
   );
   const tools = JSON.parse(await read('tools.json'));
-  assert.equal(Object.keys(tools).length, 22);
+  assert.equal(Object.keys(tools).length, 21);
   assert.deepEqual(
     Object.entries(tools)
       .filter(([, entry]) => entry.first)
       .map(([name]) => name.split('/').at(-1)),
-    [
-      'wasm-tls-engine',
-      'wasm-grep',
-      'wasm-sed',
-      'wasm-curl',
-      'wasm-tar',
-      'wasm-gzip',
-      'wasm-jq',
-      'wasi-ripgrep',
-    ]
+    ['wasm-grep', 'wasm-sed', 'wasm-curl', 'wasm-tar', 'wasm-gzip', 'wasm-jq', 'wasi-ripgrep']
   );
   const pnpmLock = await read('pnpm-lock.yaml');
   for (const name of Object.keys(tools)) {
