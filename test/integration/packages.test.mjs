@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
+import { compare } from '../../src/seed/packages.js';
 import { actPackage, boot, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { fakeCatalog } from './fake-catalog.mjs';
@@ -14,6 +16,41 @@ const RSYNC = '@ai-ecoverse/wasm-rsync';
 const REGISTRY = 'https://registry.npmjs.org/';
 const doc = async (name, version) =>
   JSON.parse(await download(`${REGISTRY}${name}/${encodeURIComponent(version)}`));
+
+const attested = async (version) => {
+  const url = version?.dist?.attestations?.url;
+  if (!url) return null;
+  return download(url).then(
+    (body) => [url, body.toString()],
+    () => undefined
+  );
+};
+
+async function pinCatalog() {
+  const catalog = JSON.parse(
+    await readFile(new URL('../../src/packages/optional/catalog.json', import.meta.url), 'utf8')
+  );
+  for (const [name, entry] of Object.entries(catalog)) {
+    if (entry.kind === 'project') continue;
+    const all = JSON.parse(await download(`${REGISTRY}${name}`));
+    const versions = Object.keys(all.versions ?? {}).sort(compare);
+    const latest = all['dist-tags']?.latest;
+    const cut = versions.indexOf(latest);
+    for (const version of versions.slice(0, cut + 1).reverse()) {
+      const pinned = all.versions[version];
+      const attestation = await attested(pinned);
+      if (attestation === undefined) continue;
+      for (const later of versions.slice(versions.indexOf(version) + 1)) delete all.versions[later];
+      all['dist-tags'] = { latest: version };
+      const body = JSON.stringify(pinned);
+      registry.docs.set(`${REGISTRY}${name}`, JSON.stringify(all));
+      registry.docs.set(`${REGISTRY}${name}/latest`, body);
+      registry.docs.set(`${REGISTRY}${name}/${encodeURIComponent(version)}`, body);
+      if (attestation) registry.docs.set(...attestation);
+      break;
+    }
+  }
+}
 
 function offer(latest) {
   const catalog = {
@@ -392,6 +429,7 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
   const page = await chrome.page(t);
   registry.reset();
   chrome.overrides.delete('/packages/optional/catalog.json');
+  await pinCatalog();
   await boot(page);
   await state(page, 'git', 'available');
   const color = (value) =>
