@@ -68,6 +68,7 @@ import { installProfile, kernelPorts } from './profile.js';
 import { PYTHON } from './projects.js';
 import { createNotes, createReleases } from './releases.js';
 import { createRemote } from './remote.js';
+import { pageRequests } from './requests.js';
 import { BIOS, home, sharesOrigin } from './site.js';
 import { installPrompts, keepStorage, onSend } from './storage.js';
 import {
@@ -335,6 +336,7 @@ let files = null;
 const composer = holdComposer();
 let presentation = null;
 let kernel = null;
+const requests = pageRequests({ show: confirm });
 let folders = null;
 let owner = null;
 let agent = null;
@@ -413,7 +415,9 @@ async function followerShell(link, meta, stream) {
 
 async function give(from, names) {
   return {
-    kernel: names.includes('kernel') ? await kernel.connect({ tag: terminalTag(from) }) : null,
+    kernel: names.includes('kernel')
+      ? await kernel.connect({ tag: terminalTag(from), requests: 'attach' })
+      : null,
     agent: names.includes('agent') && owner ? await owner.port() : null,
     os: names.includes('os') ? serving.open() : null,
   };
@@ -481,7 +485,7 @@ async function started(chat, lock) {
 
 async function launch() {
   try {
-    owner = await startChat(kernel);
+    owner = await startChat(kernel, { requests });
     if (await announce(await agentVersion())) return owner;
   } catch (error) {
     if (error.older) refusal = error;
@@ -507,7 +511,7 @@ function startOnce() {
 
 async function relaunch(running) {
   try {
-    owner = await restartChat(kernel, running);
+    owner = await restartChat(kernel, running, { requests });
     if (await announce(await agentVersion())) return owner;
   } catch (error) {
     if (error.older) refusal = error;
@@ -781,6 +785,7 @@ async function own() {
     network: { transport, uplink: exits.uplink },
     cdp: control.hook,
     clipboard: clipboardHook(),
+    requests,
     commands: { append: [USER_MODULES] },
     facades: { link: { port: LINK_PORT, hook: link } },
     ...sealedOption((await versions(root, [KERNEL]))[KERNEL], vault),
@@ -868,7 +873,7 @@ async function own() {
 async function follow() {
   const facade = followKernel({
     port: async () => (await board.ports(['kernel'])).kernel,
-    attach: attachKernel,
+    attach: (port) => attachKernel(port, { requests }),
   });
   serveLoopback(facade);
   model = createKernelModel({

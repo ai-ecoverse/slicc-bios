@@ -64,17 +64,18 @@ function spec({ name, home, groups: asked = [], umask, homeGroup, homeMode }) {
   };
 }
 
-export function kernelSource(kernel) {
+export function kernelSource(kernel, requests) {
+  const bound = requests ? { requests } : {};
   const connect = (options) => {
     if (options === undefined || options === null || !('user' in options))
-      return kernel.connect({ tag: agentTag('root') });
+      return kernel.connect({ tag: agentTag('root'), ...bound });
     const { user, agentId } = options;
     if (typeof user !== 'string')
       throw refused(`${agentId ?? 'an agent'} as a kernel user that isn't a name`);
     if (agentFor(user) !== agentId) {
       throw refused(`${agentId ?? 'an agent'} as the kernel user ${user}`);
     }
-    return kernel.connect({ user, tag: agentTag(agentId) });
+    return kernel.connect({ user, tag: agentTag(agentId), ...bound });
   };
   const users = kernel.users;
   if (!users || users.mode === 'off') return { connect };

@@ -112,7 +112,7 @@ async function outdated() {
   return chat !== null && (await chatFrom) !== (await recorded());
 }
 
-export async function startChat(kernel, { vault = chatVault, ...options } = {}) {
+export async function startChat(kernel, { vault = chatVault, requests, ...options } = {}) {
   await mayStart(await version(), { root: await navigator.storage.getDirectory() });
   const fresh = options.fresh || (await outdated());
   const { startAgent } = await loadChat({ ...options, fresh });
@@ -122,7 +122,7 @@ export async function startChat(kernel, { vault = chatVault, ...options } = {}) 
       () => new Worker(agentWorker, { type: 'module', name: 'slicc-agent' }),
       takes ? vault : null
     ),
-    kernel: kernelSource(kernel),
+    kernel: kernelSource(kernel, requests),
     held: true,
   });
 }
