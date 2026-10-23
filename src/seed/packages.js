@@ -443,14 +443,14 @@ export function createNpm({ base, shipped = base, sources, bundled, have, fetche
     return found.find(Boolean) ?? null;
   }
 
-  async function judged(lock) {
+  async function judged(lock, tops = null) {
     const ctx = await context();
     ctx.pins = [...lock.keys(), ...shipped.keys()];
     const found = await Promise.all(
       [...lock].map(async ([one, integrity]) => [
         one,
-        await judge(one, integrity, ctx).catch((error) =>
-          no(`couldn't check ${one} on npm (${error.message.split('\n')[0]})`)
+        await judge(one, integrity, tops && !tops.has(one) ? { ...ctx, dep: true } : ctx).catch(
+          (error) => no(`couldn't check ${one} on npm (${error.message.split('\n')[0]})`)
         ),
       ])
     );

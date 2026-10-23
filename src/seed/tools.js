@@ -5,6 +5,8 @@ import { fetchText, installer, pnpm, readable, remove, text, write } from './upd
 export const FOLDER = 'opt/slicc/tools';
 export const MODULES = `/${FOLDER}/node_modules`;
 export const CAP = 2 * 60 * 1000;
+export const LIMIT = 180;
+export const RETIRE = 30 * 1000;
 export const NOTE = 'Seven installs it after boot, at the newest version that passes its checks.';
 const deployed = new URL('packages/', BIOS);
 const WORKSPACE = "minimumReleaseAgeExclude:\n  - '@ai-ecoverse/*'\n";
@@ -91,6 +93,36 @@ export function row(entry, { version, offer, state, error, log }) {
   };
 }
 
+export function graph(lock) {
+  const needs = new Map();
+  const at = lock.indexOf('\nsnapshots:\n');
+  if (at < 0) return needs;
+  let current = null;
+  for (const line of lock.slice(at + 12).split('\n')) {
+    const top = /^ {2}'?([^'\s][^']*?)'?:(?: \{\})?$/.exec(line);
+    if (top) {
+      current = top[1].replace(/\(.*$/, '');
+      needs.set(current, []);
+      continue;
+    }
+    const dep = /^ {6}'?(@?[^'\s:]+)'?: '?([^'\s(]+)/.exec(line);
+    if (dep && current) needs.get(current).push(`${dep[1]}@${dep[2]}`);
+  }
+  return needs;
+}
+
+export function reach(needs, key) {
+  const seen = new Set([key]);
+  const todo = [key];
+  while (todo.length)
+    for (const next of needs.get(todo.pop()) ?? [])
+      if (!seen.has(next)) {
+        seen.add(next);
+        todo.push(next);
+      }
+  return seen;
+}
+
 async function put(root, path, body) {
   if (body === null) await remove(root, path);
   else await write(root, path, body);
@@ -111,24 +143,35 @@ async function installTools({ root, kernel, npm }, wanted, batch) {
         log = step.log ?? log;
       },
       null,
-      argv
+      argv,
+      true,
+      LIMIT
     ).catch((error) => {
       throw Object.assign(error, { log: error.log ?? log });
     });
   try {
     await run(RESOLVE);
-    const lock = installedLock((await text(root, LOCK)) ?? '');
-    const verdicts = await npm.judged(lock);
+    const lockText = (await text(root, LOCK)) ?? '';
+    const lock = installedLock(lockText);
+    const tops = new Set(Object.entries(wanted).map(([name, version]) => `${name}@${version}`));
+    const verdicts = await npm.judged(lock, tops);
+    const bad = [...verdicts].filter(([, why]) => why);
+    const needs = graph(lockText);
     const refused = new Map();
+    const covered = new Set();
     for (const entry of batch) {
-      const key = `${entry.package}@${wanted[entry.package]}`;
       if (!Object.hasOwn(wanted, entry.package)) continue;
-      const own = verdicts.get(key);
-      const other = [...verdicts].find(
-        ([one, why]) => why && !Object.keys(wanted).some((name) => one.startsWith(`${name}@`))
-      );
+      const key = `${entry.package}@${wanted[entry.package]}`;
+      const tree = reach(needs, key);
+      const hit = [...tree].find((one) => verdicts.get(one));
       if (!lock.has(key)) refused.set(entry.package, { why: `pnpm didn't resolve ${key}` });
-      else if (own || other) refused.set(entry.package, own ?? other[1]);
+      else if (hit) refused.set(entry.package, verdicts.get(hit));
+      if (refused.has(entry.package)) for (const one of tree) covered.add(one);
+    }
+    const stray = bad.find(([one]) => !covered.has(one));
+    if (stray) {
+      await back();
+      throw new Error(`${stray[0]} fails the checks: ${stray[1].why}`);
     }
     if (refused.size) {
       await back();
@@ -149,6 +192,7 @@ export function createTools({
   entries,
   emit = () => {},
   retire = (names) => installer('retire', { names }),
+  patience = RETIRE,
   locks = navigator.locks,
   cap = CAP,
 }) {
@@ -237,7 +281,13 @@ export function createTools({
       .map((entry) => entry.package);
     if (!done.length) return;
     for (const name of done) await remove(root, `node_modules/${name}`);
-    await retire(done).catch((error) => console.warn(`tools: ${error.message}`));
+    let timer;
+    const late = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("the installer didn't answer retire")), patience);
+    });
+    await Promise.race([retire(done), late])
+      .catch((error) => console.warn(`tools: ${error.message}`))
+      .finally(() => clearTimeout(timer));
     found = await present(root, entries);
   }
 
