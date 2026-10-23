@@ -1095,7 +1095,8 @@ test('the vault’s endpoints entries show in Activity as named hosts, never "un
   t.diagnostic(JSON.stringify(rows));
   await shoot(page, 'vault-endpoints-activity', { show: 'settings', target: '#secrets-audit' });
   const before = fake.log.length;
-  await page.evaluate(() => {
+  await page.evaluate(() => document.querySelector('slicc-app').show('settings'));
+  await page.within(30000, () => {
     const deep = (root) => {
       const found = root.querySelector('slicc-secrets');
       if (found) return found;
@@ -1105,7 +1106,12 @@ test('the vault’s endpoints entries show in Activity as named hosts, never "un
       }
       return null;
     };
-    deep(document).shadowRoot.querySelector('li[data-seq="13"] [data-action=unpin]').click();
+    const unpin = deep(document)?.shadowRoot?.querySelector(
+      'li[data-seq="13"] [data-action=unpin]'
+    );
+    if (!unpin) return false;
+    unpin.click();
+    return true;
   });
   await logged(() => fake.log.slice(before).some((entry) => entry.op === 'endpoints-fields'));
   const sent = fake.log
