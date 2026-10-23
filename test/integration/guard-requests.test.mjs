@@ -91,6 +91,14 @@ const site = createServer(await certificate(), (req, res) => {
     });
     return res.end();
   }
+  if (host === 'ordinary.test' && parts[0] === 'redir') {
+    const [, how, origin, type] = parts;
+    const dest = origin === 'vault' ? 'vault.sliccy.ai' : 'seven.sliccy.ai';
+    res.writeHead(how === '307' ? 307 : 302, {
+      location: `https://${dest}:${site.address().port}/c/chain/${type}/${how}/${origin}`,
+    });
+    return res.end();
+  }
   if (host === 'ordinary.test' && parts[0] === 'go') {
     const [, how, type, origin] = parts;
     const dest = origin === 'vault' ? 'vault.sliccy.ai' : 'seven.sliccy.ai';
@@ -604,6 +612,78 @@ async function clients({ transport, proxy, runtime, port }) {
         : { error: { message: 'no pause' } }
     );
   }
+  const starter = async (type, path) => {
+    const target = JSON.stringify(ordinary(path));
+    const expression =
+      type === 'xhr'
+        ? `(() => { const xhr = new XMLHttpRequest(); xhr.open('GET', ${target}); xhr.send(); })()`
+        : type === 'img'
+          ? `(() => { const img = new Image(); img.src = ${target}; })()`
+          : `fetch(${target}, {cache:'no-store'})`;
+    await send('Runtime.evaluate', { expression, returnByValue: true }, session);
+    return take(
+      (message) =>
+        message.params.request?.url?.includes(path) &&
+        message.params.responseStatusCode === undefined
+    );
+  };
+  const chains = [];
+  for (const type of ['fetch', 'xhr', 'img']) {
+    for (const how of ['302', '307']) {
+      for (const origin of ['seven', 'vault']) {
+        const path = `/start/${type}/${how}/${origin}`;
+        chains.push({ type, how, origin, paused: await starter(type, path) });
+      }
+    }
+  }
+  for (const chain of chains) {
+    const url = ordinary(`/redir/${chain.how}/${chain.origin}/${chain.type}`);
+    note(
+      'Fetch.continueRequest chain',
+      `${chain.type} ${chain.how} ${chain.origin}`,
+      chain.paused
+        ? await send(
+            'Fetch.continueRequest',
+            { requestId: chain.paused.params.requestId, url },
+            session
+          )
+        : { error: { message: 'no pause' } }
+    );
+  }
+  const replayPaused = await starter('xhr', '/replay-src');
+  note(
+    'Network.replayXHR',
+    'seven',
+    replayPaused
+      ? await send(
+          'Network.replayXHR',
+          { requestId: replayPaused.params.networkId ?? replayPaused.params.requestId },
+          session
+        )
+      : { error: { message: 'no pause' } }
+  );
+  note(
+    'Network.continueInterceptedRequest',
+    'seven',
+    await send(
+      'Network.continueInterceptedRequest',
+      { interceptionId: 'legacy-seven', url: seven('/c/intercept') },
+      session
+    )
+  );
+  note(
+    'Network.continueInterceptedRequest',
+    'ordinary',
+    await send(
+      'Network.continueInterceptedRequest',
+      { interceptionId: 'legacy-ordinary', url: ordinary('/c/intercept') },
+      session
+    )
+  );
+  await new Promise((resolve) => setTimeout(resolve, 5000));
+  const leaked = pauses.filter((message) =>
+    `${message.params?.request?.url ?? ''}`.includes('/c/chain')
+  ).length;
   const authPaused = await pauseFor('/auth-src');
   note(
     'Fetch.continueWithAuth',
@@ -638,7 +718,7 @@ async function clients({ transport, proxy, runtime, port }) {
     note('Page.navigateToHistoryEntry', 'seven', { error: { message: 'no entries' } });
   await new Promise((resolve) => setTimeout(resolve, 400));
   await send('Target.closeTarget', { targetId });
-  return { rows };
+  return { rows, leaked };
 }
 
 function rows(route) {
@@ -766,8 +846,30 @@ async function check(t, transport) {
     if (row.name === 'Page.navigateToHistoryEntry' && !/sliccy\.ai|chrome-error/.test(row.origin)) {
       continue;
     }
+    if (row.name === 'Fetch.continueRequest chain') {
+      assert.equal(row.error, '', `${row.name} ${row.origin}\n${text}`);
+      continue;
+    }
     assert.match(row.error, /refused/, `${row.name} ${row.origin}\n${text}`);
   }
+  assert.equal(client.leaked ?? 0, 0, text);
+  const redirs = [];
+  for (const type of ['fetch', 'xhr', 'img']) {
+    for (const how of ['302', '307']) {
+      for (const origin of ['seven', 'vault']) {
+        const path = `/redir/${how}/${origin}/${type}`;
+        redirs.push(
+          hits.filter(
+            (hit) => hit.host === 'ordinary.test' && hit.path === path && hit.method !== 'OPTIONS'
+          ).length
+        );
+      }
+    }
+  }
+  assert.ok(
+    redirs.every((count) => count > 0),
+    `${redirs.join(',')}\n${text}`
+  );
   assert.deepEqual(clientHits, [], text);
 }
 
