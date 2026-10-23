@@ -1658,14 +1658,24 @@ class Guard {
   }
 
   async keptShot(was) {
-    const admitted =
-      was?.method === 'Page.captureScreenshot' && this.shots.delete(was.id) && this.sealed(was);
+    const admitted = was?.method === 'Page.captureScreenshot' && this.shots.delete(was.id);
     if (!admitted) return false;
     return this.blankShot(was.sessionId);
   }
 
-  async answer(message, was) {
+  async openShot(was) {
+    const now = await this.surface(was?.sessionId);
+    return Boolean(now && !now.protected && !now.pendingTree);
+  }
+
+  async shotAnswer(message, was) {
     if (await this.keptShot(was)) return this.deliver(message);
+    if (this.sealed(was) || !(await this.openShot(was))) return this.refuse(was);
+    return this.deliver(message);
+  }
+
+  async answer(message, was) {
+    if (was?.method === 'Page.captureScreenshot') return this.shotAnswer(message, was);
     if (this.sealed(was)) return this.refuse(was);
     const { method, params = {} } = was ?? {};
     const { result } = message;
