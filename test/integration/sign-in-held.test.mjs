@@ -6,8 +6,7 @@ import { createServer as createHttps } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { startProxy } from '@ai-ecoverse/slicc-node';
-import { boot, ready, run, screen, shows } from './bios.mjs';
+import { boot, run, screen, shows } from './bios.mjs';
 import { devtools as boundPort, debuggerUrl, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
 
@@ -315,17 +314,6 @@ async function rows(t, page, via) {
   const mcp = await tabWhere(
     (tab) => tab.url.startsWith('https://ims-na1.adobelogin.com/mcp') && !known.has(tab.id)
   );
-  let quick = null;
-  if (via === 'proxy') {
-    const before = new Set((await devtools('/json/list')).map((tab) => tab.id));
-    await page.evaluate((MARK) => {
-      const tab = window.open('about:blank', 'slicc-quick', 'popup,width=520,height=720');
-      tab.location.href = `https://ims-na1.adobelogin.com/quick#access_token=${MARK}-quick`;
-    }, MARK);
-    quick = await tabWhere(
-      (tab) => tab.url.startsWith('https://ims-na1.adobelogin.com/quick') && !before.has(tab.id)
-    );
-  }
   const idpLater = 'https://ims-na1.adobelogin.com/vault-idp';
   const vaultPage = `http://vault.sliccy.ai:${plain.address().port}/vault-${via}?later=${encodeURIComponent(idpLater)}`;
   const vaultHost = (
@@ -349,7 +337,6 @@ async function rows(t, page, via) {
         mcp,
         vaultHost,
         vaultChild,
-        quick,
       ].filter(Boolean)
     )
   );
@@ -374,7 +361,6 @@ async function rows(t, page, via) {
           'the blob tab': blob,
           'an MCP sign-in tab on the marker': mcp,
           'the vault’s sign-in tab': vaultChild,
-          ...(quick ? { 'an unmarked popup that leaves about:blank at once': quick } : {}),
         })
     );
     await t.test(
@@ -473,62 +459,6 @@ test('through slicc-extension, sign-in tabs and their lineage are held from crea
   await page.init(debugSignIn);
   await boot(page);
   await rows(t, page, 'extension');
-});
-
-test('through slicc-node, sign-in tabs and their lineage are held from creation on any origin, and other tabs stay drivable', {
-  timeout: 10 * 60 * 1000,
-}, async (t) => {
-  const proxy = await startProxy({
-    port: 0,
-    origins: [new URL(chrome.url).origin],
-    cdp: `http://127.0.0.1:${port}`,
-    kernelPort: null,
-    log: () => {},
-  });
-  t.after(() => proxy.close());
-  const page = await chrome.page(t);
-  await page.init(debugSignIn);
-  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}`);
-  await ready(page);
-  await page.until(
-    () => document.querySelector('slicc-app').model.network.status().browser?.via === 'proxy'
-  );
-  await rows(t, page, 'proxy');
-});
-
-test('through slicc-node, an unmarked popup seven opens before any client connects, and that leaves about:blank at once, is held, and the first client never sees it', {
-  timeout: 5 * 60 * 1000,
-}, async (t) => {
-  const proxy = await startProxy({
-    port: 0,
-    origins: [new URL(chrome.url).origin],
-    cdp: `http://127.0.0.1:${port}`,
-    kernelPort: null,
-    log: () => {},
-  });
-  t.after(() => proxy.close());
-  const page = await chrome.page(t);
-  await page.init(debugSignIn);
-  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}`);
-  await ready(page);
-  await page.until(
-    () => document.querySelector('slicc-app').model.network.status().browser?.via === 'proxy'
-  );
-  const before = new Set((await devtools('/json/list')).map((tab) => tab.id));
-  await page.evaluate((MARK) => {
-    const tab = window.open('about:blank', 'slicc-mcp-oauth', 'popup,width=520,height=720');
-    tab.location.href = `https://ims-na1.adobelogin.com/early#access_token=${MARK}-early`;
-  }, MARK);
-  const early = await tabWhere(
-    (tab) => tab.url.startsWith('https://ims-na1.adobelogin.com/early') && !before.has(tab.id)
-  );
-  t.after(() => close([early]));
-  await navigate(early, ordinary(`/early-elsewhere#access_token=${MARK}-early-elsewhere`));
-  const first = await guarded(page, 'proxy', 'first');
-  t.after(() => first.close().catch(() => {}));
-  await first.send('Target.setDiscoverTargets', { discover: true });
-  await unreachable(first, { 'the popup opened before any client': early });
-  assert.deepEqual(page.errors, []);
 });
 
 const UNHELD =

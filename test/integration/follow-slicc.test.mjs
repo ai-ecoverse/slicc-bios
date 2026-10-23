@@ -14,7 +14,7 @@ import {
 } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { leader, model, startHub } from './fake-hub.mjs';
-import { eventFrame, fakeProxy } from './fake-proxy.mjs';
+import { eventFrame, fakeLlm } from './fake-llm.mjs';
 import { PEER_TRACE, peerTrace } from './peer-trace.mjs';
 
 const KEY = 'dummy-bedrock-key-0000';
@@ -65,12 +65,11 @@ const lastTurn = (body) => {
 
 let sleeps = 0;
 
-const leaders = await launch({ agent: true, timeout: 60000 });
+const leaders = await launch({ intercept: [], agent: true, timeout: 60000 });
 const followers = await launch({ timeout: 60000 });
 const asked = [];
-const proxy = await fakeProxy({
-  origin: new URL(leaders.url).origin,
-  key: 'the-key',
+const llm = await fakeLlm(leaders.cdp, {
+  hosts: [BEDROCK, 'https://registry.npmjs.org/'],
   answer: async (request, body) => {
     if (request.url.startsWith('https://registry.npmjs.org/')) {
       const type = request.url.endsWith('.tgz') ? 'application/octet-stream' : 'application/json';
@@ -92,7 +91,7 @@ const proxy = await fakeProxy({
 const hub = await startHub();
 after(async () => {
   hub.close();
-  await proxy.close();
+  await llm.close();
   await Promise.all([leaders.close(), followers.close()]);
 });
 
@@ -217,7 +216,7 @@ test('in seven’s terminal a cone’s slicc prompts, watches and aborts another
 }, async (t) => {
   const owner = await leaders.page(t);
   await owner.init(PEER_TRACE);
-  await owner.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await owner.goto('/');
   await ready(owner);
   await owner.evaluate((url) => localStorage.setItem('slicc-os.tray-hub', url), hub.url);
   await owner.reload();

@@ -14,7 +14,7 @@ import {
 } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { model, startHub } from './fake-hub.mjs';
-import { eventFrame, fakeProxy } from './fake-proxy.mjs';
+import { eventFrame, fakeLlm } from './fake-llm.mjs';
 import { shoot } from './shots.mjs';
 
 const KEY = 'dummy-bedrock-key-0000';
@@ -71,15 +71,14 @@ function answer(body) {
   return text('Done.');
 }
 
-const owners = await launch({ agent: true, timeout: 60000 });
+const owners = await launch({ intercept: [], agent: true, timeout: 60000 });
 const followers = await launch({
   agent: true,
   timeout: 60000,
   args: ['--disable-features=IsolateSandboxedIframes'],
 });
-const proxy = await fakeProxy({
-  origin: new URL(owners.url).origin,
-  key: 'the-key',
+const llm = await fakeLlm(owners.cdp, {
+  hosts: [BEDROCK, 'https://registry.npmjs.org/'],
   answer: async (request, body) => {
     if (request.url.startsWith('https://registry.npmjs.org/')) {
       const type = request.url.endsWith('.tgz') ? 'application/octet-stream' : 'application/json';
@@ -95,7 +94,7 @@ const proxy = await fakeProxy({
   },
 });
 after(async () => {
-  await proxy.close();
+  await llm.close();
   await Promise.all([owners.close(), followers.close()]);
 });
 
@@ -154,7 +153,7 @@ test("a follower of a SLICC on another agent version shows the agent's sentence 
   const owner = await owners.page(t);
   const page = await followers.page(t);
   for (const [path, body] of Object.entries(OLD_AGENT)) owners.overrides.set(path, body);
-  await owner.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await owner.goto('/');
   await ready(owner);
   await owner.evaluate((url) => localStorage.setItem('slicc-os.tray-hub', url), hub.url);
   await owner.reload();

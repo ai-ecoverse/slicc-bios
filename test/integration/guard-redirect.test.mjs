@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { createServer as createHttp } from 'node:http';
 import { after, test } from 'node:test';
-import { startProxy } from '@ai-ecoverse/slicc-node';
 import { ready } from './bios.mjs';
 import { debuggerUrl, devtools, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
@@ -215,14 +214,13 @@ const plan = () => {
   return steps;
 };
 
-async function rig({ transport, proxy, port, override }) {
+async function rig({ port, override }) {
   const { guardProtected } = await import(new URL('guard.js', location.href).href);
-  const { proxyHost, extensionConnection } = await import(new URL('cdp.js', location.href).href);
-  const raw =
-    transport === 'proxy'
-      ? await proxyHost(proxy)()
-      : extensionConnection(globalThis.sliccExtension.cdp);
-  const connection = guardProtected(raw, self.origin);
+  const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
+  const connection = guardProtected(
+    extensionConnection(globalThis.sliccExtension.cdp),
+    self.origin
+  );
   const pending = new Map();
   const seen = [];
   const paused = [];
@@ -598,33 +596,18 @@ const leaks = (seen) => {
   return [...new Set(found)];
 };
 
-async function check(t, transport) {
+async function check(t) {
   const page = await chrome.page(t);
-  let proxy;
-  if (transport === 'proxy') {
-    proxy = await startProxy({
-      port: 0,
-      origins: [new URL(chrome.url).origin],
-      cdp: `http://127.0.0.1:${debugging}`,
-      kernelPort: null,
-      log: () => {},
-    });
-    t.after(() => proxy.close());
-  } else {
-    const extension = await fakeExtension(page);
-    t.after(() => extension.close());
-  }
-  await page.goto(proxy ? `/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}` : '/');
+  const extension = await fakeExtension(page);
+  t.after(() => extension.close());
+  await page.goto('/');
   await ready(page);
   const steps = plan();
   await page.evaluate(rig, {
-    transport,
-    proxy: proxy && { url: proxy.url, key: proxy.key },
     port,
     override: PROTECTED.seven(mark(), mark(), mark()),
   });
   const seen = [];
-  if (proxy) marks.push(proxy.key);
   const own = [
     `${chrome.url}#tailscale=${mark()}&proxy=http://127.0.0.1:1&key=${mark()}`,
     `${chrome.url}#access_token=${mark()}&expires_in=3600`,
@@ -796,17 +779,9 @@ async function check(t, transport) {
 }
 
 test(
-  'a redirect to seven or the vault shows the client only its origin, on the proxy path',
-  {
-    timeout: 10 * 60 * 1000,
-  },
-  (t) => check(t, 'proxy')
-);
-
-test(
   'a redirect to seven or the vault shows the client only its origin, on the extension path',
   {
     timeout: 10 * 60 * 1000,
   },
-  (t) => check(t, 'extension')
+  (t) => check(t)
 );

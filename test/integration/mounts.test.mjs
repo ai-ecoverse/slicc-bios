@@ -2,20 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { boot, ready, run, screen, shows, ui } from './bios.mjs';
 import { launch } from './chrome.mjs';
-import { fakeProxy } from './fake-proxy.mjs';
 
 async function opened(t) {
   const chrome = await launch();
-  const proxy = await fakeProxy({
-    origin: new URL(chrome.url).origin,
-    key: 'the-key',
-    exports: { project: { 'hello.txt': 'hello from the host\n' } },
-  });
-  t.after(async () => {
-    await proxy.close();
-    await chrome.close();
-  });
-  return { page: await chrome.page(t), proxy };
+  t.after(() => chrome.close());
+  return { page: await chrome.page(t) };
 }
 
 async function picker(page) {
@@ -121,9 +112,9 @@ test('off the record, a shell fsa mount asks for a folder in the Files panel, wo
 
   await run(
     page,
-    'mkdir -p /mnt/h; mount -t hostfs project /mnt/h; echo "no proxy $((1000 + $?))"'
+    'mkdir -p /mnt/h; mount -t hostfs project /mnt/h; echo "no host folder $((1000 + $?))"'
   );
-  await shows(page, 'no proxy 1032');
+  await shows(page, 'no host folder 1032');
   assert.match(await screen(page), /mount: \/mnt\/h: Operation not permitted/);
   assert.deepEqual(page.errors, []);
 });
@@ -178,46 +169,5 @@ test('Mount a folder and Eject in the Files panel mount and unmount a picked fol
   await run(page, 'umount /mnt/y && echo "gone $((6 * 6))"');
   await shows(page, 'gone 36');
   await until(page, '/mnt/y', false);
-  assert.deepEqual(page.errors, []);
-});
-
-test('mount -t hostfs mounts a folder the local proxy exports, with a grant the shell never sees', async (t) => {
-  const { page, proxy } = await opened(t);
-  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
-  await ready(page);
-  await run(
-    page,
-    'mkdir -p /mnt/p && mount -t hostfs -o ro project /mnt/p && cat /mnt/p/hello.txt && grep -c "^project /mnt/p hostfs ro" /proc/mounts | sed "s/^/listed /"'
-  );
-  await shows(page, 'hello from the host');
-  await shows(page, 'listed 1');
-  const [token] = proxy.grants.keys();
-  assert.ok(token);
-  await run(page, `grep -c -e "${token.slice(0, 12)}" /proc/mounts | sed "s/^/leaked /"`);
-  await shows(page, 'leaked 0');
-  await page.until(() =>
-    document.querySelector('slicc-app').model.files.mounts().includes('/mnt/p')
-  );
-  assert.deepEqual(await remembered(page), [
-    { type: 'hostfs', source: 'project', target: '/mnt/p', options: { ro: '' } },
-  ]);
-
-  await page.reload();
-  await ready(page);
-  await page.until(() =>
-    document.querySelector('slicc-app').model.files.mounts().includes('/mnt/p')
-  );
-  await run(
-    page,
-    'cat /mnt/p/hello.txt | tr a-z A-Z; grep -c "^project /mnt/p hostfs ro.*uid=1000,gid=1000" /proc/mounts | sed "s/^/restored /"'
-  );
-  await shows(page, 'HELLO FROM THE HOST');
-  await shows(page, 'restored 1');
-
-  await run(
-    page,
-    'mkdir -p /mnt/q; mount -t hostfs elsewhere /mnt/q; echo "refused $((1000 + $?))"'
-  );
-  await shows(page, 'refused 1032');
   assert.deepEqual(page.errors, []);
 });

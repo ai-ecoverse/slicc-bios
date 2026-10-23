@@ -1,13 +1,26 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { after, test } from 'node:test';
 import { ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
-import { fakeProxy } from './fake-proxy.mjs';
 
 const chrome = await launch({ tools: false });
-after(() => chrome.close());
+const asked = [];
+const named = createServer((req, res) => {
+  asked.push(`${req.method} ${req.url}`);
+  res.writeHead(200, { 'Access-Control-Allow-Origin': '*' });
+  res.end('{}');
+});
+await new Promise((resolve) => named.listen(0, '127.0.0.1', resolve));
+const NAMED = `http://127.0.0.1:${named.address().port}`;
+after(async () => {
+  named.close();
+  named.closeAllConnections();
+  await chrome.close();
+});
 
 const KEY = 'tidy-key-0123456789abcdefghijklmn';
+const EXIT = 'node-tidy-0123456789abcdefghij';
 const TOKEN = 'Tidytoken0123456789xyz';
 const FP = 'ab'.repeat(32);
 
@@ -68,24 +81,21 @@ const idb = (page, key) =>
     key
   );
 
-test('a launch address with a proxy and its key is tidied before seven boots: no address, history entry or tab listing holds the key, and the proxy is used', async (t) => {
+test('a launch address with a proxy and its key is tidied before seven boots and never honoured: no address, history entry, tab listing or storage holds the key, and the proxy is never contacted', async (t) => {
   const page = await watched(t);
-  const proxy = await fakeProxy({ origin: new URL(chrome.url).origin, key: KEY });
-  t.after(() => proxy.close());
-  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: KEY, users: 'enforce' })}`);
+  asked.length = 0;
+  await page.goto(`/#${new URLSearchParams({ proxy: NAMED, key: KEY, users: 'enforce' })}`);
   await ready(page);
-  await page.until(() => {
-    const status = document.querySelector('slicc-app').model.network.status();
-    return status.route === 'local-proxy' || status.route === 'proxy';
-  });
   const where = await addresses(page);
-  clean(where, [KEY, encodeURIComponent(proxy.url)], ['proxy', 'key']);
+  clean(where, [KEY, encodeURIComponent(NAMED)], ['proxy', 'key']);
   assert.equal(where.hash, '#users=enforce');
   assert.ok(where.seen[0].includes(KEY), 'the launcher’s own address is the only one that held it');
   const status = await network(page);
-  assert.equal(status.detail, `Local proxy at ${new URL(proxy.url).host}`, JSON.stringify(status));
-  assert.deepEqual(await idb(page, 'proxy'), { url: proxy.url, key: KEY });
-  assert.ok(proxy.probes.length > 0, 'seven checked the proxy with the key it was given');
+  assert.deepEqual([status.route, status.detail], ['page', null], JSON.stringify(status));
+  assert.equal(await idb(page, 'proxy'), null);
+  const local = await page.evaluate(() => JSON.stringify(Object.entries(localStorage)));
+  assert.ok(!local.includes(KEY), 'localStorage holds the key');
+  assert.deepEqual(asked, [], 'seven contacted the proxy the address named');
   assert.deepEqual(page.errors, []);
 });
 
@@ -206,29 +216,28 @@ test('the handoff is cleared at the end of a boot that succeeds: its own entry, 
 test('the handoff is cleared at the end of a boot whose UI fails to load, and of one whose BIOS step fails', async (t) => {
   const page = await watched(t);
   chrome.overrides.set('/seed/os.js', "throw new Error('the UI failed on purpose');\n");
-  await page.goto(`/#${new URLSearchParams({ proxy: 'http://127.0.0.1:9', key: KEY })}`);
+  await page.goto(`/#${new URLSearchParams({ tailscale: 'off', exit: EXIT })}`);
   await page.until(() => !!document.querySelector('main[data-refused]'));
   await page.until(() => !location.hash.includes('handoff='));
   assert.deepEqual(await handoffs(page), []);
   const where = await addresses(page);
   for (const url of [where.href, ...where.history, ...where.seen.slice(1)])
-    assert.ok(!url.includes(KEY), url);
+    assert.ok(!url.includes(EXIT), url);
 
   const bios = await page.tab();
   chrome.overrides.set('/packages/package-lock.json', '{');
-  await bios.goto(`/#${new URLSearchParams({ key: KEY })}`);
+  await bios.goto(`/#${new URLSearchParams({ tailscale: 'off', exit: EXIT })}`);
   await bios.until(
     () => document.querySelector('[data-step="packages"]')?.dataset.state === 'failed'
   );
   assert.deepEqual(await handoffs(bios), []);
   const href = await bios.evaluate(() => location.href);
-  assert.ok(!href.includes(KEY) && !href.includes('handoff='), href);
+  assert.ok(!href.includes(EXIT) && !href.includes('handoff='), href);
 });
 
 test('when the settings from the link can’t be stored, the address is tidied anyway, nothing holds them, and the BIOS says in one line which it lost', async (t) => {
   const page = await watched(t);
-  const proxy = await fakeProxy({ origin: new URL(chrome.url).origin, key: KEY });
-  t.after(() => proxy.close());
+  asked.length = 0;
   await page.init(() => {
     const set = Storage.prototype.setItem;
     Storage.prototype.setItem = function (key, value) {
@@ -238,7 +247,7 @@ test('when the settings from the link can’t be stored, the address is tidied a
     };
   });
   await page.goto(
-    `/#${new URLSearchParams({ proxy: proxy.url, key: KEY, tailscale: 'off', exit: 'node-tidy', users: 'enforce' })}`
+    `/#${new URLSearchParams({ proxy: NAMED, key: KEY, tailscale: 'off', exit: 'node-tidy', users: 'enforce' })}`
   );
   await page.until(
     () => document.querySelector('[data-step="navigate"]')?.dataset.state === 'failed'
@@ -248,7 +257,7 @@ test('when the settings from the link can’t be stored, the address is tidied a
   );
   assert.equal(
     line,
-    'Seven couldn’t store the settings from the link (proxy, Tailscale). Allow site storage and open the link again.'
+    'Seven couldn’t store the settings from the link (Tailscale). Allow site storage and open the link again.'
   );
   const where = await addresses(page);
   assert.equal(where.hash, '#users=enforce');
@@ -257,8 +266,8 @@ test('when the settings from the link can’t be stored, the address is tidied a
     assert.equal(new URL(url).pathname === '/os/', false, `the BIOS went on to ${url}`);
   }
   assert.deepEqual(where.handoff, []);
-  assert.deepEqual(await page.evaluate(() => globalThis.sliccDropped), ['proxy', 'Tailscale']);
-  assert.deepEqual(proxy.probes, []);
+  assert.deepEqual(await page.evaluate(() => globalThis.sliccDropped), ['Tailscale']);
+  assert.deepEqual(asked, []);
   assert.deepEqual(
     page.errors.filter((error) => !error.includes('couldn’t store')),
     []
