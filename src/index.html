@@ -5,10 +5,22 @@
     <script>
     (() => {
       const params = new URLSearchParams(location.hash.slice(1));
-      const names = ['proxy', 'key', 'slicc-pair', 'tailscale'];
+      const ignored = ['proxy', 'key'].filter((name) => params.has(name));
+      for (const name of ignored) params.delete(name);
+      const names = ['slicc-pair', 'tailscale'];
       if (params.has('tailscale')) names.push('exit');
       const taken = names.filter((name) => params.has(name));
-      if (!taken.length) return;
+      if (!taken.length) {
+        if (ignored.length) {
+          const rest = params.toString();
+          history.replaceState(
+            history.state,
+            '',
+            `${location.pathname}${location.search}${rest ? `#${rest}` : ''}`
+          );
+        }
+        return;
+      }
       const values = {};
       for (const name of taken) {
         values[name] = params.get(name);
@@ -26,8 +38,6 @@
       } catch {
         params.delete('handoff');
         const labels = {
-          proxy: 'proxy',
-          key: 'proxy',
           tailscale: 'Tailscale',
           'slicc-pair': 'pairing',
         };
@@ -35,9 +45,7 @@
           ...(globalThis.sliccDropped || []),
           ...taken.map((name) => labels[name]),
         ]);
-        globalThis.sliccDropped = ['proxy', 'Tailscale', 'pairing'].filter((label) =>
-          lost.has(label)
-        );
+        globalThis.sliccDropped = ['Tailscale', 'pairing'].filter((label) => lost.has(label));
       }
       const rest = params.toString();
       history.replaceState(

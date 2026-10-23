@@ -54,35 +54,6 @@ export async function offTheRecord(storage = navigator.storage, memory = perform
   return quota < (memory?.jsHeapSizeLimit ?? 2 ** 30) * 2;
 }
 
-export function hostfsGrants(proxy, fetcher = fetch) {
-  return async (source, { readonly }) => {
-    const response = await fetcher(new URL('/api/hostfs/grant', proxy.url), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Bridge-Token': proxy.key },
-      body: JSON.stringify({ mount: source, readonly }),
-    });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(
-        body.message ?? `the local proxy has no folder ${source} (${response.status})`
-      );
-    }
-    return { url: proxy.url, token: body.token, capabilities: body.capabilities };
-  };
-}
-
-export function hostfsExports(proxy, fetcher = fetch) {
-  return async () => {
-    const response = await fetcher(new URL('/api/hostfs/mounts', proxy.url), {
-      method: 'POST',
-      headers: { 'X-Bridge-Token': proxy.key },
-    });
-    if (!response.ok) return [];
-    const list = await response.json().catch(() => []);
-    return Array.isArray(list) ? list.map((entry) => entry.name) : [];
-  };
-}
-
 export function remembered(storage, secret) {
   let list = [];
   try {
@@ -142,18 +113,16 @@ async function settle(kernel, before, update) {
   }
 }
 
-export function hostfsHook(network, linked) {
-  const proxy = network.kind === 'local-proxy' ? hostfsGrants(network.proxy) : null;
-  if (!linked) return proxy;
+export function hostfsHook(linked) {
+  if (!linked) return null;
   return (source, options) => {
     if (linked.claims(source)) return linked.fsGrant(source, options);
-    if (proxy) return proxy(source, options);
     return Promise.reject(new Error(`no host folder ${source}`));
   };
 }
 
-function kernelOptions({ secret, pick, pending, allow, network, linked }) {
-  const hostfs = hostfsHook(network, linked);
+function kernelOptions({ secret, pick, pending, allow, linked }) {
+  const hostfs = hostfsHook(linked);
   return {
     ...(secret ? { media: false } : {}),
     requestDirectory: () => pick(),
@@ -210,7 +179,6 @@ function linkedActions(state, update, owner) {
 
 export function createFolders({
   storage,
-  network,
   secret: initial = false,
   pick = () => showDirectoryPicker({ mode: 'readwrite' }),
   persist = () => navigator.storage.persist?.(),
@@ -222,7 +190,6 @@ export function createFolders({
 }) {
   let secret = initial;
   mark(secret);
-  const exports = network.kind === 'local-proxy' ? hostfsExports(network.proxy) : null;
   const listeners = new Map();
   const waiting = new Map();
   const inserting = new Set();
@@ -316,7 +283,7 @@ export function createFolders({
   async function allow(req) {
     const hostfs = req.op === 'mount' && req.type === 'hostfs';
     const link = hostfs && linked?.claims(req.source);
-    if (hostfs && !link && !(exports && (await exports()).includes(req.source))) return false;
+    if (hostfs && !link) return false;
     void settle(kernel, await kernel.mounts(), update);
     return true;
   }
@@ -371,7 +338,7 @@ export function createFolders({
   };
 
   return {
-    options: kernelOptions({ secret: initial, pick, pending, allow, network, linked }),
+    options: kernelOptions({ secret: initial, pick, pending, allow, linked }),
     async attach(attached, model) {
       kernel = attached;
       files = model.files;

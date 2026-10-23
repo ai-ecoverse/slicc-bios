@@ -9,7 +9,6 @@ import {
   KEY,
   NEW_VERSION,
   oneHolder,
-  proxy,
   queue,
   say,
 } from './old-agent-fixture.mjs';
@@ -89,7 +88,7 @@ test("slicc-agent 3.26.0, which ignores held, isn't started at boot: seven's age
   );
   const other = await page.tab();
   await other.init(helpers);
-  await other.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await other.goto('/');
   await ready(other);
   await other.until(
     () => document.querySelector('slicc-app').model.tabs?.state().role === 'follower'
