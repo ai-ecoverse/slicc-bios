@@ -59,9 +59,7 @@ function reasons(tree) {
   ];
 }
 
-test("Back to seven's /os/ from another page loads a fresh document, because Chrome reports seven's unload handler as a reason not to keep it in the back/forward cache", async (t) => {
-  const page = await chrome.page(t);
-  await boot(page);
+async function comeBack(t, page, landed, label) {
   const { frameTree } = await page.send('Page.getFrameTree');
   const frame = frameTree.frame.id;
   const refused = [];
@@ -76,7 +74,7 @@ test("Back to seven's /os/ from another page loads a fresh document, because Chr
   await page.until(() => document.getElementById('elsewhere'));
   await new Promise((done) => setTimeout(done, AWAY));
   await page.evaluate(() => setTimeout(() => history.back()));
-  await page.until(() => location.pathname === '/os/' && !!document.querySelector('slicc-app'));
+  await page.until(landed);
   const back = await page.evaluate(() => ({
     kept: window.sliccKept ?? null,
     type: performance.getEntriesByType('navigation')[0]?.type,
@@ -85,7 +83,7 @@ test("Back to seven's /os/ from another page loads a fresh document, because Chr
     ...notRestoredExplanations.map(({ type, reason }) => `${type}:${reason}`),
     ...reasons(notRestoredExplanationsTree).map((reason) => `tree:${reason}`),
   ]);
-  t.diagnostic(`back/forward cache refused seven's /os/: ${found.join(', ') || 'nothing'}`);
+  t.diagnostic(`back/forward cache refused seven's ${label}: ${found.join(', ') || 'nothing'}`);
   assert.deepEqual(back, { kept: null, type: 'back_forward' }, LOST);
   assert.equal(refused.length, 1, LOST);
   assert.ok(
@@ -94,7 +92,46 @@ test("Back to seven's /os/ from another page loads a fresh document, because Chr
     ),
     LOST
   );
-  assert.deepEqual(page.errors, []);
+}
+
+test("Back to seven's /os/, its guest page and the BIOS page from another page loads each fresh, because Chrome reports seven's unload handler as a reason not to keep them in the back/forward cache", async (t) => {
+  const page = await chrome.page(t);
+  await page.init(() => {
+    if (location.pathname === '/' && sessionStorage.getItem('test.hold-bios'))
+      globalThis.sliccDropped = ['proxy'];
+  });
+  await boot(page);
+  await comeBack(
+    t,
+    page,
+    () => location.pathname === '/os/' && !!document.querySelector('slicc-app'),
+    '/os/'
+  );
+
+  await page.goto('/os/join.html');
+  await page.until(
+    () => location.pathname === '/os/join.html' && document.body.textContent.length > 0
+  );
+  await comeBack(
+    t,
+    page,
+    () => location.pathname === '/os/join.html' && document.body.textContent.length > 0,
+    'guest page'
+  );
+
+  await page.evaluate(() => sessionStorage.setItem('test.hold-bios', '1'));
+  await page.goto('/');
+  const halted = () =>
+    location.pathname === '/' &&
+    !!navigator.serviceWorker.controller &&
+    document.querySelector('[data-step="navigate"]')?.dataset.state === 'failed';
+  await page.until(halted);
+  await comeBack(t, page, halted, 'BIOS page');
+  const held = /^Error: Seven couldn’t store the settings from the link \(proxy\)/;
+  assert.deepEqual(
+    page.errors.filter((error) => !held.test(error)),
+    []
+  );
 });
 
 test("a navigation to a BIOS path that the host redirects still follows the redirect under seven's service worker", async (t) => {
