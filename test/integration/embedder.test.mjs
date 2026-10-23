@@ -148,6 +148,7 @@ test('a program opens an http(s) URL in a new tab through /dev/embedder, and a j
   await page.screenshot(new URL('open-url-prompt-long-420.png', page.dir));
   await page.send('Emulation.clearDeviceMetricsOverride');
   await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
+  await new Promise((resolve) => setTimeout(resolve, 2000));
   await press(page, 'cancel');
   await shows(page, 'long 1');
 
@@ -170,6 +171,7 @@ test('a program opens an http(s) URL in a new tab through /dev/embedder, and a j
   );
   await page.send('Emulation.clearDeviceMetricsOverride');
   await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
+  await new Promise((resolve) => setTimeout(resolve, 2000));
   await press(page, 'action');
   await shows(page, 'clicked 0');
   await eventually(() => opened('https://example.test/clicked'));
