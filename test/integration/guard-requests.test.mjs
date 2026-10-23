@@ -91,6 +91,14 @@ const site = createServer(await certificate(), (req, res) => {
     });
     return res.end();
   }
+  if (host === 'ordinary.test' && parts[0] === 'serve') {
+    const [, how, origin, type] = parts;
+    const dest = origin === 'vault' ? 'vault.sliccy.ai' : 'seven.sliccy.ai';
+    res.writeHead(how === '307' ? 307 : 302, {
+      location: `https://${dest}:${site.address().port}/c/serve/${type}/${how}/${origin}`,
+    });
+    return res.end();
+  }
   if (host === 'ordinary.test' && parts[0] === 'redir') {
     const [, how, origin, type] = parts;
     const dest = origin === 'vault' ? 'vault.sliccy.ai' : 'seven.sliccy.ai';
@@ -228,7 +236,6 @@ async function load(origin, type, how) {
     }
   }
   await Promise.all(protectedLoads);
-  await new Promise((resolve) => setTimeout(resolve, 300));
   document.body.dataset.report = JSON.stringify(ordinary);
   document.title = types.every((type) => ordinary[type]) ? 'DROVE' : 'PARTIAL';
 })();
@@ -473,10 +480,21 @@ async function clients({ transport, proxy, runtime, port }) {
         );
   const pending = new Map();
   const pauses = [];
+  const finished = new Set();
+  let leaked = 0;
   let next = 0;
   opened.onmessage = (text) => {
     const message = JSON.parse(text);
-    if (message.method === 'Fetch.requestPaused') pauses.push(message);
+    if (message.method === 'Fetch.requestPaused') {
+      pauses.push(message);
+      if (`${message.params?.request?.url ?? ''}`.includes('/c/')) leaked += 1;
+    }
+    if (
+      message.method === 'Network.loadingFinished' ||
+      message.method === 'Network.loadingFailed'
+    ) {
+      finished.add(message.params?.requestId);
+    }
     if (message.id !== undefined) {
       pending.get(message.id)?.(message);
       pending.delete(message.id);
@@ -538,14 +556,19 @@ async function clients({ transport, proxy, runtime, port }) {
   ]) {
     note('Page.navigate', origin, await send('Page.navigate', { url }, session));
   }
-  const take = async (match) => {
-    const deadline = Date.now() + 8000;
+  const take = async (match, timeout = 8000) => {
+    const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
       const found = pauses.findIndex(match);
       if (found >= 0) return pauses.splice(found, 1)[0];
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     return null;
+  };
+  const drop = async (message) => {
+    const requestId = message?.params?.requestId;
+    if (typeof requestId !== 'string') return;
+    await send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' }, session);
   };
   const pauseFor = async (path) => {
     await send(
@@ -574,6 +597,7 @@ async function clients({ transport, proxy, runtime, port }) {
         ? await send('Fetch.continueRequest', { requestId: paused.params.requestId, url }, session)
         : { error: { message: 'no pause' } }
     );
+    await drop(paused);
   }
   for (const [origin, url] of [
     ['seven', seven('/c/hop')],
@@ -590,6 +614,7 @@ async function clients({ transport, proxy, runtime, port }) {
         ? await send('Fetch.continueRequest', { requestId: hop.params.requestId, url }, session)
         : { error: { message: 'no hop' } }
     );
+    await drop(hop);
   }
   for (const [origin, url] of [
     ['seven', seven('/c/fulfill')],
@@ -611,6 +636,7 @@ async function clients({ transport, proxy, runtime, port }) {
           )
         : { error: { message: 'no pause' } }
     );
+    await drop(paused);
   }
   const starter = async (type, path) => {
     const target = JSON.stringify(ordinary(path));
@@ -618,7 +644,7 @@ async function clients({ transport, proxy, runtime, port }) {
       type === 'xhr'
         ? `(() => { const xhr = new XMLHttpRequest(); xhr.open('GET', ${target}); xhr.send(); })()`
         : type === 'img'
-          ? `(() => { const img = new Image(); img.src = ${target}; })()`
+          ? `(() => { const img = new Image(); (globalThis.__held ??= []).push(img); img.src = ${target}; })()`
           : `fetch(${target}, {cache:'no-store'})`;
     await send('Runtime.evaluate', { expression, returnByValue: true }, session);
     return take(
@@ -627,28 +653,146 @@ async function clients({ transport, proxy, runtime, port }) {
         message.params.responseStatusCode === undefined
     );
   };
-  const chains = [];
+  const headerPaused = await starter('fetch', '/header-src');
+  if (headerPaused) {
+    const requestId = headerPaused.params.requestId;
+    note(
+      'Fetch.fulfillRequest',
+      'binary',
+      await send(
+        'Fetch.fulfillRequest',
+        {
+          requestId,
+          responseCode: 302,
+          binaryResponseHeaders: btoa('Location: https://seven.sliccy.ai/c/bin\0'),
+        },
+        session
+      )
+    );
+    note(
+      'Fetch.fulfillRequest',
+      'relative',
+      await send(
+        'Fetch.fulfillRequest',
+        {
+          requestId,
+          responseCode: 302,
+          responseHeaders: [{ name: 'Location', value: '//vault.sliccy.ai/c/rel' }],
+        },
+        session
+      )
+    );
+    note(
+      'Fetch.fulfillRequest',
+      'malformed',
+      await send(
+        'Fetch.fulfillRequest',
+        { requestId, responseCode: 302, binaryResponseHeaders: 'not-base64' },
+        session
+      )
+    );
+    note(
+      'Fetch.continueResponse',
+      'seven',
+      await send(
+        'Fetch.continueResponse',
+        {
+          requestId,
+          responseCode: 302,
+          responseHeaders: [{ name: 'Location', value: seven('/c/continue') }],
+        },
+        session
+      )
+    );
+    await drop(headerPaused);
+  } else note('Fetch.continueResponse', 'seven', { error: { message: 'no pause' } });
+  const settled = async (networkId) => {
+    if (typeof networkId !== 'string') return 'no network id';
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      if (finished.has(networkId)) return '';
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return `still waiting for ${networkId} to finish`;
+  };
+  const release = async () => {
+    const held = pauses.splice(0, pauses.length);
+    for (const message of held) {
+      const requestId = message.params?.requestId;
+      if (typeof requestId !== 'string') continue;
+      await send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' }, session);
+    }
+  };
+  await release();
   for (const type of ['fetch', 'xhr', 'img']) {
     for (const how of ['302', '307']) {
       for (const origin of ['seven', 'vault']) {
         const path = `/start/${type}/${how}/${origin}`;
-        chains.push({ type, how, origin, paused: await starter(type, path) });
+        const paused = await starter(type, path);
+        note(
+          'Fetch.continueRequest chain',
+          `${type} ${how} ${origin}`,
+          paused
+            ? await send(
+                'Fetch.continueRequest',
+                {
+                  requestId: paused.params.requestId,
+                  url: ordinary(`/redir/${how}/${origin}/${type}`),
+                },
+                session
+              )
+            : { error: { message: 'no pause' } }
+        );
+        if (paused) {
+          const why = await settled(paused.params.networkId);
+          if (why)
+            note('Fetch.continueRequest chain', `${type} ${how} ${origin} end`, {
+              error: { message: why },
+            });
+        }
+        await release();
       }
     }
   }
-  for (const chain of chains) {
-    const url = ordinary(`/redir/${chain.how}/${chain.origin}/${chain.type}`);
-    note(
-      'Fetch.continueRequest chain',
-      `${chain.type} ${chain.how} ${chain.origin}`,
-      chain.paused
-        ? await send(
-            'Fetch.continueRequest',
-            { requestId: chain.paused.params.requestId, url },
-            session
-          )
-        : { error: { message: 'no pause' } }
-    );
+  for (const how of ['302', '307']) {
+    for (const origin of ['seven', 'vault']) {
+      const paused = await starter('fetch', `/fulfill-src/${how}/${origin}`);
+      const location = ordinary(`/serve/${how}/${origin}/fetch`);
+      note(
+        'Fetch.fulfillRequest chain',
+        `${how} ${origin}`,
+        paused
+          ? await send(
+              'Fetch.fulfillRequest',
+              {
+                requestId: paused.params.requestId,
+                responseCode: Number(how),
+                responseHeaders: [{ name: 'Location', value: location }],
+              },
+              session
+            )
+          : { error: { message: 'no pause' } }
+      );
+      const hop = await take(
+        (message) =>
+          message.params.request?.url?.includes(`/serve/${how}/${origin}/fetch`) &&
+          message.params.responseStatusCode === undefined,
+        2000
+      );
+      if (hop) await send('Fetch.continueRequest', { requestId: hop.params.requestId }, session);
+      else if (paused)
+        note('Fetch.fulfillRequest chain', `${how} ${origin} hop`, {
+          error: { message: 'no hop' },
+        });
+      if (paused) {
+        const why = await settled(paused.params.networkId);
+        if (why)
+          note('Fetch.fulfillRequest chain', `${how} ${origin} end`, {
+            error: { message: why },
+          });
+      }
+      await release();
+    }
   }
   const replayPaused = await starter('xhr', '/replay-src');
   note(
@@ -662,6 +806,7 @@ async function clients({ transport, proxy, runtime, port }) {
         )
       : { error: { message: 'no pause' } }
   );
+  await drop(replayPaused);
   note(
     'Network.continueInterceptedRequest',
     'seven',
@@ -680,10 +825,6 @@ async function clients({ transport, proxy, runtime, port }) {
       session
     )
   );
-  await new Promise((resolve) => setTimeout(resolve, 5000));
-  const leaked = pauses.filter((message) =>
-    `${message.params?.request?.url ?? ''}`.includes('/c/chain')
-  ).length;
   await send(
     'Fetch.enable',
     {
@@ -706,7 +847,10 @@ async function clients({ transport, proxy, runtime, port }) {
         )
       : { error: { message: 'no pause' } }
   );
-  await new Promise((resolve) => setTimeout(resolve, 2000));
+  if (patternPaused) {
+    const why = await settled(patternPaused.params.networkId);
+    if (why) note('Fetch pattern kept', 'end', { error: { message: why } });
+  }
   const imageKept = await starter('img', '/pattern-img');
   note('Fetch pattern kept', 'image', imageKept ? {} : { error: { message: 'no pause' } });
   if (imageKept)
@@ -726,14 +870,20 @@ async function clients({ transport, proxy, runtime, port }) {
         )
       : { error: { message: 'no pause' } }
   );
+  await drop(authPaused);
   await send(
     'Runtime.evaluate',
     { expression: `location.href=${JSON.stringify(seven('/c/history'))}`, returnByValue: true },
     session
   );
-  await new Promise((resolve) => setTimeout(resolve, 1000));
-  const history = await send('Page.getNavigationHistory', {}, session);
-  const entries = history.result?.entries ?? [];
+  const historyDeadline = Date.now() + 8000;
+  let entries = [];
+  while (Date.now() < historyDeadline) {
+    const history = await send('Page.getNavigationHistory', {}, session);
+    entries = history.result?.entries ?? [];
+    if (entries.some((entry) => /sliccy\.ai|chrome-error/.test(entry.url ?? ''))) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
   for (const entry of entries) {
     note(
       'Page.navigateToHistoryEntry',
@@ -743,7 +893,6 @@ async function clients({ transport, proxy, runtime, port }) {
   }
   if (!entries.length)
     note('Page.navigateToHistoryEntry', 'seven', { error: { message: 'no entries' } });
-  await new Promise((resolve) => setTimeout(resolve, 400));
   await send('Target.closeTarget', { targetId });
   return { rows, leaked };
 }
@@ -873,7 +1022,11 @@ async function check(t, transport) {
     if (row.name === 'Page.navigateToHistoryEntry' && !/sliccy\.ai|chrome-error/.test(row.origin)) {
       continue;
     }
-    if (row.name === 'Fetch.continueRequest chain' || row.name === 'Fetch pattern kept') {
+    if (
+      row.name === 'Fetch.continueRequest chain' ||
+      row.name === 'Fetch.fulfillRequest chain' ||
+      row.name === 'Fetch pattern kept'
+    ) {
       assert.equal(row.error, '', `${row.name} ${row.origin}\n${text}`);
       continue;
     }
@@ -896,6 +1049,21 @@ async function check(t, transport) {
   assert.ok(
     redirs.every((count) => count > 0),
     `${redirs.join(',')}\n${text}`
+  );
+  const served = [];
+  for (const how of ['302', '307']) {
+    for (const origin of ['seven', 'vault']) {
+      const path = `/serve/${how}/${origin}/fetch`;
+      served.push(
+        hits.filter(
+          (hit) => hit.host === 'ordinary.test' && hit.path === path && hit.method !== 'OPTIONS'
+        ).length
+      );
+    }
+  }
+  assert.ok(
+    served.every((count) => count > 0),
+    `${served.join(',')}\n${text}`
   );
   assert.deepEqual(clientHits, [], text);
 }

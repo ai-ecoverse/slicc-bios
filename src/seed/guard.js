@@ -727,7 +727,8 @@ class Guard {
 
   async armSteer(message) {
     const params = message.params ?? {};
-    if (message.method !== 'Fetch.continueRequest' || typeof params.url !== 'string') return null;
+    const override = message.method === 'Fetch.continueRequest' && typeof params.url === 'string';
+    if (!override && !this.clientHop(message.method, params)) return null;
     const base = this.bases.get(params.requestId);
     if (base?.type === 'Document') return null;
     const nav = this.navs.get(this.sessions.get(message.sessionId)?.targetId);
@@ -739,7 +740,8 @@ class Guard {
     ) {
       return PROTECTED;
     }
-    const entry = { type: base.type, nav, url: params.url, requestId: params.requestId };
+    const entry = { type: base.type, nav, requestId: params.requestId };
+    if (override) entry.url = params.url;
     this.steerNets.set(base.networkId, entry);
     this.holding.add(params.requestId);
     if (await this.syncPatterns(nav)) return null;
@@ -816,7 +818,8 @@ class Guard {
 
   forwardOriginal(params, sessionId) {
     const entry = this.steerNets.get(params.networkId);
-    if (!entry || params.redirectedRequestId !== undefined) return false;
+    if (!entry || typeof entry.url !== 'string' || params.redirectedRequestId !== undefined)
+      return false;
     void this.call(
       'Fetch.continueRequest',
       { requestId: params.requestId, url: entry.url },
@@ -1628,6 +1631,30 @@ class Guard {
       return null;
     }
     return rows;
+  }
+
+  clientHop(method, params) {
+    if (method !== 'Fetch.fulfillRequest' && method !== 'Fetch.continueResponse') return false;
+    if (
+      method === 'Fetch.continueResponse' &&
+      params.responseHeaders === undefined &&
+      params.binaryResponseHeaders === undefined
+    ) {
+      return false;
+    }
+    if (this.fulfilledRedirect(params)) return false;
+    const code =
+      typeof params.responseCode === 'number'
+        ? params.responseCode
+        : this.bases.get(params.requestId)?.status;
+    if (typeof code !== 'number' || code < 300 || code >= 400) return false;
+    const headers = this.headerList(params);
+    const base = this.bases.get(params.requestId)?.url;
+    return headers.some(([name, value]) => {
+      if (name.toLowerCase().trim() !== 'location') return false;
+      const next = resolveTo(value, base);
+      return typeof next === 'string' && !this.is.url(next);
+    });
   }
 
   servedRedirect(method, params) {
