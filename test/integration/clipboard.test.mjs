@@ -24,7 +24,7 @@ const fake = `
   });
 `;
 
-test('/dev/clipboard, pbcopy, pbpaste, xclip, sccopy and scpaste write and read the browser clipboard, and a refused read or write fails with EACCES', async (t) => {
+test('/dev/clipboard, pbcopy, pbpaste, xclip, sccopy and scpaste write and read the browser clipboard, and a refused read or write fails with EACCES, sccopy and scpaste included', async (t) => {
   const page = await chrome.page(t);
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source: fake });
   await boot(page);
@@ -56,6 +56,10 @@ test('/dev/clipboard, pbcopy, pbpaste, xclip, sccopy and scpaste write and read 
   await run(page, 'printf x | cat > /dev/clipboard; echo "write refused $?"');
   await shows(page, 'cat: write error: Permission denied');
   await shows(page, 'write refused 1');
+  await run(page, 'printf x | sccopy; echo "sccopy refused $?"');
+  await shows(page, 'sccopy refused 1');
+  await run(page, 'scpaste; echo "scpaste refused $?"');
+  await shows(page, 'scpaste refused 1');
   assert.equal(await page.evaluate(() => window.fakeClipboard.text), 'from-sccopy');
   assert.deepEqual(page.errors, []);
 });
