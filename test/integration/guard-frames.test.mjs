@@ -13,6 +13,11 @@ const site = createHttp((req, res) => {
   if (url.pathname === '/plain') {
     return res.end('<title>plain</title><h1>plain</h1>');
   }
+  if (url.pathname === '/linking') {
+    return res.end(
+      `<title>linking</title><p>see http://vault.sliccy.ai:${port}/oauth/mcp-callback?code=AXMARK1 here</p><a href="http://vault.sliccy.ai:${port}/oauth/mcp-callback?code=AXMARK3">vault</a><iframe id="gone" src="http://vault.sliccy.ai:${port}/child?k=AXMARK2"></iframe>`
+    );
+  }
   if (url.pathname === '/editors') {
     return res.end(
       `<title>editors</title><iframe id="blank"></iframe><iframe id="srcdoc" srcdoc="<body contenteditable></body>"></iframe><script>const d=document.getElementById('blank').contentDocument;d.open();d.write('<body contenteditable></body>');d.close();</script>`
@@ -644,4 +649,141 @@ test(
   'an ordinary page’s about:blank and srcdoc editors get a utility world and are filled, on the extension path',
   { timeout: 3 * 60 * 1000 },
   (t) => editorsCheck(t, 'extension')
+);
+
+async function failing({ transport, proxy, port }) {
+  const { guardProtected } = await import(new URL('guard.js', location.href).href);
+  const { proxyHost, extensionConnection } = await import(new URL('cdp.js', location.href).href);
+  const raw =
+    transport === 'proxy'
+      ? await proxyHost(proxy)()
+      : extensionConnection(globalThis.sliccExtension.cdp);
+  const connection = guardProtected(raw, self.origin);
+  const pending = new Map();
+  const seen = [];
+  let next = 0;
+  connection.onmessage = (text) => {
+    seen.push(text);
+    const message = JSON.parse(text);
+    pending.get(message.id)?.(message);
+    pending.delete(message.id);
+  };
+  const send = (method, params = {}, sessionId) =>
+    new Promise((resolve) => {
+      next += 1;
+      const id = next;
+      const timer = setTimeout(
+        () => resolve({ error: { message: `${method} got no answer` } }),
+        10000
+      );
+      pending.set(id, (message) => {
+        clearTimeout(timer);
+        resolve(message);
+      });
+      connection.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+  const until = async (check, what, saw) => {
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      if (await check()) return;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(`${what} never happened; saw ${JSON.stringify(await saw()).slice(0, 400)}`);
+  };
+  const created = await send('Target.createTarget', {
+    url: `http://ordinary.test:${port}/linking`,
+  });
+  const targetId = created.result?.targetId;
+  const session = (await send('Target.attachToTarget', { targetId, flatten: true })).result
+    ?.sessionId;
+  await send('Page.enable', {}, session);
+  const tree = async () => (await send('Page.getFrameTree', {}, session)).result?.frameTree;
+  await until(
+    async () => (await tree())?.childFrames?.[0]?.frame?.url?.startsWith('chrome-error:'),
+    'the vault iframe failing to its error page',
+    tree
+  );
+  const child = (await tree()).childFrames[0].frame.id;
+  const out = {};
+  const ax = await send('Accessibility.getFullAXTree', {}, session);
+  out.ax = ax.error?.message ?? 'answered';
+  out.axOrigin = JSON.stringify(ax.result ?? {}).includes('vault.sliccy.ai');
+  out.read =
+    (await send('Page.createIsolatedWorld', { frameId: child, worldName: 'w' }, session)).error
+      ?.message ?? 'answered';
+  out.leave =
+    (
+      await send(
+        'Page.navigate',
+        { frameId: child, url: `http://ordinary.test:${port}/plain` },
+        session
+      )
+    ).error?.message ?? 'navigated';
+  await until(
+    async () => (await tree())?.childFrames?.[0]?.frame?.url?.endsWith('/plain'),
+    'the iframe committing an ordinary page',
+    tree
+  );
+  out.after =
+    (await send('Page.createIsolatedWorld', { frameId: child, worldName: 'w2' }, session)).error
+      ?.message ?? 'answered';
+  out.leaked = seen.some((text) => text.includes('AXMARK'));
+  await send('Target.closeTarget', { targetId });
+  return out;
+}
+
+async function failingCheck(t, transport) {
+  const page = await chrome.page(t);
+  let proxy;
+  if (transport === 'proxy') {
+    proxy = await startProxy({
+      port: 0,
+      origins: [new URL(chrome.url).origin],
+      cdp: `http://127.0.0.1:${debugging}`,
+      kernelPort: null,
+      log: () => {},
+    });
+    t.after(() => proxy.close());
+  } else {
+    const extension = await fakeExtension(page);
+    t.after(() => extension.close());
+  }
+  await page.goto(proxy ? `/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}` : '/');
+  await ready(page);
+  const out = await page.evaluate(failing, {
+    transport,
+    proxy: proxy && { url: proxy.url, key: proxy.key },
+    port,
+  });
+  assert.deepEqual(
+    {
+      ax: out.ax,
+      axOrigin: out.axOrigin,
+      read: out.read.replace(/:.*/, ''),
+      leave: out.leave,
+      after: out.after,
+      leaked: out.leaked,
+    },
+    {
+      ax: 'answered',
+      axOrigin: true,
+      read: 'slicc',
+      leave: 'navigated',
+      after: 'answered',
+      leaked: false,
+    },
+    JSON.stringify(out)
+  );
+}
+
+test(
+  'an AX tree keeps a vault link only as its origin; a failed vault iframe is left but not read, on the proxy path',
+  { timeout: 3 * 60 * 1000 },
+  (t) => failingCheck(t, 'proxy')
+);
+
+test(
+  'an AX tree keeps a vault link only as its origin; a failed vault iframe is left but not read, on the extension path',
+  { timeout: 3 * 60 * 1000 },
+  (t) => failingCheck(t, 'extension')
 );
