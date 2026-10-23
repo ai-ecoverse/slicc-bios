@@ -41,6 +41,7 @@ function fakeNpm(releases, { live = null, tags = {}, failing = new Set() } = {})
     description: one.description ?? `${one.name} for slicc`,
     ...(one.dependencies ? { dependencies: one.dependencies } : {}),
     ...(one.engines ? { engines: one.engines } : {}),
+    ...(one.peerDependencies ? { peerDependencies: one.peerDependencies } : {}),
     ...(one.deprecated ? { deprecated: one.deprecated } : {}),
     slicc: { ...(one.slicc ?? {}), commands: one.commands ?? { [one.name.split('-').pop()]: {} } },
     dist: {
@@ -569,6 +570,52 @@ test('when latest fails the gate, the listing offers the newest older version th
   assert.equal(none.version, '0.1.30');
   assert.equal(none.withheld, 'slicc-cdp 1.30.13 has no build provenance');
   assert.equal(none.newer, undefined, '0.1.23 is past the five it checks');
+});
+
+test('when the six newest releases need a newer kernel, by engines or by peer, the walk-back skips them unjudged and offers the newest that fits and passes the gate (#972)', async () => {
+  const jsh = '@ai-ecoverse/slicc-jsh';
+  const built = { repository: 'ai-ecoverse/slicc-jsh', path: '.github/workflows/ci.yml' };
+  const release = (version, extra = {}) => ({ name: jsh, version, built, ...extra });
+  const ahead = { engines: { 'slicc-kernel': '>=1.200.0' } };
+  const peered = { peerDependencies: { [KERNEL]: '>=1.200.0' } };
+  const fitting = { engines: { 'slicc-kernel': '>=1.120.0' } };
+  const entry = { id: 'node', label: 'Node.js (jsh)', package: jsh };
+  const sources = {
+    [jsh]: { repo: 'ai-ecoverse/slicc-jsh', workflow: '.github/workflows/ci.yml' },
+  };
+  const releases = (seventh) => [
+    release('0.49.0', fitting),
+    release('0.50.0', seventh),
+    release('0.51.0', ahead),
+    release('0.52.0', peered),
+    release('0.53.0', ahead),
+    release('0.54.0', ahead),
+    release('0.55.0', peered),
+    release('0.56.0', ahead),
+  ];
+  const listed = async (seventh) => {
+    const npm = gate(releases(seventh), { sources });
+    const found = (await npm.npm.lookAll([entry], new Map())).get(jsh);
+    const judged = npm.asked
+      .map(({ url }) => decodeURIComponent(url))
+      .filter((url) => url.includes('/npm/v1/attestations/'))
+      .map((url) => url.split('@').pop());
+    return { found, judged };
+  };
+  const { found, judged } = await listed(fitting);
+  assert.equal(found.version, '0.50.0');
+  assert.equal(found.withheld, undefined);
+  assert.deepEqual(found.newer, {
+    version: '0.56.0',
+    reason: 'needs slicc-kernel 1.200.0 or newer',
+  });
+  assert.deepEqual(
+    judged,
+    ['0.56.0', '0.50.0'],
+    'latest is judged, then of the older releases only the one that fits'
+  );
+  const unproven = await listed({ ...fitting, provenance: false });
+  assert.equal(unproven.found.version, '0.49.0', 'the walk-back still runs the full gate');
 });
 
 test('in Your packages, a certs.json exact match that homescoop’s bundled or live exceptions deny is untested too', async () => {
