@@ -267,7 +267,7 @@ export function browserHook(
   own = globalThis.location?.origin
 ) {
   const guard = (connection) => observe(guardProtected(connection, own));
-  return async ({ runtime } = {}) => {
+  const hook = async ({ runtime } = {}) => {
     const linked = linkedBrowsers(links);
     const hosts = browserHosts(network);
     if (runtime && !RUNTIMES.includes(runtime)) {
@@ -283,6 +283,8 @@ export function browserHook(
     if (!open) throw new Error(MISSING[runtime ?? 'any']);
     return guard(await open());
   };
+  if (globalThis.sliccCdpDebug === true) globalThis.sliccCdp = hook;
+  return hook;
 }
 
 export function browserControl(network, { observe, links } = {}) {

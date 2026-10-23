@@ -455,7 +455,7 @@ const kept = (set, value) => {
   if (set.size > REMEMBERED) set.delete(set.values().next().value);
 };
 
-export const ARM = [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }];
+export const ARM = [{ urlPattern: '*', requestStage: 'Request' }];
 
 const CALLBACK_NAMED = RELAY.replace(/^https?:\/\//, '').toLowerCase();
 
@@ -738,6 +738,14 @@ class Guard {
       this.failed(nav.targetId, params);
       return;
     }
+    if (this.is.url(params.request?.url)) {
+      void this.call(
+        'Fetch.failRequest',
+        { requestId, errorReason: 'BlockedByClient' },
+        nav.session
+      );
+      return;
+    }
     void this.call('Fetch.continueRequest', { requestId }, nav.session);
   }
 
@@ -986,13 +994,10 @@ class Guard {
 
   release({ method, params = {}, sessionId }) {
     const { requestId } = params;
-    if (
-      method === 'Fetch.requestPaused' &&
-      params.resourceType === 'Document' &&
-      this.is.url(params.request?.url)
-    ) {
+    if (method === 'Fetch.requestPaused' && this.is.url(params.request?.url)) {
       void this.call('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' }, sessionId);
-      this.failed(this.sessions.get(sessionId)?.targetId, params);
+      if (params.resourceType === 'Document')
+        this.failed(this.sessions.get(sessionId)?.targetId, params);
       return;
     }
     if (method === 'Fetch.authRequired') {
