@@ -1421,6 +1421,11 @@ class Guard {
     return Boolean(now && this.blankFrames(now));
   }
 
+  async noteShot(message) {
+    if (message.method !== 'Page.captureScreenshot') return;
+    if (await this.blankShot(message.sessionId)) this.shots.add(message.id);
+  }
+
   blankShown(now) {
     const urls = [now.url, now.info?.url, ...now.frames.map((frame) => frame.url)].filter(
       (url) => typeof url === 'string' && url
@@ -1551,14 +1556,15 @@ class Guard {
     return Boolean(was?.sessionId && this.blocked.has(was.sessionId));
   }
 
-  keptShot(was) {
-    return (
-      was?.method === 'Page.captureScreenshot' && this.shots.delete(was.id) && this.sealed(was)
-    );
+  async keptShot(was) {
+    const admitted =
+      was?.method === 'Page.captureScreenshot' && this.shots.delete(was.id) && this.sealed(was);
+    if (!admitted) return false;
+    return this.blankShot(was.sessionId);
   }
 
   async answer(message, was) {
-    if (this.keptShot(was)) return this.deliver(message);
+    if (await this.keptShot(was)) return this.deliver(message);
     if (this.sealed(was)) return this.refuse(was);
     const { method, params = {} } = was ?? {};
     const { result } = message;
@@ -1899,7 +1905,7 @@ class Guard {
     }
     const blocked = await this.confirmed(message.sessionId, message.method);
     if (!blocked) {
-      if (message.method === 'Page.captureScreenshot') this.shots.add(message.id);
+      await this.noteShot(message);
       return false;
     }
     this.refuse(message, blocked);

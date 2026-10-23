@@ -182,6 +182,14 @@ async function historyTo(targetId, sessionId, expression, url) {
   return { heard: heard.length - from, pages: chrome.requests.length - pages };
 }
 
+function parkedRead(message) {
+  if (message?.method === 'Page.captureScreenshot') return true;
+  return (
+    message?.method === 'Runtime.evaluate' &&
+    String(message.params?.expression ?? '').includes('BFHOLD')
+  );
+}
+
 async function guardPage(t, proxy = null) {
   const seven = await chrome.page(t);
   chrome.overrides.set('/probe-bf.html', html);
@@ -212,11 +220,7 @@ async function guardPage(t, proxy = null) {
         return false;
       }
     }
-    return (
-      holding &&
-      message?.method === 'Runtime.evaluate' &&
-      String(message.params?.expression ?? '').includes('BFHOLD')
-    );
+    return holding && parkedRead(message);
   };
   await seven.expose('holdSeen', () => {
     noteHold();
@@ -244,8 +248,9 @@ async function guardPage(t, proxy = null) {
       }
       if (
         window.holdReads &&
-        message?.method === 'Runtime.evaluate' &&
-        String(message.params?.expression ?? '').includes('BFHOLD')
+        (message?.method === 'Page.captureScreenshot' ||
+          (message?.method === 'Runtime.evaluate' &&
+            String(message.params?.expression ?? '').includes('BFHOLD')))
       ) {
         parkedSockets.push([this, data]);
         window.holdSeen('{}');
@@ -758,6 +763,70 @@ async function runAbsent(guard, path, variant, origin) {
   }
 }
 
+async function runShot(guard, path, origin) {
+  const id = `bf-shot-${path}-${origin}-${Date.now()}`;
+  const { targetId, protectedUrl } = await prepare(origin, 'back', id, leaveCounter);
+  const host = new URL(protectedUrl).host;
+  try {
+    const attached = await guard.send('Target.attachToTarget', { targetId, flatten: true });
+    assert.equal(attached.error, undefined, clipped(attached));
+    const session = attached.result.sessionId;
+    await guard.send('Page.enable', {}, session);
+    await guard.send('Runtime.enable', {}, session);
+    const control = await guard.send(
+      'Runtime.evaluate',
+      { expression: '1+1', returnByValue: true },
+      session
+    );
+    assert.equal(control.result?.result?.value, 2, `ordinary evaluate: ${clipped(control)}`);
+    await guard.lag(READ_LAG);
+    await guard.hold();
+    const pending = guard.send('Page.captureScreenshot', { format: 'png' }, session, 20000);
+    const forwarded = await Promise.race([
+      guard.held().then(() => 'held'),
+      pending.then(() => 'answered'),
+      pause(8000).then(() => 'timeout'),
+    ]);
+    if (forwarded !== 'held') {
+      throw new Error(`${id}: the screenshot was ${forwarded} before the restore`);
+    }
+    await guard.send(
+      'Runtime.evaluate',
+      { expression: 'history.back()', userGesture: true, returnByValue: true },
+      session
+    );
+    const shownAt = await waitPageshow(targetId);
+    if (!shownAt) throw new Error(`${id}: pageshow did not run on the restored page`);
+    await pause(400);
+    const after = Date.now() - shownAt;
+    await guard.release();
+    const answer = await pending;
+    const text = JSON.stringify(answer) ?? '';
+    const kind = verdict(answer);
+    const pixels = typeof answer.result?.data === 'string' ? answer.result.data.length : 0;
+    const guardRefused = (answer?.error?.message ?? '').startsWith('slicc: refused:');
+    const line = [
+      'BFSHOT',
+      path,
+      'lagging',
+      origin,
+      'back',
+      `shot=${kind}`,
+      `after=${after}`,
+      `pixels=${pixels}`,
+      guardRefused && pixels === 0 && !text.includes(host) && after >= 350 ? 'pass' : 'GAP',
+    ].join(' ');
+    console.log(line);
+    if (!guardRefused || pixels !== 0 || text.includes(host) || after < 350) {
+      throw new Error(`${line}\nanswer=${clipped(answer)}`);
+    }
+  } finally {
+    await guard.release().catch(() => undefined);
+    await guard.lag(0);
+    await own.send('Target.closeTarget', { targetId });
+  }
+}
+
 async function runInput(guard, path, variant, origin) {
   const id = `bf-input-${path}-${variant}-${origin}-${Date.now()}`;
   const { targetId } = await prepare(origin, 'back', id);
@@ -833,7 +902,8 @@ async function matrix(t, path, proxy) {
   const wide =
     process.env.BF_HELD !== 'only' &&
     process.env.BF_INPUT !== 'only' &&
-    process.env.BF_EFFECT !== 'only';
+    process.env.BF_EFFECT !== 'only' &&
+    process.env.BF_SHOT !== 'only';
   if (wide) {
     for (const variant of ['prompt', 'lagging']) {
       await t.test(`${path} ${variant}`, async () => {
@@ -844,26 +914,44 @@ async function matrix(t, path, proxy) {
       });
     }
   }
-  if (process.env.BF_INPUT !== 'only' && process.env.BF_EFFECT !== 'only') {
+  if (
+    process.env.BF_INPUT !== 'only' &&
+    process.env.BF_EFFECT !== 'only' &&
+    process.env.BF_SHOT !== 'only'
+  ) {
     for (const variant of ['prompt', 'lagging']) {
       await t.test(`${path} ${variant} held`, async () => {
         await runHeld(guard, path, variant, 'seven');
       });
     }
   }
-  if (process.env.BF_EFFECT !== 'only') {
+  if (process.env.BF_EFFECT !== 'only' && process.env.BF_SHOT !== 'only') {
     for (const variant of ['prompt', 'lagging']) {
       await t.test(`${path} ${variant} input`, async () => {
         await runInput(guard, path, variant, 'seven');
       });
     }
   }
-  if (process.env.BF_HELD !== 'only' && process.env.BF_INPUT !== 'only') {
+  if (
+    process.env.BF_HELD !== 'only' &&
+    process.env.BF_INPUT !== 'only' &&
+    process.env.BF_SHOT !== 'only'
+  ) {
     for (const variant of ['prompt', 'lagging']) {
       await t.test(`${path} ${variant} effect`, async () => {
         await runAbsent(guard, path, variant, 'seven');
       });
     }
+  }
+  if (
+    process.env.BF_SHOT === 'only' ||
+    (process.env.BF_HELD !== 'only' &&
+      process.env.BF_INPUT !== 'only' &&
+      process.env.BF_EFFECT !== 'only')
+  ) {
+    await t.test(`${path} lagging shot`, async () => {
+      await runShot(guard, path, 'seven');
+    });
   }
 }
 
@@ -1028,10 +1116,7 @@ async function guardLink(t) {
       } catch {
         message = null;
       }
-      if (
-        message?.method === 'Runtime.evaluate' &&
-        String(message.params?.expression ?? '').includes('BFHOLD')
-      ) {
+      if (parkedRead(message)) {
         parked.push(text);
         noteHold();
         return;
@@ -1162,7 +1247,8 @@ if (ONLY === '' || ONLY === 'link') {
     const wide =
       process.env.BF_HELD !== 'only' &&
       process.env.BF_INPUT !== 'only' &&
-      process.env.BF_EFFECT !== 'only';
+      process.env.BF_EFFECT !== 'only' &&
+      process.env.BF_SHOT !== 'only';
     if (wide) {
       for (const variant of ['prompt', 'lagging']) {
         await t.test(`link ${variant}`, async () => {
@@ -1173,26 +1259,44 @@ if (ONLY === '' || ONLY === 'link') {
         });
       }
     }
-    if (process.env.BF_INPUT !== 'only' && process.env.BF_EFFECT !== 'only') {
+    if (
+      process.env.BF_INPUT !== 'only' &&
+      process.env.BF_EFFECT !== 'only' &&
+      process.env.BF_SHOT !== 'only'
+    ) {
       for (const variant of ['prompt', 'lagging']) {
         await t.test(`link ${variant} held`, async () => {
           await runHeld(guard, 'link', variant, 'seven');
         });
       }
     }
-    if (process.env.BF_EFFECT !== 'only') {
+    if (process.env.BF_EFFECT !== 'only' && process.env.BF_SHOT !== 'only') {
       for (const variant of ['prompt', 'lagging']) {
         await t.test(`link ${variant} input`, async () => {
           await runInput(guard, 'link', variant, 'seven');
         });
       }
     }
-    if (process.env.BF_HELD !== 'only' && process.env.BF_INPUT !== 'only') {
+    if (
+      process.env.BF_HELD !== 'only' &&
+      process.env.BF_INPUT !== 'only' &&
+      process.env.BF_SHOT !== 'only'
+    ) {
       for (const variant of ['prompt', 'lagging']) {
         await t.test(`link ${variant} effect`, async () => {
           await runAbsent(guard, 'link', variant, 'seven');
         });
       }
+    }
+    if (
+      process.env.BF_SHOT === 'only' ||
+      (process.env.BF_HELD !== 'only' &&
+        process.env.BF_INPUT !== 'only' &&
+        process.env.BF_EFFECT !== 'only')
+    ) {
+      await t.test('link lagging shot', async () => {
+        await runShot(guard, 'link', 'seven');
+      });
     }
   });
 }
