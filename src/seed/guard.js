@@ -530,9 +530,9 @@ class Guard {
     this.frames = new Map();
     this.requests = new Map();
     this.bases = new Map();
-    this.steerIds = new Set();
     this.steerNets = new Map();
     this.holding = new Set();
+    this.fetchPatterns = new Map();
     this.held = new Map();
     this.internal = new Map();
     this.asked = new Map();
@@ -739,13 +739,7 @@ class Guard {
     ) {
       return PROTECTED;
     }
-    const entry = {
-      type: base.type,
-      nav,
-      url: params.url,
-      fetches: new Set([params.requestId]),
-    };
-    this.steerIds.add(params.requestId);
+    const entry = { type: base.type, nav, url: params.url, requestId: params.requestId };
     this.steerNets.set(base.networkId, entry);
     this.holding.add(params.requestId);
     if (await this.syncPatterns(nav)) return null;
@@ -763,6 +757,15 @@ class Guard {
     for (const resourceType of [...types].sort()) {
       patterns.push({ urlPattern: '*', resourceType, requestStage: 'Request' });
     }
+    for (const pattern of this.keptPatterns(nav)) {
+      const same = patterns.some(
+        (had) =>
+          had.resourceType === pattern.resourceType &&
+          had.urlPattern === pattern.urlPattern &&
+          had.requestStage === pattern.requestStage
+      );
+      if (!same) patterns.push(pattern);
+    }
     const key = JSON.stringify(patterns);
     if (nav.patternKey === key) return true;
     const answer = await this.call('Fetch.enable', { patterns }, nav.session);
@@ -771,40 +774,43 @@ class Guard {
     return true;
   }
 
+  keptPatterns(nav) {
+    const kept = [];
+    for (const [sessionId, list] of this.fetchPatterns) {
+      if (this.sessions.get(sessionId)?.targetId !== nav.targetId) continue;
+      for (const pattern of list) {
+        if (typeof pattern?.resourceType !== 'string') continue;
+        kept.push(pattern);
+      }
+    }
+    return kept;
+  }
+
   finishNet(networkId) {
     if (typeof networkId !== 'string') return;
     const entry = this.steerNets.get(networkId);
     if (!entry) return;
-    for (const [key, value] of [...this.steerNets]) {
-      if (value === entry) this.steerNets.delete(key);
-    }
-    for (const id of entry.fetches) {
-      this.steerIds.delete(id);
-      this.holding.delete(id);
-    }
+    this.steerNets.delete(networkId);
+    this.holding.delete(entry.requestId);
     void this.syncPatterns(entry.nav);
   }
 
   dropSteers(nav) {
-    const entries = new Set();
+    let dropped = false;
     for (const [key, entry] of [...this.steerNets]) {
       if (entry.nav !== nav) continue;
-      entries.add(entry);
       this.steerNets.delete(key);
+      this.holding.delete(entry.requestId);
+      dropped = true;
     }
-    for (const entry of entries) {
-      for (const id of entry.fetches) {
-        this.steerIds.delete(id);
-        this.holding.delete(id);
-      }
-    }
-    if (entries.size) void this.syncPatterns(nav);
+    if (dropped) void this.syncPatterns(nav);
   }
 
   steerHop(params) {
     return (
+      typeof params.networkId === 'string' &&
       typeof params.redirectedRequestId === 'string' &&
-      this.steerIds.has(params.redirectedRequestId)
+      this.steerNets.has(params.networkId)
     );
   }
 
@@ -819,43 +825,18 @@ class Guard {
     return true;
   }
 
-  noteHop(params) {
-    let entry;
-    for (const value of this.steerNets.values()) {
-      if (value.fetches.has(params.redirectedRequestId)) entry = value;
-    }
-    if (!entry || typeof params.requestId !== 'string') return;
-    entry.fetches.add(params.requestId);
-    this.steerIds.add(params.requestId);
-    if (typeof params.networkId === 'string' && !this.steerNets.has(params.networkId)) {
-      this.steerNets.set(params.networkId, entry);
-    }
-  }
-
-  netOf(fetchId) {
-    for (const [networkId, entry] of this.steerNets) {
-      if (entry.fetches.has(fetchId)) return networkId;
-    }
-  }
-
   failHop(params, sessionId) {
     void this.call(
       'Fetch.failRequest',
       { requestId: params.requestId, errorReason: 'BlockedByClient' },
       sessionId
     );
-    const net =
-      typeof params.networkId === 'string'
-        ? params.networkId
-        : this.netOf(params.redirectedRequestId);
-    this.finishNet(net);
   }
 
   onSteerPause(params, sessionId, own) {
     if (own && this.holding.has(params.requestId)) return 'drop';
     if (own && this.forwardOriginal(params, sessionId)) return 'drop';
     if (!this.steerHop(params)) return 'pass';
-    this.noteHop(params);
     if (this.is.url(params.request?.url)) {
       this.failHop(params, sessionId);
       return 'drop';
@@ -1752,8 +1733,18 @@ class Guard {
       this.pages.delete(sessionId);
       return this.deliver({ id, sessionId, result: {} });
     }
+    this.noteFetch(message);
     this.asked.set(id, message);
     this.connection.send(JSON.stringify(message));
+  }
+
+  noteFetch(message) {
+    const { sessionId } = message;
+    if (!sessionId) return;
+    if (message.method === 'Fetch.disable') this.fetchPatterns.delete(sessionId);
+    if (message.method !== 'Fetch.enable') return;
+    const patterns = message.params?.patterns;
+    this.fetchPatterns.set(sessionId, Array.isArray(patterns) ? patterns : []);
   }
 
   received(text) {

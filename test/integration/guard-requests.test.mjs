@@ -684,6 +684,33 @@ async function clients({ transport, proxy, runtime, port }) {
   const leaked = pauses.filter((message) =>
     `${message.params?.request?.url ?? ''}`.includes('/c/chain')
   ).length;
+  await send(
+    'Fetch.enable',
+    {
+      patterns: [
+        { urlPattern: '*', resourceType: 'Image', requestStage: 'Request' },
+        { urlPattern: '*', resourceType: 'XHR', requestStage: 'Request' },
+      ],
+    },
+    session
+  );
+  const patternPaused = await starter('xhr', '/pattern-src');
+  note(
+    'Fetch pattern kept',
+    'xhr',
+    patternPaused
+      ? await send(
+          'Fetch.continueRequest',
+          { requestId: patternPaused.params.requestId, url: ordinary('/pattern-land') },
+          session
+        )
+      : { error: { message: 'no pause' } }
+  );
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  const imageKept = await starter('img', '/pattern-img');
+  note('Fetch pattern kept', 'image', imageKept ? {} : { error: { message: 'no pause' } });
+  if (imageKept)
+    await send('Fetch.continueRequest', { requestId: imageKept.params.requestId }, session);
   const authPaused = await pauseFor('/auth-src');
   note(
     'Fetch.continueWithAuth',
@@ -846,7 +873,7 @@ async function check(t, transport) {
     if (row.name === 'Page.navigateToHistoryEntry' && !/sliccy\.ai|chrome-error/.test(row.origin)) {
       continue;
     }
-    if (row.name === 'Fetch.continueRequest chain') {
+    if (row.name === 'Fetch.continueRequest chain' || row.name === 'Fetch pattern kept') {
       assert.equal(row.error, '', `${row.name} ${row.origin}\n${text}`);
       continue;
     }
