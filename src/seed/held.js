@@ -247,7 +247,6 @@ export function watchOpened({
   every = 250,
   timers = globalThis,
   now = Date.now,
-  eager = [],
 }) {
   const live = new Map();
   const ended = new Set();
@@ -255,7 +254,7 @@ export function watchOpened({
   const look = async () => {
     for (const [name, open] of Object.entries(hosts() ?? {})) {
       if (typeof open !== 'function' || ended.has(name)) continue;
-      if (!wanted && !eager.includes(name)) continue;
+      if (!wanted) continue;
       if (live.has(name)) {
         live.get(name)?.poll();
         continue;

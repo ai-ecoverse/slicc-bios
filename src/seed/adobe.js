@@ -6,7 +6,6 @@ const imsHosts = {
   stg1: 'https://ims-na1-stg1.adobelogin.com',
 };
 export const RELAY = 'https://www.sliccy.ai/auth/callback';
-export const CALLBACK = '/auth/callback';
 export const CLIENTS_KEY = 'slicc-os.sign-in-clients';
 
 export function storedClients(storage = globalThis.localStorage) {
@@ -28,8 +27,8 @@ export function rememberClient(id) {
     globalThis.localStorage?.setItem(CLIENTS_KEY, JSON.stringify([...SIGN_IN_CLIENTS]));
   } catch {}
 }
-export const NEEDS_PROXY =
-  'signing in to Adobe needs slicc-node or slicc-extension: run npx @ai-ecoverse/slicc-node or install slicc-extension';
+export const NEEDS_EXTENSION =
+  'signing in to Adobe on this site needs slicc-extension: install slicc-extension, or open seven on its sliccy.ai address';
 
 export function nonce(random = (bytes) => crypto.getRandomValues(bytes)) {
   const bytes = random(new Uint8Array(24));
@@ -49,10 +48,6 @@ function authorize({ clientId, scopes, imsEnvironment }, state) {
     state: btoa(JSON.stringify(state)),
   });
   return `${imsHosts[imsEnvironment] ?? imsHosts.prod}/ims/authorize/v2?${params}`;
-}
-
-export function authorizeUrl(config, port, value) {
-  return authorize(config, { source: 'local', port, path: CALLBACK, nonce: value });
 }
 
 export function relayUrl(config, origin, value) {
@@ -191,79 +186,8 @@ function viaRelay({
   };
 }
 
-function viaProxy({ proxy, open, hold, fetcher, every, timeout }) {
-  return async (_providerId, options, signal) => {
-    if (!proxy) throw new Error(NEEDS_PROXY);
-    const value = nonce();
-    const headers = { 'X-Bridge-Token': proxy.key };
-    const abandon = () =>
-      fetcher(`${proxy.url}/api/oauth-state?nonce=${value}`, { method: 'DELETE', headers }).catch(
-        () => {}
-      );
-    let registering = null;
-    const register = (config) => {
-      registering = fetcher(`${proxy.url}/api/oauth-state`, {
-        method: 'POST',
-        headers: { ...headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nonce: value }),
-      });
-      return registering.then((registered) => {
-        if (!registered.ok) {
-          throw new Error(
-            `slicc-node refused the sign-in (${registered.status}); update it with npx @ai-ecoverse/slicc-node@latest`
-          );
-        }
-        return authorizeUrl(config, Number(new URL(proxy.url).port), value);
-      });
-    };
-    const popup = await prepare(open, options, register, signal, hold).catch((error) => {
-      if (error?.name === 'AbortError') registering?.then(abandon, () => {});
-      throw error;
-    });
-    return waiting({
-      popup,
-      signal,
-      timeout,
-      abandon,
-      start: (ok, fail) => {
-        let stopped = false;
-        let timer;
-        const poll = async () => {
-          let token;
-          try {
-            const response = await fetcher(`${proxy.url}/api/oauth-result?nonce=${value}`, {
-              headers,
-            });
-            if (stopped) return;
-            if (response.status === 204) {
-              timer = setTimeout(poll, every);
-              return;
-            }
-            if (response.status === 404) throw new Error('the sign-in expired; try again');
-            if (!response.ok)
-              throw new Error(`slicc-node refused the sign-in (${response.status})`);
-            token = grantFrom((await response.json()).redirectUrl, value);
-          } catch (error) {
-            fail(error);
-            return;
-          }
-          ok(token);
-        };
-        timer = setTimeout(poll, every);
-        return () => {
-          stopped = true;
-          clearTimeout(timer);
-        };
-      },
-    });
-  };
-}
-
 export function signIn({
-  network = {},
   open = (url) => window.open(url, 'slicc-sign-in', 'popup,width=520,height=720'),
-  fetch: fetcher = (input, init) => globalThis.fetch(input, init),
-  every = 1000,
   timeout = SIGN_IN_TIMEOUT,
   extension = globalThis.sliccExtension,
   origin = globalThis.location?.origin,
@@ -277,7 +201,6 @@ export function signIn({
   const relay = shared
     ? viaRelay({ open, hold, listen, timeout, address: openerUrl, channel: OPENER_CHANNEL })
     : viaRelay({ open, hold, origin, listen, timeout });
-  const proxy = network?.kind === 'local-proxy' ? network.proxy : null;
   const direct = extension?.signIn
     ? async (_providerId, options, signal) => {
         if (signal?.aborted) throw cancelled();
@@ -287,7 +210,9 @@ export function signIn({
         const token = await abortable(extension.signIn(config), signal);
         return typeof token === 'string' ? { token } : token;
       }
-    : viaProxy({ proxy, open, hold, fetcher, every, timeout });
+    : async () => {
+        throw new Error(NEEDS_EXTENSION);
+      };
   const forced = () => force ?? globalThis.localStorage?.getItem(FORCE_RELAY) === 'relay';
   const grant = (providerId, options, { signal } = {}) =>
     (shared || relayed(origin) || forced()

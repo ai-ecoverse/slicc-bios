@@ -341,10 +341,9 @@ export function favicon(href) {
     : undefined;
 }
 
-function defaultOpener(network) {
+function defaultOpener() {
   return () => {
-    const hosts = browserHosts(network);
-    const open = hosts.extension || hosts.proxy;
+    const open = browserHosts().extension;
     if (!open) throw new Error('no browser to drive');
     return open();
   };
@@ -381,7 +380,7 @@ class Browser {
     this.#clock = options.clock ?? globalThis;
     this.#now = options.now ?? (() => Date.now());
     this.#storage = options.storage === undefined ? globalThis.sessionStorage : options.storage;
-    this.#client = pageClient(options.opener ?? defaultOpener(network), this.#clock);
+    this.#client = pageClient(options.opener ?? defaultOpener(), this.#clock);
     this.#owned = restore(this.#storage);
     this.#dpr = options.dpr ?? (() => globalThis.devicePixelRatio ?? 1);
     this.#visible = options.visible ?? (() => globalThis.document?.visibilityState !== 'hidden');
