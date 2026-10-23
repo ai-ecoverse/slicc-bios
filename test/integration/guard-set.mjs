@@ -6,7 +6,6 @@ import { fileURLToPath } from 'node:url';
 import { fixtureServer } from '@ai-ecoverse/slicc-browsers/fixture';
 import { run, summary } from '@ai-ecoverse/slicc-browsers/guard-runner';
 import set from '@ai-ecoverse/slicc-browsers/guard-vectors.json' with { type: 'json' };
-import { startProxy } from '@ai-ecoverse/slicc-node';
 import { boot } from './bios.mjs';
 import { debuggerUrl, launch } from './chrome.mjs';
 import { ALL_TARGETS, groupTargets } from './guard-groups.mjs';
@@ -36,14 +35,6 @@ const PATHS = {
     browserContexts: true,
     chromeUrlsAttach: false,
     discovery: false,
-    extensionWorld: true,
-  },
-  proxy: {
-    autoAttach: true,
-    browserSession: true,
-    browserContexts: true,
-    chromeUrlsAttach: true,
-    discovery: true,
     extensionWorld: true,
   },
 };
@@ -140,14 +131,6 @@ async function unguardedClient() {
 }
 
 export async function guardHost(t) {
-  const proxy = await startProxy({
-    port: 0,
-    origins: [new URL(chrome.url).origin],
-    cdp: `http://127.0.0.1:${port}`,
-    kernelPort: null,
-    log: () => {},
-  });
-  t.after(() => proxy.close());
   const seven = await chrome.page(t);
   const socket = new WebSocket(browser);
   await new Promise((resolve, reject) => {
@@ -207,12 +190,11 @@ export async function guardHost(t) {
     });
   });
   await boot(seven);
-  const setup = async (proxy) => {
+  const setup = async () => {
     const { guardProtected } = await import(new URL('guard.js', location.href).href);
-    const { extensionConnection, proxyHost } = await import(new URL('cdp.js', location.href).href);
+    const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
     const hosts = {
       extension: async () => extensionConnection(globalThis.sliccExtension.cdp),
-      proxy: proxyHost(proxy),
     };
     const lagged = (connection, lag) => {
       const send = connection.send.bind(connection);
@@ -267,7 +249,7 @@ export async function guardHost(t) {
   const ensure = async () => {
     if (await seven.evaluate(() => Boolean(window.guards))) return;
     trace('install', 'the guard hooks go into seven’s page, again if it reloaded');
-    await seven.evaluate(setup, { url: proxy.url, key: proxy.key });
+    await seven.evaluate(setup);
   };
   await ensure();
   let count = 0;

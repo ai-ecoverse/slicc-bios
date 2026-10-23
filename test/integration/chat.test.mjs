@@ -9,7 +9,7 @@ import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
 import { agentState, agentUp, connectAccount, listsAccount, ready, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
-import { eventFrame, fakeProxy } from './fake-proxy.mjs';
+import { eventFrame, fakeLlm } from './fake-llm.mjs';
 
 const KEY = 'dummy-bedrock-key-0000';
 const ADOBE = 'https://adobe-llm-proxy.paolo-moz.workers.dev/';
@@ -131,6 +131,7 @@ const ims = createServer(
 );
 await new Promise((resolve) => ims.listen(0, '127.0.0.1', resolve));
 const chrome = await launch({
+  intercept: [],
   agent: true,
   timeout: 60000,
   args: [
@@ -138,9 +139,8 @@ const chrome = await launch({
     '--ignore-certificate-errors',
   ],
 });
-const proxy = await fakeProxy({
-  origin: new URL(chrome.url).origin,
-  key: 'the-key',
+const llm = await fakeLlm(chrome.cdp, {
+  hosts: [BEDROCK, ADOBE, 'https://tracker.example.com/', 'https://registry.npmjs.org/'],
   answer: async (request, raw) => {
     if (request.url.startsWith(ADOBE)) {
       const bearer = request.headers.find(([name]) => name.toLowerCase() === 'authorization')?.[1];
@@ -189,7 +189,7 @@ const proxy = await fakeProxy({
 });
 after(async () => {
   ims.close();
-  await proxy.close();
+  await llm.close();
   await chrome.close();
 });
 
@@ -277,7 +277,7 @@ const UPDATE = 5 * 60 * 1000;
 const GLOBAL_MEMORY = '/root/.pi/agent/memory/MEMORY.md';
 const CONE_MEMORY = '/root/.pi/agent/memory/cone/MEMORY.md';
 
-test('chat in seven answers through the agent worker, Bedrock and the local proxy', {
+test('chat in seven answers through the agent worker, Bedrock and the page fetch', {
   timeout: 35 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -287,7 +287,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   await page.init(() => {
     globalThis.sliccKernelDebug = true;
   });
-  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await page.goto('/');
   await ready(page);
   await page.evaluate(
     (global, cone) =>
@@ -548,7 +548,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   await page.screenshot(new URL('chat.png', page.dir));
 
   const keyed = () =>
-    proxy.requests.filter(
+    llm.requests.filter(
       (request) =>
         request.url.startsWith(BEDROCK) &&
         request.headers.some(
@@ -651,7 +651,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
 
   const other = await page.tab();
   await other.init(helpers);
-  await other.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await other.goto('/');
   await ready(other);
   await other.until(
     () => document.querySelector('slicc-app').model.tabs?.state().role === 'follower'
@@ -711,6 +711,20 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     );
     await page.press('Enter');
   };
+  assert.equal(
+    await page.evaluate(() =>
+      globalThis
+        .sliccLogin('adobe', async () => ({ clientId: 'test-client', scopes: 'openid,AdobeID' }))
+        .then(
+          () => 'resolved',
+          (error) => error.message
+        )
+    ),
+    'signing in to Adobe on this site needs slicc-extension: install slicc-extension, or open seven on its sliccy.ai address'
+  );
+  assert.equal(await page.evaluate(() => window.signInWindows.length), 0);
+  assert.equal(authorized.length, 0);
+  await page.evaluate(() => localStorage.setItem('slicc-os.sign-in', 'relay'));
   await signIn();
   await page.until(() => window.adobeStatus() === 'signing-in');
   await page.until(() => !!window.adobeCancel());
@@ -742,10 +756,9 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   await page.until(() => !!window.adobeCancel());
   await page.evaluate(() => window.adobeCancel().click());
   await page.until(() => window.adobeStatus() === 'disconnected');
-  await eventually(() => proxy.dropped.length === 1 && authorized.length === 1);
+  await eventually(() => authorized.length === 1);
   const quiet = {
     windows: await page.evaluate(() => window.signInWindows.length),
-    registered: proxy.registered.length,
     authorized: authorized.length,
   };
   assert.equal(
@@ -764,14 +777,12 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
   assert.deepEqual(
     {
       windows: await page.evaluate(() => window.signInWindows.length),
-      registered: proxy.registered.length,
       authorized: authorized.length,
     },
     quiet
   );
   hold = false;
   authorized.length = 0;
-  await page.evaluate(() => localStorage.setItem('slicc-os.sign-in', 'relay'));
   await signIn();
   await page.until(
     () =>
@@ -1587,7 +1598,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
 
   const second = await page.tab();
   await second.init(helpers);
-  await second.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await second.goto('/');
   await ready(second);
   await second.until(
     () => document.querySelector('slicc-app').model.tabs?.state().role === 'follower'
@@ -1663,7 +1674,7 @@ test('an agent that failed to start at boot loads the new page adapter once an u
   await page.init(helpers);
   await page.init(persisted);
   await page.init(storageStub);
-  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await page.goto('/');
   await ready(page);
   await agentUp(page);
   await connectAccount(page, 'amazon-bedrock', KEY);

@@ -3,7 +3,7 @@ import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
 import { agentUp, connectAccount, listsAccount, ready, run } from './bios.mjs';
 import { launch } from './chrome.mjs';
-import { eventFrame, fakeProxy } from './fake-proxy.mjs';
+import { eventFrame, fakeLlm } from './fake-llm.mjs';
 import { shoot } from './shots.mjs';
 
 const KEY = 'dummy-bedrock-key-0000';
@@ -69,10 +69,9 @@ function answer(body) {
   return text('Done.');
 }
 
-const chrome = await launch({ agent: true, timeout: 60000 });
-const proxy = await fakeProxy({
-  origin: new URL(chrome.url).origin,
-  key: 'the-key',
+const chrome = await launch({ intercept: [], agent: true, timeout: 60000 });
+const llm = await fakeLlm(chrome.cdp, {
+  hosts: [BEDROCK, 'https://registry.npmjs.org/'],
   answer: async (request, body, { closed }) => {
     if (
       request.url.startsWith(BEDROCK) &&
@@ -100,7 +99,7 @@ const proxy = await fakeProxy({
   },
 });
 after(async () => {
-  await proxy.close();
+  await llm.close();
   await chrome.close();
 });
 
@@ -143,7 +142,7 @@ test("the agent's UI: vault hold, tool-run clusters, a failed bash card's notes,
   timeout: 35 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
-  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await page.goto('/');
   await ready(page);
   await agentUp(page);
   await listsAccount(page, 'amazon-bedrock');
@@ -388,7 +387,7 @@ test("the agent's UI: vault hold, tool-run clusters, a failed bash card's notes,
   });
   for (let i = 0; i < 600 && !held.at; i += 1)
     await new Promise((resolve) => setTimeout(resolve, 100));
-  assert.ok(held.at, 'the model request never reached the proxy');
+  assert.ok(held.at, 'the model request never reached the fake model');
   assert.equal(
     await page.evaluate(() => {
       const { agent } = document.querySelector('slicc-app').model;
@@ -409,13 +408,13 @@ test("the agent's UI: vault hold, tool-run clusters, a failed bash card's notes,
     .catch(async (error) => {
       release();
       throw new Error(
-        `Stop didn't end a turn whose model request had no response yet: ${error.message}\nproxy hop closed: ${held.closed ? `${held.closed - stopped} ms after Stop` : 'no'}\nconsole:\n${page.console.slice(-15).join('\n')}`
+        `Stop didn't end a turn whose model request had no response yet: ${error.message}\nmodel request closed: ${held.closed ? `${held.closed - stopped} ms after Stop` : 'no'}\nconsole:\n${page.console.slice(-15).join('\n')}`
       );
     });
   for (let i = 0; i < 100 && !held.closed; i += 1)
     await new Promise((resolve) => setTimeout(resolve, 100));
   release();
-  assert.ok(held.closed, 'the proxy never saw the held model request close after Stop');
+  assert.ok(held.closed, 'the fake model never saw the held model request close after Stop');
   assert.ok(held.closed - stopped < 10000, `the hop closed ${held.closed - stopped} ms after Stop`);
   assert.ok(
     !page.console.some((line) => line.includes('aws-websocket-abort-signal:')),

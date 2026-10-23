@@ -4,7 +4,7 @@ import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harne
 import { agentUp, connectAccount, listsAccount, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { model, startHub } from './fake-hub.mjs';
-import { eventFrame, fakeProxy } from './fake-proxy.mjs';
+import { eventFrame, fakeLlm } from './fake-llm.mjs';
 import { shoot } from './shots.mjs';
 
 const KEY = 'dummy-bedrock-key-0000';
@@ -105,16 +105,15 @@ const lastTurn = (body) => {
   }
 };
 
-const owners = await launch({ agent: true, timeout: 60000 });
+const owners = await launch({ intercept: [], agent: true, timeout: 60000 });
 const followers = await launch({
   agent: true,
   timeout: 60000,
   args: ['--disable-features=IsolateSandboxedIframes'],
 });
 const asked = [];
-const proxy = await fakeProxy({
-  origin: new URL(owners.url).origin,
-  key: 'the-key',
+const llm = await fakeLlm(owners.cdp, {
+  hosts: [BEDROCK, ADOBE, 'https://registry.npmjs.org/'],
   answer: async (request, body) => {
     if (request.url.startsWith('https://registry.npmjs.org/')) {
       const type = request.url.endsWith('.tgz') ? 'application/octet-stream' : 'application/json';
@@ -164,7 +163,7 @@ const proxy = await fakeProxy({
   },
 });
 after(async () => {
-  await proxy.close();
+  await llm.close();
   await Promise.all([owners.close(), followers.close()]);
 });
 
@@ -253,7 +252,7 @@ test('a follower watches the owner run with View, is refused a send, sends with 
   t.after(() => hub.close());
   const owner = await owners.page(t);
   const page = await followers.page(t);
-  await owner.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await owner.goto('/');
   await ready(owner);
   await owner.evaluate((url) => localStorage.setItem('slicc-os.tray-hub', url), hub.url);
   await owner.reload();

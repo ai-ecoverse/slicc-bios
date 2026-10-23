@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:net';
 import { after, test } from 'node:test';
-import { startProxy } from '@ai-ecoverse/slicc-node';
 import { ready } from './bios.mjs';
 import { debuggerUrl, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
@@ -16,14 +15,13 @@ const chrome = await launch({ args: [`--remote-debugging-port=${debugging}`] });
 after(() => chrome.close());
 const fakeExtension = extensionOver(await debuggerUrl(debugging));
 
-async function rig({ transport, proxy }) {
+async function rig() {
   const { guardProtected } = await import(new URL('guard.js', location.href).href);
-  const { proxyHost, extensionConnection } = await import(new URL('cdp.js', location.href).href);
-  const raw =
-    transport === 'proxy'
-      ? await proxyHost(proxy)()
-      : extensionConnection(globalThis.sliccExtension.cdp);
-  const connection = guardProtected(raw, self.origin);
+  const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
+  const connection = guardProtected(
+    extensionConnection(globalThis.sliccExtension.cdp),
+    self.origin
+  );
   const pending = new Map();
   const events = [];
   let next = 0;
@@ -54,25 +52,13 @@ async function rig({ transport, proxy }) {
   };
 }
 
-async function churn(t, transport, rounds) {
+async function churn(t, rounds) {
   const page = await chrome.page(t);
-  let proxy;
-  if (transport === 'proxy') {
-    proxy = await startProxy({
-      port: 0,
-      origins: [new URL(chrome.url).origin],
-      cdp: `http://127.0.0.1:${debugging}`,
-      kernelPort: null,
-      log: () => {},
-    });
-    t.after(() => proxy.close());
-  } else {
-    const extension = await fakeExtension(page);
-    t.after(() => extension.close());
-  }
-  await page.goto(proxy ? `/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}` : '/');
+  const extension = await fakeExtension(page);
+  t.after(() => extension.close());
+  await page.goto('/');
   await ready(page);
-  await page.evaluate(rig, { transport, proxy: proxy && { url: proxy.url, key: proxy.key } });
+  await page.evaluate(rig);
   chrome.overrides.set(
     '/spawn.html',
     '<!doctype html><script>window.w = new SharedWorker("/spawned.js?" + Math.random(), "spawned-" + Math.random());</script>'
@@ -122,13 +108,7 @@ async function churn(t, transport, rounds) {
 }
 
 test(
-  'a paused browser-level auto-attach toggled while seven’s shared workers come and go leaves the browser and seven up, on the proxy path',
-  { timeout: 5 * 60 * 1000 },
-  (t) => churn(t, 'proxy', 30)
-);
-
-test(
   'a paused browser-level auto-attach toggled while seven’s shared workers come and go leaves the browser and seven up, on the extension path',
   { timeout: 5 * 60 * 1000 },
-  (t) => churn(t, 'extension', 30)
+  (t) => churn(t, 30)
 );

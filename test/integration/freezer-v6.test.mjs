@@ -1,10 +1,8 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { after, test } from 'node:test';
-import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
 import { agentUp, ready } from './bios.mjs';
 import { launch, VAULT_KEY } from './chrome.mjs';
-import { fakeProxy } from './fake-proxy.mjs';
 
 const chrome = await launch({ agent: true, timeout: 60000 });
 const seven = new URL(chrome.url);
@@ -32,18 +30,7 @@ const www = createServer(async (request, response) => {
 });
 await new Promise((done) => www.listen(0, '127.0.0.1', done));
 const origin = `http://127.0.0.1:${www.address().port}`;
-const proxy = await fakeProxy({
-  origin,
-  key: 'the-key',
-  answer: async (request) => {
-    if (!request.url.startsWith('https://registry.npmjs.org/'))
-      return { status: 404, headers: [], body: Buffer.alloc(0) };
-    const type = request.url.endsWith('.tgz') ? 'application/octet-stream' : 'application/json';
-    return { status: 200, headers: [['content-type', type]], body: await download(request.url) };
-  },
-});
 after(async () => {
-  await proxy.close();
   await new Promise((done) => {
     www.close(done);
     www.closeAllConnections();
@@ -113,7 +100,7 @@ test('slicc-agent#487: on a /7/ boot, freezer import --in-place refuses a .. pat
   await page.init(
     `() => { globalThis.sliccKernelDebug = true; if (location.origin === ${JSON.stringify(origin)} && !localStorage.getItem(${JSON.stringify(VAULT_KEY)})) localStorage.setItem(${JSON.stringify(VAULT_KEY)}, ${JSON.stringify(chrome.vault.origin)}); }`
   );
-  await page.goto(`${origin}/7/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await page.goto(`${origin}/7/`);
   await ready(page);
   await agentUp(page);
 
