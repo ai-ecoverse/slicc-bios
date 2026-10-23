@@ -225,7 +225,7 @@ test('a release without provenance or with an uncertified gated dependency isn�
   );
 
   await t.test(
-    'a new major on npm, from the agent’s CI workflow, isn’t offered while seven ships the old major, unless a newer agent already opened the profile',
+    'a new major on npm, from the agent’s CI workflow, isn’t offered while seven ships the old major, unless a newer agent already opened the profile, and then it installs and starts',
     async () => {
       releases.unshift(major);
       t.after(() => {
@@ -265,8 +265,22 @@ test('a release without provenance or with an uncertified gated dependency isn�
       await developer(page, true);
       await npmSays(page, 'offered');
       assert.equal((await agentRow(page)).npm.latest, '8.0.0');
+      const acting = act(page, 'install-beta');
+      await confirmWith(page, 'Install beta');
+      await acting;
+      await rowSettled(page, 'agent');
+      assert.equal(await installedAgent(page), '8.0.0');
+      if ((await agentRow(page)).actions.includes('restart-agent'))
+        await act(page, 'restart-agent');
+      await runsAgent(page, '8.0.0');
+      assert.equal(await page.evaluate(() => localStorage.getItem('slicc-os.agent-schema')), '3');
       releases.splice(releases.indexOf(future), 1);
       await marker(null);
+      await page.evaluate(() => localStorage.setItem('slicc-os.agent-schema', '1'));
+      await act(page, 'back-to-certified');
+      await rowSettled(page, 'agent');
+      assert.equal(await installedAgent(page), PINNED);
+      await runsAgent(page, PINNED);
       releases.splice(releases.indexOf(major), 1);
       await developer(page, false);
       await developer(page, true);
