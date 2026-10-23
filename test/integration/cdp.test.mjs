@@ -810,11 +810,6 @@ test('screenshots of the browser panel: a driven tab live, two driven tabs, the 
       button.textContent.includes('harbor')
     )
   );
-  const running = () =>
-    document
-      .querySelector('slicc-app')
-      .model.browser.actions()
-      .some(({ agentId, status }) => agentId === 'harbor' && status === 'running');
   const seen = async () => {
     const state = await page.evaluate(() => {
       const browser = document.querySelector('slicc-app').model.browser;
@@ -843,17 +838,23 @@ test('screenshots of the browser panel: a driven tab live, two driven tabs, the 
     return `${JSON.stringify(state)}\n/tmp/harbor:\n${await read(page, '/tmp/harbor').catch((error) => error.message)}`;
   };
   try {
-    await page.within(30000, running);
+    await page.within(30000, () => {
+      const busy = document
+        .querySelector('slicc-app')
+        .model.browser.actions()
+        .some(({ agentId, status }) => agentId === 'harbor' && status === 'running');
+      const stop = [...window.panel().querySelectorAll('[data-action="stop-agent"]')].find(
+        (button) => button.textContent.includes('harbor')
+      );
+      if (!busy || !stop) return false;
+      stop.click();
+      return true;
+    });
   } catch (error) {
     throw new Error(
-      `harbor never had a command in flight to stop: ${error.message}\n${await seen()}`
+      `harbor never had a command in flight to stop while its Stop showed: ${error.message}\n${await seen()}`
     );
   }
-  await page.evaluate(() =>
-    [...window.panel().querySelectorAll('[data-action="stop-agent"]')]
-      .find((button) => button.textContent.includes('harbor'))
-      .click()
-  );
   try {
     await page.within(20000, () =>
       document
