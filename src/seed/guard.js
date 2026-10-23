@@ -350,7 +350,10 @@ const PUBLIC = {
 
 const normalHost = (host) => host.toLowerCase().replace(/\.$/, '');
 
-function readable(url) {
+const PROSE = /[.,;:!?)\]}'"]+$/;
+
+function readable(text) {
+  const url = text.replace(PROSE, '');
   if (!URL.canParse(url)) return false;
   const parsed = new URL(url);
   if (parsed.username || parsed.password || parsed.search || parsed.hash) return false;
