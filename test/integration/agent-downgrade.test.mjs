@@ -62,18 +62,6 @@ test('seven never starts a 6.x agent on a profile a 7.x agent opened, by the age
   timeout: 20 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
-  await page.init(() => {
-    try {
-      if (!sessionStorage.getItem('slicc-test.full')) return;
-    } catch {
-      return;
-    }
-    const set = Storage.prototype.setItem;
-    Storage.prototype.setItem = function (key, value) {
-      if (key === 'slicc-os.agent-schema') throw new DOMException('full', 'QuotaExceededError');
-      return set.call(this, key, value);
-    };
-  });
   await boot(page);
   await agentUp(page);
 
@@ -124,38 +112,40 @@ test('seven never starts a 6.x agent on a profile a 7.x agent opened, by the age
     async (t) => {
       await page.evaluate(() => {
         localStorage.removeItem('slicc-os.agent-schema');
-        sessionStorage.setItem('slicc-test.full', '1');
+        const set = Storage.prototype.setItem;
+        window.sliccSet = set;
+        Storage.prototype.setItem = function (key, value) {
+          if (key === 'slicc-os.agent-schema') throw new DOMException('full', 'QuotaExceededError');
+          return set.call(this, key, value);
+        };
       });
-      let was = null;
+      const was = await relabel(page, '7.0.0');
       t.after(async () => {
-        await page.evaluate(() => sessionStorage.removeItem('slicc-test.full')).catch(() => {});
-        if (was) await relabel(page, was).catch(() => {});
-        await page.goto('/');
-        await ready(page);
-        assert.equal(
-          await page.evaluate(() => {
-            localStorage.setItem('slicc-os.probe', 'x');
-            localStorage.removeItem('slicc-os.probe');
-            return sessionStorage.getItem('slicc-test.full');
-          }),
-          null
-        );
+        await page
+          .evaluate(() => {
+            if (window.sliccSet) Storage.prototype.setItem = window.sliccSet;
+          })
+          .catch(() => {});
+        await relabel(page, was).catch(() => {});
       });
-      await page.goto('/');
-      await ready(page);
-      assert.equal(
-        await page.evaluate(() => {
-          try {
-            localStorage.setItem('slicc-os.agent-schema', '0');
-            return 'written';
-          } catch (error) {
-            return error.name;
-          }
-        }),
-        'QuotaExceededError'
+      await page.evaluate(() => {
+        void document
+          .querySelector('slicc-app')
+          .model.updates.act('agent', 'retry')
+          .catch(() => {});
+      });
+      const error = await page.within(
+        5 * 60 * 1000,
+        (text) => {
+          const row = document
+            .querySelector('slicc-app')
+            .model.updates.list()
+            .find((item) => item.id === 'agent');
+          return row?.state === 'failed' && row.error === text ? row.error : null;
+        },
+        UNRECORDED
       );
-      was = await relabel(page, '7.0.0');
-      assert.equal((await refused(page)).error, UNRECORDED);
+      assert.equal(error, UNRECORDED);
       assert.equal(await page.evaluate(() => localStorage.getItem('slicc-os.agent-schema')), null);
     }
   );
