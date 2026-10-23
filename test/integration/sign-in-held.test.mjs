@@ -285,13 +285,43 @@ async function rows(t, page, via) {
   const blob = await tabWhere((tab) => tab.url.startsWith(`blob:${new URL(chrome.url).origin}`));
   const [plainHost, plainChild] = await popupFrom(`/opener-${via}`, `opened-${via}`);
   const known = new Set((await devtools('/json/list')).map((tab) => tab.id));
-  await page.evaluate((MARK) => {
-    window.mcpTab = window.open('about:blank', 'slicc-mcp-oauth', 'popup,width=520,height=720');
-    window.mcpTab.location.href = `https://ims-na1.adobelogin.com/mcp#access_token=${MARK}-mcp`;
+  const answered = await page.evaluate(async (MARK) => {
+    const marker = `mcp${Math.random().toString(36).slice(2)}`;
+    window.mcpTab = window.open(
+      `about:blank#slicc-sign-in-${marker}`,
+      'slicc-mcp-oauth',
+      'popup,width=520,height=720'
+    );
+    const channel = new BroadcastChannel('slicc-held');
+    const answer = await new Promise((resolve) => {
+      const timer = setTimeout(() => resolve('timeout'), 6000);
+      channel.onmessage = ({ data }) => {
+        if (data?.marker !== marker || data.type === 'hold') return;
+        clearTimeout(timer);
+        resolve(data.type);
+      };
+      channel.postMessage({ type: 'hold', marker });
+    });
+    channel.close();
+    if (answer === 'held')
+      window.mcpTab.location.href = `https://ims-na1.adobelogin.com/mcp#access_token=${MARK}-mcp`;
+    return answer;
   }, MARK);
+  assert.equal(answered, 'held');
   const mcp = await tabWhere(
     (tab) => tab.url.startsWith('https://ims-na1.adobelogin.com/mcp') && !known.has(tab.id)
   );
+  let quick = null;
+  if (via === 'proxy') {
+    const before = new Set((await devtools('/json/list')).map((tab) => tab.id));
+    await page.evaluate((MARK) => {
+      const tab = window.open('about:blank', 'slicc-quick', 'popup,width=520,height=720');
+      tab.location.href = `https://ims-na1.adobelogin.com/quick#access_token=${MARK}-quick`;
+    }, MARK);
+    quick = await tabWhere(
+      (tab) => tab.url.startsWith('https://ims-na1.adobelogin.com/quick') && !before.has(tab.id)
+    );
+  }
   const idpLater = 'https://ims-na1.adobelogin.com/vault-idp';
   const vaultPage = `http://vault.sliccy.ai:${plain.address().port}/vault-${via}?later=${encodeURIComponent(idpLater)}`;
   const vaultHost = (
@@ -303,7 +333,21 @@ async function rows(t, page, via) {
   await navigate(mcp, ordinary(`/mcp-elsewhere#access_token=${MARK}-mcp-elsewhere`));
   await navigate(vaultChild, ordinary(`/vault-elsewhere#access_token=${MARK}-vault-elsewhere`));
   t.after(() =>
-    close([popup, child, grandchild, free, blob, plainHost, plainChild, mcp, vaultHost, vaultChild])
+    close(
+      [
+        popup,
+        child,
+        grandchild,
+        free,
+        blob,
+        plainHost,
+        plainChild,
+        mcp,
+        vaultHost,
+        vaultChild,
+        quick,
+      ].filter(Boolean)
+    )
   );
   await navigate(popup, `https://ims-na1.adobelogin.com/landing#access_token=${MARK}-again`);
   await navigate(popup, ordinary(`/elsewhere#access_token=${MARK}-elsewhere`));
@@ -324,8 +368,9 @@ async function rows(t, page, via) {
           'the IdP popup’s own popup': grandchild,
           'the sign-in page’s iframe': frame,
           'the blob tab': blob,
-          'an MCP sign-in tab': mcp,
+          'an MCP sign-in tab on the marker': mcp,
           'the vault’s sign-in tab': vaultChild,
+          ...(quick ? { 'an unmarked popup that leaves about:blank at once': quick } : {}),
         })
     );
     await t.test(
