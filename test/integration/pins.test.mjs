@@ -120,7 +120,7 @@ export function nestedCopies(lock) {
       const nested = packages[`${path}/node_modules/${name}`];
       if (nested)
         found.push(`${owner} nests ${name}@${nested.version} beside ${top(name).version}`);
-      else if (!satisfies(top(name).version, range))
+      else if (range !== '*' && !satisfies(top(name).version, range))
         found.push(`${owner} wants ${name} ${range}, the base set has ${top(name).version}`);
     }
   }
@@ -157,7 +157,10 @@ test('the nested-copy check catches a package that pins an older copy of a base-
       'node_modules/@ai-ecoverse/wasm-coreutils': { version: '9.12.0-15' },
       'node_modules/@ai-ecoverse/wasm-xz': {
         version: '5.8.4-8',
-        peerDependencies: { '@ai-ecoverse/wasm-coreutils': '>=9.12.0-13' },
+        peerDependencies: {
+          '@ai-ecoverse/wasm-coreutils': '*',
+          '@ai-ecoverse/wasm-sed': '>=4.10.0-6',
+        },
       },
     },
   };
