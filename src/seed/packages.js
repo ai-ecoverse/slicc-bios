@@ -264,23 +264,18 @@ const PROVENANCE = {
     `${it} wasn't built by ${repo}'s release workflow on main`,
 };
 
-export function denied(source, name, version) {
-  const it = `${short(name)} ${version}`;
-  if (Object.hasOwn(source?.deny ?? {}, version))
-    return `${it} isn't certified: ${source.deny[version]}`;
-  if (source?.since && compare(version, source.since) < 0)
-    return `${it} isn't certified: releases before ${source.since} weren't reviewed`;
-  return null;
-}
+const deprecation = (name, version, doc) =>
+  doc?.deprecated ? `${short(name)} ${version} is deprecated on npm: ${doc.deprecated}` : null;
 
-const bySource = (...args) => denied(...args);
+async function withdrawn(name, version, ctx) {
+  if (!OURS.test(name) || ctx.shipped?.has(`${name}@${version}`)) return null;
+  const doc = await ctx.npm.version(name, version);
+  if (!doc) return `npm doesn't have ${short(name)} ${version}`;
+  return deprecation(name, version, doc);
+}
 
 async function published(name, version, doc, source, ctx) {
   const it = `${short(name)} ${version}`;
-  if (source.certified === 'tag') {
-    const tags = (await ctx.npm.packument(name))?.['dist-tags'] ?? {};
-    return tags.certified === version ? null : `needs ${it}, which isn't certified`;
-  }
   const memo = `${name}@${version} ${doc.dist.integrity}`;
   if (ctx.verdicts?.has(memo)) return ctx.verdicts.get(memo);
   const repository = `https://github.com/${source.repo}`;
@@ -298,10 +293,10 @@ export async function judge(key, integrity, ctx) {
   const name = nameOf(key);
   const version = versionOf(key);
   if (!integrity) return no(`${key} isn't a registry tarball with an integrity`);
-  const source = OURS.test(name) ? sourceOf(name, ctx.sources) : null;
   if (ctx.base.get(key) === integrity) {
-    const why =
-      denied(source, name, version) ?? ruled(ctx.exceptions, name, version, ctx.pins ?? []);
+    const gone = await withdrawn(name, version, ctx);
+    if (gone) return no(gone);
+    const why = ruled(ctx.exceptions, name, version, ctx.pins ?? []);
     return why ? no(why) : null;
   }
   if (!OURS.test(name)) return no(`${key} isn't one of seven's own packages`);
@@ -309,9 +304,10 @@ export async function judge(key, integrity, ctx) {
   if (!doc) return no(`npm doesn't have ${short(name)} ${version}`);
   if (doc.dist?.integrity !== integrity)
     return no(`${short(name)} ${version} doesn't match npm's build`, true);
+  const source = sourceOf(name, ctx.sources);
   if (!source) return no(`${short(name)} has no publisher seven knows`);
   const why =
-    denied(source, name, version) ??
+    deprecation(name, version, doc) ??
     (await published(name, version, doc, source, ctx)) ??
     ruled(ctx.exceptions, name, version, ctx.pins ?? []) ??
     fits(doc, ctx.have);
@@ -446,13 +442,14 @@ export function createNpm({ base, shipped = base, sources, bundled, have, fetche
   async function denied(keys, lock) {
     const ctx = await context();
     const pins = [...lock.keys(), ...shipped.keys()];
-    return keys.filter((key) => {
-      const name = nameOf(key);
-      const source = OURS.test(name) ? sourceOf(name, sources) : null;
-      return (
-        bySource(source, name, versionOf(key)) || ruled(ctx.exceptions, name, versionOf(key), pins)
-      );
-    });
+    const refused = await Promise.all(
+      keys.map(
+        async (key) =>
+          (await withdrawn(nameOf(key), versionOf(key), ctx)) ??
+          ruled(ctx.exceptions, nameOf(key), versionOf(key), pins)
+      )
+    );
+    return keys.filter((_, i) => refused[i]);
   }
 
   async function admitted(left, lock, names) {

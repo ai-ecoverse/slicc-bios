@@ -114,6 +114,7 @@ function fakeNpm(releases, { live = null, tags = {}, failing = new Set() } = {})
   return { fetcher, asked };
 }
 
+const CDP_RELEASE = { repository: 'ai-ecoverse/slicc-cdp', path: '.github/workflows/release.yml' };
 const GIT = { name: '@ai-ecoverse/wasm-git', version: '2.55.0-18' };
 const BASH = { name: '@ai-ecoverse/wasm-bash', version: '5.3.0-19' };
 const base = new Map([
@@ -125,7 +126,10 @@ const have = { [KERNEL]: '1.129.0' };
 function gate(releases, options = {}) {
   const npm = fakeNpm(releases, options);
   const sources = {
-    '@ai-ecoverse/slicc-cdp': { certified: 'tag' },
+    '@ai-ecoverse/slicc-cdp': {
+      repo: 'ai-ecoverse/slicc-cdp',
+      workflow: ['.github/workflows/release.yml', '.github/workflows/ci.yml'],
+    },
     '@ai-ecoverse/sliccy-browser': {
       repo: 'ai-ecoverse/slicc-cdp',
       workflow: '.github/workflows/publish-sliccy-browser.yml',
@@ -142,13 +146,13 @@ const lockOf = (...keys) =>
   new Map(keys.map((key) => (Array.isArray(key) ? key : [key, integrityOf(key)])));
 const key = ({ name, version }) => `${name}@${version}`;
 
-test('the gate admits a homescoop release from its ladder at main, a dependency the base set locks with that integrity, a non-ai-ecoverse dependency the base set locks, and a slicc-cdp at its certified dist-tag', async () => {
+test('the gate admits a homescoop release from its ladder at main, a dependency the base set locks with that integrity, a non-ai-ecoverse dependency the base set locks, and a slicc-cdp on its provenance with no certified dist-tag', async () => {
   const cdp = { name: '@ai-ecoverse/slicc-cdp', version: '1.30.13' };
   const browser = { name: '@ai-ecoverse/sliccy-browser', version: '0.1.30' };
   const { npm } = gate(
     [
       { ...GIT, dependencies: { [BASH.name]: BASH.version } },
-      { ...cdp, provenance: false },
+      { ...cdp, built: CDP_RELEASE },
       {
         ...browser,
         built: {
@@ -157,7 +161,7 @@ test('the gate admits a homescoop release from its ladder at main, a dependency 
         },
       },
     ],
-    { tags: { [cdp.name]: { certified: '1.30.13' } } }
+    { tags: { [cdp.name]: { certified: '1.30.11' } } }
   );
   assert.equal(await npm.gate(lockOf(key(GIT), key(BASH), 'left-pad@1.3.0'), key(GIT)), null);
   assert.equal(await npm.gate(lockOf(key(browser), key(cdp)), key(browser)), null);
@@ -215,16 +219,58 @@ test('the gate refuses a release without npm provenance, built by another repo, 
   assert.equal(await npm.gate(lockOf(key(GIT)), key(GIT)), null, 'publish.yml is homescoop’s too');
 });
 
-test('the gate refuses a package whose publisher seven doesn’t know, and a slicc-cdp off its certified tag', async () => {
+test('the gate refuses a package whose publisher seven doesn’t know, and a slicc-cdp without provenance even at its certified dist-tag', async () => {
   const stranger = { name: '@ai-ecoverse/new-thing', version: '1.0.0' };
   const cdp = { name: '@ai-ecoverse/slicc-cdp', version: '1.30.13', provenance: false };
-  const { npm } = gate([stranger, cdp], { tags: { [cdp.name]: { certified: '1.30.11' } } });
+  const { npm } = gate([stranger, cdp], { tags: { [cdp.name]: { certified: '1.30.13' } } });
   assert.deepEqual(await npm.gate(lockOf(key(stranger)), key(stranger)), {
     why: 'new-thing has no publisher seven knows',
   });
   assert.deepEqual(await npm.gate(lockOf(key(cdp)), key(cdp)), {
-    why: "needs slicc-cdp 1.30.13, which isn't certified",
+    why: 'slicc-cdp 1.30.13 has no build provenance',
   });
+});
+
+test('the gate refuses a version npm marks deprecated, whoever built it, and admits the same release once it isn’t', async () => {
+  const cdp = { name: '@ai-ecoverse/slicc-cdp', version: '1.30.13', built: CDP_RELEASE };
+  const why = 'superseded; use >=1.30.25';
+  for (const one of [GIT, cdp]) {
+    const it = key(one);
+    const { npm } = gate([{ ...one, deprecated: why }]);
+    const name = one.name.slice(13);
+    assert.deepEqual(await npm.gate(lockOf(it), it), {
+      why: `${name} ${one.version} is deprecated on npm: ${why}`,
+    });
+    assert.equal(await gate([one]).npm.gate(lockOf(it), it), null, it);
+  }
+});
+
+test('a throw anywhere in the check refuses, never passes: npm’s version answer, the attestation fetch, and a certs.json match whose npm answer throws', async () => {
+  const it = key(GIT);
+  const version = `${REGISTRY}${GIT.name}/${encodeURIComponent(GIT.version)}`;
+  const attestation = `${REGISTRY}-/npm/v1/attestations/${GIT.name.replace('/', '%2f')}@${GIT.version}`;
+  for (const url of [version, attestation]) {
+    const { npm } = gate([GIT], { failing: new Set([url]) });
+    assert.deepEqual(await npm.gate(lockOf(it), it), {
+      why: `couldn't check ${it} on npm (Failed to fetch)`,
+    });
+  }
+  const entry = { id: 'git', label: 'git', package: GIT.name };
+  const listing = gate([GIT], { failing: new Set([attestation]) }).npm;
+  const info = (await listing.lookAll([entry], new Map())).get(GIT.name);
+  assert.ok(!info || info.withheld, 'a listing whose attestation fetch throws offers nothing');
+  const exact = { name: '@ai-ecoverse/wasi-slicc', version: '1.44.7' };
+  const at = `${REGISTRY}${exact.name}/${exact.version}`;
+  const { npm } = gate([exact], { failing: new Set([at]) });
+  const lock = `lockfileVersion: '9.0'\n\npackages:\n\n  '${key(exact)}':\n    resolution: {integrity: ${integrityOf(key(exact))}}\n`;
+  const certs = async () => ({ [key(exact)]: { integrity: integrityOf(key(exact)) } });
+  const none = async () => new Set();
+  assert.deepEqual(
+    await untested(lock, `lockfileVersion: '9.0'\n`, certs, none, (keys, all) =>
+      npm.denied(keys, all)
+    ),
+    [key(exact)]
+  );
 });
 
 test('homescoop’s certification exceptions deny: the bundled copy always, the live one too, and a live file can never grant', async () => {
@@ -299,7 +345,7 @@ test('the listing takes the version, description, commands without helpers and t
       cdp,
       browser,
     ],
-    { tags: { [cdp.name]: { certified: '1.30.11' } } }
+    { tags: { [cdp.name]: { certified: '1.30.13' } } }
   );
   const entries = [
     { id: 'git', label: 'git', package: GIT.name, helpers: ['git-shell'] },
@@ -315,7 +361,7 @@ test('the listing takes the version, description, commands without helpers and t
     size: 55748565,
   });
   assert.equal(found.get(browser.name).version, '0.1.30');
-  assert.equal(found.get(browser.name).withheld, "needs slicc-cdp 1.30.13, which isn't certified");
+  assert.equal(found.get(browser.name).withheld, 'slicc-cdp 1.30.13 has no build provenance');
   assert.equal(found.get('@ai-ecoverse/wasm-gone'), null, 'a failed row is null, the rest load');
   assert.ok(fetcher, 'the fake answered');
 });
@@ -497,19 +543,19 @@ test('when latest fails the gate, the listing offers the newest older version th
   });
   const entry = { id: 'jsh-browser', label: 'Browser', package: '@ai-ecoverse/sliccy-browser' };
   const releases = [
-    { ...cdp, version: '1.30.10' },
+    { ...cdp, version: '1.30.10', provenance: undefined, built: CDP_RELEASE },
     { ...cdp, version: '1.30.13' },
     browser('0.1.28', '1.30.10'),
     browser('0.1.29', '1.30.10'),
     browser('0.1.30', '1.30.13'),
   ];
-  const tags = { tags: { [cdp.name]: { certified: '1.30.10' } } };
+  const tags = { tags: { [cdp.name]: { certified: '1.30.13' } } };
   const found = (await gate(releases, tags).npm.lookAll([entry], new Map())).get(entry.package);
   assert.equal(found.version, '0.1.29');
   assert.equal(found.withheld, undefined);
   assert.deepEqual(found.newer, {
     version: '0.1.30',
-    reason: "needs slicc-cdp 1.30.13, which isn't certified",
+    reason: 'slicc-cdp 1.30.13 has no build provenance',
   });
   const blocked = [
     { ...cdp, version: '1.30.13' },
@@ -521,7 +567,7 @@ test('when latest fails the gate, the listing offers the newest older version th
   ];
   const none = (await gate(blocked, tags).npm.lookAll([entry], new Map())).get(entry.package);
   assert.equal(none.version, '0.1.30');
-  assert.equal(none.withheld, "needs slicc-cdp 1.30.13, which isn't certified");
+  assert.equal(none.withheld, 'slicc-cdp 1.30.13 has no build provenance');
   assert.equal(none.newer, undefined, '0.1.23 is past the five it checks');
 });
 
@@ -561,25 +607,23 @@ test('in Your packages, a certs.json exact match that homescoop’s bundled or l
   );
 });
 
-test('in Your packages, a certs.json exact match its source denies, such as the pre-review wasi-slicc 1.41.0, is untested too', async () => {
-  const old = { name: '@ai-ecoverse/wasi-slicc', version: '1.41.0' };
+test('in Your packages, a certs.json exact match npm marks deprecated, such as wasi-slicc 1.41.0, is untested too, and so is one npm can’t answer for', async () => {
+  const old = { name: '@ai-ecoverse/wasi-slicc', version: '1.41.0', deprecated: 'superseded' };
   const fine = { name: '@ai-ecoverse/wasi-slicc', version: '1.44.7' };
+  const gone = { name: '@ai-ecoverse/wasi-slicc', version: '1.44.8' };
   const lock = (rows) =>
     `lockfileVersion: '9.0'\n\npackages:\n\n${rows.map(([one, integrity]) => `  '${one}':\n    resolution: {integrity: ${integrity}}\n`).join('\n')}`;
-  const certs = async () => ({
-    [key(old)]: { integrity: integrityOf(key(old)) },
-    [key(fine)]: { integrity: integrityOf(key(fine)) },
-  });
+  const certs = async () =>
+    Object.fromEntries(
+      [old, fine, gone].map((one) => [key(one), { integrity: integrityOf(key(one)) }])
+    );
   const catalog = JSON.parse(await readFile(new URL('catalog.json', OPTIONAL), 'utf8'));
-  const { npm } = gate([], { sources: { [old.name]: catalog[old.name].source } });
-  const user = lock([
-    [key(old), integrityOf(key(old))],
-    [key(fine), integrityOf(key(fine))],
-  ]);
+  const { npm } = gate([old, fine], { sources: { [old.name]: catalog[old.name].source } });
+  const user = lock([old, fine, gone].map((one) => [key(one), integrityOf(key(one))]));
   const none = async () => new Set();
   assert.deepEqual(
     await untested(user, lock([]), certs, none, (keys, all) => npm.denied(keys, all)),
-    [key(old)]
+    [key(old), key(gone)]
   );
 });
 
@@ -698,8 +742,7 @@ const PUBLISHERS = {
     },
   },
 };
-const CDP = { name: '@ai-ecoverse/slicc-cdp', version: '1.30.30', provenance: false };
-const certified = { tags: { [CDP.name]: { certified: CDP.version } } };
+const CDP = { name: '@ai-ecoverse/slicc-cdp', version: '1.30.30', built: CDP_RELEASE };
 
 function releasesOf(name, change = {}) {
   const { versions, built } = PUBLISHERS[name];
@@ -737,7 +780,7 @@ async function shipped(releases, options = {}) {
 test('with no optional pins, the catalog names the publishers of slicc-jsh, mcpcat, wasi-slicc and sliccy-browser, and seven offers each at npm’s latest when its provenance passes', async () => {
   const names = Object.keys(PUBLISHERS);
   const releases = [CDP, ...names.flatMap((name) => releasesOf(name))];
-  const { npm, byName, asked } = await shipped(releases, certified);
+  const { npm, byName, asked } = await shipped(releases);
   for (const file of ['package.json', 'package-lock.json'])
     assert.ok(!asked.some(({ url }) => url.endsWith(`/optional/${file}`)), file);
   const entries = names.map((name) => byName.get(name));
@@ -757,6 +800,39 @@ test('with no optional pins, the catalog names the publishers of slicc-jsh, mcpc
   }
 });
 
+test('a publisher on shared-web’s pipeline releases from ci.yml: a ci.yml build at refs/heads/main is offered, from a branch or under another name it isn’t', async () => {
+  const PIPELINE = '.github/workflows/ci.yml';
+  for (const [name, { versions, built }] of Object.entries(PUBLISHERS)) {
+    const [good, latest] = versions;
+    const repo = built.repository;
+    const fresh = await shipped([
+      CDP,
+      ...releasesOf(name, { built: { ...built, path: PIPELINE } }),
+    ]);
+    const info = (await fresh.npm.lookAll([fresh.byName.get(name)], new Map())).get(name);
+    assert.deepEqual([info.version, info.newer], [latest, undefined], name);
+    for (const change of [{ ref: 'refs/heads/next' }, { path: '.github/workflows/ci.yaml' }]) {
+      const bad = await shipped([
+        CDP,
+        ...releasesOf(name, { built: { ...built, path: PIPELINE, ...change } }),
+      ]);
+      const row = (await bad.npm.lookAll([bad.byName.get(name)], new Map())).get(name);
+      assert.deepEqual(
+        [row.version, row.newer?.reason],
+        [good, `${name.slice(13)} ${latest} wasn't built by ${repo}'s release workflow on main`],
+        `${name} ${JSON.stringify(change)}`
+      );
+    }
+  }
+  const browser = '@ai-ecoverse/sliccy-browser';
+  const piped = await shipped([
+    { ...CDP, built: { ...CDP_RELEASE, path: PIPELINE } },
+    ...releasesOf(browser),
+  ]);
+  const row = (await piped.npm.lookAll([piped.byName.get(browser)], new Map())).get(browser);
+  assert.deepEqual([row.version, row.withheld], ['0.1.41', undefined], 'a slicc-cdp from ci.yml');
+});
+
 test('a new publisher’s release built by another repo, another workflow or a maintenance branch isn’t offered: the row lists it and offers the newest release that passes', async () => {
   const cases = [
     [{ repository: 'someone/fork' }, (it, repo) => `${it} wasn't built by ${repo}`],
@@ -773,7 +849,7 @@ test('a new publisher’s release built by another repo, another workflow or a m
   for (const [name, { versions, built }] of Object.entries(PUBLISHERS)) {
     for (const [change, why] of cases) {
       const bad = 'provenance' in change ? change : { built: { ...built, ...change } };
-      const { npm, byName } = await shipped([CDP, ...releasesOf(name, bad)], certified);
+      const { npm, byName } = await shipped([CDP, ...releasesOf(name, bad)]);
       const [good, latest] = versions;
       const reason = why(`${name.slice(13)} ${latest}`, built.repository);
       const info = (await npm.lookAll([byName.get(name)], new Map())).get(name);
@@ -812,35 +888,37 @@ test('wasi-slicc, slicc-jsh and mcpcat built by their own ci.yml on main, the sh
   }
 });
 
-test('wasi-slicc 1.44.4, which its source denies, and anything before its since are never offered, from npm or as an exact match in certs.json', async () => {
+test('a release npm marks deprecated is never offered, from latest, the walk-back or an exact match in certs.json: wasi-slicc 1.44.4 and everything before 1.44.1, and a deprecated mcpcat latest', async () => {
   const name = '@ai-ecoverse/wasi-slicc';
-  const releases = ['1.44.0', '1.44.3', '1.44.4'].map((version) => ({ name, version, built: CLI }));
+  const why = 'superseded; use >=1.47.3';
+  const releases = [
+    { name, version: '1.41.0', built: CLI, deprecated: why, notLatest: true },
+    ...['1.44.0', '1.44.3', '1.44.4'].map((version) => ({
+      name,
+      version,
+      built: CLI,
+      ...(version === '1.44.3' ? {} : { deprecated: why }),
+    })),
+  ];
   const { npm, byName, certified: exact } = await shipped(releases);
   const info = (await npm.lookAll([byName.get(name)], new Map())).get(name);
   assert.deepEqual(
     [info.version, info.newer],
-    [
-      '1.44.3',
-      {
-        version: '1.44.4',
-        reason:
-          "wasi-slicc 1.44.4 isn't certified: its release run failed, so it was never certified (slicc-cli coordinator, 10-19)",
-      },
-    ]
+    ['1.44.3', { version: '1.44.4', reason: `wasi-slicc 1.44.4 is deprecated on npm: ${why}` }]
   );
   assert.deepEqual(await npm.gate(lockOf(`${name}@1.44.0`), `${name}@1.44.0`), {
-    why: "wasi-slicc 1.44.0 isn't certified: releases before 1.44.1 weren't reviewed",
+    why: `wasi-slicc 1.44.0 is deprecated on npm: ${why}`,
   });
   const old = `${name}@1.41.0`;
-  assert.ok(exact.has(old), 'certs.json has the pre-review 1.41.0');
+  assert.ok(exact.has(old), 'certs.json has 1.41.0');
   assert.deepEqual(await npm.gate(new Map([[old, exact.get(old)]]), old), {
-    why: "wasi-slicc 1.41.0 isn't certified: releases before 1.44.1 weren't reviewed",
+    why: `wasi-slicc 1.41.0 is deprecated on npm: ${why}`,
   });
   const row = describe(withNpm(byName.get(name), info), '1.41.0', null);
   assert.deepEqual(
     [row.state, row.version, row.offered, row.actions],
     ['outdated', '1.41.0', '1.44.3', ['update', 'remove']],
-    'a profile on the pre-review 1.41.0 is offered the newest certified release as its update'
+    'a profile on the deprecated 1.41.0 is offered the newest release that passes as its update'
   );
   const theirs = describe(withNpm(byName.get(name), info), null, null, [
     { version: '1.41.0', where: '/home/.local/share/pnpm', user: 'cone', manager: 'pnpm' },
@@ -849,17 +927,49 @@ test('wasi-slicc 1.44.4, which its source denies, and anything before its since 
     [theirs.state, theirs.offered, theirs.actions],
     ['outdated', '1.44.3', ['update']]
   );
+  const mcpcat = '@ai-ecoverse/mcpcat';
+  const dropped = await shipped(releasesOf(mcpcat, { deprecated: 'broken stdio' }));
+  const listed = (await dropped.npm.lookAll([dropped.byName.get(mcpcat)], new Map())).get(mcpcat);
+  assert.deepEqual(
+    [listed.version, listed.newer],
+    ['0.18.0', { version: '0.18.1', reason: 'mcpcat 0.18.1 is deprecated on npm: broken stdio' }]
+  );
 });
 
-test('sliccy-browser is offered only with a slicc-cdp at its certified tag, and only from slicc-cdp’s sliccy-browser workflow; the new publishers meet homescoop’s exceptions and the kernel’s engines too', async () => {
+test('sliccy-browser is offered only with a slicc-cdp from slicc-cdp’s release workflow that npm doesn’t deprecate, whatever its certified tag says, and only from slicc-cdp’s sliccy-browser workflow; the new publishers meet homescoop’s exceptions and the kernel’s engines too', async () => {
   const browser = '@ai-ecoverse/sliccy-browser';
-  const off = await shipped([CDP, ...releasesOf(browser)], {
-    tags: { [CDP.name]: { certified: '1.30.18' } },
-  });
+  const tagged = { tags: { [CDP.name]: { certified: CDP.version } } };
+  const untagged = await shipped([CDP, ...releasesOf(browser)]);
+  const fine = (await untagged.npm.lookAll([untagged.byName.get(browser)], new Map())).get(browser);
+  assert.deepEqual([fine.version, fine.withheld], ['0.1.41', undefined]);
+  const bare = { ...CDP, built: undefined, provenance: false };
+  const off = await shipped([bare, ...releasesOf(browser)], tagged);
   const info = (await off.npm.lookAll([off.byName.get(browser)], new Map())).get(browser);
-  assert.equal(info.withheld, "needs slicc-cdp 1.30.30, which isn't certified");
+  assert.equal(info.withheld, 'slicc-cdp 1.30.30 has no build provenance');
+  const elsewhere = [
+    [
+      { ref: `refs/tags/v${CDP.version}` },
+      "wasn't built by ai-ecoverse/slicc-cdp's release workflow on main",
+    ],
+    [
+      { path: '.github/workflows/manual.yml' },
+      "wasn't built by ai-ecoverse/slicc-cdp's release workflow on main",
+    ],
+    [{ repository: 'someone/slicc-cdp' }, "wasn't built by ai-ecoverse/slicc-cdp"],
+  ];
+  for (const [change, why] of elsewhere) {
+    const moved = await shipped(
+      [{ ...CDP, built: { ...CDP_RELEASE, ...change } }, ...releasesOf(browser)],
+      tagged
+    );
+    const row = (await moved.npm.lookAll([moved.byName.get(browser)], new Map())).get(browser);
+    assert.equal(row.withheld, `slicc-cdp 1.30.30 ${why}`, JSON.stringify(change));
+  }
+  const old = await shipped([{ ...CDP, deprecated: 'use 1.31' }, ...releasesOf(browser)], tagged);
+  const held = (await old.npm.lookAll([old.byName.get(browser)], new Map())).get(browser);
+  assert.equal(held.withheld, 'slicc-cdp 1.30.30 is deprecated on npm: use 1.31');
   const cdpRelease = { repository: 'ai-ecoverse/slicc-cdp', path: '.github/workflows/release.yml' };
-  const wrong = await shipped([CDP, ...releasesOf(browser, { built: cdpRelease })], certified);
+  const wrong = await shipped([CDP, ...releasesOf(browser, { built: cdpRelease })]);
   const it = `${browser}@0.1.41`;
   assert.deepEqual(await wrong.npm.gate(lockOf(it, key(CDP)), it), {
     why: "sliccy-browser 0.1.41 wasn't built by ai-ecoverse/slicc-cdp's release workflow on main",

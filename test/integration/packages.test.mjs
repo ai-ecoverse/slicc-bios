@@ -399,6 +399,87 @@ test('when npm’s latest fails the gate, the newest older version that passes i
   assert.deepEqual(page.errors, []);
 });
 
+const settledRow = async (page, id) => {
+  await page.within(
+    120000,
+    (id) =>
+      document
+        .querySelector('slicc-app')
+        .model.updates.packages()
+        .some((item) => item.id === id && !item.registry),
+    id
+  );
+  return (await packageItems(page)).find((item) => item.id === id);
+};
+
+test('seven’s page doesn’t offer a release npm marks deprecated, though its provenance passes, and the row names the deprecation', async (t) => {
+  const page = await chrome.page(t);
+  const version = '9.2.1172-1';
+  offer({ [XXD]: version });
+  const gone = JSON.stringify({
+    ...(await doc(XXD, version)),
+    deprecated: 'superseded; use 9.2.1186',
+  });
+  registry.docs.set(`${REGISTRY}${XXD}/latest`, gone);
+  registry.docs.set(`${REGISTRY}${XXD}/${encodeURIComponent(version)}`, gone);
+  await boot(page);
+  const row = await settledRow(page, 'xxd');
+  assert.notEqual(row.offered, version);
+  assert.equal(
+    row.newer?.reason ?? row.withheld,
+    `wasm-xxd ${version} is deprecated on npm: superseded; use 9.2.1186`
+  );
+  assert.deepEqual(page.errors, []);
+});
+
+const BROWSER = '@ai-ecoverse/sliccy-browser';
+const CDP = '@ai-ecoverse/slicc-cdp';
+const PIPELINE_CDP = '1.31.9';
+
+async function browserRow(t, bare) {
+  const JSH = '@ai-ecoverse/slicc-jsh';
+  const shipped = JSON.parse(
+    await readFile(new URL('../../src/packages/optional/catalog.json', import.meta.url), 'utf8')
+  );
+  const latest = JSON.parse(await download(`${REGISTRY}${BROWSER}/latest`));
+  const browser = JSON.stringify({
+    ...latest,
+    dependencies: { ...latest.dependencies, [CDP]: PIPELINE_CDP },
+  });
+  registry.reset();
+  chrome.overrides.set(
+    '/packages/optional/catalog.json',
+    JSON.stringify({ [JSH]: shipped[JSH], [BROWSER]: shipped[BROWSER] })
+  );
+  registry.docs.set(`${REGISTRY}${BROWSER}/latest`, browser);
+  registry.docs.set(`${REGISTRY}${BROWSER}/${latest.version}`, browser);
+  if (bare) {
+    const real = JSON.parse(await download(`${REGISTRY}${CDP}/${PIPELINE_CDP}`));
+    const { attestations, ...dist } = real.dist;
+    assert.ok(attestations, `slicc-cdp ${PIPELINE_CDP} has provenance on npm`);
+    registry.docs.set(`${REGISTRY}${CDP}/${PIPELINE_CDP}`, JSON.stringify({ ...real, dist }));
+  }
+  const page = await chrome.page(t);
+  await boot(page);
+  const row = await settledRow(page, 'jsh-browser');
+  assert.deepEqual(page.errors, []);
+  return { row, version: latest.version };
+}
+
+test('seven’s page offers sliccy-browser with a slicc-cdp that slicc-cdp’s pipeline built on main, though slicc-cdp’s certified dist-tag names another version', async (t) => {
+  const { row, version } = await browserRow(t, false);
+  assert.deepEqual([row.offered, row.withheld, row.newer], [version, undefined, undefined]);
+});
+
+test('seven’s page withholds sliccy-browser when the slicc-cdp it pins has no build provenance', async (t) => {
+  const { row, version } = await browserRow(t, true);
+  assert.notEqual(row.offered, version);
+  assert.equal(
+    row.newer?.reason ?? row.withheld,
+    `slicc-cdp ${PIPELINE_CDP} has no build provenance`
+  );
+});
+
 test('a failed download shows Retry, and Retry installs it', async (t) => {
   const page = await chrome.page(t);
   offer({ [XXD]: LATEST[XXD] });
