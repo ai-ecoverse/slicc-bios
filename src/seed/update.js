@@ -94,14 +94,7 @@ export function progress(output, downloads = new Map()) {
 }
 
 export const WRITER = 'bios-installer';
-export const PROTECTED = [
-  '/node_modules',
-  '/opt/agent',
-  '/opt/grammars',
-  '/opt/tailscale',
-  '/opt/slicc',
-  '/os',
-];
+export const PROTECTED = ['/node_modules', '/opt/agent', '/opt/tailscale', '/opt/slicc', '/os'];
 const INSTALLER = '/opt/slicc/.installer';
 export const BASE = 'opt/slicc/base';
 const SYSTEM = '/usr/local/share/pnpm';

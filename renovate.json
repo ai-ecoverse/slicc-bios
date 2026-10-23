@@ -53,11 +53,8 @@
       "allowedVersions": "!/^12\\.9\\.1-1[12]$/"
     },
     {
-      "description": "The grammars and Tailscale projects (src/packages/grammars, src/packages/tailscale) are pinned by hand: Renovate lists them on the dependency dashboard and opens a PR only when one is ticked there.",
-      "matchFileNames": [
-        "src/packages/grammars/package.json",
-        "src/packages/tailscale/package.json"
-      ],
+      "description": "The Tailscale project (src/packages/tailscale) is pinned by hand: Renovate lists it on the dependency dashboard and opens a PR only when it is ticked there.",
+      "matchFileNames": ["src/packages/tailscale/package.json"],
       "matchPackageNames": ["@ai-ecoverse/**"],
       "automerge": false,
       "dependencyDashboardApproval": true

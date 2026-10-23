@@ -150,7 +150,6 @@ await step('seed', async () => {
     'follow.js',
     'follower.js',
     'followers.js',
-    'grammars.js',
     'guard.js',
     'handoff.js',
     'held.js',
