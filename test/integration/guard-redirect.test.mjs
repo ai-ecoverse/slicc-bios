@@ -17,7 +17,7 @@ const free = () =>
   });
 
 const ordinary = (path) =>
-  `<title>ordinary</title>${path}<script>void \`http://localhost:\${location.port}/x\`;</script>`;
+  `<title>ordinary</title>${path}<script>void \`http://localhost:\${location.port}/x\`;</script><a href="https://www.sliccy.ai/7/">seven</a> <a href="https://ntfy.sliccy.ai/github">ntfy</a> curl -fsSL https://www.sliccy.ai/install.sh <a href="https://www.sliccy.ai/blog/post">blog</a> <code>curl -fsSL www.sliccy.ai/install.sh | sh</code> Visit www.sliccy.ai/7/ now`;
 const marks = [];
 const mark = () => {
   const value = `M${randomBytes(6).toString('hex')}`;
@@ -85,6 +85,50 @@ const site = createHttp((req, res) => {
       ].join('\n')
     );
   }
+  if (url.pathname.startsWith('/dotted/') && hop) {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    return res.end(
+      `<title>dotted</title><p>sliccy.ai/join/A${hop}/../../ and https://www.sliccy.ai/join/B${hop}/../../7/</p><script>console.log("https://www.sliccy.ai/join/C${hop}/../../7/")</script>`
+    );
+  }
+  if (url.pathname.startsWith('/encoded/') && hop) {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    return res.end(
+      `<title>encoded</title><p>https://example.com/?next=%252F%252Fsliccy.ai/join/W${hop} see &#47sliccy.ai/join/Y${hop} \\57sliccy.ai\\57join\\57O${hop}</p><script>console.log("next=%252F%252Fsliccy.ai/join/C${hop}");console.log("see &#47sliccy.ai/join/E${hop}");console.log(String.raw\`\\57sliccy.ai\\57join\\57R${hop}\`)</script>`
+    );
+  }
+  if (url.pathname.startsWith('/escaped/') && hop) {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    return res.end(
+      `<title>escaped</title><script>window.state = "https:\\u002F\\u002Fsliccy.ai\\u002Fjoin\\u002FJ${hop}"; window.other = "\\x2fsliccy.ai\\x2fjoin\\x2fX${hop}";</script>`
+    );
+  }
+  if (url.pathname.startsWith('/wrapped/') && hop) {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    return res.end(
+      `<title>wrapped</title><p>__sliccy.ai/join/U${hop}__ 加入sliccy.ai/join/K${hop} Join here...sliccy.ai/join/D${hop} __www.sliccy.ai/webhook/H${hop}__ <a href="/go?next=%2F%2Fsliccy.ai%2Fjoin%2FE${hop}">next</a></p>`
+    );
+  }
+  if (url.pathname.startsWith('/newline/') && hop) {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end(`<title>newline</title><pre>Join:\nsliccy.ai/join/N${hop}</pre>`);
+  }
+  if (url.pathname.startsWith('/capability/') && hop) {
+    const m = hop;
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end(
+      [
+        '<title>capability</title>',
+        `<a href="https://www.sliccy.ai/join/J${m}">join</a>`,
+        `<p>Payload URL https://www.sliccy.ai/webhook/W${m}</p>`,
+        `<p>wss://www.sliccy.ai/controller/C${m}</p>`,
+        `<a href="https://seven.sliccy.ai/#slicc-pair=1.P${m}.fp">pair</a>`,
+        `<p>https://vault.sliccy.ai./V${m}</p>`,
+        `<p>https://user:U${m}@vault.sliccy.ai/</p>`,
+        `<p>see \`sliccy.ai/join/B${m}\` or *sliccy.ai/join/S${m}*</p>`,
+      ].join('\n')
+    );
+  }
   if (url.pathname.startsWith('/framed/')) {
     res.writeHead(200, { 'content-type': 'text/html' });
     return res.end(
@@ -144,6 +188,24 @@ const plan = () => {
     steps.push({ fetching, kind: 'seven', how: 'navigate', path: `/meta/${hopTo('seven')}` });
     steps.push({ fetching, kind: 'seven', how: 'navigate', path: `/entity/${hopTo('seven')}` });
     steps.push({ fetching, kind: 'sheet', how: 'navigate', path: `/styled/${hopTo('sheet')}` });
+    counter += 1;
+    hops.set(String(counter), mark());
+    steps.push({ fetching, kind: 'capability', how: 'navigate', path: `/capability/${counter}` });
+    counter += 1;
+    hops.set(String(counter), mark());
+    steps.push({ fetching, kind: 'newline', how: 'navigate', path: `/newline/${counter}` });
+    counter += 1;
+    hops.set(String(counter), mark());
+    steps.push({ fetching, kind: 'wrapped', how: 'navigate', path: `/wrapped/${counter}` });
+    counter += 1;
+    hops.set(String(counter), mark());
+    steps.push({ fetching, kind: 'escaped', how: 'navigate', path: `/escaped/${counter}` });
+    counter += 1;
+    hops.set(String(counter), mark());
+    steps.push({ fetching, kind: 'encoded', how: 'navigate', path: `/encoded/${counter}` });
+    counter += 1;
+    hops.set(String(counter), mark());
+    steps.push({ fetching, kind: 'dotted', how: 'navigate', path: `/dotted/${counter}` });
     steps.push({ fetching, kind: 'vault', how: 'navigate', path: `/form/${hopTo('vault')}` });
   }
   return steps;
@@ -192,6 +254,8 @@ async function rig({ transport, proxy, port, override }) {
     return false;
   };
   const answers = {
+    caps: [],
+    dom: [],
     searches: [],
     streams: [],
     doms: [],
@@ -236,6 +300,23 @@ async function rig({ transport, proxy, port, override }) {
         } else if (request.url.endsWith('/override')) {
           answers.overrides.push(
             await send('Fetch.continueRequest', { requestId, url: override }, state.session)
+          );
+        } else if (request.url.endsWith('/again') && state.hop) {
+          answers.overrides.push(
+            await send(
+              'Fetch.continueRequest',
+              { requestId, url: `${state.hop}?extra=1` },
+              state.session
+            )
+          );
+          const dotted = new URL(state.hop);
+          dotted.hostname = `${dotted.hostname}.`;
+          answers.overrides.push(
+            await send(
+              'Fetch.continueRequest',
+              { requestId, url: `${dotted.href}?extra=2` },
+              state.session
+            )
           );
         }
         await send('Fetch.continueRequest', { requestId }, state.session);
@@ -332,6 +413,7 @@ async function rig({ transport, proxy, port, override }) {
         );
       }
       const hop = `${origin}/hop/${step.path.split('/').pop()}`;
+      if (step.path.startsWith('/hop/')) state.hop = hop;
       const requestIds = seen
         .slice(before)
         .map((text) => JSON.parse(text))
@@ -350,6 +432,25 @@ async function rig({ transport, proxy, port, override }) {
         .map((text) => JSON.parse(text))
         .filter((m) => m.method === 'Network.requestWillBeSent' && m.params?.request?.url === url)
         .map((m) => m.params.requestId);
+      if (['capability', 'newline', 'wrapped', 'escaped', 'encoded', 'dotted'].includes(kind)) {
+        for (const requestId of new Set(own)) {
+          answers.caps.push({
+            kind,
+            read: 'body',
+            ...(await send('Network.getResponseBody', { requestId }, session)),
+          });
+        }
+        answers.caps.push({
+          kind,
+          read: 'dom',
+          ...(await send('DOM.getDocument', { depth: -1 }, session)),
+        });
+        answers.caps.push({
+          kind,
+          read: 'snapshot',
+          ...(await send('Page.captureSnapshot', {}, session)),
+        });
+      }
       for (const requestId of new Set(own)) {
         answers.reads.push(await send('Network.getResponseBody', { requestId }, session));
         answers.reads.push(
@@ -403,6 +504,11 @@ async function rig({ transport, proxy, port, override }) {
       return requestIds.length;
     },
     async end(fetching) {
+      if (fetching === 'Request' && state.hop) {
+        const before = answers.overrides.length;
+        await send('Page.navigate', { url: `${origin}/again` }, state.session);
+        await expect('again', async () => answers.overrides.length > before);
+      }
       const before = seen.length;
       await send('Page.navigate', { url: `${origin}/start` }, state.session);
       await expect('end start', async () =>
@@ -419,6 +525,8 @@ async function rig({ transport, proxy, port, override }) {
       for (const requestId of new Set(ids)) {
         answers.plain.push(await send('Network.getResponseBody', { requestId }, state.session));
       }
+      answers.dom.push(await send('DOM.getDocument', { depth: -1 }, state.session));
+      answers.dom.push(await send('Page.captureSnapshot', {}, state.session));
       await send('Page.navigate', { url: `${origin}/plain` }, state.session);
       await expect('landing', async () => (await frame()).url?.includes('/landing'));
       state.pumping = false;
@@ -546,9 +654,24 @@ async function check(t, transport) {
     'a body or resource that names seven or the vault is refused'
   );
   assert.ok(
+    answers.caps.length > 0 &&
+      answers.caps.every(
+        (answer) =>
+          refused(answer) ||
+          (answer.kind === 'escaped' &&
+            answer.read === 'snapshot' &&
+            !marks.some((value) => JSON.stringify(answer).includes(value)))
+      ),
+    `a page showing a join, webhook, controller or pairing capability, or a dotted or userinfo vault URL, is not readable: ${JSON.stringify(answers.caps.filter((answer) => !refused(answer)).map((answer) => [answer.kind, answer.read]))}`
+  );
+  assert.ok(
+    answers.dom.length > 0 && answers.dom.every((answer) => !answer.error),
+    `an ordinary page that links into sliccy.ai stays readable: ${JSON.stringify(answers.dom.map((answer) => answer.error ?? 'ok'))}`
+  );
+  assert.ok(
     answers.plain.length > 0 &&
       answers.plain.every((answer) => answer.result?.body === ordinary('/start')),
-    `an ordinary page's body reads unchanged: ${JSON.stringify(answers.plain).slice(0, 300)}`
+    `an ordinary page's body reads unchanged: ${JSON.stringify(answers.plain.map((answer) => answer.error ?? answer.result?.body?.length))}`
   );
   const sheets = answers.sheets.filter(({ url }) => url.includes('sliccy.ai'));
   assert.ok(

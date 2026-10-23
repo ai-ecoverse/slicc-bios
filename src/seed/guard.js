@@ -272,20 +272,26 @@ const ANSWERED = new Set([
 ]);
 const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const HOSTS = new RegExp(
-  `(${[...catalog.protectedOrigins.domains, ...catalog.protectedOrigins.hosts].map(escaped).join('|')})(\\.?(?::\\d+|%3a\\d+)?)(?:[/?#\\\\][^\\s"'<>\`]*|(?:%2f|%3f|%23|%5c)[^\\s"'<>\`&]*)`,
-  'gi'
+  `((?:${[...catalog.protectedOrigins.domains, ...catalog.protectedOrigins.hosts].map(escaped).join('|')}))(\\.?(?::\\d+|%3a\\d+)?)(?:[/?#\\\\][^\\s"'<>\`]*|(?:%2f|%3f|%23|%5c)[^\\s"'<>\`&]*)`,
+  'giu'
 );
 
 const ENTITIES = { colon: ':', sol: '/', amp: '&', quest: '?', num: '#', equals: '=', period: '.' };
 
 function unescaped(text) {
-  return text.replace(/&(?:#x([0-9a-f]{1,6})|#(\d{1,7})|([a-z]+));?/gi, (found, hex, dec, name) => {
-    if (hex || dec) {
-      const code = hex ? Number.parseInt(hex, 16) : Number(dec);
-      return code <= 0x10ffff ? String.fromCodePoint(code) : found;
-    }
-    return ENTITIES[name.toLowerCase()] ?? found;
-  });
+  return text
+    .replace(
+      /\\u([0-9a-f]{4})|\\x([0-9a-f]{2})|\\(\/)/gi,
+      (found, unicode, hex, slash) =>
+        slash ?? String.fromCharCode(Number.parseInt(unicode ?? hex, 16))
+    )
+    .replace(/&(?:#x([0-9a-f]{1,6})|#(\d{1,7})|([a-z]+));?/gi, (found, hex, dec, name) => {
+      if (hex || dec) {
+        const code = hex ? Number.parseInt(hex, 16) : Number(dec);
+        return code <= 0x10ffff ? String.fromCodePoint(code) : found;
+      }
+      return ENTITIES[name.toLowerCase()] ?? found;
+    });
 }
 
 function decodedBytes(text) {
@@ -336,10 +342,50 @@ function scanned(value, starts, stops, swap) {
   return out + value.slice(last);
 }
 
+const PUBLIC = {
+  'www.sliccy.ai': /^\/(?:7\/?|install\.sh|docs(?:\/[a-z0-9-]+)*\/?|blog(?:\/[a-z0-9-]+)*\/?)?$/,
+  'sliccy.ai': /^\/?$/,
+  'ntfy.sliccy.ai': /^\/github\/?$/,
+};
+
+const normalHost = (host) => host.toLowerCase().replace(/\.$/, '');
+
+function readable(url) {
+  if (!URL.canParse(url)) return false;
+  const parsed = new URL(url);
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) return false;
+  const rest = url.slice(url.indexOf('://') + 3);
+  const raw = /[/\\?#]/.test(rest) ? rest.slice(rest.search(/[/\\?#]/)) : '';
+  if (raw !== parsed.pathname && !(raw === '' && parsed.pathname === '/')) return false;
+  if (parsed.pathname === '/') return true;
+  return PUBLIC[normalHost(parsed.hostname)]?.test(parsed.pathname) === true;
+}
+
+const HOST_CHAR = /[a-z0-9-]/i;
+
+function labelsBefore(text, end) {
+  let start = end;
+  for (let count = 0; count < 8 && text[start - 1] === '.'; count += 1) {
+    let at = start - 1;
+    while (at > 0 && start - 1 - at < 63 && HOST_CHAR.test(text[at - 1])) at -= 1;
+    if (at === start - 1) break;
+    start = at;
+  }
+  return text.slice(start, end);
+}
+
+const hopKey = (url) => {
+  if (!URL.canParse(url)) return bare(url).split('?')[0];
+  const parsed = new URL(url);
+  return `${parsed.protocol}//${normalHost(parsed.hostname)}${parsed.port ? `:${parsed.port}` : ''}${parsed.pathname}`;
+};
+
 export function redacting(is) {
   let webs = 0;
   const past = (text, shown) => {
-    if (/^(?:https?|wss?):/i.test(text) && /^\/?[^/]/.test(text.slice(shown.length))) webs += 1;
+    if (/^(?:https?|wss?):/i.test(text) && text.length > shown.length && !readable(text)) {
+      webs += 1;
+    }
   };
   const origin = (text) => {
     const shown = authority(text);
@@ -359,13 +405,12 @@ export function redacting(is) {
       return value;
     }
     const raw = scanned(value, STARTS, STOPS, origin);
-    return scanned(raw, ENCODED_STARTS, ENCODED_STOPS, encoded).replace(
-      HOSTS,
-      (found, host, port) => {
-        if (/^(?:\/|%2f)?[^/%]/i.test(found.slice(host.length + port.length))) webs += 1;
-        return `${host}${port}`;
-      }
-    );
+    const coded = scanned(raw, ENCODED_STARTS, ENCODED_STOPS, encoded);
+    return coded.replace(HOSTS, (found, host, port, offset) => {
+      const labels = labelsBefore(coded, offset);
+      if (!readable(`http://${labels}${decoded(found)}`)) webs += 1;
+      return `${host}${port}`;
+    });
   };
   const walk = (value, path, changed) => {
     if (typeof value === 'string') {
@@ -474,7 +519,7 @@ class Guard {
       for (const id of [params.requestId, params.networkId])
         if (id !== undefined) kept(this.redirected, id);
       for (const url of [params.request?.url, params.response?.url])
-        if (typeof url === 'string') kept(this.hops, bare(url));
+        if (typeof url === 'string') kept(this.hops, hopKey(url));
     }
     return this.deliver({ ...message, params: redacted });
   }
@@ -808,7 +853,7 @@ class Guard {
   hopped(message) {
     const { requestId, redirectResponse } = message.params;
     kept(this.continued, requestId);
-    if (redirectResponse.url) kept(this.hops, bare(redirectResponse.url));
+    if (redirectResponse.url) kept(this.hops, hopKey(redirectResponse.url));
     kept(this.redirected, requestId);
     this.redacted(message);
     return true;
@@ -1162,13 +1207,29 @@ class Guard {
 
   mentions(result) {
     if (!result || typeof result !== 'object') return false;
-    const coded = [result.body, result.data, result.content].find(
-      (item) => typeof item === 'string'
-    );
-    const unfolded = (text) => text.replace(/=\r?\n/g, '').replace(/=3D/gi, '=');
-    const plain = result.base64Encoded && coded !== undefined ? decodedBytes(coded) : (coded ?? '');
-    const text = unescaped(`${unfolded(plain)}\n${JSON.stringify(result)}`);
-    return this.redact({ text }).named;
+    const field = ['body', 'data', 'content'].find((key) => typeof result[key] === 'string');
+    const coded = field ? result[field] : '';
+    const plain = result.base64Encoded ? decodedBytes(coded) : coded;
+    const printable = /content-transfer-encoding:\s*quoted-printable|=\r?\n|=3d/i.test(plain)
+      ? plain
+          .replace(/=\r?\n/g, '')
+          .replace(/=([0-9a-f]{2})/gi, (found, hex) =>
+            String.fromCharCode(Number.parseInt(hex, 16))
+          )
+      : plain;
+    const rest = field ? { ...result, [field]: undefined } : result;
+    const strings = [];
+    const collect = (value) => {
+      if (typeof value === 'string') strings.push(unescaped(value));
+      else if (value && typeof value === 'object') {
+        for (const [key, item] of Object.entries(value)) {
+          strings.push(key);
+          collect(item);
+        }
+      }
+    };
+    collect(rest);
+    return this.redact({ text: unescaped(printable), strings }).named;
   }
 
   contents(message, was) {
@@ -1312,7 +1373,9 @@ class Guard {
       (sessionId !== undefined && this.hidden(sessionId)) ||
       (UNSAFE.has(method) && !this.clearing(method, params, sessionId)) ||
       this.valued(params) ||
-      (REQUESTS.has(method) && typeof params.url === 'string' && this.hops.has(bare(params.url))) ||
+      (REQUESTS.has(method) &&
+        typeof params.url === 'string' &&
+        this.hops.has(hopKey(params.url))) ||
       this.sheets.has(params.styleSheetId) ||
       this.workers(method, params) ||
       (method === 'Target.detachFromTarget' &&
