@@ -83,6 +83,13 @@ async function settled(page, wide) {
   await page.press('u', 'ctrl');
 }
 
+async function focusedTerminal(page) {
+  const token = `zf${(probes += 1)}`;
+  await page.insert(token);
+  await shows(page, token, 10000);
+  await page.press('u', 'ctrl');
+}
+
 const LONG = `https://example.test/${'a'.repeat(280)}`;
 
 async function press(page, which) {
@@ -131,7 +138,10 @@ test('a program opens an http(s) URL in a new tab through /dev/embedder, and a j
   assert.deepEqual(await opened(`${seven}/os/#follow`), []);
   assert.deepEqual(await opened('https://vault.sliccy.ai'), []);
 
-  await run(page, `sleep 8; ${ask('https://example.test/late')}; echo "late $?"`);
+  await run(
+    page,
+    `sleep 8; ${ask('https://example.test/late')}; echo "late $?"; sleep 6; ${ask('https://example.test/rested')}; echo "rested $?"`
+  );
   await page.until(() => !!window.findConfirm(), undefined);
   assert.match(
     await page.evaluate(() => window.findConfirm().shadowRoot.textContent),
@@ -150,6 +160,19 @@ test('a program opens an http(s) URL in a new tab through /dev/embedder, and a j
   await shows(page, 'the request to open the page was dismissed');
   await shows(page, 'late 1');
   assert.deepEqual(await opened('https://example.test/late'), []);
+  await shows(page, 'rested 1');
+  assert.equal(await page.evaluate(() => window.findConfirm()), null);
+  assert.match(
+    await page.evaluate(() => {
+      const { dock } = document.querySelector('slicc-app');
+      const id = dock.api.panels
+        .map((panel) => panel.id)
+        .findLast((id) => id.startsWith('terminal:'));
+      return dock.content(id).screen.textContent;
+    }),
+    /late 1.*the request to open the page was dismissed.*rested 1/s
+  );
+  assert.deepEqual(await opened('https://example.test/rested'), []);
 
   await run(page, `sleep 12; ${ask(LONG)}; echo "long $?"`);
   await page.until(() => !!window.findConfirm(), undefined);
@@ -211,6 +234,7 @@ test('a program opens an http(s) URL in a new tab through /dev/embedder, and a j
   await page.until(() => !!window.findConfirm(), undefined);
   await shows(page, 'withdrawn 143');
   await page.until(() => !window.findConfirm(), undefined);
+  await focusedTerminal(page);
   assert.deepEqual(await opened('https://example.test/withdrawn'), []);
 
   await run(
