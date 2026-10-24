@@ -268,7 +268,7 @@ function failed(status, text) {
 function sandboxed(body, type, status = 200) {
   return new Response(body, {
     status,
-    headers: { ...sandbox, 'content-type': type, 'x-served-from': 'opfs' },
+    headers: { ...sandbox, ...unkept(type), 'content-type': type, 'x-served-from': 'opfs' },
   });
 }
 

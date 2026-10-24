@@ -48,7 +48,6 @@ after(async () => {
   await chrome.close();
 });
 
-const AWAY = 3000;
 const LOST = 'BFCache exclusion lost: only the guard protects seven now';
 
 function reasons(tree) {
@@ -71,8 +70,9 @@ async function comeBack(t, page, landed, label) {
     window.sliccKept = 'kept';
   });
   await page.goto(elsewhere);
-  await page.until(() => document.getElementById('elsewhere'));
-  await new Promise((done) => setTimeout(done, AWAY));
+  await page.until(
+    () => !!document.getElementById('elsewhere') && document.readyState === 'complete'
+  );
   await page.evaluate(() => setTimeout(() => history.back()));
   await page.until(landed);
   const back = await page.evaluate(() => ({
@@ -148,5 +148,32 @@ test("a navigation to a BIOS path that the host redirects still follows the redi
   await page.goto(`${shared}/7/index.html`);
   await ready(page);
   assert.equal(await page.evaluate(() => location.href), `${shared}/os/`);
+  assert.deepEqual(page.errors, []);
+});
+
+test("a sandboxed HTML file from OPFS is sent no-store with unload allowed, like seven's own pages", async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  const sandboxed = await page.evaluate(async () => {
+    const root = await navigator.storage.getDirectory();
+    const home = await root.getDirectoryHandle('home', { create: true });
+    const writable = await (
+      await home.getFileHandle('kept-page.html', { create: true })
+    ).createWritable();
+    await writable.write('<!doctype html><title>kept</title>');
+    await writable.close();
+    const response = await fetch('/home/kept-page.html', { cache: 'no-store' });
+    return {
+      status: response.status,
+      sandbox: /sandbox/.test(response.headers.get('content-security-policy') ?? ''),
+      cache: response.headers.get('cache-control'),
+      unload: response.headers.get('permissions-policy'),
+    };
+  });
+  assert.deepEqual(
+    sandboxed,
+    { status: 200, sandbox: true, cache: 'no-store', unload: 'unload=(self)' },
+    LOST
+  );
   assert.deepEqual(page.errors, []);
 });
