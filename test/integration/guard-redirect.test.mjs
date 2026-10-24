@@ -523,19 +523,43 @@ async function rig({ transport, proxy, port, override }) {
       }
       const before = seen.length;
       await send('Page.navigate', { url: `${origin}/start` }, state.session);
-      await expect('end start', async () =>
-        seen.slice(before).some((text) => text.includes('"Network.loadingFinished"'))
-      );
-      const ids = seen
-        .slice(before)
-        .map((text) => JSON.parse(text))
-        .filter(
+      const since = () => seen.slice(before).map((text) => JSON.parse(text));
+      const startIds = () =>
+        since()
+          .filter(
+            (m) =>
+              m.method === 'Network.requestWillBeSent' &&
+              m.params?.request?.url === `${origin}/start`
+          )
+          .map((m) => m.params.requestId);
+      const settled = (id) =>
+        since().some(
           (m) =>
-            m.method === 'Network.requestWillBeSent' && m.params?.request?.url === `${origin}/start`
-        )
-        .map((m) => m.params.requestId);
-      for (const requestId of new Set(ids)) {
-        answers.plain.push(await send('Network.getResponseBody', { requestId }, state.session));
+            (m.method === 'Network.loadingFinished' || m.method === 'Network.loadingFailed') &&
+            m.params?.requestId === id
+        );
+      await expect('end start', async () => {
+        const ids = startIds();
+        return ids.length > 0 && ids.every(settled);
+      });
+      const finished = since().filter(
+        (m) => m.method === 'Network.loadingFinished' && startIds().includes(m.params?.requestId)
+      );
+      const read = async (requestId) => {
+        const deadline = Date.now() + 8000;
+        let answer = await send('Network.getResponseBody', { requestId }, state.session);
+        while (answer.error?.code === -32000 && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          answer = await send('Network.getResponseBody', { requestId }, state.session);
+        }
+        return answer;
+      };
+      if (finished.length === 0) {
+        answers.plain.push({ error: { message: 'no finished body for /start' } });
+      } else {
+        for (const requestId of new Set(finished.map((m) => m.params.requestId))) {
+          answers.plain.push(await read(requestId));
+        }
       }
       answers.dom.push(await send('DOM.getDocument', { depth: -1 }, state.session));
       answers.dom.push(await send('Page.captureSnapshot', {}, state.session));

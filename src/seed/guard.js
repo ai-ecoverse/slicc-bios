@@ -54,6 +54,7 @@ const UNSAFE = new Set([
   'ServiceWorker.stopAllWorkers',
   'BackgroundService.clearEvents',
   'Network.loadNetworkResource',
+  'Network.replayXHR',
   'Storage.getPrivateVerificationTokens',
   'Storage.getTrustTokens',
 ]);
@@ -384,6 +385,14 @@ const hopKey = (url) => {
   return `${parsed.protocol}//${normalHost(parsed.hostname)}${parsed.port ? `:${parsed.port}` : ''}${parsed.pathname}`;
 };
 
+const resolveTo = (value, base) => {
+  try {
+    return new URL(value, base).href;
+  } catch {
+    return null;
+  }
+};
+
 export function redacting(is) {
   let webs = 0;
   const past = (text, shown) => {
@@ -520,6 +529,10 @@ class Guard {
     this.pages = new Set();
     this.frames = new Map();
     this.requests = new Map();
+    this.bases = new Map();
+    this.steerNets = new Map();
+    this.holding = new Set();
+    this.fetchPatterns = new Map();
     this.held = new Map();
     this.internal = new Map();
     this.asked = new Map();
@@ -712,6 +725,130 @@ class Guard {
     nav.settle(steps.some((step) => step.error));
   }
 
+  async armSteer(message) {
+    const params = message.params ?? {};
+    const override = message.method === 'Fetch.continueRequest' && typeof params.url === 'string';
+    if (!override && !this.clientHop(message.method, params)) return null;
+    const base = this.bases.get(params.requestId);
+    if (base?.type === 'Document') return null;
+    const nav = this.navs.get(this.sessions.get(message.sessionId)?.targetId);
+    if (
+      !base ||
+      typeof base.type !== 'string' ||
+      typeof base.networkId !== 'string' ||
+      !nav?.session
+    ) {
+      return PROTECTED;
+    }
+    const entry = { type: base.type, nav, requestId: params.requestId };
+    if (override) entry.url = params.url;
+    this.steerNets.set(base.networkId, entry);
+    this.holding.add(params.requestId);
+    if (await this.syncPatterns(nav)) return null;
+    this.finishNet(base.networkId);
+    return PROTECTED;
+  }
+
+  async syncPatterns(nav) {
+    if (!nav.session) return false;
+    const types = new Set();
+    for (const entry of this.steerNets.values()) {
+      if (entry.nav === nav && entry.type !== 'Document') types.add(entry.type);
+    }
+    const patterns = [ARM[0]];
+    for (const resourceType of [...types].sort()) {
+      patterns.push({ urlPattern: '*', resourceType, requestStage: 'Request' });
+    }
+    for (const pattern of this.keptPatterns(nav)) {
+      const same = patterns.some(
+        (had) =>
+          had.resourceType === pattern.resourceType &&
+          had.urlPattern === pattern.urlPattern &&
+          had.requestStage === pattern.requestStage
+      );
+      if (!same) patterns.push(pattern);
+    }
+    const key = JSON.stringify(patterns);
+    if (nav.patternKey === key) return true;
+    const answer = await this.call('Fetch.enable', { patterns }, nav.session);
+    if (answer.error) return false;
+    nav.patternKey = key;
+    return true;
+  }
+
+  keptPatterns(nav) {
+    const kept = [];
+    for (const [sessionId, list] of this.fetchPatterns) {
+      if (this.sessions.get(sessionId)?.targetId !== nav.targetId) continue;
+      for (const pattern of list) {
+        if (typeof pattern?.resourceType !== 'string') continue;
+        kept.push(pattern);
+      }
+    }
+    return kept;
+  }
+
+  finishNet(networkId) {
+    if (typeof networkId !== 'string') return;
+    const entry = this.steerNets.get(networkId);
+    if (!entry) return;
+    this.steerNets.delete(networkId);
+    this.holding.delete(entry.requestId);
+    void this.syncPatterns(entry.nav);
+  }
+
+  dropSteers(nav) {
+    let dropped = false;
+    for (const [key, entry] of [...this.steerNets]) {
+      if (entry.nav !== nav) continue;
+      this.steerNets.delete(key);
+      this.holding.delete(entry.requestId);
+      dropped = true;
+    }
+    if (dropped) void this.syncPatterns(nav);
+  }
+
+  steerHop(params) {
+    return (
+      typeof params.networkId === 'string' &&
+      typeof params.redirectedRequestId === 'string' &&
+      this.steerNets.has(params.networkId)
+    );
+  }
+
+  forwardOriginal(params, sessionId) {
+    const entry = this.steerNets.get(params.networkId);
+    if (!entry || typeof entry.url !== 'string' || params.redirectedRequestId !== undefined)
+      return false;
+    void this.call(
+      'Fetch.continueRequest',
+      { requestId: params.requestId, url: entry.url },
+      sessionId
+    );
+    return true;
+  }
+
+  failHop(params, sessionId) {
+    void this.call(
+      'Fetch.failRequest',
+      { requestId: params.requestId, errorReason: 'BlockedByClient' },
+      sessionId
+    );
+  }
+
+  onSteerPause(params, sessionId, own) {
+    if (own && this.holding.has(params.requestId)) return 'drop';
+    if (own && this.forwardOriginal(params, sessionId)) return 'drop';
+    if (!this.steerHop(params)) return 'pass';
+    if (this.is.url(params.request?.url)) {
+      this.failHop(params, sessionId);
+      return 'drop';
+    }
+    if (!own) return 'pass';
+    void this.call('Fetch.continueRequest', { requestId: params.requestId }, sessionId);
+    return 'drop';
+  }
+
   navEvent({ method, params = {} }, nav) {
     if (method === 'Page.frameNavigated' && params.frame && !params.frame.parentId) {
       nav.last = `${params.frame.url}${params.frame.urlFragment ?? ''}`;
@@ -722,7 +859,12 @@ class Guard {
       nav.stopped = true;
       return this.wipe(nav);
     }
+    if (method === 'Network.loadingFinished' || method === 'Network.loadingFailed') {
+      this.finishNet(params.requestId);
+      return;
+    }
     if (method !== 'Fetch.requestPaused') return;
+    if (this.onSteerPause(params, nav.session, true) === 'drop') return;
     const { requestId } = params;
     if (params.resourceType === 'Document' && this.is.url(params.request?.url)) {
       if (nav.held) {
@@ -747,6 +889,7 @@ class Guard {
     nav.session = null;
     nav.settle(true);
     nav.failed = true;
+    this.dropSteers(nav);
   }
 
   async guarding(method, sessionId) {
@@ -859,6 +1002,9 @@ class Guard {
 
   async network(message) {
     const { method, params = {} } = message;
+    if (method === 'Network.loadingFinished' || method === 'Network.loadingFailed') {
+      this.finishNet(params.requestId);
+    }
     const { requestId } = params;
     if (method === 'Network.requestWillBeSent' || method === 'Network.webSocketCreated') {
       const shown = this.delivered.has(requestId);
@@ -918,8 +1064,23 @@ class Guard {
     return true;
   }
 
+  notePause(params = {}) {
+    const { requestId } = params;
+    const url = params.request?.url;
+    if (typeof requestId !== 'string' || typeof url !== 'string') return;
+    this.bases.set(requestId, {
+      url,
+      status: typeof params.responseStatusCode === 'number' ? params.responseStatusCode : undefined,
+      type: typeof params.resourceType === 'string' ? params.resourceType : undefined,
+      networkId: typeof params.networkId === 'string' ? params.networkId : undefined,
+    });
+    if (this.bases.size > REMEMBERED) this.bases.delete(this.bases.keys().next().value);
+  }
+
   async paused(message) {
-    const { params = {} } = message;
+    const { params = {}, sessionId } = message;
+    this.notePause(params);
+    if (this.onSteerPause(params, sessionId, false) === 'drop') return true;
     const marked = this.requests.get(params.networkId) === true || (await this.request(params));
     this.remember(params.requestId, marked);
     if (params.networkId !== undefined && marked) this.settle(params.networkId, true);
@@ -1040,7 +1201,7 @@ class Guard {
       const nav = this.navs.get(params.targetId);
       this.navs.delete(params.targetId);
       this.errored.delete(params.targetId);
-      if (nav?.session) this.navSessions.delete(nav.session);
+      if (nav?.session) this.lost(nav.session);
       return this.targets.get(params.targetId)?.guarded === true;
     }
     if (method === 'Target.detachedFromTarget') {
@@ -1429,10 +1590,108 @@ class Guard {
     return null;
   }
 
+  namedHeaders(list, rows) {
+    if (!Array.isArray(list)) return false;
+    for (const entry of list) {
+      if (!entry || typeof entry.name !== 'string' || typeof entry.value !== 'string') return false;
+      if (entry.name.trim() === '') return false;
+      rows.push([entry.name, entry.value]);
+    }
+    return true;
+  }
+
+  binaryHeaders(encoded, rows) {
+    if (typeof encoded !== 'string' || encoded.length === 0 || encoded.length % 4 !== 0)
+      return false;
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) return false;
+    const text = atob(encoded);
+    const parts = text.split('\0');
+    if (parts.at(-1) === '') parts.pop();
+    if (parts.length === 0) return false;
+    for (const part of parts) {
+      const colon = part.indexOf(':');
+      if (colon <= 0) return false;
+      const name = part.slice(0, colon).trim();
+      const value = part.slice(colon + 1).trim();
+      if (name === '') return false;
+      rows.push([name, value]);
+    }
+    return true;
+  }
+
+  headerList(params) {
+    const rows = [];
+    if (params.responseHeaders !== undefined && !this.namedHeaders(params.responseHeaders, rows)) {
+      return null;
+    }
+    if (
+      params.binaryResponseHeaders !== undefined &&
+      !this.binaryHeaders(params.binaryResponseHeaders, rows)
+    ) {
+      return null;
+    }
+    return rows;
+  }
+
+  clientHop(method, params) {
+    if (method !== 'Fetch.fulfillRequest' && method !== 'Fetch.continueResponse') return false;
+    if (
+      method === 'Fetch.continueResponse' &&
+      params.responseHeaders === undefined &&
+      params.binaryResponseHeaders === undefined
+    ) {
+      return false;
+    }
+    if (this.fulfilledRedirect(params)) return false;
+    const code =
+      typeof params.responseCode === 'number'
+        ? params.responseCode
+        : this.bases.get(params.requestId)?.status;
+    if (typeof code !== 'number' || code < 300 || code >= 400) return false;
+    const headers = this.headerList(params);
+    const base = this.bases.get(params.requestId)?.url;
+    return headers.some(([name, value]) => {
+      if (name.toLowerCase().trim() !== 'location') return false;
+      const next = resolveTo(value, base);
+      return typeof next === 'string' && !this.is.url(next);
+    });
+  }
+
+  servedRedirect(method, params) {
+    if (method !== 'Fetch.fulfillRequest' && method !== 'Fetch.continueResponse') return false;
+    return this.fulfilledRedirect(params);
+  }
+
+  legacyUrl(method, params) {
+    return method === 'Network.continueInterceptedRequest' && typeof params.url === 'string';
+  }
+
+  blockedSteer(method, params) {
+    return this.servedRedirect(method, params) || this.legacyUrl(method, params);
+  }
+
+  fulfilledRedirect(params) {
+    const headers = this.headerList(params);
+    if (headers === null) return true;
+    if (params.responseCode !== undefined && typeof params.responseCode !== 'number') return true;
+    const code =
+      typeof params.responseCode === 'number'
+        ? params.responseCode
+        : this.bases.get(params.requestId)?.status;
+    if (typeof code !== 'number' || code < 300 || code >= 400) return false;
+    const base = this.bases.get(params.requestId)?.url;
+    return headers.some(([name, value]) => {
+      if (name.toLowerCase().trim() !== 'location') return false;
+      const next = resolveTo(value, base);
+      return next === null || this.is.url(next);
+    });
+  }
+
   async check(message) {
     const { method, params = {}, sessionId } = message;
     if (typeof method !== 'string') return null;
     if (method.startsWith('Fetch.') && sessionId === undefined) return FETCH;
+    if (this.blockedSteer(method, params)) return PROTECTED;
     if (LATER.has(method)) return SCRIPTS;
     if (method === 'Page.navigate' && inherits(params.url)) return INHERITED;
     if (FLAT.has(method) && params.flatten !== true) {
@@ -1501,8 +1760,18 @@ class Guard {
       this.pages.delete(sessionId);
       return this.deliver({ id, sessionId, result: {} });
     }
+    this.noteFetch(message);
     this.asked.set(id, message);
     this.connection.send(JSON.stringify(message));
+  }
+
+  noteFetch(message) {
+    const { sessionId } = message;
+    if (!sessionId) return;
+    if (message.method === 'Fetch.disable') this.fetchPatterns.delete(sessionId);
+    if (message.method !== 'Fetch.enable') return;
+    const patterns = message.params?.patterns;
+    this.fetchPatterns.set(sessionId, Array.isArray(patterns) ? patterns : []);
   }
 
   received(text) {
@@ -1543,6 +1812,8 @@ class Guard {
         async () => {
           const why = await this.check(message);
           if (why) return this.refuse(message, why);
+          const watch = await this.armSteer(message);
+          if (watch) return this.refuse(message, watch);
           if (message.method === 'Runtime.enable' && this.primed.delete(message.sessionId)) {
             await this.call('Runtime.disable', {}, message.sessionId);
           }
