@@ -1,5 +1,5 @@
 import { browserHosts } from './cdp.js';
-import { askHold, markerUrl, UNHELD } from './held.js';
+import { askHold, landed, markerUrl, UNHELD } from './held.js';
 import { IMS_TOKEN } from './vault.js';
 
 const imsHosts = {
@@ -296,9 +296,10 @@ export function signIn({
     : viaProxy({ proxy, open, hold, fetcher, every, timeout });
   const forced = () => force ?? globalThis.localStorage?.getItem(FORCE_RELAY) === 'relay';
   const grant = (providerId, options, { signal } = {}) =>
-    shared || relayed(origin) || forced()
+    (shared || relayed(origin) || forced()
       ? relay(providerId, options, signal)
-      : direct(providerId, options, signal);
+      : direct(providerId, options, signal)
+    ).finally(() => landed());
   const login = (providerId, options, context) =>
     grant(providerId, options, context).then((got) => got.token);
   login.grant = grant;

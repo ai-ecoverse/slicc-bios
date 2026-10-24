@@ -22,6 +22,12 @@ export function flying(now = Date.now, storage = globalThis.localStorage) {
   } catch {}
 }
 
+export function landed(storage = globalThis.localStorage) {
+  try {
+    storage?.removeItem(FLIGHT_KEY);
+  } catch {}
+}
+
 export function inFlight(now = Date.now, storage = globalThis.localStorage) {
   return Number(storage?.getItem(FLIGHT_KEY) ?? 0) > now();
 }
