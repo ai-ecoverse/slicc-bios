@@ -40,7 +40,7 @@ export const LAYOUTS = {
     framing('localhost', framing('middle.example.test', marker('client.example.test', n))),
   ordinary: (n) => framing('ordinary.example.test', marker('localhost', n)),
 };
-const LATE = ['late-remote', 'late-nested'];
+const LATE = ['late-local', 'late-remote', 'late-nested'];
 export const GUARDED = ['local', 'remote', 'nested'];
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -356,7 +356,7 @@ async function measure(factory, unguarded, own, route, layout) {
       row.reads = await reads(client, session, n, leaf.frameId);
       row.probes = await probes(client, session);
       row.input = await click(client, session, n);
-      if (layout !== 'ordinary') {
+      if (layout === 'remote' || layout === 'nested') {
         await evaluate(unguarded, raw, "document.querySelector('iframe').remove()");
         await until(async () => (await shot(unguarded, raw)) === 0, 10000);
         row.again = await until(async () => {
@@ -384,6 +384,7 @@ async function measureLate(factory, unguarded, own, route, layout) {
       flatten: true,
     });
     await unguarded.send('Page.enable', {}, raw);
+    if (layout === 'late-local') await unguarded.send('Runtime.enable', {}, raw);
     await unguarded.send('Target.activateTarget', { targetId });
     row.preloaded = await until(async () => {
       const pixels = await shot(unguarded, raw);
@@ -402,6 +403,7 @@ async function measureLate(factory, unguarded, own, route, layout) {
     if (!guarded) return row;
     const { client, session, close } = guarded;
     try {
+      if (layout === 'late-local') await client.send('Runtime.enable', {}, session);
       const mark = unguarded.events.length;
       let pendingShot;
       let settled = false;
@@ -431,6 +433,48 @@ async function measureLate(factory, unguarded, own, route, layout) {
       };
       row.frames = await frames(unguarded);
       row.shot = await shot(client, session);
+      if (layout === 'late-local') {
+        const context = await until(
+          async () =>
+            unguarded.events
+              .slice(mark)
+              .find(
+                (event) =>
+                  event.sessionId === raw &&
+                  event.method === 'Runtime.executionContextCreated' &&
+                  event.params.context.origin.startsWith(OWN)
+              ),
+          5000
+        );
+        assert.ok(context, 'a protected local context was created after attach');
+        row.contextShown = client.events.some(
+          (event) =>
+            event.method === 'Runtime.executionContextCreated' &&
+            event.params.context.origin.startsWith(OWN)
+        );
+        row.cut = verdict(
+          await outcome(
+            client.send('Runtime.evaluate', { expression: '42', returnByValue: true }, session)
+          ),
+          () => true
+        );
+        const before = hitsOf(n);
+        row.runtime = verdict(
+          await outcome(
+            client.send(
+              'Runtime.evaluate',
+              {
+                contextId: context.params.context.id,
+                expression: `navigator.sendBeacon('/hit?n=${n}&k=runtime')`,
+                returnByValue: true,
+              },
+              session
+            )
+          ),
+          () => true
+        );
+        row.runtimeReached = Boolean(await until(async () => hitsOf(n) > before, 2000));
+      }
     } finally {
       await close();
     }
@@ -515,7 +559,7 @@ export function paint(route) {
         [],
         `${layout}: nothing of the protected frame reaches the client`
       );
-      if (row.attach === 'ok')
+      if (row.attach === 'ok' && layout !== 'local')
         assert.equal(
           row.again?.pixels,
           0,
@@ -545,6 +589,15 @@ export function paint(route) {
         `${layout}: a screenshot after the frame appeared shows none of it`
       );
     }
+    const local = by['late-local'];
+    assert.equal(local.contextShown, false, 'a protected local context is not delivered');
+    assert.equal(local.cut, 'refused', 'a protected local child cuts its page session');
+    assert.equal(local.runtime, 'refused', 'evaluation in the protected local context is refused');
+    assert.equal(
+      local.runtimeReached,
+      false,
+      'evaluation in the protected local context never runs'
+    );
     const ordinary = by.ordinary;
     assert.equal(ordinary.attach, 'ok', 'an ordinary page attaches');
     assert.ok(ordinary.shot >= MARKED, 'an ordinary page’s frame shows in a screenshot');
