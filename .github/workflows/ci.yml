@@ -33,7 +33,7 @@ jobs:
           restore-keys: harness-cdn-
       - run: if sudo -n true 2>/dev/null; then npx playwright-core install-deps chromium; fi
       - run: npm run pretest
-      - run: node proof/patch.mjs
+      - run: C9_FRAME=1 node proof/patch.mjs
       - name: Proof rounds
         env:
           SLICC_TESTS: test/integration/guard-set-link-rest.test.mjs

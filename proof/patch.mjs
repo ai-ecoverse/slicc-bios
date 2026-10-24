@@ -22,5 +22,13 @@ s = s.replace(
   ret,
   `  const after = await outcome(client.send('Runtime.evaluate', { expression: ${JSON.stringify(`JSON.stringify({ log: window.c9log, ${state.slice(16, -3)} })`)}, returnByValue: true }, session));\n  const brief = (o) => (o.ok ? (o.result?.result?.value ?? 'ok') : 'ERR ' + o.error?.message);\n  console.error('probe c9 ' + JSON.stringify({ leg: client.transport ?? 'unguarded', setup: brief(setup), pre: brief(pre), front: brief(front), down: brief(down), up: brief(up), click: brief(click), after: brief(after) }));\n${ret}`
 );
+if (process.env.C9_FRAME === '1') {
+  const front = "  await outcome(reader.send('Page.bringToFront', {}, observer));\n";
+  if (!s.includes(front)) throw new Error('frame anchor');
+  s = s.replace(
+    front,
+    `${front}  await outcome(client.send('Runtime.evaluate', { expression: 'new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true))))', awaitPromise: true, returnByValue: true }, session));\n`
+  );
+}
 writeFileSync(file, s);
 console.log('patched');
