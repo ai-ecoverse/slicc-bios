@@ -8,7 +8,7 @@ import { guardHost } from './guard-set.mjs';
 const hits = [];
 const pages = {
   '/marker': (p) =>
-    `<!doctype html><title>marker</title><style>html,body{margin:0;height:100%;background:#ff00ff;color:#ff00ff}</style><p>paint-marker-${p.get('n')}</p><script>const n=${JSON.stringify(p.get('n'))};for(const k of ['mousedown','keydown'])addEventListener(k,()=>navigator.sendBeacon('/hit?n='+n+'&k='+k))</script>`,
+    `<!doctype html><title>marker</title><style>html,body{margin:0;height:100%;background:#ff00ff;color:#ff00ff;--marker:paint-marker-${p.get('n')}}</style><button aria-label="paint-marker-${p.get('n')}">paint-marker-${p.get('n')}</button><script>const n=${JSON.stringify(p.get('n'))};for(const k of ['mousedown','keydown'])addEventListener(k,()=>navigator.sendBeacon('/hit?n='+n+'&k='+k))</script>`,
   '/frame': (p) =>
     `<!doctype html><title>frame</title><style>html,body{margin:0;height:100%;background:#fff}iframe{position:absolute;left:0;top:0;width:600px;height:400px;border:0}</style><iframe src="${p.get('src').replaceAll('&', '&amp;').replaceAll('"', '&quot;')}"></iframe>`,
   '/empty': () =>
@@ -40,10 +40,7 @@ export const LAYOUTS = {
     framing('localhost', framing('middle.example.test', marker('client.example.test', n))),
   ordinary: (n) => framing('ordinary.example.test', marker('localhost', n)),
 };
-const LATE = {
-  'late-remote': (n) => marker('seven.sliccy.ai', n),
-  'late-nested': (n) => framing('middle.example.test', marker('client.example.test', n)),
-};
+const LATE = ['late-remote', 'late-nested'];
 export const GUARDED = ['local', 'remote', 'nested'];
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -174,7 +171,7 @@ const printable = (text) =>
     .replace(/=\r?\n/g, '')
     .replace(/=([0-9a-f]{2})/gi, (found, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
 
-async function reads(client, session, n) {
+async function reads(client, session, n, frameId) {
   const text = `paint-marker-${n}`;
   const shows = (result) => JSON.stringify(result).includes(text);
   const out = {};
@@ -182,7 +179,10 @@ async function reads(client, session, n) {
     await outcome(client.send('DOM.getDocument', { depth: -1, pierce: true }, session)),
     shows
   );
-  out.ax = verdict(await outcome(client.send('Accessibility.getFullAXTree', {}, session)), shows);
+  out.ax = verdict(
+    await outcome(client.send('Accessibility.getFullAXTree', { frameId }, session)),
+    shows
+  );
   out.snapshot = verdict(
     await outcome(
       client.send('DOMSnapshot.captureSnapshot', { computedStyles: ['background-color'] }, session)
@@ -196,12 +196,21 @@ async function reads(client, session, n) {
   const read = client.events.length;
   await outcome(client.send('DOM.enable', {}, session));
   const enabled = await outcome(client.send('CSS.enable', {}, session));
-  await pause(500);
-  const sheets = client.events
-    .slice(read)
-    .filter((event) => event.method === 'CSS.styleSheetAdded' && event.sessionId === session);
+  const sheets = () =>
+    client.events
+      .slice(read)
+      .filter((event) => event.method === 'CSS.styleSheetAdded' && event.sessionId === session);
+  if (enabled.ok)
+    await until(
+      async () => sheets().some((event) => event.params.header.frameId === frameId),
+      5000
+    );
+  out.sheets = sheets().map((event) => ({
+    frameId: event.params.header.frameId,
+    sourceURL: event.params.header.sourceURL,
+  }));
   const texts = [];
-  for (const sheet of sheets) {
+  for (const sheet of sheets()) {
     const answer = await outcome(
       client.send(
         'CSS.getStyleSheetText',
@@ -210,7 +219,7 @@ async function reads(client, session, n) {
       )
     );
     if (!answer.ok) texts.push(answer);
-    else if (/ff00ff/i.test(answer.result.text)) texts.push({ ok: true, result: { shown: text } });
+    else if (answer.result.text.includes(text)) texts.push({ ok: true, result: { shown: text } });
   }
   out.css = !enabled.ok
     ? verdict(enabled, () => false)
@@ -281,8 +290,8 @@ async function frames(unguarded) {
     .map((info) => new URL(info.url).hostname);
 }
 
-async function guardedRow(factory, own, targetId, row) {
-  const { client, close } = await factory({ own });
+async function guardedRow(factory, own, targetId, row, options = {}) {
+  const { client, close } = await factory({ own, ...options });
   const attach = await outcome(client.send('Target.attachToTarget', { targetId, flatten: true }));
   if (!attach.ok) {
     row.attach = REFUSED.test(attach.error) ? 'refused' : `error: ${attach.error}`;
@@ -293,6 +302,27 @@ async function guardedRow(factory, own, targetId, row) {
   const session = attach.result.sessionId;
   await outcome(client.send('Page.enable', {}, session));
   return { client, session, close };
+}
+
+async function markerFrame(client, raw, n) {
+  const targets = (await client.send('Target.getTargets')).targetInfos;
+  let session = raw;
+  const info = targets.find(
+    (info) =>
+      info.type === 'iframe' &&
+      (info.url === marker('seven.sliccy.ai', n) ||
+        info.url === marker('localhost', n) ||
+        info.url === framing('middle.example.test', marker('client.example.test', n)))
+  );
+  if (info)
+    session = (
+      await client.send('Target.attachToTarget', { targetId: info.targetId, flatten: true })
+    ).sessionId;
+  const tree = (await client.send('Page.getFrameTree', {}, session)).frameTree;
+  const walk = (tree) => [tree.frame, ...(tree.childFrames ?? []).flatMap(walk)];
+  const frame = walk(tree).find((frame) => frame.url.includes(`/marker?n=${n}`));
+  assert.ok(frame, 'the marker frame is placed in its renderer');
+  return { session, frameId: frame.id, remote: Boolean(info) };
 }
 
 async function measure(factory, unguarded, own, route, layout) {
@@ -313,7 +343,9 @@ async function measure(factory, unguarded, own, route, layout) {
     };
     row.frames = await frames(unguarded);
     row.control.cast = await cast(unguarded, raw, 1500);
-    row.control.reads = await reads(unguarded, raw, n);
+    const leaf = await markerFrame(unguarded, raw, n);
+    row.placement = { remote: leaf.remote, frameId: leaf.frameId };
+    row.control.reads = await reads(unguarded, leaf.session, n, leaf.frameId);
     row.control.input = await click(unguarded, raw, n);
     const guarded = await guardedRow(factory, own, targetId, row);
     if (!guarded) return row;
@@ -321,14 +353,16 @@ async function measure(factory, unguarded, own, route, layout) {
     try {
       row.shot = await shot(client, session);
       row.cast = await cast(client, session, 2000);
-      row.reads = await reads(client, session, n);
+      row.reads = await reads(client, session, n, leaf.frameId);
       row.probes = await probes(client, session);
       row.input = await click(client, session, n);
       if (layout !== 'ordinary') {
         await evaluate(unguarded, raw, "document.querySelector('iframe').remove()");
         await until(async () => (await shot(unguarded, raw)) === 0, 10000);
-        await pause(500);
-        row.again = await shot(client, session);
+        row.again = await until(async () => {
+          const pixels = await shot(client, session);
+          return pixels === 0 ? { pixels } : null;
+        }, 10000);
       }
     } finally {
       await close();
@@ -342,27 +376,53 @@ async function measure(factory, unguarded, own, route, layout) {
 async function measureLate(factory, unguarded, own, route, layout) {
   const n = randomBytes(6).toString('hex');
   const row = { route, layout };
-  const { targetId } = await unguarded.send('Target.createTarget', {
-    url: at('ordinary.example.test', '/empty'),
-  });
+  const url = LAYOUTS[layout.slice(5)](n);
+  const { targetId } = await unguarded.send('Target.createTarget', { url });
   try {
     const { sessionId: raw } = await unguarded.send('Target.attachToTarget', {
       targetId,
       flatten: true,
     });
+    await unguarded.send('Page.enable', {}, raw);
     await unguarded.send('Target.activateTarget', { targetId });
-    const guarded = await guardedRow(factory, own, targetId, row);
+    row.preloaded = await until(async () => {
+      const pixels = await shot(unguarded, raw);
+      return pixels >= MARKED ? pixels : 0;
+    }, 20000);
+    const history = await unguarded.send('Page.getNavigationHistory', {}, raw);
+    const entry = history.entries.find((entry) => entry.url === url);
+    assert.ok(entry, 'the preloaded page has a history entry');
+    await unguarded.send('Page.navigate', { url: at('ordinary.example.test', '/empty') }, raw);
+    await until(
+      async () =>
+        (await unguarded.send('Page.getFrameTree', {}, raw)).frameTree.frame.url.endsWith('/empty'),
+      10000
+    );
+    const guarded = await guardedRow(factory, own, targetId, row, { paintDelay: 1500 });
     if (!guarded) return row;
     const { client, session, close } = guarded;
     try {
-      const src = LATE[layout](n);
+      const mark = unguarded.events.length;
+      let pendingShot;
+      let settled = false;
       row.cast = await cast(client, session, 6000, async () => {
-        await evaluate(
-          unguarded,
-          raw,
-          `new Promise((done) => { const f = document.createElement('iframe'); f.src = ${JSON.stringify(src)}; f.style.cssText = 'position:absolute;left:0;top:0;width:600px;height:400px;border:0'; f.onload = done; document.body.append(f); })`
-        );
+        pendingShot = shot(client, session).then((result) => {
+          settled = true;
+          return result;
+        });
+        await pause(100);
+        row.pending = !settled;
+        await unguarded.send('Page.navigateToHistoryEntry', { entryId: entry.id }, raw);
       });
+      row.lateShot = await pendingShot;
+      row.restore = unguarded.events
+        .slice(mark)
+        .find(
+          (event) =>
+            event.sessionId === raw &&
+            event.method === 'Page.frameNavigated' &&
+            event.params.frame.url === url
+        )?.params.type;
       row.control = {
         shot: await until(async () => {
           const pixels = await shot(unguarded, raw);
@@ -418,8 +478,7 @@ export function paint(route) {
     const rows = [];
     for (const layout of Object.keys(LAYOUTS))
       rows.push(await measure(factory, unguarded, own, route, layout));
-    for (const layout of Object.keys(LATE))
-      rows.push(await measureLate(factory, unguarded, own, route, layout));
+    for (const layout of LATE) rows.push(await measureLate(factory, unguarded, own, route, layout));
     if (route !== 'link') {
       const { targetInfos } = await unguarded.send('Target.getTargets');
       rows.push({
@@ -440,20 +499,47 @@ export function paint(route) {
         `${layout}: a cast without the guard shows the marker`
       );
       assert.equal(row.control.input, 'reached', `${layout}: a click without the guard reaches`);
+      for (const read of ['dom', 'ax', 'css'])
+        assert.equal(
+          row.control.reads[read],
+          'shown',
+          `${layout}: ${read} reads the marker without the guard`
+        );
+      assert.equal(
+        row.placement.remote,
+        layout !== 'local',
+        `${layout}: the renderer layout is established`
+      );
       assert.deepEqual(
         leaked(row),
         [],
         `${layout}: nothing of the protected frame reaches the client`
       );
       if (row.attach === 'ok')
-        assert.equal(row.again, 0, `${layout}: the page is drivable once the frame is gone`);
+        assert.equal(
+          row.again?.pixels,
+          0,
+          `${layout}: the page is drivable once the frame is gone`
+        );
     }
-    for (const layout of Object.keys(LATE)) {
+    for (const layout of LATE) {
       const row = by[layout];
+      assert.equal(
+        row.restore,
+        'BackForwardCacheRestore',
+        `${layout}: the protected page is restored without a new document request`
+      );
       assert.ok(row.control.shot >= MARKED, `${layout}: the late frame paints without the guard`);
       assert.equal(row.attach, 'ok', `${layout}: the ordinary page attaches`);
       assert.equal(row.cast.start, 'ok', `${layout}: the cast starts on the ordinary page`);
+      assert.equal(row.pending, true, `${layout}: the screenshot was pending before the restore`);
+      assert.equal(
+        row.lateShot,
+        'refused',
+        `${layout}: a delayed screenshot answer is refused after the page locks`
+      );
       assert.equal(row.cast.marked, 0, `${layout}: no cast frame shows the late frame`);
+      assert.equal(row.cast.frames, 0, `${layout}: the running cast stops when the page locks`);
       assert.ok(
         row.shot === 'refused' || row.shot === 0,
         `${layout}: a screenshot after the frame appeared shows none of it`
