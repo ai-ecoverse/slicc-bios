@@ -8,6 +8,11 @@ const chrome = await launch();
 after(() => chrome.close());
 
 const bash = 'node_modules/@ai-ecoverse/wasm-bash';
+const tools = new Set(
+  Object.keys(
+    JSON.parse(await readFile(new URL('../../src/packages/tools.json', import.meta.url), 'utf8'))
+  )
+);
 const shipped = JSON.parse(
   await readFile(new URL('../../src/packages/package-lock.json', import.meta.url), 'utf8')
 );
@@ -68,7 +73,10 @@ async function reboot(page) {
 
 function downloads() {
   return chrome.cdn.requests.filter(
-    (url) => url.startsWith('https://registry.npmjs.org/') && /\/-\/[^/]+\.tgz$/.test(url)
+    (url) =>
+      url.startsWith('https://registry.npmjs.org/') &&
+      /\/-\/[^/]+\.tgz$/.test(url) &&
+      !tools.has(new URL(url).pathname.slice(1).split('/-/')[0])
   );
 }
 

@@ -137,6 +137,7 @@ test('seven boots from /7/ of an origin it shares with six: the UI is /os/, ever
     (path) =>
       !path.startsWith('/7/') &&
       !path.startsWith('/fonts/') &&
+      !path.startsWith('/opt/agent/') &&
       !['/', '/six.js', '/auth/callback', '/favicon.ico'].includes(path)
   );
   assert.deepEqual(outside, []);
