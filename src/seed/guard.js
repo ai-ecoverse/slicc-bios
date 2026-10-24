@@ -199,6 +199,24 @@ const PROBE =
   "typeof chrome === 'object' && chrome !== null && Boolean(chrome.runtime && chrome.runtime.id)";
 const OBJECT_ID = /^-?\d+\.(\d+)\.\d+$/;
 const PROFILERS = ['HeapProfiler.', 'Profiler.'];
+const PAGE_PAINT = new Set([
+  'Page.captureScreenshot',
+  'Page.startScreencast',
+  'Page.captureSnapshot',
+]);
+const PAGE_DOMAINS = [
+  'DOM.',
+  'DOMSnapshot.',
+  'CSS.',
+  'Accessibility.',
+  'Input.',
+  'LayerTree.',
+  'HeadlessExperimental.',
+  'Cast.',
+];
+const pageScoped = (method = '') =>
+  PAGE_PAINT.has(method) || PAGE_DOMAINS.some((domain) => method.startsWith(domain));
+const FRAME_CHILDREN = [{ type: 'iframe', exclude: false }, { exclude: true }];
 
 function objectIds(value, found) {
   if (typeof value !== 'string') return;
@@ -531,6 +549,10 @@ class Guard {
     this.pages = new Set();
     this.frames = new Map();
     this.parents = new Map();
+    this.scopes = new Map();
+    this.placements = new Map();
+    this.placing = new Map();
+    this.casts = new Set();
     this.requests = new Map();
     this.held = new Map();
     this.internal = new Map();
@@ -580,7 +602,11 @@ class Guard {
   call(method, params, sessionId) {
     return new Promise((resolve) => {
       this.next += 1;
-      this.internal.set(this.next, resolve);
+      this.internal.set(this.next, (message) => {
+        if (method === 'Page.getFrameTree')
+          this.recordTree(this.scopeTarget(sessionId), message.result?.frameTree);
+        resolve(message);
+      });
       this.connection.send(
         JSON.stringify({ id: this.next, method, params, ...(sessionId ? { sessionId } : {}) })
       );
@@ -664,6 +690,204 @@ class Guard {
     }
     found.guarded = found.guarded || verdict;
     return found.guarded;
+  }
+
+  scope(targetId) {
+    if (!this.scopes.has(targetId)) this.scopes.set(targetId, { frames: new Set(), ready: false });
+    return this.scopes.get(targetId);
+  }
+
+  scopeTarget(sessionId) {
+    return (
+      this.placements.get(sessionId) ??
+      this.sessions.get(sessionId)?.targetId ??
+      this.navSessions.get(sessionId)?.targetId
+    );
+  }
+
+  pageLocked(targetId, seen = new Set()) {
+    if (!targetId || seen.has(targetId)) return true;
+    seen.add(targetId);
+    const scope = this.scopes.get(targetId);
+    if (!scope?.ready) return true;
+    for (const id of scope.frames) {
+      const url = this.frames.get(id);
+      if (url === undefined || url === '' || this.is.url(url)) return true;
+      if (
+        id !== targetId &&
+        this.targets.get(id)?.type === 'iframe' &&
+        this.pageLocked(id, new Set(seen))
+      )
+        return true;
+      if (id !== targetId && (!this.parents.has(id) || !this.frames.has(this.parents.get(id))))
+        return true;
+    }
+    for (const [child, entry] of this.scopes) {
+      if (entry.parent === targetId && this.pageLocked(child, new Set(seen))) return true;
+    }
+    return false;
+  }
+
+  locked(sessionId) {
+    const targetId = this.scopeTarget(sessionId);
+    if (!targetId) return true;
+    const seen = new Set();
+    let id = targetId;
+    while (id) {
+      if (seen.has(id) || this.pageLocked(id)) return true;
+      seen.add(id);
+      id = this.scopes.get(id)?.parent;
+    }
+    return false;
+  }
+
+  stopCasts() {
+    for (const message of this.asked.values()) {
+      if (pageScoped(message.method) && this.locked(message.sessionId)) message.locked = true;
+    }
+    for (const sessionId of this.casts) {
+      if (!this.locked(sessionId)) continue;
+      this.casts.delete(sessionId);
+      void this.call('Page.stopScreencast', {}, sessionId);
+    }
+  }
+
+  recordTree(targetId, tree) {
+    const scope = this.scope(targetId);
+    const all = framed(tree);
+    scope.frames = new Set(all.map((frame) => frame.id));
+    const parentId = tree?.frame?.parentId;
+    if (parentId && !scope.parent)
+      scope.parent = this.scopes.has(parentId)
+        ? parentId
+        : [...this.scopes].find(
+            ([id, entry]) => id !== targetId && entry.frames.has(parentId)
+          )?.[0];
+    scope.tree = all.length > 0;
+    scope.ready = scope.tree && !scope.failed && !scope.pending;
+    if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
+    for (const frame of all) {
+      this.frames.set(
+        frame.id,
+        this.is.url(frame.securityOrigin) ? frame.securityOrigin : (frame.url ?? '')
+      );
+      if (frame.parentId) this.parents.set(frame.id, frame.parentId);
+    }
+    this.stopCasts();
+  }
+
+  async place(targetId, sessionId) {
+    this.placements.set(sessionId, targetId);
+    this.scope(targetId).pending = (this.scope(targetId).pending ?? 0) + 1;
+    this.scope(targetId).ready = false;
+    this.stopCasts();
+    const enabled = await this.call('Page.enable', {}, sessionId);
+    const [attached] = await Promise.all([
+      this.call(
+        'Target.setAutoAttach',
+        { autoAttach: true, waitForDebuggerOnStart: false, flatten: true, filter: FRAME_CHILDREN },
+        sessionId
+      ),
+      this.call('Page.getFrameTree', {}, sessionId),
+    ]);
+    const scope = this.scope(targetId);
+    scope.pending -= 1;
+    scope.failed = Boolean(enabled.error || attached.error);
+    scope.ready = Boolean(scope.tree && !scope.failed && !scope.pending);
+    if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
+    this.stopCasts();
+    await Promise.all(
+      [...this.scopes]
+        .filter(([, scope]) => scope.parent === targetId)
+        .map(([id]) => this.placing.get(id))
+    );
+  }
+
+  scopeEvent(message) {
+    const targetId = this.scopeTarget(message.sessionId);
+    this.scopeTargets(message, targetId);
+    if (targetId) this.scopeFrames(message, targetId);
+    this.stopCasts();
+  }
+
+  scopeTargets({ method, params = {}, sessionId }, targetId) {
+    if (
+      method === 'Target.targetInfoChanged' &&
+      this.scopes.has(params.targetInfo?.targetId) &&
+      this.is.url(params.targetInfo.url)
+    )
+      this.frames.set(params.targetInfo.targetId, params.targetInfo.url);
+    if (method === 'Target.attachedToTarget' && this.placements.has(sessionId)) {
+      const info = params.targetInfo;
+      if (info?.type !== 'iframe') return;
+      const child = this.scope(info.targetId);
+      child.parent = targetId;
+      child.ready = false;
+      this.learn(info);
+      this.placements.set(params.sessionId, info.targetId);
+      this.placing.set(info.targetId, this.place(info.targetId, params.sessionId));
+    }
+    if (method === 'Target.targetDestroyed') this.scopes.delete(params.targetId);
+    if (method === 'Target.detachedFromTarget' && this.placements.has(params.sessionId)) {
+      const childId = this.placements.get(params.sessionId);
+      this.placements.delete(params.sessionId);
+      const child = this.scopes.get(childId);
+      if (child) child.ready = false;
+    }
+  }
+
+  scopeFrames({ method, params = {} }, targetId) {
+    if (method === 'Page.frameAttached') {
+      const scope = this.scope(targetId);
+      scope.frames.add(params.frameId);
+      this.frames.set(params.frameId, '');
+      if (params.parentFrameId) this.parents.set(params.frameId, params.parentFrameId);
+    }
+    if (method === 'Page.frameNavigated' && params.frame)
+      this.scopeNavigated(params.frame, targetId);
+    if (method === 'Runtime.executionContextCreated' && this.is.url(params.context?.origin)) {
+      const id = params.context.auxData?.frameId;
+      if (id) {
+        this.scope(targetId).frames.add(id);
+        this.frames.set(id, params.context.origin);
+      } else this.scope(targetId).ready = false;
+    }
+    if (method === 'Page.frameDetached') {
+      if (params.reason === 'swap') this.frames.set(params.frameId, '');
+      else this.removeFrame(params.frameId);
+    }
+  }
+
+  scopeNavigated(frame, targetId) {
+    const scope = this.scope(targetId);
+    if (!frame.parentId && frame.id === targetId) {
+      for (const id of scope.frames) if (id !== targetId) this.removeFrame(id);
+      scope.frames.clear();
+      scope.ready = false;
+      const navSession = this.navs.get(targetId)?.session;
+      if (navSession) this.placing.set(targetId, this.place(targetId, navSession));
+    }
+    scope.frames.add(frame.id);
+    this.frames.set(
+      frame.id,
+      this.is.url(frame.securityOrigin) ? frame.securityOrigin : (frame.url ?? '')
+    );
+    if (frame.parentId) this.parents.set(frame.id, frame.parentId);
+  }
+
+  removeFrame(frameId) {
+    const gone = new Set([frameId]);
+    for (let size = 0; size !== gone.size; ) {
+      size = gone.size;
+      for (const [id, parent] of this.parents) if (gone.has(parent)) gone.add(id);
+      for (const [id, scope] of this.scopes) if (gone.has(scope.parent)) gone.add(id);
+    }
+    for (const id of gone) {
+      this.frames.delete(id);
+      this.parents.delete(id);
+      this.scopes.delete(id);
+      for (const scope of this.scopes.values()) scope.frames.delete(id);
+    }
   }
 
   async frame(frameId, strict = false) {
@@ -765,6 +989,8 @@ class Guard {
       this.call('Network.setBypassServiceWorker', { bypass: true }, session),
       this.call('Page.enable', {}, session),
     ]);
+    this.placing.set(nav.targetId, this.place(nav.targetId, session));
+    await this.placing.get(nav.targetId);
     nav.settle(steps.some((step) => step.error));
   }
 
@@ -1138,6 +1364,14 @@ class Guard {
     return method === 'Runtime.executionContextCreated' && this.is.url(params.context?.origin);
   }
 
+  walkCuts({ method, params = {}, sessionId }) {
+    if (method === 'Page.frameNavigated') return params.frame?.id === this.scopeTarget(sessionId);
+    if (method.startsWith('Page.')) return false;
+    if (method === 'Runtime.executionContextCreated')
+      return params.context?.auxData?.frameId === this.scopeTarget(sessionId);
+    return true;
+  }
+
   world(sessionId) {
     let world = this.worlds.get(sessionId);
     if (!world) {
@@ -1291,11 +1525,15 @@ class Guard {
     const foreign = this.foreign({ ...message, method });
     if (this.navSessions.has(sessionId))
       return this.navEvent(message, this.navSessions.get(sessionId));
+    if (this.placements.has(sessionId)) return;
     if (method.startsWith('Target.') && (await this.targetEvent(message))) return;
+    if (method === 'Page.screencastFrame' && !this.casts.has(sessionId)) return;
+    if (this.locked(sessionId) && (pageScoped(method) || method === 'Page.screencastFrame')) return;
     if (this.blocked.has(sessionId) && PAUSES.has(method)) return this.release(message);
     if (this.hidden(sessionId)) return;
     if (foreign) return;
-    if (this.walked({ ...message, method })) return this.cut(sessionId);
+    if (this.walked({ ...message, method }) && this.walkCuts({ ...message, method }))
+      return this.cut(sessionId);
     if (sessionId && method.startsWith('Runtime.') && !this.runtimes.has(sessionId)) return;
     if (await this.swallowed({ ...message, method })) return;
     if (this.stored({ ...message, method })) return;
@@ -1357,8 +1595,17 @@ class Guard {
     return this.deliver({ ...message, result: { ...result, targetInfos } });
   }
 
+  pageAnswer(was) {
+    if (!pageScoped(was?.method) || (!was.locked && !this.locked(was.sessionId))) return false;
+    if (was.method === 'Page.startScreencast')
+      void this.call('Page.stopScreencast', {}, was.sessionId);
+    this.refuse(was);
+    return true;
+  }
+
   async answer(message, was) {
-    if (was?.sessionId && this.blocked.has(was.sessionId)) return this.refuse(was);
+    if (this.blocked.has(was?.sessionId)) return this.refuse(was);
+    if (this.pageAnswer(was)) return;
     const { method, params = {} } = was ?? {};
     const { result } = message;
     if (method === 'Page.createIsolatedWorld' && result?.executionContextId !== undefined) {
@@ -1509,6 +1756,7 @@ class Guard {
   async check(message) {
     const { method, params = {}, sessionId } = message;
     if (typeof method !== 'string') return null;
+    if (pageScoped(method) && this.locked(sessionId)) return PROTECTED;
     if (method.startsWith('Fetch.') && sessionId === undefined) return FETCH;
     if (LATER.has(method)) return SCRIPTS;
     if (method === 'Page.navigate' && inherits(params.url)) return INHERITED;
@@ -1565,6 +1813,9 @@ class Guard {
 
   pass(message) {
     const { id, method, sessionId } = message;
+    if (pageScoped(method) && this.locked(sessionId)) return this.refuse(message);
+    if (method === 'Page.startScreencast') this.casts.add(sessionId);
+    if (method === 'Page.stopScreencast') this.casts.delete(sessionId);
     globalThis.sliccGuardTrace?.push({
       method,
       targetId: message.params?.targetId,
@@ -1584,16 +1835,19 @@ class Guard {
 
   received(text) {
     const message = parse(text);
+    this.scopeEvent(message);
     if (this.internal.has(message.id)) {
       const resolve = this.internal.get(message.id);
       this.internal.delete(message.id);
       return resolve(message);
     }
     const was = message.id === undefined ? undefined : this.asked.get(message.id);
-    this.asked.delete(message.id);
     this.queue(
       message.sessionId ?? was?.sessionId ?? '',
-      () => (message.id === undefined ? this.event(message) : this.answer(message, was)),
+      () => {
+        this.asked.delete(message.id);
+        return message.id === undefined ? this.event(message) : this.answer(message, was);
+      },
       (error) => {
         console.warn(`the CDP guard dropped a message: ${error.message}`);
         if (was) this.refuse(was, FAILED);

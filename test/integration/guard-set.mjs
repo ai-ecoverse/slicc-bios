@@ -243,20 +243,29 @@ export async function guardHost(t, path) {
         return linked.open();
       },
     };
-    const lagged = (connection, lag) => {
+    const lagged = (connection, lag, paintDelay) => {
       const send = connection.send.bind(connection);
-      connection.send = (text) => {
-        if (lag && JSON.parse(text).method === 'Target.detachFromTarget') {
-          setTimeout(() => send(text), lag);
-        } else send(text);
+      const shots = new Set();
+      const relay = { onmessage: null, onclose: null, close: () => connection.close() };
+      connection.onmessage = (text) => {
+        if (shots.delete(JSON.parse(text).id))
+          setTimeout(() => relay.onmessage?.(text), paintDelay);
+        else relay.onmessage?.(text);
       };
-      return connection;
+      connection.onclose = (why) => relay.onclose?.(why);
+      relay.send = (text) => {
+        const message = JSON.parse(text);
+        if (paintDelay && message.method === 'Page.captureScreenshot') shots.add(message.id);
+        if (lag && message.method === 'Target.detachFromTarget') setTimeout(() => send(text), lag);
+        else send(text);
+      };
+      return relay;
     };
     const guards = new Map();
     window.guards = {
-      async open(row, own, path, lag) {
+      async open(row, own, path, lag, paintDelay) {
         const connection = guardProtected(
-          lagged(await hosts[path](), lag),
+          lagged(await hosts[path](), lag, paintDelay),
           [location.origin, own].flat()
         );
         const pending = new Map();
@@ -307,7 +316,7 @@ export async function guardHost(t, path) {
   t.after(() => unguarded.close());
   const clientFactory =
     (path) =>
-    async ({ detachDelay, own = targets.own }) => {
+    async ({ detachDelay, paintDelay, own = targets.own }) => {
       count += 1;
       const row = count;
       const { events, push, waitEvent } = eventsOf();
@@ -315,8 +324,8 @@ export async function guardHost(t, path) {
       rows.set(row, { push, messages });
       await ensure();
       await seven.evaluate(
-        ([row, own, path, lag]) => window.guards.open(row, own, path, lag),
-        [row, own, path, detachDelay]
+        ([row, own, path, lag, paintDelay]) => window.guards.open(row, own, path, lag, paintDelay),
+        [row, own, path, detachDelay, paintDelay]
       );
       const client = {
         transport: path,
