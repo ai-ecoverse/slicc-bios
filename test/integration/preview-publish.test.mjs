@@ -3,7 +3,7 @@ import { readdir } from 'node:fs/promises';
 import { relative } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { publishBranch, ROUTE } from '../../edge/publish.mjs';
+import { preview, publishBranch, ROUTE } from '../../edge/publish.mjs';
 
 const src = fileURLToPath(new URL('../../src/', import.meta.url));
 const tree = (await readdir(src, { recursive: true, withFileTypes: true }))
@@ -58,4 +58,45 @@ test('a preview publish cut off at any request leaves a manifest that lists ever
     assert.deepEqual([...route.bucket.objects].sort(), tree, `after the cut at ${n}`);
     assert.deepEqual(route.bucket.manifest, tree, `after the cut at ${n}`);
   }
+});
+
+test('a pull request from a bb/** branch publishes its preview and gets its URL, another branch or a pull request without an OIDC token publishes nothing', async () => {
+  const route = worker();
+  let requests = 0;
+  const fetcher = (...args) => {
+    requests += 1;
+    return route.fetcher(...args);
+  };
+  const oidc = { ACTIONS_ID_TOKEN_REQUEST_URL: 'https://token.actions.example/' };
+  for (const vars of [
+    { ...oidc, GITHUB_HEAD_REF: 'renovate/x' },
+    { ...oidc },
+    { GITHUB_HEAD_REF: 'bb/x' },
+  ]) {
+    const result = await preview(vars, { fetcher, token: 't' });
+    assert.equal(result.url, undefined, JSON.stringify(vars));
+    assert.match(result.skipped, /gets no preview/);
+  }
+  assert.equal(requests, 0);
+  assert.deepEqual(await preview({ ...oidc, GITHUB_HEAD_REF: 'bb/x' }, { fetcher, token: 't' }), {
+    url: 'https://bb-x.sliccy.ai/',
+  });
+  assert.deepEqual([...route.bucket.objects].sort(), tree);
+});
+
+test('a preview the route refuses or can’t reach reports why and sets no URL, so the pull request’s CI goes on', async () => {
+  const refused = async () => Response.json({ error: 'not a branch' }, { status: 403 });
+  const down = async () => {
+    throw new Error('fetch failed');
+  };
+  const vars = {
+    ACTIONS_ID_TOKEN_REQUEST_URL: 'https://token.actions.example/',
+    GITHUB_HEAD_REF: 'bb/x',
+  };
+  assert.deepEqual(await preview(vars, { fetcher: refused, token: 't' }), {
+    skipped: 'preview failed: manifest: 403 not a branch',
+  });
+  assert.deepEqual(await preview(vars, { fetcher: down, token: 't' }), {
+    skipped: 'preview failed: fetch failed',
+  });
 });
