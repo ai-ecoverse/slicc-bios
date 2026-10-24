@@ -147,6 +147,12 @@ const CONTENTS = new Set([
   'DOMSnapshot.captureSnapshot',
   'DOMSnapshot.getSnapshot',
 ]);
+const TREED = new Set([
+  'Accessibility.getFullAXTree',
+  'Accessibility.getPartialAXTree',
+  'Accessibility.getChildAXNodes',
+  'Accessibility.queryAXTree',
+]);
 const STREAMED = new Set([
   'Network.streamResourceContent',
   'Fetch.takeResponseBodyAsStream',
@@ -524,6 +530,7 @@ class Guard {
     this.waiting = new Set();
     this.pages = new Set();
     this.frames = new Map();
+    this.parents = new Map();
     this.requests = new Map();
     this.held = new Map();
     this.internal = new Map();
@@ -659,12 +666,28 @@ class Guard {
     return found.guarded;
   }
 
-  async frame(frameId) {
+  async frame(frameId, strict = false) {
     if (frameId === undefined) return false;
     if (this.targets.has(frameId)) return this.target(frameId);
-    if (this.frames.has(frameId)) return this.is.url(this.frames.get(frameId));
+    if (this.frames.has(frameId)) {
+      const url = this.frames.get(frameId);
+      if (this.is.url(url)) return true;
+      return strict && (url === '' || inherits(url)) && (await this.inherited(frameId, 0));
+    }
     if (await this.lookup(frameId)) return this.target(frameId);
+    if (strict) return true;
     this.frames.set(frameId, '');
+    return false;
+  }
+
+  async inherited(frameId, depth) {
+    const parent = this.parents.get(frameId);
+    if (parent === undefined || depth > 16) return true;
+    if (this.targets.has(parent)) return this.target(parent);
+    if (!this.frames.has(parent)) return true;
+    const url = this.frames.get(parent);
+    if (this.is.url(url)) return true;
+    if (url === '' || inherits(url)) return this.inherited(parent, depth + 1);
     return false;
   }
 
@@ -795,8 +818,11 @@ class Guard {
     void this.call('Page.enable', {}, sessionId);
     const tree = (await this.call('Page.getFrameTree', {}, sessionId)).result?.frameTree;
     const all = framed(tree);
-    for (const frame of all) this.frames.set(frame.id, frame.url);
-    return !all.some((frame) => this.is.url(frame.url));
+    for (const frame of all) {
+      this.frames.set(frame.id, frame.url);
+      if (frame.parentId) this.parents.set(frame.id, frame.parentId);
+    }
+    return !all.some((frame) => this.is.url(frame.url) || this.is.url(frame.securityOrigin));
   }
 
   async inspect(sessionId, targetId, parent) {
@@ -1093,12 +1119,17 @@ class Guard {
 
   walked({ method, params = {}, sessionId }) {
     if (method === 'Page.frameNavigated' && params.frame) {
-      this.frames.set(params.frame.id, params.frame.url);
+      this.frames.set(params.frame.id, this.framed(params.frame));
+      if (params.frame.parentId) this.parents.set(params.frame.id, params.frame.parentId);
       const targetId = this.sessions.get(sessionId)?.targetId;
       if (!params.frame.parentId && targetId && this.targets.has(targetId)) {
         this.targets.get(targetId).url = params.frame.url;
       }
       return this.is.url(params.frame.url) || this.is.url(params.frame.securityOrigin);
+    }
+    if (method === 'Page.frameAttached' && params.frameId) {
+      if (!this.frames.has(params.frameId)) this.frames.set(params.frameId, '');
+      if (params.parentFrameId) this.parents.set(params.frameId, params.parentFrameId);
     }
     if (NAVIGATED.has(method)) return !this.armed(sessionId) && this.is.url(params.url);
     if (method === 'Network.requestWillBeSent' && params.type === 'Document') {
@@ -1198,7 +1229,16 @@ class Guard {
     return { ...entry, url: ERROR_PAGE, userTypedURL: ERROR_PAGE, title: '' };
   }
 
+  framed(frame) {
+    const named = [frame.unreachableUrl, frame.securityOrigin].find((url) => this.is.url(url));
+    return named ?? frame.url ?? '';
+  }
+
   tree({ frame, childFrames, resources, ...rest }) {
+    if (frame.id !== undefined && !this.targets.has(frame.id)) {
+      this.frames.set(frame.id, this.framed(frame));
+      if (frame.parentId) this.parents.set(frame.id, frame.parentId);
+    }
     const hidden = this.is.url(frame.url) || this.is.url(frame.unreachableUrl);
     const { unreachableUrl, urlFragment, ...shown } = frame;
     return {
@@ -1299,6 +1339,10 @@ class Guard {
   }
 
   contents(message, was) {
+    if (TREED.has(was?.method) && message.result && typeof message.result === 'object') {
+      this.deliver({ ...message, result: this.redact(message.result).params });
+      return true;
+    }
     if (!CONTENTS.has(was?.method) || !this.mentions(message.result)) return false;
     this.refuse(was);
     return true;
@@ -1495,7 +1539,7 @@ class Guard {
       if (nav) await nav.ready;
       if (nav?.failed) return UNGUARDED;
     }
-    if (await this.frame(params.frameId)) return PROTECTED;
+    if (await this.frame(params.frameId, true)) return PROTECTED;
     if (method === 'Page.navigateToHistoryEntry' && (await this.back(params, sessionId))) {
       return PROTECTED;
     }
