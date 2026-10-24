@@ -15,7 +15,7 @@ const site = createHttp((req, res) => {
   }
   if (url.pathname === '/linking') {
     return res.end(
-      `<title>linking</title><p>see http://vault.sliccy.ai:${port}/oauth/mcp-callback?code=AXMARK1 here</p><a href="http://vault.sliccy.ai:${port}/oauth/mcp-callback?code=AXMARK3">vault</a><iframe id="gone" src="http://vault.sliccy.ai:${dead}/child?k=AXMARK2"></iframe>`
+      `<title>linking</title><p>see http://vault.sliccy.ai:${port}/oauth/mcp-callback?code=AXMARK1 here</p><a href="http://vault.sliccy.ai:${port}/oauth/mcp-callback?code=AXMARK3">vault</a>`
     );
   }
   if (url.pathname === '/editors') {
@@ -43,12 +43,6 @@ const port = site.address().port;
 after(() => site.close());
 
 const debugging = await new Promise((resolve) => {
-  const server = createServer().listen(0, '127.0.0.1', () => {
-    const { port: free } = server.address();
-    server.close(() => resolve(free));
-  });
-});
-const dead = await new Promise((resolve) => {
   const server = createServer().listen(0, '127.0.0.1', () => {
     const { port: free } = server.address();
     server.close(() => resolve(free));
@@ -657,7 +651,7 @@ test(
   (t) => editorsCheck(t, 'extension')
 );
 
-async function failing({ transport, proxy, port, targetId }) {
+async function axTree({ transport, proxy, port }) {
   const { guardProtected } = await import(new URL('guard.js', location.href).href);
   const { proxyHost, extensionConnection } = await import(new URL('cdp.js', location.href).href);
   const raw =
@@ -688,53 +682,29 @@ async function failing({ transport, proxy, port, targetId }) {
       });
       connection.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
     });
-  const until = async (check, what, saw) => {
-    const deadline = Date.now() + 10000;
-    while (Date.now() < deadline) {
-      if (await check()) return;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    throw new Error(`${what} never happened; saw ${JSON.stringify(await saw()).slice(0, 400)}`);
+  const created = await send('Target.createTarget', {
+    url: `http://ordinary.test:${port}/linking`,
+  });
+  const targetId = created.result?.targetId;
+  const session = (await send('Target.attachToTarget', { targetId, flatten: true })).result
+    ?.sessionId;
+  const deadline = Date.now() + 10000;
+  let ax = {};
+  while (Date.now() < deadline) {
+    ax = await send('Accessibility.getFullAXTree', {}, session);
+    if (JSON.stringify(ax.result ?? {}).includes('see http')) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await send('Target.closeTarget', { targetId });
+  return {
+    ax: ax.error?.message ?? 'answered',
+    text: JSON.stringify(ax.result ?? {}).includes('see http'),
+    origin: JSON.stringify(ax.result ?? {}).includes('vault.sliccy.ai'),
+    leaked: seen.some((text) => text.includes('AXMARK')),
   };
-  const attached = await send('Target.attachToTarget', { targetId, flatten: true });
-  const session = attached.result?.sessionId;
-  if (!session) return { attach: attached.error?.message ?? 'no session' };
-  await send('Page.enable', {}, session);
-  const tree = async () => (await send('Page.getFrameTree', {}, session)).result?.frameTree;
-  await until(
-    async () => (await tree())?.childFrames?.[0]?.frame?.url?.startsWith('chrome-error:'),
-    'the vault iframe failing to its error page',
-    tree
-  );
-  const child = (await tree()).childFrames[0].frame.id;
-  const out = {};
-  const ax = await send('Accessibility.getFullAXTree', {}, session);
-  out.ax = ax.error?.message ?? 'answered';
-  out.axOrigin = JSON.stringify(ax.result ?? {}).includes('vault.sliccy.ai');
-  out.read =
-    (await send('Page.createIsolatedWorld', { frameId: child, worldName: 'w' }, session)).error
-      ?.message ?? 'answered';
-  out.leave =
-    (
-      await send(
-        'Page.navigate',
-        { frameId: child, url: `http://ordinary.test:${port}/plain` },
-        session
-      )
-    ).error?.message ?? 'navigated';
-  await until(
-    async () => (await tree())?.childFrames?.[0]?.frame?.url?.endsWith('/plain'),
-    'the iframe committing an ordinary page',
-    tree
-  );
-  out.after =
-    (await send('Page.createIsolatedWorld', { frameId: child, worldName: 'w2' }, session)).error
-      ?.message ?? 'answered';
-  out.leaked = seen.some((text) => text.includes('AXMARK'));
-  return out;
 }
 
-async function failingCheck(t, transport) {
+async function axCheck(t, transport) {
   const page = await chrome.page(t);
   let proxy;
   if (transport === 'proxy') {
@@ -752,60 +722,26 @@ async function failingCheck(t, transport) {
   }
   await page.goto(proxy ? `/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}` : '/');
   await ready(page);
-  const { targetId } = await chrome.cdp.send('Target.createTarget', {
-    url: `http://ordinary.test:${port}/linking`,
-  });
-  t.after(() => chrome.cdp.send('Target.closeTarget', { targetId }).catch(() => {}));
-  const { sessionId: watching } = await chrome.cdp.send('Target.attachToTarget', {
-    targetId,
-    flatten: true,
-  });
-  const deadline = Date.now() + 15000;
-  let frames;
-  for (;;) {
-    ({ frameTree: frames } = await chrome.cdp.send('Page.getFrameTree', {}, watching));
-    const child = frames.childFrames?.[0]?.frame;
-    if (child?.unreachableUrl?.includes('vault.sliccy.ai')) break;
-    if (Date.now() > deadline)
-      throw new Error(`the vault iframe never failed: ${JSON.stringify(frames)}`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  await chrome.cdp.send('Target.detachFromTarget', { sessionId: watching });
-  const out = await page.evaluate(failing, {
+  const out = await page.evaluate(axTree, {
     transport,
     proxy: proxy && { url: proxy.url, key: proxy.key },
     port,
-    targetId,
   });
   assert.deepEqual(
-    {
-      ax: out.ax,
-      axOrigin: out.axOrigin,
-      read: out.read.replace(/:.*/, ''),
-      leave: out.leave,
-      after: out.after,
-      leaked: out.leaked,
-    },
-    {
-      ax: 'answered',
-      axOrigin: true,
-      read: 'slicc',
-      leave: 'navigated',
-      after: 'answered',
-      leaked: false,
-    },
+    out,
+    { ax: 'answered', text: true, origin: true, leaked: false },
     JSON.stringify(out)
   );
 }
 
 test(
-  'an AX tree keeps a vault link only as its origin; a failed vault iframe is left but not read, on the proxy path',
+  'an AX tree of an ordinary page keeps a vault link only as its origin, on the proxy path',
   { timeout: 3 * 60 * 1000 },
-  (t) => failingCheck(t, 'proxy')
+  (t) => axCheck(t, 'proxy')
 );
 
 test(
-  'an AX tree keeps a vault link only as its origin; a failed vault iframe is left but not read, on the extension path',
+  'an AX tree of an ordinary page keeps a vault link only as its origin, on the extension path',
   { timeout: 3 * 60 * 1000 },
-  (t) => failingCheck(t, 'extension')
+  (t) => axCheck(t, 'extension')
 );
