@@ -152,7 +152,10 @@ async function cast(client, session, ms, during) {
     }
     if (during && since === null && Date.now() > end - ms / 2) {
       since = frames.length;
-      await during();
+      await during(() => {
+        read = client.events.length;
+        since = frames.length;
+      });
     }
     await pause(100);
   }
@@ -393,7 +396,11 @@ async function measureLate(factory, unguarded, own, route, layout) {
     const history = await unguarded.send('Page.getNavigationHistory', {}, raw);
     const entry = history.entries.find((entry) => entry.url === url);
     assert.ok(entry, 'the preloaded page has a history entry');
-    await unguarded.send('Page.navigate', { url: at('ordinary.example.test', '/empty') }, raw);
+    await unguarded.send(
+      'Page.navigate',
+      { url: at(layout === 'late-local' ? 'localhost' : 'ordinary.example.test', '/empty') },
+      raw
+    );
     await until(
       async () =>
         (await unguarded.send('Page.getFrameTree', {}, raw)).frameTree.frame.url.endsWith('/empty'),
@@ -407,13 +414,14 @@ async function measureLate(factory, unguarded, own, route, layout) {
       const mark = unguarded.events.length;
       let pendingShot;
       let settled = false;
-      row.cast = await cast(client, session, 6000, async () => {
+      row.cast = await cast(client, session, 6000, async (mark) => {
         pendingShot = shot(client, session).then((result) => {
           settled = true;
           return result;
         });
         await pause(100);
         row.pending = !settled;
+        mark();
         await unguarded.send('Page.navigateToHistoryEntry', { entryId: entry.id }, raw);
       });
       row.lateShot = await pendingShot;
