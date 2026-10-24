@@ -68,6 +68,46 @@ const workers = (page) =>
     };
   });
 
+const snapshot = (page) =>
+  page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.getRegistration();
+    const controller = navigator.serviceWorker.controller;
+    const open = await new Promise((resolve) => {
+      if (!controller) {
+        resolve(null);
+        return;
+      }
+      let timer;
+      const listen = (event) => {
+        if (!Array.isArray(event.data?.streams)) return;
+        navigator.serviceWorker.removeEventListener('message', listen);
+        clearTimeout(timer);
+        resolve(event.data.streams.map(({ url }) => url));
+      };
+      timer = setTimeout(() => {
+        navigator.serviceWorker.removeEventListener('message', listen);
+        resolve(null);
+      }, 2000);
+      navigator.serviceWorker.addEventListener('message', listen);
+      controller.postMessage({ streams: 'mine' });
+    });
+    return {
+      waiting: registration?.waiting?.state ?? null,
+      installing: registration?.installing?.state ?? null,
+      open,
+    };
+  });
+
+const until = async (page, ms, ready) => {
+  const deadline = Date.now() + ms;
+  let state = await snapshot(page);
+  while (!ready(state) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    state = await snapshot(page);
+  }
+  return state;
+};
+
 test('while the tab holds a half-read download from the old worker, it says seven updated and names the download, and Reload reloads the tab (#710)', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
@@ -163,6 +203,8 @@ test('an ordinary update shows no notice: the updated worker activates before an
   const page = await chrome.page(t);
   await boot(page);
   await settled(page);
+  const quiet = await until(page, 45000, (state) => state.open?.length === 0);
+  assert.deepEqual(quiet.open, []);
   await page.evaluate(() => {
     window.noticed = [];
     document
@@ -171,10 +213,11 @@ test('an ordinary update shows no notice: the updated worker activates before an
   });
   bumpWorker();
   assert.ok(await update(page));
-  await page.within(30000, async () => {
-    const registration = await navigator.serviceWorker.getRegistration();
-    return !registration.waiting && !registration.installing;
-  });
+  const done = await until(page, 45000, (state) => !state.waiting && !state.installing);
+  assert.deepEqual(
+    { waiting: done.waiting, installing: done.installing, open: done.open },
+    { waiting: null, installing: null, open: [] }
+  );
   assert.deepEqual(
     await page.evaluate(() => window.noticed.filter((id) => id.startsWith('sw-waiting:'))),
     []
