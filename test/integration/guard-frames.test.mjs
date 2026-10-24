@@ -15,7 +15,7 @@ const site = createHttp((req, res) => {
   }
   if (url.pathname === '/linking') {
     return res.end(
-      `<title>linking</title><p>see http://vault.sliccy.ai:${port}/oauth/mcp-callback?code=AXMARK1 here</p><a href="http://vault.sliccy.ai:${port}/oauth/mcp-callback?code=AXMARK3">vault</a><iframe id="gone" src="http://vault.sliccy.ai:${port}/child?k=AXMARK2"></iframe>`
+      `<title>linking</title><p>see http://vault.sliccy.ai:${port}/oauth/mcp-callback?code=AXMARK1 here</p><a href="http://vault.sliccy.ai:${port}/oauth/mcp-callback?code=AXMARK3">vault</a><iframe id="gone" src="http://vault.sliccy.ai:${dead}/child?k=AXMARK2"></iframe>`
     );
   }
   if (url.pathname === '/editors') {
@@ -43,6 +43,12 @@ const port = site.address().port;
 after(() => site.close());
 
 const debugging = await new Promise((resolve) => {
+  const server = createServer().listen(0, '127.0.0.1', () => {
+    const { port: free } = server.address();
+    server.close(() => resolve(free));
+  });
+});
+const dead = await new Promise((resolve) => {
   const server = createServer().listen(0, '127.0.0.1', () => {
     const { port: free } = server.address();
     server.close(() => resolve(free));
@@ -651,7 +657,7 @@ test(
   (t) => editorsCheck(t, 'extension')
 );
 
-async function failing({ transport, proxy, port }) {
+async function failing({ transport, proxy, port, targetId }) {
   const { guardProtected } = await import(new URL('guard.js', location.href).href);
   const { proxyHost, extensionConnection } = await import(new URL('cdp.js', location.href).href);
   const raw =
@@ -690,12 +696,9 @@ async function failing({ transport, proxy, port }) {
     }
     throw new Error(`${what} never happened; saw ${JSON.stringify(await saw()).slice(0, 400)}`);
   };
-  const created = await send('Target.createTarget', {
-    url: `http://ordinary.test:${port}/linking`,
-  });
-  const targetId = created.result?.targetId;
-  const session = (await send('Target.attachToTarget', { targetId, flatten: true })).result
-    ?.sessionId;
+  const attached = await send('Target.attachToTarget', { targetId, flatten: true });
+  const session = attached.result?.sessionId;
+  if (!session) return { attach: attached.error?.message ?? 'no session' };
   await send('Page.enable', {}, session);
   const tree = async () => (await send('Page.getFrameTree', {}, session)).result?.frameTree;
   await until(
@@ -728,7 +731,6 @@ async function failing({ transport, proxy, port }) {
     (await send('Page.createIsolatedWorld', { frameId: child, worldName: 'w2' }, session)).error
       ?.message ?? 'answered';
   out.leaked = seen.some((text) => text.includes('AXMARK'));
-  await send('Target.closeTarget', { targetId });
   return out;
 }
 
@@ -750,10 +752,30 @@ async function failingCheck(t, transport) {
   }
   await page.goto(proxy ? `/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}` : '/');
   await ready(page);
+  const { targetId } = await chrome.cdp.send('Target.createTarget', {
+    url: `http://ordinary.test:${port}/linking`,
+  });
+  t.after(() => chrome.cdp.send('Target.closeTarget', { targetId }).catch(() => {}));
+  const { sessionId: watching } = await chrome.cdp.send('Target.attachToTarget', {
+    targetId,
+    flatten: true,
+  });
+  const deadline = Date.now() + 15000;
+  let frames;
+  for (;;) {
+    ({ frameTree: frames } = await chrome.cdp.send('Page.getFrameTree', {}, watching));
+    const child = frames.childFrames?.[0]?.frame;
+    if (child?.unreachableUrl?.includes('vault.sliccy.ai')) break;
+    if (Date.now() > deadline)
+      throw new Error(`the vault iframe never failed: ${JSON.stringify(frames)}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await chrome.cdp.send('Target.detachFromTarget', { sessionId: watching });
   const out = await page.evaluate(failing, {
     transport,
     proxy: proxy && { url: proxy.url, key: proxy.key },
     port,
+    targetId,
   });
   assert.deepEqual(
     {
