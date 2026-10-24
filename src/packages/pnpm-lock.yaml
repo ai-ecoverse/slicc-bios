@@ -18,8 +18,8 @@ importers:
         specifier: 1.1.1
         version: 1.1.1
       '@ai-ecoverse/slicc-kernel':
-        specifier: 1.159.4
-        version: 1.159.4
+        specifier: 1.160.3
+        version: 1.160.3
       '@ai-ecoverse/slicc-spectrum':
         specifier: 1.104.1
         version: 1.104.1
@@ -112,8 +112,8 @@ packages:
     engines: {node: '>=24', slicc-kernel: '>=1.75.0'}
     hasBin: true
 
-  '@ai-ecoverse/slicc-kernel@1.159.4':
-    resolution: {integrity: sha512-LSiUILx2oUctYW7PCHSm3QmK+msLF0yqdwFW0n4Ihokzd7oWjnTeYt3MNzXMYnI5HkCbhYGUJNnKNFDqcAp4hg==}
+  '@ai-ecoverse/slicc-kernel@1.160.3':
+    resolution: {integrity: sha512-PC9VCRpT68N8CNwbvhEAI7ypiQQ7a53c6u+CZ+ppWvC9dmyjDIRk4CCMkqpoeW8jVMMRBkOsPrDrW4Vp9xkK+g==}
     engines: {node: '>=26'}
 
   '@ai-ecoverse/slicc-spectrum@1.104.1':
@@ -221,7 +221,7 @@ snapshots:
 
   '@ai-ecoverse/slicc-clipboard@1.1.1': {}
 
-  '@ai-ecoverse/slicc-kernel@1.159.4': {}
+  '@ai-ecoverse/slicc-kernel@1.160.3': {}
 
   '@ai-ecoverse/slicc-spectrum@1.104.1': {}
 
