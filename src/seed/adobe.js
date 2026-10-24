@@ -1,3 +1,4 @@
+import { askHold, landed, markerUrl, UNHELD } from './held.js';
 import { IMS_TOKEN } from './vault.js';
 
 const imsHosts = {
@@ -136,12 +137,16 @@ function waiting({ popup, signal, timeout, start, abandon = () => {} }) {
   });
 }
 
-async function prepare(open, options, address, signal) {
+async function prepare(open, options, address, signal, hold) {
   if (signal?.aborted) throw cancelled();
-  const popup = open('about:blank');
+  const marker = nonce();
+  const popup = open(markerUrl(marker));
   if (!popup) throw new Error('the browser blocked the sign-in window');
   try {
+    const held = abortable(Promise.resolve(hold(marker, signal)), signal);
+    held.catch(() => {});
     const config = await abortable(Promise.resolve(options()), signal);
+    if ((await held) === 'unheld') throw new Error(UNHELD);
     if (!config) throw new Error('this account has no sign-in');
     popup.location.href = await abortable(Promise.resolve(address(config)), signal);
   } catch (error) {
@@ -153,6 +158,7 @@ async function prepare(open, options, address, signal) {
 
 function viaRelay({
   open,
+  hold,
   origin,
   listen,
   timeout,
@@ -161,7 +167,7 @@ function viaRelay({
 }) {
   return async (_providerId, options, signal) => {
     const value = nonce();
-    const popup = await prepare(open, options, (config) => address(config, value), signal);
+    const popup = await prepare(open, options, (config) => address(config, value), signal, hold);
     return waiting({
       popup,
       signal,
@@ -185,7 +191,7 @@ function viaRelay({
   };
 }
 
-function viaProxy({ proxy, open, fetcher, every, timeout }) {
+function viaProxy({ proxy, open, hold, fetcher, every, timeout }) {
   return async (_providerId, options, signal) => {
     if (!proxy) throw new Error(NEEDS_PROXY);
     const value = nonce();
@@ -210,7 +216,7 @@ function viaProxy({ proxy, open, fetcher, every, timeout }) {
         return authorizeUrl(config, Number(new URL(proxy.url).port), value);
       });
     };
-    const popup = await prepare(open, options, register, signal).catch((error) => {
+    const popup = await prepare(open, options, register, signal, hold).catch((error) => {
       if (error?.name === 'AbortError') registering?.then(abandon, () => {});
       throw error;
     });
@@ -254,7 +260,7 @@ function viaProxy({ proxy, open, fetcher, every, timeout }) {
 }
 
 export function signIn({
-  network,
+  network = {},
   open = (url) => window.open(url, 'slicc-sign-in', 'popup,width=520,height=720'),
   fetch: fetcher = (input, init) => globalThis.fetch(input, init),
   every = 1000,
@@ -264,10 +270,13 @@ export function signIn({
   force,
   shared = false,
   listen = (name) => new BroadcastChannel(name),
+  holdWait,
+  hosted = () => false,
+  hold = (marker, signal) => askHold(marker, { listen, signal, wait: holdWait, present: hosted }),
 }) {
   const relay = shared
-    ? viaRelay({ open, listen, timeout, address: openerUrl, channel: OPENER_CHANNEL })
-    : viaRelay({ open, origin, listen, timeout });
+    ? viaRelay({ open, hold, listen, timeout, address: openerUrl, channel: OPENER_CHANNEL })
+    : viaRelay({ open, hold, origin, listen, timeout });
   const proxy = network?.kind === 'local-proxy' ? network.proxy : null;
   const direct = extension?.signIn
     ? async (_providerId, options, signal) => {
@@ -278,12 +287,13 @@ export function signIn({
         const token = await abortable(extension.signIn(config), signal);
         return typeof token === 'string' ? { token } : token;
       }
-    : viaProxy({ proxy, open, fetcher, every, timeout });
+    : viaProxy({ proxy, open, hold, fetcher, every, timeout });
   const forced = () => force ?? globalThis.localStorage?.getItem(FORCE_RELAY) === 'relay';
   const grant = (providerId, options, { signal } = {}) =>
-    shared || relayed(origin) || forced()
+    (shared || relayed(origin) || forced()
       ? relay(providerId, options, signal)
-      : direct(providerId, options, signal);
+      : direct(providerId, options, signal)
+    ).finally(() => landed());
   const login = (providerId, options, context) =>
     grant(providerId, options, context).then((got) => got.token);
   login.grant = grant;

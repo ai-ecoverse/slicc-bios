@@ -1,6 +1,7 @@
 import catalog from '@ai-ecoverse/slicc-browsers/catalog.json' with { type: 'json' };
 import { protectedOrigins } from '@ai-ecoverse/slicc-browsers/protected.mjs';
 import { RELAY, SIGN_IN_CLIENTS } from './adobe.js';
+import { hold, isHeld } from './held.js';
 
 export const PROTECTED =
   'slicc: refused: seven’s own pages and the vault are out of reach of browser automation';
@@ -455,6 +456,10 @@ const kept = (set, value) => {
   if (set.size > REMEMBERED) set.delete(set.values().next().value);
 };
 
+const INHERITING = /^(?:$|about:|javascript:)/i;
+const ORDINARY = /^(?:https?|data):/i;
+const BLANK = /^about:blank(?:#|$)/i;
+
 export const ARM = [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }];
 
 const CALLBACK_NAMED = RELAY.replace(/^https?:\/\//, '').toLowerCase();
@@ -593,8 +598,11 @@ class Guard {
       url: failed ? ERROR_PAGE : (info.url ?? ''),
       type: info.type ?? known?.type,
       openerId: info.openerId,
+      parentId: info.parentId ?? known?.parentId,
       was: known?.was || known?.guarded || false,
       guarded: known?.guarded || false,
+      real: known?.real || false,
+      access: known?.access || info.canAccessOpener === true,
       context: info.browserContextId ?? known?.context,
     });
   }
@@ -615,13 +623,38 @@ class Guard {
   async target(targetId, depth = 0) {
     const found = await this.lookup(targetId);
     if (!found) return false;
+    if (isHeld(targetId) || isHeld(found.openerId)) {
+      hold(targetId);
+      found.guarded = true;
+      return true;
+    }
     if (depth > 8) return true;
+    if (found.parentId && found.parentId !== targetId) {
+      await this.target(found.parentId, depth + 1);
+      if (isHeld(found.parentId)) {
+        hold(targetId);
+        found.guarded = true;
+        return true;
+      }
+    }
+    const opener = await this.opener(found.openerId, depth);
+    const lent = found.type === 'page' && (found.access || BLANK.test(found.url));
+    if (isHeld(found.openerId) || (opener === 'protected' && lent)) {
+      hold(targetId);
+      found.guarded = true;
+      return true;
+    }
     const verdict = this.is.target({
       url: found.url,
       type: found.type,
       previous: found.was,
-      opener: await this.opener(found.openerId, depth),
+      opener,
     });
+    if (verdict && !INHERITING.test(found.url)) found.real = true;
+    if (!found.real && ORDINARY.test(found.url) && !this.is.url(found.url)) {
+      found.guarded = false;
+      found.was = false;
+    }
     found.guarded = found.guarded || verdict;
     return found.guarded;
   }

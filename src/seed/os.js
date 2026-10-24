@@ -21,7 +21,7 @@ import {
 import { createApprovals, rootChecked, routeSudo, useSecretRules } from './approvals.js';
 import { createBetas } from './beta.js';
 import { createBrowser } from './browser.js';
-import { browserControl, linkedBrowsers } from './cdp.js';
+import { browserControl, browserHosts, linkedBrowsers } from './cdp.js';
 import { clipboardHook } from './clipboard.js';
 import { denialLog, installCommand, watchProtected } from './denials.js';
 import { createExitRouter } from './exits.js';
@@ -36,6 +36,7 @@ import {
   installed,
 } from './grammars.js';
 import { clearHandOff } from './handoff.js';
+import { sweep, watchOpened, watchSignIns } from './held.js';
 import { createJerk } from './jerk.js';
 import { change, userRows } from './layer.js';
 import { createLeaders, proxyOf } from './leaders.js';
@@ -171,7 +172,15 @@ export function offered(all) {
 const network = await pickTransport();
 const { kind } = network;
 const browser = createBrowser(network);
-const control = browserControl(network, { observe: browser.observe, links: () => links });
+let poke = () => {};
+const control = browserControl(network, {
+  observe: (connection) => {
+    poke();
+    return browser.observe(connection);
+  },
+  links: () => links,
+  before: () => sweep({ hosts: () => browserHosts(network), own: location.origin }),
+});
 const exits = createExitRouter();
 const tailscale = createTailscale(await tailscaleConfig(), { router: exits });
 clearHandOff();
@@ -288,10 +297,17 @@ const vault = createVault({
 });
 const jerk = createJerk({ links: () => links, vault });
 useVault(vault);
-const login = sealedLogin(signIn({ network, shared: sharesOrigin() }), {
-  vault,
-  takes: () => takesVault(mine.agent),
-});
+const login = sealedLogin(
+  signIn({
+    network,
+    shared: sharesOrigin(),
+    hosted: () => Object.values(browserHosts(network)).some(Boolean),
+  }),
+  {
+    vault,
+    takes: () => takesVault(mine.agent),
+  }
+);
 document.documentElement.dataset.transport = kind;
 const root = await navigator.storage.getDirectory();
 const app = document.querySelector('slicc-app');
@@ -764,6 +780,10 @@ async function own() {
     owner: () => coneIds ?? { uid: 0, gid: 0 },
   });
   approvals.own();
+  const hosts = () => browserHosts(network);
+  ({ poke } = watchOpened({ hosts, own: location.origin, eager: ['proxy'] }));
+  watchSignIns({ hosts, asked: () => poke() });
+  if (globalThis.sliccKernelDebug === true) globalThis.sliccBrowserHook = control.hook;
   const denials = denialLog({ root, users: () => kernel?.users, mode });
   const link = linkFacade({
     check: async (stamp) => permitted(stamp, await sudoGidOf(kernel).catch(() => undefined)),
