@@ -423,7 +423,7 @@ export async function guardHost(t, path) {
     window.guards = {
       async open(row, own, path, lag) {
         const gated = gateWrap(lagged(await hosts[path](), lag));
-        const connection = guardProtected(gated, [location.origin, own]);
+        const connection = guardProtected(gated, [location.origin, own].flat());
         const pending = new Map();
         let next = 0;
         connection.onmessage = (text) => {
@@ -483,7 +483,7 @@ export async function guardHost(t, path) {
   t.after(() => unguarded.close());
   const clientFactory =
     (path) =>
-    async ({ detachDelay }) => {
+    async ({ detachDelay, own = targets.own }) => {
       count += 1;
       const row = count;
       const { events, push, waitEvent } = eventsOf();
@@ -492,7 +492,7 @@ export async function guardHost(t, path) {
       await ensure();
       await seven.evaluate(
         ([row, own, path, lag]) => window.guards.open(row, own, path, lag),
-        [row, targets.own, path, detachDelay]
+        [row, own, path, detachDelay]
       );
       const client = {
         transport: path,
@@ -548,7 +548,7 @@ export async function guardHost(t, path) {
         },
       };
     };
-  return clientFactory;
+  return Object.assign(clientFactory, { vault: chrome.vault.origin });
 }
 
 export const trace = (...parts) =>
