@@ -643,6 +643,7 @@ class Guard {
     this.scopes = new Map();
     this.placements = new Map();
     this.placing = new Map();
+    this.placementsPending = new Map();
     this.casts = new Set();
     this.requests = new Map();
     this.held = new Map();
@@ -974,7 +975,36 @@ class Guard {
     this.stopCasts();
   }
 
-  async place(targetId, sessionId) {
+  place(targetId, sessionId) {
+    const active = this.placementsPending.get(targetId);
+    if (active) {
+      active.again = true;
+      active.sessionId = sessionId;
+      return active.promise;
+    }
+    this.placements.set(sessionId, targetId);
+    this.scope(targetId).ready = false;
+    this.stopCasts();
+    const entry = { sessionId, again: false };
+    this.placementsPending.set(targetId, entry);
+    entry.promise = Promise.resolve().then(() => this.placeNext(targetId, entry));
+    this.placing.set(targetId, entry.promise);
+    return entry.promise;
+  }
+
+  async placeNext(targetId, entry) {
+    try {
+      await this.placeOne(targetId, entry.sessionId);
+      while (entry.again) {
+        entry.again = false;
+        await this.placeOne(targetId, entry.sessionId);
+      }
+    } finally {
+      this.placementsPending.delete(targetId);
+    }
+  }
+
+  async placeOne(targetId, sessionId) {
     this.placements.set(sessionId, targetId);
     this.scope(targetId).pending = (this.scope(targetId).pending ?? 0) + 1;
     this.scope(targetId).ready = false;
@@ -989,9 +1019,10 @@ class Guard {
       this.call('Page.getFrameTree', {}, sessionId),
     ]);
     await this.call('DOM.getDocument', { depth: -1, pierce: true }, sessionId);
+    const disabled = await this.call('DOM.disable', {}, sessionId);
     const scope = this.scope(targetId);
     scope.pending -= 1;
-    scope.failed = Boolean(enabled.error || attached.error || !scope.ownersReady);
+    scope.failed = Boolean(enabled.error || attached.error || !scope.ownersReady || disabled.error);
     scope.ready = Boolean(scope.tree && !scope.failed && !scope.pending);
     if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
     this.stopCasts();
