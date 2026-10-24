@@ -657,3 +657,28 @@ test('a program WebSocket goes through the Tailscale exit to a tailnet peer, a s
     false
   );
 });
+
+test('after a program closes its WebSocket to a tailnet peer, the peer’s last message and its own close code still arrive (wasm-tailscale#18)', {
+  skip: !(tailnetAvailable && (usable || online)),
+}, async (t) => {
+  const { tailnet, page } = await joinLocal(t, { handshakeMs: 5000 });
+  await page.evaluate(async (script) => {
+    const home = await (await navigator.storage.getDirectory()).getDirectoryHandle('home');
+    const writable = await (await home.getFileHandle('ws.sh', { create: true })).createWritable();
+    await writable.write(script);
+    await writable.close();
+  }, WS_SCRIPT);
+  const closed = await curled(
+    page,
+    '',
+    'ts-ws-linger',
+    `bash /home/ws.sh '${tailnet.peer.linger}' '' '' '${String.raw`\x88\x82\x00\x00\x00\x00\x03\xe8`}' '' 15 > /home/ts-ws-linger.txt`
+  );
+  const said = Buffer.from(closed.body, 'hex').toString('latin1');
+  console.log(JSON.stringify({ wsLinger: closed.body.slice(-120) }));
+  assert.ok(said.startsWith('HTTP/1.1 101 Switching Protocols'), said.slice(0, 200));
+  assert.ok(closed.body.includes(`8110${hex('after your close')}`), closed.body);
+  assert.ok(closed.body.includes(`880b0fa2${hex('peer done')}`), closed.body);
+  assert.ok(!closed.body.includes('880203ee'), `a 1006 close: ${closed.body}`);
+  assert.deepEqual(page.errors, []);
+});
