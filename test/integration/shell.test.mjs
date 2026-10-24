@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { boot, opfs, ready, run, screen, shows, ui } from './bios.mjs';
 import { launch } from './chrome.mjs';
+import { pausedWorkers } from './sw-resume.mjs';
 
 const chrome = await launch();
 after(() => chrome.close());
@@ -90,14 +91,21 @@ test('reaches npm over HTTPS with curl and the everyday tools', async (t) => {
 
 test('waits for an updated service worker before opening the shell', async (t) => {
   const page = await chrome.page(t);
+  const workers = pausedWorkers(chrome);
+  t.after(workers.stop);
   const current = await readFile(new URL('../../src/sw.js', import.meta.url), 'utf8');
   chrome.overrides.set('/sw.js', current.replace('...isolation, ', ''));
   await page.goto('/');
   await page.until(() => location.pathname === '/os/');
   assert.equal(await page.evaluate(() => crossOriginIsolated), false);
   chrome.overrides.delete('/sw.js');
-
-  await boot(page);
+  const resumed = await workers.release();
+  console.log(`shell paused ${JSON.stringify(resumed)}`);
+  try {
+    await boot(page);
+  } catch (error) {
+    throw new Error(`${error.message}\n${JSON.stringify(resumed)}`, { cause: error });
+  }
   assert.equal(await page.evaluate(() => crossOriginIsolated), true);
   await run(page, 'echo "upgraded $((1 + 1))"');
   await shows(page, 'upgraded 2');
