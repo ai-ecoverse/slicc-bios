@@ -587,6 +587,8 @@ class Guard {
     this.settled = new Map();
     this.uncommitted = new Set();
     this.moved = new Set();
+    this.mains = new Map();
+    this.opening = new Map();
     this.next = GUARD_IDS;
     this.guarded = { onmessage: null, onclose: null };
   }
@@ -1508,23 +1510,58 @@ class Guard {
     return ids;
   }
 
+  rememberMain(sessionId, frameId) {
+    if (!frameId) return;
+    for (const id of this.boundSessions(sessionId)) this.mains.set(id, frameId);
+  }
+
+  noteStarted(id, frameId, url) {
+    const main = this.mains.get(id);
+    const top = main === undefined || frameId === undefined || frameId === main;
+    const open = this.opening.get(id) ?? {};
+    if (top) {
+      this.uncommitted.add(id);
+      open.input = frameId;
+    }
+    if (this.is.url(url)) {
+      this.pendingCommit.add(id);
+      open.commit = frameId;
+    } else if (top) {
+      this.pendingCommit.delete(id);
+      delete open.commit;
+    }
+    this.opening.set(id, open);
+  }
+
+  noteCommitted(id, method, frameId, parentId) {
+    const top = method === 'Page.frameNavigated' && !parentId;
+    const same = method === 'Page.navigatedWithinDocument';
+    if (top) this.worlds.delete(id);
+    const open = this.opening.get(id) ?? {};
+    if (top || same || open.input === frameId) {
+      this.uncommitted.delete(id);
+      delete open.input;
+    }
+    if (top || same || open.commit === frameId) {
+      this.pendingCommit.delete(id);
+      delete open.commit;
+    }
+    if (open.input === undefined && open.commit === undefined) this.opening.delete(id);
+    else this.opening.set(id, open);
+  }
+
   noteNavigation(sessionId, method, params = {}) {
+    const frameId = params.frameId ?? params.frame?.id;
+    if (method === 'Page.frameNavigated' && frameId && !params.frame?.parentId) {
+      this.rememberMain(sessionId, frameId);
+    }
     const started =
       method === 'Page.frameStartedNavigating' && HISTORY_NAV.has(params.navigationType);
-    const committed =
-      (method === 'Page.frameNavigated' && !params.frame?.parentId) ||
-      method === 'Page.navigatedWithinDocument';
+    const committed = method === 'Page.frameNavigated' || method === 'Page.navigatedWithinDocument';
     if (!started && !committed) return;
     for (const id of this.boundSessions(sessionId)) {
-      if (started) {
-        this.uncommitted.add(id);
-        if (this.is.url(params.url)) this.pendingCommit.add(id);
-        else this.pendingCommit.delete(id);
-      } else {
-        this.uncommitted.delete(id);
-        this.pendingCommit.delete(id);
-        this.worlds.delete(id);
-      }
+      if (started) this.noteStarted(id, frameId, params.url);
+      else this.noteCommitted(id, method, frameId, params.frame?.parentId);
     }
   }
 
@@ -1740,8 +1777,30 @@ class Guard {
     return this.deliver(message);
   }
 
+  async entryAnswer(message, was) {
+    const sessionId = was.sessionId;
+    const deadline = Date.now() + HISTORY_WAIT;
+    while (sessionId && this.pendingHistory.has(sessionId) && Date.now() < deadline) {
+      await pause(HISTORY_POLL);
+    }
+    if (sessionId && this.blocked.has(sessionId)) return this.refuse(was);
+    const now = await this.surface(sessionId);
+    if (!now || now.protected || now.pendingTree) return this.refuse(was);
+    return this.deliver(message);
+  }
+
+  async routed(message, was) {
+    if (was?.method === 'Page.captureScreenshot') {
+      await this.shotAnswer(message, was);
+      return true;
+    }
+    if (was?.method !== 'Page.navigateToHistoryEntry' || !this.moved.delete(was.id)) return false;
+    await this.entryAnswer(message, was);
+    return true;
+  }
+
   async answer(message, was) {
-    if (was?.method === 'Page.captureScreenshot') return this.shotAnswer(message, was);
+    if (await this.routed(message, was)) return;
     if (this.sealed(was)) return this.refuse(was);
     const { method, params = {} } = was ?? {};
     const { result } = message;
