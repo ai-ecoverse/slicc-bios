@@ -328,6 +328,64 @@ async function markerFrame(client, raw, n) {
   return { session, frameId: frame.id, remote: Boolean(info) };
 }
 
+function driveState(row) {
+  if (
+    typeof row.shot === 'number' &&
+    row.shot >= MARKED &&
+    row.cast.marked > 0 &&
+    row.input === 'reached'
+  )
+    return 'drivable';
+  if (
+    row.shot === 'refused' &&
+    row.cast.frames === 0 &&
+    row.cast.start === 'refused' &&
+    row.input === 'refused'
+  )
+    return 'closed';
+  return 'failed';
+}
+
+async function drive(client, session, n) {
+  const ready = await until(async () => {
+    const pixels = await shot(client, session);
+    return typeof pixels === 'number' && pixels >= MARKED ? { pixels } : null;
+  }, 10000);
+  const row = {
+    shot: ready ? ready.pixels : await shot(client, session),
+    cast: await cast(client, session, 1500),
+    input: await click(client, session, n),
+  };
+  row.state = driveState(row);
+  return row;
+}
+
+async function ordinaryFrames(unguarded, raw, client, session, n) {
+  const added = randomBytes(6).toString('hex');
+  await evaluate(
+    unguarded,
+    raw,
+    `new Promise((done) => { const f = document.createElement('iframe'); f.id = 'added-frame'; f.src = ${JSON.stringify(marker('localhost', added))}; f.onload = done; document.body.append(f); })`
+  );
+  const control = {
+    shot: await shot(unguarded, raw),
+    cast: await cast(unguarded, raw, 1500),
+    input: await click(unguarded, raw, added),
+    frames: await frames(unguarded),
+  };
+  const inserted = { control, ...(await drive(client, session, added)) };
+  await evaluate(unguarded, raw, "document.querySelector('#added-frame').remove()");
+  const removed = {
+    control: {
+      shot: await shot(unguarded, raw),
+      cast: await cast(unguarded, raw, 1500),
+      input: await click(unguarded, raw, n),
+    },
+    ...(await drive(client, session, n)),
+  };
+  return { added: inserted, removed };
+}
+
 async function measure(factory, unguarded, own, route, layout) {
   const n = randomBytes(6).toString('hex');
   const row = { route, layout };
@@ -359,6 +417,10 @@ async function measure(factory, unguarded, own, route, layout) {
       row.reads = await reads(client, session, n, leaf.frameId);
       row.probes = await probes(client, session);
       row.input = await click(client, session, n);
+      if (layout === 'ordinary') {
+        row.state = driveState(row);
+        Object.assign(row, await ordinaryFrames(unguarded, raw, client, session, n));
+      }
       if (layout === 'remote' || layout === 'nested') {
         await evaluate(unguarded, raw, "document.querySelector('iframe').remove()");
         await until(async () => (await shot(unguarded, raw)) === 0, 10000);
@@ -519,6 +581,34 @@ const leaked = (row) => {
   return found;
 };
 
+function ordinary(row, route, label) {
+  assert.ok(row.control.shot >= MARKED, `${label}: the ordinary marker paints without the guard`);
+  assert.ok(row.control.cast.marked > 0, `${label}: the ordinary marker casts without the guard`);
+  assert.equal(
+    row.control.input,
+    'reached',
+    `${label}: input reaches the ordinary frame without the guard`
+  );
+  if (route === 'link' && row.state === 'closed') {
+    assert.equal(row.shot, 'refused', `${label}: unplaced link frames close paint`);
+    assert.equal(row.cast.frames, 0, `${label}: unplaced link frames close casts`);
+    assert.equal(row.input, 'refused', `${label}: unplaced link frames close input`);
+  } else {
+    assert.equal(
+      row.state,
+      'drivable',
+      `${label}: the ordinary page is fully drivable once placed`
+    );
+    assert.ok(row.shot >= MARKED, `${label}: the ordinary marker paints through the guard`);
+    assert.ok(row.cast.marked > 0, `${label}: the ordinary marker casts through the guard`);
+    assert.equal(
+      row.input,
+      'reached',
+      `${label}: input reaches the ordinary frame through the guard`
+    );
+  }
+}
+
 export function paint(route) {
   test(`a page that holds a protected frame is locked for paint, DOM and input on the ${route} path`, {
     timeout: 30 * 60 * 1000,
@@ -606,12 +696,18 @@ export function paint(route) {
       false,
       'evaluation in the protected local context never runs'
     );
-    const ordinary = by.ordinary;
-    assert.equal(ordinary.attach, 'ok', 'an ordinary page attaches');
-    assert.ok(ordinary.shot >= MARKED, 'an ordinary page’s frame shows in a screenshot');
-    assert.ok(ordinary.cast.marked > 0, 'an ordinary page’s frame shows in a cast');
-    assert.equal(ordinary.input, 'reached', 'a click reaches an ordinary page’s frame');
-    assert.equal(ordinary.reads.dom, 'none', 'an ordinary page’s DOM reads');
+    const plain = by.ordinary;
+    assert.equal(plain.attach, 'ok', 'an ordinary page attaches');
+    assert.equal(plain.placement.remote, true, 'the ordinary frame is cross-process');
+    assert.ok(
+      plain.added.control.frames.filter((host) => host === 'localhost').length >= 2,
+      'the added ordinary frame is cross-process too'
+    );
+    ordinary(plain, route, 'ordinary preloaded');
+    ordinary(plain.added, route, 'ordinary added');
+    ordinary(plain.removed, route, 'ordinary removed');
+    if (plain.state === 'drivable')
+      assert.equal(plain.reads.dom, 'none', 'an ordinary page’s DOM reads');
     if (route !== 'link') assert.equal(by.seven.vaultFramed, true, 'seven frames the vault');
   });
 }
