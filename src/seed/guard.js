@@ -615,6 +615,8 @@ class Guard {
       this.internal.set(this.next, (message) => {
         if (method === 'Page.getFrameTree')
           this.recordTree(this.scopeTarget(sessionId), message.result?.frameTree);
+        if (method === 'DOM.getDocument' && this.placements.has(sessionId))
+          this.recordOwners(this.scopeTarget(sessionId), message.result?.root);
         resolve(message);
       });
       this.connection.send(
@@ -787,6 +789,31 @@ class Guard {
     this.stopCasts();
   }
 
+  recordOwners(targetId, root) {
+    const scope = this.scope(targetId);
+    scope.ownersReady = Boolean(root);
+    const nodes = [root];
+    while (nodes.length) {
+      const node = nodes.pop();
+      if (!node) continue;
+      if (node.nodeName === 'IFRAME' || node.nodeName === 'FRAME') {
+        if (!node.frameId) scope.ownersReady = false;
+        else {
+          scope.frames.add(node.frameId);
+          if (!this.frames.has(node.frameId)) this.frames.set(node.frameId, '');
+          if (!this.parents.has(node.frameId)) this.parents.set(node.frameId, scope.root);
+        }
+      }
+      nodes.push(
+        ...(node.children ?? []),
+        ...(node.shadowRoots ?? []),
+        node.contentDocument,
+        node.templateContent
+      );
+    }
+    this.stopCasts();
+  }
+
   async place(targetId, sessionId) {
     this.placements.set(sessionId, targetId);
     this.scope(targetId).pending = (this.scope(targetId).pending ?? 0) + 1;
@@ -801,9 +828,10 @@ class Guard {
       ),
       this.call('Page.getFrameTree', {}, sessionId),
     ]);
+    await this.call('DOM.getDocument', { depth: -1, pierce: true }, sessionId);
     const scope = this.scope(targetId);
     scope.pending -= 1;
-    scope.failed = Boolean(enabled.error || attached.error);
+    scope.failed = Boolean(enabled.error || attached.error || !scope.ownersReady);
     scope.ready = Boolean(scope.tree && !scope.failed && !scope.pending);
     if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
     this.stopCasts();
@@ -871,7 +899,11 @@ class Guard {
     }
     if (method === 'Page.frameDetached') {
       if (params.reason === 'swap') this.frames.set(params.frameId, '');
-      else this.removeFrame(params.frameId);
+      else {
+        this.removeFrame(params.frameId);
+        const navSession = this.navs.get(targetId)?.session;
+        if (navSession) this.placing.set(targetId, this.place(targetId, navSession));
+      }
     }
   }
 
