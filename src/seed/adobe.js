@@ -271,7 +271,7 @@ export function signIn({
   shared = false,
   listen = (name) => new BroadcastChannel(name),
   holdWait,
-  hosted = () => false,
+  hosted = () => true,
   hold = (marker, signal) => askHold(marker, { listen, signal, wait: holdWait, present: hosted }),
 }) {
   const relay = shared
