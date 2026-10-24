@@ -237,6 +237,18 @@ test('a follower with Terminal gets a shell in the owner kernel: ls, ^C, resize 
   await shows(page, 'sleep-ended-130');
   await type(page, "bash -c 'exit 7'; echo exit-status-$?");
   await shows(page, 'exit-status-7');
+  await type(
+    page,
+    `printf '{"kind":"open.url","url":"%s"}\\n' https://example.test/remote | cat > /dev/embedder; echo remote-$?`
+  );
+  await shows(page, 'no page answers requests for this session');
+  await shows(page, 'remote-1');
+  const { targetInfos } = await owners.cdp.send('Target.getTargets');
+  assert.deepEqual(
+    targetInfos.filter(({ url }) => url.startsWith('https://example.test')),
+    []
+  );
+  assert.equal(await owner.evaluate(dialog), null);
   await shoot(page, 'follower-terminal', { show: 'terminal' });
   await owner.evaluate(() => document.querySelector('slicc-app').show('terminal'));
   await shows(owner, 'slicc:');
