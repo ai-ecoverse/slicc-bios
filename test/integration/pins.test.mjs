@@ -107,6 +107,72 @@ test('the pinned slicc-kernel satisfies every pinned package’s engines and pee
   assert.deepEqual(unmet, [], `slicc-kernel ${kernel} doesn't satisfy these`);
 });
 
+export function nestedCopies(lock) {
+  const packages = lock.packages;
+  const top = (name) => packages[`node_modules/${name}`];
+  const found = [];
+  for (const [path, entry] of Object.entries(packages)) {
+    if (!path) continue;
+    const owner = `${path.split('node_modules/').at(-1)}@${entry.version}`;
+    const wants = { ...entry.dependencies, ...entry.peerDependencies };
+    for (const [name, range] of Object.entries(wants)) {
+      if (!name.startsWith('@ai-ecoverse/') || !top(name)) continue;
+      const nested = packages[`${path}/node_modules/${name}`];
+      if (nested)
+        found.push(`${owner} nests ${name}@${nested.version} beside ${top(name).version}`);
+      else if (range !== '*' && !satisfies(top(name).version, range))
+        found.push(`${owner} wants ${name} ${range}, the base set has ${top(name).version}`);
+    }
+  }
+  return found;
+}
+
+test('every base-set package that names another base-set package as a peer or dependency resolves to its one top-level pin, never a nested second copy', async () => {
+  const lock = JSON.parse(await read('package-lock.json'));
+  assert.deepEqual(nestedCopies(lock), []);
+  const nested = Object.keys(lock.packages).filter((path) =>
+    /node_modules\/@ai-ecoverse\/[^/]+\/node_modules\/@ai-ecoverse\//.test(path)
+  );
+  assert.deepEqual(nested, []);
+});
+
+test('the nested-copy check catches a package that pins an older copy of a base-set package, as wasm-xz 5.8.4-7 pinned coreutils', () => {
+  const lock = (xz) => ({
+    packages: {
+      '': {},
+      'node_modules/@ai-ecoverse/wasm-coreutils': { version: '9.12.0-15' },
+      'node_modules/@ai-ecoverse/wasm-xz': { version: '5.8.4-7', ...xz },
+      'node_modules/@ai-ecoverse/wasm-xz/node_modules/@ai-ecoverse/wasm-coreutils': {
+        version: '9.12.0-13',
+      },
+    },
+  });
+  assert.deepEqual(
+    nestedCopies(lock({ dependencies: { '@ai-ecoverse/wasm-coreutils': '9.12.0-13' } })),
+    ['@ai-ecoverse/wasm-xz@5.8.4-7 nests @ai-ecoverse/wasm-coreutils@9.12.0-13 beside 9.12.0-15']
+  );
+  const flat = {
+    packages: {
+      '': {},
+      'node_modules/@ai-ecoverse/wasm-coreutils': { version: '9.12.0-15' },
+      'node_modules/@ai-ecoverse/wasm-xz': {
+        version: '5.8.4-8',
+        peerDependencies: {
+          '@ai-ecoverse/wasm-coreutils': '*',
+          '@ai-ecoverse/wasm-sed': '>=4.10.0-6',
+        },
+      },
+    },
+  };
+  assert.deepEqual(nestedCopies(flat), []);
+  flat.packages['node_modules/@ai-ecoverse/wasm-xz'].peerDependencies[
+    '@ai-ecoverse/wasm-coreutils'
+  ] = '>=9.12.0-16';
+  assert.deepEqual(nestedCopies(flat), [
+    '@ai-ecoverse/wasm-xz@5.8.4-8 wants @ai-ecoverse/wasm-coreutils >=9.12.0-16, the base set has 9.12.0-15',
+  ]);
+});
+
 const SPECTRUM = '@ai-ecoverse/slicc-spectrum';
 
 test('the agent’s slicc-spectrum peer range accepts the base set’s slicc-spectrum, so page and agent agree on one spectrum', async () => {
