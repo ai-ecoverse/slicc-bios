@@ -205,7 +205,7 @@ export async function sweep({ hosts, own, is = guardOf(own), storage, now = Date
     try {
       connection = await open();
     } catch {
-      continue;
+      throw new Error(UNSWEPT);
     }
     try {
       const listed = await ask(connection, 'Target.getTargets');
