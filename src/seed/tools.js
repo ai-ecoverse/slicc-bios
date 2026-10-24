@@ -9,7 +9,8 @@ export const LIMIT = 180;
 export const RETIRE = 30 * 1000;
 export const NOTE = 'Seven installs it after boot, at the newest version that passes its checks.';
 const deployed = new URL('packages/', BIOS);
-const WORKSPACE = "minimumReleaseAgeExclude:\n  - '@ai-ecoverse/*'\n";
+export const WORKSPACE =
+  "autoInstallPeers: false\nminimumReleaseAgeExclude:\n  - '@ai-ecoverse/*'\n";
 const SAFE = ['--ignore-scripts', '--ignore-pnpmfile'];
 export const RESOLVE = ['pnpm', 'install', '--lockfile-only', ...SAFE];
 export const INSTALL = ['pnpm', 'install', '--frozen-lockfile', ...SAFE];
@@ -132,7 +133,7 @@ async function installTools({ root, kernel, npm }, wanted, batch) {
   const before = [await text(root, MANIFEST), await text(root, LOCK)];
   const back = () => Promise.all([put(root, MANIFEST, before[0]), put(root, LOCK, before[1])]);
   await write(root, MANIFEST, manifest(wanted));
-  if ((await text(root, `${FOLDER}/pnpm-workspace.yaml`)) === null)
+  if ((await text(root, `${FOLDER}/pnpm-workspace.yaml`)) !== WORKSPACE)
     await write(root, `${FOLDER}/pnpm-workspace.yaml`, WORKSPACE);
   let log = '';
   const run = (argv) =>

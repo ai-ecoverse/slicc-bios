@@ -245,6 +245,15 @@ test('a lock entry the gate refuses keeps its tool out, even another version of 
     others.every((row) => row.state === 'installed'),
     `the other first tools install: ${JSON.stringify(others)}`
   );
+  for (const name of ['@ai-ecoverse/wasm-xz', '@ai-ecoverse/wasm-tree']) {
+    const row = all.find((one) => one.name === name);
+    assert.equal(
+      row?.state,
+      'installed',
+      `${name}, whose peers name sed, still installs: ${JSON.stringify(row)}`
+    );
+    assert.equal(await versionOf(page, `${TOOLS}/${name}`), await latestOf(name), name);
+  }
   assert.deepEqual(page.errors, []);
 });
 
