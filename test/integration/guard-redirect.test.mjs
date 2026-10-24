@@ -43,7 +43,12 @@ const site = createHttp((req, res) => {
     );
   }
   if (url.pathname.startsWith('/hop/') && hop) {
-    res.writeHead(302, { location: hop });
+    res.writeHead(302, {
+      Location: hop,
+      'Content-Location': hop,
+      Link: `<${hop}>; rel=preconnect`,
+      Refresh: `0;url=${hop}`,
+    });
     return res.end(`<a href="${hop}">moved</a>`);
   }
   if (url.pathname.startsWith('/linked/') && hop) {
@@ -560,6 +565,35 @@ async function rig({ transport, proxy, port, override }) {
 }
 
 const refused = (answer) => /^slicc: refused:/.test(answer?.error?.message ?? '');
+const carries = (value) =>
+  marks.some((mark) =>
+    [mark, encodeURIComponent(mark), Buffer.from(mark).toString('base64')].some((form) =>
+      JSON.stringify(value).includes(form)
+    )
+  );
+const redirected = (message) =>
+  message.params?.statusCode >= 300 && message.params?.statusCode < 400;
+const VECTORS = {
+  'Network.responseReceivedExtraInfo headersText': (m) =>
+    m.method === 'Network.responseReceivedExtraInfo' && redirected(m) && m.params.headersText,
+  'Network.responseReceivedExtraInfo Location, Content-Location, Link and Refresh headers': (m) =>
+    m.method === 'Network.responseReceivedExtraInfo' &&
+    redirected(m) &&
+    Object.keys(m.params.headers ?? {}).some((key) =>
+      /^content-location$|^link$|^refresh$/i.test(key)
+    ),
+  'Network.requestWillBeSent redirectResponse.headers': (m) =>
+    m.method === 'Network.requestWillBeSent' && m.params.redirectResponse?.headers,
+  'Fetch.requestPaused responseHeaders': (m) =>
+    m.method === 'Fetch.requestPaused' &&
+    m.params.responseStatusCode >= 300 &&
+    m.params.responseHeaders,
+  'Runtime.consoleAPICalled': (m) => m.method === 'Runtime.consoleAPICalled',
+  'Console.messageAdded': (m) => m.method === 'Console.messageAdded',
+  'Log.entryAdded': (m) => m.method === 'Log.entryAdded',
+  'Runtime.exceptionThrown': (m) => m.method === 'Runtime.exceptionThrown',
+};
+
 const leaks = (seen) => {
   const found = [];
   for (const value of marks) {
@@ -634,6 +668,40 @@ async function check(t, transport) {
     seen.some((text) => text.includes(`/landing?keep=${CONTROL}`) && text.includes('location')),
     'an ordinary redirect still shows its Location'
   );
+  const parsed = seen.map((text) => JSON.parse(text));
+  for (const [vector, picks] of Object.entries(VECTORS)) {
+    const hits = parsed.filter(picks);
+    assert.ok(hits.length > 0, `${vector}: the client saw none, so the vector didn't run`);
+    const leaked = hits.filter(carries);
+    assert.deepEqual(
+      leaked.map((m) => JSON.stringify(m).slice(0, 300)),
+      [],
+      `${vector} carries no marker`
+    );
+  }
+  const extra = parsed.filter(
+    (m) =>
+      m.method === 'Network.responseReceivedExtraInfo' &&
+      redirected(m) &&
+      /sliccy\.ai/.test(JSON.stringify(m.params.headers ?? {}))
+  );
+  assert.ok(extra.length > 0, 'a hop into seven or the vault shows its redirect headers');
+  for (const m of extra) {
+    for (const [key, value] of Object.entries(m.params.headers)) {
+      if (/^(?:location|content-location)$/i.test(key) && /sliccy\.ai/.test(value)) {
+        assert.match(
+          value,
+          /^https?:\/\/[a-z.-]*sliccy\.ai(?::\d+)?$/,
+          `${key} is cut to its origin: ${value}`
+        );
+      }
+    }
+    assert.doesNotMatch(
+      m.params.headersText ?? '',
+      /sliccy\.ai(?::\d+)?\/\S/i,
+      `headersText keeps no protected path: ${m.params.headersText}`
+    );
+  }
   assert.deepEqual(leaks(seen), [], 'no protected URL past its origin reached the client');
   const hopped = new Set(
     seen
