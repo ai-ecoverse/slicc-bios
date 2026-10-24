@@ -217,6 +217,16 @@ const PAGE_DOMAINS = [
 const pageScoped = (method = '') =>
   PAGE_PAINT.has(method) || PAGE_DOMAINS.some((domain) => method.startsWith(domain));
 const FRAME_CHILDREN = [{ type: 'iframe', exclude: false }, { exclude: true }];
+const STRUCTURE = new Set([
+  'Page.frameAttached',
+  'Page.frameDetached',
+  'Page.frameNavigated',
+  'Target.attachedToTarget',
+  'Target.detachedFromTarget',
+  'Target.targetDestroyed',
+  'Target.targetInfoChanged',
+  'Runtime.executionContextCreated',
+]);
 
 function objectIds(value, found) {
   if (typeof value !== 'string') return;
@@ -1045,10 +1055,11 @@ class Guard {
     const tree = (await this.call('Page.getFrameTree', {}, sessionId)).result?.frameTree;
     const all = framed(tree);
     for (const frame of all) {
-      this.frames.set(frame.id, frame.url);
+      this.frames.set(frame.id, this.framed(frame));
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
     }
-    return !all.some((frame) => this.is.url(frame.url) || this.is.url(frame.securityOrigin));
+    return Boolean(tree?.frame) &&
+      !all.some((frame) => this.is.url(frame.url) || this.is.url(frame.securityOrigin));
   }
 
   async inspect(sessionId, targetId, parent) {
@@ -1364,14 +1375,6 @@ class Guard {
     return method === 'Runtime.executionContextCreated' && this.is.url(params.context?.origin);
   }
 
-  walkCuts({ method, params = {}, sessionId }) {
-    if (method === 'Page.frameNavigated') return params.frame?.id === this.scopeTarget(sessionId);
-    if (method.startsWith('Page.')) return false;
-    if (method === 'Runtime.executionContextCreated')
-      return params.context?.auxData?.frameId === this.scopeTarget(sessionId);
-    return true;
-  }
-
   world(sessionId) {
     let world = this.worlds.get(sessionId);
     if (!world) {
@@ -1532,8 +1535,7 @@ class Guard {
     if (this.blocked.has(sessionId) && PAUSES.has(method)) return this.release(message);
     if (this.hidden(sessionId)) return;
     if (foreign) return;
-    if (this.walked({ ...message, method }) && this.walkCuts({ ...message, method }))
-      return this.cut(sessionId);
+    if (this.walked({ ...message, method })) return this.cut(sessionId);
     if (sessionId && method.startsWith('Runtime.') && !this.runtimes.has(sessionId)) return;
     if (await this.swallowed({ ...message, method })) return;
     if (this.stored({ ...message, method })) return;
@@ -1753,10 +1755,34 @@ class Guard {
     return null;
   }
 
+  async placed(sessionId) {
+    const pending = this.placing.get(this.scopeTarget(sessionId));
+    if (!pending) return true;
+    let timer;
+    const expired = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(false), NAV_MS);
+      timer.unref?.();
+    });
+    try {
+      return await Promise.race([pending.then(() => true), expired]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async pageCheck(method, sessionId) {
+    if (!pageScoped(method)) return null;
+    const unguarded = await this.guarding(method, sessionId);
+    if (unguarded) return unguarded;
+    if (!(await this.placed(sessionId))) return UNGUARDED;
+    return this.locked(sessionId) ? PROTECTED : null;
+  }
+
   async check(message) {
     const { method, params = {}, sessionId } = message;
     if (typeof method !== 'string') return null;
-    if (pageScoped(method) && this.locked(sessionId)) return PROTECTED;
+    const page = await this.pageCheck(method, sessionId);
+    if (page) return page;
     if (method.startsWith('Fetch.') && sessionId === undefined) return FETCH;
     if (LATER.has(method)) return SCRIPTS;
     if (method === 'Page.navigate' && inherits(params.url)) return INHERITED;
@@ -1835,7 +1861,7 @@ class Guard {
 
   received(text) {
     const message = parse(text);
-    this.scopeEvent(message);
+    if (STRUCTURE.has(message.method)) this.scopeEvent(message);
     if (this.internal.has(message.id)) {
       const resolve = this.internal.get(message.id);
       this.internal.delete(message.id);
