@@ -159,6 +159,16 @@ const proxy = await fakeProxy({
       const type = request.url.endsWith('.tgz') ? 'application/octet-stream' : 'application/json';
       return { status: 200, headers: [['content-type', type]], body: await download(request.url) };
     }
+    if (request.url.startsWith('https://tools.example.test/')) {
+      return {
+        status: 200,
+        headers: [
+          ['content-type', 'text/plain'],
+          ['x-upstream', 'tools'],
+        ],
+        body: Buffer.from('upstream\n'),
+      };
+    }
     if (request.url.startsWith('https://tracker.example.com/')) {
       return {
         status: 401,
@@ -288,7 +298,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     globalThis.sliccKernelDebug = true;
   });
   await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
-  await ready(page);
+  await ready(page, undefined, { tools: false });
   await page.evaluate(
     (global, cone) =>
       Promise.all([
@@ -1775,4 +1785,35 @@ test('an agent that failed to start at boot loads the new page adapter once an u
     )
     .catch(seen);
   assert.deepEqual(page.errors, []);
+});
+
+test('a fresh profile’s first agent turn finds seven’s tools after boot: rg runs and curl reaches an https upstream, since the agent waits for them to settle', {
+  timeout: 30 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  await page.init(helpers);
+  await page.init(persisted);
+  await page.init(storageStub);
+  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await ready(page, undefined, { tools: false });
+  await agentUp(page);
+  await connectAccount(page, 'amazon-bedrock', KEY);
+  await page.until(() =>
+    document.querySelector('slicc-app').dock.api.panels.some((panel) => panel.id === 'chat:cone')
+  );
+  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
+  await page.until(
+    () => !!window.chatView() && !!window.deep(window.chatView().shadowRoot, 'textarea')
+  );
+  const before = toolResults.length;
+  await page.evaluate(() => window.deep(window.chatView().shadowRoot, 'textarea').focus());
+  await page.insert(
+    'RUN: rg --version | head -1 && curl -sI https://tools.example.test/ | tr -d "\\r"'
+  );
+  await page.enter();
+  await eventually(() => toolResults.length > before, 120000);
+  const result = toolResults[before];
+  assert.match(result.text, /^ripgrep \d/m, JSON.stringify(result));
+  assert.match(result.text, /^x-upstream: tools$/im, JSON.stringify(result));
+  assert.notEqual(result.status, 'error', JSON.stringify(result));
 });

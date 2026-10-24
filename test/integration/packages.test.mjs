@@ -70,6 +70,7 @@ const items = (page) =>
     document
       .querySelector('slicc-app')
       .model.updates.packages()
+      .filter((item) => !item.preinstalled)
       .map(({ id, state, version, offered, actions, error }) => ({
         id,
         state,
@@ -87,6 +88,7 @@ const state = (page, id, wanted) =>
       document
         .querySelector('slicc-app')
         .model.updates.packages()
+        .filter((item) => !item.preinstalled)
         .some((item) => item.id === id && item.state === wanted && !item.registry),
     [id, wanted]
   );
@@ -155,7 +157,12 @@ async function read(page, path) {
 const LATEST = { [XXD]: '9.2.1172-1', [RSYNC]: '3.5.1-4' };
 
 const packageItems = (page) =>
-  page.evaluate(() => document.querySelector('slicc-app').model.updates.packages());
+  page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.updates.packages()
+      .filter((item) => !item.preinstalled)
+  );
 
 test('the optional packages take npm’s latest, install, update and remove with pnpm add -g, and a hand install shows', async (t) => {
   const page = await chrome.page(t);
@@ -263,7 +270,10 @@ test('the optional packages take npm’s latest, install, update and remove with
 
 const unreachable = (page) =>
   page.within(120000, () => {
-    const rows = document.querySelector('slicc-app').model.updates.packages();
+    const rows = document
+      .querySelector('slicc-app')
+      .model.updates.packages()
+      .filter((item) => !item.preinstalled);
     return rows.length === 2 && rows.every((item) => item.registry === 'unreachable');
   });
 
@@ -386,7 +396,10 @@ test('when npm’s latest fails the gate, the newest older version that passes i
   await shows(page, 'by hand 40', 300000);
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await page.within(120000, () => {
-    const [xxd] = document.querySelector('slicc-app').model.updates.packages();
+    const [xxd] = document
+      .querySelector('slicc-app')
+      .model.updates.packages()
+      .filter((item) => !item.preinstalled);
     return xxd?.version === '9.2.1172-1';
   });
   const [row] = await packageItems(page);
@@ -394,7 +407,7 @@ test('when npm’s latest fails the gate, the newest older version that passes i
   assert.equal(row.offered, '9.2.1172-1');
   assert.deepEqual(row.newer, {
     version: '9.2.1186-1',
-    reason: 'wasm-xxd 9.2.1186-1 has no build provenance',
+    reason: 'npm has no record of where it was built',
   });
   assert.deepEqual(page.errors, []);
 });
@@ -476,7 +489,7 @@ test('seven’s page withholds sliccy-browser when the slicc-cdp it pins has no 
   assert.notEqual(row.offered, version);
   assert.equal(
     row.newer?.reason ?? row.withheld,
-    `slicc-cdp ${PIPELINE_CDP} has no build provenance`
+    `npm has no record of where its slicc-cdp ${PIPELINE_CDP} was built`
   );
 });
 
@@ -499,14 +512,17 @@ test('a release npm serves no attestation for yet, as in the minutes after homes
   registry.docs.set(`${REGISTRY}${XXD}/latest`, JSON.stringify(published));
   await boot(page);
   const [row] = await page.within(120000, () => {
-    const rows = document.querySelector('slicc-app').model.updates.packages();
+    const rows = document
+      .querySelector('slicc-app')
+      .model.updates.packages()
+      .filter((item) => !item.preinstalled);
     return (rows[0]?.offered || rows[0]?.registry === 'unreachable') && rows;
   });
   assert.equal(row.registry, undefined, JSON.stringify(row));
   assert.equal(row.offered, LATEST[XXD]);
   assert.deepEqual(row.newer, {
     version: fresh,
-    reason: `wasm-xxd ${fresh} has no build provenance`,
+    reason: 'npm has no record of where it was built',
   });
   assert.equal(row.state, 'available');
   assert.deepEqual(page.errors, []);
@@ -529,7 +545,13 @@ test('a failed download shows Retry, and Retry installs it', async (t) => {
   assert.equal(xxd.state, 'failed');
   assert.deepEqual(xxd.actions, ['retry']);
   assert.match(
-    await page.evaluate(() => document.querySelector('slicc-app').model.updates.packages()[0].log),
+    await page.evaluate(
+      () =>
+        document
+          .querySelector('slicc-app')
+          .model.updates.packages()
+          .filter((item) => !item.preinstalled)[0].log
+    ),
     /^@ai-ecoverse\/wasm-xxd@9\.2\.1172-1\n/
   );
 
@@ -608,6 +630,7 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
         document
           .querySelector('slicc-app')
           .model.updates.packages()
+          .filter((item) => !item.preinstalled)
           .find((item) => item.id === 'jsh-browser').state
     ),
     'queued'

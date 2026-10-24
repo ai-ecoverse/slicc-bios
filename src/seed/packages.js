@@ -258,12 +258,12 @@ export function sourceOf(name, sources) {
   return HOMESCOOPED.test(name) ? HOMESCOOP : null;
 }
 
+const OUTSIDE = (it) => `${it} didn't come from SLICC's own build`;
 const PROVENANCE = {
-  'no integrity': (it) => `npm lists no integrity for ${it}`,
-  'no provenance': (it) => `${it} has no build provenance`,
-  'its provenance doesn’t match this release': (it, repo) => `${it} wasn't built by ${repo}`,
-  'built outside the release workflow': (it, repo) =>
-    `${it} wasn't built by ${repo}'s release workflow on main`,
+  'no integrity': (it) => `npm lists no checksum for ${it}`,
+  'no provenance': (it) => `npm has no record of where ${it} was built`,
+  'its provenance doesn’t match this release': OUTSIDE,
+  'built outside the release workflow': OUTSIDE,
 };
 
 const deprecation = (name, version, doc) =>
@@ -286,7 +286,8 @@ async function published(name, version, doc, source, ctx) {
     { name, repository, workflow: source.workflow, refs: MAIN },
     ctx.npm.attest
   );
-  const why = found && (PROVENANCE[found]?.(it, source.repo) ?? `${it}: ${found}`);
+  const subject = ctx.dep ? `its ${it}` : 'it';
+  const why = found && (PROVENANCE[found]?.(subject) ?? `${it}: ${found}`);
   if (!why) ctx.verdicts?.set(memo, null);
   return why;
 }
@@ -323,7 +324,7 @@ async function exactDeps(doc, ctx) {
       const key = `${dep}@${spec}`;
       const depDoc = await ctx.npm.version(dep, spec);
       if (!depDoc) return no(`npm doesn't have ${short(dep)} ${spec}`);
-      return judge(key, depDoc.dist?.integrity, ctx);
+      return judge(key, depDoc.dist?.integrity, { ...ctx, dep: true });
     })
   );
   return found.find(Boolean) ?? null;
@@ -434,12 +435,26 @@ export function createNpm({ base, shipped = base, sources, bundled, have, fetche
     ctx.pins = [...lock.keys(), ...shipped.keys()];
     const found = await Promise.all(
       [...lock].map(([one, integrity]) =>
-        judge(one, integrity, ctx).catch((error) =>
+        judge(one, integrity, one === key ? ctx : { ...ctx, dep: true }).catch((error) =>
           no(`couldn't check ${one} on npm (${error.message.split('\n')[0]})`)
         )
       )
     );
     return found.find(Boolean) ?? null;
+  }
+
+  async function judged(lock, tops = null) {
+    const ctx = await context();
+    ctx.pins = [...lock.keys(), ...shipped.keys()];
+    const found = await Promise.all(
+      [...lock].map(async ([one, integrity]) => [
+        one,
+        await judge(one, integrity, tops && !tops.has(one) ? { ...ctx, dep: true } : ctx).catch(
+          (error) => no(`couldn't check ${one} on npm (${error.message.split('\n')[0]})`)
+        ),
+      ])
+    );
+    return new Map(found);
   }
 
   async function denied(keys, lock) {
@@ -473,11 +488,11 @@ export function createNpm({ base, shipped = base, sources, bundled, have, fetche
     return ok;
   }
 
-  async function offer(entry) {
-    return look(entry, await context());
+  async function offer(entry, verdicts = null) {
+    return look(entry, await context(verdicts));
   }
 
-  return { lookAll, gate, admitted, denied, offer };
+  return { lookAll, gate, judged, admitted, denied, offer };
 }
 
 export async function readCache(root) {

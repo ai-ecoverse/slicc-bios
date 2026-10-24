@@ -98,7 +98,7 @@ test('the pinned slicc-kernel satisfies every pinned package’s engines and pee
       wanted.push([`${file} ${name} (peer)`, range]);
     }
   }
-  assert.ok(wanted.length >= 10, `found ${wanted.length} kernel requirements`);
+  assert.ok(wanted.length >= 5, `found ${wanted.length} kernel requirements`);
   assert.ok(
     wanted.some(([what]) => /slicc-agent@.*\(peer\)$/.test(what)),
     'the agent’s kernel peer is checked'
@@ -242,7 +242,7 @@ test('the runtime union (certs.json and every lockfile seven ships, Tailscale an
   const { certifiedSet } = await import('../../src/seed/layer.js');
   const certified = await certifiedSet(served);
   const found = await lockedGated();
-  assert.ok(found.size >= 30, `found ${found.size} gated packages`);
+  assert.ok(found.size >= 15, `found ${found.size} gated packages`);
   const missing = [...found]
     .filter(([key, [, integrity]]) => certified[key]?.integrity !== integrity)
     .map(([key, [file]]) => `${file} ${key}`);
@@ -416,4 +416,41 @@ test('every gated pin is a release its own repository built from main, with npm 
   );
   assert.deepEqual(wrong.sort(), []);
   t.diagnostic(`provenance: PASS ${found.size} gated pins`);
+});
+
+test('the base set pins exactly what UI boot and the agent install need, and every other tool is in tools.json, first the ones the agent reaches for, and pinned nowhere', async () => {
+  const base = Object.keys(JSON.parse(await read('package.json')).dependencies).sort();
+  assert.deepEqual(base, [
+    '@ai-ecoverse/slicc-browsers',
+    '@ai-ecoverse/slicc-kernel',
+    '@ai-ecoverse/slicc-spectrum',
+    '@ai-ecoverse/wasi-pnpm',
+    '@ai-ecoverse/wasm-bash',
+    '@ai-ecoverse/wasm-coreutils',
+    '@ai-ecoverse/wasm-findutils',
+    '@ai-ecoverse/wasm-tls-engine',
+  ]);
+  const lock = JSON.parse(await read('package-lock.json'));
+  assert.deepEqual(
+    Object.keys(lock.packages)
+      .filter(Boolean)
+      .map((path) => path.split('node_modules/').at(-1))
+      .sort(),
+    base
+  );
+  const tools = JSON.parse(await read('tools.json'));
+  assert.equal(Object.keys(tools).length, 21);
+  assert.deepEqual(
+    Object.entries(tools)
+      .filter(([, entry]) => entry.first)
+      .map(([name]) => name.split('/').at(-1)),
+    ['wasm-grep', 'wasm-sed', 'wasm-curl', 'wasm-tar', 'wasm-gzip', 'wasm-jq', 'wasi-ripgrep']
+  );
+  const pnpmLock = await read('pnpm-lock.yaml');
+  for (const name of Object.keys(tools)) {
+    assert.ok(!base.includes(name), name);
+    assert.ok(!pnpmLock.includes(`${name}@`), `${name} is out of pnpm-lock.yaml`);
+  }
+  const ids = Object.values(tools).map((entry) => entry.id);
+  assert.equal(new Set(ids).size, ids.length, 'tool ids are unique');
 });

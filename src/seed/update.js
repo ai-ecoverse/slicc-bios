@@ -175,7 +175,9 @@ export function writing(cwd) {
 }
 
 export function hygiene(argv) {
-  return guard.on && argv[0] === 'pnpm' ? [...argv, ...HYGIENE] : argv;
+  return guard.on && argv[0] === 'pnpm'
+    ? [...argv, ...HYGIENE.filter((flag) => !argv.includes(flag))]
+    : argv;
 }
 
 export function guarded() {
@@ -263,6 +265,13 @@ export async function kernelFiles(kernel, attach) {
     await expect([at], () => client.fs.writeFile(at, data));
   };
   return {
+    async stop({ argv, since, uid }) {
+      const same = (one) => one.length === argv.length && one.every((arg, i) => arg === argv[i]);
+      const ours = (proc) =>
+        same(proc.argv ?? []) && proc.uid === uid && !proc.tty && proc.started >= since - 2000;
+      for (const proc of await client.ps())
+        if (ours(proc)) await client.kill(proc.pid, 'SIGTERM').catch(() => {});
+    },
     write: (path, data) => put(`/${path}`, data),
     async rm(path) {
       const at = `/${path}`;
@@ -320,8 +329,15 @@ export function installer(
 
 export const STORE = 'slicc-pnpm-store';
 
-export function pnpm(kernel, cwd, report, to = null, argv = INSTALL, writer = true) {
-  return navigator.locks.request(STORE, () => pnpmAlone(kernel, cwd, report, to, argv, writer));
+export function pnpm(kernel, cwd, report, to = null, argv = INSTALL, writer = true, limit = 0) {
+  const run = () => pnpmAlone(kernel, cwd, report, to, argv, writer, null, limit);
+  if (!limit) return navigator.locks.request(STORE, run);
+  return navigator.locks
+    .request(STORE, { signal: AbortSignal.timeout(limit * 1000) }, run)
+    .catch((error) => {
+      if (error?.name !== 'TimeoutError' && error?.name !== 'AbortError') throw error;
+      throw Object.assign(new Error(`the pnpm store stayed busy for ${limit} s`), { to });
+    });
 }
 
 export function pnpmAs(kernel, { user, home, where }, report, to, argv) {
@@ -329,11 +345,40 @@ export function pnpmAs(kernel, { user, home, where }, report, to, argv) {
   return pnpmAlone(kernel, home, report, to, argv, false, { user, env: { ...env, ...TRAPS } });
 }
 
-async function pnpmAlone(kernel, cwd, report, to, argv, writer, as = null) {
+export const CEILING = 15 * 60;
+
+function watchdog(limit, command) {
+  const since = Date.now();
+  let last = since;
+  let stalled = false;
+  const timer = setInterval(
+    () => {
+      if (stalled || Date.now() - last < limit * 1000) return;
+      stalled = true;
+      void kernelSink()
+        ?.stop?.({ argv: command, since, uid: 0 })
+        .catch((error) => console.warn(`pnpm: ${error.message}`));
+    },
+    Math.min((limit * 1000) / 4, 5000)
+  );
+  return {
+    heard: () => {
+      last = Date.now();
+    },
+    stalled: () => stalled,
+    done: () => clearInterval(timer),
+  };
+}
+
+async function pnpmAlone(kernel, cwd, report, to, argv, writer, as = null, limit = 0) {
   let log = '';
   const downloads = new Map();
   report({ progress: null, log });
+  const line = writer ? hygiene(argv) : argv;
+  const command = limit ? ['timeout', '-k', '10', String(CEILING), ...line] : line;
+  const dog = limit ? watchdog(limit, command) : null;
   const onStdout = (chunk) => {
+    dog?.heard();
     log = (log + chunk).slice(-LOG);
     report({ progress: progress(log, downloads), log });
   };
@@ -343,10 +388,19 @@ async function pnpmAlone(kernel, cwd, report, to, argv, writer, as = null) {
     : writer
       ? { ...writing(cwd), onStdout }
       : { cwd, env: TRAPS, onStdout };
-  const ran = () => kernel.run(writer ? hygiene(argv) : argv, run);
-  const { status, stderr } = await (writer ? writing_(kernel, writes(cwd, argv), ran) : ran());
+  const ran = () => kernel.run(command, run);
+  const { status, stderr } = await (writer
+    ? writing_(kernel, writes(cwd, argv), ran)
+    : ran()
+  ).finally(() => dog?.done());
   if (status) {
-    const error = new Error(stderr.trim() || `pnpm exited with ${status}`);
+    const late = limit && (status === 124 || status === 137);
+    const reason = dog?.stalled()
+      ? `pnpm wrote nothing for ${limit} s`
+      : late
+        ? `pnpm didn't finish within ${CEILING} s`
+        : stderr.trim() || `pnpm exited with ${status}`;
+    const error = new Error(reason);
     error.log = (log + stderr).slice(-LOG);
     error.to = to;
     throw error;
@@ -402,10 +456,11 @@ export async function versions(dir, names, prefix = '') {
   return found;
 }
 
-async function install(kernel, from, report, record) {
+async function install(kernel, from, report, record, ready) {
   const root = await navigator.storage.getDirectory();
   const lock = await fetchText('pnpm-lock.yaml', from);
   if (lock === (await text(root, 'var/lib/slicc/pnpm-lock.yaml'))) return null;
+  await ready();
   const manifest = await fetchText('package.json', from);
   const names = Object.keys(JSON.parse(manifest).dependencies ?? {});
   const before = await versions(root, names);
@@ -437,6 +492,11 @@ async function install(kernel, from, report, record) {
     .map((name) => ({ name, from: before[name], to: after[name] }));
 }
 
-export function update(kernel, { from = deployed, report = () => {}, record = installer } = {}) {
-  return navigator.locks.request('slicc-packages', () => install(kernel, from, report, record));
+export function update(
+  kernel,
+  { from = deployed, report = () => {}, record = installer, ready = async () => {} } = {}
+) {
+  return navigator.locks.request('slicc-packages', () =>
+    install(kernel, from, report, record, ready)
+  );
 }

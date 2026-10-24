@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
-import { AGENT_BUDGET, actPackage, agentUp, boot, run, shows } from './bios.mjs';
+import { AGENT_BUDGET, actPackage, agentUp, boot } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch({ timeout: 120000, agent: true });
@@ -110,7 +110,10 @@ describe('a cold agent install runs in the page’s one kernel with no package s
     await page.init(watchKernels);
     await page.init(promptStamp);
     await page.init(() => performance.setResourceTimingBufferSize(20000));
-    await boot(page);
+    await page.init(() => {
+      globalThis.sliccKernelDebug = true;
+    });
+    await boot(page, undefined, { tools: false });
     await page.within(
       300000,
       () =>
@@ -123,21 +126,19 @@ describe('a cold agent install runs in the page’s one kernel with no package s
           .model.updates.list()
           .find((item) => item.id === 'agent')?.progress
     );
-    await run(
-      page,
-      "clear; ps -e -o args | grep '^pnpm install' | sed 's/^/seen: /'; echo listed-$((40 + 2))"
-    );
-    await shows(page, 'listed-42', 120000);
-    const screen = await page.evaluate(() => {
-      const { dock } = document.querySelector('slicc-app');
-      return dock.content(
-        dock.api.panels.map((panel) => panel.id).findLast((id) => id.startsWith('terminal:'))
-      ).screen.textContent;
+    const seen = await page.within(300000, async () => {
+      globalThis.oneKernelClient ??= await globalThis.sliccKernelClient();
+      const all = (await globalThis.oneKernelClient.ps()).map((proc) =>
+        (proc.argv ?? []).join(' ')
+      );
+      window.oneKernelPs = all;
+      return all.find(
+        (args) => args.startsWith('pnpm install') && args.includes('--trust-lockfile')
+      );
     });
-    const seen = screen.match(/seen: (pnpm install[^\n]*?)(?=\s{2,}|seen:|listed-42)/)?.[1] ?? '';
-    assert.match(seen, /--frozen-lockfile/, screen);
-    assert.match(seen, /--ignore-scripts/, screen);
-    assert.match(seen, /--ignore-pnpmfile/, screen);
+    assert.match(seen, /--frozen-lockfile/, seen);
+    assert.match(seen, /--ignore-scripts/, seen);
+    assert.match(seen, /--ignore-pnpmfile/, seen);
     const optional = actPackage(page, 'rsync', 'install', {
       budget: AGENT_BUDGET,
       stall: AGENT_BUDGET,

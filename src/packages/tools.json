@@ -1,0 +1,93 @@
+{
+  "@ai-ecoverse/wasm-grep": {
+    "id": "grep",
+    "label": "grep",
+    "first": true
+  },
+  "@ai-ecoverse/wasm-sed": {
+    "id": "sed",
+    "label": "sed",
+    "first": true
+  },
+  "@ai-ecoverse/wasm-curl": {
+    "id": "curl",
+    "label": "curl",
+    "first": true
+  },
+  "@ai-ecoverse/wasm-tar": {
+    "id": "tar",
+    "label": "tar",
+    "first": true
+  },
+  "@ai-ecoverse/wasm-gzip": {
+    "id": "gzip",
+    "label": "gzip",
+    "first": true
+  },
+  "@ai-ecoverse/wasm-jq": {
+    "id": "jq",
+    "label": "jq",
+    "first": true
+  },
+  "@ai-ecoverse/wasi-ripgrep": {
+    "id": "rg",
+    "label": "ripgrep",
+    "first": true
+  },
+  "@ai-ecoverse/wasm-gawk": {
+    "id": "awk",
+    "label": "gawk"
+  },
+  "@ai-ecoverse/wasm-diffutils": {
+    "id": "diff",
+    "label": "diffutils"
+  },
+  "@ai-ecoverse/wasm-patch": {
+    "id": "patch",
+    "label": "patch"
+  },
+  "@ai-ecoverse/wasm-xz": {
+    "id": "xz",
+    "label": "xz"
+  },
+  "@ai-ecoverse/wasm-bzip2": {
+    "id": "bzip2",
+    "label": "bzip2"
+  },
+  "@ai-ecoverse/wasm-less": {
+    "id": "less",
+    "label": "less"
+  },
+  "@ai-ecoverse/wasm-tree": {
+    "id": "tree",
+    "label": "tree"
+  },
+  "@ai-ecoverse/wasm-which": {
+    "id": "which",
+    "label": "which"
+  },
+  "@ai-ecoverse/wasm-procps": {
+    "id": "procps",
+    "label": "procps (ps, free, pgrep)"
+  },
+  "@ai-ecoverse/wasm-ncurses-utils": {
+    "id": "ncurses",
+    "label": "ncurses utilities (tput, clear)"
+  },
+  "@ai-ecoverse/wasm-mount": {
+    "id": "mount",
+    "label": "mount"
+  },
+  "@ai-ecoverse/wasi-fnox": {
+    "id": "fnox",
+    "label": "fnox"
+  },
+  "@ai-ecoverse/slicc-cdp": {
+    "id": "cdp",
+    "label": "slicc-cdp (playwright-cli, curlwright)"
+  },
+  "@ai-ecoverse/slicc-clipboard": {
+    "id": "clipboard",
+    "label": "slicc-clipboard (pbcopy, xclip)"
+  }
+}

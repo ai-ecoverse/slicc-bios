@@ -194,23 +194,11 @@ test('the gate refuses a dependency from outside ai-ecoverse unless the base set
 
 test('the gate refuses a release without npm provenance, built by another repo, by another workflow, from a branch, or whose attestation names another tarball', async () => {
   const cases = [
-    [{ provenance: false }, 'wasm-git 2.55.0-18 has no build provenance'],
-    [
-      { built: { repository: 'someone/homescoop' } },
-      "wasm-git 2.55.0-18 wasn't built by ai-ecoverse/homescoop",
-    ],
-    [
-      { built: { path: '.github/workflows/manual.yml' } },
-      "wasm-git 2.55.0-18 wasn't built by ai-ecoverse/homescoop's release workflow on main",
-    ],
-    [
-      { built: { ref: 'refs/heads/try-this' } },
-      "wasm-git 2.55.0-18 wasn't built by ai-ecoverse/homescoop's release workflow on main",
-    ],
-    [
-      { subject: integrityOf('another tarball') },
-      "wasm-git 2.55.0-18 wasn't built by ai-ecoverse/homescoop",
-    ],
+    [{ provenance: false }, 'npm has no record of where it was built'],
+    [{ built: { repository: 'someone/homescoop' } }, "it didn't come from SLICC's own build"],
+    [{ built: { path: '.github/workflows/manual.yml' } }, "it didn't come from SLICC's own build"],
+    [{ built: { ref: 'refs/heads/try-this' } }, "it didn't come from SLICC's own build"],
+    [{ subject: integrityOf('another tarball') }, "it didn't come from SLICC's own build"],
   ];
   for (const [change, why] of cases) {
     const { npm } = gate([{ ...GIT, ...change }]);
@@ -228,7 +216,7 @@ test('the gate refuses a package whose publisher seven doesn’t know, and a sli
     why: 'new-thing has no publisher seven knows',
   });
   assert.deepEqual(await npm.gate(lockOf(key(cdp)), key(cdp)), {
-    why: 'slicc-cdp 1.30.13 has no build provenance',
+    why: 'npm has no record of where it was built',
   });
 });
 
@@ -362,7 +350,10 @@ test('the listing takes the version, description, commands without helpers and t
     size: 55748565,
   });
   assert.equal(found.get(browser.name).version, '0.1.30');
-  assert.equal(found.get(browser.name).withheld, 'slicc-cdp 1.30.13 has no build provenance');
+  assert.equal(
+    found.get(browser.name).withheld,
+    'npm has no record of where its slicc-cdp 1.30.13 was built'
+  );
   assert.equal(found.get('@ai-ecoverse/wasm-gone'), null, 'a failed row is null, the rest load');
   assert.ok(fetcher, 'the fake answered');
 });
@@ -482,8 +473,8 @@ test('a refusal reads “Not offered: …”, drift keeps MISMATCH, and an updat
     "This version doesn't match the tested build, so git 2.55.0-1 stays. Retry later."
   );
   assert.equal(
-    refusal({ why: 'wasm-git 2.55.0-18 has no build provenance' }, 'git', null),
-    'Not offered: wasm-git 2.55.0-18 has no build provenance.'
+    refusal({ why: 'npm has no record of where it was built' }, 'git', null),
+    'Not offered: npm has no record of where it was built.'
   );
   assert.equal(
     refusal({ why: 'needs slicc-kernel 1.200.0 or newer' }, 'git', '2.55.0-1'),
@@ -556,7 +547,7 @@ test('when latest fails the gate, the listing offers the newest older version th
   assert.equal(found.withheld, undefined);
   assert.deepEqual(found.newer, {
     version: '0.1.30',
-    reason: 'slicc-cdp 1.30.13 has no build provenance',
+    reason: 'npm has no record of where its slicc-cdp 1.30.13 was built',
   });
   const blocked = [
     { ...cdp, version: '1.30.13' },
@@ -568,7 +559,7 @@ test('when latest fails the gate, the listing offers the newest older version th
   ];
   const none = (await gate(blocked, tags).npm.lookAll([entry], new Map())).get(entry.package);
   assert.equal(none.version, '0.1.30');
-  assert.equal(none.withheld, 'slicc-cdp 1.30.13 has no build provenance');
+  assert.equal(none.withheld, 'npm has no record of where its slicc-cdp 1.30.13 was built');
   assert.equal(none.newer, undefined, '0.1.23 is past the five it checks');
 });
 
@@ -707,7 +698,7 @@ test('the OPFS cache keeps only what the rows show: a provenance verdict planted
   assert.deepEqual(Object.keys(JSON.parse(files[CACHE])), ['schema', 'entries']);
   const { npm } = gate([{ ...GIT, provenance: false }]);
   const found = await npm.lookAll([{ id: 'git', label: 'git', package: GIT.name }], new Map());
-  assert.equal(found.get(GIT.name).withheld, 'wasm-git 2.55.0-18 has no build provenance');
+  assert.equal(found.get(GIT.name).withheld, 'npm has no record of where it was built');
 });
 
 test('an exception’s requires reads the kernel seven ships, never certs.json’s history', async () => {
@@ -762,11 +753,12 @@ test('the walk-back skips an older version with no valid integrity and still off
   assert.equal(found.get(name).version, '9.2.1192-1');
   assert.deepEqual(found.get(name).newer, {
     version: '9.2.1192-3',
-    reason: 'wasm-xxd 9.2.1192-3 has no build provenance',
+    reason: 'npm has no record of where it was built',
   });
 });
 
 const OPTIONAL = new URL('../../src/packages/optional/', import.meta.url);
+const OUTSIDE = "it didn't come from SLICC's own build";
 const CLI = { repository: 'ai-ecoverse/slicc-cli', path: '.github/workflows/release.yml' };
 const PUBLISHERS = {
   '@ai-ecoverse/slicc-jsh': {
@@ -851,7 +843,6 @@ test('a publisher on shared-web’s pipeline releases from ci.yml: a ci.yml buil
   const PIPELINE = '.github/workflows/ci.yml';
   for (const [name, { versions, built }] of Object.entries(PUBLISHERS)) {
     const [good, latest] = versions;
-    const repo = built.repository;
     const fresh = await shipped([
       CDP,
       ...releasesOf(name, { built: { ...built, path: PIPELINE } }),
@@ -866,7 +857,7 @@ test('a publisher on shared-web’s pipeline releases from ci.yml: a ci.yml buil
       const row = (await bad.npm.lookAll([bad.byName.get(name)], new Map())).get(name);
       assert.deepEqual(
         [row.version, row.newer?.reason],
-        [good, `${name.slice(13)} ${latest} wasn't built by ${repo}'s release workflow on main`],
+        [good, "it didn't come from SLICC's own build"],
         `${name} ${JSON.stringify(change)}`
       );
     }
@@ -882,16 +873,10 @@ test('a publisher on shared-web’s pipeline releases from ci.yml: a ci.yml buil
 
 test('a new publisher’s release built by another repo, another workflow or a maintenance branch isn’t offered: the row lists it and offers the newest release that passes', async () => {
   const cases = [
-    [{ repository: 'someone/fork' }, (it, repo) => `${it} wasn't built by ${repo}`],
-    [
-      { path: '.github/workflows/manual.yml' },
-      (it, repo) => `${it} wasn't built by ${repo}'s release workflow on main`,
-    ],
-    [
-      { ref: 'refs/heads/release-0.x' },
-      (it, repo) => `${it} wasn't built by ${repo}'s release workflow on main`,
-    ],
-    [{ provenance: false }, (it) => `${it} has no build provenance`],
+    [{ repository: 'someone/fork' }, () => OUTSIDE],
+    [{ path: '.github/workflows/manual.yml' }, () => OUTSIDE],
+    [{ ref: 'refs/heads/release-0.x' }, () => OUTSIDE],
+    [{ provenance: false }, () => 'npm has no record of where it was built'],
   ];
   for (const [name, { versions, built }] of Object.entries(PUBLISHERS)) {
     for (const [change, why] of cases) {
@@ -930,7 +915,7 @@ test('wasi-slicc, slicc-jsh and mcpcat built by their own ci.yml on main, the sh
       releasesOf(name, { built: { ...built, path: '.github/workflows/publish.yml' } })
     );
     const found = (await other.npm.lookAll([other.byName.get(name)], new Map())).get(name);
-    const reason = `${name.slice(13)} ${latest} wasn't built by ${built.repository}'s release workflow on main`;
+    const reason = "it didn't come from SLICC's own build";
     assert.deepEqual([found.version, found.newer], [good, { version: latest, reason }], name);
   }
 });
@@ -992,25 +977,23 @@ test('sliccy-browser is offered only with a slicc-cdp from slicc-cdp’s release
   const bare = { ...CDP, built: undefined, provenance: false };
   const off = await shipped([bare, ...releasesOf(browser)], tagged);
   const info = (await off.npm.lookAll([off.byName.get(browser)], new Map())).get(browser);
-  assert.equal(info.withheld, 'slicc-cdp 1.30.30 has no build provenance');
+  assert.equal(info.withheld, 'npm has no record of where its slicc-cdp 1.30.30 was built');
   const elsewhere = [
-    [
-      { ref: `refs/tags/v${CDP.version}` },
-      "wasn't built by ai-ecoverse/slicc-cdp's release workflow on main",
-    ],
-    [
-      { path: '.github/workflows/manual.yml' },
-      "wasn't built by ai-ecoverse/slicc-cdp's release workflow on main",
-    ],
-    [{ repository: 'someone/slicc-cdp' }, "wasn't built by ai-ecoverse/slicc-cdp"],
+    { ref: `refs/tags/v${CDP.version}` },
+    { path: '.github/workflows/manual.yml' },
+    { repository: 'someone/slicc-cdp' },
   ];
-  for (const [change, why] of elsewhere) {
+  for (const change of elsewhere) {
     const moved = await shipped(
       [{ ...CDP, built: { ...CDP_RELEASE, ...change } }, ...releasesOf(browser)],
       tagged
     );
     const row = (await moved.npm.lookAll([moved.byName.get(browser)], new Map())).get(browser);
-    assert.equal(row.withheld, `slicc-cdp 1.30.30 ${why}`, JSON.stringify(change));
+    assert.equal(
+      row.withheld,
+      "its slicc-cdp 1.30.30 didn't come from SLICC's own build",
+      JSON.stringify(change)
+    );
   }
   const old = await shipped([{ ...CDP, deprecated: 'use 1.31' }, ...releasesOf(browser)], tagged);
   const held = (await old.npm.lookAll([old.byName.get(browser)], new Map())).get(browser);
@@ -1019,7 +1002,7 @@ test('sliccy-browser is offered only with a slicc-cdp from slicc-cdp’s release
   const wrong = await shipped([CDP, ...releasesOf(browser, { built: cdpRelease })]);
   const it = `${browser}@0.1.41`;
   assert.deepEqual(await wrong.npm.gate(lockOf(it, key(CDP)), it), {
-    why: "sliccy-browser 0.1.41 wasn't built by ai-ecoverse/slicc-cdp's release workflow on main",
+    why: "it didn't come from SLICC's own build",
   });
   const mcpcat = '@ai-ecoverse/mcpcat';
   const live = {
@@ -1105,4 +1088,26 @@ test('two entries whose latest claim the same command: the first in the catalog 
   assert.equal(found.get('a').withheld, undefined);
   assert.equal(found.get('b').withheld, "its unzip command is zip's");
   assert.equal(found.get('c'), null);
+});
+
+test('a refusal reads as a reason a user gets: a release, or its exact dependency, that didn’t come from SLICC’s own build says so', async () => {
+  const bash = { name: '@ai-ecoverse/wasm-bash', version: '5.3.0-30', provenance: false };
+  const git = { ...GIT, version: '2.55.0-30', dependencies: { [bash.name]: bash.version } };
+  const { npm } = gate([bash, git]);
+  const found = await npm.lookAll([{ id: 'git', label: 'git', package: GIT.name }], new Map());
+  assert.equal(
+    found.get(GIT.name).withheld,
+    'npm has no record of where its wasm-bash 5.3.0-30 was built'
+  );
+  assert.deepEqual(await npm.gate(lockOf(key(git), key(bash)), key(git)), {
+    why: 'npm has no record of where its wasm-bash 5.3.0-30 was built',
+  });
+  const forked = gate([{ ...GIT, built: { repository: 'someone/fork' } }]).npm;
+  assert.deepEqual(await forked.gate(lockOf(key(GIT)), key(GIT)), {
+    why: "it didn't come from SLICC's own build",
+  });
+  assert.equal(
+    refusal({ why: "it didn't come from SLICC's own build" }, 'git', '2.55.0-17'),
+    "Not offered: it didn't come from SLICC's own build. git 2.55.0-17 stays."
+  );
 });

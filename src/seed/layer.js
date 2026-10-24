@@ -1,5 +1,6 @@
 import { compare, loadCatalog, locked } from './packages.js';
 import { BIOS } from './site.js';
+import { loadTools } from './tools.js';
 import { baseManifest, enforced, fetchText, pnpm, readable, text, write } from './update.js';
 
 export const FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies'];
@@ -176,11 +177,12 @@ export async function certifiedSet(get = (name) => fetchText(name, BIOS)) {
   return found;
 }
 
-export async function viaCatalog(left, lock) {
+export async function viaCatalog(left, lock, tools = () => loadTools().catch(() => [])) {
   const catalog = await loadCatalog();
   const names = new Set(
     catalog.entries.filter((entry) => entry.kind !== 'project').map((entry) => entry.package)
   );
+  for (const entry of await tools()) names.add(entry.package);
   if (!left.some(([key]) => names.has(key.slice(0, key.lastIndexOf('@'))))) return new Set();
   return catalog.npm.admitted(left, lock, names);
 }
