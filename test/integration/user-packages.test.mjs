@@ -145,7 +145,7 @@ async function checked(page) {
     document
       .querySelector('slicc-app')
       .model.updates.list()
-      .some((item) => item.id === 'grammars' && item.checkedAt !== null)
+      .some((item) => item.id === 'agent' && item.checkedAt !== null)
   );
 }
 

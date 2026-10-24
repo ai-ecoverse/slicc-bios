@@ -104,13 +104,6 @@ test('Install / Update opens at boot until the agent is installed, and a failed 
     const kept = await readFile(new URL('agent-failed.log', page.dir), 'utf8');
     assert.match(row.log.trim(), /^Progress: resolved[\s\S]*\n[\s\S]*is-number-99\.0\.0\.tgz$/);
     assert.ok(kept.includes(`install log:\n${row.log}`));
-    const grammars = await page.evaluate(() =>
-      window
-        .app()
-        .model.updates.list()
-        .find((item) => item.id === 'grammars')
-    );
-    assert.notEqual(grammars.state, 'current');
     assert.equal(await page.evaluate(() => window.updatesOpen()), true);
     assert.equal(await page.evaluate(() => window.app().model.updates.ready()), false);
     await page.screenshot(new URL('failed.png', page.dir));

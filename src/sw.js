@@ -51,7 +51,7 @@ const code = new Set([
   'paintworklet',
   'xslt',
 ]);
-const live = ['/os/', '/node_modules/', '/opt/agent/', '/opt/grammars/'];
+const live = ['/os/', '/node_modules/', '/opt/agent/'];
 const SCOPE = new URL(self.registration.scope).pathname;
 const BIOS = `/${new URL('./', self.location).pathname.slice(SCOPE.length)}`;
 const BIOS_URL = new URL('./', self.location).href;
