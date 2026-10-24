@@ -243,19 +243,31 @@ export async function guardHost(t, path) {
         return linked.open();
       },
     };
-    const lagged = (connection, lag) => {
+    const lagged = (connection, lag, paintDelay) => {
       const send = connection.send.bind(connection);
-      connection.send = (text) => {
-        if (lag && JSON.parse(text).method === 'Target.detachFromTarget') {
-          setTimeout(() => send(text), lag);
-        } else send(text);
+      const shots = new Set();
+      const relay = { onmessage: null, onclose: null, close: () => connection.close() };
+      connection.onmessage = (text) => {
+        if (shots.delete(JSON.parse(text).id))
+          setTimeout(() => relay.onmessage?.(text), paintDelay);
+        else relay.onmessage?.(text);
       };
-      return connection;
+      connection.onclose = (why) => relay.onclose?.(why);
+      relay.send = (text) => {
+        const message = JSON.parse(text);
+        if (paintDelay && message.method === 'Page.captureScreenshot') shots.add(message.id);
+        if (lag && message.method === 'Target.detachFromTarget') setTimeout(() => send(text), lag);
+        else send(text);
+      };
+      return relay;
     };
     const guards = new Map();
     window.guards = {
-      async open(row, own, path, lag) {
-        const connection = guardProtected(lagged(await hosts[path](), lag), [location.origin, own]);
+      async open(row, own, path, lag, paintDelay) {
+        const connection = guardProtected(
+          lagged(await hosts[path](), lag, paintDelay),
+          [location.origin, own].flat()
+        );
         const pending = new Map();
         let next = 0;
         connection.onmessage = (text) => {
@@ -304,7 +316,7 @@ export async function guardHost(t, path) {
   t.after(() => unguarded.close());
   const clientFactory =
     (path) =>
-    async ({ detachDelay }) => {
+    async ({ detachDelay, paintDelay, own = targets.own }) => {
       count += 1;
       const row = count;
       const { events, push, waitEvent } = eventsOf();
@@ -312,8 +324,8 @@ export async function guardHost(t, path) {
       rows.set(row, { push, messages });
       await ensure();
       await seven.evaluate(
-        ([row, own, path, lag]) => window.guards.open(row, own, path, lag),
-        [row, targets.own, path, detachDelay]
+        ([row, own, path, lag, paintDelay]) => window.guards.open(row, own, path, lag, paintDelay),
+        [row, own, path, detachDelay, paintDelay]
       );
       const client = {
         transport: path,
@@ -340,7 +352,7 @@ export async function guardHost(t, path) {
         },
       };
     };
-  return { clientFactory };
+  return { clientFactory, vault: chrome.vault.origin };
 }
 
 export const trace = (...parts) =>
@@ -379,6 +391,8 @@ export function shared(path, { variants, except = [], group } = {}) {
       const { clientFactory } = await guardHost(t, path);
       for (const target of chosen.targets) {
         trace('run', path, target, variant);
+        let current;
+        const evidence = new Map();
         const execution = await run(subset(target), {
           clientFactory: clientFactory(path),
           rowTimeoutMs: ROW_MS,
@@ -398,17 +412,62 @@ export function shared(path, { variants, except = [], group } = {}) {
               row.guarded,
               row.live
             ),
-          debug: process.env.GUARD_TRACE
-            ? (data) =>
-                trace(
-                  'debug',
-                  JSON.stringify(data).slice(0, Number(process.env.GUARD_TRACE) || 300)
+          onStart: (row) => {
+            current = row;
+          },
+          debug: (data) => {
+            if (process.env.GUARD_TRACE)
+              trace('debug', JSON.stringify(data).slice(0, Number(process.env.GUARD_TRACE) || 300));
+            if (
+              data.side !== 'guarded' ||
+              !data.calls ||
+              !['C8.iframe-error', 'C4.static-cross-site'].includes(current?.id)
+            )
+              return;
+            const snapshot = data.calls.snapshot;
+            evidence.set(current.id, {
+              frameTree: data.calls.frameTree,
+              snapshot: snapshot && {
+                ok: snapshot.ok,
+                error: snapshot.error,
+                nodeName: snapshot.result?.root?.nodeName,
+              },
+              events: data.events
+                .filter((event) =>
+                  [
+                    'Page.frameAttached',
+                    'Page.frameNavigated',
+                    'Page.frameDetached',
+                    'Network.loadingFailed',
+                    'Target.attachedToTarget',
+                    'Target.detachedFromTarget',
+                  ].includes(event.method)
                 )
-            : undefined,
+                .map((event) => ({
+                  method: event.method,
+                  sessionId: event.sessionId,
+                  frame: event.params.frame,
+                  frameId: event.params.frameId,
+                  reason: event.params.reason,
+                  errorText: event.params.errorText,
+                  targetInfo: event.params.targetInfo,
+                })),
+            });
+          },
         });
         results.push(...execution.results);
+        for (const row of execution.results.filter(failing)) {
+          if (evidence.has(row.id))
+            process.stdout.write(
+              `GUARD-FRAMES ${path} ${row.id} ${target} ${variant} ${JSON.stringify(evidence.get(row.id))}\n`
+            );
+        }
       }
       const failed = results.filter((row) => row.variant === variant && failing(row));
+      for (const row of failed)
+        process.stdout.write(
+          `GUARD-OBSERVATIONS ${path} ${row.id} ${row.target} ${variant} ${JSON.stringify(row.observations)}\n`
+        );
       assert.deepEqual(
         failed.map(({ id, target, control, guarded, live, why, errors }) => ({
           id,
