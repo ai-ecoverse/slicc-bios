@@ -41,7 +41,7 @@ export async function fakeRelease({ name, from, version, repository, dependencie
     integrity,
     provenance: true,
     repository,
-    workflow: { ref: 'refs/heads/main', path: '.github/workflows/release.yml' },
+    workflow: { ref: 'refs/heads/main', path: '.github/workflows/ci.yml' },
   };
   const packument = async () => {
     const real = JSON.parse((await download(base)).toString());

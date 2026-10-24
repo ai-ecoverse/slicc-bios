@@ -9,7 +9,9 @@ import {
   chrome,
   confirmWith,
   developer,
+  future,
   installedAgent,
+  major,
   notice,
   npmSays,
   PINNED,
@@ -184,9 +186,9 @@ test('a release without provenance or with an uncertified gated dependency isnâ€
       assert.ok(!row.actions.includes('install-beta'));
       await shoot(page, 'beta-not-offered', { show: 'updates', target: '[data-npm]' });
       release.provenance = true;
-      release.workflow = { ref: 'refs/heads/main', path: '.github/workflows/ci.yml' };
+      release.workflow = { ref: 'refs/heads/main', path: '.github/workflows/other.yml' };
       t.after(() => {
-        release.workflow = { ref: 'refs/heads/main', path: '.github/workflows/release.yml' };
+        release.workflow = { ref: 'refs/heads/main', path: '.github/workflows/ci.yml' };
       });
       await developer(page, false);
       await developer(page, true);
@@ -194,7 +196,7 @@ test('a release without provenance or with an uncertified gated dependency isnâ€
       const outside = await agentRow(page);
       assert.equal(outside.npm.reason, 'built outside the release workflow');
       assert.ok(!outside.actions.includes('install-beta'));
-      release.workflow = { ref: 'refs/heads/main', path: '.github/workflows/release.yml' };
+      release.workflow = { ref: 'refs/heads/main', path: '.github/workflows/ci.yml' };
     }
   );
 
@@ -209,7 +211,7 @@ test('a release without provenance or with an uncertified gated dependency isnâ€
       await developer(page, true);
       await npmSays(page, 'not-offered');
       const row = await agentRow(page);
-      assert.equal(row.npm.latest, '7.0.0');
+      assert.equal(row.npm.latest, '6.98.0');
       assert.equal(
         row.npm.reason,
         'needs @ai-ecoverse/slicc-clipboard@1.0.99, which isnâ€™t certified'
@@ -217,6 +219,69 @@ test('a release without provenance or with an uncertified gated dependency isnâ€
       assert.ok(!row.actions.includes('install-beta'));
       assert.equal(await installedAgent(page), PINNED);
       releases.splice(releases.indexOf(tainted), 1);
+      await developer(page, false);
+      await developer(page, true);
+    }
+  );
+
+  await t.test(
+    'a new major on npm, from the agentâ€™s CI workflow, isnâ€™t offered while seven ships the old major, unless a newer agent already opened the profile, and then it installs and starts',
+    async () => {
+      releases.unshift(major);
+      t.after(() => {
+        if (releases.includes(major)) releases.splice(releases.indexOf(major), 1);
+      });
+      await developer(page, false);
+      await developer(page, true);
+      await npmSays(page, 'not-offered');
+      const row = await agentRow(page);
+      assert.equal(row.npm.latest, '7.0.0');
+      assert.equal(row.npm.reason, `a new major version; seven ships ${PINNED.split('.')[0]}.x`);
+      assert.ok(!row.actions.includes('install-beta'));
+      const marker = (data) =>
+        page.evaluate(async (data) => {
+          const root = await navigator.storage.getDirectory();
+          const dir = await root.getDirectoryHandle('.slicc', { create: true });
+          if (data === null) return dir.removeEntry('agent-profile.json').catch(() => {});
+          const writable = await (
+            await dir.getFileHandle('agent-profile.json', { create: true })
+          ).createWritable();
+          await writable.write(data);
+          await writable.close();
+        }, data);
+      assert.equal(await page.evaluate(() => localStorage.getItem('slicc-os.agent-schema')), '1');
+      await marker(JSON.stringify({ durableSchema: 2, agent: '7.0.0' }));
+      t.after(() => marker(null).catch(() => {}));
+      await developer(page, false);
+      await developer(page, true);
+      await npmSays(page, 'offered');
+      assert.equal((await agentRow(page)).npm.latest, '7.0.0');
+      releases.unshift(future);
+      t.after(() => {
+        if (releases.includes(future)) releases.splice(releases.indexOf(future), 1);
+      });
+      await marker(JSON.stringify({ durableSchema: 3, agent: '8.0.0' }));
+      await developer(page, false);
+      await developer(page, true);
+      await npmSays(page, 'offered');
+      assert.equal((await agentRow(page)).npm.latest, '8.0.0');
+      const acting = act(page, 'install-beta');
+      await confirmWith(page, 'Install beta');
+      await acting;
+      await rowSettled(page, 'agent');
+      assert.equal(await installedAgent(page), '8.0.0');
+      if ((await agentRow(page)).actions.includes('restart-agent'))
+        await act(page, 'restart-agent');
+      await runsAgent(page, '8.0.0');
+      assert.equal(await page.evaluate(() => localStorage.getItem('slicc-os.agent-schema')), '3');
+      releases.splice(releases.indexOf(future), 1);
+      await marker(null);
+      await page.evaluate(() => localStorage.setItem('slicc-os.agent-schema', '1'));
+      await act(page, 'back-to-certified');
+      await rowSettled(page, 'agent');
+      assert.equal(await installedAgent(page), PINNED);
+      await runsAgent(page, PINNED);
+      releases.splice(releases.indexOf(major), 1);
       await developer(page, false);
       await developer(page, true);
     }

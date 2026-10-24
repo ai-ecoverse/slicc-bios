@@ -447,14 +447,34 @@ async function installTailnet(report = () => {}) {
   }
 }
 
+let refusal = null;
+let refusedLast = false;
+
 async function started(chat, lock) {
   if (chat) {
+    refusedLast = false;
+    notices.remove('agent:older');
     startedWith = lock;
     updates.setReady(true);
     return chat;
   }
   agent = null;
-  if ((await agentVersion()) === null) updates.setReady(true);
+  const refused = refusal;
+  refusal = null;
+  refusedLast = Boolean(refused);
+  if (refused) {
+    updates.fail('agent', refused);
+    notices.show(
+      {
+        id: 'agent:older',
+        tone: 'warning',
+        title: 'Seven didn’t start the agent',
+        body: refused.plain,
+        actions: [],
+      },
+      () => {}
+    );
+  } else if ((await agentVersion()) === null) updates.setReady(true);
   else updates.fail('agent', Object.assign(new Error('the agent did not start'), { plain: STUCK }));
   return chat;
 }
@@ -464,6 +484,7 @@ async function launch() {
     owner = await startChat(kernel);
     if (await announce(await agentVersion())) return owner;
   } catch (error) {
+    if (error.older) refusal = error;
     console.warn(`the agent did not start: ${error.message}`);
   }
   await owner?.release();
@@ -489,6 +510,7 @@ async function relaunch(running) {
     owner = await restartChat(kernel, running);
     if (await announce(await agentVersion())) return owner;
   } catch (error) {
+    if (error.older) refusal = error;
     console.warn(`the agent did not restart: ${error.message}`);
   }
   await owner?.release();
@@ -502,6 +524,7 @@ async function restart() {
   const lock = recorded();
   agent = relaunch(running).then(async (restarted) => started(restarted, await lock));
   if (!(await agent)) {
+    if (refusedLast) return;
     updates.fail(
       'agent',
       Object.assign(new Error('the agent did not restart'), {
