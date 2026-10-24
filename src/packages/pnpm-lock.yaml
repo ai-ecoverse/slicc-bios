@@ -30,8 +30,8 @@ importers:
         specifier: 4.11.0-5
         version: 4.11.0-5
       '@ai-ecoverse/wasm-tls-engine':
-        specifier: 4.2.0-8
-        version: 4.2.0-8
+        specifier: 4.2.0-12
+        version: 4.2.0-12
 
 packages:
 
@@ -70,8 +70,8 @@ packages:
   '@ai-ecoverse/wasm-findutils@4.11.0-5':
     resolution: {integrity: sha512-UNQgX1BFtHUa8HE5M7D1gSZmfl9HztvamvhrZbQENVlKcqZdCiQo/Bzi8WPhklU7+SpglSVe5PFVggLrfKQ1Tw==}
 
-  '@ai-ecoverse/wasm-tls-engine@4.2.0-8':
-    resolution: {integrity: sha512-YVM03Q4pTJTqjjXLwDN0SCu6M78JJ5BIB9edkWYzKKp8If/QPU10O8P9pGNqMrD+61fj+L4HaFT7jvtvG3jM0w==}
+  '@ai-ecoverse/wasm-tls-engine@4.2.0-12':
+    resolution: {integrity: sha512-s/BeMGFK4SmaoG3l2e7eV9H3iXH2GjHxZzMqKhPufE3WfjaTuL8BziZGCcfA/gd7VtqTldMAXErAQWwpvhG2pg==}
 
 snapshots:
 
@@ -89,4 +89,4 @@ snapshots:
 
   '@ai-ecoverse/wasm-findutils@4.11.0-5': {}
 
-  '@ai-ecoverse/wasm-tls-engine@4.2.0-8': {}
+  '@ai-ecoverse/wasm-tls-engine@4.2.0-12': {}
