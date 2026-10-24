@@ -632,6 +632,7 @@ class Guard {
     this.quarantined = new Map();
     this.hints = new Map();
     this.shots = new Set();
+    this.gone = new Set();
     this.waiting = new Set();
     this.pages = new Set();
     this.frames = new Map();
@@ -651,6 +652,8 @@ class Guard {
     this.held = new Map();
     this.internal = new Map();
     this.asked = new Map();
+    this.commands = new Map();
+    this.finished = new WeakSet();
     this.watching = new Map();
     this.queues = new Map();
     this.streams = new Set();
@@ -764,6 +767,12 @@ class Guard {
     }
     if (release && message.id !== undefined) {
       const key = requestKey(message);
+      const command = this.commands.get(key);
+      if (command) {
+        this.finished.add(command);
+        this.commands.delete(key);
+        this.pendingContent.delete(command);
+      }
       this.callerIds.delete(key);
       this.moved.delete(key);
       this.shots.delete(key);
@@ -791,7 +800,13 @@ class Guard {
     });
   }
 
-  refuse({ id, sessionId }, message = PROTECTED, release = true) {
+  refuse(command, message = PROTECTED, release = true) {
+    if (this.finished.has(command)) return;
+    this.finished.add(command);
+    if (release && this.commands.get(requestKey(command)) === command)
+      this.commands.delete(requestKey(command));
+    this.pendingContent.delete(command);
+    const { id, sessionId } = command;
     this.deliver(
       { id, ...(sessionId ? { sessionId } : {}), error: { code: -32000, message } },
       release
@@ -924,7 +939,10 @@ class Guard {
 
   stopCasts() {
     for (const message of this.asked.values()) {
-      if (pageScoped(message.method) && this.locked(message.sessionId)) message.locked = true;
+      if (pageScoped(message.method) && this.locked(message.sessionId)) {
+        message.locked = true;
+        this.refuse(message);
+      }
     }
     for (const sessionId of this.casts) {
       if (!this.locked(sessionId)) continue;
@@ -1083,6 +1101,10 @@ class Guard {
       this.placing.set(info.targetId, this.place(info.targetId, params.sessionId));
     }
     if (method === 'Target.targetDestroyed') this.scopes.delete(params.targetId);
+    if (method === 'Target.detachedFromTarget' && params.sessionId !== undefined) {
+      kept(this.gone, params.sessionId);
+      this.refusePending(params.sessionId);
+    }
     if (method === 'Target.detachedFromTarget' && this.placements.has(params.sessionId)) {
       const childId = this.placements.get(params.sessionId);
       this.placements.delete(params.sessionId);
@@ -1194,10 +1216,19 @@ class Guard {
     return sessionId !== undefined && (this.blocked.has(sessionId) || !this.shown.has(sessionId));
   }
 
+  refusePending(sessionId) {
+    if (sessionId === undefined) return;
+    for (const command of this.asked.values())
+      if (command.sessionId === sessionId) this.refuse(command);
+    for (const command of this.commands.values())
+      if (command.sessionId === sessionId) this.refuse(command);
+  }
+
   cut(sessionId, parent) {
     this.quarantined.delete(sessionId);
     if (this.blocked.has(sessionId)) return;
     this.blocked.add(sessionId);
+    this.refusePending(sessionId);
     if (this.waiting.delete(sessionId))
       void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
     const targetId = this.sessions.get(sessionId)?.targetId;
@@ -1356,6 +1387,7 @@ class Guard {
   }
 
   watch(sessionId, targetId, parent) {
+    this.gone.delete(sessionId);
     if (!this.sessions.has(sessionId)) this.sessions.set(sessionId, { targetId, parent });
     if (!this.watching.has(sessionId)) {
       this.watching.set(sessionId, this.inspect(sessionId, targetId, parent));
@@ -1786,6 +1818,7 @@ class Guard {
     }
     if (method === 'Target.detachedFromTarget') {
       this.discardPending(params.sessionId);
+      this.watching.delete(params.sessionId);
       this.worlds.delete(params.sessionId);
       this.runtimes.delete(params.sessionId);
       this.primed.delete(params.sessionId);
@@ -2693,6 +2726,17 @@ class Guard {
     return true;
   }
 
+  endedAnswer(was) {
+    if (this.finished.has(was)) {
+      if (was.method === 'Page.startScreencast')
+        void this.call('Page.stopScreencast', {}, was.sessionId);
+      return true;
+    }
+    if (!this.blocked.has(was?.sessionId)) return false;
+    this.refuse(was);
+    return true;
+  }
+
   unsafeContent(message) {
     return (
       this.unsafe.has(message) ||
@@ -2764,7 +2808,7 @@ class Guard {
 
   async answer(message, was) {
     this.pendingContent.delete(was);
-    if (!this.owns(was)) return;
+    if (this.endedAnswer(was) || !this.owns(was)) return;
     if (this.unsafeContent(was)) return this.refuse(was);
     if (this.pageAnswer(was)) return;
     if (await this.routed(message, was)) return;
@@ -3014,18 +3058,21 @@ class Guard {
     return this.unseen(method, params);
   }
 
-  async create({ id, params, sessionId }) {
+  async create(message) {
+    const { id, params, sessionId } = message;
     const answer = await this.call('Target.createTarget', {
       ...params,
       background: params.background ?? true,
       url: 'about:blank',
     });
     const targetId = answer.result?.targetId;
+    if (this.finished.has(message)) return;
     if (!targetId) return this.deliver({ ...answer, id, ...(sessionId ? { sessionId } : {}) });
     this.learn({ targetId, url: 'about:blank', type: 'page' });
     this.touch(targetId);
     const nav = this.navs.get(targetId);
     await nav.ready;
+    if (this.finished.has(message)) return;
     if (!nav.failed && !inherits(params.url))
       void this.call('Page.navigate', { url: params.url }, nav.session);
     this.deliver({ id, ...(sessionId ? { sessionId } : {}), result: answer.result });
@@ -3051,9 +3098,11 @@ class Guard {
   }
 
   async pass(message) {
+    if (this.finished.has(message) || !this.owns(message)) return;
+    this.commands.set(requestKey(message), message);
     const outgoing = await this.withMainWorld(message);
     const { id, method, sessionId } = outgoing;
-    if (!this.owns(message)) return;
+    if (this.finished.has(message) || !this.owns(message)) return;
     if (this.unsafeContent(message)) return this.refuse(message);
     if (
       this.blocked.has(sessionId) &&
@@ -3232,17 +3281,20 @@ class Guard {
         if (this.callerIds.has(key)) return this.refuse(message, FAILED, false);
         this.callerIds.set(key, message);
       }
+      this.commands.set(key, message);
       if (
         this.quarantined.has(message.sessionId) ||
         (contentRead(message.method) && this.errorDocument(message.sessionId, message.method))
       )
         this.unsafe.add(message);
+      if (this.blocked.has(message.sessionId) || this.gone.has(message.sessionId))
+        return this.refuse(message);
       this.queue(
         `send:${message.sessionId ?? ''}`,
         async () => {
-          if (!this.owns(message)) return;
+          if (this.finished.has(message) || !this.owns(message)) return;
           const why = await this.check(message);
-          if (!this.owns(message)) return;
+          if (this.finished.has(message) || !this.owns(message)) return;
           if (why) return this.refuse(message, why);
           if (message.method === 'Runtime.enable' && this.primed.delete(message.sessionId)) {
             await this.call('Runtime.disable', {}, message.sessionId);
