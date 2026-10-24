@@ -322,6 +322,10 @@ async function ordinaryFrames(unguarded, raw, client, session, n) {
     frames: await frames(unguarded),
   };
   const inserted = { control, ...(await drive(client, session, added)) };
+  inserted.snapshot = verdict(
+    await outcome(client.send('DOM.getDocument', { depth: 1 }, session)),
+    (result) => result.root?.nodeName === '#document'
+  );
   await evaluate(unguarded, raw, "document.querySelector('#added-frame').remove()");
   const removed = {
     control: {
@@ -541,6 +545,8 @@ function ordinary(row, route, label) {
     assert.equal(row.shot, 'refused', `${label}: unplaced link frames close paint`);
     assert.equal(row.cast.frames, 0, `${label}: unplaced link frames close casts`);
     assert.equal(row.input, 'refused', `${label}: unplaced link frames close input`);
+    if (row.snapshot !== undefined)
+      assert.equal(row.snapshot, 'refused', `${label}: unplaced link frames close DOM`);
   } else {
     assert.equal(
       row.state,
@@ -549,6 +555,12 @@ function ordinary(row, route, label) {
     );
     assert.ok(row.shot >= MARKED, `${label}: the ordinary marker paints through the guard`);
     assert.ok(row.cast.marked > 0, `${label}: the ordinary marker casts through the guard`);
+    if (row.snapshot !== undefined)
+      assert.equal(
+        row.snapshot,
+        'shown',
+        `${label}: the placed ordinary page remains snapshot-readable`
+      );
     assert.equal(
       row.input,
       'reached',
