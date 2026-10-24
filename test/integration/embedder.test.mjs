@@ -85,7 +85,7 @@ async function settled(page, wide) {
 
 async function focusedTerminal(page) {
   const token = `zf${(probes += 1)}`;
-  await page.insert(token);
+  for (const key of token) await page.press(key);
   await shows(page, token, 10000);
   await page.press('u', 'ctrl');
 }
