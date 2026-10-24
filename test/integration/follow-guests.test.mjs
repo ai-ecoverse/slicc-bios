@@ -88,6 +88,16 @@ const proxy = await fakeProxy({
     const result = turn.content.find((item) => item.toolResult)?.toolResult?.toolUseId;
     if (result === 'guest-look')
       return { status: 200, headers: EVENTS, body: spoken('Done looking.') };
+    if (result === 'guest-job') return { status: 200, headers: EVENTS, body: spoken('Job left.') };
+    if (turn.tools && says('Leave a job'))
+      return {
+        status: 200,
+        headers: EVENTS,
+        body: runs(
+          'guest-job',
+          "(sleep 2; echo '17 3 * * * true' | crontab -) > /dev/null 2>&1 & echo job-started"
+        ),
+      };
     if (result === 'guest-sudo')
       return { status: 200, headers: EVENTS, body: spoken('Sudo answered.') };
     if (turn.tools && says('Look around')) {
@@ -386,6 +396,9 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
   const owner = await owners.page(t);
   const guest = await guests.page(t);
   await owner.init(deep);
+  await owner.init(() => {
+    globalThis.sliccKernelDebug = true;
+  });
   await guest.init(deep);
   await owner.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
   await ready(owner);
@@ -558,6 +571,47 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
   const delivered = asked.find((body) => body.includes('Hello from Anna'));
   assert.match(delivered, /A guest message from \\"Anna\\"/);
   assert.match(await transcript(owner), /Hello from Anna/);
+
+  await guest.evaluate(() => {
+    const { agent } = document.querySelector('slicc-chat').model;
+    return agent.send(agent.active(), 'Leave a job');
+  });
+  const jobMessage = await owner.within(60000, () =>
+    document
+      .querySelector('slicc-app')
+      .model.approvals.list()
+      .find((item) => item.kind === 'guest-message')
+  );
+  await owner.evaluate(
+    (id) => document.querySelector('slicc-app').model.approvals.decide(id, 'once'),
+    jobMessage.id
+  );
+  const jobTool = await owner.within(120000, () =>
+    document
+      .querySelector('slicc-app')
+      .model.approvals.list()
+      .find((item) => item.kind === 'guest-tool')
+  );
+  await owner.evaluate(
+    (id) => document.querySelector('slicc-app').model.approvals.decide(id, 'once'),
+    jobTool.id
+  );
+  await guest.until(() => {
+    const { agent } = document.querySelector('slicc-chat').model;
+    return JSON.stringify(agent.messages(agent.active())).includes('Job left.');
+  });
+  const tagged = await owner.within(60000, async () => {
+    const client = await globalThis.sliccKernelClient();
+    try {
+      const { stdout } = await client.run(['cat', '/var/spool/cron/tags'], { cwd: '/' });
+      return /slicc-taint:/.test(stdout) ? stdout : null;
+    } catch {
+      return null;
+    } finally {
+      await client.close?.();
+    }
+  });
+  assert.match(tagged, /slicc-taint:/, 'the guest’s background job left an untainted cron line');
   await shootGuest(guest, 'guest-chat');
 
   const probe = await guest.tab();
