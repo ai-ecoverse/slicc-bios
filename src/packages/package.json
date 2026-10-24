@@ -7,7 +7,7 @@
     "@ai-ecoverse/slicc-cdp": "1.34.1",
     "@ai-ecoverse/slicc-clipboard": "1.1.1",
     "@ai-ecoverse/slicc-kernel": "1.153.0",
-    "@ai-ecoverse/slicc-spectrum": "1.104.1",
+    "@ai-ecoverse/slicc-spectrum": "1.107.1",
     "@ai-ecoverse/wasi-fnox": "1.39.0-6",
     "@ai-ecoverse/wasi-pnpm": "12.9.1-21",
     "@ai-ecoverse/wasi-ripgrep": "15.2.0-5",
