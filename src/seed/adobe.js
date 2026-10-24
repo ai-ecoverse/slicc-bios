@@ -1,4 +1,3 @@
-import { browserHosts } from './cdp.js';
 import { askHold, landed, markerUrl, UNHELD } from './held.js';
 import { IMS_TOKEN } from './vault.js';
 
@@ -272,13 +271,8 @@ export function signIn({
   shared = false,
   listen = (name) => new BroadcastChannel(name),
   holdWait,
-  hold = (marker, signal) =>
-    askHold(marker, {
-      listen,
-      signal,
-      wait: holdWait,
-      present: () => Object.values(browserHosts(network)).some(Boolean),
-    }),
+  hosted = () => false,
+  hold = (marker, signal) => askHold(marker, { listen, signal, wait: holdWait, present: hosted }),
 }) {
   const relay = shared
     ? viaRelay({ open, hold, listen, timeout, address: openerUrl, channel: OPENER_CHANNEL })

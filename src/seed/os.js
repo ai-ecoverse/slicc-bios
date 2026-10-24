@@ -297,10 +297,17 @@ const vault = createVault({
 });
 const jerk = createJerk({ links: () => links, vault });
 useVault(vault);
-const login = sealedLogin(signIn({ network, shared: sharesOrigin() }), {
-  vault,
-  takes: () => takesVault(mine.agent),
-});
+const login = sealedLogin(
+  signIn({
+    network,
+    shared: sharesOrigin(),
+    hosted: () => Object.values(browserHosts(network)).some(Boolean),
+  }),
+  {
+    vault,
+    takes: () => takesVault(mine.agent),
+  }
+);
 document.documentElement.dataset.transport = kind;
 const root = await navigator.storage.getDirectory();
 const app = document.querySelector('slicc-app');
