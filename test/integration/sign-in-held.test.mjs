@@ -492,6 +492,42 @@ test('through slicc-node, sign-in tabs and their lineage are held from creation 
   await rows(t, page, 'proxy');
 });
 
+test('through slicc-node, an unmarked popup seven opens before any client connects, and that leaves about:blank at once, is held, and the first client never sees it', {
+  timeout: 5 * 60 * 1000,
+}, async (t) => {
+  const proxy = await startProxy({
+    port: 0,
+    origins: [new URL(chrome.url).origin],
+    cdp: `http://127.0.0.1:${port}`,
+    kernelPort: null,
+    log: () => {},
+  });
+  t.after(() => proxy.close());
+  const page = await chrome.page(t);
+  await page.init(debugSignIn);
+  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}`);
+  await ready(page);
+  await page.until(
+    () => document.querySelector('slicc-app').model.network.status().browser?.via === 'proxy'
+  );
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  const before = new Set((await devtools('/json/list')).map((tab) => tab.id));
+  await page.evaluate((MARK) => {
+    const tab = window.open('about:blank', 'slicc-mcp-oauth', 'popup,width=520,height=720');
+    tab.location.href = `https://ims-na1.adobelogin.com/early#access_token=${MARK}-early`;
+  }, MARK);
+  const early = await tabWhere(
+    (tab) => tab.url.startsWith('https://ims-na1.adobelogin.com/early') && !before.has(tab.id)
+  );
+  t.after(() => close([early]));
+  await navigate(early, ordinary(`/early-elsewhere#access_token=${MARK}-early-elsewhere`));
+  const first = await guarded(page, 'proxy', 'first');
+  t.after(() => first.close().catch(() => {}));
+  await first.send('Target.setDiscoverTargets', { discover: true });
+  await unreachable(first, { 'the popup opened before any client': early });
+  assert.deepEqual(page.errors, []);
+});
+
 const UNHELD =
   "Seven couldn't keep the sign-in window out of reach of browser automation, so it didn't open the sign-in. Try again.";
 

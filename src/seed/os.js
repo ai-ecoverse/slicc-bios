@@ -774,7 +774,7 @@ async function own() {
   });
   approvals.own();
   const hosts = () => browserHosts(network);
-  ({ poke } = watchOpened({ hosts, own: location.origin }));
+  ({ poke } = watchOpened({ hosts, own: location.origin, eager: ['proxy'] }));
   watchSignIns({ hosts, asked: () => poke() });
   if (globalThis.sliccKernelDebug === true) globalThis.sliccBrowserHook = control.hook;
   const denials = denialLog({ root, users: () => kernel?.users, mode });

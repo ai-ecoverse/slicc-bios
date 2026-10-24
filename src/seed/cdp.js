@@ -268,7 +268,7 @@ export function browserHook(
   before = async () => {}
 ) {
   const guard = async (connection) => {
-    await before().catch(() => {});
+    await before();
     return observe(guardProtected(connection, own));
   };
   return async ({ runtime } = {}) => {

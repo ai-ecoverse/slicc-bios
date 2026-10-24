@@ -7,6 +7,8 @@ export const MARK = 'slicc-sign-in-';
 export const KEEP = 32;
 export const WAIT = 5000;
 export const FLIGHT = 11 * 60 * 1000;
+export const UNSWEPT =
+  "seven couldn't check the browser for sign-in tabs before handing it over; try again";
 export const UNHELD =
   "Seven couldn't keep the sign-in window out of reach of browser automation, so it didn't open the sign-in. Try again.";
 const EVERY = 200;
@@ -54,9 +56,12 @@ export function markerUrl(marker) {
   return `about:blank#${MARK}${marker}`;
 }
 
-function ask(connection, method, params = {}) {
+export const ASK = 10000;
+
+function ask(connection, method, params = {}, timers = globalThis) {
   return new Promise((resolve) => {
     const id = 1;
+    const timer = timers.setTimeout(() => resolve(null), ASK);
     connection.onmessage = (text) => {
       let message;
       try {
@@ -64,9 +69,14 @@ function ask(connection, method, params = {}) {
       } catch {
         return;
       }
-      if (message.id === id) resolve(message.result ?? null);
+      if (message.id !== id) return;
+      timers.clearTimeout(timer);
+      resolve(message.result ?? null);
     };
-    connection.onclose = () => resolve(null);
+    connection.onclose = () => {
+      timers.clearTimeout(timer);
+      resolve(null);
+    };
     connection.send(JSON.stringify({ id, method, params }));
   });
 }
@@ -192,7 +202,9 @@ export async function sweep({ hosts, own, is = guardOf(own), storage, now = Date
       continue;
     }
     try {
-      consider((await ask(connection, 'Target.getTargets'))?.targetInfos ?? []);
+      const listed = await ask(connection, 'Target.getTargets');
+      if (!Array.isArray(listed?.targetInfos)) throw new Error(UNSWEPT);
+      consider(listed.targetInfos);
     } finally {
       connection.close();
     }
@@ -229,14 +241,15 @@ export function watchOpened({
   every = 250,
   timers = globalThis,
   now = Date.now,
+  eager = [],
 }) {
   const live = new Map();
   const ended = new Set();
   let wanted = false;
   const look = async () => {
-    if (!wanted) return;
     for (const [name, open] of Object.entries(hosts() ?? {})) {
       if (typeof open !== 'function' || ended.has(name)) continue;
+      if (!wanted && !eager.includes(name)) continue;
       if (live.has(name)) {
         live.get(name)?.poll();
         continue;
@@ -255,6 +268,7 @@ export function watchOpened({
       }
     }
   };
+  void look();
   const timer = timers.setInterval(() => void look(), every);
   return {
     poke() {
