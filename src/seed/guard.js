@@ -930,6 +930,8 @@ class Guard {
       this.learn(info);
       this.placements.set(params.sessionId, info.targetId);
       this.placing.set(info.targetId, this.place(info.targetId, params.sessionId));
+      if (params.waitingForDebugger)
+        void this.call('Runtime.runIfWaitingForDebugger', {}, params.sessionId);
     }
     if (method === 'Target.targetDestroyed') this.scopes.delete(params.targetId);
     if (method === 'Target.detachedFromTarget' && params.sessionId !== undefined) {

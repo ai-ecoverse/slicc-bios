@@ -183,6 +183,9 @@ export async function guardHost(t, path) {
   });
   const rows = new Map();
   await seven.expose('guardEvent', ([row, text]) => rows.get(row)?.push(JSON.parse(text)));
+  await seven.expose('guardTransport', ([row, message]) =>
+    rows.get(row)?.transportEvents.push(message)
+  );
   await seven.expose('guardRaw', ([row, text]) => {
     if (!exposure.listed && listedWrong(text)) {
       exposure.listed = true;
@@ -243,18 +246,43 @@ export async function guardHost(t, path) {
         return linked.open();
       },
     };
-    const lagged = (connection, lag, paintDelay) => {
+    const lagged = (connection, lag, paintDelay, row) => {
       const send = connection.send.bind(connection);
       const shots = new Set();
       const relay = { onmessage: null, onclose: null, close: () => connection.close() };
       connection.onmessage = (text) => {
-        if (shots.delete(JSON.parse(text).id))
-          setTimeout(() => relay.onmessage?.(text), paintDelay);
+        const message = JSON.parse(text);
+        if (message.method === 'Target.attachedToTarget')
+          void window.guardTransport(
+            JSON.stringify([
+              row,
+              {
+                direction: 'in',
+                method: message.method,
+                parent: message.sessionId,
+                sessionId: message.params.sessionId,
+                targetInfo: message.params.targetInfo,
+                waitingForDebugger: message.params.waitingForDebugger,
+              },
+            ])
+          );
+        if (shots.delete(message.id)) setTimeout(() => relay.onmessage?.(text), paintDelay);
         else relay.onmessage?.(text);
       };
       connection.onclose = (why) => relay.onclose?.(why);
       relay.send = (text) => {
         const message = JSON.parse(text);
+        if (message.method === 'Runtime.runIfWaitingForDebugger')
+          void window.guardTransport(
+            JSON.stringify([
+              row,
+              {
+                direction: 'out',
+                method: message.method,
+                sessionId: message.sessionId,
+              },
+            ])
+          );
         if (paintDelay && message.method === 'Page.captureScreenshot') shots.add(message.id);
         if (lag && message.method === 'Target.detachFromTarget') setTimeout(() => send(text), lag);
         else send(text);
@@ -265,7 +293,7 @@ export async function guardHost(t, path) {
     window.guards = {
       async open(row, own, path, lag, paintDelay) {
         const connection = guardProtected(
-          lagged(await hosts[path](), lag, paintDelay),
+          lagged(await hosts[path](), lag, paintDelay, row),
           [location.origin, own].flat()
         );
         const pending = new Map();
@@ -321,7 +349,8 @@ export async function guardHost(t, path) {
       const row = count;
       const { events, push, waitEvent } = eventsOf();
       const messages = [];
-      rows.set(row, { push, messages });
+      const transportEvents = [];
+      rows.set(row, { push, messages, transportEvents });
       await ensure();
       await seven.evaluate(
         ([row, own, path, lag, paintDelay]) => window.guards.open(row, own, path, lag, paintDelay),
@@ -329,6 +358,7 @@ export async function guardHost(t, path) {
       );
       const client = {
         transport: path,
+        transportEvents,
         events,
         messages,
         waitEvent,
@@ -392,9 +422,14 @@ export function shared(path, { variants, except = [], group } = {}) {
       for (const target of chosen.targets) {
         trace('run', path, target, variant);
         let current;
+        let transportEvents;
         const evidence = new Map();
         const execution = await run(subset(target), {
-          clientFactory: clientFactory(path),
+          clientFactory: async (configuration) => {
+            const made = await clientFactory(path)(configuration);
+            transportEvents = made.client.transportEvents;
+            return made;
+          },
           rowTimeoutMs: ROW_MS,
           settleScale: SCALE[variant] ?? 1,
           targets,
@@ -426,6 +461,7 @@ export function shared(path, { variants, except = [], group } = {}) {
               return;
             const snapshot = data.calls.snapshot;
             evidence.set(current.id, {
+              transportEvents,
               frameTree: data.calls.frameTree,
               snapshot: snapshot && {
                 ok: snapshot.ok,
@@ -451,15 +487,18 @@ export function shared(path, { variants, except = [], group } = {}) {
                   reason: event.params.reason,
                   errorText: event.params.errorText,
                   targetInfo: event.params.targetInfo,
+                  waitingForDebugger: event.params.waitingForDebugger,
                 })),
             });
           },
         });
         results.push(...execution.results);
-        for (const row of execution.results.filter(failing)) {
+        for (const row of execution.results.filter(
+          (row) => failing(row) || row.id === 'C4.static-cross-site'
+        )) {
           if (evidence.has(row.id))
             process.stdout.write(
-              `GUARD-FRAMES ${path} ${row.id} ${target} ${variant} ${JSON.stringify(evidence.get(row.id))}\n`
+              `GUARD-FRAMES ${path} ${row.id} ${target} ${variant} ${JSON.stringify({ ...evidence.get(row.id), observations: row.observations })}\n`
             );
         }
       }
