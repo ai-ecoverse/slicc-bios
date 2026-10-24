@@ -71,6 +71,7 @@ import { createNotes, createReleases } from './releases.js';
 import { createRemote } from './remote.js';
 import { pageRequests } from './requests.js';
 import { BIOS, home, sharesOrigin } from './site.js';
+import { importSix, retirePreview, said } from './six.js';
 import { installPrompts, keepStorage, onSend } from './storage.js';
 import {
   claim,
@@ -129,6 +130,7 @@ import {
 } from './vault.js';
 
 const prompts = installPrompts();
+void retirePreview().catch((error) => console.warn(`SLICC 6 preview: ${said(error)}`));
 let unoffered = takePairing();
 
 export const layouts = {
@@ -470,12 +472,18 @@ async function installTailnet(report = () => {}) {
 let refusal = null;
 let refusedLast = false;
 
+async function connectOwner() {
+  const { connectAgent } = await loadChat();
+  return connectAgent(await owner.port());
+}
+
 async function started(chat, lock) {
   if (chat) {
     refusedLast = false;
     notices.remove('agent:older');
     startedWith = lock;
     updates.setReady(true);
+    void importSix({ root, connect: connectOwner, notices });
     return chat;
   }
   agent = null;

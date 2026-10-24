@@ -1,5 +1,6 @@
 import { clearHandOff, dropped, droppedLine } from './seed/handoff.js';
 import { usersMode } from './seed/users.js';
+import { sixStep } from './sw/six.js';
 
 const quiet = {
   begin() {},
@@ -82,7 +83,7 @@ async function step(name, task) {
     if (item.dataset.state === 'failed') clearHandOff();
   }
   item.dataset.state = 'done';
-  document.querySelector('progress').value += 1;
+  document.querySelector('.status progress').value += 1;
   splash.done(name, output.value);
 }
 
@@ -202,6 +203,7 @@ await step('seed', async () => {
     'remote.js',
     'requests.js',
     'site.js',
+    'six.js',
     'skills.js',
     'start.js',
     'storage.js',
@@ -251,6 +253,10 @@ await step('intercept', async () => {
   if (update) await activated(registration, update);
   return registration.scope;
 });
+
+if (root.pathname !== new URL('./', import.meta.url).pathname) {
+  await sixStep({ root: await navigator.storage.getDirectory() });
+}
 
 await step('navigate', async () => {
   const lost = dropped();

@@ -422,6 +422,110 @@ button {
   color: var(--pink);
 }
 
+.six {
+  width: min(44ch, calc(100vw - 48px));
+  margin: auto;
+  padding: 20px 22px 18px;
+  border: 0;
+  border-radius: 14px;
+  color: var(--ink);
+  background: rgb(var(--veil) / 0.94);
+  box-shadow:
+    0 24px 60px -24px light-dark(rgb(40 20 50 / 0.3), rgb(0 0 0 / 0.8)),
+    0 0 0 1px var(--line);
+  backdrop-filter: blur(12px);
+}
+
+.six::backdrop {
+  background: rgb(11 9 15 / 0.32);
+  backdrop-filter: blur(2px);
+}
+
+.six:focus-visible {
+  outline: none;
+}
+
+.splash:is([data-six="asking"], [data-six="moving"], [data-six="failed"]) .story {
+  visibility: hidden;
+}
+
+.six-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 650;
+  line-height: 1.25;
+  text-wrap: balance;
+}
+
+.six-body {
+  margin: 10px 0 0;
+  color: var(--dim);
+  font-size: 14px;
+  text-wrap: pretty;
+}
+
+.six[data-state="failed"] .six-title {
+  color: var(--bad);
+}
+
+.six-progress {
+  margin: 14px 0 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.six-bar {
+  display: block;
+  width: 100%;
+  height: 3px;
+  margin: 8px 0 0;
+  border: 0;
+  border-radius: 2px;
+  appearance: none;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.six-bar::-webkit-progress-bar {
+  background: var(--line);
+}
+
+.six-bar::-webkit-progress-value {
+  background: linear-gradient(90deg, var(--pink), var(--orange));
+  transition: width 0.3s ease-out;
+}
+
+.six-bar:indeterminate {
+  background: linear-gradient(90deg, var(--line), var(--pink), var(--line)) 0 0 / 200% 100%;
+  animation: sweep 1.6s linear infinite;
+}
+
+@keyframes sweep {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.six-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.six-actions .chip {
+  padding: 6px 16px;
+  font-size: 13px;
+}
+
+.six [hidden] {
+  display: none;
+}
+
+.six-exporter {
+  display: none;
+}
+
 .splash[data-state="failed"] .verb {
   color: var(--bad);
 }
@@ -682,7 +786,8 @@ button {
   }
 
   .steps li[data-state="active"]::before,
-  .bar span::after {
+  .bar span::after,
+  .six-bar:indeterminate {
     animation: none;
   }
 
