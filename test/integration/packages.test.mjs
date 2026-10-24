@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
+import { compare } from '../../src/seed/packages.js';
 import { actPackage, boot, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { fakeCatalog } from './fake-catalog.mjs';
@@ -14,6 +16,41 @@ const RSYNC = '@ai-ecoverse/wasm-rsync';
 const REGISTRY = 'https://registry.npmjs.org/';
 const doc = async (name, version) =>
   JSON.parse(await download(`${REGISTRY}${name}/${encodeURIComponent(version)}`));
+
+const attested = async (version) => {
+  const url = version?.dist?.attestations?.url;
+  if (!url) return null;
+  return download(url).then(
+    (body) => [url, body.toString()],
+    () => undefined
+  );
+};
+
+async function pinCatalog() {
+  const catalog = JSON.parse(
+    await readFile(new URL('../../src/packages/optional/catalog.json', import.meta.url), 'utf8')
+  );
+  for (const [name, entry] of Object.entries(catalog)) {
+    if (entry.kind === 'project') continue;
+    const all = JSON.parse(await download(`${REGISTRY}${name}`));
+    const versions = Object.keys(all.versions ?? {}).sort(compare);
+    const latest = all['dist-tags']?.latest;
+    const cut = versions.indexOf(latest);
+    for (const version of versions.slice(0, cut + 1).reverse()) {
+      const pinned = all.versions[version];
+      const attestation = await attested(pinned);
+      if (attestation === undefined) continue;
+      for (const later of versions.slice(versions.indexOf(version) + 1)) delete all.versions[later];
+      all['dist-tags'] = { latest: version };
+      const body = JSON.stringify(pinned);
+      registry.docs.set(`${REGISTRY}${name}`, JSON.stringify(all));
+      registry.docs.set(`${REGISTRY}${name}/latest`, body);
+      registry.docs.set(`${REGISTRY}${name}/${encodeURIComponent(version)}`, body);
+      if (attestation) registry.docs.set(...attestation);
+      break;
+    }
+  }
+}
 
 function offer(latest) {
   const catalog = {
@@ -362,6 +399,119 @@ test('when npm’s latest fails the gate, the newest older version that passes i
   assert.deepEqual(page.errors, []);
 });
 
+const settledRow = async (page, id) => {
+  await page.within(
+    120000,
+    (id) =>
+      document
+        .querySelector('slicc-app')
+        .model.updates.packages()
+        .some((item) => item.id === id && !item.registry),
+    id
+  );
+  return (await packageItems(page)).find((item) => item.id === id);
+};
+
+test('seven’s page doesn’t offer a release npm marks deprecated, though its provenance passes, and the row names the deprecation', async (t) => {
+  const page = await chrome.page(t);
+  const version = '9.2.1172-1';
+  offer({ [XXD]: version });
+  const gone = JSON.stringify({
+    ...(await doc(XXD, version)),
+    deprecated: 'superseded; use 9.2.1186',
+  });
+  registry.docs.set(`${REGISTRY}${XXD}/latest`, gone);
+  registry.docs.set(`${REGISTRY}${XXD}/${encodeURIComponent(version)}`, gone);
+  await boot(page);
+  const row = await settledRow(page, 'xxd');
+  assert.notEqual(row.offered, version);
+  assert.equal(
+    row.newer?.reason ?? row.withheld,
+    `wasm-xxd ${version} is deprecated on npm: superseded; use 9.2.1186`
+  );
+  assert.deepEqual(page.errors, []);
+});
+
+const BROWSER = '@ai-ecoverse/sliccy-browser';
+const CDP = '@ai-ecoverse/slicc-cdp';
+const PIPELINE_CDP = '1.31.9';
+
+async function browserRow(t, bare) {
+  const JSH = '@ai-ecoverse/slicc-jsh';
+  const shipped = JSON.parse(
+    await readFile(new URL('../../src/packages/optional/catalog.json', import.meta.url), 'utf8')
+  );
+  const latest = JSON.parse(await download(`${REGISTRY}${BROWSER}/latest`));
+  const browser = JSON.stringify({
+    ...latest,
+    dependencies: { ...latest.dependencies, [CDP]: PIPELINE_CDP },
+  });
+  registry.reset();
+  chrome.overrides.set(
+    '/packages/optional/catalog.json',
+    JSON.stringify({ [JSH]: shipped[JSH], [BROWSER]: shipped[BROWSER] })
+  );
+  registry.docs.set(`${REGISTRY}${BROWSER}/latest`, browser);
+  registry.docs.set(`${REGISTRY}${BROWSER}/${latest.version}`, browser);
+  if (bare) {
+    const real = JSON.parse(await download(`${REGISTRY}${CDP}/${PIPELINE_CDP}`));
+    const { attestations, ...dist } = real.dist;
+    assert.ok(attestations, `slicc-cdp ${PIPELINE_CDP} has provenance on npm`);
+    registry.docs.set(`${REGISTRY}${CDP}/${PIPELINE_CDP}`, JSON.stringify({ ...real, dist }));
+  }
+  const page = await chrome.page(t);
+  await boot(page);
+  const row = await settledRow(page, 'jsh-browser');
+  assert.deepEqual(page.errors, []);
+  return { row, version: latest.version };
+}
+
+test('seven’s page offers sliccy-browser with a slicc-cdp that slicc-cdp’s pipeline built on main, though slicc-cdp’s certified dist-tag names another version', async (t) => {
+  const { row, version } = await browserRow(t, false);
+  assert.deepEqual([row.offered, row.withheld, row.newer], [version, undefined, undefined]);
+});
+
+test('seven’s page withholds sliccy-browser when the slicc-cdp it pins has no build provenance', async (t) => {
+  const { row, version } = await browserRow(t, true);
+  assert.notEqual(row.offered, version);
+  assert.equal(
+    row.newer?.reason ?? row.withheld,
+    `slicc-cdp ${PIPELINE_CDP} has no build provenance`
+  );
+});
+
+test('a release npm serves no attestation for yet, as in the minutes after homescoop publishes, is withheld, and the newest older attested version is offered (#910)', async (t) => {
+  const page = await chrome.page(t);
+  offer({ [XXD]: LATEST[XXD] });
+  const fresh = '9.2.1172-2';
+  const real = await doc(XXD, LATEST[XXD]);
+  const published = {
+    ...real,
+    version: fresh,
+    dist: {
+      ...real.dist,
+      attestations: {
+        ...real.dist.attestations,
+        url: `${REGISTRY}-/npm/v1/attestations/${XXD.replace('/', '%2f')}@${fresh}`,
+      },
+    },
+  };
+  registry.docs.set(`${REGISTRY}${XXD}/latest`, JSON.stringify(published));
+  await boot(page);
+  const [row] = await page.within(120000, () => {
+    const rows = document.querySelector('slicc-app').model.updates.packages();
+    return (rows[0]?.offered || rows[0]?.registry === 'unreachable') && rows;
+  });
+  assert.equal(row.registry, undefined, JSON.stringify(row));
+  assert.equal(row.offered, LATEST[XXD]);
+  assert.deepEqual(row.newer, {
+    version: fresh,
+    reason: `wasm-xxd ${fresh} has no build provenance`,
+  });
+  assert.equal(row.state, 'available');
+  assert.deepEqual(page.errors, []);
+});
+
 test('a failed download shows Retry, and Retry installs it', async (t) => {
   const page = await chrome.page(t);
   offer({ [XXD]: LATEST[XXD] });
@@ -392,6 +542,7 @@ test('the Install / Update panel offers the catalog, in every state', async (t) 
   const page = await chrome.page(t);
   registry.reset();
   chrome.overrides.delete('/packages/optional/catalog.json');
+  await pinCatalog();
   await boot(page);
   await state(page, 'git', 'available');
   const color = (value) =>

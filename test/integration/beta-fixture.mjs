@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { after } from 'node:test';
+import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
 import { debuggerUrl, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
 import { fakeRegistry, fakeRelease } from './fake-npm.mjs';
@@ -40,7 +41,7 @@ export const clipboard = await fakeRelease({
 export const tainted = await fakeRelease({
   name: AGENT,
   from: PINNED,
-  version: '7.0.0',
+  version: '6.98.0',
   repository: 'https://github.com/ai-ecoverse/slicc-agent',
   dependencies: { '@ai-ecoverse/slicc-clipboard': '1.0.99' },
 });
@@ -50,12 +51,51 @@ export const mcpcat = await fakeRelease({
   version: '0.99.0',
   repository: 'https://github.com/ai-ecoverse/mcpcat',
 });
+export const DEPRECATED = {
+  name: '@ai-ecoverse/py-six',
+  version: '1.17.0-2',
+  message: 'superseded; use 1.17.0-3',
+  async serve(address) {
+    const { pathname } = new URL(address);
+    const path = decodeURIComponent(pathname);
+    const base = `https://registry.npmjs.org/${DEPRECATED.name}`;
+    if (path === `/${DEPRECATED.name}`) {
+      const real = JSON.parse((await download(base)).toString());
+      const doc = real.versions[DEPRECATED.version];
+      return JSON.stringify({
+        ...real,
+        versions: {
+          ...real.versions,
+          [DEPRECATED.version]: { ...doc, deprecated: DEPRECATED.message },
+        },
+      });
+    }
+    if (path !== `/${DEPRECATED.name}/${DEPRECATED.version}`) return null;
+    const doc = JSON.parse((await download(`${base}/${DEPRECATED.version}`)).toString());
+    return JSON.stringify({ ...doc, deprecated: DEPRECATED.message });
+  },
+};
 export const pinned = await fakeRelease({
   name: AGENT,
   from: PINNED,
-  version: '7.0.1',
+  version: '6.97.0',
   repository: 'https://github.com/ai-ecoverse/slicc-agent',
-  dependencies: { '@ai-ecoverse/mcpcat': '0.99.0' },
+  dependencies: {
+    '@ai-ecoverse/mcpcat': '0.99.0',
+    [DEPRECATED.name]: DEPRECATED.version,
+  },
+});
+export const major = await fakeRelease({
+  name: AGENT,
+  from: PINNED,
+  version: '7.0.0',
+  repository: 'https://github.com/ai-ecoverse/slicc-agent',
+});
+export const future = await fakeRelease({
+  name: AGENT,
+  from: PINNED,
+  version: '8.0.0',
+  repository: 'https://github.com/ai-ecoverse/slicc-agent',
 });
 export const releases = [release, clipboard, mcpcat];
 export const registry = await fakeRegistry(chrome.cdp, releases);

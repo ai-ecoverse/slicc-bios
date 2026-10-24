@@ -21,11 +21,11 @@ import {
 import { createApprovals, rootChecked, routeSudo, useSecretRules } from './approvals.js';
 import { createBetas } from './beta.js';
 import { createBrowser } from './browser.js';
-import { browserControl } from './cdp.js';
+import { browserControl, browserHosts, linkedBrowsers } from './cdp.js';
 import { clipboardHook } from './clipboard.js';
 import { denialLog, installCommand, watchProtected } from './denials.js';
 import { createExitRouter } from './exits.js';
-import { LINK_PORT, LINK_URL, linkFacade, permitted } from './facade.js';
+import { LINK_PORT, LINK_URL, linkFacade, permitted, trayRequests } from './facade.js';
 import { deviceName, hubClient } from './follow.js';
 import { createFollowers } from './followers.js';
 import {
@@ -36,6 +36,7 @@ import {
   installed,
 } from './grammars.js';
 import { clearHandOff } from './handoff.js';
+import { sweep, watchOpened, watchSignIns } from './held.js';
 import { createJerk } from './jerk.js';
 import { change, userRows } from './layer.js';
 import { createLeaders, proxyOf } from './leaders.js';
@@ -171,7 +172,15 @@ export function offered(all) {
 const network = await pickTransport();
 const { kind } = network;
 const browser = createBrowser(network);
-const control = browserControl(network, { observe: browser.observe, links: () => links });
+let poke = () => {};
+const control = browserControl(network, {
+  observe: (connection) => {
+    poke();
+    return browser.observe(connection);
+  },
+  links: () => links,
+  before: () => sweep({ hosts: () => browserHosts(network), own: location.origin }),
+});
 const exits = createExitRouter();
 const tailscale = createTailscale(await tailscaleConfig(), { router: exits });
 clearHandOff();
@@ -288,10 +297,17 @@ const vault = createVault({
 });
 const jerk = createJerk({ links: () => links, vault });
 useVault(vault);
-const login = sealedLogin(signIn({ network, shared: sharesOrigin() }), {
-  vault,
-  takes: () => takesVault(mine.agent),
-});
+const login = sealedLogin(
+  signIn({
+    network,
+    shared: sharesOrigin(),
+    hosted: () => Object.values(browserHosts(network)).some(Boolean),
+  }),
+  {
+    vault,
+    takes: () => takesVault(mine.agent),
+  }
+);
 document.documentElement.dataset.transport = kind;
 const root = await navigator.storage.getDirectory();
 const app = document.querySelector('slicc-app');
@@ -447,14 +463,34 @@ async function installTailnet(report = () => {}) {
   }
 }
 
+let refusal = null;
+let refusedLast = false;
+
 async function started(chat, lock) {
   if (chat) {
+    refusedLast = false;
+    notices.remove('agent:older');
     startedWith = lock;
     updates.setReady(true);
     return chat;
   }
   agent = null;
-  if ((await agentVersion()) === null) updates.setReady(true);
+  const refused = refusal;
+  refusal = null;
+  refusedLast = Boolean(refused);
+  if (refused) {
+    updates.fail('agent', refused);
+    notices.show(
+      {
+        id: 'agent:older',
+        tone: 'warning',
+        title: 'Seven didn’t start the agent',
+        body: refused.plain,
+        actions: [],
+      },
+      () => {}
+    );
+  } else if ((await agentVersion()) === null) updates.setReady(true);
   else updates.fail('agent', Object.assign(new Error('the agent did not start'), { plain: STUCK }));
   return chat;
 }
@@ -464,6 +500,7 @@ async function launch() {
     owner = await startChat(kernel);
     if (await announce(await agentVersion())) return owner;
   } catch (error) {
+    if (error.older) refusal = error;
     console.warn(`the agent did not start: ${error.message}`);
   }
   await owner?.release();
@@ -489,6 +526,7 @@ async function relaunch(running) {
     owner = await restartChat(kernel, running);
     if (await announce(await agentVersion())) return owner;
   } catch (error) {
+    if (error.older) refusal = error;
     console.warn(`the agent did not restart: ${error.message}`);
   }
   await owner?.release();
@@ -502,6 +540,7 @@ async function restart() {
   const lock = recorded();
   agent = relaunch(running).then(async (restarted) => started(restarted, await lock));
   if (!(await agent)) {
+    if (refusedLast) return;
     updates.fail(
       'agent',
       Object.assign(new Error('the agent did not restart'), {
@@ -741,11 +780,16 @@ async function own() {
     owner: () => coneIds ?? { uid: 0, gid: 0 },
   });
   approvals.own();
+  const hosts = () => browserHosts(network);
+  ({ poke } = watchOpened({ hosts, own: location.origin, eager: ['proxy'] }));
+  watchSignIns({ hosts, asked: () => poke() });
+  if (globalThis.sliccKernelDebug === true) globalThis.sliccBrowserHook = control.hook;
   const denials = denialLog({ root, users: () => kernel?.users, mode });
   const link = linkFacade({
     check: async (stamp) => permitted(stamp, await sudoGidOf(kernel).catch(() => undefined)),
     leaders,
     scrub: vault.scrubText,
+    trays: trayRequests({ tray, network: reach.port, hub, ask: approvals.askTray }),
     refused: ({ pid, uid, tag }) =>
       denials({ pid, uid, tag, op: 'connect', path: LINK_URL, errno: 'EACCES' }),
   });
@@ -797,8 +841,10 @@ async function own() {
     );
   }
   exits.attach(kernel);
-  if (globalThis.sliccKernelDebug === true)
+  if (globalThis.sliccKernelDebug === true) {
     globalThis.sliccKernelClient = async () => attachKernel(await kernel.connect());
+    globalThis.sliccLinkedBrowsers = () => linkedBrowsers(() => links);
+  }
   await seedFnox(kernel, attachKernel).catch((error) =>
     console.warn(`fnox config: ${error.message}`)
   );

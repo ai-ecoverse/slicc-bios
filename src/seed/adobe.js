@@ -1,3 +1,4 @@
+import { askHold, landed, markerUrl, UNHELD } from './held.js';
 import { IMS_TOKEN } from './vault.js';
 
 const imsHosts = {
@@ -6,6 +7,27 @@ const imsHosts = {
 };
 export const RELAY = 'https://www.sliccy.ai/auth/callback';
 export const CALLBACK = '/auth/callback';
+export const CLIENTS_KEY = 'slicc-os.sign-in-clients';
+
+export function storedClients(storage = globalThis.localStorage) {
+  try {
+    const list = JSON.parse(storage?.getItem(CLIENTS_KEY) ?? '[]');
+    return Array.isArray(list) ? list.filter((id) => typeof id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export const SEVEN_CLIENT = 'experience-catalyst-prod';
+export const SIGN_IN_CLIENTS = new Set([SEVEN_CLIENT, ...storedClients()]);
+
+export function rememberClient(id) {
+  if (!id || SIGN_IN_CLIENTS.has(id)) return;
+  SIGN_IN_CLIENTS.add(id);
+  try {
+    globalThis.localStorage?.setItem(CLIENTS_KEY, JSON.stringify([...SIGN_IN_CLIENTS]));
+  } catch {}
+}
 export const NEEDS_PROXY =
   'signing in to Adobe needs slicc-node or slicc-extension: run npx @ai-ecoverse/slicc-node or install slicc-extension';
 
@@ -18,6 +40,7 @@ export function nonce(random = (bytes) => crypto.getRandomValues(bytes)) {
 }
 
 function authorize({ clientId, scopes, imsEnvironment }, state) {
+  rememberClient(clientId);
   const params = new URLSearchParams({
     client_id: clientId,
     scope: scopes,
@@ -114,12 +137,16 @@ function waiting({ popup, signal, timeout, start, abandon = () => {} }) {
   });
 }
 
-async function prepare(open, options, address, signal) {
+async function prepare(open, options, address, signal, hold) {
   if (signal?.aborted) throw cancelled();
-  const popup = open('about:blank');
+  const marker = nonce();
+  const popup = open(markerUrl(marker));
   if (!popup) throw new Error('the browser blocked the sign-in window');
   try {
+    const held = abortable(Promise.resolve(hold(marker, signal)), signal);
+    held.catch(() => {});
     const config = await abortable(Promise.resolve(options()), signal);
+    if ((await held) === 'unheld') throw new Error(UNHELD);
     if (!config) throw new Error('this account has no sign-in');
     popup.location.href = await abortable(Promise.resolve(address(config)), signal);
   } catch (error) {
@@ -131,6 +158,7 @@ async function prepare(open, options, address, signal) {
 
 function viaRelay({
   open,
+  hold,
   origin,
   listen,
   timeout,
@@ -139,7 +167,7 @@ function viaRelay({
 }) {
   return async (_providerId, options, signal) => {
     const value = nonce();
-    const popup = await prepare(open, options, (config) => address(config, value), signal);
+    const popup = await prepare(open, options, (config) => address(config, value), signal, hold);
     return waiting({
       popup,
       signal,
@@ -163,7 +191,7 @@ function viaRelay({
   };
 }
 
-function viaProxy({ proxy, open, fetcher, every, timeout }) {
+function viaProxy({ proxy, open, hold, fetcher, every, timeout }) {
   return async (_providerId, options, signal) => {
     if (!proxy) throw new Error(NEEDS_PROXY);
     const value = nonce();
@@ -188,7 +216,7 @@ function viaProxy({ proxy, open, fetcher, every, timeout }) {
         return authorizeUrl(config, Number(new URL(proxy.url).port), value);
       });
     };
-    const popup = await prepare(open, options, register, signal).catch((error) => {
+    const popup = await prepare(open, options, register, signal, hold).catch((error) => {
       if (error?.name === 'AbortError') registering?.then(abandon, () => {});
       throw error;
     });
@@ -232,7 +260,7 @@ function viaProxy({ proxy, open, fetcher, every, timeout }) {
 }
 
 export function signIn({
-  network,
+  network = {},
   open = (url) => window.open(url, 'slicc-sign-in', 'popup,width=520,height=720'),
   fetch: fetcher = (input, init) => globalThis.fetch(input, init),
   every = 1000,
@@ -242,25 +270,30 @@ export function signIn({
   force,
   shared = false,
   listen = (name) => new BroadcastChannel(name),
+  holdWait,
+  hosted = () => false,
+  hold = (marker, signal) => askHold(marker, { listen, signal, wait: holdWait, present: hosted }),
 }) {
   const relay = shared
-    ? viaRelay({ open, listen, timeout, address: openerUrl, channel: OPENER_CHANNEL })
-    : viaRelay({ open, origin, listen, timeout });
+    ? viaRelay({ open, hold, listen, timeout, address: openerUrl, channel: OPENER_CHANNEL })
+    : viaRelay({ open, hold, origin, listen, timeout });
   const proxy = network?.kind === 'local-proxy' ? network.proxy : null;
   const direct = extension?.signIn
     ? async (_providerId, options, signal) => {
         if (signal?.aborted) throw cancelled();
         const config = await abortable(Promise.resolve(options()), signal);
         if (!config) throw new Error('this account has no sign-in');
+        rememberClient(config?.clientId);
         const token = await abortable(extension.signIn(config), signal);
         return typeof token === 'string' ? { token } : token;
       }
-    : viaProxy({ proxy, open, fetcher, every, timeout });
+    : viaProxy({ proxy, open, hold, fetcher, every, timeout });
   const forced = () => force ?? globalThis.localStorage?.getItem(FORCE_RELAY) === 'relay';
   const grant = (providerId, options, { signal } = {}) =>
-    shared || relayed(origin) || forced()
+    (shared || relayed(origin) || forced()
       ? relay(providerId, options, signal)
-      : direct(providerId, options, signal);
+      : direct(providerId, options, signal)
+    ).finally(() => landed());
   const login = (providerId, options, context) =>
     grant(providerId, options, context).then((got) => got.token);
   login.grant = grant;

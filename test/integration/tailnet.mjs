@@ -200,6 +200,48 @@ async function wsEchoServer(port) {
   return server;
 }
 
+function lingerServer(port) {
+  const sockets = new Set();
+  const frame = (opcode, payload) => {
+    const body = Buffer.from(payload);
+    return Buffer.concat([Buffer.from([0x80 | opcode, body.length]), body]);
+  };
+  const server = createTcpServer((socket) => {
+    sockets.add(socket);
+    socket.on('error', () => {});
+    socket.on('close', () => sockets.delete(socket));
+    let head = Buffer.alloc(0);
+    let upgraded = false;
+    socket.on('data', (chunk) => {
+      if (upgraded) {
+        if ((chunk[0] & 0x0f) !== 0x08) return;
+        socket.write(frame(0x01, 'after your close'));
+        const code = Buffer.alloc(2);
+        code.writeUInt16BE(4002);
+        socket.end(frame(0x08, Buffer.concat([code, Buffer.from('peer done')])));
+        return;
+      }
+      head = Buffer.concat([head, chunk]);
+      const text = head.toString('latin1');
+      if (!text.includes('\r\n\r\n')) return;
+      const key = /sec-websocket-key: *([^\r\n]+)/i.exec(text)?.[1]?.trim() ?? '';
+      const accept = createHash('sha1')
+        .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+        .digest('base64');
+      socket.write(
+        `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\nSec-WebSocket-Protocol: echo\r\n\r\n`
+      );
+      upgraded = true;
+    });
+  });
+  const close = server.close.bind(server);
+  server.close = () => {
+    for (const socket of sockets) socket.destroy();
+    return close();
+  };
+  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve(server)));
+}
+
 function silentServer(port) {
   const sockets = new Set();
   let total = 0;
@@ -239,7 +281,8 @@ export async function startTailnet() {
     gitPort,
     wsPort,
     silentPort,
-  ] = await Promise.all(Array.from({ length: 10 }, freePort));
+    lingerPort,
+  ] = await Promise.all(Array.from({ length: 11 }, freePort));
   const config = join(dir, 'config.yaml');
   await writeFile(
     config,
@@ -327,6 +370,7 @@ unix_socket_permission: "0770"
   servers.push(wsEcho);
   const silent = await silentServer(silentPort);
   servers.push(silent);
+  servers.push(await lingerServer(lingerPort));
 
   const env = { ...process.env, TS_DEBUG_USE_DERP_HTTP: '1' };
   const node = async (name, extra = []) => {
@@ -388,6 +432,7 @@ unix_socket_permission: "0770"
       ws: `${peer.ip}:${wsPort}`,
       wsSeen: wsEcho.seen,
       silent: `${peer.ip}:${silentPort}`,
+      linger: `${peer.ip}:${lingerPort}`,
       silentAccepted: () => silent.accepted(),
     },
     exit,

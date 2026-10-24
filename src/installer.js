@@ -1,4 +1,4 @@
-const TAR = 'https://cdn.jsdelivr.net/npm/modern-tar@0.8.5/dist/web/index.js';
+const TAR = 'https://cdn.jsdelivr.net/npm/modern-tar@0.8.6/dist/web/index.js';
 const INTEGRITY = new URL('sw/integrity.js', self.location.href).href;
 let ledger;
 

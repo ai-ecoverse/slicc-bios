@@ -1,3 +1,4 @@
+import { mayStart } from './durable.js';
 import { apply } from './layer.js';
 import { failure } from './link.js';
 import { compare } from './packages.js';
@@ -112,6 +113,7 @@ async function outdated() {
 }
 
 export async function startChat(kernel, { vault = chatVault, ...options } = {}) {
+  await mayStart(await version(), { root: await navigator.storage.getDirectory() });
   const fresh = options.fresh || (await outdated());
   const { startAgent } = await loadChat({ ...options, fresh });
   const takes = vault && takesVault(await version());

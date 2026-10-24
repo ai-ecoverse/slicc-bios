@@ -1,5 +1,7 @@
 import catalog from '@ai-ecoverse/slicc-browsers/catalog.json' with { type: 'json' };
 import { protectedOrigins } from '@ai-ecoverse/slicc-browsers/protected.mjs';
+import { RELAY, SIGN_IN_CLIENTS } from './adobe.js';
+import { hold, isHeld } from './held.js';
 
 export const PROTECTED =
   'slicc: refused: seven’s own pages and the vault are out of reach of browser automation';
@@ -398,7 +400,10 @@ const PUBLIC = {
 
 const normalHost = (host) => host.toLowerCase().replace(/\.$/, '');
 
-function readable(url) {
+const PROSE = /[.,;:!?)\]}'"]+$/;
+
+function readable(text) {
+  const url = text.replace(PROSE, '');
   if (!URL.canParse(url)) return false;
   const parsed = new URL(url);
   if (parsed.username || parsed.password || parsed.search || parsed.hash) return false;
@@ -499,13 +504,46 @@ const kept = (set, value) => {
   if (set.size > REMEMBERED) set.delete(set.values().next().value);
 };
 
+const INHERITING = /^(?:$|about:|javascript:)/i;
+const ORDINARY = /^(?:https?|data):/i;
+const BLANK = /^about:blank(?:#|$)/i;
+
 export const ARM = [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }];
+
+const CALLBACK_NAMED = RELAY.replace(/^https?:\/\//, '').toLowerCase();
+
+export function signsIn(url) {
+  if (typeof url !== 'string' || !/^https?:/i.test(url)) return false;
+  let text = url;
+  for (let i = 0; i < 5; i += 1) {
+    const lower = text.toLowerCase();
+    if (lower.includes(CALLBACK_NAMED)) return true;
+    for (const [, id] of lower.matchAll(/[?&#]client_id=([^&#\s]*)/g)) {
+      if ([...SIGN_IN_CLIENTS].some((client) => client.toLowerCase() === id)) return true;
+    }
+    const next = text.replace(/\+/g, ' ').replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
+      try {
+        return decodeURIComponent(run);
+      } catch {
+        return run.replace(/%([0-9a-f]{2})/gi, (found, hex) =>
+          String.fromCharCode(Number.parseInt(hex, 16))
+        );
+      }
+    });
+    if (next === text) return false;
+    text = next;
+  }
+  return true;
+}
 
 export function protection(own) {
   const matcher = protectedOrigins(catalog.protectedOrigins, owned(own));
   const web = (url, options) =>
-    typeof url === 'string' && matcher.url(url.replace(/^ws(s?):/i, 'http$1:'), options);
-  return { ...matcher, url: web };
+    typeof url === 'string' &&
+    (matcher.url(url.replace(/^ws(s?):/i, 'http$1:'), options) || signsIn(url));
+  const target = (info) =>
+    matcher.target(info) || (!info.type?.endsWith('worker') && signsIn(info.url));
+  return { ...matcher, url: web, target };
 }
 
 class Guard {
@@ -608,8 +646,11 @@ class Guard {
       url: failed ? ERROR_PAGE : (info.url ?? ''),
       type: info.type ?? known?.type,
       openerId: info.openerId,
+      parentId: info.parentId ?? known?.parentId,
       was: known?.was || known?.guarded || false,
       guarded: known?.guarded || false,
+      real: known?.real || false,
+      access: known?.access || info.canAccessOpener === true,
       context: info.browserContextId ?? known?.context,
     });
   }
@@ -630,13 +671,38 @@ class Guard {
   async target(targetId, depth = 0) {
     const found = await this.lookup(targetId);
     if (!found) return false;
+    if (isHeld(targetId) || isHeld(found.openerId)) {
+      hold(targetId);
+      found.guarded = true;
+      return true;
+    }
     if (depth > 8) return true;
+    if (found.parentId && found.parentId !== targetId) {
+      await this.target(found.parentId, depth + 1);
+      if (isHeld(found.parentId)) {
+        hold(targetId);
+        found.guarded = true;
+        return true;
+      }
+    }
+    const opener = await this.opener(found.openerId, depth);
+    const lent = found.type === 'page' && (found.access || BLANK.test(found.url));
+    if (isHeld(found.openerId) || (opener === 'protected' && lent)) {
+      hold(targetId);
+      found.guarded = true;
+      return true;
+    }
     const verdict = this.is.target({
       url: found.url,
       type: found.type,
       previous: found.was,
-      opener: await this.opener(found.openerId, depth),
+      opener,
     });
+    if (verdict && !INHERITING.test(found.url)) found.real = true;
+    if (!found.real && ORDINARY.test(found.url) && !this.is.url(found.url)) {
+      found.guarded = false;
+      found.was = false;
+    }
     found.guarded = found.guarded || verdict;
     return found.guarded;
   }

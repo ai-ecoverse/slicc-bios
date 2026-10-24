@@ -975,7 +975,7 @@ test('the real slicc CLI carries <port>.kernel.localhost into the page, and the 
   assert.notEqual(facade[0], 200);
 });
 
-test('the real slicc CLI shares another browser over cdp: the 9222 facade reaches it as <device>/<browser>, and a walk to seven’s origin never loads there', {
+test('the real slicc CLI shares another browser over cdp: the 9222 facade reaches it as <device>/<browser>, a walk to seven’s origin never loads there, and the agent keeps the walked tab', {
   skip: !cli,
 }, async (t) => {
   const probe = createServer();
@@ -1048,7 +1048,66 @@ test('the real slicc CLI shares another browser over cdp: the 9222 facade reache
   assert.match(
     walked.out,
     /about:blank#blocked|slicc: refused: target is on seven's origin/,
-    `the walk to seven’s origin was failed in the other browser: bios's guard blanked the page, or the CLI's guard took the tab: ${walked.out}`
+    `the walk to seven’s origin was failed in the other browser, and a guarded read of the walked tab is blanked or refused: ${walked.out}`
+  );
+  const frames = async () => {
+    const seen = [];
+    for (const tab of await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) =>
+      r.json()
+    )) {
+      if (tab.type !== 'page') continue;
+      const frame = await new Promise((resolve, reject) => {
+        const socket = new WebSocket(tab.webSocketDebuggerUrl);
+        const timer = setTimeout(() => {
+          socket.close();
+          reject(new Error(`Page.getFrameTree on ${tab.url}: no answer in 10 s`));
+        }, 10000);
+        socket.onopen = () => socket.send(JSON.stringify({ id: 1, method: 'Page.getFrameTree' }));
+        socket.onmessage = ({ data }) => {
+          const answer = JSON.parse(data);
+          if (answer.id !== 1) return;
+          clearTimeout(timer);
+          socket.close();
+          resolve(answer.result?.frameTree?.frame ?? {});
+        };
+        socket.onerror = () => {
+          clearTimeout(timer);
+          reject(new Error(`Page.getFrameTree on ${tab.url}: the socket failed`));
+        };
+      });
+      seen.push({ url: tab.url, frame: frame.url, unreachable: frame.unreachableUrl ?? null });
+    }
+    return seen;
+  };
+  let scrubbed = [];
+  for (const end = Date.now() + 15000; ; ) {
+    scrubbed = await frames();
+    if (scrubbed.some((tab) => tab.url === 'about:blank#blocked')) break;
+    if (Date.now() > end)
+      assert.fail(
+        `bios's guard blanks the walked tab within 15 s; the linked browser's pages are ${JSON.stringify(scrubbed)}`
+      );
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  assert.ok(
+    scrubbed.every(
+      (tab) =>
+        !tab.url.startsWith(own) &&
+        !tab.frame?.startsWith(own) &&
+        !tab.frame?.startsWith('chrome-error:') &&
+        !tab.unreachable?.startsWith(own)
+    ),
+    `no page is left on seven’s origin or its error page: ${JSON.stringify(scrubbed)}`
+  );
+  const kept = await shell(
+    page,
+    `{ playwright-cli --runtime ${runtime} goto 'data:text/html,<title>after-walk</title>' > /dev/null 2>&1; echo "goto $?"; playwright-cli --runtime ${runtime} eval 'document.title' 2>&1; echo "eval $?"; playwright-cli --runtime ${runtime} reload > /dev/null 2>&1; echo "reload $?"; playwright-cli --runtime ${runtime} close > /dev/null 2>&1; echo "close $?"; }`,
+    'cdp-after-walk'
+  );
+  assert.match(
+    kept.out,
+    /^goto 0\n[\s\S]*after-walk[\s\S]*\neval 0\nreload 0\nclose 0$/,
+    `the agent keeps the walked tab: it navigates, reads, reloads and closes it: ${kept.out}`
   );
   const looked = [];
   for (const tab of await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) => r.json())) {
@@ -1101,7 +1160,7 @@ test('the real slicc CLI shares another browser over cdp: the 9222 facade reache
   assert.doesNotMatch(hidden.out, new RegExp(own.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 });
 
-const CDP_NOTE = "Update slicc to 1.47.0 or later to share this computer's browsers.";
+const CDP_NOTE = "Update slicc to 1.47.3 or later to share this computer's browsers.";
 
 const fakeRow = (page) =>
   page.evaluate(
@@ -1128,7 +1187,7 @@ async function cdpNode(page, version) {
 }
 
 for (const [said, version] of [
-  ['1.46.9', '1.46.9'],
+  ['1.47.2', '1.47.2'],
   ['no version', undefined],
 ]) {
   test(`a node that offers cdp with ${said} in its HELLO shares no browsers: none on its device row, which says to update slicc, none on the 9222 facade, none after a browsers update, and no cdp opens, while net and its folders still work`, async (t) => {
@@ -1185,7 +1244,7 @@ for (const [said, version] of [
             ...(el.shadowRoot ? walk(el.shadowRoot) : []),
           ]);
         document.querySelector('slicc-app').show('network');
-        return walk(document).some((text) => text.includes('Update slicc to 1.47.0'));
+        return walk(document).some((text) => text.includes('Update slicc to 1.47.3'));
       });
       await shoot(page, 'network-cli-cdp-min', { show: 'network', target: '[data-note]' });
     }
@@ -1193,7 +1252,7 @@ for (const [said, version] of [
   });
 }
 
-for (const version of ['1.47.0', 'dev', '1.47.1-0.20261021120000-abc123def456']) {
+for (const version of ['1.47.3', 'dev', '1.47.4-0.20261021120000-abc123def456']) {
   test(`a node that offers cdp with ${version} in its HELLO shares its browsers on its device row and the 9222 facade, and a browsers update replaces them`, async (t) => {
     const page = await chrome.page(t);
     await boot(page);

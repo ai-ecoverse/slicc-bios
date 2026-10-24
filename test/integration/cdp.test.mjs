@@ -7,6 +7,7 @@ import { startProxy } from '@ai-ecoverse/slicc-node';
 import { actPackage, boot, ready, run, screen, shows } from './bios.mjs';
 import { debuggerUrl, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
+import { linkNode } from './linked-node.mjs';
 import { display, EXTENSIONS, realExtension, SEVEN } from './real-extension.mjs';
 
 const port = await new Promise((resolve) => {
@@ -1460,6 +1461,249 @@ test('a browser extension’s hidden world stays out of reach through the guard:
   assert.equal(results.leaked, false, 'no event named the extension');
 });
 
+test('headed, on the link path: a tab created through the guard with an empty URL opens blank behind seven, which keeps the focus', {
+  timeout: 5 * 60 * 1000,
+}, async (t) => {
+  const undisplay = await display();
+  const cleanup = [];
+  t.after(async () => {
+    for (const step of cleanup.reverse()) await step().catch(() => undefined);
+    undisplay();
+  });
+  const debugging = await new Promise((resolve) => {
+    const server = createServer().listen(0, '127.0.0.1', () => {
+      const { port: free } = server.address();
+      server.close(() => resolve(free));
+    });
+  });
+  const headed = await launch({ realistic: true, args: [`--remote-debugging-port=${debugging}`] });
+  cleanup.push(() => headed.close());
+  await debuggerUrl(debugging);
+  const page = await headed.page(t);
+  await page.init(() => {
+    globalThis.sliccKernelDebug = true;
+  });
+  await page.goto('/');
+  await ready(page);
+  await linkNode(t, page, debugging);
+  await page.evaluate(async () => {
+    const { guardProtected } = await import(new URL('guard.js', location.href).href);
+    const connection = guardProtected(
+      await globalThis.sliccLinkedBrowsers()[0].open(),
+      location.origin
+    );
+    const pending = new Map();
+    let next = 0;
+    connection.onmessage = (text) => {
+      const message = JSON.parse(text);
+      if (message.id === undefined) return;
+      pending.get(message.id)?.(message);
+      pending.delete(message.id);
+    };
+    window.guarded = (method, params = {}) =>
+      new Promise((resolve) => {
+        next += 1;
+        const id = next;
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          resolve({ error: { message: `${method} got no answer` } });
+        }, 20000);
+        pending.set(id, (message) => {
+          clearTimeout(timer);
+          resolve(message);
+        });
+        connection.send(JSON.stringify({ id, method, params }));
+      });
+  }, null);
+  const sample = () =>
+    page.evaluate(() => ({ shown: document.visibilityState, focused: document.hasFocus() }));
+  const before = await sample();
+  assert.deepEqual(before, { shown: 'visible', focused: true });
+  const created = await page.evaluate(() => window.guarded('Target.createTarget', { url: '' }));
+  assert.ok(created.result?.targetId, JSON.stringify(created));
+  cleanup.push(() =>
+    page.evaluate(
+      (targetId) => window.guarded('Target.closeTarget', { targetId }),
+      created.result.targetId
+    )
+  );
+  const info = await page.evaluate(
+    (targetId) => window.guarded('Target.getTargetInfo', { targetId }),
+    created.result.targetId
+  );
+  assert.equal(info.result?.targetInfo?.url, 'about:blank', JSON.stringify(info));
+  const seen = [];
+  for (let i = 0; i < 4; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    seen.push(await sample());
+  }
+  assert.deepEqual(
+    seen,
+    Array(4).fill(before),
+    `seven after an empty-URL tab: ${JSON.stringify(seen)}`
+  );
+  assert.deepEqual(page.errors, []);
+});
+
+test('a browser extension’s hidden world stays out of reach through the guard on the link path: a world named like it, its id and a binding into it are refused, and its mark is never readable', {
+  timeout: 5 * 60 * 1000,
+}, async (t) => {
+  const debugging = await new Promise((resolve) => {
+    const server = createServer().listen(0, '127.0.0.1', () => {
+      const { port: free } = server.address();
+      server.close(() => resolve(free));
+    });
+  });
+  const worlds = await launch({
+    extensions: [fileURLToPath(new URL('./fixtures/injected-frame', import.meta.url))],
+    args: [`--remote-debugging-port=${debugging}`],
+  });
+  t.after(() => worlds.close());
+  await debuggerUrl(debugging);
+  worlds.overrides.set('/marked.html', '<!doctype html><title>marked</title><h1>Ordinary</h1>');
+  const url = new URL('/marked.html', worlds.url);
+  url.hostname = 'localhost';
+  const { targetId } = await worlds.cdp.send('Target.createTarget', { url: url.href });
+  t.after(() => worlds.cdp.send('Target.closeTarget', { targetId }).catch(() => {}));
+  const { sessionId: watching } = await worlds.cdp.send('Target.attachToTarget', {
+    targetId,
+    flatten: true,
+  });
+  const contexts = [];
+  const off = worlds.cdp.on((event) => {
+    if (event.sessionId === watching && event.method === 'Runtime.executionContextCreated')
+      contexts.push(event.params.context);
+  });
+  t.after(off);
+  await worlds.cdp.send('Runtime.enable', {}, watching);
+  const deadline = Date.now() + 15000;
+  let hidden;
+  while (
+    !(hidden = contexts.find(
+      (context) =>
+        context.auxData?.type === 'isolated' &&
+        context.origin.startsWith('chrome-extension://') &&
+        context.origin !== `chrome-extension://${worlds.extension?.id}`
+    ))
+  ) {
+    if (Date.now() > deadline)
+      throw new Error(`no extension world on the page: ${JSON.stringify(contexts)}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const MARK =
+    'typeof chrome === "object" && Boolean(chrome.runtime && chrome.runtime.id) && document.documentElement.dataset.extensionFixture === chrome.runtime.id';
+  const control = await worlds.cdp.send(
+    'Runtime.evaluate',
+    { contextId: hidden.id, expression: MARK, returnByValue: true },
+    watching
+  );
+  assert.equal(control.result?.value, true, 'the observer reads the mark in the extension world');
+  const page = await worlds.page(t);
+  await page.init(() => {
+    globalThis.sliccKernelDebug = true;
+  });
+  await page.goto('/');
+  await ready(page);
+  await linkNode(t, page, debugging);
+  const results = await page.evaluate(
+    async ({ targetId, hidden, MARK }) => {
+      const { guardProtected } = await import(new URL('guard.js', location.href).href);
+      const connection = guardProtected(
+        await globalThis.sliccLinkedBrowsers()[0].open(),
+        location.origin
+      );
+      const pending = new Map();
+      const events = [];
+      let next = 0;
+      connection.onmessage = (text) => {
+        const message = JSON.parse(text);
+        if (message.id === undefined) return events.push(message);
+        pending.get(message.id)?.(message);
+        pending.delete(message.id);
+      };
+      const send = (method, params = {}, sessionId) =>
+        new Promise((resolve) => {
+          next += 1;
+          const id = next;
+          const timer = setTimeout(
+            () => resolve({ error: { message: `${method} got no answer` } }),
+            20000
+          );
+          pending.set(id, (message) => {
+            clearTimeout(timer);
+            resolve(message);
+          });
+          connection.send(
+            JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })
+          );
+        });
+      const attached = await send('Target.attachToTarget', { targetId, flatten: true });
+      const session = attached.result?.sessionId;
+      if (!session) return { attach: JSON.stringify(attached) };
+      const frameId = targetId;
+      const named = await send(
+        'Page.createIsolatedWorld',
+        { frameId, worldName: hidden.name },
+        session
+      );
+      await send('Runtime.enable', {}, session);
+      const byId = await send(
+        'Runtime.evaluate',
+        { contextId: hidden.id, expression: MARK, returnByValue: true },
+        session
+      );
+      const byUnique = await send(
+        'Runtime.evaluate',
+        { uniqueContextId: hidden.uniqueId, expression: MARK, returnByValue: true },
+        session
+      );
+      const binding = await send(
+        'Runtime.addBinding',
+        { name: 'leak', executionContextName: hidden.name },
+        session
+      );
+      const marks = [];
+      for (let id = 1; id <= 32; id += 1) {
+        const out = await send(
+          'Runtime.evaluate',
+          { contextId: id, expression: MARK, returnByValue: true },
+          session
+        );
+        if (out.result?.result?.value === true) marks.push(id);
+      }
+      const own = await send(
+        'Runtime.evaluate',
+        { expression: MARK, returnByValue: true },
+        session
+      );
+      return {
+        named: named.error?.message ?? null,
+        byId: byId.error?.message ?? null,
+        byUnique: byUnique.error?.message ?? null,
+        binding: binding.error?.message ?? null,
+        marks,
+        own: own.result?.result?.value ?? null,
+        leaked: JSON.stringify(events).includes('chrome-extension://'),
+      };
+    },
+    {
+      targetId,
+      hidden: { id: hidden.id, uniqueId: hidden.uniqueId, name: hidden.name },
+      MARK,
+    }
+  );
+  assert.match(results.byId ?? '', /^slicc: refused:/, JSON.stringify(results));
+  assert.match(results.byUnique ?? '', /^slicc: refused:/, JSON.stringify(results));
+  assert.match(results.binding ?? '', /^slicc: refused:/, JSON.stringify(results));
+  assert.deepEqual(
+    results.marks,
+    [],
+    `the extension's mark was readable in contexts ${results.marks}`
+  );
+  assert.equal(results.own, false);
+  assert.equal(results.leaked, false, 'no event named the extension');
+});
+
 test('playwright-cli drives a page through slicc-node’s /cdp, on one shared socket', async (t) => {
   const proxy = await viaProxy(t);
   const page = await launched(t, proxy);
@@ -1520,6 +1764,89 @@ test('playwright-cli: a goto that redirects into the vault fails cleanly, and a 
   await shows(page, 'heading "Plain"');
   await run(page, 'playwright-cli close && echo closed-$?');
   await shows(page, 'closed-0');
+  assert.deepEqual(page.errors, []);
+});
+
+test('on the link path, playwright-cli: a goto that redirects into the vault fails cleanly, and a page whose own URL names a vault redirect_uri, opened in a fresh tab, stays drivable', async (t) => {
+  const page = await chrome.page(t);
+  await page.init(() => {
+    globalThis.sliccKernelDebug = true;
+  });
+  await page.goto('/');
+  await ready(page);
+  await linkNode(t, page, port);
+  await page.until(
+    () => document.querySelector('slicc-app').model.network.status().browser.via === 'link'
+  );
+  await run(page, 'playwright-cli open about:blank');
+  await shows(page, 'Opened about:blank');
+  hits.length = 0;
+  const started = Date.now();
+  await run(
+    page,
+    `playwright-cli goto http://localhost:${standPort}/to-vault > /tmp/hop 2>&1; echo "status $?" >> /tmp/hop; echo "hop-""done"`
+  );
+  await shows(page, 'hop-done', 60000);
+  const hop = await read(page, '/tmp/hop');
+  assert.ok(Date.now() - started < 60000, hop);
+  assert.doesNotMatch(hop, /HOPMARK77|VAULT-MARK/, hop);
+  assert.ok(!hits.some((hit) => hit.startsWith('vault.sliccy.ai')), hits.join(' '));
+  const idp = `http://localhost:${standPort}/plain?redirect_uri=${encodeURIComponent(`${VAULT}/cb`)}&state=s`;
+  await run(
+    page,
+    `playwright-cli open '${idp}' > /tmp/idp 2>&1 && playwright-cli snapshot >> /tmp/idp 2>&1; echo "idp-""done"`
+  );
+  await shows(page, 'idp-done', 120000);
+  const idpOut = await read(page, '/tmp/idp');
+  assert.match(idpOut, /heading "Plain"/, idpOut);
+  await run(page, 'playwright-cli close && echo closed-$?');
+  await shows(page, 'closed-0');
+  assert.deepEqual(page.errors, []);
+});
+
+test('playwright-cli drives a page through a linked slicc CLI’s browser, through the guard', async (t) => {
+  const page = await chrome.page(t);
+  await page.init(() => {
+    globalThis.sliccKernelDebug = true;
+  });
+  await page.goto('/');
+  await ready(page);
+  await linkNode(t, page, port);
+  await page.until(
+    () => document.querySelector('slicc-app').model.network.status().browser.via === 'link'
+  );
+  chrome.overrides.set(
+    '/driven.html',
+    '<!doctype html><title>driven</title><h1>Driven through the link</h1>'
+  );
+  const target = elsewhere('/driven.html');
+
+  await run(
+    page,
+    `curl -sf http://127.0.0.1:9222/json/list | jq -r '[.[] | select(.url | endswith("/os/"))] | "seven listed " + (length | tostring)'`
+  );
+  await shows(page, 'seven listed 0');
+
+  await run(
+    page,
+    `playwright-cli open about:blank && playwright-cli goto ${target} && playwright-cli snapshot`
+  );
+  await shows(page, 'heading "Driven through the link"');
+  hits.length = 0;
+  await run(
+    page,
+    `playwright-cli goto ${VAULT} > /tmp/vault 2>&1; playwright-cli eval 'location.href + " " + document.title' >> /tmp/vault 2>&1; echo "vault-""done"`
+  );
+  await shows(page, 'vault-done', 60000);
+  const vault = await read(page, '/tmp/vault');
+  assert.ok(
+    !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
+    `the vault was served: ${hits.join(' ')}`
+  );
+  assert.doesNotMatch(vault, /VAULT-MARK|VAULT-BODY-MARK/, vault);
+  await run(page, 'playwright-cli close && echo closed-$?');
+  await shows(page, 'closed-0');
+  assert.equal(await open(page), false);
   assert.deepEqual(page.errors, []);
 });
 

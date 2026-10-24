@@ -78,7 +78,7 @@ async function install(page, id) {
   console.log(`unshadow: ${id} installed in ${Date.now() - installing} ms`);
 }
 
-test('a catalog package’s kernel command wins over the same package’s Node bin, and a package with only a bin keeps it', {
+test('a catalog package’s kernel command wins over the same package’s Node bin, whose link now points at /usr/bin, and a package with only a bin keeps it', {
   timeout: 20 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -89,26 +89,25 @@ test('a catalog package’s kernel command wins over the same package’s Node b
   console.log(`unshadow: booted in ${Date.now() - booting} ms`);
 
   await install(page, 'mcpcat');
-  const found = await sh(page, 'command -v mcpcat');
-  assert.deepEqual(found, { code: '0', out: '/usr/bin/mcpcat' });
+  const found = await sh(page, `command -v mcpcat; readlink ${BIN}/mcpcat`);
+  assert.deepEqual(found, { code: '0', out: `${BIN}/mcpcat\n/usr/bin/mcpcat` });
   const version = await sh(page, 'mcpcat --version');
   assert.equal(version.code, '0', version.out);
   assert.match(version.out, /0\.16\.3/);
-  const gone = await sh(page, `test -e ${BIN}/mcpcat || test -L ${BIN}/mcpcat; echo $?`);
-  assert.equal(gone.out, '1');
 
   await install(page, 'hot-glue');
   const kept = await sh(page, `test -e ${BIN}/hotglue || test -L ${BIN}/hotglue; echo $?`);
   assert.equal(kept.out, '0');
   assert.deepEqual(await sh(page, 'command -v hotglue'), { code: '0', out: `${BIN}/hotglue` });
 
-  const listed = await sh(page, `ls ${BIN}`);
-  assert.doesNotMatch(listed.out, /^mcpcat$/m);
+  const listed = await sh(page, `ls ${BIN}; readlink ${BIN}/hotglue`);
+  assert.match(listed.out, /^mcpcat$/m);
   assert.match(listed.out, /^hotglue$/m);
+  assert.doesNotMatch(listed.out, /^\/usr\/bin\/hotglue$/m);
   assert.deepEqual(page.errors, []);
 });
 
-test('bios#715: a shell pnpm add -g, as root and as cone, leaves the package’s kernel command first on PATH, a package with only a bin keeps its link, and a Node link left from before goes at the next boot', {
+test('bios#715: a shell pnpm add -g, as root and as cone, leaves the package’s kernel command first on PATH, a package with only a bin keeps its link, and a Node link left from before is replaced at the next boot', {
   timeout: 20 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -150,6 +149,7 @@ test('bios#715: a shell pnpm add -g, as root and as cone, leaves the package’s
   const coneLog = await sh(page, 'cat /tmp/cone.log');
   check((await screen(page)).replace(/ {2,}/g, '\n') + coneLog.out, cone);
 
+  assert.equal((await sh(page, `rm -f ${BIN}/mcpcat; echo $?`)).out, '0');
   await page.evaluate(async (owner) => {
     let dir = await navigator.storage.getDirectory();
     for (const part of ['usr', 'local', 'share', 'pnpm', 'bin'])
@@ -163,8 +163,90 @@ test('bios#715: a shell pnpm add -g, as root and as cone, leaves the package’s
   await ready(page);
   const left = await sh(
     page,
-    `n=0; while [ -e ${BIN}/mcpcat ] && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done; [ -e ${BIN}/mcpcat ] && echo left || echo gone; command -v mcpcat`
+    `n=0; until [ "$(readlink ${BIN}/mcpcat)" = /usr/bin/mcpcat ] || [ $n -ge 100 ]; do sleep 0.1; n=$((n + 1)); done; readlink ${BIN}/mcpcat || echo left`
   );
-  assert.deepEqual(left, { code: '0', out: 'gone\n/usr/bin/mcpcat' });
+  assert.deepEqual(left, { code: '0', out: '/usr/bin/mcpcat' });
+  assert.deepEqual(page.errors, []);
+});
+
+test('bios#823: after pnpm add -g mcpcat && mcpcat --version in one shell command, the hashed path runs the kernel command once seven replaces the Node link, pnpm remove -g leaves no link behind, and a link someone else made stays, as root and as cone', {
+  timeout: 20 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  offer();
+  await page.init('() => { globalThis.sliccKernelDebug = true; }');
+  await page.goto(`/#${new URLSearchParams({ users: 'enforce' })}`);
+  await ready(page);
+  const at = `${MCPCAT}@${SHIPPED}`;
+  const steps = [
+    `pnpm add -g --config.minimum-release-age=0 ${at} > /tmp/add-$(id -u).log 2>&1 && mcpcat --version`,
+    'echo "hashed $(hash -t mcpcat)"',
+    'ln -sf /usr/bin/bash "$PNPM_HOME/bin/bash"',
+    'n=0; while head -c 19 "$PNPM_HOME/bin/mcpcat" 2>/dev/null | grep -q /usr/bin/env && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done; echo "settled $(readlink "$PNPM_HOME/bin/mcpcat" || echo kernel)"',
+    'mcpcat --version',
+    `pnpm remove -g ${MCPCAT} > /tmp/remove-$(id -u).log 2>&1; echo removed-$?`,
+    'n=0; while { [ -e "$PNPM_HOME/bin/mcpcat" ] || [ -L "$PNPM_HOME/bin/mcpcat" ]; } && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done; ls -la "$PNPM_HOME/bin"; { [ -e "$PNPM_HOME/bin/mcpcat" ] || [ -L "$PNPM_HOME/bin/mcpcat" ]; } && echo link-left || echo no-link',
+    'sleep 0.5; echo "kept $(readlink "$PNPM_HOME/bin/bash")"',
+  ].join('; ');
+  const version = SHIPPED.replaceAll('.', '\\.');
+  const check = (text, bin, log) => {
+    const [first, after = ''] = text.split(`settled ${bin === BIN ? '/usr/bin/mcpcat' : 'kernel'}`);
+    t.diagnostic(
+      `${bin}: first call ${new RegExp(`^${version}$`, 'm').test(first) ? 'ran the kernel command' : 'hit the Node link'}`
+    );
+    assert.match(first, new RegExp(`hashed ${bin}/mcpcat`), `${text}\n${log}`);
+    assert.ok(after, `the Node link was never replaced\n${text}`);
+    assert.match(after, new RegExp(`^${version}$`, 'm'), text);
+    assert.match(after, /removed-0/, text);
+    assert.match(after, /no-link/, text);
+    assert.match(after, /kept \/usr\/bin\/bash/, text);
+    assert.doesNotMatch(after, /bad interpreter|No such file or directory|link-left/, text);
+  };
+  await run(page, `clear; ${steps}; echo root-$((40 + 2))`);
+  await shows(page, 'root-42', 10 * 60 * 1000).catch(async (error) => {
+    throw new Error(`${error.message}\n${await screen(page)}`);
+  });
+  const rootLog = await sh(page, 'cat /tmp/add-0.log /tmp/remove-0.log');
+  check((await screen(page)).replace(/ {2,}/g, '\n'), BIN, rootLog.out);
+
+  const cone = '/home/cone/.local/share/pnpm/bin';
+  await run(
+    page,
+    `clear; sudo -u cone bash -c '${`PATH=$PNPM_HOME/bin:$PATH; ${steps}`.replaceAll("'", "'\\''")}'; echo cone-$((40 + 2))`
+  );
+  await shows(page, 'cone-42', 10 * 60 * 1000).catch(async (error) => {
+    throw new Error(`${error.message}\n${await screen(page)}`);
+  });
+  const coneLog = await sh(page, 'cat /tmp/add-1000.log /tmp/remove-1000.log');
+  check((await screen(page)).replace(/ {2,}/g, '\n'), cone, coneLog.out);
+  assert.deepEqual(page.errors, []);
+});
+
+test('bios#795: a user added after boot, whose pnpm home already holds a Node link, gets the kernel command without another write or a reload', {
+  timeout: 20 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  offer();
+  await page.init('() => { globalThis.sliccKernelDebug = true; }');
+  await page.goto(`/#${new URLSearchParams({ users: 'enforce' })}`);
+  await ready(page);
+  const home = '/home/ada/.local/share/pnpm';
+  const node = `head -c 19 ${home}/bin/mcpcat 2>/dev/null | grep -q /usr/bin/env`;
+  const prepared = await sh(
+    page,
+    `mkdir -p ${home} && HOME=/home/ada PNPM_HOME=${home} PATH=${home}/bin:$PATH pnpm add -g --config.minimum-release-age=0 ${MCPCAT}@${SHIPPED} > /tmp/ada.log 2>&1; echo added-$?; ${node} && echo node-before; chown -R 1001:1001 /home/ada && chmod 710 /home/ada && echo owned`
+  );
+  assert.match(
+    prepared.out,
+    /added-0\nnode-before\nowned/,
+    `${prepared.out}\n${(await sh(page, 'cat /tmp/ada.log')).out}`
+  );
+  const added = await sh(
+    page,
+    `echo 'ada:x:1001:1001::/home/ada:/bin/bash' >> /etc/passwd; n=0; while ${node} && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done; ${node} && echo still-node || echo settled-after-$n; sudo -u ada bash -c 'PATH=$PNPM_HOME/bin:$PATH; mcpcat --version'`
+  );
+  t.diagnostic(added.out);
+  assert.match(added.out, /^settled-after-\d+\n/, added.out);
+  assert.match(added.out, new RegExp(`\\n${SHIPPED.replaceAll('.', '\\.')}$`), added.out);
   assert.deepEqual(page.errors, []);
 });

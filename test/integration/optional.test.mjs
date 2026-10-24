@@ -44,28 +44,46 @@ test('the optional catalog lists packages and pins none: no package.json or lock
       assert.ok(Object.hasOwn(retired, gone), `${name} replaces ${gone}, which isn't retired`);
     if (entry.source) {
       assert.match(entry.source.repo, /^ai-ecoverse\/[\w.-]+$/, name);
-      for (const workflow of [entry.source.workflow].flat())
-        assert.match(workflow, /^\.github\/workflows\/[\w.-]+\.ya?ml$/, name);
+      assert.ok(Array.isArray(entry.source.workflow) && entry.source.workflow.length, name);
+      for (const path of entry.source.workflow)
+        assert.match(path, /^\.github\/workflows\/[\w.-]+\.ya?ml$/, name);
     } else assert.match(name, HOMESCOOPED, `${name} is homescoop's, from its ladder at main`);
   }
-  assert.deepEqual(await read('sources.json'), { '@ai-ecoverse/slicc-cdp': { certified: 'tag' } });
+  assert.deepEqual(await read('sources.json'), {
+    '@ai-ecoverse/slicc-cdp': {
+      repo: 'ai-ecoverse/slicc-cdp',
+      workflow: ['.github/workflows/release.yml', '.github/workflows/ci.yml'],
+    },
+  });
+  const publishers = [
+    ...Object.entries(catalog)
+      .filter(([, entry]) => entry.source)
+      .map(([name, entry]) => [name, entry.source]),
+    ...Object.entries(await read('sources.json')),
+  ];
+  for (const [name, source] of publishers)
+    assert.deepEqual(
+      Object.keys(source).sort(),
+      ['repo', 'workflow'],
+      `${name} names only its repo and workflow: no certified tag, no since or deny`
+    );
   const named = Object.entries(catalog).filter(([, entry]) => entry.source);
   assert.deepEqual(
     Object.fromEntries(
       named.map(([name, entry]) => [
         name,
-        `${entry.source.repo} ${[entry.source.workflow].flat().join(' ')}`,
+        `${entry.source.repo} ${entry.source.workflow.join(' or ')}`,
       ])
     ),
     {
       '@ai-ecoverse/wasi-slicc':
-        'ai-ecoverse/slicc-cli .github/workflows/release.yml .github/workflows/ci.yml',
+        'ai-ecoverse/slicc-cli .github/workflows/release.yml or .github/workflows/ci.yml',
       '@ai-ecoverse/slicc-jsh':
-        'ai-ecoverse/slicc-jsh .github/workflows/release.yml .github/workflows/ci.yml',
+        'ai-ecoverse/slicc-jsh .github/workflows/release.yml or .github/workflows/ci.yml',
       '@ai-ecoverse/sliccy-browser':
-        'ai-ecoverse/slicc-cdp .github/workflows/publish-sliccy-browser.yml',
+        'ai-ecoverse/slicc-cdp .github/workflows/publish-sliccy-browser.yml or .github/workflows/ci.yml',
       '@ai-ecoverse/mcpcat':
-        'ai-ecoverse/mcpcat .github/workflows/release.yml .github/workflows/ci.yml',
+        'ai-ecoverse/mcpcat .github/workflows/release.yml or .github/workflows/ci.yml',
     },
     'every other package is homescoop’s, from its ladder at main'
   );

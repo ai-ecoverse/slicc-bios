@@ -25,7 +25,9 @@ export const MOVED = 'var/lib/slicc/optional/moved';
 
 const COMMAND = /^[A-Za-z0-9][\w.+-]*$/;
 const UNSHADOW =
-  'b=$1; o=$2; shift 2; for n in "$@"; do f="$b/$n"; [ -e "$f" ] || [ -L "$f" ] || continue; case "$(readlink -f "$f" 2>/dev/null)" in *"$o"*) ;; *) grep -qsF -- "$o" "$f" || continue ;; esac; rm -f -- "$f" || exit 1; echo "$n"; done';
+  'b=$1; o=$2; l=$3; shift 3; for n in "$@"; do f="$b/$n"; [ -e "$f" ] || [ -L "$f" ] || continue; [ "$(readlink "$f" 2>/dev/null)" = "/usr/bin/$n" ] && continue; case "$(readlink -f "$f" 2>/dev/null)" in *"$o"*) ;; *) grep -qsF -- "$o" "$f" || continue ;; esac; if [ "$l" = link ]; then t="$b/.$n.slicc"; rm -f -- "$t"; ln -s -- "/usr/bin/$n" "$t" && mv -f -- "$t" "$f" || { rm -f -- "$t"; exit 1; }; : > "$b/.$n.slicc-link"; else rm -f -- "$f" || exit 1; fi; echo "$n"; done';
+const DANGLING =
+  'b=$1; shift; for m in "$b"/.*.slicc-link; do [ -e "$m" ] || continue; n=${m##*/.}; n=${n%.slicc-link}; f="$b/$n"; case " $* " in *" $n "*) continue ;; esac; if [ -L "$f" ] && [ "$(readlink "$f")" = "/usr/bin/$n" ]; then [ -e "$f" ] && continue; rm -f -- "$f" || exit 1; echo "$n"; fi; rm -f -- "$m"; done';
 
 export const MISMATCH =
   "This version doesn't match the tested build, so it was removed again. Retry later.";
@@ -264,23 +266,18 @@ const PROVENANCE = {
     `${it} wasn't built by ${repo}'s release workflow on main`,
 };
 
-export function denied(source, name, version) {
-  const it = `${short(name)} ${version}`;
-  if (Object.hasOwn(source?.deny ?? {}, version))
-    return `${it} isn't certified: ${source.deny[version]}`;
-  if (source?.since && compare(version, source.since) < 0)
-    return `${it} isn't certified: releases before ${source.since} weren't reviewed`;
-  return null;
-}
+const deprecation = (name, version, doc) =>
+  doc?.deprecated ? `${short(name)} ${version} is deprecated on npm: ${doc.deprecated}` : null;
 
-const bySource = (...args) => denied(...args);
+async function withdrawn(name, version, ctx) {
+  if (!OURS.test(name) || ctx.shipped?.has(`${name}@${version}`)) return null;
+  const doc = await ctx.npm.version(name, version);
+  if (!doc) return `npm doesn't have ${short(name)} ${version}`;
+  return deprecation(name, version, doc);
+}
 
 async function published(name, version, doc, source, ctx) {
   const it = `${short(name)} ${version}`;
-  if (source.certified === 'tag') {
-    const tags = (await ctx.npm.packument(name))?.['dist-tags'] ?? {};
-    return tags.certified === version ? null : `needs ${it}, which isn't certified`;
-  }
   const memo = `${name}@${version} ${doc.dist.integrity}`;
   if (ctx.verdicts?.has(memo)) return ctx.verdicts.get(memo);
   const repository = `https://github.com/${source.repo}`;
@@ -298,10 +295,10 @@ export async function judge(key, integrity, ctx) {
   const name = nameOf(key);
   const version = versionOf(key);
   if (!integrity) return no(`${key} isn't a registry tarball with an integrity`);
-  const source = OURS.test(name) ? sourceOf(name, ctx.sources) : null;
   if (ctx.base.get(key) === integrity) {
-    const why =
-      denied(source, name, version) ?? ruled(ctx.exceptions, name, version, ctx.pins ?? []);
+    const gone = await withdrawn(name, version, ctx);
+    if (gone) return no(gone);
+    const why = ruled(ctx.exceptions, name, version, ctx.pins ?? []);
     return why ? no(why) : null;
   }
   if (!OURS.test(name)) return no(`${key} isn't one of seven's own packages`);
@@ -309,9 +306,10 @@ export async function judge(key, integrity, ctx) {
   if (!doc) return no(`npm doesn't have ${short(name)} ${version}`);
   if (doc.dist?.integrity !== integrity)
     return no(`${short(name)} ${version} doesn't match npm's build`, true);
+  const source = sourceOf(name, ctx.sources);
   if (!source) return no(`${short(name)} has no publisher seven knows`);
   const why =
-    denied(source, name, version) ??
+    deprecation(name, version, doc) ??
     (await published(name, version, doc, source, ctx)) ??
     ruled(ctx.exceptions, name, version, ctx.pins ?? []) ??
     fits(doc, ctx.have);
@@ -364,6 +362,7 @@ async function older(entry, latest, ctx) {
     .filter(([version, doc]) => EXACT.test(version) && !doc?.deprecated)
     .filter(([version]) => compare(version, latest) < 0)
     .filter(([version]) => !entry.range || within(version, entry.range))
+    .filter(([, doc]) => !fits(doc ?? {}, ctx.have))
     .map(([version]) => version)
     .sort(compare)
     .reverse()
@@ -446,13 +445,14 @@ export function createNpm({ base, shipped = base, sources, bundled, have, fetche
   async function denied(keys, lock) {
     const ctx = await context();
     const pins = [...lock.keys(), ...shipped.keys()];
-    return keys.filter((key) => {
-      const name = nameOf(key);
-      const source = OURS.test(name) ? sourceOf(name, sources) : null;
-      return (
-        bySource(source, name, versionOf(key)) || ruled(ctx.exceptions, name, versionOf(key), pins)
-      );
-    });
+    const refused = await Promise.all(
+      keys.map(
+        async (key) =>
+          (await withdrawn(nameOf(key), versionOf(key), ctx)) ??
+          ruled(ctx.exceptions, nameOf(key), versionOf(key), pins)
+      )
+    );
+    return keys.filter((_, i) => refused[i]);
   }
 
   async function admitted(left, lock, names) {
@@ -664,10 +664,33 @@ export function binDir(global) {
 
 let unshadowing = Promise.resolve();
 
-export function unshadow(options) {
-  const next = unshadowing.then(() => unshadowOnce(options));
+function queued(step) {
+  const next = unshadowing.then(step);
   unshadowing = next.catch(() => undefined);
   return next;
+}
+
+export function unshadow(options) {
+  return queued(() => unshadowOnce(options));
+}
+
+async function lines(kernel, argv, user, what) {
+  let out = '';
+  const { status, stderr } = await kernel.run(argv, {
+    cwd: '/',
+    user,
+    onStdout: (chunk) => {
+      out += chunk;
+    },
+  });
+  if (status) throw new Error(stderr?.trim() || `${what} exited with ${status}`);
+  return out.split('\n').filter(Boolean);
+}
+
+export function tidyBins({ kernel, bin, keep = [] }) {
+  return queued(() =>
+    lines(kernel, ['bash', '-c', DANGLING, 'tidy', bin, ...keep], 'root', `tidying ${bin}`)
+  );
 }
 
 async function unshadowOnce({ root, kernel, global, name, dir, user = 'root' }) {
@@ -677,20 +700,21 @@ async function unshadowOnce({ root, kernel, global, name, dir, user = 'root' }) 
   const names = shadowed(manifest);
   if (!names.length) return [];
   const owner = `/node_modules/${name}/`;
-  let out = '';
-  const { status, stderr } = await kernel.run(
-    ['bash', '-c', UNSHADOW, 'unshadow', binDir(global), owner, ...names],
-    {
-      cwd: '/',
-      user,
-      onStdout: (chunk) => {
-        out += chunk;
-      },
-    }
+  return lines(
+    kernel,
+    [
+      'bash',
+      '-c',
+      UNSHADOW,
+      'unshadow',
+      binDir(global),
+      owner,
+      user === 'root' ? 'link' : 'remove',
+      ...names,
+    ],
+    user,
+    `unlinking ${names.join(', ')}`
   );
-  if (status)
-    throw new Error(stderr?.trim() || `unlinking ${names.join(', ')} exited with ${status}`);
-  return out.split('\n').filter(Boolean);
 }
 
 const PASSWD = '/etc/passwd';
@@ -712,8 +736,13 @@ export async function shellUnshadow({ root, kernel, global, home }) {
           .map(({ user }) => ({ user, global: `${home.slice(1)}/global/v11` }))[0];
   if (!owner) return [];
   const removed = [];
-  for (const { name, dir } of await globals(root, owner.global))
+  const keep = [];
+  for (const { name, dir } of await globals(root, owner.global)) {
+    const manifest = (await text(root, `${dir}/node_modules/${name}/package.json`)) ?? '{}';
+    keep.push(...shadowed(JSON.parse(manifest)));
     removed.push(...(await unshadow({ root, kernel, name, dir, ...owner })));
+  }
+  if (owner.user === 'root') await tidyBins({ kernel, bin: binDir(owner.global), keep });
   return removed;
 }
 
@@ -748,20 +777,25 @@ export async function watchShadows({ root, kernel, attach, global, wait = 50, re
   let watching = null;
   let watched = '';
   let chain = Promise.resolve();
+  const known = new Set();
   const rewatch = () => {
     const next = chain.then(async () => {
-      const paths = [PASSWD, ...(await all()).flatMap((home) => [`${home}/bin`, `${home}/global`])];
+      const found = await all();
+      const paths = [PASSWD, ...found.flatMap((home) => [`${home}/bin`, `${home}/global`])];
       if (paths.join('\n') === watched) return;
       const before = watching;
       watching = await client.fs.watch(paths, { recursive: true }, onChange);
       watched = paths.join('\n');
       before?.close();
+      for (const home of found.filter((home) => !known.has(home))) {
+        known.add(home);
+        pass(home);
+      }
     });
     chain = next.catch(() => undefined);
     return next;
   };
   await rewatch();
-  for (const home of await all()) pass(home);
   return {
     paths: () => watched.split('\n'),
     close: () => chain.then(() => watching.close()),

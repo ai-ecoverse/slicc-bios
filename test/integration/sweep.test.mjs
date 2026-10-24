@@ -56,6 +56,8 @@ const CALLS = {
   xsel: 'xsel --help',
   'wl-copy': 'wl-copy --help',
   'wl-paste': 'wl-paste --help',
+  sccopy: 'sccopy --help',
+  scpaste: 'scpaste --help',
 };
 const SHELL = new Set(['yes', '[']);
 const EXITS = {
@@ -76,6 +78,7 @@ const REAL = [
   ['wasm-grep', 'egrep', `[ "$(egrep '^g' s.txt)" = gamma ]`],
   ['wasm-sed', 'sed -n, sed -i', `sed -i s/beta/BETA/ s.txt && [ "$(sed -n 2p s.txt)" = BETA ]`],
   ['wasm-xz', 'xz -k, xz -dc', `xz -k s.txt && [ "$(xz -dc s.txt.xz)" = "$(<s.txt)" ]`],
+  ['wasm-xz', 'xzgrep', `[ "$(xzgrep -c BETA s.txt.xz)" = 1 ]`],
   ['wasm-jq', 'jq -c', `[ "$(printf '{"k":[1,2]}' | jq -c .k)" = '[1,2]' ]`],
   [
     'wasm-findutils',
