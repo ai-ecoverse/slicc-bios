@@ -639,8 +639,10 @@ async function checkPackages() {
 }
 
 const RETIRED = ['opt/grammars', 'var/lib/slicc/grammars'];
+const GRAMMARS_RECEIPT = 'var/lib/slicc/grammars/pnpm-lock.yaml';
 
 async function retire() {
+  if ((await text(root, GRAMMARS_RECEIPT)) === null) return;
   for (const path of RETIRED)
     await remove(root, path).catch((error) => console.warn(`retire /${path}: ${error.message}`));
 }

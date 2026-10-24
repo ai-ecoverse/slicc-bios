@@ -171,7 +171,7 @@ A hidden owner is fine. In R1, 30 minutes in the background throttled only the o
 
 Spectrum (≥ 1.105.0) highlights code with [`@pierre/highlights`](https://diffs.com/highlights), whose lexers are one WebAssembly module inside spectrum's own `dist/`, in the base set. So highlighting works offline from the first boot, and nothing loads from a CDN. Files in a language it doesn't know (about 80 are known) show as plain text.
 
-Before that, seven installed `@shikijs/langs` and `@shikijs/themes` as a pnpm project of its own in `/opt/grammars` and pointed spectrum's `grammarBase` at it. Spectrum no longer reads it, so bios no longer installs it. At every update check, bios removes `/opt/grammars` and `var/lib/slicc/grammars`, which a profile from before keeps.
+Before that, seven installed `@shikijs/langs` and `@shikijs/themes` as a pnpm project of its own in `/opt/grammars` and pointed spectrum's `grammarBase` at it. Spectrum no longer reads it, so bios no longer installs it. On a profile from before, which still has the old receipt `var/lib/slicc/grammars/pnpm-lock.yaml`, an update check removes `/opt/grammars` and then `var/lib/slicc/grammars`. Without the receipt bios leaves both paths alone, since `/opt/grammars` is an ordinary path now.
 
 ### Install / Update
 
