@@ -718,12 +718,12 @@ class Guard {
       const url = this.frames.get(id);
       if (url === undefined || url === '' || this.is.url(url)) return true;
       if (
-        id !== targetId &&
+        id !== scope.root &&
         this.targets.get(id)?.type === 'iframe' &&
         this.pageLocked(id, new Set(seen))
       )
         return true;
-      if (id !== targetId && (!this.parents.has(id) || !this.frames.has(this.parents.get(id))))
+      if (id !== scope.root && (!this.parents.has(id) || !this.frames.has(this.parents.get(id))))
         return true;
     }
     for (const [child, entry] of this.scopes) {
@@ -759,6 +759,7 @@ class Guard {
   recordTree(targetId, tree) {
     const scope = this.scope(targetId);
     const all = framed(tree);
+    scope.root = tree?.frame?.id;
     scope.frames = new Set(all.map((frame) => frame.id));
     const parentId = tree?.frame?.parentId;
     if (parentId && !scope.parent)
@@ -849,7 +850,13 @@ class Guard {
     }
     if (method === 'Page.frameNavigated' && params.frame)
       this.scopeNavigated(params.frame, targetId);
-    if (method === 'Runtime.executionContextCreated' && this.is.url(params.context?.origin)) {
+    const foreign =
+      params.context?.auxData?.type === 'isolated' && EXTENSIONS.test(params.context?.origin ?? '');
+    if (
+      method === 'Runtime.executionContextCreated' &&
+      !foreign &&
+      this.is.url(params.context?.origin)
+    ) {
       const id = params.context.auxData?.frameId;
       if (id) {
         this.scope(targetId).frames.add(id);
@@ -864,7 +871,7 @@ class Guard {
 
   scopeNavigated(frame, targetId) {
     const scope = this.scope(targetId);
-    if (!frame.parentId && frame.id === targetId) {
+    if (frame.id === scope.root || (!frame.parentId && !scope.root)) {
       for (const id of scope.frames) if (id !== targetId) this.removeFrame(id);
       scope.frames.clear();
       scope.ready = false;
