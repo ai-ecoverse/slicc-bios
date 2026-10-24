@@ -179,6 +179,7 @@ test('a program opens an http(s) URL in a new tab through /dev/embedder, and a j
   await settled(page, wide);
 
   await run(page, `sleep 8; ${ask('https://example.test/clicked')}; echo "clicked $?"`);
+  await shows(page, 'echo "clicked $?"');
   await page.send('Emulation.setDeviceMetricsOverride', {
     width: 420,
     height: 800,
