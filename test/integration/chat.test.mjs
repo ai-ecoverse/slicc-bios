@@ -298,7 +298,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     globalThis.sliccKernelDebug = true;
   });
   await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
-  await ready(page);
+  await ready(page, undefined, { tools: false });
   await page.evaluate(
     (global, cone) =>
       Promise.all([
