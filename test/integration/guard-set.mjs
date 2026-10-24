@@ -596,6 +596,8 @@ export function shared(path, { variants, except = [], group } = {}) {
       const clientFactory = await guardHost(t, path);
       for (const target of chosen.targets) {
         trace('run', path, target, variant);
+        let current;
+        const evidence = new Map();
         const execution = await run(subset(target), {
           clientFactory: clientFactory(path),
           rowTimeoutMs: ROW_MS,
@@ -617,17 +619,62 @@ export function shared(path, { variants, except = [], group } = {}) {
               row.why ?? '',
               JSON.stringify(row.incomplete ?? [])
             ),
-          debug: process.env.GUARD_TRACE
-            ? (data) =>
-                trace(
-                  'debug',
-                  JSON.stringify(data).slice(0, Number(process.env.GUARD_TRACE) || 300)
+          onStart: (row) => {
+            current = row;
+          },
+          debug: (data) => {
+            if (process.env.GUARD_TRACE)
+              trace('debug', JSON.stringify(data).slice(0, Number(process.env.GUARD_TRACE) || 300));
+            if (
+              data.side !== 'guarded' ||
+              !data.calls ||
+              !['C8.iframe-error', 'C4.static-cross-site'].includes(current?.id)
+            )
+              return;
+            const snapshot = data.calls.snapshot;
+            evidence.set(current.id, {
+              frameTree: data.calls.frameTree,
+              snapshot: snapshot && {
+                ok: snapshot.ok,
+                error: snapshot.error,
+                nodeName: snapshot.result?.root?.nodeName,
+              },
+              events: data.events
+                .filter((event) =>
+                  [
+                    'Page.frameAttached',
+                    'Page.frameNavigated',
+                    'Page.frameDetached',
+                    'Network.loadingFailed',
+                    'Target.attachedToTarget',
+                    'Target.detachedFromTarget',
+                  ].includes(event.method)
                 )
-            : undefined,
+                .map((event) => ({
+                  method: event.method,
+                  sessionId: event.sessionId,
+                  frame: event.params.frame,
+                  frameId: event.params.frameId,
+                  reason: event.params.reason,
+                  errorText: event.params.errorText,
+                  targetInfo: event.params.targetInfo,
+                })),
+            });
+          },
         });
         results.push(...execution.results);
+        for (const row of execution.results.filter(failing)) {
+          if (evidence.has(row.id))
+            process.stdout.write(
+              `GUARD-FRAMES ${path} ${row.id} ${target} ${variant} ${JSON.stringify(evidence.get(row.id))}\n`
+            );
+        }
       }
       const failed = results.filter((row) => row.variant === variant && failing(row));
+      for (const row of failed)
+        process.stdout.write(
+          `GUARD-OBSERVATIONS ${path} ${row.id} ${row.target} ${variant} ${JSON.stringify(row.observations)}\n`
+        );
       assert.deepEqual(
         failed.map(({ id, target, control, guarded, live, why, errors }) => ({
           id,
