@@ -27,7 +27,7 @@ test('an extension without child attachment keeps an ordinary cross-site frame p
     '/ordinary-parent',
     `<!doctype html><style>body{margin:0}iframe{width:400px;height:300px;border:0}</style><script>globalThis.clicks=0;addEventListener("message",({data})=>{if(data==="loaded")globalThis.loaded=true;if(data==="clicked")globalThis.clicks++})</script><iframe src="${child}"></iframe>`
   );
-  await plain.goto(outer.href);
+  await plain.send('Page.navigate', { url: outer.href });
   await plain.within(15000, () => globalThis.loaded);
   const infos = (await real.cdp.send('Target.getTargets', { filter: [{}] })).targetInfos;
   assert.ok(
