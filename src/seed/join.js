@@ -2,7 +2,7 @@ import { createKernel, fetchTransport } from '@ai-ecoverse/slicc-kernel';
 import '@ai-ecoverse/slicc-spectrum/ui';
 import { followGuest, installAgent, loadChat } from './agent.js';
 import { createFollow, hubClient, hubOrigin, hubs, joinUrl } from './follow.js';
-import { home } from './site.js';
+import { home, neverCached } from './site.js';
 
 export const SEAT_KEY = 'slicc-os.seat';
 export const REFUSED = 'This guest link isn’t valid any more.';
@@ -207,4 +207,5 @@ export async function boot() {
   });
 }
 
+neverCached();
 await boot();
