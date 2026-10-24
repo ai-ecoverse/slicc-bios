@@ -110,7 +110,7 @@ describe('a cold agent install runs in the page’s one kernel with no package s
     await page.init(watchKernels);
     await page.init(promptStamp);
     await page.init(() => performance.setResourceTimingBufferSize(20000));
-    await boot(page);
+    await boot(page, undefined, { tools: false });
     await page.within(
       300000,
       () =>

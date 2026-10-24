@@ -16,6 +16,12 @@ const tools = new Set(
 const shipped = JSON.parse(
   await readFile(new URL('../../src/packages/package-lock.json', import.meta.url), 'utf8')
 );
+const base = new Set(
+  Object.keys(shipped.packages)
+    .filter(Boolean)
+    .map((path) => path.split('node_modules/').at(-1))
+);
+const extra = (name) => tools.has(name) || (name.startsWith('@ai-ecoverse/') && !base.has(name));
 const lit = {
   '': {
     name: 'lit-fixture',
@@ -76,7 +82,7 @@ function downloads() {
     (url) =>
       url.startsWith('https://registry.npmjs.org/') &&
       /\/-\/[^/]+\.tgz$/.test(url) &&
-      !tools.has(new URL(url).pathname.slice(1).split('/-/')[0])
+      !extra(new URL(url).pathname.slice(1).split('/-/')[0])
   );
 }
 
