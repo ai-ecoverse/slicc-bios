@@ -1877,16 +1877,46 @@ class Guard {
     return null;
   }
 
+  placementPromises(sessionId) {
+    let root = this.scopeTarget(sessionId);
+    if (root === undefined) return new Map();
+    const seen = new Set();
+    while (this.scopes.get(root)?.parent) {
+      if (seen.has(root)) return null;
+      seen.add(root);
+      root = this.scopes.get(root).parent;
+    }
+    const targets = new Set([root]);
+    for (let size = 0; size !== targets.size; ) {
+      size = targets.size;
+      for (const [id, scope] of this.scopes) if (targets.has(scope.parent)) targets.add(id);
+    }
+    return new Map(
+      [...targets].filter((id) => this.placing.has(id)).map((id) => [id, this.placing.get(id)])
+    );
+  }
+
+  async placementsReady(sessionId, pending) {
+    for (;;) {
+      await Promise.all(pending.values());
+      const latest = this.placementPromises(sessionId);
+      if (!latest) return false;
+      if ([...latest].every(([id, promise]) => pending.get(id) === promise)) return true;
+      pending = latest;
+    }
+  }
+
   async placed(sessionId) {
-    const pending = this.placing.get(this.scopeTarget(sessionId));
-    if (!pending) return true;
+    const pending = this.placementPromises(sessionId);
+    if (!pending) return false;
+    if (!pending.size) return true;
     let timer;
     const expired = new Promise((resolve) => {
       timer = setTimeout(() => resolve(false), NAV_MS);
       timer.unref?.();
     });
     try {
-      return await Promise.race([pending.then(() => true), expired]);
+      return await Promise.race([this.placementsReady(sessionId, pending), expired]);
     } finally {
       clearTimeout(timer);
     }
