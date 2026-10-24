@@ -227,13 +227,28 @@ test("on a shared origin, sign-in goes through six's relay, the tray hub through
         return channel;
       };
       trail('import done');
-      const login = signIn({ shared: true, open: () => popup, listen });
+      const login = signIn({ shared: true, open: () => popup, listen, hosted: () => false });
       const token = await login('adobe', () => ({ clientId: 'c', scopes: 's' }));
       trail('token');
-      return { token, source: state.source, origin: state.origin ?? null };
+      const unchecked = signIn({
+        shared: true,
+        open: () => ({ location: {}, close() {} }),
+        listen,
+      });
+      const refused = await unchecked('adobe', () => ({ clientId: 'c', scopes: 's' })).then(
+        () => 'signed in',
+        (error) => error.message
+      );
+      return { token, source: state.source, origin: state.origin ?? null, refused };
     })
   );
-  assert.deepEqual(signedIn, { token: 'tok-1', source: 'opener', origin: null });
+  assert.deepEqual(signedIn, {
+    token: 'tok-1',
+    source: 'opener',
+    origin: null,
+    refused:
+      "Seven couldn't keep the sign-in window out of reach of browser automation, so it didn't open the sign-in. Try again.",
+  });
 
   const hub = await step('hub', () =>
     page.evaluate(async () => {
