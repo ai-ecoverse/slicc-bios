@@ -181,11 +181,48 @@ test('slicc-cdp#377: the kernel facade and slicc-cli link drive ordinary tabs wi
     () => document.querySelector('slicc-app').model.network.status().browser.via === 'link'
   );
   await installCandidate(page);
+  const diag = { contexts: [] };
+  const { sessionId: watch } = await chrome.cdp.send('Target.attachToTarget', {
+    targetId: user,
+    flatten: true,
+  });
+  chrome.cdp.on(({ method, params, sessionId }) => {
+    if (sessionId !== watch || method !== 'Runtime.executionContextCreated') return;
+    const { id, origin, auxData } = params.context;
+    diag.contexts.push({
+      id,
+      origin,
+      type: auxData?.type ?? null,
+      frameId: auxData?.frameId ?? null,
+    });
+  });
+  await chrome.cdp.send('Runtime.enable', {}, watch);
   const userSnapshot = await shell(
     page,
     `playwright-cli eval --tab ${user} 'document.title' && playwright-cli eval --tab ${user} 'document.documentElement.dataset.extensionFixture' && playwright-cli snapshot --tab ${user}`,
     'user-link'
   );
+  const frames = (tree) => [
+    {
+      id: tree.frame.id,
+      parentId: tree.frame.parentId ?? null,
+      url: tree.frame.url,
+      securityOrigin: tree.frame.securityOrigin,
+      loaderId: tree.frame.loaderId,
+    },
+    ...(tree.childFrames ?? []).flatMap(frames),
+  ];
+  diag.frames = frames((await chrome.cdp.send('Page.getFrameTree', {}, watch)).frameTree);
+  diag.targets = (await chrome.cdp.send('Target.getTargets')).targetInfos.map((info) => ({
+    type: info.type,
+    targetId: info.targetId,
+    browserContextId: info.browserContextId,
+    url: info.url,
+    openerId: info.openerId ?? null,
+    parentFrameId: info.parentFrameId ?? null,
+  }));
+  diag.user = user;
+  console.log(`CDP-DIAG-1416 ${JSON.stringify(diag)}`);
   assert.match(userSnapshot, /LINK-DRIVEN/);
   assert.match(userSnapshot, /[a-p]{32}/);
   assert.match(userSnapshot, /exit-0/);
