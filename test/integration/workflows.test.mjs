@@ -88,7 +88,7 @@ test('seven is published only after a release, from the production environment, 
 
 test('a pull request publishes its preview through the OIDC route in the pipeline’s deploy job, which gets no secret', () => {
   assert.equal(input('deploy'), 'node edge/publish.mjs preview >> "$GITHUB_STEP_SUMMARY"');
-  assert.equal(input('deploy-secrets'), 'NONE');
+  assert.equal(input('deploy-secrets'), undefined);
 });
 
 test('semantic-release publishes to npm from the trusted ci.yml, with provenance', async () => {

@@ -30,7 +30,6 @@ jobs:
       timeout-minutes: 90
       review-timeout-minutes: 90
       deploy: node edge/publish.mjs preview >> "$GITHUB_STEP_SUMMARY"
-      deploy-secrets: NONE
       release-environment: production
       release-secrets: SLICC_BIOS_DEPLOY_TOKEN
       after-release: |
