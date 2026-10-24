@@ -63,6 +63,12 @@
       "dependencyDashboardApproval": true
     },
     {
+      "description": "A pin inside seven's own sources (the jsDelivr URLs under src/, such as the tar library src/installer.js imports) ships with seven, and seven is published only on a release, so its bump is a fix: commit, not the chore: a custom-manager dependency gets by default.",
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["src/**"],
+      "semanticCommitType": "fix"
+    },
+    {
       "description": "The slicc-shared-web npm package and the pipeline.yml ref in ci.yml move together, in one PR, so the harness and the pipeline stay at one release (workflows.test.mjs holds them equal).",
       "matchPackageNames": ["@ai-ecoverse/slicc-shared-web", "ai-ecoverse/slicc-shared-web"],
       "groupName": "slicc-shared-web",

@@ -1,21 +1,21 @@
-name: Deploy
+name: Preview
 
 on:
   push:
-    branches: [main, 'bb/**']
+    branches: ['bb/**']
 
 permissions:
   contents: read
 
 concurrency:
-  group: deploy-${{ github.ref_name }}
-  cancel-in-progress: ${{ github.ref_name != 'main' }}
+  group: preview-${{ github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: ${{ github.ref_name == 'main' && 'production' || 'preview' }}
+    environment: preview
     permissions:
       contents: read
       id-token: write
@@ -26,12 +26,5 @@ jobs:
           node-version: 26
           cache: npm
       - run: npm ci
-      - name: Publish main to seven/ with the R2 token
-        if: github.ref_name == 'main'
-        run: node edge/publish.mjs "$GITHUB_REF_NAME" >> "$GITHUB_STEP_SUMMARY"
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-
       - name: Publish the branch through sliccy.ai with its OIDC token
-        if: github.ref_name != 'main'
         run: node edge/publish.mjs "$GITHUB_REF_NAME" >> "$GITHUB_STEP_SUMMARY"
