@@ -297,7 +297,7 @@ test('a refused lock entry of a tool outside the batch blocks the install: with 
   assert.deepEqual(page.errors, []);
 });
 
-test('a tools round whose pnpm hangs gives up after its limit and releases the pnpm store, so the tools settle and the agent install still finishes', {
+test('a tools round whose pnpm goes quiet gives up after its idle limit and releases the pnpm store, so the tools settle and the agent install still finishes', {
   timeout: 25 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -314,7 +314,7 @@ test('a tools round whose pnpm hangs gives up after its limit and releases the p
         .model.updates.packages()
         .find((row) => row.id === 'tools:jq')?.log ?? ''
   );
-  assert.match(log, /pnpm didn't finish within \d+ s/, log);
+  assert.match(log, /pnpm wrote nothing for \d+ s/, log);
   const later = (await rows(page)).filter((row) => !listed[row.name]?.first);
   assert.ok(
     later.every((row) => row.state === 'installed'),
@@ -332,6 +332,10 @@ test('a tools round whose pnpm hangs gives up after its limit and releases the p
     ((await navigator.locks.query()).held ?? []).map((lock) => lock.name)
   );
   assert.ok(!held.includes('slicc-pnpm-store'), `the pnpm store is free: ${held.join(', ')}`);
+  registry.hold = null;
+  assert.equal(await act(page, 'tools:jq', 'retry'), 'ok', 'the failed round runs again');
+  assert.equal((await jqRow(page)).state, 'installed');
+  assert.ok(await versionOf(page, `${TOOLS}/${JQ}`), 'jq is installed once npm answers');
   assert.deepEqual(page.errors, []);
 });
 
