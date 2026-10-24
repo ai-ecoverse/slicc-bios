@@ -1,0 +1,470 @@
+import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
+import { createServer } from 'node:http';
+import { after, test } from 'node:test';
+import { inflateSync } from 'node:zlib';
+import { guardHost } from './guard-set.mjs';
+
+const hits = [];
+const pages = {
+  '/marker': (p) =>
+    `<!doctype html><title>marker</title><style>html,body{margin:0;height:100%;background:#ff00ff;color:#ff00ff}</style><p>paint-marker-${p.get('n')}</p><script>const n=${JSON.stringify(p.get('n'))};for(const k of ['mousedown','keydown'])addEventListener(k,()=>navigator.sendBeacon('/hit?n='+n+'&k='+k))</script>`,
+  '/frame': (p) =>
+    `<!doctype html><title>frame</title><style>html,body{margin:0;height:100%;background:#fff}iframe{position:absolute;left:0;top:0;width:600px;height:400px;border:0}</style><iframe src="${p.get('src').replaceAll('&', '&amp;').replaceAll('"', '&quot;')}"></iframe>`,
+  '/empty': () =>
+    '<!doctype html><title>empty</title><style>html,body{margin:0;height:100%;background:#fff}</style>',
+};
+const server = createServer((req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  if (url.pathname === '/hit') {
+    hits.push({ host: url.hostname, n: url.searchParams.get('n'), k: url.searchParams.get('k') });
+    res.writeHead(204, { 'access-control-allow-origin': '*' });
+    return res.end();
+  }
+  const page = pages[url.pathname];
+  res.writeHead(page ? 200 : 404, { 'content-type': 'text/html; charset=utf-8' });
+  return res.end(page ? page(url.searchParams) : 'missing');
+});
+await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+after(() => server.close());
+const port = server.address().port;
+const at = (host, path = '') => `http://${host}:${port}${path}`;
+const OWN = at('client.example.test');
+const framing = (host, src) => at(host, `/frame?src=${encodeURIComponent(src)}`);
+const marker = (host, n) => at(host, `/marker?n=${n}`);
+
+export const LAYOUTS = {
+  local: (n) => framing('ordinary.example.test', marker('client.example.test', n)),
+  remote: (n) => framing('ordinary.example.test', marker('seven.sliccy.ai', n)),
+  nested: (n) =>
+    framing('localhost', framing('middle.example.test', marker('client.example.test', n))),
+  ordinary: (n) => framing('ordinary.example.test', marker('localhost', n)),
+};
+const LATE = {
+  'late-remote': (n) => marker('seven.sliccy.ai', n),
+  'late-nested': (n) => framing('middle.example.test', marker('client.example.test', n)),
+};
+export const GUARDED = ['local', 'remote', 'nested'];
+
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const REFUSED = /^slicc: refused:/;
+const MARKED = 1000;
+
+function paeth(a, b, c) {
+  const p = a + b - c;
+  const pa = Math.abs(p - a);
+  const pb = Math.abs(p - b);
+  const pc = Math.abs(p - c);
+  return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+}
+
+export function markerPixels(base64) {
+  const png = Buffer.from(base64, 'base64');
+  const chunks = [];
+  let width = 0;
+  let height = 0;
+  let channels = 0;
+  for (let at = 8; at + 8 <= png.length; ) {
+    const length = png.readUInt32BE(at);
+    const kind = png.toString('latin1', at + 4, at + 8);
+    const data = png.subarray(at + 8, at + 8 + length);
+    if (kind === 'IHDR') {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      channels = { 0: 1, 2: 3, 4: 2, 6: 4 }[data[9]];
+      if (data[8] !== 8 || data[12] !== 0) throw new Error('an unexpected PNG format');
+    }
+    if (kind === 'IDAT') chunks.push(data);
+    at += 12 + length;
+  }
+  const raw = inflateSync(Buffer.concat(chunks));
+  const stride = width * channels;
+  let previous = Buffer.alloc(stride);
+  let count = 0;
+  for (let y = 0; y < height; y += 1) {
+    const filter = raw[y * (stride + 1)];
+    const line = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
+    const row = Buffer.alloc(stride);
+    for (let x = 0; x < stride; x += 1) {
+      const left = x >= channels ? row[x - channels] : 0;
+      const up = previous[x];
+      const corner = x >= channels ? previous[x - channels] : 0;
+      const base = [0, left, up, (left + up) >> 1, paeth(left, up, corner)][filter];
+      row[x] = (line[x] + base) & 255;
+    }
+    if (channels >= 3) {
+      for (let x = 0; x < stride; x += channels) {
+        if (row[x] > 200 && row[x + 1] < 80 && row[x + 2] > 200) count += 1;
+      }
+    }
+    previous = row;
+  }
+  return count;
+}
+
+async function outcome(promise) {
+  try {
+    return { ok: true, result: await promise };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+}
+
+const verdict = (answer, shows) =>
+  !answer.ok
+    ? REFUSED.test(answer.error)
+      ? 'refused'
+      : `error: ${answer.error.slice(0, 80)}`
+    : shows(answer.result)
+      ? 'shown'
+      : 'none';
+
+async function until(check, ms) {
+  const end = Date.now() + ms;
+  let last;
+  while (Date.now() < end) {
+    last = await check();
+    if (last) return last;
+    await pause(200);
+  }
+  return last;
+}
+
+async function shot(client, session) {
+  const answer = await outcome(client.send('Page.captureScreenshot', { format: 'png' }, session));
+  if (!answer.ok) return REFUSED.test(answer.error) ? 'refused' : `error: ${answer.error}`;
+  return markerPixels(answer.result.data);
+}
+
+async function cast(client, session, ms, during) {
+  const frames = [];
+  let read = client.events.length;
+  let since = null;
+  const start = await outcome(
+    client.send('Page.startScreencast', { format: 'png', everyNthFrame: 1 }, session)
+  );
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    for (; read < client.events.length; read += 1) {
+      const event = client.events[read];
+      if (event.method !== 'Page.screencastFrame' || event.sessionId !== session) continue;
+      frames.push(markerPixels(event.params.data));
+      void outcome(
+        client.send('Page.screencastFrameAck', { sessionId: event.params.sessionId }, session)
+      );
+    }
+    if (during && since === null && Date.now() > end - ms / 2) {
+      since = frames.length;
+      await during();
+    }
+    await pause(100);
+  }
+  await outcome(client.send('Page.stopScreencast', {}, session));
+  const later = frames.slice(since ?? 0);
+  return {
+    before: since ?? frames.length,
+    start: start.ok ? 'ok' : REFUSED.test(start.error) ? 'refused' : `error: ${start.error}`,
+    frames: later.length,
+    marked: later.filter((pixels) => pixels >= MARKED).length,
+  };
+}
+
+const printable = (text) =>
+  text
+    .replace(/=\r?\n/g, '')
+    .replace(/=([0-9a-f]{2})/gi, (found, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
+
+async function reads(client, session, n) {
+  const text = `paint-marker-${n}`;
+  const shows = (result) => JSON.stringify(result).includes(text);
+  const out = {};
+  out.dom = verdict(
+    await outcome(client.send('DOM.getDocument', { depth: -1, pierce: true }, session)),
+    shows
+  );
+  out.ax = verdict(await outcome(client.send('Accessibility.getFullAXTree', {}, session)), shows);
+  out.snapshot = verdict(
+    await outcome(
+      client.send('DOMSnapshot.captureSnapshot', { computedStyles: ['background-color'] }, session)
+    ),
+    (result) => shows(result) || JSON.stringify(result).includes('rgb(255, 0, 255)')
+  );
+  out.mhtml = verdict(
+    await outcome(client.send('Page.captureSnapshot', { format: 'mhtml' }, session)),
+    (result) => printable(result.data ?? '').includes(text)
+  );
+  const read = client.events.length;
+  await outcome(client.send('DOM.enable', {}, session));
+  const enabled = await outcome(client.send('CSS.enable', {}, session));
+  await pause(500);
+  const sheets = client.events
+    .slice(read)
+    .filter((event) => event.method === 'CSS.styleSheetAdded' && event.sessionId === session);
+  const texts = [];
+  for (const sheet of sheets) {
+    const answer = await outcome(
+      client.send(
+        'CSS.getStyleSheetText',
+        { styleSheetId: sheet.params.header.styleSheetId },
+        session
+      )
+    );
+    if (!answer.ok) texts.push(answer);
+    else if (/ff00ff/i.test(answer.result.text)) texts.push({ ok: true, result: { shown: text } });
+  }
+  out.css = !enabled.ok
+    ? verdict(enabled, () => false)
+    : texts.some((answer) => answer.ok)
+      ? 'shown'
+      : texts.some((answer) => REFUSED.test(answer.error))
+        ? 'refused'
+        : 'none';
+  return out;
+}
+
+const PROBES = [
+  ['LayerTree.enable', {}],
+  ['LayerTree.makeSnapshot', { layerId: 'missing' }],
+  ['LayerTree.replaySnapshot', { snapshotId: 'missing' }],
+  ['HeadlessExperimental.beginFrame', { screenshot: { format: 'png' } }],
+  ['Cast.enable', {}],
+  ['Cast.startTabMirroring', { sinkName: 'missing' }],
+];
+
+async function probes(client, session) {
+  const out = {};
+  for (const [method, params] of PROBES) {
+    const answer = await outcome(client.send(method, params, session));
+    out[method] = answer.ok ? 'passed' : REFUSED.test(answer.error) ? 'refused' : 'chrome error';
+  }
+  return out;
+}
+
+const hitsOf = (n) => hits.filter((hit) => hit.n === n).length;
+
+async function click(client, session, n) {
+  const before = hitsOf(n);
+  const mouse = (type) =>
+    client.send(
+      'Input.dispatchMouseEvent',
+      { type, x: 300, y: 200, button: 'left', clickCount: 1 },
+      session
+    );
+  const sent = await outcome(
+    (async () => {
+      await mouse('mouseMoved');
+      await mouse('mousePressed');
+      await mouse('mouseReleased');
+      await client.send(
+        'Input.dispatchKeyEvent',
+        { type: 'keyDown', key: 'x', code: 'KeyX', text: 'x' },
+        session
+      );
+      await client.send(
+        'Input.dispatchKeyEvent',
+        { type: 'keyUp', key: 'x', code: 'KeyX' },
+        session
+      );
+    })()
+  );
+  if (!sent.ok) return REFUSED.test(sent.error) ? 'refused' : `error: ${sent.error}`;
+  return (await until(async () => hitsOf(n) > before, 3000)) ? 'reached' : 'none';
+}
+
+const evaluate = (client, session, expression) =>
+  outcome(client.send('Runtime.evaluate', { expression, awaitPromise: true }, session));
+
+async function frames(unguarded) {
+  const { targetInfos } = await unguarded.send('Target.getTargets');
+  return targetInfos
+    .filter((info) => info.type === 'iframe' && info.url.includes(`:${port}/`))
+    .map((info) => new URL(info.url).hostname);
+}
+
+async function guardedRow(factory, own, targetId, row) {
+  const { client, close } = await factory({ own });
+  const attach = await outcome(client.send('Target.attachToTarget', { targetId, flatten: true }));
+  if (!attach.ok) {
+    row.attach = REFUSED.test(attach.error) ? 'refused' : `error: ${attach.error}`;
+    await close();
+    return null;
+  }
+  row.attach = 'ok';
+  const session = attach.result.sessionId;
+  await outcome(client.send('Page.enable', {}, session));
+  return { client, session, close };
+}
+
+async function measure(factory, unguarded, own, route, layout) {
+  const n = randomBytes(6).toString('hex');
+  const row = { route, layout };
+  const { targetId } = await unguarded.send('Target.createTarget', { url: LAYOUTS[layout](n) });
+  try {
+    const { sessionId: raw } = await unguarded.send('Target.attachToTarget', {
+      targetId,
+      flatten: true,
+    });
+    await unguarded.send('Target.activateTarget', { targetId });
+    row.control = {
+      shot: await until(async () => {
+        const pixels = await shot(unguarded, raw);
+        return pixels >= MARKED ? pixels : 0;
+      }, 20000),
+    };
+    row.frames = await frames(unguarded);
+    row.control.cast = await cast(unguarded, raw, 1500);
+    row.control.reads = await reads(unguarded, raw, n);
+    row.control.input = await click(unguarded, raw, n);
+    const guarded = await guardedRow(factory, own, targetId, row);
+    if (!guarded) return row;
+    const { client, session, close } = guarded;
+    try {
+      row.shot = await shot(client, session);
+      row.cast = await cast(client, session, 2000);
+      row.reads = await reads(client, session, n);
+      row.probes = await probes(client, session);
+      row.input = await click(client, session, n);
+      if (layout !== 'ordinary') {
+        await evaluate(unguarded, raw, "document.querySelector('iframe').remove()");
+        await until(async () => (await shot(unguarded, raw)) === 0, 10000);
+        await pause(500);
+        row.again = await shot(client, session);
+      }
+    } finally {
+      await close();
+    }
+    return row;
+  } finally {
+    await outcome(unguarded.send('Target.closeTarget', { targetId }));
+  }
+}
+
+async function measureLate(factory, unguarded, own, route, layout) {
+  const n = randomBytes(6).toString('hex');
+  const row = { route, layout };
+  const { targetId } = await unguarded.send('Target.createTarget', {
+    url: at('ordinary.example.test', '/empty'),
+  });
+  try {
+    const { sessionId: raw } = await unguarded.send('Target.attachToTarget', {
+      targetId,
+      flatten: true,
+    });
+    await unguarded.send('Target.activateTarget', { targetId });
+    const guarded = await guardedRow(factory, own, targetId, row);
+    if (!guarded) return row;
+    const { client, session, close } = guarded;
+    try {
+      const src = LATE[layout](n);
+      row.cast = await cast(client, session, 6000, async () => {
+        await evaluate(
+          unguarded,
+          raw,
+          `new Promise((done) => { const f = document.createElement('iframe'); f.src = ${JSON.stringify(src)}; f.style.cssText = 'position:absolute;left:0;top:0;width:600px;height:400px;border:0'; f.onload = done; document.body.append(f); })`
+        );
+      });
+      row.control = {
+        shot: await until(async () => {
+          const pixels = await shot(unguarded, raw);
+          return pixels >= MARKED ? pixels : 0;
+        }, 10000),
+      };
+      row.frames = await frames(unguarded);
+      row.shot = await shot(client, session);
+    } finally {
+      await close();
+    }
+    return row;
+  } finally {
+    await outcome(unguarded.send('Target.closeTarget', { targetId }));
+  }
+}
+
+const cell = (value) => (typeof value === 'object' ? JSON.stringify(value) : String(value));
+
+function table(rows) {
+  const lines = [];
+  for (const row of rows) {
+    const { route, layout, ...rest } = row;
+    for (const [vector, value] of Object.entries(rest)) {
+      lines.push(`GUARD-PAINT ${route} ${layout} ${vector} ${cell(value)}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+const leaked = (row) => {
+  const found = [];
+  if (row.attach !== 'ok') return found;
+  if (typeof row.shot === 'number' && row.shot > 0) found.push(`shot ${row.shot}px`);
+  if (row.cast && (row.cast.frames > 0 || row.cast.marked > 0))
+    found.push(`cast ${row.cast.frames} frames, ${row.cast.marked} marked`);
+  for (const [read, value] of Object.entries(row.reads ?? {}))
+    if (value === 'shown') found.push(read);
+  for (const [probe, value] of Object.entries(row.probes ?? {}))
+    if (value !== 'refused') found.push(`${probe} ${value}`);
+  if (row.input && row.input !== 'refused') found.push(`input ${row.input}`);
+  return found;
+};
+
+export function paint(route) {
+  test(`a page that holds a protected frame is locked for paint, DOM and input on the ${route} path`, {
+    timeout: 30 * 60 * 1000,
+  }, async (t) => {
+    const { clientFactory, vault } = await guardHost(t, route);
+    const factory = clientFactory(route);
+    const own = [OWN, vault];
+    const { unguarded } = await factory({ own });
+    const rows = [];
+    for (const layout of Object.keys(LAYOUTS))
+      rows.push(await measure(factory, unguarded, own, route, layout));
+    for (const layout of Object.keys(LATE))
+      rows.push(await measureLate(factory, unguarded, own, route, layout));
+    if (route !== 'link') {
+      const { targetInfos } = await unguarded.send('Target.getTargets');
+      rows.push({
+        route,
+        layout: 'seven',
+        vaultFramed: targetInfos.some(
+          (info) => info.type === 'iframe' && info.url.startsWith(vault)
+        ),
+      });
+    }
+    process.stdout.write(`${table(rows)}\n`);
+    const by = Object.fromEntries(rows.map((row) => [row.layout, row]));
+    for (const layout of GUARDED) {
+      const row = by[layout];
+      assert.ok(row.control.shot >= MARKED, `${layout}: the marker paints without the guard`);
+      assert.ok(
+        row.control.cast.marked > 0,
+        `${layout}: a cast without the guard shows the marker`
+      );
+      assert.equal(row.control.input, 'reached', `${layout}: a click without the guard reaches`);
+      assert.deepEqual(
+        leaked(row),
+        [],
+        `${layout}: nothing of the protected frame reaches the client`
+      );
+      if (row.attach === 'ok')
+        assert.equal(row.again, 0, `${layout}: the page is drivable once the frame is gone`);
+    }
+    for (const layout of Object.keys(LATE)) {
+      const row = by[layout];
+      assert.ok(row.control.shot >= MARKED, `${layout}: the late frame paints without the guard`);
+      assert.equal(row.attach, 'ok', `${layout}: the ordinary page attaches`);
+      assert.equal(row.cast.start, 'ok', `${layout}: the cast starts on the ordinary page`);
+      assert.equal(row.cast.marked, 0, `${layout}: no cast frame shows the late frame`);
+      assert.ok(
+        row.shot === 'refused' || row.shot === 0,
+        `${layout}: a screenshot after the frame appeared shows none of it`
+      );
+    }
+    const ordinary = by.ordinary;
+    assert.equal(ordinary.attach, 'ok', 'an ordinary page attaches');
+    assert.ok(ordinary.shot >= MARKED, 'an ordinary page’s frame shows in a screenshot');
+    assert.ok(ordinary.cast.marked > 0, 'an ordinary page’s frame shows in a cast');
+    assert.equal(ordinary.input, 'reached', 'a click reaches an ordinary page’s frame');
+    assert.equal(ordinary.reads.dom, 'none', 'an ordinary page’s DOM reads');
+    if (route !== 'link') assert.equal(by.seven.vaultFramed, true, 'seven frames the vault');
+  });
+}
