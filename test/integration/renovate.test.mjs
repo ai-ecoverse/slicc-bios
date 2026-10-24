@@ -141,3 +141,18 @@ test('the slicc-shared-web npm package and the pipeline ref in ci.yml move toget
   assert.equal(rule.groupName, 'slicc-shared-web');
   assert.doesNotMatch(JSON.stringify(config), /cert-review|release-state|ci \/ test/);
 });
+
+test('a bump of a jsDelivr pin in seven’s sources is a fix: commit, so it releases and reaches seven', async () => {
+  const source = await read('src/installer.js');
+  assert.match(source, /https:\/\/cdn\.jsdelivr\.net\/npm\/modern-tar@\d/);
+  const rules = config.packageRules.filter(
+    (rule) =>
+      rule.matchManagers?.includes('custom.regex') &&
+      rule.matchFileNames?.some((pattern) => glob(pattern).test('src/installer.js'))
+  );
+  assert.deepEqual(
+    rules.map((rule) => rule.semanticCommitType),
+    ['fix']
+  );
+  assert.equal(rules[0].matchPackageNames, undefined);
+});
