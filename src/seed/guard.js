@@ -217,6 +217,8 @@ const PAGE_DOMAINS = [
 const pageScoped = (method = '') =>
   PAGE_PAINT.has(method) || PAGE_DOMAINS.some((domain) => method.startsWith(domain));
 const FRAME_CHILDREN = [{ type: 'iframe', exclude: false }, { exclude: true }];
+const NO_AUTO_ATTACH =
+  'slicc: refused: Target.setAutoAttach is not supported: attach to each target';
 const STRUCTURE = new Set([
   'Page.frameAttached',
   'Page.frameDetached',
@@ -706,7 +708,13 @@ class Guard {
   }
 
   scope(targetId) {
-    if (!this.scopes.has(targetId)) this.scopes.set(targetId, { frames: new Set(), ready: false });
+    if (!this.scopes.has(targetId))
+      this.scopes.set(targetId, {
+        frames: new Set(),
+        owners: new Set(),
+        remoteOwners: new Set(),
+        ready: false,
+      });
     return this.scopes.get(targetId);
   }
 
@@ -728,7 +736,7 @@ class Guard {
       if (url === undefined || url === '' || this.is.url(url)) return true;
       if (
         id !== scope.root &&
-        this.targets.get(id)?.type === 'iframe' &&
+        (scope.remoteOwners.has(id) || this.targets.get(id)?.type === 'iframe') &&
         this.pageLocked(id, new Set(seen))
       )
         return true;
@@ -769,7 +777,8 @@ class Guard {
     const scope = this.scope(targetId);
     const all = framed(tree);
     scope.root = tree?.frame?.id;
-    scope.frames = new Set(all.map((frame) => frame.id));
+    scope.treeFrames = new Set(all.map((frame) => frame.id));
+    scope.frames = new Set([...scope.treeFrames, ...scope.owners]);
     const parentId = tree?.frame?.parentId;
     if (parentId && !scope.parent)
       scope.parent = this.scopes.has(parentId)
@@ -793,18 +802,14 @@ class Guard {
   recordOwners(targetId, root) {
     const scope = this.scope(targetId);
     scope.ownersReady = Boolean(root);
+    const former = scope.owners;
+    scope.owners = new Set();
+    scope.remoteOwners = new Set();
     const nodes = [root];
     while (nodes.length) {
       const node = nodes.pop();
       if (!node) continue;
-      if (node.nodeName === 'IFRAME' || node.nodeName === 'FRAME') {
-        if (!node.frameId) scope.ownersReady = false;
-        else {
-          scope.frames.add(node.frameId);
-          if (!this.frames.has(node.frameId)) this.frames.set(node.frameId, '');
-          if (!this.parents.has(node.frameId)) this.parents.set(node.frameId, scope.root);
-        }
-      }
+      this.recordOwner(scope, node);
       nodes.push(
         ...(node.children ?? []),
         ...(node.shadowRoots ?? []),
@@ -812,7 +817,22 @@ class Guard {
         node.templateContent
       );
     }
+    for (const id of former)
+      if (!scope.owners.has(id) && !scope.treeFrames?.has(id)) scope.frames.delete(id);
     this.stopCasts();
+  }
+
+  recordOwner(scope, node) {
+    if (node.nodeName !== 'IFRAME' && node.nodeName !== 'FRAME') return;
+    if (!node.frameId) {
+      scope.ownersReady = false;
+      return;
+    }
+    scope.owners.add(node.frameId);
+    if (!node.contentDocument) scope.remoteOwners.add(node.frameId);
+    scope.frames.add(node.frameId);
+    if (!this.frames.has(node.frameId)) this.frames.set(node.frameId, '');
+    if (!this.parents.has(node.frameId)) this.parents.set(node.frameId, scope.root);
   }
 
   place(targetId, sessionId) {
@@ -862,7 +882,12 @@ class Guard {
     const disabled = await this.call('DOM.disable', {}, sessionId);
     const scope = this.scope(targetId);
     scope.pending -= 1;
-    scope.failed = Boolean(enabled.error || attached.error || !scope.ownersReady || disabled.error);
+    scope.failed = Boolean(
+      enabled.error ||
+        (attached.error && attached.error.message !== NO_AUTO_ATTACH) ||
+        !scope.ownersReady ||
+        disabled.error
+    );
     scope.ready = Boolean(scope.tree && !scope.failed && !scope.pending);
     if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
     this.stopCasts();
@@ -910,6 +935,7 @@ class Guard {
     if (method === 'Page.frameAttached') {
       const scope = this.scope(targetId);
       scope.frames.add(params.frameId);
+      scope.owners.add(params.frameId);
       this.frames.set(params.frameId, '');
       if (params.parentFrameId) this.parents.set(params.frameId, params.parentFrameId);
     }
@@ -943,11 +969,14 @@ class Guard {
     if (frame.id === scope.root || (!frame.parentId && !scope.root)) {
       for (const id of scope.frames) if (id !== targetId) this.removeFrame(id);
       scope.frames.clear();
+      scope.owners.clear();
+      scope.remoteOwners.clear();
       scope.ready = false;
       const navSession = this.navs.get(targetId)?.session;
       if (navSession) this.placing.set(targetId, this.place(targetId, navSession));
     }
     scope.frames.add(frame.id);
+    if (frame.parentId && frame.id !== scope.root) scope.remoteOwners.delete(frame.id);
     this.frames.set(
       frame.id,
       this.is.url(frame.securityOrigin) ? frame.securityOrigin : (frame.url ?? '')
@@ -966,7 +995,12 @@ class Guard {
       this.frames.delete(id);
       this.parents.delete(id);
       this.scopes.delete(id);
-      for (const scope of this.scopes.values()) scope.frames.delete(id);
+      for (const scope of this.scopes.values()) {
+        scope.frames.delete(id);
+        scope.owners.delete(id);
+        scope.remoteOwners.delete(id);
+        scope.treeFrames?.delete(id);
+      }
     }
   }
 
@@ -1592,6 +1626,23 @@ class Guard {
     return false;
   }
 
+  async styleLater(message) {
+    const { sessionId, params = {} } = message;
+    const header = params.header;
+    const scope = this.scopes.get(this.scopeTarget(sessionId));
+    if (!header || header.frameId !== scope?.root || this.is.url(this.frames.get(header.frameId)))
+      return;
+    if (this.is.url(header.sourceURL)) kept(this.sheets, header.styleSheetId);
+    if ((await this.placed(sessionId)) && !this.hidden(sessionId) && !this.locked(sessionId))
+      this.redacted(message);
+  }
+
+  deferredStyle(message) {
+    if (message.method !== 'CSS.styleSheetAdded' || !this.locked(message.sessionId)) return false;
+    void this.styleLater(message).catch(() => {});
+    return true;
+  }
+
   async event(message) {
     const method = message.method ?? '';
     const { sessionId } = message;
@@ -1601,6 +1652,7 @@ class Guard {
     if (this.placements.has(sessionId)) return;
     if (method.startsWith('Target.') && (await this.targetEvent(message))) return;
     if (method === 'Page.screencastFrame' && !this.casts.has(sessionId)) return;
+    if (this.deferredStyle(message)) return;
     if (this.locked(sessionId) && (pageScoped(method) || method === 'Page.screencastFrame')) return;
     if (this.blocked.has(sessionId) && PAUSES.has(method)) return this.release(message);
     if (this.hidden(sessionId)) return;
