@@ -1,5 +1,8 @@
 import { clearHandOff, dropped, droppedLine } from './seed/handoff.js';
+import { neverCached } from './seed/site.js';
 import { usersMode } from './seed/users.js';
+
+neverCached();
 
 const quiet = {
   begin() {},
