@@ -2,6 +2,7 @@ import { appendLog, described, openIntegrity, sha256, treeOf } from './sw/integr
 import { kernelPort, loopback, Unreachable } from './sw/loopback.js';
 import { joined, opfsReader } from './sw/opfs.js';
 import { createResolver, NODE_STUBS } from './sw/resolve.js';
+import { ASSETS, EXPORTER, retired } from './sw/six.js';
 import { nodeStub } from './sw/stubs.js';
 import { transform } from './sw/transform.js';
 
@@ -65,7 +66,8 @@ const ownDirs = [
   ...['sw/', 'seed/', 'packages/', 'icons/'].map((dir) => `${BIOS}${dir}`),
   '/fonts/',
 ];
-const passed = new Set(SHARED ? ['/auth/callback'] : []);
+const passed = new Set(SHARED ? ['/auth/callback', EXPORTER] : []);
+const passedDirs = SHARED ? [ASSETS] : [];
 const MANIFEST = '/os/manifest.json';
 
 function kind(path) {
@@ -348,6 +350,11 @@ const aliases = new Map([
   ],
 ]);
 
+const passes = (asked) => passed.has(asked) || passedDirs.some((dir) => asked.startsWith(dir));
+
+const toOs = async (asked, request) =>
+  SHARED && asked === '/' && request.mode === 'navigate' && retired();
+
 async function serve(request, controller, client) {
   const scope = new URL(self.registration.scope).pathname;
   const url = new URL(request.url);
@@ -356,7 +363,10 @@ async function serve(request, controller, client) {
   const base = scope.replace(/\/$/, '');
   const network = async () =>
     watched(await fetch(request, { signal: controller.signal }), request, controller, client);
-  if (passed.has(asked)) return network();
+  if (passes(asked)) return network();
+  if (await toOs(asked, request)) {
+    return Response.redirect(new URL('os/', self.registration.scope).href, 302);
+  }
   if (asked === MANIFEST) return Response.redirect(`${BIOS_URL}manifest.json`, 302);
   const served = kind(path);
   if (served === 'bios') return network();
