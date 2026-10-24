@@ -8,7 +8,25 @@ export const MAX_RECORD = 16 * 1024 * 1024;
 export const NOT_ENFORCED =
   "EACCES: this seven links to other sevens only when its kernel users are 'enforce'";
 export const NOT_SUDO = 'EACCES: only root and members of sudo may reach another seven';
-const NOT_AGENT = 'EOPNOTSUPP: the link facade opens only agent prompt, watch and abort streams';
+const NOT_AGENT =
+  'EOPNOTSUPP: the link facade opens only agent prompt, watch and abort streams and tray requests';
+export const NO_TRAY = 'EOPNOTSUPP: this seven has no tray';
+const TRAY_OPS = ['status', 'url', 'rotate', 'unlink', 'retry'];
+const DEVICE = [
+  'id',
+  'name',
+  'kind',
+  'host',
+  'address',
+  'mode',
+  'offers',
+  'policy',
+  'exit',
+  'state',
+  'access',
+];
+
+const failure = (code, message) => Object.assign(new Error(message), { code });
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -74,6 +92,77 @@ export function outbound(open) {
   );
 }
 
+function shown(device) {
+  return Object.fromEntries(
+    DEVICE.filter((key) => device?.[key] !== undefined).map((key) => [key, device[key]])
+  );
+}
+
+function redacted(text, secrets) {
+  let out = String(text);
+  for (const secret of secrets) if (secret) out = out.split(secret).join('<join-url>');
+  return out;
+}
+
+export const UNAPPROVED = "the owner didn't approve this";
+const ASKED = ['url', 'rotate', 'unlink'];
+
+export function trayRequests({ tray, network, hub, ask }) {
+  if (!tray) return null;
+  const devices = () => (network.status().links?.devices ?? []).map(shown);
+  const ready = () => {
+    if (tray.status().state !== 'ready' || !tray.status().joinUrl)
+      throw failure('ENOTCONN', "this seven's tray isn't connected");
+  };
+  const device = (id) => {
+    const found = devices().find((item) => item.id === id);
+    if (!found) throw failure('ENOENT', 'no linked device has that id');
+    return found;
+  };
+  const answers = {
+    status() {
+      const { state, error, joinUrl, joinCommand, webhookUrl, followUrl } = tray.status();
+      const secrets = [joinUrl, joinCommand, webhookUrl, followUrl];
+      return {
+        tray: state,
+        ...(error ? { error: redacted(error, secrets) } : {}),
+        ...(hub ? { hub: new URL(hub).origin } : {}),
+        exit: network.status().exit ?? null,
+        devices: devices(),
+      };
+    },
+    url() {
+      ready();
+      return { url: tray.status().joinUrl };
+    },
+    async rotate() {
+      await network.rotateJoinUrl();
+      return {};
+    },
+    async unlink({ id }) {
+      await network.unlink(id);
+      return {};
+    },
+    async retry() {
+      await network.retryLinks();
+      return {};
+    },
+  };
+  return async (open, stamp, signal) => {
+    if (!TRAY_OPS.includes(open?.op))
+      throw failure('EINVAL', 'a tray request is status, url, rotate, unlink or retry');
+    if (open.op === 'unlink' && (typeof open.id !== 'string' || !open.id))
+      throw failure('EINVAL', 'unlink needs the id of a linked device');
+    const found = open.op === 'unlink' ? device(open.id) : undefined;
+    if (open.op === 'url') ready();
+    const asked = ASKED.includes(open.op) && stamp?.uid !== 0;
+    if (asked && !(await ask({ op: open.op, stamp, device: found, signal })))
+      throw failure('EACCES', UNAPPROVED);
+    if (signal?.aborted) throw failure('ECONNRESET', 'the caller went away');
+    return answers[open.op](open);
+  };
+}
+
 function joined(chunks) {
   const out = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.length, 0));
   let at = 0;
@@ -84,7 +173,7 @@ function joined(chunks) {
   return out;
 }
 
-export function linkFacade({ check, leaders, scrub, refused = () => {} }) {
+export function linkFacade({ check, leaders, scrub, trays = null, refused = () => {} }) {
   return (stamp) => {
     const conn = { onmessage: null, onclose: null };
     let buffer = new Uint8Array(0);
@@ -98,6 +187,7 @@ export function linkFacade({ check, leaders, scrub, refused = () => {} }) {
     let gotEnd = false;
     let sentEnd = false;
     let broken = false;
+    const gone = new AbortController();
 
     const out = (type, payload) => {
       if (!finished) conn.onmessage?.(record(type, payload));
@@ -144,7 +234,12 @@ export function linkFacade({ check, leaders, scrub, refused = () => {} }) {
         if (stamp?.users === 'enforce') refused(stamp);
         return reset(refusal);
       }
-      if (hello?.v !== 1 || typeof hello.join !== 'string') return reset('EPROTO');
+      if (hello?.v !== 1) return reset('EPROTO');
+      return hello.open?.kind === 'tray' ? request(hello) : agent(hello);
+    }
+
+    async function agent(hello) {
+      if (typeof hello.join !== 'string') return reset('EPROTO');
       const open = outbound(hello.open);
       if (!open) return reset(hello.open?.kind === 'agent' ? 'EINVAL' : NOT_AGENT);
       join = hello.join;
@@ -154,6 +249,14 @@ export function linkFacade({ check, leaders, scrub, refused = () => {} }) {
       }
       if (open.text !== undefined) open.text = await scrub(open.text);
       await reach(open, true);
+    }
+
+    async function request(hello) {
+      if (!trays) return reset(NO_TRAY);
+      if ('join' in hello) return reset('EINVAL: a tray request takes no join URL');
+      const result = await trays(hello.open, stamp, gone.signal);
+      out(CONTROL, JSON.stringify({ opened: result }));
+      finish();
     }
 
     async function upload({ open, chunks, total }) {
@@ -223,6 +326,7 @@ export function linkFacade({ check, leaders, scrub, refused = () => {} }) {
       }
     };
     conn.close = () => {
+      gone.abort('withdrawn');
       if (finished) return;
       finished = true;
       stream?.reset('ECONNRESET');
