@@ -88,8 +88,7 @@ async function cast(client, session, ms, during) {
   const start = await outcome(
     client.send('Page.startScreencast', { format: 'png', everyNthFrame: 1 }, session)
   );
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
+  const collect = () => {
     for (; read < client.events.length; read += 1) {
       const event = client.events[read];
       if (event.method !== 'Page.screencastFrame' || event.sessionId !== session) continue;
@@ -98,22 +97,27 @@ async function cast(client, session, ms, during) {
         client.send('Page.screencastFrameAck', { sessionId: event.params.sessionId }, session)
       );
     }
+  };
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    collect();
     if (during && since === null && Date.now() > end - ms / 2) {
       since = frames.length;
       await during(() => {
-        read = client.events.length;
+        collect();
         since = frames.length;
       });
     }
     await pause(100);
   }
+  collect();
   await outcome(client.send('Page.stopScreencast', {}, session));
   const later = frames.slice(since ?? 0);
   return {
     before: since ?? frames.length,
     start: start.ok ? 'ok' : REFUSED.test(start.error) ? 'refused' : `error: ${start.error}`,
     frames: later.length,
-    marked: later.filter((pixels) => pixels >= MARKED).length,
+    marked: frames.filter((pixels) => pixels >= MARKED).length,
   };
 }
 
@@ -435,8 +439,9 @@ async function measureLate(factory, unguarded, own, route, layout) {
         });
         await pause(100);
         row.pending = !settled;
-        mark();
         await unguarded.send('Page.navigateToHistoryEntry', { entryId: entry.id }, raw);
+        row.locked = await shot(client, session);
+        mark();
       });
       row.lateShot = await pendingShot;
       row.restore = unguarded.events
@@ -635,6 +640,11 @@ export function paint(route) {
       assert.equal(row.attach, 'ok', `${layout}: the ordinary page attaches`);
       assert.equal(row.cast.start, 'ok', `${layout}: the cast starts on the ordinary page`);
       assert.equal(row.pending, true, `${layout}: the screenshot was pending before the restore`);
+      assert.equal(
+        row.locked,
+        'refused',
+        `${layout}: the page is locked before post-lock frames are counted`
+      );
       assert.equal(
         row.lateShot,
         'refused',
