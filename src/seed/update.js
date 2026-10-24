@@ -258,6 +258,13 @@ export async function kernelFiles(kernel, attach) {
     await expect([at], () => client.fs.writeFile(at, data));
   };
   return {
+    async stop({ argv, since, uid }) {
+      const same = (one) => one.length === argv.length && one.every((arg, i) => arg === argv[i]);
+      const ours = (proc) =>
+        same(proc.argv ?? []) && proc.uid === uid && !proc.tty && proc.started >= since - 2000;
+      for (const proc of await client.ps())
+        if (ours(proc)) await client.kill(proc.pid, 'SIGTERM').catch(() => {});
+    },
     write: (path, data) => put(`/${path}`, data),
     async rm(path) {
       const at = `/${path}`;
@@ -333,11 +340,40 @@ export function pnpmAs(kernel, { user, home, where }, report, to, argv) {
   return pnpmAlone(kernel, home, report, to, argv, false, { user, env: { ...env, ...TRAPS } });
 }
 
+export const CEILING = 15 * 60;
+
+function watchdog(limit, command) {
+  const since = Date.now();
+  let last = since;
+  let stalled = false;
+  const timer = setInterval(
+    () => {
+      if (stalled || Date.now() - last < limit * 1000) return;
+      stalled = true;
+      void kernelSink()
+        ?.stop?.({ argv: command, since, uid: 0 })
+        .catch((error) => console.warn(`pnpm: ${error.message}`));
+    },
+    Math.min((limit * 1000) / 4, 5000)
+  );
+  return {
+    heard: () => {
+      last = Date.now();
+    },
+    stalled: () => stalled,
+    done: () => clearInterval(timer),
+  };
+}
+
 async function pnpmAlone(kernel, cwd, report, to, argv, writer, as = null, limit = 0) {
   let log = '';
   const downloads = new Map();
   report({ progress: null, log });
+  const line = writer ? hygiene(argv) : argv;
+  const command = limit ? ['timeout', '-k', '10', String(CEILING), ...line] : line;
+  const dog = limit ? watchdog(limit, command) : null;
   const onStdout = (chunk) => {
+    dog?.heard();
     log = (log + chunk).slice(-LOG);
     report({ progress: progress(log, downloads), log });
   };
@@ -347,15 +383,19 @@ async function pnpmAlone(kernel, cwd, report, to, argv, writer, as = null, limit
     : writer
       ? { ...writing(cwd), onStdout }
       : { cwd, env: TRAPS, onStdout };
-  const line = writer ? hygiene(argv) : argv;
-  const command = limit ? ['timeout', '-k', '10', String(limit), ...line] : line;
   const ran = () => kernel.run(command, run);
-  const { status, stderr } = await (writer ? writing_(kernel, writes(cwd, argv), ran) : ran());
+  const { status, stderr } = await (writer
+    ? writing_(kernel, writes(cwd, argv), ran)
+    : ran()
+  ).finally(() => dog?.done());
   if (status) {
     const late = limit && (status === 124 || status === 137);
-    const error = new Error(
-      late ? `pnpm didn't finish within ${limit} s` : stderr.trim() || `pnpm exited with ${status}`
-    );
+    const reason = dog?.stalled()
+      ? `pnpm wrote nothing for ${limit} s`
+      : late
+        ? `pnpm didn't finish within ${CEILING} s`
+        : stderr.trim() || `pnpm exited with ${status}`;
+    const error = new Error(reason);
     error.log = (log + stderr).slice(-LOG);
     error.to = to;
     throw error;
