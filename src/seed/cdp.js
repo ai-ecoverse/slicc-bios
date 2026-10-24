@@ -267,9 +267,9 @@ export function browserHook(
   own = globalThis.location?.origin,
   before = async () => {}
 ) {
-  const guard = async (connection) => {
+  const guard = async (open) => {
     await before();
-    return observe(guardProtected(connection, own));
+    return observe(guardProtected(await open(), own));
   };
   return async ({ runtime } = {}) => {
     const linked = linkedBrowsers(links);
@@ -280,12 +280,12 @@ export function browserHook(
         const known = [...RUNTIMES, ...linked.map((browser) => browser.runtime)];
         throw new Error(`unknown runtime "${runtime}" (${known.join(', ')})`);
       }
-      return guard(await found.open());
+      return guard(() => found.open());
     }
     const fallback = linked.find((browser) => browser.seven) ?? linked[0];
     const open = runtime ? hosts[runtime] : hosts.extension || hosts.proxy || fallback?.open;
     if (!open) throw new Error(MISSING[runtime ?? 'any']);
-    return guard(await open());
+    return guard(open);
   };
 }
 

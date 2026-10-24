@@ -8,7 +8,7 @@ export const KEEP = 32;
 export const WAIT = 5000;
 export const FLIGHT = 11 * 60 * 1000;
 export const UNSWEPT =
-  "seven couldn't check the browser for sign-in tabs before handing it over; try again";
+  "Seven couldn't check the browser for sign-in tabs before handing it over. Try again.";
 export const UNHELD =
   "Seven couldn't keep the sign-in window out of reach of browser automation, so it didn't open the sign-in. Try again.";
 const EVERY = 200;

@@ -510,7 +510,6 @@ test('through slicc-node, an unmarked popup seven opens before any client connec
   await page.until(
     () => document.querySelector('slicc-app').model.network.status().browser?.via === 'proxy'
   );
-  await new Promise((resolve) => setTimeout(resolve, 3000));
   const before = new Set((await devtools('/json/list')).map((tab) => tab.id));
   await page.evaluate((MARK) => {
     const tab = window.open('about:blank', 'slicc-mcp-oauth', 'popup,width=520,height=720');
