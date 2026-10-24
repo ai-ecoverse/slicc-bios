@@ -16,18 +16,19 @@ test('an extension without child attachment keeps an ordinary cross-site frame p
   await seven.goto(SEVEN);
   await ready(seven);
   const plain = await seven.tab();
-  const child = new URL('/ordinary-child', real.url).href;
-  const outer = new URL('/ordinary-parent', real.url);
+  const child = new URL('/ordinary-child.html', real.url).href;
+  const outer = new URL('/ordinary-parent.html', real.url);
   outer.hostname = 'localhost';
   real.overrides.set(
-    '/ordinary-child',
+    '/ordinary-child.html',
     '<!doctype html><style>html,body{margin:0;height:100%;background:#ff00ff}</style><button>ordinary marker</button><script>addEventListener("mousedown",()=>parent.postMessage("clicked","*"));parent.postMessage("loaded","*")</script>'
   );
   real.overrides.set(
-    '/ordinary-parent',
+    '/ordinary-parent.html',
     `<!doctype html><style>body{margin:0}iframe{width:400px;height:300px;border:0}</style><script>globalThis.clicks=0;addEventListener("message",({data})=>{if(data==="loaded")globalThis.loaded=true;if(data==="clicked")globalThis.clicks++})</script><iframe src="${child}"></iframe>`
   );
-  await plain.send('Page.navigate', { url: outer.href });
+  const navigation = await plain.send('Page.navigate', { url: outer.href });
+  assert.ok(!navigation.isDownload && !navigation.errorText, JSON.stringify(navigation));
   await plain.within(15000, () => globalThis.loaded);
   const infos = (await real.cdp.send('Target.getTargets', { filter: [{}] })).targetInfos;
   assert.ok(
