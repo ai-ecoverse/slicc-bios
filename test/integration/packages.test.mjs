@@ -512,14 +512,17 @@ test('a release npm serves no attestation for yet, as in the minutes after homes
   registry.docs.set(`${REGISTRY}${XXD}/latest`, JSON.stringify(published));
   await boot(page);
   const [row] = await page.within(120000, () => {
-    const rows = document.querySelector('slicc-app').model.updates.packages();
+    const rows = document
+      .querySelector('slicc-app')
+      .model.updates.packages()
+      .filter((item) => !item.preinstalled);
     return (rows[0]?.offered || rows[0]?.registry === 'unreachable') && rows;
   });
   assert.equal(row.registry, undefined, JSON.stringify(row));
   assert.equal(row.offered, LATEST[XXD]);
   assert.deepEqual(row.newer, {
     version: fresh,
-    reason: `wasm-xxd ${fresh} has no build provenance`,
+    reason: 'npm has no record of where it was built',
   });
   assert.equal(row.state, 'available');
   assert.deepEqual(page.errors, []);
