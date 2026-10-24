@@ -4,6 +4,7 @@ import { after, test } from 'node:test';
 import { boot } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { shoot } from './shots.mjs';
+import { pausedWorkers } from './sw-resume.mjs';
 
 const chrome = await launch();
 after(() => chrome.close());
@@ -161,8 +162,12 @@ test('when another seven tab holds the download, the owner names that tab instea
 
 test('an ordinary update shows no notice: the updated worker activates before any notice could show, and nothing said seven updated (#710)', async (t) => {
   const page = await chrome.page(t);
+  const workers = pausedWorkers(chrome);
+  t.after(workers.stop);
   await boot(page);
   await settled(page);
+  const resumed = await workers.release();
+  console.log(`sw-waiting paused ${JSON.stringify(resumed)}`);
   await page.evaluate(() => {
     window.noticed = [];
     document
@@ -171,10 +176,21 @@ test('an ordinary update shows no notice: the updated worker activates before an
   });
   bumpWorker();
   assert.ok(await update(page));
-  await page.within(30000, async () => {
-    const registration = await navigator.serviceWorker.getRegistration();
-    return !registration.waiting && !registration.installing;
-  });
+  await page
+    .within(30000, async () => {
+      const registration = await navigator.serviceWorker.getRegistration();
+      return !registration.waiting && !registration.installing;
+    })
+    .catch(async (error) => {
+      const state = await page.evaluate(async () => {
+        const registration = await navigator.serviceWorker.getRegistration();
+        return {
+          waiting: registration?.waiting?.state ?? null,
+          installing: registration?.installing?.state ?? null,
+        };
+      });
+      throw new Error(`${error.message}\n${JSON.stringify(resumed)}\n${JSON.stringify(state)}`);
+    });
   assert.deepEqual(
     await page.evaluate(() => window.noticed.filter((id) => id.startsWith('sw-waiting:'))),
     []
