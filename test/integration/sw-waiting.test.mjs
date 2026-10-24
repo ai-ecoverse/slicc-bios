@@ -11,6 +11,87 @@ after(() => chrome.close());
 const current = await readFile(new URL('../../src/sw.js', import.meta.url), 'utf8');
 const SIZE = 64 * 1024 * 1024;
 let bump = 0;
+let served = current;
+
+const once = (source, from, to) => {
+  const parts = source.split(from);
+  if (parts.length !== 2) throw new Error(`sw.js marker missing: ${from.slice(0, 48)}`);
+  return parts[0] + to + parts[1];
+};
+
+function instrument(source) {
+  const tracked = `const fetching = new Set();
+function tracked(event, promise) {
+  const { request, clientId } = event;
+  const ticket = { url: request.url, client: clientId || event.resultingClientId || null };
+  fetching.add(ticket);
+  return promise.finally(() => fetching.delete(ticket));
+}
+`;
+  const listed = `self.addEventListener('message', (event) => {
+  if (event.data?.streams === 'all' && event.source) {
+    const { source } = event;
+    event.waitUntil(
+      prune().then(async () => {
+        const clients = await self.clients.matchAll({ type: 'all', includeUncontrolled: true });
+        const known = new Map(clients.map((client) => [client.id, client]));
+        const describe = async (id, url) => {
+          const found = id ? (known.get(id) ?? (await self.clients.get(id))) : null;
+          return { url, type: found?.type ?? null, client: found?.url ?? null };
+        };
+        const order = (a, b) =>
+          String(a.url).localeCompare(String(b.url)) ||
+          String(a.type).localeCompare(String(b.type)) ||
+          String(a.client).localeCompare(String(b.client));
+        const pending = [...fetching];
+        const bodies = [...streaming];
+        const inflight = await Promise.all(pending.map((ticket) => describe(ticket.client, ticket.url)));
+        const open = await Promise.all(bodies.map((item) => describe(item.client, item.url)));
+        source.postMessage({
+          wide: true,
+          fetches: pending.length,
+          inflight: inflight.sort(order),
+          open: open.sort(order),
+        });
+      })
+    );
+    return;
+  }
+  if (event.data?.streams !== 'mine' || !event.source) return;`;
+  return once(
+    once(
+      once(
+        once(
+          source,
+          "self.addEventListener('fetch', (event) => {\n",
+          `${tracked}self.addEventListener('fetch', (event) => {\n`
+        ),
+        `    event.respondWith(
+      answer(
+        request,
+        (asked, controller) => kernel(asked, controller, port, clientId),
+        \` from kernel port \${port}\`
+      )
+    );`,
+        `    event.respondWith(
+      tracked(
+        event,
+        answer(
+          request,
+          (asked, controller) => kernel(asked, controller, port, clientId),
+          \` from kernel port \${port}\`
+        )
+      )
+    );`
+      ),
+      '    event.respondWith(answer(request, (asked, controller) => serve(asked, controller, client)));',
+      '    event.respondWith(tracked(event, answer(request, (asked, controller) => serve(asked, controller, client))));'
+    ),
+    `self.addEventListener('message', (event) => {
+  if (event.data?.streams !== 'mine' || !event.source) return;`,
+    listed
+  );
+}
 
 const deep = (selector) => {
   const walk = (root) => {
@@ -27,10 +108,7 @@ const deep = (selector) => {
 
 function bumpWorker() {
   bump += 1;
-  chrome.overrides.set(
-    '/sw.js',
-    current.replace('const own = ', `const own =${' '.repeat(bump)} `)
-  );
+  chrome.overrides.set('/sw.js', served.replace('const own = ', `const own =${' '.repeat(bump)} `));
 }
 
 const settled = (page) =>
@@ -95,6 +173,42 @@ const snapshot = (page) =>
       waiting: registration?.waiting?.state ?? null,
       installing: registration?.installing?.state ?? null,
       open,
+    };
+  });
+
+const wide = (page) =>
+  page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.getRegistration();
+    const controller = navigator.serviceWorker.controller;
+    const detail = await new Promise((resolve) => {
+      if (!controller) {
+        resolve(null);
+        return;
+      }
+      let timer;
+      const listen = (event) => {
+        if (event.data?.wide !== true) return;
+        navigator.serviceWorker.removeEventListener('message', listen);
+        clearTimeout(timer);
+        resolve({
+          fetches: event.data.fetches,
+          inflight: event.data.inflight,
+          open: event.data.open,
+        });
+      };
+      timer = setTimeout(() => {
+        navigator.serviceWorker.removeEventListener('message', listen);
+        resolve(null);
+      }, 2000);
+      navigator.serviceWorker.addEventListener('message', listen);
+      controller.postMessage({ streams: 'all' });
+    });
+    return {
+      waiting: registration?.waiting?.state ?? null,
+      installing: registration?.installing?.state ?? null,
+      fetches: detail?.fetches ?? null,
+      inflight: detail?.inflight ?? null,
+      open: detail?.open ?? null,
     };
   });
 
@@ -201,26 +315,45 @@ test('when another seven tab holds the download, the owner names that tab instea
 
 test('an ordinary update shows no notice: the updated worker activates before any notice could show, and nothing said seven updated (#710)', async (t) => {
   const page = await chrome.page(t);
-  await boot(page);
-  await settled(page);
-  const quiet = await until(page, 45000, (state) => state.open?.length === 0);
-  assert.deepEqual(quiet.open, []);
-  await page.evaluate(() => {
-    window.noticed = [];
-    document
-      .querySelector('slicc-app')
-      .model.notices.on('notices', (list) => window.noticed.push(...list.map(({ id }) => id)));
-  });
-  bumpWorker();
-  assert.ok(await update(page));
-  const done = await until(page, 45000, (state) => !state.waiting && !state.installing);
-  assert.deepEqual(
-    { waiting: done.waiting, installing: done.installing, open: done.open },
-    { waiting: null, installing: null, open: [] }
-  );
-  assert.deepEqual(
-    await page.evaluate(() => window.noticed.filter((id) => id.startsWith('sw-waiting:'))),
-    []
-  );
-  assert.deepEqual(page.errors, []);
+  served = instrument(current);
+  chrome.overrides.set('/sw.js', served);
+  try {
+    await boot(page);
+    await settled(page);
+    const quiet = await until(page, 45000, (state) => state.open?.length === 0);
+    assert.deepEqual(quiet.open, []);
+    await page.evaluate(() => {
+      window.noticed = [];
+      document
+        .querySelector('slicc-app')
+        .model.notices.on('notices', (list) => window.noticed.push(...list.map(({ id }) => id)));
+    });
+    bumpWorker();
+    assert.ok(await update(page));
+    await until(page, 45000, (state) => !state.waiting && !state.installing);
+    const detail = await wide(page);
+    assert.deepEqual(
+      {
+        waiting: detail.waiting,
+        installing: detail.installing,
+        fetches: detail.fetches,
+        inflight: detail.inflight,
+        open: detail.open,
+      },
+      {
+        waiting: null,
+        installing: null,
+        fetches: detail.fetches,
+        inflight: detail.inflight,
+        open: detail.open,
+      }
+    );
+    assert.deepEqual(
+      await page.evaluate(() => window.noticed.filter((id) => id.startsWith('sw-waiting:'))),
+      []
+    );
+    assert.deepEqual(page.errors, []);
+  } finally {
+    served = current;
+  }
 });
