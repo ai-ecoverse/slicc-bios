@@ -161,8 +161,46 @@ test('when another seven tab holds the download, the owner names that tab instea
 
 test('an ordinary update shows no notice: the updated worker activates before any notice could show, and nothing said seven updated (#710)', async (t) => {
   const page = await chrome.page(t);
+  const pending = new Map();
+  const seen = [];
+  const sw = new Map();
+  const off = chrome.cdp.on(({ method, params, sessionId }) => {
+    const where = sw.has(sessionId) ? 'sw' : 'page';
+    if (method === 'Network.requestWillBeSent')
+      pending.set(`${where}:${params.requestId}`, {
+        where,
+        url: params.request.url,
+        type: params.type,
+        at: Date.now(),
+      });
+    if (method === 'Network.loadingFinished' || method === 'Network.loadingFailed') {
+      const key = `${where}:${params.requestId}`;
+      const done = pending.get(key);
+      if (done)
+        seen.push({
+          ...done,
+          ms: Date.now() - done.at,
+          failed: method === 'Network.loadingFailed',
+        });
+      pending.delete(key);
+    }
+    if (method === 'Target.attachedToTarget' && params.targetInfo.type === 'service_worker')
+      sw.set(params.sessionId, params.targetInfo.url);
+  });
+  t.after(off);
+  await page.send('Network.enable');
   await boot(page);
   await settled(page);
+  const { targetInfos } = await chrome.cdp.send('Target.getTargets');
+  for (const info of targetInfos.filter((item) => item.type === 'service_worker')) {
+    const { sessionId } = await chrome.cdp.send('Target.attachToTarget', {
+      targetId: info.targetId,
+      flatten: true,
+    });
+    sw.set(sessionId, info.url);
+    await chrome.cdp.send('Network.enable', {}, sessionId).catch(() => {});
+  }
+  const bumped = Date.now();
   await page.evaluate(() => {
     window.noticed = [];
     document
@@ -171,10 +209,38 @@ test('an ordinary update shows no notice: the updated worker activates before an
   });
   bumpWorker();
   assert.ok(await update(page));
-  await page.within(30000, async () => {
-    const registration = await navigator.serviceWorker.getRegistration();
-    return !registration.waiting && !registration.installing;
-  });
+  await page
+    .within(30000, async () => {
+      const registration = await navigator.serviceWorker.getRegistration();
+      return !registration.waiting && !registration.installing;
+    })
+    .catch(async (error) => {
+      const now = Date.now();
+      const open = [...pending.values()].map((item) => ({ ...item, age: now - item.at }));
+      const recent = seen.filter((item) => item.at >= bumped - 5000);
+      const streams = await page
+        .evaluate(
+          () =>
+            new Promise((resolve) => {
+              const channel = new MessageChannel();
+              navigator.serviceWorker.addEventListener('message', ({ data }) => resolve(data), {
+                once: true,
+              });
+              navigator.serviceWorker.controller?.postMessage({ streams: 'mine' });
+              setTimeout(() => resolve('no answer'), 3000);
+              channel.port1.close();
+            })
+        )
+        .catch((failure) => failure.message);
+      const clients = await chrome.cdp
+        .send('Target.getTargets')
+        .then(({ targetInfos }) =>
+          targetInfos.map(({ type, url, attached }) => ({ type, url, attached }))
+        );
+      throw new Error(
+        `PROBE ${error.message}\nworkers ${JSON.stringify(await workers(page))}\nopen ${JSON.stringify(open, null, 1)}\nrecent ${JSON.stringify(recent, null, 1)}\nstreams ${JSON.stringify(streams)}\ntargets ${JSON.stringify(clients, null, 1)}`
+      );
+    });
   assert.deepEqual(
     await page.evaluate(() => window.noticed.filter((id) => id.startsWith('sw-waiting:'))),
     []
