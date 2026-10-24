@@ -551,6 +551,7 @@ class Guard {
     this.sessions = new Map();
     this.shown = new Set();
     this.blocked = new Set();
+    this.gone = new Set();
     this.waiting = new Set();
     this.pages = new Set();
     this.frames = new Map();
@@ -564,6 +565,8 @@ class Guard {
     this.held = new Map();
     this.internal = new Map();
     this.asked = new Map();
+    this.commands = new Map();
+    this.finished = new WeakSet();
     this.watching = new Map();
     this.queues = new Map();
     this.streams = new Set();
@@ -599,6 +602,11 @@ class Guard {
   }
 
   deliver(message) {
+    const command = this.commands.get(message.id);
+    if (command) {
+      this.finished.add(command);
+      this.commands.delete(message.id);
+    }
     try {
       this.guarded.onmessage?.(JSON.stringify(message));
     } catch (error) {
@@ -622,7 +630,11 @@ class Guard {
     });
   }
 
-  refuse({ id, sessionId, method, params }, message = PROTECTED) {
+  refuse(command, message = PROTECTED) {
+    if (this.finished.has(command)) return;
+    this.finished.add(command);
+    this.commands.delete(command.id);
+    const { id, sessionId, method, params } = command;
     globalThis.sliccGuardTrace?.push({
       method,
       targetId: params?.targetId,
@@ -758,7 +770,10 @@ class Guard {
 
   stopCasts() {
     for (const message of this.asked.values()) {
-      if (pageScoped(message.method) && this.locked(message.sessionId)) message.locked = true;
+      if (pageScoped(message.method) && this.locked(message.sessionId)) {
+        message.locked = true;
+        this.refuse(message);
+      }
     }
     for (const sessionId of this.casts) {
       if (!this.locked(sessionId)) continue;
@@ -917,6 +932,10 @@ class Guard {
       this.placing.set(info.targetId, this.place(info.targetId, params.sessionId));
     }
     if (method === 'Target.targetDestroyed') this.scopes.delete(params.targetId);
+    if (method === 'Target.detachedFromTarget' && params.sessionId !== undefined) {
+      kept(this.gone, params.sessionId);
+      this.refusePending(params.sessionId);
+    }
     if (method === 'Target.detachedFromTarget' && this.placements.has(params.sessionId)) {
       const childId = this.placements.get(params.sessionId);
       this.placements.delete(params.sessionId);
@@ -1011,9 +1030,18 @@ class Guard {
     return sessionId !== undefined && (this.blocked.has(sessionId) || !this.shown.has(sessionId));
   }
 
+  refusePending(sessionId) {
+    if (sessionId === undefined) return;
+    for (const command of this.asked.values())
+      if (command.sessionId === sessionId) this.refuse(command);
+    for (const command of this.commands.values())
+      if (command.sessionId === sessionId) this.refuse(command);
+  }
+
   cut(sessionId, parent) {
     if (this.blocked.has(sessionId)) return;
     this.blocked.add(sessionId);
+    this.refusePending(sessionId);
     if (this.waiting.delete(sessionId))
       void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
     const targetId = this.sessions.get(sessionId)?.targetId;
@@ -1152,6 +1180,7 @@ class Guard {
   }
 
   watch(sessionId, targetId, parent) {
+    this.gone.delete(sessionId);
     if (!this.sessions.has(sessionId)) this.sessions.set(sessionId, { targetId, parent });
     if (!this.watching.has(sessionId)) {
       this.watching.set(sessionId, this.inspect(sessionId, targetId, parent));
@@ -1419,6 +1448,7 @@ class Guard {
       return this.targets.get(params.targetId)?.guarded === true;
     }
     if (method === 'Target.detachedFromTarget') {
+      this.watching.delete(params.sessionId);
       this.worlds.delete(params.sessionId);
       this.runtimes.delete(params.sessionId);
       this.primed.delete(params.sessionId);
@@ -1687,9 +1717,19 @@ class Guard {
     return true;
   }
 
+  endedAnswer(was) {
+    if (this.finished.has(was)) {
+      if (was.method === 'Page.startScreencast')
+        void this.call('Page.stopScreencast', {}, was.sessionId);
+      return true;
+    }
+    if (!this.blocked.has(was?.sessionId)) return false;
+    this.refuse(was);
+    return true;
+  }
+
   async answer(message, was) {
-    if (this.blocked.has(was?.sessionId)) return this.refuse(was);
-    if (this.pageAnswer(was)) return;
+    if (this.endedAnswer(was) || this.pageAnswer(was)) return;
     const { method, params = {} } = was ?? {};
     const { result } = message;
     if (method === 'Page.createIsolatedWorld' && result?.executionContextId !== undefined) {
@@ -1932,24 +1972,29 @@ class Guard {
     return this.unseen(method, params);
   }
 
-  async create({ id, params }) {
+  async create(message) {
+    const { id, params } = message;
     const answer = await this.call('Target.createTarget', {
       ...params,
       background: params.background ?? true,
       url: 'about:blank',
     });
     const targetId = answer.result?.targetId;
+    if (this.finished.has(message)) return;
     if (!targetId) return this.deliver({ ...answer, id });
     this.learn({ targetId, url: 'about:blank', type: 'page' });
     this.touch(targetId);
     const nav = this.navs.get(targetId);
     await nav.ready;
+    if (this.finished.has(message)) return;
     if (!nav.failed && !inherits(params.url))
       void this.call('Page.navigate', { url: params.url }, nav.session);
     this.deliver({ id, result: answer.result });
   }
 
   pass(message) {
+    if (this.finished.has(message)) return;
+    this.commands.set(message.id, message);
     const { id, method, sessionId } = message;
     if (pageScoped(method) && this.locked(sessionId)) return this.refuse(message);
     if (method === 'Page.startScreencast') this.casts.add(sessionId);
@@ -2007,10 +2052,15 @@ class Guard {
     connection.onclose = (why) => guarded.onclose?.(why);
     guarded.send = (text) => {
       const message = parse(text);
+      this.commands.set(message.id, message);
+      if (this.blocked.has(message.sessionId) || this.gone.has(message.sessionId))
+        return this.refuse(message);
       this.queue(
         `send:${message.sessionId ?? ''}`,
         async () => {
+          if (this.finished.has(message)) return;
           const why = await this.check(message);
+          if (this.finished.has(message)) return;
           if (why) return this.refuse(message, why);
           if (message.method === 'Runtime.enable' && this.primed.delete(message.sessionId)) {
             await this.call('Runtime.disable', {}, message.sessionId);
