@@ -6,6 +6,7 @@ export const OWN = "seven doesn't open its own pages or the vault for a program"
 export const DISMISSED = 'the request to open the page was dismissed';
 export const LATE = 'nobody answered the request to open the page within 60 s';
 export const WAIT_MS = 60_000;
+export const REST_MS = 10_000;
 export const BUSY = 'another request is waiting for you';
 
 export const refused = (message) => new DOMException(message, 'NotAllowedError');
@@ -65,7 +66,14 @@ export function wrapped(element, make = () => new CSSStyleSheet()) {
   root.adoptedStyleSheets = [...root.adoptedStyleSheets, sheet];
 }
 
-export function shown(options, { show, find = dialogs, wrap = wrapped }) {
+export function focused(root = globalThis.document) {
+  let active = root?.activeElement ?? null;
+  while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+  return active;
+}
+
+export function shown(options, { show, find = dialogs, wrap = wrapped, current = focused }) {
+  const back = current();
   const before = new Set(find());
   const result = show(options);
   const added = find().filter((element) => !before.has(element));
@@ -74,6 +82,7 @@ export function shown(options, { show, find = dialogs, wrap = wrapped }) {
     result,
     close: () => {
       for (const element of added) element.remove();
+      if (back?.isConnected) back.focus();
     },
   };
 }
@@ -84,12 +93,19 @@ export function gestures({
   active = () => globalThis.navigator?.userActivation?.isActive === true,
   timers = globalThis,
   wait = WAIT_MS,
+  rest = REST_MS,
+  now = () => Date.now(),
 } = {}) {
   const waiting = new Set();
+  const resting = new Map();
   return async (stamp, { dismissed, late, ...prompt }, signal) => {
     if (signal.aborted) throw signal.reason;
     if (typed(stamp) && active()) return;
     const key = session(stamp);
+    if (resting.has(key)) {
+      if (resting.get(key) > now()) throw refused(dismissed);
+      resting.delete(key);
+    }
     if (waiting.has(key)) throw refused(BUSY);
     const asked = ask(prompt);
     waiting.add(key);
@@ -110,7 +126,10 @@ export function gestures({
       signal.removeEventListener('abort', withdraw);
     }
     if (signal.aborted) throw signal.reason;
-    if (!yes) throw refused(why);
+    if (!yes) {
+      resting.set(key, now() + rest);
+      throw refused(why);
+    }
   };
 }
 

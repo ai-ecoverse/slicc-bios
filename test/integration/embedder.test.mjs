@@ -151,7 +151,7 @@ test('a program opens an http(s) URL in a new tab through /dev/embedder, and a j
   await shows(page, 'late 1');
   assert.deepEqual(await opened('https://example.test/late'), []);
 
-  await run(page, `sleep 8; ${ask(LONG)}; echo "long $?"`);
+  await run(page, `sleep 12; ${ask(LONG)}; echo "long $?"`);
   await page.until(() => !!window.findConfirm(), undefined);
   const long1280 = await box(page);
   inside(long1280, 'the long URL at 1280');
@@ -178,7 +178,7 @@ test('a program opens an http(s) URL in a new tab through /dev/embedder, and a j
   await shows(page, 'long 1');
   await settled(page, wide);
 
-  await run(page, `sleep 8; ${ask('https://example.test/clicked')}; echo "clicked $?"`);
+  await run(page, `sleep 12; ${ask('https://example.test/clicked')}; echo "clicked $?"`);
   await shows(page, 'echo "clicked $?"');
   await page.send('Emulation.setDeviceMetricsOverride', {
     width: 420,
