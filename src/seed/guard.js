@@ -39,11 +39,59 @@ const SCRUB_MS = 5000;
 export const BLANKED = 'about:blank#blocked';
 const HISTORY = new Set(['Page.getNavigationHistory']);
 const TREES = new Set(['Page.getFrameTree', 'Page.getResourceTree']);
+const OBSERVED = new Set([...TREES, ...HISTORY]);
 const NAV_MS = 10000;
 const NAV_TYPES = new Set(['page', 'iframe', 'background_page', 'webview']);
 const UNWAITED = new Set(['Target.getTargetInfo', 'Target.detachFromTarget']);
 const POLL_MS = 100;
 const REMEMBERED = 10000;
+const HISTORY_WAIT = 5000;
+const HISTORY_POLL = 40;
+const FRAME_MS = 300;
+const TREE_WAIT = 2000;
+const PROBE_WAIT = 2000;
+const PROBE_TRIES = 3;
+const PROBE_BUDGET = 1000;
+const ANSWER_MS = 1000;
+const WORKER_TYPES = new Set(['service_worker', 'shared_worker', 'worker']);
+const HISTORY_NAV = new Set([
+  'restore',
+  'restoreWithPost',
+  'historySameDocument',
+  'historyDifferentDocument',
+  'backForward',
+  'back_forward',
+]);
+const RUNTIME_META = new Set([
+  'Runtime.enable',
+  'Runtime.disable',
+  'Runtime.discardConsoleEntries',
+  'Runtime.runIfWaitingForDebugger',
+  'Runtime.terminateExecution',
+]);
+const NAVIGATES = new Set(['Page.navigate', 'Page.reload', 'Page.stopLoading']);
+const PAGE_CONTENT = new Set([
+  'Page.createIsolatedWorld',
+  'Page.captureScreenshot',
+  'Page.captureSnapshot',
+  'Page.printToPDF',
+  'Page.getLayoutMetrics',
+  'Page.getResourceContent',
+  'Page.searchInResource',
+  'Page.getAppManifest',
+  'Page.getCookies',
+  'Page.setDocumentContent',
+  'Page.startScreencast',
+  'Page.stopScreencast',
+  'Page.screencastFrameAck',
+  'Page.handleJavaScriptDialog',
+  'Page.navigate',
+  'Page.navigateToHistoryEntry',
+  'Page.reload',
+  'Page.stopLoading',
+]);
+const REACHES = /^(?:DOMSnapshot|Input|Accessibility|IO)\./;
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const UNSAFE = new Set([
   'Target.sendMessageToTarget',
@@ -521,6 +569,7 @@ class Guard {
     this.sessions = new Map();
     this.shown = new Set();
     this.blocked = new Set();
+    this.shots = new Set();
     this.waiting = new Set();
     this.pages = new Set();
     this.frames = new Map();
@@ -533,6 +582,13 @@ class Guard {
     this.streams = new Set();
     this.allowed = new Set();
     this.blockedWorkers = new Set();
+    this.pendingHistory = new Set();
+    this.pendingCommit = new Set();
+    this.settled = new Map();
+    this.uncommitted = new Set();
+    this.moved = new Set();
+    this.mains = new Map();
+    this.opening = new Map();
     this.next = GUARD_IDS;
     this.guarded = { onmessage: null, onclose: null };
   }
@@ -580,13 +636,7 @@ class Guard {
     });
   }
 
-  refuse({ id, sessionId, method, params }, message = PROTECTED) {
-    globalThis.sliccGuardTrace?.push({
-      method,
-      targetId: params?.targetId,
-      sessionId,
-      refused: message,
-    });
+  refuse({ id, sessionId }, message = PROTECTED) {
     this.deliver({ id, ...(sessionId ? { sessionId } : {}), error: { code: -32000, message } });
   }
 
@@ -755,23 +805,22 @@ class Guard {
       nav.stopped = true;
       return this.wipe(nav);
     }
-    if (method !== 'Fetch.requestPaused') return;
+    if (method === 'Fetch.requestPaused') this.pausedDocument(params, nav);
+  }
+
+  pausedDocument(params, nav) {
     const { requestId } = params;
-    if (params.resourceType === 'Document' && this.is.url(params.request?.url)) {
-      if (nav.held) {
-        nav.taken = true;
-        void this.call('Fetch.continueRequest', { requestId }, nav.session);
-        return;
-      }
-      void this.call(
-        'Fetch.failRequest',
-        { requestId, errorReason: 'BlockedByClient' },
-        nav.session
-      );
-      this.failed(nav.targetId, params);
+    if (params.resourceType !== 'Document' || !this.is.url(params.request?.url)) {
+      void this.call('Fetch.continueRequest', { requestId }, nav.session);
       return;
     }
-    void this.call('Fetch.continueRequest', { requestId }, nav.session);
+    if (nav.held) {
+      nav.taken = true;
+      void this.call('Fetch.continueRequest', { requestId }, nav.session);
+      return;
+    }
+    void this.call('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' }, nav.session);
+    this.failed(nav.targetId, params);
   }
 
   lost(session) {
@@ -1060,10 +1109,7 @@ class Guard {
     if (method === 'Target.targetCreated' || method === 'Target.targetInfoChanged') {
       this.learn(params.targetInfo);
       if (!(await this.target(params.targetInfo?.targetId))) {
-        this.deliver({
-          ...message,
-          params: { ...params, targetInfo: this.masked(params.targetInfo) },
-        });
+        this.shownTarget(message, params.targetInfo);
         return true;
       }
       this.cutTarget(params.targetInfo.targetId);
@@ -1117,6 +1163,10 @@ class Guard {
   }
 
   foreign({ method, params = {}, sessionId }) {
+    if (method === 'Runtime.executionContextsCleared') {
+      this.worlds.delete(sessionId);
+      return false;
+    }
     if (method === 'Runtime.executionContextCreated' && params.context) {
       const { id, uniqueId, name, origin, auxData } = params.context;
       const hidden = auxData?.type === 'isolated' && EXTENSIONS.test(origin ?? '');
@@ -1124,6 +1174,12 @@ class Guard {
       world.ids.set(id, hidden);
       if (uniqueId !== undefined) world.uniques.set(uniqueId, hidden);
       if (hidden && name) world.names.add(name);
+      const judgedMain =
+        !hidden &&
+        uniqueId &&
+        !world.main &&
+        (auxData?.isDefault === true || (auxData?.type === 'default' && !name));
+      if (judgedMain) world.main = uniqueId;
       if (hidden) return true;
     }
     const world = this.worlds.get(sessionId);
@@ -1209,10 +1265,395 @@ class Guard {
     };
   }
 
+  reaches(method) {
+    if (typeof method !== 'string') return false;
+    if (PAGE_CONTENT.has(method) || REACHES.test(method)) return true;
+    if (method.startsWith('DOM.')) return method !== 'DOM.enable' && method !== 'DOM.disable';
+    return method.startsWith('Runtime.') && !RUNTIME_META.has(method);
+  }
+
+  moveFrom(message) {
+    if (!message.sessionId) return null;
+    if (message.method === 'Page.navigateToHistoryEntry') return { kind: 'entry' };
+    return null;
+  }
+
+  idle(move, now) {
+    if (move.kind === 'back') return now.index <= 0;
+    if (move.kind === 'forward') return now.index < 0 || now.index >= now.length - 1;
+    return move.kind === 'go' && move.delta === 0;
+  }
+
+  within(work, limit) {
+    let timer;
+    const late = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(undefined), limit);
+    });
+    return Promise.race([
+      work.then((value) => {
+        clearTimeout(timer);
+        return value;
+      }),
+      late,
+    ]);
+  }
+
+  answered(work) {
+    return this.within(work, ANSWER_MS);
+  }
+
+  racedTree(sessionId) {
+    let timer;
+    const late = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(undefined), FRAME_MS);
+    });
+    const tree = this.call('Page.getFrameTree', {}, sessionId);
+    const raced = Promise.race([
+      tree.then((value) => {
+        clearTimeout(timer);
+        return value;
+      }),
+      late,
+    ]);
+    return { tree, raced };
+  }
+
+  view(info, frames, history) {
+    const entries = history.result.entries ?? [];
+    const index = history.result.currentIndex;
+    const entry = entries[index];
+    const infoUrl = info.result?.targetInfo?.url;
+    const hinted = [entry?.userTypedURL];
+    for (const frame of frames) hinted.push(frame.unreachableUrl);
+    const visible = [infoUrl, ...frames.flatMap((frame) => [frame.url, frame.securityOrigin])].some(
+      (url) => this.is.url(url)
+    );
+    const live = visible || this.is.url(entry?.url);
+    return {
+      url: infoUrl || frames[0]?.url || '',
+      index,
+      length: entries.length,
+      live,
+      visible,
+      protected: live || hinted.some((url) => this.is.url(url)),
+      frames,
+      info: info.result?.targetInfo,
+    };
+  }
+
+  lateTree(sessionId, tree) {
+    if (tree.error) return;
+    const frames = framed(tree.result?.frameTree);
+    const hidden = frames.some((frame) => this.frameLive(frame));
+    if (!hidden) return;
+    this.note(sessionId, { frames, info: null });
+    this.cut(sessionId);
+  }
+
+  frameLive(frame) {
+    return this.is.url(frame.url) || this.is.url(frame.securityOrigin);
+  }
+
+  async openDocument(sessionId) {
+    const tree = await this.answered(this.call('Page.getFrameTree', {}, sessionId));
+    const frames = tree && !tree.error ? framed(tree.result?.frameTree) : [];
+    return frames.length > 0 && !frames.some((frame) => this.frameLive(frame));
+  }
+
+  blankHistory() {
+    return { result: { currentIndex: 0, entries: [] } };
+  }
+
+  unattached(info, frames, treeNow) {
+    const child = info.result?.targetInfo?.type === 'iframe';
+    const readable = child && treeNow && !treeNow.error && frames.length;
+    const history = this.blankHistory();
+    if (child && !readable) return null;
+    if (readable) {
+      if (frames.some((frame) => this.frameLive(frame))) {
+        return { ...this.view(info, frames, history), probed: true };
+      }
+      if (!frames.some((frame) => /^https?:/i.test(frame.url ?? ''))) return null;
+      return this.view(info, frames, history);
+    }
+    const infoUrl = info.result?.targetInfo?.url ?? '';
+    if (frames.some((frame) => this.frameLive(frame)) || this.is.url(infoUrl)) {
+      return { ...this.view(info, frames, history), probed: true };
+    }
+    return undefined;
+  }
+
+  async once(sessionId, budget) {
+    const targetId = this.sessions.get(sessionId)?.targetId;
+    const { tree, raced } = this.racedTree(sessionId);
+    const limit = Math.max(0, budget);
+    const [info, treeNow, history] = await Promise.all([
+      targetId
+        ? this.within(this.call('Target.getTargetInfo', { targetId }), Math.min(PROBE_WAIT, limit))
+        : Promise.resolve(null),
+      raced,
+      this.within(
+        this.call('Page.getNavigationHistory', {}, sessionId),
+        Math.min(ANSWER_MS, limit)
+      ),
+    ]);
+    if (treeNow === undefined) void tree.then((late) => this.lateTree(sessionId, late));
+    const frames = treeNow && !treeNow.error ? framed(treeNow.result?.frameTree) : [];
+    const historyKnown =
+      history && !history.error && Number.isInteger(history.result?.currentIndex);
+    if (!info || info.error) return undefined;
+    if (!historyKnown) return this.unattached(info, frames, treeNow);
+    if (this.pendingHistory.has(sessionId) && !frames.length) return null;
+    if (treeNow === undefined) return this.slowTree(sessionId, info, history, tree);
+    if (treeNow.error || !frames.length) return this.view(info, [], history);
+    return this.view(info, frames, history);
+  }
+
+  async surface(sessionId) {
+    const started = Date.now();
+    let now;
+    for (let attempt = 0; attempt < PROBE_TRIES; attempt += 1) {
+      const left = PROBE_BUDGET - (Date.now() - started);
+      if (left <= 0) break;
+      now = await this.once(sessionId, left);
+      if (now !== undefined) break;
+      const slot = Math.floor(((attempt + 1) * PROBE_BUDGET) / PROBE_TRIES);
+      const wait = slot - (Date.now() - started);
+      if (wait > 0 && attempt + 1 < PROBE_TRIES) await pause(wait);
+    }
+    if (now) {
+      if (!now.probed && !now.pendingTree) this.settled.set(sessionId, now);
+      return now;
+    }
+    if (this.pendingCommit.has(sessionId)) {
+      return {
+        url: '',
+        index: 0,
+        length: 0,
+        live: true,
+        protected: true,
+        frames: [],
+        info: null,
+        probed: true,
+      };
+    }
+    return null;
+  }
+
+  async slowTree(sessionId, info, history, tree) {
+    const preview = this.view(info, [], history);
+    if (preview.protected) return preview;
+    if (this.uncommitted.has(sessionId)) return { ...preview, pendingTree: true };
+    let timer;
+    const late = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(undefined), TREE_WAIT);
+    });
+    const arrived = await Promise.race([
+      tree.then((value) => {
+        clearTimeout(timer);
+        return value;
+      }),
+      late,
+    ]);
+    const frames = arrived && !arrived.error ? framed(arrived.result?.frameTree) : [];
+    if (!frames.length) return { ...preview, pendingTree: true };
+    const now = this.view(info, frames, history);
+    if (now.protected) return now;
+    if (frames.some((frame) => /^https?:/i.test(frame.url ?? ''))) return now;
+    return { ...preview, pendingTree: true };
+  }
+
+  note(sessionId, now) {
+    for (const frame of now.frames) {
+      if (!frame.id) continue;
+      this.frames.set(frame.id, `${frame.url ?? ''}${frame.urlFragment ?? ''}`);
+    }
+    if (now.info) this.learn(now.info);
+    void sessionId;
+  }
+
+  async untilSettled(sessionId, before) {
+    const deadline = Date.now() + HISTORY_WAIT;
+    while (Date.now() < deadline) {
+      const now = await this.surface(sessionId);
+      if (now?.live) {
+        this.pendingHistory.delete(sessionId);
+        this.note(sessionId, now);
+        this.cut(sessionId);
+        return;
+      }
+      if (
+        now?.frames?.length &&
+        !now.live &&
+        (now.url !== before.url || now.index !== before.index)
+      ) {
+        this.pendingHistory.delete(sessionId);
+        this.note(sessionId, now);
+        return;
+      }
+      await pause(HISTORY_POLL);
+    }
+    const now = await this.surface(sessionId);
+    if (!now?.frames?.length) return;
+    this.pendingHistory.delete(sessionId);
+    this.note(sessionId, now);
+    if (now.live) this.cut(sessionId);
+  }
+
+  boundSessions(sessionId) {
+    const targetId =
+      this.sessions.get(sessionId)?.targetId ?? this.navSessions.get(sessionId)?.targetId;
+    const ids = new Set(sessionId ? [sessionId] : []);
+    if (!targetId) return ids;
+    for (const [id, entry] of this.sessions) if (entry.targetId === targetId) ids.add(id);
+    for (const [id, nav] of this.navSessions) if (nav.targetId === targetId) ids.add(id);
+    return ids;
+  }
+
+  rememberMain(sessionId, frameId) {
+    if (!frameId) return;
+    for (const id of this.boundSessions(sessionId)) this.mains.set(id, frameId);
+  }
+
+  noteStarted(id, frameId, url) {
+    const main = this.mains.get(id);
+    const top = main === undefined || frameId === undefined || frameId === main;
+    const open = this.opening.get(id) ?? {};
+    if (top) {
+      this.uncommitted.add(id);
+      open.input = frameId;
+    }
+    if (this.is.url(url)) {
+      this.pendingCommit.add(id);
+      open.commit = frameId;
+    } else if (top) {
+      this.pendingCommit.delete(id);
+      delete open.commit;
+    }
+    this.opening.set(id, open);
+  }
+
+  noteCommitted(id, method, frameId, parentId) {
+    const top = method === 'Page.frameNavigated' && !parentId;
+    const same = method === 'Page.navigatedWithinDocument';
+    if (top) this.worlds.delete(id);
+    const open = this.opening.get(id) ?? {};
+    if (top || same || open.input === frameId) {
+      this.uncommitted.delete(id);
+      delete open.input;
+    }
+    if (top || same || open.commit === frameId) {
+      this.pendingCommit.delete(id);
+      delete open.commit;
+    }
+    if (open.input === undefined && open.commit === undefined) this.opening.delete(id);
+    else this.opening.set(id, open);
+  }
+
+  noteNavigation(sessionId, method, params = {}) {
+    const frameId = params.frameId ?? params.frame?.id;
+    if (method === 'Page.frameNavigated' && frameId && !params.frame?.parentId) {
+      this.rememberMain(sessionId, frameId);
+    }
+    const started =
+      method === 'Page.frameStartedNavigating' && HISTORY_NAV.has(params.navigationType);
+    const committed = method === 'Page.frameNavigated' || method === 'Page.navigatedWithinDocument';
+    if (!started && !committed) return;
+    for (const id of this.boundSessions(sessionId)) {
+      if (started) this.noteStarted(id, frameId, params.url);
+      else this.noteCommitted(id, method, frameId, params.frame?.parentId);
+    }
+  }
+
+  async workerSession(sessionId) {
+    const targetId = this.sessions.get(sessionId)?.targetId;
+    if (!targetId) return undefined;
+    const kind = (await this.lookup(targetId))?.type;
+    if (!WORKER_TYPES.has(kind)) return undefined;
+    return (await this.target(targetId)) ? PROTECTED : null;
+  }
+
+  prelude(sessionId, method) {
+    if (method.startsWith('Input.') && this.uncommitted.has(sessionId)) return PROTECTED;
+    if (
+      method === 'Page.handleJavaScriptDialog' &&
+      !this.pendingCommit.has(sessionId) &&
+      !this.settled.get(sessionId)?.protected
+    ) {
+      return null;
+    }
+    if (this.pendingCommit.has(sessionId) && !NAVIGATES.has(method)) return PROTECTED;
+    return false;
+  }
+
+  async confirmed(sessionId, method) {
+    const shot = method === 'Page.captureScreenshot';
+    if (this.pendingHistory.has(sessionId) || this.blocked.has(sessionId)) {
+      if (shot && this.blocked.has(sessionId) && (await this.blankShot(sessionId))) return null;
+      return PROTECTED;
+    }
+    const early = this.prelude(sessionId, method);
+    if (early !== false) return early;
+    const worker = await this.workerSession(sessionId);
+    if (worker !== undefined) return worker;
+    const now = await this.surface(sessionId);
+    const navigating = NAVIGATES.has(method);
+    if (!now) return navigating && (await this.openDocument(sessionId)) ? null : PROTECTED;
+    if (now.pendingTree) return navigating ? null : PROTECTED;
+    this.note(sessionId, now);
+    if (!now.protected) return null;
+    if (shot && this.blankFrames(now)) return null;
+    if (now.visible && !this.blankFrames(now) && !now.probed) this.cut(sessionId);
+    if (!now.live && navigating) return null;
+    if (!now.live && shot && this.blankShown(now)) return null;
+    return PROTECTED;
+  }
+
+  blankFrames(now) {
+    const frames = now?.frames ?? [];
+    return (
+      frames.length > 0 &&
+      frames.every((frame) => {
+        const url = frame?.url;
+        return url === BLANKED || (typeof url === 'string' && url.startsWith('about:blank'));
+      })
+    );
+  }
+
+  async blankShot(sessionId) {
+    const now = await this.surface(sessionId);
+    return Boolean(now && this.blankFrames(now));
+  }
+
+  async noteShot(message) {
+    if (message.method !== 'Page.captureScreenshot') return;
+    if (await this.blankShot(message.sessionId)) this.shots.add(message.id);
+  }
+
+  blankShown(now) {
+    const urls = [now.url, now.info?.url, ...now.frames.map((frame) => frame.url)].filter(
+      (url) => typeof url === 'string' && url
+    );
+    return urls.length > 0 && urls.every((url) => url === BLANKED || url.startsWith('about:blank'));
+  }
+
   async back(params, sessionId) {
-    const history = (await this.call('Page.getNavigationHistory', {}, sessionId)).result;
-    const entry = history?.entries?.find((item) => item.id === params.entryId);
-    return Boolean(entry && this.hides(entry));
+    const history = await this.answered(this.call('Page.getNavigationHistory', {}, sessionId));
+    if (!history || history.error) return true;
+    const entries = history.result.entries;
+    if (!Array.isArray(entries)) return true;
+    const entry = entries.find((item) => item.id === params.entryId);
+    if (!entry) return true;
+    return this.hides(entry);
+  }
+
+  shownTarget(message, info) {
+    const shown = this.masked(info ?? {});
+    if (shown !== info && this.is.url(shown.url)) return;
+    this.deliver({
+      ...message,
+      params: { ...message.params, targetInfo: shown },
+    });
   }
 
   masked(info) {
@@ -1248,6 +1689,7 @@ class Guard {
   async event(message) {
     const method = message.method ?? '';
     const { sessionId } = message;
+    this.noteNavigation(sessionId, method, message.params);
     const foreign = this.foreign({ ...message, method });
     if (this.navSessions.has(sessionId))
       return this.navEvent(message, this.navSessions.get(sessionId));
@@ -1313,8 +1755,53 @@ class Guard {
     return this.deliver({ ...message, result: { ...result, targetInfos } });
   }
 
+  sealed(was) {
+    if (was && this.moved.delete(was.id)) return true;
+    return Boolean(was?.sessionId && this.blocked.has(was.sessionId));
+  }
+
+  async keptShot(was) {
+    const admitted = was?.method === 'Page.captureScreenshot' && this.shots.delete(was.id);
+    if (!admitted) return false;
+    return this.blankShot(was.sessionId);
+  }
+
+  async openShot(was) {
+    const now = await this.surface(was?.sessionId);
+    return Boolean(now && !now.protected && !now.pendingTree);
+  }
+
+  async shotAnswer(message, was) {
+    if (await this.keptShot(was)) return this.deliver(message);
+    if (this.sealed(was) || !(await this.openShot(was))) return this.refuse(was);
+    return this.deliver(message);
+  }
+
+  async entryAnswer(message, was) {
+    const sessionId = was.sessionId;
+    const deadline = Date.now() + HISTORY_WAIT;
+    while (sessionId && this.pendingHistory.has(sessionId) && Date.now() < deadline) {
+      await pause(HISTORY_POLL);
+    }
+    if (sessionId && this.blocked.has(sessionId)) return this.refuse(was);
+    const now = await this.surface(sessionId);
+    if (!now || now.protected || now.pendingTree) return this.refuse(was);
+    return this.deliver(message);
+  }
+
+  async routed(message, was) {
+    if (was?.method === 'Page.captureScreenshot') {
+      await this.shotAnswer(message, was);
+      return true;
+    }
+    if (was?.method !== 'Page.navigateToHistoryEntry' || !this.moved.delete(was.id)) return false;
+    await this.entryAnswer(message, was);
+    return true;
+  }
+
   async answer(message, was) {
-    if (was?.sessionId && this.blocked.has(was.sessionId)) return this.refuse(was);
+    if (await this.routed(message, was)) return;
+    if (this.sealed(was)) return this.refuse(was);
     const { method, params = {} } = was ?? {};
     const { result } = message;
     if (method === 'Page.createIsolatedWorld' && result?.executionContextId !== undefined) {
@@ -1435,8 +1922,11 @@ class Guard {
   }
 
   plainly(method, params, sessionId) {
+    if (sessionId !== undefined && this.hidden(sessionId)) {
+      if (method === 'Page.captureScreenshot' && this.blocked.has(sessionId)) return false;
+      return !(this.blocked.has(sessionId) && OBSERVED.has(method));
+    }
     return (
-      (sessionId !== undefined && this.hidden(sessionId)) ||
       (UNSAFE.has(method) && !this.clearing(method, params, sessionId)) ||
       this.valued(params) ||
       (REQUESTS.has(method) &&
@@ -1519,23 +2009,40 @@ class Guard {
     this.deliver({ id, result: answer.result });
   }
 
-  pass(message) {
-    const { id, method, sessionId } = message;
-    globalThis.sliccGuardTrace?.push({
-      method,
-      targetId: message.params?.targetId,
-      sessionId,
-      passed: true,
-    });
+  async withMainWorld(message) {
+    const { method, params = {}, sessionId } = message;
+    if (method !== 'Runtime.evaluate' && method !== 'Runtime.callFunctionOn') return message;
+    if (
+      params.contextId !== undefined ||
+      params.executionContextId !== undefined ||
+      params.uniqueContextId !== undefined ||
+      params.executionContextUniqueId !== undefined ||
+      params.objectId !== undefined ||
+      params.nodeId !== undefined
+    ) {
+      return message;
+    }
+    await this.queues.get(sessionId);
+    const uniqueContextId = this.worlds.get(sessionId)?.main;
+    if (!uniqueContextId) return message;
+    return { ...message, params: { ...params, uniqueContextId } };
+  }
+
+  async pass(message) {
+    const outgoing = await this.withMainWorld(message);
+    const { id, method, sessionId } = outgoing;
     if (sessionId && method === 'Runtime.enable') this.runtimes.add(sessionId);
-    if (sessionId && method === 'Runtime.disable') this.runtimes.delete(sessionId);
+    if (sessionId && method === 'Runtime.disable') {
+      this.runtimes.delete(sessionId);
+      this.worlds.delete(sessionId);
+    }
     if (sessionId && method === 'Page.enable') this.pages.add(sessionId);
     if (sessionId && method === 'Page.disable' && this.shown.has(sessionId)) {
       this.pages.delete(sessionId);
       return this.deliver({ id, sessionId, result: {} });
     }
     this.asked.set(id, message);
-    this.connection.send(JSON.stringify(message));
+    this.connection.send(JSON.stringify(outgoing));
   }
 
   received(text) {
@@ -1565,6 +2072,85 @@ class Guard {
     });
   }
 
+  standIn(message) {
+    const { id, sessionId } = message;
+    if (TREES.has(message.method)) {
+      this.deliver({
+        id,
+        sessionId,
+        result: { frameTree: { frame: { id: '0', url: ERROR_PAGE, securityOrigin: '://' } } },
+      });
+      return;
+    }
+    this.deliver({
+      id,
+      sessionId,
+      result: {
+        currentIndex: 0,
+        entries: [{ id: 0, url: ERROR_PAGE, userTypedURL: ERROR_PAGE, title: '' }],
+      },
+    });
+  }
+
+  async observing(message) {
+    if (!OBSERVED.has(message.method)) return false;
+    const { sessionId } = message;
+    if (!sessionId || this.pendingHistory.has(sessionId)) {
+      this.refuse(message);
+      return true;
+    }
+    if (this.blocked.has(sessionId)) {
+      this.standIn(message);
+      return true;
+    }
+    const now = await this.surface(sessionId);
+    if (!now || now.pendingTree) {
+      this.refuse(message);
+      return true;
+    }
+    this.note(sessionId, now);
+    if (!now.live || this.blankFrames(now)) return false;
+    if (now.visible && !now.probed) this.cut(sessionId);
+    this.standIn(message);
+    return true;
+  }
+
+  async recheck(message) {
+    const move = this.moveFrom(message);
+    if (move) {
+      const now = await this.surface(message.sessionId);
+      if (!now || now.live) {
+        if (now?.live) {
+          this.note(message.sessionId, now);
+          this.cut(message.sessionId);
+        }
+        this.refuse(message);
+        return true;
+      }
+      if (!this.idle(move, now)) {
+        this.pendingHistory.add(message.sessionId);
+        this.uncommitted.add(message.sessionId);
+        this.moved.add(message.id);
+        await this.pass(message);
+        await this.untilSettled(message.sessionId, now);
+        return true;
+      }
+    }
+    if (await this.observing(message)) return true;
+    if (!this.reaches(message.method)) return false;
+    if (!message.sessionId) {
+      this.refuse(message);
+      return true;
+    }
+    const blocked = await this.confirmed(message.sessionId, message.method);
+    if (!blocked) {
+      await this.noteShot(message);
+      return false;
+    }
+    this.refuse(message, blocked);
+    return true;
+  }
+
   start() {
     const { connection, guarded } = this;
     connection.onmessage = (text) => this.received(text);
@@ -1582,6 +2168,7 @@ class Guard {
           if (message.method === 'Target.createTarget' && typeof message.params?.url === 'string') {
             return this.create(message);
           }
+          if (await this.recheck(message)) return;
           return this.pass(message);
         },
         (error) => {

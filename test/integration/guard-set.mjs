@@ -39,6 +39,8 @@ const PATHS = {
     chromeUrlsAttach: false,
     discovery: false,
     extensionWorld: true,
+    inboundDelay: true,
+    forwardAudit: true,
   },
   proxy: {
     autoAttach: true,
@@ -47,6 +49,8 @@ const PATHS = {
     chromeUrlsAttach: true,
     discovery: true,
     extensionWorld: true,
+    inboundDelay: true,
+    forwardAudit: true,
   },
   link: {
     autoAttach: true,
@@ -56,6 +60,47 @@ const PATHS = {
     extensionWorld: true,
   },
 };
+
+function noteUrl(flags, raw) {
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    return;
+  }
+  const host = url.hostname;
+  if (host === 'sliccy.ai' || host.endsWith('.sliccy.ai')) flags.protectedObserved = true;
+  if (host.endsWith('.example.test') && url.pathname.includes('/bfcache'))
+    flags.ordinaryObserved = true;
+}
+
+function noteMessage(flags, value) {
+  if (typeof value === 'string') {
+    if (value.startsWith('http://') || value.startsWith('https://')) noteUrl(flags, value);
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  for (const item of Object.values(value)) noteMessage(flags, item);
+}
+
+function matchForwards(forwards, probes) {
+  const used = new Set();
+  return {
+    complete: true,
+    probes: (probes ?? []).map((probe) => {
+      const want = JSON.stringify(probe.params ?? {});
+      const index = forwards.findIndex(
+        (forward, at) =>
+          !used.has(at) &&
+          forward.method === probe.method &&
+          JSON.stringify(forward.params ?? {}) === want &&
+          forward.at >= probe.sentAt - 1000
+      );
+      if (index >= 0) used.add(index);
+      return { id: probe.id, forwarded: index >= 0 };
+    }),
+  };
+}
 
 const freePort = () =>
   new Promise((resolve) => {
@@ -130,21 +175,70 @@ async function unguardedClient(browser) {
   const pending = new Map();
   const { events, push, waitEvent } = eventsOf();
   const messages = [];
+  const forwards = [];
+  const flags = { protectedObserved: false, ordinaryObserved: false };
+  let gate = null;
   let next = 0;
-  socket.onmessage = ({ data }) => {
-    messages.push(String(data));
-    const message = JSON.parse(data);
-    const call = pending.get(message.id);
+  const dispatch = (text, message) => {
+    messages.push(text);
+    const call = message.id === undefined ? undefined : pending.get(message.id);
     if (!call) return push(message);
     pending.delete(message.id);
     clearTimeout(call.timer);
     if (message.error) call.reject(cdpError(message.error));
     else call.resolve(message.result);
   };
+  socket.onmessage = ({ data }) => {
+    const text = String(data);
+    const message = JSON.parse(text);
+    noteMessage(flags, message);
+    if (gate && message.sessionId === gate.sessionId) {
+      if (gate.first === undefined) gate.first = Date.now();
+      gate.held.push({ text, message });
+      return;
+    }
+    dispatch(text, message);
+  };
+  const write = socket.send.bind(socket);
+  socket.send = (text) => {
+    const message = JSON.parse(text);
+    if (message.method) {
+      forwards.push({
+        method: message.method,
+        params: message.params,
+        at: Date.now(),
+      });
+    }
+    return write(text);
+  };
+  const releaseGate = async (ms) => {
+    const current = gate;
+    gate = null;
+    const delayedEvents = current?.held.length ?? 0;
+    const firstDelayedAt = current?.first ?? Date.now();
+    const wait = current?.first === undefined ? 0 : Math.max(0, current.first + ms - Date.now());
+    if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
+    for (const item of current?.held ?? []) dispatch(item.text, item.message);
+    return { delayedEvents, firstDelayedAt, releasedAt: Date.now() };
+  };
   return {
     events,
     messages,
     waitEvent,
+    forwards,
+    flags,
+    armGate(sessionId) {
+      forwards.length = 0;
+      const seen = {
+        protectedObserved: flags.protectedObserved,
+        ordinaryObserved: flags.ordinaryObserved,
+      };
+      setTimeout(() => {
+        if (!gate) gate = { sessionId, held: [], first: undefined };
+      }, 0);
+      return seen;
+    },
+    releaseGate,
     send: (method, params = {}, sessionId) =>
       new Promise((resolve, reject) => {
         next += 1;
@@ -252,10 +346,115 @@ export async function guardHost(t, path) {
       };
       return connection;
     };
+    const remember = (flags, value) => {
+      if (typeof value === 'string') {
+        if (!value.startsWith('http://') && !value.startsWith('https://')) return;
+        try {
+          const url = new URL(value);
+          const host = url.hostname;
+          if (host === 'sliccy.ai' || host.endsWith('.sliccy.ai')) flags.protectedObserved = true;
+          if (host.endsWith('.example.test') && url.pathname.includes('/bfcache'))
+            flags.ordinaryObserved = true;
+        } catch {
+          return;
+        }
+        return;
+      }
+      if (!value || typeof value !== 'object') return;
+      for (const item of Object.values(value)) remember(flags, item);
+    };
+    const gateWrap = (raw) => {
+      const flags = { protectedObserved: false, ordinaryObserved: false };
+      const forwards = [];
+      let sink = null;
+      let hold = null;
+      raw.onmessage = (text) => {
+        try {
+          remember(flags, JSON.parse(text));
+        } catch {
+          return;
+        }
+        if (hold) {
+          if (hold.first === undefined) hold.first = Date.now();
+          hold.texts.push(text);
+          return;
+        }
+        sink?.(text);
+      };
+      return {
+        set onmessage(fn) {
+          sink = fn;
+        },
+        get onmessage() {
+          return sink;
+        },
+        set onclose(fn) {
+          raw.onclose = fn;
+        },
+        get onclose() {
+          return raw.onclose;
+        },
+        send(text) {
+          try {
+            const message = JSON.parse(text);
+            if (message.method) {
+              forwards.push({ method: message.method, params: message.params, at: Date.now() });
+            }
+          } catch {
+            return raw.send(text);
+          }
+          return raw.send(text);
+        },
+        close() {
+          return raw.close();
+        },
+        arm() {
+          forwards.length = 0;
+          const seen = {
+            protectedObserved: flags.protectedObserved,
+            ordinaryObserved: flags.ordinaryObserved,
+          };
+          setTimeout(() => {
+            if (!hold) hold = { texts: [], first: undefined };
+          }, 0);
+          return seen;
+        },
+        async release(ms) {
+          const current = hold;
+          hold = null;
+          const delayedEvents = current?.texts.length ?? 0;
+          const firstDelayedAt = current?.first ?? Date.now();
+          const wait =
+            current?.first === undefined ? 0 : Math.max(0, current.first + ms - Date.now());
+          if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
+          for (const text of current?.texts ?? []) sink?.(text);
+          return { delayedEvents, firstDelayedAt, releasedAt: Date.now() };
+        },
+        audit(probes) {
+          const used = new Set();
+          return {
+            complete: true,
+            probes: (probes ?? []).map((probe) => {
+              const want = JSON.stringify(probe.params ?? {});
+              const index = forwards.findIndex(
+                (forward, at) =>
+                  !used.has(at) &&
+                  forward.method === probe.method &&
+                  JSON.stringify(forward.params ?? {}) === want &&
+                  forward.at >= probe.sentAt - 1000
+              );
+              if (index >= 0) used.add(index);
+              return { id: probe.id, forwarded: index >= 0 };
+            }),
+          };
+        },
+      };
+    };
     const guards = new Map();
     window.guards = {
       async open(row, own, path, lag) {
-        const connection = guardProtected(lagged(await hosts[path](), lag), [location.origin, own]);
+        const gated = gateWrap(lagged(await hosts[path](), lag));
+        const connection = guardProtected(gated, [location.origin, own]);
         const pending = new Map();
         let next = 0;
         connection.onmessage = (text) => {
@@ -267,7 +466,18 @@ export async function guardHost(t, path) {
           pending.get(message.id)?.(message);
           pending.delete(message.id);
         };
-        guards.set(row, { connection, pending, next: () => ++next });
+        guards.set(row, { connection, pending, gated, next: () => ++next });
+      },
+      arm(row) {
+        return (
+          guards.get(row)?.gated.arm() ?? { protectedObserved: false, ordinaryObserved: false }
+        );
+      },
+      release(row, ms) {
+        return guards.get(row)?.gated.release(ms);
+      },
+      audit(row, probes) {
+        return guards.get(row)?.gated.audit(probes) ?? { complete: false, probes: [] };
       },
       send(row, method, params, sessionId, wait) {
         const guard = guards.get(row);
@@ -320,6 +530,35 @@ export async function guardHost(t, path) {
         events,
         messages,
         waitEvent,
+        async inboundDelay({ targetId, sessionId, ms, side, gate }) {
+          const seen =
+            side === 'control'
+              ? unguarded.armGate(sessionId)
+              : await seven.evaluate((row) => window.guards.arm(row), row);
+          return {
+            targetId,
+            sessionId,
+            ms,
+            gate: gate === true,
+            protectedObserved: seen?.protectedObserved === true,
+            ordinaryObserved: seen?.ordinaryObserved === true,
+            release: () =>
+              side === 'control'
+                ? unguarded.releaseGate(ms)
+                : seven.evaluate(([id, wait]) => window.guards.release(id, wait), [row, ms]),
+            audit: ({ probes }) => {
+              const list = (probes ?? []).map(({ id, method, params, sentAt }) => ({
+                id,
+                method,
+                params,
+                sentAt,
+              }));
+              return side === 'control'
+                ? matchForwards(unguarded.forwards, list)
+                : seven.evaluate(([id, items]) => window.guards.audit(id, items), [row, list]);
+            },
+          };
+        },
         send: async (method, params = {}, sessionId) => {
           const answer = await seven.evaluate(
             ([row, method, params, sessionId, wait]) =>
@@ -340,7 +579,7 @@ export async function guardHost(t, path) {
         },
       };
     };
-  return { clientFactory };
+  return clientFactory;
 }
 
 export const trace = (...parts) =>
@@ -376,7 +615,7 @@ export function shared(path, { variants, except = [], group } = {}) {
     test(`the shared guard vectors (@ai-ecoverse/slicc-browsers@${set.setVersion}) against bios's guard on the ${path} path, ${variant} detach${where}`, {
       timeout: 60 * 60 * 1000,
     }, async (t) => {
-      const { clientFactory } = await guardHost(t, path);
+      const clientFactory = await guardHost(t, path);
       for (const target of chosen.targets) {
         trace('run', path, target, variant);
         const execution = await run(subset(target), {
@@ -396,7 +635,9 @@ export function shared(path, { variants, except = [], group } = {}) {
               row.variant,
               row.control,
               row.guarded,
-              row.live
+              row.live,
+              row.why ?? '',
+              JSON.stringify(row.incomplete ?? [])
             ),
           debug: process.env.GUARD_TRACE
             ? (data) =>
