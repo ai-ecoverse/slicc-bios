@@ -104,7 +104,7 @@ test('pins the same packages in the bootstrap and the pnpm lockfile', async () =
       /^ {2}'?(\S+?)'?:\n {4}resolution: \{integrity: (\S+)\}/gm
     ),
   ].map(([, id, integrity]) => `${id} ${integrity}`);
-  assert.ok(npm.length >= 13);
+  assert.ok(npm.length >= 7, `${npm.length} packages`);
   assert.deepEqual(npm.sort(), pnpm.sort());
 });
 

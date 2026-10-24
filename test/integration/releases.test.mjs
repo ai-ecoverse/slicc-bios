@@ -270,7 +270,7 @@ test('a GitHub that answers slowly does not hold the update check up, and its re
   const page = await chrome.page(t);
   chrome.github.releases('ai-ecoverse/slicc-kernel', [release(`v${SHIPPED}`, 'late notes')]);
   chrome.github.state.delay = 6000;
-  await boot(page);
+  await boot(page, undefined, { tools: false });
   await page.until(() => {
     const kernel = document
       .querySelector('slicc-app')
