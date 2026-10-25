@@ -41,6 +41,7 @@ const HISTORY = new Set(['Page.getNavigationHistory']);
 const TREES = new Set(['Page.getFrameTree', 'Page.getResourceTree']);
 const NAV_MS = 10000;
 const NAV_TYPES = new Set(['page', 'iframe', 'background_page', 'webview']);
+const WORKER_TYPES = new Set(['worker', 'service_worker', 'shared_worker']);
 const UNWAITED = new Set(['Target.getTargetInfo', 'Target.detachFromTarget']);
 const POLL_MS = 100;
 const REMEMBERED = 10000;
@@ -561,6 +562,8 @@ class Guard {
     this.sheets = new Set();
     this.navs = new Map();
     this.navSessions = new Map();
+    this.pendingAttachments = new Set();
+    this.privateSessions = new Set();
     this.errored = new Map();
     this.offered = new Set();
     this.contexts = new Set();
@@ -787,7 +790,8 @@ class Guard {
 
   async current(targetId) {
     const info = (await this.call('Target.getTargetInfo', { targetId })).result?.targetInfo;
-    if (info) this.learn(info);
+    if (!info) return true;
+    this.learn(info);
     return this.target(targetId);
   }
 
@@ -1025,6 +1029,8 @@ class Guard {
   }
 
   async checkDocument(targetId) {
+    if (WORKER_TYPES.has(this.targets.get(targetId)?.type))
+      return (await this.verifyWorker(targetId)) === true;
     const state = this.document(targetId);
     const nav = this.navs.get(targetId);
     if (!nav) return false;
@@ -1064,7 +1070,7 @@ class Guard {
   touch(targetId, held = false) {
     if (!targetId) return;
     const known = this.navs.get(targetId);
-    if (known) {
+    if (known && !known.failed) {
       if (!held) known.held = false;
       return;
     }
@@ -1083,10 +1089,15 @@ class Guard {
     nav.timer = setTimeout(() => nav.settle(true), NAV_MS);
     nav.timer.unref?.();
     this.navs.set(targetId, nav);
+    this.pendingAttachments.add(nav);
     nav.attaching = this.call('Target.attachToTarget', { targetId, flatten: true }).then(
       (answer) => answer.result?.sessionId ?? null
     );
-    void nav.attaching.then((session) => this.arm(nav, session));
+    void nav.attaching.then((session) => {
+      if (session) this.privateSessions.add(session);
+      this.pendingAttachments.delete(nav);
+      return this.arm(nav, session);
+    });
   }
 
   async arm(nav, session) {
@@ -1157,22 +1168,67 @@ class Guard {
     return nav.failed ? UNGUARDED : null;
   }
 
-  async verify(sessionId) {
+  async verifyWorker(targetId) {
+    const state = this.document(targetId);
+    const revision = state.revision;
+    const answer = await this.call('Target.getTargetInfo', { targetId }, undefined, CHECK_MS);
+    const info = answer.result?.targetInfo;
+    if (
+      answer.error ||
+      !info ||
+      info.targetId !== targetId ||
+      typeof info.url !== 'string' ||
+      !info.url ||
+      !URL.canParse(info.url)
+    ) {
+      if (state.revision === revision) state.checked = -1;
+      return false;
+    }
+    this.learn(info);
+    if (await this.target(targetId)) {
+      state.checked = -1;
+      return PROTECTED;
+    }
+    if (!WORKER_TYPES.has(info.type) || state.retired || state.revision !== revision) {
+      if (state.revision === revision) state.checked = -1;
+      return false;
+    }
+    state.checked = revision;
+    return true;
+  }
+
+  async verify(sessionId, targetId) {
+    if (WORKER_TYPES.has(this.targets.get(targetId)?.type)) return this.verifyWorker(targetId);
     void this.call('Page.enable', {}, sessionId);
-    const tree = (await this.call('Page.getFrameTree', {}, sessionId)).result?.frameTree;
+    const answer = await this.call('Page.getFrameTree', {}, sessionId, CHECK_MS);
+    if (answer.error) return false;
+    const tree = answer.result?.frameTree;
     const all = framed(tree);
-    for (const frame of all) {
-      this.frames.set(frame.id, frame.url);
+    if (all.some((frame) => this.is.url(frame.url) || this.is.url(frame.securityOrigin)))
+      return PROTECTED;
+    const known = this.documentTree(tree);
+    if (!known) return false;
+    for (const frame of known) {
+      this.frames.set(frame.id, this.framed(frame));
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
     }
-    return !all.some((frame) => this.is.url(frame.url) || this.is.url(frame.securityOrigin));
+    return true;
   }
 
   async inspect(sessionId, targetId, parent) {
     const guarded = targetId ? await this.target(targetId) : false;
-    if (guarded || !(await this.verify(sessionId))) {
+    const verified = guarded ? PROTECTED : await this.verify(sessionId, targetId);
+    if (verified === PROTECTED) {
       this.cut(sessionId, parent);
       return false;
+    }
+    if (!verified) return false;
+    this.touch(targetId);
+    const nav = this.navs.get(targetId);
+    if (!nav && !WORKER_TYPES.has(this.targets.get(targetId)?.type)) return false;
+    if (nav) {
+      await nav.ready;
+      if (nav.failed) return false;
     }
     this.shown.add(sessionId);
     return true;
@@ -1181,7 +1237,11 @@ class Guard {
   watch(sessionId, targetId, parent) {
     if (!this.sessions.has(sessionId)) this.sessions.set(sessionId, { targetId, parent });
     if (!this.watching.has(sessionId)) {
-      this.watching.set(sessionId, this.inspect(sessionId, targetId, parent));
+      const watched = this.inspect(sessionId, targetId, parent).then((ok) => {
+        if (!ok && this.watching.get(sessionId) === watched) this.watching.delete(sessionId);
+        return ok;
+      });
+      this.watching.set(sessionId, watched);
     }
     return this.watching.get(sessionId);
   }
@@ -1415,12 +1475,20 @@ class Guard {
     void this.call(next, { requestId }, sessionId);
   }
 
+  async privateAttachment(targetId, sessionId, parent) {
+    if (parent !== undefined) return false;
+    if (this.privateSessions.has(sessionId)) return true;
+    for (const nav of this.pendingAttachments) {
+      if (nav.targetId === targetId && (await nav.attaching) === sessionId) return true;
+    }
+    return false;
+  }
+
   async targetEvent(message) {
     const { method, params = {}, sessionId } = message;
     if (method === 'Target.attachedToTarget') {
       const info = params.targetInfo ?? {};
-      const nav = this.navs.get(info.targetId);
-      if (nav && sessionId === undefined && (await nav.attaching) === params.sessionId) return true;
+      if (await this.privateAttachment(info.targetId, params.sessionId, sessionId)) return true;
       if (params.waitingForDebugger) this.waiting.add(params.sessionId);
       if (!info.url && (info.type === 'page' || info.type === 'iframe')) {
         void this.blank(message);
@@ -1870,8 +1938,16 @@ class Guard {
 
   async documentCheck(method, sessionId) {
     if (!sessionId || !documentContent(method)) return null;
-    if (this.hidden(sessionId) || !(await this.documentChecked(sessionId))) return PROTECTED;
-    return null;
+    const entry = this.sessions.get(sessionId);
+    if (this.hidden(sessionId) && entry && !this.blocked.has(sessionId))
+      await this.watch(sessionId, entry.targetId, entry.parent);
+    if (this.hidden(sessionId)) return PROTECTED;
+    if (WORKER_TYPES.has(this.targets.get(entry?.targetId)?.type)) {
+      const verified = await this.verify(sessionId, entry.targetId);
+      if (verified === PROTECTED) this.cut(sessionId);
+      return verified === true ? null : PROTECTED;
+    }
+    return (await this.documentChecked(sessionId)) ? null : PROTECTED;
   }
 
   async check(message) {

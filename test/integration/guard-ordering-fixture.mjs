@@ -29,12 +29,20 @@ export function protocol(t, protect = guardProtected) {
   const delivered = [];
   let next = 0;
   let hold = () => false;
+  let privateFailure = false;
   const raw = {
     send(text) {
       const message = JSON.parse(text);
       sent.push(message);
       if (hold(message)) return void held.push(message);
-      queueMicrotask(() => respond(message));
+      queueMicrotask(() =>
+        respond(
+          message,
+          privateFailure && message.id >= 2 ** 30
+            ? { error: { code: -32000, message: 'synthetic private failure' } }
+            : undefined
+        )
+      );
     },
     close() {},
   };
@@ -124,6 +132,9 @@ export function protocol(t, protect = guardProtected) {
     attached,
     clients,
     release,
+    privateFailure(value) {
+      privateFailure = value;
+    },
     hold(fn) {
       hold = fn;
     },
