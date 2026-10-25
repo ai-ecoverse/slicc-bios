@@ -821,7 +821,7 @@ async function own() {
     install: installTailnet,
   });
   if (await agentStartable()) void startOnce();
-  optional = offerPackages();
+  optional = Promise.resolve(offerPackages && null);
   document.addEventListener('visibilitychange', () => {
     if (visible()) void check();
   });
