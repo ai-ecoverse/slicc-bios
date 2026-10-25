@@ -132,7 +132,7 @@ test('under report, a user’s pnpm pin in /opt/agent that brings an uncertified
   await rowSettled(page, 'agent');
   await run(
     page,
-    `jq '.dependencies["${AGENT}"] = "6.97.0"' /opt/agent/package.json > /tmp/p && cp /tmp/p /opt/agent/package.json; echo "pin-""done-$?"`
+    `jq '.dependencies["${AGENT}"] = "${pinned.version}"' /opt/agent/package.json > /tmp/p && cp /tmp/p /opt/agent/package.json; echo "pin-""done-$?"`
   );
   await shows(page, 'pin-done-');
   assert.match(await screen(page), /pin-done-0/);
