@@ -1,8 +1,9 @@
-import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { appendFileSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { argv, env, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { AwsClient } from 'aws4fetch';
 
 const account = '155ec15a52a18a14801e04b019da5e5a';
 const bucket = 'slicc-bios';
@@ -20,14 +21,6 @@ export function label(branch) {
   return name;
 }
 
-function wrangler(args, input) {
-  return execFileSync('npx', ['--no-install', 'wrangler', 'r2', 'object', ...args, '--remote'], {
-    input,
-    stdio: 'pipe',
-    env: { ...env, CLOUDFLARE_ACCOUNT_ID: account },
-  });
-}
-
 function files() {
   return readdirSync(root, { recursive: true, withFileTypes: true })
     .filter((entry) => entry.isFile())
@@ -35,37 +28,55 @@ function files() {
     .sort();
 }
 
-function prefix(name) {
-  return name === 'seven' ? name : `branches/${name}`;
+export const API = `https://api.cloudflare.com/client/v4/accounts/${account}/tokens/verify`;
+export const S3 = `https://${account}.r2.cloudflarestorage.com/${bucket}`;
+
+export async function r2(token, fetcher = fetch) {
+  if (!token) throw new Error('no deploy token');
+  const response = await fetcher(API, { headers: { authorization: `Bearer ${token}` } });
+  const body = await response.json().catch(() => ({}));
+  const id = body?.result?.id;
+  if (!response.ok || body?.result?.status !== 'active' || typeof id !== 'string') {
+    throw new Error(`the deploy token doesn't verify: ${response.status}`);
+  }
+  const client = new AwsClient({
+    accessKeyId: id,
+    secretAccessKey: createHash('sha256').update(token).digest('hex'),
+    service: 's3',
+    region: 'auto',
+  });
+  return async (method, key, body) => {
+    const url = `${S3}/${key.split('/').map(encodeURIComponent).join('/')}`;
+    const signed = await client.sign(url, { method, body });
+    const reply = await fetcher(signed);
+    if (method === 'GET' && reply.status === 404) return null;
+    if (!reply.ok) throw new Error(`${method} ${key}: ${reply.status}`);
+    return reply;
+  };
 }
 
-function previous(at) {
-  let manifest;
-  try {
-    manifest = wrangler(['get', `${bucket}/${at}.json`, '--pipe']);
-  } catch (error) {
-    if (`${error.stderr}`.includes('The specified key does not exist')) return { files: [] };
-    throw error;
-  }
-  return JSON.parse(manifest);
-}
-
-export function publish(branch) {
-  const name = label(branch);
-  const at = prefix(name);
-  const { branch: owner = branch, files: before } = previous(at);
-  if (owner !== branch) {
-    throw new Error(`${name}.sliccy.ai already serves ${owner}, rename ${branch}`);
-  }
+export async function publishSeven({
+  token = env.SLICC_BIOS_DEPLOY_TOKEN,
+  fetcher = fetch,
+  parallel = 8,
+} = {}) {
+  const object = await r2(token, fetcher);
+  const manifest = await object('GET', 'seven.json');
+  const { branch: owner = 'main', files: before = [] } = manifest ? await manifest.json() : {};
+  if (owner !== 'main') throw new Error(`seven.sliccy.ai serves ${owner}, not main`);
   const current = files();
-  for (const file of current) {
-    wrangler(['put', `${bucket}/${at}/${file}`, '--file', join(root, file)]);
-  }
+  const queue = [...current];
+  const put = async () => {
+    for (let file = queue.shift(); file; file = queue.shift()) {
+      await object('PUT', `seven/${file}`, readFileSync(join(root, file)));
+    }
+  };
+  await Promise.all(Array.from({ length: parallel }, put));
   for (const file of before.filter((file) => !current.includes(file))) {
-    wrangler(['delete', `${bucket}/${at}/${file}`]);
+    await object('DELETE', `seven/${file}`);
   }
-  wrangler(['put', `${bucket}/${at}.json`, '--pipe'], JSON.stringify({ branch, files: current }));
-  return `https://${name}.sliccy.ai/`;
+  await object('PUT', 'seven.json', JSON.stringify({ branch: 'main', files: current }));
+  return 'https://seven.sliccy.ai/';
 }
 
 export const ROUTE = 'https://seven.sliccy.ai/api/publish';
@@ -132,7 +143,7 @@ export async function preview(vars = env, options = {}) {
 
 if (argv[1] === fileURLToPath(import.meta.url)) {
   const mode = argv[2];
-  if (mode === 'main') stdout.write(`${publish(mode)}\n`);
+  if (mode === 'main') stdout.write(`${await publishSeven()}\n`);
   else if (mode === 'preview') {
     const { url, skipped } = await preview();
     if (skipped) stdout.write(`${skipped}\n`);

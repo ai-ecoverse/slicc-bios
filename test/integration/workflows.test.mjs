@@ -79,11 +79,8 @@ test('seven is published only after a release, from the production environment, 
   assert.ok(after, 'after-release is a block');
   assert.match(after, /\$RELEASE_VERSION/);
   assert.match(after, /: "\$\{SLICC_BIOS_DEPLOY_TOKEN:\?/);
-  assert.match(
-    after,
-    /\n {8}CLOUDFLARE_API_TOKEN="\$SLICC_BIOS_DEPLOY_TOKEN" node edge\/publish\.mjs main >> "\$GITHUB_STEP_SUMMARY"\n$/
-  );
-  assert.doesNotMatch(ci, /secrets\./);
+  assert.match(after, /\n {8}node edge\/publish\.mjs main >> "\$GITHUB_STEP_SUMMARY"\n$/);
+  assert.doesNotMatch(ci, /secrets\.|CLOUDFLARE_API_TOKEN=|wrangler/);
 });
 
 test('a pull request publishes its preview through the OIDC route in the pipeline’s deploy job, which gets no secret', () => {
