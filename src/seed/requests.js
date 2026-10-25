@@ -11,6 +11,8 @@ export const BUSY = 'another request is waiting for you';
 export const CAPTURE_DISMISSED = 'the request to capture the screen was dismissed';
 export const CAPTURE_LATE = 'nobody answered the request to capture the screen within 60 s';
 export const CAPTURED = "seven doesn't capture its own pages or the vault";
+export const UNKNOWN_TAB =
+  "seven can't tell this tab isn't its own or the vault's (it sets no capture handle), so it doesn't capture it; share a window or the screen";
 export const HANDLE = 'slicc-seven';
 export const HANDLES = [HANDLE, 'slicc-vault'];
 export const HANDLE_MS = 1000;
@@ -252,6 +254,11 @@ export function displayer({
 } = {}) {
   const sevens = (handle) =>
     HANDLES.includes(handle?.handle) || Boolean(handle?.origin && is.url(handle.origin));
+  const why = (track, handle) => {
+    if (sevens(handle)) return CAPTURED;
+    if (!handle && track?.getSettings?.().displaySurface === 'browser') return UNKNOWN_TAB;
+    return null;
+  };
   return () => {
     let reason = null;
     const display = async (constraints) => {
@@ -269,13 +276,15 @@ export function displayer({
         preferCurrentTab: false,
       });
       const track = stream?.getVideoTracks?.()[0];
-      if (sevens(await settle(track))) {
+      const first = why(track, await settle(track));
+      if (first) {
         stopped(stream);
-        throw refused(CAPTURED);
+        throw refused(first);
       }
       track?.addEventListener?.('capturehandlechange', () => {
-        if (reason || !sevens(track.getCaptureHandle?.())) return;
-        reason = refused(CAPTURED);
+        const next = reason ? null : why(track, track.getCaptureHandle?.());
+        if (!next) return;
+        reason = refused(next);
         stopped(stream);
         track.dispatchEvent?.(new Event('ended'));
       });
