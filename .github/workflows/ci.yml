@@ -35,7 +35,7 @@ jobs:
       after-release: |
         : "${SLICC_BIOS_DEPLOY_TOKEN:?SLICC_BIOS_DEPLOY_TOKEN is not set in the production environment}"
         echo "Publishing v$RELEASE_VERSION to seven" >> "$GITHUB_STEP_SUMMARY"
-        CLOUDFLARE_API_TOKEN="$SLICC_BIOS_DEPLOY_TOKEN" node edge/publish.mjs main >> "$GITHUB_STEP_SUMMARY"
+        node edge/publish.mjs main >> "$GITHUB_STEP_SUMMARY"
       review-prompt: |
         SLICC-BIOS
 
