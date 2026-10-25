@@ -212,7 +212,7 @@ export function plugged(hook, prompts, extras = () => ({})) {
       .map((kind) => [
         kind,
         async (request, { gesture }) => {
-          const prompt = prompts[kind](request);
+          const prompt = await prompts[kind](request);
           if (prompt) await gesture(request.stamp, prompt, request.signal);
           const { failure = () => null, ...extra } = extras();
           let reply;
@@ -267,16 +267,41 @@ const listening = asking(
   'Listen',
   'use the microphone'
 );
-const asked = (options) =>
-  !options?.status && !options?.warmup && !options?.supported && !options?.devices;
+const probe = (options) =>
+  Boolean(options?.status || options?.warmup || options?.supported || options?.devices);
+
+export async function peeked(body) {
+  if (!body?.getReader) return { body, carried: false };
+  const reader = body.getReader();
+  let first = await reader.read();
+  while (!first.done && !first.value?.byteLength) first = await reader.read();
+  const carried = !first.done;
+  const rest = new ReadableStream({
+    start(controller) {
+      if (first.done) controller.close();
+      else controller.enqueue(first.value);
+    },
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) controller.close();
+      else controller.enqueue(value);
+    },
+    cancel: (reason) => reader.cancel(reason),
+  });
+  return { body: rest, carried };
+}
 
 export const audioPrompts = {
   'audio.play': playing,
-  'audio.say': (request) => (asked(request.options) ? speaking(request) : null),
+  'audio.say': (request) => (probe(request.options) ? null : speaking(request)),
   'audio.voices': () => null,
   'audio.record': recording,
-  'audio.transcribe': (request) =>
-    asked(request.options) && request.options?.engine === 'webspeech' ? listening(request) : null,
+  'audio.transcribe': async (request) => {
+    if (probe(request.options)) return null;
+    const { body, carried } = await peeked(request.body);
+    request.body = body;
+    return carried ? null : listening(request);
+  },
 };
 
 function stopped(stream) {

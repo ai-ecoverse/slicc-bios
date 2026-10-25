@@ -106,12 +106,26 @@ test('slicc-audio is in the base set without ortllama, a delayed microphone requ
 
   await run(
     page,
+    `sleep 12; ${ask({ kind: 'audio.transcribe', engine: 'mystery' })}; echo "mystery $?"`
+  );
+  await page.until(() => !!window.findConfirm(), undefined);
+  assert.match(
+    await page.evaluate(() => window.findConfirm().shadowRoot.textContent),
+    /Use the microphone\?.*A program asks seven to listen through your microphone\./s
+  );
+  await press(page, 'cancel');
+  await shows(page, 'mystery 1');
+  assert.equal(await page.evaluate(() => window.micOpened), 1);
+  assert.equal(await page.evaluate(() => window.prompted), 2);
+
+  await run(
+    page,
     `sleep 8; exec 3<>/dev/embedder; printf '%s\\n' '{"kind":"audio.transcribe","status":true}' >&3; cat <&3; exec 3<&-; echo "probed"; ${ask({ kind: 'audio.voices' })}; echo "voices $?"`
   );
   await shows(page, 'ortllama: no server at');
   await shows(page, 'probed');
   await shows(page, 'voices');
-  assert.equal(await page.evaluate(() => window.prompted), 1);
+  assert.equal(await page.evaluate(() => window.prompted), 2);
   assert.equal(await page.evaluate(() => window.micOpened), 1);
   assert.deepEqual(page.errors, []);
 });
