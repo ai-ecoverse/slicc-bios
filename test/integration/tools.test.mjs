@@ -111,6 +111,9 @@ test('a fresh profile gets every tool after boot, from npm, into /opt/slicc/tool
     assert.equal(row.state, 'installed', JSON.stringify(row));
     assert.ok(row.version, row.name);
   }
+  t.diagnostic(
+    `tools: ${found.map((row) => `${row.name.split('/').at(-1)} ${row.version} (offered ${row.offered})`).join(', ')}`
+  );
   const ran = await sh(
     page,
     'jq --version && rg --version | head -1 && curl --version | head -1 && sed --version | head -1'
