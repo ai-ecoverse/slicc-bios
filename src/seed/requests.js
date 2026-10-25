@@ -13,6 +13,8 @@ export const CAPTURE_LATE = 'nobody answered the request to capture the screen w
 export const CAPTURED = "seven doesn't capture its own pages or the vault";
 export const HANDLE = 'slicc-seven';
 export const HANDLES = [HANDLE, 'slicc-vault'];
+export const HANDLE_MS = 1000;
+const STEP_MS = 50;
 
 export const refused = (message) => new DOMException(message, 'NotAllowedError');
 
@@ -230,9 +232,23 @@ function stopped(stream) {
   for (const track of stream?.getTracks?.() ?? []) track.stop();
 }
 
+export async function handleOf(
+  track,
+  { wait = HANDLE_MS, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}
+) {
+  let handle = track?.getCaptureHandle?.() ?? null;
+  if (handle || track?.getSettings?.().displaySurface !== 'browser') return handle;
+  for (let waited = 0; !handle && waited < wait; waited += STEP_MS) {
+    await sleep(STEP_MS);
+    handle = track.getCaptureHandle?.() ?? null;
+  }
+  return handle;
+}
+
 export function displayer({
   media = () => globalThis.navigator?.mediaDevices,
   is = protection(globalThis.location?.origin),
+  settle = handleOf,
 } = {}) {
   const sevens = (handle) =>
     HANDLES.includes(handle?.handle) || Boolean(handle?.origin && is.url(handle.origin));
@@ -253,7 +269,7 @@ export function displayer({
         preferCurrentTab: false,
       });
       const track = stream?.getVideoTracks?.()[0];
-      if (sevens(track?.getCaptureHandle?.())) {
+      if (sevens(await settle(track))) {
         stopped(stream);
         throw refused(CAPTURED);
       }

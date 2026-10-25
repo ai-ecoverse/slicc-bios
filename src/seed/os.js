@@ -137,6 +137,7 @@ import {
   vaultOrigin,
 } from './vault.js';
 
+markCaptured();
 const prompts = installPrompts();
 void retirePreview().catch((error) => console.warn(`SLICC 6 preview: ${said(error)}`));
 let unoffered = takePairing();
@@ -362,7 +363,6 @@ let files = null;
 const composer = holdComposer();
 let presentation = null;
 let kernel = null;
-markCaptured();
 const requests = pageRequests({
   show: confirm,
   handlers: {
