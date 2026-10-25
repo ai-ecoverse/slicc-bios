@@ -66,9 +66,26 @@ const documentContent = (method = '') =>
     method
   ) ||
     CONTENTS.has(method));
+const PAGE_LIFECYCLE = new Set([
+  'Page.frameAttached',
+  'Page.frameDetached',
+  'Page.frameNavigated',
+  'Page.frameStartedNavigating',
+  'Page.frameRequestedNavigation',
+  'Page.frameScheduledNavigation',
+  'Page.frameClearedScheduledNavigation',
+  'Page.navigatedWithinDocument',
+  'Page.frameStartedLoading',
+  'Page.frameStoppedLoading',
+  'Page.domContentEventFired',
+  'Page.loadEventFired',
+  'Page.lifecycleEvent',
+  'Page.backForwardCacheNotUsed',
+]);
 const documentPublication = (message) =>
   message.id === undefined &&
   message.sessionId !== undefined &&
+  !PAGE_LIFECYCLE.has(message.method) &&
   (documentContent(message.method) ||
     /^(?:Network|Fetch|Log|Audits|Console)\./.test(message.method));
 
@@ -562,7 +579,7 @@ class Guard {
     this.held = new Map();
     this.internal = new Map();
     this.asked = new Map();
-    this.callers = new Set();
+    this.callers = new Map();
     this.watching = new Map();
     this.queues = new Map();
     this.streams = new Set();
@@ -601,8 +618,18 @@ class Guard {
   }
 
   deliver(message, source = message) {
-    if (!this.eventValid(source)) return;
-    if (message.id !== undefined) this.callers.delete(message.id);
+    if (!this.eventValid(source)) {
+      if (PAUSES.has(source.method)) {
+        this.offered.delete(source.params?.requestId);
+        this.release(source);
+      }
+      return;
+    }
+    if (message.id !== undefined) {
+      const remaining = (this.callers.get(message.id) ?? 0) - 1;
+      if (remaining > 0) this.callers.set(message.id, remaining);
+      else this.callers.delete(message.id);
+    }
     try {
       this.guarded.onmessage?.(JSON.stringify(message));
     } catch (error) {
@@ -893,6 +920,41 @@ class Guard {
     );
   }
 
+  knownFrame(frame) {
+    if (
+      !frame ||
+      typeof frame.id !== 'string' ||
+      !frame.id ||
+      typeof frame.url !== 'string' ||
+      !frame.url ||
+      !URL.canParse(frame.url)
+    )
+      return false;
+    for (const key of ['securityOrigin', 'unreachableUrl', 'parentId'])
+      if (frame[key] !== undefined && typeof frame[key] !== 'string') return false;
+    if (frame.unreachableUrl && !URL.canParse(frame.unreachableUrl)) return false;
+    if (new URL(frame.url).protocol === 'chrome-error:' && !frame.unreachableUrl) return false;
+    return !this.is.url(this.framed(frame));
+  }
+
+  documentTree(tree, seen = new Set()) {
+    const frame = tree?.frame;
+    if (
+      !this.knownFrame(frame) ||
+      seen.has(frame.id) ||
+      (tree.childFrames !== undefined && !Array.isArray(tree.childFrames))
+    )
+      return null;
+    seen.add(frame.id);
+    const all = [frame];
+    for (const child of tree.childFrames ?? []) {
+      const frames = this.documentTree(child, seen);
+      if (!frames) return null;
+      all.push(...frames);
+    }
+    return all;
+  }
+
   async checkDocument(targetId) {
     const state = this.document(targetId);
     const nav = this.navs.get(targetId);
@@ -904,18 +966,8 @@ class Guard {
     if (state.checking?.revision === revision) return state.checking.promise;
     const promise = (async () => {
       const answer = await this.call('Page.getFrameTree', {}, nav.session, CHECK_MS);
-      const all = framed(answer.result?.frameTree);
-      if (
-        answer.error ||
-        !all.length ||
-        state.revision !== revision ||
-        all.some(
-          (frame) =>
-            this.is.url(this.framed(frame)) ||
-            (frame.url?.startsWith('chrome-error:') && !frame.unreachableUrl)
-        )
-      )
-        return false;
+      const all = this.documentTree(answer.result?.frameTree);
+      if (answer.error || !all || state.revision !== revision) return false;
       for (const frame of all) {
         this.frames.set(frame.id, this.framed(frame));
         if (frame.parentId) this.parents.set(frame.id, frame.parentId);
@@ -1198,6 +1250,10 @@ class Guard {
   }
 
   async paused(message) {
+    if (!this.eventValid(message)) {
+      this.release(message);
+      return true;
+    }
     const { params = {} } = message;
     const marked = this.requests.get(params.networkId) === true || (await this.request(params));
     this.remember(params.requestId, marked);
@@ -1513,7 +1569,7 @@ class Guard {
     if (this.navSessions.has(sessionId))
       return this.navEvent(message, this.navSessions.get(sessionId));
     if (method.startsWith('Target.') && (await this.targetEvent(message))) return;
-    if (this.blocked.has(sessionId) && PAUSES.has(method)) return this.release(message);
+    if (PAUSES.has(method) && this.hidden(sessionId)) return this.release(message);
     if (this.hidden(sessionId)) return;
     if (foreign) return;
     if (this.walked(message)) return this.cut(sessionId);
@@ -1862,8 +1918,10 @@ class Guard {
     connection.onclose = (why) => guarded.onclose?.(why);
     guarded.send = (text) => {
       const message = parse(text);
-      if (message.id >= GUARD_IDS && message.id <= this.next) return this.refuse(message, FAILED);
-      this.callers.add(message.id);
+      const duplicate = this.callers.has(message.id);
+      this.callers.set(message.id, (this.callers.get(message.id) ?? 0) + 1);
+      if (duplicate || (message.id >= GUARD_IDS && message.id <= this.next))
+        return this.refuse(message, FAILED);
       this.queue(
         `send:${message.sessionId ?? ''}`,
         async () => {
