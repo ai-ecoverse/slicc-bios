@@ -194,7 +194,7 @@ test('a capture that lands on another of seven’s tabs is stopped and refused',
   assert.deepEqual(a.errors, []);
 });
 
-test('a capture whose tab navigates to seven while it waits is stopped and refused', async (t) => {
+test('a capture whose tab navigates to seven while it waits is stopped and refused, as soon as its handle goes', async (t) => {
   const page = await chrome.page(t);
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source: helpers });
   await boot(page);
@@ -206,8 +206,18 @@ test('a capture whose tab navigates to seven while it waits is stopped and refus
     page,
     `printf '%s\\n' '{"kind":"capture.screen","type":"image/png","delay":45}' | cat > /dev/embedder; echo "nav $?"`
   );
-  await shows(page, "seven doesn't capture its own pages or the vault");
-  await shows(page, 'nav 1');
+  await shows(page, 'nav 1', 120000);
+  const said = await page.evaluate(() => {
+    const { dock } = document.querySelector('slicc-app');
+    const id = dock.api.panels
+      .map((panel) => panel.id)
+      .findLast((id) => id.startsWith('terminal:'));
+    return dock.content(id).screen.textContent;
+  });
+  assert.match(
+    said.replace(/\s+/g, ' '),
+    /\/dev\/embedder: (seven doesn't capture its own pages or the vault|seven can't tell this tab isn't its own or the vault's)/
+  );
   assert.equal(await page.evaluate(() => window.findConfirm()), null);
   await close();
   assert.deepEqual(page.errors, []);
@@ -305,8 +315,8 @@ test('through a stand-in picker: a handle that is seven’s for a moment while s
   await shows(page, "seven doesn't capture its own pages or the vault");
   await shows(page, 'flip 1');
   assert.deepEqual(await page.evaluate(() => window.fakeCaptures), [
-    'flip:flipped',
     'flip:stopped',
+    'flip:flipped',
   ]);
 
   await page.evaluate(() => {
