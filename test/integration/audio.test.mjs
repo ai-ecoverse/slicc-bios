@@ -140,12 +140,23 @@ test('slicc-audio is in the base set without ortllama, a delayed microphone requ
 
   await run(
     page,
+    `sleep 12; ${ask({ kind: 'audio.transcribe', engine: 'webspeech', devices: true })}; echo "devices $?"`
+  );
+  await page.until(() => !!window.findConfirm(), undefined);
+  await press(page, 'cancel');
+  await shows(page, 'devices 1');
+  assert.equal(await page.evaluate(() => window.recognitions), 0);
+  assert.equal(await page.evaluate(() => window.micOpened), 1);
+  assert.equal(await page.evaluate(() => window.prompted), 4);
+
+  await run(
+    page,
     `sleep 8; exec 3<>/dev/embedder; printf '%s\\n' '{"kind":"audio.transcribe","status":true}' >&3; cat <&3; exec 3<&-; echo "probed"; ${ask({ kind: 'audio.voices' })}; echo "voices $?"`
   );
   await shows(page, 'ortllama: no server at');
   await shows(page, 'probed');
   await shows(page, 'voices');
-  assert.equal(await page.evaluate(() => window.prompted), 3);
+  assert.equal(await page.evaluate(() => window.prompted), 4);
   assert.equal(await page.evaluate(() => window.recognitions), 0);
   assert.equal(await page.evaluate(() => window.micOpened), 1);
   assert.deepEqual(page.errors, []);

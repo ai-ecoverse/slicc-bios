@@ -269,8 +269,8 @@ const listening = asking(
 );
 export const BYTES_ONLY = ['whisper'];
 
-const probe = (options) =>
-  Boolean(options?.status || options?.warmup || options?.supported || options?.devices);
+const spoken = (options) => Boolean(options?.status || options?.warmup);
+const probe = (options) => Boolean(options?.status || options?.warmup || options?.supported);
 
 export async function peeked(body) {
   if (!body?.getReader) return { body, carried: false };
@@ -295,7 +295,7 @@ export async function peeked(body) {
 
 export const audioPrompts = {
   'audio.play': playing,
-  'audio.say': (request) => (probe(request.options) ? null : speaking(request)),
+  'audio.say': (request) => (spoken(request.options) ? null : speaking(request)),
   'audio.voices': () => null,
   'audio.record': recording,
   'audio.transcribe': async (request) => {
