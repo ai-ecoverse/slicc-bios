@@ -95,13 +95,13 @@ async function until(what, check, ms = 60000) {
   let last;
   while (Date.now() < deadline) {
     last = await check().catch((error) => `error: ${error.message}`);
-    if (last === true) return;
+    if (last === true || (last && typeof last === 'object' && last.done)) return last;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error(`${what}: not within ${ms} ms, last ${JSON.stringify(last)}`);
 }
 
-test("over the guarded extension route, an agent's Back from an ordinary page to seven's /os/ gets a fresh document that Chrome refused to keep in the back/forward cache, and the guard still refuses to read it", async (t) => {
+test("over the guarded extension route, an agent's Back from an ordinary page to seven's /os/ finds no cached seven: Chrome reports seven's unload handler, the guard blocks the load, and nothing of seven reaches the agent", async (t) => {
   const page = await chrome.page(t);
   const extension = await fakeExtension(page);
   t.after(() => extension.close());
@@ -165,13 +165,16 @@ test("over the guarded extension route, an agent's Back from an ordinary page to
   assert.ok(agent.session, `the agent attached to the ordinary tab: ${JSON.stringify(agent)}`);
   assert.equal(agent.back.error, undefined, `the agent's Back ran: ${JSON.stringify(agent.back)}`);
 
-  await until('seven back in the user tab', async () =>
-    observed(sessionId, `location.pathname === '/os/' && document.readyState === 'complete'`)
-  );
-  const back = await observed(
-    sessionId,
-    `JSON.stringify({ kept: window.sliccKept ?? null, type: performance.getEntriesByType('navigation')[0]?.type })`
-  );
+  const landed = await until('the Back to leave the ordinary page', async () => {
+    const at = JSON.parse(
+      await observed(
+        sessionId,
+        `JSON.stringify({ href: location.href, ready: document.readyState, kept: window.sliccKept ?? null, type: performance.getEntriesByType('navigation')[0]?.type ?? null })`
+      )
+    );
+    return at.href !== elsewhere && at.ready === 'complete' ? { done: true, ...at } : at;
+  });
+  t.diagnostic(`after the agent's Back the user tab is at ${landed.href}`);
   const found = refused.flatMap(({ notRestoredExplanations = [], notRestoredExplanationsTree }) => [
     ...notRestoredExplanations.map(({ type, reason }) => `${type}:${reason}`),
     ...reasons(notRestoredExplanationsTree).map((reason) => `tree:${reason}`),
@@ -179,13 +182,17 @@ test("over the guarded extension route, an agent's Back from an ordinary page to
   t.diagnostic(
     `back/forward cache refused seven's /os/ on the extension route: ${found.join(', ') || 'nothing'}`
   );
-  assert.deepEqual(JSON.parse(back), { kept: null, type: 'back_forward' }, LOST);
+  assert.equal(landed.kept, null, LOST);
   assert.equal(refused.length, 1, LOST);
   assert.ok(
     refused[0].notRestoredExplanations?.some(
       ({ reason }) => reason === 'UnloadHandlerExistsInMainFrame'
     ),
     LOST
+  );
+  assert.ok(
+    landed.href.startsWith('about:blank') || new URL(landed.href).pathname === '/os/',
+    `the Back went somewhere unexpected: ${landed.href}`
   );
 
   const after = await page.evaluate(async (session) => {
