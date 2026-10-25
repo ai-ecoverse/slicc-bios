@@ -1022,13 +1022,14 @@ class Guard {
   }
 
   place(targetId, sessionId) {
+    this.placements.set(sessionId, targetId);
+    this.scope(targetId).sessionId = sessionId;
     const active = this.placementsPending.get(targetId);
     if (active) {
       active.again = true;
       active.sessionId = sessionId;
       return active.promise;
     }
-    this.placements.set(sessionId, targetId);
     this.scope(targetId).ready = false;
     this.stopCasts();
     const entry = { sessionId, again: false };
@@ -1130,6 +1131,14 @@ class Guard {
     }
   }
 
+  refresh(targetId) {
+    const sessionId = this.scopes.get(targetId)?.sessionId;
+    const session =
+      this.navs.get(targetId)?.session ??
+      (this.placements.get(sessionId) === targetId ? sessionId : undefined);
+    if (session) this.placing.set(targetId, this.place(targetId, session));
+  }
+
   scopeFrames({ method, params = {} }, targetId) {
     if (method === 'Page.frameAttached') {
       const scope = this.scope(targetId);
@@ -1158,8 +1167,7 @@ class Guard {
       if (params.reason === 'swap') this.frames.set(params.frameId, '');
       else {
         this.removeFrame(params.frameId);
-        const navSession = this.navs.get(targetId)?.session;
-        if (navSession) this.placing.set(targetId, this.place(targetId, navSession));
+        this.refresh(targetId);
       }
     }
   }
@@ -1173,8 +1181,7 @@ class Guard {
       scope.remoteOwners.clear();
       scope.attachedFrames.clear();
       scope.ready = false;
-      const navSession = this.navs.get(targetId)?.session;
-      if (navSession) this.placing.set(targetId, this.place(targetId, navSession));
+      this.refresh(targetId);
     }
     scope.frames.add(frame.id);
     if (frame.parentId && frame.id !== scope.root) scope.remoteOwners.delete(frame.id);
