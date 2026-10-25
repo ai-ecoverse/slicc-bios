@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { after, test } from 'node:test';
-import { booted, ready, watch } from './bios.mjs';
+import { booted, PACKAGE_BUDGET, ready, watch } from './bios.mjs';
 import { launch, VAULT_KEY } from './chrome.mjs';
 
 const chrome = await launch();
@@ -188,11 +188,23 @@ test('seven boots from /7/ of an origin it shares with six: the UI is /os/, ever
   assert.deepEqual(page.errors, []);
 });
 
+async function startSettled(page) {
+  await page
+    .within(PACKAGE_BUDGET, () => import('/os/start.js').then(() => true))
+    .catch((error) => {
+      throw new Error(
+        `seven's /os/start.js didn't settle its top-level await start() within ${PACKAGE_BUDGET / 1000} s; it settles once os.js's boot check() has offered the agent, the betas, the grammars, the tailnet and the optional packages\n${error.message}`,
+        { cause: error }
+      );
+    });
+}
+
 test("on a shared origin, sign-in goes through six's relay, the tray hub through the BIOS's folder, and Reload and the uncontrolled trip through the BIOS", async (t) => {
   const page = await open(t);
   const step = watchSteps(page, t);
   await page.goto(`${origin}/7/`);
   await ready(page);
+  await startSettled(page);
 
   const signedIn = await step('sign-in', () =>
     page.evaluate(async () => {
