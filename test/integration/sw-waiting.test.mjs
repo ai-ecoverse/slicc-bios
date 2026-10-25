@@ -209,7 +209,11 @@ test('an update that waits without skipping waiting on its own is activated by s
   assert.ok(await update(page));
   await page.within(9000, async () => {
     const registration = await navigator.serviceWorker.getRegistration();
-    return !registration.waiting && !registration.installing;
+    return (
+      registration.active?.state === 'activated' &&
+      !registration.waiting &&
+      !registration.installing
+    );
   });
   assert.deepEqual(await workers(page), { active: 'activated', waiting: null, installing: null });
   assert.deepEqual(
