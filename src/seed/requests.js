@@ -267,6 +267,8 @@ const listening = asking(
   'Listen',
   'use the microphone'
 );
+export const BYTES_ONLY = ['whisper'];
+
 const probe = (options) =>
   Boolean(options?.status || options?.warmup || options?.supported || options?.devices);
 
@@ -298,6 +300,7 @@ export const audioPrompts = {
   'audio.record': recording,
   'audio.transcribe': async (request) => {
     if (probe(request.options)) return null;
+    if (!BYTES_ONLY.includes(request.options?.engine)) return listening(request);
     const { body, carried } = await peeked(request.body);
     request.body = body;
     return carried ? null : listening(request);
