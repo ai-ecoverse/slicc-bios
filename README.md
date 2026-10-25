@@ -586,7 +586,7 @@ Limits:
 
 **A new `sw.js` that waits.** A new service worker calls `skipWaiting()` when it installs, but Chromium can leave it `installed` after that. If the old worker was stopped or starting when the request came (for example, it had idled out between the update check's fallback fetches), Chromium doesn't ask it to stop early, and it lives on its 30 s idle timer, which every fetch event resets. Both places that wait for a new worker nudge it once through `os/activate.js`, 2 s after it is `installed`:
 - **The BIOS's `intercept` step**, before it goes on to `/os/`.
-- **The owner tab's `watchWaiting`.**
+- **Every tab's `watchWaiting`**, once for each waiting worker. Only the first `skipWaiting()` after `installed` re-triggers activation in Chromium, so a tab that nudges after another does nothing.
 
 A nudge first sends the old worker `{ streams: 'mine' }` and waits for its answer (2 s at most), which makes sure it is running. It then sends the waiting worker `{ activate: 'now' }`. `sw.js` takes that message only from a window client and only with nothing else in it, and does nothing but call `self.skipWaiting()` again. Activation still waits until the old worker has no work, so a half-read download keeps holding it, and *Seven updated* still shows after 10 s.
 
