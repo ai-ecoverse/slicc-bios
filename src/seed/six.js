@@ -39,14 +39,25 @@ export async function retirePreview({
   return gone;
 }
 
+export const STOP = 'six-import-stop';
+
 export function failedNotice(error) {
   return {
     id: NOTICE,
     tone: 'warning',
     title: 'Your SLICC 6 cones aren’t in seven yet',
-    body: `Seven couldn’t import what SLICC 6 left in this browser: ${String(error).replace(/\.$/, '')}. Seven tries again the next time it starts.`,
-    actions: [],
+    body: `Seven couldn’t import what SLICC 6 left in this browser: ${String(error).replace(/\.$/, '')}. Seven tries again the next time it starts. Stop trying leaves SLICC 6’s files where they are.`,
+    actions: [{ id: STOP, label: 'Stop trying' }],
+    session: true,
   };
+}
+
+function failing(storage, notices, error) {
+  notices.show(failedNotice(error), (action) => {
+    if (action !== STOP) return;
+    storage.removeItem(PENDING);
+    notices.remove(NOTICE);
+  });
 }
 
 async function attempt({
@@ -61,7 +72,7 @@ async function attempt({
     const dir = storage.getItem(PENDING);
     if (!dir) return null;
     if (!(await exported(root, dir))) {
-      notices.show(failedNotice(NO_MANIFEST), () => {});
+      failing(storage, notices, NO_MANIFEST);
       return null;
     }
     const connection = await connect();
@@ -74,7 +85,7 @@ async function attempt({
         preview: false,
       });
       if (result.error) {
-        notices.show(failedNotice(result.error), () => {});
+        failing(storage, notices, result.error);
         return result;
       }
       storage.removeItem(PENDING);
@@ -89,7 +100,7 @@ async function attempt({
 export function importSix(options) {
   return attempt(options).catch((error) => {
     console.warn(`SLICC 6 import: ${said(error)}`);
-    options.notices.show(failedNotice(said(error)), () => {});
+    failing(options.storage ?? localStorage, options.notices, said(error));
     return null;
   });
 }
