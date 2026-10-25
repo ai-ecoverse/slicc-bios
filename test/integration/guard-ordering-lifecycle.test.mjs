@@ -107,16 +107,17 @@ for (const [stage, method, fields, continuation] of pauses) {
           message.params?.requestId === requestId &&
           [continuation, 'Fetch.failRequest'].includes(message.method)
       );
-    assert.equal(
-      shown || released.length === 1,
-      true,
-      'the browser is not left waiting for an inaccessible pause'
+    assert.equal(shown, true, 'the caller-owned ordinary interception remains observable');
+    assert.deepEqual(released, [], 'the guard does not silently settle the caller-owned pause');
+    const settled = await wire.send(
+      continuation,
+      {
+        requestId,
+        ...(stage === 'auth' ? { authChallengeResponse: { response: 'Default' } } : {}),
+      },
+      session
     );
-    if (released.length) {
-      assert.equal(released[0].method, continuation);
-      if (stage === 'auth')
-        assert.deepEqual(released[0].params.authChallengeResponse, { response: 'Default' });
-    }
+    assert.equal(settled.error, undefined);
     wire.emit({
       method: 'Page.frameNavigated',
       sessionId: session,
@@ -171,9 +172,6 @@ test('ordering pause publication race', { timeout: 5000 }, async (t) => {
     (message) =>
       message.method === 'Fetch.continueRequest' && message.params.requestId === 'synthetic-race'
   );
-  assert.equal(
-    shown || released.length === 1,
-    true,
-    'a pause invalidated during its check is still settled'
-  );
+  assert.equal(shown, false, 'the old-generation pause is not published after recovery');
+  assert.equal(released.length, 1, 'the withheld old-generation pause is settled exactly once');
 });
