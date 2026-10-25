@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { agentUp, boot, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
@@ -8,6 +9,10 @@ const OLDER =
 
 const UNRECORDED =
   'Seven couldn’t record this agent’s profile version (storage full?), so it didn’t start it.';
+
+const pinned = JSON.parse(
+  await readFile(new URL('../../src/packages/agent/package.json', import.meta.url), 'utf8')
+).dependencies['@ai-ecoverse/slicc-agent'];
 
 const chrome = await launch({ agent: true, timeout: 120000 });
 after(() => chrome.close());
@@ -58,52 +63,95 @@ async function refused(page) {
   });
 }
 
-test('seven never starts a 6.x agent on a profile a 7.x agent opened, by the agent’s marker or by its own record', {
+const profile = (page) =>
+  page.evaluate(async () => {
+    const root = await navigator.storage.getDirectory();
+    const dir = await root.getDirectoryHandle('.slicc');
+    const file = await (await dir.getFileHandle('agent-profile.json')).getFile();
+    return JSON.parse(await file.text());
+  });
+
+const record = (page) => page.evaluate(() => localStorage.getItem('slicc-os.agent-schema'));
+
+test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way, and seven then never starts a 6.x agent on it, by the agent’s marker or by its own record', {
   timeout: 20 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
   await boot(page);
   await agentUp(page);
+  assert.match(pinned, /^7\./);
 
-  await t.test('a marker of durableSchema 2 refuses the 6.x agent', async () => {
-    await marker(page, JSON.stringify({ durableSchema: 2, agent: '7.0.1' }));
+  await t.test(
+    'a profile a 6.x agent opened starts the 7.x agent, which marks it, and seven records it',
+    async () => {
+      await marker(page, null);
+      await page.evaluate(() => localStorage.setItem('slicc-os.agent-schema', '1'));
+      await page.goto('/');
+      await ready(page);
+      await agentUp(page);
+      assert.equal(await record(page), '2');
+      assert.deepEqual(await profile(page), { durableSchema: 2, agent: pinned });
+      assert.equal(
+        await page.evaluate(() =>
+          document
+            .querySelector('slicc-app')
+            .model.notices.list()
+            .some((item) => item.id === 'agent:older')
+        ),
+        false
+      );
+    }
+  );
+
+  await t.test('the 7.x agent’s own marker refuses a 6.x agent', async (t) => {
+    await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
+    await relabel(page, '6.19.15');
+    t.after(() => relabel(page, pinned).catch(() => {}));
     const seen = await refused(page);
     assert.equal(seen.error, OLDER);
     assert.equal(seen.agents, 0);
   });
 
-  await t.test('an unreadable marker refuses it too', async () => {
-    await marker(page, 'not json');
-    assert.equal((await refused(page)).error, OLDER);
-  });
-
-  await t.test('a marker that exists but can’t be read as a file refuses it', async () => {
-    await marker(page, null);
-    await page.evaluate(async () => {
-      const root = await navigator.storage.getDirectory();
-      const dir = await root.getDirectoryHandle('.slicc', { create: true });
-      await dir.getDirectoryHandle('agent-profile.json', { create: true });
-    });
-    assert.equal((await refused(page)).error, OLDER);
-    await page.evaluate(async () => {
-      const root = await navigator.storage.getDirectory();
-      const dir = await root.getDirectoryHandle('.slicc');
-      await dir.removeEntry('agent-profile.json', { recursive: true });
-    });
-  });
-
-  await t.test('seven’s own record of a 7.x agent refuses it with no marker', async () => {
+  await t.test('with no marker, seven’s own record refuses a 6.x agent', async (t) => {
     await marker(page, null);
     await page.evaluate(() => localStorage.setItem('slicc-os.agent-schema', '2'));
+    await relabel(page, '6.19.15');
+    t.after(() => relabel(page, pinned).catch(() => {}));
     assert.equal((await refused(page)).error, OLDER);
   });
 
-  await t.test('a marker above 2 refuses a 7.x agent too', async () => {
+  await t.test('an unreadable marker refuses a 6.x agent too', async (t) => {
+    await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
+    await marker(page, 'not json');
+    await relabel(page, '6.19.15');
+    t.after(() => relabel(page, pinned).catch(() => {}));
+    assert.equal((await refused(page)).error, OLDER);
+  });
+
+  await t.test(
+    'a marker that exists but can’t be read as a file refuses a 6.x agent',
+    async (t) => {
+      await marker(page, null);
+      await page.evaluate(async () => {
+        const root = await navigator.storage.getDirectory();
+        const dir = await root.getDirectoryHandle('.slicc', { create: true });
+        await dir.getDirectoryHandle('agent-profile.json', { create: true });
+      });
+      await relabel(page, '6.19.15');
+      t.after(() => relabel(page, pinned).catch(() => {}));
+      assert.equal((await refused(page)).error, OLDER);
+      await page.evaluate(async () => {
+        const root = await navigator.storage.getDirectory();
+        const dir = await root.getDirectoryHandle('.slicc');
+        await dir.removeEntry('agent-profile.json', { recursive: true });
+      });
+    }
+  );
+
+  await t.test('a marker above 2 refuses the 7.x agent', async () => {
     await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
     await marker(page, JSON.stringify({ durableSchema: 3, agent: '8.0.0' }));
-    const was = await relabel(page, '7.0.0');
     assert.equal((await refused(page)).error, OLDER);
-    await relabel(page, was);
     await marker(page, null);
   });
 
@@ -119,14 +167,12 @@ test('seven never starts a 6.x agent on a profile a 7.x agent opened, by the age
           return set.call(this, key, value);
         };
       });
-      const was = await relabel(page, '7.0.0');
       t.after(async () => {
         await page
           .evaluate(() => {
             if (window.sliccSet) Storage.prototype.setItem = window.sliccSet;
           })
           .catch(() => {});
-        await relabel(page, was).catch(() => {});
       });
       await page.evaluate(() => {
         void document
@@ -146,27 +192,20 @@ test('seven never starts a 6.x agent on a profile a 7.x agent opened, by the age
         UNRECORDED
       );
       assert.equal(error, UNRECORDED);
-      assert.equal(await page.evaluate(() => localStorage.getItem('slicc-os.agent-schema')), null);
+      assert.equal(await record(page), null);
     }
   );
 
   await t.test(
-    'with no marker and no record, the 6.x agent starts and seven records it',
+    'with no marker and no record, the 7.x agent starts and seven records it',
     async () => {
+      await marker(page, null);
       await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
       await page.goto('/');
       await ready(page);
       await agentUp(page);
-      assert.equal(await page.evaluate(() => localStorage.getItem('slicc-os.agent-schema')), '1');
-      assert.equal(
-        await page.evaluate(() =>
-          document
-            .querySelector('slicc-app')
-            .model.notices.list()
-            .some((item) => item.id === 'agent:older')
-        ),
-        false
-      );
+      assert.equal(await record(page), '2');
+      assert.deepEqual(await profile(page), { durableSchema: 2, agent: pinned });
       assert.deepEqual(page.errors, []);
     }
   );

@@ -9,8 +9,8 @@ import {
   chrome,
   confirmWith,
   developer,
-  future,
   installedAgent,
+  MAJOR,
   major,
   notice,
   npmSays,
@@ -211,7 +211,7 @@ test('a release without provenance or with an uncertified gated dependency isnâ€
       await developer(page, true);
       await npmSays(page, 'not-offered');
       const row = await agentRow(page);
-      assert.equal(row.npm.latest, '6.98.0');
+      assert.equal(row.npm.latest, tainted.version);
       assert.equal(
         row.npm.reason,
         'needs @ai-ecoverse/slicc-clipboard@1.0.99, which isnâ€™t certified'
@@ -235,8 +235,8 @@ test('a release without provenance or with an uncertified gated dependency isnâ€
       await developer(page, true);
       await npmSays(page, 'not-offered');
       const row = await agentRow(page);
-      assert.equal(row.npm.latest, '7.0.0');
-      assert.equal(row.npm.reason, `a new major version; seven ships ${PINNED.split('.')[0]}.x`);
+      assert.equal(row.npm.latest, major.version);
+      assert.equal(row.npm.reason, `a new major version; seven ships ${MAJOR}.x`);
       assert.ok(!row.actions.includes('install-beta'));
       const marker = (data) =>
         page.evaluate(async (data) => {
@@ -249,34 +249,24 @@ test('a release without provenance or with an uncertified gated dependency isnâ€
           await writable.write(data);
           await writable.close();
         }, data);
-      assert.equal(await page.evaluate(() => localStorage.getItem('slicc-os.agent-schema')), '1');
-      await marker(JSON.stringify({ durableSchema: 2, agent: '7.0.0' }));
+      assert.equal(await page.evaluate(() => localStorage.getItem('slicc-os.agent-schema')), '2');
+      await marker(JSON.stringify({ durableSchema: 3, agent: major.version }));
       t.after(() => marker(null).catch(() => {}));
       await developer(page, false);
       await developer(page, true);
       await npmSays(page, 'offered');
-      assert.equal((await agentRow(page)).npm.latest, '7.0.0');
-      releases.unshift(future);
-      t.after(() => {
-        if (releases.includes(future)) releases.splice(releases.indexOf(future), 1);
-      });
-      await marker(JSON.stringify({ durableSchema: 3, agent: '8.0.0' }));
-      await developer(page, false);
-      await developer(page, true);
-      await npmSays(page, 'offered');
-      assert.equal((await agentRow(page)).npm.latest, '8.0.0');
+      assert.equal((await agentRow(page)).npm.latest, major.version);
       const acting = act(page, 'install-beta');
       await confirmWith(page, 'Install beta');
       await acting;
       await rowSettled(page, 'agent');
-      assert.equal(await installedAgent(page), '8.0.0');
+      assert.equal(await installedAgent(page), major.version);
       if ((await agentRow(page)).actions.includes('restart-agent'))
         await act(page, 'restart-agent');
-      await runsAgent(page, '8.0.0');
+      await runsAgent(page, major.version);
       assert.equal(await page.evaluate(() => localStorage.getItem('slicc-os.agent-schema')), '3');
-      releases.splice(releases.indexOf(future), 1);
       await marker(null);
-      await page.evaluate(() => localStorage.setItem('slicc-os.agent-schema', '1'));
+      await page.evaluate(() => localStorage.setItem('slicc-os.agent-schema', '2'));
       await act(page, 'back-to-certified');
       await rowSettled(page, 'agent');
       assert.equal(await installedAgent(page), PINNED);

@@ -10,7 +10,8 @@ export const AGENT = '@ai-ecoverse/slicc-agent';
 export const PINNED = JSON.parse(
   await readFile(new URL('../../src/packages/agent/package.json', import.meta.url), 'utf8')
 ).dependencies[AGENT];
-export const BETA = '6.99.0';
+export const MAJOR = Number(PINNED.split('.')[0]);
+export const BETA = `${MAJOR}.99.0`;
 export const ELSEWHERE = 'Only the tab running SLICC can install a beta or leave one.';
 
 const port = await new Promise((resolve) => {
@@ -41,7 +42,7 @@ export const clipboard = await fakeRelease({
 export const tainted = await fakeRelease({
   name: AGENT,
   from: PINNED,
-  version: '6.98.0',
+  version: `${MAJOR}.98.0`,
   repository: 'https://github.com/ai-ecoverse/slicc-agent',
   dependencies: { '@ai-ecoverse/slicc-clipboard': '1.0.99' },
 });
@@ -78,7 +79,7 @@ export const DEPRECATED = {
 export const pinned = await fakeRelease({
   name: AGENT,
   from: PINNED,
-  version: '6.97.0',
+  version: `${MAJOR}.97.0`,
   repository: 'https://github.com/ai-ecoverse/slicc-agent',
   dependencies: {
     '@ai-ecoverse/mcpcat': '0.99.0',
@@ -88,13 +89,7 @@ export const pinned = await fakeRelease({
 export const major = await fakeRelease({
   name: AGENT,
   from: PINNED,
-  version: '7.0.0',
-  repository: 'https://github.com/ai-ecoverse/slicc-agent',
-});
-export const future = await fakeRelease({
-  name: AGENT,
-  from: PINNED,
-  version: '8.0.0',
+  version: `${MAJOR + 1}.0.0`,
   repository: 'https://github.com/ai-ecoverse/slicc-agent',
 });
 export const releases = [release, clipboard, mcpcat];
