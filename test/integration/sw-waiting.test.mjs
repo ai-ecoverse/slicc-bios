@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
-import { boot } from './bios.mjs';
+import { boot, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { shoot } from './shots.mjs';
 
@@ -24,6 +24,19 @@ const deep = (selector) => {
   };
   return walk(document);
 };
+
+const INSTALL = "self.addEventListener('install', () => self.skipWaiting());";
+
+function waitingWorker() {
+  assert.ok(current.includes(INSTALL));
+  bump += 1;
+  chrome.overrides.set(
+    '/sw.js',
+    current
+      .replace(INSTALL, "self.addEventListener('install', () => {});")
+      .replace('const own = ', `const own =${' '.repeat(bump)} `)
+  );
+}
 
 function bumpWorker() {
   bump += 1;
@@ -177,6 +190,45 @@ test('an ordinary update shows no notice: the updated worker activates before an
   });
   assert.deepEqual(
     await page.evaluate(() => window.noticed.filter((id) => id.startsWith('sw-waiting:'))),
+    []
+  );
+  assert.deepEqual(page.errors, []);
+});
+
+test('an update that waits without skipping waiting on its own is activated by seven’s nudge before any notice could show (#959)', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await settled(page);
+  await page.evaluate(() => {
+    window.noticed = [];
+    document
+      .querySelector('slicc-app')
+      .model.notices.on('notices', (list) => window.noticed.push(...list.map(({ id }) => id)));
+  });
+  waitingWorker();
+  assert.ok(await update(page));
+  await page.within(9000, async () => {
+    const registration = await navigator.serviceWorker.getRegistration();
+    return !registration.waiting && !registration.installing;
+  });
+  assert.deepEqual(await workers(page), { active: 'activated', waiting: null, installing: null });
+  assert.deepEqual(
+    await page.evaluate(() => window.noticed.filter((id) => id.startsWith('sw-waiting:'))),
+    []
+  );
+  assert.deepEqual(page.errors, []);
+});
+
+test('the BIOS nudges an update that waits without skipping waiting, and boots onto it instead of going on under the old worker (#959)', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await settled(page);
+  waitingWorker();
+  await page.goto('/');
+  await ready(page);
+  assert.deepEqual(await workers(page), { active: 'activated', waiting: null, installing: null });
+  assert.deepEqual(
+    page.console.filter((line) => line.includes('going on under the active worker')),
     []
   );
   assert.deepEqual(page.errors, []);
