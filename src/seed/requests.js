@@ -190,7 +190,7 @@ export function pageRequests({
   };
 }
 
-export function plugged(hook, prompts, extra = {}) {
+export function plugged(hook, prompts, extras = () => ({})) {
   return Object.fromEntries(
     Object.keys(hook?.kinds ?? {})
       .filter((kind) => Object.hasOwn(prompts, kind))
@@ -198,7 +198,16 @@ export function plugged(hook, prompts, extra = {}) {
         kind,
         async (request, { gesture }) => {
           await gesture(request.stamp, prompts[kind](request), request.signal);
-          return hook.handle({ ...request, ...extra });
+          const { failure = () => null, ...extra } = extras();
+          let reply;
+          try {
+            reply = await hook.handle({ ...request, ...extra });
+          } catch (error) {
+            throw failure() ?? error;
+          }
+          const late = failure();
+          if (late) throw late;
+          return reply;
         },
       ])
   );
@@ -224,26 +233,38 @@ export function displayer({
   media = () => globalThis.navigator?.mediaDevices,
   is = protection(globalThis.location?.origin),
 } = {}) {
-  return async (constraints) => {
-    const devices = media();
-    if (typeof devices?.getDisplayMedia !== 'function')
-      throw new DOMException(
-        'screen capture is not supported in this browser',
-        'NotSupportedError'
-      );
-    const stream = await devices.getDisplayMedia({
-      ...constraints,
-      audio: false,
-      selfBrowserSurface: 'exclude',
-      surfaceSwitching: 'exclude',
-      preferCurrentTab: false,
-    });
-    const handle = stream?.getVideoTracks?.()[0]?.getCaptureHandle?.();
-    if (handle?.handle === HANDLE || (handle?.origin && is.url(handle.origin))) {
-      stopped(stream);
-      throw refused(CAPTURED);
-    }
-    return stream;
+  const sevens = (handle) =>
+    handle?.handle === HANDLE || Boolean(handle?.origin && is.url(handle.origin));
+  return () => {
+    let reason = null;
+    const display = async (constraints) => {
+      const devices = media();
+      if (typeof devices?.getDisplayMedia !== 'function')
+        throw new DOMException(
+          'screen capture is not supported in this browser',
+          'NotSupportedError'
+        );
+      const stream = await devices.getDisplayMedia({
+        ...constraints,
+        audio: false,
+        selfBrowserSurface: 'exclude',
+        surfaceSwitching: 'exclude',
+        preferCurrentTab: false,
+      });
+      const track = stream?.getVideoTracks?.()[0];
+      if (sevens(track?.getCaptureHandle?.())) {
+        stopped(stream);
+        throw refused(CAPTURED);
+      }
+      track?.addEventListener?.('capturehandlechange', () => {
+        if (reason || !sevens(track.getCaptureHandle?.())) return;
+        reason = refused(CAPTURED);
+        stopped(stream);
+        track.dispatchEvent?.(new Event('ended'));
+      });
+      return stream;
+    };
+    return { display, failure: () => reason };
   };
 }
 

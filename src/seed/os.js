@@ -368,7 +368,7 @@ const requests = pageRequests({
   handlers: {
     'open.url': openUrl(),
     'clipboard.write': clipboardWrite(),
-    ...plugged(capture, { 'capture.screen': capturePrompt }, { display: displayer() }),
+    ...plugged(capture, { 'capture.screen': capturePrompt }, displayer()),
   },
 });
 let folders = null;
