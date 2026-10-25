@@ -366,7 +366,7 @@ const aliases = new Map([
 const passes = (asked) => passed.has(asked) || passedDirs.some((dir) => asked.startsWith(dir));
 
 const toOs = async (asked, request) =>
-  SHARED && asked === '/' && request.mode === 'navigate' && retired();
+  SHARED && asked === '/' && request.mode === 'navigate' && retired(self.cookieStore);
 
 async function serve(request, controller, client) {
   const scope = new URL(self.registration.scope).pathname;
