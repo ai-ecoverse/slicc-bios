@@ -2,6 +2,7 @@ import { activated } from './seed/activate.js';
 import { clearHandOff, dropped, droppedLine } from './seed/handoff.js';
 import { neverCached } from './seed/site.js';
 import { usersMode } from './seed/users.js';
+import { intercept } from './sw/register.js';
 import { sixStep } from './sw/six.js';
 
 neverCached();
@@ -219,12 +220,12 @@ const root = new URL('/', import.meta.url);
 let scope = root.href;
 
 await step('intercept', async () => {
-  const registration = await navigator.serviceWorker.register(new URL('sw.js', import.meta.url), {
-    type: 'module',
-    scope: root.pathname,
-  });
+  const registration = await intercept(
+    navigator.serviceWorker,
+    new URL('sw.js', import.meta.url),
+    root.pathname
+  );
   scope = registration.scope;
-  if (!registration.installing && !registration.waiting) await registration.update();
   const update = registration.installing ?? registration.waiting;
   if (update) await activated(registration, update);
   return registration.scope;
