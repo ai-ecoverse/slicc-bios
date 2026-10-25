@@ -32,6 +32,12 @@
   "engines": {
     "node": ">=26"
   },
+  "slicc": {
+    "unitSources": [
+      "src",
+      "edge"
+    ]
+  },
   "scripts": {
     "prepare": "slicc-install-hooks",
     "start": "node test/integration/chrome.mjs",
