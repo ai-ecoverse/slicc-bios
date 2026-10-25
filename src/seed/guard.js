@@ -621,17 +621,32 @@ class Guard {
   }
 
   call(method, params, sessionId) {
+    if (this.gone.has(sessionId))
+      return Promise.resolve({ error: { code: -32000, message: UNGUARDED } });
+    const placement = this.placements.get(sessionId);
     return new Promise((resolve) => {
-      this.next += 1;
-      this.internal.set(this.next, (message) => {
-        if (method === 'Page.getFrameTree')
-          this.recordTree(this.scopeTarget(sessionId), message.result?.frameTree);
-        if (method === 'DOM.getDocument' && this.placements.has(sessionId))
-          this.recordOwners(this.scopeTarget(sessionId), message.result?.root);
+      const id = ++this.next;
+      let timer;
+      const answer = (message) => {
+        clearTimeout(timer);
+        const current = this.scopes.get(placement)?.sessionId;
+        if (placement === undefined || current === undefined || current === sessionId) {
+          if (method === 'Page.getFrameTree')
+            this.recordTree(placement ?? this.scopeTarget(sessionId), message.result?.frameTree);
+          if (method === 'DOM.getDocument' && placement !== undefined)
+            this.recordOwners(placement, message.result?.root);
+        }
         resolve(message);
-      });
+      };
+      answer.sessionId = sessionId;
+      timer = setTimeout(() => {
+        this.internal.delete(id);
+        answer({ id, sessionId, error: { code: -32000, message: UNGUARDED } });
+      }, NAV_MS);
+      timer.unref?.();
+      this.internal.set(id, answer);
       this.connection.send(
-        JSON.stringify({ id: this.next, method, params, ...(sessionId ? { sessionId } : {}) })
+        JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })
       );
     });
   }
@@ -894,30 +909,32 @@ class Guard {
     this.scope(targetId).ready = false;
     this.stopCasts();
     const enabled = await this.call('Page.enable', {}, sessionId);
+    const attaching = this.call(
+      'Target.setAutoAttach',
+      { autoAttach: true, waitForDebuggerOnStart: false, flatten: true, filter: FRAME_CHILDREN },
+      sessionId
+    );
     await this.call('Page.getFrameTree', {}, sessionId);
     const owners = await this.call('DOM.getDocument', { depth: -1, pierce: true }, sessionId);
     const disabled = await this.call('DOM.disable', {}, sessionId);
     const scope = this.scope(targetId);
-    const attached =
+    const withdrawn =
       !owners.error && !disabled.error && scope.ownersReady && scope.protectedOwner
-        ? {}
-        : await this.call(
+        ? await this.call(
             'Target.setAutoAttach',
-            {
-              autoAttach: true,
-              waitForDebuggerOnStart: false,
-              flatten: true,
-              filter: FRAME_CHILDREN,
-            },
+            { autoAttach: false, waitForDebuggerOnStart: false, flatten: true },
             sessionId
-          );
+          )
+        : {};
+    const attached = await attaching;
     scope.pending -= 1;
     scope.failed = Boolean(
       enabled.error ||
         owners.error ||
         (attached.error && attached.error.message !== NO_AUTO_ATTACH) ||
         !scope.ownersReady ||
-        disabled.error
+        disabled.error ||
+        withdrawn.error
     );
     scope.ready = Boolean(scope.tree && !scope.failed && !scope.pending);
     if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
@@ -964,7 +981,8 @@ class Guard {
       const childId = this.placements.get(params.sessionId);
       this.placements.delete(params.sessionId);
       const child = this.scopes.get(childId);
-      if (child) child.ready = false;
+      if (child && (child.sessionId === params.sessionId || child.sessionId === undefined))
+        child.ready = false;
     }
   }
 
@@ -1082,6 +1100,11 @@ class Guard {
       if (command.sessionId === sessionId) this.refuse(command);
     for (const command of this.commands.values())
       if (command.sessionId === sessionId) this.refuse(command);
+    for (const [id, answer] of this.internal) {
+      if (answer.sessionId !== sessionId) continue;
+      this.internal.delete(id);
+      answer({ id, sessionId, error: { code: -32000, message: UNGUARDED } });
+    }
   }
 
   cut(sessionId, parent) {
@@ -2090,6 +2113,7 @@ class Guard {
       this.internal.delete(message.id);
       return resolve(message);
     }
+    if (message.id >= GUARD_IDS && !this.asked.has(message.id)) return;
     const was = message.id === undefined ? undefined : this.asked.get(message.id);
     this.queue(
       message.sessionId ?? was?.sessionId ?? '',
