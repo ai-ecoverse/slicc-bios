@@ -562,6 +562,7 @@ class Guard {
     this.held = new Map();
     this.internal = new Map();
     this.asked = new Map();
+    this.callers = new Set();
     this.watching = new Map();
     this.queues = new Map();
     this.streams = new Set();
@@ -601,6 +602,7 @@ class Guard {
 
   deliver(message, source = message) {
     if (!this.eventValid(source)) return;
+    if (message.id !== undefined) this.callers.delete(message.id);
     try {
       this.guarded.onmessage?.(JSON.stringify(message));
     } catch (error) {
@@ -610,7 +612,8 @@ class Guard {
 
   call(method, params, sessionId, limit) {
     return new Promise((resolve) => {
-      const id = ++this.next;
+      let id = ++this.next;
+      while (this.callers.has(id)) id = ++this.next;
       let timer;
       this.internal.set(id, (message) => {
         clearTimeout(timer);
@@ -1859,6 +1862,8 @@ class Guard {
     connection.onclose = (why) => guarded.onclose?.(why);
     guarded.send = (text) => {
       const message = parse(text);
+      if (message.id >= GUARD_IDS && message.id <= this.next) return this.refuse(message, FAILED);
+      this.callers.add(message.id);
       this.queue(
         `send:${message.sessionId ?? ''}`,
         async () => {
