@@ -487,6 +487,11 @@ self.addEventListener('message', (event) => {
     event.source.postMessage({ probe: probeDump() });
     return;
   }
+  if (event.data?.probe === 'skip' && event.source) {
+    self.skipWaiting();
+    event.source.postMessage({ skipped: Date.now() });
+    return;
+  }
   if (event.data?.streams !== 'mine' || !event.source) return;
   const { source } = event;
   event.waitUntil(prune().then(() => source.postMessage({ streams: streamsOf(source.id) })));

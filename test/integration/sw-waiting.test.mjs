@@ -216,6 +216,25 @@ test('an ordinary update shows no notice: the updated worker activates before an
       t.diagnostic(
         `PROBE ordinary stall page ${JSON.stringify(await timings(page, bumped - 2000))}`
       );
+      const nudged = await page.evaluate(async () => {
+        const registration = await navigator.serviceWorker.getRegistration();
+        if (!registration.waiting) return { waiting: null };
+        const asked = Date.now();
+        registration.waiting.postMessage({ probe: 'skip' });
+        while (Date.now() - asked < 30000) {
+          const now = await navigator.serviceWorker.getRegistration();
+          if (!now.waiting && !now.installing)
+            return { activated: Date.now() - asked, active: now.active?.state ?? null };
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        const now = await navigator.serviceWorker.getRegistration();
+        return {
+          activated: null,
+          waiting: now.waiting?.state ?? null,
+          active: now.active?.state ?? null,
+        };
+      });
+      t.diagnostic(`PROBE ordinary stall nudge ${JSON.stringify(nudged)}`);
       throw error;
     });
   t.diagnostic(`PROBE ordinary activated ${Date.now() - bumped} ms`);
