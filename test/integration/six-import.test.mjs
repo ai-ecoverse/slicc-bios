@@ -93,6 +93,11 @@ const listed = (page) =>
         .some(({ id }) => id === 'six-import') ?? false
   );
 
+const still = (page) =>
+  page.within(30000, () =>
+    document.getAnimations().every((animation) => animation.playState !== 'running')
+  );
+
 async function shots(page, name) {
   await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
   const color = (want) =>
@@ -102,8 +107,10 @@ async function shots(page, name) {
       return shell.color;
     }, want);
   await color('light');
+  await still(page);
   await page.screenshot(new URL(`${name}-light.png`, page.dir));
   await color('dark');
+  await still(page);
   await page.screenshot(new URL(`${name}-dark.png`, page.dir));
   await color('light');
   await page.send('Emulation.setDeviceMetricsOverride', {
@@ -114,6 +121,7 @@ async function shots(page, name) {
   });
   await page.until(() => document.querySelector('slicc-app')?.screen === 'phone');
   await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
+  await still(page);
   await page.screenshot(new URL(`${name}-420.png`, page.dir));
   await page.send('Emulation.clearDeviceMetricsOverride');
   await page.until(() => document.querySelector('slicc-app')?.screen === 'desktop');

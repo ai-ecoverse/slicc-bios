@@ -1,5 +1,16 @@
 const DISMISSED = 'slicc-os.notices.dismissed';
 
+export function undismiss(id, storage = localStorage) {
+  try {
+    const kept = JSON.parse(storage.getItem(DISMISSED) ?? '[]');
+    if (!Array.isArray(kept) || !kept.includes(id)) return false;
+    storage.setItem(DISMISSED, JSON.stringify(kept.filter((item) => item !== id)));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function createNotices({ storage = localStorage } = {}) {
   const listeners = new Set();
   const handlers = new Map();
