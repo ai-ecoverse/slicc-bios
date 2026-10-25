@@ -74,8 +74,7 @@ export function protocol(t) {
     if (method === 'Page.captureScreenshot') result = { data: 'c3ludGhldGlj' };
     emit({ id, ...(sessionId ? { sessionId } : {}), ...(payload ?? { result }) });
   }
-  function request(method, params = {}, sessionId) {
-    const id = ++next;
+  function request(method, params = {}, sessionId, id = ++next) {
     const answer = new Promise((resolve) => pending.set(id, resolve));
     guard.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
     return { id, answer };

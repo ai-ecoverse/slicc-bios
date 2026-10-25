@@ -1791,7 +1791,7 @@ class Guard {
       this.internal.delete(message.id);
       return resolve(message);
     }
-    if (message.id >= GUARD_IDS) return;
+    if (message.id >= GUARD_IDS && !this.asked.has(message.id)) return;
     const was = message.id === undefined ? undefined : this.asked.get(message.id);
     this.asked.delete(message.id);
     this.queue(
