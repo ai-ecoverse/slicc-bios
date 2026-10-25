@@ -566,6 +566,7 @@ class Guard {
     this.placements = new Map();
     this.placing = new Map();
     this.placementsPending = new Map();
+    this.autoAttachments = new Map();
     this.casts = new Set();
     this.requests = new Map();
     this.held = new Map();
@@ -903,6 +904,19 @@ class Guard {
     }
   }
 
+  placementAttach(sessionId, params) {
+    if (!this.placements.has(sessionId) || this.gone.has(sessionId))
+      return this.call('Target.setAutoAttach', params, sessionId);
+    const config = JSON.stringify(params);
+    const cached = this.autoAttachments.get(sessionId);
+    if (cached?.config === config) return cached.promise;
+    const promise = Promise.resolve().then(() =>
+      this.call('Target.setAutoAttach', params, sessionId)
+    );
+    this.autoAttachments.set(sessionId, { config, promise });
+    return promise;
+  }
+
   async placeOne(targetId, sessionId) {
     this.placements.set(sessionId, targetId);
     this.scope(targetId).pending = (this.scope(targetId).pending ?? 0) + 1;
@@ -916,16 +930,12 @@ class Guard {
     const attached =
       !owners.error && !disabled.error && scope.ownersReady && scope.protectedOwner
         ? {}
-        : await this.call(
-            'Target.setAutoAttach',
-            {
-              autoAttach: true,
-              waitForDebuggerOnStart: false,
-              flatten: true,
-              filter: FRAME_CHILDREN,
-            },
-            sessionId
-          );
+        : await this.placementAttach(sessionId, {
+            autoAttach: true,
+            waitForDebuggerOnStart: false,
+            flatten: true,
+            filter: FRAME_CHILDREN,
+          });
     scope.pending -= 1;
     scope.failed = Boolean(
       enabled.error ||
@@ -970,7 +980,11 @@ class Guard {
       if (params.waitingForDebugger)
         void this.call('Runtime.runIfWaitingForDebugger', {}, params.sessionId);
     }
-    if (method === 'Target.targetDestroyed') this.scopes.delete(params.targetId);
+    if (method === 'Target.targetDestroyed') {
+      this.scopes.delete(params.targetId);
+      for (const [id, placed] of this.placements)
+        if (placed === params.targetId) this.autoAttachments.delete(id);
+    }
     if (method === 'Target.detachedFromTarget' && params.sessionId !== undefined) {
       kept(this.gone, params.sessionId);
       this.refusePending(params.sessionId);
@@ -1094,6 +1108,7 @@ class Guard {
 
   refusePending(sessionId) {
     if (sessionId === undefined) return;
+    this.autoAttachments.delete(sessionId);
     for (const command of this.asked.values())
       if (command.sessionId === sessionId) this.refuse(command);
     for (const command of this.commands.values())
@@ -2137,7 +2152,10 @@ class Guard {
   start() {
     const { connection, guarded } = this;
     connection.onmessage = (text) => this.received(text);
-    connection.onclose = (why) => guarded.onclose?.(why);
+    connection.onclose = (why) => {
+      this.autoAttachments.clear();
+      guarded.onclose?.(why);
+    };
     guarded.send = (text) => {
       const message = parse(text);
       this.commands.set(message.id, message);
