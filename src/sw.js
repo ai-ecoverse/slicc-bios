@@ -268,6 +268,48 @@ function deadline(text) {
 }
 
 const streaming = new Set();
+const PROBE_LIMIT = 200;
+const probed = { open: new Map(), done: [], next: 0, records: new WeakMap() };
+
+function probeStart(request) {
+  probed.next += 1;
+  const record = {
+    id: probed.next,
+    path: new URL(request.url).pathname,
+    destination: request.destination,
+    at: Date.now(),
+    phases: {},
+  };
+  probed.open.set(record.id, record);
+  probed.records.set(request, record);
+  return record;
+}
+
+function probePhase(request, name) {
+  const record = probed.records.get(request);
+  if (record) record.phases[name] = Date.now() - record.at;
+}
+
+function probeEnd(record, outcome) {
+  record.end = Date.now() - record.at;
+  record.outcome = outcome;
+  probed.open.delete(record.id);
+  probed.done.push(record);
+  if (probed.done.length > PROBE_LIMIT) probed.done.shift();
+}
+
+function probeDump() {
+  const now = Date.now();
+  return {
+    now,
+    open: [...probed.open.values()].map((record) => ({ ...record, age: now - record.at })),
+    done: probed.done.slice(-PROBE_LIMIT),
+    streaming: [...streaming].map(({ url, since }) => ({
+      path: new URL(url).pathname,
+      age: now - since,
+    })),
+  };
+}
 
 function watched(response, request, controller, client) {
   if (!response.body) return response;
@@ -359,7 +401,10 @@ async function serve(request, controller, client) {
   if (passed.has(asked)) return network();
   if (asked === MANIFEST) return Response.redirect(`${BIOS_URL}manifest.json`, 302);
   const served = kind(path);
-  if (served === 'bios') return network();
+  if (served === 'bios') {
+    probePhase(request, 'network');
+    return network();
+  }
   if (path === STATUS) {
     const stopped = await (await integrity()).stopped();
     return respond(JSON.stringify({ stopped }), types.json, 'sw');
@@ -376,6 +421,7 @@ async function serve(request, controller, client) {
   const at = path.endsWith('/') ? `${path}index.html` : path;
   let file;
   try {
+    probePhase(request, 'read');
     file = await read(path);
   } catch {
     const gone =
@@ -394,7 +440,9 @@ async function serve(request, controller, client) {
   }
   const type = types[extension] ?? 'application/octet-stream';
   try {
+    probePhase(request, 'integrity');
     file = await checked(at, file);
+    probePhase(request, 'transform');
     if (!script.test(file.name)) return respond(file, type, 'opfs');
     const run = path.startsWith(AGENT) ? url.searchParams.get('run') : null;
     const { text, timing } = await rewrite(path, file, base, run);
@@ -419,7 +467,13 @@ self.addEventListener('fetch', (event) => {
     );
   } else if (request.method === 'GET' && request.url.startsWith(self.registration.scope)) {
     const client = clientId || event.resultingClientId;
-    event.respondWith(answer(request, (asked, controller) => serve(asked, controller, client)));
+    const record = probeStart(request);
+    event.respondWith(
+      answer(request, (asked, controller) => serve(asked, controller, client)).then((response) => {
+        probeEnd(record, response.status);
+        return response;
+      })
+    );
   }
 });
 async function prune() {
@@ -429,6 +483,10 @@ async function prune() {
 }
 
 self.addEventListener('message', (event) => {
+  if (event.data?.probe === 'inflight' && event.source) {
+    event.source.postMessage({ probe: probeDump() });
+    return;
+  }
   if (event.data?.streams !== 'mine' || !event.source) return;
   const { source } = event;
   event.waitUntil(prune().then(() => source.postMessage({ streams: streamsOf(source.id) })));

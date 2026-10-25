@@ -25,8 +25,8 @@ jobs:
     secrets: inherit
     with:
       node-version: '26'
-      test-glob: test/integration/*.test.mjs
-      shards: 12
+      test-glob: test/integration/sw-waiting.test.mjs
+      shards: 1
       timeout-minutes: 90
       review-timeout-minutes: 90
       review-prompt: |

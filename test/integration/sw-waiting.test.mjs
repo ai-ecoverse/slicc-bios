@@ -50,6 +50,37 @@ const update = (page) =>
     return (registration.installing ?? registration.waiting)?.state ?? null;
   });
 
+const inflight = (page) =>
+  page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const heard = (event) => {
+          if (!event.data?.probe) return;
+          navigator.serviceWorker.removeEventListener('message', heard);
+          resolve(event.data.probe);
+        };
+        navigator.serviceWorker.addEventListener('message', heard);
+        navigator.serviceWorker.controller.postMessage({ probe: 'inflight' });
+        setTimeout(() => resolve('no answer'), 3000);
+      })
+  );
+
+const timings = (page, since) =>
+  page.evaluate(
+    (since) =>
+      performance
+        .getEntriesByType('resource')
+        .filter((entry) => performance.timeOrigin + entry.startTime >= since)
+        .map((entry) => ({
+          path: new URL(entry.name).pathname,
+          type: entry.initiatorType,
+          start: Math.round(entry.startTime),
+          worker: Math.round(entry.workerStart),
+          end: Math.round(entry.responseEnd),
+        })),
+    since
+  );
+
 const waitingNotice = (page) =>
   page.evaluate(() =>
     document
@@ -95,6 +126,7 @@ test('while the tab holds a half-read download from the old worker, it says seve
     waiting: 'installed',
     installing: null,
   });
+  t.diagnostic(`PROBE control half-read ${JSON.stringify(await inflight(page))}`);
   await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
   await page.within(30000, new Function(`return !!(${deep})('[data-notice^="sw-waiting:"]')`));
   assert.deepEqual(
@@ -169,12 +201,24 @@ test('an ordinary update shows no notice: the updated worker activates before an
       .querySelector('slicc-app')
       .model.notices.on('notices', (list) => window.noticed.push(...list.map(({ id }) => id)));
   });
+  t.diagnostic(`PROBE ordinary before ${JSON.stringify(await inflight(page))}`);
+  const bumped = Date.now();
   bumpWorker();
   assert.ok(await update(page));
-  await page.within(30000, async () => {
-    const registration = await navigator.serviceWorker.getRegistration();
-    return !registration.waiting && !registration.installing;
-  });
+  await page
+    .within(30000, async () => {
+      const registration = await navigator.serviceWorker.getRegistration();
+      return !registration.waiting && !registration.installing;
+    })
+    .catch(async (error) => {
+      t.diagnostic(`PROBE ordinary stall workers ${JSON.stringify(await workers(page))}`);
+      t.diagnostic(`PROBE ordinary stall sw ${JSON.stringify(await inflight(page))}`);
+      t.diagnostic(
+        `PROBE ordinary stall page ${JSON.stringify(await timings(page, bumped - 2000))}`
+      );
+      throw error;
+    });
+  t.diagnostic(`PROBE ordinary activated ${Date.now() - bumped} ms`);
   assert.deepEqual(
     await page.evaluate(() => window.noticed.filter((id) => id.startsWith('sw-waiting:'))),
     []
