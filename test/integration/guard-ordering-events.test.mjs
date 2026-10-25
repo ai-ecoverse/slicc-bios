@@ -108,6 +108,12 @@ for (const method of ['Runtime.consoleAPICalled', 'DOM.childNodeInserted']) {
       const session = await wire.attach('events');
       await wire.send('Runtime.enable', {}, session);
       if (admission === 'checked') await content(wire, session).answer;
+      else
+        wire.emit({
+          method: 'Page.frameAttached',
+          sessionId: session,
+          params: { frameId: 'unconfirmed-frame', parentFrameId: 'events' },
+        });
       const lookup = await block(wire, session, 'blocked-frame', 'synthetic-blocker');
       const marker = `synthetic-queued-${admission}`;
       const params = method.startsWith('Runtime.') ? consoleParams(marker) : domParams(marker);

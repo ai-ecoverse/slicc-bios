@@ -587,6 +587,7 @@ class Guard {
     this.blockedWorkers = new Set();
     this.next = GUARD_IDS;
     this.documents = new Map();
+    this.retired = new Set();
     this.documentCommands = new WeakMap();
     this.documentEvents = new WeakMap();
     this.guarded = { onmessage: null, onclose: null };
@@ -798,7 +799,12 @@ class Guard {
 
   document(targetId) {
     if (!this.documents.has(targetId))
-      this.documents.set(targetId, { revision: 0, checked: -1, opening: new Set() });
+      this.documents.set(targetId, {
+        revision: 0,
+        checked: -1,
+        opening: new Set(),
+        retired: this.retired.has(targetId),
+      });
     return this.documents.get(targetId);
   }
 
@@ -806,7 +812,7 @@ class Guard {
     const ids = new Set();
     let root = targetId;
     while (root) {
-      if (ids.has(root)) return null;
+      if (ids.has(root) || this.documents.get(root)?.retired) return null;
       ids.add(root);
       const parent = this.targets.get(root)?.parentId;
       if (!parent) break;
@@ -814,8 +820,8 @@ class Guard {
     }
     for (let size = 0; size !== ids.size; ) {
       size = ids.size;
-      for (const id of this.documents.keys())
-        if (ids.has(this.targets.get(id)?.parentId)) ids.add(id);
+      for (const [id, state] of this.documents)
+        if (!state.retired && ids.has(this.targets.get(id)?.parentId)) ids.add(id);
     }
     return ids;
   }
@@ -836,7 +842,80 @@ class Guard {
     }
   }
 
+  retireTarget(targetId, state) {
+    state.retired = true;
+    state.revision += 1;
+    const nav = this.navs.get(targetId);
+    this.navs.delete(targetId);
+    if (!nav) return;
+    nav.failed = true;
+    nav.settle(true);
+    if (nav.session) {
+      this.navSessions.delete(nav.session);
+      void this.call('Target.detachFromTarget', { sessionId: nav.session });
+    }
+  }
+
+  retireFrame(frameId) {
+    if (!frameId) return;
+    const gone = new Set([frameId]);
+    for (let size = 0; size !== gone.size; ) {
+      size = gone.size;
+      for (const [id, parent] of this.parents) if (gone.has(parent)) gone.add(id);
+      for (const [id, target] of this.targets) if (gone.has(target.parentId)) gone.add(id);
+    }
+    for (const [id, state] of this.documents) {
+      for (const frame of gone) if (state.opening.delete(frame)) state.revision += 1;
+      if (gone.has(id)) this.retireTarget(id, state);
+    }
+    for (const id of gone) {
+      kept(this.retired, id);
+      this.frames.delete(id);
+      this.parents.delete(id);
+    }
+    for (const [sessionId, entry] of this.sessions) {
+      if (!gone.has(entry.targetId)) continue;
+      this.shown.delete(sessionId);
+      this.runtimes.delete(sessionId);
+      this.watching.delete(sessionId);
+    }
+  }
+
+  refreshSubscribers(targetId) {
+    const ids = this.related(targetId);
+    if (!ids) return;
+    for (const sessionId of this.runtimes) {
+      if (ids.has(this.documentTarget(sessionId)) && !this.documentValid(sessionId))
+        void this.documentChecked(sessionId).catch(() => {});
+    }
+  }
+
+  noteFrame(targetId, method, params) {
+    const state = this.document(targetId);
+    const frameId = params.frameId ?? params.frame?.id ?? targetId;
+    if (method === 'Page.frameStartedNavigating') state.opening.add(frameId);
+    if (
+      method === 'Page.frameNavigated' ||
+      method === 'Page.navigatedWithinDocument' ||
+      method === 'Page.frameStoppedLoading'
+    ) {
+      state.opening.delete(frameId);
+      if (params.frame && !params.frame.parentId) state.opening.delete(targetId);
+      this.refreshSubscribers(targetId);
+    }
+    if (method === 'Page.frameDetached' && params.reason === 'remove') {
+      this.retireFrame(frameId);
+      this.refreshSubscribers(targetId);
+    }
+  }
+
   documentEvent({ method, params = {}, sessionId }) {
+    if (method === 'Page.frameAttached' && params.frameId) {
+      this.retired.delete(params.frameId);
+      const state = this.documents.get(params.frameId);
+      if (state) state.retired = false;
+      if (params.parentFrameId) this.parents.set(params.frameId, params.parentFrameId);
+    }
     if (method === 'Target.attachedToTarget' && NAV_TYPES.has(params.targetInfo?.type)) {
       const info = params.targetInfo;
       const parentId = info.type === 'iframe' ? this.documentTarget(sessionId) : undefined;
@@ -853,18 +932,7 @@ class Guard {
     ) {
       const targetId = this.documentTarget(sessionId);
       this.invalidate(targetId);
-      if (!targetId) return;
-      const state = this.document(targetId);
-      const frameId = params.frameId ?? params.frame?.id ?? targetId;
-      if (method === 'Page.frameStartedNavigating') state.opening.add(frameId);
-      if (
-        method === 'Page.frameNavigated' ||
-        method === 'Page.navigatedWithinDocument' ||
-        method === 'Page.frameStoppedLoading'
-      ) {
-        state.opening.delete(frameId);
-        if (params.frame && !params.frame.parentId) state.opening.delete(targetId);
-      }
+      if (targetId) this.noteFrame(targetId, method, params);
     }
     if (method === 'Target.detachedFromTarget')
       this.invalidate(this.documentTarget(params.sessionId));
@@ -941,6 +1009,7 @@ class Guard {
     const frame = tree?.frame;
     if (
       !this.knownFrame(frame) ||
+      this.retired.has(frame.id) ||
       seen.has(frame.id) ||
       (tree.childFrames !== undefined && !Array.isArray(tree.childFrames))
     )
@@ -960,7 +1029,7 @@ class Guard {
     const nav = this.navs.get(targetId);
     if (!nav) return false;
     await nav.ready;
-    if (nav.failed || !nav.session || state.opening.size) return false;
+    if (nav.failed || !nav.session || state.retired || state.opening.size) return false;
     const revision = state.revision;
     if (state.checked === revision) return true;
     if (state.checking?.revision === revision) return state.checking.promise;
@@ -1022,6 +1091,10 @@ class Guard {
 
   async arm(nav, session) {
     if (!session) return nav.settle(true);
+    if (this.navs.get(nav.targetId) !== nav) {
+      void this.call('Target.detachFromTarget', { sessionId: session });
+      return nav.settle(true);
+    }
     nav.session = session;
     this.navSessions.set(session, nav);
     const steps = await Promise.all([
@@ -1035,6 +1108,7 @@ class Guard {
       this.call('Page.enable', {}, session),
     ]);
     nav.settle(steps.some((step) => step.error));
+    this.refreshSubscribers(nav.targetId);
   }
 
   navEvent({ method, params = {} }, nav) {
@@ -1396,15 +1470,17 @@ class Guard {
 
   walked({ method, params = {}, sessionId }) {
     if (method === 'Page.frameNavigated' && params.frame) {
-      this.frames.set(params.frame.id, this.framed(params.frame));
-      if (params.frame.parentId) this.parents.set(params.frame.id, params.frame.parentId);
-      const targetId = this.sessions.get(sessionId)?.targetId;
-      if (!params.frame.parentId && targetId && this.targets.has(targetId)) {
-        this.targets.get(targetId).url = params.frame.url;
+      if (!this.retired.has(params.frame.id)) {
+        this.frames.set(params.frame.id, this.framed(params.frame));
+        if (params.frame.parentId) this.parents.set(params.frame.id, params.frame.parentId);
+        const targetId = this.sessions.get(sessionId)?.targetId;
+        if (!params.frame.parentId && targetId && this.targets.has(targetId)) {
+          this.targets.get(targetId).url = params.frame.url;
+        }
       }
       return this.is.url(params.frame.url) || this.is.url(params.frame.securityOrigin);
     }
-    if (method === 'Page.frameAttached' && params.frameId) {
+    if (method === 'Page.frameAttached' && params.frameId && !this.retired.has(params.frameId)) {
       if (!this.frames.has(params.frameId)) this.frames.set(params.frameId, '');
       if (params.parentFrameId) this.parents.set(params.frameId, params.parentFrameId);
     }
@@ -1638,7 +1714,7 @@ class Guard {
   answerClosed(was) {
     return (
       was &&
-      (this.blocked.has(was.sessionId) ||
+      (this.hidden(was.sessionId) ||
         (documentContent(was.method) && !this.documentValid(was.sessionId, was)))
     );
   }
@@ -1859,6 +1935,7 @@ class Guard {
 
   pass(message) {
     const { id, method, sessionId } = message;
+    if (this.hidden(sessionId)) return this.refuse(message);
     if (this.documents.has(this.documentTarget(sessionId)) && documentContent(method)) {
       if (!this.documentValid(sessionId)) return this.refuse(message);
       this.stampDocument(message);
@@ -1869,7 +1946,10 @@ class Guard {
       sessionId,
       passed: true,
     });
-    if (sessionId && method === 'Runtime.enable') this.runtimes.add(sessionId);
+    if (sessionId && method === 'Runtime.enable') {
+      this.runtimes.add(sessionId);
+      this.refreshSubscribers(this.documentTarget(sessionId));
+    }
     if (sessionId && method === 'Runtime.disable') this.runtimes.delete(sessionId);
     if (sessionId && method === 'Page.enable') this.pages.add(sessionId);
     if (sessionId && method === 'Page.disable' && this.shown.has(sessionId)) {
@@ -1927,6 +2007,7 @@ class Guard {
         async () => {
           const why = await this.check(message);
           if (why) return this.refuse(message, why);
+          if (message.method === 'Runtime.enable') await this.documentChecked(message.sessionId);
           if (message.method === 'Runtime.enable' && this.primed.delete(message.sessionId)) {
             await this.call('Runtime.disable', {}, message.sessionId);
           }
