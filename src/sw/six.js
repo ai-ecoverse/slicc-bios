@@ -1,7 +1,8 @@
 export const MARKER = 'slicc-os.six';
 export const UPGRADED = 'upgraded';
 export const PENDING = 'slicc-os.six-import';
-export const RETIRED = 'slicc-bios.six-retired';
+export const RETIRED = '__Host-slicc-six-retired';
+export const KEPT = 10 * 365 * 24 * 60 * 60;
 export const EXPORTER = '/upgrade-to-seven.html';
 export const ASSETS = '/assets/';
 export const EXPORTS = 'slicc-v6-upgrade';
@@ -14,11 +15,8 @@ export const BAD = 'SLICC 6’s upgrade page gave no export to import. Try again
 const PHASES = ['stopping', 'reading', 'writing'];
 const ID = /^[\w-]+$/;
 
-let known = false;
-
-export async function retired(storage = globalThis.caches) {
-  known ||= await storage.has(RETIRED);
-  return known;
+export async function retired(cookies = globalThis.cookieStore) {
+  return Boolean(await cookies?.get(RETIRED));
 }
 
 export const upgraded = (storage = localStorage) => storage.getItem(MARKER) === UPGRADED;
@@ -46,8 +44,8 @@ export async function offered(origin = location.origin, get = fetch, wait = OFFE
   }
 }
 
-export async function retire({ caches, container, origin }) {
-  await caches.open(RETIRED);
+export async function retire({ cookies, container, origin }) {
+  cookies.cookie = `${RETIRED}=1; Path=/; Max-Age=${KEPT}; Secure; SameSite=Strict`;
   const preview = `${origin}/preview/`;
   for (const registration of await container.getRegistrations()) {
     if (registration.scope.startsWith(preview)) await registration.unregister();
@@ -209,7 +207,7 @@ export function sixDialog(doc = document) {
 export async function upgradeSix({
   root,
   storage = localStorage,
-  caches = globalThis.caches,
+  cookies = globalThis.document,
   container = navigator.serviceWorker,
   origin = location.origin,
   dialog = sixDialog(),
@@ -218,7 +216,7 @@ export async function upgradeSix({
   const settle = async ({ exportId, dir }) => {
     storage.setItem(MARKER, UPGRADED);
     storage.setItem(PENDING, dir);
-    await retire({ caches, container, origin }).catch((error) =>
+    await retire({ cookies, container, origin }).catch((error) =>
       console.warn(`bios: retiring SLICC 6, ${error.message}`)
     );
     await clean(root, exportId).catch(() => []);
@@ -240,9 +238,9 @@ export async function upgradeSix({
   }
 }
 
-async function retireHere({ caches, container, origin }) {
+async function retireHere({ cookies, container, origin }) {
   await retire({
-    caches: caches ?? globalThis.caches,
+    cookies: cookies ?? globalThis.document,
     container: container ?? navigator.serviceWorker,
     origin: origin ?? location.origin,
   });

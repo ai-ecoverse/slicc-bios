@@ -203,6 +203,39 @@ test("a second tab whose check for SLICC 6's upgrade page answers after the firs
   );
 });
 
+test("a kernel process can't retire SLICC 6: what a worker on seven's origin writes doesn't make / redirect to /os/", async (t) => {
+  state.mode = 'ok';
+  const page = await open(t);
+  await page.goto(`${origin}/7/`);
+  await ready(page);
+  const forged = await page.evaluate(async () => {
+    const source = `
+      const results = {};
+      results.cookieStore = typeof self.cookieStore;
+      results.cookie = typeof self.document;
+      await caches.open('slicc-bios.six-retired');
+      await caches.open('__Host-slicc-six-retired');
+      results.caches = await caches.keys();
+      postMessage(results);
+    `;
+    const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+    const worker = new Worker(url);
+    const answer = await new Promise((done) => {
+      worker.onmessage = ({ data }) => done(data);
+    });
+    worker.terminate();
+    return answer;
+  });
+  assert.deepEqual(forged.cookieStore, 'undefined');
+  assert.deepEqual(forged.cookie, 'undefined');
+  assert.ok(forged.caches.includes('slicc-bios.six-retired'), JSON.stringify(forged));
+  const tab = await page.tab();
+  await runSix(tab);
+  assert.equal(await tab.evaluate(() => location.pathname), '/');
+  assert.deepEqual(page.errors, []);
+  assert.deepEqual(tab.errors, []);
+});
+
 test('moving SLICC 6 into seven from a cross-origin isolated BIOS: asked once, progress shown, the marker set before the frame goes, six stopped, /preview/ unregistered, / and the extension URLs land on /os/, and the export is handed to the agent', async (t) => {
   state.mode = 'ok';
   state.isolate = true;
