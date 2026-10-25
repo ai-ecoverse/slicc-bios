@@ -658,6 +658,7 @@ async function check() {
   await checkPackages();
   await yours.tidy().catch((error) => console.warn(`your packages: ${error.message}`));
   await offerChat();
+  await new Promise((resolve) => setTimeout(resolve, 20000));
   await betas.check();
   await retire();
   await updateTailnet();
