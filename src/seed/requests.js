@@ -12,6 +12,7 @@ export const CAPTURE_DISMISSED = 'the request to capture the screen was dismisse
 export const CAPTURE_LATE = 'nobody answered the request to capture the screen within 60 s';
 export const CAPTURED = "seven doesn't capture its own pages or the vault";
 export const HANDLE = 'slicc-seven';
+export const HANDLES = [HANDLE, 'slicc-vault'];
 
 export const refused = (message) => new DOMException(message, 'NotAllowedError');
 
@@ -234,7 +235,7 @@ export function displayer({
   is = protection(globalThis.location?.origin),
 } = {}) {
   const sevens = (handle) =>
-    handle?.handle === HANDLE || Boolean(handle?.origin && is.url(handle.origin));
+    HANDLES.includes(handle?.handle) || Boolean(handle?.origin && is.url(handle.origin));
   return () => {
     let reason = null;
     const display = async (constraints) => {
