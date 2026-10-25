@@ -200,3 +200,37 @@ test('a capture whose tab navigates to seven while it waits is stopped and refus
   await close();
   assert.deepEqual(page.errors, []);
 });
+
+test('a capture that lands on a vault tab is refused, and seven’s own tab is never offered', async (t) => {
+  const page = await chrome.page(t);
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: helpers });
+  await boot(page);
+  const close = await target(
+    `<script>navigator.mediaDevices.setCaptureHandleConfig({ handle: 'slicc-vault', exposeOrigin: true, permittedOrigins: ['*'] });</script>`
+  );
+  await run(
+    page,
+    `printf '%s\\n' '{"kind":"capture.screen","type":"image/png"}' | cat > /dev/embedder; echo "vault $?"`
+  );
+  await shows(page, "seven doesn't capture its own pages or the vault");
+  await shows(page, 'vault 1');
+  await close();
+
+  await page.evaluate((title) => {
+    document.title = title;
+  }, TITLE);
+  await run(
+    page,
+    'timeout 60 sh -c \'screencapture -x /tmp/self.png\'; echo "self $?"; ls /tmp/self.png'
+  );
+  await shows(page, 'No such file or directory', 90000);
+  const text = await page.evaluate(() => {
+    const { dock } = document.querySelector('slicc-app');
+    const id = dock.api.panels
+      .map((panel) => panel.id)
+      .findLast((id) => id.startsWith('terminal:'));
+    return dock.content(id).screen.textContent;
+  });
+  assert.match(text, /self [1-9]/);
+  assert.deepEqual(page.errors, []);
+});
