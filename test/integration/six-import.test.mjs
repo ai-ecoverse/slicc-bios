@@ -100,9 +100,31 @@ const listed = (page) =>
   );
 
 const still = (page) =>
-  page.within(30000, () =>
-    document.getAnimations().every((animation) => animation.playState !== 'running')
-  );
+  page.within(30000, () => {
+    const seen = (globalThis.sliccShotFrames ??= new WeakMap());
+    const frames = [];
+    const walk = (root) => {
+      for (const node of root.querySelectorAll('*')) {
+        if (node.localName === 'iframe') frames.push(node);
+        if (node.shadowRoot) walk(node.shadowRoot);
+      }
+    };
+    walk(document);
+    const now = performance.now();
+    let ready = document.getAnimations().every((animation) => animation.playState !== 'running');
+    for (const frame of frames) {
+      if (!seen.has(frame)) {
+        const entry = { found: now, loaded: null };
+        frame.addEventListener('load', () => {
+          entry.loaded = performance.now();
+        });
+        seen.set(frame, entry);
+      }
+      const { found, loaded } = seen.get(frame);
+      if (now - found < 1000 || (loaded !== null && now - loaded < 300)) ready = false;
+    }
+    return ready;
+  });
 
 async function shots(page, name) {
   await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
