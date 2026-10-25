@@ -53,6 +53,8 @@ test('the flaky-test hunter reruns up to three failing files per shard, and a fl
     .split('\n')
     .map((line) => line.trim());
   assert.deepEqual(strict.slice(0, 2), ['**/*guard*.test.*', '**/*security*.test.*']);
+  for (const refusals of ['capture', 'cdp', 'embedder', 'link', 'vault'])
+    assert.ok(strict.includes(`**/${refusals}.test.mjs`), `${refusals}.test.mjs is strict`);
   const files = await readdir(new URL('./', import.meta.url));
   for (const glob of strict.slice(2)) {
     const [, name] = glob.match(/^\*\*\/([\w.-]+\.test\.mjs)$/) ?? [];
