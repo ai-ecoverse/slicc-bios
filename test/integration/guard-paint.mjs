@@ -538,7 +538,7 @@ const leaked = (row) => {
   return found;
 };
 
-function ordinary(row, route, label) {
+function ordinary(row, label) {
   assert.ok(row.control.shot >= MARKED, `${label}: the ordinary marker paints without the guard`);
   assert.ok(row.control.cast.marked > 0, `${label}: the ordinary marker casts without the guard`);
   assert.equal(
@@ -546,32 +546,20 @@ function ordinary(row, route, label) {
     'reached',
     `${label}: input reaches the ordinary frame without the guard`
   );
-  if (route === 'link' && row.state === 'closed') {
-    assert.equal(row.shot, 'refused', `${label}: unplaced link frames close paint`);
-    assert.equal(row.cast.frames, 0, `${label}: unplaced link frames close casts`);
-    assert.equal(row.input, 'refused', `${label}: unplaced link frames close input`);
-    if (row.snapshot !== undefined)
-      assert.equal(row.snapshot, 'refused', `${label}: unplaced link frames close DOM`);
-  } else {
+  assert.equal(row.state, 'drivable', `${label}: the ordinary page is fully drivable once placed`);
+  assert.ok(row.shot >= MARKED, `${label}: the ordinary marker paints through the guard`);
+  assert.ok(row.cast.marked > 0, `${label}: the ordinary marker casts through the guard`);
+  if (row.snapshot !== undefined)
     assert.equal(
-      row.state,
-      'drivable',
-      `${label}: the ordinary page is fully drivable once placed`
+      row.snapshot,
+      'shown',
+      `${label}: the placed ordinary page remains snapshot-readable`
     );
-    assert.ok(row.shot >= MARKED, `${label}: the ordinary marker paints through the guard`);
-    assert.ok(row.cast.marked > 0, `${label}: the ordinary marker casts through the guard`);
-    if (row.snapshot !== undefined)
-      assert.equal(
-        row.snapshot,
-        'shown',
-        `${label}: the placed ordinary page remains snapshot-readable`
-      );
-    assert.equal(
-      row.input,
-      'reached',
-      `${label}: input reaches the ordinary frame through the guard`
-    );
-  }
+  assert.equal(
+    row.input,
+    'reached',
+    `${label}: input reaches the ordinary frame through the guard`
+  );
 }
 
 export function paint(route) {
@@ -673,9 +661,9 @@ export function paint(route) {
       plain.added.control.frames.filter((host) => host === 'localhost').length >= 2,
       'the added ordinary frame is cross-process too'
     );
-    ordinary(plain, route, 'ordinary preloaded');
-    ordinary(plain.added, route, 'ordinary added');
-    ordinary(plain.removed, route, 'ordinary removed');
+    ordinary(plain, 'ordinary preloaded');
+    ordinary(plain.added, 'ordinary added');
+    ordinary(plain.removed, 'ordinary removed');
     if (plain.state === 'drivable')
       assert.equal(plain.reads.dom, 'none', 'an ordinary page’s DOM reads');
     if (route !== 'link') assert.equal(by.seven.vaultFramed, true, 'seven frames the vault');

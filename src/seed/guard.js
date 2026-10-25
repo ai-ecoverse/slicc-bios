@@ -725,6 +725,7 @@ class Guard {
         frames: new Set(),
         owners: new Set(),
         remoteOwners: new Set(),
+        attachedFrames: new Set(),
         ready: false,
       });
     return this.scopes.get(targetId);
@@ -805,10 +806,7 @@ class Guard {
     scope.ready = scope.tree && !scope.failed && !scope.pending;
     if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
     for (const frame of all) {
-      this.frames.set(
-        frame.id,
-        this.is.url(frame.securityOrigin) ? frame.securityOrigin : (frame.url ?? '')
-      );
+      this.frames.set(frame.id, this.framed(frame));
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
     }
     this.stopCasts();
@@ -817,6 +815,7 @@ class Guard {
   recordOwners(targetId, root) {
     const scope = this.scope(targetId);
     scope.ownersReady = Boolean(root);
+    scope.protectedOwner = false;
     const former = scope.owners;
     scope.owners = new Set();
     scope.remoteOwners = new Set();
@@ -848,6 +847,15 @@ class Guard {
     scope.frames.add(node.frameId);
     if (!this.frames.has(node.frameId)) this.frames.set(node.frameId, '');
     if (!this.parents.has(node.frameId)) this.parents.set(node.frameId, scope.root);
+    const source = (node.attributes ?? []).indexOf('src');
+    if (
+      scope.attachedFrames.has(node.frameId) &&
+      [
+        source < 0 ? undefined : node.attributes[source + 1],
+        node.contentDocument?.documentURL,
+      ].some((url) => this.is.url(url))
+    )
+      scope.protectedOwner = true;
   }
 
   place(targetId, sessionId) {
@@ -885,20 +893,27 @@ class Guard {
     this.scope(targetId).ready = false;
     this.stopCasts();
     const enabled = await this.call('Page.enable', {}, sessionId);
-    const [attached] = await Promise.all([
-      this.call(
-        'Target.setAutoAttach',
-        { autoAttach: true, waitForDebuggerOnStart: false, flatten: true, filter: FRAME_CHILDREN },
-        sessionId
-      ),
-      this.call('Page.getFrameTree', {}, sessionId),
-    ]);
-    await this.call('DOM.getDocument', { depth: -1, pierce: true }, sessionId);
+    await this.call('Page.getFrameTree', {}, sessionId);
+    const owners = await this.call('DOM.getDocument', { depth: -1, pierce: true }, sessionId);
     const disabled = await this.call('DOM.disable', {}, sessionId);
     const scope = this.scope(targetId);
+    const attached =
+      !owners.error && !disabled.error && scope.ownersReady && scope.protectedOwner
+        ? {}
+        : await this.call(
+            'Target.setAutoAttach',
+            {
+              autoAttach: true,
+              waitForDebuggerOnStart: false,
+              flatten: true,
+              filter: FRAME_CHILDREN,
+            },
+            sessionId
+          );
     scope.pending -= 1;
     scope.failed = Boolean(
       enabled.error ||
+        owners.error ||
         (attached.error && attached.error.message !== NO_AUTO_ATTACH) ||
         !scope.ownersReady ||
         disabled.error
@@ -957,6 +972,7 @@ class Guard {
       const scope = this.scope(targetId);
       scope.frames.add(params.frameId);
       scope.owners.add(params.frameId);
+      scope.attachedFrames.add(params.frameId);
       this.frames.set(params.frameId, '');
       if (params.parentFrameId) this.parents.set(params.frameId, params.parentFrameId);
     }
@@ -992,16 +1008,14 @@ class Guard {
       scope.frames.clear();
       scope.owners.clear();
       scope.remoteOwners.clear();
+      scope.attachedFrames.clear();
       scope.ready = false;
       const navSession = this.navs.get(targetId)?.session;
       if (navSession) this.placing.set(targetId, this.place(targetId, navSession));
     }
     scope.frames.add(frame.id);
     if (frame.parentId && frame.id !== scope.root) scope.remoteOwners.delete(frame.id);
-    this.frames.set(
-      frame.id,
-      this.is.url(frame.securityOrigin) ? frame.securityOrigin : (frame.url ?? '')
-    );
+    this.frames.set(frame.id, this.framed(frame));
     if (frame.parentId) this.parents.set(frame.id, frame.parentId);
   }
 
@@ -1020,6 +1034,7 @@ class Guard {
         scope.frames.delete(id);
         scope.owners.delete(id);
         scope.remoteOwners.delete(id);
+        scope.attachedFrames.delete(id);
         scope.treeFrames?.delete(id);
       }
     }
@@ -1192,8 +1207,10 @@ class Guard {
       this.frames.set(frame.id, this.framed(frame));
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
     }
-    return Boolean(tree?.frame) &&
-      !all.some((frame) => this.is.url(frame.url) || this.is.url(frame.securityOrigin));
+    return (
+      Boolean(tree?.frame) &&
+      !all.some((frame) => this.is.url(frame.url) || this.is.url(frame.securityOrigin))
+    );
   }
 
   async inspect(sessionId, targetId, parent) {
