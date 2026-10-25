@@ -42,7 +42,7 @@
     "format": "biome check --write ."
   },
   "devDependencies": {
-    "@ai-ecoverse/slicc": "1.49.21",
+    "@ai-ecoverse/slicc": "1.49.18",
     "@ai-ecoverse/slicc-browsers": "1.18.14",
     "@ai-ecoverse/slicc-cdp": "1.41.17",
     "@ai-ecoverse/slicc-node": "2.5.1",
