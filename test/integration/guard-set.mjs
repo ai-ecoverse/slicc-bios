@@ -249,40 +249,113 @@ export async function guardHost(t, path) {
     const lagged = (connection, lag, paintDelay, row) => {
       const send = connection.send.bind(connection);
       const shots = new Set();
+      const tracked = new Map();
+      const record = (message) =>
+        void window.guardTransport(
+          JSON.stringify([
+            row,
+            {
+              time: performance.now(),
+              ...message,
+            },
+          ])
+        );
+      const structural = new Set([
+        'Target.attachedToTarget',
+        'Target.detachedFromTarget',
+        'Page.frameAttached',
+        'Page.frameNavigated',
+        'Page.frameDetached',
+        'Network.loadingFailed',
+        'Fetch.requestPaused',
+      ]);
+      const commands = new Set([
+        'Target.attachToTarget',
+        'Target.setAutoAttach',
+        'Runtime.runIfWaitingForDebugger',
+        'Page.enable',
+        'Page.getFrameTree',
+        'DOM.getDocument',
+        'DOM.disable',
+        'DOMSnapshot.captureSnapshot',
+        'Page.captureSnapshot',
+        'Fetch.failRequest',
+        'Fetch.continueRequest',
+      ]);
+      const ownerSummary = (root) => {
+        const found = [];
+        const nodes = [root];
+        while (nodes.length) {
+          const node = nodes.pop();
+          if (!node) continue;
+          if (node.nodeName === 'IFRAME' || node.nodeName === 'FRAME') {
+            const src = (node.attributes ?? []).indexOf('src');
+            found.push({
+              frameId: node.frameId,
+              src: src < 0 ? undefined : node.attributes[src + 1],
+              documentURL: node.contentDocument?.documentURL,
+            });
+          }
+          nodes.push(
+            ...(node.children ?? []),
+            ...(node.shadowRoots ?? []),
+            node.contentDocument,
+            node.templateContent
+          );
+        }
+        return found;
+      };
       const relay = { onmessage: null, onclose: null, close: () => connection.close() };
       connection.onmessage = (text) => {
         const message = JSON.parse(text);
-        if (message.method === 'Target.attachedToTarget')
-          void window.guardTransport(
-            JSON.stringify([
-              row,
-              {
-                direction: 'in',
-                method: message.method,
-                parent: message.sessionId,
-                sessionId: message.params.sessionId,
-                targetInfo: message.params.targetInfo,
-                waitingForDebugger: message.params.waitingForDebugger,
-              },
-            ])
-          );
+        if (structural.has(message.method))
+          record({
+            direction: 'in',
+            method: message.method,
+            sessionId: message.sessionId,
+            params:
+              message.method === 'Fetch.requestPaused'
+                ? {
+                    requestId: message.params.requestId,
+                    frameId: message.params.frameId,
+                    resourceType: message.params.resourceType,
+                    url: message.params.request?.url,
+                  }
+                : message.params,
+          });
+        if (tracked.has(message.id)) {
+          const command = tracked.get(message.id);
+          tracked.delete(message.id);
+          record({
+            direction: 'answer',
+            id: message.id,
+            method: command.method,
+            sessionId: command.sessionId,
+            error: message.error,
+            result:
+              command.method === 'DOM.getDocument'
+                ? {
+                    nodeName: message.result?.root?.nodeName,
+                    childCount: message.result?.root?.children?.length,
+                    owners: ownerSummary(message.result?.root),
+                  }
+                : command.method === 'Page.captureSnapshot'
+                  ? { bytes: message.result?.data?.length }
+                  : command.method === 'DOMSnapshot.captureSnapshot'
+                    ? { documents: message.result?.documents?.length }
+                    : message.result,
+          });
+        }
         if (shots.delete(message.id)) setTimeout(() => relay.onmessage?.(text), paintDelay);
         else relay.onmessage?.(text);
       };
       connection.onclose = (why) => relay.onclose?.(why);
       relay.send = (text) => {
         const message = JSON.parse(text);
-        if (message.method === 'Runtime.runIfWaitingForDebugger')
-          void window.guardTransport(
-            JSON.stringify([
-              row,
-              {
-                direction: 'out',
-                method: message.method,
-                sessionId: message.sessionId,
-              },
-            ])
-          );
+        if (commands.has(message.method)) {
+          tracked.set(message.id, message);
+          record({ direction: 'out', ...message });
+        }
         if (paintDelay && message.method === 'Page.captureScreenshot') shots.add(message.id);
         if (lag && message.method === 'Target.detachFromTarget') setTimeout(() => send(text), lag);
         else send(text);
