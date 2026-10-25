@@ -1,0 +1,63 @@
+name: Walk bisect
+
+on:
+  push:
+    branches: [guard-cli-walk-bisect]
+
+permissions:
+  contents: read
+
+jobs:
+  walk:
+    runs-on: cloud-run-job
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['1.49.9', '1.49.11', '1.49.13']
+    env:
+      LEFTHOOK: '0'
+      SLICC_COVERAGE: '0'
+      CLI_VERSION: ${{ matrix.version }}
+      PROBE_OUT: artifacts/walk-${{ matrix.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '26'
+          cache: npm
+      - run: npm ci
+      - name: Version
+        run: |
+          npm install --save-dev --save-exact "@ai-ecoverse/slicc@$CLI_VERSION"
+          node_modules/.bin/slicc --version
+      - name: Chrome
+        run: |
+          DEPS=
+          if [ "$(id -u)" = 0 ] || sudo -n true 2>/dev/null; then DEPS=1; fi
+          npx --no-install slicc-cdp install-browser ${DEPS:+--with-deps}
+      - name: Measure
+        run: |
+          set -o pipefail
+          if [ -z "${DISPLAY:-}" ]; then
+            if ! command -v Xvfb > /dev/null; then
+              if [ "$(id -u)" = 0 ]; then apt-get update -qq && apt-get install -y -qq xvfb
+              elif sudo -n true 2>/dev/null; then sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
+              else echo "::error title=Display::No Xvfb on $RUNNER_NAME and no root to install it: add xvfb to the runner image"; exit 1
+              fi
+            fi
+            nohup Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp > "$RUNNER_TEMP/xvfb.log" 2>&1 &
+            for _ in $(seq 50); do [ -S /tmp/.X11-unix/X99 ] && break; sleep 0.2; done
+            export DISPLAY=:99
+          fi
+          node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs --test-name-pattern='^the real slicc CLI shares another browser over cdp:' test/integration/link.test.mjs 2>&1 | tee walk.log
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: walk-${{ matrix.version }}
+          path: |
+            artifacts/walk-${{ matrix.version }}/
+            walk.log
+          if-no-files-found: error

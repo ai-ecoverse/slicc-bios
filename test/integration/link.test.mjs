@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
+import { createWriteStream } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
 import { createServer, request } from 'node:http';
 import { createInterface } from 'node:readline';
+import { Transform } from 'node:stream';
 import { after, test } from 'node:test';
 import { boot, ready, run } from './bios.mjs';
 import { debuggerUrl, launch } from './chrome.mjs';
 import { attach, CLI, HOST_CDP } from './cli.mjs';
+import { nativeTap, origins } from './cli-native-tap.mjs';
 import { shoot } from './shots.mjs';
 
 const chrome = await launch();
@@ -985,6 +989,8 @@ test('the real slicc CLI shares another browser over cdp: the 9222 facade reache
   const other = await launch({ vault: false, args: [`--remote-debugging-port=${debugPort}`] });
   t.after(() => other.close());
   await debuggerUrl(debugPort);
+  await mkdir(process.env.PROBE_OUT, { recursive: true });
+  const tap = await nativeTap(debugPort, `${process.env.PROBE_OUT}/native.jsonl`);
   const page = await chrome.page(t);
   await boot(page);
   await ready(page);
@@ -997,11 +1003,36 @@ test('the real slicc CLI shares another browser over cdp: the 9222 facade reache
       'ref-node',
       '--no-kernel',
       '--cdp-extra',
-      `http://127.0.0.1:${debugPort}`,
+      `http://127.0.0.1:${tap.port}`,
     ],
-    { stdio: ['pipe', 'pipe', 'inherit'] }
+    { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, SLICC_DEBUG: '1' } }
   );
-  t.after(() => node.kill());
+  const cliLog = createWriteStream(`${process.env.PROBE_OUT}/cli.stderr.log`);
+  let partial = '';
+  node.stderr.setEncoding('utf8');
+  node.stderr
+    .pipe(
+      new Transform({
+        transform(chunk, encoding, callback) {
+          const lines = (partial + String(chunk)).split('\n');
+          partial = lines.pop();
+          callback(null, lines.length ? `${origins(lines.join('\n'))}\n` : '');
+        },
+        flush(callback) {
+          callback(null, origins(partial));
+        },
+      })
+    )
+    .pipe(cliLog);
+  t.after(async () => {
+    node.kill();
+    if (!cliLog.writableFinished)
+      await new Promise((resolve, reject) => {
+        cliLog.once('finish', resolve);
+        cliLog.once('error', reject);
+      });
+    await tap.close();
+  });
   await page.expose('sliccLinkSend', (message) => node.stdin.write(`${JSON.stringify(message)}\n`));
   createInterface({ input: node.stdout }).on('line', (line) =>
     page.evaluate((line) => globalThis.sliccLinkReceive(line), line).catch(() => {})
