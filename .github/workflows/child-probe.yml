@@ -1,0 +1,70 @@
+name: Child probe
+
+on:
+  push:
+    branches: [guard-child-probe-head, guard-child-probe-main]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: cloud-run-job
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - copy: '1'
+            cpu: '0'
+          - copy: '2'
+            cpu: '0'
+          - copy: '3'
+            cpu: '0'
+          - copy: '4'
+            cpu: '1'
+          - copy: '5'
+            cpu: '1'
+          - copy: '6'
+            cpu: '1'
+          - copy: shared
+            cpu: '0'
+    env:
+      LEFTHOOK: '0'
+      SLICC_COVERAGE: '0'
+      PROBE_COPY: ${{ matrix.copy }}
+      PROBE_CPU: ${{ matrix.cpu }}
+      PROBE_BASE: 2a12187c64e0eeaeeaaab5035a4a8266e146e72a
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '26'
+          cache: npm
+      - run: npm ci
+      - run: npm install --no-save --package-lock=false @ai-ecoverse/slicc-browsers@1.18.12
+      - run: npx --no-install slicc-cdp install-browser --with-deps
+      - run: |
+          if [ "$(id -u)" = 0 ]; then
+            apt-get update -qq && apt-get install -y -qq xvfb xauth
+          else
+            sudo -n apt-get update -qq && sudo -n apt-get install -y -qq xvfb xauth
+          fi
+      - name: Measure
+        run: |
+          set -o pipefail
+          if [ "$PROBE_COPY" = shared ]; then
+            xvfb-run -a node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs --test-name-pattern='^on a shared origin, sign-in goes through six' test/integration/shared-origin.test.mjs 2>&1 | tee child-probe.log
+          else
+            xvfb-run -a node --test --test-concurrency=1 --test-timeout=2700000 --test-global-setup=test/integration/global.mjs test/integration/guard-child-probe.test.mjs 2>&1 | tee child-probe.log
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: child-probe-${{ matrix.copy }}
+          path: |
+            artifacts/
+            child-probe.log
+          if-no-files-found: error
