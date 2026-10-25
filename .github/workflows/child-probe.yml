@@ -2,7 +2,7 @@ name: Child probe
 
 on:
   push:
-    branches: [guard-child-probe-head, guard-child-probe-main]
+    branches: [guard-child-ablation-head, guard-child-ablation-main]
 
 permissions:
   contents: read
@@ -29,9 +29,14 @@ jobs:
             cpu: '1'
           - copy: shared
             cpu: '0'
+          - copy: ordinary-1
+            cpu: '0'
+          - copy: ordinary-2
+            cpu: '0'
     env:
       LEFTHOOK: '0'
       SLICC_COVERAGE: '0'
+      PROBE_ATTACHMENT: none
       PROBE_COPY: ${{ matrix.copy }}
       PROBE_CPU: ${{ matrix.cpu }}
       PROBE_BASE: f6ccd22096bba639452bd6d5fc2c79ed0d4d3f13
@@ -66,6 +71,8 @@ jobs:
           fi
           if [ "$PROBE_COPY" = shared ]; then
             node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs --test-name-pattern='^on a shared origin, sign-in goes through six' test/integration/shared-origin.test.mjs 2>&1 | tee child-probe.log
+          elif [[ "$PROBE_COPY" = ordinary-* ]]; then
+            node --test --test-concurrency=1 --test-timeout=2700000 --test-global-setup=test/integration/global.mjs test/integration/guard-ordinary-probe.test.mjs 2>&1 | tee child-probe.log
           else
             node --test --test-concurrency=1 --test-timeout=2700000 --test-global-setup=test/integration/global.mjs test/integration/guard-child-probe.test.mjs 2>&1 | tee child-probe.log
           fi
