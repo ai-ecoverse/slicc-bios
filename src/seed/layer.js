@@ -5,7 +5,7 @@ import { baseManifest, enforced, fetchText, pnpm, readable, text, write } from '
 export const FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies'];
 const EXACT = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 export const GATED =
-  /^@ai-ecoverse\/(?:slicc-kernel|slicc-cdp|slicc-clipboard|slicc-jsh|mcpcat$|wasi-|wasix-|wasm-|py-)/;
+  /^@ai-ecoverse\/(?:slicc-kernel|slicc-capture|slicc-cdp|slicc-clipboard|slicc-jsh|mcpcat$|wasi-|wasix-|wasm-|py-)/;
 const RELAXED = ['pnpm', 'install', '--no-frozen-lockfile'];
 const seen = new Map();
 

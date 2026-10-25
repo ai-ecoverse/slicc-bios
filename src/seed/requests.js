@@ -8,6 +8,10 @@ export const LATE = 'nobody answered the request to open the page within 60 s';
 export const WAIT_MS = 60_000;
 export const REST_MS = 10_000;
 export const BUSY = 'another request is waiting for you';
+export const CAPTURE_DISMISSED = 'the request to capture the screen was dismissed';
+export const CAPTURE_LATE = 'nobody answered the request to capture the screen within 60 s';
+export const CAPTURED = "seven doesn't capture its own pages or the vault";
+export const HANDLE = 'slicc-seven';
 
 export const refused = (message) => new DOMException(message, 'NotAllowedError');
 
@@ -164,7 +168,7 @@ export function openUrl({
   };
 }
 
-export const KINDS = { 'open.url': {} };
+export const KINDS = { 'open.url': {}, 'capture.screen': {}, 'clipboard.write': {} };
 
 export function pageRequests({
   show,
@@ -186,7 +190,7 @@ export function pageRequests({
   };
 }
 
-export function plugged(hook, prompts) {
+export function plugged(hook, prompts, extra = {}) {
   return Object.fromEntries(
     Object.keys(hook?.kinds ?? {})
       .filter((kind) => Object.hasOwn(prompts, kind))
@@ -194,8 +198,62 @@ export function plugged(hook, prompts) {
         kind,
         async (request, { gesture }) => {
           await gesture(request.stamp, prompts[kind](request), request.signal);
-          return hook.handle(request);
+          return hook.handle({ ...request, ...extra });
         },
       ])
   );
+}
+
+export function capturePrompt({ stamp }) {
+  return {
+    title: 'Capture the screen?',
+    body: `${asker(stamp)} asks seven to capture your screen. You pick what to share next.`,
+    action: 'Choose',
+    cancel: 'Cancel',
+    variant: 'confirmation',
+    dismissed: CAPTURE_DISMISSED,
+    late: CAPTURE_LATE,
+  };
+}
+
+function stopped(stream) {
+  for (const track of stream?.getTracks?.() ?? []) track.stop();
+}
+
+export function displayer({
+  media = () => globalThis.navigator?.mediaDevices,
+  is = protection(globalThis.location?.origin),
+} = {}) {
+  return async (constraints) => {
+    const devices = media();
+    if (typeof devices?.getDisplayMedia !== 'function')
+      throw new DOMException(
+        'screen capture is not supported in this browser',
+        'NotSupportedError'
+      );
+    const stream = await devices.getDisplayMedia({
+      ...constraints,
+      audio: false,
+      selfBrowserSurface: 'exclude',
+      surfaceSwitching: 'exclude',
+      preferCurrentTab: false,
+    });
+    const handle = stream?.getVideoTracks?.()[0]?.getCaptureHandle?.();
+    if (handle?.handle === HANDLE || (handle?.origin && is.url(handle.origin))) {
+      stopped(stream);
+      throw refused(CAPTURED);
+    }
+    return stream;
+  };
+}
+
+export function markCaptured({
+  media = () => globalThis.navigator?.mediaDevices,
+  origin = globalThis.location?.origin,
+} = {}) {
+  media()?.setCaptureHandleConfig?.({
+    handle: HANDLE,
+    exposeOrigin: true,
+    permittedOrigins: [origin],
+  });
 }
