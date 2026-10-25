@@ -1073,9 +1073,20 @@ class Guard {
     const config = JSON.stringify(params);
     const cached = this.autoAttachments.get(sessionId);
     if (cached?.config === config) return cached.promise;
-    const promise = Promise.resolve().then(() =>
-      this.call('Target.setAutoAttach', params, sessionId)
-    );
+    const promise = Promise.resolve()
+      .then(() => this.call('Target.setAutoAttach', params, sessionId))
+      .then(
+        (answer) => {
+          if (answer.error && this.autoAttachments.get(sessionId)?.promise === promise)
+            this.autoAttachments.delete(sessionId);
+          return answer;
+        },
+        (error) => {
+          if (this.autoAttachments.get(sessionId)?.promise === promise)
+            this.autoAttachments.delete(sessionId);
+          throw error;
+        }
+      );
     this.autoAttachments.set(sessionId, { config, promise });
     return promise;
   }
