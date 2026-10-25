@@ -241,10 +241,23 @@ async function rewrite(path, file, base, run) {
 
 const CACHED = 'transform;desc="cached"';
 
+const UNKEPT = { 'cache-control': 'no-store', 'permissions-policy': 'unload=(self)' };
+
+const unkept = (type) => (type === types.html ? UNKEPT : {});
+
 function respond(body, type, origin, status = 200, extra = {}) {
-  return new Response(body, {
-    status,
-    headers: { ...isolation, 'content-type': type, 'x-served-from': origin, ...extra },
+  const headers = { ...isolation, 'content-type': type, 'x-served-from': origin };
+  return new Response(body, { status, headers: { ...headers, ...unkept(type), ...extra } });
+}
+
+function unkeptDocument(response, request) {
+  if (request.destination !== 'document' || response.type === 'opaqueredirect') return response;
+  const headers = new Headers(response.headers);
+  for (const [name, value] of Object.entries(UNKEPT)) headers.set(name, value);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
   });
 }
 
@@ -257,7 +270,7 @@ function failed(status, text) {
 function sandboxed(body, type, status = 200) {
   return new Response(body, {
     status,
-    headers: { ...sandbox, 'content-type': type, 'x-served-from': 'opfs' },
+    headers: { ...sandbox, ...unkept(type), 'content-type': type, 'x-served-from': 'opfs' },
   });
 }
 
@@ -369,7 +382,7 @@ async function serve(request, controller, client) {
   }
   if (asked === MANIFEST) return Response.redirect(`${BIOS_URL}manifest.json`, 302);
   const served = kind(path);
-  if (served === 'bios') return network();
+  if (served === 'bios') return unkeptDocument(await network(), request);
   if (path === STATUS) {
     const stopped = await (await integrity()).stopped();
     return respond(JSON.stringify({ stopped }), types.json, 'sw');

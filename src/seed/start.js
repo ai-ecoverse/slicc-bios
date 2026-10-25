@@ -131,4 +131,12 @@ export async function start({
   }
 }
 
+export function uncached(target = globalThis) {
+  target.addEventListener('unload', () => {});
+  target.addEventListener('pageshow', (event) => {
+    if (event.persisted) target.location.reload();
+  });
+}
+
+uncached();
 await start();
