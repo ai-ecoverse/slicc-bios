@@ -2699,6 +2699,7 @@ for (const route of ['extension', 'proxy', 'link']) {
         transport = { url: proxy.url, key: proxy.key };
       }
       const guard = await guardPage(t, 0, transport);
+      sevenPages(guard.seven);
       const targetId = await tab(`${PLAIN}/doc?wipe=${route}`);
       const protectedId = await tab(`${VAULT}/vault?read=${route}`);
       t.after(() => closeAll([targetId, protectedId]));
@@ -2741,8 +2742,8 @@ for (const route of ['extension', 'proxy', 'link']) {
       await refused();
       const owner = await harness(targetId);
       const before = await guard.seven.evaluate(() => window.guarded.messages.length);
-      const destination = `${VAULT}/vault?wiped=${route}`;
-      const requested = heard.length;
+      const destination = `${SEVEN}/probe-doc.html?wipe=${route}`;
+      const requested = chrome.requests.length;
       await owner.send('Runtime.evaluate', { expression: TRIGGERS.href(destination) });
       let snapshot;
       for (const end = Date.now() + 15000; ; ) {
@@ -2766,10 +2767,7 @@ for (const route of ['extension', 'proxy', 'link']) {
         [],
         'the private wipe publishes neither replies nor events to the client'
       );
-      assert.equal(
-        heard.slice(requested).some((hit) => hit.path === `/vault?wiped=${route}`),
-        false
-      );
+      assert.equal(served(destination, requested), false);
       assert.deepEqual(await read(), snapshot);
       assert.equal(
         (await guard.send('Target.getTargetInfo', { targetId })).result?.targetInfo?.url,
