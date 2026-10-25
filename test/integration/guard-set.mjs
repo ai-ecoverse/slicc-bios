@@ -235,7 +235,7 @@ export async function guardHost(t, path) {
   const tabs = await tabsBrowser(t, path);
   if (path === 'link') trace('link', (await linkNode(t, seven, tabs.port)).join(' '));
   const setup = async (proxy) => {
-    const { guardProtected } = await import(new URL('guard.js', location.href).href);
+    const { guardProtected, protection } = await import(new URL('guard.js', location.href).href);
     const { extensionConnection, proxyHost } = await import(new URL('cdp.js', location.href).href);
     const hosts = {
       extension: async () => extensionConnection(globalThis.sliccExtension.cdp),
@@ -246,10 +246,14 @@ export async function guardHost(t, path) {
         return linked.open();
       },
     };
-    const lagged = (connection, lag, paintDelay, row, path) => {
+    const lagged = (connection, lag, paintDelay, row, path, own) => {
       const send = connection.send.bind(connection);
       const shots = new Set();
       const tracked = new Map();
+      const inspected = new Map();
+      const attachedFrames = new Map();
+      const matcher = protection(own);
+      let inspectionId = 2 ** 29;
       const record = (message) =>
         void window.guardTransport(
           JSON.stringify([
@@ -279,9 +283,75 @@ export async function guardHost(t, path) {
         'Fetch.failRequest',
         'Fetch.continueRequest',
       ]);
+      const query = (method, params, sessionId) =>
+        new Promise((resolve) => {
+          const id = ++inspectionId;
+          const timer = setTimeout(() => {
+            inspected.delete(id);
+            resolve({ error: { message: 'owner inspection timed out' } });
+          }, 10000);
+          inspected.set(id, { resolve, timer, method, sessionId });
+          record({ direction: 'probe-out', id, method, params, sessionId });
+          send(JSON.stringify({ id, method, params, sessionId }));
+        });
+      const protectedOwner = async (sessionId) => {
+        const document = await query('DOM.getDocument', { depth: -1, pierce: true }, sessionId);
+        const disabled = await query('DOM.disable', {}, sessionId);
+        const owners = [];
+        const nodes = [document.result?.root];
+        while (nodes.length) {
+          const node = nodes.pop();
+          if (!node) continue;
+          if (node.nodeName === 'IFRAME' || node.nodeName === 'FRAME') {
+            const attributes = node.attributes ?? [];
+            const index = attributes.indexOf('src');
+            const positive = [
+              index < 0 ? null : attributes[index + 1],
+              node.contentDocument?.documentURL,
+            ].some((url) => typeof url === 'string' && matcher.url(url));
+            owners.push({
+              frameId: node.frameId,
+              attached: attachedFrames.get(sessionId)?.has(node.frameId) === true,
+              positive,
+            });
+          }
+          nodes.push(
+            ...(node.children ?? []),
+            ...(node.shadowRoots ?? []),
+            node.contentDocument,
+            node.templateContent
+          );
+        }
+        const failed = Boolean(document.error || disabled.error || !document.result?.root);
+        const skip = !failed && owners.some((owner) => owner.attached && owner.positive);
+        record({ direction: 'owner-check', sessionId, failed, skip, owners });
+        return skip;
+      };
       const relay = { onmessage: null, onclose: null, close: () => connection.close() };
       connection.onmessage = (text) => {
         const message = JSON.parse(text);
+        if (inspected.has(message.id)) {
+          const request = inspected.get(message.id);
+          inspected.delete(message.id);
+          clearTimeout(request.timer);
+          record({
+            direction: 'probe-answer',
+            id: message.id,
+            method: request.method,
+            sessionId: request.sessionId,
+            error: message.error,
+            ok: !message.error,
+          });
+          request.resolve(message);
+          return;
+        }
+        if (message.method === 'Page.frameAttached') {
+          if (!attachedFrames.has(message.sessionId))
+            attachedFrames.set(message.sessionId, new Set());
+          attachedFrames.get(message.sessionId).add(message.params.frameId);
+        }
+        if (message.method === 'Page.frameDetached' && message.params.reason !== 'swap')
+          attachedFrames.get(message.sessionId)?.delete(message.params.frameId);
         if (structural.has(message.method))
           record({
             direction: 'in',
@@ -319,16 +389,17 @@ export async function guardHost(t, path) {
         else relay.onmessage?.(text);
       };
       connection.onclose = (why) => relay.onclose?.(why);
-      relay.send = (text) => {
+      relay.send = async (text) => {
         const message = JSON.parse(text);
         if (
           path === 'link' &&
-          proxy.probeAttachment === 'none' &&
+          ['none', 'protected-owner'].includes(proxy.probeAttachment) &&
           message.id >= 2 ** 30 &&
           message.method === 'Target.setAutoAttach' &&
           message.params.autoAttach &&
           !message.params.waitForDebuggerOnStart &&
-          message.params.filter?.some((entry) => entry.type === 'iframe' && !entry.exclude)
+          message.params.filter?.some((entry) => entry.type === 'iframe' && !entry.exclude) &&
+          (proxy.probeAttachment === 'none' || (await protectedOwner(message.sessionId)))
         ) {
           record({ direction: 'suppressed', ...message, probeAttachment: proxy.probeAttachment });
           queueMicrotask(() => {
@@ -359,7 +430,7 @@ export async function guardHost(t, path) {
     window.guards = {
       async open(row, own, path, lag, paintDelay) {
         const connection = guardProtected(
-          lagged(await hosts[path](), lag, paintDelay, row, path),
+          lagged(await hosts[path](), lag, paintDelay, row, path, [location.origin, own].flat()),
           [location.origin, own].flat()
         );
         const pending = new Map();

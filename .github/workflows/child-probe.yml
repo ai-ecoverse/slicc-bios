@@ -2,7 +2,7 @@ name: Child probe
 
 on:
   push:
-    branches: [guard-child-ablation-head, guard-child-ablation-main]
+    branches: [guard-child-owner-head, guard-child-owner-main]
 
 permissions:
   contents: read
@@ -36,7 +36,7 @@ jobs:
     env:
       LEFTHOOK: '0'
       SLICC_COVERAGE: '0'
-      PROBE_ATTACHMENT: none
+      PROBE_ATTACHMENT: protected-owner
       PROBE_COPY: ${{ matrix.copy }}
       PROBE_CPU: ${{ matrix.cpu }}
       PROBE_BASE: 2a12187c64e0eeaeeaaab5035a4a8266e146e72a
