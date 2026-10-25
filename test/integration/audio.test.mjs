@@ -36,8 +36,9 @@ const helpers = `
     }
     if (!window.findConfirm()) window.prompting = false;
   }).observe(document, { childList: true, subtree: true });
-  Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
+  Object.defineProperty(MediaDevices.prototype, 'getUserMedia', {
     configurable: true,
+    writable: true,
     value: async () => {
       window.micOpened += 1;
       throw new DOMException('denied by the test', 'NotAllowedError');

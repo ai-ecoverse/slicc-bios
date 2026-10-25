@@ -11,7 +11,7 @@ const lock = JSON.parse(
   readFileSync(new URL('../../src/packages/package-lock.json', import.meta.url), 'utf8')
 );
 const base = Object.entries(lock.packages)
-  .filter(([path, entry]) => path && entry.resolved && !entry.os && !entry.cpu)
+  .filter(([path, entry]) => path && entry.resolved && !entry.os && !entry.cpu && !entry.optional)
   .map(([path, entry]) => ({ name: path.split('node_modules/').at(-1), version: entry.version }));
 
 const present = (command) => `command -v ${command}`;

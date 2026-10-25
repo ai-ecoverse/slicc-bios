@@ -1580,8 +1580,9 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
 
   await page.evaluate(() => {
     window.micOpened = 0;
-    Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
+    Object.defineProperty(MediaDevices.prototype, 'getUserMedia', {
       configurable: true,
+      writable: true,
       value: async () => {
         window.micOpened += 1;
         throw new DOMException('denied by the test', 'NotAllowedError');
