@@ -3,7 +3,8 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { origins } from './cli-native-tap.mjs';
 import { lateRemoteProbe } from './guard-paint.mjs';
-import { MARKED } from './guard-paint-pixels.mjs';
+
+const MARKED = 1000;
 
 const copy = process.env.PROBE_COPY;
 const out = `artifacts/late-remote-${copy}`;
