@@ -32,13 +32,19 @@ const sh = (page, command) =>
     return { status, out: `${stdout}${stderr}` };
   }, command);
 
-async function moved(t) {
+async function moved(t, { dismissed = null } = {}) {
   const page = await chrome.page(t);
   await page.init(
     `() => { globalThis.sliccKernelDebug = true; if (location.origin === ${JSON.stringify(origin)} && !localStorage.getItem(${JSON.stringify(VAULT_KEY)})) localStorage.setItem(${JSON.stringify(VAULT_KEY)}, ${JSON.stringify(chrome.vault.origin)}); }`
   );
   await page.goto(`${origin}/`);
   await page.until(() => document.getElementById('six')?.dataset.ran === 'yes');
+  if (dismissed) {
+    await page.evaluate(
+      (dismissed) => localStorage.setItem('slicc-os.notices.dismissed', JSON.stringify(dismissed)),
+      dismissed
+    );
+  }
   await page.goto(`${origin}/7/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
   await page.within(
     15 * 60 * 1000,
@@ -185,11 +191,11 @@ test('when the agent refuses the export, seven keeps the hand-off key, says so, 
   assert.deepEqual(page.errors, []);
 });
 
-test('when the export named by the hand-off key has no manifest.json, seven keeps the key, says so, moves nothing, and closing the notice hides it only until the next start', {
+test('when the export named by the hand-off key has no manifest.json, seven keeps the key and says so, even to someone who closed that notice for good before, moves nothing, and closing the notice hides it only until the next start', {
   timeout: 30 * 60 * 1000,
 }, async (t) => {
   state.mode = 'lost';
-  const { page, dir } = await moved(t);
+  const { page, dir } = await moved(t, { dismissed: ['six-import', 'unrelated'] });
   const shown = await page.within(5 * 60 * 1000, () => {
     const found = document
       .querySelector('slicc-app')
@@ -202,6 +208,10 @@ test('when the export named by the hand-off key has no manifest.json, seven keep
     'Seven couldn’t import what SLICC 6 left in this browser: SLICC 6’s export has no readable manifest.json. Seven tries again the next time it starts. Stop trying leaves SLICC 6’s files where they are.'
   );
   assert.equal(await page.evaluate(() => localStorage.getItem('slicc-os.six-import')), dir);
+  assert.deepEqual(
+    await page.evaluate(() => JSON.parse(localStorage.getItem('slicc-os.notices.dismissed'))),
+    ['unrelated']
+  );
   const kept = await sh(
     page,
     `cat /slicc-fs/home/user/notes.txt; test -d ${dir} && test ! -e ${dir}manifest.json && echo no-manifest; test ! -e /root/v6 && echo not-moved`
