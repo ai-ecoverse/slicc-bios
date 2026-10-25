@@ -46,6 +46,20 @@ test('the pipeline picks its runners and reviews no Renovate pull request', () =
   assert.match(input('review-prompt'), /^\|$/);
 });
 
+test('the flaky-test hunter reruns up to three failing files per shard, and a flip of a guard or security row always stays red', async () => {
+  assert.equal(input('flaky-retry'), '3');
+  const strict = block('strict-tests')
+    .trim()
+    .split('\n')
+    .map((line) => line.trim());
+  assert.deepEqual(strict.slice(0, 2), ['**/*guard*.test.*', '**/*security*.test.*']);
+  const files = await readdir(new URL('./', import.meta.url));
+  for (const glob of strict.slice(2)) {
+    const [, name] = glob.match(/^\*\*\/([\w.-]+\.test\.mjs)$/) ?? [];
+    assert.ok(name && files.includes(name), `${glob} names no test file`);
+  }
+});
+
 test('the review prompt judges a dependency-only pull request on the suite and provenance, denying only a concrete defect', () => {
   const prompt = ci.slice(ci.indexOf('review-prompt: |'));
   assert.match(

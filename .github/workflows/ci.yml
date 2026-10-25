@@ -21,13 +21,38 @@ concurrency:
 
 jobs:
   ci:
-    uses: ai-ecoverse/slicc-shared-web/.github/workflows/pipeline.yml@v2.12.4
+    uses: ai-ecoverse/slicc-shared-web/.github/workflows/pipeline.yml@v2.13.0
     secrets: inherit
     with:
       node-version: '26'
       test-glob: test/integration/*.test.mjs
       shards: 12
       timeout-minutes: 90
+      flaky-retry: 3
+      strict-tests: |
+        **/*guard*.test.*
+        **/*security*.test.*
+        **/address.test.mjs
+        **/agent-sign-in-held.test.mjs
+        **/beta-boundary.test.mjs
+        **/bfcache.test.mjs
+        **/bfcache-extension.test.mjs
+        **/cdp.test.mjs
+        **/cdp-link-worlds.test.mjs
+        **/embedder.test.mjs
+        **/fnox.test.mjs
+        **/framing.test.mjs
+        **/integrity.test.mjs
+        **/keys.test.mjs
+        **/link.test.mjs
+        **/mcpcat-users.test.mjs
+        **/pair.test.mjs
+        **/pins.test.mjs
+        **/releases-boundary.test.mjs
+        **/sandbox.test.mjs
+        **/sign-in-held.test.mjs
+        **/vault.test.mjs
+        **/vault-endpoints.test.mjs
       review-timeout-minutes: 90
       deploy: node edge/publish.mjs preview >> "$GITHUB_STEP_SUMMARY"
       release-environment: production
