@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { readdir, readFile } from 'node:fs/promises';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 const read = (path) => readFile(new URL(`../../${path}`, import.meta.url), 'utf8');
 const ci = await read('.github/workflows/ci.yml');
@@ -118,4 +120,17 @@ test('the guard-set vectors run as one file per path, target group and detach va
     )
     .sort();
   assert.deepEqual(files, want);
+});
+
+test('the pre-commit diff coverage measures every directory of code outside the tests: src and edge', () => {
+  assert.deepEqual(pkg.slicc?.unitSources, ['src', 'edge']);
+  const root = fileURLToPath(new URL('../../', import.meta.url));
+  const tracked = execFileSync('git', ['ls-files'], { cwd: root, encoding: 'utf8' }).split('\n');
+  const outside = tracked.filter(
+    (path) =>
+      /\.(?:m|c)?[jt]s$/.test(path) &&
+      path.includes('/') &&
+      !['test', ...pkg.slicc.unitSources].includes(path.split('/')[0])
+  );
+  assert.deepEqual(outside, [], 'code in a directory the diff coverage doesn’t measure');
 });
