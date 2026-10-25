@@ -663,7 +663,9 @@ export function shared(path, { variants, except = [], group } = {}) {
             if (
               data.side !== 'guarded' ||
               !data.calls ||
-              !['C8.iframe-error', 'C4.static-cross-site'].includes(current?.id)
+              !['C8.iframe-error', 'C4.static-cross-site', 'C4.script-cross-site'].includes(
+                current?.id
+              )
             )
               return;
             const snapshot = data.calls.snapshot;
@@ -701,7 +703,7 @@ export function shared(path, { variants, except = [], group } = {}) {
         });
         results.push(...execution.results);
         for (const row of execution.results.filter(
-          (row) => failing(row) || row.id === 'C4.static-cross-site'
+          (row) => failing(row) || ['C4.static-cross-site', 'C4.script-cross-site'].includes(row.id)
         )) {
           if (evidence.has(row.id))
             process.stdout.write(
