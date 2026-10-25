@@ -1104,6 +1104,19 @@ class Guard {
     return all;
   }
 
+  revokeProof(targetId, state, revision, proof) {
+    if (
+      this.documents.get(targetId) === state &&
+      state.revision === revision &&
+      state.proof === proof
+    ) {
+      state.transport = false;
+      state.checked = -1;
+      state.proof = (proof ?? 0) + 1;
+    }
+    return false;
+  }
+
   async checkDocument(targetId) {
     if (WORKER_TYPES.has(this.targets.get(targetId)?.type))
       return (await this.verifyWorker(targetId)) === true;
@@ -1115,17 +1128,23 @@ class Guard {
     const revision = state.revision;
     if (state.checked === revision) return true;
     if (state.checking?.revision === revision) return state.checking.promise;
+    const proof = state.proof;
     const promise = (async () => {
       const answer = await this.call('Page.getFrameTree', {}, nav.session, CHECK_MS);
       const all = this.documentTree(answer.result?.frameTree);
-      if (answer.error || !all || state.revision !== revision) {
-        if (state.revision === revision) state.transport = false;
-        return false;
-      }
+      if (
+        answer.error ||
+        !all ||
+        this.documents.get(targetId) !== state ||
+        state.revision !== revision ||
+        state.proof !== proof
+      )
+        return this.revokeProof(targetId, state, revision, proof);
       for (const frame of all) {
         this.frames.set(frame.id, this.framed(frame));
         if (frame.parentId) this.parents.set(frame.id, frame.parentId);
       }
+      state.proof = (proof ?? 0) + 1;
       state.transport = true;
       state.url = bare(all[0].url);
       state.origins = new Map(
@@ -1257,6 +1276,7 @@ class Guard {
     const state = this.document(targetId);
     state.transport = false;
     const revision = state.revision;
+    const proof = state.proof;
     const answer = await this.call('Target.getTargetInfo', { targetId }, undefined, CHECK_MS);
     const info = answer.result?.targetInfo;
     if (
@@ -1267,18 +1287,19 @@ class Guard {
       !info.url ||
       !URL.canParse(info.url)
     ) {
-      if (state.revision === revision) state.checked = -1;
-      return false;
+      return this.revokeProof(targetId, state, revision, proof);
     }
+    if (state.revision !== revision || state.proof !== proof) return false;
     this.learn(info);
-    if (await this.target(targetId)) {
-      state.checked = -1;
+    const guarded = await this.target(targetId);
+    if (state.revision !== revision || state.proof !== proof) return false;
+    if (guarded) {
+      this.revokeProof(targetId, state, revision, proof);
       return PROTECTED;
     }
-    if (!WORKER_TYPES.has(info.type) || state.retired || state.revision !== revision) {
-      if (state.revision === revision) state.checked = -1;
-      return false;
-    }
+    if (!WORKER_TYPES.has(info.type) || state.retired)
+      return this.revokeProof(targetId, state, revision, proof);
+    state.proof = (proof ?? 0) + 1;
     state.transport = true;
     state.url = bare(info.url);
     state.checked = revision;
@@ -1287,15 +1308,26 @@ class Guard {
 
   async verify(sessionId, targetId) {
     if (WORKER_TYPES.has(this.targets.get(targetId)?.type)) return this.verifyWorker(targetId);
+    const state = this.document(targetId);
+    const revision = state.revision;
+    const proof = state.proof;
     void this.call('Page.enable', {}, sessionId);
     const answer = await this.call('Page.getFrameTree', {}, sessionId, NAV_MS);
-    if (answer.error) return false;
+    if (answer.error) return this.revokeProof(targetId, state, revision, proof);
+    if (
+      this.documents.get(targetId) !== state ||
+      state.revision !== revision ||
+      state.proof !== proof
+    )
+      return false;
     const tree = answer.result?.frameTree;
     const all = framed(tree);
-    if (all.some((frame) => this.is.url(frame.url) || this.is.url(frame.securityOrigin)))
+    if (all.some((frame) => this.is.url(frame.url) || this.is.url(frame.securityOrigin))) {
+      this.revokeProof(targetId, state, revision, proof);
       return PROTECTED;
+    }
     const known = this.documentTree(tree);
-    if (!known) return false;
+    if (!known) return this.revokeProof(targetId, state, revision, proof);
     for (const frame of known) {
       this.frames.set(frame.id, this.framed(frame));
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
@@ -1585,7 +1617,7 @@ class Guard {
       this.learn(info);
       if (await this.watch(params.sessionId, info.targetId, sessionId)) {
         this.touch(info.targetId);
-        this.deliver(message);
+        this.deliver({ ...message, params: { ...params, targetInfo: this.masked(info) } });
       }
       return true;
     }
