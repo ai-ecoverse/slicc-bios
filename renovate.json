@@ -48,6 +48,11 @@
       "separateMajorMinor": false
     },
     {
+      "description": "Held below 1.165.0: its stack callback change leaks released slicc-jsh 0.63.x frames into program stacks; a fix comes from the kernel lane and slicc-jsh (ai-ecoverse/slicc-bios#1016).",
+      "matchPackageNames": ["@ai-ecoverse/slicc-kernel"],
+      "allowedVersions": "<1.165.0"
+    },
+    {
       "description": "Skipped: wasi-pnpm 12.9.1-11 and 12.9.1-12 are deprecated, since installs can fail with rename timeouts on OPFS (ai-ecoverse/homescoop#1128). Use 12.9.1-13 or later.",
       "matchPackageNames": ["@ai-ecoverse/wasi-pnpm"],
       "allowedVersions": "!/^12\\.9\\.1-1[12]$/"

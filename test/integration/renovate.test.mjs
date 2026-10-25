@@ -112,7 +112,7 @@ test('every py-* of the Python data tools is one PR, opened from the dependency 
   assert.equal(effective('@ai-ecoverse/wasm-bash', PINNED[0]).groupName, 'homescoop packages');
 });
 
-test('known breaks are holds with a reason and an issue: wasi-pnpm without 12.9.1-11 and -12; wasm-bash moves freely now that kernel 1.135.2 has slicc-kernel#1146', () => {
+test('known breaks are holds with a reason and an issue: wasi-pnpm without 12.9.1-11 and -12; slicc-kernel below 1.165.0 until slicc-jsh is compatible (#1016); wasm-bash moves freely now that kernel 1.135.2 has slicc-kernel#1146', () => {
   const holds = config.packageRules.filter(
     (rule) => 'allowedVersions' in rule || rule.enabled === false || 'ignoreVersions' in rule
   );
@@ -123,6 +123,8 @@ test('known breaks are holds with a reason and an issue: wasi-pnpm without 12.9.
       `${rule.matchPackageNames} names its issue`
     );
   assert.equal(effective('@ai-ecoverse/wasm-bash', PINNED[0]).allowedVersions, undefined);
+  for (const file of PINNED)
+    assert.equal(effective('@ai-ecoverse/slicc-kernel', file).allowedVersions, '<1.165.0', file);
   const pnpm = effective('@ai-ecoverse/wasi-pnpm', PINNED[0]).allowedVersions;
   const [, pattern] = pnpm.match(/^!\/(.+)\/$/);
   const refused = (version) => new RegExp(pattern).test(version);
