@@ -45,10 +45,16 @@ const PNG = '89 50 4e 47';
 const NAMED =
   "<script>navigator.mediaDevices.setCaptureHandleConfig({ handle: 'capture-target', exposeOrigin: true, permittedOrigins: ['*'] });</script>";
 
+let targets = 0;
+
 async function target(then = NAMED) {
   const html = `<!doctype html><title>${TITLE}</title><body style="margin:0;background:#0a6"><h1>dummy</h1>${then}`;
+  const path = `/capture-target-${(targets += 1)}.html`;
+  chrome.overrides.set(path, html);
+  const url = new URL(path, chrome.url);
+  url.hostname = 'localhost';
   const { targetId } = await chrome.cdp.send('Target.createTarget', {
-    url: `data:text/html,${encodeURIComponent(html)}`,
+    url: url.href,
     background: true,
   });
   return () => chrome.cdp.send('Target.closeTarget', { targetId });
