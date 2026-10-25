@@ -1,3 +1,4 @@
+import { activated } from './seed/activate.js';
 import { clearHandOff, dropped, droppedLine } from './seed/handoff.js';
 import { neverCached } from './seed/site.js';
 import { usersMode } from './seed/users.js';
@@ -99,35 +100,6 @@ function baseProject() {
 const repaired = [];
 const stopped = [];
 
-const SETTLE = 15000;
-
-function activated(registration, worker) {
-  return new Promise((resolve, reject) => {
-    const finish = (error) => {
-      clearTimeout(timer);
-      worker.removeEventListener('statechange', check);
-      navigator.serviceWorker.removeEventListener('controllerchange', check);
-      if (error) reject(error);
-      else resolve();
-    };
-    const check = () => {
-      if (worker.state === 'activated') finish();
-      else if (worker.state === 'redundant')
-        finish(new Error(`${worker.scriptURL} failed to install`));
-    };
-    const timer = setTimeout(() => {
-      if (!registration.active) return finish(new Error(`${worker.scriptURL} didn't activate`));
-      console.warn(
-        `bios: ${worker.scriptURL} is still ${worker.state}, going on under the active worker`
-      );
-      finish();
-    }, SETTLE);
-    worker.addEventListener('statechange', check);
-    navigator.serviceWorker.addEventListener('controllerchange', check);
-    check();
-  });
-}
-
 await step('opfs', async () => {
   await navigator.storage.getDirectory();
   const persisted = await navigator.storage.persist();
@@ -161,6 +133,7 @@ await step('packages', async (report) => {
 
 await step('seed', async () => {
   const files = [
+    'activate.js',
     'adobe.js',
     'agent.js',
     'approvals.js',
