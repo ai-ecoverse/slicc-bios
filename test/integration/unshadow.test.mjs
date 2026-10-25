@@ -169,7 +169,7 @@ test('bios#715: a shell pnpm add -g, as root and as cone, leaves the package’s
   assert.deepEqual(page.errors, []);
 });
 
-test('bios#823: after pnpm add -g mcpcat && mcpcat --version in one shell command, the hashed path runs the kernel command once seven replaces the Node link, pnpm remove -g leaves no link behind, and a link someone else made stays, as root and as cone', {
+test('bios#823: pnpm add -g mcpcat && mcpcat in one command runs the kernel command at once and through the hashed path, remove -g leaves no link, and an admin’s link stays, as root and cone', {
   timeout: 20 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -191,9 +191,12 @@ test('bios#823: after pnpm add -g mcpcat && mcpcat --version in one shell comman
   const version = SHIPPED.replaceAll('.', '\\.');
   const check = (text, bin, log) => {
     const [first, after = ''] = text.split(`settled ${bin === BIN ? '/usr/bin/mcpcat' : 'kernel'}`);
-    t.diagnostic(
-      `${bin}: first call ${new RegExp(`^${version}$`, 'm').test(first) ? 'ran the kernel command' : 'hit the Node link'}`
+    assert.match(
+      first,
+      new RegExp(`^${version}$`, 'm'),
+      `the first call didn't run mcpcat\n${text}\n${log}`
     );
+    assert.doesNotMatch(first, /bad interpreter|No such file or directory/, `${text}\n${log}`);
     assert.match(first, new RegExp(`hashed ${bin}/mcpcat`), `${text}\n${log}`);
     assert.ok(after, `the Node link was never replaced\n${text}`);
     assert.match(after, new RegExp(`^${version}$`, 'm'), text);
