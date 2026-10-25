@@ -22,9 +22,24 @@ const served = (page) =>
     return { worker: `${pathname}${search}`, probe: stub.match(/probe \d+/)?.[0] ?? null };
   });
 
+const watchers = new WeakMap();
+
+async function watcher(page) {
+  if (!watchers.has(page)) watchers.set(page, await watch(page));
+  return watchers.get(page);
+}
+
+const settled = (page) =>
+  page.within(
+    5 * 60 * 1000,
+    () => location.pathname !== '/os/' || document.querySelector('slicc-app')?.model.updates.ready()
+  );
+
 async function release(page, changes) {
+  await settled(page);
   for (const [path, body] of Object.entries(changes)) chrome.overrides.set(path, body);
-  const bios = await watch(page);
+  const bios = await watcher(page);
+  const from = bios.states().length;
   const mark = page.responses.length;
   await boot(page);
   const refused = page.responses
@@ -32,7 +47,7 @@ async function release(page, changes) {
     .filter((response) => response.status >= 400)
     .map((response) => `${response.status} ${new URL(response.url).pathname}`);
   assert.deepEqual(refused, []);
-  assert.deepEqual(bios.states(), booted);
+  assert.deepEqual(bios.states().slice(from), booted);
   return served(page);
 }
 
