@@ -78,10 +78,6 @@
     "id": "mount",
     "label": "mount"
   },
-  "@ai-ecoverse/wasi-fnox": {
-    "id": "fnox",
-    "label": "fnox"
-  },
   "@ai-ecoverse/slicc-cdp": {
     "id": "cdp",
     "label": "slicc-cdp (playwright-cli, curlwright)"

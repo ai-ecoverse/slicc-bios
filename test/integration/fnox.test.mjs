@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { after, test } from 'node:test';
-import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
 import { actPackage, boot, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { fakeCatalog } from './fake-catalog.mjs';
@@ -16,13 +15,10 @@ const FNOX = '@ai-ecoverse/wasi-fnox';
 const packages = new URL('../../src/packages/', import.meta.url);
 const text = (file) => readFileSync(new URL(file, packages), 'utf8');
 const json = (file) => JSON.parse(text(file));
-const LATEST = JSON.parse(
-  (await download(`https://registry.npmjs.org/${FNOX}/latest`)).toString()
-).version;
 
 function beforeTheMove() {
   const base = json('package.json');
-  const version = base.dependencies[FNOX] ?? LATEST;
+  const version = base.dependencies[FNOX];
   delete base.dependencies[FNOX];
   const lock = json('package-lock.json');
   delete lock.packages[`node_modules/${FNOX}`];
@@ -383,7 +379,7 @@ test('fnox exec runs in a project with an as_file secret: the plain secret reach
   assert.deepEqual(page.errors, []);
 });
 
-test('a profile that installed fnox from the catalog keeps a working fnox once fnox moves into seven’s tools, its catalog row is retired, not installed again, and removing it leaves the tools’s fnox', {
+test('a profile that installed fnox from the catalog keeps a working fnox once fnox moves into the base set, its catalog row is retired, not installed again, and removing it leaves the base set’s fnox', {
   timeout: 25 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);

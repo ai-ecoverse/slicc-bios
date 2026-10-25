@@ -426,6 +426,7 @@ test('the base set pins exactly what UI boot and the agent install need, and eve
     '@ai-ecoverse/slicc-browsers',
     '@ai-ecoverse/slicc-kernel',
     '@ai-ecoverse/slicc-spectrum',
+    '@ai-ecoverse/wasi-fnox',
     '@ai-ecoverse/wasi-pnpm',
     '@ai-ecoverse/wasm-bash',
     '@ai-ecoverse/wasm-coreutils',
@@ -441,7 +442,7 @@ test('the base set pins exactly what UI boot and the agent install need, and eve
     base
   );
   const tools = JSON.parse(await read('tools.json'));
-  assert.equal(Object.keys(tools).length, 21);
+  assert.equal(Object.keys(tools).length, 20);
   assert.deepEqual(
     Object.entries(tools)
       .filter(([, entry]) => entry.first)
