@@ -1,3 +1,5 @@
+import { nudge } from './activate.js';
+
 const DISMISSED = 'slicc-os.notices.dismissed';
 
 export function undismiss(id, storage = localStorage) {
@@ -248,8 +250,10 @@ export function watchWaiting({
   now = Date.now,
   settle = SETTLE_MS,
   poll = POLL_MS,
+  wake = nudge,
 }) {
   let worker = null;
+  let woken = null;
   let since = null;
   let mine = [];
   let holders = [];
@@ -288,6 +292,10 @@ export function watchWaiting({
       if (waiting !== worker) {
         worker = waiting;
         since = waiting ? now() : null;
+      }
+      if (waiting && woken !== waiting && now() - since >= poll) {
+        woken = waiting;
+        await wake(registration);
       }
       report(held() ? await streams() : []);
       render();

@@ -452,7 +452,11 @@ async function prune() {
 }
 
 self.addEventListener('message', (event) => {
-  if (event.data?.streams !== 'mine' || !event.source) return;
-  const { source } = event;
+  const { data, source } = event;
+  if (data?.activate === 'now' && Object.keys(data).length === 1 && source?.type === 'window') {
+    self.skipWaiting();
+    return;
+  }
+  if (data?.streams !== 'mine' || !source) return;
   event.waitUntil(prune().then(() => source.postMessage({ streams: streamsOf(source.id) })));
 });

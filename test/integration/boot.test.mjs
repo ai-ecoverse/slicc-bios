@@ -106,10 +106,12 @@ test('goes on under the active worker when an updated one waits and never activa
   const page = await chrome.page(t);
   await boot(page);
   const current = await readFile(new URL('../../src/sw.js', import.meta.url), 'utf8');
-  const stuck = current.replace(
-    "self.addEventListener('install', () => self.skipWaiting());",
-    "self.addEventListener('install', () => {});"
-  );
+  const stuck = current
+    .replace(
+      "self.addEventListener('install', () => self.skipWaiting());",
+      "self.addEventListener('install', () => {});"
+    )
+    .replace('    self.skipWaiting();\n    return;', '    return;');
   assert.notEqual(stuck, current);
   chrome.overrides.set('/sw.js', stuck);
   const bios = await watch(page);
