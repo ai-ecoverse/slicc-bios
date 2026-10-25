@@ -1054,7 +1054,7 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
 
   const errorPage = async (sessionId) => {
     let href = null;
-    for (let n = 0; n < 50 && href !== 'about:blank#blocked'; n += 1) {
+    for (let n = 0; n < 50 && href !== 'data:text/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E'; n += 1) {
       await new Promise((resolve) => setTimeout(resolve, 200));
       href = (
         await send(
@@ -1157,7 +1157,7 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
   );
   assert.equal(
     await errorPage(walking),
-    'about:blank#blocked',
+    'data:text/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E',
     'the walk into the vault ends on a blank page, and the client keeps its session'
   );
   await new Promise((resolve) => setTimeout(resolve, 3000));
@@ -1167,11 +1167,11 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
   );
   assert.equal(
     (await devtools('/json/list')).find((tab) => tab.id === walker)?.url,
-    'about:blank#blocked'
+    'data:text/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E'
   );
   assert.equal(
     (await send('Target.getTargetInfo', { targetId: walker })).result?.targetInfo.url,
-    'about:blank#blocked',
+    'data:text/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E',
     'the client sees the blank page, not the vault URL it failed'
   );
   assert.equal((await send('Target.activateTarget', { targetId: walker })).error, undefined);

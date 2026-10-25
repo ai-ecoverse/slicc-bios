@@ -210,7 +210,7 @@ const served = (url, mark) => {
   return heard.some((hit) => hit.host === at.host && hit.path === `${at.pathname}${at.search}`);
 };
 
-const BLANKED = 'about:blank#blocked';
+const BLANKED = 'data:text/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E';
 const stopped = (href) => String(href).startsWith('chrome-error://') || href === BLANKED;
 
 async function errorPage(targetId, ms) {
@@ -413,9 +413,11 @@ async function guardPage(t, lag, proxy = null, lens = null) {
     const connection = guardProtected(await routed(), location.origin);
     const pending = new Map();
     const events = [];
+    const messages = [];
     let next = 0;
     connection.onmessage = (text) => {
       const message = JSON.parse(text);
+      messages.push(message);
       if (message.id !== undefined) {
         pending.get(message.id)?.(message);
         pending.delete(message.id);
@@ -427,6 +429,7 @@ async function guardPage(t, lag, proxy = null, lens = null) {
     const handlers = new Set();
     window.guarded = {
       events,
+      messages,
       handlers,
       send: (method, params = {}, sessionId = undefined, wait = 20000) =>
         new Promise((resolve) => {
@@ -2675,3 +2678,154 @@ test('a console message and an exception from code with a relative sourceURL rea
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
 });
+
+for (const route of ['extension', 'proxy', 'link']) {
+  once(
+    `the ${route} route wipes in place to the blocked data page without publishing the wipe, refuses protected reads before and after, and keeps the same tab drivable`,
+    {
+      timeout: 5 * 60 * 1000,
+    },
+    async (t) => {
+      let transport = route === 'link' ? 'link' : null;
+      if (route === 'proxy') {
+        const proxy = await startProxy({
+          port: 0,
+          origins: [SEVEN],
+          cdp: `http://127.0.0.1:${port}`,
+          kernelPort: null,
+          log: () => {},
+        });
+        t.after(() => proxy.close());
+        transport = { url: proxy.url, key: proxy.key };
+      }
+      const guard = await guardPage(t, 0, transport);
+      sevenPages(guard.seven);
+      const targetId = await tab(`${PLAIN}/doc?wipe=${route}`);
+      const protectedId = await tab(`${VAULT}/vault?read=${route}`);
+      t.after(() => closeAll([targetId, protectedId]));
+      const attached = await guard.send('Target.attachToTarget', { targetId, flatten: true });
+      assert.equal(attached.error, undefined, JSON.stringify(attached));
+      const session = attached.result.sessionId;
+      const read = async () => {
+        const answer = await guard.send(
+          'Runtime.evaluate',
+          {
+            expression:
+              '({ href: location.href, title: document.title, origin, body: document.body?.textContent ?? null })',
+            returnByValue: true,
+          },
+          session
+        );
+        assert.equal(answer.error, undefined, JSON.stringify(answer));
+        assert.equal(answer.result?.exceptionDetails, undefined, JSON.stringify(answer));
+        return answer.result?.result?.value;
+      };
+      assert.equal((await read()).title, 'STAND');
+      const refused = async () => {
+        for (const [method, params, where] of [
+          ['Target.attachToTarget', { targetId: protectedId, flatten: true }],
+          ['Target.getTargetInfo', { targetId: protectedId }],
+          [
+            'Page.createIsolatedWorld',
+            { frameId: protectedId, worldName: 'protected-read' },
+            session,
+          ],
+          [
+            'Page.getResourceContent',
+            { frameId: protectedId, url: `${VAULT}/vault?read=${route}` },
+            session,
+          ],
+        ]) {
+          assert.equal((await guard.send(method, params, where)).error?.message, PROTECTED, method);
+        }
+      };
+      await refused();
+      const owner = await harness(targetId);
+      const before = await guard.seven.evaluate(() => window.guarded.messages.length);
+      const destination = `${SEVEN}/probe-doc.html?wipe=${route}`;
+      const requested = chrome.requests.length;
+      await owner.send('Runtime.evaluate', { expression: TRIGGERS.href(destination) });
+      let snapshot;
+      for (const end = Date.now() + 15000; ; ) {
+        snapshot = (
+          await owner.send('Runtime.evaluate', {
+            expression:
+              '({ href: location.href, title: document.title, origin, body: document.body?.textContent ?? null })',
+            returnByValue: true,
+          })
+        ).result?.result?.value;
+        if (snapshot?.href === BLANKED && snapshot?.title === 'blocked' && snapshot?.body === '')
+          break;
+        if (Date.now() > end)
+          assert.fail(
+            `${route}: the same tab never reached the sentinel: ${JSON.stringify(snapshot)}`
+          );
+        await pause(100);
+      }
+      assert.deepEqual(snapshot, { href: BLANKED, title: 'blocked', origin: 'null', body: '' });
+      assert.deepEqual(
+        await guard.seven.evaluate((before) => window.guarded.messages.slice(before), before),
+        [],
+        'the private wipe publishes neither replies nor events to the client'
+      );
+      assert.equal(served(destination, requested), false);
+      assert.deepEqual(await read(), snapshot);
+      assert.equal(
+        (await guard.send('Target.getTargetInfo', { targetId })).result?.targetInfo?.url,
+        BLANKED
+      );
+      const tree = await guard.send('Page.getFrameTree', {}, session);
+      assert.equal(tree.error, undefined, JSON.stringify(tree));
+      assert.equal(tree.result?.frameTree?.frame.url, BLANKED);
+      assert.ok(!tree.result?.frameTree?.frame.unreachableUrl, JSON.stringify(tree));
+      await refused();
+      const after = `data:text/html,%3Ctitle%3Eafter-wipe-${route}%3C%2Ftitle%3E`;
+      const navigated = await guard.send('Page.navigate', { url: after }, session);
+      assert.equal(navigated.error, undefined, JSON.stringify(navigated));
+      assert.equal(navigated.result?.errorText, undefined, JSON.stringify(navigated));
+      for (const end = Date.now() + 15000; ; ) {
+        snapshot = await read();
+        if (
+          snapshot?.href === after &&
+          snapshot?.title === `after-wipe-${route}` &&
+          snapshot?.body === ''
+        )
+          break;
+        if (Date.now() > end)
+          assert.fail(
+            `${route}: the kept session could not navigate and read: ${JSON.stringify(snapshot)}`
+          );
+        await pause(100);
+      }
+      assert.equal((await guard.send('Page.enable', {}, session)).error, undefined);
+      const reloading = (await guard.events()).length;
+      assert.equal((await guard.send('Page.reload', {}, session)).error, undefined);
+      for (const end = Date.now() + 15000; ; ) {
+        if (
+          (await guard.events())
+            .slice(reloading)
+            .some(
+              (event) =>
+                event.sessionId === session &&
+                event.method === 'Page.frameStoppedLoading' &&
+                event.params.frameId === targetId
+            )
+        )
+          break;
+        if (Date.now() > end) assert.fail(`${route}: the same session did not finish reloading`);
+        await pause(100);
+      }
+      assert.equal((await read()).title, `after-wipe-${route}`);
+      assert.equal(
+        (await guard.send('Target.getTargetInfo', { targetId })).result?.targetInfo?.targetId,
+        targetId
+      );
+      assert.equal((await guard.send('Target.closeTarget', { targetId })).result?.success, true);
+      assert.ok(
+        !(await own.send('Target.getTargets')).result?.targetInfos.some(
+          (info) => info.targetId === targetId
+        )
+      );
+    }
+  );
+}

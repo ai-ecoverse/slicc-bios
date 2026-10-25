@@ -36,7 +36,7 @@ const BLANK_MS = 10000;
 const ERROR_PAGE = 'chrome-error://chromewebdata/';
 const bare = (url) => url.split('#')[0];
 const SCRUB_MS = 5000;
-export const BLANKED = 'about:blank#blocked';
+export const BLANKED = 'data:text/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E';
 const HISTORY = new Set(['Page.getNavigationHistory']);
 const TREES = new Set(['Page.getFrameTree', 'Page.getResourceTree']);
 const NAV_MS = 10000;
