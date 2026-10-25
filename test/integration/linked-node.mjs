@@ -1,3 +1,4 @@
+import { createWriteStream } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,6 +17,7 @@ export async function linkNode(t, page, cdpPort, name = 'guard-fixture') {
     HOME: home,
     XDG_CONFIG_HOME: join(home, 'config'),
     SLICC_CDP_PORTS: '9300-9309',
+    SLICC_DEBUG: '1',
   };
   delete env.SLICC_CDP_URL;
   const node = attach(
@@ -29,9 +31,20 @@ export async function linkNode(t, page, cdpPort, name = 'guard-fixture') {
       '--cdp-extra',
       `http://127.0.0.1:${cdpPort}`,
     ],
-    { stdio: ['pipe', 'pipe', 'inherit'], env }
+    { stdio: ['pipe', 'pipe', 'pipe'], env }
   );
-  t.after(() => node.kill());
+  const log = createWriteStream(
+    join(process.env.PROBE_STDERR_DIR, `cli-round-${process.env.PROBE_ROUND}.stderr.log`)
+  );
+  node.stderr.pipe(log);
+  t.after(async () => {
+    node.kill();
+    if (!log.writableFinished)
+      await new Promise((resolve, reject) => {
+        log.once('finish', resolve);
+        log.once('error', reject);
+      });
+  });
   await page.expose('sliccLinkSend', (message) => node.stdin.write(`${JSON.stringify(message)}\n`));
   createInterface({ input: node.stdout }).on('line', (line) =>
     page.evaluate((line) => globalThis.sliccLinkReceive(line), line).catch(() => {})
