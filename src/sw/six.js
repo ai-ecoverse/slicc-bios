@@ -1,6 +1,7 @@
-import { RETIRED, retiredCookie } from '../seed/six.js';
-
 export const MARKER = 'slicc-os.six';
+export const RETIRED = '__Host-slicc-six-retired';
+export const KEPT = 400 * 24 * 60 * 60;
+export const retiredCookie = () => `${RETIRED}=1; Path=/; Max-Age=${KEPT}; Secure; SameSite=Strict`;
 export const UPGRADED = 'upgraded';
 export const PENDING = 'slicc-os.six-import';
 export const EXPORTER = '/upgrade-to-seven.html';

@@ -246,6 +246,23 @@ test("a kernel process can't retire SLICC 6: what a worker on seven's origin wri
   assert.deepEqual(tab.errors, []);
 });
 
+test("/os/ renews SLICC 6's retirement cookie on its own once the browser has moved", async (t) => {
+  state.mode = 'ok';
+  const page = await open(t);
+  await page.goto(`${origin}/7/`);
+  await ready(page);
+  assert.equal(await page.evaluate(() => document.cookie.includes('slicc-six-retired')), false);
+  await page.evaluate(() => localStorage.setItem('slicc-os.six', 'upgraded'));
+  await page.goto(`${origin}/os/`);
+  await ready(page);
+  await page.within(30000, () => document.cookie.includes('__Host-slicc-six-retired=1'));
+  const tab = await page.tab();
+  await tab.goto(`${origin}/`);
+  await tab.until(() => location.pathname === '/os/' && !!document.querySelector('slicc-app'));
+  assert.equal(await tab.evaluate(() => document.getElementById('six')), null);
+  assert.deepEqual(page.errors, []);
+});
+
 test('moving SLICC 6 into seven from a cross-origin isolated BIOS: asked once, progress shown, the marker set before the frame goes, six stopped, /preview/ unregistered, / and the extension URLs land on /os/, and the export is handed to the agent', async (t) => {
   state.mode = 'ok';
   state.isolate = true;
