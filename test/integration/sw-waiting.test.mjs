@@ -193,6 +193,16 @@ test('when another seven tab holds the download, the owner names that tab instea
 
 test('an ordinary update shows no notice: the updated worker activates before any notice could show, and nothing said seven updated (#710)', async (t) => {
   const page = await chrome.page(t);
+  const attached = [];
+  const off = chrome.cdp.on(({ method, params }) => {
+    if (method !== 'Target.attachedToTarget' || params.targetInfo.type !== 'service_worker') return;
+    attached.push({
+      at: Date.now(),
+      url: new URL(params.targetInfo.url).pathname,
+      waiting: params.waitingForDebugger,
+    });
+  });
+  t.after(off);
   await boot(page);
   await settled(page);
   await page.evaluate(() => {
@@ -216,6 +226,14 @@ test('an ordinary update shows no notice: the updated worker activates before an
       t.diagnostic(
         `PROBE ordinary stall page ${JSON.stringify(await timings(page, bumped - 2000))}`
       );
+      const targets = await chrome.cdp
+        .send('Target.getTargets')
+        .then(({ targetInfos }) =>
+          targetInfos
+            .filter(({ type }) => type === 'service_worker')
+            .map(({ url, attached: on }) => ({ url: new URL(url).pathname, attached: on }))
+        );
+      t.diagnostic(`PROBE ordinary stall targets ${JSON.stringify({ bumped, attached, targets })}`);
       const nudged = await page.evaluate(async () => {
         const registration = await navigator.serviceWorker.getRegistration();
         if (!registration.waiting) return { waiting: null };
