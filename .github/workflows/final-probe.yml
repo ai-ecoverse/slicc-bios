@@ -1,0 +1,84 @@
+name: Final probe
+
+on:
+  push:
+    branches: [guard-final-probe-head, guard-final-probe-main]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: cloud-run-job
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - copy: '1'
+            cpu: '0'
+          - copy: '2'
+            cpu: '0'
+          - copy: '3'
+            cpu: '0'
+          - copy: '4'
+            cpu: '1'
+          - copy: '5'
+            cpu: '1'
+          - copy: '6'
+            cpu: '1'
+          - copy: shared
+            cpu: '0'
+          - copy: ordinary-1
+            cpu: '0'
+          - copy: ordinary-2
+            cpu: '0'
+    env:
+      LEFTHOOK: '0'
+      SLICC_COVERAGE: '0'
+      PROBE_COPY: ${{ matrix.copy }}
+      PROBE_CPU: ${{ matrix.cpu }}
+      PROBE_BASE: edc99d4bbf453c642580ede19ca4db07d8c8ab99
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '26'
+          cache: npm
+      - run: npm ci
+      - name: Chrome
+        run: |
+          DEPS=
+          if [ "$(id -u)" = 0 ] || sudo -n true 2>/dev/null; then DEPS=1; fi
+          npx --no-install slicc-cdp install-browser ${DEPS:+--with-deps}
+      - name: Measure
+        run: |
+          set -o pipefail
+          if [ -z "${DISPLAY:-}" ]; then
+            if ! command -v Xvfb > /dev/null; then
+              if [ "$(id -u)" = 0 ]; then apt-get update -qq && apt-get install -y -qq xvfb
+              elif sudo -n true 2>/dev/null; then sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
+              else echo "::error title=Display::No Xvfb on $RUNNER_NAME and no root to install it: add xvfb to the runner image"; exit 1
+              fi
+            fi
+            nohup Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp > "$RUNNER_TEMP/xvfb.log" 2>&1 &
+            for _ in $(seq 50); do [ -S /tmp/.X11-unix/X99 ] && break; sleep 0.2; done
+            export DISPLAY=:99
+          fi
+          if [ "$PROBE_COPY" = shared ]; then
+            node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs --test-name-pattern='^on a shared origin, sign-in goes through six' test/integration/shared-origin.test.mjs 2>&1 | tee child-probe.log
+          elif [[ "$PROBE_COPY" = ordinary-* ]]; then
+            node --test --test-concurrency=1 --test-timeout=2700000 --test-global-setup=test/integration/global.mjs test/integration/guard-ordinary-probe.test.mjs 2>&1 | tee child-probe.log
+          else
+            node --test --test-concurrency=1 --test-timeout=2700000 --test-global-setup=test/integration/global.mjs test/integration/guard-child-probe.test.mjs test/integration/guard-error-probe.test.mjs 2>&1 | tee child-probe.log
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: final-probe-${{ matrix.copy }}
+          path: |
+            artifacts/
+            child-probe.log
+          if-no-files-found: error
