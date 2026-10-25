@@ -1,3 +1,4 @@
+import capture from '@ai-ecoverse/slicc-capture/page';
 import { attachKernel, createKernel, serveHostfsPort } from '@ai-ecoverse/slicc-kernel';
 import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
 import { confirm, secretRules, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
@@ -22,7 +23,7 @@ import { createApprovals, rootChecked, routeSudo, useSecretRules } from './appro
 import { createBetas } from './beta.js';
 import { createBrowser } from './browser.js';
 import { browserControl, browserHosts, linkedBrowsers } from './cdp.js';
-import { clipboardHook } from './clipboard.js';
+import { clipboardHook, clipboardWrite } from './clipboard.js';
 import { denialLog, installCommand, watchProtected } from './denials.js';
 import { createExitRouter } from './exits.js';
 import { LINK_PORT, LINK_URL, linkFacade, permitted, trayRequests } from './facade.js';
@@ -69,7 +70,14 @@ import { installProfile, kernelPorts } from './profile.js';
 import { PYTHON } from './projects.js';
 import { createNotes, createReleases } from './releases.js';
 import { createRemote } from './remote.js';
-import { pageRequests } from './requests.js';
+import {
+  capturePrompt,
+  displayer,
+  markCaptured,
+  openUrl,
+  pageRequests,
+  plugged,
+} from './requests.js';
 import { BIOS, home, sharesOrigin } from './site.js';
 import { importSix, retirePreview, said } from './six.js';
 import { installPrompts, keepStorage, onSend } from './storage.js';
@@ -129,6 +137,7 @@ import {
   vaultOrigin,
 } from './vault.js';
 
+markCaptured();
 const prompts = installPrompts();
 void retirePreview().catch((error) => console.warn(`SLICC 6 preview: ${said(error)}`));
 let unoffered = takePairing();
@@ -354,7 +363,14 @@ let files = null;
 const composer = holdComposer();
 let presentation = null;
 let kernel = null;
-const requests = pageRequests({ show: confirm });
+const requests = pageRequests({
+  show: confirm,
+  handlers: {
+    'open.url': openUrl(),
+    'clipboard.write': clipboardWrite(),
+    ...plugged(capture, { 'capture.screen': capturePrompt }, displayer()),
+  },
+});
 let folders = null;
 let owner = null;
 let agent = null;

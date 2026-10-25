@@ -207,7 +207,7 @@ test('the range check reads the forms the packages use', () => {
 });
 
 const GATED =
-  /^@ai-ecoverse\/(slicc-kernel|slicc-cdp|slicc-clipboard|slicc-jsh|mcpcat$|wasi-|wasix-|wasm-|py-)/;
+  /^@ai-ecoverse\/(slicc-kernel|slicc-capture|slicc-cdp|slicc-clipboard|slicc-jsh|mcpcat$|wasi-|wasix-|wasm-|py-)/;
 
 async function lockedGated() {
   const found = new Map();
@@ -344,6 +344,7 @@ const BUILDERS = {
   'slicc-kernel': 'slicc-kernel',
   'slicc-jsh': 'slicc-jsh',
   'slicc-cdp': 'slicc-cdp',
+  'slicc-capture': 'slicc-capture',
   'slicc-clipboard': 'slicc-clipboard',
   mcpcat: 'mcpcat',
   'wasi-slicc': 'slicc-cli',
