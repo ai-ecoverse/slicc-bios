@@ -1,8 +1,8 @@
+import { RETIRED, retiredCookie } from '../seed/six.js';
+
 export const MARKER = 'slicc-os.six';
 export const UPGRADED = 'upgraded';
 export const PENDING = 'slicc-os.six-import';
-export const RETIRED = '__Host-slicc-six-retired';
-export const KEPT = 10 * 365 * 24 * 60 * 60;
 export const EXPORTER = '/upgrade-to-seven.html';
 export const ASSETS = '/assets/';
 export const EXPORTS = 'slicc-v6-upgrade';
@@ -45,7 +45,7 @@ export async function offered(origin = location.origin, get = fetch, wait = OFFE
 }
 
 export async function retire({ cookies, container, origin }) {
-  cookies.cookie = `${RETIRED}=1; Path=/; Max-Age=${KEPT}; Secure; SameSite=Strict`;
+  cookies.cookie = retiredCookie();
   const preview = `${origin}/preview/`;
   for (const registration of await container.getRegistrations()) {
     if (registration.scope.startsWith(preview)) await registration.unregister();

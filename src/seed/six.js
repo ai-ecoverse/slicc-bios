@@ -3,6 +3,9 @@ export const NOTICE = 'six-import';
 const EXPORT = /^\/slicc-v6-upgrade\/([\w-]+)\/?$/;
 
 export const MARKER = 'slicc-os.six';
+export const RETIRED = '__Host-slicc-six-retired';
+export const KEPT = 400 * 24 * 60 * 60;
+export const retiredCookie = () => `${RETIRED}=1; Path=/; Max-Age=${KEPT}; Secure; SameSite=Strict`;
 export const NO_MANIFEST = 'SLICC 6’s export has no readable manifest.json';
 
 async function exported(root, dir) {
@@ -23,8 +26,10 @@ export async function retirePreview({
   storage = localStorage,
   container = navigator.serviceWorker,
   origin = location.origin,
+  cookies = globalThis.document,
 } = {}) {
   if (storage.getItem(MARKER) !== 'upgraded') return [];
+  cookies.cookie = retiredCookie();
   const gone = [];
   for (const registration of await container.getRegistrations()) {
     if (!registration.scope.startsWith(`${origin}/preview/`)) continue;

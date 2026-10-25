@@ -219,12 +219,22 @@ test("a kernel process can't retire SLICC 6: what a worker on seven's origin wri
       postMessage(results);
     `;
     const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
-    const worker = new Worker(url);
-    const answer = await new Promise((done) => {
-      worker.onmessage = ({ data }) => done(data);
-    });
-    worker.terminate();
-    return answer;
+    const worker = new Worker(url, { type: 'module' });
+    try {
+      return await new Promise((done, fail) => {
+        const timer = setTimeout(() => fail(new Error('the worker posted nothing in 20 s')), 20000);
+        worker.onmessage = ({ data }) => {
+          clearTimeout(timer);
+          done(data);
+        };
+        worker.onerror = (event) => {
+          clearTimeout(timer);
+          fail(new Error(`the worker failed: ${event.message}`));
+        };
+      });
+    } finally {
+      worker.terminate();
+    }
   });
   assert.deepEqual(forged.cookieStore, 'undefined');
   assert.deepEqual(forged.cookie, 'undefined');
