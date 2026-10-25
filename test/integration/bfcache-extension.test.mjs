@@ -110,7 +110,15 @@ test("over the guarded extension route, an agent's Back from an ordinary page to
   await page.evaluate(guarded);
 
   const seven = new URL('os/', chrome.url).href;
-  const { targetId } = await chrome.cdp.send('Target.createTarget', { url: seven });
+  const { targetInfos } = await chrome.cdp.send('Target.getTargets');
+  const mine = targetInfos.find(
+    (info) => info.type === 'page' && info.url.startsWith(new URL('/', chrome.url).href)
+  );
+  assert.ok(mine?.browserContextId, `the test's own tab: ${JSON.stringify(targetInfos)}`);
+  const { targetId } = await chrome.cdp.send('Target.createTarget', {
+    url: seven,
+    browserContextId: mine.browserContextId,
+  });
   t.after(() => chrome.cdp.send('Target.closeTarget', { targetId }).catch(() => {}));
   const { sessionId } = await chrome.cdp.send('Target.attachToTarget', {
     targetId,
