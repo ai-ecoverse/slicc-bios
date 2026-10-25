@@ -246,7 +246,7 @@ export async function guardHost(t, path) {
         return linked.open();
       },
     };
-    const lagged = (connection, lag, paintDelay, row) => {
+    const lagged = (connection, lag, paintDelay, row, path) => {
       const send = connection.send.bind(connection);
       const shots = new Set();
       const tracked = new Map();
@@ -321,6 +321,30 @@ export async function guardHost(t, path) {
       connection.onclose = (why) => relay.onclose?.(why);
       relay.send = (text) => {
         const message = JSON.parse(text);
+        if (
+          path === 'link' &&
+          proxy.probeAttachment === 'none' &&
+          message.id >= 2 ** 30 &&
+          message.method === 'Target.setAutoAttach' &&
+          message.params.autoAttach &&
+          !message.params.waitForDebuggerOnStart &&
+          message.params.filter?.some((entry) => entry.type === 'iframe' && !entry.exclude)
+        ) {
+          record({ direction: 'suppressed', ...message, probeAttachment: proxy.probeAttachment });
+          queueMicrotask(() => {
+            record({
+              direction: 'synthetic-answer',
+              method: message.method,
+              id: message.id,
+              sessionId: message.sessionId,
+              result: {},
+            });
+            relay.onmessage?.(
+              JSON.stringify({ id: message.id, sessionId: message.sessionId, result: {} })
+            );
+          });
+          return;
+        }
         if (commands.has(message.method)) {
           tracked.set(message.id, message);
           record({ direction: 'out', ...message });
@@ -335,7 +359,7 @@ export async function guardHost(t, path) {
     window.guards = {
       async open(row, own, path, lag, paintDelay) {
         const connection = guardProtected(
-          lagged(await hosts[path](), lag, paintDelay, row),
+          lagged(await hosts[path](), lag, paintDelay, row, path),
           [location.origin, own].flat()
         );
         const pending = new Map();
@@ -378,7 +402,11 @@ export async function guardHost(t, path) {
   const ensure = async () => {
     if (await seven.evaluate(() => Boolean(window.guards))) return;
     trace('install', 'the guard hooks go into seven’s page, again if it reloaded');
-    await seven.evaluate(setup, { url: proxy.url, key: proxy.key });
+    await seven.evaluate(setup, {
+      url: proxy.url,
+      key: proxy.key,
+      probeAttachment: process.env.PROBE_ATTACHMENT,
+    });
   };
   await ensure();
   let count = 0;
