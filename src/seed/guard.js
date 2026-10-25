@@ -66,6 +66,10 @@ const documentContent = (method = '') =>
     method
   ) ||
     CONTENTS.has(method));
+const documentPublication = (message) =>
+  message.id === undefined &&
+  message.sessionId !== undefined &&
+  (documentContent(message.method) || /^(?:Network|Fetch)\./.test(message.method));
 
 const UNSAFE = new Set([
   'Target.sendMessageToTarget',
@@ -565,13 +569,14 @@ class Guard {
     this.next = GUARD_IDS;
     this.documents = new Map();
     this.documentCommands = new WeakMap();
+    this.documentEvents = new WeakMap();
     this.guarded = { onmessage: null, onclose: null };
   }
 
-  redacted(message) {
+  redacted(message, source = message) {
     const { method, params } = message;
     if (!params || !(SPOKEN.test(method ?? '') || CONSOLE.has(method)))
-      return this.deliver(message);
+      return this.deliver(message, source);
     if (
       method === 'Network.responseReceivedExtraInfo' &&
       params.statusCode >= 300 &&
@@ -583,17 +588,18 @@ class Guard {
       kept(this.sheets, params.header.styleSheetId);
     }
     const { params: redacted, changed, answered } = this.redact(params);
-    if (!changed.length) return this.deliver(message);
+    if (!changed.length) return this.deliver(message, source);
     if (answered && /^(?:Network|Fetch)\./.test(method)) {
       for (const id of [params.requestId, params.networkId])
         if (id !== undefined) kept(this.redirected, id);
       for (const url of [params.request?.url, params.response?.url])
         if (typeof url === 'string') kept(this.hops, hopKey(url));
     }
-    return this.deliver({ ...message, params: redacted });
+    return this.deliver({ ...message, params: redacted }, source);
   }
 
-  deliver(message) {
+  deliver(message, source = message) {
+    if (!this.eventValid(source)) return;
     try {
       this.guarded.onmessage?.(JSON.stringify(message));
     } catch (error) {
@@ -849,6 +855,38 @@ class Guard {
         (!before || before.get(id) === state.revision)
       );
     });
+  }
+
+  stampDocument(message) {
+    const targetId = this.documentTarget(message.sessionId);
+    if (!this.documents.has(targetId)) return;
+    const ids = this.related(targetId);
+    if (ids)
+      this.documentCommands.set(
+        message,
+        new Map([...ids].map((id) => [id, this.document(id).revision]))
+      );
+  }
+
+  rememberEvent(message) {
+    if (!documentPublication(message)) return;
+    const { sessionId } = message;
+    this.documentEvents.set(message, {
+      verified: !this.hidden(sessionId) && this.documentValid(sessionId),
+      targetId: this.documentTarget(sessionId),
+    });
+    this.stampDocument(message);
+  }
+
+  eventValid(message) {
+    if (!documentPublication(message)) return true;
+    const receipt = this.documentEvents.get(message);
+    return Boolean(
+      receipt?.verified &&
+        receipt.targetId === this.documentTarget(message.sessionId) &&
+        !this.hidden(message.sessionId) &&
+        this.documentValid(message.sessionId, message)
+    );
   }
 
   async checkDocument(targetId) {
@@ -1129,18 +1167,21 @@ class Guard {
   continuing(message) {
     const { method, params = {} } = message;
     if (method === 'Network.loadingFailed' || method === 'Network.loadingFinished') {
-      this.redacted({
-        method: 'Network.loadingFailed',
-        sessionId: message.sessionId,
-        params: {
-          requestId: params.requestId,
-          timestamp: params.timestamp,
-          type: params.type ?? 'Other',
-          errorText: 'net::ERR_BLOCKED_BY_CLIENT',
-          canceled: false,
-          blockedReason: 'inspector',
+      this.redacted(
+        {
+          method: 'Network.loadingFailed',
+          sessionId: message.sessionId,
+          params: {
+            requestId: params.requestId,
+            timestamp: params.timestamp,
+            type: params.type ?? 'Other',
+            errorText: 'net::ERR_BLOCKED_BY_CLIENT',
+            canceled: false,
+            blockedReason: 'inspector',
+          },
         },
-      });
+        message
+      );
       return true;
     }
     if (method !== 'Network.responseReceivedExtraInfo') return true;
@@ -1462,21 +1503,21 @@ class Guard {
   }
 
   async event(message) {
-    const method = message.method ?? '';
-    const { sessionId } = message;
-    const foreign = this.foreign({ ...message, method });
+    message.method ??= '';
+    const { method, sessionId } = message;
+    const foreign = this.foreign(message);
     if (this.navSessions.has(sessionId))
       return this.navEvent(message, this.navSessions.get(sessionId));
     if (method.startsWith('Target.') && (await this.targetEvent(message))) return;
     if (this.blocked.has(sessionId) && PAUSES.has(method)) return this.release(message);
     if (this.hidden(sessionId)) return;
     if (foreign) return;
-    if (documentContent(method) && !this.documentValid(sessionId)) return;
-    if (this.walked({ ...message, method })) return this.cut(sessionId);
+    if (this.walked(message)) return this.cut(sessionId);
+    if (documentContent(method) && !this.eventValid(message)) return;
     if (sessionId && method.startsWith('Runtime.') && !this.runtimes.has(sessionId)) return;
-    if (await this.swallowed({ ...message, method })) return;
-    if (this.stored({ ...message, method })) return;
-    if (sessionId && this.naming({ ...message, method })) return;
+    if (await this.swallowed(message)) return;
+    if (this.stored(message)) return;
+    if (sessionId && this.naming(message)) return;
     if (sessionId && method.startsWith('Page.') && !this.pages.has(sessionId)) return;
     if (PAUSES.has(method)) this.offered.add(message.params?.requestId);
     this.redacted(message);
@@ -1760,11 +1801,7 @@ class Guard {
     const { id, method, sessionId } = message;
     if (this.documents.has(this.documentTarget(sessionId)) && documentContent(method)) {
       if (!this.documentValid(sessionId)) return this.refuse(message);
-      const ids = this.related(this.documentTarget(sessionId));
-      this.documentCommands.set(
-        message,
-        new Map([...ids].map((id) => [id, this.document(id).revision]))
-      );
+      this.stampDocument(message);
     }
     globalThis.sliccGuardTrace?.push({
       method,
@@ -1785,7 +1822,10 @@ class Guard {
 
   received(text) {
     const message = parse(text);
-    if (message.id === undefined) this.documentEvent(message);
+    if (message.id === undefined) {
+      this.documentEvent(message);
+      this.rememberEvent(message);
+    }
     if (this.internal.has(message.id)) {
       const resolve = this.internal.get(message.id);
       this.internal.delete(message.id);

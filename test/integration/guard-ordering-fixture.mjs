@@ -20,7 +20,7 @@ export const plainFrame = (id, parentId) => ({
 });
 export const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-export function protocol(t) {
+export function protocol(t, protect = guardProtected) {
   const targets = new Map();
   const sessions = new Map();
   const sent = [];
@@ -38,7 +38,7 @@ export function protocol(t) {
     },
     close() {},
   };
-  const guard = guardProtected(raw, protectedOrigin);
+  const guard = protect(raw, protectedOrigin);
   guard.onmessage = (text) => {
     const message = JSON.parse(text);
     delivered.push(message);
