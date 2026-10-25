@@ -1072,32 +1072,30 @@ class Guard {
     this.scope(targetId).ready = false;
     this.stopCasts();
     const enabled = await this.call('Page.enable', {}, sessionId);
-    const attaching = this.call(
-      'Target.setAutoAttach',
-      { autoAttach: true, waitForDebuggerOnStart: false, flatten: true, filter: FRAME_CHILDREN },
-      sessionId
-    );
     await this.call('Page.getFrameTree', {}, sessionId);
     const owners = await this.call('DOM.getDocument', { depth: -1, pierce: true }, sessionId);
     const disabled = await this.call('DOM.disable', {}, sessionId);
     const scope = this.scope(targetId);
-    const withdrawn =
+    const attached =
       !owners.error && !disabled.error && scope.ownersReady && scope.protectedOwner
-        ? await this.call(
+        ? {}
+        : await this.call(
             'Target.setAutoAttach',
-            { autoAttach: false, waitForDebuggerOnStart: false, flatten: true },
+            {
+              autoAttach: true,
+              waitForDebuggerOnStart: false,
+              flatten: true,
+              filter: FRAME_CHILDREN,
+            },
             sessionId
-          )
-        : {};
-    const attached = await attaching;
+          );
     scope.pending -= 1;
     scope.failed = Boolean(
       enabled.error ||
         owners.error ||
         (attached.error && attached.error.message !== NO_AUTO_ATTACH) ||
         !scope.ownersReady ||
-        disabled.error ||
-        withdrawn.error
+        disabled.error
     );
     scope.ready = Boolean(scope.tree && !scope.failed && !scope.pending);
     if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
