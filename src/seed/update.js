@@ -324,14 +324,23 @@ export function installer(
 
 export const STORE = 'slicc-pnpm-store';
 
-export function pnpm(kernel, cwd, report, to = null, argv = INSTALL, writer = true, limit = 0) {
+export function pnpm(
+  kernel,
+  cwd,
+  report,
+  to = null,
+  argv = INSTALL,
+  writer = true,
+  limit = 0,
+  wait = CEILING
+) {
   const run = () => pnpmAlone(kernel, cwd, report, to, argv, writer, null, limit);
   if (!limit) return navigator.locks.request(STORE, run);
   return navigator.locks
-    .request(STORE, { signal: AbortSignal.timeout(limit * 1000) }, run)
+    .request(STORE, { signal: AbortSignal.timeout(wait * 1000) }, run)
     .catch((error) => {
       if (error?.name !== 'TimeoutError' && error?.name !== 'AbortError') throw error;
-      throw Object.assign(new Error(`the pnpm store stayed busy for ${limit} s`), { to });
+      throw Object.assign(new Error(`the pnpm store stayed busy for ${wait} s`), { to });
     });
 }
 

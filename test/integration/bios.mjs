@@ -79,7 +79,10 @@ export async function ready(page, prompts = [prompt], { tools = true } = {}) {
   const left = await page.evaluate(() =>
     (document.querySelector('slicc-app')?.model?.updates?.packages?.() ?? [])
       .filter((row) => row.id.startsWith('tools:') && row.state !== 'installed')
-      .map((row) => `${row.id} ${row.state}${row.error ? ` (${row.error})` : ''}`)
+      .map((row) => {
+        const why = row.log?.trim().split('\n').at(-1);
+        return `${row.id} ${row.state}${row.error ? ` (${row.error})` : ''}${why ? `: ${why.slice(0, 160)}` : ''}`;
+      })
   );
   if (left.length) console.log(`seven's tools settled with ${left.join(', ')}`);
 }
