@@ -90,6 +90,8 @@ async function focusedTerminal(page) {
   await page.press('u', 'ctrl');
 }
 
+const REST_MS = 10_000;
+
 const LONG = `https://example.test/${'a'.repeat(280)}`;
 
 async function press(page, which) {
@@ -140,7 +142,7 @@ test('a program opens an http(s) URL in a new tab through /dev/embedder, and a j
 
   await run(
     page,
-    `sleep 8; ${ask('https://example.test/late')}; echo "late $?"; sleep 6; ${ask('https://example.test/rested')}; echo "rested $?"`
+    `sleep 8; ${ask('https://example.test/late')}; echo "late $?"; ${ask('https://example.test/rested')}; echo "rested $?"`
   );
   await page.until(() => !!window.findConfirm(), undefined);
   assert.match(
@@ -156,11 +158,29 @@ test('a program opens an http(s) URL in a new tab through /dev/embedder, and a j
   });
   await page.screenshot(new URL('open-url-prompt-dark.png', page.dir));
   await page.evaluate(() => document.querySelector('slicc-app').toggleColor());
-  await press(page, 'cancel');
-  await shows(page, 'the request to open the page was dismissed');
+  await page.until(() => navigator.userActivation.isActive === false, undefined);
+  await page.evaluate(() => window.findConfirm().shadowRoot.querySelector('[data-cancel]').click());
+  const cancelled = Date.now();
+  const outcome = await page.until(() => {
+    if (window.findConfirm()?.shadowRoot?.textContent.includes('example.test/rested'))
+      return 'prompted';
+    const { dock } = document.querySelector('slicc-app');
+    const id = dock.api.panels
+      .map((panel) => panel.id)
+      .findLast((id) => id.startsWith('terminal:'));
+    return dock.content(id).screen.textContent.includes('rested 1') ? 'refused' : null;
+  }, undefined);
+  const answered = Date.now() - cancelled;
+  t.diagnostic(`rest: the refusal came ${answered} ms after Cancel`);
+  assert.equal(
+    outcome,
+    'refused',
+    `the request ${answered} ms after Cancel got a prompt instead of the rest's refusal`
+  );
+  assert.ok(answered < REST_MS, `the refusal came ${answered} ms after Cancel, past the rest`);
+  assert.equal(await page.evaluate(() => navigator.userActivation.isActive), false);
   await shows(page, 'late 1');
   assert.deepEqual(await opened('https://example.test/late'), []);
-  await shows(page, 'rested 1');
   assert.equal(await page.evaluate(() => window.findConfirm()), null);
   assert.match(
     await page.evaluate(() => {
