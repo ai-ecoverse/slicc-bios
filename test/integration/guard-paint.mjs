@@ -249,6 +249,8 @@ async function guardedRow(factory, own, targetId, row, options = {}) {
   const { client, close } = await factory({ own, ...options });
   const attach = await outcome(client.send('Target.attachToTarget', { targetId, flatten: true }));
   if (!attach.ok) {
+    row.attachError = attach.error;
+    row.attachWire = client.transportEvents;
     row.attach = REFUSED.test(attach.error) ? 'refused' : `error: ${attach.error}`;
     await close();
     return null;
@@ -419,11 +421,11 @@ async function measureLate(factory, unguarded, own, route, layout) {
       { url: at(layout === 'late-local' ? 'localhost' : 'ordinary.example.test', '/empty') },
       raw
     );
-    await until(
-      async () =>
-        (await unguarded.send('Page.getFrameTree', {}, raw)).frameTree.frame.url.endsWith('/empty'),
-      10000
-    );
+    await until(async () => {
+      const tree = await unguarded.send('Page.getFrameTree', {}, raw);
+      row.beforeAttach = tree;
+      return tree.frameTree.frame.url.endsWith('/empty');
+    }, 10000);
     const guarded = await guardedRow(factory, own, targetId, row, { paintDelay: 1500 });
     if (!guarded) return row;
     const { client, session, close } = guarded;
@@ -560,6 +562,18 @@ function ordinary(row, label) {
     'reached',
     `${label}: input reaches the ordinary frame through the guard`
   );
+}
+
+export async function lateRemoteProbe(t) {
+  const { clientFactory, vault } = await guardHost(t, 'link');
+  const factory = clientFactory('link');
+  const own = [OWN, vault];
+  const { unguarded, close } = await factory({ own });
+  try {
+    return await measureLate(factory, unguarded, own, 'link', 'late-remote');
+  } finally {
+    await close();
+  }
 }
 
 export function paint(route) {
