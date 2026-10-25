@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { guardProtected } from '../../src/seed/guard.js';
+
+const { guardProtected } = await import(process.env.GUARD_SOURCE ?? '../../src/seed/guard.js');
 
 export const ordinary = 'https://ordinary.invalid/page';
 export const protectedOrigin = 'https://protected.invalid';
@@ -61,7 +62,15 @@ export function protocol(t) {
     if (method === 'Page.getNavigationHistory') {
       result = { currentIndex: 0, entries: [{ id: 1, url: target.info.url, title: 'ordinary' }] };
     }
-    if (method === 'Runtime.evaluate') result = { result: { value: 'synthetic-content' } };
+    if (method === 'DOM.getDocument')
+      result = { root: { nodeId: 1, nodeName: '#document', children: [] } };
+    if (method === 'Runtime.evaluate') {
+      result = {
+        result: {
+          value: target.tree.frame.url.startsWith('chrome-error:') ? failed : 'synthetic-content',
+        },
+      };
+    }
     if (method === 'Page.captureScreenshot') result = { data: 'c3ludGhldGlj' };
     emit({ id, ...(sessionId ? { sessionId } : {}), ...(payload ?? { result }) });
   }

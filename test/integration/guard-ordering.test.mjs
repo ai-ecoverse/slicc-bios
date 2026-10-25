@@ -60,10 +60,15 @@ test('ordering B attach', { timeout: 5000 }, async (t) => {
   await flush();
   const reads = [
     early,
+    wire.send('Runtime.evaluate', { expression: 'document.title' }, child),
     wire.send('Runtime.evaluate', { expression: 'loadTimeData' }, child),
     wire.send('DOM.getDocument', {}, child),
     wire.send('DOM.getOuterHTML', { nodeId: 1 }, child),
   ];
+  await flush();
+  wire.hold(() => false);
+  const probe = wire.held.find((message) => message.method === 'Page.getFrameTree');
+  if (probe) wire.release(probe);
   wire.release(pending);
   const answers = await Promise.all([...reads, shot.answer]);
   const forwarded = wire.clients(mark);
@@ -72,28 +77,32 @@ test('ordering B attach', { timeout: 5000 }, async (t) => {
   assert.equal(JSON.stringify(wire.delivered).includes(failed), false);
 });
 
-test('ordering B uncertainty and recovery', { timeout: 5000 }, async (t) => {
-  const wire = protocol(t);
-  wire.target('parent');
-  const parent = await wire.attach('parent');
-  const entry = wire.target('child', 'iframe', plainFrame('child', 'parent'), 'parent');
-  wire.hold(
-    (message) => message.sessionId === 'guard-child' && message.method === 'Page.getFrameTree'
-  );
-  const child = wire.attached('child', parent);
-  await flush();
-  const mark = wire.sent.length;
-  const pendingRead = wire.send('Runtime.evaluate', { expression: 'document.title' }, child);
-  await flush();
-  const blocked = wire.clients(mark);
-  const probe = wire.held.find((message) => message.method === 'Page.getFrameTree');
-  if (probe) wire.release(probe, { error: { code: -32000, message: 'synthetic uncertainty' } });
-  const uncertain = await pendingRead;
-  wire.hold(() => false);
-  entry.tree = { frame: plainFrame('child', 'parent') };
-  const recovered = await wire.send('Runtime.evaluate', { expression: 'document.title' }, child);
-  assert.deepEqual(blocked, [], 'an uncertain tree forwarded no content');
-  refusal(uncertain);
-  assert.equal(recovered.error, undefined);
-  assert.equal(recovered.result?.result?.value, 'synthetic-content');
-});
+for (const initial of ['error', 'ordinary']) {
+  test(`ordering B uncertainty and recovery ${initial}`, { timeout: 5000 }, async (t) => {
+    const wire = protocol(t);
+    wire.target('parent');
+    const parent = await wire.attach('parent');
+    const frame =
+      initial === 'error' ? errorFrame('child', 'parent') : plainFrame('child', 'parent');
+    const entry = wire.target('child', 'iframe', frame, 'parent');
+    wire.hold(
+      (message) => message.sessionId === 'guard-child' && message.method === 'Page.getFrameTree'
+    );
+    const child = wire.attached('child', parent);
+    await flush();
+    const mark = wire.sent.length;
+    const pendingRead = wire.send('Runtime.evaluate', { expression: 'document.title' }, child);
+    await flush();
+    const blocked = wire.clients(mark);
+    const probe = wire.held.find((message) => message.method === 'Page.getFrameTree');
+    if (probe) wire.release(probe, { error: { code: -32000, message: 'synthetic uncertainty' } });
+    const uncertain = await pendingRead;
+    wire.hold(() => false);
+    entry.tree = { frame: plainFrame('child', 'parent') };
+    const recovered = await wire.send('Runtime.evaluate', { expression: 'document.title' }, child);
+    assert.deepEqual(blocked, [], 'an uncertain tree forwarded no content');
+    refusal(uncertain);
+    assert.equal(recovered.error, undefined);
+    assert.equal(recovered.result?.result?.value, 'synthetic-content');
+  });
+}
