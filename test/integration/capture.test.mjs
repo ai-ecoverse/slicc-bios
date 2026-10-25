@@ -255,3 +255,61 @@ test('a tab that sets no capture handle is refused, since seven can’t tell it 
   await close();
   assert.deepEqual(page.errors, []);
 });
+
+const standIn = `
+  window.fakeCaptures = [];
+  const make = (mode) => {
+    const track = new EventTarget();
+    let handle = null;
+    track.kind = 'video';
+    track.readyState = 'live';
+    track.stop = () => {
+      track.readyState = 'ended';
+      window.fakeCaptures.push(mode + ':stopped');
+    };
+    track.getCaptureHandle = () => handle;
+    track.getSettings = () => (mode === 'unknown' ? {} : { displaySurface: 'browser' });
+    const stream = { getVideoTracks: () => [track], getTracks: () => [track] };
+    if (mode === 'flip')
+      setTimeout(() => {
+        handle = { handle: 'slicc-seven', origin: location.origin };
+        track.dispatchEvent(new Event('capturehandlechange'));
+        handle = { handle: 'ordinary', origin: 'https://example.test' };
+        window.fakeCaptures.push('flip:flipped');
+      }, 200);
+    return stream;
+  };
+  Object.defineProperty(navigator.mediaDevices, 'getDisplayMedia', {
+    configurable: true,
+    value: async () => make(window.fakeMode),
+  });
+`;
+
+test('through a stand-in picker: a handle that is seven’s for a moment while seven waits is refused, and so is a surface that isn’t a window or screen', async (t) => {
+  const page = await chrome.page(t);
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: helpers });
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: standIn });
+  await boot(page);
+  const ask = `printf '%s\\n' '{"kind":"capture.screen","type":"image/png"}' | cat > /dev/embedder`;
+
+  await page.evaluate(() => {
+    window.fakeMode = 'flip';
+  });
+  await run(page, `${ask}; echo "flip $?"`);
+  await shows(page, "seven doesn't capture its own pages or the vault");
+  await shows(page, 'flip 1');
+  assert.deepEqual(await page.evaluate(() => window.fakeCaptures), [
+    'flip:flipped',
+    'flip:stopped',
+  ]);
+
+  await page.evaluate(() => {
+    window.fakeMode = 'unknown';
+    window.fakeCaptures.length = 0;
+  });
+  await run(page, `${ask}; echo "unknown $?"`);
+  await shows(page, "seven can't tell this tab isn't its own or the vault's");
+  await shows(page, 'unknown 1');
+  assert.deepEqual(await page.evaluate(() => window.fakeCaptures), ['unknown:stopped']);
+  assert.deepEqual(page.errors, []);
+});
