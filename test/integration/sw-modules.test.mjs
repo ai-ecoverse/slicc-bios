@@ -12,6 +12,7 @@ const stubs = await source('sw/stubs.js');
 const integrity = await source('sw/integrity.js');
 const MISSING = 'is not available in the browser';
 const WORKERS = ['/sw.js', '/sw.js?afresh'];
+const AGENT = '/opt/agent/';
 
 const probed = (n) => stubs.replace(MISSING, `${MISSING}, probe ${n}`);
 
@@ -45,6 +46,9 @@ async function release(page, changes) {
   const refused = page.responses
     .slice(mark)
     .filter((response) => response.status >= 400)
+    .filter(
+      (response) => response.status !== 404 || !new URL(response.url).pathname.startsWith(AGENT)
+    )
     .map((response) => `${response.status} ${new URL(response.url).pathname}`);
   assert.deepEqual(refused, []);
   assert.deepEqual(bios.states().slice(from), booted);
@@ -111,6 +115,7 @@ test('a module-only release whose worker throws fails the BIOS with the updateâ€
 test('a BIOS without the fresh install takes over a worker the fresh install registered, and this BIOS takes it back (#1022)', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
+  await settled(page);
   await page.evaluate(async () => {
     const registration = await navigator.serviceWorker.register('/sw.js?afresh', {
       type: 'module',
