@@ -4,7 +4,7 @@ import { boot, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const TITLE = 'Capture target';
-const chrome = await launch({ args: [`--auto-select-tab-capture-source-by-title=${TITLE}`] });
+const chrome = await launch({ args: [`--auto-select-desktop-capture-source=${TITLE}`] });
 after(() => chrome.close());
 
 const helpers = `
@@ -39,8 +39,8 @@ const helpers = `
 
 const PNG = '89 50 4e 47';
 
-async function target() {
-  const html = `<!doctype html><title>${TITLE}</title><body style="margin:0;background:#0a6"><h1>dummy</h1>`;
+async function target(then = '') {
+  const html = `<!doctype html><title>${TITLE}</title><body style="margin:0;background:#0a6"><h1>dummy</h1>${then}`;
   const { targetId } = await chrome.cdp.send('Target.createTarget', {
     url: `data:text/html,${encodeURIComponent(html)}`,
     background: true,
@@ -124,6 +124,14 @@ test('screencapture through /dev/embedder: typed it captures the picked tab, del
   assert.ok(copied[0].size > 100, JSON.stringify(copied));
   assert.deepEqual(copied[0].head, [0x89, 0x50, 0x4e, 0x47]);
 
+  await run(
+    page,
+    `{ printf '%s\\n' '{"kind":"clipboard.write","type":"image/png"}'; head -c 17000000 /dev/zero; } | cat > /dev/embedder; echo "big $?"`
+  );
+  await shows(page, 'seven copies at most 16 MB to the clipboard');
+  await shows(page, 'big 1');
+  assert.equal((await page.evaluate(() => window.copied)).length, 1);
+
   await close();
   assert.deepEqual(page.errors, []);
 });
@@ -145,6 +153,25 @@ test('a capture that lands on another of seven’s tabs is stopped and refused',
     });
   }, TITLE);
   await a.send('Page.bringToFront');
+  const seven = await a.evaluate(() => location.origin);
+  const { result, exceptionDetails } = await a.send('Runtime.evaluate', {
+    expression: `(async () => {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, selfBrowserSurface: 'exclude' });
+      const [track] = stream.getVideoTracks();
+      const started = Date.now();
+      while (!track.getCaptureHandle() && Date.now() - started < 10000)
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      const found = { handle: track.getCaptureHandle(), after: Date.now() - started, surface: track.getSettings().displaySurface };
+      for (const each of stream.getTracks()) each.stop();
+      return found;
+    })()`,
+    awaitPromise: true,
+    returnByValue: true,
+    userGesture: true,
+  });
+  assert.equal(exceptionDetails, undefined, exceptionDetails?.exception?.description);
+  t.diagnostic(`seven's capture handle: ${JSON.stringify(result.value)}`);
+  assert.deepEqual(result.value.handle, { handle: 'slicc-seven', origin: seven });
   await run(
     a,
     `printf '%s\\n' '{"kind":"capture.screen","type":"image/png"}' | cat > /dev/embedder; echo "own $?"`
@@ -153,4 +180,23 @@ test('a capture that lands on another of seven’s tabs is stopped and refused',
   await shows(a, 'own 1');
   assert.equal(await a.evaluate(() => window.findConfirm()), null);
   assert.deepEqual(a.errors, []);
+});
+
+test('a capture whose tab navigates to seven while it waits is stopped and refused', async (t) => {
+  const page = await chrome.page(t);
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: helpers });
+  await boot(page);
+  const seven = await page.evaluate(() => location.origin);
+  const close = await target(
+    `<script>setTimeout(() => location.assign(${JSON.stringify(`${seven}/os/`)}), 8000)</script>`
+  );
+  await run(
+    page,
+    `printf '%s\\n' '{"kind":"capture.screen","type":"image/png","delay":45}' | cat > /dev/embedder; echo "nav $?"`
+  );
+  await shows(page, "seven doesn't capture its own pages or the vault");
+  await shows(page, 'nav 1');
+  assert.equal(await page.evaluate(() => window.findConfirm()), null);
+  await close();
+  assert.deepEqual(page.errors, []);
 });
