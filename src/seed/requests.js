@@ -14,6 +14,7 @@ export const CAPTURED = "seven doesn't capture its own pages or the vault";
 export const UNKNOWN_TAB =
   "seven can't tell this tab isn't its own or the vault's (it sets no capture handle), so it doesn't capture it; share a window or the screen";
 export const HANDLE = 'slicc-seven';
+export const SHARED = ['window', 'monitor'];
 export const HANDLES = [HANDLE, 'slicc-vault'];
 export const HANDLE_MS = 1000;
 const STEP_MS = 50;
@@ -256,7 +257,7 @@ export function displayer({
     HANDLES.includes(handle?.handle) || Boolean(handle?.origin && is.url(handle.origin));
   const why = (track, handle) => {
     if (sevens(handle)) return CAPTURED;
-    if (!handle && track?.getSettings?.().displaySurface === 'browser') return UNKNOWN_TAB;
+    if (!handle && !SHARED.includes(track?.getSettings?.().displaySurface)) return UNKNOWN_TAB;
     return null;
   };
   return () => {
@@ -276,18 +277,22 @@ export function displayer({
         preferCurrentTab: false,
       });
       const track = stream?.getVideoTracks?.()[0];
-      const first = why(track, await settle(track));
-      if (first) {
+      let settled = false;
+      const stop = (next) => {
+        reason ??= refused(next);
         stopped(stream);
-        throw refused(first);
-      }
+        if (settled) track?.dispatchEvent?.(new Event('ended'));
+      };
       track?.addEventListener?.('capturehandlechange', () => {
-        const next = reason ? null : why(track, track.getCaptureHandle?.());
-        if (!next) return;
-        reason = refused(next);
-        stopped(stream);
-        track.dispatchEvent?.(new Event('ended'));
+        if (reason) return;
+        const next = why(track, track.getCaptureHandle?.());
+        if (next) stop(next);
       });
+      const first = why(track, await settle(track));
+      const now = reason ? null : why(track, track?.getCaptureHandle?.() ?? null);
+      if (!reason && (first || now)) stop(first ?? now);
+      if (reason) throw reason;
+      settled = true;
       return stream;
     };
     return { display, failure: () => reason };
