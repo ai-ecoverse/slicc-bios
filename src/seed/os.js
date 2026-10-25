@@ -663,7 +663,6 @@ async function check() {
   await updateTailnet();
   const packages = await optional;
   if (packages) await notes.packages(packages.list());
-  await packages?.refresh().catch(() => undefined);
 }
 
 function offerPackages() {
