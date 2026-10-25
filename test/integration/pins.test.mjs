@@ -424,6 +424,7 @@ test('the base set pins exactly what UI boot and the agent install need, and eve
   const base = Object.keys(JSON.parse(await read('package.json')).dependencies).sort();
   assert.deepEqual(base, [
     '@ai-ecoverse/slicc-browsers',
+    '@ai-ecoverse/slicc-capture',
     '@ai-ecoverse/slicc-kernel',
     '@ai-ecoverse/slicc-spectrum',
     '@ai-ecoverse/wasi-fnox',
