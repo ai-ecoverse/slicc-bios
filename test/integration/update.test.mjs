@@ -167,6 +167,16 @@ test('updates a running install from a bumped lockfile', async (t) => {
       ],
       [`https://registry.npmjs.org/@ai-ecoverse/wasm-bash/-/wasm-bash-${SHIPPED}.tgz`]
     );
+    assert.deepEqual(
+      (await opfs(page)).filter(
+        (path) => path.includes('slicc-ortllama') || path.includes('onnxruntime-web')
+      ),
+      []
+    );
+    assert.deepEqual(
+      chrome.cdn.requests.filter((url) => /slicc-ortllama|onnxruntime-web/.test(url)),
+      []
+    );
     await page.screenshot(new URL('updated.png', page.dir));
 
     await run(

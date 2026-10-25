@@ -29,13 +29,11 @@ const helpers = `
     stop() {}
     abort() {}
   };
-  new MutationObserver(() => {
-    if (window.findConfirm() && !window.prompting) {
-      window.prompting = true;
-      window.prompted += 1;
-    }
-    if (!window.findConfirm()) window.prompting = false;
-  }).observe(document, { childList: true, subtree: true });
+  const showModal = HTMLDialogElement.prototype.showModal;
+  HTMLDialogElement.prototype.showModal = function (...args) {
+    if (this.getRootNode()?.host?.localName === 'slicc-confirm') window.prompted += 1;
+    return showModal.apply(this, args);
+  };
   Object.defineProperty(MediaDevices.prototype, 'getUserMedia', {
     configurable: true,
     writable: true,
@@ -150,6 +148,44 @@ test('slicc-audio is in the base set without ortllama, a delayed microphone requ
   assert.equal(await page.evaluate(() => window.micOpened), 1);
   assert.equal(await page.evaluate(() => window.prompted), 4);
 
+  await run(page, `sleep 12; ${ask({ kind: 'audio.play', sound: 'chime' })}; echo "play $?"`);
+  await page.until(() => !!window.findConfirm(), undefined);
+  assert.match(
+    await page.evaluate(() => window.findConfirm().shadowRoot.textContent),
+    /Play a sound\?.*A program asks seven to play a sound\./s
+  );
+  await press(page, 'cancel');
+  await shows(page, 'the request to play a sound was dismissed');
+  await shows(page, 'play 1');
+
+  await run(
+    page,
+    `sleep 12; { printf '%s\\n' '{"kind":"audio.say","engine":"webspeech"}'; printf 'hello'; } | cat > /dev/embedder; echo "say $?"`
+  );
+  await page.until(() => !!window.findConfirm(), undefined);
+  assert.match(
+    await page.evaluate(() => window.findConfirm().shadowRoot.textContent),
+    /Speak aloud\?.*A program asks seven to speak aloud\./s
+  );
+  await press(page, 'cancel');
+  await shows(page, 'the request to speak aloud was dismissed');
+  await shows(page, 'say 1');
+  assert.equal(await page.evaluate(() => window.prompted), 6);
+
+  await run(page, `${ask({ kind: 'audio.play', sound: 'chime' })}; echo "typed play $?"`);
+  await shows(page, 'typed play');
+  assert.equal(await page.evaluate(() => window.prompted), 6);
+
+  await run(
+    page,
+    `sleep 12; { printf '%s\\n' '{"kind":"audio.transcribe","engine":"whisper","format":"text"}'; printf 'RIFFbytes'; } | cat > /dev/embedder; echo "whisper $?"`
+  );
+  await shows(page, 'whisper 1');
+  await shows(page, 'no server at http://11435.kernel.localhost');
+  assert.equal(await page.evaluate(() => window.prompted), 6);
+  assert.equal(await page.evaluate(() => window.micOpened), 1);
+  assert.equal(await page.evaluate(() => window.recognitions), 0);
+
   await run(
     page,
     `sleep 8; exec 3<>/dev/embedder; printf '%s\\n' '{"kind":"audio.transcribe","status":true}' >&3; cat <&3; exec 3<&-; echo "probed"; ${ask({ kind: 'audio.voices' })}; echo "voices $?"`
@@ -157,7 +193,7 @@ test('slicc-audio is in the base set without ortllama, a delayed microphone requ
   await shows(page, 'ortllama: no server at');
   await shows(page, 'probed');
   await shows(page, 'voices');
-  assert.equal(await page.evaluate(() => window.prompted), 4);
+  assert.equal(await page.evaluate(() => window.prompted), 6);
   assert.equal(await page.evaluate(() => window.recognitions), 0);
   assert.equal(await page.evaluate(() => window.micOpened), 1);
   assert.deepEqual(page.errors, []);

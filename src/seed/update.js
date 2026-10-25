@@ -293,10 +293,12 @@ export async function kernelFiles(kernel, attach) {
   };
 }
 
+export const NO_OPTIONAL = '--no-optional';
+
 export function project() {
   return guard.on
-    ? { folder: `${BASE}/`, cwd: `/${BASE}`, flags: ['--modules-dir=/node_modules'] }
-    : { folder: '', cwd: '/', flags: [] };
+    ? { folder: `${BASE}/`, cwd: `/${BASE}`, flags: ['--modules-dir=/node_modules', NO_OPTIONAL] }
+    : { folder: '', cwd: '/', flags: [NO_OPTIONAL] };
 }
 
 const INSTALL = ['pnpm', 'install', '--frozen-lockfile', '--trust-lockfile'];
