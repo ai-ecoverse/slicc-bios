@@ -208,6 +208,19 @@ async function tabWhere(match) {
   );
 }
 
+async function frameWhere(match) {
+  let seen = [];
+  for (let n = 0; n < 150; n += 1) {
+    seen = (await chrome.cdp.send('Target.getTargets')).targetInfos;
+    const found = seen.find(match);
+    if (found) return found.targetId;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(
+    `the sign-in page’s cross-site iframe never became its own target: ${seen.map((info) => `${info.type} ${info.url}`).join(' ')}`
+  );
+}
+
 const close = (ids) =>
   Promise.all(ids.map((id) => fetch(`http://127.0.0.1:${port}/json/close/${id}`))).catch(() => {});
 
@@ -269,9 +282,7 @@ async function rows(t, page, via) {
   const child = await tabWhere((tab) =>
     tab.url.startsWith('https://ims-na1.adobelogin.com/idp-child')
   );
-  const { targetInfos: raw } = await chrome.cdp.send('Target.getTargets');
-  const frame = raw.find((info) => info.type === 'iframe' && info.url.includes('/frame'))?.targetId;
-  assert.ok(frame, 'the sign-in page’s cross-site iframe is its own target');
+  const frame = await frameWhere((info) => info.type === 'iframe' && info.url.includes('/frame'));
   const grandchild = await tabWhere((tab) =>
     tab.url.startsWith('https://ims-na1.adobelogin.com/idp-grandchild')
   );
