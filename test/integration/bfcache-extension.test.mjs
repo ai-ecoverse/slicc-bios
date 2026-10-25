@@ -217,10 +217,18 @@ test("over the guarded extension route, an agent's Back from an ordinary page to
       LOST
     );
   }
-  assert.ok(
-    after.read.error,
-    `the guard read seven's document: ${JSON.stringify(after.read).slice(0, 300)}`
-  );
+  if (landed.href.startsWith('about:blank')) {
+    assert.equal(
+      after.read.result?.result?.value,
+      '<html><head></head><body></body></html>',
+      `the agent read more than the blocked page: ${JSON.stringify(after.read).slice(0, 300)}`
+    );
+  } else {
+    assert.ok(
+      after.read.error,
+      `the guard read seven's document: ${JSON.stringify(after.read).slice(0, 300)}`
+    );
+  }
   assert.doesNotMatch(JSON.stringify(after.read), /slicc-app/);
   assert.deepEqual(page.errors, []);
 });
