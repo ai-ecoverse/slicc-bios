@@ -174,7 +174,16 @@ export function openUrl({
   };
 }
 
-export const KINDS = { 'open.url': {}, 'capture.screen': {}, 'clipboard.write': {} };
+export const KINDS = {
+  'open.url': {},
+  'capture.screen': {},
+  'clipboard.write': {},
+  'audio.play': {},
+  'audio.say': {},
+  'audio.voices': {},
+  'audio.record': {},
+  'audio.transcribe': {},
+};
 
 export function pageRequests({
   show,
@@ -203,7 +212,8 @@ export function plugged(hook, prompts, extras = () => ({})) {
       .map((kind) => [
         kind,
         async (request, { gesture }) => {
-          await gesture(request.stamp, prompts[kind](request), request.signal);
+          const prompt = prompts[kind](request);
+          if (prompt) await gesture(request.stamp, prompt, request.signal);
           const { failure = () => null, ...extra } = extras();
           let reply;
           try {
@@ -230,6 +240,44 @@ export function capturePrompt({ stamp }) {
     late: CAPTURE_LATE,
   };
 }
+
+function asking(title, says, action, what) {
+  return ({ stamp }) => ({
+    title,
+    body: `${asker(stamp)} asks seven to ${says}.`,
+    action,
+    cancel: 'Cancel',
+    variant: 'confirmation',
+    dismissed: `the request to ${what} was dismissed`,
+    late: `nobody answered the request to ${what} within 60 s`,
+  });
+}
+
+const playing = asking('Play a sound?', 'play a sound', 'Play', 'play a sound');
+const speaking = asking('Speak aloud?', 'speak aloud', 'Speak', 'speak aloud');
+const recording = asking(
+  'Use the microphone?',
+  'record from your microphone',
+  'Record',
+  'use the microphone'
+);
+const listening = asking(
+  'Use the microphone?',
+  'listen through your microphone',
+  'Listen',
+  'use the microphone'
+);
+const asked = (options) =>
+  !options?.status && !options?.warmup && !options?.supported && !options?.devices;
+
+export const audioPrompts = {
+  'audio.play': playing,
+  'audio.say': (request) => (asked(request.options) ? speaking(request) : null),
+  'audio.voices': () => null,
+  'audio.record': recording,
+  'audio.transcribe': (request) =>
+    asked(request.options) && request.options?.engine === 'webspeech' ? listening(request) : null,
+};
 
 function stopped(stream) {
   for (const track of stream?.getTracks?.() ?? []) track.stop();

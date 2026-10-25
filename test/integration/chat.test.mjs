@@ -1568,6 +1568,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
       new Function(`return (${find})()`)().shadowRoot.querySelector('[data-cancel]').click(),
     confirmOf.toString()
   );
+  const cancelledOpen = Date.now();
   const refusedOpen = await asking;
   assert.match(refusedOpen.text, /the request to open the page was dismissed/);
   assert.match(refusedOpen.text, /agent open 1/);
@@ -1576,6 +1577,43 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
     agentTabs.filter(({ url }) => url.startsWith('https://example.test/agent')),
     []
   );
+
+  await page.evaluate(() => {
+    window.micOpened = 0;
+    Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
+      configurable: true,
+      value: async () => {
+        window.micOpened += 1;
+        throw new DOMException('denied by the test', 'NotAllowedError');
+      },
+    });
+  });
+  await new Promise((resolve) =>
+    setTimeout(resolve, Math.max(0, cancelledOpen + 10_500 - Date.now()))
+  );
+  const recording = agentRun(
+    `printf '%s\\n' '{"kind":"audio.record","seconds":1}' | cat > /dev/embedder; echo "agent rec $?"`
+  );
+  await page.until(
+    (find) => !!new Function(`return (${find})()`)()?.shadowRoot?.querySelector('[data-cancel]'),
+    confirmOf.toString()
+  );
+  assert.match(
+    await page.evaluate(
+      (find) => new Function(`return (${find})()`)().shadowRoot.textContent,
+      confirmOf.toString()
+    ),
+    /Use the microphone\?.*The agent \S+ asks seven to record from your microphone\./s
+  );
+  await page.evaluate(
+    (find) =>
+      new Function(`return (${find})()`)().shadowRoot.querySelector('[data-cancel]').click(),
+    confirmOf.toString()
+  );
+  const refusedMic = await recording;
+  assert.match(refusedMic.text, /the request to use the microphone was dismissed/);
+  assert.match(refusedMic.text, /agent rec 1/);
+  assert.equal(await page.evaluate(() => window.micOpened), 0);
 
   await run(page, 'echo "tab=$SLICC_TAB"');
   await page.until(() =>

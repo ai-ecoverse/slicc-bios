@@ -1,3 +1,4 @@
+import audio from '@ai-ecoverse/slicc-audio/page';
 import capture from '@ai-ecoverse/slicc-capture/page';
 import { attachKernel, createKernel, serveHostfsPort } from '@ai-ecoverse/slicc-kernel';
 import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
@@ -71,6 +72,7 @@ import { PYTHON } from './projects.js';
 import { createNotes, createReleases } from './releases.js';
 import { createRemote } from './remote.js';
 import {
+  audioPrompts,
   capturePrompt,
   displayer,
   markCaptured,
@@ -369,6 +371,7 @@ const requests = pageRequests({
     'open.url': openUrl(),
     'clipboard.write': clipboardWrite(),
     ...plugged(capture, { 'capture.screen': capturePrompt }, displayer()),
+    ...plugged(audio, audioPrompts),
   },
 });
 let folders = null;
