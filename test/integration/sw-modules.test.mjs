@@ -116,17 +116,31 @@ test('a BIOS without the fresh install takes over a worker the fresh install reg
   const page = await chrome.page(t);
   await boot(page);
   await settled(page);
-  await page.evaluate(async () => {
-    const registration = await navigator.serviceWorker.register('/sw.js?afresh', {
-      type: 'module',
-      scope: '/',
+  await page.evaluate(() =>
+    navigator.serviceWorker.register('/sw.js?afresh', { type: 'module', scope: '/' })
+  );
+  const workers = () =>
+    page.evaluate(async () => {
+      const registration = await navigator.serviceWorker.getRegistration('/');
+      const state = (worker) => worker && `${new URL(worker.scriptURL).search} ${worker.state}`;
+      return {
+        active: state(registration.active),
+        waiting: state(registration.waiting),
+        installing: state(registration.installing),
+      };
     });
-    const worker = registration.installing ?? registration.waiting ?? registration.active;
-    if (worker.state === 'activated') return;
-    await new Promise((resolve) =>
-      worker.addEventListener('statechange', () => worker.state === 'activated' && resolve())
-    );
-  });
+  const afresh = { active: '?afresh activated', waiting: null, installing: null };
+  await page
+    .within(60000, async () => {
+      const registration = await navigator.serviceWorker.getRegistration('/');
+      return (
+        registration.active?.scriptURL.endsWith('/sw.js?afresh') &&
+        registration.active.state === 'activated' &&
+        !registration.waiting &&
+        !registration.installing
+      );
+    })
+    .catch(async () => assert.deepEqual(await workers(), afresh));
   assert.deepEqual(await release(page, {}), { worker: '/sw.js?afresh', probe: null });
   const older = [
     'export async function intercept(container, script, scope) {',
