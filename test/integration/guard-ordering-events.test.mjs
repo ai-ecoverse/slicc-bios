@@ -112,6 +112,16 @@ for (const method of ['Runtime.consoleAPICalled', 'DOM.childNodeInserted']) {
       const marker = `synthetic-queued-${admission}`;
       const params = method.startsWith('Runtime.') ? consoleParams(marker) : domParams(marker);
       wire.emit({ method, sessionId: session, params });
+      wire.emit({
+        method: 'Console.messageAdded',
+        sessionId: session,
+        params: { message: { text: `${marker} ${failed}` } },
+      });
+      wire.emit({
+        method: 'Log.entryAdded',
+        sessionId: session,
+        params: { entry: { text: `${marker} ${failed}` } },
+      });
       if (admission === 'checked') {
         entry.tree = { frame: errorFrame('events') };
         wire.emit({
@@ -136,13 +146,25 @@ for (const method of ['Runtime.consoleAPICalled', 'DOM.childNodeInserted']) {
         sessionId: session,
         params: method.startsWith('Runtime.') ? consoleParams(benign) : domParams(benign),
       });
+      wire.emit({
+        method: 'Console.messageAdded',
+        sessionId: session,
+        params: { message: { text: benign } },
+      });
+      wire.emit({
+        method: 'Log.entryAdded',
+        sessionId: session,
+        params: { entry: { text: benign } },
+      });
       await flush();
-      assert.equal(contains(wire, method, marker), false, 'queued content is never published');
-      assert.equal(
-        contains(wire, method, benign),
-        true,
-        'current ordinary content still publishes'
-      );
+      for (const emitted of [method, 'Console.messageAdded', 'Log.entryAdded']) {
+        assert.equal(contains(wire, emitted, marker), false, 'queued content is never published');
+        assert.equal(
+          contains(wire, emitted, benign),
+          true,
+          'current ordinary content still publishes'
+        );
+      }
       assert.equal(JSON.stringify(wire.delivered).includes(failed), false);
     });
   }

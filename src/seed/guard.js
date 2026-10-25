@@ -69,7 +69,8 @@ const documentContent = (method = '') =>
 const documentPublication = (message) =>
   message.id === undefined &&
   message.sessionId !== undefined &&
-  (documentContent(message.method) || /^(?:Network|Fetch)\./.test(message.method));
+  (documentContent(message.method) ||
+    /^(?:Network|Fetch|Log|Audits|Console)\./.test(message.method));
 
 const UNSAFE = new Set([
   'Target.sendMessageToTarget',
