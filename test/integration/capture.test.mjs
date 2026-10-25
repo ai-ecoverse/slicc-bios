@@ -48,7 +48,7 @@ const NAMED =
 let targets = 0;
 
 async function target(then = NAMED) {
-  const html = `<!doctype html><title>${TITLE}</title><body style="margin:0;background:#0a6"><h1>dummy</h1>${then}`;
+  const html = `<!doctype html><title>loading</title>${then}<script>document.title = ${JSON.stringify(TITLE)};</script><body style="margin:0;background:#0a6"><h1>dummy</h1>`;
   const path = `/capture-target-${(targets += 1)}.html`;
   chrome.overrides.set(path, html);
   const url = new URL(path, chrome.url);
@@ -57,6 +57,13 @@ async function target(then = NAMED) {
     url: url.href,
     background: true,
   });
+  const deadline = Date.now() + 30000;
+  for (;;) {
+    const { targetInfos } = await chrome.cdp.send('Target.getTargets');
+    if (targetInfos.some((info) => info.targetId === targetId && info.title === TITLE)) break;
+    if (Date.now() > deadline) throw new Error(`the dummy tab ${url.href} never ran its scripts`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
   return () => chrome.cdp.send('Target.closeTarget', { targetId });
 }
 
