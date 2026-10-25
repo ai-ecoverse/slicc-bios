@@ -1041,13 +1041,13 @@ test('the real slicc CLI shares another browser over cdp: the 9222 facade reache
   assert.doesNotMatch(opened.out, /open 0$/, opened.out);
   const walked = await shell(
     page,
-    `{ playwright-cli --runtime ${runtime} open 'data:text/html,<title>start</title>' > /dev/null; playwright-cli --runtime ${runtime} eval 'location.href = ${JSON.stringify(`${own}/`)}' > /dev/null 2>&1; for i in $(seq 1 50); do s=$(playwright-cli --runtime ${runtime} eval 'location.href' 2>&1); case "$s" in *'#blocked'*|*"seven's origin"*) break ;; esac; sleep 0.2; done; echo "$s"; }`,
+    `{ playwright-cli --runtime ${runtime} open 'data:text/html,<title>start</title>' > /dev/null; playwright-cli --runtime ${runtime} eval 'location.href = ${JSON.stringify(`${own}/`)}' > /dev/null 2>&1; for i in $(seq 1 50); do s=$(playwright-cli --runtime ${runtime} eval 'location.href' 2>&1); case "$s" in *'data:text/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E'*|*"seven's origin"*) break ;; esac; sleep 0.2; done; echo "$s"; }`,
     'cdp-own-walk'
   );
   assert.ok(!walked.out.includes(own), walked.out);
   assert.match(
     walked.out,
-    /about:blank#blocked|slicc: refused: target is on seven's origin/,
+    /data:text\/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E|slicc: refused: target is on seven's origin/,
     `the walk to seven’s origin was failed in the other browser, and a guarded read of the walked tab is blanked or refused: ${walked.out}`
   );
   const frames = async () => {
@@ -1082,7 +1082,8 @@ test('the real slicc CLI shares another browser over cdp: the 9222 facade reache
   let scrubbed = [];
   for (const end = Date.now() + 15000; ; ) {
     scrubbed = await frames();
-    if (scrubbed.some((tab) => tab.url === 'about:blank#blocked')) break;
+    if (scrubbed.some((tab) => tab.url === 'data:text/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E'))
+      break;
     if (Date.now() > end)
       assert.fail(
         `bios's guard blanks the walked tab within 15 s; the linked browser's pages are ${JSON.stringify(scrubbed)}`

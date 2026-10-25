@@ -7,6 +7,7 @@ import { debuggerUrl, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
 
 const LOST = 'BFCache exclusion lost: only the guard protects seven now';
+const BLANKED = 'data:text/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E';
 
 const free = () =>
   new Promise((resolve) => {
@@ -165,14 +166,16 @@ test("over the guarded extension route, an agent's Back from an ordinary page to
   assert.ok(agent.session, `the agent attached to the ordinary tab: ${JSON.stringify(agent)}`);
   assert.equal(agent.back.error, undefined, `the agent's Back ran: ${JSON.stringify(agent.back)}`);
 
-  const landed = await until('the Back to leave the ordinary page', async () => {
+  const landed = await until('the Back to reach the blocked page or a fresh /os/', async () => {
     const at = JSON.parse(
       await observed(
         sessionId,
         `JSON.stringify({ href: location.href, ready: document.readyState, kept: window.sliccKept ?? null, type: performance.getEntriesByType('navigation')[0]?.type ?? null })`
       )
     );
-    return at.href !== elsewhere && at.ready === 'complete' ? { done: true, ...at } : at;
+    return (at.href === BLANKED || at.href === seven) && at.ready === 'complete'
+      ? { done: true, ...at }
+      : at;
   });
   t.diagnostic(`after the agent's Back the user tab is at ${landed.href}`);
   const found = refused.flatMap(({ notRestoredExplanations = [], notRestoredExplanationsTree }) => [
@@ -191,7 +194,7 @@ test("over the guarded extension route, an agent's Back from an ordinary page to
     LOST
   );
   assert.ok(
-    landed.href.startsWith('about:blank') || new URL(landed.href).pathname === '/os/',
+    landed.href === BLANKED || landed.href === seven,
     `the Back went somewhere unexpected: ${landed.href}`
   );
 
@@ -217,10 +220,10 @@ test("over the guarded extension route, an agent's Back from an ordinary page to
       LOST
     );
   }
-  if (landed.href.startsWith('about:blank')) {
+  if (landed.href === BLANKED) {
     assert.equal(
       after.read.result?.result?.value,
-      '<html><head></head><body></body></html>',
+      '<html><head><title>blocked</title></head><body></body></html>',
       `the agent read more than the blocked page: ${JSON.stringify(after.read).slice(0, 300)}`
     );
   } else {
