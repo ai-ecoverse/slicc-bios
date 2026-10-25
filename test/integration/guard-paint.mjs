@@ -374,6 +374,7 @@ async function measure(factory, unguarded, own, route, layout) {
       row.probes = await probes(client, session);
       row.input = await click(client, session, n);
       if (layout === 'ordinary') {
+        row.transportEvents = client.transportEvents;
         row.state = driveState(row);
         Object.assign(row, await ordinaryFrames(unguarded, raw, client, session, n));
       }
@@ -560,6 +561,18 @@ function ordinary(row, label) {
     'reached',
     `${label}: input reaches the ordinary frame through the guard`
   );
+}
+
+export async function ordinaryProbe(t) {
+  const { clientFactory, vault } = await guardHost(t, 'link');
+  const factory = clientFactory('link');
+  const own = [OWN, vault];
+  const { unguarded, close } = await factory({ own });
+  try {
+    return await measure(factory, unguarded, own, 'link', 'ordinary');
+  } finally {
+    await close();
+  }
 }
 
 export function paint(route) {
