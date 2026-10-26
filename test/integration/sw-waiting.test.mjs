@@ -236,6 +236,7 @@ test('an update activates within 15 s while the tab keeps pulling a long downloa
     async (started) => {
       const registration = await navigator.serviceWorker.getRegistration();
       return (
+        registration.active?.state === 'activated' &&
         !registration.waiting &&
         !registration.installing &&
         window.switched !== null &&
