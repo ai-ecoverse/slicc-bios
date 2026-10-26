@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
+import { loadCatalog } from '../../src/seed/packages.js';
+import { OWNER, REGISTRY } from '../../src/seed/releases.js';
 import {
   boot,
   booted,
@@ -211,14 +213,30 @@ test('updates a running install from a bumped lockfile', async (t) => {
   );
 });
 
-const NOTES_DOC =
-  /^https:\/\/registry\.npmjs\.org\/(?:@[^/]+%2F[^/]+|[^@/][^/]*)\/(?!latest$)[^/]+$/;
-const notesBurst = (url) =>
-  NOTES_DOC.test(url) ||
-  (url.startsWith(`${chrome.github.origin}/repos/`) && new URL(url).pathname.endsWith('/releases'));
+async function notesBurst() {
+  const { entries, retired } = await loadCatalog(new URL('packages/optional/', chrome.url));
+  const noted = new Set([...entries, ...retired].map((entry) => entry.package.replace('/', '%2F')));
+  const doc = ({ origin, pathname }) => {
+    const [, name, version, ...rest] = pathname.split('/');
+    return origin === REGISTRY && noted.has(name) && /^\d/.test(version ?? '') && !rest.length;
+  };
+  const releases = ({ origin, pathname }) => {
+    const [, repos, owner, repo, list, ...rest] = pathname.split('/');
+    return (
+      origin === chrome.github.origin &&
+      repos === 'repos' &&
+      owner === OWNER &&
+      Boolean(repo) &&
+      list === 'releases' &&
+      !rest.length
+    );
+  };
+  return (url) => doc(new URL(url)) || releases(new URL(url));
+}
 
 test('code is highlighted offline by spectrum’s own highlighter, and a profile’s old /opt/grammars goes', async (t) => {
   const page = await chrome.page(t);
+  const burst = await notesBurst();
   await boot(page);
   await page.evaluate(async () => {
     const put = async (path, text) => {
@@ -316,11 +334,11 @@ test('code is highlighted offline by spectrum’s own highlighter, and a profile
     before
   );
   assert.deepEqual(
-    fetched.filter((url) => !notesBurst(url)),
+    fetched.filter((url) => !burst(url)),
     []
   );
   assert.deepEqual(
-    chrome.cdn.requests.filter((url) => !notesBurst(url)),
+    chrome.cdn.requests.filter((url) => !burst(url)),
     []
   );
   assert.equal((await opfs(page)).filter((path) => path.includes('@shikijs')).length, 0);
