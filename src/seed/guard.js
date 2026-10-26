@@ -594,8 +594,8 @@ class Guard {
     this.documents = new Map();
     this.roots = new Map();
     this.retired = new Set();
-    this.commits = new Map();
     this.documentCommands = new WeakMap();
+    this.documentSources = new WeakMap();
     this.documentEvents = new WeakMap();
     this.pendingContexts = new Map();
     this.guarded = { onmessage: null, onclose: null };
@@ -867,16 +867,63 @@ class Guard {
     return this.sessions.get(sessionId)?.targetId ?? this.navSessions.get(sessionId)?.targetId;
   }
 
-  invalidate(targetId, invalidated = new Map()) {
+  sourceFrame(frame, other) {
+    return Boolean(
+      frame &&
+        other &&
+        typeof frame.loaderId === 'string' &&
+        frame.loaderId &&
+        [
+          'id',
+          'loaderId',
+          'url',
+          'urlFragment',
+          'securityOrigin',
+          'unreachableUrl',
+          'parentId',
+        ].every((key) => frame[key] === other[key])
+    );
+  }
+
+  confirmSource(state, frames) {
+    const previous = state.source;
+    if (
+      previous?.alive &&
+      previous.frames.length === frames.length &&
+      frames.every((frame, i) => this.sourceFrame(previous.frames[i], frame))
+    )
+      return;
+    if (previous) previous.alive = false;
+    state.source = {
+      alive: frames.every((frame) => typeof frame.loaderId === 'string' && frame.loaderId),
+      frames,
+    };
+  }
+
+  invalidate(targetId, invalidated = new Set(), frame) {
     const seen = new Set();
     let current = targetId;
     while (current && !seen.has(current)) {
       seen.add(current);
-      const state = this.document(current);
-      const before = invalidated.get(current);
-      if (before?.state !== state || before.revision !== state.revision) {
-        state.revision += 1;
-        invalidated.set(current, { state, revision: state.revision });
+      if (!invalidated.has(current)) {
+        const state = this.document(current);
+        if (
+          state.source &&
+          (!frame ||
+            !this.knownFrame(frame) ||
+            !state.source.frames.some((before) => this.sourceFrame(before, frame)))
+        )
+          state.source.alive = false;
+        if (
+          state.checked === state.revision ||
+          state.classified === state.revision ||
+          state.planned ||
+          state.reading
+        )
+          state.revision += 1;
+        state.checked = -1;
+        state.classified = -1;
+        invalidated.add(current);
       }
       current = this.parentTarget(current);
     }
@@ -913,7 +960,6 @@ class Guard {
       kept(this.retired, id);
       this.frames.delete(id);
       this.parents.delete(id);
-      this.commits.delete(id);
     }
     for (const [sessionId, entry] of this.sessions) {
       if (!gone.has(entry.targetId)) continue;
@@ -953,54 +999,19 @@ class Guard {
     }
   }
 
-  forgetCommits(targetId) {
-    for (const id of this.related(targetId) ?? [targetId])
-      this.commits.delete(this.documents.get(id)?.frameId ?? id);
-  }
-
   observationLost(sessionId, targetId) {
-    const id = this.documentTarget(sessionId) ?? targetId;
-    this.forgetCommits(id);
-    this.invalidate(id);
-  }
-
-  rebindCommit(frame) {
-    const commit = this.commits.get(frame.id);
-    if (
-      commit &&
-      ['loaderId', 'url', 'securityOrigin', 'unreachableUrl'].some(
-        (key) => frame[key] !== undefined && frame[key] !== commit.frame[key]
-      )
-    )
-      this.commits.delete(frame.id);
+    this.invalidate(this.documentTarget(sessionId) ?? targetId);
   }
 
   commitDocument(targetId, method, params) {
     const frame = method === 'Page.frameNavigated' && params.frame;
-    let invalidated = new Map();
-    if (typeof frame?.loaderId === 'string' && frame.loaderId && typeof frame.id === 'string') {
-      const signature = JSON.stringify([
-        frame.loaderId,
-        frame.url,
-        frame.securityOrigin,
-        frame.unreachableUrl,
-        frame.parentId,
-        params.type,
-      ]);
-      let commit = this.commits.get(frame.id);
-      if (commit?.signature !== signature) {
-        commit = { signature, frame, invalidated: new Map() };
-        this.commits.set(frame.id, commit);
-      }
-      invalidated = commit.invalidated;
-      if (this.commits.size > REMEMBERED) this.commits.delete(this.commits.keys().next().value);
-    }
-    this.invalidate(targetId, invalidated);
+    const invalidated = new Set();
+    this.invalidate(targetId, invalidated, frame);
     const owner =
       frame && (this.roots.get(frame.id) ?? (this.documents.has(frame.id) ? frame.id : undefined));
-    if (owner) this.invalidate(owner, invalidated);
+    if (owner) this.invalidate(owner, invalidated, frame);
     if (frame && !this.knownFrame(frame))
-      for (const id of invalidated.keys()) this.document(id).transport = false;
+      for (const id of invalidated) this.document(id).transport = false;
   }
 
   documentEvent({ method, params = {}, sessionId }) {
@@ -1063,11 +1074,17 @@ class Guard {
     const targetId = this.documentTarget(message.sessionId);
     if (!this.documents.has(targetId)) return;
     const ids = this.related(targetId);
-    if (ids)
+    if (ids) {
       this.documentCommands.set(
         message,
         new Map([...ids].map((id) => [id, this.document(id).revision]))
       );
+      if (message.id !== undefined)
+        this.documentSources.set(
+          message,
+          new Map([...ids].map((id) => [id, this.document(id).source]))
+        );
+    }
   }
 
   rememberEvent(message) {
@@ -1239,11 +1256,21 @@ class Guard {
       state.proof === proof
     ) {
       state.transport = false;
+      if (state.source) state.source.alive = false;
       state.checked = -1;
       state.classified = -1;
       state.proof = (proof ?? 0) + 1;
     }
     return false;
+  }
+
+  async readDocument(state, method, params, sessionId, limit) {
+    state.reading = (state.reading ?? 0) + 1;
+    try {
+      return await this.call(method, params, sessionId, limit);
+    } finally {
+      state.reading -= 1;
+    }
   }
 
   async checkDocument(targetId, content = true, limit = CHECK_MS) {
@@ -1260,7 +1287,7 @@ class Guard {
       return state.checking.promise;
     const proof = state.proof;
     const promise = (async () => {
-      const answer = await this.call('Page.getFrameTree', {}, nav.session, limit);
+      const answer = await this.readDocument(state, 'Page.getFrameTree', {}, nav.session, limit);
       if (
         !answer.error &&
         this.documents.get(targetId) === state &&
@@ -1278,11 +1305,11 @@ class Guard {
       )
         return this.revokeProof(targetId, state, revision, proof);
       for (const frame of all) {
-        this.rebindCommit(frame);
         this.frames.set(frame.id, this.framed(frame));
         if (frame.parentId) this.parents.set(frame.id, frame.parentId);
       }
       this.rootFrame(targetId, all[0]);
+      this.confirmSource(state, all);
       state.proof = (proof ?? 0) + 1;
       state.transport = true;
       state.url = bare(all[0].url);
@@ -1306,10 +1333,16 @@ class Guard {
     if (!this.documents.has(targetId)) return true;
     const ids = this.related(targetId);
     if (!ids) return false;
-    const checked = await Promise.all([...ids].map((id) => this.checkDocument(id)));
-    const verified = checked.every(Boolean) && this.documentValid(sessionId);
-    if (verified) this.currentContexts(sessionId);
-    return verified;
+    const states = [...ids].map((id) => this.document(id));
+    for (const state of states) state.planned = (state.planned ?? 0) + 1;
+    try {
+      const checked = await Promise.all([...ids].map((id) => this.checkDocument(id)));
+      const verified = checked.every(Boolean) && this.documentValid(sessionId);
+      if (verified) this.currentContexts(sessionId);
+      return verified;
+    } finally {
+      for (const state of states) state.planned -= 1;
+    }
   }
 
   touch(targetId, held = false) {
@@ -1477,7 +1510,7 @@ class Guard {
     void this.call('Page.enable', {}, sessionId);
     const remaining = deadline - Date.now();
     if (remaining <= 0) return false;
-    const answer = await this.call('Page.getFrameTree', {}, sessionId, remaining);
+    const answer = await this.readDocument(state, 'Page.getFrameTree', {}, sessionId, remaining);
     if (answer.error) return this.revokeProof(targetId, state, revision, proof);
     const tree = answer.result?.frameTree;
     if (
@@ -1505,7 +1538,6 @@ class Guard {
     if (!known) return this.revokeProof(targetId, state, revision, proof);
     this.rootFrame(targetId, known[0]);
     for (const frame of known) {
-      this.rebindCommit(frame);
       this.frames.set(frame.id, this.framed(frame));
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
     }
@@ -1536,7 +1568,6 @@ class Guard {
 
   watch(sessionId, targetId, parent) {
     if (!this.sessions.has(sessionId)) {
-      this.forgetCommits(targetId);
       this.sessions.set(sessionId, { targetId, parent });
     }
     if (!this.watching.has(sessionId)) {
@@ -2105,8 +2136,23 @@ class Guard {
     );
   }
 
+  async revalidateReply(was) {
+    if (!documentContent(was?.method) || this.hidden(was.sessionId)) return false;
+    const sources = this.documentSources.get(was);
+    if (!sources || ![...sources.values()].every((source) => source?.alive)) return false;
+    if (!(await this.documentChecked(was.sessionId))) return false;
+    const ids = this.related(this.documentTarget(was.sessionId));
+    return Boolean(
+      ids &&
+        ids.size === sources.size &&
+        [...ids].every(
+          (id) => sources.get(id)?.alive && sources.get(id) === this.document(id).source
+        )
+    );
+  }
+
   async answer(message, was) {
-    if (this.answerClosed(was)) return this.refuse(was);
+    if (this.answerClosed(was) && !(await this.revalidateReply(was))) return this.refuse(was);
     const { method, params = {} } = was ?? {};
     const { result } = message;
     if (method === 'Page.createIsolatedWorld' && result?.executionContextId !== undefined) {

@@ -2,12 +2,20 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { errorFrame, flush, plainFrame, protocol } from './guard-ordering-fixture.mjs';
 
-for (const transition of ['duplicate', 'new-loader', 'protected-same-loader']) {
+for (const transition of [
+  'duplicate',
+  'new-loader',
+  'protected-same-loader',
+  'unknown-loader',
+  'fresh-proof-mismatch',
+  'fresh-proof-error',
+]) {
   test(`ordering loader observation ${transition}`, async (t) => {
     const wire = protocol(t);
     const entry = wire.target('loader');
     const session = await wire.attach('loader');
     const frame = { ...plainFrame('loader'), loaderId: 'synthetic-loader' };
+    entry.tree = { frame: transition === 'unknown-loader' ? plainFrame('loader') : frame };
     wire.emit({
       method: 'Page.frameNavigated',
       sessionId: session,
@@ -34,7 +42,28 @@ for (const transition of ['duplicate', 'new-loader', 'protected-same-loader']) {
       params: { frame: next, type: 'Navigation' },
     });
     await flush();
+    wire.hold(
+      (message) => message.method === 'Page.getFrameTree' && message.sessionId === 'guard-loader'
+    );
     wire.release(held);
+    if (transition === 'duplicate' || transition.startsWith('fresh-proof')) {
+      await flush();
+      const proof = wire.held.find((message) => message.method === 'Page.getFrameTree');
+      assert.ok(proof, 'a duplicate requires one more bounded private check');
+      assert.equal(
+        wire.delivered.some((message) => message.id === read.id),
+        false,
+        'the original reply stays withheld until positive revalidation'
+      );
+      if (transition === 'fresh-proof-mismatch')
+        entry.tree = { frame: { ...frame, url: 'https://other.invalid/' } };
+      wire.release(
+        proof,
+        transition === 'fresh-proof-error'
+          ? { error: { code: -32000, message: 'synthetic failed revalidation' } }
+          : undefined
+      );
+    }
     const answer = await read.answer;
     if (transition === 'duplicate')
       assert.equal(
