@@ -592,6 +592,8 @@ class Guard {
     this.blockedWorkers = new Set();
     this.next = GUARD_IDS;
     this.documents = new Map();
+    this.reportModes = globalThis.sliccGuardTrace?.modes?.();
+    this.nextMode = 0;
     this.documentCommands = new WeakMap();
     this.documentEvents = new WeakMap();
     this.guarded = { onmessage: null, onclose: null };
@@ -676,15 +678,36 @@ class Guard {
     this.deliver({ id, ...(sessionId ? { sessionId } : {}), error: { code: -32000, message } });
   }
 
+  frameTarget(frameId) {
+    if (this.targets.has(frameId)) return frameId;
+    for (const [targetId, state] of this.documents)
+      if (!state.retired && state.root === frameId) return targetId;
+    return undefined;
+  }
+
+  frameOwner(frameId) {
+    const seen = new Set([frameId]);
+    let parent = this.parents.get(frameId);
+    while (parent && !seen.has(parent)) {
+      const owner = this.frameTarget(parent);
+      if (owner) return owner;
+      seen.add(parent);
+      parent = this.parents.get(parent);
+    }
+    return undefined;
+  }
+
   learn(info) {
     if (!info?.targetId) return;
     const known = this.targets.get(info.targetId);
+    const type = info.type ?? known?.type;
+    const parentId = info.parentId ?? known?.parentId;
     const failed = info.url !== undefined && this.errored.get(info.targetId) === bare(info.url);
     this.targets.set(info.targetId, {
       url: failed ? ERROR_PAGE : (info.url ?? ''),
-      type: info.type ?? known?.type,
+      type,
       openerId: info.openerId,
-      parentId: info.parentId ?? known?.parentId,
+      parentId: parentId ?? (type === 'iframe' ? this.frameOwner(info.targetId) : undefined),
       was: known?.was || known?.guarded || false,
       guarded: known?.guarded || false,
       real: known?.real || false,
@@ -746,7 +769,7 @@ class Guard {
     return found.guarded;
   }
 
-  async frame(frameId, strict = false) {
+  async frame(frameId, strict = false, owner) {
     if (frameId === undefined) return false;
     if (this.targets.has(frameId)) return this.target(frameId);
     if (this.frames.has(frameId)) {
@@ -755,9 +778,12 @@ class Guard {
       return strict && (url === '' || inherits(url)) && (await this.inherited(frameId, 0));
     }
     if (await this.lookup(frameId)) return this.target(frameId);
-    if (strict) return true;
-    this.frames.set(frameId, '');
-    return false;
+    if (owner) {
+      this.enterStrict(owner, true);
+      this.invalidate(owner);
+      this.document(owner).failed = true;
+    }
+    return true;
   }
 
   async inherited(frameId, depth) {
@@ -822,8 +848,8 @@ class Guard {
   }
 
   document(targetId) {
-    if (!this.documents.has(targetId))
-      this.documents.set(targetId, {
+    if (!this.documents.has(targetId)) {
+      const state = {
         revision: 0,
         checked: -1,
         cleaned: new Set(),
@@ -831,8 +857,28 @@ class Guard {
         hazard: false,
         first: true,
         guardCommit: null,
-      });
+        mode: ++this.nextMode,
+      };
+      this.documents.set(targetId, state);
+      this.mode(state, 'enter', 'new');
+    }
     return this.documents.get(targetId);
+  }
+
+  mode(state, phase, cause) {
+    this.reportModes?.({
+      target: state.mode,
+      strict: state.strict,
+      evidence: state.hazard,
+      phase,
+      cause,
+    });
+  }
+
+  ordinary(state, commit = false, proof = 'tree') {
+    if (!state.strict || (state.hazard && !commit)) return;
+    state.strict = false;
+    this.mode(state, 'leave', commit ? 'commit' : proof);
   }
 
   related(targetId) {
@@ -875,14 +921,17 @@ class Guard {
     return !ids || [...ids].some((id) => this.document(id).strict);
   }
 
-  enterStrict(targetId, hazard = false) {
+  enterStrict(targetId, hazard = true) {
     if (!targetId) return;
     const ids = this.related(targetId) ?? new Set([targetId]);
     for (const id of ids) {
       const state = this.document(id);
-      state.hazard ||= hazard || !state.strict;
+      const entered = !state.strict;
+      const evidence = hazard && id === targetId;
+      state.hazard = entered ? evidence : state.hazard || evidence;
       state.strict = true;
-      state.guardCommit = null;
+      if (entered || evidence) state.guardCommit = null;
+      this.mode(state, entered ? 'enter' : 'observe', evidence ? 'evidence' : 'pending');
     }
   }
 
@@ -935,7 +984,10 @@ class Guard {
     if (
       this.is.url(url) ||
       url === ERROR_PAGE ||
-      (context?.auxData?.frameId && !this.frames.has(context.auxData.frameId))
+      (context?.auxData?.frameId &&
+        context.auxData.frameId !== targetId &&
+        context.auxData.frameId !== this.documents.get(targetId)?.root &&
+        !this.frames.has(context.auxData.frameId))
     ) {
       this.enterStrict(targetId, true);
       this.invalidate(targetId);
@@ -946,7 +998,9 @@ class Guard {
     if (
       !this.navSessions.has(sessionId) ||
       !frame ||
-      frame.parentId ||
+      (frame.parentId &&
+        frame.id !== targetId &&
+        frame.id !== this.documents.get(targetId)?.root) ||
       frame.url === ERROR_PAGE ||
       typeof frame.loaderId !== 'string' ||
       !frame.loaderId ||
@@ -965,6 +1019,13 @@ class Guard {
   frameEvidence({ method, params, sessionId }) {
     const targetId = this.documentTarget(sessionId);
     const frame = params.frame;
+    const frameId = frame?.id ?? params.frameId;
+    const parentFrameId = frame?.parentId ?? params.parentFrameId;
+    if (typeof frameId === 'string' && typeof parentFrameId === 'string') {
+      this.parents.set(frameId, parentFrameId);
+      const child = this.targets.get(frameId);
+      if (child?.type === 'iframe' && !child.parentId) child.parentId = this.frameOwner(frameId);
+    }
     const unsafe =
       (method === 'Page.frameNavigated' && !frame) ||
       (frame &&
@@ -973,7 +1034,13 @@ class Guard {
           (frame.parentId
             ? !this.frames.has(frame.parentId) && frame.parentId !== targetId
             : frame.id !== targetId && frame.id !== this.document(targetId).root)));
-    if (unsafe || method === 'Page.frameAttached') this.enterStrict(targetId, true);
+    const childTarget = frame && this.frameTarget(frame.id);
+    const subject =
+      childTarget && frame.parentId && this.frameOwner(frame.id) === targetId
+        ? childTarget
+        : targetId;
+    if (unsafe || method === 'Page.frameAttached')
+      this.enterStrict(subject, Boolean(unsafe) || this.frameOwner(frameId) !== targetId);
     this.invalidate(
       targetId,
       Boolean(unsafe) || method === 'Page.frameAttached' || method === 'Page.frameDetached'
@@ -1209,11 +1276,10 @@ class Guard {
     const commit = state.guardCommit;
     const matched =
       commit &&
-      commit.revision === revision &&
       all[0].id === commit.frameId &&
       all[0].loaderId === commit.loaderId &&
       this.framed(all[0]) === commit.url;
-    if (!state.hazard || matched) state.strict = false;
+    this.ordinary(state, Boolean(matched));
     for (const frame of all) {
       this.frames.set(frame.id, this.framed(frame));
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
@@ -1449,7 +1515,7 @@ class Guard {
     state.failed = false;
     state.url = info.url;
     state.checked = revision;
-    if (!state.hazard) state.strict = false;
+    this.ordinary(state, false, 'worker');
     return true;
   }
 
@@ -1567,7 +1633,7 @@ class Guard {
     }
   }
 
-  async request({ request = {}, documentURL, frameId, initiator, url }) {
+  async request({ request = {}, documentURL, frameId, initiator, url }, targetId) {
     const { is } = this;
     return (
       is.url(request.url) ||
@@ -1576,7 +1642,7 @@ class Guard {
       is.url(initiator?.url) ||
       is.url(header(request.headers, 'referer')) ||
       is.url(header(request.headers, 'origin')) ||
-      (await this.frame(frameId))
+      (await this.frame(frameId, false, targetId))
     );
   }
 
@@ -1609,7 +1675,9 @@ class Guard {
     const { requestId } = params;
     if (method === 'Network.requestWillBeSent' || method === 'Network.webSocketCreated') {
       const shown = this.delivered.has(requestId);
-      const marked = this.requests.get(requestId) === true || (await this.request(params));
+      const marked =
+        this.requests.get(requestId) === true ||
+        (await this.request(params, this.documentTarget(message.sessionId)));
       const waiting = this.settle(requestId, marked);
       if (marked && shown && params.redirectResponse && !this.continued.has(requestId)) {
         return this.hopped(message);
@@ -1674,7 +1742,9 @@ class Guard {
       return true;
     }
     const { params = {} } = message;
-    const marked = this.requests.get(params.networkId) === true || (await this.request(params));
+    const marked =
+      this.requests.get(params.networkId) === true ||
+      (await this.request(params, this.documentTarget(message.sessionId)));
     this.remember(params.requestId, marked);
     if (params.networkId !== undefined && marked) this.settle(params.networkId, true);
     if (!marked) return false;

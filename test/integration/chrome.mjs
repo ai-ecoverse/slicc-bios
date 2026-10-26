@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { serve, launch as start } from '@ai-ecoverse/slicc-shared-web/harness';
 import { startFakeGitHub } from './fake-github.mjs';
 import { startFakeVault } from './fake-vault.mjs';
+import { guardModeCounts, installGuardModes } from './guard-mode-metadata.mjs';
 
 env.SLICC_CDP_PORTS ??= '9300-9309';
 
@@ -180,6 +181,34 @@ export async function launch({ agent = false, vault = true, tools = true, ...ove
   };
   chrome.page = async (t) => {
     const opened = await page(t);
+    if (env.CI) {
+      const modes = guardModeCounts(t.name);
+      await opened.expose('__biosGuardModeEvent', modes.handle);
+      await opened.init(`() => (${installGuardModes})(${JSON.stringify(t.name)})`);
+      const subtest = t.test;
+      t.test = async (...args) => {
+        const name = typeof args[0] === 'string' ? `${t.name} / ${args[0]}` : t.name;
+        modes.allow(name);
+        await opened
+          .evaluate((row) => {
+            globalThis.__biosGuardModeRow = row;
+          }, name)
+          .catch(() => {});
+        try {
+          return await subtest.apply(t, args);
+        } finally {
+          await opened
+            .evaluate((row) => {
+              globalThis.__biosGuardModeRow = row;
+            }, t.name)
+            .catch(() => {});
+        }
+      };
+      t.after(async () => {
+        t.test = subtest;
+        await modes.flush(t);
+      });
+    }
     messages.length = 0;
     opened.console = messages;
     github.reset();
