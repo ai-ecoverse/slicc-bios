@@ -423,6 +423,7 @@ test('every gated pin is a release its own repository built from main, with npm 
 test('the base set pins exactly what UI boot and the agent install need, and every other tool is in tools.json, first the ones the agent reaches for, and pinned nowhere', async () => {
   const base = Object.keys(JSON.parse(await read('package.json')).dependencies).sort();
   assert.deepEqual(base, [
+    '@ai-ecoverse/slicc-audio',
     '@ai-ecoverse/slicc-browsers',
     '@ai-ecoverse/slicc-capture',
     '@ai-ecoverse/slicc-kernel',
@@ -436,8 +437,9 @@ test('the base set pins exactly what UI boot and the agent install need, and eve
   ]);
   const lock = JSON.parse(await read('package-lock.json'));
   assert.deepEqual(
-    Object.keys(lock.packages)
-      .filter(Boolean)
+    Object.entries(lock.packages)
+      .filter(([path, entry]) => path && !entry.optional)
+      .map(([path]) => path)
       .map((path) => path.split('node_modules/').at(-1))
       .sort(),
     base
