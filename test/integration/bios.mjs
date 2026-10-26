@@ -168,9 +168,13 @@ export async function opfs(page) {
   return page.evaluate(async () => {
     const paths = [];
     const walk = async (dir, prefix) => {
-      for await (const [name, handle] of dir.entries()) {
-        if (handle.kind === 'directory') await walk(handle, `${prefix}${name}/`);
-        else paths.push(`${prefix}${name}`);
+      try {
+        for await (const [name, handle] of dir.entries()) {
+          if (handle.kind === 'directory') await walk(handle, `${prefix}${name}/`);
+          else paths.push(`${prefix}${name}`);
+        }
+      } catch (error) {
+        if (error.name !== 'NotFoundError' || !prefix) throw error;
       }
     };
     await walk(await navigator.storage.getDirectory(), '');
