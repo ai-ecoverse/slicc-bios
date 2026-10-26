@@ -27,9 +27,10 @@ export async function pickTransport() {
   await stored('readwrite', (store) => store.delete('proxy')).catch(() => undefined);
   const extension = globalThis.sliccExtension;
   if (extension) {
+    const transport = fetchTransport({ fetch: extension.fetch, bodyIdleMs: BODY_IDLE_MS });
     return {
       kind: 'extension',
-      transport: fetchTransport({ fetch: extension.fetch, bodyIdleMs: BODY_IDLE_MS }),
+      transport: { ...transport, traits: { ...transport.traits, crossOrigin: 'any' } },
     };
   }
   return { kind: 'page', transport: fetchTransport({ hint: HINT, bodyIdleMs: BODY_IDLE_MS }) };
