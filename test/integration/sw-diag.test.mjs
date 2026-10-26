@@ -106,11 +106,19 @@ const consumers = {
 for (const variant of Object.keys(variants))
   for (const [name, consumer] of Object.entries(consumers))
     test(`diag ${variant} ${name}`, async (t) => {
+      const page = await chrome.page(t);
       chrome.overrides.set('/sw.js', variants[variant]);
       chrome.overrides.set('/os/held.bin', Buffer.alloc(SIZE, 7));
-      const page = await chrome.page(t);
       await page.init(TRICKLE);
       await boot(page);
+      const booted = await page.evaluate(async () => {
+        const registration = await navigator.serviceWorker.getRegistration();
+        const text = await (
+          await fetch(registration.active.scriptURL, { cache: 'no-store' })
+        ).text();
+        return text.includes('Promise.race([ended, reader.read(), idle.late])') ? 'fix' : 'main';
+      });
+      assert.equal(booted, variant);
       await page.within(5 * 60 * 1000, () =>
         document.querySelector('slicc-app').model.updates.ready()
       );
