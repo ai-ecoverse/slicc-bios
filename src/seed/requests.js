@@ -214,7 +214,7 @@ export function plugged(hook, prompts, extras = () => ({})) {
         async (request, { gesture }) => {
           const prompt = await prompts[kind](request);
           if (prompt) await gesture(request.stamp, prompt, request.signal);
-          const { failure = () => null, ...extra } = extras();
+          const { failure = () => null, ...extra } = extras(request);
           let reply;
           try {
             reply = await hook.handle({ ...request, ...extra });
@@ -229,10 +229,30 @@ export function plugged(hook, prompts, extras = () => ({})) {
   );
 }
 
-export function capturePrompt({ stamp }) {
+export const CAPTURE_VIDEO = ['video/webm', 'video/mp4'];
+
+export const captureSound = (options) =>
+  CAPTURE_VIDEO.includes(options?.type) && options?.system === true;
+
+export function captureMicrophone(options) {
+  if (!CAPTURE_VIDEO.includes(options?.type)) return false;
+  const microphone = options?.microphone;
+  if (microphone === undefined || microphone === false) return false;
+  if (microphone === true || (typeof microphone === 'string' && /^[\w+/=.-]+$/.test(microphone)))
+    return microphone;
+  throw refused("seven doesn't answer this microphone request");
+}
+
+export function capturePrompt({ stamp, options }) {
+  const sound = captureSound(options) ? ' and its sound' : '';
+  const microphone = captureMicrophone(options)
+    ? `, and record from your microphone${lasting(options?.duration)}`
+    : '';
   return {
-    title: 'Capture the screen?',
-    body: `${asker(stamp)} asks seven to capture your screen. You pick what to share next.`,
+    title: captureMicrophone(options)
+      ? 'Capture the screen and microphone?'
+      : 'Capture the screen?',
+    body: `${asker(stamp)} asks seven to capture your screen${sound}${microphone}. You pick what to share next.`,
     action: 'Choose',
     cancel: 'Cancel',
     variant: 'confirmation',
@@ -343,8 +363,34 @@ export function displayer({
     if (!handle && !SHARED.includes(track?.getSettings?.().displaySurface)) return UNKNOWN_TAB;
     return null;
   };
-  return () => {
+  return ({ options, signal } = {}) => {
     let reason = null;
+    let mic = null;
+    const microphone = captureMicrophone(options);
+    const userMedia = async (constraints) => {
+      const audio = microphone === true ? true : { deviceId: { exact: microphone } };
+      if (
+        !microphone ||
+        constraints?.video !== false ||
+        Object.keys(constraints).some((key) => !['audio', 'video'].includes(key)) ||
+        JSON.stringify(constraints.audio) !== JSON.stringify(audio)
+      )
+        throw refused("seven doesn't answer this microphone request");
+      if (signal?.aborted) throw signal.reason;
+      if (reason) throw reason;
+      const devices = media();
+      if (typeof devices?.getUserMedia !== 'function')
+        throw new DOMException(
+          'microphone recording is not supported in this browser',
+          'NotSupportedError'
+        );
+      mic = await devices.getUserMedia({ audio, video: false });
+      if (signal?.aborted || reason) {
+        stopped(mic);
+        throw reason ?? signal.reason;
+      }
+      return mic;
+    };
     const display = async (constraints) => {
       const devices = media();
       if (typeof devices?.getDisplayMedia !== 'function')
@@ -354,7 +400,7 @@ export function displayer({
         );
       const stream = await devices.getDisplayMedia({
         ...constraints,
-        audio: false,
+        audio: captureSound(options) && constraints?.audio === true,
         selfBrowserSurface: 'exclude',
         surfaceSwitching: 'exclude',
         preferCurrentTab: false,
@@ -364,6 +410,7 @@ export function displayer({
       const stop = (next) => {
         reason ??= refused(next);
         stopped(stream);
+        stopped(mic);
         if (settled) track?.dispatchEvent?.(new Event('ended'));
       };
       track?.addEventListener?.('capturehandlechange', () => {
@@ -378,7 +425,7 @@ export function displayer({
       settled = true;
       return stream;
     };
-    return { display, failure: () => reason };
+    return { display, userMedia, failure: () => reason };
   };
 }
 
