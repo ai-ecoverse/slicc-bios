@@ -592,6 +592,7 @@ class Guard {
     this.blockedWorkers = new Set();
     this.next = GUARD_IDS;
     this.documents = new Map();
+    this.roots = new Map();
     this.retired = new Set();
     this.commits = new Map();
     this.documentCommands = new WeakMap();
@@ -816,20 +817,48 @@ class Guard {
     return this.documents.get(targetId);
   }
 
+  rootFrame(targetId, frame) {
+    if (!targetId || typeof frame?.id !== 'string' || !frame.id) return;
+    const state = this.document(targetId);
+    const owner = this.roots.get(frame.id);
+    if (owner && owner !== targetId && !this.documents.get(owner)?.retired) {
+      for (const id of [owner, targetId]) {
+        const document = this.document(id);
+        this.revokeProof(id, document, document.revision, document.proof);
+        this.invalidate(id);
+      }
+      return;
+    }
+    const before = this.parentTarget(targetId);
+    if (state.frameId && state.frameId !== frame.id) this.roots.delete(state.frameId);
+    state.frameId = frame.id;
+    this.roots.set(frame.id, targetId);
+    if (typeof frame.parentId === 'string') this.parents.set(frame.id, frame.parentId);
+    const parent = this.parentTarget(targetId);
+    if (parent && parent !== before) this.invalidate(parent);
+  }
+
+  parentTarget(targetId) {
+    const parent =
+      this.targets.get(targetId)?.parentId ??
+      this.parents.get(this.documents.get(targetId)?.frameId ?? targetId);
+    return this.roots.get(parent) ?? parent;
+  }
+
   related(targetId) {
     const ids = new Set();
     let root = targetId;
     while (root) {
       if (ids.has(root) || this.documents.get(root)?.retired) return null;
       ids.add(root);
-      const parent = this.targets.get(root)?.parentId;
+      const parent = this.parentTarget(root);
       if (!parent) break;
       root = parent;
     }
     for (let size = 0; size !== ids.size; ) {
       size = ids.size;
       for (const [id, state] of this.documents)
-        if (!state.retired && ids.has(this.targets.get(id)?.parentId)) ids.add(id);
+        if (!state.retired && ids.has(this.parentTarget(id))) ids.add(id);
     }
     return ids;
   }
@@ -838,15 +867,16 @@ class Guard {
     return this.sessions.get(sessionId)?.targetId ?? this.navSessions.get(sessionId)?.targetId;
   }
 
-  invalidate(targetId) {
-    if (!targetId) return;
-    this.document(targetId).revision += 1;
-    const seen = new Set([targetId]);
-    let parent = this.targets.get(targetId)?.parentId;
-    while (parent && !seen.has(parent)) {
-      seen.add(parent);
-      this.document(parent).revision += 1;
-      parent = this.targets.get(parent)?.parentId;
+  invalidate(targetId, invalidated = new Set()) {
+    const seen = new Set();
+    let current = targetId;
+    while (current && !seen.has(current)) {
+      seen.add(current);
+      if (!invalidated.has(current)) {
+        this.document(current).revision += 1;
+        invalidated.add(current);
+      }
+      current = this.parentTarget(current);
     }
   }
 
@@ -867,10 +897,11 @@ class Guard {
   retireFrame(frameId) {
     if (!frameId) return;
     const gone = new Set([frameId]);
+    if (this.roots.has(frameId)) gone.add(this.roots.get(frameId));
     for (let size = 0; size !== gone.size; ) {
       size = gone.size;
       for (const [id, parent] of this.parents) if (gone.has(parent)) gone.add(id);
-      for (const [id, target] of this.targets) if (gone.has(target.parentId)) gone.add(id);
+      for (const id of this.targets.keys()) if (gone.has(this.parentTarget(id))) gone.add(id);
     }
     for (const [id, state] of this.documents) {
       for (const frame of gone) if (state.opening.delete(frame)) state.revision += 1;
@@ -920,28 +951,40 @@ class Guard {
     }
   }
 
-  duplicateCommit(method, params) {
+  commitDocument(targetId, method, params) {
     const frame = method === 'Page.frameNavigated' && params.frame;
-    if (typeof frame?.loaderId !== 'string' || !frame.loaderId || typeof frame.id !== 'string')
-      return false;
-    const signature = JSON.stringify([
-      frame.loaderId,
-      frame.url,
-      frame.securityOrigin,
-      frame.unreachableUrl,
-      frame.parentId,
-      params.type,
-    ]);
-    const duplicate = this.commits.get(frame.id) === signature;
-    this.commits.set(frame.id, signature);
-    if (this.commits.size > REMEMBERED) this.commits.delete(this.commits.keys().next().value);
-    return duplicate;
+    let invalidated = new Set();
+    if (typeof frame?.loaderId === 'string' && frame.loaderId && typeof frame.id === 'string') {
+      const signature = JSON.stringify([
+        frame.loaderId,
+        frame.url,
+        frame.securityOrigin,
+        frame.unreachableUrl,
+        frame.parentId,
+        params.type,
+      ]);
+      let commit = this.commits.get(frame.id);
+      if (commit?.signature !== signature) {
+        commit = { signature, invalidated: new Set() };
+        this.commits.set(frame.id, commit);
+      }
+      invalidated = commit.invalidated;
+      if (this.commits.size > REMEMBERED) this.commits.delete(this.commits.keys().next().value);
+    }
+    this.invalidate(targetId, invalidated);
+    const owner =
+      frame && (this.roots.get(frame.id) ?? (this.documents.has(frame.id) ? frame.id : undefined));
+    if (owner) this.invalidate(owner, invalidated);
+    if (frame && !this.knownFrame(frame))
+      for (const id of invalidated) this.document(id).transport = false;
   }
 
   documentEvent({ method, params = {}, sessionId }) {
     if (method === 'Page.frameAttached' && params.frameId) {
       this.retired.delete(params.frameId);
-      const state = this.documents.get(params.frameId);
+      const owner = this.roots.get(params.frameId) ?? params.frameId;
+      this.retired.delete(owner);
+      const state = this.documents.get(owner);
       if (state) state.retired = false;
       if (params.parentFrameId) this.parents.set(params.frameId, params.parentFrameId);
     }
@@ -965,11 +1008,8 @@ class Guard {
         [...(this.related(targetId) ?? [])].some((id) =>
           this.document(id).opening.has(params.frameId ?? targetId)
         );
-      if (
-        !this.duplicateCommit(method, params) &&
-        (method !== 'Page.frameStoppedLoading' || settling)
-      )
-        this.invalidate(targetId);
+      if (method !== 'Page.frameStoppedLoading' || settling)
+        this.commitDocument(targetId, method, params);
       if (targetId) this.noteFrame(targetId, method, params);
     }
     if (method === 'Target.detachedFromTarget')
@@ -1182,7 +1222,7 @@ class Guard {
     return false;
   }
 
-  async checkDocument(targetId, content = true) {
+  async checkDocument(targetId, content = true, limit = CHECK_MS) {
     if (WORKER_TYPES.has(this.targets.get(targetId)?.type))
       return (await this.verifyWorker(targetId)) === true;
     const state = this.document(targetId);
@@ -1192,10 +1232,18 @@ class Guard {
     if (nav.failed || !nav.session || state.retired || state.opening.size) return false;
     const revision = state.revision;
     if (state.checked === revision) return true;
-    if (state.checking?.revision === revision) return state.checking.promise;
+    if (state.checking?.revision === revision && state.checking.content === content)
+      return state.checking.promise;
     const proof = state.proof;
     const promise = (async () => {
-      const answer = await this.call('Page.getFrameTree', {}, nav.session, CHECK_MS);
+      const answer = await this.call('Page.getFrameTree', {}, nav.session, limit);
+      if (
+        !answer.error &&
+        this.documents.get(targetId) === state &&
+        state.revision === revision &&
+        state.proof === proof
+      )
+        this.rootFrame(targetId, answer.result?.frameTree?.frame);
       const all = this.documentTree(answer.result?.frameTree);
       if (
         answer.error ||
@@ -1209,6 +1257,7 @@ class Guard {
         this.frames.set(frame.id, this.framed(frame));
         if (frame.parentId) this.parents.set(frame.id, frame.parentId);
       }
+      this.rootFrame(targetId, all[0]);
       state.proof = (proof ?? 0) + 1;
       state.transport = true;
       state.url = bare(all[0].url);
@@ -1219,7 +1268,7 @@ class Guard {
       if (content) state.checked = revision;
       return true;
     })();
-    state.checking = { revision, promise };
+    state.checking = { revision, promise, content };
     try {
       return await promise;
     } finally {
@@ -1296,13 +1345,17 @@ class Guard {
     if (
       method === 'Page.frameNavigated' &&
       params.frame &&
-      (!params.frame.parentId || params.frame.id === nav.targetId)
+      (!params.frame.parentId || params.frame.id === this.document(nav.targetId).frameId)
     ) {
+      this.rootFrame(nav.targetId, params.frame);
       nav.last = `${params.frame.url}${params.frame.urlFragment ?? ''}`;
       nav.stopped = false;
       return this.wiping(nav, nav.last);
     }
-    if (method === 'Page.frameStoppedLoading' && params.frameId === nav.targetId) {
+    if (
+      method === 'Page.frameStoppedLoading' &&
+      params.frameId === this.document(nav.targetId).frameId
+    ) {
       nav.stopped = true;
       return this.wipe(nav);
     }
@@ -1377,21 +1430,47 @@ class Guard {
     return true;
   }
 
-  async verify(sessionId, targetId) {
+  uninitialized(tree) {
+    const frame = tree?.frame;
+    return Boolean(
+      frame &&
+        typeof frame.id === 'string' &&
+        frame.id &&
+        frame.url === '' &&
+        frame.securityOrigin === '://' &&
+        frame.unreachableUrl === undefined &&
+        (tree.childFrames === undefined ||
+          (Array.isArray(tree.childFrames) && !tree.childFrames.length))
+    );
+  }
+
+  async verify(sessionId, targetId, deadline = Date.now() + NAV_MS, retries = 2) {
     if (WORKER_TYPES.has(this.targets.get(targetId)?.type)) return this.verifyWorker(targetId);
     const state = this.document(targetId);
     const revision = state.revision;
     const proof = state.proof;
     void this.call('Page.enable', {}, sessionId);
-    const answer = await this.call('Page.getFrameTree', {}, sessionId, NAV_MS);
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    const answer = await this.call('Page.getFrameTree', {}, sessionId, remaining);
     if (answer.error) return this.revokeProof(targetId, state, revision, proof);
+    const tree = answer.result?.frameTree;
+    if (
+      retries &&
+      this.uninitialized(tree) &&
+      this.documents.get(targetId) === state &&
+      !state.retired
+    ) {
+      this.revokeProof(targetId, state, revision, proof);
+      return this.verify(sessionId, targetId, deadline, retries - 1);
+    }
     if (
       this.documents.get(targetId) !== state ||
       state.revision !== revision ||
       state.proof !== proof
     )
       return false;
-    const tree = answer.result?.frameTree;
+    this.rootFrame(targetId, tree?.frame);
     const all = framed(tree);
     if (all.some((frame) => this.is.url(frame.url) || this.is.url(frame.securityOrigin))) {
       this.revokeProof(targetId, state, revision, proof);
@@ -1399,6 +1478,7 @@ class Guard {
     }
     const known = this.documentTree(tree);
     if (!known) return this.revokeProof(targetId, state, revision, proof);
+    this.rootFrame(targetId, known[0]);
     for (const frame of known) {
       this.frames.set(frame.id, this.framed(frame));
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
@@ -1407,8 +1487,9 @@ class Guard {
   }
 
   async inspect(sessionId, targetId, parent) {
+    const deadline = Date.now() + NAV_MS;
     const guarded = targetId ? await this.target(targetId) : false;
-    const verified = guarded ? PROTECTED : await this.verify(sessionId, targetId);
+    const verified = guarded ? PROTECTED : await this.verify(sessionId, targetId, deadline);
     if (verified === PROTECTED) {
       this.cut(sessionId, parent);
       return false;
@@ -1419,7 +1500,9 @@ class Guard {
     if (!nav && !WORKER_TYPES.has(this.targets.get(targetId)?.type)) return false;
     if (nav) {
       await nav.ready;
-      if (nav.failed || !(await this.checkDocument(targetId, false))) return false;
+      const remaining = deadline - Date.now();
+      if (nav.failed || remaining <= 0 || !(await this.checkDocument(targetId, false, remaining)))
+        return false;
     }
     this.shown.add(sessionId);
     return true;
@@ -1589,7 +1672,7 @@ class Guard {
   }
 
   failed(targetId, { frameId, request }) {
-    if (!targetId || frameId !== targetId) return;
+    if (!targetId || frameId !== this.documents.get(targetId)?.frameId) return;
     this.errored.set(targetId, bare(request.url));
     const nav = this.navs.get(targetId);
     if (!nav?.session || nav.scrub) return;
@@ -1707,6 +1790,7 @@ class Guard {
     if (method === 'Target.targetDestroyed') {
       const nav = this.navs.get(params.targetId);
       this.navs.delete(params.targetId);
+      this.roots.delete(this.documents.get(params.targetId)?.frameId);
       this.documents.delete(params.targetId);
       this.errored.delete(params.targetId);
       if (nav?.session) this.navSessions.delete(nav.session);
