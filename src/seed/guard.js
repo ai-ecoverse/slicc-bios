@@ -593,6 +593,7 @@ class Guard {
     this.next = GUARD_IDS;
     this.documents = new Map();
     this.retired = new Set();
+    this.commits = new Map();
     this.documentCommands = new WeakMap();
     this.documentEvents = new WeakMap();
     this.pendingContexts = new Map();
@@ -879,6 +880,7 @@ class Guard {
       kept(this.retired, id);
       this.frames.delete(id);
       this.parents.delete(id);
+      this.commits.delete(id);
     }
     for (const [sessionId, entry] of this.sessions) {
       if (!gone.has(entry.targetId)) continue;
@@ -918,6 +920,24 @@ class Guard {
     }
   }
 
+  duplicateCommit(method, params) {
+    const frame = method === 'Page.frameNavigated' && params.frame;
+    if (typeof frame?.loaderId !== 'string' || !frame.loaderId || typeof frame.id !== 'string')
+      return false;
+    const signature = JSON.stringify([
+      frame.loaderId,
+      frame.url,
+      frame.securityOrigin,
+      frame.unreachableUrl,
+      frame.parentId,
+      params.type,
+    ]);
+    const duplicate = this.commits.get(frame.id) === signature;
+    this.commits.set(frame.id, signature);
+    if (this.commits.size > REMEMBERED) this.commits.delete(this.commits.keys().next().value);
+    return duplicate;
+  }
+
   documentEvent({ method, params = {}, sessionId }) {
     if (method === 'Page.frameAttached' && params.frameId) {
       this.retired.delete(params.frameId);
@@ -945,7 +965,11 @@ class Guard {
         [...(this.related(targetId) ?? [])].some((id) =>
           this.document(id).opening.has(params.frameId ?? targetId)
         );
-      if (method !== 'Page.frameStoppedLoading' || settling) this.invalidate(targetId);
+      if (
+        !this.duplicateCommit(method, params) &&
+        (method !== 'Page.frameStoppedLoading' || settling)
+      )
+        this.invalidate(targetId);
       if (targetId) this.noteFrame(targetId, method, params);
     }
     if (method === 'Target.detachedFromTarget')
