@@ -233,8 +233,9 @@ test('slicc-cdp#377: the kernel facade and slicc-cli link drive ordinary tabs wi
   ]) {
     const snapshot = await shell(page, 'playwright-cli snapshot', `${name}-snapshot`);
     const output = await shell(page, command(snapshot), `${name}-action`);
-    assert.match(output, /exit-0/, output);
-    assert.doesNotMatch(output, /slicc: refused:/, output);
+    console.log(`LINK-ACTION ${name} ${JSON.stringify(output.slice(-300))}`);
+    assert.match(output, /exit-0/, `${name}: ${output}`);
+    assert.doesNotMatch(output, /slicc: refused:/, `${name}: ${output}`);
   }
   const tools = await shell(
     page,
