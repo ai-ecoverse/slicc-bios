@@ -9,6 +9,7 @@ import set from '@ai-ecoverse/slicc-browsers/guard-vectors.json' with { type: 'j
 import { startProxy } from '@ai-ecoverse/slicc-node';
 import { boot } from './bios.mjs';
 import { debuggerUrl, launch } from './chrome.mjs';
+import { saveVector } from './guard-diagnostic-capture.mjs';
 import { ALL_TARGETS, groupTargets } from './guard-groups.mjs';
 import { known as knownRow, listedWrong, stale } from './guard-known.mjs';
 
@@ -255,6 +256,7 @@ export async function guardHost(t, path) {
     const guards = new Map();
     window.guards = {
       async open(row, own, path, lag) {
+        globalThis.sliccGuardDiagnosticRow = row;
         const connection = guardProtected(lagged(await hosts[path](), lag), [location.origin, own]);
         const pending = new Map();
         let next = 0;
@@ -387,8 +389,9 @@ export function shared(path, { variants, except = [], group } = {}) {
           capabilities: PATHS[path],
           variant,
           fixture,
-          log: (row) =>
-            trace(
+          log: (row) => {
+            saveVector(row);
+            return trace(
               'row',
               row.transport,
               row.id,
@@ -397,7 +400,8 @@ export function shared(path, { variants, except = [], group } = {}) {
               row.control,
               row.guarded,
               row.live
-            ),
+            );
+          },
           debug: process.env.GUARD_TRACE
             ? (data) =>
                 trace(

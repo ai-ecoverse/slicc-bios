@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { serve, launch as start } from '@ai-ecoverse/slicc-shared-web/harness';
 import { startFakeGitHub } from './fake-github.mjs';
 import { startFakeVault } from './fake-vault.mjs';
+import { exposeDiagnostic } from './guard-diagnostic-capture.mjs';
 
 env.SLICC_CDP_PORTS ??= '9300-9309';
 
@@ -162,6 +163,7 @@ export async function launch({ agent = false, vault = true, ...overrides } = {})
   };
   chrome.page = async (t) => {
     const opened = await page(t);
+    await exposeDiagnostic(opened, t);
     messages.length = 0;
     opened.console = messages;
     github.reset();

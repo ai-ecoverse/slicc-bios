@@ -1,6 +1,7 @@
 import catalog from '@ai-ecoverse/slicc-browsers/catalog.json' with { type: 'json' };
 import { protectedOrigins } from '@ai-ecoverse/slicc-browsers/protected.mjs';
 import { RELAY, SIGN_IN_CLIENTS } from './adobe.js';
+import { diagnostic } from './guard-diagnostic.js';
 import { hold, isHeld } from './held.js';
 
 export const PROTECTED =
@@ -599,6 +600,28 @@ class Guard {
     this.documentEvents = new WeakMap();
     this.pendingContexts = new Map();
     this.guarded = { onmessage: null, onclose: null };
+    this.probe('instance', 'start');
+  }
+
+  probe(point, reason, message = {}, facts = {}) {
+    diagnostic(this, point, reason, message, facts);
+  }
+
+  probeFailure(answer, all, state, targetId, revision) {
+    if (answer.error) return 'rpc-error-or-deadline';
+    if (!all) return 'unclassified-tree';
+    if (this.documents.get(targetId) !== state) return 'owner-changed';
+    return state.revision !== revision ? 'revision-changed' : 'proof-changed';
+  }
+
+  probeAttach(message, was) {
+    if (was?.method === 'Target.attachToTarget' && message.error)
+      this.probe(
+        'answer.attach',
+        'provider-error',
+        { method: was.method, sessionId: was.sessionId, targetId: was.params?.targetId },
+        { error: message.error }
+      );
   }
 
   redacted(message, source = message) {
@@ -628,6 +651,7 @@ class Guard {
 
   deliver(message, source = message) {
     if (!this.eventValid(source)) {
+      this.probe('deliver', 'receipt-or-final-gate', source);
       if (PAUSES.has(source.method)) {
         this.offered.delete(source.params?.requestId);
         this.release(source);
@@ -651,13 +675,27 @@ class Guard {
       let id = ++this.next;
       while (this.callers.has(id)) id = ++this.next;
       let timer;
+      const started = Date.now();
       this.internal.set(id, (message) => {
         clearTimeout(timer);
+        if (message.error)
+          this.probe(
+            'privateCall.answer',
+            'rpc-error',
+            { method, sessionId, targetId: params?.targetId },
+            { elapsed: Date.now() - started, limit, error: message.error }
+          );
         resolve(message);
       });
       if (limit) {
         timer = setTimeout(() => {
           this.internal.delete(id);
+          this.probe(
+            'privateCall.timeout',
+            'bounded-deadline',
+            { method, sessionId, targetId: params?.targetId },
+            { elapsed: Date.now() - started, limit }
+          );
           resolve({ error: { code: -32000, message: UNGUARDED } });
         }, limit);
         timer.unref?.();
@@ -668,7 +706,18 @@ class Guard {
     });
   }
 
-  refuse({ id, sessionId, method, params }, message = PROTECTED) {
+  refuse({ id, sessionId, method, params }, message = PROTECTED, point = 'refuse') {
+    this.probe(
+      point,
+      message === PROTECTED
+        ? 'protected'
+        : message === FAILED
+          ? 'failed'
+          : message === UNGUARDED
+            ? 'unguarded'
+            : 'other-policy',
+      { method, sessionId, targetId: params?.targetId }
+    );
     globalThis.sliccGuardTrace?.push({
       method,
       targetId: params?.targetId,
@@ -777,6 +826,7 @@ class Guard {
   }
 
   cut(sessionId, parent) {
+    this.probe('cut', 'protected-or-unavailable-surface', { sessionId });
     if (this.blocked.has(sessionId)) return;
     this.blocked.add(sessionId);
     if (this.waiting.delete(sessionId))
@@ -1010,8 +1060,10 @@ class Guard {
     const owner =
       frame && (this.roots.get(frame.id) ?? (this.documents.has(frame.id) ? frame.id : undefined));
     if (owner) this.invalidate(owner, invalidated, frame);
-    if (frame && !this.knownFrame(frame))
+    if (frame && !this.knownFrame(frame)) {
+      this.probe('invalidate', 'unclassified-frame-observation', { targetId, method }, { frame });
       for (const id of invalidated) this.document(id).transport = false;
+    }
   }
 
   documentEvent({ method, params = {}, sessionId }) {
@@ -1278,16 +1330,37 @@ class Guard {
       return (await this.verifyWorker(targetId)) === true;
     const state = this.document(targetId);
     const nav = this.navs.get(targetId);
-    if (!nav) return false;
+    if (!nav) {
+      this.probe('checkDocument', 'no-private-navigation', { targetId });
+      return false;
+    }
     await nav.ready;
-    if (nav.failed || !nav.session || state.retired || state.opening.size) return false;
+    if (nav.failed || !nav.session || state.retired || state.opening.size) {
+      this.probe('checkDocument', 'private-navigation-unavailable', {
+        targetId,
+        sessionId: nav.session,
+      });
+      return false;
+    }
     const revision = state.revision;
     if (state.checked === revision) return true;
     if (state.checking?.revision === revision && state.checking.content === content)
       return state.checking.promise;
     const proof = state.proof;
+    const started = Date.now();
     const promise = (async () => {
       const answer = await this.readDocument(state, 'Page.getFrameTree', {}, nav.session, limit);
+      this.probe(
+        'checkDocument.read',
+        answer.error ? 'rpc-error-or-deadline' : 'tree-answer',
+        { method: 'Page.getFrameTree', targetId, sessionId: nav.session },
+        {
+          tree: answer.result?.frameTree,
+          elapsed: Date.now() - started,
+          limit,
+          error: answer.error,
+        }
+      );
       if (
         !answer.error &&
         this.documents.get(targetId) === state &&
@@ -1302,8 +1375,15 @@ class Guard {
         this.documents.get(targetId) !== state ||
         state.revision !== revision ||
         state.proof !== proof
-      )
+      ) {
+        this.probe(
+          'checkDocument.reject',
+          this.probeFailure(answer, all, state, targetId, revision),
+          { targetId, sessionId: nav.session },
+          { tree: answer.result?.frameTree, error: answer.error }
+        );
         return this.revokeProof(targetId, state, revision, proof);
+      }
       for (const frame of all) {
         this.frames.set(frame.id, this.framed(frame));
         if (frame.parentId) this.parents.set(frame.id, frame.parentId);
@@ -1318,6 +1398,12 @@ class Guard {
       );
       state.classified = revision;
       if (content) state.checked = revision;
+      this.probe(
+        'checkDocument.accept',
+        content ? 'content-positive' : 'metadata-positive',
+        { targetId, sessionId: nav.session },
+        { tree: answer.result?.frameTree }
+      );
       return true;
     })();
     state.checking = { revision, promise, content };
@@ -1396,6 +1482,10 @@ class Guard {
       this.call('Page.enable', {}, session),
     ]);
     nav.settle(steps.some((step) => step.error));
+    this.probe('arm', nav.failed ? 'setup-step-error-or-timeout' : 'private-navigation-ready', {
+      targetId: nav.targetId,
+      sessionId: session,
+    });
     this.refreshSubscribers(nav.targetId);
   }
 
@@ -1510,7 +1600,19 @@ class Guard {
     void this.call('Page.enable', {}, sessionId);
     const remaining = deadline - Date.now();
     if (remaining <= 0) return false;
+    const started = Date.now();
     const answer = await this.readDocument(state, 'Page.getFrameTree', {}, sessionId, remaining);
+    this.probe(
+      'verify.read',
+      answer.error ? 'rpc-error-or-deadline' : 'tree-answer',
+      { method: 'Page.getFrameTree', targetId, sessionId },
+      {
+        tree: answer.result?.frameTree,
+        elapsed: Date.now() - started,
+        limit: remaining,
+        error: answer.error,
+      }
+    );
     if (answer.error) return this.revokeProof(targetId, state, revision, proof);
     const tree = answer.result?.frameTree;
     if (
@@ -1519,6 +1621,12 @@ class Guard {
       this.documents.get(targetId) === state &&
       !state.retired
     ) {
+      this.probe(
+        'verify.uninitialized',
+        'existing-initial-completeness-retry',
+        { targetId, sessionId },
+        { tree }
+      );
       this.revokeProof(targetId, state, revision, proof);
       return this.verify(sessionId, targetId, deadline, retries - 1);
     }
@@ -1526,16 +1634,27 @@ class Guard {
       this.documents.get(targetId) !== state ||
       state.revision !== revision ||
       state.proof !== proof
-    )
+    ) {
+      this.probe(
+        'verify.reject',
+        this.probeFailure(answer, true, state, targetId, revision),
+        { targetId, sessionId },
+        { tree }
+      );
       return false;
+    }
     this.rootFrame(targetId, tree?.frame);
     const all = framed(tree);
     if (all.some((frame) => this.is.url(frame.url) || this.is.url(frame.securityOrigin))) {
+      this.probe('verify.reject', 'protected-tree', { targetId, sessionId }, { tree });
       this.revokeProof(targetId, state, revision, proof);
       return PROTECTED;
     }
     const known = this.documentTree(tree);
-    if (!known) return this.revokeProof(targetId, state, revision, proof);
+    if (!known) {
+      this.probe('verify.reject', 'unclassified-tree', { targetId, sessionId }, { tree });
+      return this.revokeProof(targetId, state, revision, proof);
+    }
     this.rootFrame(targetId, known[0]);
     for (const frame of known) {
       this.frames.set(frame.id, this.framed(frame));
@@ -1548,6 +1667,11 @@ class Guard {
     const deadline = Date.now() + NAV_MS;
     const guarded = targetId ? await this.target(targetId) : false;
     const verified = guarded ? PROTECTED : await this.verify(sessionId, targetId, deadline);
+    this.probe(
+      'inspect.verify',
+      verified === PROTECTED ? 'protected' : verified ? 'positive' : 'unconfirmed',
+      { targetId, sessionId }
+    );
     if (verified === PROTECTED) {
       this.cut(sessionId, parent);
       return false;
@@ -1559,10 +1683,18 @@ class Guard {
     if (nav) {
       await nav.ready;
       const remaining = deadline - Date.now();
-      if (nav.failed || remaining <= 0 || !(await this.checkDocument(targetId, false, remaining)))
+      if (nav.failed || remaining <= 0 || !(await this.checkDocument(targetId, false, remaining))) {
+        this.probe(
+          'inspect.metadata',
+          'initial-metadata-unavailable',
+          { targetId, sessionId },
+          { limit: remaining }
+        );
         return false;
+      }
     }
     this.shown.add(sessionId);
+    this.probe('inspect.accept', 'positive-attachment', { targetId, sessionId });
     return true;
   }
 
@@ -1602,12 +1734,26 @@ class Guard {
     if (this.waiting.delete(sessionId))
       void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
     const info = await this.named(targetId);
-    if (!info || nav?.taken || nav?.failed) return this.cut(sessionId, parent);
+    if (!info || nav?.taken || nav?.failed) {
+      this.probe('blank', 'target-info-or-initial-navigation-unavailable', {
+        method: 'Target.attachedToTarget',
+        targetId,
+        sessionId,
+      });
+      return this.cut(sessionId, parent);
+    }
     this.targets.delete(info.targetId);
     this.learn(info);
     if (await this.watch(sessionId, info.targetId, parent)) {
       const guarded = await this.target(info.targetId);
-      if (guarded || nav?.taken || nav?.failed) return this.cut(sessionId, parent);
+      if (guarded || nav?.taken || nav?.failed) {
+        this.probe('blank', 'target-protected-or-navigation-unavailable', {
+          method: 'Target.attachedToTarget',
+          targetId,
+          sessionId,
+        });
+        return this.cut(sessionId, parent);
+      }
       if (nav) nav.held = false;
       this.deliver({
         ...message,
@@ -1670,10 +1816,12 @@ class Guard {
       return true;
     }
     if (!this.requests.has(requestId)) {
+      this.probe('network', 'awaiting-request-classification', message);
       this.hold(requestId, message);
       return true;
     }
     if (this.requests.get(requestId) && this.delivered.has(requestId)) {
+      this.probe('network', 'private-request-continuation', message);
       return this.continuing(message);
     }
     return this.requests.get(requestId);
@@ -1719,6 +1867,7 @@ class Guard {
 
   async paused(message) {
     if (!this.eventValid(message)) {
+      this.probe('paused', 'receipt-or-generation-settlement', message);
       this.release(message);
       return true;
     }
@@ -1727,6 +1876,7 @@ class Guard {
     this.remember(params.requestId, marked);
     if (params.networkId !== undefined && marked) this.settle(params.networkId, true);
     if (!marked) return false;
+    this.probe('paused', 'private-request-settlement', message);
     this.release(message);
     return true;
   }
@@ -1822,7 +1972,14 @@ class Guard {
     const { method, params = {}, sessionId } = message;
     if (method === 'Target.attachedToTarget') {
       const info = params.targetInfo ?? {};
-      if (await this.privateAttachment(info.targetId, params.sessionId, sessionId)) return true;
+      if (await this.privateAttachment(info.targetId, params.sessionId, sessionId)) {
+        this.probe('targetEvent', 'private-session-event', {
+          method,
+          targetId: info.targetId,
+          sessionId: params.sessionId,
+        });
+        return true;
+      }
       if (params.waitingForDebugger) this.waiting.add(params.sessionId);
       if (!info.url && (info.type === 'page' || info.type === 'iframe')) {
         void this.blank(message);
@@ -1832,6 +1989,12 @@ class Guard {
       if (await this.watch(params.sessionId, info.targetId, sessionId)) {
         this.touch(info.targetId);
         this.deliver({ ...message, params: { ...params, targetInfo: this.masked(info) } });
+      } else {
+        this.probe('targetEvent', 'attachment-withheld', {
+          method,
+          targetId: info.targetId,
+          sessionId: params.sessionId,
+        });
       }
       return true;
     }
@@ -1950,7 +2113,7 @@ class Guard {
     return null;
   }
 
-  async probe(found, sessionId) {
+  async contextProbe(found, sessionId) {
     const world = this.world(sessionId);
     for (const [kind, value] of found) {
       if (kind === 'unreadable' || world[kind].has(value)) continue;
@@ -1975,7 +2138,7 @@ class Guard {
     if (verdict !== UNSEEN_CONTEXT || !sessionId) return verdict;
     await this.learned(sessionId);
     if (this.verdict(found, sessionId) !== UNSEEN_CONTEXT) return this.verdict(found, sessionId);
-    await this.probe(found, sessionId);
+    await this.contextProbe(found, sessionId);
     return this.verdict(found, sessionId);
   }
 
@@ -2023,7 +2186,15 @@ class Guard {
       state.classified === state.revision &&
       typeof info.url === 'string' &&
       state.url === bare(info.url);
-    if (info.title !== undefined && !classified) info = { ...info, title: '' };
+    if (info.title !== undefined && !classified) {
+      this.probe(
+        'metadata.mask',
+        'title-unconfirmed-or-mismatched',
+        { method: 'Target.getTargetInfo', targetId: info.targetId },
+        { url: info.url }
+      );
+      info = { ...info, title: '' };
+    }
     const failed = this.errored.get(info.targetId);
     if (info.url === undefined || failed === undefined) return info;
     if (![failed, '', ERROR_PAGE].includes(bare(info.url))) return info;
@@ -2062,16 +2233,25 @@ class Guard {
     if (this.navSessions.has(sessionId))
       return this.navEvent(message, this.navSessions.get(sessionId));
     if (method.startsWith('Target.') && (await this.targetEvent(message))) return;
-    if (PAUSES.has(method) && this.hidden(sessionId)) return this.release(message);
-    if (this.hidden(sessionId)) return;
-    if (foreign) return;
-    if (this.walked(message)) return this.cut(sessionId);
-    if (documentContent(method) && !this.eventValid(message)) return;
-    if (sessionId && method.startsWith('Runtime.') && !this.runtimes.has(sessionId)) return;
+    if (PAUSES.has(method) && this.hidden(sessionId)) {
+      this.probe('event.pause', 'hidden-session-settlement', message);
+      return this.release(message);
+    }
+    if (this.hidden(sessionId)) return this.probe('event', 'hidden-session', message);
+    if (foreign) return this.probe('event', 'foreign-extension-world', message);
+    if (this.walked(message)) {
+      this.probe('event', 'protected-navigation-or-context', message);
+      return this.cut(sessionId);
+    }
+    if (documentContent(method) && !this.eventValid(message))
+      return this.probe('event', 'content-receipt-or-generation', message);
+    if (sessionId && method.startsWith('Runtime.') && !this.runtimes.has(sessionId))
+      return this.probe('event', 'runtime-not-subscribed', message);
     if (await this.swallowed(message)) return;
-    if (this.stored(message)) return;
-    if (sessionId && this.naming(message)) return;
-    if (sessionId && method.startsWith('Page.') && !this.pages.has(sessionId)) return;
+    if (this.stored(message)) return this.probe('event', 'stored-policy', message);
+    if (sessionId && this.naming(message)) return this.probe('event', 'named-private-url', message);
+    if (sessionId && method.startsWith('Page.') && !this.pages.has(sessionId))
+      return this.probe('event', 'page-not-subscribed', message);
     if (PAUSES.has(method)) this.offered.add(message.params?.requestId);
     this.redacted(message);
   }
@@ -2139,8 +2319,14 @@ class Guard {
   async revalidateReply(was) {
     if (!documentContent(was?.method) || this.hidden(was.sessionId)) return false;
     const sources = this.documentSources.get(was);
-    if (!sources || ![...sources.values()].every((source) => source?.alive)) return false;
-    if (!(await this.documentChecked(was.sessionId))) return false;
+    if (!sources || ![...sources.values()].every((source) => source?.alive)) {
+      this.probe('reply.revalidate', 'original-source-unavailable-or-revoked', was);
+      return false;
+    }
+    if (!(await this.documentChecked(was.sessionId))) {
+      this.probe('reply.revalidate', 'fresh-scope-unconfirmed', was);
+      return false;
+    }
     const ids = this.related(this.documentTarget(was.sessionId));
     return Boolean(
       ids &&
@@ -2152,9 +2338,13 @@ class Guard {
   }
 
   async answer(message, was) {
-    if (this.answerClosed(was) && !(await this.revalidateReply(was))) return this.refuse(was);
+    if (this.answerClosed(was) && !(await this.revalidateReply(was))) {
+      this.probe('answer', 'closed-or-failed-live-source-revalidation', was);
+      return this.refuse(was);
+    }
     const { method, params = {} } = was ?? {};
     const { result } = message;
+    this.probeAttach(message, was);
     if (method === 'Page.createIsolatedWorld' && result?.executionContextId !== undefined) {
       const world = this.world(was.sessionId);
       if (!world.ids.has(result.executionContextId))
@@ -2305,13 +2495,18 @@ class Guard {
     const entry = this.sessions.get(sessionId);
     if (this.hidden(sessionId) && entry && !this.blocked.has(sessionId))
       await this.watch(sessionId, entry.targetId, entry.parent);
-    if (this.hidden(sessionId)) return PROTECTED;
+    if (this.hidden(sessionId)) {
+      this.probe('documentCheck', 'hidden-session', { method, sessionId });
+      return PROTECTED;
+    }
     if (WORKER_TYPES.has(this.targets.get(entry?.targetId)?.type)) {
       const verified = await this.verify(sessionId, entry.targetId);
       if (verified === PROTECTED) this.cut(sessionId);
       return verified === true ? null : PROTECTED;
     }
-    return (await this.documentChecked(sessionId)) ? null : PROTECTED;
+    const verified = await this.documentChecked(sessionId);
+    if (!verified) this.probe('documentCheck', 'unconfirmed-document-scope', { method, sessionId });
+    return verified ? null : PROTECTED;
   }
 
   async check(message) {
@@ -2319,9 +2514,15 @@ class Guard {
     if (typeof method !== 'string') return null;
     const document = await this.documentCheck(method, sessionId);
     if (document) return document;
-    if (method.startsWith('Fetch.') && sessionId === undefined) return FETCH;
+    if (method.startsWith('Fetch.') && sessionId === undefined) {
+      this.probe('check', 'fetch-needs-session', message);
+      return FETCH;
+    }
     if (LATER.has(method)) return SCRIPTS;
-    if (method === 'Page.navigate' && inherits(params.url)) return INHERITED;
+    if (method === 'Page.navigate' && inherits(params.url)) {
+      this.probe('check', 'inherited-navigation', message, { url: params.url });
+      return INHERITED;
+    }
     if (FLAT.has(method) && params.flatten !== true) {
       const target = params.targetId !== undefined && (await this.current(params.targetId));
       return target ? PROTECTED : UNFLAT;
@@ -2331,10 +2532,19 @@ class Guard {
     if (STREAMED.has(method)) return STREAMING;
     if (SEARCHES[method] && (await this.searched(method, params, sessionId))) return PROTECTED;
     const world = await this.selecting(method, params, sessionId);
-    if (world) return world;
-    if (this.plainly(method, params, sessionId)) return PROTECTED;
+    if (world) {
+      this.probe('check.world', 'world-policy', message);
+      return world;
+    }
+    if (this.plainly(method, params, sessionId)) {
+      this.probe('check.plainly', 'session-url-or-unsafe-policy', message);
+      return PROTECTED;
+    }
     const unguarded = await this.guarding(method, sessionId);
-    if (unguarded) return unguarded;
+    if (unguarded) {
+      this.probe('check.guarding', 'private-arming-unavailable', message);
+      return unguarded;
+    }
     if ((method === 'IO.read' || method === 'IO.close') && !this.streams.has(params.handle)) {
       return STREAM;
     }
@@ -2342,14 +2552,25 @@ class Guard {
   }
 
   async reaching(method, params, sessionId) {
-    if (params.targetId !== undefined && (await this.current(params.targetId))) return PROTECTED;
+    if (params.targetId !== undefined && (await this.current(params.targetId))) {
+      this.probe('reaching', 'protected-target', { method, sessionId, targetId: params.targetId });
+      return PROTECTED;
+    }
     if (method === 'Target.attachToTarget') {
       this.touch(params.targetId);
       const nav = this.navs.get(params.targetId);
       if (nav) await nav.ready;
       if (nav?.failed) return UNGUARDED;
     }
-    if (await this.frame(params.frameId, true)) return PROTECTED;
+    if (await this.frame(params.frameId, true)) {
+      this.probe(
+        'reaching',
+        'protected-or-unknown-frame',
+        { method, sessionId },
+        { frame: { id: params.frameId } }
+      );
+      return PROTECTED;
+    }
     if (method === 'Page.navigateToHistoryEntry' && (await this.back(params, sessionId))) {
       return PROTECTED;
     }
@@ -2375,9 +2596,9 @@ class Guard {
 
   pass(message) {
     const { id, method, sessionId } = message;
-    if (this.hidden(sessionId)) return this.refuse(message);
+    if (this.hidden(sessionId)) return this.refuse(message, PROTECTED, 'pass.hidden');
     if (this.documents.has(this.documentTarget(sessionId)) && documentContent(method)) {
-      if (!this.documentValid(sessionId)) return this.refuse(message);
+      if (!this.documentValid(sessionId)) return this.refuse(message, PROTECTED, 'pass.generation');
       this.stampDocument(message);
     }
     globalThis.sliccGuardTrace?.push({
