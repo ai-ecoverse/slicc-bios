@@ -37,6 +37,7 @@ jobs:
         **/beta-boundary.test.mjs
         **/bfcache.test.mjs
         **/bfcache-extension.test.mjs
+        **/capture.test.mjs
         **/cdp.test.mjs
         **/cdp-link-worlds.test.mjs
         **/embedder.test.mjs
