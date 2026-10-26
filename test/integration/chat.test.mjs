@@ -1604,7 +1604,7 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
       (find) => new Function(`return (${find})()`)().shadowRoot.textContent,
       confirmOf.toString()
     ),
-    /Use the microphone\?.*The agent \S+ asks seven to record from your microphone\./s
+    /Use the microphone\?.*The agent \S+ asks seven to record from your microphone for 1 second\./s
   );
   await page.evaluate(
     (find) =>

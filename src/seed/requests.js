@@ -241,10 +241,15 @@ export function capturePrompt({ stamp }) {
   };
 }
 
-function asking(title, says, action, what) {
-  return ({ stamp }) => ({
+export function lasting(seconds) {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) return '';
+  return ` for ${seconds} ${seconds === 1 ? 'second' : 'seconds'}`;
+}
+
+function asking(title, says, action, what, timed = false) {
+  return ({ stamp, options }) => ({
     title,
-    body: `${asker(stamp)} asks seven to ${says}.`,
+    body: `${asker(stamp)} asks seven to ${says}${timed ? lasting(options?.seconds) : ''}.`,
     action,
     cancel: 'Cancel',
     variant: 'confirmation',
@@ -259,13 +264,15 @@ const recording = asking(
   'Use the microphone?',
   'record from your microphone',
   'Record',
-  'use the microphone'
+  'use the microphone',
+  true
 );
 const listening = asking(
   'Use the microphone?',
   'listen through your microphone',
   'Listen',
-  'use the microphone'
+  'use the microphone',
+  true
 );
 export const BYTES_ONLY = ['whisper'];
 
