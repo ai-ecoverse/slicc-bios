@@ -52,6 +52,18 @@ test('ordering ordinary context after commit requires current private classifica
   );
   wire.emit({
     method: 'Page.frameNavigated',
+    sessionId: session,
+    params: {
+      frame: {
+        id: 'ordinary',
+        url: 'chrome-error://chromewebdata/',
+        securityOrigin: '://',
+        unreachableUrl: 'https://protected.invalid/controller/synthetic-admission-transition',
+      },
+    },
+  });
+  wire.emit({
+    method: 'Page.frameNavigated',
     sessionId: 'guard-ordinary',
     params: { frame: plainFrame('ordinary') },
   });
@@ -78,6 +90,18 @@ test('ordering ordinary context after commit requires current private classifica
       .filter((message) => message.method === 'Runtime.executionContextCreated').length,
     1
   );
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: session,
+    params: {
+      frame: {
+        id: 'ordinary',
+        url: 'chrome-error://chromewebdata/',
+        securityOrigin: '://',
+        unreachableUrl: 'https://protected.invalid/controller/synthetic-admission-transition',
+      },
+    },
+  });
   wire.emit({
     method: 'Page.frameNavigated',
     sessionId: 'guard-ordinary',

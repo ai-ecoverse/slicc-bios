@@ -42,6 +42,18 @@ for (const outcome of [
     );
     wire.emit({
       method: 'Page.frameNavigated',
+      sessionId: session,
+      params: {
+        frame: {
+          id: 'observed',
+          url: 'chrome-error://chromewebdata/',
+          securityOrigin: '://',
+          unreachableUrl: 'https://protected.invalid/controller/synthetic-context-transition',
+        },
+      },
+    });
+    wire.emit({
+      method: 'Page.frameNavigated',
       sessionId: 'guard-observed',
       params: { frame: plainFrame('observed') },
     });
@@ -174,6 +186,18 @@ test('ordering cleared contexts retire pending notifications', { timeout: 5000 }
   wire.hold(
     (message) => message.sessionId === 'guard-observed' && message.method === 'Page.getFrameTree'
   );
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: session,
+    params: {
+      frame: {
+        id: 'observed',
+        url: 'chrome-error://chromewebdata/',
+        securityOrigin: '://',
+        unreachableUrl: 'https://protected.invalid/controller/synthetic-context-transition',
+      },
+    },
+  });
   wire.emit({
     method: 'Page.frameNavigated',
     sessionId: 'guard-observed',

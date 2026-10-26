@@ -35,6 +35,7 @@ const HOLD_MS = 2000;
 const BLANK_MS = 10000;
 const ERROR_PAGE = 'chrome-error://chromewebdata/';
 const ERROR_DOCUMENT = Symbol();
+const UNCLASSIFIED_DOCUMENT = Symbol();
 const bare = (url) => url.split('#')[0];
 const SCRUB_MS = 5000;
 export const BLANKED = 'data:text/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E';
@@ -802,6 +803,7 @@ class Guard {
     )
       return info;
     this.invalidate(targetId);
+    this.enterStrict(targetId);
     this.document(targetId).failed = true;
     return null;
   }
@@ -821,7 +823,15 @@ class Guard {
 
   document(targetId) {
     if (!this.documents.has(targetId))
-      this.documents.set(targetId, { revision: 0, checked: -1, cleaned: new Set() });
+      this.documents.set(targetId, {
+        revision: 0,
+        checked: -1,
+        cleaned: new Set(),
+        strict: true,
+        hazard: false,
+        first: true,
+        guardCommit: null,
+      });
     return this.documents.get(targetId);
   }
 
@@ -860,41 +870,129 @@ class Guard {
     );
   }
 
+  strictScope(targetId) {
+    const ids = this.related(targetId);
+    return !ids || [...ids].some((id) => this.document(id).strict);
+  }
+
+  enterStrict(targetId, hazard = false) {
+    if (!targetId) return;
+    const ids = this.related(targetId) ?? new Set([targetId]);
+    for (const id of ids) {
+      const state = this.document(id);
+      state.hazard ||= hazard || !state.strict;
+      state.strict = true;
+      state.guardCommit = null;
+    }
+  }
+
   documentTarget(sessionId) {
     return this.sessions.get(sessionId)?.targetId ?? this.navSessions.get(sessionId)?.targetId;
   }
 
-  invalidate(targetId) {
+  invalidate(targetId, force = true) {
     if (!targetId) return;
-    this.document(targetId).revision += 1;
+    if (force || this.document(targetId).strict) this.document(targetId).revision += 1;
     const seen = new Set([targetId]);
     let parent = this.targets.get(targetId)?.parentId;
     while (parent && !seen.has(parent)) {
       seen.add(parent);
-      this.document(parent).revision += 1;
+      if (force || this.document(parent).strict) this.document(parent).revision += 1;
       parent = this.targets.get(parent)?.parentId;
     }
   }
 
-  documentEvent({ method, params = {}, sessionId }) {
+  targetEvidence({ method, params, sessionId }) {
+    const info = params.targetInfo;
+    if (!info?.targetId) return;
+    const unsafe = this.is.target(info) || info.url === ERROR_PAGE || !URL.canParse(info.url);
     if (method === 'Target.attachedToTarget') {
-      const info = params.targetInfo;
-      if (!info?.targetId || this.privateSessions.has(params.sessionId)) return;
+      if (this.privateSessions.has(params.sessionId)) return;
       const parentId = info.type === 'iframe' ? this.documentTarget(sessionId) : undefined;
       this.learn({ ...info, ...(parentId ? { parentId } : {}) });
+      this.enterStrict(info.targetId, unsafe);
+      this.invalidate(info.targetId);
+    } else if (
+      unsafe &&
+      (method === 'Target.targetCreated' || method === 'Target.targetInfoChanged')
+    ) {
+      this.learn(info);
+      this.enterStrict(info.targetId, true);
       this.invalidate(info.targetId);
     }
+  }
+
+  sessionEvidence({ method, params, sessionId }) {
+    if (!sessionId) return;
+    const targetId = this.documentTarget(sessionId);
+    const context = method === 'Runtime.executionContextCreated' && params.context;
+    const url = NAVIGATED.has(method)
+      ? params.url
+      : (method === 'Network.requestWillBeSent' && params.type === 'Document') ||
+          (method === 'Fetch.requestPaused' && params.resourceType === 'Document')
+        ? params.request?.url
+        : context?.origin;
     if (
-      (method === 'Page.frameNavigated' && params.frame) ||
+      this.is.url(url) ||
+      url === ERROR_PAGE ||
+      (context?.auxData?.frameId && !this.frames.has(context.auxData.frameId))
+    ) {
+      this.enterStrict(targetId, true);
+      this.invalidate(targetId);
+    }
+  }
+
+  guardCommit(sessionId, frame, targetId) {
+    if (
+      !this.navSessions.has(sessionId) ||
+      !frame ||
+      frame.parentId ||
+      frame.url === ERROR_PAGE ||
+      typeof frame.loaderId !== 'string' ||
+      !frame.loaderId ||
+      !this.knownFrame(frame)
+    )
+      return;
+    const state = this.document(targetId);
+    state.guardCommit = {
+      frameId: frame.id,
+      loaderId: frame.loaderId,
+      url: this.framed(frame),
+      revision: state.revision,
+    };
+  }
+
+  frameEvidence({ method, params, sessionId }) {
+    const targetId = this.documentTarget(sessionId);
+    const frame = params.frame;
+    const unsafe =
+      (method === 'Page.frameNavigated' && !frame) ||
+      (frame &&
+        (!this.knownFrame(frame) ||
+          frame.url === ERROR_PAGE ||
+          (frame.parentId
+            ? !this.frames.has(frame.parentId) && frame.parentId !== targetId
+            : frame.id !== targetId && frame.id !== this.document(targetId).root)));
+    if (unsafe || method === 'Page.frameAttached') this.enterStrict(targetId, true);
+    this.invalidate(
+      targetId,
+      Boolean(unsafe) || method === 'Page.frameAttached' || method === 'Page.frameDetached'
+    );
+    if (method === 'Page.frameNavigated') this.guardCommit(sessionId, frame, targetId);
+    if (method === 'Page.frameDetached' && params.reason === 'remove') this.retire(params.frameId);
+  }
+
+  documentEvent({ method, params = {}, sessionId }) {
+    const message = { method, params, sessionId };
+    this.targetEvidence(message);
+    this.sessionEvidence(message);
+    if (
+      method === 'Page.frameNavigated' ||
       method === 'Page.navigatedWithinDocument' ||
       method === 'Page.frameAttached' ||
       method === 'Page.frameDetached'
-    ) {
-      const targetId = this.documentTarget(sessionId);
-      this.invalidate(targetId);
-      if (method === 'Page.frameDetached' && params.reason === 'remove')
-        this.retire(params.frameId);
-    }
+    )
+      this.frameEvidence(message);
     if (
       method === 'Page.frameNavigated' &&
       this.navSessions.has(sessionId) &&
@@ -933,7 +1031,8 @@ class Guard {
       const state = this.document(id);
       return (
         !state.retired &&
-        state.checked === state.revision &&
+        !state.failed &&
+        (!state.strict || state.checked === state.revision) &&
         (!before || before.get(id) === state.revision)
       );
     });
@@ -978,8 +1077,8 @@ class Guard {
   async verifyContext(message) {
     const context = message.params.context;
     const record = this.worlds.get(message.sessionId)?.notified.get(context.id);
-    const expected = this.contextURL(message);
-    if (record?.message !== message || typeof expected !== 'string') return false;
+    let expected = this.contextURL(message);
+    if (record?.message !== message) return false;
     const where =
       typeof context.uniqueId === 'string'
         ? { uniqueContextId: context.uniqueId }
@@ -995,10 +1094,20 @@ class Guard {
       answer.error ||
       answer.result?.exceptionDetails ||
       typeof value !== 'string' ||
-      this.is.url(value) ||
-      bare(value) !== bare(expected)
+      !URL.canParse(value) ||
+      value.startsWith('chrome-error:') ||
+      this.is.url(value)
     )
       return false;
+    if (typeof expected !== 'string' || bare(value) !== bare(expected)) {
+      if (
+        this.strictScope(this.documentTarget(message.sessionId)) ||
+        !(await this.documentChecked(message.sessionId, true))
+      )
+        return false;
+      expected = this.contextURL(message);
+      if (typeof expected !== 'string' || bare(value) !== bare(expected)) return false;
+    }
     record.url = bare(value);
     return (
       this.worlds.get(message.sessionId)?.notified.get(context.id) === record &&
@@ -1095,7 +1204,16 @@ class Guard {
     state.failed = false;
     state.checked = revision;
     state.url = all[0].url;
+    state.root = all[0].id;
     state.tree = new Map(all.map((frame) => [frame.id, `${frame.url}${frame.urlFragment ?? ''}`]));
+    const commit = state.guardCommit;
+    const matched =
+      commit &&
+      commit.revision === revision &&
+      all[0].id === commit.frameId &&
+      all[0].loaderId === commit.loaderId &&
+      this.framed(all[0]) === commit.url;
+    if (!state.hazard || matched) state.strict = false;
     for (const frame of all) {
       this.frames.set(frame.id, this.framed(frame));
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
@@ -1176,6 +1294,7 @@ class Guard {
       }
       if (answer.error || !all) {
         state.failed = true;
+        this.enterStrict(targetId);
         state.checked = -1;
         return false;
       }
@@ -1316,18 +1435,21 @@ class Guard {
     ) {
       state.checked = -1;
       state.failed = true;
+      this.enterStrict(targetId, true);
       return false;
     }
     this.learn(info);
     if (await this.target(targetId)) {
       state.checked = -1;
       state.failed = true;
+      this.enterStrict(targetId, true);
       return PROTECTED;
     }
     if (state.revision !== revision) return false;
     state.failed = false;
     state.url = info.url;
     state.checked = revision;
+    if (!state.hazard) state.strict = false;
     return true;
   }
 
@@ -1343,7 +1465,7 @@ class Guard {
     if (!all)
       return this.documentTree(tree, new Set(), true)?.some((frame) => this.opaqueError(frame))
         ? ERROR_DOCUMENT
-        : false;
+        : UNCLASSIFIED_DOCUMENT;
     for (const frame of all) {
       this.frames.set(frame.id, this.framed(frame));
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
@@ -1359,10 +1481,12 @@ class Guard {
         : guarded === 'unknown'
           ? false
           : await this.verify(sessionId, targetId);
-    if (verified === ERROR_DOCUMENT) {
+    if (verified === ERROR_DOCUMENT || verified === UNCLASSIFIED_DOCUMENT) {
       this.invalidate(targetId);
       this.document(targetId).checked = -1;
       this.document(targetId).failed = true;
+      this.document(targetId).first = true;
+      this.enterStrict(targetId, true);
       this.touch(targetId);
       await this.checkDocument(targetId, true);
       const state = this.document(targetId);
@@ -1373,6 +1497,7 @@ class Guard {
         this.documentValid(sessionId);
     }
     if (verified !== true) {
+      this.enterStrict(targetId);
       this.document(targetId).checked = -1;
       this.document(targetId).failed = true;
       if (verified === PROTECTED) this.cut(sessionId, parent);
@@ -1927,8 +2052,9 @@ class Guard {
   }
 
   async admittedContext(message) {
+    const strict = this.strictScope(this.documentTarget(message.sessionId));
     if (
-      !(await this.documentChecked(message.sessionId, true)) ||
+      (strict && !(await this.documentChecked(message.sessionId, true))) ||
       !(await this.verifyContext(message)) ||
       !this.eventValid(message)
     )
@@ -2192,7 +2318,14 @@ class Guard {
     const entry = this.sessions.get(sessionId);
     if (this.hidden(sessionId) && entry && !this.blocked.has(sessionId))
       await this.watch(sessionId, entry.targetId, entry.parent);
-    if (this.hidden(sessionId) || !(await this.documentChecked(sessionId, true))) return PROTECTED;
+    if (this.hidden(sessionId)) return PROTECTED;
+    const targetId = this.documentTarget(sessionId);
+    const state = this.document(targetId);
+    if (
+      (this.strictScope(targetId) || state.first) &&
+      !(await this.documentChecked(sessionId, true))
+    )
+      return PROTECTED;
     return null;
   }
 
@@ -2260,6 +2393,7 @@ class Guard {
     if (this.documents.has(this.documentTarget(sessionId)) && documentContent(method)) {
       if (!this.documentValid(sessionId)) return this.refuse(message);
       this.stampDocument(message);
+      this.document(this.documentTarget(sessionId)).first = false;
     }
     globalThis.sliccGuardTrace?.push({
       method,
