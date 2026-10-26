@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
+import { REGISTRY as NPM } from '../../src/seed/beta.js';
 import { loadCatalog } from '../../src/seed/packages.js';
 import { OWNER, REGISTRY } from '../../src/seed/releases.js';
+import { loadTools } from '../../src/seed/tools.js';
 import {
   boot,
   booted,
@@ -213,9 +215,11 @@ test('updates a running install from a bumped lockfile', async (t) => {
   );
 });
 
-async function notesBurst() {
+async function updateCheck() {
   const { entries, retired } = await loadCatalog(new URL('packages/optional/', chrome.url));
   const noted = new Set([...entries, ...retired].map((entry) => entry.package.replace('/', '%2F')));
+  const tools = await loadTools(new URL('packages/', chrome.url));
+  const latest = new Set(tools.map((tool) => `${NPM}${tool.package}/latest`));
   const doc = ({ origin, pathname }) => {
     const [, name, version, ...rest] = pathname.split('/');
     return origin === REGISTRY && noted.has(name) && /^\d/.test(version ?? '') && !rest.length;
@@ -231,12 +235,12 @@ async function notesBurst() {
       !rest.length
     );
   };
-  return (url) => doc(new URL(url)) || releases(new URL(url));
+  return (url) => latest.has(url) || doc(new URL(url)) || releases(new URL(url));
 }
 
 test('code is highlighted offline by spectrum’s own highlighter, and a profile’s old /opt/grammars goes', async (t) => {
   const page = await chrome.page(t);
-  const burst = await notesBurst();
+  const background = await updateCheck();
   await boot(page);
   await page.evaluate(async () => {
     const put = async (path, text) => {
@@ -334,11 +338,11 @@ test('code is highlighted offline by spectrum’s own highlighter, and a profile
     before
   );
   assert.deepEqual(
-    fetched.filter((url) => !burst(url)),
+    fetched.filter((url) => !background(url)),
     []
   );
   assert.deepEqual(
-    chrome.cdn.requests.filter((url) => !burst(url)),
+    chrome.cdn.requests.filter((url) => !background(url)),
     []
   );
   assert.equal((await opfs(page)).filter((path) => path.includes('@shikijs')).length, 0);
