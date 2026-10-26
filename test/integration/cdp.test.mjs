@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { execFileSync, spawn } from 'node:child_process';
+import { readdirSync, readFileSync } from 'node:fs';
 import { createServer as createHttp } from 'node:http';
 import { createServer } from 'node:net';
 import { after, test } from 'node:test';
@@ -9,6 +11,105 @@ import { debuggerUrl, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
 import { linkNode } from './linked-node.mjs';
 import { display, EXTENSIONS, realExtension, SEVEN } from './real-extension.mjs';
+
+function force() {
+  const cpus = process.env.PROOF_PIN;
+  if (!cpus) return;
+  const kids = new Map();
+  for (const name of readdirSync('/proc')) {
+    if (!/^\d+$/.test(name)) continue;
+    try {
+      const stat = readFileSync(`/proc/${name}/stat`, 'utf8');
+      const ppid = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]);
+      if (!kids.has(ppid)) kids.set(ppid, []);
+      kids.get(ppid).push(Number(name));
+    } catch {}
+  }
+  const all = [process.pid];
+  const walk = (pid) => {
+    for (const kid of kids.get(pid) ?? []) {
+      all.push(kid);
+      walk(kid);
+    }
+  };
+  walk(process.pid);
+  for (const pid of all) {
+    try {
+      execFileSync('taskset', ['-a', '-p', '-c', cpus, String(pid)], { stdio: 'ignore' });
+    } catch {}
+  }
+  const hogs = Array.from({ length: Number(process.env.PROOF_HOGS ?? 0) }, () =>
+    spawn(
+      'taskset',
+      [
+        '-c',
+        cpus,
+        process.execPath,
+        '-e',
+        'const end = Date.now() + 120000; while (Date.now() < end);',
+      ],
+      { stdio: 'ignore' }
+    )
+  );
+  process.on('exit', () => {
+    for (const hog of hogs) hog.kill('SIGKILL');
+  });
+  console.log(`probe pinned ${all.length} processes to cpus ${cpus} with ${hogs.length} hogs`);
+}
+
+function watchCdp() {
+  const log = [];
+  globalThis.sliccDiag = log;
+  const at = () => Math.round(performance.timeOrigin + performance.now());
+  const Native = globalThis.WebSocket;
+  globalThis.WebSocket = class extends Native {
+    constructor(url, protocols) {
+      super(url, protocols);
+      const name = String(url);
+      if (!name.includes('/cdp')) return;
+      const id = log.filter((row) => row[1] === 'ws open').length + 1;
+      log.push([at(), 'ws open', id, name]);
+      this.addEventListener('open', () => log.push([at(), 'ws opened', id]));
+      this.addEventListener('close', (event) =>
+        log.push([at(), 'ws close', id, event.code, event.reason, event.wasClean])
+      );
+      this.addEventListener('error', () => log.push([at(), 'ws error', id]));
+    }
+  };
+  const tag = new WeakMap();
+  let ports = 0;
+  const named = (port) => {
+    if (!tag.has(port)) tag.set(port, ++ports);
+    return tag.get(port);
+  };
+  const shown = (data) =>
+    data && typeof data === 'object' && ('close' in data || 'open' in data || 'error' in data);
+  const post = MessagePort.prototype.postMessage;
+  MessagePort.prototype.postMessage = function (data, ...rest) {
+    if (shown(data)) log.push([at(), 'port post', named(this), JSON.stringify(data).slice(0, 300)]);
+    return post.call(this, data, ...rest);
+  };
+  const close = MessagePort.prototype.close;
+  MessagePort.prototype.close = function () {
+    if (tag.has(this)) log.push([at(), 'port close', named(this)]);
+    return close.call(this);
+  };
+  const add = MessagePort.prototype.addEventListener;
+  MessagePort.prototype.addEventListener = function (type, listener, ...rest) {
+    if (type !== 'message') return add.call(this, type, listener, ...rest);
+    const port = this;
+    return add.call(
+      this,
+      type,
+      function (event) {
+        if (shown(event.data))
+          log.push([at(), 'port got', named(port), JSON.stringify(event.data).slice(0, 300)]);
+        return listener.call(this, event);
+      },
+      ...rest
+    );
+  };
+}
 
 const port = await new Promise((resolve) => {
   const server = createServer().listen(0, '127.0.0.1', () => {
@@ -1190,20 +1291,21 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
   assert.deepEqual(page.errors, []);
 });
 
-async function viaProxy(t) {
+async function viaProxy(t, log = () => {}) {
   const proxy = await startProxy({
     port: 0,
     origins: [new URL(chrome.url).origin],
     cdp: `http://127.0.0.1:${port}`,
     kernelPort: null,
-    log: () => {},
+    log,
   });
   t.after(() => proxy.close());
   return proxy;
 }
 
-async function launched(t, proxy) {
+async function launched(t, proxy, before = async () => {}) {
   const page = await chrome.page(t);
+  await before(page);
   await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}`);
   await ready(page);
   return page;
@@ -1851,8 +1953,10 @@ test('playwright-cli drives a page through a linked slicc CLI’s browser, throu
 });
 
 test('when another page takes over slicc-node’s /cdp, the first page’s connections close and say so', async (t) => {
-  const proxy = await viaProxy(t);
-  const first = await launched(t, proxy);
+  const events = [];
+  const proxy = await viaProxy(t, (line) => events.push([Date.now(), 'node', line]));
+  const first = await launched(t, proxy, (page) => page.init(watchCdp));
+  force();
   await run(first, 'playwright-cli open about:blank');
   await shows(first, 'Opened about:blank');
   const second = await first.tab();
@@ -1878,10 +1982,21 @@ test('when another page takes over slicc-node’s /cdp, the first page’s conne
     ),
     'slicc.cdp.v1'
   );
+  const taken = Date.now();
+  events.push([taken, 'test', 'second connected']);
   await first.send('Page.bringToFront');
   await shows(first, 'held-1');
+  const held = await read(first, '/tmp/held');
+  const seen = await first.evaluate(() => globalThis.sliccDiag ?? []);
+  const timeline = [...events, ...seen.map(([when, ...rest]) => [when, 'page', ...rest])].sort(
+    (a, b) => a[0] - b[0]
+  );
+  const verdict = held.startsWith('websocket closed 1011 another page') ? 'GOOD' : 'BAD';
+  for (const [when, ...rest] of timeline)
+    console.log(`probe ${verdict} ${when - taken} ${JSON.stringify(rest)}`);
+  console.log(`probe ${verdict} held ${JSON.stringify(held)}`);
   assert.equal(
-    await read(first, '/tmp/held'),
+    held,
     'websocket closed 1011 another page took over the local proxy’s browser connection (superseded-by-new-cdp-client)\n'
   );
 });
