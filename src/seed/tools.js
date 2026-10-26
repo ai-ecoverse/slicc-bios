@@ -206,10 +206,28 @@ async function placeholders({ root, kernel }, names) {
   if (!names.length) return;
   for (const name of names) await write(root, `${SHIMS}/bin/${name}`, shim(name));
   await executable(kernel, `/${SHIMS}/bin`);
+  await listed(root, names);
+}
+
+async function listed(root, names) {
   const bin = Object.fromEntries(names.map((name) => [name, `bin/${name}`]));
   const manifest = { name: 'slicc-pending-tools', version: '0.0.0', private: true, bin };
   await write(root, `${SHIMS}/package.json`, `${JSON.stringify(manifest, null, 2)}\n`);
 }
+
+export async function narrowed(root, shimmed) {
+  const names = commandsOf(shimmed.map((one) => one.offer));
+  const kept = commandsOf(shimmed.filter((one) => !one.first).map((one) => one.offer));
+  const dropped = names.filter((name) => !kept.includes(name));
+  if (!dropped.length) return;
+  if (!kept.length) return remove(root, PENDING);
+  await listed(root, kept);
+  for (const name of dropped) await remove(root, `${SHIMS}/bin/${name}`);
+}
+
+const warn = (error) => {
+  console.warn(`tools: ${error.message}`);
+};
 
 export function createTools({
   root,
@@ -268,6 +286,7 @@ export function createTools({
     const offered = await looked(waiting);
     for (const [i, entry] of waiting.entries()) primed.set(entry.package, offered[i]);
     await placeholders({ root, kernel }, commandsOf(offered));
+    return waiting.map((entry, i) => ({ first: entry.first, offer: offered[i] }));
   }
 
   async function plan(batch) {
@@ -358,9 +377,10 @@ export function createTools({
     const opening = first === null;
     running ??= locks
       .request('slicc-tools', async () => {
-        if (opening) await shims().catch((error) => console.warn(`tools: ${error.message}`));
+        const shimmed = opening && (await shims().catch(warn));
         try {
           await round(entries.filter((entry) => entry.first));
+          if (shimmed) await narrowed(root, shimmed).catch(warn);
           await round(entries.filter((entry) => !entry.first));
         } finally {
           if (opening) await remove(root, PENDING).catch(() => {});
