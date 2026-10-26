@@ -1,4 +1,3 @@
-import { undismiss } from './notices.js';
 export const PENDING = 'slicc-os.six-import';
 export const NOTICE = 'six-import';
 const EXPORT = /^\/slicc-v6-upgrade\/([\w-]+)\/?$/;
@@ -54,7 +53,6 @@ export function failedNotice(error) {
 }
 
 function failing(storage, notices, error) {
-  undismiss(NOTICE, storage);
   notices.show(failedNotice(error), (action) => {
     if (action !== STOP) return;
     storage.removeItem(PENDING);
