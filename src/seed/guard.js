@@ -1707,6 +1707,10 @@ class Guard {
     return this.is.url(frame.url) || this.is.url(frame.securityOrigin);
   }
 
+  pageShown(now) {
+    return (now?.frames ?? []).some((frame) => this.frameLive(frame));
+  }
+
   async openDocument(sessionId) {
     const tree = await this.answered(this.call('Page.getFrameTree', {}, sessionId));
     const frames = tree && !tree.error ? framed(tree.result?.frameTree) : [];
@@ -1956,7 +1960,7 @@ class Guard {
     this.note(sessionId, now);
     if (!now.protected) return null;
     if (shot && this.blankFrames(now)) return null;
-    if (now.visible && !this.blankFrames(now) && !now.probed) this.cut(sessionId);
+    if (this.pageShown(now) && !now.probed) this.cut(sessionId);
     if (!now.live && navigating) return null;
     if (!now.live && shot && this.blankShown(now)) return null;
     return PROTECTED;
@@ -2530,7 +2534,7 @@ class Guard {
     }
     this.note(sessionId, now);
     if (!now.live || this.blankFrames(now)) return false;
-    if (now.visible && !now.probed) this.cut(sessionId);
+    if (this.pageShown(now) && !now.probed) this.cut(sessionId);
     this.standIn(message);
     return true;
   }
