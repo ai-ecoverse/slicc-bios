@@ -243,15 +243,10 @@ export function captureMicrophone(options) {
   throw refused("seven doesn't answer this microphone request");
 }
 
-function captureDuration(seconds) {
-  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) return '';
-  return ` for up to ${seconds} ${seconds === 1 ? 'second' : 'seconds'}`;
-}
-
 export function capturePrompt({ stamp, options }) {
   const sound = captureSound(options) ? ' and its sound' : '';
   const microphone = captureMicrophone(options)
-    ? `, and record from your microphone${captureDuration(options?.duration)}`
+    ? `, and record from your microphone${lasting(options?.duration)}`
     : '';
   return {
     title: captureMicrophone(options)
