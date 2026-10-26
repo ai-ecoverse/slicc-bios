@@ -431,6 +431,16 @@ const UNREADABLE = [
   ')',
 ];
 
+export async function executable(kernel, path) {
+  const { status, stderr } = await writing_(kernel, [path], () =>
+    kernel.run(['chmod', '-R', 'a+rx', path], writing('/'))
+  );
+  if (status)
+    throw new Error(
+      `making ${path} runnable failed: ${stderr.trim() || `chmod exited with ${status}`}`
+    );
+}
+
 export async function readable(kernel, path) {
   const { status, stderr } = await writing_(kernel, [path], () =>
     kernel.run(['find', path, ...UNREADABLE, '-exec', 'chmod', 'a+rX', '{}', '+'], writing('/'))

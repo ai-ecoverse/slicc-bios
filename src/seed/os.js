@@ -874,7 +874,7 @@ async function own() {
     cdp: control.hook,
     clipboard: clipboardHook(),
     requests,
-    commands: { append: [TOOLS_MODULES, USER_MODULES] },
+    commands: { append: [TOOLS_MODULES, USER_MODULES, '/opt/slicc/pending/node_modules'] },
     facades: { link: { port: LINK_PORT, hook: link } },
     ...sealedOption((await versions(root, [KERNEL]))[KERNEL], vault),
     ...folders.options,

@@ -373,6 +373,51 @@ test('a tools round whose pnpm goes quiet gives up after its idle limit and rele
   assert.deepEqual(page.errors, []);
 });
 
+test('while the first tools round runs, a tool’s command says seven is still installing it; once the round ends, an installed tool runs and one that didn’t install is plainly not found', {
+  timeout: 25 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  prepare();
+  registry.hold = /\/@ai-ecoverse\/wasm-jq\/-\/wasm-jq-[^/]+\.tgz$/;
+  t.after(() => {
+    registry.hold = null;
+  });
+  await page.init('() => { globalThis.sliccKernelDebug = true; }');
+  await page.goto('/');
+  const pending = await page.within(5 * 60 * 1000, async () => {
+    if (typeof globalThis.sliccKernelClient !== 'function') return false;
+    globalThis.pendingClient ??= await globalThis.sliccKernelClient();
+    const { status, stdout, stderr } = await globalThis.pendingClient.run(
+      ['bash', '-c', 'jq --version; echo "rc=$?"; command -v less'],
+      { cwd: '/' }
+    );
+    const out = `${stdout}${stderr}`;
+    window.pendingSeen = out;
+    return status === 0 && /still installing/.test(out) && out;
+  });
+  assert.match(
+    pending,
+    /^jq: seven is still installing it; Install \/ Update shows its progress$/m,
+    pending
+  );
+  assert.match(pending, /^rc=127$/m, pending);
+  assert.match(pending, /^\/usr\/bin\/less$/m, 'every tool’s command has its placeholder');
+
+  await toolsSettled(page, 15 * 60 * 1000);
+  assert.equal((await jqRow(page)).state, 'failed');
+  const after = await sh(
+    page,
+    'jq --version; echo "rc=$?"; command -v jq || echo "no-jq"; less --version | head -1; test -e /opt/slicc/pending || echo "no-pending"'
+  );
+  assert.match(after.out, /jq: command not found/, after.out);
+  assert.doesNotMatch(after.out, /still installing/, after.out);
+  assert.match(after.out, /^rc=127$/m, after.out);
+  assert.match(after.out, /^no-jq$/m, after.out);
+  assert.match(after.out, /^less \d/m, 'a tool that installed runs');
+  assert.match(after.out, /^no-pending$/m, after.out);
+  assert.deepEqual(page.errors, []);
+});
+
 test('seven never takes a tool back to an older npm latest, and a newer release that fails the gate leaves the installed one in place', {
   timeout: 25 * 60 * 1000,
 }, async (t) => {
