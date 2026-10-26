@@ -1794,7 +1794,7 @@ class Guard {
           : [...(world?.notified.values() ?? [])].find(
               (item) => item.message.params.context.uniqueId === value
             );
-      return record && (!record.published || !this.contextCurrent(record.message))
+      return record && (!record.verified || !this.contextCurrent(record.message))
         ? undefined
         : verdict;
     });
@@ -1926,6 +1926,17 @@ class Guard {
     return ids && [...ids].some((id) => this.documents.get(id)?.failed === true);
   }
 
+  async admittedContext(message) {
+    if (
+      !(await this.documentChecked(message.sessionId, true)) ||
+      !(await this.verifyContext(message)) ||
+      !this.eventValid(message)
+    )
+      return false;
+    this.world(message.sessionId).notified.get(message.params.context.id).verified = true;
+    return true;
+  }
+
   async event(message) {
     message.method ??= '';
     const { method, sessionId } = message;
@@ -1937,10 +1948,8 @@ class Guard {
     if (this.hidden(sessionId)) return;
     if (foreign) return;
     if (this.walked(message)) return this.cut(sessionId);
-    if (method === 'Runtime.executionContextCreated') {
-      if (!(await this.documentChecked(sessionId, true)) || !(await this.verifyContext(message)))
-        return;
-    }
+    if (method === 'Runtime.executionContextCreated' && !(await this.admittedContext(message)))
+      return;
     const receipt = this.documentEvents.get(message);
     if (
       method === 'Runtime.consoleAPICalled' &&
