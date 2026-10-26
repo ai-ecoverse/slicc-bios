@@ -1,0 +1,83 @@
+name: Guard Head Bisect
+
+on:
+  push:
+    branches: [bb/bisect-1024-key-heads]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: guard-bisect-1024-once
+  cancel-in-progress: false
+
+jobs:
+  head:
+    runs-on: cloud-run-job
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: main
+            head: 17fba4f3e5234d98efcad520760dcabc3ed4942c
+          - label: a20f97e
+            head: a20f97e9963a83460ef44d0cebeacf723201fd53
+          - label: 3ee6446b
+            head: 3ee6446b97b4b37d959a1f7ae46acfb171132e3b
+          - label: d95aced6
+            head: d95aced63ec487c83441d90a6043b91abecdc3b2
+          - label: 7eab0123
+            head: 7eab01239b24c80adc88d54e3fab83321941e360
+          - label: ce49c1a6
+            head: ce49c1a63774b2c31b7cd62c3732030678a9e6cf
+          - label: b9935240
+            head: b99352408f30961a6d057250d936cc42c539b06c
+          - label: 1f2d42eb
+            head: 1f2d42eb5264a3a8712f38cff1d5a8f5abdc3eb6
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: probe
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ matrix.head }}
+          path: head
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '26'
+          cache: npm
+          cache-dependency-path: head/package-lock.json
+      - name: Exact historical head and dependencies
+        working-directory: head
+        env:
+          EXPECTED_HEAD: ${{ matrix.head }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          npm ci
+          git diff --exit-code
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: head/node_modules/.cache/slicc-harness/cdn
+          key: slicc-harness-cdn-${{ runner.os }}-${{ hashFiles('head/package-lock.json', 'head/pnpm-lock.yaml') }}
+          restore-keys: slicc-harness-cdn-${{ runner.os }}-
+      - name: Unprivileged browser setup
+        working-directory: head
+        run: |
+          node_modules/.bin/slicc-cdp install-browser
+          command -v xvfb-run
+      - name: One strict attempt per head
+        working-directory: head
+        env:
+          BISECT_HEAD: ${{ matrix.head }}
+          BISECT_OUTPUT: ${{ github.workspace }}/bisect-safe
+        run: xvfb-run -a -s '-screen 0 1920x1080x24 -nolisten tcp' node ../probe/test/integration/guard-bisect-run.mjs
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: guard-bisect-${{ matrix.label }}
+          path: bisect-safe/
+          if-no-files-found: error
+          retention-days: 3
