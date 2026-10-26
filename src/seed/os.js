@@ -96,7 +96,6 @@ import { serveTerminal } from './terminal.js';
 import { createTools, loadTools, MODULES as TOOLS_MODULES } from './tools.js';
 import { pickTransport } from './transport.js';
 import { createTray, seatNotices, TRAY_HUB_KEY, trayPort } from './tray.js';
-import { openTunnel } from './tunnel.js';
 import {
   baseManifest,
   enforced,
@@ -181,13 +180,13 @@ const network = await pickTransport();
 const { kind } = network;
 const browser = createBrowser(network);
 let poke = () => {};
-const control = browserControl(network, {
+const control = browserControl({
   observe: (connection) => {
     poke();
     return browser.observe(connection);
   },
   links: () => links,
-  before: () => sweep({ hosts: () => browserHosts(network), own: location.origin }),
+  before: () => sweep({ hosts: () => browserHosts(), own: location.origin }),
 });
 const exits = createExitRouter();
 const tailscale = createTailscale(await tailscaleConfig(), { router: exits });
@@ -307,9 +306,8 @@ const jerk = createJerk({ links: () => links, vault });
 useVault(vault);
 const login = sealedLogin(
   signIn({
-    network,
     shared: sharesOrigin(),
-    hosted: () => Object.values(browserHosts(network)).some(Boolean),
+    hosted: () => Object.values(browserHosts()).some(Boolean),
   }),
   {
     vault,
@@ -846,14 +844,13 @@ async function rows() {
 async function own() {
   folders = createFolders({
     storage: localStorage,
-    network,
     secret: await offTheRecord(),
     linked: links,
     owner: () => coneIds ?? { uid: 0, gid: 0 },
   });
   approvals.own();
-  const hosts = () => browserHosts(network);
-  ({ poke } = watchOpened({ hosts, own: location.origin, eager: ['proxy'] }));
+  const hosts = () => browserHosts();
+  ({ poke } = watchOpened({ hosts, own: location.origin }));
   watchSignIns({ hosts, asked: () => poke() });
   if (globalThis.sliccKernelDebug === true) globalThis.sliccBrowserHook = control.hook;
   const denials = denialLog({ root, users: () => kernel?.users, mode });
@@ -930,7 +927,6 @@ async function own() {
   pairing.start();
   tray?.start();
   leaders.start();
-  if (network.status?.probe?.kernelTunnel) openTunnel(kernel, network.proxy);
   files = await folders.attach(kernel, model);
   files.files.on('mounts', links.changed);
   const served = serveUpdates(updates);

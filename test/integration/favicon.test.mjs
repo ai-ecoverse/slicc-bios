@@ -6,7 +6,7 @@ import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harne
 import { agentUp, connectAccount, listsAccount, ready } from './bios.mjs';
 import { debuggerUrl, devtools, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
-import { eventFrame, fakeProxy } from './fake-proxy.mjs';
+import { eventFrame, fakeLlm } from './fake-llm.mjs';
 
 const KEY = 'dummy-bedrock-key-0000';
 const BEDROCK = 'https://bedrock-runtime.us-west-2.amazonaws.com/';
@@ -138,14 +138,14 @@ function answer(body) {
 }
 
 const chrome = await launch({
+  intercept: [],
   agent: true,
   timeout: 60000,
   args: ['--host-resolver-rules=MAP *.example.test 127.0.0.1, MAP vault.sliccy.ai 127.0.0.1'],
 });
 const { port } = await devtools(chrome);
-const proxy = await fakeProxy({
-  origin: new URL(chrome.url).origin,
-  key: 'the-key',
+const llm = await fakeLlm(chrome.cdp, {
+  hosts: [BEDROCK, 'https://registry.npmjs.org/'],
   answer: async (request, body) => {
     if (request.url.startsWith('https://registry.npmjs.org/')) {
       const type = request.url.endsWith('.tgz') ? 'application/octet-stream' : 'application/json';
@@ -163,7 +163,7 @@ const proxy = await fakeProxy({
 const browser = await debuggerUrl(port);
 const fakeExtension = extensionOver(browser);
 after(async () => {
-  await proxy.close();
+  await llm.close();
   await chrome.close();
   stand.close();
 });
@@ -174,7 +174,7 @@ test('a tab’s favicon comes from the data: icon its page already loaded, a too
   const page = await chrome.page(t);
   const extension = await fakeExtension(page);
   t.after(extension.close);
-  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await page.goto('/');
   await ready(page);
   await agentUp(page);
   await listsAccount(page, 'amazon-bedrock');

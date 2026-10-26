@@ -193,7 +193,6 @@ await step('seed', async () => {
     'tools.js',
     'transport.js',
     'tray.js',
-    'tunnel.js',
     'update.js',
     'updates.js',
     'user.js',

@@ -1,22 +1,22 @@
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
+import { createServer } from 'node:http';
 import { after, test } from 'node:test';
-import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
 import { ready, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
-import { fakeProxy } from './fake-proxy.mjs';
 
 const chrome = await launch();
-const answer = async (request) =>
-  request.url.startsWith('https://registry.npmjs.org/')
-    ? {
-        status: 200,
-        headers: [['content-type', 'application/json']],
-        body: await download(request.url),
-      }
-    : { status: 404, headers: [], body: Buffer.alloc(0) };
-const proxy = await fakeProxy({ origin: new URL(chrome.url).origin, key: 'the-key', answer });
+const asked = [];
+const named = createServer((req, res) => {
+  asked.push(`${req.method} ${req.url}`);
+  res.writeHead(200, { 'Access-Control-Allow-Origin': '*' });
+  res.end('{}');
+});
+await new Promise((resolve) => named.listen(0, '127.0.0.1', resolve));
+const NAMED = `http://127.0.0.1:${named.address().port}`;
 after(async () => {
-  await proxy.close();
+  named.close();
+  named.closeAllConnections();
   await chrome.close();
 });
 
@@ -35,7 +35,6 @@ const shown = async (page) => {
   const { failures, ...rest } = await network(page);
   return rest;
 };
-const fragment = (url, key) => `#${new URLSearchParams({ proxy: url, key })}`;
 const stored = (page) =>
   page.evaluate(
     () =>
@@ -52,40 +51,91 @@ const stored = (page) =>
       })
   );
 
-test('a proxy in the fragment is probed, kept, stripped from the address bar and used', async (t) => {
-  const page = await chrome.page(t);
-  proxy.probes.length = 0;
-  await page.goto(`/${fragment(proxy.url, 'the-key')}&keep=1`);
-  await ready(page);
+const keys = (page) =>
+  page.evaluate(async () => {
+    const local = Object.entries(localStorage).flat();
+    const databases = (await indexedDB.databases()).map((db) => db.name);
+    return { local, databases, address: location.href };
+  });
 
-  assert.equal(await transport(page), 'local-proxy');
+test('a #proxy= and key= fragment is stripped before anything loads and never honoured: no request to the named port, no local-proxy transport, and the key is nowhere', async (t) => {
+  const page = await chrome.page(t);
+  const MARK = `MARK${randomBytes(8).toString('hex')}`;
+  asked.length = 0;
+  await page.goto(`/#${new URLSearchParams({ proxy: NAMED, key: MARK })}&keep=1`);
+  await ready(page);
+  assert.equal(await transport(page), 'page');
   assert.equal(
     await page.evaluate(() => location.href.replace(location.origin, '')),
     '/os/#keep=1'
   );
-  assert.deepEqual(await stored(page), { url: proxy.url, key: 'the-key' });
-  assert.deepEqual(proxy.probes, ['the-key']);
-  assert.deepEqual(await shown(page), {
-    route: 'proxy',
-    health: 'ok',
-    detail: `Local proxy at ${new URL(proxy.url).host}`,
-    indicator: 'ok',
-  });
-
-  await page.reload();
-  await ready(page);
-  assert.equal(await transport(page), 'local-proxy');
-  assert.deepEqual(proxy.probes, ['the-key', 'the-key']);
+  assert.equal(await stored(page), null);
+  await run(page, 'curl -sS https://unreachable.invalid/ > /dev/null 2>&1; echo "fetched-""done"');
+  await shows(page, 'fetched-done');
+  const seen = await keys(page);
+  assert.ok(
+    !JSON.stringify(seen).includes(MARK),
+    `the key is held somewhere: ${JSON.stringify(seen)}`
+  );
+  assert.ok(!page.console.some((line) => line.includes(MARK)), 'the key reached the console');
+  const status = await shown(page);
+  assert.deepEqual([status.route, status.health, status.detail], ['page', 'limited', null]);
+  assert.deepEqual(asked, [], 'seven contacted the port the fragment named');
   assert.deepEqual(page.errors, []);
 });
 
-test('the proxy route turns red when the proxy stops answering, and lists the failure', async (t) => {
+test('a proxy an older seven kept in IndexedDB is deleted at boot and never contacted', async (t) => {
   const page = await chrome.page(t);
-  const gone = await fakeProxy({ origin: new URL(chrome.url).origin, key: 'gone-key', answer });
-  await page.goto(`/${fragment(gone.url, 'gone-key')}`);
+  await page.goto('/');
+  await ready(page);
+  const MARK = `MARK${randomBytes(8).toString('hex')}`;
+  await page.evaluate(
+    ([url, key]) =>
+      new Promise((resolve, reject) => {
+        const open = indexedDB.open('slicc-os');
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const put = open.result
+            .transaction('transport', 'readwrite')
+            .objectStore('transport')
+            .put({ url, key }, 'proxy');
+          put.onsuccess = () => {
+            open.result.close();
+            resolve();
+          };
+          put.onerror = () => reject(put.error);
+        };
+      }),
+    [NAMED, MARK]
+  );
+  assert.deepEqual(await stored(page), { url: NAMED, key: MARK });
+  asked.length = 0;
+  await page.reload();
+  await ready(page);
+  assert.equal(await transport(page), 'page');
+  assert.equal(await stored(page), null);
+  assert.deepEqual(asked, [], 'seven contacted a proxy an older seven kept');
+  assert.deepEqual(page.errors, []);
+});
+
+test('the extension route turns red when slicc-extension stops answering, and lists the failure', async (t) => {
+  const page = await chrome.page(t);
+  await page.init(() => {
+    Object.defineProperty(globalThis, 'sliccExtension', {
+      value: Object.freeze({
+        fetch: (input, init) =>
+          window.extensionDown
+            ? Promise.reject(new TypeError('Failed to fetch'))
+            : fetch(input, init),
+      }),
+    });
+  });
+  await page.goto('/');
   await ready(page);
   assert.equal((await shown(page)).health, 'ok');
-  await gone.close();
+  await page.evaluate(() => {
+    window.extensionDown = true;
+  });
   await run(page, 'curl -sS https://example.test/');
   await page.until(
     () =>
@@ -94,76 +144,12 @@ test('the proxy route turns red when the proxy stops answering, and lists the fa
   );
   const status = await network(page);
   assert.equal(status.indicator, 'failing');
+  assert.equal(
+    status.detail,
+    'slicc-extension stopped answering: check that it is still installed and enabled'
+  );
   assert.ok(status.failures.some((failure) => failure.url === 'https://example.test/'));
   await page.screenshot(new URL('failing.png', page.dir));
-});
-
-test('a proxy that refuses its key is dropped, and the page falls back', async (t) => {
-  const page = await chrome.page(t);
-  proxy.probes.length = 0;
-  await page.goto(`/${fragment(proxy.url, 'stale-key')}`);
-  await ready(page);
-
-  assert.equal(await transport(page), 'page');
-  assert.deepEqual(proxy.probes, ['stale-key']);
-  assert.equal(await stored(page), null);
-  assert.equal(await page.evaluate(() => location.hash), '');
-  const status = await shown(page);
-  assert.deepEqual([status.route, status.health, status.indicator], ['page', 'limited', 'limited']);
-  assert.match(
-    status.detail,
-    /refused this page \(proxy key missing or wrong\): open SLICC from the launcher again; using the page fetch/
-  );
-});
-
-test('a proxy that is not running is named, and Retry switches to it once it is back', async (t) => {
-  const page = await chrome.page(t);
-  const later = await fakeProxy({ origin: new URL(chrome.url).origin, key: 'later-key' });
-  const { port } = new URL(later.url);
-  await later.close();
-  await page.goto(`/${fragment(later.url, 'later-key')}`);
-  await ready(page);
-
-  assert.equal(await transport(page), 'page');
-  assert.equal(
-    (await shown(page)).detail,
-    `No local proxy at 127.0.0.1:${port}: run npx @ai-ecoverse/slicc-node again; using the page fetch, limited by CORS`
-  );
-
-  const back = await fakeProxy({
-    origin: new URL(chrome.url).origin,
-    key: 'later-key',
-    port: Number(port),
-    answer,
-  });
-  t.after(() => back.close());
-  await page.evaluate(() =>
-    document.querySelector('slicc-app').shadowRoot.querySelector('[data-network]').click()
-  );
-  await page.until(
-    () =>
-      !!document
-        .querySelector('slicc-app')
-        .dock.content('network')
-        ?.shadowRoot?.querySelector('[data-action="check"]')
-  );
-  await page.screenshot(new URL('network-panel.png', page.dir));
-  await page.evaluate(
-    () =>
-      void document
-        .querySelector('slicc-app')
-        .dock.content('network')
-        .shadowRoot.querySelector('[data-action="check"]')
-        .click()
-  );
-  await page.until(() => document.documentElement.dataset.transport === 'local-proxy');
-  await ready(page);
-  assert.deepEqual(await shown(page), {
-    route: 'proxy',
-    health: 'ok',
-    detail: `Local proxy at 127.0.0.1:${port}`,
-    indicator: 'ok',
-  });
 });
 
 test('under the page fetch, the 502 curl shows points at the slicc CLI and slicc-extension', async (t) => {
@@ -187,17 +173,7 @@ test('under the page fetch, the 502 curl shows points at the slicc CLI and slicc
   );
 });
 
-test('a proxy that is not on loopback is never contacted', async (t) => {
-  const page = await chrome.page(t);
-  await page.goto(`/${fragment('https://evil.test', 'the-key')}`);
-  await ready(page);
-
-  assert.equal(await transport(page), 'page');
-  assert.equal(await page.evaluate(() => location.hash), '');
-  assert.equal(await stored(page), null);
-});
-
-test('without a proxy, the extension relay is used when it is there', async (t) => {
+test('the extension relay is used when it is there', async (t) => {
   const page = await chrome.page(t);
   await page.init(() => {
     Object.defineProperty(globalThis, 'sliccExtension', {

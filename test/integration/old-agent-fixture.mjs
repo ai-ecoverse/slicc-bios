@@ -4,7 +4,7 @@ import { after } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
 import { AGENT_BUDGET, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
-import { eventFrame, fakeProxy } from './fake-proxy.mjs';
+import { eventFrame, fakeLlm } from './fake-llm.mjs';
 
 export const KEY = 'dummy-bedrock-key-0000';
 const BEDROCK = 'https://bedrock-runtime.us-west-2.amazonaws.com/';
@@ -31,10 +31,9 @@ const answer = Buffer.concat([
   }),
 ]);
 
-export const chrome = await launch({ tools: false, agent: true, timeout: 60000 });
-export const proxy = await fakeProxy({
-  origin: new URL(chrome.url).origin,
-  key: 'the-key',
+export const chrome = await launch({ tools: false, intercept: [], agent: true, timeout: 60000 });
+export const llm = await fakeLlm(chrome.cdp, {
+  hosts: [BEDROCK, 'https://registry.npmjs.org/'],
   answer: async (request) => {
     if (request.url.startsWith('https://registry.npmjs.org/')) {
       const type = request.url.endsWith('.tgz') ? 'application/octet-stream' : 'application/json';
@@ -50,7 +49,7 @@ export const proxy = await fakeProxy({
   },
 });
 after(async () => {
-  await proxy.close();
+  await llm.close();
   await chrome.close();
 });
 
@@ -171,7 +170,7 @@ export async function installedOld(t, old) {
   t.after(() => {
     for (const path of Object.keys(fixture)) chrome.overrides.delete(path);
   });
-  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await page.goto('/');
   await ready(page);
   await page.within(
     AGENT_BUDGET,

@@ -16,7 +16,7 @@ import {
 import { launch } from './chrome.mjs';
 import { CLI, cliEnv } from './cli.mjs';
 import { startHub } from './fake-hub.mjs';
-import { eventFrame, fakeProxy } from './fake-proxy.mjs';
+import { eventFrame, fakeLlm } from './fake-llm.mjs';
 
 const cli = CLI;
 const KEY = 'dummy-bedrock-key-0000';
@@ -33,10 +33,9 @@ const stream = Buffer.concat([
   }),
 ]);
 
-const chrome = await launch({ tools: false, agent: true, timeout: 60000 });
-const proxy = await fakeProxy({
-  origin: new URL(chrome.url).origin,
-  key: 'the-key',
+const chrome = await launch({ tools: false, intercept: [], agent: true, timeout: 60000 });
+const llm = await fakeLlm(chrome.cdp, {
+  hosts: [BEDROCK, 'https://registry.npmjs.org/'],
   answer: async (request) => {
     if (request.url.startsWith('https://registry.npmjs.org/')) {
       const type = request.url.endsWith('.tgz') ? 'application/octet-stream' : 'application/json';
@@ -58,7 +57,7 @@ const proxy = await fakeProxy({
 const hub = await startHub();
 after(async () => {
   hub.close();
-  await proxy.close();
+  await llm.close();
   await chrome.close();
 });
 
@@ -82,7 +81,7 @@ test('a linked slicc CLI prompts the agent, watches it, and aborts, over the lin
   timeout: 35 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
-  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await page.goto('/');
   await ready(page);
   await agentUp(page);
   await listsAccount(page, 'amazon-bedrock');
@@ -145,7 +144,7 @@ test('a webhook from the tray hub reaches the agent as a lick, without secret he
   timeout: 35 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
-  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await page.goto('/');
   await ready(page);
   await page.evaluate((url) => localStorage.setItem('slicc-os.tray-hub', url), hub.url);
   await page.reload();
@@ -181,7 +180,7 @@ test('a webhook from the tray hub reaches the agent as a lick, without secret he
     timestamp: new Date().toISOString(),
   });
   const asked = () =>
-    proxy.requests.filter((r) => r.url.startsWith(BEDROCK) && r.body.includes('webhook-marker-42'));
+    llm.requests.filter((r) => r.url.startsWith(BEDROCK) && r.body.includes('webhook-marker-42'));
   for (let i = 0; i < 240 && !asked().length; i += 1)
     await new Promise((resolve) => setTimeout(resolve, 250));
   const [request] = asked();

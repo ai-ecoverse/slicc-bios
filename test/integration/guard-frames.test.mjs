@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer as createHttp } from 'node:http';
 import { after, test } from 'node:test';
-import { startProxy } from '@ai-ecoverse/slicc-node';
 import { ready } from './bios.mjs';
 import { debuggerUrl, devtools, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
@@ -77,14 +76,13 @@ async function framed() {
   }
 }
 
-async function reads({ transport, proxy, targetId, frameId, plain, vaultChild }) {
+async function reads({ targetId, frameId, plain, vaultChild }) {
   const { guardProtected } = await import(new URL('guard.js', location.href).href);
-  const { proxyHost, extensionConnection } = await import(new URL('cdp.js', location.href).href);
-  const raw =
-    transport === 'proxy'
-      ? await proxyHost(proxy)()
-      : extensionConnection(globalThis.sliccExtension.cdp);
-  const connection = guardProtected(raw, self.origin);
+  const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
+  const connection = guardProtected(
+    extensionConnection(globalThis.sliccExtension.cdp),
+    self.origin
+  );
   const pending = new Map();
   const seen = [];
   let next = 0;
@@ -144,30 +142,16 @@ async function reads({ transport, proxy, targetId, frameId, plain, vaultChild })
   return out;
 }
 
-async function check(t, transport) {
+async function check(t) {
   const page = await chrome.page(t);
-  let proxy;
-  if (transport === 'proxy') {
-    proxy = await startProxy({
-      port: 0,
-      origins: [new URL(chrome.url).origin],
-      cdp: `http://127.0.0.1:${debugging}`,
-      kernelPort: null,
-      log: () => {},
-    });
-    t.after(() => proxy.close());
-  } else {
-    const extension = await fakeExtension(page);
-    t.after(() => extension.close());
-  }
-  await page.goto(proxy ? `/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}` : '/');
+  const extension = await fakeExtension(page);
+  t.after(() => extension.close());
+  await page.goto('/');
   await ready(page);
   const { targetId, frameId, sameProcess } = await framed();
   t.after(() => chrome.cdp.send('Target.closeTarget', { targetId }).catch(() => {}));
   assert.equal(sameProcess, true, 'the vault child frame shares its parent’s process');
   const out = await page.evaluate(reads, {
-    transport,
-    proxy: proxy && { url: proxy.url, key: proxy.key },
     targetId,
     frameId,
     plain: `http://ordinary.test:${port}/plain`,
@@ -190,25 +174,18 @@ async function check(t, transport) {
 }
 
 test(
-  'a tab with a same-process vault frame that committed before the client attached is refused whole, on the proxy path',
-  { timeout: 3 * 60 * 1000 },
-  (t) => check(t, 'proxy')
-);
-
-test(
   'a tab with a same-process vault frame that committed before the client attached is refused whole, on the extension path',
   { timeout: 3 * 60 * 1000 },
-  (t) => check(t, 'extension')
+  (t) => check(t)
 );
 
-async function fresh({ transport, proxy, port }) {
+async function fresh({ port }) {
   const { guardProtected } = await import(new URL('guard.js', location.href).href);
-  const { proxyHost, extensionConnection } = await import(new URL('cdp.js', location.href).href);
-  const raw =
-    transport === 'proxy'
-      ? await proxyHost(proxy)()
-      : extensionConnection(globalThis.sliccExtension.cdp);
-  const connection = guardProtected(raw, self.origin);
+  const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
+  const connection = guardProtected(
+    extensionConnection(globalThis.sliccExtension.cdp),
+    self.origin
+  );
   const pending = new Map();
   const events = [];
   let next = 0;
@@ -302,27 +279,13 @@ async function fresh({ transport, proxy, port }) {
   return out;
 }
 
-async function freshCheck(t, transport) {
+async function freshCheck(t) {
   const page = await chrome.page(t);
-  let proxy;
-  if (transport === 'proxy') {
-    proxy = await startProxy({
-      port: 0,
-      origins: [new URL(chrome.url).origin],
-      cdp: `http://127.0.0.1:${debugging}`,
-      kernelPort: null,
-      log: () => {},
-    });
-    t.after(() => proxy.close());
-  } else {
-    const extension = await fakeExtension(page);
-    t.after(() => extension.close());
-  }
-  await page.goto(proxy ? `/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}` : '/');
+  const extension = await fakeExtension(page);
+  t.after(() => extension.close());
+  await page.goto('/');
   await ready(page);
   const out = await page.evaluate(fresh, {
-    transport,
-    proxy: proxy && { url: proxy.url, key: proxy.key },
     port,
   });
   assert.match(out.unknown, /^slicc: refused:/, 'a frame id the guard never saw is refused');
@@ -334,25 +297,18 @@ async function freshCheck(t, transport) {
 }
 
 test(
-  'a frame id the guard never saw is refused, and a new ordinary frame is readable once it commits, on the proxy path',
-  { timeout: 3 * 60 * 1000 },
-  (t) => freshCheck(t, 'proxy')
-);
-
-test(
   'a frame id the guard never saw is refused, and a new ordinary frame is readable once it commits, on the extension path',
   { timeout: 3 * 60 * 1000 },
-  (t) => freshCheck(t, 'extension')
+  (t) => freshCheck(t)
 );
 
-async function late({ transport, proxy, port, targetId }) {
+async function late({ port, targetId }) {
   const { guardProtected } = await import(new URL('guard.js', location.href).href);
-  const { proxyHost, extensionConnection } = await import(new URL('cdp.js', location.href).href);
-  const raw =
-    transport === 'proxy'
-      ? await proxyHost(proxy)()
-      : extensionConnection(globalThis.sliccExtension.cdp);
-  const connection = guardProtected(raw, self.origin);
+  const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
+  const connection = guardProtected(
+    extensionConnection(globalThis.sliccExtension.cdp),
+    self.origin
+  );
   const pending = new Map();
   const seen = [];
   const out = { early: {}, after: {} };
@@ -461,31 +417,17 @@ async function committed(targetId) {
   throw new Error(`the vault frame never committed: ${JSON.stringify(tree)}`);
 }
 
-async function lateCheck(t, transport) {
+async function lateCheck(t) {
   const page = await chrome.page(t);
-  let proxy;
-  if (transport === 'proxy') {
-    proxy = await startProxy({
-      port: 0,
-      origins: [new URL(chrome.url).origin],
-      cdp: `http://127.0.0.1:${debugging}`,
-      kernelPort: null,
-      log: () => {},
-    });
-    t.after(() => proxy.close());
-  } else {
-    const extension = await fakeExtension(page);
-    t.after(() => extension.close());
-  }
-  await page.goto(proxy ? `/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}` : '/');
+  const extension = await fakeExtension(page);
+  t.after(() => extension.close());
+  await page.goto('/');
   await ready(page);
   const { targetId } = await chrome.cdp.send('Target.createTarget', {
     url: `http://ordinary.test:${port}/late`,
   });
   t.after(() => chrome.cdp.send('Target.closeTarget', { targetId }).catch(() => {}));
   const early = await page.evaluate(late, {
-    transport,
-    proxy: proxy && { url: proxy.url, key: proxy.key },
     port,
     targetId,
   });
@@ -515,25 +457,18 @@ async function lateCheck(t, transport) {
 }
 
 test(
-  'frame commits a protected URL after attach: reads refused, on the proxy path',
-  { timeout: 3 * 60 * 1000 },
-  (t) => lateCheck(t, 'proxy')
-);
-
-test(
   'frame commits a protected URL after attach: reads refused, on the extension path',
   { timeout: 3 * 60 * 1000 },
-  (t) => lateCheck(t, 'extension')
+  (t) => lateCheck(t)
 );
 
-async function editors({ transport, proxy, port }) {
+async function editors({ port }) {
   const { guardProtected } = await import(new URL('guard.js', location.href).href);
-  const { proxyHost, extensionConnection } = await import(new URL('cdp.js', location.href).href);
-  const raw =
-    transport === 'proxy'
-      ? await proxyHost(proxy)()
-      : extensionConnection(globalThis.sliccExtension.cdp);
-  const connection = guardProtected(raw, self.origin);
+  const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
+  const connection = guardProtected(
+    extensionConnection(globalThis.sliccExtension.cdp),
+    self.origin
+  );
   const pending = new Map();
   let next = 0;
   connection.onmessage = (text) => {
@@ -600,27 +535,13 @@ async function editors({ transport, proxy, port }) {
   return out;
 }
 
-async function editorsCheck(t, transport) {
+async function editorsCheck(t) {
   const page = await chrome.page(t);
-  let proxy;
-  if (transport === 'proxy') {
-    proxy = await startProxy({
-      port: 0,
-      origins: [new URL(chrome.url).origin],
-      cdp: `http://127.0.0.1:${debugging}`,
-      kernelPort: null,
-      log: () => {},
-    });
-    t.after(() => proxy.close());
-  } else {
-    const extension = await fakeExtension(page);
-    t.after(() => extension.close());
-  }
-  await page.goto(proxy ? `/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}` : '/');
+  const extension = await fakeExtension(page);
+  t.after(() => extension.close());
+  await page.goto('/');
   await ready(page);
   const out = await page.evaluate(editors, {
-    transport,
-    proxy: proxy && { url: proxy.url, key: proxy.key },
     port,
   });
   assert.deepEqual(
@@ -634,25 +555,18 @@ async function editorsCheck(t, transport) {
 }
 
 test(
-  'an ordinary page’s about:blank and srcdoc editors get a utility world and are filled, on the proxy path',
-  { timeout: 3 * 60 * 1000 },
-  (t) => editorsCheck(t, 'proxy')
-);
-
-test(
   'an ordinary page’s about:blank and srcdoc editors get a utility world and are filled, on the extension path',
   { timeout: 3 * 60 * 1000 },
-  (t) => editorsCheck(t, 'extension')
+  (t) => editorsCheck(t)
 );
 
-async function axTree({ transport, proxy, port }) {
+async function axTree({ port }) {
   const { guardProtected } = await import(new URL('guard.js', location.href).href);
-  const { proxyHost, extensionConnection } = await import(new URL('cdp.js', location.href).href);
-  const raw =
-    transport === 'proxy'
-      ? await proxyHost(proxy)()
-      : extensionConnection(globalThis.sliccExtension.cdp);
-  const connection = guardProtected(raw, self.origin);
+  const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
+  const connection = guardProtected(
+    extensionConnection(globalThis.sliccExtension.cdp),
+    self.origin
+  );
   const pending = new Map();
   const seen = [];
   let next = 0;
@@ -698,27 +612,13 @@ async function axTree({ transport, proxy, port }) {
   };
 }
 
-async function axCheck(t, transport) {
+async function axCheck(t) {
   const page = await chrome.page(t);
-  let proxy;
-  if (transport === 'proxy') {
-    proxy = await startProxy({
-      port: 0,
-      origins: [new URL(chrome.url).origin],
-      cdp: `http://127.0.0.1:${debugging}`,
-      kernelPort: null,
-      log: () => {},
-    });
-    t.after(() => proxy.close());
-  } else {
-    const extension = await fakeExtension(page);
-    t.after(() => extension.close());
-  }
-  await page.goto(proxy ? `/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}` : '/');
+  const extension = await fakeExtension(page);
+  t.after(() => extension.close());
+  await page.goto('/');
   await ready(page);
   const out = await page.evaluate(axTree, {
-    transport,
-    proxy: proxy && { url: proxy.url, key: proxy.key },
     port,
   });
   assert.deepEqual(
@@ -729,13 +629,7 @@ async function axCheck(t, transport) {
 }
 
 test(
-  'an AX tree of an ordinary page keeps a vault link only as its origin, on the proxy path',
-  { timeout: 3 * 60 * 1000 },
-  (t) => axCheck(t, 'proxy')
-);
-
-test(
   'an AX tree of an ordinary page keeps a vault link only as its origin, on the extension path',
   { timeout: 3 * 60 * 1000 },
-  (t) => axCheck(t, 'extension')
+  (t) => axCheck(t)
 );

@@ -5,8 +5,7 @@ import { createServer as createHttps } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { startProxy } from '@ai-ecoverse/slicc-node';
-import { agentUp, boot, ready } from './bios.mjs';
+import { agentUp, boot } from './bios.mjs';
 import { devtools as boundPort, debuggerUrl, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
 
@@ -191,29 +190,6 @@ test('the agent’s real MCP sign-in popup is held through the marker on slicc-e
   await boot(page, undefined, { tools: false });
   await agentUp(page);
   await heldThroughout(t, page, 'extension');
-  assert.deepEqual(page.errors, []);
-});
-
-test('the agent’s real MCP sign-in popup is held through the marker on slicc-node: a client polling and attaching throughout never lists it', {
-  timeout: 15 * 60 * 1000,
-}, async (t) => {
-  const proxy = await startProxy({
-    port: 0,
-    origins: [new URL(chrome.url).origin],
-    cdp: `http://127.0.0.1:${port}`,
-    kernelPort: null,
-    log: () => {},
-  });
-  t.after(() => proxy.close());
-  const page = await chrome.page(t);
-  await page.init(debug);
-  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}`);
-  await ready(page, undefined, { tools: false });
-  await agentUp(page);
-  await page.until(
-    () => document.querySelector('slicc-app').model.network.status().browser?.via === 'proxy'
-  );
-  await heldThroughout(t, page, 'proxy');
   assert.deepEqual(page.errors, []);
 });
 

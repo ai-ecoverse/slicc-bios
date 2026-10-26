@@ -1,26 +1,13 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
 import { agentUp, ready } from './bios.mjs';
 import { launch, VAULT_KEY } from './chrome.mjs';
-import { fakeProxy } from './fake-proxy.mjs';
 import { startWww } from './fake-six.mjs';
 
 const chrome = await launch({ tools: false, agent: true, timeout: 60000 });
 const www = await startWww(new URL(chrome.url));
 const { origin, state } = www;
-const proxy = await fakeProxy({
-  origin,
-  key: 'the-key',
-  answer: async (request) => {
-    if (!request.url.startsWith('https://registry.npmjs.org/'))
-      return { status: 404, headers: [], body: Buffer.alloc(0) };
-    const type = request.url.endsWith('.tgz') ? 'application/octet-stream' : 'application/json';
-    return { status: 200, headers: [['content-type', type]], body: await download(request.url) };
-  },
-});
 after(async () => {
-  await proxy.close();
   await www.close();
   await chrome.close();
 });
@@ -45,7 +32,7 @@ async function moved(t, { dismissed = null } = {}) {
       dismissed
     );
   }
-  await page.goto(`${origin}/7/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await page.goto(`${origin}/7/`);
   await page.within(
     15 * 60 * 1000,
     () =>

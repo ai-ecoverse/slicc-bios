@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { createServer as createHttp } from 'node:http';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { startProxy } from '@ai-ecoverse/slicc-node';
 import { actPackage, boot, ready, run, screen, shows } from './bios.mjs';
 import { devtools as boundPort, debuggerUrl, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
@@ -924,11 +923,11 @@ test('with no host, the CDP endpoint says what to install', async (t) => {
   await shows(page, 'done-0');
   assert.equal(
     await read(page, '/tmp/none'),
-    'CDP host: no browser to drive: install slicc-extension, or run npx @ai-ecoverse/slicc-node\n502'
+    'CDP host: no browser to drive: install slicc-extension, or link a computer with npx sliccy@next\n502'
   );
   assert.equal(
     await read(page, '/tmp/elsewhere'),
-    'CDP host: unknown runtime "elsewhere" (extension, proxy)\n502'
+    'CDP host: unknown runtime "elsewhere" (extension)\n502'
   );
   assert.deepEqual(await automation(page), { via: null });
 });
@@ -1184,110 +1183,7 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
   assert.deepEqual(page.errors, []);
 });
 
-async function viaProxy(t) {
-  const proxy = await startProxy({
-    port: 0,
-    origins: [new URL(chrome.url).origin],
-    cdp: `http://127.0.0.1:${port}`,
-    kernelPort: null,
-    log: () => {},
-  });
-  t.after(() => proxy.close());
-  return proxy;
-}
-
-async function launched(t, proxy) {
-  const page = await chrome.page(t);
-  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}`);
-  await ready(page);
-  return page;
-}
-
-test('headed, on the proxy path: a tab created through the guard with an empty URL opens blank behind seven, which keeps the focus', {
-  timeout: 5 * 60 * 1000,
-}, async (t) => {
-  const undisplay = await display();
-  const cleanup = [];
-  t.after(async () => {
-    for (const step of cleanup.reverse()) await step().catch(() => undefined);
-    undisplay();
-  });
-  const headed = await launch({ realistic: true });
-  const { port: debugging } = await boundPort(headed);
-  cleanup.push(() => headed.close());
-  await debuggerUrl(debugging);
-  const proxy = await startProxy({
-    port: 0,
-    origins: [new URL(headed.url).origin],
-    cdp: `http://127.0.0.1:${debugging}`,
-    kernelPort: null,
-    log: () => {},
-  });
-  cleanup.push(async () => proxy.close());
-  const page = await headed.page(t);
-  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}`);
-  await ready(page);
-  await page.evaluate(
-    async (proxy) => {
-      const { guardProtected } = await import(new URL('guard.js', location.href).href);
-      const { proxyHost } = await import(new URL('cdp.js', location.href).href);
-      const connection = guardProtected(await proxyHost(proxy)(), location.origin);
-      const pending = new Map();
-      let next = 0;
-      connection.onmessage = (text) => {
-        const message = JSON.parse(text);
-        if (message.id === undefined) return;
-        pending.get(message.id)?.(message);
-        pending.delete(message.id);
-      };
-      window.guarded = (method, params = {}) =>
-        new Promise((resolve) => {
-          next += 1;
-          const id = next;
-          const timer = setTimeout(() => {
-            pending.delete(id);
-            resolve({ error: { message: `${method} got no answer` } });
-          }, 20000);
-          pending.set(id, (message) => {
-            clearTimeout(timer);
-            resolve(message);
-          });
-          connection.send(JSON.stringify({ id, method, params }));
-        });
-    },
-    { url: proxy.url, key: proxy.key }
-  );
-  const sample = () =>
-    page.evaluate(() => ({ shown: document.visibilityState, focused: document.hasFocus() }));
-  const before = await sample();
-  assert.deepEqual(before, { shown: 'visible', focused: true });
-  const created = await page.evaluate(() => window.guarded('Target.createTarget', { url: '' }));
-  assert.ok(created.result?.targetId, JSON.stringify(created));
-  cleanup.push(() =>
-    page.evaluate(
-      (targetId) => window.guarded('Target.closeTarget', { targetId }),
-      created.result.targetId
-    )
-  );
-  const info = await page.evaluate(
-    (targetId) => window.guarded('Target.getTargetInfo', { targetId }),
-    created.result.targetId
-  );
-  assert.equal(info.result?.targetInfo?.url, 'about:blank', JSON.stringify(info));
-  const seen = [];
-  for (let i = 0; i < 4; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    seen.push(await sample());
-  }
-  assert.deepEqual(
-    seen,
-    Array(4).fill(before),
-    `seven after an empty-URL tab: ${JSON.stringify(seen)}`
-  );
-  assert.deepEqual(page.errors, []);
-});
-
-test('a browser extension’s hidden world stays out of reach through the guard: a world named like it, its id and a binding into it are refused, and its mark is never readable', {
+test('a browser extension’s hidden world stays out of reach through the guard on a browser-level socket: a world named like it, its id and a binding into it are refused as an extension’s, and its mark is never readable', {
   timeout: 5 * 60 * 1000,
 }, async (t) => {
   const worlds = await launch({
@@ -1295,15 +1191,7 @@ test('a browser extension’s hidden world stays out of reach through the guard:
   });
   const { port: debugging } = await boundPort(worlds);
   t.after(() => worlds.close());
-  await debuggerUrl(debugging);
-  const proxy = await startProxy({
-    port: 0,
-    origins: [new URL(worlds.url).origin],
-    cdp: `http://127.0.0.1:${debugging}`,
-    kernelPort: null,
-    log: () => {},
-  });
-  t.after(() => proxy.close());
+  const overSocket = extensionOver(await debuggerUrl(debugging));
   worlds.overrides.set('/marked.html', '<!doctype html><title>marked</title><h1>Ordinary</h1>');
   const url = new URL('/marked.html', worlds.url);
   url.hostname = 'localhost';
@@ -1343,13 +1231,18 @@ test('a browser extension’s hidden world stays out of reach through the guard:
   );
   assert.equal(control.result?.value, true, 'the observer reads the mark in the extension world');
   const page = await worlds.page(t);
-  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}`);
+  const socket = await overSocket(page);
+  t.after(() => socket.close?.());
+  await page.goto('/');
   await ready(page);
   const results = await page.evaluate(
-    async ({ targetId, hidden, MARK, proxy }) => {
+    async ({ targetId, hidden, MARK }) => {
       const { guardProtected } = await import(new URL('guard.js', location.href).href);
-      const { proxyHost } = await import(new URL('cdp.js', location.href).href);
-      const connection = guardProtected(await proxyHost(proxy)(), location.origin);
+      const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
+      const connection = guardProtected(
+        extensionConnection(globalThis.sliccExtension.cdp),
+        location.origin
+      );
       const pending = new Map();
       const events = [];
       let next = 0;
@@ -1428,7 +1321,6 @@ test('a browser extension’s hidden world stays out of reach through the guard:
       targetId,
       hidden: { id: hidden.id, uniqueId: hidden.uniqueId, name: hidden.name },
       MARK,
-      proxy: { url: proxy.url, key: proxy.key },
     }
   );
   assert.match(results.named ?? '', /belongs to a browser extension/, JSON.stringify(results));
@@ -1676,69 +1568,6 @@ test('a browser extension’s hidden world stays out of reach through the guard 
   assert.equal(results.leaked, false, 'no event named the extension');
 });
 
-test('playwright-cli drives a page through slicc-node’s /cdp, on one shared socket', async (t) => {
-  const proxy = await viaProxy(t);
-  const page = await launched(t, proxy);
-  assert.deepEqual(await automation(page), { via: 'proxy' });
-  chrome.overrides.set(
-    '/driven.html',
-    '<!doctype html><title>driven</title><h1>Driven through slicc-node</h1>'
-  );
-  const target = elsewhere('/driven.html');
-
-  await run(
-    page,
-    `curl -sf http://127.0.0.1:9222/json/list | jq -r '[.[] | select(.url | endswith("/os/"))] | "seven listed " + (length | tostring)'`
-  );
-  await shows(page, 'seven listed 0');
-
-  await run(
-    page,
-    `playwright-cli open about:blank && playwright-cli goto ${target} && playwright-cli snapshot`
-  );
-  await shows(page, 'heading "Driven through slicc-node"');
-  hits.length = 0;
-  await run(
-    page,
-    `playwright-cli goto ${VAULT} > /tmp/vault 2>&1; playwright-cli eval 'location.href + " " + document.title' >> /tmp/vault 2>&1; echo "vault-""done"`
-  );
-  await shows(page, 'vault-done', 60000);
-  const vault = await read(page, '/tmp/vault');
-  assert.ok(
-    !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
-    `the vault was served: ${hits.join(' ')}`
-  );
-  assert.doesNotMatch(vault, /VAULT-MARK|VAULT-BODY-MARK/, vault);
-  await run(page, 'playwright-cli close && echo closed-$?');
-  await shows(page, 'closed-0');
-  assert.equal(await open(page), false);
-  assert.deepEqual(page.errors, []);
-});
-
-test('playwright-cli: a goto that redirects into the vault fails cleanly, and a page whose own URL names a vault redirect_uri stays drivable', async (t) => {
-  const proxy = await viaProxy(t);
-  const page = await launched(t, proxy);
-  await run(page, 'playwright-cli open about:blank');
-  await shows(page, 'Opened about:blank');
-  hits.length = 0;
-  const started = Date.now();
-  await run(
-    page,
-    `playwright-cli goto http://localhost:${standPort}/to-vault > /tmp/hop 2>&1; echo "status $?" >> /tmp/hop; echo "hop-""done"`
-  );
-  await shows(page, 'hop-done', 60000);
-  const hop = await read(page, '/tmp/hop');
-  assert.ok(Date.now() - started < 60000, hop);
-  assert.doesNotMatch(hop, /HOPMARK77|VAULT-MARK/, hop);
-  assert.ok(!hits.some((hit) => hit.startsWith('vault.sliccy.ai')), hits.join(' '));
-  const idp = `http://localhost:${standPort}/plain?redirect_uri=${encodeURIComponent(`${VAULT}/cb`)}&state=s`;
-  await run(page, `playwright-cli open '${idp}' && playwright-cli snapshot`);
-  await shows(page, 'heading "Plain"');
-  await run(page, 'playwright-cli close && echo closed-$?');
-  await shows(page, 'closed-0');
-  assert.deepEqual(page.errors, []);
-});
-
 test('on the link path, playwright-cli: a goto that redirects into the vault fails cleanly, and a page whose own URL names a vault redirect_uri, opened in a fresh tab, stays drivable', async (t) => {
   const page = await chrome.page(t);
   await page.init(() => {
@@ -1820,42 +1649,6 @@ test('playwright-cli drives a page through a linked slicc CLI’s browser, throu
   await shows(page, 'closed-0');
   assert.equal(await open(page), false);
   assert.deepEqual(page.errors, []);
-});
-
-test('when another page takes over slicc-node’s /cdp, the first page’s connections close and say so', async (t) => {
-  const proxy = await viaProxy(t);
-  const first = await launched(t, proxy);
-  await run(first, 'playwright-cli open about:blank');
-  await shows(first, 'Opened about:blank');
-  const second = await first.tab();
-  await second.goto('/packages/agent/package.json');
-  await first.send('Page.bringToFront');
-  await run(first, `playwright-cli eval 'new Promise(() => {})' > /tmp/held 2>&1; echo "held-$?"`);
-  await first.within(60000, () =>
-    document
-      .querySelector('slicc-app')
-      .model.browser.actions()
-      .some(({ kind, status }) => kind === 'eval' && status === 'running')
-  );
-
-  assert.equal(
-    await second.evaluate(
-      ({ url, key }) =>
-        new Promise((resolve, reject) => {
-          const socket = new WebSocket(new URL('/cdp', url), ['slicc.cdp.v1', `slicc.key.${key}`]);
-          socket.onopen = () => resolve(socket.protocol);
-          socket.onerror = () => reject(new Error('the second page could not connect'));
-        }),
-      { url: proxy.url, key: proxy.key }
-    ),
-    'slicc.cdp.v1'
-  );
-  await first.send('Page.bringToFront');
-  await shows(first, 'held-1');
-  assert.equal(
-    await read(first, '/tmp/held'),
-    'websocket closed 1011 another page took over the local proxy’s browser connection (superseded-by-new-cdp-client)\n'
-  );
 });
 
 test('a cone’s .jsh script, with sliccy:browser installed from the catalog, opens an ordinary tab and reads its title, and never finds seven or the vault', async (t) => {

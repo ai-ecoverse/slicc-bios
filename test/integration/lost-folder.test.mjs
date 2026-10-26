@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { after, test } from 'node:test';
-import { startProxy } from '@ai-ecoverse/slicc-node';
 import { boot, ready, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { attach, CLI } from './cli.mjs';
@@ -130,27 +129,7 @@ async function linked(t) {
   return { page, lose: () => node.kill('SIGKILL') };
 }
 
-async function proxied(t) {
-  const dir = await folder();
-  const proxy = await startProxy({
-    port: 0,
-    origins: [new URL(chrome.url).origin],
-    mounts: [`${dir}:proj`],
-    kernelPort: null,
-    log: () => {},
-  });
-  t.after(() => proxy.close().catch(() => {}));
-  const page = await chrome.page(t);
-  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}`);
-  await ready(page);
-  await mounted(page, 'mkdir -p MNT && mount -t hostfs proj MNT');
-  return { page, lose: () => proxy.close() };
-}
-
-const ways = [
-  ['a linked slicc CLI', linked, !cli],
-  ['the slicc-node proxy', proxied, false],
-];
+const ways = [['a linked slicc CLI', linked, !cli]];
 
 for (const [name, open, skip] of ways) {
   test(`kernel#1032: once ${name} is gone, a new write to its folder fails within ${BOUND} s and the mount shows nomedium`, {

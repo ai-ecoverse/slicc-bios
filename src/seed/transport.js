@@ -1,29 +1,9 @@
-import { checkLocalProxy, fetchTransport, localProxyTransport } from '@ai-ecoverse/slicc-kernel';
-import { take } from './handoff.js';
+import { fetchTransport } from '@ai-ecoverse/slicc-kernel';
 
 const DATABASE = 'slicc-os';
 const STORE = 'transport';
-const PROXY = 'proxy';
-const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
 const BODY_IDLE_MS = 120000;
-const PROXY_BODY_IDLE_MS = 300000;
 export const HINT = 'for the whole web, run npx sliccy@next or install slicc-extension';
-
-function isLoopback(url) {
-  try {
-    const parsed = new URL(url);
-    return parsed.protocol === 'http:' && LOOPBACK.has(parsed.hostname) && parsed.origin === url;
-  } catch {
-    return false;
-  }
-}
-
-export function takeFragment(options) {
-  const found = take(['proxy', 'key'], options);
-  if (!('proxy' in found) && !('key' in found)) return null;
-  const { proxy: url = null, key = null } = found;
-  return key && isLoopback(url) ? { url, key } : null;
-}
 
 function request(operation) {
   return new Promise((resolve, reject) => {
@@ -43,36 +23,15 @@ export async function stored(mode, act) {
   }
 }
 
-export const keepProxy = (proxy) => stored('readwrite', (store) => store.put(proxy, PROXY));
-
 export async function pickTransport() {
-  const given = takeFragment();
-  if (given) await keepProxy(given);
-  const proxy = given ?? (await stored('readonly', (store) => store.get(PROXY)));
-  const status = proxy ? await checkLocalProxy(proxy) : undefined;
-  if (status?.state === 'ready') {
-    return {
-      kind: 'local-proxy',
-      transport: localProxyTransport({ ...proxy, bodyIdleMs: PROXY_BODY_IDLE_MS }),
-      proxy,
-      status,
-    };
-  }
-  const kept = status?.state === 'blocked' || status?.permission === 'prompt';
-  if (status && !kept) await stored('readwrite', (store) => store.delete(PROXY));
+  await stored('readwrite', (store) => store.delete('proxy')).catch(() => undefined);
   const extension = globalThis.sliccExtension;
   if (extension) {
+    const transport = fetchTransport({ fetch: extension.fetch, bodyIdleMs: BODY_IDLE_MS });
     return {
       kind: 'extension',
-      transport: fetchTransport({ fetch: extension.fetch, bodyIdleMs: BODY_IDLE_MS }),
-      proxy,
-      status,
+      transport: { ...transport, traits: { ...transport.traits, crossOrigin: 'any' } },
     };
   }
-  return {
-    kind: 'page',
-    transport: fetchTransport({ hint: HINT, bodyIdleMs: BODY_IDLE_MS }),
-    proxy,
-    status,
-  };
+  return { kind: 'page', transport: fetchTransport({ hint: HINT, bodyIdleMs: BODY_IDLE_MS }) };
 }

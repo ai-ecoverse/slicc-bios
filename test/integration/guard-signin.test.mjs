@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer as createHttp } from 'node:http';
 import { after, test } from 'node:test';
-import { startProxy } from '@ai-ecoverse/slicc-node';
 import { ready } from './bios.mjs';
 import { debuggerUrl, devtools, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
@@ -74,16 +73,15 @@ const DRIVABLE = {
   }),
 };
 
-async function rig({ transport, proxy, port, client, signing, drivable }) {
+async function rig({ port, client, signing, drivable }) {
   const { guardProtected } = await import(new URL('guard.js', location.href).href);
-  const { proxyHost, extensionConnection } = await import(new URL('cdp.js', location.href).href);
-  const { authorizeUrl } = await import(new URL('adobe.js', location.href).href);
-  authorizeUrl({ clientId: client, scopes: 'openid' }, 1, 'n');
-  const raw =
-    transport === 'proxy'
-      ? await proxyHost(proxy)()
-      : extensionConnection(globalThis.sliccExtension.cdp);
-  const connection = guardProtected(raw, self.origin);
+  const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
+  const { relayUrl } = await import(new URL('adobe.js', location.href).href);
+  relayUrl({ clientId: client, scopes: 'openid' }, location.origin, 'n');
+  const connection = guardProtected(
+    extensionConnection(globalThis.sliccExtension.cdp),
+    self.origin
+  );
   const pending = new Map();
   let next = 0;
   connection.onmessage = (text) => {
@@ -167,28 +165,14 @@ async function rig({ transport, proxy, port, client, signing, drivable }) {
   return out;
 }
 
-async function check(t, transport) {
+async function check(t) {
   const page = await chrome.page(t);
-  let proxy;
-  if (transport === 'proxy') {
-    proxy = await startProxy({
-      port: 0,
-      origins: [new URL(chrome.url).origin],
-      cdp: `http://127.0.0.1:${debugging}`,
-      kernelPort: null,
-      log: () => {},
-    });
-    t.after(() => proxy.close());
-  } else {
-    const extension = await fakeExtension(page);
-    t.after(() => extension.close());
-  }
-  await page.goto(proxy ? `/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}` : '/');
+  const extension = await fakeExtension(page);
+  t.after(() => extension.close());
+  await page.goto('/');
   await ready(page);
   hits.length = 0;
   const out = await page.evaluate(rig, {
-    transport,
-    proxy: proxy && { url: proxy.url, key: proxy.key },
     port,
     client: CLIENT,
     signing: SIGNING_IN,
@@ -231,15 +215,9 @@ async function check(t, transport) {
 }
 
 test(
-  'seven’s own sign-in pages can’t be driven through the guard, on the proxy path',
-  { timeout: 5 * 60 * 1000 },
-  (t) => check(t, 'proxy')
-);
-
-test(
   'seven’s own sign-in pages can’t be driven through the guard, on the extension path',
   { timeout: 5 * 60 * 1000 },
-  (t) => check(t, 'extension')
+  (t) => check(t)
 );
 
 test('after a reload, seven’s last sign-in client id still makes its authorize page protected', {
@@ -251,8 +229,8 @@ test('after a reload, seven’s last sign-in client id still makes its authorize
   await page.goto('/');
   await ready(page);
   await page.evaluate(async (client) => {
-    const { authorizeUrl } = await import(new URL('adobe.js', location.href).href);
-    authorizeUrl({ clientId: client, scopes: 'openid' }, 1, 'n');
+    const { relayUrl } = await import(new URL('adobe.js', location.href).href);
+    relayUrl({ clientId: client, scopes: 'openid' }, location.origin, 'n');
   }, CLIENT);
   await page.goto('/');
   await ready(page);

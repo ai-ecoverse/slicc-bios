@@ -3,7 +3,7 @@ import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
 import { agentUp, connectAccount, listsAccount, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
-import { eventFrame, fakeProxy } from './fake-proxy.mjs';
+import { eventFrame, fakeLlm } from './fake-llm.mjs';
 
 const KEY = 'dummy-bedrock-key-0000';
 const BEDROCK = 'https://bedrock-runtime.us-west-2.amazonaws.com/';
@@ -102,10 +102,9 @@ function kimi(url, body) {
   });
 }
 
-const chrome = await launch({ agent: true, timeout: 60000 });
-const proxy = await fakeProxy({
-  origin: new URL(chrome.url).origin,
-  key: 'the-key',
+const chrome = await launch({ intercept: [], agent: true, timeout: 60000 });
+const llm = await fakeLlm(chrome.cdp, {
+  hosts: [BEDROCK, KIMI, 'https://registry.npmjs.org/'],
   answer: async (request, body) => {
     asked.push({ url: request.url, body: body.toString() });
     if (request.url.startsWith(KIMI)) return kimi(request.url, body.toString());
@@ -123,7 +122,7 @@ const proxy = await fakeProxy({
   },
 });
 after(async () => {
-  await proxy.close();
+  await llm.close();
   await chrome.close();
 });
 
@@ -193,9 +192,7 @@ test('enforce: a cone agent’s sudo asks the human through the agent’s approv
   timeout: 35 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
-  await page.goto(
-    `/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key', users: 'enforce' })}`
-  );
+  await page.goto(`/#${new URLSearchParams({ users: 'enforce' })}`);
   await ready(page, ['slicc:/home# ']);
   await agentUp(page);
   await listsAccount(page, 'amazon-bedrock');
@@ -297,7 +294,7 @@ test('kernel#1099: with a secret in the vault, the agent’s bash shows jq’s a
   chrome.vault.set({ secrets: ['API_TOKEN'] });
   t.after(() => chrome.vault.set({ secrets: [] }));
   const page = await chrome.page(t);
-  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await page.goto('/');
   await ready(page, ['slicc:/home# ']);
   await agentUp(page);
   await listsAccount(page, 'amazon-bedrock');
@@ -380,9 +377,7 @@ test('slicc-agent#459: on a fresh profile the agent lists a sealed fnox secret w
   t.after(() => chrome.vault.set({ secrets: [] }));
   const page = await chrome.page(t);
   await page.init('() => { globalThis.sliccKernelDebug = true; }');
-  await page.goto(
-    `/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key', users: 'enforce' })}`
-  );
+  await page.goto(`/#${new URLSearchParams({ users: 'enforce' })}`);
   await ready(page, ['slicc:/home# ']);
   const write = (config) =>
     page.evaluate(async (config) => {
@@ -506,8 +501,18 @@ test('slicc-agent 6.16+: a Kimi device-code sign-in shows its user code, ends wi
   });
   const page = await chrome.page(t);
   await page.init('() => { window.open = () => null; }');
-  await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: 'the-key' })}`);
+  await page.init(() => {
+    Object.defineProperty(globalThis, 'sliccExtension', {
+      value: Object.freeze({ fetch: (input, init) => fetch(input, init) }),
+    });
+  });
+  await page.goto('/');
   await ready(page, ['slicc:/home# ']);
+  assert.equal(
+    await page.evaluate(() => document.documentElement.dataset.transport),
+    'extension',
+    'Kimi needs a CORS-free transport, which slicc-extension’s fetch gives seven'
+  );
   await agentUp(page);
   await page.within(5 * 60 * 1000, () =>
     (document.querySelector('slicc-app').model.settings.providers?.() ?? []).some(
