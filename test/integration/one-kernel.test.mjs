@@ -3,7 +3,7 @@ import { after, before, describe, test } from 'node:test';
 import { AGENT_BUDGET, actPackage, agentUp, boot } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
-const chrome = await launch({ timeout: 120000, agent: true });
+const chrome = await launch({ tools: false, timeout: 120000, agent: true });
 after(() => chrome.close());
 
 function watchKernels() {

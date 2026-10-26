@@ -66,8 +66,9 @@ const held = new Promise((resolve) => {
 let holding = false;
 const asked = [];
 
-const owners = await launch({ agent: true, timeout: 60000 });
+const owners = await launch({ tools: false, agent: true, timeout: 60000 });
 const guests = await launch({
+  tools: false,
   agent: true,
   timeout: 60000,
   args: ['--disable-features=IsolateSandboxedIframes'],

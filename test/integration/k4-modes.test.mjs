@@ -12,7 +12,7 @@ const OLD = {
     'sha512-Z7ylHfrgkjf1pR7GSMLeg00QuohB8RBASTQYX9c5mhIprFuKRn473l+1epiwO+rLUMI7ON/gq2kQiSDaTPrrgQ==',
 };
 
-const chrome = await launch({ timeout: 120000, agent: true });
+const chrome = await launch({ tools: false, timeout: 120000, agent: true });
 after(() => chrome.close());
 
 async function read(page, path) {

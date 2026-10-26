@@ -67,6 +67,7 @@ const freePort = () =>
   });
 const browserAt = (port) =>
   launch({
+    tools: false,
     extensions: [fileURLToPath(new URL('./fixtures/foreign-world', import.meta.url))],
     args: [
       `--remote-debugging-port=${port}`,

@@ -26,7 +26,7 @@ await new Promise((done) => away.listen(0, '127.0.0.1', done));
 const elsewhere = `http://localhost:${away.address().port}/`;
 
 const debugging = await free();
-const chrome = await launch({ args: [`--remote-debugging-port=${debugging}`] });
+const chrome = await launch({ tools: false, args: [`--remote-debugging-port=${debugging}`] });
 const fakeExtension = extensionOver(await debuggerUrl(debugging));
 after(async () => {
   await new Promise((done) => {

@@ -3,7 +3,7 @@ import { after, test } from 'node:test';
 import { eventually, ready, run, shows, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
-const chrome = await launch();
+const chrome = await launch({ tools: false });
 after(() => chrome.close());
 
 const model = 'node_modules/@ai-ecoverse/slicc-spectrum/dist/slicc-kernel-model.js';

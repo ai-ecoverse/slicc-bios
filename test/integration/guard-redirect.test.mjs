@@ -176,6 +176,7 @@ hops.set('plain', CONTROL);
 
 const debugging = await free();
 const chrome = await launch({
+  tools: false,
   args: [
     `--remote-debugging-port=${debugging}`,
     `--host-resolver-rules=MAP seven.sliccy.ai 127.0.0.1, MAP vault.sliccy.ai 127.0.0.1, MAP ordinary.test 127.0.0.1, MAP other.test 127.0.0.1`,

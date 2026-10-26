@@ -4,7 +4,7 @@ import { after, test } from 'node:test';
 import { boot, trust } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
-const chrome = await launch();
+const chrome = await launch({ tools: false });
 const framers = new Map();
 const other = createServer((request, response) => {
   const body = framers.get(new URL(request.url, 'http://x').pathname);

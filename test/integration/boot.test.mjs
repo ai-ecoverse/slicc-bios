@@ -5,7 +5,7 @@ import { boot, booted, eventually, installable, opfs, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { seedFiles } from './seed.mjs';
 
-const chrome = await launch();
+const chrome = await launch({ tools: false });
 after(() => chrome.close());
 
 const seed = await seedFiles();

@@ -5,8 +5,8 @@ import { launch } from './chrome.mjs';
 import { model, startHub } from './fake-hub.mjs';
 import { shoot } from './shots.mjs';
 
-const owners = await launch();
-const followers = await launch();
+const owners = await launch({ tools: false });
+const followers = await launch({ tools: false });
 after(() => Promise.all([owners.close(), followers.close()]));
 
 const last = () => {

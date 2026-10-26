@@ -4,7 +4,7 @@ import { after, test } from 'node:test';
 import { agentUp, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
-const chrome = await launch({ timeout: 120000 });
+const chrome = await launch({ tools: false, timeout: 120000 });
 after(() => chrome.close());
 
 const INSTALL = 5 * 60 * 1000;

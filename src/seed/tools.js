@@ -17,7 +17,8 @@ export const INSTALL = ['pnpm', 'install', '--frozen-lockfile', ...SAFE];
 const MANIFEST = `${FOLDER}/package.json`;
 const LOCK = `${FOLDER}/pnpm-lock.yaml`;
 
-export async function loadTools(from = deployed) {
+export async function loadTools(from = deployed, scope = globalThis) {
+  if (scope.sliccTools === false) return [];
   const listed = JSON.parse(await fetchText('tools.json', from));
   return Object.entries(listed).map(([name, entry]) => ({
     id: entry.id,

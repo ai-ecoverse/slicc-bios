@@ -4,7 +4,7 @@ import { agentUp, AGENT_RESTART as RESTART, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { shoot } from './shots.mjs';
 
-const chrome = await launch({ agent: true, timeout: 60000 });
+const chrome = await launch({ tools: false, agent: true, timeout: 60000 });
 after(() => chrome.close());
 
 const deep = (selector) => {

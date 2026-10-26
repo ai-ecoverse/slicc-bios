@@ -5,7 +5,7 @@ import { after, test } from 'node:test';
 import { booted, PACKAGE_BUDGET, ready, watch } from './bios.mjs';
 import { launch, VAULT_KEY } from './chrome.mjs';
 
-const chrome = await launch();
+const chrome = await launch({ tools: false });
 const seven = new URL(chrome.url);
 const six = {
   '/': '<!doctype html><title>SLICC 6</title><p id="six">six</p><script src="/six.js"></script>\n',

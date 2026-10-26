@@ -3,7 +3,7 @@ import { after, test } from 'node:test';
 import { AGENT_BUDGET, agentUp, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
-const chrome = await launch({ agent: true, timeout: 60000 });
+const chrome = await launch({ tools: false, agent: true, timeout: 60000 });
 after(() => chrome.close());
 
 const AGENT = '/opt/agent/node_modules/@ai-ecoverse/slicc-agent';

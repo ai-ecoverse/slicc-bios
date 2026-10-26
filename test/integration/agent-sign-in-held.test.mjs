@@ -50,6 +50,7 @@ const port = await new Promise((resolve) => {
   });
 });
 const chrome = await launch({
+  tools: false,
   agent: true,
   timeout: 120000,
   args: [

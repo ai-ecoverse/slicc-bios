@@ -29,7 +29,7 @@ const slow = createServer(async (request, response) => {
 await new Promise((resolve) => slow.listen(0, '127.0.0.1', resolve));
 const port = slow.address().port;
 
-const chrome = await launch({ timeout: 120000, intercept: [] });
+const chrome = await launch({ tools: false, timeout: 120000, intercept: [] });
 after(() => {
   slow.close();
   return chrome.close();

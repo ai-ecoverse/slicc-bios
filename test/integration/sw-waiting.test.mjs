@@ -5,7 +5,7 @@ import { boot, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { shoot } from './shots.mjs';
 
-const chrome = await launch();
+const chrome = await launch({ tools: false });
 after(() => chrome.close());
 
 const current = await readFile(new URL('../../src/sw.js', import.meta.url), 'utf8');

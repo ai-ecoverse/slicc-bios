@@ -5,6 +5,7 @@ import { boot, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch({
+  tools: false,
   extensions: [fileURLToPath(new URL('./fixtures/injected-frame', import.meta.url))],
 });
 after(() => chrome.close());

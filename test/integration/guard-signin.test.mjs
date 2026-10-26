@@ -44,6 +44,7 @@ const debugging = await new Promise((resolve) => {
   });
 });
 const chrome = await launch({
+  tools: false,
   args: [
     `--remote-debugging-port=${debugging}`,
     '--host-resolver-rules=MAP idp.test 127.0.0.1, MAP ordinary.test 127.0.0.1',

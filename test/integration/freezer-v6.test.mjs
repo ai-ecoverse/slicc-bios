@@ -6,7 +6,7 @@ import { agentUp, ready } from './bios.mjs';
 import { launch, VAULT_KEY } from './chrome.mjs';
 import { fakeProxy } from './fake-proxy.mjs';
 
-const chrome = await launch({ agent: true, timeout: 60000 });
+const chrome = await launch({ tools: false, agent: true, timeout: 60000 });
 const seven = new URL(chrome.url);
 const www = createServer(async (request, response) => {
   const url = new URL(request.url, 'http://www');

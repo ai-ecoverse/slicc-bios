@@ -145,7 +145,7 @@ function networkTrace(cdp, origin) {
   };
 }
 
-export async function launch({ agent = false, vault = true, ...overrides } = {}) {
+export async function launch({ agent = false, vault = true, tools = true, ...overrides } = {}) {
   const chrome = await start({ ...options, ...overrides });
   const fake = vault ? await startFakeVault({ agentReal: true }) : null;
   const github = await startFakeGitHub();
@@ -180,6 +180,7 @@ export async function launch({ agent = false, vault = true, ...overrides } = {})
       await opened.init(
         `() => { if (location.origin === ${JSON.stringify(new URL(chrome.url).origin)} && !localStorage.getItem(${JSON.stringify(VAULT_KEY)})) localStorage.setItem(${JSON.stringify(VAULT_KEY)}, ${JSON.stringify(fake.origin)}); }`
       );
+    if (!tools) await opened.init('() => { globalThis.sliccTools = false; }');
     if (!agent)
       for (const [path, body] of Object.entries(emptyAgent)) chrome.overrides.set(path, body);
     return opened;

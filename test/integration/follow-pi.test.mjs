@@ -105,8 +105,9 @@ const lastTurn = (body) => {
   }
 };
 
-const owners = await launch({ agent: true, timeout: 60000 });
+const owners = await launch({ tools: false, agent: true, timeout: 60000 });
 const followers = await launch({
+  tools: false,
   agent: true,
   timeout: 60000,
   args: ['--disable-features=IsolateSandboxedIframes'],

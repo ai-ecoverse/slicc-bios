@@ -4,7 +4,7 @@ import { after, test } from 'node:test';
 import { boot, booted, eventually, installable, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
-const chrome = await launch();
+const chrome = await launch({ tools: false });
 after(() => chrome.close());
 
 const bash = 'node_modules/@ai-ecoverse/wasm-bash';

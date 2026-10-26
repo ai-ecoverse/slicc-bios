@@ -33,7 +33,7 @@ const stream = Buffer.concat([
   }),
 ]);
 
-const chrome = await launch({ agent: true, timeout: 60000 });
+const chrome = await launch({ tools: false, agent: true, timeout: 60000 });
 const proxy = await fakeProxy({
   origin: new URL(chrome.url).origin,
   key: 'the-key',

@@ -4,7 +4,7 @@ import { booted, ready, watch } from './bios.mjs';
 import { launch, VAULT_KEY } from './chrome.mjs';
 import { STOP_ERROR, startWww } from './fake-six.mjs';
 
-const chrome = await launch();
+const chrome = await launch({ tools: false });
 const www = await startWww(new URL(chrome.url));
 const { origin, state } = www;
 const asked = state.asked;
