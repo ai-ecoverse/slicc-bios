@@ -63,6 +63,21 @@ export function installGuardModes(row) {
   };
 }
 
+export function guardModeRows(page, t, modes) {
+  const label = (name) =>
+    page
+      .evaluate((row) => {
+        globalThis.__biosGuardModeRow = row;
+      }, name)
+      .catch(() => {});
+  t.beforeEach(async (child) => {
+    const name = `${t.name} / ${child.name}`;
+    modes.allow(name);
+    await label(name);
+  });
+  t.afterEach(() => label(t.name));
+}
+
 export function guardModeCounts(row) {
   const allowed = new Set([row]);
   const methods = new Set([
