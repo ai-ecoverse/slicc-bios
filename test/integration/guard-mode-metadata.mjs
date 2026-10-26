@@ -30,11 +30,12 @@ export function installGuardModes(row) {
   ]);
   globalThis.__biosGuardModeRow = row;
   const emit = (record) => {
-    const sent = globalThis.__biosGuardModeEvent?.({
-      row: globalThis.__biosGuardModeRow,
-      ...record,
-    });
-    sent?.catch(() => {});
+    try {
+      const sent = globalThis.__biosGuardModeEvent?.(
+        JSON.stringify({ row: globalThis.__biosGuardModeRow, ...record })
+      );
+      sent?.catch(() => {});
+    } catch {}
   };
   globalThis.sliccGuardTrace = {
     push({ method, passed, refused }) {
@@ -53,7 +54,9 @@ export function installGuardModes(row) {
       emit({ kind: 'command', method, outcome: passed ? 'passed' : 'refused', reason });
     },
     modes() {
-      const instance = crypto.randomUUID();
+      const instance = Array.from(crypto.getRandomValues(new Uint32Array(4)), (value) =>
+        value.toString(16).padStart(8, '0')
+      ).join('');
       return ({ target, strict, evidence, phase, cause }) =>
         emit({ kind: 'mode', instance, target, strict, evidence, phase, cause });
     },
@@ -126,7 +129,7 @@ export function guardModeCounts(row) {
     }
     if (
       typeof record.instance !== 'string' ||
-      !/^[0-9a-f-]{36}$/.test(record.instance) ||
+      !/^[0-9a-f]{32}$/.test(record.instance) ||
       !Number.isSafeInteger(record.target) ||
       record.target < 1 ||
       typeof record.strict !== 'boolean' ||
