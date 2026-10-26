@@ -60,8 +60,12 @@ async function target(then = NAMED) {
   const deadline = Date.now() + 30000;
   for (;;) {
     const { targetInfos } = await chrome.cdp.send('Target.getTargets');
-    if (targetInfos.some((info) => info.targetId === targetId && info.title === TITLE)) break;
-    if (Date.now() > deadline) throw new Error(`the dummy tab ${url.href} never ran its scripts`);
+    const seen = targetInfos.find((info) => info.targetId === targetId);
+    if (seen?.title === TITLE) break;
+    if (Date.now() > deadline)
+      throw new Error(
+        `the dummy tab ${url.href} never set its title to ${JSON.stringify(TITLE)} (${seen ? `last title: ${JSON.stringify(seen.title)}` : 'the target is gone'})`
+      );
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   return () => chrome.cdp.send('Target.closeTarget', { targetId });
