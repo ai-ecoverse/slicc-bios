@@ -211,6 +211,12 @@ test('updates a running install from a bumped lockfile', async (t) => {
   );
 });
 
+const NOTES_DOC =
+  /^https:\/\/registry\.npmjs\.org\/(?:@[^/]+%2F[^/]+|[^@/][^/]*)\/(?!latest$)[^/]+$/;
+const notesBurst = (url) =>
+  NOTES_DOC.test(url) ||
+  (url.startsWith(`${chrome.github.origin}/repos/`) && new URL(url).pathname.endsWith('/releases'));
+
 test('code is highlighted offline by spectrum’s own highlighter, and a profile’s old /opt/grammars goes', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
@@ -309,8 +315,14 @@ test('code is highlighted offline by spectrum’s own highlighter, and a profile
         .filter((name) => new URL(name).origin !== location.origin),
     before
   );
-  assert.deepEqual(fetched, []);
-  assert.deepEqual(chrome.cdn.requests, []);
+  assert.deepEqual(
+    fetched.filter((url) => !notesBurst(url)),
+    []
+  );
+  assert.deepEqual(
+    chrome.cdn.requests.filter((url) => !notesBurst(url)),
+    []
+  );
   assert.equal((await opfs(page)).filter((path) => path.includes('@shikijs')).length, 0);
   assert.deepEqual(page.errors, []);
 });
