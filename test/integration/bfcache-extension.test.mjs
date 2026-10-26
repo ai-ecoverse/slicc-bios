@@ -1,21 +1,12 @@
 import assert from 'node:assert/strict';
 import { createServer as createHttp } from 'node:http';
-import { createServer } from 'node:net';
 import { after, test } from 'node:test';
 import { ready } from './bios.mjs';
-import { debuggerUrl, launch } from './chrome.mjs';
+import { debuggerUrl, devtools, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
 
 const LOST = 'BFCache exclusion lost: only the guard protects seven now';
 const BLANKED = 'data:text/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E';
-
-const free = () =>
-  new Promise((resolve) => {
-    const server = createServer().listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
-    });
-  });
 
 const away = createHttp((request, response) => {
   response
@@ -25,8 +16,8 @@ const away = createHttp((request, response) => {
 await new Promise((done) => away.listen(0, '127.0.0.1', done));
 const elsewhere = `http://localhost:${away.address().port}/`;
 
-const debugging = await free();
-const chrome = await launch({ tools: false, args: [`--remote-debugging-port=${debugging}`] });
+const chrome = await launch({ tools: false });
+const { port: debugging } = await devtools(chrome);
 const fakeExtension = extensionOver(await debuggerUrl(debugging));
 after(async () => {
   await new Promise((done) => {

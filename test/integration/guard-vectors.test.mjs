@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import { createServer as createHttp } from 'node:http';
-import { createServer } from 'node:net';
 import { after, test } from 'node:test';
 import { startProxy } from '@ai-ecoverse/slicc-node';
 import { boot } from './bios.mjs';
-import { debuggerUrl, launch } from './chrome.mjs';
+import { debuggerUrl, devtools, launch } from './chrome.mjs';
 import { linkNode } from './linked-node.mjs';
 
 const LAG = 8000;
@@ -28,13 +27,6 @@ const UNGUARDED =
   'slicc: refused: the guard couldn’t keep seven’s pages and the vault out of this tab, so it refuses commands there';
 const UNSEEN = 'slicc: refused: this request wasn’t seen, so it could be seven’s or the vault’s';
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const port = await new Promise((resolve) => {
-  const server = createServer().listen(0, '127.0.0.1', () => {
-    const { port } = server.address();
-    server.close(() => resolve(port));
-  });
-});
 
 const beacons = [];
 const heard = [];
@@ -117,10 +109,10 @@ const ABC = `http://abc.sliccy.ai:${standPort}`;
 const chrome = await launch({
   tools: false,
   args: [
-    `--remote-debugging-port=${port}`,
     '--host-resolver-rules=MAP vault.sliccy.ai 127.0.0.1, MAP plain.test 127.0.0.1, MAP abc.sliccy.ai 127.0.0.1',
   ],
 });
+const { port } = await devtools(chrome);
 const SEVEN = new URL(chrome.url).origin;
 after(() => {
   chrome.close();

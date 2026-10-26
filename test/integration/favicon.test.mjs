@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict';
 import { createServer as createHttp } from 'node:http';
-import { createServer } from 'node:net';
 import { after, test } from 'node:test';
 import { crc32, deflateSync } from 'node:zlib';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
 import { agentUp, connectAccount, listsAccount, ready } from './bios.mjs';
-import { debuggerUrl, launch } from './chrome.mjs';
+import { debuggerUrl, devtools, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
 import { eventFrame, fakeProxy } from './fake-proxy.mjs';
 
@@ -49,12 +48,6 @@ const BIG_ICON = png(64, () => [200, 40, 40, 255]);
 const EDGE_ICON = png(32, () => [40, 120, 60, 255]);
 const SVG_ICON = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#7a4b0b"/></svg>')}`;
 
-const port = await new Promise((resolve) => {
-  const server = createServer().listen(0, '127.0.0.1', () => {
-    const { port } = server.address();
-    server.close(() => resolve(port));
-  });
-});
 const hits = [];
 const pages = {
   '/harbor/forecast.html': `<!doctype html><title>Harbor forecast</title><link rel="icon" href="${HARBOR_ICON}"><h1>Harbor forecast</h1><p>High tide 16:40, 3.2 m.</p>`,
@@ -147,11 +140,9 @@ function answer(body) {
 const chrome = await launch({
   agent: true,
   timeout: 60000,
-  args: [
-    `--remote-debugging-port=${port}`,
-    '--host-resolver-rules=MAP *.example.test 127.0.0.1, MAP vault.sliccy.ai 127.0.0.1',
-  ],
+  args: ['--host-resolver-rules=MAP *.example.test 127.0.0.1, MAP vault.sliccy.ai 127.0.0.1'],
 });
+const { port } = await devtools(chrome);
 const proxy = await fakeProxy({
   origin: new URL(chrome.url).origin,
   key: 'the-key',

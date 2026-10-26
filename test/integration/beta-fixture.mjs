@@ -1,8 +1,7 @@
 import { readFile } from 'node:fs/promises';
-import { createServer } from 'node:net';
 import { after } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
-import { debuggerUrl, launch } from './chrome.mjs';
+import { debuggerUrl, devtools, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
 import { fakeRegistry, fakeRelease } from './fake-npm.mjs';
 
@@ -14,12 +13,6 @@ export const MAJOR = Number(PINNED.split('.')[0]);
 export const BETA = `${MAJOR}.99.0`;
 export const ELSEWHERE = 'Only the tab running SLICC can install a beta or leave one.';
 
-const port = await new Promise((resolve) => {
-  const server = createServer().listen(0, '127.0.0.1', () => {
-    const { port } = server.address();
-    server.close(() => resolve(port));
-  });
-});
 export const release = await fakeRelease({
   name: AGENT,
   from: PINNED,
@@ -30,8 +23,8 @@ export const chrome = await launch({
   agent: true,
   timeout: 120000,
   intercept: [],
-  args: [`--remote-debugging-port=${port}`],
 });
+const { port } = await devtools(chrome);
 after(() => chrome.close());
 export const clipboard = await fakeRelease({
   name: '@ai-ecoverse/slicc-clipboard',

@@ -1,18 +1,12 @@
 import assert from 'node:assert/strict';
-import { createServer } from 'node:net';
 import { after, test } from 'node:test';
 import { startProxy } from '@ai-ecoverse/slicc-node';
 import { ready } from './bios.mjs';
-import { debuggerUrl, launch } from './chrome.mjs';
+import { debuggerUrl, devtools, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
 
-const debugging = await new Promise((resolve) => {
-  const server = createServer().listen(0, '127.0.0.1', () => {
-    const { port } = server.address();
-    server.close(() => resolve(port));
-  });
-});
-const chrome = await launch({ tools: false, args: [`--remote-debugging-port=${debugging}`] });
+const chrome = await launch({ tools: false });
+const { port: debugging } = await devtools(chrome);
 after(() => chrome.close());
 const fakeExtension = extensionOver(await debuggerUrl(debugging));
 
