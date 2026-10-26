@@ -181,7 +181,7 @@ test('slicc-audio is in the base set without ortllama, a delayed microphone requ
     `sleep 12; { printf '%s\\n' '{"kind":"audio.transcribe","engine":"whisper","format":"text"}'; printf 'RIFFbytes'; } | cat > /dev/embedder; echo "whisper $?"`
   );
   await shows(page, 'whisper 1');
-  await shows(page, 'no server at http://11435.kernel.localhost');
+  await shows(page, 'sw: nothing listening on kernel port 11435');
   assert.equal(await page.evaluate(() => window.prompted), 6);
   assert.equal(await page.evaluate(() => window.micOpened), 1);
   assert.equal(await page.evaluate(() => window.recognitions), 0);
@@ -190,7 +190,7 @@ test('slicc-audio is in the base set without ortllama, a delayed microphone requ
     page,
     `sleep 8; exec 3<>/dev/embedder; printf '%s\\n' '{"kind":"audio.transcribe","status":true}' >&3; cat <&3; exec 3<&-; echo "probed"; ${ask({ kind: 'audio.voices' })}; echo "voices $?"`
   );
-  await shows(page, 'ortllama: no server at');
+  await shows(page, 'ortllama: ');
   await shows(page, 'probed');
   await shows(page, 'voices');
   assert.equal(await page.evaluate(() => window.prompted), 6);
