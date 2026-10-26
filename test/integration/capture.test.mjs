@@ -1,15 +1,25 @@
 import assert from 'node:assert/strict';
-import { after, test } from 'node:test';
+import { test } from 'node:test';
 import { boot, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { shoot } from './shots.mjs';
 
 const TITLE = 'Capture target';
-const chrome = await launch({
-  persistent: true,
-  args: [`--auto-select-desktop-capture-source=${TITLE}`],
-});
-after(() => chrome.close());
+let chrome = null;
+
+async function freshChrome(t) {
+  const own = await launch({
+    persistent: true,
+    args: [`--auto-select-desktop-capture-source=${TITLE}`],
+  });
+  chrome = own;
+  const page = await own.page(t).catch(async (error) => {
+    await own.close();
+    throw error;
+  });
+  t.after(() => own.close());
+  return page;
+}
 
 const helpers = `
   window.findConfirm = () => {
@@ -92,7 +102,7 @@ async function press(page, which) {
 const magic = (file) => `od -An -tx1 -N4 ${file} | tr -s ' ' | sed 's/^ //'`;
 
 test('screencapture through /dev/embedder: typed it captures the picked tab, delayed it asks first, Cancel refuses, and -c copies the PNG', async (t) => {
-  const page = await chrome.page(t);
+  const page = await freshChrome(t);
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source: helpers });
   await boot(page);
   const close = await target();
@@ -161,7 +171,7 @@ test('screencapture through /dev/embedder: typed it captures the picked tab, del
 });
 
 test('a capture that lands on another of seven’s tabs is stopped and refused', async (t) => {
-  const a = await chrome.page(t);
+  const a = await freshChrome(t);
   await a.send('Page.addScriptToEvaluateOnNewDocument', { source: helpers });
   await boot(a);
   const b = await a.tab();
@@ -207,7 +217,7 @@ test('a capture that lands on another of seven’s tabs is stopped and refused',
 });
 
 test('a capture whose tab navigates to seven while it waits is stopped and refused, as soon as its handle goes', async (t) => {
-  const page = await chrome.page(t);
+  const page = await freshChrome(t);
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source: helpers });
   await boot(page);
   const seven = await page.evaluate(() => location.origin);
@@ -236,7 +246,7 @@ test('a capture whose tab navigates to seven while it waits is stopped and refus
 });
 
 test('a capture that lands on a vault tab is refused, and seven’s own tab is never offered', async (t) => {
-  const page = await chrome.page(t);
+  const page = await freshChrome(t);
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source: helpers });
   await boot(page);
   const close = await target(
@@ -270,7 +280,7 @@ test('a capture that lands on a vault tab is refused, and seven’s own tab is n
 });
 
 test('a tab that sets no capture handle is refused, since seven can’t tell it isn’t its own or the vault', async (t) => {
-  const page = await chrome.page(t);
+  const page = await freshChrome(t);
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source: helpers });
   await boot(page);
   const close = await target('');
@@ -331,7 +341,7 @@ const videoDevices = `
 `;
 
 test('a typed video asks the picker for shared sound only with -A', async (t) => {
-  const page = await chrome.page(t);
+  const page = await freshChrome(t);
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source: helpers + videoDevices });
   await boot(page);
   for (const [name, flag] of [
@@ -360,7 +370,7 @@ test('a typed video asks the picker for shared sound only with -A', async (t) =>
 });
 
 test('shared sound is named before the picker, and Cancel opens nothing', async (t) => {
-  const page = await chrome.page(t);
+  const page = await freshChrome(t);
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source: helpers + videoDevices });
   await boot(page);
   await run(page, 'sleep 8; screencapture -V 5 -A /tmp/sound.webm; echo "sound cancelled $?"');
@@ -379,7 +389,7 @@ test('shared sound is named before the picker, and Cancel opens nothing', async 
 });
 
 test('screen, shared sound and microphone use one duration-bearing prompt, and Cancel opens neither device', async (t) => {
-  const page = await chrome.page(t);
+  const page = await freshChrome(t);
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source: helpers + videoDevices });
   await boot(page);
   await run(page, 'sleep 8; screencapture -V 5 -A -g /tmp/mic.webm; echo "mic cancelled $?"');
@@ -399,7 +409,7 @@ test('screen, shared sound and microphone use one duration-bearing prompt, and C
 });
 
 test('after Choose, a denied microphone closes every display track and writes no capture file', async (t) => {
-  const page = await chrome.page(t);
+  const page = await freshChrome(t);
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source: helpers + videoDevices });
   await boot(page);
   await run(
@@ -428,7 +438,7 @@ test('after Choose, a denied microphone closes every display track and writes no
 });
 
 test('typed -g and -G in an active tab request only the default or exact named microphone', async (t) => {
-  const page = await chrome.page(t);
+  const page = await freshChrome(t);
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source: helpers + videoDevices });
   await boot(page);
   for (const [name, flag] of [
@@ -480,7 +490,7 @@ const standIn = `
 `;
 
 test('through a stand-in picker: a handle that is seven’s for a moment while seven waits is refused, and so is a surface that isn’t a window or screen', async (t) => {
-  const page = await chrome.page(t);
+  const page = await freshChrome(t);
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source: helpers });
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source: standIn });
   await boot(page);
