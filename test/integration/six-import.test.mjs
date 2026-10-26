@@ -213,7 +213,7 @@ test('when the agent refuses the export, seven keeps the hand-off key, says so, 
   assert.deepEqual(page.errors, []);
 });
 
-test('when the export named by the hand-off key has no manifest.json, seven keeps the key and says so, even to someone who closed that notice for good before, moves nothing, and closing the notice hides it only until the next start', {
+test('when the export has no manifest.json, seven keeps the key and says so, even to someone who closed that notice for good before, moves nothing, closing it hides it only until the next start, and Stop trying drops the key for good', {
   timeout: 30 * 60 * 1000,
 }, async (t) => {
   state.mode = 'lost';
@@ -223,12 +223,13 @@ test('when the export named by the hand-off key has no manifest.json, seven keep
       .querySelector('slicc-app')
       ?.model?.notices?.list()
       .find(({ id }) => id === 'six-import');
-    return found?.body ?? null;
+    return found ? { body: found.body, actions: found.actions, session: found.session } : null;
   });
-  assert.equal(
-    shown,
-    'Seven couldn’t import what SLICC 6 left in this browser: SLICC 6’s export has no readable manifest.json. Seven tries again the next time it starts. Stop trying leaves SLICC 6’s files where they are.'
-  );
+  assert.deepEqual(shown, {
+    body: 'Seven couldn’t import what SLICC 6 left in this browser: SLICC 6’s export has no readable manifest.json. Seven tries again the next time it starts. Stop trying leaves SLICC 6’s files where they are.',
+    actions: [{ id: 'six-import-stop', label: 'Stop trying' }],
+    session: true,
+  });
   assert.equal(await page.evaluate(() => localStorage.getItem('slicc-os.six-import')), dir);
   assert.deepEqual(
     await page.evaluate(() => JSON.parse(localStorage.getItem('slicc-os.notices.dismissed'))),
@@ -254,5 +255,22 @@ test('when the export named by the hand-off key has no manifest.json, seven keep
       .some(({ id }) => id === 'six-import')
   );
   assert.equal(await page.evaluate(() => localStorage.getItem('slicc-os.six-import')), dir);
+  await pressNotice(page, '[data-notice="six-import"] [data-action="six-import-stop"]');
+  await page.within(30000, () => localStorage.getItem('slicc-os.six-import') === null);
+  assert.equal(await listed(page), false);
+  await page.reload();
+  await ready(page);
+  await agentUp(page);
+  assert.equal(await page.evaluate(() => localStorage.getItem('slicc-os.six-import')), null);
+  assert.equal(await listed(page), false);
+  assert.deepEqual(
+    await page.evaluate(() => JSON.parse(localStorage.getItem('slicc-os.notices.dismissed'))),
+    ['unrelated']
+  );
+  const left = await sh(
+    page,
+    `test -d ${dir} && test ! -e ${dir}manifest.json && echo no-manifest`
+  );
+  assert.equal(left.out, 'no-manifest\n', left.out);
   assert.deepEqual(page.errors, []);
 });
