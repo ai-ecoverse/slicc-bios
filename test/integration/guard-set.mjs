@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
-import { createServer } from 'node:net';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { fixtureServer } from '@ai-ecoverse/slicc-browsers/fixture';
@@ -8,7 +7,7 @@ import { run, summary } from '@ai-ecoverse/slicc-browsers/guard-runner';
 import set from '@ai-ecoverse/slicc-browsers/guard-vectors.json' with { type: 'json' };
 import { startProxy } from '@ai-ecoverse/slicc-node';
 import { boot } from './bios.mjs';
-import { debuggerUrl, launch } from './chrome.mjs';
+import { devtools, launch } from './chrome.mjs';
 import { ALL_TARGETS, groupTargets } from './guard-groups.mjs';
 import { known as knownRow, listedWrong, stale } from './guard-known.mjs';
 
@@ -57,36 +56,25 @@ const PATHS = {
   },
 };
 
-const freePort = () =>
-  new Promise((resolve) => {
-    const server = createServer();
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
-    });
-  });
-const browserAt = (port) =>
+const browserAt = () =>
   launch({
     extensions: [fileURLToPath(new URL('./fixtures/foreign-world', import.meta.url))],
     args: [
-      `--remote-debugging-port=${port}`,
       '--host-resolver-rules=MAP *.sliccy.ai 127.0.0.1, MAP sliccy.ai 127.0.0.1, MAP *.example.test 127.0.0.1',
     ],
   });
-const port = await freePort();
-const chrome = await browserAt(port);
+const chrome = await browserAt();
 after(async () => {
   chrome.close();
   await fixture.close();
 });
-const browser = await debuggerUrl(port);
+const { port, browser } = await devtools(chrome);
 
 async function tabsBrowser(t, path) {
   if (path !== 'link') return { port, browser };
-  const own = await freePort();
-  const other = await browserAt(own);
+  const other = await browserAt();
   t.after(() => other.close());
-  return { port: own, browser: await debuggerUrl(own) };
+  return devtools(other);
 }
 
 const COMMAND_MS = 20000;
