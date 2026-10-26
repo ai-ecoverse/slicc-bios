@@ -242,7 +242,7 @@ const checked = (page) =>
     window.checked = performance.now();
   });
 
-test('a live event stream from a kernel server no longer holds an update: 5 s after the new worker is installed, the old one ends the stream cleanly, the EventSource reconnects to the new worker and keeps getting events, and a fetch reader of the same stream gets an error (#710)', {
+test('a kernel server’s live event stream no longer holds an update: once the new worker has waited 5 s, the old one ends it, an EventSource reconnects to the new worker and a fetch reader gets an error (#710)', {
   timeout: 15 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
