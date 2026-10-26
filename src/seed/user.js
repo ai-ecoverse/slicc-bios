@@ -40,13 +40,11 @@ function parse(data) {
   }
 }
 
-export function droppedNotice(grammars) {
+export function droppedNotice() {
   return {
     id: 'pins-dropped',
     tone: 'info',
-    title: grammars
-      ? 'Your pinned versions and added grammar packages were removed'
-      : 'Your pinned versions were removed',
+    title: 'Your pinned versions were removed',
     body: DROPPED,
     actions: [],
   };
@@ -166,15 +164,13 @@ export function createUserPackages({
       await locked(() => ensure(root));
       const on = strict();
       let pins = 0;
-      let grammars = 0;
       for (const [id, project] of Object.entries(projects)) {
         const found = await locks.request(project.lock, () =>
           locked(() => adopt(root, project, { move: id === 'agent', strict: on }))
         );
-        pins += found.pins.length;
-        grammars += found.adds.length;
+        pins += found.pins.length + found.adds.length;
       }
-      if (pins + grammars) notices.show(droppedNotice(grammars > 0), () => {});
+      if (pins) notices.show(droppedNotice(), () => {});
       await install();
     },
     async act(name, action) {

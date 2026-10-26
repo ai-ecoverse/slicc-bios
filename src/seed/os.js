@@ -30,13 +30,6 @@ import { createExitRouter } from './exits.js';
 import { LINK_PORT, LINK_URL, linkFacade, permitted, trayRequests } from './facade.js';
 import { deviceName, hubClient } from './follow.js';
 import { createFollowers } from './followers.js';
-import {
-  grammarBase,
-  grammars,
-  project as grammarsProject,
-  version as grammarsVersion,
-  installed,
-} from './grammars.js';
 import { clearHandOff } from './handoff.js';
 import { sweep, watchOpened, watchSignIns } from './held.js';
 import { createJerk } from './jerk.js';
@@ -111,6 +104,7 @@ import {
   PROTECTED,
   protectInstalls,
   protection,
+  remove,
   text,
   update,
   useKernelFiles,
@@ -167,7 +161,6 @@ export const hide = ['/.slicc', '/.slicc-unlinked'];
 export const skip = [
   '/node_modules',
   '/opt/agent/node_modules',
-  '/opt/grammars/node_modules',
   '/opt/user/node_modules',
   '/opt/slicc',
   '/home/.local/share/pnpm',
@@ -584,7 +577,7 @@ async function restart() {
   updates.checked('agent', { state: 'current', from: at, to: at, actions: [] });
 }
 
-const layered = { agent: agentProject, grammars: grammarsProject };
+const layered = { agent: agentProject };
 const UNDOING = { unpin: 'removing', remove: 'removing', retry: 'updating' };
 const yours = createUserPackages({
   root,
@@ -634,7 +627,7 @@ async function actOwn(id, action) {
     return;
   }
   await change(layered[which], action === 'retry' ? null : name);
-  await (which === 'agent' ? offerChat() : installGrammars());
+  await offerChat();
 }
 
 let installNotice = null;
@@ -715,16 +708,13 @@ async function checkPackages() {
   }
 }
 
-async function installGrammars() {
-  try {
-    const changed = await grammars(start, { report: updates.track('grammars'), refuse });
-    const at = await grammarsVersion();
-    updates.checked('grammars', changed ? { state: 'installed', from: at, to: at } : {});
-    app.grammarBase = grammarBase;
-  } catch (error) {
-    updates.fail('grammars', error);
-  }
-  await listOwn();
+const RETIRED = ['opt/grammars', 'var/lib/slicc/grammars'];
+const GRAMMARS_RECEIPT = 'var/lib/slicc/grammars/pnpm-lock.yaml';
+
+async function retire() {
+  if ((await text(root, GRAMMARS_RECEIPT)) === null) return;
+  for (const path of RETIRED)
+    await remove(root, path).catch((error) => console.warn(`retire /${path}: ${error.message}`));
 }
 
 async function updateTailnet() {
@@ -739,7 +729,7 @@ async function check() {
   await yours.tidy().catch((error) => console.warn(`your packages: ${error.message}`));
   await offerChat();
   await betas.check();
-  await installGrammars();
+  await retire();
   await updateTailnet();
   const packages = await optional;
   if (packages) await notes.packages(packages.list());
@@ -771,7 +761,6 @@ function offerPackages() {
 
 const retry = {
   agent: offerChat,
-  grammars: installGrammars,
   tailscale: () => tailscale.panel.check(),
   bios: checkPackages,
   kernel: checkPackages,
@@ -796,7 +785,6 @@ async function rows() {
   const waiting = (at) => ({ from: at, to: at, state: at ? 'current' : 'queued' });
   updates.set('agent', waiting(await agentVersion()));
   betas.show();
-  updates.set('grammars', waiting(await grammarsVersion()));
   const tailscaleAt = await tailscaleVersion();
   updates.set('tailscale', { from: tailscaleAt, to: tailscaleAt });
   await listOwn();
@@ -908,7 +896,6 @@ async function own() {
     install: installTailnet,
   });
   if (await agentStartable()) void startOnce();
-  if (await installed()) app.grammarBase = grammarBase;
   optional = offerPackages();
   document.addEventListener('visibilitychange', () => {
     if (visible()) void check();

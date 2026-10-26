@@ -193,21 +193,6 @@ test('updates a running install from a bumped lockfile', async (t) => {
   await t.test(
     'reloads onto the new version through the BIOS without downloading it again',
     async () => {
-      await page
-        .within(10 * 60 * 1000, () => {
-          const grammars = document
-            .querySelector('slicc-app')
-            .model.updates.list()
-            .find((item) => item.id === 'grammars');
-          window.lastGrammars = grammars?.state ?? 'absent';
-          return grammars && !/queued|starting|checking|downloading|linking/.test(grammars.state);
-        })
-        .catch(async (error) => {
-          const seen = await page.evaluate(() => window.lastGrammars);
-          throw new Error(
-            `the grammars install didn't settle before the reload, last ${seen}: ${error.message}`
-          );
-        });
       chrome.cdn.requests.length = 0;
       const bios = await watch(page);
       await reload(page);
@@ -226,29 +211,146 @@ test('updates a running install from a bumped lockfile', async (t) => {
   );
 });
 
-test('installs the grammars with pnpm in the background and serves them from OPFS', async (t) => {
+test('code is highlighted offline by spectrum’s own highlighter, and a profile’s old /opt/grammars goes', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
-  assert.equal(await page.evaluate(() => document.querySelector('slicc-app').grammarBase), null);
-  assert.equal((await opfs(page)).filter((path) => path.includes('@shikijs')).length, 0);
-  await page.until(() => document.querySelector('slicc-app').grammarBase !== null);
-  const base = await page.evaluate(() => document.querySelector('slicc-app').grammarBase);
-  assert.equal(base, new URL('/opt/grammars/node_modules/@shikijs/', chrome.url).href);
-  const served = await page.evaluate(async (base) => {
-    const response = await fetch(new URL('langs/dist/rust.mjs', base));
-    return [response.status, (await response.text()).includes('rust')];
-  }, base);
-  assert.deepEqual(served, [200, true]);
-  const grammars = await row(page, 'grammars');
-  assert.deepEqual([grammars.state, grammars.from], ['installed', '4.5.0']);
-  assert.equal(
-    await read(page, 'var/lib/slicc/grammars/pnpm-lock.yaml'),
-    await readFile(new URL('../../src/packages/grammars/pnpm-lock.yaml', import.meta.url), 'utf8')
-  );
-
+  await page.evaluate(async () => {
+    const put = async (path, text) => {
+      let dir = await navigator.storage.getDirectory();
+      const names = path.split('/');
+      const name = names.pop();
+      for (const part of names) dir = await dir.getDirectoryHandle(part, { create: true });
+      const writable = await (await dir.getFileHandle(name, { create: true })).createWritable();
+      await writable.write(text);
+      await writable.close();
+    };
+    await put('opt/grammars/node_modules/@shikijs/langs/package.json', '{"version":"4.5.0"}');
+    await put('var/lib/slicc/grammars/pnpm-lock.yaml', "lockfileVersion: '9.0'\n");
+  });
   await page.reload();
   await ready(page);
-  assert.equal(await page.evaluate(() => document.querySelector('slicc-app').grammarBase), base);
+  const exists = (path) =>
+    page.evaluate(async (path) => {
+      let dir = await navigator.storage.getDirectory();
+      try {
+        for (const part of path.split('/')) dir = await dir.getDirectoryHandle(part);
+        return true;
+      } catch {
+        return false;
+      }
+    }, path);
+  await page.within(5 * 60 * 1000, async () => {
+    const gone = async (path) => {
+      let dir = await navigator.storage.getDirectory();
+      try {
+        for (const part of path.split('/')) dir = await dir.getDirectoryHandle(part);
+        return false;
+      } catch {
+        return true;
+      }
+    };
+    return (await gone('opt/grammars')) && (await gone('var/lib/slicc/grammars'));
+  });
+  assert.deepEqual(
+    [await exists('opt/grammars'), await exists('var/lib/slicc/grammars')],
+    [false, false]
+  );
+  assert.equal(await row(page, 'grammars'), undefined);
+  assert.equal(
+    await page.evaluate(() => document.querySelector('slicc-app').grammarBase),
+    undefined
+  );
+
+  await run(
+    page,
+    `clear; mkdir -p /home/hl && printf 'fn main() {\\n    let answer: u32 = 42;\\n    println!("{}", answer);\\n}\\n' > /home/hl/main.rs && echo written-$((40 + 2))`
+  );
+  await shows(page, 'written-42');
+  await page.send('Network.enable');
+  await page.send('Network.emulateNetworkConditions', {
+    offline: true,
+    latency: 0,
+    downloadThroughput: -1,
+    uploadThroughput: -1,
+  });
+  t.after(() =>
+    page
+      .send('Network.emulateNetworkConditions', {
+        offline: false,
+        latency: 0,
+        downloadThroughput: -1,
+        uploadThroughput: -1,
+      })
+      .catch(() => {})
+  );
+  chrome.cdn.requests.length = 0;
+  const before = await page.evaluate(() => performance.getEntriesByType('resource').length);
+  await page.evaluate(() => document.querySelector('slicc-app').open('file', '/home/hl/main.rs'));
+  const colours = await page.within(60000, () => {
+    const view = document.querySelector('slicc-app').dock.content('file:/home/hl/main.rs');
+    const code = view?.shadowRoot
+      ?.querySelector('slicc-code-view')
+      ?.shadowRoot?.querySelector('diffs-container')?.shadowRoot;
+    const tokens = [...(code?.querySelectorAll('[data-line] span') ?? [])].filter((span) =>
+      span.textContent.trim()
+    );
+    const text = tokens.map((span) => span.textContent).join('');
+    if (!text.includes('answer')) return false;
+    const seen = new Set(tokens.map((span) => getComputedStyle(span).color));
+    return seen.size >= 3 && [...seen];
+  });
+  assert.ok(colours.length >= 3, JSON.stringify(colours));
+  const fetched = await page.evaluate(
+    (before) =>
+      performance
+        .getEntriesByType('resource')
+        .slice(before)
+        .map((entry) => entry.name)
+        .filter((name) => new URL(name).origin !== location.origin),
+    before
+  );
+  assert.deepEqual(fetched, []);
+  assert.deepEqual(chrome.cdn.requests, []);
+  assert.equal((await opfs(page)).filter((path) => path.includes('@shikijs')).length, 0);
+  assert.deepEqual(page.errors, []);
+});
+
+test('a profile without the old grammars receipt keeps its own /opt/grammars through an update check', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await page.evaluate(async () => {
+    let dir = await navigator.storage.getDirectory();
+    for (const part of ['opt', 'grammars'])
+      dir = await dir.getDirectoryHandle(part, { create: true });
+    const writable = await (await dir.getFileHandle('keep', { create: true })).createWritable();
+    await writable.write('mine\n');
+    await writable.close();
+  });
+  await page.reload();
+  chrome.cdn.requests.length = 0;
+  await ready(page);
+  const notes = (url) =>
+    /^https:\/\/registry\.npmjs\.org\/@ai-ecoverse%2Fwas(m|i|ix)-[^/]+\/\d/.test(url);
+  const end = Date.now() + 5 * 60 * 1000;
+  while (!chrome.cdn.requests.some(notes)) {
+    assert.ok(
+      Date.now() < end,
+      `no release-notes fetch after the update check in 5 min, last requests: ${chrome.cdn.requests.slice(-5).join(', ')}`
+    );
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  assert.equal(
+    await page.evaluate(async () => {
+      try {
+        const opt = await (await navigator.storage.getDirectory()).getDirectoryHandle('opt');
+        const grammars = await opt.getDirectoryHandle('grammars');
+        return await (await (await grammars.getFileHandle('keep')).getFile()).text();
+      } catch (error) {
+        return error.name;
+      }
+    }),
+    'mine\n'
+  );
   assert.deepEqual(page.errors, []);
 });
 
