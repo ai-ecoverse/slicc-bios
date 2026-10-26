@@ -349,8 +349,11 @@ const TOOLS = 'opt/slicc/tools/node_modules';
 
 async function moved(from) {
   const response = await fetch(new URL('tools.json', from)).catch(() => null);
-  if (!response?.ok) return new Set();
-  const names = Object.keys(await response.json().catch(() => ({})));
+  if (response?.status === 404) return new Set();
+  if (!response?.ok) return null;
+  const listed = await response.json().catch(() => null);
+  if (!listed || typeof listed !== 'object' || Array.isArray(listed)) return null;
+  const names = Object.keys(listed);
   const waiting = new Set();
   for (const name of names) {
     const there = await read(`${TOOLS}/${name}/package.json`).catch(() => null);
@@ -366,6 +369,7 @@ async function drop(path) {
 }
 
 async function prune(locked, kept = new Set()) {
+  if (kept === null) return 0;
   const receipts = await list(await directory(['var', 'lib', 'bios']), '');
   const stale = receipts
     .map((receipt) => receipt.path.replace(/\.json$/, ''))

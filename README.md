@@ -33,7 +33,7 @@ The other 20 tools are listed in [`src/packages/tools.json`](src/packages/tools.
   - never older than the installed one;
   - one that doesn't pass, or doesn't come back from pnpm, leaves the version it had. Its row reads *Not offered: …*.
 - **Offline:** what's installed stays. Nothing is fetched until npm answers again.
-- **Moving an old profile over:** an existing profile has the tools in `/node_modules`. The installer keeps each one there until `/opt/slicc/tools` has it. Then seven removes the old copy through the kernel, and its receipt and ledger entry through the installer (`retire`). A tool therefore never disappears, offline or not.
+- **Moving an old profile over:** an existing profile has the tools in `/node_modules`. The installer keeps each one there until `/opt/slicc/tools` has it. When the installer can't read `tools.json` (a network error, a 5xx or broken JSON), it prunes nothing that run, since it can't tell a tool waiting to move from a dropped package; a deployment without `tools.json` (404) prunes as before. Then seven removes the old copy through the kernel, and its receipt and ledger entry through the installer (`retire`). A tool therefore never disappears, offline or not.
 - **Install / Update:** each tool has a row (`tools:<id>`, `preinstalled: true`), with the version it has, what npm offers, and why a newer one isn't offered. Retry or Update checks again. There's no Remove.
 - **Your packages:** a user's own add of one of these packages goes through the gate like a catalog package.
 
