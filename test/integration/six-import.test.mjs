@@ -213,7 +213,7 @@ test('when the agent refuses the export, seven keeps the hand-off key, says so, 
   assert.deepEqual(page.errors, []);
 });
 
-test('when the export named by the hand-off key has no manifest.json, seven keeps the key and says so, even to someone who closed that notice for good before, moves nothing, closing the notice hides it only until the next start, and Stop trying then drops the key for good', {
+test('when the export has no manifest.json, seven keeps the key and says so, even to someone who closed that notice for good before, moves nothing, closing it hides it only until the next start, and Stop trying drops the key for good', {
   timeout: 30 * 60 * 1000,
 }, async (t) => {
   state.mode = 'lost';
