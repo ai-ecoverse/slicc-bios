@@ -41,9 +41,53 @@ const HISTORY = new Set(['Page.getNavigationHistory']);
 const TREES = new Set(['Page.getFrameTree', 'Page.getResourceTree']);
 const NAV_MS = 10000;
 const NAV_TYPES = new Set(['page', 'iframe', 'background_page', 'webview']);
+const WORKER_TYPES = new Set(['worker', 'service_worker', 'shared_worker']);
 const UNWAITED = new Set(['Target.getTargetInfo', 'Target.detachFromTarget']);
 const POLL_MS = 100;
 const REMEMBERED = 10000;
+const CHECK_MS = 1000;
+const DOCUMENT_META = new Set([
+  'Runtime.enable',
+  'Runtime.disable',
+  'Runtime.runIfWaitingForDebugger',
+  'Runtime.terminateExecution',
+  'Runtime.discardConsoleEntries',
+  'Page.enable',
+  'Page.disable',
+  'Page.navigate',
+  'Page.reload',
+  'Page.stopLoading',
+  'Page.navigateToHistoryEntry',
+  ...TREES,
+  ...HISTORY,
+]);
+const documentContent = (method = '') =>
+  !DOCUMENT_META.has(method) &&
+  (/^(?:Runtime|Page|DOM|DOMSnapshot|CSS|Accessibility|Input|LayerTree|HeadlessExperimental|Profiler|HeapProfiler|IO)\./.test(
+    method
+  ) ||
+    CONTENTS.has(method));
+const PAGE_LIFECYCLE = new Set([
+  'Page.frameAttached',
+  'Page.frameDetached',
+  'Page.frameNavigated',
+  'Page.frameStartedNavigating',
+  'Page.frameRequestedNavigation',
+  'Page.frameScheduledNavigation',
+  'Page.frameClearedScheduledNavigation',
+  'Page.navigatedWithinDocument',
+  'Page.frameStartedLoading',
+  'Page.frameStoppedLoading',
+  'Page.domContentEventFired',
+  'Page.loadEventFired',
+  'Page.lifecycleEvent',
+  'Page.backForwardCacheNotUsed',
+]);
+const documentPublication = (message) =>
+  message.id === undefined &&
+  message.sessionId !== undefined &&
+  !PAGE_LIFECYCLE.has(message.method) &&
+  (documentContent(message.method) || /^(?:Log|Console)\./.test(message.method));
 
 const UNSAFE = new Set([
   'Target.sendMessageToTarget',
@@ -517,6 +561,9 @@ class Guard {
     this.sheets = new Set();
     this.navs = new Map();
     this.navSessions = new Map();
+    this.pendingAttachments = new Set();
+    this.privateSessions = new Set();
+    this.attachmentProofs = new Map();
     this.errored = new Map();
     this.offered = new Set();
     this.contexts = new Set();
@@ -535,19 +582,23 @@ class Guard {
     this.held = new Map();
     this.internal = new Map();
     this.asked = new Map();
+    this.callers = new Map();
     this.watching = new Map();
     this.queues = new Map();
     this.streams = new Set();
     this.allowed = new Set();
     this.blockedWorkers = new Set();
     this.next = GUARD_IDS;
+    this.documents = new Map();
+    this.documentCommands = new WeakMap();
+    this.documentEvents = new WeakMap();
     this.guarded = { onmessage: null, onclose: null };
   }
 
-  redacted(message) {
+  redacted(message, source = message) {
     const { method, params } = message;
     if (!params || !(SPOKEN.test(method ?? '') || CONSOLE.has(method)))
-      return this.deliver(message);
+      return this.deliver(message, source);
     if (
       method === 'Network.responseReceivedExtraInfo' &&
       params.statusCode >= 300 &&
@@ -559,17 +610,29 @@ class Guard {
       kept(this.sheets, params.header.styleSheetId);
     }
     const { params: redacted, changed, answered } = this.redact(params);
-    if (!changed.length) return this.deliver(message);
+    if (!changed.length) return this.deliver(message, source);
     if (answered && /^(?:Network|Fetch)\./.test(method)) {
       for (const id of [params.requestId, params.networkId])
         if (id !== undefined) kept(this.redirected, id);
       for (const url of [params.request?.url, params.response?.url])
         if (typeof url === 'string') kept(this.hops, hopKey(url));
     }
-    return this.deliver({ ...message, params: redacted });
+    return this.deliver({ ...message, params: redacted }, source);
   }
 
-  deliver(message) {
+  deliver(message, source = message) {
+    if (!this.eventValid(source) || this.transportClosed(source)) {
+      if (PAUSES.has(source.method)) {
+        this.offered.delete(source.params?.requestId);
+        this.release(source);
+      }
+      return;
+    }
+    if (message.id !== undefined) {
+      const remaining = (this.callers.get(message.id) ?? 0) - 1;
+      if (remaining > 0) this.callers.set(message.id, remaining);
+      else this.callers.delete(message.id);
+    }
     try {
       this.guarded.onmessage?.(JSON.stringify(message));
     } catch (error) {
@@ -577,12 +640,24 @@ class Guard {
     }
   }
 
-  call(method, params, sessionId) {
+  call(method, params, sessionId, limit = NAV_MS) {
     return new Promise((resolve) => {
-      this.next += 1;
-      this.internal.set(this.next, resolve);
+      let id = ++this.next;
+      while (this.callers.has(id)) id = ++this.next;
+      let timer;
+      this.internal.set(id, (message) => {
+        clearTimeout(timer);
+        resolve(message.error ? { ...message, result: undefined } : message);
+      });
+      if (limit) {
+        timer = setTimeout(() => {
+          this.internal.delete(id);
+          resolve({ error: { code: -32000, message: UNGUARDED } });
+        }, limit);
+        timer.unref?.();
+      }
       this.connection.send(
-        JSON.stringify({ id: this.next, method, params, ...(sessionId ? { sessionId } : {}) })
+        JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })
       );
     });
   }
@@ -616,7 +691,7 @@ class Guard {
 
   async lookup(targetId) {
     if (!this.targets.has(targetId)) {
-      this.learn((await this.call('Target.getTargetInfo', { targetId })).result?.targetInfo);
+      this.learn(this.targetInfo(await this.call('Target.getTargetInfo', { targetId }), targetId));
     }
     return this.targets.get(targetId);
   }
@@ -629,7 +704,7 @@ class Guard {
 
   async target(targetId, depth = 0) {
     const found = await this.lookup(targetId);
-    if (!found) return false;
+    if (!found) return true;
     if (isHeld(targetId) || isHeld(found.openerId)) {
       hold(targetId);
       found.guarded = true;
@@ -712,9 +787,25 @@ class Guard {
     );
   }
 
+  targetInfo(answer, targetId) {
+    const info = answer.result?.targetInfo;
+    if (
+      !answer.error &&
+      info?.targetId === targetId &&
+      typeof info.type === 'string' &&
+      typeof info.url === 'string' &&
+      URL.canParse(info.url)
+    )
+      return info;
+    this.invalidate(targetId);
+    this.document(targetId).failed = true;
+    return null;
+  }
+
   async current(targetId) {
-    const info = (await this.call('Target.getTargetInfo', { targetId })).result?.targetInfo;
-    if (info) this.learn(info);
+    const info = this.targetInfo(await this.call('Target.getTargetInfo', { targetId }), targetId);
+    if (!info) return true;
+    this.learn(info);
     return this.target(targetId);
   }
 
@@ -724,14 +815,222 @@ class Guard {
     }
   }
 
+  document(targetId) {
+    if (!this.documents.has(targetId)) this.documents.set(targetId, { revision: 0, checked: -1 });
+    return this.documents.get(targetId);
+  }
+
+  related(targetId) {
+    const ids = new Set();
+    let root = targetId;
+    while (root) {
+      if (ids.has(root)) return null;
+      ids.add(root);
+      const parent = this.targets.get(root)?.parentId;
+      if (!parent) break;
+      root = parent;
+    }
+    for (let size = 0; size !== ids.size; ) {
+      size = ids.size;
+      for (const id of this.documents.keys())
+        if (!this.document(id).retired && ids.has(this.targets.get(id)?.parentId)) ids.add(id);
+    }
+    return ids;
+  }
+
+  documentTarget(sessionId) {
+    return this.sessions.get(sessionId)?.targetId ?? this.navSessions.get(sessionId)?.targetId;
+  }
+
+  invalidate(targetId) {
+    if (!targetId) return;
+    this.document(targetId).revision += 1;
+    const seen = new Set([targetId]);
+    let parent = this.targets.get(targetId)?.parentId;
+    while (parent && !seen.has(parent)) {
+      seen.add(parent);
+      this.document(parent).revision += 1;
+      parent = this.targets.get(parent)?.parentId;
+    }
+  }
+
+  documentEvent({ method, params = {}, sessionId }) {
+    if (method === 'Target.attachedToTarget') {
+      const info = params.targetInfo;
+      if (!info?.targetId || this.privateSessions.has(params.sessionId)) return;
+      const parentId = info.type === 'iframe' ? this.documentTarget(sessionId) : undefined;
+      this.learn({ ...info, ...(parentId ? { parentId } : {}) });
+      this.invalidate(info.targetId);
+    }
+    if (
+      (method === 'Page.frameNavigated' && params.frame) ||
+      method === 'Page.navigatedWithinDocument' ||
+      method === 'Page.frameAttached' ||
+      method === 'Page.frameDetached'
+    ) {
+      const targetId = this.documentTarget(sessionId);
+      this.invalidate(targetId);
+      if (method === 'Page.frameDetached' && params.reason === 'remove')
+        this.retire(params.frameId);
+    }
+    if (method === 'Target.detachedFromTarget')
+      this.invalidate(this.documentTarget(params.sessionId));
+    if (method === 'Target.targetDestroyed') this.retire(params.targetId);
+  }
+
+  retire(targetId) {
+    if (!targetId) return;
+    this.invalidate(targetId);
+    this.document(targetId).retired = true;
+    const nav = this.navs.get(targetId);
+    this.navs.delete(targetId);
+    if (nav) {
+      nav.retired = true;
+      nav.settle(true);
+      if (nav.session) {
+        this.navSessions.delete(nav.session);
+        void this.call('Target.detachFromTarget', { sessionId: nav.session });
+      }
+    }
+  }
+
+  documentValid(sessionId, command) {
+    const targetId = this.documentTarget(sessionId);
+    const before = command && this.documentCommands.get(command);
+    if (!this.documents.has(targetId)) return !before;
+    const ids = this.related(targetId);
+    if (!ids) return false;
+    if (before && before.size !== ids.size) return false;
+    return [...ids].every((id) => {
+      const state = this.document(id);
+      return (
+        !state.retired &&
+        state.checked === state.revision &&
+        (!before || before.get(id) === state.revision)
+      );
+    });
+  }
+
+  stampDocument(message) {
+    const targetId = this.documentTarget(message.sessionId);
+    if (!this.documents.has(targetId)) return;
+    const ids = this.related(targetId);
+    if (ids)
+      this.documentCommands.set(
+        message,
+        new Map([...ids].map((id) => [id, this.document(id).revision]))
+      );
+  }
+
+  rememberEvent(message) {
+    if (!documentPublication(message)) return;
+    const { sessionId } = message;
+    this.documentEvents.set(message, {
+      verified: !this.hidden(sessionId) && this.documentValid(sessionId),
+      targetId: this.documentTarget(sessionId),
+    });
+    this.stampDocument(message);
+  }
+
+  eventValid(message) {
+    if (!documentPublication(message)) return true;
+    const receipt = this.documentEvents.get(message);
+    return Boolean(
+      receipt?.verified &&
+        receipt.targetId === this.documentTarget(message.sessionId) &&
+        !this.hidden(message.sessionId) &&
+        this.documentValid(message.sessionId, message)
+    );
+  }
+
+  knownFrame(frame) {
+    if (
+      !frame ||
+      typeof frame.id !== 'string' ||
+      !frame.id ||
+      typeof frame.url !== 'string' ||
+      !frame.url ||
+      !URL.canParse(frame.url)
+    )
+      return false;
+    for (const key of ['securityOrigin', 'unreachableUrl', 'parentId'])
+      if (frame[key] !== undefined && typeof frame[key] !== 'string') return false;
+    if (frame.unreachableUrl && !URL.canParse(frame.unreachableUrl)) return false;
+    if (new URL(frame.url).protocol === 'chrome-error:' && !frame.unreachableUrl) return false;
+    return !this.is.url(this.framed(frame));
+  }
+
+  documentTree(tree, seen = new Set()) {
+    const frame = tree?.frame;
+    if (
+      !this.knownFrame(frame) ||
+      seen.has(frame.id) ||
+      (tree.childFrames !== undefined && !Array.isArray(tree.childFrames))
+    )
+      return null;
+    seen.add(frame.id);
+    const all = [frame];
+    for (const child of tree.childFrames ?? []) {
+      const frames = this.documentTree(child, seen);
+      if (!frames) return null;
+      all.push(...frames);
+    }
+    return all;
+  }
+
+  async checkDocument(targetId) {
+    if (WORKER_TYPES.has(this.targets.get(targetId)?.type)) return this.verifyWorker(targetId);
+    const state = this.document(targetId);
+    const nav = this.navs.get(targetId);
+    if (!nav || state.retired) return false;
+    await nav.ready;
+    if (nav.failed || !nav.session) return false;
+    const revision = state.revision;
+    if (state.checked === revision) return true;
+    if (state.checking?.revision === revision) return state.checking.promise;
+    const promise = (async () => {
+      const answer = await this.call('Page.getFrameTree', {}, nav.session, CHECK_MS);
+      const all = this.documentTree(answer.result?.frameTree);
+      if (answer.error || !all) {
+        state.failed = true;
+        state.checked = -1;
+        return false;
+      }
+      if (state.revision !== revision) return false;
+      state.failed = false;
+      for (const frame of all) {
+        this.frames.set(frame.id, this.framed(frame));
+        if (frame.parentId) this.parents.set(frame.id, frame.parentId);
+      }
+      state.checked = revision;
+      return true;
+    })();
+    state.checking = { revision, promise };
+    try {
+      return await promise;
+    } finally {
+      if (state.checking?.promise === promise) state.checking = null;
+    }
+  }
+
+  async documentChecked(sessionId) {
+    const targetId = this.documentTarget(sessionId);
+    if (!this.documents.has(targetId)) return true;
+    const ids = this.related(targetId);
+    if (!ids) return false;
+    const checked = await Promise.all([...ids].map((id) => this.checkDocument(id)));
+    return checked.every(Boolean) && this.documentValid(sessionId);
+  }
+
   touch(targetId, held = false) {
     if (!targetId) return;
     const known = this.navs.get(targetId);
-    if (known) {
+    if (known && !known.failed) {
       if (!held) known.held = false;
       return;
     }
     if (!NAV_TYPES.has(this.targets.get(targetId)?.type ?? 'page')) return;
+    this.document(targetId);
     const nav = { targetId, session: null, done: false, failed: false, held };
     nav.ready = new Promise((resolve) => {
       nav.settle = (failed) => {
@@ -745,14 +1044,23 @@ class Guard {
     nav.timer = setTimeout(() => nav.settle(true), NAV_MS);
     nav.timer.unref?.();
     this.navs.set(targetId, nav);
-    nav.attaching = this.call('Target.attachToTarget', { targetId, flatten: true }).then(
-      (answer) => answer.result?.sessionId ?? null
-    );
-    void nav.attaching.then((session) => this.arm(nav, session));
+    this.pendingAttachments.add(nav);
+    nav.attaching = this.call(
+      'Target.attachToTarget',
+      { targetId, flatten: true },
+      undefined,
+      NAV_MS
+    ).then((answer) => (answer.error ? null : (answer.result?.sessionId ?? null)));
+    void nav.attaching.then((session) => {
+      if (session) this.privateSessions.add(session);
+      this.pendingAttachments.delete(nav);
+      return this.arm(nav, session);
+    });
   }
 
   async arm(nav, session) {
     if (!session) return nav.settle(true);
+    if (nav.retired) return void this.call('Target.detachFromTarget', { sessionId: session });
     nav.session = session;
     this.navSessions.set(session, nav);
     const steps = await Promise.all([
@@ -765,7 +1073,7 @@ class Guard {
       this.call('Network.setBypassServiceWorker', { bypass: true }, session),
       this.call('Page.enable', {}, session),
     ]);
-    nav.settle(steps.some((step) => step.error));
+    nav.settle(steps.some((step) => step.error || !step.result));
   }
 
   navEvent({ method, params = {} }, nav) {
@@ -814,23 +1122,74 @@ class Guard {
     return nav.failed ? UNGUARDED : null;
   }
 
-  async verify(sessionId) {
+  async verifyWorker(targetId) {
+    const state = this.document(targetId);
+    const revision = state.revision;
+    const answer = await this.call('Target.getTargetInfo', { targetId }, undefined, CHECK_MS);
+    const info = answer.result?.targetInfo;
+    if (
+      answer.error ||
+      info?.targetId !== targetId ||
+      !WORKER_TYPES.has(info.type) ||
+      typeof info.url !== 'string' ||
+      !URL.canParse(info.url) ||
+      state.retired ||
+      state.revision !== revision
+    ) {
+      state.checked = -1;
+      state.failed = true;
+      return false;
+    }
+    this.learn(info);
+    if (await this.target(targetId)) {
+      state.checked = -1;
+      state.failed = true;
+      return PROTECTED;
+    }
+    if (state.revision !== revision) return false;
+    state.failed = false;
+    state.checked = revision;
+    return true;
+  }
+
+  async verify(sessionId, targetId) {
+    if (WORKER_TYPES.has(this.targets.get(targetId)?.type)) return this.verifyWorker(targetId);
     void this.call('Page.enable', {}, sessionId);
-    const tree = (await this.call('Page.getFrameTree', {}, sessionId)).result?.frameTree;
-    const all = framed(tree);
+    const answer = await this.call('Page.getFrameTree', {}, sessionId, CHECK_MS);
+    if (answer.error) return false;
+    const tree = answer.result?.frameTree;
+    if (framed(tree).some((frame) => this.is.url(frame.url) || this.is.url(frame.securityOrigin)))
+      return PROTECTED;
+    const all = this.documentTree(tree);
+    if (!all) return false;
     for (const frame of all) {
-      this.frames.set(frame.id, frame.url);
+      this.frames.set(frame.id, this.framed(frame));
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
     }
-    return !all.some((frame) => this.is.url(frame.url) || this.is.url(frame.securityOrigin));
+    return true;
   }
 
   async inspect(sessionId, targetId, parent) {
-    const guarded = targetId ? await this.target(targetId) : false;
-    if (guarded || !(await this.verify(sessionId))) {
-      this.cut(sessionId, parent);
+    const guarded = targetId ? await this.target(targetId) : true;
+    const verified = guarded ? PROTECTED : await this.verify(sessionId, targetId);
+    if (verified !== true) {
+      this.document(targetId).checked = -1;
+      this.document(targetId).failed = true;
+      if (verified === PROTECTED) this.cut(sessionId, parent);
       return false;
     }
+    this.touch(targetId);
+    const nav = this.navs.get(targetId);
+    if (nav) {
+      await nav.ready;
+      if (nav.failed || this.document(targetId).retired) return false;
+    }
+    if (!(await this.documentChecked(sessionId)) || !this.documentValid(sessionId)) return false;
+    this.attachmentProofs.set(
+      sessionId,
+      new Map([...this.related(targetId)].map((id) => [id, this.document(id).revision]))
+    );
+    this.document(targetId).checked = -1;
     this.shown.add(sessionId);
     return true;
   }
@@ -838,14 +1197,18 @@ class Guard {
   watch(sessionId, targetId, parent) {
     if (!this.sessions.has(sessionId)) this.sessions.set(sessionId, { targetId, parent });
     if (!this.watching.has(sessionId)) {
-      this.watching.set(sessionId, this.inspect(sessionId, targetId, parent));
+      const watched = this.inspect(sessionId, targetId, parent).then((ok) => {
+        if (!ok && this.watching.get(sessionId) === watched) this.watching.delete(sessionId);
+        return ok;
+      });
+      this.watching.set(sessionId, watched);
     }
     return this.watching.get(sessionId);
   }
 
   async named(targetId) {
     for (let waited = 0; waited < BLANK_MS; waited += POLL_MS) {
-      const info = (await this.call('Target.getTargetInfo', { targetId })).result?.targetInfo;
+      const info = this.targetInfo(await this.call('Target.getTargetInfo', { targetId }), targetId);
       if (!info) return null;
       if (info.url) return info;
       await new Promise((resolve) => setTimeout(resolve, POLL_MS));
@@ -954,18 +1317,21 @@ class Guard {
   continuing(message) {
     const { method, params = {} } = message;
     if (method === 'Network.loadingFailed' || method === 'Network.loadingFinished') {
-      this.redacted({
-        method: 'Network.loadingFailed',
-        sessionId: message.sessionId,
-        params: {
-          requestId: params.requestId,
-          timestamp: params.timestamp,
-          type: params.type ?? 'Other',
-          errorText: 'net::ERR_BLOCKED_BY_CLIENT',
-          canceled: false,
-          blockedReason: 'inspector',
+      this.redacted(
+        {
+          method: 'Network.loadingFailed',
+          sessionId: message.sessionId,
+          params: {
+            requestId: params.requestId,
+            timestamp: params.timestamp,
+            type: params.type ?? 'Other',
+            errorText: 'net::ERR_BLOCKED_BY_CLIENT',
+            canceled: false,
+            blockedReason: 'inspector',
+          },
         },
-      });
+        message
+      );
       return true;
     }
     if (method !== 'Network.responseReceivedExtraInfo') return true;
@@ -978,6 +1344,10 @@ class Guard {
   }
 
   async paused(message) {
+    if (this.transportClosed(message)) {
+      this.release(message);
+      return true;
+    }
     const { params = {} } = message;
     const marked = this.requests.get(params.networkId) === true || (await this.request(params));
     this.remember(params.requestId, marked);
@@ -1065,26 +1435,64 @@ class Guard {
     void this.call(next, { requestId }, sessionId);
   }
 
+  async privateAttachment(targetId, sessionId, parent) {
+    if (parent !== undefined) return false;
+    if (this.privateSessions.has(sessionId)) return true;
+    for (const nav of this.pendingAttachments)
+      if (nav.targetId === targetId && (await nav.attaching) === sessionId) return true;
+    return false;
+  }
+
+  attachmentValid(sessionId) {
+    const proof = this.attachmentProofs.get(sessionId);
+    const ids = this.related(this.documentTarget(sessionId));
+    return (
+      proof &&
+      ids &&
+      proof.size === ids.size &&
+      [...ids].every((id) => {
+        const state = this.document(id);
+        return !state.retired && !state.failed && proof.get(id) === state.revision;
+      })
+    );
+  }
+
+  attachmentInfo(info) {
+    const { title, ...rest } = this.masked(info);
+    return rest;
+  }
+
+  async metadataReady(info) {
+    const id = info?.targetId;
+    return !this.documents.has(id) || (await this.checkDocument(id)) === true;
+  }
+
+  async publishAttachment(message, info) {
+    const { params, sessionId } = message;
+    if (
+      (await this.watch(params.sessionId, info.targetId, sessionId)) &&
+      this.attachmentValid(params.sessionId)
+    )
+      this.deliver({ ...message, params: { ...params, targetInfo: this.attachmentInfo(info) } });
+  }
+
   async targetEvent(message) {
     const { method, params = {}, sessionId } = message;
     if (method === 'Target.attachedToTarget') {
       const info = params.targetInfo ?? {};
-      const nav = this.navs.get(info.targetId);
-      if (nav && sessionId === undefined && (await nav.attaching) === params.sessionId) return true;
+      if (await this.privateAttachment(info.targetId, params.sessionId, sessionId)) return true;
       if (params.waitingForDebugger) this.waiting.add(params.sessionId);
       if (!info.url && (info.type === 'page' || info.type === 'iframe')) {
         void this.blank(message);
         return true;
       }
       this.learn(info);
-      if (await this.watch(params.sessionId, info.targetId, sessionId)) {
-        this.touch(info.targetId);
-        this.deliver(message);
-      }
+      await this.publishAttachment(message, info);
       return true;
     }
     if (method === 'Target.targetCreated' || method === 'Target.targetInfoChanged') {
       this.learn(params.targetInfo);
+      if (!(await this.metadataReady(params.targetInfo))) return true;
       if (!(await this.target(params.targetInfo?.targetId))) {
         this.deliver({
           ...message,
@@ -1098,6 +1506,7 @@ class Guard {
     if (method === 'Target.targetDestroyed') {
       const nav = this.navs.get(params.targetId);
       this.navs.delete(params.targetId);
+      this.documents.delete(params.targetId);
       this.errored.delete(params.targetId);
       if (nav?.session) this.navSessions.delete(nav.session);
       return this.targets.get(params.targetId)?.guarded === true;
@@ -1171,7 +1580,8 @@ class Guard {
 
   async prime(sessionId) {
     if (!this.runtimes.has(sessionId)) this.primed.add(sessionId);
-    await this.call('Runtime.enable', {}, sessionId);
+    const answer = await this.call('Runtime.enable', {}, sessionId);
+    if (answer.error || !answer.result) throw new Error(FAILED);
     await this.queues.get(sessionId);
   }
 
@@ -1251,8 +1661,9 @@ class Guard {
 
   async back(params, sessionId) {
     const history = (await this.call('Page.getNavigationHistory', {}, sessionId)).result;
-    const entry = history?.entries?.find((item) => item.id === params.entryId);
-    return Boolean(entry && this.hides(entry));
+    if (!Array.isArray(history?.entries)) return true;
+    const entry = history.entries.find((item) => item.id === params.entryId);
+    return !entry || this.hides(entry);
   }
 
   masked(info) {
@@ -1285,21 +1696,28 @@ class Guard {
     return false;
   }
 
+  transportClosed(message) {
+    if (!/^(?:Network|Fetch)\./.test(message.method)) return false;
+    const ids = this.related(this.documentTarget(message.sessionId));
+    return ids && [...ids].some((id) => this.documents.get(id)?.failed === true);
+  }
+
   async event(message) {
-    const method = message.method ?? '';
-    const { sessionId } = message;
-    const foreign = this.foreign({ ...message, method });
+    message.method ??= '';
+    const { method, sessionId } = message;
+    const foreign = this.foreign(message);
     if (this.navSessions.has(sessionId))
       return this.navEvent(message, this.navSessions.get(sessionId));
     if (method.startsWith('Target.') && (await this.targetEvent(message))) return;
-    if (this.blocked.has(sessionId) && PAUSES.has(method)) return this.release(message);
+    if (PAUSES.has(method) && this.hidden(sessionId)) return this.release(message);
     if (this.hidden(sessionId)) return;
     if (foreign) return;
-    if (this.walked({ ...message, method })) return this.cut(sessionId);
+    if (this.walked(message)) return this.cut(sessionId);
+    if (documentContent(method) && !this.eventValid(message)) return;
     if (sessionId && method.startsWith('Runtime.') && !this.runtimes.has(sessionId)) return;
-    if (await this.swallowed({ ...message, method })) return;
-    if (this.stored({ ...message, method })) return;
-    if (sessionId && this.naming({ ...message, method })) return;
+    if (await this.swallowed(message)) return;
+    if (this.stored(message)) return;
+    if (sessionId && this.naming(message)) return;
     if (sessionId && method.startsWith('Page.') && !this.pages.has(sessionId)) return;
     if (PAUSES.has(method)) this.offered.add(message.params?.requestId);
     this.redacted(message);
@@ -1307,8 +1725,13 @@ class Guard {
 
   async searched(method, params, sessionId) {
     const [read, args] = SEARCHES[method](params);
-    const { result } = await this.call(read, args, sessionId);
-    return this.mentions(result);
+    const { result, error } = await this.call(read, args, sessionId);
+    return (
+      error ||
+      !result ||
+      !['body', 'data', 'content'].some((key) => typeof result[key] === 'string') ||
+      this.mentions(result)
+    );
   }
 
   mentions(result) {
@@ -1357,8 +1780,16 @@ class Guard {
     return this.deliver({ ...message, result: { ...result, targetInfos } });
   }
 
+  answerClosed(was) {
+    return (
+      was &&
+      (this.blocked.has(was.sessionId) ||
+        (documentContent(was.method) && !this.documentValid(was.sessionId, was)))
+    );
+  }
+
   async answer(message, was) {
-    if (was?.sessionId && this.blocked.has(was.sessionId)) return this.refuse(was);
+    if (this.answerClosed(was)) return this.refuse(was);
     const { method, params = {} } = was ?? {};
     const { result } = message;
     if (method === 'Page.createIsolatedWorld' && result?.executionContextId !== undefined) {
@@ -1368,7 +1799,7 @@ class Guard {
     }
     if (method === 'Target.attachToTarget' && result?.sessionId) {
       const ok = await this.watch(result.sessionId, params.targetId);
-      if (!ok) return this.refuse(was);
+      if (!ok || !this.attachmentValid(result.sessionId)) return this.refuse(was);
       this.touch(params.targetId);
       return this.deliver(message);
     }
@@ -1506,9 +1937,20 @@ class Guard {
     return null;
   }
 
+  async documentCheck(method, sessionId) {
+    if (!sessionId || !documentContent(method)) return null;
+    const entry = this.sessions.get(sessionId);
+    if (this.hidden(sessionId) && entry && !this.blocked.has(sessionId))
+      await this.watch(sessionId, entry.targetId, entry.parent);
+    if (this.hidden(sessionId) || !(await this.documentChecked(sessionId))) return PROTECTED;
+    return null;
+  }
+
   async check(message) {
     const { method, params = {}, sessionId } = message;
     if (typeof method !== 'string') return null;
+    const document = await this.documentCheck(method, sessionId);
+    if (document) return document;
     if (method.startsWith('Fetch.') && sessionId === undefined) return FETCH;
     if (LATER.has(method)) return SCRIPTS;
     if (method === 'Page.navigate' && inherits(params.url)) return INHERITED;
@@ -1565,6 +2007,10 @@ class Guard {
 
   pass(message) {
     const { id, method, sessionId } = message;
+    if (this.documents.has(this.documentTarget(sessionId)) && documentContent(method)) {
+      if (!this.documentValid(sessionId)) return this.refuse(message);
+      this.stampDocument(message);
+    }
     globalThis.sliccGuardTrace?.push({
       method,
       targetId: message.params?.targetId,
@@ -1584,11 +2030,16 @@ class Guard {
 
   received(text) {
     const message = parse(text);
+    if (message.id === undefined) {
+      this.documentEvent(message);
+      this.rememberEvent(message);
+    }
     if (this.internal.has(message.id)) {
       const resolve = this.internal.get(message.id);
       this.internal.delete(message.id);
       return resolve(message);
     }
+    if (message.id >= GUARD_IDS && !this.asked.has(message.id)) return;
     const was = message.id === undefined ? undefined : this.asked.get(message.id);
     this.asked.delete(message.id);
     this.queue(
@@ -1615,13 +2066,18 @@ class Guard {
     connection.onclose = (why) => guarded.onclose?.(why);
     guarded.send = (text) => {
       const message = parse(text);
+      const duplicate = this.callers.has(message.id);
+      this.callers.set(message.id, (this.callers.get(message.id) ?? 0) + 1);
+      if (duplicate || (message.id >= GUARD_IDS && message.id <= this.next))
+        return this.refuse(message, FAILED);
       this.queue(
         `send:${message.sessionId ?? ''}`,
         async () => {
           const why = await this.check(message);
           if (why) return this.refuse(message, why);
           if (message.method === 'Runtime.enable' && this.primed.delete(message.sessionId)) {
-            await this.call('Runtime.disable', {}, message.sessionId);
+            const answer = await this.call('Runtime.disable', {}, message.sessionId);
+            if (answer.error || !answer.result) return this.refuse(message, FAILED);
           }
           if (message.method === 'Target.createTarget' && typeof message.params?.url === 'string') {
             return this.create(message);
