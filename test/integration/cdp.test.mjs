@@ -1,21 +1,14 @@
 import assert from 'node:assert/strict';
 import { createServer as createHttp } from 'node:http';
-import { createServer } from 'node:net';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { startProxy } from '@ai-ecoverse/slicc-node';
 import { actPackage, boot, ready, run, screen, shows } from './bios.mjs';
-import { debuggerUrl, launch } from './chrome.mjs';
+import { devtools as boundPort, debuggerUrl, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
 import { linkNode } from './linked-node.mjs';
 import { display, EXTENSIONS, realExtension, SEVEN } from './real-extension.mjs';
 
-const port = await new Promise((resolve) => {
-  const server = createServer().listen(0, '127.0.0.1', () => {
-    const { port } = server.address();
-    server.close(() => resolve(port));
-  });
-});
 const hits = [];
 const heard = [];
 const stand = createHttp((req, res) => {
@@ -58,8 +51,9 @@ const standPort = stand.address().port;
 const VAULT = `http://vault.sliccy.ai:${standPort}/vault`;
 const PLAIN = `http://localhost:${standPort}/plain`;
 const chrome = await launch({
-  args: [`--remote-debugging-port=${port}`, '--host-resolver-rules=MAP vault.sliccy.ai 127.0.0.1'],
+  args: ['--host-resolver-rules=MAP vault.sliccy.ai 127.0.0.1'],
 });
+const { port } = await boundPort(chrome);
 const elsewhere = (path) => {
   const at = new URL(path, chrome.url);
   at.hostname = 'localhost';
@@ -1218,13 +1212,8 @@ test('headed, on the proxy path: a tab created through the guard with an empty U
     for (const step of cleanup.reverse()) await step().catch(() => undefined);
     undisplay();
   });
-  const debugging = await new Promise((resolve) => {
-    const server = createServer().listen(0, '127.0.0.1', () => {
-      const { port: free } = server.address();
-      server.close(() => resolve(free));
-    });
-  });
-  const headed = await launch({ realistic: true, args: [`--remote-debugging-port=${debugging}`] });
+  const headed = await launch({ realistic: true });
+  const { port: debugging } = await boundPort(headed);
   cleanup.push(() => headed.close());
   await debuggerUrl(debugging);
   const proxy = await startProxy({
@@ -1301,16 +1290,10 @@ test('headed, on the proxy path: a tab created through the guard with an empty U
 test('a browser extension’s hidden world stays out of reach through the guard: a world named like it, its id and a binding into it are refused, and its mark is never readable', {
   timeout: 5 * 60 * 1000,
 }, async (t) => {
-  const debugging = await new Promise((resolve) => {
-    const server = createServer().listen(0, '127.0.0.1', () => {
-      const { port: free } = server.address();
-      server.close(() => resolve(free));
-    });
-  });
   const worlds = await launch({
     extensions: [fileURLToPath(new URL('./fixtures/injected-frame', import.meta.url))],
-    args: [`--remote-debugging-port=${debugging}`],
   });
+  const { port: debugging } = await boundPort(worlds);
   t.after(() => worlds.close());
   await debuggerUrl(debugging);
   const proxy = await startProxy({
@@ -1470,13 +1453,8 @@ test('headed, on the link path: a tab created through the guard with an empty UR
     for (const step of cleanup.reverse()) await step().catch(() => undefined);
     undisplay();
   });
-  const debugging = await new Promise((resolve) => {
-    const server = createServer().listen(0, '127.0.0.1', () => {
-      const { port: free } = server.address();
-      server.close(() => resolve(free));
-    });
-  });
-  const headed = await launch({ realistic: true, args: [`--remote-debugging-port=${debugging}`] });
+  const headed = await launch({ realistic: true });
+  const { port: debugging } = await boundPort(headed);
   cleanup.push(() => headed.close());
   await debuggerUrl(debugging);
   const page = await headed.page(t);
@@ -1548,16 +1526,10 @@ test('headed, on the link path: a tab created through the guard with an empty UR
 test('a browser extension’s hidden world stays out of reach through the guard on the link path: a world named like it, its id and a binding into it are refused, and its mark is never readable', {
   timeout: 5 * 60 * 1000,
 }, async (t) => {
-  const debugging = await new Promise((resolve) => {
-    const server = createServer().listen(0, '127.0.0.1', () => {
-      const { port: free } = server.address();
-      server.close(() => resolve(free));
-    });
-  });
   const worlds = await launch({
     extensions: [fileURLToPath(new URL('./fixtures/injected-frame', import.meta.url))],
-    args: [`--remote-debugging-port=${debugging}`],
   });
+  const { port: debugging } = await boundPort(worlds);
   t.after(() => worlds.close());
   await debuggerUrl(debugging);
   worlds.overrides.set('/marked.html', '<!doctype html><title>marked</title><h1>Ordinary</h1>');

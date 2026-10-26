@@ -3,7 +3,7 @@ import { createServer, request } from 'node:http';
 import { createInterface } from 'node:readline';
 import { after, test } from 'node:test';
 import { boot, ready, run } from './bios.mjs';
-import { debuggerUrl, launch } from './chrome.mjs';
+import { debuggerUrl, devtools, launch } from './chrome.mjs';
 import { attach, CLI, HOST_CDP } from './cli.mjs';
 import { shoot } from './shots.mjs';
 
@@ -978,11 +978,8 @@ test('the real slicc CLI carries <port>.kernel.localhost into the page, and the 
 test('the real slicc CLI shares another browser over cdp: the 9222 facade reaches it as <device>/<browser>, a walk to seven’s origin never loads there, and the agent keeps the walked tab', {
   skip: !cli,
 }, async (t) => {
-  const probe = createServer();
-  await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
-  const debugPort = probe.address().port;
-  await new Promise((resolve) => probe.close(resolve));
-  const other = await launch({ vault: false, args: [`--remote-debugging-port=${debugPort}`] });
+  const other = await launch({ vault: false });
+  const { port: debugPort } = await devtools(other);
   t.after(() => other.close());
   await debuggerUrl(debugPort);
   const page = await chrome.page(t);

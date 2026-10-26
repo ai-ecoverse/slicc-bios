@@ -1,20 +1,11 @@
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { createServer as createHttp } from 'node:http';
-import { createServer } from 'node:net';
 import { after, test } from 'node:test';
 import { startProxy } from '@ai-ecoverse/slicc-node';
 import { ready } from './bios.mjs';
-import { debuggerUrl, launch } from './chrome.mjs';
+import { debuggerUrl, devtools, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
-
-const free = () =>
-  new Promise((resolve) => {
-    const server = createServer().listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
-    });
-  });
 
 const ordinary = (path) =>
   `<title>ordinary</title>${path}<script>void \`http://localhost:\${location.port}/x\`;</script><a href="https://www.sliccy.ai/7/">seven</a> <a href="https://ntfy.sliccy.ai/github">ntfy</a> curl -fsSL https://www.sliccy.ai/install.sh <a href="https://www.sliccy.ai/blog/post">blog</a> <code>curl -fsSL www.sliccy.ai/install.sh | sh</code> Visit www.sliccy.ai/7/ now. Docs: https://www.sliccy.ai/docs/install. (https://www.sliccy.ai/7/), see www.sliccy.ai/install.sh.`;
@@ -174,14 +165,13 @@ const hopTo = (kind) => {
 const CONTROL = `K${randomBytes(6).toString('hex')}`;
 hops.set('plain', CONTROL);
 
-const debugging = await free();
 const chrome = await launch({
   tools: false,
   args: [
-    `--remote-debugging-port=${debugging}`,
     `--host-resolver-rules=MAP seven.sliccy.ai 127.0.0.1, MAP vault.sliccy.ai 127.0.0.1, MAP ordinary.test 127.0.0.1, MAP other.test 127.0.0.1`,
   ],
 });
+const { port: debugging } = await devtools(chrome);
 after(() => chrome.close());
 const browser = await debuggerUrl(debugging);
 const fakeExtension = extensionOver(browser);

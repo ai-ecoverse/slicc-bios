@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import { createServer as createHttp } from 'node:http';
-import { createServer } from 'node:net';
 import { after, test } from 'node:test';
 import { startProxy } from '@ai-ecoverse/slicc-node';
 import { ready } from './bios.mjs';
-import { debuggerUrl, launch } from './chrome.mjs';
+import { debuggerUrl, devtools, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
 
 const site = createHttp((req, res) => {
@@ -42,21 +41,15 @@ await new Promise((resolve) => site.listen(0, '127.0.0.1', resolve));
 const port = site.address().port;
 after(() => site.close());
 
-const debugging = await new Promise((resolve) => {
-  const server = createServer().listen(0, '127.0.0.1', () => {
-    const { port: free } = server.address();
-    server.close(() => resolve(free));
-  });
-});
 const chrome = await launch({
   tools: false,
   args: [
-    `--remote-debugging-port=${debugging}`,
     '--host-resolver-rules=MAP vault.sliccy.ai 127.0.0.1, MAP ordinary.test 127.0.0.1',
     '--disable-site-isolation-trials',
     '--disable-features=IsolateOrigins,site-per-process',
   ],
 });
+const { port: debugging } = await devtools(chrome);
 after(() => chrome.close());
 const fakeExtension = extensionOver(await debuggerUrl(debugging));
 

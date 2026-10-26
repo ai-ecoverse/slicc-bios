@@ -2,13 +2,12 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer as createHttps } from 'node:https';
-import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { startProxy } from '@ai-ecoverse/slicc-node';
 import { agentUp, boot, ready } from './bios.mjs';
-import { debuggerUrl, launch } from './chrome.mjs';
+import { devtools as boundPort, debuggerUrl, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
 
 const MARK = 'AGENT-MCP-MARK';
@@ -43,23 +42,17 @@ const idp = createHttps(
   }
 );
 await new Promise((resolve) => idp.listen(0, '127.0.0.1', resolve));
-const port = await new Promise((resolve) => {
-  const server = createServer().listen(0, '127.0.0.1', () => {
-    const { port: free } = server.address();
-    server.close(() => resolve(free));
-  });
-});
 const chrome = await launch({
   tools: false,
   agent: true,
   timeout: 120000,
   args: [
-    `--remote-debugging-port=${port}`,
     `--host-resolver-rules=MAP ims-na1.adobelogin.com:443 127.0.0.1:${idp.address().port}`,
     '--ignore-certificate-errors',
     '--disable-popup-blocking',
   ],
 });
+const { port } = await boundPort(chrome);
 after(() => {
   chrome.close();
   idp.close();

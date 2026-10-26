@@ -3,13 +3,12 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer as createHttp } from 'node:http';
 import { createServer as createHttps } from 'node:https';
-import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { startProxy } from '@ai-ecoverse/slicc-node';
 import { boot, ready, run, screen, shows } from './bios.mjs';
-import { debuggerUrl, launch } from './chrome.mjs';
+import { devtools as boundPort, debuggerUrl, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
 
 const MARK = 'FRAGMENT-MARK';
@@ -77,20 +76,14 @@ const plain = createHttp((req, res) => {
 await new Promise((resolve) => plain.listen(0, '127.0.0.1', resolve));
 const ordinary = (path) => `http://localhost:${plain.address().port}${path}`;
 
-const port = await new Promise((resolve) => {
-  const server = createServer().listen(0, '127.0.0.1', () => {
-    const { port: free } = server.address();
-    server.close(() => resolve(free));
-  });
-});
 const chrome = await launch({
   args: [
-    `--remote-debugging-port=${port}`,
     `--host-resolver-rules=MAP ims-na1.adobelogin.com:443 127.0.0.1:${ims.address().port}, MAP vault.sliccy.ai 127.0.0.1`,
     '--ignore-certificate-errors',
     '--disable-popup-blocking',
   ],
 });
+const { port } = await boundPort(chrome);
 after(() => {
   chrome.close();
   ims.close();
