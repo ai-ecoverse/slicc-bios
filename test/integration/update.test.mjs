@@ -315,6 +315,45 @@ test('code is highlighted offline by spectrum’s own highlighter, and a profile
   assert.deepEqual(page.errors, []);
 });
 
+test('a profile without the old grammars receipt keeps its own /opt/grammars through an update check', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await page.evaluate(async () => {
+    let dir = await navigator.storage.getDirectory();
+    for (const part of ['opt', 'grammars'])
+      dir = await dir.getDirectoryHandle(part, { create: true });
+    const writable = await (await dir.getFileHandle('keep', { create: true })).createWritable();
+    await writable.write('mine\n');
+    await writable.close();
+  });
+  await page.reload();
+  chrome.cdn.requests.length = 0;
+  await ready(page);
+  const notes = (url) =>
+    /^https:\/\/registry\.npmjs\.org\/@ai-ecoverse%2Fwas(m|i|ix)-[^/]+\/\d/.test(url);
+  const end = Date.now() + 5 * 60 * 1000;
+  while (!chrome.cdn.requests.some(notes)) {
+    assert.ok(
+      Date.now() < end,
+      `no release-notes fetch after the update check in 5 min, last requests: ${chrome.cdn.requests.slice(-5).join(', ')}`
+    );
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  assert.equal(
+    await page.evaluate(async () => {
+      try {
+        const opt = await (await navigator.storage.getDirectory()).getDirectoryHandle('opt');
+        const grammars = await opt.getDirectoryHandle('grammars');
+        return await (await (await grammars.getFileHandle('keep')).getFile()).text();
+      } catch (error) {
+        return error.name;
+      }
+    }),
+    'mine\n'
+  );
+  assert.deepEqual(page.errors, []);
+});
+
 test('an /opt/agent installed without a workspace file updates to a pruned one', async (t) => {
   const page = await chrome.page(t);
   const manifest = '{"name":"slicc-bios-agent","private":true,"dependencies":{"is-odd":"3.0.1"}}';
