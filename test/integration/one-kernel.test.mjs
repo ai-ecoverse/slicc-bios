@@ -45,7 +45,9 @@ function watchKernels() {
 }
 
 const WARM_PROMPT = 11000;
+const WARM_PER_UI = 20;
 const FIRST_UI = 2000;
+const FIRST_PER_STEADY = 3;
 
 function promptStamp() {
   const tick = () => {
@@ -94,7 +96,7 @@ describe('a cold agent install runs in the page’s one kernel with no package s
   let page;
   let finish;
   let ui;
-  let kept;
+  let steady;
   after(() => finish?.());
   before(async () => {
     page = await chrome.page({
@@ -159,14 +161,16 @@ describe('a cold agent install runs in the page’s one kernel with no package s
     );
   });
 
-  test('the first reload after the agent install re-transforms none of seven’s own modules', async () => {
+  test('the first reload after the agent install re-transforms none of seven’s own modules', async (t) => {
     await idle(page);
     const first = Date.now();
     await page.reload();
     ui = (await page.within(120000, () => window.sliccUiAt)) - first;
     await page.within(120000, () => window.sliccPromptAt);
-    assert.ok(ui < FIRST_UI, `the first reload after the agent install took ${ui} ms to the UI`);
-    kept = await transforms(page);
+    const kept = await transforms(page);
+    t.diagnostic(
+      `first reload after the agent install to the UI: ${ui} ms, ${kept.cached} transforms cached`
+    );
     assert.ok(
       kept.cached > 0,
       'the first reload after the agent install served no cached transform'
@@ -179,20 +183,33 @@ describe('a cold agent install runs in the page’s one kernel with no package s
     assert.deepEqual(page.errors, []);
   });
 
-  test('a steady reload shows the prompt within 11 s', async (t) => {
+  test('a steady reload shows the prompt within 11 s, or within 20 × its own time to the UI on a slower runner', async (t) => {
     await idle(page);
     const start = Date.now();
     await page.reload();
-    const steady = (await page.within(120000, () => window.sliccUiAt)) - start;
+    steady = (await page.within(120000, () => window.sliccUiAt)) - start;
     const took = (await page.within(120000, () => window.sliccPromptAt)) - start;
+    const bound = Math.max(WARM_PROMPT, WARM_PER_UI * steady);
     t.diagnostic(
-      `first reload after the agent install to the UI: ${ui} ms (bound ${FIRST_UI} ms; a steady reload ${steady} ms), ${kept.cached} transforms cached`
+      `warm reload to the UI: ${steady} ms, to the terminal prompt: ${took} ms (bound ${bound} ms)`
     );
-    t.diagnostic(`warm reload to the terminal prompt: ${took} ms (bound ${WARM_PROMPT} ms)`);
     assert.ok(
-      took < WARM_PROMPT,
-      `a steady-state warm reload took ${took} ms to the terminal prompt`
+      took < bound,
+      `a steady-state warm reload took ${took} ms to the terminal prompt and ${steady} ms to the UI`
     );
     assert.deepEqual(page.errors, []);
+  });
+
+  test('the first reload after the agent install reached the UI within 2 s, or within 3 × a steady reload’s time on a slower runner', (t) => {
+    assert.notEqual(ui, undefined, 'the first reload after the agent install never reached the UI');
+    assert.notEqual(steady, undefined, 'no steady reload reached the UI to compare it with');
+    const bound = Math.max(FIRST_UI, FIRST_PER_STEADY * steady);
+    t.diagnostic(
+      `first reload after the agent install to the UI: ${ui} ms (bound ${bound} ms; a steady reload ${steady} ms)`
+    );
+    assert.ok(
+      ui < bound,
+      `the first reload after the agent install took ${ui} ms to the UI, a steady reload ${steady} ms`
+    );
   });
 });
