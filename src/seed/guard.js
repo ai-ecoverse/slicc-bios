@@ -34,6 +34,7 @@ const GUARD_IDS = 2 ** 30;
 const HOLD_MS = 2000;
 const BLANK_MS = 10000;
 const ERROR_PAGE = 'chrome-error://chromewebdata/';
+const ERROR_DOCUMENT = Symbol();
 const bare = (url) => url.split('#')[0];
 const SCRUB_MS = 5000;
 export const BLANKED = 'data:text/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E';
@@ -628,6 +629,8 @@ class Guard {
       }
       return;
     }
+    if (source.method === 'Runtime.executionContextCreated')
+      this.world(source.sessionId).notified.get(source.params.context.id).published = true;
     if (message.id !== undefined) {
       const remaining = (this.callers.get(message.id) ?? 0) - 1;
       if (remaining > 0) this.callers.set(message.id, remaining);
@@ -817,7 +820,8 @@ class Guard {
   }
 
   document(targetId) {
-    if (!this.documents.has(targetId)) this.documents.set(targetId, { revision: 0, checked: -1 });
+    if (!this.documents.has(targetId))
+      this.documents.set(targetId, { revision: 0, checked: -1, cleaned: new Set() });
     return this.documents.get(targetId);
   }
 
@@ -834,9 +838,26 @@ class Guard {
     for (let size = 0; size !== ids.size; ) {
       size = ids.size;
       for (const id of this.documents.keys())
-        if (!this.document(id).retired && ids.has(this.targets.get(id)?.parentId)) ids.add(id);
+        if (
+          !this.document(id).retired &&
+          !this.quarantined(id) &&
+          ids.has(this.targets.get(id)?.parentId)
+        )
+          ids.add(id);
     }
     return ids;
+  }
+
+  quarantined(targetId) {
+    const state = this.documents.get(targetId);
+    const proof = state?.quarantine;
+    const parent = this.documents.get(proof?.parent);
+    return (
+      proof &&
+      proof.revision === state.revision &&
+      parent?.checked === parent?.revision &&
+      proof.parentRevision === parent?.revision
+    );
   }
 
   documentTarget(sessionId) {
@@ -874,6 +895,12 @@ class Guard {
       if (method === 'Page.frameDetached' && params.reason === 'remove')
         this.retire(params.frameId);
     }
+    if (
+      method === 'Page.frameNavigated' &&
+      this.navSessions.has(sessionId) &&
+      this.opaqueError(params.frame)
+    )
+      void this.checkDocument(this.documentTarget(sessionId), true).catch(() => {});
     if (method === 'Target.detachedFromTarget')
       this.invalidate(this.documentTarget(params.sessionId));
     if (method === 'Target.targetDestroyed') this.retire(params.targetId);
@@ -923,13 +950,76 @@ class Guard {
       );
   }
 
+  rememberContext(message) {
+    const { method, params = {}, sessionId } = message;
+    if (method === 'Runtime.executionContextCreated' && Number.isSafeInteger(params.context?.id))
+      this.world(sessionId).notified.set(params.context.id, { message, published: false });
+    if (method === 'Runtime.executionContextDestroyed')
+      this.worlds.get(sessionId)?.notified.delete(params.executionContextId);
+    if (method === 'Runtime.executionContextsCleared') this.worlds.get(sessionId)?.notified.clear();
+  }
+
+  contextURL(message) {
+    const state = this.documents.get(this.documentTarget(message.sessionId));
+    const context = message.params?.context;
+    const type = this.targets.get(this.documentTarget(message.sessionId))?.type;
+    return (
+      state?.tree?.get(context?.auxData?.frameId) ??
+      (WORKER_TYPES.has(type) ? state?.url : undefined)
+    );
+  }
+
+  contextCurrent(message) {
+    const record = this.worlds.get(message.sessionId)?.notified.get(message.params?.context?.id);
+    const expected = this.contextURL(message);
+    return typeof expected === 'string' && record?.url === bare(expected);
+  }
+
+  async verifyContext(message) {
+    const context = message.params.context;
+    const record = this.worlds.get(message.sessionId)?.notified.get(context.id);
+    const expected = this.contextURL(message);
+    if (record?.message !== message || typeof expected !== 'string') return false;
+    const where =
+      typeof context.uniqueId === 'string'
+        ? { uniqueContextId: context.uniqueId }
+        : { contextId: context.id };
+    const answer = await this.call(
+      'Runtime.evaluate',
+      { expression: 'location.href', returnByValue: true, silent: true, ...where },
+      message.sessionId,
+      CHECK_MS
+    );
+    const value = answer.result?.result?.value;
+    if (
+      answer.error ||
+      answer.result?.exceptionDetails ||
+      typeof value !== 'string' ||
+      this.is.url(value) ||
+      bare(value) !== bare(expected)
+    )
+      return false;
+    record.url = bare(value);
+    return (
+      this.worlds.get(message.sessionId)?.notified.get(context.id) === record &&
+      this.contextCurrent(message)
+    );
+  }
+
   rememberEvent(message) {
     if (!documentPublication(message)) return;
     const { sessionId } = message;
+    const context =
+      message.method === 'Runtime.consoleAPICalled' &&
+      this.worlds.get(sessionId)?.notified.get(message.params?.executionContextId);
     this.documentEvents.set(message, {
+      checked: this.documentValid(sessionId),
+      context,
       verified:
         !this.hidden(sessionId) &&
-        (message.method === 'Runtime.executionContextCreated' || this.documentValid(sessionId)),
+        (message.method === 'Runtime.executionContextCreated' ||
+          context ||
+          this.documentValid(sessionId)),
       targetId: this.documentTarget(sessionId),
     });
     this.stampDocument(message);
@@ -938,6 +1028,20 @@ class Guard {
   eventValid(message) {
     if (!documentPublication(message)) return true;
     const receipt = this.documentEvents.get(message);
+    const notified = this.worlds.get(message.sessionId)?.notified;
+    if (
+      message.method === 'Runtime.executionContextCreated' &&
+      notified?.get(message.params?.context?.id)?.message !== message
+    )
+      return false;
+    if (
+      receipt?.context &&
+      (!receipt.context.published ||
+        notified?.get(message.params?.executionContextId) !== receipt.context ||
+        (!receipt.checked && !this.eventValid(receipt.context.message)) ||
+        !this.contextCurrent(receipt.context.message))
+    )
+      return false;
     return Boolean(
       receipt?.verified &&
         receipt.targetId === this.documentTarget(message.sessionId) &&
@@ -946,7 +1050,11 @@ class Guard {
     );
   }
 
-  knownFrame(frame) {
+  opaqueError(frame) {
+    return frame?.url === ERROR_PAGE && frame.securityOrigin === '://';
+  }
+
+  knownFrame(frame, cleanup = false) {
     if (
       !frame ||
       typeof frame.id !== 'string' ||
@@ -956,17 +1064,18 @@ class Guard {
       !URL.canParse(frame.url)
     )
       return false;
-    for (const key of ['securityOrigin', 'unreachableUrl', 'parentId'])
+    for (const key of ['securityOrigin', 'unreachableUrl', 'parentId', 'urlFragment'])
       if (frame[key] !== undefined && typeof frame[key] !== 'string') return false;
     if (frame.unreachableUrl && !URL.canParse(frame.unreachableUrl)) return false;
+    if (cleanup && this.opaqueError(frame)) return true;
     if (new URL(frame.url).protocol === 'chrome-error:' && !frame.unreachableUrl) return false;
     return !this.is.url(this.framed(frame));
   }
 
-  documentTree(tree, seen = new Set()) {
+  documentTree(tree, seen = new Set(), cleanup = false) {
     const frame = tree?.frame;
     if (
-      !this.knownFrame(frame) ||
+      !this.knownFrame(frame, cleanup) ||
       seen.has(frame.id) ||
       (tree.childFrames !== undefined && !Array.isArray(tree.childFrames))
     )
@@ -974,11 +1083,78 @@ class Guard {
     seen.add(frame.id);
     const all = [frame];
     for (const child of tree.childFrames ?? []) {
-      const frames = this.documentTree(child, seen);
+      const frames = this.documentTree(child, seen, cleanup);
       if (!frames) return null;
       all.push(...frames);
     }
     return all;
+  }
+
+  checked(targetId, all, revision) {
+    const state = this.document(targetId);
+    state.failed = false;
+    state.checked = revision;
+    state.url = all[0].url;
+    state.tree = new Map(all.map((frame) => [frame.id, `${frame.url}${frame.urlFragment ?? ''}`]));
+    for (const frame of all) {
+      this.frames.set(frame.id, this.framed(frame));
+      if (frame.parentId) this.parents.set(frame.id, frame.parentId);
+      const child = this.documents.get(frame.id);
+      if (frame.id !== targetId && child && frame.url === BLANKED && state.cleaned.has(frame.id)) {
+        child.quarantine = { parent: targetId, parentRevision: revision, revision: child.revision };
+        this.cutTarget(frame.id);
+      }
+    }
+  }
+
+  async cleanError(nav, all) {
+    const state = this.document(nav.targetId);
+    if (state.cleaning?.nav === nav) return state.cleaning.promise;
+    const promise = this.cleaningError(nav, all);
+    state.cleaning = { nav, promise };
+    try {
+      return await promise;
+    } finally {
+      if (state.cleaning?.promise === promise) state.cleaning = null;
+    }
+  }
+
+  async cleaningError(nav, all) {
+    const frame = all.find((item) => this.opaqueError(item));
+    if (!frame || this.navs.get(nav.targetId) !== nav || !nav.session || nav.failed) return false;
+    const child = this.navs.get(frame.id);
+    const owner = child?.done && !child.failed && child.session ? child : nav;
+    this.invalidate(nav.targetId);
+    const answer = await this.call(
+      'Page.navigate',
+      { url: BLANKED, frameId: frame.id },
+      owner.session,
+      NAV_MS
+    );
+    if (
+      answer.error ||
+      answer.result?.frameId !== frame.id ||
+      answer.result?.errorText ||
+      this.navs.get(nav.targetId) !== nav ||
+      !nav.session ||
+      nav.failed
+    )
+      return false;
+    const state = this.document(nav.targetId);
+    state.cleaned.add(frame.id);
+    const revision = state.revision;
+    const tree = await this.call('Page.getFrameTree', {}, nav.session, CHECK_MS);
+    const fresh = !tree.error && this.documentTree(tree.result?.frameTree);
+    if (
+      !fresh ||
+      state.revision !== revision ||
+      this.navs.get(nav.targetId) !== nav ||
+      nav.failed ||
+      !fresh.some((item) => item.id === frame.id && item.url === BLANKED)
+    )
+      return false;
+    this.checked(nav.targetId, fresh, revision);
+    return true;
   }
 
   async checkDocument(targetId, fresh = false) {
@@ -994,18 +1170,17 @@ class Guard {
     const promise = (async () => {
       const answer = await this.call('Page.getFrameTree', {}, nav.session, CHECK_MS);
       const all = this.documentTree(answer.result?.frameTree);
+      if (!answer.error && !all && state.revision === revision) {
+        const cleanup = this.documentTree(answer.result?.frameTree, new Set(), true);
+        if (cleanup && (await this.cleanError(nav, cleanup))) return false;
+      }
       if (answer.error || !all) {
         state.failed = true;
         state.checked = -1;
         return false;
       }
       if (state.revision !== revision) return false;
-      state.failed = false;
-      for (const frame of all) {
-        this.frames.set(frame.id, this.framed(frame));
-        if (frame.parentId) this.parents.set(frame.id, frame.parentId);
-      }
-      state.checked = revision;
+      this.checked(targetId, all, revision);
       return true;
     })();
     state.checking = { revision, promise };
@@ -1151,6 +1326,7 @@ class Guard {
     }
     if (state.revision !== revision) return false;
     state.failed = false;
+    state.url = info.url;
     state.checked = revision;
     return true;
   }
@@ -1164,7 +1340,10 @@ class Guard {
     if (framed(tree).some((frame) => this.is.url(frame.url) || this.is.url(frame.securityOrigin)))
       return PROTECTED;
     const all = this.documentTree(tree);
-    if (!all) return false;
+    if (!all)
+      return this.documentTree(tree, new Set(), true)?.some((frame) => this.opaqueError(frame))
+        ? ERROR_DOCUMENT
+        : false;
     for (const frame of all) {
       this.frames.set(frame.id, this.framed(frame));
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
@@ -1174,12 +1353,25 @@ class Guard {
 
   async inspect(sessionId, targetId, parent) {
     const guarded = targetId ? await this.target(targetId) : 'unknown';
-    const verified =
+    let verified =
       guarded === true
         ? PROTECTED
         : guarded === 'unknown'
           ? false
           : await this.verify(sessionId, targetId);
+    if (verified === ERROR_DOCUMENT) {
+      this.invalidate(targetId);
+      this.document(targetId).checked = -1;
+      this.document(targetId).failed = true;
+      this.touch(targetId);
+      await this.checkDocument(targetId, true);
+      const state = this.document(targetId);
+      verified =
+        !state.failed &&
+        state.checked === state.revision &&
+        (await this.documentChecked(sessionId)) &&
+        this.documentValid(sessionId);
+    }
     if (verified !== true) {
       this.document(targetId).checked = -1;
       this.document(targetId).failed = true;
@@ -1470,6 +1662,18 @@ class Guard {
     return rest;
   }
 
+  metadataInfo(info) {
+    const state = this.documents.get(info.targetId);
+    if (
+      info.url === ERROR_PAGE ||
+      state?.failed ||
+      (state?.url && info.url !== state.url) ||
+      this.mentions({ title: info.title })
+    )
+      return this.attachmentInfo(info);
+    return this.masked(info);
+  }
+
   async metadataReady(info) {
     const id = info?.targetId;
     return !this.documents.has(id) || (await this.checkDocument(id)) === true;
@@ -1504,7 +1708,7 @@ class Guard {
       if (!(await this.target(params.targetInfo?.targetId))) {
         this.deliver({
           ...message,
-          params: { ...params, targetInfo: this.masked(params.targetInfo) },
+          params: { ...params, targetInfo: this.metadataInfo(params.targetInfo) },
         });
         return true;
       }
@@ -1558,7 +1762,7 @@ class Guard {
   world(sessionId) {
     let world = this.worlds.get(sessionId);
     if (!world) {
-      world = { ids: new Map(), uniques: new Map(), names: new Set() };
+      world = { ids: new Map(), uniques: new Map(), names: new Set(), notified: new Map() };
       this.worlds.set(sessionId, world);
     }
     return world;
@@ -1581,7 +1785,19 @@ class Guard {
 
   verdict(found, sessionId) {
     const world = this.worlds.get(sessionId);
-    const known = found.map(([kind, value]) => world?.[kind]?.get(value));
+    const known = found.map(([kind, value]) => {
+      const verdict = world?.[kind]?.get(value);
+      if (verdict === true) return true;
+      const record =
+        kind === 'ids'
+          ? world?.notified.get(value)
+          : [...(world?.notified.values() ?? [])].find(
+              (item) => item.message.params.context.uniqueId === value
+            );
+      return record && (!record.published || !this.contextCurrent(record.message))
+        ? undefined
+        : verdict;
+    });
     if (known.includes(true)) return WORLD;
     return known.includes(undefined) ? UNSEEN_CONTEXT : null;
   }
@@ -1721,8 +1937,19 @@ class Guard {
     if (this.hidden(sessionId)) return;
     if (foreign) return;
     if (this.walked(message)) return this.cut(sessionId);
-    if (method === 'Runtime.executionContextCreated' && !this.eventValid(message))
-      await this.documentChecked(sessionId);
+    if (method === 'Runtime.executionContextCreated') {
+      if (!(await this.documentChecked(sessionId, true)) || !(await this.verifyContext(message)))
+        return;
+    }
+    const receipt = this.documentEvents.get(message);
+    if (
+      method === 'Runtime.consoleAPICalled' &&
+      receipt?.checked &&
+      receipt.context?.published &&
+      !this.contextCurrent(receipt.context.message) &&
+      typeof receipt.context.message.params.context.uniqueId === 'string'
+    )
+      await this.verifyContext(receipt.context.message);
     if (documentContent(method) && !this.eventValid(message)) return;
     if (sessionId && method.startsWith('Runtime.') && !this.runtimes.has(sessionId)) return;
     if (await this.swallowed(message)) return;
@@ -1785,7 +2012,8 @@ class Guard {
     const targetInfos = [];
     for (const info of result.targetInfos) {
       this.learn(info);
-      if (!(await this.target(info.targetId))) targetInfos.push(this.masked(info));
+      if (!(await this.target(info.targetId)) && (await this.metadataReady(info)))
+        targetInfos.push(this.metadataInfo(info));
     }
     return this.deliver({ ...message, result: { ...result, targetInfos } });
   }
@@ -1828,7 +2056,10 @@ class Guard {
     }
     if (this.contents(message, was)) return;
     if (method === 'Target.getTargetInfo' && result?.targetInfo) {
-      return this.deliver({ ...message, result: { targetInfo: this.masked(result.targetInfo) } });
+      return this.deliver({
+        ...message,
+        result: { targetInfo: this.metadataInfo(result.targetInfo) },
+      });
     }
     if (method === 'Target.createBrowserContext' && result?.browserContextId) {
       this.contexts.add(result.browserContextId);
@@ -2042,6 +2273,7 @@ class Guard {
     const message = parse(text);
     if (message.id === undefined) {
       this.documentEvent(message);
+      this.rememberContext(message);
       this.rememberEvent(message);
     }
     if (this.internal.has(message.id)) {

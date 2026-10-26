@@ -75,7 +75,12 @@ export function protocol(t, protect = guardProtected) {
     if (method === 'Runtime.evaluate') {
       result = {
         result: {
-          value: target.tree.frame.url.startsWith('chrome-error:') ? failed : 'synthetic-content',
+          value:
+            id >= 2 ** 30 && params.expression === 'location.href'
+              ? `${target.tree.frame.url}${target.tree.frame.urlFragment ?? ''}`
+              : target.tree.frame.url.startsWith('chrome-error:')
+                ? failed
+                : 'synthetic-content',
         },
       };
     }
