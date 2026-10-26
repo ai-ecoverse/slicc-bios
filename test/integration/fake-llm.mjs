@@ -108,7 +108,9 @@ export async function fakeLlm(cdp, { answer, hosts }) {
     if (method !== 'Fetch.requestPaused') return;
     const ours = hosts.some((host) => params.request.url.startsWith(host));
     await (ours ? answered(params) : served(params)).catch(() =>
-      cdp.send('Fetch.failRequest', { requestId: params.requestId, errorReason: 'Failed' })
+      cdp
+        .send('Fetch.failRequest', { requestId: params.requestId, errorReason: 'Failed' })
+        .catch(() => {})
     );
   });
   await cdp.send('Fetch.enable', {
