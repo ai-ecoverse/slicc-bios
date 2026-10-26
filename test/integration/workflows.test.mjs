@@ -43,7 +43,7 @@ test('CI runs on pull requests, merge groups and pushes to main, and cancels a s
 test('the pipeline picks its runners and reviews no Renovate pull request', () => {
   for (const name of ['runs-on', 'review-renovate']) assert.equal(input(name), undefined, name);
   assert.doesNotMatch(ci, /vars\./);
-  assert.equal(input('shards'), '12');
+  assert.equal(input('shards'), '14');
   assert.equal(input('timeout-minutes'), '90');
   assert.match(input('review-prompt'), /^\|$/);
 });
