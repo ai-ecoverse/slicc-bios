@@ -78,8 +78,8 @@ importers:
         specifier: 2.8.0-5
         version: 2.8.0-5
       '@ai-ecoverse/wasm-procps':
-        specifier: 4.0.7-5
-        version: 4.0.7-5
+        specifier: 4.0.7-6
+        version: 4.0.7-6
       '@ai-ecoverse/wasm-sed':
         specifier: 4.10.0-6
         version: 4.10.0-6
@@ -192,8 +192,8 @@ packages:
   '@ai-ecoverse/wasm-patch@2.8.0-5':
     resolution: {integrity: sha512-xoMrYGOwbD43O46JQaQsIQkv7hcP/oVMsDH1F3kgaAFMko0KZXUURm0xtnZVEQMy9JLPlN+dwalKZf93gx17sg==}
 
-  '@ai-ecoverse/wasm-procps@4.0.7-5':
-    resolution: {integrity: sha512-N69rs2QAstDMKWSGbCYV3RcEfhifH4xQagpFOM70Ia9oDHkBJO9jyf66rsVqAbHl3gUdKVgq7G9MeJW1pc3/Xg==}
+  '@ai-ecoverse/wasm-procps@4.0.7-6':
+    resolution: {integrity: sha512-pFRV/plLnZ9bYVIHl2TIDl6bhiqJ32HJn0/UDnsik28JiCWy4sZ1fZjZvsP1l1MaxLscelovaaRzOiQf1QnFkQ==}
     engines: {slicc-kernel: '>=1.44.0'}
 
   '@ai-ecoverse/wasm-sed@4.10.0-6':
@@ -269,7 +269,7 @@ snapshots:
 
   '@ai-ecoverse/wasm-patch@2.8.0-5': {}
 
-  '@ai-ecoverse/wasm-procps@4.0.7-5': {}
+  '@ai-ecoverse/wasm-procps@4.0.7-6': {}
 
   '@ai-ecoverse/wasm-sed@4.10.0-6': {}
 
