@@ -803,6 +803,128 @@ test('the BIOS installer replaces a package in place while seven runs: the shell
   assert.deepEqual(page.errors, []);
 });
 
+const COMMAND = [`${bash}/bin/bash.wasm`, `${bash}/bin/bash`];
+const HOLD = 'slicc-test-hold';
+
+function holdSecond(files, name) {
+  const channel = new BroadcastChannel(name);
+  const opened = [];
+  let letGo;
+  const released = new Promise((resolve) => {
+    letGo = resolve;
+  });
+  globalThis.releaseHold = () => letGo();
+  const create = FileSystemFileHandle.prototype.createWritable;
+  FileSystemFileHandle.prototype.createWritable = async function (...args) {
+    const root = await navigator.storage.getDirectory();
+    const path = (await root.resolve(this))?.join('/');
+    if (files.includes(path) && !opened.includes(path)) {
+      opened.push(path);
+      if (opened.length === files.length) {
+        channel.postMessage(path);
+        await released;
+      }
+    }
+    return create.apply(this, args);
+  };
+  return true;
+}
+
+async function installerWorker(t) {
+  const href = new URL('/installer.js', chrome.url).href;
+  const { targetInfos } = await chrome.cdp.send('Target.getTargets');
+  const found = targetInfos.filter(({ type, url }) => type === 'shared_worker' && url === href);
+  assert.equal(found.length, 1, `installer workers: ${JSON.stringify(targetInfos)}`);
+  const { sessionId } = await chrome.cdp.send('Target.attachToTarget', {
+    targetId: found[0].targetId,
+    flatten: true,
+  });
+  t.after(() => chrome.cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {}));
+  return (expression) =>
+    chrome.cdp
+      .send('Runtime.evaluate', { expression, returnByValue: true }, sessionId)
+      .then(({ result, exceptionDetails }) => {
+        if (exceptionDetails) throw new Error(exceptionDetails.exception?.description);
+        return result.value;
+      });
+}
+
+test('the BIOS installer replaces a command in place while seven runs: an exec that starts while one of its wasm and glue is new and the other old runs one version whole', async (t) => {
+  const page = await chrome.page(t);
+  await bootOlder(page);
+  chrome.overrides.set('/hold.html', '<!doctype html><title>hold</title>');
+  const other = await page.tab();
+  await other.goto('/hold.html');
+  await other.evaluate(
+    (name) =>
+      new Promise((resolve) => {
+        const { port } = new SharedWorker('/installer.js', 'slicc-installer');
+        window.installer = { port, held: null, result: null };
+        new BroadcastChannel(name).onmessage = ({ data }) => {
+          window.installer.held = data;
+        };
+        port.onmessage = ({ data }) => {
+          if ('progress' in data) return;
+          if (data.id === 1) resolve(data);
+          else window.installer.result = data;
+        };
+        port.postMessage({ id: 1, op: 'hello' });
+      }),
+    HOLD
+  );
+  const installer = await installerWorker(t);
+  assert.equal(await installer(`(${holdSecond})(${JSON.stringify(COMMAND)}, '${HOLD}')`), true);
+  deploy();
+  await other.evaluate(() =>
+    window.installer.port.postMessage({
+      id: 2,
+      op: 'packages',
+      args: {
+        from: new URL('/packages/package-lock.json', location.href).href,
+        base: 'opt/slicc/base',
+      },
+    })
+  );
+  const held = await other.until(() => window.installer.held ?? window.installer.result);
+  assert.ok(
+    COMMAND.includes(held),
+    `the installer wasn't held at bash's files: ${JSON.stringify(held)}`
+  );
+  await page.send('Page.bringToFront');
+  await shows(page, prompt);
+  await run(
+    page,
+    `clear; bash -c 'echo exec-ok' > /tmp/held 2>&1; echo "held-$((40 + 2)) exit=$?"`
+  );
+  const seen = await page
+    .within(
+      60000,
+      async (root) => {
+        const { dock } = document.querySelector('slicc-app');
+        const terminal = dock.api.panels
+          .map(({ id }) => id)
+          .findLast((id) => id.startsWith('terminal:'));
+        if (dock.content(terminal).screen.textContent.includes('held-42')) return 'answered';
+        const { pending = [] } = await navigator.locks.query();
+        const waiting = pending.some(({ name, mode }) => mode === 'shared' && name.includes(root));
+        return waiting && 'waiting';
+      },
+      `/${bash}`
+    )
+    .catch((error) => {
+      throw new Error(`the exec neither answered nor waited for the package: ${error.message}`);
+    });
+  await installer('globalThis.releaseHold()');
+  const result = await other.until(() => window.installer.result);
+  assert.ok(result.result?.downloaded >= 1, JSON.stringify(result));
+  await shows(page, 'held-42', 120000);
+  const output = await read(page, 'tmp/held').catch((error) => `no /tmp/held: ${error.message}`);
+  assert.equal(output.trim(), 'exec-ok', `the exec (${seen} while ${held} was held): ${output}`);
+  assert.match(await screen(page), /held-42 exit=0/);
+  assert.equal(await version(page), SHIPPED);
+  assert.deepEqual(page.errors, []);
+});
+
 test('the BIOS installer updates a command’s wasm before its glue and its package.json last, so another tab never sees new glue beside old wasm', async (t) => {
   const page = await chrome.page(t);
   await bootOlder(page);
