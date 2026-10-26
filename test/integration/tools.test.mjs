@@ -418,6 +418,44 @@ test('while the first tools round runs, a tool’s command says seven is still i
   assert.deepEqual(page.errors, []);
 });
 
+test('a first-batch tool that fails drops its placeholder when its batch ends: while the second batch still installs, jq is plainly not found and less still says seven is installing it (#1086)', {
+  timeout: 25 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  prepare();
+  registry.tarballs = 404;
+  registry.only = /\/wasm-jq-[^/]+\.tgz$/;
+  registry.hold = /\/@ai-ecoverse\/wasm-less\/-\/wasm-less-[^/]+\.tgz$/;
+  t.after(() => registry.reset());
+  await page.init('() => { globalThis.sliccKernelDebug = true; }');
+  await page.goto('/');
+  const seen = await page.within(10 * 60 * 1000, () => {
+    const rows = document.querySelector('slicc-app')?.model?.updates?.packages?.() ?? [];
+    const state = (id) => rows.find((row) => row.id === id)?.state;
+    window.toolsSeen = rows.map((row) => `${row.id} ${row.state}`).join(', ');
+    return (
+      state('tools:jq') === 'failed' &&
+      state('tools:less') === 'installing' &&
+      document.documentElement.dataset.tools === 'installing' &&
+      window.toolsSeen
+    );
+  });
+  const during = await sh(
+    page,
+    'jq --version; echo "rc=$?"; command -v jq || echo "no-jq"; less --version; echo "rc=$?"'
+  );
+  assert.match(during.out, /jq: command not found/, `${during.out}\n${seen}`);
+  assert.doesNotMatch(during.out, /jq: seven is still installing/, during.out);
+  assert.match(during.out, /^no-jq$/m, during.out);
+  assert.match(
+    during.out,
+    /^less: seven is still installing it; Install \/ Update shows its progress$/m,
+    `the second batch keeps its placeholders: ${during.out}`
+  );
+  assert.equal((await jqRow(page)).state, 'failed');
+  assert.deepEqual(page.errors, []);
+});
+
 test('seven never takes a tool back to an older npm latest, and a newer release that fails the gate leaves the installed one in place', {
   timeout: 25 * 60 * 1000,
 }, async (t) => {

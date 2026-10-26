@@ -195,6 +195,72 @@ test('an ordinary update shows no notice: the updated worker activates before an
   assert.deepEqual(page.errors, []);
 });
 
+test('an update activates within 15 s while the tab keeps pulling a long download from the old worker: the old worker ends the download with an error once it is 5 s old, before any notice could show, and the next fetch of it comes whole from the new worker (#710)', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await settled(page);
+  chrome.overrides.set('/os/held.bin', Buffer.alloc(SIZE, 7));
+  await page.evaluate(async () => {
+    window.noticed = [];
+    document
+      .querySelector('slicc-app')
+      .model.notices.on('notices', (list) => window.noticed.push(...list.map(({ id }) => id)));
+    window.switched = null;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      window.switched = performance.now();
+    });
+    const reader = (await fetch('/os/held.bin')).body.getReader();
+    window.pulled = { bytes: 0, end: null };
+    void (async () => {
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) {
+            window.pulled.end = 'done';
+            return;
+          }
+          window.pulled.bytes += value.byteLength;
+          await new Promise((resolve) => setTimeout(resolve, value.byteLength / 2048));
+        }
+      } catch (error) {
+        window.pulled.end = error.name;
+      }
+    })();
+  });
+  await page.within(5000, () => window.pulled.bytes > 0);
+  bumpWorker();
+  const started = await page.evaluate(() => performance.now());
+  assert.ok(await update(page));
+  const took = await page.within(
+    15000,
+    async (started) => {
+      const registration = await navigator.serviceWorker.getRegistration();
+      return (
+        !registration.waiting &&
+        !registration.installing &&
+        window.switched !== null &&
+        Math.round(window.switched - started)
+      );
+    },
+    started
+  );
+  t.diagnostic(`the update took over ${took} ms after the update check`);
+  assert.deepEqual(await workers(page), { active: 'activated', waiting: null, installing: null });
+  const pulled = await page.within(10000, () => window.pulled.end && window.pulled);
+  assert.notEqual(pulled.end, 'done', 'the download fails instead of ending early');
+  assert.ok(pulled.bytes < SIZE, JSON.stringify(pulled));
+  const again = await page.evaluate(async () => {
+    const response = await fetch('/os/held.bin', { cache: 'no-store' });
+    return (await response.arrayBuffer()).byteLength;
+  });
+  assert.equal(again, SIZE);
+  assert.deepEqual(
+    await page.evaluate(() => window.noticed.filter((id) => id.startsWith('sw-waiting:'))),
+    []
+  );
+  assert.deepEqual(page.errors, []);
+});
+
 test('an update that waits without skipping waiting on its own is activated by seven’s nudge before any notice could show (#959)', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
