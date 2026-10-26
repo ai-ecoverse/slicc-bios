@@ -4,7 +4,9 @@ import { writeFile } from 'node:fs/promises';
 export const installable = Object.entries(
   JSON.parse(readFileSync(new URL('../../src/packages/package-lock.json', import.meta.url), 'utf8'))
     .packages
-).filter(([path, entry]) => path && entry.resolved && !entry.os && !entry.cpu).length;
+).filter(
+  ([path, entry]) => path && entry.resolved && !entry.os && !entry.cpu && !entry.optional
+).length;
 
 export const steps = ['opfs', 'installer', 'packages', 'seed', 'intercept', 'navigate'];
 export const booted = steps.flatMap((step) => [`${step}:active`, `${step}:done`]);

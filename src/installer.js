@@ -434,7 +434,7 @@ async function replay(from, progress, base) {
   return outcome(ledger, '/node_modules/', async () => {
     const lock = JSON.parse(new TextDecoder().decode(await download(from)));
     const queue = Object.entries(lock.packages).filter(
-      ([path, entry]) => path && entry.resolved && !entry.os && !entry.cpu
+      ([path, entry]) => path && entry.resolved && !entry.os && !entry.cpu && !entry.optional
     );
     const removed = await prune(new Set(queue.map(([path]) => path)));
     const tampered = (await ledger.tampered()).filter((path) => path.startsWith('/node_modules/'));
