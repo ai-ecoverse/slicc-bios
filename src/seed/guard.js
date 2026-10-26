@@ -699,12 +699,13 @@ class Guard {
   async opener(openerId, depth) {
     if (!openerId) return undefined;
     if (!(await this.lookup(openerId))) return 'unknown';
-    return (await this.target(openerId, depth + 1)) ? 'protected' : 'unprotected';
+    const verdict = await this.target(openerId, depth + 1);
+    return verdict === true ? 'protected' : verdict === false ? 'unprotected' : 'unknown';
   }
 
   async target(targetId, depth = 0) {
     const found = await this.lookup(targetId);
-    if (!found) return true;
+    if (!found) return 'unknown';
     if (isHeld(targetId) || isHeld(found.openerId)) {
       hold(targetId);
       found.guarded = true;
@@ -926,7 +927,9 @@ class Guard {
     if (!documentPublication(message)) return;
     const { sessionId } = message;
     this.documentEvents.set(message, {
-      verified: !this.hidden(sessionId) && this.documentValid(sessionId),
+      verified:
+        !this.hidden(sessionId) &&
+        (message.method === 'Runtime.executionContextCreated' || this.documentValid(sessionId)),
       targetId: this.documentTarget(sessionId),
     });
     this.stampDocument(message);
@@ -978,7 +981,7 @@ class Guard {
     return all;
   }
 
-  async checkDocument(targetId) {
+  async checkDocument(targetId, fresh = false) {
     if (WORKER_TYPES.has(this.targets.get(targetId)?.type)) return this.verifyWorker(targetId);
     const state = this.document(targetId);
     const nav = this.navs.get(targetId);
@@ -986,7 +989,7 @@ class Guard {
     await nav.ready;
     if (nav.failed || !nav.session) return false;
     const revision = state.revision;
-    if (state.checked === revision) return true;
+    if (!fresh && state.checked === revision) return true;
     if (state.checking?.revision === revision) return state.checking.promise;
     const promise = (async () => {
       const answer = await this.call('Page.getFrameTree', {}, nav.session, CHECK_MS);
@@ -1013,12 +1016,12 @@ class Guard {
     }
   }
 
-  async documentChecked(sessionId) {
+  async documentChecked(sessionId, fresh = false) {
     const targetId = this.documentTarget(sessionId);
     if (!this.documents.has(targetId)) return true;
     const ids = this.related(targetId);
     if (!ids) return false;
-    const checked = await Promise.all([...ids].map((id) => this.checkDocument(id)));
+    const checked = await Promise.all([...ids].map((id) => this.checkDocument(id, fresh)));
     return checked.every(Boolean) && this.documentValid(sessionId);
   }
 
@@ -1170,8 +1173,13 @@ class Guard {
   }
 
   async inspect(sessionId, targetId, parent) {
-    const guarded = targetId ? await this.target(targetId) : true;
-    const verified = guarded ? PROTECTED : await this.verify(sessionId, targetId);
+    const guarded = targetId ? await this.target(targetId) : 'unknown';
+    const verified =
+      guarded === true
+        ? PROTECTED
+        : guarded === 'unknown'
+          ? false
+          : await this.verify(sessionId, targetId);
     if (verified !== true) {
       this.document(targetId).checked = -1;
       this.document(targetId).failed = true;
@@ -1189,13 +1197,13 @@ class Guard {
       sessionId,
       new Map([...this.related(targetId)].map((id) => [id, this.document(id).revision]))
     );
-    this.document(targetId).checked = -1;
     this.shown.add(sessionId);
     return true;
   }
 
   watch(sessionId, targetId, parent) {
-    if (!this.sessions.has(sessionId)) this.sessions.set(sessionId, { targetId, parent });
+    const known = this.sessions.get(sessionId);
+    if (!known?.targetId) this.sessions.set(sessionId, { targetId, parent });
     if (!this.watching.has(sessionId)) {
       const watched = this.inspect(sessionId, targetId, parent).then((ok) => {
         if (!ok && this.watching.get(sessionId) === watched) this.watching.delete(sessionId);
@@ -1713,6 +1721,8 @@ class Guard {
     if (this.hidden(sessionId)) return;
     if (foreign) return;
     if (this.walked(message)) return this.cut(sessionId);
+    if (method === 'Runtime.executionContextCreated' && !this.eventValid(message))
+      await this.documentChecked(sessionId);
     if (documentContent(method) && !this.eventValid(message)) return;
     if (sessionId && method.startsWith('Runtime.') && !this.runtimes.has(sessionId)) return;
     if (await this.swallowed(message)) return;
@@ -1942,7 +1952,7 @@ class Guard {
     const entry = this.sessions.get(sessionId);
     if (this.hidden(sessionId) && entry && !this.blocked.has(sessionId))
       await this.watch(sessionId, entry.targetId, entry.parent);
-    if (this.hidden(sessionId) || !(await this.documentChecked(sessionId))) return PROTECTED;
+    if (this.hidden(sessionId) || !(await this.documentChecked(sessionId, true))) return PROTECTED;
     return null;
   }
 
