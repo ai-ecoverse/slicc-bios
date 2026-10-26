@@ -81,7 +81,7 @@ test('slicc-audio is in the base set without ortllama, a delayed microphone requ
   await page.until(() => !!window.findConfirm(), undefined);
   assert.match(
     await page.evaluate(() => window.findConfirm().shadowRoot.textContent),
-    /Use the microphone\?.*A program asks seven to record from your microphone for 1 second\./s
+    /Use the microphone\?.*A program asks seven to record from your microphone for up to 1 second\./s
   );
   await page.screenshot(new URL('mic-prompt-light.png', page.dir));
   await page.evaluate(() => {

@@ -243,7 +243,7 @@ export function capturePrompt({ stamp }) {
 
 export function lasting(seconds) {
   if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) return '';
-  return ` for ${seconds} ${seconds === 1 ? 'second' : 'seconds'}`;
+  return ` for up to ${seconds} ${seconds === 1 ? 'second' : 'seconds'}`;
 }
 
 function asking(title, says, action, what, timed = false) {
