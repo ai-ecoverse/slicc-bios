@@ -160,6 +160,28 @@ test('an old profile keeps its base-set copy of a tool until seven has installed
   assert.deepEqual(page.errors, []);
 });
 
+test('an old profile whose first replay can’t read tools.json keeps its base-set copy of every tool: nothing is pruned until seven knows which tools moved', {
+  timeout: 25 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  prepare();
+  chrome.overrides.set('/packages/package-lock.json', await pinnedBefore('1.8.2-4'));
+  chrome.overrides.set('/packages/tools.json', '{}\n');
+  await page.init('() => { globalThis.sliccKernelDebug = true; }');
+  await boot(page);
+  assert.equal(await versionOf(page, `/node_modules/${JQ}`), '1.8.2-4');
+
+  chrome.overrides.delete('/packages/package-lock.json');
+  chrome.overrides.set('/packages/tools.json', '{ not json');
+  t.after(() => chrome.overrides.delete('/packages/tools.json'));
+  await boot(page);
+  const kept = await sh(page, `jq --version && test ! -e ${TOOLS}/${JQ} && echo old-copy`);
+  assert.equal(kept.code, '0', kept.out);
+  assert.match(kept.out, /old-copy/);
+  assert.equal(await versionOf(page, `/node_modules/${JQ}`), '1.8.2-4');
+  assert.deepEqual(page.errors, []);
+});
+
 test('seven judges every package pnpm resolved for the tools before pnpm downloads any of them: each tool’s version doc is asked for before its tarball', {
   timeout: 20 * 60 * 1000,
 }, async (t) => {
