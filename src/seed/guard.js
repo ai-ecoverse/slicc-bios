@@ -1037,12 +1037,9 @@ class Guard {
       const guarded = await this.target(info.targetId);
       if (guarded || nav?.taken || nav?.failed) return this.cut(sessionId, parent);
       if (nav) nav.held = false;
-      this.deliver(
-        {
-          ...message,
-          params: { ...params, targetInfo: this.masked(info), waitingForDebugger: false },
-        },
-        true,
+      this.shownTarget(
+        { ...message, params: { ...params, waitingForDebugger: false } },
+        info,
         message
       );
     }
@@ -1261,7 +1258,7 @@ class Guard {
       this.learn(info);
       if (await this.watch(params.sessionId, info.targetId, sessionId)) {
         this.touch(info.targetId);
-        this.deliver(message);
+        this.shownTarget(message, info);
       }
       return true;
     }
@@ -2003,13 +2000,16 @@ class Guard {
     return !entry || this.unsafeUrl(entry.url) || this.hides(entry);
   }
 
-  shownTarget(message, info) {
-    const shown = this.masked(info ?? {});
-    if (shown !== info && this.is.url(shown.url)) return;
+  shownTarget(message, info, source = message) {
+    const raw = info ?? {};
+    const shown = this.masked(raw);
+    const names = (value) =>
+      typeof value === 'string' && value.includes('://') && this.is.url(value);
+    if ([raw.url, raw.title, shown.url, shown.title].some(names)) return;
     this.deliver({
       ...message,
       params: { ...message.params, targetInfo: shown },
-    }, true, message);
+    }, true, source);
   }
 
   masked(info) {
