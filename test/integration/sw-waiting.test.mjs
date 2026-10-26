@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
-import { boot, ready } from './bios.mjs';
+import { boot, ready, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { shoot } from './shots.mjs';
 
@@ -192,6 +192,146 @@ test('an ordinary update shows no notice: the updated worker activates before an
     await page.evaluate(() => window.noticed.filter((id) => id.startsWith('sw-waiting:'))),
     []
   );
+  assert.deepEqual(page.errors, []);
+});
+
+const fixture = new URL('fixtures/sse-fixture/', import.meta.url);
+
+async function sseServer(page) {
+  const files = {};
+  for (const name of ['package.json', 'index.mjs'])
+    files[`node_modules/sse-fixture/${name}`] = (await readFile(new URL(name, fixture))).toString(
+      'base64'
+    );
+  await page.evaluate(async (files) => {
+    for (const [path, data] of Object.entries(files)) {
+      const names = path.split('/');
+      const name = names.pop();
+      let dir = await navigator.storage.getDirectory();
+      for (const part of names) dir = await dir.getDirectoryHandle(part, { create: true });
+      const writable = await (await dir.getFileHandle(name, { create: true })).createWritable();
+      await writable.write(Uint8Array.from(atob(data), (c) => c.charCodeAt(0)));
+      await writable.close();
+    }
+  }, files);
+  await page.reload();
+  await ready(page);
+  await settled(page);
+  await run(page, 'sse-fixture 8480 &');
+  await shows(page, 'listening 8480');
+}
+
+const tookOver = (page, ms) =>
+  page.within(ms, async () => {
+    const registration = await navigator.serviceWorker.getRegistration();
+    return (
+      registration.active?.state === 'activated' &&
+      !registration.waiting &&
+      !registration.installing &&
+      window.switched !== null &&
+      Math.round(window.switched - window.checked)
+    );
+  });
+
+const checked = (page) =>
+  page.evaluate(() => {
+    window.switched = null;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      window.switched = performance.now();
+    });
+    window.checked = performance.now();
+  });
+
+test('a live event stream from a kernel server no longer holds an update: 5 s after the new worker is installed, the old one ends the stream cleanly, the EventSource reconnects to the new worker and keeps getting events, and a fetch reader of the same stream gets an error (#710)', {
+  timeout: 15 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await settled(page);
+  await sseServer(page);
+  await page.evaluate(() => {
+    window.live = { opens: 0, errors: 0, seen: [], fetched: 0, end: null };
+    const source = new EventSource('http://8480.kernel.localhost/events');
+    window.liveSource = source;
+    source.onopen = () => {
+      window.live.opens += 1;
+    };
+    source.onerror = () => {
+      window.live.errors += 1;
+    };
+    source.onmessage = ({ data }) => {
+      window.live.seen.push(data);
+    };
+    void (async () => {
+      try {
+        const reader = (await fetch('http://8480.kernel.localhost/events')).body.getReader();
+        for (;;) {
+          const { done } = await reader.read();
+          if (done) {
+            window.live.end = 'done';
+            return;
+          }
+          window.live.fetched += 1;
+        }
+      } catch (error) {
+        window.live.end = error.name;
+      }
+    })();
+  });
+  await page.within(15000, () => window.live.seen.length >= 2 && window.live.fetched >= 2);
+  bumpWorker();
+  await checked(page);
+  assert.ok(await update(page));
+  const took = await tookOver(page, 15000);
+  t.diagnostic(`the new worker took over ${took} ms after the update check`);
+  const first = await page.evaluate(() => window.live.seen[0].split(' ')[0]);
+  const live = await page.within(
+    15000,
+    (first) => {
+      const { live } = window;
+      const later = live.seen.filter((event) => event.split(' ')[0] !== first);
+      return live.opens >= 2 && later.length >= 2 && live.end && live;
+    },
+    first
+  );
+  assert.ok(live.errors >= 1, JSON.stringify(live));
+  assert.notEqual(live.end, 'done', `the fetch reader fails instead of ending: ${live.end}`);
+  assert.equal(await page.evaluate(() => window.liveSource.readyState), 1);
+  assert.deepEqual(page.errors, []);
+});
+
+test('a download the tab keeps pulling doesn’t hold an update, so the old worker leaves it alone: the update activates and the download ends whole (#710)', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await settled(page);
+  chrome.overrides.set('/os/held.bin', Buffer.alloc(SIZE, 7));
+  await page.evaluate(() => {
+    window.pulled = { bytes: 0, end: null };
+    void (async () => {
+      try {
+        const reader = (await fetch('/os/held.bin')).body.getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) {
+            window.pulled.end = 'done';
+            return;
+          }
+          window.pulled.bytes += value.byteLength;
+          await new Promise((resolve) => setTimeout(resolve, value.byteLength / 2048));
+        }
+      } catch (error) {
+        window.pulled.end = error.name;
+      }
+    })();
+  });
+  await page.within(30000, (least) => window.pulled.bytes >= least, 12 * 1024 * 1024);
+  bumpWorker();
+  await checked(page);
+  assert.ok(await update(page));
+  const took = await tookOver(page, 15000);
+  t.diagnostic(`the new worker took over ${took} ms after the update check`);
+  const pulled = await page.within(60000, () => window.pulled.end && window.pulled);
+  assert.deepEqual(pulled, { bytes: SIZE, end: 'done' });
   assert.deepEqual(page.errors, []);
 });
 

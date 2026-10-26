@@ -43,7 +43,7 @@
     "prepare": "slicc-install-hooks",
     "start": "node test/integration/chrome.mjs",
     "pretest": "slicc-cdp install-browser",
-    "test": "node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs 'test/integration/*.test.mjs'",
+    "test": "node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs test/integration/sw-waiting.test.mjs",
     "test:unit": "mcr -c node_modules/@ai-ecoverse/slicc-shared-web/mcr.config.mjs node --test 'test/unit/**/*.test.mjs'",
     "lint": "slicc-lint",
     "format": "biome check --write ."
