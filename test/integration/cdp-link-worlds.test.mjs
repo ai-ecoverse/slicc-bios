@@ -141,6 +141,15 @@ test('slicc-cdp#377: the kernel facade and slicc-cli link drive ordinary tabs wi
   });
   await boot(page);
   await ready(page);
+  const cdp = await page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.updates.packages()
+      .find((row) => row.id === 'tools:cdp')
+  );
+  t.diagnostic(
+    `slicc-cdp: seven offered ${cdp?.offered ?? 'nothing'}, installed ${cdp?.version ?? 'nothing'} (${cdp?.state ?? 'no row'})`
+  );
   const home = await mkdtemp(join(tmpdir(), 'cdp-link-home-'));
   t.after(() => rm(home, { recursive: true, force: true }));
   const env = {

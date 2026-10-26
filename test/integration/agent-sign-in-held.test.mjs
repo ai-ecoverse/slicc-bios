@@ -50,6 +50,7 @@ const port = await new Promise((resolve) => {
   });
 });
 const chrome = await launch({
+  tools: false,
   agent: true,
   timeout: 120000,
   args: [
@@ -194,7 +195,7 @@ test('the agent’s real MCP sign-in popup is held through the marker on slicc-e
   const extension = await fakeExtension(page);
   t.after(extension.close);
   await page.init(debug);
-  await boot(page);
+  await boot(page, undefined, { tools: false });
   await agentUp(page);
   await heldThroughout(t, page, 'extension');
   assert.deepEqual(page.errors, []);
@@ -214,7 +215,7 @@ test('the agent’s real MCP sign-in popup is held through the marker on slicc-n
   const page = await chrome.page(t);
   await page.init(debug);
   await page.goto(`/#${new URLSearchParams({ proxy: proxy.url, key: proxy.key })}`);
-  await ready(page);
+  await ready(page, undefined, { tools: false });
   await agentUp(page);
   await page.until(
     () => document.querySelector('slicc-app').model.network.status().browser?.via === 'proxy'
@@ -230,7 +231,7 @@ test('with no bios holder answering, the agent’s MCP sign-in fails and never o
   const extension = await fakeExtension(page);
   t.after(extension.close);
   await page.init(debug);
-  await boot(page);
+  await boot(page, undefined, { tools: false });
   await agentUp(page);
   await page.evaluate(() => {
     const post = BroadcastChannel.prototype.postMessage;

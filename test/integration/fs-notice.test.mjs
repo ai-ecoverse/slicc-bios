@@ -6,7 +6,7 @@ import { packTar } from 'modern-tar';
 import { eventually, ready, run, shows, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
-const chrome = await launch({ timeout: 120000 });
+const chrome = await launch({ tools: false, timeout: 120000 });
 after(() => chrome.close());
 
 const WAIT_S = 10;

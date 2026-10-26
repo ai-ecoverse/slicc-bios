@@ -43,14 +43,14 @@ export async function watch(page) {
   };
 }
 
-export async function boot(page, prompts = [prompt]) {
+export async function boot(page, prompts = [prompt], options = {}) {
   await page.goto('/');
-  await ready(page, prompts);
+  await ready(page, prompts, options);
 }
 
 export const prompt = 'slicc:/home# ';
 
-export async function ready(page, prompts = [prompt]) {
+export async function ready(page, prompts = [prompt], { tools = true } = {}) {
   await page.until(
     () =>
       location.pathname === '/os/' &&
@@ -74,6 +74,40 @@ export async function ready(page, prompts = [prompt]) {
     )?.screen?.textContent;
     return !!text && prompts.some((wanted) => text.includes(wanted));
   }, prompts);
+  if (!tools) return;
+  await toolsSettled(page);
+  const left = await page.evaluate(() =>
+    (document.querySelector('slicc-app')?.model?.updates?.packages?.() ?? [])
+      .filter((row) => row.id.startsWith('tools:') && row.state !== 'installed')
+      .map((row) => {
+        const why = row.log?.trim().split('\n').at(-1);
+        return `${row.id} ${row.state}${row.error ? ` (${row.error})` : ''}${why ? `: ${why.slice(0, 160)}` : ''}`;
+      })
+  );
+  if (left.length) console.log(`seven's tools settled with ${left.join(', ')}`);
+}
+
+export async function toolsSettled(page, ms = 10 * 60 * 1000) {
+  try {
+    await page.within(ms, () => {
+      const at = document.documentElement.dataset.tools;
+      return !!at && at !== 'installing';
+    });
+  } catch (error) {
+    const seen = await page
+      .evaluate(async () => ({
+        tools: document.documentElement.dataset.tools ?? 'unset',
+        rows: (document.querySelector('slicc-app')?.model?.updates?.packages?.() ?? [])
+          .filter((row) => row.id.startsWith('tools:'))
+          .map((row) => `${row.id} ${row.state}${row.error ? ` (${row.error})` : ''}`),
+        locks: ((await navigator.locks.query()).held ?? []).map((lock) => lock.name),
+      }))
+      .catch((failed) => ({ tools: `unreadable (${failed.message})`, rows: [], locks: [] }));
+    throw new Error(
+      `seven's tools didn't settle in ${ms} ms: data-tools is ${seen.tools}; held locks ${seen.locks.join(', ') || 'none'}; ${seen.rows.join(', ') || 'no tool rows'}`,
+      { cause: error }
+    );
+  }
 }
 
 export async function rowSettled(page, id, ms = 10 * 60 * 1000) {

@@ -5,7 +5,7 @@ import { boot, eventually, prompt } from './bios.mjs';
 import { offered } from './catalog.mjs';
 import { launch } from './chrome.mjs';
 
-const chrome = await launch({ timeout: 120000 });
+const chrome = await launch({ tools: false, timeout: 120000 });
 after(() => chrome.close());
 
 const source = (file) => readFile(new URL(`../../src/packages/${file}`, import.meta.url), 'utf8');
@@ -270,7 +270,7 @@ test('a GitHub that answers slowly does not hold the update check up, and its re
   const page = await chrome.page(t);
   chrome.github.releases('ai-ecoverse/slicc-kernel', [release(`v${SHIPPED}`, 'late notes')]);
   chrome.github.state.delay = 6000;
-  await boot(page);
+  await boot(page, undefined, { tools: false });
   await page.until(() => {
     const kernel = document
       .querySelector('slicc-app')

@@ -12,7 +12,7 @@ const OLD = {
     'sha512-Z7ylHfrgkjf1pR7GSMLeg00QuohB8RBASTQYX9c5mhIprFuKRn473l+1epiwO+rLUMI7ON/gq2kQiSDaTPrrgQ==',
 };
 
-const chrome = await launch({ timeout: 120000, agent: true });
+const chrome = await launch({ tools: false, timeout: 120000, agent: true });
 after(() => chrome.close());
 
 async function read(page, path) {
@@ -47,7 +47,7 @@ const agentRow = (page) =>
   );
 
 async function said(page, command, mark) {
-  await run(page, `clear; ${command}; echo ${mark}-$((40 + 2))`);
+  await run(page, `printf '\\033[H\\033[2J\\033[3J'; ${command}; echo ${mark}-$((40 + 2))`);
   await shows(page, `${mark}-42`, BINS);
   return (await screen(page)).replace(/\s+/g, ' ');
 }
@@ -71,7 +71,7 @@ test('a profile whose /opt/agent was installed on kernel 1.67.1 keeps its bin sc
   assert.match(installed.log, /\+ n 10\.2\.0/);
   const old = await said(
     page,
-    "chmod 644 /opt/agent/node_modules/semver/bin/semver.js; stat -L -c 'old %a %n' /opt/agent/node_modules/.bin/n /opt/agent/node_modules/.bin/semver; jq -r '\"kernel \" + .version' /node_modules/@ai-ecoverse/slicc-kernel/package.json; md5sum /opt/agent/node_modules/.modules.yaml",
+    'chmod 644 /opt/agent/node_modules/semver/bin/semver.js; stat -L -c \'old %a %n\' /opt/agent/node_modules/.bin/n /opt/agent/node_modules/.bin/semver; k=$(< /node_modules/@ai-ecoverse/slicc-kernel/package.json); [[ $k =~ \\"version\\":\\ *\\"([^\\"]+)\\" ]] && echo "kernel ${BASH_REMATCH[1]} "; md5sum /opt/agent/node_modules/.modules.yaml',
     'old'
   );
   assert.match(old, /kernel 1\.67\.1 /);

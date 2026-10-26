@@ -3,7 +3,7 @@ import { after, test } from 'node:test';
 import { boot, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
-const chrome = await launch();
+const chrome = await launch({ tools: false });
 after(() => chrome.close());
 
 const probe = `<!doctype html>

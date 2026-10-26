@@ -115,6 +115,7 @@ const VAULT = `http://vault.sliccy.ai:${standPort}`;
 const ABC = `http://abc.sliccy.ai:${standPort}`;
 
 const chrome = await launch({
+  tools: false,
   args: [
     `--remote-debugging-port=${port}`,
     '--host-resolver-rules=MAP vault.sliccy.ai 127.0.0.1, MAP plain.test 127.0.0.1, MAP abc.sliccy.ai 127.0.0.1',

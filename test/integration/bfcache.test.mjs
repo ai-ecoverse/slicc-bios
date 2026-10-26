@@ -4,7 +4,7 @@ import { after, test } from 'node:test';
 import { boot, ready } from './bios.mjs';
 import { launch, VAULT_KEY } from './chrome.mjs';
 
-const chrome = await launch();
+const chrome = await launch({ tools: false });
 const seven = new URL(chrome.url);
 const www = createServer(async (request, response) => {
   const url = new URL(request.url, 'http://www');

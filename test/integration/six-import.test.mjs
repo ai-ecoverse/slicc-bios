@@ -6,7 +6,7 @@ import { launch, VAULT_KEY } from './chrome.mjs';
 import { fakeProxy } from './fake-proxy.mjs';
 import { startWww } from './fake-six.mjs';
 
-const chrome = await launch({ agent: true, timeout: 60000 });
+const chrome = await launch({ tools: false, agent: true, timeout: 60000 });
 const www = await startWww(new URL(chrome.url));
 const { origin, state } = www;
 const proxy = await fakeProxy({

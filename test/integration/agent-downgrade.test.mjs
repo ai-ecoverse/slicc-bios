@@ -14,7 +14,7 @@ const pinned = JSON.parse(
   await readFile(new URL('../../src/packages/agent/package.json', import.meta.url), 'utf8')
 ).dependencies['@ai-ecoverse/slicc-agent'];
 
-const chrome = await launch({ agent: true, timeout: 120000 });
+const chrome = await launch({ tools: false, agent: true, timeout: 120000 });
 after(() => chrome.close());
 
 const relabel = (page, version) =>

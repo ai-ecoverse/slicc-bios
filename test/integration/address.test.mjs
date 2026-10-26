@@ -4,7 +4,7 @@ import { ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { fakeProxy } from './fake-proxy.mjs';
 
-const chrome = await launch();
+const chrome = await launch({ tools: false });
 after(() => chrome.close());
 
 const KEY = 'tidy-key-0123456789abcdefghijklmn';

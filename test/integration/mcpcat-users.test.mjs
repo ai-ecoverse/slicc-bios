@@ -7,7 +7,7 @@ import { launch } from './chrome.mjs';
 const ROOT_SHELL = ['slicc:/home# '];
 const URL_HTTP = 'http://127.0.0.1:8470/mcp';
 const fixture = new URL('fixtures/mcp-fixture/', import.meta.url);
-const chrome = await launch({ timeout: 120000 });
+const chrome = await launch({ tools: false, timeout: 120000 });
 after(() => chrome.close());
 
 async function client(page) {

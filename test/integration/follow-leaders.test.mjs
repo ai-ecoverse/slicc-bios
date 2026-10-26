@@ -8,8 +8,8 @@ import { PEER_TRACE, peerTrace } from './peer-trace.mjs';
 import { shoot } from './shots.mjs';
 
 const STEP = 3 * 60 * 1000;
-const owners = await launch({ timeout: 120000 });
-const followers = await launch({ timeout: 120000 });
+const owners = await launch({ tools: false, timeout: 120000 });
+const followers = await launch({ tools: false, timeout: 120000 });
 const hub = await startHub();
 after(async () => {
   hub.close();

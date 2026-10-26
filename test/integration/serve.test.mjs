@@ -5,7 +5,7 @@ import { after, test } from 'node:test';
 import { boot, ready, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
-const chrome = await launch();
+const chrome = await launch({ tools: false });
 const held = [];
 const end = ServerResponse.prototype.end;
 ServerResponse.prototype.end = function (chunk, ...rest) {

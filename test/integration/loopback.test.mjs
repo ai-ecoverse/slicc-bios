@@ -5,7 +5,7 @@ import { startProxy } from '@ai-ecoverse/slicc-node';
 import { boot, ready, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
-const chrome = await launch();
+const chrome = await launch({ tools: false });
 after(() => chrome.close());
 
 const fixture = new URL('fixtures/httptest/', import.meta.url);

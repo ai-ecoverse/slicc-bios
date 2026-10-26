@@ -31,7 +31,7 @@ const answer = Buffer.concat([
   }),
 ]);
 
-export const chrome = await launch({ agent: true, timeout: 60000 });
+export const chrome = await launch({ tools: false, agent: true, timeout: 60000 });
 export const proxy = await fakeProxy({
   origin: new URL(chrome.url).origin,
   key: 'the-key',

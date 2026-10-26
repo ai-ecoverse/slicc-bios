@@ -5,7 +5,7 @@ import { after, test } from 'node:test';
 import { boot, booted, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
-const chrome = await launch();
+const chrome = await launch({ tools: false });
 after(() => chrome.close());
 
 const root = new URL('../../', import.meta.url);
@@ -38,7 +38,7 @@ test('a seven installed from main’s build loads this build’s BIOS page under
   t.diagnostic(`main ${main.commit.slice(0, 8)}, ${changed.size} files differ`);
   const page = await chrome.page(t);
   for (const [path, body] of changed) chrome.overrides.set(path, body);
-  await boot(page);
+  await boot(page, undefined, { tools: false });
   const installed = await page.evaluate(
     () => navigator.serviceWorker.controller?.scriptURL ?? null
   );

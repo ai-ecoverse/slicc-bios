@@ -12,7 +12,7 @@ const debugging = await new Promise((resolve) => {
     server.close(() => resolve(port));
   });
 });
-const chrome = await launch({ args: [`--remote-debugging-port=${debugging}`] });
+const chrome = await launch({ tools: false, args: [`--remote-debugging-port=${debugging}`] });
 after(() => chrome.close());
 const fakeExtension = extensionOver(await debuggerUrl(debugging));
 

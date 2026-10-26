@@ -4,13 +4,24 @@ import { after, test } from 'node:test';
 import { boot, booted, eventually, installable, watch } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
-const chrome = await launch();
+const chrome = await launch({ tools: false });
 after(() => chrome.close());
 
 const bash = 'node_modules/@ai-ecoverse/wasm-bash';
+const tools = new Set(
+  Object.keys(
+    JSON.parse(await readFile(new URL('../../src/packages/tools.json', import.meta.url), 'utf8'))
+  )
+);
 const shipped = JSON.parse(
   await readFile(new URL('../../src/packages/package-lock.json', import.meta.url), 'utf8')
 );
+const base = new Set(
+  Object.keys(shipped.packages)
+    .filter(Boolean)
+    .map((path) => path.split('node_modules/').at(-1))
+);
+const extra = (name) => tools.has(name) || (name.startsWith('@ai-ecoverse/') && !base.has(name));
 const lit = {
   '': {
     name: 'lit-fixture',
@@ -68,7 +79,10 @@ async function reboot(page) {
 
 function downloads() {
   return chrome.cdn.requests.filter(
-    (url) => url.startsWith('https://registry.npmjs.org/') && /\/-\/[^/]+\.tgz$/.test(url)
+    (url) =>
+      url.startsWith('https://registry.npmjs.org/') &&
+      /\/-\/[^/]+\.tgz$/.test(url) &&
+      !extra(new URL(url).pathname.slice(1).split('/-/')[0])
   );
 }
 

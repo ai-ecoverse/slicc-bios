@@ -93,6 +93,7 @@ import {
   tailscaleVersion,
 } from './tailscale.js';
 import { serveTerminal } from './terminal.js';
+import { createTools, loadTools, MODULES as TOOLS_MODULES } from './tools.js';
 import { pickTransport } from './transport.js';
 import { createTray, seatNotices, TRAY_HUB_KEY, trayPort } from './tray.js';
 import { openTunnel } from './tunnel.js';
@@ -330,6 +331,7 @@ const board = shared
   : localBoard({ versions: mine });
 document.addEventListener('visibilitychange', () => board.show(visible()));
 const claimed = await claim();
+document.documentElement.dataset.tools = claimed.owner ? 'installing' : 'elsewhere';
 const notes = createNotes({ releases: createReleases() });
 const updates = createUpdates({ developer: true, notes });
 const notices = createNotices();
@@ -375,6 +377,43 @@ let owned = new Map();
 let serving = null;
 let optional = Promise.resolve(null);
 let coneIds = null;
+let catalogs = null;
+let tools = null;
+let toolRows = [];
+let optionalRows = [];
+
+const listPackages = () => updates.setPackages([...toolRows, ...optionalRows]);
+
+function toolsSettled() {
+  return Promise.resolve(tools).then((found) => found?.settled());
+}
+
+function startTools() {
+  document.documentElement.dataset.tools = 'installing';
+  tools = Promise.all([catalogs, loadTools()])
+    .then(([catalog, entries]) => {
+      const found = createTools({
+        root,
+        kernel,
+        npm: catalog.npm,
+        entries,
+        emit: (list) => {
+          toolRows = list;
+          listPackages();
+        },
+      });
+      void found.settle().finally(() => {
+        document.documentElement.dataset.tools = 'settled';
+      });
+      return found;
+    })
+    .catch((error) => {
+      console.warn(`seven's tools are unavailable: ${error.message}`);
+      document.documentElement.dataset.tools = 'settled';
+      return null;
+    });
+  return tools;
+}
 
 const start = Object.assign(async () => kernel, { shared: true });
 const betas = createBetas({
@@ -521,6 +560,7 @@ async function started(chat, lock) {
 
 async function launch() {
   try {
+    await toolsSettled();
     owner = await startChat(kernel, { requests });
     if (await announce(await agentVersion())) return owner;
   } catch (error) {
@@ -680,9 +720,11 @@ async function offerChat() {
   }
 }
 
-async function checkPackages() {
+async function checkPackages(
+  ready = () => Promise.resolve(tools).then((found) => found?.settle())
+) {
   try {
-    const changes = await update(kernel, { report: updates.track('bios') });
+    const changes = await update(kernel, { report: updates.track('bios'), ready });
     for (const id of owned.values()) updates.checked(id);
     if (!changes) {
       updates.checked('bios');
@@ -725,7 +767,10 @@ async function updateTailnet() {
 
 async function check() {
   await notes.prepare(updates);
-  await checkPackages();
+  const settling = Promise.resolve(tools)
+    .then((found) => found?.settle())
+    .catch(() => undefined);
+  await checkPackages(() => settling);
   await yours.tidy().catch((error) => console.warn(`your packages: ${error.message}`));
   await offerChat();
   await betas.check();
@@ -737,7 +782,7 @@ async function check() {
 }
 
 function offerPackages() {
-  return loadCatalog()
+  return catalogs
     .then(async (catalog) => {
       await writeListing(root, catalog.entries);
       const packages = createPackages({
@@ -746,9 +791,17 @@ function offerPackages() {
         kernel,
         global: await globalDir(kernel),
         ask: confirm,
-        emit: updates.setPackages,
+        emit: (list) => {
+          optionalRows = list;
+          listPackages();
+        },
       });
-      updates.handlePackages(packages.act);
+      updates.handlePackages(async (id, action) => {
+        if (!id.startsWith('tools:')) return packages.act(id, action);
+        const found = await tools;
+        if (!found) throw new Error("Seven's tools are not available yet.");
+        return found.act(id, action);
+      });
       await packages.refresh();
       void packages.move().catch((error) => console.warn(`optional packages: ${error.message}`));
       return packages;
@@ -821,13 +874,15 @@ async function own() {
     cdp: control.hook,
     clipboard: clipboardHook(),
     requests,
-    commands: { append: [USER_MODULES] },
+    commands: { append: [TOOLS_MODULES, USER_MODULES] },
     facades: { link: { port: LINK_PORT, hook: link } },
     ...sealedOption((await versions(root, [KERNEL]))[KERNEL], vault),
     ...folders.options,
     ...kernelUsers(mode, { approve: sudo, onDenial: denials }),
   });
   useKernelFiles(await kernelFiles(kernel, attachKernel));
+  catalogs = loadCatalog();
+  void startTools();
   approvals.verify((req) => rootChecked((argv) => kernel.run(argv, { cwd: '/' }), req));
   const cone = await addCone(kernel);
   coneIds = cone && { uid: cone.uid, gid: cone.gid };

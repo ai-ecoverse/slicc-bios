@@ -1,8 +1,18 @@
 import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { crc32 } from 'node:zlib';
+import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
 
 const RAW = 'application/vnd.slicc.raw-fetch';
+const NPM = 'https://registry.npmjs.org/';
+
+async function fromNpm(request) {
+  const type = request.url.endsWith('.tgz') ? 'application/octet-stream' : 'application/json';
+  return download(request.url).then(
+    (body) => ({ status: 200, headers: [['content-type', type]], body }),
+    () => ({ status: 404, headers: [], body: Buffer.alloc(0) })
+  );
+}
 
 function uint32(value) {
   const bytes = Buffer.alloc(4);
@@ -242,12 +252,13 @@ export async function fakeProxy({ origin, key, port = 0, answer, exports = {} })
       return;
     }
     const raw = req.headers['x-slicc-raw-request'];
-    if (raw && answer && req.headers['x-bridge-token'] === key) {
-      const request = JSON.parse(raw);
+    const asked = raw && req.headers['x-bridge-token'] === key ? JSON.parse(raw) : null;
+    const respond = answer ?? (asked?.url?.startsWith(NPM) ? fromNpm : null);
+    if (asked && respond) {
       void readBody(req).then(async (body) => {
-        requests.push({ ...request, body: body.toString() });
+        if (answer) requests.push({ ...asked, body: body.toString() });
         const closed = new Promise((resolve) => res.on('close', () => resolve(Date.now())));
-        const { status, headers, body: reply } = await answer(request, body, { closed });
+        const { status, headers, body: reply } = await respond(asked, body, { closed });
         res.writeHead(200, { ...cors, 'Content-Type': RAW });
         res.end(rawResponse(status, headers, reply));
       });
