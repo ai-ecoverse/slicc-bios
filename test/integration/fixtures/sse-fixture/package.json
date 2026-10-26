@@ -1,0 +1,12 @@
+{
+  "name": "sse-fixture",
+  "private": true,
+  "slicc": {
+    "commands": {
+      "sse-fixture": {
+        "abi": "js",
+        "module": "index.mjs"
+      }
+    }
+  }
+}
