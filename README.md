@@ -25,6 +25,14 @@ Seven's documents are never kept in the back/forward cache. The service worker s
 
 Every other OPFS file is served sandboxed: `Content-Security-Policy: sandbox allow-scripts allow-forms allow-popups allow-modals; frame-ancestors 'self'` (without `allow-same-origin`), `X-Content-Type-Options: nosniff`, `Cross-Origin-Resource-Policy: same-origin`, and no COOP or COEP. An HTML page there still renders and runs its scripts, but in an opaque origin, with no access to seven's IndexedDB, `localStorage`, OPFS or keys. JavaScript and TypeScript files there are served as `text/plain` and wasm as `application/octet-stream`, and a request for a script, a worker or a worklet there gets a 403, so none of seven's pages can import, run or instantiate them. Bare imports are resolved only in the live paths. Kernel symlinks live in the kernel's metadata, not in OPFS, so the service worker never follows one. The kernel itself reads binaries from OPFS directly, not through the service worker.
 
+**Requests the service worker never answers skip it (#728).** When it installs, `sw.js` adds static routes (`InstallEvent.addRoutes`, in Chromium):
+- **Straight to the network:** an `https:` request to any host other than seven's own, `localhost` or a `.localhost` name (with or without a trailing dot). The worker isn't started for it.
+- **To the fetch handler, as before:** everything else. That covers seven's host on any scheme or port, every `localhost` and kernel-port form, and every `http:` request.
+
+The handler passes the routed requests through untouched anyway, so the only change is that they don't wake the worker. Before this, the update check's release-notes fetches to npm and GitHub kept an old worker busy, or restarted it while it was stopping for an update. Chromium skips the activation check when a stopping worker restarts, so the update stayed `installed`.
+
+Every rule's `URLPattern` has all its parts explicit, with no base URL. Where `addRoutes` or `URLPattern` is missing, or Chromium refuses the rules, there are no routes and every request reaches the handler.
+
 ### Next to SLICC 6 (`www.sliccy.ai/7`)
 
 Seven can share its origin with another app: on `www.sliccy.ai` the BIOS is `/7/` and SLICC 6 keeps the rest of the origin, the first step of the in-place upgrade from six (#648; the routes are sliccy-ai#51).

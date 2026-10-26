@@ -8,18 +8,22 @@ const chrome = await launch();
 after(() => chrome.close());
 
 const current = await readFile(new URL('../../src/sw.js', import.meta.url), 'utf8');
+const { dependencies } = JSON.parse(
+  await readFile(new URL('../../src/packages/package.json', import.meta.url), 'utf8')
+);
+const NPM = `https://registry.npmjs.org/@ai-ecoverse%2Fslicc-kernel/${dependencies['@ai-ecoverse/slicc-kernel']}`;
 const HOLD = 5000;
 const SIZE = 64 * 1024 * 1024;
 let bump = 0;
 
-async function updateWhileHolding(page, url) {
+async function updateWhileHolding(page, url, traffic = null) {
   bump += 1;
   chrome.overrides.set(
     '/sw.js',
     current.replace('const own = ', `const own =${' '.repeat(bump)} `)
   );
   return page.evaluate(
-    async ([url, hold]) => {
+    async ([url, hold, traffic]) => {
       const start = performance.now();
       const at = () => Math.round(performance.now() - start);
       const log = [];
@@ -38,14 +42,49 @@ async function updateWhileHolding(page, url) {
         while (worker.state !== 'activated' && performance.now() < end)
           await new Promise((resolve) => setTimeout(resolve, 50));
       };
-      await until(hold);
+      performance.clearResourceTimings();
+      performance.setResourceTimingBufferSize(100000);
+      let busy = Boolean(traffic);
+      let fetched = 0;
+      const loop = async () => {
+        while (busy) {
+          await fetch(traffic, { cache: 'no-store' })
+            .then((response) => response.arrayBuffer())
+            .catch(() => undefined);
+          fetched += 1;
+        }
+      };
+      const loops = [];
+      if (traffic) {
+        await until(hold - 1000);
+        for (let i = 0; i < 4; i += 1) loops.push(loop());
+        await until(1000);
+      } else await until(hold);
       const held = worker.state;
       await reader.cancel();
       log.push(`${at()} cancelled`);
       await until(hold);
-      return { log, held, released: worker.state };
+      busy = false;
+      await Promise.all(loops);
+      if (traffic) log.push(`${at()} fetched ${traffic} ${fetched} times`);
+      const own = new URL('/os/notices.js', location.href).href;
+      await (await fetch(own, { cache: 'no-store' })).text();
+      const sources = (name) => [
+        ...new Set(
+          performance
+            .getEntriesByName(new URL(name, location.href).href)
+            .map((entry) => entry.workerMatchedSourceType)
+        ),
+      ];
+      return {
+        log,
+        held,
+        released: worker.state,
+        fetched,
+        sources: { own: sources(own), traffic: traffic ? sources(traffic) : [] },
+      };
     },
-    [url, HOLD]
+    [url, HOLD, traffic]
   );
 }
 
@@ -71,5 +110,28 @@ test('Chrome keeps an updated worker installed while a page holds a half-read st
   }, SIZE);
   const blob = await updateWhileHolding(page, '/home/held.bin');
   assert.equal(blob.held, 'activated', blob.log.join('\n'));
+  assert.deepEqual(page.errors, []);
+});
+
+test('an update activates within 5 s of the cancel while the page keeps fetching from npm, since that goes straight to the network and never wakes the old worker (#728)', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  chrome.overrides.set('/os/held.bin', Buffer.alloc(SIZE, 7));
+  const streamed = await updateWhileHolding(page, '/os/held.bin', NPM);
+  const log = streamed.log.join('\n');
+  assert.deepEqual([streamed.held, streamed.released], ['installed', 'activated'], log);
+  assert.ok(streamed.fetched >= 20, log);
+  assert.deepEqual(streamed.sources, { own: ['fetch-event'], traffic: ['network'] }, log);
+  const kernel = await page.evaluate(() =>
+    Promise.all(
+      ['http://1.kernel.localhost/', 'https://1.kernel.localhost/'].map((url) =>
+        fetch(url).then(
+          async (response) => `${response.status} ${(await response.text()).slice(0, 3)}`,
+          (error) => `${error.name}`
+        )
+      )
+    )
+  );
+  assert.deepEqual(kernel, ['502 sw:', '502 sw:']);
   assert.deepEqual(page.errors, []);
 });

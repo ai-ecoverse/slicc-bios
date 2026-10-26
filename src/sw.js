@@ -2,6 +2,7 @@ import { appendLog, described, openIntegrity, sha256, treeOf } from './sw/integr
 import { kernelPort, loopback, Unreachable } from './sw/loopback.js';
 import { joined, opfsReader } from './sw/opfs.js';
 import { createResolver, NODE_STUBS } from './sw/resolve.js';
+import { route } from './sw/routes.js';
 import { ASSETS, EXPORTER, retired } from './sw/six.js';
 import { nodeStub } from './sw/stubs.js';
 import { transform } from './sw/transform.js';
@@ -427,6 +428,7 @@ async function serve(request, controller, client) {
   }
 }
 
+self.addEventListener('install', (event) => route(event, self.registration.scope));
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', (event) => {
