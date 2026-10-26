@@ -501,8 +501,18 @@ test('slicc-agent 6.16+: a Kimi device-code sign-in shows its user code, ends wi
   });
   const page = await chrome.page(t);
   await page.init('() => { window.open = () => null; }');
+  await page.init(() => {
+    Object.defineProperty(globalThis, 'sliccExtension', {
+      value: Object.freeze({ fetch: (input, init) => fetch(input, init) }),
+    });
+  });
   await page.goto('/');
   await ready(page, ['slicc:/home# ']);
+  assert.equal(
+    await page.evaluate(() => document.documentElement.dataset.transport),
+    'extension',
+    'Kimi needs a CORS-free transport, which slicc-extension’s fetch gives seven'
+  );
   await agentUp(page);
   await page.within(5 * 60 * 1000, () =>
     (document.querySelector('slicc-app').model.settings.providers?.() ?? []).some(

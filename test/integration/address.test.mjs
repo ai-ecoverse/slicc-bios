@@ -93,8 +93,10 @@ test('a launch address with a proxy and its key is tidied before seven boots and
   const status = await network(page);
   assert.deepEqual([status.route, status.detail], ['page', null], JSON.stringify(status));
   assert.equal(await idb(page, 'proxy'), null);
-  const local = await page.evaluate(() => JSON.stringify(Object.entries(localStorage)));
-  assert.ok(!local.includes(KEY), 'localStorage holds the key');
+  const local = await page.evaluate(() =>
+    JSON.stringify(Object.entries(localStorage).filter(([name]) => name !== 'test.seen'))
+  );
+  assert.ok(!local.includes(KEY), 'seven stored the key in localStorage');
   assert.deepEqual(asked, [], 'seven contacted the proxy the address named');
   assert.deepEqual(page.errors, []);
 });
