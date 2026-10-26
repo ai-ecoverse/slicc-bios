@@ -363,7 +363,7 @@ test('shared sound is named before the picker, and Cancel opens nothing', async 
   );
   await shoot(page, 'capture-sound-prompt');
   await press(page, 'cancel');
-  await shows(page, 'the request to capture the screen was dismissed');
+  await shows(page, 'user cancelled, permission denied, or the surface is protected');
   await shows(page, 'sound cancelled 1');
   assert.deepEqual(await page.evaluate(() => window.displayOpened), []);
   assert.deepEqual(await page.evaluate(() => window.micOpened), []);
@@ -382,7 +382,7 @@ test('screen, shared sound and microphone use one duration-bearing prompt, and C
   );
   await shoot(page, 'capture-microphone-prompt');
   await press(page, 'cancel');
-  await shows(page, 'the request to capture the screen was dismissed');
+  await shows(page, 'user cancelled, permission denied, or the surface is protected');
   await shows(page, 'mic cancelled 1');
   assert.equal(await page.evaluate(() => window.prompted), 1);
   assert.deepEqual(await page.evaluate(() => window.displayOpened), []);
