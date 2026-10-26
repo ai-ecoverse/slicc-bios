@@ -4,7 +4,7 @@
   "description": "Packages the BIOS installs from npm into OPFS, pinned by package-lock.json and pnpm-lock.yaml",
   "dependencies": {
     "@ai-ecoverse/slicc-audio": "1.1.6",
-    "@ai-ecoverse/slicc-browsers": "1.18.14",
+    "@ai-ecoverse/slicc-browsers": "1.18.16",
     "@ai-ecoverse/slicc-capture": "1.4.1",
     "@ai-ecoverse/slicc-kernel": "1.167.4",
     "@ai-ecoverse/slicc-spectrum": "1.107.2",
