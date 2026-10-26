@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { boot } from './bios.mjs';
-import { launch } from './chrome.mjs';
+import { launch, RELEASES_KEY } from './chrome.mjs';
 
 const chrome = await launch({ tools: false });
 after(() => chrome.close());
@@ -88,8 +88,18 @@ async function updateWhileHolding(page, url, traffic = null) {
   );
 }
 
-test('Chrome keeps an updated worker installed while a page holds a half-read streamed response from the old one, activates it once the page cancels, and a blob body holds nothing (#699)', async (t) => {
+const RELEASES = 'https://releases.invalid';
+
+async function opened(t) {
   const page = await chrome.page(t);
+  await page.init(
+    `() => { if (location.origin === ${JSON.stringify(new URL(chrome.url).origin)}) localStorage.setItem(${JSON.stringify(RELEASES_KEY)}, ${JSON.stringify(RELEASES)}); }`
+  );
+  return page;
+}
+
+test('Chrome keeps an updated worker installed while a page holds a half-read streamed response from the old one, activates it once the page cancels, and a blob body holds nothing (#699)', async (t) => {
+  const page = await opened(t);
   await boot(page);
   chrome.overrides.set('/os/held.bin', Buffer.alloc(SIZE, 7));
   const streamed = await updateWhileHolding(page, '/os/held.bin');
@@ -114,7 +124,7 @@ test('Chrome keeps an updated worker installed while a page holds a half-read st
 });
 
 test('an update activates within 5 s of the cancel while the page keeps fetching from npm, since that goes straight to the network and never wakes the old worker (#728)', async (t) => {
-  const page = await chrome.page(t);
+  const page = await opened(t);
   await boot(page);
   chrome.overrides.set('/os/held.bin', Buffer.alloc(SIZE, 7));
   const streamed = await updateWhileHolding(page, '/os/held.bin', NPM);
