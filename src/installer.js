@@ -187,18 +187,22 @@ function entryName(name) {
 
 const KERNEL = 'node_modules/@ai-ecoverse/slicc-kernel';
 
-async function metadata() {
+async function meta() {
   try {
     const manifest = JSON.parse(await (await read(`${KERNEL}/package.json`)).text());
     const entry = manifest.exports?.['./meta'];
     const target = typeof entry === 'string' ? entry : entry?.default;
-    if (!target) return null;
+    if (!target) return {};
     const code = await (await read(`${KERNEL}/${target.replace(/^\.\//, '')}`)).text();
     const url = `data:text/javascript;charset=utf-8,${encodeURIComponent(code)}`;
-    return (await import(url)).writeMetadata ?? null;
+    return await import(url);
   } catch {
-    return null;
+    return {};
   }
+}
+
+async function metadata() {
+  return (await meta()).writeMetadata ?? null;
 }
 
 async function stamp(entries) {
@@ -332,14 +336,17 @@ async function repair(entries, fresh) {
   return repaired;
 }
 
-async function add([path, entry], changed, stamps, fresh = new Set()) {
+async function add([path, entry], changed, stamps, fresh, replacing) {
   const { resolved, integrity: expected } = entry;
   if (await current(path, entry, changed).catch(() => false)) return 0;
   const bytes = await download(resolved);
   await verify(bytes, expected, path);
-  const files = await unpack(bytes, path, stamps);
-  await sweep(path, new Set(files.map((file) => file.path)));
-  await (await integrity()).record(path, files, expected);
+  const write = async () => {
+    const files = await unpack(bytes, path, stamps);
+    await sweep(path, new Set(files.map((file) => file.path)));
+    await (await integrity()).record(path, files, expected);
+  };
+  await (typeof replacing === 'function' ? replacing([`/${path}`], write) : write());
   await save(`var/lib/bios/${path}.json`, JSON.stringify({ resolved, integrity: expected }));
   fresh.add(path);
   return bytes.byteLength;
@@ -480,12 +487,13 @@ async function replay(from, progress, base) {
     const stamps = [];
     const fresh = new Set();
     const entries = [...queue];
+    const { replacing } = await meta();
     let failure = null;
     const worker = async () => {
       while (queue.length && !failure) {
         const entry = queue.shift();
         try {
-          const size = await add(entry, changed, stamps, fresh);
+          const size = await add(entry, changed, stamps, fresh, replacing);
           done += 1;
           downloaded += size ? 1 : 0;
           bytes += size;
