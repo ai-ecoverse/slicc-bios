@@ -64,7 +64,7 @@ jobs:
           restore-keys: slicc-harness-cdn-${{ runner.os }}-
       - name: Browser and display
         run: |
-          node_modules/.bin/slicc-cdp install-browser --with-deps
+          node_modules/.bin/slicc-cdp install-browser
           if ! command -v xvfb-run > /dev/null; then
             if [ "$(id -u)" = 0 ]; then apt-get update -qq && apt-get install -y -qq xvfb;
             else sudo apt-get update -qq && sudo apt-get install -y -qq xvfb; fi
