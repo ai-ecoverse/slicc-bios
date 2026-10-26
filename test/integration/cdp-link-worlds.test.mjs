@@ -233,7 +233,7 @@ test('slicc-cdp#377: the kernel facade and slicc-cli link drive ordinary tabs wi
   ]) {
     const snapshot = await shell(page, 'playwright-cli snapshot', `${name}-snapshot`);
     const output = await shell(page, command(snapshot), `${name}-action`);
-    const said = `${name} on the user tab: ${output}\nits snapshot: ${snapshot.slice(-600)}`;
+    const said = `${name} on the fresh tab (${freshId}): ${output}\nits snapshot: ${snapshot.slice(-600)}`;
     assert.match(output, /exit-0/, said);
     assert.doesNotMatch(output, /slicc: refused:/, said);
   }
