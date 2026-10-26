@@ -181,7 +181,10 @@ test('slicc-audio is in the base set without ortllama, a delayed microphone requ
     `sleep 12; { printf '%s\\n' '{"kind":"audio.transcribe","engine":"whisper","format":"text"}'; printf 'RIFFbytes'; } | cat > /dev/embedder; echo "whisper $?"`
   );
   await shows(page, 'whisper 1');
-  await shows(page, 'sw: nothing listening on kernel port 11435');
+  await shows(
+    page,
+    'no server at http://11435.kernel.localhost (pnpm add -g @ai-ecoverse/slicc-ortllama, then ortllama serve --detach)'
+  );
   assert.equal(await page.evaluate(() => window.prompted), 6);
   assert.equal(await page.evaluate(() => window.micOpened), 1);
   assert.equal(await page.evaluate(() => window.recognitions), 0);
