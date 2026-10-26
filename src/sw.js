@@ -284,18 +284,43 @@ function deadline(text) {
 }
 
 const streaming = new Set();
+const RETIRE = 5000;
+let retiring = null;
+
+function retire() {
+  const left = [...streaming].filter((open) => !open.ended);
+  if (retiring !== null || !self.registration.waiting || !left.length) return;
+  const due = Math.min(...left.map(({ since }) => since)) + RETIRE - Date.now();
+  retiring = setTimeout(
+    () => {
+      retiring = null;
+      if (self.registration.waiting)
+        for (const open of streaming) if (Date.now() - open.since >= RETIRE) open.end();
+      retire();
+    },
+    Math.max(due, 0)
+  );
+}
 
 function watched(response, request, controller, client) {
   if (!response.body) return response;
   const { origin, pathname } = new URL(request.url);
-  const open = { client, url: `${origin}${pathname}`, since: Date.now() };
+  const open = { client, url: `${origin}${pathname}`, since: Date.now(), ended: false };
+  const ended = new Promise((_, reject) => {
+    open.end = () => {
+      open.ended = true;
+      reject(new Error(`sw: seven updated, so ${pathname} stopped`));
+    };
+  });
+  ended.catch(() => {});
   const reader = response.body.getReader();
   streaming.add(open);
+  retire();
   const body = new ReadableStream({
     async pull(stream) {
       const idle = deadline(`sw: no data for ${pathname} in ${PATIENCE / 1000} s`);
       try {
-        const { done, value } = await Promise.race([reader.read(), idle.late]);
+        const { done, value } = await Promise.race([ended, reader.read(), idle.late]);
         if (done) {
           streaming.delete(open);
           stream.close();
@@ -431,6 +456,9 @@ async function serve(request, controller, client) {
 self.addEventListener('install', (event) => route(event, self.registration.scope));
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
+self.registration.addEventListener('updatefound', () =>
+  self.registration.installing?.addEventListener('statechange', retire)
+);
 self.addEventListener('fetch', (event) => {
   const { request, clientId } = event;
   const port = kernelPort(request.url);
@@ -460,5 +488,6 @@ self.addEventListener('message', (event) => {
     return;
   }
   if (data?.streams !== 'mine' || !source) return;
+  retire();
   event.waitUntil(prune().then(() => source.postMessage({ streams: streamsOf(source.id) })));
 });
