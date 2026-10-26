@@ -1634,30 +1634,45 @@ test('chat in seven answers through the agent worker, Bedrock and the local prox
       /The agent \S+ asks seven to capture your screen, and record from your microphone for up to 1 second\./,
     ],
   ]) {
-    const capturing = agentRun(
-      `sleep 12; screencapture -V 1 ${flag} /tmp/agent-${name}.webm; echo "agent ${name} $?"`
+    await t.test(
+      `the agent is asked before capture ${name}, and Cancel opens nothing`,
+      async () => {
+        const capturing = agentRun(
+          `sleep 12; screencapture -V 1 ${flag} /tmp/agent-${name}.webm; echo "agent ${name} $?"`
+        );
+        await page.until(
+          (find) =>
+            !!new Function(`return (${find})()`)()?.shadowRoot?.querySelector('[data-cancel]'),
+          confirmOf.toString()
+        );
+        let refusedCapture;
+        try {
+          assert.match(
+            await page.evaluate(
+              (find) => new Function(`return (${find})()`)().shadowRoot.textContent,
+              confirmOf.toString()
+            ),
+            expected
+          );
+        } finally {
+          await page.evaluate(
+            (find) =>
+              new Function(`return (${find})()`)()
+                .shadowRoot.querySelector('[data-cancel]')
+                .click(),
+            confirmOf.toString()
+          );
+          refusedCapture = await capturing;
+        }
+        assert.match(
+          refusedCapture.text,
+          /user cancelled, permission denied, or the surface is protected/
+        );
+        assert.match(refusedCapture.text, new RegExp(`agent ${name} 1`));
+        assert.deepEqual(await page.evaluate(() => window.displayOpened), []);
+        assert.equal(await page.evaluate(() => window.micOpened), 0);
+      }
     );
-    await page.until(
-      (find) => !!new Function(`return (${find})()`)()?.shadowRoot?.querySelector('[data-cancel]'),
-      confirmOf.toString()
-    );
-    assert.match(
-      await page.evaluate(
-        (find) => new Function(`return (${find})()`)().shadowRoot.textContent,
-        confirmOf.toString()
-      ),
-      expected
-    );
-    await page.evaluate(
-      (find) =>
-        new Function(`return (${find})()`)().shadowRoot.querySelector('[data-cancel]').click(),
-      confirmOf.toString()
-    );
-    const refusedCapture = await capturing;
-    assert.match(refusedCapture.text, /the request to capture the screen was dismissed/);
-    assert.match(refusedCapture.text, new RegExp(`agent ${name} 1`));
-    assert.deepEqual(await page.evaluate(() => window.displayOpened), []);
-    assert.equal(await page.evaluate(() => window.micOpened), 0);
   }
 
   await run(page, 'echo "tab=$SLICC_TAB"');
