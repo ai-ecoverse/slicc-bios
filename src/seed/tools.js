@@ -1,9 +1,13 @@
 import { compare, installedLock, refusal } from './packages.js';
 import { BIOS } from './site.js';
-import { fetchText, installer, pnpm, readable, remove, text, write } from './update.js';
+import { executable, fetchText, installer, pnpm, readable, remove, text, write } from './update.js';
 
 export const FOLDER = 'opt/slicc/tools';
 export const MODULES = `/${FOLDER}/node_modules`;
+export const PENDING = 'opt/slicc/pending';
+export const PENDING_MODULES = `/${PENDING}/node_modules`;
+const SHIMS = `${PENDING}/node_modules/slicc-pending-tools`;
+const SHIMMED = /^[A-Za-z0-9][\w.+-]*$/;
 export const CAP = 2 * 60 * 1000;
 export const LIMIT = 180;
 export const RETIRE = 30 * 1000;
@@ -49,6 +53,10 @@ export async function present(root, entries) {
     found.set(entry.package, { tools, old });
   }
   return found;
+}
+
+export function shim(name) {
+  return `#!/bin/sh\necho '${name}: seven is still installing it; Install / Update shows its progress' >&2\nexit 127\n`;
 }
 
 export function target(offer, { tools, old }) {
@@ -187,6 +195,22 @@ async function installTools({ root, kernel, npm }, wanted, batch) {
   }
 }
 
+function commandsOf(offered) {
+  const names = offered.flatMap((offer) =>
+    offer && !offer.withheld ? (offer.commands ?? []) : []
+  );
+  return [...new Set(names)].filter((name) => SHIMMED.test(name));
+}
+
+async function placeholders({ root, kernel }, names) {
+  if (!names.length) return;
+  for (const name of names) await write(root, `${SHIMS}/bin/${name}`, shim(name));
+  await executable(kernel, `/${SHIMS}/bin`);
+  const bin = Object.fromEntries(names.map((name) => [name, `bin/${name}`]));
+  const manifest = { name: 'slicc-pending-tools', version: '0.0.0', private: true, bin };
+  await write(root, `${SHIMS}/package.json`, `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
 export function createTools({
   root,
   kernel,
@@ -201,6 +225,7 @@ export function createTools({
   const offers = new Map();
   const states = new Map();
   const verdicts = new Map();
+  const primed = new Map();
   let found = new Map();
   let running = null;
   let first = null;
@@ -222,12 +247,33 @@ export function createTools({
 
   const install = (wanted, batch) => installTools({ root, kernel, npm }, wanted, batch);
 
+  async function looked(batch) {
+    return Promise.all(
+      batch.map((entry) => {
+        if (!primed.has(entry.package)) return npm.offer(entry, verdicts).catch(() => null);
+        const offer = primed.get(entry.package);
+        primed.delete(entry.package);
+        return offer;
+      })
+    );
+  }
+
+  async function shims() {
+    await remove(root, PENDING);
+    found = await present(root, entries);
+    const waiting = entries.filter((entry) => {
+      const have = found.get(entry.package);
+      return !have?.tools && !have?.old;
+    });
+    const offered = await looked(waiting);
+    for (const [i, entry] of waiting.entries()) primed.set(entry.package, offered[i]);
+    await placeholders({ root, kernel }, commandsOf(offered));
+  }
+
   async function plan(batch) {
     found = await present(root, entries);
-    const looked = await Promise.all(
-      batch.map((entry) => npm.offer(entry, verdicts).catch(() => null))
-    );
-    for (const [i, entry] of batch.entries()) offers.set(entry.package, looked[i]);
+    const offered = await looked(batch);
+    for (const [i, entry] of batch.entries()) offers.set(entry.package, offered[i]);
     const current = parse(await text(root, `${FOLDER}/package.json`))?.dependencies ?? {};
     const wanted = { ...current };
     const moving = [];
@@ -309,10 +355,16 @@ export function createTools({
   }
 
   function settle() {
+    const opening = first === null;
     running ??= locks
       .request('slicc-tools', async () => {
-        await round(entries.filter((entry) => entry.first));
-        await round(entries.filter((entry) => !entry.first));
+        if (opening) await shims().catch((error) => console.warn(`tools: ${error.message}`));
+        try {
+          await round(entries.filter((entry) => entry.first));
+          await round(entries.filter((entry) => !entry.first));
+        } finally {
+          if (opening) await remove(root, PENDING).catch(() => {});
+        }
       })
       .finally(() => {
         running = null;
