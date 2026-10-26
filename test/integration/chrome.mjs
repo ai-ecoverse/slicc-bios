@@ -1,4 +1,6 @@
 import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { argv, env } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { serve, launch as start } from '@ai-ecoverse/slicc-shared-web/harness';
@@ -51,6 +53,22 @@ export async function debuggerUrl(port, ms = 30000) {
     if (Date.now() >= end)
       throw new Error(
         `Chrome's DevTools endpoint on ${port} gave no webSocketDebuggerUrl in ${ms} ms; last saw: ${last}`
+      );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+export async function devtools(chrome, ms = 30000) {
+  const file = join(chrome.profile, 'DevToolsActivePort');
+  const end = Date.now() + ms;
+  for (;;) {
+    const text = await readFile(file, 'utf8').catch(() => null);
+    const [port, path] = (text ?? '').split('\n');
+    if (/^\d+$/.test(port) && path?.startsWith('/devtools/browser/'))
+      return { port: Number(port), browser: `ws://127.0.0.1:${port}${path}` };
+    if (Date.now() >= end)
+      throw new Error(
+        `Chrome wrote no DevTools port to ${file} in ${ms} ms; it holds: ${JSON.stringify(text)}`
       );
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
