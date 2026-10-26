@@ -282,6 +282,8 @@ test('a tab that sets no capture handle is refused, since seven can’t tell it 
 
 const videoDevices = `
   window.displayOpened = [];
+  window.displayStopped = 0;
+  window.displayTracks = [];
   window.micOpened = [];
   window.prompted = 0;
   const showModal = HTMLDialogElement.prototype.showModal;
@@ -303,9 +305,11 @@ const videoDevices = `
       paint();
       const stream = canvas.captureStream(10);
       const [track] = stream.getVideoTracks();
+      window.displayTracks.push(...stream.getTracks());
       const timer = setInterval(paint, 50);
       const stop = track.stop.bind(track);
       track.stop = () => {
+        window.displayStopped += 1;
         clearInterval(timer);
         stop();
       };
@@ -387,6 +391,35 @@ test('screen, shared sound and microphone use one duration-bearing prompt, and C
   assert.equal(await page.evaluate(() => window.prompted), 1);
   assert.deepEqual(await page.evaluate(() => window.displayOpened), []);
   assert.deepEqual(await page.evaluate(() => window.micOpened), []);
+  assert.deepEqual(page.errors, []);
+});
+
+test('after Choose, a denied microphone closes every display track and writes no capture file', async (t) => {
+  const page = await chrome.page(t);
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: helpers + videoDevices });
+  await boot(page);
+  await run(
+    page,
+    'sleep 8; screencapture -V 5 -g /tmp/denied-mic.webm; echo "mic denied $?"; if test -e /tmp/denied-mic.webm; then echo "mic denied file exists"; else echo "mic denied file absent"; fi'
+  );
+  await page.until(() => !!window.findConfirm());
+  assert.match(
+    await page.evaluate(() => window.findConfirm().shadowRoot.textContent),
+    /Capture the screen and microphone\?.*record from your microphone for up to 5 seconds\./s
+  );
+  assert.deepEqual(await page.evaluate(() => window.displayOpened), []);
+  assert.deepEqual(await page.evaluate(() => window.micOpened), []);
+  await press(page, 'action');
+  await shows(page, 'mic denied 1');
+  await shows(page, 'mic denied file absent');
+  assert.equal(await page.evaluate(() => window.displayOpened.length), 1);
+  assert.deepEqual(await page.evaluate(() => window.micOpened), [{ audio: true, video: false }]);
+  assert.equal(await page.evaluate(() => window.displayStopped), 1);
+  assert.deepEqual(
+    await page.evaluate(() => window.displayTracks.map((track) => track.readyState)),
+    ['ended']
+  );
+  assert.equal(await page.evaluate(() => window.prompted), 1);
   assert.deepEqual(page.errors, []);
 });
 
