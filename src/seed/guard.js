@@ -867,14 +867,16 @@ class Guard {
     return this.sessions.get(sessionId)?.targetId ?? this.navSessions.get(sessionId)?.targetId;
   }
 
-  invalidate(targetId, invalidated = new Set()) {
+  invalidate(targetId, invalidated = new Map()) {
     const seen = new Set();
     let current = targetId;
     while (current && !seen.has(current)) {
       seen.add(current);
-      if (!invalidated.has(current)) {
-        this.document(current).revision += 1;
-        invalidated.add(current);
+      const state = this.document(current);
+      const before = invalidated.get(current);
+      if (before?.state !== state || before.revision !== state.revision) {
+        state.revision += 1;
+        invalidated.set(current, { state, revision: state.revision });
       }
       current = this.parentTarget(current);
     }
@@ -951,9 +953,31 @@ class Guard {
     }
   }
 
+  forgetCommits(targetId) {
+    for (const id of this.related(targetId) ?? [targetId])
+      this.commits.delete(this.documents.get(id)?.frameId ?? id);
+  }
+
+  observationLost(sessionId, targetId) {
+    const id = this.documentTarget(sessionId) ?? targetId;
+    this.forgetCommits(id);
+    this.invalidate(id);
+  }
+
+  rebindCommit(frame) {
+    const commit = this.commits.get(frame.id);
+    if (
+      commit &&
+      ['loaderId', 'url', 'securityOrigin', 'unreachableUrl'].some(
+        (key) => frame[key] !== undefined && frame[key] !== commit.frame[key]
+      )
+    )
+      this.commits.delete(frame.id);
+  }
+
   commitDocument(targetId, method, params) {
     const frame = method === 'Page.frameNavigated' && params.frame;
-    let invalidated = new Set();
+    let invalidated = new Map();
     if (typeof frame?.loaderId === 'string' && frame.loaderId && typeof frame.id === 'string') {
       const signature = JSON.stringify([
         frame.loaderId,
@@ -965,7 +989,7 @@ class Guard {
       ]);
       let commit = this.commits.get(frame.id);
       if (commit?.signature !== signature) {
-        commit = { signature, invalidated: new Set() };
+        commit = { signature, frame, invalidated: new Map() };
         this.commits.set(frame.id, commit);
       }
       invalidated = commit.invalidated;
@@ -976,7 +1000,7 @@ class Guard {
       frame && (this.roots.get(frame.id) ?? (this.documents.has(frame.id) ? frame.id : undefined));
     if (owner) this.invalidate(owner, invalidated);
     if (frame && !this.knownFrame(frame))
-      for (const id of invalidated) this.document(id).transport = false;
+      for (const id of invalidated.keys()) this.document(id).transport = false;
   }
 
   documentEvent({ method, params = {}, sessionId }) {
@@ -1013,8 +1037,8 @@ class Guard {
       if (targetId) this.noteFrame(targetId, method, params);
     }
     if (method === 'Target.detachedFromTarget')
-      this.invalidate(this.documentTarget(params.sessionId));
-    if (method === 'Target.targetDestroyed') this.invalidate(params.targetId);
+      this.observationLost(params.sessionId, params.targetId);
+    if (method === 'Target.targetDestroyed') this.observationLost(undefined, params.targetId);
   }
 
   documentValid(sessionId, command, transport = false) {
@@ -1254,6 +1278,7 @@ class Guard {
       )
         return this.revokeProof(targetId, state, revision, proof);
       for (const frame of all) {
+        this.rebindCommit(frame);
         this.frames.set(frame.id, this.framed(frame));
         if (frame.parentId) this.parents.set(frame.id, frame.parentId);
       }
@@ -1480,6 +1505,7 @@ class Guard {
     if (!known) return this.revokeProof(targetId, state, revision, proof);
     this.rootFrame(targetId, known[0]);
     for (const frame of known) {
+      this.rebindCommit(frame);
       this.frames.set(frame.id, this.framed(frame));
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
     }
@@ -1509,7 +1535,10 @@ class Guard {
   }
 
   watch(sessionId, targetId, parent) {
-    if (!this.sessions.has(sessionId)) this.sessions.set(sessionId, { targetId, parent });
+    if (!this.sessions.has(sessionId)) {
+      this.forgetCommits(targetId);
+      this.sessions.set(sessionId, { targetId, parent });
+    }
     if (!this.watching.has(sessionId)) {
       const watched = this.inspect(sessionId, targetId, parent).then((ok) => {
         if (!ok && this.watching.get(sessionId) === watched) this.watching.delete(sessionId);
