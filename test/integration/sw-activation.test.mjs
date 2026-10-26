@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
+import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
 import { boot } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
@@ -117,6 +118,7 @@ test('an update activates within 5 s of the cancel while the page keeps fetching
   const page = await chrome.page(t);
   await boot(page);
   chrome.overrides.set('/os/held.bin', Buffer.alloc(SIZE, 7));
+  await download(NPM);
   const streamed = await updateWhileHolding(page, '/os/held.bin', NPM);
   const log = streamed.log.join('\n');
   assert.deepEqual([streamed.held, streamed.released], ['installed', 'activated'], log);
