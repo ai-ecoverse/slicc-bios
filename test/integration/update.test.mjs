@@ -925,6 +925,118 @@ test('the BIOS installer replaces a command in place while seven runs: an exec t
   assert.deepEqual(page.errors, []);
 });
 
+const REPLACING = `slicc-kernel-replacing:v1:slicc-kernel:/${bash}`;
+const BASH_FILES = ['package.json', 'bin/bash', 'bin/bash.wasm'];
+
+async function hashes(tab) {
+  return tab.evaluate(
+    async (dir, files) => {
+      const out = {};
+      for (const file of files) {
+        let at = await navigator.storage.getDirectory();
+        const parts = `${dir}/${file}`.split('/');
+        const name = parts.pop();
+        for (const part of parts) at = await at.getDirectoryHandle(part);
+        const bytes = await (await (await at.getFileHandle(name)).getFile()).arrayBuffer();
+        const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+        out[file] = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
+      }
+      return out;
+    },
+    bash,
+    BASH_FILES
+  );
+}
+
+test('seven’s own pnpm update swaps a command’s package while seven runs: an exec that starts during the swap waits for it and runs the new version whole', async (t) => {
+  const page = await chrome.page(t);
+  await bootOlder(page);
+  chrome.overrides.set('/reader.html', '<!doctype html><title>reader</title>');
+  const other = await page.tab();
+  await other.goto('/reader.html');
+  const before = await hashes(other);
+  await other.evaluate(
+    (name) =>
+      new Promise((resolve) => {
+        navigator.locks.request(name, { mode: 'shared' }, () => {
+          resolve(true);
+          return new Promise((release) => {
+            window.releaseReader = release;
+          });
+        });
+      }),
+    REPLACING
+  );
+  deploy();
+  await page.send('Page.bringToFront');
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  const parked = await page.within(
+    5 * 60 * 1000,
+    async (name) => {
+      const { pending = [] } = await navigator.locks.query();
+      if (pending.some((request) => request.name === name && request.mode === 'exclusive'))
+        return 'parked';
+      const bios = document
+        .querySelector('slicc-app')
+        .model.updates.list()
+        .find((item) => item.id === 'bios');
+      return /ready|failed/.test(bios?.state ?? '') && `bios ${bios.state} ${bios.error ?? ''}`;
+    },
+    REPLACING
+  );
+  assert.equal(parked, 'parked', `the update never asked for ${REPLACING}`);
+  assert.deepEqual(await hashes(other), before, 'the package changed before its swap got the lock');
+  assert.equal(await version(page), '5.3.0-13');
+  const queued = await other.evaluate(async (name) => {
+    const { pending = [] } = await navigator.locks.query();
+    return pending.filter((request) => request.name === name && request.mode === 'shared').length;
+  }, REPLACING);
+  await shows(page, prompt);
+  await run(
+    page,
+    `clear; bash -c 'echo exec-ok' > /tmp/swap 2>&1; echo "swap-$((40 + 2)) exit=$?"`
+  );
+  await other
+    .within(
+      60000,
+      async (name, queued) => {
+        const { pending = [] } = await navigator.locks.query();
+        const shared = pending.filter(
+          (request) => request.name === name && request.mode === 'shared'
+        );
+        return shared.length > queued;
+      },
+      REPLACING,
+      queued
+    )
+    .catch(async (error) => {
+      const shown = (await screen(page)).replace(/\s+/g, ' ');
+      throw new Error(`the exec never queued behind the swap: ${error.message}\n${shown}`);
+    });
+  assert.ok(!(await screen(page)).includes('swap-42'), 'the exec answered while the swap was held');
+  await other.evaluate(() => window.releaseReader());
+  await shows(page, 'swap-42', 120000);
+  const output = await read(page, 'tmp/swap').catch((error) => `no /tmp/swap: ${error.message}`);
+  assert.equal(output.trim(), 'exec-ok', output);
+  assert.match(await screen(page), /swap-42 exit=0/);
+  await page.until(() =>
+    /ready|failed/.test(
+      document
+        .querySelector('slicc-app')
+        .model.updates.list()
+        .find((item) => item.id === 'bios').state
+    )
+  );
+  assert.equal((await row(page, 'bios')).state, 'ready', (await row(page, 'bios')).error);
+  assert.equal(await version(page), SHIPPED);
+  await run(
+    page,
+    `clear; echo "fresh-$((40 + 2)) $(bash -c 'head -3 /${bash}/package.json' | tail -1 | tr -d ' ')"`
+  );
+  await shows(page, `fresh-42 "version":"${SHIPPED}",`);
+  assert.deepEqual(page.errors, []);
+});
+
 test('the BIOS installer updates a command’s wasm before its glue and its package.json last, so another tab never sees new glue beside old wasm', async (t) => {
   const page = await chrome.page(t);
   await bootOlder(page);
