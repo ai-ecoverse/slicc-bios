@@ -66,9 +66,20 @@ for (const outcome of ['verified', 'error', 'missing', 'mismatch']) {
     );
     await flush();
     const creation = wire.held.find((message) => message.method === 'Page.createIsolatedWorld');
-    assert.ok(creation);
-    wire.release(creation, { result: { executionContextId: 701 } });
-    assert.equal((await world).error, undefined);
+    if (outcome === 'verified') {
+      assert.ok(creation);
+      wire.release(creation, { result: { executionContextId: 701 } });
+      assert.equal((await world).error, undefined);
+    } else {
+      assert.equal(
+        creation,
+        undefined,
+        'a failed private realm check forwards no frame-world creation'
+      );
+      const answer = await world;
+      assert.match(answer.error?.message ?? '', /^slicc: refused:/);
+      assert.equal(answer.result, undefined);
+    }
     assert.equal(
       wire.delivered.some((message) => message.method === 'Runtime.executionContextCreated'),
       false,

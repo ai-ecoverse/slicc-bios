@@ -778,11 +778,7 @@ class Guard {
       return strict && (url === '' || inherits(url)) && (await this.inherited(frameId, 0));
     }
     if (await this.lookup(frameId)) return this.target(frameId);
-    if (owner) {
-      this.enterStrict(owner, true);
-      this.invalidate(owner);
-      this.document(owner).failed = true;
-    }
+    this.uncertain(owner);
     return true;
   }
 
@@ -828,9 +824,7 @@ class Guard {
       URL.canParse(info.url)
     )
       return info;
-    this.invalidate(targetId);
-    this.enterStrict(targetId);
-    this.document(targetId).failed = true;
+    this.uncertain(targetId);
     return null;
   }
 
@@ -935,6 +929,15 @@ class Guard {
     }
   }
 
+  uncertain(targetId) {
+    if (!targetId) return;
+    this.invalidate(targetId);
+    this.enterStrict(targetId);
+    const state = this.document(targetId);
+    state.failed = true;
+    state.checked = -1;
+  }
+
   documentTarget(sessionId) {
     return this.sessions.get(sessionId)?.targetId ?? this.navSessions.get(sessionId)?.targetId;
   }
@@ -984,6 +987,8 @@ class Guard {
     if (
       this.is.url(url) ||
       url === ERROR_PAGE ||
+      this.is.url(params.documentURL) ||
+      params.documentURL === ERROR_PAGE ||
       (context?.auxData?.frameId &&
         context.auxData.frameId !== targetId &&
         context.auxData.frameId !== this.documents.get(targetId)?.root &&
@@ -1164,16 +1169,21 @@ class Guard {
       !URL.canParse(value) ||
       value.startsWith('chrome-error:') ||
       this.is.url(value)
-    )
+    ) {
+      this.uncertain(this.documentTarget(message.sessionId));
       return false;
+    }
     if (typeof expected !== 'string' || bare(value) !== bare(expected)) {
-      if (
-        this.strictScope(this.documentTarget(message.sessionId)) ||
-        !(await this.documentChecked(message.sessionId, true))
-      )
+      if (this.strictScope(this.documentTarget(message.sessionId))) {
+        this.uncertain(this.documentTarget(message.sessionId));
         return false;
+      }
+      if (!(await this.documentChecked(message.sessionId, true))) return false;
       expected = this.contextURL(message);
-      if (typeof expected !== 'string' || bare(value) !== bare(expected)) return false;
+      if (typeof expected !== 'string' || bare(value) !== bare(expected)) {
+        this.uncertain(this.documentTarget(message.sessionId));
+        return false;
+      }
     }
     record.url = bare(value);
     return (
@@ -1359,9 +1369,7 @@ class Guard {
         if (cleanup && (await this.cleanError(nav, cleanup))) return false;
       }
       if (answer.error || !all) {
-        state.failed = true;
-        this.enterStrict(targetId);
-        state.checked = -1;
+        this.uncertain(targetId);
         return false;
       }
       if (state.revision !== revision) return false;
@@ -1499,16 +1507,12 @@ class Guard {
       state.retired ||
       state.revision !== revision
     ) {
-      state.checked = -1;
-      state.failed = true;
-      this.enterStrict(targetId, true);
+      this.uncertain(targetId);
       return false;
     }
     this.learn(info);
     if (await this.target(targetId)) {
-      state.checked = -1;
-      state.failed = true;
-      this.enterStrict(targetId, true);
+      this.uncertain(targetId);
       return PROTECTED;
     }
     if (state.revision !== revision) return false;
@@ -1548,11 +1552,8 @@ class Guard {
           ? false
           : await this.verify(sessionId, targetId);
     if (verified === ERROR_DOCUMENT || verified === UNCLASSIFIED_DOCUMENT) {
-      this.invalidate(targetId);
-      this.document(targetId).checked = -1;
-      this.document(targetId).failed = true;
+      this.uncertain(targetId);
       this.document(targetId).first = true;
-      this.enterStrict(targetId, true);
       this.touch(targetId);
       await this.checkDocument(targetId, true);
       const state = this.document(targetId);
@@ -1563,9 +1564,7 @@ class Guard {
         this.documentValid(sessionId);
     }
     if (verified !== true) {
-      this.enterStrict(targetId);
-      this.document(targetId).checked = -1;
-      this.document(targetId).failed = true;
+      this.uncertain(targetId);
       if (verified === PROTECTED) this.cut(sessionId, parent);
       return false;
     }
@@ -1860,8 +1859,10 @@ class Guard {
   metadataInfo(info) {
     const state = this.documents.get(info.targetId);
     if (
+      !state ||
+      state.checked !== state.revision ||
       info.url === ERROR_PAGE ||
-      state?.failed ||
+      state.failed ||
       (state?.url && info.url !== state.url) ||
       this.mentions({ title: info.title })
     )
