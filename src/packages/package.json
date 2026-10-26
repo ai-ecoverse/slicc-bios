@@ -5,7 +5,7 @@
   "dependencies": {
     "@ai-ecoverse/slicc-browsers": "1.18.14",
     "@ai-ecoverse/slicc-capture": "1.4.1",
-    "@ai-ecoverse/slicc-cdp": "1.41.20",
+    "@ai-ecoverse/slicc-cdp": "1.42.2",
     "@ai-ecoverse/slicc-clipboard": "1.1.1",
     "@ai-ecoverse/slicc-kernel": "1.167.4",
     "@ai-ecoverse/slicc-spectrum": "1.104.1",
