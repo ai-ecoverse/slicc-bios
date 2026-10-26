@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { boot, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
+import { shoot } from './shots.mjs';
 
 const TITLE = 'Capture target';
 const chrome = await launch({
@@ -280,6 +281,139 @@ test('a tab that sets no capture handle is refused, since seven can’t tell it 
   await shows(page, "seven can't tell this tab isn't its own or the vault's");
   await shows(page, 'bare 1');
   await close();
+  assert.deepEqual(page.errors, []);
+});
+
+const videoDevices = `
+  window.displayOpened = [];
+  window.micOpened = [];
+  window.prompted = 0;
+  const showModal = HTMLDialogElement.prototype.showModal;
+  HTMLDialogElement.prototype.showModal = function (...args) {
+    if (this.getRootNode()?.host?.localName === 'slicc-confirm') window.prompted += 1;
+    return showModal.apply(this, args);
+  };
+  Object.defineProperty(navigator.mediaDevices, 'getDisplayMedia', {
+    configurable: true,
+    value: async (constraints) => {
+      window.displayOpened.push(constraints);
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 64;
+      const context = canvas.getContext('2d');
+      const paint = () => {
+        context.fillStyle = '#0a6';
+        context.fillRect(0, 0, 64, 64);
+      };
+      paint();
+      const stream = canvas.captureStream(10);
+      const [track] = stream.getVideoTracks();
+      const timer = setInterval(paint, 50);
+      const stop = track.stop.bind(track);
+      track.stop = () => {
+        clearInterval(timer);
+        stop();
+      };
+      track.getCaptureHandle = () => ({ handle: 'ordinary', origin: 'https://example.test' });
+      return stream;
+    },
+  });
+  Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
+    configurable: true,
+    value: async (constraints) => {
+      window.micOpened.push(constraints);
+      throw new DOMException('denied by the test', 'NotAllowedError');
+    },
+  });
+`;
+
+test('a typed video asks the picker for shared sound only with -A', async (t) => {
+  const page = await chrome.page(t);
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: helpers + videoDevices });
+  await boot(page);
+  for (const [name, flag] of [
+    ['silent', ''],
+    ['sound', '-A'],
+  ]) {
+    await run(
+      page,
+      `screencapture -V 0.5 ${flag} /tmp/${name}.webm; echo "${name} $?"; wc -c /tmp/${name}.webm`
+    );
+    await shows(page, `${name} 0`);
+  }
+  const constraints = await page.evaluate(() => window.displayOpened);
+  assert.deepEqual(
+    constraints.map((value) => value.audio),
+    [false, true]
+  );
+  for (const value of constraints) {
+    assert.equal(value.selfBrowserSurface, 'exclude');
+    assert.equal(value.surfaceSwitching, 'exclude');
+    assert.equal(value.preferCurrentTab, false);
+  }
+  assert.deepEqual(await page.evaluate(() => window.micOpened), []);
+  assert.equal(await page.evaluate(() => window.prompted), 0);
+  assert.deepEqual(page.errors, []);
+});
+
+test('shared sound is named before the picker, and Cancel opens nothing', async (t) => {
+  const page = await chrome.page(t);
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: helpers + videoDevices });
+  await boot(page);
+  await run(page, 'sleep 8; screencapture -V 5 -A /tmp/sound.webm; echo "sound cancelled $?"');
+  await page.until(() => !!window.findConfirm());
+  assert.match(
+    await page.evaluate(() => window.findConfirm().shadowRoot.textContent),
+    /Capture the screen\?.*A program asks seven to capture your screen and its sound\. You pick what to share next\./s
+  );
+  await shoot(page, 'capture-sound-prompt');
+  await press(page, 'cancel');
+  await shows(page, 'the request to capture the screen was dismissed');
+  await shows(page, 'sound cancelled 1');
+  assert.deepEqual(await page.evaluate(() => window.displayOpened), []);
+  assert.deepEqual(await page.evaluate(() => window.micOpened), []);
+  assert.deepEqual(page.errors, []);
+});
+
+test('screen, shared sound and microphone use one duration-bearing prompt, and Cancel opens neither device', async (t) => {
+  const page = await chrome.page(t);
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: helpers + videoDevices });
+  await boot(page);
+  await run(page, 'sleep 8; screencapture -V 5 -A -g /tmp/mic.webm; echo "mic cancelled $?"');
+  await page.until(() => !!window.findConfirm());
+  assert.match(
+    await page.evaluate(() => window.findConfirm().shadowRoot.textContent),
+    /Capture the screen and microphone\?.*A program asks seven to capture your screen and its sound, and record from your microphone for up to 5 seconds\. You pick what to share next\./s
+  );
+  await shoot(page, 'capture-microphone-prompt');
+  await press(page, 'cancel');
+  await shows(page, 'the request to capture the screen was dismissed');
+  await shows(page, 'mic cancelled 1');
+  assert.equal(await page.evaluate(() => window.prompted), 1);
+  assert.deepEqual(await page.evaluate(() => window.displayOpened), []);
+  assert.deepEqual(await page.evaluate(() => window.micOpened), []);
+  assert.deepEqual(page.errors, []);
+});
+
+test('typed -g and -G in an active tab request only the default or exact named microphone', async (t) => {
+  const page = await chrome.page(t);
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: helpers + videoDevices });
+  await boot(page);
+  for (const [name, flag] of [
+    ['default', '-g'],
+    ['named', '-G dummy-mic'],
+  ]) {
+    await run(page, `screencapture -V 1 ${flag} /tmp/${name}.webm; echo "${name} mic $?"`);
+    await shows(page, `${name} mic 1`);
+  }
+  assert.deepEqual(await page.evaluate(() => window.micOpened), [
+    { audio: true, video: false },
+    { audio: { deviceId: { exact: 'dummy-mic' } }, video: false },
+  ]);
+  assert.deepEqual(await page.evaluate(() => window.displayOpened.map((value) => value.audio)), [
+    false,
+    false,
+  ]);
+  assert.equal(await page.evaluate(() => window.prompted), 0);
   assert.deepEqual(page.errors, []);
 });
 
