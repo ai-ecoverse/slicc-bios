@@ -819,13 +819,13 @@ class Guard {
   refuse(command, message = PROTECTED, release = true) {
     if (this.finished.has(command)) return;
     this.finished.add(command);
-    if (release && this.commands.get(requestKey(command)) === command)
-      this.commands.delete(requestKey(command));
+    const key = requestKey(command);
+    if (release && this.commands.get(key) === command) this.commands.delete(key);
     this.pendingContent.delete(command);
     const { id, sessionId } = command;
     this.deliver(
       { id, ...(sessionId ? { sessionId } : {}), error: { code: -32000, message } },
-      release
+      release && this.asked.get(key) !== command
     );
   }
 
@@ -923,7 +923,12 @@ class Guard {
     seen.add(targetId);
     const scope = this.scopes.get(targetId);
     if (!scope?.ready) return true;
-    for (const id of scope.frames) {
+    const frames = new Set(scope.frames);
+    for (let size = 0; size !== frames.size; ) {
+      size = frames.size;
+      for (const [id, parent] of this.parents) if (frames.has(parent)) frames.add(id);
+    }
+    for (const id of frames) {
       const url = this.frames.get(id);
       if (url === undefined || url === '' || this.is.url(url)) return true;
       if (
@@ -1215,8 +1220,18 @@ class Guard {
 
   scopeNavigated(frame, targetId) {
     const scope = this.scope(targetId);
-    if (frame.id === scope.root || (!frame.parentId && !scope.root)) {
-      for (const id of scope.frames) if (id !== targetId) this.removeFrame(id);
+    if (
+      frame.id === scope.root ||
+      frame.id === this.frameRoots.get(targetId) ||
+      (!frame.parentId && !scope.root)
+    ) {
+      if (scope.root && frame.id !== scope.root) {
+        this.frames.delete(scope.root);
+        this.parents.delete(scope.root);
+      } else {
+        for (const id of scope.frames) if (id !== targetId) this.removeFrame(id);
+      }
+      scope.root = frame.id;
       scope.frames.clear();
       scope.owners.clear();
       scope.remoteOwners.clear();
@@ -2799,6 +2814,9 @@ class Guard {
 
   endedAnswer(was) {
     if (this.finished.has(was)) {
+      const key = requestKey(was);
+      if (this.callerIds.get(key) === was && this.asked.get(key) !== was)
+        this.callerIds.delete(key);
       if (was.method === 'Page.startScreencast')
         void this.call('Page.stopScreencast', {}, was.sessionId);
       return true;

@@ -192,7 +192,9 @@ for (const missing of [
       sessionId: 'guard-target',
       params: { frame: entry.tree.frame },
     });
-    wire.hold((m) => m.id >= 2 ** 30 && m.method === 'Page.getFrameTree');
+    wire.hold(
+      (m) => m.id >= 2 ** 30 && m.method === 'Page.getFrameTree' && m.sessionId === 'client-target'
+    );
     wire.release(attachment);
     await flush();
     const proof = wire.held.find((m) => m.method === 'Page.getFrameTree');
