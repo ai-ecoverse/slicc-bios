@@ -29,11 +29,9 @@ export function installGuardModes(row) {
     'Fetch.getResponseBody',
   ]);
   globalThis.__biosGuardModeRow = row;
-  const emit = (record) => {
+  const emit = (record, ownerRow = globalThis.__biosGuardModeRow) => {
     try {
-      const sent = globalThis.__biosGuardModeEvent?.(
-        JSON.stringify({ row: globalThis.__biosGuardModeRow, ...record })
-      );
+      const sent = globalThis.__biosGuardModeEvent?.(JSON.stringify({ row: ownerRow, ...record }));
       sent?.catch(() => {});
     } catch {}
   };
@@ -57,8 +55,26 @@ export function installGuardModes(row) {
       const instance = Array.from(crypto.getRandomValues(new Uint32Array(4)), (value) =>
         value.toString(16).padStart(8, '0')
       ).join('');
-      return ({ target, strict, evidence, phase, cause }) =>
-        emit({ kind: 'mode', instance, target, strict, evidence, phase, cause });
+      const ownerRow = globalThis.__biosGuardVectorRow;
+      return (record) => {
+        if (record.kind === 'check') {
+          const { site, action, untainted, ordinary } = record;
+          emit(
+            {
+              kind: 'check',
+              site,
+              action,
+              method: methods.has(record.method) ? record.method : 'other',
+              untainted: untainted === true,
+              ordinary: ordinary === true,
+            },
+            ownerRow
+          );
+        } else {
+          const { target, strict, evidence, phase, cause } = record;
+          emit({ kind: 'mode', instance, target, strict, evidence, phase, cause }, ownerRow);
+        }
+      };
     },
   };
 }
@@ -104,6 +120,29 @@ export function guardModeCounts(row) {
     'Network.getResponseBody',
     'Fetch.getResponseBody',
   ]);
+  const sites = new Set([
+    'private-read',
+    'check-other',
+    'reply-generation',
+    'attachment-inspect',
+    'attachment-proof',
+    'target-reply',
+    'forward-generation',
+    'document-hidden',
+    'document-private-proof',
+    'target-current',
+    'frame-target',
+    'context-selection',
+    'plain-scope',
+    'navigation-arm',
+    'history-entry',
+    'request-proof',
+    'event-hidden',
+    'event-foreign',
+    'context-proof',
+    'event-receipt',
+    'event-naming',
+  ]);
   const rows = new Map();
   const phases = new Set(['enter', 'leave', 'observe']);
   const causes = new Set(['new', 'pending', 'evidence', 'tree', 'commit', 'worker']);
@@ -124,11 +163,28 @@ export function guardModeCounts(row) {
       rows.set(name, {
         ...Object.fromEntries(fields.map((field) => [field, new Set()])),
         commands: new Map(),
+        checks: new Map(),
+        untaintedErrors: 0,
+        ordinaryErrors: 0,
       });
     return rows.get(name);
   };
   const handle = (record) => {
     if (!record || !allowed.has(record.row)) return;
+    if (record.kind === 'check') {
+      if (
+        !sites.has(record.site) ||
+        !['refuse', 'drop', 'error'].includes(record.action) ||
+        (!methods.has(record.method) && record.method !== 'other')
+      )
+        return;
+      const state = stateFor(record.row);
+      const key = `${record.site}:${record.method}:${record.action}`;
+      state.checks.set(key, (state.checks.get(key) ?? 0) + 1);
+      if (record.action === 'error' && record.untainted === true) state.untaintedErrors += 1;
+      if (record.action === 'error' && record.ordinary === true) state.ordinaryErrors += 1;
+      return;
+    }
     if (record.kind === 'command') {
       if (
         typeof record.method !== 'string' ||
@@ -170,6 +226,9 @@ export function guardModeCounts(row) {
       row: name,
       ...Object.fromEntries(fields.map((field) => [field, state[field].size])),
       commands: Object.fromEntries(state.commands),
+      checks: Object.fromEntries(state.checks),
+      untaintedErrors: state.untaintedErrors,
+      ordinaryErrors: state.ordinaryErrors,
     }));
   return {
     allow(name) {

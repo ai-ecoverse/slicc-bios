@@ -183,6 +183,7 @@ export async function launch({ agent = false, vault = true, tools = true, ...ove
     const opened = await page(t);
     if (env.CI) {
       const modes = guardModeCounts(t.name);
+      opened.guardModes = modes;
       await opened.expose('__biosGuardModeEvent', modes.handle);
       await opened.init(`() => (${installGuardModes})(${JSON.stringify(t.name)})`);
       guardModeRows(opened, t, modes);
