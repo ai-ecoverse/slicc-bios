@@ -65,6 +65,8 @@ for (const kind of ['ordinary', 'error']) {
       params: { frame: entry.tree.frame },
     });
     await flush();
+    wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: entry.info } });
+    await flush();
     const blank = await wire.send('Page.captureScreenshot', {}, session);
     assert.equal(blank.error, undefined);
     assert.equal(blank.result.data, 'c3ludGhldGlj');

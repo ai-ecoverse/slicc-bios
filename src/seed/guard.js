@@ -1364,6 +1364,8 @@ class Guard {
     if (!frames || frames.some((frame) => this.frameLive(frame)) || isHeld(entry.targetId))
       return this.cut(sessionId);
     for (const frame of frames) this.noteError(frame, sessionId);
+    const url = ticket.hint.params?.targetInfo?.url;
+    if (typeof url !== 'string' || !URL.canParse(url) || this.is.url(url)) return;
     this.quarantined.delete(sessionId);
   }
 

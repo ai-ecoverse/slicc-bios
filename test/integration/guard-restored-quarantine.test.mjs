@@ -90,6 +90,8 @@ for (const kind of ['ordinary', 'error']) {
       params: { frame: entry.tree.frame },
     });
     await flush();
+    hint(wire, entry, BLANKED);
+    await flush();
     const shot = await wire.send('Page.captureScreenshot', {}, session);
     assert.equal(shot.error, undefined);
     assert.equal(shot.result.data, 'c3ludGhldGlj');
@@ -120,6 +122,12 @@ for (const method of ['Runtime.evaluate', 'Page.captureScreenshot']) {
     wire.release(answer);
     assert.equal((await pending.answer).error?.message, PROTECTED);
     wire.hold(() => false);
+    assert.equal(
+      (await wire.send('Page.captureScreenshot', {}, session)).error?.message,
+      PROTECTED
+    );
+    hint(wire, entry, BLANKED);
+    await flush();
     assert.equal((await wire.send('Page.captureScreenshot', {}, session)).error, undefined);
   });
 }
@@ -219,6 +227,8 @@ for (const stale of ['ordinary', 'protected']) {
       params: { frame: entry.tree.frame },
     });
     await flush();
+    hint(wire, entry, BLANKED);
+    await flush();
     assert.equal((await wire.send('Page.captureScreenshot', {}, session)).error, undefined);
   });
 }
@@ -279,6 +289,8 @@ test('restored quarantine receipt closes a session even while an unrelated root 
     params: { frame: entry.tree.frame },
   });
   await flush();
+  hint(wire, entry, BLANKED);
+  await flush();
   assert.equal((await wire.send('Page.captureScreenshot', {}, session)).error, undefined);
 });
 
@@ -329,5 +341,7 @@ test('restored quarantine a fresh commit supersedes error evidence before it can
   wire.release(second);
   await flush();
   assert.equal(detached(wire, session), false);
+  hint(wire, entry, BLANKED);
+  await flush();
   assert.equal((await wire.send('Page.captureScreenshot', {}, session)).error, undefined);
 });
