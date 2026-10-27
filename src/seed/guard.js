@@ -34,6 +34,7 @@ const GUARD_IDS = 2 ** 30;
 const HOLD_MS = 2000;
 const BLANK_MS = 10000;
 const ERROR_PAGE = 'chrome-error://chromewebdata/';
+const errorURL = (url) => typeof url === 'string' && URL.parse(url)?.protocol === 'chrome-error:';
 const ERROR_DOCUMENT = Symbol();
 const UNCLASSIFIED_DOCUMENT = Symbol();
 const bare = (url) => url.split('#')[0];
@@ -718,7 +719,7 @@ class Guard {
   }
 
   negativeTarget(info) {
-    return Boolean(info?.targetId && (this.is.target(info) || info.url === ERROR_PAGE));
+    return Boolean(info?.targetId && (this.is.target(info) || errorURL(info.url)));
   }
 
   replyEvidence(method, answer) {
@@ -995,12 +996,18 @@ class Guard {
 
   invalidate(targetId, force = true) {
     if (!targetId) return;
-    if (force || this.document(targetId).strict) this.document(targetId).revision += 1;
+    if (force || this.document(targetId).strict) {
+      this.document(targetId).revision += 1;
+      this.document(targetId).guardCommit = null;
+    }
     const seen = new Set([targetId]);
     let parent = this.targets.get(targetId)?.parentId;
     while (parent && !seen.has(parent)) {
       seen.add(parent);
-      if (force || this.document(parent).strict) this.document(parent).revision += 1;
+      if (force || this.document(parent).strict) {
+        this.document(parent).revision += 1;
+        this.document(parent).guardCommit = null;
+      }
       parent = this.targets.get(parent)?.parentId;
     }
   }
@@ -1008,7 +1015,7 @@ class Guard {
   targetEvidence({ method, params, sessionId }) {
     const info = params.targetInfo;
     if (!info?.targetId) return;
-    const unsafe = this.is.target(info) || info.url === ERROR_PAGE || !URL.canParse(info.url);
+    const unsafe = this.is.target(info) || errorURL(info.url) || !URL.canParse(info.url);
     if (method === 'Target.attachedToTarget') {
       if (this.privateSessions.has(params.sessionId)) return;
       const parentId = info.type === 'iframe' ? this.documentTarget(sessionId) : undefined;
@@ -1047,9 +1054,9 @@ class Guard {
         : context?.origin;
     if (
       this.is.url(url) ||
-      url === ERROR_PAGE ||
+      errorURL(url) ||
       this.is.url(params.documentURL) ||
-      params.documentURL === ERROR_PAGE ||
+      errorURL(params.documentURL) ||
       (context?.auxData?.frameId &&
         context.auxData.frameId !== targetId &&
         context.auxData.frameId !== this.documents.get(targetId)?.root &&
@@ -1067,7 +1074,7 @@ class Guard {
       (frame.parentId &&
         frame.id !== targetId &&
         frame.id !== this.documents.get(targetId)?.root) ||
-      frame.url === ERROR_PAGE ||
+      errorURL(frame.url) ||
       typeof frame.loaderId !== 'string' ||
       !frame.loaderId ||
       !this.knownFrame(frame)
@@ -1078,8 +1085,34 @@ class Guard {
       frameId: frame.id,
       loaderId: frame.loaderId,
       url: this.framed(frame),
+      fragment: frame.urlFragment ?? '',
+      parentId: frame.parentId,
       revision: state.revision,
     };
+  }
+
+  committed(targetId, frame, revision) {
+    const state = this.documents.get(targetId);
+    const commit = state?.guardCommit;
+    return Boolean(
+      frame &&
+        commit &&
+        commit.revision === revision &&
+        revision === state.revision &&
+        frame.id === commit.frameId &&
+        frame.loaderId === commit.loaderId &&
+        this.framed(frame) === commit.url &&
+        (frame.urlFragment ?? '') === commit.fragment &&
+        frame.parentId === commit.parentId
+    );
+  }
+
+  duplicateCommit(targetId, frame, method, unsafe) {
+    return (
+      method === 'Page.frameNavigated' &&
+      !unsafe &&
+      this.committed(targetId, frame, this.document(targetId).revision)
+    );
   }
 
   frameEvidence({ method, params, sessionId }) {
@@ -1096,7 +1129,7 @@ class Guard {
       (method === 'Page.frameNavigated' && !frame) ||
       (frame &&
         (!this.knownFrame(frame) ||
-          frame.url === ERROR_PAGE ||
+          errorURL(frame.url) ||
           (frame.parentId
             ? !this.frames.has(frame.parentId) && frame.parentId !== targetId
             : frame.id !== targetId && frame.id !== this.document(targetId).root)));
@@ -1107,10 +1140,11 @@ class Guard {
         : targetId;
     if (unsafe || method === 'Page.frameAttached')
       this.enterStrict(subject, Boolean(unsafe) || this.frameOwner(frameId) !== targetId);
-    this.invalidate(
-      targetId,
-      Boolean(unsafe) || method === 'Page.frameAttached' || method === 'Page.frameDetached'
-    );
+    if (!this.duplicateCommit(targetId, frame, method, unsafe))
+      this.invalidate(
+        targetId,
+        Boolean(unsafe) || method === 'Page.frameAttached' || method === 'Page.frameDetached'
+      );
     if (method === 'Page.frameNavigated') this.guardCommit(sessionId, frame, targetId);
     if (method === 'Page.frameDetached' && params.reason === 'remove') this.retire(params.frameId);
   }
@@ -1380,13 +1414,7 @@ class Guard {
     state.url = all[0].url;
     state.root = all[0].id;
     state.tree = new Map(all.map((frame) => [frame.id, `${frame.url}${frame.urlFragment ?? ''}`]));
-    const commit = state.guardCommit;
-    const matched =
-      commit &&
-      all[0].id === commit.frameId &&
-      all[0].loaderId === commit.loaderId &&
-      this.framed(all[0]) === commit.url;
-    this.ordinary(state, Boolean(matched));
+    this.ordinary(state, this.committed(targetId, all[0], revision));
     for (const frame of all) {
       this.frames.set(frame.id, this.framed(frame));
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
@@ -2168,7 +2196,7 @@ class Guard {
       this.frames.set(frame.id, this.framed(frame));
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
     }
-    const hidden = this.is.url(frame.url) || this.is.url(frame.unreachableUrl);
+    const hidden = this.is.url(this.framed(frame));
     const { unreachableUrl, urlFragment, ...shown } = frame;
     return {
       ...rest,
