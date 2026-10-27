@@ -288,18 +288,20 @@ const RETIRE = 5000;
 let retiring = null;
 let held = { worker: null, since: 0 };
 
-function retire() {
+function retire(after) {
   const { waiting } = self.registration;
   if (!waiting) return;
   if (held.worker !== waiting) held = { worker: waiting, since: Date.now() };
   const left = [...streaming].filter((open) => !open.ended);
   if (retiring !== null || !left.length) return;
   const oldest = Math.min(...left.map(({ since }) => since));
-  const due = Math.max(held.since, oldest) + RETIRE - Date.now();
+  const due = after ?? Math.max(held.since, oldest) + RETIRE - Date.now();
   retiring = setTimeout(
     () => {
       retiring = null;
       const now = Date.now();
+      const unread = [...streaming].some((open) => !open.pulling && now - open.pulled >= RETIRE);
+      if (unread) return retire(RETIRE);
       if (self.registration.waiting === held.worker && now - held.since >= RETIRE)
         for (const open of streaming) if (now - open.since >= RETIRE) open.end();
       retire();
@@ -311,7 +313,8 @@ function retire() {
 function watched(response, request, controller, client) {
   if (!response.body) return response;
   const { origin, pathname } = new URL(request.url);
-  const open = { client, url: `${origin}${pathname}`, since: Date.now(), ended: false };
+  const since = Date.now();
+  const open = { client, url: `${origin}${pathname}`, since, pulled: since, ended: false };
   const events = /^text\/event-stream\b/i.test(response.headers.get('content-type') ?? '');
   const ended = new Promise((_, reject) => {
     open.end = () => {
@@ -326,6 +329,7 @@ function watched(response, request, controller, client) {
   const body = new ReadableStream({
     async pull(stream) {
       const idle = deadline(`sw: no data for ${pathname} in ${PATIENCE / 1000} s`);
+      open.pulling = true;
       try {
         const { done, value } = await Promise.race([ended, reader.read(), idle.late]);
         if (done) {
@@ -339,6 +343,8 @@ function watched(response, request, controller, client) {
         if (events && open.ended) stream.close();
         else stream.error(error);
       } finally {
+        open.pulling = false;
+        open.pulled = Date.now();
         idle.clear();
       }
     },
@@ -465,7 +471,7 @@ self.addEventListener('install', (event) => route(event, self.registration.scope
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
 self.registration.addEventListener('updatefound', () =>
-  self.registration.installing?.addEventListener('statechange', retire)
+  self.registration.installing?.addEventListener('statechange', () => retire())
 );
 self.addEventListener('fetch', (event) => {
   const { request, clientId } = event;
