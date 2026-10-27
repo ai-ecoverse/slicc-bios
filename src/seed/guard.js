@@ -153,6 +153,30 @@ const TREED = new Set([
   'Accessibility.getChildAXNodes',
   'Accessibility.queryAXTree',
 ]);
+const ERROR_METADATA = new Set([
+  'Target.targetCreated',
+  'Target.targetInfoChanged',
+  'Target.targetDestroyed',
+  'Target.attachedToTarget',
+  'Target.detachedFromTarget',
+  'Page.frameAttached',
+  'Page.frameDetached',
+  'Page.frameNavigated',
+  'Page.frameStartedLoading',
+  'Page.frameStoppedLoading',
+]);
+const requestKey = ({ id, sessionId }) => JSON.stringify([sessionId ?? null, id]);
+const RENDERED = new Set([
+  'Page.printToPDF',
+  'Page.startScreencast',
+  'Page.screencastFrame',
+  'HeadlessExperimental.beginFrame',
+]);
+const contentRead = (method = '') =>
+  CONTENTS.has(method) ||
+  TREED.has(method) ||
+  RENDERED.has(method) ||
+  /^(?:Runtime|DOM|DOMSnapshot|Accessibility|CSS|LayerTree)\.|^Page\.capture/.test(method);
 const STREAMED = new Set([
   'Network.streamResourceContent',
   'Fetch.takeResponseBodyAsStream',
@@ -530,6 +554,11 @@ class Guard {
     this.waiting = new Set();
     this.pages = new Set();
     this.frames = new Map();
+    this.errorFrames = new Set();
+    this.frameRoots = new Map();
+    this.unsafe = new WeakSet();
+    this.pendingContent = new Set();
+    this.callerIds = new Map();
     this.parents = new Map();
     this.requests = new Map();
     this.held = new Map();
@@ -569,7 +598,69 @@ class Guard {
     return this.deliver({ ...message, params: redacted });
   }
 
-  deliver(message) {
+  discardEvent(message) {
+    if (PAUSES.has(message.method)) {
+      this.offered.delete(message.params?.requestId);
+      this.release(message);
+    }
+  }
+
+  eventFields(value = {}) {
+    const safe = {};
+    for (const key of [
+      'id',
+      'frameId',
+      'parentId',
+      'parentFrameId',
+      'loaderId',
+      'targetId',
+      'sessionId',
+      'openerId',
+      'browserContextId',
+    ])
+      if (typeof value[key] === 'string' && /^[\w-]{1,256}$/.test(value[key]))
+        safe[key] = value[key];
+    for (const key of ['url', 'unreachableUrl', 'securityOrigin']) {
+      if (value[key] === undefined) continue;
+      safe[key] =
+        typeof value[key] === 'string' &&
+        URL.canParse(value[key]) &&
+        new URL(value[key]).origin !== 'null'
+          ? new URL(value[key]).origin
+          : ERROR_PAGE;
+    }
+    if (value.title !== undefined) safe.title = safe.url ?? ERROR_PAGE;
+    for (const key of ['attached', 'waitingForDebugger', 'canAccessOpener'])
+      if (typeof value[key] === 'boolean') safe[key] = value[key];
+    if (
+      /^(?:page|iframe|worker|service_worker|shared_worker|background_page|webview|browser|browser_ui|other|Navigation|BackForwardCacheRestore)$/.test(
+        value.type ?? ''
+      )
+    )
+      safe.type = value.type;
+    if (value.reason === 'remove' || value.reason === 'swap') safe.reason = value.reason;
+    return safe;
+  }
+
+  metadataEvent(message) {
+    const { method, sessionId, params = {} } = message;
+    return {
+      method,
+      ...(sessionId ? { sessionId } : {}),
+      params: {
+        ...this.eventFields(params),
+        ...(params.frame ? { frame: this.eventFields(params.frame) } : {}),
+        ...(params.targetInfo ? { targetInfo: this.eventFields(params.targetInfo) } : {}),
+      },
+    };
+  }
+
+  deliver(message, release = true, source = message) {
+    if (message.id === undefined && (this.unsafe.has(source) || this.eventError(source))) {
+      if (!ERROR_METADATA.has(message.method)) return this.discardEvent(message);
+      message = this.metadataEvent(message);
+    }
+    if (release && message.id !== undefined) this.callerIds.delete(requestKey(message));
     try {
       this.guarded.onmessage?.(JSON.stringify(message));
     } catch (error) {
@@ -587,14 +678,17 @@ class Guard {
     });
   }
 
-  refuse({ id, sessionId, method, params }, message = PROTECTED) {
+  refuse({ id, sessionId, method, params }, message = PROTECTED, release = true) {
     globalThis.sliccGuardTrace?.push({
       method,
       targetId: params?.targetId,
       sessionId,
       refused: message,
     });
-    this.deliver({ id, ...(sessionId ? { sessionId } : {}), error: { code: -32000, message } });
+    this.deliver(
+      { id, ...(sessionId ? { sessionId } : {}), error: { code: -32000, message } },
+      release
+    );
   }
 
   learn(info) {
@@ -668,6 +762,7 @@ class Guard {
 
   async frame(frameId, strict = false) {
     if (frameId === undefined) return false;
+    if (this.errorFrames.has(frameId)) return true;
     if (this.targets.has(frameId)) return this.target(frameId);
     if (this.frames.has(frameId)) {
       const url = this.frames.get(frameId);
@@ -818,11 +913,16 @@ class Guard {
     void this.call('Page.enable', {}, sessionId);
     const tree = (await this.call('Page.getFrameTree', {}, sessionId)).result?.frameTree;
     const all = framed(tree);
-    for (const frame of all) {
-      this.frames.set(frame.id, frame.url);
-      if (frame.parentId) this.parents.set(frame.id, frame.parentId);
+    const entry = this.sessions.get(sessionId);
+    if (this.errorDocument(sessionId)) return false;
+    if (!tree?.frame && this.targets.get(entry?.targetId)?.url?.startsWith('chrome-error:'))
+      return false;
+    if (entry && tree?.frame?.id) {
+      entry.frameId = tree.frame.id;
+      this.frameRoots.set(entry.targetId, tree.frame.id);
     }
-    return !all.some((frame) => this.is.url(frame.url) || this.is.url(frame.securityOrigin));
+    for (const frame of all) this.noteError(frame);
+    return !all.some((frame) => this.protectedFrame(frame));
   }
 
   async inspect(sessionId, targetId, parent) {
@@ -872,10 +972,14 @@ class Guard {
       const guarded = await this.target(info.targetId);
       if (guarded || nav?.taken || nav?.failed) return this.cut(sessionId, parent);
       if (nav) nav.held = false;
-      this.deliver({
-        ...message,
-        params: { ...params, targetInfo: this.masked(info), waitingForDebugger: false },
-      });
+      this.deliver(
+        {
+          ...message,
+          params: { ...params, targetInfo: this.masked(info), waitingForDebugger: false },
+        },
+        true,
+        message
+      );
     }
   }
 
@@ -1065,6 +1169,16 @@ class Guard {
     void this.call(next, { requestId }, sessionId);
   }
 
+  discardPending(sessionId) {
+    for (const command of [...this.callerIds.values()]) {
+      if (command.sessionId !== sessionId) continue;
+      this.unsafe.add(command);
+      this.pendingContent.delete(command);
+      this.asked.delete(requestKey(command));
+      this.refuse(command);
+    }
+  }
+
   async targetEvent(message) {
     const { method, params = {}, sessionId } = message;
     if (method === 'Target.attachedToTarget') {
@@ -1086,10 +1200,11 @@ class Guard {
     if (method === 'Target.targetCreated' || method === 'Target.targetInfoChanged') {
       this.learn(params.targetInfo);
       if (!(await this.target(params.targetInfo?.targetId))) {
-        this.deliver({
-          ...message,
-          params: { ...params, targetInfo: this.masked(params.targetInfo) },
-        });
+        this.deliver(
+          { ...message, params: { ...params, targetInfo: this.masked(params.targetInfo) } },
+          true,
+          message
+        );
         return true;
       }
       this.cutTarget(params.targetInfo.targetId);
@@ -1103,6 +1218,7 @@ class Guard {
       return this.targets.get(params.targetId)?.guarded === true;
     }
     if (method === 'Target.detachedFromTarget') {
+      this.discardPending(params.sessionId);
       this.worlds.delete(params.sessionId);
       this.runtimes.delete(params.sessionId);
       this.primed.delete(params.sessionId);
@@ -1150,7 +1266,9 @@ class Guard {
   foreign({ method, params = {}, sessionId }) {
     if (method === 'Runtime.executionContextCreated' && params.context) {
       const { id, uniqueId, name, origin, auxData } = params.context;
-      const hidden = auxData?.type === 'isolated' && EXTENSIONS.test(origin ?? '');
+      const hidden =
+        (auxData?.type === 'isolated' && EXTENSIONS.test(origin ?? '')) ||
+        this.errorFrames.has(auxData?.frameId);
       const world = this.world(sessionId);
       world.ids.set(id, hidden);
       if (uniqueId !== undefined) world.uniques.set(uniqueId, hidden);
@@ -1224,8 +1342,122 @@ class Guard {
     return this.is.url(entry.url) || this.is.url(entry.userTypedURL);
   }
 
+  protectedFrame(frame) {
+    return (
+      this.is.url(frame.url) ||
+      this.is.url(frame.securityOrigin) ||
+      (typeof frame.url === 'string' &&
+        frame.url.startsWith('chrome-error:') &&
+        this.unsafeUrl(frame.unreachableUrl))
+    );
+  }
+
+  unsafeUrl(url) {
+    return typeof url !== 'string' || !URL.canParse(url) || this.is.url(url);
+  }
+
+  noteError(frame, sessionId, committed = false) {
+    this.frames.set(frame.id, this.framed(frame));
+    if (this.protectedFrame(frame) && frame.url?.startsWith('chrome-error:'))
+      this.errorFrames.add(frame.id);
+    else if (committed) this.errorFrames.delete(frame.id);
+    const targetId =
+      this.sessions.get(sessionId)?.targetId ?? this.navSessions.get(sessionId)?.targetId;
+    const nav = this.navs.get(targetId);
+    if (nav && this.errorFrames.has(frame.id)) {
+      nav.errors ??= new Set();
+      nav.errors.add(frame.id);
+    }
+    const root = this.frameRoots.get(targetId);
+    if (
+      targetId &&
+      (root === frame.id ||
+        (!root &&
+          (!frame.parentId ||
+            (this.targets.get(targetId)?.type === 'iframe' && this.navSessions.has(sessionId)))))
+    )
+      this.frameRoots.set(targetId, frame.id);
+    for (const entry of this.sessions.values()) {
+      if (entry.targetId !== targetId || (frame.parentId && entry.frameId !== frame.id)) continue;
+      entry.frameId = frame.id;
+      if (this.errorFrames.has(frame.id))
+        this.errored.set(
+          targetId,
+          typeof frame.unreachableUrl === 'string' && URL.canParse(frame.unreachableUrl)
+            ? frame.unreachableUrl
+            : ERROR_PAGE
+        );
+    }
+    if (frame.parentId) this.parents.set(frame.id, frame.parentId);
+    this.taintContent();
+  }
+
+  taintContent() {
+    for (const command of this.pendingContent)
+      if (contentRead(command.method) && this.errorDocument(command.sessionId, command.method))
+        this.unsafe.add(command);
+  }
+
+  errorDocument(sessionId, method = '') {
+    const entry = this.sessions.get(sessionId);
+    if (!entry) return false;
+    const known = this.frameRoots.get(entry.targetId);
+    if (
+      (!known || this.targets.get(entry.targetId)?.type === 'iframe') &&
+      [...(this.navs.get(entry.targetId)?.errors ?? [])].some((frame) =>
+        this.errorFrames.has(frame)
+      )
+    )
+      return true;
+    const root = known ?? entry.frameId ?? entry.targetId;
+    if (this.errorFrames.has(root)) return true;
+    if (
+      !RENDERED.has(method) &&
+      !/^(?:DOM|DOMSnapshot|Accessibility|CSS|LayerTree|Log)\.|^Page\.capture/.test(method)
+    )
+      return false;
+    for (const frame of this.errorFrames) {
+      const seen = new Set();
+      let id = frame;
+      while (id && !seen.has(id)) {
+        if (id === root) return true;
+        seen.add(id);
+        id = this.parents.get(id);
+      }
+    }
+    return false;
+  }
+
+  frameError(params = {}) {
+    if (!this.errorFrames.size) return false;
+    const pending = [params];
+    let visited = 0;
+    while (pending.length) {
+      visited += 1;
+      const value = pending.pop();
+      if (typeof value === 'string' && this.errorFrames.has(value)) return true;
+      if (!value || typeof value !== 'object') continue;
+      for (const key of Object.keys(value)) {
+        if (this.errorFrames.has(key) || pending.length + visited >= 4096) return true;
+        pending.push(value[key]);
+      }
+    }
+    return false;
+  }
+
+  eventError(message) {
+    return this.frameError(message.params) || this.errorDocument(message.sessionId, message.method);
+  }
+
+  rememberUnsafe(message) {
+    if (message.id !== undefined || this.navSessions.has(message.sessionId)) return;
+    const named = this.frameError(message.params);
+    if (named && message.method === 'Runtime.executionContextCreated') this.foreign(message);
+    if (named || this.errorDocument(message.sessionId, message.method)) this.unsafe.add(message);
+  }
+
   entry(entry) {
-    if (!this.hides(entry)) return entry;
+    if (!this.unsafeUrl(entry.url) && !this.hides(entry)) return entry;
     return { ...entry, url: ERROR_PAGE, userTypedURL: ERROR_PAGE, title: '' };
   }
 
@@ -1239,24 +1471,44 @@ class Guard {
       this.frames.set(frame.id, this.framed(frame));
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
     }
-    const hidden = this.is.url(frame.url) || this.is.url(frame.unreachableUrl);
+    const hidden = this.errorFrames.has(frame.id) || this.protectedFrame(frame);
     const { unreachableUrl, urlFragment, ...shown } = frame;
     return {
       ...rest,
       frame: hidden ? { ...shown, url: ERROR_PAGE, securityOrigin: '://' } : frame,
       ...(childFrames ? { childFrames: childFrames.map((child) => this.tree(child)) } : {}),
-      ...(resources ? { resources: resources.filter((item) => !this.is.url(item.url)) } : {}),
+      ...(resources
+        ? {
+            resources: hidden
+              ? []
+              : resources.filter((item) => !this.frameError(item) && !this.is.url(item.url)),
+          }
+        : {}),
     };
   }
 
   async back(params, sessionId) {
     const history = (await this.call('Page.getNavigationHistory', {}, sessionId)).result;
     const entry = history?.entries?.find((item) => item.id === params.entryId);
-    return Boolean(entry && this.hides(entry));
+    return !entry || this.unsafeUrl(entry.url) || this.hides(entry);
   }
 
   masked(info) {
     const failed = this.errored.get(info.targetId);
+    const entries = [...this.sessions.values()].filter((entry) => entry.targetId === info.targetId);
+    const error =
+      this.errorFrames.has(this.frameRoots.get(info.targetId)) ||
+      entries.some((entry) => this.errorFrames.has(entry.frameId));
+    if (
+      info.url?.startsWith('chrome-error:') &&
+      !entries.some((entry) => this.frames.get(entry.frameId)?.startsWith('chrome-error:'))
+    )
+      info = { ...info, title: '' };
+    if (error) {
+      const origin =
+        failed !== ERROR_PAGE && URL.canParse(failed) ? new URL(failed).origin : ERROR_PAGE;
+      return { ...info, url: origin, title: origin };
+    }
     if (info.url === undefined || failed === undefined) return info;
     if (![failed, '', ERROR_PAGE].includes(bare(info.url))) return info;
     const origin = URL.canParse(failed) ? new URL(failed).origin : ERROR_PAGE;
@@ -1288,12 +1540,14 @@ class Guard {
   async event(message) {
     const method = message.method ?? '';
     const { sessionId } = message;
+    if (this.unsafe.has(message) && !method.startsWith('Target.')) return this.deliver(message);
     const foreign = this.foreign({ ...message, method });
     if (this.navSessions.has(sessionId))
       return this.navEvent(message, this.navSessions.get(sessionId));
     if (method.startsWith('Target.') && (await this.targetEvent(message))) return;
     if (this.blocked.has(sessionId) && PAUSES.has(method)) return this.release(message);
     if (this.hidden(sessionId)) return;
+    if (this.eventError(message)) return this.deliver(message);
     if (foreign) return;
     if (this.walked({ ...message, method })) return this.cut(sessionId);
     if (sessionId && method.startsWith('Runtime.') && !this.runtimes.has(sessionId)) return;
@@ -1357,15 +1611,36 @@ class Guard {
     return this.deliver({ ...message, result: { ...result, targetInfos } });
   }
 
-  async answer(message, was) {
-    if (was?.sessionId && this.blocked.has(was.sessionId)) return this.refuse(was);
-    const { method, params = {} } = was ?? {};
-    const { result } = message;
-    if (method === 'Page.createIsolatedWorld' && result?.executionContextId !== undefined) {
+  unsafeContent(message) {
+    return (
+      this.unsafe.has(message) ||
+      (contentRead(message.method) && this.errorDocument(message.sessionId, message.method))
+    );
+  }
+
+  replyProtected(was) {
+    return this.blocked.has(was.sessionId) || this.unsafeContent(was);
+  }
+
+  owns(message) {
+    return message.id === undefined || this.callerIds.get(requestKey(message)) === message;
+  }
+
+  worldReply(was, result) {
+    if (was?.method === 'Page.createIsolatedWorld' && result?.executionContextId !== undefined) {
       const world = this.world(was.sessionId);
       if (!world.ids.has(result.executionContextId))
         world.ids.set(result.executionContextId, false);
     }
+  }
+
+  async answer(message, was) {
+    this.pendingContent.delete(was);
+    if (!this.owns(was)) return;
+    if (was?.sessionId && this.replyProtected(was)) return this.refuse(was);
+    const { method, params = {} } = was ?? {};
+    const { result } = message;
+    this.worldReply(was, result);
     if (method === 'Target.attachToTarget' && result?.sessionId) {
       const ok = await this.watch(result.sessionId, params.targetId);
       if (!ok) return this.refuse(was);
@@ -1509,6 +1784,7 @@ class Guard {
   async check(message) {
     const { method, params = {}, sessionId } = message;
     if (typeof method !== 'string') return null;
+    if (this.unsafeContent(message)) return PROTECTED;
     if (method.startsWith('Fetch.') && sessionId === undefined) return FETCH;
     if (LATER.has(method)) return SCRIPTS;
     if (method === 'Page.navigate' && inherits(params.url)) return INHERITED;
@@ -1546,25 +1822,27 @@ class Guard {
     return this.unseen(method, params);
   }
 
-  async create({ id, params }) {
+  async create({ id, params, sessionId }) {
     const answer = await this.call('Target.createTarget', {
       ...params,
       background: params.background ?? true,
       url: 'about:blank',
     });
     const targetId = answer.result?.targetId;
-    if (!targetId) return this.deliver({ ...answer, id });
+    if (!targetId) return this.deliver({ ...answer, id, ...(sessionId ? { sessionId } : {}) });
     this.learn({ targetId, url: 'about:blank', type: 'page' });
     this.touch(targetId);
     const nav = this.navs.get(targetId);
     await nav.ready;
     if (!nav.failed && !inherits(params.url))
       void this.call('Page.navigate', { url: params.url }, nav.session);
-    this.deliver({ id, result: answer.result });
+    this.deliver({ id, ...(sessionId ? { sessionId } : {}), result: answer.result });
   }
 
   pass(message) {
     const { id, method, sessionId } = message;
+    if (!this.owns(message)) return;
+    if (this.unsafeContent(message)) return this.refuse(message);
     globalThis.sliccGuardTrace?.push({
       method,
       targetId: message.params?.targetId,
@@ -1578,19 +1856,42 @@ class Guard {
       this.pages.delete(sessionId);
       return this.deliver({ id, sessionId, result: {} });
     }
-    this.asked.set(id, message);
+    this.asked.set(requestKey(message), message);
+    if (contentRead(method)) this.pendingContent.add(message);
     this.connection.send(JSON.stringify(message));
   }
 
   received(text) {
     const message = parse(text);
+    if (message.method === 'Page.frameNavigated' && message.params?.frame)
+      this.noteError(message.params.frame, message.sessionId, true);
+    if (
+      message.method === 'Page.frameAttached' &&
+      message.params?.frameId &&
+      message.params.parentFrameId
+    ) {
+      this.parents.set(message.params.frameId, message.params.parentFrameId);
+      this.taintContent();
+    }
+    if (message.method === 'Page.frameDetached' && message.params?.reason === 'remove') {
+      this.rememberUnsafe(message);
+      this.errorFrames.delete(message.params.frameId);
+      this.parents.delete(message.params.frameId);
+    }
+    this.rememberUnsafe(message);
     if (this.internal.has(message.id)) {
       const resolve = this.internal.get(message.id);
       this.internal.delete(message.id);
       return resolve(message);
     }
-    const was = message.id === undefined ? undefined : this.asked.get(message.id);
-    this.asked.delete(message.id);
+    if (message.method === 'Target.detachedFromTarget' && message.params?.sessionId) {
+      this.blocked.add(message.params.sessionId);
+      this.discardPending(message.params.sessionId);
+    }
+    const key = requestKey(message);
+    if (message.id !== undefined && !this.asked.has(key)) return;
+    const was = message.id === undefined ? undefined : this.asked.get(key);
+    this.asked.delete(key);
     this.queue(
       message.sessionId ?? was?.sessionId ?? '',
       () => (message.id === undefined ? this.event(message) : this.answer(message, was)),
@@ -1615,10 +1916,19 @@ class Guard {
     connection.onclose = (why) => guarded.onclose?.(why);
     guarded.send = (text) => {
       const message = parse(text);
+      const key = requestKey(message);
+      if (message.id !== undefined) {
+        if (this.callerIds.has(key)) return this.refuse(message, FAILED, false);
+        this.callerIds.set(key, message);
+      }
+      if (contentRead(message.method) && this.errorDocument(message.sessionId, message.method))
+        this.unsafe.add(message);
       this.queue(
         `send:${message.sessionId ?? ''}`,
         async () => {
+          if (!this.owns(message)) return;
           const why = await this.check(message);
+          if (!this.owns(message)) return;
           if (why) return this.refuse(message, why);
           if (message.method === 'Runtime.enable' && this.primed.delete(message.sessionId)) {
             await this.call('Runtime.disable', {}, message.sessionId);
