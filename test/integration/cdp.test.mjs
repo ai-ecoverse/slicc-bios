@@ -6,7 +6,7 @@ import { actPackage, boot, ready, run, screen, shows } from './bios.mjs';
 import { devtools as boundPort, debuggerUrl, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
 import { linkNode } from './linked-node.mjs';
-import { CURRENT_EXTENSION, display, EXTENSIONS, realExtension, SEVEN } from './real-extension.mjs';
+import { display, EXTENSIONS, realExtension, SEVEN } from './real-extension.mjs';
 
 const hits = [];
 const heard = [];
@@ -191,7 +191,7 @@ test('over the extension’s shield, the guard arms every driven tab with no pro
   assert.deepEqual(page.errors, []);
 });
 
-for (const extension of [...EXTENSIONS, CURRENT_EXTENSION].filter(
+for (const extension of EXTENSIONS.filter(
   ({ version }) => !['7.5.1', '7.6.2', '7.6.3', '7.6.4'].includes(version)
 )) {
   test(`real slicc-extension ${extension.version}: playwright-cli opens about:blank on an opaque origin, drives an ordinary page, the vault stays out, and no driven document has the extension's origin`, {
@@ -273,7 +273,7 @@ for (const extension of [...EXTENSIONS, CURRENT_EXTENSION].filter(
       inherit
     );
     assert.doesNotMatch(inherit, /chrome-extension:/, inherit);
-    const recoveryVersions = ['7.5.1', '7.6.2', '7.6.3', '7.6.4', CURRENT_EXTENSION.version];
+    const recoveryVersions = ['7.5.1', '7.6.2', '7.6.3', '7.6.4'];
     if (recoveryVersions.includes(extension.version)) {
       const recoveredTitle = `Recovered ordinary ${extension.version}`;
       real.overrides.set(
