@@ -1887,6 +1887,7 @@ class Guard {
       this.touch(params.targetId);
       const nav = this.navs.get(params.targetId);
       if (nav) await nav.ready;
+      if (nav?.scrub) await nav.scrub;
       if (nav?.failed) return UNGUARDED;
     }
     if (await this.frame(params.frameId, true)) return PROTECTED;

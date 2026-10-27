@@ -22,6 +22,10 @@ export const EXTENSIONS = [
   release('7.6.3', '17f0e53dd5d11465ea60d7ae4409cfbb9f48859501119d62dd5e5d4673a79426'),
   release('7.6.4', 'd3523ce49e61b8db4c84d4470c5a1248b5765b3a9967b91c2a4e0f60a7f578f5'),
 ];
+export const CURRENT_EXTENSION = release(
+  '7.9.15',
+  '05bfa58e06c9472ac174b38ac806073bcf832531b68264b3ca36d07136b8ace3'
+);
 export const [EXTENSION] = EXTENSIONS;
 export const SEVEN = 'https://seven.sliccy.ai/';
 
