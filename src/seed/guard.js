@@ -1361,7 +1361,38 @@ class Guard {
     return typeof url !== 'string' || !URL.canParse(url) || this.is.url(url);
   }
 
+  recoverError(frame, sessionId, targetId) {
+    if (!targetId || this.protectedFrame(frame) || this.unsafeUrl(frame.url) || inherits(frame.url))
+      return;
+    const target = this.targets.get(targetId);
+    const root = this.frameRoots.get(targetId);
+    if (
+      root !== frame.id &&
+      (frame.parentId || target?.type !== 'page' || !this.navSessions.has(sessionId))
+    )
+      return;
+    if (root !== frame.id) {
+      this.errorFrames.delete(root);
+      this.errorUrls.delete(root);
+      this.navs.get(targetId)?.errors?.delete(root);
+    }
+    this.frameRoots.set(targetId, frame.id);
+    this.errored.delete(targetId);
+    if (!target) return;
+    target.url = frame.url;
+    if (!target.real) {
+      target.guarded = false;
+      target.was = false;
+    }
+  }
+
   noteError(frame, sessionId, committed = false) {
+    const targetId =
+      this.sessions.get(sessionId)?.targetId ?? this.navSessions.get(sessionId)?.targetId;
+    const target = this.targets.get(targetId);
+    const nav = this.navs.get(targetId);
+    const root = this.frameRoots.get(targetId);
+    if (committed) this.recoverError(frame, sessionId, targetId);
     this.frames.set(frame.id, this.framed(frame));
     if (this.protectedFrame(frame) && frame.url?.startsWith('chrome-error:')) {
       this.errorFrames.add(frame.id);
@@ -1369,21 +1400,17 @@ class Guard {
     } else if (committed) {
       this.errorFrames.delete(frame.id);
       this.errorUrls.delete(frame.id);
+      nav?.errors?.delete(frame.id);
     }
-    const targetId =
-      this.sessions.get(sessionId)?.targetId ?? this.navSessions.get(sessionId)?.targetId;
-    const nav = this.navs.get(targetId);
     if (nav && this.errorFrames.has(frame.id)) {
       nav.errors ??= new Set();
       nav.errors.add(frame.id);
     }
-    const root = this.frameRoots.get(targetId);
     if (
       targetId &&
       (root === frame.id ||
         (!root &&
-          (!frame.parentId ||
-            (this.targets.get(targetId)?.type === 'iframe' && this.navSessions.has(sessionId)))))
+          (!frame.parentId || (target?.type === 'iframe' && this.navSessions.has(sessionId)))))
     )
       this.frameRoots.set(targetId, frame.id);
     for (const entry of this.sessions.values()) {

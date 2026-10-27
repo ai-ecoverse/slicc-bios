@@ -265,21 +265,14 @@ for (const extension of EXTENSIONS) {
     );
     await shows(page, 'inherit-done', 60000);
     const inherit = await read(page, '/tmp/inherit');
-    const protectedErrorVersions = ['7.5.1', '7.6.2', '7.6.3', '7.6.4'];
-    if (protectedErrorVersions.includes(extension.version))
-      assert.equal(
-        inherit,
-        `${Array(3).fill("slicc: refused: target is on seven's origin").join('\n')}\n`,
-        inherit
-      );
-    else
-      assert.match(
-        inherit,
-        /slicc: refused: a browser-side navigation to about: gives the page the origin of whatever drives the browser/,
-        inherit
-      );
+    assert.match(
+      inherit,
+      /slicc: refused: a browser-side navigation to about: gives the page the origin of whatever drives the browser/,
+      inherit
+    );
     assert.doesNotMatch(inherit, /chrome-extension:/, inherit);
-    if (protectedErrorVersions.includes(extension.version)) {
+    const recoveryVersions = ['7.5.1', '7.6.2', '7.6.3', '7.6.4'];
+    if (recoveryVersions.includes(extension.version)) {
       const recoveredTitle = `Recovered ordinary ${extension.version}`;
       real.overrides.set(
         '/recovered.html',
