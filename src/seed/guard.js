@@ -599,6 +599,8 @@ class Guard {
     this.sessions = new Map();
     this.shown = new Set();
     this.blocked = new Set();
+    this.quarantined = new Map();
+    this.hints = new Map();
     this.shots = new Set();
     this.waiting = new Set();
     this.pages = new Set();
@@ -714,6 +716,13 @@ class Guard {
   }
 
   deliver(message, release = true, source = message) {
+    const caller = this.callerIds.get(requestKey(message));
+    if (message.id !== undefined && !message.error && caller && this.unsafeContent(caller))
+      message = {
+        id: message.id,
+        sessionId: message.sessionId,
+        error: { code: -32000, message: PROTECTED },
+      };
     if (message.id === undefined && (this.unsafe.has(source) || this.eventError(source))) {
       if (!ERROR_METADATA.has(message.method)) return this.discardEvent(message);
       message = this.metadataEvent(message);
@@ -848,6 +857,7 @@ class Guard {
   }
 
   cut(sessionId, parent) {
+    this.quarantined.delete(sessionId);
     if (this.blocked.has(sessionId)) return;
     this.blocked.add(sessionId);
     if (this.waiting.delete(sessionId))
@@ -1249,6 +1259,158 @@ class Guard {
     }
   }
 
+  quarantine(sessionId, hint) {
+    const ticket = { hint };
+    this.quarantined.set(sessionId, ticket);
+    for (const command of this.callerIds.values()) {
+      if (command.sessionId !== sessionId) continue;
+      this.unsafe.add(command);
+      this.shots.delete(requestKey(command));
+    }
+    return ticket;
+  }
+
+  relatedHeld(targetId, depth = 0) {
+    if (!targetId) return false;
+    if (isHeld(targetId) || depth > 8) return true;
+    const known = this.targets.get(targetId);
+    if (!known) return true;
+    if (known.parentId && this.relatedHeld(known.parentId, depth + 1)) return true;
+    if (!known.openerId) return false;
+    if (this.relatedHeld(known.openerId, depth + 1)) return true;
+    const opener = this.targets.get(known.openerId);
+    return Boolean(
+      known.type === 'page' &&
+        (known.access || BLANK.test(known.url)) &&
+        (opener?.guarded || this.is.target(opener))
+    );
+  }
+
+  hinted(info) {
+    const known = this.targets.get(info.targetId);
+    return (
+      known?.guarded ||
+      isHeld(info.targetId) ||
+      this.relatedHeld(info.openerId) ||
+      this.relatedHeld(info.parentId ?? known?.parentId) ||
+      (info.openerId &&
+        (info.canAccessOpener || known?.access) &&
+        (this.targets.get(info.openerId)?.guarded ||
+          this.is.target(this.targets.get(info.openerId)))) ||
+      this.is.target({
+        url: info.url ?? known?.url,
+        type: info.type ?? known?.type,
+        previous: known?.was,
+        opener: info.openerId ? 'unknown' : undefined,
+      })
+    );
+  }
+
+  receiveHint(message) {
+    const info = message.params?.targetInfo;
+    if (!info?.targetId) return;
+    this.hints.set(info.targetId, message);
+    const guarded = this.hinted(info);
+    for (const [id, entry] of this.sessions)
+      if (
+        entry.targetId === info.targetId &&
+        !this.blocked.has(id) &&
+        (guarded || this.quarantined.has(id))
+      )
+        this.quarantine(id, message);
+  }
+
+  documentFrames(tree) {
+    const pending = [{ tree }];
+    const frames = [];
+    const ids = new Set();
+    while (pending.length) {
+      const { tree: node, parent } = pending.pop();
+      const frame = node?.frame;
+      if (
+        !frame ||
+        typeof frame.id !== 'string' ||
+        !frame.id ||
+        ids.has(frame.id) ||
+        typeof frame.url !== 'string' ||
+        !URL.canParse(frame.url) ||
+        typeof frame.securityOrigin !== 'string' ||
+        (!URL.canParse(frame.securityOrigin) && !['null', '://'].includes(frame.securityOrigin)) ||
+        (parent !== undefined && frame.parentId !== parent) ||
+        (node.childFrames !== undefined && !Array.isArray(node.childFrames)) ||
+        frames.length + pending.length >= 4096
+      )
+        return null;
+      ids.add(frame.id);
+      frames.push(frame);
+      for (const child of node.childFrames ?? []) pending.push({ tree: child, parent: frame.id });
+    }
+    return frames;
+  }
+
+  async checkHint(sessionId, ticket) {
+    const entry = this.sessions.get(sessionId);
+    if (this.quarantined.get(sessionId) !== ticket) return;
+    if (
+      !entry ||
+      !this.shown.has(sessionId) ||
+      isHeld(entry.targetId) ||
+      !NAV_TYPES.has(this.targets.get(entry.targetId)?.type)
+    )
+      return this.cut(sessionId);
+    const answer = await this.answered(this.call('Page.getFrameTree', {}, sessionId));
+    if (this.quarantined.get(sessionId) !== ticket) return;
+    const frames = answer && !answer.error ? this.documentFrames(answer.result?.frameTree) : null;
+    if (!frames || frames.some((frame) => this.frameLive(frame)) || isHeld(entry.targetId))
+      return this.cut(sessionId);
+    for (const frame of frames) this.noteError(frame, sessionId);
+    this.quarantined.delete(sessionId);
+  }
+
+  startHint(sessionId, ticket) {
+    if (ticket.checking) return;
+    ticket.checking = true;
+    void this.checkHint(sessionId, ticket).catch(() => {
+      if (this.quarantined.get(sessionId) === ticket) this.cut(sessionId);
+    });
+  }
+
+  refreshHint(message) {
+    for (const id of this.boundSessions(message.sessionId)) {
+      const ticket = this.quarantined.get(id);
+      if (!ticket) continue;
+      if (this.frameLive(message.params.frame)) this.cut(id);
+      else this.startHint(id, this.quarantine(id, ticket.hint));
+    }
+  }
+
+  async targetHint(message) {
+    const info = message.params?.targetInfo;
+    this.learn(info);
+    const targetId = info?.targetId;
+    const guarded = await this.answered(this.target(targetId));
+    if (this.hints.get(targetId) !== message) return;
+    if (guarded === false) {
+      let pending = false;
+      for (const [id, ticket] of this.quarantined) {
+        if (ticket.hint !== message) continue;
+        pending = true;
+        this.startHint(id, ticket);
+      }
+      if (!pending) this.shownTarget(message, info);
+      return;
+    }
+    for (const [id, entry] of this.sessions) {
+      if (entry.targetId !== targetId || this.blocked.has(id)) continue;
+      if (guarded === undefined) {
+        this.cut(id);
+        continue;
+      }
+      const ticket = this.quarantined.get(id) ?? this.quarantine(id, message);
+      if (ticket.hint === message) this.startHint(id, ticket);
+    }
+  }
+
   async targetEvent(message) {
     const { method, params = {}, sessionId } = message;
     if (method === 'Target.attachedToTarget') {
@@ -1268,12 +1430,9 @@ class Guard {
       return true;
     }
     if (method === 'Target.targetCreated' || method === 'Target.targetInfoChanged') {
-      this.learn(params.targetInfo);
-      if (!(await this.target(params.targetInfo?.targetId))) {
-        this.shownTarget(message, params.targetInfo);
-        return true;
-      }
-      this.cutTarget(params.targetInfo.targetId);
+      void this.targetHint(message).catch(() => {
+        for (const [id, ticket] of this.quarantined) if (ticket.hint === message) this.cut(id);
+      });
       return true;
     }
     if (method === 'Target.targetDestroyed') {
@@ -1570,6 +1729,7 @@ class Guard {
 
   eventError(message) {
     return (
+      this.quarantined.has(message.sessionId) ||
       this.frameError(message.params, message.sessionId, this.eventFrames(message.method)) ||
       this.errorDocument(message.sessionId, message.method)
     );
@@ -1583,7 +1743,12 @@ class Guard {
       this.eventFrames(message.method)
     );
     if (named && message.method === 'Runtime.executionContextCreated') this.foreign(message);
-    if (named || this.errorDocument(message.sessionId, message.method)) this.unsafe.add(message);
+    if (
+      this.quarantined.has(message.sessionId) ||
+      named ||
+      this.errorDocument(message.sessionId, message.method)
+    )
+      this.unsafe.add(message);
   }
 
   entry(entry) {
@@ -2160,6 +2325,7 @@ class Guard {
   unsafeContent(message) {
     return (
       this.unsafe.has(message) ||
+      this.quarantined.has(message.sessionId) ||
       (contentRead(message.method) && this.errorDocument(message.sessionId, message.method))
     );
   }
@@ -2484,8 +2650,17 @@ class Guard {
 
   received(text) {
     const message = parse(text);
-    if (message.method === 'Page.frameNavigated' && message.params?.frame)
+    if (message.method === 'Target.targetCreated' || message.method === 'Target.targetInfoChanged')
+      this.receiveHint(message);
+    if (message.method === 'Target.targetDestroyed') {
+      this.hints.delete(message.params?.targetId);
+      for (const [id, entry] of this.sessions)
+        if (entry.targetId === message.params?.targetId && this.quarantined.has(id)) this.cut(id);
+    }
+    if (message.method === 'Page.frameNavigated' && message.params?.frame) {
       this.noteError(message.params.frame, message.sessionId, true);
+      this.refreshHint(message);
+    }
     if (
       message.method === 'Page.frameAttached' &&
       message.params?.frameId &&
@@ -2507,6 +2682,7 @@ class Guard {
       return resolve(message);
     }
     if (message.method === 'Target.detachedFromTarget' && message.params?.sessionId) {
+      this.quarantined.delete(message.params.sessionId);
       this.blocked.add(message.params.sessionId);
       this.discardPending(message.params.sessionId);
     }
@@ -2623,7 +2799,10 @@ class Guard {
         if (this.callerIds.has(key)) return this.refuse(message, FAILED, false);
         this.callerIds.set(key, message);
       }
-      if (contentRead(message.method) && this.errorDocument(message.sessionId, message.method))
+      if (
+        this.quarantined.has(message.sessionId) ||
+        (contentRead(message.method) && this.errorDocument(message.sessionId, message.method))
+      )
         this.unsafe.add(message);
       this.queue(
         `send:${message.sessionId ?? ''}`,

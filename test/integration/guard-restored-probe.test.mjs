@@ -100,13 +100,12 @@ test('restored probe an unanswered tree does not hold later browser target event
   cleanup(t, wire);
   const entry = wire.target('slow-target');
   await wire.attach('slow-target');
+  wire.hold((message) => message.method === 'Page.getFrameTree');
   wire.emit(protectedInfo(entry));
   await flush();
   entry.info.url = ordinary;
   const later = wire.target('later-target');
-  wire.hold((message) => message.method === 'Page.getFrameTree');
   const mark = wire.delivered.length;
-  const sent = wire.sent.length;
   wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: entry.info } });
   wire.emit({ method: 'Target.targetCreated', params: { targetInfo: later.info } });
   await flush();
@@ -119,10 +118,6 @@ test('restored probe an unanswered tree does not hold later browser target event
           message.params.targetInfo.targetId === 'later-target'
       ),
     true
-  );
-  assert.equal(
-    wire.sent.slice(sent).some((message) => message.method === 'Page.getFrameTree'),
-    false
   );
 });
 
