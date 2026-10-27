@@ -242,7 +242,7 @@ const checked = (page) =>
     window.checked = performance.now();
   });
 
-test('a kernel server’s live event stream no longer holds an update: once the new worker has waited 5 s, the old one ends it, an EventSource reconnects to the new worker and a fetch reader gets an error (#710)', {
+test('a kernel server’s slow streams no longer hold an update: once the new worker has waited 5 s, the old one ends them, an event stream cleanly so an EventSource reconnects, and any other stream with an error (#710)', {
   timeout: 15 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -250,7 +250,7 @@ test('a kernel server’s live event stream no longer holds an update: once the 
   await settled(page);
   await sseServer(page);
   await page.evaluate(() => {
-    window.live = { opens: 0, errors: 0, seen: [], fetched: 0, end: null };
+    window.live = { opens: 0, errors: 0, seen: [], events: null, ticks: null };
     const source = new EventSource('http://8480.kernel.localhost/events');
     window.liveSource = source;
     source.onopen = () => {
@@ -262,23 +262,30 @@ test('a kernel server’s live event stream no longer holds an update: once the 
     source.onmessage = ({ data }) => {
       window.live.seen.push(data);
     };
-    void (async () => {
+    const pull = async (path) => {
+      window.live[path] = { read: 0, end: null };
       try {
-        const reader = (await fetch('http://8480.kernel.localhost/events')).body.getReader();
+        const reader = (await fetch(`http://8480.kernel.localhost/${path}`)).body.getReader();
         for (;;) {
           const { done } = await reader.read();
           if (done) {
-            window.live.end = 'done';
+            window.live[path].end = 'done';
             return;
           }
-          window.live.fetched += 1;
+          window.live[path].read += 1;
         }
       } catch (error) {
-        window.live.end = error.name;
+        window.live[path].end = error.name;
       }
-    })();
+    };
+    void pull('events');
+    void pull('ticks');
   });
-  await page.within(15000, () => window.live.seen.length >= 2 && window.live.fetched >= 2);
+  await page.within(
+    15000,
+    () =>
+      window.live.seen.length >= 2 && window.live.events?.read >= 2 && window.live.ticks?.read >= 2
+  );
   bumpWorker();
   await checked(page);
   assert.ok(await update(page));
@@ -290,13 +297,18 @@ test('a kernel server’s live event stream no longer holds an update: once the 
     (first) => {
       const { live } = window;
       const later = live.seen.filter((event) => event.split(' ')[0] !== first);
-      return live.opens >= 2 && later.length >= 2 && live.end && live;
+      return live.opens >= 2 && later.length >= 2 && live.events.end && live.ticks.end && live;
     },
     first
   );
   assert.ok(live.errors >= 1, JSON.stringify(live));
-  assert.notEqual(live.end, 'done', `the fetch reader fails instead of ending: ${live.end}`);
   assert.equal(await page.evaluate(() => window.liveSource.readyState), 1);
+  assert.equal(
+    live.events.end,
+    'done',
+    'a fetch of the event stream sees it end, as when its server closes it'
+  );
+  assert.equal(live.ticks.end, 'TypeError', 'any other stream fails instead of ending');
   assert.deepEqual(page.errors, []);
 });
 

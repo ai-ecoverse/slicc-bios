@@ -2,6 +2,10 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let connections = 0;
+const KINDS = {
+  '/events': { type: 'text/event-stream', line: (id, n) => `data: ${id} ${n}\n\n` },
+  '/ticks': { type: 'application/x-ndjson', line: (id, n) => `${JSON.stringify({ id, n })}\n` },
+};
 
 async function head(reader) {
   let text = '';
@@ -25,7 +29,8 @@ async function serve(conn) {
   const id = connections;
   try {
     const line = await head(reader);
-    if (!line?.startsWith('GET /events ')) {
+    const kind = KINDS[/^GET (\/\w+) /.exec(line ?? '')?.[1]];
+    if (!kind) {
       await writer.write(
         enc.encode('HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
       );
@@ -33,11 +38,11 @@ async function serve(conn) {
     }
     await writer.write(
       enc.encode(
-        'HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n'
+        `HTTP/1.1 200 OK\r\nContent-Type: ${kind.type}\r\nCache-Control: no-cache\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n`
       )
     );
     for (let n = 1; ; n += 1) {
-      await writer.write(chunk(`data: ${id} ${n}\n\n`));
+      await writer.write(chunk(kind.line(id, n)));
       await sleep(1000);
     }
   } catch {
