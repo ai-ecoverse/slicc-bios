@@ -574,10 +574,10 @@ class Guard {
     this.guarded = { onmessage: null, onclose: null };
   }
 
-  redacted(message) {
+  redacted(message, source = message) {
     const { method, params } = message;
     if (!params || !(SPOKEN.test(method ?? '') || CONSOLE.has(method)))
-      return this.deliver(message);
+      return this.deliver(message, true, source);
     if (
       method === 'Network.responseReceivedExtraInfo' &&
       params.statusCode >= 300 &&
@@ -589,14 +589,14 @@ class Guard {
       kept(this.sheets, params.header.styleSheetId);
     }
     const { params: redacted, changed, answered } = this.redact(params);
-    if (!changed.length) return this.deliver(message);
+    if (!changed.length) return this.deliver(message, true, source);
     if (answered && /^(?:Network|Fetch)\./.test(method)) {
       for (const id of [params.requestId, params.networkId])
         if (id !== undefined) kept(this.redirected, id);
       for (const url of [params.request?.url, params.response?.url])
         if (typeof url === 'string') kept(this.hops, hopKey(url));
     }
-    return this.deliver({ ...message, params: redacted });
+    return this.deliver({ ...message, params: redacted }, true, source);
   }
 
   discardEvent(message) {
@@ -626,6 +626,7 @@ class Guard {
       safe[key] =
         typeof value[key] === 'string' &&
         URL.canParse(value[key]) &&
+        !this.is.url(value[key]) &&
         new URL(value[key]).origin !== 'null'
           ? new URL(value[key]).origin
           : ERROR_PAGE;
@@ -1059,18 +1060,21 @@ class Guard {
   continuing(message) {
     const { method, params = {} } = message;
     if (method === 'Network.loadingFailed' || method === 'Network.loadingFinished') {
-      this.redacted({
-        method: 'Network.loadingFailed',
-        sessionId: message.sessionId,
-        params: {
-          requestId: params.requestId,
-          timestamp: params.timestamp,
-          type: params.type ?? 'Other',
-          errorText: 'net::ERR_BLOCKED_BY_CLIENT',
-          canceled: false,
-          blockedReason: 'inspector',
+      this.redacted(
+        {
+          method: 'Network.loadingFailed',
+          sessionId: message.sessionId,
+          params: {
+            requestId: params.requestId,
+            timestamp: params.timestamp,
+            type: params.type ?? 'Other',
+            errorText: 'net::ERR_BLOCKED_BY_CLIENT',
+            canceled: false,
+            blockedReason: 'inspector',
+          },
         },
-      });
+        message
+      );
       return true;
     }
     if (method !== 'Network.responseReceivedExtraInfo') return true;
@@ -1533,14 +1537,11 @@ class Guard {
       !entries.some((entry) => this.frames.get(entry.frameId)?.startsWith('chrome-error:'))
     )
       info = { ...info, title: '' };
-    if (error) {
-      const origin =
-        failed !== ERROR_PAGE && URL.canParse(failed) ? new URL(failed).origin : ERROR_PAGE;
-      return { ...info, url: origin, title: origin };
-    }
+    if (error) return { ...info, url: ERROR_PAGE, title: ERROR_PAGE };
     if (info.url === undefined || failed === undefined) return info;
     if (![failed, '', ERROR_PAGE].includes(bare(info.url))) return info;
-    const origin = URL.canParse(failed) ? new URL(failed).origin : ERROR_PAGE;
+    const origin =
+      !this.is.url(failed) && URL.canParse(failed) ? new URL(failed).origin : ERROR_PAGE;
     return { ...info, url: origin, title: origin };
   }
 
@@ -1556,7 +1557,8 @@ class Guard {
   }
 
   swallowed(message) {
-    const { method, params = {} } = message;
+    const method = message.method ?? '';
+    const { params = {} } = message;
     if (method === 'Fetch.requestPaused' || method === 'Fetch.authRequired') {
       return this.paused(message);
     }
@@ -1569,19 +1571,17 @@ class Guard {
   async event(message) {
     const method = message.method ?? '';
     const { sessionId } = message;
-    if (this.unsafe.has(message) && !method.startsWith('Target.')) return this.deliver(message);
     const foreign = this.foreign({ ...message, method });
     if (this.navSessions.has(sessionId))
       return this.navEvent(message, this.navSessions.get(sessionId));
     if (method.startsWith('Target.') && (await this.targetEvent(message))) return;
     if (this.blocked.has(sessionId) && PAUSES.has(method)) return this.release(message);
     if (this.hidden(sessionId)) return;
-    if (this.eventError(message)) return this.deliver(message);
     if (foreign) return;
     if (this.walked({ ...message, method })) return this.cut(sessionId);
     if (sessionId && method.startsWith('Runtime.') && !this.runtimes.has(sessionId)) return;
-    if (await this.swallowed({ ...message, method })) return;
-    if (this.stored({ ...message, method })) return;
+    if (await this.swallowed(message)) return;
+    if (this.stored(message)) return;
     if (sessionId && this.naming({ ...message, method })) return;
     if (sessionId && method.startsWith('Page.') && !this.pages.has(sessionId)) return;
     if (PAUSES.has(method)) this.offered.add(message.params?.requestId);
@@ -1746,14 +1746,16 @@ class Guard {
   }
 
   stored(message) {
-    const { method, params = {} } = message;
+    const method = message.method ?? '';
+    const { params = {} } = message;
     if (!STORED.some((domain) => method.startsWith(domain))) return false;
     if (
       method === 'ServiceWorker.workerRegistrationUpdated' &&
       Array.isArray(params.registrations)
     ) {
       const registrations = params.registrations.filter((item) => this.worker(item));
-      if (registrations.length) this.deliver({ ...message, params: { ...params, registrations } });
+      if (registrations.length)
+        this.deliver({ ...message, params: { ...params, registrations } }, true, message);
       return true;
     }
     if (method === 'ServiceWorker.workerVersionUpdated' && Array.isArray(params.versions)) {

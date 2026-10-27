@@ -16,6 +16,7 @@ for (const method of [
     await wire.send('Page.enable', {}, session);
     const frame = {
       ...errorFrame('policy-child', 'policy-owner'),
+      unreachableUrl: 'synthetic-private-metadata',
       name: 'synthetic-private-metadata',
       urlFragment: '#synthetic-private-metadata',
     };
@@ -32,7 +33,7 @@ for (const method of [
         : {
             frameId: 'policy-child',
             parentFrameId: 'policy-owner',
-            url: failed,
+            url: ordinary,
             reason: 'swap',
             extra: 'synthetic-private-metadata',
           };
@@ -43,8 +44,9 @@ for (const method of [
     assert.equal(JSON.stringify(event).includes(failed), false);
     assert.equal(JSON.stringify(event).includes('synthetic-private-metadata'), false);
     if (method === 'Page.frameNavigated')
-      assert.equal(event.params.frame.unreachableUrl, new URL(failed).origin);
-    else assert.equal(event.params.url, new URL(failed).origin);
+      assert.equal(event.params.frame.unreachableUrl, 'chrome-error://chromewebdata/');
+    else assert.equal(event.params.url, new URL(ordinary).origin);
+    assert.equal(JSON.stringify(event).includes(new URL(failed).origin), false);
   });
 }
 
@@ -76,8 +78,9 @@ for (const method of ['Target.targetCreated', 'Target.targetInfoChanged']) {
     await flush();
     const event = wire.delivered.slice(mark).find((message) => message.method === method);
     assert.ok(event);
-    assert.equal(event.params.targetInfo.url, new URL(failed).origin);
-    assert.equal(event.params.targetInfo.title, new URL(failed).origin);
+    assert.equal(event.params.targetInfo.url, 'chrome-error://chromewebdata/');
+    assert.equal(event.params.targetInfo.title, 'chrome-error://chromewebdata/');
+    assert.equal(JSON.stringify(event).includes(new URL(failed).origin), false);
     assert.equal(JSON.stringify(event).includes(failed), false);
     assert.equal(JSON.stringify(event).includes('synthetic-private-metadata'), false);
   });

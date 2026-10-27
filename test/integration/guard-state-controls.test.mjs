@@ -91,8 +91,9 @@ test('state events and metadata', async (t) => {
   entry.info.title = failed;
   const listing = await wire.send('Target.getTargets');
   assert.equal(listing.error, undefined);
-  assert.equal(listing.result?.targetInfos?.[0]?.url, new URL(failed).origin);
-  assert.equal(listing.result?.targetInfos?.[0]?.title, new URL(failed).origin);
+  assert.equal(listing.result?.targetInfos?.[0]?.url, 'chrome-error://chromewebdata/');
+  assert.equal(listing.result?.targetInfos?.[0]?.title, 'chrome-error://chromewebdata/');
+  assert.equal(JSON.stringify(listing).includes(new URL(failed).origin), false);
   assert.equal(JSON.stringify(listing).includes(failed), false);
 });
 
