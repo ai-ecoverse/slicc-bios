@@ -250,6 +250,7 @@ async function guardedRow(factory, own, targetId, row, options = {}) {
   const attach = await outcome(client.send('Target.attachToTarget', { targetId, flatten: true }));
   if (!attach.ok) {
     row.attach = REFUSED.test(attach.error) ? 'refused' : `error: ${attach.error}`;
+    row.attachError = attach.error;
     await close();
     return null;
   }
@@ -620,12 +621,16 @@ export function paint(route) {
     for (const layout of LATE) {
       const row = by[layout];
       assert.equal(
+        row.attach,
+        'ok',
+        `${layout}: the ordinary page attaches${row.attachError ? `: ${row.attachError}` : ''}`
+      );
+      assert.equal(
         row.restore,
         'BackForwardCacheRestore',
         `${layout}: the protected page is restored without a new document request`
       );
       assert.ok(row.control.shot >= MARKED, `${layout}: the late frame paints without the guard`);
-      assert.equal(row.attach, 'ok', `${layout}: the ordinary page attaches`);
       assert.equal(row.cast.start, 'ok', `${layout}: the cast starts on the ordinary page`);
       assert.equal(row.pending, true, `${layout}: the screenshot was pending before the restore`);
       assert.equal(
