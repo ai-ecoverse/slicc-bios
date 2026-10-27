@@ -1685,7 +1685,10 @@ class Guard {
       length: entries.length,
       live,
       visible,
-      protected: live || hinted.some((url) => this.is.url(url)),
+      protected:
+        live ||
+        hinted.some((url) => this.is.url(url)) ||
+        frames.some((frame) => this.protectedFrame(frame)),
       frames,
       info: info.result?.targetInfo,
     };
@@ -1694,6 +1697,7 @@ class Guard {
   lateTree(sessionId, tree) {
     if (tree.error) return;
     const frames = framed(tree.result?.frameTree);
+    for (const frame of frames) this.noteError(frame, sessionId);
     const hidden = frames.some((frame) => this.frameLive(frame));
     if (!hidden) return;
     this.note(sessionId, { frames, info: null });
@@ -1753,13 +1757,19 @@ class Guard {
     ]);
     if (treeNow === undefined) void tree.then((late) => this.lateTree(sessionId, late));
     const frames = treeNow && !treeNow.error ? framed(treeNow.result?.frameTree) : [];
+    for (const frame of frames) this.noteError(frame, sessionId);
     const historyKnown =
-      history && !history.error && Number.isInteger(history.result?.currentIndex);
+      history &&
+      !history.error &&
+      Number.isInteger(history.result?.currentIndex) &&
+      Array.isArray(history.result?.entries) &&
+      history.result.currentIndex >= 0 &&
+      history.result.currentIndex < history.result.entries.length;
     if (!info || info.error) return undefined;
     if (!historyKnown) return this.unattached(info, frames, treeNow);
     if (this.pendingHistory.has(sessionId) && !frames.length) return null;
     if (treeNow === undefined) return this.slowTree(sessionId, info, history, tree);
-    if (treeNow.error || !frames.length) return this.view(info, [], history);
+    if (treeNow.error || !frames.length) return undefined;
     return this.view(info, frames, history);
   }
 
@@ -1820,10 +1830,9 @@ class Guard {
   note(sessionId, now) {
     for (const frame of now.frames) {
       if (!frame.id) continue;
-      this.frames.set(frame.id, `${frame.url ?? ''}${frame.urlFragment ?? ''}`);
+      this.noteError({ ...frame, url: `${frame.url ?? ''}${frame.urlFragment ?? ''}` }, sessionId);
     }
     if (now.info) this.learn(now.info);
-    void sessionId;
   }
 
   async untilSettled(sessionId, before) {
@@ -2001,15 +2010,23 @@ class Guard {
   }
 
   shownTarget(message, info, source = message) {
+    if (this.unsafe.has(source) || this.eventError(source)) {
+      this.deliver(this.metadataEvent(message), true, source);
+      return;
+    }
     const raw = info ?? {};
     const shown = this.masked(raw);
     const names = (value) =>
       typeof value === 'string' && value.includes('://') && this.is.url(value);
     if ([raw.url, raw.title, shown.url, shown.title].some(names)) return;
-    this.deliver({
-      ...message,
-      params: { ...message.params, targetInfo: shown },
-    }, true, source);
+    this.deliver(
+      {
+        ...message,
+        params: { ...message.params, targetInfo: shown },
+      },
+      true,
+      source
+    );
   }
 
   masked(info) {
@@ -2144,7 +2161,7 @@ class Guard {
 
   sealed(was) {
     if (was && this.moved.delete(was.id)) return true;
-    return Boolean(was?.sessionId && this.blocked.has(was.sessionId));
+    return Boolean(was?.sessionId && this.replyProtected(was));
   }
 
   async keptShot(was) {
