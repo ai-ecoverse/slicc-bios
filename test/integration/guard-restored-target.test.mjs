@@ -11,7 +11,7 @@ import {
 } from './guard-state-fixture.mjs';
 
 for (const kind of ['ordinary', 'error']) {
-  test(`restored target a protected target hint keeps the ${kind} document attached and closed`, async (t) => {
+  test(`restored target a protected target hint cuts the ${kind} session and keeps content closed`, async (t) => {
     const wire = protocol(t);
     const entry = wire.target('target-hint');
     const session = await wire.attach('target-hint');
@@ -38,7 +38,7 @@ for (const kind of ['ordinary', 'error']) {
           (message) =>
             message.method === 'Target.detachFromTarget' && message.params.sessionId === session
         ),
-      false
+      true
     );
     assert.equal(
       JSON.stringify(wire.delivered.slice(messages)).includes(`${protectedOrigin}/private`),
@@ -65,9 +65,13 @@ for (const kind of ['ordinary', 'error']) {
       params: { frame: entry.tree.frame },
     });
     await flush();
+    wire.emit({
+      method: 'Target.detachedFromTarget',
+      params: { sessionId: session, targetId: 'target-hint' },
+    });
+    await flush();
     const shot = await wire.send('Page.captureScreenshot', {}, session);
-    assert.equal(shot.error, undefined);
-    assert.equal(shot.result.data, 'c3ludGhldGlj');
+    assert.equal(shot.error?.message, PROTECTED);
   });
 }
 

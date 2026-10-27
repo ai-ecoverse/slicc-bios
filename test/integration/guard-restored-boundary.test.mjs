@@ -46,24 +46,37 @@ for (const method of ['Input.dispatchKeyEvent', 'Runtime.evaluate']) {
 }
 
 for (const kind of ['origin', 'target', 'both']) {
-  test(`restored boundary a protected ${kind} is not a blank screenshot`, async (t) => {
-    const wire = protocol(t);
-    const entry = wire.target('blank-origin');
-    const session = await wire.attach('blank-origin');
-    entry.info.url = kind === 'origin' ? 'about:blank' : `${protectedOrigin}/private`;
-    entry.tree.frame = {
-      id: 'blank-origin',
-      url: 'about:blank',
-      securityOrigin: kind === 'target' ? 'null' : protectedOrigin,
-    };
-    entry.history = { currentIndex: 0, entries: [{ id: 1, url: 'about:blank' }] };
-    const mark = wire.sent.length;
-    assert.equal(
-      (await wire.send('Page.captureScreenshot', {}, session)).error?.message,
-      PROTECTED
-    );
-    assert.equal(wire.clients(mark).length, 0);
-  });
+  test(
+    kind === 'target'
+      ? 'restored boundary a target hint alone permits only an ordinary blank screenshot'
+      : `restored boundary a protected ${kind} is not a blank screenshot`,
+    async (t) => {
+      const wire = protocol(t);
+      const entry = wire.target('blank-origin');
+      const session = await wire.attach('blank-origin');
+      entry.info.url = kind === 'origin' ? 'about:blank' : `${protectedOrigin}/private`;
+      entry.tree.frame = {
+        id: 'blank-origin',
+        url: 'about:blank',
+        securityOrigin: kind === 'target' ? 'null' : protectedOrigin,
+      };
+      entry.history = { currentIndex: 0, entries: [{ id: 1, url: 'about:blank' }] };
+      const mark = wire.sent.length;
+      const shot = await wire.send('Page.captureScreenshot', {}, session);
+      if (kind === 'target') {
+        assert.equal(shot.error, undefined);
+        assert.equal(shot.result.data, 'c3ludGhldGlj');
+        assert.equal(
+          (await wire.send('Runtime.evaluate', { expression: 'document.title' }, session)).error
+            ?.message,
+          PROTECTED
+        );
+      } else {
+        assert.equal(shot.error?.message, PROTECTED);
+        assert.equal(wire.clients(mark).length, 0);
+      }
+    }
+  );
 }
 
 test('restored boundary a blanked document with only a typed hint keeps its blank screenshot', async (t) => {
