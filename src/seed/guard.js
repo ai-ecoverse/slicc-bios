@@ -718,7 +718,12 @@ class Guard {
       if (!ERROR_METADATA.has(message.method)) return this.discardEvent(message);
       message = this.metadataEvent(message);
     }
-    if (release && message.id !== undefined) this.callerIds.delete(requestKey(message));
+    if (release && message.id !== undefined) {
+      const key = requestKey(message);
+      this.callerIds.delete(key);
+      this.moved.delete(key);
+      this.shots.delete(key);
+    }
     try {
       this.guarded.onmessage?.(JSON.stringify(message));
     } catch (error) {
@@ -1340,6 +1345,7 @@ class Guard {
       if (hidden && name) world.names.add(name);
       const judgedMain =
         !hidden &&
+        !this.is.url(origin) &&
         uniqueId &&
         !world.main &&
         (auxData?.isDefault === true || (auxData?.type === 'default' && !name));
@@ -1898,7 +1904,11 @@ class Guard {
 
   noteCommitted(id, method, frameId, parentId) {
     const top = method === 'Page.frameNavigated' && !parentId;
-    const same = method === 'Page.navigatedWithinDocument';
+    const same =
+      method === 'Page.navigatedWithinDocument' &&
+      frameId !== undefined &&
+      frameId === (this.mains.get(id) ?? this.sessions.get(id)?.frameId) &&
+      !this.opening.has(id);
     if (top) this.worlds.delete(id);
     const open = this.opening.get(id) ?? {};
     if (top || same || open.input === frameId) {
@@ -1976,9 +1986,14 @@ class Guard {
     const frames = now?.frames ?? [];
     return (
       frames.length > 0 &&
+      !this.is.url(now?.url) &&
+      !this.is.url(now?.info?.url) &&
       frames.every((frame) => {
         const url = frame?.url;
-        return url === BLANKED || (typeof url === 'string' && url.startsWith('about:blank'));
+        return (
+          !this.is.url(frame?.securityOrigin) &&
+          (url === BLANKED || (typeof url === 'string' && url.startsWith('about:blank')))
+        );
       })
     );
   }
@@ -1990,7 +2005,7 @@ class Guard {
 
   async noteShot(message) {
     if (message.method !== 'Page.captureScreenshot') return;
-    if (await this.blankShot(message.sessionId)) this.shots.add(message.id);
+    if (await this.blankShot(message.sessionId)) this.shots.add(requestKey(message));
   }
 
   blankShown(now) {
@@ -2160,12 +2175,12 @@ class Guard {
   }
 
   sealed(was) {
-    if (was && this.moved.delete(was.id)) return true;
+    if (was && this.moved.delete(requestKey(was))) return true;
     return Boolean(was?.sessionId && this.replyProtected(was));
   }
 
   async keptShot(was) {
-    const admitted = was?.method === 'Page.captureScreenshot' && this.shots.delete(was.id);
+    const admitted = was?.method === 'Page.captureScreenshot' && this.shots.delete(requestKey(was));
     if (!admitted) return false;
     return this.blankShot(was.sessionId);
   }
@@ -2198,7 +2213,8 @@ class Guard {
       await this.shotAnswer(message, was);
       return true;
     }
-    if (was?.method !== 'Page.navigateToHistoryEntry' || !this.moved.delete(was.id)) return false;
+    if (was?.method !== 'Page.navigateToHistoryEntry' || !this.moved.delete(requestKey(was)))
+      return false;
     await this.entryAnswer(message, was);
     return true;
   }
@@ -2448,6 +2464,11 @@ class Guard {
     const { id, method, sessionId } = outgoing;
     if (!this.owns(message)) return;
     if (this.unsafeContent(message)) return this.refuse(message);
+    if (
+      this.blocked.has(sessionId) &&
+      !(method === 'Page.captureScreenshot' && this.shots.has(requestKey(message)))
+    )
+      return this.refuse(message);
     if (sessionId && method === 'Runtime.enable') this.runtimes.add(sessionId);
     if (sessionId && method === 'Runtime.disable') {
       this.runtimes.delete(sessionId);
@@ -2571,7 +2592,7 @@ class Guard {
       if (!this.idle(move, now)) {
         this.pendingHistory.add(message.sessionId);
         this.uncommitted.add(message.sessionId);
-        this.moved.add(message.id);
+        this.moved.add(requestKey(message));
         await this.pass(message);
         await this.untilSettled(message.sessionId, now);
         return true;

@@ -48,6 +48,12 @@ export function extensionConnection(cdp) {
   const off = cdp.on((event) => {
     const tracked = sessions.has(event.sessionId);
     if (!tracked && !browserTargetEvent(event)) return;
+    if (
+      !tracked &&
+      event.method === 'Target.attachedToTarget' &&
+      !sessions.has(event.params?.sessionId)
+    )
+      return;
     if (tracked && event.method === 'Target.detachedFromTarget') sessions.delete(event.sessionId);
     if (tracked && event.method === 'Target.attachedToTarget' && event.params?.sessionId) {
       attached(event.params.sessionId, 1);
