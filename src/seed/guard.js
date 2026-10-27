@@ -2569,7 +2569,8 @@ class Guard {
       return true;
     }
     this.note(sessionId, now);
-    if (!now.live || this.blankFrames(now)) return false;
+    const blank = this.blankFrames(now) && !this.is.url(now.url) && !this.is.url(now.info?.url);
+    if (!now.live || blank) return false;
     if (this.pageShown(now) && !now.probed) this.cut(sessionId);
     this.standIn(message);
     return true;
