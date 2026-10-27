@@ -2729,11 +2729,16 @@ for (const route of ['extension', 'link']) {
         targetId
       );
       assert.equal((await guard.send('Target.closeTarget', { targetId })).result?.success, true);
-      assert.ok(
-        !(await own.send('Target.getTargets')).result?.targetInfos.some(
-          (info) => info.targetId === targetId
-        )
-      );
+      for (const end = Date.now() + 15000; ; ) {
+        const listed = await own.send('Target.getTargets');
+        const infos = listed.result?.targetInfos;
+        if (infos && !infos.some((info) => info.targetId === targetId)) break;
+        if (Date.now() > end)
+          assert.fail(
+            `${route}: 15 s after closing ${targetId}, the harness's target list was ${JSON.stringify(listed)}`
+          );
+        await pause(100);
+      }
     }
   );
 }
