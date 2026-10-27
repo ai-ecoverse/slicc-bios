@@ -657,7 +657,7 @@ class Guard {
     if (!answer.error) return;
     const state = this.documents.get(targetId);
     this.observe(method, 'private-read', 'error', {
-      untainted: !state?.hazard && !state?.failed,
+      untainted: Boolean(targetId && !state?.hazard && !state?.failed),
       ordinary: state?.strict === false && state.checked === state.revision,
     });
   }
@@ -1245,7 +1245,10 @@ class Guard {
     const context = message.params.context;
     const record = this.worlds.get(message.sessionId)?.notified.get(context.id);
     let expected = this.contextURL(message);
-    if (record?.message !== message) return false;
+    if (record?.message !== message) {
+      this.observe('Runtime.executionContextCreated', 'context-replaced', 'drop');
+      return false;
+    }
     const where =
       typeof context.uniqueId === 'string'
         ? { uniqueContextId: context.uniqueId }
@@ -1265,17 +1268,20 @@ class Guard {
       value.startsWith('chrome-error:') ||
       this.is.url(value)
     ) {
+      this.observe('Runtime.executionContextCreated', 'context-private-value', 'drop');
       this.uncertain(this.documentTarget(message.sessionId));
       return false;
     }
     if (typeof expected !== 'string' || bare(value) !== bare(expected)) {
       if (this.strictScope(this.documentTarget(message.sessionId))) {
+        this.observe('Runtime.executionContextCreated', 'context-strict-mismatch', 'drop');
         this.uncertain(this.documentTarget(message.sessionId));
         return false;
       }
       if (!(await this.documentChecked(message.sessionId, true))) return false;
       expected = this.contextURL(message);
       if (typeof expected !== 'string' || bare(value) !== bare(expected)) {
+        this.observe('Runtime.executionContextCreated', 'context-tree-mismatch', 'drop');
         this.uncertain(this.documentTarget(message.sessionId));
         return false;
       }
@@ -1497,10 +1503,18 @@ class Guard {
         if (cleanup && (await this.cleanError(nav, cleanup))) return false;
       }
       if (answer.error || !all) {
+        this.observe(
+          'Page.getFrameTree',
+          answer.error ? 'tree-private-error' : 'tree-unclassified',
+          'drop'
+        );
         this.uncertain(targetId);
         return false;
       }
-      if (state.revision !== revision) return false;
+      if (state.revision !== revision) {
+        this.observe('Page.getFrameTree', 'tree-revision', 'drop');
+        return false;
+      }
       this.checked(targetId, all, revision);
       return true;
     })();
@@ -1672,6 +1686,7 @@ class Guard {
 
   async inspect(sessionId, targetId, parent) {
     const guarded = targetId ? await this.target(targetId) : 'unknown';
+    if (guarded === true) this.observe('Target.attachToTarget', 'attachment-target', 'drop');
     let verified =
       guarded === true
         ? PROTECTED
@@ -1691,6 +1706,7 @@ class Guard {
         this.documentValid(sessionId);
     }
     if (verified !== true) {
+      this.observe('Target.attachToTarget', 'attachment-client-proof', 'drop');
       this.uncertain(targetId);
       if (verified === PROTECTED) this.cut(sessionId, parent);
       return false;
@@ -1699,9 +1715,15 @@ class Guard {
     const nav = this.navs.get(targetId);
     if (nav) {
       await nav.ready;
-      if (nav.failed || this.document(targetId).retired) return false;
+      if (nav.failed || this.document(targetId).retired) {
+        this.observe('Target.attachToTarget', 'attachment-retired', 'drop');
+        return false;
+      }
     }
-    if (!(await this.documentChecked(sessionId)) || !this.documentValid(sessionId)) return false;
+    if (!(await this.documentChecked(sessionId)) || !this.documentValid(sessionId)) {
+      this.observe('Target.attachToTarget', 'attachment-guard-proof', 'drop');
+      return false;
+    }
     this.attachmentProofs.set(
       sessionId,
       new Map([...this.related(targetId)].map((id) => [id, this.document(id).revision]))
@@ -2246,7 +2268,9 @@ class Guard {
   transportClosed(message) {
     if (!/^(?:Network|Fetch)\./.test(message.method)) return false;
     const ids = this.related(this.documentTarget(message.sessionId));
-    return ids && [...ids].some((id) => this.documents.get(id)?.failed === true);
+    const closed = ids && [...ids].some((id) => this.documents.get(id)?.failed === true);
+    if (closed) this.observe(message.method, 'transport-private-closure', 'drop');
+    return closed;
   }
 
   async admittedContext(message) {
