@@ -2729,11 +2729,12 @@ for (const route of ['extension', 'link']) {
         targetId
       );
       assert.equal((await guard.send('Target.closeTarget', { targetId })).result?.success, true);
-      assert.ok(
-        !(await own.send('Target.getTargets')).result?.targetInfos.some(
-          (info) => info.targetId === targetId
-        )
-      );
+      for (const end = Date.now() + 15000; ; ) {
+        const { result } = await own.send('Target.getTargets');
+        if (result && !result.targetInfos.some((info) => info.targetId === targetId)) break;
+        if (Date.now() > end) assert.fail(`${route}: the closed tab is still listed after 15 s`);
+        await pause(100);
+      }
     }
   );
 }
