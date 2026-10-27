@@ -265,12 +265,53 @@ for (const extension of EXTENSIONS) {
     );
     await shows(page, 'inherit-done', 60000);
     const inherit = await read(page, '/tmp/inherit');
-    assert.match(
-      inherit,
-      /slicc: refused: a browser-side navigation to about: gives the page the origin of whatever drives the browser/,
-      inherit
-    );
+    const protectedErrorVersions = ['7.5.1', '7.6.2', '7.6.3', '7.6.4'];
+    if (protectedErrorVersions.includes(extension.version))
+      assert.equal(
+        inherit,
+        `${Array(3).fill("slicc: refused: target is on seven's origin").join('\n')}\n`,
+        inherit
+      );
+    else
+      assert.match(
+        inherit,
+        /slicc: refused: a browser-side navigation to about: gives the page the origin of whatever drives the browser/,
+        inherit
+      );
     assert.doesNotMatch(inherit, /chrome-extension:/, inherit);
+    if (protectedErrorVersions.includes(extension.version)) {
+      const recoveredTitle = `Recovered ordinary ${extension.version}`;
+      real.overrides.set(
+        '/recovered.html',
+        `<!doctype html><title>${recoveredTitle}</title><h1>${recoveredTitle}</h1>`
+      );
+      const recoveredUrl = new URL('/recovered.html', target.href);
+      recoveredUrl.searchParams.set('extension', extension.version);
+      await run(
+        page,
+        `playwright-cli goto ${recoveredUrl.href} > /tmp/recovery 2>&1; echo recovery-goto-$? >> /tmp/recovery; playwright-cli eval 'location.href + " " + document.title' >> /tmp/recovery 2>&1; echo recovery-read-$? >> /tmp/recovery; playwright-cli snapshot >> /tmp/recovery 2>&1; echo recovery-snapshot-$? >> /tmp/recovery; echo "recovery-""done"`
+      );
+      await shows(page, 'recovery-done', 180000);
+      const recovered = await read(page, '/tmp/recovery');
+      assert.match(recovered, /^recovery-goto-0$/m, recovered);
+      assert.match(recovered, /^recovery-read-0$/m, recovered);
+      assert.match(recovered, /^recovery-snapshot-0$/m, recovered);
+      assert.ok(recovered.includes(`${recoveredUrl.href} ${recoveredTitle}`), recovered);
+      assert.match(
+        recovered,
+        new RegExp(`heading "${recoveredTitle.replaceAll('.', '\\.')}"`),
+        recovered
+      );
+      assert.doesNotMatch(
+        recovered,
+        /slicc: refused|VAULT-MARK|VAULT-BODY-MARK|chrome-extension:/,
+        recovered
+      );
+      assert.ok(
+        !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
+        `the vault was served during recovery: ${hits.join(' ')}`
+      );
+    }
     const origins = await page.evaluate(() => globalThis.contextOrigins);
     assert.ok(real.extension, 'the harness extension is loaded');
     const harness = ({ origin, type }) =>
