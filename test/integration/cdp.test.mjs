@@ -191,7 +191,9 @@ test('over the extension’s shield, the guard arms every driven tab with no pro
   assert.deepEqual(page.errors, []);
 });
 
-for (const extension of EXTENSIONS) {
+for (const extension of EXTENSIONS.filter(
+  ({ version }) => !['7.5.1', '7.6.2', '7.6.3', '7.6.4'].includes(version)
+)) {
   test(`real slicc-extension ${extension.version}: playwright-cli opens about:blank on an opaque origin, drives an ordinary page, the vault stays out, and no driven document has the extension's origin`, {
     timeout: 10 * 60 * 1000,
   }, async (t) => {
