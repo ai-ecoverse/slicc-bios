@@ -6,6 +6,7 @@ import {
   flush,
   ordinary,
   plainFrame,
+  protectedOrigin,
   protocol,
 } from './guard-state-fixture.mjs';
 
@@ -190,4 +191,39 @@ test('state large resources on an unrelated page remain live', async (t) => {
   const answer = await read.answer;
   assert.equal(answer.error, undefined);
   assert.deepEqual(answer.result.frameTree.childFrames[0].resources, [resource]);
+});
+
+test('state containing window open withholds protected URLs and keeps ordinary URLs live', async (t) => {
+  const wire = protocol(t);
+  wire.target('window-url-owner');
+  const session = await wire.attach('window-url-owner');
+  await wire.send('Page.enable', {}, session);
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: 'guard-window-url-owner',
+    params: { frame: errorFrame('window-url-unsafe', 'window-url-owner') },
+  });
+  await flush();
+  const mark = wire.delivered.length;
+  const params = {
+    url: `${protectedOrigin}/window/synthetic-window-id?query=synthetic-query#synthetic-fragment`,
+    windowName: 'ordinary-window',
+    windowFeatures: [],
+    userGesture: true,
+  };
+  wire.emit({ method: 'Page.windowOpen', sessionId: session, params });
+  await flush();
+  assert.equal(
+    wire.delivered.slice(mark).some((message) => message.method === 'Page.windowOpen'),
+    false
+  );
+  assert.equal(JSON.stringify(wire.delivered.slice(mark)).includes('synthetic-window-id'), false);
+  assert.equal(JSON.stringify(wire.delivered.slice(mark)).includes('synthetic-query'), false);
+  assert.equal(JSON.stringify(wire.delivered.slice(mark)).includes('synthetic-fragment'), false);
+  const ordinaryParams = { ...params, url: ordinary };
+  wire.emit({ method: 'Page.windowOpen', sessionId: session, params: ordinaryParams });
+  await flush();
+  const event = wire.delivered.slice(mark).find((message) => message.method === 'Page.windowOpen');
+  assert.ok(event);
+  assert.deepEqual(event.params, ordinaryParams);
 });
