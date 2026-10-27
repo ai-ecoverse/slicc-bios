@@ -1386,6 +1386,8 @@ class Guard {
     )
       return;
     if (root !== frame.id) {
+      for (const [child, parent] of this.parents)
+        if (parent === root) this.parents.set(child, frame.id);
       this.errorFrames.delete(root);
       this.errorUrls.delete(root);
       this.navs.get(targetId)?.errors?.delete(root);
