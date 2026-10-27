@@ -40,8 +40,9 @@ export function extensionConnection(cdp) {
     send(text) {
       if (closed) return;
       const { id, method, params, sessionId } = command(text);
+      const envelope = { id, ...(sessionId !== undefined ? { sessionId } : {}) };
       if (typeof method !== 'string') {
-        deliver({ id, error: { code: -32600, message: 'a command needs a method' } });
+        deliver({ ...envelope, error: { code: -32600, message: 'a command needs a method' } });
         return;
       }
       cdp.send(method, params, sessionId).then(
@@ -56,9 +57,9 @@ export function extensionConnection(cdp) {
           if (method === 'Target.detachFromTarget' && sessions.has(params?.sessionId)) {
             attached(params.sessionId, -1);
           }
-          deliver({ id, result });
+          deliver({ ...envelope, result });
         },
-        (error) => deliver({ id, error: { code: -32000, message: error.message } })
+        (error) => deliver({ ...envelope, error: { code: -32000, message: error.message } })
       );
     },
     close() {
