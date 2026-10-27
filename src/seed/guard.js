@@ -916,6 +916,20 @@ class Guard {
     const tree = (await this.call('Page.getFrameTree', {}, sessionId)).result?.frameTree;
     const all = framed(tree);
     const entry = this.sessions.get(sessionId);
+    const nav = this.navs.get(entry?.targetId);
+    if (
+      nav?.session &&
+      !nav.held &&
+      !nav.scrub &&
+      this.targets.get(entry.targetId)?.type === 'page' &&
+      !tree?.frame?.parentId &&
+      tree?.frame?.url?.startsWith('chrome-error:') &&
+      this.protectedFrame(tree.frame)
+    ) {
+      nav.scrub = this.scrubbing(nav);
+      nav.erred = true;
+      this.wipe(nav);
+    }
     if (this.errorDocument(sessionId)) return false;
     if (!tree?.frame && this.targets.get(entry?.targetId)?.url?.startsWith('chrome-error:'))
       return false;
