@@ -312,6 +312,54 @@ test('a kernel server’s slow streams no longer hold an update: once the new wo
   assert.deepEqual(page.errors, []);
 });
 
+test('while a half-read download holds an update, the old worker cuts nothing, since only that tab can release it: an event stream opened meanwhile keeps its one connection (#1104)', {
+  timeout: 15 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await settled(page);
+  await sseServer(page);
+  chrome.overrides.set('/os/held.bin', Buffer.alloc(SIZE, 7));
+  await hold(page);
+  bumpWorker();
+  assert.ok(await update(page));
+  await page.within(30000, () =>
+    document
+      .querySelector('slicc-app')
+      .model.notices.list()
+      .some((notice) => notice.id.startsWith('sw-waiting:'))
+  );
+  await page.evaluate(() => {
+    window.live = { opens: 0, errors: 0, seen: [] };
+    const source = new EventSource('http://8480.kernel.localhost/events');
+    source.onopen = () => {
+      window.live.opens += 1;
+    };
+    source.onerror = () => {
+      window.live.errors += 1;
+    };
+    source.onmessage = ({ data }) => {
+      window.live.seen.push(data);
+    };
+  });
+  const live = await page.within(30000, () => window.live.seen.length >= 12 && window.live);
+  assert.deepEqual(
+    {
+      opens: live.opens,
+      errors: live.errors,
+      connections: new Set(live.seen.map((event) => event.split(' ')[0])).size,
+    },
+    { opens: 1, errors: 0, connections: 1 },
+    JSON.stringify(live)
+  );
+  assert.deepEqual(await workers(page), {
+    active: 'activated',
+    waiting: 'installed',
+    installing: null,
+  });
+  assert.deepEqual(page.errors, []);
+});
+
 test('a download the tab keeps pulling doesn’t hold an update, so the old worker leaves it alone: the update activates and the download ends whole (#710)', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
