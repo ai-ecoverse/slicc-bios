@@ -1249,6 +1249,16 @@ class Guard {
     }
   }
 
+  async cutShownTarget(targetId) {
+    if (isHeld(targetId) || !NAV_TYPES.has(this.targets.get(targetId)?.type))
+      return this.cutTarget(targetId);
+    for (const [sessionId, entry] of this.sessions) {
+      if (entry.targetId !== targetId) continue;
+      if (!this.shown.has(sessionId) || this.pageShown(await this.surface(sessionId)))
+        this.cut(sessionId, entry.parent);
+    }
+  }
+
   async targetEvent(message) {
     const { method, params = {}, sessionId } = message;
     if (method === 'Target.attachedToTarget') {
@@ -1273,7 +1283,7 @@ class Guard {
         this.shownTarget(message, params.targetInfo);
         return true;
       }
-      this.cutTarget(params.targetInfo.targetId);
+      await this.cutShownTarget(params.targetInfo.targetId);
       return true;
     }
     if (method === 'Target.targetDestroyed') {
