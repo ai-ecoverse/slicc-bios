@@ -555,6 +555,7 @@ class Guard {
     this.pages = new Set();
     this.frames = new Map();
     this.errorFrames = new Set();
+    this.errorUrls = new Map();
     this.frameRoots = new Map();
     this.unsafe = new WeakSet();
     this.pendingContent = new Set();
@@ -1358,9 +1359,13 @@ class Guard {
 
   noteError(frame, sessionId, committed = false) {
     this.frames.set(frame.id, this.framed(frame));
-    if (this.protectedFrame(frame) && frame.url?.startsWith('chrome-error:'))
+    if (this.protectedFrame(frame) && frame.url?.startsWith('chrome-error:')) {
       this.errorFrames.add(frame.id);
-    else if (committed) this.errorFrames.delete(frame.id);
+      this.errorUrls.set(frame.id, frame.unreachableUrl);
+    } else if (committed) {
+      this.errorFrames.delete(frame.id);
+      this.errorUrls.delete(frame.id);
+    }
     const targetId =
       this.sessions.get(sessionId)?.targetId ?? this.navSessions.get(sessionId)?.targetId;
     const nav = this.navs.get(targetId);
@@ -1428,30 +1433,50 @@ class Guard {
     return false;
   }
 
-  frameError(params = {}) {
-    if (!this.errorFrames.size) return false;
+  frameError(params = {}, sessionId, names = this.errorFrames) {
+    if (!names.size) return false;
     const pending = [params];
     let visited = 0;
     while (pending.length) {
       visited += 1;
       const value = pending.pop();
-      if (typeof value === 'string' && this.errorFrames.has(value)) return true;
+      if (typeof value === 'string' && names.has(value)) return true;
       if (!value || typeof value !== 'object') continue;
       for (const key of Object.keys(value)) {
-        if (this.errorFrames.has(key) || pending.length + visited >= 4096) return true;
+        if (names.has(key)) return true;
+        if (pending.length + visited >= 4096)
+          return this.errorDocument(sessionId, 'Page.captureScreenshot');
         pending.push(value[key]);
       }
     }
     return false;
   }
 
+  eventFrames(method) {
+    if (!/^Page\.(?:javascriptDialogOpening|javascriptDialogClosed|windowOpen)$/.test(method))
+      return this.errorFrames;
+    return new Set([
+      ...this.errorFrames,
+      ...[...this.errorFrames]
+        .map((frame) => this.errorUrls.get(frame))
+        .filter((url) => typeof url === 'string' && url.length > 0),
+    ]);
+  }
+
   eventError(message) {
-    return this.frameError(message.params) || this.errorDocument(message.sessionId, message.method);
+    return (
+      this.frameError(message.params, message.sessionId, this.eventFrames(message.method)) ||
+      this.errorDocument(message.sessionId, message.method)
+    );
   }
 
   rememberUnsafe(message) {
     if (message.id !== undefined || this.navSessions.has(message.sessionId)) return;
-    const named = this.frameError(message.params);
+    const named = this.frameError(
+      message.params,
+      message.sessionId,
+      this.eventFrames(message.method)
+    );
     if (named && message.method === 'Runtime.executionContextCreated') this.foreign(message);
     if (named || this.errorDocument(message.sessionId, message.method)) this.unsafe.add(message);
   }
@@ -1466,7 +1491,7 @@ class Guard {
     return named ?? frame.url ?? '';
   }
 
-  tree({ frame, childFrames, resources, ...rest }) {
+  tree({ frame, childFrames, resources, ...rest }, sessionId) {
     if (frame.id !== undefined && !this.targets.has(frame.id)) {
       this.frames.set(frame.id, this.framed(frame));
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
@@ -1476,12 +1501,16 @@ class Guard {
     return {
       ...rest,
       frame: hidden ? { ...shown, url: ERROR_PAGE, securityOrigin: '://' } : frame,
-      ...(childFrames ? { childFrames: childFrames.map((child) => this.tree(child)) } : {}),
+      ...(childFrames
+        ? { childFrames: childFrames.map((child) => this.tree(child, sessionId)) }
+        : {}),
       ...(resources
         ? {
             resources: hidden
               ? []
-              : resources.filter((item) => !this.frameError(item) && !this.is.url(item.url)),
+              : resources.filter(
+                  (item) => !this.frameError(item, sessionId) && !this.is.url(item.url)
+                ),
           }
         : {}),
     };
@@ -1657,7 +1686,7 @@ class Guard {
     if (TREES.has(method) && result?.frameTree) {
       return this.deliver({
         ...message,
-        result: { ...result, frameTree: this.tree(result.frameTree) },
+        result: { ...result, frameTree: this.tree(result.frameTree, message.sessionId) },
       });
     }
     if (this.contents(message, was)) return;
@@ -1876,6 +1905,7 @@ class Guard {
     if (message.method === 'Page.frameDetached' && message.params?.reason === 'remove') {
       this.rememberUnsafe(message);
       this.errorFrames.delete(message.params.frameId);
+      this.errorUrls.delete(message.params.frameId);
       this.parents.delete(message.params.frameId);
     }
     this.rememberUnsafe(message);
