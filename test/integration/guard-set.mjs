@@ -7,6 +7,7 @@ import { run, summary } from '@ai-ecoverse/slicc-browsers/guard-runner';
 import set from '@ai-ecoverse/slicc-browsers/guard-vectors.json' with { type: 'json' };
 import { boot } from './bios.mjs';
 import { devtools, launch } from './chrome.mjs';
+import { auditForwards } from './guard-forward-audit.mjs';
 import { ALL_TARGETS, groupTargets } from './guard-groups.mjs';
 import { known as knownRow, listedWrong, stale } from './guard-known.mjs';
 
@@ -69,25 +70,6 @@ function noteMessage(flags, value) {
   }
   if (!value || typeof value !== 'object') return;
   for (const item of Object.values(value)) noteMessage(flags, item);
-}
-
-function matchForwards(forwards, probes) {
-  const used = new Set();
-  return {
-    complete: true,
-    probes: (probes ?? []).map((probe) => {
-      const want = JSON.stringify(probe.params ?? {});
-      const index = forwards.findIndex(
-        (forward, at) =>
-          !used.has(at) &&
-          forward.method === probe.method &&
-          JSON.stringify(forward.params ?? {}) === want &&
-          forward.at >= probe.sentAt - 1000
-      );
-      if (index >= 0) used.add(index);
-      return { id: probe.id, forwarded: index >= 0 };
-    }),
-  };
 }
 
 const browserAt = () =>
@@ -182,6 +164,8 @@ async function unguardedClient(browser) {
     const message = JSON.parse(text);
     if (message.method) {
       forwards.push({
+        id: message.id,
+        sessionId: message.sessionId,
         method: message.method,
         params: message.params,
         at: Date.now(),
@@ -298,7 +282,8 @@ export async function guardHost(t, path) {
   await boot(seven);
   const tabs = await tabsBrowser(t, path);
   if (path === 'link') trace('link', (await linkNode(t, seven, tabs.port)).join(' '));
-  const setup = async () => {
+  const setup = async (auditSource) => {
+    const auditForwards = new Function(`return (${auditSource})`)();
     const { guardProtected } = await import(new URL('guard.js', location.href).href);
     const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
     const hosts = {
@@ -372,6 +357,7 @@ export async function guardHost(t, path) {
     const gateWrap = (raw) => {
       const flags = { protectedObserved: false, ordinaryObserved: false };
       const forwards = [];
+      const commands = [];
       let sink = null;
       let hold = null;
       raw.onmessage = (text) => {
@@ -404,7 +390,13 @@ export async function guardHost(t, path) {
           try {
             const message = JSON.parse(text);
             if (message.method) {
-              forwards.push({ method: message.method, params: message.params, at: Date.now() });
+              forwards.push({
+                id: message.id,
+                sessionId: message.sessionId,
+                method: message.method,
+                params: message.params,
+                at: Date.now(),
+              });
             }
           } catch {
             return raw.send(text);
@@ -414,8 +406,12 @@ export async function guardHost(t, path) {
         close() {
           return raw.close();
         },
+        publicCommand(message) {
+          commands.push({ ...message, at: Date.now() });
+        },
         arm() {
           forwards.length = 0;
+          commands.length = 0;
           const seen = {
             protectedObserved: flags.protectedObserved,
             ordinaryObserved: flags.ordinaryObserved,
@@ -436,23 +432,8 @@ export async function guardHost(t, path) {
           for (const text of current?.texts ?? []) sink?.(text);
           return { delayedEvents, firstDelayedAt, releasedAt: Date.now() };
         },
-        audit(probes) {
-          const used = new Set();
-          return {
-            complete: true,
-            probes: (probes ?? []).map((probe) => {
-              const want = JSON.stringify(probe.params ?? {});
-              const index = forwards.findIndex(
-                (forward, at) =>
-                  !used.has(at) &&
-                  forward.method === probe.method &&
-                  JSON.stringify(forward.params ?? {}) === want &&
-                  forward.at >= probe.sentAt - 1000
-              );
-              if (index >= 0) used.add(index);
-              return { id: probe.id, forwarded: index >= 0 };
-            }),
-          };
+        audit(probes, sessionId) {
+          return auditForwards(forwards, commands, probes, sessionId);
         },
       };
     };
@@ -482,8 +463,8 @@ export async function guardHost(t, path) {
       release(row, ms) {
         return guards.get(row)?.gated.release(ms);
       },
-      audit(row, probes) {
-        return guards.get(row)?.gated.audit(probes) ?? { complete: false, probes: [] };
+      audit(row, probes, sessionId) {
+        return guards.get(row)?.gated.audit(probes, sessionId) ?? { complete: false, probes: [] };
       },
       send(row, method, params, sessionId, wait) {
         const guard = guards.get(row);
@@ -498,9 +479,9 @@ export async function guardHost(t, path) {
             clearTimeout(timer);
             resolve(message);
           });
-          guard.connection.send(
-            JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })
-          );
+          const command = { id, method, params, ...(sessionId ? { sessionId } : {}) };
+          guard.gated.publicCommand(command);
+          guard.connection.send(JSON.stringify(command));
         });
       },
       close(row) {
@@ -512,7 +493,7 @@ export async function guardHost(t, path) {
   const ensure = async () => {
     if (await seven.evaluate(() => Boolean(window.guards))) return;
     trace('install', 'the guard hooks go into seven’s page, again if it reloaded');
-    await seven.evaluate(setup);
+    await seven.evaluate(setup, auditForwards.toString());
   };
   await ensure();
   let count = 0;
@@ -562,8 +543,11 @@ export async function guardHost(t, path) {
                 sentAt,
               }));
               return side === 'control'
-                ? matchForwards(unguarded.forwards, list)
-                : seven.evaluate(([id, items]) => window.guards.audit(id, items), [row, list]);
+                ? auditForwards(unguarded.forwards, unguarded.forwards, list, sessionId)
+                : seven.evaluate(
+                    ([id, items, session]) => window.guards.audit(id, items, session),
+                    [row, list, sessionId]
+                  );
             },
           };
         },

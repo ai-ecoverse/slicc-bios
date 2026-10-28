@@ -1501,7 +1501,10 @@ class Guard {
       this.frameRoots.set(entry.targetId, tree.frame.id);
     }
     for (const frame of all) this.noteError(frame);
-    return Boolean(tree?.frame) && !all.some((frame) => this.protectedFrame(frame));
+    return (
+      (Boolean(tree?.frame) || WORKER_TYPES.has(this.targets.get(entry?.targetId)?.type)) &&
+      !all.some((frame) => this.protectedFrame(frame))
+    );
   }
 
   async inspect(sessionId, targetId, parent) {
