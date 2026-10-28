@@ -36,6 +36,7 @@ const BLANK_MS = 10000;
 const ERROR_PAGE = 'chrome-error://chromewebdata/';
 const bare = (url) => url.split('#')[0];
 const SCRUB_MS = 5000;
+const CLOSE_MS = 5000;
 export const BLANKED = 'data:text/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E';
 const HISTORY = new Set(['Page.getNavigationHistory']);
 const TREES = new Set(['Page.getFrameTree', 'Page.getResourceTree']);
@@ -1908,18 +1909,44 @@ class Guard {
         if (nav.scrubTicket !== ticket) return;
         clearTimeout(nav.scrubTimer);
         nav.scrubTicket = null;
+        nav.closeScrub = null;
         nav.wiped = null;
         nav.scrub = null;
         nav.retried = false;
         resolve();
       };
-      const expire = async () => {
+      const sameDocument = (frame) => {
+        const previous = nav.scrubDocument;
+        return Boolean(
+          previous &&
+            typeof previous.loaderId === 'string' &&
+            previous.loaderId &&
+            previous.id === frame?.id &&
+            previous.loaderId === frame?.loaderId &&
+            !frame?.parentId &&
+            previous.url === frame?.url &&
+            this.protectedFrame(previous) &&
+            this.protectedFrame(frame)
+        );
+      };
+      const blank = async () => {
+        nav.retried = true;
+        ticket.blank = this.call('Page.navigate', { url: BLANKED }, nav.session);
+        if (ticket.closing) {
+          await this.answered(ticket.blank);
+          return done();
+        }
+        nav.scrubTimer = setTimeout(expire, SCRUB_MS);
+        nav.scrubTimer.unref?.();
+      };
+      const probe = async () => {
         const answer = await this.scrubTree(nav);
         if (nav.scrubTicket !== ticket) return;
         const frames =
           answer && !answer.error ? this.documentFrames(answer.result?.frameTree) : null;
         if (frames?.some((frame) => this.frameLive(frame))) this.commitScope(nav.targetId);
         const frame = frames?.[0];
+        if (ticket.closing && !sameDocument(frame)) return done();
         if (frame && !frame.url.startsWith('chrome-error:') && !this.is.url(frame.url))
           return done();
         if (
@@ -1927,19 +1954,26 @@ class Guard {
           frame?.url.startsWith('chrome-error:') &&
           this.strandable(nav.targetId, nav, false) &&
           !this.pageLocked(nav.targetId, new Set(), false, this.errorView(nav.targetId, frames))
-        ) {
-          nav.retried = true;
-          void this.call('Page.navigate', { url: BLANKED }, nav.session);
-          nav.scrubTimer = setTimeout(expire, SCRUB_MS);
-          nav.scrubTimer.unref?.();
-          return;
-        }
+        )
+          return blank();
         done();
         this.cutTarget(nav.targetId);
+      };
+      const expire = () => {
+        if (ticket.closing && nav.retried) return Promise.resolve(done());
+        ticket.checking ??= probe().finally(() => {
+          ticket.checking = null;
+        });
+        return ticket.checking;
       };
       nav.scrubTimer = setTimeout(expire, SCRUB_MS);
       nav.scrubTimer.unref?.();
       nav.wiped = done;
+      nav.closeScrub = () => {
+        clearTimeout(nav.scrubTimer);
+        ticket.closing = true;
+        return expire().then(() => ticket.blank && this.answered(ticket.blank));
+      };
     });
   }
 
@@ -3973,9 +4007,26 @@ class Guard {
         }
       );
     };
+    let closing = false;
     guarded.close = () => {
-      for (const nav of this.navs.values()) nav.wiped?.();
-      connection.close();
+      if (closing) return;
+      closing = true;
+      guarded.send = () => {};
+      guarded.onmessage = null;
+      const pending = [...this.navs.values()].filter((nav) => nav.closeScrub);
+      if (!pending.length) return connection.close();
+      let finished = false;
+      let timer;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        for (const nav of this.navs.values()) nav.wiped?.();
+        connection.close();
+      };
+      timer = setTimeout(finish, CLOSE_MS);
+      timer.unref?.();
+      void Promise.allSettled(pending.map((nav) => nav.closeScrub())).then(finish);
     };
     return guarded;
   }

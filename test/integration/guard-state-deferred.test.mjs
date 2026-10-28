@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { BLANKED, guardProtected, PROTECTED } from '../../src/seed/guard.js';
+import { BLANKED, PROTECTED } from '../../src/seed/guard.js';
 import {
   errorFrame,
   failed,
   flush,
+  guardProtected,
   ordinary,
   plainFrame,
   protocol,
@@ -240,14 +241,25 @@ test('deferred expiry cannot wipe after an exit cancels its in-flight private tr
   assert.equal(wipes(wire).length, 0);
 });
 
-test('deferred scrub is disarmed when its guarded client closes', async (t) => {
+test('deferred scrub on client close sends one proved private blank immediately and disarms its deadline', async (t) => {
   let connection;
+  let closed = 0;
   const { wire } = await blocked(t, (raw, own) => {
+    raw.close = () => {
+      closed += 1;
+    };
     connection = guardProtected(raw, own);
     return connection;
   });
+  const before = wire.delivered.length;
   connection.close();
+  connection.close();
+  await flush();
+  assert.equal(wipes(wire).length, 1);
+  assert.equal(closed, 1);
+  assert.equal(wire.delivered.length, before);
   t.mock.timers.tick(10000);
   await flush();
-  assert.equal(wipes(wire).length, 0);
+  assert.equal(wipes(wire).length, 1);
+  assert.equal(closed, 1);
 });
