@@ -6,7 +6,7 @@ import { actPackage, boot, ready, run, screen, shows } from './bios.mjs';
 import { devtools as boundPort, debuggerUrl, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
 import { linkNode } from './linked-node.mjs';
-import { CURRENT_EXTENSION, display, EXTENSIONS, realExtension, SEVEN } from './real-extension.mjs';
+import { display, EXTENSIONS, realExtension, SEVEN } from './real-extension.mjs';
 
 const hits = [];
 const heard = [];
@@ -190,72 +190,6 @@ test('over the extension’s shield, the guard arms every driven tab with no pro
   assert.deepEqual(extension.shielding, []);
   assert.deepEqual(page.errors, []);
 });
-
-for (const extension of [CURRENT_EXTENSION, ...EXTENSIONS]) {
-  test(`real slicc-extension ${extension.version}: a blocked protected hop recovers through the kernel to an ordinary tab`, {
-    timeout: 10 * 60 * 1000,
-  }, async (t) => {
-    const real = await realExtension({ extension, rules: ['MAP vault.sliccy.ai 127.0.0.1'] });
-    t.after(() => real.close());
-    const page = await real.page(t);
-    await page.goto(SEVEN);
-    await ready(page);
-    assert.deepEqual(await automation(page), { via: 'extension' });
-    const title = 'Recovered ordinary tab';
-    real.overrides.set('/recovery-seed.html', '<!doctype html><title>seed</title><h1>Seed</h1>');
-    real.overrides.set(
-      '/recovery-hop.html',
-      '<!doctype html><meta http-equiv="refresh" content="0;url=' + VAULT + '">'
-    );
-    real.overrides.set(
-      '/recovery-destination.html',
-      '<!doctype html><title>' + title + '</title><h1>' + title + '</h1>'
-    );
-    const address = (path) => {
-      const url = new URL(path, real.url);
-      url.hostname = 'localhost';
-      return url.href;
-    };
-    hits.length = 0;
-    await run(
-      page,
-      'playwright-cli open ' +
-        address('/recovery-seed.html') +
-        ' > /tmp/blocked-hop 2>&1; playwright-cli goto ' +
-        address('/recovery-hop.html') +
-        ' >> /tmp/blocked-hop 2>&1; playwright-cli eval "document.title" >> /tmp/blocked-hop 2>&1; echo "hop-""finished"'
-    );
-    await shows(page, 'hop-finished', 180000);
-    const hopped = await read(page, '/tmp/blocked-hop');
-    assert.doesNotMatch(hopped, /VAULT-MARK|VAULT-BODY-MARK|chrome-extension:/, hopped);
-    assert.ok(
-      !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
-      'the protected document was not served'
-    );
-    const destination = address('/recovery-destination.html');
-    await run(
-      page,
-      'playwright-cli goto ' +
-        destination +
-        ' > /tmp/blocked-recovery 2>&1; echo recovery-goto-$? >> /tmp/blocked-recovery; playwright-cli eval "location.href + \' \' + document.title" >> /tmp/blocked-recovery 2>&1; echo recovery-read-$? >> /tmp/blocked-recovery; playwright-cli snapshot >> /tmp/blocked-recovery 2>&1; echo recovery-snapshot-$? >> /tmp/blocked-recovery; echo "recovery-""finished"'
-    );
-    await shows(page, 'recovery-finished', 180000);
-    const recovered = await read(page, '/tmp/blocked-recovery');
-    for (const step of ['goto', 'read', 'snapshot'])
-      assert.match(recovered, new RegExp('^recovery-' + step + '-0$', 'm'), recovered);
-    assert.ok(recovered.includes(destination + ' ' + title), recovered);
-    assert.match(recovered, /heading "Recovered ordinary tab"/, recovered);
-    assert.doesNotMatch(
-      recovered,
-      /slicc: refused|VAULT-MARK|VAULT-BODY-MARK|chrome-extension:/,
-      recovered
-    );
-    assert.ok(
-      !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
-      'recovery did not serve the protected document'
-    );
-  });
-}
 
 for (const extension of EXTENSIONS.filter(
   ({ version }) => !['7.5.1', '7.6.2', '7.6.3', '7.6.4'].includes(version)

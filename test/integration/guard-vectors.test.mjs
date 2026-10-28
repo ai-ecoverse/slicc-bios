@@ -1815,6 +1815,7 @@ for (const [detach, lag] of DETACH) {
             undefined
           );
           const before = (await guard.events()).length;
+          const observer = await harness(page.targetId);
           await guard.go(how === 'direct' ? TRIGGERS.href(url) : TRIGGERS[302](url), page.session);
           await keptOut(id, {
             targetId: page.targetId,
@@ -1822,7 +1823,33 @@ for (const [detach, lag] of DETACH) {
             mark: chrome.requests.length,
             lag,
           });
-          await pause(lag + 1000);
+          const wait = lag + 6000;
+          const deadline = Date.now() + wait;
+          let timer;
+          let blanked;
+          try {
+            blanked = await Promise.race([
+              (async () => {
+                while (Date.now() < deadline) {
+                  const tree = await observer.send('Page.getFrameTree');
+                  if (Date.now() < deadline && tree.result?.frameTree?.frame.url === BLANKED)
+                    return true;
+                  await pause(100);
+                }
+                return false;
+              })(),
+              new Promise((resolve) => {
+                timer = setTimeout(resolve, wait, false);
+              }),
+            ]);
+          } finally {
+            clearTimeout(timer);
+          }
+          assert.equal(
+            blanked,
+            true,
+            `${id}: the private blank arrived before scrub expiry plus margin`
+          );
           const read = async (method, params = {}) =>
             JSON.stringify(await guard.send(method, params, page.session));
           const seen = {
