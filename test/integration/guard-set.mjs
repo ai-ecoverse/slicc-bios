@@ -559,20 +559,11 @@ export async function guardHost(t, path) {
           };
         },
         send: async (method, params = {}, sessionId) => {
-          if (method === 'Page.reload') transportEvents.push({ method, role: 'client-command' });
           const answer = await seven.evaluate(
             ([row, method, params, sessionId, wait]) =>
               window.guards.send(row, method, params, sessionId ?? undefined, wait),
             [row, method, params, sessionId ?? null, COMMAND_MS]
           );
-          if (method === 'Page.reload')
-            transportEvents.push({
-              method,
-              role: answer.error ? 'client-refused-answer' : 'client-answer',
-              refusal: /^slicc: refused:/.test(answer.error?.message ?? '')
-                ? 'slicc: refused'
-                : undefined,
-            });
           if (answer.error) throw cdpError(answer.error);
           return answer.result;
         },
@@ -655,44 +646,6 @@ export function shared(path, { variants, except = [], group } = {}) {
             current = row;
           },
           debug: (data) => {
-            if (data.side === 'guarded' && current?.id?.startsWith('C8.protected-')) {
-              const roots = new Map();
-              const metadata = (event, role) => {
-                const info = event.params?.targetInfo ?? event.targetInfo;
-                if (!roots.has(info?.targetId)) roots.set(info?.targetId, `root-${roots.size + 1}`);
-                const url = URL.canParse(info?.url ?? '') ? new URL(info.url) : null;
-                const protectedOrigin = url && /(?:^|\.)sliccy\.ai$/.test(url.hostname);
-                const scope = protectedOrigin
-                  ? info.url === url.origin && info.title === url.origin
-                    ? 'origin-only'
-                    : 'over-origin'
-                  : url?.protocol === 'chrome-error:'
-                    ? 'error'
-                    : 'ordinary';
-                return {
-                  method: 'Target.attachedToTarget',
-                  role: `${role}-${scope}`,
-                  root: roots.get(info?.targetId),
-                  origin: url?.origin,
-                };
-              };
-              const events = data.events.filter(
-                (event) => event.method === 'Target.attachedToTarget'
-              );
-              const transport = (transportEvents ?? []).filter(
-                (event) => event.method === 'Target.attachedToTarget'
-              );
-              process.stdout.write(
-                `ATTACH-METADATA ${path} ${current.id} ${target} ${variant} ${JSON.stringify([
-                  ...transport.map((event) => metadata(event, 'transport')),
-                  ...events.map((event) => metadata(event, 'client')),
-                  ...(transportEvents ?? []).filter((event) => event.role),
-                  ...(!events.length
-                    ? [{ method: 'Target.attachedToTarget', role: 'client-missing' }]
-                    : []),
-                ])}\n`
-              );
-            }
             if (process.env.GUARD_TRACE)
               trace('debug', JSON.stringify(data).slice(0, Number(process.env.GUARD_TRACE) || 300));
             if (
