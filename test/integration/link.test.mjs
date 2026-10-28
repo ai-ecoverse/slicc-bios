@@ -1559,7 +1559,7 @@ test('the real slicc CLI carries a program WebSocket over the link: text, binary
   );
   assert.ok(far.out.includes(`880e0fa1${hex('far end done')}`), far.out);
   await relink(['--deny', '127.0.0.1/32']);
-  const denied = await shell(page, String.raw`bash /home/ws.sh '' ''`, 'ws-denied');
+  const denied = await shell(page, "bash /home/ws.sh '' ''", 'ws-denied');
   assert.ok(denied.out.startsWith(hex('HTTP/1.1 502')), denied.out);
   assert.ok(
     denied.out.includes(hex('EACCES')) || denied.out.includes(hex('policy')),
