@@ -5,6 +5,7 @@ import { after, test } from 'node:test';
 import { boot, ready, run } from './bios.mjs';
 import { debuggerUrl, devtools, launch } from './chrome.mjs';
 import { attach, CLI, HOST_CDP } from './cli.mjs';
+import { captureLinkProtocol } from './link-protocol-capture.mjs';
 import { shoot } from './shots.mjs';
 
 const chrome = await launch();
@@ -984,178 +985,199 @@ test('the real slicc CLI shares another browser over cdp: the 9222 facade reache
   await debuggerUrl(debugPort);
   const page = await chrome.page(t);
   await boot(page);
-  await ready(page);
-  const node = attach(
-    cli,
-    [
-      '--signal',
-      'stdio',
-      '--name',
-      'ref-node',
-      '--no-kernel',
-      '--cdp-extra',
-      `http://127.0.0.1:${debugPort}`,
-    ],
-    { stdio: ['pipe', 'pipe', 'inherit'] }
-  );
-  t.after(() => node.kill());
-  await page.expose('sliccLinkSend', (message) => node.stdin.write(`${JSON.stringify(message)}\n`));
-  createInterface({ input: node.stdout }).on('line', (line) =>
-    page.evaluate((line) => globalThis.sliccLinkReceive(line), line).catch(() => {})
-  );
-  await page.until(() =>
-    document
-      .querySelector('slicc-app')
-      .model.network.status()
-      .links?.devices.some((d) => d.state === 'connected')
-  );
-  const listed = await shell(
-    page,
-    "curl -s 'http://127.0.0.1:9222/json/list?runtime=nope'",
-    'cdp-nope'
-  );
-  const runtime = /ref-node\/[A-Za-z0-9._-]+/.exec(listed.out)?.[0];
-  assert.ok(runtime, listed.out);
-  const pages = await shell(
-    page,
-    `curl -sf 'http://127.0.0.1:9222/json/list?runtime=${runtime}' | jq -r '.[].url'`,
-    'cdp-list'
-  );
-  assert.equal(pages.code, '0', pages.out);
-  assert.match(pages.out, /about:blank/);
-  const driven = await shell(
-    page,
-    `{ playwright-cli --runtime ${runtime} open 'data:text/html,<title>linked-browser</title>' > /dev/null && playwright-cli --runtime ${runtime} eval 'document.title'; playwright-cli --runtime ${runtime} close > /dev/null; }`,
-    'cdp-driven'
-  );
-  assert.match(driven.out, /linked-browser/);
-  const own = new URL(chrome.url).origin;
-  const opened = await shell(
-    page,
-    `playwright-cli --runtime ${runtime} open '${own}/' 2>&1; echo "open $?"`,
-    'cdp-own-open'
-  );
-  assert.doesNotMatch(opened.out, /open 0$/, opened.out);
-  const walked = await shell(
-    page,
-    `{ playwright-cli --runtime ${runtime} open 'data:text/html,<title>start</title>' > /dev/null; playwright-cli --runtime ${runtime} eval 'location.href = ${JSON.stringify(`${own}/`)}' > /dev/null 2>&1; for i in $(seq 1 50); do s=$(playwright-cli --runtime ${runtime} eval 'location.href' 2>&1); case "$s" in *'data:text/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E'*|*"seven's origin"*) break ;; esac; sleep 0.2; done; echo "$s"; }`,
-    'cdp-own-walk'
-  );
-  assert.ok(!walked.out.includes(own), walked.out);
-  assert.match(
-    walked.out,
-    /data:text\/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E|slicc: refused: target is on seven's origin/,
-    `the walk to seven’s origin was failed in the other browser, and a guarded read of the walked tab is blanked or refused: ${walked.out}`
-  );
-  const frames = async () => {
-    const seen = [];
+  await page.evaluate(captureLinkProtocol);
+  try {
+    await ready(page);
+    const node = attach(
+      cli,
+      [
+        '--signal',
+        'stdio',
+        '--name',
+        'ref-node',
+        '--no-kernel',
+        '--cdp-extra',
+        `http://127.0.0.1:${debugPort}`,
+      ],
+      { stdio: ['pipe', 'pipe', 'inherit'] }
+    );
+    t.after(() => node.kill());
+    await page.expose('sliccLinkSend', (message) =>
+      node.stdin.write(`${JSON.stringify(message)}\n`)
+    );
+    createInterface({ input: node.stdout }).on('line', (line) =>
+      page.evaluate((line) => globalThis.sliccLinkReceive(line), line).catch(() => {})
+    );
+    await page.until(() =>
+      document
+        .querySelector('slicc-app')
+        .model.network.status()
+        .links?.devices.some((d) => d.state === 'connected')
+    );
+    const listed = await shell(
+      page,
+      "curl -s 'http://127.0.0.1:9222/json/list?runtime=nope'",
+      'cdp-nope'
+    );
+    const runtime = /ref-node\/[A-Za-z0-9._-]+/.exec(listed.out)?.[0];
+    assert.ok(runtime, listed.out);
+    const pages = await shell(
+      page,
+      `curl -sf 'http://127.0.0.1:9222/json/list?runtime=${runtime}' | jq -r '.[].url'`,
+      'cdp-list'
+    );
+    assert.equal(pages.code, '0', pages.out);
+    assert.match(pages.out, /about:blank/);
+    const driven = await shell(
+      page,
+      `{ playwright-cli --runtime ${runtime} open 'data:text/html,<title>linked-browser</title>' > /dev/null && playwright-cli --runtime ${runtime} eval 'document.title'; playwright-cli --runtime ${runtime} close > /dev/null; }`,
+      'cdp-driven'
+    );
+    assert.match(driven.out, /linked-browser/);
+    const own = new URL(chrome.url).origin;
+    const opened = await shell(
+      page,
+      `playwright-cli --runtime ${runtime} open '${own}/' 2>&1; echo "open $?"`,
+      'cdp-own-open'
+    );
+    assert.doesNotMatch(opened.out, /open 0$/, opened.out);
+    await page.evaluate(() => {
+      globalThis.linkProtocolCapture.active = true;
+    });
+    const walked = await shell(
+      page,
+      `{ playwright-cli --runtime ${runtime} open 'data:text/html,<title>start</title>' > /dev/null; playwright-cli --runtime ${runtime} eval 'location.href = ${JSON.stringify(`${own}/`)}' > /dev/null 2>&1; for i in $(seq 1 50); do s=$(playwright-cli --runtime ${runtime} eval 'location.href' 2>&1); case "$s" in *'data:text/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E'*|*"seven's origin"*) break ;; esac; sleep 0.2; done; echo "$s"; }`,
+      'cdp-own-walk'
+    );
+    assert.ok(!walked.out.includes(own), walked.out);
+    assert.match(
+      walked.out,
+      /data:text\/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E|slicc: refused: target is on seven's origin/,
+      `the walk to seven’s origin was failed in the other browser, and a guarded read of the walked tab is blanked or refused: ${walked.out}`
+    );
+    const frames = async () => {
+      const seen = [];
+      for (const tab of await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) =>
+        r.json()
+      )) {
+        if (tab.type !== 'page') continue;
+        const frame = await new Promise((resolve, reject) => {
+          const socket = new WebSocket(tab.webSocketDebuggerUrl);
+          const timer = setTimeout(() => {
+            socket.close();
+            reject(new Error(`Page.getFrameTree on ${tab.url}: no answer in 10 s`));
+          }, 10000);
+          socket.onopen = () => socket.send(JSON.stringify({ id: 1, method: 'Page.getFrameTree' }));
+          socket.onmessage = ({ data }) => {
+            const answer = JSON.parse(data);
+            if (answer.id !== 1) return;
+            clearTimeout(timer);
+            socket.close();
+            resolve(answer.result?.frameTree?.frame ?? {});
+          };
+          socket.onerror = () => {
+            clearTimeout(timer);
+            reject(new Error(`Page.getFrameTree on ${tab.url}: the socket failed`));
+          };
+        });
+        seen.push({ url: tab.url, frame: frame.url, unreachable: frame.unreachableUrl ?? null });
+      }
+      return seen;
+    };
+    let scrubbed = [];
+    for (const end = Date.now() + 15000; ; ) {
+      scrubbed = await frames();
+      if (scrubbed.some((tab) => tab.url === 'data:text/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E'))
+        break;
+      if (Date.now() > end)
+        assert.fail(
+          `bios's guard blanks the walked tab within 15 s; the linked browser's pages are ${JSON.stringify(scrubbed)}`
+        );
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    assert.ok(
+      scrubbed.every(
+        (tab) =>
+          !tab.url.startsWith(own) &&
+          !tab.frame?.startsWith(own) &&
+          !tab.frame?.startsWith('chrome-error:') &&
+          !tab.unreachable?.startsWith(own)
+      ),
+      `no page is left on seven’s origin or its error page: ${JSON.stringify(scrubbed)}`
+    );
+    const kept = await shell(
+      page,
+      `{ playwright-cli --runtime ${runtime} goto 'data:text/html,<title>after-walk</title>' > /dev/null 2>&1; echo "goto $?"; playwright-cli --runtime ${runtime} eval 'document.title' 2>&1; echo "eval $?"; playwright-cli --runtime ${runtime} reload > /dev/null 2>&1; echo "reload $?"; playwright-cli --runtime ${runtime} close > /dev/null 2>&1; echo "close $?"; }`,
+      'cdp-after-walk'
+    );
+    assert.match(
+      kept.out,
+      /^goto 0\n[\s\S]*after-walk[\s\S]*\neval 0\nreload 0\nclose 0$/,
+      `the agent keeps the walked tab: it navigates, reads, reloads and closes it: ${kept.out}`
+    );
+    const looked = [];
     for (const tab of await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) =>
       r.json()
     )) {
       if (tab.type !== 'page') continue;
-      const frame = await new Promise((resolve, reject) => {
-        const socket = new WebSocket(tab.webSocketDebuggerUrl);
-        const timer = setTimeout(() => {
-          socket.close();
-          reject(new Error(`Page.getFrameTree on ${tab.url}: no answer in 10 s`));
-        }, 10000);
-        socket.onopen = () => socket.send(JSON.stringify({ id: 1, method: 'Page.getFrameTree' }));
-        socket.onmessage = ({ data }) => {
-          const answer = JSON.parse(data);
-          if (answer.id !== 1) return;
-          clearTimeout(timer);
-          socket.close();
-          resolve(answer.result?.frameTree?.frame ?? {});
-        };
-        socket.onerror = () => {
-          clearTimeout(timer);
-          reject(new Error(`Page.getFrameTree on ${tab.url}: the socket failed`));
-        };
-      });
-      seen.push({ url: tab.url, frame: frame.url, unreachable: frame.unreachableUrl ?? null });
-    }
-    return seen;
-  };
-  let scrubbed = [];
-  for (const end = Date.now() + 15000; ; ) {
-    scrubbed = await frames();
-    if (scrubbed.some((tab) => tab.url === 'data:text/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E'))
-      break;
-    if (Date.now() > end)
-      assert.fail(
-        `bios's guard blanks the walked tab within 15 s; the linked browser's pages are ${JSON.stringify(scrubbed)}`
+      looked.push(
+        await new Promise((resolve, reject) => {
+          const socket = new WebSocket(tab.webSocketDebuggerUrl);
+          let seen = 'nothing';
+          const timer = setTimeout(() => {
+            socket.close();
+            reject(
+              new Error(`Runtime.evaluate on ${tab.url}: no answer in 10 s; it answered ${seen}`)
+            );
+          }, 10000);
+          socket.onopen = () =>
+            socket.send(
+              JSON.stringify({
+                id: 1,
+                method: 'Runtime.evaluate',
+                params: {
+                  expression: 'JSON.stringify([location.href, origin])',
+                  returnByValue: true,
+                },
+              })
+            );
+          socket.onmessage = ({ data }) => {
+            seen = String(data);
+            const answer = JSON.parse(data);
+            if (answer.id !== 1) return;
+            clearTimeout(timer);
+            socket.close();
+            resolve(answer.result?.result?.value ?? seen);
+          };
+          socket.onerror = () => {
+            clearTimeout(timer);
+            reject(new Error(`Runtime.evaluate on ${tab.url}: the socket failed`));
+          };
+        })
       );
-    await new Promise((resolve) => setTimeout(resolve, 200));
-  }
-  assert.ok(
-    scrubbed.every(
-      (tab) =>
-        !tab.url.startsWith(own) &&
-        !tab.frame?.startsWith(own) &&
-        !tab.frame?.startsWith('chrome-error:') &&
-        !tab.unreachable?.startsWith(own)
-    ),
-    `no page is left on seven’s origin or its error page: ${JSON.stringify(scrubbed)}`
-  );
-  const kept = await shell(
-    page,
-    `{ playwright-cli --runtime ${runtime} goto 'data:text/html,<title>after-walk</title>' > /dev/null 2>&1; echo "goto $?"; playwright-cli --runtime ${runtime} eval 'document.title' 2>&1; echo "eval $?"; playwright-cli --runtime ${runtime} reload > /dev/null 2>&1; echo "reload $?"; playwright-cli --runtime ${runtime} close > /dev/null 2>&1; echo "close $?"; }`,
-    'cdp-after-walk'
-  );
-  assert.match(
-    kept.out,
-    /^goto 0\n[\s\S]*after-walk[\s\S]*\neval 0\nreload 0\nclose 0$/,
-    `the agent keeps the walked tab: it navigates, reads, reloads and closes it: ${kept.out}`
-  );
-  const looked = [];
-  for (const tab of await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) => r.json())) {
-    if (tab.type !== 'page') continue;
-    looked.push(
-      await new Promise((resolve, reject) => {
-        const socket = new WebSocket(tab.webSocketDebuggerUrl);
-        let seen = 'nothing';
-        const timer = setTimeout(() => {
-          socket.close();
-          reject(
-            new Error(`Runtime.evaluate on ${tab.url}: no answer in 10 s; it answered ${seen}`)
-          );
-        }, 10000);
-        socket.onopen = () =>
-          socket.send(
-            JSON.stringify({
-              id: 1,
-              method: 'Runtime.evaluate',
-              params: {
-                expression: 'JSON.stringify([location.href, origin])',
-                returnByValue: true,
-              },
-            })
-          );
-        socket.onmessage = ({ data }) => {
-          seen = String(data);
-          const answer = JSON.parse(data);
-          if (answer.id !== 1) return;
-          clearTimeout(timer);
-          socket.close();
-          resolve(answer.result?.result?.value ?? seen);
-        };
-        socket.onerror = () => {
-          clearTimeout(timer);
-          reject(new Error(`Runtime.evaluate on ${tab.url}: the socket failed`));
-        };
-      })
+    }
+    assert.ok(
+      !looked.some((seen) => seen.includes(`"${own}"`) || seen.startsWith(`["${own}`)),
+      `seven’s document never loaded there, read without a guard: ${looked.join(' ')}`
     );
+    const hidden = await shell(
+      page,
+      `curl -s 'http://127.0.0.1:9222/json/list?runtime=${runtime}'`,
+      'cdp-own-list'
+    );
+    assert.doesNotMatch(hidden.out, new RegExp(own.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  } catch (error) {
+    console.log(
+      'LINK-TRANSPORT ' +
+        JSON.stringify(
+          await page.evaluate(() => ({
+            records: globalThis.linkProtocolCapture.records,
+            capped: globalThis.linkProtocolCapture.capped,
+          }))
+        )
+    );
+    throw error;
   }
-  assert.ok(
-    !looked.some((seen) => seen.includes(`"${own}"`) || seen.startsWith(`["${own}`)),
-    `seven’s document never loaded there, read without a guard: ${looked.join(' ')}`
-  );
-  const hidden = await shell(
-    page,
-    `curl -s 'http://127.0.0.1:9222/json/list?runtime=${runtime}'`,
-    'cdp-own-list'
-  );
-  assert.doesNotMatch(hidden.out, new RegExp(own.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 });
 
 const CDP_NOTE = "Update slicc to 1.47.3 or later to share this computer's browsers.";
