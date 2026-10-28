@@ -626,6 +626,8 @@ export function protection(own) {
 class Guard {
   constructor(connection, own) {
     this.connection = connection;
+    this.closing = false;
+    this.closed = false;
     this.is = protection(own);
     this.redact = redacting(this.is);
     this.redirected = new Set();
@@ -823,7 +825,7 @@ class Guard {
   }
 
   call(method, params, sessionId) {
-    if (this.gone.has(sessionId))
+    if (this.closed || this.gone.has(sessionId))
       return Promise.resolve({ error: { code: -32000, message: UNGUARDED } });
     const placement = this.placements.get(sessionId);
     return new Promise((resolve) => {
@@ -3290,7 +3292,11 @@ class Guard {
   }
 
   owns(message) {
-    return message.id === undefined || this.callerIds.get(requestKey(message)) === message;
+    return (
+      !this.closing &&
+      !this.closed &&
+      (message.id === undefined || this.callerIds.get(requestKey(message)) === message)
+    );
   }
 
   sealed(was) {
@@ -3662,6 +3668,7 @@ class Guard {
   }
 
   async create(message) {
+    if (this.finished.has(message) || !this.owns(message)) return;
     const { id, params, sessionId } = message;
     const answer = await this.call('Target.createTarget', {
       ...params,
@@ -3669,13 +3676,13 @@ class Guard {
       url: 'about:blank',
     });
     const targetId = answer.result?.targetId;
-    if (this.finished.has(message)) return;
+    if (this.finished.has(message) || !this.owns(message)) return;
     if (!targetId) return this.deliver({ ...answer, id, ...(sessionId ? { sessionId } : {}) });
     this.learn({ targetId, url: 'about:blank', type: 'page' });
     this.touch(targetId);
     const nav = this.navs.get(targetId);
     await nav.ready;
-    if (this.finished.has(message)) return;
+    if (this.finished.has(message) || !this.owns(message)) return;
     if (!nav.failed) nav.admitted = true;
     if (!nav.failed && !inherits(params.url))
       void this.call('Page.navigate', { url: params.url }, nav.session);
@@ -3961,10 +3968,16 @@ class Guard {
     const { connection, guarded } = this;
     connection.onmessage = (text) => this.received(text);
     connection.onclose = (why) => {
+      this.closing = true;
+      this.closed = true;
+      guarded.send = () => {};
+      guarded.onmessage = null;
+      for (const nav of this.navs.values()) nav.wiped?.();
       this.autoAttachments.clear();
       guarded.onclose?.(why);
     };
     guarded.send = (text) => {
+      if (this.closing || this.closed) return;
       const message = parse(text);
       const key = requestKey(message);
       if (message.id !== undefined) {
@@ -4007,26 +4020,27 @@ class Guard {
         }
       );
     };
-    let closing = false;
     guarded.close = () => {
-      if (closing) return;
-      closing = true;
+      if (this.closing || this.closed) return;
+      this.closing = true;
       guarded.send = () => {};
       guarded.onmessage = null;
       const pending = [...this.navs.values()].filter((nav) => nav.closeScrub);
-      if (!pending.length) return connection.close();
-      let finished = false;
+      if (!pending.length) {
+        this.closed = true;
+        return connection.close();
+      }
       let timer;
       const finish = () => {
-        if (finished) return;
-        finished = true;
+        if (this.closed) return;
+        this.closed = true;
         clearTimeout(timer);
         for (const nav of this.navs.values()) nav.wiped?.();
         connection.close();
       };
       timer = setTimeout(finish, CLOSE_MS);
       timer.unref?.();
-      void Promise.allSettled(pending.map((nav) => nav.closeScrub())).then(finish);
+      void Promise.allSettled(pending.map((nav) => nav.closeScrub?.())).then(finish);
     };
     return guarded;
   }
