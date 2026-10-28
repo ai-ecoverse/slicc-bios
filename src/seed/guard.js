@@ -2099,8 +2099,21 @@ class Guard {
       return this.cut(sessionId);
     for (const frame of frames) this.noteError(frame, sessionId);
     ticket.verified = true;
-    const url = ticket.hint.params?.targetInfo?.url;
-    if (typeof url !== 'string' || !URL.canParse(url) || this.is.url(url)) return;
+    const commit = ticket.commit;
+    if (commit) {
+      const root = frames[0];
+      if (
+        root.parentId ||
+        root.id !== commit.id ||
+        root.url !== commit.url ||
+        root.loaderId !== commit.loaderId ||
+        this.protectedFrame(root)
+      )
+        return;
+    } else {
+      const url = ticket.hint.params?.targetInfo?.url;
+      if (typeof url !== 'string' || !URL.canParse(url) || this.is.url(url)) return;
+    }
     this.quarantined.delete(sessionId);
     this.refresh(entry.targetId);
   }
@@ -2117,7 +2130,23 @@ class Guard {
       const ticket = this.quarantined.get(id);
       if (!ticket) continue;
       if (this.frameLive(message.params.frame)) this.cut(id);
-      else this.startHint(id, this.quarantine(id, ticket.hint));
+      else {
+        const frame = message.params.frame;
+        const targetId = this.sessions.get(id)?.targetId;
+        const next = this.quarantine(id, ticket.hint);
+        if (
+          this.targets.get(targetId)?.type === 'page' &&
+          !frame.parentId &&
+          frame.id === this.frameRoots.get(targetId) &&
+          typeof frame.loaderId === 'string' &&
+          frame.loaderId &&
+          !this.protectedFrame(frame) &&
+          !this.unsafeUrl(frame.url) &&
+          !inherits(frame.url)
+        )
+          next.commit = { id: frame.id, url: frame.url, loaderId: frame.loaderId };
+        this.startHint(id, next);
+      }
     }
   }
 
