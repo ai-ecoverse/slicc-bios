@@ -76,8 +76,29 @@ function linked(row, listed) {
   return found?.[0] ?? null;
 }
 
+const RELOAD_WAIT = '#748 (lagging reload, awaiting slicc-browsers)';
+const laggingExtension = (row) =>
+  row.transport === 'extension' && row.variant === 'lagging' && row.target === 'seven';
+
+function laggingReload(row, listed) {
+  if (
+    listed ||
+    row.errors?.length ||
+    row.incomplete?.length ||
+    !laggingExtension(row) ||
+    !ERROR_RECOVERY.includes(row.id) ||
+    row.control !== 'pass' ||
+    row.guarded !== 'fail' ||
+    row.live !== 'pass'
+  )
+    return null;
+  return row.why === 'reload: got false, want true' ? RELOAD_WAIT : null;
+}
+
 export function known(row, { listed = false } = {}) {
   if (row.transport === 'link') return linked(row, listed);
+  const reload = laggingReload(row, listed);
+  if (reload) return reload;
   const reason = issue(row.id);
   if (!reason || row.control !== 'pass' || row.guarded !== 'fail') return null;
   const items = (row.why ?? '').split('; ');
@@ -95,6 +116,7 @@ export function known(row, { listed = false } = {}) {
 
 export function stale(results) {
   const lists = [
+    [RELOAD_WAIT, ERROR_RECOVERY, laggingExtension],
     ...Object.entries(KNOWN).map(([reason, ids]) => [reason, ids, () => true]),
     ...Object.entries(LINK).map(([reason, { ids }]) => [
       reason,
