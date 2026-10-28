@@ -1654,6 +1654,10 @@ class Guard {
   watch(sessionId, targetId, parent) {
     this.gone.delete(sessionId);
     if (!this.sessions.has(sessionId)) this.sessions.set(sessionId, { targetId, parent });
+    if (this.pendingTarget(targetId)) {
+      this.cut(sessionId, parent);
+      return Promise.resolve(false);
+    }
     if (!this.watching.has(sessionId)) {
       this.watching.set(sessionId, this.inspect(sessionId, targetId, parent));
     }
@@ -1932,8 +1936,12 @@ class Guard {
       (nav.scrubDocument?.loaderId &&
         frame.loaderId &&
         nav.scrubDocument.loaderId !== frame.loaderId)
-    )
-      return nav.wiped();
+    ) {
+      nav.wiped();
+      if (this.protectedFrame(frame) && !this.frameLive(frame))
+        nav.scrub = this.scrubbing(nav, frame);
+      return;
+    }
     nav.scrubDocument ??= frame;
     nav.erred = true;
   }
@@ -2479,7 +2487,8 @@ class Guard {
   }
 
   entry(entry) {
-    if (!this.unsafeUrl(entry.url) && !this.hides(entry)) return entry;
+    if (!this.unsafeUrl(entry.url) && !this.hides(entry) && !entry.url.startsWith('chrome-error:'))
+      return entry;
     return { ...entry, url: ERROR_PAGE, userTypedURL: ERROR_PAGE, title: '' };
   }
 
@@ -2854,6 +2863,28 @@ class Guard {
       if (started) this.noteStarted(id, frameId, params.url, params.loaderId, guardian);
       else this.noteCommitted(id, method, frameId, params.frame?.parentId, params.frame?.loaderId);
     }
+    if (started)
+      for (const command of this.callerIds.values())
+        if (this.pendingRecovery(command)) this.unsafe.add(command);
+  }
+
+  pendingTarget(targetId) {
+    return Boolean(
+      targetId && [...this.pendingCommit].some((id) => this.scopeTarget(id) === targetId)
+    );
+  }
+
+  pendingRecovery({ method, params = {}, sessionId }) {
+    if (
+      !OBSERVED.has(method) &&
+      method !== 'Target.getTargetInfo' &&
+      method !== 'Target.attachToTarget'
+    )
+      return false;
+    const targetId = method.startsWith('Target.')
+      ? (params.targetId ?? this.scopeTarget(sessionId))
+      : this.scopeTarget(sessionId);
+    return this.pendingTarget(targetId);
   }
 
   async workerSession(sessionId) {
@@ -2873,7 +2904,11 @@ class Guard {
     ) {
       return null;
     }
-    if (this.pendingCommit.has(sessionId) && !NAVIGATES.has(method)) return PROTECTED;
+    if (
+      (this.pendingCommit.has(sessionId) || this.pendingTarget(this.scopeTarget(sessionId))) &&
+      !NAVIGATES.has(method)
+    )
+      return PROTECTED;
     return false;
   }
 
@@ -3145,6 +3180,7 @@ class Guard {
   unsafeContent(message) {
     return (
       this.unsafe.has(message) ||
+      this.pendingRecovery(message) ||
       (this.quarantined.has(message.sessionId) && !RECOVERS.has(message.method)) ||
       (contentRead(message.method) && this.errorDocument(message.sessionId, message.method))
     );

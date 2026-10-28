@@ -93,7 +93,7 @@ test('deferred wipe leaves the error document sealed for the entire five-second 
 
 for (const cancel of [
   'main commit',
-  'different error commit',
+  'different ordinary error commit',
   'Page.navigate',
   'Page.reload',
   'Target.closeTarget',
@@ -102,8 +102,12 @@ for (const cancel of [
     const { wire, entry, session } = await blocked(t);
     if (cancel.includes('commit')) {
       const frame =
-        cancel === 'different error commit'
-          ? { ...errorFrame('deferred'), loaderId: 'different-error-loader' }
+        cancel === 'different ordinary error commit'
+          ? {
+              ...errorFrame('deferred'),
+              loaderId: 'different-error-loader',
+              unreachableUrl: ordinary,
+            }
           : plainFrame('deferred');
       entry.tree.frame = frame;
       entry.info.url = frame.url;
