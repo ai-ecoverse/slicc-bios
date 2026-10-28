@@ -52,7 +52,7 @@
     "@ai-ecoverse/slicc": "1.49.27",
     "@ai-ecoverse/slicc-browsers": "1.18.17",
     "@ai-ecoverse/slicc-cdp": "1.42.3",
-    "@ai-ecoverse/slicc-shared-web": "2.13.4",
+    "@ai-ecoverse/slicc-shared-web": "2.13.6",
     "@ai-ecoverse/slicc-spectrum": "1.107.2",
     "@ai-ecoverse/slicc-vault": "1.17.0",
     "@biomejs/biome": "2.5.15",
