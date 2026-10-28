@@ -1,23 +1,22 @@
 import { UNGUARDED } from '../../src/seed/guard.js';
 
-export const KNOWN = {
-  '#748': [
-    'C8.protected-error-page',
-    'C8.protected-error-page.query',
-    'C8.protected-error-page.fragment',
-    'C8.protected-document-restore',
-    'C8.protected-error-page-sticky',
-    'C8.protected-error-page-sticky.query',
-    'C8.protected-error-page-sticky.fragment',
-  ],
-};
+export const KNOWN = {};
+const ERROR_RECOVERY = [
+  'C8.protected-error-page',
+  'C8.protected-error-page.query',
+  'C8.protected-error-page.fragment',
+  'C8.protected-document-restore',
+  'C8.protected-error-page-sticky',
+  'C8.protected-error-page-sticky.query',
+  'C8.protected-error-page-sticky.fragment',
+];
 const RECOVERY = new Set(['reload', 'blank', 'close', 'attachRedacted']);
 const unmet = (items) =>
   items.every((item) => /^[A-Za-z]+: got (?:false|undefined), want true$/.test(item));
 const ABSENT = new Set(['listRedacted', 'infoRedacted']);
 export const LINK = {
   'slicc-cli#366 (fail-closed)': {
-    ids: KNOWN['#748'],
+    ids: ERROR_RECOVERY,
     allowed: new Set([...RECOVERY, ...ABSENT]),
     notLive: `not live: client attach refused: ${UNGUARDED}`,
   },

@@ -40,6 +40,7 @@ const PATHS = {
     extensionWorld: true,
     inboundDelay: true,
     forwardAudit: true,
+    clientExit: true,
   },
   link: {
     autoAttach: true,
@@ -47,6 +48,7 @@ const PATHS = {
     browserContexts: true,
     chromeUrlsAttach: true,
     extensionWorld: true,
+    clientExit: true,
   },
 };
 
