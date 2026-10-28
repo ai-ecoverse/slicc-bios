@@ -2,6 +2,16 @@
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
   "extends": ["@ai-ecoverse/slicc-shared-web/biome"],
   "files": {
-    "includes": ["**", "!src/packages/optional/exceptions.json"]
+    "includes": [
+      "**",
+      "!src/packages/optional/exceptions.json",
+      "!**/pnpm-lock.yaml",
+      "!**/pnpm-workspace.yaml"
+    ]
+  },
+  "markdown": {
+    "formatter": {
+      "enabled": false
+    }
   }
 }
