@@ -1728,12 +1728,34 @@ class Guard {
     let verified = false;
     if (bare(this.frames.get(context.auxData.frameId) ?? '') !== bare(value)) {
       const nav = this.navs.get(targetId);
-      if (!nav?.session || !(await this.verify(nav.session))) return this.uncertainProof(targetId);
+      if (!nav?.session || !(await this.verify(nav.session, undefined, true)))
+        return this.uncertainProof(targetId);
       verified = true;
     }
     if (!current()) return false;
     if (bare(this.frames.get(context.auxData.frameId) ?? '') === bare(value)) return true;
-    return verified && this.maskedLocation(context.auxData.frameId, value);
+    return (
+      verified &&
+      (this.isolateLoadingContext(record, context, value) ||
+        this.maskedLocation(context.auxData.frameId, value))
+    );
+  }
+
+  isolateLoadingContext(record, context, value) {
+    const frameId = context.auxData.frameId;
+    if (
+      value !== 'about:blank' ||
+      frameId === this.frameRoots.get(record.targetId) ||
+      this.frames.get(frameId) !== '' ||
+      !this.parents.has(frameId)
+    )
+      return false;
+    const world = this.world(record.message.sessionId);
+    if (world.main === context.uniqueId) delete world.main;
+    world.ids.set(context.id, true);
+    if (context.uniqueId) world.uniques.set(context.uniqueId, true);
+    record.loading = true;
+    return true;
   }
 
   async privateAttachment(targetId, sessionId) {
@@ -1930,14 +1952,14 @@ class Guard {
     return nav.failed ? UNGUARDED : null;
   }
 
-  async verify(sessionId, proof) {
+  async verify(sessionId, proof, loading = false) {
     const placed = this.placements.has(sessionId)
       ? { targetId: this.placements.get(sessionId) }
       : undefined;
     const entry = this.sessions.get(sessionId) ?? this.navSessions.get(sessionId) ?? placed;
     const epoch = this.proofEpoch.get(entry?.targetId);
     void this.call('Page.enable', {}, sessionId);
-    const answer = await this.proofTree(sessionId);
+    const answer = await this.proofTree(sessionId, loading);
     if (epoch !== this.proofEpoch.get(entry?.targetId)) return false;
     const tree = answer?.result?.frameTree;
     if (
@@ -1946,7 +1968,7 @@ class Guard {
       WORKER_TYPES.has(this.targets.get(entry?.targetId)?.type)
     )
       return !this.errorDocument(sessionId);
-    const all = answer && !answer.error && this.documentFrames(tree);
+    const all = answer && !answer.error && this.proofFrames(tree, proof);
     if (!all) return this.uncertainProof(entry?.targetId);
     const nav = this.navs.get(entry?.targetId);
     if (
@@ -2534,9 +2556,34 @@ class Guard {
         this.quarantine(id, message);
   }
 
-  async proofTree(sessionId) {
+  proofFrames(tree, proof) {
+    return this.documentFrames(tree) || (!proof && this.loadingChildren(tree));
+  }
+
+  loadingChildren(tree, frames = this.documentFrames(tree, true)) {
+    const root = frames?.[0];
+    return root &&
+      !root.parentId &&
+      /^https?:\/\//.test(root.url) &&
+      /^https?:\/\//.test(root.securityOrigin) &&
+      typeof root.loaderId === 'string' &&
+      root.loaderId !== '' &&
+      frames.slice(1).some((frame) => frame.url === '') &&
+      frames.every(
+        (frame) =>
+          !this.protectedFrame(frame) &&
+          !this.errorFrames.has(frame.id) &&
+          !frame.url.startsWith('chrome-error:') &&
+          !frame.unreachableUrl
+      )
+      ? frames
+      : null;
+  }
+
+  async proofTree(sessionId, partial = false) {
     const started = Date.now();
     let bound = ANSWER_MS;
+    let pending;
     for (
       let attempt = 0;
       attempt < Math.ceil(bound / HISTORY_POLL) && Date.now() < started + bound;
@@ -2549,23 +2596,14 @@ class Guard {
       const tree = answer?.result?.frameTree;
       const loading = this.documentFrames(tree, true);
       if (!answer || answer.error || this.documentFrames(tree) || !loading) return answer;
-      const root = loading[0];
-      const children =
-        !root.parentId &&
-        /^https?:\/\//.test(root.url) &&
-        /^https?:\/\//.test(root.securityOrigin) &&
-        typeof root.loaderId === 'string' &&
-        root.loaderId !== '' &&
-        loading.slice(1).some((frame) => frame.url === '') &&
-        loading.every(
-          (frame) =>
-            !this.protectedFrame(frame) && !this.errorFrames.has(frame.id) && !frame.unreachableUrl
-        );
+      const children = this.loadingChildren(tree, loading);
+      if (partial && children) return answer;
       if (attempt === 0 && children) bound = 3 * ANSWER_MS;
       if (bound > ANSWER_MS && !children) return answer;
+      pending = children ? answer : undefined;
       await pause(HISTORY_POLL);
     }
-    return undefined;
+    return pending;
   }
 
   documentFrames(tree, loading = false) {
@@ -2594,7 +2632,12 @@ class Guard {
         typeof frame.securityOrigin !== 'string' ||
         (!URL.canParse(frame.securityOrigin) &&
           !['null', '://'].includes(frame.securityOrigin) &&
-          !(loading && frame.url === '' && frame.securityOrigin === '')) ||
+          !(
+            loading &&
+            frame.securityOrigin === '' &&
+            (frame.url === '' ||
+              (parent === undefined && !frame.parentId && frame.url === 'about:blank'))
+          )) ||
         (parent !== undefined && frame.parentId !== parent) ||
         (node.childFrames !== undefined && !Array.isArray(node.childFrames)) ||
         frames.length + pending.length >= 4096
@@ -3669,7 +3712,7 @@ class Guard {
       return true;
     if (message.method === 'Runtime.executionContextCreated') {
       const record = this.contextChecks.get(message.sessionId)?.get(message.params?.context?.id);
-      if (record?.message === message && !(await record.promise)) return true;
+      if (record?.message === message && (!(await record.promise) || record.loading)) return true;
     }
     return this.failedScope(message.sessionId) && contentRead(message.method);
   }
