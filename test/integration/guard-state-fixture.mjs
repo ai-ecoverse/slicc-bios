@@ -109,8 +109,7 @@ export function protocol(t, protect = guardProtected) {
     attach,
     release,
     clients: (since = 0) => sent.slice(since).filter((message) => message.id < 2 ** 30),
-    attached(id, parentSession) {
-      const sessionId = `client-${id}`;
+    attached(id, parentSession, sessionId = `client-${id}`) {
       sessions.set(sessionId, id);
       emit({
         method: 'Target.attachedToTarget',
