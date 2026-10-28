@@ -27,7 +27,7 @@ async function blocked(t, protect) {
     },
   });
   await flush();
-  entry.tree.frame = errorFrame('deferred');
+  entry.tree.frame = { ...errorFrame('deferred'), loaderId: 'deferred-error-loader' };
   entry.info.url = entry.tree.frame.url;
   wire.emit({
     method: 'Page.frameNavigated',
@@ -93,30 +93,20 @@ test('deferred wipe leaves the error document sealed for the entire five-second 
 
 for (const cancel of [
   'main commit',
-  'child commit',
-  'error commit',
+  'different error commit',
   'Page.navigate',
   'Page.reload',
-  'Page.stopLoading',
-  'Page.enable',
-  'Page.disable',
-  'Target.attachToTarget',
   'Target.closeTarget',
 ]) {
   test(`deferred wipe is cancelled by ${cancel} and cannot replace a client page`, async (t) => {
     const { wire, entry, session } = await blocked(t);
     if (cancel.includes('commit')) {
       const frame =
-        cancel === 'error commit'
-          ? errorFrame('deferred')
-          : plainFrame(
-              cancel === 'child commit' ? 'child' : 'deferred',
-              cancel === 'child commit' ? 'deferred' : undefined
-            );
-      if (!frame.parentId) {
-        entry.tree.frame = frame;
-        entry.info.url = frame.url;
-      }
+        cancel === 'different error commit'
+          ? { ...errorFrame('deferred'), loaderId: 'different-error-loader' }
+          : plainFrame('deferred');
+      entry.tree.frame = frame;
+      entry.info.url = frame.url;
       wire.emit({ method: 'Page.frameNavigated', sessionId: 'guard-deferred', params: { frame } });
     } else {
       const answer = await wire.send(
@@ -134,6 +124,99 @@ for (const cancel of [
     assert.equal(wipes(wire).length, 0);
   });
 }
+
+for (const action of [
+  'guardian duplicate',
+  'client duplicate',
+  'unknown duplicate',
+  'child commit',
+  'Page.getNavigationHistory',
+  'Page.enable',
+  'Page.disable',
+  'Page.stopLoading',
+  'Target.getTargetInfo',
+  'Target.getTargets',
+  'Target.attachToTarget',
+  'Target.activateTarget',
+]) {
+  test(`deferred wipe survives ${action} while the main error document remains`, async (t) => {
+    const { wire, entry, session } = await blocked(t);
+    if (action.includes('duplicate') || action === 'child commit') {
+      const frame =
+        action === 'child commit'
+          ? plainFrame('child', 'deferred')
+          : {
+              ...entry.tree.frame,
+              ...(action === 'unknown duplicate' ? { loaderId: undefined } : {}),
+            };
+      wire.emit({
+        method: 'Page.frameNavigated',
+        sessionId: action === 'client duplicate' ? session : 'guard-deferred',
+        params: { frame },
+      });
+    } else {
+      const browser = action.startsWith('Target.');
+      const answer = await wire.send(
+        action,
+        browser ? { targetId: 'deferred', flatten: true } : {},
+        browser ? undefined : session
+      );
+      assert.equal(answer.error, undefined);
+    }
+    await flush();
+    t.mock.timers.tick(5000);
+    await flush();
+    assert.equal(wipes(wire).length, 1);
+    assert.equal((await wire.send('Runtime.evaluate', {}, session)).error?.message, PROTECTED);
+  });
+}
+
+test('deferred wipe is cancelled only by a successful stop of an active main load away', async (t) => {
+  const { wire, session } = await blocked(t);
+  wire.emit({
+    method: 'Page.frameStartedNavigating',
+    sessionId: 'guard-deferred',
+    params: {
+      frameId: 'deferred',
+      url: ordinary,
+      loaderId: 'away-loader',
+      navigationType: 'differentDocument',
+    },
+  });
+  assert.equal((await wire.send('Page.stopLoading', {}, session)).error, undefined);
+  t.mock.timers.tick(10000);
+  await flush();
+  assert.equal(wipes(wire).length, 0);
+  assert.equal((await wire.send('Runtime.evaluate', {}, session)).error?.message, PROTECTED);
+});
+
+test('deferred wipe survives a failed stop of a main load away', async (t) => {
+  const { wire, session } = await blocked(t);
+  wire.emit({
+    method: 'Page.frameStartedNavigating',
+    sessionId: 'guard-deferred',
+    params: {
+      frameId: 'deferred',
+      url: ordinary,
+      loaderId: 'away-loader',
+      navigationType: 'differentDocument',
+    },
+  });
+  wire.hold((message) => {
+    if (message.method !== 'Page.stopLoading' || message.id >= 2 ** 30) return false;
+    queueMicrotask(() =>
+      wire.release(message, { error: { code: -32000, message: 'load could not stop' } })
+    );
+    return true;
+  });
+  assert.equal(
+    (await wire.send('Page.stopLoading', {}, session)).error?.message,
+    'load could not stop'
+  );
+  t.mock.timers.tick(5000);
+  await flush();
+  assert.equal(wipes(wire).length, 1);
+});
 
 test('deferred expiry cannot wipe after an exit cancels its in-flight private tree answer', async (t) => {
   const { wire, entry, session } = await blocked(t);

@@ -54,14 +54,6 @@ const PROBE_TRIES = 3;
 const PROBE_BUDGET = 1000;
 const ANSWER_MS = 1000;
 const WORKER_TYPES = new Set(['service_worker', 'shared_worker', 'worker']);
-const HISTORY_NAV = new Set([
-  'restore',
-  'restoreWithPost',
-  'historySameDocument',
-  'historyDifferentDocument',
-  'backForward',
-  'back_forward',
-]);
 const RUNTIME_META = new Set([
   'Runtime.enable',
   'Runtime.disable',
@@ -684,6 +676,7 @@ class Guard {
     this.moved = new Set();
     this.mains = new Map();
     this.opening = new Map();
+    this.loading = new Map();
     this.revisions = new Map();
     this.recoveries = new WeakMap();
     this.next = GUARD_IDS;
@@ -961,26 +954,68 @@ class Guard {
     return frames;
   }
 
-  pageLocked(targetId, seen = new Set(), blankRoot = false, errors) {
+  errorView(targetId, frames) {
+    return {
+      targetId,
+      root: frames.length === 1 && frames[0].url === ERROR_PAGE ? frames[0].id : undefined,
+      errors: new Set(
+        frames.filter((frame) => frame.url.startsWith('chrome-error:')).map((frame) => frame.id)
+      ),
+    };
+  }
+
+  errorReady(targetId, scope, view) {
+    if (
+      !scope?.tree ||
+      !scope.setup ||
+      view?.targetId !== targetId ||
+      !view.root ||
+      view.root !== scope.root ||
+      scope.treeFrames.size !== 1 ||
+      scope.pending ||
+      scope.owners.size ||
+      scope.remoteOwners.size ||
+      scope.attachedFrames.size ||
+      scope.protectedOwner ||
+      this.relatedFrames(scope.frames).size !== 1
+    )
+      return false;
+    const roots = new Set([targetId, scope.root]);
+    for (const [id, child] of this.scopes)
+      if (id !== targetId && roots.has(child.parent)) return false;
+    for (const [id, child] of this.targets) {
+      if (id === targetId || child.type !== 'iframe') continue;
+      const parent = child.parentId ?? this.scopes.get(id)?.parent ?? this.parents.get(id);
+      if (!parent || roots.has(parent)) return false;
+    }
+    return true;
+  }
+
+  scopeReady(targetId, scope, view) {
+    return Boolean(scope?.ready || this.errorReady(targetId, scope, view));
+  }
+
+  pageLocked(targetId, seen = new Set(), blankRoot = false, view) {
     if (!targetId || seen.has(targetId)) return true;
     seen.add(targetId);
     const scope = this.scopes.get(targetId);
-    if (!scope?.ready || (errors && scope.committed)) return true;
+    if (!this.scopeReady(targetId, scope, view) || (view && scope.committed)) return true;
     for (const id of this.relatedFrames(scope.frames)) {
       const url = this.frames.get(id);
       if (url === undefined || url === '') return true;
-      if (this.is.url(url) && !(blankRoot && id === scope.root) && !errors?.has(id)) return true;
+      if (this.is.url(url) && !(blankRoot && id === scope.root) && !view?.errors.has(id))
+        return true;
       if (
         id !== scope.root &&
         (scope.remoteOwners.has(id) || this.targets.get(id)?.type === 'iframe') &&
-        this.pageLocked(id, new Set(seen), false, errors)
+        this.pageLocked(id, new Set(seen), false, view)
       )
         return true;
       if (id !== scope.root && (!this.parents.has(id) || !this.frames.has(this.parents.get(id))))
         return true;
     }
     for (const [child, entry] of this.scopes) {
-      if (entry.parent === targetId && this.pageLocked(child, new Set(seen), false, errors))
+      if (entry.parent === targetId && this.pageLocked(child, new Set(seen), false, view))
         return true;
     }
     return false;
@@ -1168,6 +1203,9 @@ class Guard {
             filter: FRAME_CHILDREN,
           });
     scope.pending -= 1;
+    scope.setup = Boolean(
+      !enabled.error && (!attached.error || attached.error.message === NO_AUTO_ATTACH)
+    );
     scope.failed = Boolean(
       enabled.error ||
         owners.error ||
@@ -1357,13 +1395,14 @@ class Guard {
 
   fresh(proof) {
     return (
-      this.currentProof(proof) && !this.pageLocked(proof.targetId, new Set(), false, proof.errors)
+      this.currentProof(proof) && !this.pageLocked(proof.targetId, new Set(), false, proof.view)
     );
   }
 
   async stranded(targetId) {
     const nav = this.navs.get(targetId);
     if (!this.strandable(targetId, nav)) return null;
+    if (!(await this.placed(nav.session)) || !this.strandable(targetId, nav)) return null;
     const proof = { targetId, nav, revision: this.revisions.get(targetId) };
     const answer = await this.answered(this.call('Page.getFrameTree', {}, nav.session));
     if (!this.currentProof(proof)) return null;
@@ -1373,9 +1412,7 @@ class Guard {
       this.commitScope(targetId);
       return null;
     }
-    proof.errors = new Set(
-      frames.filter((frame) => frame.url.startsWith('chrome-error:')).map((frame) => frame.id)
-    );
+    proof.view = this.errorView(targetId, frames);
     if (!this.fresh(proof)) return null;
     for (const frame of frames) this.noteError(frame, nav.session);
     this.targets.get(targetId).real = false;
@@ -1520,9 +1557,9 @@ class Guard {
     if (method === 'Page.frameNavigated' && params.frame && !params.frame.parentId) {
       nav.last = `${params.frame.url}${params.frame.urlFragment ?? ''}`;
       nav.stopped = false;
-      return this.wiping(nav, nav.last);
+      return;
     }
-    if (method === 'Page.frameStoppedLoading' && params.frameId === nav.targetId) {
+    if (method === 'Page.frameStoppedLoading' && params.frameId === this.mainFrame(nav.session)) {
       nav.stopped = true;
     }
     if (method === 'Fetch.requestPaused') this.pausedDocument(params, nav);
@@ -1539,7 +1576,7 @@ class Guard {
       void this.call('Fetch.continueRequest', { requestId }, nav.session);
       return;
     }
-    void this.call('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' }, nav.session);
+    void this.failDocument(params, nav.session, nav.targetId);
     this.failed(nav.targetId, params);
   }
 
@@ -1576,7 +1613,7 @@ class Guard {
       tree?.frame?.url?.startsWith('chrome-error:') &&
       this.protectedFrame(tree.frame)
     ) {
-      nav.scrub = this.scrubbing(nav);
+      nav.scrub = this.scrubbing(nav, tree.frame);
       nav.erred = true;
     }
     if (!proof && this.errorDocument(sessionId)) return false;
@@ -1771,8 +1808,67 @@ class Guard {
     return true;
   }
 
+  loadKey(targetId, requestId) {
+    return JSON.stringify([targetId, requestId]);
+  }
+
+  loadSnapshot(sessionId) {
+    return [...this.boundSessions(sessionId)]
+      .filter((id) => this.opening.get(id)?.input !== undefined)
+      .map((id) => [id, this.opening.get(id)]);
+  }
+
+  settleLoad(load, stopped = false) {
+    if (!load?.length || load.some(([id, open]) => this.opening.get(id) !== open)) return false;
+    for (const [id, open] of load) {
+      open.stopped = stopped;
+      this.pendingCommit.delete(id);
+      this.uncommitted.delete(id);
+      this.opening.delete(id);
+    }
+    return true;
+  }
+
+  loadingEvent({ method, params = {}, sessionId }) {
+    const targetId = this.scopeTarget(sessionId);
+    if (!targetId || !params.requestId) return;
+    const key = this.loadKey(targetId, params.requestId);
+    if (method === 'Network.loadingFailed') {
+      const load = this.loading.get(key);
+      this.loading.delete(key);
+      this.settleLoad(load);
+    }
+    if (method !== 'Network.requestWillBeSent' || params.type !== 'Document') return;
+    const load = this.loadSnapshot(sessionId);
+    if (
+      !load.length ||
+      !params.loaderId ||
+      load.some(
+        ([, open]) =>
+          open.input !== params.frameId ||
+          open.url !== params.request?.url ||
+          (open.loaderId && open.loaderId !== params.loaderId)
+      )
+    )
+      return;
+    for (const [, open] of load) open.loaderId = params.loaderId;
+    this.loading.set(key, load);
+    if (this.loading.size > REMEMBERED) this.loading.delete(this.loading.keys().next().value);
+  }
+
+  async failDocument(params, sessionId, targetId) {
+    const load = this.loading.get(this.loadKey(targetId, params.networkId));
+    const answer = await this.call(
+      'Fetch.failRequest',
+      { requestId: params.requestId, errorReason: 'BlockedByClient' },
+      sessionId
+    );
+    if (!answer.error) this.settleLoad(load);
+  }
+
   failed(targetId, { frameId, request }) {
-    if (!targetId || frameId !== targetId) return;
+    const root = this.frameRoots.get(targetId) ?? this.scopes.get(targetId)?.root ?? targetId;
+    if (!targetId || frameId !== root) return;
     this.errored.set(targetId, bare(request.url));
     const nav = this.navs.get(targetId);
     if (!nav?.session || nav.scrub) return;
@@ -1780,10 +1876,15 @@ class Guard {
     if (nav.last?.startsWith('chrome-error:')) nav.erred = true;
   }
 
-  scrubbing(nav) {
+  async scrubTree(nav) {
+    if (!nav.session || !(await this.placed(nav.session))) return null;
+    return this.answered(this.call('Page.getFrameTree', {}, nav.session));
+  }
+
+  scrubbing(nav, frame = nav.document) {
     const ticket = {};
     nav.scrubTicket = ticket;
-    nav.scrubCommitted = false;
+    nav.scrubDocument = frame?.url?.startsWith('chrome-error:') ? frame : null;
     return new Promise((resolve) => {
       const done = () => {
         if (nav.scrubTicket !== ticket) return;
@@ -1795,9 +1896,7 @@ class Guard {
         resolve();
       };
       const expire = async () => {
-        const answer = nav.session
-          ? await this.answered(this.call('Page.getFrameTree', {}, nav.session))
-          : null;
+        const answer = await this.scrubTree(nav);
         if (nav.scrubTicket !== ticket) return;
         const frames =
           answer && !answer.error ? this.documentFrames(answer.result?.frameTree) : null;
@@ -1809,16 +1908,7 @@ class Guard {
           !nav.retried &&
           frame?.url.startsWith('chrome-error:') &&
           this.strandable(nav.targetId, nav, false) &&
-          !this.pageLocked(
-            nav.targetId,
-            new Set(),
-            false,
-            new Set(
-              frames
-                .filter((frame) => frame.url.startsWith('chrome-error:'))
-                .map((frame) => frame.id)
-            )
-          )
+          !this.pageLocked(nav.targetId, new Set(), false, this.errorView(nav.targetId, frames))
         ) {
           nav.retried = true;
           void this.call('Page.navigate', { url: BLANKED }, nav.session);
@@ -1835,11 +1925,16 @@ class Guard {
     });
   }
 
-  wiping(nav, url) {
-    if (!nav.wiped) return;
-    const error = url.startsWith('chrome-error:');
-    if (nav.scrubCommitted || !error) return nav.wiped();
-    nav.scrubCommitted = true;
+  wiping(nav, frame) {
+    if (!nav?.wiped || frame.parentId) return;
+    if (
+      !frame.url?.startsWith('chrome-error:') ||
+      (nav.scrubDocument?.loaderId &&
+        frame.loaderId &&
+        nav.scrubDocument.loaderId !== frame.loaderId)
+    )
+      return nav.wiped();
+    nav.scrubDocument ??= frame;
     nav.erred = true;
   }
 
@@ -1850,8 +1945,9 @@ class Guard {
       params.resourceType === 'Document' &&
       this.is.url(params.request?.url)
     ) {
-      void this.call('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' }, sessionId);
-      this.failed(this.sessions.get(sessionId)?.targetId, params);
+      const targetId = this.sessions.get(sessionId)?.targetId;
+      void this.failDocument(params, sessionId, targetId);
+      this.failed(targetId, params);
       return;
     }
     if (method === 'Fetch.authRequired') {
@@ -2680,25 +2776,39 @@ class Guard {
     for (const id of this.boundSessions(sessionId)) this.mains.set(id, frameId);
   }
 
-  noteStarted(id, frameId, url) {
-    const main = this.mains.get(id);
-    const top = main === undefined || frameId === undefined || frameId === main;
-    const open = this.opening.get(id) ?? {};
-    if (top) {
-      this.uncommitted.add(id);
-      open.input = frameId;
+  mainFrame(sessionId) {
+    const targetId = this.scopeTarget(sessionId);
+    return (
+      this.mains.get(sessionId) ??
+      this.frameRoots.get(targetId) ??
+      this.scopes.get(targetId)?.root ??
+      this.sessions.get(sessionId)?.frameId
+    );
+  }
+
+  noteStarted(id, frameId, url, loaderId, guardian) {
+    const main = this.mainFrame(id);
+    if (main !== undefined && frameId !== undefined && frameId !== main) return;
+    const former = this.opening.get(id);
+    if (
+      loaderId &&
+      former?.loaderId === loaderId &&
+      former.input === frameId &&
+      former.url === url
+    ) {
+      former.guardian ||= guardian;
+      return;
     }
+    const open = { input: frameId, url, loaderId, guardian };
+    this.uncommitted.add(id);
     if (this.is.url(url)) {
       this.pendingCommit.add(id);
       open.commit = frameId;
-    } else if (top) {
-      this.pendingCommit.delete(id);
-      delete open.commit;
-    }
+    } else this.pendingCommit.delete(id);
     this.opening.set(id, open);
   }
 
-  noteCommitted(id, method, frameId, parentId) {
+  noteCommitted(id, method, frameId, parentId, loaderId) {
     const top = method === 'Page.frameNavigated' && !parentId;
     const same =
       method === 'Page.navigatedWithinDocument' &&
@@ -2707,6 +2817,8 @@ class Guard {
       !this.opening.has(id);
     if (top) this.worlds.delete(id);
     const open = this.opening.get(id) ?? {};
+    if (open.loaderId && (top || same || open.input === frameId) && open.loaderId !== loaderId)
+      return;
     if (top || same || open.input === frameId) {
       this.uncommitted.delete(id);
       delete open.input;
@@ -2721,17 +2833,26 @@ class Guard {
 
   noteNavigation(sessionId, method, params = {}) {
     const frameId = params.frameId ?? params.frame?.id;
+    const guardian = this.navSessions.has(sessionId);
+    if (
+      method === 'Page.frameStoppedLoading' &&
+      guardian &&
+      frameId === this.mainFrame(sessionId)
+    ) {
+      const load = this.loadSnapshot(sessionId);
+      if (load.every(([, open]) => open.guardian && open.input === frameId))
+        this.settleLoad(load, true);
+      return;
+    }
     if (method === 'Page.frameNavigated' && frameId && !params.frame?.parentId) {
       this.rememberMain(sessionId, frameId);
     }
-    const started =
-      method === 'Page.frameStartedNavigating' &&
-      (HISTORY_NAV.has(params.navigationType) || this.is.url(params.url));
+    const started = method === 'Page.frameStartedNavigating';
     const committed = method === 'Page.frameNavigated' || method === 'Page.navigatedWithinDocument';
     if (!started && !committed) return;
     for (const id of this.boundSessions(sessionId)) {
-      if (started) this.noteStarted(id, frameId, params.url);
-      else this.noteCommitted(id, method, frameId, params.frame?.parentId);
+      if (started) this.noteStarted(id, frameId, params.url, params.loaderId, guardian);
+      else this.noteCommitted(id, method, frameId, params.frame?.parentId, params.frame?.loaderId);
     }
   }
 
@@ -3320,7 +3441,7 @@ class Guard {
     const { method, sessionId } = message;
     if (!RECOVERS.has(method) || sessionId === undefined) return false;
     const ticket = this.quarantined.get(sessionId);
-    if (ticket?.checking && !ticket.verified) return true;
+    if (ticket?.checking && !ticket.verified && !NAVIGATES.has(method)) return true;
     const targetId = this.sessions.get(sessionId)?.targetId;
     const target = this.targets.get(targetId);
     if (!ticket && !target?.guarded && !this.errorDocument(sessionId)) return false;
@@ -3449,7 +3570,14 @@ class Guard {
     const proof = this.recoveries.get(message);
     if (proof && !this.fresh(proof)) return true;
     const targetId = this.sessions.get(message.sessionId)?.targetId ?? message.params?.targetId;
-    if (RECOVERS.has(message.method) || STRANDED.has(message.method))
+    if (message.method === 'Page.stopLoading')
+      message.stopping = this.loadSnapshot(message.sessionId);
+    if (
+      message.method === 'Page.navigate' ||
+      message.method === 'Page.reload' ||
+      message.method === 'Page.navigateToHistoryEntry' ||
+      message.method === 'Target.closeTarget'
+    )
       this.navs.get(targetId)?.wiped?.();
     return false;
   }
@@ -3511,8 +3639,8 @@ class Guard {
     if (message.method !== 'Page.frameNavigated' || !message.params?.frame) return;
     const { frame } = message.params;
     const nav = this.navs.get(targetId);
-    if (nav?.scrubCommitted || frame.parentId || !frame.url?.startsWith('chrome-error:'))
-      nav?.wiped?.();
+    this.wiping(nav, frame);
+    if (nav && !frame.parentId) nav.document = frame;
     if (targetId && this.frameLive(frame)) this.commitScope(targetId);
     this.noteError(frame, message.sessionId, true);
     this.refreshHint(message);
@@ -3520,6 +3648,24 @@ class Guard {
 
   received(text) {
     const message = parse(text);
+    this.loadingEvent(message);
+    const stopping = this.asked.get(requestKey(message));
+    if (
+      stopping?.method === 'Page.stopLoading' &&
+      !message.error &&
+      stopping.stopping?.length &&
+      stopping.stopping.every(
+        ([id, open]) => this.opening.get(id) === open || (!this.opening.has(id) && open.stopped)
+      )
+    ) {
+      this.settleLoad(stopping.stopping, true);
+      if (
+        stopping.stopping.every(
+          ([, open]) => open.url && !open.url.startsWith('chrome-error:') && !this.is.url(open.url)
+        )
+      )
+        this.navs.get(this.scopeTarget(stopping.sessionId))?.wiped?.();
+    }
     this.receiveNavigation(message);
     if (message.method === 'Target.targetCreated' || message.method === 'Target.targetInfoChanged')
       this.receiveHint(message);
