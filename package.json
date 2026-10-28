@@ -55,7 +55,7 @@
     "@ai-ecoverse/slicc-shared-web": "2.13.4",
     "@ai-ecoverse/slicc-spectrum": "1.107.2",
     "@ai-ecoverse/slicc-vault": "1.17.0",
-    "@biomejs/biome": "2.5.15",
+    "@biomejs/biome": "2.6.2",
     "aws4fetch": "1.0.20",
     "es-module-lexer": "3.0.4",
     "fake-indexeddb": "6.2.6",
