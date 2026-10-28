@@ -191,6 +191,81 @@ test('over the extension’s shield, the guard arms every driven tab with no pro
   assert.deepEqual(page.errors, []);
 });
 
+const recoveryMetadata = () => {
+  const original = MessagePort.prototype.postMessage;
+  const ports = new WeakMap();
+  const labels = new Map();
+  globalThis.recoveryMetadata = [];
+  const root = (id) => {
+    if (typeof id !== 'string' || !id) return undefined;
+    if (!labels.has(id)) labels.set(id, `root-${labels.size + 1}`);
+    return labels.get(id);
+  };
+  const loaders = new Map();
+  const loader = (id) => {
+    if (typeof id !== 'string' || !id) return undefined;
+    if (!loaders.has(id)) loaders.set(id, `loader-${loaders.size + 1}`);
+    return loaders.get(id);
+  };
+  const origin = (url) =>
+    typeof url === 'string' && URL.canParse(url) ? new URL(url).origin : undefined;
+  const record = (metadata) => {
+    if (globalThis.recoveryMetadata.length < 400) globalThis.recoveryMetadata.push(metadata);
+  };
+  MessagePort.prototype.postMessage = function (data, ...rest) {
+    const command = data?.cdp;
+    if (
+      !/^(?:Target\.|Page\.(?:navigate|reload|enable|getFrameTree|getNavigationHistory|createIsolatedWorld|stopLoading)$|DOM\.getDocument$|Runtime\.evaluate$)/.test(
+        command?.method ?? ''
+      )
+    )
+      return original.call(this, data, ...rest);
+    if (!ports.has(this)) {
+      const pending = new Map();
+      ports.set(this, pending);
+      this.addEventListener('message', ({ data }) => {
+        const answer = data?.cdp;
+        const request = pending.get(answer?.id);
+        if (!request) return;
+        pending.delete(answer.id);
+        const frame = answer.result?.frameTree?.frame;
+        const text = typeof answer.error === 'string' ? answer.error : answer.error?.message;
+        const refusal =
+          text === "slicc: refused: target is on seven's origin"
+            ? text
+            : /^slicc: refused:/.test(text ?? '')
+              ? 'slicc: refused'
+              : undefined;
+        record({
+          method: request.method,
+          role: 'answer',
+          root: root(frame?.id) ?? request.root,
+          loader: loader(frame?.loaderId),
+          origin: origin(frame?.url ?? answer.result?.targetInfo?.url),
+          refusal,
+        });
+        if (frame?.unreachableUrl)
+          record({
+            method: request.method,
+            role: 'failed-root',
+            root: root(frame.id),
+            loader: loader(frame.loaderId),
+            origin: origin(frame.unreachableUrl),
+          });
+      });
+    }
+    const metadata = {
+      method: command.method,
+      role: command.sessionId === undefined ? 'browser-command' : 'page-command',
+      root: root(command.params?.frameId ?? command.params?.targetId),
+      origin: origin(command.params?.url),
+    };
+    ports.get(this).set(command.id, metadata);
+    record(metadata);
+    return original.call(this, data, ...rest);
+  };
+};
+
 for (const extension of [CURRENT_EXTENSION, ...EXTENSIONS]) {
   test(`real slicc-extension ${extension.version}: a blocked protected hop recovers through the kernel to an ordinary tab`, {
     timeout: 10 * 60 * 1000,
@@ -198,9 +273,13 @@ for (const extension of [CURRENT_EXTENSION, ...EXTENSIONS]) {
     const real = await realExtension({ extension, rules: ['MAP vault.sliccy.ai 127.0.0.1'] });
     t.after(() => real.close());
     const page = await real.page(t);
+    await page.init(recoveryMetadata);
     await page.goto(SEVEN);
     await ready(page);
     assert.deepEqual(await automation(page), { via: 'extension' });
+    await page.evaluate(() => {
+      globalThis.recoveryMetadata.length = 0;
+    });
     const title = 'Recovered ordinary tab';
     real.overrides.set('/recovery-seed.html', '<!doctype html><title>seed</title><h1>Seed</h1>');
     real.overrides.set(
@@ -241,6 +320,9 @@ for (const extension of [CURRENT_EXTENSION, ...EXTENSIONS]) {
     );
     await shows(page, 'recovery-finished', 180000);
     const recovered = await read(page, '/tmp/blocked-recovery');
+    process.stdout.write(
+      `RECOVERY-METADATA ${extension.version} ${JSON.stringify(await page.evaluate(() => globalThis.recoveryMetadata))}\n`
+    );
     for (const step of ['goto', 'read', 'snapshot'])
       assert.match(recovered, new RegExp('^recovery-' + step + '-0$', 'm'), recovered);
     assert.ok(recovered.includes(destination + ' ' + title), recovered);

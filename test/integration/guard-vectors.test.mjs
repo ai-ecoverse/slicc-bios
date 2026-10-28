@@ -314,7 +314,44 @@ async function guardPage(t, lag, path = null, lens = null) {
   });
   t.after(() => socket.close());
   const asked = new Map();
+  const diagnostic = [];
+  const requests = new Map();
+  const roots = new Map();
+  const loaders = new Map();
+  const label = (map, value, prefix) => {
+    if (typeof value !== 'string' || !value) return undefined;
+    if (!map.has(value)) map.set(value, `${prefix}-${map.size + 1}`);
+    return map.get(value);
+  };
+  const origin = (value) =>
+    typeof value === 'string' && URL.canParse(value) ? new URL(value).origin : undefined;
+  const record = (method, role, message, request = {}) => {
+    if (diagnostic.length >= 600) return;
+    const frame = message.result?.frameTree?.frame ?? message.params?.frame;
+    const params = message.params ?? {};
+    const error = message.error?.message;
+    diagnostic.push({
+      method,
+      role,
+      root:
+        label(roots, frame?.id ?? params.frameId ?? params.targetInfo?.targetId, 'root') ??
+        request.root,
+      loader: label(loaders, frame?.loaderId ?? params.loaderId, 'loader'),
+      origin:
+        origin(frame?.unreachableUrl ?? frame?.url ?? params.url ?? params.targetInfo?.url) ??
+        request.origin,
+      refusal: /^slicc: refused:/.test(error ?? '') ? 'slicc: refused' : undefined,
+    });
+  };
   socket.onmessage = ({ data }) => {
+    const observed = JSON.parse(data);
+    const request = requests.get(observed.id);
+    if (request) {
+      requests.delete(observed.id);
+      record(request.method, observed.error ? 'refused-answer' : 'answer', observed, request);
+    } else if (/^(?:Target\.|Page\.frame|Network\.loadingFailed$)/.test(observed.method ?? '')) {
+      record(observed.method, 'event', observed);
+    }
     let text = data;
     if (lens) {
       const message = JSON.parse(data);
@@ -326,6 +363,25 @@ async function guardPage(t, lag, path = null, lens = null) {
   };
   const stalls = [];
   await seven.expose('cdpOut', (command) => {
+    const observed = typeof command === 'string' ? JSON.parse(command) : command;
+    if (
+      /^(?:Target\.|Page\.(?:navigate|reload|enable|stopLoading|getFrameTree|getNavigationHistory)$|Fetch\.(?:enable|failRequest)$)/.test(
+        observed.method ?? ''
+      )
+    ) {
+      const request = {
+        method: observed.method,
+        root: label(roots, observed.params?.frameId ?? observed.params?.targetId, 'root'),
+        origin: origin(observed.params?.url),
+      };
+      requests.set(observed.id, request);
+      record(
+        observed.method,
+        observed.sessionId === undefined ? 'browser-command' : 'page-command',
+        observed,
+        request
+      );
+    }
     const stall = stalls.findIndex(
       ({ method }) =>
         command.method === method &&
@@ -460,7 +516,19 @@ async function guardPage(t, lag, path = null, lens = null) {
     seven.evaluate((until) => {
       window.armDelay = until;
     }, Date.now() + ms);
-  return { seven, send, go, events, attach, stall, slowArm };
+  return {
+    seven,
+    send,
+    go,
+    events,
+    attach,
+    stall,
+    slowArm,
+    resetMetadata: () => {
+      diagnostic.length = 0;
+    },
+    metadata: () => diagnostic.splice(0),
+  };
 }
 
 const targets = () => ({
@@ -1815,6 +1883,7 @@ for (const [detach, lag] of DETACH) {
             undefined
           );
           const before = (await guard.events()).length;
+          guard.resetMetadata();
           await guard.go(how === 'direct' ? TRIGGERS.href(url) : TRIGGERS[302](url), page.session);
           await keptOut(id, {
             targetId: page.targetId,
@@ -1841,6 +1910,9 @@ for (const [detach, lag] of DETACH) {
           seen.events = JSON.stringify((await guard.events()).slice(before)).replaceAll(
             asked,
             'the client’s own request'
+          );
+          process.stdout.write(
+            `VECTOR-METADATA #450 ${detach} ${how} ${JSON.stringify(guard.metadata())}\n`
           );
           const host = new URL(base).host;
           for (const [what, text] of Object.entries(seen)) {
@@ -1985,6 +2057,7 @@ for (const [detach, lag] of DETACH) {
           const url = `${base}?${id}`;
           const before = (await guard.events()).length;
           const mark = chrome.requests.length;
+          guard.resetMetadata();
           const created = await guard.send('Target.createTarget', {
             url: `${PLAIN}/redirect?to=${encodeURIComponent(url)}`,
           });
@@ -1993,7 +2066,13 @@ for (const [detach, lag] of DETACH) {
           opened.push(targetId);
           await keptOut(id, { targetId, url, mark, lag });
           const session = await guard.attach(targetId);
-          await kept(guard, id, { targetId, session, url, lag });
+          try {
+            await kept(guard, id, { targetId, session, url, lag });
+          } finally {
+            process.stdout.write(
+              `VECTOR-METADATA created-redirect ${detach} ${JSON.stringify(guard.metadata())}\n`
+            );
+          }
           assert.ok(
             !JSON.stringify((await guard.events()).slice(before)).includes(url),
             `${id}: nothing naming the protected document reached the client`

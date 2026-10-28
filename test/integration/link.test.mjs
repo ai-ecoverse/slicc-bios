@@ -1047,8 +1047,17 @@ test('the real slicc CLI shares another browser over cdp: the 9222 facade reache
     /data:text\/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E|slicc: refused: target is on seven's origin/,
     `the walk to seven’s origin was failed in the other browser, and a guarded read of the walked tab is blanked or refused: ${walked.out}`
   );
+  const diagnosticRoots = new Map();
+  const diagnosticLoaders = new Map();
+  let diagnostic = [];
+  const label = (map, value, prefix) => {
+    if (typeof value !== 'string' || !value) return undefined;
+    if (!map.has(value)) map.set(value, `${prefix}-${map.size + 1}`);
+    return map.get(value);
+  };
   const frames = async () => {
     const seen = [];
+    diagnostic = [];
     for (const tab of await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((r) =>
       r.json()
     )) {
@@ -1072,6 +1081,15 @@ test('the real slicc CLI shares another browser over cdp: the 9222 facade reache
           reject(new Error(`Page.getFrameTree on ${tab.url}: the socket failed`));
         };
       });
+      const failed = frame.unreachableUrl ?? frame.url;
+      diagnostic.push({
+        method: 'Page.getFrameTree',
+        role: frame.url?.startsWith('chrome-error:') ? 'observer-error-root' : 'observer-root',
+        origin:
+          typeof failed === 'string' && URL.canParse(failed) ? new URL(failed).origin : undefined,
+        root: label(diagnosticRoots, frame.id, 'root'),
+        loader: label(diagnosticLoaders, frame.loaderId, 'loader'),
+      });
       seen.push({ url: tab.url, frame: frame.url, unreachable: frame.unreachableUrl ?? null });
     }
     return seen;
@@ -1081,10 +1099,10 @@ test('the real slicc CLI shares another browser over cdp: the 9222 facade reache
     scrubbed = await frames();
     if (scrubbed.some((tab) => tab.url === 'data:text/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E'))
       break;
-    if (Date.now() > end)
-      assert.fail(
-        `bios's guard blanks the walked tab within 15 s; the linked browser's pages are ${JSON.stringify(scrubbed)}`
-      );
+    if (Date.now() > end) {
+      process.stdout.write(`LINK-METADATA ${JSON.stringify(diagnostic)}\n`);
+      assert.fail('bios’s guard blanks the walked tab within 15 s; see LINK-METADATA');
+    }
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
   assert.ok(
