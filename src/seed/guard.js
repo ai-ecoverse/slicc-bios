@@ -2099,6 +2099,7 @@ class Guard {
       return this.cut(sessionId);
     for (const frame of frames) this.noteError(frame, sessionId);
     ticket.verified = true;
+    if (this.pendingTarget(entry.targetId)) return;
     const commit = ticket.commit;
     if (commit) {
       const root = frames[0];
@@ -2125,7 +2126,7 @@ class Guard {
     });
   }
 
-  refreshHint(message) {
+  refreshHint(message, committed) {
     for (const id of this.boundSessions(message.sessionId)) {
       const ticket = this.quarantined.get(id);
       if (!ticket) continue;
@@ -2135,6 +2136,8 @@ class Guard {
         const targetId = this.sessions.get(id)?.targetId;
         const next = this.quarantine(id, ticket.hint);
         if (
+          committed?.has(id) &&
+          !this.pendingTarget(targetId) &&
           this.targets.get(targetId)?.type === 'page' &&
           !frame.parentId &&
           frame.id === this.frameRoots.get(targetId) &&
@@ -2873,7 +2876,7 @@ class Guard {
     const open = this.opening.get(id) ?? {};
     if (open.loaderId && (top || same || open.input === frameId) && open.loaderId !== loaderId) {
       if (top && loaderId === undefined && !this.pendingCommit.has(id)) this.uncommitted.delete(id);
-      return;
+      return false;
     }
     if (top || same || open.input === frameId) {
       this.uncommitted.delete(id);
@@ -2885,6 +2888,7 @@ class Guard {
     }
     if (open.input === undefined && open.commit === undefined) this.opening.delete(id);
     else this.opening.set(id, open);
+    return true;
   }
 
   noteNavigation(sessionId, method, params = {}) {
@@ -2906,6 +2910,7 @@ class Guard {
     const started = method === 'Page.frameStartedNavigating';
     const committed = method === 'Page.frameNavigated' || method === 'Page.navigatedWithinDocument';
     if (!started && !committed) return;
+    const accepted = new Set();
     for (const id of this.boundSessions(sessionId)) {
       if (started)
         this.noteStarted(
@@ -2916,11 +2921,15 @@ class Guard {
           guardian,
           HISTORY_NAV.has(params.navigationType) || this.is.url(params.url)
         );
-      else this.noteCommitted(id, method, frameId, params.frame?.parentId, params.frame?.loaderId);
+      else if (
+        this.noteCommitted(id, method, frameId, params.frame?.parentId, params.frame?.loaderId)
+      )
+        accepted.add(id);
     }
     if (started)
       for (const command of this.callerIds.values())
         if (this.pendingRecovery(command)) this.unsafe.add(command);
+    return accepted;
   }
 
   pendingTarget(targetId) {
@@ -3716,7 +3725,7 @@ class Guard {
   }
 
   receiveNavigation(message) {
-    this.noteNavigation(message.sessionId, message.method, message.params);
+    const committed = this.noteNavigation(message.sessionId, message.method, message.params);
     const targetId =
       message.params?.targetInfo?.targetId ??
       message.params?.targetId ??
@@ -3735,7 +3744,7 @@ class Guard {
     if (nav && !frame.parentId) nav.document = frame;
     if (targetId && this.frameLive(frame)) this.commitScope(targetId);
     this.noteError(frame, message.sessionId, true);
-    this.refreshHint(message);
+    this.refreshHint(message, committed);
   }
 
   received(text) {

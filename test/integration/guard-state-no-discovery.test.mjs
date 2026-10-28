@@ -75,6 +75,7 @@ for (const failure of [
   'missing loader',
   'invalid proof',
   'live protected child',
+  'rejected protected loader',
 ]) {
   test(`state no-discovery main settlement stays sealed for ${failure}`, {
     timeout: 5000,
@@ -82,6 +83,17 @@ for (const failure of [
     const targetId = `no-discovery-negative-${failure.replaceAll(' ', '-')}`;
     const { wire, entry, sessions } = await attachedError(t, targetId);
     const frame = { ...plainFrame(targetId), loaderId: 'ordinary-loader' };
+    if (failure === 'rejected protected loader')
+      wire.emit({
+        method: 'Page.frameStartedNavigating',
+        sessionId: `guard-${targetId}`,
+        params: {
+          frameId: targetId,
+          loaderId: 'pending-protected-loader',
+          url: failed,
+          navigationType: 'differentDocument',
+        },
+      });
     if (failure === 'child commit') {
       wire.emit({
         method: 'Page.frameNavigated',
