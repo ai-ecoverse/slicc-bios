@@ -67,6 +67,11 @@ for (const unreachableUrl of [undefined, '', 'not a URL', 'https://protected.inv
       sessionId: session,
       params: { frame: entry.tree.frame },
     });
+    wire.emit({
+      method: 'Page.frameNavigated',
+      sessionId: 'guard-restored-error',
+      params: { frame: entry.tree.frame },
+    });
     await flush();
     assert.equal(
       (await wire.send('Runtime.evaluate', { expression: 'document.title' }, session)).error,

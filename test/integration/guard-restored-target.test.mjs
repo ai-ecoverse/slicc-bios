@@ -64,6 +64,11 @@ for (const kind of ['ordinary', 'error']) {
       sessionId: session,
       params: { frame: entry.tree.frame },
     });
+    wire.emit({
+      method: 'Page.frameNavigated',
+      sessionId: 'guard-target-hint',
+      params: { frame: entry.tree.frame },
+    });
     await flush();
     wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: entry.info } });
     await flush();

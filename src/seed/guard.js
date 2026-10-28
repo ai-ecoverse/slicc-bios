@@ -638,6 +638,14 @@ class Guard {
     this.sheets = new Set();
     this.navs = new Map();
     this.navSessions = new Map();
+    this.pendingAttachments = new Set();
+    this.privateSessions = new Set();
+    this.retiredTargets = new Set();
+    this.failedProof = new Set();
+    this.proofNeeded = new Set();
+    this.contextChecks = new Map();
+    this.proofCommits = new Map();
+    this.proofEpoch = new Map();
     this.errored = new Map();
     this.offered = new Set();
     this.contexts = new Set();
@@ -792,6 +800,13 @@ class Guard {
   }
 
   deliver(message, release = true, source = message, proof) {
+    if (
+      message.id === undefined &&
+      /^(?:Network|Fetch)\./.test(message.method) &&
+      this.failedScope(message.sessionId) &&
+      !(message.method === 'Network.loadingFailed' && source !== message)
+    )
+      return this.discardEvent(message);
     const caller = this.callerIds.get(requestKey(message));
     if (message.id !== undefined && !message.error && caller && this.finished.has(caller)) return;
     if (message.id !== undefined && !message.error && caller?.locked) return this.refuse(caller);
@@ -901,7 +916,7 @@ class Guard {
 
   async target(targetId, depth = 0) {
     const found = await this.lookup(targetId);
-    if (!found) return false;
+    if (!found) return true;
     if (isHeld(targetId) || isHeld(found.openerId)) {
       hold(targetId);
       found.guarded = true;
@@ -920,6 +935,10 @@ class Guard {
     const lent = found.type === 'page' && (found.access || BLANK.test(found.url));
     if (isHeld(found.openerId) || (opener === 'protected' && lent)) {
       hold(targetId);
+      found.guarded = true;
+      return true;
+    }
+    if ((found.was || found.guarded) && this.proofCommits.get(targetId)?.url === BLANKED) {
       found.guarded = true;
       return true;
     }
@@ -1008,6 +1027,10 @@ class Guard {
     return Boolean(scope?.ready || this.errorReady(targetId, scope, view));
   }
 
+  unavailableFrame(frameId, url, view) {
+    return url === undefined || url === '' || (this.errorFrames.has(frameId) && !view);
+  }
+
   pageLocked(targetId, seen = new Set(), blankRoot = false, view) {
     if (!targetId || seen.has(targetId)) return true;
     seen.add(targetId);
@@ -1015,7 +1038,7 @@ class Guard {
     if (!this.scopeReady(targetId, scope, view) || (view && scope.committed)) return true;
     for (const id of this.relatedFrames(scope.frames)) {
       const url = this.frames.get(id);
-      if (url === undefined || url === '') return true;
+      if (this.unavailableFrame(id, url, view)) return true;
       if (this.is.url(url) && !(blankRoot && id === scope.root) && !view?.errors.has(id))
         return true;
       if (
@@ -1093,6 +1116,17 @@ class Guard {
       this.frames.set(frame.id, this.framed(frame));
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
     }
+    const parentRoot = this.scopes.get(scope.parent)?.root;
+    if (
+      this.targets.get(targetId)?.type === 'iframe' &&
+      typeof parentRoot === 'string' &&
+      parentRoot &&
+      tree?.frame?.parentId === parentRoot &&
+      tree.frame.securityOrigin === '://' &&
+      this.containedError(tree.frame, parentRoot) &&
+      this.documentFrames(tree)?.length === 1
+    )
+      this.noteError(tree.frame, scope.sessionId);
     this.stopCasts();
   }
 
@@ -1510,9 +1544,282 @@ class Guard {
   }
 
   async current(targetId) {
-    const info = (await this.call('Target.getTargetInfo', { targetId })).result?.targetInfo;
-    if (info) this.learn(info);
+    const answer = await this.answered(this.call('Target.getTargetInfo', { targetId }));
+    const info = answer?.result?.targetInfo;
+    if (!answer || answer.error || info?.targetId !== targetId || typeof info.type !== 'string')
+      return true;
+    this.learn(info);
+    if (await this.target(targetId)) return true;
+    if (!URL.canParse(info.url)) {
+      if (info.url !== '' || !NAV_TYPES.has(info.type)) return true;
+      this.touch(targetId);
+      const nav = this.navs.get(targetId);
+      if (!nav) return true;
+      await nav.ready;
+      if (nav.failed || !(await this.verify(nav.session))) return true;
+      this.learn({ ...info, url: this.frames.get(this.frameRoots.get(targetId)) });
+    }
     return this.target(targetId);
+  }
+
+  relatedProof(owner, targetId) {
+    const seen = new Set();
+    for (let id = targetId; id && !seen.has(id); id = this.targets.get(id)?.parentId) {
+      if (id === owner) return true;
+      seen.add(id);
+    }
+    return false;
+  }
+
+  uncertainProof(targetId, uncertain = true) {
+    if (!targetId || this.retiredTargets.has(targetId)) return false;
+    if (uncertain) {
+      this.failedProof.add(targetId);
+      this.proofNeeded.add(targetId);
+      this.proofEpoch.set(targetId, (this.proofEpoch.get(targetId) ?? 0) + 1);
+      this.proofCommits.delete(targetId);
+    }
+    for (const command of this.pendingContent)
+      if (this.relatedProof(this.sessions.get(command.sessionId)?.targetId, targetId))
+        this.unsafe.add(command);
+    return false;
+  }
+
+  async proveContent(message) {
+    if (!message.sessionId || !contentRead(message.method)) return true;
+    const owner = this.sessions.get(message.sessionId)?.targetId;
+    for (const record of this.contextChecks.get(message.sessionId)?.values() ?? [])
+      if (!record.done && (await this.answered(record.promise)) !== true) return false;
+    const needed = [...this.proofNeeded].filter((id) => {
+      const root = this.frameRoots.get(id) ?? this.scopes.get(id)?.root ?? id;
+      return (
+        this.relatedProof(owner, id) &&
+        !(id !== owner && this.targets.get(id)?.type === 'iframe' && this.errorFrames.has(root))
+      );
+    });
+    if (
+      owner &&
+      (this.hidden(message.sessionId) || this.targets.get(owner)?.guarded) &&
+      !needed.includes(owner)
+    )
+      needed.push(owner);
+    if (
+      needed.length &&
+      message.method === 'Page.captureScreenshot' &&
+      (await this.blankShot(message.sessionId)) &&
+      !this.locked(message.sessionId, true)
+    )
+      return true;
+    for (const id of needed) {
+      const session = [...this.sessions].find(([, entry]) => entry.targetId === id)?.[0];
+      const parent = this.sessions.get(session)?.parent;
+      let checked;
+      if (session)
+        checked = this.shown.has(session)
+          ? this.inspect(session, id, parent)
+          : this.watch(session, id, parent);
+      else checked = this.provePlacement(id);
+      if (!checked || !(await checked)) return false;
+    }
+    return true;
+  }
+
+  async provePlacement(targetId) {
+    const sessionId = this.scopes.get(targetId)?.sessionId;
+    if (
+      !sessionId ||
+      this.placements.get(sessionId) !== targetId ||
+      this.retiredTargets.has(targetId) ||
+      (await this.answered(this.current(targetId))) !== false
+    )
+      return false;
+    return this.verify(sessionId);
+  }
+
+  failedScope(sessionId) {
+    const owner = this.sessions.get(sessionId)?.targetId;
+    return [...this.failedProof].some((id) => this.relatedProof(owner, id));
+  }
+
+  receiveContext(message) {
+    const { method, sessionId, params = {} } = message;
+    if (method === 'Runtime.executionContextsCleared') this.contextChecks.delete(sessionId);
+    if (method === 'Runtime.executionContextDestroyed')
+      this.contextChecks.get(sessionId)?.delete(params.executionContextId);
+    const context = params.context;
+    if (
+      method !== 'Runtime.executionContextCreated' ||
+      !context?.auxData?.isDefault ||
+      (!this.runtimes.has(sessionId) && !this.primed.has(sessionId))
+    )
+      return;
+    const records = this.contextChecks.get(sessionId) ?? new Map();
+    this.contextChecks.set(sessionId, records);
+    const record = { message, done: false, targetId: this.sessions.get(sessionId)?.targetId };
+    records.set(context.id, record);
+    record.promise = this.checkContext(record).finally(() => {
+      record.done = true;
+    });
+  }
+
+  maskedLocation(frameId, value) {
+    const url = bare(value);
+    const parsed = URL.parse(url);
+    if (!parsed || !['http:', 'https:'].includes(parsed.protocol)) return false;
+    const query = url.indexOf('?');
+    if (query < 0) return false;
+    const matches = [...url.slice(query).matchAll(/[?&]redirect_uri=([^&#]*)/g)];
+    if (matches.length !== 1) return false;
+    let redirect;
+    try {
+      redirect = URL.parse(decodeURIComponent(matches[0][1]));
+    } catch {
+      return false;
+    }
+    if (
+      !redirect ||
+      !['http:', 'https:'].includes(redirect.protocol) ||
+      !this.is.url(redirect.href)
+    )
+      return false;
+    const match = matches[0];
+    const start = query + match.index + match[0].indexOf('=') + 1;
+    const projected = `${url.slice(0, start)}${redirect.origin}${url.slice(start + match[1].length)}`;
+    return projected === bare(this.frames.get(frameId) ?? '');
+  }
+
+  async checkContext(record) {
+    const {
+      sessionId,
+      params: { context },
+    } = record.message;
+    const current = () => this.contextChecks.get(sessionId)?.get(context.id) === record;
+    const where =
+      typeof context.uniqueId === 'string'
+        ? { uniqueContextId: context.uniqueId }
+        : { contextId: context.id };
+    const answer = await this.answered(
+      this.call(
+        'Runtime.evaluate',
+        { expression: 'location.href', returnByValue: true, silent: true, ...where },
+        sessionId
+      )
+    );
+    const targetId = record.targetId;
+    if (!current()) {
+      if (!answer || answer.error) this.uncertainProof(targetId);
+      return false;
+    }
+    const value =
+      answer?.error || answer?.result?.exceptionDetails ? undefined : answer?.result?.result?.value;
+    if (
+      typeof value !== 'string' ||
+      !URL.canParse(value) ||
+      this.unsafeUrl(value) ||
+      this.is.url(value) ||
+      URL.parse(value)?.protocol === 'chrome-error:'
+    ) {
+      const world = this.world(sessionId);
+      if (world.main === context.uniqueId) delete world.main;
+      world.ids.set(context.id, true);
+      if (context.uniqueId) world.uniques.set(context.uniqueId, true);
+      return this.uncertainProof(targetId);
+    }
+    let verified = false;
+    if (bare(this.frames.get(context.auxData.frameId) ?? '') !== bare(value)) {
+      const nav = this.navs.get(targetId);
+      if (!nav?.session || !(await this.verify(nav.session))) return this.uncertainProof(targetId);
+      verified = true;
+    }
+    if (!current()) return false;
+    if (bare(this.frames.get(context.auxData.frameId) ?? '') === bare(value)) return true;
+    return verified && this.maskedLocation(context.auxData.frameId, value);
+  }
+
+  async privateAttachment(targetId, sessionId) {
+    if (this.privateSessions.has(sessionId)) return true;
+    for (const pending of this.pendingAttachments)
+      if (pending.targetId === targetId && (await pending.attaching) === sessionId) return true;
+    const nav = this.navs.get(targetId);
+    return Boolean(nav && (await nav.attaching) === sessionId);
+  }
+
+  receiveAttachment(message) {
+    if (message.method !== 'Target.attachedToTarget') return;
+    const info = message.params?.targetInfo;
+    if (!info?.targetId || this.privateSessions.has(message.params.sessionId)) return;
+    const parentId =
+      info.type === 'iframe' ? this.sessions.get(message.sessionId)?.targetId : undefined;
+    this.learn({ ...info, ...(parentId ? { parentId } : {}) });
+    if (info.url?.startsWith('chrome-error:') || this.is.target(info) || !URL.canParse(info.url))
+      this.uncertainProof(info.targetId);
+  }
+
+  receiveFrame(message) {
+    const { method, sessionId, params = {} } = message;
+    const nav = this.navSessions.get(sessionId);
+    const targetId = nav?.targetId ?? this.sessions.get(sessionId)?.targetId;
+    if (
+      ['Page.frameAttached', 'Page.frameDetached', 'Page.navigatedWithinDocument'].includes(method)
+    )
+      this.proofCommits.delete(targetId);
+    if (method !== 'Page.frameNavigated' || !params.frame) return;
+    const frame = params.frame;
+    const commit = this.proofCommits.get(targetId);
+    const root = this.frameRoots.get(targetId);
+    if (this.protectedFrame(frame))
+      this.uncertainProof(targetId, !root || !this.containedError(frame, root));
+    else if (
+      commit &&
+      (commit.id !== frame.id ||
+        commit.loader !== frame.loaderId ||
+        commit.url !== this.framed(frame))
+    )
+      this.proofCommits.delete(targetId);
+    if (
+      nav &&
+      (root === frame.id || !frame.parentId) &&
+      typeof frame.loaderId === 'string' &&
+      frame.loaderId &&
+      !frame.url.startsWith('chrome-error:') &&
+      !this.protectedFrame(frame)
+    )
+      this.proofCommits.set(targetId, {
+        id: frame.id,
+        loader: frame.loaderId,
+        url: this.framed(frame),
+        epoch: this.proofEpoch.get(targetId),
+      });
+    this.noteError(
+      frame,
+      sessionId,
+      Boolean(nav) &&
+        !frame.url?.startsWith('chrome-error:') &&
+        !this.unsafeUrl(frame.url) &&
+        !this.protectedFrame(frame)
+    );
+  }
+
+  retireProof(frameId) {
+    const ids = [
+      frameId,
+      ...[...this.frameRoots].filter(([, root]) => root === frameId).map(([id]) => id),
+    ];
+    for (const id of ids) {
+      this.retiredTargets.add(id);
+      this.failedProof.delete(id);
+      this.proofNeeded.delete(id);
+      this.proofCommits.delete(id);
+      const nav = this.navs.get(id);
+      if (!nav) continue;
+      nav.retired = true;
+      nav.settle(true);
+      this.navs.delete(id);
+      if (nav.session) {
+        this.navSessions.delete(nav.session);
+        void this.call('Target.detachFromTarget', { sessionId: nav.session });
+      }
+    }
   }
 
   cutTarget(targetId) {
@@ -1545,13 +1852,22 @@ class Guard {
     nav.timer = setTimeout(() => nav.settle(true), NAV_MS);
     nav.timer.unref?.();
     this.navs.set(targetId, nav);
+    this.pendingAttachments.add(nav);
     nav.attaching = this.call('Target.attachToTarget', { targetId, flatten: true }).then(
       (answer) => answer.result?.sessionId ?? null
     );
-    void nav.attaching.then((session) => this.arm(nav, session));
+    void nav.attaching.then((session) => {
+      if (session) this.privateSessions.add(session);
+      this.pendingAttachments.delete(nav);
+      return this.arm(nav, session);
+    });
   }
 
   async arm(nav, session) {
+    if (nav.retired) {
+      if (session) void this.call('Target.detachFromTarget', { sessionId: session });
+      return nav.settle(true);
+    }
     if (!session) return nav.settle(true);
     nav.session = session;
     this.navSessions.set(session, nav);
@@ -1615,10 +1931,23 @@ class Guard {
   }
 
   async verify(sessionId, proof) {
+    const placed = this.placements.has(sessionId)
+      ? { targetId: this.placements.get(sessionId) }
+      : undefined;
+    const entry = this.sessions.get(sessionId) ?? this.navSessions.get(sessionId) ?? placed;
+    const epoch = this.proofEpoch.get(entry?.targetId);
     void this.call('Page.enable', {}, sessionId);
-    const tree = (await this.call('Page.getFrameTree', {}, sessionId)).result?.frameTree;
-    const all = framed(tree);
-    const entry = this.sessions.get(sessionId);
+    const answer = await this.proofTree(sessionId);
+    if (epoch !== this.proofEpoch.get(entry?.targetId)) return false;
+    const tree = answer?.result?.frameTree;
+    if (
+      answer &&
+      (answer.error || !tree?.frame) &&
+      WORKER_TYPES.has(this.targets.get(entry?.targetId)?.type)
+    )
+      return !this.errorDocument(sessionId);
+    const all = answer && !answer.error && this.documentFrames(tree);
+    if (!all) return this.uncertainProof(entry?.targetId);
     const nav = this.navs.get(entry?.targetId);
     if (
       nav?.session &&
@@ -1640,27 +1969,138 @@ class Guard {
       entry.frameId = tree.frame.id;
       this.frameRoots.set(entry.targetId, tree.frame.id);
     }
-    for (const frame of all) this.noteError(frame);
     if (proof) {
-      const frames = this.documentFrames(tree);
-      return this.fresh(proof) && Boolean(frames) && !frames.some((frame) => this.frameLive(frame));
+      for (const frame of all) this.noteError(frame, sessionId);
+      return this.fresh(proof) && !all.some((frame) => this.frameLive(frame));
     }
-    return (
-      (Boolean(tree?.frame) || WORKER_TYPES.has(this.targets.get(entry?.targetId)?.type)) &&
-      !all.some((frame) => this.protectedFrame(frame))
+    if (
+      all.some(
+        (frame) =>
+          (this.protectedFrame(frame) && !this.containedError(frame, tree.frame.id)) ||
+          (frame.id === tree.frame.id && this.errorFrames.has(frame.id))
+      )
+    )
+      return this.uncertainProof(entry?.targetId);
+    if (
+      all.some(
+        (frame) => this.containedError(frame, tree.frame.id) && !this.errorFrames.has(frame.id)
+      )
+    )
+      this.uncertainProof(entry?.targetId, false);
+    for (const frame of all) this.noteError(frame, sessionId);
+    this.completeProof(sessionId, entry, tree);
+    return Boolean(tree?.frame) || WORKER_TYPES.has(this.targets.get(entry?.targetId)?.type);
+  }
+
+  completeProof(sessionId, entry, tree) {
+    this.failedProof.delete(entry?.targetId);
+    if (this.navSessions.has(sessionId)) {
+      const commit = this.proofCommits.get(entry?.targetId);
+      if (
+        commit &&
+        commit.epoch === this.proofEpoch.get(entry.targetId) &&
+        commit.id === tree.frame.id &&
+        commit.loader === tree.frame.loaderId &&
+        commit.url === this.framed(tree.frame)
+      )
+        this.proofNeeded.delete(entry.targetId);
+    }
+  }
+
+  async retainedBlank(sessionId, info) {
+    const targetId = info?.targetId;
+    const nav = this.navs.get(targetId);
+    const commit = this.proofCommits.get(targetId);
+    if (
+      !this.shown.has(sessionId) ||
+      this.sessions.get(sessionId)?.targetId !== targetId ||
+      isHeld(targetId) ||
+      nav?.held ||
+      !nav?.done ||
+      nav.failed ||
+      nav.retired ||
+      !nav.session ||
+      this.navSessions.get(nav.session) !== nav ||
+      info.type !== 'page' ||
+      info.url !== BLANKED ||
+      !commit ||
+      commit.url !== BLANKED ||
+      commit.epoch !== this.proofEpoch.get(targetId)
+    )
+      return false;
+    const answer = await this.proofTree(nav.session);
+    const frames = answer && !answer.error && this.documentFrames(answer.result?.frameTree);
+    const frame = frames?.[0];
+    return Boolean(
+      this.navs.get(targetId) === nav &&
+        this.navSessions.get(nav.session) === nav &&
+        !nav.failed &&
+        !nav.retired &&
+        this.proofCommits.get(targetId) === commit &&
+        commit.epoch === this.proofEpoch.get(targetId) &&
+        !isHeld(targetId) &&
+        !nav.held &&
+        !this.errorFrames.has(commit.id) &&
+        this.frameRoots.get(targetId) === commit.id &&
+        frames?.length === 1 &&
+        !frame.parentId &&
+        frame.id === commit.id &&
+        frame.loaderId === commit.loader &&
+        this.framed(frame) === BLANKED &&
+        !this.protectedFrame(frame)
     );
   }
 
-  async inspect(sessionId, targetId, parent) {
-    const guarded = targetId ? await this.target(targetId) : false;
+  async attachmentProof(sessionId, targetId, raw, guarded, recoverable) {
     const error =
       this.navs.get(targetId)?.admitted &&
       this.targets.get(targetId)?.url?.startsWith('chrome-error:');
-    const proof = guarded || error ? await this.stranded(targetId) : null;
-    if ((guarded && !proof) || !(await this.verify(sessionId, proof))) {
-      this.cut(sessionId, parent);
+    return recoverable &&
+      (guarded || error) &&
+      (this.is.url(raw.url) || this.errorDocument(sessionId))
+      ? this.stranded(targetId)
+      : null;
+  }
+
+  async inspect(sessionId, targetId, parent, recoverable = false) {
+    if (this.privateSessions.has(sessionId) || this.retiredTargets.has(targetId)) return false;
+    const answer = await this.answered(this.call('Target.getTargetInfo', { targetId }));
+    const raw = answer?.result?.targetInfo;
+    const info =
+      raw?.url === '' && NAV_TYPES.has(raw.type)
+        ? { ...raw, url: this.frames.get(this.frameRoots.get(targetId)) ?? '' }
+        : raw;
+    if (
+      !answer ||
+      answer.error ||
+      info?.targetId !== targetId ||
+      typeof info.type !== 'string' ||
+      !URL.canParse(info.url)
+    )
+      return this.uncertainProof(targetId);
+    this.learn(info);
+    const guarded = await this.target(targetId);
+    const proof = await this.attachmentProof(sessionId, targetId, raw, guarded, recoverable);
+    if (guarded && !proof) {
+      if (!(await this.retainedBlank(sessionId, raw))) this.cut(sessionId, parent);
       return false;
     }
+    if (!(await this.verify(sessionId, proof))) return this.uncertainProof(targetId);
+    if (!WORKER_TYPES.has(info.type)) {
+      const previous = this.navs.get(targetId);
+      if (previous?.failed && !previous.retired) this.navs.delete(targetId);
+      this.touch(targetId);
+      const nav = this.navs.get(targetId);
+      if (!nav) return this.uncertainProof(targetId);
+      if (
+        (await this.answered(nav.ready.then(() => !nav.failed))) !== true ||
+        nav.retired ||
+        !(await this.verify(nav.session, proof))
+      )
+        return this.uncertainProof(targetId);
+    }
+    this.failedProof.delete(targetId);
+    this.blocked.delete(sessionId);
     this.shown.add(sessionId);
     const nav = this.navs.get(targetId);
     if (nav) nav.admitted = true;
@@ -1676,7 +2116,11 @@ class Guard {
       return Promise.resolve(false);
     }
     if (!this.watching.has(sessionId)) {
-      this.watching.set(sessionId, this.inspect(sessionId, targetId, parent));
+      const proof = this.inspect(sessionId, targetId, parent, true).then((ok) => {
+        if (!ok && this.watching.get(sessionId) === proof) this.watching.delete(sessionId);
+        return ok;
+      });
+      this.watching.set(sessionId, proof);
     }
     return this.watching.get(sessionId);
   }
@@ -2090,7 +2534,41 @@ class Guard {
         this.quarantine(id, message);
   }
 
-  documentFrames(tree) {
+  async proofTree(sessionId) {
+    const started = Date.now();
+    let bound = ANSWER_MS;
+    for (
+      let attempt = 0;
+      attempt < Math.ceil(bound / HISTORY_POLL) && Date.now() < started + bound;
+      attempt += 1
+    ) {
+      const answer = await this.within(
+        this.call('Page.getFrameTree', {}, sessionId),
+        Math.max(1, started + bound - Date.now())
+      );
+      const tree = answer?.result?.frameTree;
+      const loading = this.documentFrames(tree, true);
+      if (!answer || answer.error || this.documentFrames(tree) || !loading) return answer;
+      const root = loading[0];
+      const children =
+        !root.parentId &&
+        /^https?:\/\//.test(root.url) &&
+        /^https?:\/\//.test(root.securityOrigin) &&
+        typeof root.loaderId === 'string' &&
+        root.loaderId !== '' &&
+        loading.slice(1).some((frame) => frame.url === '') &&
+        loading.every(
+          (frame) =>
+            !this.protectedFrame(frame) && !this.errorFrames.has(frame.id) && !frame.unreachableUrl
+        );
+      if (attempt === 0 && children) bound = 3 * ANSWER_MS;
+      if (bound > ANSWER_MS && !children) return answer;
+      await pause(HISTORY_POLL);
+    }
+    return undefined;
+  }
+
+  documentFrames(tree, loading = false) {
     const pending = [{ tree }];
     const frames = [];
     const ids = new Set();
@@ -2103,9 +2581,20 @@ class Guard {
         !frame.id ||
         ids.has(frame.id) ||
         typeof frame.url !== 'string' ||
-        !URL.canParse(frame.url) ||
+        (!URL.canParse(frame.url) &&
+          !(
+            loading &&
+            frame.url === '' &&
+            (parent !== undefined ||
+              ['', '://', 'null'].includes(frame.securityOrigin) ||
+              (/^https?:\/\//.test(frame.securityOrigin) &&
+                URL.canParse(frame.securityOrigin) &&
+                !this.is.url(frame.securityOrigin)))
+          )) ||
         typeof frame.securityOrigin !== 'string' ||
-        (!URL.canParse(frame.securityOrigin) && !['null', '://'].includes(frame.securityOrigin)) ||
+        (!URL.canParse(frame.securityOrigin) &&
+          !['null', '://'].includes(frame.securityOrigin) &&
+          !(loading && frame.url === '' && frame.securityOrigin === '')) ||
         (parent !== undefined && frame.parentId !== parent) ||
         (node.childFrames !== undefined && !Array.isArray(node.childFrames)) ||
         frames.length + pending.length >= 4096
@@ -2193,7 +2682,7 @@ class Guard {
     const info = message.params?.targetInfo;
     this.learn(info);
     const targetId = info?.targetId;
-    const guarded = await this.answered(this.target(targetId));
+    const guarded = await this.answered(this.current(targetId));
     if (this.hints.get(targetId) !== message) return;
     if (guarded === false && !this.is.url(info?.url)) {
       let pending = false;
@@ -2228,8 +2717,7 @@ class Guard {
     const { method, params = {}, sessionId } = message;
     if (method === 'Target.attachedToTarget') {
       const info = params.targetInfo ?? {};
-      const nav = this.navs.get(info.targetId);
-      if (nav && sessionId === undefined && (await nav.attaching) === params.sessionId) return true;
+      if (await this.privateAttachment(info.targetId, params.sessionId)) return true;
       if (params.waitingForDebugger) this.waiting.add(params.sessionId);
       if (!info.url && (info.type === 'page' || info.type === 'iframe')) {
         void this.blank(message);
@@ -2404,6 +2892,16 @@ class Guard {
     );
   }
 
+  containedError(frame, root) {
+    return Boolean(
+      frame.id !== root &&
+        frame.parentId &&
+        typeof frame.url === 'string' &&
+        frame.url.startsWith('chrome-error:') &&
+        this.protectedFrame(frame)
+    );
+  }
+
   unsafeUrl(url) {
     return typeof url !== 'string' || !URL.canParse(url) || this.is.url(url);
   }
@@ -2430,7 +2928,7 @@ class Guard {
     if (!target) return;
     target.url = frame.url;
     this.scope(targetId).committed = false;
-    if (!target.real) {
+    if (!target.real && frame.url !== BLANKED) {
       target.guarded = false;
       target.was = false;
     }
@@ -3166,6 +3664,16 @@ class Guard {
     return true;
   }
 
+  async contentEvent(message) {
+    if (message.method === 'Page.screencastFrame' && !this.casts.has(message.sessionId))
+      return true;
+    if (message.method === 'Runtime.executionContextCreated') {
+      const record = this.contextChecks.get(message.sessionId)?.get(message.params?.context?.id);
+      if (record?.message === message && !(await record.promise)) return true;
+    }
+    return this.failedScope(message.sessionId) && contentRead(message.method);
+  }
+
   async event(message) {
     const method = message.method ?? '';
     const { sessionId } = message;
@@ -3174,12 +3682,12 @@ class Guard {
       return this.navEvent(message, this.navSessions.get(sessionId));
     if (this.placements.has(sessionId)) return;
     if (method.startsWith('Target.') && (await this.targetEvent(message))) return;
-    if (method === 'Page.screencastFrame' && !this.casts.has(sessionId)) return;
     if (this.deferredStyle(message)) return;
     if (this.locked(sessionId) && (pageScoped(method) || method === 'Page.screencastFrame')) return;
     if (this.blocked.has(sessionId) && PAUSES.has(method)) return this.release(message);
     if (this.hidden(sessionId)) return;
     if (foreign) return;
+    if (await this.contentEvent(message)) return;
     if (this.walked({ ...message, method })) return this.cut(sessionId);
     if (sessionId && method.startsWith('Runtime.') && !this.runtimes.has(sessionId)) return;
     if (await this.swallowed(message)) return;
@@ -3192,8 +3700,13 @@ class Guard {
 
   async searched(method, params, sessionId) {
     const [read, args] = SEARCHES[method](params);
-    const { result } = await this.call(read, args, sessionId);
-    return this.mentions(result);
+    const { result, error } = await this.call(read, args, sessionId);
+    return (
+      error ||
+      !result ||
+      !['body', 'data', 'content'].some((field) => typeof result[field] === 'string') ||
+      this.mentions(result)
+    );
   }
 
   mentions(result) {
@@ -3237,7 +3750,7 @@ class Guard {
     const targetInfos = [];
     for (const info of result.targetInfos) {
       this.learn(info);
-      const guarded = (await this.target(info.targetId)) || this.is.url(info.url);
+      const guarded = (await this.current(info.targetId)) || this.is.url(info.url);
       const proof = guarded ? await this.stranded(info.targetId) : null;
       if (!guarded || this.fresh(proof)) targetInfos.push(this.masked(info, Boolean(proof)));
     }
@@ -3784,13 +4297,10 @@ class Guard {
     this.wiping(nav, frame);
     if (nav && !frame.parentId) nav.document = frame;
     if (targetId && this.frameLive(frame)) this.commitScope(targetId);
-    this.noteError(frame, message.sessionId, true);
     this.refreshHint(message, committed);
   }
 
-  received(text) {
-    const message = parse(text);
-    this.loadingEvent(message);
+  completeStopping(message) {
     const stopping = this.asked.get(requestKey(message));
     if (
       stopping?.method === 'Page.stopLoading' &&
@@ -3808,10 +4318,27 @@ class Guard {
       )
         this.navs.get(this.scopeTarget(stopping.sessionId))?.wiped?.();
     }
+  }
+
+  received(text) {
+    const message = parse(text);
+    this.loadingEvent(message);
+    this.completeStopping(message);
+    if (
+      message.id === undefined &&
+      /^(?:Network|Fetch)\./.test(message.method) &&
+      this.failedScope(message.sessionId) &&
+      !['Network.loadingFinished', 'Network.loadingFailed'].includes(message.method)
+    )
+      this.unsafe.add(message);
+    this.receiveContext(message);
+    this.receiveAttachment(message);
+    this.receiveFrame(message);
     this.receiveNavigation(message);
     if (message.method === 'Target.targetCreated' || message.method === 'Target.targetInfoChanged')
       this.receiveHint(message);
     if (message.method === 'Target.targetDestroyed') {
+      this.retireProof(message.params?.targetId);
       this.hints.delete(message.params?.targetId);
       for (const [id, entry] of this.sessions)
         if (entry.targetId === message.params?.targetId && this.quarantined.has(id)) this.cut(id);
@@ -3825,6 +4352,7 @@ class Guard {
       this.taintContent();
     }
     if (message.method === 'Page.frameDetached' && message.params?.reason === 'remove') {
+      this.retireProof(message.params.frameId);
       this.rememberUnsafe(message);
       this.errorFrames.delete(message.params.frameId);
       this.errorUrls.delete(message.params.frameId);
@@ -3964,6 +4492,22 @@ class Guard {
     return true;
   }
 
+  async sendChecked(message) {
+    if (message.method === 'Runtime.enable' && this.primed.delete(message.sessionId)) {
+      await this.call('Runtime.disable', {}, message.sessionId);
+    }
+    if (message.method === 'Target.createTarget' && typeof message.params?.url === 'string') {
+      return this.create(message);
+    }
+    if (await this.recheck(message)) return;
+    return this.pass(message);
+  }
+
+  ownedBlank(sessionId) {
+    const owner = this.sessions.get(sessionId)?.targetId;
+    return this.proofCommits.get(owner)?.url === BLANKED;
+  }
+
   start() {
     const { connection, guarded } = this;
     connection.onmessage = (text) => this.received(text);
@@ -3990,6 +4534,7 @@ class Guard {
         (contentRead(message.method) && this.errorDocument(message.sessionId, message.method))
       )
         this.unsafe.add(message);
+      if (contentRead(message.method)) this.pendingContent.add(message);
       if (
         (this.blocked.has(message.sessionId) || this.gone.has(message.sessionId)) &&
         !(
@@ -4002,17 +4547,18 @@ class Guard {
         `send:${message.sessionId ?? ''}`,
         async () => {
           if (this.finished.has(message) || !this.owns(message)) return;
+          if (
+            this.unsafeContent(message) &&
+            (this.errorDocument(message.sessionId, message.method) ||
+              !this.ownedBlank(message.sessionId))
+          )
+            return this.refuse(message);
+          if (!(await this.proveContent(message))) return this.refuse(message);
+          if (this.unsafeContent(message)) return this.refuse(message);
           const why = await this.check(message);
           if (this.finished.has(message) || !this.owns(message)) return;
           if (why) return this.refuse(message, why);
-          if (message.method === 'Runtime.enable' && this.primed.delete(message.sessionId)) {
-            await this.call('Runtime.disable', {}, message.sessionId);
-          }
-          if (message.method === 'Target.createTarget' && typeof message.params?.url === 'string') {
-            return this.create(message);
-          }
-          if (await this.recheck(message)) return;
-          return this.pass(message);
+          return this.sendChecked(message);
         },
         (error) => {
           console.warn(`the CDP guard refused a command: ${error.message}`);

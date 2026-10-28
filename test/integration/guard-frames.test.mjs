@@ -463,16 +463,73 @@ test(
 );
 
 async function editors({ port }) {
-  const { guardProtected } = await import(new URL('guard.js', location.href).href);
-  const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
-  const connection = guardProtected(
-    extensionConnection(globalThis.sliccExtension.cdp),
-    self.origin
+  const { guardProtected, FAILED, UNGUARDED } = await import(
+    new URL('guard.js', location.href).href
   );
+  const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
+  const { guardOf } = await import(new URL('held.js', location.href).href);
+  const metadata = [];
+  window.guardFrameMetadata = metadata;
+  const is = guardOf(self.origin);
+  const kind = (value) =>
+    typeof value !== 'string' || value === ''
+      ? 'empty'
+      : is.url(value)
+        ? 'protected'
+        : value.startsWith('about:')
+          ? 'about'
+          : /^https?:\/\//.test(value)
+            ? 'http'
+            : value === 'null'
+              ? 'null'
+              : 'opaque';
+  const shape = (frame) => ({
+    url: kind(frame?.url),
+    origin: kind(frame?.securityOrigin),
+    loader: frame?.loaderId !== undefined,
+  });
+  const treeSeen = (view, message) => {
+    const tree = message.result?.frameTree;
+    const children = [];
+    const pending = [...(tree?.childFrames ?? [])];
+    while (pending.length) {
+      const child = pending.shift();
+      children.push(shape(child.frame));
+      pending.push(...(child.childFrames ?? []));
+    }
+    metadata.push({ view, root: tree?.frame ? shape(tree.frame) : null, children });
+  };
+  const queries = new Set();
+  const raw = extensionConnection(globalThis.sliccExtension.cdp);
+  const transport = {
+    send(text) {
+      const message = JSON.parse(text);
+      if (message.method === 'Page.getFrameTree') queries.add(message.id);
+      if (message.id >= 2 ** 30 && message.method === 'Target.detachFromTarget')
+        metadata.push({ decision: 'cut' });
+      raw.send(text);
+    },
+    close() {
+      raw.close?.();
+    },
+  };
+  raw.onmessage = (text) => {
+    const message = JSON.parse(text);
+    if (queries.delete(message.id)) treeSeen('guard', message);
+    transport.onmessage?.(text);
+  };
+  raw.onclose = (event) => transport.onclose?.(event);
+  const connection = guardProtected(transport, self.origin);
   const pending = new Map();
+  const callerTrees = new Set();
   let next = 0;
   connection.onmessage = (text) => {
     const message = JSON.parse(text);
+    if (callerTrees.delete(message.id)) treeSeen('caller', message);
+    if (message.error?.message === FAILED || message.error?.message === UNGUARDED)
+      metadata.push({ decision: 'uncertain' });
+    else if (message.error?.message?.startsWith('slicc: refused:'))
+      metadata.push({ decision: 'refused' });
     pending.get(message.id)?.(message);
     pending.delete(message.id);
   };
@@ -480,6 +537,7 @@ async function editors({ port }) {
     new Promise((resolve) => {
       next += 1;
       const id = next;
+      if (method === 'Page.getFrameTree') callerTrees.add(id);
       const timer = setTimeout(
         () => resolve({ error: { message: `${method} got no answer` } }),
         10000
@@ -506,8 +564,7 @@ async function editors({ port }) {
     if (children.length === 2 && children.every((child) => child.url)) break;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  if (children.length !== 2)
-    throw new Error(`the editor frames never committed: ${JSON.stringify(tree)}`);
+  if (children.length !== 2) throw new Error('the editor frames never committed');
   const out = {};
   for (const [index, child] of children.entries()) {
     const world = await send(
@@ -541,17 +598,24 @@ async function editorsCheck(t) {
   t.after(() => extension.close());
   await page.goto('/');
   await ready(page);
-  const out = await page.evaluate(editors, {
-    port,
-  });
-  assert.deepEqual(
-    out,
-    {
-      blank: { world: 'world', value: 'FILLED-0' },
-      srcdoc: { world: 'world', value: 'FILLED-1' },
-    },
-    'an editor in an about:blank and a srcdoc frame of an ordinary page gets a utility world and is filled'
-  );
+  try {
+    const out = await page.evaluate(editors, {
+      port,
+    });
+    assert.deepEqual(
+      out,
+      {
+        blank: { world: 'world', value: 'FILLED-0' },
+        srcdoc: { world: 'world', value: 'FILLED-1' },
+      },
+      'an editor in an about:blank and a srcdoc frame of an ordinary page gets a utility world and is filled'
+    );
+  } catch (error) {
+    t.diagnostic(
+      `guard-frame-metadata: ${JSON.stringify(await page.evaluate(() => window.guardFrameMetadata ?? []).catch(() => []))}`
+    );
+    throw error;
+  }
 }
 
 test(
