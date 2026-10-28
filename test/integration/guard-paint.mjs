@@ -567,7 +567,8 @@ export function paint(route) {
   test(`a page that holds a protected frame is locked for paint, DOM and input on the ${route} path`, {
     timeout: 30 * 60 * 1000,
   }, async (t) => {
-    const { clientFactory, vault } = await guardHost(t, route);
+    const clientFactory = await guardHost(t, route);
+    const { vault } = clientFactory;
     const factory = clientFactory(route);
     const own = [OWN, vault];
     const { unguarded } = await factory({ own });

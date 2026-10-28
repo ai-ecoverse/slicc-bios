@@ -13,7 +13,7 @@ for (const target of ['seven', 'vault']) {
     }, async (t) => {
       assert.ok(vector);
       const selected = { ...set, vectors: [{ ...vector, targets: [target] }] };
-      const { clientFactory } = await guardHost(t, 'link');
+      const clientFactory = await guardHost(t, 'link');
       for (let round = 1; round <= 3; round += 1) {
         const execution = await run(selected, {
           clientFactory: clientFactory('link'),

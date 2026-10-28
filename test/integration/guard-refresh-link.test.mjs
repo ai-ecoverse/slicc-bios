@@ -15,7 +15,7 @@ test('a static cross-site frame completes its refused navigation on the link pat
   timeout: 15 * 60 * 1000,
 }, async (t) => {
   assert.equal(selected.vectors.length, 1);
-  const { clientFactory } = await guardHost(t, 'link');
+  const clientFactory = await guardHost(t, 'link');
   for (let round = 1; round <= 3; round += 1) {
     const result = await run(selected, {
       clientFactory: clientFactory('link'),
