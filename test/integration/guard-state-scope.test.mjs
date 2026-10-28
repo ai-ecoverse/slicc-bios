@@ -34,6 +34,11 @@ for (const order of ['ancestor-first', 'leaf-first']) {
         params: { frameId: 'child-root', parentFrameId: 'middle' },
       };
       for (const e of order === 'ancestor-first' ? [ancestor, leaf] : [leaf, ancestor]) w.emit(e);
+      w.emit({
+        method: 'Page.frameNavigated',
+        sessionId: 'guard-parent',
+        params: { frame: plainFrame('middle', 'parent-root') },
+      });
       await flush();
       assert.ok(refused(await w.send('Page.printToPDF', {}, s)));
       if (recovery === 'remove')

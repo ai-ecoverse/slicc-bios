@@ -275,6 +275,9 @@ const PAGE_PAINT = new Set([
   'Page.captureScreenshot',
   'Page.startScreencast',
   'Page.captureSnapshot',
+  'Page.printToPDF',
+  'Page.getResourceContent',
+  'Page.searchInResource',
 ]);
 const PAGE_DOMAINS = [
   'DOM.',
@@ -1243,11 +1246,11 @@ class Guard {
       } else this.scope(targetId).ready = false;
     }
     if (method === 'Page.frameDetached') {
-      if (params.reason === 'swap') this.frames.set(params.frameId, '');
-      else {
-        this.removeFrame(params.frameId);
-        this.refresh(targetId);
-      }
+      if (params.reason === 'swap') {
+        this.frames.set(params.frameId, '');
+        for (const [id, scope] of this.scopes) if (scope.root === params.frameId) this.refresh(id);
+      } else this.removeFrame(params.frameId);
+      this.refresh(targetId);
     }
   }
 
@@ -3157,7 +3160,7 @@ class Guard {
     const unguarded = await this.guarding(method, sessionId);
     if (unguarded) return unguarded;
     if (!(await this.placed(sessionId))) return UNGUARDED;
-    if (method === 'Page.captureScreenshot') return null;
+    if (method === 'Page.captureScreenshot') return this.locked(sessionId, true) ? PROTECTED : null;
     return this.locked(sessionId) ? PROTECTED : null;
   }
 
