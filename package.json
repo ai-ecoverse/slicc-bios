@@ -50,7 +50,7 @@
   },
   "devDependencies": {
     "@ai-ecoverse/slicc": "1.49.28",
-    "@ai-ecoverse/slicc-browsers": "1.18.17",
+    "@ai-ecoverse/slicc-browsers": "1.18.19",
     "@ai-ecoverse/slicc-cdp": "1.42.4",
     "@ai-ecoverse/slicc-shared-web": "2.13.6",
     "@ai-ecoverse/slicc-spectrum": "1.107.2",

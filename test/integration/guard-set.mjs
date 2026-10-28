@@ -791,7 +791,7 @@ export function shared(path, { variants, except = [], group } = {}) {
     assert.match(
       report.line,
       held.length ? /^GUARD-(?:PASS|FAIL) / : /^GUARD-PASS /,
-      'the runner prints a passing verdict for the whole set, or fails only on #748'
+      'the runner prints a passing verdict for the whole set, or fails only on known rows'
     );
   });
 }
