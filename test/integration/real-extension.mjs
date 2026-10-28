@@ -16,18 +16,11 @@ const release = (version, sha256) => ({
   url: `https://github.com/ai-ecoverse/slicc-extension/releases/download/v${version}/slicc-extension.zip`,
   sha256,
 });
-export const CURRENT_EXTENSION = release(
-  '7.9.15',
-  '05bfa58e06c9472ac174b38ac806073bcf832531b68264b3ca36d07136b8ace3'
-);
 export const EXTENSIONS = [
   release('7.5.1', 'bdcd08b945cf69baa554cf01072d88436c3f8b97b05376cd369746598cf84a75'),
   release('7.6.2', '0871897fe03e96bddb16ab1c2712437e99835d01ca4566049a61ae888277c20e'),
   release('7.6.3', '17f0e53dd5d11465ea60d7ae4409cfbb9f48859501119d62dd5e5d4673a79426'),
   release('7.6.4', 'd3523ce49e61b8db4c84d4470c5a1248b5765b3a9967b91c2a4e0f60a7f578f5'),
-  release('7.9.13', 'ec3825f6b14438867a3ff2f9db26a5a593cc2ff9f232dd7a01b4305adaf1f0ac'),
-  release('7.9.5', '526763b3d575f8d2301c253ffb9ec8eb62c073b2440cf63cae5a11200f338dff'),
-  release('7.9.4', '1ecf6c60b1dfa327e0ecedb97d4b4d2a8f6e0cf84a35fac112a32bdae3dcc99a'),
 ];
 export const [EXTENSION] = EXTENSIONS;
 export const SEVEN = 'https://seven.sliccy.ai/';
