@@ -36,6 +36,7 @@ export function ordered(send) {
 
 export function extensionConnection(cdp) {
   const sessions = new Map();
+  const attaching = new Set();
   let closed = false;
   const deliver = (message) => {
     if (!closed) connection.onmessage?.(JSON.stringify(message));
@@ -52,8 +53,18 @@ export function extensionConnection(cdp) {
       !tracked &&
       event.method === 'Target.attachedToTarget' &&
       !sessions.has(event.params?.sessionId)
-    )
+    ) {
+      for (const entry of attaching)
+        if (
+          typeof entry.targetId === 'string' &&
+          entry.targetId &&
+          typeof event.params?.sessionId === 'string' &&
+          event.params.targetInfo?.targetId === entry.targetId &&
+          entry.events.size < 64
+        )
+          entry.events.set(event.params.sessionId, event);
       return;
+    }
     if (tracked && event.method === 'Target.detachedFromTarget') sessions.delete(event.sessionId);
     if (tracked && event.method === 'Target.attachedToTarget' && event.params?.sessionId) {
       attached(event.params.sessionId, 1);
@@ -71,26 +82,38 @@ export function extensionConnection(cdp) {
         deliver({ ...envelope, error: { code: -32600, message: 'a command needs a method' } });
         return;
       }
+      const attachment =
+        method === 'Target.attachToTarget'
+          ? { targetId: params?.targetId, events: new Map() }
+          : undefined;
+      if (attachment) attaching.add(attachment);
       cdp.send(method, params, sessionId).then(
         (result) => {
+          if (attachment) attaching.delete(attachment);
           if (method === 'Target.attachToTarget' && result.sessionId) {
             if (closed) {
               cdp.send('Target.detachFromTarget', { sessionId: result.sessionId }).catch(() => {});
               return;
             }
             attached(result.sessionId, 1);
+            const event = attachment.events.get(result.sessionId);
+            if (event) deliver(event);
           }
           if (method === 'Target.detachFromTarget' && sessions.has(params?.sessionId)) {
             attached(params.sessionId, -1);
           }
           deliver({ ...envelope, result });
         },
-        (error) => deliver({ ...envelope, error: { code: -32000, message: error.message } })
+        (error) => {
+          if (attachment) attaching.delete(attachment);
+          deliver({ ...envelope, error: { code: -32000, message: error.message } });
+        }
       );
     },
     close() {
       if (closed) return;
       closed = true;
+      attaching.clear();
       off();
       for (const [sessionId, count] of sessions) {
         for (let n = 0; n < count; n++) {

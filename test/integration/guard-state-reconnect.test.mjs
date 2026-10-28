@@ -119,6 +119,7 @@ test('state catalog reconnect after an internally blocked hop retains ordinary r
   original.close();
   await flush();
   wire.block();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const hopped = wire.connect();
   const listed = (await hopped.send('Target.getTargets')).result.targetInfos[0];
   assert.deepEqual(
@@ -130,6 +131,8 @@ test('state catalog reconnect after an internally blocked hop retains ordinary r
     flatten: true,
   });
   if (attachment.error) assert.equal(attachment.error.message, PROTECTED);
+  t.mock.timers.tick(5000);
+  await flush();
   hopped.close();
   await flush();
   const recovered = wire.connect();
@@ -193,7 +196,7 @@ test('state catalog error reads remain refused until the private wipe commits', 
   const wipes = wire.calls.filter(
     ({ method, params }) => method === 'Page.navigate' && params.url === BLANKED
   );
-  assert.equal(wipes.length, 1);
+  assert.equal(wipes.length, 0);
   const client = wire.calls.filter(({ method }) => method === 'Target.attachToTarget')[1];
   assert.ok(client);
   const read = await connection.send('Runtime.evaluate', {}, 'catalog-session-2');

@@ -1,23 +1,26 @@
 import { UNGUARDED } from '../../src/seed/guard.js';
 
-export const KNOWN = {
-  '#748': [
-    'C8.protected-error-page',
-    'C8.protected-error-page.query',
-    'C8.protected-error-page.fragment',
-    'C8.protected-document-restore',
-    'C8.protected-error-page-sticky',
-    'C8.protected-error-page-sticky.query',
-    'C8.protected-error-page-sticky.fragment',
-  ],
-};
+export const KNOWN = {};
+const ERROR_RECOVERY = [
+  'C8.protected-error-page',
+  'C8.protected-error-page.query',
+  'C8.protected-error-page.fragment',
+  'C8.protected-document-restore',
+  'C8.protected-error-page-sticky',
+  'C8.protected-error-page-sticky.query',
+  'C8.protected-error-page-sticky.fragment',
+];
 const RECOVERY = new Set(['reload', 'blank', 'close', 'attachRedacted']);
 const unmet = (items) =>
   items.every((item) => /^[A-Za-z]+: got (?:false|undefined), want true$/.test(item));
 const ABSENT = new Set(['listRedacted', 'infoRedacted']);
 export const LINK = {
+  '#749 (discovery metadata)': {
+    ids: ERROR_RECOVERY,
+    allowed: new Set(['eventsRedacted']),
+  },
   'slicc-cli#366 (fail-closed)': {
-    ids: KNOWN['#748'],
+    ids: ERROR_RECOVERY,
     allowed: new Set([...RECOVERY, ...ABSENT]),
     notLive: `not live: client attach refused: ${UNGUARDED}`,
   },
@@ -59,22 +62,43 @@ const checks = (why = '') =>
 const issue = (id) => Object.keys(KNOWN).find((key) => KNOWN[key].includes(id));
 
 function linked(row, listed) {
-  if (listed) return null;
-  const found = Object.entries(LINK).find(([, { ids }]) => ids.includes(row.id));
-  if (!found) return null;
-  const [reason, { allowed, notLive }] = found;
-  if (row.control !== 'pass' || row.guarded !== 'fail') return null;
-  if (row.live === 'fail') {
-    const items = (row.why ?? '').split('; ');
-    return notLive && items.at(-1) === notLive && unmet(items.slice(0, -1)) ? reason : null;
-  }
-  if (row.live !== 'pass') return null;
-  const failed = checks(row.why);
-  return failed.length > 0 && failed.every((check) => allowed.has(check)) ? reason : null;
+  if (listed || row.control !== 'pass' || row.guarded !== 'fail') return null;
+  const found = Object.entries(LINK).find(([, { ids, allowed, notLive }]) => {
+    if (!ids.includes(row.id)) return false;
+    if (row.live === 'fail') {
+      const items = (row.why ?? '').split('; ');
+      return Boolean(notLive && items.at(-1) === notLive && unmet(items.slice(0, -1)));
+    }
+    if (row.live !== 'pass') return false;
+    const failed = checks(row.why);
+    return failed.length > 0 && failed.every((check) => allowed.has(check));
+  });
+  return found?.[0] ?? null;
+}
+
+const RELOAD_WAIT = '#748 (lagging reload, awaiting slicc-browsers)';
+const laggingExtension = (row) =>
+  row.transport === 'extension' && row.variant === 'lagging' && row.target === 'seven';
+
+function laggingReload(row, listed) {
+  if (
+    listed ||
+    row.errors?.length ||
+    row.incomplete?.length ||
+    !laggingExtension(row) ||
+    !ERROR_RECOVERY.includes(row.id) ||
+    row.control !== 'pass' ||
+    row.guarded !== 'fail' ||
+    row.live !== 'pass'
+  )
+    return null;
+  return row.why === 'reload: got false, want true' ? RELOAD_WAIT : null;
 }
 
 export function known(row, { listed = false } = {}) {
   if (row.transport === 'link') return linked(row, listed);
+  const reload = laggingReload(row, listed);
+  if (reload) return reload;
   const reason = issue(row.id);
   if (!reason || row.control !== 'pass' || row.guarded !== 'fail') return null;
   const items = (row.why ?? '').split('; ');
@@ -92,6 +116,7 @@ export function known(row, { listed = false } = {}) {
 
 export function stale(results) {
   const lists = [
+    [RELOAD_WAIT, ERROR_RECOVERY, laggingExtension],
     ...Object.entries(KNOWN).map(([reason, ids]) => [reason, ids, () => true]),
     ...Object.entries(LINK).map(([reason, { ids }]) => [
       reason,

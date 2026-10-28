@@ -87,14 +87,20 @@ test('state events and metadata', async (t) => {
   });
   await flush();
   assert.equal(JSON.stringify(wire.delivered.slice(mark)).includes('synthetic-withheld'), false);
-  entry.info.url = failed;
-  entry.info.title = failed;
+  entry.info.url = `${failed}?query-marker=synthetic-query#synthetic-fragment`;
+  entry.info.title = 'synthetic-protected-title';
   const listing = await wire.send('Target.getTargets');
   assert.equal(listing.error, undefined);
-  assert.equal(listing.result?.targetInfos?.[0]?.url, 'chrome-error://chromewebdata/');
-  assert.equal(listing.result?.targetInfos?.[0]?.title, 'chrome-error://chromewebdata/');
-  assert.equal(JSON.stringify(listing).includes(new URL(failed).origin), false);
+  assert.equal(listing.result?.targetInfos?.[0]?.url, new URL(failed).origin);
+  assert.equal(listing.result?.targetInfos?.[0]?.title, new URL(failed).origin);
   assert.equal(JSON.stringify(listing).includes(failed), false);
+  for (const marker of [
+    new URL(failed).pathname,
+    'synthetic-query',
+    'synthetic-fragment',
+    entry.info.title,
+  ])
+    assert.equal(JSON.stringify(listing).includes(marker), false);
 });
 
 test('state ordinary recovery', async (t) => {
