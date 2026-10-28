@@ -83,7 +83,7 @@ test('the shards split exactly the files npm test runs, on the Node the package 
   assert.equal(input('test-glob'), 'test/integration/*.test.mjs');
   assert.ok(pkg.scripts.test.endsWith(` '${input('test-glob')}'`), pkg.scripts.test);
   assert.doesNotMatch(pkg.scripts.test, /NODE_OPTIONS/);
-  assert.equal(input('node-version'), `'${pkg.engines.node.replace(/^>=/, '')}'`);
+  assert.equal(input('node-version'), `"${pkg.engines.node.replace(/^>=/, '')}"`);
   assert.equal(pkg.scripts.pretest, 'slicc-cdp install-browser');
   assert.ok(pkg.devDependencies['@ai-ecoverse/slicc-cdp']);
   assert.equal(pkg.devDependencies['playwright-core'], undefined);
