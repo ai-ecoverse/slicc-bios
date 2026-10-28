@@ -54,6 +54,14 @@ const PROBE_TRIES = 3;
 const PROBE_BUDGET = 1000;
 const ANSWER_MS = 1000;
 const WORKER_TYPES = new Set(['service_worker', 'shared_worker', 'worker']);
+const HISTORY_NAV = new Set([
+  'restore',
+  'restoreWithPost',
+  'historySameDocument',
+  'historyDifferentDocument',
+  'backForward',
+  'back_forward',
+]);
 const RUNTIME_META = new Set([
   'Runtime.enable',
   'Runtime.disable',
@@ -1415,6 +1423,10 @@ class Guard {
     proof.view = this.errorView(targetId, frames);
     if (!this.fresh(proof)) return null;
     for (const frame of frames) this.noteError(frame, nav.session);
+    if (frames[0].url === ERROR_PAGE && this.protectedFrame(frames[0]) && !nav.scrub) {
+      nav.scrub = this.scrubbing(nav, frames[0]);
+      nav.erred = true;
+    }
     this.targets.get(targetId).real = false;
     if (this.is.url(this.targets.get(targetId).reported))
       for (const [id, entry] of this.sessions)
@@ -1473,7 +1485,7 @@ class Guard {
     }
   }
 
-  cut(sessionId, parent) {
+  cut(sessionId, parent, guardTarget = true) {
     this.quarantined.delete(sessionId);
     if (this.blocked.has(sessionId)) return;
     this.blocked.add(sessionId);
@@ -1481,7 +1493,7 @@ class Guard {
     if (this.waiting.delete(sessionId))
       void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
     const targetId = this.sessions.get(sessionId)?.targetId;
-    if (targetId) {
+    if (targetId && guardTarget) {
       const known = this.targets.get(targetId) ?? { url: '' };
       this.targets.set(targetId, { ...known, was: true, guarded: true });
     }
@@ -1655,7 +1667,7 @@ class Guard {
     this.gone.delete(sessionId);
     if (!this.sessions.has(sessionId)) this.sessions.set(sessionId, { targetId, parent });
     if (this.pendingTarget(targetId)) {
-      this.cut(sessionId, parent);
+      this.cut(sessionId, parent, false);
       return Promise.resolve(false);
     }
     if (!this.watching.has(sessionId)) {
@@ -2795,7 +2807,7 @@ class Guard {
     );
   }
 
-  noteStarted(id, frameId, url, loaderId, guardian) {
+  noteStarted(id, frameId, url, loaderId, guardian, holdInput = true) {
     const main = this.mainFrame(id);
     if (main !== undefined && frameId !== undefined && frameId !== main) return;
     const former = this.opening.get(id);
@@ -2806,10 +2818,12 @@ class Guard {
       former.url === url
     ) {
       former.guardian ||= guardian;
+      if (holdInput) this.uncommitted.add(id);
       return;
     }
     const open = { input: frameId, url, loaderId, guardian };
-    this.uncommitted.add(id);
+    if (holdInput) this.uncommitted.add(id);
+    else this.uncommitted.delete(id);
     if (this.is.url(url)) {
       this.pendingCommit.add(id);
       open.commit = frameId;
@@ -2826,8 +2840,10 @@ class Guard {
       !this.opening.has(id);
     if (top) this.worlds.delete(id);
     const open = this.opening.get(id) ?? {};
-    if (open.loaderId && (top || same || open.input === frameId) && open.loaderId !== loaderId)
+    if (open.loaderId && (top || same || open.input === frameId) && open.loaderId !== loaderId) {
+      if (top && loaderId === undefined && !this.pendingCommit.has(id)) this.uncommitted.delete(id);
       return;
+    }
     if (top || same || open.input === frameId) {
       this.uncommitted.delete(id);
       delete open.input;
@@ -2860,7 +2876,15 @@ class Guard {
     const committed = method === 'Page.frameNavigated' || method === 'Page.navigatedWithinDocument';
     if (!started && !committed) return;
     for (const id of this.boundSessions(sessionId)) {
-      if (started) this.noteStarted(id, frameId, params.url, params.loaderId, guardian);
+      if (started)
+        this.noteStarted(
+          id,
+          frameId,
+          params.url,
+          params.loaderId,
+          guardian,
+          HISTORY_NAV.has(params.navigationType) || this.is.url(params.url)
+        );
       else this.noteCommitted(id, method, frameId, params.frame?.parentId, params.frame?.loaderId);
     }
     if (started)

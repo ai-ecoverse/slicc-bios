@@ -515,7 +515,12 @@ export async function guardHost(t, path) {
         ([row, own, path, lag, paintDelay]) => window.guards.open(row, own, path, lag, paintDelay),
         [row, own, path, detachDelay, paintDelay]
       );
+      const close = async () => {
+        rows.delete(row);
+        await seven.evaluate((row) => window.guards.close(row), row).catch(() => false);
+      };
       const client = {
+        close,
         transport: path,
         transportEvents,
         events,
@@ -567,10 +572,7 @@ export async function guardHost(t, path) {
         client,
         unguarded,
         transportVariant: true,
-        close: async () => {
-          rows.delete(row);
-          await seven.evaluate((row) => window.guards.close(row), row).catch(() => false);
-        },
+        close,
       };
     };
   return Object.assign(clientFactory, { vault: chrome.vault.origin });
