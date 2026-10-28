@@ -773,7 +773,9 @@ class Guard {
           ? {
               targetInfo: {
                 ...this.eventFields(params.targetInfo),
-                ...(this.fresh(proof) && this.is.url(params.targetInfo.url)
+                ...(method === 'Target.attachedToTarget' &&
+                this.fresh(proof) &&
+                this.is.url(params.targetInfo.url)
                   ? {
                       url: new URL(params.targetInfo.url).origin,
                       title: new URL(params.targetInfo.url).origin,
@@ -3010,10 +3012,11 @@ class Guard {
       return;
     }
     const raw = info ?? {};
-    const shown = this.masked(raw, this.fresh(proof));
+    const originOnly = message.method === 'Target.attachedToTarget' && this.fresh(proof);
+    const shown = this.masked(raw, originOnly);
     const names = (value) =>
       typeof value === 'string' && value.includes('://') && this.is.url(value);
-    const origin = this.fresh(proof) && this.is.url(raw.url) && shown.url === shown.title;
+    const origin = originOnly && this.is.url(raw.url) && shown.url === shown.title;
     if ([raw.url, raw.title, shown.url, shown.title].some(names) && !origin) return;
     this.deliver(
       {

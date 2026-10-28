@@ -11,11 +11,11 @@ import {
   protocol,
 } from './guard-state-fixture.mjs';
 
-async function stranded(t, type = 'page') {
+async function stranded(t, type = 'page', root = 'stranded') {
   const wire = protocol(t);
-  const entry = wire.target('stranded', type);
+  const entry = wire.target('stranded', type, plainFrame(root));
   const session = await wire.attach('stranded');
-  entry.tree.frame = errorFrame('stranded');
+  entry.tree.frame = errorFrame(root);
   entry.info.url = `${failed}?private=query#fragment`;
   entry.info.title = 'private error title';
   wire.emit({
@@ -89,24 +89,32 @@ for (const method of [...browserExits, ...sessionExits]) {
   });
 }
 
-test('stranded listings and target events expose only the protected origin', async (t) => {
-  const { wire } = await stranded(t);
-  const listed = await wire.send('Target.getTargets');
-  assert.equal(listed.result.targetInfos.length, 1);
-  assert.equal(listed.result.targetInfos[0].url, protectedOrigin);
-  assert.equal(listed.result.targetInfos[0].title, protectedOrigin);
-  const event = wire.delivered.find((message) => message.method === 'Target.targetInfoChanged');
-  assert.ok(event);
-  assert.equal(event.params.targetInfo.url, protectedOrigin);
-  assert.equal(event.params.targetInfo.title, protectedOrigin);
-  for (const marker of [
-    new URL(failed).pathname,
-    'private=query',
-    '#fragment',
-    'private error title',
-  ])
-    assert.equal(JSON.stringify([listed, event]).includes(marker), false);
-});
+for (const root of ['stranded', 'separate-root']) {
+  test(`stranded explicit metadata is origin-only while discovery remains sealed: ${root}`, async (t) => {
+    const { wire, entry } = await stranded(t, 'page', root);
+    wire.emit({ method: 'Target.targetCreated', params: { targetInfo: entry.info } });
+    await flush();
+    const listed = await wire.send('Target.getTargets');
+    assert.equal(listed.result.targetInfos.length, 1);
+    assert.equal(listed.result.targetInfos[0].url, protectedOrigin);
+    assert.equal(listed.result.targetInfos[0].title, protectedOrigin);
+    const discovery = wire.delivered.filter((message) =>
+      ['Target.targetInfoChanged', 'Target.targetCreated'].includes(message.method)
+    );
+    for (const event of discovery) {
+      assert.equal(event.params.targetInfo.url, 'chrome-error://chromewebdata/');
+      assert.equal(event.params.targetInfo.title, 'chrome-error://chromewebdata/');
+    }
+    assert.equal(JSON.stringify(discovery).includes(protectedOrigin), false);
+    for (const marker of [
+      new URL(failed).pathname,
+      'private=query',
+      '#fragment',
+      'private error title',
+    ])
+      assert.equal(JSON.stringify([listed, discovery]).includes(marker), false);
+  });
+}
 
 test('stranded recovery clears the reported-URL latch but never admits inherited navigation', async (t) => {
   const { wire, entry, session } = await stranded(t);
