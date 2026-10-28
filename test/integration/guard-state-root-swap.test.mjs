@@ -21,6 +21,11 @@ for (const method of [
             sessionId: 'guard-swap-owner',
             params: { frameId: 'swap-middle', parentFrameId: 'swap-old-root' },
           });
+          wire.emit({
+            method: 'Page.frameNavigated',
+            sessionId: 'guard-swap-owner',
+            params: { frame: plainFrame('swap-middle', 'swap-old-root') },
+          });
         }
         wire.emit({
           method: 'Page.frameNavigated',

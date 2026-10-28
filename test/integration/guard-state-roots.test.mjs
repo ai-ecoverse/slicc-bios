@@ -104,6 +104,8 @@ test('state authoritative publication', { timeout: 5000 }, async (t) => {
 for (const commitSession of ['guard-oopif', 'client-oopif']) {
   test(`state authoritative ordinary ${commitSession}`, { timeout: 5000 }, async (t) => {
     const w = protocol(t);
+    w.target('parent', 'page', plainFrame('parent-root'));
+    await w.attach('parent');
     w.target('oopif', 'iframe', plainFrame('oopif-root', 'parent-root'));
     const s = await w.attach('oopif');
     w.emit({

@@ -44,6 +44,8 @@ function catalogProtocol(t) {
       if (method === 'Page.getFrameTree') return { frameTree: { frame } };
       if (method === 'Page.getNavigationHistory')
         return { currentIndex: 0, entries: [{ id: 1, url: info.url, title: info.title }] };
+      if (method === 'DOM.getDocument')
+        return { root: { nodeId: 1, nodeName: '#document', children: [] } };
       if (method === 'Page.navigate') {
         if (!(wipeHeld && params.url === BLANKED)) commit(params.url);
         return { frameId: frame.id };

@@ -29,6 +29,8 @@ for (const kind of ['ordinary', 'blank']) {
       const session = await wire.attach('publication');
       await wire.send('Page.enable', {}, session);
       await wire.send('Runtime.enable', {}, session);
+      if (method === 'Page.screencastFrame')
+        assert.equal((await wire.send('Page.startScreencast', {}, session)).error, undefined);
       if (kind === 'blank')
         entry.tree.frame = { id: 'publication', url: BLANKED, securityOrigin: '://' };
       wire.hold((message) => message.method === 'Page.getFrameTree');
@@ -87,6 +89,8 @@ for (const kind of ['ordinary', 'blank']) {
       const shot = await wire.send('Page.captureScreenshot', {}, session);
       assert.equal(shot.error, undefined);
       assert.equal(shot.result.data, 'c3ludGhldGlj');
+      if (method === 'Page.screencastFrame')
+        assert.equal((await wire.send('Page.startScreencast', {}, session)).error, undefined);
       wire.emit({ method, params, sessionId: session });
       await flush();
       assert.equal(

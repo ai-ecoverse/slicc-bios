@@ -322,7 +322,7 @@ test('restored quarantine a fresh commit supersedes error evidence before it can
   cleanup(t, wire);
   const entry = wire.target('fresh-commit');
   const session = await wire.attach('fresh-commit');
-  wire.hold((message) => message.method === 'Page.getFrameTree');
+  wire.hold((message) => message.method === 'Page.getFrameTree' && message.sessionId === session);
   hint(wire, entry);
   await flush();
   const first = wire.held[0];
