@@ -2636,7 +2636,10 @@ class Guard {
             loading &&
             frame.securityOrigin === '' &&
             (frame.url === '' ||
-              (parent === undefined && !frame.parentId && frame.url === 'about:blank'))
+              (parent === undefined &&
+                !frame.parentId &&
+                (frame.url === 'about:blank' ||
+                  (/^https?:\/\//.test(frame.url) && !this.is.url(frame.url)))))
           )) ||
         (parent !== undefined && frame.parentId !== parent) ||
         (node.childFrames !== undefined && !Array.isArray(node.childFrames)) ||
