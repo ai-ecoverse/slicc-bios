@@ -4,6 +4,7 @@ import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { actPackage, boot, ready, run, screen, shows } from './bios.mjs';
 import { devtools as boundPort, debuggerUrl, launch } from './chrome.mjs';
+import { prepareDiagnostic } from './diagnostic-rig.mjs';
 import { extensionOver } from './fake-extension.mjs';
 import { linkNode } from './linked-node.mjs';
 import { CURRENT_EXTENSION, display, EXTENSIONS, realExtension, SEVEN } from './real-extension.mjs';
@@ -198,62 +199,74 @@ for (const extension of [CURRENT_EXTENSION, ...EXTENSIONS]) {
     const real = await realExtension({ extension, rules: ['MAP vault.sliccy.ai 127.0.0.1'] });
     t.after(() => real.close());
     const page = await real.page(t);
-    await page.goto(SEVEN);
-    await ready(page);
-    assert.deepEqual(await automation(page), { via: 'extension' });
-    const title = 'Recovered ordinary tab';
-    real.overrides.set('/recovery-seed.html', '<!doctype html><title>seed</title><h1>Seed</h1>');
-    real.overrides.set(
-      '/recovery-hop.html',
-      '<!doctype html><meta http-equiv="refresh" content="0;url=' + VAULT + '">'
-    );
-    real.overrides.set(
-      '/recovery-destination.html',
-      '<!doctype html><title>' + title + '</title><h1>' + title + '</h1>'
-    );
-    const address = (path) => {
-      const url = new URL(path, real.url);
-      url.hostname = 'localhost';
-      return url.href;
-    };
-    hits.length = 0;
-    await run(
-      page,
-      'playwright-cli open ' +
-        address('/recovery-seed.html') +
-        ' > /tmp/blocked-hop 2>&1; playwright-cli goto ' +
-        address('/recovery-hop.html') +
-        ' >> /tmp/blocked-hop 2>&1; playwright-cli eval "document.title" >> /tmp/blocked-hop 2>&1; echo "hop-""finished"'
-    );
-    await shows(page, 'hop-finished', 180000);
-    const hopped = await read(page, '/tmp/blocked-hop');
-    assert.doesNotMatch(hopped, /VAULT-MARK|VAULT-BODY-MARK|chrome-extension:/, hopped);
-    assert.ok(
-      !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
-      'the protected document was not served'
-    );
-    const destination = address('/recovery-destination.html');
-    await run(
-      page,
-      'playwright-cli goto ' +
-        destination +
-        ' > /tmp/blocked-recovery 2>&1; echo recovery-goto-$? >> /tmp/blocked-recovery; playwright-cli eval "location.href + \' \' + document.title" >> /tmp/blocked-recovery 2>&1; echo recovery-read-$? >> /tmp/blocked-recovery; playwright-cli snapshot >> /tmp/blocked-recovery 2>&1; echo recovery-snapshot-$? >> /tmp/blocked-recovery; echo "recovery-""finished"'
-    );
-    await shows(page, 'recovery-finished', 180000);
-    const recovered = await read(page, '/tmp/blocked-recovery');
-    for (const step of ['goto', 'read', 'snapshot'])
-      assert.match(recovered, new RegExp('^recovery-' + step + '-0$', 'm'), recovered);
-    assert.ok(recovered.includes(destination + ' ' + title), recovered);
-    assert.match(recovered, /heading "Recovered ordinary tab"/, recovered);
-    assert.doesNotMatch(
-      recovered,
-      /slicc: refused|VAULT-MARK|VAULT-BODY-MARK|chrome-extension:/,
-      recovered
-    );
-    assert.ok(
-      !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
-      'recovery did not serve the protected document'
-    );
+    const diagnostic = await prepareDiagnostic(real, page, extension, 'recovery');
+    try {
+      await page.goto(SEVEN);
+      await ready(page);
+      await diagnostic.installCli();
+      await diagnostic.mark('blocked-hop:start');
+      assert.deepEqual(await automation(page), { via: 'extension' });
+      const title = 'Recovered ordinary tab';
+      real.overrides.set('/recovery-seed.html', '<!doctype html><title>seed</title><h1>Seed</h1>');
+      real.overrides.set(
+        '/recovery-hop.html',
+        '<!doctype html><meta http-equiv="refresh" content="0;url=' + VAULT + '">'
+      );
+      real.overrides.set(
+        '/recovery-destination.html',
+        '<!doctype html><title>' + title + '</title><h1>' + title + '</h1>'
+      );
+      const address = (path) => {
+        const url = new URL(path, real.url);
+        url.hostname = 'localhost';
+        return url.href;
+      };
+      hits.length = 0;
+      await run(
+        page,
+        'playwright-cli open ' +
+          address('/recovery-seed.html') +
+          ' > /tmp/blocked-hop 2>&1; playwright-cli goto ' +
+          address('/recovery-hop.html') +
+          ' >> /tmp/blocked-hop 2>&1; playwright-cli eval "document.title" >> /tmp/blocked-hop 2>&1; echo "hop-""finished"'
+      );
+      await shows(page, 'hop-finished', 180000);
+      const hopped = await read(page, '/tmp/blocked-hop');
+      await diagnostic.cli(hopped, 'blocked-hop');
+      await diagnostic.mark('blocked-hop:finished');
+      assert.doesNotMatch(hopped, /VAULT-MARK|VAULT-BODY-MARK|chrome-extension:/, hopped);
+      assert.ok(
+        !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
+        'the protected document was not served'
+      );
+      const destination = address('/recovery-destination.html');
+      await diagnostic.mark('recovery:start');
+      await run(
+        page,
+        'playwright-cli goto ' +
+          destination +
+          ' > /tmp/blocked-recovery 2>&1; echo recovery-goto-$? >> /tmp/blocked-recovery; playwright-cli eval "location.href + \' \' + document.title" >> /tmp/blocked-recovery 2>&1; echo recovery-read-$? >> /tmp/blocked-recovery; playwright-cli snapshot >> /tmp/blocked-recovery 2>&1; echo recovery-snapshot-$? >> /tmp/blocked-recovery; echo "recovery-""finished"'
+      );
+      await shows(page, 'recovery-finished', 180000);
+      const recovered = await read(page, '/tmp/blocked-recovery');
+      await diagnostic.cli(recovered, 'recovery');
+      await diagnostic.mark('recovery:finished');
+      for (const step of ['goto', 'read', 'snapshot'])
+        assert.match(recovered, new RegExp('^recovery-' + step + '-0$', 'm'), recovered);
+      assert.ok(recovered.includes(destination + ' ' + title), recovered);
+      assert.match(recovered, /heading "Recovered ordinary tab"/, recovered);
+      assert.doesNotMatch(
+        recovered,
+        /slicc: refused|VAULT-MARK|VAULT-BODY-MARK|chrome-extension:/,
+        recovered
+      );
+      assert.ok(
+        !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
+        'recovery did not serve the protected document'
+      );
+    } finally {
+      await diagnostic.collect();
+    }
   });
 }
 
@@ -266,122 +279,129 @@ for (const extension of EXTENSIONS.filter(
     const real = await realExtension({ extension, rules: ['MAP vault.sliccy.ai 127.0.0.1'] });
     t.after(() => real.close());
     const page = await real.page(t);
-    await page.goto(SEVEN);
-    await ready(page);
-    assert.deepEqual(await automation(page), { via: 'extension' });
-    await page.evaluate(() => {
-      globalThis.contextOrigins = [];
-      globalThis.sliccExtension.cdp.on((message) => {
-        if (message.method === 'Runtime.executionContextCreated')
-          globalThis.contextOrigins.push({
-            origin: message.params.context.origin,
-            type: message.params.context.auxData?.type ?? null,
-          });
+    const diagnostic = await prepareDiagnostic(real, page, extension, 'legacy');
+    try {
+      await page.goto(SEVEN);
+      await ready(page);
+      assert.deepEqual(await automation(page), { via: 'extension' });
+      await page.evaluate(() => {
+        globalThis.contextOrigins = [];
+        globalThis.sliccExtension.cdp.on((message) => {
+          if (message.method === 'Runtime.executionContextCreated')
+            globalThis.contextOrigins.push({
+              origin: message.params.context.origin,
+              type: message.params.context.auxData?.type ?? null,
+            });
+        });
       });
-    });
-    real.overrides.set(
-      '/driven.html',
-      '<!doctype html><title>driven</title><h1>Driven past the real shield</h1>'
-    );
-    const target = new URL('/driven.html', real.url);
-    target.hostname = 'localhost';
-    await run(
-      page,
-      `playwright-cli open about:blank > /tmp/pw 2>&1 && playwright-cli eval 'self.origin' > /tmp/origin 2>&1 && playwright-cli goto ${target.href} >> /tmp/pw 2>&1 && playwright-cli snapshot >> /tmp/pw 2>&1; echo pw-$? >> /tmp/pw; echo "pw-""done"`
-    );
-    await shows(page, 'pw-done', 180000);
-    const pw = await read(page, '/tmp/pw');
-    assert.doesNotMatch(pw, /slicc: refused/, pw);
-    assert.match(pw, /heading "Driven past the real shield"/, pw);
-    assert.match(pw, /pw-0/, pw);
-    const origin = await read(page, '/tmp/origin');
-    assert.match(origin, /null/, `the opened about:blank's self.origin: ${origin}`);
-    assert.doesNotMatch(origin, /chrome-extension:/, origin);
-    hits.length = 0;
-    await run(
-      page,
-      `playwright-cli goto ${VAULT} > /tmp/vault 2>&1; playwright-cli eval 'self.origin + " " + location.href + " " + document.title' >> /tmp/vault 2>&1; echo "vault-""done"`
-    );
-    await shows(page, 'vault-done', 60000);
-    const vault = await read(page, '/tmp/vault');
-    assert.ok(
-      !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
-      `the vault was served: ${hits.join(' ')}`
-    );
-    assert.doesNotMatch(vault, /VAULT-MARK|VAULT-BODY-MARK/, vault);
-    assert.doesNotMatch(vault, /chrome-extension:/, vault);
-    real.overrides.set(
-      '/hop.html',
-      `<!doctype html><title>hop</title><meta http-equiv="refresh" content="0;url=${VAULT}">`
-    );
-    const hop = new URL('/hop.html', real.url);
-    hop.hostname = 'localhost';
-    await run(
-      page,
-      `playwright-cli goto ${hop.href} > /tmp/hop 2>&1; playwright-cli eval 'self.origin + " " + location.href' >> /tmp/hop 2>&1; echo "hop-""done"`
-    );
-    await shows(page, 'hop-done', 60000);
-    const hopped = await read(page, '/tmp/hop');
-    assert.doesNotMatch(hopped, /chrome-extension:|VAULT-MARK/, hopped);
-    assert.ok(
-      !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
-      `the vault was served after a hop: ${hits.join(' ')}`
-    );
-    await run(
-      page,
-      `playwright-cli goto about:blank > /tmp/inherit 2>&1; playwright-cli goto ' about:blank' >> /tmp/inherit 2>&1; playwright-cli eval 'self.origin' >> /tmp/inherit 2>&1; echo "inherit-""done"`
-    );
-    await shows(page, 'inherit-done', 60000);
-    const inherit = await read(page, '/tmp/inherit');
-    assert.match(
-      inherit,
-      /slicc: refused: a browser-side navigation to about: gives the page the origin of whatever drives the browser/,
-      inherit
-    );
-    assert.doesNotMatch(inherit, /chrome-extension:/, inherit);
-    const recoveryVersions = ['7.5.1', '7.6.2', '7.6.3', '7.6.4'];
-    if (recoveryVersions.includes(extension.version)) {
-      const recoveredTitle = `Recovered ordinary ${extension.version}`;
       real.overrides.set(
-        '/recovered.html',
-        `<!doctype html><title>${recoveredTitle}</title><h1>${recoveredTitle}</h1>`
+        '/driven.html',
+        '<!doctype html><title>driven</title><h1>Driven past the real shield</h1>'
       );
-      const recoveredUrl = new URL('/recovered.html', target.href);
-      recoveredUrl.searchParams.set('extension', extension.version);
+      const target = new URL('/driven.html', real.url);
+      target.hostname = 'localhost';
       await run(
         page,
-        `playwright-cli goto ${recoveredUrl.href} > /tmp/recovery 2>&1; echo recovery-goto-$? >> /tmp/recovery; playwright-cli eval 'location.href + " " + document.title' >> /tmp/recovery 2>&1; echo recovery-read-$? >> /tmp/recovery; playwright-cli snapshot >> /tmp/recovery 2>&1; echo recovery-snapshot-$? >> /tmp/recovery; echo "recovery-""done"`
+        `playwright-cli open about:blank > /tmp/pw 2>&1 && playwright-cli eval 'self.origin' > /tmp/origin 2>&1 && playwright-cli goto ${target.href} >> /tmp/pw 2>&1 && playwright-cli snapshot >> /tmp/pw 2>&1; echo pw-$? >> /tmp/pw; echo "pw-""done"`
       );
-      await shows(page, 'recovery-done', 180000);
-      const recovered = await read(page, '/tmp/recovery');
-      assert.match(recovered, /^recovery-goto-0$/m, recovered);
-      assert.match(recovered, /^recovery-read-0$/m, recovered);
-      assert.match(recovered, /^recovery-snapshot-0$/m, recovered);
-      assert.ok(recovered.includes(`${recoveredUrl.href} ${recoveredTitle}`), recovered);
-      assert.match(
-        recovered,
-        new RegExp(`heading "${recoveredTitle.replaceAll('.', '\\.')}"`),
-        recovered
+      await shows(page, 'pw-done', 180000);
+      const pw = await read(page, '/tmp/pw');
+      assert.doesNotMatch(pw, /slicc: refused/, pw);
+      assert.match(pw, /heading "Driven past the real shield"/, pw);
+      assert.match(pw, /pw-0/, pw);
+      const origin = await read(page, '/tmp/origin');
+      assert.match(origin, /null/, `the opened about:blank's self.origin: ${origin}`);
+      assert.doesNotMatch(origin, /chrome-extension:/, origin);
+      hits.length = 0;
+      await run(
+        page,
+        `playwright-cli goto ${VAULT} > /tmp/vault 2>&1; playwright-cli eval 'self.origin + " " + location.href + " " + document.title' >> /tmp/vault 2>&1; echo "vault-""done"`
       );
-      assert.doesNotMatch(
-        recovered,
-        /slicc: refused|VAULT-MARK|VAULT-BODY-MARK|chrome-extension:/,
-        recovered
-      );
+      await shows(page, 'vault-done', 60000);
+      const vault = await read(page, '/tmp/vault');
       assert.ok(
         !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
-        `the vault was served during recovery: ${hits.join(' ')}`
+        `the vault was served: ${hits.join(' ')}`
       );
+      assert.doesNotMatch(vault, /VAULT-MARK|VAULT-BODY-MARK/, vault);
+      assert.doesNotMatch(vault, /chrome-extension:/, vault);
+      real.overrides.set(
+        '/hop.html',
+        `<!doctype html><title>hop</title><meta http-equiv="refresh" content="0;url=${VAULT}">`
+      );
+      const hop = new URL('/hop.html', real.url);
+      hop.hostname = 'localhost';
+      await run(
+        page,
+        `playwright-cli goto ${hop.href} > /tmp/hop 2>&1; playwright-cli eval 'self.origin + " " + location.href' >> /tmp/hop 2>&1; echo "hop-""done"`
+      );
+      await shows(page, 'hop-done', 60000);
+      const hopped = await read(page, '/tmp/hop');
+      assert.doesNotMatch(hopped, /chrome-extension:|VAULT-MARK/, hopped);
+      assert.ok(
+        !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
+        `the vault was served after a hop: ${hits.join(' ')}`
+      );
+      await run(
+        page,
+        `playwright-cli goto about:blank > /tmp/inherit 2>&1; playwright-cli goto ' about:blank' >> /tmp/inherit 2>&1; playwright-cli eval 'self.origin' >> /tmp/inherit 2>&1; echo "inherit-""done"`
+      );
+      await shows(page, 'inherit-done', 60000);
+      const inherit = await read(page, '/tmp/inherit');
+      await diagnostic.cli(inherit, 'legacy-inherit');
+      await diagnostic.mark('legacy-inherit:finished');
+      assert.match(
+        inherit,
+        /slicc: refused: a browser-side navigation to about: gives the page the origin of whatever drives the browser/,
+        inherit
+      );
+      assert.doesNotMatch(inherit, /chrome-extension:/, inherit);
+      const recoveryVersions = ['7.5.1', '7.6.2', '7.6.3', '7.6.4'];
+      if (recoveryVersions.includes(extension.version)) {
+        const recoveredTitle = `Recovered ordinary ${extension.version}`;
+        real.overrides.set(
+          '/recovered.html',
+          `<!doctype html><title>${recoveredTitle}</title><h1>${recoveredTitle}</h1>`
+        );
+        const recoveredUrl = new URL('/recovered.html', target.href);
+        recoveredUrl.searchParams.set('extension', extension.version);
+        await run(
+          page,
+          `playwright-cli goto ${recoveredUrl.href} > /tmp/recovery 2>&1; echo recovery-goto-$? >> /tmp/recovery; playwright-cli eval 'location.href + " " + document.title' >> /tmp/recovery 2>&1; echo recovery-read-$? >> /tmp/recovery; playwright-cli snapshot >> /tmp/recovery 2>&1; echo recovery-snapshot-$? >> /tmp/recovery; echo "recovery-""done"`
+        );
+        await shows(page, 'recovery-done', 180000);
+        const recovered = await read(page, '/tmp/recovery');
+        assert.match(recovered, /^recovery-goto-0$/m, recovered);
+        assert.match(recovered, /^recovery-read-0$/m, recovered);
+        assert.match(recovered, /^recovery-snapshot-0$/m, recovered);
+        assert.ok(recovered.includes(`${recoveredUrl.href} ${recoveredTitle}`), recovered);
+        assert.match(
+          recovered,
+          new RegExp(`heading "${recoveredTitle.replaceAll('.', '\\.')}"`),
+          recovered
+        );
+        assert.doesNotMatch(
+          recovered,
+          /slicc: refused|VAULT-MARK|VAULT-BODY-MARK|chrome-extension:/,
+          recovered
+        );
+        assert.ok(
+          !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
+          `the vault was served during recovery: ${hits.join(' ')}`
+        );
+      }
+      const origins = await page.evaluate(() => globalThis.contextOrigins);
+      assert.ok(real.extension, 'the harness extension is loaded');
+      const harness = ({ origin, type }) =>
+        type === 'isolated' && origin === `chrome-extension://${real.extension.id}`;
+      assert.deepEqual(
+        origins.filter((each) => !harness(each) && /^chrome-extension:/i.test(each.origin)),
+        [],
+        `a driven tab's context had the extension's origin: ${JSON.stringify(origins)}`
+      );
+    } finally {
+      await diagnostic.collect();
     }
-    const origins = await page.evaluate(() => globalThis.contextOrigins);
-    assert.ok(real.extension, 'the harness extension is loaded');
-    const harness = ({ origin, type }) =>
-      type === 'isolated' && origin === `chrome-extension://${real.extension.id}`;
-    assert.deepEqual(
-      origins.filter((each) => !harness(each) && /^chrome-extension:/i.test(each.origin)),
-      [],
-      `a driven tab's context had the extension's origin: ${JSON.stringify(origins)}`
-    );
   });
 }
 

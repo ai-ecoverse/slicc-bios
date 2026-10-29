@@ -1,0 +1,122 @@
+diff --git a/crates/cdp-client/src/cdp.rs b/crates/cdp-client/src/cdp.rs
+index 2982d12..6b9ec5c 100644
+--- a/crates/cdp-client/src/cdp.rs
++++ b/crates/cdp-client/src/cdp.rs
+@@ -705,7 +705,10 @@ impl Cdp {
+         Ok(())
+     }
+ 
++    #[track_caller]
+     fn refusal(&self) -> String {
++        let site = std::panic::Location::caller();
++        crate::diagnostic::record("base:refusal", json!({"file":site.file(),"line":site.line()}));
+         self.closed.clone().unwrap_or_else(|| format!("{}\n", self.guard.refusal()))
+     }
+ 
+diff --git a/crates/cdp-client/src/lib.rs b/crates/cdp-client/src/lib.rs
+index 488efa0..d3ef1bd 100644
+--- a/crates/cdp-client/src/lib.rs
++++ b/crates/cdp-client/src/lib.rs
+@@ -1,3 +1,4 @@
++pub mod diagnostic;
+ pub mod cdp;
+ pub mod connect;
+ pub mod contract;
+diff --git a/crates/cdp-client/src/navigation_away.rs b/crates/cdp-client/src/navigation_away.rs
+index 53201f3..d4198af 100644
+--- a/crates/cdp-client/src/navigation_away.rs
++++ b/crates/cdp-client/src/navigation_away.rs
+@@ -41,12 +41,15 @@ impl Cdp {
+     }
+ 
+     pub fn navigate_away(&mut self, target: &str, destination: &str) -> Result<bool, String> {
++        crate::diagnostic::record("away:enter", json!({}));
+         self.connected()?;
+         if self.guard.url(destination) { return Err(self.refusal()) }
+         let Ok(parsed) = url::Url::parse(destination) else { return Ok(false) };
+         let url = parsed.to_string();
+         if !self.away_url(&url) { return Ok(false) }
+-        let result = match self.raw_call("Target.getTargetInfo", json!({"targetId":target}), None, DOCUMENT_CHECK) {
++        let info_reply = self.raw_call("Target.getTargetInfo", json!({"targetId":target}), None, DOCUMENT_CHECK);
++        crate::diagnostic::record("away:target-info", crate::diagnostic::reply(&info_reply));
++        let result = match info_reply {
+             Ok(result) => result,
+             Err(message) if super::transport_error(&message) => return Err(message),
+             Err(_) => return Ok(false),
+@@ -57,7 +60,10 @@ impl Cdp {
+         }
+         let current = info.get("url").and_then(Value::as_str).unwrap_or("");
+         if !self.info_protected(info, &[]) && !self.guard.error_page_url(current)
+-            && !self.documents.get(target).is_some_and(|doc| self.sealed(doc)) { return Ok(false) }
++            && !self.documents.get(target).is_some_and(|doc| self.sealed(doc)) {
++            crate::diagnostic::record("away:not-protected-or-error", json!({}));
++            return Ok(false)
++        }
+         self.targets.insert(target.to_string(), info.clone());
+         self.protect_target(target);
+         self.away_operation = Some(Operation { target: target.to_string(), ready: false, tainted: false });
+@@ -68,7 +74,7 @@ impl Cdp {
+         operation.ready = result.is_ok();
+         operation.tainted |= result.is_err();
+         if result.is_err() { self.protect_target(target); }
+-        result.map(|_| true).map_err(|_| self.away_failure())
++        result.map(|_| true).map_err(|message| { crate::diagnostic::record("away:failure", crate::diagnostic::error(&message)); self.away_failure() })
+     }
+ 
+     fn navigate_away_locked(&mut self, target: &str, url: &str) -> Result<(), String> {
+@@ -78,7 +84,9 @@ impl Cdp {
+         let old_loaders = self.document_versions.iter().filter(|((owner, _), _)| owner == target).map(|(_, loader)| loader.clone()).collect();
+         self.away_sessions.insert(session.clone(), Away { destination: self.guard.resource_key(url).unwrap(), old_loaders, ..Away::default() });
+         let navigated = (|| {
+-            let delegated = match self.raw_exchange("Page.getFrameTree", json!({}), Some(&session), DOCUMENT_CHECK, false) {
++            let tree_reply = self.raw_exchange("Page.getFrameTree", json!({}), Some(&session), DOCUMENT_CHECK, false);
++            crate::diagnostic::record("away:tree", crate::diagnostic::reply(&tree_reply));
++            let delegated = match tree_reply {
+                 Ok(tree) if tree == json!({"frameTree":{"frame":{"id":"0","url":"chrome-error://chromewebdata/","securityOrigin":"://"}}}) => true,
+                 Ok(tree) => {
+                     let root = tree.get("frameTree").ok_or_else(|| self.away_failure())?;
+@@ -92,13 +100,13 @@ impl Cdp {
+                 Err(_) => return Err(self.away_failure()),
+             };
+             self.away_sessions.get_mut(&session).unwrap().delegated = delegated;
+-            self.raw_call("Page.enable", json!({}), Some(&session), DOCUMENT_CHECK)?;
++            self.raw_call("Page.enable", json!({}), Some(&session), DOCUMENT_CHECK).inspect_err(|message| crate::diagnostic::record("away:enable-refused", crate::diagnostic::error(message)))?;
+             if self.away_sessions[&session].tainted { return Err(self.away_failure()) }
+             if !delegated {
+                 self.raw_call("Fetch.enable", json!({"patterns":[{"urlPattern":"*","resourceType":"Document","requestStage":"Request"}]}), Some(&session), DOCUMENT_CHECK)?;
+             }
+             self.away_sessions.get_mut(&session).unwrap().started = true;
+-            let result = self.raw_call("Page.navigate", json!({"url":url}), Some(&session), Duration::from_secs(30))?;
++            let result = self.raw_call("Page.navigate", json!({"url":url}), Some(&session), Duration::from_secs(30)).inspect_err(|message| crate::diagnostic::record("away:navigate-refused", crate::diagnostic::error(message)))?;
+             if result.get("errorText").is_some() || result.get("isDownload").and_then(Value::as_bool) == Some(true) { return Err(self.refusal()) }
+             let frame = result.get("frameId").and_then(Value::as_str).filter(|id| !id.is_empty()).ok_or_else(|| self.refusal())?;
+             let loader = result.get("loaderId").and_then(Value::as_str).filter(|id| !id.is_empty()).ok_or_else(|| self.refusal())?;
+diff --git a/crates/playwright-cli/src/commands.rs b/crates/playwright-cli/src/commands.rs
+index 087734b..fa1d3f0 100644
+--- a/crates/playwright-cli/src/commands.rs
++++ b/crates/playwright-cli/src/commands.rs
+@@ -389,6 +389,7 @@ fn cmd_goto(
+     report.url(url.as_str());
+     if cdp.guard().url(url) { return Output::err(format!("{}\n", cdp.guard().refusal_for_url(url))) }
+     let selected = invocation.flags.get("tab").cloned().or_else(|| state.current.clone());
++    cdp_client::diagnostic::record("goto:selected", serde_json::json!({"explicit":invocation.flags.contains_key("tab"),"saved":state.current.is_some(),"selected":selected.is_some()}));
+     let escaped = selected.as_deref().map(|target| browser::navigate_away(cdp, state, target, url)).transpose();
+     match escaped {
+         Ok(Some(true)) => {
+@@ -399,13 +400,14 @@ fn cmd_goto(
+         Err(message) => return Output::err(message),
+         _ => {}
+     }
++    cdp_client::diagnostic::record("goto:base-path", serde_json::json!({}));
+     let pages = match browser::list_pages(cdp) {
+         Ok(pages) => pages,
+-        Err(message) => return Output::err(message),
++        Err(message) => { cdp_client::diagnostic::record("goto:list-failed", cdp_client::diagnostic::error(&message)); return Output::err(message) },
+     };
+     let target = match resolve_target(cdp, invocation, state, &pages, true) {
+         Ok(target) => target,
+-        Err(message) => return Output::err(message),
++        Err(message) => { cdp_client::diagnostic::record("goto:resolve-failed", cdp_client::diagnostic::error(&message)); return Output::err(message) },
+     };
+     report.tab(&target);
+     report.begin(cdp);

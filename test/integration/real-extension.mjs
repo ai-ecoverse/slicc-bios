@@ -33,6 +33,8 @@ export const [EXTENSION] = EXTENSIONS;
 export const SEVEN = 'https://seven.sliccy.ai/';
 
 async function unpacked(extension) {
+  if (extension.version === '7.9.16' && process.env.SLICC_DIAGNOSTIC_EXTENSION)
+    return process.env.SLICC_DIAGNOSTIC_EXTENSION;
   const dir = join(process.cwd(), 'node_modules', '.cache', `slicc-extension-${extension.version}`);
   const root = join(dir, 'unpacked');
   if (existsSync(join(root, 'manifest.json'))) return root;
