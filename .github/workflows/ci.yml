@@ -28,8 +28,10 @@ jobs:
           cp test/integration/diagnostic-extension.mjs node_modules/.cache/diagnostic-extension-source/extension/diagnostic.js
           cd node_modules/.cache/diagnostic-extension-source
           node "$GITHUB_WORKSPACE/test/integration/diagnostic-build.mjs" extension-install "$PWD" timeout -k 30 900 npm ci
-          node "$GITHUB_WORKSPACE/test/integration/diagnostic-build.mjs" extension "$PWD" timeout -k 30 900 npm run build
+          node "$GITHUB_WORKSPACE/test/integration/diagnostic-build.mjs" extension-seven "$PWD" timeout -k 30 900 node scripts/build-seven.mjs
+          node "$GITHUB_WORKSPACE/test/integration/diagnostic-build.mjs" extension-six "$PWD" timeout -k 30 900 node scripts/build-six.mjs
       - name: Build traced CLI
+        if: always()
         run: |
           git clone --branch v1.42.10 --single-branch https://github.com/ai-ecoverse/slicc-cdp.git node_modules/.cache/diagnostic-cdp-source
           git -C node_modules/.cache/diagnostic-cdp-source apply "$GITHUB_WORKSPACE/test/integration/diagnostic-cli.patch"

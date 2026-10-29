@@ -12,6 +12,17 @@ child.stderr.on('data', (chunk) => {
   tail = lines.pop();
   for (const line of lines) {
     const code = /^error\[(E\d+)\]/.exec(line);
+    const node = /^(?:Error:|✘ \[ERROR\]|npm error code) (.{1,400})$/.exec(line);
+    if (node)
+      errors.push({
+        buildError: node[1].replace(/https?:\/\/[^\s'"<>]+/g, (value) => {
+          try {
+            return new URL(value).origin;
+          } catch {
+            return 'invalid-url';
+          }
+        }),
+      });
     const file = /^\s*--> (crates\/[a-z-]+\/src\/[a-z_]+\.rs):(\d+):(\d+)/.exec(line);
     if (code) errors.push({ code: code[1] });
     if (file) errors.push({ file: file[1], line: Number(file[2]), column: Number(file[3]) });
