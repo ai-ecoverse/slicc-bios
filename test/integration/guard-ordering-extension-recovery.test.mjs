@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { PROTECTED } from '../../src/seed/guard.js';
 import {
   failed,
   flush,
@@ -20,6 +21,92 @@ async function knownTab(t, observed = true, id = 'known') {
   if (observed) original.close();
   await flush();
   return wire;
+}
+
+for (const [site, destination] of [
+  ['seven', `${protectedOrigin}/os/`],
+  ['vault', 'https://vault.sliccy.ai/page'],
+]) {
+  test(`a remembered extension error cannot issue a fresh session after an offline live ${site} commit`, {
+    timeout: 5000,
+  }, async (t) => {
+    const wire = await knownTab(t);
+    const stranded = await wire.connect();
+    await stranded.attach('known');
+    stranded.close();
+    await flush();
+    wire.commit('known', destination);
+    await flush();
+    const fresh = await wire.connect();
+    for (const method of ['Target.getTargetInfo', 'Target.attachToTarget']) {
+      const reply = await fresh.send(method, { targetId: 'known', flatten: true });
+      assert.equal(reply.error?.message, PROTECTED);
+      assert.equal(
+        reply.result,
+        undefined,
+        'a live commit cannot produce recovery proof or a session'
+      );
+      assert.equal(JSON.stringify(reply).includes(destination), false);
+    }
+  });
+
+  for (const [method, params] of [
+    ['Page.enable', {}],
+    ['Page.navigate', { url: ordinary }],
+    ['Page.reload', {}],
+    ['Page.navigateToHistoryEntry', { entryId: 1 }],
+  ]) {
+    test(`a fresh recalled extension session refuses ${method} after a live ${site} commit`, {
+      timeout: 5000,
+    }, async (t) => {
+      const wire = await knownTab(t);
+      const fresh = await wire.connect();
+      const session = await fresh.attach('known');
+      wire.commit('known', destination);
+      await flush();
+      const mark = wire.calls.length;
+      for (const [read, result] of [
+        [
+          'Page.getFrameTree',
+          {
+            frameTree: {
+              frame: { id: '0', url: 'chrome-error://chromewebdata/', securityOrigin: '://' },
+            },
+          },
+        ],
+        [
+          'Page.getNavigationHistory',
+          {
+            currentIndex: 0,
+            entries: [
+              {
+                id: 0,
+                url: 'chrome-error://chromewebdata/',
+                userTypedURL: 'chrome-error://chromewebdata/',
+                title: '',
+              },
+            ],
+          },
+        ],
+      ]) {
+        const reply = await fresh.send(read, {}, session);
+        if (reply.error) {
+          assert.equal(reply.error.message, PROTECTED);
+          assert.equal(reply.result, undefined);
+        } else assert.deepEqual(reply, { id: reply.id, sessionId: session, result });
+        for (const origin of [protectedOrigin, new URL(destination).origin])
+          assert.equal(JSON.stringify(reply).includes(origin), false);
+      }
+      const refused = await fresh.send(method, params, session);
+      assert.equal(refused.error?.message, PROTECTED);
+      assert.equal(refused.result, undefined);
+      assert.equal(
+        wire.calls.slice(mark).some((call) => call.method === method),
+        false,
+        'the caller navigation never reaches the backend'
+      );
+    });
+  }
 }
 
 for (const observed of [false, true]) {
