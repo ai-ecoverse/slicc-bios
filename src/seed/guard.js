@@ -906,11 +906,14 @@ class Guard {
     if (this.closed || this.gone.has(sessionId))
       return Promise.resolve({ error: { code: -32000, message: UNGUARDED } });
     const placement = this.placements.get(sessionId);
+    const nav = this.navSessions.get(sessionId);
     return new Promise((resolve) => {
       const id = ++this.next;
       let timer;
       const answer = (message) => {
         clearTimeout(timer);
+        if (method === 'Page.getFrameTree' && !message.error)
+          this.rememberTreeError(message.result?.frameTree, sessionId, nav);
         const current = this.scopes.get(placement)?.sessionId;
         if (placement === undefined || current === undefined || current === sessionId) {
           if (method === 'Page.getFrameTree' && placement !== undefined)
@@ -3070,6 +3073,24 @@ class Guard {
       target.guarded = false;
       target.was = false;
     }
+  }
+
+  rememberTreeError(tree, sessionId, nav) {
+    if (!nav || this.navs.get(nav.targetId) !== nav) return;
+    const frames = this.documentFrames(tree);
+    const frame = frames?.length === 1 ? frames[0] : undefined;
+    if (
+      !frame ||
+      frame.parentId ||
+      frame.url !== ERROR_PAGE ||
+      typeof frame.unreachableUrl !== 'string' ||
+      !URL.canParse(frame.unreachableUrl) ||
+      !this.is.url(frame.unreachableUrl)
+    )
+      return;
+    const origin = new URL(frame.unreachableUrl).origin;
+    if (origin === 'null' || !this.is.url(origin)) return;
+    this.rememberError({ ...frame, unreachableUrl: origin }, sessionId, nav.targetId, nav);
   }
 
   rememberError(frame, sessionId, targetId, nav) {

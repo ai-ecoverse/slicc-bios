@@ -62,6 +62,38 @@ for (const observed of [false, true]) {
   });
 }
 
+test('a protected error fetched by the guard survives withheld extension commits and ordinary reconnect hints', async (t) => {
+  const wire = recoveryProtocol(t);
+  wire.target('withheld-commit');
+  const first = await wire.connect();
+  await first.attach('withheld-commit');
+  wire.blocked('withheld-commit', false);
+  const entry = wire.targets.get('withheld-commit');
+  entry.tree.frame.unreachableUrl = protectedOrigin;
+  assert.equal(
+    (await first.send('Target.getTargetInfo', { targetId: 'withheld-commit' })).error,
+    undefined
+  );
+  first.close();
+  await flush();
+  entry.info = { ...entry.info, url: ordinary, title: 'ordinary' };
+  entry.tree.frame = {
+    id: 'root-withheld-commit',
+    url: ordinary,
+    securityOrigin: new URL(ordinary).origin,
+    loaderId: 'unobserved-ordinary',
+  };
+  const next = await wire.connect();
+  const attached = await next.attach('withheld-commit');
+  assert.match(
+    (await next.send('Runtime.evaluate', {}, attached)).error?.message ?? '',
+    /^slicc: refused:/
+  );
+  wire.commit('withheld-commit', ordinary);
+  await flush();
+  assert.equal((await next.send('Runtime.evaluate', {}, attached)).error, undefined);
+});
+
 test('an unknown extension error tab stays refused across fresh guards', async (t) => {
   const wire = recoveryProtocol(t);
   wire.target('unknown');
