@@ -16,6 +16,7 @@ export function recoveryProtocol(t, hook = browserHook) {
   const guards = new Set();
   const calls = [];
   let serial = 0;
+  let pendingTree;
   const emit = (message) => {
     for (const listener of listeners) listener(message);
   };
@@ -72,7 +73,16 @@ export function recoveryProtocol(t, hook = browserHook) {
         enabled.delete(params.sessionId);
       }
       if (method === 'Page.enable') enabled.add(sessionId);
-      if (method === 'Page.getFrameTree') return { frameTree: entry.tree };
+      if (method === 'Page.getFrameTree') {
+        const frameTree = structuredClone(entry.tree);
+        const waiting = pendingTree;
+        if (waiting) {
+          pendingTree = undefined;
+          waiting.seen();
+          await waiting.ready;
+        }
+        return { frameTree };
+      }
       if (method === 'Page.getNavigationHistory')
         return {
           currentIndex: 0,
@@ -108,6 +118,18 @@ export function recoveryProtocol(t, hook = browserHook) {
     target,
     commit,
     emit,
+    pauseTree() {
+      let seen;
+      let release;
+      const requested = new Promise((resolve) => {
+        seen = resolve;
+      });
+      const ready = new Promise((resolve) => {
+        release = resolve;
+      });
+      pendingTree = { seen, ready };
+      return { requested, release };
+    },
     blocked(id, observed = true) {
       const entry = targets.get(id);
       entry.info = { ...entry.info, url: failed, title: 'synthetic error' };
