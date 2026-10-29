@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { argv, env } from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -59,6 +60,8 @@ export async function debuggerUrl(port, ms = 30000) {
 }
 
 export async function devtools(chrome, ms = 30000) {
+  if (chrome.diagnosticPort)
+    return { port: chrome.diagnosticPort, browser: await debuggerUrl(chrome.diagnosticPort, ms) };
   const file = join(chrome.profile, 'DevToolsActivePort');
   const end = Date.now() + ms;
   for (;;) {
@@ -163,8 +166,56 @@ function networkTrace(cdp, origin) {
   };
 }
 
+const diagnosticPorts = new Set();
+
 export async function launch({ agent = false, vault = true, tools = true, ...overrides } = {}) {
+  let diagnosticPort;
+  if (env.SLICC_DIAGNOSTIC_LOCAL === '1') {
+    if (Date.now() >= Date.parse('2026-10-30T07:55:00Z'))
+      throw new Error('the local diagnostic Chrome window is closed');
+    if (overrides.realistic) throw new Error('the local diagnostic never runs headed Chrome');
+    for (let port = 9300; port <= 9309; port += 1) {
+      if (diagnosticPorts.has(port)) continue;
+      const probe = createServer();
+      try {
+        await new Promise((resolve, reject) => {
+          probe.once('error', reject);
+          probe.listen(port, '127.0.0.1', resolve);
+        });
+        await new Promise((resolve) => probe.close(resolve));
+        diagnosticPort = port;
+        diagnosticPorts.add(port);
+        break;
+      } catch (error) {
+        if (error.code !== 'EADDRINUSE') throw error;
+      }
+    }
+    if (!diagnosticPort) throw new Error('no free diagnostic port in 9300-9309');
+    overrides.headless = true;
+    overrides.args = [
+      ...(overrides.args ?? []),
+      `--remote-debugging-port=${diagnosticPort}`,
+      '--renderer-process-limit=1',
+      '--disable-gpu',
+    ];
+  }
   const chrome = await start({ ...options, ...overrides });
+  if (diagnosticPort) {
+    chrome.diagnosticPort = diagnosticPort;
+    const dir = env.SLICC_DIAGNOSTIC_DIR;
+    await mkdir(dir, { recursive: true });
+    await appendFile(
+      join(dir, 'local-chrome.jsonl'),
+      JSON.stringify({
+        layer: 'rig',
+        stage: 'chrome',
+        pid: chrome.pid,
+        profile: chrome.profile,
+        port: diagnosticPort,
+        headless: true,
+      }) + '\n'
+    );
+  }
   const fake = vault ? await startFakeVault({ agentReal: true }) : null;
   const github = await startFakeGitHub();
   const page = chrome.page;

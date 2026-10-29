@@ -60,7 +60,11 @@ export function diagnosticShape(value = {}) {
       type: item.type,
       url: origin(item.url),
     }));
-  if (value.frame) out.frame = frame(value.frame);
+  const params = value.params ?? value;
+  if (params.frame) out.frame = frame(params.frame);
+  if (params.type === 'Navigation' || params.type === 'BackForwardCacheRestore')
+    out.type = params.type;
+  if (params.request?.url) out.requestOrigin = origin(params.request.url);
   for (const key of ['url', 'pendingUrl', 'unreachableUrl', 'securityOrigin'])
     if (typeof value[key] === 'string') out[key] = origin(value[key]);
   if (value.errorReason !== undefined) out.errorReason = value.errorReason === 'BlockedByClient';
@@ -92,6 +96,7 @@ function initDiagnostic(shape) {
         navSession: label(nav?.session),
         navDone: nav?.done,
         navFailed: nav?.failed,
+        navAdmitted: nav?.admitted,
         guarded: guard.targets.get(target)?.guarded,
         reported: shape({ url: guard.targets.get(target)?.reported }).url,
       };
@@ -143,6 +148,13 @@ function initDiagnostic(shape) {
       'received',
       'call',
       'answer',
+      'checkHint',
+      'refreshHint',
+      'event',
+      'discardEvent',
+      'noteCommitted',
+      'rememberExistingNavError',
+      'settledRecoveryLoad',
     ]) {
       const original = guard[name];
       guard[name] = function (...args) {
@@ -156,20 +168,124 @@ function initDiagnostic(shape) {
               : name === 'rememberError'
                 ? args[2]
                 : name === 'rememberTreeError'
-                  ? args[2]?.targetId
-                  : guard.sessions.get(message?.sessionId)?.targetId;
+                  ? (args[2]?.targetId ?? guard.sessions.get(args[1])?.targetId)
+                  : name === 'call'
+                    ? (guard.navSessions.get(args[2])?.targetId ??
+                      guard.sessions.get(args[2])?.targetId)
+                    : ['checkHint', 'noteCommitted'].includes(name)
+                      ? guard.sessions.get(message)?.targetId
+                      : (message?.params?.targetId ??
+                        guard.sessions.get(message?.sessionId)?.targetId);
         const method =
-          typeof message === 'object' ? message?.method : name === 'call' ? message : undefined;
+          name === 'noteCommitted'
+            ? args[1]
+            : typeof message === 'object'
+              ? message?.method
+              : name === 'call'
+                ? message
+                : undefined;
         const detail = {
           method,
-          request: typeof message === 'object' ? message?.id : undefined,
+          request: typeof message?.id === 'number' ? message.id : undefined,
           session: label(
-            typeof message === 'object' ? message?.sessionId : name === 'call' ? args[2] : undefined
+            ['checkHint', 'noteCommitted'].includes(name)
+              ? message
+              : ['rememberError', 'rememberTreeError'].includes(name)
+                ? args[1]
+                : typeof message === 'object'
+                  ? message?.sessionId
+                  : name === 'call'
+                    ? args[2]
+                    : undefined
           ),
           ...state(target),
         };
         if (['rememberError', 'learn'].includes(name)) detail.shape = shape(message);
-        if (name === 'rememberTreeError') detail.shape = shape({ frameTree: message });
+        if (name === 'rememberTreeError') {
+          detail.shape = shape({ frameTree: message });
+          const nav = args[2];
+          const frames = this.documentFrames(message);
+          const frame = frames?.length === 1 ? frames[0] : undefined;
+          detail.revisionMatches = this.revisions.get(nav?.targetId) === args[3];
+          detail.recordGate = !nav
+            ? 'no-nav-for-tree-session'
+            : this.navs.get(nav.targetId) !== nav
+              ? 'nav-replaced'
+              : this.revisions.get(nav.targetId) !== args[3]
+                ? 'revision-changed'
+                : !frame
+                  ? 'not-one-valid-frame'
+                  : frame.parentId
+                    ? 'child-root'
+                    : frame.url !== 'chrome-error://chromewebdata/'
+                      ? 'not-exact-error-url'
+                      : typeof frame.unreachableUrl !== 'string'
+                        ? 'unreachable-not-string'
+                        : !URL.canParse(frame.unreachableUrl)
+                          ? 'unreachable-not-parseable'
+                          : !this.is.url(frame.unreachableUrl)
+                            ? 'unreachable-not-protected'
+                            : new URL(frame.unreachableUrl).origin === 'null'
+                              ? 'null-origin'
+                              : !this.is.url(new URL(frame.unreachableUrl).origin)
+                                ? 'origin-not-protected'
+                                : 'eligible-tree';
+        }
+        if (name === 'rememberError') {
+          const record = this.tabs.get(target);
+          const nav = args[3];
+          detail.recordGate = !record?.admitted
+            ? 'tab-not-admitted'
+            : !nav
+              ? 'no-nav'
+              : this.navSessions.get(args[1]) !== nav
+                ? 'not-own-nav-session'
+                : this.targets.get(target)?.type !== 'page'
+                  ? 'not-page'
+                  : message?.parentId
+                    ? 'child-frame'
+                    : !this.protectedFrame(message)
+                      ? 'not-protected-frame'
+                      : !message?.url?.startsWith('chrome-error:')
+                        ? 'not-error-frame'
+                        : 'eligible-record';
+        }
+        if (name === 'checkHint') {
+          detail.ticketCommit = Boolean(args[1]?.commit);
+          detail.ticketVerified = args[1]?.verified === true;
+          detail.pendingTarget = this.pendingTarget(target);
+          detail.shown = this.shown.has(message);
+        }
+        if (name === 'noteCommitted') {
+          const open = this.opening.get(message);
+          detail.opening = Boolean(open);
+          detail.loaderMatches = !open?.loaderId || open.loaderId === args[4];
+          detail.parent = args[3] !== undefined;
+        }
+        if (name === 'refreshHint' && message.params?.frame) {
+          const frame = message.params.frame;
+          detail.sessions = [...this.boundSessions(message.sessionId)]
+            .filter((id) => this.quarantined.has(id))
+            .map((id) => {
+              const targetId = this.sessions.get(id)?.targetId;
+              return {
+                session: label(id),
+                accepted: args[1]?.has(id) === true,
+                pending: this.pendingTarget(targetId),
+                page: this.targets.get(targetId)?.type === 'page',
+                rootMatches: frame.id === this.frameRoots.get(targetId),
+                loader: Boolean(frame.loaderId),
+                ordinary:
+                  !this.protectedFrame(frame) &&
+                  !this.unsafeUrl(frame.url) &&
+                  !/^about:|^data:/.test(frame.url),
+              };
+            });
+        }
+        if (name === 'event' || name === 'discardEvent') {
+          detail.quarantined = this.quarantined.has(message.sessionId);
+          detail.errorDocument = this.errorDocument(message.sessionId, message.method);
+        }
         if (name === 'refuse') {
           detail.error = shape({
             error:
@@ -191,6 +307,7 @@ function initDiagnostic(shape) {
             shape: shape(incoming),
           });
         } else log(`${name}:enter`, detail);
+        const loadOwn = name === 'settledRecoveryLoad' ? this.proofCommits.get(target) : undefined;
         const result = original.apply(this, args);
         const done = (value) => {
           const verdict =
@@ -206,6 +323,27 @@ function initDiagnostic(shape) {
             ...state(target),
             verdict,
             proof: this.recoveries.has(message ?? {}),
+            ...(['rememberError', 'rememberTreeError'].includes(name)
+              ? { recordedError: Boolean(this.tabs.get(target)?.error) }
+              : {}),
+            ...(name === 'checkHint'
+              ? {
+                  ticketStillCurrent: this.quarantined.get(message) === args[1],
+                  ticketCommit: Boolean(args[1]?.commit),
+                  ticketVerified: args[1]?.verified === true,
+                  pendingTarget: this.pendingTarget(target),
+                }
+              : {}),
+            ...(name === 'settledRecoveryLoad'
+              ? {
+                  sameOwnCommit: this.proofCommits.get(target) === loadOwn,
+                  ownCommitPresent: Boolean(loadOwn),
+                  quarantined: this.quarantined.has(message.sessionId),
+                  pendingTarget: this.pendingTarget(target),
+                  errorDocument: this.errorDocument(message.sessionId, message.method),
+                  locked: this.locked(message.sessionId),
+                }
+              : {}),
             ...(name === 'call' ? { shape: shape(value) } : {}),
           });
         };
@@ -268,6 +406,44 @@ function initDiagnostic(shape) {
   globalThis.sliccDiagnostic = { records, emit, instrument };
 }
 
+export function splitDiagnosticCli(text) {
+  const stages = new Set([
+    'base:refusal',
+    'away:enter',
+    'away:target-info',
+    'away:not-protected-or-error',
+    'away:failure',
+    'away:tree',
+    'away:enable-refused',
+    'away:navigate-refused',
+    'goto:selected',
+    'goto:base-path',
+    'goto:list-failed',
+    'goto:resolve-failed',
+  ]);
+  const parsed = [];
+  const clean = text
+    .split('\n')
+    .filter((line) => {
+      if (!line.startsWith('SLICC_DIAGNOSTIC ')) return true;
+      try {
+        const record = JSON.parse(line.slice(17));
+        if (
+          !record ||
+          Object.keys(record).sort().join(',') !== 'detail,stage' ||
+          !stages.has(record.stage)
+        )
+          return true;
+        parsed.push(record);
+        return false;
+      } catch {
+        return true;
+      }
+    })
+    .join('\n');
+  return { parsed, clean };
+}
+
 export async function prepareDiagnostic(_real, page, extension, kind) {
   await page.init(`() => (${initDiagnostic.toString()})(${diagnosticShape.toString()})`);
   const mark = async (phase) =>
@@ -284,8 +460,25 @@ export async function prepareDiagnostic(_real, page, extension, kind) {
       records.map((record) => JSON.stringify(record)).join('\n') + '\n'
     );
   };
+  await page.evaluate(
+    ({ scenarioVersion, rollForward }) =>
+      globalThis.sliccDiagnostic.emit({
+        layer: 'rig',
+        stage: 'extension-selected',
+        scenarioVersion,
+        candidateVersion: rollForward ? '7.9.16' : scenarioVersion,
+      }),
+    {
+      scenarioVersion: extension.version,
+      rollForward: process.env.SLICC_DIAGNOSTIC_ROLL_FORWARD === '1',
+    }
+  );
   const installCli = async () => {
-    if (extension.version !== '7.9.16' || !process.env.SLICC_DIAGNOSTIC_CLI) return;
+    if (
+      !process.env.SLICC_DIAGNOSTIC_CLI ||
+      (extension.version !== '7.9.16' && process.env.SLICC_DIAGNOSTIC_ROLL_FORWARD !== '1')
+    )
+      return;
     const bytes = (await readFile(process.env.SLICC_DIAGNOSTIC_CLI)).toString('base64');
     const installed = await page.evaluate(async (bytes) => {
       const client = await globalThis.sliccKernelClient();
@@ -318,10 +511,7 @@ export async function prepareDiagnostic(_real, page, extension, kind) {
     return true;
   };
   const cli = async (text, phase) => {
-    const parsed = text
-      .split('\n')
-      .filter((line) => line.startsWith('SLICC_DIAGNOSTIC '))
-      .map((line) => JSON.parse(line.slice(17)));
+    const { parsed, clean } = splitDiagnosticCli(text);
     const exits = [...text.matchAll(/recovery-(goto|read|snapshot)-(\d+)/g)].map((match) => ({
       step: match[1],
       code: Number(match[2]),
@@ -334,6 +524,7 @@ export async function prepareDiagnostic(_real, page, extension, kind) {
       },
       { parsed, exits, phase }
     );
+    return clean;
   };
   return { mark, collect, installCli, cli };
 }

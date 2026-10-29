@@ -837,7 +837,7 @@ class Guard {
 
   metadataEvent(message, proof) {
     const { method, sessionId, params = {} } = message;
-    return {
+    const metadata = {
       method,
       ...(sessionId ? { sessionId } : {}),
       params: {
@@ -860,6 +860,31 @@ class Guard {
           : {}),
       },
     };
+    if (method === 'Page.frameNavigated' && params.frame && !params.frame.parentId) {
+      const targetId = this.sessions.get(sessionId)?.targetId;
+      const nav = this.navs.get(targetId);
+      const owned = this.proofCommits.get(targetId);
+      if (
+        owned?.accepted &&
+        /^https?:/.test(owned.url) &&
+        nav?.admitted &&
+        !nav.failed &&
+        !nav.retired &&
+        this.navSessions.get(nav.session) === nav &&
+        owned.epoch === this.proofEpoch.get(targetId) &&
+        owned.id === params.frame.id &&
+        owned.loader === params.frame.loaderId &&
+        owned.url === this.framed(params.frame) &&
+        this.tabs.get(targetId)?.admitted &&
+        this.shown.has(sessionId) &&
+        !this.blocked.has(sessionId) &&
+        !this.gone.has(sessionId)
+      ) {
+        const safe = this.redact({ url: owned.url }).params.url;
+        if (safe === owned.url) metadata.params.frame.url = safe;
+      }
+    }
+    return metadata;
   }
 
   deliver(message, release = true, source = message, proof) {
@@ -911,10 +936,12 @@ class Guard {
     return new Promise((resolve) => {
       const id = ++this.next;
       let timer;
-      const answer = (message) => {
+      const answer = async (message) => {
         clearTimeout(timer);
-        if (method === 'Page.getFrameTree' && !message.error)
+        if (method === 'Page.getFrameTree' && !message.error) {
           this.rememberTreeError(message.result?.frameTree, sessionId, nav, revision);
+          if (!nav) await this.rememberExistingNavError(message.result?.frameTree, sessionId);
+        }
         const current = this.scopes.get(placement)?.sessionId;
         if (placement === undefined || current === undefined || current === sessionId) {
           if (method === 'Page.getFrameTree' && placement !== undefined)
@@ -927,7 +954,7 @@ class Guard {
       answer.sessionId = sessionId;
       timer = setTimeout(() => {
         this.internal.delete(id);
-        answer({ id, sessionId, error: { code: -32000, message: UNGUARDED } });
+        void answer({ id, sessionId, error: { code: -32000, message: UNGUARDED } });
       }, NAV_MS);
       timer.unref?.();
       this.internal.set(id, answer);
@@ -3081,6 +3108,27 @@ class Guard {
     }
   }
 
+  async rememberExistingNavError(tree, sessionId) {
+    const frames = this.documentFrames(tree);
+    const frame = frames?.length === 1 ? frames[0] : undefined;
+    if (!frame || frame.parentId || frame.url !== ERROR_PAGE || !this.protectedFrame(frame)) return;
+    const targetId = this.sessions.get(sessionId)?.targetId;
+    const nav = this.navs.get(targetId);
+    if (
+      this.targets.get(targetId)?.type !== 'page' ||
+      !this.tabs.get(targetId)?.admitted ||
+      !nav?.admitted ||
+      !nav.done ||
+      nav.failed ||
+      nav.retired ||
+      !nav.session ||
+      this.navSessions.get(nav.session) !== nav ||
+      this.relatedHeld(targetId)
+    )
+      return;
+    await this.answered(this.call('Page.getFrameTree', {}, nav.session));
+  }
+
   rememberTreeError(tree, sessionId, nav, revision) {
     if (
       !nav ||
@@ -3870,6 +3918,8 @@ class Guard {
     if (this.navSessions.has(sessionId))
       return this.navEvent(message, this.navSessions.get(sessionId));
     if (this.placements.has(sessionId)) return;
+    if (await this.settledRecoveryLoad(message))
+      return this.deliver({ method, sessionId, params: { timestamp: message.params.timestamp } });
     if (method.startsWith('Target.') && (await this.targetEvent(message))) return;
     if (this.deferredStyle(message)) return;
     if (this.locked(sessionId) && (pageScoped(method) || method === 'Page.screencastFrame')) return;
@@ -4052,6 +4102,64 @@ class Guard {
       if (!world.ids.has(result.executionContextId))
         world.ids.set(result.executionContextId, false);
     }
+  }
+
+  async settledRecoveryLoad(message) {
+    if (
+      message.method !== 'Page.loadEventFired' ||
+      typeof message.params?.timestamp !== 'number' ||
+      !Number.isFinite(message.params.timestamp)
+    )
+      return false;
+    const { sessionId } = message;
+    const entry = this.sessions.get(sessionId);
+    const nav = this.navs.get(entry?.targetId);
+    const owned = this.proofCommits.get(entry?.targetId);
+    let ticket = this.quarantined.get(sessionId);
+    const commit = ticket?.commit;
+    if (
+      !entry ||
+      !nav ||
+      !ticket ||
+      !owned?.accepted ||
+      this.targets.get(entry.targetId)?.type !== 'page' ||
+      !URL.canParse(owned.url)
+    )
+      return false;
+    const url = new URL(owned.url);
+    url.hash = '';
+    if (!['http:', 'https:'].includes(url.protocol)) return false;
+    if (commit) {
+      if (owned.id !== commit.id || owned.loader !== commit.loaderId || url.href !== commit.url)
+        return false;
+    } else {
+      const hint = ticket.hint?.params?.targetInfo;
+      if (hint?.targetId !== entry.targetId || hint.url !== owned.url) return false;
+    }
+    const deadline = Date.now() + ANSWER_MS;
+    while (ticket?.checking && Date.now() < deadline) {
+      await this.answered(ticket.checking);
+      const next = this.quarantined.get(sessionId);
+      if (next === ticket) break;
+      ticket = next;
+    }
+    if (!(await this.placed(sessionId))) return false;
+    return Boolean(
+      this.sessions.get(sessionId) === entry &&
+        this.navs.get(entry.targetId) === nav &&
+        this.navSessions.get(nav.session) === nav &&
+        !nav.failed &&
+        !nav.retired &&
+        this.proofCommits.get(entry.targetId) === owned &&
+        owned.epoch === this.proofEpoch.get(entry.targetId) &&
+        !this.quarantined.has(sessionId) &&
+        !this.blocked.has(sessionId) &&
+        !this.gone.has(sessionId) &&
+        this.shown.has(sessionId) &&
+        !this.pendingTarget(entry.targetId) &&
+        !this.errorDocument(sessionId, message.method) &&
+        !this.locked(sessionId)
+    );
   }
 
   async finishRecovery(was) {
@@ -4499,6 +4607,8 @@ class Guard {
       !inherits(frame.url)
     ) {
       this.recalled.delete(targetId);
+      const owned = this.proofCommits.get(targetId);
+      if (owned) owned.accepted = true;
       const record = this.tabs.get(targetId);
       if (record) delete record.error;
     }

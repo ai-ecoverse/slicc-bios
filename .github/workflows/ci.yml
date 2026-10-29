@@ -25,6 +25,7 @@ jobs:
         run: |
           git clone --branch v7.9.16 --single-branch https://github.com/ai-ecoverse/slicc-extension.git "$RUNNER_TEMP/diagnostic-extension-source"
           git -C "$RUNNER_TEMP/diagnostic-extension-source" apply "$GITHUB_WORKSPACE/test/integration/diagnostic-extension.patch"
+          git -C "$RUNNER_TEMP/diagnostic-extension-source" apply "$GITHUB_WORKSPACE/test/integration/diagnostic-extension-candidate.patch"
           cp test/integration/diagnostic-extension.mjs "$RUNNER_TEMP/diagnostic-extension-source/extension/diagnostic.js"
           cd "$RUNNER_TEMP/diagnostic-extension-source"
           node "$GITHUB_WORKSPACE/test/integration/diagnostic-build.mjs" extension-install "$PWD" timeout -k 30 900 npm ci
@@ -40,14 +41,29 @@ jobs:
           cd "$RUNNER_TEMP/diagnostic-cdp-source"
           node "$GITHUB_WORKSPACE/test/integration/diagnostic-build.mjs" cli "$PWD" timeout -k 30 900 cargo build --locked --release --target wasm32-wasip1 -p slicc-cdp -j 4
       - run: npx --no-install slicc-cdp install-browser
-      - name: Eleven diagnostic rows
+      - name: Protocol gates and security pins
         env:
+          SLICC_CDP_PORTS: 9300-9309
+          SLICC_DIAGNOSTIC_EXTENSION: ${{ runner.temp }}/diagnostic-extension-source/extension
+        run: |
+          timeout -k 30 900 node --test --test-concurrency=1 --test-timeout=60000 --test-reporter=junit --test-reporter-destination=diagnostic-artifacts/junit-gates.xml test/integration/diagnostic-fetch.test.mjs test/integration/diagnostic-output.test.mjs test/integration/guard-protected-navigation.test.mjs test/integration/guard-ordering-*.test.mjs test/integration/guard-lock-*.test.mjs test/integration/guard-forward-audit.test.mjs
+      - name: Native BFCache security
+        if: always()
+        env:
+          SLICC_CDP_PORTS: 9300-9309
+        run: |
+          timeout -k 30 900 xvfb-run -a node --test --test-concurrency=1 --test-timeout=600000 --test-global-setup=test/integration/global.mjs --test-reporter=junit --test-reporter-destination=diagnostic-artifacts/junit-bfcache.xml test/integration/guard-bfcache.test.mjs test/integration/bfcache-extension.test.mjs
+      - name: Eleven roll-forward scenarios and native security
+        if: always()
+        env:
+          SLICC_DIAGNOSTIC_ROLL_FORWARD: '1'
+          SLICC_CDP_PORTS: 9300-9309
           SLICC_DIAGNOSTIC_EXTENSION: ${{ runner.temp }}/diagnostic-extension-source/extension
           SLICC_DIAGNOSTIC_CLI: ${{ runner.temp }}/diagnostic-cdp-source/target/wasm32-wasip1/release/playwright-cli.wasm
           SLICC_DIAGNOSTIC_DIR: diagnostic-artifacts
         run: |
           mkdir -p diagnostic-artifacts
-          timeout -k 30 900 xvfb-run -a node --test --test-concurrency=1 --test-timeout=600000 --test-global-setup=test/integration/global.mjs --test-name-pattern="^real slicc-extension (7\.9\.16|7\.5\.1|7\.6\.2|7\.6\.3|7\.6\.4|7\.9\.13|7\.9\.5|7\.9\.4): (a blocked protected hop|playwright-cli opens about:blank)" --test-reporter=junit --test-reporter-destination=diagnostic-artifacts/junit-diagnostic.xml test/integration/cdp.test.mjs
+          timeout -k 30 900 xvfb-run -a node --test --test-concurrency=1 --test-timeout=600000 --test-global-setup=test/integration/global.mjs --test-name-pattern="^real slicc-extension (7\.9\.16|7\.5\.1|7\.6\.2|7\.6\.3|7\.6\.4|7\.9\.13|7\.9\.5|7\.9\.4): (a blocked protected hop|playwright-cli opens about:blank)|^the guard keeps seven|^a browser extension’s hidden world|^on the link path, playwright-cli: a goto" --test-reporter=junit --test-reporter-destination=diagnostic-artifacts/junit-diagnostic.xml test/integration/cdp.test.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:

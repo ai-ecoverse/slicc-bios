@@ -33,7 +33,10 @@ export const [EXTENSION] = EXTENSIONS;
 export const SEVEN = 'https://seven.sliccy.ai/';
 
 async function unpacked(extension) {
-  if (extension.version === '7.9.16' && process.env.SLICC_DIAGNOSTIC_EXTENSION)
+  if (
+    process.env.SLICC_DIAGNOSTIC_EXTENSION &&
+    (extension.version === '7.9.16' || process.env.SLICC_DIAGNOSTIC_ROLL_FORWARD === '1')
+  )
     return process.env.SLICC_DIAGNOSTIC_EXTENSION;
   const dir = join(process.cwd(), 'node_modules', '.cache', `slicc-extension-${extension.version}`);
   const root = join(dir, 'unpacked');

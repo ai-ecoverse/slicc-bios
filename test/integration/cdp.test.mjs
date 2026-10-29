@@ -234,8 +234,7 @@ for (const extension of [CURRENT_EXTENSION, ...EXTENSIONS]) {
           ' >> /tmp/blocked-hop 2>&1; playwright-cli eval "document.title" >> /tmp/blocked-hop 2>&1; echo "hop-""finished"'
       );
       await shows(page, 'hop-finished', 180000);
-      const hopped = await read(page, '/tmp/blocked-hop');
-      await diagnostic.cli(hopped, 'blocked-hop');
+      const hopped = await diagnostic.cli(await read(page, '/tmp/blocked-hop'), 'blocked-hop');
       await diagnostic.mark('blocked-hop:finished');
       assert.doesNotMatch(hopped, /VAULT-MARK|VAULT-BODY-MARK|chrome-extension:/, hopped);
       assert.ok(
@@ -251,8 +250,7 @@ for (const extension of [CURRENT_EXTENSION, ...EXTENSIONS]) {
           ' > /tmp/blocked-recovery 2>&1; echo recovery-goto-$? >> /tmp/blocked-recovery; playwright-cli eval "location.href + \' \' + document.title" >> /tmp/blocked-recovery 2>&1; echo recovery-read-$? >> /tmp/blocked-recovery; playwright-cli snapshot >> /tmp/blocked-recovery 2>&1; echo recovery-snapshot-$? >> /tmp/blocked-recovery; echo "recovery-""finished"'
       );
       await shows(page, 'recovery-finished', 180000);
-      const recovered = await read(page, '/tmp/blocked-recovery');
-      await diagnostic.cli(recovered, 'recovery');
+      const recovered = await diagnostic.cli(await read(page, '/tmp/blocked-recovery'), 'recovery');
       await diagnostic.mark('recovery:finished');
       for (const step of ['goto', 'read', 'snapshot'])
         assert.match(recovered, new RegExp('^recovery-' + step + '-0$', 'm'), recovered);
@@ -350,8 +348,7 @@ for (const extension of EXTENSIONS.filter(
         `playwright-cli goto about:blank > /tmp/inherit 2>&1; playwright-cli goto ' about:blank' >> /tmp/inherit 2>&1; playwright-cli eval 'self.origin' >> /tmp/inherit 2>&1; echo "inherit-""done"`
       );
       await shows(page, 'inherit-done', 60000);
-      const inherit = await read(page, '/tmp/inherit');
-      await diagnostic.cli(inherit, 'legacy-inherit');
+      const inherit = await diagnostic.cli(await read(page, '/tmp/inherit'), 'legacy-inherit');
       await diagnostic.mark('legacy-inherit:finished');
       assert.match(
         inherit,
