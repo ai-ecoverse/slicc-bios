@@ -142,7 +142,7 @@ for (const transport of ['direct', 'extension-browser']) {
       ['Page.reload', {}],
       ['Page.navigateToHistoryEntry', { entryId: 1 }],
     ]) {
-      test(`live protected ${site} refuses tree and ${method} over ${transport}`, {
+      test(`live protected ${site} returns a stand-in tree and refuses ${method} over ${transport}`, {
         timeout: 5000,
       }, async (t) => {
         const wire = navigationProtocol(t, transport);
@@ -153,9 +153,14 @@ for (const transport of ['direct', 'extension-browser']) {
         assert.equal((await client.send('Page.enable', {}, session)).error, undefined);
         await wire.commit(destination);
         const mark = wire.calls.length;
-        sealed(await client.send('Page.getFrameTree', {}, session), session, {
-          frameTree: {
-            frame: { id: '0', url: 'chrome-error://chromewebdata/', securityOrigin: '://' },
+        const tree = await client.send('Page.getFrameTree', {}, session);
+        assert.deepEqual(tree, {
+          id: tree.id,
+          sessionId: session,
+          result: {
+            frameTree: {
+              frame: { id: '0', url: 'chrome-error://chromewebdata/', securityOrigin: '://' },
+            },
           },
         });
         sealed(await client.send('Page.getNavigationHistory', {}, session), session, {
