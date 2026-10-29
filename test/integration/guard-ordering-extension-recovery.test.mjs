@@ -109,45 +109,61 @@ for (const [site, destination] of [
   }
 }
 
-for (const observed of [false, true]) {
-  test(`a known extension tab retains recovery across fresh guards with observed error ${observed}`, async (t) => {
-    const wire = await knownTab(t, observed);
-    const metadata = await wire.connect();
-    const info = await metadata.send('Target.getTargetInfo', { targetId: 'known' });
-    assert.equal(info.error, undefined, 'a fresh connection can identify the stranded known tab');
-    assert.equal(info.result.targetInfo.url, protectedOrigin);
-    assert.equal(JSON.stringify(info).includes(failed), false);
-    metadata.close();
-    await flush();
-    const recovery = await wire.connect();
-    const session = await recovery.attach('known');
-    for (const method of ['Runtime.evaluate', 'DOM.getDocument', 'Accessibility.getFullAXTree'])
-      assert.match(
-        (await recovery.send(method, {}, session)).error?.message ?? '',
-        /^slicc: refused:/
-      );
-    const destination = `${ordinary}?recovered`;
-    assert.equal(
-      (await recovery.send('Page.navigate', { url: destination }, session)).error,
-      undefined
+test('a known extension tab without a recorded error refuses fresh identification and metadata', async (t) => {
+  const wire = await knownTab(t, false);
+  const mark = wire.calls.length;
+  const fresh = await wire.connect();
+  for (const method of ['Target.getTargetInfo', 'Target.attachToTarget']) {
+    const reply = await fresh.send(method, { targetId: 'known', flatten: true });
+    assert.equal(reply.error?.message, PROTECTED);
+    assert.equal(reply.result, undefined);
+    assert.equal(JSON.stringify(reply).includes(failed), false);
+  }
+  assert.deepEqual((await fresh.send('Target.getTargets')).result, { targetInfos: [] });
+  assert.equal(
+    wire.calls.slice(mark).some((call) => call.method === 'Target.attachToTarget'),
+    false,
+    'a fresh guard never probes a tab without a recorded error'
+  );
+});
+
+test('a known extension tab retains recovery across fresh guards with an observed error', async (t) => {
+  const wire = await knownTab(t);
+  const metadata = await wire.connect();
+  const info = await metadata.send('Target.getTargetInfo', { targetId: 'known' });
+  assert.equal(info.error, undefined, 'a fresh connection can identify the stranded known tab');
+  assert.equal(info.result.targetInfo.url, protectedOrigin);
+  assert.equal(JSON.stringify(info).includes(failed), false);
+  metadata.close();
+  await flush();
+  const recovery = await wire.connect();
+  const session = await recovery.attach('known');
+  for (const method of ['Runtime.evaluate', 'DOM.getDocument', 'Accessibility.getFullAXTree'])
+    assert.match(
+      (await recovery.send(method, {}, session)).error?.message ?? '',
+      /^slicc: refused:/
     );
-    recovery.close();
-    await flush();
-    const reader = await wire.connect();
-    const attached = await reader.attach('known');
-    const content = await reader.send(
-      'Runtime.evaluate',
-      { expression: 'location.href + document.title' },
-      attached
-    );
-    assert.equal(content.error, undefined);
-    assert.equal(content.result.result.value, `${destination} recovered`);
-    assert.equal(
-      (await reader.send('Accessibility.getFullAXTree', {}, attached)).result.nodes[0].name.value,
-      'recovered'
-    );
-  });
-}
+  const destination = `${ordinary}?recovered`;
+  assert.equal(
+    (await recovery.send('Page.navigate', { url: destination }, session)).error,
+    undefined
+  );
+  recovery.close();
+  await flush();
+  const reader = await wire.connect();
+  const attached = await reader.attach('known');
+  const content = await reader.send(
+    'Runtime.evaluate',
+    { expression: 'location.href + document.title' },
+    attached
+  );
+  assert.equal(content.error, undefined);
+  assert.equal(content.result.result.value, `${destination} recovered`);
+  assert.equal(
+    (await reader.send('Accessibility.getFullAXTree', {}, attached)).result.nodes[0].name.value,
+    'recovered'
+  );
+});
 
 test('a protected error fetched by the guard survives withheld extension commits and ordinary reconnect hints', async (t) => {
   const wire = recoveryProtocol(t);

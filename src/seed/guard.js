@@ -1524,7 +1524,12 @@ class Guard {
 
   async stranded(targetId) {
     let nav = this.navs.get(targetId);
-    if (!nav && this.tabs.get(targetId)?.admitted && !this.relatedHeld(targetId)) {
+    if (
+      !nav &&
+      this.tabs.get(targetId)?.admitted &&
+      this.tabs.get(targetId)?.error &&
+      !this.relatedHeld(targetId)
+    ) {
       this.touch(targetId);
       nav = this.navs.get(targetId);
       if (nav) await nav.ready;
