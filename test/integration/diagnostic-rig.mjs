@@ -71,7 +71,7 @@ export function diagnosticShape(value = {}) {
   return out;
 }
 
-function initDiagnostic(shape) {
+function initDiagnostic(shape, selection) {
   globalThis.sliccKernelDebug = true;
   const records = [];
   const labels = new Map();
@@ -404,6 +404,7 @@ function initDiagnostic(shape) {
     };
   };
   globalThis.sliccDiagnostic = { records, emit, instrument };
+  emit({ layer: 'rig', stage: 'extension-selected', ...selection });
 }
 
 export function splitDiagnosticCli(text) {
@@ -445,7 +446,14 @@ export function splitDiagnosticCli(text) {
 }
 
 export async function prepareDiagnostic(_real, page, extension, kind) {
-  await page.init(`() => (${initDiagnostic.toString()})(${diagnosticShape.toString()})`);
+  const selection = {
+    scenarioVersion: extension.version,
+    candidateVersion:
+      process.env.SLICC_DIAGNOSTIC_ROLL_FORWARD === '1' ? '7.9.16' : extension.version,
+  };
+  await page.init(
+    `() => (${initDiagnostic.toString()})(${diagnosticShape.toString()}, ${JSON.stringify(selection)})`
+  );
   const mark = async (phase) =>
     page.evaluate(
       (phase) => globalThis.sliccDiagnostic.emit({ layer: 'rig', stage: phase }),
@@ -460,19 +468,6 @@ export async function prepareDiagnostic(_real, page, extension, kind) {
       records.map((record) => JSON.stringify(record)).join('\n') + '\n'
     );
   };
-  await page.evaluate(
-    ({ scenarioVersion, rollForward }) =>
-      globalThis.sliccDiagnostic.emit({
-        layer: 'rig',
-        stage: 'extension-selected',
-        scenarioVersion,
-        candidateVersion: rollForward ? '7.9.16' : scenarioVersion,
-      }),
-    {
-      scenarioVersion: extension.version,
-      rollForward: process.env.SLICC_DIAGNOSTIC_ROLL_FORWARD === '1',
-    }
-  );
   const installCli = async () => {
     if (
       !process.env.SLICC_DIAGNOSTIC_CLI ||

@@ -1,6 +1,21 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { splitDiagnosticCli } from './diagnostic-rig.mjs';
+import { prepareDiagnostic, splitDiagnosticCli } from './diagnostic-rig.mjs';
+
+test('the selection trace is registered before navigation without evaluating the old document', async () => {
+  let init;
+  const page = {
+    async init(script) {
+      init = script;
+    },
+    async evaluate() {
+      assert.fail('diagnostic setup must not evaluate the previous document');
+    },
+  };
+  await prepareDiagnostic(undefined, page, { version: '7.9.13' }, 'legacy');
+  assert.match(init, /extension-selected/);
+  assert.match(init, /"scenarioVersion":"7.9.13"/);
+});
 
 test('only known diagnostic CLI records are separated from unchanged assertion text', () => {
   const record = {

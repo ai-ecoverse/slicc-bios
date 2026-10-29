@@ -202,6 +202,14 @@ export async function launch({ agent = false, vault = true, tools = true, ...ove
   const chrome = await start({ ...options, ...overrides });
   if (diagnosticPort) {
     chrome.diagnosticPort = diagnosticPort;
+    const close = chrome.close;
+    chrome.close = async (...args) => {
+      try {
+        return await close.apply(chrome, args);
+      } finally {
+        diagnosticPorts.delete(diagnosticPort);
+      }
+    };
     const dir = env.SLICC_DIAGNOSTIC_DIR;
     await mkdir(dir, { recursive: true });
     await appendFile(
