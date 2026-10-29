@@ -472,8 +472,11 @@ export async function prepareDiagnostic(_real, page, extension, kind) {
     if (
       !process.env.SLICC_DIAGNOSTIC_CLI ||
       (extension.version !== '7.9.16' && process.env.SLICC_DIAGNOSTIC_ROLL_FORWARD !== '1')
-    )
+    ) {
+      await mark('cli-production:selected');
       return;
+    }
+    await mark('cli-install:start');
     const bytes = (await readFile(process.env.SLICC_DIAGNOSTIC_CLI)).toString('base64');
     const installed = await page.evaluate(async (bytes) => {
       const client = await globalThis.sliccKernelClient();

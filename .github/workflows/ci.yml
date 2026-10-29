@@ -13,7 +13,20 @@ concurrency:
 jobs:
   diagnostic:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: recovery-a
+            expected: 4
+            pattern: '^real slicc-extension (7\.9\.16|7\.5\.1|7\.6\.2|7\.6\.3): a blocked protected hop'
+          - group: recovery-b
+            expected: 4
+            pattern: '^real slicc-extension (7\.6\.4|7\.9\.13|7\.9\.5|7\.9\.4): a blocked protected hop'
+          - group: legacy
+            expected: 3
+            pattern: '^real slicc-extension (7\.9\.13|7\.9\.5|7\.9\.4): playwright-cli opens about:blank'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -42,20 +55,34 @@ jobs:
           node "$GITHUB_WORKSPACE/test/integration/diagnostic-build.mjs" cli "$PWD" timeout -k 30 900 cargo build --locked --release --target wasm32-wasip1 -p slicc-cdp -j 4
       - run: npx --no-install slicc-cdp install-browser
       - name: Protocol gates and security pins
+        if: matrix.group == 'recovery-a'
         env:
           SLICC_CDP_PORTS: 9300-9309
           SLICC_DIAGNOSTIC_EXTENSION: ${{ runner.temp }}/diagnostic-extension-source/extension
         run: |
           timeout -k 30 900 node --test --test-concurrency=1 --test-timeout=60000 --test-reporter=junit --test-reporter-destination=diagnostic-artifacts/junit-gates.xml test/integration/diagnostic-fetch.test.mjs test/integration/diagnostic-output.test.mjs test/integration/guard-protected-navigation.test.mjs test/integration/guard-ordering-*.test.mjs test/integration/guard-lock-*.test.mjs test/integration/guard-forward-audit.test.mjs
       - name: Native BFCache security
-        if: always()
+        if: always() && matrix.group == 'recovery-a'
         env:
           SLICC_CDP_PORTS: 9300-9309
         run: |
           timeout -k 30 900 xvfb-run -a node --test --test-concurrency=1 --test-timeout=600000 --test-global-setup=test/integration/global.mjs --test-reporter=junit --test-reporter-destination=diagnostic-artifacts/junit-bfcache.xml test/integration/guard-bfcache.test.mjs test/integration/bfcache-extension.test.mjs
-      - name: Eleven roll-forward scenarios and native security
+      - name: Production CLI control
+        if: always() && matrix.group == 'recovery-a'
+        env:
+          SLICC_DIAGNOSTIC_ROLL_FORWARD: '1'
+          SLICC_CDP_PORTS: 9300-9309
+          SLICC_DIAGNOSTIC_EXTENSION: ${{ runner.temp }}/diagnostic-extension-source/extension
+          SLICC_DIAGNOSTIC_DIR: diagnostic-artifacts/production-cli
+        run: |
+          mkdir -p diagnostic-artifacts/production-cli
+          timeout -k 30 900 xvfb-run -a node --test --test-concurrency=1 --test-timeout=600000 --test-global-setup=test/integration/global.mjs --test-name-pattern="^real slicc-extension 7\.9\.16: a blocked protected hop" --test-reporter=junit --test-reporter-destination=diagnostic-artifacts/production-cli/junit-control.xml test/integration/cdp.test.mjs
+          python3 -c 'import xml.etree.ElementTree as E; cases=list(E.parse("diagnostic-artifacts/production-cli/junit-control.xml").iter("testcase")); assert len(cases)==1; assert cases[0].find("failure") is None; print({"productionCliControl":1})'
+      - name: Sequential roll-forward scenarios
         if: always()
         env:
+          SLICC_DIAGNOSTIC_PATTERN: ${{ matrix.pattern }}
+          SLICC_DIAGNOSTIC_EXPECTED: ${{ matrix.expected }}
           SLICC_DIAGNOSTIC_ROLL_FORWARD: '1'
           SLICC_CDP_PORTS: 9300-9309
           SLICC_DIAGNOSTIC_EXTENSION: ${{ runner.temp }}/diagnostic-extension-source/extension
@@ -63,18 +90,26 @@ jobs:
           SLICC_DIAGNOSTIC_DIR: diagnostic-artifacts
         run: |
           mkdir -p diagnostic-artifacts
-          timeout -k 30 900 xvfb-run -a node --test --test-concurrency=1 --test-timeout=600000 --test-global-setup=test/integration/global.mjs --test-name-pattern="^real slicc-extension (7\.9\.16|7\.5\.1|7\.6\.2|7\.6\.3|7\.6\.4|7\.9\.13|7\.9\.5|7\.9\.4): (a blocked protected hop|playwright-cli opens about:blank)|^the guard keeps seven|^a browser extension’s hidden world|^on the link path, playwright-cli: a goto" --test-reporter=junit --test-reporter-destination=diagnostic-artifacts/junit-diagnostic.xml test/integration/cdp.test.mjs
+          timeout -k 30 900 xvfb-run -a node --test --test-concurrency=1 --test-timeout=600000 --test-global-setup=test/integration/global.mjs --test-name-pattern="$SLICC_DIAGNOSTIC_PATTERN" --test-reporter=junit --test-reporter-destination=diagnostic-artifacts/junit-diagnostic.xml test/integration/cdp.test.mjs
+          python3 -c 'import os, xml.etree.ElementTree as E; cases=list(E.parse("diagnostic-artifacts/junit-diagnostic.xml").iter("testcase")); assert len(cases)==int(os.environ["SLICC_DIAGNOSTIC_EXPECTED"]); assert all(c.find("failure") is None for c in cases); print({"scenarioCount":len(cases)})'
+      - name: Native vault and hidden-world security
+        if: always() && matrix.group == 'recovery-a'
+        env:
+          SLICC_CDP_PORTS: 9300-9309
+        run: |
+          timeout -k 30 900 xvfb-run -a node --test --test-concurrency=1 --test-timeout=600000 --test-global-setup=test/integration/global.mjs --test-name-pattern="^the guard keeps seven|^a browser extension’s hidden world|^on the link path, playwright-cli: a goto" --test-reporter=junit --test-reporter-destination=diagnostic-artifacts/junit-security.xml test/integration/cdp.test.mjs
+          python3 -c 'import xml.etree.ElementTree as E; cases=list(E.parse("diagnostic-artifacts/junit-security.xml").iter("testcase")); assert len(cases)==4; assert all(c.find("failure") is None for c in cases); print({"nativeSecurityCount":len(cases)})'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: diagnostic-traces
+          name: diagnostic-traces-${{ matrix.group }}
           path: |
-            diagnostic-artifacts/*.jsonl
-            diagnostic-artifacts/junit-*.xml
+            diagnostic-artifacts/**/*.jsonl
+            diagnostic-artifacts/**/junit-*.xml
           if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: diagnostic-cli-build
+          name: diagnostic-cli-build-${{ matrix.group }}
           path: ${{ runner.temp }}/diagnostic-cdp-source/target/wasm32-wasip1/release/playwright-cli.wasm
           if-no-files-found: warn

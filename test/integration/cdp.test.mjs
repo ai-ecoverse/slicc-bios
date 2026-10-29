@@ -203,6 +203,7 @@ for (const extension of [CURRENT_EXTENSION, ...EXTENSIONS]) {
     try {
       await page.goto(SEVEN);
       await ready(page);
+      await diagnostic.mark('boot:ready');
       if (await diagnostic.installCli()) {
         await run(page, 'export PATH=/tmp/diagnostic-cli/bin:$PATH; echo diagnostic-cli-selected');
         await shows(page, 'diagnostic-cli-selected');
@@ -284,6 +285,7 @@ for (const extension of EXTENSIONS.filter(
     try {
       await page.goto(SEVEN);
       await ready(page);
+      await diagnostic.mark('boot:ready');
       assert.deepEqual(await automation(page), { via: 'extension' });
       await page.evaluate(() => {
         globalThis.contextOrigins = [];
