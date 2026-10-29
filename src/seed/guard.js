@@ -685,8 +685,10 @@ export function protection(own) {
 }
 
 class Guard {
-  constructor(connection, own) {
+  constructor(connection, own, tabs) {
     this.connection = connection;
+    this.tabs = tabs;
+    this.recalled = new Set();
     this.closing = false;
     this.closed = false;
     this.is = protection(own);
@@ -947,6 +949,17 @@ class Guard {
   learn(info) {
     if (!info?.targetId) return;
     const known = this.targets.get(info.targetId);
+    const record = this.tabs.get(info.targetId);
+    if (record?.admitted && this.is.url(info.url)) record.locked = true;
+    if (!known && record?.locked) this.recalled.add(info.targetId);
+    const remembered = record?.error;
+    if (remembered && !this.errorFrames.has(remembered.id)) {
+      this.recalled.add(info.targetId);
+      this.frameRoots.set(info.targetId, remembered.id);
+      this.errorFrames.add(remembered.id);
+      this.errorUrls.set(remembered.id, remembered.url);
+      this.errored.set(info.targetId, remembered.url);
+    }
     const failed = info.url !== undefined && this.errored.get(info.targetId) === bare(info.url);
     this.targets.set(info.targetId, {
       url: failed ? ERROR_PAGE : (info.url ?? ''),
@@ -978,6 +991,7 @@ class Guard {
   async target(targetId, depth = 0) {
     const found = await this.lookup(targetId);
     if (!found) return true;
+    if (this.recalled.has(targetId)) return true;
     if (isHeld(targetId) || isHeld(found.openerId)) {
       hold(targetId);
       found.guarded = true;
@@ -1508,7 +1522,12 @@ class Guard {
   }
 
   async stranded(targetId) {
-    const nav = this.navs.get(targetId);
+    let nav = this.navs.get(targetId);
+    if (!nav && this.tabs.get(targetId)?.admitted && !this.relatedHeld(targetId)) {
+      this.touch(targetId);
+      nav = this.navs.get(targetId);
+      if (nav) await nav.ready;
+    }
     if (!this.strandable(targetId, nav)) return null;
     if (!(await this.placed(nav.session)) || !this.strandable(targetId, nav)) return null;
     const proof = { targetId, nav, revision: this.revisions.get(targetId) };
@@ -1911,6 +1930,19 @@ class Guard {
     }
   }
 
+  rememberTab(targetId) {
+    if (this.targets.get(targetId)?.type !== 'page') return;
+    const record = this.tabs.get(targetId) ?? {};
+    record.admitted = true;
+    this.tabs.set(targetId, record);
+    if (this.tabs.size > REMEMBERED) {
+      const oldest = [...this.tabs].find(
+        ([id, entry]) => id !== targetId && !entry.error && !entry.locked
+      )?.[0];
+      if (oldest !== undefined) this.tabs.delete(oldest);
+    }
+  }
+
   touch(targetId, held = false) {
     if (!targetId) return;
     const known = this.navs.get(targetId);
@@ -1919,9 +1951,9 @@ class Guard {
       return;
     }
     if (!NAV_TYPES.has(this.targets.get(targetId)?.type ?? 'page')) return;
-    const admitted = [...this.sessions].some(
-      ([id, entry]) => entry.targetId === targetId && this.shown.has(id)
-    );
+    const admitted =
+      this.tabs.get(targetId)?.admitted ||
+      [...this.sessions].some(([id, entry]) => entry.targetId === targetId && this.shown.has(id));
     const nav = { targetId, session: null, done: false, failed: false, held, admitted };
     nav.ready = new Promise((resolve) => {
       nav.settle = (failed) => {
@@ -2140,7 +2172,7 @@ class Guard {
       this.targets.get(targetId)?.url?.startsWith('chrome-error:');
     return recoverable &&
       (guarded || error) &&
-      (this.is.url(raw.url) || this.errorDocument(sessionId))
+      (this.is.url(raw.url) || this.errorDocument(sessionId) || this.recalled.has(targetId))
       ? this.stranded(targetId)
       : null;
   }
@@ -2186,7 +2218,10 @@ class Guard {
     this.blocked.delete(sessionId);
     this.shown.add(sessionId);
     const nav = this.navs.get(targetId);
-    if (nav) nav.admitted = true;
+    if (nav) {
+      nav.admitted = true;
+      this.rememberTab(targetId);
+    }
     if (proof) this.quarantine(sessionId, this.hints.get(targetId) ?? {});
     return true;
   }
@@ -3041,12 +3076,29 @@ class Guard {
     }
   }
 
+  rememberError(frame, sessionId, targetId, nav) {
+    const record = this.tabs.get(targetId);
+    if (
+      record?.admitted &&
+      nav &&
+      this.navSessions.get(sessionId) === nav &&
+      this.targets.get(targetId)?.type === 'page' &&
+      !frame.parentId &&
+      this.protectedFrame(frame) &&
+      frame.url?.startsWith('chrome-error:')
+    ) {
+      record.locked = true;
+      record.error = { id: frame.id, url: frame.unreachableUrl ?? ERROR_PAGE };
+    }
+  }
+
   noteError(frame, sessionId, committed = false) {
     const targetId =
       this.sessions.get(sessionId)?.targetId ?? this.navSessions.get(sessionId)?.targetId;
     const target = this.targets.get(targetId);
     const nav = this.navs.get(targetId);
     const root = this.frameRoots.get(targetId);
+    this.rememberError(frame, sessionId, targetId, nav);
     if (committed) this.recoverError(frame, sessionId, targetId);
     this.frames.set(frame.id, this.framed(frame));
     if (this.protectedFrame(frame) && frame.url?.startsWith('chrome-error:')) {
@@ -4307,7 +4359,10 @@ class Guard {
     const nav = this.navs.get(targetId);
     await nav.ready;
     if (this.finished.has(message) || !this.owns(message)) return;
-    if (!nav.failed) nav.admitted = true;
+    if (!nav.failed) {
+      nav.admitted = true;
+      this.rememberTab(targetId);
+    }
     if (!nav.failed && !inherits(params.url))
       await this.call('Page.navigate', { url: params.url }, nav.session);
     if (this.finished.has(message) || !this.owns(message)) return;
@@ -4406,6 +4461,24 @@ class Guard {
     if (message.method !== 'Page.frameNavigated' || !message.params?.frame) return;
     const { frame } = message.params;
     const nav = this.navs.get(targetId);
+    if (
+      nav &&
+      this.navSessions.get(message.sessionId) === nav &&
+      committed?.has(message.sessionId) &&
+      !frame.parentId &&
+      typeof frame.id === 'string' &&
+      frame.id &&
+      !this.protectedFrame(frame) &&
+      !this.unsafeUrl(frame.url) &&
+      !inherits(frame.url)
+    ) {
+      this.recalled.delete(targetId);
+      const record = this.tabs.get(targetId);
+      if (record) {
+        delete record.error;
+        delete record.locked;
+      }
+    }
     this.wiping(nav, frame);
     if (nav && !frame.parentId) nav.document = frame;
     if (targetId && this.frameLive(frame)) this.commitScope(targetId);
@@ -4451,6 +4524,7 @@ class Guard {
       this.receiveHint(message);
     if (message.method === 'Target.targetDestroyed') {
       this.retireProof(message.params?.targetId);
+      this.tabs.delete(message.params?.targetId);
       this.hints.delete(message.params?.targetId);
       for (const [id, entry] of this.sessions)
         if (entry.targetId === message.params?.targetId && this.quarantined.has(id)) this.cut(id);
@@ -4707,6 +4781,6 @@ class Guard {
 const framed = (tree) =>
   tree?.frame ? [tree.frame, ...(tree.childFrames ?? []).flatMap((child) => framed(child))] : [];
 
-export function guardProtected(connection, own) {
-  return new Guard(connection, own).start();
+export function guardProtected(connection, own, tabs = new Map()) {
+  return new Guard(connection, own, tabs).start();
 }
