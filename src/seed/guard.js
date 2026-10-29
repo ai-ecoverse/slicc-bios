@@ -4245,6 +4245,7 @@ class Guard {
     if (!nav.failed) nav.admitted = true;
     if (!nav.failed && !inherits(params.url))
       await this.call('Page.navigate', { url: params.url }, nav.session);
+    if (this.finished.has(message) || !this.owns(message)) return;
     this.deliver({ id, ...(sessionId ? { sessionId } : {}), result: answer.result });
   }
 

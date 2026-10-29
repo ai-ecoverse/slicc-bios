@@ -14,6 +14,10 @@ function createdProtocol(t, transport, securityOrigin, destination = ordinary) {
   let next = 0;
   let timer;
   let finish;
+  let begin;
+  const navigating = new Promise((resolve) => {
+    begin = resolve;
+  });
   const committed = new Promise((resolve) => {
     finish = resolve;
   });
@@ -34,6 +38,7 @@ function createdProtocol(t, transport, securityOrigin, destination = ordinary) {
       if (method === 'Page.navigate') {
         url = ordinary;
         frame = { id, url: '', securityOrigin };
+        begin();
         if (destination === 'unanswered') return new Promise(() => {});
         if (destination === 'rejected') throw new Error('synthetic navigation failure');
         return new Promise((resolve) => {
@@ -94,8 +99,12 @@ function createdProtocol(t, transport, securityOrigin, destination = ordinary) {
   });
   return {
     committed,
+    navigating,
     delivered,
     close: () => guard.close(),
+    listen(callback) {
+      guard.onmessage = callback;
+    },
     send(method, params = {}, sessionId) {
       const id = ++next;
       const answer = new Promise((resolve) => waiting.set(id, resolve));
@@ -106,6 +115,19 @@ function createdProtocol(t, transport, securityOrigin, destination = ordinary) {
 }
 
 for (const transport of ['direct', 'extension']) {
+  test(`a closed guard does not publish a delayed created tab over ${transport}`, async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const wire = createdProtocol(t, transport, '');
+    void wire.send('Target.createTarget', { url: ordinary });
+    await wire.navigating;
+    wire.close();
+    const late = [];
+    wire.listen((text) => late.push(JSON.parse(text)));
+    t.mock.timers.tick(10000);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(late, [], 'closing suppresses every delayed create response');
+  });
+
   for (const securityOrigin of ['', '://']) {
     test(`an ordinary created tab waits for its navigation answer with initial origin ${JSON.stringify(securityOrigin)} over ${transport}`, {
       timeout: 5000,
