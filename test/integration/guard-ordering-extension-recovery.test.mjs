@@ -1,0 +1,195 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import {
+  failed,
+  flush,
+  ordinary,
+  protectedOrigin,
+  recoveryProtocol,
+} from './guard-recovery-fixture.mjs';
+
+async function knownTab(t, observed = true) {
+  const wire = recoveryProtocol(t);
+  wire.target('known');
+  const original = await wire.connect();
+  await original.attach('known');
+  if (!observed) original.close();
+  await flush();
+  wire.blocked('known', observed);
+  await flush();
+  if (observed) original.close();
+  await flush();
+  return wire;
+}
+
+for (const observed of [false, true]) {
+  test(`a known extension tab retains recovery across fresh guards with observed error ${observed}`, async (t) => {
+    const wire = await knownTab(t, observed);
+    const metadata = await wire.connect();
+    const info = await metadata.send('Target.getTargetInfo', { targetId: 'known' });
+    assert.equal(info.error, undefined, 'a fresh connection can identify the stranded known tab');
+    assert.equal(info.result.targetInfo.url, protectedOrigin);
+    assert.equal(JSON.stringify(info).includes(failed), false);
+    metadata.close();
+    await flush();
+    const recovery = await wire.connect();
+    const session = await recovery.attach('known');
+    for (const method of ['Runtime.evaluate', 'DOM.getDocument', 'Accessibility.getFullAXTree'])
+      assert.match(
+        (await recovery.send(method, {}, session)).error?.message ?? '',
+        /^slicc: refused:/
+      );
+    const destination = `${ordinary}?recovered`;
+    assert.equal(
+      (await recovery.send('Page.navigate', { url: destination }, session)).error,
+      undefined
+    );
+    recovery.close();
+    await flush();
+    const reader = await wire.connect();
+    const attached = await reader.attach('known');
+    const content = await reader.send(
+      'Runtime.evaluate',
+      { expression: 'location.href + document.title' },
+      attached
+    );
+    assert.equal(content.error, undefined);
+    assert.equal(content.result.result.value, `${destination} recovered`);
+    assert.equal(
+      (await reader.send('Accessibility.getFullAXTree', {}, attached)).result.nodes[0].name.value,
+      'recovered'
+    );
+  });
+}
+
+test('an unknown extension error tab stays refused across fresh guards', async (t) => {
+  const wire = recoveryProtocol(t);
+  wire.target('unknown');
+  wire.blocked('unknown', false);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const connection = await wire.connect();
+    for (const method of ['Target.getTargetInfo', 'Target.attachToTarget']) {
+      const answer = await connection.send(method, { targetId: 'unknown', flatten: true });
+      assert.match(answer.error?.message ?? '', /^slicc: refused:/);
+      assert.equal(answer.result, undefined);
+    }
+    connection.close();
+    await flush();
+  }
+});
+
+test('a known extension tab cannot admit a live protected document after reconnect', async (t) => {
+  const wire = await knownTab(t);
+  wire.targets.get('known').tree.frame = {
+    id: 'root-known',
+    url: `${protectedOrigin}/private`,
+    securityOrigin: protectedOrigin,
+    loaderId: 'protected-document',
+  };
+  const connection = await wire.connect();
+  for (const method of [
+    'Target.getTargetInfo',
+    'Target.attachToTarget',
+    'Target.activateTarget',
+    'Target.closeTarget',
+  ]) {
+    const answer = await connection.send(method, { targetId: 'known', flatten: true });
+    assert.match(answer.error?.message ?? '', /^slicc: refused:/);
+    assert.equal(answer.result, undefined);
+  }
+});
+
+test('extension recovery state is not lent to another tab', async (t) => {
+  const wire = await knownTab(t);
+  wire.target('other');
+  wire.blocked('other', false);
+  const connection = await wire.connect();
+  assert.match(
+    (await connection.send('Target.getTargetInfo', { targetId: 'other' })).error?.message ?? '',
+    /^slicc: refused:/
+  );
+  assert.equal(
+    (await connection.send('Target.getTargetInfo', { targetId: 'known' })).error,
+    undefined
+  );
+});
+
+test('extension recovery state is not lent to a replacement browser', async (t) => {
+  const wire = await knownTab(t);
+  wire.replaceBrowser();
+  const connection = await wire.connect();
+  assert.match(
+    (await connection.send('Target.getTargetInfo', { targetId: 'known' })).error?.message ?? '',
+    /^slicc: refused:/
+  );
+});
+
+test('destroying a closed extension tab removes its recovery record', async (t) => {
+  const wire = await knownTab(t);
+  wire.emit({ method: 'Target.targetDestroyed', params: { targetId: 'known' } });
+  const connection = await wire.connect();
+  assert.match(
+    (await connection.send('Target.getTargetInfo', { targetId: 'known' })).error?.message ?? '',
+    /^slicc: refused:/
+  );
+});
+
+for (const shape of ['missing root', 'protected child', 'protected opener']) {
+  test(`a remembered extension error does not admit ${shape}`, async (t) => {
+    const wire = await knownTab(t);
+    const entry = wire.targets.get('known');
+    if (shape === 'missing root') entry.tree = {};
+    if (shape === 'protected child')
+      entry.tree.childFrames = [
+        {
+          frame: {
+            id: 'protected-child',
+            parentId: 'root-known',
+            url: `${protectedOrigin}/private`,
+            securityOrigin: protectedOrigin,
+          },
+        },
+      ];
+    if (shape === 'protected opener') {
+      wire.target('opener', `${protectedOrigin}/sign-in`);
+      entry.info = { ...entry.info, openerId: 'opener', canAccessOpener: true };
+    }
+    const connection = await wire.connect();
+    assert.match(
+      (await connection.send('Target.getTargetInfo', { targetId: 'known' })).error?.message ?? '',
+      /^slicc: refused:/
+    );
+  });
+}
+
+for (const fresh of ['hint', 'client commit', 'own commit']) {
+  test(`a remembered extension error is cleared only by its own fresh commit, not ${fresh}`, async (t) => {
+    const wire = await knownTab(t);
+    const entry = wire.targets.get('known');
+    entry.info = { ...entry.info, url: ordinary, title: 'ordinary' };
+    entry.tree.frame = {
+      id: 'root-known',
+      url: ordinary,
+      securityOrigin: new URL(ordinary).origin,
+      loaderId: 'unobserved-document',
+    };
+    const connection = await wire.connect();
+    const session = await connection.attach('known');
+    assert.match(
+      (await connection.send('Runtime.evaluate', {}, session)).error?.message ?? '',
+      /^slicc: refused:/
+    );
+    if (fresh === 'client commit') {
+      await connection.send('Page.enable', {}, session);
+      wire.commit('known', ordinary, { session });
+    } else if (fresh === 'own commit') {
+      wire.commit('known', ordinary);
+    } else {
+      wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: entry.info } });
+    }
+    await flush();
+    const read = await connection.send('Runtime.evaluate', {}, session);
+    if (fresh === 'own commit') assert.equal(read.error, undefined);
+    else assert.match(read.error?.message ?? '', /^slicc: refused:/);
+  });
+}
