@@ -467,7 +467,7 @@ function scanned(value, starts, stops, swap) {
       stops.lastIndex = found.index;
       stop = stops.exec(value)?.index ?? value.length;
     }
-    const swapped = swap(value.slice(found.index, stop));
+    const swapped = swap(value.slice(found.index, stop), found.index);
     if (swapped === null) continue;
     out += value.slice(last, found.index) + swapped;
     last = stop;
@@ -560,6 +560,23 @@ export function redacting(is) {
     const compact = value.replace(DELIMITERS, '');
     return scrub(compact) !== compact;
   };
+  const closed = (value) => {
+    let cut = null;
+    scanned(value, STARTS, STOPS, (candidate, offset) => {
+      if (cut !== null) return null;
+      const shown = origin(candidate);
+      if (shown !== null) cut = { prefix: value.slice(0, offset), shown };
+      return shown;
+    });
+    if (
+      cut === null ||
+      !URL.canParse(cut.shown) ||
+      new URL(cut.shown).origin !== cut.shown ||
+      !/^\s*\d*\s*;?\s*url\s*=\s*$/i.test(cut.prefix)
+    )
+      return null;
+    return cut.prefix + cut.shown;
+  };
   const text = (value) => {
     if (!value.includes('://') && !/[%&\\/?#]/.test(value)) {
       return value;
@@ -577,6 +594,8 @@ export function redacting(is) {
       const out = scrub(normalized);
       if (normalized.search(DELIMITERS) >= 0 && namesProtected(normalized)) {
         webs += 1;
+        const span = closed(normalized);
+        if (span !== null) return span;
         const shown = URL.canParse(normalized) ? new URL(normalized).origin : '';
         return shown === 'null' ? '' : shown;
       }

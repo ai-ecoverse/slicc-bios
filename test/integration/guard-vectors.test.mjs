@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer as createHttp } from 'node:http';
 import { after, test } from 'node:test';
+import { protection, redacting } from '../../src/seed/guard.js';
 import { boot } from './bios.mjs';
 import { debuggerUrl, devtools, launch } from './chrome.mjs';
 import { linkNode } from './linked-node.mjs';
@@ -1865,10 +1866,11 @@ for (const [detach, lag] of DETACH) {
           };
           await guard.send('Target.setDiscoverTargets', { discover: false });
           const asked = `${PLAIN}/redirect?to=${encodeURIComponent(url)}`;
-          seen.events = JSON.stringify((await guard.events()).slice(before)).replaceAll(
-            asked,
-            'the client’s own request'
-          );
+          const scrubbedAsked =
+            how === '302' ? redacting(protection(SEVEN))({ url: asked }).params.url : asked;
+          seen.events = JSON.stringify((await guard.events()).slice(before))
+            .replaceAll(asked, 'the client’s own request')
+            .replaceAll(scrubbedAsked, 'the client’s own request');
           const host = new URL(base).host;
           for (const [what, text] of Object.entries(seen)) {
             assert.ok(
