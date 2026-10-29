@@ -384,9 +384,7 @@ const inherits = (url) => {
 const owned = (own) => [own ?? []].flat().filter(Boolean);
 
 const STARTS = /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\//gi;
-const ENCODED_STARTS = /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*%(?:25)*3a%(?:25)*2f%(?:25)*2f/gi;
-const STOPS = /[\s"'<>\\`]/g;
-const ENCODED_STOPS = /[\s"'<>\\`&]/g;
+const STOPS = /[\s"'<>`]/g;
 const AUTHORITY = 4096;
 const SPOKEN = /^(?:Network|Fetch|Log|Audits|Page|CSS|Console|DOM)\./;
 const CONSOLE = new Set(['Runtime.exceptionThrown', 'Runtime.consoleAPICalled']);
@@ -402,6 +400,11 @@ const HOSTS = new RegExp(
   `((?:${[...catalog.protectedOrigins.domains, ...catalog.protectedOrigins.hosts].map(escaped).join('|')}))(\\.?(?::\\d+|%3a\\d+)?)(?:[/?#\\\\][^\\s"'<>\`]*|(?:%2f|%3f|%23|%5c)[^\\s"'<>\`&]*)`,
   'giu'
 );
+const AUTHORITIES =
+  /(?<![\p{L}\p{N}._-])(?:\[[0-9a-f:.]+\]|[\p{L}\p{N}._-]+)(?::\d+)?(?=[/?#\\])/giu;
+const CANDIDATES =
+  /(?<![\p{L}\p{N}._-])(?:\[[0-9a-f:.]+\]|[\p{L}\p{N}._-]+)(?::\d+)?(?=$|[\s\u0000-\u001f\u007f"'<>`/?#\\])/giu;
+const DELIMITERS = /[\s\u0000-\u001f\u007f"'<>`]/g;
 
 const ENTITIES = { colon: ':', sol: '/', amp: '&', quest: '?', num: '#', equals: '=', period: '.' };
 
@@ -430,15 +433,19 @@ function decodedBytes(text) {
 }
 
 function decoded(text) {
-  let out = text.replace(/%[0-9a-f]?$/i, '');
-  for (let i = 0; i < 4 && /%[0-9a-f]{2}/i.test(out); i += 1) {
-    try {
-      out = decodeURIComponent(out);
-    } catch {
-      return out;
-    }
+  let out = text;
+  for (let i = 0; i < 5 && /%[0-9a-f]{2}/i.test(out); i += 1) {
+    out = out.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
+      try {
+        return decodeURIComponent(run);
+      } catch {
+        return run.replace(/%([0-9a-f]{2})/gi, (found, hex) =>
+          String.fromCharCode(Number.parseInt(hex, 16))
+        );
+      }
+    });
   }
-  return out;
+  return { text: out, changing: /%[0-9a-f]{2}/i.test(out) };
 }
 
 function authority(text) {
@@ -460,7 +467,7 @@ function scanned(value, starts, stops, swap) {
       stops.lastIndex = found.index;
       stop = stops.exec(value)?.index ?? value.length;
     }
-    const swapped = swap(value.slice(found.index, stop));
+    const swapped = swap(value.slice(found.index, stop), found.index);
     if (swapped === null) continue;
     out += value.slice(last, found.index) + swapped;
     last = stop;
@@ -524,22 +531,76 @@ export function redacting(is) {
     if (URL.canParse(`${shown}/`)) past(text, shown);
     return shown;
   };
-  const encoded = (text) => {
-    const plain = decoded(text.slice(0, AUTHORITY * 3));
-    if (!plain.includes('://')) return null;
-    const shown = origin(plain);
-    return shown === null ? null : encodeURIComponent(shown);
+  const protectedAuthority = (token) => {
+    if (token.length > AUTHORITY) return false;
+    const http = `http://${token}/`;
+    const https = `https://${token}/`;
+    return (URL.canParse(http) && is.url(http)) || (URL.canParse(https) && is.url(https));
+  };
+  const scrub = (value) => {
+    const raw = scanned(value, STARTS, STOPS, origin);
+    const known = raw.replace(HOSTS, (found, host, port, offset) => {
+      const labels = labelsBefore(raw, offset);
+      const candidate = decoded(`${labels}${host}${port}`).text;
+      if (!is.url(`http://${candidate}/`) && !is.url(`https://${candidate}/`)) return found;
+      if (!readable(`http://${labels}${found}`)) webs += 1;
+      return `${host}${port}`;
+    });
+    return scanned(known, AUTHORITIES, STOPS, (candidate) => {
+      const token = candidate.slice(0, candidate.search(/[/?#\\]/));
+      if (!protectedAuthority(token)) return null;
+      if (!readable(`http://${candidate}`)) webs += 1;
+      return token;
+    });
+  };
+  const namesProtected = (value) => {
+    for (const candidate of value.matchAll(CANDIDATES)) {
+      if (protectedAuthority(candidate[0])) return true;
+    }
+    const compact = value.replace(DELIMITERS, '');
+    return scrub(compact) !== compact;
+  };
+  const closed = (value) => {
+    let cut = null;
+    scanned(value, STARTS, STOPS, (candidate, offset) => {
+      if (cut !== null) return null;
+      const shown = origin(candidate);
+      if (shown !== null) cut = { prefix: value.slice(0, offset), shown };
+      return shown;
+    });
+    if (
+      cut === null ||
+      !URL.canParse(cut.shown) ||
+      new URL(cut.shown).origin !== cut.shown ||
+      !/^\s*\d*\s*;?\s*url\s*=\s*$/i.test(cut.prefix)
+    )
+      return null;
+    return cut.prefix + cut.shown;
   };
   const text = (value) => {
-    if (!value.includes('://') && !/%(?:25)*3a/i.test(value) && !/sliccy\.ai/i.test(value)) {
+    if (!value.includes('://') && !/[%&\\/?#]/.test(value)) {
       return value;
     }
-    const raw = scanned(value, STARTS, STOPS, origin);
-    const coded = scanned(raw, ENCODED_STARTS, ENCODED_STOPS, encoded);
-    return coded.replace(HOSTS, (found, host, port, offset) => {
-      const labels = labelsBefore(coded, offset);
-      if (!readable(`http://${labels}${decoded(found)}`)) webs += 1;
-      return `${host}${port}`;
+    const plain = decoded(unescaped(value));
+    if (plain.changing) {
+      webs += 1;
+      const shown = URL.canParse(plain.text) ? new URL(plain.text).origin : '';
+      return shown === 'null' ? '' : shown;
+    }
+    if (plain.text === value) return scrub(value);
+    return value.replace(/[^\s"'<>`]+/g, (run) => {
+      const normalized = decoded(unescaped(run)).text;
+      scrub(run);
+      const out = scrub(normalized);
+      if (normalized.search(DELIMITERS) >= 0 && namesProtected(normalized)) {
+        webs += 1;
+        const span = closed(normalized);
+        if (span !== null) return span;
+        const shown = URL.canParse(normalized) ? new URL(normalized).origin : '';
+        return shown === 'null' ? '' : shown;
+      }
+      if (out === normalized) return run;
+      return out;
     });
   };
   const walk = (value, path, changed) => {
@@ -3648,6 +3709,10 @@ class Guard {
   }
 
   masked(info, stranded = false) {
+    return this.redact(this.masking(info, stranded)).params;
+  }
+
+  masking(info, stranded = false) {
     if (stranded && this.is.url(info.url) && URL.canParse(info.url)) {
       const { origin } = new URL(info.url);
       return { ...info, url: origin, title: origin };
