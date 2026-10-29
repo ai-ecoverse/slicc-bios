@@ -286,6 +286,10 @@ for (const extension of EXTENSIONS.filter(
       await page.goto(SEVEN);
       await ready(page);
       await diagnostic.mark('boot:ready');
+      if (await diagnostic.installCli()) {
+        await run(page, 'export PATH=/tmp/diagnostic-cli/bin:$PATH; echo diagnostic-cli-selected');
+        await shows(page, 'diagnostic-cli-selected');
+      }
       assert.deepEqual(await automation(page), { via: 'extension' });
       await page.evaluate(() => {
         globalThis.contextOrigins = [];
@@ -345,18 +349,30 @@ for (const extension of EXTENSIONS.filter(
         !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
         `the vault was served after a hop: ${hits.join(' ')}`
       );
+      await diagnostic.mark('legacy-inherit:start');
       await run(
         page,
-        `playwright-cli goto about:blank > /tmp/inherit 2>&1; playwright-cli goto ' about:blank' >> /tmp/inherit 2>&1; playwright-cli eval 'self.origin' >> /tmp/inherit 2>&1; echo "inherit-""done"`
+        `playwright-cli goto about:blank > /tmp/inherit 2>&1; echo inherit-plain-$? >> /tmp/inherit; playwright-cli goto ' about:blank' >> /tmp/inherit 2>&1; echo inherit-spaced-$? >> /tmp/inherit; playwright-cli eval 'self.origin' >> /tmp/inherit 2>&1; echo "inherit-""done"`
       );
       await shows(page, 'inherit-done', 60000);
       const inherit = await diagnostic.cli(await read(page, '/tmp/inherit'), 'legacy-inherit');
       await diagnostic.mark('legacy-inherit:finished');
-      assert.match(
-        inherit,
-        /slicc: refused: a browser-side navigation to about: gives the page the origin of whatever drives the browser/,
+      const refused = /^([\s\S]*?)\ninherit-plain-(\d+)\n([\s\S]*?)\ninherit-spaced-(\d+)\n/m.exec(
         inherit
       );
+      assert.ok(refused, inherit);
+      for (const [message, code] of [
+        [refused[1], refused[2]],
+        [refused[3], refused[4]],
+      ]) {
+        assert.notEqual(Number(code), 0, inherit);
+        assert.match(message, /slicc: refused:/, inherit);
+      }
+      assert.deepEqual(await diagnostic.aboutProof('legacy-inherit'), {
+        valid: true,
+        observed: true,
+        forwarded: 0,
+      });
       assert.doesNotMatch(inherit, /chrome-extension:/, inherit);
       const recoveryVersions = ['7.5.1', '7.6.2', '7.6.3', '7.6.4'];
       if (recoveryVersions.includes(extension.version)) {

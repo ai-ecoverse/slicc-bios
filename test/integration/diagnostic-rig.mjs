@@ -71,7 +71,28 @@ export function diagnosticShape(value = {}) {
   return out;
 }
 
-function initDiagnostic(shape, selection) {
+export function diagnosticAboutProof(records, phase) {
+  const start = records.findLastIndex(
+    (record) => record.layer === 'rig' && record.stage === `${phase}:start`
+  );
+  const end = records.findLastIndex(
+    (record) => record.layer === 'rig' && record.stage === `${phase}:finished`
+  );
+  const observed = records.some((record) => record.layer === 'bios' && record.stage === 'upstream');
+  if (start < 0 || end < start) return { valid: false, observed, forwarded: null };
+  const forwarded = records
+    .slice(start, end + 1)
+    .filter(
+      (record) =>
+        record.layer === 'bios' &&
+        record.stage === 'upstream' &&
+        record.method === 'Page.navigate' &&
+        record.params?.url === 'about://'
+    ).length;
+  return { valid: true, observed, forwarded };
+}
+
+function initDiagnostic(shape, selection, aboutProof) {
   globalThis.sliccKernelDebug = true;
   const records = [];
   const labels = new Map();
@@ -403,7 +424,12 @@ function initDiagnostic(shape, selection) {
       return result;
     };
   };
-  globalThis.sliccDiagnostic = { records, emit, instrument };
+  globalThis.sliccDiagnostic = {
+    records,
+    emit,
+    instrument,
+    aboutProof: (phase) => aboutProof(records, phase),
+  };
   emit({ layer: 'rig', stage: 'extension-selected', ...selection });
 }
 
@@ -452,7 +478,7 @@ export async function prepareDiagnostic(_real, page, extension, kind) {
       process.env.SLICC_DIAGNOSTIC_ROLL_FORWARD === '1' ? '7.9.16' : extension.version,
   };
   await page.init(
-    `() => (${initDiagnostic.toString()})(${diagnosticShape.toString()}, ${JSON.stringify(selection)})`
+    `() => (${initDiagnostic.toString()})(${diagnosticShape.toString()}, ${JSON.stringify(selection)}, ${diagnosticAboutProof.toString()})`
   );
   const mark = async (phase) =>
     page.evaluate(
@@ -469,43 +495,53 @@ export async function prepareDiagnostic(_real, page, extension, kind) {
     );
   };
   const installCli = async () => {
+    const released = process.env.SLICC_DIAGNOSTIC_RELEASE_CLI;
+    const cliPath = released || process.env.SLICC_DIAGNOSTIC_CLI;
+    const cliVariant = released ? 'published-1.42.10' : 'traced-source-1.42.10';
     if (
-      !process.env.SLICC_DIAGNOSTIC_CLI ||
+      !cliPath ||
       (extension.version !== '7.9.16' && process.env.SLICC_DIAGNOSTIC_ROLL_FORWARD !== '1')
     ) {
       await mark('cli-production:selected');
       return;
     }
     await mark('cli-install:start');
-    const bytes = (await readFile(process.env.SLICC_DIAGNOSTIC_CLI)).toString('base64');
-    const installed = await page.evaluate(async (bytes) => {
-      const client = await globalThis.sliccKernelClient();
-      try {
-        const pkg = '/tmp/diagnostic-cli';
-        await client.fs.mkdir(`${pkg}/bin`, { recursive: true });
-        await client.fs.writeFile(
-          `${pkg}/package.json`,
-          JSON.stringify({
-            name: 'diagnostic-cli',
-            slicc: { abi: 'wasi', commands: { 'playwright-cli': { wasm: 'bin/playwright-cli' } } },
-          })
-        );
-        await client.fs.writeFile(
-          `${pkg}/bin/playwright-cli`,
-          Uint8Array.from(atob(bytes), (character) => character.charCodeAt(0))
-        );
-        const result = await client.run(['chmod', '755', `${pkg}/bin/playwright-cli`]);
-        globalThis.sliccDiagnostic.emit({
-          layer: 'rig',
-          stage: 'cli-installed',
-          code: result.status,
-        });
-        return result.status;
-      } finally {
-        await client.close();
-      }
-    }, bytes);
-    assert.equal(installed, 0, 'traced playwright-cli was installed');
+    const bytes = (await readFile(cliPath)).toString('base64');
+    const installed = await page.evaluate(
+      async ({ bytes, cliVariant }) => {
+        const client = await globalThis.sliccKernelClient();
+        try {
+          const pkg = '/tmp/diagnostic-cli';
+          await client.fs.mkdir(`${pkg}/bin`, { recursive: true });
+          await client.fs.writeFile(
+            `${pkg}/package.json`,
+            JSON.stringify({
+              name: 'diagnostic-cli',
+              slicc: {
+                abi: 'wasi',
+                commands: { 'playwright-cli': { wasm: 'bin/playwright-cli' } },
+              },
+            })
+          );
+          await client.fs.writeFile(
+            `${pkg}/bin/playwright-cli`,
+            Uint8Array.from(atob(bytes), (character) => character.charCodeAt(0))
+          );
+          const result = await client.run(['chmod', '755', `${pkg}/bin/playwright-cli`]);
+          globalThis.sliccDiagnostic.emit({
+            layer: 'rig',
+            stage: 'cli-installed',
+            code: result.status,
+            cliVariant,
+          });
+          return result.status;
+        } finally {
+          await client.close();
+        }
+      },
+      { bytes, cliVariant }
+    );
+    assert.equal(installed, 0, 'the selected playwright-cli fixture was installed');
     return true;
   };
   const cli = async (text, phase) => {
@@ -524,5 +560,11 @@ export async function prepareDiagnostic(_real, page, extension, kind) {
     );
     return clean;
   };
-  return { mark, collect, installCli, cli };
+  const aboutProof = async (phase) =>
+    page.evaluate((phase) => {
+      const proof = globalThis.sliccDiagnostic.aboutProof(phase);
+      globalThis.sliccDiagnostic.emit({ layer: 'rig', stage: 'about-forwarding', phase, ...proof });
+      return proof;
+    }, phase);
+  return { mark, collect, installCli, cli, aboutProof };
 }

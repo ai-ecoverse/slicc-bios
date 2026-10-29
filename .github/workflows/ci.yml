@@ -74,6 +74,7 @@ jobs:
           SLICC_CDP_PORTS: 9300-9309
           SLICC_DIAGNOSTIC_EXTENSION: ${{ runner.temp }}/diagnostic-extension-source/extension
           SLICC_DIAGNOSTIC_DIR: diagnostic-artifacts/production-cli
+          SLICC_DIAGNOSTIC_RELEASE_CLI: ${{ github.workspace }}/node_modules/@ai-ecoverse/slicc-cdp/bin/playwright-cli.wasm
         run: |
           mkdir -p diagnostic-artifacts/production-cli
           timeout -k 30 900 xvfb-run -a node --test --test-concurrency=1 --test-timeout=600000 --test-global-setup=test/integration/global.mjs --test-name-pattern="^real slicc-extension 7\.9\.16: a blocked protected hop" --test-reporter=junit --test-reporter-destination=diagnostic-artifacts/production-cli/junit-control.xml test/integration/cdp.test.mjs
@@ -87,6 +88,7 @@ jobs:
           SLICC_CDP_PORTS: 9300-9309
           SLICC_DIAGNOSTIC_EXTENSION: ${{ runner.temp }}/diagnostic-extension-source/extension
           SLICC_DIAGNOSTIC_CLI: ${{ runner.temp }}/diagnostic-cdp-source/target/wasm32-wasip1/release/playwright-cli.wasm
+          SLICC_DIAGNOSTIC_RELEASE_CLI: ${{ matrix.group == 'legacy' && format('{0}/node_modules/@ai-ecoverse/slicc-cdp/bin/playwright-cli.wasm', github.workspace) || '' }}
           SLICC_DIAGNOSTIC_DIR: diagnostic-artifacts
         run: |
           mkdir -p diagnostic-artifacts
