@@ -68,6 +68,7 @@ export function diagnosticShape(value = {}) {
 }
 
 function initDiagnostic(shape) {
+  globalThis.sliccKernelDebug = true;
   const records = [];
   const labels = new Map();
   let guards = 0;
