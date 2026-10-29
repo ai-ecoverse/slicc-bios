@@ -17,6 +17,7 @@ export function recoveryProtocol(t, hook = browserHook) {
   const calls = [];
   let serial = 0;
   let pendingTree;
+  let treeOf;
   const emit = (message) => {
     for (const listener of listeners) listener(message);
   };
@@ -74,9 +75,9 @@ export function recoveryProtocol(t, hook = browserHook) {
       }
       if (method === 'Page.enable') enabled.add(sessionId);
       if (method === 'Page.getFrameTree') {
-        const frameTree = structuredClone(entry.tree);
+        const frameTree = structuredClone(treeOf ? await treeOf(entry, sessionId) : entry.tree);
         const waiting = pendingTree;
-        if (waiting) {
+        if (waiting?.matches(sessionId)) {
           pendingTree = undefined;
           waiting.seen();
           await waiting.ready;
@@ -118,7 +119,10 @@ export function recoveryProtocol(t, hook = browserHook) {
     target,
     commit,
     emit,
-    pauseTree() {
+    trees(read) {
+      treeOf = read;
+    },
+    pauseTree(matches = () => true) {
       let seen;
       let release;
       const requested = new Promise((resolve) => {
@@ -127,7 +131,7 @@ export function recoveryProtocol(t, hook = browserHook) {
       const ready = new Promise((resolve) => {
         release = resolve;
       });
-      pendingTree = { seen, ready };
+      pendingTree = { seen, ready, matches };
       return { requested, release };
     },
     blocked(id, observed = true) {

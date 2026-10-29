@@ -327,17 +327,62 @@ for (const extension of EXTENSIONS.filter(
       !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
       `the vault was served after a hop: ${hits.join(' ')}`
     );
+    await page.evaluate(async () => {
+      const original = MessagePort.prototype.postMessage;
+      let bridge;
+      let active = false;
+      let commands = 0;
+      let aboutNavigations = 0;
+      MessagePort.prototype.postMessage = function (data, ...args) {
+        const command = data?.cdp;
+        if (!bridge && command?.method === 'Browser.getVersion') bridge = this;
+        if (this === bridge && active && typeof command?.method === 'string') {
+          commands += 1;
+          if (
+            command.method === 'Page.navigate' &&
+            typeof command.params?.url === 'string' &&
+            /^about:/i.test(command.params.url.trim())
+          )
+            aboutNavigations += 1;
+        }
+        return Reflect.apply(original, this, [data, ...args]);
+      };
+      try {
+        await globalThis.sliccExtension.cdp.send('Browser.getVersion');
+        if (!bridge) throw new Error('the extension backend bridge was not observed');
+        active = true;
+        globalThis.finishInheritedNavigation = () => {
+          const started = active;
+          active = false;
+          MessagePort.prototype.postMessage = original;
+          return { started, ended: true, observed: commands > 0, aboutNavigations };
+        };
+      } catch (error) {
+        MessagePort.prototype.postMessage = original;
+        throw error;
+      }
+    });
     await run(
       page,
-      `playwright-cli goto about:blank > /tmp/inherit 2>&1; playwright-cli goto ' about:blank' >> /tmp/inherit 2>&1; playwright-cli eval 'self.origin' >> /tmp/inherit 2>&1; echo "inherit-""done"`
+      `playwright-cli goto about:blank > /tmp/inherit-plain 2>&1; echo plain-exit-$? >> /tmp/inherit-plain; playwright-cli goto ' about:blank' > /tmp/inherit-spaced 2>&1; echo spaced-exit-$? >> /tmp/inherit-spaced; cat /tmp/inherit-plain /tmp/inherit-spaced > /tmp/inherit; playwright-cli eval 'self.origin' >> /tmp/inherit 2>&1; echo "inherit-""done"`
     );
     await shows(page, 'inherit-done', 60000);
+    const forwarding = await page.evaluate(() => globalThis.finishInheritedNavigation());
+    assert.deepEqual(forwarding, {
+      started: true,
+      ended: true,
+      observed: true,
+      aboutNavigations: 0,
+    });
+    for (const [file, exit] of [
+      ['/tmp/inherit-plain', 'plain'],
+      ['/tmp/inherit-spaced', 'spaced'],
+    ]) {
+      const refused = await read(page, file);
+      assert.match(refused, /slicc: refused:/, refused);
+      assert.match(refused, new RegExp(`^${exit}-exit-[1-9]\\d*$`, 'm'), refused);
+    }
     const inherit = await read(page, '/tmp/inherit');
-    assert.match(
-      inherit,
-      /slicc: refused: a browser-side navigation to about: gives the page the origin of whatever drives the browser/,
-      inherit
-    );
     assert.doesNotMatch(inherit, /chrome-extension:/, inherit);
     const recoveryVersions = ['7.5.1', '7.6.2', '7.6.3', '7.6.4'];
     if (recoveryVersions.includes(extension.version)) {
