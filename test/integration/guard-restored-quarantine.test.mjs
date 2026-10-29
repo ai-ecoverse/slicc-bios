@@ -89,6 +89,11 @@ for (const kind of ['ordinary', 'error']) {
       sessionId: session,
       params: { frame: entry.tree.frame },
     });
+    wire.emit({
+      method: 'Page.frameNavigated',
+      sessionId: `guard-${entry.info.targetId}`,
+      params: { frame: entry.tree.frame },
+    });
     await flush();
     hint(wire, entry, BLANKED);
     await flush();

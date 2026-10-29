@@ -506,8 +506,7 @@ async function editors({ port }) {
     if (children.length === 2 && children.every((child) => child.url)) break;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  if (children.length !== 2)
-    throw new Error(`the editor frames never committed: ${JSON.stringify(tree)}`);
+  if (children.length !== 2) throw new Error('the editor frames never committed');
   const out = {};
   for (const [index, child] of children.entries()) {
     const world = await send(

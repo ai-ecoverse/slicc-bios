@@ -389,7 +389,11 @@ test('a lost probe retries closed and a protected commit stays refused', async (
           });
         }
         if (message.method === 'Target.attachToTarget') {
-          return answer({ result: { sessionId: `client-${message.params?.targetId}` } });
+          return answer({
+            result: {
+              sessionId: `${message.id >= 2 ** 30 ? 'guard' : 'client'}-${message.params?.targetId}`,
+            },
+          });
         }
         if (message.method === 'Page.getFrameTree') {
           return answer({

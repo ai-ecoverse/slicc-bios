@@ -74,10 +74,10 @@ const DRIVABLE = {
 };
 
 async function rig({ port, client, signing, drivable }) {
-  const { guardProtected } = await import(new URL('guard.js', location.href).href);
-  const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
   const { relayUrl } = await import(new URL('adobe.js', location.href).href);
   relayUrl({ clientId: client, scopes: 'openid' }, location.origin, 'n');
+  const { guardProtected } = await import(new URL('guard.js', location.href).href);
+  const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
   const connection = guardProtected(
     extensionConnection(globalThis.sliccExtension.cdp),
     self.origin

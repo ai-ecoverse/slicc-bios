@@ -120,7 +120,8 @@ test('state extension matches reversed early attach events to separate pending r
 function extensionGuard(raw, origin) {
   const pending = new Map();
   const listeners = new Set();
-  let next = 0;
+  const logicalIds = [];
+  let cleanupId = 2 ** 31;
   raw.onmessage = (text) => {
     const message = JSON.parse(text);
     if (message.method) {
@@ -132,22 +133,30 @@ function extensionGuard(raw, origin) {
     if (message.error) call.reject(new Error(message.error.message));
     else call.resolve(message.result);
   };
-  return guardProtected(
-    extensionConnection({
-      send(method, params, sessionId) {
-        const id = ++next;
-        return new Promise((resolve, reject) => {
-          pending.set(id, { resolve, reject });
-          raw.send(JSON.stringify({ id, method, params, sessionId }));
-        });
-      },
-      on(listener) {
-        listeners.add(listener);
-        return () => listeners.delete(listener);
-      },
-    }),
-    origin
-  );
+  const connection = extensionConnection({
+    send(method, params, sessionId) {
+      const id = logicalIds.shift() ?? ++cleanupId;
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        raw.send(JSON.stringify({ id, method, params, sessionId }));
+      });
+    },
+    on(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  });
+  const send = connection.send.bind(connection);
+  const close = connection.close.bind(connection);
+  connection.send = (text) => {
+    logicalIds.push(JSON.parse(text).id);
+    return send(text);
+  };
+  connection.close = () => {
+    logicalIds.length = 0;
+    close();
+  };
+  return guardProtected(connection, origin);
 }
 
 test('state extension early attach to a protected error root reaches the client as origin-only metadata', {
