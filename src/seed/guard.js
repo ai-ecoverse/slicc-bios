@@ -949,10 +949,7 @@ class Guard {
   learn(info) {
     if (!info?.targetId) return;
     const known = this.targets.get(info.targetId);
-    const record = this.tabs.get(info.targetId);
-    if (record?.admitted && this.is.url(info.url)) record.locked = true;
-    if (!known && record?.locked) this.recalled.add(info.targetId);
-    const remembered = record?.error;
+    const remembered = this.tabs.get(info.targetId)?.error;
     if (remembered && !this.errorFrames.has(remembered.id)) {
       this.recalled.add(info.targetId);
       this.frameRoots.set(info.targetId, remembered.id);
@@ -991,7 +988,6 @@ class Guard {
   async target(targetId, depth = 0) {
     const found = await this.lookup(targetId);
     if (!found) return true;
-    if (this.recalled.has(targetId)) return true;
     if (isHeld(targetId) || isHeld(found.openerId)) {
       hold(targetId);
       found.guarded = true;
@@ -1017,6 +1013,7 @@ class Guard {
       found.guarded = true;
       return true;
     }
+    if (this.recalled.has(targetId)) return true;
     const verdict = this.is.target({
       url: found.url,
       type: found.type,
@@ -1892,6 +1889,7 @@ class Guard {
         url: this.framed(frame),
         epoch: this.proofEpoch.get(targetId),
       });
+    this.rememberError(frame, sessionId, targetId, nav);
     this.noteError(
       frame,
       sessionId,
@@ -1936,9 +1934,7 @@ class Guard {
     record.admitted = true;
     this.tabs.set(targetId, record);
     if (this.tabs.size > REMEMBERED) {
-      const oldest = [...this.tabs].find(
-        ([id, entry]) => id !== targetId && !entry.error && !entry.locked
-      )?.[0];
+      const oldest = [...this.tabs].find(([id, entry]) => id !== targetId && !entry.error)?.[0];
       if (oldest !== undefined) this.tabs.delete(oldest);
     }
   }
@@ -3087,7 +3083,6 @@ class Guard {
       this.protectedFrame(frame) &&
       frame.url?.startsWith('chrome-error:')
     ) {
-      record.locked = true;
       record.error = { id: frame.id, url: frame.unreachableUrl ?? ERROR_PAGE };
     }
   }
@@ -3098,7 +3093,6 @@ class Guard {
     const target = this.targets.get(targetId);
     const nav = this.navs.get(targetId);
     const root = this.frameRoots.get(targetId);
-    this.rememberError(frame, sessionId, targetId, nav);
     if (committed) this.recoverError(frame, sessionId, targetId);
     this.frames.set(frame.id, this.framed(frame));
     if (this.protectedFrame(frame) && frame.url?.startsWith('chrome-error:')) {
@@ -4474,10 +4468,7 @@ class Guard {
     ) {
       this.recalled.delete(targetId);
       const record = this.tabs.get(targetId);
-      if (record) {
-        delete record.error;
-        delete record.locked;
-      }
+      if (record) delete record.error;
     }
     this.wiping(nav, frame);
     if (nav && !frame.parentId) nav.document = frame;
