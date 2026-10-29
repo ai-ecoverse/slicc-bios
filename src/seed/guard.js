@@ -907,13 +907,14 @@ class Guard {
       return Promise.resolve({ error: { code: -32000, message: UNGUARDED } });
     const placement = this.placements.get(sessionId);
     const nav = this.navSessions.get(sessionId);
+    const revision = this.revisions.get(nav?.targetId);
     return new Promise((resolve) => {
       const id = ++this.next;
       let timer;
       const answer = (message) => {
         clearTimeout(timer);
         if (method === 'Page.getFrameTree' && !message.error)
-          this.rememberTreeError(message.result?.frameTree, sessionId, nav);
+          this.rememberTreeError(message.result?.frameTree, sessionId, nav, revision);
         const current = this.scopes.get(placement)?.sessionId;
         if (placement === undefined || current === undefined || current === sessionId) {
           if (method === 'Page.getFrameTree' && placement !== undefined)
@@ -3075,8 +3076,13 @@ class Guard {
     }
   }
 
-  rememberTreeError(tree, sessionId, nav) {
-    if (!nav || this.navs.get(nav.targetId) !== nav) return;
+  rememberTreeError(tree, sessionId, nav, revision) {
+    if (
+      !nav ||
+      this.navs.get(nav.targetId) !== nav ||
+      this.revisions.get(nav.targetId) !== revision
+    )
+      return;
     const frames = this.documentFrames(tree);
     const frame = frames?.length === 1 ? frames[0] : undefined;
     if (

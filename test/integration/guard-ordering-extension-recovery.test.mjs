@@ -94,6 +94,32 @@ test('a protected error fetched by the guard survives withheld extension commits
   assert.equal((await next.send('Runtime.evaluate', {}, attached)).error, undefined);
 });
 
+test('an older error tree cannot re-record an error after the guard accepted an ordinary commit', async (t) => {
+  const wire = recoveryProtocol(t);
+  wire.target('late-error-tree');
+  const first = await wire.connect();
+  await first.attach('late-error-tree');
+  wire.blocked('late-error-tree', false);
+  wire.targets.get('late-error-tree').tree.frame.unreachableUrl = protectedOrigin;
+  assert.equal(
+    (await first.send('Target.getTargetInfo', { targetId: 'late-error-tree' })).error,
+    undefined
+  );
+  const gate = wire.pauseTree();
+  t.after(gate.release);
+  const pending = first.send('Target.getTargetInfo', { targetId: 'late-error-tree' });
+  await gate.requested;
+  wire.commit('late-error-tree', ordinary);
+  await flush();
+  gate.release();
+  await pending;
+  first.close();
+  await flush();
+  const next = await wire.connect();
+  const attached = await next.attach('late-error-tree');
+  assert.equal((await next.send('Runtime.evaluate', {}, attached)).error, undefined);
+});
+
 test('an unknown extension error tab stays refused across fresh guards', async (t) => {
   const wire = recoveryProtocol(t);
   wire.target('unknown');
