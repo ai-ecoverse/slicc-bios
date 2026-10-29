@@ -4805,5 +4805,7 @@ const framed = (tree) =>
   tree?.frame ? [tree.frame, ...(tree.childFrames ?? []).flatMap((child) => framed(child))] : [];
 
 export function guardProtected(connection, own, tabs = new Map()) {
-  return new Guard(connection, own, tabs).start();
+  const instance = new Guard(connection, own, tabs);
+  globalThis.sliccDiagnostic?.instrument(instance);
+  return instance.start();
 }

@@ -203,7 +203,10 @@ for (const extension of [CURRENT_EXTENSION, ...EXTENSIONS]) {
     try {
       await page.goto(SEVEN);
       await ready(page);
-      await diagnostic.installCli();
+      if (await diagnostic.installCli()) {
+        await run(page, 'export PATH=/tmp/diagnostic-cli/bin:$PATH; echo diagnostic-cli-selected');
+        await shows(page, 'diagnostic-cli-selected');
+      }
       await diagnostic.mark('blocked-hop:start');
       assert.deepEqual(await automation(page), { via: 'extension' });
       const title = 'Recovered ordinary tab';

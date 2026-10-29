@@ -267,15 +267,7 @@ function initDiagnostic(shape) {
   globalThis.sliccDiagnostic = { records, emit, instrument };
 }
 
-export async function prepareDiagnostic(real, page, extension, kind) {
-  const source = await readFile(new URL('../../src/seed/guard.js', import.meta.url), 'utf8');
-  real.overrides.set(
-    '/os/guard.js',
-    source.replace(
-      'return new Guard(connection, own, tabs).start();',
-      'const instance = new Guard(connection, own, tabs); globalThis.sliccDiagnostic.instrument(instance); return instance.start();'
-    )
-  );
+export async function prepareDiagnostic(_real, page, extension, kind) {
   await page.init(`() => (${initDiagnostic.toString()})(${diagnosticShape.toString()})`);
   const mark = async (phase) =>
     page.evaluate(
@@ -294,29 +286,35 @@ export async function prepareDiagnostic(real, page, extension, kind) {
   const installCli = async () => {
     if (extension.version !== '7.9.16' || !process.env.SLICC_DIAGNOSTIC_CLI) return;
     const bytes = (await readFile(process.env.SLICC_DIAGNOSTIC_CLI)).toString('base64');
-    const paths = await page.evaluate(async (bytes) => {
-      const wasm = Uint8Array.from(atob(bytes), (character) => character.charCodeAt(0));
-      const paths = [];
-      const walk = async (dir, prefix) => {
-        for await (const [name, entry] of dir.entries()) {
-          if (entry.kind === 'directory') await walk(entry, `${prefix}${name}/`);
-          else if (name === 'playwright-cli.wasm') {
-            const writer = await entry.createWritable();
-            await writer.write(wasm);
-            await writer.close();
-            paths.push(`${prefix}${name}`);
-          }
-        }
-      };
-      await walk(await navigator.storage.getDirectory(), '/');
-      globalThis.sliccDiagnostic.emit({
-        layer: 'rig',
-        stage: 'cli-installed',
-        count: paths.length,
-      });
-      return paths;
+    const installed = await page.evaluate(async (bytes) => {
+      const client = await globalThis.sliccKernelClient();
+      try {
+        const pkg = '/tmp/diagnostic-cli';
+        await client.fs.mkdir(`${pkg}/bin`, { recursive: true });
+        await client.fs.writeFile(
+          `${pkg}/package.json`,
+          JSON.stringify({
+            name: 'diagnostic-cli',
+            slicc: { abi: 'wasi', commands: { 'playwright-cli': { wasm: 'bin/playwright-cli' } } },
+          })
+        );
+        await client.fs.writeFile(
+          `${pkg}/bin/playwright-cli`,
+          Uint8Array.from(atob(bytes), (character) => character.charCodeAt(0))
+        );
+        const result = await client.run(['chmod', '755', `${pkg}/bin/playwright-cli`]);
+        globalThis.sliccDiagnostic.emit({
+          layer: 'rig',
+          stage: 'cli-installed',
+          code: result.status,
+        });
+        return result.status;
+      } finally {
+        await client.close();
+      }
     }, bytes);
-    assert.equal(paths.length, 1, 'one installed playwright-cli was replaced');
+    assert.equal(installed, 0, 'traced playwright-cli was installed');
+    return true;
   };
   const cli = async (text, phase) => {
     const parsed = text
