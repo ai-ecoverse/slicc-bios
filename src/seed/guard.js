@@ -866,6 +866,8 @@ class Guard {
       const owned = this.proofCommits.get(targetId);
       if (
         owned?.accepted &&
+        params.frame.unreachableUrl === undefined &&
+        !this.is.url(owned.url) &&
         /^https?:/.test(owned.url) &&
         nav?.admitted &&
         !nav.failed &&
@@ -4604,11 +4606,12 @@ class Guard {
       frame.id &&
       !this.protectedFrame(frame) &&
       !this.unsafeUrl(frame.url) &&
-      !inherits(frame.url)
+      !inherits(frame.url) &&
+      frame.unreachableUrl === undefined
     ) {
       this.recalled.delete(targetId);
       const owned = this.proofCommits.get(targetId);
-      if (owned) owned.accepted = true;
+      if (owned?.url === `${frame.url}${frame.urlFragment ?? ''}`) owned.accepted = true;
       const record = this.tabs.get(targetId);
       if (record) delete record.error;
     }

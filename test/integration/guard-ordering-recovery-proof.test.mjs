@@ -246,6 +246,85 @@ for (const [kind, url] of [
   });
 }
 
+test('an ordinary own commit with a protected unreachable URL cannot accept recovery or release metadata', {
+  timeout: 5000,
+}, async (t) => {
+  const initial = await admitted(t);
+  const { wire } = initial;
+  wire.blocked('proof');
+  await flush();
+  initial.client.close();
+  await flush();
+  const client = await wire.connect();
+  const session = await client.attach('proof');
+  assert.equal((await client.send('Page.enable', {}, session)).error, undefined);
+  const owner = wire.calls.filter((call) => call.method === 'Fetch.enable').at(-1)?.sessionId;
+  const frame = {
+    id: 'root-proof',
+    url: `${ordinary}?ordinary=unreachable`,
+    securityOrigin: new URL(ordinary).origin,
+    loaderId: 'ordinary-unreachable',
+    unreachableUrl: 'https://vault.sliccy.ai',
+  };
+  const entry = wire.targets.get('proof');
+  entry.info = { ...entry.info, url: frame.url, title: 'ordinary' };
+  entry.tree = { frame };
+  const gate = wire.pauseTree((caller) => caller === session);
+  t.after(gate.release);
+  const mark = client.delivered.length;
+  wire.emit({ method: 'Page.frameNavigated', sessionId: owner, params: { frame } });
+  wire.emit({ method: 'Page.frameNavigated', sessionId: session, params: { frame } });
+  wire.emit({ method: 'Page.loadEventFired', sessionId: session, params: { timestamp: 456.5 } });
+  await flush();
+  assert.equal(
+    client.delivered.slice(mark).some((message) => message.method === 'Page.loadEventFired'),
+    false
+  );
+  assert.equal(
+    client.delivered
+      .slice(mark)
+      .some(
+        (message) =>
+          message.method === 'Page.frameNavigated' &&
+          message.params.frame.url === frame.unreachableUrl
+      ),
+    false
+  );
+  gate.release();
+  await flush();
+  await flush();
+  client.close();
+  await flush();
+  const { unreachableUrl, ...ordinaryHint } = frame;
+  entry.tree = { frame: ordinaryHint };
+  const fresh = await wire.connect();
+  const attached = await fresh.attach('proof');
+  const content = await fresh.send('Runtime.evaluate', { expression: 'document.title' }, attached);
+  assert.match(
+    content.error?.message ?? '',
+    /^slicc: refused:/,
+    'the rejected commit cannot clear the recorded error, even after a clean backend hint'
+  );
+  assert.equal(content.result, undefined);
+  assert.equal(
+    client.delivered.slice(mark).some((message) => message.method === 'Page.loadEventFired'),
+    false,
+    'the rejected own commit never releases the held load, including after proof settles'
+  );
+  assert.equal(
+    client.delivered
+      .slice(mark)
+      .some(
+        (message) =>
+          message.method === 'Page.frameNavigated' &&
+          message.params.frame.url === frame.unreachableUrl
+      ),
+    false,
+    'the protected unreachable URL never appears as a restored frame URL'
+  );
+  assert.equal(unreachableUrl, 'https://vault.sliccy.ai');
+});
+
 for (const kind of ['child', 'stale']) {
   test(`a ${kind} frame does not restore an accepted root URL`, { timeout: 5000 }, async (t) => {
     const { wire, client, session, frame, gate } = await recovering(t);
