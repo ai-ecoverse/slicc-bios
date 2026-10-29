@@ -20,15 +20,15 @@ jobs:
         with:
           node-version: '26'
           cache: npm
-      - run: timeout -k 30 900 npm ci
+      - run: mkdir -p diagnostic-artifacts && timeout -k 30 900 npm ci
       - name: Build traced extension
         run: |
           git clone --branch v7.9.16 --single-branch https://github.com/ai-ecoverse/slicc-extension.git node_modules/.cache/diagnostic-extension-source
           git -C node_modules/.cache/diagnostic-extension-source apply "$GITHUB_WORKSPACE/test/integration/diagnostic-extension.patch"
           cp test/integration/diagnostic-extension.mjs node_modules/.cache/diagnostic-extension-source/extension/diagnostic.js
           cd node_modules/.cache/diagnostic-extension-source
-          timeout -k 30 900 npm ci
-          timeout -k 30 900 npm run build
+          node "$GITHUB_WORKSPACE/test/integration/diagnostic-build.mjs" extension-install "$PWD" timeout -k 30 900 npm ci
+          node "$GITHUB_WORKSPACE/test/integration/diagnostic-build.mjs" extension "$PWD" timeout -k 30 900 npm run build
       - name: Build traced CLI
         run: |
           git clone --branch v1.42.10 --single-branch https://github.com/ai-ecoverse/slicc-cdp.git node_modules/.cache/diagnostic-cdp-source
@@ -36,14 +36,16 @@ jobs:
           cp test/integration/diagnostic-cli.rs node_modules/.cache/diagnostic-cdp-source/crates/cdp-client/src/diagnostic.rs
           rustup target add wasm32-wasip1
           cd node_modules/.cache/diagnostic-cdp-source
-          timeout -k 30 900 cargo build --locked --release --target wasm32-wasip1 -p slicc-cdp -j 4
+          node "$GITHUB_WORKSPACE/test/integration/diagnostic-build.mjs" cli "$PWD" timeout -k 30 900 cargo build --locked --release --target wasm32-wasip1 -p slicc-cdp -j 4
       - run: npx --no-install slicc-cdp install-browser
       - name: Eleven diagnostic rows
         env:
           SLICC_DIAGNOSTIC_EXTENSION: ${{ github.workspace }}/node_modules/.cache/diagnostic-extension-source/extension
           SLICC_DIAGNOSTIC_CLI: ${{ github.workspace }}/node_modules/.cache/diagnostic-cdp-source/target/wasm32-wasip1/release/playwright-cli.wasm
           SLICC_DIAGNOSTIC_DIR: diagnostic-artifacts
-        run: mkdir -p diagnostic-artifacts && timeout -k 30 900 xvfb-run -a node --test --test-concurrency=1 --test-timeout=600000 --test-global-setup=test/integration/global.mjs --test-name-pattern="^real slicc-extension (7\.9\.16|7\.5\.1|7\.6\.2|7\.6\.3|7\.6\.4|7\.9\.13|7\.9\.5|7\.9\.4): (a blocked protected hop|playwright-cli opens about:blank)" --test-reporter=junit --test-reporter-destination=diagnostic-artifacts/junit-diagnostic.xml test/integration/cdp.test.mjs
+        run: |
+          mkdir -p diagnostic-artifacts
+          timeout -k 30 900 xvfb-run -a node --test --test-concurrency=1 --test-timeout=600000 --test-global-setup=test/integration/global.mjs --test-name-pattern="^real slicc-extension (7\.9\.16|7\.5\.1|7\.6\.2|7\.6\.3|7\.6\.4|7\.9\.13|7\.9\.5|7\.9\.4): (a blocked protected hop|playwright-cli opens about:blank)" --test-reporter=junit --test-reporter-destination=diagnostic-artifacts/junit-diagnostic.xml test/integration/cdp.test.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
