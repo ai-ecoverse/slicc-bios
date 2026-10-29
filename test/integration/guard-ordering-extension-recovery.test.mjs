@@ -8,14 +8,14 @@ import {
   recoveryProtocol,
 } from './guard-recovery-fixture.mjs';
 
-async function knownTab(t, observed = true) {
+async function knownTab(t, observed = true, id = 'known') {
   const wire = recoveryProtocol(t);
-  wire.target('known');
+  wire.target(id);
   const original = await wire.connect();
-  await original.attach('known');
+  await original.attach(id);
   if (!observed) original.close();
   await flush();
-  wire.blocked('known', observed);
+  wire.blocked(id, observed);
   await flush();
   if (observed) original.close();
   await flush();
@@ -134,17 +134,50 @@ test('destroying a closed extension tab removes its recovery record', async (t) 
   );
 });
 
+test('a remembered extension error resolves an ordinary opener before recovery', async (t) => {
+  const wire = await knownTab(t);
+  wire.target('ordinary-opener');
+  const entry = wire.targets.get('known');
+  entry.info = { ...entry.info, openerId: 'ordinary-opener', canAccessOpener: true };
+  const connection = await wire.connect();
+  assert.equal(
+    (await connection.send('Target.getTargetInfo', { targetId: 'known' })).error,
+    undefined
+  );
+});
+
+test('an admitted extension tab is ordinary again after an offline ordinary commit without an error commit', async (t) => {
+  const wire = recoveryProtocol(t);
+  wire.target('offline-return');
+  const first = await wire.connect();
+  await first.attach('offline-return');
+  const entry = wire.targets.get('offline-return');
+  entry.info = { ...entry.info, url: `${protectedOrigin}/private` };
+  entry.tree.frame = { ...entry.tree.frame, url: entry.info.url, securityOrigin: protectedOrigin };
+  assert.match(
+    (await first.send('Target.getTargetInfo', { targetId: 'offline-return' })).error?.message ?? '',
+    /^slicc: refused:/
+  );
+  first.close();
+  await flush();
+  wire.commit('offline-return', ordinary);
+  const next = await wire.connect();
+  const session = await next.attach('offline-return');
+  assert.equal((await next.send('Runtime.evaluate', {}, session)).error, undefined);
+});
+
 for (const shape of ['missing root', 'protected child', 'protected opener']) {
   test(`a remembered extension error does not admit ${shape}`, async (t) => {
-    const wire = await knownTab(t);
-    const entry = wire.targets.get('known');
+    const id = shape === 'protected opener' ? 'opener-dependent' : 'known';
+    const wire = await knownTab(t, true, id);
+    const entry = wire.targets.get(id);
     if (shape === 'missing root') entry.tree = {};
     if (shape === 'protected child')
       entry.tree.childFrames = [
         {
           frame: {
             id: 'protected-child',
-            parentId: 'root-known',
+            parentId: `root-${id}`,
             url: `${protectedOrigin}/private`,
             securityOrigin: protectedOrigin,
           },
@@ -156,7 +189,7 @@ for (const shape of ['missing root', 'protected child', 'protected opener']) {
     }
     const connection = await wire.connect();
     assert.match(
-      (await connection.send('Target.getTargetInfo', { targetId: 'known' })).error?.message ?? '',
+      (await connection.send('Target.getTargetInfo', { targetId: id })).error?.message ?? '',
       /^slicc: refused:/
     );
   });
