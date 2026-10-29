@@ -201,6 +201,18 @@ for (const extension of [CURRENT_EXTENSION, ...EXTENSIONS]) {
     await page.goto(SEVEN);
     await ready(page);
     assert.deepEqual(await automation(page), { via: 'extension' });
+    const offDiagnostic = real.cdp.on((event) => {
+      if (event.method !== 'Runtime.consoleAPICalled') return;
+      const [prefix, stage, value] = event.params.args.map((arg) => arg.value);
+      if (prefix !== 'SLICC_RECOVERY_DIAGNOSTIC') return;
+      if (!['fresh', 'record', 'recalled', 'stranded', 'refusing'].includes(stage)) return;
+      if (typeof value !== 'string' || !/^[A-Za-z-]+(?:\.[A-Za-z]+)?$/.test(value)) return;
+      console.log(`SLICC_RECOVERY_DIAGNOSTIC ${extension.version} ${stage}:${value}`);
+    });
+    t.after(offDiagnostic);
+    await page.evaluate(() => {
+      globalThis.__sliccRecoveryDiagnostic = true;
+    });
     const title = 'Recovered ordinary tab';
     real.overrides.set('/recovery-seed.html', '<!doctype html><title>seed</title><h1>Seed</h1>');
     real.overrides.set(

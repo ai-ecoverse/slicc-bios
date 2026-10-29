@@ -689,6 +689,8 @@ class Guard {
     this.connection = connection;
     this.tabs = tabs;
     this.recalled = new Set();
+    this.diagnostic = globalThis.__sliccRecoveryDiagnostic === true;
+    this.diagnose('fresh', 'yes');
     this.closing = false;
     this.closed = false;
     this.is = protection(own);
@@ -763,6 +765,29 @@ class Guard {
     this.recoveries = new WeakMap();
     this.next = GUARD_IDS;
     this.guarded = { onmessage: null, onclose: null };
+  }
+
+  diagnose(stage, value) {
+    if (!this.diagnostic) return;
+    if (stage === 'refusing' && !/^[A-Za-z]+\.[A-Za-z]+$/.test(value ?? '')) return;
+    console.info('SLICC_RECOVERY_DIAGNOSTIC', stage, value);
+  }
+
+  diagnoseRefusal(message, method) {
+    if (message?.error) this.diagnose('refusing', method);
+  }
+
+  strandedExit(stage) {
+    this.diagnose('stranded', stage);
+    return null;
+  }
+
+  strandedNavExit(nav, touching) {
+    return this.strandedExit(nav ? 'not-strandable' : touching ? 'touch-failed' : 'no-nav');
+  }
+
+  strandedPlacementExit(placed) {
+    return this.strandedExit(placed ? 'not-strandable' : 'not-placed');
   }
 
   redacted(message, source = message) {
@@ -910,6 +935,7 @@ class Guard {
       const id = ++this.next;
       let timer;
       const answer = (message) => {
+        if (message.error) this.diagnose('refusing', method);
         clearTimeout(timer);
         const current = this.scopes.get(placement)?.sessionId;
         if (placement === undefined || current === undefined || current === sessionId) {
@@ -934,6 +960,7 @@ class Guard {
   }
 
   refuse(command, message = PROTECTED, release = true) {
+    this.diagnose('refusing', command?.method);
     if (this.finished.has(command)) return;
     this.finished.add(command);
     const key = requestKey(command);
@@ -949,7 +976,9 @@ class Guard {
   learn(info) {
     if (!info?.targetId) return;
     const known = this.targets.get(info.targetId);
-    const remembered = this.tabs.get(info.targetId)?.error;
+    const record = this.tabs.get(info.targetId);
+    this.diagnose('record', record?.error ? 'error' : record?.admitted ? 'admitted' : 'none');
+    const remembered = record?.error;
     if (remembered && !this.errorFrames.has(remembered.id)) {
       this.recalled.add(info.targetId);
       this.frameRoots.set(info.targetId, remembered.id);
@@ -957,6 +986,7 @@ class Guard {
       this.errorUrls.set(remembered.id, remembered.url);
       this.errored.set(info.targetId, remembered.url);
     }
+    this.diagnose('recalled', this.recalled.has(info.targetId) ? 'yes' : 'no');
     const failed = info.url !== undefined && this.errored.get(info.targetId) === bare(info.url);
     this.targets.set(info.targetId, {
       url: failed ? ERROR_PAGE : (info.url ?? ''),
@@ -1520,24 +1550,36 @@ class Guard {
 
   async stranded(targetId) {
     let nav = this.navs.get(targetId);
-    if (!nav && this.tabs.get(targetId)?.admitted && !this.relatedHeld(targetId)) {
+    const touching = !nav && this.tabs.get(targetId)?.admitted && !this.relatedHeld(targetId);
+    if (touching) {
       this.touch(targetId);
       nav = this.navs.get(targetId);
       if (nav) await nav.ready;
     }
-    if (!this.strandable(targetId, nav)) return null;
-    if (!(await this.placed(nav.session)) || !this.strandable(targetId, nav)) return null;
+    if (!this.strandable(targetId, nav)) return this.strandedNavExit(nav, touching);
+    const placed = await this.placed(nav.session);
+    if (!placed || !this.strandable(targetId, nav)) return this.strandedPlacementExit(placed);
     const proof = { targetId, nav, revision: this.revisions.get(targetId) };
     const answer = await this.answered(this.call('Page.getFrameTree', {}, nav.session));
-    if (!this.currentProof(proof)) return null;
+    if (!this.currentProof(proof)) {
+      this.diagnose('stranded', 'not-fresh');
+      return null;
+    }
     const frames = answer && !answer.error ? this.documentFrames(answer.result?.frameTree) : null;
-    if (!frames || frames[0].parentId) return null;
+    if (!frames || frames[0].parentId) {
+      this.diagnose('stranded', 'tree-shape');
+      return null;
+    }
     if (frames.some((frame) => this.frameLive(frame))) {
+      this.diagnose('stranded', 'live-frame');
       this.commitScope(targetId);
       return null;
     }
     proof.view = this.errorView(targetId, frames);
-    if (!this.fresh(proof)) return null;
+    if (!this.fresh(proof)) {
+      this.diagnose('stranded', 'not-fresh');
+      return null;
+    }
     for (const frame of frames) this.noteError(frame, nav.session);
     if (frames[0].url === ERROR_PAGE && this.protectedFrame(frames[0]) && !nav.scrub) {
       nav.scrub = this.scrubbing(nav, frames[0]);
@@ -3084,6 +3126,7 @@ class Guard {
       frame.url?.startsWith('chrome-error:')
     ) {
       record.error = { id: frame.id, url: frame.unreachableUrl ?? ERROR_PAGE };
+      this.diagnose('record', 'error');
     }
   }
 
@@ -4040,6 +4083,7 @@ class Guard {
   }
 
   async answer(message, was) {
+    this.diagnoseRefusal(message, was?.method);
     await this.finishRecovery(was);
     this.pendingContent.delete(was);
     if (this.endedAnswer(was) || !this.owns(was)) return;
