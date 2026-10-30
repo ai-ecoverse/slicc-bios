@@ -2,13 +2,13 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ready } from './bios.mjs';
 import { markerPixels } from './guard-paint-pixels.mjs';
-import { EXTENSIONS, realExtension, SEVEN } from './real-extension.mjs';
+import { CURRENT_EXTENSION, realExtension, SEVEN } from './real-extension.mjs';
 
 test('an extension without child attachment keeps an ordinary cross-site frame page closed', {
   timeout: 10 * 60 * 1000,
 }, async (t) => {
   const real = await realExtension({
-    extension: EXTENSIONS.find(({ version }) => version === '7.6.4'),
+    extension: CURRENT_EXTENSION,
     args: ['--site-per-process'],
   });
   t.after(() => real.close());
@@ -156,7 +156,7 @@ test('an extension without child attachment keeps an ordinary cross-site frame p
       return { capability, screenshot, cast, input, frames, state: closed ? 'closed' : 'failed' };
     }, outer.href);
     process.stdout.write(
-      `GUARD-PAINT extension-7.6.4 ordinary ${JSON.stringify({ control, ...row })}\n`
+      `GUARD-PAINT extension-${CURRENT_EXTENSION.version} ordinary ${JSON.stringify({ control, ...row })}\n`
     );
     assert.ok(
       control.shot > 0 && control.cast > 0 && control.input === 1,

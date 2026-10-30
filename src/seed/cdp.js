@@ -1,3 +1,4 @@
+import { EXTENSION_UPDATE, extensionAutomationSupported } from './extension.js';
 import { guardProtected } from './guard.js';
 
 const RUNTIMES = ['extension'];
@@ -127,9 +128,9 @@ export function extensionConnection(cdp) {
   return connection;
 }
 
-export function browserHosts() {
-  const extension = globalThis.sliccExtension?.cdp;
-  return { extension: extension && (() => extensionConnection(extension)) };
+export function browserHosts(extension = globalThis.sliccExtension) {
+  const cdp = extensionAutomationSupported(extension) ? extension?.cdp : undefined;
+  return { extension: cdp && (() => extensionConnection(cdp)) };
 }
 
 export function linkedBrowsers(links) {
@@ -154,13 +155,22 @@ export function browserHook(
   own = globalThis.location?.origin,
   before = async () => {}
 ) {
-  const guard = async (open) => {
+  const tabs = new WeakMap();
+  const guard = async (open, browser) => {
     await before();
-    return observe(guardProtected(await open(), own));
+    if (browser && !tabs.has(browser)) {
+      const records = new Map();
+      browser.on((event) => {
+        if (event.method === 'Target.targetDestroyed') records.delete(event.params?.targetId);
+      });
+      tabs.set(browser, records);
+    }
+    return observe(guardProtected(await open(), own, browser ? tabs.get(browser) : undefined));
   };
   return async ({ runtime } = {}) => {
     const linked = linkedBrowsers(links);
-    const hosts = browserHosts();
+    const extension = globalThis.sliccExtension;
+    const hosts = browserHosts(extension);
     if (runtime && !RUNTIMES.includes(runtime)) {
       const found = linked.find((browser) => browser.runtime === runtime);
       if (!found) {
@@ -169,10 +179,11 @@ export function browserHook(
       }
       return guard(() => found.open());
     }
+    if (extension && !extensionAutomationSupported(extension)) throw new Error(EXTENSION_UPDATE);
     const fallback = linked.find((browser) => browser.seven) ?? linked[0];
     const open = runtime ? hosts[runtime] : hosts.extension || fallback?.open;
     if (!open) throw new Error(MISSING[runtime ?? 'any']);
-    return guard(open);
+    return guard(open, open === hosts.extension ? extension.cdp : undefined);
   };
 }
 
