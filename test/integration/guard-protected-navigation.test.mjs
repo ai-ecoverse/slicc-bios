@@ -52,7 +52,10 @@ function navigationProtocol(t, transport) {
       return {};
     },
   };
-  Object.defineProperty(globalThis, 'sliccExtension', { configurable: true, value: { cdp } });
+  Object.defineProperty(globalThis, 'sliccExtension', {
+    configurable: true,
+    value: { version: '7.10.0', cdp },
+  });
   const extension = browserHook(undefined, undefined, new URL(seven).origin);
   t.after(() => {
     for (const guard of guards) guard.close();

@@ -4,9 +4,17 @@ import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { actPackage, boot, ready, run, screen, shows } from './bios.mjs';
 import { devtools as boundPort, debuggerUrl, launch } from './chrome.mjs';
+import { observeExtensionCommands } from './extension-commands.mjs';
 import { extensionOver } from './fake-extension.mjs';
 import { linkNode } from './linked-node.mjs';
-import { CURRENT_EXTENSION, display, EXTENSIONS, realExtension, SEVEN } from './real-extension.mjs';
+import {
+  CURRENT_EXTENSION,
+  display,
+  EXTENSIONS,
+  realExtension,
+  SEVEN,
+  UNSUPPORTED_EXTENSION,
+} from './real-extension.mjs';
 
 const hits = [];
 const heard = [];
@@ -191,8 +199,49 @@ test('over the extension’s shield, the guard arms every driven tab with no pro
   assert.deepEqual(page.errors, []);
 });
 
-for (const extension of [CURRENT_EXTENSION, ...EXTENSIONS]) {
-  test(`real slicc-extension ${extension.version}: a blocked protected hop recovers through the kernel to an ordinary tab`, {
+test('real slicc-extension 7.9.16: unsupported automation refuses with an update message before any extension CDP command', {
+  timeout: 10 * 60 * 1000,
+}, async (t) => {
+  const real = await realExtension({ extension: UNSUPPORTED_EXTENSION });
+  t.after(() => real.close());
+  real.overrides.set(
+    '/version-fetch.html',
+    '<!doctype html><title>Fetch still works</title>extension-fetch-still-works'
+  );
+  const page = await real.page(t);
+  await page.goto(SEVEN);
+  await ready(page);
+  assert.deepEqual(await automation(page), { via: null });
+  const capabilities = await page.evaluate(async () => ({
+    fetch: await (
+      await globalThis.sliccExtension.fetch(new URL('/version-fetch.html', location.href).href)
+    ).text(),
+    signIn: typeof globalThis.sliccExtension.signIn,
+  }));
+  assert.match(capabilities.fetch, /extension-fetch-still-works/);
+  assert.equal(capabilities.signIn, 'function');
+  const finish = await observeExtensionCommands(page);
+  await run(
+    page,
+    `playwright-cli open about:blank > /tmp/extension-update 2>&1; echo update-exit-$? >> /tmp/extension-update; echo "update-""done"`
+  );
+  await shows(page, 'update-done', 60000);
+  const refused = await read(page, '/tmp/extension-update');
+  assert.match(refused, /slicc: refused: Update slicc-extension/);
+  assert.match(refused, /Reload this tab after updating/);
+  assert.match(refused, /^update-exit-[1-9]\d*$/m);
+  assert.deepEqual(await finish(), {
+    bound: true,
+    started: true,
+    ended: true,
+    commands: 0,
+    aboutNavigations: 0,
+  });
+});
+
+for (const scenario of ['7.9.16', '7.5.1', '7.6.2', '7.6.3', '7.6.4', '7.9.13', '7.9.5', '7.9.4']) {
+  const extension = CURRENT_EXTENSION;
+  test(`real slicc-extension ${extension.version}: recovery scenario ${scenario}: a blocked protected hop recovers through the kernel to an ordinary tab`, {
     timeout: 10 * 60 * 1000,
   }, async (t) => {
     const real = await realExtension({ extension, rules: ['MAP vault.sliccy.ai 127.0.0.1'] });
@@ -201,6 +250,7 @@ for (const extension of [CURRENT_EXTENSION, ...EXTENSIONS]) {
     await page.goto(SEVEN);
     await ready(page);
     assert.deepEqual(await automation(page), { via: 'extension' });
+    assert.equal(await page.evaluate(() => globalThis.sliccExtension.version), extension.version);
     const title = 'Recovered ordinary tab';
     real.overrides.set('/recovery-seed.html', '<!doctype html><title>seed</title><h1>Seed</h1>');
     real.overrides.set(
@@ -257,10 +307,9 @@ for (const extension of [CURRENT_EXTENSION, ...EXTENSIONS]) {
   });
 }
 
-for (const extension of EXTENSIONS.filter(
-  ({ version }) => !['7.5.1', '7.6.2', '7.6.3', '7.6.4'].includes(version)
-)) {
-  test(`real slicc-extension ${extension.version}: playwright-cli opens about:blank on an opaque origin, drives an ordinary page, the vault stays out, and no driven document has the extension's origin`, {
+for (const scenario of ['7.9.13', '7.9.5', '7.9.4']) {
+  const extension = CURRENT_EXTENSION;
+  test(`real slicc-extension ${extension.version}: legacy scenario ${scenario}: playwright-cli opens about:blank on an opaque origin, drives an ordinary page, the vault stays out, and no driven document has the extension's origin`, {
     timeout: 10 * 60 * 1000,
   }, async (t) => {
     const real = await realExtension({ extension, rules: ['MAP vault.sliccy.ai 127.0.0.1'] });
@@ -269,6 +318,7 @@ for (const extension of EXTENSIONS.filter(
     await page.goto(SEVEN);
     await ready(page);
     assert.deepEqual(await automation(page), { via: 'extension' });
+    assert.equal(await page.evaluate(() => globalThis.sliccExtension.version), extension.version);
     await page.evaluate(() => {
       globalThis.contextOrigins = [];
       globalThis.sliccExtension.cdp.on((message) => {
@@ -327,51 +377,21 @@ for (const extension of EXTENSIONS.filter(
       !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
       `the vault was served after a hop: ${hits.join(' ')}`
     );
-    await page.evaluate(async () => {
-      const original = MessagePort.prototype.postMessage;
-      let bridge;
-      let active = false;
-      let commands = 0;
-      let aboutNavigations = 0;
-      MessagePort.prototype.postMessage = function (data, ...args) {
-        const command = data?.cdp;
-        if (!bridge && command?.method === 'Browser.getVersion') bridge = this;
-        if (this === bridge && active && typeof command?.method === 'string') {
-          commands += 1;
-          if (
-            command.method === 'Page.navigate' &&
-            typeof command.params?.url === 'string' &&
-            /^about:/i.test(command.params.url.trim())
-          )
-            aboutNavigations += 1;
-        }
-        return Reflect.apply(original, this, [data, ...args]);
-      };
-      try {
-        await globalThis.sliccExtension.cdp.send('Browser.getVersion');
-        if (!bridge) throw new Error('the extension backend bridge was not observed');
-        active = true;
-        globalThis.finishInheritedNavigation = () => {
-          const started = active;
-          active = false;
-          MessagePort.prototype.postMessage = original;
-          return { started, ended: true, observed: commands > 0, aboutNavigations };
-        };
-      } catch (error) {
-        MessagePort.prototype.postMessage = original;
-        throw error;
-      }
-    });
+    const finish = await observeExtensionCommands(page);
     await run(
       page,
       `playwright-cli goto about:blank > /tmp/inherit-plain 2>&1; echo plain-exit-$? >> /tmp/inherit-plain; playwright-cli goto ' about:blank' > /tmp/inherit-spaced 2>&1; echo spaced-exit-$? >> /tmp/inherit-spaced; cat /tmp/inherit-plain /tmp/inherit-spaced > /tmp/inherit; playwright-cli eval 'self.origin' >> /tmp/inherit 2>&1; echo "inherit-""done"`
     );
     await shows(page, 'inherit-done', 60000);
-    const forwarding = await page.evaluate(() => globalThis.finishInheritedNavigation());
+    const { commands, ...forwarding } = await finish();
+    assert.ok(
+      commands > 0,
+      'the complete inherited phase observed actual extension backend commands'
+    );
     assert.deepEqual(forwarding, {
+      bound: true,
       started: true,
       ended: true,
-      observed: true,
       aboutNavigations: 0,
     });
     for (const [file, exit] of [

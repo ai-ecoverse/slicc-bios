@@ -363,6 +363,7 @@ async function guardPage(t, lag, path = null, lens = null) {
     };
     Object.defineProperty(globalThis, 'sliccExtension', {
       value: Object.freeze({
+        version: '7.10.0',
         fetch: (input, init) => fetch(input, init),
         cdp: Object.freeze({
           send(method, params, sessionId) {

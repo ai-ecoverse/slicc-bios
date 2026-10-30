@@ -105,7 +105,10 @@ export function recoveryProtocol(t, hook = browserHook) {
       return {};
     },
   };
-  Object.defineProperty(globalThis, 'sliccExtension', { configurable: true, value: { cdp } });
+  Object.defineProperty(globalThis, 'sliccExtension', {
+    configurable: true,
+    value: { version: '7.10.0', cdp },
+  });
   const open = hook(undefined, undefined, protectedOrigin);
   t.after(() => {
     for (const guard of guards) guard.close();
@@ -155,7 +158,7 @@ export function recoveryProtocol(t, hook = browserHook) {
     replaceBrowser() {
       Object.defineProperty(globalThis, 'sliccExtension', {
         configurable: true,
-        value: { cdp: { ...cdp } },
+        value: { version: '7.10.0', cdp: { ...cdp } },
       });
     },
     async connect() {
