@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { createServer as createSecureServer } from 'node:https';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { boot, ready } from './bios.mjs';
 import { devtools, launch } from './chrome.mjs';
 import { linkNode } from './linked-node.mjs';
-import { realExtension, SEVEN } from './real-extension.mjs';
+import { certificate, realExtension, SEVEN } from './real-extension.mjs';
 
 async function installWire({ route, runtime }) {
   const module = await import(new URL('guard.js', location.href).href);
@@ -157,8 +158,11 @@ async function installWire({ route, runtime }) {
   const connection = module.guardProtected(wire, self.origin);
   let next = 0;
   const pending = new Map();
+  const published = [];
   connection.onmessage = (text) => {
     const message = JSON.parse(text);
+    if (message.method === 'Debugger.paused')
+      published.push({ session: message.sessionId, reason: message.params?.reason });
     pending.get(message.id)?.(message);
     pending.delete(message.id);
   };
@@ -200,6 +204,7 @@ async function installWire({ route, runtime }) {
     transport,
     snapshot,
     constant,
+    published: () => published.slice(),
     pendingTransport: () =>
       [...inFlightBelow.values()]
         .filter((request) => request.sessionId === active)
@@ -399,23 +404,50 @@ for (const route of ['extension', 'link']) {
       }
     };
     t.after(persist);
-    const site = createServer((_request, response) => {
+    const firstScripts = [];
+    const fixture = (request, response) => {
+      const incoming = new URL(request.url, 'http://fixture');
+      if (incoming.pathname === '/first') {
+        firstScripts.push({
+          document: incoming.searchParams.get('document'),
+          marker: incoming.searchParams.get('marker') === 'true',
+        });
+        response.writeHead(204).end();
+        return;
+      }
       response.writeHead(200, { 'content-type': 'text/html' });
       response.end(
-        '<!doctype html><title>ordinary</title><main>diagnostic</main><script>globalThis.diagnostic675Reached = true;</script>'
+        '<!doctype html><title>ordinary</title><script>globalThis.diagnostic675FirstSawMarker = globalThis.__slicc675PinnedMarker === "diagnostic-675-v1"; fetch("/first?document=" + new URL(location.href).searchParams.get("document") + "&marker=" + globalThis.diagnostic675FirstSawMarker); globalThis.diagnostic675Reached = true;</script>'
       );
-    });
-    await step(
-      'setup.fixture-listen',
-      () => new Promise((resolve) => site.listen(0, '127.0.0.1', resolve))
+    };
+    const site = createServer(fixture);
+    const secure = createSecureServer(
+      await step('setup.fixture-certificate', certificate),
+      fixture
     );
+    await step('setup.fixture-listen', async () => {
+      await new Promise((resolve) => site.listen(0, '127.0.0.1', resolve));
+      await new Promise((resolve) => secure.listen(0, '127.0.0.1', resolve));
+    });
     t.after(() => {
       site.closeAllConnections();
       site.close();
+      secure.closeAllConnections();
+      secure.close();
     });
     const url = `http://localhost:${site.address().port}/ordinary`;
+    const ordinaryMapping = `MAP echo.sliccy.ai 127.0.0.1:${secure.address().port}`;
+    const vaultMapping = `MAP vault.sliccy.ai 127.0.0.1:${secure.address().port}`;
     const chrome = await step('setup.launch', () =>
-      route === 'extension' ? realExtension() : launch({ tools: false })
+      route === 'extension'
+        ? realExtension({ rules: [ordinaryMapping, vaultMapping] })
+        : launch({
+            tools: false,
+            args: [
+              '--ignore-certificate-errors',
+              `--host-resolver-rules=${ordinaryMapping}, ${vaultMapping}, MAP seven.sliccy.ai 127.0.0.1:${secure.address().port}`,
+            ],
+          })
     );
     t.after(() => chrome.close());
     const page = await step('setup.page', () => chrome.page(t));
@@ -501,6 +533,8 @@ for (const route of ['extension', 'link']) {
           frames: event.params.callFrames.map((frame) => ({
             id: frame.callFrameId,
             scriptId: frame.location?.scriptId,
+            url: frame.url,
+            location: frame.location,
           })),
         });
         for (const waiter of rawWaiters) waiter();
@@ -618,8 +652,7 @@ for (const route of ['extension', 'link']) {
       await below('Debugger.resume').catch(() => {});
       await page.evaluate(() => diagnostic675.close()).catch(() => {});
     });
-    const positives = [];
-    const perform = async ({ kind, fault = false, destination, navigate = true }) =>
+    const perform = async ({ kind, fault = false, destination }) =>
       step(kind, async () => {
         await page.evaluate(({ kind, fault }) => diagnostic675.reset(kind, fault), { kind, fault });
         breakpoint = (
@@ -628,181 +661,475 @@ for (const route of ['extension', 'link']) {
           })
         ).breakpointId;
         const after = await page.evaluate(() => diagnostic675.sequence());
+        const rawAfter = rawPauses.length;
         const observedAfter = observerEvents.length;
-        const rawPausedAfter = rawPauses.length;
-        const executing = navigate
-          ? below('Page.navigate', { url: destination })
-          : below('Runtime.evaluate', {
-              expression: 'globalThis.diagnostic675Loaded = true',
-              returnByValue: true,
-            });
-        const pause = await step(kind + '.route-pause', () =>
+        const executing = below('Page.navigate', { url: destination });
+        const initial = await step(kind + '.instrumentation-pause', () =>
           page.evaluate((after) => diagnostic675.wait('Debugger.paused', after), after)
-        );
-        const rawPause = await step(kind + '.raw-pause', () =>
-          rawWait(() => rawPauses[rawPausedAfter])
         );
         const row = {
           kind,
           fault,
-          routePause: !pause.deadline,
-          pauseReason: pause.reason,
-          callFrames: pause.frames?.length,
-          breakpointOwner: 'route',
-          rawControlOwnDebugger: true,
-          routeSession: session,
-          rawControlSession: observer,
+          paths: {
+            arm: route + ' guard, below bios; no Rust',
+            convert: route + ' guard, below bios; no Rust',
+            read: 'bios + ' + route + ' guard; no Rust',
+            evaluate: route + ' guard, below bios; no Rust',
+            marker: route + ' guard, below bios; no Rust',
+          },
+          initialReason: initial.reason,
         };
-        if (navigate) trace.rows.push(row);
-        else trace.controls.push(row);
+        trace.rows.push(row);
         await persist();
-        assert.equal(pause.deadline, undefined, 'route instrumentation pause was observed');
-        assert.equal(rawPause.deadline, undefined, 'raw debugger observed the same pause');
-        assert.equal(pause.reason, 'instrumentation');
-        assert.ok(pause.frames.length > 0 && rawPause.frames.length > 0);
-        row.observerAtPause = observerEvents.slice(observedAfter);
-        row.observerLoadPending =
-          navigate && !row.observerAtPause.some((event) => event.method === 'Page.loadEventFired');
-        const correlation = await page.evaluate(
-          ({ pause, expected }) => diagnostic675.correlate(pause, expected),
-          { pause, expected: destination }
+        assert.equal(initial.deadline, undefined);
+        assert.equal(initial.reason, 'instrumentation');
+        assert.equal((await rawWait(() => rawPauses[rawAfter])).deadline, undefined);
+        const normalAfter = await page.evaluate(() => diagnostic675.sequence());
+        const rawNormalAfter = rawPauses.length;
+        const paused = await step(kind + '.request-normal-pause', () => below('Debugger.pause'));
+        row.pause = summarize(paused);
+        const resumed = await step(kind + '.instrumentation-resume', () =>
+          below('Debugger.resume')
         );
-        row.eventVerdict = correlation;
-        if (navigate && !fault) positives.push(correlation.fourEvents.yes);
-        row.pendingBeforeEvaluateFirst = {
-          route: await page.evaluate(() => diagnostic675.pendingTransport()),
-          raw: [...rawPending].map((request) => request.method),
-          ownedReads: await page.evaluate(() => diagnostic675.snapshot()),
-        };
-        const routeParams = {
-          callFrameId: pause.frames[0].id,
-          expression: '1 + 1',
-          returnByValue: true,
-          silent: true,
-        };
-        const rawParams = { ...routeParams, callFrameId: rawPause.frames[0].id };
-        const [routeFirst, rawFirst] = await step(kind + '.evaluate-first', () =>
-          Promise.all([
-            below('Debugger.evaluateOnCallFrame', routeParams),
-            native('Debugger.evaluateOnCallFrame', rawParams),
-          ])
-        );
-        row.routeEvaluateFirst = {
-          ...summarize(routeFirst),
-          returnedTwo: routeFirst.result?.result?.value === 2,
-        };
-        row.rawEvaluateFirst = {
-          ...summarize(rawFirst),
-          returnedTwo: rawFirst.result?.result?.value === 2,
-        };
-        row.evaluateOnCallFrame = row.routeEvaluateFirst;
+        row.instrumentationResume = summarize(resumed);
         await persist();
-        const [tree, rawTree, info] = await step(kind + '.tree-reads', () =>
-          Promise.all([
-            below('Page.getFrameTree'),
-            native('Page.getFrameTree'),
-            below('Target.getTargetInfo', { targetId: target.targetId }, null),
-          ])
+        const normal = await step(kind + '.normal-pause', () =>
+          page.evaluate((after) => diagnostic675.wait('Debugger.paused', after), normalAfter)
         );
-        row.transportFrameTree = {
-          ...summarize(tree),
-          urlMatched: tree.result?.frameTree?.frame?.url === destination,
-        };
-        row.rawFrameTree = {
-          ...summarize(rawTree),
-          urlMatched: rawTree.result?.frameTree?.frame?.url === destination,
-        };
-        row.transportTargetInfo = {
-          ...summarize(info),
-          urlMatched: info.result?.targetInfo?.url === destination,
-        };
+        const rawNormal = await rawWait(() => rawPauses[rawNormalAfter]);
+        row.normalReason = normal.reason;
+        row.normalDeadline = Boolean(normal.deadline);
+        row.sameScript = normal.frames?.[0]?.scriptId === initial.frames?.[0]?.scriptId;
+        row.supportingEvents = normal.deadline
+          ? undefined
+          : await page.evaluate(({ pause, expected }) => diagnostic675.correlate(pause, expected), {
+              pause: normal,
+              expected: destination,
+            });
         await persist();
-        const [routeAfter, rawAfter] = await step(kind + '.evaluate-after-read', () =>
-          Promise.all([
-            below('Debugger.evaluateOnCallFrame', routeParams),
-            native('Debugger.evaluateOnCallFrame', rawParams),
-          ])
-        );
-        row.routeEvaluateAfterTree = {
-          ...summarize(routeAfter),
-          returnedTwo: routeAfter.result?.result?.value === 2,
-        };
-        row.rawEvaluateAfterTree = {
-          ...summarize(rawAfter),
-          returnedTwo: rawAfter.result?.result?.value === 2,
-        };
-        await persist();
+        assert.ok(!normal.deadline && !rawNormal.deadline && normal.reason !== 'instrumentation');
+        const removed = await below('Debugger.removeBreakpoint', { breakpointId: breakpoint });
+        breakpoint = undefined;
+        row.removeBreakpoint = summarize(removed);
         const answer = await step(kind + '.guarded-read', guarded);
         Object.assign(row, summarize(answer), {
           ownedReads: await page.evaluate(() => diagnostic675.snapshot()),
+          urlMatched: answer.result?.frameTree?.frame?.url === destination,
         });
         await persist();
-        const removed = await step(kind + '.remove', () =>
-          below('Debugger.removeBreakpoint', { breakpointId: breakpoint })
-        );
-        breakpoint = undefined;
-        const resumed = await step(kind + '.resume', () => below('Debugger.resume'));
-        row.removeBreakpoint = summarize(removed);
-        row.resume = summarize(resumed);
+        if (!fault) {
+          const evaluated = await step(kind + '.route-evaluate', () =>
+            below('Debugger.evaluateOnCallFrame', {
+              callFrameId: normal.frames[0].id,
+              expression: '1 + 1',
+              returnByValue: true,
+              silent: true,
+            })
+          );
+          row.evaluateOnCallFrame = {
+            ...summarize(evaluated),
+            returnedTwo: evaluated.result?.result?.value === 2,
+          };
+          if (
+            row.urlMatched &&
+            !answer.error &&
+            !answer.deadline &&
+            row.evaluateOnCallFrame.returnedTwo
+          ) {
+            const installed = await step(kind + '.pinned-marker', () =>
+              below('Debugger.evaluateOnCallFrame', {
+                callFrameId: normal.frames[0].id,
+                expression:
+                  'Object.defineProperty(globalThis, "__slicc675PinnedMarker", {value: "diagnostic-675-v1"}); globalThis.__slicc675PinnedMarker === "diagnostic-675-v1"',
+                returnByValue: true,
+                silent: true,
+              })
+            );
+            row.marker = {
+              ...summarize(installed),
+              installed:
+                installed.result?.result?.value === true && !installed.result?.exceptionDetails,
+            };
+          }
+        }
+        const release = await step(kind + '.normal-resume', () => below('Debugger.resume'));
+        row.resume = summarize(release);
         row.deadlock = Boolean(
-          answer.deadline || removed.deadline || removed.error || resumed.deadline || resumed.error
+          answer.deadline || removed.deadline || removed.error || release.deadline || release.error
         );
         if (row.deadlock) {
-          row.failureCleanup = 'raw debugger rescue after proof failure only';
+          row.failureCleanup = 'raw rescue only after recorded proof failure';
           await native('Debugger.resume');
         }
-        row.observerAfterResume = observerEvents.slice(observedAfter);
-        row.navigationCommand = summarize(await executing);
+        row.navigation = summarize(await executing);
+        const loaded = await rawWait(() =>
+          observerEvents.slice(observedAfter).find((e) => e.method === 'Page.loadEventFired')
+        );
+        row.loaded = !loaded.deadline;
+        const observed = await native('Runtime.evaluate', {
+          expression: 'globalThis.diagnostic675FirstSawMarker === true',
+          returnByValue: true,
+        });
+        row.firstScript = {
+          ...summarize(observed),
+          sawMarker: observed.result?.result?.value === true,
+          observationPath: 'raw post-resume observation of first page script result',
+        };
+        row.firstScriptBeacons = firstScripts.filter(
+          (entry) => entry.document === new URL(destination).searchParams.get('document')
+        );
         await persist();
-        assert.equal(answer.deadline, undefined, 'guard returned or refused before deadline');
-        assert.equal(row.deadlock, false, 'route resumed without raw rescue');
+        assert.equal(row.deadlock, false);
         if (fault) {
-          assert.ok(row.ownedReads.held > 0, 'an actual owned reply was held');
+          assert.ok(row.ownedReads.held > 0);
           assert.ok(answer.error);
           assert.equal(answer.result, undefined);
         }
-        if (answer.result) assert.equal(answer.result.frameTree.frame.url, destination);
-        if (navigate) {
-          const finished = await step(kind + '.raw-loaded', () =>
-            rawWait(() =>
-              observerEvents
-                .slice(observedAfter)
-                .find((event) => event.method === 'Page.loadEventFired')
-            )
-          );
-          row.loadedAfterResume = !finished.deadline;
-          await persist();
-          assert.equal(finished.deadline, undefined, 'document loaded after route resume');
-        }
       });
-    await perform({ kind: 'evaluate-first-fresh-pause', destination: `${url}?document=fresh` });
-    const loadedDestination = `${url}?document=fresh`;
+    await perform({ kind: 'positive-normal-pause', destination: url + '?document=positive' });
     await perform({
-      kind: 'loaded-document-paused',
-      destination: loadedDestination,
-      navigate: false,
-    });
-    await perform({ kind: 'new-document-paused', destination: `${url}?document=read` });
-    await perform({
-      kind: 'new-document-held-reply',
-      destination: `${url}?document=stall`,
+      kind: 'held-read-normal-pause',
+      destination: url + '?document=held',
       fault: true,
     });
-    trace.positiveVerdict = positives.some(Boolean);
-    trace.passedSafety = true;
+    const pendingRows = [];
+    trace.pendingPauses = pendingRows;
+    for (const siteRelation of ['same-site', 'cross-site']) {
+      for (const protectedKind of ['seven', 'vault']) {
+        const row = {
+          kind: 'pending-pause',
+          siteRelation,
+          protectedKind,
+          phase: 'setup',
+          steeringPath:
+            'raw observer navigation; real guards remain attached; not client admission',
+        };
+        pendingRows.push(row);
+        let ownedTarget;
+        let pendingSession;
+        let privateSession;
+        let pendingBreakpoint;
+        const attempt = (method, params = {}) => below(method, params, pendingSession);
+        const privateCall = async (method, params = {}) => {
+          const started = Date.now();
+          let timer;
+          const result = await Promise.race([
+            raw.send(method, params, privateSession).then(
+              (result) => ({ result, elapsedMs: Date.now() - started }),
+              (error) => ({ error: true, errorName: error.name, elapsedMs: Date.now() - started })
+            ),
+            new Promise((resolve) => {
+              timer = setTimeout(
+                () => resolve({ deadline: true, elapsedMs: Date.now() - started }),
+                3000
+              );
+            }),
+          ]);
+          clearTimeout(timer);
+          return result;
+        };
+        const rawEvents = [];
+        const rawScripts = new Map();
+        const privateWaiters = new Set();
+        const stop = raw.on((event) => {
+          if (event.sessionId !== privateSession) return;
+          if (event.method === 'Debugger.scriptParsed')
+            rawScripts.set(event.params.scriptId, event.params.url);
+          if (['Debugger.paused', 'Page.frameNavigated'].includes(event.method)) {
+            rawEvents.push(event);
+            for (const waiter of privateWaiters) waiter();
+          }
+        });
+        const waitPrivate = (after) =>
+          new Promise((resolve) => {
+            const find = () =>
+              rawEvents.slice(after).find((event) => event.method === 'Debugger.paused');
+            if (find()) return resolve(find());
+            const listener = () => {
+              const found = find();
+              if (!found) return;
+              clearTimeout(timer);
+              privateWaiters.delete(listener);
+              resolve(found);
+            };
+            const timer = setTimeout(() => {
+              privateWaiters.delete(listener);
+              resolve({ deadline: true });
+            }, 3000);
+            privateWaiters.add(listener);
+          });
+        try {
+          await step('pending.' + siteRelation + '.' + protectedKind + '.setup', async () => {
+            const source = siteRelation === 'same-site' ? 'https://echo.sliccy.ai/ordinary' : url;
+            row.setupStep = 'raw.create-target';
+            ownedTarget = (await raw.send('Target.createTarget', { url: source })).targetId;
+            row.setupStep = 'raw.attach';
+            privateSession = (
+              await raw.send('Target.attachToTarget', { targetId: ownedTarget, flatten: true })
+            ).sessionId;
+            await privateCall('Page.enable');
+            row.setupStep = 'route.discovery';
+            const discovered = await page.evaluate(() => diagnostic675.send('Target.getTargets'));
+            const found = discovered.result?.targetInfos.find((target) => target.url === source);
+            assert.ok(found);
+            row.setupStep = 'route.attachment';
+            const attached = await page.evaluate(
+              (targetId) =>
+                diagnostic675.send('Target.attachToTarget', { targetId, flatten: true }),
+              found.targetId
+            );
+            pendingSession = attached.result?.sessionId;
+            assert.ok(pendingSession);
+            await page.evaluate((session) => diagnostic675.setSession(session), pendingSession);
+            for (const method of ['Page.enable', 'Runtime.enable', 'Debugger.enable']) {
+              row.setupStep = 'route.' + method;
+              const reply = await step(
+                'pending.' + siteRelation + '.' + protectedKind + '.' + method,
+                async () => {
+                  const reply = await attempt(method);
+                  row.lastSetupReply = { method, ...summarize(reply) };
+                  assert.ok(!reply.deadline && !reply.error);
+                  return reply;
+                }
+              );
+              assert.ok(reply.result);
+            }
+            row.setupStep = 'raw.Debugger.enable';
+            const enabled = await privateCall('Debugger.enable');
+            assert.ok(!enabled.deadline && !enabled.error);
+            row.setupStep = 'raw.Runtime.getIsolateId';
+            row.beforeIsolate = (await privateCall('Runtime.getIsolateId')).result?.id;
+            row.setupStep = 'route.instrumentation-arm';
+            pendingBreakpoint = (
+              await attempt('Debugger.setInstrumentationBreakpoint', {
+                instrumentation: 'beforeScriptExecution',
+              })
+            ).result?.breakpointId;
+            assert.ok(pendingBreakpoint);
+            row.setupStep = 'route.instrumented-navigation';
+            const after = await page.evaluate(() => diagnostic675.sequence());
+            await attempt('Page.navigate', { url: source + '?document=pending' });
+            row.setupStep = 'route.instrumentation-pause';
+            const paused = await page.evaluate(
+              (after) => diagnostic675.wait('Debugger.paused', after),
+              after
+            );
+            assert.equal(paused.reason, 'instrumentation');
+          });
+          row.phase = 'proof';
+          const after = await page.evaluate(() => diagnostic675.sequence());
+          const rawAfter = rawEvents.length;
+          row.pause = summarize(await attempt('Debugger.pause'));
+          const destination = protectedKind === 'seven' ? SEVEN : 'https://vault.sliccy.ai/';
+          const navigation = privateCall('Page.navigate', { url: destination });
+          row.resume = summarize(await attempt('Debugger.resume'));
+          row.navigation = summarize(await navigation);
+          const routePause = await page.evaluate(
+            (after) => diagnostic675.wait('Debugger.paused', after, 3000),
+            after
+          );
+          row.routePausePublished = !routePause.deadline;
+          row.routePauseReason = routePause.reason;
+          const rawPause = rawEvents
+            .slice(rawAfter)
+            .find((event) => event.method === 'Debugger.paused');
+          row.rawPauseReason = rawPause?.params.reason;
+          row.rawPauseScript = rawPause?.params.callFrames?.[0]?.location?.scriptId;
+          row.rawPauseUrl = rawScripts.get(row.rawPauseScript);
+          row.protectedPause = row.rawPauseUrl?.startsWith(destination);
+          const frameTree = await privateCall('Page.getFrameTree');
+          row.rawTree = summarize(frameTree);
+          row.landingUrl = frameTree.result?.frameTree?.frame?.url;
+          row.afterIsolate = (await privateCall('Runtime.getIsolateId')).result?.id;
+          row.sameProcess =
+            row.beforeIsolate && row.afterIsolate
+              ? row.beforeIsolate === row.afterIsolate
+              : undefined;
+          row.protectedLanding = row.landingUrl?.startsWith(destination);
+          row.biosPausePublications = await page.evaluate(() => diagnostic675.published());
+          row.rawNavigationEvents = rawEvents
+            .slice(rawAfter)
+            .filter((event) => event.method === 'Page.frameNavigated')
+            .map((event) => ({
+              url: event.params.frame?.url,
+              frameId: event.params.frame?.id,
+              loaderId: event.params.frame?.loaderId,
+            }));
+          row.requiredRescue = Boolean(row.protectedPause);
+          row.pendingSafetyNotClaimed = true;
+          row.phase = 'complete';
+        } catch (error) {
+          row.failure = {
+            step:
+              row.phase === 'setup'
+                ? 'pending.' + siteRelation + '.' + protectedKind + '.' + row.setupStep
+                : trace.step,
+            errorName: error.name,
+          };
+        } finally {
+          if (pendingBreakpoint)
+            row.remove = summarize(
+              await attempt('Debugger.removeBreakpoint', { breakpointId: pendingBreakpoint })
+            );
+          if (privateSession) {
+            row.failureCleanup =
+              'diagnostic raw cleanup after landing and publication measurements; not guard-owned rescue';
+            const beforeCleanup = rawEvents.length;
+            const beforeCleanupRoute = await page.evaluate(() => diagnostic675.sequence());
+            row.rawCleanupResume = summarize(await privateCall('Debugger.resume'));
+            const laterPause = await waitPrivate(beforeCleanup);
+            row.pauseAfterDiagnosticCleanup = {
+              deadline: Boolean(laterPause.deadline),
+              reason: laterPause.params?.reason,
+              scriptUrl: rawScripts.get(laterPause.params?.callFrames?.[0]?.location?.scriptId),
+              diagnosticCleanupNotGuardRescue: true,
+            };
+            if (!laterPause.deadline) {
+              const finalTree = await privateCall('Page.getFrameTree');
+              row.finalRawTree = {
+                ...summarize(finalTree),
+                url: finalTree.result?.frameTree?.frame?.url,
+              };
+              row.finalRoutePublication = !(
+                await page.evaluate(
+                  (after) => diagnostic675.wait('Debugger.paused', after, 3000),
+                  beforeCleanupRoute
+                )
+              ).deadline;
+              await privateCall('Debugger.resume');
+            }
+          }
+          if (ownedTarget)
+            await raw.send('Target.closeTarget', { targetId: ownedTarget }).catch(() => {});
+          stop();
+          await page.evaluate((session) => diagnostic675.setSession(session), session);
+          await persist();
+        }
+      }
+    }
+    const positive = trace.rows.find((row) => !row.fault);
     trace.phase = 'complete';
-    assert.equal(
-      trace.positiveVerdict,
-      true,
-      'new document has a positive four-event verdict at the pause'
+    trace.passedSafety = trace.rows.every((row) => !row.deadlock);
+    await persist();
+    assert.ok(
+      positive.urlMatched && positive.safe && !positive.refused && !positive.deadline,
+      'bios live read verified the paused new document'
     );
-    const normal = trace.rows.find((row) => !row.fault);
     assert.equal(
-      normal.evaluateOnCallFrame.returnedTwo,
+      positive.evaluateOnCallFrame?.returnedTwo,
       true,
-      'call-frame evaluation completed while paused'
+      'route evaluation completed at the verified pause'
+    );
+    assert.equal(positive.marker?.installed, true, 'pinned marker installed through route');
+    assert.equal(
+      positive.firstScript?.sawMarker,
+      true,
+      'first page script saw the marker before running'
     );
     trace.passed = true;
     t.diagnostic(`diagnostic-675 ${route} passed`);
   });
 }
+
+test('diagnostic 675: extension with other content script', { timeout: 900000 }, async (t) => {
+  const trace = { route: 'extension', kind: 'other-extension', phase: 'setup', steps: [] };
+  const persist = async () => {
+    const root = process.env.SLICC_PROOF_TRACE_DIR;
+    if (!root) return;
+    await mkdir(root, { recursive: true });
+    await writeFile(
+      join(root, 'diagnostic-675-extension-foreign.json'),
+      JSON.stringify(trace, null, 2)
+    );
+  };
+  t.after(persist);
+  const step = async (name, operation) => {
+    trace.step = name;
+    await persist();
+    try {
+      const result = await operation();
+      trace.steps.push({ name, state: 'completed' });
+      await persist();
+      return result;
+    } catch (error) {
+      trace.failure = { step: name, errorName: error.name };
+      await persist();
+      throw error;
+    }
+  };
+  const previous = process.env.SLICC_HARNESS_EXTENSION;
+  process.env.SLICC_HARNESS_EXTENSION = '1';
+  let chrome;
+  try {
+    chrome = await step('setup.launch-with-harness-extension', () => realExtension());
+  } finally {
+    if (previous === undefined) delete process.env.SLICC_HARNESS_EXTENSION;
+    else process.env.SLICC_HARNESS_EXTENSION = previous;
+  }
+  t.after(() => chrome.close());
+  trace.harnessExtension = chrome.extension?.id;
+  const page = await step('setup.page', () => chrome.page(t));
+  await page.init(() => {
+    globalThis.sliccKernelDebug = true;
+  });
+  await step('setup.seven-navigation', () => page.goto(SEVEN));
+  await step('setup.seven-ready', () => ready(page, undefined, { tools: false }));
+  await step('setup.topology', async () => {
+    assert.equal(await page.evaluate(() => globalThis.sliccLinkedBrowsers().length), 0);
+    assert.equal(trace.harnessExtension, 'ankmbodmgimjemnojmeddfcdlbocolob');
+  });
+  await step('setup.wire', () => page.evaluate(installWire, { route: 'extension' }));
+  const site = createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'text/html' });
+    response.end('<!doctype html><title>ordinary</title>');
+  });
+  await new Promise((resolve) => site.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    site.closeAllConnections();
+    site.close();
+  });
+  const url = 'http://localhost:' + site.address().port + '/ordinary';
+  const { targetId } = await step('setup.ordinary-target', () =>
+    chrome.cdp.send('Target.createTarget', { url })
+  );
+  t.after(() => chrome.cdp.send('Target.closeTarget', { targetId }).catch(() => {}));
+  const targets = await step('setup.discovery', () =>
+    page.evaluate(() => diagnostic675.send('Target.getTargets'))
+  );
+  const target = targets.result?.targetInfos.find((target) => target.url === url);
+  assert.ok(target);
+  const attached = await step('setup.attachment', () =>
+    page.evaluate(
+      (targetId) => diagnostic675.send('Target.attachToTarget', { targetId, flatten: true }),
+      target.targetId
+    )
+  );
+  const sessionId = attached.result?.sessionId;
+  assert.ok(sessionId);
+  await step('setup.runtime', async () => {
+    const reply = await page.evaluate(
+      (sessionId) => diagnostic675.transport('Runtime.enable', {}, sessionId),
+      sessionId
+    );
+    assert.ok(!reply.error && !reply.deadline);
+  });
+  trace.phase = 'proof';
+  const reply = await step('proof.Debugger.enable', () =>
+    page.evaluate(
+      (sessionId) => diagnostic675.transport('Debugger.enable', {}, sessionId),
+      sessionId
+    )
+  );
+  trace.reply = summarize(reply);
+  trace.path =
+    'extension guard below bios; actual builtin content-script extension ON; no linked CLI or Rust';
+  await persist();
+  assert.ok(reply.error && !reply.deadline && !reply.result);
+  assert.equal(
+    reply.refusalConstant,
+    'slicc: refused: a browser extension runs scripts in this page, and profiling it would expose them'
+  );
+  trace.phase = 'complete';
+  trace.passed = true;
+  await persist();
+});
