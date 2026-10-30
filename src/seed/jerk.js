@@ -125,8 +125,10 @@ export function createJerk({ links, vault, timers = globalThis }) {
   }
 
   async function status(id, provider) {
-    const secrets = (await vault.call('list')).list.secrets ?? [];
-    const found = secrets.some((secret) => !secret.removedAt && own(provider)(secret));
+    const { secrets, mcp } = (await vault.call('list')).list;
+    const found =
+      (secrets ?? []).some((secret) => !secret.removedAt && own(provider)(secret)) ||
+      (mcp ?? []).some((record) => provider === `mcp:${record.server}`);
     await done(
       id,
       found
