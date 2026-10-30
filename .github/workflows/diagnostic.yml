@@ -19,7 +19,6 @@ jobs:
     timeout-minutes: 35
     env:
       SLICC_CDP_PORTS: 9300-9309
-      SLICC_PROOF_TRACE_DIR: ${{ runner.temp }}/diagnostic-trace
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,6 +32,7 @@ jobs:
       - name: Run diagnostic
         run: |
           set +e
+          export SLICC_PROOF_TRACE_DIR="$RUNNER_TEMP/diagnostic-trace"
           node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs test/integration/guard-diagnostic-675.test.mjs > "$RUNNER_TEMP/diagnostic.log" 2>&1
           result=$?
           echo "Diagnostic exit: $result"
