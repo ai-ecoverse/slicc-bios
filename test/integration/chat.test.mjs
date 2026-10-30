@@ -39,7 +39,7 @@ function ledger(request, raw) {
   if (id === undefined) return { status: 202, headers: [], body: Buffer.alloc(0) };
   const results = {
     initialize: {
-      protocolVersion: params.protocolVersion,
+      protocolVersion: params?.protocolVersion,
       capabilities: { tools: {} },
       serverInfo: { name: 'ledger', version: '1.0.0' },
     },
