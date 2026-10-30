@@ -7,7 +7,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
-import { agentState, agentUp, connectAccount, listsAccount, ready, run, shows } from './bios.mjs';
+import {
+  agentState,
+  agentUp,
+  connectAccount,
+  connected,
+  listsAccount,
+  ready,
+  run,
+  screen,
+  shows,
+} from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { eventFrame, fakeLlm } from './fake-llm.mjs';
 
@@ -21,6 +31,30 @@ const adobeConfig = {
   models: [{ id: 'claude-test', name: 'Claude Test', context_window: 200000, max_tokens: 8192 }],
 };
 const BEDROCK = 'https://bedrock-runtime.us-west-2.amazonaws.com/';
+const LEDGER = 'https://ledger.example.com/';
+
+function ledger(request, raw) {
+  if (request.method !== 'POST') return { status: 405, headers: [], body: Buffer.alloc(0) };
+  const { id, method, params } = JSON.parse(raw.toString());
+  if (id === undefined) return { status: 202, headers: [], body: Buffer.alloc(0) };
+  const results = {
+    initialize: {
+      protocolVersion: params?.protocolVersion,
+      capabilities: { tools: {} },
+      serverInfo: { name: 'ledger', version: '1.0.0' },
+    },
+    'tools/list': {
+      tools: [
+        { name: 'balance', description: 'Reads the balance', inputSchema: { type: 'object' } },
+      ],
+    },
+  };
+  return {
+    status: 200,
+    headers: [['content-type', 'application/json']],
+    body: Buffer.from(JSON.stringify({ jsonrpc: '2.0', id, result: results[method] ?? {} })),
+  };
+}
 
 const stream = Buffer.concat([
   eventFrame('messageStart', { role: 'assistant' }),
@@ -146,8 +180,10 @@ const llm = await fakeLlm(chrome.cdp, {
     'https://tracker.example.com/',
     'https://tools.example.test/',
     'https://registry.npmjs.org/',
+    LEDGER,
   ],
   answer: async (request, raw) => {
+    if (request.url.startsWith(LEDGER)) return ledger(request, raw);
     if (request.url.startsWith(ADOBE)) {
       const bearer = request.headers.find(([name]) => name.toLowerCase() === 'authorization')?.[1];
       const body = request.url.endsWith('/v1/config')
@@ -1971,4 +2007,61 @@ test('a fresh profile’s first agent turn finds seven’s tools after boot: rg 
   assert.match(result.text, /^ripgrep \d/m, JSON.stringify(result));
   assert.match(result.text, /^x-upstream: tools$/im, JSON.stringify(result));
   assert.notEqual(result.status, 'error', JSON.stringify(result));
+});
+
+test('a server added through the Settings form lands in /etc/slicc/agent/mcp.json as 0600 root:root and connects', {
+  timeout: 30 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  await page.init(helpers);
+  await page.goto('/');
+  await ready(page, undefined, { tools: false });
+  await agentUp(page);
+  await page.evaluate(() => {
+    window.settingsPart = (selector) =>
+      window.deep(
+        document.querySelector('slicc-app').dock.content('settings').shadowRoot,
+        selector
+      );
+    document.querySelector('slicc-app').show('settings');
+  });
+  await page.until(() => !!window.settingsPart('[data-action="add-server"]'));
+  await page.evaluate(() => window.settingsPart('[data-action="add-server"]').click());
+  await page.until(() => !!window.settingsPart('form[data-form="add-server"]'));
+  await page.evaluate(() => window.settingsPart('[data-server-field="name"]').focus());
+  await page.insert('ledger');
+  await page.evaluate(() => window.settingsPart('[data-server-field="url"]').focus());
+  await page.insert(`${LEDGER}mcp`);
+  await page.evaluate(() =>
+    window.settingsPart('form[data-form="add-server"] [data-action="save"]').click()
+  );
+  await page.until(() => !window.settingsPart('form[data-form="add-server"]'));
+  await connected(page, 'mcp:ledger');
+  await page.until(() => {
+    const row = window.settingsPart('.accounts[data-group=mcp] [data-id="mcp:ledger"]');
+    return !!row && /Connected/.test(window.deepText(row));
+  });
+  assert.deepEqual(
+    await page.evaluate(() => {
+      const { auth, identity, state } = document
+        .querySelector('slicc-app')
+        .model.settings.accounts()
+        .find((item) => item.id === 'mcp:ledger');
+      return { auth, identity, state };
+    }),
+    { auth: 'local', identity: 'ledger.example.com', state: 'connected' }
+  );
+
+  await run(
+    page,
+    `cat /etc/slicc/agent/mcp.json; stat -c 'mcp %U:%G %a' /etc/slicc/agent/mcp.json`
+  );
+  await shows(page, 'mcp root:root 600');
+  const text = await screen(page);
+  assert.deepEqual(
+    JSON.parse(
+      text.slice(text.indexOf('{', text.lastIndexOf('mcp.json')), text.lastIndexOf('}') + 1)
+    ),
+    { mcpServers: { ledger: { url: `${LEDGER}mcp` } } }
+  );
 });
