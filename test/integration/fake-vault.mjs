@@ -74,8 +74,10 @@ const view = (record) => ({
 });
 const audit = [...(state.audit ?? [])];
 const audited = (entry) => audit.unshift({ seq: Math.max(0, ...audit.map((each) => each.seq ?? 0)) + 1, id: 'audit-' + Date.now(), at: Date.now(), uid: null, tag: null, ...entry });
+const usable = (record) => record.kind === 'mcp' && record.server && record.source !== 'process' && record.server.length <= 124;
 const list = () => ({
   secrets: live().map(view),
+  mcp: live().filter(usable).map(({ name, server }) => ({ name, server, state: 'ready' })),
   refused: [],
   audit,
   auditMore: false,
@@ -180,10 +182,12 @@ const page = (port) => (event) => {
   if (op === 'sealed' && event.data.req?.op === 'status')
     return reply({ reply: { v: 1, ...(requests.get(event.data.req.id) ?? { state: 'expired' }) } });
   if (op === 'answer') {
-    const found = requests.get(event.data.request);
-    log({ role: 'page', op: 'answered', request: event.data.request, state: event.data.state, exit: event.data.exit ?? null });
+    const { v: _v, id: _id, op: _op, request, state: answered, ...fields } = event.data;
+    const found = requests.get(request);
+    log({ role: 'page', op: 'answered', request, state: answered, fields });
     if (!found || found.state !== 'pending') return port.postMessage({ v: 1, id, error: { code: 'EINVAL', message: 'the request ended' } });
-    if (event.data.state === 'done') found.state = 'done';
+    Object.assign(found, fields);
+    if (answered === 'done') found.state = 'done';
     return reply({ state: found.state });
   }
   if (op === 'sealed') return reply({ reply: { v: 1, secrets: live().filter((record) => record.kind === 'secret').map((record) => ({ name: record.name, placeholder: record.placeholder, state: 'inert', exec: record.exec ?? false, rules: [] })) } });
