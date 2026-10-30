@@ -1004,6 +1004,66 @@ test('a jerk sign-in cancelled while the linked computer doesn’t answer leaves
   assert.deepEqual(page.errors, []);
 });
 
+test('jerk status counts a usable MCP record only for mcp:<its exact server>; every other provider answers no token, and a kernel program reads that back', async (t) => {
+  t.after(() => fake.set({ secrets: [] }));
+  fake.set({
+    locked: false,
+    records: [
+      {
+        kind: 'mcp',
+        name: 'HARBOR_MCP_TOKEN',
+        value: 'harbor-token-value',
+        source: 'settings',
+        placeholder: 'fnox_proxy_000000000000000000000b01',
+        server: 'harbor',
+      },
+    ],
+    version: 1,
+  });
+  const page = await chrome.page(t);
+  await page.init(override(fake.origin));
+  await boot(page);
+  await page.until(
+    () => document.querySelector('slicc-app').model.vault?.availability() === 'ready'
+  );
+  const sealed = async (mark, body) => {
+    await run(
+      page,
+      `exec 3<>/dev/sealed; printf '${JSON.stringify(body)}' >&3; R=$(cat <&3); exec 3>&-; echo "${mark} $R"`
+    );
+    await shows(page, `${mark} {`);
+  };
+  const ask = async (provider) => {
+    const before = fake.log.length;
+    await sealed(`ASKED ${provider}`, {
+      v: 1,
+      op: 'request',
+      kind: 'jerk',
+      jop: 'status',
+      provider,
+    });
+    const answer = await logged(() =>
+      fake.log.slice(before).find((entry) => entry.op === 'answered')
+    );
+    assert.ok(answer, `no answer for ${provider}: ${JSON.stringify(fake.log.slice(before))}`);
+    assert.equal(answer.state, 'done');
+    await sealed(`READ ${answer.request}`, { v: 1, op: 'status', id: answer.request });
+    await shows(
+      page,
+      `READ ${answer.request} {"v":1,"kind":"jerk","state":"done","exit":${answer.fields.exit}`
+    );
+    return answer.fields;
+  };
+  const none = (provider) => ({
+    exit: 3,
+    message: `no token for ${provider} in seven's vault: run jerk ${provider} create`,
+  });
+  assert.deepEqual(await ask('mcp:harbor'), { exit: 0 });
+  for (const provider of ['mcp:tide', 'mcp:harbor-north', 'mcp:harbo', 'harbor'])
+    assert.deepEqual(await ask(provider), none(provider));
+  assert.deepEqual(page.errors, []);
+});
+
 test('the live vault answers on vault.sliccy.ai (smoke)', async (t) => {
   const response = await fetch('https://vault.sliccy.ai/', {
     signal: AbortSignal.timeout(10000),
