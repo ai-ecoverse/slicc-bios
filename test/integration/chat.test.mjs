@@ -1353,13 +1353,15 @@ test('chat in seven answers through the agent worker, Bedrock and the page fetch
     `mkdir -p /etc/slicc/agent && echo ${Buffer.from(JSON.stringify(servers)).toString('base64')} | base64 -d > /etc/slicc/agent/mcp.json; echo "mcp $((6 * 7))"`
   );
   await shows(page, 'mcp 42');
-  await page.until(
-    () =>
-      document
-        .querySelector('slicc-app')
-        .model.settings.accounts()
-        .filter((item) => item.group === 'mcp').length === 2
-  );
+  await page.until(() => {
+    const servers = document
+      .querySelector('slicc-app')
+      .model.settings.accounts()
+      .filter((item) => item.group === 'mcp');
+    return (
+      servers.length === 2 && servers.find((item) => item.id === 'mcp:tracker')?.auth === 'oauth'
+    );
+  });
   const [docs, tracker] = await page.evaluate(() =>
     ['mcp:docs', 'mcp:tracker'].map((id) =>
       document
