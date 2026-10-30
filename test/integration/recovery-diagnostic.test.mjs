@@ -93,7 +93,7 @@ test('diagnostic recovery of the protected hop records the CLI-facing bridge', {
     'return observe(guardProtected(await open(), own, browser ? tabs.get(browser) : undefined));';
   assert.ok(source.includes(original));
   real.overrides.set(
-    '/os/cdp.js',
+    '/seed/cdp.js',
     source.replace(
       original,
       `return observe((${diagnosticConnection.toString()})(guardProtected(await open(), own, browser ? tabs.get(browser) : undefined)));`
@@ -140,6 +140,7 @@ test('diagnostic recovery of the protected hop records the CLI-facing bridge', {
     assert.match(recovered, /^recovery-goto-0$/m);
   } finally {
     const records = await page.evaluate(() => globalThis.recoveryDiagnosticRecords ?? []);
+    assert.ok(records.length > 0, 'the CLI-facing diagnostic override did not execute');
     for (const row of records) console.log('DIAGNOSTIC_CDP', JSON.stringify(row));
   }
 });
