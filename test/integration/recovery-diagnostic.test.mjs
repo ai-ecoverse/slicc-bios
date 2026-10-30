@@ -87,6 +87,7 @@ test('diagnostic recovery of the protected hop records the CLI-facing bridge', {
     rules: ['MAP vault.sliccy.ai 127.0.0.1'],
   });
   t.after(() => real.close());
+  const page = await real.page(t);
   const source = await readFile(new URL('../../src/seed/cdp.js', import.meta.url), 'utf8');
   const original =
     'return observe(guardProtected(await open(), own, browser ? tabs.get(browser) : undefined));';
@@ -107,7 +108,6 @@ test('diagnostic recovery of the protected hop records the CLI-facing bridge', {
     '/recovery-destination.html',
     '<!doctype html><title>Recovered ordinary tab</title><h1>Recovered ordinary tab</h1>'
   );
-  const page = await real.page(t);
   await page.goto(SEVEN);
   await ready(page);
   const address = (path) => {
