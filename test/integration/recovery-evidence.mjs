@@ -4,7 +4,9 @@ const pass = process.argv[2];
 const log = await readFile(`diagnostic/${pass}.log`, 'utf8').catch(() => '');
 const rows = [];
 for (const line of log.split('\n')) {
-  const match = line.match(/\b(RECOVERY_(?:DIAGNOSTIC|EXTENSION|CLI|EXIT|RELAY))\s+(\{.*\})\s*$/);
+  const match = line.match(
+    /\b(RECOVERY_(?:DIAGNOSTIC|EXTENSION|CLI|EXIT|RELAY|GUARD))\s+(\{.*\})\s*$/
+  );
   if (!match) continue;
   try {
     rows.push({ kind: match[1], ...JSON.parse(match[2]) });

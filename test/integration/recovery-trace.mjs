@@ -4,7 +4,29 @@ import { join } from 'node:path';
 
 const traced = new Set();
 
-function runtimeTrace() {
+function diagnosticReason(value) {
+  const message = String(value?.message ?? value ?? '');
+  if (message === "slicc: refused: target is on seven's origin") return 'extension-origin';
+  if (
+    message ===
+    'slicc: refused: seven’s own pages and the vault are out of reach of browser automation'
+  )
+    return 'bios-protected';
+  if (message === 'slicc: refused: the CDP guard couldn’t check this answer, so it held it back')
+    return 'bios-proof';
+  if (
+    message ===
+    'slicc: refused: the guard couldn’t keep seven’s pages and the vault out of this tab, so it refuses commands there'
+  )
+    return 'bios-unguarded';
+  if (message === 'slicc: refused: this request wasn’t seen, so it could be seven’s or the vault’s')
+    return 'bios-unseen';
+  if (message === 'Target detached') return 'target-detached';
+  if (message.includes('no answer in')) return 'timeout';
+  return message.includes('slicc: refused:') ? 'other-refusal' : message ? 'other' : '';
+}
+
+function runtimeTrace(reason) {
   const boot = crypto.randomUUID();
   let seq = 0;
   const rows = [];
@@ -18,10 +40,7 @@ function runtimeTrace() {
       return 'opaque';
     }
   };
-  const error = (value) => {
-    const message = String(value?.message ?? value ?? '');
-    return message.includes('slicc: refused:') ? 'refused' : message ? 'other' : '';
-  };
+  const error = reason;
   const record = (site, data = {}) => {
     if (seq >= 12000) return;
     const row = { at: Date.now(), boot, seq: ++seq, site, ...data };
@@ -48,7 +67,7 @@ export async function traceExtension(root) {
   traced.add(root);
   await writeFile(
     join(root, 'recovery-trace.js'),
-    `export const trace = (${runtimeTrace.toString()})();\n`
+    `export const trace = (${runtimeTrace.toString()})((${diagnosticReason.toString()}));\n`
   );
   const path = join(root, 'cdp.js');
   let source = await readFile(path, 'utf8');
@@ -157,13 +176,13 @@ export async function traceExtension(root) {
     source,
     '  async run(message) {',
     `  async run(message) {
-    trace.record('command-start', {connection:this.traceId, id:message.id, method:message.method, sessionId:message.sessionId, targetId:message.params?.targetId});`
+    trace.record('command-start', {connection:this.traceId, id:message.id, method:message.method, sessionId:message.sessionId, targetId:message.params?.targetId, destination:trace.origin(message.params?.url)});`
   );
   source = swap(
     source,
     '      this.post({ id: message.id, result: await this.dispatch(message) }, message.method);',
     `      const result = await this.dispatch(message);
-      trace.record('command-result', {connection:this.traceId, id:message.id, method:message.method, sessionId:result?.sessionId});
+      trace.record('command-result', {connection:this.traceId, id:message.id, method:message.method, sessionId:result?.sessionId, url:trace.origin(result?.targetInfo?.url)});
       this.post({ id: message.id, result }, message.method);`
   );
   source = swap(
@@ -229,7 +248,7 @@ export async function traceExtension(root) {
   );
 }
 
-export function diagnosticConnection(connection) {
+export function diagnosticConnection(connection, reason) {
   const records = (globalThis.recoveryDiagnosticRecords ??= []);
   const methods = new Map();
   const origin = (url) => {
@@ -257,11 +276,7 @@ export function diagnosticConnection(connection) {
       session: message.sessionId,
       target: params.targetId ?? info?.targetId,
       destination: origin(params.url),
-      error: message.error
-        ? String(message.error.message).includes('slicc: refused:')
-          ? 'refused'
-          : 'other'
-        : undefined,
+      error: message.error ? reason(message.error.message) : undefined,
       attached: message.result?.sessionId,
       frame: tree?.id,
       loader: tree?.loaderId,
@@ -307,8 +322,20 @@ export async function traceRecovery(real, page, label) {
     swap(
       source,
       'return observe(guardProtected(await open(), own, browser ? tabs.get(browser) : undefined));',
-      `return observe((${diagnosticConnection.toString()})(guardProtected(await open(), own, browser ? tabs.get(browser) : undefined)));`
+      `return observe((${diagnosticConnection.toString()})(guardProtected(await open(), own, browser ? tabs.get(browser) : undefined), (${diagnosticReason.toString()})));`
     )
+  );
+  const guardSource = await readFile(new URL('../../src/seed/guard.js', import.meta.url), 'utf8');
+  real.overrides.set(
+    '/seed/guard.js',
+    'globalThis.recoveryGuardTraceLoaded = true;\n' +
+      swap(
+        guardSource,
+        '  refuse(command, message = PROTECTED, release = true) {',
+        `  refuse(command, message = PROTECTED, release = true) {
+      const rows = (globalThis.recoveryGuardRecords ??= []);
+      if (rows.length < 2000) rows.push({at:Date.now(),site:'guard-refuse',id:command?.id,method:command?.method,sessionId:command?.sessionId,targetId:command?.params?.targetId,release,reason:(${diagnosticReason.toString()})(message),caller:new Error().stack.split('\\n').slice(1,6).map(line=>line.match(/at ([\\w.]+)/)?.[1]).filter(Boolean)});`
+      )
   );
   return async () => {
     const { targetInfos } = await real.cdp.send('Target.getTargets');
@@ -362,6 +389,12 @@ export async function traceRecovery(real, page, label) {
       .evaluate(() => globalThis.recoveryDiagnosticRecords ?? [])
       .catch(() => []);
     const relay = await page.evaluate(() => globalThis.recoveryRelayRecords ?? []).catch(() => []);
+    const guard = await page
+      .evaluate(() => ({
+        loaded: globalThis.recoveryGuardTraceLoaded === true,
+        rows: globalThis.recoveryGuardRecords ?? [],
+      }))
+      .catch(() => ({ loaded: false, rows: [] }));
     console.log(
       'RECOVERY_DIAGNOSTIC',
       JSON.stringify({
@@ -370,12 +403,16 @@ export async function traceRecovery(real, page, label) {
         workerRows: rows.length,
         cliRows: cli.length,
         relayRows: relay.length,
+        guardLoaded: guard.loaded,
+        guardRows: guard.rows.length,
       })
     );
     for (const row of rows.sort((a, b) => a.at - b.at || a.seq - b.seq))
       console.log('RECOVERY_EXTENSION', JSON.stringify({ label, ...row }));
     for (const row of cli) console.log('RECOVERY_CLI', JSON.stringify({ label, ...row }));
     for (const row of relay) console.log('RECOVERY_RELAY', JSON.stringify({ label, ...row }));
+    for (const row of guard.rows) console.log('RECOVERY_GUARD', JSON.stringify({ label, ...row }));
+    assert.ok(guard.loaded, 'BIOS trace executed');
     await real.cdp.send('Target.detachFromTarget', { sessionId });
     assert.ok(rows.length > 0, 'extension trace executed');
     assert.ok(cli.length > 0, 'CLI trace executed');
