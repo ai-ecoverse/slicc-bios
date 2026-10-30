@@ -25,7 +25,7 @@ export const MOVED = 'var/lib/slicc/optional/moved';
 
 const COMMAND = /^[A-Za-z0-9][\w.+-]*$/;
 const UNSHADOW =
-  'b=$1; o=$2; l=$3; shift 3; for n in "$@"; do f="$b/$n"; [ -e "$f" ] || [ -L "$f" ] || continue; [ "$(readlink "$f" 2>/dev/null)" = "/usr/bin/$n" ] && continue; case "$(readlink -f "$f" 2>/dev/null)" in *"$o"*) ;; *) grep -qsF -- "$o" "$f" || continue ;; esac; if [ "$l" = link ]; then t="$b/.$n.slicc"; rm -f -- "$t"; ln -s -- "/usr/bin/$n" "$t" && mv -f -- "$t" "$f" || { rm -f -- "$t"; exit 1; }; : > "$b/.$n.slicc-link"; else rm -f -- "$f" || exit 1; fi; echo "$n"; done';
+  'b=$1; o=$2; l=$3; shift 3; s=0; for n in "$@"; do f="$b/$n"; [ -e "$f" ] || [ -L "$f" ] || continue; [ "$(readlink "$f" 2>/dev/null)" = "/usr/bin/$n" ] && continue; case "$(readlink -f "$f" 2>/dev/null)" in *"$o"*) ;; *) grep -qsF -- "$o" "$f" || continue ;; esac; if [ "$l" = link ]; then t="$b/.$n.slicc"; rm -f -- "$t"; ln -s -- "/usr/bin/$n" "$t" && mv -f -- "$t" "$f"; if [ "$(readlink "$f" 2>/dev/null)" != "/usr/bin/$n" ]; then rm -f -- "$t"; s=1; continue; fi; : > "$b/.$n.slicc-link"; else rm -f -- "$f" || { s=1; continue; }; [ -e "$f" ] || [ -L "$f" ] && continue; fi; echo "$n"; done; exit $s';
 const DANGLING =
   'b=$1; shift; for m in "$b"/.*.slicc-link; do [ -e "$m" ] || continue; n=${m##*/.}; n=${n%.slicc-link}; f="$b/$n"; case " $* " in *" $n "*) continue ;; esac; if [ -L "$f" ] && [ "$(readlink "$f")" = "/usr/bin/$n" ]; then [ -e "$f" ] && continue; rm -f -- "$f" || exit 1; echo "$n"; fi; rm -f -- "$m"; done';
 
@@ -677,16 +677,19 @@ export function binDir(global) {
   return `/${global.replace(/\/global\/v\d+$/, '')}/bin`;
 }
 
-let unshadowing = Promise.resolve();
+const unshadowing = new Map();
 
-function queued(step) {
-  const next = unshadowing.then(step);
-  unshadowing = next.catch(() => undefined);
+function queued(bin, step) {
+  const next = (unshadowing.get(bin) ?? Promise.resolve()).then(step);
+  unshadowing.set(
+    bin,
+    next.catch(() => undefined)
+  );
   return next;
 }
 
 export function unshadow(options) {
-  return queued(() => unshadowOnce(options));
+  return queued(binDir(options.global), () => unshadowOnce(options));
 }
 
 async function lines(kernel, argv, user, what) {
@@ -703,7 +706,7 @@ async function lines(kernel, argv, user, what) {
 }
 
 export function tidyBins({ kernel, bin, keep = [] }) {
-  return queued(() =>
+  return queued(bin, () =>
     lines(kernel, ['bash', '-c', DANGLING, 'tidy', bin, ...keep], 'root', `tidying ${bin}`)
   );
 }
@@ -752,24 +755,86 @@ export async function shellUnshadow({ root, kernel, global, home }) {
   if (!owner) return [];
   const removed = [];
   const keep = [];
+  const stuck = [];
   for (const { name, dir } of await globals(root, owner.global)) {
     const manifest = (await text(root, `${dir}/node_modules/${name}/package.json`)) ?? '{}';
     keep.push(...shadowed(JSON.parse(manifest)));
-    removed.push(...(await unshadow({ root, kernel, name, dir, ...owner })));
+    await unshadow({ root, kernel, name, dir, ...owner }).then(
+      (names) => removed.push(...names),
+      (error) => stuck.push(error.message)
+    );
   }
   if (owner.user === 'root') await tidyBins({ kernel, bin: binDir(owner.global), keep });
+  if (stuck.length) throw new Error(stuck.join('; '));
   return removed;
+}
+
+async function binEntry(client, at) {
+  const { size, mtime, isSymbolicLink } = await client.fs.lstat(at);
+  return [at, size, mtime, isSymbolicLink ? await client.fs.readlink(at) : null];
+}
+
+export async function pnpmState({ root, client, home, global }) {
+  const bin = `${home}/bin`;
+  const names = await client.fs.readdir(bin).catch(() => []);
+  const entries = await Promise.all(
+    names.sort().map((name) => binEntry(client, `${bin}/${name}`).catch(() => name))
+  );
+  const installs = await globals(root, global);
+  return JSON.stringify([entries, installs.map(({ name, version, dir }) => [name, version, dir])]);
+}
+
+export function passPerHome({ look, pass, report }) {
+  const states = new Map();
+  const turn = async (home, state) => {
+    do {
+      state.again = false;
+      const now = await look(home).catch(() => null);
+      if (now === state.seen) continue;
+      state.seen = now;
+      await pass(home).then(
+        () => {
+          state.said = '';
+        },
+        (error) => {
+          const line = `unshadow ${home}: ${error.message}`;
+          if (line !== state.said) report(line);
+          state.said = line;
+        }
+      );
+    } while (state.again);
+    state.running = false;
+  };
+  return (home) => {
+    const state = states.get(home) ?? { running: false, again: false, seen: undefined, said: '' };
+    states.set(home, state);
+    if (state.running) {
+      state.again = true;
+      return;
+    }
+    state.running = true;
+    void turn(home, state);
+  };
 }
 
 export async function watchShadows({ root, kernel, attach, global, wait = 50, report }) {
   const system = binDir(global).slice(0, -'/bin'.length);
   const client = await attach(await kernel.connect());
   const timers = new Map();
+  const run = passPerHome({
+    look: (home) =>
+      pnpmState({
+        root,
+        client,
+        home,
+        global: home === system ? global : `${home.slice(1)}/global/v11`,
+      }),
+    pass: (home) => shellUnshadow({ root, kernel, global, home }),
+    report,
+  });
   const pass = (home) => {
     timers.delete(home);
-    void shellUnshadow({ root, kernel, global, home }).catch((error) =>
-      report(`unshadow ${home}: ${error.message}`)
-    );
+    run(home);
   };
   const all = async () => [
     system,

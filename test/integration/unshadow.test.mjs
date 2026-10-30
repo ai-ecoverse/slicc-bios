@@ -10,6 +10,9 @@ const GLUE = '@ai-ecoverse/hot-glue';
 const pins = { [MCPCAT]: '0.16.3', [GLUE]: '0.3.0' };
 const BIN = '/usr/local/share/pnpm/bin';
 const SHIPPED = await offered(MCPCAT);
+const SELFISH = '@fixture/selfish';
+const QUIET = 10;
+const PROMPT = 30000;
 
 const chrome = await launch({ timeout: 120000, intercept: [] });
 const registry = await fakeCatalog(chrome.cdp);
@@ -49,6 +52,19 @@ async function sh(page, command) {
   }, command);
 }
 
+const asCone = (script) => `sudo -u cone bash -c '${script.replaceAll("'", "'\\''")}'`;
+
+async function pidGrowth(page) {
+  const seen = [];
+  const end = Date.now() + 60000;
+  while (Date.now() < end && !(seen.at(-1) <= QUIET)) {
+    const before = Number((await sh(page, 'echo $$')).out);
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    seen.push(Number((await sh(page, 'echo $$')).out) - before);
+  }
+  return seen;
+}
+
 const rows = (page) =>
   page.evaluate(() =>
     document
@@ -57,7 +73,7 @@ const rows = (page) =>
       .map(({ id, state, version, offered, error }) => ({ id, state, version, offered, error }))
   );
 
-async function install(page, id) {
+async function install(page, id, limits) {
   const started = Date.now();
   await page
     .within(
@@ -74,7 +90,11 @@ async function install(page, id) {
     });
   console.log(`unshadow: the ${id} row was available after ${Date.now() - started} ms`);
   const installing = Date.now();
-  assert.equal(await actPackage(page, id, 'install'), 'ok', JSON.stringify(await rows(page)));
+  assert.equal(
+    await actPackage(page, id, 'install', limits),
+    'ok',
+    JSON.stringify(await rows(page))
+  );
   console.log(`unshadow: ${id} installed in ${Date.now() - installing} ms`);
 }
 
@@ -251,5 +271,87 @@ test('bios#795: a user added after boot, whose pnpm home already holds a Node li
   t.diagnostic(added.out);
   assert.match(added.out, /^settled-after-\d+\n/, added.out);
   assert.match(added.out, new RegExp(`\\n${SHIPPED.replaceAll('.', '\\.')}$`), added.out);
+  assert.deepEqual(page.errors, []);
+});
+
+test('bios#1153: a cone’s own kernel command that rm can’t remove, whether rm -f returns 0 or says Resource busy, starts no loop, stops no other package’s pass, warns once and leaves a panel install prompt', {
+  timeout: 20 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  offer();
+  await page.init('() => { globalThis.sliccKernelDebug = true; }');
+  await page.goto(`/#${new URLSearchParams({ users: 'enforce' })}`);
+  await ready(page);
+  const at = '$PNPM_HOME/global/v11/0000';
+  const dir = `${at}/node_modules/${SELFISH}`;
+  const entry = '"$PNPM_HOME/bin/selfish"';
+  const manifest = {
+    name: SELFISH,
+    version: '1.0.0',
+    bin: { selfish: 'selfish' },
+    slicc: { abi: 'wasi', commands: { selfish: { script: 'selfish' } } },
+  };
+  const made = await sh(
+    page,
+    asCone(
+      [
+        `mkdir -p "$PNPM_HOME/bin" "${dir}"`,
+        `echo '${JSON.stringify({ dependencies: { [SELFISH]: '1.0.0' } })}' > "${at}/package.json"`,
+        `echo '${JSON.stringify(manifest)}' > "${dir}/package.json"`,
+        `printf '#!/bin/sh\\n# /node_modules/${SELFISH}/\\necho selfish\\n' > "${dir}/selfish"`,
+        `chmod 755 "${dir}/selfish"`,
+        `n=0; until [ -e ${entry} ] || [ $n -ge 100 ]; do sleep 0.1; n=$((n + 1)); done`,
+        `rm -f -- ${entry}; echo rm-$?`,
+        `[ -e ${entry} ] && echo left`,
+      ].join('; ')
+    )
+  );
+  t.diagnostic(`rm -f on the kernel's own entry: ${made.out}`);
+  assert.match(made.out, /\nleft$/, made.out);
+
+  const noop = await pidGrowth(page);
+  t.diagnostic(`new PIDs per 5 s with rm -f a no-op: ${noop.join(' ')}`);
+  await install(page, 'hot-glue', { budget: PROMPT, stall: PROMPT });
+  assert.ok(noop.at(-1) <= QUIET, `the loop kept running: ${noop.join(' ')} new PIDs per 5 s`);
+
+  await page.evaluate(
+    (command) => {
+      void globalThis.unshadowClient
+        .run(['bash', '-c', command], { cwd: '/' })
+        .catch(() => undefined);
+    },
+    asCone(`exec 3< ${entry}; sleep 1100`)
+  );
+  const busy = async () =>
+    (
+      await sh(
+        page,
+        asCone(
+          `n=0; e=; while [ $n -lt 100 ]; do e=$(rm -f -- ${entry} 2>&1) || break; e=; sleep 0.1; n=$((n + 1)); done; echo "$e"`
+        )
+      )
+    ).out;
+  assert.match(await busy(), /Resource busy/);
+
+  const node = 'head -c 19 "$PNPM_HOME/bin/mcpcat" 2>/dev/null | grep -q /usr/bin/env';
+  const added = await sh(
+    page,
+    asCone(
+      `PATH=$PNPM_HOME/bin:$PATH; pnpm add -g --config.minimum-release-age=0 ${MCPCAT}@${SHIPPED} > /tmp/cone.log 2>&1; echo added-$?; n=0; while ${node} && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done; ${node} && echo still-node || echo settled-after-$n; mcpcat --version`
+    )
+  );
+  t.diagnostic(added.out);
+  assert.match(
+    added.out,
+    new RegExp(`added-0\\nsettled-after-\\d+\\n${SHIPPED.replaceAll('.', '\\.')}`),
+    `${added.out}\n${(await sh(page, 'cat /tmp/cone.log')).out}`
+  );
+  assert.match(await busy(), /Resource busy/);
+
+  const stuck = await pidGrowth(page);
+  t.diagnostic(`new PIDs per 5 s with the entry busy: ${stuck.join(' ')}`);
+  assert.ok(stuck.at(-1) <= QUIET, `the loop kept running: ${stuck.join(' ')} new PIDs per 5 s`);
+  const warned = page.console.filter((line) => line.includes('Resource busy'));
+  assert.ok(warned.length >= 1 && warned.length <= 3, warned.join('\n'));
   assert.deepEqual(page.errors, []);
 });
