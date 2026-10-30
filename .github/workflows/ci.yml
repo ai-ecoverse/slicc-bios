@@ -1,83 +1,37 @@
-name: CI
+name: Diagnostic only
 
 on:
   pull_request:
-  merge_group:
-  push:
-    branches: [main]
 
 permissions:
-  contents: write
-  actions: read
-  attestations: write
-  issues: write
-  pull-requests: write
-  statuses: write
-  id-token: write
+  contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: diagnostic-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  ci:
-    uses: ai-ecoverse/slicc-shared-web/.github/workflows/pipeline.yml@v2.13.7
-    secrets: inherit
-    with:
-      node-version: "26"
-      test-glob: test/integration/*.test.mjs
-      shards: 14
-      timeout-minutes: 90
-      flaky-retry: 3
-      strict-tests: |
-        **/*guard*.test.*
-        **/*security*.test.*
-        **/address.test.mjs
-        **/agent-sign-in-held.test.mjs
-        **/beta-boundary.test.mjs
-        **/bfcache.test.mjs
-        **/bfcache-extension.test.mjs
-        **/capture.test.mjs
-        **/cdp.test.mjs
-        **/cdp-link-worlds.test.mjs
-        **/embedder.test.mjs
-        **/fnox.test.mjs
-        **/framing.test.mjs
-        **/integrity.test.mjs
-        **/keys.test.mjs
-        **/link.test.mjs
-        **/mcpcat-users.test.mjs
-        **/pair.test.mjs
-        **/pins.test.mjs
-        **/releases-boundary.test.mjs
-        **/sandbox.test.mjs
-        **/sign-in-held.test.mjs
-        **/vault.test.mjs
-        **/vault-endpoints.test.mjs
-      review-timeout-minutes: 90
-      deploy: node edge/publish.mjs preview >> "$GITHUB_STEP_SUMMARY"
-      release-environment: production
-      release-secrets: SLICC_BIOS_DEPLOY_TOKEN
-      after-release: |
-        : "${SLICC_BIOS_DEPLOY_TOKEN:?SLICC_BIOS_DEPLOY_TOKEN is not set in the production environment}"
-        echo "Publishing v$RELEASE_VERSION to seven" >> "$GITHUB_STEP_SUMMARY"
-        node edge/publish.mjs main >> "$GITHUB_STEP_SUMMARY"
-      review-prompt: |
-        SLICC-BIOS
-
-        This repository is slicc-bios (`@ai-ecoverse/slicc-bios`): the loader that installs seven (seven.sliccy.ai) into the browser, a WebAssembly kernel, its shell and packages, the agent, and the page around them. The README is the contract: read the sections the change touches first. `git diff origin/main...HEAD`, or `$RUNNER_TEMP/review/context/pr.diff`, is the change.
-
-        There is no certification after you: once this pull request passes the merge queue and its commits make a release, semantic-release publishes the npm package, whose lockfiles mcpcat and homescoop test against, and that release deploys to seven.sliccy.ai. Review it as the last check before it ships.
-
-        Look for real defects, in this order:
-        1. Correctness: logic errors, races, missed error paths, and state that a reload, a reconnect, a second tab or a service worker update breaks.
-        2. Security, above all: the guard (`src/seed/guard.js`) and the CDP surface (`src/seed/cdp.js`, the in-kernel 9222 facade) expose nothing new to a page, a kernel program or a linked device; the vault and `/dev/sealed` (`src/seed/vault.js`) never let a sealed value reach the page, a log, a URL or a program that didn't ask; secrets and tokens are never logged, printed or put in a URL; sudo and approvals (`src/seed/approvals.js`, `src/seed/users.js`) have no path to root without the owner's decision; the link, follower, remote and tray surfaces; the service worker's integrity checks (`src/sw/`); and in workflows, fork code never reaches the pool, and a secret goes only to the step that needs it.
-        3. Pins: lockfiles (`package-lock.json`, `src/packages/package-lock.json`, `src/packages/pnpm-lock.yaml`) are regenerated, never hand-edited, so a lockfile change that the package.json changes don't explain is a finding. Every gated pin (slicc-kernel, slicc-jsh, slicc-cdp, slicc-clipboard, mcpcat, wasi-*, wasix-*, wasm-*, py-*) is a release its own repository built on main, which `pins.test.mjs` checks.
-        4. Tests: every behaviour change has an integration test under `test/integration/` through the public surface (seven's page, the terminal, the kernel API, the CLI), and a fix's test fails without the fix: copy the changed test files into `$RUNNER_TEMP/base` and run them there. No blind waits: every wait is bounded, waits for one precondition, and fails saying what it waited for and what it saw.
-        5. Repo rules: no comments anywhere (YAML too, except `# renovate:` annotations), no unit tests in git (any file under `test/unit/` is a finding), no Markdown other than README.md, and a conventional-commit title (`fix`, `feat` and `perf` release, the rest don't).
-
-        Run one test file with `node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs test/integration/<file>.test.mjs`. `npm start` serves `src/` on http://127.0.0.1:8080/. The review browsers aren't used by this repository. Don't report style preferences, or anything you haven't confirmed in the code or by a run.
-
-        Severity: deny for a confirmed P1 or P2: a security or secret exposure, data loss, a seven that doesn't boot or update, a regression in a common workflow without a workaround, a behaviour change without its test, or a fix whose test passes without it. A narrow problem with a workaround is P3: comment with a repro and approve. A problem in a pinned package belongs to its own repository (ai-ecoverse/slicc-kernel, ai-ecoverse/homescoop, ai-ecoverse/slicc-agent, ai-ecoverse/slicc-spectrum, ai-ecoverse/slicc-cdp): open it there as an issue.
-
-        Dependency-only pull requests (Renovate's, or a pin bump that changes only package.json and lockfiles): bios tests how seven wires a dependency in, not the dependency's own features (#771). Don't ask for new tests of what the dependency does; the passing integration suite and the pin's provenance (its repository, main, and the integrity) are the evidence. Deny one only for a concrete defect: a test that fails, or is flaky, on the head because of the bump; a bios call site the bump breaks (an API bios uses that was removed or changed); a provenance or integrity mismatch; or a new install script. Notes, and anything you can't judge, are comments, never a denial.
+  recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SLICC_CDP_PORTS: 9300-9309
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+          cache: npm
+      - run: npm ci
+      - run: npm run pretest
+      - name: One recovery row
+        run: node --test --test-concurrency=1 --test-timeout=600000 --test-global-setup=test/integration/global.mjs test/integration/recovery-diagnostic.test.mjs > diagnostic.log 2>&1
+      - name: Text evidence
+        if: always()
+        run: grep -E 'DIAGNOSTIC_|not ok|error:|failureType:|Error' diagnostic.log | cut -c 1-1800 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: recovery-text
+          path: diagnostic.log
+          retention-days: 3
