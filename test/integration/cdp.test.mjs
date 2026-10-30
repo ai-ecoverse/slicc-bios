@@ -204,11 +204,11 @@ test('real slicc-extension 7.9.16: unsupported automation refuses with an update
 }, async (t) => {
   const real = await realExtension({ extension: UNSUPPORTED_EXTENSION });
   t.after(() => real.close());
+  const page = await real.page(t);
   real.overrides.set(
     '/version-fetch.html',
     '<!doctype html><title>Fetch still works</title>extension-fetch-still-works'
   );
-  const page = await real.page(t);
   await page.goto(SEVEN);
   await ready(page);
   assert.deepEqual(await automation(page), { via: null });
@@ -219,7 +219,7 @@ test('real slicc-extension 7.9.16: unsupported automation refuses with an update
   assert.equal(capabilities.kind, 'extension');
   await run(
     page,
-    `curl -sS ${JSON.stringify(new URL('/version-fetch.html', SEVEN).href)} > /tmp/extension-fetch 2>&1; result=$?; printf '\\nfetch-exit-%s\\n' "$result" >> /tmp/extension-fetch; echo "fetch-""done"`
+    `curl -fsS ${JSON.stringify(new URL('/version-fetch.html', SEVEN).href)} > /tmp/extension-fetch 2>&1; result=$?; printf '\\nfetch-exit-%s\\n' "$result" >> /tmp/extension-fetch; echo "fetch-""done"`
   );
   await shows(page, 'fetch-done', 60000);
   const fetched = await read(page, '/tmp/extension-fetch');
