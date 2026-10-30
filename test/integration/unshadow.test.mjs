@@ -54,6 +54,8 @@ async function sh(page, command) {
 
 const asCone = (script) => `sudo -u cone bash -c '${script.replaceAll("'", "'\\''")}'`;
 
+const SAMPLE = `end=$((EPOCHSECONDS + 5)); declare -A seen; while [ "$EPOCHSECONDS" -lt "$end" ]; do for p in /proc/[0-9]*; do i=\${p#/proc/}; [ -n "\${seen[$i]}" ] && continue; mapfile -d '' -t a < "$p/cmdline" 2>/dev/null || continue; read -r _ _ _ pp _ < "$p/stat" 2>/dev/null; seen[$i]="$i ppid=$pp \${a[0]} \${a[1]:0:70} ... \${a[*]: -3}"; done; done; printf '%s\\n' "\${seen[@]}"`;
+
 const settled = (seen) => seen.length >= SETTLED && seen.slice(-SETTLED).every((n) => n <= QUIET);
 
 async function pidGrowth(page) {
@@ -61,8 +63,14 @@ async function pidGrowth(page) {
   const end = Date.now() + 60000;
   while (Date.now() < end && !settled(seen)) {
     const before = Number((await sh(page, 'echo $$')).out);
-    await new Promise((resolve) => setTimeout(resolve, 5000));
-    seen.push(Number((await sh(page, 'echo $$')).out) - before);
+    const sampled = await sh(page, SAMPLE);
+    const after = Number((await sh(page, 'echo $$')).out);
+    seen.push(after - before);
+    const lines = sampled.out
+      .split('\n')
+      .filter((line) => Number.parseInt(line, 10) >= before)
+      .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
+    console.log(`pids ${before}..${after} code=${sampled.code}\n${lines.join('\n')}`);
   }
   return seen;
 }
@@ -358,6 +366,9 @@ test('bios#1153: a cone’s own kernel command that rm -f leaves in place, and a
   t.diagnostic(added.out);
   const locked = await pidGrowth(page);
   t.diagnostic(`new PIDs per 5 s with the file locked: ${locked.join(' ')}`);
+  console.log(
+    `warned so far: ${page.console.filter((line) => line.includes('Resource busy')).length}`
+  );
   assert.match(
     added.out,
     new RegExp(`added-0\\nsettled-after-\\d+\\n${SHIPPED.replaceAll('.', '\\.')}`),
@@ -366,6 +377,7 @@ test('bios#1153: a cone’s own kernel command that rm -f leaves in place, and a
   assert.match(await busy(), /Resource busy/);
   assert.ok(settled(locked), `the loop kept running: ${locked.join(' ')} new PIDs per 5 s`);
   const warned = page.console.filter((line) => line.includes('Resource busy'));
+  console.log(`warned ${warned.length}: ${warned.join(' | ')}`);
   assert.ok(warned.length >= 1 && warned.length <= 3, warned.join('\n'));
   assert.deepEqual(page.errors, []);
 });
