@@ -12,7 +12,7 @@ const BIN = '/usr/local/share/pnpm/bin';
 const SHIPPED = await offered(MCPCAT);
 const SELFISH = '@fixture/selfish';
 const QUIET = 10;
-const PROMPT = 120000;
+const PROMPT = 30000;
 
 const chrome = await launch({ timeout: 120000, intercept: [] });
 const registry = await fakeCatalog(chrome.cdp);
