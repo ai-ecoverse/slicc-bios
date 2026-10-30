@@ -147,6 +147,7 @@ await step('seed', async () => {
     'denials.js',
     'durable.js',
     'exits.js',
+    'extension.js',
     'facade.js',
     'follow.js',
     'follower.js',
