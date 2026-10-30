@@ -26,7 +26,10 @@ jobs:
           node-version: '26'
           cache: npm
       - run: npm ci
-      - run: npx --yes --package @ai-ecoverse/slicc-cdp slicc-cdp install-browser --with-deps
+      - run: |
+          DEPS=
+          if [ "$(id -u)" = 0 ] || sudo -n true 2>/dev/null; then DEPS=1; fi
+          npx --yes --package @ai-ecoverse/slicc-cdp slicc-cdp install-browser ${DEPS:+--with-deps}
       - name: Display
         run: |
           if ! command -v Xvfb > /dev/null; then
@@ -48,6 +51,7 @@ jobs:
       - name: Text evidence
         if: always()
         run: |
+          mkdir -p diagnostic
           node -e 'const fs=require("node:fs"); for(const name of fs.readdirSync("diagnostic").filter(n=>n.endsWith(".summary.json"))) console.log(name,fs.readFileSync("diagnostic/"+name,"utf8"))'
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
