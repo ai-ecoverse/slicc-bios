@@ -9,6 +9,8 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { launch } from './chrome.mjs';
 
+import { traceExtension } from './recovery-trace.mjs';
+
 const run = promisify(execFile);
 
 const release = (version, sha256) => ({
@@ -136,6 +138,8 @@ export async function realExtension({
   realistic = false,
 } = {}) {
   const root = await unpacked(extension);
+  if (process.env.SLICC_RECOVERY_TRACE === '1' && extension === CURRENT_EXTENSION)
+    await traceExtension(root);
   const undisplay = realistic ? await display() : () => {};
   const upstream = { url: null };
   let tls;
