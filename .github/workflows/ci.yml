@@ -27,7 +27,7 @@ jobs:
       node-version: "26"
       test-glob: test/integration/sliccy-browser-676.test.mjs
       shards: 1
-      timeout-minutes: 90
+      timeout-minutes: 45
       flaky-retry: 3
       strict-tests: |
         **/*guard*.test.*
