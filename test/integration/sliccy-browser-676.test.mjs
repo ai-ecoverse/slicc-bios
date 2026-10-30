@@ -1,14 +1,11 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { ready, run, screen, shows } from './bios.mjs';
 import { debuggerUrl, devtools, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
 
-const CANDIDATE = (
-  await readFile(new URL('./fixtures/sliccy-browser-candidate.tgz', import.meta.url))
-).toString('base64');
 const PUBLISHED = '0.1.34';
+const FIXED = '0.1.35';
 const OWN = '/home/cone/.local/share/pnpm/bin';
 const BASE = '/usr/bin';
 const WORK = `const browser = require('sliccy:browser');
@@ -56,7 +53,6 @@ after(() => chrome.close());
 const { port } = await devtools(chrome);
 const fakeExtension = extensionOver(await debuggerUrl(port));
 
-chrome.overrides.set('/driven.html', '<!doctype html><title>driven</title><h1>Driven</h1>');
 const driven = () => {
   const at = new URL('/driven.html', chrome.url);
   at.hostname = 'localhost';
@@ -87,6 +83,7 @@ async function write(page, file, text) {
 
 async function start(t) {
   const page = await chrome.page(t);
+  chrome.overrides.set('/driven.html', '<!doctype html><title>driven</title><h1>Driven</h1>');
   const extension = await fakeExtension(page);
   t.after(extension.close);
   await page.init('() => { globalThis.sliccKernelDebug = true; }');
@@ -94,11 +91,6 @@ async function start(t) {
   await ready(page);
   await write(page, '/tmp/work.jsh', WORK);
   await write(page, '/tmp/676.sh', `URL=${driven()}\n${SCRIPT}`);
-  const tarball = await sh(
-    page,
-    `printf %s '${CANDIDATE}' | base64 -d > /tmp/sliccy-browser.tgz; chmod 644 /tmp/sliccy-browser.tgz; echo wrote-$?`
-  );
-  assert.equal(tarball.out, 'wrote-0');
   return page;
 }
 
@@ -119,6 +111,7 @@ async function asCone(page, steps, name) {
 const worked = /^work \{"same":true,"title":"driven","sum":4,"stored":"123","status":200\}$/m;
 
 function checkBase(log) {
+  assert.match(log, new RegExp(`sliccy-browser@?\\s?${FIXED.replaceAll('.', '[.]')}`), log);
   assert.match(log, new RegExp(`^which ${BASE}/playwright-cli ${BASE}/curlwright$`, 'm'), log);
   assert.match(log, /^playwright-cli \d+\.\d+\.\d+$/m, log);
   assert.doesNotMatch(log, /^playwright-cli 1\.30\.18$/m, log);
@@ -126,13 +119,13 @@ function checkBase(log) {
   assert.doesNotMatch(log, /@ai-ecoverse\/slicc-cdp@/, log);
 }
 
-test('#676: in a real seven, a fresh pnpm add -g of the packed sliccy-browser leaves cone the base set’s playwright-cli and curlwright, and sliccy:browser works', {
+test('#676: in a real seven, a fresh pnpm add -g of the published sliccy-browser leaves cone the base set’s playwright-cli and curlwright, and sliccy:browser works', {
   timeout: 20 * 60 * 1000,
 }, async (t) => {
   const page = await start(t);
   const log = await asCone(
     page,
-    'add @ai-ecoverse/slicc-jsh file:/tmp/sliccy-browser.tgz; look',
+    `add @ai-ecoverse/slicc-jsh @ai-ecoverse/sliccy-browser@${FIXED}; look`,
     'fresh'
   );
   assert.match(log, /^added-0$/m, log);
@@ -151,8 +144,9 @@ test(`#676: in a real seven, updating from the published ${PUBLISHED} gives cone
   assert.match(before, /^added-0$/m, before);
   assert.match(before, new RegExp(`^which ${OWN}/playwright-cli ${OWN}/curlwright$`, 'm'), before);
   assert.match(before, /^playwright-cli 1\.30\.18$/m, before);
+  assert.match(before.split('---')[0], worked, before);
 
-  const updated = await asCone(page, 'add file:/tmp/sliccy-browser.tgz; look', 'updated');
+  const updated = await asCone(page, `add @ai-ecoverse/sliccy-browser@${FIXED}; look`, 'updated');
   assert.doesNotMatch(updated.split('---')[0], /^added-[1-9]/m, updated);
   checkBase(updated.split('---')[0]);
 
@@ -161,4 +155,18 @@ test(`#676: in a real seven, updating from the published ${PUBLISHED} gives cone
   const reloaded = await asCone(page, 'look', 'reloaded');
   checkBase(reloaded.split('---')[0]);
   assert.deepEqual(page.errors, []);
+});
+
+test(`#676: in a real seven, the panel offers the published ${FIXED}`, {
+  timeout: 5 * 60 * 1000,
+}, async (t) => {
+  const page = await start(t);
+  const offered = await page.evaluate(async () => {
+    const { loadCatalog } = await import(new URL('packages.js', location.href).href);
+    const { entries, npm } = await loadCatalog();
+    const entry = entries.find(({ package: name }) => name === '@ai-ecoverse/sliccy-browser');
+    const { version, withheld } = await npm.offer(entry);
+    return { version, withheld: withheld ?? null };
+  });
+  assert.deepEqual(offered, { version: FIXED, withheld: null });
 });
