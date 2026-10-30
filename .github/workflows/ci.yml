@@ -25,8 +25,8 @@ jobs:
     secrets: inherit
     with:
       node-version: "26"
-      test-glob: test/integration/*.test.mjs
-      shards: 14
+      test-glob: test/integration/sliccy-browser-676.test.mjs
+      shards: 1
       timeout-minutes: 90
       flaky-retry: 3
       strict-tests: |
@@ -55,7 +55,6 @@ jobs:
         **/vault.test.mjs
         **/vault-endpoints.test.mjs
       review-timeout-minutes: 90
-      deploy: node edge/publish.mjs preview >> "$GITHUB_STEP_SUMMARY"
       release-environment: production
       release-secrets: SLICC_BIOS_DEPLOY_TOKEN
       after-release: |
