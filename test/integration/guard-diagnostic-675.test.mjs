@@ -205,6 +205,18 @@ async function installWire({ route, runtime }) {
     snapshot,
     constant,
     published: () => published.slice(),
+    routeEvents: (after, session) =>
+      events
+        .filter((event) => event.sequence > after && event.session === session)
+        .map((event) => ({
+          sequence: event.sequence,
+          method: event.method,
+          frameUrl: event.frame?.url,
+          scriptUrl: event.script?.url,
+          contextOrigin: event.context?.origin,
+          pausedReason: event.reason,
+          pausedFrames: event.frames?.length,
+        })),
     pendingTransport: () =>
       [...inFlightBelow.values()]
         .filter((request) => request.sessionId === active)
@@ -278,22 +290,35 @@ async function installWire({ route, runtime }) {
       }
       const before = pause.before ?? [];
       const script = before.findLast(
-        (e) => e.session === active && e.script?.id === first?.scriptId
+        (e) =>
+          first?.scriptId !== undefined && e.session === active && e.script?.id === first.scriptId
       );
-      const context = before.findLast((e) => e.session === active && e.context?.id === contextId);
+      const context = before.findLast(
+        (e) =>
+          Number.isSafeInteger(contextId) && e.session === active && e.context?.id === contextId
+      );
       const supplementalContext = before.findLast(
-        (e) => e.session === active && e.context?.id === script?.script?.contextId
+        (e) =>
+          script?.script?.contextId !== undefined &&
+          e.session === active &&
+          e.context?.id === script.script.contextId
       );
       const check = (c) => {
         const frame = before.findLast(
-          (e) => e.session === active && e.frame?.id === c?.context?.frameId
+          (e) =>
+            c?.context?.frameId !== undefined &&
+            e.session === active &&
+            e.frame?.id === c.context.frameId
         );
         const target = before.findLast((e) => e.target?.url === expected);
         const response = before.findLast(
           (e) =>
+            e.response &&
+            frame?.frame?.id !== undefined &&
+            frame.frame.loaderId !== undefined &&
             e.session === active &&
-            e.response?.frameId === frame?.frame?.id &&
-            e.response.loaderId === frame?.frame?.loaderId
+            e.response.frameId === frame.frame.id &&
+            e.response.loaderId === frame.frame.loaderId
         );
         const fields = {
           pauseSequence: pause.sequence,
@@ -357,6 +382,17 @@ async function installWire({ route, runtime }) {
   };
 }
 
+const safeError = (error) => {
+  const message = String(error?.message ?? '');
+  if (/screenshot|data:image|image\/|iVBORw0KGgo|\/9j\//i.test(message))
+    return '[image payload omitted]';
+  return message
+    .replace(/https?:\/\/\S+/g, '[url]')
+    .replace(/[A-Za-z0-9+/_=-]{33,}/g, '[opaque]')
+    .replace(/[^\x20-\x7e]/g, ' ')
+    .slice(0, 160);
+};
+
 const summarize = (reply) => ({
   elapsedMs: reply.elapsedMs,
   deadline: Boolean(reply.deadline),
@@ -398,7 +434,7 @@ for (const route of ['extension', 'link']) {
         return value;
       } catch (error) {
         record.state = 'failed';
-        trace.failure ??= { step: name, errorName: error.name };
+        trace.failure ??= { step: name, errorName: error.name, errorMessage: safeError(error) };
         await persist();
         throw error;
       }
@@ -702,10 +738,12 @@ for (const route of ['extension', 'link']) {
         row.sameScript = normal.frames?.[0]?.scriptId === initial.frames?.[0]?.scriptId;
         row.supportingEvents = normal.deadline
           ? undefined
-          : await page.evaluate(({ pause, expected }) => diagnostic675.correlate(pause, expected), {
-              pause: normal,
-              expected: destination,
-            });
+          : await step(kind + '.supporting-correlation', () =>
+              page.evaluate(({ pause, expected }) => diagnostic675.correlate(pause, expected), {
+                pause: normal,
+                expected: destination,
+              })
+            );
         await persist();
         assert.ok(!normal.deadline && !rawNormal.deadline && normal.reason !== 'instrumentation');
         const removed = await below('Debugger.removeBreakpoint', { breakpointId: breakpoint });
@@ -794,217 +832,280 @@ for (const route of ['extension', 'link']) {
     });
     const pendingRows = [];
     trace.pendingPauses = pendingRows;
-    for (const siteRelation of ['same-site', 'cross-site']) {
-      for (const protectedKind of ['seven', 'vault']) {
-        const row = {
-          kind: 'pending-pause',
-          siteRelation,
-          protectedKind,
-          phase: 'setup',
-          steeringPath:
-            'raw observer navigation; real guards remain attached; not client admission',
-        };
-        pendingRows.push(row);
-        let ownedTarget;
-        let pendingSession;
-        let privateSession;
-        let pendingBreakpoint;
-        const attempt = (method, params = {}) => below(method, params, pendingSession);
-        const privateCall = async (method, params = {}) => {
-          const started = Date.now();
-          let timer;
-          const result = await Promise.race([
-            raw.send(method, params, privateSession).then(
-              (result) => ({ result, elapsedMs: Date.now() - started }),
-              (error) => ({ error: true, errorName: error.name, elapsedMs: Date.now() - started })
-            ),
-            new Promise((resolve) => {
-              timer = setTimeout(
-                () => resolve({ deadline: true, elapsedMs: Date.now() - started }),
-                3000
-              );
-            }),
-          ]);
-          clearTimeout(timer);
-          return result;
-        };
-        const rawEvents = [];
-        const rawScripts = new Map();
-        const privateWaiters = new Set();
-        const stop = raw.on((event) => {
-          if (event.sessionId !== privateSession) return;
-          if (event.method === 'Debugger.scriptParsed')
-            rawScripts.set(event.params.scriptId, event.params.url);
-          if (['Debugger.paused', 'Page.frameNavigated'].includes(event.method)) {
-            rawEvents.push(event);
-            for (const waiter of privateWaiters) waiter();
-          }
-        });
-        const waitPrivate = (after) =>
+    for (const { siteRelation, protectedKind, reuse } of [
+      { siteRelation: 'cross-site', protectedKind: 'seven', reuse: true },
+      { siteRelation: 'same-site', protectedKind: 'vault', reuse: false },
+    ]) {
+      const row = {
+        kind: 'pending-pause',
+        siteRelation,
+        protectedKind,
+        phase: 'setup',
+        steeringPath:
+          'ordinary route session owns instrumentation and requests pause; raw observer navigates and resumes; observations only, no protected route attachment',
+      };
+      pendingRows.push(row);
+      let ownedTarget;
+      let pendingSession;
+      let privateSession;
+      let pendingBreakpoint;
+      const attempt = (method, params = {}) => below(method, params, pendingSession);
+      const privateCall = async (method, params = {}) => {
+        const started = Date.now();
+        let timer;
+        const result = await Promise.race([
+          raw.send(method, params, privateSession).then(
+            (result) => ({ result, elapsedMs: Date.now() - started }),
+            (error) => ({ error: true, errorName: error.name, elapsedMs: Date.now() - started })
+          ),
           new Promise((resolve) => {
-            const find = () =>
-              rawEvents.slice(after).find((event) => event.method === 'Debugger.paused');
-            if (find()) return resolve(find());
-            const listener = () => {
-              const found = find();
-              if (!found) return;
-              clearTimeout(timer);
-              privateWaiters.delete(listener);
-              resolve(found);
-            };
-            const timer = setTimeout(() => {
-              privateWaiters.delete(listener);
-              resolve({ deadline: true });
-            }, 3000);
-            privateWaiters.add(listener);
-          });
-        try {
-          await step('pending.' + siteRelation + '.' + protectedKind + '.setup', async () => {
-            const source = siteRelation === 'same-site' ? 'https://echo.sliccy.ai/ordinary' : url;
-            row.setupStep = 'raw.create-target';
-            ownedTarget = (await raw.send('Target.createTarget', { url: source })).targetId;
-            row.setupStep = 'raw.attach';
-            privateSession = (
-              await raw.send('Target.attachToTarget', { targetId: ownedTarget, flatten: true })
-            ).sessionId;
-            await privateCall('Page.enable');
-            row.setupStep = 'route.discovery';
+            timer = setTimeout(
+              () => resolve({ deadline: true, elapsedMs: Date.now() - started }),
+              3000
+            );
+          }),
+        ]);
+        clearTimeout(timer);
+        return result;
+      };
+      const rawEvents = [];
+      const rawScripts = new Map();
+      const privateWaiters = new Set();
+      const stop = raw.on((event) => {
+        if (event.sessionId !== privateSession) return;
+        if (event.method === 'Debugger.scriptParsed')
+          rawScripts.set(event.params.scriptId, event.params.url);
+        if (
+          [
+            'Debugger.paused',
+            'Debugger.resumed',
+            'Page.frameNavigated',
+            'Page.loadEventFired',
+          ].includes(event.method)
+        ) {
+          rawEvents.push(event);
+          for (const waiter of privateWaiters) waiter();
+        }
+      });
+      const waitPrivate = (after, method = 'Debugger.paused') =>
+        new Promise((resolve) => {
+          const find = () => rawEvents.slice(after).find((event) => event.method === method);
+          if (find()) return resolve(find());
+          const listener = () => {
+            const found = find();
+            if (!found) return;
+            clearTimeout(timer);
+            privateWaiters.delete(listener);
+            resolve(found);
+          };
+          const timer = setTimeout(() => {
+            privateWaiters.delete(listener);
+            resolve({ deadline: true });
+          }, 3000);
+          privateWaiters.add(listener);
+        });
+      try {
+        await step('pending.' + siteRelation + '.' + protectedKind + '.setup', async () => {
+          const source = siteRelation === 'same-site' ? 'https://echo.sliccy.ai/ordinary' : url;
+          await page.evaluate(
+            (label) => diagnostic675.reset(label, false),
+            'pending-' + siteRelation + '-' + protectedKind
+          );
+          row.source = source;
+          row.setupStep = 'ordinary.raw-attachment';
+          ownedTarget = reuse
+            ? targetId
+            : (await raw.send('Target.createTarget', { url: 'about:blank' })).targetId;
+          privateSession = reuse
+            ? observer
+            : (await raw.send('Target.attachToTarget', { targetId: ownedTarget, flatten: true }))
+                .sessionId;
+          await privateCall('Page.enable');
+          row.setupStep = 'ordinary.raw-load';
+          const loadingAfter = rawEvents.length;
+          const ordinaryNavigation = await privateCall('Page.navigate', { url: source });
+          row.ordinaryNavigation = summarize(ordinaryNavigation);
+          assert.ok(!ordinaryNavigation.deadline && !ordinaryNavigation.error);
+          assert.equal(
+            (await waitPrivate(loadingAfter, 'Page.loadEventFired')).deadline,
+            undefined
+          );
+          row.setupStep = 'ordinary.raw-tree';
+          const ordinaryTree = await privateCall('Page.getFrameTree');
+          row.ordinaryTree = {
+            ...summarize(ordinaryTree),
+            url: ordinaryTree.result?.frameTree?.frame?.url,
+          };
+          assert.equal(row.ordinaryTree.url, source);
+          assert.ok(!ordinaryTree.result?.frameTree?.frame?.unreachableUrl);
+          if (reuse) pendingSession = session;
+          else {
+            row.setupStep = 'ordinary.route-discovery';
             const discovered = await page.evaluate(() => diagnostic675.send('Target.getTargets'));
+            row.discovery = {
+              ...summarize(discovered),
+              targetCount: discovered.result?.targetInfos?.length,
+            };
             const found = discovered.result?.targetInfos.find((target) => target.url === source);
             assert.ok(found);
-            row.setupStep = 'route.attachment';
+            row.setupStep = 'ordinary.route-attachment';
             const attached = await page.evaluate(
               (targetId) =>
                 diagnostic675.send('Target.attachToTarget', { targetId, flatten: true }),
               found.targetId
             );
+            row.attachment = summarize(attached);
             pendingSession = attached.result?.sessionId;
             assert.ok(pendingSession);
-            await page.evaluate((session) => diagnostic675.setSession(session), pendingSession);
-            for (const method of ['Page.enable', 'Runtime.enable', 'Debugger.enable']) {
-              row.setupStep = 'route.' + method;
-              const reply = await step(
-                'pending.' + siteRelation + '.' + protectedKind + '.' + method,
-                async () => {
-                  const reply = await attempt(method);
-                  row.lastSetupReply = { method, ...summarize(reply) };
-                  assert.ok(!reply.deadline && !reply.error);
-                  return reply;
-                }
-              );
-              assert.ok(reply.result);
-            }
-            row.setupStep = 'raw.Debugger.enable';
-            const enabled = await privateCall('Debugger.enable');
-            assert.ok(!enabled.deadline && !enabled.error);
-            row.setupStep = 'raw.Runtime.getIsolateId';
-            row.beforeIsolate = (await privateCall('Runtime.getIsolateId')).result?.id;
-            row.setupStep = 'route.instrumentation-arm';
-            pendingBreakpoint = (
-              await attempt('Debugger.setInstrumentationBreakpoint', {
-                instrumentation: 'beforeScriptExecution',
-              })
-            ).result?.breakpointId;
-            assert.ok(pendingBreakpoint);
-            row.setupStep = 'route.instrumented-navigation';
-            const after = await page.evaluate(() => diagnostic675.sequence());
-            await attempt('Page.navigate', { url: source + '?document=pending' });
-            row.setupStep = 'route.instrumentation-pause';
-            const paused = await page.evaluate(
-              (after) => diagnostic675.wait('Debugger.paused', after),
-              after
-            );
-            assert.equal(paused.reason, 'instrumentation');
-          });
-          row.phase = 'proof';
+          }
+          await page.evaluate((session) => diagnostic675.setSession(session), pendingSession);
+          for (const method of ['Page.enable', 'Runtime.enable', 'Debugger.enable']) {
+            row.setupStep = 'ordinary.route.' + method;
+            const reply = await attempt(method);
+            row.lastSetupReply = { method, ...summarize(reply) };
+            await persist();
+            assert.ok(!reply.deadline && !reply.error);
+          }
+          row.setupStep = 'ordinary.raw.Debugger.enable';
+          const enabled = await privateCall('Debugger.enable');
+          assert.ok(!enabled.deadline && !enabled.error);
+          row.setupStep = 'raw.Runtime.getIsolateId';
+          row.beforeIsolate = (await privateCall('Runtime.getIsolateId')).result?.id;
+          row.setupStep = 'route.instrumentation-arm';
+          pendingBreakpoint = (
+            await attempt('Debugger.setInstrumentationBreakpoint', {
+              instrumentation: 'beforeScriptExecution',
+            })
+          ).result?.breakpointId;
+          assert.ok(pendingBreakpoint);
+          row.setupStep = 'route.instrumented-navigation';
           const after = await page.evaluate(() => diagnostic675.sequence());
-          const rawAfter = rawEvents.length;
-          row.pause = summarize(await attempt('Debugger.pause'));
-          const destination = protectedKind === 'seven' ? SEVEN : 'https://vault.sliccy.ai/';
-          const navigation = privateCall('Page.navigate', { url: destination });
-          row.resume = summarize(await attempt('Debugger.resume'));
-          row.navigation = summarize(await navigation);
-          const routePause = await page.evaluate(
-            (after) => diagnostic675.wait('Debugger.paused', after, 3000),
+          await attempt('Page.navigate', { url: source + '?document=pending' });
+          row.setupStep = 'route.instrumentation-pause';
+          const paused = await page.evaluate(
+            (after) => diagnostic675.wait('Debugger.paused', after),
             after
           );
-          row.routePausePublished = !routePause.deadline;
-          row.routePauseReason = routePause.reason;
-          const rawPause = rawEvents
-            .slice(rawAfter)
-            .find((event) => event.method === 'Debugger.paused');
-          row.rawPauseReason = rawPause?.params.reason;
-          row.rawPauseScript = rawPause?.params.callFrames?.[0]?.location?.scriptId;
-          row.rawPauseUrl = rawScripts.get(row.rawPauseScript);
-          row.protectedPause = row.rawPauseUrl?.startsWith(destination);
-          const frameTree = await privateCall('Page.getFrameTree');
-          row.rawTree = summarize(frameTree);
-          row.landingUrl = frameTree.result?.frameTree?.frame?.url;
-          row.afterIsolate = (await privateCall('Runtime.getIsolateId')).result?.id;
-          row.sameProcess =
-            row.beforeIsolate && row.afterIsolate
-              ? row.beforeIsolate === row.afterIsolate
-              : undefined;
-          row.protectedLanding = row.landingUrl?.startsWith(destination);
-          row.biosPausePublications = await page.evaluate(() => diagnostic675.published());
-          row.rawNavigationEvents = rawEvents
-            .slice(rawAfter)
-            .filter((event) => event.method === 'Page.frameNavigated')
-            .map((event) => ({
-              url: event.params.frame?.url,
-              frameId: event.params.frame?.id,
-              loaderId: event.params.frame?.loaderId,
-            }));
-          row.requiredRescue = Boolean(row.protectedPause);
-          row.pendingSafetyNotClaimed = true;
-          row.phase = 'complete';
-        } catch (error) {
-          row.failure = {
-            step:
-              row.phase === 'setup'
-                ? 'pending.' + siteRelation + '.' + protectedKind + '.' + row.setupStep
-                : trace.step,
-            errorName: error.name,
+          assert.equal(paused.reason, 'instrumentation');
+        });
+        row.phase = 'proof';
+        const after = await page.evaluate(() => diagnostic675.sequence());
+        const rawAfter = rawEvents.length;
+        row.pause = summarize(
+          await step(
+            'pending.' + siteRelation + '.' + protectedKind + '.request-normal-pause',
+            () => attempt('Debugger.pause')
+          )
+        );
+        await persist();
+        assert.ok(!row.pause.refused && !row.pause.deadline);
+        const destination = protectedKind === 'seven' ? SEVEN : 'https://vault.sliccy.ai/';
+        const navigation = privateCall('Page.navigate', { url: destination });
+        row.resume = summarize(await privateCall('Debugger.resume'));
+        const navigationReply = await navigation;
+        row.navigation = {
+          ...summarize(navigationReply),
+          browserError: safeError({ message: navigationReply.result?.errorText }),
+        };
+        const routePause = await page.evaluate(
+          (after) => diagnostic675.wait('Debugger.paused', after, 3000),
+          after
+        );
+        row.routePausePublished = !routePause.deadline;
+        row.routePauseReason = routePause.reason;
+        row.routeEventsAfterSteering = await page.evaluate(
+          ({ after, session }) => diagnostic675.routeEvents(after, session),
+          { after, session: pendingSession }
+        );
+        row.anythingReachedRouteSession = row.routeEventsAfterSteering.length > 0;
+        const rawPause = rawEvents
+          .slice(rawAfter)
+          .find((event) => event.method === 'Debugger.paused');
+        row.rawPauseReason = rawPause?.params.reason;
+        row.rawPauseScript = rawPause?.params.callFrames?.[0]?.location?.scriptId;
+        row.rawPauseUrl = rawScripts.get(row.rawPauseScript);
+        const privatePauseIndex = rawEvents.indexOf(rawPause);
+        row.resumedAfterPauseBeforeDiagnosticCleanup =
+          privatePauseIndex >= 0 &&
+          rawEvents
+            .slice(privatePauseIndex + 1)
+            .some((event) => event.method === 'Debugger.resumed');
+        row.rawEventTimeline = rawEvents.slice(rawAfter).map((event) => ({
+          method: event.method,
+          reason: event.params?.reason,
+          url:
+            event.params?.frame?.url ??
+            rawScripts.get(event.params?.callFrames?.[0]?.location?.scriptId),
+        }));
+        row.protectedPause = row.rawPauseUrl?.startsWith(destination);
+        const frameTree = await privateCall('Page.getFrameTree');
+        row.rawTree = summarize(frameTree);
+        row.landingUrl = frameTree.result?.frameTree?.frame?.url;
+        row.afterIsolate = (await privateCall('Runtime.getIsolateId')).result?.id;
+        row.sameProcess =
+          row.beforeIsolate && row.afterIsolate
+            ? row.beforeIsolate === row.afterIsolate
+            : undefined;
+        row.protectedLanding = row.landingUrl?.startsWith(destination);
+        row.biosPausePublications = await page.evaluate(() => diagnostic675.published());
+        row.rawNavigationEvents = rawEvents
+          .slice(rawAfter)
+          .filter((event) => event.method === 'Page.frameNavigated')
+          .map((event) => ({
+            url: event.params.frame?.url,
+            frameId: event.params.frame?.id,
+            loaderId: event.params.frame?.loaderId,
+          }));
+        row.requiredRescue = Boolean(row.protectedPause);
+        row.pendingSafetyNotClaimed = true;
+        row.phase = 'complete';
+      } catch (error) {
+        row.failure = {
+          step:
+            row.phase === 'setup'
+              ? 'pending.' + siteRelation + '.' + protectedKind + '.' + row.setupStep
+              : trace.step,
+          errorName: error.name,
+          errorMessage: safeError(error),
+        };
+      } finally {
+        if (pendingBreakpoint && row.phase === 'setup')
+          row.remove = summarize(
+            await attempt('Debugger.removeBreakpoint', { breakpointId: pendingBreakpoint })
+          );
+        if (privateSession) {
+          row.failureCleanup =
+            'diagnostic raw cleanup after landing and publication measurements; not guard-owned rescue';
+          const beforeCleanup = rawEvents.length;
+          const beforeCleanupRoute = await page.evaluate(() => diagnostic675.sequence());
+          row.rawCleanupResume = summarize(await privateCall('Debugger.resume'));
+          const laterPause = await waitPrivate(beforeCleanup);
+          row.pauseAfterDiagnosticCleanup = {
+            deadline: Boolean(laterPause.deadline),
+            reason: laterPause.params?.reason,
+            scriptUrl: rawScripts.get(laterPause.params?.callFrames?.[0]?.location?.scriptId),
+            diagnosticCleanupNotGuardRescue: true,
           };
-        } finally {
-          if (pendingBreakpoint)
-            row.remove = summarize(
-              await attempt('Debugger.removeBreakpoint', { breakpointId: pendingBreakpoint })
-            );
-          if (privateSession) {
-            row.failureCleanup =
-              'diagnostic raw cleanup after landing and publication measurements; not guard-owned rescue';
-            const beforeCleanup = rawEvents.length;
-            const beforeCleanupRoute = await page.evaluate(() => diagnostic675.sequence());
-            row.rawCleanupResume = summarize(await privateCall('Debugger.resume'));
-            const laterPause = await waitPrivate(beforeCleanup);
-            row.pauseAfterDiagnosticCleanup = {
-              deadline: Boolean(laterPause.deadline),
-              reason: laterPause.params?.reason,
-              scriptUrl: rawScripts.get(laterPause.params?.callFrames?.[0]?.location?.scriptId),
-              diagnosticCleanupNotGuardRescue: true,
+          if (!laterPause.deadline) {
+            const finalTree = await privateCall('Page.getFrameTree');
+            row.finalRawTree = {
+              ...summarize(finalTree),
+              url: finalTree.result?.frameTree?.frame?.url,
             };
-            if (!laterPause.deadline) {
-              const finalTree = await privateCall('Page.getFrameTree');
-              row.finalRawTree = {
-                ...summarize(finalTree),
-                url: finalTree.result?.frameTree?.frame?.url,
-              };
-              row.finalRoutePublication = !(
-                await page.evaluate(
-                  (after) => diagnostic675.wait('Debugger.paused', after, 3000),
-                  beforeCleanupRoute
-                )
-              ).deadline;
-              await privateCall('Debugger.resume');
-            }
+            row.finalRoutePublication = !(
+              await page.evaluate(
+                (after) => diagnostic675.wait('Debugger.paused', after, 3000),
+                beforeCleanupRoute
+              )
+            ).deadline;
+            await privateCall('Debugger.resume');
           }
-          if (ownedTarget)
-            await raw.send('Target.closeTarget', { targetId: ownedTarget }).catch(() => {});
-          stop();
-          await page.evaluate((session) => diagnostic675.setSession(session), session);
-          await persist();
         }
+        if (ownedTarget)
+          await raw.send('Target.closeTarget', { targetId: ownedTarget }).catch(() => {});
+        stop();
+        await page.evaluate((session) => diagnostic675.setSession(session), session);
+        await persist();
       }
     }
     const positive = trace.rows.find((row) => !row.fault);
@@ -1052,7 +1153,7 @@ test('diagnostic 675: extension with other content script', { timeout: 900000 },
       await persist();
       return result;
     } catch (error) {
-      trace.failure = { step: name, errorName: error.name };
+      trace.failure = { step: name, errorName: error.name, errorMessage: safeError(error) };
       await persist();
       throw error;
     }
