@@ -45,6 +45,7 @@ async function installWire({ route, runtime }) {
   let sequence = 0;
   let below = 2 ** 29;
   const pendingBelow = new Map();
+  const inFlightBelow = new Map();
   const issuedBelow = new Set();
   const owned = new Map();
   const events = [];
@@ -68,6 +69,7 @@ async function installWire({ route, runtime }) {
       if (message.id >= 2 ** 30 && readMethods.has(message.method)) {
         const record = {
           method: message.method,
+          session: message.sessionId,
           started: performance.now(),
           state: 'pending',
           label: report.label,
@@ -130,6 +132,7 @@ async function installWire({ route, runtime }) {
   raw.onmessage = (text) => {
     const message = JSON.parse(text);
     if (issuedBelow.has(message.id)) {
+      inFlightBelow.delete(message.id);
       pendingBelow.get(message.id)?.(message);
       pendingBelow.delete(message.id);
       return;
@@ -163,6 +166,7 @@ async function installWire({ route, runtime }) {
     new Promise((resolve) => {
       const id = ++below;
       issuedBelow.add(id);
+      inFlightBelow.set(id, { method, sessionId });
       const started = performance.now();
       const finish = (message) =>
         resolve({
@@ -196,6 +200,10 @@ async function installWire({ route, runtime }) {
     transport,
     snapshot,
     constant,
+    pendingTransport: () =>
+      [...inFlightBelow.values()]
+        .filter((request) => request.sessionId === active)
+        .map((request) => request.method),
     setSession(session) {
       active = session;
     },
@@ -357,125 +365,251 @@ for (const route of ['extension', 'link']) {
     const trace = {
       route,
       phase: 'setup',
+      step: 'start',
       rows: [],
       controls: [],
-      topology: { arming: 'route transport below bios', observerArmed: false },
+      steps: [],
+      topology: {
+        arming: 'route transport below bios',
+        rawDebuggerOwned: false,
+        rawInstrumentationArmed: false,
+      },
     };
     const root = process.env.SLICC_PROOF_TRACE_DIR;
-    t.after(async () => {
+    const persist = async () => {
       if (!root) return;
       await mkdir(root, { recursive: true });
       await writeFile(join(root, `diagnostic-675-${route}.json`), JSON.stringify(trace, null, 2));
-    });
+    };
+    const step = async (name, operation) => {
+      trace.step = name;
+      const record = { name, state: 'started' };
+      trace.steps.push(record);
+      await persist();
+      try {
+        const value = await operation();
+        record.state = 'completed';
+        await persist();
+        return value;
+      } catch (error) {
+        record.state = 'failed';
+        trace.failure ??= { step: name, errorName: error.name };
+        await persist();
+        throw error;
+      }
+    };
+    t.after(persist);
     const site = createServer((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/html' });
       response.end(
         '<!doctype html><title>ordinary</title><main>diagnostic</main><script>globalThis.diagnostic675Reached = true;</script>'
       );
     });
-    await new Promise((resolve) => site.listen(0, '127.0.0.1', resolve));
+    await step(
+      'setup.fixture-listen',
+      () => new Promise((resolve) => site.listen(0, '127.0.0.1', resolve))
+    );
     t.after(() => {
       site.closeAllConnections();
       site.close();
     });
     const url = `http://localhost:${site.address().port}/ordinary`;
-    const chrome = route === 'extension' ? await realExtension() : await launch({ tools: false });
+    const chrome = await step('setup.launch', () =>
+      route === 'extension' ? realExtension() : launch({ tools: false })
+    );
     t.after(() => chrome.close());
-    const page = await chrome.page(t);
-    await page.init(() => {
-      globalThis.sliccKernelDebug = true;
-    });
+    const page = await step('setup.page', () => chrome.page(t));
+    await step('setup.page-init', () =>
+      page.init(() => {
+        globalThis.sliccKernelDebug = true;
+      })
+    );
     if (route === 'extension') {
-      await page.goto(SEVEN);
-      await ready(page, undefined, { tools: false });
-      assert.equal(await page.evaluate(() => globalThis.sliccLinkedBrowsers().length), 0);
-      assert.equal(
-        await page.evaluate(() => typeof globalThis.sliccExtension.cdp.send),
-        'function'
-      );
-      await page.evaluate(installWire, { route });
+      await step('setup.seven-navigation', () => page.goto(SEVEN));
+      await step('setup.seven-ready', () => ready(page, undefined, { tools: false }));
+      await step('setup.extension-topology', async () => {
+        assert.equal(await page.evaluate(() => globalThis.sliccLinkedBrowsers().length), 0);
+        assert.equal(
+          await page.evaluate(() => typeof globalThis.sliccExtension.cdp.send),
+          'function'
+        );
+      });
+      await step('setup.wire', () => page.evaluate(installWire, { route }));
     } else {
-      await boot(page, undefined, { tools: false });
-      assert.equal(await page.evaluate(() => typeof globalThis.sliccExtension), 'undefined');
-      const runtimes = await linkNode(t, page, (await devtools(chrome)).port, 'diagnostic-675');
-      assert.ok(runtimes.length > 0);
-      await page.evaluate(installWire, { route, runtime: runtimes[0] });
+      await step('setup.boot', () => boot(page, undefined, { tools: false }));
+      await step('setup.link-topology', async () => {
+        assert.equal(await page.evaluate(() => typeof globalThis.sliccExtension), 'undefined');
+      });
+      const runtimes = await step('setup.link', async () =>
+        linkNode(t, page, (await devtools(chrome)).port, 'diagnostic-675')
+      );
+      await step('setup.link-runtimes', () => assert.ok(runtimes.length > 0));
+      await step('setup.wire', () => page.evaluate(installWire, { route, runtime: runtimes[0] }));
     }
     const raw = chrome.cdp;
-    const { targetId } = await raw.send('Target.createTarget', { url });
+    const { targetId } = await step('setup.raw-target', () =>
+      raw.send('Target.createTarget', { url })
+    );
     t.after(() => raw.send('Target.closeTarget', { targetId }).catch(() => {}));
-    const { sessionId: observer } = await raw.send('Target.attachToTarget', {
-      targetId,
-      flatten: true,
-    });
-    await raw.send('Page.enable', {}, observer);
+    const { sessionId: observer } = await step('setup.raw-attachment', () =>
+      raw.send('Target.attachToTarget', { targetId, flatten: true })
+    );
+    await step('setup.raw-page-events', () => raw.send('Page.enable', {}, observer));
     const observerEvents = [];
+    const rawPauses = [];
+    const rawWaiters = new Set();
+    const rawPending = new Set();
+    const native = async (method, params = {}) => {
+      const started = Date.now();
+      const record = { method };
+      rawPending.add(record);
+      const actual = raw
+        .send(method, params, observer)
+        .then(
+          (result) => ({ result, elapsedMs: Date.now() - started }),
+          (error) => ({ error: true, errorName: error.name, elapsedMs: Date.now() - started })
+        )
+        .finally(() => rawPending.delete(record));
+      let timer;
+      const reply = await Promise.race([
+        actual,
+        new Promise((resolve) => {
+          timer = setTimeout(
+            () => resolve({ deadline: true, elapsedMs: Date.now() - started }),
+            3000
+          );
+        }),
+      ]);
+      clearTimeout(timer);
+      return reply;
+    };
     const stopObserving = raw.on((event) => {
-      if (
-        event.sessionId !== observer ||
-        !['Page.frameNavigated', 'Page.loadEventFired'].includes(event.method)
-      )
-        return;
-      observerEvents.push({
-        method: event.method,
-        url: event.params.frame?.url,
-        frameId: event.params.frame?.id,
-        loaderId: event.params.frame?.loaderId,
-      });
+      if (event.sessionId !== observer) return;
+      if (['Page.frameNavigated', 'Page.loadEventFired'].includes(event.method)) {
+        const value = {
+          method: event.method,
+          url: event.params.frame?.url,
+          frameId: event.params.frame?.id,
+          loaderId: event.params.frame?.loaderId,
+        };
+        observerEvents.push(value);
+        for (const waiter of rawWaiters) waiter();
+      }
+      if (event.method === 'Debugger.paused') {
+        rawPauses.push({
+          reason: event.params.reason,
+          frames: event.params.callFrames.map((frame) => ({
+            id: frame.callFrameId,
+            scriptId: frame.location?.scriptId,
+          })),
+        });
+        for (const waiter of rawWaiters) waiter();
+      }
     });
     t.after(stopObserving);
-    const targets = await page.evaluate(() => diagnostic675.send('Target.getTargets'));
-    assert.ok(!targets.deadline && !targets.error, 'diagnostic discovery completed');
-    const target = targets.result.targetInfos.find((target) => target.url === url);
-    assert.ok(target, 'ordinary document was discovered');
-    const attached = await page.evaluate(
-      (targetId) => diagnostic675.send('Target.attachToTarget', { targetId, flatten: true }),
-      target.targetId
+    const rawWait = (find, bound = 10000) =>
+      new Promise((resolve) => {
+        const found = find();
+        if (found) return resolve(found);
+        const listener = () => {
+          const result = find();
+          if (!result) return;
+          clearTimeout(timer);
+          rawWaiters.delete(listener);
+          resolve(result);
+        };
+        const timer = setTimeout(() => {
+          rawWaiters.delete(listener);
+          resolve({ deadline: true });
+        }, bound);
+        rawWaiters.add(listener);
+      });
+    const targets = await step('setup.route-discovery', () =>
+      page.evaluate(() => diagnostic675.send('Target.getTargets'))
     );
-    assert.ok(!attached.deadline && !attached.error, 'diagnostic attachment completed');
+    const target = await step('setup.route-discovery-result', () => {
+      assert.ok(!targets.deadline && !targets.error, 'diagnostic discovery completed');
+      const target = targets.result.targetInfos.find((target) => target.url === url);
+      assert.ok(target, 'ordinary document was discovered');
+      return target;
+    });
+    const attached = await step('setup.route-attachment', () =>
+      page.evaluate(
+        (targetId) => diagnostic675.send('Target.attachToTarget', { targetId, flatten: true }),
+        target.targetId
+      )
+    );
+    await step('setup.route-attachment-result', () => {
+      assert.ok(!attached.deadline && !attached.error, 'diagnostic attachment completed');
+    });
     const session = attached.result.sessionId;
-    await page.evaluate((session) => diagnostic675.setSession(session), session);
+    await step('setup.route-session', () =>
+      page.evaluate((session) => diagnostic675.setSession(session), session)
+    );
     const below = (method, params = {}, sessionId = session) =>
       page.evaluate(
         ({ method, params, sessionId }) => diagnostic675.transport(method, params, sessionId),
         { method, params, sessionId }
       );
-    const required = async (method, params = {}, sessionId = session) => {
-      const reply = await below(method, params, sessionId);
-      assert.ok(!reply.deadline && !reply.error, `${method} completed through route transport`);
-      return reply.result;
-    };
+    const required = async (method, params = {}, sessionId = session) =>
+      step(`route.${method}`, async () => {
+        const reply = await below(method, params, sessionId);
+        trace.lastRequiredReply = { method, ...summarize(reply) };
+        await persist();
+        assert.ok(!reply.deadline && !reply.error, `${method} completed through route transport`);
+        return reply.result;
+      });
     const guarded = () =>
       page.evaluate((sessionId) => diagnostic675.send('Page.getFrameTree', {}, sessionId), session);
     for (const method of ['Page.enable', 'Runtime.enable', 'Network.enable'])
       await required(method);
     await required('Target.setDiscoverTargets', { discover: true }, null);
-    const warm = await guarded();
-    assert.equal(warm.result?.frameTree?.frame?.url, url);
+    const warm = await step('setup.warm-tree', guarded);
+    await step('setup.warm-tree-result', () =>
+      assert.equal(warm.result?.frameTree?.frame?.url, url)
+    );
     const noBreakpoint = `${url}?document=control`;
     await page.evaluate(() => diagnostic675.reset('no-breakpoint'));
     const sequence = await page.evaluate(() => diagnostic675.sequence());
+    const controlObservedAfter = observerEvents.length;
     const navigation = below('Page.navigate', { url: noBreakpoint });
-    const frame = await page.evaluate(
-      (sequence) => diagnostic675.wait('Page.frameNavigated', sequence),
-      sequence
+    const frame = await step('setup.control-frame', () =>
+      page.evaluate((sequence) => diagnostic675.wait('Page.frameNavigated', sequence), sequence)
     );
-    assert.equal(frame.deadline, undefined, 'control navigation was observed');
-    const unpaused = await guarded();
+    await step('setup.control-frame-result', () => {
+      assert.equal(frame.deadline, undefined, 'control navigation was observed');
+    });
+    const unpaused = await step('setup.control-read', guarded);
     trace.controls.push({
       kind: 'navigation-no-breakpoint',
       ...summarize(unpaused),
       ownedReads: await page.evaluate(() => diagnostic675.snapshot()),
     });
-    assert.equal(unpaused.deadline, undefined, 'unpaused control did not deadlock');
-    assert.ok(!(await navigation).deadline, 'control navigate returned');
-    const loaded = await page.evaluate(
-      (sequence) => diagnostic675.wait('Page.loadEventFired', sequence),
-      sequence
+    await step('setup.control-read-result', () => {
+      assert.equal(unpaused.deadline, undefined, 'unpaused control did not deadlock');
+    });
+    await step('setup.control-navigation-result', async () => {
+      const reply = await navigation;
+      assert.ok(!reply.deadline && !reply.error, 'control navigate returned');
+    });
+    const loaded = await step('setup.control-raw-load', () =>
+      rawWait(() =>
+        observerEvents
+          .slice(controlObservedAfter)
+          .find((event) => event.method === 'Page.loadEventFired')
+      )
     );
-    assert.equal(loaded.deadline, undefined, 'control document loaded');
-    await required('Debugger.enable');
+    await step('setup.control-raw-load-result', () => {
+      assert.equal(loaded.deadline, undefined, 'control document loaded');
+    });
+    await step('setup.route-debugger-enable', () => required('Debugger.enable'));
     trace.topology.routeDebuggerEnabled = true;
+    await step('setup.raw-debugger-enable', () =>
+      native('Debugger.enable').then((reply) => {
+        assert.ok(!reply.deadline && !reply.error);
+      })
+    );
+    trace.topology.rawDebuggerOwned = true;
     trace.phase = 'proof';
     let breakpoint;
     t.after(async () => {
@@ -485,106 +619,169 @@ for (const route of ['extension', 'link']) {
       await page.evaluate(() => diagnostic675.close()).catch(() => {});
     });
     const positives = [];
-    const perform = async ({ kind, fault = false, destination, navigate = true }) => {
-      await page.evaluate(({ kind, fault }) => diagnostic675.reset(kind, fault), { kind, fault });
-      breakpoint = (
-        await required('Debugger.setInstrumentationBreakpoint', {
-          instrumentation: 'beforeScriptExecution',
-        })
-      ).breakpointId;
-      const after = await page.evaluate(() => diagnostic675.sequence());
-      const observedAfter = observerEvents.length;
-      const executing = navigate
-        ? below('Page.navigate', { url: destination })
-        : below('Runtime.evaluate', {
-            expression: 'globalThis.diagnostic675Loaded = true',
-            returnByValue: true,
-          });
-      const pause = await page.evaluate(
-        (after) => diagnostic675.wait('Debugger.paused', after),
-        after
-      );
-      const row = {
-        kind,
-        fault,
-        routePause: !pause.deadline,
-        pauseReason: pause.reason,
-        callFrames: pause.frames?.length,
-      };
-      if (navigate) trace.rows.push(row);
-      else trace.controls.push(row);
-      assert.equal(pause.deadline, undefined, 'route transport observed the instrumentation pause');
-      assert.equal(pause.reason, 'instrumentation');
-      assert.ok(pause.frames.length > 0, 'instrumentation supplied a call frame');
-      row.observerAtPause = observerEvents.slice(observedAfter);
-      row.observerLoadPending =
-        navigate && !row.observerAtPause.some((event) => event.method === 'Page.loadEventFired');
-      const correlation = await page.evaluate(
-        ({ pause, expected }) => diagnostic675.correlate(pause, expected),
-        { pause, expected: destination }
-      );
-      row.eventVerdict = correlation;
-      if (navigate && !fault) positives.push(correlation.fourEvents.yes);
-      const evaluated = await below('Debugger.evaluateOnCallFrame', {
-        callFrameId: pause.frames[0].id,
-        expression: '1 + 1',
-        returnByValue: true,
-        silent: true,
-      });
-      row.evaluateOnCallFrame = {
-        ...summarize(evaluated),
-        returnedTwo: evaluated.result?.result?.value === 2,
-      };
-      const [tree, info] = await Promise.all([
-        below('Page.getFrameTree'),
-        below('Target.getTargetInfo', { targetId: target.targetId }, null),
-      ]);
-      row.transportFrameTree = {
-        ...summarize(tree),
-        urlMatched: tree.result?.frameTree?.frame?.url === destination,
-      };
-      row.transportTargetInfo = {
-        ...summarize(info),
-        urlMatched: info.result?.targetInfo?.url === destination,
-      };
-      const answer = await guarded();
-      Object.assign(row, summarize(answer), {
-        ownedReads: await page.evaluate(() => diagnostic675.snapshot()),
-      });
-      const removed = await below('Debugger.removeBreakpoint', { breakpointId: breakpoint });
-      breakpoint = undefined;
-      const resumed = await below('Debugger.resume');
-      row.removeBreakpoint = summarize(removed);
-      row.resume = summarize(resumed);
-      row.deadlock = Boolean(
-        answer.deadline || removed.deadline || resumed.deadline || resumed.error
-      );
-      if (row.deadlock) {
-        row.failureCleanup = 'raw observer rescue only after proof failure';
-        await raw.send('Debugger.enable', {}, observer).catch(() => {});
-        await raw.send('Debugger.resume', {}, observer).catch(() => {});
-      }
-      row.observerAfterResume = observerEvents.slice(observedAfter);
-      row.navigationCommand = summarize(await executing);
-      assert.equal(answer.deadline, undefined, 'guard returned or refused before client deadline');
-      assert.equal(row.deadlock, false, 'route resumed without deadlock or observer rescue');
-
-      if (fault) {
-        assert.ok(row.ownedReads.held > 0, 'an actual owned read reply was held');
-        assert.ok(answer.error, 'the unavailable owned read refused');
-        assert.equal(answer.result, undefined, 'unavailable read never counted safe');
-      }
-      if (answer.result) assert.equal(answer.result.frameTree.frame.url, destination);
-      if (navigate) {
-        const finished = await page.evaluate(
-          (sequence) => diagnostic675.wait('Page.loadEventFired', sequence),
-          pause.sequence
+    const perform = async ({ kind, fault = false, destination, navigate = true }) =>
+      step(kind, async () => {
+        await page.evaluate(({ kind, fault }) => diagnostic675.reset(kind, fault), { kind, fault });
+        breakpoint = (
+          await required('Debugger.setInstrumentationBreakpoint', {
+            instrumentation: 'beforeScriptExecution',
+          })
+        ).breakpointId;
+        const after = await page.evaluate(() => diagnostic675.sequence());
+        const observedAfter = observerEvents.length;
+        const rawPausedAfter = rawPauses.length;
+        const executing = navigate
+          ? below('Page.navigate', { url: destination })
+          : below('Runtime.evaluate', {
+              expression: 'globalThis.diagnostic675Loaded = true',
+              returnByValue: true,
+            });
+        const pause = await step(kind + '.route-pause', () =>
+          page.evaluate((after) => diagnostic675.wait('Debugger.paused', after), after)
         );
-        row.loadedAfterResume = !finished.deadline;
-        assert.equal(finished.deadline, undefined, 'document loaded after route resume');
-      }
-    };
-    await perform({ kind: 'loaded-document-paused', destination: noBreakpoint, navigate: false });
+        const rawPause = await step(kind + '.raw-pause', () =>
+          rawWait(() => rawPauses[rawPausedAfter])
+        );
+        const row = {
+          kind,
+          fault,
+          routePause: !pause.deadline,
+          pauseReason: pause.reason,
+          callFrames: pause.frames?.length,
+          breakpointOwner: 'route',
+          rawControlOwnDebugger: true,
+          routeSession: session,
+          rawControlSession: observer,
+        };
+        if (navigate) trace.rows.push(row);
+        else trace.controls.push(row);
+        await persist();
+        assert.equal(pause.deadline, undefined, 'route instrumentation pause was observed');
+        assert.equal(rawPause.deadline, undefined, 'raw debugger observed the same pause');
+        assert.equal(pause.reason, 'instrumentation');
+        assert.ok(pause.frames.length > 0 && rawPause.frames.length > 0);
+        row.observerAtPause = observerEvents.slice(observedAfter);
+        row.observerLoadPending =
+          navigate && !row.observerAtPause.some((event) => event.method === 'Page.loadEventFired');
+        const correlation = await page.evaluate(
+          ({ pause, expected }) => diagnostic675.correlate(pause, expected),
+          { pause, expected: destination }
+        );
+        row.eventVerdict = correlation;
+        if (navigate && !fault) positives.push(correlation.fourEvents.yes);
+        row.pendingBeforeEvaluateFirst = {
+          route: await page.evaluate(() => diagnostic675.pendingTransport()),
+          raw: [...rawPending].map((request) => request.method),
+          ownedReads: await page.evaluate(() => diagnostic675.snapshot()),
+        };
+        const routeParams = {
+          callFrameId: pause.frames[0].id,
+          expression: '1 + 1',
+          returnByValue: true,
+          silent: true,
+        };
+        const rawParams = { ...routeParams, callFrameId: rawPause.frames[0].id };
+        const [routeFirst, rawFirst] = await step(kind + '.evaluate-first', () =>
+          Promise.all([
+            below('Debugger.evaluateOnCallFrame', routeParams),
+            native('Debugger.evaluateOnCallFrame', rawParams),
+          ])
+        );
+        row.routeEvaluateFirst = {
+          ...summarize(routeFirst),
+          returnedTwo: routeFirst.result?.result?.value === 2,
+        };
+        row.rawEvaluateFirst = {
+          ...summarize(rawFirst),
+          returnedTwo: rawFirst.result?.result?.value === 2,
+        };
+        row.evaluateOnCallFrame = row.routeEvaluateFirst;
+        await persist();
+        const [tree, rawTree, info] = await step(kind + '.tree-reads', () =>
+          Promise.all([
+            below('Page.getFrameTree'),
+            native('Page.getFrameTree'),
+            below('Target.getTargetInfo', { targetId: target.targetId }, null),
+          ])
+        );
+        row.transportFrameTree = {
+          ...summarize(tree),
+          urlMatched: tree.result?.frameTree?.frame?.url === destination,
+        };
+        row.rawFrameTree = {
+          ...summarize(rawTree),
+          urlMatched: rawTree.result?.frameTree?.frame?.url === destination,
+        };
+        row.transportTargetInfo = {
+          ...summarize(info),
+          urlMatched: info.result?.targetInfo?.url === destination,
+        };
+        await persist();
+        const [routeAfter, rawAfter] = await step(kind + '.evaluate-after-read', () =>
+          Promise.all([
+            below('Debugger.evaluateOnCallFrame', routeParams),
+            native('Debugger.evaluateOnCallFrame', rawParams),
+          ])
+        );
+        row.routeEvaluateAfterTree = {
+          ...summarize(routeAfter),
+          returnedTwo: routeAfter.result?.result?.value === 2,
+        };
+        row.rawEvaluateAfterTree = {
+          ...summarize(rawAfter),
+          returnedTwo: rawAfter.result?.result?.value === 2,
+        };
+        await persist();
+        const answer = await step(kind + '.guarded-read', guarded);
+        Object.assign(row, summarize(answer), {
+          ownedReads: await page.evaluate(() => diagnostic675.snapshot()),
+        });
+        await persist();
+        const removed = await step(kind + '.remove', () =>
+          below('Debugger.removeBreakpoint', { breakpointId: breakpoint })
+        );
+        breakpoint = undefined;
+        const resumed = await step(kind + '.resume', () => below('Debugger.resume'));
+        row.removeBreakpoint = summarize(removed);
+        row.resume = summarize(resumed);
+        row.deadlock = Boolean(
+          answer.deadline || removed.deadline || removed.error || resumed.deadline || resumed.error
+        );
+        if (row.deadlock) {
+          row.failureCleanup = 'raw debugger rescue after proof failure only';
+          await native('Debugger.resume');
+        }
+        row.observerAfterResume = observerEvents.slice(observedAfter);
+        row.navigationCommand = summarize(await executing);
+        await persist();
+        assert.equal(answer.deadline, undefined, 'guard returned or refused before deadline');
+        assert.equal(row.deadlock, false, 'route resumed without raw rescue');
+        if (fault) {
+          assert.ok(row.ownedReads.held > 0, 'an actual owned reply was held');
+          assert.ok(answer.error);
+          assert.equal(answer.result, undefined);
+        }
+        if (answer.result) assert.equal(answer.result.frameTree.frame.url, destination);
+        if (navigate) {
+          const finished = await step(kind + '.raw-loaded', () =>
+            rawWait(() =>
+              observerEvents
+                .slice(observedAfter)
+                .find((event) => event.method === 'Page.loadEventFired')
+            )
+          );
+          row.loadedAfterResume = !finished.deadline;
+          await persist();
+          assert.equal(finished.deadline, undefined, 'document loaded after route resume');
+        }
+      });
+    await perform({ kind: 'evaluate-first-fresh-pause', destination: `${url}?document=fresh` });
+    const loadedDestination = `${url}?document=fresh`;
+    await perform({
+      kind: 'loaded-document-paused',
+      destination: loadedDestination,
+      navigate: false,
+    });
     await perform({ kind: 'new-document-paused', destination: `${url}?document=read` });
     await perform({
       kind: 'new-document-held-reply',
