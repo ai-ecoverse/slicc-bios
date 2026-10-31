@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { boot, ready, run, shows } from './bios.mjs';
+import { boot, run, shows } from './bios.mjs';
 import { devtools as boundPort, debuggerUrl, launch } from './chrome.mjs';
 
 const chrome = await launch({ args: ['--remote-allow-origins=*'] });
@@ -47,7 +47,7 @@ test('a browser that offers its own DevTools port is driven through the guard, a
 
 test('a DevTools port that arrives late is picked up when the browser announces it', async (t) => {
   const page = await chrome.page(t);
-  await ready(page);
+  await boot(page);
   assert.deepEqual(await automation(page), { via: null });
   await page.evaluate((url) => {
     Object.defineProperty(globalThis, 'crestDevTools', {
