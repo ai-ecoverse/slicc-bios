@@ -36,7 +36,7 @@ export function filesState(fetcher = fetch) {
 export function whatFailed(error, intact) {
   const named = error?.name && error?.message ? `${error.name}: ${error.message}` : String(error);
   const lead = intact
-    ? 'None of seven’s files changed, but it stopped while starting'
+    ? 'Seven has no record of a changed file, but it stopped while starting'
     : 'Seven stopped while starting';
   return `${lead}: ${named}`.slice(0, LONGEST);
 }
