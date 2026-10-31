@@ -1130,7 +1130,7 @@ test('with no host, the CDP endpoint says what to install', async (t) => {
   );
   assert.equal(
     await read(page, '/tmp/elsewhere'),
-    'CDP host: unknown runtime "elsewhere" (extension)\n502'
+    'CDP host: unknown runtime "elsewhere" (extension, devtools)\n502'
   );
   assert.deepEqual(await automation(page), { via: null });
 });

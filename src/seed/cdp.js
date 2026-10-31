@@ -1,12 +1,17 @@
 import { EXTENSION_UPDATE, extensionAutomationSupported } from './extension.js';
-import { guardProtected } from './guard.js';
+import { guardProtected, NO_AUTO_ATTACH } from './guard.js';
 
-const RUNTIMES = ['extension'];
+const RUNTIMES = ['extension', 'devtools'];
 
 export const MISSING = {
   any: 'no browser to drive: install slicc-extension, or link a computer with npx sliccy@next',
   extension: 'no browser to drive: install slicc-extension',
+  devtools: 'no browser to drive: this browser offers seven no DevTools port',
 };
+export const PORT_CLOSED = "this browser's DevTools port didn't answer: it may have closed";
+export const OPEN_WAIT = 10000;
+const ANNOUNCED = -1;
+const NOT_FOUND = -32601;
 
 function command(text) {
   try {
@@ -128,9 +133,76 @@ export function extensionConnection(cdp) {
   return connection;
 }
 
-export function browserHosts(extension = globalThis.sliccExtension) {
+export function devtoolsConnection(
+  url,
+  { socket = (at) => new WebSocket(at), timers = globalThis } = {}
+) {
+  return new Promise((resolve, reject) => {
+    const ws = socket(url);
+    const attaching = new Set();
+    let open = false;
+    const refuse = () => {
+      timers.clearTimeout(timer);
+      ws.onopen = ws.onclose = ws.onerror = ws.onmessage = null;
+      ws.close();
+      reject(new Error(PORT_CLOSED));
+    };
+    const timer = timers.setTimeout(refuse, OPEN_WAIT);
+    const connection = {
+      onmessage: null,
+      onclose: null,
+      send(text) {
+        if (!open) return;
+        const { id, method } = command(text);
+        if (method === 'Target.setAutoAttach') attaching.add(id);
+        ws.send(text);
+      },
+      close() {
+        if (!open) return;
+        open = false;
+        ws.close();
+      },
+    };
+    ws.onerror = () => {
+      if (!open) refuse();
+    };
+    ws.onopen = () => {
+      timers.clearTimeout(timer);
+      open = true;
+      ws.onclose = ({ reason }) => {
+        if (!open) return;
+        open = false;
+        connection.onclose?.(reason || PORT_CLOSED);
+      };
+      ws.onmessage = ({ data }) => {
+        const message = command(data);
+        if (message.id === ANNOUNCED) return;
+        const refused = attaching.delete(message.id) && message.error?.code === NOT_FOUND;
+        connection.onmessage?.(
+          refused
+            ? JSON.stringify({ ...message, error: { ...message.error, message: NO_AUTO_ATTACH } })
+            : data
+        );
+      };
+      ws.send(JSON.stringify({ id: ANNOUNCED, method: 'Slicc.action', params: {} }));
+      resolve(connection);
+    };
+    ws.onclose = () => {
+      if (!open) refuse();
+    };
+  });
+}
+
+export function browserHosts(
+  extension = globalThis.sliccExtension,
+  devtools = globalThis.crestDevTools
+) {
   const cdp = extensionAutomationSupported(extension) ? extension?.cdp : undefined;
-  return { extension: cdp && (() => extensionConnection(cdp)) };
+  const url = devtools?.webSocketDebuggerUrl;
+  return {
+    extension: cdp && (() => extensionConnection(cdp)),
+    devtools: url && (() => devtoolsConnection(url)),
+  };
 }
 
 export function linkedBrowsers(links) {
@@ -181,7 +253,7 @@ export function browserHook(
     }
     if (extension && !extensionAutomationSupported(extension)) throw new Error(EXTENSION_UPDATE);
     const fallback = linked.find((browser) => browser.seven) ?? linked[0];
-    const open = runtime ? hosts[runtime] : hosts.extension || fallback?.open;
+    const open = runtime ? hosts[runtime] : hosts.extension || hosts.devtools || fallback?.open;
     if (!open) throw new Error(MISSING[runtime ?? 'any']);
     return guard(open, open === hosts.extension ? extension.cdp : undefined);
   };
