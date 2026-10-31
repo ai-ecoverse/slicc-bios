@@ -98,7 +98,47 @@ async function cone(page, command, name) {
   return sh(page, `cat /tmp/${name}.log`);
 }
 
-async function stagePackage(page, name) {
+function installCommand(paths) {
+  return `timeout 180 pnpm add -g --config.minimum-release-age=0 ${paths.map(quote).join(' ')}; echo install-status-$?; hash -r; echo playwright-command-$(command -v playwright-cli); echo mcpcat-command-$(command -v mcpcat); echo playwright-version-$(playwright-cli --version); echo mcpcat-version-$(mcpcat --version); root=$(pnpm root -g); echo package-root-$root; find -L "$root" -name playwright-cli.wasm | while IFS= read -r wasm; do echo wasm-path-$wasm; sha256sum "$wasm"; done; pnpm ls -g --depth 0`;
+}
+
+function packageProof(output, version, sha256) {
+  const stdout = output.stdout ?? '';
+  const binary = stdout.match(/^playwright-command-(.*)$/m)?.[1] ?? null;
+  const mcpcat = stdout.match(/^mcpcat-command-(.*)$/m)?.[1] ?? null;
+  const actualVersion = stdout.match(/^playwright-version-playwright-cli (.*)$/m)?.[1] ?? null;
+  const mcpcatVersion = stdout.match(/^mcpcat-version-(.*)$/m)?.[1] ?? null;
+  const wasm = [...stdout.matchAll(/^([a-f0-9]{64})\s+(.+playwright-cli\.wasm)$/gm)].map(
+    ([, sha256, path]) => ({ path, sha256 })
+  );
+  const checks = {
+    binary: Boolean(binary?.startsWith('/home/cone/') && binary.endsWith('playwright-cli')),
+    mcpcat: Boolean(mcpcat?.startsWith('/home/cone/') && mcpcat.endsWith('mcpcat')),
+    version: actualVersion === version,
+    mcpcatVersion: mcpcatVersion === '0.80.1',
+    sha256: wasm.some((entry) => entry.sha256 === sha256),
+  };
+  return {
+    status: Object.values(checks).every(Boolean) ? 'pass' : 'fail',
+    binary,
+    mcpcat,
+    version: actualVersion,
+    mcpcatVersion,
+    wasm,
+    expected: { version, sha256 },
+    checks,
+    install: 'pnpm add -g as cone',
+  };
+}
+
+function countRow(row) {
+  row.counted =
+    row.packageProof?.status === 'pass' && row.setupChecks?.every(({ pass }) => pass) === true;
+  row.outcome = row.status;
+  if (!row.counted && row.status !== 'setup-failure') row.status = 'not-counted';
+}
+
+async function stagePackage(page, name, checks = []) {
   const encoded = (await readFile(join(directory, name))).toString('base64');
   const path = `/tmp/cdp-675-packages/${name}`;
   const result = await page.evaluate(
@@ -113,9 +153,13 @@ async function stagePackage(page, name) {
     },
     { encoded, path }
   );
-  assert.equal(result.status, 0, result.stderr);
   const readable = await sh(page, `chmod 644 ${quote(path)}`);
-  assert.equal(readable.status, 0, readable.stderr);
+  checks.push({
+    name: `staged package permissions ${name}`,
+    pass: result.status === 0 && readable.status === 0,
+    directory: result,
+    file: readable,
+  });
   return path;
 }
 
@@ -204,6 +248,7 @@ for (const route of ['extension', 'link']) {
         oldRoute,
         manifest,
         newGuardOutput: 0,
+        setupChecks: [],
         rows: [],
         fetches: [],
         failedRequests: [],
@@ -328,11 +373,19 @@ for (const route of ['extension', 'link']) {
             extension: globalThis.sliccExtension?.version,
             links: globalThis.sliccLinkedBrowsers().length,
           }));
-          assert.equal(trace.selectedRoute.extension, oldRoute ? '7.10.0' : '7.10.1');
-          assert.equal(trace.selectedRoute.links, 0);
+          trace.setupChecks.push({
+            name: 'selected extension route',
+            pass:
+              trace.selectedRoute.extension === (oldRoute ? '7.10.0' : '7.10.1') &&
+              trace.selectedRoute.links === 0,
+            actual: trace.selectedRoute,
+          });
         } else {
           await boot(page, undefined, { tools: false });
-          assert.equal(await page.evaluate(() => typeof globalThis.sliccExtension), 'undefined');
+          trace.setupChecks.push({
+            name: 'link has no extension route',
+            pass: (await page.evaluate(() => typeof globalThis.sliccExtension)) === 'undefined',
+          });
           const runtimes = await linkNode(
             t,
             page,
@@ -345,34 +398,26 @@ for (const route of ['extension', 'link']) {
           trace.selectedRoute = await page.evaluate(() =>
             globalThis.sliccLinkedBrowsers().map(({ runtime, route }) => ({ runtime, route }))
           );
-          assert.ok(runtimes.length);
-          assert.ok(
-            trace.selectedRoute.every(
-              ({ route }) => route.version === (oldRoute ? '1.49.36' : '1.49.37')
-            )
-          );
+          trace.setupChecks.push({
+            name: 'selected link route',
+            pass:
+              runtimes.length > 0 &&
+              trace.selectedRoute.length > 0 &&
+              trace.selectedRoute.every(
+                ({ route }) => route.version === (oldRoute ? '1.49.36' : '1.49.37')
+              ),
+            actual: trace.selectedRoute,
+          });
         }
-        const cdpPackage = await stagePackage(page, manifest.cdp);
-        const mcpcatPackage = await stagePackage(page, manifest.mcpcat);
+        const cdpPackage = await stagePackage(page, manifest.cdp, trace.setupChecks);
+        const mcpcatPackage = await stagePackage(page, manifest.mcpcat, trace.setupChecks);
         trace.install = await cone(
           page,
-          `timeout 180 pnpm add -g --config.minimum-release-age=0 ${quote(cdpPackage)} ${quote(mcpcatPackage)}; echo install-status-$?; hash -r; echo which-$(which playwright-cli)-$(which mcpcat); playwright-cli --version; mcpcat --version; root=$(pnpm root -g); echo package-root-$root; sha256sum "$root/@ai-ecoverse/slicc-cdp/bin/playwright-cli.wasm"; pnpm ls -g --depth 0`,
+          installCommand([cdpPackage, mcpcatPackage]),
           '675-install'
         );
         assert.match(trace.install.stdout, /install-status-0/);
-        assert.match(trace.install.stdout, /playwright-cli 1\.43\.2/);
-        assert.match(
-          trace.install.stdout,
-          /which-\/home\/cone\/.*playwright-cli-\/home\/cone\/.*mcpcat/
-        );
-        assert.ok(trace.install.stdout.includes(manifest.wasmSha256));
-        trace.packageProof = {
-          binary: 'playwright-cli',
-          version: '1.43.2',
-          sha256: manifest.wasmSha256,
-          install: 'pnpm add -g as cone',
-          assertionPassed: true,
-        };
+        trace.packageProof = packageProof(trace.install, '1.43.2', manifest.wasmSha256);
       } catch (error) {
         setupError = error;
         trace.setupFailure = { name: error.name, message: error.message };
@@ -408,22 +453,13 @@ for (const route of ['extension', 'link']) {
         try {
           if (setupError) throw setupError;
           row.packageProof = trace.packageProof;
+          row.setupChecks = [...trace.setupChecks];
           if (scene.oldClient) {
             row.step = 'install-old-client';
-            const oldPackage = await stagePackage(page, manifest.oldClient);
-            row.oldInstall = await cone(
-              page,
-              `timeout 180 pnpm add -g --config.minimum-release-age=0 ${quote(oldPackage)}; echo install-status-$?; playwright-cli --version; root=$(pnpm root -g); sha256sum "$root/@ai-ecoverse/slicc-cdp/bin/playwright-cli.wasm"`,
-              '675-old-install'
-            );
+            const oldPackage = await stagePackage(page, manifest.oldClient, row.setupChecks);
+            row.oldInstall = await cone(page, installCommand([oldPackage]), '675-old-install');
             assert.match(row.oldInstall.stdout, /install-status-0/);
-            assert.match(row.oldInstall.stdout, /playwright-cli 1\.43\.1/);
-            assert.ok(row.oldInstall.stdout.includes(manifest.oldClientWasmSha256));
-            row.packageProof = {
-              binary: 'playwright-cli',
-              version: '1.43.1',
-              sha256: manifest.oldClientWasmSha256,
-            };
+            row.packageProof = packageProof(row.oldInstall, '1.43.1', manifest.oldClientWasmSha256);
           }
           row.step = 'create-ordinary-target';
           const url = new URL(`/page?row=${index}`, trace.fixtureOrigin);
@@ -472,16 +508,20 @@ for (const route of ['extension', 'link']) {
           row.initialLoaded = await loaded;
           clearTimeout(loadTimer);
           loadOff();
-          assert.equal(row.initialLoaded, true);
+          row.setupChecks.push({
+            name: 'ordinary target loaded',
+            pass: row.initialLoaded === true,
+          });
           if (foreign)
-            assert.ok(
-              row.rawWorlds.some(
+            row.setupChecks.push({
+              name: 'real other extension world',
+              pass: row.rawWorlds.some(
                 ({ origin, name, auxData }) =>
                   origin.startsWith('chrome-extension://') &&
                   name !== 'slicc-navigate' &&
                   auxData?.isDefault === false
-              )
-            );
+              ),
+            });
           row.step = 'guarded-discovery';
           row.target = await discover(page, url.href);
           row.traceStart = await page.evaluate(() => globalThis.cdp675Trace?.length ?? 0);
@@ -767,6 +807,7 @@ for (const route of ['extension', 'link']) {
             : 'finding';
           row.failure = { name: error.name, message: error.message };
         } finally {
+          countRow(row);
           if (page && !setupError) {
             if (!guardLevel) {
               row.serverLog = await sh(page, 'cat /tmp/675-serve.log').catch((error) => ({
@@ -792,7 +833,18 @@ for (const route of ['extension', 'link']) {
         trace.rows.filter(({ status }) => status !== 'pass').length,
         0,
         JSON.stringify(
-          trace.rows.map(({ name, status, step, failure }) => ({ name, status, step, failure }))
+          trace.rows.map(
+            ({ name, status, outcome, counted, step, failure, packageProof, setupChecks }) => ({
+              name,
+              status,
+              outcome,
+              counted,
+              step,
+              failure,
+              packageProof,
+              setupChecks,
+            })
+          )
         )
       );
     });
