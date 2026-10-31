@@ -128,6 +128,7 @@ for (const route of ['extension', 'link']) {
         newGuardOutput: 0,
         rows: [],
         fetches: [],
+        failedRequests: [],
       };
       const persist = async () => {
         if (!process.env.SLICC_PROOF_TRACE_DIR) return;
@@ -141,6 +142,7 @@ for (const route of ['extension', 'link']) {
       let chrome;
       let page;
       let setupError;
+      let offBoot;
       const previous = process.env.SLICC_HARNESS_EXTENSION;
       try {
         process.env.SLICC_HARNESS_EXTENSION = foreign ? '1' : '0';
@@ -151,12 +153,6 @@ for (const route of ['extension', 'link']) {
                 args: ['--disable-features=WebMCP,WebMCPTesting'],
               })
             : await launch({ tools: false, args: ['--disable-features=WebMCP,WebMCPTesting'] });
-        chrome.overrides.set(
-          '/seed/cdp.js',
-          tapSource(await readFile(new URL('../../src/seed/cdp.js', import.meta.url), 'utf8'))
-        );
-        for (const name of [manifest.cdp, manifest.mcpcat, manifest.oldClient])
-          chrome.overrides.set(`/__675/${name}`, await readFile(join(directory, name)));
         const fixture = createServer((request, response) => {
           const at = new URL(request.url, 'http://fixture');
           if (at.pathname === '/data') {
@@ -198,6 +194,39 @@ for (const route of ['extension', 'link']) {
         });
         trace.fixtureOrigin = `http://localhost:${fixture.address().port}`;
         page = await chrome.page(t);
+        chrome.overrides.set(
+          '/seed/cdp.js',
+          tapSource(await readFile(new URL('../../src/seed/cdp.js', import.meta.url), 'utf8'))
+        );
+        for (const name of [manifest.cdp, manifest.mcpcat, manifest.oldClient])
+          chrome.overrides.set(`/__675/${name}`, await readFile(join(directory, name)));
+        const requests = new Map();
+        const failed = (entry) => {
+          trace.failedRequests.push(entry);
+          if (trace.failedRequests.length > 100) trace.failedRequests.shift();
+        };
+        offBoot = chrome.cdp.on(({ method, params, sessionId }) => {
+          const key = `${sessionId ?? ''}:${params?.requestId}`;
+          if (method === 'Network.requestWillBeSent') {
+            const url = new URL(params.request.url);
+            requests.set(key, {
+              url: `${url.origin}${url.pathname}`.slice(0, 500),
+              method: params.request.method,
+            });
+            if (requests.size > 1000) requests.delete(requests.keys().next().value);
+          }
+          if (method === 'Network.responseReceived' && params.response.status >= 400)
+            failed({ ...requests.get(key), status: params.response.status });
+          if (method === 'Network.loadingFailed') {
+            failed({
+              ...requests.get(key),
+              errorText: params.errorText,
+              canceled: params.canceled,
+            });
+            requests.delete(key);
+          }
+          if (method === 'Network.loadingFinished') requests.delete(key);
+        });
         await page.init(() => {
           globalThis.sliccKernelDebug = true;
         });
@@ -255,7 +284,25 @@ for (const route of ['extension', 'link']) {
       } catch (error) {
         setupError = error;
         trace.setupFailure = { name: error.name, message: error.message };
+        if (page) {
+          trace.bootState = await page
+            .evaluate(() => ({
+              location: `${location.origin}${location.pathname}`,
+              splash: document.querySelector('.splash')?.dataset ?? null,
+              verb: document.querySelector('.verb')?.textContent?.slice(0, 1000),
+              steps: [...document.querySelectorAll('[data-step]')].map((item) => ({
+                step: item.dataset.step,
+                state: item.dataset.state,
+                output: item.querySelector('output')?.value?.slice(0, 1000),
+              })),
+            }))
+            .catch((failure) => ({ captureFailure: failure.message }));
+          trace.consoleErrors = [...(page.errors ?? []), ...(page.console ?? [])]
+            .slice(-40)
+            .map((message) => String(message).slice(0, 1000));
+        }
       } finally {
+        offBoot?.();
         if (previous === undefined) delete process.env.SLICC_HARNESS_EXTENSION;
         else process.env.SLICC_HARNESS_EXTENSION = previous;
         await persist();
