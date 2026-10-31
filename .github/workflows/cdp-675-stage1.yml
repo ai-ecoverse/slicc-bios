@@ -34,12 +34,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-cdp
-          ref: 255319cdba240a293d57989a6cd8bb530a1161c8
+          ref: 448340d81e8ca58e89894f75b96e0bf4fda51e3f
           path: candidates/cdp
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/mcpcat
-          ref: 6ac9b14ca96b184fe33c62bc7b7e90c01444866c
+          ref: 3488e6df1f502760190d7d327c6cec671957f8f1
           path: candidates/mcpcat
       - uses: actions/checkout@v4
         with:
@@ -49,7 +49,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-extension
-          ref: 5f1218fea1fdb9118dd6d09794265848838c9334
+          ref: c58ff2235cd0c12d0559de145bb54333af01026d
           path: candidates/extension
       - uses: actions/checkout@v4
         with:
@@ -109,7 +109,7 @@ jobs:
           export SLICC_675_ARTIFACT_DIR="$RUNNER_TEMP/candidate-artifacts"
           export SLICC_675_EXTENSION_DIR="$RUNNER_TEMP/extension-candidate"
           export SLICC_CLI="$RUNNER_TEMP/slicc-candidate"
-          node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs test/integration/cdp-675-packaged.test.mjs > "$RUNNER_TEMP/candidate.log" 2>&1
+          node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs test/integration/cdp-675-packaged.test.mjs test/integration/cdp-675-existing-reads.test.mjs > "$RUNNER_TEMP/candidate.log" 2>&1
           result=$?
           echo "Diagnostic exit: $result"
           exit "$result"
