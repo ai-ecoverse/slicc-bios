@@ -83,6 +83,27 @@ async function opened(t) {
     60000,
     () => document.querySelector('slicc-app')?.model?.vault?.status()?.capabilities?.forward === 1
   );
+  await page
+    .within(120000, async () => {
+      const client = await globalThis.sliccKernelClient();
+      try {
+        const result = await client.run(['curl', '--version'], { cwd: '/' });
+        globalThis.sliccCurlSeedState = {
+          status: result.status,
+          stdout: result.stdout?.slice(0, 160),
+          stderr: result.stderr?.slice(0, 160),
+        };
+        return result.status === 0 && /^curl\s/.test(result.stdout ?? '');
+      } finally {
+        await client.close();
+      }
+    })
+    .catch(async (error) => {
+      const state = await page.evaluate(() => globalThis.sliccCurlSeedState);
+      throw new Error(
+        `curl was not installed before the forwarding row: ${JSON.stringify(state)}; ${error.message}`
+      );
+    });
   await policySeeded(page);
   await page
     .within(60000, () => {
