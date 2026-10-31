@@ -174,6 +174,43 @@ test('the scene keeps running across a tab that is hidden for longer than its fr
   assert.match(shown.render, /^\d+fps, scene at \d+%$/);
 });
 
+test('a repeat boot’s MCP tip names Add server in Settings and the file it writes', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await page.init(() => {
+    if (location.pathname !== '/') return;
+    navigator.storage.persist = () => new Promise(() => {});
+    localStorage.setItem('slicc-bios.tip', '8');
+  });
+  await page.goto('/');
+  await page.until(
+    () =>
+      document.querySelector('.headline')?.textContent === 'Connect an MCP server.' &&
+      ['running', 'static'].includes(document.querySelector('.splash').dataset.scene)
+  );
+  assert.match(
+    await page.evaluate(() => document.querySelector('.slide .body').textContent),
+    /Add server under Settings › MCP servers.*\/etc\/slicc\/agent\/mcp\.json/
+  );
+  const shot = async (color, width) => {
+    await page.send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-color-scheme', value: color }],
+    });
+    await page.send('Emulation.setDeviceMetricsOverride', {
+      width,
+      height: 800,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await page.screenshot(new URL(`card-mcp-${color}-${width}.png`, page.dir));
+  };
+  await shot('light', 1280);
+  await shot('dark', 1280);
+  await shot('light', 420);
+  await page.send('Emulation.clearDeviceMetricsOverride');
+  await page.send('Emulation.setEmulatedMedia', { features: [] });
+});
+
 async function refuse(page, status) {
   const seen = [];
   const pattern = { patterns: [{ urlPattern: '*/sw/splash.js*' }] };

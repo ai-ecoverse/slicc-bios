@@ -56,7 +56,7 @@ const tips = [
   },
   {
     headline: 'Connect an MCP server.',
-    body: 'Servers in <code>~/.pi/agent/mcp.json</code> show up under Settings › MCP servers, with <strong>Connect</strong> or <strong>Sign in</strong>.',
+    body: '<strong>Add server</strong> under Settings › MCP servers takes a name and a URL, no terminal needed. Seven saves it in <code>/etc/slicc/agent/mcp.json</code>.',
   },
   {
     headline: 'Edit and save in place.',
