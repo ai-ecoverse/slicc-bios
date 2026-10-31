@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { ready } from './bios.mjs';
+import { boot } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const chrome = await launch({ tools: false });
@@ -22,7 +22,7 @@ const notice = (page, chromium) =>
 
 test('only Chrome is told what Chrome does with seven’s files', async (t) => {
   const page = await chrome.page(t);
-  await ready(page);
+  await boot(page);
   assert.equal(
     await notice(page, null),
     'Chrome may clear seven’s files and chats when disk space runs low. Bookmark seven to keep them.'

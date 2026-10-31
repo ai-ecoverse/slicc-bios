@@ -59,7 +59,7 @@ test('a browser with no folder picker says so', async (t) => {
   await page.init(() => {
     window.showDirectoryPicker = undefined;
   });
-  await ready(page);
+  await boot(page);
   const said = await page.evaluate(() =>
     document
       .querySelector('slicc-app')
