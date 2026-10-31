@@ -1,6 +1,7 @@
 import catalog from '@ai-ecoverse/slicc-browsers/catalog.json' with { type: 'json' };
 import { protectedOrigins } from '@ai-ecoverse/slicc-browsers/protected.mjs';
 import { RELAY, SIGN_IN_CLIENTS } from './adobe.js';
+import { DEBUGGER_ROUTE_UPDATE, debuggerAdmitted, debuggerRouteSupported } from './debugger.js';
 import { hold, isHeld } from './held.js';
 
 export const PROTECTED =
@@ -235,6 +236,8 @@ const RENDERED = new Set([
   'HeadlessExperimental.beginFrame',
 ]);
 const contentRead = (method = '') =>
+  debuggerAdmitted(method) ||
+  method.startsWith('Debugger.') ||
   CONTENTS.has(method) ||
   TREED.has(method) ||
   RENDERED.has(method) ||
@@ -305,7 +308,9 @@ const PAGE_DOMAINS = [
   'Cast.',
 ];
 const pageScoped = (method = '') =>
-  PAGE_PAINT.has(method) || PAGE_DOMAINS.some((domain) => method.startsWith(domain));
+  debuggerAdmitted(method) ||
+  PAGE_PAINT.has(method) ||
+  PAGE_DOMAINS.some((domain) => method.startsWith(domain));
 const FRAME_CHILDREN = [{ type: 'iframe', exclude: false }, { exclude: true }];
 export const NO_AUTO_ATTACH =
   'slicc: refused: Target.setAutoAttach is not supported: attach to each target';
@@ -686,7 +691,8 @@ export function protection(own) {
 }
 
 class Guard {
-  constructor(connection, own, tabs) {
+  constructor(connection, own, tabs, route) {
+    this.debuggerSupported = debuggerRouteSupported(route);
     this.connection = connection;
     this.tabs = tabs;
     this.recalled = new Set();
@@ -3046,7 +3052,7 @@ class Guard {
     if (method === 'Page.createIsolatedWorld' && typeof params.worldName === 'string') {
       return (await this.learned(sessionId)).names.has(params.worldName) ? WORLD : null;
     }
-    if (PROFILERS.some((domain) => method.startsWith(domain))) {
+    if (PROFILERS.some((domain) => method.startsWith(domain)) || debuggerAdmitted(method)) {
       return [...(await this.learned(sessionId)).ids.values()].includes(true) ? PROFILED : null;
     }
     return null;
@@ -3366,7 +3372,7 @@ class Guard {
 
   reaches(method) {
     if (typeof method !== 'string') return false;
-    if (PAGE_CONTENT.has(method) || REACHES.test(method)) return true;
+    if (debuggerAdmitted(method) || PAGE_CONTENT.has(method) || REACHES.test(method)) return true;
     if (method.startsWith('DOM.')) return method !== 'DOM.enable' && method !== 'DOM.disable';
     return method.startsWith('Runtime.') && !RUNTIME_META.has(method);
   }
@@ -4445,6 +4451,16 @@ class Guard {
     return this.pageCheck(message.method, message.sessionId);
   }
 
+  async debuggerCheck(message) {
+    const { method, sessionId } = message;
+    if (!DEBUGGERS.some((domain) => method.startsWith(domain))) return null;
+    if (!debuggerAdmitted(method)) return DEBUGGER;
+    if (!this.debuggerSupported) return DEBUGGER_ROUTE_UPDATE;
+    const target = this.targets.get(this.sessions.get(sessionId)?.targetId);
+    if (!sessionId || target?.type !== 'page') return UNGUARDED;
+    return null;
+  }
+
   async check(message) {
     const { method, params = {}, sessionId } = message;
     if (typeof method !== 'string') return null;
@@ -4458,7 +4474,8 @@ class Guard {
       return target ? PROTECTED : UNFLAT;
     }
     if (STICKY.has(method) || EMULATION.test(method)) return HEADERS;
-    if (DEBUGGERS.some((domain) => method.startsWith(domain))) return DEBUGGER;
+    const debuggerRefusal = await this.debuggerCheck(message);
+    if (debuggerRefusal) return debuggerRefusal;
     if (STREAMED.has(method)) return STREAMING;
     if (SEARCHES[method] && (await this.searched(method, params, sessionId))) return PROTECTED;
     const world = await this.selecting(method, params, sessionId);
@@ -4961,6 +4978,6 @@ class Guard {
 const framed = (tree) =>
   tree?.frame ? [tree.frame, ...(tree.childFrames ?? []).flatMap((child) => framed(child))] : [];
 
-export function guardProtected(connection, own, tabs = new Map()) {
-  return new Guard(connection, own, tabs).start();
+export function guardProtected(connection, own, tabs = new Map(), route) {
+  return new Guard(connection, own, tabs, route).start();
 }
