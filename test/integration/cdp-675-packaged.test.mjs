@@ -22,6 +22,19 @@ const ordinaryCases = [
   { name: 'armed-vault-hop-error-scrub-bounded', reload: true, protectedHop: 'vault' },
   { name: 'old-client-terminal', reload: true, negative: true, oldClient: true },
 ];
+const guardCases = [
+  { name: 'guard-level-free-pause-refused', method: 'Debugger.pause', params: {} },
+  {
+    name: 'guard-level-script-source-refused',
+    method: 'Debugger.getScriptSource',
+    params: { scriptId: '675-unpublished' },
+  },
+  {
+    name: 'guard-level-call-frame-evaluate-refused',
+    method: 'Debugger.evaluateOnCallFrame',
+    params: { callFrameId: '675-unpublished', expression: '1', returnByValue: true },
+  },
+];
 const fallbackCases = [
   { name: 'foreign-iframe-cached', reload: true, delay: 0, cached: true },
   { name: 'foreign-iframe-immediate', reload: true, delay: 0 },
@@ -79,10 +92,70 @@ async function sh(page, command) {
 async function cone(page, command, name) {
   await run(
     page,
-    `sudo -u cone bash -c ${quote(`export PATH=$PNPM_HOME/bin:$PATH; export SLICC_CDP_URL=http://127.0.0.1:9222; ${command}`)} > /tmp/${name}.log 2>&1; echo ${name}-finished`
+    `sudo -u cone bash -c ${quote(`export PATH=$PNPM_HOME/bin:$PATH; export SLICC_CDP_URL=http://127.0.0.1:9222; ${command}`)} > /tmp/${name}.log 2>&1; echo ${name}-$((40 + 2))`
   );
-  await shows(page, `${name}-finished`, 240000);
+  await shows(page, `${name}-42`, 240000);
   return sh(page, `cat /tmp/${name}.log`);
+}
+
+async function stagePackage(page, name) {
+  const encoded = (await readFile(join(directory, name))).toString('base64');
+  const path = `/tmp/cdp-675-packages/${name}`;
+  const result = await page.evaluate(
+    async ({ encoded, path }) => {
+      globalThis.cdp675Client ??= await globalThis.sliccKernelClient();
+      await globalThis.cdp675Client.fs.mkdir('/tmp/cdp-675-packages', { recursive: true });
+      await globalThis.cdp675Client.fs.writeFile(
+        path,
+        Uint8Array.from(atob(encoded), (each) => each.charCodeAt(0))
+      );
+      return globalThis.cdp675Client.run(['chmod', '755', '/tmp/cdp-675-packages']);
+    },
+    { encoded, path }
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const readable = await sh(page, `chmod 644 ${quote(path)}`);
+  assert.equal(readable.status, 0, readable.stderr);
+  return path;
+}
+
+async function guardRefusal(page, targetId, method, params) {
+  return page.evaluate(
+    async ({ targetId, method, params }) => {
+      const connection = await globalThis.sliccBrowserHook();
+      const pending = new Map();
+      connection.onmessage = (text) => {
+        const packet = JSON.parse(text);
+        const entry = pending.get(packet.id);
+        if (!entry) return;
+        pending.delete(packet.id);
+        clearTimeout(entry.timer);
+        entry.resolve(packet);
+      };
+      const call = (id, method, params, sessionId) =>
+        new Promise((resolve) => {
+          const timer = setTimeout(() => {
+            pending.delete(id);
+            resolve({ id, deadline: true });
+          }, 10000);
+          pending.set(id, { timer, resolve });
+          connection.send(
+            JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })
+          );
+        });
+      try {
+        const attached = await call(1, 'Target.attachToTarget', { targetId, flatten: true });
+        if (!attached.result?.sessionId) return { attached };
+        const request = { id: 2, method, params, sessionId: attached.result.sessionId };
+        const reply = await call(request.id, method, params, request.sessionId);
+        return { attached, request, reply };
+      } finally {
+        connection.close();
+        for (const entry of pending.values()) clearTimeout(entry.timer);
+      }
+    },
+    { targetId, method, params }
+  );
 }
 
 async function discover(page, url) {
@@ -109,14 +182,17 @@ async function discover(page, url) {
 }
 
 for (const route of ['extension', 'link']) {
-  for (const mode of ['ordinary', 'foreign', 'old-route']) {
+  for (const mode of ['ordinary', 'foreign', 'old-route', 'guard-level']) {
     const foreign = mode === 'foreign';
     const oldRoute = mode === 'old-route';
-    const cases = foreign
-      ? fallbackCases
-      : oldRoute
-        ? [{ name: 'old-route-terminal', reload: true, negative: true }]
-        : ordinaryCases;
+    const guardLevel = mode === 'guard-level';
+    const cases = guardLevel
+      ? guardCases
+      : foreign
+        ? fallbackCases
+        : oldRoute
+          ? [{ name: 'old-route-terminal', reload: true, negative: true }]
+          : ordinaryCases;
     test(`cdp 675 packaged ${route} ${mode}`, {
       skip: process.env.SLICC_675_STAGE1_DIAGNOSTIC !== '1',
       timeout: 900000,
@@ -215,12 +291,6 @@ for (const route of ['extension', 'link']) {
           '/seed/cdp.js',
           tapSource(await readFile(new URL('../../src/seed/cdp.js', import.meta.url), 'utf8'))
         );
-        chrome.overrides.set(
-          '/__675/protected-doc',
-          '<!doctype html><title>675 protected fixture</title><script>globalThis.cdp675Protected = true;</script>'
-        );
-        for (const name of [manifest.cdp, manifest.mcpcat, manifest.oldClient])
-          chrome.overrides.set(`/__675/${name}`, await readFile(join(directory, name)));
         const requests = new Map();
         const failed = (entry) => {
           trace.failedRequests.push(entry);
@@ -282,10 +352,11 @@ for (const route of ['extension', 'link']) {
             )
           );
         }
-        const port = new URL(chrome.url).port;
+        const cdpPackage = await stagePackage(page, manifest.cdp);
+        const mcpcatPackage = await stagePackage(page, manifest.mcpcat);
         trace.install = await cone(
           page,
-          `timeout 180 pnpm add -g --config.minimum-release-age=0 http://host.slicc.internal:${port}/__675/${manifest.cdp} http://host.slicc.internal:${port}/__675/${manifest.mcpcat}; echo install-status-$?; hash -r; echo which-$(which playwright-cli)-$(which mcpcat); playwright-cli --version; mcpcat --version; root=$(pnpm root -g); echo package-root-$root; sha256sum "$root/@ai-ecoverse/slicc-cdp/bin/playwright-cli.wasm"; pnpm ls -g --depth 0`,
+          `timeout 180 pnpm add -g --config.minimum-release-age=0 ${quote(cdpPackage)} ${quote(mcpcatPackage)}; echo install-status-$?; hash -r; echo which-$(which playwright-cli)-$(which mcpcat); playwright-cli --version; mcpcat --version; root=$(pnpm root -g); echo package-root-$root; sha256sum "$root/@ai-ecoverse/slicc-cdp/bin/playwright-cli.wasm"; pnpm ls -g --depth 0`,
           '675-install'
         );
         assert.match(trace.install.stdout, /install-status-0/);
@@ -339,9 +410,10 @@ for (const route of ['extension', 'link']) {
           row.packageProof = trace.packageProof;
           if (scene.oldClient) {
             row.step = 'install-old-client';
+            const oldPackage = await stagePackage(page, manifest.oldClient);
             row.oldInstall = await cone(
               page,
-              `timeout 180 pnpm add -g --config.minimum-release-age=0 http://host.slicc.internal:${new URL(chrome.url).port}/__675/${manifest.oldClient}; echo install-status-$?; playwright-cli --version; root=$(pnpm root -g); sha256sum "$root/@ai-ecoverse/slicc-cdp/bin/playwright-cli.wasm"`,
+              `timeout 180 pnpm add -g --config.minimum-release-age=0 ${quote(oldPackage)}; echo install-status-$?; playwright-cli --version; root=$(pnpm root -g); sha256sum "$root/@ai-ecoverse/slicc-cdp/bin/playwright-cli.wasm"`,
               '675-old-install'
             );
             assert.match(row.oldInstall.stdout, /install-status-0/);
@@ -413,6 +485,33 @@ for (const route of ['extension', 'link']) {
           row.step = 'guarded-discovery';
           row.target = await discover(page, url.href);
           row.traceStart = await page.evaluate(() => globalThis.cdp675Trace?.length ?? 0);
+          if (guardLevel) {
+            row.scope = 'guard-level, real bios browserHook; not Rust-path';
+            row.step = 'guard-level-refusal';
+            row.probe = await guardRefusal(page, row.target, scene.method, scene.params);
+            assert.ok(row.probe.attached.result?.sessionId, JSON.stringify(row.probe));
+            assert.match(row.probe.reply?.error?.message ?? '', /^slicc: refused:/);
+            row.methods = await page.evaluate(
+              (start) => globalThis.cdp675Trace.slice(start),
+              row.traceStart
+            );
+            assert.ok(
+              row.methods.some(
+                ({ boundary, direction, packet }) =>
+                  boundary === 'bios' && direction === 'send' && packet.method === scene.method
+              )
+            );
+            assert.equal(
+              row.methods.some(
+                ({ boundary, direction, packet }) =>
+                  boundary === 'route' && direction === 'send' && packet.method === scene.method
+              ),
+              false,
+              'refused method reached route'
+            );
+            row.status = 'pass';
+            continue;
+          }
           const command = `mcpcat serve --webmcp ${scene.reload ? '--webmcp-reload ' : ''}--tab ${quote(row.target)} --http 8812 --no-auth`;
           row.command = command;
           row.step = 'shipped-serve';
@@ -587,7 +686,7 @@ for (const route of ['extension', 'link']) {
             row.step = 'armed-protected-hop';
             const destination =
               scene.protectedHop === 'seven'
-                ? `${SEVEN}/__675/protected-doc`
+                ? `${SEVEN}/protected-doc`
                 : `http://vault.sliccy.ai:${new URL(trace.fixtureOrigin).port}/protected-doc`;
             const start = await page.evaluate(() => globalThis.cdp675Trace.length);
             const began = Date.now();
@@ -669,13 +768,15 @@ for (const route of ['extension', 'link']) {
           row.failure = { name: error.name, message: error.message };
         } finally {
           if (page && !setupError) {
-            row.serverLog = await sh(page, 'cat /tmp/675-serve.log').catch((error) => ({
-              error: error.message,
-            }));
+            if (!guardLevel) {
+              row.serverLog = await sh(page, 'cat /tmp/675-serve.log').catch((error) => ({
+                error: error.message,
+              }));
+              await sh(page, 'kill "$(cat /tmp/675-serve.pid)"').catch(() => {});
+            }
             row.methods ??= await page
               .evaluate((start) => globalThis.cdp675Trace?.slice(start ?? 0) ?? [], row.traceStart)
               .catch(() => []);
-            await sh(page, 'kill "$(cat /tmp/675-serve.pid)"').catch(() => {});
           }
           unobserve?.();
           if (rawSession)
