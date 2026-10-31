@@ -343,7 +343,8 @@ export function favicon(href) {
 
 function defaultOpener() {
   return () => {
-    const open = browserHosts().extension;
+    const { extension, devtools } = browserHosts();
+    const open = extension ?? devtools;
     if (!open) throw new Error('no browser to drive');
     return open();
   };
