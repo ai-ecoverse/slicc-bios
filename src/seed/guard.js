@@ -742,6 +742,7 @@ class Guard {
     this.requests = new Map();
     this.held = new Map();
     this.internal = new Map();
+    this.evidence = new Set();
     this.asked = new Map();
     this.commands = new Map();
     this.answering = new Set();
@@ -935,12 +936,12 @@ class Guard {
     const placement = this.placements.get(sessionId);
     const nav = this.navSessions.get(sessionId);
     const revision = this.revisions.get(nav?.targetId);
-    return new Promise((resolve) => {
+    const work = new Promise((resolve) => {
       const id = ++this.next;
       let timer;
       const answer = async (message) => {
         clearTimeout(timer);
-        if (method === 'Page.getFrameTree' && !message.error) {
+        if (!this.closed && method === 'Page.getFrameTree' && !message.error) {
           this.rememberTreeError(message.result?.frameTree, sessionId, nav, revision);
           if (!nav) await this.rememberExistingNavError(message.result?.frameTree, sessionId);
         }
@@ -964,6 +965,11 @@ class Guard {
         JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })
       );
     });
+    if (method === 'Page.getFrameTree' && nav?.admitted) {
+      this.evidence.add(work);
+      void Promise.allSettled([work]).then(() => this.evidence.delete(work));
+    }
+    return work;
   }
 
   refuse(command, message = PROTECTED, release = true) {
@@ -4894,7 +4900,7 @@ class Guard {
       guarded.send = () => {};
       guarded.onmessage = null;
       const pending = [...this.navs.values()].filter((nav) => nav.closeScrub);
-      if (!pending.length) {
+      if (!pending.length && !this.evidence.size) {
         this.closed = true;
         return connection.close();
       }
@@ -4908,7 +4914,11 @@ class Guard {
       };
       timer = setTimeout(finish, CLOSE_MS);
       timer.unref?.();
-      void Promise.allSettled(pending.map((nav) => nav.closeScrub?.())).then(finish);
+      const settled = () => {
+        if (this.closed || !this.evidence.size) return finish();
+        void Promise.allSettled([...this.evidence]).then(settled);
+      };
+      void Promise.allSettled(pending.map((nav) => nav.closeScrub?.())).then(settled);
     };
     return guarded;
   }
