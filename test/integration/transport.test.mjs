@@ -202,6 +202,7 @@ test('the page fetch never names a User-Agent, which WebKit would preflight and 
       return send(input, init);
     };
   });
+  await page.goto('/');
   await ready(page);
   await run(page, `curl -s -A probe-agent ${NAMED}/agent-probe >/dev/null; echo asked-$?`);
   await shows(page, 'asked-0');
