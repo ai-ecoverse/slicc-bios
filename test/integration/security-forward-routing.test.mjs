@@ -5,7 +5,8 @@ import { indexedDB } from 'fake-indexeddb';
 import { createExitRouter } from '../../src/seed/exits.js';
 import { createForwarder } from '../../src/seed/forward.js';
 import { linkExit } from '../../src/seed/link.js';
-import { pickTransport } from '../../src/seed/transport.js';
+import { createNetwork } from '../../src/seed/network.js';
+import { EXTENSION_UPDATE_HINT, pickTransport } from '../../src/seed/transport.js';
 import { unfollowed } from '../../src/seed/vault.js';
 
 const bytes = (text) => new TextEncoder().encode(text);
@@ -259,8 +260,18 @@ test('old extension manual and credentialed sends are refused without native fal
     const choice = await pickTransport();
     assert.equal(choice.kind, 'extension');
     assert.equal(choice.credentialed, null);
-    for (const redirect of ['manual', 'error'])
-      await assert.rejects(choice.transport.fetch({ ...request, redirect }));
+    const network = createNetwork(choice);
+    for (const redirect of ['manual', 'error']) {
+      await assert.rejects(network.transport.fetch({ ...request, redirect }), {
+        name: 'TypeError',
+        code: 'EACCES',
+        status: 502,
+        message: EXTENSION_UPDATE_HINT,
+      });
+      assert.equal(network.port.status().health, 'limited');
+      assert.equal(network.port.status().detail, EXTENSION_UPDATE_HINT);
+    }
+    assert.equal(network.port.status().failures.length, 2);
   }
   assert.equal(extensionCalls, 0);
   assert.equal(nativeCalls, 0);

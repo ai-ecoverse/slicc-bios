@@ -12,7 +12,7 @@ const namesProtected = ({ urlPattern } = {}) => {
 };
 
 export function extensionOver(browser) {
-  return async function fakeExtension(page, { slow = {} } = {}) {
+  return async function fakeExtension(page, { slow = {}, version = '7.10.0' } = {}) {
     const socket = new WebSocket(browser);
     await new Promise((resolve, reject) => {
       socket.onopen = resolve;
@@ -36,7 +36,7 @@ export function extensionOver(browser) {
       if (ms) setTimeout(() => socket.send(JSON.stringify(command)), ms);
       else socket.send(JSON.stringify(command));
     });
-    const bridge = () => {
+    const bridge = (version) => {
       const pending = new Map();
       const listeners = new Set();
       let next = 0;
@@ -53,7 +53,7 @@ export function extensionOver(browser) {
       };
       Object.defineProperty(globalThis, 'sliccExtension', {
         value: Object.freeze({
-          version: '7.10.0',
+          version,
           fetch: (input, init) => fetch(input, init),
           cdp: Object.freeze({
             send(method, params, sessionId) {
@@ -71,7 +71,12 @@ export function extensionOver(browser) {
         }),
       });
     };
-    await page.init(bridge);
-    return { sent, shielding, close: () => socket.close(), install: () => page.evaluate(bridge) };
+    await page.init(`() => (${bridge.toString()})(${JSON.stringify(version)})`);
+    return {
+      sent,
+      shielding,
+      close: () => socket.close(),
+      install: () => page.evaluate(bridge, version),
+    };
   };
 }

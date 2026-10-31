@@ -2,6 +2,8 @@ import { fetchTransport } from '@ai-ecoverse/slicc-kernel';
 import { redirectMode } from './redirects.js';
 
 export const EXTENSION_REDIRECT_MINIMUM = '7.11.0';
+export const EXTENSION_UPDATE_HINT =
+  'update slicc-extension before using manual redirects or credentialed requests';
 
 export function extensionRedirects(version, minimum = EXTENSION_REDIRECT_MINIMUM) {
   const parts = (value) =>
@@ -56,20 +58,24 @@ export async function pickTransport({ minimumRedirectVersion = EXTENSION_REDIREC
   const extension = globalThis.sliccExtension;
   if (extension) {
     const supported = extensionRedirects(extension.version, minimumRedirectVersion);
-    const send = (input, init) => {
-      if (redirectMode(init) !== 'follow' && !supported)
-        return Promise.reject(
-          new TypeError('the selected extension cannot honor this redirect policy')
-        );
-      return extension.fetch(input, init);
-    };
+    const send = (input, init) => extension.fetch(input, init);
     const transport = redirectingTransport({ fetch: send, bodyIdleMs: BODY_IDLE_MS });
     const manual = supported
       ? redirectingTransport({ fetch: send, bodyIdleMs: BODY_IDLE_MS, redirect: 'manual' })
       : null;
     return {
       kind: 'extension',
-      transport: { ...transport, traits: { ...transport.traits, crossOrigin: 'any' } },
+      transport: {
+        ...transport,
+        traits: { ...transport.traits, crossOrigin: 'any' },
+        fetch: (request) => {
+          if (redirectMode(request) !== 'follow' && !supported)
+            return Promise.reject(
+              Object.assign(new TypeError(EXTENSION_UPDATE_HINT), { code: 'EACCES', status: 502 })
+            );
+          return transport.fetch(request);
+        },
+      },
       credentialed: manual && { ...manual, active: () => globalThis.sliccExtension === extension },
     };
   }

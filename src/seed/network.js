@@ -1,5 +1,6 @@
 import { DIRECT } from './exits.js';
 import { mergeDevices } from './link.js';
+import { EXTENSION_UPDATE_HINT } from './transport.js';
 
 export const EXTENSION_URL =
   'https://chromewebstore.google.com/detail/slicc/akjjllgokmbgpbdbmafpiefnhidlmbgf';
@@ -171,6 +172,7 @@ export function createNetwork(choice, options = {}) {
   const listeners = new Set();
   let failures = [];
   let failing = false;
+  const extensionUpdate = choice.kind === 'extension' && choice.credentialed === null;
   const away = () => [...(options.tray?.away() ?? []), ...(options.pairing?.away() ?? [])];
 
   const status = () => {
@@ -188,8 +190,12 @@ export function createNetwork(choice, options = {}) {
           }
         : {
             route,
-            health: !fullWeb ? 'limited' : failing ? 'failing' : 'ok',
-            detail: stopped ? STOPPED[choice.kind]() : null,
+            health: !fullWeb || extensionUpdate ? 'limited' : failing ? 'failing' : 'ok',
+            detail: extensionUpdate
+              ? EXTENSION_UPDATE_HINT
+              : stopped
+                ? STOPPED[choice.kind]()
+                : null,
           }),
       failures,
       extensionUrl: EXTENSION_URL,
@@ -253,7 +259,7 @@ export function createNetwork(choice, options = {}) {
             0,
             FAILURES
           );
-          failing = true;
+          failing = !extensionUpdate || error.code !== 'EACCES';
           emit();
         }
         throw error;
