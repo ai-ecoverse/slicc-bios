@@ -1,6 +1,7 @@
 import { bareHost, loopback } from './exits.js';
 import { linkUdp } from './link-udp.js';
 import { linkWebSocket } from './link-ws.js';
+import { checkRedirect, redirectMode } from './redirects.js';
 
 export const OPEN = 1;
 export const OPENED = 2;
@@ -497,6 +498,112 @@ const mapped = (error) =>
 
 const DEVICE_ID = /^[A-Za-z0-9._:-]+$/;
 
+function encodedResponse(request, response) {
+  return (
+    request.credentialed === true &&
+    request.method !== 'HEAD' &&
+    response.status >= 200 &&
+    ![204, 205, 304].includes(response.status) &&
+    response.headers.some(
+      ([name, value]) =>
+        name.toLowerCase() === 'content-encoding' && value.trim().toLowerCase() !== 'identity'
+    )
+  );
+}
+
+async function linkHttp(session, mine, request) {
+  const mode = redirectMode(request);
+  const credentialed = request.credentialed === true;
+  if (credentialed && !session.caps().includes('credentialed'))
+    throw Object.assign(new TypeError('the selected exit cannot carry this request'), {
+      status: 502,
+      code: 'EACCES',
+    });
+  const { signal } = request;
+  signal?.throwIfAborted();
+  const url = new URL(request.url);
+  if (mine(url.hostname)) url.hostname = '127.0.0.1';
+  const s = await session.open({
+    kind: 'http',
+    ...(credentialed ? { credentialed: true } : {}),
+  });
+  const cancel = async () => s.close();
+  signal?.addEventListener('abort', cancel, { once: true });
+  const source = bodySource(request.bodyStream ?? request.body);
+  let halt;
+  const halted = new Promise((resolve) => {
+    halt = () => resolve({ done: true });
+  });
+  const stop = () => {
+    halt();
+    source.stop();
+    s.closeWrite();
+  };
+  const reader = bufferedReader(s);
+  let answer;
+  try {
+    signal?.throwIfAborted();
+    const head = encoder.encode(
+      JSON.stringify({ url: url.href, method: request.method, headers: request.headers })
+    );
+    await s.write(u32(head.length));
+    await s.write(head);
+    const sending = (async () => {
+      for (;;) {
+        const { done, value } = await Promise.race([source.next(), halted]);
+        if (done) return s.closeWrite();
+        await s.write(value);
+      }
+    })();
+    const answering = (async () => {
+      const size = new DataView((await reader.take(4)).buffer).getUint32(0);
+      return json(await reader.take(size));
+    })();
+    sending.catch(() => {});
+    answering.catch(() => {});
+    answer = await Promise.race([answering, sending.then(() => answering)]);
+    stop();
+  } catch (error) {
+    s.close();
+    stop();
+    throw signal?.aborted ? signal.reason : error;
+  }
+  if (!answer) {
+    s.close();
+    throw failure('EPROTO: a malformed response head');
+  }
+  const response = {
+    status: answer.status,
+    statusText: answer.statusText ?? '',
+    headers: answer.headers ?? [],
+    ...(typeof answer.url === 'string'
+      ? { url: answer.url === url.href ? request.url : answer.url }
+      : {}),
+    ...(answer.redirected === true ? { redirected: true } : {}),
+    cancel,
+    body: {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          const value = await reader.next();
+          return value === null ? { value: undefined, done: true } : { value, done: false };
+        },
+        return: async () => {
+          await cancel();
+          return { value: undefined, done: true };
+        },
+      }),
+    },
+  };
+  if (encodedResponse(request, response)) {
+    await cancel();
+    throw Object.assign(new TypeError('the selected exit returned an encoded body'), {
+      status: 502,
+      code: 'EACCES',
+    });
+  }
+  return checkRedirect({ ...request, redirect: mode }, response);
+}
+
 export function linkExit(
   session,
   { id, device = () => null, address, label, browsers = () => [], automatic = false }
@@ -507,9 +614,22 @@ export function linkExit(
     return bare === address() || bare === name();
   };
   const hello = () => session.peer();
-  return {
+  const exit = {
     id,
     kind: 'link',
+    redirectPolicy: true,
+    get credentialed() {
+      if (!session.caps().includes('credentialed')) return null;
+      return {
+        traits: {
+          manualRedirects: true,
+          encodedBodies: false,
+          maxRequestBody: 64 * 1024 * 1024,
+          streamingBodies: true,
+        },
+        fetch: (request) => exit.fetch({ ...request, credentialed: true, redirect: 'manual' }),
+      };
+    },
     exitName: () => {
       const named = device();
       return typeof named === 'string' && DEVICE_ID.test(named) ? `device:${named}` : null;
@@ -585,77 +705,9 @@ export function linkExit(
         bufferedReader
       ).catch((error) => Promise.reject(mapped(error)));
     },
-    async fetch(request) {
-      const { signal } = request;
-      signal?.throwIfAborted();
-      const url = new URL(request.url);
-      if (mine(url.hostname)) url.hostname = '127.0.0.1';
-      const s = await session.open({ kind: 'http' });
-      const cancel = async () => s.close();
-      signal?.addEventListener('abort', cancel, { once: true });
-      const source = bodySource(request.body);
-      let halt;
-      const halted = new Promise((resolve) => {
-        halt = () => resolve({ done: true });
-      });
-      const stop = () => {
-        halt();
-        source.stop();
-        s.closeWrite();
-      };
-      const reader = bufferedReader(s);
-      let answer;
-      try {
-        signal?.throwIfAborted();
-        const head = encoder.encode(
-          JSON.stringify({ url: url.href, method: request.method, headers: request.headers })
-        );
-        await s.write(u32(head.length));
-        await s.write(head);
-        const sending = (async () => {
-          for (;;) {
-            const { done, value } = await Promise.race([source.next(), halted]);
-            if (done) return s.closeWrite();
-            await s.write(value);
-          }
-        })();
-        const answering = (async () => {
-          const size = new DataView((await reader.take(4)).buffer).getUint32(0);
-          return json(await reader.take(size));
-        })();
-        sending.catch(() => {});
-        answering.catch(() => {});
-        answer = await Promise.race([answering, sending.then(() => answering)]);
-        stop();
-      } catch (error) {
-        s.close();
-        stop();
-        throw signal?.aborted ? signal.reason : error;
-      }
-      if (!answer) {
-        s.close();
-        throw failure('EPROTO: a malformed response head');
-      }
-      return {
-        status: answer.status,
-        statusText: answer.statusText ?? '',
-        headers: answer.headers ?? [],
-        cancel,
-        body: {
-          [Symbol.asyncIterator]: () => ({
-            next: async () => {
-              const value = await reader.next();
-              return value === null ? { value: undefined, done: true } : { value, done: false };
-            },
-            return: async () => {
-              await cancel();
-              return { value: undefined, done: true };
-            },
-          }),
-        },
-      };
-    },
+    fetch: (request) => linkHttp(session, mine, request),
   };
+  return exit;
 }
 
 export function dnsLabel(hint, taken) {
