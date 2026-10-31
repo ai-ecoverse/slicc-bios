@@ -403,7 +403,64 @@ async function guardPage(t, lag, path = null, lens = null) {
       if (path === 'link') return slowed(await globalThis.sliccLinkedBrowsers()[0].open());
       return extensionConnection(globalThis.sliccExtension.cdp);
     };
-    const connection = guardProtected(await routed(), location.origin);
+    const raw = await routed();
+    const trace = [];
+    const methods = new Map();
+    const sessions = new Map();
+    const infos = new Map();
+    const record = (direction, message) => {
+      const method = message.method ?? methods.get(message.id)?.method;
+      const params = message.params ?? methods.get(message.id)?.params ?? {};
+      const sessionId = message.sessionId ?? methods.get(message.id)?.sessionId;
+      const info = message.params?.targetInfo ?? message.result?.targetInfo;
+      if (info?.targetId) infos.set(info.targetId, info);
+      if (method === 'Target.attachToTarget' && message.result?.sessionId)
+        sessions.set(message.result.sessionId, params.targetId);
+      if (method === 'Target.attachedToTarget' && info)
+        sessions.set(message.params.sessionId, info.targetId);
+      if (
+        /^(?:Target\.|Page\.(?:getFrameTree|frame|navigate|windowOpen)|Fetch\.|Runtime\.runIfWaitingForDebugger)/.test(
+          method ?? ''
+        )
+      ) {
+        trace.push({
+          at: performance.now(),
+          direction,
+          id: message.id,
+          method,
+          sessionId,
+          targetId: params.targetId ?? info?.targetId ?? sessions.get(sessionId),
+          info,
+          frameTree: message.result?.frameTree,
+          frame: message.params?.frame,
+          url: params.url ?? params.request?.url,
+          frameId: params.frameId,
+          resourceType: params.resourceType,
+          resultSession: message.result?.sessionId,
+          waiting: params.waitingForDebugger,
+          error: message.error,
+        });
+        if (trace.length > 10000) trace.shift();
+      }
+    };
+    const observed = {
+      send(text) {
+        const message = JSON.parse(text);
+        methods.set(message.id, message);
+        record('out', message);
+        raw.send(text);
+      },
+      close: () => raw.close(),
+    };
+    raw.onmessage = (text) => {
+      const message = JSON.parse(text);
+      record('in', message);
+      methods.delete(message.id);
+      observed.onmessage?.(text);
+    };
+    raw.onclose = () => observed.onclose?.();
+    window.diagnostic = { trace, infos };
+    const connection = guardProtected(observed, location.origin);
     const pending = new Map();
     const events = [];
     const messages = [];
@@ -442,11 +499,23 @@ async function guardPage(t, lag, path = null, lens = null) {
         }),
     };
   }, path);
-  const send = (method, params, sessionId, wait) =>
-    seven.evaluate(
+  const send = async (method, params, sessionId, wait) => {
+    const answer = await seven.evaluate(
       ([m, p, s, w]) => window.guarded.send(m, p ?? {}, s ?? undefined, w ?? 20000),
       [method, params ?? {}, sessionId ?? null, wait ?? 20000]
     );
+    if (method === 'Target.attachToTarget') {
+      const evidence = await seven.evaluate((targetId) => {
+        const { trace, infos } = window.diagnostic;
+        const info = infos.get(targetId);
+        return info?.openerId
+          ? { info, trace: trace.filter((entry) => entry.targetId === targetId) }
+          : null;
+      }, params.targetId);
+      if (evidence) console.log('diagnostic', JSON.stringify({ answer, ...evidence }));
+    }
+    return answer;
+  };
   const go = (expression, sessionId) =>
     send('Runtime.evaluate', { expression, userGesture: true }, sessionId, 3000);
   const events = () => seven.evaluate(() => window.guarded.events);

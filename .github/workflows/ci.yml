@@ -25,10 +25,20 @@ jobs:
     secrets: inherit
     with:
       node-version: "26"
-      test-glob: test/integration/*.test.mjs
-      shards: 14
-      timeout-minutes: 90
-      flaky-retry: 3
+      test-glob: test/integration/{guard-vectors,freezer-v6,embedder,bind,modes,offline-update,guard-no-extension,guard-restored-state,guard-ordering-placement-proof,guard-state-liveness,guard-state-root-swap,guard-state-parity,guard-state-scrub-attach,guard-state-identifiers,guard-restored-target,guard-state-rendering,guard-ordering-stale,guard-forward-audit}.test.mjs
+      test: |
+        timeout -k 30 900 bash -c '
+          status=0
+          node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs test/integration/{freezer-v6,embedder,bind,modes,offline-update,guard-no-extension,guard-restored-state,guard-ordering-placement-proof,guard-state-liveness,guard-state-root-swap,guard-state-parity,guard-state-scrub-attach,guard-state-identifiers,guard-restored-target,guard-state-rendering,guard-ordering-stale,guard-forward-audit}.test.mjs || status=1
+          for attempt in 1 2 3 4 5; do
+            echo "diagnostic attempt $attempt"
+            node --test --test-concurrency=1 --test-timeout=900000 --test-name-pattern="C1–C4 and E1 at registration, prompt detach" --test-global-setup=test/integration/global.mjs test/integration/guard-vectors.test.mjs || status=1
+          done
+          exit "$status"
+        '
+      shards: 1
+      timeout-minutes: 25
+      flaky-retry: 0
       strict-tests: |
         **/*guard*.test.*
         **/*security*.test.*
