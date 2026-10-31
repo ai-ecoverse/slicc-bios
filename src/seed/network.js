@@ -283,5 +283,5 @@ export function createNetwork(choice, options = {}) {
   options.tray?.on(emit);
   options.pairing?.on(emit);
   options.leaders?.on(emit);
-  return { port, transport };
+  return { port, transport, credentialed: choice.credentialed ?? null };
 }
