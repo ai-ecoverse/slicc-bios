@@ -339,6 +339,7 @@ for (const scenario of ['7.9.16', '7.5.1', '7.6.2', '7.6.3', '7.6.4', '7.9.13', 
       !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
       'recovery did not serve the protected document'
     );
+    if (process.env.SLICC_RECOVERY_DIAGNOSTIC === '1') assert.fail('forced recovery diagnostic');
     passed = true;
   });
 }
