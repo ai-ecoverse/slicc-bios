@@ -125,6 +125,13 @@ for (const route of ['extension', 'link']) {
   }, async (t) => {
     const trace = {
       route,
+      extensionCandidate:
+        route === 'extension'
+          ? {
+              directorySupplied: Boolean(process.env.SLICC_675_EXTENSION_DIR),
+              head: process.env.SLICC_675_EXTENSION_HEAD ?? null,
+            }
+          : undefined,
       scope:
         'Existing guarded frame tree and main-world DOM reads; diagnostic only, not Rust or shipped Stage1 admission/fallback acceptance',
       newGuardOutput: 0,
@@ -186,7 +193,7 @@ for (const route of ['extension', 'link']) {
           const rules = [`MAP vault.sliccy.ai 127.0.0.1:${secure.address().port}`];
           chrome =
             route === 'extension'
-              ? await realExtension({ rules })
+              ? await realExtension({ rules, directory: process.env.SLICC_675_EXTENSION_DIR })
               : await launch({
                   tools: false,
                   args: [
@@ -326,6 +333,14 @@ for (const route of ['extension', 'link']) {
               info.targets = targets.result ? targetRows(targets.result.targetInfos) : targets;
               const selected = fixtureTarget(targets.result?.targetInfos, scene.url);
               info.selectedTargetId = selected?.targetId;
+              if (route === 'extension' && selected)
+                assert.match(
+                  selected.targetId,
+                  /^[1-9][0-9]*$/,
+                  'extension discovery uses a numeric tab ID'
+                );
+              if (otherExtension)
+                assert.ok(selected, `${route}/${lane} ordinary control is discovered`);
               if (!selected) {
                 info.attach = { undiscovered: true };
                 continue;
@@ -339,8 +354,14 @@ for (const route of ['extension', 'link']) {
                 : attached.deadline
                   ? { deadline: true }
                   : { admitted: true };
+              if (otherExtension)
+                assert.ok(
+                  attached.result?.sessionId,
+                  `${route}/${lane} ordinary control attaches before read measurements`
+                );
               if (!attached.result?.sessionId) continue;
               const sessionId = attached.result.sessionId;
+              info.sessionId = sessionId;
               const frames = await call(lane, 'Page.getFrameTree', {}, sessionId);
               info.frameTree = frames.result ? treeRows(frames.result.frameTree) : frames;
               const evaluated = await call(
