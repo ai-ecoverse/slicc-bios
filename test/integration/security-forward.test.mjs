@@ -33,7 +33,7 @@ const upstream = await fakeLlm(chrome.cdp, {
         headers: [...headers, ['location', `${HOST}model/collect`]],
         body: '',
       };
-    if (path === '/ordinary' || path === '/mcp/body')
+    if (path === '/ordinary' || path === '/mcp/body' || path === '/model/collect')
       return {
         status: 200,
         headers,
@@ -144,7 +144,7 @@ test('an ordinary Settings secret uses the real kernel and vault request path an
   const page = await opened(t);
   const { placeholder } = await record(page, 'FORWARD_TOKEN', ORDINARY);
   const paths = ['/ordinary', ...[301, 302, 303, 307, 308].map((code) => `/ordinary-${code}`)];
-  const config = `default_provider = "seven"\n[providers.seven]\ntype = "sealed"\n[secrets]\nFORWARD_TOKEN = { provider = "seven", value = "${placeholder}" }\n[[proxy.rules]]\nsecret = "FORWARD_TOKEN"\ndomain = "forward.example.test"\nheader = "authorization"\nmethods = ["GET", "POST"]\npaths = ${JSON.stringify(paths)}\n`;
+  const config = `default_provider = "seven"\n[providers.seven]\ntype = "sealed"\n[secrets]\nFORWARD_TOKEN = { provider = "seven", value = "${placeholder}" }\n[[proxy.rules]]\nsecret = "FORWARD_TOKEN"\ndomain = "forward.example.test"\nheader = "authorization"\nmethods = ["GET", "POST"]\npaths = ${JSON.stringify(paths)}\n[[proxy.rules]]\nsecret = "FORWARD_TOKEN"\ndomain = "forward.example.test"\nheader = "authorization"\nmethods = ["GET"]\npaths = ["/model/collect"]\n`;
   await page.evaluate(async (config) => {
     const client = await globalThis.sliccKernelClient();
     try {
@@ -157,7 +157,7 @@ test('an ordinary Settings secret uses the real kernel and vault request path an
     document
       .querySelector('slicc-app')
       .model.vault.list()
-      ?.secrets.some((item) => item.name === 'FORWARD_TOKEN' && item.rules?.length > 0)
+      ?.secrets.some((item) => item.name === 'FORWARD_TOKEN' && item.rules?.length === 2)
   );
   const before = upstream.requests.length;
   const result = await shell(
@@ -180,6 +180,17 @@ test('an ordinary Settings secret uses the real kernel and vault request path an
   );
   assert.notEqual(denied.status, 0);
   assert.equal(upstream.requests.length, refusedBefore);
+  const controlBefore = upstream.requests.length;
+  const control = await shell(
+    page,
+    `curl -sS --fail-with-body -H "Authorization: Bearer $FORWARD_TOKEN" '${HOST}model/collect'`,
+    { FORWARD_TOKEN: placeholder }
+  );
+  assert.equal(control.status, 0);
+  assert.equal(upstream.requests.length, controlBefore + 1);
+  assert.equal(bearer(upstream.requests[controlBefore]), `Bearer ${ORDINARY}`);
+  assert.ok(control.stdout.includes(placeholder));
+  assert.equal(`${control.stdout}${control.stderr}`.includes(ORDINARY), false);
   await page.evaluate(
     (url) => document.querySelector('slicc-app').model.vault.endpoints({ add: { model: [url] } }),
     `${HOST}model`
