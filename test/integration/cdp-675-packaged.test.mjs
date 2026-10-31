@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { createServer as https } from 'node:https';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -8,7 +9,7 @@ import { boot, ready, run, shows } from './bios.mjs';
 import { devtools, launch } from './chrome.mjs';
 import { fixtureTarget } from './fixtures/cdp-675-target.mjs';
 import { linkNode } from './linked-node.mjs';
-import { realExtension, SEVEN } from './real-extension.mjs';
+import { certificate, realExtension, SEVEN } from './real-extension.mjs';
 
 const directory = process.env.SLICC_675_ARTIFACT_DIR;
 const manifest = directory
@@ -17,12 +18,17 @@ const manifest = directory
 const quote = (text) => `'${text.replaceAll("'", "'\\''")}'`;
 const ordinaryCases = [
   { name: 'instrumented-list-call', reload: true },
-  { name: 'late-no-unasked-reload', reload: false },
+  { name: 'late-no-unasked-reload', reload: false, late: true },
   { name: 'armed-seven-hop-error-scrub-bounded', reload: true, protectedHop: 'seven' },
   { name: 'armed-vault-hop-error-scrub-bounded', reload: true, protectedHop: 'vault' },
   { name: 'old-client-terminal', reload: true, negative: true, oldClient: true },
 ];
 const guardCases = [
+  { name: 'guard-level-holder-close-at-pause', lifecycle: 'close' },
+  { name: 'guard-level-pause-deadline-stall', lifecycle: 'stall' },
+  { name: 'guard-level-protected-commit-revoke', lifecycle: 'revoke' },
+  { name: 'guard-level-stale-published-ids', lifecycle: 'stale' },
+  { name: 'guard-level-change-before-stale-context-install', lifecycle: 'change' },
   { name: 'guard-level-free-pause-refused', method: 'Debugger.pause', params: {} },
   {
     name: 'guard-level-script-source-refused',
@@ -41,6 +47,18 @@ const fallbackCases = [
   { name: 'foreign-iframe-50ms', reload: true, delay: 50 },
   { name: 'foreign-iframe-500ms', reload: true, delay: 500 },
   { name: 'foreign-iframe-parse-time', reload: true, parse: true },
+  {
+    name: 'fallback-protected-seven-subframe-root-only',
+    reload: true,
+    delay: 500,
+    protectedSubframe: 'seven',
+  },
+  {
+    name: 'fallback-protected-vault-subframe-root-only',
+    reload: true,
+    delay: 500,
+    protectedSubframe: 'vault',
+  },
 ];
 
 function tapSource(source) {
@@ -163,6 +181,31 @@ async function stagePackage(page, name, checks = []) {
   return path;
 }
 
+async function rawChildren(chrome, rootSession) {
+  const { targetInfos } = await chrome.cdp.send('Target.getTargets');
+  const children = [];
+  for (const target of targetInfos.filter((target) => target.type === 'iframe')) {
+    const owner = await chrome.cdp
+      .send('DOM.getFrameOwner', { frameId: target.targetId }, rootSession)
+      .catch(() => null);
+    if (!owner?.backendNodeId) continue;
+    const { sessionId } = await chrome.cdp.send('Target.attachToTarget', {
+      targetId: target.targetId,
+      flatten: true,
+    });
+    try {
+      children.push({
+        targetId: target.targetId,
+        owner,
+        tree: await chrome.cdp.send('Page.getFrameTree', {}, sessionId),
+      });
+    } finally {
+      await chrome.cdp.send('Target.detachFromTarget', { sessionId });
+    }
+  }
+  return children;
+}
+
 async function guardRefusal(page, targetId, method, params) {
   return page.evaluate(
     async ({ targetId, method, params }) => {
@@ -200,6 +243,261 @@ async function guardRefusal(page, targetId, method, params) {
     },
     { targetId, method, params }
   );
+}
+
+async function lifecycleOpen(page, targetId) {
+  return page.evaluate(async (targetId) => {
+    const connection = await globalThis.sliccBrowserHook();
+    const pending = new Map();
+    const events = [];
+    const calls = [];
+    let next = 0;
+    connection.onmessage = (text) => {
+      const packet = JSON.parse(text);
+      if (!packet.id) {
+        events.push({ at: Date.now(), packet });
+        return;
+      }
+      const entry = pending.get(packet.id);
+      if (!entry) return;
+      clearTimeout(entry.timer);
+      pending.delete(packet.id);
+      entry.resolve(packet);
+    };
+    const holder = {
+      events,
+      calls,
+      call(method, params = {}, sessionId = holder.sessionId) {
+        const packet = { id: ++next, method, params, ...(sessionId ? { sessionId } : {}) };
+        calls.push({ at: Date.now(), packet });
+        return new Promise((resolve) => {
+          const timer = setTimeout(() => {
+            pending.delete(packet.id);
+            resolve({ id: packet.id, deadline: true });
+          }, 10000);
+          pending.set(packet.id, { timer, resolve });
+          connection.send(JSON.stringify(packet));
+        });
+      },
+      close() {
+        connection.close();
+        for (const [id, entry] of pending) {
+          clearTimeout(entry.timer);
+          entry.resolve({ id, closed: true });
+        }
+        pending.clear();
+      },
+    };
+    globalThis.cdp675Lifecycle = holder;
+    const attached = await holder.call('Target.attachToTarget', { targetId, flatten: true });
+    holder.sessionId = attached.result?.sessionId;
+    return attached;
+  }, targetId);
+}
+
+async function lifecycleCall(page, method, params = {}) {
+  return page.evaluate(({ method, params }) => globalThis.cdp675Lifecycle.call(method, params), {
+    method,
+    params,
+  });
+}
+
+async function rawBounded(chrome, sessionId, method, params, milliseconds = 7000) {
+  let timer;
+  try {
+    return await Promise.race([
+      chrome.cdp.send(method, params, sessionId),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`raw ${method} exceeded ${milliseconds}ms`)),
+          milliseconds
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function rawLoad(chrome, sessionId, method, params) {
+  let off;
+  let timer;
+  const loaded = new Promise((resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('raw document load exceeded 6000ms')), 6000);
+    off = chrome.cdp.on((packet) => {
+      if (packet.sessionId === sessionId && packet.method === 'Page.loadEventFired') resolve(true);
+    });
+  });
+  try {
+    const [reply] = await Promise.all([rawBounded(chrome, sessionId, method, params), loaded]);
+    return reply;
+  } finally {
+    clearTimeout(timer);
+    off?.();
+  }
+}
+
+async function lifecycleRow(page, chrome, rawSession, row, scene, url) {
+  row.attached = await lifecycleOpen(page, row.target);
+  assert.ok(row.attached.result?.sessionId, JSON.stringify(row.attached));
+  row.armReplies = [];
+  for (const [method, params] of [
+    ['Page.enable', {}],
+    ['Runtime.enable', {}],
+    ['Debugger.enable', {}],
+    ['Debugger.setInstrumentationBreakpoint', { instrumentation: 'beforeScriptExecution' }],
+  ]) {
+    const reply = await lifecycleCall(page, method, params);
+    row.armReplies.push({ method, reply });
+    assert.ok(reply.result, JSON.stringify({ method, reply }));
+  }
+  await page.evaluate(() => {
+    const holder = globalThis.cdp675Lifecycle;
+    holder.reload = holder.call('Page.reload');
+  });
+  await page.within(10000, () =>
+    globalThis.cdp675Lifecycle.events.some(({ packet }) => packet.method === 'Debugger.paused')
+  );
+  row.pause = await page.evaluate(() =>
+    globalThis.cdp675Lifecycle.events.find(({ packet }) => packet.method === 'Debugger.paused')
+  );
+  assert.equal(row.pause.packet.params.reason, 'other');
+  assert.ok(row.pause.packet.params.callFrames.length > 0);
+  row.publishedScripts = await page.evaluate(() =>
+    globalThis.cdp675Lifecycle.events.filter(
+      ({ packet }) => packet.method === 'Debugger.scriptParsed'
+    )
+  );
+  assert.ok(row.publishedScripts.length > 0, 'published pause needs placed script identity');
+  row.pausedContext = row.rawWorlds.findLast(({ auxData }) => auxData?.isDefault)?.uniqueId;
+  assert.ok(row.pausedContext);
+  row.removed = await lifecycleCall(page, 'Debugger.removeBreakpoint', {
+    breakpointId: row.armReplies.at(-1).reply.result.breakpointId,
+  });
+  assert.ok(row.removed.result, JSON.stringify(row.removed));
+  if (scene.lifecycle === 'close' || scene.lifecycle === 'stall') {
+    await lifecycleRescue(page, chrome, rawSession, row, scene.lifecycle);
+    return;
+  }
+  if (scene.lifecycle === 'stale') {
+    const frame = row.pause.packet.params.callFrames[0];
+    row.publishedSource = await lifecycleCall(page, 'Debugger.getScriptSource', {
+      scriptId: frame.location.scriptId,
+    });
+    row.publishedFrame = await lifecycleCall(page, 'Debugger.evaluateOnCallFrame', {
+      callFrameId: frame.callFrameId,
+      expression: '1',
+      returnByValue: true,
+    });
+    for (const reply of [row.publishedSource, row.publishedFrame])
+      assert.match(reply.error?.message ?? '', /^slicc: refused:/);
+  }
+  await lifecycleChanged(page, chrome, rawSession, row, scene, url);
+}
+
+async function lifecycleRescue(page, chrome, rawSession, row, kind) {
+  if (kind === 'close') await page.evaluate(() => globalThis.cdp675Lifecycle.close());
+  row.continued = await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
+    expression: 'globalThis.cdp675Loads',
+    returnByValue: true,
+  });
+  row.continuedAt = Date.now();
+  assert.equal(row.continued.result?.value, 2, 'raw observer must see paused page continue');
+  assert.ok(row.continuedAt - row.pause.at < 7000, 'pause rescue exceeded its bound');
+  row.rescueBoundMs = row.continuedAt - row.pause.at;
+  await page.evaluate(() => globalThis.cdp675Lifecycle.close());
+  row.nextReloadAt = Date.now();
+  await rawLoad(chrome, rawSession, 'Page.reload', {});
+  row.nextReloadContinued = await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
+    expression: 'globalThis.cdp675Loads',
+    returnByValue: true,
+  });
+  assert.equal(row.nextReloadContinued.result?.value, 3);
+  row.methods = await page.evaluate((start) => globalThis.cdp675Trace.slice(start), row.traceStart);
+  assert.equal(
+    row.methods.some(
+      ({ at, packet }) => at >= row.nextReloadAt && packet.method === 'Debugger.paused'
+    ),
+    false,
+    'holder death left a pause on next reload'
+  );
+  assert.equal(
+    row.methods.some(
+      ({ direction, packet }) => direction === 'send' && packet.method === 'Debugger.resume'
+    ),
+    false,
+    'client must not provide rescue'
+  );
+}
+
+async function lifecycleChanged(page, chrome, rawSession, row, scene, url) {
+  row.changedAt = Date.now();
+  const destination = scene.lifecycle === 'revoke' ? `${SEVEN}/__675_frame` : `${url}&changed=1`;
+  row.changedNavigation = await rawLoad(chrome, rawSession, 'Page.navigate', { url: destination });
+  await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
+    expression: 'document.readyState',
+    returnByValue: true,
+  });
+  row.changedTree = await rawBounded(chrome, rawSession, 'Page.getFrameTree', {});
+  assert.notEqual(row.changedTree.frameTree.frame.id, undefined);
+  assert.notEqual(
+    row.rawWorlds.findLast(({ auxData }) => auxData?.isDefault)?.uniqueId,
+    row.pausedContext,
+    'document-change premise requires a new realm'
+  );
+  if (scene.lifecycle === 'revoke') {
+    assert.ok(
+      row.rawFrames.some(
+        (frame) => frame.url?.startsWith(SEVEN) || frame.unreachableUrl?.startsWith(SEVEN)
+      ),
+      'protected commit premise absent'
+    );
+    row.revokedResume = await lifecycleCall(page, 'Debugger.resume');
+    assert.match(row.revokedResume.error?.message ?? '', /^slicc: refused:/);
+    row.changedEvents = await page.evaluate(
+      (at) => globalThis.cdp675Lifecycle.events.filter((event) => event.at >= at),
+      row.changedAt
+    );
+    assert.equal(
+      row.changedEvents.some(({ packet }) =>
+        ['Debugger.paused', 'Debugger.scriptParsed', 'Debugger.scriptFailedToParse'].includes(
+          packet.method
+        )
+      ),
+      false
+    );
+    assert.ok(Date.now() - row.changedAt < 7000, 'protected document stalled');
+    return;
+  }
+  if (scene.lifecycle === 'stale') {
+    const frame = row.pause.packet.params.callFrames[0];
+    row.staleSource = await lifecycleCall(page, 'Debugger.getScriptSource', {
+      scriptId: frame.location.scriptId,
+    });
+    row.staleFrame = await lifecycleCall(page, 'Debugger.evaluateOnCallFrame', {
+      callFrameId: frame.callFrameId,
+      expression: '1',
+      returnByValue: true,
+    });
+    for (const reply of [row.staleSource, row.staleFrame])
+      assert.match(reply.error?.message ?? '', /^slicc: refused:/);
+  }
+  row.staleInstall = await lifecycleCall(page, 'Runtime.evaluate', {
+    expression: 'const __wmcp_675_stale_probe = 675',
+    uniqueContextId: row.pausedContext,
+    returnByValue: true,
+  });
+  assert.ok(
+    row.staleInstall.error || row.staleInstall.result?.exceptionDetails,
+    'old realm must not accept installation'
+  );
+  row.noNewInstall = await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
+    expression: 'typeof __wmcp_675_stale_probe',
+    returnByValue: true,
+  });
+  assert.equal(row.noNewInstall.result?.value, 'undefined');
+  row.installProofScope =
+    'guard-level stale uniqueContextId; not the Rust holder publication-to-install race';
 }
 
 async function waitPort(page, port) {
@@ -288,22 +586,38 @@ for (const route of ['extension', 'link']) {
       const previous = process.env.SLICC_HARNESS_EXTENSION;
       try {
         process.env.SLICC_HARNESS_EXTENSION = foreign ? '1' : '0';
+        const protectedSite = https(await certificate(), (_request, response) =>
+          response
+            .writeHead(200, { 'content-type': 'text/html' })
+            .end(
+              '<!doctype html><title>Owned protected child</title><script>globalThis.cdp675ProtectedChild = true;</script>'
+            )
+        );
+        await new Promise((resolve) => protectedSite.listen(0, '127.0.0.1', resolve));
+        t.after(() => {
+          protectedSite.closeAllConnections();
+          protectedSite.close();
+        });
+        const protectedRules = [`MAP vault.sliccy.ai 127.0.0.1:${protectedSite.address().port}`];
         chrome =
           route === 'extension'
             ? await realExtension({
+                rules: protectedRules,
                 directory: oldRoute ? undefined : process.env.SLICC_675_EXTENSION_DIR,
-                args: [
-                  '--disable-features=WebMCP,WebMCPTesting',
-                  '--host-resolver-rules=MAP vault.sliccy.ai 127.0.0.1',
-                ],
+                args: ['--disable-features=WebMCP,WebMCPTesting'],
               })
             : await launch({
                 tools: false,
                 args: [
                   '--disable-features=WebMCP,WebMCPTesting',
-                  '--host-resolver-rules=MAP vault.sliccy.ai 127.0.0.1',
+                  '--ignore-certificate-errors',
+                  `--host-resolver-rules=${[`MAP seven.sliccy.ai 127.0.0.1:${protectedSite.address().port}`, ...protectedRules].join(', ')}`,
                 ],
               });
+        chrome.overrides.set(
+          '/__675_frame',
+          '<!doctype html><title>Owned protected child</title><script>globalThis.cdp675ProtectedChild = true;</script>'
+        );
         const fixture = createServer((request, response) => {
           const at = new URL(request.url, 'http://fixture');
           if (at.pathname === '/data') {
@@ -341,7 +655,7 @@ for (const route of ['extension', 'link']) {
               : `await fetch('/data?delay=${at.searchParams.get('delay') ?? 0}${at.searchParams.has('cached') ? '&cached=1' : ''}'); if (document.modelContext) { ${registration}; }`
             : `if (document.modelContext) { ${registration}; } else { const retry = setInterval(() => { if (document.modelContext) { clearInterval(retry); ${registration}; } }, 10); }`;
           response.end(
-            `<!doctype html><title>675 ordinary</title>${foreign ? '<iframe src="/iframe"></iframe>' : ''}<script type="module">window.cdp675Loads = (Number(sessionStorage.cdp675Loads) || 0) + 1; sessionStorage.cdp675Loads = window.cdp675Loads; ${code}</script>`
+            `<!doctype html><title>675 ordinary</title>${foreign ? `<iframe src="${at.searchParams.has('protected') ? `https://${at.searchParams.get('protected')}.sliccy.ai/__675_frame` : '/iframe'}"></iframe>` : ''}<script type="module">window.cdp675Loads = (Number(sessionStorage.cdp675Loads) || 0) + 1; sessionStorage.cdp675Loads = window.cdp675Loads; ${code}</script>`
           );
         });
         await new Promise((resolve) => fixture.listen(0, '127.0.0.1', resolve));
@@ -494,6 +808,7 @@ for (const route of ['extension', 'link']) {
             url.searchParams.set('delay', String(scene.delay ?? 0));
             if (scene.cached) url.searchParams.set('cached', '1');
             if (scene.parse) url.searchParams.set('parse', '1');
+            if (scene.protectedSubframe) url.searchParams.set('protected', scene.protectedSubframe);
           }
           ({ targetId } = await chrome.cdp.send('Target.createTarget', {
             url: 'about:blank',
@@ -505,10 +820,14 @@ for (const route of ['extension', 'link']) {
           }));
           row.rawNetwork = [];
           row.rawWorlds = [];
+          row.rawFrames = [];
           unobserve = chrome.cdp.on(({ method, params, sessionId }) => {
             if (sessionId !== rawSession) return;
+            if (method === 'Page.frameNavigated') row.rawFrames.push(params.frame);
             if (method === 'Runtime.executionContextCreated')
               row.rawWorlds.push({
+                id: params.context.id,
+                uniqueId: params.context.uniqueId,
                 origin: params.context.origin,
                 name: params.context.name,
                 auxData: params.context.auxData,
@@ -551,11 +870,36 @@ for (const route of ['extension', 'link']) {
                   auxData?.isDefault === false
               ),
             });
+          if (scene.protectedSubframe) {
+            row.rawTree = await chrome.cdp.send('Page.getFrameTree', {}, rawSession);
+            const frames = [];
+            const walk = (node) => {
+              frames.push(node.frame);
+              for (const child of node.childFrames ?? []) walk(child);
+            };
+            row.rawProtectedChildren = await rawChildren(chrome, rawSession);
+            walk(row.rawTree.frameTree);
+            for (const child of row.rawProtectedChildren) walk(child.tree.frameTree);
+            row.protectedFrames = frames.filter((frame) =>
+              frame.url.startsWith(`https://${scene.protectedSubframe}.sliccy.ai/`)
+            );
+            assert.equal(
+              row.protectedFrames.length,
+              1,
+              'protected child must really commit before guarded attach'
+            );
+          }
           row.step = 'guarded-discovery';
           row.target = await discover(page, url.href);
           row.traceStart = await page.evaluate(() => globalThis.cdp675Trace?.length ?? 0);
           if (guardLevel) {
             row.scope = 'guard-level, real bios browserHook; not Rust-path';
+            if (scene.lifecycle) {
+              row.step = 'guard-level-lifecycle';
+              await lifecycleRow(page, chrome, rawSession, row, scene, url.href);
+              row.status = 'pass';
+              continue;
+            }
             row.step = 'guard-level-refusal';
             row.probe = await guardRefusal(page, row.target, scene.method, scene.params);
             assert.ok(row.probe.attached.result?.sessionId, JSON.stringify(row.probe));
@@ -614,10 +958,13 @@ for (const route of ['extension', 'link']) {
                 ? /refused|update|needs.*newer/i.test(stdout)
                 : stdout.includes('listening on http:');
             },
-            { negative: Boolean(scene.negative), log: row.log }
+            {
+              negative: Boolean(scene.negative || (scene.protectedSubframe && route === 'link')),
+              log: row.log,
+            }
           );
           row.portAnswered = await waitPort(page, row.port);
-          if (scene.negative) {
+          if (scene.negative || (scene.protectedSubframe && route === 'link')) {
             row.step = 'terminal-bound';
             await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 30000)));
             row.terminal = await sh(page, `cat ${row.log}`);
@@ -641,7 +988,7 @@ for (const route of ['extension', 'link']) {
                     packet.method
                   )
               ).length,
-              1
+              scene.protectedSubframe ? 0 : 1
             );
             row.status = 'pass';
             continue;
@@ -656,7 +1003,15 @@ for (const route of ['extension', 'link']) {
           const tools = Array.isArray(listing) ? listing : listing.tools;
           row.tools = tools;
           assert.ok(Array.isArray(tools));
-          if (scene.parse) {
+          if (scene.late) {
+            assert.equal(tools.length, 0, row.list.stdout);
+            assert.match(listing.hint ?? '', /before the polyfill was injected.*--webmcp-reload/);
+            row.statusEvidence = {
+              source: 'mcpcat late-only hint; no wire reload; root load count',
+              late: true,
+              reloaded: false,
+            };
+          } else if (scene.parse) {
             assert.equal(tools.length, 0, row.list.stdout);
             row.clearMessage = await sh(page, `cat ${row.log}`);
             assert.match(row.clearMessage.stdout, /other-extension fallback|startup or parse-time/);
@@ -691,16 +1046,28 @@ for (const route of ['extension', 'link']) {
           assert.ok(sent.includes('Runtime.evaluate'));
           assert.ok(forwarded.includes('Runtime.evaluate'));
           if (foreign) {
-            assert.ok(
-              row.methods.some(
-                ({ direction, packet }) =>
-                  direction === 'receive' &&
-                  /browser extension runs scripts|another extension|profiled|hidden.*world/i.test(
-                    packet.error?.message ?? ''
-                  )
-              )
+            const refusal = row.methods.findIndex(
+              ({ boundary, direction, packet }) =>
+                boundary === 'bios' &&
+                direction === 'receive' &&
+                /browser extension runs scripts|that execution context belongs to a browser extension|another extension|profiled|hidden.*world/i.test(
+                  packet.error?.message ?? ''
+                )
             );
-            assert.equal(forwarded.filter((method) => method.startsWith('Debugger.')).length, 0);
+            assert.ok(refusal >= 0, 'real other-extension refusal missing');
+            row.fallbackStart = refusal;
+            assert.equal(
+              row.methods
+                .slice(refusal + 1)
+                .filter(
+                  ({ boundary, direction, packet }) =>
+                    boundary === 'route' &&
+                    direction === 'send' &&
+                    packet.method?.startsWith('Debugger.')
+                ).length,
+              0,
+              'Debugger method sent after fallback began'
+            );
           } else {
             assert.ok(forwarded.includes('Debugger.enable'));
             assert.ok(forwarded.includes('Debugger.setInstrumentationBreakpoint'));
@@ -721,6 +1088,48 @@ for (const route of ['extension', 'link']) {
               /^const __wmcp_/.test(packet.params?.expression ?? '')
           );
           assert.ok(installations.length > 0);
+          if (scene.protectedSubframe) {
+            const root = row.rawTree.frameTree.frame.id;
+            for (const install of installations) {
+              assert.ok(
+                row.rawWorlds.some(
+                  (world) =>
+                    world.uniqueId === install.packet.params.uniqueContextId &&
+                    world.auxData?.isDefault === true &&
+                    world.auxData.frameId === root
+                ),
+                'fallback install must bind only to root main realm'
+              );
+            }
+            row.reloadedChildren = await rawChildren(chrome, rawSession);
+            const privateFrames = [
+              ...row.protectedFrames,
+              ...row.rawFrames.filter(
+                (frame) =>
+                  frame.parentId &&
+                  [frame.url, frame.unreachableUrl].some((url) =>
+                    /^https:\/\/(?:seven|vault)\.sliccy\.ai(?:\/|$)/i.test(url ?? '')
+                  )
+              ),
+            ].map((frame) => frame.id);
+            privateFrames.push(
+              ...row.reloadedChildren.map((child) => child.tree.frameTree.frame.id)
+            );
+            const wire = JSON.stringify(row.methods.slice(row.fallbackStart + 1));
+            for (const id of privateFrames)
+              assert.ok(!wire.includes(id), 'fallback wire names protected subframe');
+            row.fallbackOutputs = await sh(page, `cat ${row.log}`);
+            for (const output of [
+              row.list.stdout,
+              row.list.stderr,
+              row.call?.stdout ?? '',
+              row.call?.stderr ?? '',
+              JSON.stringify(tools),
+              row.fallbackOutputs.stdout ?? '',
+              row.fallbackOutputs.stderr ?? '',
+            ])
+              assert.doesNotMatch(output, /(?:seven|vault)\.sliccy\.ai/i);
+          }
           const binding =
             installations[0].packet.params.expression.match(/^const (__wmcp_\w+)\s*=/)?.[1];
           assert.ok(binding);
@@ -753,6 +1162,17 @@ for (const route of ['extension', 'link']) {
             sent.filter((method) => method === 'Page.reload').length,
             scene.reload ? 1 : 0
           );
+          assert.equal(
+            forwarded.filter((method) => method === 'Page.reload').length,
+            scene.reload ? 1 : 0,
+            'reload must go through the selected guarded route'
+          );
+          row.reloadGuardEvidence = {
+            source:
+              'real wasm command through bios and selected route; raw observer sent no reload',
+            bios: sent.filter((method) => method === 'Page.reload').length,
+            route: forwarded.filter((method) => method === 'Page.reload').length,
+          };
           if (scene.protectedHop) {
             row.step = 'armed-protected-hop';
             const destination =
@@ -851,6 +1271,18 @@ for (const route of ['extension', 'link']) {
                 error: error.message,
               }));
               await sh(page, `kill "$(cat ${row.pid})"`).catch(() => {});
+            }
+            if (guardLevel) {
+              row.lifecycleFinal = await page
+                .evaluate(() => {
+                  const holder = globalThis.cdp675Lifecycle;
+                  if (!holder) return null;
+                  holder.close();
+                  const result = { events: holder.events, calls: holder.calls };
+                  delete globalThis.cdp675Lifecycle;
+                  return result;
+                })
+                .catch((error) => ({ error: error.message }));
             }
             row.methods ??= await page
               .evaluate((start) => globalThis.cdp675Trace?.slice(start ?? 0) ?? [], row.traceStart)

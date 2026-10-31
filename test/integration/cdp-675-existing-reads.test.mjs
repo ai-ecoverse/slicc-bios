@@ -451,6 +451,20 @@ for (const route of ['extension', 'link']) {
               if (debuggerResult.result) await call(lane, 'Debugger.disable', {}, sessionId);
               await call(lane, 'Target.detachFromTarget', { sessionId });
             }
+            if (route === 'link' && !otherExtension) {
+              for (const lane of ['route', 'bios']) {
+                const info = row.lanes[lane];
+                assert.ok(
+                  info.selectedTargetId,
+                  `link/${lane} protected-scene root discovery premise`
+                );
+                assert.ok(
+                  info.frameTreeOutcome === 'refused' ||
+                    /slicc: refused:/i.test(info.attach?.error ?? ''),
+                  `link/${lane} ${scene.name} must refuse the protected scene`
+                );
+              }
+            }
             trace.methods = await page.evaluate(() => cdp675Reads.records());
             await persist();
             await chrome.cdp.send('Target.detachFromTarget', { sessionId: rawSession });
