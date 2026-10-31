@@ -191,6 +191,24 @@ test('the extension relay is used when it is there', async (t) => {
   });
 });
 
+test('the page fetch never names a User-Agent, which WebKit would preflight and npm refuses', async (t) => {
+  const page = await chrome.page(t);
+  await page.init(() => {
+    const send = globalThis.fetch.bind(globalThis);
+    globalThis.fetchAgents = [];
+    globalThis.fetch = (input, init) => {
+      if (String(input).includes('/agent-probe'))
+        globalThis.fetchAgents.push(new Headers(init?.headers).get('user-agent'));
+      return send(input, init);
+    };
+  });
+  await ready(page);
+  await run(page, `curl -s -A probe-agent ${NAMED}/agent-probe >/dev/null; echo asked-$?`);
+  await shows(page, 'asked-0');
+  assert.deepEqual(await page.evaluate(() => globalThis.fetchAgents), [null]);
+  assert.ok(asked.includes('GET /agent-probe'));
+});
+
 test('without either, the page fetch is used', async (t) => {
   const page = await chrome.page(t);
   await page.goto('/');

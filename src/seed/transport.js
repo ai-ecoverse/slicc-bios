@@ -23,6 +23,14 @@ export async function stored(mode, act) {
   }
 }
 
+export function withoutUserAgent(send = globalThis.fetch.bind(globalThis)) {
+  return (url, init) => {
+    const headers = new Headers(init?.headers);
+    headers.delete('user-agent');
+    return send(url, { ...init, headers });
+  };
+}
+
 export async function pickTransport() {
   await stored('readwrite', (store) => store.delete('proxy')).catch(() => undefined);
   const extension = globalThis.sliccExtension;
@@ -33,5 +41,12 @@ export async function pickTransport() {
       transport: { ...transport, traits: { ...transport.traits, crossOrigin: 'any' } },
     };
   }
-  return { kind: 'page', transport: fetchTransport({ hint: HINT, bodyIdleMs: BODY_IDLE_MS }) };
+  return {
+    kind: 'page',
+    transport: fetchTransport({
+      fetch: withoutUserAgent(),
+      hint: HINT,
+      bodyIdleMs: BODY_IDLE_MS,
+    }),
+  };
 }
