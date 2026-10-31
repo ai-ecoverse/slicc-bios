@@ -7,6 +7,7 @@ import { run, summary } from '@ai-ecoverse/slicc-browsers/guard-runner';
 import set from '@ai-ecoverse/slicc-browsers/guard-vectors.json' with { type: 'json' };
 import { boot } from './bios.mjs';
 import { devtools, launch } from './chrome.mjs';
+import { attachRecorder, attachReport } from './guard-attach-evidence.mjs';
 import { auditForwards } from './guard-forward-audit.mjs';
 import { ALL_TARGETS, groupTargets } from './guard-groups.mjs';
 import { known as knownRow, listedWrong, stale } from './guard-known.mjs';
@@ -285,8 +286,9 @@ export async function guardHost(t, path) {
   await boot(seven);
   const tabs = await tabsBrowser(t, path);
   if (path === 'link') trace('link', (await linkNode(t, seven, tabs.port)).join(' '));
-  const setup = async (auditSource) => {
-    const auditForwards = new Function(`return (${auditSource})`)();
+  const setup = async (sources) => {
+    const auditForwards = new Function(`return (${sources.audit})`)();
+    const attachRecorder = new Function(`return (${sources.attach})`)();
     const { guardProtected } = await import(new URL('guard.js', location.href).href);
     const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
     const hosts = {
@@ -357,7 +359,8 @@ export async function guardHost(t, path) {
       if (!value || typeof value !== 'object') return;
       for (const item of Object.values(value)) remember(flags, item);
     };
-    const gateWrap = (raw) => {
+    const gateWrap = (raw, capture) => {
+      const evidence = capture ? attachRecorder() : null;
       const flags = { protectedObserved: false, ordinaryObserved: false };
       const forwards = [];
       const commands = [];
@@ -365,7 +368,11 @@ export async function guardHost(t, path) {
       let hold = null;
       raw.onmessage = (text) => {
         try {
-          remember(flags, JSON.parse(text));
+          const message = JSON.parse(text);
+          remember(flags, message);
+          try {
+            evidence?.record('in', message);
+          } catch {}
         } catch {
           return;
         }
@@ -400,6 +407,9 @@ export async function guardHost(t, path) {
                 params: message.params,
                 at: Date.now(),
               });
+              try {
+                evidence?.record('out', message);
+              } catch {}
             }
           } catch {
             return raw.send(text);
@@ -411,6 +421,19 @@ export async function guardHost(t, path) {
         },
         publicCommand(message) {
           commands.push({ ...message, at: Date.now() });
+          try {
+            return evidence?.publicCommand(message);
+          } catch {
+            return false;
+          }
+        },
+        capture(command, answer) {
+          try {
+            evidence?.capture(command, answer);
+          } catch {}
+        },
+        takeEvidence(id) {
+          return evidence?.take(id);
         },
         arm() {
           forwards.length = 0;
@@ -442,8 +465,8 @@ export async function guardHost(t, path) {
     };
     const guards = new Map();
     window.guards = {
-      async open(row, own, path, lag, paintDelay) {
-        const gated = gateWrap(lagged(await hosts[path](), lag, paintDelay, row));
+      async open(row, own, path, lag, paintDelay, capture) {
+        const gated = gateWrap(lagged(await hosts[path](), lag, paintDelay, row), capture);
         const connection = guardProtected(gated, [location.origin, own].flat());
         const pending = new Map();
         let next = 0;
@@ -453,10 +476,15 @@ export async function guardHost(t, path) {
           if (message.id === undefined) {
             return void window.guardEvent(JSON.stringify([row, text]));
           }
-          pending.get(message.id)?.(message);
+          const caller = pending.get(message.id);
+          if (caller?.capture && message.error) gated.capture(caller.command, message);
+          caller?.(message);
           pending.delete(message.id);
         };
         guards.set(row, { connection, pending, gated, next: () => ++next });
+      },
+      evidence(row, id) {
+        return guards.get(row)?.gated.takeEvidence(id);
       },
       arm(row) {
         return (
@@ -475,15 +503,23 @@ export async function guardHost(t, path) {
         const id = guard.next();
         return new Promise((resolve) => {
           const timer = setTimeout(() => {
+            const answer = {
+              id,
+              ...(sessionId ? { sessionId } : {}),
+              error: { message: `${method} got no answer through the guard` },
+            };
+            if (receive.capture) guard.gated.capture(command, answer);
             guard.pending.delete(id);
-            resolve({ error: { message: `${method} got no answer through the guard` } });
+            resolve(answer);
           }, wait);
-          guard.pending.set(id, (message) => {
+          const command = { id, method, params, ...(sessionId ? { sessionId } : {}) };
+          const receive = (message) => {
             clearTimeout(timer);
             resolve(message);
-          });
-          const command = { id, method, params, ...(sessionId ? { sessionId } : {}) };
-          guard.gated.publicCommand(command);
+          };
+          receive.command = command;
+          receive.capture = guard.gated.publicCommand(command);
+          guard.pending.set(id, receive);
           guard.connection.send(JSON.stringify(command));
         });
       },
@@ -496,7 +532,10 @@ export async function guardHost(t, path) {
   const ensure = async () => {
     if (await seven.evaluate(() => Boolean(window.guards))) return;
     trace('install', 'the guard hooks go into seven’s page, again if it reloaded');
-    await seven.evaluate(setup, auditForwards.toString());
+    await seven.evaluate(setup, {
+      audit: auditForwards.toString(),
+      attach: attachRecorder.toString(),
+    });
   };
   await ensure();
   let count = 0;
@@ -504,7 +543,8 @@ export async function guardHost(t, path) {
   t.after(() => unguarded.close());
   const clientFactory =
     (path) =>
-    async ({ detachDelay, paintDelay, own = targets.own }) => {
+    async ({ detachDelay, paintDelay, own = targets.own, vector, target, variant }) => {
+      const capture = vector?.id === 'C8.newtab';
       count += 1;
       const row = count;
       const { events, push, waitEvent } = eventsOf();
@@ -513,8 +553,9 @@ export async function guardHost(t, path) {
       rows.set(row, { push, messages, transportEvents });
       await ensure();
       await seven.evaluate(
-        ([row, own, path, lag, paintDelay]) => window.guards.open(row, own, path, lag, paintDelay),
-        [row, own, path, detachDelay, paintDelay]
+        ([row, own, path, lag, paintDelay, capture]) =>
+          window.guards.open(row, own, path, lag, paintDelay, capture),
+        [row, own, path, detachDelay, paintDelay, capture]
       );
       const close = async () => {
         rows.delete(row);
@@ -565,7 +606,42 @@ export async function guardHost(t, path) {
               window.guards.send(row, method, params, sessionId ?? undefined, wait),
             [row, method, params, sessionId ?? null, COMMAND_MS]
           );
-          if (answer.error) throw cdpError(answer.error);
+          if (answer.error) {
+            if (capture && method === 'Target.attachToTarget') {
+              let timer;
+              try {
+                const snapshot = await Promise.race([
+                  seven.evaluate(([row, id]) => window.guards.evidence(row, id), [row, answer.id]),
+                  new Promise((_, reject) => {
+                    timer = setTimeout(() => reject(new Error('diagnostic deadline')), 15000);
+                  }),
+                ]);
+                if (snapshot) {
+                  const { records, ...report } = attachReport(snapshot, {
+                    id: vector.id,
+                    target,
+                    variant,
+                    path,
+                    step: 'attach',
+                  });
+                  console.log('GUARD-ATTACH', JSON.stringify(report));
+                  for (const record of records)
+                    console.log(
+                      'GUARD-ATTACH-RECORD',
+                      JSON.stringify({ id: vector.id, target, variant, path, ...record })
+                    );
+                }
+              } catch {
+                console.log(
+                  'GUARD-ATTACH',
+                  JSON.stringify({ id: vector.id, target, variant, path, unavailable: true })
+                );
+              } finally {
+                clearTimeout(timer);
+              }
+            }
+            throw cdpError(answer.error);
+          }
           return answer.result;
         },
       };
