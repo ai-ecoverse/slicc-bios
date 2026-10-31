@@ -39,7 +39,7 @@ const HARBOR_AUTH = 'https://auth.example.com/';
 const HARBOR_TOKEN = 'dummy-harbor-token-0000';
 const VAULT_PREVIEW = 'https://vault-preview.sliccy.ai';
 const previewed =
-  env.GITHUB_EVENT_NAME === 'pull_request' && !env.GITHUB_HEAD_REF?.startsWith('renovate/');
+  env.GITHUB_EVENT_NAME === 'pull_request' && env.GITHUB_HEAD_REF?.startsWith('bb/');
 
 const json = (status, body, headers = []) => ({
   status,
