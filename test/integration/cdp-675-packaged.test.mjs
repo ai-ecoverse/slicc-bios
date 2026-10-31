@@ -202,6 +202,25 @@ async function guardRefusal(page, targetId, method, params) {
   );
 }
 
+async function waitPort(page, port) {
+  return page.within(
+    120000,
+    async (port) => {
+      try {
+        const response = await globalThis.cdp675Client.loopbackFetch(
+          new Request(`http://${port}.kernel.localhost/mcp`, { signal: AbortSignal.timeout(2000) }),
+          { port }
+        );
+        await response.body?.cancel();
+        return response.status >= 100 && response.status <= 599;
+      } catch {
+        return false;
+      }
+    },
+    port
+  );
+}
+
 async function discover(page, url) {
   const result = await page.evaluate(async () => {
     const connection = await globalThis.sliccBrowserHook();
@@ -445,7 +464,14 @@ for (const route of ['extension', 'link']) {
         await persist();
       }
       for (const [index, scene] of cases.entries()) {
-        const row = { name: scene.name, step: 'setup', status: 'running' };
+        const row = {
+          name: scene.name,
+          step: 'setup',
+          status: 'running',
+          port: 8812 + index,
+          log: `/tmp/675-serve-${index}.log`,
+          pid: `/tmp/675-serve-${index}.pid`,
+        };
         trace.rows.push(row);
         let targetId;
         let rawSession;
@@ -469,7 +495,10 @@ for (const route of ['extension', 'link']) {
             if (scene.cached) url.searchParams.set('cached', '1');
             if (scene.parse) url.searchParams.set('parse', '1');
           }
-          ({ targetId } = await chrome.cdp.send('Target.createTarget', { url: 'about:blank' }));
+          ({ targetId } = await chrome.cdp.send('Target.createTarget', {
+            url: 'about:blank',
+            newWindow: route === 'extension',
+          }));
           ({ sessionId: rawSession } = await chrome.cdp.send('Target.attachToTarget', {
             targetId,
             flatten: true,
@@ -552,44 +581,46 @@ for (const route of ['extension', 'link']) {
             row.status = 'pass';
             continue;
           }
-          const command = `mcpcat serve --webmcp ${scene.reload ? '--webmcp-reload ' : ''}--tab ${quote(row.target)} --http 8812 --no-auth`;
+          const command = `mcpcat serve --webmcp ${scene.reload ? '--webmcp-reload ' : ''}--tab ${quote(row.target)} --http ${row.port} --no-auth`;
           row.command = command;
           row.step = 'shipped-serve';
           await page.evaluate(
-            async ({ command }) => {
+            async ({ command, log }) => {
               globalThis.cdp675Client ??= await globalThis.sliccKernelClient();
               globalThis.cdp675Server = globalThis.cdp675Client
                 .run(
                   [
                     'bash',
                     '-c',
-                    `sudo -u cone bash -c '${command.replaceAll("'", "'\\''")}' > /tmp/675-serve.log 2>&1`,
+                    `sudo -u cone bash -c '${command.replaceAll("'", "'\\''")}' > ${log} 2>&1`,
                   ],
                   { cwd: '/' }
                 )
                 .then(({ status, stdout, stderr }) => ({ status, stdout, stderr }));
             },
             {
-              command: `export PATH=$PNPM_HOME/bin:$PATH; export SLICC_CDP_URL=http://127.0.0.1:9222; echo $$ > /tmp/675-serve.pid; exec ${command}`,
+              command: `export PATH=$PNPM_HOME/bin:$PATH; export SLICC_CDP_URL=http://127.0.0.1:9222; echo $$ > ${row.pid}; exec ${command}`,
+              log: row.log,
             }
           );
+          row.step = 'shipped-server-ready';
           await page.within(
             120000,
-            async (negative) => {
-              const { stdout } = await globalThis.cdp675Client.run(
-                ['bash', '-c', 'cat /tmp/675-serve.log'],
-                { cwd: '/' }
-              );
+            async ({ negative, log }) => {
+              const { stdout } = await globalThis.cdp675Client.run(['bash', '-c', `cat ${log}`], {
+                cwd: '/',
+              });
               return negative
                 ? /refused|update|needs.*newer/i.test(stdout)
                 : stdout.includes('listening on http:');
             },
-            Boolean(scene.negative)
+            { negative: Boolean(scene.negative), log: row.log }
           );
+          row.portAnswered = await waitPort(page, row.port);
           if (scene.negative) {
             row.step = 'terminal-bound';
             await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 30000)));
-            row.terminal = await sh(page, 'cat /tmp/675-serve.log');
+            row.terminal = await sh(page, `cat ${row.log}`);
             assert.match(row.terminal.stdout, /refused|update|needs.*newer/i);
             assert.doesNotMatch(row.terminal.stdout, /restarting|restart in/i);
             row.methods = await page.evaluate(
@@ -618,7 +649,7 @@ for (const route of ['extension', 'link']) {
           row.step = 'shipped-tools-list';
           row.list = await cone(
             page,
-            'timeout 60 mcpcat tools http://127.0.0.1:8812/mcp --json',
+            `timeout 60 mcpcat tools http://127.0.0.1:${row.port}/mcp --json`,
             `675-list-${index}`
           );
           const listing = JSON.parse(row.list.stdout);
@@ -627,12 +658,12 @@ for (const route of ['extension', 'link']) {
           assert.ok(Array.isArray(tools));
           if (scene.parse) {
             assert.equal(tools.length, 0, row.list.stdout);
-            row.clearMessage = await sh(page, 'cat /tmp/675-serve.log');
+            row.clearMessage = await sh(page, `cat ${row.log}`);
             assert.match(row.clearMessage.stdout, /other-extension fallback|startup or parse-time/);
           } else {
             const tool = tools.find(({ name }) => name === 'add' || name.endsWith('_add'));
             if (foreign && !tool) {
-              row.zeroToolsMessage = await sh(page, 'cat /tmp/675-serve.log');
+              row.zeroToolsMessage = await sh(page, `cat ${row.log}`);
               assert.match(
                 row.zeroToolsMessage.stdout,
                 /other-extension fallback|startup or parse-time/
@@ -642,7 +673,7 @@ for (const route of ['extension', 'link']) {
             row.step = 'shipped-tools-call';
             row.call = await cone(
               page,
-              `timeout 60 mcpcat call http://127.0.0.1:8812/mcp ${quote(tool.name)} --a 2 --b 3`,
+              `timeout 60 mcpcat call http://127.0.0.1:${row.port}/mcp ${quote(tool.name)} --a 2 --b 3`,
               `675-call-${index}`
             );
             assert.match(row.call.stdout, /^5$/m);
@@ -802,7 +833,13 @@ for (const route of ['extension', 'link']) {
           }
           row.status = 'pass';
         } catch (error) {
-          row.status = ['setup', 'install-old-client', 'create-ordinary-target'].includes(row.step)
+          row.status = [
+            'setup',
+            'install-old-client',
+            'create-ordinary-target',
+            'guarded-discovery',
+            'shipped-server-ready',
+          ].includes(row.step)
             ? 'setup-failure'
             : 'finding';
           row.failure = { name: error.name, message: error.message };
@@ -810,10 +847,10 @@ for (const route of ['extension', 'link']) {
           countRow(row);
           if (page && !setupError) {
             if (!guardLevel) {
-              row.serverLog = await sh(page, 'cat /tmp/675-serve.log').catch((error) => ({
+              row.serverLog = await sh(page, `cat ${row.log}`).catch((error) => ({
                 error: error.message,
               }));
-              await sh(page, 'kill "$(cat /tmp/675-serve.pid)"').catch(() => {});
+              await sh(page, `kill "$(cat ${row.pid})"`).catch(() => {});
             }
             row.methods ??= await page
               .evaluate((start) => globalThis.cdp675Trace?.slice(start ?? 0) ?? [], row.traceStart)
