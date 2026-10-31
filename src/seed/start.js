@@ -21,24 +21,40 @@ export function stoppedText(path) {
   return `One of seven’s files, ${path}, keeps changing, so seven stopped putting it back and won’t run it. Seven tries again in about 10 minutes. Reload after that.`;
 }
 
-export async function stoppedPath(fetcher = fetch) {
-  try {
-    const response = await fetcher(STATUS);
-    if (!response.ok) return null;
-    const { stopped = [] } = await response.json();
-    return stopped[0] ?? null;
-  } catch {
-    return null;
-  }
+export const UNCONTROLLED =
+  'Seven’s service worker isn’t running in this page, so seven couldn’t load its code. Reloading goes through the BIOS, which starts it again.';
+
+const LONGEST = 400;
+
+export function filesState(fetcher = fetch) {
+  return Promise.resolve()
+    .then(() => fetcher(STATUS))
+    .then((response) => (response.ok ? response.json() : null))
+    .catch(() => null);
 }
 
-export function refused(doc = document, go = (url) => location.replace(url), stopped = null) {
+export function whatFailed(error, intact) {
+  const named = error?.name && error?.message ? `${error.name}: ${error.message}` : String(error);
+  const lead = intact
+    ? 'None of seven’s files changed, but it stopped while starting'
+    : 'Seven stopped while starting';
+  return `${lead}: ${named}`.slice(0, LONGEST);
+}
+
+export function explain(error, files, worker = true) {
+  if (files?.stopped?.[0]) return stoppedText(files.stopped[0]);
+  if (files?.changed?.length) return REFUSED;
+  if (!worker) return UNCONTROLLED;
+  return whatFailed(error, Boolean(files?.changed));
+}
+
+export function refused(doc = document, go = (url) => location.replace(url), why = REFUSED) {
   const box = doc.createElement('main');
   box.dataset.refused = '';
   const title = doc.createElement('h1');
   title.textContent = 'Seven couldn’t start';
   const text = doc.createElement('p');
-  text.textContent = stopped ? stoppedText(stopped) : REFUSED;
+  text.textContent = why;
   const button = doc.createElement('button');
   button.type = 'button';
   button.textContent = 'Reload';
@@ -96,7 +112,7 @@ export async function start({
   follower = () => import('./follower.js'),
   os = () => import('./os.js'),
   fail = refused,
-  check = stoppedPath,
+  check = filesState,
   doc = globalThis.document,
 } = {}) {
   if (tripped(worker, storage)) return go(`${await target()}${at.hash}`);
@@ -105,7 +121,7 @@ export async function start({
     hand = await handoff();
   } catch (error) {
     console.error(error);
-    return fail(undefined, undefined, await check());
+    return fail(undefined, undefined, explain(error, await check(), worker()));
   }
   const clear = () => hand.clearHandOff();
   const names = hand.dropped();
@@ -127,7 +143,7 @@ export async function start({
   } catch (error) {
     clear();
     console.error(error);
-    fail(undefined, undefined, await check());
+    fail(undefined, undefined, explain(error, await check(), worker()));
   }
 }
 

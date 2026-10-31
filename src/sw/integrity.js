@@ -102,6 +102,15 @@ export function createIntegrity(db) {
         .filter((entry) => entry.open && entry.stopped && entry.path.startsWith(prefix))
         .filter((entry) => !due(entry, prefix, now))
         .map(({ path }) => path),
+    status: async (now = Date.now()) => {
+      const open = (await all('tampered')).filter((entry) => entry.open);
+      return {
+        stopped: open
+          .filter((entry) => entry.stopped && !due(entry, '/', now))
+          .map(({ path }) => path),
+        changed: open.map(({ path }) => path),
+      };
+    },
     async record(source, entries, integrity = null) {
       const transaction = db.transaction(['files', 'sources'], 'readwrite');
       const files = transaction.objectStore('files');
