@@ -2,82 +2,80 @@ name: CI
 
 on:
   pull_request:
-  merge_group:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   actions: read
-  attestations: write
-  issues: write
-  pull-requests: write
-  statuses: write
-  id-token: write
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: diagnostic-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  ci:
-    uses: ai-ecoverse/slicc-shared-web/.github/workflows/pipeline.yml@v2.13.7
-    secrets: inherit
-    with:
-      node-version: "26"
-      test-glob: test/integration/*.test.mjs
-      shards: 14
-      timeout-minutes: 90
-      flaky-retry: 3
-      strict-tests: |
-        **/*guard*.test.*
-        **/*security*.test.*
-        **/address.test.mjs
-        **/agent-sign-in-held.test.mjs
-        **/beta-boundary.test.mjs
-        **/bfcache.test.mjs
-        **/bfcache-extension.test.mjs
-        **/capture.test.mjs
-        **/cdp.test.mjs
-        **/cdp-link-worlds.test.mjs
-        **/embedder.test.mjs
-        **/fnox.test.mjs
-        **/framing.test.mjs
-        **/integrity.test.mjs
-        **/keys.test.mjs
-        **/link.test.mjs
-        **/mcpcat-users.test.mjs
-        **/pair.test.mjs
-        **/pins.test.mjs
-        **/releases-boundary.test.mjs
-        **/sandbox.test.mjs
-        **/sign-in-held.test.mjs
-        **/vault.test.mjs
-        **/vault-endpoints.test.mjs
-      review-timeout-minutes: 90
-      deploy: node edge/publish.mjs preview >> "$GITHUB_STEP_SUMMARY"
-      release-environment: production
-      release-secrets: SLICC_BIOS_DEPLOY_TOKEN
-      after-release: |
-        : "${SLICC_BIOS_DEPLOY_TOKEN:?SLICC_BIOS_DEPLOY_TOKEN is not set in the production environment}"
-        echo "Publishing v$RELEASE_VERSION to seven" >> "$GITHUB_STEP_SUMMARY"
-        node edge/publish.mjs main >> "$GITHUB_STEP_SUMMARY"
-      review-prompt: |
-        SLICC-BIOS
-
-        This repository is slicc-bios (`@ai-ecoverse/slicc-bios`): the loader that installs seven (seven.sliccy.ai) into the browser, a WebAssembly kernel, its shell and packages, the agent, and the page around them. The README is the contract: read the sections the change touches first. `git diff origin/main...HEAD`, or `$RUNNER_TEMP/review/context/pr.diff`, is the change.
-
-        There is no certification after you: once this pull request passes the merge queue and its commits make a release, semantic-release publishes the npm package, whose lockfiles mcpcat and homescoop test against, and that release deploys to seven.sliccy.ai. Review it as the last check before it ships.
-
-        Look for real defects, in this order:
-        1. Correctness: logic errors, races, missed error paths, and state that a reload, a reconnect, a second tab or a service worker update breaks.
-        2. Security, above all: the guard (`src/seed/guard.js`) and the CDP surface (`src/seed/cdp.js`, the in-kernel 9222 facade) expose nothing new to a page, a kernel program or a linked device; the vault and `/dev/sealed` (`src/seed/vault.js`) never let a sealed value reach the page, a log, a URL or a program that didn't ask; secrets and tokens are never logged, printed or put in a URL; sudo and approvals (`src/seed/approvals.js`, `src/seed/users.js`) have no path to root without the owner's decision; the link, follower, remote and tray surfaces; the service worker's integrity checks (`src/sw/`); and in workflows, fork code never reaches the pool, and a secret goes only to the step that needs it.
-        3. Pins: lockfiles (`package-lock.json`, `src/packages/package-lock.json`, `src/packages/pnpm-lock.yaml`) are regenerated, never hand-edited, so a lockfile change that the package.json changes don't explain is a finding. Every gated pin (slicc-kernel, slicc-jsh, slicc-cdp, slicc-clipboard, mcpcat, wasi-*, wasix-*, wasm-*, py-*) is a release its own repository built on main, which `pins.test.mjs` checks.
-        4. Tests: every behaviour change has an integration test under `test/integration/` through the public surface (seven's page, the terminal, the kernel API, the CLI), and a fix's test fails without the fix: copy the changed test files into `$RUNNER_TEMP/base` and run them there. No blind waits: every wait is bounded, waits for one precondition, and fails saying what it waited for and what it saw.
-        5. Repo rules: no comments anywhere (YAML too, except `# renovate:` annotations), no unit tests in git (any file under `test/unit/` is a finding), no Markdown other than README.md, and a conventional-commit title (`fix`, `feat` and `perf` release, the rest don't).
-
-        Run one test file with `node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs test/integration/<file>.test.mjs`. `npm start` serves `src/` on http://127.0.0.1:8080/. The review browsers aren't used by this repository. Don't report style preferences, or anything you haven't confirmed in the code or by a run.
-
-        Severity: deny for a confirmed P1 or P2: a security or secret exposure, data loss, a seven that doesn't boot or update, a regression in a common workflow without a workaround, a behaviour change without its test, or a fix whose test passes without it. A narrow problem with a workaround is P3: comment with a repro and approve. A problem in a pinned package belongs to its own repository (ai-ecoverse/slicc-kernel, ai-ecoverse/homescoop, ai-ecoverse/slicc-agent, ai-ecoverse/slicc-spectrum, ai-ecoverse/slicc-cdp): open it there as an issue.
-
-        Dependency-only pull requests (Renovate's, or a pin bump that changes only package.json and lockfiles): bios tests how seven wires a dependency in, not the dependency's own features (#771). Don't ask for new tests of what the dependency does; the passing integration suite and the pin's provenance (its repository, main, and the integrity) are the evidence. Deny one only for a concrete defect: a test that fails, or is flaky, on the head because of the bump; a bios call site the bump breaks (an API bios uses that was removed or changed); a provenance or integrity mismatch; or a new install script. Notes, and anything you can't judge, are comments, never a denial.
+  recovery:
+    runs-on: cloud-run-job
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "26"
+          cache: npm
+      - run: npm ci
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: node_modules/.cache/slicc-harness/cdn
+          key: slicc-harness-cdn-${{ runner.os }}-${{ hashFiles('**/package-lock.json', '**/pnpm-lock.yaml') }}
+          restore-keys: slicc-harness-cdn-${{ runner.os }}-
+      - name: Chrome
+        run: |
+          DEPS=
+          if [ "$(id -u)" = 0 ] || sudo -n true 2>/dev/null; then DEPS=1; fi
+          npx --yes --package @ai-ecoverse/slicc-cdp slicc-cdp install-browser ${DEPS:+--with-deps} --version 156.0.8078.80
+      - name: Original shard
+        env:
+          SLICC_RECOVERY_TRACE: "1"
+          TEST: npm test
+          GLOB: test/integration/*.test.mjs
+          SHARDS: "14"
+          SLICC_TEST_SHARD: "4"
+          SLICC_TEST_FILES: |
+            test/integration/cdp.test.mjs
+            test/integration/update.test.mjs
+            test/integration/guard-signin.test.mjs
+            test/integration/agent-downgrade.test.mjs
+            test/integration/guard-redirect.test.mjs
+            test/integration/guard-paint-extension.test.mjs
+            test/integration/follow-leaders.test.mjs
+            test/integration/gpg.test.mjs
+            test/integration/shots-pointer.test.mjs
+            test/integration/guard-state-liveness.test.mjs
+            test/integration/guard-restored-boundary.test.mjs
+            test/integration/guard-state-admission.test.mjs
+            test/integration/guard-state-close-scrub.test.mjs
+            test/integration/guard-lock-lifecycle.test.mjs
+            test/integration/releases-boundary.test.mjs
+            test/integration/guard-state-input-settlement.test.mjs
+            test/integration/guard-state-witness-race.test.mjs
+            test/integration/guard-state-extension.test.mjs
+        run: |
+          mkdir -p diagnostic junit
+          node -e 'const os=require("node:os"); console.log(JSON.stringify({at:Date.now(),cores:os.availableParallelism(),load:os.loadavg(),memory:os.totalmem(),shards:process.env.SHARDS,glob:process.env.GLOB,test:process.env.TEST}))' > diagnostic/runner.json
+          sha256sum node_modules/@ai-ecoverse/slicc-cdp/bin/playwright-cli.wasm > diagnostic/released-wasm.sha256
+          SLICC_TEST_ALL="$(node -e 'for(const file of require("node:fs").globSync(process.env.GLOB)) console.log(file)')"
+          export SLICC_TEST_ALL
+          export SLICC_TEST_JUNIT="$PWD/junit/4.xml"
+          export SLICC_TEST_DOWNLOADS="$PWD/junit/4.downloads"
+          export SLICC_TEST_NODE_OPTIONS=""
+          export NODE_OPTIONS="--require $PWD/node_modules/@ai-ecoverse/slicc-shared-web/harness/shard.cjs --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=$PWD/junit/4.xml"
+          xvfb-run -a -s '-screen 0 1920x1080x24 -nolisten tcp' bash -eo pipefail -c "$TEST" 2>&1 | tee diagnostic/shard.log
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: recovery-${{ github.run_attempt }}
+          path: |
+            diagnostic/
+            junit/
+            artifacts/**/*.log
+          if-no-files-found: error

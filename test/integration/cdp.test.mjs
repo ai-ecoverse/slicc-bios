@@ -15,6 +15,7 @@ import {
   SEVEN,
   UNSUPPORTED_EXTENSION,
 } from './real-extension.mjs';
+import { traceRecovery } from './recovery-trace.mjs';
 
 const hits = [];
 const heard = [];
@@ -251,8 +252,17 @@ for (const scenario of ['7.9.16', '7.5.1', '7.6.2', '7.6.3', '7.6.4', '7.9.13', 
     timeout: 10 * 60 * 1000,
   }, async (t) => {
     const real = await realExtension({ extension, rules: ['MAP vault.sliccy.ai 127.0.0.1'] });
-    t.after(() => real.close());
+    let finishTrace;
+    t.after(async () => {
+      try {
+        if (finishTrace) await finishTrace();
+      } finally {
+        await real.close();
+      }
+    });
     const page = await real.page(t);
+    if (process.env.SLICC_RECOVERY_TRACE === '1')
+      finishTrace = await traceRecovery(real, page, scenario);
     await page.goto(SEVEN);
     await ready(page);
     assert.deepEqual(await automation(page), { via: 'extension' });
@@ -297,6 +307,18 @@ for (const scenario of ['7.9.16', '7.5.1', '7.6.2', '7.6.3', '7.6.4', '7.9.13', 
     );
     await shows(page, 'recovery-finished', 180000);
     const recovered = await read(page, '/tmp/blocked-recovery');
+    if (finishTrace) {
+      console.log('RECOVERY_OUTPUT', JSON.stringify({ scenario, hopped, recovered }));
+      await run(
+        page,
+        'jq -r .version /opt/slicc/tools/node_modules/@ai-ecoverse/slicc-cdp/package.json > /tmp/recovery-identity 2>&1; sha256sum /opt/slicc/tools/node_modules/@ai-ecoverse/slicc-cdp/bin/playwright-cli.wasm >> /tmp/recovery-identity 2>&1; echo "identity-""finished"'
+      );
+      await shows(page, 'identity-finished', 60000);
+      console.log(
+        'RECOVERY_IDENTITY',
+        JSON.stringify({ scenario, text: await read(page, '/tmp/recovery-identity') })
+      );
+    }
     for (const step of ['goto', 'read', 'snapshot'])
       assert.match(recovered, new RegExp('^recovery-' + step + '-0$', 'm'), recovered);
     assert.ok(recovered.includes(destination + ' ' + title), recovered);
