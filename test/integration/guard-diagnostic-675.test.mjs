@@ -50,6 +50,7 @@ async function installWire({ route, runtime }) {
   const issuedBelow = new Set();
   const owned = new Map();
   const events = [];
+  const sent = [];
   const waiters = new Set();
   const readMethods = new Set([
     'Page.getFrameTree',
@@ -67,6 +68,13 @@ async function installWire({ route, runtime }) {
     onclose: null,
     send(text) {
       const message = JSON.parse(text);
+      sent.push({
+        method: message.method,
+        session: message.sessionId,
+        label: report.label,
+        boundary: 'bios -> ' + route + ' guard',
+        role: message.id >= 2 ** 30 ? 'bios-owned' : 'bios-forwarded',
+      });
       if (message.id >= 2 ** 30 && readMethods.has(message.method)) {
         const record = {
           method: message.method,
@@ -168,6 +176,13 @@ async function installWire({ route, runtime }) {
   };
   const transport = (method, params = {}, sessionId, bound = 3000) =>
     new Promise((resolve) => {
+      sent.push({
+        method,
+        session: sessionId,
+        label: report.label,
+        boundary: 'client -> ' + route + ' guard below bios',
+        role: 'client',
+      });
       const id = ++below;
       issuedBelow.add(id);
       inFlightBelow.set(id, { method, sessionId });
@@ -203,6 +218,7 @@ async function installWire({ route, runtime }) {
   globalThis.diagnostic675 = {
     transport,
     snapshot,
+    sent: (after = 0) => sent.slice(after),
     constant,
     published: () => published.slice(),
     routeEvents: (after, session) =>
@@ -251,6 +267,13 @@ async function installWire({ route, runtime }) {
     sequence: () => sequence,
     send(method, params = {}, sessionId) {
       return new Promise((resolve) => {
+        sent.push({
+          method,
+          session: sessionId,
+          label: report.label,
+          boundary: 'client -> bios + ' + route + ' guard',
+          role: 'client',
+        });
         const id = ++next;
         const started = performance.now();
         const finish = (answer) =>
@@ -1234,3 +1257,5 @@ test('diagnostic 675: extension with other content script', { timeout: 900000 },
   trace.passed = true;
   await persist();
 });
+
+export { installWire, safeError, summarize };

@@ -5,6 +5,8 @@ on:
     paths:
       - .github/workflows/diagnostic.yml
       - test/integration/guard-diagnostic-675.test.mjs
+      - test/integration/guard-fallback-675.test.mjs
+      - test/integration/fixtures/diagnostic-675-webmcp-shim.js
 
 permissions:
   contents: read
@@ -19,7 +21,7 @@ jobs:
     timeout-minutes: 35
     env:
       SLICC_CDP_PORTS: 9300-9309
-      SLICC_HARNESS_EXTENSION: '0'
+      SLICC_HARNESS_EXTENSION: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,7 +36,7 @@ jobs:
         run: |
           set +e
           export SLICC_PROOF_TRACE_DIR="$RUNNER_TEMP/diagnostic-trace"
-          node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs test/integration/guard-diagnostic-675.test.mjs > "$RUNNER_TEMP/diagnostic.log" 2>&1
+          node --test --test-concurrency=1 --test-timeout=900000 --test-name-pattern='diagnostic 675: fallback' --test-global-setup=test/integration/global.mjs test/integration/guard-fallback-675.test.mjs > "$RUNNER_TEMP/diagnostic.log" 2>&1
           result=$?
           echo "Diagnostic exit: $result"
           exit "$result"
