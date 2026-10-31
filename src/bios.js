@@ -144,6 +144,7 @@ await step('seed', async () => {
     'callback.js',
     'cdp.js',
     'clipboard.js',
+    'debugger.js',
     'denials.js',
     'durable.js',
     'exits.js',

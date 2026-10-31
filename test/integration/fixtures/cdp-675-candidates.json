@@ -1,0 +1,12 @@
+{
+  "cdp": "a8b155013e8b2d3c1ba386fa4095d06392687bcf",
+  "cli": "dfd319829c2243bd2efa1bd1d3ad9eef8e68fd4e",
+  "extension": "6fbebacd8652d78d383b0293c9c1098932d455db",
+  "browsers": "415ecb0390d7aad75be32c4507d1f9ac3387798c",
+  "mcpcat": "ea22f6e2194e165a1879108ff7c5540595187a75",
+  "extensionVersion": "7.10.1",
+  "cliVersion": "1.49.37",
+  "oldExtensionVersion": "7.10.0",
+  "oldCliVersion": "1.49.36",
+  "oldCdpVersion": "1.43.1"
+}
