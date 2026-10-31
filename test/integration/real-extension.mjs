@@ -134,8 +134,14 @@ export async function realExtension({
   args = [],
   extension = EXTENSION,
   realistic = false,
+  directory,
 } = {}) {
-  const root = await unpacked(extension);
+  const draft = directory;
+  if (draft && process.env.SLICC_675_STAGE1_DIAGNOSTIC !== '1') {
+    throw new Error('draft extension needs the diagnostic opt-in');
+  }
+  const root = draft ?? (await unpacked(extension));
+  if (!existsSync(join(root, 'manifest.json'))) throw new Error('extension manifest missing');
   const undisplay = realistic ? await display() : () => {};
   const upstream = { url: null };
   let tls;
