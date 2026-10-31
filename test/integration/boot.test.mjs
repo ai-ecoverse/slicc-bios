@@ -189,5 +189,9 @@ test('an /os/ page that is still without its service worker after one trip throu
   const before = await uncontrolledReload(page, true);
   await page.within(30000, () => !window.before765 && !!document.querySelector('[data-refused]'));
   assert.equal(await page.evaluate(() => location.pathname), '/os/index.html');
+  assert.equal(
+    await page.evaluate(() => document.querySelector('[data-refused] p').textContent),
+    'Seven’s service worker isn’t running in this page, so seven couldn’t load its code. Reloading goes through the BIOS, which starts it again.'
+  );
   assert.equal(chrome.requests.slice(before).includes('/bios.js'), false, 'no second trip');
 });
