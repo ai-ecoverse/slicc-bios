@@ -179,7 +179,7 @@ test('a boot that fails while it runs shows the error, not a claim about its fil
   const text = await page.until(() => document.querySelector('[data-refused] p')?.textContent);
   assert.equal(
     text,
-    'None of seven’s files changed, but it stopped while starting: Error: the UI failed on purpose'
+    'Seven has no record of a changed file, but it stopped while starting: Error: the UI failed on purpose'
   );
 });
 
