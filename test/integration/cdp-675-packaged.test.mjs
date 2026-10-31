@@ -18,6 +18,8 @@ const quote = (text) => `'${text.replaceAll("'", "'\\''")}'`;
 const ordinaryCases = [
   { name: 'instrumented-list-call', reload: true },
   { name: 'late-no-unasked-reload', reload: false },
+  { name: 'armed-seven-hop-error-scrub-bounded', reload: true, protectedHop: 'seven' },
+  { name: 'armed-vault-hop-error-scrub-bounded', reload: true, protectedHop: 'vault' },
   { name: 'old-client-terminal', reload: true, negative: true, oldClient: true },
 ];
 const fallbackCases = [
@@ -150,9 +152,18 @@ for (const route of ['extension', 'link']) {
           route === 'extension'
             ? await realExtension({
                 directory: oldRoute ? undefined : process.env.SLICC_675_EXTENSION_DIR,
-                args: ['--disable-features=WebMCP,WebMCPTesting'],
+                args: [
+                  '--disable-features=WebMCP,WebMCPTesting',
+                  '--host-resolver-rules=MAP vault.sliccy.ai 127.0.0.1',
+                ],
               })
-            : await launch({ tools: false, args: ['--disable-features=WebMCP,WebMCPTesting'] });
+            : await launch({
+                tools: false,
+                args: [
+                  '--disable-features=WebMCP,WebMCPTesting',
+                  '--host-resolver-rules=MAP vault.sliccy.ai 127.0.0.1',
+                ],
+              });
         const fixture = createServer((request, response) => {
           const at = new URL(request.url, 'http://fixture');
           if (at.pathname === '/data') {
@@ -174,6 +185,12 @@ for (const route of ['extension', 'link']) {
             return;
           }
           response.writeHead(200, { 'content-type': 'text/html' });
+          if (at.pathname === '/protected-doc') {
+            (trace.protectedRequests ??= []).push({ at: Date.now(), host: request.headers.host });
+            return response.end(
+              '<!doctype html><title>675 protected fixture</title><script>globalThis.cdp675Protected = true;</script>'
+            );
+          }
           if (at.pathname === '/iframe')
             return response.end('<!doctype html><title>ordinary iframe</title>');
           const registration =
@@ -197,6 +214,10 @@ for (const route of ['extension', 'link']) {
         chrome.overrides.set(
           '/seed/cdp.js',
           tapSource(await readFile(new URL('../../src/seed/cdp.js', import.meta.url), 'utf8'))
+        );
+        chrome.overrides.set(
+          '/__675/protected-doc',
+          '<!doctype html><title>675 protected fixture</title><script>globalThis.cdp675Protected = true;</script>'
         );
         for (const name of [manifest.cdp, manifest.mcpcat, manifest.oldClient])
           chrome.overrides.set(`/__675/${name}`, await readFile(join(directory, name)));
@@ -562,6 +583,84 @@ for (const route of ['extension', 'link']) {
             sent.filter((method) => method === 'Page.reload').length,
             scene.reload ? 1 : 0
           );
+          if (scene.protectedHop) {
+            row.step = 'armed-protected-hop';
+            const destination =
+              scene.protectedHop === 'seven'
+                ? `${SEVEN}/__675/protected-doc`
+                : `http://vault.sliccy.ai:${new URL(trace.fixtureOrigin).port}/protected-doc`;
+            const start = await page.evaluate(() => globalThis.cdp675Trace.length);
+            const began = Date.now();
+            let timer;
+            let off;
+            row.hopFrames = [];
+            const settled = new Promise((resolve) => {
+              timer = setTimeout(() => resolve(false), 6000);
+              off = chrome.cdp.on(({ method, params, sessionId }) => {
+                if (sessionId !== rawSession) return;
+                if (method === 'Page.frameNavigated') row.hopFrames.push(params.frame);
+                if (method === 'Page.loadEventFired') resolve(true);
+              });
+            });
+            try {
+              row.hopReply = await chrome.cdp.send(
+                'Page.navigate',
+                { url: destination },
+                rawSession
+              );
+              row.hopSettled = await settled;
+              row.hopMilliseconds = Date.now() - began;
+              assert.equal(row.hopSettled, true, 'protected hop or error document stalled');
+              assert.ok(row.hopMilliseconds < 6000, 'protected hop exceeded rescue bound');
+            } finally {
+              clearTimeout(timer);
+              off();
+            }
+            await page.evaluate(
+              (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+              Math.max(0, 6000 - (Date.now() - began))
+            );
+            row.hopMethods = await page.evaluate(
+              (start) => globalThis.cdp675Trace.slice(start),
+              start
+            );
+            const published = row.hopMethods.filter(
+              ({ direction, packet }) =>
+                direction === 'receive' &&
+                [
+                  'Debugger.scriptParsed',
+                  'Debugger.scriptFailedToParse',
+                  'Debugger.paused',
+                ].includes(packet.method)
+            );
+            assert.deepEqual(
+              published,
+              [],
+              'protected or blocked-hop error Debugger event published'
+            );
+            assert.equal(
+              row.hopMethods.some(
+                ({ direction, packet }) =>
+                  direction === 'send' &&
+                  packet.method === 'Runtime.evaluate' &&
+                  /^const __wmcp_/.test(packet.params?.expression ?? '')
+              ),
+              false,
+              'shim was installed after protected hop'
+            );
+            assert.ok(
+              row.hopFrames.length > 0,
+              'raw observer never saw the hop commit or error page'
+            );
+            row.hopErrorPage = row.hopFrames.some(
+              (frame) =>
+                frame.url?.startsWith('chrome-error:') ||
+                frame.url?.startsWith('data:text/html') ||
+                Boolean(frame.unreachableUrl)
+            );
+            assert.equal(row.hopErrorPage, true, 'blocked-hop error-page premise was not reached');
+            row.hopEvidence = { shippedHolderArmed: true, rawObserverDebuggerEnabled: false };
+          }
           row.status = 'pass';
         } catch (error) {
           row.status = ['setup', 'install-old-client', 'create-ordinary-target'].includes(row.step)
