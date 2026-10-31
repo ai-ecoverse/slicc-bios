@@ -10,8 +10,8 @@ const GLUE = '@ai-ecoverse/hot-glue';
 const pins = { [MCPCAT]: '0.16.3', [GLUE]: '0.3.0' };
 const BIN = '/usr/local/share/pnpm/bin';
 const SHIPPED = await offered(MCPCAT);
-const SELFISH = '@fixture/selfish';
 const QUIET = 10;
+const SETTLED = 3;
 const PROMPT = 30000;
 
 const chrome = await launch({ timeout: 120000, intercept: [] });
@@ -54,16 +54,55 @@ async function sh(page, command) {
 
 const asCone = (script) => `sudo -u cone bash -c '${script.replaceAll("'", "'\\''")}'`;
 
+const settled = (seen) => seen.length >= SETTLED && seen.slice(-SETTLED).every((n) => n <= QUIET);
+
 async function pidGrowth(page) {
   const seen = [];
   const end = Date.now() + 60000;
-  while (Date.now() < end && !(seen.at(-1) <= QUIET)) {
+  while (Date.now() < end && !settled(seen)) {
     const before = Number((await sh(page, 'echo $$')).out);
     await new Promise((resolve) => setTimeout(resolve, 5000));
     seen.push(Number((await sh(page, 'echo $$')).out) - before);
   }
   return seen;
 }
+
+function fixture(name, at) {
+  const project = `$PNPM_HOME/global/v11/${at}`;
+  const scoped = `@fixture/${name}`;
+  const dir = `${project}/node_modules/${scoped}`;
+  const entry = `"$PNPM_HOME/bin/${name}"`;
+  const manifest = {
+    name: scoped,
+    version: '1.0.0',
+    bin: { [name]: name },
+    slicc: { abi: 'wasi', commands: { [name]: { script: name } } },
+  };
+  return [
+    `mkdir -p "$PNPM_HOME/bin" "${dir}"`,
+    `echo '${JSON.stringify({ dependencies: { [scoped]: '1.0.0' } })}' > "${project}/package.json"`,
+    `echo '${JSON.stringify(manifest)}' > "${dir}/package.json"`,
+    `printf '#!/bin/sh\\n# /node_modules/${scoped}/\\necho ${name}\\n' > "${dir}/${name}"`,
+    `chmod 755 "${dir}/${name}"`,
+    `n=0; until [ -e ${entry} ] || [ $n -ge 100 ]; do sleep 0.1; n=$((n + 1)); done`,
+  ];
+}
+
+const lockBinFile = (page, name) =>
+  page.evaluate(
+    async (name, shim) => {
+      let dir = await navigator.storage.getDirectory();
+      for (const part of ['home', 'cone', '.local', 'share', 'pnpm', 'bin'])
+        dir = await dir.getDirectoryHandle(part);
+      const handle = await dir.getFileHandle(name, { create: true });
+      const writable = await handle.createWritable();
+      await writable.write(shim);
+      await writable.close();
+      globalThis.unshadowLock = await handle.createWritable({ keepExistingData: true });
+    },
+    name,
+    `#!/usr/bin/env node\nimport '/x/node_modules/@fixture/${name}/${name}';\n`
+  );
 
 const rows = (page) =>
   page.evaluate(() =>
@@ -274,7 +313,7 @@ test('bios#795: a user added after boot, whose pnpm home already holds a Node li
   assert.deepEqual(page.errors, []);
 });
 
-test('bios#1153: a cone’s own kernel command that rm can’t remove, whether rm -f returns 0 or says Resource busy, starts no loop, stops no other package’s pass, warns once and leaves a panel install prompt', {
+test('bios#1153: a cone’s own kernel command that rm -f leaves in place, and a Node link in its bin under a real OPFS lock, start no loop, stop no other package’s pass, warn once and leave a panel install prompt', {
   timeout: 20 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -282,25 +321,15 @@ test('bios#1153: a cone’s own kernel command that rm can’t remove, whether r
   await page.init('() => { globalThis.sliccKernelDebug = true; }');
   await page.goto(`/#${new URLSearchParams({ users: 'enforce' })}`);
   await ready(page);
-  const at = '$PNPM_HOME/global/v11/0000';
-  const dir = `${at}/node_modules/${SELFISH}`;
+  const idle = await pidGrowth(page);
+  t.diagnostic(`new PIDs per 5 s before the fixture: ${idle.join(' ')}`);
+
   const entry = '"$PNPM_HOME/bin/selfish"';
-  const manifest = {
-    name: SELFISH,
-    version: '1.0.0',
-    bin: { selfish: 'selfish' },
-    slicc: { abi: 'wasi', commands: { selfish: { script: 'selfish' } } },
-  };
   const made = await sh(
     page,
     asCone(
       [
-        `mkdir -p "$PNPM_HOME/bin" "${dir}"`,
-        `echo '${JSON.stringify({ dependencies: { [SELFISH]: '1.0.0' } })}' > "${at}/package.json"`,
-        `echo '${JSON.stringify(manifest)}' > "${dir}/package.json"`,
-        `printf '#!/bin/sh\\n# /node_modules/${SELFISH}/\\necho selfish\\n' > "${dir}/selfish"`,
-        `chmod 755 "${dir}/selfish"`,
-        `n=0; until [ -e ${entry} ] || [ $n -ge 100 ]; do sleep 0.1; n=$((n + 1)); done`,
+        ...fixture('selfish', '0000'),
         `rm -f -- ${entry}; echo rm-$?`,
         `[ -e ${entry} ] && echo left`,
       ].join('; ')
@@ -312,25 +341,11 @@ test('bios#1153: a cone’s own kernel command that rm can’t remove, whether r
   const noop = await pidGrowth(page);
   t.diagnostic(`new PIDs per 5 s with rm -f a no-op: ${noop.join(' ')}`);
   await install(page, 'hot-glue', { budget: PROMPT, stall: PROMPT });
-  assert.ok(noop.at(-1) <= QUIET, `the loop kept running: ${noop.join(' ')} new PIDs per 5 s`);
+  assert.ok(settled(noop), `the loop kept running: ${noop.join(' ')} new PIDs per 5 s`);
 
-  await page.evaluate(
-    (command) => {
-      void globalThis.unshadowClient
-        .run(['bash', '-c', command], { cwd: '/' })
-        .catch(() => undefined);
-    },
-    asCone(`exec 3< ${entry}; sleep 1100`)
-  );
-  const busy = async () =>
-    (
-      await sh(
-        page,
-        asCone(
-          `n=0; e=; while [ $n -lt 100 ]; do e=$(rm -f -- ${entry} 2>&1) || break; e=; sleep 0.1; n=$((n + 1)); done; echo "$e"`
-        )
-      )
-    ).out;
+  await lockBinFile(page, 'stuck');
+  await sh(page, asCone(fixture('stuck', '0001').join('; ')));
+  const busy = async () => (await sh(page, asCone('rm -f -- "$PNPM_HOME/bin/stuck"'))).out;
   assert.match(await busy(), /Resource busy/);
 
   const node = 'head -c 19 "$PNPM_HOME/bin/mcpcat" 2>/dev/null | grep -q /usr/bin/env';
@@ -341,16 +356,15 @@ test('bios#1153: a cone’s own kernel command that rm can’t remove, whether r
     )
   );
   t.diagnostic(added.out);
+  const locked = await pidGrowth(page);
+  t.diagnostic(`new PIDs per 5 s with the file locked: ${locked.join(' ')}`);
   assert.match(
     added.out,
     new RegExp(`added-0\\nsettled-after-\\d+\\n${SHIPPED.replaceAll('.', '\\.')}`),
     `${added.out}\n${(await sh(page, 'cat /tmp/cone.log')).out}`
   );
   assert.match(await busy(), /Resource busy/);
-
-  const stuck = await pidGrowth(page);
-  t.diagnostic(`new PIDs per 5 s with the entry busy: ${stuck.join(' ')}`);
-  assert.ok(stuck.at(-1) <= QUIET, `the loop kept running: ${stuck.join(' ')} new PIDs per 5 s`);
+  assert.ok(settled(locked), `the loop kept running: ${locked.join(' ')} new PIDs per 5 s`);
   const warned = page.console.filter((line) => line.includes('Resource busy'));
   assert.ok(warned.length >= 1 && warned.length <= 3, warned.join('\n'));
   assert.deepEqual(page.errors, []);
