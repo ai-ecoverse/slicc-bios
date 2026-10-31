@@ -34,12 +34,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-cdp
-          ref: 448340d81e8ca58e89894f75b96e0bf4fda51e3f
+          ref: 222ab7e57a887cff772f636df6ac1683cbb481a3
           path: candidates/cdp
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/mcpcat
-          ref: 3488e6df1f502760190d7d327c6cec671957f8f1
+          ref: c79b56fcf774c481f2f3e0f1d86b20aac85e2ce1
           path: candidates/mcpcat
       - uses: actions/checkout@v4
         with:
