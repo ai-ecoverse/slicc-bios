@@ -4,6 +4,7 @@ import manifest from '../../package.json' with { type: 'json' };
 import { actPackage } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { fakeLlm } from './fake-llm.mjs';
+import { policySeeded } from './policy-seeded.mjs';
 import { realVault } from './real-vault.mjs';
 
 const HOST = 'https://forward.example.test/';
@@ -82,6 +83,29 @@ async function opened(t) {
     60000,
     () => document.querySelector('slicc-app')?.model?.vault?.status()?.capabilities?.forward === 1
   );
+  await policySeeded(page);
+  await page
+    .within(60000, () => {
+      const files = document.querySelector('slicc-app').model.vault.status()?.policy ?? [];
+      return ['/etc/fnox/config.toml', '/etc/slicc/secrets-policy.toml'].every((path) =>
+        files.some(
+          (file) =>
+            file.path === path &&
+            file.accepted === true &&
+            file.absent !== true &&
+            file.paused !== true &&
+            typeof file.sha256 === 'string'
+        )
+      );
+    })
+    .catch(async (error) => {
+      const files = await page.evaluate(
+        () => document.querySelector('slicc-app').model.vault.status()?.policy
+      );
+      throw new Error(
+        `the real vault did not acknowledge the trusted policy seed: ${JSON.stringify(files)}; ${error.message}`
+      );
+    });
   t.after(() => t.diagnostic(JSON.stringify(vault.evidence())));
   return page;
 }

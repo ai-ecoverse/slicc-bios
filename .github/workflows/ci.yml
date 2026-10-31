@@ -25,9 +25,8 @@ jobs:
     secrets: inherit
     with:
       node-version: "26"
-      test-glob: test/integration/security-forward*.test.mjs
-      test: node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs 'test/integration/security-forward*.test.mjs'
-      shards: 2
+      test-glob: test/integration/*.test.mjs
+      shards: 14
       timeout-minutes: 90
       flaky-retry: 3
       strict-tests: |

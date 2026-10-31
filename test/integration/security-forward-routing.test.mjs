@@ -83,6 +83,26 @@ async function consume(response) {
   return text;
 }
 
+test('a request during policy seeding refuses cleanly before the vault or carrier, then works after readiness', {
+  timeout: 10000,
+}, async (t) => {
+  let ready = false;
+  const f = fixture(t);
+  const forward = createForwarder({ vault: f.vault, select: () => f.selected, ready: () => ready });
+  await assert.rejects(forward(request, { signal: new AbortController().signal }), {
+    status: 403,
+    code: 'EACCES',
+    message: 'the credentialed request was refused',
+  });
+  assert.equal(f.ports.length, 0);
+  assert.equal(f.sends.length, 0);
+  ready = true;
+  const response = await forward(request, { signal: new AbortController().signal });
+  assert.equal(response.status, 200);
+  assert.equal(await consume(response), 'response');
+  assert.equal(f.sends.length, 1);
+});
+
 test('a prepared request cannot cross a selected device identity change', {
   timeout: 10000,
 }, async (t) => {

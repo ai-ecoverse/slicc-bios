@@ -5,6 +5,7 @@ import { after, test } from 'node:test';
 import { actPackage, boot, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { fakeCatalog } from './fake-catalog.mjs';
+import { policySeeded } from './policy-seeded.mjs';
 
 const VALUE = 'dummy-fnox-value-0123456789';
 const chrome = await launch({ timeout: 120000, intercept: [] });
@@ -241,37 +242,6 @@ test('without the vault, fnox’s sealed operations fail closed with ENOTCONN', 
   assert.deepEqual(page.errors, []);
 });
 
-function watchSeeds() {
-  globalThis.sliccKernelDebug = true;
-  const found = [];
-  window.fnoxSeeds = found;
-  window.fnoxWatching = true;
-  let client;
-  const look = async () => {
-    for (const entry of await client.ps().catch(() => []))
-      if (entry.argv.join(' ').includes('"$1/config.toml"') && !found.includes(entry.pid))
-        found.push(entry.pid);
-  };
-  const wait = setInterval(async () => {
-    if (client !== undefined || typeof globalThis.sliccKernelClient !== 'function') return;
-    clearInterval(wait);
-    client = null;
-    client = await globalThis.sliccKernelClient();
-    const until = Date.now() + 8000;
-    const tick = async () => {
-      await look();
-      if (Date.now() < until) setTimeout(tick, 20);
-      else window.fnoxWatching = false;
-    };
-    void tick();
-  }, 10);
-}
-
-async function seeds(page) {
-  await page.within(60000, () => window.fnoxWatching === false);
-  return page.evaluate(() => window.fnoxSeeds);
-}
-
 const modes = (page, label) =>
   sh(
     page,
@@ -279,23 +249,24 @@ const modes = (page, label) =>
     label
   );
 
-test('a reload skips the fnox seed while /etc/fnox is root’s 0755 and config.toml root’s 0644, keeps what root wrote there, and reseeds after a chmod or chown', {
+test('policy seeding preserves root contents and existing metadata across reloads, including tampering until root repairs it', {
   timeout: 20 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
-  await page.init(watchSeeds);
+  await page.init('() => { globalThis.sliccKernelDebug = true; }');
   await boot(page);
-  assert.notDeepEqual(await seeds(page), [], 'the first boot runs the seed');
+  await policySeeded(page);
+  const initial = await config(page);
+  assert.equal(initial.code, '0', initial.out);
+  assert.match(initial.out, /default_provider = "seven"/);
+  assert.match(initial.out, /\n0 644$/);
   const appended = await sh(page, "printf 'DOCK_NOTE = 1\\n' >> /etc/fnox/config.toml", 'append');
   assert.equal(appended.code, '0', appended.out);
   const expected = { code: '0', out: '0 0 755 directory\n0 0 644 regular file\n1' };
   assert.deepEqual(await modes(page, 'appended'), expected);
-
   await page.reload();
   await ready(page);
-  assert.deepEqual(await seeds(page), [], 'a reload with root’s /etc/fnox runs no seed');
   assert.deepEqual(await modes(page, 'kept'), expected);
-
   for (const [label, broken] of [
     ['chmod', 'chmod 0600 /etc/fnox/config.toml'],
     ['chown', 'chown 1000:1000 /etc/fnox/config.toml'],
@@ -303,14 +274,23 @@ test('a reload skips the fnox seed while /etc/fnox is root’s 0755 and config.t
   ]) {
     const broke = await sh(page, broken, `${label}-break`);
     assert.equal(broke.code, '0', broke.out);
+    const tampered = await modes(page, `${label}-before`);
+    assert.notDeepEqual(tampered, expected);
     await page.reload();
     await ready(page);
-    assert.notDeepEqual(await seeds(page), [], `${label}: a broken /etc/fnox is reseeded`);
-    assert.deepEqual(await modes(page, `${label}-fixed`), expected, label);
+    assert.deepEqual(await modes(page, `${label}-preserved`), tampered);
+    assert.match((await config(page)).out, /DOCK_NOTE = 1/);
+    const repair = await sh(
+      page,
+      'chown 0:0 /etc/fnox /etc/fnox/config.toml; chmod 0755 /etc/fnox; chmod 0644 /etc/fnox/config.toml',
+      `${label}-repair`
+    );
+    assert.equal(repair.code, '0', repair.out);
+    await page.reload();
+    await ready(page);
+    await policySeeded(page);
+    assert.deepEqual(await modes(page, `${label}-repaired`), expected);
   }
-  await page.reload();
-  await ready(page);
-  assert.deepEqual(await seeds(page), [], 'the repaired /etc/fnox is not seeded again');
   assert.deepEqual(page.errors, []);
 });
 
