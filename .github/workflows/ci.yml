@@ -16,6 +16,10 @@ jobs:
   recovery:
     runs-on: cloud-run-job
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel: ['1.170.1', '1.170.3']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
@@ -33,9 +37,20 @@ jobs:
           DEPS=
           if [ "$(id -u)" = 0 ] || sudo -n true 2>/dev/null; then DEPS=1; fi
           npx --yes --package @ai-ecoverse/slicc-cdp slicc-cdp install-browser ${DEPS:+--with-deps} --version 156.0.8078.80
+      - name: Kernel arm
+        env:
+          KERNEL: ${{ matrix.kernel }}
+        run: |
+          if [ "$KERNEL" = 1.170.1 ]; then
+            cp test/integration/recovery-kernel-1.170.1/package.json src/packages/package.json
+            cp test/integration/recovery-kernel-1.170.1/package-lock.json src/packages/package-lock.json
+            cp test/integration/recovery-kernel-1.170.1/pnpm-lock.yaml src/packages/pnpm-lock.yaml
+          fi
+          node -e 'const m=require("./src/packages/package.json"); if(m.dependencies["@ai-ecoverse/slicc-kernel"]!==process.env.KERNEL) throw new Error("wrong kernel arm")'
       - name: Original shard
         env:
           SLICC_RECOVERY_TRACE: "1"
+          SLICC_RECOVERY_KERNEL: ${{ matrix.kernel }}
           TEST: npm test
           GLOB: test/integration/*.test.mjs
           SHARDS: "14"
@@ -43,25 +58,25 @@ jobs:
           SLICC_TEST_FILES: |
             test/integration/cdp.test.mjs
             test/integration/update.test.mjs
-            test/integration/guard-signin.test.mjs
-            test/integration/agent-downgrade.test.mjs
-            test/integration/guard-redirect.test.mjs
-            test/integration/guard-paint-extension.test.mjs
-            test/integration/follow-leaders.test.mjs
-            test/integration/gpg.test.mjs
-            test/integration/shots-pointer.test.mjs
-            test/integration/guard-state-liveness.test.mjs
-            test/integration/guard-restored-boundary.test.mjs
-            test/integration/guard-state-admission.test.mjs
-            test/integration/guard-state-close-scrub.test.mjs
-            test/integration/guard-lock-lifecycle.test.mjs
-            test/integration/releases-boundary.test.mjs
-            test/integration/guard-state-input-settlement.test.mjs
-            test/integration/guard-state-witness-race.test.mjs
-            test/integration/guard-state-extension.test.mjs
+            test/integration/old-agent.test.mjs
+            test/integration/favicon.test.mjs
+            test/integration/lost-folder.test.mjs
+            test/integration/releases.test.mjs
+            test/integration/guard-paint-link.test.mjs
+            test/integration/mcpcat.test.mjs
+            test/integration/guard-autoattach.test.mjs
+            test/integration/guard-ordering-loading-ordinary.test.mjs
+            test/integration/guard-state-no-discovery.test.mjs
+            test/integration/guard-ordering.test.mjs
+            test/integration/guard-state-policy.test.mjs
+            test/integration/guard-state-history.test.mjs
+            test/integration/guard-state-close-races.test.mjs
+            test/integration/guard-state-rendering.test.mjs
+            test/integration/guard-state-pending-attach-exit.test.mjs
+            test/integration/guard-state-descendants.test.mjs
         run: |
           mkdir -p diagnostic junit
-          node -e 'const os=require("node:os"); console.log(JSON.stringify({at:Date.now(),cores:os.availableParallelism(),load:os.loadavg(),memory:os.totalmem(),shards:process.env.SHARDS,glob:process.env.GLOB,test:process.env.TEST}))' > diagnostic/runner.json
+          node -e 'const os=require("node:os"); console.log(JSON.stringify({at:Date.now(),cores:os.availableParallelism(),load:os.loadavg(),memory:os.totalmem(),shards:process.env.SHARDS,glob:process.env.GLOB,test:process.env.TEST,kernel:process.env.SLICC_RECOVERY_KERNEL}))' > diagnostic/runner.json
           sha256sum node_modules/@ai-ecoverse/slicc-cdp/bin/playwright-cli.wasm > diagnostic/released-wasm.sha256
           SLICC_TEST_ALL="$(node -e 'for(const file of require("node:fs").globSync(process.env.GLOB)) console.log(file)')"
           export SLICC_TEST_ALL
@@ -73,7 +88,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: recovery-${{ github.run_attempt }}
+          name: recovery-${{ matrix.kernel }}-${{ github.run_attempt }}
           path: |
             diagnostic/
             junit/

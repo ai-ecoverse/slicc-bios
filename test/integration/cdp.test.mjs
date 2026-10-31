@@ -311,7 +311,7 @@ for (const scenario of ['7.9.16', '7.5.1', '7.6.2', '7.6.3', '7.6.4', '7.9.13', 
       console.log('RECOVERY_OUTPUT', JSON.stringify({ scenario, hopped, recovered }));
       await run(
         page,
-        'jq -r .version /opt/slicc/tools/node_modules/@ai-ecoverse/slicc-cdp/package.json > /tmp/recovery-identity 2>&1; sha256sum /opt/slicc/tools/node_modules/@ai-ecoverse/slicc-cdp/bin/playwright-cli.wasm >> /tmp/recovery-identity 2>&1; echo "identity-""finished"'
+        'jq -r .version /opt/slicc/tools/node_modules/@ai-ecoverse/slicc-cdp/package.json > /tmp/recovery-identity 2>&1; sha256sum /opt/slicc/tools/node_modules/@ai-ecoverse/slicc-cdp/bin/playwright-cli.wasm >> /tmp/recovery-identity 2>&1; printf "kernel " >> /tmp/recovery-identity; jq -r .version /node_modules/@ai-ecoverse/slicc-kernel/package.json >> /tmp/recovery-identity 2>&1; echo "identity-""finished"'
       );
       await shows(page, 'identity-finished', 60000);
       console.log(

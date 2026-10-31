@@ -1,0 +1,18 @@
+{
+  "name": "slicc-bios-packages",
+  "private": true,
+  "description": "Packages the BIOS installs from npm into OPFS, pinned by package-lock.json and pnpm-lock.yaml",
+  "dependencies": {
+    "@ai-ecoverse/slicc-audio": "1.1.6",
+    "@ai-ecoverse/slicc-browsers": "1.18.21",
+    "@ai-ecoverse/slicc-capture": "1.4.1",
+    "@ai-ecoverse/slicc-kernel": "1.170.1",
+    "@ai-ecoverse/slicc-spectrum": "1.107.2",
+    "@ai-ecoverse/wasi-fnox": "1.42.0-1",
+    "@ai-ecoverse/wasi-pnpm": "12.9.1-21",
+    "@ai-ecoverse/wasm-bash": "5.3.0-23",
+    "@ai-ecoverse/wasm-coreutils": "9.12.0-15",
+    "@ai-ecoverse/wasm-findutils": "4.11.0-5",
+    "@ai-ecoverse/wasm-tls-engine": "4.2.0-12"
+  }
+}
