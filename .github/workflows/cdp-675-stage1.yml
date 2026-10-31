@@ -1,0 +1,49 @@
+name: Candidate diagnostic
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/cdp-675-stage1.yml
+      - test/integration/cdp-675-existing-reads.test.mjs
+      - test/integration/guard-domain-premise.test.mjs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-diagnostic-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      SLICC_CDP_PORTS: 9300-9309
+      SLICC_675_STAGE1_DIAGNOSTIC: '1'
+      UV_THREADPOOL_SIZE: '2'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+          cache: npm
+      - run: npm ci
+      - run: npx --no-install slicc-cdp install-browser
+      - name: Run candidate diagnostic
+        run: |
+          set +e
+          export SLICC_PROOF_TRACE_DIR="$RUNNER_TEMP/candidate-trace"
+          node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs test/integration/cdp-675-existing-reads.test.mjs test/integration/guard-domain-premise.test.mjs > "$RUNNER_TEMP/candidate.log" 2>&1
+          result=$?
+          echo "Diagnostic exit: $result"
+          exit "$result"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-trace
+          path: ${{ runner.temp }}/candidate-trace/*.json
+          if-no-files-found: error
+          retention-days: 3
