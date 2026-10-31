@@ -3,6 +3,7 @@ import { createExitRouter, loopback } from './exits.js';
 import { take } from './handoff.js';
 import { datagrams, fitsFamily, UDP_MAX, udpCode } from './link-udp.js';
 import { cut, inbox, sendable, WS_MAX } from './link-ws.js';
+import { checkRedirect, manualRedirects, redirectMode } from './redirects.js';
 import { BIOS } from './site.js';
 import { stored } from './transport.js';
 import { fetchText, pnpm, text, versions, write } from './update.js';
@@ -236,6 +237,16 @@ export function tailnetWebSocket(worker, request, { handshakeMs = HANDSHAKE_MS, 
   });
 }
 
+function tailnetHead(head) {
+  return {
+    status: head.status,
+    statusText: head.statusText,
+    headers: head.headers,
+    ...(typeof head.url === 'string' ? { url: head.url } : {}),
+    ...(head.redirected === true ? { redirected: true } : {}),
+  };
+}
+
 export function createTailnet({
   worker,
   traits,
@@ -368,6 +379,7 @@ export function createTailnet({
       };
     },
     async fetch(request) {
+      const mode = redirectMode(request, traits.manualRedirects ? 'manual' : 'follow');
       const id = ++nextId;
       const { signal } = request;
       signal?.throwIfAborted();
@@ -380,7 +392,8 @@ export function createTailnet({
           url: request.url,
           method: request.method,
           headers: request.headers,
-          manualRedirects: traits.manualRedirects,
+          redirect: mode,
+          manualRedirects: manualRedirects(request, traits.manualRedirects),
           encodedBodies: traits.encodedBodies,
           ...(body ? { body } : {}),
         },
@@ -398,10 +411,8 @@ export function createTailnet({
       };
       signal?.addEventListener('abort', cancel, { once: true });
       const head = await within(id, headMs, message, body ? [body.buffer] : []);
-      return {
-        status: head.status,
-        statusText: head.statusText,
-        headers: head.headers,
+      const response = {
+        ...tailnetHead(head),
         cancel,
         body: {
           [Symbol.asyncIterator]: () => ({
@@ -421,6 +432,7 @@ export function createTailnet({
           }),
         },
       };
+      return checkRedirect({ ...request, redirect: mode }, response);
     },
   };
   return tailnet;
@@ -552,6 +564,7 @@ export function tailnetExit(slot) {
   return {
     id: 'tailscale',
     kind: 'tailnet',
+    redirectPolicy: true,
     exitName: () => 'tailscale',
     active: () => status()?.state === 'Running',
     offersDefault: () => Boolean(status()?.exitNode),

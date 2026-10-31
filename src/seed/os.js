@@ -1,6 +1,6 @@
 import audio from '@ai-ecoverse/slicc-audio/page';
 import capture from '@ai-ecoverse/slicc-capture/page';
-import { attachKernel, createKernel, serveHostfsPort } from '@ai-ecoverse/slicc-kernel';
+import * as kernelModule from '@ai-ecoverse/slicc-kernel';
 import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
 import { confirm, secretRules, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
 import { sealedLogin, signIn } from './adobe.js';
@@ -30,8 +30,9 @@ import { createExitRouter } from './exits.js';
 import { LINK_PORT, LINK_URL, linkFacade, permitted, trayRequests } from './facade.js';
 import { deviceName, hubClient } from './follow.js';
 import { createFollowers } from './followers.js';
+import { createForwarder } from './forward.js';
 import { clearHandOff } from './handoff.js';
-import { sweep, watchOpened, watchSignIns } from './held.js';
+import { guardOf, sweep, watchOpened, watchSignIns } from './held.js';
 import { createJerk } from './jerk.js';
 import { change, userRows } from './layer.js';
 import { createLeaders, proxyOf } from './leaders.js';
@@ -52,6 +53,7 @@ import {
 } from './notices.js';
 import { createPackages, globalDir, loadCatalog, watchShadows, writeListing } from './packages.js';
 import { createPairing, takePairing } from './pair.js';
+import { createPolicySync, seedPolicies } from './policy.js';
 import {
   biosHash,
   mirrorNetwork,
@@ -133,6 +135,9 @@ import {
   vaultOrigin,
 } from './vault.js';
 
+const { attachKernel, createKernel, serveHostfsPort } = kernelModule;
+const forwardKernel = kernelModule.SEALED_FETCH_VERSION === 1;
+
 markCaptured();
 const prompts = installPrompts();
 void retirePreview().catch((error) => console.warn(`SLICC 6 preview: ${said(error)}`));
@@ -188,7 +193,8 @@ const control = browserControl({
   links: () => links,
   before: () => sweep({ hosts: () => browserHosts(), own: location.origin }),
 });
-const exits = createExitRouter();
+const protectedHttp = guardOf(location.origin);
+const exits = createExitRouter({ protectedUrl: (url) => protectedHttp.url(url) });
 const tailscale = createTailscale(await tailscaleConfig(), { router: exits });
 clearHandOff();
 const remote = createRemote({
@@ -294,13 +300,23 @@ const reach = createNetwork(network, {
   },
 });
 const transport = exits.transport(reach.transport);
+let policy = null;
 const vault = createVault({
   origin: vaultOrigin(),
   transport,
   sudoGid: async () => storedSudoGid(localStorage),
   users: () => kernel?.users?.mode ?? 'off',
+  policyReady: () => policy?.ready() === true,
   onRequest: (req, id) => void jerk.handle(req, id),
   onCancelled: (id) => jerk.cancelled(id),
+});
+const forwarder = createForwarder({
+  vault,
+  select: (url) =>
+    exits.selectCredentialed(url, reach.credentialed, (value) => protectedHttp.url(value)),
+  ready: () => forwardKernel && policy?.ready() === true,
+  policyEpoch: () => policy?.epoch() ?? 0,
+  onPolicyChange: (listener) => policy?.onChange(listener) ?? (() => {}),
 });
 const jerk = createJerk({ links: () => links, vault });
 useVault(vault);
@@ -873,7 +889,10 @@ async function own() {
     requests,
     commands: { append: [TOOLS_MODULES, USER_MODULES, '/opt/slicc/pending/node_modules'] },
     facades: { link: { port: LINK_PORT, hook: link } },
-    ...sealedOption((await versions(root, [KERNEL]))[KERNEL], vault),
+    ...sealedOption((await versions(root, [KERNEL]))[KERNEL], vault, {
+      forwardVersion: kernelModule.SEALED_FETCH_VERSION,
+      fetch: forwarder,
+    }),
     ...folders.options,
     ...kernelUsers(mode, { approve: sudo, onDenial: denials }),
   });
@@ -917,9 +936,25 @@ async function own() {
     globalThis.sliccKernelClient = async () => attachKernel(await kernel.connect());
     globalThis.sliccLinkedBrowsers = () => linkedBrowsers(() => links);
   }
-  await seedFnox(kernel, attachKernel).catch((error) =>
-    console.warn(`fnox config: ${error.message}`)
-  );
+  policy?.close();
+  if (typeof kernel.attest === 'function' && typeof kernel.watch === 'function') {
+    policy = createPolicySync({ kernel, vault, report: (message) => console.warn(message) });
+    await seedPolicies(kernel, attachKernel).catch(() =>
+      console.warn('the credential policy is unavailable')
+    );
+    await policy.start().catch(() => console.warn('the credential policy is unavailable'));
+  } else {
+    await seedFnox(kernel, attachKernel).catch(() =>
+      console.warn('the credential policy is unavailable')
+    );
+  }
+  if (forwardKernel) {
+    const placeholders = (list) => {
+      void kernel.sealed.setPlaceholders(list).catch(() => policy?.close());
+    };
+    vault.port.on('placeholders', placeholders);
+    placeholders(vault.placeholders());
+  }
   const gid = await sudoGidOf(kernel).catch(() => undefined);
   keepSudoGid(localStorage, gid);
   void vault.sudoGid(gid);
