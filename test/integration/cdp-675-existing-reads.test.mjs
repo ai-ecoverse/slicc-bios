@@ -93,6 +93,30 @@ function treeRows(tree, path = []) {
   ];
 }
 
+function documentRows(node) {
+  if (!node) return [];
+  return [
+    {
+      nodeName: node.nodeName,
+      frameId: node.frameId,
+      documentURL: node.documentURL,
+      childNodeCount: node.childNodeCount,
+    },
+    ...(node.children ?? []).flatMap(documentRows),
+    ...(node.contentDocument ? documentRows(node.contentDocument) : []),
+    ...(node.shadowRoots ?? []).flatMap(documentRows),
+  ];
+}
+
+function targetRows(infos) {
+  return (infos ?? []).map((info) => ({
+    targetId: info.targetId,
+    type: info.type,
+    url: info.url,
+    openerFrameId: info.openerFrameId,
+  }));
+}
+
 for (const route of ['extension', 'link']) {
   test(`cdp 675 existing reads ${route}`, {
     skip: process.env.SLICC_675_STAGE1_DIAGNOSTIC !== '1',
@@ -104,6 +128,8 @@ for (const route of ['extension', 'link']) {
         'Existing guarded frame tree and main-world DOM reads; diagnostic only, not Rust or shipped Stage1 admission/fallback acceptance',
       newGuardOutput: 0,
       plainPathStillGuarded: true,
+      oracleTargetInfoScope:
+        'Raw observer supplies these IDs for diagnosis; client eligibility cannot rely on an oracle-only ID',
       rows: [],
     };
     const persist = async () => {
@@ -132,7 +158,12 @@ for (const route of ['extension', 'link']) {
         const url = new URL(request.url, 'http://fixture');
         const child = url.searchParams.get('child');
         const nested = url.pathname === '/nested';
-        const src = nested ? `/container?child=${encodeURIComponent(child)}` : child;
+        const src =
+          url.pathname === '/nested-cross'
+            ? `http://127.0.0.1:${site.address().port}/container?child=${encodeURIComponent(child)}`
+            : nested
+              ? `/container?child=${encodeURIComponent(child)}`
+              : child;
         response.writeHead(200, { 'content-type': 'text/html' });
         response.end(
           `<!doctype html><title>Owned ordinary frame fixture</title>${src ? `<iframe src="${src}"></iframe>` : ''}`
@@ -201,9 +232,9 @@ for (const route of ['extension', 'link']) {
           const cases = otherExtension
             ? [{ name: 'other-extension-only', url: `${origin}/plain`, expectedFrames: 1 }]
             : ['seven', 'vault'].flatMap((host) =>
-                [false, true].map((nested) => ({
-                  name: `${nested ? 'nested' : 'direct'}-${host}`,
-                  url: `${origin}/${nested ? 'nested' : 'direct'}?child=${encodeURIComponent(`https://${host}.sliccy.ai/__675_frame`)}`,
+                [false, true, 'cross'].map((nested) => ({
+                  name: `${nested === 'cross' ? 'nested-cross' : nested ? 'nested' : 'direct'}-${host}`,
+                  url: `${origin}/${nested === 'cross' ? 'nested-cross' : nested ? 'nested' : 'direct'}?child=${encodeURIComponent(`https://${host}.sliccy.ai/__675_frame`)}`,
                   expectedFrames: nested ? 3 : 2,
                   protectedOrigin: `https://${host}.sliccy.ai`,
                 }))
@@ -242,18 +273,65 @@ for (const route of ['extension', 'link']) {
             row.rawTree = treeRows(
               (await chrome.cdp.send('Page.getFrameTree', {}, rawSession)).frameTree
             );
-            assert.equal(row.rawLoad.loaded, true);
-            assert.equal(row.rawTree.length, scene.expectedFrames);
-            if (scene.protectedOrigin)
-              assert.ok(
-                row.rawTree.some(
-                  (frame) =>
-                    frame.securityOrigin === scene.protectedOrigin &&
-                    frame.url === `${scene.protectedOrigin}/__675_frame`
+            row.rawDom = JSON.parse(
+              (
+                await chrome.cdp.send(
+                  'Runtime.evaluate',
+                  { expression: dom, returnByValue: true },
+                  rawSession
                 )
+              ).result.value
+            );
+            row.rawIframeTrees = [];
+            if (scene.protectedOrigin) {
+              const { targetInfos } = await chrome.cdp.send('Target.getTargets');
+              for (const target of targetInfos.filter(
+                (info) =>
+                  info.type === 'iframe' && info.url === `${scene.protectedOrigin}/__675_frame`
+              )) {
+                const { sessionId } = await chrome.cdp.send('Target.attachToTarget', {
+                  targetId: target.targetId,
+                  flatten: true,
+                });
+                const frameTree = (await chrome.cdp.send('Page.getFrameTree', {}, sessionId))
+                  .frameTree;
+                const marker = (
+                  await chrome.cdp.send(
+                    'Runtime.evaluate',
+                    { expression: 'globalThis.cdp675OwnFrame === true', returnByValue: true },
+                    sessionId
+                  )
+                ).result.value;
+                row.rawIframeTrees.push({
+                  targetId: target.targetId,
+                  frames: treeRows(frameTree),
+                  marker,
+                });
+                await chrome.cdp.send('Target.detachFromTarget', { sessionId });
+              }
+            }
+            await persist();
+            row.rawCommitted =
+              !scene.protectedOrigin ||
+              [...row.rawTree, ...row.rawIframeTrees.flatMap((info) => info.frames)].some(
+                (frame) =>
+                  frame.securityOrigin === scene.protectedOrigin &&
+                  frame.url === `${scene.protectedOrigin}/__675_frame`
               );
+            assert.equal(row.rawCommitted, true);
             for (const lane of ['route', 'bios']) {
               const info = (row.lanes[lane] = {});
+              const targets = await call(lane, 'Target.getTargets');
+              info.targets = targets.result ? targetRows(targets.result.targetInfos) : targets;
+              info.oracleTargetInfo = [];
+              for (const target of row.rawIframeTrees) {
+                const queried = await call(lane, 'Target.getTargetInfo', {
+                  targetId: target.targetId,
+                });
+                info.oracleTargetInfo.push(
+                  queried.result ? targetRows([queried.result.targetInfo])[0] : queried
+                );
+              }
               const attached = await call(lane, 'Target.attachToTarget', {
                 targetId,
                 flatten: true,
@@ -281,6 +359,68 @@ for (const route of ['extension', 'link']) {
                       type: evaluated.result.result?.type,
                     }
                   : evaluated;
+              const document = await call(
+                lane,
+                'DOM.getDocument',
+                { depth: -1, pierce: true },
+                sessionId
+              );
+              info.document = document.result ? documentRows(document.result.root) : document;
+              info.documentTargetInfo = [];
+              if (Array.isArray(info.document)) {
+                for (const node of info.document.filter(
+                  (node) => ['IFRAME', 'FRAME'].includes(node.nodeName) && node.frameId
+                )) {
+                  const queried = await call(lane, 'Target.getTargetInfo', {
+                    targetId: node.frameId,
+                  });
+                  const child = {
+                    frameId: node.frameId,
+                    response: queried.result ? targetRows([queried.result.targetInfo])[0] : queried,
+                  };
+                  info.documentTargetInfo.push(child);
+                  if (queried.result?.targetInfo?.targetId) {
+                    const attachment = await call(lane, 'Target.attachToTarget', {
+                      targetId: queried.result.targetInfo.targetId,
+                      flatten: true,
+                    });
+                    child.attach = attachment.result ? { admitted: true } : attachment;
+                    if (attachment.result?.sessionId) {
+                      const childSession = attachment.result.sessionId;
+                      const childTree = await call(lane, 'Page.getFrameTree', {}, childSession);
+                      child.frameTree = childTree.result
+                        ? treeRows(childTree.result.frameTree)
+                        : childTree;
+                      const childDocument = await call(
+                        lane,
+                        'DOM.getDocument',
+                        { depth: -1, pierce: true },
+                        childSession
+                      );
+                      child.document = childDocument.result
+                        ? documentRows(childDocument.result.root)
+                        : childDocument;
+                      if (Array.isArray(child.document)) {
+                        child.nestedTargetInfo = [];
+                        for (const nestedNode of child.document.filter(
+                          (n) => ['IFRAME', 'FRAME'].includes(n.nodeName) && n.frameId
+                        )) {
+                          const nestedInfo = await call(lane, 'Target.getTargetInfo', {
+                            targetId: nestedNode.frameId,
+                          });
+                          child.nestedTargetInfo.push({
+                            frameId: nestedNode.frameId,
+                            response: nestedInfo.result
+                              ? targetRows([nestedInfo.result.targetInfo])[0]
+                              : nestedInfo,
+                          });
+                        }
+                      }
+                      await call(lane, 'Target.detachFromTarget', { sessionId: childSession });
+                    }
+                  }
+                }
+              }
               const debuggerResult = await call(lane, 'Debugger.enable', {}, sessionId);
               info.debugger = debuggerResult.result ? { admitted: true } : debuggerResult;
               if (debuggerResult.result) await call(lane, 'Debugger.disable', {}, sessionId);
