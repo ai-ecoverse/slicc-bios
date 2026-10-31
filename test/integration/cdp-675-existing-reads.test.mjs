@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { boot, ready } from './bios.mjs';
 import { devtools, launch } from './chrome.mjs';
+import { fixtureTarget } from './fixtures/cdp-675-target.mjs';
 import { linkNode } from './linked-node.mjs';
 import { certificate, realExtension, SEVEN } from './real-extension.mjs';
 
@@ -128,8 +129,8 @@ for (const route of ['extension', 'link']) {
         'Existing guarded frame tree and main-world DOM reads; diagnostic only, not Rust or shipped Stage1 admission/fallback acceptance',
       newGuardOutput: 0,
       plainPathStillGuarded: true,
-      oracleTargetInfoScope:
-        'Raw observer supplies these IDs for diagnosis; client eligibility cannot rely on an oracle-only ID',
+      targetIdentityScope:
+        'Attach IDs come only from the selected guarded lane discovery, never from raw Chrome IDs',
       rows: [],
     };
     const persist = async () => {
@@ -323,17 +324,14 @@ for (const route of ['extension', 'link']) {
               const info = (row.lanes[lane] = {});
               const targets = await call(lane, 'Target.getTargets');
               info.targets = targets.result ? targetRows(targets.result.targetInfos) : targets;
-              info.oracleTargetInfo = [];
-              for (const target of row.rawIframeTrees) {
-                const queried = await call(lane, 'Target.getTargetInfo', {
-                  targetId: target.targetId,
-                });
-                info.oracleTargetInfo.push(
-                  queried.result ? targetRows([queried.result.targetInfo])[0] : queried
-                );
+              const selected = fixtureTarget(targets.result?.targetInfos, scene.url);
+              info.selectedTargetId = selected?.targetId;
+              if (!selected) {
+                info.attach = { undiscovered: true };
+                continue;
               }
               const attached = await call(lane, 'Target.attachToTarget', {
-                targetId,
+                targetId: selected.targetId,
                 flatten: true,
               });
               info.attach = attached.error
