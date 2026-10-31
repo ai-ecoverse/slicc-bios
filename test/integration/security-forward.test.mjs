@@ -9,6 +9,8 @@ import { realVault } from './real-vault.mjs';
 const HOST = 'https://forward.example.test/';
 const ORDINARY = 'synthetic-ordinary-credential-00000000';
 const MCP = 'synthetic-mcp-credential-00000000';
+const MODEL = 'synthetic-model-credential+/00000000';
+const GRANT = 'synthetic-grant-credential+/00000000';
 const chrome = await launch({ vault: false });
 const vault = await realVault(new URL(chrome.url).origin, {
   version: manifest.devDependencies['@ai-ecoverse/slicc-vault'],
@@ -25,6 +27,12 @@ const upstream = await fakeLlm(chrome.cdp, {
       ['content-type', 'application/json'],
       ['x-echo', wanted],
     ];
+    if (/^\/ordinary-(301|302|303|307|308)$/.test(path))
+      return {
+        status: Number(path.slice(-3)),
+        headers: [...headers, ['location', `${HOST}model/collect`]],
+        body: '',
+      };
     if (path === '/ordinary' || path === '/mcp/body')
       return {
         status: 200,
@@ -92,6 +100,36 @@ async function shell(page, command, env = {}) {
   );
 }
 
+async function pageOp(page, op, fields) {
+  return page.evaluate(
+    ({ op, fields }) =>
+      new Promise((resolve, reject) => {
+        const frame = document.querySelector('iframe[data-vault=core]');
+        const { port1, port2 } = new MessageChannel();
+        const timer = setTimeout(() => {
+          port1.close();
+          reject(new Error('the real vault did not answer the page operation'));
+        }, 30000);
+        port1.onmessage = ({ data }) => {
+          if (data.op === 'welcome') port1.postMessage({ v: 1, id: 1, op, ...fields });
+          else if (data.id === 1) {
+            clearTimeout(timer);
+            port1.close();
+            if (data.error) reject(new Error('the real vault refused the page operation'));
+            else resolve(data);
+          }
+        };
+        port1.start();
+        frame.contentWindow.postMessage(
+          { type: 'slicc-vault', v: 1, op: 'hello', role: 'page' },
+          new URL(frame.src).origin,
+          [port2]
+        );
+      }),
+    { op, fields }
+  );
+}
+
 async function record(page, name, value, options = {}) {
   return page.evaluate(
     async ({ name, value, options }) =>
@@ -105,7 +143,8 @@ test('an ordinary Settings secret uses the real kernel and vault request path an
 }, async (t) => {
   const page = await opened(t);
   const { placeholder } = await record(page, 'FORWARD_TOKEN', ORDINARY);
-  const config = `default_provider = "seven"\n[providers.seven]\ntype = "sealed"\n[secrets]\nFORWARD_TOKEN = { provider = "seven", value = "${placeholder}" }\n[[proxy.rules]]\nsecret = "FORWARD_TOKEN"\ndomain = "forward.example.test"\nheader = "authorization"\nmethods = ["GET", "POST"]\npaths = ["/ordinary"]\n`;
+  const paths = ['/ordinary', ...[301, 302, 303, 307, 308].map((code) => `/ordinary-${code}`)];
+  const config = `default_provider = "seven"\n[providers.seven]\ntype = "sealed"\n[secrets]\nFORWARD_TOKEN = { provider = "seven", value = "${placeholder}" }\n[[proxy.rules]]\nsecret = "FORWARD_TOKEN"\ndomain = "forward.example.test"\nheader = "authorization"\nmethods = ["GET", "POST"]\npaths = ${JSON.stringify(paths)}\n`;
   await page.evaluate(async (config) => {
     const client = await globalThis.sliccKernelClient();
     try {
@@ -141,6 +180,32 @@ test('an ordinary Settings secret uses the real kernel and vault request path an
   );
   assert.notEqual(denied.status, 0);
   assert.equal(upstream.requests.length, refusedBefore);
+  await page.evaluate(
+    (url) => document.querySelector('slicc-app').model.vault.endpoints({ add: { model: [url] } }),
+    `${HOST}model`
+  );
+  const protectedBefore = upstream.requests.length;
+  const protectedResult = await shell(
+    page,
+    `curl -sS --fail-with-body -H "Authorization: Bearer $FORWARD_TOKEN" '${HOST}model/collect'`,
+    { FORWARD_TOKEN: placeholder }
+  );
+  assert.notEqual(protectedResult.status, 0);
+  assert.equal(upstream.requests.length, protectedBefore);
+  for (const code of [301, 302, 303, 307, 308]) {
+    const redirectBefore = upstream.requests.length;
+    const redirect = await shell(
+      page,
+      `curl -sS -L --fail-with-body -H "Authorization: Bearer $FORWARD_TOKEN" '${HOST}ordinary-${code}'`,
+      { FORWARD_TOKEN: placeholder }
+    );
+    assert.notEqual(redirect.status, 0);
+    const sent = upstream.requests.slice(redirectBefore);
+    assert.equal(sent.length, 1);
+    assert.equal(new URL(sent[0].url).pathname, `/ordinary-${code}`);
+    assert.equal(bearer(sent[0]), `Bearer ${ORDINARY}`);
+    assert.equal(`${redirect.stdout}${redirect.stderr}`.includes(ORDINARY), false);
+  }
 });
 
 test('a Settings MCP record supplies root mcpcat directly and scrubs the complete outgoing body', {
@@ -149,6 +214,16 @@ test('a Settings MCP record supplies root mcpcat directly and scrubs the complet
   const page = await opened(t);
   const { placeholder } = await record(page, 'FORWARD_MCP', MCP, { kind: 'mcp', server: 'bb' });
   await record(page, 'BODY_VALUE', ORDINARY);
+  const { placeholder: modelPlaceholder } = await record(page, 'BODY_MODEL', MODEL, {
+    kind: 'model',
+    provider: 'anthropic',
+  });
+  const { placeholder: grantPlaceholder } = await pageOp(page, 'seal', {
+    name: 'BODY_GRANT',
+    value: GRANT,
+    kind: 'grant',
+    source: 'settings',
+  });
   await page.evaluate(
     (url) =>
       document
@@ -179,17 +254,39 @@ test('a Settings MCP record supplies root mcpcat directly and scrubs the complet
   assert.equal(`${info.stdout}${info.stderr}`.includes(placeholder), false);
   assert.ok(upstream.requests.slice(before).length > 0);
   assert.ok(upstream.requests.slice(before).every((item) => bearer(item) === `Bearer ${MCP}`));
-  const bodyBefore = upstream.requests.length;
-  const body = await shell(
-    page,
-    `curl -sS --fail-with-body -H "Authorization: Bearer $FORWARD_MCP" -H 'Content-Type: application/json' --data-binary '${JSON.stringify({ value: ORDINARY })}' '${HOST}mcp/body'`,
-    { FORWARD_MCP: placeholder }
+  const values = [ORDINARY, MODEL, GRANT];
+  const payload = JSON.stringify(
+    values.map((value) => ({
+      raw: value,
+      uri: encodeURIComponent(value),
+      base64: Buffer.from(value).toString('base64'),
+    }))
   );
-  assert.equal(body.status, 0);
-  const sent = upstream.requests.slice(bodyBefore);
-  assert.equal(sent.length, 1);
-  assert.equal(sent[0].body.includes(ORDINARY), false);
-  assert.equal(bearer(sent[0]), `Bearer ${MCP}`);
-  assert.equal(`${body.stdout}${body.stderr}`.includes(MCP), false);
-  assert.equal(`${body.stdout}${body.stderr}`.includes(ORDINARY), false);
+  for (const content of [payload, '']) {
+    const bodyBefore = upstream.requests.length;
+    const body = await shell(
+      page,
+      `curl -sS --fail-with-body -H "Authorization: Bearer $FORWARD_MCP" -H 'Content-Type: application/json' --data-binary '${content}' '${HOST}mcp/body'`,
+      { FORWARD_MCP: placeholder }
+    );
+    assert.equal(body.status, 0);
+    const sent = upstream.requests.slice(bodyBefore);
+    assert.equal(sent.length, 1);
+    assert.equal(bearer(sent[0]), `Bearer ${MCP}`);
+    for (const value of values) {
+      for (const form of [
+        value,
+        encodeURIComponent(value),
+        Buffer.from(value).toString('base64'),
+      ]) {
+        assert.equal(sent[0].body.includes(form), false);
+        assert.equal(`${body.stdout}${body.stderr}`.includes(form), false);
+      }
+    }
+    if (content) {
+      assert.ok(sent[0].body.includes(modelPlaceholder));
+      assert.ok(sent[0].body.includes(grantPlaceholder));
+    } else assert.equal(sent[0].body, '');
+    assert.equal(`${body.stdout}${body.stderr}`.includes(MCP), false);
+  }
 });

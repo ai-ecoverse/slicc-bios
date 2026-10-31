@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { test } from 'node:test';
 import { indexedDB } from 'fake-indexeddb';
 import { createExitRouter } from '../../src/seed/exits.js';
 import { createForwarder } from '../../src/seed/forward.js';
 import { pickTransport } from '../../src/seed/transport.js';
+import { unfollowed } from '../../src/seed/vault.js';
 
 const bytes = (text) => new TextEncoder().encode(text);
 const request = {
@@ -160,7 +162,20 @@ test('fatal S1 failure cancels a paused carrier without another consumer pull', 
   const response = await f.run();
   assert.equal(new TextDecoder().decode((await response.body.next()).value), 'first');
   f.ports[0].postMessage({ op: 'error' });
-  await f.cancellation.promise;
+  let timer;
+  try {
+    await Promise.race([
+      f.cancellation.promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('fatal S1 did not cancel the raw carrier')),
+          1000
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
   assert.equal(f.sends[0].signal.aborted, true);
   await assert.rejects(response.body.next());
   idle.resolve();
@@ -228,4 +243,44 @@ test('old extension manual and credentialed sends are refused without native fal
   }
   assert.equal(extensionCalls, 0);
   assert.equal(nativeCalls, 0);
+});
+
+test('a routed page token refresh reaches its selected endpoint with manual redirects', {
+  timeout: 10000,
+}, async (t) => {
+  const prior = { indexedDB: globalThis.indexedDB, extension: globalThis.sliccExtension };
+  globalThis.indexedDB = indexedDB;
+  delete globalThis.sliccExtension;
+  t.after(() => {
+    globalThis.indexedDB = prior.indexedDB;
+    globalThis.sliccExtension = prior.extension;
+  });
+  const received = [];
+  const endpoint = createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk;
+    });
+    req.on('end', () => {
+      received.push({ method: req.method, body });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"access_token":"synthetic-result"}');
+    });
+  });
+  await new Promise((resolve) => endpoint.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => endpoint.close(resolve)));
+  const choice = await pickTransport();
+  const transport = createExitRouter().transport(choice.transport);
+  assert.equal(transport.traits.redirectPolicy, true);
+  const response = await unfollowed(transport, {
+    method: 'POST',
+    url: `http://127.0.0.1:${endpoint.address().port}/token`,
+    headers: [['content-type', 'application/x-www-form-urlencoded']],
+    body: bytes('grant_type=refresh_token&refresh_token=synthetic-refresh'),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(JSON.parse(await consume(response)), { access_token: 'synthetic-result' });
+  assert.deepEqual(received, [
+    { method: 'POST', body: 'grant_type=refresh_token&refresh_token=synthetic-refresh' },
+  ]);
 });

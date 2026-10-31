@@ -256,7 +256,7 @@ async function admittedBody(request, original, selected, max, signal, ask, disca
     if (!present) throw refused();
     body = await collected(request, max, signal);
     result = await ask(body);
-    if (result?.mode !== 'mcp') throw refused();
+    if (result?.mode !== 'mcp') throw refused(result?.refused?.cause);
   }
   if (!approved(original, result?.head)) throw refused(result?.refused?.cause);
   if (result.mode === 'secret') {
