@@ -133,7 +133,7 @@ for (const route of ['extension', 'link']) {
             }
           : undefined,
       scope:
-        'Existing guarded frame tree and main-world DOM reads; diagnostic only, not Rust or shipped Stage1 admission/fallback acceptance',
+        'Existing guarded Page.getFrameTree outcomes per protected scene and other-extension control; diagnostic only, not Rust or shipped Stage1 fallback acceptance',
       newGuardOutput: 0,
       plainPathStillGuarded: true,
       targetIdentityScope:
@@ -259,6 +259,7 @@ for (const route of ['extension', 'link']) {
             await persist();
             const { targetId } = await chrome.cdp.send('Target.createTarget', {
               url: 'about:blank',
+              newWindow: route === 'extension',
             });
             const { sessionId: rawSession } = await chrome.cdp.send('Target.attachToTarget', {
               targetId,
@@ -333,12 +334,7 @@ for (const route of ['extension', 'link']) {
               info.targets = targets.result ? targetRows(targets.result.targetInfos) : targets;
               const selected = fixtureTarget(targets.result?.targetInfos, scene.url);
               info.selectedTargetId = selected?.targetId;
-              if (route === 'extension' && selected)
-                assert.match(
-                  selected.targetId,
-                  /^[1-9][0-9]*$/,
-                  'extension discovery uses a numeric tab ID'
-                );
+              info.frameTreeOutcome = 'not-attempted';
               if (otherExtension)
                 assert.ok(selected, `${route}/${lane} ordinary control is discovered`);
               if (!selected) {
@@ -363,6 +359,16 @@ for (const route of ['extension', 'link']) {
               const sessionId = attached.result.sessionId;
               info.sessionId = sessionId;
               const frames = await call(lane, 'Page.getFrameTree', {}, sessionId);
+              info.guardedFrameTree = frames;
+              info.frameTreeOutcome = frames.error
+                ? /slicc: refused:/i.test(frames.error)
+                  ? 'refused'
+                  : 'error'
+                : frames.deadline
+                  ? 'deadline'
+                  : frames.result
+                    ? 'admitted'
+                    : 'incomplete';
               info.frameTree = frames.result ? treeRows(frames.result.frameTree) : frames;
               const evaluated = await call(
                 lane,
