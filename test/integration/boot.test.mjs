@@ -172,6 +172,17 @@ test('an /os/ page that loads without seven’s service worker goes back through
   assert.deepEqual(page.errors, []);
 });
 
+test('a boot that fails while it runs shows the error, not a claim about its files', async (t) => {
+  const page = await chrome.page(t);
+  chrome.overrides.set('/seed/os.js', "throw new Error('the UI failed on purpose');\n");
+  await page.goto('/');
+  const text = await page.until(() => document.querySelector('[data-refused] p')?.textContent);
+  assert.equal(
+    text,
+    'None of seven’s files changed, but it stopped while starting: Error: the UI failed on purpose'
+  );
+});
+
 test('an /os/ page that is still without its service worker after one trip through the BIOS stops there and says why, with no second trip (#765)', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
