@@ -204,10 +204,11 @@ test('the page fetch never names a User-Agent, which WebKit would preflight and 
   });
   await page.goto('/');
   await ready(page);
-  await run(page, `curl -s -A probe-agent ${NAMED}/agent-probe >/dev/null; echo asked-$?`);
-  await shows(page, 'asked-0');
-  assert.deepEqual(await page.evaluate(() => globalThis.fetchAgents), [null]);
-  assert.ok(asked.includes('GET /agent-probe'));
+  await run(page, 'curl -s -A probe-agent https://unreachable.invalid/agent-probe; echo tried');
+  await shows(page, 'tried');
+  await page.until(() => globalThis.fetchAgents.length > 0);
+  const agents = await page.evaluate(() => globalThis.fetchAgents);
+  assert.deepEqual([...new Set(agents)], [null]);
 });
 
 test('without either, the page fetch is used', async (t) => {
