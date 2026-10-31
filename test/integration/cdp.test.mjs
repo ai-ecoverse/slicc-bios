@@ -15,6 +15,7 @@ import {
   SEVEN,
   UNSUPPORTED_EXTENSION,
 } from './real-extension.mjs';
+import { recoveryEvidence } from './recovery-evidence.mjs';
 
 const hits = [];
 const heard = [];
@@ -251,8 +252,36 @@ for (const scenario of ['7.9.16', '7.5.1', '7.6.2', '7.6.3', '7.6.4', '7.9.13', 
     timeout: 10 * 60 * 1000,
   }, async (t) => {
     const real = await realExtension({ extension, rules: ['MAP vault.sliccy.ai 127.0.0.1'] });
-    t.after(() => real.close());
+    let evidence;
+    let passed = false;
+    t.after(async () => {
+      let timer;
+      try {
+        if (!passed) {
+          try {
+            const { rows, ...report } = await Promise.race([
+              evidence?.report(scenario) ?? Promise.reject(new Error('evidence unavailable')),
+              new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error('evidence deadline')), 15000);
+              }),
+            ]);
+            console.log('recovery diagnostic', JSON.stringify(report));
+            for (const row of rows)
+              console.log('recovery record', JSON.stringify({ scenario, ...row }));
+          } catch {
+            console.log('recovery diagnostic', JSON.stringify({ scenario, unavailable: true }));
+          }
+        }
+      } finally {
+        clearTimeout(timer);
+        evidence?.stop();
+        await real.close();
+      }
+    });
     const page = await real.page(t);
+    try {
+      evidence = await recoveryEvidence(real, page);
+    } catch {}
     await page.goto(SEVEN);
     await ready(page);
     assert.deepEqual(await automation(page), { via: 'extension' });
@@ -310,6 +339,7 @@ for (const scenario of ['7.9.16', '7.5.1', '7.6.2', '7.6.3', '7.6.4', '7.9.13', 
       !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
       'recovery did not serve the protected document'
     );
+    passed = true;
   });
 }
 
