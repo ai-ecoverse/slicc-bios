@@ -5,9 +5,11 @@ import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { env } from 'node:process';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
 import {
+  actPackage,
   agentState,
   agentUp,
   connectAccount,
@@ -32,6 +34,64 @@ const adobeConfig = {
 };
 const BEDROCK = 'https://bedrock-runtime.us-west-2.amazonaws.com/';
 const LEDGER = 'https://ledger.example.com/';
+const HARBOR = 'https://harbor.example.com/';
+const HARBOR_AUTH = 'https://auth.example.com/';
+const HARBOR_TOKEN = 'dummy-harbor-token-0000';
+const VAULT_PREVIEW = 'https://vault-preview.sliccy.ai';
+const previewed =
+  env.GITHUB_EVENT_NAME === 'pull_request' && !env.GITHUB_HEAD_REF?.startsWith('renovate/');
+
+const json = (status, body, headers = []) => ({
+  status,
+  headers: [['content-type', 'application/json'], ...headers],
+  body: Buffer.from(JSON.stringify(body)),
+});
+const bearerOf = (request) =>
+  request.headers.find(([name]) => name.toLowerCase() === 'authorization')?.[1];
+
+const signIns = [];
+async function harborAuth(request, raw) {
+  const url = new URL(request.url);
+  if (url.pathname === '/.well-known/oauth-authorization-server')
+    return json(200, {
+      issuer: url.origin,
+      authorization_endpoint: `${HARBOR_AUTH}authorize`,
+      token_endpoint: `${HARBOR_AUTH}token`,
+      response_types_supported: ['code'],
+      code_challenge_methods_supported: ['S256'],
+      grant_types_supported: ['authorization_code', 'refresh_token'],
+      token_endpoint_auth_methods_supported: ['none'],
+      client_id_metadata_document_supported: true,
+    });
+  if (url.pathname === '/authorize') {
+    const {
+      client_id: clientId,
+      redirect_uri: redirect,
+      state,
+    } = Object.fromEntries(url.searchParams);
+    const document = await (await fetch(clientId)).json();
+    signIns.push({ clientId, redirect, listed: document.redirect_uris.includes(redirect) });
+    return { status: 302, headers: [['location', `${redirect}?code=harbor&state=${state}`]] };
+  }
+  if (url.pathname === '/token' && raw.toString().includes('grant_type=authorization_code'))
+    return json(200, { access_token: HARBOR_TOKEN, token_type: 'Bearer', expires_in: 3600 });
+  return json(400, { error: 'invalid_request' });
+}
+
+function harbor(request, raw) {
+  if (request.url.includes('/.well-known/oauth-protected-resource'))
+    return json(200, {
+      resource: `${HARBOR}mcp`,
+      authorization_servers: [new URL(HARBOR_AUTH).origin],
+    });
+  if (bearerOf(request) === `Bearer ${HARBOR_TOKEN}`) return ledger(request, raw);
+  return json(401, { error: 'invalid_token' }, [
+    [
+      'www-authenticate',
+      `Bearer resource_metadata="${HARBOR}.well-known/oauth-protected-resource/mcp"`,
+    ],
+  ]);
+}
 
 function ledger(request, raw) {
   if (request.method !== 'POST') return { status: 405, headers: [], body: Buffer.alloc(0) };
@@ -181,9 +241,13 @@ const llm = await fakeLlm(chrome.cdp, {
     'https://tools.example.test/',
     'https://registry.npmjs.org/',
     LEDGER,
+    HARBOR,
+    HARBOR_AUTH,
   ],
   answer: async (request, raw) => {
     if (request.url.startsWith(LEDGER)) return ledger(request, raw);
+    if (request.url.startsWith(HARBOR)) return harbor(request, raw);
+    if (request.url.startsWith(HARBOR_AUTH)) return harborAuth(request, raw);
     if (request.url.startsWith(ADOBE)) {
       const bearer = request.headers.find(([name]) => name.toLowerCase() === 'authorization')?.[1];
       const body = request.url.endsWith('/v1/config')
@@ -2009,14 +2073,7 @@ test('a fresh profile’s first agent turn finds seven’s tools after boot: rg 
   assert.notEqual(result.status, 'error', JSON.stringify(result));
 });
 
-test('a server added through the Settings form lands in /etc/slicc/agent/mcp.json as 0600 root:root and connects', {
-  timeout: 30 * 60 * 1000,
-}, async (t) => {
-  const page = await chrome.page(t);
-  await page.init(helpers);
-  await page.goto('/');
-  await ready(page, undefined, { tools: false });
-  await agentUp(page);
+async function addServer(page, name, url) {
   await page.evaluate(() => {
     window.settingsPart = (selector) =>
       window.deep(
@@ -2029,13 +2086,24 @@ test('a server added through the Settings form lands in /etc/slicc/agent/mcp.jso
   await page.evaluate(() => window.settingsPart('[data-action="add-server"]').click());
   await page.until(() => !!window.settingsPart('form[data-form="add-server"]'));
   await page.evaluate(() => window.settingsPart('[data-server-field="name"]').focus());
-  await page.insert('ledger');
+  await page.insert(name);
   await page.evaluate(() => window.settingsPart('[data-server-field="url"]').focus());
-  await page.insert(`${LEDGER}mcp`);
+  await page.insert(url);
   await page.evaluate(() =>
     window.settingsPart('form[data-form="add-server"] [data-action="save"]').click()
   );
   await page.until(() => !window.settingsPart('form[data-form="add-server"]'));
+}
+
+test('a server added through the Settings form lands in /etc/slicc/agent/mcp.json as 0600 root:root and connects', {
+  timeout: 30 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  await page.init(helpers);
+  await page.goto('/');
+  await ready(page, undefined, { tools: false });
+  await agentUp(page);
+  await addServer(page, 'ledger', `${LEDGER}mcp`);
   await connected(page, 'mcp:ledger');
   await page.until(() => {
     const row = window.settingsPart('.accounts[data-group=mcp] [data-id="mcp:ledger"]');
@@ -2064,4 +2132,112 @@ test('a server added through the Settings form lands in /etc/slicc/agent/mcp.jso
     ),
     { mcpServers: { ledger: { url: `${LEDGER}mcp` } } }
   );
+});
+
+test('on a pull request’s preview with the real vault, a CIMD sign-in in Settings connects, only root gets its placeholder, and mcpcat info as cone fails with the hint', {
+  skip: !previewed,
+  timeout: 30 * 60 * 1000,
+}, async (t) => {
+  assert.ok(env.STAGING_URL, 'this pull request has no preview to run on');
+  const seven = new URL(env.STAGING_URL);
+  const filled = () =>
+    llm.requests.filter(
+      (request) => request.url.startsWith(HARBOR) && bearerOf(request) === `Bearer ${HARBOR_TOKEN}`
+    ).length;
+  const page = await chrome.page(t);
+  await page.init(helpers);
+  await page.init(() => {
+    globalThis.sliccKernelDebug = true;
+  });
+  await page.goto(seven.href);
+  await ready(page, undefined, { tools: false });
+  await agentUp(page);
+  await page.within(
+    60000,
+    () => document.querySelector('slicc-app').model.vault.availability() === 'ready'
+  );
+  assert.equal(
+    await page.evaluate(
+      () => new URL(document.querySelector('iframe[data-vault="core"]').src).origin
+    ),
+    VAULT_PREVIEW
+  );
+  await page.until(() => typeof globalThis.sliccKernelClient === 'function');
+  const shell = (command, user) =>
+    page.evaluate(
+      async ({ command, user }) => {
+        const client = await globalThis.sliccKernelClient();
+        const { status, stdout, stderr } = await client.run(
+          ['bash', '-c', command],
+          user ? { cwd: `/home/${user}`, user } : { cwd: '/root' }
+        );
+        return { status, stdout: stdout ?? '', out: `${stdout ?? ''}${stderr ?? ''}` };
+      },
+      { command, user }
+    );
+  const sealed = async (request, user) => {
+    const { stdout } = await shell(
+      `exec 3<>/dev/sealed; printf '%s' '${JSON.stringify(request)}' >&3; cat <&3; exec 3>&-`,
+      user
+    );
+    return JSON.parse(stdout);
+  };
+  const placeholder = async (user) => {
+    const { id } = await sealed(
+      { v: 1, op: 'request', kind: 'jerk', jop: 'status', provider: 'mcp:harbor' },
+      user
+    );
+    const end = Date.now() + 30000;
+    for (;;) {
+      const reply = await sealed({ v: 1, op: 'status', id }, user);
+      if (reply.state === 'done') return reply.placeholder;
+      assert.ok(Date.now() < end, `the status never finished: ${JSON.stringify(reply)}`);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  };
+  await page.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.updates.packages()
+      .some((item) => item.id === 'mcpcat' && item.state === 'available')
+  );
+  assert.equal(await actPackage(page, 'mcpcat', 'install'), 'ok');
+
+  await addServer(page, 'harbor', `${HARBOR}mcp`);
+  await page.within(
+    60000,
+    () =>
+      document
+        .querySelector('slicc-app')
+        .model.settings.accounts()
+        .find((item) => item.id === 'mcp:harbor')?.state === 'needs-auth'
+  );
+  assert.equal(await placeholder(), undefined);
+  assert.equal(filled(), 0);
+
+  await page.evaluate(() => {
+    document.querySelector('slicc-app').show('settings');
+    window.settingsPart('[data-id="mcp:harbor"] [data-action="connect"]').focus();
+  });
+  await page.press('Enter');
+  await connected(page, 'mcp:harbor', 120000);
+  assert.deepEqual(signIns, [
+    {
+      clientId: new URL('oauth/client.json', seven).href,
+      redirect: new URL('oauth/mcp-callback', seven).href,
+      listed: true,
+    },
+  ]);
+  assert.ok(filled() > 0, 'the vault never filled the token into a request');
+
+  assert.match(await placeholder(), /^fnox_proxy_[0-9a-f]{24}$/);
+  assert.equal(await placeholder('cone'), undefined);
+
+  const before = filled();
+  const cone = await shell(`mcpcat info ${HARBOR}mcp`, 'cone');
+  assert.equal(cone.status, 4, cone.out);
+  assert.match(cone.out, /HTTP 401: authentication required\./);
+  assert.match(cone.out, /Sign in under Settings › MCP servers\./);
+  assert.doesNotMatch(cone.out, /mcpcat login|fnox_proxy_/);
+  assert.equal(filled(), before);
 });
