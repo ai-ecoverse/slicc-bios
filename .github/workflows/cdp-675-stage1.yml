@@ -34,27 +34,27 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-cdp
-          ref: a8b155013e8b2d3c1ba386fa4095d06392687bcf
+          ref: 255319cdba240a293d57989a6cd8bb530a1161c8
           path: candidates/cdp
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/mcpcat
-          ref: ea22f6e2194e165a1879108ff7c5540595187a75
+          ref: 6ac9b14ca96b184fe33c62bc7b7e90c01444866c
           path: candidates/mcpcat
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-cli
-          ref: dfd319829c2243bd2efa1bd1d3ad9eef8e68fd4e
+          ref: a9625a96bdb9aa9143ce5a3d056cb61d523e7b18
           path: candidates/cli
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-extension
-          ref: 6fbebacd8652d78d383b0293c9c1098932d455db
+          ref: 5f1218fea1fdb9118dd6d09794265848838c9334
           path: candidates/extension
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-browsers
-          ref: 415ecb0390d7aad75be32c4507d1f9ac3387798c
+          ref: 195f7d371bc3add40efb6007c819c1ca65955a06
           path: candidates/browsers
       - uses: actions/setup-node@v4
         with:
