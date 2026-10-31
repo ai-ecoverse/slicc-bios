@@ -617,32 +617,8 @@ export function linkExit(
   const exit = {
     id,
     kind: 'link',
-    redirectPolicy: true,
-    get credentialed() {
-      const peer = hello();
-      if (!peer || !session.caps().includes('credentialed')) return null;
-      const active = () =>
-        hello() === peer && !session.closed() && session.caps().includes('credentialed');
-      return {
-        active,
-        traits: {
-          manualRedirects: true,
-          encodedBodies: false,
-          maxRequestBody: 64 * 1024 * 1024,
-          streamingBodies: true,
-        },
-        fetch: (request) => {
-          if (!active())
-            return Promise.reject(
-              Object.assign(new TypeError('the selected exit changed'), {
-                status: 502,
-                code: 'EACCES',
-              })
-            );
-          return exit.fetch({ ...request, credentialed: true, redirect: 'manual' });
-        },
-      };
-    },
+    redirectPolicy: false,
+    credentialed: null,
     exitName: () => {
       const named = device();
       return typeof named === 'string' && DEVICE_ID.test(named) ? `device:${named}` : null;

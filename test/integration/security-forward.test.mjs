@@ -273,11 +273,27 @@ test('a Settings MCP record supplies root mcpcat directly and scrubs the complet
       base64: Buffer.from(value).toString('base64'),
     }))
   );
-  for (const content of [payload, '']) {
+  const cases = [
+    { content: payload, chunked: false },
+    {
+      content: JSON.stringify({ padding: 'x'.repeat(64 * 1024), values: JSON.parse(payload) }),
+      chunked: true,
+    },
+    { content: '', chunked: false },
+  ];
+  for (const { content, chunked } of cases) {
+    await page.evaluate(async (content) => {
+      const client = await globalThis.sliccKernelClient();
+      try {
+        await client.fs.writeFile('/tmp/forward-body.json', content);
+      } finally {
+        await client.close();
+      }
+    }, content);
     const bodyBefore = upstream.requests.length;
     const body = await shell(
       page,
-      `curl -sS --fail-with-body -H "Authorization: Bearer $FORWARD_MCP" -H 'Content-Type: application/json' --data-binary '${content}' '${HOST}mcp/body'`,
+      `curl -sS --fail-with-body ${chunked ? "--http1.1 -H 'Transfer-Encoding: chunked'" : ''} -H "Authorization: Bearer $FORWARD_MCP" -H 'Content-Type: application/json' --data-binary @/tmp/forward-body.json '${HOST}mcp/body'`,
       { FORWARD_MCP: placeholder }
     );
     assert.equal(body.status, 0);

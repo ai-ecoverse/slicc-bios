@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { indexedDB } from 'fake-indexeddb';
 import { createExitRouter } from '../../src/seed/exits.js';
 import { createForwarder } from '../../src/seed/forward.js';
+import { linkExit } from '../../src/seed/link.js';
 import { pickTransport } from '../../src/seed/transport.js';
 import { unfollowed } from '../../src/seed/vault.js';
 
@@ -243,6 +244,56 @@ test('old extension manual and credentialed sends are refused without native fal
   }
   assert.equal(extensionCalls, 0);
   assert.equal(nativeCalls, 0);
+});
+
+test('a capability-advertising link remains refused for credentialed and explicit manual requests', {
+  timeout: 10000,
+}, async (t) => {
+  let opened = 0;
+  let baseCalls = 0;
+  const peer = { routes: { exit: true } };
+  const exit = linkExit(
+    {
+      peer: () => peer,
+      closed: () => false,
+      caps: () => ['http', 'net', 'credentialed'],
+      open: async () => {
+        opened += 1;
+        throw new Error('unproven link opened');
+      },
+    },
+    {
+      id: 'link:unproven',
+      device: () => 'unproven',
+      address: () => '100.64.0.1',
+      label: () => 'unproven',
+    }
+  );
+  const router = createExitRouter();
+  router.add(exit);
+  router.choose(exit.id);
+  assert.equal(exit.credentialed, null);
+  assert.equal(router.selectCredentialed(request.url), null);
+  const f = fixture(t);
+  const forward = createForwarder({
+    vault: f.vault,
+    select: (url) => router.selectCredentialed(url),
+    ready: () => true,
+  });
+  await assert.rejects(forward(request, { signal: new AbortController().signal }));
+  const transport = router.transport({
+    traits: { redirectPolicy: true },
+    fetch: async () => {
+      baseCalls += 1;
+      throw new Error('native fallback');
+    },
+  });
+  for (const redirect of ['manual', 'error'])
+    await assert.rejects(transport.fetch({ ...request, headers: head.headers, redirect }));
+  assert.equal(f.ports.length, 0);
+  assert.equal(f.sends.length, 0);
+  assert.equal(opened, 0);
+  assert.equal(baseCalls, 0);
 });
 
 test('a routed page token refresh reaches its selected endpoint with manual redirects', {
