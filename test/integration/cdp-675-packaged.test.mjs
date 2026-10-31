@@ -21,6 +21,13 @@ const ordinaryCases = [
   { name: 'late-no-unasked-reload', reload: false, late: true },
   { name: 'armed-seven-hop-error-scrub-bounded', reload: true, protectedHop: 'seven' },
   { name: 'armed-vault-hop-error-scrub-bounded', reload: true, protectedHop: 'vault' },
+  { name: 'shipped-kernel-holder-killed-while-armed', reload: true, holderKill: 'armed' },
+  {
+    name: 'shipped-kernel-holder-killed-during-many-script-load',
+    reload: true,
+    holderKill: 'load',
+    many: true,
+  },
   { name: 'old-client-terminal', reload: true, negative: true, oldClient: true },
 ];
 const guardCases = [
@@ -40,12 +47,24 @@ const guardCases = [
     method: 'Debugger.evaluateOnCallFrame',
     params: { callFrameId: '675-unpublished', expression: '1', returnByValue: true },
   },
+  {
+    name: 'guard-level-extension-worker-target-stopped-at-pause',
+    lifecycle: 'worker-stop',
+    extensionOnly: true,
+  },
+  {
+    name: 'guard-level-extension-runtime-reload-worker-restart-at-pause',
+    lifecycle: 'worker',
+    extensionOnly: true,
+  },
+  { name: 'guard-level-seven-owner-tab-gone-at-pause', lifecycle: 'owner-gone' },
 ];
 const fallbackCases = [
-  { name: 'foreign-iframe-cached', reload: true, delay: 0, cached: true },
-  { name: 'foreign-iframe-immediate', reload: true, delay: 0 },
-  { name: 'foreign-iframe-50ms', reload: true, delay: 50 },
+  { name: 'foreign-iframe-cached', reload: true, delay: 0, cached: true, measure: true },
+  { name: 'foreign-iframe-immediate', reload: true, delay: 0, measure: true },
+  { name: 'foreign-iframe-50ms', reload: true, delay: 50, measure: true },
   { name: 'foreign-iframe-500ms', reload: true, delay: 500 },
+  { name: 'foreign-opspile-two-sequential-fetches', reload: true, delay: 150, sequential: true },
   { name: 'foreign-iframe-parse-time', reload: true, parse: true },
   {
     name: 'fallback-protected-seven-subframe-root-only',
@@ -375,7 +394,7 @@ async function lifecycleRow(page, chrome, rawSession, row, scene, url) {
     breakpointId: row.armReplies.at(-1).reply.result.breakpointId,
   });
   assert.ok(row.removed.result, JSON.stringify(row.removed));
-  if (scene.lifecycle === 'close' || scene.lifecycle === 'stall') {
+  if (['close', 'stall', 'owner-gone', 'worker', 'worker-stop'].includes(scene.lifecycle)) {
     await lifecycleRescue(page, chrome, rawSession, row, scene.lifecycle);
     return;
   }
@@ -397,15 +416,106 @@ async function lifecycleRow(page, chrome, rawSession, row, scene, url) {
 
 async function lifecycleRescue(page, chrome, rawSession, row, kind) {
   if (kind === 'close') await page.evaluate(() => globalThis.cdp675Lifecycle.close());
-  row.continued = await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
-    expression: 'globalThis.cdp675Loads',
-    returnByValue: true,
-  });
-  row.continuedAt = Date.now();
+  if (kind === 'owner-gone') {
+    row.methods = await page.evaluate(
+      (start) => globalThis.cdp675Trace.slice(start),
+      row.traceStart
+    );
+    row.lifecycleFinal = await page.evaluate(() => ({
+      events: globalThis.cdp675Lifecycle.events,
+      calls: globalThis.cdp675Lifecycle.calls,
+    }));
+    const targets = await chrome.cdp.send('Target.getTargets', {});
+    const owners = targets.targetInfos.filter(
+      (info) => info.type === 'page' && info.url.startsWith(SEVEN)
+    );
+    assert.equal(owners.length, 1, 'only the controlled seven owner tab may be closed');
+    row.ownerTarget = owners[0].targetId;
+    row.ownerClosedAt = Date.now();
+    row.ownerClosed = await chrome.cdp.send('Target.closeTarget', { targetId: row.ownerTarget });
+    assert.equal(row.ownerClosed.success, true);
+  }
+  if (kind === 'worker' || kind === 'worker-stop') {
+    const before = await chrome.cdp.send('Target.getTargets', {});
+    const workers = before.targetInfos.filter(
+      (info) => info.type === 'service_worker' && info.url.startsWith('chrome-extension://')
+    );
+    assert.equal(
+      workers.length,
+      1,
+      'only the controlled candidate extension worker may be restarted'
+    );
+    row.workerBefore = workers[0];
+    row.workerRestartAt = Date.now();
+    if (kind === 'worker-stop') {
+      row.workerStop = await chrome.cdp
+        .send('Target.closeTarget', { targetId: workers[0].targetId })
+        .catch((error) => ({ error: error.message }));
+      row.workerStopSupported = row.workerStop.success === true;
+      assert.equal(
+        row.workerStopSupported,
+        true,
+        `raw CDP could not stop the owned extension worker target without unloading the extension: ${JSON.stringify(row.workerStop)}`
+      );
+    } else {
+      const attached = await chrome.cdp.send('Target.attachToTarget', {
+        targetId: workers[0].targetId,
+        flatten: true,
+      });
+      row.workerRestart = await rawBounded(
+        chrome,
+        attached.sessionId,
+        'Runtime.evaluate',
+        { expression: 'chrome.runtime.reload()', returnByValue: true },
+        1000
+      ).catch((error) => ({ error: error.message }));
+      await chrome.cdp
+        .send('Target.detachFromTarget', { sessionId: attached.sessionId })
+        .catch(() => {});
+    }
+  }
+  row.progressReads = [];
+  const until = row.pause.at + 7000;
+  do {
+    const started = Date.now();
+    row.continued = await rawBounded(
+      chrome,
+      rawSession,
+      'Runtime.evaluate',
+      {
+        expression: 'globalThis.cdp675Loads',
+        returnByValue: true,
+      },
+      Math.max(1, until - started)
+    );
+    row.continuedAt = Date.now();
+    row.progressReads.push({ started, ended: row.continuedAt, reply: row.continued });
+    if (row.continued.result?.value === 2) break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  } while (Date.now() < until);
   assert.equal(row.continued.result?.value, 2, 'raw observer must see paused page continue');
   assert.ok(row.continuedAt - row.pause.at < 7000, 'pause rescue exceeded its bound');
   row.rescueBoundMs = row.continuedAt - row.pause.at;
-  await page.evaluate(() => globalThis.cdp675Lifecycle.close());
+  if (kind === 'worker' || kind === 'worker-stop') {
+    const until = Date.now() + 5000;
+    do {
+      const targets = await chrome.cdp.send('Target.getTargets', {});
+      row.workerAfter = targets.targetInfos.find(
+        (info) =>
+          info.type === 'service_worker' &&
+          info.url === row.workerBefore.url &&
+          info.targetId !== row.workerBefore.targetId
+      );
+      if (row.workerAfter) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    } while (Date.now() < until);
+    assert.ok(row.workerAfter, 'extension runtime reload must actually replace its worker');
+    row.workerRestartScope =
+      kind === 'worker-stop'
+        ? 'raw Target.closeTarget of only the owned worker; extension not unloaded, replacement target identity required'
+        : 'chrome.runtime.reload of the owned extension; old worker death and new target identity required';
+  }
+  if (kind !== 'owner-gone') await page.evaluate(() => globalThis.cdp675Lifecycle.close());
   row.nextReloadAt = Date.now();
   await rawLoad(chrome, rawSession, 'Page.reload', {});
   row.nextReloadContinued = await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
@@ -413,7 +523,13 @@ async function lifecycleRescue(page, chrome, rawSession, row, kind) {
     returnByValue: true,
   });
   assert.equal(row.nextReloadContinued.result?.value, 3);
-  row.methods = await page.evaluate((start) => globalThis.cdp675Trace.slice(start), row.traceStart);
+  if (kind !== 'owner-gone')
+    row.methods = await page.evaluate(
+      (start) => globalThis.cdp675Trace.slice(start),
+      row.traceStart
+    );
+  if (kind === 'owner-gone')
+    row.postDeathEvidence = 'raw progress and next reload; owner tab has no event receiver';
   assert.equal(
     row.methods.some(
       ({ at, packet }) => at >= row.nextReloadAt && packet.method === 'Debugger.paused'
@@ -500,6 +616,101 @@ async function lifecycleChanged(page, chrome, rawSession, row, scene, url) {
     'guard-level stale uniqueContextId; not the Rust holder publication-to-install race';
 }
 
+async function shippedHolderDeath(page, chrome, rawSession, row, scene) {
+  row.processTable = await sh(page, `printf 'server-pid '; cat ${row.pid}; ps -o pid,ppid,args`);
+  const server = Number(row.processTable.stdout.match(/server-pid\s+(\d+)/)?.[1]);
+  assert.ok(Number.isSafeInteger(server) && server > 1, 'owned server PID is required');
+  const children = row.processTable.stdout.split('\n').flatMap((line) => {
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
+    return match &&
+      Number(match[2]) === server &&
+      /\bwebmcp-polyfill\b/.test(match[3]) &&
+      match[3].includes(row.target)
+      ? [{ pid: Number(match[1]), ppid: Number(match[2]), argv: match[3] }]
+      : [];
+  });
+  assert.equal(children.length, 1, 'exact owned packaged holder child is required');
+  row.killedHolder = children[0];
+  row.deathTraceStart = await page.evaluate(() => globalThis.cdp675Trace.length);
+  let loading;
+  if (scene.holderKill === 'load') {
+    row.reloadStartedAt = Date.now();
+    loading = rawLoad(chrome, rawSession, 'Page.reload', {});
+    loading.catch(() => {});
+    await page.within(
+      7000,
+      ({ start }) =>
+        globalThis.cdp675Trace
+          .slice(start)
+          .some(
+            ({ boundary, direction, packet }) =>
+              boundary === 'bios' && direction === 'receive' && packet.method === 'Debugger.paused'
+          ),
+      { start: row.deathTraceStart }
+    );
+  }
+  row.killStartedAt = Date.now();
+  row.kill = await sh(page, `kill -9 ${children[0].pid} ${server}; echo holder-kill-status-$?`);
+  row.killCompletedAt = Date.now();
+  row.postDeathTraceStart = await page.evaluate(() => globalThis.cdp675Trace.length);
+  assert.match(row.kill.stdout, /holder-kill-status-0/);
+  row.deathMethods = await page.evaluate(
+    (start) => globalThis.cdp675Trace.slice(start),
+    row.deathTraceStart
+  );
+  const pauses = row.deathMethods.filter(
+    ({ boundary, direction, packet, at }) =>
+      boundary === 'bios' &&
+      direction === 'receive' &&
+      packet.method === 'Debugger.paused' &&
+      at <= row.killStartedAt
+  );
+  const pause = pauses.at(-1);
+  row.pauseAtKill = {
+    publishedPauseAt: pause?.at ?? null,
+    killStartedAt: row.killStartedAt,
+    killCompletedAt: row.killCompletedAt,
+    noObservedResumeDuringKill:
+      Boolean(pause) &&
+      !row.deathMethods.some(
+        ({ at, packet }) =>
+          at >= pause.at &&
+          at <= row.killCompletedAt &&
+          ['Debugger.resume', 'Debugger.resumed'].includes(packet.method)
+      ),
+    scope: 'publication and resume wire timing; does not claim an unobserved native pause',
+  };
+  if (!loading) {
+    row.reloadStartedAt = Date.now();
+    loading = rawLoad(chrome, rawSession, 'Page.reload', {});
+  }
+  await loading;
+  row.loadCompletedAt = Date.now();
+  row.deathProgress = await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
+    expression: '({ loads: window.cdp675Loads, ready: document.readyState })',
+    returnByValue: true,
+  });
+  assert.equal(row.deathProgress.result?.value?.loads, 3);
+  assert.equal(row.deathProgress.result?.value?.ready, 'complete');
+  assert.ok(row.loadCompletedAt - row.killStartedAt < 7000, 'holder death left the page stalled');
+  row.deathMethods = await page.evaluate(
+    (start) => globalThis.cdp675Trace.slice(start),
+    row.deathTraceStart
+  );
+  row.postDeathMethods = await page.evaluate(
+    (start) => globalThis.cdp675Trace.slice(start),
+    row.postDeathTraceStart
+  );
+  assert.equal(
+    row.postDeathMethods.some(
+      ({ direction, packet }) => direction === 'receive' && packet.method?.startsWith('Debugger.')
+    ),
+    false,
+    'Debugger publication survived holder death'
+  );
+  row.deathBoundMs = row.loadCompletedAt - row.killStartedAt;
+}
+
 async function waitPort(page, port) {
   return page.within(
     120000,
@@ -548,7 +759,7 @@ for (const route of ['extension', 'link']) {
     const oldRoute = mode === 'old-route';
     const guardLevel = mode === 'guard-level';
     const cases = guardLevel
-      ? guardCases
+      ? guardCases.filter((scene) => !scene.extensionOnly || route === 'extension')
       : foreign
         ? fallbackCases
         : oldRoute
@@ -645,6 +856,8 @@ for (const route of ['extension', 'link']) {
               '<!doctype html><title>675 protected fixture</title><script>globalThis.cdp675Protected = true;</script>'
             );
           }
+          if (at.pathname === '/script')
+            return response.end(`window.cdp675ScriptCount = (window.cdp675ScriptCount || 0) + 1;`);
           if (at.pathname === '/iframe')
             return response.end('<!doctype html><title>ordinary iframe</title>');
           const registration =
@@ -654,8 +867,16 @@ for (const route of ['extension', 'link']) {
               ? `if (document.modelContext) { ${registration}; }`
               : `await fetch('/data?delay=${at.searchParams.get('delay') ?? 0}${at.searchParams.has('cached') ? '&cached=1' : ''}'); if (document.modelContext) { ${registration}; }`
             : `if (document.modelContext) { ${registration}; } else { const retry = setInterval(() => { if (document.modelContext) { clearInterval(retry); ${registration}; } }, 10); }`;
+          const startup = at.searchParams.has('sequential')
+            ? `async function start() { await fetch('/data?delay=150&step=who'); await fetch('/data?delay=150&step=inbox'); window.cdp675Connected = true; window.cdp675RegisterCalls = 1; if (document.modelContext) { ${registration}; } } await start();`
+            : code;
+          const scripts = at.searchParams.has('many')
+            ? Array.from({ length: 100 }, (_, i) => `<script src="/script?i=${i}"></script>`).join(
+                ''
+              )
+            : '';
           response.end(
-            `<!doctype html><title>675 ordinary</title>${foreign ? `<iframe src="${at.searchParams.has('protected') ? `https://${at.searchParams.get('protected')}.sliccy.ai/__675_frame` : '/iframe'}"></iframe>` : ''}<script type="module">window.cdp675Loads = (Number(sessionStorage.cdp675Loads) || 0) + 1; sessionStorage.cdp675Loads = window.cdp675Loads; ${code}</script>`
+            `<!doctype html><title>675 ordinary</title>${scripts}${foreign ? `<iframe src="${at.searchParams.has('protected') ? `https://${at.searchParams.get('protected')}.sliccy.ai/__675_frame` : '/iframe'}"></iframe>` : ''}<script type="module">window.cdp675Loads = (Number(sessionStorage.cdp675Loads) || 0) + 1; sessionStorage.cdp675Loads = window.cdp675Loads; ${startup}</script>`
           );
         });
         await new Promise((resolve) => fixture.listen(0, '127.0.0.1', resolve));
@@ -803,11 +1024,13 @@ for (const route of ['extension', 'link']) {
           }
           row.step = 'create-ordinary-target';
           const url = new URL(`/page?row=${index}`, trace.fixtureOrigin);
+          if (scene.many) url.searchParams.set('many', '1');
           if (foreign) {
             url.searchParams.set('foreign', '1');
             url.searchParams.set('delay', String(scene.delay ?? 0));
             if (scene.cached) url.searchParams.set('cached', '1');
             if (scene.parse) url.searchParams.set('parse', '1');
+            if (scene.sequential) url.searchParams.set('sequential', '1');
             if (scene.protectedSubframe) url.searchParams.set('protected', scene.protectedSubframe);
           }
           ({ targetId } = await chrome.cdp.send('Target.createTarget', {
@@ -977,7 +1200,21 @@ for (const route of ['extension', 'link']) {
             const forwarded = row.methods
               .filter(({ boundary, direction }) => boundary === 'route' && direction === 'send')
               .map(({ packet }) => packet.method);
-            assert.ok(!forwarded.includes('Debugger.enable'));
+            if (!scene.oldClient) assert.ok(!forwarded.includes('Debugger.enable'));
+            assert.equal(
+              row.methods.some(
+                ({ boundary, direction, packet }) =>
+                  boundary === 'bios' &&
+                  direction === 'receive' &&
+                  [
+                    'Debugger.paused',
+                    'Debugger.scriptParsed',
+                    'Debugger.scriptFailedToParse',
+                  ].includes(packet.method)
+              ),
+              false,
+              'terminal refusal must publish no Debugger content'
+            );
             assert.equal(forwarded.filter((method) => method === 'Page.reload').length, 0);
             assert.equal(
               row.methods.filter(
@@ -1024,14 +1261,19 @@ for (const route of ['extension', 'link']) {
                 /other-extension fallback|startup or parse-time/
               );
             }
-            assert.ok(tool, row.list.stdout);
-            row.step = 'shipped-tools-call';
-            row.call = await cone(
-              page,
-              `timeout 60 mcpcat call http://127.0.0.1:${row.port}/mcp ${quote(tool.name)} --a 2 --b 3`,
-              `675-call-${index}`
-            );
-            assert.match(row.call.stdout, /^5$/m);
+            if (!tool && scene.measure) {
+              row.raceOutcome = 'clear-message';
+            } else {
+              assert.ok(tool, row.list.stdout);
+              if (scene.measure) row.raceOutcome = 'tools-listed';
+              row.step = 'shipped-tools-call';
+              row.call = await cone(
+                page,
+                `timeout 60 mcpcat call http://127.0.0.1:${row.port}/mcp ${quote(tool.name)} --a 2 --b 3`,
+                `675-call-${index}`
+              );
+              assert.match(row.call.stdout, /^5$/m);
+            }
           }
           row.methods = await page.evaluate(
             (start) => globalThis.cdp675Trace.slice(start),
@@ -1088,6 +1330,36 @@ for (const route of ['extension', 'link']) {
               /^const __wmcp_/.test(packet.params?.expression ?? '')
           );
           assert.ok(installations.length > 0);
+          if (foreign) {
+            const reload = row.methods.find(
+              ({ boundary, direction, packet }) =>
+                boundary === 'bios' && direction === 'send' && packet.method === 'Page.reload'
+            );
+            assert.ok(reload);
+            row.installLatencyMs = installations[0].at - reload.at;
+            assert.ok(row.installLatencyMs >= 0);
+          }
+          if (scene.sequential) {
+            row.startup = (
+              await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
+                expression:
+                  '({ connected: window.cdp675Connected, registerCalls: window.cdp675RegisterCalls })',
+                returnByValue: true,
+              })
+            ).result.value;
+            assert.equal(row.startup.connected, true);
+            assert.equal(row.startup.registerCalls, 1);
+            row.sequentialFetches = trace.fetches.filter(
+              ({ at, url }) =>
+                at >=
+                  row.methods.find(
+                    ({ boundary, direction, packet }) =>
+                      boundary === 'bios' && direction === 'send' && packet.method === 'Page.reload'
+                  ).at && /step=(who|inbox)/.test(url)
+            );
+            assert.equal(row.sequentialFetches.length, 2);
+            assert.ok(row.sequentialFetches[1].at >= row.sequentialFetches[0].sent);
+          }
           if (scene.protectedSubframe) {
             const root = row.rawTree.frameTree.frame.id;
             for (const install of installations) {
@@ -1173,6 +1445,10 @@ for (const route of ['extension', 'link']) {
             bios: sent.filter((method) => method === 'Page.reload').length,
             route: forwarded.filter((method) => method === 'Page.reload').length,
           };
+          if (scene.holderKill) {
+            row.step = 'shipped-holder-death';
+            await shippedHolderDeath(page, chrome, rawSession, row, scene);
+          }
           if (scene.protectedHop) {
             row.step = 'armed-protected-hop';
             const destination =
@@ -1272,7 +1548,7 @@ for (const route of ['extension', 'link']) {
               }));
               await sh(page, `kill "$(cat ${row.pid})"`).catch(() => {});
             }
-            if (guardLevel) {
+            if (guardLevel && !row.ownerClosed?.success) {
               row.lifecycleFinal = await page
                 .evaluate(() => {
                   const holder = globalThis.cdp675Lifecycle;
