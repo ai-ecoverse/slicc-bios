@@ -49,7 +49,10 @@ export function hide(text, value) {
 
 export function failure(error, value) {
   const code = typeof error?.code === 'string' ? error.code : 'EIO';
-  return Object.assign(new Error(hide(error?.message ?? 'the vault refused', value)), { code });
+  return Object.assign(new Error(hide(error?.message ?? 'the vault refused', value)), {
+    code,
+    ...(error?.cause === 'policy-paused' ? { cause: 'policy-paused' } : {}),
+  });
 }
 
 function pairOf(scrub) {

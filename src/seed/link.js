@@ -619,15 +619,28 @@ export function linkExit(
     kind: 'link',
     redirectPolicy: true,
     get credentialed() {
-      if (!session.caps().includes('credentialed')) return null;
+      const peer = hello();
+      if (!peer || !session.caps().includes('credentialed')) return null;
+      const active = () =>
+        hello() === peer && !session.closed() && session.caps().includes('credentialed');
       return {
+        active,
         traits: {
           manualRedirects: true,
           encodedBodies: false,
           maxRequestBody: 64 * 1024 * 1024,
           streamingBodies: true,
         },
-        fetch: (request) => exit.fetch({ ...request, credentialed: true, redirect: 'manual' }),
+        fetch: (request) => {
+          if (!active())
+            return Promise.reject(
+              Object.assign(new TypeError('the selected exit changed'), {
+                status: 502,
+                code: 'EACCES',
+              })
+            );
+          return exit.fetch({ ...request, credentialed: true, redirect: 'manual' });
+        },
       };
     },
     exitName: () => {
@@ -1117,10 +1130,10 @@ export function createLinks({
     },
     identify(key, id, wanted) {
       const link = links.get(key);
-      link.id = id;
-      supersede(link);
+      supersede(Object.assign(link, { id }));
       link.exit.id = `link:${id}`;
       if (wanted && free(wanted) === wanted) link.address = wanted;
+      router.sync();
       changed();
     },
     drop(key, reason) {

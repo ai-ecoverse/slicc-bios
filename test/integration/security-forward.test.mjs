@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
+import manifest from '../../package.json' with { type: 'json' };
 import { actPackage } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { fakeLlm } from './fake-llm.mjs';
@@ -9,7 +10,9 @@ const HOST = 'https://forward.example.test/';
 const ORDINARY = 'synthetic-ordinary-credential-00000000';
 const MCP = 'synthetic-mcp-credential-00000000';
 const chrome = await launch({ vault: false });
-const vault = await realVault(new URL(chrome.url).origin);
+const vault = await realVault(new URL(chrome.url).origin, {
+  version: manifest.devDependencies['@ai-ecoverse/slicc-vault'],
+});
 const bearer = (request) =>
   request.headers.find(([name]) => name.toLowerCase() === 'authorization')?.[1];
 const upstream = await fakeLlm(chrome.cdp, {
@@ -71,6 +74,7 @@ async function opened(t) {
     60000,
     () => document.querySelector('slicc-app')?.model?.vault?.status()?.capabilities?.forward === 1
   );
+  t.after(() => t.diagnostic(JSON.stringify(vault.evidence())));
   return page;
 }
 
@@ -160,7 +164,7 @@ test('a Settings MCP record supplies root mcpcat directly and scrubs the complet
   );
   assert.equal(await actPackage(page, 'mcpcat', 'install'), 'ok');
   const version = await shell(page, 'mcpcat --version');
-  assert.match(`${version.stdout}${version.stderr}`, /0\.31\.15/);
+  assert.match(`${version.stdout}${version.stderr}`, /0\.31\.16/);
   const added = await shell(
     page,
     `env -u PI_CODING_AGENT_DIR mcpcat add bb '${HOST}mcp' --no-probe`

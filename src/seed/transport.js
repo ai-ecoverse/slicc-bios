@@ -1,7 +1,7 @@
 import { fetchTransport } from '@ai-ecoverse/slicc-kernel';
 import { redirectMode } from './redirects.js';
 
-export const EXTENSION_REDIRECT_MINIMUM = null;
+export const EXTENSION_REDIRECT_MINIMUM = '7.11.0';
 
 export function extensionRedirects(version, minimum = EXTENSION_REDIRECT_MINIMUM) {
   const parts = (value) =>

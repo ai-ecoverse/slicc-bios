@@ -1,8 +1,9 @@
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 
 const SOURCE = 'https://vault-preview.sliccy.ai/';
 
-export async function realVault(origin) {
+export async function realVault(origin, { version } = {}) {
   const cached = new Map();
   const config = await fetch(new URL('config.json', SOURCE), {
     signal: AbortSignal.timeout(30000),
@@ -10,6 +11,8 @@ export async function realVault(origin) {
     if (!r.ok) throw new Error('the vault deployment is unavailable');
     return r.json();
   });
+  if (config.version !== version)
+    throw new Error(`the vault deployment version is ${config.version}, expected ${version}`);
   const server = createServer(async (request, response) => {
     try {
       const path = new URL(request.url, 'http://fixture').pathname;
@@ -50,6 +53,14 @@ export async function realVault(origin) {
   return {
     origin: `http://127.0.0.1:${server.address().port}`,
     version: config.version,
+    evidence: () => ({
+      version: config.version,
+      source: SOURCE,
+      assets: [...cached].map(([path, asset]) => ({
+        path,
+        sha256: createHash('sha256').update(asset.body).digest('hex'),
+      })),
+    }),
     close: () => new Promise((resolve) => server.close(resolve)),
   };
 }

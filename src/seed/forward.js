@@ -7,13 +7,14 @@ export const FORWARD_QUEUE_MAX = 2 * 1024 * 1024;
 export const FORWARD_WAIT_MS = 120000;
 
 const LOCAL = Symbol();
-const failure = (message, status = 502) =>
+const failure = (message, status = 502, cause) =>
   Object.assign(new Error(message), {
     status,
     code: status === 403 ? 'EACCES' : 'EIO',
     [LOCAL]: true,
+    ...(cause === 'policy-paused' ? { cause } : {}),
   });
-const refused = () => failure('the credentialed request was refused', 403);
+const refused = (cause) => failure('the credentialed request was refused', 403, cause);
 
 function approved(original, head) {
   return (
@@ -97,7 +98,7 @@ function validResponse(data) {
   );
 }
 
-function exchange(signal, maxQueue = FORWARD_QUEUE_MAX) {
+function exchange(signal, onFailure, maxQueue = FORWARD_QUEUE_MAX) {
   const { port1, port2 } = new MessageChannel();
   const chunks = [];
   let bytes = 0;
@@ -130,6 +131,7 @@ function exchange(signal, maxQueue = FORWARD_QUEUE_MAX) {
     port1.close();
     port2.close();
     signal.removeEventListener('abort', abort);
+    if (reason) onFailure();
   };
   const abort = () => close(failure('the credentialed request was cancelled'));
   signal.addEventListener('abort', abort, { once: true });
@@ -237,6 +239,13 @@ function selectedFor(request, options) {
   return { selected, epoch, max: Math.min(FORWARD_BODY_MAX, selected.maxRequestBody) };
 }
 
+function mcpBody(result, present, max) {
+  if (result.bodyComplete !== true || Object.hasOwn(result, 'body') !== present) throw refused();
+  if (present && (!(result.body instanceof Uint8Array) || result.body.byteLength > max))
+    throw refused();
+  return result.body;
+}
+
 async function admittedBody(request, original, selected, max, signal, ask, discard) {
   const present = request.body !== undefined || request.bodyStream !== undefined;
   let result = await ask();
@@ -247,16 +256,15 @@ async function admittedBody(request, original, selected, max, signal, ask, disca
     if (!present) throw refused();
     body = await collected(request, max, signal);
     result = await ask(body);
+    if (result?.mode !== 'mcp') throw refused();
   }
-  if (!approved(original, result?.head)) throw refused();
+  if (!approved(original, result?.head)) throw refused(result?.refused?.cause);
   if (result.mode === 'secret') {
     if (Object.hasOwn(result, 'body') || Object.hasOwn(result, 'bodyComplete')) throw refused();
     if (request.bodyStream && selected.streamingBodies === true) bodyStream = request.bodyStream;
     else body = present ? await collected(request, max, signal) : undefined;
   } else if (result.mode === 'mcp') {
-    if (result.bodyComplete !== true || Object.hasOwn(result, 'body') !== present) throw refused();
-    body = result.body;
-    if (present && (!(body instanceof Uint8Array) || body.byteLength > max)) throw refused();
+    body = mcpBody(result, present, max);
   } else throw refused();
   return { head: result.head, body, bodyStream };
 }
@@ -280,6 +288,7 @@ export function createForwarder({
     if (signal.aborted) abort();
     let relay;
     let raw;
+    let cancelled = false;
     const current = () =>
       ready() === true &&
       policyEpoch() === policy &&
@@ -300,15 +309,21 @@ export function createForwarder({
       offPolicy();
     };
     const cancel = async () => {
+      if (cancelled) return;
+      cancelled = true;
       abort();
       relay?.close(failure('the credentialed request was cancelled'));
       clean();
-      await Promise.resolve(raw?.cancel()).catch(() => {});
+      await Promise.resolve()
+        .then(() => raw?.cancel())
+        .catch(() => {});
     };
     try {
       const ask = async (body) => {
         controller.signal.throwIfAborted();
-        relay = exchange(controller.signal);
+        relay = exchange(controller.signal, () => {
+          void cancel();
+        });
         return within(
           vault.forward(
             {
@@ -341,17 +356,43 @@ export function createForwarder({
       );
       controller.signal.throwIfAborted();
       raw = await within(
-        selected.fetch({
-          ...head,
-          headers,
-          redirect: 'manual',
-          ...(body === undefined ? {} : { body }),
-          ...(bodyStream === undefined ? {} : { bodyStream }),
-          signal: controller.signal,
+        Promise.resolve(
+          selected.fetch({
+            ...head,
+            headers,
+            redirect: 'manual',
+            ...(body === undefined ? {} : { body }),
+            ...(bodyStream === undefined ? {} : { bodyStream }),
+            signal: controller.signal,
+          })
+        ).then((response) => {
+          raw = response;
+          if (controller.signal.aborted)
+            void Promise.resolve()
+              .then(() => response.cancel())
+              .catch(() => {});
+          return response;
         }),
         controller.signal
       );
-      await checkRedirect({ url: original.url, redirect: 'manual' }, raw);
+      if (raw.opaqueRedirect === true || raw.type === 'opaqueredirect' || raw.status === 0) {
+        await within(
+          Promise.resolve()
+            .then(() => raw.cancel())
+            .catch(() => {}),
+          controller.signal
+        );
+        raw = {
+          status: 502,
+          statusText: 'Bad Gateway',
+          headers: [['content-type', 'text/plain; charset=utf-8']],
+          url: original.url,
+          body: (async function* () {
+            yield new TextEncoder().encode('credentialed request redirected; not followed');
+          })(),
+          cancel: async () => {},
+        };
+      } else await checkRedirect({ url: original.url, redirect: 'manual' }, raw);
       relay.send({
         op: 'response',
         status: raw.status,

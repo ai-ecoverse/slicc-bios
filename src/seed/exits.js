@@ -163,7 +163,12 @@ function credentialedSelection(url, base, protectedUrl, { httpCarrier, own, exit
     streamingBodies: sender.traits.streamingBodies === true,
     active: () =>
       httpCarrier(host) === carrier &&
-      (carrier ? carrier.active() === true && exits.includes(carrier) : sender.active() === true),
+      (carrier
+        ? carrier.active() === true &&
+          exits.includes(carrier) &&
+          carrier.exitName?.() === exit &&
+          sender.active?.() === true
+        : sender.active() === true),
     onChange,
     fetch: (request) => sender.fetch({ ...request, redirect: 'manual' }),
   };
