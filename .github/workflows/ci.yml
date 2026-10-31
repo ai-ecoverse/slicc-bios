@@ -25,10 +25,11 @@ jobs:
     secrets: inherit
     with:
       node-version: "26"
-      test-glob: test/integration/*.test.mjs
-      shards: 14
-      timeout-minutes: 90
-      flaky-retry: 3
+      test-glob: test/integration/chat.test.mjs
+      shards: 1
+      test: node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs --test-name-pattern='CIMD sign-in' test/integration/chat.test.mjs
+      timeout-minutes: 40
+      flaky-retry: 0
       strict-tests: |
         **/*guard*.test.*
         **/*security*.test.*

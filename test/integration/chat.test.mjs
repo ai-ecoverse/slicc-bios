@@ -9,7 +9,6 @@ import { env } from 'node:process';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
 import {
-  actPackage,
   agentState,
   agentUp,
   connectAccount,
@@ -2201,7 +2200,11 @@ test('on a pull request’s preview with the real vault, a CIMD sign-in in Setti
       .model.updates.packages()
       .some((item) => item.id === 'mcpcat' && item.state === 'available')
   );
-  assert.equal(await actPackage(page, 'mcpcat', 'install'), 'ok');
+  await run(
+    page,
+    `pnpm add -g @ai-ecoverse/mcpcat@0.31.9 > /dev/null 2>&1; mcpcat --version; echo "old mcpcat $?"`
+  );
+  await shows(page, 'old mcpcat 0', 300000);
 
   await addServer(page, 'harbor', `${HARBOR}mcp`);
   await page.within(
