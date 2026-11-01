@@ -1915,6 +1915,51 @@ class Guard {
     return projected === bare(this.frames.get(frameId) ?? '');
   }
 
+  retryContexts({ method, sessionId }) {
+    if (!/^Page\.frame/.test(method ?? '') && method !== 'Page.loadEventFired') return;
+    const targetId = this.scopeTarget(sessionId);
+    for (const records of this.contextChecks.values())
+      for (const record of records.values()) if (record.targetId === targetId) record.retry?.();
+  }
+
+  async retryContext(record) {
+    const context = record.message.params.context;
+    const scope = this.scopes.get(record.targetId);
+    if (
+      this.is.url(context.origin) ||
+      this.errorFrames.has(context.auxData.frameId) ||
+      (!record.deadline && (!scope || (scope.ready && !scope.pending)))
+    )
+      return false;
+    record.deadline ??= Date.now() + 2000;
+    let timer;
+    try {
+      return await new Promise((resolve) => {
+        record.retry = () => resolve(Date.now() < record.deadline);
+        timer = setTimeout(() => resolve(false), Math.max(0, record.deadline - Date.now()));
+      });
+    } finally {
+      clearTimeout(timer);
+      delete record.retry;
+    }
+  }
+
+  contextAnswer(record, where) {
+    return this.within(
+      this.call(
+        'Runtime.evaluate',
+        { expression: 'location.href', returnByValue: true, silent: true, ...where },
+        record.message.sessionId
+      ),
+      record.deadline ? Math.max(0, Math.min(ANSWER_MS, record.deadline - Date.now())) : ANSWER_MS
+    );
+  }
+
+  staleContext(answer, targetId) {
+    if (!answer || answer.error) this.uncertainProof(targetId);
+    return false;
+  }
+
   async checkContext(record) {
     const {
       sessionId,
@@ -1925,18 +1970,11 @@ class Guard {
       typeof context.uniqueId === 'string'
         ? { uniqueContextId: context.uniqueId }
         : { contextId: context.id };
-    const answer = await this.answered(
-      this.call(
-        'Runtime.evaluate',
-        { expression: 'location.href', returnByValue: true, silent: true, ...where },
-        sessionId
-      )
-    );
+    const answer = await this.contextAnswer(record, where);
     const targetId = record.targetId;
-    if (!current()) {
-      if (!answer || answer.error) this.uncertainProof(targetId);
-      return false;
-    }
+    if (!current()) return this.staleContext(answer, targetId);
+    if (answer?.error && (await this.retryContext(record))) return this.checkContext(record);
+    if (!current()) return false;
     const value =
       answer?.error || answer?.result?.exceptionDetails ? undefined : answer?.result?.result?.value;
     if (
@@ -4863,6 +4901,7 @@ class Guard {
     }
     this.rememberUnsafe(message);
     if (STRUCTURE.has(message.method)) this.scopeEvent(message);
+    this.retryContexts(message);
     if (this.debuggerEventHeld(message)) return;
     if (this.internal.has(message.id)) {
       const resolve = this.internal.get(message.id);

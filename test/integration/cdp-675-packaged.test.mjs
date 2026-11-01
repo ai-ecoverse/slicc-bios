@@ -277,6 +277,31 @@ function tapGuardSource(source) {
   const method = '  setDebuggerLease(targetId, state) {';
   return source
     .replace(
+      '      world.ids.set(id, hidden);',
+      `      (globalThis.cdp675WorldTrace ??= []).push({ at: Date.now(), targetId: this.scopeTarget(sessionId), sessionId, phase: 'context-created', context: params.context, hidden, errorFrame: this.errorFrames.has(auxData?.frameId) });
+      world.ids.set(id, hidden);`
+    )
+    .replace(
+      '      world.ids.set(context.id, true);',
+      `      (globalThis.cdp675WorldTrace ??= []).push({ at: Date.now(), targetId, sessionId, phase: 'context-proof-refused', context, answer });
+      world.ids.set(context.id, true);`
+    )
+    .replace(
+      '\n    world.ids.set(context.id, true);',
+      `
+    (globalThis.cdp675WorldTrace ??= []).push({ at: Date.now(), targetId: record.targetId, sessionId: record.message.sessionId, phase: 'loading-context', context, value });
+    world.ids.set(context.id, true);`
+    )
+    .replace(
+      '      (await this.placed(sessionId)) &&',
+      `      (await this.placed(sessionId).then((placed) => {
+        const targetId = this.scopeTarget(sessionId);
+        const scope = this.scope(targetId);
+        (globalThis.cdp675PublicationTrace ??= []).push({ at: Date.now(), targetId, sessionId, method, placed, capturedRevision: revision, currentRevision: this.revisions.get(targetId), lease: this.debuggerLeases.get(targetId)?.state, locked: this.locked(sessionId), hidden: this.hidden(sessionId), ready: scope.ready, pending: scope.pending, failed: scope.failed });
+        return placed;
+      })) &&`
+    )
+    .replace(
       method,
       `${method}\n    (globalThis.cdp675LeaseTrace ??= []).push({ at: Date.now(), targetId, state });`
     )
@@ -3453,6 +3478,22 @@ for (const route of ['extension', 'link']) {
               .evaluate(
                 (target) =>
                   (globalThis.cdp675FrameReadTrace ?? []).filter(
+                    ({ targetId }) => targetId === target
+                  ),
+                row.target
+              )
+              .catch(() => []);
+            row.worldTrace = await page
+              .evaluate(
+                (target) =>
+                  (globalThis.cdp675WorldTrace ?? []).filter(({ targetId }) => targetId === target),
+                row.target
+              )
+              .catch(() => []);
+            row.publicationTrace = await page
+              .evaluate(
+                (target) =>
+                  (globalThis.cdp675PublicationTrace ?? []).filter(
                     ({ targetId }) => targetId === target
                   ),
                 row.target
