@@ -39,7 +39,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/mcpcat
-          ref: bd9c3935ee33efe0a1933ab89b909fc181db1fe3
+          ref: 383030db275265c65b2855fb306f9d4fb31d5699
           path: candidates/mcpcat
       - uses: actions/checkout@v4
         with:
@@ -54,7 +54,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-browsers
-          ref: 195f7d371bc3add40efb6007c819c1ca65955a06
+          ref: 8aaac62df5c5eef34376eec5518dd7741c8be270
           path: candidates/browsers
       - uses: actions/setup-node@v4
         with:
