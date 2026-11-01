@@ -135,6 +135,7 @@ export async function realExtension({
   extension = EXTENSION,
   realistic = false,
   directory,
+  extraExtensions = [],
 } = {}) {
   const draft = directory;
   if (draft && process.env.SLICC_675_STAGE1_DIAGNOSTIC !== '1') {
@@ -150,7 +151,7 @@ export async function realExtension({
     tls = await front(upstream);
     chrome = await launch({
       realistic,
-      extensions: [root],
+      extensions: [root, ...extraExtensions],
       args: [
         ...args,
         '--ignore-certificate-errors',

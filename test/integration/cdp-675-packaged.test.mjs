@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createServer as https } from 'node:https';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -436,8 +437,8 @@ async function rawLoad(chrome, sessionId, method, params) {
       if (
         packet.sessionId === sessionId &&
         (packet.method === 'Page.loadEventFired' ||
-          (method === 'Runtime.evaluate' &&
-            params.expression === 'history.back()' &&
+          (((method === 'Runtime.evaluate' && params.expression === 'history.back()') ||
+            method === 'Page.navigateToHistoryEntry') &&
             packet.method === 'Page.frameNavigated' &&
             packet.params.type === 'BackForwardCacheRestore'))
       )
@@ -450,6 +451,65 @@ async function rawLoad(chrome, sessionId, method, params) {
   } finally {
     clearTimeout(timer);
     off?.();
+  }
+}
+
+async function lateExtensionFixture() {
+  const path = await mkdtemp(join(tmpdir(), 'thr_uzh6iuph2q-late-extension-'));
+  try {
+    await cp(harnessExtensionPath, path, { recursive: true });
+    const manifest = JSON.parse(await readFile(join(path, 'manifest.json'), 'utf8'));
+    for (const entry of manifest.content_scripts) entry.matches = ['http://*/*late=1*'];
+    await writeFile(join(path, 'manifest.json'), JSON.stringify(manifest));
+    return path;
+  } catch (error) {
+    await rm(path, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function rawNavigate(chrome, sessionId, url) {
+  const events = [];
+  let reply;
+  let timer;
+  let resolveLoad;
+  const check = () => {
+    if (!reply?.loaderId) return;
+    const commit = events.findIndex(
+      ({ method, params }) =>
+        method === 'Page.frameNavigated' &&
+        params.frame?.id === reply.frameId &&
+        params.frame.loaderId === reply.loaderId
+    );
+    if (
+      commit >= 0 &&
+      events.slice(commit + 1).some(({ method }) => method === 'Page.loadEventFired')
+    )
+      resolveLoad();
+  };
+  const loaded = new Promise((resolve, reject) => {
+    resolveLoad = resolve;
+    timer = setTimeout(() => reject(new Error('new ordinary loader load exceeded 6000ms')), 6000);
+  });
+  const off = chrome.cdp.on((packet) => {
+    if (packet.sessionId !== sessionId) return;
+    if (['Page.frameNavigated', 'Page.loadEventFired'].includes(packet.method)) events.push(packet);
+    check();
+  });
+  try {
+    const navigation = rawBounded(chrome, sessionId, 'Page.navigate', { url }).then((result) => {
+      reply = result;
+      assert.ok(reply.loaderId && reply.frameId, 'ordinary navigation needs the actual new loader');
+      check();
+      return result;
+    });
+    const [result] = await Promise.all([navigation, loaded]);
+    const tree = await rawBounded(chrome, sessionId, 'Page.getFrameTree', {});
+    assert.equal(tree.frameTree.frame.loaderId, result.loaderId);
+    return result;
+  } finally {
+    clearTimeout(timer);
+    off();
   }
 }
 
@@ -803,24 +863,23 @@ async function lifecycleRow(page, chrome, rawSession, row, scene, url) {
   }
   if (scene.lifecycle === 'late-world') {
     row.lateWorldStartedAt = Date.now();
-    row.lateExtension = await chrome.cdp.send('Extensions.loadUnpacked', {
-      path: harnessExtensionPath,
-    });
-    assert.ok(row.lateExtension.id);
-    row.lateNavigation = await rawLoad(chrome, rawSession, 'Page.navigate', {
-      url: `${url}&lateForeign=1`,
-    });
+    row.lateExtension = { path: row.lateExtensionPath, loadedAtLaunch: true };
+    const marked = new URL(url);
+    marked.searchParams.set('late', '1');
+    row.lateNavigation = await rawNavigate(chrome, rawSession, marked.href);
     row.lateProgress = await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
       expression: '({ready: document.readyState, loads: globalThis.cdp675Loads})',
       returnByValue: true,
     });
     assert.equal(row.lateProgress.result?.value?.ready, 'complete');
-    assert.equal(row.lateProgress.result?.value?.loads, 2);
+    assert.ok(
+      [2, 3].includes(row.lateProgress.result?.value?.loads),
+      'only the one pending reload may also complete before the marked navigation'
+    );
     assert.ok(Date.now() - row.lateWorldStartedAt < 7000, 'late foreign world transition stalled');
     row.lateForeignWorlds = row.rawWorlds.filter(
       ({ origin, auxData }) =>
-        origin.replace(/\/$/, '') === `chrome-extension://${row.lateExtension.id}` &&
-        auxData?.isDefault === false
+        origin.startsWith('chrome-extension://') && auxData?.isDefault === false
     );
     assert.ok(row.lateForeignWorlds.length > 0, 'late real extension world must actually arrive');
     row.lateRefusal = await lifecycleCall(page, 'Debugger.enable');
@@ -855,8 +914,15 @@ async function lifecycleRow(page, chrome, rawSession, row, scene, url) {
         packet.method === 'Page.reload'
     ).length;
     assert.equal(row.lateFallbackReloads, 0);
+    assert.equal(
+      row.methods.filter(
+        ({ boundary, direction, packet }) =>
+          boundary === 'bios' && direction === 'send' && packet.method === 'Page.reload'
+      ).length,
+      1
+    );
     row.lateScope =
-      'guard-level successful enable and normal pause before late real extension load; navigation brings its world, pause privately rescued within bound; no shipped fallback transition claimed';
+      'guard-level successful enable and normal pause on unmarked page before real launch-loaded fixture extension content script matches marked new loader; pause privately rescued within bound; no shipped fallback transition claimed';
     await page.evaluate(() => globalThis.cdp675Lifecycle.close());
     return;
   }
@@ -1397,6 +1463,10 @@ for (const route of ['extension', 'link']) {
       const previous = process.env.SLICC_HARNESS_EXTENSION;
       try {
         process.env.SLICC_HARNESS_EXTENSION = foreign ? '1' : '0';
+        const lateExtensionPath = mode === 'late-world' ? await lateExtensionFixture() : null;
+        if (lateExtensionPath)
+          t.after(() => rm(lateExtensionPath, { recursive: true, force: true }));
+        trace.lateExtensionPath = lateExtensionPath;
         const protectedSite = https(await certificate(), (request, response) =>
           response
             .writeHead(200, { 'content-type': 'text/html' })
@@ -1418,10 +1488,12 @@ for (const route of ['extension', 'link']) {
             ? await realExtension({
                 rules: protectedRules,
                 directory: oldRoute ? undefined : process.env.SLICC_675_EXTENSION_DIR,
+                extraExtensions: lateExtensionPath ? [lateExtensionPath] : [],
                 args: ['--disable-features=WebMCP,WebMCPTesting'],
               })
             : await launch({
                 tools: false,
+                extensions: lateExtensionPath ? [lateExtensionPath] : [],
                 args: [
                   '--disable-features=WebMCP,WebMCPTesting',
                   '--ignore-certificate-errors',
@@ -1743,6 +1815,17 @@ for (const route of ['extension', 'link']) {
                   auxData?.isDefault === false
               ),
             });
+          if (scene.lifecycle === 'late-world') {
+            row.lateExtensionPath = trace.lateExtensionPath;
+            assert.equal(
+              row.rawWorlds.some(
+                ({ origin, auxData }) =>
+                  origin.startsWith('chrome-extension://') && auxData?.isDefault === false
+              ),
+              false,
+              'unmarked page must have no real foreign world before enable'
+            );
+          }
           if (scene.protectedSubframe) {
             row.rawTree = await chrome.cdp.send('Page.getFrameTree', {}, rawSession);
             const frames = [];
@@ -2669,6 +2752,17 @@ for (const route of ['extension', 'link']) {
               : scene.protectedHop === 'seven'
                 ? `${SEVEN}/protected-doc`
                 : `http://vault.sliccy.ai:${new URL(trace.fixtureOrigin).port}/protected-doc`;
+            if (scene.hopMode) {
+              row.ordinaryHistory = await rawBounded(
+                chrome,
+                rawSession,
+                'Page.getNavigationHistory',
+                {}
+              );
+              row.ordinaryHistoryCheckpoint =
+                row.ordinaryHistory.entries[row.ordinaryHistory.currentIndex];
+              assert.equal(new URL(row.ordinaryHistoryCheckpoint.url).origin, trace.fixtureOrigin);
+            }
             const start = await page.evaluate(() => globalThis.cdp675Trace.length);
             const began = Date.now();
             let timer;
@@ -2775,10 +2869,23 @@ for (const route of ['extension', 'link']) {
                 `${row.hopLog.stdout}\n${row.hopLog.stderr}`,
                 /(?:seven|vault)\.sliccy\.ai/i
               );
+              row.historyAfterHop = await rawBounded(
+                chrome,
+                rawSession,
+                'Page.getNavigationHistory',
+                {}
+              );
+              const checkpoint = row.historyAfterHop.entries.find(
+                (entry) =>
+                  entry.id === row.ordinaryHistoryCheckpoint.id &&
+                  entry.url === row.ordinaryHistoryCheckpoint.url
+              );
+              assert.ok(checkpoint, 'actual history must retain the recorded ordinary checkpoint');
+              row.historyReturnScope =
+                'return to exact recorded ordinary history entry; link may add a private blocked-data entry, so one history.back is not assumed';
               row.historyReturnAt = Date.now();
-              await rawLoad(chrome, rawSession, 'Runtime.evaluate', {
-                expression: 'history.back()',
-                returnByValue: true,
+              await rawLoad(chrome, rawSession, 'Page.navigateToHistoryEntry', {
+                entryId: checkpoint.id,
               });
               row.historyReturn = await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
                 expression: '({origin: location.origin, ready: document.readyState})',
