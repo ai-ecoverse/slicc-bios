@@ -177,10 +177,17 @@ function linkedActions(state, update, owner) {
   };
 }
 
+export const NO_PICKER = 'This browser can’t open a folder from this device.';
+
+export async function pickFolder(scope = globalThis) {
+  if (!scope.showDirectoryPicker) throw new Error(NO_PICKER);
+  return scope.showDirectoryPicker({ mode: 'readwrite' });
+}
+
 export function createFolders({
   storage,
   secret: initial = false,
-  pick = () => showDirectoryPicker({ mode: 'readwrite' }),
+  pick = pickFolder,
   persist = () => navigator.storage.persist?.(),
   check = offTheRecord,
   mark = markFolders,
