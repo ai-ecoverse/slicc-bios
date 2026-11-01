@@ -4,6 +4,7 @@ import { after, test } from 'node:test';
 import { protection, redacting } from '../../src/seed/guard.js';
 import { boot } from './bios.mjs';
 import { debuggerUrl, devtools, launch } from './chrome.mjs';
+import { assertPopupOutcome, popupReport } from './guard-popup.mjs';
 import { linkNode } from './linked-node.mjs';
 
 const LAG = 8000;
@@ -184,80 +185,6 @@ async function harness(targetId) {
   await send('Runtime.enable');
   await send('Page.enable');
   return { sessionId, send };
-}
-
-async function popupReport(guard, popup, answer) {
-  const report = {
-    afterAttachReply: true,
-    observedAt: Date.now(),
-    discoveredUrl: popup.url,
-    answer,
-  };
-  const capture = (promise) => promise.catch((error) => ({ error: { message: String(error) } }));
-  let sessionId;
-  try {
-    const attached = await capture(
-      own.send('Target.attachToTarget', {
-        targetId: popup.targetId,
-        flatten: true,
-      })
-    );
-    report.harnessAttach = attached;
-    sessionId = attached.result?.sessionId;
-    const [target, tree, guardedTarget, guardedTree, guardedDOM] = await Promise.all([
-      capture(own.send('Target.getTargetInfo', { targetId: popup.targetId })),
-      sessionId ? capture(own.send('Page.getFrameTree', {}, sessionId)) : attached,
-      capture(guard.send('Target.getTargetInfo', { targetId: popup.targetId }, undefined, 3000)),
-      answer.result?.sessionId
-        ? capture(guard.send('Page.getFrameTree', {}, answer.result.sessionId, 3000))
-        : null,
-      answer.result?.sessionId
-        ? capture(guard.send('DOM.getDocument', { depth: 0 }, answer.result.sessionId, 3000))
-        : null,
-    ]);
-    const frameTree = tree.result?.frameTree;
-    const frame = frameTree?.frame;
-    const frames = (node) =>
-      node?.frame ? [node.frame, ...(node.childFrames ?? []).flatMap(frames)] : [];
-    const is = protection(SEVEN);
-    const live = frames(frameTree).some(
-      (entry) => is.url(entry.url) || is.url(entry.securityOrigin)
-    );
-    const error = frame?.url?.startsWith('chrome-error:') || frame?.unreachableUrl;
-    report.target = target;
-    report.frameTree = frameTree ?? tree;
-    report.loaderId = frame?.loaderId ?? null;
-    report.securityOrigin = frame?.securityOrigin ?? null;
-    report.guardedTarget = guardedTarget;
-    report.guardedTree = guardedTree;
-    report.guardedDOM = guardedDOM && {
-      error: guardedDOM.error,
-      hasRoot: Boolean(guardedDOM.result?.root),
-    };
-    report.pathObserved = live
-      ? 'protected frame after attach reply'
-      : error
-        ? guardedDOM?.error?.message === PROTECTED
-          ? 'sealed error/recovery candidate'
-          : 'error document after attach reply'
-        : frame?.url === BLANKED
-          ? 'blocked blank after attach reply'
-          : frame?.url?.startsWith('about:blank')
-            ? 'ordinary blank after attach reply'
-            : 'unknown';
-  } catch (error) {
-    report.diagnosticError = String(error);
-  } finally {
-    if (sessionId) {
-      try {
-        report.detached = await own.send('Target.detachFromTarget', { sessionId });
-      } catch (error) {
-        report.detachError = String(error);
-      }
-    }
-  }
-  report.observedUntil = Date.now();
-  return report;
 }
 
 async function readAttribute(prefix, name = 'data-k', ms = 4000) {
@@ -757,7 +684,7 @@ for (const [detach, lag] of DETACH) {
               const report =
                 attached.error?.message === PROTECTED
                   ? null
-                  : await popupReport(guard, popup, attached);
+                  : await popupReport(own, guard, popup, attached, SEVEN);
               const failures = [];
               let attribute;
               try {
@@ -776,26 +703,10 @@ for (const [detach, lag] of DETACH) {
                   failures.push(error);
                 }
               }
-              for (const check of [
-                () =>
-                  assert.equal(
-                    attribute?.value,
-                    null,
-                    `${id}: no attribute in the protected popup`
-                  ),
-                () => assert.ok(!beacon, `${id}: no beacon from the protected popup`),
-                () =>
-                  assert.equal(
-                    attached.error?.message,
-                    PROTECTED,
-                    `${id}: the client can't attach to the protected popup`
-                  ),
-              ]) {
-                try {
-                  check();
-                } catch (error) {
-                  failures.push(error);
-                }
+              try {
+                assertPopupOutcome(id, popup, attached, report, attribute, beacon);
+              } catch (error) {
+                failures.push(error);
               }
               if (failures.length === 1) throw failures[0];
               if (failures.length > 1)
