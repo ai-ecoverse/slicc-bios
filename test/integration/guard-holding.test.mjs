@@ -23,8 +23,14 @@ const origined = (frame) => ({
 });
 
 function port({ holds = true, frames = [] }) {
-  const state = { frames, trees: 0, nextSession: 0 };
+  const state = { frames, trees: 0, nextSession: 0, children: [], attached: new Map() };
+  const target = (targetId) => state.children.find((child) => child.targetId === targetId);
   const emit = (message) => queueMicrotask(() => connection.onmessage?.(JSON.stringify(message)));
+  const childTree = ({ targetId, url }) => ({
+    frameTree: {
+      frame: { id: targetId, url, securityOrigin: new URL(url).origin, loaderId: 'c1' },
+    },
+  });
   const tree = () => ({
     frameTree: {
       frame: { id: TARGET, url: PAGE, securityOrigin: new URL(PAGE).origin, loaderId: 'l1' },
@@ -49,20 +55,26 @@ function port({ holds = true, frames = [] }) {
     },
   });
   const answers = {
-    'Target.getTargets': () => ({ targetInfos: [info()] }),
-    'Target.getTargetInfo': () => ({ targetInfo: info() }),
-    'Target.attachToTarget': (params) => {
+    'Target.getTargets': () => ({ targetInfos: [info(), ...state.children] }),
+    'Target.getTargetInfo': ({ targetId }) => ({ targetInfo: target(targetId) ?? info() }),
+    'Target.attachToTarget': ({ targetId }) => {
       const sessionId = `session-${++state.nextSession}`;
+      state.attached.set(sessionId, targetId);
       emit({
         method: 'Target.attachedToTarget',
-        params: { sessionId, targetInfo: info(), waitingForDebugger: false },
+        params: {
+          sessionId,
+          targetInfo: target(targetId) ?? info(),
+          waitingForDebugger: false,
+        },
       });
       return { sessionId };
     },
     'Fetch.enable': () => (holds ? { holdsDocuments: true } : {}),
-    'Page.getFrameTree': () => {
+    'Page.getFrameTree': (params, sessionId) => {
       state.trees += 1;
-      return tree();
+      const child = target(state.attached.get(sessionId));
+      return child ? childTree(child) : tree();
     },
     'DOM.getDocument': documentNode,
     'Page.getNavigationHistory': () => ({
@@ -105,7 +117,7 @@ function port({ holds = true, frames = [] }) {
           },
         });
       }
-      emit({ ...envelope, result: answers[method]?.(params) ?? {} });
+      emit({ ...envelope, result: answers[method]?.(params, sessionId) ?? {} });
     },
   };
   return connection;
@@ -148,6 +160,16 @@ test('a holding browser paints past a known, unprotected frame, in the DOM or a 
   const site = 'https://ads.example/';
   assert.deepEqual(await painted(await driven({ frames: [frame(site)] })), open);
   assert.deepEqual(await painted(await driven({ frames: [frame(site, { closed: true })] })), open);
+});
+
+test('a frame a holding browser also reports as a target of its own is walked, and locks the page until it is ready', async () => {
+  const site = frame('https://ads.example/');
+  const page = await driven({ frames: [site] });
+  assert.deepEqual(await painted(page), open);
+  page.crest.state.children.push({ ...info(), targetId: site.id, type: 'iframe', url: site.url });
+  const attached = await page.call('Target.attachToTarget', { targetId: site.id, flatten: true });
+  assert.equal(attached.error, undefined);
+  assert.deepEqual(await painted(page), locked);
 });
 
 test('a browser that doesn’t attest holdsDocuments stays locked by the same frame', async () => {

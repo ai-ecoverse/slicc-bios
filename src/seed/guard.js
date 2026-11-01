@@ -1152,8 +1152,8 @@ class Guard {
     if (id === scope.root) return false;
     if (holds && !LISTED_FRAME.test(this.frames.get(id))) return true;
     if (
-      !holds &&
       (scope.remoteOwners.has(id) || this.targets.get(id)?.type === 'iframe') &&
+      (!holds || this.scopes.has(id)) &&
       this.pageLocked(id, new Set(seen), false, view)
     )
       return true;
