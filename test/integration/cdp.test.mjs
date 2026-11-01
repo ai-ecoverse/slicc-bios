@@ -7,7 +7,9 @@ import { devtools as boundPort, debuggerUrl, launch } from './chrome.mjs';
 import { observeExtensionCommands } from './extension-commands.mjs';
 import { extensionOver } from './fake-extension.mjs';
 import { linkNode } from './linked-node.mjs';
+import { armGuard, finishPair, stopped } from './paired-trace.mjs';
 import {
+  CANDIDATE_EXTENSION,
   CURRENT_EXTENSION,
   display,
   EXTENSIONS,
@@ -247,100 +249,100 @@ test('real slicc-extension 7.9.16: unsupported automation refuses with an update
 });
 
 for (const scenario of ['7.9.16', '7.5.1', '7.6.2', '7.6.3', '7.6.4', '7.9.13', '7.9.5', '7.9.4']) {
-  const extension = CURRENT_EXTENSION;
-  test(`real slicc-extension ${extension.version}: recovery scenario ${scenario}: a blocked protected hop recovers through the kernel to an ordinary tab`, {
-    timeout: 10 * 60 * 1000,
-  }, async (t) => {
-    const real = await realExtension({ extension, rules: ['MAP vault.sliccy.ai 127.0.0.1'] });
-    let evidence;
-    let passed = false;
-    t.after(async () => {
-      let timer;
-      try {
-        if (!passed) {
-          try {
-            const { rows, ...report } = await Promise.race([
-              evidence?.report(scenario) ?? Promise.reject(new Error('evidence unavailable')),
-              new Promise((_, reject) => {
-                timer = setTimeout(() => reject(new Error('evidence deadline')), 15000);
-              }),
-            ]);
-            console.log('recovery diagnostic', JSON.stringify(report));
-            for (const row of rows)
-              console.log('recovery record', JSON.stringify({ scenario, ...row }));
-          } catch {
-            console.log('recovery diagnostic', JSON.stringify({ scenario, unavailable: true }));
-          }
+  for (const extension of [CURRENT_EXTENSION, CANDIDATE_EXTENSION]) {
+    const repeat = Number(process.env.PAIRED_REPEAT ?? 1);
+    test(`real slicc-extension ${extension.version}: recovery scenario ${scenario}: paired ${extension.side} repeat ${repeat}: a blocked protected hop recovers through the kernel to an ordinary tab`, {
+      timeout: 10 * 60 * 1000,
+    }, async (t) => {
+      if (stopped())
+        return t.skip('diagnostic stopped on a candidate-only failure involving a retry');
+      const real = await realExtension({ extension, rules: ['MAP vault.sliccy.ai 127.0.0.1'] });
+      let evidence;
+      let page;
+      let passed = false;
+      const label = { scenario, repeat, side: extension.side, version: extension.version };
+      t.after(async () => {
+        try {
+          await finishPair(real, page, evidence, label, passed);
+        } catch (error) {
+          console.log(
+            'PAIRED_RESULT',
+            JSON.stringify({
+              ...label,
+              passed: false,
+              usable: false,
+              collectorError: String(error.message),
+            })
+          );
+          throw error;
+        } finally {
+          evidence?.stop();
+          await real.close();
         }
-      } finally {
-        clearTimeout(timer);
-        evidence?.stop();
-        await real.close();
-      }
-    });
-    const page = await real.page(t);
-    try {
+      });
+      page = await real.page(t);
+      await armGuard(real);
       evidence = await recoveryEvidence(real, page);
-    } catch {}
-    await page.goto(SEVEN);
-    await ready(page);
-    assert.deepEqual(await automation(page), { via: 'extension' });
-    assert.equal(await page.evaluate(() => globalThis.sliccExtension.version), extension.version);
-    const title = 'Recovered ordinary tab';
-    real.overrides.set('/recovery-seed.html', '<!doctype html><title>seed</title><h1>Seed</h1>');
-    real.overrides.set(
-      '/recovery-hop.html',
-      '<!doctype html><meta http-equiv="refresh" content="0;url=' + VAULT + '">'
-    );
-    real.overrides.set(
-      '/recovery-destination.html',
-      '<!doctype html><title>' + title + '</title><h1>' + title + '</h1>'
-    );
-    const address = (path) => {
-      const url = new URL(path, real.url);
-      url.hostname = 'localhost';
-      return url.href;
-    };
-    hits.length = 0;
-    await run(
-      page,
-      'playwright-cli open ' +
-        address('/recovery-seed.html') +
-        ' > /tmp/blocked-hop 2>&1; playwright-cli goto ' +
-        address('/recovery-hop.html') +
-        ' >> /tmp/blocked-hop 2>&1; playwright-cli eval "document.title" >> /tmp/blocked-hop 2>&1; echo "hop-""finished"'
-    );
-    await shows(page, 'hop-finished', 180000);
-    const hopped = await read(page, '/tmp/blocked-hop');
-    assert.doesNotMatch(hopped, /VAULT-MARK|VAULT-BODY-MARK|chrome-extension:/, hopped);
-    assert.ok(
-      !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
-      'the protected document was not served'
-    );
-    const destination = address('/recovery-destination.html');
-    await run(
-      page,
-      'playwright-cli goto ' +
-        destination +
-        ' > /tmp/blocked-recovery 2>&1; echo recovery-goto-$? >> /tmp/blocked-recovery; playwright-cli eval "location.href + \' \' + document.title" >> /tmp/blocked-recovery 2>&1; echo recovery-read-$? >> /tmp/blocked-recovery; playwright-cli snapshot >> /tmp/blocked-recovery 2>&1; echo recovery-snapshot-$? >> /tmp/blocked-recovery; echo "recovery-""finished"'
-    );
-    await shows(page, 'recovery-finished', 180000);
-    const recovered = await read(page, '/tmp/blocked-recovery');
-    for (const step of ['goto', 'read', 'snapshot'])
-      assert.match(recovered, new RegExp('^recovery-' + step + '-0$', 'm'), recovered);
-    assert.ok(recovered.includes(destination + ' ' + title), recovered);
-    assert.match(recovered, /heading "Recovered ordinary tab"/, recovered);
-    assert.doesNotMatch(
-      recovered,
-      /slicc: refused|VAULT-MARK|VAULT-BODY-MARK|chrome-extension:/,
-      recovered
-    );
-    assert.ok(
-      !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
-      'recovery did not serve the protected document'
-    );
-    passed = true;
-  });
+      await page.goto(SEVEN);
+      await ready(page);
+      assert.deepEqual(await automation(page), { via: 'extension' });
+      assert.equal(await page.evaluate(() => globalThis.sliccExtension.version), extension.version);
+      const title = 'Recovered ordinary tab';
+      real.overrides.set('/recovery-seed.html', '<!doctype html><title>seed</title><h1>Seed</h1>');
+      real.overrides.set(
+        '/recovery-hop.html',
+        '<!doctype html><meta http-equiv="refresh" content="0;url=' + VAULT + '">'
+      );
+      real.overrides.set(
+        '/recovery-destination.html',
+        '<!doctype html><title>' + title + '</title><h1>' + title + '</h1>'
+      );
+      const address = (path) => {
+        const url = new URL(path, real.url);
+        url.hostname = 'localhost';
+        return url.href;
+      };
+      hits.length = 0;
+      await run(
+        page,
+        'playwright-cli open ' +
+          address('/recovery-seed.html') +
+          ' > /tmp/blocked-hop 2>&1; playwright-cli goto ' +
+          address('/recovery-hop.html') +
+          ' >> /tmp/blocked-hop 2>&1; playwright-cli eval "document.title" >> /tmp/blocked-hop 2>&1; echo "hop-""finished"'
+      );
+      await shows(page, 'hop-finished', 180000);
+      const hopped = await read(page, '/tmp/blocked-hop');
+      assert.doesNotMatch(hopped, /VAULT-MARK|VAULT-BODY-MARK|chrome-extension:/, hopped);
+      assert.ok(
+        !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
+        'the protected document was not served'
+      );
+      const destination = address('/recovery-destination.html');
+      await run(
+        page,
+        'playwright-cli goto ' +
+          destination +
+          ' > /tmp/blocked-recovery 2>&1; echo recovery-goto-$? >> /tmp/blocked-recovery; playwright-cli eval "location.href + \' \' + document.title" >> /tmp/blocked-recovery 2>&1; echo recovery-read-$? >> /tmp/blocked-recovery; playwright-cli snapshot >> /tmp/blocked-recovery 2>&1; echo recovery-snapshot-$? >> /tmp/blocked-recovery; echo "recovery-""finished"'
+      );
+      await shows(page, 'recovery-finished', 180000);
+      const recovered = await read(page, '/tmp/blocked-recovery');
+      for (const step of ['goto', 'read', 'snapshot'])
+        assert.match(recovered, new RegExp('^recovery-' + step + '-0$', 'm'), recovered);
+      assert.ok(recovered.includes(destination + ' ' + title), recovered);
+      assert.match(recovered, /heading "Recovered ordinary tab"/, recovered);
+      assert.doesNotMatch(
+        recovered,
+        /slicc: refused|VAULT-MARK|VAULT-BODY-MARK|chrome-extension:/,
+        recovered
+      );
+      assert.ok(
+        !hits.some((hit) => hit.startsWith('vault.sliccy.ai')),
+        'recovery did not serve the protected document'
+      );
+      passed = true;
+    });
+  }
 }
 
 for (const scenario of ['7.9.13', '7.9.5', '7.9.4']) {

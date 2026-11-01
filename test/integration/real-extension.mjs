@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { launch } from './chrome.mjs';
+import { traceExtension } from './paired-trace.mjs';
 
 const run = promisify(execFile);
 
@@ -16,10 +17,18 @@ const release = (version, sha256) => ({
   url: `https://github.com/ai-ecoverse/slicc-extension/releases/download/v${version}/slicc-extension.zip`,
   sha256,
 });
-export const CURRENT_EXTENSION = release(
-  '7.10.0',
-  '9ee54be7897f5e7078363d1aee20016f2d233274863b40323e00a4168d81f458'
-);
+export const CURRENT_EXTENSION = {
+  ...release('7.11.0', '976d9a6983d70777589cccbff2d2b292fe8b99e7f0d1ac838f840ac876632521'),
+  paired: true,
+  side: 'baseline',
+};
+export const CANDIDATE_EXTENSION = {
+  version: '7.11.2',
+  url: new URL('../../diagnostic/candidate.zip', import.meta.url).href,
+  sha256: '9c4cc6c2adfdad2a3d3c26dd93122f9649341521417a4c908158b0ecc020d1ff',
+  paired: true,
+  side: 'candidate',
+};
 export const UNSUPPORTED_EXTENSION = release(
   '7.9.16',
   '65efcc22918b32adda99bc4ff85e5856bead6530f43a3c6a558a2ddd8227bb2b'
@@ -32,7 +41,9 @@ async function unpacked(extension) {
   const dir = join(process.cwd(), 'node_modules', '.cache', `slicc-extension-${extension.version}`);
   const root = join(dir, 'unpacked');
   if (existsSync(join(root, 'manifest.json'))) return root;
-  const response = await fetch(extension.url);
+  const response = extension.url.startsWith('file:')
+    ? { ok: true, arrayBuffer: () => readFile(new URL(extension.url)) }
+    : await fetch(extension.url);
   if (!response.ok) throw new Error(`${extension.url}: HTTP ${response.status}`);
   const zip = Buffer.from(await response.arrayBuffer());
   const sum = createHash('sha256').update(zip).digest('hex');
@@ -136,6 +147,7 @@ export async function realExtension({
   realistic = false,
 } = {}) {
   const root = await unpacked(extension);
+  if (extension.paired) await traceExtension(root);
   const undisplay = realistic ? await display() : () => {};
   const upstream = { url: null };
   let tls;
