@@ -41,6 +41,14 @@ export async function stored(mode, act) {
   }
 }
 
+export function withoutUserAgent(send = globalThis.fetch.bind(globalThis)) {
+  return (url, init) => {
+    const headers = new Headers(init?.headers);
+    headers.delete('user-agent');
+    return send(url, { ...init, headers });
+  };
+}
+
 function redirectingTransport(options) {
   const transport = fetchTransport(options);
   return {
@@ -79,7 +87,7 @@ export async function pickTransport({ minimumRedirectVersion = EXTENSION_REDIREC
       credentialed: manual && { ...manual, active: () => globalThis.sliccExtension === extension },
     };
   }
-  const fetch = globalThis.fetch.bind(globalThis);
+  const fetch = withoutUserAgent();
   return {
     kind: 'page',
     transport: redirectingTransport({ fetch, hint: HINT, bodyIdleMs: BODY_IDLE_MS }),
