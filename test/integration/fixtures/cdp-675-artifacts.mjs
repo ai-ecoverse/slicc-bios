@@ -31,7 +31,7 @@ await writeFile(
         cli: head('candidates/cli'),
         browsers: head('candidates/browsers'),
       },
-      diagnosticVersions: { cdp: '1.43.2', mcpcat: '0.80.1', extension: '7.10.1', cli: '1.49.37' },
+      diagnosticVersions: { cdp: '1.43.2', mcpcat: '0.80.1', extension: '7.11.1', cli: '1.49.37' },
       cdp,
       mcpcat,
       oldClient,

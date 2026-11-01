@@ -3,7 +3,7 @@ import test from 'node:test';
 import { guardProtected } from '../../src/seed/guard.js';
 import { flush, plainFrame, protocol } from './guard-ordering-fixture.mjs';
 
-const route = { kind: 'extension', version: '7.10.1' };
+const route = { kind: 'extension', version: '7.11.1' };
 const dom = (ids) => ({
   nodeId: 1,
   nodeName: '#document',
