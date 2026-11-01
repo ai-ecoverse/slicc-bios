@@ -405,7 +405,7 @@ A browser can vouch for more. When `Fetch.enable` answers `holdsDocuments: true`
 
 **Known limits on such a browser:**
 - A screenshot or PDF shows third-party iframes' pixels to the program. This is accepted.
-- **A frame the browser doesn't list is invisible to the guard.** Crest records a frame's navigations only once a client has touched the page, so on a page the person opened, or a popup a program opened and hadn't attached to yet, a frame inside a cross-origin frame goes unseen. Seven and the vault still render blank there, but only because they send `frame-ancestors`: the hosting holds that line, not the guard. `https://www.sliccy.ai/`, `https://sliccy.ai/` and `https://www.sliccy.ai/auth/callback` send no framing protection, and `www.sliccy.ai`'s pixels reached a screenshot that way.
+- **A frame the browser doesn't list is invisible to the guard.** Crest records a frame's address from when its port opens, so a page already loaded by then can hide a frame nested inside a cross-origin frame until it reloads. Seven and the vault would still render blank there, but only because they send `frame-ancestors`: the hosting holds that line, not the guard. `https://www.sliccy.ai/`, `https://sliccy.ai/` and `https://www.sliccy.ai/auth/callback` send no framing protection.
 
 Such a browser also leaves seven's own pages out of its listing and refuses navigation into them. The guard still runs on every connection, so the rules below hold whatever the browser does.
 
