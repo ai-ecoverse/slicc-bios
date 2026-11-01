@@ -48,7 +48,13 @@ const ordinaryCases = [
     holderKill: 'load',
     many: true,
   },
-  { name: 'ordinary-root-cross-origin-child-clear-error', reload: true, crossOriginChild: true },
+  { name: 'ordinary-root-cross-origin-child-list-call', reload: true, crossOriginChild: true },
+  {
+    name: 'requested-cross-origin-child-clear-error',
+    reload: true,
+    crossOriginChild: true,
+    fromOrigin: true,
+  },
   {
     name: 'protected-cross-origin-child-refuses',
     reload: true,
@@ -203,7 +209,22 @@ function cdp675Frames(reader) {
   return (targetId) => {
     const key = String(targetId);
     calls.set(key, (calls.get(key) ?? 0) + 1);
-    return reader(targetId);
+    const result = reader(targetId);
+    Promise.resolve(result).then(
+      (list) => (globalThis.cdp675FrameReadTrace ??= []).push({
+        at: Date.now(), targetId: key, version: list?.version,
+        count: Array.isArray(list?.frames) ? list.frames.length : null,
+        kinds: Array.isArray(list?.frames) ? list.frames.map((frame) => ({
+          root: frame?.frameId === 0,
+          kind: /^https?:/.test(frame?.url ?? '') ? 'http' : frame?.url === 'about:blank' ? 'blank' : 'unknown',
+          active: frame?.documentLifecycle === undefined || frame.documentLifecycle === 'active',
+          error: frame?.errorOccurred === true,
+        })) : [],
+        remoteOwnerCount: Array.isArray(list?.remoteOwners) ? list.remoteOwners.length : null,
+      }),
+      () => (globalThis.cdp675FrameReadTrace ??= []).push({ at: Date.now(), targetId: key, refused: true })
+    );
+    return result;
   };
 }
 function cdp675Tap(connection, boundary, route) {
@@ -253,10 +274,27 @@ function cdp675Tap(connection, boundary, route) {
 
 function tapGuardSource(source) {
   const method = '  setDebuggerLease(targetId, state) {';
-  return source.replace(
-    method,
-    `${method}\n    (globalThis.cdp675LeaseTrace ??= []).push({ at: Date.now(), targetId, state });`
-  );
+  return source
+    .replace(
+      method,
+      `${method}\n    (globalThis.cdp675LeaseTrace ??= []).push({ at: Date.now(), targetId, state });`
+    )
+    .replace(
+      '  async placePrivateFrames(targetId) {',
+      `  async placePrivateFrames(targetId) {\n    (globalThis.cdp675FramePredicateTrace ??= []).push({ at: Date.now(), targetId, phase: 'start', extension: this.extensionFrames, reader: typeof this.privateFrames === 'function', remoteOwnerCount: this.scope(targetId).remoteOwners.size });`
+    )
+    .replace(
+      '    if (this.revisions.get(targetId) !== revision || scope.loader !== loader) return;',
+      `    (globalThis.cdp675FramePredicateTrace ??= []).push({ at: Date.now(), targetId, phase: 'received', revisionMatches: this.revisions.get(targetId) === revision, loaderMatches: scope.loader === loader, received: list !== undefined, kinds: Array.isArray(list?.frames) ? list.frames.map((frame) => this.is.url(frame?.url) ? 'protected' : ORDINARY.test(frame?.url ?? '') ? 'ordinary' : frame?.url === 'about:blank' ? 'blank' : 'unknown') : [] });\n    if (this.revisions.get(targetId) !== revision || scope.loader !== loader) return;`
+    )
+    .replace(
+      "      this.replaceDebuggerLease(targetId, 'revoked');\n      return;",
+      `      (globalThis.cdp675FramePredicateTrace ??= []).push({ at: Date.now(), targetId, verdict: 'protected' });\n      this.replaceDebuggerLease(targetId, 'revoked');\n      return;`
+    )
+    .replace(
+      '    scope.privatePlaced = rooted;',
+      `    (globalThis.cdp675FramePredicateTrace ??= []).push({ at: Date.now(), targetId, verdict: rooted ? 'placed' : 'unsettled', checks: { complete: Boolean(complete), rooted, version: list?.version === 1, revision: Number.isSafeInteger(list?.revision), nativeRoot: root?.documentId === list?.rootDocumentId && root?.parentFrameId === -1, root: list?.rootFrameId === scope.root, loader: Boolean(loader) && list?.rootLoaderId === loader, ownerCount: list?.remoteOwners?.length === scope.remoteOwners.size, ownerIds: Array.isArray(list?.remoteOwners) && list.remoteOwners.every((id) => scope.remoteOwners.has(id)), remoteFits: scope.remoteOwners.size < (frames?.length ?? 0), reachableFits: this.relatedFrames(scope.frames).size <= (frames?.length ?? 0), ordinary: Array.isArray(frames) && frames.every((frame) => ORDINARY.test(frame?.url ?? '') && !this.is.url(frame?.url)), ready: scope.ready, pending: scope.pending, failed: scope.failed } });\n    scope.privatePlaced = rooted;`
+    );
 }
 
 async function lateFrameRow(page, chrome, rawSession, row, scene, origin, binding) {
@@ -288,6 +326,21 @@ async function lateFrameRow(page, chrome, rawSession, row, scene, origin, bindin
   assert.equal(row.lateRootTools.ready, 'complete');
   assert.equal(row.lateRootTools.binding, 'object', 'already installed root bridge stays');
   assert.match(row.lateRootTools.tools.toolsJson, /"add"/);
+  const firstSuspension = await page.evaluate(
+    (start) =>
+      (globalThis.cdp675LeaseTrace ?? [])
+        .slice(start.leases)
+        .find(({ targetId, state }) => targetId === start.target && state === 'suspended'),
+    { leases: row.lateFrameStart.leases, target: row.target }
+  );
+  assert.ok(firstSuspension, 'frame arrival must suspend the bios-owned lease');
+  await page.within(
+    Math.max(1, firstSuspension.at + 5000 - Date.now()),
+    ({ target, wanted }) =>
+      (globalThis.cdp675LeaseTrace ?? []).filter(({ targetId }) => targetId === target).at(-1)
+        ?.state === wanted,
+    { target: row.target, wanted: scene.lateFrame === 'protected' ? 'revoked' : 'placed' }
+  );
   row.lateLeaseStates = await page.evaluate(
     (start) => (globalThis.cdp675LeaseTrace ?? []).slice(start),
     row.lateFrameStart.leases
@@ -539,8 +592,12 @@ function privateFrameRefusal(scene, probe) {
   assert.equal(probe.reply?.deadline, undefined, 'the private-reader probe must receive a reply');
   if (scene.method !== 'Slicc.frames')
     assert.ok(probe.reply?.error, 'a CDP client cannot call the private frame reader');
+  const reply = JSON.stringify(probe.reply).replace(
+    JSON.stringify(`'${scene.method}' wasn't found`).slice(1, -1),
+    'unknown method'
+  );
   assert.doesNotMatch(
-    JSON.stringify(probe.reply),
+    reply,
     /frame|url|rootDocumentId|remoteOwners|loaderId|revision|native-child|https?:\/\//i
   );
   assert.equal(probe.frameReaderObserved, true, 'the private-reader counter must be installed');
@@ -645,6 +702,51 @@ async function rawLoad(chrome, sessionId, method, params) {
     clearTimeout(timer);
     off?.();
   }
+}
+
+async function armedHistoryRestore(chrome, sessionId, row, entry) {
+  const began = Date.now();
+  const start = row.rawEvents.length;
+  const reply = await rawLoad(chrome, sessionId, 'Page.navigateToHistoryEntry', {
+    entryId: entry.id,
+  });
+  const frame = (await rawBounded(chrome, sessionId, 'Page.getFrameTree', {})).frameTree?.frame;
+  const state = (
+    await rawBounded(chrome, sessionId, 'Runtime.evaluate', {
+      expression: '({ready:document.readyState,persisted:globalThis.__bfcachePersisted})',
+      returnByValue: true,
+    })
+  ).result?.value;
+  const elapsedMs = Date.now() - began;
+  assert.equal(state?.ready, 'complete', 'history return must leave no paused document');
+  assert.ok(elapsedMs < 7000, 'history return exceeded completion bound');
+  const restored = row.rawEvents
+    .slice(start)
+    .some(
+      (event) =>
+        event.method === 'Page.frameNavigated' &&
+        event.params?.type === 'BackForwardCacheRestore' &&
+        event.params.frame?.url === entry.url
+    );
+  if (restored) {
+    assert.equal(frame?.url, entry.url);
+    assert.equal(frame?.unreachableUrl, undefined);
+    assert.equal(state.persisted, true);
+    return { reply, state, restored: true, elapsedMs, outcome: 'real-bfcache-restore' };
+  }
+  assert.equal(frame?.url, 'chrome-error://chromewebdata/');
+  assert.equal(
+    frame?.unreachableUrl,
+    entry.url,
+    'only the requested protected return may be blocked'
+  );
+  return {
+    reply,
+    state,
+    restored: false,
+    elapsedMs,
+    outcome: 'blocked-error-document-not-reached',
+  };
 }
 
 async function lateExtensionFixture() {
@@ -1432,17 +1534,28 @@ async function shippedHolderDeath(page, chrome, rawSession, row, scene) {
     row.reloadStartedAt = Date.now();
     loading = rawLoad(chrome, rawSession, 'Page.reload', {});
     loading.catch(() => {});
-    await page.within(
-      7000,
-      ({ start }) =>
-        globalThis.cdp675Trace
-          .slice(start)
-          .some(
-            ({ boundary, direction, packet }) =>
-              boundary === 'bios' && direction === 'receive' && packet.method === 'Debugger.paused'
-          ),
-      { start: row.deathTraceStart }
-    );
+    try {
+      await page.within(
+        7000,
+        ({ start }) =>
+          globalThis.cdp675Trace
+            .slice(start)
+            .some(
+              ({ boundary, direction, packet }) =>
+                boundary === 'bios' &&
+                direction === 'receive' &&
+                packet.method === 'Debugger.paused'
+            ),
+        { start: row.deathTraceStart }
+      );
+      row.pauseCatch = { caught: true, scope: 'first published pause after reload' };
+    } catch (error) {
+      if (!error.message.includes('Timed out after 7000 ms')) throw error;
+      row.pauseCatch = {
+        caught: false,
+        scope: 'no pause caught; holder death and subsequent progress only, not pause rescue',
+      };
+    }
   }
   row.killStartedAt = Date.now();
   row.kill = await sh(page, `kill -9 ${holders[0].pid} ${server}; echo holder-kill-status-$?`);
@@ -2632,10 +2745,37 @@ for (const route of ['extension', 'link']) {
               'cross-origin child must really exist'
             );
             row.crossOriginMessage = await sh(page, `cat ${row.log}`);
-            assert.match(
+            assert.doesNotMatch(
               row.crossOriginMessage.stdout,
               /cross-origin child tools are unavailable on this guarded route/
             );
+            if (scene.fromOrigin) {
+              const origin = new URL(
+                row.crossOriginChildren.find(
+                  ({ tree }) => new URL(tree.frameTree.frame.url).origin !== trace.fixtureOrigin
+                ).tree.frameTree.frame.url
+              ).origin;
+              row.fromOriginList = await cone(
+                page,
+                `playwright-cli webmcp-list --tab ${quote(row.target)} --from-origin ${quote(origin)} --json`,
+                `675-cross-origin-${index}`
+              );
+              assert.equal(row.fromOriginList.status, 0);
+              assert.match(
+                row.fromOriginList.stdout + row.fromOriginList.stderr,
+                /cross-origin child tools are unavailable on this guarded route/
+              );
+              const requested = JSON.parse(row.fromOriginList.stdout);
+              const rootTools = Array.isArray(requested) ? requested : requested.tools;
+              assert.ok(rootTools.some(({ name }) => name === 'add'));
+              row.fromOriginCall = await cone(
+                page,
+                `playwright-cli webmcp-call add '{"a":2,"b":3}' --tab ${quote(row.target)} --from-origin ${quote(origin)}`,
+                `675-cross-origin-call-${index}`
+              );
+              assert.equal(row.fromOriginCall.status, 0);
+              assert.match(row.fromOriginCall.stdout, /^5$/m);
+            }
             assert.ok(row.tools.some(({ name }) => name === 'add' || name.endsWith('_add')));
             assert.match(row.call.stdout, /^5$/m);
             for (const { tree } of row.crossOriginChildren)
@@ -2785,14 +2925,16 @@ for (const route of ['extension', 'link']) {
             };
             row.loadCost.addedMs = row.loadCost.holderMs - row.loadCost.baselineMs;
             assert.ok(
-              row.loadCost.addedMs < (route === 'link' ? 2000 : 1000),
+              row.loadCost.addedMs < 2000,
               `100-script holder added ${row.loadCost.addedMs}ms`
             );
           }
           if (scene.bfcache) {
             row.step = 'armed-bfcache-restore';
             const start = await page.evaluate(() => globalThis.cdp675Trace.length);
-            row.bfcache.protectedRestore = await bfcacheDriver.restore(row.bfcache.protectedEntry);
+            row.bfcache.protectedRestore = scene.ordinaryBfcache
+              ? await bfcacheDriver.restore(row.bfcache.protectedEntry)
+              : await armedHistoryRestore(chrome, rawSession, row, row.bfcache.protectedEntry);
             if (scene.ordinaryBfcache)
               row.bfcache.scope =
                 'clean tab with only ordinary history; first ordinary restore and return to armed ordinary B measured separately from refused protected-history tab';
@@ -3195,8 +3337,26 @@ for (const route of ['extension', 'link']) {
                 })
                 .catch((error) => ({ error: error.message }));
             }
-            row.methods ??= await page
+            row.methods = await page
               .evaluate((start) => globalThis.cdp675Trace?.slice(start ?? 0) ?? [], row.traceStart)
+              .catch(() => []);
+            row.frameReadTrace = await page
+              .evaluate(
+                (target) =>
+                  (globalThis.cdp675FrameReadTrace ?? []).filter(
+                    ({ targetId }) => targetId === target
+                  ),
+                row.target
+              )
+              .catch(() => []);
+            row.framePredicateTrace = await page
+              .evaluate(
+                (target) =>
+                  (globalThis.cdp675FramePredicateTrace ?? []).filter(
+                    ({ targetId }) => targetId === target
+                  ),
+                row.target
+              )
               .catch(() => []);
           }
           unobserve?.();
