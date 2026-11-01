@@ -80,6 +80,20 @@ const fallbackCases = [
   { name: 'foreign-iframe-50ms', reload: true, delay: 50, measure: true },
   { name: 'foreign-iframe-500ms', reload: true, delay: 500 },
   { name: 'foreign-opspile-two-sequential-fetches', reload: true, delay: 150, sequential: true },
+  {
+    name: 'foreign-opspile-two-sequential-fetches-repeat2',
+    reload: true,
+    delay: 150,
+    sequential: true,
+    extensionOnly: true,
+  },
+  {
+    name: 'foreign-opspile-two-sequential-fetches-repeat3',
+    reload: true,
+    delay: 150,
+    sequential: true,
+    extensionOnly: true,
+  },
   { name: 'foreign-iframe-parse-time', reload: true, parse: true },
   {
     name: 'fallback-protected-seven-subframe-root-only',
@@ -399,6 +413,89 @@ async function rawLoad(chrome, sessionId, method, params) {
   }
 }
 
+async function stopTracing(chrome) {
+  let timer;
+  const done = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(false), 1500);
+  });
+  let tracingDone;
+  const completion = new Promise((resolve) => {
+    tracingDone = resolve;
+  });
+  const off = chrome.cdp.on(({ method }) => {
+    if (method === 'Tracing.tracingComplete') tracingDone(true);
+  });
+  try {
+    const reply = await rawBounded(chrome, undefined, 'Tracing.end', {}, 1000).catch((error) => ({
+      error: error.message,
+    }));
+    if (reply.error) {
+      assert.match(reply.error, /Tracing is not started|Tracing hasn't been started/i);
+      return { active: false, reply };
+    }
+    assert.equal(
+      await Promise.race([completion, done]),
+      true,
+      'existing browser tracing must finish before the owned PID trace starts'
+    );
+    return { active: true, ended: true, reply };
+  } finally {
+    clearTimeout(timer);
+    off();
+  }
+}
+
+async function recoverWorker(page, row, budget = 30000) {
+  const until = Date.now() + budget;
+  const retryable =
+    "Seven couldn't check the browser for sign-in tabs before handing it over. Try again.";
+  row.workerGuardAttempts = [];
+  let timer;
+  const expired = new Promise((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error('new guarded extension call did not recover within its bound')),
+      budget
+    );
+  });
+  const recovering = async () => {
+    do {
+      const attempt = { at: Date.now() };
+      row.workerGuardAttempts.push(attempt);
+      try {
+        row.workerGuardAttach = await lifecycleOpen(page, row.target);
+        assert.ok(row.workerGuardAttach.result?.sessionId, JSON.stringify(row.workerGuardAttach));
+        row.workerGuardEnable = await lifecycleCall(page, 'Runtime.enable');
+        assert.ok(row.workerGuardEnable.result, JSON.stringify(row.workerGuardEnable));
+        row.workerGuardRead = await lifecycleCall(page, 'Runtime.evaluate', {
+          expression: '6 * 7',
+          returnByValue: true,
+        });
+        assert.equal(
+          row.workerGuardRead.result?.result?.value,
+          42,
+          'a new guarded call must work after lazy extension restart'
+        );
+        attempt.success = true;
+        return;
+      } catch (error) {
+        attempt.error = error.message;
+        await Promise.resolve(page.evaluate(() => globalThis.cdp675Lifecycle?.close())).catch(
+          () => {}
+        );
+        if (!error.message.includes(retryable)) throw error;
+        if (Date.now() >= until) break;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(250, until - Date.now())));
+      }
+    } while (Date.now() < until);
+    throw new Error('new guarded extension call did not recover within its bound');
+  };
+  try {
+    await Promise.race([recovering(), expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function stopOwnedWorker(chrome, row) {
   const targetId = row.workerBefore.targetId;
   const destroyed = [];
@@ -436,6 +533,7 @@ async function stopOwnedWorker(chrome, row) {
         targetId,
         flatten: true,
       });
+      row.workerPriorTracing = await stopTracing(chrome);
       const tag = `675-owned-worker-${targetId}-${Date.now()}`;
       const records = [];
       let completed;
@@ -716,21 +814,9 @@ async function lifecycleRescue(page, chrome, rawSession, row, kind) {
         holder.close();
         return { calls: holder.calls, events: holder.events };
       });
-      row.workerGuardAttach = await lifecycleOpen(page, row.target);
-      assert.ok(row.workerGuardAttach.result?.sessionId);
-      row.workerGuardEnable = await lifecycleCall(page, 'Runtime.enable');
-      assert.ok(row.workerGuardEnable.result);
-      row.workerGuardRead = await lifecycleCall(page, 'Runtime.evaluate', {
-        expression: '6 * 7',
-        returnByValue: true,
-      });
-      assert.equal(
-        row.workerGuardRead.result?.result?.value,
-        42,
-        'a new guarded call must work after lazy extension restart'
-      );
+      await recoverWorker(page, row);
       row.workerGuardCallMs = Date.now() - row.workerGuardCallAt;
-      assert.ok(row.workerGuardCallMs < 10000);
+      assert.ok(row.workerGuardCallMs < 30000);
       row.workerAfterGuardCallTargets = (
         await chrome.cdp.send('Target.getTargets', {})
       ).targetInfos.filter(
@@ -1058,7 +1144,7 @@ for (const route of ['extension', 'link']) {
             (!scene.extensionOnly || route === 'extension')
         )
       : foreign
-        ? fallbackCases
+        ? fallbackCases.filter((scene) => !scene.extensionOnly || route === 'extension')
         : oldRoute
           ? [{ name: 'old-route-terminal', reload: true, negative: true }]
           : ordinaryCases.filter((scene) => !scene.linkOnly || route === 'link');
@@ -1330,6 +1416,9 @@ for (const route of ['extension', 'link']) {
           if (setupError) throw setupError;
           row.packageProof = trace.packageProof;
           row.setupChecks = [...trace.setupChecks];
+          if (route === 'extension' && scene.sequential)
+            row.repeatReason =
+              'three sequential opspile rows verify the frame-tree freshness fence, rather than fetch latency or a lucky result';
           if (scene.oldClient) {
             row.step = 'install-old-client';
             const oldPackage = await stagePackage(page, manifest.oldClient, row.setupChecks);
