@@ -278,6 +278,13 @@ function tapGuardSource(source) {
   const method = '  setDebuggerLease(targetId, state) {';
   return source
     .replace(
+      '    if (this.releasePendingDocument(message)) return;',
+      `    if (this.releasePendingDocument(message)) {
+      (globalThis.cdp675PrivateDocumentTrace ??= []).push({ at: Date.now(), targetId: this.scopeTarget(message.sessionId), sessionId: message.sessionId, requestId: message.params.requestId, frameId: message.params.frameId });
+      return;
+    }`
+    )
+    .replace(
       '      world.ids.set(id, hidden);',
       `      (globalThis.cdp675WorldTrace ??= []).push({ at: Date.now(), targetId: this.scopeTarget(sessionId), sessionId, phase: 'context-created', context: params.context, hidden, errorFrame: this.errorFrames.has(auxData?.frameId) });
       world.ids.set(id, hidden);`
@@ -3498,6 +3505,15 @@ for (const route of ['extension', 'link']) {
                 row.target
               )
               .catch(() => []);
+            row.privateDocumentTrace = await page
+              .evaluate(
+                (target) =>
+                  (globalThis.cdp675PrivateDocumentTrace ?? []).filter(
+                    ({ targetId }) => targetId === target
+                  ),
+                row.target
+              )
+              .catch(() => []);
             row.publicationTrace = await page
               .evaluate(
                 (target) =>
@@ -3531,6 +3547,39 @@ for (const route of ['extension', 'link']) {
                 row.status = 'finding';
                 row.failure = { name: error.name, message: error.message };
               }
+            }
+          }
+          if (row.status === 'pass' && row.privateDocumentTrace?.length) {
+            try {
+              for (const record of row.privateDocumentTrace) {
+                assert.equal(
+                  row.methods.some(
+                    ({ boundary, direction, packet }) =>
+                      boundary === 'bios' &&
+                      direction === 'receive' &&
+                      packet.method === 'Fetch.requestPaused' &&
+                      packet.sessionId === record.sessionId &&
+                      packet.params?.requestId === record.requestId
+                  ),
+                  false,
+                  'privately consumed child request must never reach the client'
+                );
+                assert.ok(
+                  row.methods.some(
+                    ({ boundary, direction, packet }) =>
+                      boundary === 'route' &&
+                      direction === 'send' &&
+                      packet.id >= 2 ** 30 &&
+                      ['Fetch.continueRequest', 'Fetch.failRequest'].includes(packet.method) &&
+                      packet.sessionId === record.sessionId &&
+                      packet.params?.requestId === record.requestId
+                  ),
+                  'bios must privately answer the consumed client interception'
+                );
+              }
+            } catch (error) {
+              row.status = 'finding';
+              row.failure = { name: error.name, message: error.message };
             }
           }
           countRow(row);
