@@ -306,7 +306,7 @@ const PAGE_DOMAINS = [
 const pageScoped = (method = '') =>
   PAGE_PAINT.has(method) || PAGE_DOMAINS.some((domain) => method.startsWith(domain));
 const FRAME_CHILDREN = [{ type: 'iframe', exclude: false }, { exclude: true }];
-const NO_AUTO_ATTACH =
+export const NO_AUTO_ATTACH =
   'slicc: refused: Target.setAutoAttach is not supported: attach to each target';
 const STRUCTURE = new Set([
   'Page.frameAttached',

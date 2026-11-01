@@ -289,5 +289,6 @@ export function createNetwork(choice, options = {}) {
   options.tray?.on(emit);
   options.pairing?.on(emit);
   options.leaders?.on(emit);
+  (options.events ?? globalThis).addEventListener?.('crestdevtools', emit);
   return { port, transport, credentialed: choice.credentialed ?? null };
 }
