@@ -2042,6 +2042,58 @@ test('an agent that failed to start at boot loads the new page adapter once an u
   assert.deepEqual(page.errors, []);
 });
 
+test('a browser without userAgentData hears what it may do with seven’s files, and no advice for Chrome', {
+  timeout: 30 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  await page.init(helpers);
+  await page.init(storageStub);
+  await page.init(() => {
+    Object.defineProperty(Navigator.prototype, 'userAgentData', {
+      configurable: true,
+      get: () => undefined,
+    });
+  });
+  await page.goto('/');
+  await ready(page, undefined, { tools: false });
+  await agentUp(page);
+  await connectAccount(page, 'amazon-bedrock', KEY);
+  await page.until(() =>
+    document.querySelector('slicc-app').dock.api.panels.some((panel) => panel.id === 'chat:cone')
+  );
+  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
+  await page.until(
+    () => !!window.chatView() && !!window.deep(window.chatView().shadowRoot, 'textarea')
+  );
+  await page.evaluate(() => window.deep(window.chatView().shadowRoot, 'textarea').focus());
+  await page.insert('Say hello');
+  await page.enter();
+  await page.until(() => !!window.storageNotice());
+  const [notice] = await page.evaluate(() =>
+    document.querySelector('slicc-app').model.notices.list()
+  );
+  assert.equal(
+    notice.body,
+    'This browser may clear seven’s files and chats when it needs the space.'
+  );
+  assert.deepEqual(
+    notice.actions.map(({ id }) => id),
+    ['retry']
+  );
+  assert.equal(
+    await page.evaluate(() =>
+      document
+        .querySelector('slicc-app')
+        .model.notices.act('storage', 'retry')
+        .then(
+          () => 'kept',
+          (error) => error.message
+        )
+    ),
+    'This browser still doesn’t promise to keep seven’s files.'
+  );
+});
+
 test('a fresh profile’s first agent turn finds seven’s tools after boot: rg runs and curl reaches an https upstream, since the agent waits for them to settle', {
   timeout: 30 * 60 * 1000,
 }, async (t) => {

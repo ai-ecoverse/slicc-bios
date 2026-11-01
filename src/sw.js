@@ -424,8 +424,7 @@ async function serve(request, controller, client) {
   const served = kind(path);
   if (served === 'bios') return unkeptDocument(await network(), request);
   if (path === STATUS) {
-    const stopped = await (await integrity()).stopped();
-    return respond(JSON.stringify({ stopped }), types.json, 'sw');
+    return respond(JSON.stringify(await (await integrity()).status()), types.json, 'sw');
   }
   if (served === 'stub') {
     const name = path.slice(NODE_STUBS.length).replace(/\.js$/, '');

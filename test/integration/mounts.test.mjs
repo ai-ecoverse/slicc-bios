@@ -54,6 +54,21 @@ async function read(page, path) {
   }, path);
 }
 
+test('a browser with no folder picker says so', async (t) => {
+  const { page } = await opened(t);
+  await page.init(() => {
+    window.showDirectoryPicker = undefined;
+  });
+  await boot(page);
+  const said = await page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.files.mountFolder()
+      .catch((error) => error.message)
+  );
+  assert.equal(said, 'This browser can’t open a folder from this device.');
+});
+
 test('off the record, a shell fsa mount asks for a folder in the Files panel, works and is not kept', async (t) => {
   const { page } = await opened(t);
   await ui(page);
