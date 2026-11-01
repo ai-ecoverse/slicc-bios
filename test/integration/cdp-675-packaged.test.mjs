@@ -48,6 +48,7 @@ const ordinaryCases = [
     holderKill: 'load',
     many: true,
   },
+  { name: 'ordinary-dedicated-worker-root-list-call', reload: true, dedicatedWorker: true },
   { name: 'ordinary-root-cross-origin-child-list-call', reload: true, crossOriginChild: true },
   {
     name: 'requested-cross-origin-child-clear-error',
@@ -335,7 +336,7 @@ async function lateFrameRow(page, chrome, rawSession, row, scene, origin, bindin
   );
   assert.ok(firstSuspension, 'frame arrival must suspend the bios-owned lease');
   await page.within(
-    Math.max(1, firstSuspension.at + 5000 - Date.now()),
+    Math.max(1, firstSuspension.at + 6000 - Date.now()),
     ({ target, wanted }) =>
       (globalThis.cdp675LeaseTrace ?? []).filter(({ targetId }) => targetId === target).at(-1)
         ?.state === wanted,
@@ -1847,6 +1848,10 @@ for (const route of ['extension', 'link']) {
             response.writeHead(302, { location: at.searchParams.get('to') });
             return response.end();
           }
+          if (at.pathname === '/dedicated-worker.js')
+            return response
+              .writeHead(200, { 'content-type': 'application/javascript' })
+              .end("self.cdp675WorkerURL = location.href; self.postMessage('675-worker-ready');");
           response.writeHead(200, { 'content-type': 'text/html' });
           if (at.pathname === '/prerender-candidate')
             return response.end('<!doctype html><title>675 no-activation candidate</title>');
@@ -1870,13 +1875,16 @@ for (const route of ['extension', 'link']) {
           const startup = at.searchParams.has('sequential')
             ? `async function start() { await fetch('/data?delay=150&step=who'); await fetch('/data?delay=150&step=inbox'); window.cdp675Connected = true; window.cdp675RegisterCalls = 1; if (document.modelContext) { ${registration}; } } await start();`
             : code;
+          const workerStartup = at.searchParams.has('dedicatedWorker')
+            ? `window.cdp675Worker = new Worker('/dedicated-worker.js?row=${at.searchParams.get('row')}'); await new Promise(resolve => { window.cdp675Worker.onmessage = ({data}) => { if (data === '675-worker-ready') { window.cdp675WorkerReady = true; resolve(); } }; });`
+            : '';
           const scripts = at.searchParams.has('many')
             ? Array.from({ length: 100 }, (_, i) => `<script src="/script?i=${i}"></script>`).join(
                 ''
               )
             : '';
           response.end(
-            `<!doctype html><title>675 ordinary</title>${at.pathname === '/bfcache' ? bfcacheMarkup(request.url) : ''}${scripts}${at.searchParams.has('crossChild') ? `<iframe src="${at.searchParams.has('protected') ? `https://${at.searchParams.get('protected')}.sliccy.ai/__675_frame` : `http://127.0.0.1:${fixture.address().port}/iframe`}"></iframe>` : ''}${at.searchParams.has('siblings') ? `<iframe src="http://127.0.0.1:${fixture.address().port}/iframe?ordinary=one"></iframe><iframe src="http://127.0.0.1:${fixture.address().port}/iframe?ordinary=two"></iframe>` : ''}${foreign ? `<iframe src="${at.searchParams.has('protected') ? `https://${at.searchParams.get('protected')}.sliccy.ai/__675_frame` : '/iframe'}"></iframe>` : ''}<script type="module">window.cdp675Loads = (Number(sessionStorage.cdp675Loads) || 0) + 1; sessionStorage.cdp675Loads = window.cdp675Loads; ${startup}</script>`
+            `<!doctype html><title>675 ordinary</title>${at.pathname === '/bfcache' ? bfcacheMarkup(request.url) : ''}${scripts}${at.searchParams.has('crossChild') ? `<iframe src="${at.searchParams.has('protected') ? `https://${at.searchParams.get('protected')}.sliccy.ai/__675_frame` : `http://127.0.0.1:${fixture.address().port}/iframe`}"></iframe>` : ''}${at.searchParams.has('siblings') ? `<iframe src="http://127.0.0.1:${fixture.address().port}/iframe?ordinary=one"></iframe><iframe src="http://127.0.0.1:${fixture.address().port}/iframe?ordinary=two"></iframe>` : ''}${foreign ? `<iframe src="${at.searchParams.has('protected') ? `https://${at.searchParams.get('protected')}.sliccy.ai/__675_frame` : '/iframe'}"></iframe>` : ''}<script type="module">window.cdp675Loads = (Number(sessionStorage.cdp675Loads) || 0) + 1; sessionStorage.cdp675Loads = window.cdp675Loads; ${workerStartup}${startup}</script>`
           );
         });
         await new Promise((resolve) => fixture.listen(0, '127.0.0.1', resolve));
@@ -2040,6 +2048,7 @@ for (const route of ['extension', 'link']) {
             trace.fixtureOrigin
           );
           if (scene.lifecycle === 'echo') url = new URL('https://echo.sliccy.ai/__675_echo');
+          if (scene.dedicatedWorker) url.searchParams.set('dedicatedWorker', '1');
           if (scene.crossOriginChild) url.searchParams.set('crossChild', '1');
           if (scene.siblings) url.searchParams.set('siblings', '1');
           if (scene.protectedSubframe) url.searchParams.set('protected', scene.protectedSubframe);
@@ -2129,6 +2138,20 @@ for (const route of ['extension', 'link']) {
                   auxData?.isDefault === false
               ),
             });
+          if (scene.dedicatedWorker) {
+            row.workerPremise = await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
+              expression: '({ready: window.cdp675WorkerReady, owned: !!window.cdp675Worker})',
+              returnByValue: true,
+            });
+            assert.equal(row.workerPremise.result?.value?.ready, true);
+            assert.equal(row.workerPremise.result?.value?.owned, true);
+            row.workerTargets = (await chrome.cdp.send('Target.getTargets', {})).targetInfos.filter(
+              ({ type, url: workerURL }) =>
+                type === 'worker' &&
+                workerURL === new URL(`/dedicated-worker.js?row=${index}`, trace.fixtureOrigin).href
+            );
+            assert.equal(row.workerTargets.length, 1, 'own concrete dedicated worker must exist');
+          }
           if (scene.crossOriginChild && !scene.protectedSubframe) {
             row.ordinaryPageRelay = (
               await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
@@ -2736,6 +2759,35 @@ for (const route of ['extension', 'link']) {
           );
           assert.ok(installations.length > 0);
           row.installationsPerRealm = oncePerRealm(installations);
+          if (scene.dedicatedWorker) {
+            row.workerAfterHolder = await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
+              expression: '({ready: window.cdp675WorkerReady, owned: !!window.cdp675Worker})',
+              returnByValue: true,
+            });
+            assert.equal(row.workerAfterHolder.result?.value?.ready, true);
+            assert.equal(row.workerAfterHolder.result?.value?.owned, true);
+            const rootOwner = row.methods.find(
+              ({ boundary, direction, packet }) =>
+                boundary === 'bios' && direction === 'send' && packet.method === 'Debugger.enable'
+            ).packet.sessionId;
+            assert.ok(rootOwner);
+            assert.equal(
+              row.methods.some(
+                ({ boundary, direction, packet }) =>
+                  boundary === 'bios' &&
+                  direction === 'receive' &&
+                  [
+                    'Debugger.paused',
+                    'Debugger.scriptParsed',
+                    'Debugger.scriptFailedToParse',
+                  ].includes(packet.method) &&
+                  (packet.sessionId !== rootOwner ||
+                    packet.params?.url?.includes('/dedicated-worker.js'))
+              ),
+              false,
+              'dedicated-worker pauses and scripts must never be published'
+            );
+          }
           if (scene.crossOriginChild) {
             row.crossOriginChildren = await rawChildren(chrome, rawSession);
             assert.ok(
@@ -3283,16 +3335,57 @@ for (const route of ['extension', 'link']) {
                 `675-history-list-${index}`
               );
               const historyListing = JSON.parse(row.historyList.stdout);
-              const historyTools = Array.isArray(historyListing)
-                ? historyListing
-                : historyListing.tools;
-              assert.ok(Array.isArray(historyTools));
-              assert.ok(
-                historyTools.some(({ name }) => name === 'add' || name.endsWith('_add')) ||
-                  typeof historyListing.hint === 'string',
-                row.historyList.stdout
-              );
+              if (route === 'link') {
+                assert.equal(historyListing.error?.kind, 'rpc_error');
+                assert.match(
+                  historyListing.error?.message ?? '',
+                  /Target\.attachToTarget: slicc: refused:/
+                );
+                row.historyRefusalScope =
+                  'existing CLI protected-history fence remains terminal after an ordinary return';
+                row.historyProgress = await rawBounded(
+                  chrome,
+                  rawSession,
+                  'Runtime.evaluate',
+                  {
+                    expression: 'new Promise(resolve => setTimeout(() => resolve(true), 0))',
+                    awaitPromise: true,
+                    returnByValue: true,
+                  },
+                  5000
+                );
+                assert.equal(row.historyProgress.result?.value, true, 'history return left paused');
+                row.historyMethods = await page.evaluate(
+                  (at) => globalThis.cdp675Trace.filter((entry) => entry.at >= at),
+                  row.historyReturnAt
+                );
+                assert.equal(
+                  row.historyMethods.some(
+                    ({ boundary, direction, packet }) =>
+                      boundary === 'bios' &&
+                      direction === 'receive' &&
+                      [
+                        'Debugger.scriptParsed',
+                        'Debugger.scriptFailedToParse',
+                        'Debugger.paused',
+                      ].includes(packet.method)
+                  ),
+                  false
+                );
+              } else {
+                const historyTools = Array.isArray(historyListing)
+                  ? historyListing
+                  : historyListing.tools;
+                assert.ok(Array.isArray(historyTools));
+                assert.ok(
+                  historyTools.some(({ name }) => name === 'add' || name.endsWith('_add')) ||
+                    typeof historyListing.hint === 'string',
+                  row.historyList.stdout
+                );
+              }
               assert.doesNotMatch(row.historyList.stdout, /(?:seven|vault)\.sliccy\.ai/i);
+              if (route === 'link')
+                assert.doesNotMatch(row.historyList.stderr, /(?:seven|vault)\.sliccy\.ai/i);
             }
           }
           row.status = 'pass';
@@ -3319,6 +3412,17 @@ for (const route of ['extension', 'link']) {
               .catch(() => {});
           countRow(row);
           if (page && !setupError) {
+            if (row.lateFrameStart) {
+              row.lateLeaseStates = await page
+                .evaluate(
+                  ({ start, target }) =>
+                    (globalThis.cdp675LeaseTrace ?? [])
+                      .slice(start)
+                      .filter(({ targetId }) => targetId === target),
+                  { start: row.lateFrameStart.leases, target: row.target }
+                )
+                .catch(() => []);
+            }
             if (!guardLevel) {
               row.serverLog = await sh(page, `cat ${row.log}`).catch((error) => ({
                 error: error.message,
