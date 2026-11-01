@@ -172,11 +172,61 @@ test('an /os/ page that loads without seven’s service worker goes back through
   assert.deepEqual(page.errors, []);
 });
 
+async function shots(page, name) {
+  for (const [color, width] of [
+    ['light', 1280],
+    ['dark', 1280],
+    ['light', 420],
+  ]) {
+    await page.send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-color-scheme', value: color }],
+    });
+    await page.send('Emulation.setDeviceMetricsOverride', {
+      width,
+      height: 800,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await page.screenshot(new URL(`${name}-${color}-${width}.png`, page.dir));
+  }
+  await page.send('Emulation.clearDeviceMetricsOverride');
+  await page.send('Emulation.setEmulatedMedia', { features: [] });
+}
+
+test('a boot that fails while it runs shows the error, not a claim about its files', async (t) => {
+  const page = await chrome.page(t);
+  chrome.overrides.set('/seed/os.js', "throw new Error('the UI failed on purpose');\n");
+  await page.goto('/');
+  const text = await page.until(() => document.querySelector('[data-refused] p')?.textContent);
+  assert.equal(text, 'Seven stopped while starting: Error: the UI failed on purpose');
+  await shots(page, 'start-failed');
+});
+
+test('a boot that fails with no answer from the service worker claims nothing about its files', async (t) => {
+  const page = await chrome.page(t);
+  chrome.overrides.set('/seed/os.js', "throw new Error('the UI failed on purpose');\n");
+  await page.init(() => {
+    const send = globalThis.fetch.bind(globalThis);
+    globalThis.fetch = (input, init) =>
+      String(input).endsWith('/__slicc/integrity')
+        ? Promise.reject(new TypeError('no answer'))
+        : send(input, init);
+  });
+  await page.goto('/');
+  const text = await page.until(() => document.querySelector('[data-refused] p')?.textContent);
+  assert.equal(text, 'Seven stopped while starting: Error: the UI failed on purpose');
+});
+
 test('an /os/ page that is still without its service worker after one trip through the BIOS stops there and says why, with no second trip (#765)', async (t) => {
   const page = await chrome.page(t);
   await boot(page);
   const before = await uncontrolledReload(page, true);
   await page.within(30000, () => !window.before765 && !!document.querySelector('[data-refused]'));
   assert.equal(await page.evaluate(() => location.pathname), '/os/index.html');
+  assert.equal(
+    await page.evaluate(() => document.querySelector('[data-refused] p').textContent),
+    'Seven’s service worker isn’t running in this page, so seven couldn’t load its code. Reloading goes through the BIOS, which starts it again.'
+  );
+  await shots(page, 'start-no-worker');
   assert.equal(chrome.requests.slice(before).includes('/bios.js'), false, 'no second trip');
 });
