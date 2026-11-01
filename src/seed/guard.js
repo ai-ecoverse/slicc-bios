@@ -966,7 +966,8 @@ class Guard {
         JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })
       );
     });
-    if (method === 'Page.getFrameTree' && nav?.admitted) {
+    const evidenceNav = nav ?? this.navs.get(this.sessions.get(sessionId)?.targetId);
+    if (method === 'Page.getFrameTree' && evidenceNav?.admitted) {
       this.evidence.add(work);
       void Promise.allSettled([work]).then(() => this.evidence.delete(work));
     }
