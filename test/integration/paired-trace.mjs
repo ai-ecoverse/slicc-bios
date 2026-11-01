@@ -61,6 +61,7 @@ export async function traceExtension(root) {
   traced.add(root);
   const path = join(root, 'cdp.js');
   let source = await readFile(path, 'utf8');
+  if (source.startsWith('const pairedTrace =')) return;
   source = `const pairedTrace = (${runtime.toString()})();\n${source}`;
   source = swap(
     source,
