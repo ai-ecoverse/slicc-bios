@@ -1652,16 +1652,22 @@ class Guard {
     this.refusePending(sessionId);
     if (this.waiting.delete(sessionId))
       void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
-    const targetId = this.sessions.get(sessionId)?.targetId;
+    const entry = this.sessions.get(sessionId);
+    const targetId = entry?.targetId;
     if (targetId && guardTarget) {
       const known = this.targets.get(targetId) ?? { url: '' };
       this.targets.set(targetId, { ...known, was: true, guarded: true });
     }
-    void this.call(
-      'Target.detachFromTarget',
-      { sessionId },
-      parent ?? this.sessions.get(sessionId)?.parent
-    );
+    const outer = parent ?? entry?.parent;
+    if (entry && this.shown.has(sessionId)) {
+      entry.cutNotified = true;
+      this.deliver({
+        method: 'Target.detachedFromTarget',
+        params: { sessionId },
+        ...(outer ? { sessionId: outer } : {}),
+      });
+    }
+    void this.call('Target.detachFromTarget', { sessionId }, outer);
   }
 
   async current(targetId, limit = ANSWER_MS) {
@@ -2937,9 +2943,10 @@ class Guard {
         this.lost(params.sessionId);
         return true;
       }
+      const notified = this.sessions.get(params.sessionId)?.cutNotified;
       this.sessions.delete(params.sessionId);
       this.waiting.delete(params.sessionId);
-      return !this.shown.delete(params.sessionId);
+      return !this.shown.delete(params.sessionId) || notified === true;
     }
     return false;
   }
