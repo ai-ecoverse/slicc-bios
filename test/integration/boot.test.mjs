@@ -198,11 +198,8 @@ test('a boot that fails while it runs shows the error, not a claim about its fil
   chrome.overrides.set('/seed/os.js', "throw new Error('the UI failed on purpose');\n");
   await page.goto('/');
   const text = await page.until(() => document.querySelector('[data-refused] p')?.textContent);
-  assert.equal(
-    text,
-    'Seven has no record of a changed file, but it stopped while starting: Error: the UI failed on purpose'
-  );
-  await shots(page, 'start-no-record');
+  assert.equal(text, 'Seven stopped while starting: Error: the UI failed on purpose');
+  await shots(page, 'start-failed');
 });
 
 test('a boot that fails with no answer from the service worker claims nothing about its files', async (t) => {

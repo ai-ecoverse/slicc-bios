@@ -33,19 +33,16 @@ export function filesState(fetcher = fetch) {
     .catch(() => null);
 }
 
-export function whatFailed(error, intact) {
+export function whatFailed(error) {
   const named = error?.name && error?.message ? `${error.name}: ${error.message}` : String(error);
-  const lead = intact
-    ? 'Seven has no record of a changed file, but it stopped while starting'
-    : 'Seven stopped while starting';
-  return `${lead}: ${named}`.slice(0, LONGEST);
+  return `Seven stopped while starting: ${named}`.slice(0, LONGEST);
 }
 
 export function explain(error, files, worker = true) {
   if (files?.stopped?.[0]) return stoppedText(files.stopped[0]);
   if (files?.changed?.length) return REFUSED;
   if (!worker) return UNCONTROLLED;
-  return whatFailed(error, Boolean(files?.changed));
+  return whatFailed(error);
 }
 
 export function refused(doc = document, go = (url) => location.replace(url), why = REFUSED) {
