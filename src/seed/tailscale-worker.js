@@ -1,3 +1,5 @@
+import { checkRedirect } from './redirects.js';
+
 const open = new Map();
 const dropped = new Set();
 let ipn = null;
@@ -81,6 +83,7 @@ async function start({ wasm, exec, config, state }) {
 async function fetchOne({ id, ...request }) {
   try {
     const response = await ipn.fetch(request);
+    await checkRedirect(request, response);
     if (dropped.delete(id)) {
       response.cancel();
       return;
@@ -92,6 +95,9 @@ async function fetchOne({ id, ...request }) {
         status: response.status,
         statusText: response.statusText,
         headers: response.headers,
+        ...(typeof response.url === 'string'
+          ? { url: response.url, redirected: response.url !== request.url }
+          : {}),
       },
     });
   } catch (error) {

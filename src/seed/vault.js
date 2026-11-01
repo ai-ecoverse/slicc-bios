@@ -1,3 +1,4 @@
+import { policyDependent } from './policy.js';
 import { production } from './site.js';
 
 export const VAULT = 'https://vault.sliccy.ai';
@@ -48,7 +49,10 @@ export function hide(text, value) {
 
 export function failure(error, value) {
   const code = typeof error?.code === 'string' ? error.code : 'EIO';
-  return Object.assign(new Error(hide(error?.message ?? 'the vault refused', value)), { code });
+  return Object.assign(new Error(hide(error?.message ?? 'the vault refused', value)), {
+    code,
+    ...(error?.cause === 'policy-paused' ? { cause: 'policy-paused' } : {}),
+  });
 }
 
 function pairOf(scrub) {
@@ -157,33 +161,17 @@ export function answerEgress(transport, request, port, { timers = globalThis } =
   })();
 }
 
-export function unfollowed(
-  transport,
-  request,
-  { fetcher = (url, init) => globalThis.fetch(url, init) } = {}
-) {
-  if (transport?.traits?.manualRedirects)
-    return transport.fetch({ ...request, redirect: 'manual' });
-  return fetcher(request.url, {
-    method: request.method,
-    headers: request.headers,
-    body: request.body,
-    signal: request.signal,
-    redirect: 'manual',
-    credentials: 'omit',
-    cache: 'no-store',
-  }).then((response) => ({
-    status: response.status,
-    type: response.type,
-    redirected: response.redirected,
-    headers: response.headers,
-    body: response.body ? chunksOf(response.body) : null,
-  }));
-}
-
-async function* chunksOf(stream) {
-  const reader = stream.getReader();
-  for (let next = await reader.read(); !next.done; next = await reader.read()) yield next.value;
+export function unfollowed(transport, request) {
+  const traits = transport?.traits;
+  const honors =
+    traits?.redirectPolicy === true ||
+    (traits?.manualRedirects === true &&
+      (traits.redirectHops === undefined || traits.redirectHops === false));
+  if (!honors)
+    return Promise.reject(
+      new TypeError('the selected transport cannot honor this redirect policy')
+    );
+  return transport.fetch({ ...request, redirect: 'manual' });
 }
 
 export function vaultButtons({ document, origin, media }) {
@@ -361,12 +349,27 @@ async function kernelOp(call, req, { signal, away }) {
   }
 }
 
-export function sealedRelay({ call, forward, users, onRequest, away = () => false }) {
+function restrictedSealed(rest, policyReady) {
+  if (rest.op === 'endpoints') return refusal('EACCES', ENDPOINTS_PAGE_ONLY);
+  if (rest.op === 'put' && !Object.hasOwn(rest, 'value'))
+    return refusal('EACCES', SETTINGS_PAGE_ONLY);
+  if (policyDependent(rest) && policyReady() !== true)
+    return refusal('EACCES', 'the credential policy is unavailable');
+  return null;
+}
+
+export function sealedRelay({
+  call,
+  forward,
+  users,
+  onRequest,
+  policyReady = () => true,
+  away = () => false,
+}) {
   return async (req, { signal } = {}) => {
     const { caller, ...rest } = req ?? {};
-    if (rest.op === 'endpoints') return refusal('EACCES', ENDPOINTS_PAGE_ONLY);
-    if (rest.op === 'put' && !Object.hasOwn(rest, 'value'))
-      return refusal('EACCES', SETTINGS_PAGE_ONLY);
+    const restricted = restrictedSealed(rest, policyReady);
+    if (restricted) return restricted;
     if (Object.hasOwn(KERNEL_OPS, rest.op ?? '')) return kernelOp(call, rest, { signal, away });
     if (away()) return refusal('ENOTCONN', NOT_CONNECTED);
     const exec = rest.op === 'materialize' || rest.op === 'materializeConsume';
@@ -396,7 +399,12 @@ export function sealedRelay({ call, forward, users, onRequest, away = () => fals
 }
 
 function snapshots({ now, timers, pending, view }) {
-  const listeners = { status: new Set(), list: new Set(), availability: new Set() };
+  const listeners = {
+    status: new Set(),
+    list: new Set(),
+    availability: new Set(),
+    placeholders: new Set(),
+  };
   let shown = 'connecting';
   const emit = (type, value) => {
     for (const listener of [...listeners[type]]) listener(value);
@@ -508,6 +516,83 @@ export function vaultScrubber({ frame, origin, pair }) {
   };
 }
 
+function vaultCaller({ pending, view, post, state, next, now }) {
+  return (op, fields = {}, { value, signal, transfer = [], dropAway = false } = {}) => {
+    if (signal?.aborted)
+      return Promise.reject(failure({ code: 'ECANCELED', message: 'cancelled' }));
+    const id = next();
+    const message = { ...fields, v: 1, id, op };
+    return new Promise((resolve, reject) => {
+      const item = { message, transfer, value, resolve, reject, sent: null, at: now(), dropAway };
+      pending.set(id, item);
+      signal?.addEventListener?.(
+        'abort',
+        () => {
+          if (pending.delete(id)) reject(failure({ code: 'ECANCELED', message: 'cancelled' }));
+          state.refresh();
+        },
+        { once: true }
+      );
+      if (view.welcomed) post(item);
+    });
+  };
+}
+
+function forwardingPort(call) {
+  return {
+    async seal(fields) {
+      return data(await call('seal', fields, { value: fields.value }));
+    },
+    answer: (request, status, fields = {}) => call('answer', { ...fields, request, state: status }),
+    async forward(
+      { head, body, owner, exit, rawTraits, bodyPresent, streamCredit },
+      port,
+      { signal } = {}
+    ) {
+      const fields = {
+        head,
+        owner,
+        exit,
+        rawTraits,
+        bodyPresent,
+        streamCredit,
+        ...maybe('body', body),
+      };
+      return data(await call('forward', fields, { signal, transfer: [port], dropAway: true }));
+    },
+  };
+}
+
+function listedPlaceholders(view, state, list) {
+  view.placeholders =
+    Array.isArray(list) && list.every((item) => typeof item === 'string') ? [...list] : [];
+  state.emit('placeholders', view.placeholders);
+}
+
+function vaultAnswerer(pending, forward) {
+  return (reply) => {
+    const item = pending.get(reply.id);
+    if (!item) return;
+    pending.delete(reply.id);
+    if (reply.error) item.reject(failure(reply.error, item.value));
+    else {
+      if (SCRUBBING.has(item.message.op)) forward();
+      item.resolve(reply);
+    }
+  };
+}
+
+function vaultAgent({ frame, origin, pair, loads }) {
+  return (worker) => {
+    if (!loads() || !frame.contentWindow) return;
+    const { port1, port2 } = new MessageChannel();
+    frame.contentWindow.postMessage({ type: TYPE, v: 1, op: 'hello', role: 'agent' }, origin, [
+      port2,
+    ]);
+    worker.postMessage({ vault: port1, scrub: pair() }, [port1]);
+  };
+}
+
 export function createVault({
   origin,
   document = globalThis.document,
@@ -518,23 +603,26 @@ export function createVault({
   sudoGid = async () => undefined,
   transport = null,
   users = () => 'off',
+  policyReady = () => true,
   onRequest = () => {},
   onCancelled = () => {},
   onRefresh = () => {},
 }) {
   const pending = new Map();
   const workers = new Set();
-  const view = { welcomed: false, since: now(), status: null, list: null };
+  const view = { welcomed: false, since: now(), status: null, list: null, placeholders: [] };
   const state = snapshots({ now, timers, pending, view });
   const buttons = vaultButtons({ document, origin, media });
   const frame = coreFrame(document);
   let serial = 0;
+  let epoch = 0;
   let page = null;
   let loads = 0;
   let scrub = stored(storage);
   let sentGid;
 
   const pair = () => (scrub ? { ...scrub } : null);
+  const placeholders = (list) => listedPlaceholders(view, state, list);
   const forward = () => {
     for (const worker of workers) worker.postMessage({ scrub: pair() }, []);
   };
@@ -552,26 +640,7 @@ export function createVault({
     state.later(ANSWER_MS);
   };
 
-  function call(op, fields = {}, { value, signal, transfer = [], dropAway = false } = {}) {
-    if (signal?.aborted)
-      return Promise.reject(failure({ code: 'ECANCELED', message: 'cancelled' }));
-    const id = ++serial;
-    const message = { ...fields, v: 1, id, op };
-    return new Promise((resolve, reject) => {
-      const item = { message, transfer, value, resolve, reject, sent: null, at: now(), dropAway };
-      pending.set(id, item);
-      signal?.addEventListener?.(
-        'abort',
-        () => {
-          if (pending.delete(id)) reject(failure({ code: 'ECANCELED', message: 'cancelled' }));
-          state.refresh();
-        },
-        { once: true }
-      );
-      if (view.welcomed) post(item);
-    });
-  }
-
+  const call = vaultCaller({ pending, view, post, state, next: () => ++serial, now });
   async function relist() {
     try {
       view.list = (await call('list')).list;
@@ -579,16 +648,7 @@ export function createVault({
     } catch {}
   }
 
-  function answer(reply) {
-    const item = pending.get(reply.id);
-    if (!item) return;
-    pending.delete(reply.id);
-    if (reply.error) item.reject(failure(reply.error, item.value));
-    else {
-      if (SCRUBBING.has(item.message.op)) forward();
-      item.resolve(reply);
-    }
-  }
+  const answer = vaultAnswerer(pending, forward);
 
   function event(message, ports) {
     if (message.event === 'status') {
@@ -599,42 +659,47 @@ export function createVault({
         for (const worker of workers)
           worker.postMessage({ locked: Boolean(view.status?.locked) }, []);
       state.emit('status', view.status);
-    } else if (message.event === 'placeholders') take(message.scrub);
-    else if (message.event === 'changed') void relist();
+    } else if (message.event === 'placeholders') {
+      take(message.scrub);
+      placeholders(message.placeholders);
+    } else if (message.event === 'changed') void relist();
     else if (message.event === 'egress' && ports[0] && transport)
       void answerEgress(transport, message.request, ports[0], { timers });
     else if (message.event === 'cancelled') onCancelled(message.request, message.kind);
     else if (message.event === 'refresh') onRefresh(message);
   }
 
-  function receive(port, message, ports) {
-    if (port !== page || message?.v !== 1) return;
+  function receive(port, message, ports, generation) {
+    if (port !== page || generation !== epoch || message?.v !== 1) return;
     if (message.op === 'welcome') {
       view.welcomed = true;
       view.status = message.status;
       take(view.status?.scrub);
+      placeholders(message.placeholders);
       state.emit('status', view.status);
       for (const item of pending.values()) post(item);
       void relist();
+      void call('placeholders')
+        .then((reply) => placeholders(reply.placeholders))
+        .catch(() => {});
     } else if (message.op === 'refused') view.welcomed = false;
     else if (typeof message.id === 'number') answer(message);
     else if (typeof message.event === 'string') event(message, ports);
     state.refresh();
   }
 
-  function agent(worker) {
-    if (!loads || !frame.contentWindow) return;
-    const { port1, port2 } = new MessageChannel();
-    frame.contentWindow.postMessage({ type: TYPE, v: 1, op: 'hello', role: 'agent' }, origin, [
-      port2,
-    ]);
-    worker.postMessage({ vault: port1, scrub: pair() }, [port1]);
-  }
+  const agent = vaultAgent({ frame, origin, pair, loads: () => loads });
 
   async function hello() {
+    const generation = ++epoch;
+    view.welcomed = false;
+    view.status = null;
+    placeholders([]);
+    state.emit('status', null);
+    state.refresh();
     const load = loads;
     const gid = await sudoGid().catch(() => undefined);
-    if (load !== loads || !frame.contentWindow) return;
+    if (load !== loads || generation !== epoch || !frame.contentWindow) return;
     sentGid = Number.isInteger(gid) ? gid : undefined;
     const { port1, port2 } = new MessageChannel();
     page?.close();
@@ -642,7 +707,8 @@ export function createVault({
     page = port1;
     view.welcomed = false;
     view.since = now();
-    port1.onmessage = ({ data: message, ports }) => receive(port1, message, ports ?? []);
+    port1.onmessage = ({ data: message, ports }) =>
+      receive(port1, message, ports ?? [], generation);
     port1.start?.();
     const sudo = Number.isInteger(gid) ? { sudoGid: gid } : {};
     frame.contentWindow.postMessage(
@@ -670,17 +736,22 @@ export function createVault({
     frame,
     port: vaultPort({ call, state, button: buttons.button }),
     call,
-    sealed: sealedRelay({ call, forward, users, onRequest, away: () => away(view, state) }),
+    sealed: sealedRelay({
+      call,
+      forward,
+      users,
+      policyReady,
+      onRequest,
+      away: () => away(view, state),
+    }),
+    forwardEpoch: () =>
+      view.welcomed && view.status?.capabilities?.forward === 1 && view.status.locked !== true
+        ? epoch
+        : null,
+    placeholders: () => [...view.placeholders],
     scrub: pair,
     scrubText: vaultScrubber({ frame, origin, pair }),
-    async seal(fields) {
-      return data(await call('seal', fields, { value: fields.value }));
-    },
-    answer: (request, status, fields = {}) => call('answer', { ...fields, request, state: status }),
-    async forward({ head, body, owner, exit, rawTraits }, port) {
-      const fields = { head, owner, exit, rawTraits, ...maybe('body', body) };
-      return data(await call('forward', fields, { transfer: [port] }));
-    },
+    ...forwardingPort(call),
     attach(worker) {
       workers.add(worker);
       agent(worker);
@@ -692,6 +763,12 @@ export function createVault({
       return loads && wanted !== sentGid ? hello() : Promise.resolve();
     },
     close() {
+      epoch += 1;
+      view.welcomed = false;
+      view.status = null;
+      placeholders([]);
+      state.emit('status', null);
+      state.refresh();
       buttons.close();
       page?.close();
       frame.remove();
@@ -717,8 +794,12 @@ export function takesSealed(version) {
   return major > 1 || (major === 1 && minor >= 68);
 }
 
-export function sealedOption(version, vault) {
-  return takesSealed(version) ? { sealed: (req, context) => vault.sealed(req, context) } : {};
+export function sealedOption(version, vault, { forwardVersion, fetch } = {}) {
+  if (!takesSealed(version)) return {};
+  const request = (req, context) => vault.sealed(req, context);
+  return {
+    sealed: forwardVersion === 1 && typeof fetch === 'function' ? { request, fetch } : request,
+  };
 }
 
 const FNOX_SEED = [
