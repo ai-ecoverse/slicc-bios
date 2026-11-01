@@ -547,7 +547,7 @@ test('chat in seven answers through the agent worker, Bedrock and the page fetch
     notice.body,
     /^Chrome may clear seven’s files and chats when disk space runs low\. (Install seven as an app|Bookmark seven) to keep them\.$/
   );
-  assert.equal(notice.actions.at(-1).id, 'retry');
+  assert.deepEqual(notice.actions.at(-1), { id: 'retry', label: 'Ask again' });
   assert.deepEqual(
     notice.actions.map(({ id }) => id),
     notice.body.includes('Install') ? ['install', 'retry'] : ['retry']
@@ -2077,10 +2077,7 @@ test('a browser without userAgentData hears what it may do with seven’s files,
     notice.body,
     'This browser may clear seven’s files and chats when it needs the space.'
   );
-  assert.deepEqual(
-    notice.actions.map(({ id }) => id),
-    ['retry']
-  );
+  assert.deepEqual(notice.actions, [{ id: 'retry', label: 'Ask again' }]);
   assert.equal(
     await page.evaluate(() =>
       document

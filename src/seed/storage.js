@@ -48,7 +48,7 @@ export function keepStorage({
     body: prompts.offered() ? INSTALL : chromium ? BOOKMARK : ELSEWHERE,
     actions: [
       ...(prompts.offered() ? [{ id: 'install', label: 'Install' }] : []),
-      { id: 'retry', label: 'Try again' },
+      { id: 'retry', label: 'Ask again' },
     ],
   });
   const show = () => {
