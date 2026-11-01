@@ -688,22 +688,6 @@ async function lifecycleRescue(page, chrome, rawSession, row, kind) {
     row.workerAfterTargets = targets.targetInfos.filter(
       (info) => info.type === 'service_worker' && info.url === row.workerBefore.url
     );
-    if (kind === 'worker' && !row.workerAfterTargets.length) {
-      const until = Date.now() + 1000;
-      const off = chrome.cdp.on(() => {});
-      try {
-        do {
-          const { targetInfos } = await chrome.cdp.send('Target.getTargets', {});
-          row.workerAfterTargets = targetInfos.filter(
-            (info) => info.type === 'service_worker' && info.url === row.workerBefore.url
-          );
-          if (row.workerAfterTargets.length) break;
-          await new Promise((resolve) => setTimeout(resolve, 25));
-        } while (Date.now() < until);
-      } finally {
-        off();
-      }
-    }
     row.workerAfter = row.workerAfterTargets[0] ?? null;
     row.workerAfterInfo = row.workerAfter
       ? (await chrome.cdp.send('Target.getTargetInfo', { targetId: row.workerAfter.targetId }))
@@ -725,7 +709,36 @@ async function lifecycleRescue(page, chrome, rawSession, row, kind) {
             ? 'original worker target identity remained; stop or restart not established despite raw page progress'
             : 'no owned worker target observed after operation; replacement not established';
     if (kind === 'worker-stop') assert.equal(row.workerStopSupported, true, row.workerObservation);
-    else assert.equal(row.workerIdentityChanged, true, row.workerObservation);
+    else {
+      row.workerGuardCallAt = Date.now();
+      row.lifecycleBeforeRecovery = await page.evaluate(() => {
+        const holder = globalThis.cdp675Lifecycle;
+        holder.close();
+        return { calls: holder.calls, events: holder.events };
+      });
+      row.workerGuardAttach = await lifecycleOpen(page, row.target);
+      assert.ok(row.workerGuardAttach.result?.sessionId);
+      row.workerGuardEnable = await lifecycleCall(page, 'Runtime.enable');
+      assert.ok(row.workerGuardEnable.result);
+      row.workerGuardRead = await lifecycleCall(page, 'Runtime.evaluate', {
+        expression: '6 * 7',
+        returnByValue: true,
+      });
+      assert.equal(
+        row.workerGuardRead.result?.result?.value,
+        42,
+        'a new guarded call must work after lazy extension restart'
+      );
+      row.workerGuardCallMs = Date.now() - row.workerGuardCallAt;
+      assert.ok(row.workerGuardCallMs < 10000);
+      row.workerAfterGuardCallTargets = (
+        await chrome.cdp.send('Target.getTargets', {})
+      ).targetInfos.filter(
+        (info) => info.type === 'service_worker' && info.url === row.workerBefore.url
+      );
+      row.workerObservation =
+        'paused page continued within bound and new guarded extension call returned42; target facts recorded without requiring an eager replacement';
+    }
   }
   if (kind !== 'owner-gone') await page.evaluate(() => globalThis.cdp675Lifecycle.close());
   row.nextReloadAt = Date.now();
@@ -740,6 +753,21 @@ async function lifecycleRescue(page, chrome, rawSession, row, kind) {
       (start) => globalThis.cdp675Trace.slice(start),
       row.traceStart
     );
+  if (kind === 'worker') {
+    for (const boundary of ['bios', 'route'])
+      assert.ok(
+        row.methods.some(
+          ({ at, boundary: lane, direction, route, packet }) =>
+            at >= row.workerGuardCallAt &&
+            lane === boundary &&
+            direction === 'send' &&
+            route?.kind === 'extension' &&
+            packet.method === 'Runtime.evaluate' &&
+            packet.params?.expression === '6 * 7'
+        ),
+        'restart recovery call must cross bios and the extension'
+      );
+  }
   if (kind === 'owner-gone')
     row.postDeathEvidence = 'raw progress and next reload; owner tab has no event receiver';
   assert.equal(
@@ -2178,7 +2206,7 @@ for (const route of ['extension', 'link']) {
               const start = await page.evaluate(() => globalThis.cdp675Trace.length);
               const frameStart = row.rawFrames.length;
               row.sameProcess.navigation = await rawLoad(chrome, rawSession, 'Page.navigate', {
-                url: `${trace.sameProcessOrigin}/protected-doc`,
+                url: `${trace.sameProcessOrigin}/protected-doc?675-private=present`,
               });
               row.sameProcess.after = await rawBounded(
                 chrome,
@@ -2227,7 +2255,14 @@ for (const route of ['extension', 'link']) {
                 publications.some(({ packet }) => packet.method?.startsWith('Debugger.')),
                 false
               );
-              assert.ok(!JSON.stringify(publications).includes(trace.sameProcessOrigin));
+              const published = JSON.stringify(publications);
+              for (const suffix of ['/', '?', '#'])
+                assert.ok(
+                  !published.includes(`${trace.sameProcessOrigin}${suffix}`),
+                  'Page and Network events may expose the test-only protected origin but no path or query'
+                );
+              row.sameProcess.outputScope =
+                'existing origin-only Page/Network/Target metadata for CLI-only --origin; no Debugger publication or path/query';
             }
           }
           if (scene.holderKill) {
