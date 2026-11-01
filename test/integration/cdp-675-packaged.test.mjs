@@ -19,6 +19,9 @@ const manifest = directory
 const { bfcacheNavigation } = manifest
   ? await import(new URL('../../candidates/browsers/bfcache-restore.mjs', import.meta.url))
   : { bfcacheNavigation: null };
+const harnessExtensionPath = fileURLToPath(
+  new URL('./extension', import.meta.resolve('@ai-ecoverse/slicc-shared-web/harness'))
+);
 const quote = (text) => `'${text.replaceAll("'", "'\\''")}'`;
 const ordinaryCases = [
   { name: 'instrumented-list-call', reload: true },
@@ -44,9 +47,37 @@ const ordinaryCases = [
     holderKill: 'load',
     many: true,
   },
+  { name: 'ordinary-root-cross-origin-child-clear-error', reload: true, crossOriginChild: true },
+  {
+    name: 'armed-seven-redirect-history-return',
+    reload: true,
+    protectedHop: 'seven',
+    hopMode: 'redirect',
+  },
+  {
+    name: 'armed-vault-redirect-history-return',
+    reload: true,
+    protectedHop: 'vault',
+    hopMode: 'redirect',
+  },
+  {
+    name: 'armed-seven-renderer-navigation-history-return',
+    reload: true,
+    protectedHop: 'seven',
+    hopMode: 'renderer',
+  },
+  {
+    name: 'armed-vault-renderer-navigation-history-return',
+    reload: true,
+    protectedHop: 'vault',
+    hopMode: 'renderer',
+  },
   { name: 'old-client-terminal', reload: true, negative: true, oldClient: true },
 ];
 const guardCases = [
+  { name: 'guard-level-own-https-echo-protected', lifecycle: 'echo' },
+  { name: 'guard-level-late-real-foreign-world-rescue', lifecycle: 'late-world' },
+  { name: 'guard-level-method-negatives-at-published-pause', lifecycle: 'negatives' },
   { name: 'guard-level-holder-close-at-pause', lifecycle: 'close' },
   { name: 'guard-level-pause-deadline-stall', lifecycle: 'stall' },
   { name: 'guard-level-protected-commit-revoke', lifecycle: 'revoke' },
@@ -402,7 +433,15 @@ async function rawLoad(chrome, sessionId, method, params) {
   const loaded = new Promise((resolve, reject) => {
     timer = setTimeout(() => reject(new Error('raw document load exceeded 6000ms')), 6000);
     off = chrome.cdp.on((packet) => {
-      if (packet.sessionId === sessionId && packet.method === 'Page.loadEventFired') resolve(true);
+      if (
+        packet.sessionId === sessionId &&
+        (packet.method === 'Page.loadEventFired' ||
+          (method === 'Runtime.evaluate' &&
+            params.expression === 'history.back()' &&
+            packet.method === 'Page.frameNavigated' &&
+            packet.params.type === 'BackForwardCacheRestore'))
+      )
+        resolve(true);
     });
   });
   try {
@@ -636,6 +675,88 @@ async function stopOwnedWorker(chrome, row) {
   }
 }
 
+function oncePerRealm(installations) {
+  const counts = new Map();
+  for (const { packet } of installations) {
+    const realm = packet.params?.uniqueContextId;
+    assert.ok(realm, 'installer must name the verified realm');
+    counts.set(realm, (counts.get(realm) ?? 0) + 1);
+  }
+  assert.ok(counts.size > 0);
+  for (const count of counts.values())
+    assert.equal(count, 1, 'same realm installed more than once');
+  return Object.fromEntries(counts);
+}
+
+async function echoRefusal(page, chrome, rawSession, row, url) {
+  row.echoControl = await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
+    expression:
+      '({ origin: location.origin, ready: document.readyState, loaded: globalThis.cdp675ProtectedChild })',
+    returnByValue: true,
+  });
+  assert.equal(row.echoControl.result?.value?.origin, new URL(url).origin);
+  assert.equal(row.echoControl.result?.value?.ready, 'complete');
+  assert.equal(row.echoControl.result?.value?.loaded, true);
+  row.echoDiscovery = await page.evaluate(async () => {
+    const connection = await globalThis.sliccBrowserHook();
+    try {
+      return await new Promise((resolve) => {
+        const timer = setTimeout(() => resolve({ deadline: true }), 10000);
+        connection.onmessage = (text) => {
+          const packet = JSON.parse(text);
+          if (packet.id !== 1) return;
+          clearTimeout(timer);
+          resolve(packet);
+        };
+        connection.send(JSON.stringify({ id: 1, method: 'Target.getTargets', params: {} }));
+      });
+    } finally {
+      connection.close();
+    }
+  });
+  assert.ok(row.echoDiscovery.result?.targetInfos);
+  assert.equal(
+    row.echoDiscovery.result.targetInfos.some(
+      (target) =>
+        target.targetId === row.rawTargetId ||
+        target.targetId === row.echoTargetId ||
+        target.url?.startsWith('https://echo.sliccy.ai')
+    ),
+    false
+  );
+  assert.ok(row.echoTargetId, 'protected attach probe needs the real route target identity');
+  row.echoAttach = await lifecycleOpen(page, row.echoTargetId);
+  assert.match(row.echoAttach.error?.message ?? '', /^slicc: refused:/);
+  row.echoRefusals = [];
+  for (const [method, params] of [
+    ['Debugger.enable', {}],
+    ['Debugger.disable', {}],
+    ['Debugger.resume', {}],
+    ['Debugger.setInstrumentationBreakpoint', { instrumentation: 'beforeScriptExecution' }],
+    ['Debugger.removeBreakpoint', { breakpointId: '675-echo' }],
+    ['Page.getFrameTree', {}],
+  ]) {
+    const reply = await page.evaluate(
+      ({ method, params, sessionId }) => globalThis.cdp675Lifecycle.call(method, params, sessionId),
+      { method, params, sessionId: rawSession }
+    );
+    row.echoRefusals.push({ method, reply });
+    assert.match(reply.error?.message ?? '', /^slicc: refused:/);
+  }
+  row.echoLeaseRefused = row.echoRefusals.find(({ method }) => method === 'Debugger.enable');
+  row.echoEvents = await page.evaluate(() => globalThis.cdp675Lifecycle.events);
+  assert.deepEqual(row.echoEvents, []);
+  row.methods = await page.evaluate((start) => globalThis.cdp675Trace.slice(start), row.traceStart);
+  assert.equal(
+    row.methods.some(
+      ({ boundary, direction, packet }) =>
+        boundary === 'route' && direction === 'send' && packet.method?.startsWith('Debugger.')
+    ),
+    false
+  );
+  await page.evaluate(() => globalThis.cdp675Lifecycle.close());
+}
+
 async function lifecycleRow(page, chrome, rawSession, row, scene, url) {
   row.attached = await lifecycleOpen(page, row.target);
   assert.ok(row.attached.result?.sessionId, JSON.stringify(row.attached));
@@ -670,12 +791,99 @@ async function lifecycleRow(page, chrome, rawSession, row, scene, url) {
   assert.ok(row.publishedScripts.length > 0, 'published pause needs placed script identity');
   row.pausedContext = row.rawWorlds.findLast(({ auxData }) => auxData?.isDefault)?.uniqueId;
   assert.ok(row.pausedContext);
-  row.removed = await lifecycleCall(page, 'Debugger.removeBreakpoint', {
-    breakpointId: row.armReplies.at(-1).reply.result.breakpointId,
-  });
-  assert.ok(row.removed.result, JSON.stringify(row.removed));
+  if (scene.lifecycle !== 'late-world') {
+    row.removed = await lifecycleCall(page, 'Debugger.removeBreakpoint', {
+      breakpointId: row.armReplies.at(-1).reply.result.breakpointId,
+    });
+    assert.ok(row.removed.result, JSON.stringify(row.removed));
+  }
   if (['close', 'stall', 'owner-gone', 'worker', 'worker-stop'].includes(scene.lifecycle)) {
     await lifecycleRescue(page, chrome, rawSession, row, scene.lifecycle);
+    return;
+  }
+  if (scene.lifecycle === 'late-world') {
+    row.lateWorldStartedAt = Date.now();
+    row.lateExtension = await chrome.cdp.send('Extensions.loadUnpacked', {
+      path: harnessExtensionPath,
+    });
+    assert.ok(row.lateExtension.id);
+    row.lateNavigation = await rawLoad(chrome, rawSession, 'Page.navigate', {
+      url: `${url}&lateForeign=1`,
+    });
+    row.lateProgress = await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
+      expression: '({ready: document.readyState, loads: globalThis.cdp675Loads})',
+      returnByValue: true,
+    });
+    assert.equal(row.lateProgress.result?.value?.ready, 'complete');
+    assert.equal(row.lateProgress.result?.value?.loads, 2);
+    assert.ok(Date.now() - row.lateWorldStartedAt < 7000, 'late foreign world transition stalled');
+    row.lateForeignWorlds = row.rawWorlds.filter(
+      ({ origin, auxData }) =>
+        origin.replace(/\/$/, '') === `chrome-extension://${row.lateExtension.id}` &&
+        auxData?.isDefault === false
+    );
+    assert.ok(row.lateForeignWorlds.length > 0, 'late real extension world must actually arrive');
+    row.lateRefusal = await lifecycleCall(page, 'Debugger.enable');
+    assert.match(row.lateRefusal.error?.message ?? '', /^slicc: refused:/);
+    row.lateEvents = await page.evaluate(
+      (at) => globalThis.cdp675Lifecycle.events.filter((event) => event.at >= at),
+      row.lateWorldStartedAt
+    );
+    assert.equal(
+      row.lateEvents.some(({ packet }) =>
+        ['Debugger.paused', 'Debugger.scriptParsed', 'Debugger.scriptFailedToParse'].includes(
+          packet.method
+        )
+      ),
+      false
+    );
+    row.methods = await page.evaluate(
+      (start) => globalThis.cdp675Trace.slice(start),
+      row.traceStart
+    );
+    assert.equal(
+      row.methods.some(
+        ({ direction, packet }) => direction === 'send' && packet.method === 'Debugger.resume'
+      ),
+      false
+    );
+    row.lateFallbackReloads = row.methods.filter(
+      ({ at, boundary, direction, packet }) =>
+        at >= row.lateWorldStartedAt &&
+        boundary === 'bios' &&
+        direction === 'send' &&
+        packet.method === 'Page.reload'
+    ).length;
+    assert.equal(row.lateFallbackReloads, 0);
+    row.lateScope =
+      'guard-level successful enable and normal pause before late real extension load; navigation brings its world, pause privately rescued within bound; no shipped fallback transition claimed';
+    await page.evaluate(() => globalThis.cdp675Lifecycle.close());
+    return;
+  }
+  if (scene.lifecycle === 'negatives') {
+    row.negativeReplies = [];
+    const frame = row.pause.packet.params.callFrames[0];
+    for (const [method, params] of [
+      ['Debugger.setBreakpoint', { location: frame.location }],
+      ['Debugger.setBreakpointByUrl', { lineNumber: 0, url }],
+      ['DOMDebugger.setEventListenerBreakpoint', { eventName: 'click' }],
+      ['EventBreakpoints.setInstrumentationBreakpoint', { eventName: 'beforeScriptExecution' }],
+      ['Page.addScriptToEvaluateOnNewDocument', { source: 'globalThis.__675_negative = true' }],
+      ['Runtime.addBinding', { name: '__675_negative' }],
+    ]) {
+      const reply = await lifecycleCall(page, method, params);
+      row.negativeReplies.push({ method, reply });
+      assert.match(reply.error?.message ?? '', /^slicc: refused:/);
+    }
+    await lifecycleRescue(page, chrome, rawSession, row, 'close');
+    for (const { method } of row.negativeReplies)
+      assert.equal(
+        row.methods.some(
+          ({ boundary, direction, packet }) =>
+            boundary === 'route' && direction === 'send' && packet.method === method
+        ),
+        false
+      );
     return;
   }
   if (scene.lifecycle === 'stale') {
@@ -1124,13 +1332,18 @@ for (const route of ['extension', 'link']) {
     'owner-death',
     'worker-stop',
     'worker-restart',
+    'late-world',
   ]) {
     if (route === 'link' && mode.startsWith('worker-')) continue;
     const foreign = mode === 'foreign';
     const oldRoute = mode === 'old-route';
-    const guardLevel = ['guard-level', 'owner-death', 'worker-stop', 'worker-restart'].includes(
-      mode
-    );
+    const guardLevel = [
+      'guard-level',
+      'owner-death',
+      'worker-stop',
+      'worker-restart',
+      'late-world',
+    ].includes(mode);
     const cases = guardLevel
       ? guardCases.filter(
           (scene) =>
@@ -1140,7 +1353,11 @@ for (const route of ['extension', 'link']) {
                 ? scene.lifecycle === 'worker-stop'
                 : mode === 'worker-restart'
                   ? scene.lifecycle === 'worker'
-                  : !['owner-gone', 'worker-stop', 'worker'].includes(scene.lifecycle)) &&
+                  : mode === 'late-world'
+                    ? scene.lifecycle === 'late-world'
+                    : !['owner-gone', 'worker-stop', 'worker', 'late-world'].includes(
+                        scene.lifecycle
+                      )) &&
             (!scene.extensionOnly || route === 'extension')
         )
       : foreign
@@ -1192,7 +1409,10 @@ for (const route of ['extension', 'link']) {
           protectedSite.closeAllConnections();
           protectedSite.close();
         });
-        const protectedRules = [`MAP vault.sliccy.ai 127.0.0.1:${protectedSite.address().port}`];
+        const protectedRules = [
+          `MAP vault.sliccy.ai 127.0.0.1:${protectedSite.address().port}`,
+          `MAP echo.sliccy.ai 127.0.0.1:${protectedSite.address().port}`,
+        ];
         chrome =
           route === 'extension'
             ? await realExtension({
@@ -1245,6 +1465,10 @@ for (const route of ['extension', 'link']) {
             }, entry.delay);
             return;
           }
+          if (at.pathname === '/redirect') {
+            response.writeHead(302, { location: at.searchParams.get('to') });
+            return response.end();
+          }
           response.writeHead(200, { 'content-type': 'text/html' });
           if (at.pathname === '/prerender-candidate')
             return response.end('<!doctype html><title>675 no-activation candidate</title>');
@@ -1274,7 +1498,7 @@ for (const route of ['extension', 'link']) {
               )
             : '';
           response.end(
-            `<!doctype html><title>675 ordinary</title>${at.pathname === '/bfcache' ? bfcacheMarkup(request.url) : ''}${scripts}${foreign ? `<iframe src="${at.searchParams.has('protected') ? `https://${at.searchParams.get('protected')}.sliccy.ai/__675_frame` : '/iframe'}"></iframe>` : ''}<script type="module">window.cdp675Loads = (Number(sessionStorage.cdp675Loads) || 0) + 1; sessionStorage.cdp675Loads = window.cdp675Loads; ${startup}</script>`
+            `<!doctype html><title>675 ordinary</title>${at.pathname === '/bfcache' ? bfcacheMarkup(request.url) : ''}${scripts}${at.searchParams.has('crossChild') ? `<iframe src="http://127.0.0.1:${fixture.address().port}/iframe"></iframe>` : ''}${foreign ? `<iframe src="${at.searchParams.has('protected') ? `https://${at.searchParams.get('protected')}.sliccy.ai/__675_frame` : '/iframe'}"></iframe>` : ''}<script type="module">window.cdp675Loads = (Number(sessionStorage.cdp675Loads) || 0) + 1; sessionStorage.cdp675Loads = window.cdp675Loads; ${startup}</script>`
           );
         });
         await new Promise((resolve) => fixture.listen(0, '127.0.0.1', resolve));
@@ -1431,6 +1655,8 @@ for (const route of ['extension', 'link']) {
             scene.bfcache ? `/bfcache?n=675-${route}-${index}-a` : `/page?row=${index}`,
             trace.fixtureOrigin
           );
+          if (scene.lifecycle === 'echo') url = new URL('https://echo.sliccy.ai/__675_echo');
+          if (scene.crossOriginChild) url.searchParams.set('crossChild', '1');
           if (scene.many) url.searchParams.set('many', '1');
           if (foreign) {
             url.searchParams.set('foreign', '1');
@@ -1453,8 +1679,16 @@ for (const route of ['extension', 'link']) {
           row.rawWorlds = [];
           row.rawFrames = [];
           row.rawLoads = [];
+          row.rawRedirects = [];
           unobserve = chrome.cdp.on(({ method, params, sessionId }) => {
             if (sessionId !== rawSession) return;
+            if (method === 'Network.requestWillBeSent' && params.redirectResponse)
+              row.rawRedirects.push({
+                at: Date.now(),
+                from: params.redirectResponse.url,
+                to: params.request.url,
+                status: params.redirectResponse.status,
+              });
             if (method === 'Page.frameNavigated') {
               row.rawFrames.push(params.frame);
               (row.rawEvents ??= []).push({ method, params, sessionId, at: Date.now() });
@@ -1548,6 +1782,46 @@ for (const route of ['extension', 'link']) {
             url = new URL(row.bfcache.url);
           }
           row.step = 'guarded-discovery';
+          row.traceStart = await page.evaluate(() => globalThis.cdp675Trace?.length ?? 0);
+          if (scene.lifecycle === 'echo') {
+            row.scope =
+              'guard-level, real bios browserHook; raw own HTTPS echo control, not Rust-path';
+            row.step = 'guard-level-echo-refusal';
+            row.echoTargetId = targetId;
+            if (route === 'extension') {
+              const workers = (await chrome.cdp.send('Target.getTargets', {})).targetInfos.filter(
+                ({ type, url }) =>
+                  type === 'service_worker' && url.startsWith('chrome-extension://')
+              );
+              assert.equal(
+                workers.length,
+                1,
+                'echo identity lookup only uses the owned candidate worker'
+              );
+              const { sessionId } = await chrome.cdp.send('Target.attachToTarget', {
+                targetId: workers[0].targetId,
+                flatten: true,
+              });
+              try {
+                const lookup = await rawBounded(chrome, sessionId, 'Runtime.evaluate', {
+                  expression: `chrome.tabs.query({url: ${JSON.stringify(url.href)}}).then(tabs => tabs.map(tab => tab.id))`,
+                  awaitPromise: true,
+                  returnByValue: true,
+                });
+                assert.equal(lookup.result?.value?.length, 1);
+                row.echoTargetId = String(lookup.result.value[0]);
+              } finally {
+                await chrome.cdp.send('Target.detachFromTarget', { sessionId });
+              }
+            }
+            row.echoGuardIdentity =
+              route === 'extension'
+                ? 'owned extension chrome.tabs exact URL lookup'
+                : 'raw Chrome target ID used by CLI route';
+            await echoRefusal(page, chrome, rawSession, row, url.href);
+            row.status = 'pass';
+            continue;
+          }
           row.target = await discover(page, url.href);
           row.traceStart = await page.evaluate(() => globalThis.cdp675Trace?.length ?? 0);
           if (guardLevel) {
@@ -2028,6 +2302,34 @@ for (const route of ['extension', 'link']) {
               /^const __wmcp_/.test(packet.params?.expression ?? '')
           );
           assert.ok(installations.length > 0);
+          row.installationsPerRealm = oncePerRealm(installations);
+          if (scene.crossOriginChild) {
+            row.crossOriginChildren = await rawChildren(chrome, rawSession);
+            assert.ok(
+              row.crossOriginChildren.some(
+                ({ tree }) => new URL(tree.frameTree.frame.url).origin !== trace.fixtureOrigin
+              ),
+              'cross-origin child must really exist'
+            );
+            row.crossOriginMessage = await sh(page, `cat ${row.log}`);
+            assert.match(
+              row.crossOriginMessage.stdout,
+              /cross-origin child tools are unavailable on this guarded route/
+            );
+            assert.ok(row.tools.some(({ name }) => name === 'add' || name.endsWith('_add')));
+            assert.match(row.call.stdout, /^5$/m);
+            for (const { tree } of row.crossOriginChildren)
+              assert.equal(
+                installations.some(({ packet }) =>
+                  row.rawWorlds.some(
+                    ({ uniqueId, auxData }) =>
+                      uniqueId === packet.params.uniqueContextId &&
+                      auxData?.frameId === tree.frameTree.frame.id
+                  )
+                ),
+                false
+              );
+          }
           if (foreign) {
             const reload = row.methods.find(
               ({ boundary, direction, packet }) =>
@@ -2360,8 +2662,11 @@ for (const route of ['extension', 'link']) {
           }
           if (scene.protectedHop) {
             row.step = 'armed-protected-hop';
-            const destination =
-              scene.protectedHop === 'seven'
+            const destination = scene.hopMode
+              ? scene.protectedHop === 'seven'
+                ? `${SEVEN}/protected-doc`
+                : 'https://vault.sliccy.ai/protected-doc'
+              : scene.protectedHop === 'seven'
                 ? `${SEVEN}/protected-doc`
                 : `http://vault.sliccy.ai:${new URL(trace.fixtureOrigin).port}/protected-doc`;
             const start = await page.evaluate(() => globalThis.cdp675Trace.length);
@@ -2378,11 +2683,20 @@ for (const route of ['extension', 'link']) {
               });
             });
             try {
-              row.hopReply = await chrome.cdp.send(
-                'Page.navigate',
-                { url: destination },
-                rawSession
-              );
+              if (scene.hopMode === 'renderer') {
+                row.hopReply = await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
+                  expression: `location.assign(${JSON.stringify(destination)})`,
+                  returnByValue: true,
+                });
+              } else {
+                const redirect = new URL('/redirect', trace.fixtureOrigin);
+                redirect.searchParams.set('to', destination);
+                row.hopReply = await chrome.cdp.send(
+                  'Page.navigate',
+                  { url: scene.hopMode === 'redirect' ? redirect.href : destination },
+                  rawSession
+                );
+              }
               row.hopSettled = await settled;
               row.hopMilliseconds = Date.now() - began;
               assert.equal(row.hopSettled, true, 'protected hop or error document stalled');
@@ -2435,6 +2749,61 @@ for (const route of ['extension', 'link']) {
             );
             assert.equal(row.hopErrorPage, true, 'blocked-hop error-page premise was not reached');
             row.hopEvidence = { shippedHolderArmed: true, rawObserverDebuggerEnabled: false };
+            if (scene.hopMode) {
+              assert.ok(
+                row.hopFrames.some((frame) =>
+                  [frame.url, frame.unreachableUrl].some(
+                    (url) => url && new URL(url).origin === new URL(destination).origin
+                  )
+                ),
+                'protected destination must really be the blocked hop'
+              );
+              if (scene.hopMode === 'redirect')
+                assert.ok(
+                  row.rawRedirects.some(
+                    ({ at, from, to, status }) =>
+                      at >= began &&
+                      new URL(from).pathname === '/redirect' &&
+                      to === destination &&
+                      status === 302
+                  ),
+                  'real HTTP redirect to the protected destination was not observed'
+                );
+              assert.doesNotMatch(JSON.stringify(published), /(?:seven|vault)\.sliccy\.ai/i);
+              row.hopLog = await sh(page, `cat ${row.log}`);
+              assert.doesNotMatch(
+                `${row.hopLog.stdout}\n${row.hopLog.stderr}`,
+                /(?:seven|vault)\.sliccy\.ai/i
+              );
+              row.historyReturnAt = Date.now();
+              await rawLoad(chrome, rawSession, 'Runtime.evaluate', {
+                expression: 'history.back()',
+                returnByValue: true,
+              });
+              row.historyReturn = await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
+                expression: '({origin: location.origin, ready: document.readyState})',
+                returnByValue: true,
+              });
+              assert.equal(row.historyReturn.result?.value?.origin, trace.fixtureOrigin);
+              assert.equal(row.historyReturn.result?.value?.ready, 'complete');
+              assert.ok(Date.now() - row.historyReturnAt < 7000, 'ordinary history return stalled');
+              row.historyList = await cone(
+                page,
+                `timeout 60 mcpcat tools http://127.0.0.1:${row.port}/mcp --json`,
+                `675-history-list-${index}`
+              );
+              const historyListing = JSON.parse(row.historyList.stdout);
+              const historyTools = Array.isArray(historyListing)
+                ? historyListing
+                : historyListing.tools;
+              assert.ok(Array.isArray(historyTools));
+              assert.ok(
+                historyTools.some(({ name }) => name === 'add' || name.endsWith('_add')) ||
+                  typeof historyListing.hint === 'string',
+                row.historyList.stdout
+              );
+              assert.doesNotMatch(row.historyList.stdout, /(?:seven|vault)\.sliccy\.ai/i);
+            }
           }
           row.status = 'pass';
         } catch (error) {
