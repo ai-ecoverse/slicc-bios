@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { boot, run, shows } from './bios.mjs';
+import { boot, run, screen, shows } from './bios.mjs';
 import { devtools as boundPort, debuggerUrl, launch } from './chrome.mjs';
 
 const chrome = await launch({
@@ -135,7 +135,9 @@ test('a browser that attests holdsDocuments paints past a listed frame, takes in
   await shows(page, 'pressed-0');
   await run(
     page,
-    `playwright-cli --runtime devtools eval "document.querySelector('iframe').src = '${chrome.url}os/'; 1"; sleep 2; playwright-cli --runtime devtools screenshot --filename=/tmp/moved.png; echo moved-$?`
+    `playwright-cli --runtime devtools eval "document.querySelector('iframe').src = '${chrome.url}os/'; 1"; i=0; code=0; while [ "$code" -eq 0 ] && [ "$i" -lt 30 ]; do last=$(playwright-cli --runtime devtools screenshot --filename=/tmp/moved.png 2>&1); code=$?; i=$((i + 1)); done; clear; echo "exit $code after $i"; echo "$last" | grep -o 'slicc: refused.*' | head -1; echo "tried $((6 * 7))"`
   );
-  await shows(page, 'moved-1');
+  await shows(page, 'tried 42', 300000);
+  const seen = await screen(page);
+  assert.match(seen, /exit 1 after \d+\s+slicc: refused/, seen);
 });
