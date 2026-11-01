@@ -160,9 +160,18 @@ test('without the attestation an owner-less frame is read as it always was', asy
   assert.deepEqual(await painted(await driven({ holds: false, frames })), open);
 });
 
+for (const url of ['about:blank', 'about:srcdoc']) {
+  test(`a frame at ${url} doesn't lock a holding browser, in the DOM or a closed root`, async () => {
+    assert.deepEqual(await painted(await driven({ frames: [frame(url)] })), open);
+    assert.deepEqual(await painted(await driven({ frames: [frame(url, { closed: true })] })), open);
+  });
+
+  test(`a frame at ${url} still locks a browser without the attestation`, async () => {
+    assert.deepEqual(await painted(await driven({ holds: false, frames: [frame(url)] })), locked);
+  });
+}
+
 for (const url of [
-  'about:blank',
-  'about:srcdoc',
   'blob:https://site.test/1f0e',
   'data:text/html,<h1>x</h1>',
   'javascript:0',
@@ -182,7 +191,7 @@ test('a frame that moves after the last read can’t slip through: each command 
   const page = await driven({ frames: [site] });
   assert.deepEqual(await painted(page), open);
   const before = page.crest.state.trees;
-  site.url = 'about:srcdoc';
+  site.url = 'data:text/html,x';
   assert.equal(
     (await page.call('Page.captureScreenshot', {}, page.session)).error?.message,
     PROTECTED
@@ -196,7 +205,7 @@ test('a frame that moves after the last read can’t slip through: each command 
 test('a frame that appears after the last read is checked too', async () => {
   const page = await driven({});
   assert.deepEqual(await painted(page), open);
-  page.crest.state.frames.push(frame('about:blank'));
+  page.crest.state.frames.push(frame('data:text/html,x'));
   assert.deepEqual(await painted(page), locked);
 });
 

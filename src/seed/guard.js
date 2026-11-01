@@ -284,7 +284,7 @@ const objectKey = (key) => key === 'objectId' || key.endsWith('ObjectId');
 const PROBE =
   "typeof chrome === 'object' && chrome !== null && Boolean(chrome.runtime && chrome.runtime.id)";
 const OBJECT_ID = /^-?\d+\.(\d+)\.\d+$/;
-const WEB_FRAME = /^https?:\/\/[^/?#]/i;
+const LISTED_FRAME = /^(?:https?:\/\/[^/?#]|about:(?:blank|srcdoc)(?:[?#]|$))/i;
 const PROFILERS = ['HeapProfiler.', 'Profiler.'];
 const PAGE_PAINT = new Set([
   'Page.captureScreenshot',
@@ -1150,7 +1150,7 @@ class Guard {
 
   childLocked(id, scope, holds, seen, view) {
     if (id === scope.root) return false;
-    if (holds && !WEB_FRAME.test(this.frames.get(id))) return true;
+    if (holds && !LISTED_FRAME.test(this.frames.get(id))) return true;
     if (
       !holds &&
       (scope.remoteOwners.has(id) || this.targets.get(id)?.type === 'iframe') &&
