@@ -50,6 +50,29 @@ const ordinaryCases = [
   },
   { name: 'ordinary-root-cross-origin-child-clear-error', reload: true, crossOriginChild: true },
   {
+    name: 'protected-cross-origin-child-refuses',
+    reload: true,
+    crossOriginChild: true,
+    protectedSubframe: 'vault',
+  },
+  {
+    name: 'protected-among-ordinary-cross-origin-children-refuses',
+    reload: true,
+    crossOriginChild: true,
+    protectedSubframe: 'vault',
+    siblings: true,
+  },
+  {
+    name: 'late-ordinary-cross-origin-frame-replaces-suspended-lease',
+    reload: true,
+    lateFrame: 'ordinary',
+  },
+  {
+    name: 'late-protected-cross-origin-frame-revokes-document-lease',
+    reload: true,
+    lateFrame: 'protected',
+  },
+  {
     name: 'armed-seven-redirect-history-return',
     reload: true,
     protectedHop: 'seven',
@@ -76,6 +99,19 @@ const ordinaryCases = [
   { name: 'old-client-terminal', reload: true, negative: true, oldClient: true },
 ];
 const guardCases = [
+  { name: 'guard-level-frames-call-not-CDP', method: 'frames', params: {}, privateCall: true },
+  {
+    name: 'guard-level-sliccExtension-frames-not-CDP',
+    method: 'sliccExtension.frames',
+    params: {},
+    privateCall: true,
+  },
+  {
+    name: 'guard-level-Slicc-frames-not-CDP',
+    method: 'Slicc.frames',
+    params: {},
+    privateCall: true,
+  },
   { name: 'guard-level-own-https-echo-protected', lifecycle: 'echo' },
   { name: 'guard-level-late-real-foreign-world-rescue', lifecycle: 'late-world' },
   { name: 'guard-level-method-negatives-at-published-pause', lifecycle: 'negatives' },
@@ -204,6 +240,133 @@ function cdp675Tap(connection, boundary, route) {
 }
 `
   );
+}
+
+function tapGuardSource(source) {
+  const method = '  setDebuggerLease(targetId, state) {';
+  return source.replace(
+    method,
+    `${method}\n    (globalThis.cdp675LeaseTrace ??= []).push({ at: Date.now(), targetId, state });`
+  );
+}
+
+async function lateFrameRow(page, chrome, rawSession, row, scene, origin, binding) {
+  row.lateFrameStart = await page.evaluate(() => ({
+    wire: globalThis.cdp675Trace.length,
+    leases: globalThis.cdp675LeaseTrace?.length ?? 0,
+  }));
+  row.lateFrameStartedAt = Date.now();
+  const src =
+    scene.lateFrame === 'protected'
+      ? 'https://vault.sliccy.ai/__675_frame'
+      : new URL('/iframe?late-child=1', origin.replace('localhost', '127.0.0.1')).href;
+  row.lateFrameInserted = await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
+    expression: `new Promise(resolve => { const frame = document.createElement('iframe'); frame.id = 'cdp675-late-frame'; frame.onload = () => resolve(true); frame.onerror = () => resolve(false); frame.src = ${JSON.stringify(src)}; document.body.append(frame); })`,
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  assert.equal(row.lateFrameInserted.result?.value, true);
+  assert.ok(
+    Date.now() - row.lateFrameStartedAt < 7000,
+    'late frame must complete within the bound'
+  );
+  row.lateRootTools = (
+    await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
+      expression: `({ready: document.readyState, binding: typeof ${binding}, tools: ${binding}.list()})`,
+      returnByValue: true,
+    })
+  ).result.value;
+  assert.equal(row.lateRootTools.ready, 'complete');
+  assert.equal(row.lateRootTools.binding, 'object', 'already installed root bridge stays');
+  assert.match(row.lateRootTools.tools.toolsJson, /"add"/);
+  row.lateLeaseStates = await page.evaluate(
+    (start) => (globalThis.cdp675LeaseTrace ?? []).slice(start),
+    row.lateFrameStart.leases
+  );
+  const states = row.lateLeaseStates.filter(({ targetId }) => targetId === row.target);
+  assert.ok(
+    states.some(({ state }) => state === 'suspended'),
+    'frame arrival must suspend the bios-owned lease'
+  );
+  assert.equal(states.at(-1)?.state, scene.lateFrame === 'protected' ? 'revoked' : 'placed');
+  row.lateFrameMethods = await page.evaluate(
+    (start) => globalThis.cdp675Trace.slice(start),
+    row.lateFrameStart.wire
+  );
+  const suspension = states.find(({ state }) => state === 'suspended');
+  const outcome = states.at(-1);
+  assert.equal(
+    row.lateFrameMethods.some(
+      ({ at, boundary, direction, packet }) =>
+        at >= suspension.at &&
+        at < outcome.at &&
+        boundary === 'route' &&
+        direction === 'send' &&
+        packet.id < 2 ** 30 &&
+        packet.method?.startsWith('Debugger.')
+    ),
+    false,
+    'no client Debugger forwarding during suspension'
+  );
+  assert.equal(
+    row.lateFrameMethods.some(
+      ({ boundary, direction, packet }) =>
+        boundary === 'bios' &&
+        direction === 'receive' &&
+        ['Debugger.paused', 'Debugger.scriptParsed', 'Debugger.scriptFailedToParse'].includes(
+          packet.method
+        )
+    ),
+    false
+  );
+  assert.equal(
+    row.lateFrameMethods.some(
+      ({ boundary, direction, packet }) =>
+        boundary === 'bios' &&
+        direction === 'send' &&
+        packet.method === 'Runtime.evaluate' &&
+        /^const __wmcp_/.test(packet.params?.expression ?? '')
+    ),
+    false,
+    'late cross-origin frame must receive no installer and root must not install twice'
+  );
+  if (scene.lateFrame === 'protected') {
+    assert.equal(
+      row.lateFrameMethods.some(
+        ({ at, boundary, direction, packet }) =>
+          at >= outcome.at &&
+          boundary === 'route' &&
+          direction === 'send' &&
+          packet.id < 2 ** 30 &&
+          packet.method?.startsWith('Debugger.')
+      ),
+      false
+    );
+    assert.doesNotMatch(
+      JSON.stringify(
+        row.lateFrameMethods.filter(
+          ({ boundary, direction }) => boundary === 'bios' && direction === 'receive'
+        )
+      ),
+      /vault\.sliccy\.ai/
+    );
+  } else {
+    row.lateToolsList = await cone(
+      page,
+      `timeout 60 mcpcat tools http://127.0.0.1:${row.port}/mcp --json`,
+      `675-late-frame-list-${row.port}`
+    );
+    const listing = JSON.parse(row.lateToolsList.stdout);
+    const tools = Array.isArray(listing) ? listing : listing.tools;
+    const tool = tools.find(({ name }) => name === 'add' || name.endsWith('_add'));
+    assert.ok(tool);
+    row.lateToolsCall = await cone(
+      page,
+      `timeout 60 mcpcat call http://127.0.0.1:${row.port}/mcp ${quote(tool.name)} --a 2 --b 3`,
+      `675-late-frame-call-${row.port}`
+    );
+    assert.match(row.lateToolsCall.stdout, /^5$/m);
+  }
 }
 
 async function sh(page, command) {
@@ -1570,7 +1733,7 @@ for (const route of ['extension', 'link']) {
               )
             : '';
           response.end(
-            `<!doctype html><title>675 ordinary</title>${at.pathname === '/bfcache' ? bfcacheMarkup(request.url) : ''}${scripts}${at.searchParams.has('crossChild') ? `<iframe src="http://127.0.0.1:${fixture.address().port}/iframe"></iframe>` : ''}${foreign ? `<iframe src="${at.searchParams.has('protected') ? `https://${at.searchParams.get('protected')}.sliccy.ai/__675_frame` : '/iframe'}"></iframe>` : ''}<script type="module">window.cdp675Loads = (Number(sessionStorage.cdp675Loads) || 0) + 1; sessionStorage.cdp675Loads = window.cdp675Loads; ${startup}</script>`
+            `<!doctype html><title>675 ordinary</title>${at.pathname === '/bfcache' ? bfcacheMarkup(request.url) : ''}${scripts}${at.searchParams.has('crossChild') ? `<iframe src="${at.searchParams.has('protected') ? `https://${at.searchParams.get('protected')}.sliccy.ai/__675_frame` : `http://127.0.0.1:${fixture.address().port}/iframe`}"></iframe>` : ''}${at.searchParams.has('siblings') ? `<iframe src="http://127.0.0.1:${fixture.address().port}/iframe?ordinary=one"></iframe><iframe src="http://127.0.0.1:${fixture.address().port}/iframe?ordinary=two"></iframe>` : ''}${foreign ? `<iframe src="${at.searchParams.has('protected') ? `https://${at.searchParams.get('protected')}.sliccy.ai/__675_frame` : '/iframe'}"></iframe>` : ''}<script type="module">window.cdp675Loads = (Number(sessionStorage.cdp675Loads) || 0) + 1; sessionStorage.cdp675Loads = window.cdp675Loads; ${startup}</script>`
           );
         });
         await new Promise((resolve) => fixture.listen(0, '127.0.0.1', resolve));
@@ -1583,6 +1746,12 @@ for (const route of ['extension', 'link']) {
         chrome.overrides.set(
           '/seed/cdp.js',
           tapSource(await readFile(new URL('../../src/seed/cdp.js', import.meta.url), 'utf8'))
+        );
+        chrome.overrides.set(
+          '/seed/guard.js',
+          tapGuardSource(
+            await readFile(new URL('../../src/seed/guard.js', import.meta.url), 'utf8')
+          )
         );
         const requests = new Map();
         const failed = (entry) => {
@@ -1729,6 +1898,8 @@ for (const route of ['extension', 'link']) {
           );
           if (scene.lifecycle === 'echo') url = new URL('https://echo.sliccy.ai/__675_echo');
           if (scene.crossOriginChild) url.searchParams.set('crossChild', '1');
+          if (scene.siblings) url.searchParams.set('siblings', '1');
+          if (scene.protectedSubframe) url.searchParams.set('protected', scene.protectedSubframe);
           if (scene.many) url.searchParams.set('many', '1');
           if (foreign) {
             url.searchParams.set('foreign', '1');
@@ -1815,6 +1986,19 @@ for (const route of ['extension', 'link']) {
                   auxData?.isDefault === false
               ),
             });
+          if (scene.crossOriginChild && !scene.protectedSubframe) {
+            row.ordinaryPageRelay = (
+              await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
+                expression: 'typeof globalThis.sliccExtension',
+                returnByValue: true,
+              })
+            ).result.value;
+            assert.equal(
+              row.ordinaryPageRelay,
+              'undefined',
+              'ordinary page cannot reach the seven-only relay'
+            );
+          }
           if (scene.lifecycle === 'late-world') {
             row.lateExtensionPath = trace.lateExtensionPath;
             assert.equal(
@@ -1839,6 +2023,21 @@ for (const route of ['extension', 'link']) {
             row.protectedFrames = frames.filter((frame) =>
               frame.url.startsWith(`https://${scene.protectedSubframe}.sliccy.ai/`)
             );
+            if (scene.crossOriginChild)
+              row.protectedFrames = frames.filter((frame) =>
+                [frame.url, frame.unreachableUrl].some((url) =>
+                  url?.startsWith(`https://${scene.protectedSubframe}.sliccy.ai/`)
+                )
+              );
+            if (scene.siblings)
+              assert.ok(
+                frames.filter((frame) =>
+                  frame.url?.startsWith(
+                    `http://127.0.0.1:${new URL(trace.fixtureOrigin).port}/iframe`
+                  )
+                ).length >= 2,
+                'protected-sibling row needs several actual ordinary children'
+              );
             assert.equal(
               row.protectedFrames.length,
               1,
@@ -1916,9 +2115,23 @@ for (const route of ['extension', 'link']) {
               continue;
             }
             row.step = 'guard-level-refusal';
-            row.probe = await guardRefusal(page, row.target, scene.method, scene.params);
+            row.probe = await guardRefusal(
+              page,
+              row.target,
+              scene.method,
+              scene.privateCall ? { tabId: row.target } : scene.params
+            );
             assert.ok(row.probe.attached.result?.sessionId, JSON.stringify(row.probe));
-            assert.match(row.probe.reply?.error?.message ?? '', /^slicc: refused:/);
+            if (scene.privateCall) {
+              assert.ok(
+                row.probe.reply?.error,
+                'a CDP client cannot call the private frame reader'
+              );
+              assert.doesNotMatch(
+                JSON.stringify(row.probe.reply),
+                /rootDocumentId|remoteOwners|native-child/
+              );
+            } else assert.match(row.probe.reply?.error?.message ?? '', /^slicc: refused:/);
             row.methods = await page.evaluate(
               (start) => globalThis.cdp675Trace.slice(start),
               row.traceStart
@@ -1929,14 +2142,15 @@ for (const route of ['extension', 'link']) {
                   boundary === 'bios' && direction === 'send' && packet.method === scene.method
               )
             );
-            assert.equal(
-              row.methods.some(
-                ({ boundary, direction, packet }) =>
-                  boundary === 'route' && direction === 'send' && packet.method === scene.method
-              ),
-              false,
-              'refused method reached route'
-            );
+            if (!scene.privateCall)
+              assert.equal(
+                row.methods.some(
+                  ({ boundary, direction, packet }) =>
+                    boundary === 'route' && direction === 'send' && packet.method === scene.method
+                ),
+                false,
+                'refused method reached route'
+              );
             row.status = 'pass';
             continue;
           }
@@ -2738,6 +2952,10 @@ for (const route of ['extension', 'link']) {
               row.sameProcess.outputScope =
                 'existing origin-only Page/Network/Target metadata for CLI-only --origin; no Debugger publication or path/query';
             }
+          }
+          if (scene.lateFrame) {
+            row.step = 'late-frame-placement';
+            await lateFrameRow(page, chrome, rawSession, row, scene, trace.fixtureOrigin, binding);
           }
           if (scene.holderKill) {
             row.step = 'shipped-holder-death';
