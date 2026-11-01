@@ -193,9 +193,19 @@ function tapSource(source) {
     source.replace(
       call,
       (matched) =>
-        `cdp675Tap(guardProtected(cdp675Tap(await open(), "route", route), own, browser ? tabs.get(browser) : undefined, route${matched.includes('privateFrames') ? ', privateFrames' : ''}), "bios", route)`
+        `cdp675Tap(guardProtected(cdp675Tap(await open(), "route", route), own, browser ? tabs.get(browser) : undefined, route${matched.includes('privateFrames') ? ', cdp675Frames(privateFrames)' : ''}), "bios", route)`
     ) +
     `
+function cdp675Frames(reader) {
+  globalThis.cdp675FrameReaderObserved = true;
+  const calls = globalThis.cdp675FrameReaderCalls ??= new Map();
+  if (typeof reader !== 'function') return reader;
+  return (targetId) => {
+    const key = String(targetId);
+    calls.set(key, (calls.get(key) ?? 0) + 1);
+    return reader(targetId);
+  };
+}
 function cdp675Tap(connection, boundary, route) {
   const trace = globalThis.cdp675Trace ??= [];
   const connectionId = globalThis.cdp675ConnectionId = (globalThis.cdp675ConnectionId ?? 0) + 1;
@@ -505,8 +515,16 @@ async function guardRefusal(page, targetId, method, params) {
         const attached = await call(1, 'Target.attachToTarget', { targetId, flatten: true });
         if (!attached.result?.sessionId) return { attached };
         const request = { id: 2, method, params, sessionId: attached.result.sessionId };
+        const before = globalThis.cdp675FrameReaderCalls?.get(String(targetId)) ?? 0;
         const reply = await call(request.id, method, params, request.sessionId);
-        return { attached, request, reply };
+        return {
+          attached,
+          request,
+          reply,
+          frameReaderObserved: globalThis.cdp675FrameReaderObserved === true,
+          frameReaderCalls:
+            (globalThis.cdp675FrameReaderCalls?.get(String(targetId)) ?? 0) - before,
+        };
       } finally {
         connection.close();
         for (const entry of pending.values()) clearTimeout(entry.timer);
@@ -514,6 +532,19 @@ async function guardRefusal(page, targetId, method, params) {
     },
     { targetId, method, params }
   );
+}
+
+function privateFrameRefusal(scene, probe) {
+  assert.equal(probe.reply?.id, probe.request.id);
+  assert.equal(probe.reply?.deadline, undefined, 'the private-reader probe must receive a reply');
+  if (scene.method !== 'Slicc.frames')
+    assert.ok(probe.reply?.error, 'a CDP client cannot call the private frame reader');
+  assert.doesNotMatch(
+    JSON.stringify(probe.reply),
+    /frame|url|rootDocumentId|remoteOwners|loaderId|revision|native-child|https?:\/\//i
+  );
+  assert.equal(probe.frameReaderObserved, true, 'the private-reader counter must be installed');
+  assert.equal(probe.frameReaderCalls, 0, 'the extension frames call was reached');
 }
 
 async function lifecycleOpen(page, targetId) {
@@ -2121,27 +2152,20 @@ for (const route of ['extension', 'link']) {
               scene.privateCall ? { tabId: row.target } : scene.params
             );
             assert.ok(row.probe.attached.result?.sessionId, JSON.stringify(row.probe));
-            if (scene.privateCall) {
-              assert.ok(
-                row.probe.reply?.error,
-                'a CDP client cannot call the private frame reader'
-              );
-              assert.doesNotMatch(
-                JSON.stringify(row.probe.reply),
-                /rootDocumentId|remoteOwners|native-child/
-              );
-            } else assert.match(row.probe.reply?.error?.message ?? '', /^slicc: refused:/);
+            if (scene.privateCall) privateFrameRefusal(scene, row.probe);
+            else assert.match(row.probe.reply?.error?.message ?? '', /^slicc: refused:/);
             row.methods = await page.evaluate(
               (start) => globalThis.cdp675Trace.slice(start),
               row.traceStart
             );
-            assert.ok(
-              row.methods.some(
-                ({ boundary, direction, packet }) =>
-                  boundary === 'bios' && direction === 'send' && packet.method === scene.method
-              )
-            );
-            if (!scene.privateCall)
+            if (scene.method !== 'Slicc.frames')
+              assert.ok(
+                row.methods.some(
+                  ({ boundary, direction, packet }) =>
+                    boundary === 'bios' && direction === 'send' && packet.method === scene.method
+                )
+              );
+            if (!scene.privateCall || scene.method === 'Slicc.frames')
               assert.equal(
                 row.methods.some(
                   ({ boundary, direction, packet }) =>
