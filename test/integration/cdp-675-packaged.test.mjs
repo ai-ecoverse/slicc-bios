@@ -22,6 +22,13 @@ const quote = (text) => `'${text.replaceAll("'", "'\\''")}'`;
 const ordinaryCases = [
   { name: 'instrumented-list-call', reload: true },
   { name: 'armed-protected-and-ordinary-bfcache-restore', reload: true, bfcache: true },
+  {
+    name: 'armed-clean-ordinary-bfcache-restore',
+    reload: true,
+    bfcache: true,
+    ordinaryBfcache: true,
+    linkOnly: true,
+  },
   { name: 'armed-speculation-no-prerender-activation', reload: true, prerender: true },
   { name: 'armed-exact-extra-origin-same-process-hop', reload: true, sameProcess: true },
   { name: 'shipped-publication-before-document-change-no-install', reload: true, race: true },
@@ -410,6 +417,8 @@ async function stopOwnedWorker(chrome, row) {
       targetId: extensionTarget,
       flatten: true,
     }));
+    await chrome.cdp.send('Target.setDiscoverTargets', { discover: true });
+    row.workerEnable = await rawBounded(chrome, extensionSession, 'ServiceWorker.enable', {}, 1000);
     row.workerStop = await rawBounded(
       chrome,
       extensionSession,
@@ -494,10 +503,30 @@ async function stopOwnedWorker(chrome, row) {
     } else {
       row.workerStopPath = 'ServiceWorker.stopAllWorkers';
     }
-    row.workerStoppedTargets = (await chrome.cdp.send('Target.getTargets', {})).targetInfos;
+    row.workerStopChecks = [];
+    const until = Math.min(Date.now() + 1000, (row.pause?.at ?? Date.now()) + 7000);
+    do {
+      row.workerStoppedTargets = (await chrome.cdp.send('Target.getTargets', {})).targetInfos;
+      const present = row.workerStoppedTargets.some((target) => target.targetId === targetId);
+      if (row.workerPIDProof && present && !destroyed.length) {
+        row.workerProcessAfterKill = await chrome.cdp.send('SystemInfo.getProcessInfo', {});
+        row.workerRendererExitObserved = !row.workerProcessAfterKill.processInfo.some(
+          (process) => Number(process.id) === row.workerPIDProof.pid
+        );
+      }
+      row.workerStopChecks.push({
+        at: Date.now(),
+        targetPresent: present,
+        destroyed: destroyed.length,
+        rendererExitObserved: row.workerRendererExitObserved === true,
+      });
+      if (!present || destroyed.length || row.workerRendererExitObserved) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    } while (Date.now() < until);
     row.workerDestroyed = destroyed;
     row.workerStopSupported =
       destroyed.length > 0 ||
+      row.workerRendererExitObserved === true ||
       !row.workerStoppedTargets.some((target) => target.targetId === targetId);
     assert.equal(
       row.workerStopSupported,
@@ -687,11 +716,14 @@ async function lifecycleRescue(page, chrome, rawSession, row, kind) {
       kind === 'worker-stop'
         ? `${row.workerStopPath} of the owned worker renderer, extension not unloaded`
         : 'chrome.runtime.reload of only the owned extension';
-    row.workerObservation = row.workerIdentityChanged
-      ? 'owned worker target identity replaced; raw page progress observed'
-      : row.workerAfter
-        ? 'original worker target identity remained; stop or restart not established despite raw page progress'
-        : 'no owned worker target observed after operation; replacement not established';
+    row.workerObservation =
+      kind === 'worker-stop' && row.workerRendererExitObserved
+        ? 'owned worker renderer exited; CDP target identity may remain cached; raw page progress observed'
+        : row.workerIdentityChanged
+          ? 'owned worker target identity replaced; raw page progress observed'
+          : row.workerAfter
+            ? 'original worker target identity remained; stop or restart not established despite raw page progress'
+            : 'no owned worker target observed after operation; replacement not established';
     if (kind === 'worker-stop') assert.equal(row.workerStopSupported, true, row.workerObservation);
     else assert.equal(row.workerIdentityChanged, true, row.workerObservation);
   }
@@ -970,21 +1002,38 @@ async function discover(page, url) {
 }
 
 for (const route of ['extension', 'link']) {
-  for (const mode of ['ordinary', 'foreign', 'old-route', 'guard-level', 'owner-death']) {
+  for (const mode of [
+    'ordinary',
+    'foreign',
+    'old-route',
+    'guard-level',
+    'owner-death',
+    'worker-stop',
+    'worker-restart',
+  ]) {
+    if (route === 'link' && mode.startsWith('worker-')) continue;
     const foreign = mode === 'foreign';
     const oldRoute = mode === 'old-route';
-    const guardLevel = mode === 'guard-level' || mode === 'owner-death';
+    const guardLevel = ['guard-level', 'owner-death', 'worker-stop', 'worker-restart'].includes(
+      mode
+    );
     const cases = guardLevel
       ? guardCases.filter(
           (scene) =>
-            (scene.lifecycle === 'owner-gone') === (mode === 'owner-death') &&
+            (mode === 'owner-death'
+              ? scene.lifecycle === 'owner-gone'
+              : mode === 'worker-stop'
+                ? scene.lifecycle === 'worker-stop'
+                : mode === 'worker-restart'
+                  ? scene.lifecycle === 'worker'
+                  : !['owner-gone', 'worker-stop', 'worker'].includes(scene.lifecycle)) &&
             (!scene.extensionOnly || route === 'extension')
         )
       : foreign
         ? fallbackCases
         : oldRoute
           ? [{ name: 'old-route-terminal', reload: true, negative: true }]
-          : ordinaryCases;
+          : ordinaryCases.filter((scene) => !scene.linkOnly || route === 'link');
     test(`cdp 675 packaged ${route} ${mode}`, {
       skip: process.env.SLICC_675_STAGE1_DIAGNOSTIC !== '1',
       timeout: 900000,
@@ -1372,10 +1421,13 @@ for (const route of ['extension', 'link']) {
               reader,
               targetId,
               ordinary: trace.fixtureOrigin,
-              protectedOrigin: 'https://vault.sliccy.ai',
+              protectedOrigin: scene.ordinaryBfcache
+                ? trace.fixtureOrigin
+                : 'https://vault.sliccy.ai',
               tag: `675-${route}-${index}`,
             });
             row.bfcache = await bfcacheDriver.prepare();
+            row.bfcache.ordinaryHistoryOnly = Boolean(scene.ordinaryBfcache);
             url = new URL(row.bfcache.url);
           }
           row.step = 'guarded-discovery';
@@ -1464,6 +1516,48 @@ for (const route of ['extension', 'link']) {
             }
           );
           row.portAnswered = await waitPort(page, row.port);
+          if (scene.bfcache && route === 'link' && !scene.ordinaryBfcache) {
+            row.step = 'protected-history-pre-arm-refusal';
+            row.terminal = await sh(page, `cat ${row.log}`);
+            assert.match(
+              row.terminal.stdout,
+              /Target.attachToTarget: slicc: refused: the guard couldn’t keep seven’s pages and the vault out of this tab/
+            );
+            row.methods = await page.evaluate(
+              (start) => globalThis.cdp675Trace.slice(start),
+              row.traceStart
+            );
+            assert.equal(
+              row.methods.some(
+                ({ boundary, direction, packet }) =>
+                  boundary === 'bios' &&
+                  direction === 'send' &&
+                  (packet.method?.startsWith('Debugger.') ||
+                    packet.method === 'Page.reload' ||
+                    (packet.method === 'Runtime.evaluate' &&
+                      /^const __wmcp_/.test(packet.params?.expression ?? '')))
+              ),
+              false,
+              'protected history must be refused before holder arms or fallback begins'
+            );
+            const publications = row.methods.filter(
+              ({ boundary, direction }) => boundary === 'bios' && direction === 'receive'
+            );
+            assert.equal(
+              publications.some(({ packet }) => packet.method?.startsWith('Debugger.')),
+              false
+            );
+            for (const output of [
+              JSON.stringify(publications),
+              row.terminal.stdout,
+              row.terminal.stderr,
+            ])
+              assert.doesNotMatch(output, /vault\.sliccy\.ai/i);
+            row.bfcache.scope =
+              'protected history refused before holder attach; no protected restore reached through an armed link holder';
+            row.status = 'pass';
+            continue;
+          }
           if (scene.race) {
             row.race.terminal = await sh(page, `cat ${row.log}`);
             assert.match(row.race.terminal.stdout, /refused|could not verify|listening on http:/i);
@@ -1596,8 +1690,16 @@ for (const route of ['extension', 'link']) {
                 `675-protected-list-${index}`
               );
               const listing = JSON.parse(row.protectedList.stdout);
-              assert.deepEqual(listing.tools, []);
-              assert.match(listing.hint, /guard refused|refused/i);
+              if (route === 'link') {
+                assert.equal(listing.tools, undefined, 'refusal is not an empty page');
+                assert.match(
+                  listing.error?.message ?? '',
+                  /Target.attachToTarget: slicc: refused: seven’s own pages and the vault/
+                );
+              } else {
+                assert.deepEqual(listing.tools, []);
+                assert.match(listing.hint, /guard refused|refused/i);
+              }
               const publications = row.methods.filter(
                 ({ boundary, direction }) => boundary === 'bios' && direction === 'receive'
               );
@@ -1897,7 +1999,10 @@ for (const route of ['extension', 'link']) {
           assert.equal(row.lexical.type, 'object');
           assert.equal(row.lexical.own, false);
           assert.equal(row.lexical.window, false);
-          assert.equal(row.lexical.loads, scene.bfcache ? 3 : scene.reload ? 2 : 1);
+          assert.equal(
+            row.lexical.loads,
+            scene.ordinaryBfcache ? 4 : scene.bfcache ? 3 : scene.reload ? 2 : 1
+          );
           if (scene.reload && !foreign) {
             const published = row.methods.findIndex(
               ({ boundary, direction, packet }) =>
@@ -1949,6 +2054,9 @@ for (const route of ['extension', 'link']) {
             row.step = 'armed-bfcache-restore';
             const start = await page.evaluate(() => globalThis.cdp675Trace.length);
             row.bfcache.protectedRestore = await bfcacheDriver.restore(row.bfcache.protectedEntry);
+            if (scene.ordinaryBfcache)
+              row.bfcache.scope =
+                'clean tab with only ordinary history; first ordinary restore and return to armed ordinary B measured separately from refused protected-history tab';
             row.bfcache.methods = await page.evaluate(
               (start) => globalThis.cdp675Trace.slice(start),
               start
@@ -1956,11 +2064,12 @@ for (const route of ['extension', 'link']) {
             const publications = row.bfcache.methods.filter(
               ({ boundary, direction }) => boundary === 'bios' && direction === 'receive'
             );
-            assert.equal(
-              publications.some(({ packet }) => packet.method?.startsWith('Debugger.')),
-              false,
-              'protected restore must publish nothing'
-            );
+            if (!scene.ordinaryBfcache)
+              assert.equal(
+                publications.some(({ packet }) => packet.method?.startsWith('Debugger.')),
+                false,
+                'protected restore must publish nothing'
+              );
             row.bfcache.protectedOutput = await sh(page, `cat ${row.log}`);
             for (const output of [
               JSON.stringify(publications),
@@ -2067,6 +2176,7 @@ for (const route of ['extension', 'link']) {
               assert.equal(new URL(trace.sameProcessOrigin).hostname, url.hostname);
               assert.notEqual(trace.sameProcessOrigin, url.origin);
               const start = await page.evaluate(() => globalThis.cdp675Trace.length);
+              const frameStart = row.rawFrames.length;
               row.sameProcess.navigation = await rawLoad(chrome, rawSession, 'Page.navigate', {
                 url: `${trace.sameProcessOrigin}/protected-doc`,
               });
@@ -2082,13 +2192,30 @@ for (const route of ['extension', 'link']) {
                   returnByValue: true,
                 })
               ).result?.value;
-              assert.equal(row.sameProcess.state.origin, trace.sameProcessOrigin);
+              row.sameProcess.frames = row.rawFrames.slice(frameStart);
               assert.equal(row.sameProcess.state.ready, 'complete');
               assert.ok(row.sameProcess.before.id && row.sameProcess.after.id);
-              row.sameProcess.outcome =
-                row.sameProcess.before.id === row.sameProcess.after.id
-                  ? 'same-process-proved'
-                  : 'Chrome-swapped-process-no-claim';
+              if (row.sameProcess.navigation.errorText === 'net::ERR_BLOCKED_BY_CLIENT') {
+                assert.equal(row.sameProcess.state.origin, 'null');
+                assert.ok(row.sameProcess.frames.length > 0);
+                assert.equal(
+                  row.sameProcess.frames.some((frame) =>
+                    frame.url?.startsWith(`${trace.sameProcessOrigin}/`)
+                  ),
+                  false,
+                  'blocked protected hop must never commit'
+                );
+                row.sameProcess.outcome =
+                  'protected-hop-blocked-before-commit-no-same-process-proof';
+                row.sameProcess.scope =
+                  'no same-process protected commit exists to measure; ordinary and error-document isolate identities recorded only';
+              } else {
+                assert.equal(row.sameProcess.state.origin, trace.sameProcessOrigin);
+                row.sameProcess.outcome =
+                  row.sameProcess.before.id === row.sameProcess.after.id
+                    ? 'same-process-proved'
+                    : 'Chrome-swapped-process-no-claim';
+              }
               row.sameProcess.methods = await page.evaluate(
                 (start) => globalThis.cdp675Trace.slice(start),
                 start
