@@ -228,6 +228,38 @@ export async function eventually(check) {
   }
 }
 
+export async function shots(page, name, panel, shown) {
+  for (const [color, width, screen] of [
+    ['light', 1280, 'desktop'],
+    ['dark', 1280, 'desktop'],
+    ['light', 420, 'phone'],
+  ]) {
+    await page.evaluate((wanted) => {
+      const app = document.querySelector('slicc-app');
+      if (app.color !== wanted) app.toggleColor();
+    }, color);
+    await page.send('Emulation.setDeviceMetricsOverride', {
+      width,
+      height: 800,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await page.until(
+      ([wanted, on]) => {
+        const app = document.querySelector('slicc-app');
+        return app.color === wanted && app.screen === on;
+      },
+      [color, screen]
+    );
+    await page.evaluate((id) => document.querySelector('slicc-app').show(id), panel);
+    await page.until(shown);
+    await page.screenshot(new URL(`${name}-${color}-${width}.png`, page.dir));
+  }
+  await page.send('Emulation.clearDeviceMetricsOverride');
+  await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
+  await page.evaluate((id) => document.querySelector('slicc-app').show(id), panel);
+}
+
 export async function ui(page) {
   await page.init(() => {
     const app = () => document.querySelector('slicc-app');
