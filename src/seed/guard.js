@@ -284,6 +284,7 @@ const objectKey = (key) => key === 'objectId' || key.endsWith('ObjectId');
 const PROBE =
   "typeof chrome === 'object' && chrome !== null && Boolean(chrome.runtime && chrome.runtime.id)";
 const OBJECT_ID = /^-?\d+\.(\d+)\.\d+$/;
+const WEB_FRAME = /^https?:\/\/[^/?#]/i;
 const PROFILERS = ['HeapProfiler.', 'Profiler.'];
 const PAGE_PAINT = new Set([
   'Page.captureScreenshot',
@@ -1142,24 +1143,35 @@ class Guard {
     return url === undefined || url === '' || (this.errorFrames.has(frameId) && !view);
   }
 
+  holding(targetId) {
+    const nav = this.navs.get(targetId);
+    return nav?.holds === true && !nav.failed;
+  }
+
+  childLocked(id, scope, holds, seen, view) {
+    if (id === scope.root) return false;
+    if (holds && !WEB_FRAME.test(this.frames.get(id))) return true;
+    if (
+      !holds &&
+      (scope.remoteOwners.has(id) || this.targets.get(id)?.type === 'iframe') &&
+      this.pageLocked(id, new Set(seen), false, view)
+    )
+      return true;
+    return !this.parents.has(id) || !this.frames.has(this.parents.get(id));
+  }
+
   pageLocked(targetId, seen = new Set(), blankRoot = false, view) {
     if (!targetId || seen.has(targetId)) return true;
     seen.add(targetId);
     const scope = this.scopes.get(targetId);
     if (!this.scopeReady(targetId, scope, view) || (view && scope.committed)) return true;
+    const holds = this.holding(targetId);
     for (const id of this.relatedFrames(scope.frames)) {
       const url = this.frames.get(id);
       if (this.unavailableFrame(id, url, view)) return true;
       if (this.is.url(url) && !(blankRoot && id === scope.root) && !view?.errors.has(id))
         return true;
-      if (
-        id !== scope.root &&
-        (scope.remoteOwners.has(id) || this.targets.get(id)?.type === 'iframe') &&
-        this.pageLocked(id, new Set(seen), false, view)
-      )
-        return true;
-      if (id !== scope.root && (!this.parents.has(id) || !this.frames.has(this.parents.get(id))))
-        return true;
+      if (this.childLocked(id, scope, holds, seen, view)) return true;
     }
     for (const [child, entry] of this.scopes) {
       if (entry.parent === targetId && this.pageLocked(child, new Set(seen), false, view))
@@ -2036,6 +2048,7 @@ class Guard {
       this.call('Network.setBypassServiceWorker', { bypass: true }, session),
       this.call('Page.enable', {}, session),
     ]);
+    nav.holds = steps[0].result?.holdsDocuments === true;
     this.placing.set(nav.targetId, this.place(nav.targetId, session));
     await this.placing.get(nav.targetId);
     nav.settle(steps.some((step) => step.error));
@@ -4392,8 +4405,17 @@ class Guard {
     const unguarded = await this.guarding(method, sessionId);
     if (unguarded) return unguarded;
     if (!(await this.placed(sessionId))) return UNGUARDED;
+    if (!(await this.reread(sessionId))) return UNGUARDED;
     if (method === 'Page.captureScreenshot') return this.locked(sessionId, true) ? PROTECTED : null;
     return this.locked(sessionId) ? PROTECTED : null;
+  }
+
+  async reread(sessionId) {
+    const targetId = this.scopeTarget(sessionId);
+    if (!this.holding(targetId)) return true;
+    const session = this.scopes.get(targetId)?.sessionId;
+    const { error, result } = await this.call('Page.getFrameTree', {}, session);
+    return !error && Boolean(result?.frameTree);
   }
 
   async recover(message) {
