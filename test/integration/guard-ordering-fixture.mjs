@@ -71,7 +71,7 @@ export function protocol(t, protect = guardProtected) {
       result = { currentIndex: 0, entries: [{ id: 1, url: target.info.url, title: 'ordinary' }] };
     }
     if (method === 'DOM.getDocument')
-      result = { root: { nodeId: 1, nodeName: '#document', children: [] } };
+      result = { root: target.dom ?? { nodeId: 1, nodeName: '#document', children: [] } };
     if (method === 'Runtime.evaluate') {
       result = {
         result: {
