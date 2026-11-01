@@ -18,6 +18,7 @@ import {
   ready,
   run,
   screen,
+  shots,
   shows,
 } from './bios.mjs';
 import { launch } from './chrome.mjs';
@@ -2092,6 +2093,23 @@ test('a browser without userAgentData hears what it may do with seven’s files,
     ),
     'This browser still doesn’t promise to keep seven’s files.'
   );
+  await shots(
+    page,
+    'storage-elsewhere',
+    'chat',
+    () => !!window.chatView() && !!window.storageNotice()
+  );
+  const refused = () => {
+    const notice = !!window.chatView() && window.storageNotice();
+    const said = notice && window.deep(notice, '[data-error] span')?.textContent;
+    if (notice && !said) window.deep(notice, '[data-action="retry"]').click();
+    return said;
+  };
+  assert.equal(
+    await page.until(refused),
+    'This browser still doesn’t promise to keep seven’s files.'
+  );
+  await shots(page, 'storage-elsewhere-retry', 'chat', refused);
 });
 
 test('a fresh profile’s first agent turn finds seven’s tools after boot: rg runs and curl reaches an https upstream, since the agent waits for them to settle', {

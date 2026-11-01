@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { boot, ready, run, screen, shows, ui } from './bios.mjs';
+import { boot, ready, run, screen, shots, shows, ui } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 async function opened(t) {
@@ -67,6 +67,15 @@ test('a browser with no folder picker says so', async (t) => {
       .catch((error) => error.message)
   );
   assert.equal(said, 'This browser can’t open a folder from this device.');
+  await page.evaluate(() => document.querySelector('slicc-app').show('files'));
+  const refused = () => {
+    const panel = document.querySelector('slicc-app').dock.content('files')?.shadowRoot;
+    const shown = panel?.querySelector('.error span')?.textContent;
+    if (!shown) panel?.querySelector('[data-action="mount-folder"]')?.click();
+    return shown;
+  };
+  assert.equal(await page.until(refused), 'This browser can’t open a folder from this device.');
+  await shots(page, 'mount-no-picker', 'files', refused);
 });
 
 test('off the record, a shell fsa mount asks for a folder in the Files panel, works and is not kept', async (t) => {
