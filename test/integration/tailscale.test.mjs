@@ -648,8 +648,8 @@ test('a program WebSocket goes through the Tailscale exit to a tailnet peer, a s
     const sealed = await ws(name, tailnet.peer.ws, path, header, '', '', 10);
     const answer = Buffer.from(sealed.body, 'hex').toString('latin1');
     console.log(JSON.stringify({ [name]: answer.split('\r\n')[0] }));
-    assert.ok(answer.startsWith('HTTP/1.1 502'), answer);
-    assert.match(answer, /secrets in WebSocket handshakes aren't supported yet/);
+    assert.ok(answer.startsWith('HTTP/1.1 403'), answer);
+    assert.match(answer, /sealed placeholder.*so it was not sent/);
   }
   assert.equal(tailnet.peer.wsSeen.length, before, 'no sealed handshake reached the peer');
   assert.equal(

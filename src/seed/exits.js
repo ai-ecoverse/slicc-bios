@@ -1,4 +1,6 @@
 import { datagrams } from './link-udp.js';
+import { hasPlaceholder, SEALED } from './placeholders.js';
+import { checkRedirect, redirectMode } from './redirects.js';
 
 export const KERNEL_NAMES = ['emscripten', 'slicc', 'wasmer.sh'];
 const LOOPBACK = new Set(['localhost', '::1']);
@@ -67,11 +69,10 @@ export function held(id) {
   };
 }
 
-export const SEALED = /fnox_proxy_[0-9a-f]{24}/;
+export { SEALED };
 export const NO_SEALED_WEBSOCKET = "secrets in WebSocket handshakes aren't supported yet";
 
-const sealed = ({ url, headers = [] }) =>
-  SEALED.test(url) || headers.some(([name, value]) => SEALED.test(`${name}:${value}`));
+const sealed = hasPlaceholder;
 
 export const NO_WEBSOCKET =
   'WebSockets go out only through an exit: link a slicc CLI (npx sliccy@next), or use a Tailscale exit node';
@@ -137,8 +138,54 @@ export function routedUdp({ family, signal }, choose) {
   };
 }
 
-export function createExitRouter() {
+function credentialedSelection(url, base, protectedUrl, { httpCarrier, own, exits, onChange }) {
+  const host = bareHost(new URL(url).hostname).replace(/\.$/, '');
+  const literal = /^\d+\.\d+\.\d+\.\d+$/.test(host) || host.includes(':');
+  const carrier = httpCarrier(host);
+  const local = loopback(host) && carrier?.hostLoopback?.() === true;
+  if (
+    (!local && loopback(host)) ||
+    ownName(host, own) ||
+    (literal && reserved(host) && !local) ||
+    /^(?:\d+\.)?kernel\.localhost$/.test(host) ||
+    protectedUrl(url)
+  )
+    return null;
+  const sender = carrier ? carrier.credentialed : base;
+  if (sender?.traits?.manualRedirects !== true || sender.traits?.encodedBodies !== false)
+    return null;
+  const exit = carrier ? carrier.exitName?.() : 'page';
+  if (typeof exit !== 'string') return null;
+  return {
+    exit,
+    rawTraits: { manualRedirects: true, encodedBodies: false },
+    maxRequestBody: sender.traits.maxRequestBody,
+    streamingBodies: sender.traits.streamingBodies === true,
+    active: () =>
+      httpCarrier(host) === carrier &&
+      (carrier
+        ? carrier.active() === true &&
+          exits.includes(carrier) &&
+          carrier.exitName?.() === exit &&
+          sender.active?.() === true
+        : sender.active() === true),
+    onChange,
+    fetch: (request) => sender.fetch({ ...request, redirect: 'manual' }),
+  };
+}
+
+function honorsRedirect(traits, mode) {
+  return (
+    traits.redirectPolicy === true ||
+    (mode === 'manual' &&
+      traits.manualRedirects === true &&
+      (traits.redirectHops === undefined || traits.redirectHops === false))
+  );
+}
+
+export function createExitRouter({ protectedUrl = () => false } = {}) {
   const exits = [];
+  const listeners = new Set();
   const own = new Set(KERNEL_NAMES);
   const asked = [];
   const forwarded = [];
@@ -184,6 +231,18 @@ export function createExitRouter() {
       if (at >= 0) exits.splice(at, 1);
       router.sync();
     },
+    onChange(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    selectCredentialed(url, base, protectedUrl = () => false) {
+      return credentialedSelection(url, base, protectedUrl, {
+        httpCarrier,
+        own,
+        exits,
+        onChange: router.onChange,
+      });
+    },
     defaultExit: fallback,
     chosen: () => chosen,
     choose(id) {
@@ -201,6 +260,7 @@ export function createExitRouter() {
       router.sync();
     },
     sync() {
+      for (const listener of listeners) listener();
       kernel
         ?.updateTransportTraits?.()
         .catch((error) => console.warn(`exit traits: ${error.message}`));
@@ -218,11 +278,33 @@ export function createExitRouter() {
         get traits() {
           const exit = fallback();
           const about = exit && !exit.held ? describe(exit) : null;
-          return { ...base.traits, websocket: true, ...(about ? { exit: about } : {}) };
+          return {
+            ...base.traits,
+            redirectPolicy: base.traits.redirectPolicy === true,
+            websocket: true,
+            ...(about ? { exit: about } : {}),
+          };
         },
-        fetch(request) {
+        async fetch(request) {
+          if (hasPlaceholder(request))
+            throw Object.assign(new TypeError('the request carries an unfilled placeholder'), {
+              status: 403,
+              code: 'EACCES',
+            });
+          const mode = redirectMode(request);
+          if (mode !== 'follow' && protectedUrl(request.url))
+            throw Object.assign(new TypeError('the request names a protected origin'), {
+              status: 403,
+              code: 'EACCES',
+            });
           const exit = httpCarrier(new URL(request.url).hostname);
-          return exit ? exit.fetch(request) : base.fetch(request);
+          if (mode !== 'follow' && !honorsRedirect(exit ?? base.traits, mode))
+            throw Object.assign(
+              new TypeError('the selected exit cannot honor this redirect policy'),
+              { status: 502, code: 'EACCES' }
+            );
+          const response = await (exit ? exit.fetch(request) : base.fetch(request));
+          return checkRedirect(request, response);
         },
         async websocket(request) {
           if (sealed(request))
