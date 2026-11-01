@@ -1,0 +1,125 @@
+name: Candidate diagnostic
+
+on:
+  push:
+    branches:
+      - diagnostic/cdp-675-stage1-thr_uzh6iuph2q
+    paths:
+      - .github/workflows/cdp-675-stage1.yml
+      - test/integration/cdp-675-*.test.mjs
+      - test/integration/fixtures/cdp-675-*
+
+permissions:
+  contents: read
+
+concurrency:
+  group: candidate-diagnostic-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diagnostic:
+    if: ${{ contains(github.event.head_commit.message, 'run-candidates') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      SLICC_CDP_PORTS: 9300-9309
+      SLICC_675_STAGE1_DIAGNOSTIC: '1'
+      SLICC_675_RUN: '15'
+      UV_THREADPOOL_SIZE: '2'
+      CARGO_BUILD_JOBS: '4'
+      GOMAXPROCS: '4'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          repository: ai-ecoverse/slicc-cdp
+          ref: 728094fdcefdb82b2f0f14c1ff39c394a2dd9c62
+          path: candidates/cdp
+      - uses: actions/checkout@v4
+        with:
+          repository: ai-ecoverse/mcpcat
+          ref: 383030db275265c65b2855fb306f9d4fb31d5699
+          path: candidates/mcpcat
+      - uses: actions/checkout@v4
+        with:
+          repository: ai-ecoverse/slicc-cli
+          ref: 1c1b2e82ec950328af2885bf25cb1fc609003dfc
+          path: candidates/cli
+      - uses: actions/checkout@v4
+        with:
+          repository: ai-ecoverse/slicc-extension
+          ref: f1272c666d0eb7b30678713058cd4bf3479a148e
+          path: candidates/extension
+      - uses: actions/checkout@v4
+        with:
+          repository: ai-ecoverse/slicc-browsers
+          ref: 8aaac62df5c5eef34376eec5518dd7741c8be270
+          path: candidates/browsers
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: candidates/cli/go.mod
+          cache-dependency-path: candidates/cli/go.sum
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+          toolchain: 1.99.1
+      - run: npm ci
+      - name: Pack exact candidates
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/candidate-artifacts" "$RUNNER_TEMP/candidate-trace"
+          npm pack @ai-ecoverse/slicc-cdp@1.43.1 --ignore-scripts --pack-destination "$RUNNER_TEMP/candidate-artifacts"
+          cd candidates/cdp
+          npm ci
+          npm pkg set version=1.43.2
+          git diff -- package.json > "$RUNNER_TEMP/candidate-trace/cdp-version-stamp.diff"
+          npm run build:wasm
+          npm pack --pack-destination "$RUNNER_TEMP/candidate-artifacts"
+          sha256sum bin/playwright-cli.wasm > "$RUNNER_TEMP/candidate-trace/wasm.sha256"
+          cd ../mcpcat
+          npm ci
+          npm pkg set version=0.80.1
+          git diff -- package.json > "$RUNNER_TEMP/candidate-trace/mcpcat-version-stamp.diff"
+          npm pack --pack-destination "$RUNNER_TEMP/candidate-artifacts"
+          cd ../extension
+          npm ci
+          npm run build
+          node scripts/pack.mjs 7.10.1
+          sha256sum artifacts/slicc-extension.zip > "$RUNNER_TEMP/candidate-trace/extension.sha256"
+          mkdir -p "$RUNNER_TEMP/extension-candidate"
+          unzip -q artifacts/slicc-extension.zip -d "$RUNNER_TEMP/extension-candidate"
+          cd ../cli
+          npm ci
+          go build -ldflags '-X main.version=1.49.37' -o "$RUNNER_TEMP/slicc-candidate" ./cmd/slicc
+          "$RUNNER_TEMP/slicc-candidate" --version > "$RUNNER_TEMP/candidate-trace/cli-version.txt"
+          sha256sum "$RUNNER_TEMP/slicc-candidate" > "$RUNNER_TEMP/candidate-trace/cli.sha256"
+          cd ../..
+          node test/integration/fixtures/cdp-675-artifacts.mjs "$RUNNER_TEMP/candidate-artifacts"
+          cp "$RUNNER_TEMP/candidate-artifacts/manifest.json" "$RUNNER_TEMP/candidate-trace/manifest.json"
+          npx --no-install slicc-cdp install-browser
+      - name: Run candidate diagnostic
+        run: |
+          set +e
+          export SLICC_PROOF_TRACE_DIR="$RUNNER_TEMP/candidate-trace"
+          export SLICC_675_ARTIFACT_DIR="$RUNNER_TEMP/candidate-artifacts"
+          export SLICC_675_EXTENSION_DIR="$RUNNER_TEMP/extension-candidate"
+          export SLICC_CLI="$RUNNER_TEMP/slicc-candidate"
+          node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs test/integration/cdp-675-packaged.test.mjs test/integration/cdp-675-existing-reads.test.mjs > "$RUNNER_TEMP/candidate.log" 2>&1
+          result=$?
+          echo "Diagnostic exit: $result"
+          exit "$result"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-trace
+          path: |
+            ${{ runner.temp }}/candidate-trace
+            ${{ runner.temp }}/candidate-artifacts
+          if-no-files-found: error
+          retention-days: 3

@@ -380,7 +380,7 @@ async function readIn(prefix, expression, ms) {
 const marker = (id) =>
   `(function k(){var d=document.documentElement;if(!d){return setTimeout(k,0);}if(!d.hasAttribute('data-k')){d.setAttribute('data-k',${JSON.stringify(id)});fetch('http://localhost:${standPort}/beacon?id='+encodeURIComponent(${JSON.stringify(id)})+'&host='+encodeURIComponent(location.host),{mode:'no-cors'});}})()`;
 
-async function guardPage(t, lag, path = null, lens = null) {
+async function guardPage(t, lag, path = null, lens = null, route = null) {
   const seven = await chrome.page(t);
   const socket = new WebSocket(browser);
   await new Promise((resolve, reject) => {
@@ -457,65 +457,68 @@ async function guardPage(t, lag, path = null, lens = null) {
   });
   await boot(seven);
   if (path === 'link') await linkNode(t, seven, port);
-  await seven.evaluate(async (path) => {
-    const { guardProtected } = await import(new URL('guard.js', location.href).href);
-    const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
-    window.armDelay = 0;
-    const slowed = (connection) => {
-      const send = connection.send.bind(connection);
-      connection.send = (text) => {
-        const { method, params } = JSON.parse(text);
-        const arming =
-          method === 'Fetch.enable' &&
-          (params?.patterns ?? []).some((pattern) => pattern.resourceType === 'Document');
-        if (arming && Date.now() < window.armDelay) setTimeout(() => send(text), 4000);
-        else send(text);
+  await seven.evaluate(
+    async ({ path, route }) => {
+      const { guardProtected } = await import(new URL('guard.js', location.href).href);
+      const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
+      window.armDelay = 0;
+      const slowed = (connection) => {
+        const send = connection.send.bind(connection);
+        connection.send = (text) => {
+          const { method, params } = JSON.parse(text);
+          const arming =
+            method === 'Fetch.enable' &&
+            (params?.patterns ?? []).some((pattern) => pattern.resourceType === 'Document');
+          if (arming && Date.now() < window.armDelay) setTimeout(() => send(text), 4000);
+          else send(text);
+        };
+        return connection;
       };
-      return connection;
-    };
-    const routed = async () => {
-      if (path === 'link') return slowed(await globalThis.sliccLinkedBrowsers()[0].open());
-      return extensionConnection(globalThis.sliccExtension.cdp);
-    };
-    const connection = guardProtected(await routed(), location.origin);
-    const pending = new Map();
-    const events = [];
-    const messages = [];
-    let next = 0;
-    connection.onmessage = (text) => {
-      const message = JSON.parse(text);
-      messages.push(message);
-      if (message.id !== undefined) {
-        pending.get(message.id)?.(message);
-        pending.delete(message.id);
-        return;
-      }
-      events.push(message);
-      for (const handler of handlers) handler(message);
-    };
-    const handlers = new Set();
-    window.guarded = {
-      events,
-      messages,
-      handlers,
-      send: (method, params = {}, sessionId = undefined, wait = 20000) =>
-        new Promise((resolve) => {
-          next += 1;
-          const id = next;
-          const timer = setTimeout(() => {
-            pending.delete(id);
-            resolve({ error: { message: `${method} got no answer` } });
-          }, wait);
-          pending.set(id, (message) => {
-            clearTimeout(timer);
-            resolve(message);
-          });
-          connection.send(
-            JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })
-          );
-        }),
-    };
-  }, path);
+      const routed = async () => {
+        if (path === 'link') return slowed(await globalThis.sliccLinkedBrowsers()[0].open());
+        return extensionConnection(globalThis.sliccExtension.cdp);
+      };
+      const connection = guardProtected(await routed(), location.origin, new Map(), route);
+      const pending = new Map();
+      const events = [];
+      const messages = [];
+      let next = 0;
+      connection.onmessage = (text) => {
+        const message = JSON.parse(text);
+        messages.push(message);
+        if (message.id !== undefined) {
+          pending.get(message.id)?.(message);
+          pending.delete(message.id);
+          return;
+        }
+        events.push(message);
+        for (const handler of handlers) handler(message);
+      };
+      const handlers = new Set();
+      window.guarded = {
+        events,
+        messages,
+        handlers,
+        send: (method, params = {}, sessionId = undefined, wait = 20000) =>
+          new Promise((resolve) => {
+            next += 1;
+            const id = next;
+            const timer = setTimeout(() => {
+              pending.delete(id);
+              resolve({ error: { message: `${method} got no answer` } });
+            }, wait);
+            pending.set(id, (message) => {
+              clearTimeout(timer);
+              resolve(message);
+            });
+            connection.send(
+              JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })
+            );
+          }),
+      };
+    },
+    { path, route }
+  );
   const send = (method, params, sessionId, wait) =>
     seven.evaluate(
       ([m, p, s, w]) => window.guarded.send(m, p ?? {}, s ?? undefined, w ?? 20000),
@@ -861,7 +864,7 @@ for (const [detach, lag] of DETACH) {
   });
 
   test(`E2–E5, ${detach} detach`, { timeout: 20 * 60 * 1000 }, async (t) => {
-    const guard = await guardPage(t, lag);
+    const guard = await guardPage(t, lag, null, null, { kind: 'extension', version: '7.10.1' });
     sevenPages(guard.seven);
     for (const [name, at] of Object.entries(targets())) {
       await t.test(`E2.${name} control`, async () => {
@@ -1028,6 +1031,17 @@ for (const [detach, lag] of DETACH) {
             ['Debugger.setInstrumentationBreakpoint', { instrumentation: 'beforeScriptExecution' }],
             ['DOMDebugger.setEventListenerBreakpoint', { eventName: 'DOMContentLoaded' }],
           ]) {
+            if (
+              method === 'Debugger.enable' ||
+              method === 'Debugger.setInstrumentationBreakpoint'
+            ) {
+              assert.equal(
+                (await guard.send(method, params, session)).error,
+                undefined,
+                `${method}: ordinary predecessor admission`
+              );
+              continue;
+            }
             assert.match(
               (await guard.send(method, params, session)).error?.message ?? '',
               DEBUGGER,
