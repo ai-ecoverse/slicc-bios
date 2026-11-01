@@ -24,7 +24,7 @@ jobs:
     env:
       SLICC_CDP_PORTS: 9300-9309
       SLICC_675_STAGE1_DIAGNOSTIC: '1'
-      SLICC_675_RUN: '17'
+      SLICC_675_RUN: '18'
       UV_THREADPOOL_SIZE: '2'
       CARGO_BUILD_JOBS: '4'
       GOMAXPROCS: '4'
@@ -50,7 +50,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-extension
-          ref: 64ae92d2805c2e01ac18508e455ac3626b9f9fa4
+          ref: 72363d3cbdece64de93094f2f4ecfc1703cec812
           path: candidates/extension
       - uses: actions/checkout@v4
         with:
