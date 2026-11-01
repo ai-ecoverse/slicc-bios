@@ -4,7 +4,7 @@ import { after, test } from 'node:test';
 import { protection, redacting } from '../../src/seed/guard.js';
 import { boot } from './bios.mjs';
 import { debuggerUrl, devtools, launch } from './chrome.mjs';
-import { assertPopupOutcome, popupReport } from './guard-popup.mjs';
+import { assertChildEvents, assertPopupOutcome, popupReport } from './guard-popup.mjs';
 import { linkNode } from './linked-node.mjs';
 
 const LAG = 8000;
@@ -663,6 +663,7 @@ for (const [detach, lag] of DETACH) {
             const mark = chrome.requests.length;
             const ran = await guard.go(TRIGGERS[trigger](url), session);
             let popup = null;
+            let popupProof = null;
             if (trigger === 'popup') {
               assert.equal(ran.error, undefined, `${id}: the trigger ran`);
               for (const end = Date.now() + lag + 15000; !popup && Date.now() < end; ) {
@@ -704,7 +705,7 @@ for (const [detach, lag] of DETACH) {
                 }
               }
               try {
-                assertPopupOutcome(id, popup, attached, report, attribute, beacon);
+                popupProof = assertPopupOutcome(id, popup, attached, report, attribute, beacon);
               } catch (error) {
                 failures.push(error);
               }
@@ -723,31 +724,7 @@ for (const [detach, lag] of DETACH) {
             const child =
               popup ?? result.targetInfos.find((info) => children && info.url.startsWith(url));
             if (child) {
-              const about = later.filter((event) => JSON.stringify(event).includes(child.targetId));
-              assert.deepEqual(
-                about.filter((event) => event.method === 'Target.attachedToTarget'),
-                [],
-                `${id}: the protected ${trigger} was never attached to the client`
-              );
-              assert.ok(
-                !about.some((event) => JSON.stringify(event).includes(new URL(to).host)),
-                `${id}: no target event shows the protected ${trigger}'s origin (${JSON.stringify(about).slice(0, 400)})`
-              );
-              const leaks = about.filter((event) => {
-                const info = event.params?.targetInfo ?? {};
-                return (
-                  (info.url &&
-                    info.url !== 'about:blank' &&
-                    !/^https?:\/\/[^/]+$/.test(info.url)) ||
-                  (info.title && info.title !== info.url && info.title !== 'about:blank') ||
-                  /"frame":|"context":|executionContext|STAND/.test(JSON.stringify(event))
-                );
-              });
-              assert.deepEqual(
-                leaks.map((event) => event.method),
-                [],
-                `${id}: events naming the ${trigger}'s target carry no url, title, frame or execution context (${JSON.stringify(leaks).slice(0, 600)})`
-              );
+              assertChildEvents(id, trigger, to, child, later, popupProof);
             }
           } finally {
             if (children) {

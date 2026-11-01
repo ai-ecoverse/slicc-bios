@@ -138,4 +138,48 @@ export function assertPopupOutcome(id, popup, attached, report, attribute, beaco
   }
   if (failures.length === 1) throw failures[0];
   if (failures.length > 1) throw new AggregateError(failures, `${id}: popup checks failed`);
+  return attached.error?.message === PROTECTED
+    ? null
+    : { targetId: popup.targetId, sessionId: attached.result.sessionId };
+}
+
+export function assertChildEvents(id, trigger, to, child, later, blank = null) {
+  const about = later.filter((event) => JSON.stringify(event).includes(child.targetId));
+  const replacement = (event) => {
+    const info = event.params?.targetInfo;
+    return Boolean(
+      trigger === 'popup' &&
+        blank?.targetId === child.targetId &&
+        info?.targetId === child.targetId &&
+        info.url === BLANKED &&
+        info.title === 'blocked' &&
+        ['Target.targetCreated', 'Target.targetInfoChanged', 'Target.attachedToTarget'].includes(
+          event.method
+        ) &&
+        (event.method !== 'Target.attachedToTarget' || event.params.sessionId === blank.sessionId)
+    );
+  };
+  assert.deepEqual(
+    about.filter((event) => event.method === 'Target.attachedToTarget' && !replacement(event)),
+    [],
+    `${id}: the protected ${trigger} was never attached to the client`
+  );
+  assert.ok(
+    !about.some((event) => JSON.stringify(event).includes(new URL(to).host)),
+    `${id}: no target event shows the protected ${trigger}'s origin (${JSON.stringify(about).slice(0, 400)})`
+  );
+  const leaks = about.filter((event) => {
+    const info = event.params?.targetInfo ?? {};
+    const safe = replacement(event);
+    return (
+      (info.url && info.url !== 'about:blank' && !/^https?:\/\/[^/]+$/.test(info.url) && !safe) ||
+      (info.title && info.title !== info.url && info.title !== 'about:blank' && !safe) ||
+      /"frame":|"context":|executionContext|STAND/.test(JSON.stringify(event))
+    );
+  });
+  assert.deepEqual(
+    leaks.map((event) => event.method),
+    [],
+    `${id}: events naming the ${trigger}'s target carry no url, title, frame or execution context (${JSON.stringify(leaks).slice(0, 600)})`
+  );
 }

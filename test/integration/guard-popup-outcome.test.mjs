@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { BLANKED, PROTECTED, SCRIPTS } from '../../src/seed/guard.js';
-import { assertPopupOutcome, popupReport } from './guard-popup.mjs';
+import { assertChildEvents, assertPopupOutcome, popupReport } from './guard-popup.mjs';
 import { errorFrame, failed, flush, plainFrame, protocol } from './guard-state-fixture.mjs';
 
 async function blockedPopup(t) {
@@ -91,7 +91,15 @@ test('popup outcome accepts the guarded replacement after a prevented load and a
 }, async (t) => {
   const { popup, attached, report } = await blockedPopup(t);
   assert.equal(report.pathObserved, 'blocked blank after attach reply');
-  assertPopupOutcome('C3.popup', popup, attached, report, { found: false, value: null }, false);
+  const proof = assertPopupOutcome(
+    'C3.popup',
+    popup,
+    attached,
+    report,
+    { found: false, value: null },
+    false
+  );
+  assertChildEvents('C3.popup', 'popup', failed, popup, replacementEvents(report, attached), proof);
 });
 
 test('popup outcome keeps the protected refusal and leakage checks independent', () => {
@@ -102,6 +110,49 @@ test('popup outcome keeps the protected refusal and leakage checks independent',
   );
   assert.throws(() => assertPopupOutcome('C3.popup', {}, attached, null, { value: null }, true));
 });
+
+function replacementEvents(report, attached) {
+  const targetInfo = report.target.result.targetInfo;
+  return [
+    { method: 'Target.targetCreated', params: { targetInfo } },
+    { method: 'Target.targetInfoChanged', params: { targetInfo } },
+    {
+      method: 'Target.attachedToTarget',
+      params: { targetInfo, sessionId: attached.result.sessionId, waitingForDebugger: false },
+    },
+  ];
+}
+
+for (const eventState of [
+  'different session',
+  'protected URL',
+  'ordinary URL',
+  'wrong title',
+  'frame',
+  'context',
+  'marker',
+  'missing proof',
+  'wrong proved target',
+]) {
+  test(`popup outcome rejects replacement events with ${eventState}`, {
+    timeout: 5000,
+  }, async (t) => {
+    const { popup, attached, report } = await blockedPopup(t);
+    let proof = assertPopupOutcome('C3.popup', popup, attached, report, { value: null }, false);
+    const events = structuredClone(replacementEvents(report, attached));
+    const last = events.at(-1);
+    if (eventState === 'different session') last.params.sessionId = 'unproved-client';
+    if (eventState === 'protected URL') last.params.targetInfo.url = failed;
+    if (eventState === 'ordinary URL') last.params.targetInfo.url = 'https://ordinary.invalid/page';
+    if (eventState === 'wrong title') last.params.targetInfo.title = 'other';
+    if (eventState === 'frame') last.params.frame = { id: popup.targetId };
+    if (eventState === 'context') last.params.context = { origin: 'null' };
+    if (eventState === 'marker') last.params.marker = 'STAND';
+    if (eventState === 'missing proof') proof = null;
+    if (eventState === 'wrong proved target') proof.targetId = 'other';
+    assert.throws(() => assertChildEvents('C3.popup', 'popup', failed, popup, events, proof));
+  });
+}
 
 for (const state of [
   'ordinary blank',
