@@ -1156,9 +1156,19 @@ class Guard {
     }
   }
 
+  replaceDebuggerLease(targetId, state) {
+    const lease = this.debuggerLeases.get(targetId);
+    if (lease && lease.state !== 'revoked') this.setDebuggerLease(targetId, state);
+  }
+
   async placePrivateFrames(targetId) {
     const scope = this.scope(targetId);
-    if (!this.extensionFrames || typeof this.privateFrames !== 'function') return;
+    if (
+      !this.extensionFrames ||
+      typeof this.privateFrames !== 'function' ||
+      !scope.remoteOwners.size
+    )
+      return;
     const revision = this.revisions.get(targetId);
     const loader = scope.loader;
     let list;
@@ -1169,7 +1179,7 @@ class Guard {
     const frames = list?.frames;
     if (Array.isArray(frames) && frames.some((frame) => this.is.url(frame?.url))) {
       scope.privatePlaced = false;
-      this.setDebuggerLease(targetId, 'revoked');
+      this.replaceDebuggerLease(targetId, 'revoked');
       return;
     }
     const root = Array.isArray(frames) && frames.find((frame) => frame?.frameId === 0);
@@ -1217,11 +1227,7 @@ class Guard {
         }
       }
     scope.privatePlaced = rooted;
-    if (!rooted) {
-      if (this.debuggerLeases.get(targetId)?.state !== 'revoked')
-        this.setDebuggerLease(targetId, 'suspended');
-    } else if (this.debuggerLeases.get(targetId)?.state !== 'revoked')
-      this.setDebuggerLease(targetId, 'placed');
+    this.replaceDebuggerLease(targetId, rooted ? 'placed' : 'suspended');
   }
 
   unavailableFrame(frameId, url, view) {
@@ -4019,6 +4025,22 @@ class Guard {
     return this.failedScope(message.sessionId) && contentRead(message.method);
   }
 
+  async debuggerEventReady(message, revision) {
+    const { method, sessionId } = message;
+    if (
+      (await this.placed(sessionId)) &&
+      this.revisions.get(this.scopeTarget(sessionId)) === revision &&
+      !['suspended', 'revoked'].includes(
+        this.debuggerLeases.get(this.scopeTarget(sessionId))?.state
+      ) &&
+      !this.locked(sessionId) &&
+      !this.hidden(sessionId)
+    )
+      return true;
+    if (method === 'Debugger.paused') void this.call('Debugger.resume', {}, sessionId);
+    return false;
+  }
+
   async event(message) {
     const method = message.method ?? '';
     const { sessionId } = message;
@@ -4736,9 +4758,7 @@ class Guard {
       ) {
         clearTimeout(lease?.timer);
         this.debuggerLeases.delete(targetId);
-      }
-      if (this.debuggerLeases.get(targetId)?.state !== 'revoked')
-        this.setDebuggerLease(targetId, 'suspended');
+      } else if (lease && lease.state !== 'revoked') this.setDebuggerLease(targetId, 'suspended');
     }
     if (message.method !== 'Page.frameNavigated' || !message.params?.frame) return;
     const { frame } = message.params;
@@ -4791,8 +4811,9 @@ class Guard {
     if (
       !message.method?.startsWith('Debugger.') ||
       message.id !== undefined ||
-      (this.debuggerLeases.get(this.scopeTarget(message.sessionId))?.state === 'placed' &&
-        !this.locked(message.sessionId) &&
+      (!['suspended', 'revoked'].includes(
+        this.debuggerLeases.get(this.scopeTarget(message.sessionId))?.state
+      ) &&
         !this.hidden(message.sessionId))
     )
       return false;
@@ -4856,11 +4877,19 @@ class Guard {
     const key = requestKey(message);
     if (message.id !== undefined && !this.asked.has(key)) return;
     const was = message.id === undefined ? undefined : this.asked.get(key);
+    const revision = this.revisions.get(this.scopeTarget(message.sessionId));
     this.queue(
       message.sessionId ?? was?.sessionId ?? '',
       async () => {
         if (this.asked.get(key) === was) this.asked.delete(key);
-        if (message.id === undefined) return this.event(message);
+        if (message.id === undefined) {
+          if (
+            message.method?.startsWith('Debugger.') &&
+            !(await this.debuggerEventReady(message, revision))
+          )
+            return;
+          return this.event(message);
+        }
         this.answering.add(was);
         try {
           await this.answer(message, was);
