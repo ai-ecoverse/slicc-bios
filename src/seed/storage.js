@@ -5,6 +5,8 @@ export const INSTALL = `${WARNING} Install seven as an app to keep them.`;
 export const BOOKMARK = `${WARNING} Bookmark seven to keep them.`;
 export const STILL =
   'Chrome still doesn’t keep seven’s files. Install seven as an app or bookmark it, then try again.';
+export const ELSEWHERE = 'This browser may clear seven’s files and chats when it needs the space.';
+export const STILL_ELSEWHERE = 'This browser still doesn’t promise to keep seven’s files.';
 
 export function installPrompts(events = globalThis) {
   const listeners = new Set();
@@ -31,17 +33,22 @@ export function installPrompts(events = globalThis) {
   };
 }
 
-export function keepStorage({ notices, prompts, storage = navigator.storage }) {
+export function keepStorage({
+  notices,
+  prompts,
+  storage = navigator.storage,
+  chromium = Boolean(navigator.userAgentData),
+}) {
   let asked = false;
   let shown = false;
   const notice = () => ({
     id: ID,
     tone: 'warning',
     title: TITLE,
-    body: prompts.offered() ? INSTALL : BOOKMARK,
+    body: prompts.offered() ? INSTALL : chromium ? BOOKMARK : ELSEWHERE,
     actions: [
       ...(prompts.offered() ? [{ id: 'install', label: 'Install' }] : []),
-      { id: 'retry', label: 'Try again' },
+      { id: 'retry', label: 'Ask again' },
     ],
   });
   const show = () => {
@@ -61,7 +68,7 @@ export function keepStorage({ notices, prompts, storage = navigator.storage }) {
       show();
       return;
     }
-    if (!(await kept())) throw new Error(STILL);
+    if (!(await kept())) throw new Error(chromium ? STILL : STILL_ELSEWHERE);
   }
   prompts.on((what) => {
     if (!shown) return;
