@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { boot, ready, run, shows } from './bios.mjs';
+import { nativeTapFixture, nativeTapRead } from './cdp-675-native-tap.mjs';
 import { devtools, launch } from './chrome.mjs';
 import { fixtureTarget } from './fixtures/cdp-675-target.mjs';
 import { linkNode } from './linked-node.mjs';
@@ -1797,6 +1798,7 @@ for (const route of ['extension', 'link']) {
       };
       t.after(persist);
       let chrome;
+      let nativeFixture;
       let page;
       let setupError;
       let offBoot;
@@ -1823,11 +1825,18 @@ for (const route of ['extension', 'link']) {
           `MAP vault.sliccy.ai 127.0.0.1:${protectedSite.address().port}`,
           `MAP echo.sliccy.ai 127.0.0.1:${protectedSite.address().port}`,
         ];
+        if (route === 'extension' && ['ordinary', 'foreign'].includes(mode)) {
+          nativeFixture = await nativeTapFixture(process.env.SLICC_675_EXTENSION_DIR);
+          t.after(() => rm(nativeFixture.directory, { recursive: true, force: true }));
+          trace.nativeFixture = nativeFixture;
+        }
         chrome =
           route === 'extension'
             ? await realExtension({
                 rules: protectedRules,
-                directory: oldRoute ? undefined : process.env.SLICC_675_EXTENSION_DIR,
+                directory: oldRoute
+                  ? undefined
+                  : (nativeFixture?.directory ?? process.env.SLICC_675_EXTENSION_DIR),
                 extraExtensions: lateExtensionPath ? [lateExtensionPath] : [],
                 args: ['--disable-features=WebMCP,WebMCPTesting'],
               })
@@ -1977,7 +1986,7 @@ for (const route of ['extension', 'link']) {
           trace.setupChecks.push({
             name: 'selected extension route',
             pass:
-              trace.selectedRoute.extension === (oldRoute ? '7.11.0' : '7.11.1') &&
+              trace.selectedRoute.extension === (oldRoute ? '7.10.0' : '7.11.1') &&
               trace.selectedRoute.links === 0,
             actual: trace.selectedRoute,
           });
@@ -3440,7 +3449,6 @@ for (const route of ['extension', 'link']) {
                 delete globalThis.cdp675Race;
               })
               .catch(() => {});
-          countRow(row);
           if (page && !setupError) {
             if (row.lateFrameStart) {
               row.lateLeaseStates = await page
@@ -3509,6 +3517,23 @@ for (const route of ['extension', 'link']) {
               )
               .catch(() => []);
           }
+          if (nativeFixture && row.target) {
+            try {
+              row.nativeRefusalTrace = await nativeTapRead(
+                chrome,
+                nativeFixture,
+                row.target,
+                rawBounded
+              );
+            } catch (error) {
+              row.nativeRefusalTrace = { error: error.message };
+              if (row.status === 'pass') {
+                row.status = 'finding';
+                row.failure = { name: error.name, message: error.message };
+              }
+            }
+          }
+          countRow(row);
           unobserve?.();
           if (rawSession)
             await chrome.cdp

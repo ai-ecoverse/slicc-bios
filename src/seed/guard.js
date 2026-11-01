@@ -1921,6 +1921,46 @@ class Guard {
     return projected === bare(this.frames.get(frameId) ?? '');
   }
 
+  contextRetryBlocked(record) {
+    const context = record.message.params.context;
+    return (
+      this.is.url(context.origin) ||
+      this.is.url(this.frames.get(context.auxData.frameId)) ||
+      this.errorFrames.has(context.auxData.frameId) ||
+      Boolean(this.scopes.get(record.targetId)?.protectedOwner)
+    );
+  }
+
+  async retryContext(record) {
+    const scope = this.scopes.get(record.targetId);
+    if (
+      this.contextRetryBlocked(record) ||
+      (!record.deadline && (!scope || (scope.ready && !scope.pending)))
+    )
+      return false;
+    record.deadline ??= Date.now() + 1000;
+    const left = record.deadline - Date.now();
+    if (left <= 0) return false;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(100, left)));
+    return Date.now() < record.deadline && !this.contextRetryBlocked(record);
+  }
+
+  contextAnswer(record, where) {
+    return this.within(
+      this.call(
+        'Runtime.evaluate',
+        { expression: 'location.href', returnByValue: true, silent: true, ...where },
+        record.message.sessionId
+      ),
+      record.deadline ? Math.max(0, Math.min(ANSWER_MS, record.deadline - Date.now())) : ANSWER_MS
+    );
+  }
+
+  staleContext(answer, targetId) {
+    if (!answer || answer.error) this.uncertainProof(targetId);
+    return false;
+  }
+
   async checkContext(record) {
     const {
       sessionId,
@@ -1931,18 +1971,14 @@ class Guard {
       typeof context.uniqueId === 'string'
         ? { uniqueContextId: context.uniqueId }
         : { contextId: context.id };
-    const answer = await this.answered(
-      this.call(
-        'Runtime.evaluate',
-        { expression: 'location.href', returnByValue: true, silent: true, ...where },
-        sessionId
-      )
-    );
+    const answer = await this.contextAnswer(record, where);
     const targetId = record.targetId;
-    if (!current()) {
-      if (!answer || answer.error) this.uncertainProof(targetId);
-      return false;
+    if (!current()) return this.staleContext(answer, targetId);
+    if (answer?.error && (await this.retryContext(record))) {
+      if (!current()) return false;
+      return this.checkContext(record);
     }
+    if (!current()) return false;
     const value =
       answer?.error || answer?.result?.exceptionDetails ? undefined : answer?.result?.result?.value;
     if (
