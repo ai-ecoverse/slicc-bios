@@ -18,6 +18,7 @@ const manifest = directory
 const quote = (text) => `'${text.replaceAll("'", "'\\''")}'`;
 const ordinaryCases = [
   { name: 'instrumented-list-call', reload: true },
+  { name: 'instrumented-plain-100-script-list-call', reload: true, many: true, loadCost: true },
   { name: 'late-no-unasked-reload', reload: false, late: true },
   { name: 'armed-seven-hop-error-scrub-bounded', reload: true, protectedHop: 'seven' },
   { name: 'armed-vault-hop-error-scrub-bounded', reload: true, protectedHop: 'vault' },
@@ -425,12 +426,15 @@ async function lifecycleRescue(page, chrome, rawSession, row, kind) {
       events: globalThis.cdp675Lifecycle.events,
       calls: globalThis.cdp675Lifecycle.calls,
     }));
-    const targets = await chrome.cdp.send('Target.getTargets', {});
-    const owners = targets.targetInfos.filter(
-      (info) => info.type === 'page' && info.url.startsWith(SEVEN)
+    row.ownerBefore = (await page.send('Target.getTargetInfo', {})).targetInfo;
+    assert.equal(row.ownerBefore.type, 'page');
+    assert.ok(row.ownerBefore.targetId);
+    assert.notEqual(
+      row.ownerBefore.targetId,
+      row.rawTargetId,
+      'owner is not the controlled paused page'
     );
-    assert.equal(owners.length, 1, 'only the controlled seven owner tab may be closed');
-    row.ownerTarget = owners[0].targetId;
+    row.ownerTarget = row.ownerBefore.targetId;
     row.ownerClosedAt = Date.now();
     row.ownerClosed = await chrome.cdp.send('Target.closeTarget', { targetId: row.ownerTarget });
     assert.equal(row.ownerClosed.success, true);
@@ -446,6 +450,10 @@ async function lifecycleRescue(page, chrome, rawSession, row, kind) {
       'only the controlled candidate extension worker may be restarted'
     );
     row.workerBefore = workers[0];
+    row.workerBeforeInfo = (
+      await chrome.cdp.send('Target.getTargetInfo', { targetId: row.workerBefore.targetId })
+    ).targetInfo;
+    assert.equal(row.workerBeforeInfo.targetId, row.workerBefore.targetId);
     row.workerRestartAt = Date.now();
     if (kind === 'worker-stop') {
       row.workerStop = await chrome.cdp
@@ -497,23 +505,28 @@ async function lifecycleRescue(page, chrome, rawSession, row, kind) {
   assert.ok(row.continuedAt - row.pause.at < 7000, 'pause rescue exceeded its bound');
   row.rescueBoundMs = row.continuedAt - row.pause.at;
   if (kind === 'worker' || kind === 'worker-stop') {
-    const until = Date.now() + 5000;
-    do {
-      const targets = await chrome.cdp.send('Target.getTargets', {});
-      row.workerAfter = targets.targetInfos.find(
-        (info) =>
-          info.type === 'service_worker' &&
-          info.url === row.workerBefore.url &&
-          info.targetId !== row.workerBefore.targetId
-      );
-      if (row.workerAfter) break;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    } while (Date.now() < until);
-    assert.ok(row.workerAfter, 'extension runtime reload must actually replace its worker');
+    const targets = await chrome.cdp.send('Target.getTargets', {});
+    row.workerAfterTargets = targets.targetInfos.filter(
+      (info) => info.type === 'service_worker' && info.url === row.workerBefore.url
+    );
+    row.workerAfter = row.workerAfterTargets[0] ?? null;
+    row.workerAfterInfo = row.workerAfter
+      ? (await chrome.cdp.send('Target.getTargetInfo', { targetId: row.workerAfter.targetId }))
+          .targetInfo
+      : null;
+    row.workerIdentityChanged = Boolean(
+      row.workerAfter && row.workerAfter.targetId !== row.workerBefore.targetId
+    );
     row.workerRestartScope =
       kind === 'worker-stop'
-        ? 'raw Target.closeTarget of only the owned worker; extension not unloaded, replacement target identity required'
-        : 'chrome.runtime.reload of the owned extension; old worker death and new target identity required';
+        ? 'raw Target.closeTarget of only the owned worker, extension not unloaded'
+        : 'chrome.runtime.reload of only the owned extension';
+    row.workerObservation = row.workerIdentityChanged
+      ? 'owned worker target identity replaced; raw page progress observed'
+      : row.workerAfter
+        ? 'original worker target identity remained; stop or restart not established despite raw page progress'
+        : 'no owned worker target observed after operation; replacement not established';
+    assert.equal(row.workerIdentityChanged, true, row.workerObservation);
   }
   if (kind !== 'owner-gone') await page.evaluate(() => globalThis.cdp675Lifecycle.close());
   row.nextReloadAt = Date.now();
@@ -617,20 +630,22 @@ async function lifecycleChanged(page, chrome, rawSession, row, scene, url) {
 }
 
 async function shippedHolderDeath(page, chrome, rawSession, row, scene) {
-  row.processTable = await sh(page, `printf 'server-pid '; cat ${row.pid}; ps -o pid,ppid,args`);
-  const server = Number(row.processTable.stdout.match(/server-pid\s+(\d+)/)?.[1]);
+  row.processIdentity = await sh(page, `printf 'server-pid '; cat ${row.pid}; cat ${row.log}`);
+  const server = Number(row.processIdentity.stdout.match(/server-pid\s+(\d+)/)?.[1]);
   assert.ok(Number.isSafeInteger(server) && server > 1, 'owned server PID is required');
-  const children = row.processTable.stdout.split('\n').flatMap((line) => {
-    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
-    return match &&
-      Number(match[2]) === server &&
-      /\bwebmcp-polyfill\b/.test(match[3]) &&
-      match[3].includes(row.target)
-      ? [{ pid: Number(match[1]), ppid: Number(match[2]), argv: match[3] }]
-      : [];
+  const holders = row.processIdentity.stdout.split('\n').flatMap((line) => {
+    const match = line.match(/holder-pid (\d+) tab (\S+)$/);
+    return match && match[2] === row.target ? [{ pid: Number(match[1]), tab: match[2] }] : [];
   });
-  assert.equal(children.length, 1, 'exact owned packaged holder child is required');
-  row.killedHolder = children[0];
+  assert.equal(
+    holders.length,
+    1,
+    'exact PID reported by the owned packaged holder spawn is required'
+  );
+  assert.ok(
+    Number.isSafeInteger(holders[0].pid) && holders[0].pid > 1 && holders[0].pid !== server
+  );
+  row.killedHolder = holders[0];
   row.deathTraceStart = await page.evaluate(() => globalThis.cdp675Trace.length);
   let loading;
   if (scene.holderKill === 'load') {
@@ -650,7 +665,7 @@ async function shippedHolderDeath(page, chrome, rawSession, row, scene) {
     );
   }
   row.killStartedAt = Date.now();
-  row.kill = await sh(page, `kill -9 ${children[0].pid} ${server}; echo holder-kill-status-$?`);
+  row.kill = await sh(page, `kill -9 ${holders[0].pid} ${server}; echo holder-kill-status-$?`);
   row.killCompletedAt = Date.now();
   row.postDeathTraceStart = await page.evaluate(() => globalThis.cdp675Trace.length);
   assert.match(row.kill.stdout, /holder-kill-status-0/);
@@ -754,12 +769,16 @@ async function discover(page, url) {
 }
 
 for (const route of ['extension', 'link']) {
-  for (const mode of ['ordinary', 'foreign', 'old-route', 'guard-level']) {
+  for (const mode of ['ordinary', 'foreign', 'old-route', 'guard-level', 'owner-death']) {
     const foreign = mode === 'foreign';
     const oldRoute = mode === 'old-route';
-    const guardLevel = mode === 'guard-level';
+    const guardLevel = mode === 'guard-level' || mode === 'owner-death';
     const cases = guardLevel
-      ? guardCases.filter((scene) => !scene.extensionOnly || route === 'extension')
+      ? guardCases.filter(
+          (scene) =>
+            (scene.lifecycle === 'owner-gone') === (mode === 'owner-death') &&
+            (!scene.extensionOnly || route === 'extension')
+        )
       : foreign
         ? fallbackCases
         : oldRoute
@@ -1041,12 +1060,16 @@ for (const route of ['extension', 'link']) {
             targetId,
             flatten: true,
           }));
+          row.rawTargetId = targetId;
           row.rawNetwork = [];
           row.rawWorlds = [];
           row.rawFrames = [];
+          row.rawLoads = [];
           unobserve = chrome.cdp.on(({ method, params, sessionId }) => {
             if (sessionId !== rawSession) return;
             if (method === 'Page.frameNavigated') row.rawFrames.push(params.frame);
+            if (method === 'Page.loadEventFired')
+              row.rawLoads.push({ at: Date.now(), timestamp: params.timestamp });
             if (method === 'Runtime.executionContextCreated')
               row.rawWorlds.push({
                 id: params.context.id,
@@ -1075,8 +1098,10 @@ for (const route of ['extension', 'link']) {
               if (sessionId === rawSession && method === 'Page.loadEventFired') resolve(true);
             });
           });
+          row.baselineLoadStartedAt = Date.now();
           await chrome.cdp.send('Page.navigate', { url: url.href }, rawSession);
           row.initialLoaded = await loaded;
+          row.baselineLoadCompletedAt = Date.now();
           clearTimeout(loadTimer);
           loadOff();
           row.setupChecks.push({
@@ -1225,8 +1250,21 @@ for (const route of ['extension', 'link']) {
                     packet.method
                   )
               ).length,
-              scene.protectedSubframe ? 0 : 1
+              scene.protectedSubframe ? 0 : scene.oldClient ? 2 : 1
             );
+            if (scene.oldClient) {
+              row.oldClientStartup = Object.fromEntries(
+                ['Debugger.enable', 'Page.addScriptToEvaluateOnNewDocument'].map((method) => [
+                  method,
+                  row.methods.filter(
+                    ({ boundary, direction, packet }) =>
+                      boundary === 'bios' && direction === 'send' && packet.method === method
+                  ).length,
+                ])
+              );
+              assert.equal(row.oldClientStartup['Debugger.enable'], 1);
+              assert.equal(row.oldClientStartup['Page.addScriptToEvaluateOnNewDocument'], 1);
+            }
             row.status = 'pass';
             continue;
           }
@@ -1445,6 +1483,27 @@ for (const route of ['extension', 'link']) {
             bios: sent.filter((method) => method === 'Page.reload').length,
             route: forwarded.filter((method) => method === 'Page.reload').length,
           };
+          if (scene.loadCost) {
+            const reload = row.methods.find(
+              ({ boundary, direction, packet }) =>
+                boundary === 'bios' && direction === 'send' && packet.method === 'Page.reload'
+            );
+            const completed = row.rawLoads.find(({ at }) => at >= reload.at);
+            assert.ok(
+              completed,
+              '100-script positive must finish loading before list/call completes'
+            );
+            row.loadCost = {
+              scripts: 100,
+              baselineMs: row.baselineLoadCompletedAt - row.baselineLoadStartedAt,
+              holderMs: completed.at - reload.at,
+            };
+            row.loadCost.addedMs = row.loadCost.holderMs - row.loadCost.baselineMs;
+            assert.ok(
+              row.loadCost.addedMs < 1000,
+              `100-script holder added ${row.loadCost.addedMs}ms`
+            );
+          }
           if (scene.holderKill) {
             row.step = 'shipped-holder-death';
             await shippedHolderDeath(page, chrome, rawSession, row, scene);
