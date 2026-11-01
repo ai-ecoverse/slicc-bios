@@ -172,7 +172,7 @@ test('a tab’s favicon comes from the data: icon its page already loaded, a too
   timeout: 35 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
-  const extension = await fakeExtension(page);
+  const extension = await fakeExtension(page, { version: '7.11.0' });
   t.after(extension.close);
   await page.goto('/');
   await ready(page);

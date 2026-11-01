@@ -10,6 +10,7 @@ const log = (entry) => {
 };
 let version = state.version;
 let locked = state.locked;
+let policy = [];
 let serial = 0;
 const records = new Map((state.records ?? []).map((record) => [record.kind + '\\u0000' + record.name, record]));
 serial = records.size;
@@ -43,8 +44,9 @@ if (!state.records) for (const name of state.secrets) keep({ name, value: 'dummy
 const live = () => [...records.values()].filter((record) => !record.removedAt);
 const scrub = () => ({ needed: records.size > 0 || version > 0, version, ready: true });
 const status = () => ({
-  version: '1.9.1',
+  version: '1.20.0',
   protocol: 1,
+  capabilities: { forward: 1 },
   origin: location.ancestorOrigins?.[0] ?? '',
   locked,
   lock: locked ? 'passkey' : 'auto',
@@ -52,7 +54,7 @@ const status = () => ({
   waiting: [],
   exportedAt: null,
   backupReminder: live().some((record) => record.kind === 'secret') ? 'due' : null,
-  policy: [],
+  policy,
 });
 const view = (record) => ({
   name: record.name,
@@ -114,6 +116,17 @@ const page = (port) => (event) => {
   const refuse = () => port.postMessage({ v: 1, id, error: { code: 'EACCES', message: 'vault is locked: unlock it in the vault window' } });
   const result = (record) => ({ name: record.name, placeholder: record.placeholder, state: record.removedAt ? 'removed' : 'inert' });
   if (op === 'status') return reply({ status: status() });
+  if (op === 'policy') {
+    const files = event.data.files;
+    const accepted = Array.isArray(files) && files.length === 2 && files.every((file) => file.users === 'enforce' && file.onRootFs === true && file.absent !== true);
+    policy = Array.isArray(files) ? files.map((file) => ({ path: file.path, sha256: file.sha256 ?? null, accepted, warnings: [], ...(file.absent === true ? { absent: true, paused: true } : {}) })) : [];
+    reply({ accepted, files: policy });
+    return announce();
+  }
+  if (op === 'forward') {
+    event.ports[0]?.close();
+    return reply({ refused: { status: 403, reason: 'the fixture does not admit HTTP forwarding' } });
+  }
   if (op === 'list') return reply({ list: list() });
   if (op === 'audit') return reply({ audit, more: false });
   if (op === 'placeholders') return reply({ placeholders: placeholders(), scrub: scrub() });
