@@ -4864,6 +4864,33 @@ class Guard {
     return true;
   }
 
+  releasePendingDocument(message) {
+    const { method, sessionId, params = {} } = message;
+    const targetId = this.sessions.get(sessionId)?.targetId;
+    const root = this.mainFrame(sessionId);
+    if (
+      method !== 'Fetch.requestPaused' ||
+      params.resourceType !== 'Document' ||
+      params.responseStatusCode !== undefined ||
+      params.responseErrorReason !== undefined ||
+      !targetId ||
+      !root ||
+      params.frameId === root ||
+      !this.parents.has(params.frameId) ||
+      this.privateSessions.has(sessionId) ||
+      ![...(this.contextChecks.get(sessionId)?.values() ?? [])].some((record) => !record.done)
+    )
+      return false;
+    const url = params.request?.url;
+    if (ORDINARY.test(url ?? '') && !this.unsafeUrl(url) && !this.is.url(url)) {
+      this.release(message);
+    } else {
+      void this.failDocument(params, sessionId, targetId);
+      this.failed(targetId, params);
+    }
+    return true;
+  }
+
   received(text) {
     const message = parse(text);
     this.loadingEvent(message);
@@ -4905,6 +4932,7 @@ class Guard {
     }
     this.rememberUnsafe(message);
     if (STRUCTURE.has(message.method)) this.scopeEvent(message);
+    if (this.releasePendingDocument(message)) return;
     if (this.debuggerEventHeld(message)) return;
     if (this.internal.has(message.id)) {
       const resolve = this.internal.get(message.id);
