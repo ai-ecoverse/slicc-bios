@@ -5,7 +5,7 @@ import { flush, plainFrame, protocol } from './guard-ordering-fixture.mjs';
 const { guardProtected } = await import(process.env.GUARD_SOURCE ?? '../../src/seed/guard.js');
 
 for (const route of [
-  { kind: 'extension', version: '7.10.1' },
+  { kind: 'extension', version: '7.11.1' },
   { kind: 'link', version: '1.49.37' },
 ]) {
   test(`${route.kind}: a clean root reload holds its first pause for existing placement, not a private snapshot`, async (t) => {

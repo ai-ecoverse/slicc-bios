@@ -16,7 +16,7 @@ test('a Debugger reply sent before suspension is refused rather than published d
     ],
   };
   const p = protocol(t, (raw, own) =>
-    guardProtected(raw, own, new Map(), { kind: 'extension', version: '7.10.1' }, async () => list)
+    guardProtected(raw, own, new Map(), { kind: 'extension', version: '7.11.1' }, async () => list)
   );
   p.target('root', 'page', { ...plainFrame('root'), loaderId: 'loader' });
   const session = await p.attach('root');

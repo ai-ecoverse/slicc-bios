@@ -1444,9 +1444,15 @@ class Guard {
     await this.call('Page.getFrameTree', {}, sessionId);
     const owners = await this.call('DOM.getDocument', { depth: -1, pierce: true }, sessionId);
     const disabled = await this.call('DOM.disable', {}, sessionId);
+    const cleanupFailed =
+      disabled.error &&
+      !(
+        disabled.error.code === -32000 &&
+        disabled.error.message === '{"code":-32000,"message":"DOM agent hasn\'t been enabled"}'
+      );
     const scope = this.scope(targetId);
     const attached =
-      !owners.error && !disabled.error && scope.ownersReady && scope.protectedOwner
+      !owners.error && !cleanupFailed && scope.ownersReady && scope.protectedOwner
         ? {}
         : await this.placementAttach(sessionId, {
             autoAttach: true,
@@ -1463,7 +1469,7 @@ class Guard {
         owners.error ||
         (attached.error && attached.error.message !== NO_AUTO_ATTACH) ||
         !scope.ownersReady ||
-        disabled.error
+        cleanupFailed
     );
     scope.ready = Boolean(scope.tree && !scope.failed && !scope.pending);
     if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
@@ -1915,51 +1921,6 @@ class Guard {
     return projected === bare(this.frames.get(frameId) ?? '');
   }
 
-  retryContexts({ method, sessionId }) {
-    if (!/^Page\.frame/.test(method ?? '') && method !== 'Page.loadEventFired') return;
-    const targetId = this.scopeTarget(sessionId);
-    for (const records of this.contextChecks.values())
-      for (const record of records.values()) if (record.targetId === targetId) record.retry?.();
-  }
-
-  async retryContext(record) {
-    const context = record.message.params.context;
-    const scope = this.scopes.get(record.targetId);
-    if (
-      this.is.url(context.origin) ||
-      this.errorFrames.has(context.auxData.frameId) ||
-      (!record.deadline && (!scope || (scope.ready && !scope.pending)))
-    )
-      return false;
-    record.deadline ??= Date.now() + 2000;
-    let timer;
-    try {
-      return await new Promise((resolve) => {
-        record.retry = () => resolve(Date.now() < record.deadline);
-        timer = setTimeout(() => resolve(false), Math.max(0, record.deadline - Date.now()));
-      });
-    } finally {
-      clearTimeout(timer);
-      delete record.retry;
-    }
-  }
-
-  contextAnswer(record, where) {
-    return this.within(
-      this.call(
-        'Runtime.evaluate',
-        { expression: 'location.href', returnByValue: true, silent: true, ...where },
-        record.message.sessionId
-      ),
-      record.deadline ? Math.max(0, Math.min(ANSWER_MS, record.deadline - Date.now())) : ANSWER_MS
-    );
-  }
-
-  staleContext(answer, targetId) {
-    if (!answer || answer.error) this.uncertainProof(targetId);
-    return false;
-  }
-
   async checkContext(record) {
     const {
       sessionId,
@@ -1970,11 +1931,18 @@ class Guard {
       typeof context.uniqueId === 'string'
         ? { uniqueContextId: context.uniqueId }
         : { contextId: context.id };
-    const answer = await this.contextAnswer(record, where);
+    const answer = await this.answered(
+      this.call(
+        'Runtime.evaluate',
+        { expression: 'location.href', returnByValue: true, silent: true, ...where },
+        sessionId
+      )
+    );
     const targetId = record.targetId;
-    if (!current()) return this.staleContext(answer, targetId);
-    if (answer?.error && (await this.retryContext(record))) return this.checkContext(record);
-    if (!current()) return false;
+    if (!current()) {
+      if (!answer || answer.error) this.uncertainProof(targetId);
+      return false;
+    }
     const value =
       answer?.error || answer?.result?.exceptionDetails ? undefined : answer?.result?.result?.value;
     if (
@@ -4901,7 +4869,6 @@ class Guard {
     }
     this.rememberUnsafe(message);
     if (STRUCTURE.has(message.method)) this.scopeEvent(message);
-    this.retryContexts(message);
     if (this.debuggerEventHeld(message)) return;
     if (this.internal.has(message.id)) {
       const resolve = this.internal.get(message.id);
