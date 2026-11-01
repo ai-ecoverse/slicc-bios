@@ -24,7 +24,7 @@ jobs:
     env:
       SLICC_CDP_PORTS: 9300-9309
       SLICC_675_STAGE1_DIAGNOSTIC: '1'
-      SLICC_675_RUN: '23'
+      SLICC_675_RUN: '24'
       UV_THREADPOOL_SIZE: '2'
       CARGO_BUILD_JOBS: '4'
       GOMAXPROCS: '4'
@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-cdp
-          ref: f093d02d99a914880afb49773f941599e6816929
+          ref: 8ddacf4632aed29ab58e248ba77b933031089dcb
           path: candidates/cdp
       - uses: actions/checkout@v4
         with:
@@ -77,6 +77,7 @@ jobs:
           npm pack @ai-ecoverse/slicc-cdp@1.43.1 --ignore-scripts --pack-destination "$RUNNER_TEMP/candidate-artifacts"
           cd candidates/cdp
           npm ci
+          cargo test -p slicc-cdp-client one_second_settling_reply --lib -- --test-threads=1 > "$RUNNER_TEMP/candidate-trace/rust-budget.log" 2>&1
           npm pkg set version=1.43.2
           git diff -- package.json > "$RUNNER_TEMP/candidate-trace/cdp-version-stamp.diff"
           npm run build:wasm
