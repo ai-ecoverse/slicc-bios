@@ -24,6 +24,7 @@ jobs:
     env:
       SLICC_CDP_PORTS: 9300-9309
       SLICC_675_STAGE1_DIAGNOSTIC: '1'
+      SLICC_675_RUN: '12'
       UV_THREADPOOL_SIZE: '2'
       CARGO_BUILD_JOBS: '4'
       GOMAXPROCS: '4'
