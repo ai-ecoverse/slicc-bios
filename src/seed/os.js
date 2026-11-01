@@ -863,7 +863,6 @@ async function own() {
       denials({ pid, uid, tag, op: 'connect', path: LINK_URL, errno: 'EACCES' }),
   });
   kernel = await createKernel({
-    root,
     users: 'off',
     env: { PYTHONPATH: `/${PYTHON}`, FNOX_CONFIG_DIR: FNOX_DIR, ...kernelPort.env() },
     ...protection(),
