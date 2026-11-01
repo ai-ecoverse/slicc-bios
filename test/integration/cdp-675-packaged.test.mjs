@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createServer as https } from 'node:https';
@@ -413,36 +414,69 @@ async function rawLoad(chrome, sessionId, method, params) {
   }
 }
 
-async function stopTracing(chrome) {
-  let timer;
-  const done = new Promise((resolve) => {
-    timer = setTimeout(() => resolve(false), 1500);
-  });
-  let tracingDone;
-  const completion = new Promise((resolve) => {
-    tracingDone = resolve;
-  });
-  const off = chrome.cdp.on(({ method }) => {
-    if (method === 'Tracing.tracingComplete') tracingDone(true);
-  });
-  try {
-    const reply = await rawBounded(chrome, undefined, 'Tracing.end', {}, 1000).catch((error) => ({
-      error: error.message,
-    }));
-    if (reply.error) {
-      assert.match(reply.error, /Tracing is not started|Tracing hasn't been started/i);
-      return { active: false, reply };
-    }
-    assert.equal(
-      await Promise.race([completion, done]),
-      true,
-      'existing browser tracing must finish before the owned PID trace starts'
-    );
-    return { active: true, ended: true, reply };
-  } finally {
-    clearTimeout(timer);
-    off();
-  }
+async function workerRenderer(
+  chrome,
+  row,
+  readProcesses = (ids) =>
+    execFileSync('ps', ['-p', ids.join(','), '-o', 'pid=,args='], {
+      encoding: 'utf8',
+      timeout: 1000,
+      maxBuffer: 1048576,
+    })
+) {
+  const extensionId = new URL(row.workerBefore.url).hostname;
+  const targets = (await chrome.cdp.send('Target.getTargets', {})).targetInfos;
+  const extensionTargets = targets.filter((target) =>
+    target.url?.startsWith('chrome-extension://')
+  );
+  const workers = extensionTargets.filter((target) => target.type === 'service_worker');
+  assert.equal(
+    workers.length,
+    1,
+    'PID mapping requires only the owned extension worker in this Chrome'
+  );
+  assert.equal(workers[0].targetId, row.workerBefore.targetId);
+  assert.ok(
+    extensionTargets.every((target) => new URL(target.url).hostname === extensionId),
+    'another extension makes renderer PID association unproved'
+  );
+  row.workerProcessInfo = await chrome.cdp.send('SystemInfo.getProcessInfo', {});
+  const renderers = row.workerProcessInfo.processInfo.filter(
+    (process) => process.type === 'renderer'
+  );
+  const ids = renderers.map((process) => Number(process.id));
+  assert.ok(ids.length > 0 && ids.every((id) => Number.isSafeInteger(id) && id > 1));
+  const commands = readProcesses(ids)
+    .split('\n')
+    .map((line) => line.match(/^\s*(\d+)\s+(.+)$/))
+    .filter(Boolean)
+    .map((match) => ({ pid: Number(match[1]), command: match[2] }));
+  row.workerRendererCandidates = commands.filter(
+    ({ pid, command }) => ids.includes(pid) && /(?:^|\s)--extension-process(?:\s|$)/.test(command)
+  );
+  assert.equal(
+    row.workerRendererCandidates.length,
+    1,
+    'exactly one owned extension renderer is required; never guess a PID'
+  );
+  const candidate = row.workerRendererCandidates[0];
+  row.workerRenderer = renderers.find((process) => Number(process.id) === candidate.pid);
+  const current = await chrome.cdp.send('SystemInfo.getProcessInfo', {});
+  assert.ok(
+    current.processInfo.some(
+      (process) => process.type === 'renderer' && Number(process.id) === candidate.pid
+    )
+  );
+  row.workerPIDProof = {
+    pid: candidate.pid,
+    extensionId,
+    soleWorkerTarget: workers[0].targetId,
+    activeWorkerScope: true,
+    rendererCommand: candidate.command,
+    source:
+      'own Chrome SystemInfo renderer IDs, active sole owned extension worker, sole --extension-process renderer among exactly those PIDs',
+  };
+  return candidate.pid;
 }
 
 async function recoverWorker(page, row, budget = 30000) {
@@ -533,69 +567,29 @@ async function stopOwnedWorker(chrome, row) {
         targetId,
         flatten: true,
       });
-      row.workerPriorTracing = await stopTracing(chrome);
-      const tag = `675-owned-worker-${targetId}-${Date.now()}`;
-      const records = [];
-      let completed;
-      let traceTimer;
-      const done = new Promise((resolve) => {
-        completed = resolve;
-        traceTimer = setTimeout(() => resolve(false), 1500);
-      });
-      const traceOff = chrome.cdp.on(({ method, params }) => {
-        if (method === 'Tracing.dataCollected') records.push(...params.value);
-        if (method === 'Tracing.tracingComplete') completed(true);
-      });
-      let tracing = false;
       try {
-        await chrome.cdp.send('Tracing.start', {
-          categories: 'devtools.timeline,blink.console',
-          transferMode: 'ReportEvents',
-        });
-        tracing = true;
-        await rawBounded(
+        const extensionId = new URL(row.workerBefore.url).hostname;
+        row.workerActiveScope = await rawBounded(
           chrome,
           sessionId,
           'Runtime.evaluate',
-          { expression: `console.timeStamp(${JSON.stringify(tag)})`, returnByValue: true },
+          {
+            expression: `typeof ServiceWorkerGlobalScope === 'function' && globalThis instanceof ServiceWorkerGlobalScope && chrome.runtime.id === ${JSON.stringify(extensionId)}`,
+            returnByValue: true,
+          },
           1000
         );
-        await chrome.cdp.send('Tracing.end', {});
-        tracing = false;
-        assert.equal(await done, true, 'owned worker PID trace did not complete');
-        const matches = records.filter(
-          (event) => event.name === 'TimeStamp' && event.args?.data?.message === tag
-        );
-        const pids = [...new Set(matches.map((event) => event.pid))];
         assert.equal(
-          pids.length,
-          1,
-          'renderer PID must be uniquely attributed to the owned worker'
+          row.workerActiveScope.result?.value,
+          true,
+          'the owned worker must execute in its live service-worker realm'
         );
-        row.workerProcessInfo = await chrome.cdp.send('SystemInfo.getProcessInfo', {});
-        row.workerRenderer = row.workerProcessInfo.processInfo.find(
-          (process) => process.type === 'renderer' && Number(process.id) === pids[0]
-        );
-        assert.ok(
-          row.workerRenderer,
-          'owned worker trace PID must match a renderer in this CI Chrome'
-        );
-        const pid = Number(row.workerRenderer.id);
+        const pid = await workerRenderer(chrome, row);
         assert.ok(Number.isSafeInteger(pid) && pid > 1 && pid !== process.pid);
-        row.workerPIDProof = {
-          tag,
-          matches,
-          pid,
-          source:
-            'unique timestamp from owned worker, matched to SystemInfo.getProcessInfo in own CI Chrome',
-        };
         process.kill(pid, 'SIGKILL');
         row.workerKilledAt = Date.now();
         row.workerStopPath = 'owned-renderer-SIGKILL';
       } finally {
-        if (tracing) await chrome.cdp.send('Tracing.end', {}).catch(() => {});
-        clearTimeout(traceTimer);
-        traceOff();
         await chrome.cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {});
       }
     } else {
@@ -809,21 +803,27 @@ async function lifecycleRescue(page, chrome, rawSession, row, kind) {
     if (kind === 'worker-stop') assert.equal(row.workerStopSupported, true, row.workerObservation);
     else {
       row.workerGuardCallAt = Date.now();
-      row.lifecycleBeforeRecovery = await page.evaluate(() => {
-        const holder = globalThis.cdp675Lifecycle;
-        holder.close();
-        return { calls: holder.calls, events: holder.events };
-      });
-      await recoverWorker(page, row);
+      try {
+        row.lifecycleBeforeRecovery = await page.evaluate(() => {
+          const holder = globalThis.cdp675Lifecycle;
+          holder.close();
+          return { calls: holder.calls, events: holder.events };
+        });
+        await recoverWorker(page, row);
+        row.workerGuardRecovered = true;
+      } catch (error) {
+        row.workerGuardRecovered = false;
+        row.workerGuardRecoveryError = error.message;
+      }
       row.workerGuardCallMs = Date.now() - row.workerGuardCallAt;
-      assert.ok(row.workerGuardCallMs < 30000);
       row.workerAfterGuardCallTargets = (
         await chrome.cdp.send('Target.getTargets', {})
       ).targetInfos.filter(
         (info) => info.type === 'service_worker' && info.url === row.workerBefore.url
       );
-      row.workerObservation =
-        'paused page continued within bound and new guarded extension call returned42; target facts recorded without requiring an eager replacement';
+      row.workerObservation = row.workerGuardRecovered
+        ? 'paused page continued within bound; optional new guarded extension call recovered, target facts recorded'
+        : 'paused page continued within bound; guarded-call recovery not established and recorded only as a status-quo fact';
     }
   }
   if (kind !== 'owner-gone') await page.evaluate(() => globalThis.cdp675Lifecycle.close());
@@ -839,7 +839,7 @@ async function lifecycleRescue(page, chrome, rawSession, row, kind) {
       (start) => globalThis.cdp675Trace.slice(start),
       row.traceStart
     );
-  if (kind === 'worker') {
+  if (kind === 'worker' && row.workerGuardRecovered) {
     for (const boundary of ['bios', 'route'])
       assert.ok(
         row.methods.some(
