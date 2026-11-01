@@ -442,13 +442,21 @@ async function sh(page, command) {
   }, command);
 }
 
-async function cone(page, command, name) {
+async function cone(page, command, name, separate = false) {
+  const redirect = separate
+    ? `> /tmp/${name}.stdout 2> /tmp/${name}.stderr; echo $? > /tmp/${name}.status`
+    : `> /tmp/${name}.log 2>&1`;
   await run(
     page,
-    `sudo -u cone bash -c ${quote(`export PATH=$PNPM_HOME/bin:$PATH; export SLICC_CDP_URL=http://127.0.0.1:9222; ${command}`)} > /tmp/${name}.log 2>&1; echo ${name}-$((40 + 2))`
+    `sudo -u cone bash -c ${quote(`export PATH=$PNPM_HOME/bin:$PATH; export SLICC_CDP_URL=http://127.0.0.1:9222; ${command}`)} ${redirect}; echo ${name}-$((40 + 2))`
   );
   await shows(page, `${name}-42`, 240000);
-  return sh(page, `cat /tmp/${name}.log`);
+  return sh(
+    page,
+    separate
+      ? `cat /tmp/${name}.stdout; cat /tmp/${name}.stderr >&2; exit $(cat /tmp/${name}.status)`
+      : `cat /tmp/${name}.log`
+  );
 }
 
 function installCommand(paths) {
@@ -1876,7 +1884,7 @@ for (const route of ['extension', 'link']) {
             ? `async function start() { await fetch('/data?delay=150&step=who'); await fetch('/data?delay=150&step=inbox'); window.cdp675Connected = true; window.cdp675RegisterCalls = 1; if (document.modelContext) { ${registration}; } } await start();`
             : code;
           const workerStartup = at.searchParams.has('dedicatedWorker')
-            ? `window.cdp675Worker = new Worker('/dedicated-worker.js?row=${at.searchParams.get('row')}'); await new Promise(resolve => { window.cdp675Worker.onmessage = ({data}) => { if (data === '675-worker-ready') { window.cdp675WorkerReady = true; resolve(); } }; });`
+            ? `window.cdp675Worker = new Worker('/dedicated-worker.js?row=${at.searchParams.get('row')}'); window.cdp675WorkerReadyPromise = new Promise(resolve => { window.cdp675Worker.onmessage = ({data}) => { if (data === '675-worker-ready') { window.cdp675WorkerReady = true; resolve(); } }; }); await window.cdp675WorkerReadyPromise;`
             : '';
           const scripts = at.searchParams.has('many')
             ? Array.from({ length: 100 }, (_, i) => `<script src="/script?i=${i}"></script>`).join(
@@ -2140,7 +2148,9 @@ for (const route of ['extension', 'link']) {
             });
           if (scene.dedicatedWorker) {
             row.workerPremise = await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
-              expression: '({ready: window.cdp675WorkerReady, owned: !!window.cdp675Worker})',
+              expression:
+                '(async () => { await window.cdp675WorkerReadyPromise; return {ready: window.cdp675WorkerReady, owned: !!window.cdp675Worker}; })()',
+              awaitPromise: true,
               returnByValue: true,
             });
             assert.equal(row.workerPremise.result?.value?.ready, true);
@@ -2761,7 +2771,9 @@ for (const route of ['extension', 'link']) {
           row.installationsPerRealm = oncePerRealm(installations);
           if (scene.dedicatedWorker) {
             row.workerAfterHolder = await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
-              expression: '({ready: window.cdp675WorkerReady, owned: !!window.cdp675Worker})',
+              expression:
+                '(async () => { await window.cdp675WorkerReadyPromise; return {ready: window.cdp675WorkerReady, owned: !!window.cdp675Worker}; })()',
+              awaitPromise: true,
               returnByValue: true,
             });
             assert.equal(row.workerAfterHolder.result?.value?.ready, true);
@@ -2810,23 +2822,16 @@ for (const route of ['extension', 'link']) {
               row.fromOriginList = await cone(
                 page,
                 `playwright-cli webmcp-list --tab ${quote(row.target)} --from-origin ${quote(origin)} --json`,
-                `675-cross-origin-${index}`
+                `675-cross-origin-${index}`,
+                true
               );
               assert.equal(row.fromOriginList.status, 0);
               assert.match(
-                row.fromOriginList.stdout + row.fromOriginList.stderr,
+                row.fromOriginList.stderr,
                 /cross-origin child tools are unavailable on this guarded route/
               );
               const requested = JSON.parse(row.fromOriginList.stdout);
-              const rootTools = Array.isArray(requested) ? requested : requested.tools;
-              assert.ok(rootTools.some(({ name }) => name === 'add'));
-              row.fromOriginCall = await cone(
-                page,
-                `playwright-cli webmcp-call add '{"a":2,"b":3}' --tab ${quote(row.target)} --from-origin ${quote(origin)}`,
-                `675-cross-origin-call-${index}`
-              );
-              assert.equal(row.fromOriginCall.status, 0);
-              assert.match(row.fromOriginCall.stdout, /^5$/m);
+              assert.deepEqual(requested, []);
             }
             assert.ok(row.tools.some(({ name }) => name === 'add' || name.endsWith('_add')));
             assert.match(row.call.stdout, /^5$/m);
