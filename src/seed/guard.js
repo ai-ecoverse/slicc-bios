@@ -314,6 +314,7 @@ const FRAME_CHILDREN = [{ type: 'iframe', exclude: false }, { exclude: true }];
 const NO_AUTO_ATTACH =
   'slicc: refused: Target.setAutoAttach is not supported: attach to each target';
 const STRUCTURE = new Set([
+  'Page.navigatedWithinDocument',
   'Page.frameAttached',
   'Page.frameDetached',
   'Page.frameNavigated',
@@ -690,7 +691,10 @@ export function protection(own) {
 }
 
 class Guard {
-  constructor(connection, own, tabs, route) {
+  constructor(connection, own, tabs, route, privateFrames) {
+    this.privateFrames = route?.kind === 'extension' ? privateFrames : undefined;
+    this.extensionFrames = route?.kind === 'extension';
+    this.debuggerLeases = new Map();
     this.debuggerSupported = debuggerRouteSupported(route);
     this.connection = connection;
     this.tabs = tabs;
@@ -1138,6 +1142,88 @@ class Guard {
     return Boolean(scope?.ready || this.errorReady(targetId, scope, view));
   }
 
+  setDebuggerLease(targetId, state) {
+    const former = this.debuggerLeases.get(targetId);
+    if (former?.state === state) return;
+    clearTimeout(former?.timer);
+    const entry = { state, loader: this.scope(targetId).loader };
+    this.debuggerLeases.set(targetId, entry);
+    if (state === 'suspended') {
+      entry.timer = setTimeout(() => {
+        if (this.debuggerLeases.get(targetId) === entry) this.setDebuggerLease(targetId, 'revoked');
+      }, 5000);
+      entry.timer.unref?.();
+    }
+  }
+
+  async placePrivateFrames(targetId) {
+    const scope = this.scope(targetId);
+    if (!this.extensionFrames || typeof this.privateFrames !== 'function') return;
+    const revision = this.revisions.get(targetId);
+    const loader = scope.loader;
+    let list;
+    try {
+      list = await this.privateFrames(targetId);
+    } catch {}
+    if (this.revisions.get(targetId) !== revision || scope.loader !== loader) return;
+    const frames = list?.frames;
+    if (Array.isArray(frames) && frames.some((frame) => this.is.url(frame?.url))) {
+      scope.privatePlaced = false;
+      this.setDebuggerLease(targetId, 'revoked');
+      return;
+    }
+    const root = Array.isArray(frames) && frames.find((frame) => frame?.frameId === 0);
+    const ids = new Set(Array.isArray(frames) ? frames.map((frame) => frame?.frameId) : []);
+    const complete =
+      list?.version === 1 &&
+      Number.isSafeInteger(list.revision) &&
+      typeof list.rootDocumentId === 'string' &&
+      list.rootDocumentId &&
+      root?.documentId === list.rootDocumentId &&
+      root.parentFrameId === -1 &&
+      list.rootFrameId === scope.root &&
+      typeof loader === 'string' &&
+      loader &&
+      list.rootLoaderId === loader &&
+      frames.length === ids.size &&
+      Array.isArray(list.remoteOwners) &&
+      list.remoteOwners.length === scope.remoteOwners.size &&
+      list.remoteOwners.every((id) => scope.remoteOwners.has(id)) &&
+      scope.remoteOwners.size < frames.length &&
+      this.relatedFrames(scope.frames).size <= frames.length &&
+      frames.every(
+        (frame) =>
+          Number.isSafeInteger(frame.frameId) &&
+          typeof frame.documentId === 'string' &&
+          frame.documentId &&
+          typeof frame.url === 'string' &&
+          ORDINARY.test(frame.url) &&
+          !this.is.url(frame.url) &&
+          !frame.errorOccurred &&
+          (frame.documentLifecycle === undefined || frame.documentLifecycle === 'active')
+      );
+    let rooted = Boolean(complete);
+    if (rooted)
+      for (const frame of frames) {
+        let current = frame;
+        const seen = new Set();
+        while (current?.frameId !== 0) {
+          if (!current || seen.has(current.frameId)) {
+            rooted = false;
+            break;
+          }
+          seen.add(current.frameId);
+          current = frames.find((candidate) => candidate.frameId === current.parentFrameId);
+        }
+      }
+    scope.privatePlaced = rooted;
+    if (!rooted) {
+      if (this.debuggerLeases.get(targetId)?.state !== 'revoked')
+        this.setDebuggerLease(targetId, 'suspended');
+    } else if (this.debuggerLeases.get(targetId)?.state !== 'revoked')
+      this.setDebuggerLease(targetId, 'placed');
+  }
+
   unavailableFrame(frameId, url, view) {
     return url === undefined || url === '' || (this.errorFrames.has(frameId) && !view);
   }
@@ -1147,6 +1233,7 @@ class Guard {
     seen.add(targetId);
     const scope = this.scopes.get(targetId);
     if (!this.scopeReady(targetId, scope, view) || (view && scope.committed)) return true;
+    if (scope.privatePlaced) return Boolean(view);
     for (const id of this.relatedFrames(scope.frames)) {
       const url = this.frames.get(id);
       if (this.unavailableFrame(id, url, view)) return true;
@@ -1211,6 +1298,7 @@ class Guard {
     const scope = this.scope(targetId);
     const all = framed(tree);
     scope.root = tree?.frame?.id;
+    scope.loader = tree?.frame?.loaderId;
     scope.treeFrames = new Set(all.map((frame) => frame.id));
     scope.frames = new Set([...scope.treeFrames, ...scope.owners]);
     const parentId = tree?.frame?.parentId;
@@ -1373,6 +1461,13 @@ class Guard {
     );
     scope.ready = Boolean(scope.tree && !scope.failed && !scope.pending);
     if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
+    await this.placePrivateFrames(targetId);
+    if (
+      !this.extensionFrames &&
+      !this.pageLocked(targetId) &&
+      this.debuggerLeases.get(targetId)?.state === 'suspended'
+    )
+      this.setDebuggerLease(targetId, 'placed');
     this.stopCasts();
     await Promise.all(
       [...this.scopes]
@@ -1454,9 +1549,11 @@ class Guard {
       scope.attachedFrames.add(params.frameId);
       this.frames.set(params.frameId, '');
       if (params.parentFrameId) this.parents.set(params.frameId, params.parentFrameId);
+      this.refresh(targetId);
     }
     if (method === 'Page.frameNavigated' && params.frame)
       this.scopeNavigated(params.frame, targetId);
+    if (method === 'Page.navigatedWithinDocument') this.refresh(targetId);
     const foreign =
       params.context?.auxData?.type === 'isolated' && EXTENSIONS.test(params.context?.origin ?? '');
     if (
@@ -1504,7 +1601,10 @@ class Guard {
     scope.frames.add(frame.id);
     if (frame.parentId && frame.id !== scope.root) scope.remoteOwners.delete(frame.id);
     this.frames.set(frame.id, this.framed(frame));
-    if (frame.parentId) this.parents.set(frame.id, frame.parentId);
+    if (frame.parentId) {
+      this.parents.set(frame.id, frame.parentId);
+      this.refresh(targetId);
+    }
   }
 
   removeFrame(frameId) {
@@ -4420,8 +4520,14 @@ class Guard {
     if (!DEBUGGERS.some((domain) => method.startsWith(domain))) return null;
     if (!debuggerAdmitted(method)) return DEBUGGER;
     if (!this.debuggerSupported) return DEBUGGER_ROUTE_UPDATE;
-    const target = this.targets.get(this.sessions.get(sessionId)?.targetId);
+    const targetId = this.sessions.get(sessionId)?.targetId;
+    const target = this.targets.get(targetId);
     if (!sessionId || target?.type !== 'page') return UNGUARDED;
+    if (this.extensionFrames && typeof this.privateFrames !== 'function')
+      return DEBUGGER_ROUTE_UPDATE;
+    const state = this.debuggerLeases.get(targetId)?.state;
+    if (state === 'revoked' || state === 'suspended') return PROTECTED;
+    this.setDebuggerLease(targetId, 'placed');
     return null;
   }
 
@@ -4611,6 +4717,29 @@ class Guard {
         STRUCTURE.has(message.method))
     )
       this.revisions.set(targetId, {});
+    if (
+      targetId &&
+      [
+        'Page.frameAttached',
+        'Page.frameDetached',
+        'Page.frameNavigated',
+        'Page.navigatedWithinDocument',
+      ].includes(message.method)
+    ) {
+      const scope = this.scope(targetId);
+      scope.privatePlaced = false;
+      const lease = this.debuggerLeases.get(targetId);
+      if (
+        message.method === 'Page.frameNavigated' &&
+        !message.params?.frame?.parentId &&
+        message.params?.frame?.loaderId !== lease?.loader
+      ) {
+        clearTimeout(lease?.timer);
+        this.debuggerLeases.delete(targetId);
+      }
+      if (this.debuggerLeases.get(targetId)?.state !== 'revoked')
+        this.setDebuggerLease(targetId, 'suspended');
+    }
     if (message.method !== 'Page.frameNavigated' || !message.params?.frame) return;
     const { frame } = message.params;
     const nav = this.navs.get(targetId);
@@ -4658,6 +4787,20 @@ class Guard {
     }
   }
 
+  debuggerEventHeld(message) {
+    if (
+      !message.method?.startsWith('Debugger.') ||
+      message.id !== undefined ||
+      (this.debuggerLeases.get(this.scopeTarget(message.sessionId))?.state === 'placed' &&
+        !this.locked(message.sessionId) &&
+        !this.hidden(message.sessionId))
+    )
+      return false;
+    if (message.method === 'Debugger.paused')
+      void this.call('Debugger.resume', {}, message.sessionId);
+    return true;
+  }
+
   received(text) {
     const message = parse(text);
     this.loadingEvent(message);
@@ -4699,6 +4842,7 @@ class Guard {
     }
     this.rememberUnsafe(message);
     if (STRUCTURE.has(message.method)) this.scopeEvent(message);
+    if (this.debuggerEventHeld(message)) return;
     if (this.internal.has(message.id)) {
       const resolve = this.internal.get(message.id);
       this.internal.delete(message.id);
@@ -4853,6 +4997,7 @@ class Guard {
     connection.onclose = (why) => {
       this.closing = true;
       this.closed = true;
+      for (const entry of this.debuggerLeases.values()) clearTimeout(entry.timer);
       guarded.send = () => {};
       guarded.onmessage = null;
       for (const nav of this.navs.values()) nav.wiped?.();
@@ -4908,6 +5053,7 @@ class Guard {
     guarded.close = () => {
       if (this.closing || this.closed) return;
       this.closing = true;
+      for (const entry of this.debuggerLeases.values()) clearTimeout(entry.timer);
       guarded.send = () => {};
       guarded.onmessage = null;
       const pending = [...this.navs.values()].filter((nav) => nav.closeScrub);
@@ -4934,6 +5080,6 @@ class Guard {
 const framed = (tree) =>
   tree?.frame ? [tree.frame, ...(tree.childFrames ?? []).flatMap((child) => framed(child))] : [];
 
-export function guardProtected(connection, own, tabs = new Map(), route) {
-  return new Guard(connection, own, tabs, route).start();
+export function guardProtected(connection, own, tabs = new Map(), route, privateFrames) {
+  return new Guard(connection, own, tabs, route, privateFrames).start();
 }

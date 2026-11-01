@@ -157,7 +157,7 @@ export function browserHook(
   before = async () => {}
 ) {
   const tabs = new WeakMap();
-  const guard = async (open, browser, route) => {
+  const guard = async (open, browser, route, privateFrames) => {
     await before();
     if (browser && !tabs.has(browser)) {
       const records = new Map();
@@ -167,7 +167,13 @@ export function browserHook(
       tabs.set(browser, records);
     }
     return observe(
-      guardProtected(await open(), own, browser ? tabs.get(browser) : undefined, route)
+      guardProtected(
+        await open(),
+        own,
+        browser ? tabs.get(browser) : undefined,
+        route,
+        privateFrames
+      )
     );
   };
   return async ({ runtime } = {}) => {
@@ -189,7 +195,10 @@ export function browserHook(
     return guard(
       open,
       open === hosts.extension ? extension.cdp : undefined,
-      open === hosts.extension ? { kind: 'extension', version: extension.version } : fallback.route
+      open === hosts.extension ? { kind: 'extension', version: extension.version } : fallback.route,
+      open === hosts.extension && typeof extension.frames === 'function'
+        ? (targetId) => extension.frames(Number(targetId))
+        : undefined
     );
   };
 }
