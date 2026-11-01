@@ -186,15 +186,14 @@ function bfcacheMarkup(url) {
 }
 
 function tapSource(source) {
-  assert.ok(
-    source.includes(
-      'guardProtected(await open(), own, browser ? tabs.get(browser) : undefined, route)'
-    )
-  );
+  const call =
+    /guardProtected\(\s*await open\(\),\s*own,\s*browser \? tabs.get\(browser\) : undefined,\s*route(?:,\s*privateFrames)?\s*\)/;
+  assert.ok(call.test(source));
   return (
     source.replace(
-      'guardProtected(await open(), own, browser ? tabs.get(browser) : undefined, route)',
-      'cdp675Tap(guardProtected(cdp675Tap(await open(), "route", route), own, browser ? tabs.get(browser) : undefined, route), "bios", route)'
+      call,
+      (matched) =>
+        `cdp675Tap(guardProtected(cdp675Tap(await open(), "route", route), own, browser ? tabs.get(browser) : undefined, route${matched.includes('privateFrames') ? ', privateFrames' : ''}), "bios", route)`
     ) +
     `
 function cdp675Tap(connection, boundary, route) {

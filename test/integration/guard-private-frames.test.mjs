@@ -167,7 +167,67 @@ test('a late owner suspends the bios-owned lease, privately resumes a gap pause,
     'gap pause needs an owned private resume'
   );
   held = false;
-  resolve?.(structuredClone(list));
+  resolve?.(snapshot(['remote'], 'about:blank', 1));
+  await flush();
+  assert.match(
+    (await p.send('Debugger.enable', {}, session)).error?.message ?? '',
+    /^slicc: refused:/
+  );
+  p.emit({
+    sessionId: session,
+    method: 'Page.frameNavigated',
+    params: {
+      frame: {
+        id: 'remote',
+        parentId: 'root',
+        loaderId: 'child-loader',
+        url: 'https://ordinary-cross.test/',
+        securityOrigin: 'https://ordinary-cross.test',
+      },
+    },
+  });
+  await flush();
+  assert.equal((await p.send('Debugger.enable', {}, session)).error, undefined);
+});
+
+test('an unsettled late child revokes at five seconds and only a new root document can start clean', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let list = snapshot([]);
+  const { p, root } = fixture(t, async () => structuredClone(list), []);
+  const session = await p.attach('root');
+  assert.equal((await p.send('Debugger.enable', {}, session)).error, undefined);
+  root.dom = dom(['remote']);
+  list = snapshot(['remote'], 'about:blank', 1);
+  p.emit({
+    sessionId: session,
+    method: 'Page.frameAttached',
+    params: { frameId: 'remote', parentFrameId: 'root' },
+  });
+  await flush();
+  t.mock.timers.tick(5001);
+  list = snapshot(['remote'], 'https://ordinary-cross.test/', 2);
+  p.emit({
+    sessionId: session,
+    method: 'Page.frameNavigated',
+    params: {
+      frame: {
+        id: 'remote',
+        parentId: 'root',
+        loaderId: 'child-loader',
+        url: 'https://ordinary-cross.test/',
+        securityOrigin: 'https://ordinary-cross.test',
+      },
+    },
+  });
+  await flush();
+  assert.match(
+    (await p.send('Debugger.enable', {}, session)).error?.message ?? '',
+    /^slicc: refused:/
+  );
+  root.tree.frame.loaderId = 'new-root-loader';
+  list.rootLoaderId = 'new-root-loader';
+  p.emit({ sessionId: session, method: 'Page.frameNavigated', params: { frame: root.tree.frame } });
+  await flush();
   assert.equal((await p.send('Debugger.enable', {}, session)).error, undefined);
 });
 

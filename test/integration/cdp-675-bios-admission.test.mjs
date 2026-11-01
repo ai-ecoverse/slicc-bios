@@ -16,8 +16,25 @@ for (const route of [
   { kind: 'link', version: '1.49.37' },
 ]) {
   test(`bios admits only the five Stage1 methods behind the ${route.kind} floor`, async (t) => {
-    const p = protocol(t, (raw, own) => guardProtected(raw, own, new Map(), route));
-    p.target('ordinary');
+    const p = protocol(t, (raw, own) =>
+      guardProtected(raw, own, new Map(), route, async (id) => ({
+        version: 1,
+        revision: 0,
+        rootFrameId: id,
+        rootLoaderId: 'loader',
+        rootDocumentId: 'native',
+        remoteOwners: [],
+        frames: [
+          {
+            frameId: 0,
+            parentFrameId: -1,
+            documentId: 'native',
+            url: 'https://ordinary.invalid/page',
+          },
+        ],
+      }))
+    );
+    p.target('ordinary').tree.frame.loaderId = 'loader';
     const session = await p.attach('ordinary');
     for (const method of five) {
       const start = p.sent.length;
