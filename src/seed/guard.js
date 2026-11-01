@@ -1664,8 +1664,8 @@ class Guard {
     );
   }
 
-  async current(targetId) {
-    const answer = await this.answered(this.call('Target.getTargetInfo', { targetId }));
+  async current(targetId, limit = ANSWER_MS) {
+    const answer = await this.within(this.call('Target.getTargetInfo', { targetId }), limit);
     const info = answer?.result?.targetInfo;
     if (!answer || answer.error || info?.targetId !== targetId || typeof info.type !== 'string')
       return true;
@@ -4445,7 +4445,11 @@ class Guard {
   async reachTarget(message) {
     const { method, params = {} } = message;
     if (params.targetId === undefined) return false;
-    const guarded = await this.current(params.targetId);
+    const limit =
+      method === 'Target.attachToTarget' && this.navs.get(params.targetId)?.admitted
+        ? PROBE_WAIT
+        : ANSWER_MS;
+    const guarded = await this.current(params.targetId, limit);
     const target = this.targets.get(params.targetId);
     if (method === 'Target.attachToTarget' && !guarded) {
       this.touch(params.targetId);
