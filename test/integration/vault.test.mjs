@@ -390,7 +390,7 @@ test('a token refresh the vault asks seven to send never follows a redirect, so 
     role: 'egress',
     id: 'refresh-1',
     status: null,
-    error: 'EACCES: the token endpoint redirected',
+    error: 'EACCES: the token request failed',
   });
   await new Promise((resolve) => setTimeout(resolve, 500));
   assert.deepEqual(stolen, []);

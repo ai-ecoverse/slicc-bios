@@ -123,6 +123,7 @@ test('the extension route turns red when slicc-extension stops answering, and li
   await page.init(() => {
     Object.defineProperty(globalThis, 'sliccExtension', {
       value: Object.freeze({
+        version: '7.11.0',
         fetch: (input, init) =>
           window.extensionDown
             ? Promise.reject(new TypeError('Failed to fetch'))
@@ -177,7 +178,7 @@ test('the extension relay is used when it is there', async (t) => {
   const page = await chrome.page(t);
   await page.init(() => {
     Object.defineProperty(globalThis, 'sliccExtension', {
-      value: Object.freeze({ fetch: (input, init) => fetch(input, init) }),
+      value: Object.freeze({ version: '7.11.0', fetch: (input, init) => fetch(input, init) }),
     });
   });
   await page.goto('/');
@@ -209,6 +210,25 @@ test('the page fetch never names a User-Agent, which WebKit would preflight and 
   await page.until(() => globalThis.fetchAgents.length > 0);
   const agents = await page.evaluate(() => globalThis.fetchAgents);
   assert.deepEqual([...new Set(agents)], [null]);
+});
+
+test('an older extension stays selected and clearly asks for an update', async (t) => {
+  const page = await chrome.page(t);
+  await page.init(() => {
+    Object.defineProperty(globalThis, 'sliccExtension', {
+      value: Object.freeze({ version: '7.10.0', fetch: (input, init) => fetch(input, init) }),
+    });
+  });
+  await page.goto('/');
+  await ready(page);
+  assert.equal(await transport(page), 'extension');
+  assert.deepEqual(await shown(page), {
+    route: 'extension',
+    health: 'limited',
+    detail: 'update slicc-extension before using manual redirects or credentialed requests',
+    indicator: 'limited',
+  });
+  assert.deepEqual(page.errors, []);
 });
 
 test('without either, the page fetch is used', async (t) => {
