@@ -24,7 +24,7 @@ jobs:
     env:
       SLICC_CDP_PORTS: 9300-9309
       SLICC_675_STAGE1_DIAGNOSTIC: '1'
-      SLICC_675_RUN: '22'
+      SLICC_675_RUN: '23'
       UV_THREADPOOL_SIZE: '2'
       CARGO_BUILD_JOBS: '4'
       GOMAXPROCS: '4'
@@ -50,7 +50,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-extension
-          ref: 517581fe391d9419842e23c35d1326cfeda1e91b
+          ref: 542384d337b02cfdf00a1b663dcf0d1d2f99c5a6
           path: candidates/extension
       - uses: actions/checkout@v4
         with:
@@ -90,7 +90,7 @@ jobs:
           cd ../extension
           npm ci
           npm run build
-          node scripts/pack.mjs 7.10.1
+          node scripts/pack.mjs 7.11.1
           sha256sum artifacts/slicc-extension.zip > "$RUNNER_TEMP/candidate-trace/extension.sha256"
           mkdir -p "$RUNNER_TEMP/extension-candidate"
           unzip -q artifacts/slicc-extension.zip -d "$RUNNER_TEMP/extension-candidate"
