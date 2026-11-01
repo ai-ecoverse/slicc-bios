@@ -15,9 +15,16 @@ const directory = process.env.SLICC_675_ARTIFACT_DIR;
 const manifest = directory
   ? JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8'))
   : null;
+const { bfcacheNavigation } = manifest
+  ? await import(new URL('../../candidates/browsers/bfcache-restore.mjs', import.meta.url))
+  : { bfcacheNavigation: null };
 const quote = (text) => `'${text.replaceAll("'", "'\\''")}'`;
 const ordinaryCases = [
   { name: 'instrumented-list-call', reload: true },
+  { name: 'armed-protected-and-ordinary-bfcache-restore', reload: true, bfcache: true },
+  { name: 'armed-speculation-no-prerender-activation', reload: true, prerender: true },
+  { name: 'armed-exact-extra-origin-same-process-hop', reload: true, sameProcess: true },
+  { name: 'shipped-publication-before-document-change-no-install', reload: true, race: true },
   { name: 'instrumented-plain-100-script-list-call', reload: true, many: true, loadCost: true },
   { name: 'late-no-unasked-reload', reload: false, late: true },
   { name: 'armed-seven-hop-error-scrub-bounded', reload: true, protectedHop: 'seven' },
@@ -81,6 +88,13 @@ const fallbackCases = [
   },
 ];
 
+function bfcacheMarkup(url) {
+  const marker = JSON.stringify(
+    `bfcache-marker-${new URL(url, 'http://fixture').searchParams.get('n') ?? ''}`
+  ).replaceAll('<', '\\u003c');
+  return `<script>globalThis.__bfcacheMarker=${marker};sessionStorage.setItem('bfcache-marker',globalThis.__bfcacheMarker);globalThis.__bfcachePersisted=false;addEventListener('pageshow',e=>{globalThis.__bfcachePersisted=e.persisted});globalThis.__bfcacheKeys=0;</script>`;
+}
+
 function tapSource(source) {
   assert.ok(
     source.includes(
@@ -95,14 +109,35 @@ function tapSource(source) {
     `
 function cdp675Tap(connection, boundary, route) {
   const trace = globalThis.cdp675Trace ??= [];
+  const connectionId = globalThis.cdp675ConnectionId = (globalThis.cdp675ConnectionId ?? 0) + 1;
   const record = (direction, text) => {
     const packet = JSON.parse(text);
-    trace.push({ at: Date.now(), boundary, route, direction, packet });
+    trace.push({ at: Date.now(), boundary, route, direction, connectionId, packet });
   };
   const send = connection.send.bind(connection);
-  connection.send = (text) => { record('send', text); return send(text); };
+  connection.send = (text) => {
+    record('send', text);
+    const race = globalThis.cdp675Race;
+    const packet = JSON.parse(text);
+    if (boundary === 'bios' && race?.armed && packet.method === 'Page.reload') {
+      race.owner = packet.sessionId;
+      race.reload = { at: Date.now(), packet };
+    }
+    return send(text);
+  };
   let receive;
-  connection.onmessage = (text) => { record('receive', text); receive?.(text); };
+  connection.onmessage = (text) => {
+    record('receive', text);
+    const race = globalThis.cdp675Race;
+    const packet = JSON.parse(text);
+    if (boundary === 'bios' && race?.armed && race.owner === packet.sessionId && packet.method === 'Debugger.paused' && packet.params.reason === 'other') {
+      race.armed = false;
+      race.held = { at: Date.now(), packet };
+      race.release = () => { if (race.released) return; race.released = true; receive?.(text); };
+      return;
+    }
+    receive?.(text);
+  };
   const wrapped = {
     send: connection.send.bind(connection),
     close: connection.close.bind(connection),
@@ -357,6 +392,129 @@ async function rawLoad(chrome, sessionId, method, params) {
   }
 }
 
+async function stopOwnedWorker(chrome, row) {
+  const targetId = row.workerBefore.targetId;
+  const destroyed = [];
+  const off = chrome.cdp.on(({ method, params }) => {
+    if (method === 'Target.targetDestroyed' && params.targetId === targetId)
+      destroyed.push({ at: Date.now(), targetId });
+  });
+  let extensionTarget;
+  let extensionSession;
+  try {
+    ({ targetId: extensionTarget } = await chrome.cdp.send('Target.createTarget', {
+      url: new URL('/manifest.json', row.workerBefore.url).href,
+      background: true,
+    }));
+    ({ sessionId: extensionSession } = await chrome.cdp.send('Target.attachToTarget', {
+      targetId: extensionTarget,
+      flatten: true,
+    }));
+    row.workerStop = await rawBounded(
+      chrome,
+      extensionSession,
+      'ServiceWorker.stopAllWorkers',
+      {},
+      1000
+    ).catch((error) => ({ error: error.message }));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    row.workerAfterStopTargets = (await chrome.cdp.send('Target.getTargets', {})).targetInfos;
+    if (
+      !destroyed.length &&
+      row.workerAfterStopTargets.some((target) => target.targetId === targetId)
+    ) {
+      const { sessionId } = await chrome.cdp.send('Target.attachToTarget', {
+        targetId,
+        flatten: true,
+      });
+      const tag = `675-owned-worker-${targetId}-${Date.now()}`;
+      const records = [];
+      let completed;
+      let traceTimer;
+      const done = new Promise((resolve) => {
+        completed = resolve;
+        traceTimer = setTimeout(() => resolve(false), 1500);
+      });
+      const traceOff = chrome.cdp.on(({ method, params }) => {
+        if (method === 'Tracing.dataCollected') records.push(...params.value);
+        if (method === 'Tracing.tracingComplete') completed(true);
+      });
+      let tracing = false;
+      try {
+        await chrome.cdp.send('Tracing.start', {
+          categories: 'devtools.timeline,blink.console',
+          transferMode: 'ReportEvents',
+        });
+        tracing = true;
+        await rawBounded(
+          chrome,
+          sessionId,
+          'Runtime.evaluate',
+          { expression: `console.timeStamp(${JSON.stringify(tag)})`, returnByValue: true },
+          1000
+        );
+        await chrome.cdp.send('Tracing.end', {});
+        tracing = false;
+        assert.equal(await done, true, 'owned worker PID trace did not complete');
+        const matches = records.filter(
+          (event) => event.name === 'TimeStamp' && event.args?.data?.message === tag
+        );
+        const pids = [...new Set(matches.map((event) => event.pid))];
+        assert.equal(
+          pids.length,
+          1,
+          'renderer PID must be uniquely attributed to the owned worker'
+        );
+        row.workerProcessInfo = await chrome.cdp.send('SystemInfo.getProcessInfo', {});
+        row.workerRenderer = row.workerProcessInfo.processInfo.find(
+          (process) => process.type === 'renderer' && Number(process.id) === pids[0]
+        );
+        assert.ok(
+          row.workerRenderer,
+          'owned worker trace PID must match a renderer in this CI Chrome'
+        );
+        const pid = Number(row.workerRenderer.id);
+        assert.ok(Number.isSafeInteger(pid) && pid > 1 && pid !== process.pid);
+        row.workerPIDProof = {
+          tag,
+          matches,
+          pid,
+          source:
+            'unique timestamp from owned worker, matched to SystemInfo.getProcessInfo in own CI Chrome',
+        };
+        process.kill(pid, 'SIGKILL');
+        row.workerKilledAt = Date.now();
+        row.workerStopPath = 'owned-renderer-SIGKILL';
+      } finally {
+        if (tracing) await chrome.cdp.send('Tracing.end', {}).catch(() => {});
+        clearTimeout(traceTimer);
+        traceOff();
+        await chrome.cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {});
+      }
+    } else {
+      row.workerStopPath = 'ServiceWorker.stopAllWorkers';
+    }
+    row.workerStoppedTargets = (await chrome.cdp.send('Target.getTargets', {})).targetInfos;
+    row.workerDestroyed = destroyed;
+    row.workerStopSupported =
+      destroyed.length > 0 ||
+      !row.workerStoppedTargets.some((target) => target.targetId === targetId);
+    assert.equal(
+      row.workerStopSupported,
+      true,
+      'neither worker stop nor owned renderer kill proved that the original target stopped'
+    );
+  } finally {
+    off();
+    if (extensionSession)
+      await chrome.cdp
+        .send('Target.detachFromTarget', { sessionId: extensionSession })
+        .catch(() => {});
+    if (extensionTarget)
+      await chrome.cdp.send('Target.closeTarget', { targetId: extensionTarget }).catch(() => {});
+  }
+}
+
 async function lifecycleRow(page, chrome, rawSession, row, scene, url) {
   row.attached = await lifecycleOpen(page, row.target);
   assert.ok(row.attached.result?.sessionId, JSON.stringify(row.attached));
@@ -456,15 +614,7 @@ async function lifecycleRescue(page, chrome, rawSession, row, kind) {
     assert.equal(row.workerBeforeInfo.targetId, row.workerBefore.targetId);
     row.workerRestartAt = Date.now();
     if (kind === 'worker-stop') {
-      row.workerStop = await chrome.cdp
-        .send('Target.closeTarget', { targetId: workers[0].targetId })
-        .catch((error) => ({ error: error.message }));
-      row.workerStopSupported = row.workerStop.success === true;
-      assert.equal(
-        row.workerStopSupported,
-        true,
-        `raw CDP could not stop the owned extension worker target without unloading the extension: ${JSON.stringify(row.workerStop)}`
-      );
+      await stopOwnedWorker(chrome, row);
     } else {
       const attached = await chrome.cdp.send('Target.attachToTarget', {
         targetId: workers[0].targetId,
@@ -509,6 +659,22 @@ async function lifecycleRescue(page, chrome, rawSession, row, kind) {
     row.workerAfterTargets = targets.targetInfos.filter(
       (info) => info.type === 'service_worker' && info.url === row.workerBefore.url
     );
+    if (kind === 'worker' && !row.workerAfterTargets.length) {
+      const until = Date.now() + 1000;
+      const off = chrome.cdp.on(() => {});
+      try {
+        do {
+          const { targetInfos } = await chrome.cdp.send('Target.getTargets', {});
+          row.workerAfterTargets = targetInfos.filter(
+            (info) => info.type === 'service_worker' && info.url === row.workerBefore.url
+          );
+          if (row.workerAfterTargets.length) break;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        } while (Date.now() < until);
+      } finally {
+        off();
+      }
+    }
     row.workerAfter = row.workerAfterTargets[0] ?? null;
     row.workerAfterInfo = row.workerAfter
       ? (await chrome.cdp.send('Target.getTargetInfo', { targetId: row.workerAfter.targetId }))
@@ -519,14 +685,15 @@ async function lifecycleRescue(page, chrome, rawSession, row, kind) {
     );
     row.workerRestartScope =
       kind === 'worker-stop'
-        ? 'raw Target.closeTarget of only the owned worker, extension not unloaded'
+        ? `${row.workerStopPath} of the owned worker renderer, extension not unloaded`
         : 'chrome.runtime.reload of only the owned extension';
     row.workerObservation = row.workerIdentityChanged
       ? 'owned worker target identity replaced; raw page progress observed'
       : row.workerAfter
         ? 'original worker target identity remained; stop or restart not established despite raw page progress'
         : 'no owned worker target observed after operation; replacement not established';
-    assert.equal(row.workerIdentityChanged, true, row.workerObservation);
+    if (kind === 'worker-stop') assert.equal(row.workerStopSupported, true, row.workerObservation);
+    else assert.equal(row.workerIdentityChanged, true, row.workerObservation);
   }
   if (kind !== 'owner-gone') await page.evaluate(() => globalThis.cdp675Lifecycle.close());
   row.nextReloadAt = Date.now();
@@ -726,6 +893,40 @@ async function shippedHolderDeath(page, chrome, rawSession, row, scene) {
   row.deathBoundMs = row.loadCompletedAt - row.killStartedAt;
 }
 
+async function publicationRace(page, chrome, rawSession, row, url) {
+  await page.within(10000, () => Boolean(globalThis.cdp675Race?.held));
+  row.race = await page.evaluate(() => ({
+    held: globalThis.cdp675Race.held,
+    reload: globalThis.cdp675Race.reload,
+    owner: globalThis.cdp675Race.owner,
+  }));
+  assert.equal(row.race.held.packet.params.reason, 'other');
+  assert.equal(row.race.held.packet.sessionId, row.race.reload.packet.sessionId);
+  row.race.beforeTree = await rawBounded(chrome, rawSession, 'Page.getFrameTree', {});
+  row.race.beforeContext = row.rawWorlds.findLast(({ auxData }) => auxData?.isDefault)?.uniqueId;
+  assert.ok(row.race.beforeContext);
+  row.race.changedAt = Date.now();
+  const changed = new URL(url);
+  changed.searchParams.set('raceChanged', '1');
+  row.race.navigation = await rawLoad(chrome, rawSession, 'Page.navigate', { url: changed.href });
+  row.race.afterTree = await rawBounded(chrome, rawSession, 'Page.getFrameTree', {});
+  row.race.afterContext = row.rawWorlds.findLast(({ auxData }) => auxData?.isDefault)?.uniqueId;
+  assert.notEqual(
+    row.race.afterTree.frameTree.frame.loaderId,
+    row.race.beforeTree.frameTree.frame.loaderId
+  );
+  assert.notEqual(row.race.afterContext, row.race.beforeContext);
+  assert.ok(row.race.afterContext);
+  row.race.releasedAt = Date.now();
+  await page.evaluate(() => globalThis.cdp675Race.release());
+  assert.ok(
+    row.race.releasedAt - row.race.reload.at < 2000,
+    'race must replace the document before the shipped installer budget expires'
+  );
+  row.race.scope =
+    'real shipped Rust holder, guard-published normal pause delivery held in existing bios trace tap until raw owned-root loader and context change; unchanged packet then released';
+}
+
 async function waitPort(page, port) {
   return page.within(
     120000,
@@ -816,11 +1017,11 @@ for (const route of ['extension', 'link']) {
       const previous = process.env.SLICC_HARNESS_EXTENSION;
       try {
         process.env.SLICC_HARNESS_EXTENSION = foreign ? '1' : '0';
-        const protectedSite = https(await certificate(), (_request, response) =>
+        const protectedSite = https(await certificate(), (request, response) =>
           response
             .writeHead(200, { 'content-type': 'text/html' })
             .end(
-              '<!doctype html><title>Owned protected child</title><script>globalThis.cdp675ProtectedChild = true;</script>'
+              `<!doctype html><title>Owned protected child</title>${request.url.startsWith('/bfcache') ? bfcacheMarkup(request.url) : '<script>globalThis.cdp675ProtectedChild = true;</script>'}`
             )
         );
         await new Promise((resolve) => protectedSite.listen(0, '127.0.0.1', resolve));
@@ -848,6 +1049,19 @@ for (const route of ['extension', 'link']) {
           '/__675_frame',
           '<!doctype html><title>Owned protected child</title><script>globalThis.cdp675ProtectedChild = true;</script>'
         );
+        const sameProcessSite = createServer((_request, response) =>
+          response
+            .writeHead(200, { 'content-type': 'text/html' })
+            .end(
+              '<!doctype html><title>Owned extra-origin protected document</title><script>globalThis.cdp675Protected = true;</script>'
+            )
+        );
+        await new Promise((resolve) => sameProcessSite.listen(0, '127.0.0.1', resolve));
+        trace.sameProcessOrigin = `http://localhost:${sameProcessSite.address().port}`;
+        t.after(() => {
+          sameProcessSite.closeAllConnections();
+          sameProcessSite.close();
+        });
         const fixture = createServer((request, response) => {
           const at = new URL(request.url, 'http://fixture');
           if (at.pathname === '/data') {
@@ -869,6 +1083,8 @@ for (const route of ['extension', 'link']) {
             return;
           }
           response.writeHead(200, { 'content-type': 'text/html' });
+          if (at.pathname === '/prerender-candidate')
+            return response.end('<!doctype html><title>675 no-activation candidate</title>');
           if (at.pathname === '/protected-doc') {
             (trace.protectedRequests ??= []).push({ at: Date.now(), host: request.headers.host });
             return response.end(
@@ -895,7 +1111,7 @@ for (const route of ['extension', 'link']) {
               )
             : '';
           response.end(
-            `<!doctype html><title>675 ordinary</title>${scripts}${foreign ? `<iframe src="${at.searchParams.has('protected') ? `https://${at.searchParams.get('protected')}.sliccy.ai/__675_frame` : '/iframe'}"></iframe>` : ''}<script type="module">window.cdp675Loads = (Number(sessionStorage.cdp675Loads) || 0) + 1; sessionStorage.cdp675Loads = window.cdp675Loads; ${startup}</script>`
+            `<!doctype html><title>675 ordinary</title>${at.pathname === '/bfcache' ? bfcacheMarkup(request.url) : ''}${scripts}${foreign ? `<iframe src="${at.searchParams.has('protected') ? `https://${at.searchParams.get('protected')}.sliccy.ai/__675_frame` : '/iframe'}"></iframe>` : ''}<script type="module">window.cdp675Loads = (Number(sessionStorage.cdp675Loads) || 0) + 1; sessionStorage.cdp675Loads = window.cdp675Loads; ${startup}</script>`
           );
         });
         await new Promise((resolve) => fixture.listen(0, '127.0.0.1', resolve));
@@ -966,7 +1182,8 @@ for (const route of ['extension', 'link']) {
             'cdp-675-packaged',
             oldRoute
               ? fileURLToPath(new URL('../../node_modules/.bin/slicc', import.meta.url))
-              : undefined
+              : undefined,
+            oldRoute ? [] : [trace.sameProcessOrigin]
           );
           trace.selectedRoute = await page.evaluate(() =>
             globalThis.sliccLinkedBrowsers().map(({ runtime, route }) => ({ runtime, route }))
@@ -1030,6 +1247,8 @@ for (const route of ['extension', 'link']) {
         let targetId;
         let rawSession;
         let unobserve;
+        let bfcacheDriver;
+        let bfcacheOff;
         try {
           if (setupError) throw setupError;
           row.packageProof = trace.packageProof;
@@ -1042,7 +1261,10 @@ for (const route of ['extension', 'link']) {
             row.packageProof = packageProof(row.oldInstall, '1.43.1', manifest.oldClientWasmSha256);
           }
           row.step = 'create-ordinary-target';
-          const url = new URL(`/page?row=${index}`, trace.fixtureOrigin);
+          let url = new URL(
+            scene.bfcache ? `/bfcache?n=675-${route}-${index}-a` : `/page?row=${index}`,
+            trace.fixtureOrigin
+          );
           if (scene.many) url.searchParams.set('many', '1');
           if (foreign) {
             url.searchParams.set('foreign', '1');
@@ -1067,7 +1289,10 @@ for (const route of ['extension', 'link']) {
           row.rawLoads = [];
           unobserve = chrome.cdp.on(({ method, params, sessionId }) => {
             if (sessionId !== rawSession) return;
-            if (method === 'Page.frameNavigated') row.rawFrames.push(params.frame);
+            if (method === 'Page.frameNavigated') {
+              row.rawFrames.push(params.frame);
+              (row.rawEvents ??= []).push({ method, params, sessionId, at: Date.now() });
+            }
             if (method === 'Page.loadEventFired')
               row.rawLoads.push({ at: Date.now(), timestamp: params.timestamp });
             if (method === 'Runtime.executionContextCreated')
@@ -1137,6 +1362,22 @@ for (const route of ['extension', 'link']) {
               'protected child must really commit before guarded attach'
             );
           }
+          if (scene.bfcache) {
+            const reader = {
+              events: [],
+              send: (method, params, sessionId) => rawBounded(chrome, sessionId, method, params),
+            };
+            bfcacheOff = chrome.cdp.on((event) => reader.events.push(event));
+            bfcacheDriver = bfcacheNavigation({
+              reader,
+              targetId,
+              ordinary: trace.fixtureOrigin,
+              protectedOrigin: 'https://vault.sliccy.ai',
+              tag: `675-${route}-${index}`,
+            });
+            row.bfcache = await bfcacheDriver.prepare();
+            url = new URL(row.bfcache.url);
+          }
           row.step = 'guarded-discovery';
           row.target = await discover(page, url.href);
           row.traceStart = await page.evaluate(() => globalThis.cdp675Trace?.length ?? 0);
@@ -1176,6 +1417,10 @@ for (const route of ['extension', 'link']) {
           const command = `mcpcat serve --webmcp ${scene.reload ? '--webmcp-reload ' : ''}--tab ${quote(row.target)} --http ${row.port} --no-auth`;
           row.command = command;
           row.step = 'shipped-serve';
+          if (scene.race)
+            await page.evaluate(() => {
+              globalThis.cdp675Race = { armed: true };
+            });
           await page.evaluate(
             async ({ command, log }) => {
               globalThis.cdp675Client ??= await globalThis.sliccKernelClient();
@@ -1195,24 +1440,83 @@ for (const route of ['extension', 'link']) {
               log: row.log,
             }
           );
+          if (scene.race) {
+            row.step = 'shipped-publication-document-race';
+            await publicationRace(page, chrome, rawSession, row, url);
+          }
           row.step = 'shipped-server-ready';
           await page.within(
             120000,
-            async ({ negative, log }) => {
+            async ({ negative, race, log }) => {
               const { stdout } = await globalThis.cdp675Client.run(['bash', '-c', `cat ${log}`], {
                 cwd: '/',
               });
-              return negative
-                ? /refused|update|needs.*newer/i.test(stdout)
-                : stdout.includes('listening on http:');
+              return race
+                ? /refused|could not verify|listening on http:/i.test(stdout)
+                : negative
+                  ? /refused|update|needs.*newer/i.test(stdout)
+                  : stdout.includes('listening on http:');
             },
             {
-              negative: Boolean(scene.negative || (scene.protectedSubframe && route === 'link')),
+              negative: Boolean(scene.negative || scene.protectedSubframe),
+              race: Boolean(scene.race),
               log: row.log,
             }
           );
           row.portAnswered = await waitPort(page, row.port);
-          if (scene.negative || (scene.protectedSubframe && route === 'link')) {
+          if (scene.race) {
+            row.race.terminal = await sh(page, `cat ${row.log}`);
+            assert.match(row.race.terminal.stdout, /refused|could not verify|listening on http:/i);
+            row.race.newDocument = await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
+              expression:
+                '({ ready: document.readyState, modelContext: typeof document.modelContext })',
+              returnByValue: true,
+            });
+            assert.equal(row.race.newDocument.result?.value?.ready, 'complete');
+            row.methods = await page.evaluate(
+              (start) => globalThis.cdp675Trace.slice(start),
+              row.traceStart
+            );
+            row.race.installations = row.methods.filter(
+              ({ boundary, direction, packet }) =>
+                boundary === 'bios' &&
+                direction === 'send' &&
+                packet.method === 'Runtime.evaluate' &&
+                packet.params.expression?.startsWith('const __wmcp_')
+            );
+            for (const installation of row.race.installations) {
+              assert.notEqual(
+                installation.packet.params.uniqueContextId,
+                row.race.beforeContext,
+                'stale context must never receive the shim'
+              );
+              assert.equal(installation.packet.params.uniqueContextId, row.race.afterContext);
+              assert.ok(
+                row.methods.some(
+                  ({ at, boundary, direction, packet }) =>
+                    at >= row.race.changedAt &&
+                    at <= installation.at &&
+                    boundary === 'bios' &&
+                    direction === 'receive' &&
+                    packet.method === 'Debugger.paused' &&
+                    packet.params.reason === 'other' &&
+                    packet.params.callFrames?.[0]?.callFrameId !==
+                      row.race.held.packet.params.callFrames?.[0]?.callFrameId
+                ),
+                'new document install requires its own fresh published pause'
+              );
+            }
+            assert.equal(
+              row.methods.filter(
+                ({ boundary, direction, packet }) =>
+                  boundary === 'bios' && direction === 'send' && packet.method === 'Page.reload'
+              ).length,
+              1
+            );
+            row.status = 'pass';
+            continue;
+          }
+          if (scene.negative || scene.protectedSubframe) {
             row.step = 'terminal-bound';
             await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 30000)));
             row.terminal = await sh(page, `cat ${row.log}`);
@@ -1250,8 +1554,62 @@ for (const route of ['extension', 'link']) {
                     packet.method
                   )
               ).length,
-              scene.protectedSubframe ? 0 : scene.oldClient ? 2 : 1
+              scene.protectedSubframe ? (route === 'extension' ? 1 : 0) : scene.oldClient ? 2 : 1
             );
+            if (scene.protectedSubframe) {
+              if (route === 'extension') {
+                const request = row.methods.find(
+                  ({ boundary, direction, packet }) =>
+                    boundary === 'bios' &&
+                    direction === 'send' &&
+                    packet.method === 'Debugger.enable'
+                );
+                assert.ok(request);
+                row.protectedRefusal = row.methods.find(
+                  ({ at, boundary, direction, packet }) =>
+                    at >= request.at &&
+                    boundary === 'bios' &&
+                    direction === 'receive' &&
+                    packet.id === request.packet.id &&
+                    packet.error?.message ===
+                      'slicc: refused: seven’s own pages and the vault are out of reach of browser automation'
+                );
+                assert.ok(
+                  row.protectedRefusal,
+                  'bios must refuse Debugger.enable for the protected subframe'
+                );
+              }
+              assert.equal(
+                row.methods.some(
+                  ({ boundary, direction, packet }) =>
+                    boundary === 'bios' &&
+                    direction === 'send' &&
+                    packet.method === 'Runtime.evaluate' &&
+                    /^const __wmcp_/.test(packet.params?.expression ?? '')
+                ),
+                false,
+                'protected refusal must never start fallback'
+              );
+              row.protectedList = await cone(
+                page,
+                `timeout 60 mcpcat tools http://127.0.0.1:${row.port}/mcp --json`,
+                `675-protected-list-${index}`
+              );
+              const listing = JSON.parse(row.protectedList.stdout);
+              assert.deepEqual(listing.tools, []);
+              assert.match(listing.hint, /guard refused|refused/i);
+              const publications = row.methods.filter(
+                ({ boundary, direction }) => boundary === 'bios' && direction === 'receive'
+              );
+              for (const output of [
+                JSON.stringify(publications),
+                row.protectedList.stdout,
+                row.protectedList.stderr,
+                row.terminal.stdout,
+                row.terminal.stderr,
+              ])
+                assert.doesNotMatch(output, /(?:seven|vault)\.sliccy\.ai/i);
+            }
             if (scene.oldClient) {
               row.oldClientStartup = Object.fromEntries(
                 ['Debugger.enable', 'Page.addScriptToEvaluateOnNewDocument'].map((method) => [
@@ -1278,6 +1636,89 @@ for (const route of ['extension', 'link']) {
           const tools = Array.isArray(listing) ? listing : listing.tools;
           row.tools = tools;
           assert.ok(Array.isArray(tools));
+          if (
+            foreign &&
+            (scene.measure || scene.parse) &&
+            listing.hint ===
+              'webmcp: other-extension fallback could not verify the reloaded document; tools are unavailable'
+          ) {
+            assert.deepEqual(tools, []);
+            assert.equal(listing.error, undefined);
+            assert.doesNotMatch(row.list.stdout, /unverified isolated context/);
+            row.raceOutcome = 'clear-message-after-fallback-refusal';
+            row.clearMessage = await sh(page, `cat ${row.log}`);
+            assert.match(row.clearMessage.stdout, /other-extension fallback could not verify/);
+            row.methods = await page.evaluate(
+              (start) => globalThis.cdp675Trace.slice(start),
+              row.traceStart
+            );
+            const trigger = row.methods.findIndex(
+              ({ boundary, direction, packet }) =>
+                boundary === 'bios' &&
+                direction === 'receive' &&
+                /browser extension runs scripts|another extension/.test(packet.error?.message ?? '')
+            );
+            assert.ok(trigger >= 0, 'fallback must have a real other-extension cause');
+            const after = row.methods.slice(trigger + 1);
+            assert.equal(
+              after.some(
+                ({ boundary, direction, packet }) =>
+                  boundary === 'route' &&
+                  direction === 'send' &&
+                  packet.method?.startsWith('Debugger.')
+              ),
+              false
+            );
+            assert.equal(
+              after.filter(
+                ({ boundary, direction, packet }) =>
+                  boundary === 'bios' && direction === 'send' && packet.method === 'Page.reload'
+              ).length,
+              1
+            );
+            const reload = after.find(
+              ({ boundary, direction, packet }) =>
+                boundary === 'bios' && direction === 'send' && packet.method === 'Page.reload'
+            );
+            assert.ok(reload);
+            row.fallbackRefusal = after.find(
+              ({ boundary, direction, connectionId, packet }) =>
+                connectionId === reload.connectionId &&
+                boundary === 'bios' &&
+                direction === 'receive' &&
+                /seven’s own pages and the vault|target is on seven's origin/.test(
+                  packet.error?.message ?? ''
+                )
+            );
+            assert.ok(
+              row.fallbackRefusal,
+              'fresh replay refusal must remain terminal, never retried'
+            );
+            const afterRefusal = after.slice(after.indexOf(row.fallbackRefusal) + 1);
+            assert.equal(
+              afterRefusal.some(
+                ({ boundary, direction, connectionId, packet }) =>
+                  connectionId === reload.connectionId &&
+                  boundary === 'bios' &&
+                  direction === 'send' &&
+                  ['Target.attachToTarget', 'Runtime.enable', 'Page.reload'].includes(packet.method)
+              ),
+              false,
+              'protected refusal must not be retried'
+            );
+            assert.equal(
+              after.some(
+                ({ boundary, direction, packet }) =>
+                  boundary === 'bios' &&
+                  direction === 'send' &&
+                  packet.method === 'Runtime.evaluate' &&
+                  /^const __wmcp_/.test(packet.params?.expression ?? '')
+              ),
+              false
+            );
+            row.status = 'pass';
+            continue;
+          }
           if (scene.late) {
             assert.equal(tools.length, 0, row.list.stdout);
             assert.match(listing.hint ?? '', /before the polyfill was injected.*--webmcp-reload/);
@@ -1456,7 +1897,7 @@ for (const route of ['extension', 'link']) {
           assert.equal(row.lexical.type, 'object');
           assert.equal(row.lexical.own, false);
           assert.equal(row.lexical.window, false);
-          assert.equal(row.lexical.loads, scene.reload ? 2 : 1);
+          assert.equal(row.lexical.loads, scene.bfcache ? 3 : scene.reload ? 2 : 1);
           if (scene.reload && !foreign) {
             const published = row.methods.findIndex(
               ({ boundary, direction, packet }) =>
@@ -1500,9 +1941,167 @@ for (const route of ['extension', 'link']) {
             };
             row.loadCost.addedMs = row.loadCost.holderMs - row.loadCost.baselineMs;
             assert.ok(
-              row.loadCost.addedMs < 1000,
+              row.loadCost.addedMs < (route === 'link' ? 2000 : 1000),
               `100-script holder added ${row.loadCost.addedMs}ms`
             );
+          }
+          if (scene.bfcache) {
+            row.step = 'armed-bfcache-restore';
+            const start = await page.evaluate(() => globalThis.cdp675Trace.length);
+            row.bfcache.protectedRestore = await bfcacheDriver.restore(row.bfcache.protectedEntry);
+            row.bfcache.methods = await page.evaluate(
+              (start) => globalThis.cdp675Trace.slice(start),
+              start
+            );
+            const publications = row.bfcache.methods.filter(
+              ({ boundary, direction }) => boundary === 'bios' && direction === 'receive'
+            );
+            assert.equal(
+              publications.some(({ packet }) => packet.method?.startsWith('Debugger.')),
+              false,
+              'protected restore must publish nothing'
+            );
+            row.bfcache.protectedOutput = await sh(page, `cat ${row.log}`);
+            for (const output of [
+              JSON.stringify(publications),
+              row.list.stdout,
+              row.call.stdout,
+              row.bfcache.protectedOutput.stdout,
+              row.bfcache.protectedOutput.stderr,
+            ])
+              assert.doesNotMatch(output, /vault\.sliccy\.ai/i);
+            row.bfcache.ordinaryRestore = await bfcacheDriver.restore(row.bfcache.ordinaryEntry);
+            row.bfcache.list = await cone(
+              page,
+              `timeout 60 mcpcat tools http://127.0.0.1:${row.port}/mcp --json`,
+              `675-bfcache-${index}`
+            );
+            const listing =
+              row.bfcache.list.status === 0 ? JSON.parse(row.bfcache.list.stdout) : {};
+            const tools = Array.isArray(listing) ? listing : listing.tools;
+            if (!tools?.some(({ name }) => name === 'add' || name.endsWith('_add'))) {
+              row.bfcache.clearMessage = await sh(page, `cat ${row.log}`);
+              assert.match(
+                row.bfcache.clearMessage.stdout,
+                /refused|could not verify|closed, changed|startup or parse-time/i
+              );
+            }
+          }
+          if (scene.prerender) {
+            row.step = 'armed-prerender-no-activation';
+            const start = await page.evaluate(() => globalThis.cdp675Trace.length);
+            const candidate = new URL('/prerender-candidate', url).href;
+            row.prerender = { candidate, statuses: [] };
+            await rawBounded(chrome, rawSession, 'Preload.enable', {});
+            let prerenderOff;
+            let prerenderTimer;
+            const disabled = new Promise((resolve) => {
+              prerenderTimer = setTimeout(() => resolve(false), 7000);
+              prerenderOff = chrome.cdp.on(({ method, params, sessionId }) => {
+                if (sessionId !== rawSession || method !== 'Preload.prerenderStatusUpdated') return;
+                row.prerender.statuses.push(params);
+                if (params.prerenderStatus === 'PrerenderingDisabledByDevTools') resolve(true);
+              });
+            });
+            try {
+              row.prerender.rules = await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
+                expression: `(()=>{const rules=document.createElement('script');rules.type='speculationrules';rules.textContent=${JSON.stringify(JSON.stringify({ prerender: [{ source: 'list', urls: [candidate] }] }))};document.head.append(rules);return true})()`,
+                returnByValue: true,
+              });
+              assert.equal(row.prerender.rules.result?.value, true);
+              assert.equal(
+                await disabled,
+                true,
+                'armed page-session holder must disable prerender before navigation'
+              );
+            } finally {
+              clearTimeout(prerenderTimer);
+              prerenderOff?.();
+            }
+            row.prerender.navigation = await rawLoad(chrome, rawSession, 'Page.navigate', {
+              url: candidate,
+            });
+            row.prerender.state = (
+              await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
+                expression:
+                  '({ url: location.href, ready: document.readyState, activationStart: performance.getEntriesByType("navigation")[0].activationStart, prerendering: document.prerendering })',
+                returnByValue: true,
+              })
+            ).result?.value;
+            assert.equal(row.prerender.state.url, candidate);
+            assert.equal(row.prerender.state.ready, 'complete');
+            assert.equal(
+              row.prerender.state.activationStart,
+              0,
+              'prerender activation is a finding'
+            );
+            assert.equal(row.prerender.state.prerendering, false);
+            row.prerender.methods = await page.evaluate(
+              (start) => globalThis.cdp675Trace.slice(start),
+              start
+            );
+            assert.equal(
+              row.prerender.methods.some(
+                ({ boundary, direction, packet }) =>
+                  boundary === 'bios' &&
+                  direction === 'receive' &&
+                  packet.method === 'Debugger.paused'
+              ),
+              false
+            );
+          }
+          if (scene.sameProcess) {
+            row.step = 'armed-same-process-extra-origin';
+            if (route === 'extension') {
+              row.sameProcess = {
+                outcome: 'not-producible',
+                reason:
+                  'The extension protected-origin matcher is static; it has no CLI --origin equivalent. All sliccy.ai siblings are protected, so no ordinary same-site predecessor exists.',
+              };
+            } else {
+              row.sameProcess = {
+                protectedOrigin: trace.sameProcessOrigin,
+                ordinaryOrigin: url.origin,
+                before: await rawBounded(chrome, rawSession, 'Runtime.getIsolateId', {}),
+              };
+              assert.equal(new URL(trace.sameProcessOrigin).hostname, url.hostname);
+              assert.notEqual(trace.sameProcessOrigin, url.origin);
+              const start = await page.evaluate(() => globalThis.cdp675Trace.length);
+              row.sameProcess.navigation = await rawLoad(chrome, rawSession, 'Page.navigate', {
+                url: `${trace.sameProcessOrigin}/protected-doc`,
+              });
+              row.sameProcess.after = await rawBounded(
+                chrome,
+                rawSession,
+                'Runtime.getIsolateId',
+                {}
+              );
+              row.sameProcess.state = (
+                await rawBounded(chrome, rawSession, 'Runtime.evaluate', {
+                  expression: '({ origin: location.origin, ready: document.readyState })',
+                  returnByValue: true,
+                })
+              ).result?.value;
+              assert.equal(row.sameProcess.state.origin, trace.sameProcessOrigin);
+              assert.equal(row.sameProcess.state.ready, 'complete');
+              assert.ok(row.sameProcess.before.id && row.sameProcess.after.id);
+              row.sameProcess.outcome =
+                row.sameProcess.before.id === row.sameProcess.after.id
+                  ? 'same-process-proved'
+                  : 'Chrome-swapped-process-no-claim';
+              row.sameProcess.methods = await page.evaluate(
+                (start) => globalThis.cdp675Trace.slice(start),
+                start
+              );
+              const publications = row.sameProcess.methods.filter(
+                ({ boundary, direction }) => boundary === 'bios' && direction === 'receive'
+              );
+              assert.equal(
+                publications.some(({ packet }) => packet.method?.startsWith('Debugger.')),
+                false
+              );
+              assert.ok(!JSON.stringify(publications).includes(trace.sameProcessOrigin));
+            }
           }
           if (scene.holderKill) {
             row.step = 'shipped-holder-death';
@@ -1599,6 +2198,15 @@ for (const route of ['extension', 'link']) {
             : 'finding';
           row.failure = { name: error.name, message: error.message };
         } finally {
+          bfcacheOff?.();
+          if (bfcacheDriver) await bfcacheDriver.close().catch(() => {});
+          if (scene.race && page)
+            await page
+              .evaluate(() => {
+                globalThis.cdp675Race?.release?.();
+                delete globalThis.cdp675Race;
+              })
+              .catch(() => {});
           countRow(row);
           if (page && !setupError) {
             if (!guardLevel) {
