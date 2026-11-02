@@ -20,7 +20,7 @@ export async function awaitRowClosure(page, row, boundMs = 5000) {
   await page.within(
     boundMs,
     async ({ pids, connections }) => {
-      if (!connections.every((id) => globalThis.cdp675Connections?.get(id)?.closedAt !== undefined))
+      if (!connections.every((id) => globalThis.cdp675Connections?.get(id)?.closed === true))
         return false;
       globalThis.cdp675Client ??= await globalThis.sliccKernelClient();
       const command = pids.map((pid) => `test ! -e /proc/${pid}/stat`).join(' && ');

@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-cdp
-          ref: 331b8425f3e91d5778d3203b3aa19cdf89e15baf
+          ref: 716cae976a1caeddaf6941c420399b2fe74c6213
           path: candidates/cdp
       - uses: actions/checkout@v4
         with:
@@ -45,17 +45,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-cli
-          ref: cac7612fda203915fba774bfdb5f683b42ae025e
+          ref: 96a9408376e611bfd21c4a91996d1fe93e295116
           path: candidates/cli
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-extension
-          ref: 19f502efebf5c4fd029b117c35bc4fd9b23d6d3a
+          ref: b663866eec8f8fac609b7e94c557f6c0c7cb384e
           path: candidates/extension
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-browsers
-          ref: 735b2afc41c3f06c2876bdf3f07dfd600245770d
+          ref: 0523b11ff42c9ef41cd997a6a974fd66824ae60f
           path: candidates/browsers
       - uses: actions/setup-node@v4
         with:

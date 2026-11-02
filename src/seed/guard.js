@@ -941,10 +941,11 @@ class Guard {
     }
   }
 
-  call(method, params, sessionId) {
+  call(method, params, sessionId, deadline) {
     if (this.closed || this.gone.has(sessionId))
       return Promise.resolve({ error: { code: -32000, message: UNGUARDED } });
     const placement = this.placements.get(sessionId);
+    const placementRevision = this.revisions.get(placement);
     const nav = this.navSessions.get(sessionId);
     const revision = this.revisions.get(nav?.targetId);
     const work = new Promise((resolve) => {
@@ -957,15 +958,22 @@ class Guard {
           if (!nav) await this.rememberExistingNavError(message.result?.frameTree, sessionId);
         }
         const current = this.scopes.get(placement)?.sessionId;
-        if (placement === undefined || current === undefined || current === sessionId)
+        if (
+          (deadline === undefined ||
+            (Date.now() < deadline && this.revisions.get(placement) === placementRevision)) &&
+          (placement === undefined || current === undefined || current === sessionId)
+        )
           this.recordPlacement(placement, method, message.result);
         resolve(message);
       };
       answer.sessionId = sessionId;
-      timer = setTimeout(() => {
-        this.internal.delete(id);
-        void answer({ id, sessionId, error: { code: -32000, message: UNGUARDED } });
-      }, NAV_MS);
+      timer = setTimeout(
+        () => {
+          this.internal.delete(id);
+          void answer({ id, sessionId, error: { code: -32000, message: UNGUARDED } });
+        },
+        deadline === undefined ? NAV_MS : Math.max(0, Math.min(NAV_MS, deadline - Date.now()))
+      );
       timer.unref?.();
       this.internal.set(id, answer);
       this.connection.send(
@@ -1165,21 +1173,36 @@ class Guard {
     if (lease && lease.state !== 'revoked') this.setDebuggerLease(targetId, state);
   }
 
-  async placePrivateFrames(targetId) {
+  async placePrivateFrames(targetId, deadline) {
     const scope = this.scope(targetId);
     if (
       !this.extensionFrames ||
       typeof this.privateFrames !== 'function' ||
-      !scope.remoteOwners.size
+      !(scope.remoteBackendOwners?.size ?? scope.remoteOwners.size)
     )
       return;
+    scope.privatePlaced = false;
     const revision = this.revisions.get(targetId);
     const loader = scope.loader;
     let list;
+    let timer;
     try {
-      list = await this.privateFrames(targetId);
-    } catch {}
-    if (this.revisions.get(targetId) !== revision || scope.loader !== loader) return;
+      list = await Promise.race([
+        this.privateFrames(targetId),
+        new Promise((resolve) => {
+          timer = setTimeout(resolve, Math.max(0, deadline - Date.now()));
+        }),
+      ]);
+    } catch {
+    } finally {
+      clearTimeout(timer);
+    }
+    if (
+      this.revisions.get(targetId) !== revision ||
+      scope.loader !== loader ||
+      Date.now() >= deadline
+    )
+      return;
     const frames = list?.frames;
     if (Array.isArray(frames) && frames.some((frame) => this.is.url(frame?.url))) {
       scope.privatePlaced = false;
@@ -1200,10 +1223,23 @@ class Guard {
       loader &&
       list.rootLoaderId === loader &&
       frames.length === ids.size &&
+      Array.isArray(list.localFrames) &&
+      list.localFrames.length === scope.treeFrames.size &&
+      new Set(list.localFrames).size === list.localFrames.length &&
+      list.localFrames.every((id) => scope.treeFrames.has(id)) &&
       Array.isArray(list.remoteOwners) &&
-      list.remoteOwners.length === scope.remoteOwners.size &&
-      list.remoteOwners.every((id) => scope.remoteOwners.has(id)) &&
-      scope.remoteOwners.size < frames.length &&
+      list.remoteOwners.length === scope.remoteBackendOwners.size &&
+      new Set(list.remoteOwners.map((owner) => owner?.frameId)).size === list.remoteOwners.length &&
+      new Set(list.remoteOwners.map((owner) => owner?.backendNodeId)).size ===
+        list.remoteOwners.length &&
+      list.remoteOwners.every(
+        (owner) =>
+          typeof owner?.frameId === 'string' &&
+          owner.frameId &&
+          !scope.treeFrames.has(owner.frameId) &&
+          scope.remoteBackendOwners.has(owner.backendNodeId)
+      ) &&
+      list.localFrames.length + list.remoteOwners.length === frames.length &&
       this.relatedFrames(scope.frames).size <= frames.length &&
       frames.every(
         (frame) =>
@@ -1216,22 +1252,29 @@ class Guard {
           !frame.errorOccurred &&
           (frame.documentLifecycle === undefined || frame.documentLifecycle === 'active')
       );
-    let rooted = Boolean(complete);
-    if (rooted)
-      for (const frame of frames) {
-        let current = frame;
-        const seen = new Set();
-        while (current?.frameId !== 0) {
-          if (!current || seen.has(current.frameId)) {
-            rooted = false;
-            break;
-          }
-          seen.add(current.frameId);
-          current = frames.find((candidate) => candidate.frameId === current.parentFrameId);
-        }
-      }
+    const rooted = Boolean(complete && this.rootedPrivateFrames(frames));
+    if (rooted) {
+      for (const owner of list.remoteOwners)
+        this.recordOwner(scope, {
+          ...scope.remoteBackendOwners.get(owner.backendNodeId),
+          frameId: owner.frameId,
+        });
+    }
     scope.privatePlaced = rooted;
     this.replaceDebuggerLease(targetId, rooted ? 'placed' : 'suspended');
+  }
+
+  rootedPrivateFrames(frames) {
+    for (const frame of frames) {
+      let current = frame;
+      const seen = new Set();
+      while (current?.frameId !== 0) {
+        if (!current || seen.has(current.frameId)) return false;
+        seen.add(current.frameId);
+        current = frames.find((candidate) => candidate.frameId === current.parentFrameId);
+      }
+    }
+    return true;
   }
 
   unavailableFrame(frameId, url, view) {
@@ -1261,6 +1304,7 @@ class Guard {
     const scope = this.scopes.get(targetId);
     if (!this.scopeReady(targetId, scope, view) || (view && scope.committed)) return true;
     if (scope.privatePlaced) return Boolean(view);
+    if (scope.remoteBackendOwners?.size) return true;
     const holds = this.holding(targetId);
     for (const id of this.relatedFrames(scope.frames)) {
       const url = this.frames.get(id);
@@ -1354,43 +1398,124 @@ class Guard {
     if (targetId === undefined) return;
     if (method === 'Page.getFrameTree') this.recordTree(targetId, result?.frameTree);
     if (method === 'DOM.getDocument') this.recordOwners(targetId, result?.root);
-    if (method === 'DOMSnapshot.getSnapshot') this.recordSnapshotOwners(targetId, result);
+    if (method === 'DOMSnapshot.captureSnapshot') this.recordSnapshotOwners(targetId, result);
   }
 
   recordSnapshotOwners(targetId, snapshot) {
-    const nodes = snapshot?.domNodes;
+    const scope = this.scope(targetId);
+    const documents = snapshot?.documents;
+    const strings = snapshot?.strings;
     const refused = () => this.recordOwners(targetId, undefined);
     if (
-      !Array.isArray(nodes) ||
-      nodes[0]?.nodeType !== 9 ||
-      nodes[0]?.frameId !== this.scope(targetId).root
+      !Array.isArray(documents) ||
+      !documents.length ||
+      !Array.isArray(strings) ||
+      strings.some((value) => typeof value !== 'string') ||
+      strings[documents[0]?.frameId] !== scope.root
     )
       return refused();
+    const local = new Set();
+    const backend = new Set();
     const owners = [];
-    for (const node of nodes) {
-      if (!node || typeof node.nodeName !== 'string') return refused();
-      if (!['IFRAME', 'FRAME'].includes(node.nodeName)) continue;
-      const attributes = node.attributes ?? [];
+    const remote = new Map();
+    for (const document of documents) {
+      const frameId = strings[document?.frameId];
+      const nodes = document?.nodes;
       if (
-        !Array.isArray(attributes) ||
-        attributes.some((item) => typeof item?.name !== 'string' || typeof item.value !== 'string')
+        typeof frameId !== 'string' ||
+        !frameId ||
+        local.has(frameId) ||
+        !scope.treeFrames.has(frameId) ||
+        !Array.isArray(nodes?.nodeName) ||
+        !Array.isArray(nodes.backendNodeId) ||
+        !Array.isArray(nodes.attributes) ||
+        nodes.nodeName.length !== nodes.backendNodeId.length ||
+        nodes.nodeName.length !== nodes.attributes.length
       )
         return refused();
-      const content = nodes[node.contentDocumentIndex];
-      if (
-        node.contentDocumentIndex !== undefined &&
-        (!Number.isSafeInteger(node.contentDocumentIndex) ||
-          content?.nodeType !== 9 ||
-          content.frameId !== node.frameId)
-      )
+      local.add(frameId);
+      if (!this.snapshotContentReady(nodes)) return refused();
+      if (!this.snapshotDocumentOwners(scope, documents, strings, nodes, backend, owners, remote))
         return refused();
-      owners.push({
-        ...node,
-        attributes: attributes.flatMap(({ name, value }) => [name, value]),
-        contentDocument: content,
-      });
     }
+    if (local.size !== scope.treeFrames.size || owners.length !== local.size - 1) return refused();
     this.recordOwners(targetId, { children: owners });
+    scope.remoteBackendOwners = remote;
+  }
+
+  snapshotDocumentOwners(scope, documents, strings, nodes, backend, owners, remote) {
+    for (let index = 0; index < nodes.nodeName.length; index += 1) {
+      const owner = this.snapshotNodeOwner(scope, documents, strings, nodes, index);
+      if (owner === undefined) return false;
+      if (owner === null) continue;
+      if (
+        backend.has(owner.backendNodeId) ||
+        (owner.frameId && owners.some((entry) => entry.frameId === owner.frameId))
+      )
+        return false;
+      backend.add(owner.backendNodeId);
+      if (owner.frameId) owners.push(owner);
+      else remote.set(owner.backendNodeId, owner);
+    }
+    return true;
+  }
+
+  snapshotContentReady(nodes) {
+    const content = nodes.contentDocumentIndex;
+    return (
+      Array.isArray(content?.index) &&
+      Array.isArray(content.value) &&
+      content.index.length === content.value.length &&
+      new Set(content.index).size === content.index.length &&
+      content.index.every(
+        (index) => Number.isSafeInteger(index) && index >= 0 && index < nodes.nodeName.length
+      )
+    );
+  }
+
+  snapshotNodeOwner(scope, documents, strings, nodes, index) {
+    const name = strings[nodes.nodeName[index]];
+    if (typeof name !== 'string') return undefined;
+    if (!['IFRAME', 'FRAME'].includes(name)) return null;
+    const backendNodeId = nodes.backendNodeId[index];
+    const attributes = nodes.attributes[index];
+    if (
+      !Number.isSafeInteger(backendNodeId) ||
+      backendNodeId <= 0 ||
+      !Array.isArray(attributes) ||
+      attributes.length % 2 ||
+      attributes.some((value) => !Number.isSafeInteger(value) || typeof strings[value] !== 'string')
+    )
+      return undefined;
+    const owner = {
+      nodeName: name,
+      backendNodeId,
+      attributes: attributes.map((value) => strings[value]),
+    };
+    const position = nodes.contentDocumentIndex.index.indexOf(index);
+    return position < 0
+      ? owner
+      : this.snapshotLocalOwner(
+          scope,
+          documents,
+          strings,
+          nodes.contentDocumentIndex.value[position],
+          owner
+        );
+  }
+
+  snapshotLocalOwner(scope, documents, strings, index, owner) {
+    const child = documents[index];
+    const id = strings[child?.frameId];
+    if (
+      !Number.isSafeInteger(index) ||
+      typeof id !== 'string' ||
+      !id ||
+      id === scope.root ||
+      !scope.treeFrames.has(id)
+    )
+      return undefined;
+    return { ...owner, frameId: id, contentDocument: { documentURL: strings[child.documentURL] } };
   }
 
   recordOwners(targetId, root) {
@@ -1401,6 +1526,8 @@ class Guard {
     const former = scope.owners;
     scope.owners = new Set();
     scope.remoteOwners = new Set();
+    scope.remoteBackendOwners = new Map();
+    scope.privatePlaced = false;
     const nodes = [root];
     while (nodes.length) {
       const node = nodes.pop();
@@ -1470,14 +1597,14 @@ class Guard {
     }
   }
 
-  placementAttach(sessionId, params) {
+  placementAttach(sessionId, params, deadline) {
     if (!this.placements.has(sessionId) || this.gone.has(sessionId))
       return this.call('Target.setAutoAttach', params, sessionId);
     const config = JSON.stringify(params);
     const cached = this.autoAttachments.get(sessionId);
     if (cached?.config === config) return cached.promise;
     const promise = Promise.resolve()
-      .then(() => this.call('Target.setAutoAttach', params, sessionId))
+      .then(() => this.call('Target.setAutoAttach', params, sessionId, deadline))
       .then(
         (answer) => {
           if (answer.error && this.autoAttachments.get(sessionId)?.promise === promise)
@@ -1499,13 +1626,16 @@ class Guard {
     this.scope(targetId).pending = (this.scope(targetId).pending ?? 0) + 1;
     this.scope(targetId).ready = false;
     this.stopCasts();
-    const enabled = await this.call('Page.enable', {}, sessionId);
-    await this.call('Page.getFrameTree', {}, sessionId);
+    const deadline = this.extensionFrames ? Date.now() + PROBE_WAIT : undefined;
+    const revision = this.revisions.get(targetId);
+    const enabled = await this.call('Page.enable', {}, sessionId, deadline);
+    await this.call('Page.getFrameTree', {}, sessionId, deadline);
     const owners = this.extensionFrames
       ? await this.call(
-          'DOMSnapshot.getSnapshot',
-          { computedStyleWhitelist: [], includeUserAgentShadowTree: true },
-          sessionId
+          'DOMSnapshot.captureSnapshot',
+          { computedStyles: [], includeDOMRects: false, includePaintOrder: false },
+          sessionId,
+          deadline
         )
       : await this.call('DOM.getDocument', { depth: -1, pierce: true }, sessionId);
     const disabled = this.extensionFrames ? {} : await this.call('DOM.disable', {}, sessionId);
@@ -1519,12 +1649,16 @@ class Guard {
     const attached =
       !owners.error && !cleanupFailed && scope.ownersReady && scope.protectedOwner
         ? {}
-        : await this.placementAttach(sessionId, {
-            autoAttach: true,
-            waitForDebuggerOnStart: false,
-            flatten: true,
-            filter: FRAME_CHILDREN,
-          });
+        : await this.placementAttach(
+            sessionId,
+            {
+              autoAttach: true,
+              waitForDebuggerOnStart: false,
+              flatten: true,
+              filter: FRAME_CHILDREN,
+            },
+            deadline
+          );
     scope.pending -= 1;
     scope.setup = Boolean(
       !enabled.error && (!attached.error || attached.error.message === NO_AUTO_ATTACH)
@@ -1534,11 +1668,13 @@ class Guard {
         owners.error ||
         (attached.error && attached.error.message !== NO_AUTO_ATTACH) ||
         !scope.ownersReady ||
-        cleanupFailed
+        cleanupFailed ||
+        (deadline !== undefined &&
+          (Date.now() >= deadline || this.revisions.get(targetId) !== revision))
     );
     scope.ready = Boolean(scope.tree && !scope.failed && !scope.pending);
     if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
-    await this.placePrivateFrames(targetId);
+    await this.placePrivateFrames(targetId, deadline);
     if (
       !this.extensionFrames &&
       !this.pageLocked(targetId) &&

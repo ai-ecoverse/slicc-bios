@@ -23,7 +23,7 @@ for (const route of ['extension', 'link']) {
     assert.deepEqual(listed.result.nodeIds, []);
     const privateCalls = memory.calls.slice(before).filter(({ id }) => id >= 2 ** 30);
     if (route === 'extension') {
-      assert.ok(privateCalls.some(({ method }) => method === 'DOMSnapshot.getSnapshot'));
+      assert.ok(privateCalls.some(({ method }) => method === 'DOMSnapshot.captureSnapshot'));
       assert.equal(
         privateCalls.some(({ method }) => ['DOM.getDocument', 'DOM.disable'].includes(method)),
         false
@@ -39,8 +39,8 @@ for (const route of ['extension', 'link']) {
   });
 }
 
-for (const failure of ["'DOMSnapshot.getSnapshot' wasn't found", 'snapshot failed']) {
-  test(`bios refuses a missing or erroring deprecated snapshot rather than admitting Debugger: ${failure}`, async (t) => {
+for (const failure of ["'DOMSnapshot.captureSnapshot' wasn't found", 'snapshot failed']) {
+  test(`bios refuses missing or erroring independent backend evidence rather than admitting Debugger: ${failure}`, async (t) => {
     const memory = domMemory(t);
     memory.fail(failure);
     const client = memory.open();

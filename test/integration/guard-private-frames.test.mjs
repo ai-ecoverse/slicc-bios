@@ -7,9 +7,10 @@ const route = { kind: 'extension', version: '7.11.99' };
 const dom = (ids) => ({
   nodeId: 1,
   nodeName: '#document',
-  children: ids.map((frameId) => ({
+  children: ids.map((frameId, index) => ({
     nodeName: 'IFRAME',
     frameId,
+    backendNodeId: index + 2,
     attributes: ['src', 'https://ordinary-cross.test/'],
   })),
 });
@@ -19,7 +20,8 @@ const snapshot = (ids, url = 'https://ordinary-cross.test/', revision = 0) => ({
   rootLoaderId: 'root-loader',
   rootDocumentId: 'root-native-document',
   revision,
-  remoteOwners: ids,
+  localFrames: ['root'],
+  remoteOwners: ids.map((frameId, index) => ({ frameId, backendNodeId: index + 2 })),
   frames: [
     {
       frameId: 0,
@@ -72,9 +74,16 @@ for (const cause of [
   'owner-count',
   'loader',
   'version',
+  'backend-owner',
+  'duplicate-backend',
+  'duplicate-frame',
+  'local-remote-overlap',
+  'local-missing',
 ]) {
   test(`bios refuses the whole closure on ${cause}, with no list URL in output`, async (t) => {
-    const ids = cause === 'protected-sibling' ? ['one', 'two', 'three'] : ['remote'];
+    const ids = ['protected-sibling', 'duplicate-backend', 'duplicate-frame'].includes(cause)
+      ? ['one', 'two', 'three']
+      : ['remote'];
     const list = snapshot(
       ids,
       cause === 'protected-sibling'
@@ -88,6 +97,12 @@ for (const cause of [
     if (cause === 'owner-count') list.frames = list.frames.slice(0, 1);
     if (cause === 'loader') list.rootLoaderId = 'stale';
     if (cause === 'version') list.version = 99;
+    if (cause === 'backend-owner') list.remoteOwners[0].backendNodeId = 999;
+    if (cause === 'duplicate-backend')
+      list.remoteOwners[1].backendNodeId = list.remoteOwners[0].backendNodeId;
+    if (cause === 'duplicate-frame') list.remoteOwners[1].frameId = list.remoteOwners[0].frameId;
+    if (cause === 'local-remote-overlap') list.remoteOwners[0].frameId = 'root';
+    if (cause === 'local-missing') list.localFrames = [];
     let reads = 0;
     const { p } = fixture(
       t,

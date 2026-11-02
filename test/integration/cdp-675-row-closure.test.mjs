@@ -41,10 +41,10 @@ test('next protected seed waits for actual guard closure and both owned processe
     async within(bound, predicate, args) {
       assert.equal(bound, 5000);
       assert.equal(await predicate(args), false);
-      globalThis.cdp675Connections.get(1).closedAt = 1;
+      globalThis.cdp675Connections.get(1).closed = true;
       assert.equal(await predicate(args), false);
       assert.equal(probes.length, 0);
-      globalThis.cdp675Connections.get(2).closedAt = 2;
+      globalThis.cdp675Connections.get(2).closed = true;
       assert.equal(await predicate(args), false);
       status = 0;
       assert.equal(await predicate(args), true);
@@ -78,6 +78,45 @@ test('next protected seed waits for actual guard closure and both owned processe
     { ownedPids: [77], guardConnections: [-1] },
   ])
     await assert.rejects(awaitRowClosure(page, row));
+});
+
+test('test-only transport lifetime tap observes extension closed state without requiring an onclose callback', () => {
+  const source = readFileSync(new URL('./cdp-675-packaged.test.mjs', import.meta.url), 'utf8');
+  const start = source.indexOf('function cdp675Tap(connection, boundary, route)');
+  const end = source.indexOf('\n`\n  );', start);
+  const context = vm.createContext({ Date, Map, JSON });
+  const tap = vm.runInContext(source.slice(start, end) + '; cdp675Tap', context);
+  let closed = false;
+  const raw = {
+    get cdp675Closed() {
+      return closed;
+    },
+    send() {},
+    close() {
+      closed = true;
+    },
+  };
+  const route = tap(raw, 'route', { kind: 'extension' });
+  const bios = tap(
+    {
+      get cdp675Closed() {
+        return route.cdp675Closed;
+      },
+      send() {},
+      close() {
+        route.close();
+      },
+    },
+    'bios',
+    { kind: 'extension' }
+  );
+  assert.equal(context.cdp675Connections.get(1).closed, false);
+  assert.equal(context.cdp675Connections.get(2).closed, false);
+  bios.close();
+  assert.equal(context.cdp675Connections.get(1).closed, true);
+  assert.equal(context.cdp675Connections.get(2).closed, true);
+  assert.equal(context.cdp675Connections.get(1).closedAt, undefined);
+  assert.equal(context.cdp675Connections.get(2).closedAt, undefined);
 });
 
 test('test-only transport lifetime tap preserves callbacks and records actual route and bios closure', () => {

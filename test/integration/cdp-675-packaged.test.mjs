@@ -120,6 +120,13 @@ const guardCases = [
     privateDom: true,
     extensionOnly: true,
   },
+  {
+    name: 'guard-level-oopif-owner-push-scrub-preserves-client-dom-node',
+    privateDom: true,
+    privateOwnerPush: true,
+    crossOriginChild: true,
+    extensionOnly: true,
+  },
   { name: 'guard-level-frames-call-not-CDP', method: 'frames', params: {}, privateCall: true },
   {
     name: 'guard-level-sliccExtension-frames-not-CDP',
@@ -211,11 +218,16 @@ function tapSource(source) {
     /guardProtected\(\s*await open\(\),\s*own,\s*browser \? tabs.get\(browser\) : undefined,\s*route(?:,\s*privateFrames)?\s*\)/;
   assert.ok(call.test(source));
   return (
-    source.replace(
-      call,
-      (matched) =>
-        `cdp675Tap(guardProtected(cdp675Tap(await open(), "route", route), own, browser ? tabs.get(browser) : undefined, route${matched.includes('privateFrames') ? ', cdp675Frames(privateFrames)' : ''}), "bios", route)`
-    ) +
+    source
+      .replace(
+        '  const connection = {\n    onmessage: null,',
+        '  const connection = {\n    get cdp675Closed() { return closed; },\n    onmessage: null,'
+      )
+      .replace(
+        call,
+        (matched) =>
+          `cdp675Tap(guardProtected(cdp675Tap(await open(), "route", route), own, browser ? tabs.get(browser) : undefined, route${matched.includes('privateFrames') ? ', cdp675Frames(privateFrames)' : ''}), "bios", route)`
+      ) +
     `
 function cdp675Frames(reader) {
   globalThis.cdp675FrameReaderObserved = true;
@@ -246,7 +258,7 @@ function cdp675Tap(connection, boundary, route) {
   const trace = globalThis.cdp675Trace ??= [];
   const connectionId = globalThis.cdp675ConnectionId = (globalThis.cdp675ConnectionId ?? 0) + 1;
   const connections = globalThis.cdp675Connections ??= new Map();
-  const lifetime = { connectionId, boundary, openedAt: Date.now() };
+  const lifetime = { connectionId, boundary, openedAt: Date.now(), get closed() { return connection.cdp675Closed === true || this.closedAt !== undefined; } };
   connections.set(connectionId, lifetime);
   let close;
   connection.onclose = (...args) => {
@@ -282,6 +294,7 @@ function cdp675Tap(connection, boundary, route) {
     receive?.(text);
   };
   const wrapped = {
+    get cdp675Closed() { return lifetime.closed; },
     send: connection.send.bind(connection),
     close: connection.close.bind(connection),
     get onclose() { return close; },
@@ -298,6 +311,10 @@ function cdp675Tap(connection, boundary, route) {
 function tapGuardSource(source) {
   const method = '  setDebuggerLease(targetId, state) {';
   return source
+    .replace(
+      '    return guarded;',
+      '    Object.defineProperty(guarded, "cdp675Closed", { get: () => this.closed && connection.cdp675Closed === true });\n    return guarded;'
+    )
     .replace(
       '    if (this.releasePendingDocument(message)) return;',
       `    if (this.releasePendingDocument(message)) {
@@ -335,12 +352,12 @@ function tapGuardSource(source) {
       `${method}\n    (globalThis.cdp675LeaseTrace ??= []).push({ at: Date.now(), targetId, state });`
     )
     .replace(
-      '  async placePrivateFrames(targetId) {',
-      `  async placePrivateFrames(targetId) {\n    (globalThis.cdp675FramePredicateTrace ??= []).push({ at: Date.now(), targetId, phase: 'start', extension: this.extensionFrames, reader: typeof this.privateFrames === 'function', remoteOwnerCount: this.scope(targetId).remoteOwners.size });`
+      '  async placePrivateFrames(targetId, deadline) {',
+      `  async placePrivateFrames(targetId, deadline) {\n    (globalThis.cdp675FramePredicateTrace ??= []).push({ at: Date.now(), targetId, phase: 'start', extension: this.extensionFrames, reader: typeof this.privateFrames === 'function', remoteOwnerCount: this.scope(targetId).remoteBackendOwners?.size ?? 0 });`
     )
     .replace(
-      '    if (this.revisions.get(targetId) !== revision || scope.loader !== loader) return;',
-      `    (globalThis.cdp675FramePredicateTrace ??= []).push({ at: Date.now(), targetId, phase: 'received', revisionMatches: this.revisions.get(targetId) === revision, loaderMatches: scope.loader === loader, received: list !== undefined, kinds: Array.isArray(list?.frames) ? list.frames.map((frame) => this.is.url(frame?.url) ? 'protected' : ORDINARY.test(frame?.url ?? '') ? 'ordinary' : frame?.url === 'about:blank' ? 'blank' : 'unknown') : [] });\n    if (this.revisions.get(targetId) !== revision || scope.loader !== loader) return;`
+      '    if (\n      this.revisions.get(targetId) !== revision ||\n      scope.loader !== loader ||\n      Date.now() >= deadline\n    )\n      return;',
+      `    (globalThis.cdp675FramePredicateTrace ??= []).push({ at: Date.now(), targetId, phase: 'received', revisionMatches: this.revisions.get(targetId) === revision, loaderMatches: scope.loader === loader, received: list !== undefined, kinds: Array.isArray(list?.frames) ? list.frames.map((frame) => this.is.url(frame?.url) ? 'protected' : ORDINARY.test(frame?.url ?? '') ? 'ordinary' : frame?.url === 'about:blank' ? 'blank' : 'unknown') : [] });\n    if (this.revisions.get(targetId) !== revision || scope.loader !== loader || Date.now() >= deadline) return;`
     )
     .replace(
       "      this.replaceDebuggerLease(targetId, 'revoked');\n      return;",
@@ -348,7 +365,7 @@ function tapGuardSource(source) {
     )
     .replace(
       '    scope.privatePlaced = rooted;',
-      `    (globalThis.cdp675FramePredicateTrace ??= []).push({ at: Date.now(), targetId, verdict: rooted ? 'placed' : 'unsettled', checks: { complete: Boolean(complete), rooted, version: list?.version === 1, revision: Number.isSafeInteger(list?.revision), nativeRoot: root?.documentId === list?.rootDocumentId && root?.parentFrameId === -1, root: list?.rootFrameId === scope.root, loader: Boolean(loader) && list?.rootLoaderId === loader, ownerCount: list?.remoteOwners?.length === scope.remoteOwners.size, ownerIds: Array.isArray(list?.remoteOwners) && list.remoteOwners.every((id) => scope.remoteOwners.has(id)), remoteFits: scope.remoteOwners.size < (frames?.length ?? 0), reachableFits: this.relatedFrames(scope.frames).size <= (frames?.length ?? 0), ordinary: Array.isArray(frames) && frames.every((frame) => ORDINARY.test(frame?.url ?? '') && !this.is.url(frame?.url)), ready: scope.ready, pending: scope.pending, failed: scope.failed } });\n    scope.privatePlaced = rooted;`
+      `    (globalThis.cdp675FramePredicateTrace ??= []).push({ at: Date.now(), targetId, verdict: rooted ? 'placed' : 'unsettled', checks: { complete: Boolean(complete), rooted, version: list?.version === 1, revision: Number.isSafeInteger(list?.revision), nativeRoot: root?.documentId === list?.rootDocumentId && root?.parentFrameId === -1, root: list?.rootFrameId === scope.root, loader: Boolean(loader) && list?.rootLoaderId === loader, ownerCount: list?.remoteOwners?.length === scope.remoteBackendOwners.size, ownerIds: Array.isArray(list?.remoteOwners) && list.remoteOwners.every((owner) => scope.remoteBackendOwners.has(owner.backendNodeId)), remoteFits: (list?.localFrames?.length ?? 0) + (list?.remoteOwners?.length ?? 0) === (frames?.length ?? 0), reachableFits: this.relatedFrames(scope.frames).size <= (frames?.length ?? 0), ordinary: Array.isArray(frames) && frames.every((frame) => ORDINARY.test(frame?.url ?? '') && !this.is.url(frame?.url)), ready: scope.ready, pending: scope.pending, failed: scope.failed } });\n    scope.privatePlaced = rooted;`
     );
 }
 
@@ -1179,17 +1196,41 @@ async function echoRefusal(page, chrome, rawSession, row, url) {
   await page.evaluate(() => globalThis.cdp675Lifecycle.close());
 }
 
-async function privateDomReadRow(page, row) {
+async function privateDomReadRow(page, row, scene) {
   row.attached = await lifecycleOpen(page, row.target);
   assert.ok(row.attached.result?.sessionId, JSON.stringify(row.attached));
   assert.ok((await lifecycleCall(page, 'Runtime.enable', {})).result);
   row.clientDocument = await lifecycleCall(page, 'DOM.getDocument', { depth: 1, pierce: false });
   assert.ok(row.clientDocument.result?.root?.nodeId, JSON.stringify(row.clientDocument));
+  row.privateFrameReadStart = await page.evaluate(() => globalThis.cdp675Trace.length);
   row.privateFrameRead = await page.evaluate(
     (target) => globalThis.sliccExtension.frames(Number(target)),
     row.target
   );
   assert.equal(row.privateFrameRead.version, 1);
+  if (scene.privateOwnerPush) {
+    assert.equal(row.privateFrameRead.remoteOwners.length, 1);
+    assert.ok(Number.isSafeInteger(row.privateFrameRead.remoteOwners[0].backendNodeId));
+    assert.ok(row.privateFrameRead.remoteOwners[0].frameId);
+    row.privateOwnerPushes = await page.evaluate(
+      (start) =>
+        globalThis.cdp675Trace
+          .slice(start)
+          .filter(
+            ({ direction, packet }) =>
+              direction === 'receive' && packet.method === 'DOM.setChildNodes'
+          ),
+      row.privateFrameReadStart
+    );
+    assert.ok(
+      row.privateOwnerPushes.some(({ boundary }) => boundary === 'route'),
+      'bound frontend owner path must generate a scrubbed push'
+    );
+    assert.doesNotMatch(
+      JSON.stringify(row.privateOwnerPushes),
+      /vault\.sliccy\.ai|seven\.sliccy\.ai|protected-push/
+    );
+  }
   row.clientQuery = await lifecycleCall(page, 'DOM.querySelectorAll', {
     nodeId: row.clientDocument.result.root.nodeId,
     selector: 'iframe,frame',
@@ -2432,7 +2473,7 @@ for (const route of ['extension', 'link']) {
             row.scope = 'guard-level, real bios browserHook; not Rust-path';
             if (scene.privateDom) {
               row.step = 'guard-level-private-dom-preservation';
-              await privateDomReadRow(page, row);
+              await privateDomReadRow(page, row, scene);
               row.status = 'pass';
               continue;
             }

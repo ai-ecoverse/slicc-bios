@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { ownerSnapshot } from './guard-owner-snapshot.mjs';
+import { ownerSnapshot, treeDocument } from './guard-owner-snapshot.mjs';
 
 const { guardProtected } = await import(process.env.GUARD_SOURCE ?? '../../src/seed/guard.js');
 
@@ -73,8 +73,8 @@ export function protocol(t, protect = guardProtected) {
     }
     if (method === 'DOM.getDocument')
       result = { root: target.dom ?? { nodeId: 1, nodeName: '#document', children: [] } };
-    if (method === 'DOMSnapshot.getSnapshot')
-      result = ownerSnapshot(target.dom ?? { nodeName: '#document' }, target.tree.frame.id);
+    if (method === 'DOMSnapshot.captureSnapshot')
+      result = ownerSnapshot(target.dom ?? treeDocument(target.tree), target.tree.frame.id);
     if (method === 'Runtime.evaluate') {
       result = {
         result: {

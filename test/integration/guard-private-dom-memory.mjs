@@ -1,22 +1,42 @@
 import { guardProtected } from '../../src/seed/guard.js';
+import { ownerSnapshot } from './guard-owner-snapshot.mjs';
 
 export function domMemory(t, route = 'extension') {
   const calls = [];
   const frontends = new Map();
   let nextGuard = 0;
   let nextNode = 0;
-  let snapshot = {
-    domNodes: [
+  let snapshot = ownerSnapshot(
+    { nodeName: '#document', backendNodeId: 100, documentURL: 'https://ordinary.invalid/' },
+    'root'
+  );
+  let snapshotError;
+  let hold;
+  let tree = {
+    frame: {
+      id: 'root',
+      loaderId: 'document',
+      url: 'https://ordinary.invalid/',
+      securityOrigin: 'https://ordinary.invalid',
+    },
+  };
+  let proof = {
+    version: 1,
+    revision: 1,
+    rootDocumentId: 'native-root',
+    rootFrameId: 'root',
+    rootLoaderId: 'document',
+    localFrames: ['root'],
+    remoteOwners: [],
+    frames: [
       {
-        nodeType: 9,
-        nodeName: '#document',
-        frameId: 'root',
-        backendNodeId: 100,
-        documentURL: 'https://ordinary.invalid/',
+        frameId: 0,
+        parentFrameId: -1,
+        documentId: 'native-root',
+        url: 'https://ordinary.invalid/',
       },
     ],
   };
-  let snapshotError;
   function open() {
     const prefix = `connection-${++nextGuard}`;
     const sessions = new Map();
@@ -26,6 +46,7 @@ export function domMemory(t, route = 'extension') {
       send(text) {
         const call = JSON.parse(text);
         calls.push({ ...call, connection: prefix });
+        if (call.method === hold) return;
         const key = route === 'extension' ? 'shared-tab' : call.sessionId;
         let result = {};
         let error;
@@ -42,17 +63,7 @@ export function domMemory(t, route = 'extension') {
           sessions.set(sessionId, 'root');
           result = { sessionId };
         }
-        if (call.method === 'Page.getFrameTree')
-          result = {
-            frameTree: {
-              frame: {
-                id: 'root',
-                loaderId: 'document',
-                url: 'https://ordinary.invalid/',
-                securityOrigin: 'https://ordinary.invalid',
-              },
-            },
-          };
+        if (call.method === 'Page.getFrameTree') result = { frameTree: tree };
         if (call.method === 'Page.getNavigationHistory')
           result = {
             currentIndex: 0,
@@ -80,7 +91,7 @@ export function domMemory(t, route = 'extension') {
             error = { code: -32000, message: 'Could not find node with given id' };
           else result = { nodeIds: [] };
         }
-        if (call.method === 'DOMSnapshot.getSnapshot') {
+        if (call.method === 'DOMSnapshot.captureSnapshot') {
           result = snapshot;
           if (snapshotError) error = { code: -32601, message: snapshotError };
         }
@@ -101,22 +112,7 @@ export function domMemory(t, route = 'extension') {
       'https://protected.invalid',
       new Map(),
       { kind: route, version: route === 'extension' ? '7.11.99' : '1.57.99' },
-      async () => ({
-        version: 1,
-        revision: 1,
-        rootDocumentId: 'native-root',
-        rootFrameId: 'root',
-        rootLoaderId: 'document',
-        frames: [
-          {
-            frameId: 0,
-            parentFrameId: -1,
-            documentId: 'native-root',
-            url: 'https://ordinary.invalid/',
-          },
-        ],
-        remoteOwners: [],
-      })
+      async () => (typeof proof === 'function' ? proof() : proof)
     );
     const delivered = [];
     guard.onmessage = (text) => {
@@ -144,6 +140,15 @@ export function domMemory(t, route = 'extension') {
   return {
     open,
     calls,
+    hold(method) {
+      hold = method;
+    },
+    tree(value) {
+      tree = value;
+    },
+    proof(value) {
+      proof = value;
+    },
     snapshot(value) {
       snapshot = value;
     },
