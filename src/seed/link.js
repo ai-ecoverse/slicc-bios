@@ -617,7 +617,7 @@ export function linkExit(
   const exit = {
     id,
     kind: 'link',
-    redirectPolicy: false,
+    redirectPolicy: true,
     credentialed: null,
     exitName: () => {
       const named = device();

@@ -277,7 +277,7 @@ test('old extension manual and credentialed sends are refused without native fal
   assert.equal(nativeCalls, 0);
 });
 
-test('a capability-advertising link remains refused for credentialed and explicit manual requests', {
+test('a capability-advertising link stays refused for credentialed requests but sends manual and error redirect requests itself', {
   timeout: 10000,
 }, async (t) => {
   let opened = 0;
@@ -320,10 +320,12 @@ test('a capability-advertising link remains refused for credentialed and explici
     },
   });
   for (const redirect of ['manual', 'error'])
-    await assert.rejects(transport.fetch({ ...request, headers: head.headers, redirect }));
+    await assert.rejects(transport.fetch({ ...request, headers: head.headers, redirect }), {
+      message: /unproven link opened/,
+    });
   assert.equal(f.ports.length, 0);
   assert.equal(f.sends.length, 0);
-  assert.equal(opened, 0);
+  assert.equal(opened, 2);
   assert.equal(baseCalls, 0);
 });
 
