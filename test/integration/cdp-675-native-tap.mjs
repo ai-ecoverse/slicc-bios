@@ -62,10 +62,10 @@ const cdp675GateState = (gate, tabId, supplied) => {
     owner: state?.owner, generation: state?.generation, revision: state?.revision,
     enabled: state?.enabled, currentState: Boolean(state) && gate.states.get(tabId) === state,
     suspended: Boolean(state?.suspension), suspensionDeadline: state?.suspension?.deadline,
-    pause: state?.pause && { converted: state.pause.converted, published: state.pause.published, verifying: state.pause.verifying, deadline: state.pause.deadline },
+    pause: state?.pause && { converted: state.pause.converted, published: state.pause.published, verifying: state.pause.verifying, holding: Boolean(state.pause.holding), deadline: state.pause.deadline },
     scriptCount: state?.scripts.size, scripts: [...(state?.scripts.keys() ?? [])].slice(-8), scriptInfoCount: state?.scriptInfo.size, scriptInfo: [...(state?.scriptInfo.entries() ?? [])].slice(-8),
     root: tab?.mainFrameId, loader: tab?.documents.frames.get(tab.mainFrameId)?.loaderId,
-    tabRevision: tab?.debuggerRevision, frameEvents: tab?.frameEvents,
+    tabRevision: tab?.debuggerRevision, frameEvents: tab?.frameEvents, pendingFrames: [...(tab?.pendingFrames ?? [])],
     frames: [...(tab?.frames.entries() ?? [])], blocks: [...(tab?.debuggerFrameBlocks ?? [])],
     foreign: tab?.worlds.foreign, hidden: [...(tab?.worlds.ids.values() ?? [])].filter(entry => entry.hidden).map(entry => entry.context?.id)
   };

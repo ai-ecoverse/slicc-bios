@@ -1958,11 +1958,7 @@ class Guard {
 
   async retryContext(record) {
     const scope = this.scopes.get(record.targetId);
-    if (
-      this.contextRetryBlocked(record) ||
-      (!record.deadline && (!scope || (scope.ready && !scope.pending)))
-    )
-      return false;
+    if (this.contextRetryBlocked(record) || (!record.deadline && !scope)) return false;
     record.deadline ??= Date.now() + 1000;
     const left = record.deadline - Date.now();
     if (left <= 0) return false;

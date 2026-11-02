@@ -1823,13 +1823,26 @@ for (const route of ['extension', 'link']) {
         if (lateExtensionPath)
           t.after(() => rm(lateExtensionPath, { recursive: true, force: true }));
         trace.lateExtensionPath = lateExtensionPath;
-        const protectedSite = https(await certificate(), (request, response) =>
+        const protectedSite = https(await certificate(), (request, response) => {
+          if (request.url.startsWith('/bfcache'))
+            (trace.protectedSeedRequests ??= []).push({
+              at: Date.now(),
+              host: request.headers.host,
+              url: request.url,
+            });
           response
             .writeHead(200, { 'content-type': 'text/html' })
             .end(
               `<!doctype html><title>Owned protected child</title>${request.url.startsWith('/bfcache') ? bfcacheMarkup(request.url) : '<script>globalThis.cdp675ProtectedChild = true;</script>'}`
-            )
-        );
+            );
+        });
+        protectedSite.on('tlsClientError', (error) => {
+          (trace.protectedSeedTLS ??= []).push({
+            at: Date.now(),
+            code: error.code,
+            message: error.message,
+          });
+        });
         await new Promise((resolve) => protectedSite.listen(0, '127.0.0.1', resolve));
         t.after(() => {
           protectedSite.closeAllConnections();
@@ -2142,6 +2155,20 @@ for (const route of ['extension', 'link']) {
           row.rawRedirects = [];
           unobserve = chrome.cdp.on(({ method, params, sessionId }) => {
             if (sessionId !== rawSession) return;
+            if (method === 'Network.requestWillBeSent' && params.type === 'Document')
+              (row.rawDocumentRequests ??= []).push({
+                at: Date.now(),
+                requestId: params.requestId,
+                url: params.request.url,
+              });
+            if (method === 'Network.loadingFailed')
+              (row.rawNetworkFailures ??= []).push({
+                at: Date.now(),
+                requestId: params.requestId,
+                type: params.type,
+                errorText: params.errorText,
+                canceled: params.canceled,
+              });
             if (method === 'Network.requestWillBeSent' && params.redirectResponse)
               row.rawRedirects.push({
                 at: Date.now(),
@@ -2292,7 +2319,20 @@ for (const route of ['extension', 'link']) {
                 : 'https://vault.sliccy.ai',
               tag: `675-${route}-${index}`,
             });
-            row.bfcache = await deadline.wait(() => bfcacheDriver.prepare());
+            try {
+              row.bfcache = await deadline.wait(() => bfcacheDriver.prepare());
+              row.setupChecks.push({
+                name: 'BFCache seed documents committed before holder attach',
+                pass: true,
+              });
+            } catch (error) {
+              row.setupChecks.push({
+                name: 'BFCache seed documents committed before holder attach',
+                pass: false,
+                error: error.message,
+              });
+              throw error;
+            }
             row.bfcache.ordinaryHistoryOnly = Boolean(scene.ordinaryBfcache);
             url = new URL(row.bfcache.url);
           }
