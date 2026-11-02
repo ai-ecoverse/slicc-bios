@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { boot, ready, run, shows } from './bios.mjs';
 import { boundedHooks, boundedStage, rowDeadline } from './cdp-675-deadline.mjs';
+import { namespaceCommand, namespaceEnabled, namespaceTrace } from './cdp-675-namespace.mjs';
 import { nativeTapFixture, nativeTapRead } from './cdp-675-native-tap.mjs';
 import { oldRouteExtension } from './cdp-675-old-extension.mjs';
 import { assertPlainReplayBound } from './cdp-675-plain-bound.mjs';
@@ -33,6 +34,7 @@ const harnessExtensionPath = fileURLToPath(
 const quote = (text) => `'${text.replaceAll("'", "'\\''")}'`;
 const ordinaryCases = [
   { name: 'instrumented-list-call', reload: true },
+  { name: 'ordinary-root-only-standalone-list-control', reload: true, standaloneControl: true },
   { name: 'armed-protected-and-ordinary-bfcache-restore', reload: true, bfcache: true },
   {
     name: 'armed-clean-ordinary-bfcache-restore',
@@ -2430,7 +2432,12 @@ for (const route of ['extension', 'link']) {
             row.status = 'pass';
             continue;
           }
-          const command = `mcpcat serve --webmcp ${scene.reload ? '--webmcp-reload ' : ''}--tab ${quote(row.target)} --http ${row.port} --no-auth`;
+          if (namespaceEnabled(scene))
+            await cone(page, ': > /tmp/cdp-675-namespace.ndjson', `675-namespace-reset-${index}`);
+          const command = namespaceCommand(
+            scene,
+            `mcpcat serve --webmcp ${scene.reload ? '--webmcp-reload ' : ''}--tab ${quote(row.target)} --http ${row.port} --no-auth`
+          );
           row.command = command;
           row.step = 'shipped-serve';
           if (scene.race)
@@ -2801,6 +2808,21 @@ for (const route of ['extension', 'link']) {
               assert.match(row.call.stdout, /^5$/m);
             }
           }
+          if (scene.standaloneControl) {
+            row.secondProcessList = await cone(
+              page,
+              namespaceCommand(
+                scene,
+                `playwright-cli webmcp-list --tab ${quote(row.target)} --json`
+              ),
+              `675-root-only-list-${index}`
+            );
+            const standalone = JSON.parse(row.secondProcessList.stdout);
+            assert.ok(
+              standalone.some(({ name }) => name === 'add'),
+              'standalone second-process root-only tools must list'
+            );
+          }
           if (scene.sameOriginChild) {
             const child = tools.find(
               ({ name }) => name === 'child_add' || name.endsWith('_child_add')
@@ -2814,7 +2836,10 @@ for (const route of ['extension', 'link']) {
             assert.match(row.sameOriginCall.stdout, /^15$/m);
             row.secondProcessList = await cone(
               page,
-              `playwright-cli webmcp-list --tab ${quote(row.target)} --json`,
+              namespaceCommand(
+                scene,
+                `playwright-cli webmcp-list --tab ${quote(row.target)} --json`
+              ),
               `675-same-child-list-${index}`
             );
             row.sameOriginTools = sameOriginTools(JSON.parse(row.secondProcessList.stdout));
@@ -3536,6 +3561,14 @@ for (const route of ['extension', 'link']) {
                 .catch(() => []);
             }
             if (!guardLevel) {
+              if (namespaceEnabled(scene)) {
+                try {
+                  const capture = await sh(page, 'cat /tmp/cdp-675-namespace.ndjson');
+                  row.namespaceTrace = namespaceTrace(capture.stdout);
+                } catch (error) {
+                  row.namespaceTraceError = error.message;
+                }
+              }
               row.serverLog = await sh(page, `cat ${row.log}`).catch((error) => ({
                 error: error.message,
               }));
