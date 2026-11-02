@@ -236,31 +236,36 @@ test('slicc agents over the tray from a device without Control is refused, plain
   }
   const raw = await chrome.page(t);
   await raw.goto('/manifest.json');
-  const opened = await raw.evaluate(async (join) => {
-    const { createLeaders } = await import('/seed/leaders.js');
-    const { hubClient } = await import('/seed/follow.js');
-    const leaders = createLeaders({
-      post: hubClient({ origin: null, fetch: (...args) => fetch(...args) }),
-      name: 'raw inventory node',
-    });
-    const out = [];
-    for (const meta of [
-      { kind: 'agent', op: 'inventory' },
-      { kind: 'agent', op: 'inventory', watch: true },
-    ]) {
-      try {
-        const { stream } = await leaders.open(join, meta);
-        const read = await Promise.race([
-          stream.read(),
-          new Promise((resolve) => setTimeout(() => resolve('nothing'), 2000)),
-        ]);
-        out.push({ opened: true, read: read && read !== 'nothing' ? [...read] : read });
-      } catch (error) {
-        out.push({ code: error.code, message: error.message });
+  const opened = await raw.evaluate(
+    async (join, tray) => {
+      localStorage.setItem('slicc-os.tray-hub', tray);
+      const { createLeaders } = await import('/seed/leaders.js');
+      const { hubClient } = await import('/seed/follow.js');
+      const leaders = createLeaders({
+        post: hubClient({ origin: null, fetch: (...args) => fetch(...args) }),
+        name: 'raw inventory node',
+      });
+      const out = [];
+      for (const meta of [
+        { kind: 'agent', op: 'inventory' },
+        { kind: 'agent', op: 'inventory', watch: true },
+      ]) {
+        try {
+          const { stream } = await leaders.open(join, meta);
+          const read = await Promise.race([
+            stream.read(),
+            new Promise((resolve) => setTimeout(() => resolve('nothing'), 2000)),
+          ]);
+          out.push({ opened: true, read: read && read !== 'nothing' ? [...read] : read });
+        } catch (error) {
+          out.push({ code: error.code, message: error.message });
+        }
       }
-    }
-    return out;
-  }, joinUrl);
+      return out;
+    },
+    joinUrl,
+    hub.url
+  );
   assert.deepEqual(
     opened.map((each) => each.code),
     ['EACCES', 'EACCES'],
