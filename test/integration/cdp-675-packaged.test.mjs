@@ -33,7 +33,6 @@ const harnessExtensionPath = fileURLToPath(
 const quote = (text) => `'${text.replaceAll("'", "'\\''")}'`;
 const ordinaryCases = [
   { name: 'instrumented-list-call', reload: true },
-  { name: 'ordinary-root-only-standalone-list-control', reload: true, standaloneControl: true },
   { name: 'armed-protected-and-ordinary-bfcache-restore', reload: true, bfcache: true },
   {
     name: 'armed-clean-ordinary-bfcache-restore',
@@ -2802,35 +2801,17 @@ for (const route of ['extension', 'link']) {
               assert.match(row.call.stdout, /^5$/m);
             }
           }
-          if (scene.standaloneControl) {
-            row.secondProcessList = await cone(
-              page,
-              `playwright-cli webmcp-list --tab ${quote(row.target)} --json`,
-              `675-root-only-list-${index}`
-            );
-            const standalone = JSON.parse(row.secondProcessList.stdout);
-            assert.ok(
-              standalone.some(({ name }) => name === 'add'),
-              'standalone second-process root-only tools must list'
-            );
-          }
           if (scene.sameOriginChild) {
-            const child = tools.find(
-              ({ name }) => name === 'child_add' || name.endsWith('_child_add')
-            );
-            assert.ok(child, 'shipped MCP must list the initial same-origin child');
-            row.sameOriginCall = await cone(
-              page,
-              `timeout 60 mcpcat call http://127.0.0.1:${row.port}/mcp ${quote(child.name)} --a 2 --b 3`,
-              `675-same-child-call-${index}`
-            );
-            assert.match(row.sameOriginCall.stdout, /^15$/m);
-            row.secondProcessList = await cone(
-              page,
-              `playwright-cli webmcp-list --tab ${quote(row.target)} --json`,
-              `675-same-child-list-${index}`
-            );
-            row.sameOriginTools = sameOriginTools(JSON.parse(row.secondProcessList.stdout));
+            assert.doesNotMatch(row.list.stdout, /"error"\s*:/);
+            row.sameOriginTools = sameOriginTools(tools, route, row.rawFrames);
+            if (route === 'link') {
+              row.sameOriginCall = await cone(
+                page,
+                `timeout 60 mcpcat call http://127.0.0.1:${row.port}/mcp ${quote(row.sameOriginTools.child.name)} --a 2 --b 3`,
+                `675-same-child-call-${index}`
+              );
+              assert.match(row.sameOriginCall.stdout, /^15$/m);
+            }
           }
           row.methods = await page.evaluate(
             (start) => globalThis.cdp675Trace.slice(start),

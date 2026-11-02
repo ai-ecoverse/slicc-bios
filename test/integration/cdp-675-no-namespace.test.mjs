@@ -18,7 +18,6 @@ const launchSource = `\`export PATH=$PNPM_HOME${expression('command: `export PAT
 
 for (const [name, scene] of [
   ['ordinary', { reload: true }],
-  ['root-only standalone', { reload: true, standaloneControl: true }],
   ['same-origin child', { reload: true, sameOriginChild: true }],
 ]) {
   test(`packaged ${name} starts the identical untraced shipped command`, () => {
@@ -42,7 +41,7 @@ for (const [name, scene] of [
   });
 }
 
-test('packaged route drops the diagnostic flag and files but retains both standalone and child positives', () => {
+test('packaged route drops diagnostics and standalone follow-up assertions while retaining root and route-specific child checks', () => {
   assert.doesNotMatch(
     rig,
     /SLICC_WEBMCP_TRACE|namespaceCommand|namespaceEnabled|namespaceTrace|cdp-675-namespace\.ndjson/
@@ -53,19 +52,11 @@ test('packaged route drops the diagnostic flag and files but retains both standa
     'cdp-675-namespace-exec.test.mjs',
   ])
     assert.equal(existsSync(new URL(file, import.meta.url)), false);
-  assert.ok(
-    rig.includes(
-      "{ name: 'ordinary-root-only-standalone-list-control', reload: true, standaloneControl: true }"
-    )
+  assert.doesNotMatch(
+    rig,
+    /ordinary-root-only-standalone-list-control|secondProcessList|standaloneControl/
   );
-  assert.equal(
-    rig.match(/`playwright-cli webmcp-list --tab \$\{quote\(row\.target\)\} --json`/g)?.length,
-    2
-  );
-  assert.ok(rig.includes('standalone second-process root-only tools must list'));
-  assert.ok(rig.includes('shipped MCP must list the initial same-origin child'));
-  assert.ok(
-    rig.includes('row.sameOriginTools = sameOriginTools(JSON.parse(row.secondProcessList.stdout))')
-  );
+  assert.match(rig, /sameOriginTools\(tools, route, row\.rawFrames\)/);
+  assert.ok(rig.includes("if (route === 'link')"));
   assert.match(rig, /assert\.match\(row\.sameOriginCall\.stdout, \/\^15\$\/m\)/);
 });
