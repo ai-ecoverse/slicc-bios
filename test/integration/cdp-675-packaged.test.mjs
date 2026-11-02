@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { boot, ready, run, shows } from './bios.mjs';
 import { nativeTapFixture, nativeTapRead } from './cdp-675-native-tap.mjs';
+import { workerScopeRead } from './cdp-675-worker-scope.mjs';
 import { devtools, launch } from './chrome.mjs';
 import { fixtureTarget } from './fixtures/cdp-675-target.mjs';
 import { linkNode } from './linked-node.mjs';
@@ -1005,15 +1006,19 @@ async function stopOwnedWorker(chrome, row) {
       });
       try {
         const extensionId = new URL(row.workerBefore.url).hostname;
-        row.workerActiveScope = await rawBounded(
-          chrome,
-          sessionId,
-          'Runtime.evaluate',
-          {
-            expression: `typeof ServiceWorkerGlobalScope === 'function' && globalThis instanceof ServiceWorkerGlobalScope && chrome.runtime.id === ${JSON.stringify(extensionId)}`,
-            returnByValue: true,
-          },
-          1000
+        row.workerActiveScope = await workerScopeRead(
+          (milliseconds) =>
+            rawBounded(
+              chrome,
+              sessionId,
+              'Runtime.evaluate',
+              {
+                expression: `typeof ServiceWorkerGlobalScope === 'function' && globalThis instanceof ServiceWorkerGlobalScope && chrome.runtime.id === ${JSON.stringify(extensionId)}`,
+                returnByValue: true,
+              },
+              milliseconds
+            ),
+          row
         );
         assert.equal(
           row.workerActiveScope.result?.value,
