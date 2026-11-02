@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createInterface } from 'node:readline';
 import { after, test } from 'node:test';
-import { boot } from './bios.mjs';
+import { boot, ready } from './bios.mjs';
 import { devtools, launch } from './chrome.mjs';
 import { attach, CLI } from './cli.mjs';
 
@@ -48,6 +48,25 @@ test('diagnostic: 64 parallel kernel fetches and a small pnpm install through th
     globalThis.sliccKernelDebug = true;
   });
   await boot(page);
+  await page.evaluate(async (program) => {
+    let dir = await navigator.storage.getDirectory();
+    for (const part of ['node_modules', 'link-load'])
+      dir = await dir.getDirectoryHandle(part, { create: true });
+    const files = {
+      'package.json': JSON.stringify({
+        name: 'link-load',
+        slicc: { commands: { 'link-load': { abi: 'js', module: 'index.mjs' } } },
+      }),
+      'index.mjs': program,
+    };
+    for (const [name, body] of Object.entries(files)) {
+      const writer = await (await dir.getFileHandle(name, { create: true })).createWritable();
+      await writer.write(body);
+      await writer.close();
+    }
+  }, `export default ${loadProgram.toString()}`);
+  await page.reload();
+  await ready(page);
   await page.until(() => typeof globalThis.sliccKernelClient === 'function');
   const { port: debugPort } = await devtools(chrome);
   const node = attach(
@@ -81,28 +100,14 @@ test('diagnostic: 64 parallel kernel fetches and a small pnpm install through th
     const device = network.status().links.devices.find((device) => device.name === 'peak-node');
     await network.setExit({ kind: 'link', id: device.id });
   });
-  const fetched = await page.evaluate(
-    async (port, program) => {
-      const client = await globalThis.sliccKernelClient();
-      try {
-        const root = '/node_modules/link-load';
-        await client.fs.mkdir(root, { recursive: true });
-        await client.fs.writeFile(
-          `${root}/package.json`,
-          JSON.stringify({
-            name: 'link-load',
-            slicc: { commands: { 'link-load': { abi: 'js', module: 'index.mjs' } } },
-          })
-        );
-        await client.fs.writeFile(`${root}/index.mjs`, program);
-        return await client.run(['link-load', `http://peak-node.slicc.internal:${port}/load`]);
-      } finally {
-        await client.close();
-      }
-    },
-    server.address().port,
-    `export default ${loadProgram.toString()}`
-  );
+  const fetched = await page.evaluate(async (port) => {
+    const client = await globalThis.sliccKernelClient();
+    try {
+      return await client.run(['link-load', `http://peak-node.slicc.internal:${port}/load`]);
+    } finally {
+      await client.close();
+    }
+  }, server.address().port);
   assert.equal(fetched.status, 0, JSON.stringify({ ...fetched, arrived, peak }));
   assert.match(fetched.stdout, /FETCHES 64 16777216/);
   assert.equal(arrived, 64);
