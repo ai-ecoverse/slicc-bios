@@ -957,12 +957,8 @@ class Guard {
           if (!nav) await this.rememberExistingNavError(message.result?.frameTree, sessionId);
         }
         const current = this.scopes.get(placement)?.sessionId;
-        if (placement === undefined || current === undefined || current === sessionId) {
-          if (method === 'Page.getFrameTree' && placement !== undefined)
-            this.recordTree(placement, message.result?.frameTree);
-          if (method === 'DOM.getDocument' && placement !== undefined)
-            this.recordOwners(placement, message.result?.root);
-        }
+        if (placement === undefined || current === undefined || current === sessionId)
+          this.recordPlacement(placement, method, message.result);
         resolve(message);
       };
       answer.sessionId = sessionId;
@@ -1354,6 +1350,49 @@ class Guard {
     this.stopCasts();
   }
 
+  recordPlacement(targetId, method, result) {
+    if (targetId === undefined) return;
+    if (method === 'Page.getFrameTree') this.recordTree(targetId, result?.frameTree);
+    if (method === 'DOM.getDocument') this.recordOwners(targetId, result?.root);
+    if (method === 'DOMSnapshot.getSnapshot') this.recordSnapshotOwners(targetId, result);
+  }
+
+  recordSnapshotOwners(targetId, snapshot) {
+    const nodes = snapshot?.domNodes;
+    const refused = () => this.recordOwners(targetId, undefined);
+    if (
+      !Array.isArray(nodes) ||
+      nodes[0]?.nodeType !== 9 ||
+      nodes[0]?.frameId !== this.scope(targetId).root
+    )
+      return refused();
+    const owners = [];
+    for (const node of nodes) {
+      if (!node || typeof node.nodeName !== 'string') return refused();
+      if (!['IFRAME', 'FRAME'].includes(node.nodeName)) continue;
+      const attributes = node.attributes ?? [];
+      if (
+        !Array.isArray(attributes) ||
+        attributes.some((item) => typeof item?.name !== 'string' || typeof item.value !== 'string')
+      )
+        return refused();
+      const content = nodes[node.contentDocumentIndex];
+      if (
+        node.contentDocumentIndex !== undefined &&
+        (!Number.isSafeInteger(node.contentDocumentIndex) ||
+          content?.nodeType !== 9 ||
+          content.frameId !== node.frameId)
+      )
+        return refused();
+      owners.push({
+        ...node,
+        attributes: attributes.flatMap(({ name, value }) => [name, value]),
+        contentDocument: content,
+      });
+    }
+    this.recordOwners(targetId, { children: owners });
+  }
+
   recordOwners(targetId, root) {
     const scope = this.scope(targetId);
     scope.ownersReady = Boolean(root);
@@ -1462,8 +1501,14 @@ class Guard {
     this.stopCasts();
     const enabled = await this.call('Page.enable', {}, sessionId);
     await this.call('Page.getFrameTree', {}, sessionId);
-    const owners = await this.call('DOM.getDocument', { depth: -1, pierce: true }, sessionId);
-    const disabled = await this.call('DOM.disable', {}, sessionId);
+    const owners = this.extensionFrames
+      ? await this.call(
+          'DOMSnapshot.getSnapshot',
+          { computedStyleWhitelist: [], includeUserAgentShadowTree: true },
+          sessionId
+        )
+      : await this.call('DOM.getDocument', { depth: -1, pierce: true }, sessionId);
+    const disabled = this.extensionFrames ? {} : await this.call('DOM.disable', {}, sessionId);
     const cleanupFailed =
       disabled.error &&
       !(

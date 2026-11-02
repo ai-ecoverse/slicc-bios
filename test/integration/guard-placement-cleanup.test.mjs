@@ -11,15 +11,9 @@ for (const message of [
   '{"code":-32000,"message":"DOM agent hasn\'t been enabled elsewhere"}',
   "slicc: refused: target is on seven's origin",
 ]) {
-  test(`placement cleanup handles only the exact native disabled-domain error: ${message}`, async (t) => {
+  test(`private link-session placement cleanup handles only the exact native disabled-domain error: ${message}`, async (t) => {
     const p = protocol(t, (raw, own) =>
-      guardProtected(
-        raw,
-        own,
-        new Map(),
-        { kind: 'extension', version: '7.11.99' },
-        async () => null
-      )
+      guardProtected(raw, own, new Map(), { kind: 'link', version: '1.57.99' }, async () => null)
     );
     p.target('root', 'page', plainFrame('root'));
     p.hold(({ id, method }) => id >= 2 ** 30 && method === 'DOM.disable');
@@ -31,6 +25,7 @@ for (const message of [
     p.release(cleanup, { error: { code: -32000, message } });
     const attached = await attaching.answer;
     assert.equal(attached.error, undefined);
+    assert.notEqual(cleanup.sessionId, attached.result.sessionId);
     await flush();
     const answer = await p.send('Debugger.enable', {}, attached.result.sessionId);
     const benign = message === '{"code":-32000,"message":"DOM agent hasn\'t been enabled"}';

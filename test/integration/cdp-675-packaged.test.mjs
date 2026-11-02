@@ -13,6 +13,7 @@ import { nativeTapFixture, nativeTapRead } from './cdp-675-native-tap.mjs';
 import { oldRouteExtension } from './cdp-675-old-extension.mjs';
 import { assertPlainReplayBound } from './cdp-675-plain-bound.mjs';
 import { plainReplayAttempts } from './cdp-675-plain-retry.mjs';
+import { awaitRowClosure, ownedRowPids } from './cdp-675-row-closure.mjs';
 import { sameOriginChildMarkup, sameOriginTools } from './cdp-675-same-origin.mjs';
 import { workerScopeRead } from './cdp-675-worker-scope.mjs';
 import { devtools, launch } from './chrome.mjs';
@@ -114,6 +115,11 @@ const ordinaryCases = [
   { name: 'old-client-terminal', reload: true, negative: true, oldClient: true },
 ];
 const guardCases = [
+  {
+    name: 'guard-level-private-frame-read-preserves-client-dom-node',
+    privateDom: true,
+    extensionOnly: true,
+  },
   { name: 'guard-level-frames-call-not-CDP', method: 'frames', params: {}, privateCall: true },
   {
     name: 'guard-level-sliccExtension-frames-not-CDP',
@@ -239,6 +245,14 @@ function cdp675Frames(reader) {
 function cdp675Tap(connection, boundary, route) {
   const trace = globalThis.cdp675Trace ??= [];
   const connectionId = globalThis.cdp675ConnectionId = (globalThis.cdp675ConnectionId ?? 0) + 1;
+  const connections = globalThis.cdp675Connections ??= new Map();
+  const lifetime = { connectionId, boundary, openedAt: Date.now() };
+  connections.set(connectionId, lifetime);
+  let close;
+  connection.onclose = (...args) => {
+    lifetime.closedAt = Date.now();
+    close?.apply(connection, args);
+  };
   const record = (direction, text) => {
     const packet = JSON.parse(text);
     trace.push({ at: Date.now(), boundary, route, direction, connectionId, packet });
@@ -270,8 +284,8 @@ function cdp675Tap(connection, boundary, route) {
   const wrapped = {
     send: connection.send.bind(connection),
     close: connection.close.bind(connection),
-    get onclose() { return connection.onclose; },
-    set onclose(value) { connection.onclose = value; },
+    get onclose() { return close; },
+    set onclose(value) { close = value; },
     get onmessage() { return receive; },
     set onmessage(value) { receive = value; },
   };
@@ -1162,6 +1176,26 @@ async function echoRefusal(page, chrome, rawSession, row, url) {
     ),
     false
   );
+  await page.evaluate(() => globalThis.cdp675Lifecycle.close());
+}
+
+async function privateDomReadRow(page, row) {
+  row.attached = await lifecycleOpen(page, row.target);
+  assert.ok(row.attached.result?.sessionId, JSON.stringify(row.attached));
+  assert.ok((await lifecycleCall(page, 'Runtime.enable', {})).result);
+  row.clientDocument = await lifecycleCall(page, 'DOM.getDocument', { depth: 1, pierce: false });
+  assert.ok(row.clientDocument.result?.root?.nodeId, JSON.stringify(row.clientDocument));
+  row.privateFrameRead = await page.evaluate(
+    (target) => globalThis.sliccExtension.frames(Number(target)),
+    row.target
+  );
+  assert.equal(row.privateFrameRead.version, 1);
+  row.clientQuery = await lifecycleCall(page, 'DOM.querySelectorAll', {
+    nodeId: row.clientDocument.result.root.nodeId,
+    selector: 'iframe,frame',
+  });
+  assert.ok(Array.isArray(row.clientQuery.result?.nodeIds), JSON.stringify(row.clientQuery));
+  row.methods = await page.evaluate((start) => globalThis.cdp675Trace.slice(start), row.traceStart);
   await page.evaluate(() => globalThis.cdp675Lifecycle.close());
 }
 
@@ -2130,6 +2164,11 @@ for (const route of ['extension', 'link']) {
             row.packageProof = packageProof(row.oldInstall, '1.43.1', manifest.oldClientWasmSha256);
           }
           row.step = 'create-ordinary-target';
+          if (scene.bfcache && !scene.ordinaryBfcache)
+            row.previousRowClosure = await deadline.wait(() =>
+              awaitRowClosure(page, trace.rows.at(-2))
+            );
+          row.guardConnectionFloor = await page.evaluate(() => globalThis.cdp675ConnectionId ?? 0);
           let url = new URL(
             scene.bfcache ? `/bfcache?n=675-${route}-${index}-a` : `/page?row=${index}`,
             trace.fixtureOrigin
@@ -2391,6 +2430,12 @@ for (const route of ['extension', 'link']) {
           row.traceStart = await page.evaluate(() => globalThis.cdp675Trace?.length ?? 0);
           if (guardLevel) {
             row.scope = 'guard-level, real bios browserHook; not Rust-path';
+            if (scene.privateDom) {
+              row.step = 'guard-level-private-dom-preservation';
+              await privateDomReadRow(page, row);
+              row.status = 'pass';
+              continue;
+            }
             if (scene.lifecycle) {
               row.step = 'guard-level-lifecycle';
               await lifecycleRow(page, chrome, rawSession, row, scene, url.href);
@@ -3533,6 +3578,22 @@ for (const route of ['extension', 'link']) {
               row.serverLog = await sh(page, `cat ${row.log}`).catch((error) => ({
                 error: error.message,
               }));
+              if (row.command) {
+                row.serverIdentity = await sh(page, `cat ${row.pid}`).catch((error) => ({
+                  error: error.message,
+                }));
+                if (row.serverIdentity.status === 0 && row.serverLog.status === 0) {
+                  try {
+                    row.ownedPids = ownedRowPids(
+                      row.target,
+                      row.serverIdentity.stdout,
+                      row.serverLog.stdout
+                    );
+                  } catch (error) {
+                    row.closureIdentityError = error.message;
+                  }
+                }
+              }
               await sh(page, `kill "$(cat ${row.pid})"`).catch(() => {});
             }
             if (guardLevel && !row.ownerClosed?.success) {
@@ -3547,6 +3608,13 @@ for (const route of ['extension', 'link']) {
                 })
                 .catch((error) => ({ error: error.message }));
             }
+            row.guardConnections = await page.evaluate(
+              (floor) =>
+                [...(globalThis.cdp675Connections?.values() ?? [])]
+                  .filter(({ connectionId }) => connectionId > floor)
+                  .map(({ connectionId }) => connectionId),
+              row.guardConnectionFloor
+            );
             row.methods = await page
               .evaluate((start) => globalThis.cdp675Trace?.slice(start ?? 0) ?? [], row.traceStart)
               .catch(() => []);
