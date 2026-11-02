@@ -111,46 +111,155 @@ test('popup outcome keeps the protected refusal and leakage checks independent',
   assert.throws(() => assertPopupOutcome('C3.popup', {}, attached, null, { value: null }, true));
 });
 
+const SHOWN = 'data:text/html,<title>blocked<%2Ftitle>';
+
 function replacementEvents(report, attached) {
   const targetInfo = report.target.result.targetInfo;
   return [
     { method: 'Target.targetCreated', params: { targetInfo } },
+    { method: 'Target.targetInfoChanged', params: { targetInfo: { ...targetInfo, title: SHOWN } } },
     { method: 'Target.targetInfoChanged', params: { targetInfo } },
     {
       method: 'Target.attachedToTarget',
       params: { targetInfo, sessionId: attached.result.sessionId, waitingForDebugger: false },
     },
+    {
+      method: 'Runtime.executionContextCreated',
+      params: {
+        context: {
+          id: 1,
+          origin: '://',
+          name: '',
+          uniqueId: '-2443638084466758385.-6751452122298768778',
+          auxData: { isDefault: true, type: 'default', frameId: targetInfo.targetId },
+        },
+      },
+      sessionId: attached.result.sessionId,
+    },
   ];
 }
 
-for (const eventState of [
-  'different session',
-  'protected URL',
-  'ordinary URL',
-  'wrong title',
-  'frame',
-  'context',
-  'marker',
-  'missing proof',
-  'wrong proved target',
-]) {
+const only = (method, title) => (events) =>
+  events.find(
+    (event) => event.method === method && (!title || event.params.targetInfo.title === title)
+  );
+const attachedEvent = only('Target.attachedToTarget');
+const shownEvent = only('Target.targetInfoChanged', SHOWN);
+const contextEvent = only('Runtime.executionContextCreated');
+const context = (events) => contextEvent(events).params.context;
+
+const mutations = {
+  'different session': (events) => {
+    attachedEvent(events).params.sessionId = 'unproved-client';
+  },
+  'protected URL': (events) => {
+    attachedEvent(events).params.targetInfo.url = failed;
+  },
+  'ordinary URL': (events) => {
+    attachedEvent(events).params.targetInfo.url = 'https://ordinary.invalid/page';
+  },
+  'wrong title': (events) => {
+    attachedEvent(events).params.targetInfo.title = 'other';
+  },
+  frame: (events) => {
+    attachedEvent(events).params.frame = { id: 'popup-outcome' };
+  },
+  context: (events) => {
+    attachedEvent(events).params.context = { origin: 'null' };
+  },
+  marker: (events) => {
+    attachedEvent(events).params.marker = 'STAND';
+  },
+  'missing proof': (events, proof) => ({ events, proof: null }),
+  'wrong proved target': (events, proof) => {
+    proof.targetId = 'other';
+  },
+  'the shown title on attach': (events) => {
+    attachedEvent(events).params.targetInfo.title = SHOWN;
+  },
+  'the shown title on creation': (events) => {
+    events[0].params.targetInfo.title = SHOWN;
+  },
+  'another shown title': (events) => {
+    shownEvent(events).params.targetInfo.title = 'data:text/html,<title>other<%2Ftitle>';
+  },
+  'the shown title and a protected URL': (events) => {
+    shownEvent(events).params.targetInfo.url = failed;
+  },
+  'the shown title and an ordinary URL': (events) => {
+    shownEvent(events).params.targetInfo.url = 'https://ordinary.invalid/page';
+  },
+  'the shown title without proof': (events) => ({ events: [shownEvent(events)], proof: null }),
+  'a context on another session': (events) => {
+    contextEvent(events).sessionId = 'unproved-client';
+  },
+  'a context on the harness session': (events) => {
+    contextEvent(events).sessionId = 'harness-popup';
+  },
+  'a context without a session': (events) => {
+    delete contextEvent(events).sessionId;
+  },
+  'a context with a protected origin': (events) => {
+    context(events).origin = new URL(failed).origin;
+  },
+  'a context with an ordinary origin': (events) => {
+    context(events).origin = 'https://ordinary.invalid';
+  },
+  'a context with another opaque origin': (events) => {
+    context(events).origin = 'null';
+  },
+  'a context with a name': (events) => {
+    context(events).name = 'kworld';
+  },
+  'an isolated context': (events) => {
+    context(events).auxData = { isDefault: false, type: 'isolated', frameId: 'popup-outcome' };
+  },
+  'a context in a child frame': (events) => {
+    context(events).auxData.frameId = 'child-frame';
+    context(events).name = 'popup-outcome';
+  },
+  'a context with a url': (events) => {
+    context(events).auxData.url = BLANKED;
+  },
+  'a context with a marker': (events) => {
+    context(events).uniqueId = 'STAND';
+  },
+  'a context with another field': (events) => {
+    contextEvent(events).params.frame = { id: 'popup-outcome' };
+  },
+  'a context with another method': (events) => {
+    contextEvent(events).method = 'Runtime.executionContextDestroyed';
+  },
+  'a context without proof': (events) => ({ events: [contextEvent(events)], proof: null }),
+  'a context for another proved target': (events, proof) => ({
+    events: [contextEvent(events)],
+    proof: { ...proof, targetId: 'other' },
+  }),
+  'a context for another proved session': (events, proof) => ({
+    events: [contextEvent(events)],
+    proof: { ...proof, sessionId: 'unproved-client' },
+  }),
+  'a context with a protected proved origin': (events, proof) => {
+    context(events).origin = new URL(failed).origin;
+    return { events: [contextEvent(events)], proof: { ...proof, origin: context(events).origin } };
+  },
+  'a context with an ordinary proved origin': (events, proof) => {
+    context(events).origin = 'https://ordinary.invalid';
+    return { events: [contextEvent(events)], proof: { ...proof, origin: context(events).origin } };
+  },
+};
+
+for (const [eventState, mutate] of Object.entries(mutations)) {
   test(`popup outcome rejects replacement events with ${eventState}`, {
     timeout: 5000,
   }, async (t) => {
     const { popup, attached, report } = await blockedPopup(t);
-    let proof = assertPopupOutcome('C3.popup', popup, attached, report, { value: null }, false);
+    const proof = assertPopupOutcome('C3.popup', popup, attached, report, { value: null }, false);
     const events = structuredClone(replacementEvents(report, attached));
-    const last = events.at(-1);
-    if (eventState === 'different session') last.params.sessionId = 'unproved-client';
-    if (eventState === 'protected URL') last.params.targetInfo.url = failed;
-    if (eventState === 'ordinary URL') last.params.targetInfo.url = 'https://ordinary.invalid/page';
-    if (eventState === 'wrong title') last.params.targetInfo.title = 'other';
-    if (eventState === 'frame') last.params.frame = { id: popup.targetId };
-    if (eventState === 'context') last.params.context = { origin: 'null' };
-    if (eventState === 'marker') last.params.marker = 'STAND';
-    if (eventState === 'missing proof') proof = null;
-    if (eventState === 'wrong proved target') proof.targetId = 'other';
-    assert.throws(() => assertChildEvents('C3.popup', 'popup', failed, popup, events, proof));
+    const changed = mutate(events, proof) ?? { events, proof };
+    assert.throws(() =>
+      assertChildEvents('C3.popup', 'popup', failed, popup, changed.events, changed.proof)
+    );
   });
 }
 

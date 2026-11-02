@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { isDeepStrictEqual } from 'node:util';
 import { BLANKED, PROTECTED, protection } from '../../src/seed/guard.js';
+
+const SHOWN = 'data:text/html,<title>blocked<%2Ftitle>';
 
 export async function popupReport(own, guard, popup, answer, origin) {
   const report = {
@@ -140,7 +143,11 @@ export function assertPopupOutcome(id, popup, attached, report, attribute, beaco
   if (failures.length > 1) throw new AggregateError(failures, `${id}: popup checks failed`);
   return attached.error?.message === PROTECTED
     ? null
-    : { targetId: popup.targetId, sessionId: attached.result.sessionId };
+    : {
+        targetId: popup.targetId,
+        sessionId: attached.result.sessionId,
+        origin: report.guardedTree.result.frameTree.frame.securityOrigin,
+      };
 }
 
 export function assertChildEvents(id, trigger, to, child, later, blank = null) {
@@ -152,11 +159,35 @@ export function assertChildEvents(id, trigger, to, child, later, blank = null) {
         blank?.targetId === child.targetId &&
         info?.targetId === child.targetId &&
         info.url === BLANKED &&
-        info.title === 'blocked' &&
+        (info.title === 'blocked' ||
+          (event.method === 'Target.targetInfoChanged' && info.title === SHOWN)) &&
         ['Target.targetCreated', 'Target.targetInfoChanged', 'Target.attachedToTarget'].includes(
           event.method
         ) &&
         (event.method !== 'Target.attachedToTarget' || event.params.sessionId === blank.sessionId)
+    );
+  };
+  const blankContext = (event) => {
+    const context = event.params?.context;
+    return (
+      trigger === 'popup' &&
+      blank?.targetId === child.targetId &&
+      ['://', 'null'].includes(blank.origin) &&
+      Number.isInteger(context?.id) &&
+      /^-?\d+\.-?\d+$/.test(context.uniqueId ?? '') &&
+      isDeepStrictEqual(event, {
+        method: 'Runtime.executionContextCreated',
+        params: {
+          context: {
+            id: context.id,
+            origin: blank.origin,
+            name: '',
+            uniqueId: context.uniqueId,
+            auxData: { isDefault: true, type: 'default', frameId: child.targetId },
+          },
+        },
+        sessionId: blank.sessionId,
+      })
     );
   };
   assert.deepEqual(
@@ -169,6 +200,7 @@ export function assertChildEvents(id, trigger, to, child, later, blank = null) {
     `${id}: no target event shows the protected ${trigger}'s origin (${JSON.stringify(about).slice(0, 400)})`
   );
   const leaks = about.filter((event) => {
+    if (blankContext(event)) return false;
     const info = event.params?.targetInfo ?? {};
     const safe = replacement(event);
     return (
@@ -180,6 +212,6 @@ export function assertChildEvents(id, trigger, to, child, later, blank = null) {
   assert.deepEqual(
     leaks.map((event) => event.method),
     [],
-    `${id}: events naming the ${trigger}'s target carry no url, title, frame or execution context (${JSON.stringify(leaks).slice(0, 600)})`
+    `${id}: events naming the ${trigger}'s target carry no url, title, frame or execution context (${JSON.stringify(leaks).slice(0, 2000)})`
   );
 }
