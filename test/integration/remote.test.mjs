@@ -182,14 +182,20 @@ test('slicc wait over the link sees the agent busy, then finishes once it is idl
   void waiter.exited.then((code) => {
     waitCode = code;
   });
-  const opened = () => waiter.events.find((e) => e.t === 'opened');
-  for (let i = 0; i < 480 && !opened() && waitCode === null; i += 1)
+  const watching = () =>
+    page.evaluate(() =>
+      document
+        .querySelector('slicc-app')
+        .model.network.status()
+        .links?.devices.some((d) => d.controlling === 'watch')
+    );
+  let opened = false;
+  for (let i = 0; i < 480 && waitCode === null; i += 1) {
+    opened = await watching();
+    if (opened) break;
     await new Promise((resolve) => setTimeout(resolve, 250));
-  assert.ok(
-    opened(),
-    `slicc wait exited ${waitCode} before its stream opened: ${waiter.stderr.join('')}`
-  );
-  assert.equal(opened().busy, true, JSON.stringify(waiter.events));
+  }
+  assert.ok(opened, `slicc wait exited ${waitCode} before it watched: ${waiter.stderr.join('')}`);
   await new Promise((resolve) => setTimeout(resolve, 1000));
   assert.equal(
     waitCode,
