@@ -65,8 +65,33 @@ after(async () => {
   await vault.close();
 });
 
+function traceVault(t) {
+  const requests = new Map();
+  const stop = chrome.cdp.on(({ method, params, sessionId }) => {
+    const key = `${sessionId}:${params?.requestId}`;
+    if (method === 'Network.requestWillBeSent') {
+      const url = new URL(params.request.url);
+      if (url.origin !== vault.origin) return;
+      requests.set(key, { path: url.pathname, startedAt: Date.now() });
+    }
+    const request = requests.get(key);
+    if (!request) return;
+    if (method === 'Network.responseReceived') request.status = params.response.status;
+    if (method === 'Network.loadingFinished') request.finishedAt = Date.now();
+    if (method === 'Network.loadingFailed') {
+      request.failedAt = Date.now();
+      request.cancelled = params.canceled === true;
+      request.error = /^net::[A-Z_]+$/.test(params.errorText) ? params.errorText : 'failed';
+    }
+  });
+  t.after(stop);
+  return () => [...requests.values()];
+}
+
 async function opened(t) {
   const page = await chrome.page(t);
+  const network = traceVault(t);
+  t.after(() => t.diagnostic(JSON.stringify(vault.evidence())));
   await page.init(`() => {
     if (location.origin === ${JSON.stringify(new URL(chrome.url).origin)}) {
       localStorage.setItem('slicc-os.vault-origin', ${JSON.stringify(vault.origin)});
@@ -79,10 +104,27 @@ async function opened(t) {
     120000,
     () => location.pathname === '/os/' && typeof globalThis.sliccKernelClient === 'function'
   );
-  await page.within(
-    60000,
-    () => document.querySelector('slicc-app')?.model?.vault?.status()?.capabilities?.forward === 1
-  );
+  await page
+    .within(
+      60000,
+      () => document.querySelector('slicc-app')?.model?.vault?.status()?.capabilities?.forward === 1
+    )
+    .catch(async (error) => {
+      const state = await page.evaluate(() => {
+        const vault = document.querySelector('slicc-app')?.model?.vault;
+        return {
+          connection: vault?.diagnostics(),
+          availability: vault?.availability(),
+          frameOrigin: document.querySelector('iframe[data-vault=core]')?.src
+            ? new URL(document.querySelector('iframe[data-vault=core]').src).origin
+            : null,
+          now: Date.now(),
+        };
+      });
+      throw new Error(
+        `the real vault did not advertise forwarding: ${JSON.stringify({ ...state, network: network(), deployment: vault.evidence() })}; ${error.message}`
+      );
+    });
   await page
     .within(120000, async () => {
       const client = await globalThis.sliccKernelClient();
@@ -127,7 +169,6 @@ async function opened(t) {
         `the real vault did not acknowledge the trusted policy seed: ${JSON.stringify(files)}; ${error.message}`
       );
     });
-  t.after(() => t.diagnostic(JSON.stringify(vault.evidence())));
   return page;
 }
 
