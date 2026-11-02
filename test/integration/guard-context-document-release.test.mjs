@@ -2,15 +2,16 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { flush, plainFrame, protocol } from './guard-ordering-fixture.mjs';
 
-async function pendingRoot(t, retry = false) {
+async function pendingRoot(
+  t,
+  retry = false,
+  patterns = [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }]
+) {
   const p = protocol(t);
   const root = p.target('root', 'page', { ...plainFrame('root'), loaderId: 'old' });
   const session = await p.attach('root');
   assert.equal((await p.send('Runtime.enable', {}, session)).error, undefined);
-  assert.equal(
-    (await p.send('Fetch.enable', { patterns: [{ resourceType: 'Document' }] }, session)).error,
-    undefined
-  );
+  assert.equal((await p.send('Fetch.enable', { patterns }, session)).error, undefined);
   root.tree.frame.loaderId = 'new';
   const context = {
     id: 31,
@@ -92,6 +93,42 @@ function interception(session, overrides = {}) {
 }
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test('selective client Document interception remains ordered and can fail the request after pending proof', async (t) => {
+  const row = await pendingRoot(t, false, [
+    { urlPattern: 'https://child.invalid/*', resourceType: 'Document', requestStage: 'Request' },
+  ]);
+  row.p.emit(interception(row.session));
+  await delay(30);
+  assert.equal(row.continued(), false);
+  assert.equal(
+    row.p.delivered.some(({ method }) => method === 'Fetch.requestPaused'),
+    false
+  );
+  row.finish();
+  await flush();
+  assert.ok(
+    row.p.delivered.some(
+      ({ method, params }) => method === 'Fetch.requestPaused' && params.requestId === 'child-doc'
+    )
+  );
+  assert.equal(
+    (
+      await row.p.send(
+        'Fetch.failRequest',
+        { requestId: 'child-doc', errorReason: 'Aborted' },
+        row.session
+      )
+    ).error,
+    undefined
+  );
+  assert.ok(
+    row.p.sent.some(
+      ({ method, params }) => method === 'Fetch.failRequest' && params.requestId === 'child-doc'
+    )
+  );
+  assert.equal(row.continued(), false);
+});
 
 test('pending first root proof privately continues a client subframe Document and then proves the root', async (t) => {
   const row = await pendingRoot(t);

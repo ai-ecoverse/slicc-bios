@@ -12,6 +12,7 @@ import { boundedHooks, boundedStage, rowDeadline } from './cdp-675-deadline.mjs'
 import { nativeTapFixture, nativeTapRead } from './cdp-675-native-tap.mjs';
 import { assertPlainReplayBound } from './cdp-675-plain-bound.mjs';
 import { plainReplayAttempts } from './cdp-675-plain-retry.mjs';
+import { sameOriginChildMarkup, sameOriginTools } from './cdp-675-same-origin.mjs';
 import { workerScopeRead } from './cdp-675-worker-scope.mjs';
 import { devtools, launch } from './chrome.mjs';
 import { fixtureTarget } from './fixtures/cdp-675-target.mjs';
@@ -54,6 +55,7 @@ const ordinaryCases = [
     many: true,
   },
   { name: 'ordinary-dedicated-worker-root-list-call', reload: true, dedicatedWorker: true },
+  { name: 'ordinary-root-same-origin-child-list-call', reload: true, sameOriginChild: true },
   { name: 'ordinary-root-cross-origin-child-list-call', reload: true, crossOriginChild: true },
   {
     name: 'requested-cross-origin-child-clear-error',
@@ -1934,6 +1936,7 @@ for (const route of ['extension', 'link']) {
           }
           if (at.pathname === '/script')
             return response.end(`window.cdp675ScriptCount = (window.cdp675ScriptCount || 0) + 1;`);
+          if (at.pathname === '/same-child') return response.end(sameOriginChildMarkup);
           if (at.pathname === '/iframe')
             return response.end('<!doctype html><title>ordinary iframe</title>');
           const registration =
@@ -1955,7 +1958,7 @@ for (const route of ['extension', 'link']) {
               )
             : '';
           response.end(
-            `<!doctype html><title>675 ordinary</title>${at.pathname === '/bfcache' ? bfcacheMarkup(request.url) : ''}${scripts}${at.searchParams.has('crossChild') ? `<iframe src="${at.searchParams.has('protected') ? `https://${at.searchParams.get('protected')}.sliccy.ai/__675_frame` : `http://127.0.0.1:${fixture.address().port}/iframe`}"></iframe>` : ''}${at.searchParams.has('siblings') ? `<iframe src="http://127.0.0.1:${fixture.address().port}/iframe?ordinary=one"></iframe><iframe src="http://127.0.0.1:${fixture.address().port}/iframe?ordinary=two"></iframe>` : ''}${foreign ? `<iframe src="${at.searchParams.has('protected') ? `https://${at.searchParams.get('protected')}.sliccy.ai/__675_frame` : '/iframe'}"></iframe>` : ''}<script type="module">window.cdp675Loads = (Number(sessionStorage.cdp675Loads) || 0) + 1; sessionStorage.cdp675Loads = window.cdp675Loads; ${workerStartup}${startup}</script>`
+            `<!doctype html><title>675 ordinary</title>${at.pathname === '/bfcache' ? bfcacheMarkup(request.url) : ''}${scripts}${at.searchParams.has('sameChild') ? '<iframe src="/same-child"></iframe>' : ''}${at.searchParams.has('crossChild') ? `<iframe src="${at.searchParams.has('protected') ? `https://${at.searchParams.get('protected')}.sliccy.ai/__675_frame` : `http://127.0.0.1:${fixture.address().port}/iframe`}"></iframe>` : ''}${at.searchParams.has('siblings') ? `<iframe src="http://127.0.0.1:${fixture.address().port}/iframe?ordinary=one"></iframe><iframe src="http://127.0.0.1:${fixture.address().port}/iframe?ordinary=two"></iframe>` : ''}${foreign ? `<iframe src="${at.searchParams.has('protected') ? `https://${at.searchParams.get('protected')}.sliccy.ai/__675_frame` : '/iframe'}"></iframe>` : ''}<script type="module">window.cdp675Loads = (Number(sessionStorage.cdp675Loads) || 0) + 1; sessionStorage.cdp675Loads = window.cdp675Loads; ${workerStartup}${startup}</script>`
           );
         });
         await new Promise((resolve) => fixture.listen(0, '127.0.0.1', resolve));
@@ -2129,6 +2132,7 @@ for (const route of ['extension', 'link']) {
           );
           if (scene.lifecycle === 'echo') url = new URL('https://echo.sliccy.ai/__675_echo');
           if (scene.dedicatedWorker) url.searchParams.set('dedicatedWorker', '1');
+          if (scene.sameOriginChild) url.searchParams.set('sameChild', '1');
           if (scene.crossOriginChild) url.searchParams.set('crossChild', '1');
           if (scene.siblings) url.searchParams.set('siblings', '1');
           if (scene.protectedSubframe) url.searchParams.set('protected', scene.protectedSubframe);
@@ -2766,7 +2770,10 @@ for (const route of ['extension', 'link']) {
             row.clearMessage = await sh(page, `cat ${row.log}`);
             assert.match(row.clearMessage.stdout, /other-extension fallback|startup or parse-time/);
           } else {
-            const tool = tools.find(({ name }) => name === 'add' || name.endsWith('_add'));
+            const tool = tools.find(
+              ({ name }) =>
+                name === 'add' || (name.endsWith('_add') && !name.endsWith('_child_add'))
+            );
             if (foreign && !tool) {
               row.zeroToolsMessage = await sh(page, `cat ${row.log}`);
               assert.match(
@@ -2787,6 +2794,24 @@ for (const route of ['extension', 'link']) {
               );
               assert.match(row.call.stdout, /^5$/m);
             }
+          }
+          if (scene.sameOriginChild) {
+            const child = tools.find(
+              ({ name }) => name === 'child_add' || name.endsWith('_child_add')
+            );
+            assert.ok(child, 'shipped MCP must list the initial same-origin child');
+            row.sameOriginCall = await cone(
+              page,
+              `timeout 60 mcpcat call http://127.0.0.1:${row.port}/mcp ${quote(child.name)} --a 2 --b 3`,
+              `675-same-child-call-${index}`
+            );
+            assert.match(row.sameOriginCall.stdout, /^15$/m);
+            row.secondProcessList = await cone(
+              page,
+              `playwright-cli webmcp-list --tab ${quote(row.target)} --json`,
+              `675-same-child-list-${index}`
+            );
+            row.sameOriginTools = sameOriginTools(JSON.parse(row.secondProcessList.stdout));
           }
           row.methods = await page.evaluate(
             (start) => globalThis.cdp675Trace.slice(start),

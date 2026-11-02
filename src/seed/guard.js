@@ -4763,6 +4763,36 @@ class Guard {
     return false;
   }
 
+  rememberFetchPattern(message, outgoing) {
+    const { method, sessionId } = outgoing;
+    const session = this.sessions.get(sessionId);
+    if (session && method === 'Fetch.enable') {
+      const patterns = outgoing.params?.patterns;
+      const pattern = patterns?.[0];
+      session.documentPattern = {
+        command: message,
+        accepted: false,
+        catchAll:
+          Array.isArray(patterns) &&
+          patterns.length === 1 &&
+          pattern &&
+          Object.keys(pattern).length === 3 &&
+          pattern.urlPattern === '*' &&
+          pattern.resourceType === 'Document' &&
+          pattern.requestStage === 'Request',
+      };
+    }
+    if (session && method === 'Fetch.disable') delete session.documentPattern;
+  }
+
+  rememberFetchAnswer(message) {
+    if (message.id === undefined) return;
+    const was = this.asked.get(requestKey(message));
+    const pattern = this.sessions.get(was?.sessionId)?.documentPattern;
+    if (was?.method === 'Fetch.enable' && pattern?.command === was)
+      pattern.accepted = !message.error;
+  }
+
   async pass(message) {
     if (this.finished.has(message) || !this.owns(message)) return;
     this.commands.set(requestKey(message), message);
@@ -4789,6 +4819,7 @@ class Guard {
       this.pages.delete(sessionId);
       return this.deliver({ id, sessionId, result: {} });
     }
+    this.rememberFetchPattern(message, outgoing);
     this.asked.set(requestKey(message), message);
     if (contentRead(method)) this.pendingContent.add(message);
     this.connection.send(JSON.stringify(outgoing));
@@ -4914,6 +4945,8 @@ class Guard {
       params.frameId === root ||
       !this.parents.has(params.frameId) ||
       this.privateSessions.has(sessionId) ||
+      !this.sessions.get(sessionId)?.documentPattern?.accepted ||
+      !this.sessions.get(sessionId)?.documentPattern?.catchAll ||
       ![...(this.contextChecks.get(sessionId)?.values() ?? [])].some((record) => !record.done)
     )
       return false;
@@ -4929,6 +4962,7 @@ class Guard {
 
   received(text) {
     const message = parse(text);
+    this.rememberFetchAnswer(message);
     this.loadingEvent(message);
     this.completeStopping(message);
     if (
