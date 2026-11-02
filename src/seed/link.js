@@ -81,7 +81,94 @@ const json = (bytes) => {
   }
 };
 
-function stream(streams, id, channel, own, post) {
+const peakStreams = new WeakMap();
+let peakSerial = 0;
+
+function linkPeaks(role) {
+  const blank = () => ({ channels: 0, streams: 0, pending: 0, heldBytes: 0 });
+  const live = { total: blank(), page: blank(), node: blank() };
+  const peaks = { total: blank(), page: blank(), node: blank() };
+  const windows = new Map();
+  const directionPeaks = () => ({ pageToNode: {}, nodeToPage: {} });
+  const directions = directionPeaks();
+  const byInitiator = { page: directionPeaks(), node: directionPeaks() };
+  const pending = new Set();
+  let minCredit = null;
+  let reported = false;
+  const session = ++peakSerial;
+  const owner = (id) => (id % 2 ? 'page' : 'node');
+  const change = (who, metric, delta) => {
+    for (const key of ['total', who]) {
+      live[key][metric] += delta;
+      peaks[key][metric] = Math.max(peaks[key][metric], live[key][metric]);
+    }
+  };
+  const rate = (key, target, metric) => {
+    const now = performance.now();
+    const times = windows.get(key) ?? [];
+    while (times.length && times[0] <= now - 1000) times.shift();
+    times.push(now);
+    windows.set(key, times);
+    target[metric] = Math.max(target[metric] ?? 0, times.length);
+  };
+  return {
+    change,
+    hold(who) {
+      let held = 0;
+      return (bytes) => {
+        change(who, 'heldBytes', bytes - held);
+        held = bytes;
+      };
+    },
+    stream(s) {
+      const who = owner(s.id);
+      change(who, 'streams', 1);
+      peakStreams.set(s, { hold: () => this.hold(who) });
+    },
+    ended(id) {
+      change(owner(id), 'streams', -1);
+    },
+    frame(from, data) {
+      const parsed = typeof data === 'string' ? null : parse(data);
+      if (!parsed) return;
+      const { type, id, payload } = parsed;
+      const direction = from === 'page' ? 'pageToNode' : 'nodeToPage';
+      const target = directions[direction];
+      const initiated = byInitiator[owner(id)][direction];
+      if (type === OPEN) {
+        pending.add(id);
+        change(owner(id), 'pending', 1);
+        rate('total:open', peaks.total, 'opens1s');
+        rate(`${owner(id)}:open`, peaks[owner(id)], 'opens1s');
+      }
+      if ((type === OPENED || type === RESET) && pending.delete(id))
+        change(owner(id), 'pending', -1);
+      if (type === CREDIT) {
+        rate(`${direction}:credit`, target, 'credit1s');
+        rate(`${owner(id)}:${direction}:credit`, initiated, 'credit1s');
+        if (payload.length === 4) {
+          const n = new DataView(payload.buffer, payload.byteOffset).getUint32(0);
+          minCredit = minCredit === null ? n : Math.min(minCredit, n);
+        }
+      } else if (type !== DATA) {
+        rate(`${direction}:control`, target, 'control1s');
+        rate(`${owner(id)}:${direction}:control`, initiated, 'control1s');
+      }
+    },
+    report(reason) {
+      if (reported) return;
+      reported = true;
+      console.log(
+        `LINK-PEAKS ${JSON.stringify({ row: globalThis.__linkPeakRow ?? null, test: globalThis.__linkPeakTest ?? null, session, role, reason, peaks, directions, byInitiator, minCredit })}`
+      );
+    },
+  };
+}
+
+const retained = (s) => peakStreams.get(s)?.hold() ?? (() => {});
+
+function stream(streams, id, channel, own, post, peaks) {
+  const hold = peaks.hold(id % 2 ? 'page' : 'node');
   const state = { opened: false, sentEnd: false, gotEnd: false, unacked: 0, held: 0 };
   const chunks = [];
   const waiting = new Set();
@@ -111,7 +198,7 @@ function stream(streams, id, channel, own, post) {
     if (channel.readyState === 'open') post(channel, frame(type, id, payload));
   };
   const done = () => {
-    streams.delete(id);
+    if (streams.delete(id)) peaks.ended(id);
     if (own) channel.close();
     finish(error);
   };
@@ -139,6 +226,7 @@ function stream(streams, id, channel, own, post) {
       if (!state.opened || state.gotEnd || payload.length === 0) return violate();
       if (state.held + payload.length > WINDOW) return violate();
       state.held += payload.length;
+      hold(state.held);
       chunks.push(payload.slice());
       wake();
     },
@@ -179,6 +267,7 @@ function stream(streams, id, channel, own, post) {
       if (chunks.length) {
         const chunk = chunks.shift();
         state.held -= chunk.length;
+        hold(state.held);
         send(CREDIT, u32(chunk.length));
         return chunk;
       }
@@ -303,7 +392,12 @@ export function createSession({
   const peerIds = new Set();
   const channels = new Set();
   const gates = openGates((reason) => close(reason));
-  const post = gates.post;
+  const peaks = linkPeaks(role);
+  const holdEarly = peaks.hold(other);
+  const post = (channel, data) => {
+    peaks.frame(role, data);
+    gates.post(channel, data);
+  };
   const early = [];
   let held = 0;
   let next = 2 - parity;
@@ -319,6 +413,8 @@ export function createSession({
   function close(reason) {
     if (closed) return;
     closed = reason;
+    globalThis.__linkPeakClosers.delete(close);
+    peaks.report(reason);
     timers.clearTimeout(timer);
     settle.reject(failure(`ECONNRESET: ${reason}`));
     for (const stream of [...streams.values()]) stream.fail(failure(`ECONNRESET: ${reason}`));
@@ -326,14 +422,18 @@ export function createSession({
     onClose?.(reason);
   }
 
+  globalThis.__linkPeakClosers ??= new Set();
+  globalThis.__linkPeakClosers.add(close);
+
   function incoming(channel, id, payload) {
     if (id % 2 === parity || peerIds.has(id)) return close('an OPEN with a bad stream id');
     peerIds.add(id);
     const meta = json(payload);
     if (typeof meta?.kind !== 'string') return post(channel, frame(RESET, id, 'EPROTO'));
     if (!accept) return post(channel, frame(RESET, id, 'EOPNOTSUPP'));
-    const s = stream(streams, id, channel, false, post);
+    const s = stream(streams, id, channel, false, post, peaks);
     streams.set(id, s);
+    peaks.stream(s);
     Promise.resolve()
       .then(() => (closed ? Promise.reject(failure(`ECONNRESET: ${closed}`)) : accept(meta)))
       .then(
@@ -346,7 +446,7 @@ export function createSession({
           return pipe(s, socket);
         },
         (error) => {
-          streams.delete(id);
+          if (streams.delete(id)) peaks.ended(id);
           if (channel.readyState === 'open') post(channel, frame(RESET, id, error.code ?? 'EIO'));
         }
       );
@@ -360,7 +460,11 @@ export function createSession({
     timers.clearTimeout(timer);
     if (role === 'node' && !say()) return;
     settle.resolve(peer);
-    for (const [from, bytes] of early.splice(0)) if (channels.has(from)) framed(from, bytes);
+    for (const [from, bytes] of early.splice(0)) {
+      held -= bytes.byteLength;
+      holdEarly(held);
+      if (channels.has(from)) framed(from, bytes);
+    }
   }
 
   function hold(channel, data) {
@@ -369,6 +473,7 @@ export function createSession({
     held += data.byteLength;
     if (held > WINDOW) return close('too many bytes before HELLO');
     early.push([channel, data]);
+    holdEarly(held);
   }
 
   function receive(channel, data) {
@@ -383,6 +488,7 @@ export function createSession({
     const parsed = parse(data);
     if (!parsed || parsed.id === 0) return close('a malformed frame');
     const { type, id, payload } = parsed;
+    peaks.frame(other, data);
     if (type === OPEN) return incoming(channel, id, payload);
     streams.get(id)?.receive(type, payload);
   }
@@ -404,13 +510,15 @@ export function createSession({
       timer = timers.setTimeout(() => close(`no HELLO from the ${other} within 10 s`), HELLO_MS);
   }
 
-  function adopt(channel) {
+  function adopt(channel, initiator = other) {
+    const who = channel === control ? 'page' : initiator;
     channels.add(channel);
+    peaks.change(who, 'channels', 1);
     gates.watch(channel);
     channel.binaryType = 'arraybuffer';
     channel.addEventListener('message', (event) => receive(channel, event.data));
     channel.addEventListener('close', () => {
-      channels.delete(channel);
+      if (channels.delete(channel)) peaks.change(who, 'channels', -1);
       if (channel === control) return close('the control channel closed');
       for (const s of [...streams.values()]) {
         if (s.channel === channel) s.fail(failure('ECONNRESET: the stream channel closed'));
@@ -433,11 +541,12 @@ export function createSession({
       await ready;
       const id = next;
       next += 2;
-      const channel = shared ? control : adopt(createChannel(STREAM));
+      const channel = shared ? control : adopt(createChannel(STREAM), role);
       if (!shared) await gates.opened(channel);
       if (closed) throw failure(`ECONNRESET: ${closed}`);
-      const s = stream(streams, id, channel, !shared, post);
+      const s = stream(streams, id, channel, !shared, post, peaks);
       streams.set(id, s);
+      peaks.stream(s);
       post(channel, frame(OPEN, id, JSON.stringify(meta)));
       return s.answered;
     },
@@ -445,6 +554,7 @@ export function createSession({
 }
 
 export function bufferedReader(stream) {
+  const hold = retained(stream);
   let buffer = new Uint8Array(0);
   const fill = async (n) => {
     while (buffer.length < n) {
@@ -454,6 +564,7 @@ export function bufferedReader(stream) {
       merged.set(buffer);
       merged.set(chunk, buffer.length);
       buffer = merged;
+      hold(buffer.length);
     }
   };
   return {
@@ -461,12 +572,14 @@ export function bufferedReader(stream) {
       await fill(n);
       const out = buffer.slice(0, n);
       buffer = buffer.subarray(n);
+      hold(buffer.length);
       return out;
     },
     async next() {
       if (buffer.length) {
         const out = buffer;
         buffer = new Uint8Array(0);
+        hold(0);
         return out;
       }
       return stream.read();
@@ -1162,14 +1275,21 @@ const notConnected = (error) =>
   error.code === 'ECONNRESET' ? Object.assign(error, { code: 'ENOTCONN' }) : error;
 
 async function drain(stream) {
+  const hold = retained(stream);
+  let held = 0;
   const chunks = [];
-  for (let chunk = await stream.read(); chunk; chunk = await stream.read()) chunks.push(chunk);
+  for (let chunk = await stream.read(); chunk; chunk = await stream.read()) {
+    chunks.push(chunk);
+    held += chunk.length;
+    hold(held);
+  }
   const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
   let at = 0;
   for (const chunk of chunks) {
     out.set(chunk, at);
     at += chunk.length;
   }
+  hold(0);
   return out;
 }
 
@@ -1226,12 +1346,15 @@ export function linkFs(session, { mount, readonly, token }) {
       const stop = () => stream.close();
       signal.addEventListener('abort', stop, { once: true });
       onOpen();
+      const hold = retained(stream);
       let buffered = '';
       try {
         for (let chunk = await stream.read(); chunk; chunk = await stream.read()) {
           buffered += decoder.decode(chunk, { stream: true });
+          hold(encoder.encode(buffered).length);
           const parts = buffered.split('\n');
           buffered = parts.pop();
+          hold(encoder.encode(buffered).length);
           for (const part of parts.filter(Boolean)) {
             const { paths, all, ping } = JSON.parse(part);
             onEvent({
@@ -1244,6 +1367,7 @@ export function linkFs(session, { mount, readonly, token }) {
       } catch (error) {
         if (!signal.aborted) throw notConnected(error);
       } finally {
+        hold(0);
         signal.removeEventListener('abort', stop);
       }
     },
@@ -1265,6 +1389,7 @@ export function browserList(list) {
 const sharedBrowsers = (peer, list) => (sharesBrowsers(peer) ? browserList(list) : []);
 
 export function cdpConnection(stream) {
+  const hold = retained(stream);
   let ended = false;
   let writes = Promise.resolve();
   const connection = {
@@ -1286,6 +1411,7 @@ export function cdpConnection(stream) {
   };
   const finish = (why) => {
     ended = true;
+    hold(0);
     connection.onclose?.(why);
   };
   (async () => {
@@ -1306,10 +1432,12 @@ export function cdpConnection(stream) {
         merged.set(buffer);
         merged.set(chunk, buffer.length);
         buffer = merged;
+        hold(buffer.length);
       }
       const length = size();
       connection.onmessage?.(decoder.decode(buffer.subarray(4, 4 + length)));
       buffer = buffer.slice(4 + length);
+      hold(buffer.length);
     }
   })().catch((error) => finish(error.message));
   return connection;

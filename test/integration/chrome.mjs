@@ -171,6 +171,12 @@ export async function launch({ agent = false, vault = true, tools = true, ...ove
   const close = chrome.close;
   chrome.vault = fake;
   chrome.github = github;
+  chrome.cdp.on(({ method, params }) => {
+    if (method !== 'Runtime.consoleAPICalled') return;
+    for (const arg of params.args)
+      if (typeof arg.value === 'string' && arg.value.startsWith('LINK-PEAKS '))
+        console.log(arg.value);
+  });
   const messages = consoleTail(chrome.cdp);
   const traced = TRACE ? networkTrace(chrome.cdp, new URL(chrome.url).origin) : null;
   chrome.close = (...args) => {
@@ -179,7 +185,16 @@ export async function launch({ agent = false, vault = true, tools = true, ...ove
     return close.apply(chrome, args);
   };
   chrome.page = async (t) => {
-    const opened = await page(t);
+    let opened;
+    t.after(async () => {
+      await opened?.evaluate(() => {
+        for (const close of [...(globalThis.__linkPeakClosers ?? [])]) close('diagnostic teardown');
+      });
+    });
+    opened = await page(t);
+    await opened.init(
+      `() => { globalThis.__linkPeakRow = ${JSON.stringify(String(t.filePath).split('/').at(-1))}; globalThis.__linkPeakTest = ${JSON.stringify(t.name)}; }`
+    );
     messages.length = 0;
     opened.console = messages;
     github.reset();
