@@ -35,7 +35,7 @@ await writeFile(
         cdp: '1.44.99',
         mcpcat: '0.80.1',
         extension: '7.11.99',
-        cli: '1.56.99',
+        cli: '1.57.99',
       },
       cdp,
       mcpcat,

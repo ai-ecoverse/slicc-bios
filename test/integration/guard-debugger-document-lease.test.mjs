@@ -6,7 +6,7 @@ const { guardProtected } = await import(process.env.GUARD_SOURCE ?? '../../src/s
 
 for (const route of [
   { kind: 'extension', version: '7.11.99' },
-  { kind: 'link', version: '1.56.99' },
+  { kind: 'link', version: '1.57.99' },
 ]) {
   test(`${route.kind}: a clean root reload holds its first pause for existing placement, not a private snapshot`, async (t) => {
     let reads = 0;
