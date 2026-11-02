@@ -202,7 +202,7 @@ test('slicc agents lists the agents over a local link, once and as they run, wit
     assert.equal(all.includes(secret), false, `${secret} reached slicc agents`);
 });
 
-test('slicc agents over the tray from a device without Control is refused, plain and with --watch', {
+test('slicc agents over the tray from a device without Control is refused, plain and with --watch, and the page itself resets a raw inventory OPEN with EACCES', {
   skip: !cli,
   timeout: 35 * 60 * 1000,
 }, async (t) => {
@@ -234,5 +234,38 @@ test('slicc agents over the tray from a device without Control is refused, plain
     );
     assert.equal(said.includes(joinUrl), false);
   }
+  const raw = await chrome.page(t);
+  await raw.goto('/manifest.json');
+  const opened = await raw.evaluate(async (join) => {
+    const { createLeaders } = await import('/seed/leaders.js');
+    const { hubClient } = await import('/seed/follow.js');
+    const leaders = createLeaders({
+      post: hubClient({ origin: null, fetch: (...args) => fetch(...args) }),
+      name: 'raw inventory node',
+    });
+    const out = [];
+    for (const meta of [
+      { kind: 'agent', op: 'inventory' },
+      { kind: 'agent', op: 'inventory', watch: true },
+    ]) {
+      try {
+        const { stream } = await leaders.open(join, meta);
+        const read = await Promise.race([
+          stream.read(),
+          new Promise((resolve) => setTimeout(() => resolve('nothing'), 2000)),
+        ]);
+        out.push({ opened: true, read: read && read !== 'nothing' ? [...read] : read });
+      } catch (error) {
+        out.push({ code: error.code, message: error.message });
+      }
+    }
+    return out;
+  }, joinUrl);
+  assert.deepEqual(
+    opened.map((each) => each.code),
+    ['EACCES', 'EACCES'],
+    JSON.stringify(opened)
+  );
+  for (const each of opened) assert.match(each.message, /doesn't allow remote control/);
   await page.evaluate(() => localStorage.removeItem('slicc-os.tray-hub'));
 });
