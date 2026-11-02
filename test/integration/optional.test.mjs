@@ -186,9 +186,10 @@ test('HEIF and AVIF images installs from the catalog, and heif-convert runs', {
   assert.equal(result, 'ok', (await heif())?.log);
   const offered = await latest('@ai-ecoverse/wasm-libheif');
   assert.equal((await heif()).version, offered);
+  const upstream = offered.split('-')[0];
   await run(
     page,
-    'clear; heif-convert --version 2>&1 | head -1 | grep -c 1.23.6 | sed "s/^/heif ran /"'
+    `clear; heif-convert --version 2>&1 | head -1 | grep -cF ${upstream} | sed "s/^/heif ran /"`
   );
   await shows(page, 'heif ran 1');
   assert.deepEqual(page.errors, []);
