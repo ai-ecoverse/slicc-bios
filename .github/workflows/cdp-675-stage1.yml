@@ -74,12 +74,14 @@ jobs:
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/candidate-artifacts" "$RUNNER_TEMP/candidate-trace"
+          npm install --prefix "$RUNNER_TEMP/old-cli" --no-audit --no-fund @ai-ecoverse/slicc@1.49.36
+          "$RUNNER_TEMP/old-cli/node_modules/.bin/slicc" --version > "$RUNNER_TEMP/candidate-trace/old-cli-version.txt"
           npm pack @ai-ecoverse/slicc-cdp@1.43.1 --ignore-scripts --pack-destination "$RUNNER_TEMP/candidate-artifacts"
           cd candidates/cdp
           npm ci
           cargo test -p slicc-cdp-client one_second_settling_reply --lib -- --test-threads=1 > "$RUNNER_TEMP/candidate-trace/rust-budget.log" 2>&1
           cargo test -p slicc-cdp-client plain_fallback_retry --lib -- --test-threads=1 > "$RUNNER_TEMP/candidate-trace/rust-plain-retry.log" 2>&1
-          npm pkg set version=1.43.2
+          npm pkg set version=1.44.99
           git diff -- package.json > "$RUNNER_TEMP/candidate-trace/cdp-version-stamp.diff"
           npm run build:wasm
           npm pack --pack-destination "$RUNNER_TEMP/candidate-artifacts"
@@ -112,6 +114,7 @@ jobs:
           export SLICC_675_ARTIFACT_DIR="$RUNNER_TEMP/candidate-artifacts"
           export SLICC_675_EXTENSION_DIR="$RUNNER_TEMP/extension-candidate"
           export SLICC_CLI="$RUNNER_TEMP/slicc-candidate"
+          export SLICC_675_OLD_CLI="$RUNNER_TEMP/old-cli/node_modules/.bin/slicc"
           timeout -k 30 2700 node --test --test-force-exit --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs test/integration/cdp-675-packaged.test.mjs test/integration/cdp-675-existing-reads.test.mjs > "$RUNNER_TEMP/candidate.log" 2>&1
           result=$?
           echo "Diagnostic exit: $result"

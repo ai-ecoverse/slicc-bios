@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer as createHttp } from 'node:http';
 import { after, test } from 'node:test';
+import { DEBUGGER_ROUTE_UPDATE } from '../../src/seed/debugger.js';
 import { protection, redacting } from '../../src/seed/guard.js';
 import { boot } from './bios.mjs';
 import { debuggerUrl, devtools, launch } from './chrome.mjs';
@@ -923,11 +924,13 @@ for (const [detach, lag] of DETACH) {
               method === 'Debugger.enable' ||
               method === 'Debugger.setInstrumentationBreakpoint'
             ) {
-              assert.equal(
-                (await guard.send(method, params, session)).error,
-                undefined,
-                `${method}: ordinary predecessor admission`
-              );
+              const answer = await guard.send(method, params, session);
+              if (answer.error)
+                assert.equal(
+                  answer.error.message,
+                  DEBUGGER_ROUTE_UPDATE,
+                  `${method}: released predecessor has the terminal route-floor refusal`
+                );
               continue;
             }
             assert.match(

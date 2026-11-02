@@ -7,11 +7,17 @@ const tools = [
   { name: 'child_add', frameId: 'CHILD', origin: 'http://localhost:1234' },
 ];
 
-test('initial same-origin child fixture registers in a module without a late retry', () => {
+test('initial same-origin child fixture awaits one fetch before registration, without retrying', () => {
   assert.match(sameOriginChildMarkup, /<script type="module">/);
   assert.match(sameOriginChildMarkup, /name: "child_add"/);
   assert.match(sameOriginChildMarkup, /a\+b\+10/);
-  assert.doesNotMatch(sameOriginChildMarkup, /setTimeout|setInterval|fetch\(/);
+  assert.match(
+    sameOriginChildMarkup,
+    /await fetch\("\/same-child-ready"\); if \(document\.modelContext\)/
+  );
+  assert.equal((sameOriginChildMarkup.match(/fetch\(/g) ?? []).length, 1);
+  assert.equal((sameOriginChildMarkup.match(/registerTool\(/g) ?? []).length, 1);
+  assert.doesNotMatch(sameOriginChildMarkup, /setTimeout|setInterval/);
 });
 
 test('same-origin list requires both tools with distinct native frames', () => {

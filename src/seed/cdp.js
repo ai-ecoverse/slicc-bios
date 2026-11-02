@@ -222,6 +222,11 @@ export function browserVia(links) {
   return via ?? (linkedBrowsers(links).length ? 'link' : null);
 }
 
+function browserRoute(open, hosts, extension, fallback) {
+  if (open === hosts.extension) return { kind: 'extension', version: extension.version };
+  return open === hosts.devtools ? undefined : fallback?.route;
+}
+
 export function browserHook(
   observe = (connection) => connection,
   links,
@@ -267,7 +272,7 @@ export function browserHook(
     return guard(
       open,
       open === hosts.extension ? extension.cdp : undefined,
-      open === hosts.extension ? { kind: 'extension', version: extension.version } : fallback.route,
+      browserRoute(open, hosts, extension, fallback),
       open === hosts.extension && typeof extension.frames === 'function'
         ? (targetId) => extension.frames(Number(targetId))
         : undefined

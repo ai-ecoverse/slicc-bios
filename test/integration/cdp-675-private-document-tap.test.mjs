@@ -10,7 +10,11 @@ const tap = new Function(`${packaged.slice(start, end)}; return tapGuardSource;`
 const evidenceStart = packaged.indexOf(
   "          if (row.status === 'pass' && row.privateDocumentTrace?.length) {"
 );
-const evidenceEnd = packaged.indexOf('\n          countRow(row);', evidenceStart);
+const evidenceEnd = packaged.indexOf('\n          unobserve?.();', evidenceStart);
+assert.ok(
+  evidenceStart >= 0 && evidenceEnd > evidenceStart,
+  'the synchronous evidence block has exact bounds'
+);
 const validate = new Function('row', 'assert', packaged.slice(evidenceStart, evidenceEnd));
 
 test('private-document tap preserves one consumption and records no public message', () => {

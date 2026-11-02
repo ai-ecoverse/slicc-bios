@@ -5,7 +5,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const directory = process.argv[2];
-const cdp = 'ai-ecoverse-slicc-cdp-1.43.2.tgz';
+const cdp = 'ai-ecoverse-slicc-cdp-1.44.99.tgz';
 const mcpcat = 'ai-ecoverse-mcpcat-0.80.1.tgz';
 const oldClient = 'ai-ecoverse-slicc-cdp-1.43.1.tgz';
 const wasm = execFileSync(
@@ -31,7 +31,12 @@ await writeFile(
         cli: head('candidates/cli'),
         browsers: head('candidates/browsers'),
       },
-      diagnosticVersions: { cdp: '1.43.2', mcpcat: '0.80.1', extension: '7.11.99', cli: '1.55.99' },
+      diagnosticVersions: {
+        cdp: '1.44.99',
+        mcpcat: '0.80.1',
+        extension: '7.11.99',
+        cli: '1.55.99',
+      },
       cdp,
       mcpcat,
       oldClient,

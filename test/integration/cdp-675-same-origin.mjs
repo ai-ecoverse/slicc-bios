@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 export const sameOriginChildMarkup =
-  '<!doctype html><title>675 same-origin child</title><script type="module">if (document.modelContext) document.modelContext.registerTool({ name: "child_add", description: "Child adds ten", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] }, execute: ({a,b}) => String(a+b+10) });</script>';
+  '<!doctype html><title>675 same-origin child</title><script type="module">await fetch("/same-child-ready"); if (document.modelContext) document.modelContext.registerTool({ name: "child_add", description: "Child adds ten", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] }, execute: ({a,b}) => String(a+b+10) });</script>';
 
 export function sameOriginTools(tools) {
   const root = tools.find(({ name }) => name === 'add');

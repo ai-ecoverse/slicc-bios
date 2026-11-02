@@ -1939,6 +1939,8 @@ for (const route of ['extension', 'link']) {
           if (at.pathname === '/script')
             return response.end(`window.cdp675ScriptCount = (window.cdp675ScriptCount || 0) + 1;`);
           if (at.pathname === '/same-child') return response.end(sameOriginChildMarkup);
+          if (at.pathname === '/same-child-ready')
+            return void setTimeout(() => response.end('ready'), 150);
           if (at.pathname === '/iframe')
             return response.end('<!doctype html><title>ordinary iframe</title>');
           const registration =
@@ -2030,14 +2032,14 @@ for (const route of ['extension', 'link']) {
             name: 'link has no extension route',
             pass: (await page.evaluate(() => typeof globalThis.sliccExtension)) === 'undefined',
           });
+          if (oldRoute)
+            assert.ok(process.env.SLICC_675_OLD_CLI, 'historical CLI must be selected explicitly');
           const runtimes = await linkNode(
             t,
             page,
             (await devtools(chrome)).port,
             'cdp-675-packaged',
-            oldRoute
-              ? fileURLToPath(new URL('../../node_modules/.bin/slicc', import.meta.url))
-              : undefined,
+            oldRoute ? process.env.SLICC_675_OLD_CLI : undefined,
             oldRoute ? [] : [trace.sameProcessOrigin]
           );
           trace.selectedRoute = await page.evaluate(() =>
@@ -2062,7 +2064,7 @@ for (const route of ['extension', 'link']) {
           '675-install'
         );
         assert.match(trace.install.stdout, /install-status-0/);
-        trace.packageProof = packageProof(trace.install, '1.43.2', manifest.wasmSha256);
+        trace.packageProof = packageProof(trace.install, '1.44.99', manifest.wasmSha256);
       } catch (error) {
         setupError = error;
         trace.setupFailure = { name: error.name, message: error.message };

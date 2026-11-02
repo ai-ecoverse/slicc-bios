@@ -1358,6 +1358,7 @@ class Guard {
     const scope = this.scope(targetId);
     scope.ownersReady = Boolean(root);
     scope.protectedOwner = false;
+    scope.knownProtectedOwner = false;
     const former = scope.owners;
     scope.owners = new Set();
     scope.remoteOwners = new Set();
@@ -1390,14 +1391,14 @@ class Guard {
     if (!this.frames.has(node.frameId)) this.frames.set(node.frameId, '');
     if (!this.parents.has(node.frameId)) this.parents.set(node.frameId, scope.root);
     const source = (node.attributes ?? []).indexOf('src');
-    if (
-      scope.attachedFrames.has(node.frameId) &&
-      [
-        source < 0 ? undefined : node.attributes[source + 1],
-        node.contentDocument?.documentURL,
-      ].some((url) => this.is.url(url))
-    )
+    const evidence = [
+      source < 0 ? undefined : node.attributes[source + 1],
+      node.contentDocument?.documentURL,
+    ];
+    if (scope.attachedFrames.has(node.frameId) && evidence.some((url) => this.is.url(url))) {
       scope.protectedOwner = true;
+      scope.knownProtectedOwner ||= evidence.some((url) => !inherits(url) && this.is.url(url));
+    }
   }
 
   place(targetId, sessionId) {
@@ -1952,7 +1953,7 @@ class Guard {
       this.is.url(context.origin) ||
       this.is.url(this.frames.get(context.auxData.frameId)) ||
       this.errorFrames.has(context.auxData.frameId) ||
-      Boolean(this.scopes.get(record.targetId)?.protectedOwner)
+      Boolean(this.scopes.get(record.targetId)?.knownProtectedOwner)
     );
   }
 
@@ -1995,7 +1996,10 @@ class Guard {
     const answer = await this.contextAnswer(record, where);
     const targetId = record.targetId;
     if (!current()) return this.staleContext(answer, targetId);
-    if (answer?.error && (await this.retryContext(record))) {
+    if (
+      answer?.error?.message === catalog.protectedOrigins.refusal &&
+      (await this.retryContext(record))
+    ) {
       if (!current()) return false;
       return this.checkContext(record);
     }
