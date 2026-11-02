@@ -157,6 +157,7 @@ await step('seed', async () => {
     'handoff.js',
     'held.js',
     'index.html',
+    'inventory.js',
     'jerk.js',
     'join.css',
     'join.html',
