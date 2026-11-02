@@ -78,6 +78,7 @@ export function outbound(open) {
       op: 'watch',
       ...(typeof open.since === 'string' ? { since: open.since } : {}),
       ...flag(open, 'thinking'),
+      ...flag(open, 'busy'),
     };
   if (open.op !== 'prompt') return null;
   const busy = ['followUp', 'steer', 'reject'].includes(open.whenBusy) ? open.whenBusy : 'followUp';
