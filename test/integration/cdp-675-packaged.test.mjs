@@ -9,7 +9,6 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { boot, ready, run, shows } from './bios.mjs';
 import { boundedHooks, boundedStage, rowDeadline } from './cdp-675-deadline.mjs';
-import { namespaceCommand, namespaceEnabled, namespaceTrace } from './cdp-675-namespace.mjs';
 import { nativeTapFixture, nativeTapRead } from './cdp-675-native-tap.mjs';
 import { oldRouteExtension } from './cdp-675-old-extension.mjs';
 import { assertPlainReplayBound } from './cdp-675-plain-bound.mjs';
@@ -2432,10 +2431,8 @@ for (const route of ['extension', 'link']) {
             row.status = 'pass';
             continue;
           }
-          if (namespaceEnabled(scene))
-            await cone(page, ': > /tmp/cdp-675-namespace.ndjson', `675-namespace-reset-${index}`);
           const command = `mcpcat serve --webmcp ${scene.reload ? '--webmcp-reload ' : ''}--tab ${quote(row.target)} --http ${row.port} --no-auth`;
-          row.command = namespaceCommand(scene, command);
+          row.command = command;
           row.step = 'shipped-serve';
           if (scene.race)
             await page.evaluate(() => {
@@ -2456,7 +2453,7 @@ for (const route of ['extension', 'link']) {
                 .then(({ status, stdout, stderr }) => ({ status, stdout, stderr }));
             },
             {
-              command: `export PATH=$PNPM_HOME/bin:$PATH; export SLICC_CDP_URL=http://127.0.0.1:9222; echo $$ > ${row.pid}; ${namespaceCommand(scene, `exec ${command}`)}`,
+              command: `export PATH=$PNPM_HOME/bin:$PATH; export SLICC_CDP_URL=http://127.0.0.1:9222; echo $$ > ${row.pid}; exec ${command}`,
               log: row.log,
             }
           );
@@ -2808,10 +2805,7 @@ for (const route of ['extension', 'link']) {
           if (scene.standaloneControl) {
             row.secondProcessList = await cone(
               page,
-              namespaceCommand(
-                scene,
-                `playwright-cli webmcp-list --tab ${quote(row.target)} --json`
-              ),
+              `playwright-cli webmcp-list --tab ${quote(row.target)} --json`,
               `675-root-only-list-${index}`
             );
             const standalone = JSON.parse(row.secondProcessList.stdout);
@@ -2833,10 +2827,7 @@ for (const route of ['extension', 'link']) {
             assert.match(row.sameOriginCall.stdout, /^15$/m);
             row.secondProcessList = await cone(
               page,
-              namespaceCommand(
-                scene,
-                `playwright-cli webmcp-list --tab ${quote(row.target)} --json`
-              ),
+              `playwright-cli webmcp-list --tab ${quote(row.target)} --json`,
               `675-same-child-list-${index}`
             );
             row.sameOriginTools = sameOriginTools(JSON.parse(row.secondProcessList.stdout));
@@ -3558,14 +3549,6 @@ for (const route of ['extension', 'link']) {
                 .catch(() => []);
             }
             if (!guardLevel) {
-              if (namespaceEnabled(scene)) {
-                try {
-                  const capture = await sh(page, 'cat /tmp/cdp-675-namespace.ndjson');
-                  row.namespaceTrace = namespaceTrace(capture.stdout);
-                } catch (error) {
-                  row.namespaceTraceError = error.message;
-                }
-              }
               row.serverLog = await sh(page, `cat ${row.log}`).catch((error) => ({
                 error: error.message,
               }));
