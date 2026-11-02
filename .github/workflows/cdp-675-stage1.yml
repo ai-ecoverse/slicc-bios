@@ -100,7 +100,7 @@ jobs:
           unzip -q artifacts/slicc-extension.zip -d "$RUNNER_TEMP/extension-candidate"
           cd ../cli
           npm ci
-          go build -ldflags '-X main.version=1.55.99' -o "$RUNNER_TEMP/slicc-candidate" ./cmd/slicc
+          go build -ldflags '-X main.version=1.56.99' -o "$RUNNER_TEMP/slicc-candidate" ./cmd/slicc
           "$RUNNER_TEMP/slicc-candidate" --version > "$RUNNER_TEMP/candidate-trace/cli-version.txt"
           sha256sum "$RUNNER_TEMP/slicc-candidate" > "$RUNNER_TEMP/candidate-trace/cli.sha256"
           cd ../..

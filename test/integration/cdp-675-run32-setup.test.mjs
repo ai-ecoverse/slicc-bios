@@ -54,7 +54,7 @@ test('only the old link lane selects the installed historical CLI and retains it
     /export SLICC_675_OLD_CLI="\$RUNNER_TEMP\/old-cli\/node_modules\/\.bin\/slicc"/
   );
   assert.match(packaged, /oldRoute \? process\.env\.SLICC_675_OLD_CLI : undefined/);
-  assert.match(packaged, /route\.version === \(oldRoute \? '1\.49\.36' : '1\.55\.99'\)/);
+  assert.match(packaged, /route\.version === \(oldRoute \? '1\.49\.36' : '1\.56\.99'\)/);
   assert.match(packaged, /if \(oldRoute\)\s*assert\.ok\(\s*process\.env\.SLICC_675_OLD_CLI/);
 });
 

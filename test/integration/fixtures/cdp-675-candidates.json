@@ -5,7 +5,7 @@
   "browsers": "11b09f5d17f32eabf404873f9172ae595ecf3c7f",
   "mcpcat": "db06323377a4eef2ba5bff136bc520e603610e58",
   "extensionVersion": "7.11.99",
-  "cliVersion": "1.55.99",
+  "cliVersion": "1.56.99",
   "oldExtensionVersion": "7.10.0",
   "oldCliVersion": "1.49.36",
   "oldCdpVersion": "1.43.1"

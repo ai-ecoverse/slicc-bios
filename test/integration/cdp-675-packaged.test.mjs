@@ -2051,7 +2051,7 @@ for (const route of ['extension', 'link']) {
               runtimes.length > 0 &&
               trace.selectedRoute.length > 0 &&
               trace.selectedRoute.every(
-                ({ route }) => route.version === (oldRoute ? '1.49.36' : '1.55.99')
+                ({ route }) => route.version === (oldRoute ? '1.49.36' : '1.56.99')
               ),
             actual: trace.selectedRoute,
           });
