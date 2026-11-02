@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { boot, ready, run, shows } from './bios.mjs';
 import { boundedHooks, boundedStage, rowDeadline } from './cdp-675-deadline.mjs';
 import { nativeTapFixture, nativeTapRead } from './cdp-675-native-tap.mjs';
+import { plainReplayAttempts } from './cdp-675-plain-retry.mjs';
 import { workerScopeRead } from './cdp-675-worker-scope.mjs';
 import { devtools, launch } from './chrome.mjs';
 import { fixtureTarget } from './fixtures/cdp-675-target.mjs';
@@ -3547,6 +3548,7 @@ for (const route of ['extension', 'link']) {
             row.methods = await page
               .evaluate((start) => globalThis.cdp675Trace?.slice(start ?? 0) ?? [], row.traceStart)
               .catch(() => []);
+            if (foreign) row.plainReplayAttempts = plainReplayAttempts(row.methods);
             row.frameReadTrace = await page
               .evaluate(
                 (target) =>
