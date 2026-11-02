@@ -11,6 +11,7 @@ const source = `class Connection {
     this.state = { tabs: new Map(), sessions: new Map() };
     this.answers = new Map();
   }
+  async onEvent() { return this.answer; }
   async sessionCommand() { throw this.error; }
   async admit() { return this.answer; }
   async seal() { throw this.error; }
@@ -30,6 +31,12 @@ test('native refusal tap preserves return and error identity and names the exact
   connection.answer = { unchanged: true };
   connection.error = new Error('native refusal');
   const params = { expression: 'location.href' };
+  assert.equal(
+    await connection.onEvent({ tabId: 12 }, 'Debugger.scriptParsed', { scriptId: 'root-script' }),
+    connection.answer
+  );
+  assert.equal(context.cdp675NativeTrace[0].phase, 'native-event');
+  assert.equal(context.cdp675NativeTrace[0].params.scriptId, 'root-script');
   connection.state.sessions.set('owned-session', { tabId: 12 });
   await assert.rejects(
     connection.sessionCommand({ method: 'Runtime.evaluate', sessionId: 'owned-session' }, params),
@@ -83,6 +90,7 @@ test('native fixture is a stamped test copy and never changes the candidate', as
   const directory = await mkdtemp(join(tmpdir(), 'cdp-675-tap-test-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   await writeFile(join(directory, 'cdp.js'), source);
+  await writeFile(join(directory, 'debugger.js'), '          state.suspension = null;');
   await writeFile(
     join(directory, 'manifest.json'),
     JSON.stringify({ key: Buffer.from('owned-candidate').toString('base64') })
@@ -92,6 +100,11 @@ test('native fixture is a stamped test copy and never changes the candidate', as
   assert.equal(await readFile(join(directory, 'cdp.js'), 'utf8'), source);
   assert.equal(await readFile(join(fixture.directory, 'cdp.js'), 'utf8'), tapNativeSource(source));
   assert.notEqual(fixture.sourceSha256, fixture.tappedSha256);
+  assert.notEqual(fixture.debuggerSourceSha256, fixture.debuggerTappedSha256);
+  assert.equal(
+    await readFile(join(directory, 'debugger.js'), 'utf8'),
+    '          state.suspension = null;'
+  );
   assert.match(fixture.extensionId, /^[a-p]{32}$/);
 });
 
@@ -128,7 +141,10 @@ test('native observer is raw and worker-owned and detaches on failed reads', asy
     async (_chrome, sessionId, method, params) => {
       assert.equal(sessionId, 'raw-worker');
       assert.equal(method, 'Runtime.evaluate');
-      const context = vm.createContext({ cdp675NativeTrace: [{ tabId: 12 }, { tabId: 13 }] });
+      const context = vm.createContext({
+        cdp675NativeTrace: [{ tabId: 12 }, { tabId: 13 }],
+        cdp675GateRecord() {},
+      });
       return {
         result: { value: JSON.parse(JSON.stringify(vm.runInContext(params.expression, context))) },
       };
@@ -151,6 +167,12 @@ test('native observer is raw and worker-owned and detaches on failed reads', asy
   await assert.rejects(
     nativeTapRead(chrome, fixture, '12', async () => ({ result: { value: { installed: false } } })),
     /not installed/
+  );
+  await assert.rejects(
+    nativeTapRead(chrome, fixture, '12', async () => ({
+      result: { value: { installed: true, gateInstalled: false } },
+    })),
+    /gate observer was not installed/
   );
   await assert.rejects(
     nativeTapRead(

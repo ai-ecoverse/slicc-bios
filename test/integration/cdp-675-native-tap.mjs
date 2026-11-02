@@ -12,6 +12,11 @@ const cdp675NativeRecord = (record) => {
   records.push({ at: Date.now(), ...record });
   if (records.length > 20000) records.shift();
 };
+const cdp675NativeEvent = Connection.prototype.onEvent;
+Connection.prototype.onEvent = async function (source, method, params) {
+  if (method.startsWith('Debugger.')) cdp675NativeRecord({ tabId: source.tabId, phase: 'native-event', method, params });
+  return cdp675NativeEvent.call(this, source, method, params);
+};
 for (const name of ['sessionCommand', 'admit', 'seal', 'bind', 'send']) {
   const original = Connection.prototype[name];
   Connection.prototype[name] = async function (...args) {
@@ -41,6 +46,72 @@ for (const name of ['sessionCommand', 'admit', 'seal', 'bind', 'send']) {
 `;
 }
 
+export function tapDebuggerSource(source) {
+  const lift = '          state.suspension = null;';
+  assert.equal(source.split(lift).length, 2);
+  const tapped = source.replace(
+    lift,
+    `          globalThis.cdp675GateRecord({ tabId, phase: 'lift', outcome: 'success', reason: 'fresh whole-page proof, same generation and revision, within suspension deadline' });
+${lift}`
+  );
+  return `${tapped}
+const cdp675GateState = (gate, tabId, supplied) => {
+  const state = supplied ?? gate.states.get(tabId);
+  const tab = gate.connection.tabState(tabId);
+  return {
+    owner: state?.owner, generation: state?.generation, revision: state?.revision,
+    enabled: state?.enabled, currentState: Boolean(state) && gate.states.get(tabId) === state,
+    suspended: Boolean(state?.suspension), suspensionDeadline: state?.suspension?.deadline,
+    pause: state?.pause && { converted: state.pause.converted, published: state.pause.published, verifying: state.pause.verifying, deadline: state.pause.deadline },
+    scripts: [...(state?.scripts.keys() ?? [])], scriptInfo: [...(state?.scriptInfo.entries() ?? [])],
+    root: tab?.mainFrameId, loader: tab?.documents.frames.get(tab.mainFrameId)?.loaderId,
+    tabRevision: tab?.debuggerRevision, frameEvents: tab?.frameEvents,
+    frames: [...(tab?.frames.entries() ?? [])], blocks: [...(tab?.debuggerFrameBlocks ?? [])],
+    foreign: tab?.worlds.foreign, hidden: [...(tab?.worlds.ids.values() ?? [])].filter(entry => entry.hidden).map(entry => entry.context?.id)
+  };
+};
+globalThis.cdp675GateRecord = (record) => {
+  const records = globalThis.cdp675NativeTrace ??= [];
+  records.push({ at: Date.now(), gate: true, ...record });
+  if (records.length > 20000) records.shift();
+};
+for (const name of ['event', 'proof', 'pauseReady', 'paused', 'convert', 'resume', 'drop']) {
+  const original = DebuggerGate.prototype[name];
+  DebuggerGate.prototype[name] = async function (...args) {
+    const tabId = args[0];
+    const supplied = ['pauseReady', 'paused', 'convert', 'resume', 'proof'].includes(name) ? args[1] : undefined;
+    const params = name === 'event' ? args[2] : ['pauseReady', 'paused'].includes(name) ? args[2] : undefined;
+    const reason = name === 'convert' ? 'guard-owned instrumentation pause conversion' : name === 'resume' ? args[2] ? 'published pause rescue' : 'private resume; see caller and preceding gate decision' : params?.reason ?? name;
+    globalThis.cdp675GateRecord({ tabId, phase: name, outcome: 'start', reason, caller: new Error().stack, method: name === 'event' ? args[1] : undefined, params, ...cdp675GateState(this, tabId, supplied) });
+    try {
+      const result = await original.apply(this, args);
+      globalThis.cdp675GateRecord({ tabId, phase: name, outcome: 'success', reason: result === false ? 'predicate refused; see preceding proof or predicate decision' : name, verdict: result, ...cdp675GateState(this, tabId, supplied) });
+      return result;
+    } catch (error) {
+      globalThis.cdp675GateRecord({ tabId, phase: name, outcome: 'error', reason: String(error?.message ?? error), stack: error?.stack, ...cdp675GateState(this, tabId, supplied) });
+      throw error;
+    }
+  };
+}
+for (const name of ['script', 'suspend', 'revoke', 'convertible', 'childrenPlaced', 'knownChildren', 'context', 'ids', 'privateInstrumentation', 'rememberPublished']) {
+  const original = DebuggerGate.prototype[name];
+  DebuggerGate.prototype[name] = function (...args) {
+    const tabId = name === 'rememberPublished' ? [...this.states].find(([, state]) => state === args[0])?.[0] : name === 'knownChildren' ? [...this.connection.state.tabs].find(([, tab]) => tab === args[0])?.[0] : args[0];
+    const before = cdp675GateState(this, tabId);
+    try {
+      const result = original.apply(this, args);
+      const reason = name === 'rememberPublished' ? 'all live publication checks passed' : name === 'suspend' ? 'reachable frame or child witness unsettled; fresh whole-page proof required' : name;
+      globalThis.cdp675GateRecord({ tabId, phase: name === 'rememberPublished' ? 'publish' : name, outcome: 'success', reason, caller: new Error().stack, verdict: result, before, ...cdp675GateState(this, tabId) });
+      return result;
+    } catch (error) {
+      globalThis.cdp675GateRecord({ tabId, phase: name, outcome: 'error', reason: String(error?.message ?? error), before });
+      throw error;
+    }
+  };
+}
+`;
+}
+
 export async function nativeTapFixture(directory) {
   const root = await mkdtemp(join(tmpdir(), 'cdp-675-native-tap-'));
   await cp(directory, root, { recursive: true });
@@ -48,6 +119,10 @@ export async function nativeTapFixture(directory) {
   const original = await readFile(file, 'utf8');
   const tapped = tapNativeSource(original);
   await writeFile(file, tapped);
+  const debuggerFile = join(root, 'debugger.js');
+  const debuggerOriginal = await readFile(debuggerFile, 'utf8');
+  const debuggerTapped = tapDebuggerSource(debuggerOriginal);
+  await writeFile(debuggerFile, debuggerTapped);
   const manifest = JSON.parse(await readFile(join(root, 'manifest.json'), 'utf8'));
   assert.equal(typeof manifest.key, 'string');
   const extensionId = createHash('sha256')
@@ -60,7 +135,10 @@ export async function nativeTapFixture(directory) {
     extensionId,
     sourceSha256: createHash('sha256').update(original).digest('hex'),
     tappedSha256: createHash('sha256').update(tapped).digest('hex'),
-    scope: 'test-only native refusal trace, collected by raw observer, never guard output',
+    debuggerSourceSha256: createHash('sha256').update(debuggerOriginal).digest('hex'),
+    debuggerTappedSha256: createHash('sha256').update(debuggerTapped).digest('hex'),
+    scope:
+      'test-only native refusal and DebuggerGate decisions, raw observer only, never guard output',
   };
 }
 
@@ -77,13 +155,18 @@ export async function nativeTapRead(chrome, fixture, targetId, bounded) {
   });
   try {
     const result = await bounded(chrome, sessionId, 'Runtime.evaluate', {
-      expression: `({installed: Array.isArray(globalThis.cdp675NativeTrace), records: (globalThis.cdp675NativeTrace ?? []).filter(record => String(record.tabId) === ${JSON.stringify(String(targetId))})})`,
+      expression: `({installed: Array.isArray(globalThis.cdp675NativeTrace), gateInstalled: typeof globalThis.cdp675GateRecord === 'function', records: (globalThis.cdp675NativeTrace ?? []).filter(record => String(record.tabId) === ${JSON.stringify(String(targetId))})})`,
       returnByValue: true,
     });
     assert.equal(
       result.result?.value?.installed,
       true,
       'native refusal observer was not installed'
+    );
+    assert.equal(
+      result.result?.value?.gateInstalled,
+      true,
+      'native gate observer was not installed'
     );
     return result.result.value;
   } finally {
