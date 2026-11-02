@@ -234,7 +234,7 @@ test('slicc agents over the tray from a device without Control is refused, plain
     );
     assert.equal(said.includes(joinUrl), false);
   }
-  const raw = await chrome.page(t);
+  const raw = await page.tab();
   await raw.goto('/manifest.json');
   const opened = await raw.evaluate(
     async (join, tray) => {
