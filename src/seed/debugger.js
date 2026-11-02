@@ -1,8 +1,8 @@
 export const DEBUGGER_ROUTE_UPDATE =
-  'slicc: refused: Update the selected browser route to use Debugger in seven: slicc-extension 7.11.99 or slicc 1.49.37 or later. Reload seven after updating.';
+  'slicc: refused: Update the selected browser route to use Debugger in seven: slicc-extension 7.11.99 or slicc 1.55.99 or later. Reload seven after updating.';
 
 const RELEASE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
-const floors = { extension: [7n, 11n, 99n], link: [1n, 49n, 37n] };
+const floors = { extension: [7n, 11n, 99n], link: [1n, 55n, 99n] };
 const lifetimes = new Map([
   ['Debugger.enable', 'persistent'],
   ['Debugger.setInstrumentationBreakpoint', 'persistent'],
