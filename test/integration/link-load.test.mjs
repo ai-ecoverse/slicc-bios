@@ -29,7 +29,11 @@ test('diagnostic: 64 parallel kernel fetches and a small pnpm install through th
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => server.close());
   const page = await chrome.page(t);
+  await page.init(() => {
+    globalThis.sliccKernelDebug = true;
+  });
   await boot(page);
+  await page.until(() => typeof globalThis.sliccKernelClient === 'function');
   const { port: debugPort } = await devtools(chrome);
   const node = attach(
     CLI,

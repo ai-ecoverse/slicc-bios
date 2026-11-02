@@ -169,6 +169,13 @@ export async function launch({ agent = false, vault = true, tools = true, ...ove
   const github = await startFakeGitHub();
   const page = chrome.page;
   const close = chrome.close;
+  const peakPages = new Set();
+  const reportPeaks = async (opened) => {
+    if (!peakPages.delete(opened)) return;
+    await opened.evaluate(() => {
+      for (const report of [...(globalThis.__linkPeakReports ?? [])]) report('diagnostic teardown');
+    });
+  };
   chrome.vault = fake;
   chrome.github = github;
   chrome.cdp.on(({ method, params }) => {
@@ -179,19 +186,17 @@ export async function launch({ agent = false, vault = true, tools = true, ...ove
   });
   const messages = consoleTail(chrome.cdp);
   const traced = TRACE ? networkTrace(chrome.cdp, new URL(chrome.url).origin) : null;
-  chrome.close = (...args) => {
+  chrome.close = async (...args) => {
+    await Promise.all([...peakPages].map(reportPeaks));
     fake?.close();
     void github.close();
     return close.apply(chrome, args);
   };
   chrome.page = async (t) => {
     let opened;
-    t.after(async () => {
-      await opened?.evaluate(() => {
-        for (const close of [...(globalThis.__linkPeakClosers ?? [])]) close('diagnostic teardown');
-      });
-    });
+    t.after(() => reportPeaks(opened));
     opened = await page(t);
+    peakPages.add(opened);
     await opened.init(
       `() => { globalThis.__linkPeakRow = ${JSON.stringify(String(t.filePath).split('/').at(-1))}; globalThis.__linkPeakTest = ${JSON.stringify(t.name)}; }`
     );

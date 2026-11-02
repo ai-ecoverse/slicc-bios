@@ -413,7 +413,7 @@ export function createSession({
   function close(reason) {
     if (closed) return;
     closed = reason;
-    globalThis.__linkPeakClosers.delete(close);
+    globalThis.__linkPeakReports.delete(report);
     peaks.report(reason);
     timers.clearTimeout(timer);
     settle.reject(failure(`ECONNRESET: ${reason}`));
@@ -422,8 +422,9 @@ export function createSession({
     onClose?.(reason);
   }
 
-  globalThis.__linkPeakClosers ??= new Set();
-  globalThis.__linkPeakClosers.add(close);
+  const report = (reason) => peaks.report(reason);
+  globalThis.__linkPeakReports ??= new Set();
+  globalThis.__linkPeakReports.add(report);
 
   function incoming(channel, id, payload) {
     if (id % 2 === parity || peerIds.has(id)) return close('an OPEN with a bad stream id');
