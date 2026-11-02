@@ -155,6 +155,7 @@ export async function remoteAgent(owner, { load = loadChat, cone } = {}) {
     prompt: (args) => remote.prompt(args),
     watch: (args) => remote.watch(args),
     abort: () => remote.abort(),
+    ...(remote.inventory ? { inventory: (args) => remote.inventory(args) } : {}),
     close: () => connection.close(),
   };
 }

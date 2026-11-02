@@ -1,3 +1,5 @@
+import { followInventory, inventoryIdentity, shaped } from './inventory.js';
+
 export const MAX_PROMPT = 16 * 1024 * 1024;
 const MODES = ['steer', 'followUp', 'reject'];
 
@@ -48,7 +50,18 @@ async function pump(stream, events) {
   void watching;
 }
 
-export function createRemote({ control, onChange = () => {} }) {
+const clock = {
+  set: (run, ms) => setTimeout(run, ms),
+  clear: (handle) => clearTimeout(handle),
+};
+
+export function createRemote({
+  control,
+  onChange = () => {},
+  inventory = inventoryIdentity(),
+  now = Date.now,
+  timers = clock,
+}) {
   const active = new Map();
   const mark = (link, mode, by) => {
     const counts = active.get(link.key) ?? { prompt: 0, watch: 0 };
@@ -87,6 +100,17 @@ export function createRemote({ control, onChange = () => {} }) {
       });
       await pump(stream, watch.events);
     },
+    async inventory(api, meta, stream) {
+      if (typeof api.inventory !== 'function')
+        return stream.reset('EOPNOTSUPP: this agent has no inventory');
+      const watch = meta.watch === true;
+      const opened = await api.inventory({ watch });
+      const known = await inventory();
+      const render = (snapshot) => shaped(snapshot, { ...known, now });
+      stream.accepted(await render(opened.snapshot));
+      if (!watch || !opened.events) return stream.closeWrite();
+      await followInventory(stream, opened.snapshot, opened.events, { render, line, now, timers });
+    },
     async abort(api, _meta, stream) {
       const { aborted } = await api.abort();
       stream.accepted({ aborted: aborted === true });
@@ -102,7 +126,7 @@ export function createRemote({ control, onChange = () => {} }) {
     async handle(link, meta, stream) {
       const op = ops[meta.op];
       if (!op) return stream.reset('EINVAL');
-      const mode = meta.op === 'abort' ? null : meta.op;
+      const mode = meta.op === 'prompt' || meta.op === 'watch' ? meta.op : null;
       if (mode) mark(link, mode, 1);
       let api = null;
       try {
