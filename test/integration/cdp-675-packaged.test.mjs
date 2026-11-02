@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { boot, ready, run, shows } from './bios.mjs';
 import { boundedHooks, boundedStage, rowDeadline } from './cdp-675-deadline.mjs';
 import { nativeTapFixture, nativeTapRead } from './cdp-675-native-tap.mjs';
+import { assertPlainReplayBound } from './cdp-675-plain-bound.mjs';
 import { plainReplayAttempts } from './cdp-675-plain-retry.mjs';
 import { workerScopeRead } from './cdp-675-worker-scope.mjs';
 import { devtools, launch } from './chrome.mjs';
@@ -2747,32 +2748,8 @@ for (const route of ['extension', 'link']) {
                   packet.error?.message ?? ''
                 )
             );
-            assert.ok(
-              row.fallbackRefusal,
-              'fresh replay refusal must remain terminal, never retried'
-            );
-            const afterRefusal = after.slice(after.indexOf(row.fallbackRefusal) + 1);
-            assert.equal(
-              afterRefusal.some(
-                ({ boundary, direction, connectionId, packet }) =>
-                  connectionId === reload.connectionId &&
-                  boundary === 'bios' &&
-                  direction === 'send' &&
-                  ['Target.attachToTarget', 'Runtime.enable', 'Page.reload'].includes(packet.method)
-              ),
-              false,
-              'protected refusal must not be retried'
-            );
-            assert.equal(
-              after.some(
-                ({ boundary, direction, packet }) =>
-                  boundary === 'bios' &&
-                  direction === 'send' &&
-                  packet.method === 'Runtime.evaluate' &&
-                  /^const __wmcp_/.test(packet.params?.expression ?? '')
-              ),
-              false
-            );
+            assert.ok(row.fallbackRefusal, 'fresh replay must record its guarded refusal');
+            row.plainReplayBound = assertPlainReplayBound(row.methods);
             row.status = 'pass';
             continue;
           }
