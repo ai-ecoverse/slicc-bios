@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-cdp
-          ref: 716cae976a1caeddaf6941c420399b2fe74c6213
+          ref: 40074efe899e4c6b18b044a7bd7b5b775352fec4
           path: candidates/cdp
       - uses: actions/checkout@v4
         with:
