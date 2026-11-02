@@ -5,6 +5,7 @@ const SOURCE = 'https://vault-preview.sliccy.ai/';
 
 export async function realVault(origin, { version } = {}) {
   const cached = new Map();
+  const requests = [];
   const config = await fetch(new URL('config.json', SOURCE), {
     signal: AbortSignal.timeout(30000),
   }).then((r) => {
@@ -14,8 +15,13 @@ export async function realVault(origin, { version } = {}) {
   if (config.version !== version)
     throw new Error(`the vault deployment version is ${config.version}, expected ${version}`);
   const server = createServer(async (request, response) => {
+    const path = new URL(request.url, 'http://fixture').pathname;
+    const entry = { path, startedAt: Date.now(), finishedAt: null, status: null };
+    requests.push(entry);
+    response.on('close', () => {
+      entry.aborted = !response.writableFinished;
+    });
     try {
-      const path = new URL(request.url, 'http://fixture').pathname;
       let body;
       let type;
       if (path === '/config.json' || path === '/embedders.json') {
@@ -23,10 +29,12 @@ export async function realVault(origin, { version } = {}) {
         type = 'application/json';
       } else {
         let asset = cached.get(path);
+        entry.cached = Boolean(asset);
         if (!asset) {
           const upstream = await fetch(new URL(path, SOURCE), {
             signal: AbortSignal.timeout(30000),
           });
+          entry.upstreamStatus = upstream.status;
           if (!upstream.ok) throw new Error('the vault deployment asset is unavailable');
           asset = {
             body: Buffer.from(await upstream.arrayBuffer()),
@@ -43,10 +51,15 @@ export async function realVault(origin, { version } = {}) {
         'cross-origin-resource-policy': 'cross-origin',
         'cache-control': 'no-store',
       });
+      entry.status = 200;
       response.end(body);
-    } catch {
+    } catch (error) {
+      entry.error = error.name;
+      entry.status = 502;
       response.writeHead(502);
       response.end('the vault deployment is unavailable');
+    } finally {
+      entry.finishedAt = Date.now();
     }
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -56,6 +69,7 @@ export async function realVault(origin, { version } = {}) {
     evidence: () => ({
       version: config.version,
       source: SOURCE,
+      requests: requests.map((request) => ({ ...request })),
       assets: [...cached].map(([path, asset]) => ({
         path,
         sha256: createHash('sha256').update(asset.body).digest('hex'),

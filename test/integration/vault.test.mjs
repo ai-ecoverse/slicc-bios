@@ -97,6 +97,62 @@ test('seven embeds the vault at its origin: the page hello, status and list, a l
   assert.deepEqual(page.errors, []);
 });
 
+test('vault connection diagnostics distinguish a loaded silent frame from a welcome after reload without record values', async (t) => {
+  const quiet = await startFakeVault({ locked: true, mute: true });
+  t.after(() => quiet.close());
+  const page = await chrome.page(t);
+  await page.init(override(quiet.origin));
+  await page.goto('/');
+  await page.until(
+    () => document.querySelector('slicc-app')?.model?.vault?.availability() === 'waiting'
+  );
+  const before = await page.evaluate(() =>
+    document.querySelector('slicc-app').model.vault.diagnostics()
+  );
+  assert.equal(before.welcomed, false);
+  assert.equal(before.locked, null);
+  assert.equal(before.statusNull, true);
+  assert.deepEqual(before.capabilityKeys, []);
+  assert.equal(before.version, null);
+  assert.equal(before.loads, 1);
+  assert.equal(before.welcomedAt, null);
+  assert.ok(before.loadedAt >= before.createdAt);
+  assert.ok(before.helloAt >= before.loadedAt);
+  quiet.set({ mute: false });
+  await page.evaluate(() => {
+    const frame = document.querySelector('iframe[data-vault=core]');
+    frame.setAttribute('src', frame.getAttribute('src'));
+  });
+  await page.until(
+    () => document.querySelector('slicc-app').model.vault.availability() === 'locked'
+  );
+  const after = await page.evaluate(() =>
+    document.querySelector('slicc-app').model.vault.diagnostics()
+  );
+  assert.equal(after.welcomed, true);
+  assert.equal(after.locked, true);
+  assert.equal(after.statusNull, false);
+  assert.deepEqual(after.capabilityKeys, ['forward']);
+  assert.equal(after.version, '1.20.0');
+  assert.equal(after.loads, 2);
+  assert.equal(after.createdAt, before.createdAt);
+  assert.ok(after.loadedAt > before.loadedAt);
+  assert.ok(after.helloAt >= after.loadedAt);
+  assert.ok(after.welcomedAt >= after.helloAt);
+  assert.deepEqual(Object.keys(after).sort(), [
+    'capabilityKeys',
+    'createdAt',
+    'helloAt',
+    'loadedAt',
+    'loads',
+    'locked',
+    'statusNull',
+    'version',
+    'welcomed',
+    'welcomedAt',
+  ]);
+});
+
 test('the agent port: the scrub pair reaches the worker before a put answer, and { vault, scrub } comes again after a frame reload', async (t) => {
   fake.set({ locked: false, secrets: [], version: 0 });
   const page = await chrome.page(t);

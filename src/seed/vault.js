@@ -259,6 +259,7 @@ export function vaultPort({ call, state, button }) {
     status: state.status,
     list: state.list,
     availability: state.availability,
+    diagnostics: state.diagnostics,
     async audit(before, limit) {
       return data(await call('audit', { ...maybe('before', before), ...maybe('limit', limit) }));
     },
@@ -398,7 +399,26 @@ export function sealedRelay({
   };
 }
 
-function snapshots({ now, timers, pending, view }) {
+function vaultState(now) {
+  const createdAt = now();
+  return {
+    view: { welcomed: false, since: createdAt, status: null, list: null, placeholders: [] },
+    timings: { createdAt, loads: 0, loadedAt: null, helloAt: null, welcomedAt: null },
+  };
+}
+
+function vaultDiagnostics(view, timings) {
+  return {
+    welcomed: view.welcomed,
+    locked: view.status?.locked ?? null,
+    statusNull: view.status === null,
+    capabilityKeys: Object.keys(view.status?.capabilities ?? {}).sort(),
+    version: view.status?.version ?? null,
+    ...timings,
+  };
+}
+
+function snapshots({ now, timers, pending, view, timings }) {
   const listeners = {
     status: new Set(),
     list: new Set(),
@@ -430,6 +450,7 @@ function snapshots({ now, timers, pending, view }) {
       listeners[type].add(listener);
       return () => listeners[type].delete(listener);
     },
+    diagnostics: () => vaultDiagnostics(view, timings),
     status: () => view.status,
     list: () => view.list,
     availability,
@@ -610,14 +631,13 @@ export function createVault({
 }) {
   const pending = new Map();
   const workers = new Set();
-  const view = { welcomed: false, since: now(), status: null, list: null, placeholders: [] };
-  const state = snapshots({ now, timers, pending, view });
+  const { view, timings } = vaultState(now);
+  const state = snapshots({ now, timers, pending, view, timings });
   const buttons = vaultButtons({ document, origin, media });
   const frame = coreFrame(document);
   let serial = 0;
   let epoch = 0;
   let page = null;
-  let loads = 0;
   let scrub = stored(storage);
   let sentGid;
 
@@ -673,6 +693,7 @@ export function createVault({
     if (port !== page || generation !== epoch || message?.v !== 1) return;
     if (message.op === 'welcome') {
       view.welcomed = true;
+      timings.welcomedAt = now();
       view.status = message.status;
       take(view.status?.scrub);
       placeholders(message.placeholders);
@@ -688,7 +709,7 @@ export function createVault({
     state.refresh();
   }
 
-  const agent = vaultAgent({ frame, origin, pair, loads: () => loads });
+  const agent = vaultAgent({ frame, origin, pair, loads: () => timings.loads });
 
   async function hello() {
     const generation = ++epoch;
@@ -697,9 +718,9 @@ export function createVault({
     placeholders([]);
     state.emit('status', null);
     state.refresh();
-    const load = loads;
+    const load = timings.loads;
     const gid = await sudoGid().catch(() => undefined);
-    if (load !== loads || generation !== epoch || !frame.contentWindow) return;
+    if (load !== timings.loads || generation !== epoch || !frame.contentWindow) return;
     sentGid = Number.isInteger(gid) ? gid : undefined;
     const { port1, port2 } = new MessageChannel();
     page?.close();
@@ -707,6 +728,7 @@ export function createVault({
     page = port1;
     view.welcomed = false;
     view.since = now();
+    timings.helloAt = view.since;
     port1.onmessage = ({ data: message, ports }) =>
       receive(port1, message, ports ?? [], generation);
     port1.start?.();
@@ -722,7 +744,8 @@ export function createVault({
   }
 
   frame.addEventListener('load', () => {
-    loads += 1;
+    timings.loads += 1;
+    timings.loadedAt = now();
     void hello();
     for (const worker of workers) agent(worker);
   });
@@ -757,10 +780,10 @@ export function createVault({
       agent(worker);
       return () => workers.delete(worker);
     },
-    reconnect: () => (loads ? hello() : Promise.resolve()),
+    reconnect: () => (timings.loads ? hello() : Promise.resolve()),
     sudoGid(gid) {
       const wanted = Number.isInteger(gid) ? gid : undefined;
-      return loads && wanted !== sentGid ? hello() : Promise.resolve();
+      return timings.loads && wanted !== sentGid ? hello() : Promise.resolve();
     },
     close() {
       epoch += 1;
