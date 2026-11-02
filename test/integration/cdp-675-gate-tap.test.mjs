@@ -56,6 +56,10 @@ function fixture() {
 
 test('gate tap preserves async results, refusals, and records native events before decisions', async () => {
   const { context, gate, state } = fixture();
+  for (let id = 0; id < 20; id += 1) {
+    state.scripts.set(String(id), {});
+    state.scriptInfo.set(String(id), { context: 3 });
+  }
   for (const name of ['paused', 'convert', 'resume', 'drop'])
     assert.equal(await gate[name](12, state), gate.answer);
   assert.equal(await gate.event(12, 'Debugger.paused', { reason: 'instrumentation' }), gate.answer);
@@ -85,6 +89,10 @@ test('gate tap preserves async results, refusals, and records native events befo
     )
   );
   assert.deepEqual(records[0].hidden, [3]);
+  assert.equal(records[0].scriptCount, 20);
+  assert.equal(records[0].scripts.length, 8);
+  assert.equal(records[0].scriptInfoCount, 20);
+  assert.equal(records[0].scriptInfo.length, 8);
 });
 
 test('gate tap preserves synchronous decisions and records lift and actual publication separately', () => {

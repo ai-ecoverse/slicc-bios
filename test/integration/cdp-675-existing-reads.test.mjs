@@ -5,6 +5,7 @@ import { createServer as https } from 'node:https';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { boot, ready } from './bios.mjs';
+import { boundedHooks, boundedStage } from './cdp-675-deadline.mjs';
 import { devtools, launch } from './chrome.mjs';
 import { fixtureTarget } from './fixtures/cdp-675-target.mjs';
 import { linkNode } from './linked-node.mjs';
@@ -122,7 +123,7 @@ for (const route of ['extension', 'link']) {
   test(`cdp 675 existing reads ${route}`, {
     skip: process.env.SLICC_675_STAGE1_DIAGNOSTIC !== '1',
     timeout: 900000,
-  }, async (t) => {
+  }, async (context) => {
     const trace = {
       route,
       extensionCandidate:
@@ -148,6 +149,7 @@ for (const route of ['extension', 'link']) {
         JSON.stringify(trace, null, 2)
       );
     };
+    const t = boundedHooks(context, trace, persist);
     t.after(persist);
     try {
       const secure = https(await certificate(), (_request, response) =>
@@ -472,7 +474,7 @@ for (const route of ['extension', 'link']) {
           }
           await page.evaluate(() => cdp675Reads.close());
         } finally {
-          await chrome.close();
+          await boundedStage(trace, `${route}/reads/browser-close`, () => chrome.close());
         }
       }
       trace.phase = 'completed';

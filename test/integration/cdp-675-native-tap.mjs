@@ -63,7 +63,7 @@ const cdp675GateState = (gate, tabId, supplied) => {
     enabled: state?.enabled, currentState: Boolean(state) && gate.states.get(tabId) === state,
     suspended: Boolean(state?.suspension), suspensionDeadline: state?.suspension?.deadline,
     pause: state?.pause && { converted: state.pause.converted, published: state.pause.published, verifying: state.pause.verifying, deadline: state.pause.deadline },
-    scripts: [...(state?.scripts.keys() ?? [])], scriptInfo: [...(state?.scriptInfo.entries() ?? [])],
+    scriptCount: state?.scripts.size, scripts: [...(state?.scripts.keys() ?? [])].slice(-8), scriptInfoCount: state?.scriptInfo.size, scriptInfo: [...(state?.scriptInfo.entries() ?? [])].slice(-8),
     root: tab?.mainFrameId, loader: tab?.documents.frames.get(tab.mainFrameId)?.loaderId,
     tabRevision: tab?.debuggerRevision, frameEvents: tab?.frameEvents,
     frames: [...(tab?.frames.entries() ?? [])], blocks: [...(tab?.debuggerFrameBlocks ?? [])],
@@ -82,7 +82,7 @@ for (const name of ['event', 'proof', 'pauseReady', 'paused', 'convert', 'resume
     const supplied = ['pauseReady', 'paused', 'convert', 'resume', 'proof'].includes(name) ? args[1] : undefined;
     const params = name === 'event' ? args[2] : ['pauseReady', 'paused'].includes(name) ? args[2] : undefined;
     const reason = name === 'convert' ? 'guard-owned instrumentation pause conversion' : name === 'resume' ? args[2] ? 'published pause rescue' : 'private resume; see caller and preceding gate decision' : params?.reason ?? name;
-    globalThis.cdp675GateRecord({ tabId, phase: name, outcome: 'start', reason, caller: new Error().stack, method: name === 'event' ? args[1] : undefined, params, ...cdp675GateState(this, tabId, supplied) });
+    globalThis.cdp675GateRecord({ tabId, phase: name, outcome: 'start', reason, caller: ['convert', 'resume', 'drop'].includes(name) ? new Error().stack : undefined, method: name === 'event' ? args[1] : undefined, params, ...cdp675GateState(this, tabId, supplied) });
     try {
       const result = await original.apply(this, args);
       globalThis.cdp675GateRecord({ tabId, phase: name, outcome: 'success', reason: result === false ? 'predicate refused; see preceding proof or predicate decision' : name, verdict: result, ...cdp675GateState(this, tabId, supplied) });
@@ -101,7 +101,7 @@ for (const name of ['script', 'suspend', 'revoke', 'convertible', 'childrenPlace
     try {
       const result = original.apply(this, args);
       const reason = name === 'rememberPublished' ? 'all live publication checks passed' : name === 'suspend' ? 'reachable frame or child witness unsettled; fresh whole-page proof required' : name;
-      globalThis.cdp675GateRecord({ tabId, phase: name === 'rememberPublished' ? 'publish' : name, outcome: 'success', reason, caller: new Error().stack, verdict: result, before, ...cdp675GateState(this, tabId) });
+      globalThis.cdp675GateRecord({ tabId, phase: name === 'rememberPublished' ? 'publish' : name, outcome: 'success', reason, caller: ['suspend', 'revoke', 'rememberPublished'].includes(name) || result === false ? new Error().stack : undefined, verdict: result, before, ...cdp675GateState(this, tabId) });
       return result;
     } catch (error) {
       globalThis.cdp675GateRecord({ tabId, phase: name, outcome: 'error', reason: String(error?.message ?? error), before });

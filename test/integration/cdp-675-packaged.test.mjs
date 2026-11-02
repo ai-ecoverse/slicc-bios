@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { boot, ready, run, shows } from './bios.mjs';
+import { boundedHooks, boundedStage, rowDeadline } from './cdp-675-deadline.mjs';
 import { nativeTapFixture, nativeTapRead } from './cdp-675-native-tap.mjs';
 import { workerScopeRead } from './cdp-675-worker-scope.mjs';
 import { devtools, launch } from './chrome.mjs';
@@ -1787,7 +1788,7 @@ for (const route of ['extension', 'link']) {
     test(`cdp 675 packaged ${route} ${mode}`, {
       skip: process.env.SLICC_675_STAGE1_DIAGNOSTIC !== '1',
       timeout: 900000,
-    }, async (t) => {
+    }, async (context) => {
       const trace = {
         route,
         mode,
@@ -1808,6 +1809,7 @@ for (const route of ['extension', 'link']) {
           JSON.stringify(trace, null, 2)
         );
       };
+      const t = boundedHooks(context, trace, persist);
       t.after(persist);
       let chrome;
       let nativeFixture;
@@ -2067,6 +2069,8 @@ for (const route of ['extension', 'link']) {
         else process.env.SLICC_HARNESS_EXTENSION = previous;
         await persist();
       }
+      const suitePage = page;
+      const suiteChrome = chrome;
       for (const [index, scene] of cases.entries()) {
         const row = {
           name: scene.name,
@@ -2077,6 +2081,13 @@ for (const route of ['extension', 'link']) {
           pid: `/tmp/675-serve-${index}.pid`,
         };
         trace.rows.push(row);
+        console.log(`cdp675 row start ${route} ${mode} ${row.name}`);
+        const deadline = rowDeadline(row);
+        const page = deadline.wrap(suitePage, ['evaluate', 'send', 'goto', 'init']);
+        const chrome = suiteChrome && {
+          ...suiteChrome,
+          cdp: deadline.wrap(suiteChrome.cdp, ['send']),
+        };
         let targetId;
         let rawSession;
         let unobserve;
@@ -2281,7 +2292,7 @@ for (const route of ['extension', 'link']) {
                 : 'https://vault.sliccy.ai',
               tag: `675-${route}-${index}`,
             });
-            row.bfcache = await bfcacheDriver.prepare();
+            row.bfcache = await deadline.wait(() => bfcacheDriver.prepare());
             row.bfcache.ordinaryHistoryOnly = Boolean(scene.ordinaryBfcache);
             url = new URL(row.bfcache.url);
           }
@@ -3036,7 +3047,7 @@ for (const route of ['extension', 'link']) {
             row.step = 'armed-bfcache-restore';
             const start = await page.evaluate(() => globalThis.cdp675Trace.length);
             row.bfcache.protectedRestore = scene.ordinaryBfcache
-              ? await bfcacheDriver.restore(row.bfcache.protectedEntry)
+              ? await deadline.wait(() => bfcacheDriver.restore(row.bfcache.protectedEntry))
               : await armedHistoryRestore(chrome, rawSession, row, row.bfcache.protectedEntry);
             if (scene.ordinaryBfcache)
               row.bfcache.scope =
@@ -3063,7 +3074,9 @@ for (const route of ['extension', 'link']) {
               row.bfcache.protectedOutput.stderr,
             ])
               assert.doesNotMatch(output, /vault\.sliccy\.ai/i);
-            row.bfcache.ordinaryRestore = await bfcacheDriver.restore(row.bfcache.ordinaryEntry);
+            row.bfcache.ordinaryRestore = await deadline.wait(() =>
+              bfcacheDriver.restore(row.bfcache.ordinaryEntry)
+            );
             row.bfcache.list = await cone(
               page,
               `timeout 60 mcpcat tools http://127.0.0.1:${row.port}/mcp --json`,
@@ -3453,7 +3466,7 @@ for (const route of ['extension', 'link']) {
           row.failure = { name: error.name, message: error.message };
         } finally {
           bfcacheOff?.();
-          if (bfcacheDriver) await bfcacheDriver.close().catch(() => {});
+          if (bfcacheDriver) await deadline.wait(() => bfcacheDriver.close()).catch(() => {});
           if (scene.race && page)
             await page
               .evaluate(() => {
@@ -3587,17 +3600,33 @@ for (const route of ['extension', 'link']) {
               row.failure = { name: error.name, message: error.message };
             }
           }
-          countRow(row);
           unobserve?.();
           if (rawSession)
             await chrome.cdp
               .send('Target.detachFromTarget', { sessionId: rawSession })
               .catch(() => {});
           if (targetId) await chrome.cdp.send('Target.closeTarget', { targetId }).catch(() => {});
+          deadline.end();
+          if (row.deadline.expiredAt && targetId) {
+            await boundedStage(trace, `${route}/${mode}/${row.name}/timeout-target-close`, () =>
+              suiteChrome.cdp.send('Target.closeTarget', { targetId })
+            ).catch((error) => {
+              row.timeoutCleanupError = error.message;
+            });
+          }
+          countRow(row);
           await persist();
+          console.log(`cdp675 row end ${route} ${mode} ${row.name} ${row.status}`);
         }
       }
-      await chrome?.close();
+      try {
+        await boundedStage(trace, `${route}/${mode}/browser-close`, () => suiteChrome?.close());
+      } finally {
+        await persist();
+        console.log(
+          `cdp675 mode end ${route} ${mode} ${JSON.stringify(process.getActiveResourcesInfo())}`
+        );
+      }
       assert.equal(
         trace.rows.filter(({ status }) => status !== 'pass').length,
         0,

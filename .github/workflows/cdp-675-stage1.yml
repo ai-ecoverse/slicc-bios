@@ -111,7 +111,7 @@ jobs:
           export SLICC_675_ARTIFACT_DIR="$RUNNER_TEMP/candidate-artifacts"
           export SLICC_675_EXTENSION_DIR="$RUNNER_TEMP/extension-candidate"
           export SLICC_CLI="$RUNNER_TEMP/slicc-candidate"
-          node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs test/integration/cdp-675-packaged.test.mjs test/integration/cdp-675-existing-reads.test.mjs > "$RUNNER_TEMP/candidate.log" 2>&1
+          timeout -k 30 2700 node --test --test-force-exit --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs test/integration/cdp-675-packaged.test.mjs test/integration/cdp-675-existing-reads.test.mjs > "$RUNNER_TEMP/candidate.log" 2>&1
           result=$?
           echo "Diagnostic exit: $result"
           exit "$result"
@@ -122,5 +122,6 @@ jobs:
           path: |
             ${{ runner.temp }}/candidate-trace
             ${{ runner.temp }}/candidate-artifacts
+            ${{ runner.temp }}/candidate.log
           if-no-files-found: error
           retention-days: 3
