@@ -62,13 +62,18 @@ export function inventoryIdentity({ name = named(), storage, random, subtle } = 
   };
 }
 
+export const MAX_ID_TEXT = 128;
+export const MAX_AGENTS = 256;
+
 const count = (value) => (Number.isInteger(value) && value >= 0 ? value : 0);
-const text = (value) => (typeof value === 'string' && value ? value : undefined);
+const text = (value) =>
+  typeof value === 'string' && value && value.length <= MAX_ID_TEXT ? value : undefined;
 
 export async function shaped(snapshot, { instance, hash, now }) {
   const agents = await Promise.all(
     (snapshot?.agents ?? [])
       .filter((agent) => typeof agent?.id === 'string' && STATUSES.includes(agent.status))
+      .slice(0, MAX_AGENTS)
       .map(async (agent) => {
         const parent = text(agent.parent);
         const provider = text(agent.provider);
@@ -105,22 +110,29 @@ export async function followInventory(stream, first, events, { render, line, now
   let sentAt = now();
   let flush = null;
   let repeat = null;
-  let writing = Promise.resolve();
+  let writing = null;
+  let dirty = false;
   const send = () => {
     flush = null;
     if (gone) return;
-    sentAt = now();
-    const snapshot = latest;
-    writing = writing
-      .then(async () => {
-        if (gone) return;
-        await stream.write(line({ t: 'inventory', ...(await render(snapshot)) }));
-      })
-      .catch(() => {
-        stop();
-      });
     timers.clear(repeat);
     repeat = timers.set(send, REPEAT_MS);
+    if (writing !== null) {
+      dirty = true;
+      return;
+    }
+    sentAt = now();
+    const snapshot = latest;
+    writing = (async () => {
+      await stream.write(line({ t: 'inventory', ...(await render(snapshot)) }));
+    })()
+      .catch(() => stop())
+      .finally(() => {
+        writing = null;
+        if (!dirty || gone) return;
+        dirty = false;
+        send();
+      });
   };
   const stop = () => {
     if (gone) return;
@@ -149,6 +161,7 @@ export async function followInventory(stream, first, events, { render, line, now
   } catch {}
   const ended = !gone;
   stop();
-  await writing;
-  if (ended) stream.closeWrite();
+  if (!ended) return;
+  while (writing !== null) await writing;
+  stream.closeWrite();
 }
