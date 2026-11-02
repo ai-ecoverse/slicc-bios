@@ -24,7 +24,7 @@ jobs:
     env:
       SLICC_CDP_PORTS: 9300-9309
       SLICC_675_STAGE1_DIAGNOSTIC: '1'
-      SLICC_675_RUN: '31'
+      SLICC_675_RUN: '32'
       UV_THREADPOOL_SIZE: '2'
       CARGO_BUILD_JOBS: '4'
       GOMAXPROCS: '4'
@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-cdp
-          ref: ffff0ac98785c93de272c85e4105e77c6383541e
+          ref: a596d80676695e0b2f8b5f60b6fa03f07245095e
           path: candidates/cdp
       - uses: actions/checkout@v4
         with:
@@ -45,17 +45,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-cli
-          ref: 1a45f2246ea54c4ccbcdd7e61b7bf592cc45b444
+          ref: 4ffb3b6d35ec2e9faba1ad5c2ee2061f193a67f3
           path: candidates/cli
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-extension
-          ref: cc00dd9ff8bde456486daf40aa18800299ee9550
+          ref: 0f2138f61041a4f8e4e0f9e11b7ac0a55f6b6ff2
           path: candidates/extension
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-browsers
-          ref: 11b09f5d17f32eabf404873f9172ae595ecf3c7f
+          ref: 735b2afc41c3f06c2876bdf3f07dfd600245770d
           path: candidates/browsers
       - uses: actions/setup-node@v4
         with:

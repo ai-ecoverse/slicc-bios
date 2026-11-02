@@ -1,8 +1,8 @@
 {
-  "cdp": "ffff0ac98785c93de272c85e4105e77c6383541e",
-  "cli": "1a45f2246ea54c4ccbcdd7e61b7bf592cc45b444",
-  "extension": "cc00dd9ff8bde456486daf40aa18800299ee9550",
-  "browsers": "11b09f5d17f32eabf404873f9172ae595ecf3c7f",
+  "cdp": "a596d80676695e0b2f8b5f60b6fa03f07245095e",
+  "cli": "4ffb3b6d35ec2e9faba1ad5c2ee2061f193a67f3",
+  "extension": "0f2138f61041a4f8e4e0f9e11b7ac0a55f6b6ff2",
+  "browsers": "735b2afc41c3f06c2876bdf3f07dfd600245770d",
   "mcpcat": "db06323377a4eef2ba5bff136bc520e603610e58",
   "extensionVersion": "7.11.99",
   "cliVersion": "1.56.99",
