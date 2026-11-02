@@ -6,10 +6,10 @@ export function assertPlainReplayBound(methods) {
   assert.ok(replay, 'plain replay must have one fresh attachment');
   const connectionId = methods.find(
     ({ at, boundary, direction, packet }) =>
-      at === replay.attachAt &&
+      at === replay.reloadAt &&
       boundary === 'bios' &&
       direction === 'send' &&
-      packet.method === 'Target.attachToTarget'
+      packet.method === 'Page.reload'
   ).connectionId;
   const sends = methods.filter(
     ({ at, boundary, direction, connectionId: id }) =>

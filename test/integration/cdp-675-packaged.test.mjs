@@ -2722,7 +2722,9 @@ for (const route of ['extension', 'link']) {
               ({ boundary, direction, packet }) =>
                 boundary === 'bios' &&
                 direction === 'receive' &&
-                /browser extension runs scripts|another extension/.test(packet.error?.message ?? '')
+                /browser extension runs scripts|that execution context belongs to a browser extension|another extension/.test(
+                  packet.error?.message ?? ''
+                )
             );
             assert.ok(trigger >= 0, 'fallback must have a real other-extension cause');
             const after = row.methods.slice(trigger + 1);

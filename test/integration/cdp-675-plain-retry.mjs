@@ -5,7 +5,10 @@ export function plainReplayAttempts(methods) {
   const reload = sends.find(({ packet }) => packet.method === 'Page.reload');
   if (!reload) return null;
   const attach = sends.find(
-    ({ at, packet }) => at >= reload.at && packet.method === 'Target.attachToTarget'
+    ({ at, connectionId, packet }) =>
+      at >= reload.at &&
+      connectionId === reload.connectionId &&
+      packet.method === 'Target.attachToTarget'
   );
   if (!attach) return null;
   const reply = (sent) =>
