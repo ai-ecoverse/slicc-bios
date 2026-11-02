@@ -9,6 +9,21 @@ import { attach, CLI } from './cli.mjs';
 const chrome = await launch({ timeout: 180000 });
 after(() => chrome.close());
 
+async function loadProgram(ctx) {
+  const sizes = await Promise.all(
+    Array.from({ length: 64 }, async (_, i) => {
+      const response = await ctx.fetch(`${ctx.argv[1]}?i=${i}`, {
+        signal: AbortSignal.timeout(90000),
+      });
+      const bytes = await response.arrayBuffer();
+      if (response.status !== 200 || bytes.byteLength !== 256 * 1024)
+        throw new Error(`response ${i}: ${response.status}, ${bytes.byteLength} bytes`);
+      return bytes.byteLength;
+    })
+  );
+  await ctx.write(1, `FETCHES ${sizes.length} ${sizes.reduce((sum, size) => sum + size, 0)}\n`);
+}
+
 test('diagnostic: 64 parallel kernel fetches and a small pnpm install through the linked exit', {
   timeout: 15 * 60 * 1000,
 }, async (t) => {
@@ -66,32 +81,30 @@ test('diagnostic: 64 parallel kernel fetches and a small pnpm install through th
     const device = network.status().links.devices.find((device) => device.name === 'peak-node');
     await network.setExit({ kind: 'link', id: device.id });
   });
-  const fetched = await page.evaluate(async (port) => {
-    const client = await globalThis.sliccKernelClient();
-    try {
-      return await client.run([
-        'curl',
-        '--parallel',
-        '--parallel-max',
-        '64',
-        '--fail',
-        '--silent',
-        '--show-error',
-        '--noproxy',
-        '*',
-        '--max-time',
-        '90',
-        ...Array.from({ length: 64 }, (_, i) => [
-          '--output',
-          '/dev/null',
-          `http://peak-node.slicc.internal:${port}/load?i=${i}`,
-        ]).flat(),
-      ]);
-    } finally {
-      await client.close();
-    }
-  }, server.address().port);
-  assert.equal(fetched.status, 0, JSON.stringify(fetched));
+  const fetched = await page.evaluate(
+    async (port, program) => {
+      const client = await globalThis.sliccKernelClient();
+      try {
+        const root = '/node_modules/link-load';
+        await client.fs.mkdir(root, { recursive: true });
+        await client.fs.writeFile(
+          `${root}/package.json`,
+          JSON.stringify({
+            name: 'link-load',
+            slicc: { commands: { 'link-load': { abi: 'js', module: 'index.mjs' } } },
+          })
+        );
+        await client.fs.writeFile(`${root}/index.mjs`, program);
+        return await client.run(['link-load', `http://peak-node.slicc.internal:${port}/load`]);
+      } finally {
+        await client.close();
+      }
+    },
+    server.address().port,
+    `export default ${loadProgram.toString()}`
+  );
+  assert.equal(fetched.status, 0, JSON.stringify({ ...fetched, arrived, peak }));
+  assert.match(fetched.stdout, /FETCHES 64 16777216/);
   assert.equal(arrived, 64);
   assert.equal(peak, 64);
   console.log(
