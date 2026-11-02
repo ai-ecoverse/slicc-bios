@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { boot, ready, run, shows } from './bios.mjs';
 import { boundedHooks, boundedStage, rowDeadline } from './cdp-675-deadline.mjs';
 import { nativeTapFixture, nativeTapRead } from './cdp-675-native-tap.mjs';
+import { oldRouteExtension } from './cdp-675-old-extension.mjs';
 import { assertPlainReplayBound } from './cdp-675-plain-bound.mjs';
 import { plainReplayAttempts } from './cdp-675-plain-retry.mjs';
 import { sameOriginChildMarkup, sameOriginTools } from './cdp-675-same-origin.mjs';
@@ -1865,6 +1866,7 @@ for (const route of ['extension', 'link']) {
           route === 'extension'
             ? await realExtension({
                 rules: protectedRules,
+                extension: oldRoute ? oldRouteExtension : undefined,
                 directory: oldRoute
                   ? undefined
                   : (nativeFixture?.directory ?? process.env.SLICC_675_EXTENSION_DIR),
