@@ -78,8 +78,13 @@ export function createRemote({ control, onChange = () => {} }) {
       const watch = await api.watch({
         ...(typeof meta.since === 'string' ? { since: meta.since } : {}),
         thinking: meta.thinking === true,
+        ...(meta.busy === true ? { busy: true } : {}),
       });
-      stream.accepted({ head: watch.head, ...(watch.gap ? { gap: true } : {}) });
+      stream.accepted({
+        head: watch.head,
+        ...(watch.gap ? { gap: true } : {}),
+        ...(typeof watch.busy === 'boolean' ? { busy: watch.busy } : {}),
+      });
       await pump(stream, watch.events);
     },
     async abort(api, _meta, stream) {

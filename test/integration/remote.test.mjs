@@ -33,6 +33,7 @@ const stream = Buffer.concat([
   }),
 ]);
 
+let held = null;
 const chrome = await launch({ tools: false, intercept: [], agent: true, timeout: 60000 });
 const llm = await fakeLlm(chrome.cdp, {
   hosts: [BEDROCK, 'https://registry.npmjs.org/'],
@@ -47,6 +48,7 @@ const llm = await fakeLlm(chrome.cdp, {
     }
     if (!request.url.startsWith(BEDROCK))
       return { status: 404, headers: [], body: Buffer.alloc(0) };
+    await held?.promise;
     return {
       status: 200,
       headers: [['content-type', 'application/vnd.amazon.eventstream']],
@@ -138,6 +140,75 @@ test('a linked slicc CLI prompts the agent, watches it, and aborts, over the lin
     () => document.querySelector('slicc-app').model.network.status().links.devices
   );
   assert.ok(devices.every((d) => d.control?.fixed === true));
+});
+
+test('slicc wait over the link sees the agent busy, then finishes once it is idle', {
+  skip: !cli,
+  timeout: 35 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  await page.goto('/');
+  await ready(page);
+  await agentUp(page);
+  await listsAccount(page, 'amazon-bedrock');
+  await connectAccount(page, 'amazon-bedrock', KEY);
+  await connected(page, 'amazon-bedrock');
+  let current = null;
+  await page.expose('sliccLinkSend', (message) =>
+    current?.node.stdin.write(`${JSON.stringify(message)}\n`)
+  );
+  held = Promise.withResolvers();
+  t.after(() => {
+    held?.resolve();
+    held = null;
+  });
+  const asked = () =>
+    llm.requests.filter((r) => r.url.startsWith(BEDROCK) && r.body.includes('Wait for me')).length;
+  const prompt = slicc(page, ['prompt', '--signal', 'stdio', 'Wait for me']);
+  current = prompt;
+  t.after(() => prompt.node.kill('SIGINT'));
+  let promptCode = null;
+  void prompt.exited.then((code) => {
+    promptCode = code;
+  });
+  for (let i = 0; i < 480 && !asked() && promptCode === null; i += 1)
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.ok(asked(), `the agent never ran: ${prompt.stderr.join('')}`);
+
+  const waiter = slicc(page, ['wait', '--signal', 'stdio', '--json', '--timeout', '5m']);
+  current = waiter;
+  t.after(() => waiter.node.kill('SIGINT'));
+  let waitCode = null;
+  void waiter.exited.then((code) => {
+    waitCode = code;
+  });
+  const opened = () => waiter.events.find((e) => e.t === 'opened');
+  for (let i = 0; i < 480 && !opened() && waitCode === null; i += 1)
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.ok(
+    opened(),
+    `slicc wait exited ${waitCode} before its stream opened: ${waiter.stderr.join('')}`
+  );
+  assert.equal(opened().busy, true, JSON.stringify(waiter.events));
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  assert.equal(
+    waitCode,
+    null,
+    `slicc wait ended while the agent was busy: ${waiter.stderr.join('')}`
+  );
+  assert.ok(!waiter.events.some((e) => e.t === 'settled'));
+
+  held.resolve();
+  assert.equal(await waiter.exited, 0, waiter.stderr.join(''));
+  const busy = waiter.events.filter((e) => e.t === 'busy');
+  assert.equal(busy.at(-1)?.busy, false, JSON.stringify(waiter.events));
+  const ended = waiter.events.findIndex((e) => e.t === 'run' && e.state === 'end');
+  assert.ok(
+    ended >= 0 && ended < waiter.events.lastIndexOf(busy.at(-1)),
+    JSON.stringify(waiter.events)
+  );
+  assert.deepEqual(waiter.events.at(-1), { t: 'settled' });
+  assert.equal(await prompt.exited, 0, prompt.stderr.join(''));
 });
 
 test('a webhook from the tray hub reaches the agent as a lick, without secret headers', {
