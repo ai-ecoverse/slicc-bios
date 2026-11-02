@@ -50,7 +50,8 @@ test('packaged witness captures before holder shutdown without changing standalo
     )
   );
   assert.equal(rig.match(/namespaceCommand\(\s*scene,\s*`playwright-cli webmcp-list/g)?.length, 2);
-  assert.match(rig, /namespaceCommand\(\s*scene,\s*`mcpcat serve/);
+  assert.ok(rig.includes('row.command = namespaceCommand(scene, command)'));
+  assert.ok(rig.includes('${namespaceCommand(scene, `exec ${command}`)}'));
   assert.ok(
     rig.indexOf('row.namespaceTrace = namespaceTrace(capture.stdout)') <
       rig.indexOf('await sh(page, `kill "$(cat ${row.pid})"`)')

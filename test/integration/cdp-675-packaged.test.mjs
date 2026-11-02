@@ -2434,11 +2434,8 @@ for (const route of ['extension', 'link']) {
           }
           if (namespaceEnabled(scene))
             await cone(page, ': > /tmp/cdp-675-namespace.ndjson', `675-namespace-reset-${index}`);
-          const command = namespaceCommand(
-            scene,
-            `mcpcat serve --webmcp ${scene.reload ? '--webmcp-reload ' : ''}--tab ${quote(row.target)} --http ${row.port} --no-auth`
-          );
-          row.command = command;
+          const command = `mcpcat serve --webmcp ${scene.reload ? '--webmcp-reload ' : ''}--tab ${quote(row.target)} --http ${row.port} --no-auth`;
+          row.command = namespaceCommand(scene, command);
           row.step = 'shipped-serve';
           if (scene.race)
             await page.evaluate(() => {
@@ -2459,7 +2456,7 @@ for (const route of ['extension', 'link']) {
                 .then(({ status, stdout, stderr }) => ({ status, stdout, stderr }));
             },
             {
-              command: `export PATH=$PNPM_HOME/bin:$PATH; export SLICC_CDP_URL=http://127.0.0.1:9222; echo $$ > ${row.pid}; exec ${command}`,
+              command: `export PATH=$PNPM_HOME/bin:$PATH; export SLICC_CDP_URL=http://127.0.0.1:9222; echo $$ > ${row.pid}; ${namespaceCommand(scene, `exec ${command}`)}`,
               log: row.log,
             }
           );
