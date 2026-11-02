@@ -17,7 +17,7 @@ for (const message of [
         raw,
         own,
         new Map(),
-        { kind: 'extension', version: '7.11.1' },
+        { kind: 'extension', version: '7.11.99' },
         async () => null
       )
     );

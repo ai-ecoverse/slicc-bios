@@ -12,7 +12,7 @@ const five = [
 ];
 
 for (const route of [
-  { kind: 'extension', version: '7.11.1' },
+  { kind: 'extension', version: '7.11.99' },
   { kind: 'link', version: '1.49.37' },
 ]) {
   test(`bios admits only the five Stage1 methods behind the ${route.kind} floor`, async (t) => {
@@ -64,6 +64,7 @@ for (const route of [
   undefined,
   { kind: 'extension', version: '7.10.0' },
   { kind: 'extension', version: '7.11.0' },
+  { kind: 'extension', version: '7.11.1' },
   { kind: 'link', version: '1.49.36' },
   { kind: 'link', version: 'dev' },
   { kind: 'extension', version: '7.11.1-beta' },

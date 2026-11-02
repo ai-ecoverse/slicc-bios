@@ -1993,7 +1993,7 @@ for (const route of ['extension', 'link']) {
           trace.setupChecks.push({
             name: 'selected extension route',
             pass:
-              trace.selectedRoute.extension === (oldRoute ? '7.10.0' : '7.11.1') &&
+              trace.selectedRoute.extension === (oldRoute ? '7.10.0' : '7.11.99') &&
               trace.selectedRoute.links === 0,
             actual: trace.selectedRoute,
           });

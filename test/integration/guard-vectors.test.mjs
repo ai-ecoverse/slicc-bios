@@ -752,7 +752,7 @@ for (const [detach, lag] of DETACH) {
   });
 
   test(`E2–E5, ${detach} detach`, { timeout: 20 * 60 * 1000 }, async (t) => {
-    const guard = await guardPage(t, lag, null, null, { kind: 'extension', version: '7.11.1' });
+    const guard = await guardPage(t, lag, null, null, { kind: 'extension', version: '7.11.99' });
     sevenPages(guard.seven);
     for (const [name, at] of Object.entries(targets())) {
       await t.test(`E2.${name} control`, async () => {
