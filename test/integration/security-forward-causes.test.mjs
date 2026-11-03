@@ -720,3 +720,112 @@ test('a reply that lists a missing path both paused and not confirms no pause, i
     policy.close();
   }
 });
+
+test('a sync that every status contradicts retries on a backoff, a clean sync or a refresh resets it, and close stops it', async () => {
+  const CONFIG = '/etc/fnox/config.toml';
+  const EXTRA = '/etc/slicc/secrets-policy.toml';
+  const paused = { path: EXTRA, sha256: null, accepted: true, absent: true, paused: true };
+  const statusListeners = new Set();
+  const scheduled = [];
+  const cleared = [];
+  let contradict = false;
+  let calls = 0;
+  let onFile;
+  let policy;
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+  policy = createPolicySync({
+    kernel: {
+      users: { mode: 'enforce' },
+      attest: async (path) => (path === EXTRA ? { path, absent: true } : { path, sha256: 'a' }),
+      watch: async (_, listener) => {
+        onFile = listener;
+        return () => {};
+      },
+    },
+    vault: {
+      forwardEpoch: () => 1,
+      port: {
+        on: (type, listener) => {
+          if (type !== 'status') return () => {};
+          statusListeners.add(listener);
+          return () => statusListeners.delete(listener);
+        },
+        status: () => null,
+      },
+      call: async () => {
+        calls += 1;
+        if (calls > 16) policy.close();
+        if (contradict) for (const listener of [...statusListeners]) listener({ policy: [] });
+        await tick();
+        return { accepted: true, files: [{ path: CONFIG, accepted: true }, paused] };
+      },
+    },
+    timers: {
+      set: (work, ms) => {
+        const timer = { work, ms };
+        scheduled.push(timer);
+        return timer;
+      },
+      clear: (timer) => cleared.push(timer),
+    },
+  });
+  const fire = async () => {
+    const timer = scheduled.at(-1);
+    timer.work();
+    await tick();
+    await policy.settled();
+  };
+  const status = (files) => {
+    for (const listener of [...statusListeners]) listener({ policy: files });
+  };
+  await policy.start();
+  await tick();
+  await policy.settled();
+  status([paused]);
+  await tick();
+  await policy.settled();
+  assert.equal(policy.paused(), true);
+  contradict = true;
+  status([]);
+  await tick();
+  await policy.settled();
+  const first = calls;
+  await tick();
+  assert.equal(calls, first, 'a contradicted sync uploaded again at once');
+  assert.deepEqual(
+    scheduled.map((timer) => timer.ms),
+    [250]
+  );
+  assert.deepEqual(
+    [policy.ready(), policy.why(), policy.paused()],
+    [false, 'policy-syncing', false]
+  );
+  for (let i = 0; i < 8; i += 1) await fire();
+  assert.equal(calls, first + 8);
+  assert.deepEqual(
+    scheduled.map((timer) => timer.ms),
+    [250, 500, 1000, 2000, 4000, 8000, 16000, 30000, 30000]
+  );
+  contradict = false;
+  await fire();
+  assert.equal(calls, first + 9);
+  assert.equal(policy.paused(), true);
+  contradict = true;
+  status([]);
+  await tick();
+  await policy.settled();
+  assert.equal(scheduled.at(-1).ms, 250, 'a clean sync did not reset the backoff');
+  await fire();
+  assert.equal(scheduled.at(-1).ms, 500);
+  onFile();
+  await tick();
+  await policy.settled();
+  assert.equal(scheduled.at(-1).ms, 250, 'a file event did not reset the backoff');
+  const before = calls;
+  const last = scheduled.at(-1);
+  policy.close();
+  assert.ok(cleared.includes(last), 'close left the retry timer');
+  last.work();
+  await tick();
+  assert.equal(calls, before, 'a retry uploaded after close');
+});

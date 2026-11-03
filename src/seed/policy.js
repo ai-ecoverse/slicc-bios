@@ -93,7 +93,14 @@ function pausedIn(list, path, accepted) {
   );
 }
 
-export function createPolicySync({ kernel, vault, report = () => {} }) {
+export const RETRY_FIRST_MS = 250;
+export const RETRY_MAX_MS = 30000;
+const TIMERS = {
+  set: (work, ms) => setTimeout(work, ms),
+  clear: (timer) => clearTimeout(timer),
+};
+
+export function createPolicySync({ kernel, vault, report = () => {}, timers = TIMERS }) {
   let ready = false;
   let why = 'policy-syncing';
   let confirmed = false;
@@ -104,6 +111,8 @@ export function createPolicySync({ kernel, vault, report = () => {} }) {
   let running = false;
   let working = Promise.resolve();
   let again = false;
+  let backoff = 0;
+  let retrying = null;
   let unwatch;
   let offStatus;
   let offAvailability;
@@ -133,6 +142,7 @@ export function createPolicySync({ kernel, vault, report = () => {} }) {
     }
   };
   const settle = (missing, reply) => {
+    backoff = 0;
     const accepted = reply.accepted === true;
     ready = missing.length === 0 && accepted;
     why = ready ? null : accepted ? 'policy-missing' : 'policy-unaccepted';
@@ -152,14 +162,32 @@ export function createPolicySync({ kernel, vault, report = () => {} }) {
       const missing = files.filter((file) => file.absent === true).map((file) => file.path);
       const { reply, contradicted } = await upload(files, missing);
       if (version !== epoch || stopped || vault.forwardEpoch() !== active) return;
-      if (contradicted) again = true;
+      if (contradicted) later();
       else settle(missing, reply);
     } catch {
       if (version === epoch) why = 'policy-unavailable';
       report('the credential policy is unavailable');
     }
   };
+  const stopRetry = () => {
+    if (retrying !== null) timers.clear(retrying);
+    retrying = null;
+  };
+  const later = () => {
+    stopRetry();
+    if (stopped) return;
+    backoff = backoff === 0 ? RETRY_FIRST_MS : Math.min(backoff * 2, RETRY_MAX_MS);
+    retrying = timers.set(() => {
+      retrying = null;
+      if (!stopped) void run();
+    }, backoff);
+  };
   const refresh = () => {
+    backoff = 0;
+    return run();
+  };
+  const run = () => {
+    stopRetry();
     hold();
     again = true;
     if (running || stopped) return working;
@@ -218,6 +246,7 @@ export function createPolicySync({ kernel, vault, report = () => {} }) {
     },
     close() {
       stopped = true;
+      stopRetry();
       hold();
       unwatch?.();
       offStatus?.();
