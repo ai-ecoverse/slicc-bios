@@ -1,7 +1,7 @@
 import catalog from '@ai-ecoverse/slicc-browsers/catalog.json' with { type: 'json' };
 import { protectedOrigins } from '@ai-ecoverse/slicc-browsers/protected.mjs';
 import { RELAY, SIGN_IN_CLIENTS } from './adobe.js';
-import { hold, isHeld } from './held.js';
+import { crossOriginPage, hold, isHeld } from './held.js';
 
 export const PROTECTED =
   'slicc: refused: seven’s own pages and the vault are out of reach of browser automation';
@@ -645,7 +645,6 @@ const kept = (set, value) => {
 
 const INHERITING = /^(?:$|about:|javascript:)/i;
 const ORDINARY = /^(?:https?|data):/i;
-const BLANK = /^about:blank(?:#|$)/i;
 
 export const ARM = [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }];
 
@@ -1007,7 +1006,6 @@ class Guard {
       was: known?.was || known?.guarded || false,
       guarded: known?.guarded || false,
       real: known?.real || false,
-      access: known?.access || info.canAccessOpener === true,
       context: info.browserContextId ?? known?.context,
       reported: info.url ?? known?.reported,
     });
@@ -1029,7 +1027,9 @@ class Guard {
   async target(targetId, depth = 0) {
     const found = await this.lookup(targetId);
     if (!found) return true;
-    if (isHeld(targetId) || isHeld(found.openerId)) {
+    const openerInfo = found.openerId ? await this.lookup(found.openerId) : undefined;
+    const cross = crossOriginPage(found, openerInfo?.url);
+    if (isHeld(targetId) || (!cross && isHeld(found.openerId))) {
       hold(targetId);
       found.guarded = true;
       return true;
@@ -1043,9 +1043,9 @@ class Guard {
         return true;
       }
     }
-    const opener = await this.opener(found.openerId, depth);
-    const lent = found.type === 'page' && (found.access || BLANK.test(found.url));
-    if (isHeld(found.openerId) || (opener === 'protected' && lent)) {
+    const opener = cross ? undefined : await this.opener(found.openerId, depth);
+    const lent = found.type === 'page' && !cross;
+    if ((!cross && isHeld(found.openerId)) || (opener === 'protected' && lent)) {
       hold(targetId);
       found.guarded = true;
       return true;
@@ -2668,25 +2668,26 @@ class Guard {
     const known = this.targets.get(targetId);
     if (!known) return true;
     if (known.parentId && this.relatedHeld(known.parentId, depth + 1)) return true;
-    if (!known.openerId) return false;
+    if (!known.openerId || crossOriginPage(known, this.targets.get(known.openerId)?.url))
+      return false;
     if (this.relatedHeld(known.openerId, depth + 1)) return true;
     const opener = this.targets.get(known.openerId);
-    return Boolean(
-      known.type === 'page' &&
-        (known.access || BLANK.test(known.url)) &&
-        (opener?.guarded || this.is.target(opener))
-    );
+    return Boolean(known.type === 'page' && (opener?.guarded || this.is.target(opener)));
   }
 
   hinted(info) {
     const known = this.targets.get(info.targetId);
+    const cross = crossOriginPage(
+      { type: info.type ?? known?.type, url: info.url ?? known?.url },
+      this.targets.get(info.openerId)?.url
+    );
     return (
       known?.guarded ||
       isHeld(info.targetId) ||
-      this.relatedHeld(info.openerId) ||
+      (!cross && this.relatedHeld(info.openerId)) ||
       this.relatedHeld(info.parentId ?? known?.parentId) ||
       (info.openerId &&
-        (info.canAccessOpener || known?.access) &&
+        !cross &&
         (this.targets.get(info.openerId)?.guarded ||
           this.is.target(this.targets.get(info.openerId)))) ||
       this.is.target({

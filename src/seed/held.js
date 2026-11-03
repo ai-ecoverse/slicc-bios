@@ -34,6 +34,18 @@ export function inFlight(now = Date.now, storage = globalThis.localStorage) {
 
 export const guardOf = (own) => protectedOrigins(catalog.protectedOrigins, own ? [own] : []);
 
+export function crossOriginPage(info, openerUrl) {
+  const page = info.type === 'page' && URL.parse(info.url);
+  const opener = URL.parse(openerUrl);
+  return Boolean(
+    page &&
+      opener &&
+      page.origin !== 'null' &&
+      opener.origin !== 'null' &&
+      page.origin !== opener.origin
+  );
+}
+
 function stored(storage) {
   try {
     const list = JSON.parse(storage?.getItem(KEY) ?? '[]');
@@ -176,9 +188,11 @@ function considering({ is, storage, now }) {
   const urls = new Map();
   const holds = (info, all) => {
     if (isHeld(info.targetId, storage)) return false;
-    if (isHeld(info.parentId, storage) || isHeld(info.openerId, storage)) return true;
+    if (isHeld(info.parentId, storage)) return true;
+    const cross = crossOriginPage(info, urls.get(info.openerId));
+    if (isHeld(info.openerId, storage) && !cross) return true;
     if (info.type !== 'page' || !info.openerId) return false;
-    if (!all && !info.canAccessOpener && !/^about:blank(?:#|$)/.test(info.url ?? '')) return false;
+    if (!all && cross) return false;
     const opener = urls.get(info.openerId);
     return opener !== undefined && is.url(opener);
   };
