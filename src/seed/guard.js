@@ -1204,7 +1204,7 @@ class Guard {
     )
       return;
     const frames = list?.frames;
-    if (Array.isArray(frames) && frames.some((frame) => this.is.url(frame?.url))) {
+    if (Array.isArray(frames) && frames.some((frame) => frame?.kind === 'protected')) {
       scope.privatePlaced = false;
       this.replaceDebuggerLease(targetId, 'revoked');
       return;
@@ -1212,12 +1212,9 @@ class Guard {
     const root = Array.isArray(frames) && frames.find((frame) => frame?.frameId === 0);
     const ids = new Set(Array.isArray(frames) ? frames.map((frame) => frame?.frameId) : []);
     const complete =
-      list?.version === 1 &&
+      list?.version === 2 &&
       Number.isSafeInteger(list.revision) &&
-      typeof list.rootDocumentId === 'string' &&
-      list.rootDocumentId &&
-      root?.documentId === list.rootDocumentId &&
-      root.parentFrameId === -1 &&
+      root?.parentFrameId === -1 &&
       list.rootFrameId === scope.root &&
       typeof loader === 'string' &&
       loader &&
@@ -1241,17 +1238,7 @@ class Guard {
       ) &&
       list.localFrames.length + list.remoteOwners.length === frames.length &&
       this.relatedFrames(scope.frames).size <= frames.length &&
-      frames.every(
-        (frame) =>
-          Number.isSafeInteger(frame.frameId) &&
-          typeof frame.documentId === 'string' &&
-          frame.documentId &&
-          typeof frame.url === 'string' &&
-          ORDINARY.test(frame.url) &&
-          !this.is.url(frame.url) &&
-          !frame.errorOccurred &&
-          (frame.documentLifecycle === undefined || frame.documentLifecycle === 'active')
-      );
+      frames.every((frame) => Number.isSafeInteger(frame.frameId) && frame.kind === 'ordinary');
     const rooted = Boolean(complete && this.rootedPrivateFrames(frames));
     if (rooted) {
       for (const owner of list.remoteOwners)

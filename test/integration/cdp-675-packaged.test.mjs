@@ -366,7 +366,7 @@ function tapGuardSource(source) {
     )
     .replace(
       '    scope.privatePlaced = rooted;',
-      `    (globalThis.cdp675FramePredicateTrace ??= []).push({ at: Date.now(), targetId, verdict: rooted ? 'placed' : 'unsettled', checks: { complete: Boolean(complete), rooted, version: list?.version === 1, revision: Number.isSafeInteger(list?.revision), nativeRoot: root?.documentId === list?.rootDocumentId && root?.parentFrameId === -1, root: list?.rootFrameId === scope.root, loader: Boolean(loader) && list?.rootLoaderId === loader, ownerCount: list?.remoteOwners?.length === scope.remoteBackendOwners.size, ownerIds: Array.isArray(list?.remoteOwners) && list.remoteOwners.every((owner) => scope.remoteBackendOwners.has(owner.backendNodeId)), remoteFits: (list?.localFrames?.length ?? 0) + (list?.remoteOwners?.length ?? 0) === (frames?.length ?? 0), reachableFits: this.relatedFrames(scope.frames).size <= (frames?.length ?? 0), ordinary: Array.isArray(frames) && frames.every((frame) => ORDINARY.test(frame?.url ?? '') && !this.is.url(frame?.url)), ready: scope.ready, pending: scope.pending, failed: scope.failed } });\n    scope.privatePlaced = rooted;`
+      `    (globalThis.cdp675FramePredicateTrace ??= []).push({ at: Date.now(), targetId, verdict: rooted ? 'placed' : 'unsettled', checks: { complete: Boolean(complete), rooted, version: list?.version === 2, revision: Number.isSafeInteger(list?.revision), nativeRoot: root?.frameId === 0 && root?.parentFrameId === -1, root: list?.rootFrameId === scope.root, loader: Boolean(loader) && list?.rootLoaderId === loader, ownerCount: list?.remoteOwners?.length === scope.remoteBackendOwners.size, ownerIds: Array.isArray(list?.remoteOwners) && list.remoteOwners.every((owner) => scope.remoteBackendOwners.has(owner.backendNodeId)), remoteFits: (list?.localFrames?.length ?? 0) + (list?.remoteOwners?.length ?? 0) === (frames?.length ?? 0), reachableFits: this.relatedFrames(scope.frames).size <= (frames?.length ?? 0), ordinary: Array.isArray(frames) && frames.every((frame) => frame?.kind === 'ordinary'), ready: scope.ready, pending: scope.pending, failed: scope.failed } });\n    scope.privatePlaced = rooted;`
     );
 }
 
@@ -1208,7 +1208,8 @@ async function privateDomReadRow(page, row, scene) {
     (target) => globalThis.sliccExtension.frames(Number(target)),
     row.target
   );
-  assert.equal(row.privateFrameRead.version, 1);
+  assert.equal(row.privateFrameRead.version, 2);
+  assert.doesNotMatch(JSON.stringify(row.privateFrameRead), /https?:|url|origin|documentId/i);
   if (scene.privateOwnerPush) {
     assert.equal(row.privateFrameRead.remoteOwners.length, 1);
     assert.ok(Number.isSafeInteger(row.privateFrameRead.remoteOwners[0].backendNodeId));

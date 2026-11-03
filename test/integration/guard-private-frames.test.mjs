@@ -14,28 +14,19 @@ const dom = (ids) => ({
     attributes: ['src', 'https://ordinary-cross.test/'],
   })),
 });
-const snapshot = (ids, url = 'https://ordinary-cross.test/', revision = 0) => ({
-  version: 1,
+const snapshot = (ids, kind = 'ordinary', revision = 0) => ({
+  version: 2,
   rootFrameId: 'root',
   rootLoaderId: 'root-loader',
-  rootDocumentId: 'root-native-document',
   revision,
   localFrames: ['root'],
   remoteOwners: ids.map((frameId, index) => ({ frameId, backendNodeId: index + 2 })),
   frames: [
-    {
-      frameId: 0,
-      parentFrameId: -1,
-      documentId: 'root-native-document',
-      url: 'https://ordinary.invalid/page',
-      errorOccurred: false,
-    },
+    { frameId: 0, parentFrameId: -1, kind: 'ordinary' },
     ...ids.map((_, index) => ({
       frameId: index + 1,
       parentFrameId: 0,
-      documentId: `child-document-${index}`,
-      url: typeof url === 'string' ? url : url[index],
-      errorOccurred: false,
+      kind: typeof kind === 'string' ? kind : kind[index],
     })),
   ],
 });
@@ -87,12 +78,12 @@ for (const cause of [
     const list = snapshot(
       ids,
       cause === 'protected-sibling'
-        ? ['https://one.test/', 'https://protected.invalid/private-frame', 'https://three.test/']
+        ? ['ordinary', 'protected', 'ordinary']
         : cause === 'protected'
-          ? 'https://protected.invalid/private-frame'
+          ? 'protected'
           : cause === 'unknown'
-            ? 'about:blank'
-            : 'https://ordinary-cross.test/'
+            ? 'unknown'
+            : 'ordinary'
     );
     if (cause === 'owner-count') list.frames = list.frames.slice(0, 1);
     if (cause === 'loader') list.rootLoaderId = 'stale';
@@ -149,7 +140,7 @@ test('a late owner suspends the bios-owned lease, privately resumes a gap pause,
   const { p, root } = fixture(t, reader, []);
   const session = await p.attach('root');
   assert.equal((await p.send('Debugger.enable', {}, session)).error, undefined);
-  list = snapshot(['remote'], 'https://ordinary-cross.test/', 1);
+  list = snapshot(['remote'], 'ordinary', 1);
   root.dom = dom(['remote']);
   held = true;
   p.emit({
@@ -182,7 +173,7 @@ test('a late owner suspends the bios-owned lease, privately resumes a gap pause,
     'gap pause needs an owned private resume'
   );
   held = false;
-  resolve?.(snapshot(['remote'], 'about:blank', 1));
+  resolve?.(snapshot(['remote'], 'unknown', 1));
   await flush();
   assert.match(
     (await p.send('Debugger.enable', {}, session)).error?.message ?? '',
@@ -212,7 +203,7 @@ test('an unsettled late child revokes at five seconds and only a new root docume
   const session = await p.attach('root');
   assert.equal((await p.send('Debugger.enable', {}, session)).error, undefined);
   root.dom = dom(['remote']);
-  list = snapshot(['remote'], 'about:blank', 1);
+  list = snapshot(['remote'], 'unknown', 1);
   p.emit({
     sessionId: session,
     method: 'Page.frameAttached',
@@ -220,7 +211,7 @@ test('an unsettled late child revokes at five seconds and only a new root docume
   });
   await flush();
   t.mock.timers.tick(5001);
-  list = snapshot(['remote'], 'https://ordinary-cross.test/', 2);
+  list = snapshot(['remote'], 'ordinary', 2);
   p.emit({
     sessionId: session,
     method: 'Page.frameNavigated',
@@ -252,7 +243,7 @@ test('a protected late owner revokes Debugger work for this document even if it 
   const session = await p.attach('root');
   assert.equal((await p.send('Debugger.enable', {}, session)).error, undefined);
   root.dom = dom(['remote']);
-  list = snapshot(['remote'], 'https://protected.invalid/private-frame', 1);
+  list = snapshot(['remote'], 'protected', 1);
   p.emit({
     sessionId: session,
     method: 'Page.frameAttached',
@@ -263,7 +254,7 @@ test('a protected late owner revokes Debugger work for this document even if it 
     (await p.send('Debugger.enable', {}, session)).error?.message ?? '',
     /^slicc: refused:/
   );
-  list = snapshot(['remote'], 'https://ordinary-cross.test/', 2);
+  list = snapshot(['remote'], 'ordinary', 2);
   assert.match(
     (await p.send('Debugger.enable', {}, session)).error?.message ?? '',
     /^slicc: refused:/
