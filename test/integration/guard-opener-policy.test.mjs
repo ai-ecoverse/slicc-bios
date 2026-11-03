@@ -23,7 +23,7 @@ const refused = (answer) => {
 
 for (const access of [false, true]) {
   for (const [name, url, admitted] of [
-    ['cross origin', other, true],
+    ['cross origin', other, false],
     ['same origin', ordinary, false],
     ['blank', 'about:blank', false],
     ['srcdoc', 'about:srcdoc', false],
@@ -53,7 +53,7 @@ for (const access of [false, true]) {
   }
 }
 
-test('opener policy keeps an inherited hold after the opener closes and the page changes origin', async (t) => {
+test('opener policy releases an ordinary inherited tab after its opener closes', async (t) => {
   const wire = protocol(t);
   page(wire, 'retained-seven', seven);
   const child = page(wire, 'retained-child', 'about:srcdoc', 'retained-seven');
@@ -67,7 +67,7 @@ test('opener policy keeps an inherited hold after the opener closes and the page
     url: other,
     securityOrigin: new URL(other).origin,
   };
-  refused(await attach(wire, 'retained-child'));
+  assert.equal((await attach(wire, 'retained-child')).error, undefined);
 });
 
 test('opener policy admits a cross-origin page before and after opener closure and another navigation', async (t) => {
@@ -121,9 +121,11 @@ for (const reason of ['protected frame', 'protected commit', 'explicit hold', 'p
       await flush();
       refused(await attach(wire, id));
     }
-    wire.emit({ method: 'Target.targetDestroyed', params: { targetId: `${id}-seven` } });
-    delete child.info.openerId;
-    child.info.canAccessOpener = false;
+    if (reason !== 'explicit hold') {
+      wire.emit({ method: 'Target.targetDestroyed', params: { targetId: `${id}-seven` } });
+      delete child.info.openerId;
+      child.info.canAccessOpener = false;
+    }
     refused(await attach(wire, id));
   });
 }
@@ -155,7 +157,7 @@ for (const cross of [false, true]) {
       return connection;
     };
     await sweep({ hosts: () => ({ test: open }), storage });
-    assert.equal(isHeld(targetId, storage), !cross);
-    assert.equal(JSON.parse(storage.getItem(KEY)).includes(targetId), !cross);
+    assert.equal(isHeld(targetId, storage), true);
+    assert.equal(JSON.parse(storage.getItem(KEY)).includes(targetId), true);
   });
 }

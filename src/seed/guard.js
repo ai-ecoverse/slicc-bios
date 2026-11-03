@@ -1,7 +1,7 @@
 import catalog from '@ai-ecoverse/slicc-browsers/catalog.json' with { type: 'json' };
 import { protectedOrigins } from '@ai-ecoverse/slicc-browsers/protected.mjs';
 import { RELAY, SIGN_IN_CLIENTS } from './adobe.js';
-import { crossOriginPage, hold, isHeld } from './held.js';
+import { crossOriginPage, emptyNoAccess, hold, inFlight, isHeld, unhold } from './held.js';
 
 export const PROTECTED =
   'slicc: refused: seven’s own pages and the vault are out of reach of browser automation';
@@ -692,6 +692,7 @@ class Guard {
     this.closing = false;
     this.closed = false;
     this.is = protection(own);
+    this.ownUrl = protectedOrigins(catalog.protectedOrigins, owned(own)).url;
     this.redact = redacting(this.is);
     this.redirected = new Set();
     this.continued = new Set();
@@ -1058,19 +1059,83 @@ class Guard {
     )
       return null;
     this.learn(last);
-    return crossOriginPage(child, last.url);
+    return (
+      last.type === 'page' &&
+      /^https?:/i.test(last.url) &&
+      this.ownUrl(last.url) &&
+      !isHeld(last.targetId) &&
+      crossOriginPage(child, last.url)
+    );
+  }
+
+  async detachedPage(targetId) {
+    if (inFlight()) return null;
+    const info = await this.openerInfo(targetId);
+    if (
+      info?.type !== 'page' ||
+      info.parentId ||
+      info.parentFrameId ||
+      this.targets.get(targetId)?.parentId ||
+      !/^https?:/i.test(info.url) ||
+      this.is.url(info.url)
+    )
+      return null;
+    if (info.openerId) {
+      const answer = await this.within(this.call('Target.getTargets', { filter: [{}] }), ANSWER_MS);
+      const targets = answer?.result?.targetInfos;
+      if (
+        answer?.error ||
+        !Array.isArray(targets) ||
+        targets.some(
+          (target) => typeof target?.targetId !== 'string' || target.targetId === info.openerId
+        ) ||
+        !targets.some((target) => target.targetId === targetId)
+      )
+        return null;
+    }
+    const last = await this.openerInfo(targetId);
+    if (
+      !last ||
+      inFlight() ||
+      !['type', 'url', 'openerId', 'parentId', 'parentFrameId', 'browserContextId'].every(
+        (key) => info[key] === last[key]
+      )
+    )
+      return null;
+    return last;
+  }
+
+  async refreshHeld(targetId, found) {
+    const held = isHeld(targetId);
+    if (!held && (!found.openerId || found.type !== 'page' || !/^https?:/i.test(found.url)))
+      return found;
+    const info = await this.detachedPage(targetId);
+    if (!info || inFlight() || (held && !unhold(targetId))) return found;
+    this.learn({ ...info, openerId: undefined });
+    const fresh = this.targets.get(targetId);
+    if (held) {
+      fresh.guarded = fresh.real;
+      fresh.was = fresh.real;
+    }
+    return fresh;
   }
 
   async target(targetId, depth = 0) {
-    const found = await this.lookup(targetId);
-    if (!found) return true;
+    const known = await this.lookup(targetId);
+    if (!known) return true;
+    const found = await this.refreshHeld(targetId, known);
     if (isHeld(targetId)) {
       hold(targetId);
       found.guarded = true;
       return true;
     }
+    if (isHeld(found.openerId)) {
+      hold(targetId);
+      found.guarded = true;
+      return true;
+    }
     const cross = await this.crossOpener(targetId, found);
-    if (cross === null || (!cross && isHeld(found.openerId))) {
+    if (cross === null || isHeld(found.openerId)) {
       hold(targetId);
       found.guarded = true;
       return true;
@@ -1085,8 +1150,8 @@ class Guard {
       }
     }
     const opener = cross ? undefined : await this.opener(found.openerId, depth);
-    const lent = found.type === 'page' && !cross;
-    if ((!cross && isHeld(found.openerId)) || (opener === 'protected' && lent)) {
+    const lent = found.type === 'page' && !cross && !emptyNoAccess(found.info);
+    if (isHeld(found.openerId) || (opener === 'protected' && lent)) {
       hold(targetId);
       found.guarded = true;
       return true;
@@ -2743,8 +2808,10 @@ class Guard {
       (info.type ?? known?.type) === 'page' &&
       typeof info.url === 'string' &&
       opener &&
-      !crossOriginPage(info, opener.url) &&
-      (isHeld(info.openerId) || opener.guarded || this.is.target(opener))
+      (isHeld(info.openerId) ||
+        (!emptyNoAccess(info) &&
+          !crossOriginPage(info, opener.url) &&
+          (opener.guarded || this.is.target(opener))))
     )
       hold(info.targetId);
     this.hints.set(info.targetId, message);

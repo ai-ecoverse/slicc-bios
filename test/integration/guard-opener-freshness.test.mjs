@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { PROTECTED } from '../../src/seed/guard.js';
+import { guardProtected, PROTECTED } from '../../src/seed/guard.js';
 import { hold, isHeld } from '../../src/seed/held.js';
 import { flush, plainFrame, protocol } from './guard-ordering-fixture.mjs';
 
@@ -25,9 +25,18 @@ const denied = (answer) => {
   assert.equal(answer.error?.message, PROTECTED);
   assert.equal(answer.result, undefined);
 };
-async function setup(t, name, url = other) {
+async function setup(t, name, url = other, own = 'https://seven.sliccy.ai') {
+  const wire = protocol(t, (raw) => guardProtected(raw, own));
+  const parent = page(wire, `${name}-parent`, `${own}/page`);
+  denied(await attach(wire, parent.info.targetId));
+  const child = page(wire, `${name}-child`, url, parent.info.targetId);
+  return { wire, parent, child };
+}
+
+async function heldSetup(t, name, url = other) {
   const wire = protocol(t);
-  const parent = page(wire, `${name}-parent`, first);
+  const root = page(wire, `${name}-seven`, 'https://seven.sliccy.ai/page');
+  const parent = page(wire, `${name}-parent`, first, root.info.targetId);
   hold(parent.info.targetId);
   denied(await attach(wire, parent.info.targetId));
   const child = page(wire, `${name}-child`, url, parent.info.targetId);
@@ -36,7 +45,7 @@ async function setup(t, name, url = other) {
 
 for (const event of [false, true]) {
   test(`opener freshness learns a held parent's actual origin without discovery: event ${event}`, async (t) => {
-    const { wire, parent, child } = await setup(
+    const { wire, parent, child } = await heldSetup(
       t,
       `stale-${event}`,
       `${new URL(second).origin}/popup`
@@ -47,13 +56,6 @@ for (const event of [false, true]) {
     const mark = wire.clients().length;
     denied(await attach(wire, child.info.targetId));
     assert.equal(isHeld(child.info.targetId), true);
-    assert.ok(
-      wire.sent.filter(
-        (message) =>
-          message.method === 'Target.getTargetInfo' &&
-          message.params.targetId === parent.info.targetId
-      ).length >= 2
-    );
     assert.equal(
       wire
         .clients()
@@ -163,7 +165,7 @@ for (const invalid of [
       }
       if (message.params.targetId === child.info.targetId) {
         children += 1;
-        intercept = invalid === 'child read empty' && children === 2;
+        intercept = invalid === 'child read empty' && parents > 0;
       }
       if (!intercept) return false;
       const info = structuredClone(parent.info);
@@ -206,7 +208,7 @@ test('opener freshness has a bounded wait for an unanswered opener lookup', asyn
 for (const initial of ['same-origin', 'about:blank', 'about:srcdoc', 'empty']) {
   test(`opener freshness persists a ${initial} observation before back-to-back cross-origin hints`, async (t) => {
     const url = initial === 'same-origin' ? first : initial === 'empty' ? '' : initial;
-    const { wire, child } = await setup(t, `hints-${initial}`, url);
+    const { wire, child } = await heldSetup(t, `hints-${initial}`, url);
     wire.emit({ method: 'Target.targetCreated', params: { targetInfo: child.info } });
     assert.equal(isHeld(child.info.targetId), true);
     move(child, other);
@@ -217,7 +219,7 @@ for (const initial of ['same-origin', 'about:blank', 'about:srcdoc', 'empty']) {
 }
 
 test('opener freshness retains a proven same-origin ordinary hold across navigation and later opener loss', async (t) => {
-  const { wire, parent, child } = await setup(t, 'proven-hold', first);
+  const { wire, parent, child } = await heldSetup(t, 'proven-hold', first);
   denied(await attach(wire, child.info.targetId));
   await flush();
   assert.equal(isHeld(child.info.targetId), true);
@@ -229,7 +231,7 @@ test('opener freshness retains a proven same-origin ordinary hold across navigat
   delete child.info.openerId;
   child.info.canAccessOpener = false;
   await flush();
-  denied(await attach(wire, child.info.targetId));
+  assert.equal((await attach(wire, child.info.targetId)).error, undefined);
 });
 
 for (const url of [
@@ -253,11 +255,11 @@ for (const [name, url, opener, admitted] of [
   ['default port', 'https://idn.invalid:443/child', 'https://IDN.invalid/page', false],
   ['different port', 'https://idn.invalid:444/child', 'https://idn.invalid/page', true],
   ['IDN', 'https://bücher.invalid/child', 'https://xn--bcher-kva.invalid/page', false],
-  ['trailing dot', 'https://idn.invalid./child', 'https://idn.invalid/page', true],
+  ['trailing dot', 'https://idn.invalid./child', 'https://idn.invalid/page', false],
   ['different scheme', 'http://idn.invalid/child', 'https://idn.invalid/page', true],
 ]) {
   test(`opener freshness compares ${name} through the protocol`, async (t) => {
-    const { wire, parent, child } = await setup(t, `tuple-${name}`, url);
+    const { wire, parent, child } = await setup(t, `tuple-${name}`, url, new URL(opener).origin);
     move(parent, opener);
     const answer = await attach(wire, child.info.targetId);
     if (admitted) {

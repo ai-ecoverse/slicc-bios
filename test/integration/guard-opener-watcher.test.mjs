@@ -119,7 +119,7 @@ test('opener watcher never exempts a partial event using a prior cross-origin ba
   t.after(() => watcher.stop());
   watcher.poke();
   await flush();
-  assert.equal(isHeld(child, store), false);
+  assert.equal(isHeld(child, store), true);
   wire.emit(info);
   assert.equal(isHeld(child, store), true);
 });
@@ -141,5 +141,24 @@ for (const kind of ['missing URL', 'iframe', 'worker']) {
     ]);
     await sweep({ hosts: wire.hosts, storage: store });
     assert.equal(isHeld(child, store), true);
+  });
+}
+
+for (const flight of [false, true]) {
+  test(`watcher empty noopener metadata is not an inherited document, in flight ${flight}`, async () => {
+    const store = storage();
+    if (flight) store.setItem(FLIGHT_KEY, String(Date.now() + 60000));
+    const parent = `empty-own-parent-${flight}`;
+    const child = `empty-own-child-${flight}`;
+    let infos = [
+      { targetId: parent, type: 'page', url: 'https://seven.sliccy.ai/page' },
+      { targetId: child, type: 'page', url: '', openerId: parent, canAccessOpener: false },
+    ];
+    const wire = host(() => infos);
+    await sweep({ hosts: wire.hosts, storage: store });
+    assert.equal(isHeld(child, store), flight);
+    infos = [infos[0], { ...infos[1], url: other }];
+    await sweep({ hosts: wire.hosts, storage: store });
+    assert.equal(isHeld(child, store), flight);
   });
 }

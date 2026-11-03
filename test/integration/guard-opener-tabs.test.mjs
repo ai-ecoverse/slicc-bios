@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { guardProtected, PROTECTED } from '../../src/seed/guard.js';
+import { FLIGHT_KEY, KEY } from '../../src/seed/held.js';
 import { devtools, launch } from './chrome.mjs';
 
 assert.ok(process.env.CI, 'opener browser rows run in CI');
@@ -196,7 +197,7 @@ async function observe(t, raw, guard, targetId, stage) {
   return answer;
 }
 
-async function popup(raw, sessionId, url, noopener = false) {
+async function popup(raw, sessionId, url, noopener = false, openerId) {
   const mark = raw.events.length;
   const opened = result(
     await raw.send(
@@ -211,12 +212,22 @@ async function popup(raw, sessionId, url, noopener = false) {
   assert.equal(opened.exceptionDetails, undefined);
   const created = await raw.waitEvent(
     (message) =>
-      ['Target.targetCreated', 'Target.targetInfoChanged'].includes(message.method) &&
-      message.params.targetInfo.url === url,
+      openerId
+        ? message.method === 'Target.targetCreated' &&
+          message.params.targetInfo.type === 'page' &&
+          message.params.targetInfo.openerId === openerId
+        : ['Target.targetCreated', 'Target.targetInfoChanged'].includes(message.method) &&
+          message.params.targetInfo.url === url,
     mark
   );
   const targetId = created.params.targetInfo.targetId;
-  return { targetId, sessionId: await settled(raw, targetId, url) };
+  const initialInfo = raw.events
+    .slice(mark)
+    .find(
+      (message) =>
+        message.method === 'Target.targetCreated' && message.params.targetInfo.targetId === targetId
+    )?.params.targetInfo;
+  return { targetId, sessionId: await settled(raw, targetId, url), initialInfo };
 }
 
 async function fixture(t, mode, variant) {
@@ -256,12 +267,42 @@ async function fixture(t, mode, variant) {
   return { raw, guard, ids, openerId, openerSession };
 }
 
+async function closeTarget(raw, targetId) {
+  const mark = raw.events.length;
+  assert.equal(result(await raw.send('Target.closeTarget', { targetId })).success, true);
+  await raw.waitEvent(
+    (message) =>
+      message.method === 'Target.targetDestroyed' && message.params.targetId === targetId,
+    mark
+  );
+}
+function stored(t) {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const values = new Map();
+  const store = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: store });
+  t.after(() => {
+    if (descriptor) Object.defineProperty(globalThis, 'localStorage', descriptor);
+    else delete globalThis.localStorage;
+  });
+  return store;
+}
+
 for (const mode of ['production', 'no-coop']) {
   for (const variant of ['ordinary destination', 'noopener', 'closed opener', 'second origin']) {
     test(`opener tab ${mode}: ${variant}`, { timeout: 90000 }, async (t) => {
       const { raw, guard, ids, openerId, openerSession } = await fixture(t, mode, variant);
       const url = `${ordinary}/${mode}/${encodeURIComponent(variant)}`;
-      const { targetId, sessionId } = await popup(raw, openerSession, url, variant === 'noopener');
+      const { targetId, sessionId, initialInfo } = await popup(
+        raw,
+        openerSession,
+        url,
+        variant === 'noopener'
+      );
+      t.diagnostic(JSON.stringify({ mode, variant, initialInfo }));
       ids.push(targetId);
       const firstInfo = result(await raw.send('Target.getTargetInfo', { targetId })).targetInfo;
       const accessible = mode === 'no-coop' && variant !== 'noopener';
@@ -312,8 +353,8 @@ for (const mode of ['production', 'no-coop']) {
     test(`opener tab ${mode}: child of a held page, same origin ${same}`, {
       timeout: 90000,
     }, async (t) => {
-      const { raw, guard, ids, openerSession } = await fixture(t, mode, `held-${same}`);
-      const parent = await popup(raw, openerSession, `about:blank#${mode}-${same}`);
+      const { raw, guard, ids, openerId, openerSession } = await fixture(t, mode, `held-${same}`);
+      const parent = await popup(raw, openerSession, 'about:blank', false, openerId);
       ids.push(parent.targetId);
       assert.equal(
         (await observe(t, raw, guard, parent.targetId, `${mode}/held-${same}: inherited parent`))
@@ -335,15 +376,39 @@ for (const mode of ['production', 'no-coop']) {
         ).error?.message,
         PROTECTED
       );
-      const childUrl = `${same ? ordinary : second}/${mode}/held-child-${same}`;
+      const childUrl = `${same ? ordinary : second}/${mode}/held-child-${same}?code=fixture-code`;
       const child = await popup(raw, parent.sessionId, childUrl);
       ids.push(child.targetId);
       const answer = await observe(t, raw, guard, child.targetId, `${mode}/held-${same}: child`);
-      if (same) assert.equal(answer.error?.message, PROTECTED);
-      else {
-        assert.equal(answer.error, undefined, JSON.stringify(answer));
-        assert.ok(answer.result.sessionId);
-      }
+      assert.equal(answer.error?.message, PROTECTED);
+      const metadata = await guard.send('Target.getTargetInfo', { targetId: child.targetId });
+      assert.equal(metadata.error?.message, PROTECTED);
+      assert.equal(metadata.result, undefined);
+      assert.equal(
+        (await guard.send('Target.closeTarget', { targetId: parent.targetId })).error?.message,
+        PROTECTED
+      );
+      assert.equal(
+        (await guard.send('Target.closeTarget', { targetId: openerId })).error?.message,
+        PROTECTED
+      );
+      await closeTarget(raw, openerId);
+      assert.equal(
+        (await observe(t, raw, guard, parent.targetId, `${mode}/held-${same}: opener closed`))
+          .error,
+        undefined
+      );
+      assert.equal(
+        (await observe(t, raw, guard, child.targetId, `${mode}/held-${same}: direct opener alive`))
+          .error?.message,
+        PROTECTED
+      );
+      await closeTarget(raw, parent.targetId);
+      assert.equal(
+        (await observe(t, raw, guard, child.targetId, `${mode}/held-${same}: direct opener closed`))
+          .error,
+        undefined
+      );
     });
   }
   test(`opener tab ${mode}: same-origin child`, { timeout: 90000 }, async (t) => {
@@ -354,5 +419,67 @@ for (const mode of ['production', 'no-coop']) {
       (await observe(t, raw, guard, child.targetId, `${mode}/same-origin: child`)).error?.message,
       PROTECTED
     );
+  });
+}
+
+for (const mode of ['production', 'no-coop']) {
+  for (const flight of [false, true]) {
+    test(`opener tab ${mode}: closed opener, in flight ${flight}`, {
+      timeout: 90000,
+    }, async (t) => {
+      const store = stored(t);
+      const { raw, guard, ids, openerId, openerSession } = await fixture(
+        t,
+        mode,
+        `release-${flight}`
+      );
+      const child = await popup(raw, openerSession, 'about:blank', false, openerId);
+      ids.push(child.targetId);
+      assert.equal(
+        (await observe(t, raw, guard, child.targetId, `${mode}/release-${flight}: inherited`)).error
+          ?.message,
+        PROTECTED
+      );
+      const url = `${ordinary}/${mode}/release-${flight}`;
+      result(await raw.send('Page.navigate', { url }, child.sessionId));
+      await settled(raw, child.targetId, url);
+      assert.equal(
+        (await observe(t, raw, guard, child.targetId, `${mode}/release-${flight}: opener alive`))
+          .error?.message,
+        PROTECTED
+      );
+      if (flight) store.setItem(FLIGHT_KEY, String(Date.now() + 60000));
+      await closeTarget(raw, openerId);
+      const answer = await observe(
+        t,
+        raw,
+        guard,
+        child.targetId,
+        `${mode}/release-${flight}: opener closed`
+      );
+      if (flight) {
+        assert.equal(answer.error?.message, PROTECTED);
+        store.setItem(FLIGHT_KEY, '0');
+        assert.equal(
+          (await observe(t, raw, guard, child.targetId, `${mode}/release-${flight}: flight ended`))
+            .error,
+          undefined
+        );
+      } else assert.equal(answer.error, undefined, JSON.stringify(answer));
+    });
+  }
+  test(`opener tab ${mode}: legacy stored hold without an opener`, {
+    timeout: 90000,
+  }, async (t) => {
+    const store = stored(t);
+    const { raw, guard, ids } = await fixture(t, mode, 'legacy');
+    const url = `${ordinary}/${mode}/legacy`;
+    const { targetId } = result(await raw.send('Target.createTarget', { url }));
+    ids.push(targetId);
+    await settled(raw, targetId, url);
+    store.setItem(KEY, JSON.stringify([targetId]));
+    const answer = await observe(t, raw, guard, targetId, `${mode}/legacy: rechecked`);
+    assert.equal(answer.error, undefined, JSON.stringify(answer));
+    assert.equal(JSON.parse(store.getItem(KEY)).includes(targetId), false);
   });
 }

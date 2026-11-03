@@ -33,6 +33,7 @@ export function inFlight(now = Date.now, storage = globalThis.localStorage) {
 }
 
 export const guardOf = (own) => protectedOrigins(catalog.protectedOrigins, own ? [own] : []);
+export const emptyNoAccess = (info) => info.url === '' && info.canAccessOpener === false;
 
 export function crossOriginPage(info, openerUrl) {
   const page = info.type === 'page' && URL.parse(info.url);
@@ -69,6 +70,16 @@ export function hold(targetId, storage = globalThis.localStorage) {
   try {
     storage?.setItem(KEY, JSON.stringify(list));
   } catch {}
+}
+
+export function unhold(targetId, storage = globalThis.localStorage) {
+  try {
+    storage?.setItem(KEY, JSON.stringify(stored(storage).filter((id) => id !== targetId)));
+  } catch {
+    return false;
+  }
+  held.delete(targetId);
+  return !isHeld(targetId, storage);
 }
 
 export function markerUrl(marker) {
@@ -186,24 +197,28 @@ export function askHold(
 }
 
 function considering({ is, storage, now }) {
-  const holds = (info, all, urls) => {
+  const holds = (info, all, targets) => {
     if (isHeld(info.targetId, storage)) return false;
-    if (isHeld(info.parentId, storage)) return true;
-    const cross = crossOriginPage(info, urls.get(info.openerId));
-    if (isHeld(info.openerId, storage) && !cross) return true;
+    if (isHeld(info.parentId, storage) || isHeld(info.openerId, storage)) return true;
     if (info.type !== 'page' || !info.openerId) return false;
+    if (!all && emptyNoAccess(info)) return false;
+    const opener = targets.get(info.openerId);
+    const cross =
+      opener?.type === 'page' &&
+      /^https?:/i.test(opener.url) &&
+      is.url(opener.url) &&
+      crossOriginPage(info, opener.url);
     if (!all && cross) return false;
-    const opener = urls.get(info.openerId);
-    return opener !== undefined && is.url(opener);
+    return opener !== undefined && is.url(opener.url);
   };
   return (infos) => {
     const known = infos.filter((info) => info?.targetId);
-    const urls = new Map(known.map((info) => [info.targetId, info.url ?? '']));
+    const targets = new Map(known.map((info) => [info.targetId, info]));
     const all = inFlight(now, storage);
     for (let added = true; added; ) {
       added = false;
       for (const info of known) {
-        if (!holds(info, all, urls)) continue;
+        if (!holds(info, all, targets)) continue;
         hold(info.targetId, storage);
         added = true;
       }
