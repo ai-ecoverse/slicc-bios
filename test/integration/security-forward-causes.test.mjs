@@ -521,3 +521,121 @@ test('the policy sync lets the vault decide only when its accepted reply confirm
     'nothing missing'
   );
 });
+
+async function pausedSeven(t, { answer } = {}) {
+  const CONFIG = '/etc/fnox/config.toml';
+  const EXTRA = '/etc/slicc/secrets-policy.toml';
+  const statusListeners = new Set();
+  const paused = { path: EXTRA, sha256: null, accepted: true, absent: true, paused: true };
+  const sends = [];
+  const asked = [];
+  const ports = [];
+  const vault = {
+    forwardEpoch: () => 1,
+    port: {
+      on: (type, listener) => {
+        if (type !== 'status') return () => {};
+        statusListeners.add(listener);
+        return () => statusListeners.delete(listener);
+      },
+      status: () => null,
+    },
+    call: async () => ({ accepted: true, files: [{ path: CONFIG, accepted: true }, paused] }),
+    async forward(input, port) {
+      asked.push(input);
+      ports.push(port);
+      port.onmessage = ({ data }) => {
+        if (data.op === 'body') {
+          port.postMessage(data);
+          port.postMessage({ op: 'credit', bytes: data.chunk.byteLength });
+        } else port.postMessage(data);
+      };
+      port.start();
+      return answer ? answer() : { mode: 'mcp', head, bodyComplete: true };
+    },
+  };
+  const policy = createPolicySync({
+    kernel: {
+      users: { mode: 'enforce' },
+      attest: async (path) => (path === EXTRA ? { path, absent: true } : { path, sha256: 'a' }),
+      watch: async () => () => {},
+    },
+    vault,
+  });
+  await policy.start();
+  await policy.settled();
+  for (const listener of [...statusListeners]) listener({ policy: [paused] });
+  await policy.settled();
+  assert.equal(policy.paused(), true);
+  t.after(() => {
+    policy.close();
+    for (const port of ports) port.close();
+  });
+  const forward = createForwarder({
+    vault,
+    select: () => ({
+      exit: 'page',
+      rawTraits: { manualRedirects: true, encodedBodies: false },
+      maxRequestBody: 1024,
+      active: () => true,
+      fetch: async (sent) => {
+        sends.push(sent);
+        return {
+          status: 200,
+          statusText: 'OK',
+          headers: [],
+          url: request.url,
+          body: (async function* () {})(),
+          cancel: async () => {},
+        };
+      },
+    }),
+    ready: policy.ready,
+    unready: policy.why,
+    paused: policy.paused,
+    policyEpoch: policy.epoch,
+    onPolicyChange: policy.onChange,
+  });
+  const status = (policyFiles) => {
+    for (const listener of [...statusListeners]) listener({ policy: policyFiles });
+  };
+  const run = () => forward(request, { signal: new AbortController().signal });
+  return { policy, run, status, sends, asked, paused };
+}
+
+test('a later status that no longer shows the pause ends the MCP exception at once', async (t) => {
+  const seven = await pausedSeven(t);
+  seven.status([{ path: '/etc/fnox/config.toml', sha256: 'a', accepted: true }]);
+  assert.equal(seven.policy.paused(), false);
+  await assert.rejects(seven.run(), { cause: 'policy-syncing' });
+  assert.equal(seven.asked.length, 0);
+  assert.equal(seven.sends.length, 0);
+});
+
+test('a status that ends the pause while a forward is prepared stops it before it is sent', async (t) => {
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const seven = await pausedSeven(t, {
+    answer: async () => {
+      entered.resolve();
+      await release.promise;
+      return { mode: 'mcp', head, bodyComplete: true };
+    },
+  });
+  const pending = seven.run();
+  await entered.promise;
+  seven.status([]);
+  release.resolve();
+  await assert.rejects(pending);
+  assert.equal(seven.sends.length, 0);
+});
+
+test('a status that still shows the pause keeps the MCP exception', async (t) => {
+  const seven = await pausedSeven(t);
+  seven.status([seven.paused]);
+  assert.equal(seven.policy.paused(), true);
+  const response = await seven.run();
+  assert.equal(response.status, 200);
+  await response.cancel();
+  assert.equal(seven.sends.length, 1);
+});

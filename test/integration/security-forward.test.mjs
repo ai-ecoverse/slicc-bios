@@ -514,6 +514,18 @@ test('root mcpcat started by the cone’s sudo uses the owner’s Settings sign-
   assert.equal(told.includes(placeholder), false);
   const scoopSent = upstream.requests.slice(scoopBefore);
   assert.ok(scoopSent.length > 0, 'the scoop’s request never reached the server');
+  assert.deepEqual(
+    [...new Set(scoopSent.map((item) => item.url))],
+    [`${HOST}mcp`],
+    'the scoop’s slice holds a request that is not its mcpcat’s'
+  );
+  const opening = (item) => {
+    const packet = JSON.parse(item.body || '{}');
+    const meta = packet.params?._meta?.['io.modelcontextprotocol/clientInfo'];
+    const info = meta ?? packet.params?.clientInfo;
+    return item.method === 'POST' && packet.jsonrpc === '2.0' && info?.name === 'mcpcat';
+  };
+  assert.ok(scoopSent.some(opening), 'the scoop’s slice holds no mcpcat opening request');
   for (const item of scoopSent) {
     const whole = [
       item.method,

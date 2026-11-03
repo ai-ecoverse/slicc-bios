@@ -93,6 +93,7 @@ export function createPolicySync({ kernel, vault, report = () => {} }) {
   let ready = false;
   let why = 'policy-syncing';
   let confirmed = false;
+  let pausedPaths = [];
   let epoch = 0;
   let stopped = false;
   let running = false;
@@ -108,6 +109,7 @@ export function createPolicySync({ kernel, vault, report = () => {} }) {
     ready = false;
     why = 'policy-syncing';
     confirmed = false;
+    pausedPaths = [];
     epoch += 1;
     for (const listener of listeners) listener();
   };
@@ -130,6 +132,7 @@ export function createPolicySync({ kernel, vault, report = () => {} }) {
       ready = missing.length === 0 && accepted;
       why = ready ? null : accepted ? 'policy-missing' : 'policy-unaccepted';
       confirmed = accepted && missing.length > 0 && missing.every((path) => pausedIn(reply, path));
+      pausedPaths = confirmed ? missing : [];
       if (!ready) report('the credential policy is unavailable');
     } catch {
       if (version === epoch) why = 'policy-unavailable';
@@ -152,6 +155,19 @@ export function createPolicySync({ kernel, vault, report = () => {} }) {
       }
     })();
     return working;
+  };
+  const stillPaused = (status) => {
+    const files = Array.isArray(status?.policy) ? status.policy : [];
+    return pausedPaths.every((path) =>
+      files.some((file) => file?.path === path && file.absent === true && file.paused === true)
+    );
+  };
+  const statusChanged = (status) => {
+    if (confirmed && !stillPaused(status)) {
+      void refresh();
+      return;
+    }
+    connected();
   };
   const connected = () => {
     const next = vault.forwardEpoch();
@@ -177,7 +193,7 @@ export function createPolicySync({ kernel, vault, report = () => {} }) {
     },
     async start() {
       if (stopped || offStatus) return;
-      offStatus = vault.port.on('status', connected);
+      offStatus = vault.port.on('status', statusChanged);
       offAvailability = vault.port.on('availability', connected);
       unwatch = await kernel.watch([...DIRECTORIES, ...POLICY_FILES], refresh);
       if (typeof unwatch !== 'function') throw new Error('the policy watcher is unavailable');
