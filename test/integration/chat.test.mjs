@@ -1254,7 +1254,7 @@ test('chat in seven answers through the agent worker, Bedrock and the page fetch
     window.cardButton = (id, action) =>
       window
         .freezerView()
-        ?.shadowRoot?.querySelector(`.card[data-id="${id}"] [data-action="${action}"]`);
+        ?.shadowRoot?.querySelector(`.row[data-id="${id}"] [data-action="${action}"]`);
     window.deleteCone = (id) =>
       window.deep(document, `[data-action="delete-cone"][id="delete-${id}"]`);
     window.confirmDialog = () =>
@@ -1271,7 +1271,7 @@ test('chat in seven answers through the agent worker, Bedrock and the page fetch
   });
   await page.until(
     (id) =>
-      !!window.freezerView()?.shadowRoot?.querySelector(`.card[data-id="${id}"][data-live]`) &&
+      !!window.freezerView()?.shadowRoot?.querySelector(`.row[data-id="${id}"][data-live]`) &&
       !!window.cardButton(id, 'open'),
     live.id
   );
@@ -1323,8 +1323,8 @@ test('chat in seven answers through the agent worker, Bedrock and the page fetch
   assert.ok(frozen.messages >= 2);
   await page.until(
     ([id, title]) =>
-      window.freezerView().shadowRoot.querySelector(`.card[data-id="${id}"] .title`)
-        ?.textContent === title && !!window.cardButton(id, 'thaw'),
+      window.freezerView().shadowRoot.querySelector(`.row[data-id="${id}"] .title`)?.textContent ===
+        title && !!window.cardButton(id, 'thaw'),
     [frozen.id, frozen.title]
   );
   await freezerShots('frozen');
