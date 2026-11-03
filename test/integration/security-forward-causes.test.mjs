@@ -721,7 +721,7 @@ test('a reply that lists a missing path both paused and not confirms no pause, i
   }
 });
 
-test('a sync that every status contradicts retries on a backoff, a clean sync or a refresh resets it, and close stops it', async () => {
+test('a sync that every status contradicts retries on a backoff, which only a confirmation that lasts or a refresh resets, and close stops it', async () => {
   const CONFIG = '/etc/fnox/config.toml';
   const EXTRA = '/etc/slicc/secrets-policy.toml';
   const paused = { path: EXTRA, sha256: null, accepted: true, absent: true, paused: true };
@@ -730,6 +730,7 @@ test('a sync that every status contradicts retries on a backoff, a clean sync or
   const cleared = [];
   let contradict = false;
   let calls = 0;
+  let clock = 0;
   let onFile;
   let policy;
   const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
@@ -767,6 +768,7 @@ test('a sync that every status contradicts retries on a backoff, a clean sync or
         return timer;
       },
       clear: (timer) => cleared.push(timer),
+      now: () => clock,
     },
   });
   const fire = async () => {
@@ -810,11 +812,17 @@ test('a sync that every status contradicts retries on a backoff, a clean sync or
   await fire();
   assert.equal(calls, first + 9);
   assert.equal(policy.paused(), true);
-  contradict = true;
   status([]);
-  await tick();
-  await policy.settled();
-  assert.equal(scheduled.at(-1).ms, 250, 'a clean sync did not reset the backoff');
+  assert.equal(policy.paused(), false);
+  assert.equal(calls, first + 9, 'a status revocation uploaded again at once');
+  assert.equal(scheduled.at(-1).ms, 30000, 'a confirmation revoked at once reset the backoff');
+  await fire();
+  assert.equal(calls, first + 10);
+  assert.equal(policy.paused(), true);
+  clock += 30000;
+  status([]);
+  assert.equal(scheduled.at(-1).ms, 250, 'a confirmation that lasted did not reset the backoff');
+  contradict = true;
   await fire();
   assert.equal(scheduled.at(-1).ms, 500);
   onFile();
@@ -828,4 +836,96 @@ test('a sync that every status contradicts retries on a backoff, a clean sync or
   last.work();
   await tick();
   assert.equal(calls, before, 'a retry uploaded after close');
+});
+
+test('two tabs that disagree about the missing file revoke each other on a backoff, not in a chain', async () => {
+  const CONFIG = '/etc/fnox/config.toml';
+  const EXTRA = '/etc/slicc/secrets-policy.toml';
+  const listeners = new Set();
+  const scheduled = [];
+  let uploads = 0;
+  const tabs = [];
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+  const tab = (missingPath) => {
+    const own = new Set();
+    const policy = createPolicySync({
+      kernel: {
+        users: { mode: 'enforce' },
+        attest: async (path) =>
+          path === missingPath ? { path, absent: true } : { path, sha256: 'a' },
+        watch: async () => () => {},
+      },
+      vault: {
+        forwardEpoch: () => 1,
+        port: {
+          on: (type, listener) => {
+            if (type !== 'status') return () => {};
+            own.add(listener);
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          },
+          status: () => null,
+        },
+        call: async (_, { files }) => {
+          uploads += 1;
+          if (uploads > 40) for (const other of tabs) other.close();
+          const missing = files.filter((file) => file.absent === true).map((file) => file.path);
+          const states = files.map((file) => ({
+            path: file.path,
+            sha256: file.sha256 ?? null,
+            accepted: true,
+            ...(missing.includes(file.path) ? { absent: true, paused: true } : {}),
+          }));
+          for (const listener of [...listeners]) listener({ policy: states });
+          await tick();
+          return { accepted: true, files: states };
+        },
+      },
+      timers: {
+        set: (work, ms) => {
+          const timer = { work, ms, missingPath, fired: false };
+          scheduled.push(timer);
+          return timer;
+        },
+        clear: (timer) => {
+          timer.fired = true;
+        },
+        now: () => 0,
+      },
+    });
+    tabs.push(policy);
+    return policy;
+  };
+  const a = tab(EXTRA);
+  const b = tab(CONFIG);
+  await a.start();
+  await tick();
+  await a.settled();
+  await b.start();
+  for (let i = 0; i < 6; i += 1) await tick();
+  await Promise.all([a.settled(), b.settled()]);
+  assert.ok(uploads <= 6, `the tabs uploaded ${uploads} times in a chain, with no timer`);
+  const live = () => scheduled.filter((timer) => !timer.fired);
+  assert.ok(live().length > 0, 'a revoked confirmation scheduled no retry');
+  const before = uploads;
+  for (let round = 0; round < 6; round += 1) {
+    const [next] = live();
+    if (!next) break;
+    next.fired = true;
+    next.work();
+    for (let i = 0; i < 4; i += 1) await tick();
+    await Promise.all([a.settled(), b.settled()]);
+  }
+  assert.ok(uploads - before <= 6, `${uploads - before} uploads from 6 fired timers`);
+  for (const path of [EXTRA, CONFIG]) {
+    const waits = scheduled.filter((timer) => timer.missingPath === path).map((timer) => timer.ms);
+    for (let i = 1; i < waits.length; i += 1)
+      assert.ok(waits[i] >= waits[i - 1], `${path} backed off ${waits.join(', ')}`);
+  }
+  assert.ok(
+    scheduled.some((timer) => timer.ms > 250),
+    `the backoff never grew: ${scheduled.map((timer) => timer.ms).join(', ')}`
+  );
+  a.close();
+  b.close();
 });

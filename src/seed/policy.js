@@ -95,9 +95,11 @@ function pausedIn(list, path, accepted) {
 
 export const RETRY_FIRST_MS = 250;
 export const RETRY_MAX_MS = 30000;
+export const SETTLED_MS = 30000;
 const TIMERS = {
   set: (work, ms) => setTimeout(work, ms),
   clear: (timer) => clearTimeout(timer),
+  now: () => Date.now(),
 };
 
 export function createPolicySync({ kernel, vault, report = () => {}, timers = TIMERS }) {
@@ -112,6 +114,7 @@ export function createPolicySync({ kernel, vault, report = () => {}, timers = TI
   let working = Promise.resolve();
   let again = false;
   let backoff = 0;
+  let settledAt = null;
   let retrying = null;
   let unwatch;
   let offStatus;
@@ -142,7 +145,8 @@ export function createPolicySync({ kernel, vault, report = () => {}, timers = TI
     }
   };
   const settle = (missing, reply) => {
-    backoff = 0;
+    stopRetry();
+    settledAt = timers.now?.() ?? Date.now();
     const accepted = reply.accepted === true;
     ready = missing.length === 0 && accepted;
     why = ready ? null : accepted ? 'policy-missing' : 'policy-unaccepted';
@@ -170,20 +174,26 @@ export function createPolicySync({ kernel, vault, report = () => {}, timers = TI
     }
   };
   const stopRetry = () => {
-    if (retrying !== null) timers.clear(retrying);
+    if (retrying !== null) timers.clear(retrying.handle);
     retrying = null;
   };
   const later = () => {
     stopRetry();
     if (stopped) return;
+    if (settledAt !== null && (timers.now?.() ?? Date.now()) - settledAt >= SETTLED_MS) backoff = 0;
+    settledAt = null;
     backoff = backoff === 0 ? RETRY_FIRST_MS : Math.min(backoff * 2, RETRY_MAX_MS);
-    retrying = timers.set(() => {
+    const retry = {};
+    retry.handle = timers.set(() => {
+      if (retrying !== retry) return;
       retrying = null;
       if (!stopped) void run();
     }, backoff);
+    retrying = retry;
   };
   const refresh = () => {
     backoff = 0;
+    settledAt = null;
     return run();
   };
   const run = () => {
@@ -208,7 +218,8 @@ export function createPolicySync({ kernel, vault, report = () => {}, timers = TI
   const statusChanged = (status) => {
     if (pending && !shows(status, pending.missing)) pending.contradicted = true;
     if (confirmed && !shows(status, pausedPaths)) {
-      void refresh();
+      hold();
+      later();
       return;
     }
     connected();
