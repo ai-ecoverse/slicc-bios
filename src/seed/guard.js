@@ -1008,6 +1008,7 @@ class Guard {
       real: known?.real || false,
       context: info.browserContextId ?? known?.context,
       reported: info.url ?? known?.reported,
+      info,
     });
   }
 
@@ -1024,12 +1025,52 @@ class Guard {
     return (await this.target(openerId, depth + 1)) ? 'protected' : 'unprotected';
   }
 
+  async openerInfo(targetId) {
+    const answer = await this.within(this.call('Target.getTargetInfo', { targetId }), ANSWER_MS);
+    const info = answer?.result?.targetInfo;
+    return !answer?.error &&
+      info?.targetId === targetId &&
+      typeof info.type === 'string' &&
+      typeof info.url === 'string'
+      ? info
+      : null;
+  }
+
+  async crossOpener(targetId, found) {
+    if (!found.openerId || found.type !== 'page' || !/^https?:/i.test(found.url)) return false;
+    const same = (a, b) =>
+      ['targetId', 'type', 'url', 'openerId', 'parentId', 'browserContextId'].every(
+        (key) => a?.[key] === b?.[key]
+      );
+    const known = this.targets.get(found.openerId)?.info;
+    const first = await this.openerInfo(found.openerId);
+    if (!first) return null;
+    const child = await this.openerInfo(targetId);
+    const last = await this.openerInfo(found.openerId);
+    const remembered = this.targets.get(found.openerId)?.info;
+    if (
+      !child ||
+      !last ||
+      !same(first, last) ||
+      !same(found.info, child) ||
+      !same(this.targets.get(targetId)?.info, found.info) ||
+      (remembered && !same(remembered, known) && !same(remembered, last))
+    )
+      return null;
+    this.learn(last);
+    return crossOriginPage(child, last.url);
+  }
+
   async target(targetId, depth = 0) {
     const found = await this.lookup(targetId);
     if (!found) return true;
-    const openerInfo = found.openerId ? await this.lookup(found.openerId) : undefined;
-    const cross = crossOriginPage(found, openerInfo?.url);
-    if (isHeld(targetId) || (!cross && isHeld(found.openerId))) {
+    if (isHeld(targetId)) {
+      hold(targetId);
+      found.guarded = true;
+      return true;
+    }
+    const cross = await this.crossOpener(targetId, found);
+    if (cross === null || (!cross && isHeld(found.openerId))) {
       hold(targetId);
       found.guarded = true;
       return true;
@@ -2668,8 +2709,7 @@ class Guard {
     const known = this.targets.get(targetId);
     if (!known) return true;
     if (known.parentId && this.relatedHeld(known.parentId, depth + 1)) return true;
-    if (!known.openerId || crossOriginPage(known, this.targets.get(known.openerId)?.url))
-      return false;
+    if (!known.openerId) return false;
     if (this.relatedHeld(known.openerId, depth + 1)) return true;
     const opener = this.targets.get(known.openerId);
     return Boolean(known.type === 'page' && (opener?.guarded || this.is.target(opener)));
@@ -2677,17 +2717,12 @@ class Guard {
 
   hinted(info) {
     const known = this.targets.get(info.targetId);
-    const cross = crossOriginPage(
-      { type: info.type ?? known?.type, url: info.url ?? known?.url },
-      this.targets.get(info.openerId)?.url
-    );
     return (
       known?.guarded ||
       isHeld(info.targetId) ||
-      (!cross && this.relatedHeld(info.openerId)) ||
+      this.relatedHeld(info.openerId) ||
       this.relatedHeld(info.parentId ?? known?.parentId) ||
       (info.openerId &&
-        !cross &&
         (this.targets.get(info.openerId)?.guarded ||
           this.is.target(this.targets.get(info.openerId)))) ||
       this.is.target({
@@ -2702,6 +2737,16 @@ class Guard {
   receiveHint(message) {
     const info = message.params?.targetInfo;
     if (!info?.targetId) return;
+    const known = this.targets.get(info.targetId);
+    const opener = this.targets.get(info.openerId);
+    if (
+      (info.type ?? known?.type) === 'page' &&
+      typeof info.url === 'string' &&
+      opener &&
+      !crossOriginPage(info, opener.url) &&
+      (isHeld(info.openerId) || opener.guarded || this.is.target(opener))
+    )
+      hold(info.targetId);
     this.hints.set(info.targetId, message);
     const guarded = this.hinted(info);
     for (const [id, entry] of this.sessions)
@@ -4442,6 +4487,10 @@ class Guard {
   }
 
   async precheck(message) {
+    const targetId = this.scopeTarget(message.sessionId);
+    const target = this.targets.get(targetId);
+    if (target?.type === 'page' && target.openerId && (await this.current(targetId)))
+      return PROTECTED;
     if (this.unsafeContent(message) || (await this.recover(message))) return PROTECTED;
     return this.pageCheck(message.method, message.sessionId);
   }

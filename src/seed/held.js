@@ -39,6 +39,7 @@ export function crossOriginPage(info, openerUrl) {
   const opener = URL.parse(openerUrl);
   return Boolean(
     page &&
+      ['http:', 'https:'].includes(page.protocol) &&
       opener &&
       page.origin !== 'null' &&
       opener.origin !== 'null' &&
@@ -185,8 +186,7 @@ export function askHold(
 }
 
 function considering({ is, storage, now }) {
-  const urls = new Map();
-  const holds = (info, all) => {
+  const holds = (info, all, urls) => {
     if (isHeld(info.targetId, storage)) return false;
     if (isHeld(info.parentId, storage)) return true;
     const cross = crossOriginPage(info, urls.get(info.openerId));
@@ -198,12 +198,12 @@ function considering({ is, storage, now }) {
   };
   return (infos) => {
     const known = infos.filter((info) => info?.targetId);
-    for (const info of known) urls.set(info.targetId, info.url ?? '');
+    const urls = new Map(known.map((info) => [info.targetId, info.url ?? '']));
     const all = inFlight(now, storage);
     for (let added = true; added; ) {
       added = false;
       for (const info of known) {
-        if (!holds(info, all)) continue;
+        if (!holds(info, all, urls)) continue;
         hold(info.targetId, storage);
         added = true;
       }
