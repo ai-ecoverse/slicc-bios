@@ -14,6 +14,7 @@ import { oldRouteExtension } from './cdp-675-old-extension.mjs';
 import { assertPlainReplayBound } from './cdp-675-plain-bound.mjs';
 import { plainReplayAttempts } from './cdp-675-plain-retry.mjs';
 import { awaitRowClosure, ownedRowPids } from './cdp-675-row-closure.mjs';
+import { captureRowPageEvidence } from './cdp-675-row-evidence.mjs';
 import { sameOriginChildMarkup, sameOriginTools } from './cdp-675-same-origin.mjs';
 import { workerScopeRead } from './cdp-675-worker-scope.mjs';
 import { devtools, launch } from './chrome.mjs';
@@ -1430,6 +1431,7 @@ async function lifecycleRescue(page, chrome, rawSession, row, kind) {
       (start) => globalThis.cdp675Trace.slice(start),
       row.traceStart
     );
+    await captureRowPageEvidence(page, row);
     row.lifecycleFinal = await page.evaluate(() => ({
       events: globalThis.cdp675Lifecycle.events,
       calls: globalThis.cdp675Lifecycle.calls,
@@ -3635,7 +3637,7 @@ for (const route of ['extension', 'link']) {
                 delete globalThis.cdp675Race;
               })
               .catch(() => {});
-          if (page && !setupError) {
+          if (page && !setupError && !row.ownerClosed?.success) {
             if (row.lateFrameStart) {
               row.lateLeaseStates = await page
                 .evaluate(
@@ -3681,60 +3683,8 @@ for (const route of ['extension', 'link']) {
                 })
                 .catch((error) => ({ error: error.message }));
             }
-            row.guardConnections = await page.evaluate(
-              (floor) =>
-                [...(globalThis.cdp675Connections?.values() ?? [])]
-                  .filter(({ connectionId }) => connectionId > floor)
-                  .map(({ connectionId }) => connectionId),
-              row.guardConnectionFloor
-            );
-            row.methods = await page
-              .evaluate((start) => globalThis.cdp675Trace?.slice(start ?? 0) ?? [], row.traceStart)
-              .catch(() => []);
+            await captureRowPageEvidence(page, row);
             if (foreign) row.plainReplayAttempts = plainReplayAttempts(row.methods);
-            row.frameReadTrace = await page
-              .evaluate(
-                (target) =>
-                  (globalThis.cdp675FrameReadTrace ?? []).filter(
-                    ({ targetId }) => targetId === target
-                  ),
-                row.target
-              )
-              .catch(() => []);
-            row.worldTrace = await page
-              .evaluate(
-                (target) =>
-                  (globalThis.cdp675WorldTrace ?? []).filter(({ targetId }) => targetId === target),
-                row.target
-              )
-              .catch(() => []);
-            row.privateDocumentTrace = await page
-              .evaluate(
-                (target) =>
-                  (globalThis.cdp675PrivateDocumentTrace ?? []).filter(
-                    ({ targetId }) => targetId === target
-                  ),
-                row.target
-              )
-              .catch(() => []);
-            row.publicationTrace = await page
-              .evaluate(
-                (target) =>
-                  (globalThis.cdp675PublicationTrace ?? []).filter(
-                    ({ targetId }) => targetId === target
-                  ),
-                row.target
-              )
-              .catch(() => []);
-            row.framePredicateTrace = await page
-              .evaluate(
-                (target) =>
-                  (globalThis.cdp675FramePredicateTrace ?? []).filter(
-                    ({ targetId }) => targetId === target
-                  ),
-                row.target
-              )
-              .catch(() => []);
           }
           if (nativeFixture && row.target) {
             try {
