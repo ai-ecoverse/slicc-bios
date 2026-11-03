@@ -6,7 +6,7 @@ import { createServer as https } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { boot, ready, run, shows } from './bios.mjs';
 import { boundedHooks, boundedStage, rowDeadline } from './cdp-675-deadline.mjs';
 import { nativeTapFixture, nativeTapRead } from './cdp-675-native-tap.mjs';
@@ -31,7 +31,9 @@ const manifest = directory
   ? JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8'))
   : null;
 const { bfcacheNavigation } = manifest
-  ? await import(new URL('../../candidates/browsers/bfcache-restore.mjs', import.meta.url))
+  ? await import(
+      pathToFileURL(join(directory, manifest.browsersDirectory, 'bfcache-restore.mjs')).href
+    )
   : { bfcacheNavigation: null };
 const harnessExtensionPath = fileURLToPath(
   new URL('./extension', import.meta.resolve('@ai-ecoverse/slicc-shared-web/harness'))
@@ -552,7 +554,7 @@ function packageProof(output, version, sha256) {
     binary: Boolean(binary?.startsWith('/home/cone/') && binary.endsWith('playwright-cli')),
     mcpcat: Boolean(mcpcat?.startsWith('/home/cone/') && mcpcat.endsWith('mcpcat')),
     version: actualVersion === version,
-    mcpcatVersion: mcpcatVersion === '0.80.1',
+    mcpcatVersion: mcpcatVersion === '0.31.17',
     sha256: wasm.some((entry) => entry.sha256 === sha256),
   };
   return {
@@ -2136,7 +2138,7 @@ for (const route of ['extension', 'link']) {
           trace.setupChecks.push({
             name: 'selected extension route',
             pass:
-              trace.selectedRoute.extension === (oldRoute ? '7.10.0' : '7.11.99') &&
+              trace.selectedRoute.extension === (oldRoute ? '7.10.0' : '7.12.0') &&
               trace.selectedRoute.links === 0,
             actual: trace.selectedRoute,
           });
@@ -2165,7 +2167,7 @@ for (const route of ['extension', 'link']) {
               runtimes.length > 0 &&
               trace.selectedRoute.length > 0 &&
               trace.selectedRoute.every(
-                ({ route }) => route.version === (oldRoute ? '1.49.36' : '1.57.99')
+                ({ route }) => route.version === (oldRoute ? '1.49.36' : '1.60.0')
               ),
             actual: trace.selectedRoute,
           });
@@ -2178,7 +2180,7 @@ for (const route of ['extension', 'link']) {
           '675-install'
         );
         assert.match(trace.install.stdout, /install-status-0/);
-        trace.packageProof = packageProof(trace.install, '1.44.99', manifest.wasmSha256);
+        trace.packageProof = packageProof(trace.install, '1.45.0', manifest.wasmSha256);
       } catch (error) {
         setupError = error;
         trace.setupFailure = { name: error.name, message: error.message };

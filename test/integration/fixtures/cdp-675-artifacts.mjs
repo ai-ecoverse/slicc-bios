@@ -3,57 +3,129 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const directory = process.argv[2];
-const cdp = 'ai-ecoverse-slicc-cdp-1.44.99.tgz';
-const mcpcat = 'ai-ecoverse-mcpcat-0.80.1.tgz';
-const oldClient = 'ai-ecoverse-slicc-cdp-1.43.1.tgz';
-const wasm = execFileSync(
-  'tar',
-  ['-xOzf', join(directory, cdp), 'package/bin/playwright-cli.wasm'],
-  {
-    maxBuffer: 64 * 1024 * 1024,
-  }
-);
 const sum = (data) => createHash('sha256').update(data).digest('hex');
-assert.equal(sum(wasm), sum(await readFile('candidates/cdp/bin/playwright-cli.wasm')));
 const head = (where) =>
   execFileSync('git', ['rev-parse', 'HEAD'], { cwd: where, encoding: 'utf8' }).trim();
-await writeFile(
-  join(directory, 'manifest.json'),
-  JSON.stringify(
-    {
-      heads: {
-        bios: head('.'),
-        cdp: head('candidates/cdp'),
-        mcpcat: head('candidates/mcpcat'),
-        extension: head('candidates/extension'),
-        cli: head('candidates/cli'),
-        browsers: head('candidates/browsers'),
-      },
-      diagnosticVersions: {
-        cdp: '1.44.99',
-        mcpcat: '0.80.1',
-        extension: '7.11.99',
-        cli: '1.57.99',
-      },
-      cdp,
-      mcpcat,
-      oldClient,
-      oldClientWasmSha256: sum(
-        execFileSync(
-          'tar',
-          ['-xOzf', join(directory, oldClient), 'package/bin/playwright-cli.wasm'],
-          { maxBuffer: 64 * 1024 * 1024 }
-        )
-      ),
-      wasmSha256: sum(wasm),
-      packageSha256: {
-        cdp: sum(await readFile(join(directory, cdp))),
-        mcpcat: sum(await readFile(join(directory, mcpcat))),
-      },
+const wasmFrom = (file) =>
+  execFileSync('tar', ['-xOzf', file, 'package/bin/playwright-cli.wasm'], {
+    maxBuffer: 64 * 1024 * 1024,
+  });
+const verifySource = (source) =>
+  execFileSync('git', [
+    'diff',
+    '--exit-code',
+    source,
+    '--',
+    'src',
+    'edge',
+    'README.md',
+    'package.json',
+    'package-lock.json',
+  ]);
+
+export function registryProof(data, metadata, name, version, expectedHead) {
+  assert.equal(metadata.name, name);
+  assert.equal(metadata.version, version);
+  if (expectedHead !== undefined) assert.equal(metadata.gitHead, expectedHead);
+  assert.equal(
+    metadata.dist.integrity,
+    `sha512-${createHash('sha512').update(data).digest('base64')}`
+  );
+  return {
+    name,
+    version,
+    gitHead: metadata.gitHead,
+    integrity: metadata.dist.integrity,
+    tarball: metadata.dist.tarball,
+    provenance: metadata.dist.attestations?.url,
+    sha256: sum(data),
+    source: 'published npm release, not rebuilt',
+  };
+}
+
+export async function artifactManifest(directory, config, io = {}) {
+  const read = io.readFile ?? readFile;
+  const gitHead = io.head ?? head;
+  const wasm = io.wasmFrom ?? wasmFrom;
+  const verify = io.verifySource ?? verifySource;
+  const cdp = `ai-ecoverse-slicc-cdp-${config.cdpVersion}.tgz`;
+  const mcpcat = `ai-ecoverse-mcpcat-${config.mcpcatVersion}.tgz`;
+  const browsers = `ai-ecoverse-slicc-browsers-${config.browsersVersion}.tgz`;
+  const oldClient = `ai-ecoverse-slicc-cdp-${config.oldCdpVersion}.tgz`;
+  const proofs = {};
+  for (const [key, file, name, version, expected] of [
+    ['cdp', cdp, '@ai-ecoverse/slicc-cdp', config.cdpVersion, config.cdp],
+    ['mcpcat', mcpcat, '@ai-ecoverse/mcpcat', config.mcpcatVersion, config.mcpcat],
+    ['browsers', browsers, '@ai-ecoverse/slicc-browsers', config.browsersVersion, config.browsers],
+    ['oldClient', oldClient, '@ai-ecoverse/slicc-cdp', config.oldCdpVersion, undefined],
+  ]) {
+    proofs[key] = registryProof(
+      await read(join(directory, file)),
+      JSON.parse(await read(join(directory, `${key}.registry.json`), 'utf8')),
+      name,
+      version,
+      expected
+    );
+  }
+  const heads = { bios: gitHead('.') };
+  for (const key of ['cdp', 'mcpcat', 'extension', 'cli', 'browsers']) {
+    heads[key] = gitHead(`candidates/${key}`);
+    assert.equal(heads[key], config[key]);
+  }
+  verify(config.biosSource);
+  const extensionSha256 = sum(await read(join(directory, 'slicc-extension.zip')));
+  const cliSha256 = sum(await read(join(directory, 'slicc-linux-amd64')));
+  assert.equal(extensionSha256, config.extensionRelease.sha256);
+  assert.equal(cliSha256, config.cliRelease.sha256);
+  return {
+    heads,
+    biosSource: config.biosSource,
+    releaseVersions: {
+      cdp: config.cdpVersion,
+      mcpcat: config.mcpcatVersion,
+      extension: config.extensionVersion,
+      cli: config.cliVersion,
+      browsers: config.browsersVersion,
     },
-    null,
-    2
-  )
-);
+    cdp,
+    mcpcat,
+    oldClient,
+    browsers,
+    browsersDirectory: 'browsers-release',
+    oldClientWasmSha256: sum(wasm(join(directory, oldClient))),
+    wasmSha256: sum(wasm(join(directory, cdp))),
+    packageSha256: {
+      cdp: proofs.cdp.sha256,
+      mcpcat: proofs.mcpcat.sha256,
+      browsers: proofs.browsers.sha256,
+    },
+    releaseProofs: proofs,
+    extension: {
+      version: config.extensionVersion,
+      sha256: extensionSha256,
+      url: config.extensionRelease.url,
+      source: 'released zip; observational taps only in diagnostic copy',
+    },
+    cli: {
+      version: config.cliVersion,
+      sha256: cliSha256,
+      url: config.cliRelease.url,
+      source: 'released Linux amd64 binary, not rebuilt',
+    },
+    sourceCheckouts:
+      'exact released tag commits for audit and Rust memory preflights only; executed components are release artifacts',
+  };
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const directory = process.argv[2];
+  const config = JSON.parse(
+    await readFile(new URL('./cdp-675-candidates.json', import.meta.url), 'utf8')
+  );
+  await writeFile(
+    join(directory, 'manifest.json'),
+    JSON.stringify(await artifactManifest(directory, config), null, 2)
+  );
+}

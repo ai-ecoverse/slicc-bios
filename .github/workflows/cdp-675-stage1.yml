@@ -35,77 +35,65 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-cdp
-          ref: c9622ee505a07e94e5a429304385ab117ad2913f
+          ref: 67f017c4eacb5e4125810b6221b446f3ad6153e4
           path: candidates/cdp
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/mcpcat
-          ref: d9f3ec38c9813fc244662d0003581e7cb770c2a7
+          ref: 7d1e7755d6e149eac222c684e59b1d475f120022
           path: candidates/mcpcat
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-cli
-          ref: 2278951289d1d9911f57ae25db46e2ed62ab916f
+          ref: 3f902e7225bf25f56b45ef65d1b4c4cd2ea8064c
           path: candidates/cli
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-extension
-          ref: ea1f363deb525839e302f4a8c8acf84916865a0a
+          ref: 02f2253502ab41d03ee9ee73baa58728e893875c
           path: candidates/extension
       - uses: actions/checkout@v4
         with:
           repository: ai-ecoverse/slicc-browsers
-          ref: 0523b11ff42c9ef41cd997a6a974fd66824ae60f
+          ref: 306688a47f09097d027a4e7cbb0513f9c7c52a16
           path: candidates/browsers
       - uses: actions/setup-node@v4
         with:
           node-version: '26'
           cache: npm
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: candidates/cli/go.mod
-          cache-dependency-path: candidates/cli/go.sum
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-wasip1
           toolchain: 1.99.1
       - run: npm ci
-      - name: Pack exact candidates
+      - name: Acquire and verify released components
         run: |
           set -eu
-          mkdir -p "$RUNNER_TEMP/candidate-artifacts" "$RUNNER_TEMP/candidate-trace"
+          artifacts="$RUNNER_TEMP/candidate-artifacts"
+          mkdir -p "$artifacts" "$RUNNER_TEMP/candidate-trace"
           npm install --prefix "$RUNNER_TEMP/old-cli" --no-audit --no-fund @ai-ecoverse/slicc@1.49.36
           "$RUNNER_TEMP/old-cli/node_modules/.bin/slicc" --version > "$RUNNER_TEMP/candidate-trace/old-cli-version.txt"
-          npm pack @ai-ecoverse/slicc-cdp@1.43.1 --ignore-scripts --pack-destination "$RUNNER_TEMP/candidate-artifacts"
+          npm pack @ai-ecoverse/slicc-cdp@1.45.0 @ai-ecoverse/mcpcat@0.31.17 @ai-ecoverse/slicc-browsers@1.19.0 @ai-ecoverse/slicc-cdp@1.43.1 --ignore-scripts --pack-destination "$artifacts"
+          npm view @ai-ecoverse/slicc-cdp@1.45.0 name version dist gitHead --json > "$artifacts/cdp.registry.json"
+          npm view @ai-ecoverse/mcpcat@0.31.17 name version dist gitHead --json > "$artifacts/mcpcat.registry.json"
+          npm view @ai-ecoverse/slicc-browsers@1.19.0 name version dist gitHead --json > "$artifacts/browsers.registry.json"
+          npm view @ai-ecoverse/slicc-cdp@1.43.1 name version dist gitHead --json > "$artifacts/oldClient.registry.json"
+          curl -fL --retry 2 --max-time 120 https://github.com/ai-ecoverse/slicc-extension/releases/download/v7.12.0/slicc-extension.zip -o "$artifacts/slicc-extension.zip"
+          echo "e452638af2b4baa7814929ba72f104c954e315e5c25f77546f9b67263702fb82  $artifacts/slicc-extension.zip" | sha256sum -c -
+          curl -fL --retry 2 --max-time 120 https://github.com/ai-ecoverse/slicc-cli/releases/download/v1.60.0/slicc-linux-amd64 -o "$artifacts/slicc-linux-amd64"
+          echo "46b22657eb475da89e5fdcc0197923dfcfb80a38c01ec6093966f2a4585b17df  $artifacts/slicc-linux-amd64" | sha256sum -c -
+          chmod +x "$artifacts/slicc-linux-amd64"
+          "$artifacts/slicc-linux-amd64" --version > "$RUNNER_TEMP/candidate-trace/cli-version.txt"
+          sha256sum "$artifacts/slicc-linux-amd64" > "$RUNNER_TEMP/candidate-trace/cli.sha256"
+          sha256sum "$artifacts/slicc-extension.zip" > "$RUNNER_TEMP/candidate-trace/extension.sha256"
+          mkdir -p "$RUNNER_TEMP/extension-candidate" "$artifacts/browsers-release"
+          unzip -q "$artifacts/slicc-extension.zip" -d "$RUNNER_TEMP/extension-candidate"
+          tar -xzf "$artifacts/ai-ecoverse-slicc-browsers-1.19.0.tgz" --strip-components=1 -C "$artifacts/browsers-release"
+          node test/integration/fixtures/cdp-675-artifacts.mjs "$artifacts"
+          cp "$artifacts/manifest.json" "$RUNNER_TEMP/candidate-trace/manifest.json"
           cd candidates/cdp
-          npm ci
-          cargo test -p slicc-cdp-client one_second_settling_reply --lib -- --test-threads=1 > "$RUNNER_TEMP/candidate-trace/rust-budget.log" 2>&1
-          cargo test -p slicc-cdp-client plain_fallback_retry --lib -- --test-threads=1 > "$RUNNER_TEMP/candidate-trace/rust-plain-retry.log" 2>&1
-          npm pkg set version=1.44.99
-          git diff -- package.json > "$RUNNER_TEMP/candidate-trace/cdp-version-stamp.diff"
-          npm run build:wasm
-          npm pack --pack-destination "$RUNNER_TEMP/candidate-artifacts"
-          sha256sum bin/playwright-cli.wasm > "$RUNNER_TEMP/candidate-trace/wasm.sha256"
-          cd ../mcpcat
-          npm ci
-          npm pkg set version=0.80.1
-          git diff -- package.json > "$RUNNER_TEMP/candidate-trace/mcpcat-version-stamp.diff"
-          npm pack --pack-destination "$RUNNER_TEMP/candidate-artifacts"
-          cd ../extension
-          npm ci
-          npm run build
-          node scripts/pack.mjs 7.11.99
-          sha256sum artifacts/slicc-extension.zip > "$RUNNER_TEMP/candidate-trace/extension.sha256"
-          mkdir -p "$RUNNER_TEMP/extension-candidate"
-          unzip -q artifacts/slicc-extension.zip -d "$RUNNER_TEMP/extension-candidate"
-          cd ../cli
-          npm ci
-          go build -ldflags '-X main.version=1.57.99' -o "$RUNNER_TEMP/slicc-candidate" ./cmd/slicc
-          "$RUNNER_TEMP/slicc-candidate" --version > "$RUNNER_TEMP/candidate-trace/cli-version.txt"
-          sha256sum "$RUNNER_TEMP/slicc-candidate" > "$RUNNER_TEMP/candidate-trace/cli.sha256"
+          cargo test --locked -p slicc-cdp-client one_second_settling_reply --lib -- --test-threads=1 > "$RUNNER_TEMP/candidate-trace/rust-budget.log" 2>&1
+          cargo test --locked -p slicc-cdp-client plain_fallback_retry --lib -- --test-threads=1 > "$RUNNER_TEMP/candidate-trace/rust-plain-retry.log" 2>&1
           cd ../..
-          node test/integration/fixtures/cdp-675-artifacts.mjs "$RUNNER_TEMP/candidate-artifacts"
-          cp "$RUNNER_TEMP/candidate-artifacts/manifest.json" "$RUNNER_TEMP/candidate-trace/manifest.json"
           npx --no-install slicc-cdp install-browser
       - name: Run candidate diagnostic
         run: |
@@ -113,7 +101,7 @@ jobs:
           export SLICC_PROOF_TRACE_DIR="$RUNNER_TEMP/candidate-trace"
           export SLICC_675_ARTIFACT_DIR="$RUNNER_TEMP/candidate-artifacts"
           export SLICC_675_EXTENSION_DIR="$RUNNER_TEMP/extension-candidate"
-          export SLICC_CLI="$RUNNER_TEMP/slicc-candidate"
+          export SLICC_CLI="$RUNNER_TEMP/candidate-artifacts/slicc-linux-amd64"
           export SLICC_675_OLD_CLI="$RUNNER_TEMP/old-cli/node_modules/.bin/slicc"
           timeout -k 30 2700 node --test --test-force-exit --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs test/integration/cdp-675-packaged.test.mjs test/integration/cdp-675-existing-reads.test.mjs > "$RUNNER_TEMP/candidate.log" 2>&1
           result=$?

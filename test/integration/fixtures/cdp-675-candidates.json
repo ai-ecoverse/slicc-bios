@@ -1,11 +1,23 @@
 {
-  "cdp": "40074efe899e4c6b18b044a7bd7b5b775352fec4",
-  "cli": "2278951289d1d9911f57ae25db46e2ed62ab916f",
-  "extension": "b663866eec8f8fac609b7e94c557f6c0c7cb384e",
-  "browsers": "0523b11ff42c9ef41cd997a6a974fd66824ae60f",
-  "mcpcat": "d9f3ec38c9813fc244662d0003581e7cb770c2a7",
-  "extensionVersion": "7.11.99",
-  "cliVersion": "1.57.99",
+  "biosSource": "38c75b87c8c85517c7b4309e69681b467d8af67a",
+  "cdp": "67f017c4eacb5e4125810b6221b446f3ad6153e4",
+  "cli": "3f902e7225bf25f56b45ef65d1b4c4cd2ea8064c",
+  "extension": "02f2253502ab41d03ee9ee73baa58728e893875c",
+  "browsers": "306688a47f09097d027a4e7cbb0513f9c7c52a16",
+  "mcpcat": "7d1e7755d6e149eac222c684e59b1d475f120022",
+  "extensionVersion": "7.12.0",
+  "cliVersion": "1.60.0",
+  "cdpVersion": "1.45.0",
+  "mcpcatVersion": "0.31.17",
+  "browsersVersion": "1.19.0",
+  "extensionRelease": {
+    "url": "https://github.com/ai-ecoverse/slicc-extension/releases/download/v7.12.0/slicc-extension.zip",
+    "sha256": "e452638af2b4baa7814929ba72f104c954e315e5c25f77546f9b67263702fb82"
+  },
+  "cliRelease": {
+    "url": "https://github.com/ai-ecoverse/slicc-cli/releases/download/v1.60.0/slicc-linux-amd64",
+    "sha256": "46b22657eb475da89e5fdcc0197923dfcfb80a38c01ec6093966f2a4585b17df"
+  },
   "oldExtensionVersion": "7.10.0",
   "oldCliVersion": "1.49.36",
   "oldCdpVersion": "1.43.1"
