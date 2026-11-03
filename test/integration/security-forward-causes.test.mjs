@@ -425,40 +425,99 @@ test('a missing policy file the vault has paused lets the vault decide: MCP goes
     paused: () => true,
     answer: () => ({ mode: 'secret', head }),
   });
-  assert.equal(secret.cause, 'policy-missing');
+  assert.equal(secret.cause, 'policy-paused');
   const unpaused = await refusal(t, { ready: () => false, unready: () => 'policy-missing' });
   assert.equal(unpaused.cause, 'policy-missing');
   assert.equal(unpaused.asked.length, 0);
 });
 
-test('the policy sync lets the vault decide only for a missing file the vault reports paused', async () => {
-  const sync = async (statusPolicy, { attest = (path) => ({ path, absent: true }) } = {}) => {
+test('the policy sync lets the vault decide only when its accepted reply confirms every missing file as paused', async () => {
+  const CONFIG = '/etc/fnox/config.toml';
+  const EXTRA = '/etc/slicc/secrets-policy.toml';
+  const present = (path) => ({ path, sha256: 'a' });
+  const absent = (path) => ({ path, absent: true });
+  const pausedFile = (path) => ({ path, sha256: null, accepted: true, absent: true, paused: true });
+  const sync = async (attest, reply, status = []) => {
     const policy = createPolicySync({
       kernel: {
         users: { mode: 'enforce' },
-        attest: async (path) => attest(path),
+        attest: async (path) => attest[path](path),
         watch: async () => () => {},
       },
       vault: {
         forwardEpoch: () => 1,
-        port: { on: () => () => {}, status: () => ({ policy: statusPolicy }) },
-        call: async () => ({ accepted: true }),
+        port: { on: () => () => {}, status: () => ({ policy: status }) },
+        call: async () => reply,
       },
     });
     assert.equal(policy.paused(), false);
     await policy.start();
     await policy.settled();
-    const paused = policy.paused();
+    const state = { ready: policy.ready(), why: policy.why(), paused: policy.paused() };
     policy.close();
     assert.equal(policy.paused(), false);
-    return paused;
+    return state;
   };
-  const file = '/etc/slicc/secrets-policy.toml';
-  assert.equal(await sync([{ path: file, absent: true, paused: true }]), true);
-  assert.equal(await sync([{ path: file, absent: true }]), false);
-  assert.equal(await sync(undefined), false);
-  assert.equal(
-    await sync([{ path: file, paused: true }], { attest: (path) => ({ path, sha256: 'a' }) }),
-    false
+  const rejected = { path: CONFIG, sha256: 'a', accepted: false, warnings: ['not trusted'] };
+  assert.deepEqual(
+    await sync(
+      { [CONFIG]: present, [EXTRA]: absent },
+      { accepted: false, files: [rejected, pausedFile(EXTRA)] },
+      [rejected, pausedFile(EXTRA)]
+    ),
+    { ready: false, why: 'policy-unaccepted', paused: false },
+    'a rejected file and a paused missing one'
+  );
+  assert.deepEqual(
+    await sync({ [CONFIG]: present, [EXTRA]: present }, { accepted: false, files: [rejected] }),
+    { ready: false, why: 'policy-unaccepted', paused: false },
+    'a rejected file alone'
+  );
+  assert.deepEqual(
+    await sync(
+      { [CONFIG]: present, [EXTRA]: absent },
+      { accepted: true, files: [{ path: CONFIG, accepted: true }, pausedFile(EXTRA)] }
+    ),
+    { ready: false, why: 'policy-missing', paused: true },
+    'a missing file the reply confirms paused'
+  );
+  assert.deepEqual(
+    await sync(
+      { [CONFIG]: absent, [EXTRA]: absent },
+      { accepted: true, files: [pausedFile(CONFIG), pausedFile(EXTRA)] }
+    ),
+    { ready: false, why: 'policy-missing', paused: true },
+    'both missing and confirmed paused'
+  );
+  assert.deepEqual(
+    await sync(
+      { [CONFIG]: absent, [EXTRA]: absent },
+      { accepted: true, files: [pausedFile(EXTRA)] },
+      [pausedFile(CONFIG), pausedFile(EXTRA)]
+    ),
+    { ready: false, why: 'policy-missing', paused: false },
+    'a missing file this reply does not confirm, whatever the status says'
+  );
+  assert.deepEqual(
+    await sync(
+      { [CONFIG]: present, [EXTRA]: absent },
+      { accepted: true, files: [{ path: EXTRA, absent: true, accepted: true }] },
+      [pausedFile(EXTRA)]
+    ),
+    { ready: false, why: 'policy-missing', paused: false },
+    'a missing file the reply shows unpaused'
+  );
+  assert.deepEqual(
+    await sync({ [CONFIG]: present, [EXTRA]: absent }, { accepted: true }),
+    { ready: false, why: 'policy-missing', paused: false },
+    'a reply without files'
+  );
+  assert.deepEqual(
+    await sync(
+      { [CONFIG]: present, [EXTRA]: present },
+      { accepted: true, files: [pausedFile(EXTRA)] }
+    ),
+    { ready: true, why: null, paused: false },
+    'nothing missing'
   );
 });

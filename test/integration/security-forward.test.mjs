@@ -512,8 +512,17 @@ test('root mcpcat started by the cone’s sudo uses the owner’s Settings sign-
   assert.match(told, /This user gets no placeholder for this server/);
   assert.equal(told.includes(MCP), false);
   assert.equal(told.includes(placeholder), false);
-  assert.ok(
-    upstream.requests.slice(scoopBefore).every((item) => bearer(item) === undefined),
-    'a scoop got the owner’s sign-in'
-  );
+  const scoopSent = upstream.requests.slice(scoopBefore);
+  assert.ok(scoopSent.length > 0, 'the scoop’s request never reached the server');
+  for (const item of scoopSent) {
+    const whole = [
+      item.method,
+      item.url,
+      JSON.stringify(item.headers),
+      String(item.body ?? ''),
+    ].join('\n');
+    assert.equal(bearer(item), undefined, whole);
+    assert.equal(whole.includes(MCP), false, 'a scoop got the owner’s sign-in');
+    assert.equal(whole.includes(placeholder), false, 'a scoop sent the owner’s placeholder');
+  }
 });

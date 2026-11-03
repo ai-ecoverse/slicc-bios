@@ -403,7 +403,7 @@ export function createForwarder({
         ask,
         () => relay.close()
       );
-      if (mcpOnly && mode !== 'mcp') throw refused('policy-missing');
+      if (mcpOnly && mode !== 'mcp') throw refused('policy-paused');
       if (!current()) throw refused('changed');
       const headers = head.headers.filter(
         ([name]) => !['content-length', 'transfer-encoding'].includes(name.toLowerCase())

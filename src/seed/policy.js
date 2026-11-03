@@ -82,9 +82,17 @@ export async function seedPolicies(kernel, attach) {
   }
 }
 
+function pausedIn(reply, path) {
+  return (Array.isArray(reply.files) ? reply.files : []).some(
+    (file) =>
+      file?.path === path && file.absent === true && file.paused === true && file.accepted === true
+  );
+}
+
 export function createPolicySync({ kernel, vault, report = () => {} }) {
   let ready = false;
   let why = 'policy-syncing';
+  let confirmed = false;
   let epoch = 0;
   let stopped = false;
   let running = false;
@@ -99,6 +107,7 @@ export function createPolicySync({ kernel, vault, report = () => {} }) {
   const hold = () => {
     ready = false;
     why = 'policy-syncing';
+    confirmed = false;
     epoch += 1;
     for (const listener of listeners) listener();
   };
@@ -116,9 +125,11 @@ export function createPolicySync({ kernel, vault, report = () => {} }) {
         { dropAway: true, signal: AbortSignal.timeout(10000) }
       );
       if (version !== epoch || stopped || vault.forwardEpoch() !== active) return;
-      const missing = files.some((file) => file.absent === true);
-      ready = !missing && reply.accepted === true;
-      why = ready ? null : missing ? 'policy-missing' : 'policy-unaccepted';
+      const missing = files.filter((file) => file.absent === true).map((file) => file.path);
+      const accepted = reply.accepted === true;
+      ready = missing.length === 0 && accepted;
+      why = ready ? null : accepted ? 'policy-missing' : 'policy-unaccepted';
+      confirmed = accepted && missing.length > 0 && missing.every((path) => pausedIn(reply, path));
       if (!ready) report('the credential policy is unavailable');
     } catch {
       if (version === epoch) why = 'policy-unavailable';
@@ -153,10 +164,10 @@ export function createPolicySync({ kernel, vault, report = () => {} }) {
     paused: () =>
       !ready &&
       why === 'policy-missing' &&
+      confirmed &&
       watching &&
       !stopped &&
-      vault.forwardEpoch() !== null &&
-      (vault.port.status()?.policy ?? []).some((file) => file?.paused === true),
+      vault.forwardEpoch() !== null,
     why: () => why,
     epoch: () => epoch,
     settled: () => working,
