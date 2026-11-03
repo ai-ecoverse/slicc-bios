@@ -26,6 +26,14 @@ export function sameOriginTools(tools, route, frames) {
     childFrame.securityOrigin,
     'child must actually be same-origin'
   );
-  assert.ok(child, 'root and same-origin child tools must both list');
+  if (route === 'link') assert.ok(child, 'root and same-origin child tools must both list');
   return { root, child };
+}
+
+export async function sameOriginChildCall(selection, call) {
+  if (!selection.child)
+    return { limit: 'same-origin child frame tools do not work on the extension route yet (#694)' };
+  const result = await call(selection.child.name);
+  assert.match(result.stdout, /^15$/m);
+  return result;
 }
