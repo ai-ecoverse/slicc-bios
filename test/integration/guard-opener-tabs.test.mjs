@@ -93,6 +93,13 @@ function result(answer) {
 }
 
 async function settled(raw, targetId, url) {
+  await raw.waitEvent(
+    (message) =>
+      ['Target.targetCreated', 'Target.targetInfoChanged'].includes(message.method) &&
+      message.params.targetInfo.targetId === targetId &&
+      message.params.targetInfo.url === url,
+    0
+  );
   const { sessionId } = result(
     await raw.send('Target.attachToTarget', { targetId, flatten: true })
   );
