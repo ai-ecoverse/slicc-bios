@@ -31,6 +31,10 @@ export async function retirePreview({
 } = {}) {
   if (storage.getItem(MARKER) !== 'upgraded') return [];
   cookies.cookie = retiredCookie();
+  if (new URL(origin).hostname === 'www.sliccy.ai') {
+    cookies.cookie =
+      'slicc-home=www; Domain=sliccy.ai; Path=/; Secure; SameSite=Lax; Max-Age=34560000';
+  }
   const gone = [];
   for (const registration of await container.getRegistrations()) {
     if (!registration.scope.startsWith(`${origin}/preview/`)) continue;

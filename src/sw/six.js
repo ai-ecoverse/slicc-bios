@@ -47,6 +47,10 @@ export async function offered(origin = location.origin, get = fetch, wait = OFFE
 
 export async function retire({ cookies, container, origin }) {
   cookies.cookie = retiredCookie();
+  if (new URL(origin).hostname === 'www.sliccy.ai') {
+    cookies.cookie =
+      'slicc-home=www; Domain=sliccy.ai; Path=/; Secure; SameSite=Lax; Max-Age=34560000';
+  }
   const preview = `${origin}/preview/`;
   for (const registration of await container.getRegistrations()) {
     if (registration.scope.startsWith(preview)) await registration.unregister();
