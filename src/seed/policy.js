@@ -84,6 +84,7 @@ export async function seedPolicies(kernel, attach) {
 
 export function createPolicySync({ kernel, vault, report = () => {} }) {
   let ready = false;
+  let why = 'policy-syncing';
   let epoch = 0;
   let stopped = false;
   let running = false;
@@ -97,6 +98,7 @@ export function createPolicySync({ kernel, vault, report = () => {} }) {
   const listeners = new Set();
   const hold = () => {
     ready = false;
+    why = 'policy-syncing';
     epoch += 1;
     for (const listener of listeners) listener();
   };
@@ -114,9 +116,12 @@ export function createPolicySync({ kernel, vault, report = () => {} }) {
         { dropAway: true, signal: AbortSignal.timeout(10000) }
       );
       if (version !== epoch || stopped || vault.forwardEpoch() !== active) return;
-      ready = files.every((file) => file.absent !== true) && reply.accepted === true;
+      const missing = files.some((file) => file.absent === true);
+      ready = !missing && reply.accepted === true;
+      why = ready ? null : missing ? 'policy-missing' : 'policy-unaccepted';
       if (!ready) report('the credential policy is unavailable');
     } catch {
+      if (version === epoch) why = 'policy-unavailable';
       report('the credential policy is unavailable');
     }
   };
@@ -145,6 +150,7 @@ export function createPolicySync({ kernel, vault, report = () => {} }) {
   };
   return {
     ready: () => ready && watching && !stopped && vault.forwardEpoch() !== null,
+    why: () => why,
     epoch: () => epoch,
     settled: () => working,
     onChange(listener) {
