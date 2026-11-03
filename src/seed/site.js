@@ -2,6 +2,13 @@ export const PRODUCTION_HOSTS = ['seven.sliccy.ai', 'www.sliccy.ai'];
 
 export const production = (host) => PRODUCTION_HOSTS.includes(host);
 
+export const homeCookie = (age = 34560000) =>
+  `slicc-home=www; Domain=sliccy.ai; Path=/; Secure; SameSite=Lax; Max-Age=${age}`;
+
+export function rememberHome(cookies, origin) {
+  if (new URL(origin).hostname === 'www.sliccy.ai') cookies.cookie = homeCookie();
+}
+
 export function biosOf({
   controller = globalThis.navigator?.serviceWorker?.controller,
   page = globalThis.location?.href,

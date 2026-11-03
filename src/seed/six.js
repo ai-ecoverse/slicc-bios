@@ -1,4 +1,5 @@
 import { undismiss } from './notices.js';
+import { rememberHome } from './site.js';
 export const PENDING = 'slicc-os.six-import';
 export const NOTICE = 'six-import';
 const EXPORT = /^\/slicc-v6-upgrade\/([\w-]+)\/?$/;
@@ -31,6 +32,7 @@ export async function retirePreview({
 } = {}) {
   if (storage.getItem(MARKER) !== 'upgraded') return [];
   cookies.cookie = retiredCookie();
+  rememberHome(cookies, origin);
   const gone = [];
   for (const registration of await container.getRegistrations()) {
     if (!registration.scope.startsWith(`${origin}/preview/`)) continue;

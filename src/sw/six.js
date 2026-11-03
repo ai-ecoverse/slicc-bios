@@ -1,3 +1,5 @@
+import { rememberHome } from '../seed/site.js';
+
 export const MARKER = 'slicc-os.six';
 export const RETIRED = '__Host-slicc-six-retired';
 export const KEPT = 400 * 24 * 60 * 60;
@@ -47,6 +49,7 @@ export async function offered(origin = location.origin, get = fetch, wait = OFFE
 
 export async function retire({ cookies, container, origin }) {
   cookies.cookie = retiredCookie();
+  rememberHome(cookies, origin);
   const preview = `${origin}/preview/`;
   for (const registration of await container.getRegistrations()) {
     if (registration.scope.startsWith(preview)) await registration.unregister();
