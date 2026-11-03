@@ -405,7 +405,7 @@ test('a Settings MCP record supplies root mcpcat directly and scrubs the complet
   }
 });
 
-test('root mcpcat started by the cone’s sudo uses the owner’s Settings sign-in from the agent’s mcp.json, and while a policy file is missing the vault decides: MCP goes on and a secret is refused as paused', {
+test('root mcpcat started by the cone’s sudo uses the owner’s Settings sign-in from the agent’s mcp.json, and while a policy file is missing the vault decides: MCP goes on for root, a secret is refused as paused, and a scoop gets no sign-in', {
   timeout: 900000,
 }, async (t) => {
   const page = await opened(t);
@@ -486,4 +486,34 @@ test('root mcpcat started by the cone’s sudo uses the owner’s Settings sign-
   assert.match(said, /refused \(policy-paused\)/);
   assert.equal(said.includes(ORDINARY), false);
   assert.equal(upstream.requests.length, refusedBefore);
+  await page.evaluate(() => globalThis.sliccAgentSource().users.add({ name: 'scoop-probe' }));
+  const scoop = (command, env = {}) =>
+    page.evaluate(
+      async ({ command, env }) => {
+        const client = await globalThis
+          .sliccAgentSource()
+          .client({ user: 'scoop-probe', agentId: 'scoop:probe' });
+        try {
+          return await client.run(['bash', '-c', command], {
+            cwd: '/tmp',
+            env: { PI_CODING_AGENT_DIR: '/etc/slicc/agent', ...env },
+          });
+        } finally {
+          await client.close();
+        }
+      },
+      { command, env }
+    );
+  const scoopBefore = upstream.requests.length;
+  const theirs = await scoop('id -un; mcpcat tools BB');
+  const told = `${theirs.stdout}${theirs.stderr}`;
+  assert.match(theirs.stdout, /^scoop-probe$/m);
+  assert.equal(theirs.status, 4, told);
+  assert.match(told, /This user gets no placeholder for this server/);
+  assert.equal(told.includes(MCP), false);
+  assert.equal(told.includes(placeholder), false);
+  assert.ok(
+    upstream.requests.slice(scoopBefore).every((item) => bearer(item) === undefined),
+    'a scoop got the owner’s sign-in'
+  );
 });

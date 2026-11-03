@@ -119,6 +119,7 @@ import {
   addCone,
   dropProtectedMounts,
   homeSkips,
+  kernelSource,
   kernelUsers,
   lockLegacy,
   usersMode,
@@ -936,6 +937,10 @@ async function own() {
   exits.attach(kernel);
   if (globalThis.sliccKernelDebug === true) {
     globalThis.sliccKernelClient = async () => attachKernel(await kernel.connect());
+    globalThis.sliccAgentSource = () => {
+      const source = kernelSource(kernel);
+      return { ...source, client: async (options) => attachKernel(await source.connect(options)) };
+    };
     globalThis.sliccLinkedBrowsers = () => linkedBrowsers(() => links);
   }
   policy?.close();
