@@ -405,7 +405,7 @@ test('a Settings MCP record supplies root mcpcat directly and scrubs the complet
   }
 });
 
-test('root mcpcat started by the cone’s sudo uses the owner’s Settings sign-in from the agent’s mcp.json, and a refusal names its cause', {
+test('root mcpcat started by the cone’s sudo uses the owner’s Settings sign-in from the agent’s mcp.json, and while a policy file is missing the vault decides: MCP goes on and a secret is refused as paused', {
   timeout: 900000,
 }, async (t) => {
   const page = await opened(t);
@@ -456,21 +456,34 @@ test('root mcpcat started by the cone’s sudo uses the owner’s Settings sign-
   const sent = upstream.requests.slice(before);
   assert.ok(sent.length > 0);
   assert.ok(sent.every((item) => bearer(item) === `Bearer ${MCP}`));
+  const { placeholder: secret } = await record(page, 'PAUSED_TOKEN', ORDINARY);
   const removed = await shell(page, 'rm /etc/slicc/secrets-policy.toml');
   assert.equal(removed.status, 0, removed.stderr);
   await page.within(60000, () =>
     (document.querySelector('slicc-app').model.vault.status()?.policy ?? []).some(
-      (file) => file.path === '/etc/slicc/secrets-policy.toml' && file.absent === true
+      (file) =>
+        file.path === '/etc/slicc/secrets-policy.toml' &&
+        file.absent === true &&
+        file.paused === true
     )
   );
+  const pausedBefore = upstream.requests.length;
+  const paused = await cone(`${sudo} tools BB`);
+  const went = `${paused.stdout}${paused.stderr}`;
+  assert.equal(paused.status, 0, went);
+  assert.match(paused.stdout, /\(no tools\)/);
+  assert.equal(went.includes(MCP), false);
+  const mcpSent = upstream.requests.slice(pausedBefore);
+  assert.ok(mcpSent.length > 0);
+  assert.ok(mcpSent.every((item) => bearer(item) === `Bearer ${MCP}`));
   const refusedBefore = upstream.requests.length;
-  const refused = await cone(`${sudo} tools BB`);
-  const said = `${refused.stdout}${refused.stderr}`;
-  assert.notEqual(refused.status, 0, said);
-  assert.match(
-    said,
-    /the credentialed request was refused \(policy-missing\): \/etc\/fnox\/config\.toml or \/etc\/slicc\/secrets-policy\.toml is missing/
+  const refused = await shell(
+    page,
+    `curl -sS -H "Authorization: Bearer $PAUSED_TOKEN" '${HOST}ordinary'`,
+    { PAUSED_TOKEN: secret }
   );
-  assert.equal(said.includes(MCP), false);
+  const said = `${refused.stdout}${refused.stderr}`;
+  assert.match(said, /refused \(policy-paused\)/);
+  assert.equal(said.includes(ORDINARY), false);
   assert.equal(upstream.requests.length, refusedBefore);
 });

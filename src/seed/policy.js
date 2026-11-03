@@ -150,6 +150,13 @@ export function createPolicySync({ kernel, vault, report = () => {} }) {
   };
   return {
     ready: () => ready && watching && !stopped && vault.forwardEpoch() !== null,
+    paused: () =>
+      !ready &&
+      why === 'policy-missing' &&
+      watching &&
+      !stopped &&
+      vault.forwardEpoch() !== null &&
+      (vault.port.status()?.policy ?? []).some((file) => file?.paused === true),
     why: () => why,
     epoch: () => epoch,
     settled: () => working,

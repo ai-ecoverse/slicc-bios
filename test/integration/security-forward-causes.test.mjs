@@ -38,6 +38,13 @@ function forwarder({ answer, vault = {}, selected = {}, select, ready, unready, 
       async forward(input, port) {
         asked.push(input);
         ports.push(port);
+        port.onmessage = ({ data }) => {
+          if (data.op === 'body') {
+            port.postMessage(data);
+            port.postMessage({ op: 'credit', bytes: data.chunk.byteLength });
+          } else port.postMessage(data);
+        };
+        port.start();
         return answer ? answer(input, asked.length) : { mode: 'secret', head };
       },
       ...vault,
@@ -379,4 +386,79 @@ test('the vault says whether forwarding is blocked by a lock or by no forwarding
     'vault-unavailable',
   ]);
   assert.deepEqual(state({ welcomed: false, status: null }), [null, 'vault-unavailable']);
+});
+
+test('a missing policy file the vault has paused lets the vault decide: MCP goes on, a secret is refused', async (t) => {
+  const mcpHead = { ...head, url: request.url };
+  const mcp = forwarder({
+    ready: () => false,
+    unready: () => 'policy-missing',
+    paused: () => true,
+    answer: () => ({ mode: 'mcp', head: mcpHead, bodyComplete: true }),
+    selected: {
+      fetch: async () => ({
+        status: 200,
+        statusText: 'OK',
+        headers: [],
+        url: request.url,
+        body: (async function* () {})(),
+        cancel: async () => {},
+      }),
+    },
+  });
+  t.after(mcp.close);
+  const response = await mcp.run();
+  assert.equal(response.status, 200);
+  await response.cancel();
+  assert.equal(mcp.asked.length, 1);
+  const byVault = await refusal(t, {
+    ready: () => false,
+    unready: () => 'policy-missing',
+    paused: () => true,
+    answer: () => ({ refused: { status: 403, reason: 'paused', cause: 'policy-paused' } }),
+  });
+  assert.equal(byVault.cause, 'policy-paused');
+  assert.equal(byVault.asked.length, 1);
+  const secret = await refusal(t, {
+    ready: () => false,
+    unready: () => 'policy-missing',
+    paused: () => true,
+    answer: () => ({ mode: 'secret', head }),
+  });
+  assert.equal(secret.cause, 'policy-missing');
+  const unpaused = await refusal(t, { ready: () => false, unready: () => 'policy-missing' });
+  assert.equal(unpaused.cause, 'policy-missing');
+  assert.equal(unpaused.asked.length, 0);
+});
+
+test('the policy sync lets the vault decide only for a missing file the vault reports paused', async () => {
+  const sync = async (statusPolicy, { attest = (path) => ({ path, absent: true }) } = {}) => {
+    const policy = createPolicySync({
+      kernel: {
+        users: { mode: 'enforce' },
+        attest: async (path) => attest(path),
+        watch: async () => () => {},
+      },
+      vault: {
+        forwardEpoch: () => 1,
+        port: { on: () => () => {}, status: () => ({ policy: statusPolicy }) },
+        call: async () => ({ accepted: true }),
+      },
+    });
+    assert.equal(policy.paused(), false);
+    await policy.start();
+    await policy.settled();
+    const paused = policy.paused();
+    policy.close();
+    assert.equal(policy.paused(), false);
+    return paused;
+  };
+  const file = '/etc/slicc/secrets-policy.toml';
+  assert.equal(await sync([{ path: file, absent: true, paused: true }]), true);
+  assert.equal(await sync([{ path: file, absent: true }]), false);
+  assert.equal(await sync(undefined), false);
+  assert.equal(
+    await sync([{ path: file, paused: true }], { attest: (path) => ({ path, sha256: 'a' }) }),
+    false
+  );
 });
