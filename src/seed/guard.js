@@ -1,6 +1,7 @@
 import catalog from '@ai-ecoverse/slicc-browsers/catalog.json' with { type: 'json' };
 import { protectedOrigins } from '@ai-ecoverse/slicc-browsers/protected.mjs';
 import { RELAY, SIGN_IN_CLIENTS } from './adobe.js';
+import { DEBUGGER_ROUTE_UPDATE, debuggerAdmitted, debuggerRouteSupported } from './debugger.js';
 import { hold, isHeld } from './held.js';
 
 export const PROTECTED =
@@ -235,6 +236,8 @@ const RENDERED = new Set([
   'HeadlessExperimental.beginFrame',
 ]);
 const contentRead = (method = '') =>
+  debuggerAdmitted(method) ||
+  method.startsWith('Debugger.') ||
   CONTENTS.has(method) ||
   TREED.has(method) ||
   RENDERED.has(method) ||
@@ -305,11 +308,14 @@ const PAGE_DOMAINS = [
   'Cast.',
 ];
 const pageScoped = (method = '') =>
-  PAGE_PAINT.has(method) || PAGE_DOMAINS.some((domain) => method.startsWith(domain));
+  debuggerAdmitted(method) ||
+  PAGE_PAINT.has(method) ||
+  PAGE_DOMAINS.some((domain) => method.startsWith(domain));
 const FRAME_CHILDREN = [{ type: 'iframe', exclude: false }, { exclude: true }];
 export const NO_AUTO_ATTACH =
   'slicc: refused: Target.setAutoAttach is not supported: attach to each target';
 const STRUCTURE = new Set([
+  'Page.navigatedWithinDocument',
   'Page.frameAttached',
   'Page.frameDetached',
   'Page.frameNavigated',
@@ -686,7 +692,11 @@ export function protection(own) {
 }
 
 class Guard {
-  constructor(connection, own, tabs) {
+  constructor(connection, own, tabs, route, privateFrames) {
+    this.privateFrames = route?.kind === 'extension' ? privateFrames : undefined;
+    this.extensionFrames = route?.kind === 'extension';
+    this.debuggerLeases = new Map();
+    this.debuggerSupported = debuggerRouteSupported(route);
     this.connection = connection;
     this.tabs = tabs;
     this.recalled = new Set();
@@ -931,10 +941,11 @@ class Guard {
     }
   }
 
-  call(method, params, sessionId) {
+  call(method, params, sessionId, deadline) {
     if (this.closed || this.gone.has(sessionId))
       return Promise.resolve({ error: { code: -32000, message: UNGUARDED } });
     const placement = this.placements.get(sessionId);
+    const placementRevision = this.revisions.get(placement);
     const nav = this.navSessions.get(sessionId);
     const revision = this.revisions.get(nav?.targetId);
     const work = new Promise((resolve) => {
@@ -947,19 +958,22 @@ class Guard {
           if (!nav) await this.rememberExistingNavError(message.result?.frameTree, sessionId);
         }
         const current = this.scopes.get(placement)?.sessionId;
-        if (placement === undefined || current === undefined || current === sessionId) {
-          if (method === 'Page.getFrameTree' && placement !== undefined)
-            this.recordTree(placement, message.result?.frameTree);
-          if (method === 'DOM.getDocument' && placement !== undefined)
-            this.recordOwners(placement, message.result?.root);
-        }
+        if (
+          (deadline === undefined ||
+            (Date.now() < deadline && this.revisions.get(placement) === placementRevision)) &&
+          (placement === undefined || current === undefined || current === sessionId)
+        )
+          this.recordPlacement(placement, method, message.result);
         resolve(message);
       };
       answer.sessionId = sessionId;
-      timer = setTimeout(() => {
-        this.internal.delete(id);
-        void answer({ id, sessionId, error: { code: -32000, message: UNGUARDED } });
-      }, NAV_MS);
+      timer = setTimeout(
+        () => {
+          this.internal.delete(id);
+          void answer({ id, sessionId, error: { code: -32000, message: UNGUARDED } });
+        },
+        deadline === undefined ? NAV_MS : Math.max(0, Math.min(NAV_MS, deadline - Date.now()))
+      );
       timer.unref?.();
       this.internal.set(id, answer);
       this.connection.send(
@@ -1140,6 +1154,120 @@ class Guard {
     return Boolean(scope?.ready || this.errorReady(targetId, scope, view));
   }
 
+  setDebuggerLease(targetId, state) {
+    const former = this.debuggerLeases.get(targetId);
+    if (former?.state === state) return;
+    clearTimeout(former?.timer);
+    const entry = { state, loader: this.scope(targetId).loader };
+    this.debuggerLeases.set(targetId, entry);
+    if (state === 'suspended') {
+      entry.timer = setTimeout(() => {
+        if (this.debuggerLeases.get(targetId) === entry) this.setDebuggerLease(targetId, 'revoked');
+      }, 5000);
+      entry.timer.unref?.();
+    }
+  }
+
+  replaceDebuggerLease(targetId, state) {
+    const lease = this.debuggerLeases.get(targetId);
+    if (lease && lease.state !== 'revoked') this.setDebuggerLease(targetId, state);
+  }
+
+  async placePrivateFrames(targetId, deadline) {
+    const scope = this.scope(targetId);
+    if (
+      !this.extensionFrames ||
+      typeof this.privateFrames !== 'function' ||
+      !(scope.remoteBackendOwners?.size ?? scope.remoteOwners.size)
+    )
+      return;
+    scope.privatePlaced = false;
+    const revision = this.revisions.get(targetId);
+    const loader = scope.loader;
+    let list;
+    let timer;
+    try {
+      list = await Promise.race([
+        this.privateFrames(targetId),
+        new Promise((resolve) => {
+          timer = setTimeout(resolve, Math.max(0, deadline - Date.now()));
+        }),
+      ]);
+    } catch {
+    } finally {
+      clearTimeout(timer);
+    }
+    if (
+      this.revisions.get(targetId) !== revision ||
+      scope.loader !== loader ||
+      Date.now() >= deadline
+    )
+      return;
+    const frames = list?.frames;
+    if (Array.isArray(frames) && frames.some((frame) => frame?.kind === 'protected')) {
+      scope.privatePlaced = false;
+      this.replaceDebuggerLease(targetId, 'revoked');
+      return;
+    }
+    if (!Array.isArray(frames) || frames.some((frame) => frame?.kind !== 'ordinary')) {
+      this.replaceDebuggerLease(targetId, 'suspended');
+      return;
+    }
+    const root = Array.isArray(frames) && frames.find((frame) => frame?.frameId === 0);
+    const ids = new Set(Array.isArray(frames) ? frames.map((frame) => frame?.frameId) : []);
+    const complete =
+      list?.version === 2 &&
+      Number.isSafeInteger(list.revision) &&
+      root?.parentFrameId === -1 &&
+      list.rootFrameId === scope.root &&
+      typeof loader === 'string' &&
+      loader &&
+      list.rootLoaderId === loader &&
+      frames.length === ids.size &&
+      Array.isArray(list.localFrames) &&
+      list.localFrames.length === scope.treeFrames.size &&
+      new Set(list.localFrames).size === list.localFrames.length &&
+      list.localFrames.every((id) => scope.treeFrames.has(id)) &&
+      Array.isArray(list.remoteOwners) &&
+      list.remoteOwners.length === scope.remoteBackendOwners.size &&
+      new Set(list.remoteOwners.map((owner) => owner?.frameId)).size === list.remoteOwners.length &&
+      new Set(list.remoteOwners.map((owner) => owner?.backendNodeId)).size ===
+        list.remoteOwners.length &&
+      list.remoteOwners.every(
+        (owner) =>
+          typeof owner?.frameId === 'string' &&
+          owner.frameId &&
+          !scope.treeFrames.has(owner.frameId) &&
+          scope.remoteBackendOwners.has(owner.backendNodeId)
+      ) &&
+      list.localFrames.length + list.remoteOwners.length === frames.length &&
+      this.relatedFrames(scope.frames).size <= frames.length &&
+      frames.every((frame) => Number.isSafeInteger(frame.frameId) && frame.kind === 'ordinary');
+    const rooted = Boolean(complete && this.rootedPrivateFrames(frames));
+    if (rooted) {
+      for (const owner of list.remoteOwners)
+        this.recordOwner(scope, {
+          ...scope.remoteBackendOwners.get(owner.backendNodeId),
+          frameId: owner.frameId,
+        });
+    }
+    scope.privatePlaced = rooted;
+    this.replaceDebuggerLease(targetId, rooted ? 'placed' : 'suspended');
+  }
+
+  rootedPrivateFrames(frames) {
+    for (const frame of frames) {
+      let current = frame;
+      const seen = new Set();
+      while (current?.frameId !== 0) {
+        if (!current || seen.has(current.frameId)) return false;
+        seen.add(current.frameId);
+        current = frames.find((candidate) => candidate.frameId === current.parentFrameId);
+      }
+    }
+    return true;
+  }
+
   unavailableFrame(frameId, url, view) {
     return url === undefined || url === '' || (this.errorFrames.has(frameId) && !view);
   }
@@ -1166,6 +1294,8 @@ class Guard {
     seen.add(targetId);
     const scope = this.scopes.get(targetId);
     if (!this.scopeReady(targetId, scope, view) || (view && scope.committed)) return true;
+    if (scope.privatePlaced) return Boolean(view);
+    if (scope.remoteBackendOwners?.size) return true;
     const holds = this.holding(targetId);
     for (const id of this.relatedFrames(scope.frames)) {
       const url = this.frames.get(id);
@@ -1224,6 +1354,7 @@ class Guard {
     const scope = this.scope(targetId);
     const all = framed(tree);
     scope.root = tree?.frame?.id;
+    scope.loader = tree?.frame?.loaderId;
     scope.treeFrames = new Set(all.map((frame) => frame.id));
     scope.frames = new Set([...scope.treeFrames, ...scope.owners]);
     const parentId = tree?.frame?.parentId;
@@ -1254,13 +1385,140 @@ class Guard {
     this.stopCasts();
   }
 
+  recordPlacement(targetId, method, result) {
+    if (targetId === undefined) return;
+    if (method === 'Page.getFrameTree') this.recordTree(targetId, result?.frameTree);
+    if (method === 'DOM.getDocument') this.recordOwners(targetId, result?.root);
+    if (method === 'DOMSnapshot.captureSnapshot') this.recordSnapshotOwners(targetId, result);
+  }
+
+  recordSnapshotOwners(targetId, snapshot) {
+    const scope = this.scope(targetId);
+    const documents = snapshot?.documents;
+    const strings = snapshot?.strings;
+    const refused = () => this.recordOwners(targetId, undefined);
+    if (
+      !Array.isArray(documents) ||
+      !documents.length ||
+      !Array.isArray(strings) ||
+      strings.some((value) => typeof value !== 'string') ||
+      strings[documents[0]?.frameId] !== scope.root
+    )
+      return refused();
+    const local = new Set();
+    const backend = new Set();
+    const owners = [];
+    const remote = new Map();
+    for (const document of documents) {
+      const frameId = strings[document?.frameId];
+      const nodes = document?.nodes;
+      if (
+        typeof frameId !== 'string' ||
+        !frameId ||
+        local.has(frameId) ||
+        !scope.treeFrames.has(frameId) ||
+        !Array.isArray(nodes?.nodeName) ||
+        !Array.isArray(nodes.backendNodeId) ||
+        !Array.isArray(nodes.attributes) ||
+        nodes.nodeName.length !== nodes.backendNodeId.length ||
+        nodes.nodeName.length !== nodes.attributes.length
+      )
+        return refused();
+      local.add(frameId);
+      if (!this.snapshotContentReady(nodes)) return refused();
+      if (!this.snapshotDocumentOwners(scope, documents, strings, nodes, backend, owners, remote))
+        return refused();
+    }
+    if (local.size !== scope.treeFrames.size || owners.length !== local.size - 1) return refused();
+    this.recordOwners(targetId, { children: owners });
+    scope.remoteBackendOwners = remote;
+  }
+
+  snapshotDocumentOwners(scope, documents, strings, nodes, backend, owners, remote) {
+    for (let index = 0; index < nodes.nodeName.length; index += 1) {
+      const owner = this.snapshotNodeOwner(scope, documents, strings, nodes, index);
+      if (owner === undefined) return false;
+      if (owner === null) continue;
+      if (
+        backend.has(owner.backendNodeId) ||
+        (owner.frameId && owners.some((entry) => entry.frameId === owner.frameId))
+      )
+        return false;
+      backend.add(owner.backendNodeId);
+      if (owner.frameId) owners.push(owner);
+      else remote.set(owner.backendNodeId, owner);
+    }
+    return true;
+  }
+
+  snapshotContentReady(nodes) {
+    const content = nodes.contentDocumentIndex;
+    return (
+      Array.isArray(content?.index) &&
+      Array.isArray(content.value) &&
+      content.index.length === content.value.length &&
+      new Set(content.index).size === content.index.length &&
+      content.index.every(
+        (index) => Number.isSafeInteger(index) && index >= 0 && index < nodes.nodeName.length
+      )
+    );
+  }
+
+  snapshotNodeOwner(scope, documents, strings, nodes, index) {
+    const name = strings[nodes.nodeName[index]];
+    if (typeof name !== 'string') return undefined;
+    if (!['IFRAME', 'FRAME'].includes(name)) return null;
+    const backendNodeId = nodes.backendNodeId[index];
+    const attributes = nodes.attributes[index];
+    if (
+      !Number.isSafeInteger(backendNodeId) ||
+      backendNodeId <= 0 ||
+      !Array.isArray(attributes) ||
+      attributes.length % 2 ||
+      attributes.some((value) => !Number.isSafeInteger(value) || typeof strings[value] !== 'string')
+    )
+      return undefined;
+    const owner = {
+      nodeName: name,
+      backendNodeId,
+      attributes: attributes.map((value) => strings[value]),
+    };
+    const position = nodes.contentDocumentIndex.index.indexOf(index);
+    return position < 0
+      ? owner
+      : this.snapshotLocalOwner(
+          scope,
+          documents,
+          strings,
+          nodes.contentDocumentIndex.value[position],
+          owner
+        );
+  }
+
+  snapshotLocalOwner(scope, documents, strings, index, owner) {
+    const child = documents[index];
+    const id = strings[child?.frameId];
+    if (
+      !Number.isSafeInteger(index) ||
+      typeof id !== 'string' ||
+      !id ||
+      id === scope.root ||
+      !scope.treeFrames.has(id)
+    )
+      return undefined;
+    return { ...owner, frameId: id, contentDocument: { documentURL: strings[child.documentURL] } };
+  }
+
   recordOwners(targetId, root) {
     const scope = this.scope(targetId);
     scope.ownersReady = Boolean(root);
     scope.protectedOwner = false;
+    scope.knownProtectedOwner = false;
     const former = scope.owners;
     scope.owners = new Set();
     scope.remoteOwners = new Set();
+    scope.remoteBackendOwners = new Map();
+    scope.privatePlaced = false;
     const nodes = [root];
     while (nodes.length) {
       const node = nodes.pop();
@@ -1290,14 +1548,14 @@ class Guard {
     if (!this.frames.has(node.frameId)) this.frames.set(node.frameId, '');
     if (!this.parents.has(node.frameId)) this.parents.set(node.frameId, scope.root);
     const source = (node.attributes ?? []).indexOf('src');
-    if (
-      scope.attachedFrames.has(node.frameId) &&
-      [
-        source < 0 ? undefined : node.attributes[source + 1],
-        node.contentDocument?.documentURL,
-      ].some((url) => this.is.url(url))
-    )
+    const evidence = [
+      source < 0 ? undefined : node.attributes[source + 1],
+      node.contentDocument?.documentURL,
+    ];
+    if (scope.attachedFrames.has(node.frameId) && evidence.some((url) => this.is.url(url))) {
       scope.protectedOwner = true;
+      scope.knownProtectedOwner ||= evidence.some((url) => !inherits(url) && this.is.url(url));
+    }
   }
 
   place(targetId, sessionId) {
@@ -1330,14 +1588,14 @@ class Guard {
     }
   }
 
-  placementAttach(sessionId, params) {
+  placementAttach(sessionId, params, deadline) {
     if (!this.placements.has(sessionId) || this.gone.has(sessionId))
       return this.call('Target.setAutoAttach', params, sessionId);
     const config = JSON.stringify(params);
     const cached = this.autoAttachments.get(sessionId);
     if (cached?.config === config) return cached.promise;
     const promise = Promise.resolve()
-      .then(() => this.call('Target.setAutoAttach', params, sessionId))
+      .then(() => this.call('Target.setAutoAttach', params, sessionId, deadline))
       .then(
         (answer) => {
           if (answer.error && this.autoAttachments.get(sessionId)?.promise === promise)
@@ -1359,20 +1617,39 @@ class Guard {
     this.scope(targetId).pending = (this.scope(targetId).pending ?? 0) + 1;
     this.scope(targetId).ready = false;
     this.stopCasts();
-    const enabled = await this.call('Page.enable', {}, sessionId);
-    await this.call('Page.getFrameTree', {}, sessionId);
-    const owners = await this.call('DOM.getDocument', { depth: -1, pierce: true }, sessionId);
-    const disabled = await this.call('DOM.disable', {}, sessionId);
+    const deadline = this.extensionFrames ? Date.now() + PROBE_WAIT : undefined;
+    const revision = this.revisions.get(targetId);
+    const enabled = await this.call('Page.enable', {}, sessionId, deadline);
+    await this.call('Page.getFrameTree', {}, sessionId, deadline);
+    const owners = this.extensionFrames
+      ? await this.call(
+          'DOMSnapshot.captureSnapshot',
+          { computedStyles: [], includeDOMRects: false, includePaintOrder: false },
+          sessionId,
+          deadline
+        )
+      : await this.call('DOM.getDocument', { depth: -1, pierce: true }, sessionId);
+    const disabled = this.extensionFrames ? {} : await this.call('DOM.disable', {}, sessionId);
+    const cleanupFailed =
+      disabled.error &&
+      !(
+        disabled.error.code === -32000 &&
+        disabled.error.message === '{"code":-32000,"message":"DOM agent hasn\'t been enabled"}'
+      );
     const scope = this.scope(targetId);
     const attached =
-      !owners.error && !disabled.error && scope.ownersReady && scope.protectedOwner
+      !owners.error && !cleanupFailed && scope.ownersReady && scope.protectedOwner
         ? {}
-        : await this.placementAttach(sessionId, {
-            autoAttach: true,
-            waitForDebuggerOnStart: false,
-            flatten: true,
-            filter: FRAME_CHILDREN,
-          });
+        : await this.placementAttach(
+            sessionId,
+            {
+              autoAttach: true,
+              waitForDebuggerOnStart: false,
+              flatten: true,
+              filter: FRAME_CHILDREN,
+            },
+            deadline
+          );
     scope.pending -= 1;
     scope.setup = Boolean(
       !enabled.error && (!attached.error || attached.error.message === NO_AUTO_ATTACH)
@@ -1382,10 +1659,19 @@ class Guard {
         owners.error ||
         (attached.error && attached.error.message !== NO_AUTO_ATTACH) ||
         !scope.ownersReady ||
-        disabled.error
+        cleanupFailed ||
+        (deadline !== undefined &&
+          (Date.now() >= deadline || this.revisions.get(targetId) !== revision))
     );
     scope.ready = Boolean(scope.tree && !scope.failed && !scope.pending);
     if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
+    await this.placePrivateFrames(targetId, deadline);
+    if (
+      !this.extensionFrames &&
+      !this.pageLocked(targetId) &&
+      this.debuggerLeases.get(targetId)?.state === 'suspended'
+    )
+      this.setDebuggerLease(targetId, 'placed');
     this.stopCasts();
     await Promise.all(
       [...this.scopes]
@@ -1467,9 +1753,11 @@ class Guard {
       scope.attachedFrames.add(params.frameId);
       this.frames.set(params.frameId, '');
       if (params.parentFrameId) this.parents.set(params.frameId, params.parentFrameId);
+      this.refresh(targetId);
     }
     if (method === 'Page.frameNavigated' && params.frame)
       this.scopeNavigated(params.frame, targetId);
+    if (method === 'Page.navigatedWithinDocument') this.refresh(targetId);
     const foreign =
       params.context?.auxData?.type === 'isolated' && EXTENSIONS.test(params.context?.origin ?? '');
     if (
@@ -1517,7 +1805,10 @@ class Guard {
     scope.frames.add(frame.id);
     if (frame.parentId && frame.id !== scope.root) scope.remoteOwners.delete(frame.id);
     this.frames.set(frame.id, this.framed(frame));
-    if (frame.parentId) this.parents.set(frame.id, frame.parentId);
+    if (frame.parentId) {
+      this.parents.set(frame.id, frame.parentId);
+      this.refresh(targetId);
+    }
   }
 
   removeFrame(frameId) {
@@ -1828,6 +2119,42 @@ class Guard {
     return projected === bare(this.frames.get(frameId) ?? '');
   }
 
+  contextRetryBlocked(record) {
+    const context = record.message.params.context;
+    return (
+      this.is.url(context.origin) ||
+      this.is.url(this.frames.get(context.auxData.frameId)) ||
+      this.errorFrames.has(context.auxData.frameId) ||
+      Boolean(this.scopes.get(record.targetId)?.knownProtectedOwner)
+    );
+  }
+
+  async retryContext(record) {
+    const scope = this.scopes.get(record.targetId);
+    if (this.contextRetryBlocked(record) || (!record.deadline && !scope)) return false;
+    record.deadline ??= Date.now() + 1000;
+    const left = record.deadline - Date.now();
+    if (left <= 0) return false;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(100, left)));
+    return Date.now() < record.deadline && !this.contextRetryBlocked(record);
+  }
+
+  contextAnswer(record, where) {
+    return this.within(
+      this.call(
+        'Runtime.evaluate',
+        { expression: 'location.href', returnByValue: true, silent: true, ...where },
+        record.message.sessionId
+      ),
+      record.deadline ? Math.max(0, Math.min(ANSWER_MS, record.deadline - Date.now())) : ANSWER_MS
+    );
+  }
+
+  staleContext(answer, targetId) {
+    if (!answer || answer.error) this.uncertainProof(targetId);
+    return false;
+  }
+
   async checkContext(record) {
     const {
       sessionId,
@@ -1838,18 +2165,17 @@ class Guard {
       typeof context.uniqueId === 'string'
         ? { uniqueContextId: context.uniqueId }
         : { contextId: context.id };
-    const answer = await this.answered(
-      this.call(
-        'Runtime.evaluate',
-        { expression: 'location.href', returnByValue: true, silent: true, ...where },
-        sessionId
-      )
-    );
+    const answer = await this.contextAnswer(record, where);
     const targetId = record.targetId;
-    if (!current()) {
-      if (!answer || answer.error) this.uncertainProof(targetId);
-      return false;
+    if (!current()) return this.staleContext(answer, targetId);
+    if (
+      answer?.error?.message === catalog.protectedOrigins.refusal &&
+      (await this.retryContext(record))
+    ) {
+      if (!current()) return false;
+      return this.checkContext(record);
     }
+    if (!current()) return false;
     const value =
       answer?.error || answer?.result?.exceptionDetails ? undefined : answer?.result?.result?.value;
     if (
@@ -3046,7 +3372,7 @@ class Guard {
     if (method === 'Page.createIsolatedWorld' && typeof params.worldName === 'string') {
       return (await this.learned(sessionId)).names.has(params.worldName) ? WORLD : null;
     }
-    if (PROFILERS.some((domain) => method.startsWith(domain))) {
+    if (PROFILERS.some((domain) => method.startsWith(domain)) || debuggerAdmitted(method)) {
       return [...(await this.learned(sessionId)).ids.values()].includes(true) ? PROFILED : null;
     }
     return null;
@@ -3366,7 +3692,7 @@ class Guard {
 
   reaches(method) {
     if (typeof method !== 'string') return false;
-    if (PAGE_CONTENT.has(method) || REACHES.test(method)) return true;
+    if (debuggerAdmitted(method) || PAGE_CONTENT.has(method) || REACHES.test(method)) return true;
     if (method.startsWith('DOM.')) return method !== 'DOM.enable' && method !== 'DOM.disable';
     return method.startsWith('Runtime.') && !RUNTIME_META.has(method);
   }
@@ -3940,6 +4266,22 @@ class Guard {
     return this.failedScope(message.sessionId) && contentRead(message.method);
   }
 
+  async debuggerEventReady(message, revision) {
+    const { method, sessionId } = message;
+    if (
+      (await this.placed(sessionId)) &&
+      this.revisions.get(this.scopeTarget(sessionId)) === revision &&
+      !['suspended', 'revoked'].includes(
+        this.debuggerLeases.get(this.scopeTarget(sessionId))?.state
+      ) &&
+      !this.locked(sessionId) &&
+      !this.hidden(sessionId)
+    )
+      return true;
+    if (method === 'Debugger.paused') void this.call('Debugger.resume', {}, sessionId);
+    return false;
+  }
+
   async event(message) {
     const method = message.method ?? '';
     const { sessionId } = message;
@@ -4445,6 +4787,22 @@ class Guard {
     return this.pageCheck(message.method, message.sessionId);
   }
 
+  async debuggerCheck(message) {
+    const { method, sessionId } = message;
+    if (!DEBUGGERS.some((domain) => method.startsWith(domain))) return null;
+    if (!debuggerAdmitted(method)) return DEBUGGER;
+    if (!this.debuggerSupported) return DEBUGGER_ROUTE_UPDATE;
+    const targetId = this.sessions.get(sessionId)?.targetId;
+    const target = this.targets.get(targetId);
+    if (!sessionId || target?.type !== 'page') return UNGUARDED;
+    if (this.extensionFrames && typeof this.privateFrames !== 'function')
+      return DEBUGGER_ROUTE_UPDATE;
+    const state = this.debuggerLeases.get(targetId)?.state;
+    if (state === 'revoked' || state === 'suspended') return PROTECTED;
+    this.setDebuggerLease(targetId, 'placed');
+    return null;
+  }
+
   async check(message) {
     const { method, params = {}, sessionId } = message;
     if (typeof method !== 'string') return null;
@@ -4458,7 +4816,8 @@ class Guard {
       return target ? PROTECTED : UNFLAT;
     }
     if (STICKY.has(method) || EMULATION.test(method)) return HEADERS;
-    if (DEBUGGERS.some((domain) => method.startsWith(domain))) return DEBUGGER;
+    const debuggerRefusal = await this.debuggerCheck(message);
+    if (debuggerRefusal) return debuggerRefusal;
     if (STREAMED.has(method)) return STREAMING;
     if (SEARCHES[method] && (await this.searched(method, params, sessionId))) return PROTECTED;
     const world = await this.selecting(method, params, sessionId);
@@ -4580,6 +4939,36 @@ class Guard {
     return false;
   }
 
+  rememberFetchPattern(message, outgoing) {
+    const { method, sessionId } = outgoing;
+    const session = this.sessions.get(sessionId);
+    if (session && method === 'Fetch.enable') {
+      const patterns = outgoing.params?.patterns;
+      const pattern = patterns?.[0];
+      session.documentPattern = {
+        command: message,
+        accepted: false,
+        catchAll:
+          Array.isArray(patterns) &&
+          patterns.length === 1 &&
+          pattern &&
+          Object.keys(pattern).length === 3 &&
+          pattern.urlPattern === '*' &&
+          pattern.resourceType === 'Document' &&
+          pattern.requestStage === 'Request',
+      };
+    }
+    if (session && method === 'Fetch.disable') delete session.documentPattern;
+  }
+
+  rememberFetchAnswer(message) {
+    if (message.id === undefined) return;
+    const was = this.asked.get(requestKey(message));
+    const pattern = this.sessions.get(was?.sessionId)?.documentPattern;
+    if (was?.method === 'Fetch.enable' && pattern?.command === was)
+      pattern.accepted = !message.error;
+  }
+
   async pass(message) {
     if (this.finished.has(message) || !this.owns(message)) return;
     this.commands.set(requestKey(message), message);
@@ -4606,6 +4995,7 @@ class Guard {
       this.pages.delete(sessionId);
       return this.deliver({ id, sessionId, result: {} });
     }
+    this.rememberFetchPattern(message, outgoing);
     this.asked.set(requestKey(message), message);
     if (contentRead(method)) this.pendingContent.add(message);
     this.connection.send(JSON.stringify(outgoing));
@@ -4634,6 +5024,27 @@ class Guard {
         STRUCTURE.has(message.method))
     )
       this.revisions.set(targetId, {});
+    if (
+      targetId &&
+      [
+        'Page.frameAttached',
+        'Page.frameDetached',
+        'Page.frameNavigated',
+        'Page.navigatedWithinDocument',
+      ].includes(message.method)
+    ) {
+      const scope = this.scope(targetId);
+      scope.privatePlaced = false;
+      const lease = this.debuggerLeases.get(targetId);
+      if (
+        message.method === 'Page.frameNavigated' &&
+        !message.params?.frame?.parentId &&
+        message.params?.frame?.loaderId !== lease?.loader
+      ) {
+        clearTimeout(lease?.timer);
+        this.debuggerLeases.delete(targetId);
+      } else if (lease && lease.state !== 'revoked') this.setDebuggerLease(targetId, 'suspended');
+    }
     if (message.method !== 'Page.frameNavigated' || !message.params?.frame) return;
     const { frame } = message.params;
     const nav = this.navs.get(targetId);
@@ -4681,8 +5092,53 @@ class Guard {
     }
   }
 
+  debuggerEventHeld(message) {
+    if (
+      !message.method?.startsWith('Debugger.') ||
+      message.id !== undefined ||
+      (!['suspended', 'revoked'].includes(
+        this.debuggerLeases.get(this.scopeTarget(message.sessionId))?.state
+      ) &&
+        !this.hidden(message.sessionId))
+    )
+      return false;
+    if (message.method === 'Debugger.paused')
+      void this.call('Debugger.resume', {}, message.sessionId);
+    return true;
+  }
+
+  releasePendingDocument(message) {
+    const { method, sessionId, params = {} } = message;
+    const targetId = this.sessions.get(sessionId)?.targetId;
+    const root = this.mainFrame(sessionId);
+    if (
+      method !== 'Fetch.requestPaused' ||
+      params.resourceType !== 'Document' ||
+      params.responseStatusCode !== undefined ||
+      params.responseErrorReason !== undefined ||
+      !targetId ||
+      !root ||
+      params.frameId === root ||
+      !this.parents.has(params.frameId) ||
+      this.privateSessions.has(sessionId) ||
+      !this.sessions.get(sessionId)?.documentPattern?.accepted ||
+      !this.sessions.get(sessionId)?.documentPattern?.catchAll ||
+      ![...(this.contextChecks.get(sessionId)?.values() ?? [])].some((record) => !record.done)
+    )
+      return false;
+    const url = params.request?.url;
+    if (ORDINARY.test(url ?? '') && !this.unsafeUrl(url) && !this.is.url(url)) {
+      this.release(message);
+    } else {
+      void this.failDocument(params, sessionId, targetId);
+      this.failed(targetId, params);
+    }
+    return true;
+  }
+
   received(text) {
     const message = parse(text);
+    this.rememberFetchAnswer(message);
     this.loadingEvent(message);
     this.completeStopping(message);
     if (
@@ -4722,6 +5178,8 @@ class Guard {
     }
     this.rememberUnsafe(message);
     if (STRUCTURE.has(message.method)) this.scopeEvent(message);
+    if (this.releasePendingDocument(message)) return;
+    if (this.debuggerEventHeld(message)) return;
     if (this.internal.has(message.id)) {
       const resolve = this.internal.get(message.id);
       this.internal.delete(message.id);
@@ -4735,11 +5193,19 @@ class Guard {
     const key = requestKey(message);
     if (message.id !== undefined && !this.asked.has(key)) return;
     const was = message.id === undefined ? undefined : this.asked.get(key);
+    const revision = this.revisions.get(this.scopeTarget(message.sessionId));
     this.queue(
       message.sessionId ?? was?.sessionId ?? '',
       async () => {
         if (this.asked.get(key) === was) this.asked.delete(key);
-        if (message.id === undefined) return this.event(message);
+        if (message.id === undefined) {
+          if (
+            message.method?.startsWith('Debugger.') &&
+            !(await this.debuggerEventReady(message, revision))
+          )
+            return;
+          return this.event(message);
+        }
         this.answering.add(was);
         try {
           await this.answer(message, was);
@@ -4876,6 +5342,7 @@ class Guard {
     connection.onclose = (why) => {
       this.closing = true;
       this.closed = true;
+      for (const entry of this.debuggerLeases.values()) clearTimeout(entry.timer);
       guarded.send = () => {};
       guarded.onmessage = null;
       for (const nav of this.navs.values()) nav.wiped?.();
@@ -4931,6 +5398,7 @@ class Guard {
     guarded.close = () => {
       if (this.closing || this.closed) return;
       this.closing = true;
+      for (const entry of this.debuggerLeases.values()) clearTimeout(entry.timer);
       guarded.send = () => {};
       guarded.onmessage = null;
       const pending = [...this.navs.values()].filter((nav) => nav.closeScrub);
@@ -4961,6 +5429,6 @@ class Guard {
 const framed = (tree) =>
   tree?.frame ? [tree.frame, ...(tree.childFrames ?? []).flatMap((child) => framed(child))] : [];
 
-export function guardProtected(connection, own, tabs = new Map()) {
-  return new Guard(connection, own, tabs).start();
+export function guardProtected(connection, own, tabs = new Map(), route, privateFrames) {
+  return new Guard(connection, own, tabs, route, privateFrames).start();
 }

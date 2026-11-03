@@ -210,6 +210,7 @@ export function linkedBrowsers(links) {
     link.exit.browsers().map((browser) => ({
       runtime: `${link.label}/${browser.id}`,
       seven: browser.seven,
+      route: { kind: 'link', version: link.peer?.version },
       open: () => link.exit.cdp(browser.id),
     }))
   );
@@ -221,6 +222,11 @@ export function browserVia(links) {
   return via ?? (linkedBrowsers(links).length ? 'link' : null);
 }
 
+function browserRoute(open, hosts, extension, fallback) {
+  if (open === hosts.extension) return { kind: 'extension', version: extension.version };
+  return open === hosts.devtools ? undefined : fallback?.route;
+}
+
 export function browserHook(
   observe = (connection) => connection,
   links,
@@ -228,7 +234,7 @@ export function browserHook(
   before = async () => {}
 ) {
   const tabs = new WeakMap();
-  const guard = async (open, browser) => {
+  const guard = async (open, browser, route, privateFrames) => {
     await before();
     if (browser && !tabs.has(browser)) {
       const records = new Map();
@@ -237,7 +243,15 @@ export function browserHook(
       });
       tabs.set(browser, records);
     }
-    return observe(guardProtected(await open(), own, browser ? tabs.get(browser) : undefined));
+    return observe(
+      guardProtected(
+        await open(),
+        own,
+        browser ? tabs.get(browser) : undefined,
+        route,
+        privateFrames
+      )
+    );
   };
   return async ({ runtime } = {}) => {
     const linked = linkedBrowsers(links);
@@ -249,13 +263,20 @@ export function browserHook(
         const known = [...RUNTIMES, ...linked.map((browser) => browser.runtime)];
         throw new Error(`unknown runtime "${runtime}" (${known.join(', ')})`);
       }
-      return guard(() => found.open());
+      return guard(() => found.open(), undefined, found.route);
     }
     if (extension && !extensionAutomationSupported(extension)) throw new Error(EXTENSION_UPDATE);
     const fallback = linked.find((browser) => browser.seven) ?? linked[0];
     const open = runtime ? hosts[runtime] : hosts.extension || hosts.devtools || fallback?.open;
     if (!open) throw new Error(MISSING[runtime ?? 'any']);
-    return guard(open, open === hosts.extension ? extension.cdp : undefined);
+    return guard(
+      open,
+      open === hosts.extension ? extension.cdp : undefined,
+      browserRoute(open, hosts, extension, fallback),
+      open === hosts.extension && typeof extension.frames === 'function'
+        ? (targetId) => extension.frames(Number(targetId))
+        : undefined
+    );
   };
 }
 
