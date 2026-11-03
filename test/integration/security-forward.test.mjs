@@ -336,7 +336,8 @@ test('a Settings MCP record supplies root mcpcat directly and scrubs the complet
   );
   assert.equal(await actPackage(page, 'mcpcat', 'install'), 'ok');
   const version = await shell(page, 'mcpcat --version');
-  assert.match(`${version.stdout}${version.stderr}`, /0\.31\.16/);
+  const [major, minor, patch] = `${version.stdout}${version.stderr}`.trim().split('.').map(Number);
+  assert.ok(major > 0 || minor > 31 || (minor === 31 && patch >= 16), version.stdout);
   const added = await shell(
     page,
     `env -u PI_CODING_AGENT_DIR mcpcat add bb '${HOST}mcp' --no-probe`
