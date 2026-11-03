@@ -522,7 +522,7 @@ test('the policy sync lets the vault decide only when its accepted reply confirm
   );
 });
 
-async function pausedSeven(t, { answer } = {}) {
+async function pausedSeven(t, { answer, call, settle = true } = {}) {
   const CONFIG = '/etc/fnox/config.toml';
   const EXTRA = '/etc/slicc/secrets-policy.toml';
   const statusListeners = new Set();
@@ -540,7 +540,8 @@ async function pausedSeven(t, { answer } = {}) {
       },
       status: () => null,
     },
-    call: async () => ({ accepted: true, files: [{ path: CONFIG, accepted: true }, paused] }),
+    call:
+      call ?? (async () => ({ accepted: true, files: [{ path: CONFIG, accepted: true }, paused] })),
     async forward(input, port) {
       asked.push(input);
       ports.push(port);
@@ -563,10 +564,12 @@ async function pausedSeven(t, { answer } = {}) {
     vault,
   });
   await policy.start();
-  await policy.settled();
-  for (const listener of [...statusListeners]) listener({ policy: [paused] });
-  await policy.settled();
-  assert.equal(policy.paused(), true);
+  if (settle) {
+    await policy.settled();
+    for (const listener of [...statusListeners]) listener({ policy: [paused] });
+    await policy.settled();
+    assert.equal(policy.paused(), true);
+  }
   t.after(() => {
     policy.close();
     for (const port of ports) port.close();
@@ -638,4 +641,82 @@ test('a status that still shows the pause keeps the MCP exception', async (t) =>
   assert.equal(response.status, 200);
   await response.cancel();
   assert.equal(seven.sends.length, 1);
+});
+
+test('an unpaused status while a resync waits for its reply keeps that reply from confirming the pause', async (t) => {
+  const replies = [];
+  const seven = await pausedSeven(t, {
+    settle: false,
+    call: () => {
+      const reply = Promise.withResolvers();
+      replies.push(reply);
+      return reply.promise;
+    },
+  });
+  const until = async (count) => {
+    for (let tries = 0; replies.length < count; tries += 1) {
+      assert.ok(tries < 1000, `the policy call ${count} never came`);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+  };
+  const confirming = {
+    accepted: true,
+    files: [{ path: '/etc/fnox/config.toml', accepted: true }, seven.paused],
+  };
+  await until(1);
+  replies[0].resolve(confirming);
+  await seven.policy.settled();
+  seven.status([seven.paused]);
+  await until(2);
+  replies[1].resolve(confirming);
+  await seven.policy.settled();
+  assert.equal(seven.policy.paused(), true);
+  seven.status([]);
+  await until(3);
+  seven.status([]);
+  replies[2].resolve(confirming);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(seven.policy.paused(), false);
+  await assert.rejects(seven.run(), { cause: 'policy-syncing' });
+  assert.equal(seven.asked.length, 0);
+  assert.equal(seven.sends.length, 0);
+});
+
+test('a status that lists a confirmed path both paused and not ends the exception, in either order', async (t) => {
+  const unpaused = { path: '/etc/slicc/secrets-policy.toml', sha256: null, accepted: true };
+  for (const order of ['paused first', 'unpaused first']) {
+    const seven = await pausedSeven(t);
+    seven.status(order === 'paused first' ? [seven.paused, unpaused] : [unpaused, seven.paused]);
+    assert.equal(seven.policy.paused(), false, order);
+    await assert.rejects(seven.run(), { cause: 'policy-syncing' });
+    assert.equal(seven.sends.length, 0, order);
+  }
+});
+
+test('a reply that lists a missing path both paused and not confirms no pause, in either order', async () => {
+  const CONFIG = '/etc/fnox/config.toml';
+  const EXTRA = '/etc/slicc/secrets-policy.toml';
+  const good = { path: EXTRA, sha256: null, accepted: true, absent: true, paused: true };
+  const bad = { path: EXTRA, sha256: null, accepted: true, absent: true };
+  for (const files of [
+    [good, bad],
+    [bad, good],
+  ]) {
+    const policy = createPolicySync({
+      kernel: {
+        users: { mode: 'enforce' },
+        attest: async (path) => (path === EXTRA ? { path, absent: true } : { path, sha256: 'a' }),
+        watch: async () => () => {},
+      },
+      vault: {
+        forwardEpoch: () => 1,
+        port: { on: () => () => {}, status: () => null },
+        call: async () => ({ accepted: true, files: [{ path: CONFIG, accepted: true }, ...files] }),
+      },
+    });
+    await policy.start();
+    await policy.settled();
+    assert.deepEqual([policy.why(), policy.paused()], ['policy-missing', false]);
+    policy.close();
+  }
 });

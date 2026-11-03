@@ -82,10 +82,14 @@ export async function seedPolicies(kernel, attach) {
   }
 }
 
-function pausedIn(reply, path) {
-  return (Array.isArray(reply.files) ? reply.files : []).some(
-    (file) =>
-      file?.path === path && file.absent === true && file.paused === true && file.accepted === true
+function pausedIn(list, path, accepted) {
+  const entries = (Array.isArray(list) ? list : []).filter((file) => file?.path === path);
+  return (
+    entries.length > 0 &&
+    entries.every(
+      (file) =>
+        file.absent === true && file.paused === true && (!accepted || file.accepted === true)
+    )
   );
 }
 
@@ -94,6 +98,7 @@ export function createPolicySync({ kernel, vault, report = () => {} }) {
   let why = 'policy-syncing';
   let confirmed = false;
   let pausedPaths = [];
+  let pending = null;
   let epoch = 0;
   let stopped = false;
   let running = false;
@@ -113,6 +118,29 @@ export function createPolicySync({ kernel, vault, report = () => {} }) {
     epoch += 1;
     for (const listener of listeners) listener();
   };
+  const upload = async (files, missing) => {
+    const asked = { missing, contradicted: false };
+    pending = asked;
+    try {
+      const reply = await vault.call(
+        'policy',
+        { files },
+        { dropAway: true, signal: AbortSignal.timeout(10000) }
+      );
+      return { reply, contradicted: asked.contradicted };
+    } finally {
+      if (pending === asked) pending = null;
+    }
+  };
+  const settle = (missing, reply) => {
+    const accepted = reply.accepted === true;
+    ready = missing.length === 0 && accepted;
+    why = ready ? null : accepted ? 'policy-missing' : 'policy-unaccepted';
+    confirmed =
+      accepted && missing.length > 0 && missing.every((path) => pausedIn(reply.files, path, true));
+    pausedPaths = confirmed ? missing : [];
+    if (!ready) report('the credential policy is unavailable');
+  };
   const synchronise = async (version) => {
     const active = vault.forwardEpoch();
     if (active === null || kernel.users?.mode !== 'enforce') return;
@@ -121,19 +149,11 @@ export function createPolicySync({ kernel, vault, report = () => {} }) {
         POLICY_FILES.map((path) => kernel.attest(path, { absent: 'allow' }))
       );
       if (version !== epoch || stopped) return;
-      const reply = await vault.call(
-        'policy',
-        { files },
-        { dropAway: true, signal: AbortSignal.timeout(10000) }
-      );
-      if (version !== epoch || stopped || vault.forwardEpoch() !== active) return;
       const missing = files.filter((file) => file.absent === true).map((file) => file.path);
-      const accepted = reply.accepted === true;
-      ready = missing.length === 0 && accepted;
-      why = ready ? null : accepted ? 'policy-missing' : 'policy-unaccepted';
-      confirmed = accepted && missing.length > 0 && missing.every((path) => pausedIn(reply, path));
-      pausedPaths = confirmed ? missing : [];
-      if (!ready) report('the credential policy is unavailable');
+      const { reply, contradicted } = await upload(files, missing);
+      if (version !== epoch || stopped || vault.forwardEpoch() !== active) return;
+      if (contradicted) again = true;
+      else settle(missing, reply);
     } catch {
       if (version === epoch) why = 'policy-unavailable';
       report('the credential policy is unavailable');
@@ -156,14 +176,10 @@ export function createPolicySync({ kernel, vault, report = () => {} }) {
     })();
     return working;
   };
-  const stillPaused = (status) => {
-    const files = Array.isArray(status?.policy) ? status.policy : [];
-    return pausedPaths.every((path) =>
-      files.some((file) => file?.path === path && file.absent === true && file.paused === true)
-    );
-  };
+  const shows = (status, paths) => paths.every((path) => pausedIn(status?.policy, path, false));
   const statusChanged = (status) => {
-    if (confirmed && !stillPaused(status)) {
+    if (pending && !shows(status, pending.missing)) pending.contradicted = true;
+    if (confirmed && !shows(status, pausedPaths)) {
       void refresh();
       return;
     }
