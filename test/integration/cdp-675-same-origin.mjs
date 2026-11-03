@@ -26,14 +26,6 @@ export function sameOriginTools(tools, route, frames) {
     childFrame.securityOrigin,
     'child must actually be same-origin'
   );
-  if (route === 'extension') {
-    assert.equal(
-      child,
-      undefined,
-      'extension same-origin child tools are a declared Stage 1 limit (#694)'
-    );
-    return { root, child: null, declaredLimit: '#694' };
-  }
-  assert.ok(child, 'link root and same-origin child tools must both list');
+  assert.ok(child, 'root and same-origin child tools must both list');
   return { root, child };
 }

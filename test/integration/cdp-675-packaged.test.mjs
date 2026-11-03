@@ -2924,14 +2924,12 @@ for (const route of ['extension', 'link']) {
           if (scene.sameOriginChild) {
             assert.doesNotMatch(row.list.stdout, /"error"\s*:/);
             row.sameOriginTools = sameOriginTools(tools, route, row.rawFrames);
-            if (route === 'link') {
-              row.sameOriginCall = await cone(
-                page,
-                `timeout 60 mcpcat call http://127.0.0.1:${row.port}/mcp ${quote(row.sameOriginTools.child.name)} --a 2 --b 3`,
-                `675-same-child-call-${index}`
-              );
-              assert.match(row.sameOriginCall.stdout, /^15$/m);
-            }
+            row.sameOriginCall = await cone(
+              page,
+              `timeout 60 mcpcat call http://127.0.0.1:${row.port}/mcp ${quote(row.sameOriginTools.child.name)} --a 2 --b 3`,
+              `675-same-child-call-${index}`
+            );
+            assert.match(row.sameOriginCall.stdout, /^15$/m);
           }
           row.methods = await page.evaluate(
             (start) => globalThis.cdp675Trace.slice(start),

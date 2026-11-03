@@ -49,14 +49,13 @@ test('link same-origin list requires both tools and actual distinct same-origin 
   );
 });
 
-test('extension same-origin child absence is a declared limit with a required unaffected root and no error', () => {
-  assert.deepEqual(sameOriginTools([tools[0]], 'extension', frames), {
+test('extension same-origin list requires root and child tools with no error, just like link', () => {
+  assert.deepEqual(sameOriginTools(tools, 'extension', frames), {
     root: tools[0],
-    child: null,
-    declaredLimit: '#694',
+    child: tools[1],
   });
   assert.throws(() => sameOriginTools([], 'extension', frames), /root tools must list/);
-  assert.throws(() => sameOriginTools(tools, 'extension', frames), /declared Stage 1 limit/);
+  assert.throws(() => sameOriginTools(tools.slice(0, 1), 'extension', frames), /both list/);
   assert.throws(
     () => sameOriginTools([{ ...tools[0], error: 'broken' }], 'extension', frames),
     /must not contain an error/
