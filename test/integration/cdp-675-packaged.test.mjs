@@ -1212,6 +1212,31 @@ async function privateDomReadRow(page, row, scene) {
     assert.equal(row.privateFrameRead.remoteOwners.length, 1);
     assert.ok(Number.isSafeInteger(row.privateFrameRead.remoteOwners[0].backendNodeId));
     assert.ok(row.privateFrameRead.remoteOwners[0].frameId);
+    const nodes = [row.clientDocument.result.root];
+    while (nodes.length) {
+      const node = nodes.pop();
+      assert.notEqual(
+        node.backendNodeId,
+        row.privateFrameRead.remoteOwners[0].backendNodeId,
+        'depth-one client document must leave the owner unbound'
+      );
+      nodes.push(...(node.children ?? []), ...(node.shadowRoots ?? []));
+      if (node.contentDocument) nodes.push(node.contentDocument);
+    }
+    await page.within(
+      2000,
+      ({ start, sessionId }) =>
+        globalThis.cdp675Trace
+          .slice(start)
+          .some(
+            ({ boundary, direction, packet }) =>
+              boundary === 'bios' &&
+              direction === 'receive' &&
+              packet.method === 'DOM.setChildNodes' &&
+              packet.sessionId === sessionId
+          ),
+      { start: row.privateFrameReadStart, sessionId: row.attached.result.sessionId }
+    );
     row.privateOwnerPushes = await page.evaluate(
       (start) =>
         globalThis.cdp675Trace
@@ -1225,6 +1250,13 @@ async function privateDomReadRow(page, row, scene) {
     assert.ok(
       row.privateOwnerPushes.some(({ boundary }) => boundary === 'route'),
       'bound frontend owner path must generate a scrubbed push'
+    );
+    assert.ok(
+      row.privateOwnerPushes.some(
+        ({ boundary, packet }) =>
+          boundary === 'bios' && packet.sessionId === row.attached.result.sessionId
+      ),
+      'the client must receive the owner path through the bios scrub'
     );
     assert.doesNotMatch(
       JSON.stringify(row.privateOwnerPushes),
