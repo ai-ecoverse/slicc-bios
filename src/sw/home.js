@@ -1,5 +1,3 @@
-import { homeCookie } from '../seed/site.js';
-
 export async function returnHome({
   win = window,
   doc = document,
@@ -8,7 +6,7 @@ export async function returnHome({
   if (win.location.hostname !== 'seven.sliccy.ai' || win.top !== win) return false;
   const url = new URL(win.location.href);
   if (url.searchParams.has('stay')) {
-    doc.cookie = homeCookie(0);
+    doc.cookie = 'slicc-home=; Domain=sliccy.ai; Path=/; Secure; SameSite=Lax; Max-Age=0';
     url.searchParams.delete('stay');
     win.history.replaceState(win.history.state, '', url.href);
     return false;

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { createServer } from 'node:https';
 import { after, test } from 'node:test';
+import { ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { startWww } from './fake-six.mjs';
 import { certificate } from './real-extension.mjs';
@@ -12,10 +13,17 @@ const PREVIEW = 'https://preview-seven.sliccy.ai';
 let chrome;
 let www;
 let landing = true;
+let homeFailure = null;
 const hits = [];
 const front = createServer(await certificate(), (req, res) => {
   const url = new URL(req.url, `https://${req.headers.host}`);
   hits.push(url.href);
+  if (url.pathname === '/sw/home.js' && homeFailure) {
+    if (homeFailure === 'load') return res.writeHead(503).end();
+    return res
+      .writeHead(200, { 'content-type': 'text/javascript' })
+      .end('throw new Error("home fixture");');
+  }
   if (url.pathname === '/blank') {
     return res.writeHead(200, { 'content-type': 'text/html' }).end('<title>fixture</title>');
   }
@@ -160,6 +168,22 @@ test('a child document ignores the home cookie and stay flag', async (t) => {
   assert.equal(await page.evaluate(() => document.cookie.includes('slicc-home=www')), true);
 });
 
+for (const failure of ['load', 'evaluate']) {
+  test(`seven still boots when the home check fails to ${failure}`, async (t) => {
+    const page = await open(t);
+    homeFailure = failure;
+    t.after(() => {
+      homeFailure = null;
+    });
+    await page.goto(`${SEVEN}/#home-fixture`);
+    await ready(page, undefined, { tools: false });
+    assert.equal(await page.evaluate(() => location.origin), SEVEN);
+    assert.equal(await page.evaluate(() => location.hash), '#home-fixture');
+    assert.equal(await page.evaluate(() => document.cookie.includes('slicc-home=www')), true);
+    assert.deepEqual(page.errors, []);
+  });
+}
+
 test('www sets the cookie when six settles and renews it on later BIOS and OS boots', async (t) => {
   landing = false;
   t.after(() => {
@@ -190,7 +214,7 @@ test('www sets the cookie when six settles and renews it on later BIOS and OS bo
     { value: 'www', domain: '.sliccy.ai', path: '/', secure: true, sameSite: 'Lax' }
   );
   assert.ok(home.expires * 1000 > Date.now() + 399 * 24 * 60 * 60 * 1000);
-  await page.until(() => location.pathname === '/os/' && document.querySelector('slicc-app'));
+  await page.until(() => location.pathname === '/os/' && !!document.querySelector('slicc-app'));
   for (const path of ['/7/', '/os/']) {
     await page.evaluate(() => {
       document.cookie = 'slicc-home=; Domain=sliccy.ai; Path=/; Secure; SameSite=Lax; Max-Age=0';
@@ -198,6 +222,6 @@ test('www sets the cookie when six settles and renews it on later BIOS and OS bo
     assert.equal(await page.evaluate(() => document.cookie.includes('slicc-home=')), false);
     await page.goto(`${WWW}${path}`);
     await page.until(() => document.cookie.includes('slicc-home=www'));
-    await page.until(() => location.pathname === '/os/' && document.querySelector('slicc-app'));
+    await page.until(() => location.pathname === '/os/' && !!document.querySelector('slicc-app'));
   }
 });
