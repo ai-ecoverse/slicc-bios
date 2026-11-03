@@ -71,7 +71,7 @@ for (const [runtime, linked] of [
                 'node',
                 {
                   label: 'linked',
-                  peer: { version: '1.57.99' },
+                  peer: { version: '1.60.0' },
                   exit: { browsers: () => [{ id: 'chrome', seven: true }] },
                 },
               ],

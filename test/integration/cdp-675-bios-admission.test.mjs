@@ -12,8 +12,8 @@ const five = [
 ];
 
 for (const route of [
-  { kind: 'extension', version: '7.11.99' },
-  { kind: 'link', version: '1.57.99' },
+  { kind: 'extension', version: '7.12.0' },
+  { kind: 'link', version: '1.60.0' },
 ]) {
   test(`bios admits only the five Stage1 methods behind the ${route.kind} floor`, async (t) => {
     const p = protocol(t, (raw, own) =>

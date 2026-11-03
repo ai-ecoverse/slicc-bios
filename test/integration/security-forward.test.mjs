@@ -336,7 +336,8 @@ test('a Settings MCP record supplies root mcpcat directly and scrubs the complet
   );
   assert.equal(await actPackage(page, 'mcpcat', 'install'), 'ok');
   const version = await shell(page, 'mcpcat --version');
-  assert.match(`${version.stdout}${version.stderr}`, /0\.31\.16/);
+  const [major, minor, patch] = `${version.stdout}${version.stderr}`.trim().split('.').map(Number);
+  assert.ok(major > 0 || minor > 31 || (minor === 31 && patch >= 16), version.stdout);
   const added = await shell(
     page,
     `env -u PI_CODING_AGENT_DIR mcpcat add bb '${HOST}mcp' --no-probe`
@@ -402,4 +403,74 @@ test('a Settings MCP record supplies root mcpcat directly and scrubs the complet
     } else assert.equal(sent[0].body, '');
     assert.equal(`${body.stdout}${body.stderr}`.includes(MCP), false);
   }
+});
+
+test('root mcpcat started by the cone’s sudo uses the owner’s Settings sign-in from the agent’s mcp.json, and a refusal names its cause', {
+  timeout: 900000,
+}, async (t) => {
+  const page = await opened(t);
+  const { placeholder } = await record(page, 'BB_SIGN_IN', MCP, { kind: 'mcp', server: 'BB' });
+  await page.evaluate(
+    (url) =>
+      document
+        .querySelector('slicc-app')
+        .model.vault.endpoints({ add: { mcp: [{ server: 'BB', url }] } }),
+    `${HOST}mcp`
+  );
+  await page.within(60000, () =>
+    document
+      .querySelector('slicc-app')
+      .model.updates.packages()
+      .some((item) => item.id === 'mcpcat' && item.state === 'available')
+  );
+  assert.equal(await actPackage(page, 'mcpcat', 'install'), 'ok');
+  const setup = await shell(
+    page,
+    `mkdir -p /etc/slicc/agent /etc/sudoers.d && printf '%s' '{"mcpServers":{"BB":{"url":"${HOST}mcp"}}}' > /etc/slicc/agent/mcp.json && echo 'NOPASSWD cone Cmnd *' > /etc/sudoers.d/cone-mcpcat`
+  );
+  assert.equal(setup.status, 0, setup.stderr);
+  const cone = (command) =>
+    page.evaluate(async (command) => {
+      const client = await globalThis.sliccKernelClient();
+      try {
+        return await client.run(['bash', '-c', command], {
+          cwd: '/home/cone',
+          user: 'cone',
+          tag: 'cone',
+          env: { PI_CODING_AGENT_DIR: '/etc/slicc/agent' },
+        });
+      } finally {
+        await client.close();
+      }
+    }, command);
+  const sudo = 'sudo -n env PI_CODING_AGENT_DIR=/etc/slicc/agent mcpcat';
+  const list = await cone(`${sudo} list`);
+  assert.match(list.stdout, /^BB\s+http\s+\S+\s+\(\/etc\/slicc\/agent\/mcp\.json\)$/m);
+  const before = upstream.requests.length;
+  const tools = await cone(`${sudo} tools BB`);
+  const shown = `${tools.stdout}${tools.stderr}`;
+  assert.equal(tools.status, 0, shown);
+  assert.match(tools.stdout, /\(no tools\)/);
+  assert.equal(shown.includes(MCP), false);
+  assert.equal(shown.includes(placeholder), false);
+  const sent = upstream.requests.slice(before);
+  assert.ok(sent.length > 0);
+  assert.ok(sent.every((item) => bearer(item) === `Bearer ${MCP}`));
+  const removed = await shell(page, 'rm /etc/slicc/secrets-policy.toml');
+  assert.equal(removed.status, 0, removed.stderr);
+  await page.within(60000, () =>
+    (document.querySelector('slicc-app').model.vault.status()?.policy ?? []).some(
+      (file) => file.path === '/etc/slicc/secrets-policy.toml' && file.absent === true
+    )
+  );
+  const refusedBefore = upstream.requests.length;
+  const refused = await cone(`${sudo} tools BB`);
+  const said = `${refused.stdout}${refused.stderr}`;
+  assert.notEqual(refused.status, 0, said);
+  assert.match(
+    said,
+    /the credentialed request was refused \(policy-missing\): \/etc\/fnox\/config\.toml or \/etc\/slicc\/secrets-policy\.toml is missing/
+  );
+  assert.equal(said.includes(MCP), false);
+  assert.equal(upstream.requests.length, refusedBefore);
 });

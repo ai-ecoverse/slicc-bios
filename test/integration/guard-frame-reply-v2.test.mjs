@@ -24,7 +24,7 @@ function setup(t, snapshot) {
       raw,
       own,
       new Map(),
-      { kind: 'extension', version: '7.11.99' },
+      { kind: 'extension', version: '7.12.0' },
       async () => snapshot
     )
   );

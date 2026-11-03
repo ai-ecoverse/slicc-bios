@@ -111,7 +111,7 @@ export function domMemory(t, route = 'extension') {
       raw,
       'https://protected.invalid',
       new Map(),
-      { kind: route, version: route === 'extension' ? '7.11.99' : '1.57.99' },
+      { kind: route, version: route === 'extension' ? '7.12.0' : '1.60.0' },
       async () => (typeof proof === 'function' ? proof() : proof)
     );
     const delivered = [];

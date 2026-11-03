@@ -2,58 +2,65 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <script>
-    (() => {
-      const params = new URLSearchParams(location.hash.slice(1));
-      const ignored = ['proxy', 'key'].filter((name) => params.has(name));
-      for (const name of ignored) params.delete(name);
-      const names = ['slicc-pair', 'tailscale'];
-      if (params.has('tailscale')) names.push('exit');
-      const taken = names.filter((name) => params.has(name));
-      if (!taken.length) {
-        if (ignored.length) {
-          const rest = params.toString();
-          history.replaceState(
-            history.state,
-            '',
-            `${location.pathname}${location.search}${rest ? `#${rest}` : ''}`
-          );
+    <script type="module">
+    const home = await import('./sw/home.js')
+      .then(({ returnHome }) => returnHome())
+      .catch(() => false);
+
+    if (!home) {
+      (() => {
+        const params = new URLSearchParams(location.hash.slice(1));
+        const ignored = ['proxy', 'key'].filter((name) => params.has(name));
+        for (const name of ignored) params.delete(name);
+        const names = ['slicc-pair', 'tailscale'];
+        if (params.has('tailscale')) names.push('exit');
+        const taken = names.filter((name) => params.has(name));
+        if (!taken.length) {
+          if (ignored.length) {
+            const rest = params.toString();
+            history.replaceState(
+              history.state,
+              '',
+              `${location.pathname}${location.search}${rest ? `#${rest}` : ''}`
+            );
+          }
+          return;
         }
-        return;
-      }
-      const values = {};
-      for (const name of taken) {
-        values[name] = params.get(name);
-        params.delete(name);
-      }
-      try {
-        const id = params.get('handoff') || crypto.randomUUID();
-        const key = `slicc-os.handoff.${id}`;
-        const kept = JSON.parse(localStorage.getItem(key) || '{}').values || {};
-        localStorage.setItem(
-          key,
-          JSON.stringify({ at: Date.now(), values: { ...kept, ...values } })
+        const values = {};
+        for (const name of taken) {
+          values[name] = params.get(name);
+          params.delete(name);
+        }
+        try {
+          const id = params.get('handoff') || crypto.randomUUID();
+          const key = `slicc-os.handoff.${id}`;
+          const kept = JSON.parse(localStorage.getItem(key) || '{}').values || {};
+          localStorage.setItem(
+            key,
+            JSON.stringify({ at: Date.now(), values: { ...kept, ...values } })
+          );
+          params.set('handoff', id);
+        } catch {
+          params.delete('handoff');
+          const labels = {
+            tailscale: 'Tailscale',
+            'slicc-pair': 'pairing',
+          };
+          const lost = new Set([
+            ...(globalThis.sliccDropped || []),
+            ...taken.map((name) => labels[name]),
+          ]);
+          globalThis.sliccDropped = ['Tailscale', 'pairing'].filter((label) => lost.has(label));
+        }
+        const rest = params.toString();
+        history.replaceState(
+          history.state,
+          '',
+          `${location.pathname}${location.search}${rest ? `#${rest}` : ''}`
         );
-        params.set('handoff', id);
-      } catch {
-        params.delete('handoff');
-        const labels = {
-          tailscale: 'Tailscale',
-          'slicc-pair': 'pairing',
-        };
-        const lost = new Set([
-          ...(globalThis.sliccDropped || []),
-          ...taken.map((name) => labels[name]),
-        ]);
-        globalThis.sliccDropped = ['Tailscale', 'pairing'].filter((label) => lost.has(label));
-      }
-      const rest = params.toString();
-      history.replaceState(
-        history.state,
-        '',
-        `${location.pathname}${location.search}${rest ? `#${rest}` : ''}`
-      );
-    })();
+      })();
+      await import('./bios.js');
+    }
     </script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f8f8f8">
@@ -67,7 +74,6 @@
     </style>
     <link rel="stylesheet" href="bios.css">
     <link rel="modulepreload" href="sw/splash.js">
-    <script type="module" src="bios.js"></script>
   </head>
   <body>
     <canvas class="ambient" aria-hidden="true"></canvas>

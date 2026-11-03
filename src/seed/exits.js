@@ -138,7 +138,15 @@ export function routedUdp({ family, signal }, choose) {
   };
 }
 
-function credentialedSelection(url, base, protectedUrl, { httpCarrier, own, exits, onChange }) {
+const CARRIED = { link: 'exit-link', tailnet: 'exit-tailnet' };
+
+function credentialedSelection(
+  url,
+  base,
+  protectedUrl,
+  { httpCarrier, own, exits, onChange },
+  why
+) {
   const host = bareHost(new URL(url).hostname).replace(/\.$/, '');
   const literal = /^\d+\.\d+\.\d+\.\d+$/.test(host) || host.includes(':');
   const carrier = httpCarrier(host);
@@ -149,13 +157,26 @@ function credentialedSelection(url, base, protectedUrl, { httpCarrier, own, exit
     (literal && reserved(host) && !local) ||
     /^(?:\d+\.)?kernel\.localhost$/.test(host) ||
     protectedUrl(url)
-  )
+  ) {
+    why('destination-protected');
     return null;
+  }
   const sender = carrier ? carrier.credentialed : base;
-  if (sender?.traits?.manualRedirects !== true || sender.traits?.encodedBodies !== false)
-    return null;
   const exit = carrier ? carrier.exitName?.() : 'page';
-  if (typeof exit !== 'string') return null;
+  if (
+    sender?.traits?.manualRedirects !== true ||
+    sender.traits?.encodedBodies !== false ||
+    typeof exit !== 'string'
+  ) {
+    why(
+      carrier
+        ? (CARRIED[carrier.kind] ?? 'exit-not-credentialed')
+        : base
+          ? 'exit-not-credentialed'
+          : 'extension-outdated'
+    );
+    return null;
+  }
   return {
     exit,
     rawTraits: { manualRedirects: true, encodedBodies: false },
@@ -235,13 +256,14 @@ export function createExitRouter({ protectedUrl = () => false } = {}) {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    selectCredentialed(url, base, protectedUrl = () => false) {
-      return credentialedSelection(url, base, protectedUrl, {
-        httpCarrier,
-        own,
-        exits,
-        onChange: router.onChange,
-      });
+    selectCredentialed(url, base, protectedUrl = () => false, why = () => {}) {
+      return credentialedSelection(
+        url,
+        base,
+        protectedUrl,
+        { httpCarrier, own, exits, onChange: router.onChange },
+        why
+      );
     },
     defaultExit: fallback,
     chosen: () => chosen,

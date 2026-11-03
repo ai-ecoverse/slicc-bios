@@ -12,8 +12,8 @@ importers:
         specifier: 1.1.6
         version: 1.1.6
       '@ai-ecoverse/slicc-browsers':
-        specifier: 1.18.21
-        version: 1.18.21
+        specifier: 1.19.0
+        version: 1.19.0
       '@ai-ecoverse/slicc-capture':
         specifier: 1.4.1
         version: 1.4.1
@@ -21,11 +21,11 @@ importers:
         specifier: 1.172.2
         version: 1.172.2
       '@ai-ecoverse/slicc-spectrum':
-        specifier: 1.108.3
-        version: 1.108.3
+        specifier: 1.108.5
+        version: 1.108.5
       '@ai-ecoverse/wasi-fnox':
-        specifier: 1.42.1-1
-        version: 1.42.1-1
+        specifier: 1.43.0-1
+        version: 1.43.0-1
       '@ai-ecoverse/wasi-pnpm':
         specifier: 12.9.1-21
         version: 12.9.1-21
@@ -49,8 +49,8 @@ packages:
     engines: {node: '>=24', slicc-kernel: '>=1.153.0'}
     hasBin: true
 
-  '@ai-ecoverse/slicc-browsers@1.18.21':
-    resolution: {integrity: sha512-hinx7Lvb0IrClsxw1BdQTwLPjUcGkYjISmHOXHE3e4oiZZL6GpxJsvHTGaLk1bM/cX2VIz3C4BAch7HGqiVrWg==}
+  '@ai-ecoverse/slicc-browsers@1.19.0':
+    resolution: {integrity: sha512-43reWclmpjA5Q8S9i7NouVk6GijV/ZXlopazXckVfR7IhxnGOriSFQEMl/etxIwpQ97QG4PAp47LphfqtSvH5A==}
     engines: {node: '>=24'}
 
   '@ai-ecoverse/slicc-capture@1.4.1':
@@ -105,12 +105,12 @@ packages:
       webgpu:
         optional: true
 
-  '@ai-ecoverse/slicc-spectrum@1.108.3':
-    resolution: {integrity: sha512-djAMfBFCbb2d6UcRa4jwDDdq6ZQ7HWWw3aAFoak6OSDeu6C+eAdzbXAAzfOOkWw21REHdjVv2MMoIEdYTJDwCA==}
+  '@ai-ecoverse/slicc-spectrum@1.108.5':
+    resolution: {integrity: sha512-FLb+qxLhsXR2IwEA+uey5rVtbmX0c6YOf0sGHL6EnTtBswTBqlNKNz1dNFukcjh5KKwipohBGFBILJ7I44l3xQ==}
     engines: {node: '>=24'}
 
-  '@ai-ecoverse/wasi-fnox@1.42.1-1':
-    resolution: {integrity: sha512-rGdRnQYTrC3dGPD6LHd9ewyDcBJ1nPMi8ZGIZ4EpaPYEm4ETKa6Fr3oFR0tdPZxvqudtomayiA76OuT0ZCU/wQ==}
+  '@ai-ecoverse/wasi-fnox@1.43.0-1':
+    resolution: {integrity: sha512-awvZp9IgUm2v6lezBmP73WJ+V8xK+FF+3UfIRUtTiXlFpWo93I0nts2vP6pQ+l6izT1ZnHiBB+kpkyvKdnph5g==}
     engines: {slicc-kernel: '>=1.83.0'}
 
   '@ai-ecoverse/wasi-pnpm@12.9.1-21':
@@ -248,7 +248,7 @@ snapshots:
       - utf-8-validate
       - webgpu
 
-  '@ai-ecoverse/slicc-browsers@1.18.21': {}
+  '@ai-ecoverse/slicc-browsers@1.19.0': {}
 
   '@ai-ecoverse/slicc-capture@1.4.1': {}
 
@@ -270,9 +270,9 @@ snapshots:
       - utf-8-validate
     optional: true
 
-  '@ai-ecoverse/slicc-spectrum@1.108.3': {}
+  '@ai-ecoverse/slicc-spectrum@1.108.5': {}
 
-  '@ai-ecoverse/wasi-fnox@1.42.1-1': {}
+  '@ai-ecoverse/wasi-fnox@1.43.0-1': {}
 
   '@ai-ecoverse/wasi-pnpm@12.9.1-21': {}
 

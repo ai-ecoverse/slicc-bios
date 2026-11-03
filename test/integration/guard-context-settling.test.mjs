@@ -6,7 +6,7 @@ const { guardProtected } = await import(process.env.GUARD_SOURCE ?? '../../src/s
 
 async function settling(t, refuses) {
   const p = protocol(t, (raw, own) =>
-    guardProtected(raw, own, new Map(), { kind: 'extension', version: '7.11.99' }, async () => null)
+    guardProtected(raw, own, new Map(), { kind: 'extension', version: '7.12.0' }, async () => null)
   );
   const root = p.target('root', 'page', { ...plainFrame('root'), loaderId: 'old' });
   const session = await p.attach('root');

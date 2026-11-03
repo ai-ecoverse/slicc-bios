@@ -13,7 +13,7 @@ for (const message of [
 ]) {
   test(`private link-session placement cleanup handles only the exact native disabled-domain error: ${message}`, async (t) => {
     const p = protocol(t, (raw, own) =>
-      guardProtected(raw, own, new Map(), { kind: 'link', version: '1.57.99' }, async () => null)
+      guardProtected(raw, own, new Map(), { kind: 'link', version: '1.60.0' }, async () => null)
     );
     p.target('root', 'page', plainFrame('root'));
     p.hold(({ id, method }) => id >= 2 ** 30 && method === 'DOM.disable');

@@ -80,7 +80,7 @@ test('concrete protected owner evidence still stops root placement retry immedia
 
 test('the same root unique selector is re-proved after a provisional same-process child becomes ordinary', async (t) => {
   const p = protocol(t, (raw, own) =>
-    guardProtected(raw, own, new Map(), { kind: 'extension', version: '7.11.99' }, async () => null)
+    guardProtected(raw, own, new Map(), { kind: 'extension', version: '7.12.0' }, async () => null)
   );
   const root = p.target('17', 'page', { ...plainFrame('ROOT'), loaderId: 'OLD' });
   const session = await p.attach('17');
