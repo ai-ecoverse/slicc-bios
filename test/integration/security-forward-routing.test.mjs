@@ -93,7 +93,9 @@ test('a request during policy seeding refuses cleanly before the vault or carrie
   await assert.rejects(forward(request, { signal: new AbortController().signal }), {
     status: 403,
     code: 'EACCES',
-    message: 'the credentialed request was refused',
+    cause: 'policy-syncing',
+    message:
+      'the credentialed request was refused (policy-syncing): seven is still handing its credential policy to the vault; try again in a moment',
   });
   assert.equal(f.ports.length, 0);
   assert.equal(f.sends.length, 0);

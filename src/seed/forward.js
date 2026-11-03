@@ -1,3 +1,4 @@
+import { explained, FORWARD_CAUSES, vaultCause } from './causes.js';
 import { hasPlaceholder } from './placeholders.js';
 import { checkRedirect } from './redirects.js';
 
@@ -12,9 +13,19 @@ const failure = (message, status = 502, cause) =>
     status,
     code: status === 403 ? 'EACCES' : 'EIO',
     [LOCAL]: true,
-    ...(cause === 'policy-paused' ? { cause } : {}),
+    ...(Object.hasOwn(FORWARD_CAUSES, cause ?? '') ? { cause } : {}),
   });
-const refused = (cause) => failure('the credentialed request was refused', 403, cause);
+const refused = (cause, status = 403, code) =>
+  failure(
+    `the credentialed request was refused (${cause}): ${explained(cause, code)}`,
+    status,
+    cause
+  );
+const tooLarge = () => refused('body-too-large', 413);
+const byVault = (result) =>
+  result?.refused
+    ? refused(vaultCause(result.refused.cause) ?? 'vault-refused')
+    : refused('vault-reply');
 
 function approved(original, head) {
   return (
@@ -55,7 +66,8 @@ async function within(work, signal, ms = FORWARD_WAIT_MS) {
 
 async function collected(request, max, signal) {
   if (request.body !== undefined) {
-    if (!(request.body instanceof Uint8Array) || request.body.byteLength > max) throw refused();
+    if (!(request.body instanceof Uint8Array)) throw refused('body-framing');
+    if (request.body.byteLength > max) throw tooLarge();
     return request.body;
   }
   const chunks = [];
@@ -66,9 +78,9 @@ async function collected(request, max, signal) {
       signal.throwIfAborted();
       const next = await within(iterator.next(), signal);
       if (next.done) break;
-      if (!(next.value instanceof Uint8Array)) throw refused();
+      if (!(next.value instanceof Uint8Array)) throw refused('body-framing');
       length += next.value.byteLength;
-      if (length > max) throw failure('the request body is too large', 413);
+      if (length > max) throw tooLarge();
       chunks.push(next.value.slice());
     }
   } finally {
@@ -222,27 +234,47 @@ function exchange(signal, onFailure, maxQueue = FORWARD_QUEUE_MAX) {
 }
 
 function selectedFor(request, options) {
-  if (request.v !== 1 || request.caller?.users !== 'enforce' || options.ready() !== true)
-    throw refused();
-  if (request.body !== undefined && request.bodyStream !== undefined) throw refused();
+  if (request.v !== 1) throw refused('protocol-version');
+  if (request.caller?.users !== 'enforce') throw refused('users-off');
+  if (request.body !== undefined && request.bodyStream !== undefined) throw refused('body-framing');
   const epoch = options.vault.forwardEpoch();
-  if (!Number.isSafeInteger(epoch) || epoch < 1) throw refused();
-  const selected = options.select(request.url);
+  if (!Number.isSafeInteger(epoch) || epoch < 1)
+    throw refused(
+      options.vault.forwardBlocked?.() === 'vault-locked' ? 'vault-locked' : 'vault-unavailable'
+    );
+  if (options.ready() !== true) throw refused(unready(options.unready));
+  let why = 'exit-not-credentialed';
+  const selected = options.select(request.url, (cause) => {
+    why = cause;
+  });
   if (
     selected?.rawTraits?.manualRedirects !== true ||
     selected.rawTraits.encodedBodies !== false ||
-    selected.active() !== true
+    !Number.isSafeInteger(selected.maxRequestBody) ||
+    selected.maxRequestBody < 0
   )
-    throw refused();
-  if (!Number.isSafeInteger(selected.maxRequestBody) || selected.maxRequestBody < 0)
-    throw refused();
+    throw refused(Object.hasOwn(FORWARD_CAUSES, why) ? why : 'exit-not-credentialed');
+  if (selected.active() !== true) throw refused('route-inactive');
   return { selected, epoch, max: Math.min(FORWARD_BODY_MAX, selected.maxRequestBody) };
 }
 
+const UNREADY = new Set([
+  'policy-syncing',
+  'policy-missing',
+  'policy-unaccepted',
+  'policy-unavailable',
+]);
+
+function unready(why) {
+  const cause = why?.();
+  return UNREADY.has(cause) ? cause : 'policy-syncing';
+}
+
 function mcpBody(result, present, max) {
-  if (result.bodyComplete !== true || Object.hasOwn(result, 'body') !== present) throw refused();
-  if (present && (!(result.body instanceof Uint8Array) || result.body.byteLength > max))
-    throw refused();
+  if (result.bodyComplete !== true || Object.hasOwn(result, 'body') !== present)
+    throw refused('vault-reply');
+  if (present && !(result.body instanceof Uint8Array)) throw refused('vault-reply');
+  if (present && result.body.byteLength > max) throw tooLarge();
   return result.body;
 }
 
@@ -253,19 +285,20 @@ async function admittedBody(request, original, selected, max, signal, ask, disca
   let bodyStream;
   if (result?.needsBody === true) {
     discard();
-    if (!present) throw refused();
+    if (!present) throw refused('vault-reply');
     body = await collected(request, max, signal);
     result = await ask(body);
-    if (result?.mode !== 'mcp') throw refused(result?.refused?.cause);
+    if (result?.mode !== 'mcp') throw byVault(result);
   }
-  if (!approved(original, result?.head)) throw refused(result?.refused?.cause);
+  if (!approved(original, result?.head)) throw byVault(result);
   if (result.mode === 'secret') {
-    if (Object.hasOwn(result, 'body') || Object.hasOwn(result, 'bodyComplete')) throw refused();
+    if (Object.hasOwn(result, 'body') || Object.hasOwn(result, 'bodyComplete'))
+      throw refused('vault-reply');
     if (request.bodyStream && selected.streamingBodies === true) bodyStream = request.bodyStream;
     else body = present ? await collected(request, max, signal) : undefined;
   } else if (result.mode === 'mcp') {
     body = mcpBody(result, present, max);
-  } else throw refused();
+  } else throw refused('vault-reply');
   return { head: result.head, body, bodyStream };
 }
 
@@ -273,12 +306,13 @@ export function createForwarder({
   vault,
   select,
   ready,
+  unready,
   policyEpoch = () => 0,
   onPolicyChange = () => () => {},
 }) {
   return async (request, { signal }) => {
     signal.throwIfAborted();
-    const { selected, epoch, max } = selectedFor(request, { vault, select, ready });
+    const { selected, epoch, max } = selectedFor(request, { vault, select, ready, unready });
     const policy = policyEpoch();
     const present = request.body !== undefined || request.bodyStream !== undefined;
     const original = { method: request.method, url: request.url, headers: request.headers };
@@ -325,19 +359,25 @@ export function createForwarder({
           void cancel();
         });
         return within(
-          vault.forward(
-            {
-              head: original,
-              owner: request.caller,
-              exit: selected.exit,
-              rawTraits: selected.rawTraits,
-              bodyPresent: present,
-              streamCredit: true,
-              ...(body === undefined ? {} : { body }),
-            },
-            relay.port,
-            { signal: controller.signal }
-          ),
+          vault
+            .forward(
+              {
+                head: original,
+                owner: request.caller,
+                exit: selected.exit,
+                rawTraits: selected.rawTraits,
+                bodyPresent: present,
+                streamCredit: true,
+                ...(body === undefined ? {} : { body }),
+              },
+              relay.port,
+              { signal: controller.signal }
+            )
+            .catch((error) => {
+              throw error?.[LOCAL]
+                ? error
+                : refused(vaultCause(error?.cause) ?? 'vault-error', 403, error?.code);
+            }),
           controller.signal
         );
       };
@@ -350,7 +390,7 @@ export function createForwarder({
         ask,
         () => relay.close()
       );
-      if (!current()) throw refused();
+      if (!current()) throw refused('changed');
       const headers = head.headers.filter(
         ([name]) => !['content-length', 'transfer-encoding'].includes(name.toLowerCase())
       );

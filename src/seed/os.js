@@ -312,9 +312,10 @@ const vault = createVault({
 });
 const forwarder = createForwarder({
   vault,
-  select: (url) =>
-    exits.selectCredentialed(url, reach.credentialed, (value) => protectedHttp.url(value)),
+  select: (url, why) =>
+    exits.selectCredentialed(url, reach.credentialed, (value) => protectedHttp.url(value), why),
   ready: () => forwardKernel && policy?.ready() === true,
+  unready: () => policy?.why() ?? 'policy-syncing',
   policyEpoch: () => policy?.epoch() ?? 0,
   onPolicyChange: (listener) => policy?.onChange(listener) ?? (() => {}),
 });

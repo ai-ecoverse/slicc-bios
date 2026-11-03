@@ -1,3 +1,4 @@
+import { vaultCause } from './causes.js';
 import { policyDependent } from './policy.js';
 import { production } from './site.js';
 
@@ -51,7 +52,7 @@ export function failure(error, value) {
   const code = typeof error?.code === 'string' ? error.code : 'EIO';
   return Object.assign(new Error(hide(error?.message ?? 'the vault refused', value)), {
     code,
-    ...(error?.cause === 'policy-paused' ? { cause: 'policy-paused' } : {}),
+    ...(vaultCause(error?.cause) ? { cause: error.cause } : {}),
   });
 }
 
@@ -559,6 +560,17 @@ function vaultCaller({ pending, view, post, state, next, now }) {
   };
 }
 
+export function forwardState(view, epoch) {
+  return {
+    forwardEpoch: () =>
+      view.welcomed && view.status?.capabilities?.forward === 1 && view.status.locked !== true
+        ? epoch()
+        : null,
+    forwardBlocked: () =>
+      view.welcomed && view.status?.locked === true ? 'vault-locked' : 'vault-unavailable',
+  };
+}
+
 function forwardingPort(call) {
   return {
     async seal(fields) {
@@ -767,10 +779,7 @@ export function createVault({
       onRequest,
       away: () => away(view, state),
     }),
-    forwardEpoch: () =>
-      view.welcomed && view.status?.capabilities?.forward === 1 && view.status.locked !== true
-        ? epoch
-        : null,
+    ...forwardState(view, () => epoch),
     placeholders: () => [...view.placeholders],
     scrub: pair,
     scrubText: vaultScrubber({ frame, origin, pair }),
