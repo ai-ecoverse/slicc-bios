@@ -1209,6 +1209,10 @@ class Guard {
       this.replaceDebuggerLease(targetId, 'revoked');
       return;
     }
+    if (!Array.isArray(frames) || frames.some((frame) => frame?.kind !== 'ordinary')) {
+      this.replaceDebuggerLease(targetId, 'suspended');
+      return;
+    }
     const root = Array.isArray(frames) && frames.find((frame) => frame?.frameId === 0);
     const ids = new Set(Array.isArray(frames) ? frames.map((frame) => frame?.frameId) : []);
     const complete =

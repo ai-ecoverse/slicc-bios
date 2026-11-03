@@ -53,6 +53,54 @@ test('an ordinary URL-free v2 closure places through the real bios guard and adm
   assert.equal(p.clients().filter(({ method }) => method === 'Debugger.enable').length, 1);
 });
 
+test('a mixed ordinary/protected kind-only reply revokes before any placement identity is needed', async (t) => {
+  const snapshot = {
+    version: 2,
+    revision: 5,
+    rootLoaderId: 'loader',
+    frames: [{ kind: 'ordinary' }, { kind: 'protected' }],
+    localFrames: [],
+    remoteOwners: [],
+  };
+  assert.doesNotMatch(
+    JSON.stringify(snapshot),
+    /frameId|parentFrameId|backendNodeId|documentId|url|origin/i
+  );
+  const p = setup(t, snapshot);
+  const session = await p.attach('root');
+  const answer = await p.send('Debugger.enable', {}, session);
+  assert.match(answer.error?.message ?? '', /^slicc: refused:/);
+  assert.equal(
+    p.clients().some(({ method }) => method === 'Debugger.enable'),
+    false
+  );
+  Object.assign(snapshot, list());
+  assert.match(
+    (await p.send('Debugger.enable', {}, session)).error?.message ?? '',
+    /^slicc: refused:/
+  );
+});
+
+test('unknown and error kind-only replies refuse without local or remote identifier counts', async (t) => {
+  for (const kind of ['unknown', 'error']) {
+    const snapshot = {
+      version: 2,
+      revision: 5,
+      rootLoaderId: 'loader',
+      frames: [{ kind: 'ordinary' }, { kind }],
+      localFrames: [],
+      remoteOwners: [],
+    };
+    const p = setup(t, snapshot);
+    const answer = await p.send('Debugger.enable', {}, await p.attach('root'));
+    assert.match(answer.error?.message ?? '', /^slicc: refused:/);
+    assert.equal(
+      p.clients().some(({ method }) => method === 'Debugger.enable'),
+      false
+    );
+  }
+});
+
 test('bios rejects a legacy raw-URL snapshot instead of treating it as the URL-free v2 proof', async (t) => {
   const snapshot = list();
   snapshot.version = 1;
