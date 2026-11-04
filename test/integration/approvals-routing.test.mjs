@@ -43,6 +43,7 @@ test('with the agent up, routeSudo hands the kernel’s request to the agent unc
   const seen = [];
   const fallback = () => assert.fail('the fallback dialog asked while the agent was up');
   const sudo = routeSudo({
+    judges: () => true,
     agent: () => ({
       approve: async (req, options) => {
         seen.push({ req, options });
@@ -64,6 +65,7 @@ test('with the agent up, routeSudo hands the kernel’s request to the agent unc
 test('a command line the kernel can’t record arrives at the agent with always: false, and the agent’s always answer goes back to the kernel, which runs it once', async () => {
   const seen = [];
   const sudo = routeSudo({
+    judges: () => true,
     agent: () => ({
       approve: async (req) => {
         seen.push(req);
@@ -89,6 +91,7 @@ test('bios checks no command text: whatever the agent answers for any line is wh
   for (const [path, argv] of lines) {
     for (const answer of ['once', 'always', 'deny']) {
       const sudo = routeSudo({
+        judges: () => true,
         agent: () => ({ approve: async () => answer }),
         fallback: () => assert.fail('the fallback dialog asked while the agent was up'),
       });
@@ -105,7 +108,7 @@ test('with the agent down, the fallback dialog offers Allow once and Deny only, 
   ]) {
     const approvals = createApprovals({ channel: lone() });
     approvals.own();
-    const sudo = routeSudo({ agent, fallback: approvals.approve });
+    const sudo = routeSudo({ agent, judges: () => true, fallback: approvals.approve });
     const decision = sudo(request(), {});
     const [item] = await listed(approvals);
     assert.deepEqual(item, {
@@ -120,6 +123,24 @@ test('with the agent down, the fallback dialog offers Allow once and Deny only, 
       always: false,
     });
     assert.equal('verdict' in item, false);
+    await approvals.port.decide(item.id, 'once');
+    assert.equal(await decision, 'once');
+  }
+});
+
+test('an agent that runs without the judge gets nothing: the fallback dialog asks with once and deny only', async () => {
+  for (const judges of [() => false, undefined]) {
+    const approvals = createApprovals({ channel: lone() });
+    approvals.own();
+    const sudo = routeSudo({
+      agent: () => ({ approve: async () => assert.fail('an agent without the judge was asked') }),
+      ...(judges ? { judges } : {}),
+      fallback: approvals.approve,
+    });
+    const decision = sudo(request(), {});
+    const [item] = await listed(approvals);
+    assert.equal(item.always, false);
+    await assert.rejects(approvals.port.decide(item.id, 'always'), /Always isn't offered/);
     await approvals.port.decide(item.id, 'once');
     assert.equal(await decision, 'once');
   }
@@ -167,6 +188,7 @@ test('an always decision from another tab for a fallback item is ignored, and th
 
 test('an agent that fails any other way denies the request', async () => {
   const sudo = routeSudo({
+    judges: () => true,
     agent: () => ({ approve: async () => Promise.reject(new Error('boom')) }),
     fallback: () => assert.fail('the fallback dialog asked for a failure that isn’t EAGAIN'),
   });

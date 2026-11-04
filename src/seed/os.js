@@ -6,6 +6,7 @@ import { confirm, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
 import { sealedLogin, signIn } from './adobe.js';
 import {
   deployed as agentDeployed,
+  judges as agentJudges,
   project as agentProject,
   startable as agentStartable,
   version as agentVersion,
@@ -359,6 +360,7 @@ if (registration) watchWaiting({ registration, board, notices, reload: () => loc
 const approvals = createApprovals();
 const sudo = routeSudo({
   agent: () => owner,
+  judges: agentJudges,
   fallback: approvals.approve,
   where: (req) => {
     const device = followerDevice(req.tag);

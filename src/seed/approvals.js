@@ -149,10 +149,10 @@ export function createApprovals({ channel = new BroadcastChannel(CHANNEL) } = {}
   };
 }
 
-export function routeSudo({ agent, fallback, where = () => undefined }) {
+export function routeSudo({ agent, judges = () => false, fallback, where = () => undefined }) {
   return async (req, options = {}) => {
     const owner = agent();
-    if (typeof owner?.approve !== 'function') return fallback(req, options);
+    if (typeof owner?.approve !== 'function' || !judges()) return fallback(req, options);
     const place = where(req);
     try {
       return await owner.approve(req, {

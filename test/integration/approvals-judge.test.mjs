@@ -281,3 +281,44 @@ test('with the agent up, bios hands each sudo to the agent with the kernel’s f
   assert.doesNotMatch(await sudoers(page), /printf/);
   assert.deepEqual(page.errors, []);
 });
+
+const relabel = (page, version) =>
+  page.evaluate(async (version) => {
+    let dir = await navigator.storage.getDirectory();
+    for (const part of ['opt', 'agent', 'node_modules', '@ai-ecoverse', 'slicc-agent'])
+      dir = await dir.getDirectoryHandle(part);
+    const handle = await dir.getFileHandle('package.json');
+    const manifest = JSON.parse(await (await handle.getFile()).text());
+    const writable = await handle.createWritable();
+    await writable.write(JSON.stringify({ ...manifest, version }, null, 2));
+    await writable.close();
+  }, version);
+
+test('a running agent older than 7.17.0 has no judge, so bios’s own dialog asks with once and deny only and records nothing', {
+  timeout: 35 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  await page.goto(`/#${new URLSearchParams({ users: 'enforce' })}`);
+  await ready(page, ['slicc:/home# ']);
+  await agentUp(page);
+  await listsAccount(page, 'amazon-bedrock');
+  await connectAccount(page, 'amazon-bedrock', KEY);
+  await connectAccount(page, 'adobe', ADOBE_TOKEN);
+  await relabel(page, '7.16.1');
+  await page.reload();
+  await ready(page, ['slicc:/home# ']);
+  await agentUp(page);
+  const before = judged.length;
+  await run(page, 'clear; cd /; sudo -u cone sudo id -Gn; echo older=$?');
+  const item = await asked(page, /\/id -Gn$/);
+  assert.match(item.id, /^sudo-/);
+  assert.equal(item.always, false);
+  assert.equal('verdict' in item, false);
+  assert.deepEqual(await buttons(page, item.id), ['deny', 'once']);
+  assert.match(await decide(page, item.id, 'always'), /Always isn.t offered/);
+  await click(page, item.id, 'once');
+  await shows(page, 'older=0');
+  assert.equal(judged.length, before);
+  assert.doesNotMatch(await sudoers(page), /id -Gn/);
+  assert.deepEqual(page.errors, []);
+});

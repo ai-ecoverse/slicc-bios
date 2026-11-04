@@ -112,12 +112,21 @@ async function outdated() {
   return chat !== null && (await chatFrom) !== (await recorded());
 }
 
+const JUDGED = '7.17.0';
+let running = null;
+
+export function judges() {
+  return running !== null && compare(running, JUDGED) >= 0;
+}
+
 export async function startChat(kernel, { vault = chatVault, requests, ...options } = {}) {
+  running = null;
   await mayStart(await version(), { root: await navigator.storage.getDirectory() });
   const fresh = options.fresh || (await outdated());
   const { startAgent } = await loadChat({ ...options, fresh });
-  const takes = vault && takesVault(await version());
-  return startAgent({
+  const at = await version();
+  const takes = vault && takesVault(at);
+  const started = await startAgent({
     worker: vaultWorker(
       () => new Worker(agentWorker, { type: 'module', name: 'slicc-agent' }),
       takes ? vault : null
@@ -125,6 +134,8 @@ export async function startChat(kernel, { vault = chatVault, requests, ...option
     kernel: kernelSource(kernel, requests),
     held: true,
   });
+  running = at;
+  return started;
 }
 
 export async function restartChat(kernel, running, options = {}) {
