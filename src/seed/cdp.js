@@ -230,7 +230,10 @@ function browserRoute(open, hosts, extension, fallback) {
 export function browserHook(
   observe = (connection) => connection,
   links,
-  own = globalThis.location?.origin,
+  own = [
+    globalThis.location?.origin,
+    globalThis.sliccExtension?.id && `chrome-extension://${globalThis.sliccExtension.id}`,
+  ].filter(Boolean),
   before = async () => {}
 ) {
   const tabs = new WeakMap();
