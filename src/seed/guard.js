@@ -999,6 +999,7 @@ class Guard {
     if (this.finished.has(command)) return;
     this.finished.add(command);
     const key = requestKey(command);
+    this.blankReads.delete(key);
     if (release && this.commands.get(key) === command) this.commands.delete(key);
     this.pendingContent.delete(command);
     const { id, sessionId } = command;
@@ -5601,6 +5602,7 @@ class Guard {
     connection.onclose = (why) => {
       this.closing = true;
       this.closed = true;
+      this.blankReads.clear();
       for (const entry of this.debuggerLeases.values()) clearTimeout(entry.timer);
       guarded.send = () => {};
       guarded.onmessage = null;
@@ -5639,7 +5641,10 @@ class Guard {
           if (!(await this.proveContent(message))) return this.refuse(message);
           if (!(await this.admitContent(message))) return this.refuse(message);
           const why = await this.check(message);
-          if (this.finished.has(message) || !this.owns(message)) return;
+          if (this.finished.has(message) || !this.owns(message)) {
+            this.blankReads.delete(requestKey(message));
+            return;
+          }
           if (why) return this.refuse(message, why);
           return this.sendChecked(message);
         },
@@ -5652,6 +5657,7 @@ class Guard {
     guarded.close = () => {
       if (this.closing || this.closed) return;
       this.closing = true;
+      this.blankReads.clear();
       for (const entry of this.debuggerLeases.values()) clearTimeout(entry.timer);
       guarded.send = () => {};
       guarded.onmessage = null;

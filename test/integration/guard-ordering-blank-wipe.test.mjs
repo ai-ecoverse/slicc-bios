@@ -321,3 +321,52 @@ test('ordering a blank content answer refuses after a protected replacement', as
   });
   assert.equal((await pending.answer).error?.message, PROTECTED);
 });
+
+async function softClearBlank(wire, entry, id) {
+  entry.tree = { frame: { id, loaderId: 'blank-loader', url: BLANKED, securityOrigin: '://' } };
+  entry.info.url = BLANKED;
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: `guard-${id}`,
+    params: { frame: entry.tree.frame },
+  });
+  wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: { ...entry.info } } });
+  for (let i = 0; i < 30; i += 1) await flush();
+}
+
+test('ordering a blank read refused by check does not skip scrub for a reused id', async (t) => {
+  const { wire, entry, session, id } = await wipedSticky(t, 'blank-wipe-reuse-scrub');
+  assert.equal(
+    (await wire.request('Runtime.evaluate', { expression: '1', url: failed }, session, 100).answer)
+      .error?.message,
+    PROTECTED
+  );
+  await softClearBlank(wire, entry, id);
+  let holdTrees = false;
+  wire.hold((message) => {
+    if (message.method === 'Runtime.evaluate' && message.id === 100) return true;
+    if (holdTrees && message.id >= 2 ** 30 && message.method === 'Page.getFrameTree') return true;
+    return false;
+  });
+  const pending = wire.request('Runtime.evaluate', { expression: '2' }, session, 100);
+  for (let i = 0; i < 10; i += 1) await flush();
+  const held = wire.held.find(
+    (message) => message.method === 'Runtime.evaluate' && message.id === 100
+  );
+  assert.ok(held);
+  holdTrees = true;
+  void Promise.resolve()
+    .then(() => {})
+    .then(() => {})
+    .then(() => {})
+    .then(() => {
+      entry.info.url = failed;
+      wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: { ...entry.info } } });
+    });
+  wire.release(held, { result: { result: { type: 'string', value: 'leaked' } } });
+  for (let i = 0; i < 10; i += 1) await flush();
+  for (const tree of wire.held.filter((message) => message.method === 'Page.getFrameTree'))
+    wire.release(tree);
+  for (let i = 0; i < 20; i += 1) await flush();
+  assert.equal((await pending.answer).error?.message, PROTECTED);
+});
