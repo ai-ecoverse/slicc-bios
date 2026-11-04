@@ -59,7 +59,10 @@ function port({ holds = true, frames = [] }) {
       });
       return { sessionId };
     },
-    'Fetch.enable': () => (holds ? { holdsDocuments: true } : {}),
+    'Fetch.enable': () => {
+      state.attested = holds;
+      return holds ? { holdsDocuments: true } : {};
+    },
     'Page.getFrameTree': () => {
       state.trees += 1;
       return tree();
@@ -139,6 +142,16 @@ const painted = async ({ call, session }) => ({
 const open = { shot: 'ok', pdf: 'ok', dom: 'ok' };
 const locked = { shot: PROTECTED, pdf: PROTECTED, dom: PROTECTED };
 const frame = (url, more = {}) => ({ id: `frame:${url}`, url, ...more });
+
+test('a holding navigation without private placement keeps a non-listed child locked', async () => {
+  const row = await driven({
+    holds: true,
+    frames: [frame('blob:https://site.test/non-listed', { closed: true })],
+  });
+  assert.equal(row.crest.state.attested, true);
+  assert.deepEqual(await painted(row), locked);
+  assert.ok(row.crest.state.trees >= 2, 'main live tree reread remains in front of painting');
+});
 
 test('a holding browser with no child frames paints', async () => {
   assert.deepEqual(await painted(await driven({})), open);

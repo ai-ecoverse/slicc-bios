@@ -405,7 +405,7 @@ test('a Settings MCP record supplies root mcpcat directly and scrubs the complet
   }
 });
 
-test('root mcpcat started by the cone’s sudo uses the owner’s Settings sign-in from the agent’s mcp.json, and a refusal names its cause', {
+test('root mcpcat started by the cone’s sudo uses the owner’s Settings sign-in from the agent’s mcp.json, and while a policy file is missing the vault decides: MCP goes on for root, a secret is refused as paused, and a scoop gets no sign-in', {
   timeout: 900000,
 }, async (t) => {
   const page = await opened(t);
@@ -456,21 +456,85 @@ test('root mcpcat started by the cone’s sudo uses the owner’s Settings sign-
   const sent = upstream.requests.slice(before);
   assert.ok(sent.length > 0);
   assert.ok(sent.every((item) => bearer(item) === `Bearer ${MCP}`));
+  const { placeholder: secret } = await record(page, 'PAUSED_TOKEN', ORDINARY);
   const removed = await shell(page, 'rm /etc/slicc/secrets-policy.toml');
   assert.equal(removed.status, 0, removed.stderr);
   await page.within(60000, () =>
     (document.querySelector('slicc-app').model.vault.status()?.policy ?? []).some(
-      (file) => file.path === '/etc/slicc/secrets-policy.toml' && file.absent === true
+      (file) =>
+        file.path === '/etc/slicc/secrets-policy.toml' &&
+        file.absent === true &&
+        file.paused === true
     )
   );
+  const pausedBefore = upstream.requests.length;
+  const paused = await cone(`${sudo} tools BB`);
+  const went = `${paused.stdout}${paused.stderr}`;
+  assert.equal(paused.status, 0, went);
+  assert.match(paused.stdout, /\(no tools\)/);
+  assert.equal(went.includes(MCP), false);
+  const mcpSent = upstream.requests.slice(pausedBefore);
+  assert.ok(mcpSent.length > 0);
+  assert.ok(mcpSent.every((item) => bearer(item) === `Bearer ${MCP}`));
   const refusedBefore = upstream.requests.length;
-  const refused = await cone(`${sudo} tools BB`);
-  const said = `${refused.stdout}${refused.stderr}`;
-  assert.notEqual(refused.status, 0, said);
-  assert.match(
-    said,
-    /the credentialed request was refused \(policy-missing\): \/etc\/fnox\/config\.toml or \/etc\/slicc\/secrets-policy\.toml is missing/
+  const refused = await shell(
+    page,
+    `curl -sS -H "Authorization: Bearer $PAUSED_TOKEN" '${HOST}ordinary'`,
+    { PAUSED_TOKEN: secret }
   );
-  assert.equal(said.includes(MCP), false);
+  const said = `${refused.stdout}${refused.stderr}`;
+  assert.match(said, /refused \(policy-paused\)/);
+  assert.equal(said.includes(ORDINARY), false);
   assert.equal(upstream.requests.length, refusedBefore);
+  await page.evaluate(() => globalThis.sliccAgentSource().users.add({ name: 'scoop-probe' }));
+  const scoop = (command, env = {}) =>
+    page.evaluate(
+      async ({ command, env }) => {
+        const client = await globalThis
+          .sliccAgentSource()
+          .client({ user: 'scoop-probe', agentId: 'scoop:probe' });
+        try {
+          return await client.run(['bash', '-c', command], {
+            cwd: '/tmp',
+            env: { PI_CODING_AGENT_DIR: '/etc/slicc/agent', ...env },
+          });
+        } finally {
+          await client.close();
+        }
+      },
+      { command, env }
+    );
+  const scoopBefore = upstream.requests.length;
+  const theirs = await scoop('id -un; mcpcat tools BB');
+  const told = `${theirs.stdout}${theirs.stderr}`;
+  assert.match(theirs.stdout, /^scoop-probe$/m);
+  assert.equal(theirs.status, 4, told);
+  assert.match(told, /This user gets no placeholder for this server/);
+  assert.equal(told.includes(MCP), false);
+  assert.equal(told.includes(placeholder), false);
+  const scoopSent = upstream.requests.slice(scoopBefore);
+  assert.ok(scoopSent.length > 0, 'the scoop’s request never reached the server');
+  assert.deepEqual(
+    [...new Set(scoopSent.map((item) => item.url))],
+    [`${HOST}mcp`],
+    'the scoop’s slice holds a request that is not its mcpcat’s'
+  );
+  const opening = (item) => {
+    const packet = JSON.parse(item.body || '{}');
+    const meta = packet.params?._meta?.['io.modelcontextprotocol/clientInfo'];
+    const info = meta ?? packet.params?.clientInfo;
+    return item.method === 'POST' && packet.jsonrpc === '2.0' && info?.name === 'mcpcat';
+  };
+  assert.ok(scoopSent.some(opening), 'the scoop’s slice holds no mcpcat opening request');
+  for (const item of scoopSent) {
+    const whole = [
+      item.method,
+      item.url,
+      JSON.stringify(item.headers),
+      String(item.body ?? ''),
+    ].join('\n');
+    assert.equal(bearer(item), undefined, whole);
+    assert.equal(whole.includes(MCP), false, 'a scoop got the owner’s sign-in');
+    assert.equal(whole.includes(placeholder), false, 'a scoop sent the owner’s placeholder');
+  }
 });

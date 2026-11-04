@@ -145,6 +145,7 @@ await step('seed', async () => {
     'causes.js',
     'cdp.js',
     'clipboard.js',
+    'debugger.js',
     'denials.js',
     'durable.js',
     'exits.js',
