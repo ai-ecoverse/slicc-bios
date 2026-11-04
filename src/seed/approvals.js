@@ -259,6 +259,7 @@ const WRITING = {
   uniq: (args) => args.filter((arg) => !arg.startsWith('-')).length > 1,
 };
 const META = /[$`'"\\;&|<>*?[\]{}()~!\n]/;
+const CONTROL = /[\p{Cc}\p{Zl}\p{Zp}]/u;
 const WRITABLE = ['/tmp', '/var/tmp', '/home', '/mnt', '/scoops', '/dev/shm'];
 
 const base = (path) => String(path).split('/').pop();
@@ -273,7 +274,7 @@ export function alwaysAllowed(req) {
     return false;
   const args = argv.slice(1);
   if (names.some((name) => WRITING[name]?.(args))) return false;
-  if ([path, ...argv].some((word) => META.test(word))) return false;
+  if ([path, ...argv].some((word) => META.test(word) || CONTROL.test(word))) return false;
   const homes = [...WRITABLE, ...(req.user ? [`/home/${req.user}`] : [])];
   for (const arg of args) {
     if (arg.startsWith('-')) {
