@@ -14,6 +14,8 @@ const five = [
 for (const route of [
   { kind: 'extension', version: '7.12.0' },
   { kind: 'link', version: '1.60.0' },
+  { kind: 'extension', version: '8.0.0' },
+  { kind: 'link', version: '2.0.0' },
 ]) {
   test(`bios admits only the five Stage1 methods behind the ${route.kind} floor`, async (t) => {
     const p = protocol(t, (raw, own) =>
@@ -65,10 +67,12 @@ for (const route of [
   { kind: 'extension', version: '7.10.0' },
   { kind: 'extension', version: '7.11.0' },
   { kind: 'extension', version: '7.11.1' },
+  { kind: 'extension', version: '7.9.0' },
   { kind: 'link', version: '1.49.36' },
   { kind: 'link', version: '1.55.1' },
   { kind: 'link', version: '1.56.0' },
   { kind: 'link', version: '1.57.1' },
+  { kind: 'link', version: '1.9.0' },
   { kind: 'link', version: 'dev' },
   { kind: 'extension', version: '7.11.1-beta' },
 ]) {
@@ -80,6 +84,39 @@ for (const route of [
       const start = p.sent.length;
       assert.match((await p.send(method, {}, session)).error.message, /slicc: refused:/);
       assert.equal(p.clients(start).length, 0);
+    }
+  });
+}
+
+for (const route of [
+  { kind: 'extension', version: '7.9.0' },
+  { kind: 'link', version: '1.9.0' },
+]) {
+  test(`string-ordered below-floor ${route.kind} ${route.version} stays refused even with a private frame reader`, async (t) => {
+    const p = protocol(t, (raw, own) =>
+      guardProtected(raw, own, new Map(), route, async (id) => ({
+        version: 1,
+        revision: 0,
+        rootFrameId: id,
+        rootLoaderId: 'loader',
+        rootDocumentId: 'native',
+        remoteOwners: [],
+        frames: [
+          {
+            frameId: 0,
+            parentFrameId: -1,
+            documentId: 'native',
+            url: 'https://ordinary.invalid/page',
+          },
+        ],
+      }))
+    );
+    p.target('ordinary').tree.frame.loaderId = 'loader';
+    const session = await p.attach('ordinary');
+    for (const method of five) {
+      const start = p.sent.length;
+      assert.match((await p.send(method, {}, session)).error.message, /slicc: refused:/);
+      assert.equal(p.clients(start).filter((command) => command.method === method).length, 0);
     }
   });
 }

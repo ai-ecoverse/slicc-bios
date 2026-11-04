@@ -18,6 +18,8 @@ for (const route of [
   { kind: 'link' },
   { kind: 'extension', version: '7.11.99' },
   { kind: 'link', version: '1.59.99' },
+  { kind: 'extension', version: '7.9.0' },
+  { kind: 'link', version: '1.9.0' },
   { kind: 'extension', version: '7.12.0-beta' },
   { kind: 'link', version: '1.60.0-beta' },
 ]) {
@@ -32,6 +34,40 @@ for (const route of [
         { version: '99.0.0', route: { kind: route.kind, version: '99.0.0' } },
         session
       );
+      assert.match(reply.error.message, /slicc: refused:/);
+      assert.equal(p.clients(start).filter((command) => command.method === method).length, 0);
+    }
+  });
+}
+
+for (const route of [
+  { kind: 'extension', version: '7.9.0' },
+  { kind: 'link', version: '1.9.0' },
+]) {
+  test(`string-ordered below-floor ${JSON.stringify(route)} stays refused with a private frame reader`, async (t) => {
+    const p = protocol(t, (raw, own) =>
+      guardProtected(raw, own, new Map(), route, async (id) => ({
+        version: 1,
+        revision: 0,
+        rootFrameId: id,
+        rootLoaderId: 'loader',
+        rootDocumentId: 'native',
+        remoteOwners: [],
+        frames: [
+          {
+            frameId: 0,
+            parentFrameId: -1,
+            documentId: 'native',
+            url: 'https://ordinary.invalid/page',
+          },
+        ],
+      }))
+    );
+    p.target('ordinary').tree.frame.loaderId = 'loader';
+    const session = await p.attach('ordinary');
+    for (const method of five) {
+      const start = p.sent.length;
+      const reply = await p.send(method, {}, session);
       assert.match(reply.error.message, /slicc: refused:/);
       assert.equal(p.clients(start).filter((command) => command.method === method).length, 0);
     }
