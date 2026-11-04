@@ -279,3 +279,58 @@ test('opener review answers the admitted dialog prelude without waiting for page
   wire.hold(() => false);
   for (const message of wire.held.slice()) wire.release(message);
 });
+
+for (const [method, params] of [
+  ['Fetch.continueRequest', { requestId: 'offered-ordinary' }],
+  ['Fetch.failRequest', { requestId: 'offered-ordinary', errorReason: 'Aborted' }],
+  ['Fetch.fulfillRequest', { requestId: 'offered-ordinary', responseCode: 200, body: '' }],
+  ['Fetch.disable', {}],
+  ['CSS.getStyleSheetText', { styleSheetId: 'ordinary-sheet' }],
+]) {
+  test(`opener review preserves pending-navigation availability for ${method}`, async (t) => {
+    const wire = protocol(t);
+    const child = page(wire, `pending-ordinary-${method}`);
+    const answer = await attach(wire, child.info.targetId);
+    assert.equal(answer.error, undefined);
+    const session = answer.result.sessionId;
+    wire.emit({
+      method: 'Fetch.requestPaused',
+      sessionId: session,
+      params: {
+        requestId: 'offered-ordinary',
+        frameId: child.info.targetId,
+        resourceType: 'XHR',
+        request: { url: ordinary, method: 'GET' },
+      },
+    });
+    await flush();
+    assert.ok(
+      wire.delivered.some(
+        (message) =>
+          message.method === 'Fetch.requestPaused' &&
+          message.params.requestId === 'offered-ordinary'
+      )
+    );
+    wire.emit({
+      method: 'Page.frameStartedNavigating',
+      sessionId: `guard-${child.info.targetId}`,
+      params: {
+        frameId: child.info.targetId,
+        url: seven,
+        loaderId: 'pending-protected-loader',
+        navigationType: 'historyDifferentDocument',
+      },
+    });
+    await flush();
+    const mark = wire.clients().length;
+    const result = await wire.send(method, params, session);
+    assert.equal(result.error, undefined, JSON.stringify(result));
+    assert.equal(
+      wire
+        .clients()
+        .slice(mark)
+        .some((message) => message.method === method),
+      true
+    );
+  });
+}
