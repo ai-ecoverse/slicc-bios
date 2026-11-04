@@ -1042,10 +1042,10 @@ class Guard {
     return this.targets.get(targetId);
   }
 
-  async opener(openerId, depth) {
+  async opener(openerId, depth, seen) {
     if (!openerId) return undefined;
     if (!(await this.lookup(openerId))) return 'unknown';
-    return (await this.target(openerId, depth + 1)) ? 'protected' : 'unprotected';
+    return (await this.target(openerId, depth + 1, seen)) ? 'protected' : 'unprotected';
   }
 
   async openerInfo(targetId) {
@@ -1148,9 +1148,12 @@ class Guard {
     );
   }
 
-  async target(targetId, depth = 0) {
+  async target(targetId, depth = 0, seen = new Set()) {
+    if (seen.has(targetId)) return true;
     const found = await this.lookup(targetId);
     if (!found) return true;
+    seen = new Set(seen);
+    seen.add(targetId);
     if (isHeld(targetId)) {
       hold(targetId);
       found.guarded = true;
@@ -1167,16 +1170,17 @@ class Guard {
       found.guarded = true;
       return true;
     }
-    if (depth > 8) return true;
+    if (depth > 64) return true;
     if (found.parentId && found.parentId !== targetId) {
-      await this.target(found.parentId, depth + 1);
+      const refused = await this.target(found.parentId, depth + 1, seen);
       if (isHeld(found.parentId)) {
         hold(targetId);
         found.guarded = true;
         return true;
       }
+      if (refused && !this.targets.get(found.parentId)?.guarded) return true;
     }
-    const opener = cross ? undefined : await this.opener(found.openerId, depth);
+    const opener = cross ? undefined : await this.opener(found.openerId, depth, seen);
     const lent = found.type === 'page' && !cross && !emptyNoAccess(found.info);
     if (isHeld(found.openerId) || (opener === 'protected' && lent)) {
       hold(targetId);
