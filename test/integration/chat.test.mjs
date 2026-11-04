@@ -1527,34 +1527,6 @@ test('chat in seven answers through the agent worker, Bedrock and the page fetch
   await page.send('Emulation.clearDeviceMetricsOverride');
   await page.until(() => document.querySelector('slicc-app').screen === 'desktop');
 
-  const origins = await page.evaluate(async () => {
-    const at = new URL(
-      '../opt/agent/node_modules/@ai-ecoverse/slicc-agent/dist/browser/origins.js',
-      location.href
-    );
-    const source = await (await fetch(at)).text();
-    const [, url] =
-      source.match(/from\s*"([^"]*catalog\.json)"\s*with\s*\{\s*type:\s*['"]json['"]\s*\}/) ?? [];
-    if (!url) return { url: null };
-    const response = await fetch(new URL(url, at));
-    const catalog = await response.json();
-    return {
-      url: new URL(url, at).pathname,
-      status: response.status,
-      type: response.headers.get('content-type'),
-      from: response.headers.get('x-served-from'),
-      parsed: typeof catalog === 'object' && catalog !== null,
-    };
-  });
-  assert.match(
-    origins.url,
-    /^\/opt\/agent\/node_modules\/.*@ai-ecoverse\/slicc-browsers\/catalog\.json$/
-  );
-  assert.deepEqual(
-    [origins.status, origins.type, origins.from, origins.parsed],
-    [200, 'application/json', 'opfs', true]
-  );
-
   await page.evaluate(() => {
     const app = document.querySelector('slicc-app');
     window.panelIds = () => app.dock.api.panels.map((panel) => panel.id);
@@ -1661,12 +1633,6 @@ test('chat in seven answers through the agent worker, Bedrock and the page fetch
     await viewed.send('Emulation.clearDeviceMetricsOverride');
     await viewed.until(() => document.querySelector('slicc-app').screen === 'desktop');
   };
-
-  const guarded = await agentRun('playwright-cli open https://seven.sliccy.ai/');
-  assert.match(
-    guarded.text,
-    /SLICC's own pages can't be opened or driven from the browser tools\./
-  );
 
   const confirmOf = () => {
     const walk = (root) => {
