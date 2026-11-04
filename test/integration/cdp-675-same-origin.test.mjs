@@ -36,84 +36,36 @@ test('initial same-origin child fixture awaits one fetch before registration, wi
   assert.doesNotMatch(sameOriginChildMarkup, /setTimeout|setInterval/);
 });
 
-test('link same-origin list requires both tools and actual distinct same-origin native frames', () => {
-  assert.deepEqual(sameOriginTools(tools, 'link', frames), { root: tools[0], child: tools[1] });
-  assert.throws(() => sameOriginTools(tools.slice(0, 1), 'link', frames), /both list/);
-  assert.throws(
-    () => sameOriginTools(tools, 'link', [frames[0], { ...frames[1], id: 'ROOT' }]),
-    /distinct native frames/
-  );
-  assert.throws(
-    () =>
-      sameOriginTools(tools, 'link', [
-        frames[0],
-        { ...frames[1], securityOrigin: 'http://foreign:1234' },
-      ]),
-    /same-origin/
-  );
-});
-
-test('same-origin child frame tools do not work on the extension route yet (#694); root stays required', () => {
-  assert.deepEqual(sameOriginTools(tools, 'extension', frames), {
-    root: tools[0],
-    child: tools[1],
+for (const route of ['extension', 'link']) {
+  test(`${route} same-origin list requires both tools and distinct native frames`, () => {
+    assert.deepEqual(sameOriginTools(tools, route, frames), { root: tools[0], child: tools[1] });
+    assert.throws(() => sameOriginTools([], route, frames), /root tools must list/);
+    assert.throws(() => sameOriginTools(tools.slice(0, 1), route, frames), /both list/);
+    assert.throws(
+      () => sameOriginTools([{ ...tools[0], error: 'broken' }, tools[1]], route, frames),
+      /must not contain an error/
+    );
+    assert.throws(
+      () => sameOriginTools(tools, route, [frames[0], { ...frames[1], id: 'ROOT' }]),
+      /distinct native frames/
+    );
+    assert.throws(
+      () =>
+        sameOriginTools(tools, route, [
+          frames[0],
+          { ...frames[1], securityOrigin: 'http://foreign:1234' },
+        ]),
+      /same-origin/
+    );
   });
-  assert.throws(() => sameOriginTools([], 'extension', frames), /root tools must list/);
-  assert.deepEqual(sameOriginTools(tools.slice(0, 1), 'extension', frames), {
-    root: tools[0],
-    child: undefined,
-  });
-  assert.throws(
-    () => sameOriginTools([{ ...tools[0], error: 'broken' }], 'extension', frames),
-    /must not contain an error/
-  );
-});
+}
 
-test('an absent extension child reports the declared limit without making a child call', async () => {
-  let calls = 0;
-  const result = await sameOriginChildCall(
-    sameOriginTools(tools.slice(0, 1), 'extension', frames),
-    () => {
-      calls += 1;
-    }
-  );
-  assert.equal(calls, 0);
-  assert.equal(
-    result.limit,
-    'same-origin child frame tools do not work on the extension route yet (#694)'
-  );
-});
-
-test('strict candidate mode requires the extension child to list without changing the default limit', () => {
-  assert.deepEqual(sameOriginTools(tools, 'extension', frames, { requireChild: true }), {
-    root: tools[0],
-    child: tools[1],
-  });
-  assert.throws(
-    () => sameOriginTools(tools.slice(0, 1), 'extension', frames, { requireChild: true }),
-    /both list/
-  );
-  assert.equal(sameOriginTools(tools.slice(0, 1), 'extension', frames).child, undefined);
-});
-
-test('strict candidate mode requires a child call and exactly fifteen', async () => {
-  const selected = sameOriginTools(tools, 'extension', frames, { requireChild: true });
-  assert.match(
-    (await sameOriginChildCall(selected, async () => ({ stdout: '15\n' }), { requireChild: true }))
-      .stdout,
-    /^15$/m
-  );
+test('an absent child fails the row without making a child call', async () => {
   await assert.rejects(
-    sameOriginChildCall(
-      { child: undefined },
-      async () => assert.fail('absent child must not be called'),
-      { requireChild: true }
+    sameOriginChildCall({ child: undefined }, async () =>
+      assert.fail('absent child must not be called')
     ),
     /requires the child call/
-  );
-  await assert.rejects(
-    sameOriginChildCall(selected, async () => ({ stdout: '5\n' }), { requireChild: true }),
-    /15/
   );
 });
 
