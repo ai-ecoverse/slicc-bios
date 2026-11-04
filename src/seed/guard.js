@@ -2,7 +2,7 @@ import catalog from '@ai-ecoverse/slicc-browsers/catalog.json' with { type: 'jso
 import { protectedOrigins } from '@ai-ecoverse/slicc-browsers/protected.mjs';
 import { RELAY, SIGN_IN_CLIENTS } from './adobe.js';
 import { DEBUGGER_ROUTE_UPDATE, debuggerAdmitted, debuggerRouteSupported } from './debugger.js';
-import { hold, isHeld } from './held.js';
+import { crossOriginPage, emptyNoAccess, hold, isHeld } from './held.js';
 
 export const PROTECTED =
   'slicc: refused: seven’s own pages and the vault are out of reach of browser automation';
@@ -651,7 +651,6 @@ const kept = (set, value) => {
 
 const INHERITING = /^(?:$|about:|javascript:)/i;
 const ORDINARY = /^(?:https?|data):/i;
-const BLANK = /^about:blank(?:#|$)/i;
 
 export const ARM = [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }];
 
@@ -703,6 +702,7 @@ class Guard {
     this.closing = false;
     this.closed = false;
     this.is = protection(own);
+    this.ownUrl = protectedOrigins(catalog.protectedOrigins, owned(own)).url;
     this.redact = redacting(this.is);
     this.redirected = new Set();
     this.continued = new Set();
@@ -1021,9 +1021,9 @@ class Guard {
       was: known?.was || known?.guarded || false,
       guarded: known?.guarded || false,
       real: known?.real || false,
-      access: known?.access || info.canAccessOpener === true,
       context: info.browserContextId ?? known?.context,
       reported: info.url ?? known?.reported,
+      info,
     });
   }
 
@@ -1040,10 +1040,121 @@ class Guard {
     return (await this.target(openerId, depth + 1)) ? 'protected' : 'unprotected';
   }
 
+  async openerInfo(targetId) {
+    const answer = await this.within(this.call('Target.getTargetInfo', { targetId }), ANSWER_MS);
+    const info = answer?.result?.targetInfo;
+    return !answer?.error &&
+      info?.targetId === targetId &&
+      typeof info.type === 'string' &&
+      typeof info.url === 'string'
+      ? info
+      : null;
+  }
+
+  sameTarget(a, b) {
+    return ['targetId', 'type', 'url', 'openerId', 'parentId', 'browserContextId'].every(
+      (key) => a?.[key] === b?.[key]
+    );
+  }
+
+  async heldAncestry(info, seen = new Set()) {
+    if (isHeld(info.targetId)) return true;
+    if (seen.has(info.targetId) || seen.size > 8) return null;
+    const known = this.targets.get(info.targetId)?.info;
+    seen.add(info.targetId);
+    let opener;
+    for (const relation of ['parentId', 'openerId']) {
+      const id = info[relation];
+      if (!id) continue;
+      const ancestor = isHeld(id) ? true : await this.openerInfo(id);
+      if (!ancestor) return null;
+      const held = ancestor === true ? true : await this.heldAncestry(ancestor, new Set(seen));
+      if (held === null) return null;
+      if (held) {
+        hold(info.targetId);
+        return true;
+      }
+      if (relation === 'openerId') opener = this.ancestryOpener(info, ancestor);
+    }
+    const current = this.targets.get(info.targetId)?.info;
+    if (current && !this.sameTarget(current, known) && !this.sameTarget(current, info)) return null;
+    this.learn(info);
+    const found = this.targets.get(info.targetId);
+    if (opener === 'protected' && info.type === 'page' && !emptyNoAccess(info)) {
+      hold(info.targetId);
+      found.guarded = true;
+      return true;
+    }
+    this.classifyTarget(info.targetId, found, opener);
+    return false;
+  }
+
+  ancestryOpener(info, ancestor) {
+    const cross =
+      ancestor.type === 'page' &&
+      /^https?:/i.test(ancestor.url) &&
+      this.ownUrl(ancestor.url) &&
+      crossOriginPage(info, ancestor.url);
+    if (cross) return undefined;
+    const found = this.targets.get(ancestor.targetId);
+    return found?.guarded || this.recalled.has(ancestor.targetId) ? 'protected' : 'unprotected';
+  }
+
+  async crossOpener(targetId, found) {
+    if (!found.openerId || found.type !== 'page' || !/^https?:/i.test(found.url)) return false;
+    const previous = this.targets.get(found.openerId);
+    const known = previous?.info;
+    const first = await this.openerInfo(found.openerId);
+    if (!first) return previous && (previous.guarded || this.is.target(previous)) ? null : false;
+    if (first.type !== 'page' || !/^https?:/i.test(first.url) || !this.ownUrl(first.url)) {
+      this.learn(first);
+      return false;
+    }
+    const observed = this.targets.get(found.openerId)?.info;
+    if (observed && !this.sameTarget(observed, known) && !this.sameTarget(observed, first))
+      return null;
+    this.learn(first);
+    this.classifyTarget(first.targetId, this.targets.get(first.targetId));
+    const child = await this.openerInfo(targetId);
+    const ancestry = await this.heldAncestry(first, new Set([targetId]));
+    const last = await this.openerInfo(found.openerId);
+    const remembered = this.targets.get(found.openerId)?.info;
+    if (
+      !child ||
+      !last ||
+      ancestry === null ||
+      !this.sameTarget(first, last) ||
+      !this.sameTarget(found.info, child) ||
+      !this.sameTarget(this.targets.get(targetId)?.info, found.info) ||
+      (remembered && !this.sameTarget(remembered, known) && !this.sameTarget(remembered, last))
+    )
+      return null;
+    this.learn(last);
+    return (
+      last.type === 'page' &&
+      /^https?:/i.test(last.url) &&
+      this.ownUrl(last.url) &&
+      !ancestry &&
+      !isHeld(last.targetId) &&
+      crossOriginPage(child, last.url)
+    );
+  }
+
   async target(targetId, depth = 0) {
     const found = await this.lookup(targetId);
     if (!found) return true;
-    if (isHeld(targetId) || isHeld(found.openerId)) {
+    if (isHeld(targetId)) {
+      hold(targetId);
+      found.guarded = true;
+      return true;
+    }
+    if (isHeld(found.openerId)) {
+      hold(targetId);
+      found.guarded = true;
+      return true;
+    }
+    const cross = await this.crossOpener(targetId, found);
+    if (cross === null || isHeld(found.openerId)) {
       hold(targetId);
       found.guarded = true;
       return true;
@@ -1057,13 +1168,17 @@ class Guard {
         return true;
       }
     }
-    const opener = await this.opener(found.openerId, depth);
-    const lent = found.type === 'page' && (found.access || BLANK.test(found.url));
+    const opener = cross ? undefined : await this.opener(found.openerId, depth);
+    const lent = found.type === 'page' && !cross && !emptyNoAccess(found.info);
     if (isHeld(found.openerId) || (opener === 'protected' && lent)) {
       hold(targetId);
       found.guarded = true;
       return true;
     }
+    return this.classifyTarget(targetId, found, opener);
+  }
+
+  classifyTarget(targetId, found, opener) {
     if ((found.was || found.guarded) && this.proofCommits.get(targetId)?.url === BLANKED) {
       found.guarded = true;
       return true;
@@ -2997,11 +3112,7 @@ class Guard {
     if (!known.openerId) return false;
     if (this.relatedHeld(known.openerId, depth + 1)) return true;
     const opener = this.targets.get(known.openerId);
-    return Boolean(
-      known.type === 'page' &&
-        (known.access || BLANK.test(known.url)) &&
-        (opener?.guarded || this.is.target(opener))
-    );
+    return Boolean(known.type === 'page' && (opener?.guarded || this.is.target(opener)));
   }
 
   hinted(info) {
@@ -3012,7 +3123,6 @@ class Guard {
       this.relatedHeld(info.openerId) ||
       this.relatedHeld(info.parentId ?? known?.parentId) ||
       (info.openerId &&
-        (info.canAccessOpener || known?.access) &&
         (this.targets.get(info.openerId)?.guarded ||
           this.is.target(this.targets.get(info.openerId)))) ||
       this.is.target({
@@ -3027,6 +3137,18 @@ class Guard {
   receiveHint(message) {
     const info = message.params?.targetInfo;
     if (!info?.targetId) return;
+    const known = this.targets.get(info.targetId);
+    const opener = this.targets.get(info.openerId);
+    if (
+      (info.type ?? known?.type) === 'page' &&
+      typeof info.url === 'string' &&
+      opener &&
+      (isHeld(info.openerId) ||
+        (!emptyNoAccess(info) &&
+          !crossOriginPage(info, opener.url) &&
+          (opener.guarded || this.is.target(opener))))
+    )
+      hold(info.targetId);
     this.hints.set(info.targetId, message);
     const guarded = this.hinted(info);
     for (const [id, entry] of this.sessions)
@@ -4098,6 +4220,14 @@ class Guard {
     return false;
   }
 
+  async surfaceOpener(info) {
+    if (info?.type !== 'page') return false;
+    if (isHeld(info.targetId)) return true;
+    if (!info.openerId) return info.canAccessOpener === true;
+    this.learn(info);
+    return this.target(info.targetId);
+  }
+
   async confirmed(sessionId, method) {
     const shot = method === 'Page.captureScreenshot';
     if (this.pendingHistory.has(sessionId) || this.blocked.has(sessionId)) {
@@ -4111,6 +4241,7 @@ class Guard {
     const now = await this.surface(sessionId);
     const navigating = NAVIGATES.has(method);
     if (!now) return navigating && (await this.openDocument(sessionId)) ? null : PROTECTED;
+    if (await this.surfaceOpener(now.info)) return PROTECTED;
     if (now.pendingTree) return navigating ? null : PROTECTED;
     this.note(sessionId, now);
     if (!now.protected) return null;
@@ -4783,6 +4914,12 @@ class Guard {
   }
 
   async precheck(message) {
+    const targetId = this.scopeTarget(message.sessionId);
+    const target = this.targets.get(targetId);
+    if (target?.type === 'page' && this.prelude(message.sessionId, message.method) !== null) {
+      const info = await this.openerInfo(targetId);
+      if (info?.type !== 'page' || (await this.surfaceOpener(info))) return PROTECTED;
+    }
     if (this.unsafeContent(message) || (await this.recover(message))) return PROTECTED;
     return this.pageCheck(message.method, message.sessionId);
   }
@@ -5268,6 +5405,10 @@ class Guard {
       return true;
     }
     this.note(sessionId, now);
+    if (await this.surfaceOpener(now.info)) {
+      this.refuse(message);
+      return true;
+    }
     const blank = this.blankFrames(now) && !this.is.url(now.url) && !this.is.url(now.info?.url);
     if (!now.live || blank) return false;
     if (this.pageShown(now) && !now.probed) this.cut(sessionId);

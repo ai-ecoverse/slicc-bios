@@ -33,6 +33,20 @@ export function inFlight(now = Date.now, storage = globalThis.localStorage) {
 }
 
 export const guardOf = (own) => protectedOrigins(catalog.protectedOrigins, own ? [own] : []);
+export const emptyNoAccess = (info) => info.url === '' && info.canAccessOpener === false;
+
+export function crossOriginPage(info, openerUrl) {
+  const page = info.type === 'page' && URL.parse(info.url);
+  const opener = URL.parse(openerUrl);
+  return Boolean(
+    page &&
+      ['http:', 'https:'].includes(page.protocol) &&
+      opener &&
+      page.origin !== 'null' &&
+      opener.origin !== 'null' &&
+      page.origin !== opener.origin
+  );
+}
 
 function stored(storage) {
   try {
@@ -173,23 +187,33 @@ export function askHold(
 }
 
 function considering({ is, storage, now }) {
-  const urls = new Map();
-  const holds = (info, all) => {
+  const targets = new Map();
+  const holds = (info, all, fresh) => {
     if (isHeld(info.targetId, storage)) return false;
     if (isHeld(info.parentId, storage) || isHeld(info.openerId, storage)) return true;
     if (info.type !== 'page' || !info.openerId) return false;
-    if (!all && !info.canAccessOpener && !/^about:blank(?:#|$)/.test(info.url ?? '')) return false;
-    const opener = urls.get(info.openerId);
-    return opener !== undefined && is.url(opener);
+    if (!all && !info.canAccessOpener && !/^about:(?:blank|srcdoc)(?:#|$)/.test(info.url ?? ''))
+      return false;
+    const opener = targets.get(info.openerId);
+    const current = fresh.get(info.openerId);
+    const cross =
+      current?.type === 'page' &&
+      /^https?:/i.test(current.url) &&
+      is.url(current.url) &&
+      crossOriginPage(info, current.url);
+    if (!all && cross) return false;
+    return opener !== undefined && is.url(opener.url);
   };
   return (infos) => {
     const known = infos.filter((info) => info?.targetId);
-    for (const info of known) urls.set(info.targetId, info.url ?? '');
+    const fresh = new Map(known.map((info) => [info.targetId, info]));
+    for (const info of known)
+      targets.set(info.targetId, { ...targets.get(info.targetId), ...info });
     const all = inFlight(now, storage);
     for (let added = true; added; ) {
       added = false;
       for (const info of known) {
-        if (!holds(info, all)) continue;
+        if (!holds(info, all, fresh)) continue;
         hold(info.targetId, storage);
         added = true;
       }
