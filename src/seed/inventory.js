@@ -112,6 +112,7 @@ export async function followInventory(stream, first, events, { render, line, now
   let repeat = null;
   let writing = null;
   let dirty = false;
+  let pending = false;
   const send = () => {
     flush = null;
     if (gone) return;
@@ -123,6 +124,7 @@ export async function followInventory(stream, first, events, { render, line, now
     }
     sentAt = now();
     const snapshot = latest;
+    pending = false;
     writing = (async () => {
       await stream.write(line({ t: 'inventory', ...(await render(snapshot)) }));
     })()
@@ -153,15 +155,20 @@ export async function followInventory(stream, first, events, { render, line, now
   try {
     for (let next = await iterator.next(); !next.done && !gone; next = await iterator.next()) {
       latest = next.value;
+      pending = true;
       if (flush !== null) continue;
       const wait = sentAt + THROTTLE_MS - now();
       if (wait <= 0) send();
       else flush = timers.set(send, wait);
     }
   } catch {}
+  if (!gone) {
+    timers.clear(flush);
+    if (pending) send();
+    while (writing !== null) await writing;
+  }
   const ended = !gone;
   stop();
   if (!ended) return;
-  while (writing !== null) await writing;
   stream.closeWrite();
 }
