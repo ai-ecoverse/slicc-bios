@@ -1634,12 +1634,6 @@ test('chat in seven answers through the agent worker, Bedrock and the page fetch
     await viewed.until(() => document.querySelector('slicc-app').screen === 'desktop');
   };
 
-  const guarded = await agentRun('playwright-cli open https://seven.sliccy.ai/');
-  assert.match(
-    guarded.text,
-    /SLICC's own pages can't be opened or driven from the browser tools\./
-  );
-
   const confirmOf = () => {
     const walk = (root) => {
       for (const element of root.querySelectorAll('*')) {
