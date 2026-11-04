@@ -69,11 +69,42 @@ test(`real slicc-extension ${CURRENT_EXTENSION.version}: Stage 1 admits Debugger
   const row = await seven.evaluate(async (url) => {
     const client = globalThis.stage1;
     const created = await client.send('Target.createTarget', { url });
-    if (created.error) return { step: 'create', created };
+    if (created.error || !created.result?.targetId) return { step: 'create', created };
     const targetId = created.result.targetId;
     const attached = await client.send('Target.attachToTarget', { targetId, flatten: true });
-    if (attached.error) return { step: 'attach', attached };
+    if (attached.error || !attached.result?.sessionId) return { step: 'attach', attached };
     const session = attached.result.sessionId;
+    const page = await client.send('Page.enable', {}, session);
+    if (page.error) return { step: 'page', page, targetId, session };
+    const runtime = await client.send('Runtime.enable', {}, session);
+    if (runtime.error) return { step: 'runtime', runtime, targetId, session };
+    const want = new URL(url).pathname;
+    const deadline = Date.now() + 15000;
+    let ready;
+    while (Date.now() < deadline) {
+      const tree = await client.send('Page.getFrameTree', {}, session);
+      const frame = tree.result?.frameTree?.frame;
+      if (!tree.error && typeof frame?.url === 'string' && frame.url.includes(want)) {
+        const state = await client.send(
+          'Runtime.evaluate',
+          {
+            expression: 'document.readyState',
+            returnByValue: true,
+          },
+          session
+        );
+        if (!state.error && state.result?.result?.value === 'complete') {
+          ready = { tree, state };
+          break;
+        }
+        ready = { tree, state };
+      } else {
+        ready = { tree };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (!ready?.state || ready.state.error || ready.state.result?.result?.value !== 'complete')
+      return { step: 'commit', ready, targetId, session };
     const enable = await client.send('Debugger.enable', {}, session);
     if (enable.error) return { step: 'enable', enable, targetId, session };
     const breakpoint = await client.send(
@@ -85,9 +116,9 @@ test(`real slicc-extension ${CURRENT_EXTENSION.version}: Stage 1 admits Debugger
     const before = client.events.length;
     const navigated = await client.send('Page.navigate', { url: `${url}?reload=1` }, session);
     if (navigated.error) return { step: 'navigate', navigated, targetId, session };
-    const deadline = Date.now() + 15000;
+    const pauseUntil = Date.now() + 15000;
     let pause;
-    while (Date.now() < deadline) {
+    while (Date.now() < pauseUntil) {
       pause = client.events
         .slice(before)
         .find((event) => event.method === 'Debugger.paused' && event.sessionId === session);
@@ -187,14 +218,33 @@ test(`real slicc-extension ${CURRENT_EXTENSION.version}: Stage 1 still needs the
       });
     try {
       const created = await send('Target.createTarget', { url });
+      if (created.error || !created.result?.targetId)
+        return { step: 'create', error: created.error, created };
       const attached = await send('Target.attachToTarget', {
         targetId: created.result.targetId,
         flatten: true,
       });
-      return await send('Debugger.enable', {}, attached.result.sessionId);
+      if (attached.error || !attached.result?.sessionId)
+        return { step: 'attach', error: attached.error, attached };
+      const session = attached.result.sessionId;
+      const page = await send('Page.enable', {}, session);
+      if (page.error) return { step: 'page', error: page.error, page };
+      const want = new URL(url).pathname;
+      const deadline = Date.now() + 15000;
+      let last;
+      while (Date.now() < deadline) {
+        const tree = await send('Page.getFrameTree', {}, session);
+        last = tree;
+        if (!tree.error && tree.result?.frameTree?.frame?.url?.includes(want)) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      if (last?.error || !last?.result?.frameTree?.frame?.url?.includes(want))
+        return { step: 'commit', error: last?.error, last };
+      return await send('Debugger.enable', {}, session);
     } finally {
       connection.close();
     }
   }, target.href);
+  assert.equal(refused.step, undefined, JSON.stringify(refused));
   assert.equal(refused.error?.message, DEBUGGER_ROUTE_UPDATE, JSON.stringify(refused));
 });
