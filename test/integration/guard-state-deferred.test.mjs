@@ -80,15 +80,47 @@ test('deferred wipe leaves the error document sealed for the entire five-second 
   t.mock.timers.tick(1);
   await flush();
   assert.equal(wipes(wire).length, 1);
-  entry.tree.frame = { ...plainFrame('deferred'), url: BLANKED, securityOrigin: 'null' };
+  const wipeMark = wire.sent.length;
+  const pending = wire.request('Runtime.evaluate', {}, session);
+  let answered = false;
+  pending.answer.then(() => {
+    answered = true;
+  });
+  await flush();
+  assert.equal(answered, false);
+  assert.equal(
+    wire.clients(wipeMark).some((message) => message.method === 'Runtime.evaluate'),
+    false
+  );
+  entry.tree.frame = {
+    ...plainFrame('deferred'),
+    url: BLANKED,
+    securityOrigin: 'null',
+    loaderId: 'deferred-blank-loader',
+  };
   entry.info.url = BLANKED;
+  entry.info.title = 'blocked';
   wire.emit({
     method: 'Page.frameNavigated',
     sessionId: 'guard-deferred',
     params: { frame: entry.tree.frame },
   });
   await flush();
-  assert.equal((await wire.send('Runtime.evaluate', {}, session)).error, undefined);
+  for (let left = 500; left > 0; left -= 100) {
+    t.mock.timers.tick(Math.min(100, left));
+    await flush();
+  }
+  const answer = await pending.answer;
+  assert.equal(answer.error, undefined);
+  assert.equal(answered, true);
+  assert.equal(
+    wire.clients(wipeMark).some((message) => message.method === 'Runtime.evaluate'),
+    true
+  );
+  assert.equal(entry.info.title, 'blocked');
+  assert.equal(entry.tree.frame.securityOrigin, 'null');
+  assert.equal((await wire.send('Target.getTargets')).result.targetInfos[0].url, BLANKED);
+  assert.equal((await wire.send('Target.getTargets')).result.targetInfos[0].title, 'blocked');
 });
 
 for (const cancel of [

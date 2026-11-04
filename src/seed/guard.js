@@ -2693,7 +2693,8 @@ class Guard {
     const guarded = await this.target(targetId);
     const proof = await this.attachmentProof(sessionId, targetId, raw, guarded, recoverable);
     if (guarded && !proof) {
-      if (!(await this.retainedBlank(sessionId, raw))) this.cut(sessionId, parent);
+      if (await this.retainedBlank(sessionId, raw)) return true;
+      this.cut(sessionId, parent);
       return false;
     }
     if (!(await this.verify(sessionId, proof))) return this.uncertainProof(targetId);
@@ -4536,7 +4537,7 @@ class Guard {
       this.ownedBlank(message.sessionId) &&
       !this.errorDocument(message.sessionId, message.method)
     )
-      return sticky;
+      return recovering;
     return (
       this.unsafe.has(message) ||
       sticky ||
