@@ -230,7 +230,9 @@ test('with the agent up, bios hands each sudo to the agent with the kernel’s f
     facts.state.request.untrusted,
     /path "\/etc\/slicc\/secrets-policy\.toml": root-only/
   );
-  assert.equal(await decide(page, jq.id, 'always'), 'decided');
+  assert.equal(jq.verdict?.level, 1);
+  assert.deepEqual(await buttons(page, jq.id), ['always', 'deny', 'once']);
+  await click(page, jq.id, 'always');
   await shows(page, 'jq-ran');
   await closed(page);
   assert.match(
