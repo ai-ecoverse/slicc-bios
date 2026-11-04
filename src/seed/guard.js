@@ -5143,6 +5143,23 @@ class Guard {
     }
   }
 
+  sameDocumentOrdinary(url) {
+    return typeof url === 'string' && ORDINARY.test(url) && URL.canParse(url) && !this.is.url(url);
+  }
+
+  refuseScopedCommands(targetId) {
+    for (const message of new Set([...this.asked.values(), ...this.answering])) {
+      if (
+        this.scopeTarget(message.sessionId) === targetId &&
+        pageScoped(message.method) &&
+        !this.blankAdmission(message)
+      ) {
+        message.locked = true;
+        this.refuse(message);
+      }
+    }
+  }
+
   reviseDebuggerLease(targetId, method, params = {}) {
     if (
       ![
@@ -5168,7 +5185,17 @@ class Guard {
     }
     if (!lease || lease.state === 'revoked') return;
     this.setDebuggerLease(targetId, 'suspended');
-    if (sameDocument && !this.pageLocked(targetId)) this.setDebuggerLease(targetId, 'placed');
+    if (!sameDocument) return;
+    this.refuseScopedCommands(targetId);
+    const url = params.url;
+    const frameId = params.frameId;
+    if (typeof frameId === 'string' && frameId && typeof url === 'string' && url)
+      this.frames.set(frameId, url);
+    if (!this.sameDocumentOrdinary(url) || this.pageLocked(targetId)) {
+      this.refresh(targetId);
+      return;
+    }
+    this.setDebuggerLease(targetId, 'placed');
   }
 
   receiveNavigation(message) {

@@ -195,6 +195,75 @@ test('extension: a running screencast survives a same-document navigation', asyn
   );
 });
 
+for (const route of [
+  { kind: 'extension', version: '7.12.0' },
+  { kind: 'link', version: '1.60.0' },
+]) {
+  test(`${route.kind}: pushState to a sign-in URL privately resumes, stops the screencast, and leaves Debugger refused`, async (t) => {
+    const signIn = 'https://ordinary.invalid/page?client_id=experience-catalyst-prod';
+    const p = protocol(t, (raw, own) => guardProtected(raw, own, new Map(), route, ordinaryReader));
+    const root = p.target('root', 'page', { ...plainFrame('root'), loaderId: 'root-loader' });
+    const session = await p.attach('root');
+    assert.equal((await p.send('Debugger.enable', {}, session)).error, undefined);
+    assert.equal(
+      (await p.send('Page.startScreencast', { format: 'jpeg', quality: 80 }, session)).error,
+      undefined
+    );
+    root.tree.frame.url = signIn;
+    root.info.url = signIn;
+    const since = p.sent.length;
+    p.emit({
+      sessionId: session,
+      method: 'Page.navigatedWithinDocument',
+      params: { frameId: 'root', url: signIn },
+    });
+    await flush();
+    await flush();
+    assert.ok(
+      p.sent.slice(since).some(({ method }) => method === 'Page.stopScreencast'),
+      'sign-in same-document navigation must stop the screencast'
+    );
+    p.emit({
+      sessionId: session,
+      method: 'Debugger.paused',
+      params: {
+        reason: 'other',
+        callFrames: [
+          {
+            callFrameId: 'frame',
+            url: 'https://ordinary.invalid/app.js',
+            location: { scriptId: 'script', lineNumber: 0 },
+          },
+        ],
+      },
+    });
+    await flush();
+    await flush();
+    assert.equal(
+      p.delivered.some(({ method }) => method === 'Debugger.paused'),
+      false
+    );
+    assert.ok(
+      p.sent
+        .slice(since)
+        .some(
+          ({ id, method, sessionId: owner }) =>
+            id >= 2 ** 30 && method === 'Debugger.resume' && owner === session
+        )
+    );
+    assert.match(
+      (
+        await p.send(
+          'Debugger.setInstrumentationBreakpoint',
+          { instrumentation: 'beforeScriptExecution' },
+          session
+        )
+      ).error?.message ?? '',
+      /^slicc: refused:/
+    );
+  });
+}
+
 test('extension: a root-only re-placement after a frame change restores the Debugger lease', async (t) => {
   const p = protocol(t, (raw, own) =>
     guardProtected(raw, own, new Map(), { kind: 'extension', version: '7.12.0' }, ordinaryReader)
