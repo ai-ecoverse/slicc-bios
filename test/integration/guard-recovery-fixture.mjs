@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { ownerSnapshot, treeDocument } from './guard-owner-snapshot.mjs';
 
 const { browserHook } = await import(process.env.CDP_SOURCE ?? '../../src/seed/cdp.js');
 
@@ -91,6 +92,8 @@ export function recoveryProtocol(t, hook = browserHook) {
         };
       if (method === 'DOM.getDocument')
         return { root: { nodeId: 1, nodeName: '#document', children: [] } };
+      if (method === 'DOMSnapshot.captureSnapshot')
+        return ownerSnapshot(treeDocument(entry.tree), entry.tree.frame.id);
       if (method === 'Page.navigate') {
         if (params.url !== 'data:text/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E')
           commit(id, params.url);
