@@ -88,6 +88,23 @@ const runs = (id, command) =>
     ],
     'tool_use'
   );
+const ROUTINE = {
+  level: {
+    type: 'choice',
+    choice: 'routine',
+    probabilities: { routine: 0.97, permissions: 0.02, harm: 0.01 },
+    confidence: 0.97,
+  },
+  aligned: { type: 'noul', noul: 0.95 },
+  always: { type: 'noul', noul: 0.02 },
+};
+const routine = (body) => {
+  const asked = Object.keys(JSON.parse(body.toString()).input?.questions ?? {});
+  return {
+    success: true,
+    result: { answers: Object.fromEntries(asked.map((id) => [id, ROUTINE[id]])) },
+  };
+};
 let release = null;
 const held = new Promise((resolve) => {
   release = resolve;
@@ -120,6 +137,12 @@ const llm = await fakeLlm(owners.cdp, {
       const type = request.url.endsWith('.tgz') ? 'application/octet-stream' : 'application/json';
       return { status: 200, headers: [['content-type', type]], body: await download(request.url) };
     }
+    if (request.url.startsWith(`${ADOBE}v1/ai/run`))
+      return {
+        status: 200,
+        headers: [['content-type', 'application/json']],
+        body: Buffer.from(JSON.stringify(routine(body))),
+      };
     if (request.url.startsWith(ADOBE))
       return {
         status: 200,
@@ -543,12 +566,16 @@ test('a follower watches the owner run with View, is refused a send, sends with 
     const item = await page
       .within(
         5 * 60 * 1000,
-        (command) =>
+        (command, always) =>
           document
             .querySelector('slicc-app')
             .model.approvals.list()
-            .find((entry) => entry.kind === 'sudo' && entry.command === command) ?? null,
-        command
+            .find(
+              (entry) =>
+                entry.kind === 'sudo' && entry.command === command && (!always || entry.always)
+            ) ?? null,
+        command,
+        decision === 'always'
       )
       .catch(async (error) => {
         throw new Error(
