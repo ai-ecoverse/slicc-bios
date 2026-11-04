@@ -84,10 +84,15 @@ function protocol(t, own = 'https://protected.invalid') {
     if (method === 'Page.captureSnapshot') result = { data: '<html></html>' };
     if (method === 'Page.printToPDF') result = { data: 'cGRm' };
     if (method === 'HeadlessExperimental.beginFrame') result = {};
+    if (method === 'Network.getResponseBody') result = { body: '', base64Encoded: false };
     if (method === 'Runtime.evaluate')
       result = answers.get('Runtime.evaluate')?.(message)?.result ?? {
         result: { type: 'string', value: ordinary },
       };
+    if (answers.has(method) && id < 2 ** 30) {
+      const payload = answers.get(method)(message);
+      return emit({ id, ...(sessionId ? { sessionId } : {}), ...payload });
+    }
     if (method === 'Input.dispatchKeyEvent' || method.startsWith('Input.')) result = {};
     if (method === 'Page.createIsolatedWorld') result = { executionContextId: 7 };
     if (method === 'DOM.getFrameOwner') result = { backendNodeId: 9 };
@@ -384,4 +389,64 @@ test('extension frame URLs are redacted from read methods', async (t) => {
     false,
     JSON.stringify(listed.result)
   );
+  const document = await wire.request('DOM.getDocument', { depth: -1 }, session);
+  assert.equal(document.error, undefined);
+  assert.equal(
+    JSON.stringify(document.result).includes('chrome-extension://'),
+    false,
+    JSON.stringify(document.result)
+  );
+});
+
+test('base64Encoded CONTENTS that name the vault are refused', async (t) => {
+  const wire = protocol(t);
+  wire.target('b64-vault', ordinary);
+  const session = await wire.attach('b64-vault');
+  const body = Buffer.from(`hello ${vault}secret world`).toString('base64');
+  wire.answers.set('Page.getResourceContent', () => ({
+    result: { content: body, base64Encoded: true },
+  }));
+  const answer = await wire.request(
+    'Page.getResourceContent',
+    { frameId: 'b64-vault', url: ordinary },
+    session
+  );
+  assert.equal(answer.error?.message, PROTECTED);
+});
+
+test('quoted-printable CONTENTS that name the vault are refused', async (t) => {
+  const wire = protocol(t);
+  wire.target('qp-vault', ordinary);
+  const session = await wire.attach('qp-vault');
+  const data = `Content-Transfer-Encoding: quoted-printable\r\nhttps://vault.sliccy.ai/sec=\r\nret`;
+  wire.answers.set('Page.captureSnapshot', () => ({
+    result: { data },
+  }));
+  const answer = await wire.request('Page.captureSnapshot', { format: 'mhtml' }, session);
+  assert.equal(answer.error?.message, PROTECTED);
+});
+
+test('whenShown reuses one isolated world per frame and loader', async (t) => {
+  const wire = protocol(t);
+  let worlds = 0;
+  let nextContext = 40;
+  wire.answers.set('Page.createIsolatedWorld', () => {
+    worlds += 1;
+    nextContext += 1;
+    return { result: { executionContextId: nextContext } };
+  });
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: false } },
+  }));
+  wire.target('reuse-world', ordinary, foreign);
+  const session = await wire.attach('reuse-world');
+  for (let i = 0; i < 3; i += 1) {
+    const answer = await wire.request(
+      'Input.dispatchKeyEvent',
+      { type: 'keyDown', key: 'a' },
+      session
+    );
+    assert.equal(answer.error, undefined);
+  }
+  assert.equal(worlds, 1);
 });
