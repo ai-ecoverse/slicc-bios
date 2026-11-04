@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createApprovals, routeSudo, useSecretRules } from '../../src/seed/approvals.js';
 
-useSecretRules(() => ({ certain: null, maybe: null }));
+const CLEAR = { certain: null, maybe: null, once: null };
+const VERDICTS = { '/usr/bin/ls -la /etc': { ...CLEAR, once: 'xargs sort' } };
+
+useSecretRules((command) => VERDICTS[command] ?? CLEAR);
 
 const range = (from, to) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
 const CODES = [...range(0x00, 0x1f), ...range(0x7f, 0x9f), 0x2028, 0x2029];
@@ -63,3 +66,11 @@ for (const code of CODES) {
     assert.equal(await agentAnswers(args, 'always'), 'once');
   });
 }
+
+test('bios#1295: a command line secretRules gives once, as it does xargs sort, is never recorded as always', async () => {
+  assert.deepEqual(await ownerAnswers(['-la', '/etc'], 'always'), {
+    offered: false,
+    decision: 'once',
+  });
+  assert.equal(await agentAnswers(['-la', '/etc'], 'always'), 'once');
+});

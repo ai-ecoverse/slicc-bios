@@ -83,7 +83,7 @@ export function secretRules(req) {
   if (cautious(argv) || argv.slice(1).some((word) => /^[^-].*['"\\]|[$`]/.test(word))) return true;
   const { command, cwd } = approvalText(req);
   const verdict = classify(command, cwd);
-  if (verdict?.certain || verdict?.maybe) return true;
+  if (verdict?.certain || verdict?.maybe || verdict?.once) return true;
   return ownRules(req);
 }
 
