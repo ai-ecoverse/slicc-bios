@@ -65,7 +65,7 @@ export const FORWARD_CAUSES = {
   'policy-syncing':
     'seven is still handing its credential policy to the vault; try again in a moment',
   'policy-missing':
-    '/etc/fnox/config.toml or /etc/slicc/secrets-policy.toml is missing, so seven forwards no credential; restore it',
+    "/etc/fnox/config.toml or /etc/slicc/secrets-policy.toml is missing and seven's vault hasn't confirmed a pause for it, so seven forwards no credential; restore it as a root-owned file",
   'policy-unaccepted':
     "seven's vault hasn't accepted the credential policy in /etc/fnox/config.toml and /etc/slicc/secrets-policy.toml; see the vault window",
   'policy-unavailable': "seven couldn't hand its credential policy to the vault; reload seven",
