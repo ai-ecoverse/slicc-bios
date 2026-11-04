@@ -30,7 +30,6 @@ jobs:
       timeout-minutes: 90
       flaky-retry: 3
       strict-tests: |
-        **/agent-release-age.test.mjs
         **/*guard*.test.*
         **/*security*.test.*
         **/address.test.mjs
