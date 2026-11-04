@@ -16,7 +16,6 @@ export const BIG = 120 * 1024;
 export const SMALL_RUN = 10;
 export const ICON_BYTES = 4096;
 export const ICON_SIZE = 32;
-const ICONS = 'link[rel~="icon" i][href^="data:" i]';
 const ICON_TYPES = new Set([
   'image/png',
   'image/gif',
@@ -341,6 +340,46 @@ export function favicon(href) {
     : undefined;
 }
 
+function lightDOMNode(node, names, parents, strings, shadowNodes) {
+  const seen = new Set();
+  let parent = node;
+  while (Number.isInteger(parent) && parent >= 0 && !seen.has(parent)) {
+    seen.add(parent);
+    if (shadowNodes.has(parent) || strings[names[parent]] === '#document-fragment') return false;
+    parent = parents[parent];
+  }
+  return !Number.isInteger(parent) || parent < 0;
+}
+
+function iconAttributes(values, strings) {
+  const attrs = new Map();
+  for (let index = 0; index + 1 < values.length; index += 2) {
+    const name = strings[values[index]];
+    const value = strings[values[index + 1]];
+    if (typeof name === 'string' && typeof value === 'string') attrs.set(name.toLowerCase(), value);
+  }
+  return attrs;
+}
+
+function snapshotFavicon(document, strings) {
+  const names = document?.nodes?.nodeName ?? [];
+  const attributes = document?.nodes?.attributes ?? [];
+  const parents = document?.nodes?.parentIndex ?? [];
+  const shadowNodes = new Set(document?.nodes?.shadowRootType?.index ?? []);
+  for (let node = 0; node < names.length; node += 1) {
+    if (strings[names[node]]?.toLowerCase() !== 'link') continue;
+    if (!lightDOMNode(node, names, parents, strings, shadowNodes)) continue;
+    const attrs = iconAttributes(attributes[node] ?? [], strings);
+    const rel = attrs.get('rel') ?? '';
+    const href = attrs.get('href') ?? '';
+    if (!rel.split(/\s+/).some((token) => token.toLowerCase() === 'icon')) continue;
+    if (!/^data:/i.test(href)) continue;
+    const src = favicon(href);
+    if (src) return src;
+  }
+  return undefined;
+}
+
 function defaultOpener() {
   return () => {
     const { extension, devtools } = browserHosts();
@@ -426,28 +465,19 @@ class Browser {
   }
 
   async #icon(id, sessionId) {
+    const knownURL = this.#infos.get(id)?.url;
+    if (this.#is.url(knownURL)) return;
     const known = this.#icons.get(id);
-    if (known?.src && known.url === this.#infos.get(id)?.url) return;
-    const { root } = await this.#client.call('DOM.getDocument', { depth: 0 }, sessionId);
-    const url = root?.documentURL ?? '';
-    let src;
-    if (!this.#is.url(url)) {
-      const { nodeIds = [] } = await this.#client.call(
-        'DOM.querySelectorAll',
-        { nodeId: root.nodeId, selector: ICONS },
-        sessionId
-      );
-      for (const nodeId of nodeIds) {
-        const { attributes = [] } = await this.#client.call(
-          'DOM.getAttributes',
-          { nodeId },
-          sessionId
-        );
-        const at = attributes.findIndex((name, i) => i % 2 === 0 && name.toLowerCase() === 'href');
-        src = at >= 0 ? favicon(attributes[at + 1]) : undefined;
-        if (src) break;
-      }
-    }
+    if (known?.src && known.url === knownURL) return;
+    const snapshot = await this.#client.call(
+      'DOMSnapshot.captureSnapshot',
+      { computedStyles: [] },
+      sessionId
+    );
+    const strings = snapshot?.strings ?? [];
+    const document = snapshot?.documents?.[0];
+    const url = strings[document?.documentURL] ?? '';
+    const src = this.#is.url(url) ? undefined : snapshotFavicon(document, strings);
     if (!this.#owned.has(id)) return;
     this.#icons.set(id, { url, src });
     if (src) this.changed();
