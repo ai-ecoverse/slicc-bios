@@ -187,28 +187,32 @@ export function askHold(
 }
 
 function considering({ is, storage, now }) {
-  const holds = (info, all, targets) => {
+  const targets = new Map();
+  const holds = (info, all, fresh) => {
     if (isHeld(info.targetId, storage)) return false;
     if (isHeld(info.parentId, storage) || isHeld(info.openerId, storage)) return true;
     if (info.type !== 'page' || !info.openerId) return false;
     if (!all && emptyNoAccess(info)) return false;
     const opener = targets.get(info.openerId);
+    const current = fresh.get(info.openerId);
     const cross =
-      opener?.type === 'page' &&
-      /^https?:/i.test(opener.url) &&
-      is.url(opener.url) &&
-      crossOriginPage(info, opener.url);
+      current?.type === 'page' &&
+      /^https?:/i.test(current.url) &&
+      is.url(current.url) &&
+      crossOriginPage(info, current.url);
     if (!all && cross) return false;
     return opener !== undefined && is.url(opener.url);
   };
   return (infos) => {
     const known = infos.filter((info) => info?.targetId);
-    const targets = new Map(known.map((info) => [info.targetId, info]));
+    const fresh = new Map(known.map((info) => [info.targetId, info]));
+    for (const info of known)
+      targets.set(info.targetId, { ...targets.get(info.targetId), ...info });
     const all = inFlight(now, storage);
     for (let added = true; added; ) {
       added = false;
       for (const info of known) {
-        if (!holds(info, all, targets)) continue;
+        if (!holds(info, all, fresh)) continue;
         hold(info.targetId, storage);
         added = true;
       }

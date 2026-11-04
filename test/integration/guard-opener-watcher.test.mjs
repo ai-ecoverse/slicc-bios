@@ -162,3 +162,44 @@ for (const flight of [false, true]) {
     assert.equal(isHeld(child, store), flight);
   });
 }
+
+for (const url of ['about:blank', 'about:srcdoc']) {
+  test(`opener watcher remembers an earlier protected opener for a standalone ${url} event`, async (t) => {
+    const store = storage();
+    const parent = {
+      targetId: `retained-watch-parent-${url}`,
+      type: 'page',
+      url: 'https://seven.sliccy.ai/page',
+    };
+    const child = {
+      targetId: `retained-watch-child-${url}`,
+      type: 'page',
+      url,
+      openerId: parent.targetId,
+      canAccessOpener: true,
+    };
+    let infos = [parent];
+    const wire = host(() => infos);
+    let tick;
+    const watcher = watchOpened({
+      hosts: wire.hosts,
+      storage: store,
+      timers: {
+        setInterval(fn) {
+          tick = fn;
+          return 1;
+        },
+        clearInterval() {},
+      },
+    });
+    t.after(() => watcher.stop());
+    watcher.poke();
+    await flush();
+    wire.emit(child);
+    assert.equal(isHeld(child.targetId, store), true);
+    infos = [parent, { ...child, url: other }];
+    tick();
+    await flush();
+    assert.equal(isHeld(child.targetId, store), true);
+  });
+}

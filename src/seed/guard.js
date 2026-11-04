@@ -1037,21 +1037,46 @@ class Guard {
       : null;
   }
 
+  async heldAncestry(info, seen = new Set()) {
+    if (isHeld(info.targetId)) return true;
+    if (seen.has(info.targetId) || seen.size > 8) return null;
+    seen.add(info.targetId);
+    for (const id of [info.parentId, info.openerId]) {
+      if (!id) continue;
+      const ancestor = isHeld(id) ? true : await this.openerInfo(id);
+      if (!ancestor) return null;
+      const held = ancestor === true ? true : await this.heldAncestry(ancestor, new Set(seen));
+      if (held === null) return null;
+      if (held) {
+        hold(info.targetId);
+        return true;
+      }
+    }
+    return false;
+  }
+
   async crossOpener(targetId, found) {
     if (!found.openerId || found.type !== 'page' || !/^https?:/i.test(found.url)) return false;
     const same = (a, b) =>
       ['targetId', 'type', 'url', 'openerId', 'parentId', 'browserContextId'].every(
         (key) => a?.[key] === b?.[key]
       );
-    const known = this.targets.get(found.openerId)?.info;
+    const previous = this.targets.get(found.openerId);
+    const known = previous?.info;
     const first = await this.openerInfo(found.openerId);
-    if (!first) return null;
+    if (!first) return previous && (previous.guarded || this.is.target(previous)) ? null : false;
+    if (first.type !== 'page' || !/^https?:/i.test(first.url) || !this.ownUrl(first.url)) {
+      this.learn(first);
+      return false;
+    }
     const child = await this.openerInfo(targetId);
+    const ancestry = await this.heldAncestry(first, new Set([targetId]));
     const last = await this.openerInfo(found.openerId);
     const remembered = this.targets.get(found.openerId)?.info;
     if (
       !child ||
       !last ||
+      ancestry === null ||
       !same(first, last) ||
       !same(found.info, child) ||
       !same(this.targets.get(targetId)?.info, found.info) ||
@@ -1063,6 +1088,7 @@ class Guard {
       last.type === 'page' &&
       /^https?:/i.test(last.url) &&
       this.ownUrl(last.url) &&
+      !ancestry &&
       !isHeld(last.targetId) &&
       crossOriginPage(child, last.url)
     );
@@ -3834,6 +3860,7 @@ class Guard {
 
   async surfaceOpener(info) {
     if (info?.type !== 'page') return false;
+    if (isHeld(info.targetId)) return true;
     if (!info.openerId) return info.canAccessOpener === true;
     this.learn(info);
     return this.target(info.targetId);
@@ -4511,8 +4538,10 @@ class Guard {
   async precheck(message) {
     const targetId = this.scopeTarget(message.sessionId);
     const target = this.targets.get(targetId);
-    if (target?.type === 'page' && target.openerId && (await this.current(targetId)))
-      return PROTECTED;
+    if (target?.type === 'page') {
+      const info = await this.openerInfo(targetId);
+      if (info?.type !== 'page' || (await this.surfaceOpener(info))) return PROTECTED;
+    }
     if (this.unsafeContent(message) || (await this.recover(message))) return PROTECTED;
     return this.pageCheck(message.method, message.sessionId);
   }
