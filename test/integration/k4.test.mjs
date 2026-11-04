@@ -59,6 +59,24 @@ async function decide(page, decision) {
   return approval;
 }
 
+function closed(page) {
+  return page.until(() => {
+    const find = (root) => {
+      const found = root.querySelector('slicc-approvals');
+      if (found) return found;
+      for (const element of root.querySelectorAll('*')) {
+        const inner = element.shadowRoot && find(element.shadowRoot);
+        if (inner) return inner;
+      }
+      return null;
+    };
+    const dialog = find(document)?.shadowRoot?.querySelector('dialog');
+    if (!dialog) return true;
+    dialog.querySelector('[data-action="close"]')?.click();
+    return false;
+  });
+}
+
 async function logged(page, path) {
   await page.until(async (path) => {
     let dir = await navigator.storage.getDirectory();
@@ -190,25 +208,67 @@ test('enforce: a cone writes its home, is refused in root’s, and sudo asks wit
     shown.id
   );
   await shows(page, 'tmp=0');
-  await page.until(() => {
-    const find = (root) => {
-      const found = root.querySelector('slicc-approvals');
-      if (found) return found;
-      for (const element of root.querySelectorAll('*')) {
-        const inner = element.shadowRoot && find(element.shadowRoot);
-        if (inner) return inner;
-      }
-      return null;
-    };
-    const dialog = find(document)?.shadowRoot?.querySelector('dialog');
-    if (!dialog) return true;
-    dialog.querySelector('[data-action="close"]')?.click();
-    return false;
-  });
+  await closed(page);
   await run(page, 'clear; sudo -u cone sudo cat /tmp/k4x; echo tmp2=$?');
   await decide(page, 'deny');
   await shows(page, 'tmp2=1');
   assert.doesNotMatch(await read(page, 'etc/sudoers.d/cone'), /k4x/);
+  assert.deepEqual(page.errors, []);
+});
+
+test('bios#1295: an always decision sent outside the dialog is answered once when secretRules gives once, as for xargs sort, and recorded when it doesn’t, as for xargs cat', async (t) => {
+  const page = await chrome.page(t);
+  await bootIn(page, 'enforce');
+  const verdicts = await page.evaluate(async () => {
+    const ui = new URL(
+      '../node_modules/@ai-ecoverse/slicc-spectrum/dist/slicc-ui.js',
+      location.href
+    );
+    const { secretRules } = await import(ui.href);
+    const { useSecretRules } = await import(new URL('approvals.js', location.href).href);
+    const lines = {
+      '/usr/bin/id -gn': 'xargs sort < /tmp/list',
+      '/usr/bin/id -Gn': 'xargs cat < /tmp/list',
+    };
+    useSecretRules((command, cwd) => secretRules(lines[command] ?? command, cwd));
+    return Object.values(lines).map((line) => secretRules(line, '/tmp'));
+  });
+  assert.deepEqual(verdicts, [
+    { certain: null, maybe: null, once: 'xargs sort' },
+    { certain: null, maybe: null, once: null },
+  ]);
+  const forced = async (command, mark) => {
+    await run(page, `clear; cd /tmp; sudo -u cone sudo ${command}; echo ${mark}=$?`);
+    const [shown] = await page.until(() => {
+      const list = document.querySelector('slicc-app').model.approvals.list();
+      return list.length ? list : null;
+    });
+    assert.equal(shown.command, `/usr/bin/${command}`);
+    await page.evaluate(
+      (id) => document.querySelector('slicc-app').model.approvals.decide(id, 'always'),
+      shown.id
+    );
+    await shows(page, `${mark}=0`);
+    await closed(page);
+    return shown;
+  };
+
+  const sorted = await forced('id -gn', 'sorted');
+  assert.equal(sorted.always, false);
+  assert.doesNotMatch(await read(page, 'etc/sudoers.d/cone'), /id -gn/);
+  await run(page, 'clear; sudo -u cone sudo id -gn; echo again=$?');
+  await decide(page, 'deny');
+  await shows(page, 'again=1');
+
+  const catted = await forced('id -Gn', 'catted');
+  assert.equal(catted.always, true);
+  assert.match(await read(page, 'etc/sudoers.d/cone'), /id -Gn/);
+  await run(page, 'clear; sudo -u cone sudo id -Gn; echo recorded=$?');
+  await shows(page, 'recorded=0');
+  assert.deepEqual(
+    await page.evaluate(() => document.querySelector('slicc-app').model.approvals.list()),
+    []
+  );
   assert.deepEqual(page.errors, []);
 });
 

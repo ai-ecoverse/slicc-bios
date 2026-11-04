@@ -54,7 +54,7 @@
     "@ai-ecoverse/slicc-cdp": "1.45.0",
     "@ai-ecoverse/slicc-kernel": "1.173.3",
     "@ai-ecoverse/slicc-shared-web": "2.13.10",
-    "@ai-ecoverse/slicc-spectrum": "1.111.0",
+    "@ai-ecoverse/slicc-spectrum": "1.111.2",
     "@ai-ecoverse/slicc-vault": "1.22.0",
     "@biomejs/biome": "2.6.3",
     "aws4fetch": "1.0.20",
