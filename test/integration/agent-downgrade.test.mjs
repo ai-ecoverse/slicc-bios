@@ -119,7 +119,9 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
     await page.evaluate(() => localStorage.setItem('slicc-os.agent-schema', '2'));
     await relabel(page, '6.19.15');
     t.after(() => relabel(page, pinned).catch(() => {}));
-    assert.equal((await refused(page)).error, OLDER);
+    const seen = await refused(page);
+    assert.equal(seen.error, OLDER);
+    assert.equal(seen.agents, 0);
   });
 
   await t.test('an unreadable marker refuses a 6.x agent too', async (t) => {
@@ -127,7 +129,9 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
     await marker(page, 'not json');
     await relabel(page, '6.19.15');
     t.after(() => relabel(page, pinned).catch(() => {}));
-    assert.equal((await refused(page)).error, OLDER);
+    const seen = await refused(page);
+    assert.equal(seen.error, OLDER);
+    assert.equal(seen.agents, 0);
   });
 
   await t.test(
@@ -150,14 +154,18 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
       });
       await relabel(page, '6.19.15');
       t.after(() => relabel(page, pinned).catch(() => {}));
-      assert.equal((await refused(page)).error, OLDER);
+      const seen = await refused(page);
+      assert.equal(seen.error, OLDER);
+      assert.equal(seen.agents, 0);
     }
   );
 
   await t.test('a marker above 2 refuses the 7.x agent', async () => {
     await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
     await marker(page, JSON.stringify({ durableSchema: 3, agent: '8.0.0' }));
-    assert.equal((await refused(page)).error, OLDER);
+    const seen = await refused(page);
+    assert.equal(seen.error, OLDER);
+    assert.equal(seen.agents, 0);
     await marker(page, null);
   });
 
