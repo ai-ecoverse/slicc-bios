@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 export const sameOriginChildMarkup =
   '<!doctype html><title>675 same-origin child</title><script type="module">await fetch("/same-child-ready"); if (document.modelContext) document.modelContext.registerTool({ name: "child_add", description: "Child adds ten", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] }, execute: ({a,b}) => String(a+b+10) });</script>';
 
-export function sameOriginTools(tools, route, frames) {
+export function sameOriginTools(tools, route, frames, { requireChild = false } = {}) {
   assert.ok(['extension', 'link'].includes(route));
   assert.ok(Array.isArray(tools));
   assert.equal(
@@ -26,11 +26,13 @@ export function sameOriginTools(tools, route, frames) {
     childFrame.securityOrigin,
     'child must actually be same-origin'
   );
-  if (route === 'link') assert.ok(child, 'root and same-origin child tools must both list');
+  if (route === 'link' || requireChild)
+    assert.ok(child, 'root and same-origin child tools must both list');
   return { root, child };
 }
 
-export async function sameOriginChildCall(selection, call) {
+export async function sameOriginChildCall(selection, call, { requireChild = false } = {}) {
+  if (requireChild) assert.ok(selection.child, 'strict same-origin row requires the child call');
   if (!selection.child)
     return { limit: 'same-origin child frame tools do not work on the extension route yet (#694)' };
   const result = await call(selection.child.name);

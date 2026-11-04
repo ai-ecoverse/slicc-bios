@@ -27,6 +27,9 @@ import { fixtureTarget } from './fixtures/cdp-675-target.mjs';
 import { linkNode } from './linked-node.mjs';
 import { certificate, realExtension, SEVEN } from './real-extension.mjs';
 
+const sameOriginRequirements = {
+  requireChild: process.env.SLICC_694_REQUIRE_SAME_ORIGIN_CHILD === '1',
+};
 const directory = process.env.SLICC_675_ARTIFACT_DIR;
 const manifest = directory
   ? JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8'))
@@ -2145,7 +2148,8 @@ for (const route of ['extension', 'link']) {
           trace.setupChecks.push({
             name: 'selected extension route',
             pass:
-              trace.selectedRoute.extension === (oldRoute ? '7.10.0' : '7.12.0') &&
+              trace.selectedRoute.extension ===
+                (oldRoute ? '7.10.0' : manifest.extension.version) &&
               trace.selectedRoute.links === 0,
             actual: trace.selectedRoute,
           });
@@ -2937,13 +2941,22 @@ for (const route of ['extension', 'link']) {
           }
           if (scene.sameOriginChild) {
             assert.doesNotMatch(row.list.stdout, /"error"\s*:/);
-            row.sameOriginTools = sameOriginTools(tools, route, row.rawFrames);
-            row.sameOriginCall = await sameOriginChildCall(row.sameOriginTools, (name) =>
-              cone(
-                page,
-                `timeout 60 mcpcat call http://127.0.0.1:${row.port}/mcp ${quote(name)} --a 2 --b 3`,
-                `675-same-child-call-${index}`
-              )
+            row.sameOriginChildRequired = sameOriginRequirements.requireChild;
+            row.sameOriginTools = sameOriginTools(
+              tools,
+              route,
+              row.rawFrames,
+              sameOriginRequirements
+            );
+            row.sameOriginCall = await sameOriginChildCall(
+              row.sameOriginTools,
+              (name) =>
+                cone(
+                  page,
+                  `timeout 60 mcpcat call http://127.0.0.1:${row.port}/mcp ${quote(name)} --a 2 --b 3`,
+                  `675-same-child-call-${index}`
+                ),
+              sameOriginRequirements
             );
           }
           row.methods = await page.evaluate(

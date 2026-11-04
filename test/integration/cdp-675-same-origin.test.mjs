@@ -84,6 +84,39 @@ test('an absent extension child reports the declared limit without making a chil
   );
 });
 
+test('strict candidate mode requires the extension child to list without changing the default limit', () => {
+  assert.deepEqual(sameOriginTools(tools, 'extension', frames, { requireChild: true }), {
+    root: tools[0],
+    child: tools[1],
+  });
+  assert.throws(
+    () => sameOriginTools(tools.slice(0, 1), 'extension', frames, { requireChild: true }),
+    /both list/
+  );
+  assert.equal(sameOriginTools(tools.slice(0, 1), 'extension', frames).child, undefined);
+});
+
+test('strict candidate mode requires a child call and exactly fifteen', async () => {
+  const selected = sameOriginTools(tools, 'extension', frames, { requireChild: true });
+  assert.match(
+    (await sameOriginChildCall(selected, async () => ({ stdout: '15\n' }), { requireChild: true }))
+      .stdout,
+    /^15$/m
+  );
+  await assert.rejects(
+    sameOriginChildCall(
+      { child: undefined },
+      async () => assert.fail('absent child must not be called'),
+      { requireChild: true }
+    ),
+    /requires the child call/
+  );
+  await assert.rejects(
+    sameOriginChildCall(selected, async () => ({ stdout: '5\n' }), { requireChild: true }),
+    /15/
+  );
+});
+
 test('every listed child on either route must call and return fifteen', async () => {
   for (const route of ['extension', 'link']) {
     const selection = sameOriginTools(tools, route, frames);

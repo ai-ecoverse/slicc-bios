@@ -85,10 +85,13 @@ export async function artifactManifest(directory, config, io = {}) {
     releaseVersions: {
       cdp: config.cdpVersion,
       mcpcat: config.mcpcatVersion,
-      extension: config.extensionVersion,
+      extension: config.extensionCandidate ? undefined : config.extensionVersion,
       cli: config.cliVersion,
       browsers: config.browsersVersion,
     },
+    candidateVersions: config.extensionCandidate
+      ? { extension: config.extensionVersion }
+      : undefined,
     cdp,
     mcpcat,
     oldClient,
@@ -106,7 +109,10 @@ export async function artifactManifest(directory, config, io = {}) {
       version: config.extensionVersion,
       sha256: extensionSha256,
       url: config.extensionRelease.url,
-      source: 'released zip; observational taps only in diagnostic copy',
+      fixture: config.extensionRelease.fixture,
+      source: config.extensionCandidate
+        ? 'candidate fixture zip at its exact supplied commit and checksum; observational taps only in diagnostic copy'
+        : 'released zip; observational taps only in diagnostic copy',
     },
     cli: {
       version: config.cliVersion,
@@ -120,8 +126,9 @@ export async function artifactManifest(directory, config, io = {}) {
       sha256: '6e9439a236b47ccd8479d0b222ff2c5139ae2cc9a512732ccab14071b5751248',
       browserDataVersion: config.browsersVersion,
     },
-    sourceCheckouts:
-      'exact released tag commits for audit and Rust memory preflights only; executed components are release artifacts, with the explicit rig-only BFCache fixture overlay',
+    sourceCheckouts: config.extensionCandidate
+      ? 'extension candidate commit plus exact released tag commits for other components; executed artifacts are the candidate fixture zip and releases, with the explicit rig-only BFCache fixture overlay'
+      : 'exact released tag commits for audit and Rust memory preflights only; executed components are release artifacts, with the explicit rig-only BFCache fixture overlay',
   };
 }
 
