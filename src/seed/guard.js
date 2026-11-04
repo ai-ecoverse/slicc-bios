@@ -1781,11 +1781,7 @@ class Guard {
     scope.ready = Boolean(scope.tree && !scope.failed && !scope.pending);
     if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
     await this.placePrivateFrames(targetId, deadline);
-    if (
-      !this.extensionFrames &&
-      !this.pageLocked(targetId) &&
-      this.debuggerLeases.get(targetId)?.state === 'suspended'
-    )
+    if (!this.pageLocked(targetId) && this.debuggerLeases.get(targetId)?.state === 'suspended')
       this.setDebuggerLease(targetId, 'placed');
     this.stopCasts();
     await Promise.all(
@@ -1872,7 +1868,6 @@ class Guard {
     }
     if (method === 'Page.frameNavigated' && params.frame)
       this.scopeNavigated(params.frame, targetId);
-    if (method === 'Page.navigatedWithinDocument') this.refresh(targetId);
     const foreign =
       params.context?.auxData?.type === 'isolated' && EXTENSIONS.test(params.context?.origin ?? '');
     if (
@@ -5148,6 +5143,34 @@ class Guard {
     }
   }
 
+  reviseDebuggerLease(targetId, method, params = {}) {
+    if (
+      ![
+        'Page.frameAttached',
+        'Page.frameDetached',
+        'Page.frameNavigated',
+        'Page.navigatedWithinDocument',
+      ].includes(method)
+    )
+      return;
+    const scope = this.scope(targetId);
+    const sameDocument = method === 'Page.navigatedWithinDocument';
+    if (!sameDocument) scope.privatePlaced = false;
+    const lease = this.debuggerLeases.get(targetId);
+    if (
+      method === 'Page.frameNavigated' &&
+      !params.frame?.parentId &&
+      params.frame?.loaderId !== lease?.loader
+    ) {
+      clearTimeout(lease?.timer);
+      this.debuggerLeases.delete(targetId);
+      return;
+    }
+    if (!lease || lease.state === 'revoked') return;
+    this.setDebuggerLease(targetId, 'suspended');
+    if (sameDocument && !this.pageLocked(targetId)) this.setDebuggerLease(targetId, 'placed');
+  }
+
   receiveNavigation(message) {
     const committed = this.noteNavigation(message.sessionId, message.method, message.params);
     const targetId =
@@ -5161,27 +5184,7 @@ class Guard {
         STRUCTURE.has(message.method))
     )
       this.revisions.set(targetId, {});
-    if (
-      targetId &&
-      [
-        'Page.frameAttached',
-        'Page.frameDetached',
-        'Page.frameNavigated',
-        'Page.navigatedWithinDocument',
-      ].includes(message.method)
-    ) {
-      const scope = this.scope(targetId);
-      scope.privatePlaced = false;
-      const lease = this.debuggerLeases.get(targetId);
-      if (
-        message.method === 'Page.frameNavigated' &&
-        !message.params?.frame?.parentId &&
-        message.params?.frame?.loaderId !== lease?.loader
-      ) {
-        clearTimeout(lease?.timer);
-        this.debuggerLeases.delete(targetId);
-      } else if (lease && lease.state !== 'revoked') this.setDebuggerLease(targetId, 'suspended');
-    }
+    if (targetId) this.reviseDebuggerLease(targetId, message.method, message.params);
     if (message.method !== 'Page.frameNavigated' || !message.params?.frame) return;
     const { frame } = message.params;
     const nav = this.navs.get(targetId);

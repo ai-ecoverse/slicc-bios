@@ -125,3 +125,124 @@ for (const route of [
     assert.doesNotMatch(JSON.stringify(p.delivered), /protected\.invalid/);
   });
 }
+
+const ordinaryReader = async () => ({
+  version: 2,
+  revision: 0,
+  rootFrameId: 'root',
+  rootLoaderId: 'root-loader',
+  localFrames: ['root'],
+  remoteOwners: [],
+  frames: [{ frameId: 0, parentFrameId: -1, kind: 'ordinary' }],
+});
+
+test('extension: a root-only ordinary page recovers Debugger after a same-document navigation', async (t) => {
+  const p = protocol(t, (raw, own) =>
+    guardProtected(raw, own, new Map(), { kind: 'extension', version: '7.12.0' }, ordinaryReader)
+  );
+  p.target('root', 'page', { ...plainFrame('root'), loaderId: 'root-loader' });
+  const session = await p.attach('root');
+  assert.equal((await p.send('Debugger.enable', {}, session)).error, undefined);
+  const since = p.sent.length;
+  p.emit({
+    sessionId: session,
+    method: 'Page.navigatedWithinDocument',
+    params: { frameId: 'root', url: 'https://ordinary.invalid/page#new' },
+  });
+  await flush();
+  await flush();
+  assert.equal(
+    p.sent.slice(since).some(({ method }) => method === 'DOMSnapshot.captureSnapshot'),
+    false
+  );
+  assert.equal(
+    (
+      await p.send(
+        'Debugger.setInstrumentationBreakpoint',
+        { instrumentation: 'beforeScriptExecution' },
+        session
+      )
+    ).error,
+    undefined
+  );
+});
+
+test('extension: a running screencast survives a same-document navigation', async (t) => {
+  const p = protocol(t, (raw, own) =>
+    guardProtected(raw, own, new Map(), { kind: 'extension', version: '7.12.0' }, ordinaryReader)
+  );
+  p.target('root', 'page', { ...plainFrame('root'), loaderId: 'root-loader' });
+  const session = await p.attach('root');
+  assert.equal(
+    (await p.send('Page.startScreencast', { format: 'jpeg', quality: 80 }, session)).error,
+    undefined
+  );
+  const since = p.sent.length;
+  p.emit({
+    sessionId: session,
+    method: 'Page.navigatedWithinDocument',
+    params: { frameId: 'root', url: 'https://ordinary.invalid/page#new' },
+  });
+  await flush();
+  await flush();
+  assert.equal(
+    p.sent.slice(since).some(({ method }) => method === 'Page.stopScreencast'),
+    false
+  );
+  assert.equal(
+    p.sent.slice(since).some(({ method }) => method === 'DOMSnapshot.captureSnapshot'),
+    false
+  );
+});
+
+test('extension: a root-only re-placement after a frame change restores the Debugger lease', async (t) => {
+  const p = protocol(t, (raw, own) =>
+    guardProtected(raw, own, new Map(), { kind: 'extension', version: '7.12.0' }, ordinaryReader)
+  );
+  p.target('root', 'page', { ...plainFrame('root'), loaderId: 'root-loader' });
+  const session = await p.attach('root');
+  assert.equal((await p.send('Debugger.enable', {}, session)).error, undefined);
+  p.emit({
+    sessionId: session,
+    method: 'Page.frameDetached',
+    params: { frameId: 'ghost', reason: 'remove' },
+  });
+  await flush();
+  await flush();
+  assert.equal(
+    (
+      await p.send(
+        'Debugger.setInstrumentationBreakpoint',
+        { instrumentation: 'beforeScriptExecution' },
+        session
+      )
+    ).error,
+    undefined
+  );
+});
+
+test('link: a same-document navigation still admits Debugger without changing the link route', async (t) => {
+  const p = protocol(t, (raw, own) =>
+    guardProtected(raw, own, new Map(), { kind: 'link', version: '1.60.0' }, ordinaryReader)
+  );
+  p.target('root', 'page', { ...plainFrame('root'), loaderId: 'root-loader' });
+  const session = await p.attach('root');
+  assert.equal((await p.send('Debugger.enable', {}, session)).error, undefined);
+  p.emit({
+    sessionId: session,
+    method: 'Page.navigatedWithinDocument',
+    params: { frameId: 'root', url: 'https://ordinary.invalid/page#new' },
+  });
+  await flush();
+  await flush();
+  assert.equal(
+    (
+      await p.send(
+        'Debugger.setInstrumentationBreakpoint',
+        { instrumentation: 'beforeScriptExecution' },
+        session
+      )
+    ).error,
+    undefined
+  );
+});
