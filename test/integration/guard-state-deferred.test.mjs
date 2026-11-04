@@ -80,7 +80,6 @@ test('deferred wipe leaves the error document sealed for the entire five-second 
   t.mock.timers.tick(1);
   await flush();
   assert.equal(wipes(wire).length, 1);
-  assert.equal((await wire.send('Runtime.evaluate', {}, session)).error?.message, PROTECTED);
   entry.tree.frame = { ...plainFrame('deferred'), url: BLANKED, securityOrigin: 'null' };
   entry.info.url = BLANKED;
   wire.emit({
@@ -172,7 +171,13 @@ for (const action of [
     t.mock.timers.tick(5000);
     await flush();
     assert.equal(wipes(wire).length, 1);
-    assert.equal((await wire.send('Runtime.evaluate', {}, session)).error?.message, PROTECTED);
+    const pending = wire.request('Runtime.evaluate', {}, session);
+    await flush();
+    for (let left = 5000; left > 0; left -= 100) {
+      t.mock.timers.tick(Math.min(100, left));
+      await flush();
+    }
+    assert.equal((await pending.answer).error?.message, PROTECTED);
   });
 }
 

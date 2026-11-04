@@ -4528,10 +4528,18 @@ class Guard {
   }
 
   unsafeContent(message) {
+    const recovering = this.pendingRecovery(message);
+    const quarantined = this.quarantined.has(message.sessionId) && !RECOVERS.has(message.method);
+    const sticky = recovering || quarantined;
+    if (
+      contentRead(message.method) &&
+      this.ownedBlank(message.sessionId) &&
+      !this.errorDocument(message.sessionId, message.method)
+    )
+      return sticky;
     return (
       this.unsafe.has(message) ||
-      this.pendingRecovery(message) ||
-      (this.quarantined.has(message.sessionId) && !RECOVERS.has(message.method)) ||
+      sticky ||
       (contentRead(message.method) && this.errorDocument(message.sessionId, message.method))
     );
   }
@@ -5510,6 +5518,44 @@ class Guard {
     return this.proofCommits.get(owner)?.url === BLANKED;
   }
 
+  blanking(sessionId) {
+    const nav = this.navs.get(this.sessions.get(sessionId)?.targetId);
+    return Boolean(nav?.scrub && nav.retried && nav.scrubTicket);
+  }
+
+  async awaitOwnedBlank(sessionId) {
+    if (this.ownedBlank(sessionId) || !this.blanking(sessionId)) return this.ownedBlank(sessionId);
+    const deadline = Date.now() + SCRUB_MS;
+    while (Date.now() < deadline) {
+      if (this.ownedBlank(sessionId) || !this.blanking(sessionId)) break;
+      await pause(POLL_MS);
+    }
+    return this.ownedBlank(sessionId);
+  }
+
+  contentStillUnsafe(message) {
+    return (
+      this.unsafeContent(message) &&
+      (this.errorDocument(message.sessionId, message.method) || !this.ownedBlank(message.sessionId))
+    );
+  }
+
+  async refuseUnsafeContent(message) {
+    if (!this.contentStillUnsafe(message)) return false;
+    if (
+      contentRead(message.method) &&
+      this.errorDocument(message.sessionId, message.method) &&
+      !this.ownedBlank(message.sessionId) &&
+      this.blanking(message.sessionId)
+    ) {
+      await this.awaitOwnedBlank(message.sessionId);
+      if (this.finished.has(message) || !this.owns(message)) return true;
+      if (!this.contentStillUnsafe(message)) return false;
+    }
+    this.refuse(message);
+    return true;
+  }
+
   start() {
     const { connection, guarded } = this;
     connection.onmessage = (text) => this.received(text);
@@ -5550,12 +5596,7 @@ class Guard {
         `send:${message.sessionId ?? ''}`,
         async () => {
           if (this.finished.has(message) || !this.owns(message)) return;
-          if (
-            this.unsafeContent(message) &&
-            (this.errorDocument(message.sessionId, message.method) ||
-              !this.ownedBlank(message.sessionId))
-          )
-            return this.refuse(message);
+          if (await this.refuseUnsafeContent(message)) return;
           if (!(await this.proveContent(message))) return this.refuse(message);
           if (this.unsafeContent(message)) return this.refuse(message);
           const why = await this.check(message);

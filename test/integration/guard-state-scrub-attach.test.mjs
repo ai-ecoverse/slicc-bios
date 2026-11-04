@@ -126,7 +126,6 @@ for (const metadata of ['failed URL', 'chrome-error']) {
     t.mock.timers.tick(1);
     await flush();
     assert.equal(wipes(wire).length, 1);
-    assert.equal((await wire.send('Runtime.evaluate', {}, sessionId)).error?.message, PROTECTED);
     entry.tree.frame = { ...plainFrame('created-scrub'), url: BLANKED, securityOrigin: 'null' };
     entry.info.url = BLANKED;
     entry.info.title = 'blocked';
