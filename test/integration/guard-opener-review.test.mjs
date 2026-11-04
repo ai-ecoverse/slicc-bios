@@ -145,3 +145,114 @@ for (const [method, params] of [
     );
   });
 }
+
+for (const relation of [
+  'openerId',
+  'parentId',
+  'nested',
+  'inferred parent',
+  'inherited ancestor',
+]) {
+  for (const order of ['child first', 'parent first']) {
+    test(`opener review infers holds before admission: ${relation}, ${order}`, async (t) => {
+      const wire = protocol(t);
+      const prefix = `inferred-${relation}-${order}`;
+      const root = page(wire, `${prefix}-root`, seven);
+      let ancestor = root.info.targetId;
+      if (['nested', 'inferred parent', 'inherited ancestor'].includes(relation)) {
+        const middle = page(
+          wire,
+          `${prefix}-middle`,
+          relation === 'inherited ancestor' ? 'about:blank' : `${seven}/middle`,
+          { openerId: ancestor, canAccessOpener: true }
+        );
+        ancestor = middle.info.targetId;
+      }
+      const parent = page(wire, `${prefix}-parent`, `${seven}/parent`, {
+        [relation === 'inferred parent' ? 'parentId' : 'openerId']: ancestor,
+        canAccessOpener: true,
+      });
+      const child = page(wire, `${prefix}-child`, ordinary, {
+        [relation === 'parentId' ? 'parentId' : 'openerId']: parent.info.targetId,
+        canAccessOpener: true,
+      });
+      if (order === 'parent first') refused(await attach(wire, parent.info.targetId));
+      refused(await attach(wire, child.info.targetId));
+      assert.equal(isHeld(parent.info.targetId), true);
+      assert.equal(isHeld(child.info.targetId), true);
+      assert.equal(isHeld(root.info.targetId), false);
+      assert.equal(
+        wire.clients().some((message) => message.method === 'Target.attachToTarget'),
+        false
+      );
+    });
+  }
+}
+
+for (const access of [false, true]) {
+  test(`opener review retains a freshly observed protected opener across navigation, access ${access}`, async (t) => {
+    const wire = protocol(t);
+    const parent = page(wire, `unseen-own-parent-${access}`, seven);
+    const child = page(wire, `unseen-own-child-${access}`, ordinary, {
+      openerId: parent.info.targetId,
+      canAccessOpener: access,
+    });
+    const answer = await attach(wire, child.info.targetId);
+    assert.equal(answer.error, undefined, JSON.stringify(answer));
+    assert.equal(isHeld(parent.info.targetId), false);
+    assert.equal(isHeld(child.info.targetId), false);
+    parent.info.url = ordinary;
+    parent.tree.frame = {
+      ...parent.tree.frame,
+      url: ordinary,
+      securityOrigin: new URL(ordinary).origin,
+    };
+    const mark = wire.clients().length;
+    refused(
+      await wire.send(
+        'Runtime.evaluate',
+        { expression: 'window.opener.document.body.textContent' },
+        answer.result.sessionId
+      )
+    );
+    assert.equal(
+      wire
+        .clients()
+        .slice(mark)
+        .some((message) => message.method === 'Runtime.evaluate'),
+      false
+    );
+    assert.equal(isHeld(child.info.targetId), true);
+  });
+}
+
+test('opener review preserves a conflicting hint during the first protected lookup', async (t) => {
+  const wire = protocol(t);
+  const parent = page(wire, 'first-proof-parent', seven);
+  refused(await attach(wire, parent.info.targetId));
+  const child = page(wire, 'first-proof-child', ordinary, {
+    openerId: parent.info.targetId,
+    canAccessOpener: true,
+  });
+  wire.hold(
+    (message) =>
+      message.method === 'Target.getTargetInfo' && message.params.targetId === parent.info.targetId
+  );
+  const pending = wire.request('Target.attachToTarget', {
+    targetId: child.info.targetId,
+    flatten: true,
+  });
+  await flush();
+  const first = wire.held[0];
+  assert.ok(first);
+  wire.hold((message) => message.method === 'Target.getTargetInfo');
+  wire.emit({
+    method: 'Target.targetInfoChanged',
+    params: { targetInfo: { ...parent.info, url: 'https://conflict.invalid/page' } },
+  });
+  await flush();
+  wire.release(first);
+  refused(await pending.answer);
+  wire.hold(() => false);
+  for (const message of wire.held.slice()) wire.release(message);
+});

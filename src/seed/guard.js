@@ -1037,11 +1037,20 @@ class Guard {
       : null;
   }
 
+  sameTarget(a, b) {
+    return ['targetId', 'type', 'url', 'openerId', 'parentId', 'browserContextId'].every(
+      (key) => a?.[key] === b?.[key]
+    );
+  }
+
   async heldAncestry(info, seen = new Set()) {
     if (isHeld(info.targetId)) return true;
     if (seen.has(info.targetId) || seen.size > 8) return null;
+    const known = this.targets.get(info.targetId)?.info;
     seen.add(info.targetId);
-    for (const id of [info.parentId, info.openerId]) {
+    let opener;
+    for (const relation of ['parentId', 'openerId']) {
+      const id = info[relation];
       if (!id) continue;
       const ancestor = isHeld(id) ? true : await this.openerInfo(id);
       if (!ancestor) return null;
@@ -1051,16 +1060,34 @@ class Guard {
         hold(info.targetId);
         return true;
       }
+      if (relation === 'openerId') opener = this.ancestryOpener(info, ancestor);
     }
+    const current = this.targets.get(info.targetId)?.info;
+    if (current && !this.sameTarget(current, known) && !this.sameTarget(current, info)) return null;
+    this.learn(info);
+    const found = this.targets.get(info.targetId);
+    if (opener === 'protected' && info.type === 'page' && !emptyNoAccess(info)) {
+      hold(info.targetId);
+      found.guarded = true;
+      return true;
+    }
+    this.classifyTarget(info.targetId, found, opener);
     return false;
+  }
+
+  ancestryOpener(info, ancestor) {
+    const cross =
+      ancestor.type === 'page' &&
+      /^https?:/i.test(ancestor.url) &&
+      this.ownUrl(ancestor.url) &&
+      crossOriginPage(info, ancestor.url);
+    if (cross) return undefined;
+    const found = this.targets.get(ancestor.targetId);
+    return found?.guarded || this.recalled.has(ancestor.targetId) ? 'protected' : 'unprotected';
   }
 
   async crossOpener(targetId, found) {
     if (!found.openerId || found.type !== 'page' || !/^https?:/i.test(found.url)) return false;
-    const same = (a, b) =>
-      ['targetId', 'type', 'url', 'openerId', 'parentId', 'browserContextId'].every(
-        (key) => a?.[key] === b?.[key]
-      );
     const previous = this.targets.get(found.openerId);
     const known = previous?.info;
     const first = await this.openerInfo(found.openerId);
@@ -1069,6 +1096,11 @@ class Guard {
       this.learn(first);
       return false;
     }
+    const observed = this.targets.get(found.openerId)?.info;
+    if (observed && !this.sameTarget(observed, known) && !this.sameTarget(observed, first))
+      return null;
+    this.learn(first);
+    this.classifyTarget(first.targetId, this.targets.get(first.targetId));
     const child = await this.openerInfo(targetId);
     const ancestry = await this.heldAncestry(first, new Set([targetId]));
     const last = await this.openerInfo(found.openerId);
@@ -1077,10 +1109,10 @@ class Guard {
       !child ||
       !last ||
       ancestry === null ||
-      !same(first, last) ||
-      !same(found.info, child) ||
-      !same(this.targets.get(targetId)?.info, found.info) ||
-      (remembered && !same(remembered, known) && !same(remembered, last))
+      !this.sameTarget(first, last) ||
+      !this.sameTarget(found.info, child) ||
+      !this.sameTarget(this.targets.get(targetId)?.info, found.info) ||
+      (remembered && !this.sameTarget(remembered, known) && !this.sameTarget(remembered, last))
     )
       return null;
     this.learn(last);
@@ -1129,6 +1161,10 @@ class Guard {
       found.guarded = true;
       return true;
     }
+    return this.classifyTarget(targetId, found, opener);
+  }
+
+  classifyTarget(targetId, found, opener) {
     if ((found.was || found.guarded) && this.proofCommits.get(targetId)?.url === BLANKED) {
       found.guarded = true;
       return true;
