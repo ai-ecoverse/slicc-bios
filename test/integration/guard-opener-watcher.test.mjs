@@ -203,3 +203,52 @@ for (const url of ['about:blank', 'about:srcdoc']) {
     assert.equal(isHeld(child.targetId, store), true);
   });
 }
+
+for (const [url, access, flight, expected] of [
+  [other, false, false, false],
+  [other, false, true, true],
+  [other, true, false, true],
+  ['about:blank', false, false, true],
+  ['about:srcdoc', false, false, true],
+]) {
+  test(`opener watcher standalone child ${url}, access ${access}, flight ${flight}`, async (t) => {
+    const store = storage();
+    if (flight) store.setItem(FLIGHT_KEY, String(Date.now() + 60000));
+    const prefix = `standalone-noopener-${url}-${access}-${flight}`;
+    const parent = {
+      targetId: `${prefix}-parent`,
+      type: 'page',
+      url: 'https://seven.sliccy.ai/page',
+    };
+    const child = {
+      targetId: `${prefix}-child`,
+      type: 'page',
+      url,
+      openerId: parent.targetId,
+      canAccessOpener: access,
+    };
+    let infos = [parent];
+    const wire = host(() => infos);
+    let tick;
+    const watcher = watchOpened({
+      hosts: wire.hosts,
+      storage: store,
+      timers: {
+        setInterval(fn) {
+          tick = fn;
+          return 1;
+        },
+        clearInterval() {},
+      },
+    });
+    t.after(() => watcher.stop());
+    watcher.poke();
+    await flush();
+    wire.emit(child);
+    assert.equal(isHeld(child.targetId, store), expected);
+    infos = [parent, { ...child, url: other }];
+    tick();
+    await flush();
+    assert.equal(isHeld(child.targetId, store), expected);
+  });
+}

@@ -192,7 +192,8 @@ function considering({ is, storage, now }) {
     if (isHeld(info.targetId, storage)) return false;
     if (isHeld(info.parentId, storage) || isHeld(info.openerId, storage)) return true;
     if (info.type !== 'page' || !info.openerId) return false;
-    if (!all && emptyNoAccess(info)) return false;
+    if (!all && !info.canAccessOpener && !/^about:(?:blank|srcdoc)(?:#|$)/.test(info.url ?? ''))
+      return false;
     const opener = targets.get(info.openerId);
     const current = fresh.get(info.openerId);
     const cross =

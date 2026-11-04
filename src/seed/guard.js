@@ -4575,6 +4575,8 @@ class Guard {
     const targetId = this.scopeTarget(message.sessionId);
     const target = this.targets.get(targetId);
     if (target?.type === 'page') {
+      const early = this.prelude(message.sessionId, message.method);
+      if (early !== false) return early;
       const info = await this.openerInfo(targetId);
       if (info?.type !== 'page' || (await this.surfaceOpener(info))) return PROTECTED;
     }
