@@ -17,8 +17,8 @@ const release = (version, sha256) => ({
   sha256,
 });
 export const CURRENT_EXTENSION = release(
-  '7.12.0',
-  'e452638af2b4baa7814929ba72f104c954e315e5c25f77546f9b67263702fb82'
+  '7.12.1',
+  'ea5900364449c74379c4eaca009f4a09a8e0604d32208c18cfa2e8ead3d7d29c'
 );
 export const UNSUPPORTED_EXTENSION = release(
   '7.9.16',
