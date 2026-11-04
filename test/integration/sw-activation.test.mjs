@@ -18,24 +18,52 @@ const SIZE = 64 * 1024 * 1024;
 let bump = 0;
 
 async function updateWhileHolding(page, url, traffic = null) {
+  await page.evaluate(async (target) => {
+    const start = performance.now();
+    const log = [];
+    const response = await fetch(target);
+    const reader = response.body.getReader();
+    log.push(
+      `${Math.round(performance.now() - start)} ${target} ${response.status}, read ${(await reader.read()).value?.byteLength}`
+    );
+    window.__swActivationHold = { reader, log, start };
+  }, url);
   bump += 1;
   chrome.overrides.set(
     '/sw.js',
     current.replace('const own = ', `const own =${' '.repeat(bump)} `)
   );
   return page.evaluate(
-    async ([url, hold, traffic]) => {
-      const start = performance.now();
+    async ([hold, traffic]) => {
+      const { reader, log, start } = window.__swActivationHold;
+      delete window.__swActivationHold;
       const at = () => Math.round(performance.now() - start);
-      const log = [];
-      const response = await fetch(url);
-      const reader = response.body.getReader();
-      log.push(
-        `${at()} ${url} ${response.status}, read ${(await reader.read()).value?.byteLength}`
-      );
       const registration = await navigator.serviceWorker.getRegistration();
+      const appeared = new Promise((resolve) => {
+        const dig = () => {
+          const found = registration.installing ?? registration.waiting;
+          if (found) resolve(found);
+        };
+        registration.addEventListener('updatefound', dig);
+        dig();
+      });
       await registration.update();
-      const worker = registration.installing ?? registration.waiting;
+      let worker = registration.installing ?? registration.waiting;
+      if (!worker) {
+        const end = performance.now() + hold;
+        worker = await Promise.race([
+          appeared,
+          new Promise((resolve) => {
+            const tick = () => {
+              const found = registration.installing ?? registration.waiting;
+              if (found) return resolve(found);
+              if (performance.now() >= end) return resolve(null);
+              setTimeout(tick, 50);
+            };
+            tick();
+          }),
+        ]);
+      }
       if (!worker) return { log: [...log, 'no new worker'], held: null, released: null };
       worker.addEventListener('statechange', () => log.push(`${at()} ${worker.state}`));
       const until = async (ms) => {
@@ -85,7 +113,7 @@ async function updateWhileHolding(page, url, traffic = null) {
         sources: { own: sources(own), traffic: traffic ? sources(traffic) : [] },
       };
     },
-    [url, HOLD, traffic]
+    [HOLD, traffic]
   );
 }
 
