@@ -739,6 +739,8 @@ class Guard {
     this.offered = new Set();
     this.contexts = new Set();
     this.worlds = new Map();
+    this.probeContexts = new Map();
+    this.frameLoaders = new Map();
     this.runtimes = new Set();
     this.primed = new Set();
     this.targets = new Map();
@@ -2019,6 +2021,11 @@ class Guard {
     scope.frames.add(frame.id);
     if (frame.parentId && frame.id !== scope.root) scope.remoteOwners.delete(frame.id);
     this.frames.set(frame.id, this.framed(frame));
+    if (typeof frame.loaderId === 'string' && frame.loaderId) {
+      const previous = this.frameLoaders.get(frame.id);
+      this.frameLoaders.set(frame.id, frame.loaderId);
+      if (previous !== undefined && previous !== frame.loaderId) this.forgetProbeFrame(frame.id);
+    }
     if (frame.parentId) {
       this.parents.set(frame.id, frame.parentId);
       this.refresh(targetId);
@@ -2035,6 +2042,8 @@ class Guard {
     for (const id of gone) {
       this.frames.delete(id);
       this.parents.delete(id);
+      this.frameLoaders.delete(id);
+      this.forgetProbeFrame(id);
       this.scopes.delete(id);
       for (const scope of this.scopes.values()) {
         scope.frames.delete(id);
@@ -2043,6 +2052,20 @@ class Guard {
         scope.attachedFrames.delete(id);
         scope.treeFrames?.delete(id);
       }
+    }
+  }
+
+  forgetProbeFrame(frameId) {
+    const suffix = `\0${frameId}`;
+    for (const key of this.probeContexts.keys()) {
+      if (key.endsWith(suffix)) this.probeContexts.delete(key);
+    }
+  }
+
+  forgetProbeSession(sessionId) {
+    const prefix = `${sessionId}\0`;
+    for (const key of this.probeContexts.keys()) {
+      if (key.startsWith(prefix)) this.probeContexts.delete(key);
     }
   }
 
@@ -3499,6 +3522,7 @@ class Guard {
       this.discardPending(params.sessionId);
       this.watching.delete(params.sessionId);
       this.worlds.delete(params.sessionId);
+      this.forgetProbeSession(params.sessionId);
       this.runtimes.delete(params.sessionId);
       this.primed.delete(params.sessionId);
       if (this.navSessions.has(params.sessionId)) {
@@ -3556,11 +3580,13 @@ class Guard {
   foreign({ method, params = {}, sessionId }) {
     if (method === 'Runtime.executionContextsCleared') {
       this.worlds.delete(sessionId);
+      this.forgetProbeSession(sessionId);
       return false;
     }
     if (method === 'Runtime.executionContextCreated' && params.context) {
       const { id, uniqueId, name, origin, auxData } = params.context;
       const hidden =
+        name === EXTENSION_WORLD ||
         (auxData?.type === 'isolated' && EXTENSIONS.test(origin ?? '')) ||
         this.errorFrames.has(auxData?.frameId);
       const world = this.world(sessionId);
@@ -4612,18 +4638,21 @@ class Guard {
       }
       return false;
     }
-    if (
-      (TREED.has(method) || CONTENTS.has(method)) &&
-      message.result &&
-      typeof message.result === 'object'
-    ) {
-      const { params, named } = this.redact(message.result);
-      if (CONTENTS.has(method) && named) {
-        this.refuse(was);
+    if (TREED.has(method) && message.result && typeof message.result === 'object') {
+      this.deliver({ ...message, result: this.redact(message.result).params });
+      return true;
+    }
+    if (!CONTENTS.has(method)) return false;
+    if (this.mentions(message.result)) {
+      this.refuse(was);
+      return true;
+    }
+    if (message.result && typeof message.result === 'object') {
+      const { params, changed } = this.redact(message.result);
+      if (changed.length) {
+        this.deliver({ ...message, result: params });
         return true;
       }
-      this.deliver({ ...message, result: params });
-      return true;
     }
     return false;
   }
@@ -4782,8 +4811,10 @@ class Guard {
   worldReply(was, result) {
     if (was?.method === 'Page.createIsolatedWorld' && result?.executionContextId !== undefined) {
       const world = this.world(was.sessionId);
-      if (!world.ids.has(result.executionContextId))
-        world.ids.set(result.executionContextId, false);
+      const hidden = was.params?.worldName === EXTENSION_WORLD;
+      if (!world.ids.has(result.executionContextId) || hidden)
+        world.ids.set(result.executionContextId, hidden);
+      if (hidden) world.names.add(EXTENSION_WORLD);
     }
   }
 
@@ -5092,6 +5123,27 @@ class Guard {
     return ids;
   }
 
+  async extensionProbeContext(guard, parent) {
+    const loaderId = this.frameLoaders.get(parent) ?? '';
+    const key = `${guard}\0${parent}`;
+    const cached = this.probeContexts.get(key);
+    if (cached && cached.loaderId === loaderId && Number.isSafeInteger(cached.contextId)) {
+      return cached.contextId;
+    }
+    const world = await this.call(
+      'Page.createIsolatedWorld',
+      { frameId: parent, worldName: EXTENSION_WORLD },
+      guard
+    );
+    const context = world.result?.executionContextId;
+    if (world.error || !Number.isSafeInteger(context)) return null;
+    const book = this.world(guard);
+    book.ids.set(context, true);
+    book.names.add(EXTENSION_WORLD);
+    this.probeContexts.set(key, { loaderId, contextId: context });
+    return context;
+  }
+
   async extensionFrameShown(sessionId, frameId) {
     const parent = this.parents.get(frameId);
     const guard = this.scopes.get(this.scopeTarget(sessionId))?.sessionId ?? sessionId;
@@ -5102,13 +5154,8 @@ class Guard {
       timer.unref?.();
     });
     const probe = (async () => {
-      const world = await this.call(
-        'Page.createIsolatedWorld',
-        { frameId: parent, worldName: EXTENSION_WORLD },
-        guard
-      );
-      const context = world.result?.executionContextId;
-      if (world.error || !Number.isSafeInteger(context)) return true;
+      const context = await this.extensionProbeContext(guard, parent);
+      if (context === null) return true;
       const owner = await this.call('DOM.getFrameOwner', { frameId }, guard);
       const node = owner.result?.backendNodeId;
       if (owner.error || !Number.isSafeInteger(node)) return true;
@@ -5402,6 +5449,7 @@ class Guard {
     if (sessionId && method === 'Runtime.disable') {
       this.runtimes.delete(sessionId);
       this.worlds.delete(sessionId);
+      this.forgetProbeSession(sessionId);
     }
     if (sessionId && method === 'Page.enable') this.pages.add(sessionId);
     if (sessionId && method === 'Page.disable' && this.shown.has(sessionId)) {
