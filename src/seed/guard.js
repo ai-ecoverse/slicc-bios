@@ -4532,17 +4532,31 @@ class Guard {
     const recovering = this.pendingRecovery(message);
     const quarantined = this.quarantined.has(message.sessionId) && !RECOVERS.has(message.method);
     const sticky = recovering || quarantined;
-    if (
-      contentRead(message.method) &&
-      this.ownedBlank(message.sessionId) &&
-      !this.errorDocument(message.sessionId, message.method)
-    )
-      return recovering;
     return (
       this.unsafe.has(message) ||
       sticky ||
       (contentRead(message.method) && this.errorDocument(message.sessionId, message.method))
     );
+  }
+
+  async admitContent(message) {
+    if (!this.unsafeContent(message)) return true;
+    if (!contentRead(message.method)) return false;
+    if (!this.ownedBlank(message.sessionId)) return false;
+    if (this.errorDocument(message.sessionId, message.method)) return false;
+    const entry = this.sessions.get(message.sessionId);
+    if (!entry) return false;
+    if (
+      !(await this.retainedBlank(message.sessionId, {
+        targetId: entry.targetId,
+        type: 'page',
+        url: BLANKED,
+      }))
+    )
+      return false;
+    this.unsafe.delete(message);
+    this.quarantined.delete(message.sessionId);
+    return !this.pendingRecovery(message);
   }
 
   replyProtected(was) {
@@ -4689,7 +4703,7 @@ class Guard {
     await this.finishRecovery(was);
     this.pendingContent.delete(was);
     if (this.endedAnswer(was) || !this.owns(was)) return;
-    if (this.unsafeContent(was)) return this.refuse(was);
+    if (!(await this.admitContent(was))) return this.refuse(was);
     if (this.pageAnswer(was)) return;
     if (await this.routed(message, was)) return;
     if (this.sealed(was)) return this.refuse(was);
@@ -4924,7 +4938,7 @@ class Guard {
       const info = await this.openerInfo(targetId);
       if (info?.type !== 'page' || (await this.surfaceOpener(info))) return PROTECTED;
     }
-    if (this.unsafeContent(message) || (await this.recover(message))) return PROTECTED;
+    if (!(await this.admitContent(message)) || (await this.recover(message))) return PROTECTED;
     return this.pageCheck(message.method, message.sessionId);
   }
 
@@ -5116,7 +5130,7 @@ class Guard {
     const outgoing = await this.withMainWorld(message);
     const { id, method, sessionId } = outgoing;
     if (this.finished.has(message) || !this.owns(message)) return;
-    if (this.unsafeContent(message) || this.departing(message)) return this.refuse(message);
+    if (!(await this.admitContent(message)) || this.departing(message)) return this.refuse(message);
     if (
       this.blocked.has(sessionId) &&
       !(method === 'Page.captureScreenshot' && this.shots.has(requestKey(message)))
@@ -5599,7 +5613,7 @@ class Guard {
           if (this.finished.has(message) || !this.owns(message)) return;
           if (await this.refuseUnsafeContent(message)) return;
           if (!(await this.proveContent(message))) return this.refuse(message);
-          if (this.unsafeContent(message)) return this.refuse(message);
+          if (!(await this.admitContent(message))) return this.refuse(message);
           const why = await this.check(message);
           if (this.finished.has(message) || !this.owns(message)) return;
           if (why) return this.refuse(message, why);

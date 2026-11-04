@@ -166,3 +166,50 @@ test('ordering an unreachable protected chrome-error document stays refused', as
   );
   assert.deepEqual(state.wire.clients(mark), []);
 });
+
+test('ordering an owned blank root with a contained protected error child refuses content', async (t) => {
+  const id = 'blank-wipe-child-error';
+  const child = `${id}-child`;
+  const wire = protocol(t);
+  const entry = wire.target(id, 'page', plainFrame(id));
+  const session = await wire.attach(id);
+  await wire.send('Page.enable', {}, session);
+  const blankFrame = { id, loaderId: 'blank-loader', url: BLANKED, securityOrigin: 'null' };
+  entry.info.url = BLANKED;
+  entry.info.title = 'blocked';
+  entry.tree = { frame: blankFrame };
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: `guard-${id}`,
+    params: { frame: blankFrame },
+  });
+  wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: { ...entry.info } } });
+  await flush();
+  await flush();
+  wire.hold((message) => {
+    if (message.method === 'Page.getFrameTree' && String(message.sessionId).startsWith('client-')) {
+      queueMicrotask(() =>
+        wire.release(message, { result: { frameTree: { frame: { ...blankFrame } } } })
+      );
+      return true;
+    }
+    return false;
+  });
+  const mark = wire.sent.length;
+  const pending = wire.request('Runtime.evaluate', { expression: '1' }, session);
+  const childFrame = {
+    ...errorFrame(child, id),
+    loaderId: 'child-error-loader',
+  };
+  entry.tree = { frame: blankFrame, childFrames: [{ frame: childFrame }] };
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: `guard-${id}`,
+    params: { frame: childFrame },
+  });
+  assert.equal((await pending.answer).error?.message, PROTECTED);
+  assert.equal(
+    wire.clients(mark).some((message) => message.method === 'Runtime.evaluate'),
+    false
+  );
+});
