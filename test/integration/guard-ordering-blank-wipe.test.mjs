@@ -213,3 +213,111 @@ test('ordering an owned blank root with a contained protected error child refuse
     false
   );
 });
+
+async function wipedSticky(t, id) {
+  const wire = protocol(t);
+  const entry = wire.target(id, 'page', plainFrame(id));
+  const session = await wire.attach(id);
+  await wire.send('Page.enable', {}, session);
+  entry.info.url = failed;
+  wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: { ...entry.info } } });
+  await flush();
+  await flush();
+  entry.tree = { frame: { ...errorFrame(id), loaderId: 'failed-loader' } };
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: `guard-${id}`,
+    params: { frame: entry.tree.frame },
+  });
+  entry.info.url = BLANKED;
+  entry.tree = { frame: { id, loaderId: 'blank-loader', url: BLANKED, securityOrigin: '://' } };
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: `guard-${id}`,
+    params: { frame: entry.tree.frame },
+  });
+  wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: { ...entry.info } } });
+  await flush();
+  await flush();
+  entry.info.url = failed;
+  wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: { ...entry.info } } });
+  await flush();
+  await flush();
+  entry.info.url = BLANKED;
+  return { wire, entry, session, id };
+}
+
+test('ordering a blank content admit keeps the session quarantine for later commands', async (t) => {
+  const { wire, session } = await wipedSticky(t, 'blank-wipe-quarantine');
+  assert.equal(
+    (await wire.send('Runtime.evaluate', { expression: '1' }, session)).error,
+    undefined
+  );
+  const mark = wire.sent.length;
+  assert.equal(
+    (
+      await wire.send(
+        'Input.dispatchMouseEvent',
+        { type: 'mousePressed', x: 1, y: 1, button: 'left', clickCount: 1 },
+        session
+      )
+    ).error?.message,
+    PROTECTED
+  );
+  assert.equal(
+    wire.clients(mark).some((message) => message.method === 'Input.dispatchMouseEvent'),
+    false
+  );
+});
+
+test('ordering a blank content answer refuses after an ordinary replacement', async (t) => {
+  const { wire, entry, session, id } = await wipedSticky(t, 'blank-wipe-ordinary-answer');
+  wire.hold((message) => message.method === 'Runtime.evaluate' && message.id < 2 ** 30);
+  const pending = wire.request('Runtime.evaluate', { expression: '1' }, session);
+  await flush();
+  await flush();
+  const held = wire.held.find((message) => message.method === 'Runtime.evaluate');
+  entry.tree = {
+    frame: {
+      id,
+      loaderId: 'ordinary-loader',
+      url: ordinary,
+      securityOrigin: new URL(ordinary).origin,
+    },
+  };
+  entry.info.url = ordinary;
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: `guard-${id}`,
+    params: { frame: entry.tree.frame },
+  });
+  wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: { ...entry.info } } });
+  await flush();
+  assert.ok(held);
+  wire.release(held, {
+    result: { result: { type: 'string', value: 'from-ordinary-document' } },
+  });
+  assert.equal((await pending.answer).error?.message, PROTECTED);
+});
+
+test('ordering a blank content answer refuses after a protected replacement', async (t) => {
+  const { wire, entry, session, id } = await wipedSticky(t, 'blank-wipe-protected-answer');
+  wire.hold((message) => message.method === 'Runtime.evaluate' && message.id < 2 ** 30);
+  const pending = wire.request('Runtime.evaluate', { expression: '1' }, session);
+  await flush();
+  await flush();
+  const held = wire.held.find((message) => message.method === 'Runtime.evaluate');
+  entry.tree = { frame: { ...errorFrame(id), loaderId: 'prot-loader' } };
+  entry.info.url = entry.tree.frame.url;
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: `guard-${id}`,
+    params: { frame: entry.tree.frame },
+  });
+  await flush();
+  assert.ok(held);
+  wire.release(held, {
+    result: { result: { type: 'string', value: 'from-protected' } },
+  });
+  assert.equal((await pending.answer).error?.message, PROTECTED);
+});
