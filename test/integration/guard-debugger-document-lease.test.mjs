@@ -264,6 +264,69 @@ for (const route of [
   });
 }
 
+test('extension: a page with no Debugger lease pushStates to a sign-in URL and refresh locks like main', async (t) => {
+  const signIn = 'https://ordinary.invalid/page?client_id=experience-catalyst-prod';
+  const p = protocol(t, (raw, own) =>
+    guardProtected(raw, own, new Map(), { kind: 'extension', version: '7.12.0' }, ordinaryReader)
+  );
+  const root = p.target('root', 'page', { ...plainFrame('root'), loaderId: 'root-loader' });
+  const session = await p.attach('root');
+  assert.equal(
+    (await p.send('Page.startScreencast', { format: 'jpeg', quality: 80 }, session)).error,
+    undefined
+  );
+  root.tree.frame.url = signIn;
+  root.info.url = signIn;
+  const since = p.sent.length;
+  p.emit({
+    sessionId: session,
+    method: 'Page.navigatedWithinDocument',
+    params: { frameId: 'root', url: signIn },
+  });
+  await flush();
+  await flush();
+  assert.ok(
+    p.sent.slice(since).some(({ method }) => method === 'Page.stopScreencast'),
+    'no-lease sign-in same-document navigation must stop the screencast'
+  );
+  assert.ok(
+    p.sent
+      .slice(since)
+      .some(
+        ({ method }) => method === 'Page.getFrameTree' || method === 'DOMSnapshot.captureSnapshot'
+      ),
+    'no-lease sign-in same-document navigation must refresh'
+  );
+});
+
+test('extension: a page with no Debugger lease keeps the screencast across an ordinary hash change', async (t) => {
+  const p = protocol(t, (raw, own) =>
+    guardProtected(raw, own, new Map(), { kind: 'extension', version: '7.12.0' }, ordinaryReader)
+  );
+  p.target('root', 'page', { ...plainFrame('root'), loaderId: 'root-loader' });
+  const session = await p.attach('root');
+  assert.equal(
+    (await p.send('Page.startScreencast', { format: 'jpeg', quality: 80 }, session)).error,
+    undefined
+  );
+  const since = p.sent.length;
+  p.emit({
+    sessionId: session,
+    method: 'Page.navigatedWithinDocument',
+    params: { frameId: 'root', url: 'https://ordinary.invalid/page#nolease' },
+  });
+  await flush();
+  await flush();
+  assert.equal(
+    p.sent.slice(since).some(({ method }) => method === 'Page.stopScreencast'),
+    false
+  );
+  assert.equal(
+    p.sent.slice(since).some(({ method }) => method === 'DOMSnapshot.captureSnapshot'),
+    false
+  );
+});
+
 test('extension: a root-only re-placement after a frame change restores the Debugger lease', async (t) => {
   const p = protocol(t, (raw, own) =>
     guardProtected(raw, own, new Map(), { kind: 'extension', version: '7.12.0' }, ordinaryReader)

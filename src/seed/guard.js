@@ -5183,19 +5183,22 @@ class Guard {
       this.debuggerLeases.delete(targetId);
       return;
     }
-    if (!lease || lease.state === 'revoked') return;
-    this.setDebuggerLease(targetId, 'suspended');
-    if (!sameDocument) return;
-    this.refuseScopedCommands(targetId);
-    const url = params.url;
-    const frameId = params.frameId;
-    if (typeof frameId === 'string' && frameId && typeof url === 'string' && url)
-      this.frames.set(frameId, url);
-    if (!this.sameDocumentOrdinary(url) || this.pageLocked(targetId)) {
-      this.refresh(targetId);
+    if (sameDocument) {
+      this.refuseScopedCommands(targetId);
+      const url = params.url;
+      const frameId = params.frameId;
+      if (typeof frameId === 'string' && frameId && typeof url === 'string' && url)
+        this.frames.set(frameId, url);
+      if (!this.sameDocumentOrdinary(url) || this.pageLocked(targetId)) {
+        if (lease && lease.state !== 'revoked') this.setDebuggerLease(targetId, 'suspended');
+        this.refresh(targetId);
+        return;
+      }
+      if (lease && lease.state !== 'revoked') this.setDebuggerLease(targetId, 'placed');
       return;
     }
-    this.setDebuggerLease(targetId, 'placed');
+    if (!lease || lease.state === 'revoked') return;
+    this.setDebuggerLease(targetId, 'suspended');
   }
 
   receiveNavigation(message) {
