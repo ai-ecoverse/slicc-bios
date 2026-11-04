@@ -31,6 +31,17 @@ export const PROFILED =
 export const DEBUGGER =
   'slicc: refused: breakpoints could run in seven’s pages or the vault, so the guard doesn’t offer the Debugger domains';
 
+const EXTENSION_FRAMES = catalog.protectedOrigins.extensionFrames;
+export const SHOWN_REFUSAL = EXTENSION_FRAMES.shownRefusal;
+export const PRESENT_REFUSAL = EXTENSION_FRAMES.presentRefusal;
+const WHEN_SHOWN = new Set(EXTENSION_FRAMES.whenShown);
+const WHILE_PRESENT = new Set(EXTENSION_FRAMES.whilePresent);
+const EXTENSION_SCHEMES = new Set(EXTENSION_FRAMES.schemes);
+const EXTENSION_WORLD = 'slicc-extension-frames';
+const EXTENSION_PROBE =
+  'function(){if(!this.isConnected||this.checkVisibility({visibilityProperty:true}))return true;let node=this;for(let depth=0;depth<64;depth++){const root=node.getRootNode();if(root.activeElement!==node)return false;if(!root.host)return true;node=root.host;}return true;}';
+const EXTENSION_CHECK_MS = 1000;
+
 const GUARD_IDS = 2 ** 30;
 const HOLD_MS = 2000;
 const BLANK_MS = 10000;
@@ -216,6 +227,7 @@ const TREED = new Set([
   'Accessibility.getChildAXNodes',
   'Accessibility.queryAXTree',
 ]);
+const EVALUATED = new Set(['Runtime.evaluate', 'Runtime.callFunctionOn']);
 const ERROR_METADATA = new Set([
   'Target.targetCreated',
   'Target.targetInfoChanged',
@@ -535,6 +547,9 @@ export function redacting(is) {
     const shown = authority(text);
     if (shown === null) return text.slice(0, text.indexOf('://') + 3);
     if (!is.url(`${shown}/`)) return null;
+    try {
+      if (EXTENSION_SCHEMES.has(new URL(text).protocol.slice(0, -1))) return 'about:blank';
+    } catch {}
     if (URL.canParse(`${shown}/`)) past(text, shown);
     return shown;
   };
@@ -1218,9 +1233,56 @@ class Guard {
         owners: new Set(),
         remoteOwners: new Set(),
         attachedFrames: new Set(),
+        extensionOwners: new Set(),
         ready: false,
       });
     return this.scopes.get(targetId);
+  }
+
+  extensionUrl(url) {
+    return typeof url === 'string' && this.is.extensionFrame(url);
+  }
+
+  extensionOwner(owner) {
+    const attrs = owner?.attributes;
+    if (Array.isArray(attrs)) {
+      const source = attrs.indexOf('src');
+      if (source >= 0) return this.extensionUrl(attrs[source + 1]);
+    }
+    return this.extensionUrl(owner?.contentDocument?.documentURL);
+  }
+
+  remoteOwnersLock(scope) {
+    return [...(scope.remoteBackendOwners?.values() ?? [])].some(
+      (owner) => !this.extensionOwner(owner)
+    );
+  }
+
+  extensionPresent(targetId) {
+    const seen = new Set();
+    const walk = (id) => {
+      if (!id || seen.has(id)) return false;
+      seen.add(id);
+      const scope = this.scopes.get(id);
+      if (!scope) return this.extensionUrl(this.frames.get(id));
+      if (scope.extensionOwners?.size) return true;
+      for (const frame of this.relatedFrames(scope.frames)) {
+        if (this.extensionUrl(this.frames.get(frame))) return true;
+      }
+      for (const [child, entry] of this.scopes) {
+        if (entry.parent === id && walk(child)) return true;
+      }
+      return false;
+    };
+    let id = targetId;
+    const up = new Set();
+    while (id) {
+      if (up.has(id)) break;
+      up.add(id);
+      if (walk(id)) return true;
+      id = this.scopes.get(id)?.parent;
+    }
+    return false;
   }
 
   scopeTarget(sessionId) {
@@ -1406,6 +1468,7 @@ class Guard {
 
   childLocked(id, scope, holds, seen, view) {
     if (id === scope.root) return false;
+    if (this.extensionUrl(this.frames.get(id)) || scope.extensionOwners?.has(id)) return false;
     if (holds && !LISTED_FRAME.test(this.frames.get(id))) return true;
     if (
       !holds &&
@@ -1422,12 +1485,17 @@ class Guard {
     const scope = this.scopes.get(targetId);
     if (!this.scopeReady(targetId, scope, view) || (view && scope.committed)) return true;
     if (scope.privatePlaced) return Boolean(view);
-    if (scope.remoteBackendOwners?.size) return true;
+    if (this.remoteOwnersLock(scope)) return true;
     const holds = this.holding(targetId);
     for (const id of this.relatedFrames(scope.frames)) {
       const url = this.frames.get(id);
       if (this.unavailableFrame(id, url, view)) return true;
-      if (this.is.url(url) && !(blankRoot && id === scope.root) && !view?.errors.has(id))
+      if (
+        this.is.url(url) &&
+        !this.extensionUrl(url) &&
+        !(blankRoot && id === scope.root) &&
+        !view?.errors.has(id)
+      )
         return true;
       if (this.childLocked(id, scope, holds, seen, view)) return true;
     }
@@ -1459,6 +1527,18 @@ class Guard {
     );
   }
 
+  shouldStopCast(sessionId) {
+    const targetId = this.scopeTarget(sessionId);
+    return this.locked(sessionId) || Boolean(targetId && this.extensionPresent(targetId));
+  }
+
+  forgetCast(sessionId) {
+    if (!this.casts.has(sessionId)) return false;
+    this.casts.delete(sessionId);
+    void this.call('Page.stopScreencast', {}, sessionId);
+    return true;
+  }
+
   stopCasts() {
     for (const message of new Set([...this.asked.values(), ...this.answering])) {
       if (
@@ -1470,10 +1550,8 @@ class Guard {
         this.refuse(message);
       }
     }
-    for (const sessionId of this.casts) {
-      if (!this.locked(sessionId)) continue;
-      this.casts.delete(sessionId);
-      void this.call('Page.stopScreencast', {}, sessionId);
+    for (const sessionId of [...this.casts]) {
+      if (this.shouldStopCast(sessionId)) this.forgetCast(sessionId);
     }
   }
 
@@ -1484,6 +1562,7 @@ class Guard {
     scope.loader = tree?.frame?.loaderId;
     scope.treeFrames = new Set(all.map((frame) => frame.id));
     scope.frames = new Set([...scope.treeFrames, ...scope.owners]);
+    scope.extensionOwners ??= new Set();
     const parentId = tree?.frame?.parentId;
     if (parentId && !scope.parent)
       scope.parent = this.scopes.has(parentId)
@@ -1495,8 +1574,11 @@ class Guard {
     scope.ready = scope.tree && !scope.failed && !scope.pending;
     if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
     for (const frame of all) {
-      this.frames.set(frame.id, this.framed(frame));
+      const url = this.framed(frame);
+      this.frames.set(frame.id, url);
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
+      if (this.extensionUrl(url)) scope.extensionOwners.add(frame.id);
+      else scope.extensionOwners.delete(frame.id);
     }
     const parentRoot = this.scopes.get(scope.parent)?.root;
     if (
@@ -1573,7 +1655,10 @@ class Guard {
         return false;
       backend.add(owner.backendNodeId);
       if (owner.frameId) owners.push(owner);
-      else remote.set(owner.backendNodeId, owner);
+      else {
+        remote.set(owner.backendNodeId, owner);
+        if (this.extensionOwner(owner)) scope.extensionOwners.add(String(owner.backendNodeId));
+      }
     }
     return true;
   }
@@ -1645,6 +1730,7 @@ class Guard {
     scope.owners = new Set();
     scope.remoteOwners = new Set();
     scope.remoteBackendOwners = new Map();
+    scope.extensionOwners = new Set();
     scope.privatePlaced = false;
     const nodes = [root];
     while (nodes.length) {
@@ -1679,6 +1765,12 @@ class Guard {
       source < 0 ? undefined : node.attributes[source + 1],
       node.contentDocument?.documentURL,
     ];
+    if (evidence.some((url) => this.extensionUrl(url))) {
+      scope.extensionOwners.add(node.frameId);
+      if (typeof evidence[0] === 'string' && evidence[0])
+        this.frames.set(node.frameId, evidence[0]);
+      return;
+    }
     if (scope.attachedFrames.has(node.frameId) && evidence.some((url) => this.is.url(url))) {
       scope.protectedOwner = true;
       scope.knownProtectedOwner ||= evidence.some((url) => !inherits(url) && this.is.url(url));
@@ -2027,7 +2119,7 @@ class Guard {
     if (this.targets.has(frameId)) return this.target(frameId);
     if (this.frames.has(frameId)) {
       const url = this.frames.get(frameId);
-      if (this.is.url(url)) return true;
+      if (this.is.url(url) && !this.extensionUrl(url)) return true;
       return strict && (url === '' || inherits(url)) && (await this.inherited(frameId, 0));
     }
     if (await this.lookup(frameId)) return this.target(frameId);
@@ -3429,17 +3521,27 @@ class Guard {
       if (!params.frame.parentId && targetId && this.targets.has(targetId)) {
         this.targets.get(targetId).url = params.frame.url;
       }
-      return this.is.url(params.frame.url) || this.is.url(params.frame.securityOrigin);
+      return this.frameLive(params.frame);
     }
     if (method === 'Page.frameAttached' && params.frameId) {
       if (!this.frames.has(params.frameId)) this.frames.set(params.frameId, '');
       if (params.parentFrameId) this.parents.set(params.frameId, params.parentFrameId);
     }
-    if (NAVIGATED.has(method)) return !this.armed(sessionId) && this.is.url(params.url);
-    if (method === 'Network.requestWillBeSent' && params.type === 'Document') {
-      return !this.armed(sessionId) && this.is.url(params.request?.url);
+    if (NAVIGATED.has(method)) {
+      const protectedUrl = this.is.url(params.url) && !this.extensionUrl(params.url);
+      return !this.armed(sessionId) && protectedUrl;
     }
-    return method === 'Runtime.executionContextCreated' && this.is.url(params.context?.origin);
+    if (method === 'Network.requestWillBeSent' && params.type === 'Document') {
+      const protectedDocument =
+        this.is.url(params.request?.url) && !this.extensionUrl(params.request?.url);
+      return !this.armed(sessionId) && protectedDocument;
+    }
+    if (method === 'Runtime.executionContextCreated') {
+      const protectedOrigin =
+        this.is.url(params.context?.origin) && !this.extensionUrl(params.context?.origin);
+      return protectedOrigin;
+    }
+    return false;
   }
 
   world(sessionId) {
@@ -3543,12 +3645,15 @@ class Guard {
 
   protectedFrame(frame) {
     return (
-      this.is.url(frame.url) ||
-      this.is.url(frame.securityOrigin) ||
+      this.frameLive(frame) ||
       (typeof frame.url === 'string' &&
         frame.url.startsWith('chrome-error:') &&
         this.unsafeUrl(frame.unreachableUrl))
     );
+  }
+
+  extensionFrameNode(frame) {
+    return this.extensionUrl(frame?.url) || this.extensionUrl(frame?.securityOrigin);
   }
 
   containedError(frame, root) {
@@ -3800,11 +3905,20 @@ class Guard {
       this.frames.set(frame.id, this.framed(frame));
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
     }
-    const hidden = this.errorFrames.has(frame.id) || this.protectedFrame(frame);
+    const hidden =
+      this.errorFrames.has(frame.id) ||
+      this.protectedFrame(frame) ||
+      this.extensionFrameNode(frame);
     const { unreachableUrl, urlFragment, ...shown } = frame;
     return {
       ...rest,
-      frame: hidden ? { ...shown, url: ERROR_PAGE, securityOrigin: '://' } : frame,
+      frame: hidden
+        ? {
+            ...shown,
+            url: this.extensionFrameNode(frame) ? 'about:blank' : ERROR_PAGE,
+            securityOrigin: '://',
+          }
+        : frame,
       ...(childFrames
         ? { childFrames: childFrames.map((child) => this.tree(child, sessionId)) }
         : {}),
@@ -3880,9 +3994,7 @@ class Guard {
     const infoUrl = info.result?.targetInfo?.url;
     const hinted = [entry?.userTypedURL];
     for (const frame of frames) hinted.push(frame.unreachableUrl);
-    const visible = [infoUrl, ...frames.flatMap((frame) => [frame.url, frame.securityOrigin])].some(
-      (url) => this.is.url(url)
-    );
+    const visible = this.is.url(infoUrl) || frames.some((frame) => this.frameLive(frame));
     const live = visible || this.is.url(entry?.url);
     return {
       url: infoUrl || frames[0]?.url || '',
@@ -3910,7 +4022,10 @@ class Guard {
   }
 
   frameLive(frame) {
-    return this.is.url(frame.url) || this.is.url(frame.securityOrigin);
+    return (
+      (this.is.url(frame.url) && !this.extensionUrl(frame.url)) ||
+      (this.is.url(frame.securityOrigin) && !this.extensionUrl(frame.securityOrigin))
+    );
   }
 
   pageShown(now) {
@@ -4396,8 +4511,10 @@ class Guard {
   }
 
   async contentEvent(message) {
-    if (message.method === 'Page.screencastFrame' && !this.casts.has(message.sessionId))
-      return true;
+    if (message.method === 'Page.screencastFrame') {
+      if (this.shouldStopCast(message.sessionId)) this.forgetCast(message.sessionId);
+      return !this.casts.has(message.sessionId);
+    }
     if (message.method === 'Runtime.executionContextCreated') {
       const record = this.contextChecks.get(message.sessionId)?.get(message.params?.context?.id);
       if (record?.message === message && (!(await record.promise) || record.loading)) return true;
@@ -4486,13 +4603,29 @@ class Guard {
   }
 
   contents(message, was) {
-    if (TREED.has(was?.method) && message.result && typeof message.result === 'object') {
-      this.deliver({ ...message, result: this.redact(message.result).params });
+    const method = was?.method;
+    if (EVALUATED.has(method) && message.result && typeof message.result === 'object') {
+      const { params, changed } = this.redact(message.result);
+      if (changed.length) {
+        this.deliver({ ...message, result: params });
+        return true;
+      }
+      return false;
+    }
+    if (
+      (TREED.has(method) || CONTENTS.has(method)) &&
+      message.result &&
+      typeof message.result === 'object'
+    ) {
+      const { params, named } = this.redact(message.result);
+      if (CONTENTS.has(method) && named) {
+        this.refuse(was);
+        return true;
+      }
+      this.deliver({ ...message, result: params });
       return true;
     }
-    if (!CONTENTS.has(was?.method) || !this.mentions(message.result)) return false;
-    this.refuse(was);
-    return true;
+    return false;
   }
 
   async listed(message, result) {
@@ -4618,6 +4751,8 @@ class Guard {
   async shotAnswer(message, was) {
     if (await this.keptShot(was)) return this.deliver(message);
     if (this.sealed(was) || !(await this.openShot(was))) return this.refuse(was);
+    if (await this.extensionGate('Page.captureScreenshot', was.sessionId))
+      return this.refuse(was, SHOWN_REFUSAL);
     return this.deliver(message);
   }
 
@@ -4927,14 +5062,107 @@ class Guard {
     }
   }
 
+  extensionFrameIds(sessionId) {
+    const root = this.scopeTarget(sessionId);
+    if (!root) return [];
+    const ids = [];
+    const seen = new Set();
+    const collect = (targetId) => {
+      if (!targetId || seen.has(targetId)) return;
+      seen.add(targetId);
+      const scope = this.scopes.get(targetId);
+      if (!scope) return;
+      for (const id of this.relatedFrames(scope.frames)) {
+        if (this.extensionUrl(this.frames.get(id))) ids.push(id);
+      }
+      for (const id of scope.extensionOwners ?? []) {
+        if (!ids.includes(id)) ids.push(id);
+      }
+      for (const [child, entry] of this.scopes) {
+        if (entry.parent === targetId) collect(child);
+      }
+    };
+    let id = root;
+    const up = new Set();
+    while (id && !up.has(id)) {
+      up.add(id);
+      collect(id);
+      id = this.scopes.get(id)?.parent;
+    }
+    return ids;
+  }
+
+  async extensionFrameShown(sessionId, frameId) {
+    const parent = this.parents.get(frameId);
+    const guard = this.scopes.get(this.scopeTarget(sessionId))?.sessionId ?? sessionId;
+    if (typeof parent !== 'string' || !parent || guard === undefined) return true;
+    let timer;
+    const expired = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(true), EXTENSION_CHECK_MS);
+      timer.unref?.();
+    });
+    const probe = (async () => {
+      const world = await this.call(
+        'Page.createIsolatedWorld',
+        { frameId: parent, worldName: EXTENSION_WORLD },
+        guard
+      );
+      const context = world.result?.executionContextId;
+      if (world.error || !Number.isSafeInteger(context)) return true;
+      const owner = await this.call('DOM.getFrameOwner', { frameId }, guard);
+      const node = owner.result?.backendNodeId;
+      if (owner.error || !Number.isSafeInteger(node)) return true;
+      const resolved = await this.call(
+        'DOM.resolveNode',
+        { backendNodeId: node, executionContextId: context, objectGroup: EXTENSION_WORLD },
+        guard
+      );
+      const objectId = resolved.result?.object?.objectId;
+      if (resolved.error || typeof objectId !== 'string') return true;
+      const shown = await this.call(
+        'Runtime.callFunctionOn',
+        { objectId, functionDeclaration: EXTENSION_PROBE, returnByValue: true },
+        guard
+      );
+      await this.call('Runtime.releaseObjectGroup', { objectGroup: EXTENSION_WORLD }, guard);
+      return shown.error || shown.result?.result?.value !== false;
+    })().catch(() => true);
+    try {
+      return await Promise.race([probe, expired]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async extensionFramesShown(sessionId) {
+    const frames = this.extensionFrameIds(sessionId);
+    if (!frames.length) return false;
+    for (const frameId of frames) {
+      if (await this.extensionFrameShown(sessionId, frameId)) return true;
+    }
+    return false;
+  }
+
+  async extensionGate(method, sessionId) {
+    if (!WHEN_SHOWN.has(method) && !WHILE_PRESENT.has(method)) return null;
+    const targetId = this.scopeTarget(sessionId);
+    if (!targetId || !this.extensionPresent(targetId)) return null;
+    if (WHILE_PRESENT.has(method)) return PRESENT_REFUSAL;
+    if (WHEN_SHOWN.has(method) && (await this.extensionFramesShown(sessionId)))
+      return SHOWN_REFUSAL;
+    return null;
+  }
+
   async pageCheck(method, sessionId) {
     if (!pageScoped(method)) return null;
     const unguarded = await this.guarding(method, sessionId);
     if (unguarded) return unguarded;
     if (!(await this.placed(sessionId))) return UNGUARDED;
     if (!(await this.reread(sessionId))) return UNGUARDED;
-    if (method === 'Page.captureScreenshot') return this.locked(sessionId, true) ? PROTECTED : null;
-    return this.locked(sessionId) ? PROTECTED : null;
+    if (method === 'Page.captureScreenshot') {
+      if (this.locked(sessionId, true)) return PROTECTED;
+    } else if (this.locked(sessionId)) return PROTECTED;
+    return this.extensionGate(method, sessionId);
   }
 
   async reread(sessionId) {
@@ -5166,6 +5394,8 @@ class Guard {
       return this.refuse(message);
     if (pageScoped(method) && this.locked(sessionId) && !this.blankAdmission(message))
       return this.refuse(message);
+    const gate = await this.extensionGate(method, sessionId);
+    if (gate) return this.refuse(message, gate);
     if (method === 'Page.startScreencast') this.casts.add(sessionId);
     if (method === 'Page.stopScreencast') this.casts.delete(sessionId);
     if (sessionId && method === 'Runtime.enable') this.runtimes.add(sessionId);
