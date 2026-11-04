@@ -5154,6 +5154,7 @@ class Guard {
       timer.unref?.();
     });
     const probe = (async () => {
+      const key = `${guard}\0${parent}`;
       const context = await this.extensionProbeContext(guard, parent);
       if (context === null) return true;
       const owner = await this.call('DOM.getFrameOwner', { frameId }, guard);
@@ -5165,14 +5166,21 @@ class Guard {
         guard
       );
       const objectId = resolved.result?.object?.objectId;
-      if (resolved.error || typeof objectId !== 'string') return true;
+      if (resolved.error || typeof objectId !== 'string') {
+        this.probeContexts.delete(key);
+        return true;
+      }
       const shown = await this.call(
         'Runtime.callFunctionOn',
         { objectId, functionDeclaration: EXTENSION_PROBE, returnByValue: true },
         guard
       );
       await this.call('Runtime.releaseObjectGroup', { objectGroup: EXTENSION_WORLD }, guard);
-      return shown.error || shown.result?.result?.value !== false;
+      if (shown.error) {
+        this.probeContexts.delete(key);
+        return true;
+      }
+      return shown.result?.result?.value !== false;
     })().catch(() => true);
     try {
       return await Promise.race([probe, expired]);
