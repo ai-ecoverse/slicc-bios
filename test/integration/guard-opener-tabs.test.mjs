@@ -394,9 +394,9 @@ for (const mode of ['production', 'no-coop']) {
       );
       await closeTarget(raw, openerId);
       assert.equal(
-        (await observe(t, raw, guard, parent.targetId, `${mode}/held-${same}: opener closed`))
-          .error,
-        undefined
+        (await observe(t, raw, guard, parent.targetId, `${mode}/held-${same}: opener closed`)).error
+          ?.message,
+        PROTECTED
       );
       assert.equal(
         (await observe(t, raw, guard, child.targetId, `${mode}/held-${same}: direct opener alive`))
@@ -406,8 +406,8 @@ for (const mode of ['production', 'no-coop']) {
       await closeTarget(raw, parent.targetId);
       assert.equal(
         (await observe(t, raw, guard, child.targetId, `${mode}/held-${same}: direct opener closed`))
-          .error,
-        undefined
+          .error?.message,
+        PROTECTED
       );
     });
   }
@@ -424,27 +424,27 @@ for (const mode of ['production', 'no-coop']) {
 
 for (const mode of ['production', 'no-coop']) {
   for (const flight of [false, true]) {
-    test(`opener tab ${mode}: closed opener, in flight ${flight}`, {
+    test(`opener tab ${mode}: hold survives closed opener, in flight ${flight}`, {
       timeout: 90000,
     }, async (t) => {
       const store = stored(t);
       const { raw, guard, ids, openerId, openerSession } = await fixture(
         t,
         mode,
-        `release-${flight}`
+        `retention-${flight}`
       );
       const child = await popup(raw, openerSession, 'about:blank', false, openerId);
       ids.push(child.targetId);
       assert.equal(
-        (await observe(t, raw, guard, child.targetId, `${mode}/release-${flight}: inherited`)).error
-          ?.message,
+        (await observe(t, raw, guard, child.targetId, `${mode}/retention-${flight}: inherited`))
+          .error?.message,
         PROTECTED
       );
-      const url = `${ordinary}/${mode}/release-${flight}`;
+      const url = `${ordinary}/${mode}/retention-${flight}`;
       result(await raw.send('Page.navigate', { url }, child.sessionId));
       await settled(raw, child.targetId, url);
       assert.equal(
-        (await observe(t, raw, guard, child.targetId, `${mode}/release-${flight}: opener alive`))
+        (await observe(t, raw, guard, child.targetId, `${mode}/retention-${flight}: opener alive`))
           .error?.message,
         PROTECTED
       );
@@ -455,17 +455,24 @@ for (const mode of ['production', 'no-coop']) {
         raw,
         guard,
         child.targetId,
-        `${mode}/release-${flight}: opener closed`
+        `${mode}/retention-${flight}: opener closed`
       );
       if (flight) {
         assert.equal(answer.error?.message, PROTECTED);
         store.setItem(FLIGHT_KEY, '0');
         assert.equal(
-          (await observe(t, raw, guard, child.targetId, `${mode}/release-${flight}: flight ended`))
-            .error,
-          undefined
+          (
+            await observe(
+              t,
+              raw,
+              guard,
+              child.targetId,
+              `${mode}/retention-${flight}: flight ended`
+            )
+          ).error?.message,
+          PROTECTED
         );
-      } else assert.equal(answer.error, undefined, JSON.stringify(answer));
+      } else assert.equal(answer.error?.message, PROTECTED);
     });
   }
   test(`opener tab ${mode}: legacy stored hold without an opener`, {
@@ -479,7 +486,7 @@ for (const mode of ['production', 'no-coop']) {
     await settled(raw, targetId, url);
     store.setItem(KEY, JSON.stringify([targetId]));
     const answer = await observe(t, raw, guard, targetId, `${mode}/legacy: rechecked`);
-    assert.equal(answer.error, undefined, JSON.stringify(answer));
-    assert.equal(JSON.parse(store.getItem(KEY)).includes(targetId), false);
+    assert.equal(answer.error?.message, PROTECTED);
+    assert.equal(JSON.parse(store.getItem(KEY)).includes(targetId), true);
   });
 }

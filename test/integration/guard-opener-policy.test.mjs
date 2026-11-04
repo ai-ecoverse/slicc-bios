@@ -53,7 +53,7 @@ for (const access of [false, true]) {
   }
 }
 
-test('opener policy releases an ordinary inherited tab after its opener closes', async (t) => {
+test('opener policy retains an ordinary inherited tab after its opener closes', async (t) => {
   const wire = protocol(t);
   page(wire, 'retained-seven', seven);
   const child = page(wire, 'retained-child', 'about:srcdoc', 'retained-seven');
@@ -67,7 +67,8 @@ test('opener policy releases an ordinary inherited tab after its opener closes',
     url: other,
     securityOrigin: new URL(other).origin,
   };
-  assert.equal((await attach(wire, 'retained-child')).error, undefined);
+  refused(await attach(wire, 'retained-child'));
+  assert.equal(isHeld('retained-child'), true);
 });
 
 test('opener policy admits a cross-origin page before and after opener closure and another navigation', async (t) => {

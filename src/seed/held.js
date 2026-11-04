@@ -72,16 +72,6 @@ export function hold(targetId, storage = globalThis.localStorage) {
   } catch {}
 }
 
-export function unhold(targetId, storage = globalThis.localStorage) {
-  try {
-    storage?.setItem(KEY, JSON.stringify(stored(storage).filter((id) => id !== targetId)));
-  } catch {
-    return false;
-  }
-  held.delete(targetId);
-  return !isHeld(targetId, storage);
-}
-
 export function markerUrl(marker) {
   return `about:blank#${MARK}${marker}`;
 }

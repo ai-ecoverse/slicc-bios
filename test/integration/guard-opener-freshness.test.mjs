@@ -231,7 +231,8 @@ test('opener freshness retains a proven same-origin ordinary hold across navigat
   delete child.info.openerId;
   child.info.canAccessOpener = false;
   await flush();
-  assert.equal((await attach(wire, child.info.targetId)).error, undefined);
+  denied(await attach(wire, child.info.targetId));
+  assert.equal(isHeld(child.info.targetId), true);
 });
 
 for (const url of [
@@ -303,3 +304,76 @@ test('opener freshness accepts concurrent checks when fresh metadata agrees', as
   }
   assert.equal(isHeld(child.info.targetId), false);
 });
+
+for (const relation of [
+  'held opener',
+  'unknown opener',
+  'unheld ordinary opener',
+  'seven opener',
+]) {
+  test(`opener freshness checks the first command after silent reparenting: ${relation}`, async (t) => {
+    const wire = protocol(t);
+    const root = page(wire, `reparent-root-${relation}`, 'https://seven.sliccy.ai/page');
+    const parent = page(wire, `reparent-parent-${relation}`, other, root.info.targetId);
+    hold(parent.info.targetId);
+    denied(await attach(wire, parent.info.targetId));
+    const child = page(wire, `reparent-child-${relation}`, other);
+    child.info.canAccessOpener = false;
+    const attached = await attach(wire, child.info.targetId);
+    assert.equal(attached.error, undefined, JSON.stringify(attached));
+    if (relation === 'held opener') child.info.openerId = parent.info.targetId;
+    if (relation === 'seven opener') child.info.openerId = root.info.targetId;
+    if (relation === 'unheld ordinary opener') {
+      const ordinary = page(wire, 'reparent-unheld-ordinary', other);
+      ordinary.info.canAccessOpener = false;
+      child.info.openerId = ordinary.info.targetId;
+    }
+    child.info.canAccessOpener = true;
+    const mark = wire.clients().length;
+    const answer = await wire.send(
+      'Runtime.evaluate',
+      { expression: 'window.opener.document.body.textContent' },
+      attached.result.sessionId
+    );
+    if (relation === 'held opener' || relation === 'unknown opener') {
+      denied(answer);
+      assert.equal(
+        wire
+          .clients()
+          .slice(mark)
+          .some((message) => message.method === 'Runtime.evaluate'),
+        false
+      );
+      denied(
+        await wire.send(
+          'Runtime.evaluate',
+          { expression: 'location.href' },
+          attached.result.sessionId
+        )
+      );
+    } else assert.equal(answer.error, undefined, JSON.stringify(answer));
+  });
+}
+
+for (const method of ['Page.getFrameTree', 'Page.getNavigationHistory', 'DOM.getDocument']) {
+  test(`opener freshness checks silent held reparenting before ${method}`, async (t) => {
+    const wire = protocol(t);
+    const parent = page(wire, `surface-parent-${method}`, other);
+    hold(parent.info.targetId);
+    const child = page(wire, `surface-child-${method}`, other);
+    child.info.canAccessOpener = false;
+    const attached = await attach(wire, child.info.targetId);
+    assert.equal(attached.error, undefined);
+    child.info.openerId = parent.info.targetId;
+    child.info.canAccessOpener = true;
+    const mark = wire.clients().length;
+    denied(await wire.send(method, {}, attached.result.sessionId));
+    assert.equal(
+      wire
+        .clients()
+        .slice(mark)
+        .some((message) => message.method === method),
+      false
+    );
+  });
+}
