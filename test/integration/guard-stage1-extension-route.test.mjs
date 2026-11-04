@@ -1,13 +1,35 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { createServer as createHttp } from 'node:http';
+import { after, test } from 'node:test';
 import { DEBUGGER_ROUTE_UPDATE } from '../../src/seed/debugger.js';
 import { ready } from './bios.mjs';
 import { CURRENT_EXTENSION, realExtension, SEVEN } from './real-extension.mjs';
 
+const site = createHttp((req, res) => {
+  const url = new URL(req.url, 'http://ordinary.test');
+  res.writeHead(200, { 'content-type': 'text/html' });
+  if (url.pathname === '/stage1.html') {
+    return res.end(
+      '<!doctype html><title>stage1</title><h1>Stage 1 ordinary</h1><script>document.documentElement.setAttribute("data-stage1","armed")</script>'
+    );
+  }
+  if (url.pathname === '/stage1-route.html') {
+    return res.end('<!doctype html><title>stage1-route</title><h1>needs frames</h1>');
+  }
+  res.end('<!doctype html><title>missing</title>');
+});
+await new Promise((resolve) => site.listen(0, '127.0.0.1', resolve));
+const port = site.address().port;
+after(() => site.close());
+const ordinary = (path) => `http://ordinary.test:${port}${path}`;
+
 test(`real slicc-extension ${CURRENT_EXTENSION.version}: Stage 1 admits Debugger on an ordinary page, publishes a page-only pause, and resumes it`, {
   timeout: 10 * 60 * 1000,
 }, async (t) => {
-  const real = await realExtension({ extension: CURRENT_EXTENSION });
+  const real = await realExtension({
+    extension: CURRENT_EXTENSION,
+    rules: ['MAP ordinary.test 127.0.0.1'],
+  });
   t.after(() => real.close());
   const seven = await real.page(t);
   await seven.goto(SEVEN);
@@ -17,12 +39,7 @@ test(`real slicc-extension ${CURRENT_EXTENSION.version}: Stage 1 admits Debugger
     CURRENT_EXTENSION.version
   );
   assert.equal(await seven.evaluate(() => typeof globalThis.sliccExtension.frames), 'function');
-  real.overrides.set(
-    '/stage1.html',
-    '<!doctype html><title>stage1</title><h1>Stage 1 ordinary</h1><script>document.documentElement.setAttribute("data-stage1","armed")</script>'
-  );
-  const target = new URL('/stage1.html', real.url);
-  target.hostname = 'localhost';
+  const target = ordinary('/stage1.html');
   await seven.evaluate(async () => {
     const { guardProtected } = await import(new URL('guard.js', location.href).href);
     const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
@@ -94,10 +111,10 @@ test(`real slicc-extension ${CURRENT_EXTENSION.version}: Stage 1 admits Debugger
           session
         );
         if (!state.error && state.result?.result?.value === 'complete') {
-          ready = { tree, state };
+          ready = { tree, state, url: frame.url };
           break;
         }
-        ready = { tree, state };
+        ready = { tree, state, url: frame.url };
       } else {
         ready = { tree };
       }
@@ -106,7 +123,7 @@ test(`real slicc-extension ${CURRENT_EXTENSION.version}: Stage 1 admits Debugger
     if (!ready?.state || ready.state.error || ready.state.result?.result?.value !== 'complete')
       return { step: 'commit', ready, targetId, session };
     const enable = await client.send('Debugger.enable', {}, session);
-    if (enable.error) return { step: 'enable', enable, targetId, session };
+    if (enable.error) return { step: 'enable', enable, targetId, session, url: ready.url };
     const breakpoint = await client.send(
       'Debugger.setInstrumentationBreakpoint',
       { instrumentation: 'beforeScriptExecution' },
@@ -154,9 +171,11 @@ test(`real slicc-extension ${CURRENT_EXTENSION.version}: Stage 1 admits Debugger
       origins,
       objectIds,
       pageOrigin: new URL(url).origin,
+      url: ready.url,
     };
-  }, target.href);
+  }, target);
   assert.equal(row.step, 'done', JSON.stringify(row));
+  assert.match(row.url ?? '', /^http:\/\/ordinary\.test:/, JSON.stringify(row));
   assert.equal(row.enable.error, undefined, JSON.stringify(row.enable));
   assert.equal(row.breakpoint.error, undefined, JSON.stringify(row.breakpoint));
   assert.equal(row.resume.error, undefined, JSON.stringify(row.resume));
@@ -171,17 +190,15 @@ test(`real slicc-extension ${CURRENT_EXTENSION.version}: Stage 1 admits Debugger
 test(`real slicc-extension ${CURRENT_EXTENSION.version}: Stage 1 still needs the private frame callback on the extension route`, {
   timeout: 10 * 60 * 1000,
 }, async (t) => {
-  const real = await realExtension({ extension: CURRENT_EXTENSION });
+  const real = await realExtension({
+    extension: CURRENT_EXTENSION,
+    rules: ['MAP ordinary.test 127.0.0.1'],
+  });
   t.after(() => real.close());
   const seven = await real.page(t);
   await seven.goto(SEVEN);
   await ready(seven);
-  real.overrides.set(
-    '/stage1-route.html',
-    '<!doctype html><title>stage1-route</title><h1>needs frames</h1>'
-  );
-  const target = new URL('/stage1-route.html', real.url);
-  target.hostname = 'localhost';
+  const target = ordinary('/stage1-route.html');
   const refused = await seven.evaluate(async (url) => {
     const { guardProtected } = await import(new URL('guard.js', location.href).href);
     const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
@@ -240,11 +257,13 @@ test(`real slicc-extension ${CURRENT_EXTENSION.version}: Stage 1 still needs the
       }
       if (last?.error || !last?.result?.frameTree?.frame?.url?.includes(want))
         return { step: 'commit', error: last?.error, last };
-      return await send('Debugger.enable', {}, session);
+      const enable = await send('Debugger.enable', {}, session);
+      return { ...enable, url: last.result.frameTree.frame.url };
     } finally {
       connection.close();
     }
-  }, target.href);
+  }, target);
   assert.equal(refused.step, undefined, JSON.stringify(refused));
+  assert.match(refused.url ?? '', /^http:\/\/ordinary\.test:/, JSON.stringify(refused));
   assert.equal(refused.error?.message, DEBUGGER_ROUTE_UPDATE, JSON.stringify(refused));
 });
