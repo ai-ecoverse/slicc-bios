@@ -741,6 +741,7 @@ class Guard {
     this.errorUrls = new Map();
     this.frameRoots = new Map();
     this.unsafe = new WeakSet();
+    this.blankReads = new Set();
     this.pendingContent = new Set();
     this.callerIds = new Map();
     this.parents = new Map();
@@ -912,7 +913,13 @@ class Guard {
     const caller = this.callerIds.get(requestKey(message));
     if (message.id !== undefined && !message.error && caller && this.finished.has(caller)) return;
     if (message.id !== undefined && !message.error && caller?.locked) return this.refuse(caller);
-    if (message.id !== undefined && !message.error && caller && this.unsafeContent(caller))
+    if (
+      message.id !== undefined &&
+      !message.error &&
+      caller &&
+      this.unsafeContent(caller) &&
+      !this.blankReads.has(requestKey(caller))
+    )
       message = {
         id: message.id,
         sessionId: message.sessionId,
@@ -992,6 +999,7 @@ class Guard {
     if (this.finished.has(command)) return;
     this.finished.add(command);
     const key = requestKey(command);
+    this.blankReads.delete(key);
     if (release && this.commands.get(key) === command) this.commands.delete(key);
     this.pendingContent.delete(command);
     const { id, sessionId } = command;
@@ -2693,7 +2701,8 @@ class Guard {
     const guarded = await this.target(targetId);
     const proof = await this.attachmentProof(sessionId, targetId, raw, guarded, recoverable);
     if (guarded && !proof) {
-      if (!(await this.retainedBlank(sessionId, raw))) this.cut(sessionId, parent);
+      if (await this.retainedBlank(sessionId, raw)) return true;
+      this.cut(sessionId, parent);
       return false;
     }
     if (!(await this.verify(sessionId, proof))) return this.uncertainProof(targetId);
@@ -4528,12 +4537,50 @@ class Guard {
   }
 
   unsafeContent(message) {
+    const recovering = this.pendingRecovery(message);
+    const quarantined = this.quarantined.has(message.sessionId) && !RECOVERS.has(message.method);
+    const sticky = recovering || quarantined;
     return (
       this.unsafe.has(message) ||
-      this.pendingRecovery(message) ||
-      (this.quarantined.has(message.sessionId) && !RECOVERS.has(message.method)) ||
+      sticky ||
       (contentRead(message.method) && this.errorDocument(message.sessionId, message.method))
     );
+  }
+
+  async retainedBlankSession(sessionId) {
+    const entry = this.sessions.get(sessionId);
+    if (!entry) return false;
+    return this.retainedBlank(sessionId, {
+      targetId: entry.targetId,
+      type: 'page',
+      url: BLANKED,
+    });
+  }
+
+  async admitContent(message) {
+    if (!this.unsafeContent(message)) return true;
+    if (!contentRead(message.method)) return false;
+    if (!this.ownedBlank(message.sessionId)) return false;
+    if (this.errorDocument(message.sessionId, message.method)) return false;
+    if (!(await this.retainedBlankSession(message.sessionId))) return false;
+    this.unsafe.delete(message);
+    this.blankReads.add(requestKey(message));
+    return !this.pendingRecovery(message);
+  }
+
+  async blankAnswer(was) {
+    if (!this.blankReads.has(requestKey(was))) return true;
+    return this.retainedBlankSession(was.sessionId);
+  }
+
+  async admitAnswer(was) {
+    return (await this.admitContent(was)) && (await this.blankAnswer(was));
+  }
+
+  blankSealed(was) {
+    if (!this.blankReads.has(requestKey(was))) return this.sealed(was);
+    if (was && this.moved.delete(requestKey(was))) return true;
+    return this.blocked.has(was.sessionId);
   }
 
   replyProtected(was) {
@@ -4680,10 +4727,10 @@ class Guard {
     await this.finishRecovery(was);
     this.pendingContent.delete(was);
     if (this.endedAnswer(was) || !this.owns(was)) return;
-    if (this.unsafeContent(was)) return this.refuse(was);
+    if (!(await this.admitAnswer(was))) return this.refuse(was);
     if (this.pageAnswer(was)) return;
     if (await this.routed(message, was)) return;
-    if (this.sealed(was)) return this.refuse(was);
+    if (this.blankSealed(was)) return this.refuse(was);
     const { method, params = {} } = was ?? {};
     const { result } = message;
     this.worldReply(was, result);
@@ -4915,7 +4962,7 @@ class Guard {
       const info = await this.openerInfo(targetId);
       if (info?.type !== 'page' || (await this.surfaceOpener(info))) return PROTECTED;
     }
-    if (this.unsafeContent(message) || (await this.recover(message))) return PROTECTED;
+    if (!(await this.admitContent(message)) || (await this.recover(message))) return PROTECTED;
     return this.pageCheck(message.method, message.sessionId);
   }
 
@@ -5107,7 +5154,7 @@ class Guard {
     const outgoing = await this.withMainWorld(message);
     const { id, method, sessionId } = outgoing;
     if (this.finished.has(message) || !this.owns(message)) return;
-    if (this.unsafeContent(message) || this.departing(message)) return this.refuse(message);
+    if (!(await this.admitContent(message)) || this.departing(message)) return this.refuse(message);
     if (
       this.blocked.has(sessionId) &&
       !(method === 'Page.captureScreenshot' && this.shots.has(requestKey(message)))
@@ -5381,6 +5428,7 @@ class Guard {
           await this.answer(message, was);
         } finally {
           this.answering.delete(was);
+          this.blankReads.delete(key);
           if (this.finished.has(was) && this.callerIds.get(key) === was) {
             this.callerIds.delete(key);
             this.moved.delete(key);
@@ -5510,12 +5558,51 @@ class Guard {
     return this.proofCommits.get(owner)?.url === BLANKED;
   }
 
+  blanking(sessionId) {
+    const nav = this.navs.get(this.sessions.get(sessionId)?.targetId);
+    return Boolean(nav?.scrub && nav.retried && nav.scrubTicket);
+  }
+
+  async awaitOwnedBlank(sessionId) {
+    if (this.ownedBlank(sessionId) || !this.blanking(sessionId)) return this.ownedBlank(sessionId);
+    const deadline = Date.now() + SCRUB_MS;
+    while (Date.now() < deadline) {
+      if (this.ownedBlank(sessionId) || !this.blanking(sessionId)) break;
+      await pause(POLL_MS);
+    }
+    return this.ownedBlank(sessionId);
+  }
+
+  contentStillUnsafe(message) {
+    return (
+      this.unsafeContent(message) &&
+      (this.errorDocument(message.sessionId, message.method) || !this.ownedBlank(message.sessionId))
+    );
+  }
+
+  async refuseUnsafeContent(message) {
+    if (!this.contentStillUnsafe(message)) return false;
+    if (
+      contentRead(message.method) &&
+      this.errorDocument(message.sessionId, message.method) &&
+      !this.ownedBlank(message.sessionId) &&
+      this.blanking(message.sessionId)
+    ) {
+      await this.awaitOwnedBlank(message.sessionId);
+      if (this.finished.has(message) || !this.owns(message)) return true;
+      if (!this.contentStillUnsafe(message)) return false;
+    }
+    this.refuse(message);
+    return true;
+  }
+
   start() {
     const { connection, guarded } = this;
     connection.onmessage = (text) => this.received(text);
     connection.onclose = (why) => {
       this.closing = true;
       this.closed = true;
+      this.blankReads.clear();
       for (const entry of this.debuggerLeases.values()) clearTimeout(entry.timer);
       guarded.send = () => {};
       guarded.onmessage = null;
@@ -5550,16 +5637,14 @@ class Guard {
         `send:${message.sessionId ?? ''}`,
         async () => {
           if (this.finished.has(message) || !this.owns(message)) return;
-          if (
-            this.unsafeContent(message) &&
-            (this.errorDocument(message.sessionId, message.method) ||
-              !this.ownedBlank(message.sessionId))
-          )
-            return this.refuse(message);
+          if (await this.refuseUnsafeContent(message)) return;
           if (!(await this.proveContent(message))) return this.refuse(message);
-          if (this.unsafeContent(message)) return this.refuse(message);
+          if (!(await this.admitContent(message))) return this.refuse(message);
           const why = await this.check(message);
-          if (this.finished.has(message) || !this.owns(message)) return;
+          if (this.finished.has(message) || !this.owns(message)) {
+            this.blankReads.delete(requestKey(message));
+            return;
+          }
           if (why) return this.refuse(message, why);
           return this.sendChecked(message);
         },
@@ -5572,6 +5657,7 @@ class Guard {
     guarded.close = () => {
       if (this.closing || this.closed) return;
       this.closing = true;
+      this.blankReads.clear();
       for (const entry of this.debuggerLeases.values()) clearTimeout(entry.timer);
       guarded.send = () => {};
       guarded.onmessage = null;

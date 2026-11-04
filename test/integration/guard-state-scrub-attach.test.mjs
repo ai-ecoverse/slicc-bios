@@ -126,8 +126,24 @@ for (const metadata of ['failed URL', 'chrome-error']) {
     t.mock.timers.tick(1);
     await flush();
     assert.equal(wipes(wire).length, 1);
-    assert.equal((await wire.send('Runtime.evaluate', {}, sessionId)).error?.message, PROTECTED);
-    entry.tree.frame = { ...plainFrame('created-scrub'), url: BLANKED, securityOrigin: 'null' };
+    const wipeMark = wire.sent.length;
+    const pending = wire.request('Runtime.evaluate', {}, sessionId);
+    let answered = false;
+    pending.answer.then(() => {
+      answered = true;
+    });
+    await flush();
+    assert.equal(answered, false);
+    assert.equal(
+      wire.clients(wipeMark).some((message) => message.method === 'Runtime.evaluate'),
+      false
+    );
+    entry.tree.frame = {
+      ...plainFrame('created-scrub'),
+      url: BLANKED,
+      securityOrigin: 'null',
+      loaderId: 'created-scrub-blank-loader',
+    };
     entry.info.url = BLANKED;
     entry.info.title = 'blocked';
     entry.history.currentIndex = 2;
@@ -141,9 +157,23 @@ for (const metadata of ['failed URL', 'chrome-error']) {
     entry.info.url = BLANKED;
     wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: entry.info } });
     await flush();
+    for (let left = 500; left > 0; left -= 100) {
+      t.mock.timers.tick(Math.min(100, left));
+      await flush();
+    }
+    const answer = await pending.answer;
+    assert.equal(answer.error, undefined);
+    assert.equal(answered, true);
+    assert.equal(
+      wire.clients(wipeMark).some((message) => message.method === 'Runtime.evaluate'),
+      true
+    );
+    assert.equal(entry.info.title, 'blocked');
+    assert.equal(entry.tree.frame.securityOrigin, 'null');
     assert.equal((await wire.send('Runtime.evaluate', {}, sessionId)).error, undefined);
     assert.equal((await wire.send('DOM.getDocument', {}, sessionId)).error, undefined);
     assert.equal((await wire.send('Page.captureScreenshot', {}, sessionId)).error, undefined);
     assert.equal((await wire.send('Target.getTargets')).result.targetInfos[0].url, BLANKED);
+    assert.equal((await wire.send('Target.getTargets')).result.targetInfos[0].title, 'blocked');
   });
 }
