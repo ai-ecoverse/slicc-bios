@@ -340,12 +340,12 @@ export function favicon(href) {
     : undefined;
 }
 
-function lightDOMNode(node, names, parents, strings) {
+function lightDOMNode(node, names, parents, strings, shadowNodes) {
   const seen = new Set();
   let parent = node;
   while (Number.isInteger(parent) && parent >= 0 && !seen.has(parent)) {
     seen.add(parent);
-    if (strings[names[parent]] === '#document-fragment') return false;
+    if (shadowNodes.has(parent) || strings[names[parent]] === '#document-fragment') return false;
     parent = parents[parent];
   }
   return !Number.isInteger(parent) || parent < 0;
@@ -365,9 +365,10 @@ function snapshotFavicon(document, strings) {
   const names = document?.nodes?.nodeName ?? [];
   const attributes = document?.nodes?.attributes ?? [];
   const parents = document?.nodes?.parentIndex ?? [];
+  const shadowNodes = new Set(document?.nodes?.shadowRootType?.index ?? []);
   for (let node = 0; node < names.length; node += 1) {
     if (strings[names[node]]?.toLowerCase() !== 'link') continue;
-    if (!lightDOMNode(node, names, parents, strings)) continue;
+    if (!lightDOMNode(node, names, parents, strings, shadowNodes)) continue;
     const attrs = iconAttributes(attributes[node] ?? [], strings);
     const rel = attrs.get('rel') ?? '';
     const href = attrs.get('href') ?? '';
@@ -464,8 +465,10 @@ class Browser {
   }
 
   async #icon(id, sessionId) {
+    const knownURL = this.#infos.get(id)?.url;
+    if (this.#is.url(knownURL)) return;
     const known = this.#icons.get(id);
-    if (known?.src && known.url === this.#infos.get(id)?.url) return;
+    if (known?.src && known.url === knownURL) return;
     const snapshot = await this.#client.call(
       'DOMSnapshot.captureSnapshot',
       { computedStyles: [] },

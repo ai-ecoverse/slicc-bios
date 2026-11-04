@@ -77,7 +77,40 @@ test('snapshot favicon selection keeps case-insensitive light-DOM matching and i
   assert.equal(calls.filter((call) => call.method === 'DOMSnapshot.captureSnapshot').length, 1);
 });
 
-test('a protected root snapshot remains undisplayed as favicon metadata', async (t) => {
+for (const url of [
+  'https://protected.invalid/root',
+  'https://seven.sliccy.ai/',
+  'https://signin.invalid/?client_id=experience-catalyst-prod',
+]) {
+  test(`known protected or sign-in tab is never DOM-snapshotted: ${url}`, async (t) => {
+    const snapshot = iconSnapshot({ url, links: [{ attributes: { rel: 'icon', href: icon } }] });
+    const { browser, calls, client } = sharedIconBrowser(t, snapshot, { tabURL: url });
+    await client().call('Target.attachToTarget', { targetId: 'tab', flatten: true });
+    await browser.port.screenshot('tab');
+    assert.equal(
+      calls.some((call) => call.method === 'DOMSnapshot.captureSnapshot'),
+      false
+    );
+    assert.equal((await browser.port.list())[0].favicon, undefined);
+  });
+}
+
+test('flattened Chromium shadow-tree links are ignored before the light-DOM icon', async (t) => {
+  const shadow = 'data:image/svg+xml,%3Csvg%20id%3D%22shadow%22/%3E';
+  const snapshot = iconSnapshot({
+    links: [
+      { shadow: true, attributes: { rel: 'icon', href: shadow } },
+      { attributes: { rel: 'icon', href: icon } },
+    ],
+  });
+  assert.equal(snapshot.strings.includes('#document-fragment'), false);
+  const { browser, client } = sharedIconBrowser(t, snapshot);
+  await client().call('Target.attachToTarget', { targetId: 'tab', flatten: true });
+  await browser.port.screenshot('tab');
+  assert.equal((await browser.port.list())[0].favicon, icon);
+});
+
+test('a page that changes to a protected snapshot document URL remains undisplayed', async (t) => {
   const snapshot = iconSnapshot({
     url: 'https://protected.invalid/',
     links: [{ attributes: { rel: 'icon', href: icon } }],

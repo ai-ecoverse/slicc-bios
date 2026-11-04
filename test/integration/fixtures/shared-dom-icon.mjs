@@ -22,6 +22,13 @@ export function iconSnapshot({
         nodes.attributes.push([]);
         nodes.parentIndex.push(0);
       }
+      if (link.shadow) {
+        parent = nodes.nodeName.length;
+        nodes.nodeName.push(string('DIV'));
+        nodes.attributes.push([]);
+        nodes.parentIndex.push(0);
+      }
+      const index = nodes.nodeName.length;
       nodes.nodeName.push(string(link.name ?? 'LINK'));
       nodes.attributes.push(
         Object.entries(link.attributes ?? {}).flatMap(([key, value]) => [
@@ -30,6 +37,11 @@ export function iconSnapshot({
         ])
       );
       nodes.parentIndex.push(parent);
+      if (link.shadow) {
+        nodes.shadowRootType ??= { index: [], value: [] };
+        nodes.shadowRootType.index.push(index);
+        nodes.shadowRootType.value.push(string('open'));
+      }
     }
     return { documentURL: string(url), nodes };
   };
@@ -38,14 +50,14 @@ export function iconSnapshot({
   return { strings, documents: [root, child] };
 }
 
-export function sharedIconBrowser(t, snapshot = iconSnapshot()) {
+export function sharedIconBrowser(t, snapshot = iconSnapshot(), { tabURL } = {}) {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 5000 });
   const calls = [];
   const nodes = new Map();
   let nextNode = 0,
     nextSession = 0;
   const privateRead = Promise.withResolvers();
-  const url = 'https://ordinary.invalid/page';
+  const url = tabURL ?? 'https://ordinary.invalid/page';
   const api = {
     on() {
       return () => {};
