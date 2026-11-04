@@ -1149,17 +1149,9 @@ class Guard {
   }
 
   async target(targetId, depth = 0, seen = new Set()) {
-    if (seen.has(targetId)) {
-      hold(targetId);
-      const known = this.targets.get(targetId);
-      if (known) known.guarded = true;
-      return true;
-    }
+    if (seen.has(targetId)) return true;
     const found = await this.lookup(targetId);
-    if (!found) {
-      hold(targetId);
-      return true;
-    }
+    if (!found) return true;
     seen = new Set(seen);
     seen.add(targetId);
     if (isHeld(targetId)) {
@@ -1178,13 +1170,15 @@ class Guard {
       found.guarded = true;
       return true;
     }
+    if (depth > 64) return true;
     if (found.parentId && found.parentId !== targetId) {
-      await this.target(found.parentId, depth + 1, seen);
+      const refused = await this.target(found.parentId, depth + 1, seen);
       if (isHeld(found.parentId)) {
         hold(targetId);
         found.guarded = true;
         return true;
       }
+      if (refused && !this.targets.get(found.parentId)?.guarded) return true;
     }
     const opener = cross ? undefined : await this.opener(found.openerId, depth, seen);
     const lent = found.type === 'page' && !cross && !emptyNoAccess(found.info);
