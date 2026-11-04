@@ -26,7 +26,9 @@ async function updateWhileHolding(page, url, traffic = null) {
     log.push(
       `${Math.round(performance.now() - start)} ${target} ${response.status}, read ${(await reader.read()).value?.byteLength}`
     );
-    window.__swActivationHold = { reader, log, start };
+    const registration = await navigator.serviceWorker.getRegistration();
+    await registration.update();
+    window.__swActivationHold = { reader, log, start, registration };
   }, url);
   bump += 1;
   chrome.overrides.set(
@@ -35,10 +37,9 @@ async function updateWhileHolding(page, url, traffic = null) {
   );
   return page.evaluate(
     async ([hold, traffic]) => {
-      const { reader, log, start } = window.__swActivationHold;
+      const { reader, log, start, registration } = window.__swActivationHold;
       delete window.__swActivationHold;
       const at = () => Math.round(performance.now() - start);
-      const registration = await navigator.serviceWorker.getRegistration();
       const appeared = new Promise((resolve) => {
         const dig = () => {
           const found = registration.installing ?? registration.waiting;
