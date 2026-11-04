@@ -242,7 +242,8 @@ function selectedFor(request, options) {
     throw refused(
       options.vault.forwardBlocked?.() === 'vault-locked' ? 'vault-locked' : 'vault-unavailable'
     );
-  if (options.ready() !== true) throw refused(unready(options.unready));
+  if (options.ready() !== true && options.paused() !== true)
+    throw refused(unready(options.unready));
   let why = 'exit-not-credentialed';
   const selected = options.select(request.url, (cause) => {
     why = cause;
@@ -255,7 +256,12 @@ function selectedFor(request, options) {
   )
     throw refused(Object.hasOwn(FORWARD_CAUSES, why) ? why : 'exit-not-credentialed');
   if (selected.active() !== true) throw refused('route-inactive');
-  return { selected, epoch, max: Math.min(FORWARD_BODY_MAX, selected.maxRequestBody) };
+  return {
+    selected,
+    epoch,
+    max: Math.min(FORWARD_BODY_MAX, selected.maxRequestBody),
+    mcpOnly: options.ready() !== true,
+  };
 }
 
 const UNREADY = new Set([
@@ -299,7 +305,7 @@ async function admittedBody(request, original, selected, max, signal, ask, disca
   } else if (result.mode === 'mcp') {
     body = mcpBody(result, present, max);
   } else throw refused('vault-reply');
-  return { head: result.head, body, bodyStream };
+  return { head: result.head, body, bodyStream, mode: result.mode };
 }
 
 export function createForwarder({
@@ -307,12 +313,19 @@ export function createForwarder({
   select,
   ready,
   unready,
+  paused = () => false,
   policyEpoch = () => 0,
   onPolicyChange = () => () => {},
 }) {
   return async (request, { signal }) => {
     signal.throwIfAborted();
-    const { selected, epoch, max } = selectedFor(request, { vault, select, ready, unready });
+    const { selected, epoch, max, mcpOnly } = selectedFor(request, {
+      vault,
+      select,
+      ready,
+      unready,
+      paused,
+    });
     const policy = policyEpoch();
     const present = request.body !== undefined || request.bodyStream !== undefined;
     const original = { method: request.method, url: request.url, headers: request.headers };
@@ -324,7 +337,7 @@ export function createForwarder({
     let raw;
     let cancelled = false;
     const current = () =>
-      ready() === true &&
+      (ready() === true || paused() === true) &&
       policyEpoch() === policy &&
       vault.forwardEpoch() === epoch &&
       selected.active() === true;
@@ -381,7 +394,7 @@ export function createForwarder({
           controller.signal
         );
       };
-      const { head, body, bodyStream } = await admittedBody(
+      const { head, body, bodyStream, mode } = await admittedBody(
         request,
         original,
         selected,
@@ -390,6 +403,7 @@ export function createForwarder({
         ask,
         () => relay.close()
       );
+      if (mcpOnly && mode !== 'mcp') throw refused('policy-paused');
       if (!current()) throw refused('changed');
       const headers = head.headers.filter(
         ([name]) => !['content-length', 'transfer-encoding'].includes(name.toLowerCase())

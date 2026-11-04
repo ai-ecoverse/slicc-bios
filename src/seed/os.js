@@ -119,6 +119,7 @@ import {
   addCone,
   dropProtectedMounts,
   homeSkips,
+  kernelSource,
   kernelUsers,
   lockLegacy,
   usersMode,
@@ -316,6 +317,7 @@ const forwarder = createForwarder({
     exits.selectCredentialed(url, reach.credentialed, (value) => protectedHttp.url(value), why),
   ready: () => forwardKernel && policy?.ready() === true,
   unready: () => policy?.why() ?? 'policy-syncing',
+  paused: () => forwardKernel && policy?.paused() === true,
   policyEpoch: () => policy?.epoch() ?? 0,
   onPolicyChange: (listener) => policy?.onChange(listener) ?? (() => {}),
 });
@@ -935,6 +937,10 @@ async function own() {
   exits.attach(kernel);
   if (globalThis.sliccKernelDebug === true) {
     globalThis.sliccKernelClient = async () => attachKernel(await kernel.connect());
+    globalThis.sliccAgentSource = () => {
+      const source = kernelSource(kernel);
+      return { ...source, client: async (options) => attachKernel(await source.connect(options)) };
+    };
     globalThis.sliccLinkedBrowsers = () => linkedBrowsers(() => links);
   }
   policy?.close();
