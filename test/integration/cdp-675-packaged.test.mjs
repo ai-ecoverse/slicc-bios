@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { boot, ready, run, shows } from './bios.mjs';
+import { tapBrowserIconSource } from './cdp-675-browser-icon-tap.mjs';
 import { boundedHooks, boundedStage, rowDeadline } from './cdp-675-deadline.mjs';
 import { nativeTapFixture, nativeTapRead } from './cdp-675-native-tap.mjs';
 import { oldRouteExtension } from './cdp-675-old-extension.mjs';
@@ -2098,6 +2099,12 @@ for (const route of ['extension', 'link']) {
             await readFile(new URL('../../src/seed/guard.js', import.meta.url), 'utf8')
           )
         );
+        chrome.overrides.set(
+          '/seed/browser.js',
+          tapBrowserIconSource(
+            await readFile(new URL('../../src/seed/browser.js', import.meta.url), 'utf8')
+          )
+        );
         const requests = new Map();
         const failed = (entry) => {
           trace.failedRequests.push(entry);
@@ -3644,6 +3651,15 @@ for (const route of ['extension', 'link']) {
               })
               .catch(() => {});
           if (page && !setupError && !row.ownerClosed?.success) {
+            row.browserIconTrace = await page
+              .evaluate(
+                (target) =>
+                  (globalThis.cdp675BrowserIconTrace ?? []).filter(
+                    (entry) => String(entry.targetId) === String(target)
+                  ),
+                row.target
+              )
+              .catch(() => []);
             if (row.lateFrameStart) {
               row.lateLeaseStates = await page
                 .evaluate(

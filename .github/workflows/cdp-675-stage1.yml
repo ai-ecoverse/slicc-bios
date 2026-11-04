@@ -95,6 +95,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/extension-candidate" "$artifacts/browsers-release"
           unzip -q "$artifacts/slicc-extension.zip" -d "$RUNNER_TEMP/extension-candidate"
           tar -xzf "$artifacts/ai-ecoverse-slicc-browsers-1.19.0.tgz" --strip-components=1 -C "$artifacts/browsers-release"
+          cp test/integration/fixtures/cdp-675-bfcache-restore.mjs "$artifacts/browsers-release/bfcache-restore.mjs"
+          echo "6e9439a236b47ccd8479d0b222ff2c5139ae2cc9a512732ccab14071b5751248  $artifacts/browsers-release/bfcache-restore.mjs" | sha256sum -c -
           node test/integration/fixtures/cdp-675-artifacts.mjs "$artifacts"
           cp "$artifacts/manifest.json" "$RUNNER_TEMP/candidate-trace/manifest.json"
           cd candidates/cdp

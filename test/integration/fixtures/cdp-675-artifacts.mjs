@@ -114,8 +114,14 @@ export async function artifactManifest(directory, config, io = {}) {
       url: config.cliRelease.url,
       source: 'released Linux amd64 binary, not rebuilt',
     },
+    browsersRigHelper: {
+      source:
+        'byte-identical rig-only bfcache-restore.mjs from candidate 0523b11ff42c9ef41cd997a6a974fd66824ae60f',
+      sha256: '6e9439a236b47ccd8479d0b222ff2c5139ae2cc9a512732ccab14071b5751248',
+      browserDataVersion: config.browsersVersion,
+    },
     sourceCheckouts:
-      'exact released tag commits for audit and Rust memory preflights only; executed components are release artifacts',
+      'exact released tag commits for audit and Rust memory preflights only; executed components are release artifacts, with the explicit rig-only BFCache fixture overlay',
   };
 }
 
