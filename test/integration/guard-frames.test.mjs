@@ -395,24 +395,35 @@ async function late({ port, targetId }) {
   return out;
 }
 
-async function committed(targetId) {
-  const { sessionId } = await chrome.cdp.send('Target.attachToTarget', { targetId, flatten: true });
+async function committed(sessionId, failures) {
   const deadline = Date.now() + 15000;
   let tree;
-  try {
-    while (Date.now() < deadline) {
-      ({ frameTree: tree } = await chrome.cdp.send('Page.getFrameTree', {}, sessionId));
-      if (tree.childFrames?.some((child) => child.frame.url.includes('vault.sliccy.ai')))
-        return null;
-      const { targetInfos } = await chrome.cdp.send('Target.getTargets');
-      const own = targetInfos.find(
-        (info) => info.type === 'iframe' && info.url.includes('vault.sliccy.ai')
-      );
-      if (own) return own.targetId;
-      await new Promise((resolve) => setTimeout(resolve, 100));
+  while (Date.now() < deadline) {
+    ({ frameTree: tree } = await chrome.cdp.send('Page.getFrameTree', {}, sessionId));
+    const { targetInfos } = await chrome.cdp.send('Target.getTargets');
+    const child = tree.childFrames?.find(
+      ({ frame }) => frame.url === `http://vault.sliccy.ai:${port}/child` || frame.unreachableUrl
+    )?.frame;
+    const own = targetInfos.find(
+      (info) =>
+        info.type === 'iframe' &&
+        (info.targetId === child?.id || info.url === `http://vault.sliccy.ai:${port}/child`)
+    );
+    if (
+      child?.url === `http://vault.sliccy.ai:${port}/child` ||
+      (!child && own?.url === `http://vault.sliccy.ai:${port}/child`)
+    )
+      return { frameTarget: own?.targetId, blocked: false };
+    if (child?.unreachableUrl) {
+      assert.equal(child.url, 'chrome-error://chromewebdata/', JSON.stringify(child));
+      assert.equal(child.unreachableUrl, `http://vault.sliccy.ai:${port}/child`);
+      const failure = failures.find((event) => event.requestId === child.loaderId);
+      assert.ok(failure, `no failed document request for ${JSON.stringify(child)}`);
+      assert.equal(failure.errorText, 'net::ERR_BLOCKED_BY_CLIENT');
+      assert.equal(failure.blockedReason, 'inspector');
+      return { frameTarget: own?.targetId, blocked: true };
     }
-  } finally {
-    await chrome.cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error(`the vault frame never committed: ${JSON.stringify(tree)}`);
 }
@@ -427,6 +438,15 @@ async function lateCheck(t) {
     url: `http://ordinary.test:${port}/late`,
   });
   t.after(() => chrome.cdp.send('Target.closeTarget', { targetId }).catch(() => {}));
+  const { sessionId } = await chrome.cdp.send('Target.attachToTarget', { targetId, flatten: true });
+  const failures = [];
+  const off = chrome.cdp.on((event) => {
+    if (event.sessionId === sessionId && event.method === 'Network.loadingFailed')
+      failures.push(event.params);
+  });
+  t.after(off);
+  t.after(() => chrome.cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {}));
+  await chrome.cdp.send('Network.enable', {}, sessionId);
   const early = await page.evaluate(late, {
     port,
     targetId,
@@ -437,7 +457,8 @@ async function lateCheck(t) {
     true,
     `no frameAttached for the new iframe: ${JSON.stringify(early)}`
   );
-  const frameTarget = await committed(targetId);
+  const { frameTarget, blocked } = await committed(sessionId, failures);
+  t.diagnostic(blocked ? 'the guard blocked the vault document' : 'the vault document committed');
   const out = await page.evaluate((own) => window.lateRig(own), frameTarget);
   if (frameTarget) {
     assert.match(
