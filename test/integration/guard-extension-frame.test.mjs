@@ -9,6 +9,10 @@ const ownExt = 'chrome-extension://ownextensionid000000000000000000/frame.html';
 const seven = 'https://seven.sliccy.ai/app';
 const vault = 'https://vault.sliccy.ai/';
 const chrome = 'chrome://settings/';
+const extensionOrigin = (url) => {
+  const parsed = new URL(url);
+  return `${parsed.protocol}//${parsed.host}`;
+};
 const { whenShown, whilePresent } = catalog.protectedOrigins.extensionFrames;
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -127,7 +131,7 @@ function protocol(t, own = 'https://protected.invalid') {
                 id: `${id}-ext`,
                 parentId: id,
                 url: child,
-                securityOrigin: new URL(child).origin,
+                securityOrigin: extensionOrigin(child),
               },
             },
           ],
@@ -157,7 +161,7 @@ function protocol(t, own = 'https://protected.invalid') {
             id: `${id}-ext`,
             parentId: id,
             url: child,
-            securityOrigin: new URL(child).origin,
+            securityOrigin: extensionOrigin(child),
           },
         },
       });
@@ -193,6 +197,126 @@ test('a foreign extension frame does not lock an ordinary tab', async (t) => {
   );
   assert.equal(read.error, undefined, JSON.stringify(read));
   assert.equal(read.result.result.value, ordinary);
+});
+
+test('a top-level foreign extension navigation cuts the session', async (t) => {
+  const wire = protocol(t);
+  const entry = wire.target('root-ext-walk', ordinary);
+  const session = await wire.attach('root-ext-walk');
+  entry.info.url = foreign;
+  entry.tree = {
+    frame: {
+      id: 'root-ext-walk',
+      url: foreign,
+      securityOrigin: extensionOrigin(foreign),
+      loaderId: 'ext-loader',
+    },
+  };
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: session,
+    params: {
+      frame: {
+        id: 'root-ext-walk',
+        url: foreign,
+        securityOrigin: extensionOrigin(foreign),
+        loaderId: 'ext-loader',
+      },
+    },
+  });
+  await flush();
+  const read = await wire.request(
+    'Runtime.evaluate',
+    { expression: '1', returnByValue: true },
+    session
+  );
+  assert.ok(read.error, JSON.stringify(read));
+});
+
+test('targetInfoChanged to a top-level foreign extension page cuts', async (t) => {
+  const wire = protocol(t);
+  const entry = wire.target('root-ext-hint', ordinary);
+  const session = await wire.attach('root-ext-hint');
+  entry.info.url = foreign;
+  entry.tree = {
+    frame: {
+      id: 'root-ext-hint',
+      url: foreign,
+      securityOrigin: extensionOrigin(foreign),
+      loaderId: 'hint-loader',
+    },
+  };
+  wire.emit({
+    method: 'Target.targetInfoChanged',
+    params: { targetInfo: { ...entry.info, url: foreign } },
+  });
+  await flush();
+  await flush();
+  const read = await wire.request(
+    'Runtime.evaluate',
+    { expression: '1', returnByValue: true },
+    session
+  );
+  assert.ok(read.error, JSON.stringify(read));
+});
+
+test('a root default world with a foreign extension origin is protected', async (t) => {
+  const wire = protocol(t);
+  wire.target('root-ext-world', ordinary);
+  const session = await wire.attach('root-ext-world');
+  wire.emit({
+    method: 'Runtime.executionContextCreated',
+    sessionId: session,
+    params: {
+      context: {
+        id: 11,
+        origin: extensionOrigin(foreign),
+        auxData: { isDefault: true, type: 'default', frameId: 'root-ext-world' },
+      },
+    },
+  });
+  await flush();
+  const read = await wire.request(
+    'Runtime.evaluate',
+    { expression: '1', returnByValue: true },
+    session
+  );
+  assert.ok(read.error, JSON.stringify(read));
+});
+
+test('frameId commands on an embedded extension frame stay refused', async (t) => {
+  const wire = protocol(t);
+  wire.target('frame-ext-id', ordinary, foreign);
+  const session = await wire.attach('frame-ext-id');
+  const answer = await wire.request(
+    'Page.createIsolatedWorld',
+    { frameId: 'frame-ext-id-ext', worldName: 'client' },
+    session
+  );
+  assert.equal(answer.error?.message, PROTECTED);
+});
+
+test('embedded foreign extension document requests do not cut the tab', async (t) => {
+  const wire = protocol(t);
+  wire.target('embed-doc', ordinary, foreign);
+  const session = await wire.attach('embed-doc');
+  wire.emit({
+    method: 'Network.requestWillBeSent',
+    sessionId: session,
+    params: {
+      requestId: 'e1',
+      type: 'Document',
+      frameId: 'embed-doc-ext',
+      request: { url: foreign },
+    },
+  });
+  await flush();
+  const read = await wire.request(
+    'Runtime.evaluate',
+    { expression: '1', returnByValue: true },
+    session
+  );
+  assert.equal(read.error, undefined, JSON.stringify(read));
 });
 
 test("seven's own extension frame still locks the tab", async (t) => {
@@ -326,7 +450,7 @@ test('a running screencast is stopped when an extension frame appears', async (t
         id: 'cast-stop-ext',
         parentId: 'cast-stop',
         url: foreign,
-        securityOrigin: new URL(foreign).origin,
+        securityOrigin: extensionOrigin(foreign),
       },
     },
   });

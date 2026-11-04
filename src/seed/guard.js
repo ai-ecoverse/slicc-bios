@@ -1245,6 +1245,29 @@ class Guard {
     return typeof url === 'string' && this.is.extensionFrame(url);
   }
 
+  embeddedExtensionFrame(frame, sessionId) {
+    if (!frame || typeof frame !== 'object') return false;
+    if (!this.extensionUrl(frame.url) && !this.extensionUrl(frame.securityOrigin)) return false;
+    const parentId = frame.parentId ?? this.parents.get(frame.id);
+    if (!parentId) return false;
+    const targetId = this.sessions.get(sessionId)?.targetId ?? this.scopeTarget(sessionId);
+    if (targetId && this.scopes.get(targetId)?.root === frame.id) return false;
+    return true;
+  }
+
+  embeddedExtension(url, frameId, sessionId) {
+    if (!this.extensionUrl(url) || typeof frameId !== 'string' || !frameId) return false;
+    if (!this.parents.get(frameId)) return false;
+    const targetId = this.sessions.get(sessionId)?.targetId ?? this.scopeTarget(sessionId);
+    if (targetId && this.scopes.get(targetId)?.root === frameId) return false;
+    return true;
+  }
+
+  embeddedExtensionId(frameId, url, scope) {
+    if (!this.extensionUrl(url) || !frameId || frameId === scope?.root) return false;
+    return Boolean(this.parents.get(frameId));
+  }
+
   extensionOwner(owner) {
     const attrs = owner?.attributes;
     if (Array.isArray(attrs)) {
@@ -1494,7 +1517,7 @@ class Guard {
       if (this.unavailableFrame(id, url, view)) return true;
       if (
         this.is.url(url) &&
-        !this.extensionUrl(url) &&
+        !this.embeddedExtensionId(id, url, scope) &&
         !(blankRoot && id === scope.root) &&
         !view?.errors.has(id)
       )
@@ -2142,7 +2165,7 @@ class Guard {
     if (this.targets.has(frameId)) return this.target(frameId);
     if (this.frames.has(frameId)) {
       const url = this.frames.get(frameId);
-      if (this.is.url(url) && !this.extensionUrl(url)) return true;
+      if (this.is.url(url)) return true;
       return strict && (url === '' || inherits(url)) && (await this.inherited(frameId, 0));
     }
     if (await this.lookup(frameId)) return this.target(frameId);
@@ -3545,24 +3568,31 @@ class Guard {
       if (!params.frame.parentId && targetId && this.targets.has(targetId)) {
         this.targets.get(targetId).url = params.frame.url;
       }
-      return this.frameLive(params.frame);
+      return this.frameLive(params.frame, sessionId);
     }
     if (method === 'Page.frameAttached' && params.frameId) {
       if (!this.frames.has(params.frameId)) this.frames.set(params.frameId, '');
       if (params.parentFrameId) this.parents.set(params.frameId, params.parentFrameId);
     }
     if (NAVIGATED.has(method)) {
-      const protectedUrl = this.is.url(params.url) && !this.extensionUrl(params.url);
+      const protectedUrl =
+        this.is.url(params.url) && !this.embeddedExtension(params.url, params.frameId, sessionId);
       return !this.armed(sessionId) && protectedUrl;
     }
     if (method === 'Network.requestWillBeSent' && params.type === 'Document') {
       const protectedDocument =
-        this.is.url(params.request?.url) && !this.extensionUrl(params.request?.url);
+        this.is.url(params.request?.url) &&
+        !this.embeddedExtension(params.request?.url, params.frameId, sessionId);
       return !this.armed(sessionId) && protectedDocument;
     }
     if (method === 'Runtime.executionContextCreated') {
       const protectedOrigin =
-        this.is.url(params.context?.origin) && !this.extensionUrl(params.context?.origin);
+        this.is.url(params.context?.origin) &&
+        !this.embeddedExtension(
+          params.context?.origin,
+          params.context?.auxData?.frameId,
+          sessionId
+        );
       return protectedOrigin;
     }
     return false;
@@ -4047,11 +4077,9 @@ class Guard {
     this.cut(sessionId);
   }
 
-  frameLive(frame) {
-    return (
-      (this.is.url(frame.url) && !this.extensionUrl(frame.url)) ||
-      (this.is.url(frame.securityOrigin) && !this.extensionUrl(frame.securityOrigin))
-    );
+  frameLive(frame, sessionId) {
+    if (this.embeddedExtensionFrame(frame, sessionId)) return false;
+    return this.is.url(frame.url) || this.is.url(frame.securityOrigin);
   }
 
   pageShown(now) {
