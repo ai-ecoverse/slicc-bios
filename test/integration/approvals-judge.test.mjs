@@ -144,6 +144,16 @@ const decide = (page, id, decision) =>
     [id, decision]
   );
 
+const closed = (page) =>
+  page.until(
+    new Function(
+      `const dialog = (${find})('slicc-approvals')?.shadowRoot?.querySelector('dialog');
+      if (!dialog) return true;
+      dialog.querySelector('[data-action="close"]')?.click();
+      return false;`
+    )
+  );
+
 const sudoers = (page) =>
   page.evaluate(async () => {
     let dir = await navigator.storage.getDirectory();
@@ -222,6 +232,7 @@ test('with the agent up, bios hands each sudo to the agent with the kernel’s f
   );
   assert.equal(await decide(page, jq.id, 'always'), 'decided');
   await shows(page, 'jq-ran');
+  await closed(page);
   assert.match(
     await sudoers(page),
     /Cwd \/ Stdin none Cmnd \S*jq \.rules \/etc\/slicc\/secrets-policy\.toml/
