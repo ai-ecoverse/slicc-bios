@@ -334,3 +334,33 @@ for (const [method, params] of [
     );
   });
 }
+
+test('opener review refuses a dialog answer while its session is quarantined', async (t) => {
+  const wire = protocol(t);
+  const child = page(wire, 'quarantined-dialog');
+  const attached = await attach(wire, child.info.targetId);
+  assert.equal(attached.error, undefined);
+  wire.hold((message) => message.id >= 2 ** 30);
+  wire.emit({
+    method: 'Target.targetInfoChanged',
+    params: {
+      targetInfo: { ...child.info, openerId: 'unknown-protected-opener', canAccessOpener: true },
+    },
+  });
+  const mark = wire.clients().length;
+  const answer = await wire.send(
+    'Page.handleJavaScriptDialog',
+    { accept: true },
+    attached.result.sessionId
+  );
+  refused(answer);
+  assert.equal(
+    wire
+      .clients()
+      .slice(mark)
+      .some((message) => message.method === 'Page.handleJavaScriptDialog'),
+    false
+  );
+  wire.hold(() => false);
+  for (const message of wire.held.slice()) wire.release(message);
+});

@@ -4574,8 +4574,7 @@ class Guard {
   async precheck(message) {
     const targetId = this.scopeTarget(message.sessionId);
     const target = this.targets.get(targetId);
-    if (target?.type === 'page') {
-      if (this.prelude(message.sessionId, message.method) === null) return null;
+    if (target?.type === 'page' && this.prelude(message.sessionId, message.method) !== null) {
       const info = await this.openerInfo(targetId);
       if (info?.type !== 'page' || (await this.surfaceOpener(info))) return PROTECTED;
     }
