@@ -450,3 +450,41 @@ test('whenShown reuses one isolated world per frame and loader', async (t) => {
   }
   assert.equal(worlds, 1);
 });
+
+test('a stale probe context is dropped so the next whenShown makes a new world', async (t) => {
+  const wire = protocol(t);
+  let worlds = 0;
+  let nextContext = 50;
+  let resolveFails = 1;
+  wire.answers.set('Page.createIsolatedWorld', () => {
+    worlds += 1;
+    nextContext += 1;
+    return { result: { executionContextId: nextContext } };
+  });
+  wire.answers.set('DOM.resolveNode', () => {
+    if (resolveFails > 0) {
+      resolveFails -= 1;
+      return { error: { code: -32000, message: 'Cannot find context with specified id' } };
+    }
+    return { result: { object: { objectId: 'ext-frame-object', type: 'object' } } };
+  });
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: false } },
+  }));
+  wire.target('stale-world', ordinary, foreign);
+  const session = await wire.attach('stale-world');
+  const first = await wire.request(
+    'Input.dispatchKeyEvent',
+    { type: 'keyDown', key: 'a' },
+    session
+  );
+  assert.equal(first.error?.message, SHOWN_REFUSAL);
+  assert.equal(worlds, 1);
+  const second = await wire.request(
+    'Input.dispatchKeyEvent',
+    { type: 'keyDown', key: 'b' },
+    session
+  );
+  assert.equal(second.error, undefined);
+  assert.equal(worlds, 2);
+});
