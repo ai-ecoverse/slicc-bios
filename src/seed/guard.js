@@ -37,6 +37,19 @@ export const PRESENT_REFUSAL = EXTENSION_FRAMES.presentRefusal;
 const WHEN_SHOWN = new Set(EXTENSION_FRAMES.whenShown);
 const WHILE_PRESENT = new Set(EXTENSION_FRAMES.whilePresent);
 const EXTENSION_SCHEMES = new Set(EXTENSION_FRAMES.schemes);
+const schemeOf = (url) => {
+  try {
+    return new URL(url).protocol.slice(0, -1);
+  } catch {
+    return '';
+  }
+};
+const extensionOriginOf = (url) => {
+  const scheme = schemeOf(url);
+  if (!EXTENSION_SCHEMES.has(scheme)) return '';
+  const parsed = new URL(url);
+  return `${parsed.protocol}//${parsed.host}`;
+};
 const EXTENSION_WORLD = 'slicc-extension-frames';
 const EXTENSION_PROBE =
   'function(){if(!this.isConnected||this.checkVisibility({visibilityProperty:true}))return true;let node=this;for(let depth=0;depth<64;depth++){const root=node.getRootNode();if(root.activeElement!==node)return false;if(!root.host)return true;node=root.host;}return true;}';
@@ -718,6 +731,12 @@ class Guard {
     this.closed = false;
     this.is = protection(own);
     this.ownUrl = protectedOrigins(catalog.protectedOrigins, owned(own)).url;
+    this.ownExtensionOrigins = new Set(
+      owned(own)
+        .filter((url) => typeof url === 'string' && EXTENSION_SCHEMES.has(schemeOf(url)))
+        .map((url) => extensionOriginOf(url))
+        .filter(Boolean)
+    );
     this.redact = redacting(this.is);
     this.redirected = new Set();
     this.continued = new Set();
@@ -1245,26 +1264,43 @@ class Guard {
     return typeof url === 'string' && this.is.extensionFrame(url);
   }
 
+  tabRootFrame(frameId, targetId, scope) {
+    if (!frameId || frameId !== scope?.root) return false;
+    return this.targets.get(targetId)?.type !== 'iframe';
+  }
+
+  ownExtensionUrl(url) {
+    if (!this.extensionUrl(url)) return false;
+    const origin = extensionOriginOf(url);
+    return Boolean(origin && this.ownExtensionOrigins.has(origin));
+  }
+
+  foreignExtensionUrl(url) {
+    return this.extensionUrl(url) && !this.ownExtensionUrl(url);
+  }
+
   embeddedExtensionFrame(frame, sessionId) {
     if (!frame || typeof frame !== 'object') return false;
-    if (!this.extensionUrl(frame.url) && !this.extensionUrl(frame.securityOrigin)) return false;
+    if (!this.foreignExtensionUrl(frame.url) && !this.foreignExtensionUrl(frame.securityOrigin))
+      return false;
     const parentId = frame.parentId ?? this.parents.get(frame.id);
     if (!parentId) return false;
     const targetId = this.sessions.get(sessionId)?.targetId ?? this.scopeTarget(sessionId);
-    if (targetId && this.scopes.get(targetId)?.root === frame.id) return false;
+    if (this.tabRootFrame(frame.id, targetId, this.scopes.get(targetId))) return false;
     return true;
   }
 
   embeddedExtension(url, frameId, sessionId) {
-    if (!this.extensionUrl(url) || typeof frameId !== 'string' || !frameId) return false;
+    if (!this.foreignExtensionUrl(url) || typeof frameId !== 'string' || !frameId) return false;
     if (!this.parents.get(frameId)) return false;
     const targetId = this.sessions.get(sessionId)?.targetId ?? this.scopeTarget(sessionId);
-    if (targetId && this.scopes.get(targetId)?.root === frameId) return false;
+    if (this.tabRootFrame(frameId, targetId, this.scopes.get(targetId))) return false;
     return true;
   }
 
-  embeddedExtensionId(frameId, url, scope) {
-    if (!this.extensionUrl(url) || !frameId || frameId === scope?.root) return false;
+  embeddedExtensionId(frameId, url, scope, targetId) {
+    if (!this.foreignExtensionUrl(url) || !frameId) return false;
+    if (this.tabRootFrame(frameId, targetId, scope)) return false;
     return Boolean(this.parents.get(frameId));
   }
 
@@ -1517,7 +1553,7 @@ class Guard {
       if (this.unavailableFrame(id, url, view)) return true;
       if (
         this.is.url(url) &&
-        !this.embeddedExtensionId(id, url, scope) &&
+        !this.embeddedExtensionId(id, url, scope, targetId) &&
         !(blankRoot && id === scope.root) &&
         !view?.errors.has(id)
       )
@@ -1953,7 +1989,7 @@ class Guard {
       const child = this.scope(info.targetId);
       child.parent = targetId;
       child.ready = false;
-      this.learn(info);
+      this.learn({ ...info, parentId: targetId });
       this.placements.set(params.sessionId, info.targetId);
       this.placing.set(info.targetId, this.place(info.targetId, params.sessionId));
       if (params.waitingForDebugger)
@@ -2496,9 +2532,9 @@ class Guard {
     if (message.method !== 'Target.attachedToTarget') return;
     const info = message.params?.targetInfo;
     if (!info?.targetId || this.privateSessions.has(message.params.sessionId)) return;
-    const parentId =
-      info.type === 'iframe' ? this.sessions.get(message.sessionId)?.targetId : undefined;
+    const parentId = info.type === 'iframe' ? this.scopeTarget(message.sessionId) : undefined;
     this.learn({ ...info, ...(parentId ? { parentId } : {}) });
+    if (info.type === 'iframe' && parentId && this.foreignExtensionUrl(info.url)) return;
     if (info.url?.startsWith('chrome-error:') || this.is.target(info) || !URL.canParse(info.url))
       this.uncertainProof(info.targetId);
   }
