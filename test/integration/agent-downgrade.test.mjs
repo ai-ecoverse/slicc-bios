@@ -49,18 +49,20 @@ const marker = (page, data) =>
 async function refused(page) {
   await page.goto('/');
   await ready(page);
-  await page.within(5 * 60 * 1000, () => {
-    const { updates, notices } = document.querySelector('slicc-app').model;
-    const row = updates.list().find((item) => item.id === 'agent');
-    return row?.state === 'failed' && notices.list().some((item) => item.id === 'agent:older');
-  });
-  return page.evaluate(() => {
-    const { updates, agent } = document.querySelector('slicc-app').model;
-    return {
-      error: updates.list().find((item) => item.id === 'agent').error,
-      agents: agent?.list?.().length ?? 0,
-    };
-  });
+  return page.within(
+    5 * 60 * 1000,
+    (text) => {
+      const { updates, notices, agent } = document.querySelector('slicc-app').model;
+      const row = updates.list().find((item) => item.id === 'agent');
+      if (row?.state !== 'failed' || row.error !== text) return null;
+      if (!notices.list().some((item) => item.id === 'agent:older')) return null;
+      return {
+        error: row.error,
+        agents: agent?.list?.().length ?? 0,
+      };
+    },
+    OLDER
+  );
 }
 
 const profile = (page) =>
@@ -117,7 +119,9 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
     await page.evaluate(() => localStorage.setItem('slicc-os.agent-schema', '2'));
     await relabel(page, '6.19.15');
     t.after(() => relabel(page, pinned).catch(() => {}));
-    assert.equal((await refused(page)).error, OLDER);
+    const seen = await refused(page);
+    assert.equal(seen.error, OLDER);
+    assert.equal(seen.agents, 0);
   });
 
   await t.test('an unreadable marker refuses a 6.x agent too', async (t) => {
@@ -125,7 +129,9 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
     await marker(page, 'not json');
     await relabel(page, '6.19.15');
     t.after(() => relabel(page, pinned).catch(() => {}));
-    assert.equal((await refused(page)).error, OLDER);
+    const seen = await refused(page);
+    assert.equal(seen.error, OLDER);
+    assert.equal(seen.agents, 0);
   });
 
   await t.test(
@@ -137,21 +143,29 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
         const dir = await root.getDirectoryHandle('.slicc', { create: true });
         await dir.getDirectoryHandle('agent-profile.json', { create: true });
       });
+      t.after(async () => {
+        await page
+          .evaluate(async () => {
+            const root = await navigator.storage.getDirectory();
+            const dir = await root.getDirectoryHandle('.slicc');
+            await dir.removeEntry('agent-profile.json', { recursive: true });
+          })
+          .catch(() => {});
+      });
       await relabel(page, '6.19.15');
       t.after(() => relabel(page, pinned).catch(() => {}));
-      assert.equal((await refused(page)).error, OLDER);
-      await page.evaluate(async () => {
-        const root = await navigator.storage.getDirectory();
-        const dir = await root.getDirectoryHandle('.slicc');
-        await dir.removeEntry('agent-profile.json', { recursive: true });
-      });
+      const seen = await refused(page);
+      assert.equal(seen.error, OLDER);
+      assert.equal(seen.agents, 0);
     }
   );
 
   await t.test('a marker above 2 refuses the 7.x agent', async () => {
     await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
     await marker(page, JSON.stringify({ durableSchema: 3, agent: '8.0.0' }));
-    assert.equal((await refused(page)).error, OLDER);
+    const seen = await refused(page);
+    assert.equal(seen.error, OLDER);
+    assert.equal(seen.agents, 0);
     await marker(page, null);
   });
 
