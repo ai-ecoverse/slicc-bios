@@ -1527,6 +1527,12 @@ class Guard {
     return nav?.holds === true && !nav.failed;
   }
 
+  unreadyForeignExtensionIframe(targetId, scope = this.scopes.get(targetId)) {
+    if (!scope || scope.ready || !scope.parent) return false;
+    const target = this.targets.get(targetId);
+    return target?.type === 'iframe' && this.foreignExtensionUrl(target.url);
+  }
+
   childLocked(id, scope, holds, seen, view) {
     if (id === scope.root) return false;
     if (this.extensionUrl(this.frames.get(id)) || scope.extensionOwners?.has(id)) return false;
@@ -1534,6 +1540,7 @@ class Guard {
     if (
       !holds &&
       (scope.remoteOwners.has(id) || this.targets.get(id)?.type === 'iframe') &&
+      !this.unreadyForeignExtensionIframe(id) &&
       this.pageLocked(id, new Set(seen), false, view)
     )
       return true;
@@ -1561,8 +1568,8 @@ class Guard {
       if (this.childLocked(id, scope, holds, seen, view)) return true;
     }
     for (const [child, entry] of this.scopes) {
-      if (entry.parent === targetId && this.pageLocked(child, new Set(seen), false, view))
-        return true;
+      if (entry.parent !== targetId || this.unreadyForeignExtensionIframe(child, entry)) continue;
+      if (this.pageLocked(child, new Set(seen), false, view)) return true;
     }
     return false;
   }

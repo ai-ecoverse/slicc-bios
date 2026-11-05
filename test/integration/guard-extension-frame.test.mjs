@@ -274,6 +274,30 @@ test('an OOPIF extension frame leaves the tab readable', async (t) => {
   assert.equal(shot.error, undefined, JSON.stringify(shot));
 });
 
+test('an unready foreign extension OOPIF does not lock its parent tab', async (t) => {
+  const wire = protocol(t);
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: false } },
+  }));
+  wire.target('oopif-pending', ordinary, foreign, {
+    oopif: true,
+    frameId: 'oopif-pending-frame',
+  });
+  wire.answers.set('Page.getFrameTree', (message) => {
+    if (message.sessionId === 'guard-oopif-pending-frame')
+      return { error: { code: -32000, message: 'frame tree unavailable' } };
+    const targetId = wire.sessions.get(message.sessionId);
+    return { result: { frameTree: wire.targets.get(targetId).tree } };
+  });
+  const session = await wire.attach('oopif-pending');
+  await flush();
+  await flush();
+  const document = await wire.request('DOM.getDocument', { depth: -1 }, session);
+  assert.equal(document.error, undefined, JSON.stringify(document));
+  const shot = await wire.request('Page.captureScreenshot', {}, session);
+  assert.equal(shot.error, undefined, JSON.stringify(shot));
+});
+
 test('an OOPIF extension screenshot follows the shown rule', async (t) => {
   const wire = protocol(t);
   wire.answers.set('Runtime.callFunctionOn', () => ({
