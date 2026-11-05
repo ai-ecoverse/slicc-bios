@@ -37,6 +37,11 @@ export const PRESENT_REFUSAL = EXTENSION_FRAMES.presentRefusal;
 const WHEN_SHOWN = new Set(EXTENSION_FRAMES.whenShown);
 const WHILE_PRESENT = new Set(EXTENSION_FRAMES.whilePresent);
 const EXTENSION_SCHEMES = new Set(EXTENSION_FRAMES.schemes);
+let frameDiagSeq = 0;
+const frameDiag = (note, detail = {}) => {
+  frameDiagSeq += 1;
+  console.warn(`GUARD-FRAME-DIAG ${JSON.stringify({ seq: frameDiagSeq, note, ...detail })}`);
+};
 const schemeOf = (url) => {
   try {
     return new URL(url).protocol.slice(0, -1);
@@ -1032,6 +1037,13 @@ class Guard {
   }
 
   refuse(command, message = PROTECTED, release = true) {
+    if (command?.method)
+      frameDiag('refuse', {
+        method: command.method,
+        sessionId: command.sessionId,
+        reason: message,
+        target: this.scopeSnap(this.scopeTarget(command.sessionId)),
+      });
     if (this.finished.has(command)) return;
     this.finished.add(command);
     const key = requestKey(command);
@@ -1331,7 +1343,7 @@ class Guard {
       seen.add(id);
       for (const [child, entry] of this.scopes) {
         if (entry.parent !== id) continue;
-        if (!entry.ready && this.foreignExtensionIframeTarget(child)) return true;
+        if (!entry.ready && !entry.failed && this.foreignExtensionIframeTarget(child)) return true;
         if (walk(child)) return true;
       }
       return false;
@@ -1556,14 +1568,39 @@ class Guard {
     return nav?.holds === true && !nav.failed;
   }
 
+  scopeSnap(targetId) {
+    const scope = this.scopes.get(targetId);
+    const target = this.targets.get(targetId);
+    return {
+      id: targetId,
+      type: target?.type,
+      url: target?.url,
+      ready: scope?.ready,
+      pending: scope?.pending,
+      failed: scope?.failed,
+      parent: scope?.parent,
+      root: scope?.root,
+      tree: Boolean(scope?.tree),
+      placement: this.placementsPending.has(targetId),
+      foreign: this.foreignExtensionUrl(target?.url),
+    };
+  }
+
+  unreadyForeignExtensionIframe(targetId, scope = this.scopes.get(targetId)) {
+    if (!scope || scope.ready || scope.failed || !scope.parent) return false;
+    if (!(scope.pending > 0 || this.placementsPending.has(targetId))) return false;
+    const target = this.targets.get(targetId);
+    return target?.type === 'iframe' && this.foreignExtensionUrl(target.url);
+  }
+
   childLocked(id, scope, holds, seen, view) {
     if (id === scope.root) return false;
     if (this.extensionUrl(this.frames.get(id)) || scope.extensionOwners?.has(id)) return false;
-    if (this.foreignExtensionIframeTarget(id)) return false;
     if (holds && !LISTED_FRAME.test(this.frames.get(id))) return true;
     if (
       !holds &&
       (scope.remoteOwners.has(id) || this.targets.get(id)?.type === 'iframe') &&
+      !this.unreadyForeignExtensionIframe(id) &&
       this.pageLocked(id, new Set(seen), false, view)
     )
       return true;
@@ -1574,7 +1611,13 @@ class Guard {
     if (!targetId || seen.has(targetId)) return true;
     seen.add(targetId);
     const scope = this.scopes.get(targetId);
-    if (!this.scopeReady(targetId, scope, view) || (view && scope.committed)) return true;
+    if (!this.scopeReady(targetId, scope, view) || (view && scope.committed)) {
+      frameDiag('pageLocked', {
+        branch: 'scopeReady-or-committed',
+        scope: this.scopeSnap(targetId),
+      });
+      return true;
+    }
     if (scope.privatePlaced) return Boolean(view);
     if (this.remoteOwnersLock(scope)) return true;
     const holds = this.holding(targetId);
@@ -1591,8 +1634,15 @@ class Guard {
       if (this.childLocked(id, scope, holds, seen, view)) return true;
     }
     for (const [child, entry] of this.scopes) {
-      if (entry.parent !== targetId || this.foreignExtensionIframeTarget(child)) continue;
-      if (this.pageLocked(child, new Set(seen), false, view)) return true;
+      if (entry.parent !== targetId || this.unreadyForeignExtensionIframe(child, entry)) continue;
+      if (this.pageLocked(child, new Set(seen), false, view)) {
+        frameDiag('pageLocked', {
+          branch: 'child-scope',
+          scope: this.scopeSnap(targetId),
+          child: this.scopeSnap(child),
+        });
+        return true;
+      }
     }
     return false;
   }
@@ -1603,7 +1653,14 @@ class Guard {
     const seen = new Set();
     let id = targetId;
     while (id) {
-      if (seen.has(id) || this.pageLocked(id, new Set(), blankRoot && id === targetId)) return true;
+      if (seen.has(id) || this.pageLocked(id, new Set(), blankRoot && id === targetId)) {
+        frameDiag('locked', {
+          sessionId,
+          from: this.scopeSnap(targetId),
+          at: this.scopeSnap(id),
+        });
+        return true;
+      }
       seen.add(id);
       id = this.scopes.get(id)?.parent;
     }
@@ -1881,7 +1938,13 @@ class Guard {
     this.stopCasts();
     const entry = { sessionId, again: false };
     this.placementsPending.set(targetId, entry);
-    entry.promise = Promise.resolve().then(() => this.placeNext(targetId, entry));
+    frameDiag('place-start', { sessionId, scope: this.scopeSnap(targetId) });
+    entry.promise = Promise.resolve()
+      .then(() => this.placeNext(targetId, entry))
+      .then((value) => {
+        frameDiag('place-end', { sessionId, scope: this.scopeSnap(targetId) });
+        return value;
+      });
     this.placing.set(targetId, entry.promise);
     return entry.promise;
   }
@@ -1927,6 +1990,11 @@ class Guard {
     this.scope(targetId).pending = (this.scope(targetId).pending ?? 0) + 1;
     this.scope(targetId).ready = false;
     this.stopCasts();
+    frameDiag('placeOne-start', {
+      sessionId,
+      extensionFrames: this.extensionFrames,
+      scope: this.scopeSnap(targetId),
+    });
     const deadline = this.extensionFrames ? Date.now() + PROBE_WAIT : undefined;
     const revision = this.revisions.get(targetId);
     const enabled = await this.call('Page.enable', {}, sessionId, deadline);
@@ -1975,6 +2043,18 @@ class Guard {
     );
     scope.ready = Boolean(scope.tree && !scope.failed && !scope.pending);
     if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
+    frameDiag('placeOne-end', {
+      sessionId,
+      scope: this.scopeSnap(targetId),
+      enabledError: enabled.error?.message,
+      ownersError: owners.error?.message,
+      attachedError: attached.error?.message,
+      ownersReady: scope.ownersReady,
+      cleanupFailed,
+      deadlinePassed:
+        deadline !== undefined &&
+        (Date.now() >= deadline || this.revisions.get(targetId) !== revision),
+    });
     await this.placePrivateFrames(targetId, deadline);
     if (!this.pageLocked(targetId) && this.debuggerLeases.get(targetId)?.state === 'suspended')
       this.setDebuggerLease(targetId, 'placed');
@@ -1989,6 +2069,29 @@ class Guard {
   scopeEvent(message) {
     const targetId = this.scopeTarget(message.sessionId);
     const changed = targetId ?? message.params?.targetInfo?.targetId ?? message.params?.targetId;
+    const method = message.method ?? '';
+    const info = message.params?.targetInfo;
+    const frame = message.params?.frame;
+    const url = info?.url ?? frame?.url ?? this.targets.get(changed)?.url;
+    if (
+      (method.startsWith('Target.') || method.startsWith('Page.frame')) &&
+      (this.foreignExtensionUrl(url) ||
+        (typeof url === 'string' && url.includes('chrome-extension:')))
+    )
+      frameDiag('event', {
+        method,
+        targetId,
+        changed,
+        type: info?.type ?? this.targets.get(changed)?.type,
+        url,
+        frameId: frame?.id,
+        parentId: info?.parentId ?? frame?.parentId,
+        sessionId: message.sessionId,
+        childSession: message.params?.sessionId,
+        placementSession: this.placements.has(message.sessionId),
+        parent: this.scopeSnap(targetId),
+        child: this.scopeSnap(changed),
+      });
     const invalidates =
       message.method !== 'Runtime.executionContextCreated' &&
       (message.method !== 'Target.targetInfoChanged' ||
@@ -2021,6 +2124,13 @@ class Guard {
       child.ready = false;
       this.learn({ ...info, parentId: targetId });
       this.placements.set(params.sessionId, info.targetId);
+      frameDiag('place-child', {
+        sessionId,
+        childSession: params.sessionId,
+        parent: this.scopeSnap(targetId),
+        child: this.scopeSnap(info.targetId),
+        waitingForDebugger: params.waitingForDebugger,
+      });
       this.placing.set(info.targetId, this.place(info.targetId, params.sessionId));
       if (params.waitingForDebugger)
         void this.call('Runtime.runIfWaitingForDebugger', {}, params.sessionId);
@@ -2568,6 +2678,15 @@ class Guard {
       const child = this.scope(info.targetId);
       child.parent = parentId;
       child.ready = false;
+      frameDiag('event', {
+        method: 'Target.attachedToTarget',
+        via: 'receiveAttachment',
+        sessionId: message.sessionId,
+        childSession: message.params?.sessionId,
+        placementSession: this.placements.has(message.sessionId),
+        parent: this.scopeSnap(parentId),
+        child: this.scopeSnap(info.targetId),
+      });
       this.stopCasts();
       return;
     }

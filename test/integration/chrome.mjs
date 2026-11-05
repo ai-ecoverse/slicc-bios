@@ -76,17 +76,23 @@ export async function devtools(chrome, ms = 30000) {
 
 const NOISE = /Spectrum Web Components is in dev mode|The legal slot is empty/;
 const KEEP = 40;
+const DIAG = 'GUARD-FRAME-DIAG';
 function consoleTail(cdp) {
   const lines = [];
   const keep = (line) => {
     if (NOISE.test(line)) return;
-    lines.push(line.slice(0, 400));
-    if (lines.length > KEEP) lines.splice(0, lines.length - KEEP);
+    lines.push(line.includes(DIAG) ? line : line.slice(0, 400));
+    let kept = 0;
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      if (lines[i].includes(DIAG)) continue;
+      kept += 1;
+      if (kept > KEEP) lines.splice(i, 1);
+    }
   };
   cdp.on(({ method, params }) => {
     if (
       method === 'Runtime.consoleAPICalled' &&
-      ['error', 'warning', 'assert'].includes(params.type)
+      ['error', 'warning', 'assert', 'log'].includes(params.type)
     )
       keep(`${params.type} ${params.args.map((arg) => arg.value ?? arg.description).join(' ')}`);
     if (method === 'Runtime.exceptionThrown') {

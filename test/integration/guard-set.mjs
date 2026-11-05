@@ -223,6 +223,7 @@ async function unguardedClient(browser) {
 
 export async function guardHost(t, path) {
   const seven = await chrome.page(t);
+  if (process.env.GUARD_FRAME_DIAG) diagPage = seven;
   const socket = new WebSocket(browser);
   await new Promise((resolve, reject) => {
     socket.onopen = resolve;
@@ -663,8 +664,15 @@ const only = (list) => (list ? list.split(',') : null);
 const failing = (row) =>
   (row.control === 'fail' || row.guarded === 'fail' || row.live === 'fail') && !known(row);
 const SHA = process.env.GUARD_SHA ?? process.env.GITHUB_SHA;
-export const ROW_MS = 3 * 60 * 1000;
+export const ROW_MS = process.env.GUARD_FRAME_DIAG ? 60 * 1000 : 3 * 60 * 1000;
 export const SCALE = { lagging: 3 };
+let diagPage;
+const dumpFrameDiag = (label) => {
+  if (!process.env.GUARD_FRAME_DIAG) return;
+  const lines = [...(diagPage?.console ?? [])].filter((line) => line.includes('GUARD-FRAME-DIAG'));
+  process.stdout.write(`GUARD-FRAME-DIAG-DUMP ${label} count=${lines.length}\n`);
+  for (const line of lines) process.stdout.write(`${line}\n`);
+};
 
 export function shared(path, { variants, except = [], group } = {}) {
   const grouped = group ? groupTargets(group) : ALL_TARGETS;
@@ -696,79 +704,107 @@ export function shared(path, { variants, except = [], group } = {}) {
         let current;
         let transportEvents;
         const evidence = new Map();
-        const execution = await run(subset(target), {
-          clientFactory: async (configuration) => {
-            const made = await clientFactory(path)(configuration);
-            transportEvents = made.client.transportEvents;
-            return made;
-          },
-          rowTimeoutMs: ROW_MS,
-          settleScale: SCALE[variant] ?? 1,
-          targets,
-          capabilities: PATHS[path],
-          variant,
-          fixture,
-          log: (row) =>
-            trace(
-              'row',
-              row.transport,
-              row.id,
-              row.target,
-              row.variant,
-              row.control,
-              row.guarded,
-              row.live,
-              row.why ?? '',
-              JSON.stringify(row.incomplete ?? [])
-            ),
-          onStart: (row) => {
-            current = row;
-          },
-          debug: (data) => {
-            if (process.env.GUARD_TRACE)
-              trace('debug', JSON.stringify(data).slice(0, Number(process.env.GUARD_TRACE) || 300));
-            if (
-              data.side !== 'guarded' ||
-              !data.calls ||
-              !['C8.iframe-error', 'C4.static-cross-site', 'C4.script-cross-site'].includes(
-                current?.id
-              )
-            )
-              return;
-            const snapshot = data.calls.snapshot;
-            evidence.set(current.id, {
-              transportEvents,
-              frameTree: data.calls.frameTree,
-              snapshot: snapshot && {
-                ok: snapshot.ok,
-                error: snapshot.error,
-                nodeName: snapshot.result?.root?.nodeName,
-              },
-              events: data.events
-                .filter((event) =>
-                  [
-                    'Page.frameAttached',
-                    'Page.frameNavigated',
-                    'Page.frameDetached',
-                    'Network.loadingFailed',
-                    'Target.attachedToTarget',
-                    'Target.detachedFromTarget',
-                  ].includes(event.method)
+        let execution;
+        try {
+          execution = await run(subset(target), {
+            clientFactory: async (configuration) => {
+              const made = await clientFactory(path)(configuration);
+              transportEvents = made.client.transportEvents;
+              return made;
+            },
+            rowTimeoutMs: ROW_MS,
+            settleScale: SCALE[variant] ?? 1,
+            targets,
+            capabilities: PATHS[path],
+            variant,
+            fixture,
+            log: (row) =>
+              trace(
+                'row',
+                row.transport,
+                row.id,
+                row.target,
+                row.variant,
+                row.control,
+                row.guarded,
+                row.live,
+                row.why ?? '',
+                JSON.stringify(row.incomplete ?? [])
+              ),
+            onStart: (row) => {
+              current = row;
+              if (process.env.GUARD_FRAME_DIAG) {
+                if (diagPage?.console) diagPage.console.length = 0;
+                process.stdout.write(
+                  `GUARD-FRAME-ROW start ${row.id}@${row.target}/${row.variant}\n`
+                );
+              }
+            },
+            debug: (data) => {
+              if (process.env.GUARD_TRACE)
+                trace(
+                  'debug',
+                  JSON.stringify(data).slice(0, Number(process.env.GUARD_TRACE) || 300)
+                );
+              if (
+                data.side !== 'guarded' ||
+                !data.calls ||
+                !['C8.iframe-error', 'C4.static-cross-site', 'C4.script-cross-site'].includes(
+                  current?.id
                 )
-                .map((event) => ({
-                  method: event.method,
-                  sessionId: event.sessionId,
-                  frame: event.params.frame,
-                  frameId: event.params.frameId,
-                  reason: event.params.reason,
-                  errorText: event.params.errorText,
-                  targetInfo: event.params.targetInfo,
-                  waitingForDebugger: event.params.waitingForDebugger,
-                })),
-            });
-          },
-        });
+              )
+                return;
+              const snapshot = data.calls.snapshot;
+              evidence.set(current.id, {
+                transportEvents,
+                frameTree: data.calls.frameTree,
+                snapshot: snapshot && {
+                  ok: snapshot.ok,
+                  error: snapshot.error,
+                  nodeName: snapshot.result?.root?.nodeName,
+                },
+                events: data.events
+                  .filter((event) =>
+                    [
+                      'Page.frameAttached',
+                      'Page.frameNavigated',
+                      'Page.frameDetached',
+                      'Network.loadingFailed',
+                      'Target.attachedToTarget',
+                      'Target.detachedFromTarget',
+                    ].includes(event.method)
+                  )
+                  .map((event) => ({
+                    method: event.method,
+                    sessionId: event.sessionId,
+                    frame: event.params.frame,
+                    frameId: event.params.frameId,
+                    reason: event.params.reason,
+                    errorText: event.params.errorText,
+                    targetInfo: event.params.targetInfo,
+                    waitingForDebugger: event.params.waitingForDebugger,
+                  })),
+              });
+            },
+          });
+        } catch (error) {
+          if (process.env.GUARD_FRAME_DIAG) {
+            dumpFrameDiag(`timeout-or-error ${current?.id ?? '?'}@${target}/${variant}`);
+            process.stdout.write(
+              `GUARD-FRAME-ROW error ${current?.id ?? '?'}@${target}/${variant} ${error?.message ?? error}\n`
+            );
+          }
+          throw error;
+        }
         results.push(...execution.results);
+        if (process.env.GUARD_FRAME_DIAG) {
+          for (const row of execution.results) {
+            dumpFrameDiag(`${row.id}@${row.target}/${row.variant}`);
+            process.stdout.write(
+              `GUARD-FRAME-ROW end ${row.id}@${row.target}/${row.variant} control=${row.control} guarded=${row.guarded} live=${row.live} why=${row.why ?? ''}\n`
+            );
+          }
+        }
         for (const row of execution.results.filter(
           (row) => failing(row) || ['C4.static-cross-site', 'C4.script-cross-site'].includes(row.id)
         )) {
