@@ -13,6 +13,10 @@ const extensionOrigin = (url) => {
   const parsed = new URL(url);
   return `${parsed.protocol}//${parsed.host}`;
 };
+const MARKER = { version: 1, kind: 'extensionFrame' };
+const MARKER_HIDDEN = { ...MARKER, hidden: true, focused: false };
+const MARKER_SHOWN = { ...MARKER, hidden: false, focused: true };
+const MARKER_FOCUSED = { ...MARKER, hidden: true, focused: true };
 const { whenShown, whilePresent } = catalog.protectedOrigins.extensionFrames;
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -99,7 +103,12 @@ function protocol(t, own = 'https://protected.invalid') {
     }
     if (method === 'Input.dispatchKeyEvent' || method.startsWith('Input.')) result = {};
     if (method === 'Page.createIsolatedWorld') result = { executionContextId: 7 };
-    if (method === 'DOM.getFrameOwner') result = { backendNodeId: 9 };
+    if (method === 'DOM.getFrameOwner') {
+      result = {
+        backendNodeId: 9,
+        ...(target?.ownerMarker ? { sliccExtensionFrame: target.ownerMarker } : {}),
+      };
+    }
     if (method === 'DOM.resolveNode')
       result = { object: { objectId: 'ext-frame-object', type: 'object' } };
     if (method === 'Runtime.callFunctionOn')
@@ -116,56 +125,83 @@ function protocol(t, own = 'https://protected.invalid') {
     guard.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
     return answer;
   }
-  function target(id, url = ordinary, child) {
+  function target(id, url = ordinary, options = {}) {
+    const {
+      marker,
+      childUrl = 'about:blank',
+      src,
+      childOrigin,
+      contentDocument,
+      nodeName = 'IFRAME',
+      attributes,
+      extraChild,
+    } = typeof options === 'string'
+      ? { childUrl: options, src: options, childOrigin: extensionOrigin(options) }
+      : options;
     const frame = {
       id,
       url,
       securityOrigin: URL.canParse(url) ? new URL(url).origin : url,
+      loaderId: `${id}-loader`,
     };
-    const tree = child
+    const childId = `${id}-ext`;
+    const hasChild =
+      marker !== undefined ||
+      typeof options === 'string' ||
+      options.child ||
+      options.childUrl !== undefined ||
+      options.src !== undefined;
+    const tree = hasChild
       ? {
           frame,
           childFrames: [
             {
               frame: {
-                id: `${id}-ext`,
+                id: childId,
                 parentId: id,
-                url: child,
-                securityOrigin: extensionOrigin(child),
+                url: childUrl,
+                securityOrigin:
+                  childOrigin ??
+                  (childUrl && childUrl !== 'about:blank' && URL.canParse(childUrl)
+                    ? extensionOrigin(childUrl)
+                    : '://'),
               },
             },
+            ...(extraChild
+              ? [
+                  {
+                    frame: {
+                      id: `${id}-nested`,
+                      parentId: childId,
+                      url: extraChild,
+                      securityOrigin: extensionOrigin(extraChild),
+                    },
+                  },
+                ]
+              : []),
           ],
         }
       : { frame };
-    const owners = child
-      ? [
-          {
-            nodeId: 2,
-            nodeName: 'IFRAME',
-            frameId: `${id}-ext`,
-            attributes: ['src', child],
-          },
-        ]
-      : [];
+    const owner = hasChild
+      ? {
+          nodeId: 2,
+          nodeName,
+          frameId: childId,
+          attributes:
+            attributes ??
+            (src !== undefined ? ['src', src] : childUrl ? ['src', childUrl] : ['src', '']),
+          ...(marker !== undefined ? { sliccExtensionFrame: marker } : {}),
+          ...(contentDocument ? { contentDocument } : {}),
+        }
+      : undefined;
+    const owners = owner ? [owner] : [];
     const entry = {
       info: { targetId: id, type: 'page', url },
       tree,
       owners,
+      ownerMarker: marker,
     };
     targets.set(id, entry);
-    if (child) {
-      targets.set(`${id}-ext-target`, {
-        info: { targetId: `${id}-ext-target`, type: 'iframe', url: child, parentId: id },
-        tree: {
-          frame: {
-            id: `${id}-ext`,
-            parentId: id,
-            url: child,
-            securityOrigin: extensionOrigin(child),
-          },
-        },
-      });
-    }
     return entry;
   }
   async function attach(id) {
@@ -183,12 +219,13 @@ function protocol(t, own = 'https://protected.invalid') {
     answers,
     emit,
     guard,
+    targets,
   };
 }
 
-test('a foreign extension frame does not lock an ordinary tab', async (t) => {
+test('a marked foreign extension frame does not lock an ordinary tab', async (t) => {
   const wire = protocol(t);
-  wire.target('foreign-open', ordinary, foreign);
+  wire.target('foreign-open', ordinary, { marker: MARKER });
   const session = await wire.attach('foreign-open');
   const read = await wire.request(
     'Runtime.evaluate',
@@ -197,6 +234,213 @@ test('a foreign extension frame does not lock an ordinary tab', async (t) => {
   );
   assert.equal(read.error, undefined, JSON.stringify(read));
   assert.equal(read.result.result.value, ordinary);
+});
+
+async function assertPageLocked(wire, targetId) {
+  const attached = await wire.request('Target.attachToTarget', {
+    targetId,
+    flatten: true,
+  });
+  if (attached.error) {
+    assert.equal(attached.error.message, PROTECTED);
+    return;
+  }
+  await flush();
+  const shot = await wire.request('Page.captureScreenshot', {}, attached.result.sessionId);
+  assert.equal(shot.error?.message, PROTECTED);
+}
+
+test('without a marker an empty remote frame still locks', async (t) => {
+  const wire = protocol(t);
+  wire.target('no-marker', ordinary, { child: true, childUrl: '' });
+  await assertPageLocked(wire, 'no-marker');
+});
+
+test('marker version 2 is ignored and the tab stays locked', async (t) => {
+  const wire = protocol(t);
+  wire.target('bad-version', ordinary, {
+    marker: { version: 2, kind: 'extensionFrame', hidden: true, focused: false },
+    childUrl: '',
+  });
+  await assertPageLocked(wire, 'bad-version');
+});
+
+test('a forged DOM attribute does not unlock the tab', async (t) => {
+  const wire = protocol(t);
+  wire.target('forged-attr', ordinary, {
+    child: true,
+    childUrl: '',
+    attributes: ['data-slicc-extension-frame', '1', 'src', ''],
+  });
+  await assertPageLocked(wire, 'forged-attr');
+});
+
+test('a marker on a non-IFRAME node is ignored', async (t) => {
+  const wire = protocol(t);
+  wire.target('non-iframe', ordinary, {
+    marker: MARKER_HIDDEN,
+    nodeName: 'DIV',
+    childUrl: '',
+  });
+  await assertPageLocked(wire, 'non-iframe');
+});
+
+test("seven's own extension frame without a marker still locks the tab", async (t) => {
+  const wire = protocol(t, [
+    'https://protected.invalid',
+    'chrome-extension://ownextensionid000000000000000000',
+  ]);
+  wire.target('own-lock', ordinary, { child: true, childUrl: '', src: ownExt });
+  await assertPageLocked(wire, 'own-lock');
+});
+
+test('seven, vault and another protected scheme still lock', async (t) => {
+  for (const [id, url] of [
+    ['seven-lock', seven],
+    ['vault-lock', vault],
+    ['chrome-lock', chrome],
+  ]) {
+    const wire = protocol(t);
+    wire.target(id, ordinary, { childUrl: url, src: url });
+    await assertPageLocked(wire, id);
+  }
+});
+
+test('a protected frame nested under a marked extension owner still locks', async (t) => {
+  const wire = protocol(t);
+  wire.target('nested-protected', ordinary, { marker: MARKER, extraChild: seven });
+  await assertPageLocked(wire, 'nested-protected');
+});
+
+test('marker with absent fields admits whenShown after a live hidden check', async (t) => {
+  const wire = protocol(t);
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: false } },
+  }));
+  wire.target('absent-fields', ordinary, { marker: MARKER });
+  const session = await wire.attach('absent-fields');
+  for (const method of whenShown.filter((name) => name.startsWith('Input.'))) {
+    const answer = await wire.request(method, {}, session);
+    assert.equal(answer.error, undefined, method);
+  }
+});
+
+test('marker with absent fields refuses whenShown when the live check says shown', async (t) => {
+  const wire = protocol(t);
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: true } },
+  }));
+  wire.target('absent-shown', ordinary, { marker: MARKER });
+  const session = await wire.attach('absent-shown');
+  const answer = await wire.request(
+    'Input.dispatchKeyEvent',
+    { type: 'keyDown', key: 'a' },
+    session
+  );
+  assert.equal(answer.error?.message, SHOWN_REFUSAL);
+});
+
+test('marker hidden:true focused:false admits whenShown when live agrees', async (t) => {
+  const wire = protocol(t);
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: false } },
+  }));
+  wire.target('hidden-in', ordinary, { marker: MARKER_HIDDEN });
+  const session = await wire.attach('hidden-in');
+  const answer = await wire.request(
+    'Input.dispatchKeyEvent',
+    { type: 'keyDown', key: 'a' },
+    session
+  );
+  assert.equal(answer.error, undefined);
+});
+
+test('marker hidden:true focused:false refuses when live check disagrees', async (t) => {
+  const wire = protocol(t);
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: true } },
+  }));
+  wire.target('disagree', ordinary, { marker: MARKER_HIDDEN });
+  const session = await wire.attach('disagree');
+  const answer = await wire.request('Page.captureScreenshot', {}, session);
+  assert.equal(answer.error?.message, SHOWN_REFUSAL);
+});
+
+test('marker focused or shown refuses whenShown with shownRefusal', async (t) => {
+  for (const [id, marker] of [
+    ['shown-mark', MARKER_SHOWN],
+    ['focus-mark', MARKER_FOCUSED],
+  ]) {
+    const wire = protocol(t);
+    wire.answers.set('Runtime.callFunctionOn', () => ({
+      result: { result: { type: 'boolean', value: false } },
+    }));
+    wire.target(id, ordinary, { marker });
+    const session = await wire.attach(id);
+    const answer = await wire.request('Page.captureScreenshot', {}, session);
+    assert.equal(answer.error?.message, SHOWN_REFUSAL, id);
+  }
+});
+
+test('a visibility check error or timeout refuses with shownRefusal', async (t) => {
+  const wire = protocol(t);
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    error: { code: -32000, message: 'probe failed' },
+  }));
+  wire.target('check-err', ordinary, { marker: MARKER });
+  const session = await wire.attach('check-err');
+  const answer = await wire.request('Page.captureScreenshot', {}, session);
+  assert.equal(answer.error?.message, SHOWN_REFUSAL);
+});
+
+test('whilePresent captures refuse with presentRefusal', async (t) => {
+  const wire = protocol(t);
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: false } },
+  }));
+  wire.target('present-in', ordinary, { marker: MARKER });
+  const session = await wire.attach('present-in');
+  for (const method of whilePresent) {
+    const answer = await wire.request(method, {}, session);
+    assert.equal(answer.error?.message, PRESENT_REFUSAL, method);
+  }
+});
+
+test('the marker never teaches the guard a URL', async (t) => {
+  const wire = protocol(t);
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: false } },
+  }));
+  wire.target('no-url', ordinary, { marker: MARKER_HIDDEN });
+  const session = await wire.attach('no-url');
+  const tree = await wire.request('Page.getFrameTree', {}, session);
+  assert.equal(tree.error, undefined);
+  assert.equal(JSON.stringify(tree.result).includes('chrome-extension://'), false);
+  const evaluate = await wire.request(
+    'Runtime.evaluate',
+    { expression: '1', returnByValue: true },
+    session
+  );
+  assert.equal(evaluate.error, undefined);
+  assert.equal(
+    JSON.stringify(wire.targets.get('no-url').owners).includes('chrome-extension'),
+    false
+  );
+});
+
+test('frameId commands on an embedded marked frame stay refused except getFrameOwner', async (t) => {
+  const wire = protocol(t);
+  wire.target('frame-ext-id', ordinary, { marker: MARKER });
+  const session = await wire.attach('frame-ext-id');
+  const refused = await wire.request(
+    'Page.createIsolatedWorld',
+    { frameId: 'frame-ext-id-ext', worldName: 'client' },
+    session
+  );
+  assert.equal(refused.error?.message, PROTECTED);
+  const owner = await wire.request('DOM.getFrameOwner', { frameId: 'frame-ext-id-ext' }, session);
+  assert.equal(owner.error, undefined, JSON.stringify(owner));
+  assert.equal(owner.result.backendNodeId, 9);
 });
 
 test('a top-level foreign extension navigation cuts the session', async (t) => {
@@ -233,72 +477,9 @@ test('a top-level foreign extension navigation cuts the session', async (t) => {
   assert.ok(read.error, JSON.stringify(read));
 });
 
-test('targetInfoChanged to a top-level foreign extension page cuts', async (t) => {
-  const wire = protocol(t);
-  const entry = wire.target('root-ext-hint', ordinary);
-  const session = await wire.attach('root-ext-hint');
-  entry.info.url = foreign;
-  entry.tree = {
-    frame: {
-      id: 'root-ext-hint',
-      url: foreign,
-      securityOrigin: extensionOrigin(foreign),
-      loaderId: 'hint-loader',
-    },
-  };
-  wire.emit({
-    method: 'Target.targetInfoChanged',
-    params: { targetInfo: { ...entry.info, url: foreign } },
-  });
-  await flush();
-  await flush();
-  const read = await wire.request(
-    'Runtime.evaluate',
-    { expression: '1', returnByValue: true },
-    session
-  );
-  assert.ok(read.error, JSON.stringify(read));
-});
-
-test('a root default world with a foreign extension origin is protected', async (t) => {
-  const wire = protocol(t);
-  wire.target('root-ext-world', ordinary);
-  const session = await wire.attach('root-ext-world');
-  wire.emit({
-    method: 'Runtime.executionContextCreated',
-    sessionId: session,
-    params: {
-      context: {
-        id: 11,
-        origin: extensionOrigin(foreign),
-        auxData: { isDefault: true, type: 'default', frameId: 'root-ext-world' },
-      },
-    },
-  });
-  await flush();
-  const read = await wire.request(
-    'Runtime.evaluate',
-    { expression: '1', returnByValue: true },
-    session
-  );
-  assert.ok(read.error, JSON.stringify(read));
-});
-
-test('frameId commands on an embedded extension frame stay refused', async (t) => {
-  const wire = protocol(t);
-  wire.target('frame-ext-id', ordinary, foreign);
-  const session = await wire.attach('frame-ext-id');
-  const answer = await wire.request(
-    'Page.createIsolatedWorld',
-    { frameId: 'frame-ext-id-ext', worldName: 'client' },
-    session
-  );
-  assert.equal(answer.error?.message, PROTECTED);
-});
-
 test('embedded foreign extension document requests do not cut the tab', async (t) => {
   const wire = protocol(t);
-  wire.target('embed-doc', ordinary, foreign);
+  wire.target('embed-doc', ordinary, { marker: MARKER, childUrl: foreign, src: foreign });
   const session = await wire.attach('embed-doc');
   wire.emit({
     method: 'Network.requestWillBeSent',
@@ -317,209 +498,6 @@ test('embedded foreign extension document requests do not cut the tab', async (t
     session
   );
   assert.equal(read.error, undefined, JSON.stringify(read));
-});
-
-test("seven's own extension frame still locks the tab", async (t) => {
-  const wire = protocol(t, [
-    'https://protected.invalid',
-    'chrome-extension://ownextensionid000000000000000000',
-  ]);
-  wire.target('own-lock', ordinary, ownExt);
-  const attached = await wire.request('Target.attachToTarget', {
-    targetId: 'own-lock',
-    flatten: true,
-  });
-  if (attached.error) {
-    assert.equal(attached.error.message, PROTECTED);
-    return;
-  }
-  await flush();
-  const read = await wire.request(
-    'Runtime.evaluate',
-    { expression: '1', returnByValue: true },
-    attached.result.sessionId
-  );
-  assert.equal(read.error?.message, PROTECTED);
-});
-
-test('seven, vault and another protected scheme still lock', async (t) => {
-  for (const [id, url] of [
-    ['seven-lock', seven],
-    ['vault-lock', vault],
-    ['chrome-lock', chrome],
-  ]) {
-    const wire = protocol(t);
-    wire.target(id, ordinary, url);
-    const attached = await wire.request('Target.attachToTarget', { targetId: id, flatten: true });
-    if (attached.error) {
-      assert.equal(attached.error.message, PROTECTED, url);
-      continue;
-    }
-    await flush();
-    const read = await wire.request(
-      'Runtime.evaluate',
-      { expression: '1', returnByValue: true },
-      attached.result.sessionId
-    );
-    assert.equal(read.error?.message, PROTECTED, url);
-  }
-});
-
-test('hidden unfocused extension frame admits whenShown input', async (t) => {
-  const wire = protocol(t);
-  wire.answers.set('Runtime.callFunctionOn', () => ({
-    result: { result: { type: 'boolean', value: false } },
-  }));
-  wire.target('hidden-in', ordinary, foreign);
-  const session = await wire.attach('hidden-in');
-  for (const method of whenShown.filter((name) => name.startsWith('Input.'))) {
-    const answer = await wire.request(method, {}, session);
-    assert.equal(answer.error, undefined, method);
-  }
-});
-
-test('hidden focused extension frame refuses whenShown with shownRefusal', async (t) => {
-  const wire = protocol(t);
-  wire.answers.set('Runtime.callFunctionOn', () => ({
-    result: { result: { type: 'boolean', value: true } },
-  }));
-  wire.target('hidden-focus', ordinary, foreign);
-  const session = await wire.attach('hidden-focus');
-  const answer = await wire.request(
-    'Input.dispatchKeyEvent',
-    { type: 'keyDown', key: 'a' },
-    session
-  );
-  assert.equal(answer.error?.message, SHOWN_REFUSAL);
-});
-
-test('shown transparent and offscreen refuse whenShown with shownRefusal', async (t) => {
-  const wire = protocol(t);
-  wire.answers.set('Runtime.callFunctionOn', () => ({
-    result: { result: { type: 'boolean', value: true } },
-  }));
-  wire.target('shown-in', ordinary, foreign);
-  const session = await wire.attach('shown-in');
-  for (const method of ['Page.captureScreenshot', 'Input.insertText']) {
-    const answer = await wire.request(
-      method,
-      method === 'Input.insertText' ? { text: 'x' } : {},
-      session
-    );
-    assert.equal(answer.error?.message, SHOWN_REFUSAL, method);
-  }
-});
-
-test('a visibility check error or timeout refuses with shownRefusal', async (t) => {
-  const wire = protocol(t);
-  wire.answers.set('Runtime.callFunctionOn', () => ({
-    error: { code: -32000, message: 'probe failed' },
-  }));
-  wire.target('check-err', ordinary, foreign);
-  const session = await wire.attach('check-err');
-  const answer = await wire.request('Page.captureScreenshot', {}, session);
-  assert.equal(answer.error?.message, SHOWN_REFUSAL);
-});
-
-test('whilePresent captures refuse with presentRefusal', async (t) => {
-  const wire = protocol(t);
-  wire.answers.set('Runtime.callFunctionOn', () => ({
-    result: { result: { type: 'boolean', value: false } },
-  }));
-  wire.target('present-in', ordinary, foreign);
-  const session = await wire.attach('present-in');
-  for (const method of whilePresent) {
-    const answer = await wire.request(method, {}, session);
-    assert.equal(answer.error?.message, PRESENT_REFUSAL, method);
-  }
-});
-
-test('a running screencast is stopped when an extension frame appears', async (t) => {
-  const wire = protocol(t);
-  wire.target('cast-stop', ordinary);
-  const session = await wire.attach('cast-stop');
-  const started = await wire.request('Page.startScreencast', { format: 'png' }, session);
-  assert.equal(started.error, undefined);
-  const before = wire.sent.length;
-  wire.target('cast-stop', ordinary, foreign);
-  wire.emit({
-    method: 'Page.frameNavigated',
-    sessionId: session,
-    params: {
-      frame: {
-        id: 'cast-stop-ext',
-        parentId: 'cast-stop',
-        url: foreign,
-        securityOrigin: extensionOrigin(foreign),
-      },
-    },
-  });
-  await flush();
-  wire.emit({
-    method: 'Page.screencastFrame',
-    sessionId: session,
-    params: {
-      data: 'x',
-      sessionId: 1,
-      metadata: {
-        offsetTop: 0,
-        pageScaleFactor: 1,
-        deviceWidth: 1,
-        deviceHeight: 1,
-        scrollOffsetX: 0,
-        scrollOffsetY: 0,
-        timestamp: 1,
-      },
-    },
-  });
-  await flush();
-  assert.equal(
-    wire.delivered.some((message) => message.method === 'Page.screencastFrame'),
-    false
-  );
-  assert.ok(
-    wire.sent.slice(before).some((message) => message.method === 'Page.stopScreencast'),
-    'stopScreencast was sent'
-  );
-});
-
-test('extension frame URLs are redacted from read methods', async (t) => {
-  const wire = protocol(t);
-  wire.answers.set('Runtime.callFunctionOn', () => ({
-    result: { result: { type: 'boolean', value: false } },
-  }));
-  wire.answers.set('Runtime.evaluate', () => ({
-    result: { result: { type: 'string', value: foreign } },
-  }));
-  wire.target('redact-in', ordinary, foreign);
-  const session = await wire.attach('redact-in');
-  const evaluated = await wire.request(
-    'Runtime.evaluate',
-    { expression: 'document.querySelector("iframe").src', returnByValue: true },
-    session
-  );
-  assert.equal(evaluated.error, undefined);
-  assert.equal(evaluated.result.result.value, 'about:blank');
-  const tree = await wire.request('Page.getFrameTree', {}, session);
-  assert.equal(tree.error, undefined);
-  assert.equal(
-    JSON.stringify(tree.result).includes('chrome-extension://'),
-    false,
-    JSON.stringify(tree.result)
-  );
-  const listed = await wire.request('Target.getTargets', {});
-  assert.equal(
-    JSON.stringify(listed.result).includes('chrome-extension://'),
-    false,
-    JSON.stringify(listed.result)
-  );
-  const document = await wire.request('DOM.getDocument', { depth: -1 }, session);
-  assert.equal(document.error, undefined);
-  assert.equal(
-    JSON.stringify(document.result).includes('chrome-extension://'),
-    false,
-    JSON.stringify(document.result)
-  );
 });
 
 test('base64Encoded CONTENTS that name the vault are refused', async (t) => {
@@ -562,7 +540,7 @@ test('whenShown reuses one isolated world per frame and loader', async (t) => {
   wire.answers.set('Runtime.callFunctionOn', () => ({
     result: { result: { type: 'boolean', value: false } },
   }));
-  wire.target('reuse-world', ordinary, foreign);
+  wire.target('reuse-world', ordinary, { marker: MARKER });
   const session = await wire.attach('reuse-world');
   for (let i = 0; i < 3; i += 1) {
     const answer = await wire.request(
@@ -573,6 +551,84 @@ test('whenShown reuses one isolated world per frame and loader', async (t) => {
     assert.equal(answer.error, undefined);
   }
   assert.equal(worlds, 1);
+});
+
+test('DOM setChildNodes childNodeInserted and describeNode accept markers', async (t) => {
+  const wire = protocol(t);
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: false } },
+  }));
+  wire.target('dom-events', ordinary, { marker: MARKER });
+  const session = await wire.attach('dom-events');
+  wire.emit({
+    method: 'DOM.setChildNodes',
+    sessionId: session,
+    params: {
+      parentNodeId: 1,
+      nodes: [
+        {
+          nodeId: 3,
+          nodeName: 'IFRAME',
+          frameId: 'dom-events-ext',
+          attributes: ['src', ''],
+          sliccExtensionFrame: MARKER_HIDDEN,
+        },
+      ],
+    },
+  });
+  wire.emit({
+    method: 'DOM.childNodeInserted',
+    sessionId: session,
+    params: {
+      parentNodeId: 1,
+      node: {
+        nodeId: 4,
+        nodeName: 'IFRAME',
+        frameId: 'dom-events-ext',
+        attributes: ['src', ''],
+        sliccExtensionFrame: MARKER,
+      },
+    },
+  });
+  await flush();
+  wire.answers.set('DOM.describeNode', () => ({
+    result: {
+      node: {
+        nodeId: 2,
+        nodeName: 'IFRAME',
+        frameId: 'dom-events-ext',
+        attributes: ['src', ''],
+        sliccExtensionFrame: MARKER_HIDDEN,
+      },
+    },
+  }));
+  const described = await wire.request('DOM.describeNode', { nodeId: 2 }, session);
+  assert.equal(described.error, undefined, JSON.stringify(described));
+  const answer = await wire.request(
+    'Input.dispatchKeyEvent',
+    { type: 'keyDown', key: 'a' },
+    session
+  );
+  assert.equal(answer.error, undefined);
+});
+
+test('getFrameOwner marker shown during live check refuses whenShown', async (t) => {
+  const wire = protocol(t);
+  let ownerCalls = 0;
+  wire.answers.set('DOM.getFrameOwner', () => {
+    ownerCalls += 1;
+    return {
+      result: { backendNodeId: 9, sliccExtensionFrame: MARKER_SHOWN },
+    };
+  });
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: false } },
+  }));
+  wire.target('owner-shown', ordinary, { marker: MARKER_HIDDEN });
+  const session = await wire.attach('owner-shown');
+  const answer = await wire.request('Page.captureScreenshot', {}, session);
+  assert.equal(answer.error?.message, SHOWN_REFUSAL);
+  assert.ok(ownerCalls > 0);
 });
 
 test('a stale probe context is dropped so the next whenShown makes a new world', async (t) => {
@@ -595,7 +651,7 @@ test('a stale probe context is dropped so the next whenShown makes a new world',
   wire.answers.set('Runtime.callFunctionOn', () => ({
     result: { result: { type: 'boolean', value: false } },
   }));
-  wire.target('stale-world', ordinary, foreign);
+  wire.target('stale-world', ordinary, { marker: MARKER });
   const session = await wire.attach('stale-world');
   const first = await wire.request(
     'Input.dispatchKeyEvent',

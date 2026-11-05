@@ -41,6 +41,7 @@ const EXTENSION_WORLD = 'slicc-extension-frames';
 const EXTENSION_PROBE =
   'function(){if(!this.isConnected||this.checkVisibility({visibilityProperty:true}))return true;let node=this;for(let depth=0;depth<64;depth++){const root=node.getRootNode();if(root.activeElement!==node)return false;if(!root.host)return true;node=root.host;}return true;}';
 const EXTENSION_CHECK_MS = 1000;
+const EXTENSION_MARKER_KIND = 'extensionFrame';
 
 const GUARD_IDS = 2 ** 30;
 const HOLD_MS = 2000;
@@ -1236,6 +1237,7 @@ class Guard {
         remoteOwners: new Set(),
         attachedFrames: new Set(),
         extensionOwners: new Set(),
+        extensionMarkers: new Map(),
         ready: false,
       });
     return this.scopes.get(targetId);
@@ -1243,6 +1245,28 @@ class Guard {
 
   extensionUrl(url) {
     return typeof url === 'string' && this.is.extensionFrame(url);
+  }
+
+  extensionFrameMarker(value) {
+    if (!value || typeof value !== 'object') return null;
+    if (value.version !== 1 || value.kind !== EXTENSION_MARKER_KIND) return null;
+    return value;
+  }
+
+  noteExtensionMarker(scope, frameId, marker) {
+    if (!scope || typeof frameId !== 'string' || !frameId || !marker) return;
+    scope.extensionOwners.add(frameId);
+    scope.extensionMarkers ??= new Map();
+    scope.extensionMarkers.set(frameId, {
+      ...(marker.hidden !== undefined ? { hidden: marker.hidden } : {}),
+      ...(marker.focused !== undefined ? { focused: marker.focused } : {}),
+    });
+  }
+
+  markerShown(marker) {
+    if (!marker) return null;
+    if (marker.hidden === undefined && marker.focused === undefined) return null;
+    return !(marker.hidden === true && marker.focused === false);
   }
 
   embeddedExtensionFrame(frame, sessionId) {
@@ -1493,7 +1517,7 @@ class Guard {
 
   childLocked(id, scope, holds, seen, view) {
     if (id === scope.root) return false;
-    if (this.extensionUrl(this.frames.get(id)) || scope.extensionOwners?.has(id)) return false;
+    if (scope.extensionOwners?.has(id)) return false;
     if (holds && !LISTED_FRAME.test(this.frames.get(id))) return true;
     if (
       !holds &&
@@ -1514,13 +1538,9 @@ class Guard {
     const holds = this.holding(targetId);
     for (const id of this.relatedFrames(scope.frames)) {
       const url = this.frames.get(id);
-      if (this.unavailableFrame(id, url, view)) return true;
-      if (
-        this.is.url(url) &&
-        !this.embeddedExtensionId(id, url, scope) &&
-        !(blankRoot && id === scope.root) &&
-        !view?.errors.has(id)
-      )
+      const marked = scope.extensionOwners?.has(id);
+      if (this.unavailableFrame(id, url, view) && !marked) return true;
+      if (this.is.url(url) && !marked && !(blankRoot && id === scope.root) && !view?.errors.has(id))
         return true;
       if (this.childLocked(id, scope, holds, seen, view)) return true;
     }
@@ -1602,8 +1622,6 @@ class Guard {
       const url = this.framed(frame);
       this.frames.set(frame.id, url);
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
-      if (this.extensionUrl(url)) scope.extensionOwners.add(frame.id);
-      else scope.extensionOwners.delete(frame.id);
     }
     const parentRoot = this.scopes.get(scope.parent)?.root;
     if (
@@ -1624,6 +1642,28 @@ class Guard {
     if (method === 'Page.getFrameTree') this.recordTree(targetId, result?.frameTree);
     if (method === 'DOM.getDocument') this.recordOwners(targetId, result?.root);
     if (method === 'DOMSnapshot.captureSnapshot') this.recordSnapshotOwners(targetId, result);
+  }
+
+  noteOwnerNodes(sessionId, nodes) {
+    const targetId = this.scopeTarget(sessionId);
+    if (!targetId || !Array.isArray(nodes)) return;
+    const scope = this.scope(targetId);
+    for (const node of nodes) this.recordOwner(scope, node);
+  }
+
+  noteDomEventMarkers(method, sessionId, params) {
+    if (method === 'DOM.setChildNodes') this.noteOwnerNodes(sessionId, params?.nodes);
+    else if (method === 'DOM.childNodeInserted') this.noteOwnerNodes(sessionId, [params?.node]);
+  }
+
+  noteDomAnswerMarkers(method, sessionId, params, result) {
+    if (method === 'DOM.describeNode' && result?.node)
+      this.noteOwnerNodes(sessionId, [result.node]);
+    else if (method === 'DOM.getFrameOwner' && result) {
+      const marker = this.extensionFrameMarker(result.sliccExtensionFrame);
+      if (marker)
+        this.noteExtensionMarker(this.scope(this.scopeTarget(sessionId)), params?.frameId, marker);
+    }
   }
 
   recordSnapshotOwners(targetId, snapshot) {
@@ -1682,7 +1722,6 @@ class Guard {
       if (owner.frameId) owners.push(owner);
       else {
         remote.set(owner.backendNodeId, owner);
-        if (this.extensionOwner(owner)) scope.extensionOwners.add(String(owner.backendNodeId));
       }
     }
     return true;
@@ -1756,6 +1795,7 @@ class Guard {
     scope.remoteOwners = new Set();
     scope.remoteBackendOwners = new Map();
     scope.extensionOwners = new Set();
+    scope.extensionMarkers = new Map();
     scope.privatePlaced = false;
     const nodes = [root];
     while (nodes.length) {
@@ -1775,7 +1815,7 @@ class Guard {
   }
 
   recordOwner(scope, node) {
-    if (node.nodeName !== 'IFRAME' && node.nodeName !== 'FRAME') return;
+    if (!node || (node.nodeName !== 'IFRAME' && node.nodeName !== 'FRAME')) return;
     if (!node.frameId) {
       scope.ownersReady = false;
       return;
@@ -1785,17 +1825,16 @@ class Guard {
     scope.frames.add(node.frameId);
     if (!this.frames.has(node.frameId)) this.frames.set(node.frameId, '');
     if (!this.parents.has(node.frameId)) this.parents.set(node.frameId, scope.root);
+    const marker = this.extensionFrameMarker(node.sliccExtensionFrame);
+    if (marker) {
+      this.noteExtensionMarker(scope, node.frameId, marker);
+      return;
+    }
     const source = (node.attributes ?? []).indexOf('src');
     const evidence = [
       source < 0 ? undefined : node.attributes[source + 1],
       node.contentDocument?.documentURL,
     ];
-    if (evidence.some((url) => this.extensionUrl(url))) {
-      scope.extensionOwners.add(node.frameId);
-      if (typeof evidence[0] === 'string' && evidence[0])
-        this.frames.set(node.frameId, evidence[0]);
-      return;
-    }
     if (scope.attachedFrames.has(node.frameId) && evidence.some((url) => this.is.url(url))) {
       scope.protectedOwner = true;
       scope.knownProtectedOwner ||= evidence.some((url) => !inherits(url) && this.is.url(url));
@@ -2162,6 +2201,9 @@ class Guard {
   async frame(frameId, strict = false) {
     if (frameId === undefined) return false;
     if (this.errorFrames.has(frameId)) return true;
+    for (const scope of this.scopes.values()) {
+      if (scope.extensionOwners?.has(frameId)) return true;
+    }
     if (this.targets.has(frameId)) return this.target(frameId);
     if (this.frames.has(frameId)) {
       const url = this.frames.get(frameId);
@@ -4599,6 +4641,7 @@ class Guard {
     if (this.navSessions.has(sessionId))
       return this.navEvent(message, this.navSessions.get(sessionId));
     if (this.placements.has(sessionId)) return;
+    this.noteDomEventMarkers(method, sessionId, message.params);
     if (await this.settledRecoveryLoad(message))
       return this.deliver({ method, sessionId, params: { timestamp: message.params.timestamp } });
     if (method.startsWith('Target.') && (await this.targetEvent(message))) return;
@@ -4931,6 +4974,7 @@ class Guard {
     if (this.blankSealed(was)) return this.refuse(was);
     const { method, params = {} } = was ?? {};
     const { result } = message;
+    this.noteDomAnswerMarkers(method, was.sessionId, params, result);
     this.worldReply(was, result);
     if (method === 'Target.attachToTarget' && result?.sessionId) {
       const ok = await this.watch(result.sessionId, params.targetId);
@@ -5173,8 +5217,12 @@ class Guard {
   }
 
   async extensionFrameShown(sessionId, frameId) {
+    const targetId = this.scopeTarget(sessionId);
+    const marker = this.scopes.get(targetId)?.extensionMarkers?.get(frameId);
+    const fromMarker = this.markerShown(marker);
+    if (fromMarker === true) return true;
     const parent = this.parents.get(frameId);
-    const guard = this.scopes.get(this.scopeTarget(sessionId))?.sessionId ?? sessionId;
+    const guard = this.scopes.get(targetId)?.sessionId ?? sessionId;
     if (typeof parent !== 'string' || !parent || guard === undefined) return true;
     let timer;
     const expired = new Promise((resolve) => {
@@ -5186,6 +5234,9 @@ class Guard {
       const context = await this.extensionProbeContext(guard, parent);
       if (context === null) return true;
       const owner = await this.call('DOM.getFrameOwner', { frameId }, guard);
+      const next = this.extensionFrameMarker(owner.result?.sliccExtensionFrame);
+      if (next) this.noteExtensionMarker(this.scope(targetId), frameId, next);
+      if (this.markerShown(next) === true) return true;
       const node = owner.result?.backendNodeId;
       if (owner.error || !Number.isSafeInteger(node)) return true;
       const resolved = await this.call(
@@ -5363,6 +5414,10 @@ class Guard {
     if (
       params.frameId !== undefined &&
       !(proof && params.frameId === this.frameRoots.get(proof.targetId) && NAVIGATES.has(method)) &&
+      !(
+        method === 'DOM.getFrameOwner' &&
+        this.scopes.get(this.scopeTarget(sessionId))?.extensionOwners?.has(params.frameId)
+      ) &&
       (await this.frame(params.frameId, true))
     )
       return PROTECTED;
