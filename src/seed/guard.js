@@ -1319,6 +1319,34 @@ class Guard {
     );
   }
 
+  foreignExtensionIframeTarget(targetId) {
+    const target = this.targets.get(targetId);
+    return target?.type === 'iframe' && this.foreignExtensionUrl(target.url);
+  }
+
+  unreadyForeignExtensionInTab(targetId) {
+    const seen = new Set();
+    const walk = (id) => {
+      if (!id || seen.has(id)) return false;
+      seen.add(id);
+      for (const [child, entry] of this.scopes) {
+        if (entry.parent !== id) continue;
+        if (!entry.ready && !entry.failed && this.foreignExtensionIframeTarget(child)) return true;
+        if (walk(child)) return true;
+      }
+      return false;
+    };
+    let id = targetId;
+    const up = new Set();
+    while (id) {
+      if (up.has(id)) break;
+      up.add(id);
+      if (walk(id)) return true;
+      id = this.scopes.get(id)?.parent;
+    }
+    return false;
+  }
+
   extensionPresent(targetId) {
     const seen = new Set();
     const walk = (id) => {
@@ -1331,7 +1359,8 @@ class Guard {
         if (this.extensionUrl(this.frames.get(frame))) return true;
       }
       for (const [child, entry] of this.scopes) {
-        if (entry.parent === id && walk(child)) return true;
+        if (entry.parent === id && (this.foreignExtensionIframeTarget(child) || walk(child)))
+          return true;
       }
       return false;
     };
@@ -2542,7 +2571,13 @@ class Guard {
     if (!info?.targetId || this.privateSessions.has(message.params.sessionId)) return;
     const parentId = info.type === 'iframe' ? this.scopeTarget(message.sessionId) : undefined;
     this.learn({ ...info, ...(parentId ? { parentId } : {}) });
-    if (info.type === 'iframe' && parentId && this.foreignExtensionUrl(info.url)) return;
+    if (info.type === 'iframe' && parentId && this.foreignExtensionUrl(info.url)) {
+      const child = this.scope(info.targetId);
+      child.parent = parentId;
+      child.ready = false;
+      this.stopCasts();
+      return;
+    }
     if (info.url?.startsWith('chrome-error:') || this.is.target(info) || !URL.canParse(info.url))
       this.uncertainProof(info.targetId);
   }
@@ -4854,6 +4889,8 @@ class Guard {
     if (this.sealed(was) || !(await this.openShot(was))) return this.refuse(was);
     if (await this.extensionGate('Page.captureScreenshot', was.sessionId))
       return this.refuse(was, SHOWN_REFUSAL);
+    const late = this.extensionGateSync('Page.captureScreenshot', was.sessionId);
+    if (late) return this.refuse(was, late);
     return this.deliver(message);
   }
 
@@ -5270,13 +5307,25 @@ class Guard {
     return false;
   }
 
+  extensionGateSync(method, sessionId) {
+    if (!WHEN_SHOWN.has(method) && !WHILE_PRESENT.has(method)) return null;
+    const targetId = this.scopeTarget(sessionId);
+    if (!targetId || !this.extensionPresent(targetId)) return null;
+    if (WHILE_PRESENT.has(method)) return PRESENT_REFUSAL;
+    if (WHEN_SHOWN.has(method) && this.unreadyForeignExtensionInTab(targetId)) return SHOWN_REFUSAL;
+    return null;
+  }
+
   async extensionGate(method, sessionId) {
     if (!WHEN_SHOWN.has(method) && !WHILE_PRESENT.has(method)) return null;
     const targetId = this.scopeTarget(sessionId);
     if (!targetId || !this.extensionPresent(targetId)) return null;
     if (WHILE_PRESENT.has(method)) return PRESENT_REFUSAL;
-    if (WHEN_SHOWN.has(method) && (await this.extensionFramesShown(sessionId)))
-      return SHOWN_REFUSAL;
+    if (WHEN_SHOWN.has(method)) {
+      if (this.unreadyForeignExtensionInTab(targetId)) return SHOWN_REFUSAL;
+      if (await this.extensionFramesShown(sessionId)) return SHOWN_REFUSAL;
+      if (this.unreadyForeignExtensionInTab(targetId)) return SHOWN_REFUSAL;
+    }
     return null;
   }
 
@@ -5523,6 +5572,8 @@ class Guard {
       return this.refuse(message);
     const gate = await this.extensionGate(method, sessionId);
     if (gate) return this.refuse(message, gate);
+    const late = this.extensionGateSync(method, sessionId);
+    if (late) return this.refuse(message, late);
     if (method === 'Page.startScreencast') this.casts.add(sessionId);
     if (method === 'Page.stopScreencast') this.casts.delete(sessionId);
     if (sessionId && method === 'Runtime.enable') this.runtimes.add(sessionId);

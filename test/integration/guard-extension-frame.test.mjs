@@ -414,6 +414,163 @@ test('an unready own-extension OOPIF locks its parent tab', async (t) => {
   assert.equal(document.error?.message, PROTECTED);
 });
 
+function armForeignExtensionRace(wire, pageId, childId = `${pageId}-race-frame`) {
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  wire.targets.set(childId, {
+    oopif: true,
+    info: { targetId: childId, type: 'iframe', url: foreign, parentId: pageId },
+    tree: {
+      frame: {
+        id: childId,
+        parentId: pageId,
+        url: foreign,
+        securityOrigin: extensionOrigin(foreign),
+      },
+    },
+    owners: [],
+  });
+  let raced = false;
+  wire.answers.set('Page.getFrameTree', (message) => {
+    if (message.sessionId === `guard-${childId}`)
+      return held.then(() => ({
+        result: { frameTree: wire.targets.get(childId).tree },
+      }));
+    const targetId = wire.sessions.get(message.sessionId);
+    if (targetId === pageId && !raced) {
+      raced = true;
+      wire.sessions.set(`guard-${childId}`, childId);
+      wire.emit({
+        method: 'Target.attachedToTarget',
+        sessionId: `guard-${pageId}`,
+        params: {
+          sessionId: `guard-${childId}`,
+          targetInfo: wire.targets.get(childId).info,
+          waitingForDebugger: false,
+        },
+      });
+    }
+    return { result: { frameTree: wire.targets.get(targetId).tree } };
+  });
+  return { release, childId };
+}
+
+test('Page.captureScreenshot refuses when a foreign extension OOPIF attaches mid-command', async (t) => {
+  const wire = protocol(t);
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: false } },
+  }));
+  wire.target('race-shot', ordinary);
+  const session = await wire.attach('race-shot');
+  const { release } = armForeignExtensionRace(wire, 'race-shot');
+  const shot = await wire.request('Page.captureScreenshot', {}, session);
+  assert.equal(shot.error?.message, SHOWN_REFUSAL);
+  assert.equal(
+    wire.sent.some(
+      (message) => message.method === 'Page.captureScreenshot' && message.sessionId === session
+    ),
+    false
+  );
+  release();
+  await flush();
+  await flush();
+  const after = await wire.request('Page.captureScreenshot', {}, session);
+  assert.equal(after.error, undefined, JSON.stringify(after));
+});
+
+test('Page.captureSnapshot refuses when a foreign extension OOPIF attaches mid-command', async (t) => {
+  const wire = protocol(t);
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: false } },
+  }));
+  wire.target('race-snap', ordinary);
+  const session = await wire.attach('race-snap');
+  const { release } = armForeignExtensionRace(wire, 'race-snap');
+  const snap = await wire.request('Page.captureSnapshot', {}, session);
+  assert.equal(snap.error?.message, PRESENT_REFUSAL);
+  assert.equal(
+    wire.sent.some(
+      (message) => message.method === 'Page.captureSnapshot' && message.sessionId === session
+    ),
+    false
+  );
+  release();
+});
+
+test('Input.dispatchMouseEvent refuses when a foreign extension OOPIF attaches mid-command', async (t) => {
+  const wire = protocol(t);
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: false } },
+  }));
+  wire.target('race-input', ordinary);
+  const session = await wire.attach('race-input');
+  const { release } = armForeignExtensionRace(wire, 'race-input');
+  const input = await wire.request(
+    'Input.dispatchMouseEvent',
+    { type: 'mousePressed', x: 1, y: 1, button: 'left', clickCount: 1 },
+    session
+  );
+  assert.equal(input.error?.message, SHOWN_REFUSAL);
+  assert.equal(
+    wire.sent.some(
+      (message) => message.method === 'Input.dispatchMouseEvent' && message.sessionId === session
+    ),
+    false
+  );
+  release();
+  await flush();
+  await flush();
+  const after = await wire.request(
+    'Input.dispatchMouseEvent',
+    { type: 'mousePressed', x: 1, y: 1, button: 'left', clickCount: 1 },
+    session
+  );
+  assert.equal(after.error, undefined, JSON.stringify(after));
+});
+
+test('a running screencast stops when an unready foreign extension OOPIF attaches', async (t) => {
+  const wire = protocol(t);
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: false } },
+  }));
+  wire.target('cast-oopif', ordinary);
+  const session = await wire.attach('cast-oopif');
+  const started = await wire.request('Page.startScreencast', { format: 'png' }, session);
+  assert.equal(started.error, undefined);
+  const before = wire.sent.length;
+  const childId = 'cast-oopif-frame';
+  wire.targets.set(childId, {
+    oopif: true,
+    info: { targetId: childId, type: 'iframe', url: foreign, parentId: 'cast-oopif' },
+    tree: {
+      frame: {
+        id: childId,
+        parentId: 'cast-oopif',
+        url: foreign,
+        securityOrigin: extensionOrigin(foreign),
+      },
+    },
+    owners: [],
+  });
+  wire.sessions.set(`guard-${childId}`, childId);
+  wire.emit({
+    method: 'Target.attachedToTarget',
+    sessionId: session,
+    params: {
+      sessionId: `guard-${childId}`,
+      targetInfo: wire.targets.get(childId).info,
+      waitingForDebugger: false,
+    },
+  });
+  await flush();
+  assert.ok(
+    wire.sent.slice(before).some((message) => message.method === 'Page.stopScreencast'),
+    'stopScreencast was sent'
+  );
+});
+
 test('an OOPIF extension screenshot follows the shown rule', async (t) => {
   const wire = protocol(t);
   wire.answers.set('Runtime.callFunctionOn', () => ({
