@@ -170,7 +170,7 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
   });
 
   await t.test(
-    'offerChat keeps a refused row failed, keeps the notice, and does not launch again',
+    'an automatic check keeps a refused row failed, keeps the notice, and does not launch again',
     async (t) => {
       await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
       await marker(page, JSON.stringify({ durableSchema: 3, agent: '8.0.0' }));
@@ -179,16 +179,32 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
       const seen = await refused(page);
       assert.equal(seen.error, OLDER);
       assert.equal(seen.agents, 0);
-      await page.evaluate(() => {
-        window.sliccRetry = document
-          .querySelector('slicc-app')
-          .model.updates.act('agent', 'retry')
-          .then(
-            () => 'done',
-            (error) => error.message
-          );
+      const checkedAt = await page.evaluate(() => {
+        const { updates } = document.querySelector('slicc-app').model;
+        window.agentStates = [];
+        const note = () => {
+          const row = updates.list().find((item) => item.id === 'agent');
+          if (row) window.agentStates.push(row.state);
+        };
+        note();
+        updates.on('items', note);
+        return updates.list().find((item) => item.id === 'bios')?.checkedAt ?? null;
       });
-      assert.equal(await page.until(() => window.sliccRetry), 'done');
+      assert.equal(await page.evaluate(() => document.visibilityState), 'visible');
+      await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+      await page.until(() => {
+        const bios = document
+          .querySelector('slicc-app')
+          .model.updates.list()
+          .find((item) => item.id === 'bios');
+        return bios?.checkedAt != null && bios.checkedAt !== checkedAt;
+      });
+      await page.until(() => {
+        const items = document.querySelector('slicc-app').model.updates.list();
+        return items.every(
+          (item) => !/checking|downloading|linking|starting|queued/.test(item.state)
+        );
+      });
       const after = await page.evaluate(() => {
         const { updates, notices, agent } = document.querySelector('slicc-app').model;
         const row = updates.list().find((item) => item.id === 'agent');
@@ -197,12 +213,14 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
           error: row?.error ?? null,
           notice: notices.list().some((item) => item.id === 'agent:older'),
           agents: agent?.list?.().length ?? 0,
+          states: window.agentStates,
         };
       });
       assert.equal(after.state, 'failed');
       assert.equal(after.error, OLDER);
       assert.equal(after.notice, true);
       assert.equal(after.agents, 0);
+      assert.equal(after.states.includes('current'), false, after.states.join(','));
       assert.equal(
         page.console.filter((line) => line.includes('the agent did not start')).length - before,
         1,
@@ -243,6 +261,48 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
   });
 
   await t.test(
+    'an explicit Retry after a refusal attempts a start again with nothing changed',
+    async (t) => {
+      await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
+      await marker(page, JSON.stringify({ durableSchema: 3, agent: '8.0.0' }));
+      t.after(() => marker(page, null).catch(() => {}));
+      const before = page.console.filter((line) => line.includes('the agent did not start')).length;
+      const seen = await refused(page);
+      assert.equal(seen.error, OLDER);
+      assert.equal(seen.agents, 0);
+      await page.evaluate(() => {
+        window.sliccRetry = document
+          .querySelector('slicc-app')
+          .model.updates.act('agent', 'retry')
+          .then(
+            () => 'done',
+            (error) => error.message
+          );
+      });
+      assert.equal(await page.until(() => window.sliccRetry), 'done');
+      const after = await page.evaluate(() => {
+        const { updates, notices, agent } = document.querySelector('slicc-app').model;
+        const row = updates.list().find((item) => item.id === 'agent');
+        return {
+          state: row?.state ?? null,
+          error: row?.error ?? null,
+          notice: notices.list().some((item) => item.id === 'agent:older'),
+          agents: agent?.list?.().length ?? 0,
+        };
+      });
+      assert.equal(after.state, 'failed');
+      assert.equal(after.error, OLDER);
+      assert.equal(after.notice, true);
+      assert.equal(after.agents, 0);
+      assert.equal(
+        page.console.filter((line) => line.includes('the agent did not start')).length - before,
+        2,
+        page.console.filter((line) => line.includes('the agent did not start')).join('\n')
+      );
+    }
+  );
+
+  await t.test(
     'a 7.x first start whose profile version can’t be recorded is refused',
     async (t) => {
       await page.evaluate(() => {
@@ -280,6 +340,55 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
       );
       assert.equal(error, UNRECORDED);
       assert.equal(await record(page), null);
+    }
+  );
+
+  await t.test(
+    'an automatic check starts the agent once recording the profile version works again',
+    async () => {
+      assert.equal(
+        await page.evaluate(() => {
+          const row = document
+            .querySelector('slicc-app')
+            .model.updates.list()
+            .find((item) => item.id === 'agent');
+          return row?.error ?? null;
+        }),
+        UNRECORDED
+      );
+      const checkedAt = await page.evaluate(
+        () =>
+          document
+            .querySelector('slicc-app')
+            .model.updates.list()
+            .find((item) => item.id === 'bios')?.checkedAt ?? null
+      );
+      assert.equal(await page.evaluate(() => document.visibilityState), 'visible');
+      await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+      await page.until(() => {
+        const bios = document
+          .querySelector('slicc-app')
+          .model.updates.list()
+          .find((item) => item.id === 'bios');
+        return bios?.checkedAt != null && bios.checkedAt !== checkedAt;
+      });
+      await page.until(() => {
+        const items = document.querySelector('slicc-app').model.updates.list();
+        return items.every(
+          (item) => !/checking|downloading|linking|starting|queued/.test(item.state)
+        );
+      });
+      await agentUp(page);
+      assert.equal(await record(page), '2');
+      assert.equal(
+        await page.evaluate(() =>
+          document
+            .querySelector('slicc-app')
+            .model.notices.list()
+            .some((item) => item.id === 'agent:older')
+        ),
+        false
+      );
     }
   );
 

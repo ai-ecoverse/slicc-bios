@@ -1,3 +1,5 @@
+import { OLDER } from './durable.js';
+
 let refusedLast = false;
 let refusedFor = null;
 
@@ -25,15 +27,16 @@ export function clearRefusal() {
 }
 
 export function noteRefusal(refused, key = null) {
-  refusedLast = Boolean(refused);
-  refusedFor = refusedLast ? key : null;
+  const keep = refused?.plain === OLDER;
+  refusedLast = Boolean(keep);
+  refusedFor = keep ? key : null;
 }
 
 export function wasRefused() {
   return refusedLast;
 }
 
-export function skipRefusedStart(changed, key) {
-  if (changed || !refusedLast) return false;
+export function skipRefusedStart(changed, key, auto = false) {
+  if (!auto || changed || !refusedLast) return false;
   return sameStart(refusedFor, key);
 }
