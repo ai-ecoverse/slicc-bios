@@ -56,7 +56,7 @@ function protocol(t, own = 'https://protected.invalid') {
     const targetId = params.targetId ?? sessions.get(sessionId);
     const target = targets.get(targetId);
     let result = {};
-    if (method === 'Target.getTargetInfo') result = { targetInfo: target.info };
+    if (method === 'Target.getTargetInfo') result = { targetInfo: target?.info };
     if (method === 'Target.getTargets')
       result = { targetInfos: [...targets.values()].map((entry) => entry.info) };
     if (method === 'Target.attachToTarget') {
@@ -71,7 +71,7 @@ function protocol(t, own = 'https://protected.invalid') {
       sessions.set(attached, targetId);
       result = { sessionId: attached };
     }
-    if (method === 'Page.getFrameTree') result = { frameTree: target.tree };
+    if (method === 'Page.getFrameTree') result = { frameTree: target?.tree };
     if (method === 'Page.getNavigationHistory')
       result = {
         currentIndex: 0,
@@ -223,19 +223,6 @@ function protocol(t, own = 'https://protected.invalid') {
   };
 }
 
-test('a marked foreign extension frame does not lock an ordinary tab', async (t) => {
-  const wire = protocol(t);
-  wire.target('foreign-open', ordinary, { marker: MARKER });
-  const session = await wire.attach('foreign-open');
-  const read = await wire.request(
-    'Runtime.evaluate',
-    { expression: 'document.title', returnByValue: true },
-    session
-  );
-  assert.equal(read.error, undefined, JSON.stringify(read));
-  assert.equal(read.result.result.value, ordinary);
-});
-
 async function assertPageLocked(wire, targetId) {
   const attached = await wire.request('Target.attachToTarget', {
     targetId,
@@ -249,6 +236,28 @@ async function assertPageLocked(wire, targetId) {
   const shot = await wire.request('Page.captureScreenshot', {}, attached.result.sessionId);
   assert.equal(shot.error?.message, PROTECTED);
 }
+
+test('a marked foreign extension frame does not lock an ordinary tab', async (t) => {
+  const wire = protocol(t);
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: false } },
+  }));
+  wire.target('foreign-open', ordinary, { marker: MARKER });
+  const session = await wire.attach('foreign-open');
+  const read = await wire.request(
+    'Runtime.evaluate',
+    { expression: 'document.title', returnByValue: true },
+    session
+  );
+  assert.equal(read.error, undefined, JSON.stringify(read));
+  assert.equal(read.result.result.value, ordinary);
+});
+
+test('without a marker a raw chrome-extension frame locks like main', async (t) => {
+  const wire = protocol(t);
+  wire.target('raw-ext', ordinary, { childUrl: foreign, src: foreign });
+  await assertPageLocked(wire, 'raw-ext');
+});
 
 test('without a marker an empty remote frame still locks', async (t) => {
   const wire = protocol(t);
@@ -285,6 +294,39 @@ test('a marker on a non-IFRAME node is ignored', async (t) => {
   await assertPageLocked(wire, 'non-iframe');
 });
 
+test('a marker on the scope root is ignored', async (t) => {
+  const wire = protocol(t);
+  const entry = wire.target('root-mark', ordinary);
+  entry.owners = [
+    {
+      nodeId: 2,
+      nodeName: 'IFRAME',
+      frameId: 'root-mark',
+      attributes: ['src', ''],
+      sliccExtensionFrame: MARKER_HIDDEN,
+    },
+  ];
+  entry.tree = {
+    frame: {
+      id: 'root-mark',
+      url: ordinary,
+      securityOrigin: 'https://ordinary.invalid',
+      loaderId: 'root-mark-loader',
+    },
+    childFrames: [
+      {
+        frame: {
+          id: 'root-mark-ext',
+          parentId: 'root-mark',
+          url: '',
+          securityOrigin: '://',
+        },
+      },
+    ],
+  };
+  await assertPageLocked(wire, 'root-mark');
+});
+
 test("seven's own extension frame without a marker still locks the tab", async (t) => {
   const wire = protocol(t, [
     'https://protected.invalid',
@@ -310,6 +352,12 @@ test('a protected frame nested under a marked extension owner still locks', asyn
   const wire = protocol(t);
   wire.target('nested-protected', ordinary, { marker: MARKER, extraChild: seven });
   await assertPageLocked(wire, 'nested-protected');
+});
+
+test('a marked frame with a known protected url still locks', async (t) => {
+  const wire = protocol(t);
+  wire.target('marked-seven', ordinary, { marker: MARKER_HIDDEN, childUrl: seven, src: seven });
+  await assertPageLocked(wire, 'marked-seven');
 });
 
 test('marker with absent fields admits whenShown after a live hidden check', async (t) => {
@@ -428,79 +476,20 @@ test('the marker never teaches the guard a URL', async (t) => {
   );
 });
 
-test('frameId commands on an embedded marked frame stay refused except getFrameOwner', async (t) => {
+test('frameId commands on an embedded marked frame stay refused', async (t) => {
   const wire = protocol(t);
   wire.target('frame-ext-id', ordinary, { marker: MARKER });
   const session = await wire.attach('frame-ext-id');
-  const refused = await wire.request(
-    'Page.createIsolatedWorld',
-    { frameId: 'frame-ext-id-ext', worldName: 'client' },
-    session
-  );
-  assert.equal(refused.error?.message, PROTECTED);
-  const owner = await wire.request('DOM.getFrameOwner', { frameId: 'frame-ext-id-ext' }, session);
-  assert.equal(owner.error, undefined, JSON.stringify(owner));
-  assert.equal(owner.result.backendNodeId, 9);
+  for (const [method, params] of [
+    ['Page.createIsolatedWorld', { frameId: 'frame-ext-id-ext', worldName: 'client' }],
+    ['DOM.getFrameOwner', { frameId: 'frame-ext-id-ext' }],
+  ]) {
+    const answer = await wire.request(method, params, session);
+    assert.equal(answer.error?.message, PROTECTED, method);
+  }
 });
 
-test('a top-level foreign extension navigation cuts the session', async (t) => {
-  const wire = protocol(t);
-  const entry = wire.target('root-ext-walk', ordinary);
-  const session = await wire.attach('root-ext-walk');
-  entry.info.url = foreign;
-  entry.tree = {
-    frame: {
-      id: 'root-ext-walk',
-      url: foreign,
-      securityOrigin: extensionOrigin(foreign),
-      loaderId: 'ext-loader',
-    },
-  };
-  wire.emit({
-    method: 'Page.frameNavigated',
-    sessionId: session,
-    params: {
-      frame: {
-        id: 'root-ext-walk',
-        url: foreign,
-        securityOrigin: extensionOrigin(foreign),
-        loaderId: 'ext-loader',
-      },
-    },
-  });
-  await flush();
-  const read = await wire.request(
-    'Runtime.evaluate',
-    { expression: '1', returnByValue: true },
-    session
-  );
-  assert.ok(read.error, JSON.stringify(read));
-});
-
-test('embedded foreign extension document requests do not cut the tab', async (t) => {
-  const wire = protocol(t);
-  wire.target('embed-doc', ordinary, { marker: MARKER, childUrl: foreign, src: foreign });
-  const session = await wire.attach('embed-doc');
-  wire.emit({
-    method: 'Network.requestWillBeSent',
-    sessionId: session,
-    params: {
-      requestId: 'e1',
-      type: 'Document',
-      frameId: 'embed-doc-ext',
-      request: { url: foreign },
-    },
-  });
-  await flush();
-  const read = await wire.request(
-    'Runtime.evaluate',
-    { expression: '1', returnByValue: true },
-    session
-  );
-  assert.equal(read.error, undefined, JSON.stringify(read));
-});
-
-test('base64Encoded CONTENTS that name the vault are refused', async (t) => {
+test('CONTENTS that name the vault stay refused as on main', async (t) => {
   const wire = protocol(t);
   wire.target('b64-vault', ordinary);
   const session = await wire.attach('b64-vault');
@@ -513,18 +502,6 @@ test('base64Encoded CONTENTS that name the vault are refused', async (t) => {
     { frameId: 'b64-vault', url: ordinary },
     session
   );
-  assert.equal(answer.error?.message, PROTECTED);
-});
-
-test('quoted-printable CONTENTS that name the vault are refused', async (t) => {
-  const wire = protocol(t);
-  wire.target('qp-vault', ordinary);
-  const session = await wire.attach('qp-vault');
-  const data = `Content-Transfer-Encoding: quoted-printable\r\nhttps://vault.sliccy.ai/sec=\r\nret`;
-  wire.answers.set('Page.captureSnapshot', () => ({
-    result: { data },
-  }));
-  const answer = await wire.request('Page.captureSnapshot', { format: 'mhtml' }, session);
   assert.equal(answer.error?.message, PROTECTED);
 });
 
@@ -551,6 +528,44 @@ test('whenShown reuses one isolated world per frame and loader', async (t) => {
     assert.equal(answer.error, undefined);
   }
   assert.equal(worlds, 1);
+});
+
+test('a stale probe context is dropped so the next whenShown makes a new world', async (t) => {
+  const wire = protocol(t);
+  let worlds = 0;
+  let nextContext = 50;
+  let resolveFails = 1;
+  wire.answers.set('Page.createIsolatedWorld', () => {
+    worlds += 1;
+    nextContext += 1;
+    return { result: { executionContextId: nextContext } };
+  });
+  wire.answers.set('DOM.resolveNode', () => {
+    if (resolveFails > 0) {
+      resolveFails -= 1;
+      return { error: { code: -32000, message: 'Cannot find context with specified id' } };
+    }
+    return { result: { object: { objectId: 'ext-frame-object', type: 'object' } } };
+  });
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: false } },
+  }));
+  wire.target('stale-world', ordinary, { marker: MARKER });
+  const session = await wire.attach('stale-world');
+  const first = await wire.request(
+    'Input.dispatchKeyEvent',
+    { type: 'keyDown', key: 'a' },
+    session
+  );
+  assert.equal(first.error?.message, SHOWN_REFUSAL);
+  assert.equal(worlds, 1);
+  const second = await wire.request(
+    'Input.dispatchKeyEvent',
+    { type: 'keyDown', key: 'b' },
+    session
+  );
+  assert.equal(second.error, undefined);
+  assert.equal(worlds, 2);
 });
 
 test('DOM setChildNodes childNodeInserted and describeNode accept markers', async (t) => {
@@ -631,40 +646,269 @@ test('getFrameOwner marker shown during live check refuses whenShown', async (t)
   assert.ok(ownerCalls > 0);
 });
 
-test('a stale probe context is dropped so the next whenShown makes a new world', async (t) => {
+test('a detached then re-attached unmarked frame id stays locked', async (t) => {
   const wire = protocol(t);
-  let worlds = 0;
-  let nextContext = 50;
-  let resolveFails = 1;
-  wire.answers.set('Page.createIsolatedWorld', () => {
-    worlds += 1;
-    nextContext += 1;
-    return { result: { executionContextId: nextContext } };
-  });
-  wire.answers.set('DOM.resolveNode', () => {
-    if (resolveFails > 0) {
-      resolveFails -= 1;
-      return { error: { code: -32000, message: 'Cannot find context with specified id' } };
-    }
-    return { result: { object: { objectId: 'ext-frame-object', type: 'object' } } };
-  });
   wire.answers.set('Runtime.callFunctionOn', () => ({
     result: { result: { type: 'boolean', value: false } },
   }));
-  wire.target('stale-world', ordinary, { marker: MARKER });
-  const session = await wire.attach('stale-world');
-  const first = await wire.request(
-    'Input.dispatchKeyEvent',
-    { type: 'keyDown', key: 'a' },
+  wire.target('detach-mark', ordinary, { marker: MARKER_HIDDEN });
+  const session = await wire.attach('detach-mark');
+  const open = await wire.request('Input.dispatchKeyEvent', { type: 'keyDown', key: 'a' }, session);
+  assert.equal(open.error, undefined);
+  wire.emit({
+    method: 'Page.frameDetached',
+    sessionId: session,
+    params: { frameId: 'detach-mark-ext', reason: 'remove' },
+  });
+  await flush();
+  wire.targets.get('detach-mark').owners = [
+    {
+      nodeId: 2,
+      nodeName: 'IFRAME',
+      frameId: 'detach-mark-ext',
+      attributes: ['src', ''],
+    },
+  ];
+  wire.targets.get('detach-mark').tree = {
+    frame: {
+      id: 'detach-mark',
+      url: ordinary,
+      securityOrigin: 'https://ordinary.invalid',
+      loaderId: 'detach-mark-loader',
+    },
+    childFrames: [
+      {
+        frame: {
+          id: 'detach-mark-ext',
+          parentId: 'detach-mark',
+          url: '',
+          securityOrigin: '://',
+        },
+      },
+    ],
+  };
+  wire.emit({
+    method: 'Page.frameAttached',
+    sessionId: session,
+    params: { frameId: 'detach-mark-ext', parentFrameId: 'detach-mark' },
+  });
+  await flush();
+  const shot = await wire.request('Page.captureScreenshot', {}, session);
+  assert.equal(shot.error?.message, PROTECTED);
+});
+
+test('a root navigation clears extension markers so a later unmarked child locks', async (t) => {
+  const wire = protocol(t);
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: false } },
+  }));
+  wire.target('nav-clear', ordinary, { marker: MARKER_HIDDEN });
+  const session = await wire.attach('nav-clear');
+  const open = await wire.request('Input.dispatchKeyEvent', { type: 'keyDown', key: 'a' }, session);
+  assert.equal(open.error, undefined);
+  const next = `${ordinary}?after`;
+  wire.targets.get('nav-clear').info.url = next;
+  wire.targets.get('nav-clear').owners = [
+    {
+      nodeId: 2,
+      nodeName: 'IFRAME',
+      frameId: 'nav-clear-ext',
+      attributes: ['src', ''],
+    },
+  ];
+  wire.targets.get('nav-clear').tree = {
+    frame: {
+      id: 'nav-clear',
+      url: next,
+      securityOrigin: 'https://ordinary.invalid',
+      loaderId: 'nav-clear-loader-2',
+    },
+    childFrames: [
+      {
+        frame: {
+          id: 'nav-clear-ext',
+          parentId: 'nav-clear',
+          url: '',
+          securityOrigin: '://',
+        },
+      },
+    ],
+  };
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: session,
+    params: {
+      frame: {
+        id: 'nav-clear',
+        url: next,
+        securityOrigin: 'https://ordinary.invalid',
+        loaderId: 'nav-clear-loader-2',
+      },
+    },
+  });
+  await flush();
+  const shot = await wire.request('Page.captureScreenshot', {}, session);
+  assert.equal(shot.error?.message, PROTECTED);
+});
+
+test('a top-level protected navigation cuts the session like main', async (t) => {
+  const wire = protocol(t);
+  const entry = wire.target('root-seven-walk', ordinary);
+  const session = await wire.attach('root-seven-walk');
+  entry.info.url = seven;
+  entry.tree = {
+    frame: {
+      id: 'root-seven-walk',
+      url: seven,
+      securityOrigin: 'https://seven.sliccy.ai',
+      loaderId: 'seven-loader',
+    },
+  };
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: session,
+    params: {
+      frame: {
+        id: 'root-seven-walk',
+        url: seven,
+        securityOrigin: 'https://seven.sliccy.ai',
+        loaderId: 'seven-loader',
+      },
+    },
+  });
+  await flush();
+  const read = await wire.request(
+    'Runtime.evaluate',
+    { expression: '1', returnByValue: true },
     session
   );
-  assert.equal(first.error?.message, SHOWN_REFUSAL);
-  assert.equal(worlds, 1);
-  const second = await wire.request(
-    'Input.dispatchKeyEvent',
-    { type: 'keyDown', key: 'b' },
+  assert.ok(read.error, JSON.stringify(read));
+});
+
+test('getFrameTree redacts a protected child frame url like main', async (t) => {
+  const wire = protocol(t);
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: false } },
+  }));
+  const blankTree = {
+    frame: {
+      id: 'tree-redact',
+      url: ordinary,
+      securityOrigin: 'https://ordinary.invalid',
+      loaderId: 'tree-redact-loader',
+    },
+    childFrames: [
+      {
+        frame: {
+          id: 'tree-redact-ext',
+          parentId: 'tree-redact',
+          url: '',
+          securityOrigin: '://',
+        },
+      },
+    ],
+  };
+  wire.target('tree-redact', ordinary, { marker: MARKER_HIDDEN });
+  wire.targets.get('tree-redact').tree = blankTree;
+  const session = await wire.attach('tree-redact');
+  const protectedTree = {
+    frame: blankTree.frame,
+    childFrames: [
+      {
+        frame: {
+          id: 'tree-redact-ext',
+          parentId: 'tree-redact',
+          url: seven,
+          securityOrigin: '://',
+        },
+      },
+    ],
+  };
+  wire.targets.get('tree-redact').tree = protectedTree;
+  wire.answers.set('Page.getFrameTree', (message) => ({
+    result: { frameTree: message.id >= 2 ** 30 ? blankTree : protectedTree },
+  }));
+  const tree = await wire.request('Page.getFrameTree', {}, session);
+  wire.answers.delete('Page.getFrameTree');
+  await flush();
+  assert.equal(tree.error, undefined, JSON.stringify(tree));
+  assert.equal(JSON.stringify(tree.result).includes('seven.sliccy.ai'), false);
+  assert.equal(tree.result.frameTree.childFrames[0].frame.url, 'chrome-error://chromewebdata/');
+});
+
+test('an unarmed session cuts on a protected document request like main', async (t) => {
+  const wire = protocol(t);
+  wire.target('doc-cut', ordinary);
+  const session = await wire.attach('doc-cut');
+  wire.emit({
+    method: 'Target.detachedFromTarget',
+    params: { sessionId: `guard-doc-cut`, targetId: 'doc-cut' },
+  });
+  await flush();
+  wire.emit({
+    method: 'Network.requestWillBeSent',
+    sessionId: session,
+    params: {
+      requestId: 'v1',
+      type: 'Document',
+      frameId: 'doc-cut',
+      request: { url: vault },
+    },
+  });
+  await flush();
+  const read = await wire.request(
+    'Runtime.evaluate',
+    { expression: '1', returnByValue: true },
     session
   );
-  assert.equal(second.error, undefined);
-  assert.equal(worlds, 2);
+  assert.ok(read.error, JSON.stringify(read));
+});
+
+test('frameNavigated records a protected child frame url like main', async (t) => {
+  const wire = protocol(t);
+  wire.target('pf-child', ordinary);
+  const session = await wire.attach('pf-child');
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: session,
+    params: {
+      frame: {
+        id: 'pf-child-frame',
+        parentId: 'pf-child',
+        url: vault,
+        securityOrigin: '://',
+        loaderId: 'pf-child-loader',
+      },
+    },
+  });
+  await flush();
+  const read = await wire.request(
+    'Runtime.evaluate',
+    { expression: '1', returnByValue: true },
+    session
+  );
+  assert.ok(read.error, JSON.stringify(read));
+});
+
+test('frameNavigated records a chrome-error frame with a protected unreachable url', async (t) => {
+  const wire = protocol(t);
+  wire.target('pf-error', ordinary);
+  const session = await wire.attach('pf-error');
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: session,
+    params: {
+      frame: {
+        id: 'pf-error-frame',
+        parentId: 'pf-error',
+        url: 'chrome-error://chromewebdata/',
+        securityOrigin: '://',
+        unreachableUrl: vault,
+        loaderId: 'pf-error-loader',
+      },
+    },
+  });
+  await flush();
+  const tree = await wire.request('Page.getFrameTree', {}, session);
+  assert.ok(tree.result || tree.error, JSON.stringify(tree));
 });

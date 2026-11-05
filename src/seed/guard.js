@@ -36,7 +36,6 @@ export const SHOWN_REFUSAL = EXTENSION_FRAMES.shownRefusal;
 export const PRESENT_REFUSAL = EXTENSION_FRAMES.presentRefusal;
 const WHEN_SHOWN = new Set(EXTENSION_FRAMES.whenShown);
 const WHILE_PRESENT = new Set(EXTENSION_FRAMES.whilePresent);
-const EXTENSION_SCHEMES = new Set(EXTENSION_FRAMES.schemes);
 const EXTENSION_WORLD = 'slicc-extension-frames';
 const EXTENSION_PROBE =
   'function(){if(!this.isConnected||this.checkVisibility({visibilityProperty:true}))return true;let node=this;for(let depth=0;depth<64;depth++){const root=node.getRootNode();if(root.activeElement!==node)return false;if(!root.host)return true;node=root.host;}return true;}';
@@ -228,7 +227,6 @@ const TREED = new Set([
   'Accessibility.getChildAXNodes',
   'Accessibility.queryAXTree',
 ]);
-const EVALUATED = new Set(['Runtime.evaluate', 'Runtime.callFunctionOn']);
 const ERROR_METADATA = new Set([
   'Target.targetCreated',
   'Target.targetInfoChanged',
@@ -548,9 +546,6 @@ export function redacting(is) {
     const shown = authority(text);
     if (shown === null) return text.slice(0, text.indexOf('://') + 3);
     if (!is.url(`${shown}/`)) return null;
-    try {
-      if (EXTENSION_SCHEMES.has(new URL(text).protocol.slice(0, -1))) return 'about:blank';
-    } catch {}
     if (URL.canParse(`${shown}/`)) past(text, shown);
     return shown;
   };
@@ -1243,10 +1238,6 @@ class Guard {
     return this.scopes.get(targetId);
   }
 
-  extensionUrl(url) {
-    return typeof url === 'string' && this.is.extensionFrame(url);
-  }
-
   extensionFrameMarker(value) {
     if (!value || typeof value !== 'object') return null;
     if (value.version !== 1 || value.kind !== EXTENSION_MARKER_KIND) return null;
@@ -1255,6 +1246,8 @@ class Guard {
 
   noteExtensionMarker(scope, frameId, marker) {
     if (!scope || typeof frameId !== 'string' || !frameId || !marker) return;
+    if (frameId === scope.root) return;
+    if (this.targets.get(frameId)?.type === 'page') return;
     scope.extensionOwners.add(frameId);
     scope.extensionMarkers ??= new Map();
     scope.extensionMarkers.set(frameId, {
@@ -1269,55 +1262,14 @@ class Guard {
     return !(marker.hidden === true && marker.focused === false);
   }
 
-  embeddedExtensionFrame(frame, sessionId) {
-    if (!frame || typeof frame !== 'object') return false;
-    if (!this.extensionUrl(frame.url) && !this.extensionUrl(frame.securityOrigin)) return false;
-    const parentId = frame.parentId ?? this.parents.get(frame.id);
-    if (!parentId) return false;
-    const targetId = this.sessions.get(sessionId)?.targetId ?? this.scopeTarget(sessionId);
-    if (targetId && this.scopes.get(targetId)?.root === frame.id) return false;
-    return true;
-  }
-
-  embeddedExtension(url, frameId, sessionId) {
-    if (!this.extensionUrl(url) || typeof frameId !== 'string' || !frameId) return false;
-    if (!this.parents.get(frameId)) return false;
-    const targetId = this.sessions.get(sessionId)?.targetId ?? this.scopeTarget(sessionId);
-    if (targetId && this.scopes.get(targetId)?.root === frameId) return false;
-    return true;
-  }
-
-  embeddedExtensionId(frameId, url, scope) {
-    if (!this.extensionUrl(url) || !frameId || frameId === scope?.root) return false;
-    return Boolean(this.parents.get(frameId));
-  }
-
-  extensionOwner(owner) {
-    const attrs = owner?.attributes;
-    if (Array.isArray(attrs)) {
-      const source = attrs.indexOf('src');
-      if (source >= 0) return this.extensionUrl(attrs[source + 1]);
-    }
-    return this.extensionUrl(owner?.contentDocument?.documentURL);
-  }
-
-  remoteOwnersLock(scope) {
-    return [...(scope.remoteBackendOwners?.values() ?? [])].some(
-      (owner) => !this.extensionOwner(owner)
-    );
-  }
-
   extensionPresent(targetId) {
     const seen = new Set();
     const walk = (id) => {
       if (!id || seen.has(id)) return false;
       seen.add(id);
       const scope = this.scopes.get(id);
-      if (!scope) return this.extensionUrl(this.frames.get(id));
+      if (!scope) return false;
       if (scope.extensionOwners?.size) return true;
-      for (const frame of this.relatedFrames(scope.frames)) {
-        if (this.extensionUrl(this.frames.get(frame))) return true;
-      }
       for (const [child, entry] of this.scopes) {
         if (entry.parent === id && walk(child)) return true;
       }
@@ -1517,7 +1469,7 @@ class Guard {
 
   childLocked(id, scope, holds, seen, view) {
     if (id === scope.root) return false;
-    if (scope.extensionOwners?.has(id)) return false;
+    if (scope.extensionOwners?.has(id) && !this.is.url(this.frames.get(id))) return false;
     if (holds && !LISTED_FRAME.test(this.frames.get(id))) return true;
     if (
       !holds &&
@@ -1534,13 +1486,13 @@ class Guard {
     const scope = this.scopes.get(targetId);
     if (!this.scopeReady(targetId, scope, view) || (view && scope.committed)) return true;
     if (scope.privatePlaced) return Boolean(view);
-    if (this.remoteOwnersLock(scope)) return true;
+    if (scope.remoteBackendOwners?.size) return true;
     const holds = this.holding(targetId);
     for (const id of this.relatedFrames(scope.frames)) {
       const url = this.frames.get(id);
-      const marked = scope.extensionOwners?.has(id);
+      const marked = scope.extensionOwners?.has(id) && !this.is.url(url);
       if (this.unavailableFrame(id, url, view) && !marked) return true;
-      if (this.is.url(url) && !marked && !(blankRoot && id === scope.root) && !view?.errors.has(id))
+      if (this.is.url(url) && !(blankRoot && id === scope.root) && !view?.errors.has(id))
         return true;
       if (this.childLocked(id, scope, holds, seen, view)) return true;
     }
@@ -2077,6 +2029,8 @@ class Guard {
       scope.owners.clear();
       scope.remoteOwners.clear();
       scope.attachedFrames.clear();
+      scope.extensionOwners?.clear();
+      scope.extensionMarkers?.clear();
       scope.ready = false;
       this.refresh(targetId);
     }
@@ -2113,6 +2067,8 @@ class Guard {
         scope.remoteOwners.delete(id);
         scope.attachedFrames.delete(id);
         scope.treeFrames?.delete(id);
+        scope.extensionOwners?.delete(id);
+        scope.extensionMarkers?.delete(id);
       }
     }
   }
@@ -3610,34 +3566,17 @@ class Guard {
       if (!params.frame.parentId && targetId && this.targets.has(targetId)) {
         this.targets.get(targetId).url = params.frame.url;
       }
-      return this.frameLive(params.frame, sessionId);
+      return this.is.url(params.frame.url) || this.is.url(params.frame.securityOrigin);
     }
     if (method === 'Page.frameAttached' && params.frameId) {
       if (!this.frames.has(params.frameId)) this.frames.set(params.frameId, '');
       if (params.parentFrameId) this.parents.set(params.frameId, params.parentFrameId);
     }
-    if (NAVIGATED.has(method)) {
-      const protectedUrl =
-        this.is.url(params.url) && !this.embeddedExtension(params.url, params.frameId, sessionId);
-      return !this.armed(sessionId) && protectedUrl;
-    }
+    if (NAVIGATED.has(method)) return !this.armed(sessionId) && this.is.url(params.url);
     if (method === 'Network.requestWillBeSent' && params.type === 'Document') {
-      const protectedDocument =
-        this.is.url(params.request?.url) &&
-        !this.embeddedExtension(params.request?.url, params.frameId, sessionId);
-      return !this.armed(sessionId) && protectedDocument;
+      return !this.armed(sessionId) && this.is.url(params.request?.url);
     }
-    if (method === 'Runtime.executionContextCreated') {
-      const protectedOrigin =
-        this.is.url(params.context?.origin) &&
-        !this.embeddedExtension(
-          params.context?.origin,
-          params.context?.auxData?.frameId,
-          sessionId
-        );
-      return protectedOrigin;
-    }
-    return false;
+    return method === 'Runtime.executionContextCreated' && this.is.url(params.context?.origin);
   }
 
   world(sessionId) {
@@ -3742,16 +3681,12 @@ class Guard {
   }
 
   protectedFrame(frame) {
+    if (this.is.url(frame.url) || this.is.url(frame.securityOrigin)) return true;
     return (
-      this.frameLive(frame) ||
-      (typeof frame.url === 'string' &&
-        frame.url.startsWith('chrome-error:') &&
-        this.unsafeUrl(frame.unreachableUrl))
+      typeof frame.url === 'string' &&
+      frame.url.startsWith('chrome-error:') &&
+      this.unsafeUrl(frame.unreachableUrl)
     );
-  }
-
-  extensionFrameNode(frame) {
-    return this.extensionUrl(frame?.url) || this.extensionUrl(frame?.securityOrigin);
   }
 
   containedError(frame, root) {
@@ -4003,20 +3938,11 @@ class Guard {
       this.frames.set(frame.id, this.framed(frame));
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
     }
-    const hidden =
-      this.errorFrames.has(frame.id) ||
-      this.protectedFrame(frame) ||
-      this.extensionFrameNode(frame);
+    const hidden = this.errorFrames.has(frame.id) || this.protectedFrame(frame);
     const { unreachableUrl, urlFragment, ...shown } = frame;
     return {
       ...rest,
-      frame: hidden
-        ? {
-            ...shown,
-            url: this.extensionFrameNode(frame) ? 'about:blank' : ERROR_PAGE,
-            securityOrigin: '://',
-          }
-        : frame,
+      frame: hidden ? { ...shown, url: ERROR_PAGE, securityOrigin: '://' } : frame,
       ...(childFrames
         ? { childFrames: childFrames.map((child) => this.tree(child, sessionId)) }
         : {}),
@@ -4092,7 +4018,9 @@ class Guard {
     const infoUrl = info.result?.targetInfo?.url;
     const hinted = [entry?.userTypedURL];
     for (const frame of frames) hinted.push(frame.unreachableUrl);
-    const visible = this.is.url(infoUrl) || frames.some((frame) => this.frameLive(frame));
+    const visible = [infoUrl, ...frames.flatMap((frame) => [frame.url, frame.securityOrigin])].some(
+      (url) => this.is.url(url)
+    );
     const live = visible || this.is.url(entry?.url);
     return {
       url: infoUrl || frames[0]?.url || '',
@@ -4119,8 +4047,7 @@ class Guard {
     this.cut(sessionId);
   }
 
-  frameLive(frame, sessionId) {
-    if (this.embeddedExtensionFrame(frame, sessionId)) return false;
+  frameLive(frame) {
     return this.is.url(frame.url) || this.is.url(frame.securityOrigin);
   }
 
@@ -4700,32 +4627,13 @@ class Guard {
   }
 
   contents(message, was) {
-    const method = was?.method;
-    if (EVALUATED.has(method) && message.result && typeof message.result === 'object') {
-      const { params, changed } = this.redact(message.result);
-      if (changed.length) {
-        this.deliver({ ...message, result: params });
-        return true;
-      }
-      return false;
-    }
-    if (TREED.has(method) && message.result && typeof message.result === 'object') {
+    if (TREED.has(was?.method) && message.result && typeof message.result === 'object') {
       this.deliver({ ...message, result: this.redact(message.result).params });
       return true;
     }
-    if (!CONTENTS.has(method)) return false;
-    if (this.mentions(message.result)) {
-      this.refuse(was);
-      return true;
-    }
-    if (message.result && typeof message.result === 'object') {
-      const { params, changed } = this.redact(message.result);
-      if (changed.length) {
-        this.deliver({ ...message, result: params });
-        return true;
-      }
-    }
-    return false;
+    if (!CONTENTS.has(was?.method) || !this.mentions(message.result)) return false;
+    this.refuse(was);
+    return true;
   }
 
   async listed(message, result) {
@@ -5175,9 +5083,6 @@ class Guard {
       seen.add(targetId);
       const scope = this.scopes.get(targetId);
       if (!scope) return;
-      for (const id of this.relatedFrames(scope.frames)) {
-        if (this.extensionUrl(this.frames.get(id))) ids.push(id);
-      }
       for (const id of scope.extensionOwners ?? []) {
         if (!ids.includes(id)) ids.push(id);
       }
@@ -5414,10 +5319,6 @@ class Guard {
     if (
       params.frameId !== undefined &&
       !(proof && params.frameId === this.frameRoots.get(proof.targetId) && NAVIGATES.has(method)) &&
-      !(
-        method === 'DOM.getFrameOwner' &&
-        this.scopes.get(this.scopeTarget(sessionId))?.extensionOwners?.has(params.frameId)
-      ) &&
       (await this.frame(params.frameId, true))
     )
       return PROTECTED;
