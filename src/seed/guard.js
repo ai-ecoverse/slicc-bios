@@ -1528,7 +1528,8 @@ class Guard {
   }
 
   unreadyForeignExtensionIframe(targetId, scope = this.scopes.get(targetId)) {
-    if (!scope || scope.ready || !scope.parent) return false;
+    if (!scope || scope.ready || scope.failed || !scope.parent) return false;
+    if (!(scope.pending > 0 || this.placementsPending.has(targetId))) return false;
     const target = this.targets.get(targetId);
     return target?.type === 'iframe' && this.foreignExtensionUrl(target.url);
   }

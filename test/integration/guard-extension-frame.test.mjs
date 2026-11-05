@@ -47,7 +47,10 @@ function protocol(t, own = 'https://protected.invalid') {
     const { id, method, params = {}, sessionId } = message;
     if (id >= 2 ** 30 && answers.has(method)) {
       const payload = answers.get(method)(message);
-      return emit({ id, ...(sessionId ? { sessionId } : {}), ...payload });
+      void Promise.resolve(payload).then((body) =>
+        emit({ id, ...(sessionId ? { sessionId } : {}), ...body })
+      );
+      return;
     }
     const targetId = params.targetId ?? sessions.get(sessionId);
     const target = targets.get(targetId);
@@ -274,7 +277,7 @@ test('an OOPIF extension frame leaves the tab readable', async (t) => {
   assert.equal(shot.error, undefined, JSON.stringify(shot));
 });
 
-test('an unready foreign extension OOPIF does not lock its parent tab', async (t) => {
+test('a pending foreign extension OOPIF does not lock its parent tab', async (t) => {
   const wire = protocol(t);
   wire.answers.set('Runtime.callFunctionOn', () => ({
     result: { result: { type: 'boolean', value: false } },
@@ -283,19 +286,132 @@ test('an unready foreign extension OOPIF does not lock its parent tab', async (t
     oopif: true,
     frameId: 'oopif-pending-frame',
   });
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
   wire.answers.set('Page.getFrameTree', (message) => {
     if (message.sessionId === 'guard-oopif-pending-frame')
-      return { error: { code: -32000, message: 'frame tree unavailable' } };
+      return held.then(() => ({
+        result: { frameTree: wire.targets.get('oopif-pending-frame').tree },
+      }));
     const targetId = wire.sessions.get(message.sessionId);
     return { result: { frameTree: wire.targets.get(targetId).tree } };
   });
-  const session = await wire.attach('oopif-pending');
+  const attaching = wire.attach('oopif-pending');
   await flush();
   await flush();
+  release();
+  const session = await attaching;
   const document = await wire.request('DOM.getDocument', { depth: -1 }, session);
   assert.equal(document.error, undefined, JSON.stringify(document));
   const shot = await wire.request('Page.captureScreenshot', {}, session);
   assert.equal(shot.error, undefined, JSON.stringify(shot));
+});
+
+test('a failed foreign extension OOPIF locks its parent tab', async (t) => {
+  const wire = protocol(t);
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: false } },
+  }));
+  wire.target('oopif-failed', ordinary, foreign, {
+    oopif: true,
+    frameId: 'oopif-failed-frame',
+  });
+  wire.answers.set('DOM.getDocument', (message) => {
+    if (message.sessionId === 'guard-oopif-failed-frame')
+      return { error: { code: -32000, message: 'owners failed' } };
+    const targetId = wire.sessions.get(message.sessionId);
+    return {
+      result: {
+        root: {
+          nodeId: 1,
+          nodeName: '#document',
+          children: wire.targets.get(targetId).owners ?? [],
+        },
+      },
+    };
+  });
+  const session = await wire.attach('oopif-failed');
+  await flush();
+  await flush();
+  const document = await wire.request('DOM.getDocument', { depth: -1 }, session);
+  assert.equal(document.error?.message, PROTECTED);
+});
+
+test('an unready ordinary iframe OOPIF locks its parent tab', async (t) => {
+  const wire = protocol(t);
+  const child = 'https://ordinary.invalid/iframe';
+  wire.target('oopif-https', ordinary, child, {
+    oopif: true,
+    frameId: 'oopif-https-frame',
+  });
+  wire.answers.set('Page.getFrameTree', (message) => {
+    if (message.sessionId === 'guard-oopif-https-frame')
+      return { error: { code: -32000, message: 'frame tree unavailable' } };
+    const targetId = wire.sessions.get(message.sessionId);
+    return { result: { frameTree: wire.targets.get(targetId).tree } };
+  });
+  const session = await wire.attach('oopif-https');
+  await flush();
+  await flush();
+  const document = await wire.request('DOM.getDocument', { depth: -1 }, session);
+  assert.equal(document.error?.message, PROTECTED);
+});
+
+test('an unready protected iframe OOPIF locks its parent tab', async (t) => {
+  const wire = protocol(t);
+  wire.target('oopif-seven', ordinary, seven, {
+    oopif: true,
+    frameId: 'oopif-seven-frame',
+  });
+  wire.answers.set('Page.getFrameTree', (message) => {
+    if (message.sessionId === 'guard-oopif-seven-frame')
+      return { error: { code: -32000, message: 'frame tree unavailable' } };
+    const targetId = wire.sessions.get(message.sessionId);
+    return { result: { frameTree: wire.targets.get(targetId).tree } };
+  });
+  const attached = await wire.request('Target.attachToTarget', {
+    targetId: 'oopif-seven',
+    flatten: true,
+  });
+  if (attached.error) {
+    assert.equal(attached.error.message, PROTECTED);
+    return;
+  }
+  await flush();
+  await flush();
+  const document = await wire.request('DOM.getDocument', { depth: -1 }, attached.result.sessionId);
+  assert.equal(document.error?.message, PROTECTED);
+});
+
+test('an unready own-extension OOPIF locks its parent tab', async (t) => {
+  const wire = protocol(t, [
+    'https://protected.invalid',
+    'chrome-extension://ownextensionid000000000000000000',
+  ]);
+  wire.target('oopif-own', ordinary, ownExt, {
+    oopif: true,
+    frameId: 'oopif-own-frame',
+  });
+  wire.answers.set('Page.getFrameTree', (message) => {
+    if (message.sessionId === 'guard-oopif-own-frame')
+      return { error: { code: -32000, message: 'frame tree unavailable' } };
+    const targetId = wire.sessions.get(message.sessionId);
+    return { result: { frameTree: wire.targets.get(targetId).tree } };
+  });
+  const attached = await wire.request('Target.attachToTarget', {
+    targetId: 'oopif-own',
+    flatten: true,
+  });
+  if (attached.error) {
+    assert.equal(attached.error.message, PROTECTED);
+    return;
+  }
+  await flush();
+  await flush();
+  const document = await wire.request('DOM.getDocument', { depth: -1 }, attached.result.sessionId);
+  assert.equal(document.error?.message, PROTECTED);
 });
 
 test('an OOPIF extension screenshot follows the shown rule', async (t) => {
