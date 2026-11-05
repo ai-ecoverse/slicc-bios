@@ -1469,7 +1469,12 @@ class Guard {
 
   childLocked(id, scope, holds, seen, view) {
     if (id === scope.root) return false;
-    if (scope.extensionOwners?.has(id) && !this.is.url(this.frames.get(id))) return false;
+    if (
+      scope.extensionOwners?.has(id) &&
+      !this.is.url(this.frames.get(id)) &&
+      !this.errorFrames.has(id)
+    )
+      return false;
     if (holds && !LISTED_FRAME.test(this.frames.get(id))) return true;
     if (
       !holds &&
@@ -1490,7 +1495,8 @@ class Guard {
     const holds = this.holding(targetId);
     for (const id of this.relatedFrames(scope.frames)) {
       const url = this.frames.get(id);
-      const marked = scope.extensionOwners?.has(id) && !this.is.url(url);
+      const marked =
+        scope.extensionOwners?.has(id) && !this.is.url(url) && !this.errorFrames.has(id);
       if (this.unavailableFrame(id, url, view) && !marked) return true;
       if (this.is.url(url) && !(blankRoot && id === scope.root) && !view?.errors.has(id))
         return true;
@@ -1600,7 +1606,12 @@ class Guard {
     const targetId = this.scopeTarget(sessionId);
     if (!targetId || !Array.isArray(nodes)) return;
     const scope = this.scope(targetId);
-    for (const node of nodes) this.recordOwner(scope, node);
+    for (const node of nodes) {
+      if (!node || (node.nodeName !== 'IFRAME' && node.nodeName !== 'FRAME')) continue;
+      if (typeof node.frameId !== 'string' || !node.frameId) continue;
+      const marker = this.extensionFrameMarker(node.sliccExtensionFrame);
+      if (marker) this.noteExtensionMarker(scope, node.frameId, marker);
+    }
   }
 
   noteDomEventMarkers(method, sessionId, params) {
@@ -1672,9 +1683,7 @@ class Guard {
         return false;
       backend.add(owner.backendNodeId);
       if (owner.frameId) owners.push(owner);
-      else {
-        remote.set(owner.backendNodeId, owner);
-      }
+      else remote.set(owner.backendNodeId, owner);
     }
     return true;
   }
@@ -3681,11 +3690,12 @@ class Guard {
   }
 
   protectedFrame(frame) {
-    if (this.is.url(frame.url) || this.is.url(frame.securityOrigin)) return true;
     return (
-      typeof frame.url === 'string' &&
-      frame.url.startsWith('chrome-error:') &&
-      this.unsafeUrl(frame.unreachableUrl)
+      this.is.url(frame.url) ||
+      this.is.url(frame.securityOrigin) ||
+      (typeof frame.url === 'string' &&
+        frame.url.startsWith('chrome-error:') &&
+        this.unsafeUrl(frame.unreachableUrl))
     );
   }
 

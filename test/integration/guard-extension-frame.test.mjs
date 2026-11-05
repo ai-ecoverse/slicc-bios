@@ -21,7 +21,7 @@ const { whenShown, whilePresent } = catalog.protectedOrigins.extensionFrames;
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-function protocol(t, own = 'https://protected.invalid') {
+function protocol(t, own = 'https://protected.invalid', route) {
   const targets = new Map();
   const sessions = new Map();
   const sent = [];
@@ -38,7 +38,7 @@ function protocol(t, own = 'https://protected.invalid') {
     },
     close() {},
   };
-  const guard = guardProtected(raw, own);
+  const guard = guardProtected(raw, own, new Map(), route);
   guard.onmessage = (text) => {
     const message = JSON.parse(text);
     delivered.push(message);
@@ -360,6 +360,88 @@ test('a marked frame with a known protected url still locks', async (t) => {
   await assertPageLocked(wire, 'marked-seven');
 });
 
+test('a marked frame that is an error page for an unsafe url still locks', async (t) => {
+  const wire = protocol(t);
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: false } },
+  }));
+  wire.target('marked-error', ordinary, { marker: MARKER_HIDDEN, childUrl: '' });
+  const session = await wire.attach('marked-error');
+  const open = await wire.request('Input.dispatchKeyEvent', { type: 'keyDown', key: 'a' }, session);
+  assert.equal(open.error, undefined);
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: session,
+    params: {
+      frame: {
+        id: 'marked-error-ext',
+        parentId: 'marked-error',
+        url: 'chrome-error://chromewebdata/',
+        securityOrigin: '://',
+        unreachableUrl: vault,
+        loaderId: 'marked-error-loader',
+      },
+    },
+  });
+  await flush();
+  const shot = await wire.request('Page.captureScreenshot', {}, session);
+  assert.equal(shot.error?.message, PROTECTED);
+});
+
+test('an unmarked unknown remote next to a marked frame still locks', async (t) => {
+  const wire = protocol(t);
+  const entry = wire.target('pair-mark', ordinary, { marker: MARKER_HIDDEN, childUrl: '' });
+  entry.owners.push({
+    nodeId: 3,
+    nodeName: 'IFRAME',
+    frameId: 'pair-mark-other',
+    attributes: ['src', ''],
+  });
+  entry.tree.childFrames.push({
+    frame: {
+      id: 'pair-mark-other',
+      parentId: 'pair-mark',
+      url: '',
+      securityOrigin: '://',
+    },
+  });
+  await assertPageLocked(wire, 'pair-mark');
+});
+
+test('a snapshot remote backend owner without a frameId locks like main', async (t) => {
+  const wire = protocol(t, 'https://protected.invalid', { kind: 'extension' });
+  const strings = ['snap-remote', ordinary, '#document', 'IFRAME', 'src', '', 'snap-remote-ext'];
+  wire.answers.set('DOMSnapshot.captureSnapshot', () => ({
+    result: {
+      strings,
+      documents: [
+        {
+          frameId: 0,
+          documentURL: 1,
+          nodes: {
+            nodeName: [2, 3, 3],
+            backendNodeId: [1, 2, 99],
+            attributes: [[], [4, 5], [4, 5]],
+            contentDocumentIndex: { index: [1], value: [1] },
+          },
+        },
+        {
+          frameId: 6,
+          documentURL: 5,
+          nodes: {
+            nodeName: [2],
+            backendNodeId: [3],
+            attributes: [[]],
+            contentDocumentIndex: { index: [], value: [] },
+          },
+        },
+      ],
+    },
+  }));
+  wire.target('snap-remote', ordinary, { childUrl: '', src: '' });
+  await assertPageLocked(wire, 'snap-remote');
+});
+
 test('marker with absent fields admits whenShown after a live hidden check', async (t) => {
   const wire = protocol(t);
   wire.answers.set('Runtime.callFunctionOn', () => ({
@@ -625,6 +707,63 @@ test('DOM setChildNodes childNodeInserted and describeNode accept markers', asyn
     session
   );
   assert.equal(answer.error, undefined);
+});
+
+test('client describeNode and setChildNodes only ingest markers', async (t) => {
+  const wire = protocol(t);
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: false } },
+  }));
+  wire.target('client-dom', ordinary, { marker: MARKER });
+  const session = await wire.attach('client-dom');
+  const open = await wire.request('Input.dispatchKeyEvent', { type: 'keyDown', key: 'a' }, session);
+  assert.equal(open.error, undefined);
+  wire.emit({
+    method: 'DOM.setChildNodes',
+    sessionId: session,
+    params: {
+      parentNodeId: 1,
+      nodes: [
+        {
+          nodeId: 9,
+          nodeName: 'IFRAME',
+          frameId: 'client-dom-extra',
+          attributes: ['src', ''],
+        },
+        {
+          nodeId: 10,
+          nodeName: 'IFRAME',
+          attributes: ['src', ''],
+        },
+      ],
+    },
+  });
+  await flush();
+  const stillOpen = await wire.request(
+    'Input.dispatchKeyEvent',
+    { type: 'keyDown', key: 'b' },
+    session
+  );
+  assert.equal(stillOpen.error, undefined, JSON.stringify(stillOpen));
+  wire.answers.set('DOM.describeNode', () => ({
+    result: {
+      node: {
+        nodeId: 2,
+        nodeName: 'IFRAME',
+        frameId: 'client-dom-ext',
+        attributes: ['src', ''],
+        sliccExtensionFrame: MARKER_SHOWN,
+      },
+    },
+  }));
+  const described = await wire.request('DOM.describeNode', { nodeId: 2 }, session);
+  assert.equal(described.error, undefined, JSON.stringify(described));
+  const shown = await wire.request(
+    'Input.dispatchKeyEvent',
+    { type: 'keyDown', key: 'c' },
+    session
+  );
+  assert.equal(shown.error?.message, SHOWN_REFUSAL);
 });
 
 test('getFrameOwner marker shown during live check refuses whenShown', async (t) => {
