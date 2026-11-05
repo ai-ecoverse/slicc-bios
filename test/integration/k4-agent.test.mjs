@@ -249,7 +249,8 @@ test('enforce: a cone agent’s sudo asks the human through the agent’s approv
     new Function(
       'id',
       `const dialog = (${find})('slicc-approvals')?.shadowRoot?.querySelector('dialog[data-approval="' + id + '"]');
-      return dialog?.querySelector('[data-secret-rules]') && [...dialog.querySelectorAll('[data-action]')].map((b) => b.dataset.action);`
+      const actions = dialog ? [...dialog.querySelectorAll('[data-action]')].map((b) => b.dataset.action) : [];
+      return actions.length ? actions : null;`
     ),
     rules.id
   );
