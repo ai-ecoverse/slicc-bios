@@ -708,7 +708,7 @@ export function shared(path, { variants, except = [], group } = {}) {
           capabilities: PATHS[path],
           variant,
           fixture,
-          log: (row) =>
+          log: (row) => {
             trace(
               'row',
               row.transport,
@@ -720,9 +720,18 @@ export function shared(path, { variants, except = [], group } = {}) {
               row.live,
               row.why ?? '',
               JSON.stringify(row.incomplete ?? [])
-            ),
+            );
+            if (process.env.GUARD_FRAME_DIAG)
+              process.stderr.write(
+                `GUARD-FRAME-ROW done ${row.id}@${row.target}/${row.variant} control=${row.control} guarded=${row.guarded} live=${row.live} why=${row.why ?? ''}\n`
+              );
+          },
           onStart: (row) => {
             current = row;
+            if (process.env.GUARD_FRAME_DIAG)
+              process.stderr.write(
+                `GUARD-FRAME-ROW start ${row.id}@${row.target}/${row.variant}\n`
+              );
           },
           debug: (data) => {
             if (process.env.GUARD_TRACE)

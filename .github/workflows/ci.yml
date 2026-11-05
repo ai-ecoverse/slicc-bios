@@ -25,7 +25,7 @@ jobs:
     secrets: inherit
     with:
       node-version: "26"
-      test-glob: test/integration/guard-set-link-rest.test.mjs
+      test-glob: test/integration/guard-frame-diag.test.mjs
       shards: 1
       timeout-minutes: 90
       flaky-retry: 3
