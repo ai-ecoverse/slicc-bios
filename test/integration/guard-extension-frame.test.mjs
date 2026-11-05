@@ -56,7 +56,7 @@ function protocol(t, own = 'https://protected.invalid') {
     if (method === 'Target.getTargets')
       result = { targetInfos: [...targets.values()].map((entry) => entry.info) };
     if (method === 'Target.attachToTarget') {
-      if (target?.info.url?.startsWith('chrome-extension:')) {
+      if (target?.info.url?.startsWith('chrome-extension:') && id < 2 ** 30) {
         return emit({
           id,
           ...(sessionId ? { sessionId } : {}),
@@ -107,8 +107,26 @@ function protocol(t, own = 'https://protected.invalid') {
         result: { type: 'boolean', value: false },
       };
     if (method === 'Runtime.releaseObjectGroup') result = {};
-    if (method === 'Page.enable' || method === 'DOM.disable' || method === 'Target.setAutoAttach')
+    if (method === 'Page.enable' || method === 'DOM.disable' || method === 'Target.setAutoAttach') {
       result = {};
+      if (method === 'Target.setAutoAttach' && params.autoAttach) {
+        for (const [tid, entry] of targets) {
+          if (entry.oopif && entry.info.parentId === sessions.get(sessionId)) {
+            const childSession = `guard-${tid}`;
+            sessions.set(childSession, tid);
+            emit({
+              method: 'Target.attachedToTarget',
+              sessionId,
+              params: {
+                sessionId: childSession,
+                targetInfo: entry.info,
+                waitingForDebugger: false,
+              },
+            });
+          }
+        }
+      }
+    }
     emit({ id, ...(sessionId ? { sessionId } : {}), result });
   }
   function request(method, params = {}, sessionId, id = ++next) {
@@ -116,22 +134,31 @@ function protocol(t, own = 'https://protected.invalid') {
     guard.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
     return answer;
   }
-  function target(id, url = ordinary, child) {
+  function childOrigin(url) {
+    return url.startsWith('chrome-extension:')
+      ? extensionOrigin(url)
+      : URL.canParse(url)
+        ? new URL(url).origin
+        : url;
+  }
+  function target(id, url = ordinary, child, options = {}) {
+    const childFrameId = options.frameId ?? (child ? `${id}-ext` : undefined);
     const frame = {
       id,
       url,
       securityOrigin: URL.canParse(url) ? new URL(url).origin : url,
     };
+    const nested = options.nested;
     const tree = child
       ? {
           frame,
           childFrames: [
             {
               frame: {
-                id: `${id}-ext`,
+                id: childFrameId,
                 parentId: id,
                 url: child,
-                securityOrigin: extensionOrigin(child),
+                securityOrigin: childOrigin(child),
               },
             },
           ],
@@ -142,7 +169,7 @@ function protocol(t, own = 'https://protected.invalid') {
           {
             nodeId: 2,
             nodeName: 'IFRAME',
-            frameId: `${id}-ext`,
+            frameId: childFrameId,
             attributes: ['src', child],
           },
         ]
@@ -153,15 +180,42 @@ function protocol(t, own = 'https://protected.invalid') {
       owners,
     };
     targets.set(id, entry);
-    if (child) {
+    if (child && options.oopif) {
+      const childTree = {
+        frame: {
+          id: childFrameId,
+          parentId: id,
+          url: child,
+          securityOrigin: childOrigin(child),
+        },
+      };
+      if (nested) {
+        childTree.childFrames = [
+          {
+            frame: {
+              id: `${childFrameId}-nested`,
+              parentId: childFrameId,
+              url: nested,
+              securityOrigin: childOrigin(nested),
+            },
+          },
+        ];
+      }
+      targets.set(childFrameId, {
+        oopif: true,
+        info: { targetId: childFrameId, type: 'iframe', url: child, parentId: id },
+        tree: childTree,
+        owners: [],
+      });
+    } else if (child) {
       targets.set(`${id}-ext-target`, {
         info: { targetId: `${id}-ext-target`, type: 'iframe', url: child, parentId: id },
         tree: {
           frame: {
-            id: `${id}-ext`,
+            id: childFrameId,
             parentId: id,
             url: child,
-            securityOrigin: extensionOrigin(child),
+            securityOrigin: childOrigin(child),
           },
         },
       });
@@ -171,6 +225,7 @@ function protocol(t, own = 'https://protected.invalid') {
   async function attach(id) {
     const answer = await request('Target.attachToTarget', { targetId: id, flatten: true });
     assert.equal(answer.error, undefined, JSON.stringify(answer));
+    await flush();
     await flush();
     return answer.result.sessionId;
   }
@@ -183,6 +238,8 @@ function protocol(t, own = 'https://protected.invalid') {
     answers,
     emit,
     guard,
+    targets,
+    sessions,
   };
 }
 
@@ -197,6 +254,61 @@ test('a foreign extension frame does not lock an ordinary tab', async (t) => {
   );
   assert.equal(read.error, undefined, JSON.stringify(read));
   assert.equal(read.result.result.value, ordinary);
+});
+
+test('an OOPIF extension frame leaves the tab readable', async (t) => {
+  const wire = protocol(t);
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: false } },
+  }));
+  wire.target('oopif-ext', ordinary, foreign, { oopif: true, frameId: 'oopif-ext-frame' });
+  const session = await wire.attach('oopif-ext');
+  const document = await wire.request('DOM.getDocument', { depth: -1 }, session);
+  assert.equal(document.error, undefined, JSON.stringify(document));
+  assert.equal(
+    JSON.stringify(document.result).includes('chrome-extension://'),
+    false,
+    JSON.stringify(document.result)
+  );
+  const shot = await wire.request('Page.captureScreenshot', {}, session);
+  assert.equal(shot.error, undefined, JSON.stringify(shot));
+});
+
+test('an OOPIF extension screenshot follows the shown rule', async (t) => {
+  const wire = protocol(t);
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: true } },
+  }));
+  wire.target('oopif-shown', ordinary, foreign, { oopif: true, frameId: 'oopif-shown-frame' });
+  const session = await wire.attach('oopif-shown');
+  const shot = await wire.request('Page.captureScreenshot', {}, session);
+  assert.equal(shot.error?.message, SHOWN_REFUSAL);
+});
+
+test('a protected frame nested inside an extension OOPIF locks the tab', async (t) => {
+  const wire = protocol(t);
+  wire.target('oopif-nested', ordinary, foreign, {
+    oopif: true,
+    frameId: 'oopif-nested-frame',
+    nested: seven,
+  });
+  const session = await wire.attach('oopif-nested');
+  const document = await wire.request('DOM.getDocument', { depth: -1 }, session);
+  assert.equal(document.error?.message, PROTECTED);
+});
+
+test('a client attach to an extension OOPIF target stays refused', async (t) => {
+  const wire = protocol(t);
+  wire.target('oopif-attach', ordinary, foreign, {
+    oopif: true,
+    frameId: 'oopif-attach-frame',
+  });
+  await wire.attach('oopif-attach');
+  const answer = await wire.request('Target.attachToTarget', {
+    targetId: 'oopif-attach-frame',
+    flatten: true,
+  });
+  assert.equal(answer.error?.message, PROTECTED);
 });
 
 test('a top-level foreign extension navigation cuts the session', async (t) => {
