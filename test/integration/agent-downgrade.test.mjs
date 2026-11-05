@@ -170,6 +170,79 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
   });
 
   await t.test(
+    'offerChat keeps a refused row failed, keeps the notice, and does not launch again',
+    async (t) => {
+      await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
+      await marker(page, JSON.stringify({ durableSchema: 3, agent: '8.0.0' }));
+      t.after(() => marker(page, null).catch(() => {}));
+      const before = page.console.filter((line) => line.includes('the agent did not start')).length;
+      const seen = await refused(page);
+      assert.equal(seen.error, OLDER);
+      assert.equal(seen.agents, 0);
+      await page.evaluate(() => {
+        window.sliccRetry = document
+          .querySelector('slicc-app')
+          .model.updates.act('agent', 'retry')
+          .then(
+            () => 'done',
+            (error) => error.message
+          );
+      });
+      assert.equal(await page.until(() => window.sliccRetry), 'done');
+      const after = await page.evaluate(() => {
+        const { updates, notices, agent } = document.querySelector('slicc-app').model;
+        const row = updates.list().find((item) => item.id === 'agent');
+        return {
+          state: row?.state ?? null,
+          error: row?.error ?? null,
+          notice: notices.list().some((item) => item.id === 'agent:older'),
+          agents: agent?.list?.().length ?? 0,
+        };
+      });
+      assert.equal(after.state, 'failed');
+      assert.equal(after.error, OLDER);
+      assert.equal(after.notice, true);
+      assert.equal(after.agents, 0);
+      assert.equal(
+        page.console.filter((line) => line.includes('the agent did not start')).length - before,
+        1,
+        page.console.filter((line) => line.includes('the agent did not start')).join('\n')
+      );
+    }
+  );
+
+  await t.test('a marker change after the refusal lets seven start the agent', async (t) => {
+    await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
+    await marker(page, JSON.stringify({ durableSchema: 3, agent: '8.0.0' }));
+    const seen = await refused(page);
+    assert.equal(seen.error, OLDER);
+    assert.equal(seen.agents, 0);
+    await marker(page, null);
+    t.after(() => marker(page, null).catch(() => {}));
+    await page.evaluate(() => {
+      window.sliccRetry = document
+        .querySelector('slicc-app')
+        .model.updates.act('agent', 'retry')
+        .then(
+          () => 'done',
+          (error) => error.message
+        );
+    });
+    assert.equal(await page.until(() => window.sliccRetry), 'done');
+    await agentUp(page);
+    assert.equal(
+      await page.evaluate(() =>
+        document
+          .querySelector('slicc-app')
+          .model.notices.list()
+          .some((item) => item.id === 'agent:older')
+      ),
+      false
+    );
+    assert.equal(await record(page), '2');
+  });
+
+  await t.test(
     'a 7.x first start whose profile version can’t be recorded is refused',
     async (t) => {
       await page.evaluate(() => {
