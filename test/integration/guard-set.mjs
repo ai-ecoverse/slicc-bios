@@ -667,8 +667,9 @@ const SHA = process.env.GUARD_SHA ?? process.env.GITHUB_SHA;
 export const ROW_MS = process.env.GUARD_FRAME_DIAG ? 60 * 1000 : 3 * 60 * 1000;
 export const SCALE = { lagging: 3 };
 let diagPage;
-const dumpFrameDiag = (label) => {
+const dumpFrameDiag = async (label) => {
   if (!process.env.GUARD_FRAME_DIAG) return;
+  await new Promise((resolve) => setTimeout(resolve, 3500));
   const lines = [...(diagPage?.console ?? [])].filter((line) => line.includes('GUARD-FRAME-DIAG'));
   process.stdout.write(`GUARD-FRAME-DIAG-DUMP ${label} count=${lines.length}\n`);
   for (const line of lines) process.stdout.write(`${line}\n`);
@@ -789,7 +790,7 @@ export function shared(path, { variants, except = [], group } = {}) {
           });
         } catch (error) {
           if (process.env.GUARD_FRAME_DIAG) {
-            dumpFrameDiag(`timeout-or-error ${current?.id ?? '?'}@${target}/${variant}`);
+            await dumpFrameDiag(`timeout-or-error ${current?.id ?? '?'}@${target}/${variant}`);
             process.stdout.write(
               `GUARD-FRAME-ROW error ${current?.id ?? '?'}@${target}/${variant} ${error?.message ?? error}\n`
             );
@@ -799,7 +800,7 @@ export function shared(path, { variants, except = [], group } = {}) {
         results.push(...execution.results);
         if (process.env.GUARD_FRAME_DIAG) {
           for (const row of execution.results) {
-            dumpFrameDiag(`${row.id}@${row.target}/${row.variant}`);
+            await dumpFrameDiag(`${row.id}@${row.target}/${row.variant}`);
             process.stdout.write(
               `GUARD-FRAME-ROW end ${row.id}@${row.target}/${row.variant} control=${row.control} guarded=${row.guarded} live=${row.live} why=${row.why ?? ''}\n`
             );

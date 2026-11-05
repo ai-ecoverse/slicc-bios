@@ -39,12 +39,102 @@ const WHILE_PRESENT = new Set(EXTENSION_FRAMES.whilePresent);
 const EXTENSION_SCHEMES = new Set(EXTENSION_FRAMES.schemes);
 let frameDiagSeq = 0;
 let frameDiagT0 = 0;
-const frameDiag = (note, detail = {}) => {
+export const DIAG_TARGET_PROBE_MS = [0, 250, 1000, 3000];
+export const frameDiag = (note, detail = {}) => {
   frameDiagSeq += 1;
   if (!frameDiagT0) frameDiagT0 = Date.now();
   console.warn(
     `GUARD-FRAME-DIAG ${JSON.stringify({ seq: frameDiagSeq, t: Date.now() - frameDiagT0, note, ...detail })}`
   );
+};
+export const diagTargets = async (call, frameId, detail = {}) => {
+  let getTargetInfo;
+  try {
+    getTargetInfo = await call('Target.getTargetInfo', { targetId: frameId });
+  } catch (error) {
+    getTargetInfo = { thrown: `${error?.message ?? error}` };
+  }
+  let getTargets;
+  try {
+    getTargets = await call('Target.getTargets');
+  } catch (error) {
+    getTargets = { thrown: `${error?.message ?? error}` };
+  }
+  frameDiag('target-probe', { frameId, ...detail, getTargetInfo, getTargets });
+  return { getTargetInfo, getTargets };
+};
+export const diagScheduleTargets = (
+  call,
+  frameIds,
+  detail = {},
+  state = {},
+  delays = DIAG_TARGET_PROBE_MS
+) => {
+  if (state.armed || !(frameIds?.length > 0)) return state;
+  state.armed = true;
+  frameDiag('target-probe-arm', { frameIds: [...frameIds], ...detail });
+  state.timers = delays
+    .map((delayMs) => {
+      const run = () => {
+        for (const frameId of frameIds) void diagTargets(call, frameId, { ...detail, delayMs });
+      };
+      if (!delayMs) {
+        run();
+        return null;
+      }
+      const timer = setTimeout(run, delayMs);
+      timer.unref?.();
+      return timer;
+    })
+    .filter(Boolean);
+  return state;
+};
+export const diagClearTargets = (state = {}) => {
+  for (const timer of state.timers ?? []) clearTimeout(timer);
+  state.timers = [];
+  return state;
+};
+export const diagRefuseArm = (guard, targetId, reason) => {
+  if (!guard.diagArmDump || guard.diagDumped || !targetId) return null;
+  guard.diagDumped = true;
+  guard.dumpLockTables(guard.diagArmDump, reason);
+  if (!process.env.GUARD_FRAME_DIAG) return null;
+  const owners = guard.scopes.get(targetId)?.owners;
+  const frameIds = [...(owners ?? [])].filter((id) => !guard.frames?.get(id));
+  return diagScheduleTargets(
+    (...args) => guard.call(...args),
+    frameIds,
+    { targetId },
+    (guard.diagTargetState ??= {})
+  );
+};
+export const diagFrameNav = (times, method, params = {}) => {
+  if (
+    !['Page.frameNavigated', 'Page.frameStartedLoading', 'Page.frameRequestedNavigation'].includes(
+      method
+    )
+  )
+    return;
+  const frameId = params.frameId ?? params.frame?.id;
+  if (!frameId) return;
+  const entry = times.get(frameId) ?? { attachedAt: null, navs: [] };
+  const sinceAttachedMs =
+    typeof entry.attachedAt === 'number' ? Date.now() - entry.attachedAt : null;
+  entry.navs.push({
+    method,
+    at: Date.now(),
+    url: params.url ?? params.frame?.url ?? null,
+    sinceAttachedMs,
+  });
+  times.set(frameId, entry);
+  frameDiag('frame-nav', {
+    method,
+    frameId,
+    parentFrameId: params.parentFrameId ?? params.frame?.parentId ?? null,
+    url: params.url ?? params.frame?.url ?? null,
+    sinceAttachedMs,
+    navs: entry.navs,
+  });
 };
 const diagEvidence = (guard, evidence) =>
   evidence.map((url) => ({
@@ -1064,10 +1154,7 @@ class Guard {
         reason: message,
         target: this.scopeSnap(targetId),
       });
-      if (this.diagArmDump && !this.diagDumped && targetId) {
-        this.diagDumped = true;
-        this.dumpLockTables(this.diagArmDump, `${command.method}:${message}`);
-      }
+      diagRefuseArm(this, targetId, `${command.method}:${message}`);
     }
     if (this.finished.has(command)) return;
     this.finished.add(command);
@@ -1966,6 +2053,25 @@ class Guard {
     this.scopes.delete(ghost);
     this.frames.delete(ghostRoot);
     this.dumpLockTables(targetId, 'touch');
+    const cover = {};
+    diagScheduleTargets(async () => ({}), [`diag-probe-${targetId}`], { targetId }, cover, [0, 1]);
+    diagScheduleTargets(async () => ({}), [`diag-probe-${targetId}`], { targetId }, cover, [0]);
+    diagScheduleTargets(async () => ({}), [], { targetId }, {});
+    diagFrameNav((this.diagFrameTimes ??= new Map()), 'Page.frameNavigated', {
+      frameId: `diag-probe-${targetId}`,
+      url: 'about:blank',
+    });
+    diagFrameNav(this.diagFrameTimes, 'Page.frameNavigated', {});
+    diagFrameNav(this.diagFrameTimes, 'Page.enable', { frameId: 'x' });
+    this.scopeFrames(
+      {
+        method: 'Page.frameStartedLoading',
+        params: { frameId: `diag-probe-${targetId}` },
+      },
+      targetId
+    );
+    diagClearTargets(cover);
+    diagClearTargets({});
   }
 
   diagFrameIdentityLog(targetId, answer = {}) {
@@ -2461,6 +2567,17 @@ class Guard {
         disabled.error.message === '{"code":-32000,"message":"DOM agent hasn\'t been enabled"}'
       );
     const scope = this.scope(targetId);
+    frameDiag('placeOne-autoAttach', {
+      sessionId,
+      targetId,
+      callSetAutoAttach: !(
+        !owners.error &&
+        !cleanupFailed &&
+        scope.ownersReady &&
+        scope.protectedOwner
+      ),
+      filter: FRAME_CHILDREN,
+    });
     const attached =
       !owners.error && !cleanupFailed && scope.ownersReady && scope.protectedOwner
         ? {}
@@ -2474,6 +2591,17 @@ class Guard {
             },
             deadline
           );
+    frameDiag('placeOne-autoAttach-result', {
+      sessionId,
+      targetId,
+      callSetAutoAttach: !(
+        !owners.error &&
+        !cleanupFailed &&
+        scope.ownersReady &&
+        scope.protectedOwner
+      ),
+      error: attached.error?.message ?? null,
+    });
     scope.pending -= 1;
     scope.setup = Boolean(
       !enabled.error && (!attached.error || attached.error.message === NO_AUTO_ATTACH)
@@ -2608,12 +2736,17 @@ class Guard {
   }
 
   attachScopeFrame(params, targetId) {
+    (this.diagFrameTimes ??= new Map()).set(params.frameId, {
+      attachedAt: Date.now(),
+      navs: this.diagFrameTimes.get(params.frameId)?.navs ?? [],
+    });
     frameDiag('frameAttached', {
       targetId,
       frameId: params.frameId,
       parentFrameId: params.parentFrameId ?? null,
       stack: params.stack ?? null,
       priorUrl: this.frames.get(params.frameId) ?? null,
+      sinceAttachedMs: 0,
     });
     const scope = this.scope(targetId);
     scope.frames.add(params.frameId);
@@ -2660,6 +2793,7 @@ class Guard {
   }
 
   scopeFrames({ method, params = {} }, targetId) {
+    diagFrameNav((this.diagFrameTimes ??= new Map()), method, params);
     if (method === 'Page.frameAttached') {
       this.attachScopeFrame(params, targetId);
     }
