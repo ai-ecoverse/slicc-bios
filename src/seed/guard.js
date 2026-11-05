@@ -1037,13 +1037,19 @@ class Guard {
   }
 
   refuse(command, message = PROTECTED, release = true) {
-    if (command?.method)
+    if (command?.method) {
+      const targetId = this.scopeTarget(command.sessionId);
       frameDiag('refuse', {
         method: command.method,
         sessionId: command.sessionId,
         reason: message,
-        target: this.scopeSnap(this.scopeTarget(command.sessionId)),
+        target: this.scopeSnap(targetId),
       });
+      if (this.diagArmDump && !this.diagDumped && targetId) {
+        this.diagDumped = true;
+        this.dumpLockTables(this.diagArmDump, `${command.method}:${message}`);
+      }
+    }
     if (this.finished.has(command)) return;
     this.finished.add(command);
     const key = requestKey(command);
@@ -1586,6 +1592,16 @@ class Guard {
     };
   }
 
+  frameDiagSnap(frameId) {
+    const url = this.frames.get(frameId);
+    return {
+      frameId,
+      url,
+      parentId: this.parents.get(frameId),
+      root: [...this.scopes.values()].some((scope) => scope.root === frameId),
+    };
+  }
+
   unreadyForeignExtensionIframe(targetId, scope = this.scopes.get(targetId)) {
     if (!scope || scope.ready || scope.failed || !scope.parent) return false;
     if (!(scope.pending > 0 || this.placementsPending.has(targetId))) return false;
@@ -1596,48 +1612,121 @@ class Guard {
   childLocked(id, scope, holds, seen, view) {
     if (id === scope.root) return false;
     if (this.extensionUrl(this.frames.get(id)) || scope.extensionOwners?.has(id)) return false;
-    if (holds && !LISTED_FRAME.test(this.frames.get(id))) return true;
+    if (holds && !LISTED_FRAME.test(this.frames.get(id))) return 'holds-unlistable';
     if (
       !holds &&
       (scope.remoteOwners.has(id) || this.targets.get(id)?.type === 'iframe') &&
       !this.unreadyForeignExtensionIframe(id) &&
       this.pageLocked(id, new Set(seen), false, view)
     )
-      return true;
-    return !this.parents.has(id) || !this.frames.has(this.parents.get(id));
+      return 'nested-pageLocked';
+    if (!this.parents.has(id) || !this.frames.has(this.parents.get(id))) return 'orphan';
+    return false;
   }
 
   pageLocked(targetId, seen = new Set(), blankRoot = false, view) {
-    if (!targetId || seen.has(targetId)) return true;
+    if (!targetId) {
+      frameDiag('pageLocked', { branch: 'missing-target', blankRoot: Boolean(blankRoot) });
+      return true;
+    }
+    if (seen.has(targetId)) {
+      frameDiag('pageLocked', {
+        branch: 'seen',
+        blankRoot: Boolean(blankRoot),
+        scope: this.scopeSnap(targetId),
+      });
+      return true;
+    }
     seen.add(targetId);
     const scope = this.scopes.get(targetId);
     if (!this.scopeReady(targetId, scope, view) || (view && scope.committed)) {
       frameDiag('pageLocked', {
         branch: 'scopeReady-or-committed',
+        blankRoot: Boolean(blankRoot),
+        view: Boolean(view),
+        committed: scope?.committed,
         scope: this.scopeSnap(targetId),
       });
       return true;
     }
-    if (scope.privatePlaced) return Boolean(view);
-    if (this.remoteOwnersLock(scope)) return true;
+    if (scope.privatePlaced) {
+      frameDiag('pageLocked', {
+        branch: view ? 'privatePlaced-view' : 'privatePlaced-skip',
+        blankRoot: Boolean(blankRoot),
+        scope: this.scopeSnap(targetId),
+      });
+      return Boolean(view);
+    }
+    if (this.remoteOwnersLock(scope)) {
+      const remoteBackendOwners = [...(scope.remoteBackendOwners?.values() ?? [])].map((owner) => ({
+        backendNodeId: owner.backendNodeId,
+        frameId: owner.frameId,
+        attributes: owner.attributes,
+        contentDocument: owner.contentDocument?.documentURL,
+      }));
+      frameDiag('pageLocked', {
+        branch: 'remoteOwnersLock',
+        blankRoot: Boolean(blankRoot),
+        scope: this.scopeSnap(targetId),
+        remoteBackendOwners,
+      });
+      return true;
+    }
+    return this.pageLockedFrames(targetId, scope, seen, blankRoot, view);
+  }
+
+  pageLockedFrames(targetId, scope, seen, blankRoot, view) {
     const holds = this.holding(targetId);
     for (const id of this.relatedFrames(scope.frames)) {
       const url = this.frames.get(id);
-      if (this.unavailableFrame(id, url, view)) return true;
+      const frame = this.frameDiagSnap(id);
+      if (this.unavailableFrame(id, url, view)) {
+        frameDiag('pageLocked', {
+          branch: 'unavailableFrame',
+          blankRoot: Boolean(blankRoot),
+          scope: this.scopeSnap(targetId),
+          frame,
+        });
+        return true;
+      }
       if (
         this.is.url(url) &&
         !this.embeddedExtensionId(id, url, scope, targetId) &&
         !(blankRoot && id === scope.root) &&
         !view?.errors.has(id)
-      )
+      ) {
+        frameDiag('pageLocked', {
+          branch: 'protected-frame',
+          blankRoot: Boolean(blankRoot),
+          scope: this.scopeSnap(targetId),
+          frame,
+          embeddedExtensionId: this.embeddedExtensionId(id, url, scope, targetId),
+        });
         return true;
-      if (this.childLocked(id, scope, holds, seen, view)) return true;
+      }
+      const childWhy = this.childLocked(id, scope, holds, seen, view);
+      if (childWhy) {
+        frameDiag('pageLocked', {
+          branch: 'childLocked',
+          childWhy,
+          holds,
+          blankRoot: Boolean(blankRoot),
+          scope: this.scopeSnap(targetId),
+          frame,
+          listed: LISTED_FRAME.test(url),
+          extensionUrl: this.extensionUrl(url),
+          extensionOwner: scope.extensionOwners?.has(id),
+          unreadyForeign: this.unreadyForeignExtensionIframe(id),
+        });
+        return true;
+      }
     }
     for (const [child, entry] of this.scopes) {
       if (entry.parent !== targetId || this.unreadyForeignExtensionIframe(child, entry)) continue;
       if (this.pageLocked(child, new Set(seen), false, view)) {
         frameDiag('pageLocked', {
           branch: 'child-scope',
+          blankRoot: Boolean(blankRoot),
           scope: this.scopeSnap(targetId),
           child: this.scopeSnap(child),
         });
@@ -1647,24 +1736,186 @@ class Guard {
     return false;
   }
 
+  diagLocked(branch, sessionId, blankRoot, from, at) {
+    frameDiag('locked', {
+      branch,
+      sessionId,
+      blankRoot: Boolean(blankRoot),
+      from: this.scopeSnap(from),
+      at: at === undefined ? undefined : this.scopeSnap(at),
+    });
+    return true;
+  }
+
   locked(sessionId, blankRoot = false) {
     const targetId = this.scopeTarget(sessionId);
-    if (!targetId) return true;
+    if (!targetId) return this.diagLocked('no-target', sessionId, blankRoot);
     const seen = new Set();
     let id = targetId;
     while (id) {
-      if (seen.has(id) || this.pageLocked(id, new Set(), blankRoot && id === targetId)) {
-        frameDiag('locked', {
-          sessionId,
-          from: this.scopeSnap(targetId),
-          at: this.scopeSnap(id),
-        });
-        return true;
-      }
+      if (seen.has(id)) return this.diagLocked('ancestor-seen', sessionId, blankRoot, targetId, id);
+      if (this.pageLocked(id, new Set(), blankRoot && id === targetId))
+        return this.diagLocked('pageLocked', sessionId, blankRoot, targetId, id);
       seen.add(id);
       id = this.scopes.get(id)?.parent;
     }
+    frameDiag('locked', {
+      branch: 'open',
+      sessionId,
+      blankRoot: Boolean(blankRoot),
+      from: this.scopeSnap(targetId),
+    });
     return false;
+  }
+
+  diagTouchCoverage(targetId) {
+    this.pageLocked(undefined);
+    this.pageLocked(targetId, new Set([targetId]));
+    this.locked('diag-missing-session');
+    this.dumpLockTables('diag-missing-scope', 'touch-no-scope');
+    const scope = this.scopes.get(targetId);
+    if (!scope) return;
+    const priorPrivate = scope.privatePlaced;
+    scope.privatePlaced = true;
+    this.pageLocked(targetId, new Set(), false);
+    this.pageLocked(targetId, new Set(), false, { errors: new Set() });
+    scope.privatePlaced = priorPrivate;
+    const priorRemote = scope.remoteBackendOwners;
+    scope.remoteBackendOwners = new Map([
+      [
+        1,
+        {
+          backendNodeId: 1,
+          frameId: 'diag-remote',
+          attributes: ['src', 'https://seven.sliccy.ai/'],
+          contentDocument: { documentURL: 'https://seven.sliccy.ai/' },
+        },
+      ],
+    ]);
+    this.pageLocked(targetId, new Set(), false);
+    scope.remoteBackendOwners = priorRemote;
+    const orphan = `diag-orphan-${targetId}`;
+    this.frames.set(orphan, 'blob:diag-orphan');
+    scope.frames.add(orphan);
+    this.pageLocked(targetId, new Set(), false);
+    scope.frames.delete(orphan);
+    this.frames.delete(orphan);
+    const nested = `diag-nested-${targetId}`;
+    this.frames.set(nested, 'https://ordinary.invalid/nested');
+    this.parents.set(nested, scope.root ?? targetId);
+    this.targets.set(nested, {
+      url: 'https://ordinary.invalid/nested',
+      type: 'iframe',
+      parentId: targetId,
+    });
+    this.scopes.set(nested, {
+      ready: false,
+      failed: false,
+      pending: 0,
+      parent: targetId,
+      root: nested,
+      frames: new Set([nested]),
+      treeFrames: new Set([nested]),
+      owners: new Set(),
+      remoteOwners: new Set(),
+      attachedFrames: new Set(),
+      extensionOwners: new Set(),
+      tree: true,
+    });
+    this.pageLocked(targetId, new Set(), false);
+    this.scopes.delete(nested);
+    this.targets.delete(nested);
+    this.frames.delete(nested);
+    this.parents.delete(nested);
+    const listed = `diag-listed-${targetId}`;
+    const root = scope.root ?? targetId;
+    if (!this.frames.has(root)) this.frames.set(root, 'https://ordinary.invalid/page');
+    this.frames.set(listed, 'https://example.test/listed');
+    this.parents.set(listed, root);
+    scope.frames.add(listed);
+    this.childLocked(listed, scope, false, new Set(), undefined);
+    scope.frames.delete(listed);
+    this.frames.delete(listed);
+    this.parents.delete(listed);
+    const ghost = `diag-ghost-${targetId}`;
+    const ghostRoot = `${ghost}-root`;
+    this.frames.set(ghostRoot, 'https://ordinary.invalid/ghost');
+    this.scopes.set(ghost, {
+      ready: true,
+      failed: false,
+      pending: 0,
+      parent: targetId,
+      root: ghostRoot,
+      frames: new Set([ghostRoot]),
+      treeFrames: new Set([ghostRoot]),
+      owners: new Set(),
+      remoteOwners: new Set(),
+      attachedFrames: new Set(),
+      extensionOwners: new Set(),
+      tree: true,
+    });
+    const parent = scope.parent;
+    scope.parent = ghost;
+    const session = `diag-cycle-${targetId}`;
+    this.sessions.set(session, { targetId });
+    this.locked(session);
+    this.sessions.delete(session);
+    scope.parent = parent;
+    this.scopes.delete(ghost);
+    this.frames.delete(ghostRoot);
+    this.dumpLockTables(targetId, 'touch');
+  }
+
+  dumpLockTables(targetId, reason) {
+    const scope = this.scopes.get(targetId);
+    if (!scope) {
+      frameDiag('dump', { branch: 'no-scope', targetId, reason });
+      return;
+    }
+    const frames = [...(scope.frames ?? [])].map((id) => {
+      const url = this.frames.get(id);
+      const snap = this.frameDiagSnap(id);
+      const ext =
+        typeof url === 'string' && (url.startsWith('chrome-extension:') || url.startsWith('about:'))
+          ? {
+              extensionUrl: this.extensionUrl(url),
+              foreignExtensionUrl: this.foreignExtensionUrl(url),
+              embeddedExtensionId: this.embeddedExtensionId(id, url, scope, targetId),
+              tabRootFrame: this.tabRootFrame(id, targetId, scope),
+            }
+          : undefined;
+      return { ...snap, ...ext };
+    });
+    const ownerOf = (owner) => ({
+      backendNodeId: owner?.backendNodeId,
+      frameId: owner?.frameId,
+      nodeName: owner?.nodeName,
+      attributes: owner?.attributes,
+      contentDocument: owner?.contentDocument?.documentURL,
+    });
+    const childTargets = [...this.targets]
+      .filter(
+        ([id, info]) => info.parentId === targetId || this.scopes.get(id)?.parent === targetId
+      )
+      .map(([id, info]) => ({
+        id,
+        type: info.type,
+        url: info.url,
+        parentId: info.parentId,
+        scopeParent: this.scopes.get(id)?.parent,
+      }));
+    const payload = { reason, scope: this.scopeSnap(targetId), frames };
+    payload.owners = [...(scope.owners ?? [])];
+    payload.remoteOwners = [...(scope.remoteOwners ?? [])];
+    payload.remoteBackendOwners = [...(scope.remoteBackendOwners?.values() ?? [])].map(ownerOf);
+    payload.extensionOwners = [...(scope.extensionOwners ?? [])];
+    payload.attachedFrames = [...(scope.attachedFrames ?? [])];
+    payload.protectedOwner = Boolean(scope.protectedOwner);
+    payload.knownProtectedOwner = Boolean(scope.knownProtectedOwner);
+    payload.treeFrames = [...(scope.treeFrames ?? [])];
+    payload.lastFrameTree = scope.lastFrameTree;
+    payload.childTargets = childTargets;
+    frameDiag('dump', payload);
   }
 
   blankAdmission(message) {
@@ -1711,6 +1962,12 @@ class Guard {
     scope.treeFrames = new Set(all.map((frame) => frame.id));
     scope.frames = new Set([...scope.treeFrames, ...scope.owners]);
     scope.extensionOwners ??= new Set();
+    scope.lastFrameTree = all.map((frame) => ({
+      id: frame.id,
+      parentId: frame.parentId,
+      url: frame.url,
+      securityOrigin: frame.securityOrigin,
+    }));
     const parentId = tree?.frame?.parentId;
     if (parentId && !scope.parent)
       scope.parent = this.scopes.has(parentId)
@@ -1943,6 +2200,11 @@ class Guard {
       .then(() => this.placeNext(targetId, entry))
       .then((value) => {
         frameDiag('place-end', { sessionId, scope: this.scopeSnap(targetId) });
+        this.diagArmDump = targetId;
+        if (!this.diagTouched) {
+          this.diagTouched = true;
+          this.diagTouchCoverage(targetId);
+        }
         return value;
       });
     this.placing.set(targetId, entry.promise);
