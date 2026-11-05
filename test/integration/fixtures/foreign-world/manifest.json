@@ -9,5 +9,11 @@
       "js": ["world.js"],
       "run_at": "document_start"
     }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["frame.html"],
+      "matches": ["http://*.example.test/*", "https://*.example.test/*"]
+    }
   ]
 }
