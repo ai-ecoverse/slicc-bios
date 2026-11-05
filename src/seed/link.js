@@ -938,17 +938,39 @@ function greeting(link, { name, kernel, agent, sevens }) {
   };
 }
 
-function reclaim(links, labels, onLink, gone) {
+function reclaim(links, labels, onLink, label, key) {
   const live = [...links.values()];
-  if (!gone.label || links.has(gone.key) || live.some((item) => item.label === gone.label)) return;
+  if (!label || links.has(key) || live.some((item) => item.label === label)) return;
   const heir = live
-    .filter((item) => item.peer && item.wanted === gone.label && item.label !== gone.label)
+    .filter((item) => item.peer && item.wanted === label && item.label !== label)
     .at(-1);
   if (heir?.served.length) return;
   if (!heir) return;
-  heir.label = gone.label;
+  heir.label = label;
   labels.keep(heir.identity, heir.label);
   onLink(heir, heir.peer);
+}
+
+const takenLabels = (links, self) =>
+  new Set(
+    [...links.values()]
+      .filter((link) => link !== self)
+      .map((link) => link.label ?? link.held)
+      .filter(Boolean)
+  );
+
+function nameLink(link, peer, node, { links, labels, onLink, router }) {
+  if (Array.isArray(peer.caps) && peer.caps.length) {
+    const hint = peer.host ?? peer.name;
+    link.identity = `${link.id ?? link.key}|${node ?? ''}`;
+    link.base = dnsLabel(hint, new Set());
+    link.wanted = labels.wanted(link.identity, hint);
+    link.label = labels.pick(link.identity, hint, takenLabels(links, link));
+    router.add(link.exit);
+  }
+  const { held } = link;
+  link.held = null;
+  if (held !== link.label) reclaim(links, labels, onLink, held);
 }
 
 export function createLinks({
@@ -966,7 +988,6 @@ export function createLinks({
 }) {
   const links = new Map();
   let serial = 0;
-  const taken = () => new Set([...links.values()].map((link) => link.label).filter(Boolean));
   const free = (wanted) => {
     const used = new Set([...links.values()].map((link) => link.address));
     if (wanted?.startsWith(`${SUBNET}.`) && !used.has(wanted)) return wanted;
@@ -1020,6 +1041,8 @@ export function createLinks({
       return { port: port1, token, capabilities: mount.capabilities };
     },
     start({ key, send, mode, kind = 'cli', iceServers, address, certificates }) {
+      const old = links.get(key);
+      if (old) old.replaced = true;
       manager.drop(key, 'replaced');
       serial += 1;
       const seven = kind === 'seven';
@@ -1029,6 +1052,7 @@ export function createLinks({
         kind,
         address: free(address),
         label: null,
+        held: old ? (old.label ?? old.held) : null,
         peer: null,
         serial,
         served: [],
@@ -1061,7 +1085,7 @@ export function createLinks({
           if (links.get(key) === link) links.delete(key);
           router.remove(link.exit);
           for (const stop of link.served.splice(0)) stop();
-          reclaim(links, labels, onLink, link);
+          if (!link.replaced) reclaim(links, labels, onLink, link.label ?? link.held, key);
           changed();
         },
       });
@@ -1089,13 +1113,7 @@ export function createLinks({
           link.peer = peer;
           link.browsers = sharedBrowsers(peer, peer.browsers);
           link.mounts = mountList(peer.mounts);
-          if (!seven && Array.isArray(peer.caps) && peer.caps.length) {
-            link.identity = `${link.id ?? key}|${node ?? ''}`;
-            link.base = dnsLabel(peer.host ?? peer.name, new Set());
-            link.wanted = labels.wanted(link.identity, peer.host ?? peer.name);
-            link.label = labels.pick(link.identity, peer.host ?? peer.name, taken());
-            router.add(link.exit);
-          }
+          if (!seven) nameLink(link, peer, node, { links, labels, onLink, router });
           onLink(link, peer);
           changed();
         },
