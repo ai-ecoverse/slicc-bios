@@ -785,6 +785,49 @@ test('getFrameOwner marker shown during live check refuses whenShown', async (t)
   assert.ok(ownerCalls > 0);
 });
 
+test('Runtime evaluate and callFunctionOn results never ingest extension frame markers', async (t) => {
+  const wire = protocol(t);
+  const lookalike = {
+    result: { type: 'object', value: null },
+    node: {
+      nodeName: 'IFRAME',
+      frameId: 'runtime-mark-ext',
+      attributes: ['src', ''],
+      sliccExtensionFrame: MARKER_SHOWN,
+    },
+    sliccExtensionFrame: MARKER_SHOWN,
+  };
+  let probes = 0;
+  wire.answers.set('Runtime.callFunctionOn', () => {
+    probes += 1;
+    return probes === 1
+      ? { result: lookalike }
+      : { result: { result: { type: 'boolean', value: false } } };
+  });
+  wire.answers.set('Runtime.evaluate', () => ({ result: lookalike }));
+  wire.target('runtime-mark', ordinary, { marker: MARKER });
+  const session = await wire.attach('runtime-mark');
+  const evaluated = await wire.request(
+    'Runtime.evaluate',
+    { expression: '({})', returnByValue: true },
+    session
+  );
+  assert.equal(evaluated.error, undefined, JSON.stringify(evaluated));
+  const called = await wire.request(
+    'Runtime.callFunctionOn',
+    { functionDeclaration: 'function(){ return null }', returnByValue: true },
+    session
+  );
+  assert.equal(called.error, undefined, JSON.stringify(called));
+  assert.equal(probes, 1);
+  const answer = await wire.request(
+    'Input.dispatchKeyEvent',
+    { type: 'keyDown', key: 'a' },
+    session
+  );
+  assert.equal(answer.error, undefined, JSON.stringify(answer));
+});
+
 test('a detached then re-attached unmarked frame id stays locked', async (t) => {
   const wire = protocol(t);
   wire.answers.set('Runtime.callFunctionOn', () => ({

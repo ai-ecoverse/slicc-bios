@@ -50,7 +50,7 @@ const PATHS = {
     browserContexts: true,
     chromeUrlsAttach: true,
     extensionWorld: true,
-    extensionFrame: false,
+    extensionFrame: true,
     clientExit: true,
   },
 };
