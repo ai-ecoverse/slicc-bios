@@ -152,7 +152,7 @@ test('seven runs kernel users enforce by default, and the human’s terminal is 
   assert.deepEqual(page.errors, []);
 });
 
-test('enforce: a cone writes its home, is refused in root’s, and sudo asks with once, always and deny', async (t) => {
+test('enforce: a cone writes its home, is refused in root’s, and sudo asks bios’s dialog with once and deny only, and it refuses always', async (t) => {
   const page = await chrome.page(t);
   await bootIn(page, 'enforce');
   await run(
@@ -178,7 +178,7 @@ test('enforce: a cone writes its home, is refused in root’s, and sudo asks wit
   assert.deepEqual(once.requester, { kind: 'user', name: 'cone', where: 'a terminal' });
   assert.equal(once.target, 'root');
   assert.equal(once.cwd, '/tmp');
-  assert.equal(once.always, true);
+  assert.equal(once.always, false);
 
   await run(page, 'clear; sudo -u cone sudo ls -la /root; echo denied=$?');
   await page.until(() => document.querySelector('slicc-app').model.approvals.list().length > 0);
@@ -188,87 +188,59 @@ test('enforce: a cone writes its home, is refused in root’s, and sudo asks wit
   await shows(page, 'denied=1');
 
   await run(page, 'clear; sudo -u cone sudo id -un; echo always=$?');
-  await decide(page, 'always');
-  await shows(page, 'always=0');
-  await run(page, 'clear; sudo -u cone sudo id -un; echo again=$?');
-  await shows(page, 'again=0');
-  assert.deepEqual(
-    await page.evaluate(() => document.querySelector('slicc-app').model.approvals.list()),
-    []
-  );
-
-  await run(page, 'clear; echo x > /tmp/k4x; sudo -u cone sudo cat /tmp/k4x; echo tmp=$?');
-  const [shown] = await page.until(() => {
+  const [plain] = await page.until(() => {
     const list = document.querySelector('slicc-app').model.approvals.list();
     return list.length ? list : null;
   });
-  assert.equal(shown.always, false);
-  await page.evaluate(
-    (id) => document.querySelector('slicc-app').model.approvals.decide(id, 'always'),
-    shown.id
-  );
-  await shows(page, 'tmp=0');
-  await closed(page);
-  await run(page, 'clear; sudo -u cone sudo cat /tmp/k4x; echo tmp2=$?');
-  await decide(page, 'deny');
-  await shows(page, 'tmp2=1');
-  assert.doesNotMatch(await read(page, 'etc/sudoers.d/cone'), /k4x/);
-  assert.deepEqual(page.errors, []);
-});
-
-test('bios#1295: an always decision sent outside the dialog is answered once when secretRules gives once, as for xargs sort, and recorded when it doesn’t, as for xargs cat', async (t) => {
-  const page = await chrome.page(t);
-  await bootIn(page, 'enforce');
-  const verdicts = await page.evaluate(async () => {
-    const ui = new URL(
-      '../node_modules/@ai-ecoverse/slicc-spectrum/dist/slicc-ui.js',
-      location.href
-    );
-    const { secretRules } = await import(ui.href);
-    const { useSecretRules } = await import(new URL('approvals.js', location.href).href);
-    const lines = {
-      '/usr/bin/id -gn': 'xargs sort < /tmp/list',
-      '/usr/bin/id -Gn': 'xargs cat < /tmp/list',
+  assert.equal(plain.always, false);
+  assert.equal('verdict' in plain, false);
+  const buttons = await page.until((id) => {
+    const find = (root) => {
+      const found = root.querySelector('slicc-approvals');
+      if (found) return found;
+      for (const element of root.querySelectorAll('*')) {
+        const inner = element.shadowRoot && find(element.shadowRoot);
+        if (inner) return inner;
+      }
+      return null;
     };
-    useSecretRules((command, cwd) => secretRules(lines[command] ?? command, cwd));
-    return Object.values(lines).map((line) => secretRules(line, '/tmp'));
-  });
-  assert.deepEqual(verdicts, [
-    { certain: null, maybe: null, once: 'xargs sort' },
-    { certain: null, maybe: null, once: null },
+    const dialog = find(document)?.shadowRoot?.querySelector(`dialog[data-approval="${id}"]`);
+    const actions =
+      dialog && [...dialog.querySelectorAll('[data-action]')].map((b) => b.dataset.action);
+    return actions?.includes('once') ? actions : null;
+  }, plain.id);
+  assert.deepEqual(buttons.filter((action) => ['always', 'once', 'deny'].includes(action)).sort(), [
+    'deny',
+    'once',
   ]);
-  const forced = async (command, mark) => {
-    await run(page, `clear; cd /tmp; sudo -u cone sudo ${command}; echo ${mark}=$?`);
-    const [shown] = await page.until(() => {
-      const list = document.querySelector('slicc-app').model.approvals.list();
-      return list.length ? list : null;
-    });
-    assert.equal(shown.command, `/usr/bin/${command}`);
-    await page.evaluate(
-      (id) => document.querySelector('slicc-app').model.approvals.decide(id, 'always'),
-      shown.id
-    );
-    await shows(page, `${mark}=0`);
-    await closed(page);
-    return shown;
-  };
-
-  const sorted = await forced('id -gn', 'sorted');
-  assert.equal(sorted.always, false);
-  assert.doesNotMatch(await read(page, 'etc/sudoers.d/cone'), /id -gn/);
-  await run(page, 'clear; sudo -u cone sudo id -gn; echo again=$?');
+  const forced = await page.evaluate(
+    (id) =>
+      document
+        .querySelector('slicc-app')
+        .model.approvals.decide(id, 'always')
+        .then(
+          () => 'decided',
+          (error) => error.message
+        ),
+    plain.id
+  );
+  assert.match(forced, /Always isn't offered/);
+  assert.deepEqual(
+    await page.evaluate(() =>
+      document
+        .querySelector('slicc-app')
+        .model.approvals.list()
+        .map(({ id }) => id)
+    ),
+    [plain.id]
+  );
+  await decide(page, 'once');
+  await shows(page, 'always=0');
+  await closed(page);
+  await run(page, 'clear; sudo -u cone sudo id -un; echo again=$?');
   await decide(page, 'deny');
   await shows(page, 'again=1');
-
-  const catted = await forced('id -Gn', 'catted');
-  assert.equal(catted.always, true);
-  assert.match(await read(page, 'etc/sudoers.d/cone'), /id -Gn/);
-  await run(page, 'clear; sudo -u cone sudo id -Gn; echo recorded=$?');
-  await shows(page, 'recorded=0');
-  assert.deepEqual(
-    await page.evaluate(() => document.querySelector('slicc-app').model.approvals.list()),
-    []
-  );
+  assert.doesNotMatch(await read(page, 'etc/sudoers.d/cone'), /id -un/);
   assert.deepEqual(page.errors, []);
 });
 

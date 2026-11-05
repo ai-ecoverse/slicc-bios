@@ -2,10 +2,11 @@ import audio from '@ai-ecoverse/slicc-audio/page';
 import capture from '@ai-ecoverse/slicc-capture/page';
 import * as kernelModule from '@ai-ecoverse/slicc-kernel';
 import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
-import { confirm, secretRules, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
+import { confirm, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
 import { sealedLogin, signIn } from './adobe.js';
 import {
   deployed as agentDeployed,
+  judges as agentJudges,
   project as agentProject,
   startable as agentStartable,
   version as agentVersion,
@@ -20,7 +21,7 @@ import {
   useVault,
   whenIdle,
 } from './agent.js';
-import { createApprovals, rootChecked, routeSudo, useSecretRules } from './approvals.js';
+import { createApprovals, routeSudo } from './approvals.js';
 import { createBetas } from './beta.js';
 import { createBrowser } from './browser.js';
 import { browserControl, browserHosts, linkedBrowsers } from './cdp.js';
@@ -356,12 +357,11 @@ reportRepairs(notices);
 reportStopped(notices);
 const registration = await navigator.serviceWorker?.getRegistration();
 if (registration) watchWaiting({ registration, board, notices, reload: () => location.reload() });
-useSecretRules(secretRules);
 const approvals = createApprovals();
 const sudo = routeSudo({
   agent: () => owner,
+  judges: agentJudges,
   fallback: approvals.approve,
-  offered: approvals.offered,
   where: (req) => {
     const device = followerDevice(req.tag);
     const name = device && [...links.links.values()].find((link) => link.id === device)?.peer?.name;
@@ -902,7 +902,6 @@ async function own() {
   useKernelFiles(await kernelFiles(kernel, attachKernel));
   catalogs = loadCatalog();
   void startTools();
-  approvals.verify((req) => rootChecked((argv) => kernel.run(argv, { cwd: '/' }), req));
   const cone = await addCone(kernel);
   coneIds = cone && { uid: cone.uid, gid: cone.gid };
   denials.drain();
