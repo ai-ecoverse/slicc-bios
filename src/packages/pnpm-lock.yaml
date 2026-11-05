@@ -21,8 +21,8 @@ importers:
         specifier: 1.174.0
         version: 1.174.0
       '@ai-ecoverse/slicc-spectrum':
-        specifier: 1.112.0
-        version: 1.112.0
+        specifier: 1.112.1
+        version: 1.112.1
       '@ai-ecoverse/wasi-fnox':
         specifier: 1.43.0-1
         version: 1.43.0-1
@@ -105,8 +105,8 @@ packages:
       webgpu:
         optional: true
 
-  '@ai-ecoverse/slicc-spectrum@1.112.0':
-    resolution: {integrity: sha512-u4Br5BTKACjIamAeOmlhwcBEnca2fFGVEYwiToFnsaY27ENnoAB2aD1n2tTO6Y1CbQLwKbc6j4vwqaxZ4Q1fdA==}
+  '@ai-ecoverse/slicc-spectrum@1.112.1':
+    resolution: {integrity: sha512-yPE4tmN33Yy7AAoSEiQjeXQS9pcfrbpFaQZ1qjhNGlyQQ0DDkOUBYKm7r1qeOi+EsibcXOsknrdfN2s7Zxsmqg==}
     engines: {node: '>=24'}
 
   '@ai-ecoverse/wasi-fnox@1.43.0-1':
@@ -270,7 +270,7 @@ snapshots:
       - utf-8-validate
     optional: true
 
-  '@ai-ecoverse/slicc-spectrum@1.112.0': {}
+  '@ai-ecoverse/slicc-spectrum@1.112.1': {}
 
   '@ai-ecoverse/wasi-fnox@1.43.0-1': {}
 
