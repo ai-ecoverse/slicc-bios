@@ -27,6 +27,7 @@ import { createBrowser } from './browser.js';
 import { browserControl, browserHosts, linkedBrowsers } from './cdp.js';
 import { clipboardHook, clipboardWrite } from './clipboard.js';
 import { denialLog, installCommand, watchProtected } from './denials.js';
+import { profileSchema } from './durable.js';
 import { createExitRouter } from './exits.js';
 import { LINK_PORT, LINK_URL, linkFacade, permitted, trayRequests } from './facade.js';
 import { deviceName, hubClient } from './follow.js';
@@ -65,6 +66,14 @@ import {
 } from './present.js';
 import { installProfile, kernelPorts } from './profile.js';
 import { PYTHON } from './projects.js';
+import {
+  clearRefusal,
+  noteRefusal,
+  offerChatOptions,
+  skipRefusedStart,
+  startKey,
+  wasRefused,
+} from './refused-start.js';
 import { createNotes, createReleases } from './releases.js';
 import { createRemote } from './remote.js';
 import {
@@ -538,7 +547,13 @@ async function installTailnet(report = () => {}) {
 }
 
 let refusal = null;
-let refusedLast = false;
+
+const keyOf = (version) =>
+  startKey({
+    version: version === undefined ? agentVersion : version,
+    recorded,
+    schema: async () => profileSchema(await navigator.storage.getDirectory()),
+  });
 
 async function connectOwner() {
   const { connectAgent } = await loadChat();
@@ -547,7 +562,7 @@ async function connectOwner() {
 
 async function started(chat, lock) {
   if (chat) {
-    refusedLast = false;
+    clearRefusal();
     notices.remove('agent:older');
     startedWith = lock;
     updates.setReady(true);
@@ -557,7 +572,7 @@ async function started(chat, lock) {
   agent = null;
   const refused = refusal;
   refusal = null;
-  refusedLast = Boolean(refused);
+  noteRefusal(refused, refused ? await keyOf() : null);
   if (refused) {
     updates.fail('agent', refused);
     notices.show(
@@ -621,7 +636,7 @@ async function restart() {
   const lock = recorded();
   agent = relaunch(running).then(async (restarted) => started(restarted, await lock));
   if (!(await agent)) {
-    if (refusedLast) return;
+    if (wasRefused()) return;
     updates.fail(
       'agent',
       Object.assign(new Error('the agent did not restart'), {
@@ -702,7 +717,8 @@ function agentReport() {
   };
 }
 
-async function offerChat() {
+async function offerChat(options) {
+  const { auto } = offerChatOptions(options?.auto);
   try {
     const changed = await betas.apply((source) =>
       installAgent(start, { report: agentReport(), refuse, ...source })
@@ -725,6 +741,7 @@ async function offerChat() {
       });
       return;
     }
+    if (skipRefusedStart(changed, await keyOf(at), auto)) return;
     if (!changed) updates.checked('agent', {});
     await startOnce();
   } catch (error) {
@@ -789,7 +806,7 @@ async function check() {
     .catch(() => undefined);
   await checkPackages(() => settling);
   await yours.tidy().catch((error) => console.warn(`your packages: ${error.message}`));
-  await offerChat();
+  await offerChat(offerChatOptions(true));
   await betas.check();
   await retire();
   await updateTailnet();
