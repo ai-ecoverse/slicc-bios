@@ -7,6 +7,7 @@ import { run, summary } from '@ai-ecoverse/slicc-browsers/guard-runner';
 import set from '@ai-ecoverse/slicc-browsers/guard-vectors.json' with { type: 'json' };
 import { boot } from './bios.mjs';
 import { devtools, launch } from './chrome.mjs';
+import { installChromeFrameFacts } from './chrome-frame-facts.mjs';
 import { attachRecorder, attachReport } from './guard-attach-evidence.mjs';
 import { auditForwards } from './guard-forward-audit.mjs';
 import { ALL_TARGETS, groupTargets } from './guard-groups.mjs';
@@ -543,6 +544,10 @@ export async function guardHost(t, path) {
   await ensure();
   let count = 0;
   const unguarded = await unguardedClient(tabs.browser);
+  if (process.env.GUARD_FRAME_DIAG) {
+    installChromeFrameFacts(unguarded);
+    diagUnguarded = unguarded;
+  }
   t.after(() => unguarded.close());
   const clientFactory =
     (path) =>
@@ -667,10 +672,14 @@ const SHA = process.env.GUARD_SHA ?? process.env.GITHUB_SHA;
 export const ROW_MS = process.env.GUARD_FRAME_DIAG ? 60 * 1000 : 3 * 60 * 1000;
 export const SCALE = { lagging: 3 };
 let diagPage;
+let diagUnguarded;
 const dumpFrameDiag = async (label) => {
   if (!process.env.GUARD_FRAME_DIAG) return;
-  await new Promise((resolve) => setTimeout(resolve, 3500));
-  const lines = [...(diagPage?.console ?? [])].filter((line) => line.includes('GUARD-FRAME-DIAG'));
+  await diagUnguarded?.chromeFactsDone?.();
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const lines = [...(diagPage?.console ?? [])].filter(
+    (line) => line.includes('GUARD-FRAME-DIAG') || line.includes('CHROME-FACT')
+  );
   process.stdout.write(`GUARD-FRAME-DIAG-DUMP ${label} count=${lines.length}\n`);
   for (const line of lines) process.stdout.write(`${line}\n`);
 };
