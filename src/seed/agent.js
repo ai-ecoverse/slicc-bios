@@ -121,10 +121,10 @@ export function judges() {
 
 export async function startChat(kernel, { vault = chatVault, requests, ...options } = {}) {
   running = null;
-  await mayStart(await version(), { root: await navigator.storage.getDirectory() });
+  const at = await version();
+  await mayStart(at, { root: await navigator.storage.getDirectory() });
   const fresh = options.fresh || (await outdated());
   const { startAgent } = await loadChat({ ...options, fresh });
-  const at = await version();
   const takes = vault && takesVault(at);
   const started = await startAgent({
     worker: vaultWorker(
