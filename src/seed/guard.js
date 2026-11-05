@@ -38,10 +38,20 @@ const WHEN_SHOWN = new Set(EXTENSION_FRAMES.whenShown);
 const WHILE_PRESENT = new Set(EXTENSION_FRAMES.whilePresent);
 const EXTENSION_SCHEMES = new Set(EXTENSION_FRAMES.schemes);
 let frameDiagSeq = 0;
+let frameDiagT0 = 0;
 const frameDiag = (note, detail = {}) => {
   frameDiagSeq += 1;
-  console.warn(`GUARD-FRAME-DIAG ${JSON.stringify({ seq: frameDiagSeq, note, ...detail })}`);
+  if (!frameDiagT0) frameDiagT0 = Date.now();
+  console.warn(
+    `GUARD-FRAME-DIAG ${JSON.stringify({ seq: frameDiagSeq, t: Date.now() - frameDiagT0, note, ...detail })}`
+  );
 };
+const diagEvidence = (guard, evidence) =>
+  evidence.map((url) => ({
+    url,
+    extensionUrl: guard.extensionUrl(url),
+    foreignExtensionUrl: guard.foreignExtensionUrl(url),
+  }));
 const schemeOf = (url) => {
   try {
     return new URL(url).protocol.slice(0, -1);
@@ -735,6 +745,7 @@ class Guard {
     this.closing = false;
     this.closed = false;
     this.is = protection(own);
+    this.diagOwn = owned(own);
     this.ownUrl = protectedOrigins(catalog.protectedOrigins, owned(own)).url;
     this.ownExtensionOrigins = new Set(
       owned(own)
@@ -742,6 +753,14 @@ class Guard {
         .map((url) => extensionOriginOf(url))
         .filter(Boolean)
     );
+    frameDiag('own', {
+      own: this.diagOwn,
+      ownExtensionOrigins: [...this.ownExtensionOrigins],
+      routeKind: route?.kind ?? null,
+      extensionFrames: this.extensionFrames,
+      sliccExtensionId: globalThis.sliccExtension?.id ?? null,
+      hasSliccExtension: Boolean(globalThis.sliccExtension),
+    });
     this.redact = redacting(this.is);
     this.redirected = new Set();
     this.continued = new Set();
@@ -1768,6 +1787,88 @@ class Guard {
     return false;
   }
 
+  diagTouchOwnerRows(scope, targetId) {
+    const priorOwnersReady = scope.ownersReady;
+    const priorProtectedOwner = scope.protectedOwner;
+    const priorKnownProtected = scope.knownProtectedOwner;
+    this.recordOwner(scope, {
+      nodeName: 'IFRAME',
+      frameId: undefined,
+      attributes: ['id', 'diag-no-frame'],
+    });
+    this.recordOwner(scope, {
+      nodeName: 'IFRAME',
+      frameId: `diag-ext-${targetId}`,
+      attributes: ['src', 'chrome-extension://diag-own/frame.html', 'id', 'slicc-extension-frame'],
+    });
+    scope.attachedFrames.add(`diag-plain-${targetId}`);
+    this.recordOwner(scope, {
+      nodeName: 'IFRAME',
+      frameId: `diag-plain-${targetId}`,
+      attributes: ['src', 'https://ordinary.invalid/plain'],
+      contentDocument: { documentURL: 'https://ordinary.invalid/plain' },
+    });
+    for (const id of [`diag-ext-${targetId}`, `diag-plain-${targetId}`]) {
+      scope.owners.delete(id);
+      scope.remoteOwners.delete(id);
+      scope.extensionOwners.delete(id);
+      scope.frames.delete(id);
+      scope.attachedFrames.delete(id);
+      this.frames.delete(id);
+      this.parents.delete(id);
+    }
+    scope.ownersReady = priorOwnersReady;
+    scope.protectedOwner = priorProtectedOwner;
+    scope.knownProtectedOwner = priorKnownProtected;
+    const attached = `diag-attached-${targetId}`;
+    const placing = this.placing.get(targetId);
+    this.attachScopeFrame({ frameId: attached, parentFrameId: scope.root }, targetId);
+    this.attachScopeFrame(
+      { frameId: `${attached}-stack`, parentFrameId: null, stack: { callFrames: [] } },
+      targetId
+    );
+    this.placing.set(targetId, placing);
+    for (const id of [attached, `${attached}-stack`]) {
+      scope.attachedFrames.delete(id);
+      scope.frames.delete(id);
+      scope.owners.delete(id);
+      this.frames.delete(id);
+      this.parents.delete(id);
+    }
+    this.recordPlacement(targetId, 'DOM.getDocument', { root: null });
+    this.recordPlacement(targetId, 'DOMSnapshot.captureSnapshot', {
+      documents: [],
+      strings: [],
+    });
+    this.scopes.delete('diag-missing-scope');
+    this.recordPlacement('diag-missing-scope', 'DOMSnapshot.captureSnapshot', {});
+    this.scopes.delete('diag-missing-scope');
+    this.recordPlacement('diag-missing-scope', 'DOM.getDocument', { root: { nodeName: 'DIV' } });
+    this.scopes.delete('diag-missing-scope');
+    const heldAttached = scope.attachedFrames;
+    scope.attachedFrames = undefined;
+    this.recordOwners(targetId, null);
+    scope.attachedFrames = heldAttached;
+    this.diagOwnersCall({}, 'diag', targetId, 'DOM.getDocument', {});
+    this.diagOwnersCall(
+      { attachedFrames: new Set() },
+      'diag',
+      targetId,
+      'DOMSnapshot.captureSnapshot',
+      {
+        error: { message: 'diag' },
+      }
+    );
+    this.diagFrameIdentityLog('diag-no-scope', {});
+    this.diagFrameIdentityLog(targetId, {
+      error: { message: 'diag' },
+      result: {
+        result: { value: { harnessId: null, light: [] } },
+        exceptionDetails: { text: 'x' },
+      },
+    });
+  }
+
   diagTouchCoverage(targetId) {
     this.pageLocked(undefined);
     this.pageLocked(targetId, new Set([targetId]));
@@ -1775,6 +1876,7 @@ class Guard {
     this.dumpLockTables('diag-missing-scope', 'touch-no-scope');
     const scope = this.scopes.get(targetId);
     if (!scope) return;
+    this.diagTouchOwnerRows(scope, targetId);
     const priorPrivate = scope.privatePlaced;
     scope.privatePlaced = true;
     this.pageLocked(targetId, new Set(), false);
@@ -1866,6 +1968,48 @@ class Guard {
     this.dumpLockTables(targetId, 'touch');
   }
 
+  diagFrameIdentityLog(targetId, answer = {}) {
+    frameDiag('frame-identity', {
+      targetId,
+      error: answer.error?.message,
+      value: answer.result?.result?.value ?? null,
+      exception: answer.result?.exceptionDetails?.text ?? null,
+      owners: [...(this.scopes.get(targetId)?.owners ?? [])],
+      frames: [...(this.scopes.get(targetId)?.frames ?? [])].map((id) => this.frameDiagSnap(id)),
+    });
+  }
+
+  async diagFrameIdentity(sessionId, targetId) {
+    const expression = `(() => {
+      const light = [...document.querySelectorAll('iframe')].map((f) => ({
+        id: f.id || null,
+        src: f.getAttribute('src'),
+        dataset: { ...f.dataset },
+      }));
+      const host = document.getElementById('slicc-extension-frame-host');
+      const nested = host?.contentDocument
+        ? [...host.contentDocument.querySelectorAll('iframe')].map((f) => ({
+            id: f.id || null,
+            src: f.getAttribute('src'),
+          }))
+        : [];
+      return {
+        harnessId: document.documentElement?.dataset?.sliccHarnessExtension ?? null,
+        light,
+        nestedInHost: nested,
+        hasFrame: Boolean(document.getElementById('slicc-extension-frame')),
+        hasHost: Boolean(host),
+        hasShadowHost: Boolean(document.getElementById('slicc-extension-frame-shadow')),
+      };
+    })()`;
+    const answer = await this.call(
+      'Runtime.evaluate',
+      { expression, returnByValue: true },
+      sessionId
+    );
+    this.diagFrameIdentityLog(targetId, answer);
+  }
+
   dumpLockTables(targetId, reason) {
     const scope = this.scopes.get(targetId);
     if (!scope) {
@@ -1875,15 +2019,21 @@ class Guard {
     const frames = [...(scope.frames ?? [])].map((id) => {
       const url = this.frames.get(id);
       const snap = this.frameDiagSnap(id);
-      const ext =
-        typeof url === 'string' && (url.startsWith('chrome-extension:') || url.startsWith('about:'))
-          ? {
-              extensionUrl: this.extensionUrl(url),
-              foreignExtensionUrl: this.foreignExtensionUrl(url),
-              embeddedExtensionId: this.embeddedExtensionId(id, url, scope, targetId),
-              tabRootFrame: this.tabRootFrame(id, targetId, scope),
-            }
-          : undefined;
+      const interesting =
+        typeof url === 'string' &&
+        (url === '' ||
+          url.startsWith('chrome-extension:') ||
+          url.startsWith('about:') ||
+          scope.attachedFrames?.has(id) ||
+          scope.owners?.has(id));
+      const ext = interesting
+        ? {
+            extensionUrl: this.extensionUrl(url),
+            foreignExtensionUrl: this.foreignExtensionUrl(url),
+            embeddedExtensionId: this.embeddedExtensionId(id, url, scope, targetId),
+            tabRootFrame: this.tabRootFrame(id, targetId, scope),
+          }
+        : undefined;
       return { ...snap, ...ext };
     });
     const ownerOf = (owner) => ({
@@ -2002,8 +2152,22 @@ class Guard {
   recordPlacement(targetId, method, result) {
     if (targetId === undefined) return;
     if (method === 'Page.getFrameTree') this.recordTree(targetId, result?.frameTree);
-    if (method === 'DOM.getDocument') this.recordOwners(targetId, result?.root);
-    if (method === 'DOMSnapshot.captureSnapshot') this.recordSnapshotOwners(targetId, result);
+    if (method === 'DOM.getDocument') {
+      frameDiag('dom-getDocument', {
+        targetId,
+        hasRoot: Boolean(result?.root),
+        attachedFrames: [...(this.scopes.get(targetId)?.attachedFrames ?? [])],
+      });
+      this.recordOwners(targetId, result?.root);
+    }
+    if (method === 'DOMSnapshot.captureSnapshot') {
+      frameDiag('dom-captureSnapshot', {
+        targetId,
+        documents: result?.documents?.length ?? 0,
+        attachedFrames: [...(this.scopes.get(targetId)?.attachedFrames ?? [])],
+      });
+      this.recordSnapshotOwners(targetId, result);
+    }
   }
 
   recordSnapshotOwners(targetId, snapshot) {
@@ -2137,6 +2301,13 @@ class Guard {
     scope.remoteBackendOwners = new Map();
     scope.extensionOwners = new Set();
     scope.privatePlaced = false;
+    frameDiag('recordOwners-start', {
+      targetId,
+      hasRoot: Boolean(root),
+      attachedFrames: [...(scope.attachedFrames ?? [])],
+      own: this.diagOwn,
+      ownExtensionOrigins: [...this.ownExtensionOrigins],
+    });
     const nodes = [root];
     while (nodes.length) {
       const node = nodes.pop();
@@ -2151,11 +2322,36 @@ class Guard {
     }
     for (const id of former)
       if (!scope.owners.has(id) && !scope.treeFrames?.has(id)) scope.frames.delete(id);
+    frameDiag('recordOwners-end', {
+      targetId,
+      owners: [...scope.owners],
+      remoteOwners: [...scope.remoteOwners],
+      extensionOwners: [...scope.extensionOwners],
+      ownersReady: scope.ownersReady,
+      protectedOwner: scope.protectedOwner,
+    });
     this.stopCasts();
   }
 
   recordOwner(scope, node) {
     if (node.nodeName !== 'IFRAME' && node.nodeName !== 'FRAME') return;
+    const source = (node.attributes ?? []).indexOf('src');
+    const evidence = [
+      source < 0 ? undefined : node.attributes[source + 1],
+      node.contentDocument?.documentURL,
+    ];
+    frameDiag('recordOwner', {
+      nodeName: node.nodeName,
+      frameId: node.frameId ?? null,
+      attributes: node.attributes ?? null,
+      hasContentDocument: Boolean(node.contentDocument),
+      evidence,
+      evidenceCheck: diagEvidence(this, evidence),
+      own: this.diagOwn,
+      ownExtensionOrigins: [...this.ownExtensionOrigins],
+      sliccExtensionId: globalThis.sliccExtension?.id ?? null,
+      matched: evidence.some((url) => this.extensionUrl(url)),
+    });
     if (!node.frameId) {
       scope.ownersReady = false;
       return;
@@ -2165,11 +2361,6 @@ class Guard {
     scope.frames.add(node.frameId);
     if (!this.frames.has(node.frameId)) this.frames.set(node.frameId, '');
     if (!this.parents.has(node.frameId)) this.parents.set(node.frameId, scope.root);
-    const source = (node.attributes ?? []).indexOf('src');
-    const evidence = [
-      source < 0 ? undefined : node.attributes[source + 1],
-      node.contentDocument?.documentURL,
-    ];
     if (evidence.some((url) => this.extensionUrl(url))) {
       scope.extensionOwners.add(node.frameId);
       if (typeof evidence[0] === 'string' && evidence[0])
@@ -2261,14 +2452,7 @@ class Guard {
     const revision = this.revisions.get(targetId);
     const enabled = await this.call('Page.enable', {}, sessionId, deadline);
     await this.call('Page.getFrameTree', {}, sessionId, deadline);
-    const owners = this.extensionFrames
-      ? await this.call(
-          'DOMSnapshot.captureSnapshot',
-          { computedStyles: [], includeDOMRects: false, includePaintOrder: false },
-          sessionId,
-          deadline
-        )
-      : await this.call('DOM.getDocument', { depth: -1, pierce: true }, sessionId);
+    const owners = await this.placeOwners(targetId, sessionId, deadline);
     const disabled = this.extensionFrames ? {} : await this.call('DOM.disable', {}, sessionId);
     const cleanupFailed =
       disabled.error &&
@@ -2423,15 +2607,61 @@ class Guard {
     if (session) this.placing.set(targetId, this.place(targetId, session));
   }
 
+  attachScopeFrame(params, targetId) {
+    frameDiag('frameAttached', {
+      targetId,
+      frameId: params.frameId,
+      parentFrameId: params.parentFrameId ?? null,
+      stack: params.stack ?? null,
+      priorUrl: this.frames.get(params.frameId) ?? null,
+    });
+    const scope = this.scope(targetId);
+    scope.frames.add(params.frameId);
+    scope.owners.add(params.frameId);
+    scope.attachedFrames.add(params.frameId);
+    this.frames.set(params.frameId, '');
+    if (params.parentFrameId) this.parents.set(params.frameId, params.parentFrameId);
+    this.refresh(targetId);
+  }
+
+  diagOwnersCall(scope, sessionId, targetId, method, owners) {
+    frameDiag('owners-call-start', {
+      sessionId,
+      targetId,
+      method,
+      pierce: method === 'DOM.getDocument',
+      attachedFrames: [...(scope.attachedFrames ?? [])],
+    });
+    frameDiag('owners-call-end', {
+      sessionId,
+      targetId,
+      method,
+      error: owners?.error?.message,
+      attachedFrames: [...(scope.attachedFrames ?? [])],
+      owners: [...(scope.owners ?? [])],
+      extensionOwners: [...(scope.extensionOwners ?? [])],
+    });
+  }
+
+  async placeOwners(targetId, sessionId, deadline) {
+    const method = this.extensionFrames ? 'DOMSnapshot.captureSnapshot' : 'DOM.getDocument';
+    const scope = this.scope(targetId);
+    const owners = this.extensionFrames
+      ? await this.call(
+          'DOMSnapshot.captureSnapshot',
+          { computedStyles: [], includeDOMRects: false, includePaintOrder: false },
+          sessionId,
+          deadline
+        )
+      : await this.call('DOM.getDocument', { depth: -1, pierce: true }, sessionId);
+    this.diagOwnersCall(scope, sessionId, targetId, method, owners);
+    await this.diagFrameIdentity(sessionId, targetId);
+    return owners;
+  }
+
   scopeFrames({ method, params = {} }, targetId) {
     if (method === 'Page.frameAttached') {
-      const scope = this.scope(targetId);
-      scope.frames.add(params.frameId);
-      scope.owners.add(params.frameId);
-      scope.attachedFrames.add(params.frameId);
-      this.frames.set(params.frameId, '');
-      if (params.parentFrameId) this.parents.set(params.frameId, params.parentFrameId);
-      this.refresh(targetId);
+      this.attachScopeFrame(params, targetId);
     }
     if (method === 'Page.frameNavigated' && params.frame)
       this.scopeNavigated(params.frame, targetId);
