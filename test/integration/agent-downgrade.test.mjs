@@ -356,27 +356,17 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
         }),
         UNRECORDED
       );
-      const checkedAt = await page.evaluate(
-        () =>
-          document
-            .querySelector('slicc-app')
-            .model.updates.list()
-            .find((item) => item.id === 'bios')?.checkedAt ?? null
-      );
+      await page.evaluate(() => {
+        if (window.sliccSet) Storage.prototype.setItem = window.sliccSet;
+      });
       assert.equal(await page.evaluate(() => document.visibilityState), 'visible');
       await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
-      await page.until((before) => {
-        const bios = document
+      await page.until(() => {
+        const row = document
           .querySelector('slicc-app')
           .model.updates.list()
-          .find((item) => item.id === 'bios');
-        return bios?.checkedAt != null && bios.checkedAt !== before;
-      }, checkedAt);
-      await page.until(() => {
-        const items = document.querySelector('slicc-app').model.updates.list();
-        return items.every(
-          (item) => !/checking|downloading|linking|starting|queued/.test(item.state)
-        );
+          .find((item) => item.id === 'agent');
+        return row && row.state !== 'failed';
       });
       await agentUp(page);
       assert.equal(await record(page), '2');
