@@ -184,7 +184,6 @@ await step('seed', async () => {
     'profile.js',
     'redirects.js',
     'refused-start.js',
-    'auto-offer.js',
     'releases.js',
     'remote.js',
     'requests.js',

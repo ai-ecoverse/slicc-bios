@@ -27,9 +27,8 @@ export function clearRefusal() {
 }
 
 export function noteRefusal(refused, key = null) {
-  const keep = refused?.plain === OLDER;
-  refusedLast = Boolean(keep);
-  refusedFor = keep ? key : null;
+  refusedLast = Boolean(refused);
+  refusedFor = refused?.plain === OLDER ? key : null;
 }
 
 export function wasRefused() {
@@ -37,6 +36,10 @@ export function wasRefused() {
 }
 
 export function skipRefusedStart(changed, key, auto = false) {
-  if (!auto || changed || !refusedLast) return false;
+  if (!auto || changed || !refusedFor) return false;
   return sameStart(refusedFor, key);
+}
+
+export function offerChatOptions(auto = false) {
+  return { auto: Boolean(auto) };
 }

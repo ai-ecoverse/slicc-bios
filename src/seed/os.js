@@ -22,7 +22,6 @@ import {
   whenIdle,
 } from './agent.js';
 import { createApprovals, routeSudo } from './approvals.js';
-import { offerChatOptions, skipOfferStart } from './auto-offer.js';
 import { createBetas } from './beta.js';
 import { createBrowser } from './browser.js';
 import { browserControl, browserHosts, linkedBrowsers } from './cdp.js';
@@ -67,7 +66,14 @@ import {
 } from './present.js';
 import { installProfile, kernelPorts } from './profile.js';
 import { PYTHON } from './projects.js';
-import { clearRefusal, noteRefusal, startKey, wasRefused } from './refused-start.js';
+import {
+  clearRefusal,
+  noteRefusal,
+  offerChatOptions,
+  skipRefusedStart,
+  startKey,
+  wasRefused,
+} from './refused-start.js';
 import { createNotes, createReleases } from './releases.js';
 import { createRemote } from './remote.js';
 import {
@@ -735,7 +741,7 @@ async function offerChat(options) {
       });
       return;
     }
-    if (skipOfferStart(changed, await keyOf(at), { auto })) return;
+    if (skipRefusedStart(changed, await keyOf(at), auto)) return;
     if (!changed) updates.checked('agent', {});
     await startOnce();
   } catch (error) {
