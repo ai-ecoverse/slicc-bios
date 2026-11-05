@@ -60,16 +60,21 @@ const caret = (clause) => {
 
 export function satisfies(version, range) {
   return range
-    .trim()
-    .split(/\s+/)
-    .flatMap(caret)
-    .every((clause) => {
-      const match = /^(>=|<=|>|<|=)?(\d+(?:\.\d+){0,2}(?:-[\w.]+)?)$/.exec(clause);
-      assert.ok(match, `unsupported range clause "${clause}" in "${range}"`);
-      const [, op = '=', bound] = match;
-      const d = compare(version, bound);
-      return { '>=': d >= 0, '<=': d <= 0, '>': d > 0, '<': d < 0, '=': d === 0 }[op];
-    });
+    .split('||')
+    .map((alternative) =>
+      alternative
+        .trim()
+        .split(/\s+/)
+        .flatMap(caret)
+        .every((clause) => {
+          const match = /^(>=|<=|>|<|=)?(\d+(?:\.\d+){0,2}(?:-[\w.]+)?)$/.exec(clause);
+          assert.ok(match, `unsupported range clause "${clause}" in "${range}"`);
+          const [, op = '=', bound] = match;
+          const d = compare(version, bound);
+          return { '>=': d >= 0, '<=': d <= 0, '>': d > 0, '<': d < 0, '=': d === 0 }[op];
+        })
+    )
+    .some(Boolean);
 }
 
 test('the pinned slicc-kernel satisfies every pinned package’s engines and peers', async () => {
@@ -204,6 +209,12 @@ test('the range check reads the forms the packages use', () => {
   assert.equal(satisfies('1.48.0-rc.2', '>=1.48.0-rc.1'), true);
   assert.equal(satisfies('1.48.0-rc.1', '1.48.0-rc.1'), true);
   assert.throws(() => satisfies('1.0.0', '~1.0.0'), /unsupported range clause/);
+  assert.equal(satisfies('1.112.1', '^1.112.0 || ^2.0.0'), true);
+  assert.equal(satisfies('2.0.0', '^1.112.0 || ^2.0.0'), true);
+  assert.equal(satisfies('1.111.0', '^1.112.0 || ^2.0.0'), false);
+  assert.equal(satisfies('3.0.0', '^1.112.0 || ^2.0.0'), false);
+  assert.throws(() => satisfies('1.0.0', '^1.0.0 || ~1.0.0'), /unsupported range clause/);
+  assert.throws(() => satisfies('1.0.0', '^1.0.0 ||'), /unsupported range clause/);
 });
 
 const GATED =
