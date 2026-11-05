@@ -309,7 +309,7 @@ test('a pending foreign extension OOPIF does not lock its parent tab', async (t)
   assert.equal(shot.error, undefined, JSON.stringify(shot));
 });
 
-test('a failed foreign extension OOPIF locks its parent tab', async (t) => {
+test('a failed foreign extension OOPIF does not lock its parent tab', async (t) => {
   const wire = protocol(t);
   wire.answers.set('Runtime.callFunctionOn', () => ({
     result: { result: { type: 'boolean', value: false } },
@@ -318,25 +318,18 @@ test('a failed foreign extension OOPIF locks its parent tab', async (t) => {
     oopif: true,
     frameId: 'oopif-failed-frame',
   });
-  wire.answers.set('DOM.getDocument', (message) => {
+  wire.answers.set('DOMSnapshot.captureSnapshot', (message) => {
     if (message.sessionId === 'guard-oopif-failed-frame')
       return { error: { code: -32000, message: 'owners failed' } };
-    const targetId = wire.sessions.get(message.sessionId);
-    return {
-      result: {
-        root: {
-          nodeId: 1,
-          nodeName: '#document',
-          children: wire.targets.get(targetId).owners ?? [],
-        },
-      },
-    };
+    return { result: { documents: [], strings: [] } };
   });
   const session = await wire.attach('oopif-failed');
   await flush();
   await flush();
   const document = await wire.request('DOM.getDocument', { depth: -1 }, session);
-  assert.equal(document.error?.message, PROTECTED);
+  assert.equal(document.error, undefined, JSON.stringify(document));
+  const snap = await wire.request('Page.captureSnapshot', {}, session);
+  assert.equal(snap.error?.message, PRESENT_REFUSAL);
 });
 
 test('an unready ordinary iframe OOPIF locks its parent tab', async (t) => {
