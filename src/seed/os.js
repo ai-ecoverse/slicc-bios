@@ -22,6 +22,7 @@ import {
   whenIdle,
 } from './agent.js';
 import { createApprovals, routeSudo } from './approvals.js';
+import { offerChatOptions, skipOfferStart } from './auto-offer.js';
 import { createBetas } from './beta.js';
 import { createBrowser } from './browser.js';
 import { browserControl, browserHosts, linkedBrowsers } from './cdp.js';
@@ -66,13 +67,7 @@ import {
 } from './present.js';
 import { installProfile, kernelPorts } from './profile.js';
 import { PYTHON } from './projects.js';
-import {
-  clearRefusal,
-  noteRefusal,
-  skipRefusedStart,
-  startKey,
-  wasRefused,
-} from './refused-start.js';
+import { clearRefusal, noteRefusal, startKey, wasRefused } from './refused-start.js';
 import { createNotes, createReleases } from './releases.js';
 import { createRemote } from './remote.js';
 import {
@@ -716,7 +711,8 @@ function agentReport() {
   };
 }
 
-async function offerChat() {
+async function offerChat(options) {
+  const { auto } = offerChatOptions(options?.auto);
   try {
     const changed = await betas.apply((source) =>
       installAgent(start, { report: agentReport(), refuse, ...source })
@@ -739,7 +735,7 @@ async function offerChat() {
       });
       return;
     }
-    if (skipRefusedStart(changed, await keyOf(at))) return;
+    if (skipOfferStart(changed, await keyOf(at), { auto })) return;
     if (!changed) updates.checked('agent', {});
     await startOnce();
   } catch (error) {
@@ -804,7 +800,7 @@ async function check() {
     .catch(() => undefined);
   await checkPackages(() => settling);
   await yours.tidy().catch((error) => console.warn(`your packages: ${error.message}`));
-  await offerChat();
+  await offerChat(offerChatOptions(true));
   await betas.check();
   await retire();
   await updateTailnet();
