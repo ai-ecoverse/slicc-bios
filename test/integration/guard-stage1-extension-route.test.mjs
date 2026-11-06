@@ -55,8 +55,8 @@ async function guarded(seven, privateFrames) {
     const waitFor = async (method, sessionId) => {
       const deadline = Date.now() + 60000;
       while (Date.now() < deadline) {
-        const found = events.find((e) => e.method === method && e.sessionId === sessionId);
-        if (found) return found;
+        const at = events.findIndex((e) => e.method === method && e.sessionId === sessionId);
+        if (at >= 0) return events.splice(at, 1)[0];
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
       return null;
@@ -122,24 +122,52 @@ test(`Stage 1 over the real extension ${CURRENT_EXTENSION.version}`, {
         `the page never finished loading: ${JSON.stringify(opened.state)}`
       );
       const steps = await seven.evaluate(async (sessionId) => {
-        const { send, waitFor } = globalThis.stage1;
+        const { send, waitFor, events } = globalThis.stage1;
+        events.length = 0;
         const enable = await send('Debugger.enable', {}, sessionId);
+        if (enable.error) return { phase: 'enable', enable };
         const breakpoint = await send(
           'Debugger.setInstrumentationBreakpoint',
           { instrumentation: 'beforeScriptExecution' },
           sessionId
         );
-        const reload = await send('Page.reload', {}, sessionId);
+        if (breakpoint.error) return { phase: 'breakpoint', enable, breakpoint };
+        const pauseEval = send(
+          'Runtime.evaluate',
+          { expression: '1 + 1', returnByValue: true },
+          sessionId
+        );
         const paused = await waitFor('Debugger.paused', sessionId);
+        if (!paused) {
+          const evaluated = await Promise.race([
+            pauseEval,
+            new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), 1000)),
+          ]);
+          return { phase: 'paused', enable, breakpoint, paused, evaluated };
+        }
         const resume = await send('Debugger.resume', {}, sessionId);
-        return { enable, breakpoint, reload, paused, resume };
+        const evaluated = await pauseEval;
+        return { phase: 'done', enable, breakpoint, paused, resume, evaluated };
       }, opened.sessionId);
+      process.stdout.write(
+        `FACT stage1.steps ${JSON.stringify({
+          phase: steps.phase,
+          enable: steps.enable?.error?.message ?? null,
+          breakpoint: steps.breakpoint?.error?.message ?? null,
+          paused: Boolean(steps.paused),
+          resume: steps.resume?.error?.message ?? null,
+          evaluated:
+            steps.evaluated?.error?.message ?? steps.evaluated?.result?.result?.value ?? null,
+        })}\n`
+      );
+      assert.equal(steps.phase, 'done', JSON.stringify(steps));
       assert.equal(steps.enable.error, undefined, JSON.stringify(steps.enable));
       assert.equal(steps.breakpoint.error, undefined, JSON.stringify(steps.breakpoint));
-      assert.equal(steps.reload.error, undefined, JSON.stringify(steps.reload));
-      assert.ok(steps.paused, 'no Debugger.paused reached the client after the reload');
+      assert.ok(steps.paused, 'no Debugger.paused reached the client');
       assert.ok(steps.paused.params.callFrames.length >= 1, JSON.stringify(steps.paused));
       assert.equal(steps.resume.error, undefined, JSON.stringify(steps.resume));
+      assert.equal(steps.evaluated.error, undefined, JSON.stringify(steps.evaluated));
+      assert.equal(steps.evaluated.result?.result?.value, 2, JSON.stringify(steps.evaluated));
       const armed = await seven.evaluate(async (sessionId) => {
         const { send } = globalThis.stage1;
         const deadline = Date.now() + 30000;
