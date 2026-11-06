@@ -4767,7 +4767,11 @@ class Guard {
   }
 
   async shotAnswer(message, was) {
-    if (await this.keptShot(was)) return this.deliver(message);
+    if (await this.keptShot(was)) {
+      if (await this.extensionGate('Page.captureScreenshot', was.sessionId))
+        return this.refuse(was, SHOWN_REFUSAL);
+      return this.deliver(message);
+    }
     if (this.sealed(was) || !(await this.openShot(was))) return this.refuse(was);
     if (await this.extensionGate('Page.captureScreenshot', was.sessionId))
       return this.refuse(was, SHOWN_REFUSAL);

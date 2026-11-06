@@ -1094,3 +1094,41 @@ test('frameNavigated records a chrome-error frame with a protected unreachable u
   const tree = await wire.request('Page.getFrameTree', {}, session);
   assert.ok(tree.result || tree.error, JSON.stringify(tree));
 });
+
+test('all-blank kept shot refuses when a marked frame becomes shown before the answer', async (t) => {
+  const wire = protocol(t);
+  let shown = false;
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: shown } },
+  }));
+  wire.answers.set('Page.captureScreenshot', () => {
+    shown = true;
+    return { result: { data: 'c3ludGhldGlj' } };
+  });
+  wire.target('blank-shown', 'about:blank', { marker: MARKER_HIDDEN });
+  const session = await wire.attach('blank-shown');
+  const answer = await wire.request('Page.captureScreenshot', {}, session);
+  assert.equal(answer.error?.message, SHOWN_REFUSAL);
+  assert.equal(answer.result?.data, undefined);
+});
+
+test('all-blank kept shot delivers when a marked frame stays hidden and unfocused', async (t) => {
+  const wire = protocol(t);
+  wire.answers.set('Runtime.callFunctionOn', () => ({
+    result: { result: { type: 'boolean', value: false } },
+  }));
+  wire.target('blank-hidden', 'about:blank', { marker: MARKER_HIDDEN });
+  const session = await wire.attach('blank-hidden');
+  const answer = await wire.request('Page.captureScreenshot', {}, session);
+  assert.equal(answer.error, undefined, JSON.stringify(answer));
+  assert.equal(answer.result?.data, 'c3ludGhldGlj');
+});
+
+test('all-blank kept shot without a marker stays delivered', async (t) => {
+  const wire = protocol(t);
+  wire.target('blank-plain', 'about:blank');
+  const session = await wire.attach('blank-plain');
+  const answer = await wire.request('Page.captureScreenshot', {}, session);
+  assert.equal(answer.error, undefined, JSON.stringify(answer));
+  assert.equal(answer.result?.data, 'c3ludGhldGlj');
+});
