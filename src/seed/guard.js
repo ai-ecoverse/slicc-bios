@@ -31,6 +31,125 @@ export const PROFILED =
 export const DEBUGGER =
   'slicc: refused: breakpoints could run in seven’s pages or the vault, so the guard doesn’t offer the Debugger domains';
 
+export function lockRefusalFact(branch, detail) {
+  const payload = { branch, ...detail };
+  console.warn(`FACT refuseBranch ${JSON.stringify(payload)}`);
+  return payload;
+}
+
+export function classifyPageLock({
+  targetId,
+  scope,
+  frames = [],
+  scopeReady = false,
+  pageLocked = false,
+  locked = false,
+  isProtectedUrl = () => false,
+}) {
+  if (!targetId) return 'no-target';
+  if (!scope) return 'no-scope';
+  if (!scopeReady) {
+    if (scope.failed) return 'scopeReady-failed';
+    if (scope.pending) return 'scopeReady-pending';
+    if (!scope.tree) return 'scopeReady-no-tree';
+    return 'scopeReady-false';
+  }
+  if (scope.privatePlaced) return pageLocked ? 'privatePlaced-view' : 'privatePlaced-open';
+  if ((scope.remoteBackendOwnersSize || 0) > 0) return 'remoteBackendOwners';
+  for (const frame of frames) {
+    const url = frame ? frame.url : undefined;
+    if (url === undefined || url === '') return 'unavailable-frame';
+    if (isProtectedUrl(url)) return 'protected-frame-url';
+  }
+  if (pageLocked) return 'pageLocked-other';
+  if (locked) return 'locked-ancestor';
+  return 'unlocked';
+}
+
+export function scopeFactView(scope) {
+  if (!scope) return null;
+  const remote = scope.remoteBackendOwners;
+  return {
+    ready: Boolean(scope.ready),
+    pending: scope.pending || 0,
+    failed: Boolean(scope.failed),
+    tree: Boolean(scope.tree),
+    privatePlaced: scope.privatePlaced ?? null,
+    remoteBackendOwnersSize: remote ? remote.size : 0,
+    remoteOwners: [...(scope.remoteOwners || [])],
+    remoteBackendOwnerIds: [...(remote ? remote.keys() : [])],
+    owners: [...(scope.owners || [])],
+    treeFrames: [...(scope.treeFrames || [])],
+    root: scope.root || null,
+    loader: scope.loader || null,
+    parent: scope.parent || null,
+    ownersReady: Boolean(scope.ownersReady),
+    setup: Boolean(scope.setup),
+  };
+}
+
+export function frameFactView(frameIds, frames, parents) {
+  const out = [];
+  for (const frameId of frameIds) {
+    out.push({
+      id: frameId,
+      url: frames.get(frameId) || null,
+      parent: parents.get(frameId) || null,
+      missing: !frames.has(frameId),
+    });
+  }
+  return out;
+}
+
+export function describeRefuseFact(state) {
+  const {
+    targetId = null,
+    sessionId = null,
+    method = null,
+    refusal = null,
+    frames = [],
+    scope = null,
+    scopeReady = false,
+    pageLocked = false,
+    locked = false,
+    holding = false,
+    debuggerLease = null,
+    extensionFrames = false,
+    hasPrivateFrames = false,
+    placing = false,
+    guardedTarget = false,
+    targetUrl = null,
+    isProtectedUrl = () => false,
+  } = state;
+  const classified = classifyPageLock({
+    targetId,
+    scope,
+    frames,
+    scopeReady,
+    pageLocked,
+    locked,
+    isProtectedUrl,
+  });
+  return lockRefusalFact('refuse', {
+    classified,
+    method,
+    refusal,
+    sessionId,
+    targetId,
+    scope,
+    frames,
+    holding,
+    pageLocked,
+    locked,
+    debuggerLease,
+    extensionFrames,
+    hasPrivateFrames,
+    placing,
+    guardedTarget,
+    targetUrl,
+  });
+}
+
 const EXTENSION_FRAMES = catalog.protectedOrigins.extensionFrames;
 export const SHOWN_REFUSAL = EXTENSION_FRAMES.shownRefusal;
 export const PRESENT_REFUSAL = EXTENSION_FRAMES.presentRefusal;
@@ -1008,6 +1127,36 @@ class Guard {
     return work;
   }
 
+  refuseDebuggerFact(sessionId, method, message) {
+    const targetId = this.scopeTarget(sessionId);
+    const scope = this.scopes.get(targetId);
+    const frames = frameFactView(
+      scope ? this.relatedFrames(scope.frames) : [],
+      this.frames,
+      this.parents
+    );
+    const target = this.targets.get(targetId);
+    describeRefuseFact({
+      targetId: targetId || null,
+      sessionId: sessionId || null,
+      method,
+      refusal: message,
+      frames,
+      scope: scopeFactView(scope),
+      scopeReady: Boolean(targetId && this.scopeReady(targetId, scope)),
+      pageLocked: Boolean(targetId && this.pageLocked(targetId)),
+      locked: this.locked(sessionId),
+      holding: Boolean(targetId && this.holding(targetId)),
+      debuggerLease: this.debuggerLeases.get(targetId)?.state || null,
+      extensionFrames: Boolean(this.extensionFrames),
+      hasPrivateFrames: typeof this.privateFrames === 'function',
+      placing: Boolean(targetId && this.placing.has(targetId)),
+      guardedTarget: Boolean(target?.guarded),
+      targetUrl: target?.url || null,
+      isProtectedUrl: (url) => this.is.url(url),
+    });
+  }
+
   refuse(command, message = PROTECTED, release = true) {
     if (this.finished.has(command)) return;
     this.finished.add(command);
@@ -1015,7 +1164,9 @@ class Guard {
     this.blankReads.delete(key);
     if (release && this.commands.get(key) === command) this.commands.delete(key);
     this.pendingContent.delete(command);
-    const { id, sessionId } = command;
+    const { id, sessionId, method } = command;
+    if (typeof method === 'string' && method.startsWith('Debugger.'))
+      this.refuseDebuggerFact(sessionId, method, message);
     this.deliver(
       { id, ...(sessionId ? { sessionId } : {}), error: { code: -32000, message } },
       release && this.asked.get(key) !== command && !this.answering.has(command)
