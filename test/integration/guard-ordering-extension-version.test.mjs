@@ -86,7 +86,10 @@ for (const [kind, version] of [
       };
     });
     connection.send(JSON.stringify({ id: 1, method: 'Browser.getVersion' }));
-    assert.deepEqual((await answer).result, { product: 'Chrome/synthetic' });
+    assert.deepEqual((await answer).result, {
+      product: 'Chrome/synthetic',
+      slicc: { route: 'extension' },
+    });
     assert.ok(calls.some((call) => call.method === 'Browser.getVersion'));
   });
 }
