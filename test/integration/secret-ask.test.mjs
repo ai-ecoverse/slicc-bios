@@ -202,7 +202,7 @@ test('an agent’s ask reaches the vault with who asks and where, lists as a sec
   const answer = await page.evaluate((id) => globalThis.answerOf(id), id);
   assert.equal(answer.reply.v, 1);
   assert.equal(answer.reply.state, 'done');
-  assert.equal(answer.reply.record, 'TIDE_TOKEN');
+  assert.equal(answer.reply.record, 'inert');
   assert.match(answer.reply.placeholder, /^fnox_proxy_/);
   assert.equal(answer.reply.value, value);
   await listed(page, 0);
@@ -273,7 +273,7 @@ test('Deny on a secret approval cancels it in the vault, and the same session’
     ask({ ...terminal, tag: '{"kind":"user","where":"terminal:tab-2"}' }, 'HARBOR_API_KEY')
   );
   assert.equal(known.reply.state, 'done');
-  assert.equal(known.reply.record, 'HARBOR_API_KEY');
+  assert.equal(known.reply.record, 'inert');
   assert.equal(known.reply.value, undefined);
   assert.deepEqual(page.errors, []);
 });

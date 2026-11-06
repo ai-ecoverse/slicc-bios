@@ -128,11 +128,11 @@ asking.onmessage = ({ data }) => {
     const record = keep({ name: ask.view.name, value: data.value, source: 'settings' });
     changed();
     log({ role: 'value', op: 'sealed', request: data.request, name: record.name });
-    return endAsk(ask, 'done', { placeholder: record.placeholder, record: record.name, ...(ask.view.reveal ? { value: record.value } : {}) });
+    return endAsk(ask, 'done', { placeholder: record.placeholder, record: 'inert', ...(ask.view.reveal ? { value: record.value } : {}) });
   }
   const record = records.get(key('secret', ask.view.name));
   log({ role: 'value', op: 'allowed', request: data.request, name: record.name });
-  endAsk(ask, 'done', { placeholder: record.placeholder, record: record.name, value: record.value });
+  endAsk(ask, 'done', { placeholder: record.placeholder, record: 'inert', value: record.value });
 };
 const ask = (port, id, req, stamp) => {
   const requester = req.requester ?? {};
@@ -142,7 +142,7 @@ const ask = (port, id, req, stamp) => {
   if ([...asks.values()].some((each) => each.view.uid === stamp.uid)) return reply({ error: { code: 'EAGAIN', message: 'another request is pending' } });
   const record = records.get(key('secret', req.name));
   const live = record && !record.removedAt;
-  if (live && !req.reveal) return reply({ state: 'done', placeholder: record.placeholder, record: record.name });
+  if (live && !req.reveal) return reply({ state: 'done', placeholder: record.placeholder, record: 'inert' });
   const request = 'ask-' + String(++askSerial);
   const now = Date.now();
   const view = { id: request, kind: 'ask', name: req.name, ...(req.prompt ? { prompt: req.prompt } : {}), mode: live ? 'reveal' : 'enter', reveal: req.reveal === true, requester, uid: stamp.uid, tag: stamp.tag ?? null, createdAt: now, expiresAt: now + 300000 };
