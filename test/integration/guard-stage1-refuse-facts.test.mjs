@@ -141,7 +141,7 @@ async function probePage(seven, url, { waitMs = 0, label = 'row' } = {}) {
   );
 }
 
-test(`FACT2 real-extension ${CURRENT_EXTENSION.version} placement owners timing`, {
+test(`FACT3 real-extension ${CURRENT_EXTENSION.version} place events and nodes-shape`, {
   timeout: 15 * 60 * 1000,
 }, async (t) => {
   const real = await realExtension({
@@ -166,23 +166,7 @@ test(`FACT2 real-extension ${CURRENT_EXTENSION.version} placement owners timing`
   process.stdout.write(
     `FACT scenario ${JSON.stringify({ tag: first.tag, step: first.step, url: first.url, targetId: first.targetId })}\n`
   );
-  answerFact('immediate.Page.enable', first.page);
-  answerFact('immediate.Runtime.enable', first.runtime);
-  answerFact('immediate.Page.getFrameTree', first.tree);
-  answerFact('immediate.Runtime.evaluate', first.state);
-  answerFact('immediate.DOM.getDocument', first.document);
-  answerFact('immediate.Target.getTargets', first.targets);
-  answerFact('immediate.Target.getTargetInfo', first.info);
   answerFact('immediate.Debugger.enable', first.enable);
-
-  const beforeSecond = (seven.console ?? []).length;
-  const second = await probePage(seven, target, { label: 'second-create' });
-  for (const line of (seven.console ?? []).slice(beforeSecond)) printFact(line);
-  process.stdout.write(
-    `FACT scenario ${JSON.stringify({ tag: second.tag, step: second.step, url: second.url, targetId: second.targetId })}\n`
-  );
-  answerFact('second.DOM.getDocument', second.document);
-  answerFact('second.Debugger.enable', second.enable);
 
   const beforeSettle = (seven.console ?? []).length;
   const settled = await probePage(seven, target, { waitMs: 3000, label: 'settle-3s' });
@@ -190,13 +174,24 @@ test(`FACT2 real-extension ${CURRENT_EXTENSION.version} placement owners timing`
   process.stdout.write(
     `FACT scenario ${JSON.stringify({ tag: settled.tag, step: settled.step, url: settled.url, targetId: settled.targetId, waitMs: settled.waitMs })}\n`
   );
-  answerFact('settle3s.DOM.getDocument', settled.document);
   answerFact('settle3s.Debugger.enable', settled.enable);
 
+  const beforeLong = (seven.console ?? []).length;
+  const longSettle = await probePage(seven, target, { waitMs: 10000, label: 'settle-10s' });
+  for (const line of (seven.console ?? []).slice(beforeLong)) printFact(line);
+  process.stdout.write(
+    `FACT scenario ${JSON.stringify({ tag: longSettle.tag, step: longSettle.step, url: longSettle.url, targetId: longSettle.targetId, waitMs: longSettle.waitMs })}\n`
+  );
+  answerFact('settle10s.Debugger.enable', longSettle.enable);
+
   const placement = (seven.console ?? []).filter((line) => line.includes('FACT placement'));
-  process.stdout.write(`FACT placementCount ${JSON.stringify({ count: placement.length })}\n`);
+  const events = placement.filter((line) => line.includes('"label":"placeEvent"'));
+  const refuses = placement.filter((line) => line.includes('"label":"snapshot.refuse"'));
+  process.stdout.write(
+    `FACT placementCount ${JSON.stringify({ count: placement.length, placeEvents: events.length, snapshotRefuses: refuses.length })}\n`
+  );
   assert.equal(first.step, 'probed', JSON.stringify(first));
-  assert.equal(second.step, 'probed', JSON.stringify(second));
   assert.equal(settled.step, 'probed', JSON.stringify(settled));
+  assert.equal(longSettle.step, 'probed', JSON.stringify(longSettle));
   assert.match(first.url ?? '', /^http:\/\/ordinary\.test:/, JSON.stringify(first));
 });

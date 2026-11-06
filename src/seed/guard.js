@@ -98,6 +98,7 @@ export function classifySnapshotRefuse({
   contentReady,
   documentOwnersOk,
   documentShapeOk,
+  nodesShape,
 }) {
   if (
     !Array.isArray(documents) ||
@@ -120,7 +121,11 @@ export function classifySnapshotRefuse({
       documentFrameIndex: documents[0]?.frameId ?? null,
     };
   if (documentShapeOk === false)
-    return { reason: 'document-nodes-shape', documentFrameId: documentFrameId ?? null };
+    return {
+      reason: 'document-nodes-shape',
+      documentFrameId: documentFrameId ?? null,
+      nodesShape: nodesShape ?? null,
+    };
   if (contentReady && contentReady.ready === false)
     return {
       reason: 'snapshotContentReady',
@@ -138,6 +143,66 @@ export function classifySnapshotRefuse({
       expectOwners: localSize - 1,
     };
   return { reason: null };
+}
+
+export function placeEventPayload(
+  active,
+  targetId,
+  method,
+  { bumped = false, refreshed = false, placed = false } = {},
+  revisionNow
+) {
+  if (!active || method == null) return null;
+  return {
+    ms: Date.now() - active.origin,
+    targetId,
+    method,
+    bumped,
+    refreshed,
+    placed,
+    revisionBefore: active.revisionSeen,
+    revisionNowSame: revisionNow === active.revisionSeen,
+  };
+}
+
+export function classifyDocumentNodesShape({
+  frameId,
+  localHasFrame,
+  treeHasFrame,
+  nodes,
+  documentsLength,
+  treeFrames,
+  mappedRoot,
+  scopeRoot,
+  contentReady,
+}) {
+  const nodeName = nodes?.nodeName;
+  const backendNodeId = nodes?.backendNodeId;
+  const attributes = nodes?.attributes;
+  const shape = {
+    documentsLength: documentsLength ?? null,
+    treeFrames: treeFrames ? [...treeFrames] : null,
+    frameId: frameId ?? null,
+    mappedRoot: mappedRoot ?? null,
+    scopeRoot: scopeRoot ?? null,
+    nodeNameType: Array.isArray(nodeName) ? 'array' : typeof nodeName,
+    nodeNameLen: Array.isArray(nodeName) ? nodeName.length : null,
+    backendNodeIdType: Array.isArray(backendNodeId) ? 'array' : typeof backendNodeId,
+    backendNodeIdLen: Array.isArray(backendNodeId) ? backendNodeId.length : null,
+    attributesType: Array.isArray(attributes) ? 'array' : typeof attributes,
+    attributesLen: Array.isArray(attributes) ? attributes.length : null,
+    contentReady: contentReady ?? null,
+  };
+  if (typeof frameId !== 'string') return { sub: 'frameId-not-string', ...shape };
+  if (!frameId) return { sub: 'frameId-empty', ...shape };
+  if (localHasFrame) return { sub: 'frameId-duplicate-local', ...shape };
+  if (!treeHasFrame) return { sub: 'frameId-not-in-tree', ...shape };
+  if (!Array.isArray(nodeName)) return { sub: 'nodeName-not-array', ...shape };
+  if (!Array.isArray(backendNodeId)) return { sub: 'backendNodeId-not-array', ...shape };
+  if (!Array.isArray(attributes)) return { sub: 'attributes-not-array', ...shape };
+  if (nodeName.length !== backendNodeId.length) return { sub: 'nodeName-backend-len', ...shape };
+  if (nodeName.length !== attributes.length) return { sub: 'nodeName-attributes-len', ...shape };
+  return { sub: null, ...shape };
 }
 
 export function classifyPrivateFramesIncomplete(list, scope, relatedSize) {
@@ -2106,17 +2171,18 @@ class Guard {
     for (const document of documents) {
       const frameId = strings[document?.frameId];
       const nodes = document?.nodes;
-      if (
-        typeof frameId !== 'string' ||
-        !frameId ||
-        local.has(frameId) ||
-        !scope.treeFrames.has(frameId) ||
-        !Array.isArray(nodes?.nodeName) ||
-        !Array.isArray(nodes.backendNodeId) ||
-        !Array.isArray(nodes.attributes) ||
-        nodes.nodeName.length !== nodes.backendNodeId.length ||
-        nodes.nodeName.length !== nodes.attributes.length
-      )
+      const nodesShape = classifyDocumentNodesShape({
+        frameId,
+        localHasFrame: local.has(frameId),
+        treeHasFrame: scope.treeFrames.has(frameId),
+        nodes,
+        documentsLength: documents.length,
+        treeFrames: scope.treeFrames,
+        mappedRoot: strings[documents[0]?.frameId],
+        scopeRoot: scope.root,
+        contentReady: null,
+      });
+      if (nodesShape.sub)
         return refused(
           classifySnapshotRefuse({
             documents,
@@ -2124,11 +2190,13 @@ class Guard {
             scopeRoot: scope.root,
             documentShapeOk: false,
             documentFrameId: frameId,
+            nodesShape,
           })
         );
       local.add(frameId);
       const contentReady = classifySnapshotContentReady(nodes);
-      if (!contentReady.ready)
+      if (!contentReady.ready) {
+        nodesShape.contentReady = contentReady;
         return refused(
           classifySnapshotRefuse({
             documents,
@@ -2136,8 +2204,10 @@ class Guard {
             scopeRoot: scope.root,
             contentReady,
             documentFrameId: frameId,
+            nodesShape,
           })
         );
+      }
       if (!this.snapshotDocumentOwners(scope, documents, strings, nodes, backend, owners, remote))
         return refused(
           classifySnapshotRefuse({
@@ -2448,6 +2518,7 @@ class Guard {
     this.stopCasts();
     const deadline = this.extensionFrames ? Date.now() + PROBE_WAIT : undefined;
     const revision = this.revisions.get(targetId);
+    scope.diagPlaceActive = { origin, revisionSeen: revision, sessionId };
     placementFact('placeOne.start', {
       ms: Date.now() - origin,
       targetId,
@@ -2456,6 +2527,7 @@ class Guard {
       deadline,
       extensionFrames: Boolean(this.extensionFrames),
     });
+    this.notePlaceEvent(targetId, 'placeOne.watch');
     const enabled = await this.placeCallDiag(
       origin,
       targetId,
@@ -2511,6 +2583,7 @@ class Guard {
     if (!this.pageLocked(targetId) && this.debuggerLeases.get(targetId)?.state === 'suspended')
       this.setDebuggerLease(targetId, 'placed');
     this.stopCasts();
+    scope.diagPlaceActive = null;
     await Promise.all(
       [...this.scopes]
         .filter(([, entry]) => entry.parent === targetId)
@@ -2575,11 +2648,27 @@ class Guard {
     }
   }
 
+  notePlaceEvent(targetId, method, flags = {}) {
+    const scope = this.scopes.get(targetId);
+    const payload = placeEventPayload(
+      scope?.diagPlaceActive,
+      targetId,
+      method,
+      flags,
+      this.revisions.get(targetId)
+    );
+    if (payload) placementFact('placeEvent', payload);
+  }
+
   refresh(targetId) {
     const sessionId = this.scopes.get(targetId)?.sessionId;
     const session =
       this.navs.get(targetId)?.session ??
       (this.placements.get(sessionId) === targetId ? sessionId : undefined);
+    this.notePlaceEvent(targetId, 'refresh', {
+      refreshed: true,
+      placed: Boolean(session),
+    });
     if (session) this.placing.set(targetId, this.place(targetId, session));
   }
 
@@ -6136,13 +6225,14 @@ class Guard {
       message.params?.targetInfo?.targetId ??
       message.params?.targetId ??
       this.scopeTarget(message.sessionId);
-    if (
+    const bumps = Boolean(
       targetId &&
-      (message.method?.startsWith('Target.target') ||
-        NAVIGATED.has(message.method) ||
-        STRUCTURE.has(message.method))
-    )
-      this.revisions.set(targetId, {});
+        (message.method?.startsWith('Target.target') ||
+          NAVIGATED.has(message.method) ||
+          STRUCTURE.has(message.method))
+    );
+    if (bumps) this.revisions.set(targetId, {});
+    if (targetId) this.notePlaceEvent(targetId, message.method, { bumped: bumps });
     if (targetId) this.reviseDebuggerLease(targetId, message.method, message.params);
     if (message.method !== 'Page.frameNavigated' || !message.params?.frame) return;
     const { frame } = message.params;
