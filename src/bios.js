@@ -2,6 +2,7 @@ import { activated } from './seed/activate.js';
 import { clearHandOff, dropped, droppedLine } from './seed/handoff.js';
 import { neverCached } from './seed/site.js';
 import { usersMode } from './seed/users.js';
+import { disarmLine, disarmSix } from './sw/disarm.js';
 import { intercept } from './sw/register.js';
 import { sixStep } from './sw/six.js';
 
@@ -109,9 +110,10 @@ await step('opfs', async () => {
 });
 
 await step('installer', async () => {
+  const six = await disarmSix();
   installer = connect();
   const { connections } = await installer('hello');
-  return `connection #${connections}`;
+  return `connection #${connections}${disarmLine(six)}`;
 });
 
 await step('packages', async (report) => {
