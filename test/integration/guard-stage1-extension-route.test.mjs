@@ -18,7 +18,6 @@ const page = `http://ordinary.test:${site.address().port}/stage1.html`;
 
 async function guarded(seven, privateFrames) {
   await seven.evaluate(async (useFrames) => {
-    globalThis.stage1?.close();
     const { guardProtected } = await import(new URL('guard.js', location.href).href);
     const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
     const extension = globalThis.sliccExtension;
@@ -53,7 +52,7 @@ async function guarded(seven, privateFrames) {
           JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })
         );
       });
-    globalThis.stage1 = { close: () => connection.close(), send, events };
+    globalThis.stage1 = { send, events };
   }, privateFrames);
 }
 
@@ -100,7 +99,6 @@ test(`Stage 1 over the real extension ${CURRENT_EXTENSION.version}`, {
     await seven.evaluate(() => globalThis.sliccExtension.version),
     CURRENT_EXTENSION.version
   );
-  t.after(() => seven.evaluate(() => globalThis.stage1?.close()));
 
   await t.test(
     'with a private frame reader a placed ordinary page answers a page-scoped command and Debugger.enable is PROFILED because the harness extension runs scripts there',
