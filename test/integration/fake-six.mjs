@@ -53,6 +53,50 @@ self.addEventListener('fetch', (event) => {
 });
 `;
 
+export const PROXY_ERROR = 'Fetch proxy not available in worker mode';
+
+export const sixTab = `<!doctype html>
+<title>SLICC 6 tab</title>
+<p id="six">six</p>
+<script>
+(async () => {
+  await navigator.serviceWorker.register('/llm-proxy-sw.js', { scope: '/' });
+  if (!navigator.serviceWorker.controller) {
+    await new Promise((done) =>
+      navigator.serviceWorker.addEventListener('controllerchange', done, { once: true })
+    );
+  }
+  document.getElementById('six').dataset.proxied = 'yes';
+})();
+</script>
+`;
+
+export function proxyWorker(disarmable) {
+  const disarm = `self.addEventListener('message', (event) => {
+  const source = event.source;
+  if (event.data?.type !== 'slicc-six-disarm' || Object.keys(event.data).length !== 1) return;
+  if (source?.type !== 'window' || source.frameType !== 'top-level') return;
+  disarmed = true;
+  (event.ports[0] ?? source).postMessage({ type: 'slicc-six-disarmed' });
+});
+`;
+  return `let disarmed = false;
+self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
+${disarmable ? disarm : ''}self.addEventListener('fetch', (event) => {
+  if (disarmed) return;
+  const url = new URL(event.request.url);
+  if (url.origin === location.origin || !/^https?:$/.test(url.protocol)) return;
+  event.respondWith(
+    new Response(JSON.stringify({ error: ${JSON.stringify(PROXY_ERROR)} }), {
+      status: 404,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    })
+  );
+});
+`;
+}
+
 export const exporterPage = `<!doctype html>
 <meta charset="utf-8">
 <meta name="${SIX_TYPE}" content="1">
@@ -166,7 +210,7 @@ parent.postMessage('spoofed', '*');
 `;
 
 export async function startWww(seven) {
-  const state = { mode: 'ok', isolate: false, asked: [] };
+  const state = { mode: 'ok', isolate: false, asked: [], proxy: 'new' };
   let foreign = '';
   const www = createServer(async (request, response) => {
     const url = new URL(request.url, 'http://www');
@@ -208,6 +252,12 @@ export async function startWww(seven) {
     };
     if (url.pathname === '/') return response.writeHead(200, html).end(sixPage);
     if (url.pathname === '/preview-sw.js') return response.writeHead(200, js).end(previewWorker);
+    if (url.pathname === '/llm-proxy-sw.js') {
+      return response
+        .writeHead(200, { ...js, 'cache-control': 'no-store' })
+        .end(proxyWorker(state.proxy === 'new'));
+    }
+    if (url.pathname === '/six-tab.html') return response.writeHead(200, html).end(sixTab);
     if (url.pathname === '/spoof.html') {
       return response
         .writeHead(200, {

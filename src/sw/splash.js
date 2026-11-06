@@ -133,11 +133,16 @@ const boot = {
 };
 
 for (const button of retries) button.addEventListener('click', () => location.reload());
-write(
-  'info',
-  'bios',
-  `boot (${navigator.serviceWorker?.controller ? 'repeat visit' : 'first install'})`
-);
+
+export function visit(controller = navigator.serviceWorker?.controller) {
+  if (!controller) return 'first install';
+  const url = new URL(controller.scriptURL);
+  url.search = '';
+  if (url.href === new URL('../sw.js', import.meta.url).href) return 'repeat visit';
+  return `under ${url.pathname}`;
+}
+
+write('info', 'bios', `boot (${visit()})`);
 requestAnimationFrame(() =>
   setTimeout(() =>
     import('./card.js').then(

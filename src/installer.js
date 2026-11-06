@@ -145,9 +145,20 @@ function within(promise) {
   return Promise.race([promise, idle]).finally(() => clearTimeout(timer));
 }
 
+function madeByWorker(url, response, origin = self.location.origin) {
+  return (
+    new URL(url).origin !== origin && (response.type === 'basic' || response.type === 'default')
+  );
+}
+
 async function receive(url, signal) {
   const response = await within(fetch(url, { signal }));
   if (response === stalled) return stalled;
+  if (madeByWorker(url, response)) {
+    throw new Error(
+      `${response.status} ${url} came from a service worker, not the network: close every tab of ${self.location.origin} and open seven again`
+    );
+  }
   heard = Date.now();
   if (!response.ok) throw new Error(`${response.status} ${response.url}`);
   const reader = response.body.getReader();
