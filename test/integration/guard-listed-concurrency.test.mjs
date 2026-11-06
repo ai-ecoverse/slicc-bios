@@ -7,6 +7,7 @@ import { FAILED } from '../../src/seed/guard.js';
 
 const ordinary = 'https://ordinary.invalid/page';
 const protectedOrigin = 'https://protected.invalid';
+const secret = `${protectedOrigin}/secret`;
 const failed = `${protectedOrigin}/controller/synthetic-listed-id`;
 const LISTED_CHECKS = 8;
 const guardSource = fileURLToPath(new URL('../../src/seed/guard.js', import.meta.url));
@@ -40,11 +41,30 @@ function serialOracleModule() {
   return `${pathToFileURL(path).href}?serial=${Date.now()}`;
 }
 
+function spyGuardModule() {
+  const dir = join(root, 'test/unit');
+  mkdirSync(dir, { recursive: true });
+  const text = readFileSync(guardSource, 'utf8');
+  const patched = text
+    .replace(
+      'learn(info) {\n    if (!info?.targetId) return;',
+      `learn(info) {
+    globalThis.__listedLearnSpy?.(info);
+    if (!info?.targetId) return;`
+    )
+    .replaceAll("from './", "from '../../src/seed/")
+    .replaceAll('from "./', 'from "../../src/seed/');
+  assert.match(patched, /__listedLearnSpy/);
+  const path = join(dir, 'listed-spy-guard.js');
+  writeFileSync(path, patched);
+  return `${pathToFileURL(path).href}?spy=${Date.now()}`;
+}
+
 const flush = () => new Promise((resolve) => setImmediate(resolve));
-const plainFrame = (id) => ({
+const plainFrame = (id, url = ordinary) => ({
   id,
-  url: ordinary,
-  securityOrigin: new URL(ordinary).origin,
+  url,
+  securityOrigin: URL.canParse(url) ? new URL(url).origin : '://',
 });
 const errorFrame = (id) => ({
   id,
@@ -61,12 +81,15 @@ async function protocol(t, options = {}) {
   const held = [];
   const pending = new Map();
   const delivered = [];
-  const stats = { inFlight: 0, peak: 0, overlaps: 0 };
+  const stats = { inFlight: 0, peak: 0, overlaps: 0, phase1: 0, phase2: 0 };
+  let listingOrder;
   let next = 0;
   let hold = () => false;
   let latency = () => 0;
   let failInfo = () => null;
+  let liveInfo = () => null;
   let onSend = () => {};
+  let phase = 'idle';
   const raw = {
     send(text) {
       const message = JSON.parse(text);
@@ -79,9 +102,20 @@ async function protocol(t, options = {}) {
         stats.inFlight++;
         stats.peak = Math.max(stats.peak, stats.inFlight);
         if (stats.inFlight > 1) stats.overlaps++;
+        if (phase === 'phase1') stats.phase1++;
+        if (phase === 'phase2') stats.phase2++;
       }
+      if (message.method === 'Target.getTargets') phase = 'phase1';
       const finish = () => {
-        if (message.method === 'Target.getTargetInfo') stats.inFlight--;
+        if (message.method === 'Target.getTargetInfo') {
+          stats.inFlight--;
+          if (
+            phase === 'phase1' &&
+            stats.inFlight === 0 &&
+            stats.phase1 >= (listingOrder?.length ?? 0)
+          )
+            phase = 'phase2';
+        }
         respond(message, fail);
       };
       if (delay > 0) setTimeout(finish, delay);
@@ -104,11 +138,20 @@ async function protocol(t, options = {}) {
     const target = targets.get(targetId);
     let result = {};
     if (method === 'Target.getTargetInfo') {
-      if (!target?.info) result = {};
-      else result = { targetInfo: target.info };
+      const live = liveInfo(message);
+      if (live) result = live.result ? live.result : live;
+      else if (!target?.info) result = {};
+      else result = { targetInfo: target.live ?? target.info };
     }
-    if (method === 'Target.getTargets')
-      result = { targetInfos: [...targets.values()].map((entry) => entry.info) };
+    if (method === 'Target.getTargets') {
+      const infos = listingOrder
+        ? listingOrder.map((entry) => entry.info)
+        : [...targets.values()].map((entry) => entry.info);
+      result = { targetInfos: infos };
+      phase = 'phase1';
+      stats.phase1 = 0;
+      stats.phase2 = 0;
+    }
     if (method === 'Target.attachToTarget') {
       const attached = `${id >= 2 ** 30 ? 'guard' : 'client'}-${targetId}`;
       sessions.set(attached, targetId);
@@ -158,6 +201,9 @@ async function protocol(t, options = {}) {
     attach,
     release,
     respond,
+    order(entries) {
+      listingOrder = entries;
+    },
     hold(fn) {
       hold = fn;
     },
@@ -166,6 +212,9 @@ async function protocol(t, options = {}) {
     },
     failInfo(fn) {
       failInfo = fn;
+    },
+    liveInfo(fn) {
+      liveInfo = fn;
     },
     onSend(fn) {
       onSend = fn;
@@ -179,11 +228,7 @@ function seedMix(wire, count = 45) {
     const id = `t${i}`;
     const roll = i % 7;
     if (roll === 0) {
-      const entry = wire.target(id, 'page', {
-        id,
-        url: failed,
-        securityOrigin: protectedOrigin,
-      });
+      const entry = wire.target(id, 'page', plainFrame(id, failed));
       entry.info.url = failed;
       kinds.push('protected');
     } else if (roll === 2) {
@@ -215,6 +260,17 @@ async function strandedSetup(wire, id = 'stranded') {
   wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: entry.info } });
   await flush();
   return entry;
+}
+
+function openerPair(wire, childFirst) {
+  const parent = wire.target('P', 'page', plainFrame('P', ordinary));
+  parent.info.url = ordinary;
+  parent.live = { targetId: 'P', type: 'page', url: secret };
+  const child = wire.target('C', 'page', plainFrame('C', 'about:blank'));
+  child.info.url = 'about:blank';
+  child.info.openerId = 'P';
+  wire.order(childFirst ? [child, parent] : [parent, child]);
+  return { child, parent };
 }
 
 test('listed concurrency matches serial oracle for mixed targets', {
@@ -303,11 +359,7 @@ test('listed concurrency keeps a timed-out check guarded', { timeout: 10000 }, a
 test('listed concurrency leaves a protected target out', { timeout: 10000 }, async (t) => {
   const wire = await protocol(t);
   wire.target('ok');
-  const locked = wire.target('locked', 'page', {
-    id: 'locked',
-    url: failed,
-    securityOrigin: protectedOrigin,
-  });
+  const locked = wire.target('locked', 'page', plainFrame('locked', failed));
   locked.info.url = failed;
   locked.info.title = 'secret';
   const answer = await wire.send('Target.getTargets');
@@ -325,11 +377,7 @@ test('listed concurrency two getTargets in flight stay independent', {
   const wire = await protocol(t);
   const a = wire.target('a').info;
   const b = wire.target('b').info;
-  const locked = wire.target('locked', 'page', {
-    id: 'locked',
-    url: failed,
-    securityOrigin: protectedOrigin,
-  }).info;
+  const locked = wire.target('locked', 'page', plainFrame('locked', failed)).info;
   locked.url = failed;
   wire.hold((message) => message.method === 'Target.getTargets');
   const first = wire.request('Target.getTargets');
@@ -366,11 +414,7 @@ test('listed concurrency throw refuses like serial and does not fail open', {
 }, async (t) => {
   const wire = await protocol(t);
   wire.target('a');
-  const locked = wire.target('locked', 'page', {
-    id: 'locked',
-    url: failed,
-    securityOrigin: protectedOrigin,
-  });
+  const locked = wire.target('locked', 'page', plainFrame('locked', failed));
   locked.info.url = failed;
   wire.onSend((message) => {
     if (message.method === 'Target.getTargetInfo' && message.params?.targetId === 'locked')
@@ -380,4 +424,81 @@ test('listed concurrency throw refuses like serial and does not fail open', {
   assert.equal(answer.error?.message, FAILED);
   assert.equal(answer.result, undefined);
   assert.equal(JSON.stringify(wire.delivered).includes(failed), false);
+});
+
+for (const [order, mode] of [
+  ['child-first', 'protected'],
+  ['child-first', 'error'],
+  ['parent-first', 'protected'],
+  ['parent-first', 'error'],
+]) {
+  test(`listed opener order ${order} live ${mode} matches serial empty list`, {
+    timeout: 15000,
+  }, async (t) => {
+    const oraclePath = serialOracleModule();
+    async function run(source) {
+      const wire = await protocol(t, { guardSource: source });
+      openerPair(wire, order === 'child-first');
+      if (mode === 'error') {
+        wire.failInfo((message) =>
+          message.params?.targetId === 'P'
+            ? { error: { code: -32000, message: 'No target with given id found' } }
+            : null
+        );
+      }
+      wire.latency((message) => (message.params?.targetId === 'P' ? 20 : 1));
+      const answer = await wire.send('Target.getTargets');
+      assert.equal(answer.error, undefined);
+      return answer.result.targetInfos;
+    }
+    const concurrent = await run(pathToFileURL(guardSource).href);
+    const serial = await run(oraclePath);
+    assert.deepEqual(concurrent, serial);
+    assert.deepEqual(concurrent, []);
+    assert.equal(JSON.stringify(concurrent).includes(secret), false);
+  });
+}
+
+test('listed throw in prefetch stops serial learn after that target', {
+  timeout: 10000,
+}, async (t) => {
+  const learns = [];
+  globalThis.__listedLearnSpy = (info) => learns.push(info?.targetId);
+  t.after(() => {
+    delete globalThis.__listedLearnSpy;
+  });
+  const wire = await protocol(t, { guardSource: spyGuardModule() });
+  wire.target('a');
+  wire.target('b');
+  wire.target('k');
+  wire.target('after');
+  wire.onSend((message) => {
+    if (message.method === 'Target.getTargetInfo' && message.params?.targetId === 'k')
+      throw new Error('synthetic listed throw');
+  });
+  const answer = await wire.send('Target.getTargets');
+  assert.equal(answer.error?.message, FAILED);
+  assert.equal(answer.result, undefined);
+  assert.ok(learns.includes('a'));
+  assert.ok(learns.includes('b'));
+  assert.ok(learns.includes('k'));
+  assert.equal(learns.includes('after'), false);
+});
+
+test('listed phase1 peak bound and phase2 skips fresh getTargetInfo without opener', {
+  timeout: 30000,
+}, async (t) => {
+  const wire = await protocol(t);
+  for (let i = 0; i < 45; i++) wire.target(`t${i}`);
+  wire.latency(() => 8);
+  const before = wire.sent.length;
+  const answer = await wire.send('Target.getTargets');
+  assert.equal(answer.error, undefined);
+  assert.ok(wire.stats.peak > 1);
+  assert.ok(wire.stats.peak <= LISTED_CHECKS);
+  const probes = wire.sent
+    .slice(before)
+    .filter((message) => message.method === 'Target.getTargetInfo');
+  assert.equal(probes.length, 45);
+  assert.ok(wire.stats.overlaps > 0);
 });

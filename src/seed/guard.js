@@ -2271,8 +2271,13 @@ class Guard {
     void this.call('Target.detachFromTarget', { sessionId }, outer);
   }
 
-  async current(targetId, limit = ANSWER_MS) {
-    const answer = await this.within(this.call('Target.getTargetInfo', { targetId }), limit);
+  async current(targetId, limit = ANSWER_MS, ...rest) {
+    const prefetched = rest.length > 0;
+    const early = rest[0];
+    if (prefetched && early?.listedReject !== undefined) throw early.listedReject;
+    const answer = prefetched
+      ? early
+      : await this.within(this.call('Target.getTargetInfo', { targetId }), limit);
     const info = answer?.result?.targetInfo;
     if (!answer || answer.error || info?.targetId !== targetId || typeof info.type !== 'string')
       return true;
@@ -4678,24 +4683,33 @@ class Guard {
 
   async listed(message, result) {
     const infos = result.targetInfos;
-    for (const info of infos) this.learn(info);
-    const slots = new Array(infos.length);
+    const early = new Array(infos.length);
     let cursor = 0;
     const workers = Array.from({ length: Math.min(LISTED_CHECKS, infos.length) }, async () => {
       for (;;) {
         const index = cursor++;
         if (index >= infos.length) return;
-        const info = infos[index];
-        const guarded = (await this.current(info.targetId)) || this.is.url(info.url);
-        const proof = guarded ? await this.stranded(info.targetId) : null;
-        if (!guarded || this.fresh(proof)) slots[index] = this.masked(info, Boolean(proof));
+        try {
+          early[index] = await this.within(
+            this.call('Target.getTargetInfo', { targetId: infos[index].targetId }),
+            ANSWER_MS
+          );
+        } catch (error) {
+          early[index] = { listedReject: error };
+        }
       }
     });
     await Promise.all(workers);
-    return this.deliver({
-      ...message,
-      result: { ...result, targetInfos: slots.filter((info) => info !== undefined) },
-    });
+    const targetInfos = [];
+    for (let index = 0; index < infos.length; index++) {
+      const info = infos[index];
+      this.learn(info);
+      const guarded =
+        (await this.current(info.targetId, ANSWER_MS, early[index])) || this.is.url(info.url);
+      const proof = guarded ? await this.stranded(info.targetId) : null;
+      if (!guarded || this.fresh(proof)) targetInfos.push(this.masked(info, Boolean(proof)));
+    }
+    return this.deliver({ ...message, result: { ...result, targetInfos } });
   }
 
   pageAnswer(was) {
