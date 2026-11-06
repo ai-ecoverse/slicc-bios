@@ -75,8 +75,74 @@ async function openGuarded(seven, privateFrames) {
   }, privateFrames);
 }
 
-test(`FACT real-extension ${CURRENT_EXTENSION.version} ordinary page with privateFrames`, {
-  timeout: 10 * 60 * 1000,
+async function probePage(seven, url, { waitMs = 0, label = 'row' } = {}) {
+  return seven.evaluate(
+    async (pageUrl, settleMs, tag) => {
+      const client = globalThis.stage1Facts;
+      const created = await client.send('Target.createTarget', { url: pageUrl });
+      if (created.error || !created.result?.targetId) return { step: 'create', tag, created };
+      const targetId = created.result.targetId;
+      const attached = await client.send('Target.attachToTarget', { targetId, flatten: true });
+      if (attached.error || !attached.result?.sessionId) return { step: 'attach', tag, attached };
+      const session = attached.result.sessionId;
+      const page = await client.send('Page.enable', {}, session);
+      const runtime = await client.send('Runtime.enable', {}, session);
+      const want = new URL(pageUrl).pathname;
+      const deadline = Date.now() + 60000;
+      let ready;
+      while (Date.now() < deadline) {
+        const tree = await client.send('Page.getFrameTree', {}, session);
+        const frame = tree.result?.frameTree?.frame;
+        if (!tree.error && typeof frame?.url === 'string' && frame.url.includes(want)) {
+          const state = await client.send(
+            'Runtime.evaluate',
+            { expression: 'document.readyState', returnByValue: true },
+            session
+          );
+          if (!state.error && state.result?.result?.value === 'complete') {
+            ready = { tree, state, url: frame.url, frameId: frame.id };
+            break;
+          }
+          ready = { tree, state, url: frame.url, frameId: frame.id };
+        } else {
+          ready = { tree };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      if (!ready?.state || ready.state.error || ready.state.result?.result?.value !== 'complete')
+        return { step: 'commit', tag, ready, targetId, session };
+      if (settleMs > 0) await new Promise((resolve) => setTimeout(resolve, settleMs));
+      const document = await client.send('DOM.getDocument', { depth: -1, pierce: true }, session);
+      const targets = await client.send('Target.getTargets');
+      const info = await client.send('Target.getTargetInfo', { targetId });
+      const enable = await client.send('Debugger.enable', {}, session);
+      await client.send('Target.closeTarget', { targetId });
+      return {
+        step: 'probed',
+        tag,
+        targetId,
+        session,
+        url: ready.url,
+        frameId: ready.frameId,
+        waitMs: settleMs,
+        page,
+        runtime,
+        tree: ready.tree,
+        state: ready.state,
+        document,
+        targets,
+        info,
+        enable,
+      };
+    },
+    url,
+    waitMs,
+    label
+  );
+}
+
+test(`FACT2 real-extension ${CURRENT_EXTENSION.version} placement owners timing`, {
+  timeout: 15 * 60 * 1000,
 }, async (t) => {
   const real = await realExtension({
     extension: CURRENT_EXTENSION,
@@ -94,152 +160,43 @@ test(`FACT real-extension ${CURRENT_EXTENSION.version} ordinary page with privat
   await openGuarded(seven, true);
   t.after(() => seven.evaluate(() => globalThis.stage1Facts?.close()));
   const target = ordinary('/stage1.html');
-  const row = await seven.evaluate(async (url) => {
-    const client = globalThis.stage1Facts;
-    const created = await client.send('Target.createTarget', { url });
-    if (created.error || !created.result?.targetId) return { step: 'create', created };
-    const targetId = created.result.targetId;
-    const attached = await client.send('Target.attachToTarget', { targetId, flatten: true });
-    if (attached.error || !attached.result?.sessionId) return { step: 'attach', attached };
-    const session = attached.result.sessionId;
-    const page = await client.send('Page.enable', {}, session);
-    const runtime = await client.send('Runtime.enable', {}, session);
-    const want = new URL(url).pathname;
-    const deadline = Date.now() + 60000;
-    let ready;
-    while (Date.now() < deadline) {
-      const tree = await client.send('Page.getFrameTree', {}, session);
-      const frame = tree.result?.frameTree?.frame;
-      if (!tree.error && typeof frame?.url === 'string' && frame.url.includes(want)) {
-        const state = await client.send(
-          'Runtime.evaluate',
-          { expression: 'document.readyState', returnByValue: true },
-          session
-        );
-        if (!state.error && state.result?.result?.value === 'complete') {
-          ready = { tree, state, url: frame.url, frameId: frame.id };
-          break;
-        }
-        ready = { tree, state, url: frame.url, frameId: frame.id };
-      } else {
-        ready = { tree };
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    if (!ready?.state || ready.state.error || ready.state.result?.result?.value !== 'complete')
-      return { step: 'commit', ready, targetId, session };
-    const document = await client.send('DOM.getDocument', { depth: -1, pierce: true }, session);
-    const targets = await client.send('Target.getTargets');
-    const info = await client.send('Target.getTargetInfo', { targetId });
-    const enable = await client.send('Debugger.enable', {}, session);
-    return {
-      step: 'probed',
-      targetId,
-      session,
-      url: ready.url,
-      frameId: ready.frameId,
-      page,
-      runtime,
-      tree: ready.tree,
-      state: ready.state,
-      document,
-      targets,
-      info,
-      enable,
-    };
-  }, target);
-  for (const line of seven.console ?? []) printFact(line);
-  process.stdout.write(
-    `FACT row ${JSON.stringify({ step: row.step, url: row.url, frameId: row.frameId, targetId: row.targetId, session: row.session })}\n`
-  );
-  answerFact('Page.enable', row.page);
-  answerFact('Runtime.enable', row.runtime);
-  answerFact('Page.getFrameTree', row.tree);
-  answerFact('Runtime.evaluate', row.state);
-  answerFact('DOM.getDocument', row.document);
-  answerFact('Target.getTargets', row.targets);
-  answerFact('Target.getTargetInfo', row.info);
-  answerFact('Debugger.enable', row.enable);
-  const facts = (seven.console ?? []).filter((line) => line.includes('FACT refuseBranch'));
-  process.stdout.write(
-    `FACT refuseBranchCount ${JSON.stringify({ count: facts.length, lines: facts })}\n`
-  );
-  assert.equal(row.step, 'probed', JSON.stringify(row));
-  assert.match(row.url ?? '', /^http:\/\/ordinary\.test:/, JSON.stringify(row));
-});
 
-test(`FACT real-extension ${CURRENT_EXTENSION.version} ordinary page without privateFrames`, {
-  timeout: 10 * 60 * 1000,
-}, async (t) => {
-  const real = await realExtension({
-    extension: CURRENT_EXTENSION,
-    rules: ['MAP ordinary.test 127.0.0.1'],
-  });
-  t.after(() => real.close());
-  const seven = await real.page(t);
-  await seven.goto(SEVEN);
-  await ready(seven);
-  await openGuarded(seven, false);
-  t.after(() => seven.evaluate(() => globalThis.stage1Facts?.close()));
-  const target = ordinary('/stage1.html');
-  const row = await seven.evaluate(async (url) => {
-    const client = globalThis.stage1Facts;
-    const created = await client.send('Target.createTarget', { url });
-    if (created.error || !created.result?.targetId) return { step: 'create', created };
-    const targetId = created.result.targetId;
-    const attached = await client.send('Target.attachToTarget', { targetId, flatten: true });
-    if (attached.error || !attached.result?.sessionId) return { step: 'attach', attached };
-    const session = attached.result.sessionId;
-    const page = await client.send('Page.enable', {}, session);
-    const runtime = await client.send('Runtime.enable', {}, session);
-    const want = new URL(url).pathname;
-    const deadline = Date.now() + 60000;
-    let ready;
-    while (Date.now() < deadline) {
-      const tree = await client.send('Page.getFrameTree', {}, session);
-      const frame = tree.result?.frameTree?.frame;
-      if (!tree.error && typeof frame?.url === 'string' && frame.url.includes(want)) {
-        ready = { tree, url: frame.url, frameId: frame.id };
-        break;
-      }
-      ready = { tree };
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    if (!ready?.url?.includes(want)) return { step: 'commit', ready, targetId, session };
-    const document = await client.send('DOM.getDocument', { depth: -1, pierce: true }, session);
-    const targets = await client.send('Target.getTargets');
-    const info = await client.send('Target.getTargetInfo', { targetId });
-    const enable = await client.send('Debugger.enable', {}, session);
-    return {
-      step: 'probed',
-      targetId,
-      session,
-      url: ready.url,
-      frameId: ready.frameId,
-      page,
-      runtime,
-      tree: ready.tree,
-      document,
-      targets,
-      info,
-      enable,
-    };
-  }, target);
+  const first = await probePage(seven, target, { label: 'immediate' });
   for (const line of seven.console ?? []) printFact(line);
   process.stdout.write(
-    `FACT row-no-frames ${JSON.stringify({ step: row.step, url: row.url, targetId: row.targetId, session: row.session })}\n`
+    `FACT scenario ${JSON.stringify({ tag: first.tag, step: first.step, url: first.url, targetId: first.targetId })}\n`
   );
-  answerFact('noFrames.Page.enable', row.page);
-  answerFact('noFrames.Runtime.enable', row.runtime);
-  answerFact('noFrames.Page.getFrameTree', row.tree);
-  answerFact('noFrames.DOM.getDocument', row.document);
-  answerFact('noFrames.Target.getTargets', row.targets);
-  answerFact('noFrames.Target.getTargetInfo', row.info);
-  answerFact('noFrames.Debugger.enable', row.enable);
-  const facts = (seven.console ?? []).filter((line) => line.includes('FACT refuseBranch'));
+  answerFact('immediate.Page.enable', first.page);
+  answerFact('immediate.Runtime.enable', first.runtime);
+  answerFact('immediate.Page.getFrameTree', first.tree);
+  answerFact('immediate.Runtime.evaluate', first.state);
+  answerFact('immediate.DOM.getDocument', first.document);
+  answerFact('immediate.Target.getTargets', first.targets);
+  answerFact('immediate.Target.getTargetInfo', first.info);
+  answerFact('immediate.Debugger.enable', first.enable);
+
+  const beforeSecond = (seven.console ?? []).length;
+  const second = await probePage(seven, target, { label: 'second-create' });
+  for (const line of (seven.console ?? []).slice(beforeSecond)) printFact(line);
   process.stdout.write(
-    `FACT noFrames.refuseBranchCount ${JSON.stringify({ count: facts.length, lines: facts })}\n`
+    `FACT scenario ${JSON.stringify({ tag: second.tag, step: second.step, url: second.url, targetId: second.targetId })}\n`
   );
-  assert.equal(row.step, 'probed', JSON.stringify(row));
-  assert.match(row.url ?? '', /^http:\/\/ordinary\.test:/, JSON.stringify(row));
+  answerFact('second.DOM.getDocument', second.document);
+  answerFact('second.Debugger.enable', second.enable);
+
+  const beforeSettle = (seven.console ?? []).length;
+  const settled = await probePage(seven, target, { waitMs: 3000, label: 'settle-3s' });
+  for (const line of (seven.console ?? []).slice(beforeSettle)) printFact(line);
+  process.stdout.write(
+    `FACT scenario ${JSON.stringify({ tag: settled.tag, step: settled.step, url: settled.url, targetId: settled.targetId, waitMs: settled.waitMs })}\n`
+  );
+  answerFact('settle3s.DOM.getDocument', settled.document);
+  answerFact('settle3s.Debugger.enable', settled.enable);
+
+  const placement = (seven.console ?? []).filter((line) => line.includes('FACT placement'));
+  process.stdout.write(`FACT placementCount ${JSON.stringify({ count: placement.length })}\n`);
+  assert.equal(first.step, 'probed', JSON.stringify(first));
+  assert.equal(second.step, 'probed', JSON.stringify(second));
+  assert.equal(settled.step, 'probed', JSON.stringify(settled));
+  assert.match(first.url ?? '', /^http:\/\/ordinary\.test:/, JSON.stringify(first));
 });

@@ -37,6 +37,271 @@ export function lockRefusalFact(branch, detail) {
   return payload;
 }
 
+export function placementFact(label, detail) {
+  const payload = { label, ...detail };
+  console.warn(`FACT placement ${JSON.stringify(payload)}`);
+  return payload;
+}
+
+export function resultShape(result) {
+  if (result === undefined) return null;
+  if (result === null) return 'null';
+  if (Array.isArray(result)) return { type: 'array', length: result.length };
+  if (typeof result !== 'object') return { type: typeof result };
+  const keys = Object.keys(result);
+  const shape = { type: 'object', keys };
+  if (Array.isArray(result.documents)) shape.documents = result.documents.length;
+  if (Array.isArray(result.strings)) shape.strings = result.strings.length;
+  if (result.frameTree?.frame) {
+    shape.frameId = result.frameTree.frame.id ?? null;
+    shape.frameUrl = result.frameTree.frame.url ?? null;
+  }
+  return shape;
+}
+
+export function classifySnapshotContentReady(nodes) {
+  const content = nodes?.contentDocumentIndex;
+  if (!Array.isArray(content?.index))
+    return { ready: false, reason: 'content-index-missing', content: content ?? null };
+  if (!Array.isArray(content.value))
+    return { ready: false, reason: 'content-value-missing', indexLen: content.index.length };
+  if (content.index.length !== content.value.length)
+    return {
+      ready: false,
+      reason: 'content-length-mismatch',
+      indexLen: content.index.length,
+      valueLen: content.value.length,
+    };
+  if (new Set(content.index).size !== content.index.length)
+    return { ready: false, reason: 'content-index-dupes', indexLen: content.index.length };
+  const bad = content.index.find(
+    (index) => !Number.isSafeInteger(index) || index < 0 || index >= (nodes.nodeName?.length ?? 0)
+  );
+  if (bad !== undefined)
+    return {
+      ready: false,
+      reason: 'content-index-oob',
+      bad,
+      nodeNameLen: nodes.nodeName?.length ?? 0,
+    };
+  return { ready: true };
+}
+
+export function classifySnapshotRefuse({
+  documents,
+  strings,
+  scopeRoot,
+  treeFramesSize,
+  localSize,
+  ownersLength,
+  documentFrameId,
+  contentReady,
+  documentOwnersOk,
+  documentShapeOk,
+}) {
+  if (
+    !Array.isArray(documents) ||
+    !documents.length ||
+    !Array.isArray(strings) ||
+    strings.some((value) => typeof value !== 'string')
+  )
+    return {
+      reason: 'documents-shape',
+      documentsIsArray: Array.isArray(documents),
+      documentsLen: Array.isArray(documents) ? documents.length : null,
+      stringsIsArray: Array.isArray(strings),
+    };
+  const mappedRoot = strings[documents[0]?.frameId];
+  if (mappedRoot !== scopeRoot)
+    return {
+      reason: 'frame-id-vs-scope-root',
+      mappedRoot: mappedRoot ?? null,
+      scopeRoot: scopeRoot ?? null,
+      documentFrameIndex: documents[0]?.frameId ?? null,
+    };
+  if (documentShapeOk === false)
+    return { reason: 'document-nodes-shape', documentFrameId: documentFrameId ?? null };
+  if (contentReady && contentReady.ready === false)
+    return {
+      reason: 'snapshotContentReady',
+      contentReady,
+      documentFrameId: documentFrameId ?? null,
+    };
+  if (documentOwnersOk === false)
+    return { reason: 'snapshotDocumentOwners', documentFrameId: documentFrameId ?? null };
+  if (localSize !== treeFramesSize || ownersLength !== localSize - 1)
+    return {
+      reason: 'local-tree-owners-count',
+      localSize,
+      treeFramesSize,
+      ownersLength,
+      expectOwners: localSize - 1,
+    };
+  return { reason: null };
+}
+
+export function classifyPrivateFramesIncomplete(list, scope, relatedSize) {
+  if (list == null) return { complete: false, field: 'reply-missing-or-timeout' };
+  if (list.version !== 2)
+    return { complete: false, field: 'version', version: list.version ?? null };
+  if (!Number.isSafeInteger(list.revision))
+    return { complete: false, field: 'revision', revision: list.revision ?? null };
+  const frames = list.frames;
+  if (!Array.isArray(frames)) return { complete: false, field: 'frames' };
+  const kinds = frames.map((frame) => frame?.kind);
+  if (kinds.includes('protected')) return { complete: false, field: 'protected-frame' };
+  if (kinds.some((kind) => kind !== 'ordinary'))
+    return { complete: false, field: 'non-ordinary-frame' };
+  return classifyPrivateFramesShape(list, scope, relatedSize, frames);
+}
+
+export function classifyPrivateFramesShape(list, scope, relatedSize, frames) {
+  const root = frames.find((frame) => frame?.frameId === 0);
+  if (root?.parentFrameId !== -1)
+    return {
+      complete: false,
+      field: 'root-parentFrameId',
+      parentFrameId: root?.parentFrameId ?? null,
+    };
+  if (list.rootFrameId !== scope?.root)
+    return {
+      complete: false,
+      field: 'rootFrameId',
+      rootFrameId: list.rootFrameId ?? null,
+      scopeRoot: scope?.root ?? null,
+    };
+  if (!(typeof scope?.loader === 'string' && scope.loader))
+    return { complete: false, field: 'scope-loader' };
+  if (list.rootLoaderId !== scope.loader)
+    return {
+      complete: false,
+      field: 'rootLoaderId',
+      rootLoaderId: list.rootLoaderId ?? null,
+      loader: scope.loader,
+    };
+  if (frames.length !== new Set(frames.map((frame) => frame?.frameId)).size)
+    return { complete: false, field: 'frameId-dupes' };
+  if (!Array.isArray(list.localFrames)) return { complete: false, field: 'localFrames' };
+  if (list.localFrames.length !== scope.treeFrames.size)
+    return {
+      complete: false,
+      field: 'localFrames-length',
+      localFrames: list.localFrames.length,
+      treeFrames: scope.treeFrames.size,
+    };
+  if (new Set(list.localFrames).size !== list.localFrames.length)
+    return { complete: false, field: 'localFrames-dupes' };
+  if (!list.localFrames.every((id) => scope.treeFrames.has(id)))
+    return { complete: false, field: 'localFrames-not-in-tree' };
+  if (!Array.isArray(list.remoteOwners)) return { complete: false, field: 'remoteOwners' };
+  if (list.remoteOwners.length !== scope.remoteBackendOwners.size)
+    return {
+      complete: false,
+      field: 'remoteOwners-length',
+      remoteOwners: list.remoteOwners.length,
+      remoteBackendOwners: scope.remoteBackendOwners.size,
+    };
+  if (list.localFrames.length + list.remoteOwners.length !== frames.length)
+    return { complete: false, field: 'frames-cardinality' };
+  if (relatedSize > frames.length)
+    return {
+      complete: false,
+      field: 'relatedFrames-gt-frames',
+      relatedSize,
+      frames: frames.length,
+    };
+  if (!frames.every((frame) => Number.isSafeInteger(frame.frameId) && frame.kind === 'ordinary'))
+    return { complete: false, field: 'frame-id-or-kind' };
+  return { complete: true };
+}
+
+export function classifyScopeFailed({
+  enabledError,
+  ownersError,
+  attachedError,
+  ownersReady,
+  cleanupFailed,
+  pastDeadline,
+  revisionMismatch,
+  noAutoAttach,
+}) {
+  if (enabledError) return { failed: true, condition: 'enabled.error', error: enabledError };
+  if (ownersError) return { failed: true, condition: 'owners.error', error: ownersError };
+  if (attachedError && attachedError !== noAutoAttach)
+    return { failed: true, condition: 'attached.error', error: attachedError };
+  if (!ownersReady) return { failed: true, condition: '!ownersReady' };
+  if (cleanupFailed) return { failed: true, condition: 'cleanupFailed' };
+  if (pastDeadline) return { failed: true, condition: 'deadline' };
+  if (revisionMismatch) return { failed: true, condition: 'revision' };
+  return { failed: false, condition: null };
+}
+
+export function deadlineLeftMs(deadline, now = Date.now()) {
+  return deadline === undefined ? null : deadline - now;
+}
+
+export function privateFramesSkipReason(extensionFrames, privateFrames, scope) {
+  if (!extensionFrames) return 'no-extensionFrames';
+  if (typeof privateFrames !== 'function') return 'no-privateFrames';
+  if (!(scope.remoteBackendOwners?.size ?? scope.remoteOwners?.size)) return 'no-remote-owners';
+  return null;
+}
+
+export function privateFramesReplyComplete(list, scope, loader, frames, relatedSize) {
+  const root = frames.find((frame) => frame?.frameId === 0);
+  const ids = new Set(frames.map((frame) => frame?.frameId));
+  return (
+    list?.version === 2 &&
+    Number.isSafeInteger(list.revision) &&
+    root?.parentFrameId === -1 &&
+    list.rootFrameId === scope.root &&
+    typeof loader === 'string' &&
+    loader &&
+    list.rootLoaderId === loader &&
+    frames.length === ids.size &&
+    Array.isArray(list.localFrames) &&
+    list.localFrames.length === scope.treeFrames.size &&
+    new Set(list.localFrames).size === list.localFrames.length &&
+    list.localFrames.every((id) => scope.treeFrames.has(id)) &&
+    Array.isArray(list.remoteOwners) &&
+    list.remoteOwners.length === scope.remoteBackendOwners.size &&
+    new Set(list.remoteOwners.map((owner) => owner?.frameId)).size === list.remoteOwners.length &&
+    new Set(list.remoteOwners.map((owner) => owner?.backendNodeId)).size ===
+      list.remoteOwners.length &&
+    list.remoteOwners.every(
+      (owner) =>
+        typeof owner?.frameId === 'string' &&
+        owner.frameId &&
+        !scope.treeFrames.has(owner.frameId) &&
+        scope.remoteBackendOwners.has(owner.backendNodeId)
+    ) &&
+    list.localFrames.length + list.remoteOwners.length === frames.length &&
+    relatedSize <= frames.length &&
+    frames.every((frame) => Number.isSafeInteger(frame.frameId) && frame.kind === 'ordinary')
+  );
+}
+
+export function scopeFailedFlag({
+  enabledError,
+  ownersError,
+  attachedError,
+  ownersReady,
+  cleanupFailed,
+  pastDeadline,
+  revisionMismatch,
+  noAutoAttach,
+}) {
+  return Boolean(
+    enabledError ||
+      ownersError ||
+      (attachedError && attachedError !== noAutoAttach) ||
+      !ownersReady ||
+      cleanupFailed ||
+      pastDeadline ||
+      revisionMismatch
+  );
+}
+
 export function classifyPageLock({
   targetId,
   scope,
@@ -1381,10 +1646,12 @@ class Guard {
         frames: new Set(),
         owners: new Set(),
         remoteOwners: new Set(),
+        remoteBackendOwners: new Map(),
         attachedFrames: new Set(),
         extensionOwners: new Set(),
         extensionMarkers: new Map(),
         ready: false,
+        diagOrigin: Date.now(),
       });
     return this.scopes.get(targetId);
   }
@@ -1514,19 +1781,10 @@ class Guard {
     if (lease && lease.state !== 'revoked') this.setDebuggerLease(targetId, state);
   }
 
-  async placePrivateFrames(targetId, deadline) {
-    const scope = this.scope(targetId);
-    if (
-      !this.extensionFrames ||
-      typeof this.privateFrames !== 'function' ||
-      !(scope.remoteBackendOwners?.size ?? scope.remoteOwners.size)
-    )
-      return;
-    scope.privatePlaced = false;
-    const revision = this.revisions.get(targetId);
-    const loader = scope.loader;
+  async racePrivateFrames(targetId, deadline) {
     let list;
     let timer;
+    const started = Date.now();
     try {
       list = await Promise.race([
         this.privateFrames(targetId),
@@ -1534,10 +1792,64 @@ class Guard {
           timer = setTimeout(resolve, Math.max(0, deadline - Date.now()));
         }),
       ]);
-    } catch {
+      return { list, duration: Date.now() - started, error: null };
+    } catch (error) {
+      return {
+        list: undefined,
+        duration: Date.now() - started,
+        error: error?.message ?? String(error),
+      };
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  async placePrivateFrames(targetId, deadline) {
+    const scope = this.scope(targetId);
+    const origin = scope.diagOrigin;
+    const skip = privateFramesSkipReason(this.extensionFrames, this.privateFrames, scope);
+    if (skip) {
+      placementFact('privateFrames.skip', {
+        ms: Date.now() - origin,
+        targetId,
+        skip,
+        extensionFrames: Boolean(this.extensionFrames),
+        hasPrivateFrames: typeof this.privateFrames === 'function',
+        remoteBackendOwnersSize: scope.remoteBackendOwners.size,
+        remoteOwnersSize: scope.remoteOwners.size,
+      });
+      return;
+    }
+    scope.privatePlaced = false;
+    const revision = this.revisions.get(targetId);
+    const loader = scope.loader;
+    const raced = await this.racePrivateFrames(targetId, deadline);
+    if (raced.error) {
+      placementFact('privateFrames.error', {
+        ms: Date.now() - origin,
+        targetId,
+        duration: raced.duration,
+        error: raced.error,
+      });
+    }
+    const list = raced.list;
+    const relatedSize = this.relatedFrames(scope.frames).size;
+    const incomplete = classifyPrivateFramesIncomplete(list, scope, relatedSize);
+    placementFact('privateFrames.reply', {
+      ms: Date.now() - origin,
+      targetId,
+      duration: raced.duration,
+      deadlineLeft: deadlineLeftMs(deadline),
+      version: list?.version ?? null,
+      revision: list?.revision ?? null,
+      framesLen: Array.isArray(list?.frames) ? list.frames.length : null,
+      complete: incomplete.complete,
+      incomplete: incomplete.complete ? null : incomplete,
+      stale:
+        this.revisions.get(targetId) !== revision ||
+        scope.loader !== loader ||
+        Date.now() >= deadline,
+    });
     if (
       this.revisions.get(targetId) !== revision ||
       scope.loader !== loader ||
@@ -1554,37 +1866,10 @@ class Guard {
       this.replaceDebuggerLease(targetId, 'suspended');
       return;
     }
-    const root = Array.isArray(frames) && frames.find((frame) => frame?.frameId === 0);
-    const ids = new Set(Array.isArray(frames) ? frames.map((frame) => frame?.frameId) : []);
-    const complete =
-      list?.version === 2 &&
-      Number.isSafeInteger(list.revision) &&
-      root?.parentFrameId === -1 &&
-      list.rootFrameId === scope.root &&
-      typeof loader === 'string' &&
-      loader &&
-      list.rootLoaderId === loader &&
-      frames.length === ids.size &&
-      Array.isArray(list.localFrames) &&
-      list.localFrames.length === scope.treeFrames.size &&
-      new Set(list.localFrames).size === list.localFrames.length &&
-      list.localFrames.every((id) => scope.treeFrames.has(id)) &&
-      Array.isArray(list.remoteOwners) &&
-      list.remoteOwners.length === scope.remoteBackendOwners.size &&
-      new Set(list.remoteOwners.map((owner) => owner?.frameId)).size === list.remoteOwners.length &&
-      new Set(list.remoteOwners.map((owner) => owner?.backendNodeId)).size ===
-        list.remoteOwners.length &&
-      list.remoteOwners.every(
-        (owner) =>
-          typeof owner?.frameId === 'string' &&
-          owner.frameId &&
-          !scope.treeFrames.has(owner.frameId) &&
-          scope.remoteBackendOwners.has(owner.backendNodeId)
-      ) &&
-      list.localFrames.length + list.remoteOwners.length === frames.length &&
-      this.relatedFrames(scope.frames).size <= frames.length &&
-      frames.every((frame) => Number.isSafeInteger(frame.frameId) && frame.kind === 'ordinary');
-    const rooted = Boolean(complete && this.rootedPrivateFrames(frames));
+    const rooted = Boolean(
+      privateFramesReplyComplete(list, scope, loader, frames, relatedSize) &&
+        this.rootedPrivateFrames(frames)
+    );
     if (rooted) {
       for (const owner of list.remoteOwners)
         this.recordOwner(scope, {
@@ -1784,15 +2069,36 @@ class Guard {
     const scope = this.scope(targetId);
     const documents = snapshot?.documents;
     const strings = snapshot?.strings;
-    const refused = () => this.recordOwners(targetId, undefined);
+    const origin = scope.diagOrigin;
+    const refused = (detail) => {
+      placementFact('snapshot.refuse', {
+        ms: Date.now() - origin,
+        targetId,
+        ...detail,
+      });
+      this.recordOwners(targetId, undefined);
+    };
     if (
       !Array.isArray(documents) ||
       !documents.length ||
       !Array.isArray(strings) ||
-      strings.some((value) => typeof value !== 'string') ||
-      strings[documents[0]?.frameId] !== scope.root
+      strings.some((value) => typeof value !== 'string')
     )
-      return refused();
+      return refused(
+        classifySnapshotRefuse({
+          documents,
+          strings,
+          scopeRoot: scope.root,
+        })
+      );
+    if (strings[documents[0]?.frameId] !== scope.root)
+      return refused(
+        classifySnapshotRefuse({
+          documents,
+          strings,
+          scopeRoot: scope.root,
+        })
+      );
     const local = new Set();
     const backend = new Set();
     const owners = [];
@@ -1811,15 +2117,59 @@ class Guard {
         nodes.nodeName.length !== nodes.backendNodeId.length ||
         nodes.nodeName.length !== nodes.attributes.length
       )
-        return refused();
+        return refused(
+          classifySnapshotRefuse({
+            documents,
+            strings,
+            scopeRoot: scope.root,
+            documentShapeOk: false,
+            documentFrameId: frameId,
+          })
+        );
       local.add(frameId);
-      if (!this.snapshotContentReady(nodes)) return refused();
+      const contentReady = classifySnapshotContentReady(nodes);
+      if (!contentReady.ready)
+        return refused(
+          classifySnapshotRefuse({
+            documents,
+            strings,
+            scopeRoot: scope.root,
+            contentReady,
+            documentFrameId: frameId,
+          })
+        );
       if (!this.snapshotDocumentOwners(scope, documents, strings, nodes, backend, owners, remote))
-        return refused();
+        return refused(
+          classifySnapshotRefuse({
+            documents,
+            strings,
+            scopeRoot: scope.root,
+            documentOwnersOk: false,
+            documentFrameId: frameId,
+          })
+        );
     }
-    if (local.size !== scope.treeFrames.size || owners.length !== local.size - 1) return refused();
+    if (local.size !== scope.treeFrames.size || owners.length !== local.size - 1)
+      return refused(
+        classifySnapshotRefuse({
+          documents,
+          strings,
+          scopeRoot: scope.root,
+          localSize: local.size,
+          treeFramesSize: scope.treeFrames.size,
+          ownersLength: owners.length,
+        })
+      );
     this.recordOwners(targetId, { children: owners });
     scope.remoteBackendOwners = remote;
+    placementFact('snapshot.ok', {
+      ms: Date.now() - origin,
+      targetId,
+      localSize: local.size,
+      treeFramesSize: scope.treeFrames.size,
+      ownersLength: owners.length,
+      remoteBackendOwnersSize: remote.size,
+    });
   }
 
   snapshotDocumentOwners(scope, documents, strings, nodes, backend, owners, remote) {
@@ -2007,57 +2357,154 @@ class Guard {
     return promise;
   }
 
+  async placeCallDiag(origin, targetId, sessionId, deadline, method, params) {
+    const started = Date.now();
+    const answer = await this.call(method, params, sessionId, deadline);
+    placementFact('placeCall', {
+      ms: Date.now() - origin,
+      targetId,
+      method,
+      params,
+      duration: Date.now() - started,
+      deadlineLeft: deadlineLeftMs(deadline),
+      error: answer.error?.message ?? null,
+      resultShape: resultShape(answer.result),
+      ownersReady: Boolean(this.scope(targetId).ownersReady),
+    });
+    return answer;
+  }
+
+  async placeAttachDiag(origin, targetId, sessionId, deadline, scope) {
+    const attachedStarted = Date.now();
+    const attached = await this.placementAttach(
+      sessionId,
+      {
+        autoAttach: true,
+        waitForDebuggerOnStart: false,
+        flatten: true,
+        filter: FRAME_CHILDREN,
+      },
+      deadline
+    );
+    placementFact('placeCall', {
+      ms: Date.now() - origin,
+      targetId,
+      method: 'Target.setAutoAttach',
+      params: { autoAttach: true, flatten: true },
+      duration: Date.now() - attachedStarted,
+      deadlineLeft: deadlineLeftMs(deadline),
+      error: attached.error?.message ?? null,
+      resultShape: resultShape(attached.result),
+      skipped: false,
+      ownersReady: Boolean(scope.ownersReady),
+    });
+    return attached;
+  }
+
+  markPlaceFailed(scope, origin, targetId, deadline, revision, parts) {
+    const pastDeadline = deadline !== undefined && Date.now() >= deadline;
+    const revisionMismatch = deadline !== undefined && this.revisions.get(targetId) !== revision;
+    const failedInfo = classifyScopeFailed({
+      enabledError: parts.enabledError,
+      ownersError: parts.ownersError,
+      attachedError: parts.attachedError,
+      ownersReady: Boolean(scope.ownersReady),
+      cleanupFailed: Boolean(parts.cleanupFailed),
+      pastDeadline,
+      revisionMismatch,
+      noAutoAttach: NO_AUTO_ATTACH,
+    });
+    scope.failed = scopeFailedFlag({
+      enabledError: parts.enabledError,
+      ownersError: parts.ownersError,
+      attachedError: parts.attachedError,
+      ownersReady: Boolean(scope.ownersReady),
+      cleanupFailed: parts.cleanupFailed,
+      pastDeadline,
+      revisionMismatch,
+      noAutoAttach: NO_AUTO_ATTACH,
+    });
+    placementFact('placeOne.failed', {
+      ms: Date.now() - origin,
+      targetId,
+      failed: scope.failed,
+      condition: failedInfo.condition,
+      deadline,
+      pastDeadline,
+      revisionMismatch,
+      ownersReady: Boolean(scope.ownersReady),
+      setup: Boolean(scope.setup),
+      tree: Boolean(scope.tree),
+      pending: scope.pending,
+    });
+  }
+
   async placeOne(targetId, sessionId) {
     this.placements.set(sessionId, targetId);
-    this.scope(targetId).pending = (this.scope(targetId).pending ?? 0) + 1;
-    this.scope(targetId).ready = false;
+    const scope = this.scope(targetId);
+    scope.pending = (scope.pending ?? 0) + 1;
+    scope.ready = false;
+    const origin = scope.diagOrigin;
     this.stopCasts();
     const deadline = this.extensionFrames ? Date.now() + PROBE_WAIT : undefined;
     const revision = this.revisions.get(targetId);
-    const enabled = await this.call('Page.enable', {}, sessionId, deadline);
-    await this.call('Page.getFrameTree', {}, sessionId, deadline);
+    placementFact('placeOne.start', {
+      ms: Date.now() - origin,
+      targetId,
+      sessionId,
+      probeWait: PROBE_WAIT,
+      deadline,
+      extensionFrames: Boolean(this.extensionFrames),
+    });
+    const enabled = await this.placeCallDiag(
+      origin,
+      targetId,
+      sessionId,
+      deadline,
+      'Page.enable',
+      {}
+    );
+    await this.placeCallDiag(origin, targetId, sessionId, deadline, 'Page.getFrameTree', {});
     const owners = this.extensionFrames
-      ? await this.call(
-          'DOMSnapshot.captureSnapshot',
-          { computedStyles: [], includeDOMRects: false, includePaintOrder: false },
+      ? await this.placeCallDiag(
+          origin,
+          targetId,
           sessionId,
-          deadline
+          deadline,
+          'DOMSnapshot.captureSnapshot',
+          {
+            computedStyles: [],
+            includeDOMRects: false,
+            includePaintOrder: false,
+          }
         )
-      : await this.call('DOM.getDocument', { depth: -1, pierce: true }, sessionId);
-    const disabled = this.extensionFrames ? {} : await this.call('DOM.disable', {}, sessionId);
+      : await this.placeCallDiag(origin, targetId, sessionId, deadline, 'DOM.getDocument', {
+          depth: -1,
+          pierce: true,
+        });
+    const disabled = this.extensionFrames
+      ? {}
+      : await this.placeCallDiag(origin, targetId, sessionId, deadline, 'DOM.disable', {});
     const cleanupFailed =
       disabled.error &&
       !(
         disabled.error.code === -32000 &&
         disabled.error.message === '{"code":-32000,"message":"DOM agent hasn\'t been enabled"}'
       );
-    const scope = this.scope(targetId);
-    const attached =
-      !owners.error && !cleanupFailed && scope.ownersReady && scope.protectedOwner
-        ? {}
-        : await this.placementAttach(
-            sessionId,
-            {
-              autoAttach: true,
-              waitForDebuggerOnStart: false,
-              flatten: true,
-              filter: FRAME_CHILDREN,
-            },
-            deadline
-          );
+    const skipAttach = !owners.error && !cleanupFailed && scope.ownersReady && scope.protectedOwner;
+    const attached = skipAttach
+      ? {}
+      : await this.placeAttachDiag(origin, targetId, sessionId, deadline, scope);
     scope.pending -= 1;
     scope.setup = Boolean(
       !enabled.error && (!attached.error || attached.error.message === NO_AUTO_ATTACH)
     );
-    scope.failed = Boolean(
-      enabled.error ||
-        owners.error ||
-        (attached.error && attached.error.message !== NO_AUTO_ATTACH) ||
-        !scope.ownersReady ||
-        cleanupFailed ||
-        (deadline !== undefined &&
-          (Date.now() >= deadline || this.revisions.get(targetId) !== revision))
-    );
+    this.markPlaceFailed(scope, origin, targetId, deadline, revision, {
+      enabledError: enabled.error?.message ?? null,
+      ownersError: owners.error?.message ?? null,
+      attachedError: attached.error?.message ?? null,
+      cleanupFailed,
+    });
     scope.ready = Boolean(scope.tree && !scope.failed && !scope.pending);
     if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
     await this.placePrivateFrames(targetId, deadline);
@@ -2066,7 +2513,7 @@ class Guard {
     this.stopCasts();
     await Promise.all(
       [...this.scopes]
-        .filter(([, scope]) => scope.parent === targetId)
+        .filter(([, entry]) => entry.parent === targetId)
         .map(([id]) => this.placing.get(id))
     );
   }
