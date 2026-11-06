@@ -68,6 +68,7 @@ const PROBE_TRIES = 3;
 const PROBE_BUDGET = 1000;
 const ANSWER_MS = 1000;
 const LISTED_CHECKS = 8;
+const LISTED_FRESH_MS = 100;
 const WORKER_TYPES = new Set(['service_worker', 'shared_worker', 'worker']);
 const HISTORY_NAV = new Set([
   'restore',
@@ -2275,8 +2276,12 @@ class Guard {
     const prefetched = rest.length > 0;
     const early = rest[0];
     if (prefetched && early?.listedReject !== undefined) throw early.listedReject;
-    const answer = prefetched
-      ? early
+    const useEarly =
+      prefetched &&
+      typeof early?.arrivedAt === 'number' &&
+      Date.now() - early.arrivedAt <= LISTED_FRESH_MS;
+    const answer = useEarly
+      ? early.answer
       : await this.within(this.call('Target.getTargetInfo', { targetId }), limit);
     const info = answer?.result?.targetInfo;
     if (!answer || answer.error || info?.targetId !== targetId || typeof info.type !== 'string')
@@ -4690,10 +4695,11 @@ class Guard {
         const index = cursor++;
         if (index >= infos.length) return;
         try {
-          early[index] = await this.within(
+          const answer = await this.within(
             this.call('Target.getTargetInfo', { targetId: infos[index].targetId }),
             ANSWER_MS
           );
+          early[index] = { answer, arrivedAt: Date.now() };
         } catch (error) {
           early[index] = { listedReject: error };
         }

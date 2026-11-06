@@ -10,8 +10,10 @@ const protectedOrigin = 'https://protected.invalid';
 const secret = `${protectedOrigin}/secret`;
 const failed = `${protectedOrigin}/controller/synthetic-listed-id`;
 const LISTED_CHECKS = 8;
+const LISTED_FRESH_MS = 100;
 const guardSource = fileURLToPath(new URL('../../src/seed/guard.js', import.meta.url));
 const root = fileURLToPath(new URL('../..', import.meta.url));
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const serialListedSource = `async listed(message, result) {
     const targetInfos = [];
@@ -51,6 +53,10 @@ function spyGuardModule() {
       `learn(info) {
     globalThis.__listedLearnSpy?.(info);
     if (!info?.targetId) return;`
+    )
+    .replace(
+      'Date.now() - early.arrivedAt <= LISTED_FRESH_MS',
+      `(globalThis.__listedFreshSpy?.(Date.now() - early.arrivedAt), Date.now() - early.arrivedAt <= LISTED_FRESH_MS)`
     )
     .replaceAll("from './", "from '../../src/seed/")
     .replaceAll('from "./', 'from "../../src/seed/');
@@ -502,3 +508,134 @@ test('listed phase1 peak bound and phase2 skips fresh getTargetInfo without open
   assert.equal(probes.length, 45);
   assert.ok(wire.stats.overlaps > 0);
 });
+
+test('listed stale prefetch after 150 ms delay refetches and hides navigated V', {
+  timeout: 15000,
+}, async (t) => {
+  const oraclePath = serialOracleModule();
+  async function run(source) {
+    const wire = await protocol(t, { guardSource: source });
+    const s = wire.target('S');
+    const v = wire.target('V');
+    wire.order([s, v]);
+    const started = Date.now();
+    wire.liveInfo((message) => {
+      if (message.params?.targetId !== 'V') return null;
+      const url = Date.now() - started > 100 ? secret : ordinary;
+      return { result: { targetInfo: { targetId: 'V', type: 'page', url } } };
+    });
+    wire.latency((message) => (message.params?.targetId === 'S' ? 150 : 0));
+    const answer = await wire.send('Target.getTargets');
+    assert.equal(answer.error, undefined);
+    return answer.result.targetInfos.map((info) => info.targetId);
+  }
+  const concurrent = await run(pathToFileURL(guardSource).href);
+  const serial = await run(oraclePath);
+  assert.deepEqual(concurrent, serial);
+  assert.deepEqual(concurrent, ['S']);
+});
+
+test('listed fresh prefetch within 100 ms may list V and age stays in bound', {
+  timeout: 15000,
+}, async (t) => {
+  const ages = [];
+  globalThis.__listedFreshSpy = (age) => ages.push(age);
+  t.after(() => {
+    delete globalThis.__listedFreshSpy;
+  });
+  const wire = await protocol(t, { guardSource: spyGuardModule() });
+  const s = wire.target('S');
+  const v = wire.target('V');
+  wire.order([s, v]);
+  const started = Date.now();
+  wire.liveInfo((message) => {
+    if (message.params?.targetId !== 'V') return null;
+    const url = Date.now() - started > 50 ? secret : ordinary;
+    return { result: { targetInfo: { targetId: 'V', type: 'page', url } } };
+  });
+  wire.latency((message) => (message.params?.targetId === 'S' ? 20 : 0));
+  const answer = await wire.send('Target.getTargets');
+  assert.equal(answer.error, undefined);
+  const ids = answer.result.targetInfos.map((info) => info.targetId);
+  assert.ok(ids.includes('S'));
+  assert.ok(
+    ages.length > 0 && ages.every((age) => age <= LISTED_FRESH_MS),
+    `prefetch ages ${JSON.stringify(ages)} must be <= ${LISTED_FRESH_MS}`
+  );
+  if (ids.includes('V')) {
+    assert.equal(answer.result.targetInfos.find((info) => info.targetId === 'V')?.url, ordinary);
+  }
+});
+
+test('listed slow phase2 opener walk refetches later target like serial', {
+  timeout: 15000,
+}, async (t) => {
+  const oraclePath = serialOracleModule();
+  async function run(source) {
+    const wire = await protocol(t, { guardSource: source });
+    const slow = wire.target('slow');
+    slow.info.openerId = 'missing';
+    const v = wire.target('V');
+    wire.order([slow, v]);
+    let missingHeld;
+    wire.hold((message) => {
+      if (
+        message.method === 'Target.getTargetInfo' &&
+        message.params?.targetId === 'missing' &&
+        !missingHeld
+      ) {
+        missingHeld = message;
+        return true;
+      }
+      return false;
+    });
+    const pending = wire.request('Target.getTargets');
+    await flush();
+    await pause(40);
+    v.live = { targetId: 'V', type: 'page', url: secret };
+    await pause(150);
+    assert.ok(missingHeld);
+    wire.release(missingHeld, {
+      error: { code: -32000, message: 'No target with given id found' },
+    });
+    const answer = await pending.answer;
+    assert.equal(answer.error, undefined);
+    return answer.result.targetInfos.map((info) => info.targetId);
+  }
+  const concurrent = await run(pathToFileURL(guardSource).href);
+  const serial = await run(oraclePath);
+  assert.deepEqual(concurrent, serial);
+  assert.equal(concurrent.includes('V'), false);
+});
+
+for (const [order, mode] of [
+  ['child-first', 'protected'],
+  ['child-first', 'error'],
+  ['parent-first', 'protected'],
+  ['parent-first', 'error'],
+]) {
+  test(`listed invariant ${order} P always ${mode} hides C and P when delayed`, {
+    timeout: 15000,
+  }, async (t) => {
+    const oraclePath = serialOracleModule();
+    async function run(source) {
+      const wire = await protocol(t, { guardSource: source });
+      openerPair(wire, order === 'child-first');
+      if (mode === 'error') {
+        wire.failInfo((message) =>
+          message.params?.targetId === 'P'
+            ? { error: { code: -32000, message: 'No target with given id found' } }
+            : null
+        );
+      }
+      wire.latency((message) => (message.params?.targetId === 'P' ? 60 : 5));
+      const answer = await wire.send('Target.getTargets');
+      assert.equal(answer.error, undefined);
+      return answer.result.targetInfos.map((info) => info.targetId);
+    }
+    const concurrent = await run(pathToFileURL(guardSource).href);
+    const serial = await run(oraclePath);
+    assert.deepEqual(concurrent, serial);
+    assert.deepEqual(concurrent, []);
+  });
+}
