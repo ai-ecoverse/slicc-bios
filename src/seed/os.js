@@ -2,7 +2,7 @@ import audio from '@ai-ecoverse/slicc-audio/page';
 import capture from '@ai-ecoverse/slicc-capture/page';
 import * as kernelModule from '@ai-ecoverse/slicc-kernel';
 import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
-import { confirm, surfaces } from '@ai-ecoverse/slicc-spectrum/ui';
+import * as spectrumUi from '@ai-ecoverse/slicc-spectrum/ui';
 import { sealedLogin, signIn } from './adobe.js';
 import {
   deployed as agentDeployed,
@@ -85,6 +85,7 @@ import {
   pageRequests,
   plugged,
 } from './requests.js';
+import { withSecrets } from './secrets.js';
 import { BIOS, home, sharesOrigin } from './site.js';
 import { importSix, retirePreview, said } from './six.js';
 import { installPrompts, keepStorage, onSend } from './storage.js';
@@ -147,6 +148,7 @@ import {
 } from './vault.js';
 
 const { attachKernel, createKernel, serveHostfsPort } = kernelModule;
+const { confirm, surfaces } = spectrumUi;
 const forwardKernel = kernelModule.SEALED_FETCH_VERSION === 1;
 
 markCaptured();
@@ -320,6 +322,12 @@ const vault = createVault({
   policyReady: () => policy?.ready() === true,
   onRequest: (req, id) => void jerk.handle(req, id),
   onCancelled: (id) => jerk.cancelled(id),
+  ask: {
+    device: (id) => onDevice(id),
+    shows: () =>
+      spectrumUi.approvalKinds?.includes('secret') === true ||
+      globalThis.sliccSecretApprovals === true,
+  },
 });
 const forwarder = createForwarder({
   vault,
@@ -367,15 +375,16 @@ reportStopped(notices);
 const registration = await navigator.serviceWorker?.getRegistration();
 if (registration) watchWaiting({ registration, board, notices, reload: () => location.reload() });
 const approvals = createApprovals();
+const asking = withSecrets(approvals.port, vault.port);
+function onDevice(device) {
+  const name = device && [...links.links.values()].find((link) => link.id === device)?.peer?.name;
+  return name ? `on ${name}` : undefined;
+}
 const sudo = routeSudo({
   agent: () => owner,
   judges: agentJudges,
   fallback: approvals.approve,
-  where: (req) => {
-    const device = followerDevice(req.tag);
-    const name = device && [...links.links.values()].find((link) => link.id === device)?.peer?.name;
-    return name ? `on ${name}` : undefined;
-  },
+  where: (req) => onDevice(followerDevice(req.tag)),
 });
 const mode = usersMode();
 protectInstalls(mode !== 'off', mode === 'enforce');
@@ -460,10 +469,10 @@ function base(os) {
     agent: browser.stopping(heldAgent(files.agent, os ? mirrorHold(os, tabs) : composer)),
     updates: os ? mirrorUpdates(os) : updates,
     notices,
-    approvals: approvals.port,
+    approvals: asking.port,
     network,
     browser: browser.port,
-    vault: vault.port,
+    vault: asking.vault,
     tray: trayPort(network, { name: `seven on ${location.host}` }),
   };
 }
@@ -1032,10 +1041,10 @@ async function follow() {
     ...model,
     updates: waiting,
     notices,
-    approvals: approvals.port,
+    approvals: asking.port,
     network: reach.port,
     browser: browser.port,
-    vault: vault.port,
+    vault: asking.vault,
     tabs,
   };
   await app.updateComplete;

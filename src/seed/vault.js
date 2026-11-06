@@ -1,5 +1,6 @@
 import { vaultCause } from './causes.js';
 import { policyDependent } from './policy.js';
+import { askRelay } from './secrets.js';
 import { production } from './site.js';
 
 export const VAULT = 'https://vault.sliccy.ai';
@@ -182,16 +183,15 @@ export function vaultButtons({ document, origin, media }) {
     scheme = next;
     for (const handle of buttons) handle.repaint();
   });
-  function button() {
+  function framed(file, kind, paint) {
     const element = document.createElement('iframe');
     element.title = 'Vault';
-    element.dataset.vault = 'button';
+    element.dataset.vault = kind;
     element.style.border = '0';
     element.style.width = '0';
     element.style.height = '0';
-    element.src = `${origin}/button.html`;
+    element.src = `${origin}/${file}`;
     const heard = new Set();
-    let config = null;
     const send = (message) => element.contentWindow?.postMessage(message, origin);
     const onMessage = (event) => {
       if (event.source !== element.contentWindow || event.origin !== origin) return;
@@ -201,18 +201,16 @@ export function vaultButtons({ document, origin, media }) {
     };
     const handle = {
       repaint() {
-        if (config) send({ type: TYPE, v: 1, op: 'button', button: { ...config, theme: scheme } });
+        const message = paint(scheme);
+        if (message) send(message);
       },
     };
     element.addEventListener('load', handle.repaint);
     buttons.add(handle);
     return {
       element,
-      post(message) {
-        if (message?.op !== 'button') return send(message);
-        config = message.button;
-        handle.repaint();
-      },
+      send,
+      repaint: handle.repaint,
       listen(listener) {
         if (!heard.size) globalThis.addEventListener('message', onMessage);
         heard.add(listener);
@@ -225,7 +223,43 @@ export function vaultButtons({ document, origin, media }) {
       },
     };
   }
-  return { button, close: stop };
+  function button() {
+    let config = null;
+    const frame = framed(
+      'button.html',
+      'button',
+      (theme) => config && { type: TYPE, v: 1, op: 'button', button: { ...config, theme } }
+    );
+    return {
+      element: frame.element,
+      post(message) {
+        if (message?.op !== 'button') return frame.send(message);
+        config = message.button;
+        frame.repaint();
+      },
+      listen: frame.listen,
+    };
+  }
+  function valueFrame(request) {
+    let config = {};
+    const frame = framed('value.html', 'value', (theme) => ({
+      type: TYPE,
+      v: 1,
+      op: 'value',
+      request,
+      config: { ...config, theme },
+    }));
+    return {
+      element: frame.element,
+      post(message) {
+        if (message?.op !== 'value') return frame.send(message);
+        config = { ...config, ...message.config };
+        frame.repaint();
+      },
+      listen: frame.listen,
+    };
+  }
+  return { button, valueFrame, close: stop };
 }
 
 const data = (reply) => {
@@ -254,7 +288,7 @@ async function named(call, op, fields) {
   }
 }
 
-export function vaultPort({ call, state, button }) {
+export function vaultPort({ call, state, button, valueFrame }) {
   return {
     on: state.on,
     status: state.status,
@@ -311,6 +345,7 @@ export function vaultPort({ call, state, button }) {
       return named(call, 'put', { name, kind, settings });
     },
     button,
+    valueFrame,
   };
 }
 
@@ -367,6 +402,7 @@ export function sealedRelay({
   onRequest,
   policyReady = () => true,
   away = () => false,
+  ask = askRelay({ call }),
 }) {
   return async (req, { signal } = {}) => {
     const { caller, ...rest } = req ?? {};
@@ -374,6 +410,7 @@ export function sealedRelay({
     if (restricted) return restricted;
     if (Object.hasOwn(KERNEL_OPS, rest.op ?? '')) return kernelOp(call, rest, { signal, away });
     if (away()) return refusal('ENOTCONN', NOT_CONNECTED);
+    if (rest.op === 'ask') return ask(rest, caller, signal);
     const exec = rest.op === 'materialize' || rest.op === 'materializeConsume';
     if (exec && users() !== 'enforce')
       return refusal('EACCES', 'secrets reach programs only when kernel users are enforce');
@@ -425,6 +462,7 @@ function snapshots({ now, timers, pending, view, timings }) {
     list: new Set(),
     availability: new Set(),
     placeholders: new Set(),
+    cancelled: new Set(),
   };
   let shown = 'connecting';
   const emit = (type, value) => {
@@ -432,7 +470,9 @@ function snapshots({ now, timers, pending, view, timings }) {
   };
   const availability = () => {
     if (!view.welcomed) return now() - view.since >= WELCOME_MS ? 'waiting' : 'connecting';
-    const late = [...pending.values()].some((item) => item.sent && now() - item.at >= ANSWER_MS);
+    const late = [...pending.values()].some(
+      (item) => item.sent && !item.held && now() - item.at >= ANSWER_MS
+    );
     if (late) return 'waiting';
     return view.status?.locked ? 'locked' : 'ready';
   };
@@ -471,7 +511,7 @@ function dropAway(pending, view, state) {
 
 const READS = new Set(['list', 'audit']);
 
-function dropSent(pending) {
+function dropSent(pending, asks) {
   for (const [id, item] of pending) {
     if (!item.sent) continue;
     if (READS.has(item.message.op)) {
@@ -479,6 +519,7 @@ function dropSent(pending) {
       continue;
     }
     pending.delete(id);
+    asks.delete(id);
     item.reject(failure({ code: 'ENOTCONN', message: RECONNECTED }));
   }
 }
@@ -538,14 +579,29 @@ export function vaultScrubber({ frame, origin, pair }) {
   };
 }
 
-function vaultCaller({ pending, view, post, state, next, now }) {
-  return (op, fields = {}, { value, signal, transfer = [], dropAway = false } = {}) => {
+function vaultCaller({ pending, asks, view, post, state, next, now }) {
+  return (
+    op,
+    fields = {},
+    { value, signal, transfer = [], dropAway = false, held = false, asked } = {}
+  ) => {
     if (signal?.aborted)
       return Promise.reject(failure({ code: 'ECANCELED', message: 'cancelled' }));
     const id = next();
     const message = { ...fields, v: 1, id, op };
+    if (asked) asks.set(id, asked);
     return new Promise((resolve, reject) => {
-      const item = { message, transfer, value, resolve, reject, sent: null, at: now(), dropAway };
+      const item = {
+        message,
+        transfer,
+        value,
+        resolve,
+        reject,
+        sent: null,
+        at: now(),
+        dropAway,
+        held,
+      };
       pending.set(id, item);
       signal?.addEventListener?.(
         'abort',
@@ -602,8 +658,9 @@ function listedPlaceholders(view, state, list) {
   state.emit('placeholders', view.placeholders);
 }
 
-function vaultAnswerer(pending, forward) {
+function vaultAnswerer(pending, asks, forward) {
   return (reply) => {
+    asks.delete(reply.id);
     const item = pending.get(reply.id);
     if (!item) return;
     pending.delete(reply.id);
@@ -613,6 +670,20 @@ function vaultAnswerer(pending, forward) {
       item.resolve(reply);
     }
   };
+}
+
+function ended(message, { asks, state, onCancelled }) {
+  if (message.event === 'asked') {
+    const asked = asks.get(message.call);
+    asks.delete(message.call);
+    return asked?.(message.request);
+  }
+  onCancelled(message.request, message.kind);
+  state.emit('cancelled', {
+    request: message.request,
+    kind: message.kind,
+    state: message.state ?? 'cancelled',
+  });
 }
 
 function vaultAgent({ frame, origin, pair, loads }) {
@@ -640,8 +711,10 @@ export function createVault({
   onRequest = () => {},
   onCancelled = () => {},
   onRefresh = () => {},
+  ask = {},
 }) {
   const pending = new Map();
+  const asks = new Map();
   const workers = new Set();
   const { view, timings } = vaultState(now);
   const state = snapshots({ now, timers, pending, view, timings });
@@ -672,7 +745,7 @@ export function createVault({
     state.later(ANSWER_MS);
   };
 
-  const call = vaultCaller({ pending, view, post, state, next: () => ++serial, now });
+  const call = vaultCaller({ pending, asks, view, post, state, next: () => ++serial, now });
   async function relist() {
     try {
       view.list = (await call('list')).list;
@@ -680,7 +753,7 @@ export function createVault({
     } catch {}
   }
 
-  const answer = vaultAnswerer(pending, forward);
+  const answer = vaultAnswerer(pending, asks, forward);
 
   function event(message, ports) {
     if (message.event === 'status') {
@@ -697,7 +770,8 @@ export function createVault({
     } else if (message.event === 'changed') void relist();
     else if (message.event === 'egress' && ports[0] && transport)
       void answerEgress(transport, message.request, ports[0], { timers });
-    else if (message.event === 'cancelled') onCancelled(message.request, message.kind);
+    else if (message.event === 'asked' || message.event === 'cancelled')
+      ended(message, { asks, state, onCancelled });
     else if (message.event === 'refresh') onRefresh(message);
   }
 
@@ -736,7 +810,7 @@ export function createVault({
     sentGid = Number.isInteger(gid) ? gid : undefined;
     const { port1, port2 } = new MessageChannel();
     page?.close();
-    dropSent(pending);
+    dropSent(pending, asks);
     page = port1;
     view.welcomed = false;
     view.since = now();
@@ -769,7 +843,7 @@ export function createVault({
   return {
     origin,
     frame,
-    port: vaultPort({ call, state, button: buttons.button }),
+    port: vaultPort({ call, state, button: buttons.button, valueFrame: buttons.valueFrame }),
     call,
     sealed: sealedRelay({
       call,
@@ -778,6 +852,7 @@ export function createVault({
       policyReady,
       onRequest,
       away: () => away(view, state),
+      ask: askRelay({ call, ...ask }),
     }),
     ...forwardState(view, () => epoch),
     placeholders: () => [...view.placeholders],

@@ -19,6 +19,9 @@ const pages = [];
 const agents = [];
 const requests = new Map();
 const tickets = new Map();
+const asks = new Map();
+let askSerial = 0;
+const asking = new BroadcastChannel('fake-vault-value');
 const mint = () => 'fnox_proxy_' + String(++serial).padStart(24, '0');
 const key = (kind, name) => kind + '\\u0000' + name;
 const keep = (fields) => {
@@ -51,7 +54,7 @@ const status = () => ({
   locked,
   lock: locked ? 'passkey' : 'auto',
   scrub: scrub(),
-  waiting: [],
+  waiting: [...asks.values()].map((ask) => ask.view),
   exportedAt: null,
   backupReminder: live().some((record) => record.kind === 'secret') ? 'due' : null,
   policy,
@@ -107,6 +110,46 @@ const hide = (text) => {
   for (const record of records.values()) out = out.split(record.value).join(record.placeholder);
   return out;
 };
+const pushStatus = () => {
+  for (const each of pages) each.postMessage({ v: 1, event: 'status', status: status() });
+};
+const endAsk = (ask, state, reply) => {
+  asks.delete(ask.view.id);
+  if (state !== 'done')
+    for (const each of pages) each.postMessage({ v: 1, event: 'cancelled', request: ask.view.id, kind: 'ask', state });
+  ask.port.postMessage({ v: 1, id: ask.call, op: 'sealed', reply: { v: 1, state, ...reply } });
+  asking.postMessage({ gone: ask.view.id, state });
+  pushStatus();
+};
+asking.onmessage = ({ data }) => {
+  const ask = asks.get(data.request);
+  if (!ask) return;
+  if (ask.view.mode === 'enter') {
+    const record = keep({ name: ask.view.name, value: data.value, source: 'settings' });
+    changed();
+    log({ role: 'value', op: 'sealed', request: data.request, name: record.name });
+    return endAsk(ask, 'done', { placeholder: record.placeholder, record: record.name, ...(ask.view.reveal ? { value: record.value } : {}) });
+  }
+  const record = records.get(key('secret', ask.view.name));
+  log({ role: 'value', op: 'allowed', request: data.request, name: record.name });
+  endAsk(ask, 'done', { placeholder: record.placeholder, record: record.name, value: record.value });
+};
+const ask = (port, id, req, stamp) => {
+  const requester = req.requester ?? {};
+  log({ role: 'page', op: 'ask', name: req.name, reveal: req.reveal ?? false, prompt: req.prompt ?? null, requester, stamp: { uid: stamp?.uid, tag: stamp?.tag ?? null } });
+  const reply = (fields) => port.postMessage({ v: 1, id, op: 'sealed', reply: { v: 1, ...fields } });
+  if (!['agent', 'user'].includes(requester.kind) || typeof requester.name !== 'string') return reply({ error: { code: 'EINVAL', message: 'malformed requester' } });
+  if ([...asks.values()].some((each) => each.view.uid === stamp.uid)) return reply({ error: { code: 'EAGAIN', message: 'another request is pending' } });
+  const record = records.get(key('secret', req.name));
+  const live = record && !record.removedAt;
+  if (live && !req.reveal) return reply({ state: 'done', placeholder: record.placeholder, record: record.name });
+  const request = 'ask-' + String(++askSerial);
+  const now = Date.now();
+  const view = { id: request, kind: 'ask', name: req.name, ...(req.prompt ? { prompt: req.prompt } : {}), mode: live ? 'reveal' : 'enter', reveal: req.reveal === true, requester, uid: stamp.uid, tag: stamp.tag ?? null, createdAt: now, expiresAt: now + 300000 };
+  asks.set(request, { view, port, call: id });
+  port.postMessage({ v: 1, event: 'asked', call: id, request });
+  pushStatus();
+};
 const page = (port) => (event) => {
   const { id, op } = event.data;
   log({ role: 'page', op, name: event.data.name, sealed: event.data.req?.op, stamp: Boolean(event.data.stamp) });
@@ -116,6 +159,13 @@ const page = (port) => (event) => {
   const refuse = () => port.postMessage({ v: 1, id, error: { code: 'EACCES', message: 'vault is locked: unlock it in the vault window' } });
   const result = (record) => ({ name: record.name, placeholder: record.placeholder, state: record.removedAt ? 'removed' : 'inert' });
   if (op === 'status') return reply({ status: status() });
+  if (op === 'sealed' && event.data.req?.op === 'ask') return ask(port, id, event.data.req, event.data.stamp);
+  if (op === 'cancel' && asks.has(event.data.request)) {
+    const state = event.data.reason === 'withdrawn' ? 'withdrawn' : 'cancelled';
+    log({ role: 'page', op: 'cancelled', request: event.data.request, reason: event.data.reason ?? null });
+    reply({ state });
+    return endAsk(asks.get(event.data.request), state, {});
+  }
   if (op === 'policy') {
     const files = event.data.files;
     const accepted = Array.isArray(files) && files.length === 2 && files.every((file) => file.users === 'enforce' && file.onRootFs === true && file.absent !== true);
@@ -370,6 +420,36 @@ addEventListener('message', (event) => {
 parent.postMessage({ type: 'slicc-vault', v: 1, event: 'ready' }, '*');
 `;
 
+const value = `
+let request = null;
+let sent = false;
+const asking = new BroadcastChannel('fake-vault-value');
+const post = (fields) => parent.postMessage({ type: 'slicc-vault', v: 1, ...fields }, '*');
+asking.onmessage = ({ data }) => {
+  if (data.gone && data.gone === request && !sent) post({ event: 'gone', request, state: data.state });
+};
+addEventListener('message', (event) => {
+  if (event.source !== parent || event.data?.type !== 'slicc-vault') return;
+  fetch('/log', { method: 'POST', body: JSON.stringify({ role: 'value', op: event.data.op, request: event.data.request ?? null, theme: event.data.config?.theme ?? null, origin: location.ancestorOrigins?.[0] ?? null }) });
+  if (event.data.op !== 'value') return;
+  request = event.data.request;
+  document.documentElement.style.colorScheme = event.data.config?.theme ?? 'normal';
+  post({ event: 'size', width: 320, height: 72, inset: 2 });
+});
+setInterval(async () => {
+  if (!request || sent) return;
+  const shared = await (await fetch('/state')).json();
+  if (shared.typed?.request !== request) return;
+  sent = true;
+  asking.postMessage({ request, value: shared.typed.value });
+  post({ event: 'done', request, state: shared.typed.value ? 'sealed' : 'allowed' });
+}, 100);
+post({ event: 'ready' });
+`;
+
+const valuePage =
+  '<!doctype html><meta charset="utf-8"><style>html,body{margin:0;background:transparent}</style><input type="password" aria-label="Value"><button type="button">Save</button><script src="/value.js"></script>';
+
 const buttonPage =
   '<!doctype html><meta charset="utf-8"><style>html,body{margin:0;background:transparent}button{margin:2px;height:32px;padding:0 14px;border-radius:16px;border:2px solid #8f8f8f;background:Canvas;color:CanvasText;font:700 14px system-ui;white-space:nowrap}</style><button type="button">Vault</button><script src="/button.js"></script>';
 
@@ -417,6 +497,7 @@ export async function startFakeVault(initial = {}) {
           egress: state.egress ?? null,
           mute: state.mute === true,
           hold: state.hold ?? [],
+          typed: state.typed ?? null,
         })
       );
     }
@@ -425,6 +506,8 @@ export async function startFakeVault(initial = {}) {
       '/frame.js': ['text/javascript', frame(state)],
       '/button.html': ['text/html', buttonPage],
       '/button.js': ['text/javascript', button],
+      '/value.html': ['text/html', valuePage],
+      '/value.js': ['text/javascript', value],
     };
     const file = files[url.pathname];
     res.writeHead(file ? 200 : 404, { ...headers, 'content-type': file?.[0] ?? 'text/plain' });
