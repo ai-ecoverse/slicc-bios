@@ -706,6 +706,7 @@ class Guard {
   constructor(connection, own, tabs, route, privateFrames) {
     this.privateFrames = route?.kind === 'extension' ? privateFrames : undefined;
     this.extensionFrames = route?.kind === 'extension';
+    this.route = typeof route?.kind === 'string' && route.kind ? route.kind : 'devtools';
     this.debuggerLeases = new Map();
     this.debuggerSupported = debuggerRouteSupported(route);
     this.connection = connection;
@@ -4956,7 +4957,22 @@ class Guard {
       const cookies = result.cookies.filter((item) => !this.cookie(item));
       return this.deliver({ ...message, result: { ...result, cookies } });
     }
-    this.deliver(message);
+    this.deliver(this.withVersionRoute(message, method, result));
+  }
+
+  withVersionRoute(message, method, result) {
+    if (
+      method !== 'Browser.getVersion' ||
+      message.error ||
+      !result ||
+      typeof result !== 'object' ||
+      Array.isArray(result)
+    )
+      return message;
+    const next = { ...result };
+    delete next.slicc;
+    next.slicc = { route: this.route };
+    return { ...message, result: next };
   }
 
   cookie(item) {
