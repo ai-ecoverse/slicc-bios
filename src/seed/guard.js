@@ -63,6 +63,7 @@ const HISTORY_POLL = 40;
 const FRAME_MS = 300;
 const TREE_WAIT = 2000;
 const PROBE_WAIT = 2000;
+const PLACE_RETRIES = 2;
 const PROBE_TRIES = 3;
 const PROBE_BUDGET = 1000;
 const ANSWER_MS = 1000;
@@ -1822,14 +1823,21 @@ class Guard {
 
   async placeNext(targetId, entry) {
     try {
-      await this.placeOne(targetId, entry.sessionId);
+      await this.placeSettled(targetId, entry);
       while (entry.again) {
         entry.again = false;
-        await this.placeOne(targetId, entry.sessionId);
+        await this.placeSettled(targetId, entry);
       }
     } finally {
       this.placementsPending.delete(targetId);
     }
+  }
+
+  async placeSettled(targetId, entry) {
+    const deadline = this.extensionFrames ? Date.now() + PROBE_WAIT : undefined;
+    let moved = await this.placeOne(targetId, entry.sessionId, deadline);
+    for (let retry = 0; moved && retry < PLACE_RETRIES && Date.now() < deadline; retry += 1)
+      moved = await this.placeOne(targetId, entry.sessionId, deadline);
   }
 
   placementAttach(sessionId, params, deadline) {
@@ -1856,12 +1864,11 @@ class Guard {
     return promise;
   }
 
-  async placeOne(targetId, sessionId) {
+  async placeOne(targetId, sessionId, deadline) {
     this.placements.set(sessionId, targetId);
     this.scope(targetId).pending = (this.scope(targetId).pending ?? 0) + 1;
     this.scope(targetId).ready = false;
     this.stopCasts();
-    const deadline = this.extensionFrames ? Date.now() + PROBE_WAIT : undefined;
     const revision = this.revisions.get(targetId);
     const enabled = await this.call('Page.enable', {}, sessionId, deadline);
     await this.call('Page.getFrameTree', {}, sessionId, deadline);
@@ -1898,15 +1905,15 @@ class Guard {
     scope.setup = Boolean(
       !enabled.error && (!attached.error || attached.error.message === NO_AUTO_ATTACH)
     );
-    scope.failed = Boolean(
+    const broken = Boolean(
       enabled.error ||
         owners.error ||
         (attached.error && attached.error.message !== NO_AUTO_ATTACH) ||
-        !scope.ownersReady ||
-        cleanupFailed ||
-        (deadline !== undefined &&
-          (Date.now() >= deadline || this.revisions.get(targetId) !== revision))
+        cleanupFailed
     );
+    const late = deadline !== undefined && Date.now() >= deadline;
+    const moved = deadline !== undefined && this.revisions.get(targetId) !== revision;
+    scope.failed = broken || !scope.ownersReady || late || moved;
     scope.ready = Boolean(scope.tree && !scope.failed && !scope.pending);
     if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
     await this.placePrivateFrames(targetId, deadline);
@@ -1918,6 +1925,7 @@ class Guard {
         .filter(([, scope]) => scope.parent === targetId)
         .map(([id]) => this.placing.get(id))
     );
+    return moved && !broken && !late;
   }
 
   scopeEvent(message) {
