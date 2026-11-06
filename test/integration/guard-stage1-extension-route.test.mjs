@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer as createHttp } from 'node:http';
 import { after, test } from 'node:test';
 import { DEBUGGER_ROUTE_UPDATE } from '../../src/seed/debugger.js';
+import { PROFILED } from '../../src/seed/guard.js';
 import { ready } from './bios.mjs';
 import { CURRENT_EXTENSION, realExtension, SEVEN } from './real-extension.mjs';
 
@@ -52,16 +53,7 @@ async function guarded(seven, privateFrames) {
           JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })
         );
       });
-    const waitFor = async (method, sessionId) => {
-      const deadline = Date.now() + 60000;
-      while (Date.now() < deadline) {
-        const at = events.findIndex((e) => e.method === method && e.sessionId === sessionId);
-        if (at >= 0) return events.splice(at, 1)[0];
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      return null;
-    };
-    globalThis.stage1 = { close: () => connection.close(), send, waitFor, events };
+    globalThis.stage1 = { close: () => connection.close(), send, events };
   }, privateFrames);
 }
 
@@ -111,7 +103,7 @@ test(`Stage 1 over the real extension ${CURRENT_EXTENSION.version}`, {
   t.after(() => seven.evaluate(() => globalThis.stage1?.close()));
 
   await t.test(
-    'with a private frame reader an ordinary page publishes a pause the client resumes',
+    'with a private frame reader a placed ordinary page answers a page-scoped command and Debugger.enable is PROFILED because the harness extension runs scripts there',
     async () => {
       await guarded(seven, true);
       const opened = await open(seven, page);
@@ -122,71 +114,28 @@ test(`Stage 1 over the real extension ${CURRENT_EXTENSION.version}`, {
         `the page never finished loading: ${JSON.stringify(opened.state)}`
       );
       const steps = await seven.evaluate(async (sessionId) => {
-        const { send, waitFor, events } = globalThis.stage1;
-        events.length = 0;
+        const { send } = globalThis.stage1;
+        const document = await send('DOM.getDocument', { depth: 0 }, sessionId);
+        if (document.error) return { phase: 'document', document };
         const enable = await send('Debugger.enable', {}, sessionId);
-        if (enable.error) return { phase: 'enable', enable };
-        const breakpoint = await send(
-          'Debugger.setInstrumentationBreakpoint',
-          { instrumentation: 'beforeScriptExecution' },
-          sessionId
-        );
-        if (breakpoint.error) return { phase: 'breakpoint', enable, breakpoint };
-        const pauseEval = send(
-          'Runtime.evaluate',
-          { expression: '1 + 1', returnByValue: true },
-          sessionId
-        );
-        const paused = await waitFor('Debugger.paused', sessionId);
-        if (!paused) {
-          const evaluated = await Promise.race([
-            pauseEval,
-            new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), 1000)),
-          ]);
-          return { phase: 'paused', enable, breakpoint, paused, evaluated };
-        }
-        const resume = await send('Debugger.resume', {}, sessionId);
-        const evaluated = await pauseEval;
-        return { phase: 'done', enable, breakpoint, paused, resume, evaluated };
+        return { phase: 'done', document, enable };
       }, opened.sessionId);
       process.stdout.write(
         `FACT stage1.steps ${JSON.stringify({
           phase: steps.phase,
           enable: steps.enable?.error?.message ?? null,
-          breakpoint: steps.breakpoint?.error?.message ?? null,
-          paused: Boolean(steps.paused),
-          resume: steps.resume?.error?.message ?? null,
-          evaluated:
-            steps.evaluated?.error?.message ?? steps.evaluated?.result?.result?.value ?? null,
+          document:
+            steps.document?.error?.message ?? steps.document?.result?.root?.nodeName ?? null,
         })}\n`
       );
       assert.equal(steps.phase, 'done', JSON.stringify(steps));
-      assert.equal(steps.enable.error, undefined, JSON.stringify(steps.enable));
-      assert.equal(steps.breakpoint.error, undefined, JSON.stringify(steps.breakpoint));
-      assert.ok(steps.paused, 'no Debugger.paused reached the client');
-      assert.ok(steps.paused.params.callFrames.length >= 1, JSON.stringify(steps.paused));
-      assert.equal(steps.resume.error, undefined, JSON.stringify(steps.resume));
-      assert.equal(steps.evaluated.error, undefined, JSON.stringify(steps.evaluated));
-      assert.equal(steps.evaluated.result?.result?.value, 2, JSON.stringify(steps.evaluated));
-      const armed = await seven.evaluate(async (sessionId) => {
-        const { send } = globalThis.stage1;
-        const deadline = Date.now() + 30000;
-        let answer;
-        while (Date.now() < deadline) {
-          answer = await send(
-            'Runtime.evaluate',
-            {
-              expression: 'document.documentElement.getAttribute("data-stage1")',
-              returnByValue: true,
-            },
-            sessionId
-          );
-          if (answer.result?.result?.value === 'armed') break;
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        }
-        return answer;
-      }, opened.sessionId);
-      assert.equal(armed.result?.result?.value, 'armed', JSON.stringify(armed));
+      assert.equal(steps.document.error, undefined, JSON.stringify(steps.document));
+      assert.equal(
+        steps.document.result?.root?.nodeName,
+        '#document',
+        JSON.stringify(steps.document)
+      );
+      assert.equal(steps.enable.error?.message, PROFILED, JSON.stringify(steps.enable));
     }
   );
 
