@@ -67,6 +67,7 @@ const PLACE_RETRIES = 2;
 const PROBE_TRIES = 3;
 const PROBE_BUDGET = 1000;
 const ANSWER_MS = 1000;
+const LISTED_CHECKS = 8;
 const WORKER_TYPES = new Set(['service_worker', 'shared_worker', 'worker']);
 const HISTORY_NAV = new Set([
   'restore',
@@ -4676,14 +4677,25 @@ class Guard {
   }
 
   async listed(message, result) {
-    const targetInfos = [];
-    for (const info of result.targetInfos) {
-      this.learn(info);
-      const guarded = (await this.current(info.targetId)) || this.is.url(info.url);
-      const proof = guarded ? await this.stranded(info.targetId) : null;
-      if (!guarded || this.fresh(proof)) targetInfos.push(this.masked(info, Boolean(proof)));
-    }
-    return this.deliver({ ...message, result: { ...result, targetInfos } });
+    const infos = result.targetInfos;
+    for (const info of infos) this.learn(info);
+    const slots = new Array(infos.length);
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(LISTED_CHECKS, infos.length) }, async () => {
+      for (;;) {
+        const index = cursor++;
+        if (index >= infos.length) return;
+        const info = infos[index];
+        const guarded = (await this.current(info.targetId)) || this.is.url(info.url);
+        const proof = guarded ? await this.stranded(info.targetId) : null;
+        if (!guarded || this.fresh(proof)) slots[index] = this.masked(info, Boolean(proof));
+      }
+    });
+    await Promise.all(workers);
+    return this.deliver({
+      ...message,
+      result: { ...result, targetInfos: slots.filter((info) => info !== undefined) },
+    });
   }
 
   pageAnswer(was) {
