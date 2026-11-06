@@ -176,6 +176,26 @@ export function unfollowed(transport, request) {
   return transport.fetch({ ...request, redirect: 'manual' });
 }
 
+const EVENT_FIELDS = [
+  'event',
+  'request',
+  'state',
+  'width',
+  'height',
+  'inset',
+  'direction',
+  'label',
+  'intent',
+  'code',
+  'message',
+];
+
+export function frameEvent(data) {
+  const known = { type: TYPE, v: 1 };
+  for (const key of EVENT_FIELDS) if (Object.hasOwn(data, key)) known[key] = data[key];
+  return known;
+}
+
 export function vaultButtons({ document, origin, media }) {
   const buttons = new Set();
   let scheme = schemeOf(document, media);
@@ -197,7 +217,8 @@ export function vaultButtons({ document, origin, media }) {
       if (event.source !== element.contentWindow || event.origin !== origin) return;
       const data = event.data;
       if (data?.type !== TYPE || data.v !== 1 || typeof data.event !== 'string') return;
-      for (const listener of [...heard]) listener(data);
+      const known = frameEvent(data);
+      for (const listener of [...heard]) listener(known);
     };
     const handle = {
       repaint() {

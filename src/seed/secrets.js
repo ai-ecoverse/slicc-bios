@@ -21,7 +21,7 @@ function tagOf(caller) {
 function placeOf(tag, caller, device) {
   if (tag?.kind === 'agent')
     return typeof tag.agentId === 'string' ? tag.agentId.replace(/^cone:/, '') : undefined;
-  if (tag?.kind !== 'user') return agentFor(caller?.user) ? caller.user : undefined;
+  if (tag?.kind !== 'user') return agentFor(caller?.user)?.replace(/^cone:/, '');
   if (typeof tag.where !== 'string') return undefined;
   if (tag.where.startsWith('terminal:')) return 'a terminal';
   const linked = followerDevice(caller.tag);
@@ -59,6 +59,16 @@ export function resting({ now = Date.now, rest = REST_MS } = {}) {
 }
 
 const refusal = (code, message) => ({ v: 1, error: { code, message } });
+const ASK = ['v', 'op', 'name', 'prompt', 'reveal', 'replace'];
+const FACTS = ['exe', 'argv', 'cwd', 'tty', 'stdin'];
+const only = (object, keys) =>
+  Object.fromEntries(
+    keys.filter((key) => Object.hasOwn(object ?? {}, key)).map((key) => [key, object[key]])
+  );
+
+export function askOf(req, asker) {
+  return { ...only(req, ASK), requester: { ...only(req?.requester, FACTS), ...asker } };
+}
 
 export function askRelay({ call, device = () => undefined, shows = () => true, rest = resting() }) {
   return async (req, caller, signal) => {
@@ -77,11 +87,10 @@ export function askRelay({ call, device = () => undefined, shows = () => true, r
       if (request) withdraw();
     };
     signal?.addEventListener?.('abort', leave, { once: true });
-    const requester = { ...req.requester, ...askedBy(caller, device) };
     try {
       const { reply } = await call(
         'sealed',
-        { req: { ...req, requester }, stamp: caller },
+        { req: askOf(req, askedBy(caller, device)), stamp: caller },
         { signal, dropAway: true, held: true, asked }
       );
       if (reply?.state === 'cancelled') rest.dismissed(caller);

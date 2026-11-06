@@ -132,7 +132,12 @@ test('an agent’s ask reaches the vault with who asks and where, lists as a sec
   const req = ask(agent, 'TIDE_TOKEN', {
     reveal: true,
     prompt: 'the tide station needs its token',
-    requester: facts(['sealed', 'ask', 'TIDE_TOKEN', '--reveal']),
+    value: 'smuggled-top-level',
+    requester: {
+      ...facts(['sealed', 'ask', 'TIDE_TOKEN', '--reveal']),
+      kind: 'user',
+      planted: 'smuggled-requester',
+    },
   });
   const id = await page.evaluate((req) => globalThis.askLikeTheKernel(req), req);
   const [item] = await listed(page);
@@ -166,6 +171,7 @@ test('an agent’s ask reaches the vault with who asks and where, lists as a sec
     where: 'cone',
   });
   assert.deepEqual(relayed.stamp, { uid: 1000, tag: agent.tag });
+  assert.deepEqual(relayed.fields, ['name', 'op', 'prompt', 'requester', 'reveal', 'v']);
 
   await new Promise((resolve) => setTimeout(resolve, 2500));
   assert.equal(
@@ -207,6 +213,10 @@ test('an agent’s ask reaches the vault with who asks and where, lists as a sec
   assert.equal(answer.reply.value, value);
   await listed(page, 0);
   await page.until(() => globalThis.heard.some((event) => event.event === 'done'));
+  assert.deepEqual(
+    await page.evaluate(() => globalThis.heard.find((event) => event.event === 'done')),
+    { type: 'slicc-vault', v: 1, event: 'done', request: item.id, state: 'sealed' }
+  );
   await new Promise((resolve) => setTimeout(resolve, 1500));
   assert.deepEqual(await page.evaluate(() => globalThis.ended), []);
 

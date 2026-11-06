@@ -136,7 +136,7 @@ asking.onmessage = ({ data }) => {
 };
 const ask = (port, id, req, stamp) => {
   const requester = req.requester ?? {};
-  log({ role: 'page', op: 'ask', name: req.name, reveal: req.reveal ?? false, prompt: req.prompt ?? null, requester, stamp: { uid: stamp?.uid, tag: stamp?.tag ?? null } });
+  log({ role: 'page', op: 'ask', fields: Object.keys(req).sort(), name: req.name, reveal: req.reveal ?? false, prompt: req.prompt ?? null, requester, stamp: { uid: stamp?.uid, tag: stamp?.tag ?? null } });
   const reply = (fields) => port.postMessage({ v: 1, id, op: 'sealed', reply: { v: 1, ...fields } });
   if (!['agent', 'user'].includes(requester.kind) || typeof requester.name !== 'string') return reply({ error: { code: 'EINVAL', message: 'malformed requester' } });
   if ([...asks.values()].some((each) => each.view.uid === stamp.uid)) return reply({ error: { code: 'EAGAIN', message: 'another request is pending' } });
@@ -442,7 +442,7 @@ setInterval(async () => {
   if (shared.typed?.request !== request) return;
   sent = true;
   asking.postMessage({ request, value: shared.typed.value });
-  post({ event: 'done', request, state: shared.typed.value ? 'sealed' : 'allowed' });
+  post({ event: 'done', request, state: shared.typed.value ? 'sealed' : 'allowed', value: 'frame-extra-value' });
 }, 100);
 post({ event: 'ready' });
 `;
