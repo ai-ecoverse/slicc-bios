@@ -792,6 +792,7 @@ class Guard {
     this.revisions = new Map();
     this.recoveries = new WeakMap();
     this.next = GUARD_IDS;
+    this.listedEvents = 0;
     this.guarded = { onmessage: null, onclose: null };
   }
 
@@ -2279,6 +2280,7 @@ class Guard {
     const useEarly =
       prefetched &&
       typeof early?.arrivedAt === 'number' &&
+      early.events === this.listedEvents &&
       Date.now() - early.arrivedAt <= LISTED_FRESH_MS;
     const answer = useEarly
       ? early.answer
@@ -4699,7 +4701,7 @@ class Guard {
             this.call('Target.getTargetInfo', { targetId: infos[index].targetId }),
             ANSWER_MS
           );
-          early[index] = { answer, arrivedAt: Date.now() };
+          early[index] = { answer, arrivedAt: Date.now(), events: this.listedEvents };
         } catch (error) {
           early[index] = { listedReject: error };
         }
@@ -5720,8 +5722,13 @@ class Guard {
     return true;
   }
 
+  noteListedEvent(message) {
+    if (message.id === undefined) this.listedEvents++;
+  }
+
   received(text) {
     const message = parse(text);
+    this.noteListedEvent(message);
     this.rememberFetchAnswer(message);
     this.loadingEvent(message);
     this.completeStopping(message);

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -13,6 +15,7 @@ const LISTED_CHECKS = 8;
 const LISTED_FRESH_MS = 100;
 const guardSource = fileURLToPath(new URL('../../src/seed/guard.js', import.meta.url));
 const root = fileURLToPath(new URL('../..', import.meta.url));
+const seedDir = fileURLToPath(new URL('../../src/seed/', import.meta.url));
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const serialListedSource = `async listed(message, result) {
@@ -26,44 +29,60 @@ const serialListedSource = `async listed(message, result) {
     return this.deliver({ ...message, result: { ...result, targetInfos } });
   }`;
 
-function serialOracleModule() {
-  const dir = join(root, 'test/unit');
-  mkdirSync(dir, { recursive: true });
-  const text = readFileSync(guardSource, 'utf8');
-  const replaced = text.replace(
-    /async listed\(message, result\) \{[\s\S]*?\n {2}\}\n\n {2}pageAnswer/,
-    `${serialListedSource}\n\n  pageAnswer`
-  );
-  assert.notEqual(replaced, text, 'serial oracle must replace listed()');
-  const patched = replaced
-    .replaceAll("from './", "from '../../src/seed/")
-    .replaceAll('from "./', 'from "../../src/seed/');
-  const path = join(dir, 'listed-serial-oracle-guard.js');
-  writeFileSync(path, patched);
-  return `${pathToFileURL(path).href}?serial=${Date.now()}`;
+function rewriteSeedImports(text) {
+  return text.replace(/from ['"]\.\/([^'"]+)['"]/g, (_, file) => {
+    const href = pathToFileURL(join(seedDir, file)).href;
+    return `from '${href}'`;
+  });
 }
 
-function spyGuardModule() {
-  const dir = join(root, 'test/unit');
-  mkdirSync(dir, { recursive: true });
+function tempGuardModule(t, name, transform) {
+  const dir = mkdtempSync(join(tmpdir(), 'listed-guard-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  symlinkSync(join(root, 'node_modules'), join(dir, 'node_modules'), 'dir');
   const text = readFileSync(guardSource, 'utf8');
-  const patched = text
-    .replace(
-      'learn(info) {\n    if (!info?.targetId) return;',
-      `learn(info) {
+  const patched = rewriteSeedImports(transform(text));
+  const path = join(dir, name);
+  writeFileSync(path, patched);
+  return `${pathToFileURL(path).href}?t=${Date.now()}`;
+}
+
+function serialOracleModule(t) {
+  return tempGuardModule(t, 'listed-serial-oracle-guard.js', (text) => {
+    const replaced = text.replace(
+      /async listed\(message, result\) \{[\s\S]*?\n {2}\}\n\n {2}pageAnswer/,
+      `${serialListedSource}\n\n  pageAnswer`
+    );
+    assert.notEqual(replaced, text, 'serial oracle must replace listed()');
+    return replaced;
+  });
+}
+
+function spyGuardModule(t) {
+  return tempGuardModule(t, 'listed-spy-guard.js', (text) => {
+    const patched = text
+      .replace(
+        'learn(info) {\n    if (!info?.targetId) return;',
+        `learn(info) {
     globalThis.__listedLearnSpy?.(info);
     if (!info?.targetId) return;`
-    )
-    .replace(
-      'Date.now() - early.arrivedAt <= LISTED_FRESH_MS',
-      `(globalThis.__listedFreshSpy?.(Date.now() - early.arrivedAt), Date.now() - early.arrivedAt <= LISTED_FRESH_MS)`
-    )
-    .replaceAll("from './", "from '../../src/seed/")
-    .replaceAll('from "./', 'from "../../src/seed/');
-  assert.match(patched, /__listedLearnSpy/);
-  const path = join(dir, 'listed-spy-guard.js');
-  writeFileSync(path, patched);
-  return `${pathToFileURL(path).href}?spy=${Date.now()}`;
+      )
+      .replace(
+        'Date.now() - early.arrivedAt <= LISTED_FRESH_MS',
+        `(globalThis.__listedFreshSpy?.(Date.now() - early.arrivedAt), Date.now() - early.arrivedAt <= LISTED_FRESH_MS)`
+      );
+    assert.match(patched, /__listedLearnSpy/);
+    return patched;
+  });
+}
+
+function assertUnitTreeClean() {
+  const status = spawnSync('git', ['status', '--porcelain', 'test/unit'], {
+    cwd: root,
+    encoding: 'utf8',
+  });
+  assert.equal(status.status, 0);
+  assert.equal(status.stdout.trim(), '');
 }
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -282,7 +301,7 @@ function openerPair(wire, childFirst) {
 test('listed concurrency matches serial oracle for mixed targets', {
   timeout: 30000,
 }, async (t) => {
-  const oraclePath = serialOracleModule();
+  const oraclePath = serialOracleModule(t);
   const count = 45;
   const latencies = Array.from({ length: count }, (_, i) => 1 + ((i * 11) % 17));
   async function run(source) {
@@ -441,7 +460,7 @@ for (const [order, mode] of [
   test(`listed opener order ${order} live ${mode} matches serial empty list`, {
     timeout: 15000,
   }, async (t) => {
-    const oraclePath = serialOracleModule();
+    const oraclePath = serialOracleModule(t);
     async function run(source) {
       const wire = await protocol(t, { guardSource: source });
       openerPair(wire, order === 'child-first');
@@ -473,7 +492,7 @@ test('listed throw in prefetch stops serial learn after that target', {
   t.after(() => {
     delete globalThis.__listedLearnSpy;
   });
-  const wire = await protocol(t, { guardSource: spyGuardModule() });
+  const wire = await protocol(t, { guardSource: spyGuardModule(t) });
   wire.target('a');
   wire.target('b');
   wire.target('k');
@@ -512,7 +531,7 @@ test('listed phase1 peak bound and phase2 skips fresh getTargetInfo without open
 test('listed stale prefetch after 150 ms delay refetches and hides navigated V', {
   timeout: 15000,
 }, async (t) => {
-  const oraclePath = serialOracleModule();
+  const oraclePath = serialOracleModule(t);
   async function run(source) {
     const wire = await protocol(t, { guardSource: source });
     const s = wire.target('S');
@@ -543,7 +562,7 @@ test('listed fresh prefetch within 100 ms may list V and age stays in bound', {
   t.after(() => {
     delete globalThis.__listedFreshSpy;
   });
-  const wire = await protocol(t, { guardSource: spyGuardModule() });
+  const wire = await protocol(t, { guardSource: spyGuardModule(t) });
   const s = wire.target('S');
   const v = wire.target('V');
   wire.order([s, v]);
@@ -567,10 +586,60 @@ test('listed fresh prefetch within 100 ms may list V and age stays in bound', {
   }
 });
 
+test('listed event between prefetch and decide refetches V like serial', {
+  timeout: 15000,
+}, async (t) => {
+  const oraclePath = serialOracleModule(t);
+  async function run(source) {
+    const wire = await protocol(t, { guardSource: source });
+    const s = wire.target('S');
+    const v = wire.target('V');
+    wire.order([s, v]);
+    wire.hold(
+      (message) => message.method === 'Target.getTargetInfo' && message.params?.targetId === 'S'
+    );
+    const pending = wire.request('Target.getTargets');
+    for (let i = 0; i < 40; i++) {
+      await flush();
+      if (
+        wire.sent.some(
+          (message) => message.method === 'Target.getTargetInfo' && message.params?.targetId === 'V'
+        ) &&
+        !wire.held.some((message) => message.params?.targetId === 'V')
+      )
+        break;
+      await pause(5);
+    }
+    await pause(10);
+    v.live = { targetId: 'V', type: 'page', url: secret };
+    wire.emit({
+      method: 'Target.targetInfoChanged',
+      params: { targetInfo: { targetId: 'V', type: 'page', url: secret } },
+    });
+    await flush();
+    const held = wire.held.find((message) => message.params?.targetId === 'S');
+    assert.ok(held);
+    wire.release(held);
+    const answer = await pending.answer;
+    assert.equal(answer.error, undefined);
+    return answer.result.targetInfos.map((info) => info.targetId);
+  }
+  const concurrent = await run(pathToFileURL(guardSource).href);
+  const serial = await run(oraclePath);
+  assert.deepEqual(concurrent, serial);
+  assert.deepEqual(concurrent, ['S']);
+});
+
+test('listed temp guard modules leave test/unit untouched', { timeout: 10000 }, async (t) => {
+  serialOracleModule(t);
+  spyGuardModule(t);
+  assertUnitTreeClean();
+});
+
 test('listed slow phase2 opener walk refetches later target like serial', {
   timeout: 15000,
 }, async (t) => {
-  const oraclePath = serialOracleModule();
+  const oraclePath = serialOracleModule(t);
   async function run(source) {
     const wire = await protocol(t, { guardSource: source });
     const slow = wire.target('slow');
@@ -617,7 +686,7 @@ for (const [order, mode] of [
   test(`listed invariant ${order} P always ${mode} hides C and P when delayed`, {
     timeout: 15000,
   }, async (t) => {
-    const oraclePath = serialOracleModule();
+    const oraclePath = serialOracleModule(t);
     async function run(source) {
       const wire = await protocol(t, { guardSource: source });
       openerPair(wire, order === 'child-first');
