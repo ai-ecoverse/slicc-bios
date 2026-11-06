@@ -337,6 +337,24 @@ const STRUCTURE = new Set([
   'Target.targetInfoChanged',
   'Runtime.executionContextCreated',
 ]);
+const FRESHNESS_TARGET = new Set([
+  'Target.targetCreated',
+  'Target.targetInfoChanged',
+  'Target.targetDestroyed',
+  'Target.attachedToTarget',
+  'Target.detachedFromTarget',
+]);
+const FRESHNESS_FRAME = new Set([
+  'Page.frameAttached',
+  'Page.frameDetached',
+  'Page.frameNavigated',
+  'Page.frameStartedNavigating',
+  'Page.frameRequestedNavigation',
+  'Page.frameScheduledNavigation',
+  'Page.frameStartedLoading',
+  'Page.frameStoppedLoading',
+  'Page.navigatedWithinDocument',
+]);
 
 function objectIds(value, found) {
   if (typeof value !== 'string') return;
@@ -788,6 +806,8 @@ class Guard {
     this.loading = new Map();
     this.revisions = new Map();
     this.recoveries = new WeakMap();
+    this.openerFresh = new Map();
+    this.freshnessFlight = new Map();
     this.next = GUARD_IDS;
     this.guarded = { onmessage: null, onclose: null };
   }
@@ -1026,6 +1046,7 @@ class Guard {
   learn(info) {
     if (!info?.targetId) return;
     const known = this.targets.get(info.targetId);
+    if (known && known.openerId !== info.openerId) this.dropFreshness(info.targetId);
     const remembered = this.tabs.get(info.targetId)?.error;
     if (remembered && !this.errorFrames.has(remembered.id)) {
       this.recalled.add(info.targetId);
@@ -1049,6 +1070,93 @@ class Guard {
     });
   }
 
+  freshnessChain(info) {
+    const chain = new Set();
+    const queue = [info?.targetId];
+    while (queue.length && chain.size < 16) {
+      const id = queue.shift();
+      if (!id || chain.has(id)) continue;
+      chain.add(id);
+      const node = id === info.targetId ? info : this.targets.get(id)?.info;
+      if (!node) continue;
+      if (node.openerId) queue.push(node.openerId);
+      if (node.parentId) queue.push(node.parentId);
+    }
+    return chain;
+  }
+
+  chainBusy(chain) {
+    for (const id of chain) if ((this.freshnessFlight.get(id) ?? 0) > 0) return true;
+    return false;
+  }
+
+  chainFlightTotal(chain) {
+    let total = 0;
+    for (const id of chain) total += this.freshnessFlight.get(id) ?? 0;
+    return total;
+  }
+
+  freshnessStamp(chain) {
+    const revisions = new Map();
+    for (const id of chain) revisions.set(id, this.revisions.get(id));
+    return { revisions, flight: this.chainFlightTotal(chain) };
+  }
+
+  freshnessStampMatch(chain, stamp) {
+    if (this.chainFlightTotal(chain) !== stamp.flight) return false;
+    for (const id of chain) if (this.revisions.get(id) !== stamp.revisions.get(id)) return false;
+    return true;
+  }
+
+  dropFreshness(targetId) {
+    this.openerFresh.delete(targetId);
+    for (const id of [...this.openerFresh.keys()])
+      if (this.openerFresh.get(id)?.chain.has(targetId)) this.openerFresh.delete(id);
+  }
+
+  beginFreshnessFlight(targetId) {
+    if (!targetId) return;
+    this.freshnessFlight.set(targetId, (this.freshnessFlight.get(targetId) ?? 0) + 1);
+    this.dropFreshness(targetId);
+  }
+
+  endFreshnessFlight(targetId) {
+    if (!targetId) return;
+    const next = (this.freshnessFlight.get(targetId) ?? 0) - 1;
+    if (next > 0) this.freshnessFlight.set(targetId, next);
+    else this.freshnessFlight.delete(targetId);
+  }
+
+  rememberOpenerProof(info, protectedVerdict) {
+    if (!info?.targetId) return;
+    const chain = this.freshnessChain(info);
+    if (this.chainBusy(chain)) return;
+    const revisions = new Map();
+    for (const id of chain) revisions.set(id, this.revisions.get(id));
+    this.openerFresh.set(info.targetId, {
+      info: { ...info },
+      protected: protectedVerdict,
+      chain,
+      revisions,
+    });
+  }
+
+  cachedOpenerProof(info) {
+    if (!info?.targetId) return undefined;
+    const entry = this.openerFresh.get(info.targetId);
+    if (!entry) return undefined;
+    if (!this.sameTarget(entry.info, info) || this.chainBusy(entry.chain)) {
+      this.openerFresh.delete(info.targetId);
+      return undefined;
+    }
+    return entry.protected;
+  }
+
+  freshnessEventTarget(message) {
+    const { params = {}, sessionId } = message;
+    return params.targetInfo?.targetId ?? params.targetId ?? this.sessions.get(sessionId)?.targetId;
+  }
+
   async lookup(targetId) {
     if (!this.targets.has(targetId)) {
       this.learn((await this.call('Target.getTargetInfo', { targetId })).result?.targetInfo);
@@ -1065,12 +1173,17 @@ class Guard {
   async openerInfo(targetId) {
     const answer = await this.within(this.call('Target.getTargetInfo', { targetId }), ANSWER_MS);
     const info = answer?.result?.targetInfo;
-    return !answer?.error &&
-      info?.targetId === targetId &&
-      typeof info.type === 'string' &&
-      typeof info.url === 'string'
-      ? info
-      : null;
+    if (
+      answer?.error ||
+      !info ||
+      info.targetId !== targetId ||
+      typeof info.type !== 'string' ||
+      typeof info.url !== 'string'
+    ) {
+      this.dropFreshness(targetId);
+      return null;
+    }
+    return info;
   }
 
   sameTarget(a, b) {
@@ -3544,6 +3657,21 @@ class Guard {
       this.shownTarget(message, info, message, proof);
   }
 
+  async targetLifecycle(message) {
+    const method = message.method ?? '';
+    const flight =
+      FRESHNESS_TARGET.has(method) &&
+      method !== 'Target.targetCreated' &&
+      method !== 'Target.targetInfoChanged'
+        ? this.freshnessEventTarget(message)
+        : undefined;
+    try {
+      return await this.targetEvent(message);
+    } finally {
+      if (flight) this.endFreshnessFlight(flight);
+    }
+  }
+
   async targetEvent(message) {
     const { method, params = {}, sessionId } = message;
     if (method === 'Target.attachedToTarget') {
@@ -3563,9 +3691,12 @@ class Guard {
       return true;
     }
     if (method === 'Target.targetCreated' || method === 'Target.targetInfoChanged') {
-      void this.targetHint(message).catch(() => {
+      const targetId = params.targetInfo?.targetId;
+      const hint = this.targetHint(message);
+      void hint.catch(() => {
         for (const [id, ticket] of this.quarantined) if (ticket.hint === message) this.cut(id);
       });
+      void hint.finally(() => this.endFreshnessFlight(targetId));
       return true;
     }
     if (method === 'Target.targetDestroyed') {
@@ -4146,7 +4277,10 @@ class Guard {
       Array.isArray(history.result?.entries) &&
       history.result.currentIndex >= 0 &&
       history.result.currentIndex < history.result.entries.length;
-    if (!info || info.error) return undefined;
+    if (!info || info.error) {
+      if (targetId) this.dropFreshness(targetId);
+      return undefined;
+    }
     if (!historyKnown) return this.unattached(info, frames, treeNow);
     if (this.pendingHistory.has(sessionId) && !frames.length) return null;
     if (treeNow === undefined) return this.slowTree(sessionId, info, history, tree);
@@ -4408,8 +4542,24 @@ class Guard {
     if (info?.type !== 'page') return false;
     if (isHeld(info.targetId)) return true;
     if (!info.openerId) return info.canAccessOpener === true;
+    const hit = this.cachedOpenerProof(info);
+    if (hit !== undefined) return hit;
     this.learn(info);
-    return this.target(info.targetId);
+    const chain = this.freshnessChain(info);
+    if (this.chainBusy(chain)) return this.target(info.targetId);
+    const stamp = this.freshnessStamp(chain);
+    const verdict = Boolean(await this.target(info.targetId));
+    if (this.freshnessStampMatch(chain, stamp) && !this.chainBusy(chain))
+      this.rememberOpenerProof(info, verdict);
+    else this.dropFreshness(info.targetId);
+    return verdict;
+  }
+
+  async openerFreshnessHeld(info) {
+    const chain = info ? this.freshnessChain(info) : new Set();
+    const stamp = this.freshnessStamp(chain);
+    if (await this.surfaceOpener(info)) return true;
+    return !this.freshnessStampMatch(chain, stamp);
   }
 
   async confirmed(sessionId, method) {
@@ -4425,7 +4575,7 @@ class Guard {
     const now = await this.surface(sessionId);
     const navigating = NAVIGATES.has(method);
     if (!now) return navigating && (await this.openDocument(sessionId)) ? null : PROTECTED;
-    if (await this.surfaceOpener(now.info)) return PROTECTED;
+    if (await this.openerFreshnessHeld(now.info)) return PROTECTED;
     if (now.pendingTree) return navigating ? null : PROTECTED;
     this.note(sessionId, now);
     if (!now.protected) return null;
@@ -4609,7 +4759,7 @@ class Guard {
     this.noteDomEventMarkers(method, sessionId, message.params);
     if (await this.settledRecoveryLoad(message))
       return this.deliver({ method, sessionId, params: { timestamp: message.params.timestamp } });
-    if (method.startsWith('Target.') && (await this.targetEvent(message))) return;
+    if (method.startsWith('Target.') && (await this.targetLifecycle(message))) return;
     if (this.deferredStyle(message)) return;
     if (this.locked(sessionId) && (pageScoped(method) || method === 'Page.screencastFrame')) return;
     if (this.blocked.has(sessionId) && PAUSES.has(method)) return this.release(message);
@@ -5273,7 +5423,7 @@ class Guard {
     const target = this.targets.get(targetId);
     if (target?.type === 'page' && this.prelude(message.sessionId, message.method) !== null) {
       const info = await this.openerInfo(targetId);
-      if (info?.type !== 'page' || (await this.surfaceOpener(info))) return PROTECTED;
+      if (info?.type !== 'page' || (await this.openerFreshnessHeld(info))) return PROTECTED;
     }
     if (!(await this.admitContent(message)) || (await this.recover(message))) return PROTECTED;
     return this.pageCheck(message.method, message.sessionId);
@@ -5577,9 +5727,12 @@ class Guard {
       targetId &&
       (message.method?.startsWith('Target.target') ||
         NAVIGATED.has(message.method) ||
-        STRUCTURE.has(message.method))
-    )
+        STRUCTURE.has(message.method) ||
+        FRESHNESS_FRAME.has(message.method))
+    ) {
       this.revisions.set(targetId, {});
+      this.dropFreshness(targetId);
+    }
     if (targetId) this.reviseDebuggerLease(targetId, message.method, message.params);
     if (message.method !== 'Page.frameNavigated' || !message.params?.frame) return;
     const { frame } = message.params;
@@ -5690,28 +5843,7 @@ class Guard {
     this.receiveNavigation(message);
     if (message.method === 'Target.targetCreated' || message.method === 'Target.targetInfoChanged')
       this.receiveHint(message);
-    if (message.method === 'Target.targetDestroyed') {
-      this.retireProof(message.params?.targetId);
-      this.tabs.delete(message.params?.targetId);
-      this.hints.delete(message.params?.targetId);
-      for (const [id, entry] of this.sessions)
-        if (entry.targetId === message.params?.targetId && this.quarantined.has(id)) this.cut(id);
-    }
-    if (
-      message.method === 'Page.frameAttached' &&
-      message.params?.frameId &&
-      message.params.parentFrameId
-    ) {
-      this.parents.set(message.params.frameId, message.params.parentFrameId);
-      this.taintContent();
-    }
-    if (message.method === 'Page.frameDetached' && message.params?.reason === 'remove') {
-      this.retireProof(message.params.frameId);
-      this.rememberUnsafe(message);
-      this.errorFrames.delete(message.params.frameId);
-      this.errorUrls.delete(message.params.frameId);
-      this.parents.delete(message.params.frameId);
-    }
+    this.receiveFreshnessLifecycle(message);
     this.rememberUnsafe(message);
     if (STRUCTURE.has(message.method)) this.scopeEvent(message);
     if (this.releasePendingDocument(message)) return;
@@ -5730,6 +5862,10 @@ class Guard {
     if (message.id !== undefined && !this.asked.has(key)) return;
     const was = message.id === undefined ? undefined : this.asked.get(key);
     const revision = this.revisions.get(this.scopeTarget(message.sessionId));
+    if (message.id === undefined && FRESHNESS_TARGET.has(message.method)) {
+      const flightId = this.freshnessEventTarget(message);
+      if (flightId) this.beginFreshnessFlight(flightId);
+    }
     this.queue(
       message.sessionId ?? was?.sessionId ?? '',
       async () => {
@@ -5760,6 +5896,31 @@ class Guard {
         if (was) this.refuse(was, FAILED);
       }
     );
+  }
+
+  receiveFreshnessLifecycle(message) {
+    if (message.method === 'Target.targetDestroyed') {
+      this.retireProof(message.params?.targetId);
+      this.tabs.delete(message.params?.targetId);
+      this.hints.delete(message.params?.targetId);
+      for (const [id, entry] of this.sessions)
+        if (entry.targetId === message.params?.targetId && this.quarantined.has(id)) this.cut(id);
+    }
+    if (
+      message.method === 'Page.frameAttached' &&
+      message.params?.frameId &&
+      message.params.parentFrameId
+    ) {
+      this.parents.set(message.params.frameId, message.params.parentFrameId);
+      this.taintContent();
+    }
+    if (message.method === 'Page.frameDetached' && message.params?.reason === 'remove') {
+      this.retireProof(message.params.frameId);
+      this.rememberUnsafe(message);
+      this.errorFrames.delete(message.params.frameId);
+      this.errorUrls.delete(message.params.frameId);
+      this.parents.delete(message.params.frameId);
+    }
   }
 
   queue(key, task, failed) {
