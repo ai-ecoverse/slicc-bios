@@ -69,6 +69,19 @@ const PROBE_BUDGET = 1000;
 const ANSWER_MS = 1000;
 const LISTED_CHECKS = 8;
 const LISTED_FRESH_MS = 100;
+const QUIET = new Set([
+  'DOM.describeNode',
+  'DOM.getBoxModel',
+  'DOM.getContentQuads',
+  'DOM.resolveNode',
+  'Page.getFrameTree',
+  'Page.getNavigationHistory',
+  'Runtime.getProperties',
+  'Runtime.releaseObject',
+  'Runtime.releaseObjectGroup',
+  'Target.getTargetInfo',
+  'Target.getTargets',
+]);
 const WORKER_TYPES = new Set(['service_worker', 'shared_worker', 'worker']);
 const HISTORY_NAV = new Set([
   'restore',
@@ -778,6 +791,10 @@ class Guard {
     this.finished = new WeakSet();
     this.watching = new Map();
     this.queues = new Map();
+    this.clock = 0;
+    this.changes = 0;
+    this.arrivals = new WeakMap();
+    this.probes = new Map();
     this.streams = new Set();
     this.allowed = new Set();
     this.blockedWorkers = new Set();
@@ -4426,7 +4443,7 @@ class Guard {
     return this.target(info.targetId);
   }
 
-  async confirmed(sessionId, method) {
+  async confirmed(sessionId, method, arrived) {
     const shot = method === 'Page.captureScreenshot';
     if (this.pendingHistory.has(sessionId) || this.blocked.has(sessionId)) {
       if (shot && this.blocked.has(sessionId) && (await this.blankShot(sessionId))) return null;
@@ -4436,7 +4453,7 @@ class Guard {
     if (early !== false) return early;
     const worker = await this.workerSession(sessionId);
     if (worker !== undefined) return worker;
-    const now = await this.surface(sessionId);
+    const now = await this.reuse(`surface:${sessionId}`, arrived, () => this.surface(sessionId));
     const navigating = NAVIGATES.has(method);
     if (!now) return navigating && (await this.openDocument(sessionId)) ? null : PROTECTED;
     if (await this.surfaceOpener(now.info)) return PROTECTED;
@@ -5322,7 +5339,9 @@ class Guard {
     const targetId = this.scopeTarget(message.sessionId);
     const target = this.targets.get(targetId);
     if (target?.type === 'page' && this.prelude(message.sessionId, message.method) !== null) {
-      const info = await this.openerInfo(targetId);
+      const info = await this.reuse(`opener:${targetId}`, this.arrivals.get(message), () =>
+        this.openerInfo(targetId)
+      );
       if (info?.type !== 'page' || (await this.surfaceOpener(info))) return PROTECTED;
     }
     if (!(await this.admitContent(message)) || (await this.recover(message))) return PROTECTED;
@@ -5543,6 +5562,7 @@ class Guard {
     this.rememberFetchPattern(message, outgoing);
     this.asked.set(requestKey(message), message);
     if (contentRead(method)) this.pendingContent.add(message);
+    if (!QUIET.has(method)) this.changed();
     this.connection.send(JSON.stringify(outgoing));
   }
 
@@ -5729,6 +5749,7 @@ class Guard {
   received(text) {
     const message = parse(text);
     this.noteListedEvent(message);
+    this.stamp(message);
     this.rememberFetchAnswer(message);
     this.loadingEvent(message);
     this.completeStopping(message);
@@ -5817,6 +5838,27 @@ class Guard {
     );
   }
 
+  stamp(message) {
+    if (message.id === undefined) this.changed();
+  }
+
+  changed() {
+    this.changes += 1;
+    this.probes.clear();
+  }
+
+  async reuse(key, arrived, run) {
+    const hit = this.probes.get(key);
+    if (arrived !== undefined && hit && hit.started > arrived && hit.changes === this.changes) {
+      const value = await hit.work.catch(() => null);
+      if (value && hit.changes === this.changes) return value;
+    }
+    const entry = { started: ++this.clock, changes: this.changes };
+    entry.work = run();
+    this.probes.set(key, entry);
+    return entry.work;
+  }
+
   queue(key, task, failed) {
     const next = (this.queues.get(key) ?? Promise.resolve()).then(task).catch(failed);
     this.queues.set(key, next);
@@ -5853,7 +5895,9 @@ class Guard {
       this.standIn(message);
       return true;
     }
-    const now = await this.surface(sessionId);
+    const now = await this.reuse(`surface:${sessionId}`, this.arrivals.get(message), () =>
+      this.surface(sessionId)
+    );
     if (this.finished.has(message) || !this.owns(message)) return true;
     if (!now || now.pendingTree) {
       this.refuse(message);
@@ -5906,7 +5950,11 @@ class Guard {
       this.refuse(message);
       return true;
     }
-    const blocked = await this.confirmed(message.sessionId, message.method);
+    const blocked = await this.confirmed(
+      message.sessionId,
+      message.method,
+      this.arrivals.get(message)
+    );
     if (this.finished.has(message) || !this.owns(message)) return true;
     if (!blocked) {
       await this.noteShot(message);
@@ -5993,6 +6041,7 @@ class Guard {
         this.callerIds.set(key, message);
       }
       this.commands.set(key, message);
+      this.arrivals.set(message, ++this.clock);
       if (
         (this.quarantined.has(message.sessionId) && !RECOVERS.has(message.method)) ||
         (contentRead(message.method) && this.errorDocument(message.sessionId, message.method))
