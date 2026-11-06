@@ -18,6 +18,7 @@ const page = `http://ordinary.test:${site.address().port}/stage1.html`;
 
 async function guarded(seven, privateFrames) {
   await seven.evaluate(async (useFrames) => {
+    globalThis.stage1?.close();
     const { guardProtected } = await import(new URL('guard.js', location.href).href);
     const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
     const extension = globalThis.sliccExtension;
@@ -52,7 +53,7 @@ async function guarded(seven, privateFrames) {
           JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })
         );
       });
-    globalThis.stage1 = { send, events };
+    globalThis.stage1 = { close: () => connection.close(), send, events };
   }, privateFrames);
 }
 
