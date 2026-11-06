@@ -1491,6 +1491,10 @@ class Guard {
     seen.add(targetId);
     const scope = this.scopes.get(targetId);
     if (!this.scopeReady(targetId, scope, view) || (view && scope.committed)) return true;
+    for (const [child, entry] of this.scopes) {
+      if (entry.parent === targetId && this.pageLocked(child, new Set(seen), false, view))
+        return true;
+    }
     if (scope.privatePlaced) return Boolean(view);
     if (scope.remoteBackendOwners?.size) return true;
     const holds = this.holding(targetId);
@@ -1503,11 +1507,18 @@ class Guard {
         return true;
       if (this.childLocked(id, scope, holds, seen, view)) return true;
     }
-    for (const [child, entry] of this.scopes) {
-      if (entry.parent === targetId && this.pageLocked(child, new Set(seen), false, view))
-        return true;
-    }
     return false;
+  }
+
+  invalidateParentPlacement(targetId) {
+    const parentId = this.scopes.get(targetId)?.parent;
+    if (!parentId) return;
+    const parent = this.scopes.get(parentId);
+    if (!parent?.privatePlaced) return;
+    parent.privatePlaced = false;
+    const lease = this.debuggerLeases.get(parentId);
+    if (lease && lease.state !== 'revoked') this.setDebuggerLease(parentId, 'suspended');
+    this.refresh(parentId);
   }
 
   locked(sessionId, blankRoot = false) {
@@ -1948,13 +1959,20 @@ class Guard {
     this.stopCasts();
   }
 
-  scopeTargets({ method, params = {}, sessionId }, targetId) {
+  noteChildTargetInfo(info) {
+    if (!info?.targetId) return;
+    if (this.scopes.has(info.targetId) && this.is.url(info.url))
+      this.frames.set(info.targetId, info.url);
     if (
-      method === 'Target.targetInfoChanged' &&
-      this.scopes.has(params.targetInfo?.targetId) &&
-      this.is.url(params.targetInfo.url)
+      typeof info.url === 'string' &&
+      info.url &&
+      (this.is.url(info.url) || this.frames.get(info.targetId) !== info.url)
     )
-      this.frames.set(params.targetInfo.targetId, params.targetInfo.url);
+      this.invalidateParentPlacement(info.targetId);
+  }
+
+  scopeTargets({ method, params = {}, sessionId }, targetId) {
+    if (method === 'Target.targetInfoChanged') this.noteChildTargetInfo(params.targetInfo);
     if (method === 'Target.attachedToTarget' && this.placements.has(sessionId)) {
       const info = params.targetInfo;
       if (info?.type !== 'iframe') return;
@@ -1968,6 +1986,7 @@ class Guard {
         void this.call('Runtime.runIfWaitingForDebugger', {}, params.sessionId);
     }
     if (method === 'Target.targetDestroyed') {
+      this.invalidateParentPlacement(params.targetId);
       this.scopes.delete(params.targetId);
       for (const [id, placed] of this.placements)
         if (placed === params.targetId) this.autoAttachments.delete(id);
@@ -1978,6 +1997,7 @@ class Guard {
     }
     if (method === 'Target.detachedFromTarget' && this.placements.has(params.sessionId)) {
       const childId = this.placements.get(params.sessionId);
+      this.invalidateParentPlacement(childId);
       this.placements.delete(params.sessionId);
       const child = this.scopes.get(childId);
       if (child && (child.sessionId === params.sessionId || child.sessionId === undefined))
@@ -5515,7 +5535,10 @@ class Guard {
       return;
     const scope = this.scope(targetId);
     const sameDocument = method === 'Page.navigatedWithinDocument';
-    if (!sameDocument) scope.privatePlaced = false;
+    if (!sameDocument) {
+      scope.privatePlaced = false;
+      this.invalidateParentPlacement(targetId);
+    }
     const lease = this.debuggerLeases.get(targetId);
     if (
       method === 'Page.frameNavigated' &&
