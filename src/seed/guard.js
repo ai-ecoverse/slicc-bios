@@ -31,6 +31,17 @@ export const PROFILED =
 export const DEBUGGER =
   'slicc: refused: breakpoints could run in seven’s pages or the vault, so the guard doesn’t offer the Debugger domains';
 
+const EXTENSION_FRAMES = catalog.protectedOrigins.extensionFrames;
+export const SHOWN_REFUSAL = EXTENSION_FRAMES.shownRefusal;
+export const PRESENT_REFUSAL = EXTENSION_FRAMES.presentRefusal;
+const WHEN_SHOWN = new Set(EXTENSION_FRAMES.whenShown);
+const WHILE_PRESENT = new Set(EXTENSION_FRAMES.whilePresent);
+const EXTENSION_WORLD = 'slicc-extension-frames';
+const EXTENSION_PROBE =
+  'function(){if(!this.isConnected||this.checkVisibility({visibilityProperty:true}))return true;let node=this;for(let depth=0;depth<64;depth++){const root=node.getRootNode();if(root.activeElement!==node)return false;if(!root.host)return true;node=root.host;}return true;}';
+const EXTENSION_CHECK_MS = 1000;
+const EXTENSION_MARKER_KIND = 'extensionFrame';
+
 const GUARD_IDS = 2 ** 30;
 const HOLD_MS = 2000;
 const BLANK_MS = 10000;
@@ -724,6 +735,8 @@ class Guard {
     this.offered = new Set();
     this.contexts = new Set();
     this.worlds = new Map();
+    this.probeContexts = new Map();
+    this.frameLoaders = new Map();
     this.runtimes = new Set();
     this.primed = new Set();
     this.targets = new Map();
@@ -1218,9 +1231,59 @@ class Guard {
         owners: new Set(),
         remoteOwners: new Set(),
         attachedFrames: new Set(),
+        extensionOwners: new Set(),
+        extensionMarkers: new Map(),
         ready: false,
       });
     return this.scopes.get(targetId);
+  }
+
+  extensionFrameMarker(value) {
+    if (!value || typeof value !== 'object') return null;
+    if (value.version !== 1 || value.kind !== EXTENSION_MARKER_KIND) return null;
+    return value;
+  }
+
+  noteExtensionMarker(scope, frameId, marker) {
+    if (!scope || typeof frameId !== 'string' || !frameId || !marker) return;
+    if (frameId === scope.root) return;
+    if (this.targets.get(frameId)?.type === 'page') return;
+    scope.extensionOwners.add(frameId);
+    scope.extensionMarkers ??= new Map();
+    scope.extensionMarkers.set(frameId, {
+      ...(marker.hidden !== undefined ? { hidden: marker.hidden } : {}),
+      ...(marker.focused !== undefined ? { focused: marker.focused } : {}),
+    });
+  }
+
+  markerShown(marker) {
+    if (!marker) return null;
+    if (marker.hidden === undefined && marker.focused === undefined) return null;
+    return !(marker.hidden === true && marker.focused === false);
+  }
+
+  extensionPresent(targetId) {
+    const seen = new Set();
+    const walk = (id) => {
+      if (!id || seen.has(id)) return false;
+      seen.add(id);
+      const scope = this.scopes.get(id);
+      if (!scope) return false;
+      if (scope.extensionOwners?.size) return true;
+      for (const [child, entry] of this.scopes) {
+        if (entry.parent === id && walk(child)) return true;
+      }
+      return false;
+    };
+    let id = targetId;
+    const up = new Set();
+    while (id) {
+      if (up.has(id)) break;
+      up.add(id);
+      if (walk(id)) return true;
+      id = this.scopes.get(id)?.parent;
+    }
+    return false;
   }
 
   scopeTarget(sessionId) {
@@ -1406,6 +1469,12 @@ class Guard {
 
   childLocked(id, scope, holds, seen, view) {
     if (id === scope.root) return false;
+    if (
+      scope.extensionOwners?.has(id) &&
+      !this.is.url(this.frames.get(id)) &&
+      !this.errorFrames.has(id)
+    )
+      return false;
     if (holds && !LISTED_FRAME.test(this.frames.get(id))) return true;
     if (
       !holds &&
@@ -1426,7 +1495,9 @@ class Guard {
     const holds = this.holding(targetId);
     for (const id of this.relatedFrames(scope.frames)) {
       const url = this.frames.get(id);
-      if (this.unavailableFrame(id, url, view)) return true;
+      const marked =
+        scope.extensionOwners?.has(id) && !this.is.url(url) && !this.errorFrames.has(id);
+      if (this.unavailableFrame(id, url, view) && !marked) return true;
       if (this.is.url(url) && !(blankRoot && id === scope.root) && !view?.errors.has(id))
         return true;
       if (this.childLocked(id, scope, holds, seen, view)) return true;
@@ -1459,6 +1530,18 @@ class Guard {
     );
   }
 
+  shouldStopCast(sessionId) {
+    const targetId = this.scopeTarget(sessionId);
+    return this.locked(sessionId) || Boolean(targetId && this.extensionPresent(targetId));
+  }
+
+  forgetCast(sessionId) {
+    if (!this.casts.has(sessionId)) return false;
+    this.casts.delete(sessionId);
+    void this.call('Page.stopScreencast', {}, sessionId);
+    return true;
+  }
+
   stopCasts() {
     for (const message of new Set([...this.asked.values(), ...this.answering])) {
       if (
@@ -1470,10 +1553,8 @@ class Guard {
         this.refuse(message);
       }
     }
-    for (const sessionId of this.casts) {
-      if (!this.locked(sessionId)) continue;
-      this.casts.delete(sessionId);
-      void this.call('Page.stopScreencast', {}, sessionId);
+    for (const sessionId of [...this.casts]) {
+      if (this.shouldStopCast(sessionId)) this.forgetCast(sessionId);
     }
   }
 
@@ -1484,6 +1565,7 @@ class Guard {
     scope.loader = tree?.frame?.loaderId;
     scope.treeFrames = new Set(all.map((frame) => frame.id));
     scope.frames = new Set([...scope.treeFrames, ...scope.owners]);
+    scope.extensionOwners ??= new Set();
     const parentId = tree?.frame?.parentId;
     if (parentId && !scope.parent)
       scope.parent = this.scopes.has(parentId)
@@ -1495,7 +1577,8 @@ class Guard {
     scope.ready = scope.tree && !scope.failed && !scope.pending;
     if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
     for (const frame of all) {
-      this.frames.set(frame.id, this.framed(frame));
+      const url = this.framed(frame);
+      this.frames.set(frame.id, url);
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
     }
     const parentRoot = this.scopes.get(scope.parent)?.root;
@@ -1517,6 +1600,33 @@ class Guard {
     if (method === 'Page.getFrameTree') this.recordTree(targetId, result?.frameTree);
     if (method === 'DOM.getDocument') this.recordOwners(targetId, result?.root);
     if (method === 'DOMSnapshot.captureSnapshot') this.recordSnapshotOwners(targetId, result);
+  }
+
+  noteOwnerNodes(sessionId, nodes) {
+    const targetId = this.scopeTarget(sessionId);
+    if (!targetId || !Array.isArray(nodes)) return;
+    const scope = this.scope(targetId);
+    for (const node of nodes) {
+      if (!node || (node.nodeName !== 'IFRAME' && node.nodeName !== 'FRAME')) continue;
+      if (typeof node.frameId !== 'string' || !node.frameId) continue;
+      const marker = this.extensionFrameMarker(node.sliccExtensionFrame);
+      if (marker) this.noteExtensionMarker(scope, node.frameId, marker);
+    }
+  }
+
+  noteDomEventMarkers(method, sessionId, params) {
+    if (method === 'DOM.setChildNodes') this.noteOwnerNodes(sessionId, params?.nodes);
+    else if (method === 'DOM.childNodeInserted') this.noteOwnerNodes(sessionId, [params?.node]);
+  }
+
+  noteDomAnswerMarkers(method, sessionId, params, result) {
+    if (method === 'DOM.describeNode' && result?.node)
+      this.noteOwnerNodes(sessionId, [result.node]);
+    else if (method === 'DOM.getFrameOwner' && result) {
+      const marker = this.extensionFrameMarker(result.sliccExtensionFrame);
+      if (marker)
+        this.noteExtensionMarker(this.scope(this.scopeTarget(sessionId)), params?.frameId, marker);
+    }
   }
 
   recordSnapshotOwners(targetId, snapshot) {
@@ -1645,6 +1755,8 @@ class Guard {
     scope.owners = new Set();
     scope.remoteOwners = new Set();
     scope.remoteBackendOwners = new Map();
+    scope.extensionOwners = new Set();
+    scope.extensionMarkers = new Map();
     scope.privatePlaced = false;
     const nodes = [root];
     while (nodes.length) {
@@ -1664,7 +1776,7 @@ class Guard {
   }
 
   recordOwner(scope, node) {
-    if (node.nodeName !== 'IFRAME' && node.nodeName !== 'FRAME') return;
+    if (!node || (node.nodeName !== 'IFRAME' && node.nodeName !== 'FRAME')) return;
     if (!node.frameId) {
       scope.ownersReady = false;
       return;
@@ -1674,6 +1786,11 @@ class Guard {
     scope.frames.add(node.frameId);
     if (!this.frames.has(node.frameId)) this.frames.set(node.frameId, '');
     if (!this.parents.has(node.frameId)) this.parents.set(node.frameId, scope.root);
+    const marker = this.extensionFrameMarker(node.sliccExtensionFrame);
+    if (marker) {
+      this.noteExtensionMarker(scope, node.frameId, marker);
+      return;
+    }
     const source = (node.attributes ?? []).indexOf('src');
     const evidence = [
       source < 0 ? undefined : node.attributes[source + 1],
@@ -1921,12 +2038,19 @@ class Guard {
       scope.owners.clear();
       scope.remoteOwners.clear();
       scope.attachedFrames.clear();
+      scope.extensionOwners?.clear();
+      scope.extensionMarkers?.clear();
       scope.ready = false;
       this.refresh(targetId);
     }
     scope.frames.add(frame.id);
     if (frame.parentId && frame.id !== scope.root) scope.remoteOwners.delete(frame.id);
     this.frames.set(frame.id, this.framed(frame));
+    if (typeof frame.loaderId === 'string' && frame.loaderId) {
+      const previous = this.frameLoaders.get(frame.id);
+      this.frameLoaders.set(frame.id, frame.loaderId);
+      if (previous !== undefined && previous !== frame.loaderId) this.forgetProbeFrame(frame.id);
+    }
     if (frame.parentId) {
       this.parents.set(frame.id, frame.parentId);
       this.refresh(targetId);
@@ -1943,6 +2067,8 @@ class Guard {
     for (const id of gone) {
       this.frames.delete(id);
       this.parents.delete(id);
+      this.frameLoaders.delete(id);
+      this.forgetProbeFrame(id);
       this.scopes.delete(id);
       for (const scope of this.scopes.values()) {
         scope.frames.delete(id);
@@ -1950,7 +2076,23 @@ class Guard {
         scope.remoteOwners.delete(id);
         scope.attachedFrames.delete(id);
         scope.treeFrames?.delete(id);
+        scope.extensionOwners?.delete(id);
+        scope.extensionMarkers?.delete(id);
       }
+    }
+  }
+
+  forgetProbeFrame(frameId) {
+    const suffix = `\0${frameId}`;
+    for (const key of this.probeContexts.keys()) {
+      if (key.endsWith(suffix)) this.probeContexts.delete(key);
+    }
+  }
+
+  forgetProbeSession(sessionId) {
+    const prefix = `${sessionId}\0`;
+    for (const key of this.probeContexts.keys()) {
+      if (key.startsWith(prefix)) this.probeContexts.delete(key);
     }
   }
 
@@ -2024,6 +2166,9 @@ class Guard {
   async frame(frameId, strict = false) {
     if (frameId === undefined) return false;
     if (this.errorFrames.has(frameId)) return true;
+    for (const scope of this.scopes.values()) {
+      if (scope.extensionOwners?.has(frameId)) return true;
+    }
     if (this.targets.has(frameId)) return this.target(frameId);
     if (this.frames.has(frameId)) {
       const url = this.frames.get(frameId);
@@ -3407,6 +3552,7 @@ class Guard {
       this.discardPending(params.sessionId);
       this.watching.delete(params.sessionId);
       this.worlds.delete(params.sessionId);
+      this.forgetProbeSession(params.sessionId);
       this.runtimes.delete(params.sessionId);
       this.primed.delete(params.sessionId);
       if (this.navSessions.has(params.sessionId)) {
@@ -3454,11 +3600,13 @@ class Guard {
   foreign({ method, params = {}, sessionId }) {
     if (method === 'Runtime.executionContextsCleared') {
       this.worlds.delete(sessionId);
+      this.forgetProbeSession(sessionId);
       return false;
     }
     if (method === 'Runtime.executionContextCreated' && params.context) {
       const { id, uniqueId, name, origin, auxData } = params.context;
       const hidden =
+        name === EXTENSION_WORLD ||
         (auxData?.type === 'isolated' && EXTENSIONS.test(origin ?? '')) ||
         this.errorFrames.has(auxData?.frameId);
       const world = this.world(sessionId);
@@ -4396,8 +4544,10 @@ class Guard {
   }
 
   async contentEvent(message) {
-    if (message.method === 'Page.screencastFrame' && !this.casts.has(message.sessionId))
-      return true;
+    if (message.method === 'Page.screencastFrame') {
+      if (this.shouldStopCast(message.sessionId)) this.forgetCast(message.sessionId);
+      return !this.casts.has(message.sessionId);
+    }
     if (message.method === 'Runtime.executionContextCreated') {
       const record = this.contextChecks.get(message.sessionId)?.get(message.params?.context?.id);
       if (record?.message === message && (!(await record.promise) || record.loading)) return true;
@@ -4428,6 +4578,7 @@ class Guard {
     if (this.navSessions.has(sessionId))
       return this.navEvent(message, this.navSessions.get(sessionId));
     if (this.placements.has(sessionId)) return;
+    this.noteDomEventMarkers(method, sessionId, message.params);
     if (await this.settledRecoveryLoad(message))
       return this.deliver({ method, sessionId, params: { timestamp: message.params.timestamp } });
     if (method.startsWith('Target.') && (await this.targetEvent(message))) return;
@@ -4618,6 +4769,8 @@ class Guard {
   async shotAnswer(message, was) {
     if (await this.keptShot(was)) return this.deliver(message);
     if (this.sealed(was) || !(await this.openShot(was))) return this.refuse(was);
+    if (await this.extensionGate('Page.captureScreenshot', was.sessionId))
+      return this.refuse(was, SHOWN_REFUSAL);
     return this.deliver(message);
   }
 
@@ -4647,8 +4800,10 @@ class Guard {
   worldReply(was, result) {
     if (was?.method === 'Page.createIsolatedWorld' && result?.executionContextId !== undefined) {
       const world = this.world(was.sessionId);
-      if (!world.ids.has(result.executionContextId))
-        world.ids.set(result.executionContextId, false);
+      const hidden = was.params?.worldName === EXTENSION_WORLD;
+      if (!world.ids.has(result.executionContextId) || hidden)
+        world.ids.set(result.executionContextId, hidden);
+      if (hidden) world.names.add(EXTENSION_WORLD);
     }
   }
 
@@ -4737,6 +4892,7 @@ class Guard {
     if (this.blankSealed(was)) return this.refuse(was);
     const { method, params = {} } = was ?? {};
     const { result } = message;
+    this.noteDomAnswerMarkers(method, was.sessionId, params, result);
     this.worldReply(was, result);
     if (method === 'Target.attachToTarget' && result?.sessionId) {
       const ok = await this.watch(result.sessionId, params.targetId);
@@ -4927,14 +5083,135 @@ class Guard {
     }
   }
 
+  extensionFrameIds(sessionId) {
+    const root = this.scopeTarget(sessionId);
+    if (!root) return [];
+    const ids = [];
+    const seen = new Set();
+    const collect = (targetId) => {
+      if (!targetId || seen.has(targetId)) return;
+      seen.add(targetId);
+      const scope = this.scopes.get(targetId);
+      if (!scope) return;
+      for (const id of scope.extensionOwners ?? []) {
+        if (!ids.includes(id)) ids.push(id);
+      }
+      for (const [child, entry] of this.scopes) {
+        if (entry.parent === targetId) collect(child);
+      }
+    };
+    let id = root;
+    const up = new Set();
+    while (id && !up.has(id)) {
+      up.add(id);
+      collect(id);
+      id = this.scopes.get(id)?.parent;
+    }
+    return ids;
+  }
+
+  async extensionProbeContext(guard, parent) {
+    const loaderId = this.frameLoaders.get(parent) ?? '';
+    const key = `${guard}\0${parent}`;
+    const cached = this.probeContexts.get(key);
+    if (cached && cached.loaderId === loaderId && Number.isSafeInteger(cached.contextId)) {
+      return cached.contextId;
+    }
+    const world = await this.call(
+      'Page.createIsolatedWorld',
+      { frameId: parent, worldName: EXTENSION_WORLD },
+      guard
+    );
+    const context = world.result?.executionContextId;
+    if (world.error || !Number.isSafeInteger(context)) return null;
+    const book = this.world(guard);
+    book.ids.set(context, true);
+    book.names.add(EXTENSION_WORLD);
+    this.probeContexts.set(key, { loaderId, contextId: context });
+    return context;
+  }
+
+  async extensionFrameShown(sessionId, frameId) {
+    const targetId = this.scopeTarget(sessionId);
+    const marker = this.scopes.get(targetId)?.extensionMarkers?.get(frameId);
+    const fromMarker = this.markerShown(marker);
+    if (fromMarker === true) return true;
+    const parent = this.parents.get(frameId);
+    const guard = this.scopes.get(targetId)?.sessionId ?? sessionId;
+    if (typeof parent !== 'string' || !parent || guard === undefined) return true;
+    let timer;
+    const expired = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(true), EXTENSION_CHECK_MS);
+      timer.unref?.();
+    });
+    const probe = (async () => {
+      const key = `${guard}\0${parent}`;
+      const context = await this.extensionProbeContext(guard, parent);
+      if (context === null) return true;
+      const owner = await this.call('DOM.getFrameOwner', { frameId }, guard);
+      const next = this.extensionFrameMarker(owner.result?.sliccExtensionFrame);
+      if (next) this.noteExtensionMarker(this.scope(targetId), frameId, next);
+      if (this.markerShown(next) === true) return true;
+      const node = owner.result?.backendNodeId;
+      if (owner.error || !Number.isSafeInteger(node)) return true;
+      const resolved = await this.call(
+        'DOM.resolveNode',
+        { backendNodeId: node, executionContextId: context, objectGroup: EXTENSION_WORLD },
+        guard
+      );
+      const objectId = resolved.result?.object?.objectId;
+      if (resolved.error || typeof objectId !== 'string') {
+        this.probeContexts.delete(key);
+        return true;
+      }
+      const shown = await this.call(
+        'Runtime.callFunctionOn',
+        { objectId, functionDeclaration: EXTENSION_PROBE, returnByValue: true },
+        guard
+      );
+      await this.call('Runtime.releaseObjectGroup', { objectGroup: EXTENSION_WORLD }, guard);
+      if (shown.error) {
+        this.probeContexts.delete(key);
+        return true;
+      }
+      return shown.result?.result?.value !== false;
+    })().catch(() => true);
+    try {
+      return await Promise.race([probe, expired]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async extensionFramesShown(sessionId) {
+    const frames = this.extensionFrameIds(sessionId);
+    if (!frames.length) return false;
+    for (const frameId of frames) {
+      if (await this.extensionFrameShown(sessionId, frameId)) return true;
+    }
+    return false;
+  }
+
+  async extensionGate(method, sessionId) {
+    if (!WHEN_SHOWN.has(method) && !WHILE_PRESENT.has(method)) return null;
+    const targetId = this.scopeTarget(sessionId);
+    if (!targetId || !this.extensionPresent(targetId)) return null;
+    if (WHILE_PRESENT.has(method)) return PRESENT_REFUSAL;
+    if (WHEN_SHOWN.has(method) && (await this.extensionFramesShown(sessionId)))
+      return SHOWN_REFUSAL;
+    return null;
+  }
+
   async pageCheck(method, sessionId) {
     if (!pageScoped(method)) return null;
     const unguarded = await this.guarding(method, sessionId);
     if (unguarded) return unguarded;
     if (!(await this.placed(sessionId))) return UNGUARDED;
     if (!(await this.reread(sessionId))) return UNGUARDED;
-    if (method === 'Page.captureScreenshot') return this.locked(sessionId, true) ? PROTECTED : null;
-    return this.locked(sessionId) ? PROTECTED : null;
+    if (method === 'Page.captureScreenshot') {
+      if (this.locked(sessionId, true)) return PROTECTED;
+    } else if (this.locked(sessionId)) return PROTECTED;
+    return this.extensionGate(method, sessionId);
   }
 
   async reread(sessionId) {
@@ -5166,12 +5443,15 @@ class Guard {
       return this.refuse(message);
     if (pageScoped(method) && this.locked(sessionId) && !this.blankAdmission(message))
       return this.refuse(message);
+    const gate = await this.extensionGate(method, sessionId);
+    if (gate) return this.refuse(message, gate);
     if (method === 'Page.startScreencast') this.casts.add(sessionId);
     if (method === 'Page.stopScreencast') this.casts.delete(sessionId);
     if (sessionId && method === 'Runtime.enable') this.runtimes.add(sessionId);
     if (sessionId && method === 'Runtime.disable') {
       this.runtimes.delete(sessionId);
       this.worlds.delete(sessionId);
+      this.forgetProbeSession(sessionId);
     }
     if (sessionId && method === 'Page.enable') this.pages.add(sessionId);
     if (sessionId && method === 'Page.disable' && this.shown.has(sessionId)) {

@@ -39,6 +39,7 @@ const PATHS = {
     chromeUrlsAttach: false,
     discovery: false,
     extensionWorld: true,
+    extensionFrame: false,
     inboundDelay: true,
     forwardAudit: true,
     clientExit: true,
@@ -49,6 +50,7 @@ const PATHS = {
     browserContexts: true,
     chromeUrlsAttach: true,
     extensionWorld: true,
+    extensionFrame: true,
     clientExit: true,
   },
 };
