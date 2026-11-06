@@ -95,3 +95,32 @@ test('a command that can change the page, forwarded between reads sent together,
   assert.equal(forwarded(wire, since, 'DOM.describeNode'), 1);
   assert.ok(answers.every((answer) => answer.error));
 });
+
+async function flipAfterSurface(t, holdMs) {
+  const { wire, session } = await page(t);
+  const since = wire.sent.length;
+  let held = false;
+  wire.hold((message) => {
+    if (held || message.id < GUARD || message.method !== 'Page.getNavigationHistory') return false;
+    held = true;
+    setTimeout(() => {
+      wire.release(message);
+      protect(wire, 'T1');
+    }, holdMs);
+    return true;
+  });
+  const answers = await Promise.all([
+    wire.request('DOM.describeNode', { nodeId: 2 }, session).answer,
+    wire.request('DOM.describeNode', { nodeId: 3 }, session).answer,
+  ]);
+  return { answers, passed: forwarded(wire, since, 'DOM.describeNode') };
+}
+
+test('a shared check is used only while it is at most 100 ms old: a target that moved without an event is refused once the check is older', async (t) => {
+  const fresh = await flipAfterSurface(t, 10);
+  assert.equal(fresh.passed, 2, 'inside the bound the second read shares the first read’s check');
+  const stale = await flipAfterSurface(t, 150);
+  assert.equal(stale.passed, 1, 'beyond the bound the second read checks again');
+  assert.equal(stale.answers[0].error, undefined);
+  assert.ok(stale.answers[1].error);
+});

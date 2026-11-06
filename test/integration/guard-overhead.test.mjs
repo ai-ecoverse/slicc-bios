@@ -13,6 +13,7 @@ after(() => chrome.close());
 const RUNS = 5;
 const TABS = 10;
 const LIMIT = 10;
+const WAIT = 45000;
 const rows = (n, f) => Array.from({ length: n }, (_, i) => f(i)).join('');
 const FIXTURE = `<!doctype html><title>bench</title>
 <nav>${rows(30, (i) => `<a href="#l${i}">Link ${i}</a> `)}</nav>
@@ -152,29 +153,45 @@ const unguarded = {
 };
 
 async function kernel(page, script) {
-  return page.evaluate(async (script) => {
-    const { model } = document.querySelector('slicc-app');
-    const terminal = model.terminals.open();
-    const decoder = new TextDecoder();
-    let out = '';
-    let done;
-    const exited = new Promise((resolve) => {
-      done = resolve;
-    });
-    const session = await model.terminals.backend(terminal.id).open(
-      {
-        output: (bytes) => {
-          out += decoder.decode(bytes, { stream: true });
+  const { out, done } = await page.evaluate(
+    async ({ script, wait }) => {
+      const { model } = document.querySelector('slicc-app');
+      const terminal = model.terminals.open();
+      const decoder = new TextDecoder();
+      let out = '';
+      let done;
+      const exited = new Promise((resolve) => {
+        done = resolve;
+      });
+      const session = await model.terminals.backend(terminal.id).open(
+        {
+          output: (bytes) => {
+            out += decoder.decode(bytes, { stream: true });
+          },
+          exit: done,
         },
-        exit: done,
-      },
-      { cols: 200, rows: 50 }
-    );
-    session.write(`${script}\nexit\n`);
-    await exited;
-    model.terminals.close(terminal.id);
-    return out;
-  }, script);
+        { cols: 200, rows: 50 }
+      );
+      session.write(`${script}\nexit\n`);
+      let timer;
+      const finished = await Promise.race([
+        exited.then(() => true),
+        new Promise((resolve) => {
+          timer = setTimeout(() => resolve(false), wait);
+        }),
+      ]);
+      clearTimeout(timer);
+      if (!finished) session.close();
+      model.terminals.close(terminal.id);
+      return { out, done: finished };
+    },
+    { script, wait: WAIT }
+  );
+  assert.ok(
+    done,
+    `the kernel did not finish in ${WAIT} ms:\n${script}\n--- output so far:\n${out.slice(-3000)}`
+  );
+  return out;
 }
 
 const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
@@ -233,21 +250,21 @@ test('guard overhead: snapshot and screenshot through seven, the link and the CL
     snapshot: `${pw} snapshot --tab ${target}`,
     screenshot: `${pw} screenshot --tab ${target} --filename /tmp/bench.png`,
   };
-  const ran = await kernel(
-    page,
-    [
-      `for i in $(seq 1 ${RUNS}); do a=\${EPOCHREALTIME/./}; playwright-cli --version > /dev/null; b=\${EPOCHREALTIME/./}; echo "BENCH start 0 $(((b-a)/1000))"; done`,
-      ...Object.entries(ops).map(
-        ([name, cmd]) =>
-          `for i in $(seq 1 ${RUNS}); do a=\${EPOCHREALTIME/./}; ${cmd} > /tmp/bench-${name}.out 2>&1; r=$?; b=\${EPOCHREALTIME/./}; echo "BENCH ${name} $r $(((b-a)/1000))"; done`
-      ),
-      ...Object.keys(ops).map((name) => `echo "== ${name}"; head -c 400 /tmp/bench-${name}.out`),
-    ].join('\n')
-  );
   const guarded = {};
-  for (const [, name, code, ms] of ran.matchAll(/^BENCH (\S+) (\d+) (\d+)\r?$/gm)) {
-    assert.equal(code, '0', `${name} failed:\n${ran.slice(-3000)}`);
-    (guarded[name] ??= []).push(Number(ms));
+  for (const [name, cmd] of Object.entries({ start: 'playwright-cli --version', ...ops })) {
+    const ran = await kernel(
+      page,
+      `for i in $(seq 1 ${RUNS}); do a=\${EPOCHREALTIME/./}; ${cmd} > /tmp/bench.out 2>&1; r=$?; b=\${EPOCHREALTIME/./}; echo "BENCH $r $(((b-a)/1000))"; [ $r = 0 ] || head -c 600 /tmp/bench.out; done`
+    );
+    for (const [, code, ms] of ran.matchAll(/^BENCH (\d+) (\d+)\r?$/gm)) {
+      assert.equal(code, '0', `${name} failed:\n${ran.slice(-3000)}`);
+      (guarded[name] ??= []).push(Number(ms));
+    }
+    assert.equal(
+      guarded[name]?.length,
+      RUNS,
+      `${name} ran ${guarded[name]?.length ?? 0} times:\n${ran.slice(-3000)}`
+    );
   }
   assert.ok(proxy.seen.snapshot, 'the snapshot script went through the CLI');
   const report = { 'process start': { guardedMs: median(guarded.start) } };

@@ -69,6 +69,7 @@ const PROBE_BUDGET = 1000;
 const ANSWER_MS = 1000;
 const LISTED_CHECKS = 8;
 const LISTED_FRESH_MS = 100;
+const SHARE_MS = 100;
 const QUIET = new Set([
   'DOM.describeNode',
   'DOM.getBoxModel',
@@ -5847,13 +5848,17 @@ class Guard {
     this.probes.clear();
   }
 
+  shareable(hit) {
+    return hit.changes === this.changes && Date.now() - hit.at <= SHARE_MS;
+  }
+
   async reuse(key, arrived, run) {
     const hit = this.probes.get(key);
-    if (arrived !== undefined && hit && hit.started > arrived && hit.changes === this.changes) {
+    if (arrived !== undefined && hit && hit.started > arrived && this.shareable(hit)) {
       const value = await hit.work.catch(() => null);
-      if (value && hit.changes === this.changes) return value;
+      if (value && this.shareable(hit)) return value;
     }
-    const entry = { started: ++this.clock, changes: this.changes };
+    const entry = { started: ++this.clock, changes: this.changes, at: Date.now() };
     entry.work = run();
     this.probes.set(key, entry);
     return entry.work;
