@@ -187,7 +187,7 @@ const judgedFor = (pattern) =>
     pattern.test(String(input.state?.request?.untrusted ?? '').split('\n')[1] ?? '')
   );
 
-test('with the agent up, bios hands each sudo to the agent with the kernel’s facts, the judge only offers Always where the kernel can record the line, a person grants Always, and a line the kernel can’t record offers no Always and records nothing', {
+test('with the agent up, bios hands each sudo to the agent with the kernel’s facts, Always only where the kernel can record the line, a person grants Always, and an unrecordable line offers no Always', {
   timeout: 35 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
