@@ -52,26 +52,68 @@ const settled = (page) =>
     walk(document);
     let active = document.activeElement;
     while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+    const describe = (element) => {
+      if (!element || element === document || element.nodeType !== 1) return null;
+      const data = {};
+      for (const attribute of element.attributes ?? []) {
+        if (attribute.name.startsWith('data-')) data[attribute.name] = attribute.value;
+      }
+      return {
+        tag: element.localName,
+        id: element.id || null,
+        ariaLabel: element.getAttribute('aria-label'),
+        data,
+      };
+    };
+    const chain = [];
     let node = active;
     let inTerminal = false;
     while (node) {
       if (node === terminal) inTerminal = true;
-      node = node.parentNode ?? node.host ?? null;
+      if (chain.length < 4) {
+        const step = describe(node);
+        if (step) chain.push(step);
+      }
+      if (node === terminal) break;
+      if (chain.length >= 4 && inTerminal) break;
+      const next = node.parentNode ?? node.host ?? null;
+      if (chain.length >= 4) {
+        let rest = next;
+        while (rest) {
+          if (rest === terminal) inTerminal = true;
+          rest = rest.parentNode ?? rest.host ?? null;
+        }
+        break;
+      }
+      node = next;
     }
-    return { frames: frames.length, focus: active?.localName ?? null, inTerminal };
+    return {
+      frames: frames.length,
+      focus: describe(active),
+      chain,
+      inTerminal,
+    };
   });
 
 async function focusTerminal(page) {
-  await page.evaluate(() => {
+  const box = await page.evaluate(() => {
     const { dock } = document.querySelector('slicc-app');
     const id = dock.api.panels
       .map((panel) => panel.id)
       .findLast((panel) => panel.startsWith('terminal:'));
     dock.api.getPanel(id)?.api.setActive();
-    const terminal = dock.content(id).screen;
-    terminal.click();
-    terminal.focus();
+    const rect = dock.content(id).screen.getBoundingClientRect();
+    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
   });
+  for (const type of ['mousePressed', 'mouseReleased']) {
+    await page.send('Input.dispatchMouseEvent', {
+      type,
+      x: box.x,
+      y: box.y,
+      button: 'left',
+      clickCount: 1,
+    });
+  }
 }
 
 async function answered(page, marker) {
