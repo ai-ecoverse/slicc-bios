@@ -244,12 +244,19 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
         await dir.removeEntry('pnpm-lock.yaml');
         return text;
       });
+      const releaseHold = () =>
+        page
+          .evaluate(() => {
+            sessionStorage.removeItem('slicc-hold-packages');
+            globalThis.sliccReleasePackagesHold?.();
+            globalThis.sliccPackagesHold = null;
+          })
+          .catch(() => {});
       t.after(async () => {
+        await releaseHold();
         await marker(page, null).catch(() => {});
         await page
           .evaluate(async (text) => {
-            sessionStorage.removeItem('slicc-hold-packages');
-            globalThis.sliccReleasePackagesHold?.();
             if (text == null) return;
             const root = await navigator.storage.getDirectory();
             let dir = root;
@@ -274,7 +281,6 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
       await page.evaluate(() => sessionStorage.setItem('slicc-hold-packages', '1'));
       const before = page.console.filter((line) => line.includes('the agent did not start')).length;
       await page.goto('/');
-      await ready(page);
       await page.until(async () =>
         ((await navigator.locks.query()).pending ?? []).some(
           (lock) => lock.name === 'slicc-packages'
@@ -282,8 +288,8 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
       );
       assert.equal(await page.evaluate(() => document.visibilityState), 'visible');
       await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
-      await page.evaluate(() => globalThis.sliccReleasePackagesHold?.());
-      await page.evaluate(() => sessionStorage.removeItem('slicc-hold-packages'));
+      await releaseHold();
+      await ready(page);
       const seen = await page.within(
         5 * 60 * 1000,
         (text) => {
