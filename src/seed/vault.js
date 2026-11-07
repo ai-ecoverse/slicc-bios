@@ -733,10 +733,9 @@ function relayOf(view, state, { ask, ...options }) {
   return sealedRelay({ ...options, away: () => away(view, state), ask: relay });
 }
 
-function listing(view, state, timers) {
+function listing(state, timers) {
   return (placeholder) =>
     new Promise((resolve) => {
-      if (view.placeholders.includes(placeholder)) return resolve();
       const settle = () => {
         timers.clearTimeout(timer);
         stop();
@@ -782,7 +781,7 @@ export function createVault({
   const workers = new Set();
   const { view, timings } = vaultState(now);
   const state = snapshots({ now, timers, pending, view, timings });
-  const buttons = vaultButtons({ document, origin, media, hold: listing(view, state, timers) });
+  const buttons = vaultButtons({ document, origin, media, hold: listing(state, timers) });
   const frame = coreFrame(document);
   let serial = 0;
   let epoch = 0;
