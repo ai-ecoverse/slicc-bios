@@ -340,9 +340,29 @@ test('while the UI can’t show a secret approval, an ask is refused at once and
     v: 1,
     error: { code: 'EACCES', message: "seven can't show this request yet; update seven" },
   });
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  assert.ok(!fake.log.some((entry) => entry.role === 'page' && entry.op === 'ask'));
-  assert.ok(!fake.log.some((entry) => entry.role === 'stamp' && entry.op === 'ask'));
   assert.deepEqual(await secrets(page), []);
+  const opened = await page.evaluate(
+    (req) => {
+      globalThis.sliccSecretApprovals = true;
+      return globalThis.answerOf(globalThis.askLikeTheKernel(req));
+    },
+    ask(agent, 'HARBOR_API_KEY')
+  );
+  assert.equal(opened.reply.state, 'done');
+  assert.ok(
+    await logged(fake, (log) =>
+      log.some(
+        (entry) => entry.role === 'page' && entry.op === 'ask' && entry.name === 'HARBOR_API_KEY'
+      )
+    ),
+    'the ask sent once the gate opened reached the vault'
+  );
+  assert.deepEqual(
+    fake.log
+      .filter((entry) => entry.role === 'page' && entry.op === 'ask')
+      .map((entry) => entry.name),
+    ['HARBOR_API_KEY']
+  );
+  assert.equal(fake.log.filter((entry) => entry.role === 'stamp' && entry.op === 'ask').length, 1);
   assert.deepEqual(page.errors, []);
 });

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { boot, run, screen, shows } from './bios.mjs';
+import { boot, prompt, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { startFakeVault } from './fake-vault.mjs';
 
@@ -15,10 +15,64 @@ const secrets = (page) =>
       .filter((item) => item.kind === 'secret')
   );
 
-async function waitFor(check) {
-  for (let tries = 0; tries < 200 && !(await check()); tries += 1)
+async function waitFor(label, read, ok, ms = 30000) {
+  const deadline = Date.now() + ms;
+  let seen = await read();
+  while (!ok(seen)) {
+    if (Date.now() >= deadline)
+      throw new Error(`${label}: not within ${ms} ms; last saw ${JSON.stringify(seen)}`);
     await new Promise((resolve) => setTimeout(resolve, 50));
-  return check();
+    seen = await read();
+  }
+  return seen;
+}
+
+const listed = (page, count) =>
+  waitFor(
+    `${count} secret approvals listed`,
+    () => secrets(page),
+    (list) => list.length === count
+  );
+
+const settled = (page) =>
+  page.evaluate(() => {
+    const { dock } = document.querySelector('slicc-app');
+    const id = dock.api.panels
+      .map((panel) => panel.id)
+      .findLast((panel) => panel.startsWith('terminal:'));
+    const terminal = dock.content(id).screen;
+    const frames = [];
+    const walk = (root) => {
+      for (const element of root.querySelectorAll('*')) {
+        if (element.localName === 'iframe' && element.dataset.vault === 'value')
+          frames.push(element);
+        if (element.shadowRoot) walk(element.shadowRoot);
+      }
+    };
+    walk(document);
+    let active = document.activeElement;
+    while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+    let node = active;
+    let inTerminal = false;
+    while (node) {
+      if (node === terminal) inTerminal = true;
+      node = node.parentNode ?? node.host ?? null;
+    }
+    return { frames: frames.length, focus: active?.localName ?? null, inTerminal };
+  });
+
+async function answered(page, marker) {
+  await shows(page, marker);
+  await waitFor(
+    `the prompt after ${marker}`,
+    () => screen(page),
+    (text) => text.slice(text.lastIndexOf(marker)).includes(prompt.trim())
+  );
+  await waitFor(
+    `the secret dialog gone and focus back in the terminal after ${marker}`,
+    () => settled(page),
+    (state) => state.frames === 0 && state.inTerminal
+  );
 }
 
 test('sealed ask from a terminal opens spectrum’s secret dialog with the vault’s frame: the typed value comes back to the program, Deny exits 1, and the session then rests', async (t) => {
@@ -35,33 +89,28 @@ test('sealed ask from a terminal opens spectrum’s secret dialog with the vault
   assert.equal(await page.evaluate(() => globalThis.sliccSecretApprovals), undefined);
 
   await run(page, 'clear; V=$(sealed ask TIDE_TOKEN --reveal); echo "GOT-$V-$?"');
-  assert.ok(await waitFor(async () => (await secrets(page)).length === 1));
-  const [entered] = await secrets(page);
+  const [entered] = await listed(page, 1);
   assert.deepEqual(
     [entered.mode, entered.requester.kind, entered.requester.where, entered.process.exe],
     ['enter', 'user', 'a terminal', '/usr/bin/sealed']
   );
-  assert.ok(
-    await waitFor(() =>
-      fake.log.some(
-        (entry) => entry.role === 'value' && entry.op === 'value' && entry.request === entered.id
-      )
-    ),
-    'spectrum’s dialog loaded the vault’s frame for the request'
+  await waitFor(
+    'spectrum’s dialog loading the vault’s frame for the request',
+    () => fake.log.filter((entry) => entry.role === 'value'),
+    (log) => log.some((entry) => entry.op === 'value' && entry.request === entered.id)
   );
   fake.set({ typed: { request: entered.id, value: 'tide-e2e-value-91ab' } });
-  await shows(page, 'GOT-tide-e2e-value-91ab-0');
-  assert.ok(await waitFor(async () => (await secrets(page)).length === 0));
+  await answered(page, 'GOT-tide-e2e-value-91ab-0');
+  await listed(page, 0);
 
   await run(page, 'clear; sealed ask TIDE_TOKEN --reveal; echo "DENIED-$?"');
-  assert.ok(await waitFor(async () => (await secrets(page)).length === 1));
-  const [revealing] = await secrets(page);
+  const [revealing] = await listed(page, 1);
   assert.equal(revealing.mode, 'reveal');
   await page.evaluate(
     (id) => document.querySelector('slicc-app').model.approvals.decide(id, 'deny'),
     revealing.id
   );
-  await shows(page, 'DENIED-1');
+  await answered(page, 'DENIED-1');
 
   await run(page, 'clear; sealed ask TIDE_TOKEN; echo "RESTING-$?"');
   await shows(page, 'RESTING-3');
