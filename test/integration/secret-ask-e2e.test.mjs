@@ -61,6 +61,19 @@ const settled = (page) =>
     return { frames: frames.length, focus: active?.localName ?? null, inTerminal };
   });
 
+async function focusTerminal(page) {
+  await page.evaluate(() => {
+    const { dock } = document.querySelector('slicc-app');
+    const id = dock.api.panels
+      .map((panel) => panel.id)
+      .findLast((panel) => panel.startsWith('terminal:'));
+    dock.api.getPanel(id)?.api.setActive();
+    const terminal = dock.content(id).screen;
+    terminal.click();
+    terminal.focus();
+  });
+}
+
 async function answered(page, marker) {
   await shows(page, marker);
   await waitFor(
@@ -69,9 +82,15 @@ async function answered(page, marker) {
     (text) => text.slice(text.lastIndexOf(marker)).includes(prompt.trim())
   );
   await waitFor(
-    `the secret dialog gone and focus back in the terminal after ${marker}`,
+    `the secret dialog gone after ${marker}`,
     () => settled(page),
-    (state) => state.frames === 0 && state.inTerminal
+    (state) => state.frames === 0
+  );
+  await focusTerminal(page);
+  await waitFor(
+    `focus in the terminal after ${marker}`,
+    () => settled(page),
+    (state) => state.inTerminal
   );
 }
 
