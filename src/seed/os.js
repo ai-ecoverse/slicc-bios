@@ -85,7 +85,7 @@ import {
   pageRequests,
   plugged,
 } from './requests.js';
-import { withSecrets } from './secrets.js';
+import { showsSecrets, withSecrets } from './secrets.js';
 import { BIOS, home, sharesOrigin } from './site.js';
 import { importSix, retirePreview, said } from './six.js';
 import { installPrompts, keepStorage, onSend } from './storage.js';
@@ -324,9 +324,7 @@ const vault = createVault({
   onCancelled: (id) => jerk.cancelled(id),
   ask: {
     device: (id) => onDevice(id),
-    shows: () =>
-      spectrumUi.approvalKinds?.includes('secret') === true ||
-      globalThis.sliccSecretApprovals === true,
+    shows: () => showsSecrets(spectrumUi.approvalKinds, globalThis.sliccSecretApprovals),
   },
 });
 const forwarder = createForwarder({

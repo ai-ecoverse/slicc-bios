@@ -8,6 +8,9 @@ export const IN_FRAME = "Save or Allow in the vault's frame.";
 const CONTROL = /\p{Cc}/gu;
 const ENDED = { withdrawn: 'withdrawn', expired: 'expired' };
 
+export const showsSecrets = (kinds, knob) =>
+  typeof knob === 'boolean' ? knob : Array.isArray(kinds) && kinds.includes('secret');
+
 export const clean = (text) => String(text).replace(CONTROL, '').slice(0, 128);
 
 function tagOf(caller) {
