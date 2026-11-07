@@ -3,6 +3,7 @@ import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
 import { agentUp, connectAccount, listsAccount, ready, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
+import { judgeAnswers } from './fake-judge.mjs';
 import { eventFrame, fakeLlm } from './fake-llm.mjs';
 
 const KEY = 'dummy-bedrock-key-0000';
@@ -26,28 +27,7 @@ const said = Buffer.concat([
 ]);
 
 const judged = [];
-
-function verdict(body) {
-  const { input } = JSON.parse(body.toString());
-  judged.push(input);
-  const untrusted = input.state?.request?.untrusted ?? '';
-  const replay = /\/id -gn\n/.test(untrusted) ? 0.9 : 0.02;
-  const answers = {
-    level: {
-      type: 'choice',
-      choice: 'routine',
-      probabilities: { routine: 0.97, permissions: 0.02, harm: 0.01 },
-      confidence: 0.97,
-    },
-    aligned: { type: 'noul', noul: 0.95 },
-    always: { type: 'noul', noul: replay },
-  };
-  const asked = Object.keys(input.questions ?? {});
-  return {
-    success: true,
-    result: { answers: Object.fromEntries(asked.map((id) => [id, answers[id]])) },
-  };
-}
+const verdict = (body) => judgeAnswers(body, (input) => judged.push(input));
 
 const json = (value) => ({
   status: 200,
@@ -192,7 +172,7 @@ const judgedFor = (pattern) =>
     pattern.test(String(input.state?.request?.untrusted ?? '').split('\n')[1] ?? '')
   );
 
-test('with the agent up, bios hands each sudo to the agent with the kernel’s facts, Always comes only from the agent’s verdict, and a line the kernel can’t record offers no Always and records nothing', {
+test('with the agent up, bios hands each sudo to the agent with the kernel’s facts, the judge only offers Always where the kernel can record the line, a person grants Always, and a line the kernel can’t record offers no Always and records nothing', {
   timeout: 35 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -218,6 +198,9 @@ test('with the agent up, bios hands each sudo to the agent with the kernel’s f
   const jq = await asked(page, JQ, (item) => item.always === true);
   assert.equal(jq.requester.kind, 'user');
   assert.equal(jq.cwd, '/');
+  assert.equal(jq.always, true);
+  assert.equal(jq.verdict?.level, 1);
+  assert.equal('decision' in (jq.verdict ?? {}), false);
   const offers = await page.evaluate(() => window.offers);
   const seen = offers.filter(([command]) => JQ.test(command)).map(([, always]) => always);
   assert.equal(seen[0], false, JSON.stringify(offers));
@@ -230,7 +213,21 @@ test('with the agent up, bios hands each sudo to the agent with the kernel’s f
     facts.state.request.untrusted,
     /path "\/etc\/slicc\/secrets-policy\.toml": root-only/
   );
-  assert.equal(jq.verdict?.level, 1);
+  const askedIds = judged.map((input) => Object.keys(input.questions ?? {}));
+  assert.ok(
+    askedIds.some(
+      (ids) => ids.includes('changes') && ids.includes('plain') && ids.includes('always')
+    ),
+    JSON.stringify(askedIds)
+  );
+  assert.ok(
+    askedIds.some((ids) => ids.includes('wants_read')),
+    JSON.stringify(askedIds)
+  );
+  assert.ok(
+    askedIds.some((ids) => ids.includes('forbidden')),
+    JSON.stringify(askedIds)
+  );
   assert.deepEqual(await buttons(page, jq.id), ['always', 'deny', 'once']);
   await click(page, jq.id, 'always');
   await shows(page, 'jq-ran');
@@ -260,12 +257,14 @@ test('with the agent up, bios hands each sudo to the agent with the kernel’s f
   const gn = await asked(page, /\/id -gn$/, (item) => !!item.verdict);
   assert.equal(gn.always, false);
   assert.equal(judgedFor(/\/id -gn$/).state.request.sudo.writable, true);
+  assert.equal(judgedFor(/\/id -gn$/).questions.always !== undefined, true);
   assert.deepEqual(await buttons(page, gn.id), ['deny', 'once']);
   await click(page, gn.id, 'once');
   await shows(page, 'gn=0');
 
   await run(page, 'clear; cd /; sudo -u cone sudo id -Gn; echo Gn=$?');
   const Gn = await asked(page, /\/id -Gn$/, (item) => item.always === true);
+  assert.equal(Gn.always, true);
   assert.deepEqual(await buttons(page, Gn.id), ['always', 'deny', 'once']);
   await click(page, Gn.id, 'always');
   await shows(page, 'Gn=0');
