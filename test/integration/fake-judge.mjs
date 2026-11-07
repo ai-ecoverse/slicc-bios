@@ -33,14 +33,15 @@ export function clearForcedForbidden() {
 
 const ROUTINE = [
   {
-    match: /(?:^|[\s/])jq \.rules \/etc\/slicc\/secrets-policy\.toml$/,
+    match: /^\S+\/jq \.rules \/etc\/slicc\/secrets-policy\.toml$/,
     always: 0.02,
   },
-  { match: /(?:^|[\s/])id -gn$/, always: 0.9 },
-  { match: /(?:^|[\s/])id -Gn$/, always: 0.02 },
-  { match: /(?:^|[\s/])id -u$/, always: 0.02 },
-  { match: /(?:^|[\s/])printf /, always: 0.02 },
-  { match: /(?:^|[\s/])ls -la \/(?:etc|root)$/, always: 0.02 },
+  { match: /^\S+\/id -gn$/, always: 0.9 },
+  { match: /^\S+\/id -Gn$/, always: 0.02 },
+  { match: /^\S+\/id -u$/, always: 0.02 },
+  { match: /^\S+\/printf '%s-' \$'a\rb'$/, always: 0.02 },
+  { match: /^\S+\/ls -la \/etc$/, always: 0.02 },
+  { match: /^\S+\/ls -la \/root$/, always: 0.02 },
 ];
 
 const DANGER = [
@@ -82,21 +83,65 @@ const KIND_RANK = {
   routine: -1,
 };
 
-const commandOf = (untrusted) => {
+const TRAILER = /^(target:|cwd:|path )/;
+
+const openQuote = (text) => {
+  let quote = '';
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    if (quote) {
+      if (c === '\\' && quote !== "'") {
+        i += 1;
+        continue;
+      }
+      if (c === quote) quote = '';
+      continue;
+    }
+    if (c === "'" || c === '"') quote = c;
+  }
+  return quote !== '';
+};
+
+export const commandOf = (untrusted) => {
   const text = String(untrusted ?? '');
+  let body = text;
   const opened = text.match(/<untrusted-[^>]+>\n?/);
-  if (!opened) return text.split('\n')[0] ?? '';
-  return text.slice(opened.index + opened[0].length).split('\n')[0] ?? '';
+  if (opened) {
+    const start = opened.index + opened[0].length;
+    const close = text.indexOf('</', start);
+    body = close >= 0 ? text.slice(start, close) : text.slice(start);
+  }
+  const lines = body.split('\n');
+  const commandLines = [];
+  for (const line of lines) {
+    if (TRAILER.test(line)) break;
+    commandLines.push(line);
+  }
+  return commandLines.join('\n');
+};
+
+const pushToken = (parts, token) => {
+  const text = token.trim();
+  if (text) parts.push(text);
 };
 
 const segmentsOf = (command) => {
   const parts = [];
   let cur = '';
   let quote = '';
+  const flush = () => {
+    pushToken(parts, cur);
+    cur = '';
+  };
   for (let i = 0; i < command.length; i += 1) {
     const c = command[i];
     if (quote) {
       cur += c;
+      if (c === '\\' && quote !== "'") {
+        i += 1;
+        if (i < command.length) cur += command[i];
+        continue;
+      }
       if (c === quote) quote = '';
       continue;
     }
@@ -106,63 +151,87 @@ const segmentsOf = (command) => {
       continue;
     }
     if (c === '`') {
-      if (cur.trim()) parts.push(cur.trim());
-      cur = '';
+      flush();
       i += 1;
-      while (i < command.length && command[i] !== '`') i += 1;
-      parts.push('`code`');
+      let inner = '';
+      while (i < command.length && command[i] !== '`') {
+        inner += command[i];
+        i += 1;
+      }
+      pushToken(parts, inner || '`code`');
       continue;
     }
     if (c === '$' && command[i + 1] === '(') {
-      if (cur.trim()) parts.push(cur.trim());
-      cur = '';
+      flush();
       let depth = 1;
       i += 2;
+      let inner = '';
       while (i < command.length && depth) {
         if (command[i] === '(') depth += 1;
         else if (command[i] === ')') depth -= 1;
+        if (depth) inner += command[i];
         i += 1;
       }
       i -= 1;
-      parts.push('$(code)');
+      pushToken(parts, inner || '$(code)');
       continue;
     }
-    if (c === ';' || c === '|') {
-      if (cur.trim()) parts.push(cur.trim());
-      cur = '';
+    if (c === '\n' || c === ';' || c === '|') {
+      flush();
       if (c === '|' && command[i + 1] === '|') i += 1;
       continue;
     }
-    if (c === '&' && command[i + 1] === '&') {
-      if (cur.trim()) parts.push(cur.trim());
-      cur = '';
+    if (c === '&') {
+      flush();
+      if (command[i + 1] === '&') i += 1;
+      continue;
+    }
+    if (c === '<' || c === '>') {
+      flush();
+      if (command[i + 1] === c) i += 1;
+      if (command[i + 1] === '&') i += 1;
       i += 1;
+      while (i < command.length && /\s/.test(command[i])) i += 1;
+      let target = '';
+      while (i < command.length && !/[\s;|&<>]/.test(command[i])) {
+        target += command[i];
+        i += 1;
+      }
+      i -= 1;
+      pushToken(parts, target);
       continue;
     }
     cur += c;
   }
-  if (cur.trim()) parts.push(cur.trim());
+  flush();
   return parts.length ? parts : [command];
 };
 
 const kindOfPart = (part) => {
+  for (const entry of DANGER) if (entry.match.test(part)) return { kind: entry.kind };
   for (const entry of ROUTINE)
     if (entry.match.test(part)) return { kind: 'routine', always: entry.always };
-  for (const entry of DANGER) if (entry.match.test(part)) return { kind: entry.kind };
   return { kind: 'unknown' };
 };
 
 export function classifyCommand(command) {
-  const parts = segmentsOf(String(command ?? '').trim());
-  let best = { kind: 'routine', always: 0.02, rank: KIND_RANK.routine };
+  const text = String(command ?? '');
+  if (openQuote(text)) return { kind: 'unknown' };
+  const parts = segmentsOf(text.trim());
+  let best = null;
   for (const part of parts) {
     const got = kindOfPart(part);
     const rank = KIND_RANK[got.kind] ?? 0;
-    if (rank > best.rank) best = { ...got, rank };
+    if (!best || rank > best.rank) best = { ...got, rank };
     else if (rank === best.rank && got.kind === 'routine' && best.kind === 'routine') {
-      best = { ...got, rank, always: Math.max(best.always ?? 0, got.always ?? 0) };
+      best = {
+        ...got,
+        rank,
+        always: Math.max(best.always ?? 0, got.always ?? 0),
+      };
     }
   }
+  if (!best) return { kind: 'unknown' };
   if (best.kind === 'routine' && parts.some((part) => kindOfPart(part).kind === 'unknown')) {
     return { kind: 'unknown' };
   }

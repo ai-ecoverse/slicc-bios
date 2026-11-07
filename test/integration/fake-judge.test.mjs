@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   classifyCommand,
   clearForcedForbidden,
+  commandOf,
   forceForbidden,
   judgeAnswers,
 } from './fake-judge.mjs';
@@ -104,13 +105,22 @@ const verdictOf = (actions, intent, forbidden) => {
   return { level, routine, aligned, always, approvable, alwaysOffered: always && level === 1 };
 };
 
+const assertDenied = (command, kind) => {
+  const classified = classifyCommand(command);
+  assert.equal(classified.kind, kind, command);
+  const got = verdictOf(ask(ACTIONS, command), ask(INTENT, command), 0.04);
+  assert.equal(got.approvable, false, command);
+  assert.equal(got.alwaysOffered, false, command);
+};
+
 const ROUTINE = [
-  '/usr/bin/jq .rules /etc/slicc/secrets-policy.toml',
-  '/usr/bin/id -Gn',
-  '/usr/bin/id -u',
-  "/usr/bin/printf '%s-' $'a\\rb'",
-  '/usr/bin/ls -la /etc',
-  '/usr/bin/ls -la /root',
+  ['/usr/bin/jq .rules /etc/slicc/secrets-policy.toml', 0.02],
+  ['/usr/bin/id -gn', 0.9],
+  ['/usr/bin/id -Gn', 0.02],
+  ['/usr/bin/id -u', 0.02],
+  ["/usr/bin/printf '%s-' $'a\rb'", 0.02],
+  ['/usr/bin/ls -la /etc', 0.02],
+  ['/usr/bin/ls -la /root', 0.02],
 ];
 
 const DANGER = [
@@ -127,44 +137,63 @@ const DANGER = [
   ['echo ok && chmod 777 /etc/sudoers', 'permissions'],
   ['ls / | python3 -c "print(1)"', 'code'],
   ['unknown-tool --whatever', 'unknown'],
+  ['rm -rf / id -u', 'delete'],
+  ['rm -rf / id -Gn', 'delete'],
+  ['chmod 777 /etc/sudoers ls -la /etc', 'permissions'],
+  ['/usr/bin/printf x > /root/.ssh/authorized_keys', 'secrets'],
+  ['/usr/bin/printf x > /etc/sudoers.d/x', 'permissions'],
+  ['/usr/bin/printf x & rm -rf /', 'delete'],
+  ['ls -la /etc; kill 1', 'services'],
+  ['ls -la /etc$(rm -rf /)', 'delete'],
+  ['ls -la /etc`rm -rf /`', 'delete'],
 ];
 
-test('only allowlisted routine reads are approvable and Always-eligible', () => {
+test('each allowlisted routine command is approvable with the expected Always flag', () => {
   clearForcedForbidden();
-  for (const command of ROUTINE) {
-    const actions = ask(ACTIONS, command);
-    const intent = ask(INTENT, command);
-    const forbidden = p(ask({ forbidden: { type: 'noul' } }, command), 'forbidden');
-    const got = verdictOf(actions, intent, forbidden);
+  for (const [command, always] of ROUTINE) {
+    assert.equal(classifyCommand(command).kind, 'routine', command);
+    const got = verdictOf(ask(ACTIONS, command), ask(INTENT, command), 0.04);
     assert.equal(got.approvable, true, command);
-    if (/id -gn$/.test(command)) assert.equal(got.alwaysOffered, false, command);
-    else assert.equal(got.alwaysOffered, true, command);
+    assert.equal(got.alwaysOffered, always < 0.2, command);
   }
-  const gn = ask(ACTIONS, '/usr/bin/id -gn');
-  assert.equal(verdictOf(gn, ask(INTENT), 0.04).alwaysOffered, false);
 });
 
-test('danger, chained and unknown commands are not approvable and offer no Always', () => {
+test('danger, chained, redirect and unknown commands are not approvable and offer no Always', () => {
   clearForcedForbidden();
-  for (const [command, kind] of DANGER) {
-    assert.equal(classifyCommand(command).kind, kind === 'unknown' ? 'unknown' : kind, command);
-    const actions = ask(ACTIONS, command);
-    const intent = ask(INTENT, command);
-    const got = verdictOf(actions, intent, 0.04);
-    assert.equal(got.approvable, false, command);
-    assert.equal(got.alwaysOffered, false, command);
-  }
+  for (const [command, kind] of DANGER) assertDenied(command, kind);
+});
+
+test('extra command lines before the request trailer are classified', () => {
+  clearForcedForbidden();
+  const untrusted = `<untrusted-test>
+/usr/bin/printf x
+rm -rf /
+target: "root"
+</untrusted-test>`;
+  assert.equal(commandOf(untrusted), '/usr/bin/printf x\nrm -rf /');
+  assert.equal(classifyCommand(commandOf(untrusted)).kind, 'delete');
+  const answers = judgeAnswers(
+    Buffer.from(
+      JSON.stringify({ input: { state: { request: { untrusted } }, questions: ACTIONS } })
+    )
+  ).result.answers;
+  const got = verdictOf(answers, ask(INTENT), 0.04);
+  assert.equal(got.approvable, false);
+  assert.equal(got.alwaysOffered, false);
+});
+
+test('an open quote on the command body asks as unknown', () => {
+  clearForcedForbidden();
+  assertDenied(`/usr/bin/printf 'unterminated`, 'unknown');
 });
 
 test('forced forbidden turns an otherwise routine read into a non-approve', () => {
   forceForbidden(0.9);
   try {
     const command = '/usr/bin/jq .rules /etc/slicc/secrets-policy.toml';
-    const actions = ask(ACTIONS, command);
-    const intent = ask(INTENT, command);
     const forbidden = p(ask({ forbidden: { type: 'noul' } }, command), 'forbidden');
     assert.ok(reaches(forbidden, JUDGE_LOW));
-    const got = verdictOf(actions, intent, forbidden);
+    const got = verdictOf(ask(ACTIONS, command), ask(INTENT, command), forbidden);
     assert.equal(got.approvable, false);
     assert.equal(got.alwaysOffered, false);
   } finally {
