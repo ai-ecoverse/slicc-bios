@@ -5,13 +5,13 @@ import { flush, plainFrame, protocol } from './guard-ordering-fixture.mjs';
 const { guardProtected } = await import(process.env.GUARD_SOURCE ?? '../../src/seed/guard.js');
 
 async function advance(t, ms) {
-  for (let left = ms; left > 0; left -= 100) {
-    t.mock.timers.tick(100);
+  for (let left = ms; left > 0; left -= 25) {
+    t.mock.timers.tick(Math.min(25, left));
     await flush();
   }
 }
 
-async function settling(t, refuses) {
+async function settling(t, refuses, { mock = true } = {}) {
   const p = protocol(t, (raw, own) =>
     guardProtected(raw, own, new Map(), { kind: 'extension', version: '7.12.0' }, async () => null)
   );
@@ -51,7 +51,7 @@ async function settling(t, refuses) {
     context,
     attempts: () => attempts,
     async start() {
-      t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 });
+      if (mock) t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 });
       p.emit({
         sessionId: session,
         method: 'Page.frameNavigated',
@@ -75,18 +75,15 @@ test('settling probes recover on the timer without another frame or load event',
   await start();
   const pending = p.request('Debugger.enable', {}, session);
   await flush();
-  t.mock.timers.tick(50);
-  await flush();
+  await advance(t, 50);
   assert.equal(
     p.clients().some(({ method }) => method === 'Debugger.enable'),
     false
   );
   assert.equal(attempts(), 1);
   assert.equal(Date.now(), 50);
-  t.mock.timers.tick(50);
-  await flush();
-  t.mock.timers.tick(100);
-  await flush();
+  await advance(t, 50);
+  await advance(t, 100);
   assert.equal((await pending.answer).error, undefined);
   assert.equal(Date.now(), 200);
   assert.equal(attempts(), 3);
@@ -113,8 +110,7 @@ test('persistent refusal becomes hidden within one second and preserves the two-
   assert.ok(runtimeAnswer.error);
   assert.doesNotMatch(runtimeAnswer.error.message, /timed out/);
   assert.equal(attempts(), 10);
-  t.mock.timers.tick(30);
-  await flush();
+  await advance(t, 30);
   assert.equal(attempts(), 10);
   const answer = await p.send('Debugger.enable', {}, session);
   assert.match(answer.error?.message ?? '', /browser extension runs scripts/);
@@ -128,11 +124,58 @@ test('persistent refusal becomes hidden within one second and preserves the two-
   );
   const before = attempts();
   p.emit({ sessionId: session, method: 'Page.loadEventFired', params: { timestamp: 1 } });
-  await advance(t, 100);
-  t.mock.timers.tick(20);
-  await flush();
+  await advance(t, 120);
   assert.equal(attempts(), before);
   assert.equal(Date.now(), 1150);
+  assert.match(
+    (await p.send('Debugger.enable', {}, session)).error?.message ?? '',
+    /browser extension runs scripts/
+  );
+});
+
+test('real-clock smoke: settling probes recover without another frame or load event', async (t) => {
+  const { p, session, attempts, start } = await settling(t, (attempt) => attempt < 3, {
+    mock: false,
+  });
+  await start();
+  const began = performance.now();
+  const pending = p.request('Debugger.enable', {}, session);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(
+    p.clients().some(({ method }) => method === 'Debugger.enable'),
+    false
+  );
+  assert.equal((await pending.answer).error, undefined);
+  assert.ok(performance.now() - began < 2500);
+  assert.equal(attempts(), 3);
+  assert.equal((await p.send('Debugger.enable', {}, session)).error, undefined);
+});
+
+test('real-clock smoke: persistent refusal becomes hidden within one second and preserves the two-second client budget', async (t) => {
+  const { p, session, context, attempts, start } = await settling(t, () => true, { mock: false });
+  await start();
+  const began = performance.now();
+  const runtime = await p.send('Runtime.enable', {}, session);
+  assert.ok(runtime.error);
+  assert.doesNotMatch(runtime.error.message, /timed out/);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const answer = await p.send('Debugger.enable', {}, session);
+  assert.match(answer.error?.message ?? '', /browser extension runs scripts/);
+  assert.equal(
+    p.clients().some(({ method }) => method === 'Debugger.enable'),
+    false
+  );
+  const spent = performance.now() - began;
+  assert.ok(spent >= 900 && spent < 2500, `${spent} ms`);
+  assert.ok(attempts() >= 8 && attempts() <= 10);
+  assert.equal(
+    p.delivered.some(({ params }) => params?.context?.uniqueId === context.uniqueId),
+    false
+  );
+  const before = attempts();
+  p.emit({ sessionId: session, method: 'Page.loadEventFired', params: { timestamp: 1 } });
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert.equal(attempts(), before);
   assert.match(
     (await p.send('Debugger.enable', {}, session)).error?.message ?? '',
     /browser extension runs scripts/

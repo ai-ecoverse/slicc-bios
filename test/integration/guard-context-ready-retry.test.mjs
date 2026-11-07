@@ -5,13 +5,13 @@ import { flush, plainFrame, protocol } from './guard-ordering-fixture.mjs';
 const { guardProtected } = await import(process.env.GUARD_SOURCE ?? '../../src/seed/guard.js');
 
 async function advance(t, ms) {
-  for (let left = ms; left > 0; left -= 100) {
-    t.mock.timers.tick(100);
+  for (let left = ms; left > 0; left -= 25) {
+    t.mock.timers.tick(Math.min(25, left));
     await flush();
   }
 }
 
-async function readyProof(t, refuses) {
+async function readyProof(t, refuses, { mock = true } = {}) {
   const p = protocol(t, (raw, own) =>
     guardProtected(raw, own, new Map(), { kind: 'extension', version: '7.12.0' }, async () => null)
   );
@@ -50,7 +50,7 @@ async function readyProof(t, refuses) {
     session,
     attempts: () => attempts,
     start() {
-      t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 });
+      if (mock) t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 });
       p.emit({
         sessionId: session,
         method: 'Runtime.executionContextCreated',
@@ -75,8 +75,7 @@ test('a ready frame tree does not turn a transient default-context proof refusal
   );
   assert.equal(attempts(), 1);
   assert.equal(Date.now(), 0);
-  t.mock.timers.tick(50);
-  await flush();
+  await advance(t, 50);
   assert.equal(
     p
       .clients()
@@ -86,8 +85,7 @@ test('a ready frame tree does not turn a transient default-context proof refusal
   );
   assert.equal(attempts(), 1);
   assert.equal(Date.now(), 50);
-  t.mock.timers.tick(50);
-  await flush();
+  await advance(t, 50);
   assert.equal((await runtime.answer).error, undefined);
   assert.equal(attempts(), 2);
   assert.equal(Date.now(), 100);
@@ -130,6 +128,30 @@ test('a permanently refused ready default context stays terminal within the same
   await advance(t, 100);
   assert.equal(attempts(), 10);
   assert.equal(Date.now(), 1100);
+  assert.match(
+    (await p.send('Debugger.enable', {}, session)).error?.message ?? '',
+    /browser extension runs scripts/
+  );
+});
+
+test('real-clock smoke: a permanently refused ready default context stays terminal within the one-second proof budget', async (t) => {
+  const { p, session, attempts, start } = await readyProof(t, () => true, { mock: false });
+  start();
+  await flush();
+  const before = p.clients().length;
+  const began = performance.now();
+  assert.ok((await p.send('Runtime.enable', {}, session)).error);
+  assert.equal(
+    p
+      .clients()
+      .slice(before)
+      .some(({ method }) => method === 'Runtime.enable'),
+    false
+  );
+  const spent = performance.now() - began;
+  assert.ok(spent >= 900 && spent < 2500, `${spent}ms`);
+  assert.ok(attempts() >= 8 && attempts() <= 10);
+  await new Promise((resolve) => setTimeout(resolve, 30));
   assert.match(
     (await p.send('Debugger.enable', {}, session)).error?.message ?? '',
     /browser extension runs scripts/
