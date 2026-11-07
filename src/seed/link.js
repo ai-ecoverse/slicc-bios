@@ -171,6 +171,7 @@ function stream(streams, id, channel, own, post) {
     receive: (type, payload) => handlers[type](payload),
     fail,
     accepted(info = {}) {
+      if (!streams.has(id)) return;
       state.opened = true;
       send(OPENED, JSON.stringify(info));
     },

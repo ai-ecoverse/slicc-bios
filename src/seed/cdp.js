@@ -210,6 +210,7 @@ export function linkedBrowsers(links) {
     link.exit.browsers().map((browser) => ({
       runtime: `${link.label}/${browser.id}`,
       seven: browser.seven,
+      local: link.mode === 'local',
       route: { kind: 'link', version: link.peer?.version },
       open: () => link.exit.cdp(browser.id),
     }))
@@ -270,7 +271,9 @@ export function browserHook(
       return guard(() => found.open(), undefined, found.route, undefined, caller);
     }
     if (extension && !extensionAutomationSupported(extension)) throw new Error(EXTENSION_UPDATE);
-    const fallback = linked.find((browser) => browser.seven) ?? (here ? undefined : linked[0]);
+    const fallback = here
+      ? linked.find((browser) => browser.seven && browser.local)
+      : (linked.find((browser) => browser.seven) ?? linked[0]);
     const open = runtime ? hosts[runtime] : hosts.extension || hosts.devtools || fallback?.open;
     if (!open) throw new Error(MISSING[runtime ?? 'any']);
     return guard(

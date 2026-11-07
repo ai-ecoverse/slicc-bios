@@ -75,7 +75,7 @@ async function cdpNode({ key, name, mode, kind = 'cli', hello = {} }) {
     mode === 'remote'
       ? await RTCPeerConnection.generateCertificate({ name: 'ECDSA', namedCurve: 'P-256' })
       : null;
-  const node = { hello: null, streams: new Map(), next: 2, credit: true, pc: null };
+  const node = { hello: null, streams: new Map(), next: 2, credit: true, pc: null, asked: [] };
   globalThis.cdpNodes ??= {};
   globalThis.cdpNodes[key] = node;
   const serve = (channel) => {
@@ -98,6 +98,7 @@ async function cdpNode({ key, name, mode, kind = 'cli', hello = {} }) {
         return;
       }
       const bytes = new Uint8Array(data);
+      if (bytes[0] === 1) node.asked.push(JSON.parse(new TextDecoder().decode(bytes.slice(5))));
       node.streams.get(new DataView(bytes.buffer).getUint32(1))?.receive(bytes[0], bytes.slice(5));
     };
   };
@@ -237,11 +238,12 @@ const setSwitch = (page, value) =>
     value
   );
 
-async function join(page, hub, { key, name, controllerId, runtime }) {
+async function join(page, hub, { key, name, controllerId, runtime, hello = {} }) {
   await page.evaluate(cdpNode, {
     key,
     name,
     mode: 'remote',
+    hello,
     kind: runtime === 'slicc-seven/1' ? 'seven' : 'cli',
   });
   hub.send({
@@ -592,10 +594,34 @@ test('a remote CLI over the tray needs its Browser grant; the switch, Stop and r
   assert.match((await on(page, 'other', 'answer', refused)).reset, /^EACCES/);
 });
 
-test('a device never reaches another linked computer’s browser: without the extension, a DevTools port or a seven: true browser, its cdp OPEN is ENOENT', async (t) => {
+test('a device never reaches another linked computer’s browser: without the extension, a DevTools port or a local seven: true browser, its cdp OPEN is ENOENT, even when a remote link claims seven: true', async (t) => {
+  const hub = await startHub();
+  t.after(() => hub.close());
   const page = await chrome.page(t);
   await boot(page);
+  await page.evaluate((url) => localStorage.setItem('slicc-os.tray-hub', url), hub.url);
+  await page.reload();
   await ready(page);
+  await page.until(() => document.querySelector('slicc-app').model.network.status().links?.joinUrl);
+  const relay = setInterval(() => {
+    const found = hub.fromLeader.filter((m) => m.type === 'bootstrap.ice_candidate');
+    hub.fromLeader = hub.fromLeader.filter((m) => m.type !== 'bootstrap.ice_candidate');
+    for (const m of found)
+      page.evaluate((c) => globalThis.cdpNodes.liar?.candidate(c), m.candidate).catch(() => {});
+  }, 50);
+  t.after(() => clearInterval(relay));
+  const liar = await join(page, hub, {
+    key: 'liar',
+    name: 'slicc on liar',
+    controllerId: 'dev-liar',
+    runtime: 'slicc-link/1',
+    hello: {
+      caps: ['cdp'],
+      version: '1.50.0',
+      browsers: [{ id: 'chrome', name: 'Chrome', version: '140', seven: true }],
+    },
+  });
+  assert.ok(liar);
   await page.evaluate(cdpNode, {
     key: 'sharer',
     name: 'slicc on sharer',
@@ -606,11 +632,17 @@ test('a device never reaches another linked computer’s browser: without the ex
       browsers: [{ id: 'chrome', name: 'Chrome', version: '140' }],
     },
   });
-  await page.within(60000, () => (globalThis.sliccLinkedBrowsers?.() ?? []).length > 0);
+  await page.within(60000, () => (globalThis.sliccLinkedBrowsers?.() ?? []).length > 1);
   const shared = await page.evaluate(() =>
     globalThis.sliccLinkedBrowsers().map(({ runtime, seven }) => ({ runtime, seven }))
   );
-  assert.deepEqual(shared, [{ runtime: 'sharer/chrome', seven: false }]);
+  assert.deepEqual(
+    shared.sort((a, b) => a.runtime.localeCompare(b.runtime)),
+    [
+      { runtime: 'liar/chrome', seven: true },
+      { runtime: 'sharer/chrome', seven: false },
+    ]
+  );
   await page.evaluate(cdpNode, { key: 'asker', name: 'slicc on asker', mode: 'local' });
   await page.within(60000, () => globalThis.cdpNodes.asker.hello !== null);
   const id = await on(page, 'asker', 'open');
@@ -620,4 +652,13 @@ test('a device never reaches another linked computer’s browser: without the ex
       'ENOENT: no browser to drive: install slicc-extension, or link a computer with npx sliccy@next',
   });
   assert.deepEqual(await items(page), []);
+  const asked = await page.evaluate(() => [
+    ...globalThis.cdpNodes.liar.asked,
+    ...globalThis.cdpNodes.sharer.asked,
+  ]);
+  assert.equal(
+    asked.some((meta) => meta.kind === 'cdp'),
+    false,
+    JSON.stringify(asked)
+  );
 });
