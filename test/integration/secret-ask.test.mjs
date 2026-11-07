@@ -7,8 +7,8 @@ import { startFakeVault } from './fake-vault.mjs';
 const chrome = await launch({ vault: false });
 after(() => chrome.close());
 
-const override = (origin) =>
-  `() => { if (location.origin === ${JSON.stringify(new URL(chrome.url).origin)}) { localStorage.setItem('slicc-os.vault-origin', ${JSON.stringify(origin)}); globalThis.sliccSecretApprovals = true; } }`;
+const override = (origin, shows = true) =>
+  `() => { if (location.origin === ${JSON.stringify(new URL(chrome.url).origin)}) { localStorage.setItem('slicc-os.vault-origin', ${JSON.stringify(origin)}); globalThis.sliccSecretApprovals = ${shows}; } }`;
 
 const KERNEL_HOOK = `() => {
   const Native = globalThis.Worker;
@@ -87,9 +87,9 @@ const ask = (caller, name, fields = {}) => ({
   ...fields,
 });
 
-async function booted(t, fake) {
+async function booted(t, fake, shows = true) {
   const page = await chrome.page(t);
-  await page.init(override(fake.origin));
+  await page.init(override(fake.origin, shows));
   await page.init(KERNEL_HOOK);
   await boot(page);
   await page.until(
@@ -325,5 +325,44 @@ test('an ask whose program goes away is withdrawn in the vault, and the approval
   assert.notEqual(again.id, item.id);
   await page.evaluate((id) => globalThis.abortLikeTheKernel(id, 'withdrawn'), next);
   await listed(page, 0);
+  assert.deepEqual(page.errors, []);
+});
+
+test('while the UI can’t show a secret approval, an ask is refused at once and never reaches the vault', async (t) => {
+  const fake = await startFakeVault({ secrets: ['HARBOR_API_KEY'] });
+  t.after(() => fake.close());
+  const page = await booted(t, fake, false);
+  const answer = await page.evaluate(
+    (req) => globalThis.answerOf(globalThis.askLikeTheKernel(req)),
+    ask(agent, 'REEF_TOKEN', { reveal: true })
+  );
+  assert.deepEqual(answer.reply, {
+    v: 1,
+    error: { code: 'EACCES', message: "seven can't show this request yet; update seven" },
+  });
+  assert.deepEqual(await secrets(page), []);
+  const opened = await page.evaluate(
+    (req) => {
+      globalThis.sliccSecretApprovals = true;
+      return globalThis.answerOf(globalThis.askLikeTheKernel(req));
+    },
+    ask(agent, 'HARBOR_API_KEY')
+  );
+  assert.equal(opened.reply.state, 'done');
+  assert.ok(
+    await logged(fake, (log) =>
+      log.some(
+        (entry) => entry.role === 'page' && entry.op === 'ask' && entry.name === 'HARBOR_API_KEY'
+      )
+    ),
+    'the ask sent once the gate opened reached the vault'
+  );
+  assert.deepEqual(
+    fake.log
+      .filter((entry) => entry.role === 'page' && entry.op === 'ask')
+      .map((entry) => entry.name),
+    ['HARBOR_API_KEY']
+  );
+  assert.equal(fake.log.filter((entry) => entry.role === 'stamp' && entry.op === 'ask').length, 1);
   assert.deepEqual(page.errors, []);
 });
