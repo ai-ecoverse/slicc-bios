@@ -930,7 +930,7 @@ function greeting(link, { name, kernel, agent, sevens }) {
     name,
     mode,
     caps: [
-      ...(kernel ? ['kernel-in'] : []),
+      ...(kernel && mode === 'local' ? ['kernel-in'] : []),
       'browsers',
       'mounts',
       ...(agent?.allowed(link) ? ['agent'] : []),
@@ -1074,8 +1074,11 @@ export function createLinks({
             changed();
             return null;
           }
-          if (meta.kind !== 'browsers')
+          if (meta.kind !== 'browsers') {
+            if (meta.kind === 'kernel' && link.mode !== 'local')
+              return Promise.reject(failure('EACCES'));
             return kernel ? kernelIn(kernel, meta) : Promise.reject(failure('EOPNOTSUPP'));
+          }
           link.browsers = sharedBrowsers(link.offer.session.peer(), meta.browsers);
           changed();
           return null;
