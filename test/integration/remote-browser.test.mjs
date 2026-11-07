@@ -448,6 +448,32 @@ test('a remote CLI over the tray needs its Browser grant; the switch, Stop and r
 
   await model(page, (network, id) => network.setAccess(id, 'browser', true), device);
   assert.deepEqual((await row()).access, { control: false, browser: true });
+  await page.evaluate(() =>
+    document.querySelector('slicc-app').shadowRoot.querySelector('[data-network]').click()
+  );
+  const shown = await page.within(
+    30000,
+    (id) => {
+      const item = document
+        .querySelector('slicc-app')
+        .dock.content('network')
+        ?.shadowRoot?.querySelector(`li[data-device="${id}"]`);
+      const toggle = item?.querySelector('[data-action="access-browser"]');
+      if (!toggle) return false;
+      item.scrollIntoView({ block: 'center' });
+      return { label: toggle.textContent.trim(), checked: toggle.checked };
+    },
+    device
+  );
+  assert.deepEqual(shown, { label: 'Browser', checked: true });
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate((value) => {
+      const app = document.querySelector('slicc-app');
+      if (app.color !== value) app.toggleColor();
+    }, theme);
+    await page.until((value) => document.querySelector('slicc-app').color === value, theme);
+    await page.screenshot(new URL(`linked-devices-browser-${theme}.png`, page.dir));
+  }
   const first = await on(page, 'far', 'open');
   const answered = await on(page, 'far', 'answer', first);
   assert.equal(answered.reset, null);
