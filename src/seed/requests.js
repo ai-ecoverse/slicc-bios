@@ -420,9 +420,16 @@ export function captures({
     }
     return !(typed(stamp) && active());
   };
-  const consent = async (request, capture, prompt, gesture) => {
-    const { stamp, signal } = request;
+  const switched = (capture) => {
     for (const what of capture.whats) if (!on(what)) throw refused(switchedOff(what));
+  };
+  const consent = async (request, capture, prompt, gesture) => {
+    switched(capture);
+    await asking(request, capture, prompt, gesture);
+    switched(capture);
+  };
+  const asking = async (request, capture, prompt, gesture) => {
+    const { stamp, signal } = request;
     const answer = capture.asks ? await asked(request) : null;
     if (signal?.aborted) throw signal.reason;
     if (answer === null) {

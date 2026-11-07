@@ -480,6 +480,24 @@ test('the Microphone switch also covers a transcribe that listens: it shows a ch
   assert.deepEqual(page.errors, []);
 });
 
+test('turning Screen off while a click item waits refuses the request even after the click', async (t) => {
+  const page = await seven(t);
+  await run(
+    page,
+    `sleep 8; printf '%s\\n' '{"kind":"capture.screen","type":"image/png"}' | cat > /dev/embedder; echo "waited $?"`
+  );
+  await page.until(() => window.clickItems().length === 1);
+  await page.evaluate(() =>
+    document.querySelector('slicc-app').model.switches.set('screen', false)
+  );
+  await pressDeep(page, `${CLICK} [data-action="once"]`);
+  await shows(page, "screen capture is off in seven's settings");
+  await shows(page, 'waited 1');
+  assert.equal(await page.evaluate(() => window.displays.length), 0);
+  await page.evaluate(() => document.querySelector('slicc-app').model.switches.set('screen', true));
+  assert.deepEqual(page.errors, []);
+});
+
 test('a click nobody answers times out after 5 minutes with nobody clicked within 5 min', async (t) => {
   const page = await seven(t);
   await run(
