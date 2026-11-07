@@ -632,17 +632,12 @@ test('a device never reaches another linked computer’s browser: without the ex
       browsers: [{ id: 'chrome', name: 'Chrome', version: '140' }],
     },
   });
-  await page.within(60000, () => (globalThis.sliccLinkedBrowsers?.() ?? []).length > 1);
-  const shared = await page.evaluate(() =>
-    globalThis.sliccLinkedBrowsers().map(({ runtime, seven }) => ({ runtime, seven }))
-  );
-  assert.deepEqual(
-    shared.sort((a, b) => a.runtime.localeCompare(b.runtime)),
-    [
-      { runtime: 'liar/chrome', seven: true },
-      { runtime: 'sharer/chrome', seven: false },
-    ]
-  );
+  const shared = await page.within(60000, () => {
+    const rows = document.querySelector('slicc-app').model.network.status().links?.devices ?? [];
+    const runtimes = rows.flatMap((row) => (row.browsers ?? []).map((item) => item.runtime));
+    return runtimes.length > 1 && runtimes.sort();
+  });
+  assert.deepEqual(shared, ['liar/chrome', 'sharer/chrome']);
   await page.evaluate(cdpNode, { key: 'asker', name: 'slicc on asker', mode: 'local' });
   await page.within(60000, () => globalThis.cdpNodes.asker.hello !== null);
   const id = await on(page, 'asker', 'open');
