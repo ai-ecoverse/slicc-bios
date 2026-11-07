@@ -218,8 +218,15 @@ async function pageOp(page, op, fields) {
 
 async function record(page, name, value, options = {}) {
   return page.evaluate(
-    async ({ name, value, options }) =>
-      document.querySelector('slicc-app').model.vault.put(name, value, undefined, options),
+    async ({ name, value, options }) => {
+      const was = globalThis.sliccValueEntry;
+      globalThis.sliccValueEntry = false;
+      const sealing = document
+        .querySelector('slicc-app')
+        .model.vault.put(name, value, undefined, options);
+      globalThis.sliccValueEntry = was;
+      return sealing;
+    },
     { name, value, options }
   );
 }
