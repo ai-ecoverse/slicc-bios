@@ -322,6 +322,14 @@ test('a local CLI link drives an ordinary tab over a cdp stream, through the gua
   );
   assert.equal(title, 'PLAIN-MARK');
 
+  const own2 = await page.evaluate(async (id) => {
+    const node = globalThis.cdpNodes.near;
+    node.send(id, { id: -2, method: 'Browser.getVersion' });
+    return node.wait(id, (s) => s.messages.find((message) => message.id === -2));
+  }, id);
+  assert.equal(typeof own2.result.product, 'string');
+  assert.deepEqual(own2.result.slicc, { route: 'extension' });
+
   const { result: listed } = await on(page, 'near', 'call', id, 'Target.getTargets');
   const urls = listed.targetInfos.map((info) => info.url);
   assert.ok(urls.includes(PLAIN), JSON.stringify(urls));
