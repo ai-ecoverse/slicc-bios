@@ -598,7 +598,9 @@ test('a follower watches the owner run with View, is refused a send, sends with 
   const once = await sudoFor('Sudo once', '/usr/bin/ls -la /etc', 'once');
   assert.deepEqual([once.requester.kind, once.requester.agentId], ['agent', 'cone']);
   assert.equal(once.verdict?.level, 1);
-  assert.equal('decision' in (once.verdict ?? {}), false);
+  assert.equal(once.verdict?.aligned, true);
+  assert.equal(once.verdictError, undefined);
+  assert.match(once.verdict?.reason ?? '', /reads or lists|read or inspect/i);
   assert.match(await finished('sudo-once'), /passwd/);
   const always = await sudoFor('Sudo always', '/usr/bin/ls -la /root', 'always');
   assert.equal(always.always, true);

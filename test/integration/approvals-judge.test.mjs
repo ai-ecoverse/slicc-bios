@@ -3,7 +3,7 @@ import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
 import { agentUp, connectAccount, listsAccount, ready, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
-import { judgeAnswers } from './fake-judge.mjs';
+import { clearForcedForbidden, forceForbidden, judgeAnswers } from './fake-judge.mjs';
 import { eventFrame, fakeLlm } from './fake-llm.mjs';
 
 const KEY = 'dummy-bedrock-key-0000';
@@ -200,7 +200,9 @@ test('with the agent up, bios hands each sudo to the agent with the kernel’s f
   assert.equal(jq.cwd, '/');
   assert.equal(jq.always, true);
   assert.equal(jq.verdict?.level, 1);
-  assert.equal('decision' in (jq.verdict ?? {}), false);
+  assert.equal(jq.verdict?.aligned, true);
+  assert.equal(jq.verdictError, undefined);
+  assert.match(jq.verdict?.reason ?? '', /reads or lists|read or inspect/i);
   const offers = await page.evaluate(() => window.offers);
   const seen = offers.filter(([command]) => JQ.test(command)).map(([, always]) => always);
   assert.equal(seen[0], false, JSON.stringify(offers));
@@ -224,10 +226,15 @@ test('with the agent up, bios hands each sudo to the agent with the kernel’s f
     askedIds.some((ids) => ids.includes('wants_read')),
     JSON.stringify(askedIds)
   );
-  assert.ok(
-    askedIds.some((ids) => ids.includes('forbidden')),
-    JSON.stringify(askedIds)
+  const forbidCalls = judged.filter((input) =>
+    Object.keys(input.questions ?? {}).includes('forbidden')
   );
+  assert.ok(forbidCalls.length >= 2, JSON.stringify(forbidCalls.map((input) => input.state)));
+  const nonces = forbidCalls.map(
+    (input) => String(input.state?.request?.untrusted ?? '').match(/untrusted-([^>\s]+)/)?.[1]
+  );
+  assert.equal(new Set(nonces.filter(Boolean)).size >= 2, true, JSON.stringify(nonces));
+  assert.doesNotMatch(await sudoers(page), /jq \.rules \/etc\/slicc\/secrets-policy\.toml/);
   assert.deepEqual(await buttons(page, jq.id), ['always', 'deny', 'once']);
   await click(page, jq.id, 'always');
   await shows(page, 'jq-ran');
@@ -280,6 +287,36 @@ test('with the agent up, bios hands each sudo to the agent with the kernel’s f
   await click(page, cr.id, 'once');
   await shows(page, 'cr=0');
   assert.doesNotMatch(await sudoers(page), /printf/);
+
+  forceForbidden(0.9);
+  try {
+    await run(page, 'clear; cd /; sudo -u cone sudo id -u; echo vetoed=$?');
+    const vetoed = await asked(page, /\/id -u$/, (item) => !!item.verdict);
+    assert.equal(vetoed.always, false);
+    assert.equal(vetoed.verdict?.level, 1);
+    assert.deepEqual(await buttons(page, vetoed.id), ['deny', 'once']);
+    await click(page, vetoed.id, 'deny');
+    await shows(page, 'vetoed=1');
+  } finally {
+    clearForcedForbidden();
+  }
+
+  await run(
+    page,
+    'clear; cd /; sudo -u cone sudo rm -rf /tmp/slicc-judge-absent-$$; echo rm-done=$?'
+  );
+  const rm = await asked(page, /\/rm /, (item) => !!item.verdict);
+  assert.equal(rm.always, false);
+  assert.deepEqual(await buttons(page, rm.id), ['deny', 'once']);
+  await click(page, rm.id, 'deny');
+  await shows(page, 'rm-done=1');
+
+  await run(page, 'clear; cd /; sudo -u cone sudo systemctl --user restart sshd; echo ctl=$?');
+  const ctl = await asked(page, /systemctl/, (item) => !!item.verdict);
+  assert.equal(ctl.always, false);
+  assert.deepEqual(await buttons(page, ctl.id), ['deny', 'once']);
+  await click(page, ctl.id, 'deny');
+  await shows(page, 'ctl=1');
   assert.deepEqual(page.errors, []);
 });
 
