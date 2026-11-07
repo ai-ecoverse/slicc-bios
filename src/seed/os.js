@@ -85,7 +85,7 @@ import {
   pageRequests,
   plugged,
 } from './requests.js';
-import { showsSecrets, withSecrets } from './secrets.js';
+import { entersInFrame, showsSecrets, withSecrets } from './secrets.js';
 import { BIOS, home, sharesOrigin } from './site.js';
 import { importSix, retirePreview, said } from './six.js';
 import { installPrompts, keepStorage, onSend } from './storage.js';
@@ -326,6 +326,7 @@ const vault = createVault({
     device: (id) => onDevice(id),
     shows: () => showsSecrets(spectrumUi.approvalKinds, globalThis.sliccSecretApprovals),
   },
+  framed: () => entersInFrame(spectrumUi.valueEntry, globalThis.sliccValueEntry),
 });
 const forwarder = createForwarder({
   vault,

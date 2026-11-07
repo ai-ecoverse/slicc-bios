@@ -16,6 +16,9 @@ export const FNOX_DIR = '/etc/fnox';
 export const FNOX_CONFIG = 'default_provider = "seven"\n\n[providers.seven]\ntype = "sealed"\n';
 export const NOT_CONNECTED = "seven's vault isn't connected";
 export const RECONNECTED = "seven's vault reconnected before it answered";
+export const TYPED_IN_FRAME = "values are typed in the vault's frame";
+export const NO_VALUE_REQUESTS = 'ask with op ask instead';
+export const HOLD_MS = 1000;
 const TYPE = 'slicc-vault';
 const SCRUBBING = new Set(['put', 'seal', 'import']);
 
@@ -184,6 +187,9 @@ const EVENT_FIELDS = [
   'height',
   'inset',
   'direction',
+  'name',
+  'placeholder',
+  'record',
   'label',
   'intent',
   'code',
@@ -196,7 +202,7 @@ export function frameEvent(data) {
   return known;
 }
 
-export function vaultButtons({ document, origin, media }) {
+export function vaultButtons({ document, origin, media, hold = async () => undefined }) {
   const buttons = new Set();
   let scheme = schemeOf(document, media);
   const stop = watchScheme(document, media, (next) => {
@@ -218,7 +224,12 @@ export function vaultButtons({ document, origin, media }) {
       const data = event.data;
       if (data?.type !== TYPE || data.v !== 1 || typeof data.event !== 'string') return;
       const known = frameEvent(data);
-      for (const listener of [...heard]) listener(known);
+      const deliver = () => {
+        for (const listener of [...heard]) listener(known);
+      };
+      if (known.event === 'done' && typeof known.placeholder === 'string')
+        void hold(known.placeholder).then(deliver);
+      else deliver();
     };
     const handle = {
       repaint() {
@@ -309,7 +320,9 @@ async function named(call, op, fields) {
   }
 }
 
-export function vaultPort({ call, state, button, valueFrame }) {
+const ENTER = ['name', 'kind', 'provider', 'server', 'settings', 'replace'];
+
+export function vaultPort({ call, state, button, valueFrame, framed = () => false }) {
   return {
     on: state.on,
     status: state.status,
@@ -320,9 +333,14 @@ export function vaultPort({ call, state, button, valueFrame }) {
       return data(await call('audit', { ...maybe('before', before), ...maybe('limit', limit) }));
     },
     async put(name, value, request, options = {}) {
+      if (framed()) throw failure({ code: 'EACCES', message: TYPED_IN_FRAME });
       return data(
         await call('put', { ...options, name, value, ...maybe('request', request) }, { value })
       );
+    },
+    async enter(options = {}) {
+      const { request } = await call('enter', picked(options, ENTER));
+      return { request };
     },
     async cancel(request) {
       return (await call('cancel', { request })).state;
@@ -407,8 +425,10 @@ async function kernelOp(call, req, { signal, away }) {
   }
 }
 
-function restrictedSealed(rest, policyReady) {
+function restrictedSealed(rest, policyReady, framed) {
   if (rest.op === 'endpoints') return refusal('EACCES', ENDPOINTS_PAGE_ONLY);
+  if (rest.op === 'request' && rest.kind === 'value' && framed())
+    return refusal('EINVAL', NO_VALUE_REQUESTS);
   if (rest.op === 'put' && !Object.hasOwn(rest, 'value'))
     return refusal('EACCES', SETTINGS_PAGE_ONLY);
   if (policyDependent(rest) && policyReady() !== true)
@@ -424,10 +444,11 @@ export function sealedRelay({
   policyReady = () => true,
   away = () => false,
   ask = askRelay({ call }),
+  framed = () => false,
 }) {
   return async (req, { signal } = {}) => {
     const { caller, ...rest } = req ?? {};
-    const restricted = restrictedSealed(rest, policyReady);
+    const restricted = restrictedSealed(rest, policyReady, framed);
     if (restricted) return restricted;
     if (Object.hasOwn(KERNEL_OPS, rest.op ?? '')) return kernelOp(call, rest, { signal, away });
     if (away()) return refusal('ENOTCONN', NOT_CONNECTED);
@@ -707,6 +728,27 @@ function ended(message, { asks, state, onCancelled }) {
   });
 }
 
+function relayOf(view, state, { ask, ...options }) {
+  const relay = askRelay({ call: options.call, ...ask });
+  return sealedRelay({ ...options, away: () => away(view, state), ask: relay });
+}
+
+function listing(view, state, timers) {
+  return (placeholder) =>
+    new Promise((resolve) => {
+      if (view.placeholders.includes(placeholder)) return resolve();
+      const settle = () => {
+        timers.clearTimeout(timer);
+        stop();
+        resolve();
+      };
+      const timer = timers.setTimeout(settle, HOLD_MS);
+      const stop = state.on('placeholders', (list) => {
+        if (list.includes(placeholder)) settle();
+      });
+    });
+}
+
 function vaultAgent({ frame, origin, pair, loads }) {
   return (worker) => {
     if (!loads() || !frame.contentWindow) return;
@@ -733,13 +775,14 @@ export function createVault({
   onCancelled = () => {},
   onRefresh = () => {},
   ask = {},
+  framed = () => false,
 }) {
   const pending = new Map();
   const asks = new Map();
   const workers = new Set();
   const { view, timings } = vaultState(now);
   const state = snapshots({ now, timers, pending, view, timings });
-  const buttons = vaultButtons({ document, origin, media });
+  const buttons = vaultButtons({ document, origin, media, hold: listing(view, state, timers) });
   const frame = coreFrame(document);
   let serial = 0;
   let epoch = 0;
@@ -864,17 +907,9 @@ export function createVault({
   return {
     origin,
     frame,
-    port: vaultPort({ call, state, button: buttons.button, valueFrame: buttons.valueFrame }),
+    port: vaultPort({ call, state, ...buttons, framed }),
     call,
-    sealed: sealedRelay({
-      call,
-      forward,
-      users,
-      policyReady,
-      onRequest,
-      away: () => away(view, state),
-      ask: askRelay({ call, ...ask }),
-    }),
+    sealed: relayOf(view, state, { call, forward, users, policyReady, onRequest, ask, framed }),
     ...forwardState(view, () => epoch),
     placeholders: () => [...view.placeholders],
     scrub: pair,
