@@ -19,6 +19,10 @@ export const TOO_BIG = 'EMSGSIZE: a CDP message over 64 MiB';
 export const CUT = 'EPROTO: the node ended inside a CDP message';
 export const FULL = 'ENOBUFS: over 64 MiB of CDP messages wait for the node';
 
+const clean = (text) =>
+  String(text)
+    .replace(/\p{Cc}/gu, '')
+    .slice(0, 128);
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -88,7 +92,7 @@ export function createCdpIn({
   const open = new Set();
   const shown = new Map();
   const keyOf = (link) => link.id ?? link.key;
-  const nameOf = (link) => displayName(device(link).name);
+  const nameOf = (link) => clean(displayName(device(link).name));
   const drop = (key) => {
     const item = shown.get(key);
     if (!item) return;
