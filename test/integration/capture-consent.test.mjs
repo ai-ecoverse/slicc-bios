@@ -396,7 +396,10 @@ test('each switch refuses its kind before the agent is asked, ends a live captur
     document.querySelector('slicc-app').model.switches.set('microphone', false)
   );
   const before = await page.evaluate(() => window.faux.seen.length);
-  await run(page, 'screencapture -x /tmp/off.png; echo "screen off $?"');
+  await run(
+    page,
+    `printf '%s\\n' '{"kind":"capture.screen","type":"image/png"}' | cat > /dev/embedder; echo "screen off $?"`
+  );
   await shows(page, "screen capture is off in seven's settings");
   await shows(page, 'screen off 1');
   await run(
