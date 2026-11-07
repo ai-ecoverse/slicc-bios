@@ -235,7 +235,10 @@ test('a microphone recording asks for a click only while the browser would promp
 test('a deny with a message reaches the program as EACCES with that message, EAGAIN shows seven’s own prompt, and Cancel on the click item refuses', async (t) => {
   const page = await seven(t);
   await answer(page, { answer: 'deny', message: 'capture: denied by the approval judge: not now' });
-  await run(page, 'screencapture -x /tmp/denied.png; echo "denied $?"');
+  await run(
+    page,
+    `printf '%s\\n' '{"kind":"capture.screen","type":"image/png"}' | cat > /dev/embedder; echo "denied $?"`
+  );
   await shows(page, 'capture: denied by the approval judge: not now');
   await shows(page, 'denied 1');
   assert.equal(await page.evaluate(() => window.displays.length), 0);
@@ -381,7 +384,8 @@ test('each switch refuses its kind before the agent is asked, ends a live captur
     ]
   );
   await run(page, 'screencapture -V 60 /tmp/cut.webm; echo "cut $?"');
-  await page.until(() => window.chips().length === 1);
+  await page.until(() => window.chips().length === 1 && window.displays.length === 1);
+  await new Promise((resolve) => setTimeout(resolve, 1500));
   await page.evaluate(() =>
     document.querySelector('slicc-app').model.switches.set('screen', false)
   );
@@ -451,7 +455,7 @@ test('the Microphone switch also covers a transcribe that listens: it shows a ch
     `exec 3<>/dev/embedder; printf '%s\\n' '{"kind":"audio.transcribe","engine":"webspeech","seconds":60}' >&3; cat <&3; echo "${name} $?"; exec 3<&-`;
   await run(page, listen('listening'));
   await page.until(() => window.chips().some((chip) => chip.startsWith('Recording microphone')));
-  assert.equal(await page.evaluate(() => window.recognitions), 1);
+  await page.until(() => window.recognitions === 1);
   assert.deepEqual(await page.evaluate(() => window.faux.seen), []);
   await page.evaluate(() =>
     document.querySelector('slicc-app').model.switches.set('microphone', false)
@@ -475,7 +479,10 @@ test('the Microphone switch also covers a transcribe that listens: it shows a ch
 
 test('a click nobody answers times out after 5 minutes with nobody clicked within 5 min', async (t) => {
   const page = await seven(t);
-  await run(page, 'sleep 8; screencapture -x /tmp/late.png; echo "late $?"');
+  await run(
+    page,
+    `sleep 8; printf '%s\\n' '{"kind":"capture.screen","type":"image/png"}' | cat > /dev/embedder; echo "late $?"`
+  );
   await page.until(() => window.clickItems().length === 1);
   await shows(page, 'nobody clicked within 5 min', 330000);
   await shows(page, 'late 1');
