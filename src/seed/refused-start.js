@@ -46,12 +46,24 @@ export function offerChatOptions(auto = false) {
 
 export function shareRun(run) {
   let current = null;
-  return (...args) => {
-    current ??= Promise.resolve()
-      .then(() => run(...args))
-      .finally(() => {
+  let again = false;
+  const share = (...args) => {
+    if (current !== null) {
+      again = true;
+      return current;
+    }
+    current = (async () => {
+      try {
+        return await run(...args);
+      } finally {
         current = null;
-      });
+        if (again) {
+          again = false;
+          void share(...args);
+        }
+      }
+    })();
     return current;
   };
+  return share;
 }
