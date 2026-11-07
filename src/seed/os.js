@@ -25,6 +25,7 @@ import { createApprovals, routeSudo } from './approvals.js';
 import { createBetas } from './beta.js';
 import { createBrowser } from './browser.js';
 import { browserControl, browserHosts, linkedBrowsers } from './cdp.js';
+import { createClicks, withClicks } from './clicks.js';
 import { clipboardHook, clipboardWrite } from './clipboard.js';
 import { denialLog, installCommand, watchProtected } from './denials.js';
 import { profileSchema } from './durable.js';
@@ -39,6 +40,7 @@ import { createJerk } from './jerk.js';
 import { change, userRows } from './layer.js';
 import { createLeaders, proxyOf } from './leaders.js';
 import { createLinks, installLocal, labelStore, trustHostKey } from './link.js';
+import { createLive } from './live.js';
 import { serveLoopback } from './loopback.js';
 import { createFolders, KEY, layoutMnt, offTheRecord } from './mounts.js';
 import { createNetwork } from './network.js';
@@ -79,6 +81,7 @@ import { createRemote } from './remote.js';
 import {
   audioPrompts,
   capturePrompt,
+  captures,
   displayer,
   markCaptured,
   openUrl,
@@ -89,6 +92,7 @@ import { showsSecrets, withSecrets } from './secrets.js';
 import { BIOS, home, sharesOrigin } from './site.js';
 import { importSix, retirePreview, said } from './six.js';
 import { installPrompts, keepStorage, onSend } from './storage.js';
+import { createSwitches } from './switches.js';
 import {
   claim,
   createOs,
@@ -374,10 +378,28 @@ const registration = await navigator.serviceWorker?.getRegistration();
 if (registration) watchWaiting({ registration, board, notices, reload: () => location.reload() });
 const approvals = createApprovals();
 const asking = withSecrets(approvals.port, vault.port);
+const clicks = createClicks();
+const approving = withClicks(asking.port, clicks.port);
+const live = createLive();
+const switches = createSwitches();
 function onDevice(device) {
   const name = device && [...links.links.values()].find((link) => link.id === device)?.peer?.name;
   return name ? `on ${name}` : undefined;
 }
+const guarded = captures({
+  agent: () => (globalThis.sliccKernelDebug === true && globalThis.sliccCaptureAgent) || owner,
+  on: (what) => capturable[what].on(),
+  clicks,
+  live,
+  where: (stamp) => onDevice(followerDevice(stamp?.tag)),
+});
+const capturable = Object.fromEntries(
+  [
+    ['camera', 'Camera'],
+    ['microphone', 'Microphone'],
+    ['screen', 'Screen'],
+  ].map(([key, label]) => [key, switches.add({ key, label, off: () => guarded.off(key) })])
+);
 const sudo = routeSudo({
   agent: () => owner,
   judges: agentJudges,
@@ -398,8 +420,8 @@ const requests = pageRequests({
   handlers: {
     'open.url': openUrl(),
     'clipboard.write': clipboardWrite(),
-    ...plugged(capture, { 'capture.screen': capturePrompt }, displayer()),
-    ...plugged(audio, audioPrompts),
+    ...plugged(capture, { 'capture.screen': capturePrompt }, displayer(), guarded),
+    ...plugged(audio, audioPrompts, undefined, guarded),
   },
 });
 let folders = null;
@@ -467,7 +489,9 @@ function base(os) {
     agent: browser.stopping(heldAgent(files.agent, os ? mirrorHold(os, tabs) : composer)),
     updates: os ? mirrorUpdates(os) : updates,
     notices,
-    approvals: asking.port,
+    approvals: approving,
+    live: live.port,
+    switches: switches.port,
     network,
     browser: browser.port,
     vault: asking.vault,
@@ -960,6 +984,7 @@ async function own() {
   exits.attach(kernel);
   if (globalThis.sliccKernelDebug === true) {
     globalThis.sliccKernelClient = async () => attachKernel(await kernel.connect());
+    globalThis.sliccRequestsClient = async () => attachKernel(await kernel.connect({ requests }));
     globalThis.sliccAgentSource = () => {
       const source = kernelSource(kernel);
       return { ...source, client: async (options) => attachKernel(await source.connect(options)) };
@@ -1039,7 +1064,9 @@ async function follow() {
     ...model,
     updates: waiting,
     notices,
-    approvals: asking.port,
+    approvals: approving,
+    live: live.port,
+    switches: switches.port,
     network: reach.port,
     browser: browser.port,
     vault: asking.vault,
