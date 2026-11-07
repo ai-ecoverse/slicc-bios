@@ -4,7 +4,14 @@ import { flush, plainFrame, protocol } from './guard-ordering-fixture.mjs';
 
 const { guardProtected } = await import(process.env.GUARD_SOURCE ?? '../../src/seed/guard.js');
 
-async function settling(t, refuses) {
+async function advance(t, ms) {
+  for (let left = ms; left > 0; left -= 25) {
+    t.mock.timers.tick(Math.min(25, left));
+    await flush();
+  }
+}
+
+async function settling(t, refuses, { mock = true } = {}) {
   const p = protocol(t, (raw, own) =>
     guardProtected(raw, own, new Map(), { kind: 'extension', version: '7.12.0' }, async () => null)
   );
@@ -38,17 +45,100 @@ async function settling(t, refuses) {
     );
     return true;
   });
-  p.emit({ sessionId: session, method: 'Page.frameNavigated', params: { frame: root.tree.frame } });
-  p.emit({ sessionId: session, method: 'Runtime.executionContextCreated', params: { context } });
-  await flush();
-  holdTrees = false;
-  for (const held of [...p.held]) p.release(held);
-  return { p, session, context, attempts: () => attempts };
+  return {
+    p,
+    session,
+    context,
+    attempts: () => attempts,
+    async start() {
+      if (mock) t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 });
+      p.emit({
+        sessionId: session,
+        method: 'Page.frameNavigated',
+        params: { frame: root.tree.frame },
+      });
+      p.emit({
+        sessionId: session,
+        method: 'Runtime.executionContextCreated',
+        params: { context },
+      });
+      await flush();
+      holdTrees = false;
+      for (const held of [...p.held]) p.release(held);
+      await flush();
+    },
+  };
 }
 
 test('settling probes recover on the timer without another frame or load event', async (t) => {
-  const { p, session, context, attempts } = await settling(t, (attempt) => attempt < 3);
-  const start = performance.now();
+  const { p, session, attempts, start } = await settling(t, (attempt) => attempt < 3);
+  await start();
+  const pending = p.request('Debugger.enable', {}, session);
+  await flush();
+  await advance(t, 50);
+  assert.equal(
+    p.clients().some(({ method }) => method === 'Debugger.enable'),
+    false
+  );
+  assert.equal(attempts(), 1);
+  assert.equal(Date.now(), 50);
+  await advance(t, 50);
+  await advance(t, 100);
+  assert.equal((await pending.answer).error, undefined);
+  assert.equal(Date.now(), 200);
+  assert.equal(attempts(), 3);
+  assert.equal((await p.send('Debugger.enable', {}, session)).error, undefined);
+});
+
+test('persistent refusal becomes hidden within one second and preserves the two-second client budget', async (t) => {
+  const { p, session, context, attempts, start } = await settling(t, () => true);
+  await start();
+  const runtime = p.request('Runtime.enable', {}, session);
+  let settled = false;
+  void runtime.answer.then(() => {
+    settled = true;
+  });
+  await flush();
+  await advance(t, 900);
+  assert.equal(Date.now(), 900);
+  assert.equal(attempts(), 10);
+  assert.equal(settled, false);
+  await advance(t, 100);
+  assert.equal(Date.now(), 1000);
+  assert.equal(settled, true);
+  const runtimeAnswer = await runtime.answer;
+  assert.ok(runtimeAnswer.error);
+  assert.doesNotMatch(runtimeAnswer.error.message, /timed out/);
+  assert.equal(attempts(), 10);
+  await advance(t, 30);
+  assert.equal(attempts(), 10);
+  const answer = await p.send('Debugger.enable', {}, session);
+  assert.match(answer.error?.message ?? '', /browser extension runs scripts/);
+  assert.equal(
+    p.clients().some(({ method }) => method === 'Debugger.enable'),
+    false
+  );
+  assert.equal(
+    p.delivered.some(({ params }) => params?.context?.uniqueId === context.uniqueId),
+    false
+  );
+  const before = attempts();
+  p.emit({ sessionId: session, method: 'Page.loadEventFired', params: { timestamp: 1 } });
+  await advance(t, 120);
+  assert.equal(attempts(), before);
+  assert.equal(Date.now(), 1150);
+  assert.match(
+    (await p.send('Debugger.enable', {}, session)).error?.message ?? '',
+    /browser extension runs scripts/
+  );
+});
+
+test('real-clock smoke: settling probes recover without another frame or load event', async (t) => {
+  const { p, session, attempts, start } = await settling(t, (attempt) => attempt < 3, {
+    mock: false,
+  });
+  const began = performance.now();
+  await start();
   const pending = p.request('Debugger.enable', {}, session);
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(
@@ -56,14 +146,15 @@ test('settling probes recover on the timer without another frame or load event',
     false
   );
   assert.equal((await pending.answer).error, undefined);
-  assert.ok(performance.now() - start < 1500);
+  assert.ok(performance.now() - began < 1500);
   assert.equal(attempts(), 3);
   assert.equal((await p.send('Debugger.enable', {}, session)).error, undefined);
 });
 
-test('persistent refusal becomes hidden within one second and preserves the two-second client budget', async (t) => {
-  const { p, session, context, attempts } = await settling(t, () => true);
-  const start = performance.now();
+test('real-clock smoke: persistent refusal becomes hidden within one second and preserves the two-second client budget', async (t) => {
+  const { p, session, context, attempts, start } = await settling(t, () => true, { mock: false });
+  const began = performance.now();
+  await start();
   const runtime = await p.send('Runtime.enable', {}, session);
   assert.ok(runtime.error);
   assert.doesNotMatch(runtime.error.message, /timed out/);
@@ -74,12 +165,9 @@ test('persistent refusal becomes hidden within one second and preserves the two-
     p.clients().some(({ method }) => method === 'Debugger.enable'),
     false
   );
-  const spent = performance.now() - start;
-  assert.ok(
-    spent >= 900 && spent < 1600,
-    `${spent} ms exceeds the Rust DOCUMENT_CHECK budget margin`
-  );
-  assert.ok(attempts() >= 8 && attempts() <= 10);
+  const spent = performance.now() - began;
+  assert.ok(spent >= 900 && spent < 1600, `${spent} ms`);
+  assert.ok(attempts() >= 5 && attempts() <= 10);
   assert.equal(
     p.delivered.some(({ params }) => params?.context?.uniqueId === context.uniqueId),
     false

@@ -7,7 +7,7 @@
     "@ai-ecoverse/slicc-browsers": "1.20.3",
     "@ai-ecoverse/slicc-capture": "1.4.1",
     "@ai-ecoverse/slicc-kernel": "1.175.1",
-    "@ai-ecoverse/slicc-spectrum": "2.2.0",
+    "@ai-ecoverse/slicc-spectrum": "2.3.1",
     "@ai-ecoverse/wasi-fnox": "1.45.0-2",
     "@ai-ecoverse/wasi-pnpm": "12.9.1-21",
     "@ai-ecoverse/wasm-bash": "5.3.0-23",
