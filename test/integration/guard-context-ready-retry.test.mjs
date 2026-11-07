@@ -4,6 +4,13 @@ import { flush, plainFrame, protocol } from './guard-ordering-fixture.mjs';
 
 const { guardProtected } = await import(process.env.GUARD_SOURCE ?? '../../src/seed/guard.js');
 
+async function advance(t, ms) {
+  for (let left = ms; left > 0; left -= 100) {
+    t.mock.timers.tick(100);
+    await flush();
+  }
+}
+
 async function readyProof(t, refuses) {
   const p = protocol(t, (raw, own) =>
     guardProtected(raw, own, new Map(), { kind: 'extension', version: '7.12.0' }, async () => null)
@@ -38,15 +45,27 @@ async function readyProof(t, refuses) {
     );
     return true;
   });
-  p.emit({ sessionId: session, method: 'Runtime.executionContextCreated', params: { context } });
-  return { p, session, attempts: () => attempts };
+  return {
+    p,
+    session,
+    attempts: () => attempts,
+    start() {
+      t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 });
+      p.emit({
+        sessionId: session,
+        method: 'Runtime.executionContextCreated',
+        params: { context },
+      });
+    },
+  };
 }
 
 test('a ready frame tree does not turn a transient default-context proof refusal into a terminal Runtime.enable refusal', async (t) => {
-  const { p, session, attempts } = await readyProof(t, (attempt) => attempt === 1);
+  const { p, session, attempts, start } = await readyProof(t, (attempt) => attempt === 1);
+  start();
   const before = p.clients().length;
   const runtime = p.request('Runtime.enable', {}, session);
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await flush();
   assert.equal(
     p
       .clients()
@@ -54,16 +73,41 @@ test('a ready frame tree does not turn a transient default-context proof refusal
       .some(({ method }) => method === 'Runtime.enable'),
     false
   );
+  assert.equal(attempts(), 1);
+  assert.equal(Date.now(), 0);
+  t.mock.timers.tick(50);
+  await flush();
+  assert.equal(
+    p
+      .clients()
+      .slice(before)
+      .some(({ method }) => method === 'Runtime.enable'),
+    false
+  );
+  assert.equal(attempts(), 1);
+  assert.equal(Date.now(), 50);
+  t.mock.timers.tick(50);
+  await flush();
   assert.equal((await runtime.answer).error, undefined);
   assert.equal(attempts(), 2);
+  assert.equal(Date.now(), 100);
   assert.equal((await p.send('Debugger.enable', {}, session)).error, undefined);
 });
 
 test('a permanently refused ready default context stays terminal within the same one-second proof budget', async (t) => {
-  const { p, session, attempts } = await readyProof(t, () => true);
+  const { p, session, attempts, start } = await readyProof(t, () => true);
+  start();
   const before = p.clients().length;
-  const started = performance.now();
-  assert.ok((await p.send('Runtime.enable', {}, session)).error);
+  const runtime = p.request('Runtime.enable', {}, session);
+  let settled = false;
+  void runtime.answer.then(() => {
+    settled = true;
+  });
+  await flush();
+  await advance(t, 900);
+  assert.equal(Date.now(), 900);
+  assert.equal(attempts(), 10);
+  assert.equal(settled, false);
   assert.equal(
     p
       .clients()
@@ -71,10 +115,21 @@ test('a permanently refused ready default context stays terminal within the same
       .some(({ method }) => method === 'Runtime.enable'),
     false
   );
-  const spent = performance.now() - started;
-  assert.ok(spent >= 900 && spent < 1600, `${spent}ms`);
-  assert.ok(attempts() >= 8 && attempts() <= 10);
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await advance(t, 100);
+  assert.equal(Date.now(), 1000);
+  assert.equal(settled, true);
+  assert.ok((await runtime.answer).error);
+  assert.equal(
+    p
+      .clients()
+      .slice(before)
+      .some(({ method }) => method === 'Runtime.enable'),
+    false
+  );
+  assert.equal(attempts(), 10);
+  await advance(t, 100);
+  assert.equal(attempts(), 10);
+  assert.equal(Date.now(), 1100);
   assert.match(
     (await p.send('Debugger.enable', {}, session)).error?.message ?? '',
     /browser extension runs scripts/

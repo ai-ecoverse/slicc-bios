@@ -4,6 +4,13 @@ import { flush, plainFrame, protocol } from './guard-ordering-fixture.mjs';
 
 const { guardProtected } = await import(process.env.GUARD_SOURCE ?? '../../src/seed/guard.js');
 
+async function advance(t, ms) {
+  for (let left = ms; left > 0; left -= 100) {
+    t.mock.timers.tick(100);
+    await flush();
+  }
+}
+
 async function settling(t, refuses) {
   const p = protocol(t, (raw, own) =>
     guardProtected(raw, own, new Map(), { kind: 'extension', version: '7.12.0' }, async () => null)
@@ -38,56 +45,94 @@ async function settling(t, refuses) {
     );
     return true;
   });
-  p.emit({ sessionId: session, method: 'Page.frameNavigated', params: { frame: root.tree.frame } });
-  p.emit({ sessionId: session, method: 'Runtime.executionContextCreated', params: { context } });
-  await flush();
-  holdTrees = false;
-  for (const held of [...p.held]) p.release(held);
-  return { p, session, context, attempts: () => attempts };
+  return {
+    p,
+    session,
+    context,
+    attempts: () => attempts,
+    async start() {
+      t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 0 });
+      p.emit({
+        sessionId: session,
+        method: 'Page.frameNavigated',
+        params: { frame: root.tree.frame },
+      });
+      p.emit({
+        sessionId: session,
+        method: 'Runtime.executionContextCreated',
+        params: { context },
+      });
+      await flush();
+      holdTrees = false;
+      for (const held of [...p.held]) p.release(held);
+      await flush();
+    },
+  };
 }
 
 test('settling probes recover on the timer without another frame or load event', async (t) => {
-  const { p, session, context, attempts } = await settling(t, (attempt) => attempt < 3);
-  const start = performance.now();
+  const { p, session, attempts, start } = await settling(t, (attempt) => attempt < 3);
+  await start();
   const pending = p.request('Debugger.enable', {}, session);
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await flush();
+  t.mock.timers.tick(50);
+  await flush();
   assert.equal(
     p.clients().some(({ method }) => method === 'Debugger.enable'),
     false
   );
+  assert.equal(attempts(), 1);
+  assert.equal(Date.now(), 50);
+  t.mock.timers.tick(50);
+  await flush();
+  t.mock.timers.tick(100);
+  await flush();
   assert.equal((await pending.answer).error, undefined);
-  assert.ok(performance.now() - start < 1500);
+  assert.equal(Date.now(), 200);
   assert.equal(attempts(), 3);
   assert.equal((await p.send('Debugger.enable', {}, session)).error, undefined);
 });
 
 test('persistent refusal becomes hidden within one second and preserves the two-second client budget', async (t) => {
-  const { p, session, context, attempts } = await settling(t, () => true);
-  const start = performance.now();
-  const runtime = await p.send('Runtime.enable', {}, session);
-  assert.ok(runtime.error);
-  assert.doesNotMatch(runtime.error.message, /timed out/);
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  const { p, session, context, attempts, start } = await settling(t, () => true);
+  await start();
+  const runtime = p.request('Runtime.enable', {}, session);
+  let settled = false;
+  void runtime.answer.then(() => {
+    settled = true;
+  });
+  await flush();
+  await advance(t, 900);
+  assert.equal(Date.now(), 900);
+  assert.equal(attempts(), 10);
+  assert.equal(settled, false);
+  await advance(t, 100);
+  assert.equal(Date.now(), 1000);
+  assert.equal(settled, true);
+  const runtimeAnswer = await runtime.answer;
+  assert.ok(runtimeAnswer.error);
+  assert.doesNotMatch(runtimeAnswer.error.message, /timed out/);
+  assert.equal(attempts(), 10);
+  t.mock.timers.tick(30);
+  await flush();
+  assert.equal(attempts(), 10);
   const answer = await p.send('Debugger.enable', {}, session);
   assert.match(answer.error?.message ?? '', /browser extension runs scripts/);
   assert.equal(
     p.clients().some(({ method }) => method === 'Debugger.enable'),
     false
   );
-  const spent = performance.now() - start;
-  assert.ok(
-    spent >= 900 && spent < 1600,
-    `${spent} ms exceeds the Rust DOCUMENT_CHECK budget margin`
-  );
-  assert.ok(attempts() >= 8 && attempts() <= 10);
   assert.equal(
     p.delivered.some(({ params }) => params?.context?.uniqueId === context.uniqueId),
     false
   );
   const before = attempts();
   p.emit({ sessionId: session, method: 'Page.loadEventFired', params: { timestamp: 1 } });
-  await new Promise((resolve) => setTimeout(resolve, 120));
+  await advance(t, 100);
+  t.mock.timers.tick(20);
+  await flush();
   assert.equal(attempts(), before);
+  assert.equal(Date.now(), 1150);
   assert.match(
     (await p.send('Debugger.enable', {}, session)).error?.message ?? '',
     /browser extension runs scripts/
