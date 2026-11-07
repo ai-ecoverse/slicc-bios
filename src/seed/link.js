@@ -939,6 +939,27 @@ function greeting(link, { name, kernel, agent, sevens, cdpIn }) {
   };
 }
 
+function acceptOpen(link, meta, { seven, sevens, agent, kernel, cdpIn, changed }) {
+  if (meta.kind === 'cdp' && cdpIn) return cdpIn.accept(link, meta);
+  if (seven) return sevens.accept(link, meta);
+  if (meta.kind === 'agent') {
+    if (!agent?.allowed(link)) return Promise.reject(failure('EACCES'));
+    return { handle: (s) => agent.handle(link, meta, s) };
+  }
+  if (meta.kind === 'mounts') {
+    link.mounts = mountList(meta.mounts);
+    changed();
+    return null;
+  }
+  if (meta.kind !== 'browsers') {
+    if (meta.kind === 'kernel' && link.mode !== 'local') return Promise.reject(failure('EACCES'));
+    return kernel ? kernelIn(kernel, meta) : Promise.reject(failure('EOPNOTSUPP'));
+  }
+  link.browsers = sharedBrowsers(link.offer.session.peer(), meta.browsers);
+  changed();
+  return null;
+}
+
 function reclaim(links, labels, onLink, label, key) {
   const live = [...links.values()];
   if (!label || links.has(key) || live.some((item) => item.label === label)) return;
@@ -1065,27 +1086,7 @@ export function createLinks({
         pc,
         send,
         hello: () => greeting(link, { name, kernel, agent, sevens, cdpIn }),
-        accept: (meta) => {
-          if (meta.kind === 'cdp' && cdpIn) return cdpIn.accept(link, meta);
-          if (seven) return sevens.accept(link, meta);
-          if (meta.kind === 'agent') {
-            if (!agent?.allowed(link)) return Promise.reject(failure('EACCES'));
-            return { handle: (s) => agent.handle(link, meta, s) };
-          }
-          if (meta.kind === 'mounts') {
-            link.mounts = mountList(meta.mounts);
-            changed();
-            return null;
-          }
-          if (meta.kind !== 'browsers') {
-            if (meta.kind === 'kernel' && link.mode !== 'local')
-              return Promise.reject(failure('EACCES'));
-            return kernel ? kernelIn(kernel, meta) : Promise.reject(failure('EOPNOTSUPP'));
-          }
-          link.browsers = sharedBrowsers(link.offer.session.peer(), meta.browsers);
-          changed();
-          return null;
-        },
+        accept: (meta) => acceptOpen(link, meta, { seven, sevens, agent, kernel, cdpIn, changed }),
         timers,
         onClose: () => {
           if (links.get(key) === link) links.delete(key);
