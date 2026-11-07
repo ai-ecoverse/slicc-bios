@@ -85,5 +85,9 @@
   "@ai-ecoverse/slicc-clipboard": {
     "id": "clipboard",
     "label": "slicc-clipboard (pbcopy, xclip)"
+  },
+  "@ai-ecoverse/tzdata": {
+    "id": "tzdata",
+    "label": "tzdata (time zones)"
   }
 }

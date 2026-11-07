@@ -106,6 +106,70 @@ export async function fakeRelease({ name, from, version, repository, dependencie
   return release;
 }
 
+export async function localRelease({ tarball, repository, workflow }) {
+  const entries = await unpackTar(gunzipSync(tarball));
+  const packed = entries.find(({ header }) => header.name === 'package/package.json');
+  const manifest = JSON.parse(new TextDecoder().decode(packed.data));
+  const { name, version } = manifest;
+  const base = `${REGISTRY}${name}`;
+  const sha512 = createHash('sha512').update(tarball).digest();
+  const integrity = `sha512-${sha512.toString('base64')}`;
+  const url = `${REGISTRY}-/npm/v1/attestations/${name.replace('/', '%2f')}@${version}`;
+  const doc = {
+    ...manifest,
+    _id: `${name}@${version}`,
+    dist: {
+      tarball: `${base}/-/${short(name)}-${version}.tgz`,
+      integrity,
+      shasum: createHash('sha1').update(tarball).digest('hex'),
+      attestations: { url, provenance: { predicateType: SLSA } },
+    },
+  };
+  const statement = {
+    _type: 'https://in-toto.io/Statement/v1',
+    subject: [
+      {
+        name: `pkg:npm/${name.replace('@', '%40')}@${version}`,
+        digest: { sha512: sha512.toString('hex') },
+      },
+    ],
+    predicateType: SLSA,
+    predicate: {
+      buildDefinition: {
+        externalParameters: { workflow: { ref: 'refs/heads/main', path: workflow, repository } },
+      },
+    },
+  };
+  const at = new Date(0).toISOString();
+  const serve = async (address) => {
+    const { hostname, pathname } = new URL(address);
+    if (hostname !== 'registry.npmjs.org') return null;
+    const path = decodeURIComponent(pathname);
+    if (path === `/${name}`)
+      return JSON.stringify({
+        name,
+        'dist-tags': { latest: version },
+        versions: { [version]: doc },
+        time: { created: at, modified: at, [version]: at },
+      });
+    if (path === `/${name}/latest` || path === `/${name}/${version}`) return JSON.stringify(doc);
+    if (path === `/${name}/-/${short(name)}-${version}.tgz`) return tarball;
+    if (path === `/-/npm/v1/attestations/${name}@${version}`) {
+      const payload = Buffer.from(JSON.stringify(statement)).toString('base64');
+      return JSON.stringify({
+        attestations: [
+          {
+            predicateType: SLSA,
+            bundle: { dsseEnvelope: { payload, payloadType: 'application/vnd.in-toto+json' } },
+          },
+        ],
+      });
+    }
+    return null;
+  };
+  return { name, version, integrity, serve };
+}
+
 export async function fakeRegistry(cdp, releases) {
   const asked = [];
   cdp.on(async ({ method, params }) => {

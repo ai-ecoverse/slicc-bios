@@ -18,6 +18,31 @@ export const WORKSPACE =
 const SAFE = ['--ignore-scripts', '--ignore-pnpmfile'];
 export const RESOLVE = ['pnpm', 'install', '--lockfile-only', ...SAFE];
 export const INSTALL = ['pnpm', 'install', '--frozen-lockfile', ...SAFE];
+export const TZDATA = '@ai-ecoverse/tzdata';
+export const ZONES = `${MODULES}/${TZDATA}/share/zoneinfo`;
+export const ZONEINFO = '/usr/share/zoneinfo';
+export const LOCALTIME = '/etc/localtime';
+export const LINK_ZONES = [
+  'umask 022',
+  'data=$1 z=$2 l=$3',
+  'if [ -L "$z" ]; then',
+  '  [ -e "$z" ] || [ "$(readlink "$z")" = "$data" ] || { rm -f -- "$z" && ln -s -- "$data" "$z"; } || exit',
+  'elif [ ! -e "$z" ]; then',
+  '  mkdir -p -- "${z%/*}" && ln -s -- "$data" "$z" || exit',
+  'fi',
+  'zone=${TZ#:}',
+  'case "$zone" in ""|/*|*[!A-Za-z0-9/_+-]*) zone=UTC ;; esac',
+  '[ -f "$z/$zone" ] || zone=UTC',
+  'want=$z/$zone',
+  'if [ -L "$l" ]; then',
+  '  now=$(readlink "$l")',
+  '  [ "$now" = "$want" ] && exit 0',
+  '  case "$now" in "$z"/*) ;; *) [ -e "$l" ] && exit 0 ;; esac',
+  'elif [ -e "$l" ]; then',
+  '  exit 0',
+  'fi',
+  'mkdir -p -- "${l%/*}" && ln -sfn -- "$want" "$l"',
+].join('\n');
 const MANIFEST = `${FOLDER}/package.json`;
 const LOCK = `${FOLDER}/pnpm-lock.yaml`;
 
@@ -229,6 +254,18 @@ const warn = (error) => {
   console.warn(`tools: ${error.message}`);
 };
 
+export async function linkZones(kernel) {
+  const argv = ['bash', '-c', LINK_ZONES, 'zoneinfo', ZONES, ZONEINFO, LOCALTIME];
+  const { status, stderr } = await kernel.run(argv, { cwd: '/' });
+  if (status) throw new Error(`time zones: ${stderr.trim() || `exited with ${status}`}`);
+}
+
+const failure = (entry, error) => ({
+  state: 'failed',
+  error: `Couldn't install ${entry.label}: pnpm stopped with an error, shown in the install log. Retry.`,
+  log: [error.log, error.message].filter(Boolean).join('\n'),
+});
+
 export function createTools({
   root,
   kernel,
@@ -322,12 +359,7 @@ export function createTools({
   }
 
   function failed(moving, error) {
-    for (const entry of moving)
-      states.set(entry.package, {
-        state: 'failed',
-        error: `Couldn't install ${entry.label}: pnpm stopped with an error, shown in the install log. Retry.`,
-        log: [error.log, error.message].filter(Boolean).join('\n'),
-      });
+    for (const entry of moving) states.set(entry.package, failure(entry, error));
   }
 
   async function settleRows(moving, refused) {
@@ -377,6 +409,7 @@ export function createTools({
     const opening = first === null;
     running ??= locks
       .request('slicc-tools', async () => {
+        if (opening) await linkZones(kernel).catch(warn);
         const shimmed = opening && (await shims().catch(warn));
         try {
           await round(entries.filter((entry) => entry.first));
@@ -384,6 +417,7 @@ export function createTools({
           await round(entries.filter((entry) => !entry.first));
         } finally {
           if (opening) await remove(root, PENDING).catch(() => {});
+          await linkZones(kernel).catch(warn);
         }
       })
       .finally(() => {
