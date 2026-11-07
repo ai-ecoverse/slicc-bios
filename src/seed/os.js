@@ -25,6 +25,7 @@ import { createApprovals, routeSudo } from './approvals.js';
 import { createBetas } from './beta.js';
 import { createBrowser } from './browser.js';
 import { browserControl, browserHosts, linkedBrowsers } from './cdp.js';
+import { createCdpIn, SWITCH_KEY, SWITCH_LABEL } from './cdp-in.js';
 import { createClicks, withClicks } from './clicks.js';
 import { clipboardHook, clipboardWrite } from './clipboard.js';
 import { denialLog, installCommand, watchProtected } from './denials.js';
@@ -235,6 +236,21 @@ function linkFolders(link) {
 }
 const allowedRemotely = (link) =>
   (link.mode === 'local' && !link.paired) || Boolean(tray?.controlAllowed(link.id));
+const browserAllowed = (link) =>
+  (link.mode === 'local' && !link.paired) || Boolean(tray?.browserAllowed(link.id));
+const live = createLive();
+const switches = createSwitches();
+const cdpIn = createCdpIn({
+  hook: (options) => control.hook(options),
+  allowed: browserAllowed,
+  on: () => remoteBrowser.on(),
+  live,
+});
+const remoteBrowser = switches.add({
+  key: SWITCH_KEY,
+  label: SWITCH_LABEL,
+  off: () => cdpIn.off(),
+});
 let followers = null;
 const kernelPort = kernelPorts({ storage: localStorage, text, write });
 const links = createLinks({
@@ -245,6 +261,7 @@ const links = createLinks({
     hello: (link) => followers.hello(link),
     accept: (link, meta) => followers.accept(link, meta),
   },
+  cdpIn,
   describe: (link) =>
     link.kind === 'seven'
       ? followers.describe(link)
@@ -254,8 +271,8 @@ const links = createLinks({
             kind: 'cli',
             access:
               link.mode === 'local'
-                ? { control: true, fixed: true }
-                : { control: allowedRemotely(link) },
+                ? { control: true, browser: true, fixed: true }
+                : { control: allowedRemotely(link), browser: browserAllowed(link) },
             control:
               link.mode === 'local'
                 ? { allowed: true, fixed: true }
@@ -291,6 +308,7 @@ const tray = hub
       onGuest: (seat, stream) => bridgeAgent(owner, stream, { guest: seat }),
     })
   : null;
+tray?.on(() => cdpIn.revoked());
 followers = tray
   ? createFollowers({
       tray,
@@ -381,8 +399,6 @@ const approvals = createApprovals();
 const asking = withSecrets(approvals.port, vault.port);
 const clicks = createClicks();
 const approving = withClicks(asking.port, clicks.port);
-const live = createLive();
-const switches = createSwitches();
 function onDevice(device) {
   const name = device && [...links.links.values()].find((link) => link.id === device)?.peer?.name;
   return name ? `on ${name}` : undefined;

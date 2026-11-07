@@ -6,7 +6,8 @@ export const DEVICES_KEY = 'slicc-os.devices';
 export const UNLINKED_KEY = 'slicc-os.unlinked';
 export const RUNTIME = 'slicc-seven/1';
 export const FOLLOWER = 'slicc-link/1';
-export const ACCESS = ['view', 'control', 'terminal'];
+export const ACCESS = ['view', 'control', 'terminal', 'browser'];
+const SEVEN_ACCESS = ['view', 'control', 'terminal'];
 export const PING_MS = 30_000;
 export const JOIN_MS = 5_000;
 export const SEAT_LINKS = 4;
@@ -393,7 +394,7 @@ function awayDevices(devices, links) {
         ? { kind: 'seven', access: granted(known), ...(known.view ? {} : { asking: true }) }
         : {
             kind: 'cli',
-            access: { control: known.control === true },
+            access: { control: known.control === true, browser: known.browser === true },
             control: { allowed: known.control === true },
           }),
       state: 'offline',
@@ -403,9 +404,10 @@ function awayDevices(devices, links) {
 export function permit(known, name, allowed) {
   if (!known) throw new Error('That device isn’t linked.');
   if (!ACCESS.includes(name)) throw new Error(`There is no ${name} access.`);
-  const wanted = { ...granted(known), [name]: Boolean(allowed) };
-  if (name !== 'view' && allowed) wanted.view = true;
-  if (name === 'view' && !allowed) Object.assign(wanted, { control: false, terminal: false });
+  const wanted = { ...granted(known), browser: known.browser === true, [name]: Boolean(allowed) };
+  if (SEVEN_ACCESS.includes(name) && name !== 'view' && allowed) wanted.view = true;
+  if (name === 'view' && !allowed)
+    Object.assign(wanted, { control: false, terminal: false, browser: false });
   for (const key of ACCESS) {
     if (wanted[key]) known[key] = true;
     else delete known[key];
@@ -426,7 +428,7 @@ function described(state, error, session, page) {
 }
 
 export function granted(known) {
-  return Object.fromEntries(ACCESS.map((key) => [key, known?.[key] === true]));
+  return Object.fromEntries(SEVEN_ACCESS.map((key) => [key, known?.[key] === true]));
 }
 
 async function unlinkAll(links, id, notify) {
@@ -690,6 +692,7 @@ export function createTray({
     away: () => awayDevices(devices, links),
     known: (id) => id in devices,
     controlAllowed: (id) => devices[id]?.control === true,
+    browserAllowed: (id) => devices[id]?.browser === true,
     access: (id) => granted(devices[id]),
     setControl: (id, allowed) => setAccess(id, 'control', allowed),
     setAccess,

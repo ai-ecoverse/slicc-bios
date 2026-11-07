@@ -310,7 +310,7 @@ test('a linked node over real WebRTC: its name, raw TCP and HTTP to its loopback
       role: 'page',
       name: 'seven',
       mode: 'local',
-      caps: ['kernel-in', 'browsers', 'mounts', 'agent'],
+      caps: ['kernel-in', 'browsers', 'mounts', 'agent', 'cdp-in'],
     }
   );
   assert.match(hello.name, /^seven on (localhost|127\.0\.0\.1):\d+$/);

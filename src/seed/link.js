@@ -923,7 +923,7 @@ function linkedFolder(live, source, owner) {
   return rivals.length > 1 ? undefined : here;
 }
 
-function greeting(link, { name, kernel, agent, sevens }) {
+function greeting(link, { name, kernel, agent, sevens, cdpIn }) {
   const { mode } = link;
   if (link.kind === 'seven') return { name, mode, ...sevens.hello(link) };
   return {
@@ -934,6 +934,7 @@ function greeting(link, { name, kernel, agent, sevens }) {
       'browsers',
       'mounts',
       ...(agent?.allowed(link) ? ['agent'] : []),
+      ...(cdpIn ? ['cdp-in'] : []),
     ],
   };
 }
@@ -983,6 +984,7 @@ export function createLinks({
   serveFs = null,
   agent = null,
   sevens = null,
+  cdpIn = null,
   describe = () => ({}),
   labels = labelStore(),
 }) {
@@ -1062,8 +1064,9 @@ export function createLinks({
       link.offer = offerLink({
         pc,
         send,
-        hello: () => greeting(link, { name, kernel, agent, sevens }),
+        hello: () => greeting(link, { name, kernel, agent, sevens, cdpIn }),
         accept: (meta) => {
+          if (meta.kind === 'cdp' && cdpIn) return cdpIn.accept(link, meta);
           if (seven) return sevens.accept(link, meta);
           if (meta.kind === 'agent') {
             if (!agent?.allowed(link)) return Promise.reject(failure('EACCES'));
