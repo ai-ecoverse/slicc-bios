@@ -393,7 +393,7 @@ test('a local CLI link drives an ordinary tab over a cdp stream, through the gua
   });
 });
 
-test('a remote CLI over the tray needs its Browser grant, and the switch, Stop and revoking reset its streams; the chip lingers 5 s', async (t) => {
+test('a remote CLI over the tray needs its Browser grant; the switch, Stop and revoking reset its streams and take the chip at once, and a stream that ends on its own leaves it for 5 s', async (t) => {
   const hub = await startHub();
   t.after(() => hub.close());
   const page = await chrome.page(t);
@@ -451,27 +451,28 @@ test('a remote CLI over the tray needs its Browser grant, and the switch, Stop a
 
   await page.evaluate((id) => document.querySelector('slicc-app').model.live.act(id), chip.id);
   assert.equal(await on(page, 'far', 'gone', first), STOPPED);
+  assert.deepEqual(await items(page), []);
 
   const second = await on(page, 'far', 'open');
   await on(page, 'far', 'answer', second);
+  const [after] = await items(page);
+  assert.equal(after.asker, 'SLICC on far');
+  assert.notEqual(after.id, chip.id);
   await model(page, (network, id) => network.setAccess(id, 'browser', false), device);
   assert.equal(await on(page, 'far', 'gone', second), REVOKED);
+  assert.deepEqual(await items(page), []);
   await model(page, (network, id) => network.setAccess(id, 'browser', true), device);
 
   const third = await on(page, 'far', 'open');
   await on(page, 'far', 'answer', third);
+  assert.equal((await items(page)).length, 1);
   await setSwitch(page, false);
   assert.equal(await on(page, 'far', 'gone', third), SWITCHED_OFF);
+  assert.deepEqual(await items(page), []);
   const blocked = await on(page, 'far', 'open');
   assert.equal((await on(page, 'far', 'answer', blocked)).reset, SWITCHED_OFF);
   await setSwitch(page, true);
 
-  await page.within(15000, () =>
-    document
-      .querySelector('slicc-app')
-      .model.live.items()
-      .every((item) => item.kind !== 'cdp')
-  );
   const last = await on(page, 'far', 'open');
   await on(page, 'far', 'answer', last);
   assert.equal((await items(page)).length, 1);

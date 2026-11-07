@@ -87,8 +87,25 @@ export function createCdpIn({
   const shown = new Map();
   const keyOf = (link) => link.id ?? link.key;
   const nameOf = (link) => displayName(device(link).name);
+  const drop = (key) => {
+    const item = shown.get(key);
+    if (!item) return;
+    shown.delete(key);
+    timers.clearTimeout(item.timer);
+    item.remove();
+  };
   const reset = (match, text) => {
-    for (const entry of [...open]) if (match(entry)) entry.stream.reset(text);
+    const keys = new Set();
+    for (const entry of [...open]) {
+      if (!match(entry)) continue;
+      keys.add(entry.key);
+      entry.stream.reset(text);
+    }
+    for (const key of keys) drop(key);
+  };
+  const stop = (key) => {
+    reset((entry) => entry.key === key, STOPPED);
+    drop(key);
   };
 
   function show(entry) {
@@ -103,7 +120,7 @@ export function createCdpIn({
           what: '',
           asker: nameOf(entry.link),
           since: now(),
-          action: { label: 'Stop', run: () => reset((other) => other.key === key, STOPPED) },
+          action: { label: 'Stop', run: () => stop(key) },
         }) ?? (() => {});
       shown.set(key, item);
     }
@@ -201,6 +218,9 @@ export function createCdpIn({
   return {
     accept: (link) => ({ handle: (s) => serve(link, s) }),
     revoked: () => reset((entry) => !allowed(entry.link), REVOKED),
-    off: () => reset(() => true, SWITCHED_OFF),
+    off: () => {
+      reset(() => true, SWITCHED_OFF);
+      for (const key of [...shown.keys()]) drop(key);
+    },
   };
 }
