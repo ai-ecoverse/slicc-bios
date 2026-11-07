@@ -71,6 +71,7 @@ const CALLS = {
   pidof: 'pidof bash',
   which: 'which bash',
   pbcopy: 'pbcopy --help',
+  serial: 'serial --help',
   pbpaste: 'pbpaste --help',
   xclip: 'xclip -help',
   xsel: 'xsel --help',

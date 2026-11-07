@@ -192,8 +192,9 @@ test('serial is installed with the base set and its kinds reach slicc-devices th
   );
   await shows(page, '2 bytes written');
   await shows(page, 'hi read 0');
-  await run(page, 'serial signals serial1 get; serial list');
+  await run(page, 'serial signals serial1 get; serial list; echo "listed $?"');
   await shows(page, 'cts=1 dcd=0 dsr=1 ri=0');
+  await shows(page, 'listed 0');
   assert.match(await screen(page), /serial1\s+0x2e8a:0x0005 \[open\]/);
   await run(page, 'serial close serial1; echo "closed $?"');
   await shows(page, 'closed 0');
@@ -380,8 +381,8 @@ test('a boot on an /etc/group without dialout adds it with gid 20 and puts every
       umask: 0o027,
     })
   );
-  assert.ok(scoop.groups.includes('dialout'), JSON.stringify(scoop));
-  assert.ok(!scoop.groups.includes('sudo'), JSON.stringify(scoop));
+  assert.ok(scoop.groups.includes(20), JSON.stringify(scoop));
+  assert.ok(!scoop.groups.includes(27), JSON.stringify(scoop));
   await page.evaluate(() =>
     globalThis.sliccAgentSource().users.add({ name: 'cone-2', groups: [] })
   );
