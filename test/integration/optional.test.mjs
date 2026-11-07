@@ -58,6 +58,10 @@ test('the optional catalog lists packages and pins none: no package.json or lock
       repo: 'ai-ecoverse/slicc-clipboard',
       workflow: ['.github/workflows/release.yml', '.github/workflows/ci.yml'],
     },
+    '@ai-ecoverse/tzdata': {
+      repo: 'ai-ecoverse/homescoop',
+      workflow: ['.github/workflows/ladder-build.yml'],
+    },
   });
   const publishers = [
     ...Object.entries(catalog)
