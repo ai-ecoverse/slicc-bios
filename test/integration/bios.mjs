@@ -727,7 +727,11 @@ export async function connectAccount(page, id, key) {
   return page.evaluate(
     async ({ id, key, name }) => {
       const { vault, settings } = document.querySelector('slicc-app').model;
-      await vault.put(name, key, undefined, { kind: 'model', provider: id });
+      const was = globalThis.sliccValueEntry;
+      globalThis.sliccValueEntry = false;
+      const sealing = vault.put(name, key, undefined, { kind: 'model', provider: id });
+      globalThis.sliccValueEntry = was;
+      await sealing;
       if (id !== 'adobe') return settings.connect(id);
     },
     { id, key, name: VAULT_NAMES[id] }

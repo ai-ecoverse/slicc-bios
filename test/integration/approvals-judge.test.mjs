@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
-import { agentUp, connectAccount, listsAccount, ready, run, shows } from './bios.mjs';
+import { agentUp, connectAccount, listsAccount, ready, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
+import { clearForcedForbidden, forceForbidden, judgeAnswers, judgeTrace } from './fake-judge.mjs';
 import { eventFrame, fakeLlm } from './fake-llm.mjs';
 
 const KEY = 'dummy-bedrock-key-0000';
@@ -26,28 +27,7 @@ const said = Buffer.concat([
 ]);
 
 const judged = [];
-
-function verdict(body) {
-  const { input } = JSON.parse(body.toString());
-  judged.push(input);
-  const untrusted = input.state?.request?.untrusted ?? '';
-  const replay = /\/id -gn\n/.test(untrusted) ? 0.9 : 0.02;
-  const answers = {
-    level: {
-      type: 'choice',
-      choice: 'routine',
-      probabilities: { routine: 0.97, permissions: 0.02, harm: 0.01 },
-      confidence: 0.97,
-    },
-    aligned: { type: 'noul', noul: 0.95 },
-    always: { type: 'noul', noul: replay },
-  };
-  const asked = Object.keys(input.questions ?? {});
-  return {
-    success: true,
-    result: { answers: Object.fromEntries(asked.map((id) => [id, answers[id]])) },
-  };
-}
+const verdict = (body) => judgeAnswers(body, (input) => judged.push(input));
 
 const json = (value) => ({
   status: 200,
@@ -165,6 +145,23 @@ const sudoers = (page) =>
     }
   });
 
+const dumpApprovals = (page) =>
+  page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.approvals.list()
+      .map((item) => ({
+        id: item.id,
+        kind: item.kind,
+        command: item.command,
+        always: item.always,
+        requester: item.requester,
+        verdict: item.verdict ?? null,
+        verdictError: item.verdictError ?? null,
+        judging: item.judging ?? false,
+      }))
+  );
+
 async function asked(page, pattern, until = () => true) {
   const source = pattern.source;
   return page
@@ -178,11 +175,9 @@ async function asked(page, pattern, until = () => true) {
       source
     )
     .catch(async (error) => {
-      const list = await page.evaluate(() =>
-        JSON.stringify(document.querySelector('slicc-app').model.approvals.list())
-      );
+      const terminal = await screen(page).catch(() => '');
       throw new Error(
-        `${error.message}\napprovals: ${list}\njudged: ${JSON.stringify(judged).slice(-3000)}`
+        `${error.message}\napprovals: ${JSON.stringify(await dumpApprovals(page))}\ntrace: ${JSON.stringify(judgeTrace())}\nterminal: ${JSON.stringify(terminal).slice(-2000)}\njudged: ${JSON.stringify(judged).slice(-3000)}`
       );
     });
 }
@@ -192,7 +187,7 @@ const judgedFor = (pattern) =>
     pattern.test(String(input.state?.request?.untrusted ?? '').split('\n')[1] ?? '')
   );
 
-test('with the agent up, bios hands each sudo to the agent with the kernel’s facts, Always comes only from the agent’s verdict, and a line the kernel can’t record offers no Always and records nothing', {
+test('with the agent up, bios hands each sudo to the agent with the kernel’s facts, Always only where the kernel can record the line, a person grants Always, and an unrecordable line offers no Always', {
   timeout: 35 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -218,6 +213,11 @@ test('with the agent up, bios hands each sudo to the agent with the kernel’s f
   const jq = await asked(page, JQ, (item) => item.always === true);
   assert.equal(jq.requester.kind, 'user');
   assert.equal(jq.cwd, '/');
+  assert.equal(jq.always, true);
+  assert.equal(jq.verdict?.level, 1);
+  assert.equal(jq.verdict?.aligned, true);
+  assert.equal(jq.verdictError, undefined);
+  assert.match(jq.verdict?.reason ?? '', /reads or lists|read or inspect/i);
   const offers = await page.evaluate(() => window.offers);
   const seen = offers.filter(([command]) => JQ.test(command)).map(([, always]) => always);
   assert.equal(seen[0], false, JSON.stringify(offers));
@@ -230,7 +230,26 @@ test('with the agent up, bios hands each sudo to the agent with the kernel’s f
     facts.state.request.untrusted,
     /path "\/etc\/slicc\/secrets-policy\.toml": root-only/
   );
-  assert.equal(jq.verdict?.level, 1);
+  const askedIds = judged.map((input) => Object.keys(input.questions ?? {}));
+  assert.ok(
+    askedIds.some(
+      (ids) => ids.includes('changes') && ids.includes('plain') && ids.includes('always')
+    ),
+    JSON.stringify(askedIds)
+  );
+  assert.ok(
+    askedIds.some((ids) => ids.includes('wants_read')),
+    JSON.stringify(askedIds)
+  );
+  const forbidCalls = judged.filter((input) =>
+    Object.keys(input.questions ?? {}).includes('forbidden')
+  );
+  assert.ok(forbidCalls.length >= 2, JSON.stringify(forbidCalls.map((input) => input.state)));
+  const nonces = forbidCalls.map(
+    (input) => String(input.state?.request?.untrusted ?? '').match(/untrusted-([^>\s]+)/)?.[1]
+  );
+  assert.equal(new Set(nonces.filter(Boolean)).size >= 2, true, JSON.stringify(nonces));
+  assert.doesNotMatch(await sudoers(page), /jq \.rules \/etc\/slicc\/secrets-policy\.toml/);
   assert.deepEqual(await buttons(page, jq.id), ['always', 'deny', 'once']);
   await click(page, jq.id, 'always');
   await shows(page, 'jq-ran');
@@ -260,12 +279,14 @@ test('with the agent up, bios hands each sudo to the agent with the kernel’s f
   const gn = await asked(page, /\/id -gn$/, (item) => !!item.verdict);
   assert.equal(gn.always, false);
   assert.equal(judgedFor(/\/id -gn$/).state.request.sudo.writable, true);
+  assert.equal(judgedFor(/\/id -gn$/).questions.always !== undefined, true);
   assert.deepEqual(await buttons(page, gn.id), ['deny', 'once']);
   await click(page, gn.id, 'once');
   await shows(page, 'gn=0');
 
   await run(page, 'clear; cd /; sudo -u cone sudo id -Gn; echo Gn=$?');
   const Gn = await asked(page, /\/id -Gn$/, (item) => item.always === true);
+  assert.equal(Gn.always, true);
   assert.deepEqual(await buttons(page, Gn.id), ['always', 'deny', 'once']);
   await click(page, Gn.id, 'always');
   await shows(page, 'Gn=0');
@@ -281,6 +302,42 @@ test('with the agent up, bios hands each sudo to the agent with the kernel’s f
   await click(page, cr.id, 'once');
   await shows(page, 'cr=0');
   assert.doesNotMatch(await sudoers(page), /printf/);
+
+  forceForbidden(0.9);
+  try {
+    await run(page, 'clear; cd /; sudo -u cone sudo id -u; echo vetoed=$?');
+    const vetoed = await asked(page, /\/id -u$/, (item) => !!item.verdict);
+    assert.equal(vetoed.always, false);
+    assert.equal(vetoed.verdict?.level, 1);
+    assert.deepEqual(await buttons(page, vetoed.id), ['deny', 'once']);
+    await click(page, vetoed.id, 'deny');
+    await shows(page, 'vetoed=1');
+  } finally {
+    clearForcedForbidden();
+  }
+
+  await run(
+    page,
+    'clear; cd /; sudo -u cone sudo /bin/rm -rf /tmp/slicc-judge-absent; echo rm-done=$?'
+  );
+  const rm = await asked(page, /\/rm /, (item) => !!(item.verdict || item.verdictError));
+  assert.equal(rm.verdictError, undefined, JSON.stringify(rm));
+  assert.equal(rm.requester.kind, 'user');
+  assert.ok(rm.verdict?.level >= 2, JSON.stringify(rm.verdict));
+  assert.equal(rm.always, false);
+  assert.deepEqual(await buttons(page, rm.id), ['deny', 'once']);
+  await click(page, rm.id, 'deny');
+  await shows(page, 'rm-done=1');
+
+  await run(page, 'clear; cd /; sudo -u cone sudo /bin/kill -0 1; echo kill-done=$?');
+  const killed = await asked(page, /\/kill /, (item) => !!(item.verdict || item.verdictError));
+  assert.equal(killed.verdictError, undefined, JSON.stringify(killed));
+  assert.equal(killed.requester.kind, 'user');
+  assert.ok(killed.verdict?.level >= 2, JSON.stringify(killed.verdict));
+  assert.equal(killed.always, false);
+  assert.deepEqual(await buttons(page, killed.id), ['deny', 'once']);
+  await click(page, killed.id, 'deny');
+  await shows(page, 'kill-done=1');
   assert.deepEqual(page.errors, []);
 });
 

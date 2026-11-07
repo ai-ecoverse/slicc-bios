@@ -4,6 +4,7 @@ import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harne
 import { agentUp, connectAccount, listsAccount, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { model, startHub } from './fake-hub.mjs';
+import { judgeAnswers, judgeTrace } from './fake-judge.mjs';
 import { eventFrame, fakeLlm } from './fake-llm.mjs';
 import { shoot } from './shots.mjs';
 
@@ -88,23 +89,7 @@ const runs = (id, command) =>
     ],
     'tool_use'
   );
-const ROUTINE = {
-  level: {
-    type: 'choice',
-    choice: 'routine',
-    probabilities: { routine: 0.97, permissions: 0.02, harm: 0.01 },
-    confidence: 0.97,
-  },
-  aligned: { type: 'noul', noul: 0.95 },
-  always: { type: 'noul', noul: 0.02 },
-};
-const routine = (body) => {
-  const asked = Object.keys(JSON.parse(body.toString()).input?.questions ?? {});
-  return {
-    success: true,
-    result: { answers: Object.fromEntries(asked.map((id) => [id, ROUTINE[id]])) },
-  };
-};
+const routine = (body) => judgeAnswers(body);
 let release = null;
 const held = new Promise((resolve) => {
   release = resolve;
@@ -572,16 +557,35 @@ test('a follower watches the owner run with View, is refused a send, sends with 
             .model.approvals.list()
             .find(
               (entry) =>
-                entry.kind === 'sudo' && entry.command === command && (!always || entry.always)
+                entry.kind === 'sudo' &&
+                entry.command === command &&
+                (!always || entry.always) &&
+                !!(entry.verdict || entry.verdictError)
             ) ?? null,
         command,
         decision === 'always'
       )
       .catch(async (error) => {
+        const ownerList = await owner.evaluate(() =>
+          document
+            .querySelector('slicc-app')
+            .model.approvals.list()
+            .map((entry) => ({
+              id: entry.id,
+              command: entry.command,
+              always: entry.always,
+              requester: entry.requester,
+              verdict: entry.verdict ?? null,
+              verdictError: entry.verdictError ?? null,
+              judging: entry.judging ?? false,
+            }))
+        );
         throw new Error(
-          `the follower never saw the cone's sudo for ${command}: ${error.message}\nowner approvals: ${JSON.stringify(await owner.evaluate(() => document.querySelector('slicc-app').model.approvals.list()))}\nowner chat: ${await said(owner)}`
+          `the follower never saw the cone's sudo for ${command}: ${error.message}\nowner approvals: ${JSON.stringify(ownerList)}\ntrace: ${JSON.stringify(judgeTrace())}\nowner chat: ${await said(owner)}`
         );
       });
+    assert.equal(item.verdictError, undefined, JSON.stringify(item));
+    assert.ok(item.verdict, JSON.stringify(item));
     assert.deepEqual(
       await owner.evaluate(
         (id) =>
@@ -612,9 +616,14 @@ test('a follower watches the owner run with View, is refused a send, sends with 
     );
   const once = await sudoFor('Sudo once', '/usr/bin/ls -la /etc', 'once');
   assert.deepEqual([once.requester.kind, once.requester.agentId], ['agent', 'cone']);
+  assert.equal(once.verdict?.level, 1);
+  assert.equal(once.verdict?.aligned, true);
+  assert.equal(once.verdictError, undefined);
+  assert.match(once.verdict?.reason ?? '', /reads or lists|read or inspect/i);
   assert.match(await finished('sudo-once'), /passwd/);
   const always = await sudoFor('Sudo always', '/usr/bin/ls -la /root', 'always');
   assert.equal(always.always, true);
+  assert.equal(always.verdict?.level, 1);
   assert.doesNotMatch(await finished('sudo-always'), /approval denied/);
   const rule = await owner.evaluate(async () => {
     let dir = await navigator.storage.getDirectory();

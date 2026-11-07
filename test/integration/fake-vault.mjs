@@ -20,6 +20,7 @@ const agents = [];
 const requests = new Map();
 const tickets = new Map();
 const asks = new Map();
+const entries = new Map();
 let askSerial = 0;
 const asking = new BroadcastChannel('fake-vault-value');
 const mint = () => 'fnox_proxy_' + String(++serial).padStart(24, '0');
@@ -121,7 +122,17 @@ const endAsk = (ask, state, reply) => {
   asking.postMessage({ gone: ask.view.id, state });
   pushStatus();
 };
+const enterOne = (entry, data) => {
+  entries.delete(data.request);
+  const record = keep({ name: entry.name, value: data.value, source: 'settings', kind: entry.kind, provider: entry.provider, server: entry.server, settings: entry.settings });
+  changed();
+  announce();
+  log({ role: 'value', op: 'entered', request: data.request, name: record.name, kind: record.kind });
+  asking.postMessage({ done: data.request, state: 'sealed', name: record.name, placeholder: record.placeholder, record: 'inert' });
+};
 asking.onmessage = ({ data }) => {
+  if (!data.request) return;
+  if (entries.has(data.request)) return enterOne(entries.get(data.request), data);
   const ask = asks.get(data.request);
   if (!ask) return;
   if (ask.view.mode === 'enter') {
@@ -160,6 +171,23 @@ const page = (port) => (event) => {
   const result = (record) => ({ name: record.name, placeholder: record.placeholder, state: record.removedAt ? 'removed' : 'inert' });
   if (op === 'status') return reply({ status: status() });
   if (op === 'sealed' && event.data.req?.op === 'ask') return ask(port, id, event.data.req, event.data.stamp);
+  if (op === 'enter') {
+    const { v: _v, id: _id, op: _op, ...fields } = event.data;
+    log({ role: 'page', op: 'enter-fields', fields: Object.keys(fields).sort(), name: fields.name });
+    const found = records.get(key(fields.kind ?? 'secret', fields.name));
+    if (found && !found.removedAt && fields.replace !== true) return port.postMessage({ v: 1, id, error: { code: 'EEXIST', message: fields.name + ' already holds a value; replace it instead' } });
+    const request = 'enter-' + String(++askSerial);
+    entries.set(request, { kind: fields.kind ?? 'secret', ...fields });
+    return reply({ request });
+  }
+  if (op === 'cancel' && entries.has(event.data.request)) {
+    entries.delete(event.data.request);
+    log({ role: 'page', op: 'cancelled', request: event.data.request, reason: null });
+    reply({ state: 'cancelled' });
+    asking.postMessage({ gone: event.data.request, state: 'cancelled' });
+    for (const each of pages) each.postMessage({ v: 1, event: 'cancelled', request: event.data.request, kind: 'enter', state: 'cancelled' });
+    return;
+  }
   if (op === 'cancel' && asks.has(event.data.request)) {
     const state = event.data.reason === 'withdrawn' ? 'withdrawn' : 'cancelled';
     log({ role: 'page', op: 'cancelled', request: event.data.request, reason: event.data.reason ?? null });
@@ -427,6 +455,10 @@ const asking = new BroadcastChannel('fake-vault-value');
 const post = (fields) => parent.postMessage({ type: 'slicc-vault', v: 1, ...fields }, '*');
 asking.onmessage = ({ data }) => {
   if (data.gone && data.gone === request && !sent) post({ event: 'gone', request, state: data.state });
+  if (data.done && data.done === request) {
+    const { done: _done, ...fields } = data;
+    post({ event: 'done', request, ...fields, value: 'frame-extra-value' });
+  }
 };
 addEventListener('message', (event) => {
   if (event.source !== parent || event.data?.type !== 'slicc-vault') return;
@@ -442,7 +474,7 @@ setInterval(async () => {
   if (shared.typed?.request !== request) return;
   sent = true;
   asking.postMessage({ request, value: shared.typed.value });
-  post({ event: 'done', request, state: shared.typed.value ? 'sealed' : 'allowed', value: 'frame-extra-value' });
+  if (!request.startsWith('enter-')) post({ event: 'done', request, state: shared.typed.value ? 'sealed' : 'allowed', value: 'frame-extra-value' });
 }, 100);
 post({ event: 'ready' });
 `;
