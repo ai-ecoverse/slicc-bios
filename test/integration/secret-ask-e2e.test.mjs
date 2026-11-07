@@ -34,6 +34,18 @@ const listed = (page, count) =>
     (list) => list.length === count
   );
 
+async function pointerClick(page, box) {
+  for (const type of ['mousePressed', 'mouseReleased']) {
+    await page.send('Input.dispatchMouseEvent', {
+      type,
+      x: box.x,
+      y: box.y,
+      button: 'left',
+      clickCount: 1,
+    });
+  }
+}
+
 const settled = (page) =>
   page.evaluate(() => {
     const { dock } = document.querySelector('slicc-app');
@@ -42,10 +54,18 @@ const settled = (page) =>
       .findLast((panel) => panel.startsWith('terminal:'));
     const terminal = dock.content(id).screen;
     const frames = [];
+    const dialogs = [];
     const walk = (root) => {
       for (const element of root.querySelectorAll('*')) {
         if (element.localName === 'iframe' && element.dataset.vault === 'value')
           frames.push(element);
+        if (element.localName === 'dialog' && element.dataset.kind === 'secret') {
+          dialogs.push({
+            approval: element.dataset.approval ?? null,
+            gone: element.dataset.gone || null,
+            open: element.open,
+          });
+        }
         if (element.shadowRoot) walk(element.shadowRoot);
       }
     };
@@ -89,11 +109,78 @@ const settled = (page) =>
     }
     return {
       frames: frames.length,
+      dialogs,
       focus: describe(active),
       chain,
       inTerminal,
     };
   });
+
+const controlBox = (page, { approval, action, gone }) =>
+  page.evaluate(
+    ({ approval, action, gone }) => {
+      const walk = (root) => {
+        for (const element of root.querySelectorAll('*')) {
+          if (
+            element.localName === 'dialog' &&
+            element.dataset.kind === 'secret' &&
+            (!approval || element.dataset.approval === approval) &&
+            (gone === undefined || (element.dataset.gone || null) === gone)
+          ) {
+            const control = element.querySelector(`[data-action="${action}"]`);
+            if (control) {
+              const rect = control.getBoundingClientRect();
+              if (rect.width > 0 && rect.height > 0)
+                return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+            }
+          }
+          if (element.shadowRoot) {
+            const found = walk(element.shadowRoot);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+      return walk(document);
+    },
+    { approval, action, gone }
+  );
+
+async function denySecret(page, id) {
+  await waitFor(
+    `the secret dialog’s Deny for ${id}`,
+    async () => {
+      const list = await secrets(page);
+      if (!list.some((item) => item.id === id)) return { listed: false, deny: null };
+      const deny = await controlBox(page, { approval: id, action: 'deny' });
+      if (deny) await pointerClick(page, deny);
+      return { listed: true, deny };
+    },
+    (state) => !state.listed
+  );
+}
+
+async function dismissElsewhere(page) {
+  await waitFor(
+    'no secret dialog left (Close/Escape if Answered elsewhere)',
+    async () => {
+      const state = await settled(page);
+      if (state.dialogs.length === 0 && state.frames === 0) return state;
+      const elsewhere = state.dialogs.find((dialog) => dialog.gone === 'elsewhere');
+      if (elsewhere) {
+        const close = await controlBox(page, {
+          approval: elsewhere.approval,
+          action: 'close',
+          gone: 'elsewhere',
+        });
+        if (close) await pointerClick(page, close);
+        else await page.press('Escape');
+      }
+      return state;
+    },
+    (state) => state.dialogs.length === 0 && state.frames === 0
+  );
+}
 
 async function focusTerminal(page) {
   const box = await page.evaluate(() => {
@@ -105,15 +192,7 @@ async function focusTerminal(page) {
     const rect = dock.content(id).screen.getBoundingClientRect();
     return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
   });
-  for (const type of ['mousePressed', 'mouseReleased']) {
-    await page.send('Input.dispatchMouseEvent', {
-      type,
-      x: box.x,
-      y: box.y,
-      button: 'left',
-      clickCount: 1,
-    });
-  }
+  await pointerClick(page, box);
 }
 
 async function answered(page, marker) {
@@ -123,11 +202,7 @@ async function answered(page, marker) {
     () => screen(page),
     (text) => text.slice(text.lastIndexOf(marker)).includes(prompt.trim())
   );
-  await waitFor(
-    `the secret dialog gone after ${marker}`,
-    () => settled(page),
-    (state) => state.frames === 0
-  );
+  await dismissElsewhere(page);
   await focusTerminal(page);
   await waitFor(
     `focus in the terminal after ${marker}`,
@@ -167,10 +242,15 @@ test('sealed ask from a terminal opens spectrum’s secret dialog with the vault
   await run(page, 'clear; sealed ask TIDE_TOKEN --reveal; echo "DENIED-$?"');
   const [revealing] = await listed(page, 1);
   assert.equal(revealing.mode, 'reveal');
-  await page.evaluate(
-    (id) => document.querySelector('slicc-app').model.approvals.decide(id, 'deny'),
-    revealing.id
+  await waitFor(
+    `the secret dialog open for ${revealing.id}`,
+    () => settled(page),
+    (state) =>
+      state.dialogs.some(
+        (dialog) => dialog.approval === revealing.id && !dialog.gone && dialog.open !== false
+      )
   );
+  await denySecret(page, revealing.id);
   await answered(page, 'DENIED-1');
 
   await run(page, 'clear; sealed ask TIDE_TOKEN; echo "RESTING-$?"');
