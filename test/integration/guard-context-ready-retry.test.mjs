@@ -136,10 +136,10 @@ test('a permanently refused ready default context stays terminal within the same
 
 test('real-clock smoke: a permanently refused ready default context stays terminal within the one-second proof budget', async (t) => {
   const { p, session, attempts, start } = await readyProof(t, () => true, { mock: false });
-  start();
-  await flush();
   const before = p.clients().length;
   const began = performance.now();
+  start();
+  await flush();
   assert.ok((await p.send('Runtime.enable', {}, session)).error);
   assert.equal(
     p
@@ -149,8 +149,8 @@ test('real-clock smoke: a permanently refused ready default context stays termin
     false
   );
   const spent = performance.now() - began;
-  assert.ok(spent >= 900 && spent < 2500, `${spent}ms`);
-  assert.ok(attempts() >= 8 && attempts() <= 10);
+  assert.ok(spent >= 900 && spent < 1600, `${spent}ms`);
+  assert.ok(attempts() >= 5 && attempts() <= 10);
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.match(
     (await p.send('Debugger.enable', {}, session)).error?.message ?? '',

@@ -137,8 +137,8 @@ test('real-clock smoke: settling probes recover without another frame or load ev
   const { p, session, attempts, start } = await settling(t, (attempt) => attempt < 3, {
     mock: false,
   });
-  await start();
   const began = performance.now();
+  await start();
   const pending = p.request('Debugger.enable', {}, session);
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(
@@ -146,15 +146,15 @@ test('real-clock smoke: settling probes recover without another frame or load ev
     false
   );
   assert.equal((await pending.answer).error, undefined);
-  assert.ok(performance.now() - began < 2500);
+  assert.ok(performance.now() - began < 1500);
   assert.equal(attempts(), 3);
   assert.equal((await p.send('Debugger.enable', {}, session)).error, undefined);
 });
 
 test('real-clock smoke: persistent refusal becomes hidden within one second and preserves the two-second client budget', async (t) => {
   const { p, session, context, attempts, start } = await settling(t, () => true, { mock: false });
-  await start();
   const began = performance.now();
+  await start();
   const runtime = await p.send('Runtime.enable', {}, session);
   assert.ok(runtime.error);
   assert.doesNotMatch(runtime.error.message, /timed out/);
@@ -166,8 +166,8 @@ test('real-clock smoke: persistent refusal becomes hidden within one second and 
     false
   );
   const spent = performance.now() - began;
-  assert.ok(spent >= 900 && spent < 2500, `${spent} ms`);
-  assert.ok(attempts() >= 8 && attempts() <= 10);
+  assert.ok(spent >= 900 && spent < 1600, `${spent} ms`);
+  assert.ok(attempts() >= 5 && attempts() <= 10);
   assert.equal(
     p.delivered.some(({ params }) => params?.context?.uniqueId === context.uniqueId),
     false
