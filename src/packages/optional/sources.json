@@ -6,5 +6,9 @@
   "@ai-ecoverse/slicc-clipboard": {
     "repo": "ai-ecoverse/slicc-clipboard",
     "workflow": [".github/workflows/release.yml", ".github/workflows/ci.yml"]
+  },
+  "@ai-ecoverse/tzdata": {
+    "repo": "ai-ecoverse/homescoop",
+    "workflow": [".github/workflows/ladder-build.yml"]
   }
 }

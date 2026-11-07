@@ -456,7 +456,7 @@ test('the base set pins exactly what UI boot and the agent install need, and eve
     base
   );
   const tools = JSON.parse(await read('tools.json'));
-  assert.equal(Object.keys(tools).length, 20);
+  assert.equal(Object.keys(tools).length, 21);
   assert.deepEqual(
     Object.entries(tools)
       .filter(([, entry]) => entry.first)
