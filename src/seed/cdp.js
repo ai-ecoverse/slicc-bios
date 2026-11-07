@@ -257,7 +257,7 @@ export function browserHook(
       { caller }
     );
   };
-  return async ({ runtime, caller } = {}) => {
+  return async ({ runtime, caller, here = false } = {}) => {
     const linked = linkedBrowsers(links);
     const extension = globalThis.sliccExtension;
     const hosts = browserHosts(extension);
@@ -270,7 +270,7 @@ export function browserHook(
       return guard(() => found.open(), undefined, found.route, undefined, caller);
     }
     if (extension && !extensionAutomationSupported(extension)) throw new Error(EXTENSION_UPDATE);
-    const fallback = linked.find((browser) => browser.seven) ?? linked[0];
+    const fallback = linked.find((browser) => browser.seven) ?? (here ? undefined : linked[0]);
     const open = runtime ? hosts[runtime] : hosts.extension || hosts.devtools || fallback?.open;
     if (!open) throw new Error(MISSING[runtime ?? 'any']);
     return guard(

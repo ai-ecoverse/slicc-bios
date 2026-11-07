@@ -12,6 +12,8 @@ export const SWITCHED_OFF =
 export const NO_GRANT =
   "EACCES: browser control from this device is off; turn on Browser for it in seven's Linked devices";
 export const NOT_CLI = 'EACCES: only a slicc CLI can drive this browser';
+export const PER_DEVICE = 16;
+export const TOO_MANY = 'EMFILE: too many browser connections from this device';
 export const STOPPED = 'ECONNRESET: stopped in seven';
 export const TOO_BIG = 'EMSGSIZE: a CDP message over 64 MiB';
 export const CUT = 'EPROTO: the node ended inside a CDP message';
@@ -99,6 +101,7 @@ export function createCdpIn({
     for (const entry of [...open]) {
       if (!match(entry)) continue;
       keys.add(entry.key);
+      open.delete(entry);
       entry.stream.reset(text);
     }
     for (const key of keys) drop(key);
@@ -112,7 +115,7 @@ export function createCdpIn({
     const { key } = entry;
     let item = shown.get(key);
     if (!item) {
-      item = { count: 0, timer: null };
+      item = { count: 0, timer: null, link: entry.link };
       item.remove =
         live?.add({
           kind: 'cdp',
@@ -174,6 +177,7 @@ export function createCdpIn({
       if (!entry.ending) s.reset(`ECONNRESET: ${reason || 'the browser closed'}`);
     };
     connection.onmessage = (text) => {
+      if (!open.has(entry)) return;
       if (opened) return out(text);
       const message = parsed(text);
       if (message?.id !== VERSION_ID) return void early.push(text);
@@ -192,7 +196,10 @@ export function createCdpIn({
     if (link.kind !== 'cli') return s.reset(NOT_CLI);
     if (!on()) return s.reset(SWITCHED_OFF);
     if (!allowed(link)) return s.reset(NO_GRANT);
-    const entry = { link, key: keyOf(link), stream: s, ending: false, close: () => {} };
+    const key = keyOf(link);
+    if ([...open].filter((other) => other.key === key).length >= PER_DEVICE)
+      return s.reset(TOO_MANY);
+    const entry = { link, key, stream: s, ending: false, close: () => {} };
     open.add(entry);
     s.settled.then(() => {
       open.delete(entry);
@@ -201,7 +208,10 @@ export function createCdpIn({
     });
     let connection;
     try {
-      connection = await hook({ caller: { kind: 'device', id: entry.key, name: nameOf(link) } });
+      connection = await hook({
+        caller: { kind: 'device', id: entry.key, name: nameOf(link) },
+        here: true,
+      });
     } catch (error) {
       return s.reset(`ENOENT: ${error.message}`);
     }
@@ -217,7 +227,10 @@ export function createCdpIn({
 
   return {
     accept: (link) => ({ handle: (s) => serve(link, s) }),
-    revoked: () => reset((entry) => !allowed(entry.link), REVOKED),
+    revoked: () => {
+      reset((entry) => !allowed(entry.link), REVOKED);
+      for (const [key, item] of [...shown]) if (!allowed(item.link)) drop(key);
+    },
     off: () => {
       reset(() => true, SWITCHED_OFF);
       for (const key of [...shown.keys()]) drop(key);

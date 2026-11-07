@@ -700,6 +700,7 @@ export function createTray({
       delete devices[id];
       unlinked.add(id);
       save();
+      changed();
       await unlinkAll(links, id, notify);
       changed();
     },

@@ -55,7 +55,7 @@ after(() => {
   stand.close();
 });
 
-async function cdpNode({ key, name, mode, kind = 'cli' }) {
+async function cdpNode({ key, name, mode, kind = 'cli', hello = {} }) {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const frame = (type, id, payload = new Uint8Array(0)) => {
@@ -92,6 +92,7 @@ async function cdpNode({ key, name, mode, kind = 'cli' }) {
             mode,
             caps: [],
             ...(kind === 'seven' ? { kind: 'seven' } : {}),
+            ...hello,
           })
         );
         return;
@@ -196,9 +197,12 @@ async function cdpNode({ key, name, mode, kind = 'cli' }) {
     globalThis.sliccLinkReceive(
       JSON.stringify({ t: 'candidate', nonce, candidate: candidate?.toJSON() ?? null })
     );
-  globalThis.sliccLinkSend = async (text) => {
+  globalThis.cdpSignals ??= new Map();
+  globalThis.sliccLinkSend = (text) => {
     const message = JSON.parse(text);
-    if (message.nonce !== nonce) return;
+    globalThis.cdpSignals.get(message.nonce)?.(message);
+  };
+  globalThis.cdpSignals.set(nonce, async (message) => {
     if (message.t === 'offer') {
       await pc.setRemoteDescription({ type: 'offer', sdp: message.sdp });
       await pc.setLocalDescription(await pc.createAnswer());
@@ -208,7 +212,7 @@ async function cdpNode({ key, name, mode, kind = 'cli' }) {
     } else if (message.t === 'candidate' && message.candidate) {
       await pc.addIceCandidate(message.candidate).catch(() => {});
     }
-  };
+  });
   globalThis.sliccLinkReceive(JSON.stringify({ t: 'hello', v: 1, nonce, node: key }));
 }
 
@@ -399,13 +403,36 @@ test('a local CLI link drives an ordinary tab over a cdp stream, through the gua
   await page.evaluate(() => {
     globalThis.cdpNodes.near.credit = true;
   });
+
+  const cut = await on(page, 'near', 'open');
+  await on(page, 'near', 'answer', cut);
+  await page.evaluate(
+    ([id, bytes]) => globalThis.cdpNodes.near.data(id, new Uint8Array(bytes)),
+    [cut, [0, 0, 0, 10, 0x7b, 0x22, 0x69]]
+  );
+  await on(page, 'near', 'end', cut);
+  assert.match(await on(page, 'near', 'gone', cut), /^EPROTO/);
+
+  const sixteen = [];
+  for (let n = 0; n < 16; n += 1) {
+    const each = await on(page, 'near', 'open');
+    assert.equal((await on(page, 'near', 'answer', each)).reset, null);
+    sixteen.push(each);
+  }
+  const extra = await on(page, 'near', 'open');
+  assert.deepEqual(await on(page, 'near', 'answer', extra), {
+    opened: null,
+    reset: 'EMFILE: too many browser connections from this device',
+  });
+  for (const each of sixteen) await on(page, 'near', 'end', each);
 });
 
 test('a remote CLI over the tray needs its Browser grant; the switch, Stop and revoking reset its streams and take the chip at once, and a stream that ends on its own leaves it for 5 s', async (t) => {
   const hub = await startHub();
   t.after(() => hub.close());
   const page = await chrome.page(t);
-  const extension = await fakeExtension(page);
+  const slow = {};
+  const extension = await fakeExtension(page, { slow });
   t.after(extension.close);
   await boot(page);
   await page.evaluate((url) => localStorage.setItem('slicc-os.tray-hub', url), hub.url);
@@ -497,6 +524,19 @@ test('a remote CLI over the tray needs its Browser grant; the switch, Stop and r
   assert.deepEqual(await items(page), []);
   await model(page, (network, id) => network.setAccess(id, 'browser', true), device);
 
+  slow['Browser.getVersion'] = 3000;
+  const opening = await on(page, 'far', 'open');
+  await model(page, (network, id) => network.setAccess(id, 'browser', false), device);
+  assert.deepEqual(await on(page, 'far', 'answer', opening), { opened: null, reset: REVOKED });
+  delete slow['Browser.getVersion'];
+  await new Promise((resolve) => setTimeout(resolve, 3500));
+  assert.deepEqual(await items(page), []);
+  assert.equal(
+    await page.evaluate((id) => globalThis.cdpNodes.far.streams.get(id).opened, opening),
+    null
+  );
+  await model(page, (network, id) => network.setAccess(id, 'browser', true), device);
+
   const third = await on(page, 'far', 'open');
   await on(page, 'far', 'answer', third);
   assert.equal((await items(page)).length, 1);
@@ -523,6 +563,22 @@ test('a remote CLI over the tray needs its Browser grant; the switch, Stop and r
   );
   assert.ok(Date.now() - ended >= 4500, `${Date.now() - ended} ms`);
 
+  const lingering = await on(page, 'far', 'open');
+  await on(page, 'far', 'answer', lingering);
+  await on(page, 'far', 'end', lingering);
+  await on(page, 'far', 'ended', lingering);
+  assert.equal((await items(page)).length, 1);
+  await model(page, (network, id) => network.setAccess(id, 'browser', false), device);
+  assert.deepEqual(await items(page), []);
+  await model(page, (network, id) => network.setAccess(id, 'browser', true), device);
+
+  const streaming = await on(page, 'far', 'open');
+  await on(page, 'far', 'answer', streaming);
+  assert.equal((await items(page)).length, 1);
+  await model(page, (network, id) => network.unlink(id), device);
+  assert.equal(await on(page, 'far', 'gone', streaming), REVOKED);
+  assert.deepEqual(await items(page), []);
+
   const seven = await join(page, hub, {
     key: 'other',
     name: 'seven elsewhere',
@@ -534,4 +590,34 @@ test('a remote CLI over the tray needs its Browser grant; the switch, Stop and r
   assert.equal((sevenHello.caps ?? []).includes('cdp-in'), false, JSON.stringify(sevenHello));
   const refused = await on(page, 'other', 'open');
   assert.match((await on(page, 'other', 'answer', refused)).reset, /^EACCES/);
+});
+
+test('a device never reaches another linked computer’s browser: without the extension, a DevTools port or a seven: true browser, its cdp OPEN is ENOENT', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await ready(page);
+  await page.evaluate(cdpNode, {
+    key: 'sharer',
+    name: 'slicc on sharer',
+    mode: 'local',
+    hello: {
+      caps: ['cdp'],
+      version: '1.50.0',
+      browsers: [{ id: 'chrome', name: 'Chrome', version: '140' }],
+    },
+  });
+  await page.within(60000, () => (globalThis.sliccLinkedBrowsers?.() ?? []).length > 0);
+  const shared = await page.evaluate(() =>
+    globalThis.sliccLinkedBrowsers().map(({ runtime, seven }) => ({ runtime, seven }))
+  );
+  assert.deepEqual(shared, [{ runtime: 'sharer/chrome', seven: false }]);
+  await page.evaluate(cdpNode, { key: 'asker', name: 'slicc on asker', mode: 'local' });
+  await page.within(60000, () => globalThis.cdpNodes.asker.hello !== null);
+  const id = await on(page, 'asker', 'open');
+  assert.deepEqual(await on(page, 'asker', 'answer', id), {
+    opened: null,
+    reset:
+      'ENOENT: no browser to drive: install slicc-extension, or link a computer with npx sliccy@next',
+  });
+  assert.deepEqual(await items(page), []);
 });
