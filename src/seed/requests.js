@@ -216,7 +216,7 @@ export function plugged(hook, prompts, extras = () => ({}), guard = () => null) 
         kind,
         async (request, { gesture }) => {
           const prompt = await prompts[kind](request);
-          const guarded = guard(request);
+          const guarded = guard(request, prompt);
           if (guarded) await guarded.ask(prompt, gesture);
           else if (prompt) await gesture(request.stamp, prompt, request.signal);
           const open = guarded ? guarded.open() : { ...OPEN, signal: request.signal };
@@ -252,7 +252,7 @@ export const CAPTURE_DENIED = 'the request to capture was denied';
 export const UNANSWERED = "the agent couldn't answer the request to capture";
 export const blocked = (what) => `${what} permission is blocked for this site`;
 
-export function capturing(kind, options) {
+export function capturing(kind, options, prompt = null) {
   if (kind === 'capture.screen') {
     const microphone = Boolean(captureMicrophone(options));
     return {
@@ -262,16 +262,30 @@ export function capturing(kind, options) {
       whats: microphone ? ['screen', 'microphone'] : ['screen'],
       picker: true,
       listing: false,
+      asks: true,
     };
   }
-  if (kind === 'audio.record')
+  if (kind === 'audio.record') {
+    const listing = Boolean(options?.devices);
+    return {
+      kind: 'microphone',
+      label: 'Recording microphone',
+      what: '',
+      whats: listing ? [] : ['microphone'],
+      picker: false,
+      listing,
+      asks: true,
+    };
+  }
+  if (kind === 'audio.transcribe' && prompt)
     return {
       kind: 'microphone',
       label: 'Recording microphone',
       what: '',
       whats: ['microphone'],
       picker: false,
-      listing: Boolean(options?.devices),
+      listing: false,
+      asks: false,
     };
   return null;
 }
@@ -409,7 +423,7 @@ export function captures({
   const consent = async (request, capture, prompt, gesture) => {
     const { stamp, signal } = request;
     for (const what of capture.whats) if (!on(what)) throw refused(switchedOff(what));
-    const answer = await asked(request);
+    const answer = capture.asks ? await asked(request) : null;
     if (signal?.aborted) throw signal.reason;
     if (answer === null) {
       if (prompt) await gesture(stamp, prompt, signal);
@@ -474,8 +488,8 @@ export function captures({
       done,
     };
   };
-  const guard = (request) => {
-    const capture = capturing(request.kind, request.options);
+  const guard = (request, prompt) => {
+    const capture = capturing(request.kind, request.options, prompt);
     if (!capture) return null;
     return {
       ask: (prompt, gesture) => consent(request, capture, prompt, gesture),

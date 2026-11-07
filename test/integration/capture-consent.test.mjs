@@ -60,6 +60,19 @@ const faux = () => {
     descriptor?.name === 'microphone'
       ? Promise.resolve({ state: window.micState })
       : query(descriptor);
+  window.recognitions = 0;
+  window.SpeechRecognition = class {
+    constructor() {
+      window.recognitions += 1;
+    }
+    start() {}
+    stop() {
+      this.onend?.();
+    }
+    abort() {
+      this.onend?.();
+    }
+  };
   window.displays = [];
   window.mics = [];
   Object.defineProperty(navigator.mediaDevices, 'getDisplayMedia', {
@@ -429,6 +442,34 @@ test('each switch refuses its kind before the agent is asked, ends a live captur
   await shoot(page, 'capture-switches');
   await run(page, 'screencapture -x /tmp/still-off.png; echo "still off $?"');
   await shows(page, 'still off 1');
+  assert.deepEqual(page.errors, []);
+});
+
+test('the Microphone switch also covers a transcribe that listens: it shows a chip, turning the switch off ends it, and then it is refused while probes still answer', async (t) => {
+  const page = await seven(t);
+  const listen = (name) =>
+    `exec 3<>/dev/embedder; printf '%s\\n' '{"kind":"audio.transcribe","engine":"webspeech","seconds":60}' >&3; cat <&3; echo "${name} $?"; exec 3<&-`;
+  await run(page, listen('listening'));
+  await page.until(() => window.chips().some((chip) => chip.startsWith('Recording microphone')));
+  assert.equal(await page.evaluate(() => window.recognitions), 1);
+  assert.deepEqual(await page.evaluate(() => window.faux.seen), []);
+  await page.evaluate(() =>
+    document.querySelector('slicc-app').model.switches.set('microphone', false)
+  );
+  await shows(page, 'listening 0', 60000);
+  await page.until(() => window.chips().length === 0);
+
+  await run(page, listen('refused'));
+  await shows(page, "microphone capture is off in seven's settings");
+  await shows(page, 'refused 1');
+  assert.equal(await page.evaluate(() => window.recognitions), 1);
+  await run(
+    page,
+    `exec 3<>/dev/embedder; printf '%s\\n' '{"kind":"audio.transcribe","status":true}' >&3; cat <&3; echo "probe $?"; exec 3<&-`
+  );
+  await shows(page, 'platform: ready (Web Speech)');
+  await shows(page, 'probe 0');
+  assert.equal(await page.evaluate(() => window.prompted), 0);
   assert.deepEqual(page.errors, []);
 });
 
