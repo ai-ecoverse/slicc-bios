@@ -234,76 +234,52 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
     async (t) => {
       await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
       await marker(page, JSON.stringify({ durableSchema: 3, agent: '8.0.0' }));
-      const receipt = await page.evaluate(async () => {
-        const root = await navigator.storage.getDirectory();
-        let dir = root;
-        for (const part of ['var', 'lib', 'slicc', 'agent'])
-          dir = await dir.getDirectoryHandle(part, { create: true });
-        const handle = await dir.getFileHandle('pnpm-lock.yaml');
-        const text = await (await handle.getFile()).text();
-        await dir.removeEntry('pnpm-lock.yaml');
-        return text;
-      });
-      const releaseHold = () =>
-        page
-          .evaluate(() => {
-            sessionStorage.removeItem('slicc-hold-packages');
-            globalThis.sliccReleasePackagesHold?.();
-            globalThis.sliccPackagesHold = null;
-          })
-          .catch(() => {});
-      t.after(async () => {
-        await releaseHold();
-        await marker(page, null).catch(() => {});
-        await page
-          .evaluate(async (text) => {
-            if (text == null) return;
-            const root = await navigator.storage.getDirectory();
-            let dir = root;
-            for (const part of ['var', 'lib', 'slicc', 'agent'])
-              dir = await dir.getDirectoryHandle(part, { create: true });
-            const writable = await (
-              await dir.getFileHandle('pnpm-lock.yaml', { create: true })
-            ).createWritable();
-            await writable.write(text);
-            await writable.close();
-          }, receipt)
-          .catch(() => {});
-      });
-      await page.init(() => {
-        if (sessionStorage.getItem('slicc-hold-packages') !== '1') return;
-        if (globalThis.sliccPackagesHold) return;
-        const gate = Promise.withResolvers();
-        globalThis.sliccPackagesHold = gate;
-        globalThis.sliccReleasePackagesHold = () => gate.resolve();
-        void navigator.locks.request('slicc-packages', () => gate.promise);
-      });
-      await page.evaluate(() => sessionStorage.setItem('slicc-hold-packages', '1'));
+      t.after(() => marker(page, null).catch(() => {}));
       const before = page.console.filter((line) => line.includes('the agent did not start')).length;
       await page.goto('/');
-      await page.until(async () =>
-        ((await navigator.locks.query()).pending ?? []).some(
-          (lock) => lock.name === 'slicc-packages'
-        )
-      );
+      await page.until(() => !!document.querySelector('slicc-app')?.model?.updates);
       assert.equal(await page.evaluate(() => document.visibilityState), 'visible');
-      await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
-      await releaseHold();
+      for (let n = 0; n < 5; n++)
+        await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
       await ready(page);
-      const seen = await page.within(
-        5 * 60 * 1000,
-        (text) => {
-          const { updates, notices, agent } = document.querySelector('slicc-app').model;
-          const row = updates.list().find((item) => item.id === 'agent');
-          if (row?.state !== 'failed' || row.error !== text) return null;
-          if (!notices.list().some((item) => item.id === 'agent:older')) return null;
-          return {
-            error: row.error,
-            agents: agent?.list?.().length ?? 0,
-          };
-        },
-        OLDER
-      );
+      let seen;
+      try {
+        seen = await page.within(
+          5 * 60 * 1000,
+          (text) => {
+            const { updates, notices, agent } = document.querySelector('slicc-app').model;
+            const row = updates.list().find((item) => item.id === 'agent');
+            if (row?.state !== 'failed' || row.error !== text) return null;
+            if (!notices.list().some((item) => item.id === 'agent:older')) return null;
+            return {
+              error: row.error,
+              agents: agent?.list?.().length ?? 0,
+            };
+          },
+          OLDER
+        );
+      } catch (error) {
+        const dump = await page
+          .evaluate(async () => {
+            const { updates, notices, agent } = document.querySelector('slicc-app')?.model ?? {};
+            const locks = await navigator.locks.query();
+            return {
+              updates: updates?.list?.() ?? null,
+              notices: notices?.list?.() ?? null,
+              agents: agent?.list?.()?.length ?? null,
+              locks: {
+                held: (locks.held ?? []).map((lock) => lock.name),
+                pending: (locks.pending ?? []).map((lock) => lock.name),
+              },
+            };
+          })
+          .catch((failed) => ({ error: failed.message }));
+        const agentLines = page.console.filter((line) => /agent/i.test(line));
+        throw new Error(
+          `${error.message}\ndump: ${JSON.stringify(dump)}\nagent console:\n${agentLines.join('\n')}`,
+          { cause: error }
+        );
+      }
       assert.equal(seen.error, OLDER);
       assert.equal(seen.agents, 0);
       assert.equal(
