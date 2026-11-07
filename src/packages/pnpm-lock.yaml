@@ -24,8 +24,8 @@ importers:
         specifier: 2.0.2
         version: 2.0.2
       '@ai-ecoverse/wasi-fnox':
-        specifier: 1.43.0-1
-        version: 1.43.0-1
+        specifier: 1.45.0-1
+        version: 1.45.0-1
       '@ai-ecoverse/wasi-pnpm':
         specifier: 12.9.1-21
         version: 12.9.1-21
@@ -109,8 +109,8 @@ packages:
     resolution: {integrity: sha512-yfgr0wLwpT4DguBO9VW+mQkavCMYo5rZKC9DpqLQiIrRSwmJSu8/fq38Q1lBCWdOe5gR/KQqcc2UPwehwbky5g==}
     engines: {node: '>=24'}
 
-  '@ai-ecoverse/wasi-fnox@1.43.0-1':
-    resolution: {integrity: sha512-awvZp9IgUm2v6lezBmP73WJ+V8xK+FF+3UfIRUtTiXlFpWo93I0nts2vP6pQ+l6izT1ZnHiBB+kpkyvKdnph5g==}
+  '@ai-ecoverse/wasi-fnox@1.45.0-1':
+    resolution: {integrity: sha512-/xumDamvV4MD+v/oq/YFqLFylCs/88AGB68hFU9JcW5LPiQ8Tr7fnW7UIvdJDGIp/KNSmuWlgk5ugOsfeBuHBQ==}
     engines: {slicc-kernel: '>=1.83.0'}
 
   '@ai-ecoverse/wasi-pnpm@12.9.1-21':
@@ -272,7 +272,7 @@ snapshots:
 
   '@ai-ecoverse/slicc-spectrum@2.0.2': {}
 
-  '@ai-ecoverse/wasi-fnox@1.43.0-1': {}
+  '@ai-ecoverse/wasi-fnox@1.45.0-1': {}
 
   '@ai-ecoverse/wasi-pnpm@12.9.1-21': {}
 
