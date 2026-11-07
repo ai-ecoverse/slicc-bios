@@ -79,6 +79,7 @@ const faux = () => {
   };
   Object.defineProperty(Navigator.prototype, 'serial', { configurable: true, get: () => serial });
   window.grant = () => granted.push(new FakePort(ids));
+  window.feed = (text) => granted.find((port) => port.isOpen)?.feed(new TextEncoder().encode(text));
   window.unplug = () => {
     const port = granted.shift();
     const event = new Event('disconnect');
@@ -202,6 +203,8 @@ test('serial is installed with the base set and its kinds reach slicc-devices th
 
   await run(page, 'serial open serial1; serial read serial1 --follow; echo "follow $?"');
   await page.until(() => window.chips().length === 1);
+  await page.evaluate(() => window.feed('following-now'));
+  await shows(page, 'following-now');
   await page.evaluate(() => window.deep('[data-surface="live"] [data-action="live-act"]').click());
   await shows(page, 'follow 0');
   await page.until(() => window.chips().length === 0);
