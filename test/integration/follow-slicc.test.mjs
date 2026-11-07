@@ -307,10 +307,13 @@ test('in seven’s terminal a cone’s slicc prompts, watches and aborts another
     /Hello from the leader\./
   );
 
-  await page.evaluate(
-    (secret) => document.querySelector('slicc-app').model.vault.put('FOLLOW_TOKEN', secret),
-    SECRET
-  );
+  await page.evaluate((secret) => {
+    const was = globalThis.sliccValueEntry;
+    globalThis.sliccValueEntry = false;
+    const sealing = document.querySelector('slicc-app').model.vault.put('FOLLOW_TOKEN', secret);
+    globalThis.sliccValueEntry = was;
+    return sealing;
+  }, SECRET);
   await page.within(60000, () => {
     const raw = localStorage.getItem('slicc-os.vault-scrub');
     return raw && JSON.parse(raw).needed === true;

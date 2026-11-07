@@ -19,7 +19,7 @@ after(() => {
 });
 
 const override = (origin) =>
-  `() => { if (location.origin === ${JSON.stringify(new URL(chrome.url).origin)}) localStorage.setItem('slicc-os.vault-origin', ${JSON.stringify(origin)}); }`;
+  `() => { if (location.origin === ${JSON.stringify(new URL(chrome.url).origin)}) { localStorage.setItem('slicc-os.vault-origin', ${JSON.stringify(origin)}); globalThis.sliccValueEntry = false; } }`;
 
 async function logged(check) {
   for (let tries = 0; tries < 100 && !check(); tries += 1) {
@@ -308,6 +308,7 @@ test('locked, every Secrets action either waits for the unlock with a reason or 
         form: form?.dataset.form ?? null,
         submitDisabled: submit ? submit.hasAttribute('disabled') : null,
         reason: form?.querySelector('[data-locked]')?.textContent.trim() ?? null,
+        entry: form ? form.hasAttribute('data-entry') : null,
         error:
           window.secrets().shadowRoot.querySelector('[role=alert], .error')?.textContent.trim() ??
           null,
@@ -320,6 +321,7 @@ test('locked, every Secrets action either waits for the unlock with a reason or 
     () => window.secrets()?.shadowRoot.querySelector('section')?.dataset.vault === 'locked'
   );
   const table = {};
+  const loggedBefore = fake.log.length;
   const open = async (label, selector) => {
     await page.evaluate(() => window.within('[data-action=cancel]')?.click());
     const before = await page.evaluate((selector) => window.state(selector), selector);
@@ -351,10 +353,21 @@ test('locked, every Secrets action either waits for the unlock with a reason or 
   await open('Export backup', '[data-backup] [data-action=export]');
   await open('Replace value', '[data-action=replace]');
   for (const [label, row] of Object.entries(table)) {
+    assert.equal(row.error, null, label);
+    if (label === 'Add secret' || label === 'Replace value') {
+      assert.equal(row.entry, true, label);
+      continue;
+    }
     assert.equal(row.submitDisabled, true, label);
     assert.equal(row.reason, 'Unlock the vault first', label);
-    assert.equal(row.error, null, label);
   }
+  assert.deepEqual(
+    fake.log
+      .slice(loggedBefore)
+      .filter((entry) => entry.op === 'enter-fields')
+      .map((entry) => entry.name),
+    ['DOCK_TOKEN', 'HARBOR_API_KEY']
+  );
   await page.evaluate(() => window.within('[data-action=cancel]')?.click());
   await page.evaluate(() => window.within('[data-action=remove]').click());
   await page.until(() => !!window.confirmDialog()?.shadowRoot?.querySelector('[data-action]'));
@@ -372,23 +385,29 @@ test('locked, every Secrets action either waits for the unlock with a reason or 
   };
   assert.equal(table.Remove.error, null);
   t.diagnostic(JSON.stringify(table));
+  const framesBefore = fake.log.length;
   await page.evaluate(() => window.within('[data-action=add-secret]').click());
   await page.evaluate(() => {
-    const form = window.within('[data-form=add]');
-    for (const input of form.querySelectorAll('input')) {
-      input.value = input.dataset.field === 'name' ? 'DOCK_TOKEN' : 'dock-value-12345678';
-      input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-    }
+    const input = window.within('[data-form=add] input[data-field=name]');
+    input.value = 'DOCK_TOKEN';
+    input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    window.within('[data-form=add] [data-action=enter-value]').click();
   });
-  fake.unlock();
-  await page.until(
-    () =>
-      window.within('[data-form=add] [data-action=save]') &&
-      !window.within('[data-form=add] [data-action=save]').hasAttribute('disabled')
+  await page.until(() => !!window.within('[data-form=add][data-entry] slicc-vault-value'));
+  const entered = await logged(() =>
+    fake.log
+      .slice(framesBefore)
+      .findLast(
+        (entry) =>
+          entry.role === 'value' && entry.op === 'value' && entry.request?.startsWith('enter-')
+      )
   );
-  await page.evaluate(() => window.within('[data-form=add] [data-action=save]').click());
+  fake.unlock();
+  fake.set({ typed: { request: entered.request, value: 'dock-value-12345678' } });
   await page.until(() => !!window.within('[data-said=saved]'));
-  assert.ok(fake.log.some((entry) => entry.op === 'put' && entry.name === 'DOCK_TOKEN'));
+  const since = fake.log.slice(framesBefore);
+  assert.ok(since.some((entry) => entry.op === 'entered' && entry.name === 'DOCK_TOKEN'));
+  assert.ok(!since.some((entry) => entry.op === 'put' && entry.name === 'DOCK_TOKEN'));
   assert.deepEqual(page.errors, []);
 });
 
