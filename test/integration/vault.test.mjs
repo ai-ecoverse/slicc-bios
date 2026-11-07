@@ -321,6 +321,7 @@ test('locked, every Secrets action either waits for the unlock with a reason or 
     () => window.secrets()?.shadowRoot.querySelector('section')?.dataset.vault === 'locked'
   );
   const table = {};
+  const loggedBefore = fake.log.length;
   const open = async (label, selector) => {
     await page.evaluate(() => window.within('[data-action=cancel]')?.click());
     const before = await page.evaluate((selector) => window.state(selector), selector);
@@ -361,7 +362,10 @@ test('locked, every Secrets action either waits for the unlock with a reason or 
     assert.equal(row.reason, 'Unlock the vault first', label);
   }
   assert.deepEqual(
-    fake.log.filter((entry) => entry.op === 'enter-fields').map((entry) => entry.name),
+    fake.log
+      .slice(loggedBefore)
+      .filter((entry) => entry.op === 'enter-fields')
+      .map((entry) => entry.name),
     ['DOCK_TOKEN', 'HARBOR_API_KEY']
   );
   await page.evaluate(() => window.within('[data-action=cancel]')?.click());
@@ -401,8 +405,9 @@ test('locked, every Secrets action either waits for the unlock with a reason or 
   fake.unlock();
   fake.set({ typed: { request: entered.request, value: 'dock-value-12345678' } });
   await page.until(() => !!window.within('[data-said=saved]'));
-  assert.ok(fake.log.some((entry) => entry.op === 'entered' && entry.name === 'DOCK_TOKEN'));
-  assert.ok(!fake.log.some((entry) => entry.op === 'put' && entry.name === 'DOCK_TOKEN'));
+  const since = fake.log.slice(framesBefore);
+  assert.ok(since.some((entry) => entry.op === 'entered' && entry.name === 'DOCK_TOKEN'));
+  assert.ok(!since.some((entry) => entry.op === 'put' && entry.name === 'DOCK_TOKEN'));
   assert.deepEqual(page.errors, []);
 });
 
