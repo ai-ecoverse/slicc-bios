@@ -303,9 +303,7 @@ test('an ask whose program goes away is withdrawn in the vault, and the approval
     frame.listen((event) => globalThis.heard.push(event));
     document.body.append(frame.element);
   }, item.id);
-  assert.ok(
-    await logged(fake, (log) => log.some((entry) => entry.role === 'value' && entry.op === 'value'))
-  );
+  await page.until(() => globalThis.heard.some((event) => event.event === 'size'));
   await page.evaluate((id) => globalThis.abortLikeTheKernel(id, 'withdrawn'), id);
   assert.ok(
     await logged(fake, (log) =>
