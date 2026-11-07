@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
-import { agentUp, connectAccount, listsAccount, ready, run, shows } from './bios.mjs';
+import { agentUp, connectAccount, listsAccount, ready, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
-import { clearForcedForbidden, forceForbidden, judgeAnswers } from './fake-judge.mjs';
+import { clearForcedForbidden, forceForbidden, judgeAnswers, judgeTrace } from './fake-judge.mjs';
 import { eventFrame, fakeLlm } from './fake-llm.mjs';
 
 const KEY = 'dummy-bedrock-key-0000';
@@ -145,6 +145,23 @@ const sudoers = (page) =>
     }
   });
 
+const dumpApprovals = (page) =>
+  page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.approvals.list()
+      .map((item) => ({
+        id: item.id,
+        kind: item.kind,
+        command: item.command,
+        always: item.always,
+        requester: item.requester,
+        verdict: item.verdict ?? null,
+        verdictError: item.verdictError ?? null,
+        judging: item.judging ?? false,
+      }))
+  );
+
 async function asked(page, pattern, until = () => true) {
   const source = pattern.source;
   return page
@@ -158,11 +175,9 @@ async function asked(page, pattern, until = () => true) {
       source
     )
     .catch(async (error) => {
-      const list = await page.evaluate(() =>
-        JSON.stringify(document.querySelector('slicc-app').model.approvals.list())
-      );
+      const terminal = await screen(page).catch(() => '');
       throw new Error(
-        `${error.message}\napprovals: ${list}\njudged: ${JSON.stringify(judged).slice(-3000)}`
+        `${error.message}\napprovals: ${JSON.stringify(await dumpApprovals(page))}\ntrace: ${JSON.stringify(judgeTrace())}\nterminal: ${JSON.stringify(terminal).slice(-2000)}\njudged: ${JSON.stringify(judged).slice(-3000)}`
       );
     });
 }
@@ -303,20 +318,26 @@ test('with the agent up, bios hands each sudo to the agent with the kernel’s f
 
   await run(
     page,
-    'clear; cd /; sudo -u cone sudo rm -rf /tmp/slicc-judge-absent-$$; echo rm-done=$?'
+    'clear; cd /; sudo -u cone sudo /bin/rm -rf /tmp/slicc-judge-absent; echo rm-done=$?'
   );
-  const rm = await asked(page, /\/rm /, (item) => !!item.verdict);
+  const rm = await asked(page, /\/rm /, (item) => !!(item.verdict || item.verdictError));
+  assert.equal(rm.verdictError, undefined, JSON.stringify(rm));
+  assert.equal(rm.requester.kind, 'user');
+  assert.ok(rm.verdict?.level >= 2, JSON.stringify(rm.verdict));
   assert.equal(rm.always, false);
   assert.deepEqual(await buttons(page, rm.id), ['deny', 'once']);
   await click(page, rm.id, 'deny');
   await shows(page, 'rm-done=1');
 
-  await run(page, 'clear; cd /; sudo -u cone sudo systemctl --user restart sshd; echo ctl=$?');
-  const ctl = await asked(page, /systemctl/, (item) => !!item.verdict);
-  assert.equal(ctl.always, false);
-  assert.deepEqual(await buttons(page, ctl.id), ['deny', 'once']);
-  await click(page, ctl.id, 'deny');
-  await shows(page, 'ctl=1');
+  await run(page, 'clear; cd /; sudo -u cone sudo /bin/kill -0 1; echo kill-done=$?');
+  const killed = await asked(page, /\/kill /, (item) => !!(item.verdict || item.verdictError));
+  assert.equal(killed.verdictError, undefined, JSON.stringify(killed));
+  assert.equal(killed.requester.kind, 'user');
+  assert.ok(killed.verdict?.level >= 2, JSON.stringify(killed.verdict));
+  assert.equal(killed.always, false);
+  assert.deepEqual(await buttons(page, killed.id), ['deny', 'once']);
+  await click(page, killed.id, 'deny');
+  await shows(page, 'kill-done=1');
   assert.deepEqual(page.errors, []);
 });
 

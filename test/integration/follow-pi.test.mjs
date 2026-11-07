@@ -4,7 +4,7 @@ import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harne
 import { agentUp, connectAccount, listsAccount, ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { model, startHub } from './fake-hub.mjs';
-import { judgeAnswers } from './fake-judge.mjs';
+import { judgeAnswers, judgeTrace } from './fake-judge.mjs';
 import { eventFrame, fakeLlm } from './fake-llm.mjs';
 import { shoot } from './shots.mjs';
 
@@ -557,16 +557,35 @@ test('a follower watches the owner run with View, is refused a send, sends with 
             .model.approvals.list()
             .find(
               (entry) =>
-                entry.kind === 'sudo' && entry.command === command && (!always || entry.always)
+                entry.kind === 'sudo' &&
+                entry.command === command &&
+                (!always || entry.always) &&
+                !!(entry.verdict || entry.verdictError)
             ) ?? null,
         command,
         decision === 'always'
       )
       .catch(async (error) => {
+        const ownerList = await owner.evaluate(() =>
+          document
+            .querySelector('slicc-app')
+            .model.approvals.list()
+            .map((entry) => ({
+              id: entry.id,
+              command: entry.command,
+              always: entry.always,
+              requester: entry.requester,
+              verdict: entry.verdict ?? null,
+              verdictError: entry.verdictError ?? null,
+              judging: entry.judging ?? false,
+            }))
+        );
         throw new Error(
-          `the follower never saw the cone's sudo for ${command}: ${error.message}\nowner approvals: ${JSON.stringify(await owner.evaluate(() => document.querySelector('slicc-app').model.approvals.list()))}\nowner chat: ${await said(owner)}`
+          `the follower never saw the cone's sudo for ${command}: ${error.message}\nowner approvals: ${JSON.stringify(ownerList)}\ntrace: ${JSON.stringify(judgeTrace())}\nowner chat: ${await said(owner)}`
         );
       });
+    assert.equal(item.verdictError, undefined, JSON.stringify(item));
+    assert.ok(item.verdict, JSON.stringify(item));
     assert.deepEqual(
       await owner.evaluate(
         (id) =>

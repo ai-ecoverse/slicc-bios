@@ -22,6 +22,7 @@ const INTENT_READ = {
 };
 
 let forcedForbidden = null;
+const trace = [];
 
 export function forceForbidden(probability) {
   forcedForbidden = probability;
@@ -29,6 +30,10 @@ export function forceForbidden(probability) {
 
 export function clearForcedForbidden() {
   forcedForbidden = null;
+}
+
+export function judgeTrace() {
+  return trace.slice(-40);
 }
 
 const ROUTINE = [
@@ -304,6 +309,18 @@ export function judgeAnswers(body, log) {
   const { input } = JSON.parse(body.toString());
   log?.(input);
   const asked = Object.keys(input.questions ?? {});
+  const command = commandOf(input.state?.request?.untrusted);
+  const kind =
+    asked.includes('changes') || asked.includes('plain') || asked.includes('always')
+      ? classifyCommand(command).kind
+      : asked.some((id) => id.startsWith('wants_'))
+        ? 'intent'
+        : asked.includes('forbidden')
+          ? 'forbidden'
+          : asked.includes('level')
+            ? 'guest'
+            : 'other';
+  trace.push({ command, kind, questions: asked });
   const pool = poolOf(input);
   const missing = asked.filter((id) => pool[id] === undefined);
   if (missing.length) {
