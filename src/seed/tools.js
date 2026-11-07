@@ -402,6 +402,7 @@ export function createTools({
       failed(planned.moving, error);
       found = await present(root, entries);
     }
+    await linkZones(kernel).catch(warn);
     changed();
   }
 
@@ -417,7 +418,6 @@ export function createTools({
           await round(entries.filter((entry) => !entry.first));
         } finally {
           if (opening) await remove(root, PENDING).catch(() => {});
-          await linkZones(kernel).catch(warn);
         }
       })
       .finally(() => {
