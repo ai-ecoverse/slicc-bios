@@ -67,6 +67,8 @@ const PLACE_RETRIES = 2;
 const PROBE_TRIES = 3;
 const PROBE_BUDGET = 1000;
 const ANSWER_MS = 1000;
+const LISTED_CHECKS = 8;
+const LISTED_FRESH_MS = 100;
 const WORKER_TYPES = new Set(['service_worker', 'shared_worker', 'worker']);
 const HISTORY_NAV = new Set([
   'restore',
@@ -790,6 +792,7 @@ class Guard {
     this.revisions = new Map();
     this.recoveries = new WeakMap();
     this.next = GUARD_IDS;
+    this.listedEvents = 0;
     this.guarded = { onmessage: null, onclose: null };
   }
 
@@ -2270,8 +2273,18 @@ class Guard {
     void this.call('Target.detachFromTarget', { sessionId }, outer);
   }
 
-  async current(targetId, limit = ANSWER_MS) {
-    const answer = await this.within(this.call('Target.getTargetInfo', { targetId }), limit);
+  async current(targetId, limit = ANSWER_MS, ...rest) {
+    const prefetched = rest.length > 0;
+    const early = rest[0];
+    if (prefetched && early?.listedReject !== undefined) throw early.listedReject;
+    const useEarly =
+      prefetched &&
+      typeof early?.arrivedAt === 'number' &&
+      early.events === this.listedEvents &&
+      Date.now() - early.arrivedAt <= LISTED_FRESH_MS;
+    const answer = useEarly
+      ? early.answer
+      : await this.within(this.call('Target.getTargetInfo', { targetId }), limit);
     const info = answer?.result?.targetInfo;
     if (!answer || answer.error || info?.targetId !== targetId || typeof info.type !== 'string')
       return true;
@@ -4676,10 +4689,31 @@ class Guard {
   }
 
   async listed(message, result) {
+    const infos = result.targetInfos;
+    const early = new Array(infos.length);
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(LISTED_CHECKS, infos.length) }, async () => {
+      for (;;) {
+        const index = cursor++;
+        if (index >= infos.length) return;
+        try {
+          const answer = await this.within(
+            this.call('Target.getTargetInfo', { targetId: infos[index].targetId }),
+            ANSWER_MS
+          );
+          early[index] = { answer, arrivedAt: Date.now(), events: this.listedEvents };
+        } catch (error) {
+          early[index] = { listedReject: error };
+        }
+      }
+    });
+    await Promise.all(workers);
     const targetInfos = [];
-    for (const info of result.targetInfos) {
+    for (let index = 0; index < infos.length; index++) {
+      const info = infos[index];
       this.learn(info);
-      const guarded = (await this.current(info.targetId)) || this.is.url(info.url);
+      const guarded =
+        (await this.current(info.targetId, ANSWER_MS, early[index])) || this.is.url(info.url);
       const proof = guarded ? await this.stranded(info.targetId) : null;
       if (!guarded || this.fresh(proof)) targetInfos.push(this.masked(info, Boolean(proof)));
     }
@@ -5688,8 +5722,13 @@ class Guard {
     return true;
   }
 
+  noteListedEvent(message) {
+    if (message.id === undefined) this.listedEvents++;
+  }
+
   received(text) {
     const message = parse(text);
+    this.noteListedEvent(message);
     this.rememberFetchAnswer(message);
     this.loadingEvent(message);
     this.completeStopping(message);
