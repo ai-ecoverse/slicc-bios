@@ -70,6 +70,7 @@ import {
   clearRefusal,
   noteRefusal,
   offerChatOptions,
+  shareRun,
   skipRefusedStart,
   startKey,
   wasRefused,
@@ -806,7 +807,7 @@ async function updateTailnet() {
   if (changed) updates.set('tailscale', { state: 'ready', actions: ['reload'] });
 }
 
-async function check() {
+const check = shareRun(async () => {
   await notes.prepare(updates);
   const settling = Promise.resolve(tools)
     .then((found) => found?.settle())
@@ -820,7 +821,7 @@ async function check() {
   const packages = await optional;
   if (packages) await notes.packages(packages.list());
   await packages?.refresh().catch(() => undefined);
-}
+});
 
 function offerPackages() {
   return catalogs

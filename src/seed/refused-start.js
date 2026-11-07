@@ -43,3 +43,15 @@ export function skipRefusedStart(changed, key, auto = false) {
 export function offerChatOptions(auto = false) {
   return { auto: Boolean(auto) };
 }
+
+export function shareRun(run) {
+  let current = null;
+  return (...args) => {
+    current ??= Promise.resolve()
+      .then(() => run(...args))
+      .finally(() => {
+        current = null;
+      });
+    return current;
+  };
+}

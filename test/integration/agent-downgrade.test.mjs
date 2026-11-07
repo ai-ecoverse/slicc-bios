@@ -229,6 +229,85 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
     }
   );
 
+  await t.test(
+    'a visibility check while the boot check runs starts the refused agent once',
+    async (t) => {
+      await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
+      await marker(page, JSON.stringify({ durableSchema: 3, agent: '8.0.0' }));
+      const receipt = await page.evaluate(async () => {
+        const root = await navigator.storage.getDirectory();
+        let dir = root;
+        for (const part of ['var', 'lib', 'slicc', 'agent'])
+          dir = await dir.getDirectoryHandle(part, { create: true });
+        const handle = await dir.getFileHandle('pnpm-lock.yaml');
+        const text = await (await handle.getFile()).text();
+        await dir.removeEntry('pnpm-lock.yaml');
+        return text;
+      });
+      t.after(async () => {
+        await marker(page, null).catch(() => {});
+        await page
+          .evaluate(async (text) => {
+            sessionStorage.removeItem('slicc-hold-packages');
+            globalThis.sliccReleasePackagesHold?.();
+            if (text == null) return;
+            const root = await navigator.storage.getDirectory();
+            let dir = root;
+            for (const part of ['var', 'lib', 'slicc', 'agent'])
+              dir = await dir.getDirectoryHandle(part, { create: true });
+            const writable = await (
+              await dir.getFileHandle('pnpm-lock.yaml', { create: true })
+            ).createWritable();
+            await writable.write(text);
+            await writable.close();
+          }, receipt)
+          .catch(() => {});
+      });
+      await page.init(() => {
+        if (sessionStorage.getItem('slicc-hold-packages') !== '1') return;
+        if (globalThis.sliccPackagesHold) return;
+        const gate = Promise.withResolvers();
+        globalThis.sliccPackagesHold = gate;
+        globalThis.sliccReleasePackagesHold = () => gate.resolve();
+        void navigator.locks.request('slicc-packages', () => gate.promise);
+      });
+      await page.evaluate(() => sessionStorage.setItem('slicc-hold-packages', '1'));
+      const before = page.console.filter((line) => line.includes('the agent did not start')).length;
+      await page.goto('/');
+      await ready(page);
+      await page.until(async () =>
+        ((await navigator.locks.query()).pending ?? []).some(
+          (lock) => lock.name === 'slicc-packages'
+        )
+      );
+      assert.equal(await page.evaluate(() => document.visibilityState), 'visible');
+      await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+      await page.evaluate(() => globalThis.sliccReleasePackagesHold?.());
+      await page.evaluate(() => sessionStorage.removeItem('slicc-hold-packages'));
+      const seen = await page.within(
+        5 * 60 * 1000,
+        (text) => {
+          const { updates, notices, agent } = document.querySelector('slicc-app').model;
+          const row = updates.list().find((item) => item.id === 'agent');
+          if (row?.state !== 'failed' || row.error !== text) return null;
+          if (!notices.list().some((item) => item.id === 'agent:older')) return null;
+          return {
+            error: row.error,
+            agents: agent?.list?.().length ?? 0,
+          };
+        },
+        OLDER
+      );
+      assert.equal(seen.error, OLDER);
+      assert.equal(seen.agents, 0);
+      assert.equal(
+        page.console.filter((line) => line.includes('the agent did not start')).length - before,
+        1,
+        page.console.filter((line) => line.includes('the agent did not start')).join('\n')
+      );
+    }
+  );
+
   await t.test('a marker change after the refusal lets seven start the agent', async (t) => {
     await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
     await marker(page, JSON.stringify({ durableSchema: 3, agent: '8.0.0' }));
