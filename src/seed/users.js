@@ -5,6 +5,8 @@ const MODES = ['off', 'report', 'enforce'];
 const KEY = 'slicc-os.users';
 const CONE = /^cone(-[1-9]\d*)?$/;
 const SCOOP = /^scoop-[a-z0-9][a-z0-9._-]*$/;
+export const DEVICE_GROUPS = { dialout: 20 };
+const DEVICES = Object.keys(DEVICE_GROUPS);
 export const PRODUCTION_USERS = 'enforce';
 
 export function usersMode({
@@ -51,12 +53,13 @@ function spec({ name, home, groups: asked = [], umask, homeGroup, homeMode }) {
   agentUser(name);
   const scoop = SCOOP.test(name);
   const groups = scoop || asked.includes('sudo') ? asked : [...asked, 'sudo'];
-  for (const group of groups) if (scoop || group !== 'sudo') cone(group);
+  for (const group of groups)
+    if (!DEVICES.includes(group) && (scoop || group !== 'sudo')) cone(group);
   if (scoop && groups.includes('sudo')) throw refused(`sudo for the scoop ${name}`);
   if (homeGroup !== undefined) cone(homeGroup);
   return {
     name,
-    groups,
+    groups: [...groups, ...DEVICES.filter((group) => !groups.includes(group))],
     ...(home === undefined ? {} : { home }),
     ...(umask === undefined ? {} : { umask }),
     ...(homeGroup === undefined ? {} : { homeGroup }),
@@ -93,6 +96,15 @@ export function kernelSource(kernel, requests) {
       removeMember: async (group, user) => kernel.groups.removeMember(cone(group), agentUser(user)),
     },
   };
+}
+
+export async function deviceGroups(kernel) {
+  if (!kernel.users || kernel.users.mode === 'off') return [];
+  for (const [group, gid] of Object.entries(DEVICE_GROUPS)) await kernel.groups.add(group, { gid });
+  const agents = (await kernel.users.list()).filter((user) => agentFor(user.name));
+  for (const group of DEVICES)
+    for (const user of agents) await kernel.groups.addMember(group, user.name);
+  return agents.map((user) => user.name);
 }
 
 export async function addCone(kernel, name = 'cone') {

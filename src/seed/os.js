@@ -1,5 +1,6 @@
 import audio from '@ai-ecoverse/slicc-audio/page';
 import capture from '@ai-ecoverse/slicc-capture/page';
+import { create as createDevices } from '@ai-ecoverse/slicc-devices/page';
 import * as kernelModule from '@ai-ecoverse/slicc-kernel';
 import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
 import * as spectrumUi from '@ai-ecoverse/slicc-spectrum/ui';
@@ -84,12 +85,14 @@ import {
   capturePrompt,
   captures,
   displayer,
+  KINDS,
   markCaptured,
   openUrl,
   pageRequests,
   plugged,
 } from './requests.js';
 import { entersInFrame, showsSecrets, withSecrets } from './secrets.js';
+import { serialPorts } from './serial.js';
 import { BIOS, home, sharesOrigin } from './site.js';
 import { importSix, retirePreview, said } from './six.js';
 import { installPrompts, keepStorage, onSend } from './storage.js';
@@ -133,6 +136,7 @@ import { count, createUpdates, owners } from './updates.js';
 import { createUserPackages, MODULES as USER_MODULES } from './user.js';
 import {
   addCone,
+  deviceGroups,
   dropProtectedMounts,
   homeSkips,
   kernelSource,
@@ -417,6 +421,7 @@ const remoteBrowser = switches.add({
   label: SWITCH_LABEL,
   off: () => cdpIn.off(),
 });
+const serial = serialPorts({ create: createDevices, switches, clicks, live });
 const sudo = routeSudo({
   agent: () => owner,
   judges: agentJudges,
@@ -439,7 +444,9 @@ const requests = pageRequests({
     'clipboard.write': clipboardWrite(),
     ...plugged(capture, { 'capture.screen': capturePrompt }, displayer(), guarded),
     ...plugged(audio, audioPrompts, undefined, guarded),
+    ...serial.handlers,
   },
+  kinds: { ...KINDS, ...serial.kinds },
 });
 let folders = null;
 let owner = null;
@@ -968,6 +975,7 @@ async function own() {
   catalogs = loadCatalog();
   void startTools();
   const cone = await addCone(kernel);
+  await deviceGroups(kernel).catch((error) => console.warn(`device groups: ${error.message}`));
   coneIds = cone && { uid: cone.uid, gid: cone.gid };
   denials.drain();
   await lockLegacy(kernel, { text, write, root }).catch((error) =>

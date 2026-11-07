@@ -193,6 +193,7 @@ await step('seed', async () => {
     'remote.js',
     'requests.js',
     'secrets.js',
+    'serial.js',
     'site.js',
     'six.js',
     'skills.js',
