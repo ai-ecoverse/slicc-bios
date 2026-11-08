@@ -185,7 +185,8 @@ const TAB_COMMANDS = new Set([
   'Runtime.runIfWaitingForDebugger',
   'Target.getTargetInfo',
 ]);
-const TAB_FILTER = [{ type: 'tab' }, { type: 'page' }];
+const TAB_FILTER = [{ type: 'tab' }];
+const PAGE_FILTER = [{ type: 'page' }];
 const WIDE = ['tab', 'worker', 'shared_worker', 'service_worker'];
 const DEFAULT_FILTER = [{ type: 'browser', exclude: true }, { type: 'tab', exclude: true }, {}];
 
@@ -6240,8 +6241,10 @@ function narrowed(message) {
     delete stripped.contentSecurityPolicy;
     return { ...message, params: stripped };
   }
-  if (method === 'Target.setAutoAttach' && params?.autoAttach && wide(params))
-    return { ...message, params: { ...params, filter: TAB_FILTER } };
+  if (method === 'Target.setAutoAttach' && params?.autoAttach && wide(params)) {
+    const tabs = message.sessionId === undefined && admits(params.filter, 'tab');
+    return { ...message, params: { ...params, filter: tabs ? TAB_FILTER : PAGE_FILTER } };
+  }
   return message;
 }
 
