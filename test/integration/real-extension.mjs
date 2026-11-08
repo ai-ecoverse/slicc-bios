@@ -1,5 +1,4 @@
 import { execFile, spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { request } from 'node:http';
@@ -8,6 +7,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { launch } from './chrome.mjs';
+import { fetchExtension } from './extension-download.mjs';
+
+export { fetchExtension } from './extension-download.mjs';
 
 const run = promisify(execFile);
 
@@ -32,12 +34,7 @@ async function unpacked(extension) {
   const dir = join(process.cwd(), 'node_modules', '.cache', `slicc-extension-${extension.version}`);
   const root = join(dir, 'unpacked');
   if (existsSync(join(root, 'manifest.json'))) return root;
-  const response = await fetch(extension.url);
-  if (!response.ok) throw new Error(`${extension.url}: HTTP ${response.status}`);
-  const zip = Buffer.from(await response.arrayBuffer());
-  const sum = createHash('sha256').update(zip).digest('hex');
-  if (sum !== extension.sha256)
-    throw new Error(`${extension.url}: sha256 ${sum}, want ${extension.sha256}`);
+  const zip = await fetchExtension(extension);
   await rm(dir, { recursive: true, force: true });
   await mkdir(root, { recursive: true });
   await writeFile(join(dir, 'slicc-extension.zip'), zip);
