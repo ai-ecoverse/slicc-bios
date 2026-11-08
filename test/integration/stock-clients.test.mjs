@@ -42,13 +42,13 @@ const chrome = await launch({
   tools: false,
   args: [
     '--remote-allow-origins=*',
-    '--host-resolver-rules=MAP ordinary.test 127.0.0.1, MAP frame.test 127.0.0.1',
+    '--host-resolver-rules=MAP ordinary.test 127.0.0.1, MAP frame.test 127.0.0.1, MAP vault.sliccy.ai 127.0.0.1',
   ],
 });
 const { port } = await devtools(chrome);
 const browser = await debuggerUrl(port);
 const SEVEN = `${new URL(chrome.url).origin}/os/`;
-const VAULT = `${chrome.vault.origin}/`;
+const VAULT = `http://vault.sliccy.ai:${fixture.address().port}/page`;
 const protectedUrl = (url) => [SEVEN, VAULT].some((at) => url.startsWith(new URL(at).origin));
 after(() => {
   chrome.close();
@@ -58,6 +58,8 @@ after(() => {
 const holds = [];
 const answers = [];
 const pending = new Map();
+const traffic = [];
+const snapshots = new Map();
 let current = '';
 const watched = (id, text, outgoing) => {
   let message;
@@ -66,6 +68,22 @@ const watched = (id, text, outgoing) => {
   } catch {
     return;
   }
+  const short = (value) => (typeof value === 'string' ? value.slice(0, 6) : '');
+  const info = message.params?.targetInfo;
+  traffic.push(
+    [
+      outgoing ? '>' : '<',
+      message.method ?? `#${message.id}`,
+      short(message.sessionId),
+      short(message.params?.sessionId),
+      info ? `${info.type} ${info.url}` : '',
+      message.params?.waitingForDebugger ? 'paused' : '',
+      message.error ? message.error.message.slice(0, 40) : '',
+    ]
+      .filter(Boolean)
+      .join(' ')
+  );
+  if (traffic.length > 40) traffic.shift();
   if (message.id === undefined) return;
   const key = `${id}:${message.sessionId ?? ''}:${message.id}`;
   if (outgoing) {
@@ -76,8 +94,10 @@ const watched = (id, text, outgoing) => {
   if (!asked) return;
   pending.delete(key);
   const took = Date.now() - asked.at;
-  if (message.error)
+  if (message.error) {
     answers.push(`${asked.by} refused ${asked.method}: ${message.error.message.slice(0, 160)}`);
+    if (!snapshots.has(asked.method)) snapshots.set(asked.method, [...traffic]);
+  }
   if (took > HELD_MS) answers.push(`${asked.by} held ${asked.method}: ${took} ms`);
 };
 async function step(route, client, name, work) {
@@ -97,7 +117,10 @@ async function step(route, client, name, work) {
   } finally {
     clearTimeout(timer);
     const took = Date.now() - started;
-    if (took > HELD_MS) holds.push(`${route} ${client} ${name}: ${took} ms`);
+    if (took > HELD_MS) {
+      holds.push(`${route} ${client} ${name}: ${took} ms`);
+      snapshots.set(`held ${client} ${name}`, [...traffic]);
+    }
   }
 }
 
@@ -409,4 +432,7 @@ for (const route of ['devtools', 'extension'])
     await t.test('Playwright', () => playwright(route, endpoint));
     await t.test('Puppeteer', () => puppeteerFlow(route, endpoint));
     console.log(`STOCK-WIRE ${route} ${JSON.stringify(await opened.wire())}`);
+    for (const [method, lines] of snapshots)
+      console.log(`STOCK-TRAFFIC ${route} before ${method}\n${lines.join('\n')}`);
+    snapshots.clear();
   });
