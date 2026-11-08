@@ -57,7 +57,7 @@ function withoutMask(options = {}) {
 }
 
 export function shared(options = {}, user = ROOT) {
-  return owned({ ...withoutMask(options), umask: '002' }, user);
+  return { ...owned(withoutMask(options), user), umask: '002' };
 }
 
 export function mountOpts(type, options = {}, user = ROOT) {
