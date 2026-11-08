@@ -32,9 +32,21 @@ export const targets = {
   log: origin('log.example.test'),
 };
 const PATHS = {
+  devtools: {
+    autoAttach: true,
+    browserSession: true,
+    browserContexts: true,
+    chromeUrlsAttach: true,
+    extensionWorld: true,
+    extensionFrame: false,
+    inboundDelay: true,
+    forwardAudit: true,
+    clientExit: true,
+    stockSetup: true,
+  },
   extension: {
     autoAttach: true,
-    browserSession: false,
+    browserSession: true,
     browserContexts: true,
     chromeUrlsAttach: false,
     discovery: false,
@@ -43,6 +55,8 @@ const PATHS = {
     inboundDelay: true,
     forwardAudit: true,
     clientExit: true,
+    stockSetup: true,
+    syntheticAutoAttach: true,
   },
   link: {
     autoAttach: true,
@@ -82,6 +96,7 @@ const browserAt = () =>
     tools: false,
     extensions: [fileURLToPath(new URL('./fixtures/foreign-world', import.meta.url))],
     args: [
+      '--remote-allow-origins=*',
       '--host-resolver-rules=MAP *.sliccy.ai 127.0.0.1, MAP sliccy.ai 127.0.0.1, MAP *.example.test 127.0.0.1',
     ],
   });
@@ -292,8 +307,11 @@ export async function guardHost(t, path) {
     const auditForwards = new Function(`return (${sources.audit})`)();
     const attachRecorder = new Function(`return (${sources.attach})`)();
     const { guardProtected } = await import(new URL('guard.js', location.href).href);
-    const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
+    const { devtoolsConnection, extensionConnection } = await import(
+      new URL('cdp.js', location.href).href
+    );
     const hosts = {
+      devtools: () => devtoolsConnection(sources.browser),
       extension: async () => extensionConnection(globalThis.sliccExtension.cdp),
       link: async () => {
         const [linked] = globalThis.sliccLinkedBrowsers();
@@ -537,6 +555,7 @@ export async function guardHost(t, path) {
     await seven.evaluate(setup, {
       audit: auditForwards.toString(),
       attach: attachRecorder.toString(),
+      browser,
     });
   };
   await ensure();

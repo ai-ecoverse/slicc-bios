@@ -1,5 +1,5 @@
 import { EXTENSION_UPDATE, extensionAutomationSupported } from './extension.js';
-import { guardProtected, NO_AUTO_ATTACH } from './guard.js';
+import { guardProtected, NO_AUTO_ATTACH, TAB_ONLY } from './guard.js';
 
 const RUNTIMES = ['extension', 'devtools'];
 
@@ -40,6 +40,181 @@ export function ordered(send) {
   };
 }
 
+const DISCOVERED = new Set([
+  'Target.targetCreated',
+  'Target.targetInfoChanged',
+  'Target.targetDestroyed',
+]);
+const DEFAULT_FILTER = [{ type: 'browser', exclude: true }, { type: 'tab', exclude: true }, {}];
+
+export function admits(filter, type) {
+  for (const entry of Array.isArray(filter) ? filter : DEFAULT_FILTER)
+    if (entry?.type === undefined || entry.type === type) return entry?.exclude !== true;
+  return false;
+}
+
+export function syntheticAutoAttach(cdp, deliver, attached, closed) {
+  const state = { on: false, tabs: false, discovering: false, discovery: false, count: 0 };
+  const seen = new Set();
+  const tabs = new Map();
+  const parents = new Map();
+  const answer = (envelope, result) => deliver({ ...envelope, result });
+  const refuse = (envelope, message) => deliver({ ...envelope, error: { code: -32000, message } });
+  const tabInfo = (tab) => ({
+    targetId: tab.tabId,
+    type: 'tab',
+    title: tab.info.title ?? '',
+    url: tab.info.url ?? '',
+    attached: true,
+    canAccessOpener: false,
+    ...(tab.info.browserContextId ? { browserContextId: tab.info.browserContextId } : {}),
+  });
+  const attachPage = async (info, parent) => {
+    const { sessionId } = await cdp.send('Target.attachToTarget', {
+      targetId: info.targetId,
+      flatten: true,
+    });
+    if (closed()) {
+      await cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {});
+      return undefined;
+    }
+    attached(sessionId, 1);
+    if (parent) parents.set(sessionId, parent);
+    const fresh = await cdp.send('Target.getTargetInfo', { targetId: info.targetId }).then(
+      ({ targetInfo }) => targetInfo,
+      () => undefined
+    );
+    deliver({
+      method: 'Target.attachedToTarget',
+      ...(parent ? { sessionId: parent } : {}),
+      params: {
+        sessionId,
+        targetInfo: { ...(fresh ?? info), attached: true },
+        waitingForDebugger: false,
+      },
+    });
+    return sessionId;
+  };
+  const adopt = async (info) => {
+    if (!state.on || info?.type !== 'page' || seen.has(info.targetId)) return;
+    seen.add(info.targetId);
+    if (!state.tabs) {
+      await attachPage(info).catch(() => seen.delete(info.targetId));
+      return;
+    }
+    state.count += 1;
+    const sessionId = `slicc-tab-${state.count}-${crypto.randomUUID()}`;
+    const tab = { tabId: `tab-${info.targetId}`, pageId: info.targetId, info };
+    tabs.set(sessionId, tab);
+    deliver({
+      method: 'Target.attachedToTarget',
+      params: { sessionId, targetInfo: tabInfo(tab), waitingForDebugger: false },
+    });
+  };
+  const dropTab = (sessionId, tab) => {
+    tabs.delete(sessionId);
+    seen.delete(tab.pageId);
+    deliver({
+      method: 'Target.detachedFromTarget',
+      params: { sessionId, targetId: tab.tabId },
+    });
+  };
+  const tabOf = (targetId, key = 'pageId') => [...tabs].find(([, tab]) => tab[key] === targetId);
+  const discover = async () => {
+    if (state.discovering) return;
+    await cdp.send('Target.setDiscoverTargets', { discover: true });
+    state.discovering = true;
+  };
+  const browserAuto = async (envelope, params) => {
+    state.on = params?.autoAttach === true;
+    state.tabs = admits(params?.filter, 'tab');
+    if (state.on && (state.tabs || admits(params?.filter, 'page'))) {
+      await discover();
+      const { targetInfos = [] } = await cdp.send('Target.getTargets', {});
+      for (const info of targetInfos) await adopt(info);
+    } else state.on = false;
+    answer(envelope, {});
+  };
+  const tabCommand = async (envelope, sessionId, method, params) => {
+    const tab = tabs.get(sessionId);
+    if (method === 'Runtime.runIfWaitingForDebugger') return answer(envelope, {});
+    if (method === 'Target.getTargetInfo') return answer(envelope, { targetInfo: tabInfo(tab) });
+    if (method === 'Target.setAutoAttach') {
+      if (params?.autoAttach === true && !tab.page && admits(params.filter, 'page'))
+        tab.page = await attachPage(tab.info, sessionId);
+      return answer(envelope, {});
+    }
+    if (method === 'Target.detachFromTarget' && params?.sessionId === tab.page) {
+      await cdp.send('Target.detachFromTarget', { sessionId: tab.page });
+      return answer(envelope, {});
+    }
+    refuse(envelope, TAB_ONLY);
+  };
+  const browserCommand = async (envelope, method, params) => {
+    if (method === 'Target.setAutoAttach') return browserAuto(envelope, params);
+    if (method === 'Target.setDiscoverTargets') {
+      const on = params?.discover === true;
+      if (on || !state.on) await cdp.send(method, params);
+      state.discovery = on;
+      state.discovering = on || state.on;
+      return answer(envelope, {});
+    }
+    const [sessionId, tab] =
+      (method === 'Target.detachFromTarget' && tabs.has(params?.sessionId)
+        ? [params.sessionId, tabs.get(params.sessionId)]
+        : method === 'Target.getTargetInfo' && tabOf(params?.targetId, 'tabId')) || [];
+    if (!tab) return false;
+    if (method === 'Target.getTargetInfo') return answer(envelope, { targetInfo: tabInfo(tab) });
+    if (tab.page)
+      await cdp.send('Target.detachFromTarget', { sessionId: tab.page }).catch(() => {});
+    dropTab(sessionId, tab);
+    return answer(envelope, {});
+  };
+  const track = (event) => {
+    if (event.method === 'Target.targetCreated' && state.on) void adopt(event.params?.targetInfo);
+    if (event.method === 'Target.targetInfoChanged') {
+      const [, tab] = tabOf(event.params?.targetInfo?.targetId) ?? [];
+      if (tab) tab.info = event.params.targetInfo;
+    }
+    if (event.method === 'Target.targetDestroyed') {
+      seen.delete(event.params?.targetId);
+      const [sessionId, tab] = tabOf(event.params?.targetId) ?? [];
+      if (tab) dropTab(sessionId, tab);
+    }
+  };
+  return {
+    async command(envelope, method, params, sessionId) {
+      if (tabs.has(sessionId)) {
+        await tabCommand(envelope, sessionId, method, params).catch((error) =>
+          refuse(envelope, error.message)
+        );
+        return true;
+      }
+      if (sessionId !== undefined) return false;
+      const handled = await browserCommand(envelope, method, params).catch((error) => {
+        refuse(envelope, error.message);
+        return true;
+      });
+      return handled !== false;
+    },
+    event(event) {
+      if (event.sessionId !== undefined) return event;
+      track(event);
+      if (DISCOVERED.has(event.method) && !state.discovery) return null;
+      if (event.method === 'Target.detachedFromTarget' && parents.has(event.params?.sessionId)) {
+        const parent = parents.get(event.params.sessionId);
+        parents.delete(event.params.sessionId);
+        const tab = tabs.get(parent);
+        if (tab?.page === event.params.sessionId) tab.page = undefined;
+        attached(event.params.sessionId, -1);
+        deliver({ ...event, sessionId: parent });
+        return null;
+      }
+      return event;
+    },
+  };
+}
+
 export function extensionConnection(cdp) {
   const sessions = new Map();
   const attaching = new Set();
@@ -52,7 +227,10 @@ export function extensionConnection(cdp) {
     if (count > 0) sessions.set(sessionId, count);
     else sessions.delete(sessionId);
   };
-  const off = cdp.on((event) => {
+  const synthetic = syntheticAutoAttach(cdp, deliver, attached, () => closed);
+  const off = cdp.on((raw) => {
+    const event = synthetic.event(raw);
+    if (!event) return;
     const tracked = sessions.has(event.sessionId);
     if (!tracked && !browserTargetEvent(event)) return;
     if (
@@ -80,7 +258,7 @@ export function extensionConnection(cdp) {
   const connection = {
     onmessage: null,
     onclose: null,
-    send(text) {
+    async send(text) {
       if (closed) return;
       const { id, method, params, sessionId } = command(text);
       const envelope = { id, ...(sessionId !== undefined ? { sessionId } : {}) };
@@ -88,6 +266,7 @@ export function extensionConnection(cdp) {
         deliver({ ...envelope, error: { code: -32600, message: 'a command needs a method' } });
         return;
       }
+      if (await synthetic.command(envelope, method, params, sessionId)) return;
       const attachment =
         method === 'Target.attachToTarget'
           ? { targetId: params?.targetId, events: new Map() }
@@ -112,6 +291,12 @@ export function extensionConnection(cdp) {
         },
         (error) => {
           if (attachment) attaching.delete(attachment);
+          if (
+            method === 'Target.setAutoAttach' &&
+            sessionId !== undefined &&
+            error.message === NO_AUTO_ATTACH
+          )
+            return deliver({ ...envelope, result: {} });
           deliver({ ...envelope, error: { code: -32000, message: error.message } });
         }
       );
