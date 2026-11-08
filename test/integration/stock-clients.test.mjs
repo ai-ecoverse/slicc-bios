@@ -61,6 +61,8 @@ const holds = [];
 const answers = [];
 const pending = new Map();
 const traffic = [];
+const chromeShots = new Map();
+let readChrome = async () => [];
 const snapshots = new Map();
 let current = '';
 const watched = (id, text, outgoing) => {
@@ -122,6 +124,7 @@ async function step(route, client, name, work) {
     if (took > HELD_MS) {
       holds.push(`${route} ${client} ${name}: ${took} ms`);
       snapshots.set(`held ${client} ${name}`, [...traffic]);
+      chromeShots.set(`held ${client} ${name}`, await readChrome());
     }
   }
 }
@@ -165,11 +168,32 @@ async function bridge(t) {
           const entry = { method: command.method, sessionId: command.sessionId, at: Date.now() };
           window.stockWire.set(command.id, entry);
           window.stockRecent = [...(window.stockRecent ?? []).slice(-59), entry];
+          window.stockChrome = [
+            ...(window.stockChrome ?? []).slice(-79),
+            `> ${command.method} ${String(command.sessionId ?? '').slice(0, 6)}`,
+          ];
           return send(text);
         };
-        this.addEventListener('message', ({ data }) =>
-          window.stockWire.delete(JSON.parse(data).id)
-        );
+        this.addEventListener('message', ({ data }) => {
+          const message = JSON.parse(data);
+          window.stockWire.delete(message.id);
+          const params = message.params ?? {};
+          const info = params.targetInfo;
+          const note = [
+            message.error?.message?.slice(0, 60),
+            info && `${info.type} ${String(info.url).slice(0, 50)}`,
+            params.waitingForDebugger && 'paused',
+            params.context?.name && `ctx ${params.context.name}`,
+            params.frame?.url && `frame ${String(params.frame.url).slice(0, 50)}`,
+            params.url && String(params.url).slice(0, 50),
+          ]
+            .filter(Boolean)
+            .join(' ');
+          window.stockChrome = [
+            ...(window.stockChrome ?? []).slice(-79),
+            `< ${message.method ?? `#${message.id}`} ${String(message.sessionId ?? '').slice(0, 6)} ${note}`.trim(),
+          ];
+        });
       }
     };
     const pending = new Map();
@@ -276,12 +300,15 @@ async function bridge(t) {
     for (const socket of wss.clients) socket.terminate();
     server.close();
   });
+  readChrome = () => seven.evaluate(() => window.stockChrome ?? []).catch(() => []);
   const wire = async () => {
     const now = Date.now();
     const devtools = await seven.evaluate(() => [...window.stockWire.values()]).catch(() => []);
     const devtoolsRecent = await seven.evaluate(() => window.stockRecent ?? []).catch(() => []);
     const line = (entry) => `${entry.method} ${entry.sessionId ?? 'browser'} -${now - entry.at} ms`;
+    const chrome = await seven.evaluate(() => window.stockChrome ?? []).catch(() => []);
     return {
+      chrome,
       unanswered: [...devtools, ...relayed.values()]
         .filter((entry) => now - entry.at > HELD_MS)
         .map(line),
@@ -436,7 +463,11 @@ for (const route of ['devtools', 'extension'])
     });
     await t.test('Playwright', () => playwright(route, endpoint));
     await t.test('Puppeteer', () => puppeteerFlow(route, endpoint));
-    console.log(`STOCK-WIRE ${route} ${JSON.stringify(await opened.wire())}`);
+    const wired = await opened.wire();
+    for (const [name, lines] of chromeShots)
+      console.log(`STOCK-CHROME ${route} at ${name}\n${lines.join('\n')}`);
+    chromeShots.clear();
+    console.log(`STOCK-WIRE ${route} ${JSON.stringify({ unanswered: wired.unanswered })}`);
     for (const [method, lines] of snapshots)
       console.log(`STOCK-TRAFFIC ${route} before ${method}\n${lines.join('\n')}`);
     snapshots.clear();
