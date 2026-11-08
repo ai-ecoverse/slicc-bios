@@ -12,6 +12,8 @@ export const SWITCHED_OFF =
 export const NO_GRANT =
   "EACCES: browser control from this device is off; turn on Browser for it in seven's Linked devices";
 export const NOT_CLI = 'EACCES: only a slicc CLI can drive this browser';
+export const PAIRED_ONLY =
+  "EACCES: a computer linked with slicc open or slicc pair can't drive this browser yet; link it with seven's join URL instead";
 export const PER_DEVICE = 16;
 export const TOO_MANY = 'EMFILE: too many browser connections from this device';
 export const STOPPED = 'ECONNRESET: stopped in seven';
@@ -83,6 +85,7 @@ export function createCdpIn({
   hook,
   allowed,
   on = () => true,
+  pairedOnly = () => false,
   live = null,
   timers = globalThis,
   now = Date.now,
@@ -199,7 +202,7 @@ export function createCdpIn({
   async function serve(link, s) {
     if (link.kind !== 'cli') return s.reset(NOT_CLI);
     if (!on()) return s.reset(SWITCHED_OFF);
-    if (!allowed(link)) return s.reset(NO_GRANT);
+    if (!allowed(link)) return s.reset(pairedOnly(link) ? PAIRED_ONLY : NO_GRANT);
     const key = keyOf(link);
     if ([...open].filter((other) => other.key === key).length >= PER_DEVICE)
       return s.reset(TOO_MANY);

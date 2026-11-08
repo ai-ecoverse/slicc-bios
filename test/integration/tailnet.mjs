@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { fetchReleaseBytes } from './extension-download.mjs';
 
 const run = promisify(execFile);
 
@@ -32,9 +33,9 @@ const TAILSCALE_VERSION = '1.104.1';
 
 async function fetched(url, sha256, file) {
   if (existsSync(file)) return file;
-  const response = await fetch(url, { signal: AbortSignal.timeout(120000) });
-  if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
-  const body = Buffer.from(await response.arrayBuffer());
+  const body = await fetchReleaseBytes(url, {
+    init: { signal: AbortSignal.timeout(120000) },
+  });
   const got = createHash('sha256').update(body).digest('hex');
   if (got !== sha256) throw new Error(`${url}: sha256 ${got}, not the pinned ${sha256}`);
   await writeFile(`${file}.part`, body, { mode: 0o755 });

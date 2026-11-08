@@ -944,7 +944,10 @@ function acceptOpen(link, meta, { seven, sevens, agent, kernel, cdpIn, changed }
   if (meta.kind === 'cdp' && cdpIn) return cdpIn.accept(link, meta);
   if (seven) return sevens.accept(link, meta);
   if (meta.kind === 'agent') {
-    if (!agent?.allowed(link)) return Promise.reject(failure('EACCES'));
+    if (!agent?.allowed(link)) {
+      const text = agent?.refusal?.(link);
+      return text ? { handle: (s) => s.reset(text) } : Promise.reject(failure('EACCES'));
+    }
     return { handle: (s) => agent.handle(link, meta, s) };
   }
   if (meta.kind === 'mounts') {

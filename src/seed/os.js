@@ -1,5 +1,6 @@
 import audio from '@ai-ecoverse/slicc-audio/page';
 import capture from '@ai-ecoverse/slicc-capture/page';
+import { create as createDevices } from '@ai-ecoverse/slicc-devices/page';
 import * as kernelModule from '@ai-ecoverse/slicc-kernel';
 import { createKernelModel } from '@ai-ecoverse/slicc-spectrum/kernel';
 import * as spectrumUi from '@ai-ecoverse/slicc-spectrum/ui';
@@ -57,7 +58,7 @@ import {
   watchWaiting,
 } from './notices.js';
 import { createPackages, globalDir, loadCatalog, watchShadows, writeListing } from './packages.js';
-import { createPairing, takePairing } from './pair.js';
+import { createPairing, PAIRED_CONTROL, takePairing } from './pair.js';
 import { createPolicySync, seedPolicies } from './policy.js';
 import {
   biosHash,
@@ -86,12 +87,14 @@ import {
   capturePrompts,
   captures,
   displayer,
+  KINDS,
   markCaptured,
   openUrl,
   pageRequests,
   plugged,
 } from './requests.js';
 import { entersInFrame, showsSecrets, withSecrets } from './secrets.js';
+import { serialPorts } from './serial.js';
 import { BIOS, home, sharesOrigin } from './site.js';
 import { importSix, retirePreview, said } from './six.js';
 import { installPrompts, keepStorage, onSend } from './storage.js';
@@ -135,6 +138,7 @@ import { count, createUpdates, owners } from './updates.js';
 import { createUserPackages, MODULES as USER_MODULES } from './user.js';
 import {
   addCone,
+  deviceGroups,
   dropProtectedMounts,
   homeSkips,
   kernelSource,
@@ -240,11 +244,13 @@ const allowedRemotely = (link) =>
   (link.mode === 'local' && !link.paired) || Boolean(tray?.controlAllowed(link.id));
 const browserAllowed = (link) =>
   (link.mode === 'local' && !link.paired) || Boolean(tray?.browserAllowed(link.id));
+const pairedOnly = (link) => link.paired === true && !tray?.known(link.id);
 const live = createLive();
 const switches = createSwitches();
 const cdpIn = createCdpIn({
   hook: (options) => control.hook(options),
   allowed: browserAllowed,
+  pairedOnly,
   on: () => remoteBrowser.on(),
   live,
 });
@@ -253,7 +259,11 @@ const kernelPort = kernelPorts({ storage: localStorage, text, write });
 const links = createLinks({
   router: exits,
   labels: labelStore(localStorage),
-  agent: { allowed: allowedRemotely, handle: (link, meta, s) => remote.handle(link, meta, s) },
+  agent: {
+    allowed: allowedRemotely,
+    handle: (link, meta, s) => remote.handle(link, meta, s),
+    refusal: (link) => (pairedOnly(link) ? PAIRED_CONTROL : null),
+  },
   sevens: {
     hello: (link) => followers.hello(link),
     accept: (link, meta) => followers.accept(link, meta),
@@ -419,6 +429,7 @@ const remoteBrowser = switches.add({
   label: SWITCH_LABEL,
   off: () => cdpIn.off(),
 });
+const serial = serialPorts({ create: createDevices, switches, clicks, live });
 const sudo = routeSudo({
   agent: () => owner,
   judges: agentJudges,
@@ -449,7 +460,9 @@ const requests = pageRequests({
       guarded
     ),
     ...plugged(audio, audioPrompts, undefined, guarded),
+    ...serial.handlers,
   },
+  kinds: { ...KINDS, ...serial.kinds },
 });
 let folders = null;
 let owner = null;
@@ -978,6 +991,7 @@ async function own() {
   catalogs = loadCatalog();
   void startTools();
   const cone = await addCone(kernel);
+  await deviceGroups(kernel).catch((error) => console.warn(`device groups: ${error.message}`));
   coneIds = cone && { uid: cone.uid, gid: cone.gid };
   denials.drain();
   await lockLegacy(kernel, { text, write, root }).catch((error) =>
