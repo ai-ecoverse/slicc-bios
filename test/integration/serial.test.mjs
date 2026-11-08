@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { after, test } from 'node:test';
 import { boot, ready, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { shoot } from './shots.mjs';
 
+const PINNED = JSON.parse(
+  readFileSync(new URL('../../src/packages/package.json', import.meta.url), 'utf8')
+).dependencies['@ai-ecoverse/slicc-devices'];
 const chrome = await launch({ tools: false });
 after(() => chrome.close());
 
@@ -165,7 +169,9 @@ async function pressDeep(page, selector) {
 
 test('serial is installed with the base set and its kinds reach slicc-devices through seven’s hook: a typed request opens the chooser at once, and an open port shows a chip whose Close ends a follow read and later writes', async (t) => {
   const page = await seven(t);
-  await run(page, 'serial --help | head -1; echo "help $?"');
+  await run(page, 'serial --version; echo "version $?"; serial --help | head -1; echo "help $?"');
+  await shows(page, 'version 0');
+  assert.match(await screen(page), new RegExp(`\\b${PINNED.replaceAll('.', '\\.')}\\s+version 0`));
   await shows(page, 'serial - access serial ports via Web Serial');
   await shows(page, 'help 0');
   await run(page, 'command -v serial; serial list; echo "none $?"');
