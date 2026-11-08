@@ -186,6 +186,17 @@ const TAB_COMMANDS = new Set([
   'Target.getTargetInfo',
 ]);
 const TAB_FILTER = [{ type: 'tab' }, { type: 'page' }];
+const WIDE = ['tab', 'worker', 'shared_worker', 'service_worker'];
+const DEFAULT_FILTER = [{ type: 'browser', exclude: true }, { type: 'tab', exclude: true }, {}];
+
+export function admits(filter, type) {
+  for (const entry of Array.isArray(filter) ? filter : DEFAULT_FILTER)
+    if (entry?.type === undefined || entry.type === type) return entry?.exclude !== true;
+  return false;
+}
+
+const wide = (params) =>
+  Array.isArray(params?.filter) && WIDE.some((type) => admits(params.filter, type));
 export const TAB_ONLY =
   'slicc: refused: a tab session only takes Target.setAutoAttach, Runtime.runIfWaitingForDebugger and Target.getTargetInfo; send the rest on the page session under it';
 const NAVIGATED = new Set([
@@ -4922,6 +4933,10 @@ class Guard {
   }
 
   async routed(message, was) {
+    if (this.emulatedAutoAttach(message, was)) {
+      this.deliver({ id: message.id, sessionId: message.sessionId, result: {} });
+      return true;
+    }
     if (was?.method === 'Page.captureScreenshot') {
       await this.shotAnswer(message, was);
       return true;
@@ -5072,6 +5087,17 @@ class Guard {
       return this.deliver({ ...message, result: { ...result, cookies } });
     }
     this.deliver(this.withVersionRoute(message, method, result));
+  }
+
+  emulatedAutoAttach(message, was) {
+    const { method, params, sessionId } = was;
+    return (
+      this.route === 'extension' &&
+      method === 'Target.setAutoAttach' &&
+      sessionId !== undefined &&
+      message.error?.message === NO_AUTO_ATTACH &&
+      (params?.filter === undefined || wide(params))
+    );
   }
 
   withVersionRoute(message, method, result) {
@@ -6214,7 +6240,7 @@ function narrowed(message) {
     delete stripped.contentSecurityPolicy;
     return { ...message, params: stripped };
   }
-  if (method === 'Target.setAutoAttach' && params?.autoAttach && Array.isArray(params.filter))
+  if (method === 'Target.setAutoAttach' && params?.autoAttach && wide(params))
     return { ...message, params: { ...params, filter: TAB_FILTER } };
   return message;
 }

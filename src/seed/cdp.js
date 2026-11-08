@@ -1,5 +1,5 @@
 import { EXTENSION_UPDATE, extensionAutomationSupported } from './extension.js';
-import { guardProtected, NO_AUTO_ATTACH, TAB_ONLY } from './guard.js';
+import { admits, guardProtected, NO_AUTO_ATTACH, TAB_ONLY } from './guard.js';
 
 const RUNTIMES = ['extension', 'devtools'];
 
@@ -45,13 +45,6 @@ const DISCOVERED = new Set([
   'Target.targetInfoChanged',
   'Target.targetDestroyed',
 ]);
-const DEFAULT_FILTER = [{ type: 'browser', exclude: true }, { type: 'tab', exclude: true }, {}];
-
-export function admits(filter, type) {
-  for (const entry of Array.isArray(filter) ? filter : DEFAULT_FILTER)
-    if (entry?.type === undefined || entry.type === type) return entry?.exclude !== true;
-  return false;
-}
 
 export function syntheticAutoAttach(cdp, deliver, attached, closed) {
   const state = { on: false, tabs: false, discovering: false, discovery: false, count: 0 };
@@ -291,12 +284,6 @@ export function extensionConnection(cdp) {
         },
         (error) => {
           if (attachment) attaching.delete(attachment);
-          if (
-            method === 'Target.setAutoAttach' &&
-            sessionId !== undefined &&
-            error.message === NO_AUTO_ATTACH
-          )
-            return deliver({ ...envelope, result: {} });
           deliver({ ...envelope, error: { code: -32000, message: error.message } });
         }
       );
