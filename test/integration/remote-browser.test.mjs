@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { after, test } from 'node:test';
 import { boot, ready } from './bios.mjs';
@@ -72,10 +73,15 @@ async function cdpNode({ key, name, mode, kind = 'cli', hello = {} }) {
     return out;
   };
   const certificate =
-    mode === 'remote'
-      ? await RTCPeerConnection.generateCertificate({ name: 'ECDSA', namedCurve: 'P-256' })
-      : null;
+    mode === 'local'
+      ? null
+      : await RTCPeerConnection.generateCertificate({ name: 'ECDSA', namedCurve: 'P-256' });
   const node = { hello: null, streams: new Map(), next: 2, credit: true, pc: null, asked: [] };
+  node.fingerprint = certificate
+    ?.getFingerprints()
+    .find((item) => item.algorithm === 'sha-256')
+    ?.value.replaceAll(':', '')
+    .toLowerCase();
   globalThis.cdpNodes ??= {};
   globalThis.cdpNodes[key] = node;
   const serve = (channel) => {
@@ -89,7 +95,7 @@ async function cdpNode({ key, name, mode, kind = 'cli', hello = {} }) {
             role: 'node',
             name,
             host: key,
-            mode,
+            mode: mode === 'paired' ? 'local' : mode,
             caps: [],
             ...(kind === 'seven' ? { kind: 'seven' } : {}),
             ...hello,
@@ -705,4 +711,80 @@ test('a device never reaches another linked computer’s browser: without the ex
     false,
     JSON.stringify(asked)
   );
+});
+
+async function pairEndpoint(t, page, key) {
+  const token = randomBytes(16).toString('base64url');
+  const posts = [];
+  const server = createServer(async (request, response) => {
+    const cors = {
+      'access-control-allow-origin': request.headers.origin ?? '*',
+      'access-control-allow-methods': 'POST',
+      'access-control-allow-headers': 'content-type',
+      'access-control-allow-private-network': 'true',
+      vary: 'origin',
+    };
+    if (request.method === 'OPTIONS') {
+      response.writeHead(204, cors);
+      return response.end();
+    }
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString() || '{}');
+    posts.push(request.url);
+    if (request.url !== '/slicc/v1/pair' || body.token !== token) {
+      response.writeHead(403, cors);
+      return response.end('{}');
+    }
+    const answer = await page.evaluate(
+      ([key, sdp]) => globalThis.cdpNodes[key].accept(sdp),
+      [key, body.offer]
+    );
+    response.writeHead(200, { ...cors, 'content-type': 'application/json' });
+    response.end(JSON.stringify({ answer, name: 'slicc on paired' }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  return { port: server.address().port, token, posts };
+}
+
+test('a computer linked only with slicc open or slicc pair is told to link with the join URL: its cdp and agent OPENs get the paired-only refusals', async (t) => {
+  const page = await chrome.page(t);
+  await boot(page);
+  await ready(page);
+  await page.evaluate(cdpNode, { key: 'paired', name: 'slicc on paired', mode: 'paired' });
+  const fingerprint = await page.evaluate(() => globalThis.cdpNodes.paired.fingerprint);
+  assert.match(fingerprint, /^[0-9a-f]{64}$/);
+  const { port, token, posts } = await pairEndpoint(t, page, 'paired');
+  const text = `#slicc-pair=${port}.${token}.${fingerprint}`;
+  await model(page, (network, text) => network.pairComputer(text), text);
+  await page.within(30000, () => {
+    const state = document.querySelector('slicc-app').model.network.status().links?.pairing?.state;
+    return state === 'confirm' && state;
+  });
+  await model(page, (network) => network.confirmPairing());
+  await awaitState('the paired node to get seven’s HELLO', async () => {
+    const hello = await page.evaluate(() => globalThis.cdpNodes.paired.hello);
+    return { ok: hello !== null, hello, posts };
+  });
+  const hello = await page.evaluate(() => globalThis.cdpNodes.paired.hello);
+  assert.ok(hello.caps.includes('cdp-in'), JSON.stringify(hello.caps));
+  assert.equal(hello.caps.includes('agent'), false, JSON.stringify(hello.caps));
+
+  const browser = await on(page, 'paired', 'open');
+  assert.deepEqual(await on(page, 'paired', 'answer', browser), {
+    opened: null,
+    reset:
+      "EACCES: a computer linked with slicc open or slicc pair can't drive this browser yet; link it with seven's join URL instead",
+  });
+  const agent = await on(page, 'paired', 'open', { kind: 'agent', op: 'watch' });
+  assert.deepEqual(await on(page, 'paired', 'answer', agent), {
+    opened: null,
+    reset:
+      "EACCES: a computer linked with slicc open or slicc pair can't control the agent yet; link it with seven's join URL instead",
+  });
+  assert.deepEqual(await items(page), []);
 });

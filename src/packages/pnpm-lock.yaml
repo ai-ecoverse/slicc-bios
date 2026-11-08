@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@ai-ecoverse/slicc-audio':
-        specifier: 1.1.6
-        version: 1.1.6
+        specifier: 1.2.0
+        version: 1.2.0
       '@ai-ecoverse/slicc-browsers':
         specifier: 1.20.3
         version: 1.20.3
@@ -44,8 +44,8 @@ importers:
 
 packages:
 
-  '@ai-ecoverse/slicc-audio@1.1.6':
-    resolution: {integrity: sha512-C3isgqwWA0ItGlZAhbi51zzRYKV3d23VHhGNBM6LzDh8Kikd3j7zdcjkzZOydK3JGfOJ22c1mQWjAm/o1wZo0A==}
+  '@ai-ecoverse/slicc-audio@1.2.0':
+    resolution: {integrity: sha512-k+0ZNDz3iPRmx2/3vifMoYFG4yDdHiweLvz4pqoDK/2VPHZJ9/50J+HAQRYjiUFmezpDZVxPShwSc3RyGucJmQ==}
     engines: {node: '>=24', slicc-kernel: '>=1.153.0'}
     hasBin: true
 
@@ -229,7 +229,7 @@ packages:
 
 snapshots:
 
-  '@ai-ecoverse/slicc-audio@1.1.6':
+  '@ai-ecoverse/slicc-audio@1.2.0':
     optionalDependencies:
       '@ai-ecoverse/slicc-ortllama': 1.28.0
     transitivePeerDependencies:
