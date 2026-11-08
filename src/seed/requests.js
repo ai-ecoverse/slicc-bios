@@ -208,7 +208,36 @@ export function pageRequests({
 
 const OPEN = { signal: null, reply: (reply) => reply, done() {} };
 
-export function plugged(hook, prompts, extras = () => ({}), guard = () => null) {
+export function running(hook, extras = () => ({})) {
+  return async (request, guarded, asker) => {
+    const open = guarded ? guarded.open(asker) : { ...OPEN, signal: request.signal };
+    const {
+      failure = () => null,
+      end,
+      ...extra
+    } = extras({
+      ...request,
+      signal: open.signal,
+    });
+    open.ends?.(end);
+    let reply;
+    try {
+      reply = await hook.handle({ ...request, ...extra, signal: open.signal });
+    } catch (error) {
+      open.done();
+      throw failure() ?? error;
+    }
+    const late = failure();
+    if (late) {
+      open.done();
+      throw late;
+    }
+    return open.reply(reply);
+  };
+}
+
+export function plugged(hook, prompts, extras, guard = () => null) {
+  const run = running(hook, extras);
   return Object.fromEntries(
     Object.keys(hook?.kinds ?? {})
       .filter((kind) => Object.hasOwn(prompts, kind))
@@ -219,32 +248,26 @@ export function plugged(hook, prompts, extras = () => ({}), guard = () => null) 
           const guarded = guard(request, prompt);
           if (guarded) await guarded.ask(prompt, gesture);
           else if (prompt) await gesture(request.stamp, prompt, request.signal);
-          const open = guarded ? guarded.open() : { ...OPEN, signal: request.signal };
-          const {
-            failure = () => null,
-            end,
-            ...extra
-          } = extras({
-            ...request,
-            signal: open.signal,
-          });
-          open.ends?.(end);
-          let reply;
-          try {
-            reply = await hook.handle({ ...request, ...extra, signal: open.signal });
-          } catch (error) {
-            open.done();
-            throw failure() ?? error;
-          }
-          const late = failure();
-          if (late) {
-            open.done();
-            throw late;
-          }
-          return open.reply(reply);
+          return run(request, guarded);
         },
       ])
   );
+}
+
+export const YOU = 'you';
+
+export function personal(hook, guard, extras) {
+  const run = running(hook, extras);
+  return async (request) => {
+    const guarded = guard(request, null);
+    guarded.check();
+    try {
+      return { reply: await run(request, guarded, YOU), check: guarded.check };
+    } catch (error) {
+      guarded.check();
+      throw error;
+    }
+  };
 }
 
 export const STOPPED = 'stopped in seven';
@@ -448,7 +471,7 @@ export function captures({
       progress: (line) => request.progress?.(line),
     });
   };
-  const watch = (request, capture) => {
+  const watch = (request, capture, asker) => {
     const local = new AbortController();
     let end = () => false;
     let remove = () => {};
@@ -476,7 +499,7 @@ export function captures({
         kind: capture.kind,
         label: capture.label,
         what: capture.what,
-        asker: who(request.stamp),
+        asker: asker ?? who(request.stamp),
         action: { label: 'Stop', run: () => entry.stop(refused(STOPPED)) },
       });
     }
@@ -500,7 +523,8 @@ export function captures({
     if (!capture) return null;
     return {
       ask: (prompt, gesture) => consent(request, capture, prompt, gesture),
-      open: () => watch(request, capture),
+      check: () => switched(capture),
+      open: (asker) => watch(request, capture, asker),
     };
   };
   guard.off = (what) => {
