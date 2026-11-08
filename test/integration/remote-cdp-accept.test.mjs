@@ -366,30 +366,34 @@ async function exerciseRaw(t, base, { vaultTab, sevenTab, sevenUrl }) {
   assert.ok(names.includes('plainc'), JSON.stringify(names));
   assert.equal(names.includes('vaultc'), false, JSON.stringify(names));
   const navSeven = await browser.call('Page.navigate', { url: sevenUrl }, sessionId);
-  if (!navSeven.error) {
+  if (navSeven.error) {
+    assert.match(navSeven.error.message, /out of reach|refused/i, JSON.stringify(navSeven.error));
+  } else {
     let landed = '';
     const end = Date.now() + 15000;
     for (;;) {
       const answer = await browser.call(
         'Runtime.evaluate',
-        {
-          expression:
-            'location.href + " " + document.title + " " + (document.body?.innerText ?? "").slice(0, 200)',
-          returnByValue: true,
-        },
+        { expression: 'location.href', returnByValue: true },
         sessionId
       );
-      landed = answer.result?.result?.value ?? '';
-      if (
-        /error|refused|slicc|chrome-error|not available/i.test(landed) ||
-        !landed.includes('/os/')
-      )
-        break;
+      landed = answer.error
+        ? `error:${answer.error.message}`
+        : (answer.result?.result?.value ?? '');
+      const leftPlain =
+        landed.startsWith('chrome-error:') ||
+        landed.startsWith('error:') ||
+        (landed !== '' && landed !== 'about:blank' && !landed.startsWith(PLAIN));
+      if (leftPlain) break;
       if (Date.now() >= end) break;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
+    assert.ok(
+      landed.startsWith('chrome-error:') || landed.startsWith('error:'),
+      `Page.navigate to seven never left ${PLAIN} for chrome-error or a refusal; saw ${landed}`
+    );
     assert.equal(
-      /\/os\//.test(landed) && !/error|refused|chrome-error|not available/i.test(landed),
+      landed.includes('/os/') && !landed.startsWith('chrome-error:'),
       false,
       `navigated into seven: ${landed}`
     );
