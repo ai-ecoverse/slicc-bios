@@ -246,11 +246,6 @@ const cdpIn = createCdpIn({
   on: () => remoteBrowser.on(),
   live,
 });
-const remoteBrowser = switches.add({
-  key: SWITCH_KEY,
-  label: SWITCH_LABEL,
-  off: () => cdpIn.off(),
-});
 let followers = null;
 const kernelPort = kernelPorts({ storage: localStorage, text, write });
 const links = createLinks({
@@ -417,6 +412,11 @@ const capturable = Object.fromEntries(
     ['screen', 'Screen'],
   ].map(([key, label]) => [key, switches.add({ key, label, off: () => guarded.off(key) })])
 );
+const remoteBrowser = switches.add({
+  key: SWITCH_KEY,
+  label: SWITCH_LABEL,
+  off: () => cdpIn.off(),
+});
 const sudo = routeSudo({
   agent: () => owner,
   judges: agentJudges,
