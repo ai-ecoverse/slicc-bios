@@ -382,6 +382,7 @@ test('each switch refuses its kind before the agent is asked, ends a live captur
       { key: 'camera', label: 'Camera', on: true },
       { key: 'microphone', label: 'Microphone', on: true },
       { key: 'screen', label: 'Screen', on: true },
+      { key: 'remote-browser', label: 'Browser control from linked devices', on: true },
     ]
   );
   await run(page, 'screencapture -V 60 /tmp/cut.webm; echo "cut $?"');
@@ -439,6 +440,7 @@ test('each switch refuses its kind before the agent is asked, ends a live captur
       ['camera', true],
       ['microphone', false],
       ['screen', false],
+      ['remote-browser', true],
     ]
   );
   await page.evaluate(() => document.querySelector('slicc-app').show('settings'));
@@ -446,6 +448,21 @@ test('each switch refuses its kind before the agent is asked, ends a live captur
   assert.equal(
     await page.evaluate(() => window.deep('[data-surface="switches"] [data-id="screen"]').checked),
     false
+  );
+  assert.deepEqual(
+    await page.evaluate(() =>
+      [...window.deep('[data-surface="switches"]').querySelectorAll('[data-id]')].map((item) => [
+        item.dataset.id,
+        item.textContent.trim(),
+        item.checked,
+      ])
+    ),
+    [
+      ['camera', 'Camera', true],
+      ['microphone', 'Microphone', false],
+      ['screen', 'Screen', false],
+      ['remote-browser', 'Browser control from linked devices', true],
+    ]
   );
   await shoot(page, 'capture-switches');
   await run(page, 'screencapture -x /tmp/still-off.png; echo "still off $?"');

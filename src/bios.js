@@ -145,6 +145,7 @@ await step('seed', async () => {
     'callback.html',
     'callback.js',
     'causes.js',
+    'cdp-in.js',
     'cdp.js',
     'clicks.js',
     'clipboard.js',

@@ -210,6 +210,7 @@ export function linkedBrowsers(links) {
     link.exit.browsers().map((browser) => ({
       runtime: `${link.label}/${browser.id}`,
       seven: browser.seven,
+      local: link.mode === 'local',
       route: { kind: 'link', version: link.peer?.version },
       open: () => link.exit.cdp(browser.id),
     }))
@@ -237,7 +238,7 @@ export function browserHook(
   before = async () => {}
 ) {
   const tabs = new WeakMap();
-  const guard = async (open, browser, route, privateFrames) => {
+  const guard = async (open, browser, route, privateFrames, caller) => {
     await before();
     if (browser && !tabs.has(browser)) {
       const records = new Map();
@@ -253,10 +254,11 @@ export function browserHook(
         browser ? tabs.get(browser) : undefined,
         route,
         privateFrames
-      )
+      ),
+      { caller }
     );
   };
-  return async ({ runtime } = {}) => {
+  return async ({ runtime, caller, here = false } = {}) => {
     const linked = linkedBrowsers(links);
     const extension = globalThis.sliccExtension;
     const hosts = browserHosts(extension);
@@ -266,10 +268,12 @@ export function browserHook(
         const known = [...RUNTIMES, ...linked.map((browser) => browser.runtime)];
         throw new Error(`unknown runtime "${runtime}" (${known.join(', ')})`);
       }
-      return guard(() => found.open(), undefined, found.route);
+      return guard(() => found.open(), undefined, found.route, undefined, caller);
     }
     if (extension && !extensionAutomationSupported(extension)) throw new Error(EXTENSION_UPDATE);
-    const fallback = linked.find((browser) => browser.seven) ?? linked[0];
+    const fallback = here
+      ? linked.find((browser) => browser.seven && browser.local)
+      : (linked.find((browser) => browser.seven) ?? linked[0]);
     const open = runtime ? hosts[runtime] : hosts.extension || hosts.devtools || fallback?.open;
     if (!open) throw new Error(MISSING[runtime ?? 'any']);
     return guard(
@@ -278,7 +282,8 @@ export function browserHook(
       browserRoute(open, hosts, extension, fallback),
       open === hosts.extension && typeof extension.frames === 'function'
         ? (targetId) => extension.frames(Number(targetId))
-        : undefined
+        : undefined,
+      caller
     );
   };
 }

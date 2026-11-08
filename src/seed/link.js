@@ -171,6 +171,7 @@ function stream(streams, id, channel, own, post) {
     receive: (type, payload) => handlers[type](payload),
     fail,
     accepted(info = {}) {
+      if (!streams.has(id)) return;
       state.opened = true;
       send(OPENED, JSON.stringify(info));
     },
@@ -923,7 +924,7 @@ function linkedFolder(live, source, owner) {
   return rivals.length > 1 ? undefined : here;
 }
 
-function greeting(link, { name, kernel, agent, sevens }) {
+function greeting(link, { name, kernel, agent, sevens, cdpIn }) {
   const { mode } = link;
   if (link.kind === 'seven') return { name, mode, ...sevens.hello(link) };
   return {
@@ -934,8 +935,30 @@ function greeting(link, { name, kernel, agent, sevens }) {
       'browsers',
       'mounts',
       ...(agent?.allowed(link) ? ['agent'] : []),
+      ...(cdpIn ? ['cdp-in'] : []),
     ],
   };
+}
+
+function acceptOpen(link, meta, { seven, sevens, agent, kernel, cdpIn, changed }) {
+  if (meta.kind === 'cdp' && cdpIn) return cdpIn.accept(link, meta);
+  if (seven) return sevens.accept(link, meta);
+  if (meta.kind === 'agent') {
+    if (!agent?.allowed(link)) return Promise.reject(failure('EACCES'));
+    return { handle: (s) => agent.handle(link, meta, s) };
+  }
+  if (meta.kind === 'mounts') {
+    link.mounts = mountList(meta.mounts);
+    changed();
+    return null;
+  }
+  if (meta.kind !== 'browsers') {
+    if (meta.kind === 'kernel' && link.mode !== 'local') return Promise.reject(failure('EACCES'));
+    return kernel ? kernelIn(kernel, meta) : Promise.reject(failure('EOPNOTSUPP'));
+  }
+  link.browsers = sharedBrowsers(link.offer.session.peer(), meta.browsers);
+  changed();
+  return null;
 }
 
 function reclaim(links, labels, onLink, label, key) {
@@ -983,6 +1006,7 @@ export function createLinks({
   serveFs = null,
   agent = null,
   sevens = null,
+  cdpIn = null,
   describe = () => ({}),
   labels = labelStore(),
 }) {
@@ -1062,27 +1086,8 @@ export function createLinks({
       link.offer = offerLink({
         pc,
         send,
-        hello: () => greeting(link, { name, kernel, agent, sevens }),
-        accept: (meta) => {
-          if (seven) return sevens.accept(link, meta);
-          if (meta.kind === 'agent') {
-            if (!agent?.allowed(link)) return Promise.reject(failure('EACCES'));
-            return { handle: (s) => agent.handle(link, meta, s) };
-          }
-          if (meta.kind === 'mounts') {
-            link.mounts = mountList(meta.mounts);
-            changed();
-            return null;
-          }
-          if (meta.kind !== 'browsers') {
-            if (meta.kind === 'kernel' && link.mode !== 'local')
-              return Promise.reject(failure('EACCES'));
-            return kernel ? kernelIn(kernel, meta) : Promise.reject(failure('EOPNOTSUPP'));
-          }
-          link.browsers = sharedBrowsers(link.offer.session.peer(), meta.browsers);
-          changed();
-          return null;
-        },
+        hello: () => greeting(link, { name, kernel, agent, sevens, cdpIn }),
+        accept: (meta) => acceptOpen(link, meta, { seven, sevens, agent, kernel, cdpIn, changed }),
         timers,
         onClose: () => {
           if (links.get(key) === link) links.delete(key);
