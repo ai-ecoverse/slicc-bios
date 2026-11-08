@@ -813,6 +813,9 @@ class Guard {
     this.autoAttachments = new Map();
     this.tabSessions = new Set();
     this.initScripts = new Map();
+    this.pageAutoAttach = false;
+    this.decided = new Set();
+    this.deciding = new Map();
     this.casts = new Set();
     this.requests = new Map();
     this.held = new Map();
@@ -2307,6 +2310,7 @@ class Guard {
       void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
     const entry = this.sessions.get(sessionId);
     const targetId = entry?.targetId;
+    this.decide(targetId);
     if (targetId && guardTarget) {
       const known = this.targets.get(targetId) ?? { url: '' };
       this.targets.set(targetId, { ...known, was: true, guarded: true });
@@ -4576,6 +4580,7 @@ class Guard {
   }
 
   shownTarget(message, info, source = message, proof) {
+    if (message.method === 'Target.attachedToTarget') this.decide(info?.targetId);
     if (this.unsafe.has(source) || this.eventError(source)) {
       this.deliver(this.metadataEvent(message, proof), true, source, proof);
       return;
@@ -5581,8 +5586,35 @@ class Guard {
     }
     if (!nav.failed && !inherits(params.url))
       await this.call('Page.navigate', { url: params.url }, nav.session);
+    await this.attachDecided(targetId);
     if (this.finished.has(message) || !this.owns(message)) return;
     this.deliver({ id, ...(sessionId ? { sessionId } : {}), result: answer.result });
+  }
+
+  notePageAutoAttach({ method, params, sessionId }) {
+    if (method !== 'Target.setAutoAttach' || sessionId !== undefined) return;
+    this.pageAutoAttach = params?.autoAttach === true && admits(params.filter, 'page');
+  }
+
+  decide(targetId) {
+    kept(this.decided, targetId);
+    for (const resolve of this.deciding.get(targetId) ?? []) resolve();
+    this.deciding.delete(targetId);
+  }
+
+  attachDecided(targetId) {
+    if (!this.pageAutoAttach || this.decided.has(targetId)) return undefined;
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, NAV_MS);
+      timer.unref?.();
+      this.deciding.set(targetId, [
+        ...(this.deciding.get(targetId) ?? []),
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+      ]);
+    });
   }
 
   async withMainWorld(message) {
@@ -5655,6 +5687,7 @@ class Guard {
     this.commands.set(requestKey(message), message);
     const outgoing = narrowed(await this.withMainWorld(message));
     const { id, method, sessionId } = outgoing;
+    this.notePageAutoAttach(outgoing);
     if (this.finished.has(message) || !this.owns(message)) return;
     if (!(await this.admitContent(message)) || this.departing(message)) return this.refuse(message);
     if (

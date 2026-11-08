@@ -109,10 +109,18 @@ async function bridge(t) {
     extension.once('error', reject);
   });
   t.after(() => extension.close());
+  const relayed = new Map();
+  const recent = [];
   extension.on('message', (data) => {
-    void seven.evaluate((text) => window.stockCdpIn(text), data.toString()).catch(() => false);
+    const text = data.toString();
+    relayed.delete(JSON.parse(text).id);
+    void seven.evaluate((text) => window.stockCdpIn(text), text).catch(() => false);
   });
   await seven.expose('stockCdpOut', (command) => {
+    const entry = { method: command.method, sessionId: command.sessionId, at: Date.now() };
+    relayed.set(command.id, entry);
+    recent.push(entry);
+    if (recent.length > 60) recent.shift();
     if (extension.readyState === 1) extension.send(JSON.stringify(command));
   });
   await seven.send('Page.addScriptToEvaluateOnNewDocument', {
@@ -120,6 +128,25 @@ async function bridge(t) {
   });
   await seven.init(() => {
     globalThis.sliccKernelDebug = true;
+    const Native = window.WebSocket;
+    window.stockWire = new Map();
+    window.WebSocket = class extends Native {
+      constructor(...args) {
+        super(...args);
+        if (!String(args[0]).includes('/devtools/browser/')) return;
+        const send = this.send.bind(this);
+        this.send = (text) => {
+          const command = JSON.parse(text);
+          const entry = { method: command.method, sessionId: command.sessionId, at: Date.now() };
+          window.stockWire.set(command.id, entry);
+          window.stockRecent = [...(window.stockRecent ?? []).slice(-59), entry];
+          return send(text);
+        };
+        this.addEventListener('message', ({ data }) =>
+          window.stockWire.delete(JSON.parse(data).id)
+        );
+      }
+    };
     const pending = new Map();
     const listeners = new Set();
     let next = 0;
@@ -224,7 +251,22 @@ async function bridge(t) {
     for (const socket of wss.clients) socket.terminate();
     server.close();
   });
-  return `ws://127.0.0.1:${server.address().port}`;
+  const wire = async () => {
+    const now = Date.now();
+    const devtools = await seven.evaluate(() => [...window.stockWire.values()]).catch(() => []);
+    const devtoolsRecent = await seven.evaluate(() => window.stockRecent ?? []).catch(() => []);
+    const line = (entry) => `${entry.method} ${entry.sessionId ?? 'browser'} -${now - entry.at} ms`;
+    return {
+      unanswered: [...devtools, ...relayed.values()]
+        .filter((entry) => now - entry.at > HELD_MS)
+        .map(line),
+      recent: [...devtoolsRecent, ...recent]
+        .sort((a, b) => a.at - b.at)
+        .slice(-60)
+        .map(line),
+    };
+  };
+  return { endpoint: `ws://127.0.0.1:${server.address().port}`, wire };
 }
 
 async function playwright(route, endpoint) {
@@ -352,7 +394,8 @@ for (const route of ['devtools', 'extension'])
   test(`stock Playwright and Puppeteer drive an ordinary page through the guard on the ${route} route, and stay out of seven and the vault`, {
     timeout: 10 * 60 * 1000,
   }, async (t) => {
-    const endpoint = `${await bridge(t)}/${route}`;
+    const opened = await bridge(t);
+    const endpoint = `${opened.endpoint}/${route}`;
     t.after(() => {
       const unanswered = [...pending.values()].map(
         (asked) => `${asked.by} unanswered ${asked.method}: ${Date.now() - asked.at} ms`
@@ -365,4 +408,5 @@ for (const route of ['devtools', 'extension'])
     });
     await t.test('Playwright', () => playwright(route, endpoint));
     await t.test('Puppeteer', () => puppeteerFlow(route, endpoint));
+    console.log(`STOCK-WIRE ${route} ${JSON.stringify(await opened.wire())}`);
   });
