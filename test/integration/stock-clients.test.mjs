@@ -30,6 +30,8 @@ const fixture = createServer((req, res) => {
       `<iframe id="frame" src="http://frame.test:${fixture.address().port}/inner"></iframe>`,
       '<title>framed</title>'
     );
+  if (url.pathname === '/framed-same')
+    return html('<iframe id="frame" src="/inner"></iframe>', '<title>framed</title>');
   if (url.pathname === '/inner') return html('<p id="inner">inner</p>', '<title>inner</title>');
   res.writeHead(404);
   res.end();
@@ -381,10 +383,13 @@ async function puppeteerFlow(route, endpoint) {
     );
     await run('popup load', () => popup.waitForFunction(() => document.readyState === 'complete'));
     assert.equal(await popup.title(), 'popup');
-    await run('iframe', () => page.goto(`${ORDINARY}/framed`));
+    const crossSite = route !== 'extension';
+    await run('iframe', () => page.goto(`${ORDINARY}${crossSite ? '/framed' : '/framed-same'}`));
     const frame = await run('iframe frame', async () => {
       for (;;) {
-        const found = page.frames().find((item) => item.url().startsWith(FRAME));
+        const found = page
+          .frames()
+          .find((item) => item.url().startsWith(crossSite ? FRAME : `${ORDINARY}/inner`));
         if (found) return found;
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
