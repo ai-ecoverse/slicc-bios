@@ -1659,11 +1659,21 @@ test('chat in seven answers through the agent worker, Bedrock and the page fetch
         .find((item) => item.kind === 'click')
     );
   };
-  const cancelClick = (id) =>
-    page.evaluate(
+  const cancelClick = async (id) => {
+    await page.evaluate(
       (id) => document.querySelector('slicc-app').model.approvals.decide(id, 'deny'),
       id
     );
+    const since = Date.now();
+    await page.until((since) => {
+      const dialog = window.deep(document, 'slicc-approvals')?.shadowRoot?.querySelector('dialog');
+      if (dialog?.open) {
+        dialog.querySelector('[data-action="close"]')?.click();
+        return false;
+      }
+      return Date.now() - since > 1500;
+    }, since);
+  };
   const asking = agentRun(
     `printf '{"kind":"open.url","url":"%s"}\\n' https://example.test/agent | cat > /dev/embedder; echo "agent open $?"`
   );
