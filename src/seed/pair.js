@@ -4,6 +4,8 @@ import { take } from './handoff.js';
 export const PAIR_KEY = 'slicc-pair';
 export const PAIRED_KEY = 'slicc-os.paired';
 export const PAIR_PATH = '/slicc/v1/pair';
+export const PAIRED_CONTROL =
+  "EACCES: a computer linked with slicc open or slicc pair can't control the agent yet; link it with seven's join URL instead";
 export const SIGNAL_PATH = '/slicc/v1/signal';
 export const FIRST_PORT = 17117;
 export const LAST_PORT = 17126;
