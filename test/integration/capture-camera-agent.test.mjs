@@ -56,9 +56,12 @@ const media = () => {
 async function pressDeep(page, selector) {
   await page.until((selector) => {
     const box = window.deep(selector)?.getBoundingClientRect();
-    return !!box && box.width > 0;
+    if (!box || box.width <= 0) return false;
+    const key = [selector, box.x, box.y, box.width, box.height].join();
+    window.settled =
+      window.settled?.key === key ? { key, polls: window.settled.polls + 1 } : { key, polls: 1 };
+    return window.settled.polls >= 4;
   }, selector);
-  await new Promise((resolve) => setTimeout(resolve, 800));
   const { x, y } = await page.evaluate((selector) => {
     const box = window.deep(selector).getBoundingClientRect();
     return { x: box.x + box.width / 2, y: box.y + box.height / 2 };

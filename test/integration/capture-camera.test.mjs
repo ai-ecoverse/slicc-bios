@@ -65,6 +65,16 @@ const faux = () => {
       { kind: 'audioinput', deviceId: 'mic-1', label: 'Fake Microphone', groupId: 'g' },
     ],
   });
+  window.chunks = 0;
+  const Recorder = MediaRecorder;
+  globalThis.MediaRecorder = class extends Recorder {
+    constructor(...args) {
+      super(...args);
+      this.addEventListener('dataavailable', ({ data }) => {
+        if (data.size) window.chunks += 1;
+      });
+    }
+  };
   window.opened = [];
   window.running = 0;
   Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
@@ -147,9 +157,12 @@ const shaped = (header, name) =>
 async function pressDeep(page, selector) {
   await page.until((selector) => {
     const box = window.deep(selector)?.getBoundingClientRect();
-    return !!box && box.width > 0;
+    if (!box || box.width <= 0) return false;
+    const key = [selector, box.x, box.y, box.width, box.height].join();
+    window.settled =
+      window.settled?.key === key ? { key, polls: window.settled.polls + 1 } : { key, polls: 1 };
+    return window.settled.polls >= 4;
   }, selector);
-  await new Promise((resolve) => setTimeout(resolve, 800));
   const { x, y } = await page.evaluate((selector) => {
     const box = window.deep(selector).getBoundingClientRect();
     return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
@@ -180,6 +193,11 @@ async function pressConfirm(page, which) {
   for (const type of ['mousePressed', 'mouseReleased'])
     await page.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
 }
+
+const recorded = async (page) => {
+  const before = await page.evaluate(() => window.chunks);
+  await page.until((before) => window.chunks > before, before);
+};
 
 const CLICK = 'dialog[data-kind="click"]';
 const STOP = '[data-surface="live"] [data-action="live-act"]';
@@ -259,7 +277,7 @@ test('a camera recording with the microphone asks one click for both, opens them
   assert.equal(opened.length, 1);
   assert.deepEqual(opened[0].constraints, { video: true, audio: true });
   assert.equal(opened[0].active, true);
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await recorded(page);
   await shoot(page, 'camera-live-chip');
   await page.evaluate((selector) => window.deep(selector).click(), STOP);
   await shows(page, 'both 0', 60000);
@@ -302,6 +320,13 @@ test('the Camera and Microphone switches refuse before the agent and end a live 
   });
   assert.match(listed, /video\s+cam-1\s+Fake Camera/);
   assert.match(listed, /audio\s+mic-1\s+Fake Microphone/);
+  await run(
+    page,
+    `exec 3<>/dev/embedder; printf '%s\\n' '{"kind":"audio.record","devices":true}' >&3; cat <&3; echo "mics $?"; exec 3<&-`
+  );
+  await shows(page, 'mics 0');
+  assert.deepEqual(await page.evaluate(() => window.faux.seen), []);
+  assert.equal(await page.evaluate(() => window.prompted), 0);
   assert.equal(await page.evaluate(() => window.items), 0);
 
   await run(page, plain({ type: 'image/png' }, 'camera off'));
@@ -320,14 +345,14 @@ test('the Camera and Microphone switches refuse before the agent and end a live 
     ask({ type: 'video/webm', microphone: true, duration: 60 }, '/tmp/cut.webm', 'cut')
   );
   await page.until(() => window.chips().length === 1 && window.running === 2);
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await recorded(page);
   await turn(page, 'microphone', false);
   await shows(page, 'cut 0', 60000);
   await page.until(() => window.chips().length === 0 && window.running === 0);
 
   await run(page, ask({ type: 'video/webm', duration: 60 }, '/tmp/cut2.webm', 'cut2'));
   await page.until(() => window.chips().length === 1 && window.running === 1);
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await recorded(page);
   await turn(page, 'camera', false);
   await shows(page, 'cut2 0', 60000);
   await page.until(() => window.chips().length === 0 && window.running === 0);

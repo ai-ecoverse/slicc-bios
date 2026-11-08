@@ -303,7 +303,7 @@ export function capturing(kind, options, prompt = null) {
       whats: listing ? [] : ['microphone'],
       picker: false,
       listing,
-      asks: true,
+      asks: !listing,
     };
   }
   if (kind === 'audio.transcribe' && prompt)
@@ -690,7 +690,7 @@ export const audioPrompts = {
   'audio.play': playing,
   'audio.say': (request) => (spoken(request.options) ? null : speaking(request)),
   'audio.voices': () => null,
-  'audio.record': recording,
+  'audio.record': (request) => (request.options?.devices ? null : recording(request)),
   'audio.transcribe': async (request) => {
     if (probe(request.options)) return null;
     if (!BYTES_ONLY.includes(request.options?.engine)) return listening(request);
