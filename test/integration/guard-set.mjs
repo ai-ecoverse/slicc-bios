@@ -744,6 +744,22 @@ export function shared(path, { variants, except = [], group } = {}) {
             current = row;
           },
           debug: (data) => {
+            if (
+              data.side === 'guarded' &&
+              data.calls &&
+              ['C3.tab-worker-leak', 'C3.tab-iframe-leak', 'E7.isolated-foreign.script'].includes(
+                current?.id
+              )
+            )
+              process.stdout.write(
+                `GUARD-CALLS ${path} ${current.id} ${target} ${variant} ${JSON.stringify(
+                  Object.entries(data.calls).map(([name, call]) => [
+                    name,
+                    call?.ok,
+                    String(call?.error?.message ?? '').slice(0, 160),
+                  ])
+                )}\n`
+              );
             if (process.env.GUARD_TRACE)
               trace('debug', JSON.stringify(data).slice(0, Number(process.env.GUARD_TRACE) || 300));
             if (
