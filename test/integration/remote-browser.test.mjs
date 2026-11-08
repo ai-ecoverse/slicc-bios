@@ -232,6 +232,28 @@ const items = (page) =>
       .map(({ id, kind, label, what, asker, action }) => ({ id, kind, label, what, asker, action }))
   );
 
+async function awaitState(what, look, ms = 30000) {
+  const end = Date.now() + ms;
+  for (;;) {
+    const seen = await look();
+    if (seen.ok) return seen;
+    if (Date.now() >= end) assert.fail(`waited ${ms} ms for ${what}; saw ${JSON.stringify(seen)}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+async function holds(what, look, ms) {
+  const start = Date.now();
+  while (Date.now() - start < ms) {
+    const seen = await look();
+    if (!seen.ok)
+      assert.fail(
+        `${what} stopped holding after ${Date.now() - start} ms; saw ${JSON.stringify(seen)}`
+      );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 const setSwitch = (page, value) =>
   page.evaluate(
     (value) => document.querySelector('slicc-app').model.switches.set('remote-browser', value),
@@ -527,15 +549,36 @@ test('a remote CLI over the tray needs its Browser grant; the switch, Stop and r
   await model(page, (network, id) => network.setAccess(id, 'browser', true), device);
 
   slow['Browser.getVersion'] = 3000;
+  const versions = () => extension.sent.filter((method) => method === 'Browser.getVersion').length;
+  const before = versions();
   const opening = await on(page, 'far', 'open');
+  await awaitState(
+    'seven to send the held Browser.getVersion for the opening stream',
+    async () => ({
+      ok: versions() > before,
+      versions: versions(),
+      before,
+      stream: await page.evaluate((id) => {
+        const { opened, reset } = globalThis.cdpNodes.far.streams.get(id);
+        return { opened, reset };
+      }, opening),
+      last: extension.sent.slice(-5),
+    })
+  );
   await model(page, (network, id) => network.setAccess(id, 'browser', false), device);
   assert.deepEqual(await on(page, 'far', 'answer', opening), { opened: null, reset: REVOKED });
   delete slow['Browser.getVersion'];
-  await new Promise((resolve) => setTimeout(resolve, 3500));
-  assert.deepEqual(await items(page), []);
-  assert.equal(
-    await page.evaluate((id) => globalThis.cdpNodes.far.streams.get(id).opened, opening),
-    null
+  await holds(
+    'no chip and no OPENED for the revoked stream while its held version answer arrives',
+    async () => {
+      const list = await items(page);
+      const opened = await page.evaluate(
+        (id) => globalThis.cdpNodes.far.streams.get(id).opened,
+        opening
+      );
+      return { ok: list.length === 0 && opened === null, items: list, opened };
+    },
+    3500
   );
   await model(page, (network, id) => network.setAccess(id, 'browser', true), device);
 
@@ -555,8 +598,14 @@ test('a remote CLI over the tray needs its Browser grant; the switch, Stop and r
   await on(page, 'far', 'end', last);
   await on(page, 'far', 'ended', last);
   const ended = Date.now();
-  await new Promise((resolve) => setTimeout(resolve, 3000));
-  assert.equal((await items(page)).length, 1);
+  await holds(
+    'the chip lingering for 3 s after the END',
+    async () => {
+      const list = await items(page);
+      return { ok: list.length === 1, items: list, since: Date.now() - ended };
+    },
+    3000
+  );
   await page.within(15000, () =>
     document
       .querySelector('slicc-app')
