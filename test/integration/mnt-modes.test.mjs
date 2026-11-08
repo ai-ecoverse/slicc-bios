@@ -78,7 +78,8 @@ test('on a fresh profile /mnt is root’s 0755 and stays so after a cone’s sud
     "grep ' /mnt/picked ' /proc/mounts; stat -c 'point %a %u %g' /mnt/picked; sudo -u cone sh -c 'echo from-cone > /mnt/picked/cone.txt && ls /mnt/picked'; echo cone=$?; sudo -u nobody sh -c 'echo x > /mnt/picked/nobody.txt'; echo nobody=$?; test -e /mnt/picked/nobody.txt || echo no-nobody-file; echo from-root > /mnt/picked/root.txt; echo root=$?",
     'used'
   );
-  assert.match(used, /umask=000/);
+  assert.match(used, /umask=002/);
+  assert.doesNotMatch(used, /umask=000/);
   assert.match(used, /cone=0/);
   assert.match(used, /cone\.txt/);
   assert.match(used, /point 755 1000 1000/);
@@ -86,6 +87,19 @@ test('on a fresh profile /mnt is root’s 0755 and stays so after a cone’s sud
   assert.doesNotMatch(used, /nobody=0/);
   assert.match(used, /no-nobody-file/);
   assert.match(used, /root=0/);
+
+  await page.evaluate(() =>
+    globalThis.sliccAgentSource().users.add({ name: 'cone-2', groups: [] })
+  );
+  const other = await said(
+    page,
+    "id -nG cone-2; sudo -u nobody sh -c 'echo x > /mnt/picked/nobody2.txt'; echo nobody2=$?; test -e /mnt/picked/nobody2.txt || echo still-no-nobody",
+    'other'
+  );
+  assert.match(other, /\bcone\b/);
+  assert.match(other, /Permission denied/);
+  assert.match(other, /nobody2=[1-9]/);
+  assert.match(other, /still-no-nobody/);
   const layout = await said(page, "stat -c 'at %n %a %U %G' /mnt /mnt/x", 'layout');
   assert.match(layout, /at \/mnt 755 root root/);
   assert.match(layout, /at \/mnt\/x 700 root root/);

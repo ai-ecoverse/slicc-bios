@@ -45,7 +45,23 @@ export function mountPoint(kernel, target, user = ROOT) {
 }
 
 export function owned(options = {}, user = ROOT) {
-  return { ...options, uid: String(user.uid), gid: String(user.gid), umask: '000' };
+  return { ...options, uid: String(user.uid), gid: String(user.gid) };
+}
+
+function withoutMask(options = {}) {
+  const rest = { ...options };
+  delete rest.umask;
+  delete rest.fmask;
+  delete rest.dmask;
+  return rest;
+}
+
+export function shared(options = {}, user = ROOT) {
+  return owned({ ...withoutMask(options), umask: '002' }, user);
+}
+
+export function mountOpts(type, options = {}, user = ROOT) {
+  return type === 'fsa' ? shared(options, user) : owned(withoutMask(options), user);
 }
 
 export async function offTheRecord(storage = navigator.storage, memory = performance.memory) {
@@ -163,7 +179,12 @@ function linkedActions(state, update, owner) {
       const target = `/mnt/${source}`;
       const user = owner();
       if (!(await fs.exists(target))) await mountPoint(kernel, target, user);
-      await kernel.mount({ type: 'hostfs', source, target, options: owned({}, user) });
+      await kernel.mount({
+        type: 'hostfs',
+        source,
+        target,
+        options: mountOpts('hostfs', {}, user),
+      });
       await update(await kernel.mounts());
       return target;
     },
@@ -182,6 +203,24 @@ export const NO_PICKER = 'This browser can’t open a folder from this device.';
 export async function pickFolder(scope = globalThis) {
   if (!scope.showDirectoryPicker) throw new Error(NO_PICKER);
   return scope.showDirectoryPicker({ mode: 'readwrite' });
+}
+
+async function restoreMounts({ kernel, fs, storage, secret, owner, update }) {
+  for (const { type, source, target, options } of remembered(storage, secret)) {
+    try {
+      const user = owner();
+      if (!(await fs.exists(target))) await mountPoint(kernel, target, user);
+      await kernel.mount({
+        type,
+        source,
+        target,
+        options: mountOpts(type, options, user),
+      });
+    } catch (error) {
+      console.warn(`${target} was not mounted again: ${error.message}`);
+    }
+  }
+  await update(await kernel.mounts());
 }
 
 export function createFolders({
@@ -330,7 +369,12 @@ export function createFolders({
       if (!(await fs.exists(target))) await mountPoint(kernel, target, user);
       inserting.add(target);
       try {
-        await kernel.mount({ type: 'fsa', source: 'none', target, options: owned({}, user) });
+        await kernel.mount({
+          type: 'fsa',
+          source: 'none',
+          target,
+          options: mountOpts('fsa', {}, user),
+        });
         await kernel.insert(target, handle);
       } finally {
         inserting.delete(target);
@@ -362,17 +406,6 @@ export function createFolders({
       return { ...model, files: port };
     },
     ...linkedActions(() => ({ fs, kernel, table }), update, owner),
-    async restore() {
-      for (const { type, source, target, options } of remembered(storage, secret)) {
-        try {
-          const user = owner();
-          if (!(await fs.exists(target))) await mountPoint(kernel, target, user);
-          await kernel.mount({ type, source, target, options: owned(options, user) });
-        } catch (error) {
-          console.warn(`${target} was not mounted again: ${error.message}`);
-        }
-      }
-      await update(await kernel.mounts());
-    },
+    restore: () => restoreMounts({ kernel, fs, storage, secret, owner, update }),
   };
 }

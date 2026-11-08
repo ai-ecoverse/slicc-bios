@@ -82,11 +82,19 @@ export function kernelSource(kernel, requests) {
   };
   const users = kernel.users;
   if (!users || users.mode === 'off') return { connect };
+  const shareMounts = async (name) => {
+    if (name === 'cone' || !agentFor(name)) return;
+    await kernel.groups.addMember('cone', name);
+  };
   return {
     connect,
     users: {
       mode: users.mode,
-      add: async (asked) => users.add(spec(asked)),
+      add: async (asked) => {
+        const added = await users.add(spec(asked));
+        await shareMounts(asked.name);
+        return added;
+      },
       remove: async (name, options) => users.remove(agentUser(name), options),
       list: () => users.list(),
     },
@@ -102,8 +110,10 @@ export async function deviceGroups(kernel) {
   if (!kernel.users || kernel.users.mode === 'off') return [];
   for (const [group, gid] of Object.entries(DEVICE_GROUPS)) await kernel.groups.add(group, { gid });
   const agents = (await kernel.users.list()).filter((user) => agentFor(user.name));
-  for (const group of DEVICES)
-    for (const user of agents) await kernel.groups.addMember(group, user.name);
+  for (const user of agents) {
+    for (const group of DEVICES) await kernel.groups.addMember(group, user.name);
+    if (user.name !== 'cone') await kernel.groups.addMember('cone', user.name);
+  }
   return agents.map((user) => user.name);
 }
 
