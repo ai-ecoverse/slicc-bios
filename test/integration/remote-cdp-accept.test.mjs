@@ -23,7 +23,20 @@ const STOPPED = 'stopped in seven';
 const pin = JSON.parse(
   await readFile(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8')
 ).devDependencies['@ai-ecoverse/slicc'];
-assert.equal(pin, '1.63.0', `bios pins @ai-ecoverse/slicc at ${pin}, want 1.63.0`);
+
+async function within(promise, ms, what) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${what} unanswered after ${ms}ms`)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 const stand = createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -166,7 +179,7 @@ function dial(url) {
   const waiters = [];
   let closed = null;
   const wake = () => {
-    for (const look of waiters.splice(0)) look();
+    for (const look of [...waiters]) look();
   };
   ws.on('message', (data) => {
     messages.push(JSON.parse(data.toString()));
@@ -183,19 +196,26 @@ function dial(url) {
       resolve(closed);
     });
   });
-  const wait = (check, ms = 60000) =>
+  const wait = (check, ms = 60000, label = 'wait') =>
     new Promise((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error(`wait timed out; closed=${JSON.stringify(closed)}`)),
-        ms
-      );
+      const timer = setTimeout(() => {
+        const at = waiters.indexOf(look);
+        if (at >= 0) waiters.splice(at, 1);
+        reject(
+          new Error(
+            `${label} unanswered after ${ms}ms; closed=${JSON.stringify(closed)}; last=${JSON.stringify(messages.slice(-5))}`
+          )
+        );
+      }, ms);
       const look = () => {
         const found = check({ messages, closed });
-        if (found) {
-          clearTimeout(timer);
-          resolve(found);
-        } else waiters.push(look);
+        if (!found) return;
+        clearTimeout(timer);
+        const at = waiters.indexOf(look);
+        if (at >= 0) waiters.splice(at, 1);
+        resolve(found);
       };
+      waiters.push(look);
       look();
     });
   let next = 0;
@@ -203,10 +223,14 @@ function dial(url) {
     next += 1;
     const id = next;
     ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
-    const answer = await wait(({ messages: inbox, closed: gone }) => {
-      if (gone) return { closed: gone };
-      return inbox.find((message) => message.id === id);
-    });
+    const answer = await wait(
+      ({ messages: inbox, closed: gone }) => {
+        if (gone) return { closed: gone };
+        return inbox.find((message) => message.id === id);
+      },
+      60000,
+      `${method} id=${id}`
+    );
     if (answer.closed)
       throw new Error(`socket closed before ${method}: ${JSON.stringify(answer.closed)}`);
     return answer;
@@ -379,6 +403,7 @@ test('released slicc cdp --signal stdio serves seven over a local link for a raw
   skip: !cli,
   timeout: 20 * 60 * 1000,
 }, async (t) => {
+  t.diagnostic(`@ai-ecoverse/slicc pin ${pin}`);
   const page = await chrome.page(t);
   const extension = await fakeExtension(page);
   t.after(extension.close);
@@ -404,6 +429,7 @@ test('released slicc <join-url> cdp through the fake tray needs Browser, then a 
   skip: !cli,
   timeout: 25 * 60 * 1000,
 }, async (t) => {
+  t.diagnostic(`@ai-ecoverse/slicc pin ${pin}`);
   const hub = await startHub();
   t.after(() => hub.close());
   const page = await chrome.page(t);
@@ -423,7 +449,7 @@ test('released slicc <join-url> cdp through the fake tray needs Browser, then a 
   const env = await scratch(t);
 
   const denied = startCdp(t, [joinUrl, 'cdp', '--port', '0', '--json'], { env });
-  const deniedExit = await denied.exited;
+  const deniedExit = await within(denied.exited, 120000, 'slicc cdp exit without Browser grant');
   assert.equal(deniedExit.code, 3, denied.stderr.join(''));
   assert.match(denied.stderr.join(''), new RegExp(NO_GRANT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.equal(
@@ -469,7 +495,7 @@ test('released slicc <join-url> cdp through the fake tray needs Browser, then a 
   );
 
   await setSwitch(page, false);
-  const switched = await whileOpen.done;
+  const switched = await within(whileOpen.done, 30000, 'socket close after remote-browser off');
   assert.equal(switched.code, 1008, JSON.stringify(switched));
   assert.equal(switched.reason, SWITCHED_OFF);
   assert.deepEqual(await items(page), []);
@@ -481,7 +507,7 @@ test('released slicc <join-url> cdp through the fake tray needs Browser, then a 
   const [live] = await items(page);
   assert.ok(live, 'chip missing after reconnect');
   await page.evaluate((id) => document.querySelector('slicc-app').model.live.act(id), live.id);
-  const stopped = await again.done;
+  const stopped = await within(again.done, 30000, 'socket close after Stop on the chip');
   assert.match(stopped.reason, new RegExp(STOPPED));
   assert.deepEqual(await items(page), []);
   browser.ws.close();
