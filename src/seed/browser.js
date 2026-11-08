@@ -1,4 +1,4 @@
-import { browserHosts } from './cdp.js';
+import { browserOpener } from './cdp.js';
 import { protection } from './guard.js';
 
 export const HOLD = 10000;
@@ -380,13 +380,8 @@ function snapshotFavicon(document, strings) {
   return undefined;
 }
 
-function defaultOpener() {
-  return () => {
-    const { extension, devtools } = browserHosts();
-    const open = extension ?? devtools;
-    if (!open) throw new Error('no browser to drive');
-    return open();
-  };
+function defaultOpener(links) {
+  return browserOpener(links);
 }
 
 class Browser {
@@ -420,7 +415,7 @@ class Browser {
     this.#clock = options.clock ?? globalThis;
     this.#now = options.now ?? (() => Date.now());
     this.#storage = options.storage === undefined ? globalThis.sessionStorage : options.storage;
-    this.#client = pageClient(options.opener ?? defaultOpener(), this.#clock);
+    this.#client = pageClient(options.opener ?? defaultOpener(options.links), this.#clock);
     this.#owned = restore(this.#storage);
     this.#dpr = options.dpr ?? (() => globalThis.devicePixelRatio ?? 1);
     this.#visible = options.visible ?? (() => globalThis.document?.visibilityState !== 'hidden');
@@ -646,7 +641,9 @@ class Browser {
             if (this.#owned.has(info.targetId)) this.#infos.set(info.targetId, info);
           for (const id of [...this.#owned.keys()]) if (!this.#infos.has(id)) this.forget(id);
         },
-        () => this.#infos.clear()
+        () => {
+          for (const id of [...this.#owned.keys()]) this.forget(id);
+        }
       )
       .finally(() => {
         this.#refreshed = this.#now();

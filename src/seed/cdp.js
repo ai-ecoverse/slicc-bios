@@ -228,6 +228,48 @@ function browserRoute(open, hosts, extension, fallback) {
   return open === hosts.devtools ? undefined : fallback?.route;
 }
 
+export function pickBrowserOpen(
+  links,
+  { runtime, here = false, extension = globalThis.sliccExtension } = {}
+) {
+  const linked = linkedBrowsers(links);
+  const hosts = browserHosts(extension);
+  if (runtime && !RUNTIMES.includes(runtime)) {
+    const found = linked.find((browser) => browser.runtime === runtime);
+    if (!found) {
+      const known = [...RUNTIMES, ...linked.map((browser) => browser.runtime)];
+      throw new Error(`unknown runtime "${runtime}" (${known.join(', ')})`);
+    }
+    return {
+      open: () => found.open(),
+      route: found.route,
+      host: undefined,
+      frames: undefined,
+    };
+  }
+  if (extension && !extensionAutomationSupported(extension)) throw new Error(EXTENSION_UPDATE);
+  const fallback = here
+    ? linked.find((browser) => browser.seven && browser.local)
+    : (linked.find((browser) => browser.seven) ?? linked[0]);
+  const open = runtime ? hosts[runtime] : hosts.extension || hosts.devtools || fallback?.open;
+  if (!open) throw new Error(MISSING[runtime ?? 'any']);
+  return {
+    open,
+    route: browserRoute(open, hosts, extension, fallback),
+    host: open === hosts.extension ? extension.cdp : undefined,
+    frames:
+      open === hosts.extension && typeof extension.frames === 'function'
+        ? (targetId) => extension.frames(Number(targetId))
+        : undefined,
+  };
+}
+
+let panelLinks = () => ({ links: new Map() });
+
+export function browserOpener(links, options = {}) {
+  return () => pickBrowserOpen(links ?? panelLinks, options).open();
+}
+
 export function browserHook(
   observe = (connection) => connection,
   links,
@@ -259,36 +301,13 @@ export function browserHook(
     );
   };
   return async ({ runtime, caller, here = false } = {}) => {
-    const linked = linkedBrowsers(links);
-    const extension = globalThis.sliccExtension;
-    const hosts = browserHosts(extension);
-    if (runtime && !RUNTIMES.includes(runtime)) {
-      const found = linked.find((browser) => browser.runtime === runtime);
-      if (!found) {
-        const known = [...RUNTIMES, ...linked.map((browser) => browser.runtime)];
-        throw new Error(`unknown runtime "${runtime}" (${known.join(', ')})`);
-      }
-      return guard(() => found.open(), undefined, found.route, undefined, caller);
-    }
-    if (extension && !extensionAutomationSupported(extension)) throw new Error(EXTENSION_UPDATE);
-    const fallback = here
-      ? linked.find((browser) => browser.seven && browser.local)
-      : (linked.find((browser) => browser.seven) ?? linked[0]);
-    const open = runtime ? hosts[runtime] : hosts.extension || hosts.devtools || fallback?.open;
-    if (!open) throw new Error(MISSING[runtime ?? 'any']);
-    return guard(
-      open,
-      open === hosts.extension ? extension.cdp : undefined,
-      browserRoute(open, hosts, extension, fallback),
-      open === hosts.extension && typeof extension.frames === 'function'
-        ? (targetId) => extension.frames(Number(targetId))
-        : undefined,
-      caller
-    );
+    const picked = pickBrowserOpen(links, { runtime, here });
+    return guard(picked.open, picked.host, picked.route, picked.frames, caller);
   };
 }
 
 export function browserControl({ observe, links, before } = {}) {
+  if (links) panelLinks = links;
   return {
     hook: browserHook(observe, links, undefined, before),
     status: () => ({ via: browserVia(links) }),
