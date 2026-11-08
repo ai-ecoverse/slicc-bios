@@ -57,7 +57,21 @@ function withoutMask(options = {}) {
 }
 
 export function shared(options = {}, user = ROOT) {
-  return { ...owned(withoutMask(options), user), umask: '002' };
+  const { umask, fmask, dmask, ...rest } = options;
+  const keep =
+    fmask !== undefined || dmask !== undefined || (umask !== undefined && umask !== '000');
+  if (keep) {
+    return owned(
+      {
+        ...rest,
+        ...(umask !== undefined && umask !== '000' ? { umask } : {}),
+        ...(fmask !== undefined ? { fmask } : {}),
+        ...(dmask !== undefined ? { dmask } : {}),
+      },
+      user
+    );
+  }
+  return { ...owned(rest, user), umask: '002' };
 }
 
 export function mountOpts(type, options = {}, user = ROOT) {
