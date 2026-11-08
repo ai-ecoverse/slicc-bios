@@ -55,12 +55,24 @@ const media = () => {
 
 async function pressDeep(page, selector) {
   await page.until((selector) => {
-    const box = window.deep(selector)?.getBoundingClientRect();
+    const button = window.deep(selector);
+    const box = button?.getBoundingClientRect();
     if (!box || box.width <= 0) return false;
-    const key = [selector, box.x, box.y, box.width, box.height].join();
-    window.settled =
-      window.settled?.key === key ? { key, polls: window.settled.polls + 1 } : { key, polls: 1 };
-    return window.settled.polls >= 4;
+    let owner = button;
+    while (owner && typeof owner.arming !== 'number')
+      owner = owner.parentElement ?? owner.getRootNode()?.host;
+    const key = [
+      selector,
+      button.disabled,
+      button.textContent,
+      box.x,
+      box.y,
+      box.width,
+      box.height,
+    ].join();
+    const now = performance.now();
+    if (window.settled?.key !== key) window.settled = { key, since: now };
+    return now - window.settled.since >= (owner?.arming ?? 500) + 100;
   }, selector);
   const { x, y } = await page.evaluate((selector) => {
     const box = window.deep(selector).getBoundingClientRect();
