@@ -464,7 +464,7 @@ test('each switch refuses its kind before the agent is asked, ends a live captur
       ['remote-browser', 'Browser control from linked devices', true],
     ]
   );
-  await shoot(page, 'capture-switches');
+  await shoot(page, 'capture-switches', { show: 'settings', target: '[data-section="switches"]' });
   await run(page, 'screencapture -x /tmp/still-off.png; echo "still off $?"');
   await shows(page, 'still off 1');
   assert.deepEqual(page.errors, []);
