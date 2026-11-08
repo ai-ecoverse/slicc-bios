@@ -218,7 +218,7 @@ test('the range check reads the forms the packages use', () => {
 });
 
 const GATED =
-  /^@ai-ecoverse\/(slicc-kernel|slicc-audio|slicc-capture|slicc-cdp|slicc-clipboard|slicc-jsh|mcpcat$|wasi-|wasix-|wasm-|py-)/;
+  /^@ai-ecoverse\/(slicc-kernel|slicc-audio|slicc-capture|slicc-cdp|slicc-clipboard|slicc-devices|slicc-jsh|mcpcat$|wasi-|wasix-|wasm-|py-)/;
 
 async function lockedGated() {
   const found = new Map();
@@ -358,6 +358,7 @@ const BUILDERS = {
   'slicc-audio': 'slicc-audio',
   'slicc-capture': 'slicc-capture',
   'slicc-clipboard': 'slicc-clipboard',
+  'slicc-devices': 'slicc-devices',
   mcpcat: 'mcpcat',
   'wasi-slicc': 'slicc-cli',
   'wasm-tailscale': 'wasm-tailscale',
@@ -437,6 +438,7 @@ test('the base set pins exactly what UI boot and the agent install need, and eve
     '@ai-ecoverse/slicc-audio',
     '@ai-ecoverse/slicc-browsers',
     '@ai-ecoverse/slicc-capture',
+    '@ai-ecoverse/slicc-devices',
     '@ai-ecoverse/slicc-kernel',
     '@ai-ecoverse/slicc-spectrum',
     '@ai-ecoverse/wasi-fnox',
