@@ -70,6 +70,7 @@ import {
 } from './present.js';
 import { installProfile, kernelPorts } from './profile.js';
 import { PYTHON } from './projects.js';
+import { composerCapture } from './recording.js';
 import {
   clearRefusal,
   noteRefusal,
@@ -89,6 +90,7 @@ import {
   markCaptured,
   openUrl,
   pageRequests,
+  personal,
   plugged,
 } from './requests.js';
 import { entersInFrame, showsSecrets, withSecrets } from './secrets.js';
@@ -428,6 +430,11 @@ const remoteBrowser = switches.add({
   off: () => cdpIn.off(),
 });
 const serial = serialPorts({ create: createDevices, switches, clicks, live });
+const displays = displayer();
+const recorder = composerCapture({
+  record: personal(audio, guarded),
+  still: personal(capture, guarded, displays),
+});
 const sudo = routeSudo({
   agent: () => owner,
   judges: agentJudges,
@@ -448,7 +455,7 @@ const requests = pageRequests({
   handlers: {
     'open.url': openUrl(),
     'clipboard.write': clipboardWrite(),
-    ...plugged(capture, { 'capture.screen': capturePrompt }, displayer(), guarded),
+    ...plugged(capture, { 'capture.screen': capturePrompt }, displays, guarded),
     ...plugged(audio, audioPrompts, undefined, guarded),
     ...serial.handlers,
   },
@@ -522,6 +529,7 @@ function base(os) {
     approvals: approving,
     live: live.port,
     switches: switches.port,
+    capture: recorder,
     network,
     browser: browser.port,
     vault: asking.vault,
@@ -1098,6 +1106,7 @@ async function follow() {
     approvals: approving,
     live: live.port,
     switches: switches.port,
+    capture: recorder,
     network: reach.port,
     browser: browser.port,
     vault: asking.vault,
