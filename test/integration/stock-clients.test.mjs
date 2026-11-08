@@ -158,6 +158,7 @@ async function bridge(t) {
     globalThis.sliccKernelDebug = true;
     const Native = window.WebSocket;
     window.stockWire = new Map();
+    window.stockQuiet = new Set();
     window.WebSocket = class extends Native {
       constructor(...args) {
         super(...args);
@@ -168,15 +169,18 @@ async function bridge(t) {
           const entry = { method: command.method, sessionId: command.sessionId, at: Date.now() };
           window.stockWire.set(command.id, entry);
           window.stockRecent = [...(window.stockRecent ?? []).slice(-59), entry];
-          window.stockChrome = [
-            ...(window.stockChrome ?? []).slice(-79),
-            `> ${command.method} ${String(command.sessionId ?? '').slice(0, 6)}`,
-          ];
+          if (command.method === 'Target.getTargets') window.stockQuiet.add(command.id);
+          else
+            window.stockChrome = [
+              ...(window.stockChrome ?? []).slice(-199),
+              `> ${command.method} ${String(command.sessionId ?? '').slice(0, 6)}`,
+            ];
           return send(text);
         };
         this.addEventListener('message', ({ data }) => {
           const message = JSON.parse(data);
           window.stockWire.delete(message.id);
+          if (window.stockQuiet.delete(message.id)) return;
           const params = message.params ?? {};
           const info = params.targetInfo;
           const note = [
@@ -190,7 +194,7 @@ async function bridge(t) {
             .filter(Boolean)
             .join(' ');
           window.stockChrome = [
-            ...(window.stockChrome ?? []).slice(-79),
+            ...(window.stockChrome ?? []).slice(-199),
             `< ${message.method ?? `#${message.id}`} ${String(message.sessionId ?? '').slice(0, 6)} ${note}`.trim(),
           ];
         });
