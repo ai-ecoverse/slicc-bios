@@ -45,6 +45,7 @@ export const SYNC_MS = 200;
 export function syntheticAutoAttach(cdp, deliver, attached, closed, every = SYNC_MS) {
   const state = { on: false, tabs: false, count: 0 };
   const seen = new Set();
+  const refused = new Map();
   const tabs = new Map();
   const parents = new Map();
   let timer;
@@ -89,7 +90,10 @@ export function syntheticAutoAttach(cdp, deliver, attached, closed, every = SYNC
   const adopt = async (info) => {
     seen.add(info.targetId);
     if (!state.tabs) {
-      await attachPage(info).catch(() => seen.delete(info.targetId));
+      await attachPage(info).catch(() => {
+        seen.delete(info.targetId);
+        refused.set(info.targetId, info.url ?? '');
+      });
       return;
     }
     state.count += 1;
@@ -110,6 +114,17 @@ export function syntheticAutoAttach(cdp, deliver, attached, closed, every = SYNC
     });
   };
   const tabOf = (targetId, key = 'pageId') => [...tabs].find(([, tab]) => tab[key] === targetId);
+  const fresh = (info) =>
+    state.on && !seen.has(info.targetId) && refused.get(info.targetId) !== (info.url ?? '');
+  const forget = (live) => {
+    for (const id of refused.keys()) if (!live.has(id)) refused.delete(id);
+    for (const id of [...seen]) {
+      if (live.has(id)) continue;
+      seen.delete(id);
+      const [sessionId, tab] = tabOf(id) ?? [];
+      if (tab) dropTab(sessionId, tab);
+    }
+  };
   const refresh = async () => {
     const { targetInfos = [] } = await cdp.send('Target.getTargets', {});
     const live = new Set();
@@ -118,14 +133,9 @@ export function syntheticAutoAttach(cdp, deliver, attached, closed, every = SYNC
       live.add(info.targetId);
       const [, tab] = tabOf(info.targetId) ?? [];
       if (tab) tab.info = info;
-      else if (state.on && !seen.has(info.targetId)) await adopt(info);
+      else if (fresh(info)) await adopt(info);
     }
-    for (const id of [...seen]) {
-      if (live.has(id)) continue;
-      seen.delete(id);
-      const [sessionId, tab] = tabOf(id) ?? [];
-      if (tab) dropTab(sessionId, tab);
-    }
+    forget(live);
   };
   const sync = () => {
     syncing ??= refresh()
