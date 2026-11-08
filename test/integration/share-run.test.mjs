@@ -92,3 +92,37 @@ test('the first call’s arguments are used for the run and the follow-up', asyn
   assert.equal(await follow.promise, 'kept');
   assert.deepEqual(seen, ['kept', 'kept']);
 });
+
+test('three overlapping calls keep maxActive at 1; the same work unwrapped reaches 2+', async () => {
+  let active = 0;
+  let maxActive = 0;
+  const gate = Promise.withResolvers();
+  async function work() {
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    await gate.promise;
+    active -= 1;
+  }
+  const shared = shareRun(work);
+  void shared();
+  void shared();
+  void shared();
+  assert.equal(maxActive, 1);
+  gate.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  active = 0;
+  maxActive = 0;
+  const bareGate = Promise.withResolvers();
+  async function bare() {
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    await bareGate.promise;
+    active -= 1;
+  }
+  void bare();
+  void bare();
+  void bare();
+  assert.ok(maxActive >= 2);
+  bareGate.resolve();
+});
