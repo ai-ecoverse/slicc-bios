@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { after, test } from 'node:test';
-import { boot, ready } from './bios.mjs';
+import { boot, ready, run, shows } from './bios.mjs';
 import { devtools as boundPort, debuggerUrl, launch } from './chrome.mjs';
 import { extensionOver } from './fake-extension.mjs';
 import { model, startHub } from './fake-hub.mjs';
+import { linkNode } from './linked-node.mjs';
 
 const NO_GRANT =
   "EACCES: browser control from this device is off; turn on Browser for it in seven's Linked devices";
@@ -787,4 +788,54 @@ test('a computer linked only with slicc open or slicc pair is told to link with 
       "EACCES: a computer linked with slicc open or slicc pair can't control the agent yet; link it with seven's join URL instead",
   });
   assert.deepEqual(await items(page), []);
+});
+
+test('with only a linked slicc browser, the Browser panel lists an agent-driven tab and screenshots it', async (t) => {
+  const page = await chrome.page(t);
+  await page.init(() => {
+    globalThis.sliccKernelDebug = true;
+  });
+  await boot(page);
+  await ready(page);
+  await linkNode(t, page, port);
+  await page.until(
+    () => document.querySelector('slicc-app').model.network.status().browser.via === 'link'
+  );
+  chrome.overrides.set(
+    '/panel-link.html',
+    '<!doctype html><title>Panel link</title><h1>Panel through link</h1>'
+  );
+  const target = new URL('/panel-link.html', chrome.url);
+  target.hostname = 'localhost';
+  await run(page, `playwright-cli open ${target.href} && echo opened-$?`);
+  await shows(page, 'opened-0');
+  const tabs = await page
+    .within(
+      30000,
+      (wanted) => {
+        const listed = document
+          .querySelector('slicc-app')
+          .model.browser.list()
+          .filter((tab) => tab.url === wanted);
+        return listed.length > 0 && listed;
+      },
+      target.href
+    )
+    .catch(async (error) => {
+      const seen = await page.evaluate(() => ({
+        via: document.querySelector('slicc-app').model.network.status().browser,
+        tabs: document.querySelector('slicc-app').model.browser.list(),
+        owned: sessionStorage.getItem('slicc-os.browser.tabs'),
+      }));
+      throw new Error(`${error.message}; saw ${JSON.stringify(seen)}`);
+    });
+  assert.equal(tabs[0].url, target.href, JSON.stringify(tabs));
+  const shot = await page
+    .evaluate((id) => document.querySelector('slicc-app').model.browser.screenshot(id), tabs[0].id)
+    .catch((error) => {
+      throw new Error(`screenshot failed: ${error.message}; tab ${JSON.stringify(tabs[0])}`);
+    });
+  assert.match(shot, /^data:image\/jpeg;base64,\/9j\//, shot.slice(0, 64));
+  await run(page, 'playwright-cli close && echo closed-$?');
+  await shows(page, 'closed-0');
 });

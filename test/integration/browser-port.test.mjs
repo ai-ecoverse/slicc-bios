@@ -141,3 +141,126 @@ test('a browser that attests holdsDocuments paints past a listed frame, takes in
   const seen = await screen(page);
   assert.match(seen, /exit 1 after \d+\s+slicc: refused/, seen);
 });
+
+const getTargetsGate = (url) => `(() => {
+  const Real = globalThis.WebSocket;
+  globalThis.__getTargetsMode = 'pass';
+  globalThis.WebSocket = class extends EventTarget {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSING = 2;
+    static CLOSED = 3;
+    constructor(at, protocols) {
+      super();
+      if (at !== ${JSON.stringify(url)}) return new Real(at, protocols);
+      this.real = new Real(at);
+      this.real.onopen = (event) => this.onopen?.(event);
+      this.real.onerror = (event) => this.onerror?.(event);
+      this.real.onclose = (event) => this.onclose?.(event);
+      this.real.onmessage = ({ data }) => this.onmessage?.({ data });
+    }
+    send(text) {
+      const message = JSON.parse(text);
+      if (message.method === 'Target.getTargets' && globalThis.__getTargetsMode === 'fail') {
+        queueMicrotask(() =>
+          this.onmessage?.({
+            data: JSON.stringify({
+              id: message.id,
+              error: { message: 'Target.getTargets timed out' },
+            }),
+          })
+        );
+        return;
+      }
+      if (message.method === 'Target.getTargets' && globalThis.__getTargetsMode === 'empty') {
+        queueMicrotask(() =>
+          this.onmessage?.({
+            data: JSON.stringify({ id: message.id, result: { targetInfos: [] } }),
+          })
+        );
+        return;
+      }
+      this.real.send(text);
+    }
+    close() {
+      this.real.close();
+    }
+  };
+})();`;
+
+test('a failed Target.getTargets keeps owned tabs; a successful listing that omits one forgets it', async (t) => {
+  const page = await chrome.page(t);
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: define(browser) });
+  await page.send('Page.addScriptToEvaluateOnNewDocument', { source: getTargetsGate(browser) });
+  await boot(page);
+  chrome.overrides.set(
+    '/refresh-own.html',
+    '<!doctype html><title>Refresh own</title><h1>Owned through DevTools</h1>'
+  );
+  const target = elsewhere('/refresh-own.html');
+  await run(page, `playwright-cli open ${target} && echo opened-$?`);
+  await shows(page, 'opened-0');
+  const owned = await page
+    .within(
+      30000,
+      (wanted) => {
+        const tabs = document.querySelector('slicc-app').model.browser.list();
+        const match = tabs.find((tab) => tab.url === wanted);
+        const stored = JSON.parse(sessionStorage.getItem('slicc-os.browser.tabs') || '{}');
+        return match && stored[match.id] !== undefined && { id: match.id, stored };
+      },
+      target
+    )
+    .catch(async (error) => {
+      const seen = await page.evaluate(() => ({
+        tabs: document.querySelector('slicc-app').model.browser.list(),
+        stored: sessionStorage.getItem('slicc-os.browser.tabs'),
+      }));
+      throw new Error(`${error.message}; saw ${JSON.stringify(seen)}`);
+    });
+  await page.evaluate(() => {
+    globalThis.__getTargetsMode = 'fail';
+  });
+  const kept = await page
+    .within(
+      15000,
+      (id) => {
+        document.querySelector('slicc-app').model.browser.list();
+        const tabs = document.querySelector('slicc-app').model.browser.list();
+        const stored = JSON.parse(sessionStorage.getItem('slicc-os.browser.tabs') || '{}');
+        return tabs.length === 0 && stored[id] !== undefined && { tabs, stored };
+      },
+      owned.id
+    )
+    .catch(async (error) => {
+      const seen = await page.evaluate(() => ({
+        tabs: document.querySelector('slicc-app').model.browser.list(),
+        stored: sessionStorage.getItem('slicc-os.browser.tabs'),
+        mode: globalThis.__getTargetsMode,
+      }));
+      throw new Error(
+        `transient getTargets failure should keep ownership and clear the panel rows: ${error.message}; saw ${JSON.stringify(seen)}`
+      );
+    });
+  assert.ok(kept.stored[owned.id] !== undefined, JSON.stringify(kept));
+  await page.evaluate(() => {
+    globalThis.__getTargetsMode = 'empty';
+  });
+  const forgotten = await page
+    .within(15000, () => {
+      document.querySelector('slicc-app').model.browser.list();
+      const stored = JSON.parse(sessionStorage.getItem('slicc-os.browser.tabs') || '{}');
+      return Object.keys(stored).length === 0 && stored;
+    })
+    .catch(async (error) => {
+      const seen = await page.evaluate(() => ({
+        tabs: document.querySelector('slicc-app').model.browser.list(),
+        stored: sessionStorage.getItem('slicc-os.browser.tabs'),
+        mode: globalThis.__getTargetsMode,
+      }));
+      throw new Error(
+        `successful getTargets that omits a tab should forget it: ${error.message}; saw ${JSON.stringify(seen)}`
+      );
+    });
+  assert.deepEqual(forgotten, {});
+});

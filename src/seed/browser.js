@@ -641,9 +641,7 @@ class Browser {
             if (this.#owned.has(info.targetId)) this.#infos.set(info.targetId, info);
           for (const id of [...this.#owned.keys()]) if (!this.#infos.has(id)) this.forget(id);
         },
-        () => {
-          for (const id of [...this.#owned.keys()]) this.forget(id);
-        }
+        () => this.#infos.clear()
       )
       .finally(() => {
         this.#refreshed = this.#now();
