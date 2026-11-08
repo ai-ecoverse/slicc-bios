@@ -170,6 +170,24 @@ const STICKY = new Set([
 ]);
 const DEBUGGERS = ['Debugger.', 'DOMDebugger.', 'EventBreakpoints.'];
 const EMULATION = /^Emulation\.(set|add|update|remove)[A-Z]/;
+const DISPLAY = new Set([
+  'Emulation.setFocusEmulationEnabled',
+  'Emulation.setEmulatedMedia',
+  'Emulation.setDeviceMetricsOverride',
+  'Emulation.setTouchEmulationEnabled',
+]);
+const sticky = (method) => STICKY.has(method) || (EMULATION.test(method) && !DISPLAY.has(method));
+const NO_CODE_LINE = /^[ \t]*(?:\/\/[^\r\u2028\u2029]*)?$/;
+const noCode = (source) =>
+  typeof source === 'string' && source.split('\n').every((line) => NO_CODE_LINE.test(line));
+const TAB_COMMANDS = new Set([
+  'Target.setAutoAttach',
+  'Runtime.runIfWaitingForDebugger',
+  'Target.getTargetInfo',
+]);
+const TAB_FILTER = [{ type: 'tab' }, { type: 'page' }];
+export const TAB_ONLY =
+  'slicc: refused: a tab session only takes Target.setAutoAttach, Runtime.runIfWaitingForDebugger and Target.getTargetInfo; send the rest on the page session under it';
 const NAVIGATED = new Set([
   'Page.frameStartedNavigating',
   'Page.frameRequestedNavigation',
@@ -781,6 +799,8 @@ class Guard {
     this.placing = new Map();
     this.placementsPending = new Map();
     this.autoAttachments = new Map();
+    this.tabSessions = new Set();
+    this.initScripts = new Map();
     this.casts = new Set();
     this.requests = new Map();
     this.held = new Map();
@@ -3580,7 +3600,7 @@ class Guard {
     const { method, params = {}, sessionId } = message;
     if (method === 'Target.attachedToTarget') {
       const info = params.targetInfo ?? {};
-      if (await this.privateAttachment(info.targetId, params.sessionId)) return true;
+      if (await this.skippedAttachment(message)) return true;
       if (params.waitingForDebugger) this.waiting.add(params.sessionId);
       if (!info.url && (info.type === 'page' || info.type === 'iframe')) {
         void this.blank(message);
@@ -3620,11 +3640,37 @@ class Guard {
         return true;
       }
       const notified = this.sessions.get(params.sessionId)?.cutNotified;
+      this.tabSessions.delete(params.sessionId);
+      this.initScripts.delete(params.sessionId);
       this.sessions.delete(params.sessionId);
       this.waiting.delete(params.sessionId);
       return !this.shown.delete(params.sessionId) || notified === true;
     }
     return false;
+  }
+
+  async skippedAttachment(message) {
+    const { params } = message;
+    const info = params.targetInfo ?? {};
+    if (await this.privateAttachment(info.targetId, params.sessionId)) return true;
+    if (info.type !== 'tab') return false;
+    if (params.waitingForDebugger) this.waiting.add(params.sessionId);
+    return this.tabAttached(message);
+  }
+
+  tabAttached(message) {
+    const { params, sessionId: parent } = message;
+    const info = params.targetInfo;
+    this.gone.delete(params.sessionId);
+    this.sessions.set(params.sessionId, { targetId: info.targetId, parent });
+    this.tabSessions.add(params.sessionId);
+    if (this.is.url(info.url) || this.is.target(info)) {
+      this.cut(params.sessionId, parent, false);
+      return true;
+    }
+    this.shown.add(params.sessionId);
+    this.shownTarget(message, info);
+    return true;
   }
 
   walked({ method, params = {}, sessionId }) {
@@ -3651,7 +3697,7 @@ class Guard {
   world(sessionId) {
     let world = this.worlds.get(sessionId);
     if (!world) {
-      world = { ids: new Map(), uniques: new Map(), names: new Set() };
+      world = { ids: new Map(), uniques: new Map(), names: new Set(), isolated: new Set() };
       this.worlds.set(sessionId, world);
     }
     return world;
@@ -3681,8 +3727,12 @@ class Guard {
         (auxData?.isDefault === true || (auxData?.type === 'default' && !name));
       if (judgedMain) world.main = uniqueId;
       if (hidden) return true;
+      if (auxData?.type === 'isolated' && !this.is.url(origin)) world.isolated.add(id);
     }
+    if (method === 'Runtime.executionContextDestroyed')
+      this.worlds.get(sessionId)?.isolated.delete(params.executionContextId);
     const world = this.worlds.get(sessionId);
+    if (method === 'Runtime.bindingCalled') return !world?.isolated.has(params.executionContextId);
     if (!world || !method.startsWith('Runtime.')) return false;
     return mentioned(params).some(([kind, value]) => world[kind]?.get(value) === true);
   }
@@ -4889,7 +4939,19 @@ class Guard {
       if (!world.ids.has(result.executionContextId) || hidden)
         world.ids.set(result.executionContextId, hidden);
       if (hidden) world.names.add(EXTENSION_WORLD);
+      else if (world.ids.get(result.executionContextId) === false)
+        world.isolated.add(result.executionContextId);
     }
+    if (
+      was?.method === 'Page.addScriptToEvaluateOnNewDocument' &&
+      typeof result?.identifier === 'string'
+    ) {
+      const scripts = this.initScripts.get(was.sessionId) ?? new Set();
+      scripts.add(result.identifier);
+      this.initScripts.set(was.sessionId, scripts);
+    }
+    if (was?.method === 'Page.removeScriptToEvaluateOnNewDocument')
+      this.initScripts.get(was.sessionId)?.delete(was.params?.identifier);
   }
 
   async settledRecoveryLoad(message) {
@@ -5365,19 +5427,49 @@ class Guard {
     return null;
   }
 
+  async scopedBinding(params, sessionId) {
+    if (sessionId === undefined) return false;
+    const name = params.executionContextName;
+    if (params.executionContextId === undefined)
+      return (
+        typeof name === 'string' &&
+        name !== '' &&
+        name !== EXTENSION_WORLD &&
+        !(await this.learned(sessionId)).names.has(name)
+      );
+    if (name !== undefined) return false;
+    return (await this.learned(sessionId)).isolated.has(params.executionContextId);
+  }
+
+  async later(method, params, sessionId) {
+    if (this.tabSessions.has(sessionId) && !TAB_COMMANDS.has(method)) return TAB_ONLY;
+    if (method === 'Page.addScriptToEvaluateOnNewDocument')
+      return sessionId !== undefined &&
+        noCode(params.source) &&
+        params.worldName !== EXTENSION_WORLD
+        ? null
+        : SCRIPTS;
+    if (method === 'Page.removeScriptToEvaluateOnNewDocument')
+      return this.initScripts.get(sessionId)?.has(params.identifier) ? null : SCRIPTS;
+    if (method === 'Runtime.addBinding')
+      return (await this.scopedBinding(params, sessionId)) ? null : SCRIPTS;
+    return LATER.has(method) ? SCRIPTS : null;
+  }
+
   async check(message) {
     const { method, params = {}, sessionId } = message;
     if (typeof method !== 'string') return null;
     const early = await this.precheck(message);
     if (early) return early;
     if (method.startsWith('Fetch.') && sessionId === undefined) return FETCH;
-    if (LATER.has(method)) return SCRIPTS;
+    const later = await this.later(method, params, sessionId);
+    if (later) return later;
     if (method === 'Page.navigate' && inherits(params.url)) return INHERITED;
     if (FLAT.has(method) && params.flatten !== true) {
       const target = params.targetId !== undefined && (await this.current(params.targetId));
       return target ? PROTECTED : UNFLAT;
     }
-    if (STICKY.has(method) || EMULATION.test(method)) return HEADERS;
+    if (sticky(method)) return HEADERS;
     const debuggerRefusal = await this.debuggerCheck(message);
     if (debuggerRefusal) return debuggerRefusal;
     if (STREAMED.has(method)) return STREAMING;
@@ -5534,7 +5626,7 @@ class Guard {
   async pass(message) {
     if (this.finished.has(message) || !this.owns(message)) return;
     this.commands.set(requestKey(message), message);
-    const outgoing = await this.withMainWorld(message);
+    const outgoing = narrowed(await this.withMainWorld(message));
     const { id, method, sessionId } = outgoing;
     if (this.finished.has(message) || !this.owns(message)) return;
     if (!(await this.admitContent(message)) || this.departing(message)) return this.refuse(message);
@@ -6112,6 +6204,19 @@ class Guard {
     };
     return guarded;
   }
+}
+
+function narrowed(message) {
+  const { method, params } = message;
+  if (method === 'Page.createIsolatedWorld' && params) {
+    const stripped = { ...params };
+    delete stripped.grantUniveralAccess;
+    delete stripped.contentSecurityPolicy;
+    return { ...message, params: stripped };
+  }
+  if (method === 'Target.setAutoAttach' && params?.autoAttach && Array.isArray(params.filter))
+    return { ...message, params: { ...params, filter: TAB_FILTER } };
+  return message;
 }
 
 const framed = (tree) =>
