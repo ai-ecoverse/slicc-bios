@@ -1,4 +1,5 @@
 import { protection } from './guard.js';
+import { switchedOff } from './switches.js';
 
 export const NOT_URL = "that isn't a URL";
 export const SCHEME = 'seven opens only http and https URLs';
@@ -205,7 +206,9 @@ export function pageRequests({
   };
 }
 
-export function plugged(hook, prompts, extras = () => ({})) {
+const OPEN = { signal: null, reply: (reply) => reply, done() {} };
+
+export function plugged(hook, prompts, extras = () => ({}), guard = () => null) {
   return Object.fromEntries(
     Object.keys(hook?.kinds ?? {})
       .filter((kind) => Object.hasOwn(prompts, kind))
@@ -213,20 +216,298 @@ export function plugged(hook, prompts, extras = () => ({})) {
         kind,
         async (request, { gesture }) => {
           const prompt = await prompts[kind](request);
-          if (prompt) await gesture(request.stamp, prompt, request.signal);
-          const { failure = () => null, ...extra } = extras(request);
+          const guarded = guard(request, prompt);
+          if (guarded) await guarded.ask(prompt, gesture);
+          else if (prompt) await gesture(request.stamp, prompt, request.signal);
+          const open = guarded ? guarded.open() : { ...OPEN, signal: request.signal };
+          const {
+            failure = () => null,
+            end,
+            ...extra
+          } = extras({
+            ...request,
+            signal: open.signal,
+          });
+          open.ends?.(end);
           let reply;
           try {
-            reply = await hook.handle({ ...request, ...extra });
+            reply = await hook.handle({ ...request, ...extra, signal: open.signal });
           } catch (error) {
+            open.done();
             throw failure() ?? error;
           }
           const late = failure();
-          if (late) throw late;
-          return reply;
+          if (late) {
+            open.done();
+            throw late;
+          }
+          return open.reply(reply);
         },
       ])
   );
+}
+
+export const STOPPED = 'stopped in seven';
+export const CAPTURE_DENIED = 'the request to capture was denied';
+export const UNANSWERED = "the agent couldn't answer the request to capture";
+export const blocked = (what) => `${what} permission is blocked for this site`;
+
+export function capturing(kind, options, prompt = null) {
+  if (kind === 'capture.screen') {
+    const microphone = Boolean(captureMicrophone(options));
+    return {
+      kind: 'screen',
+      label: CAPTURE_VIDEO.includes(options?.type) ? 'Recording screen' : 'Taking a photo',
+      what: microphone ? 'with microphone' : '',
+      whats: microphone ? ['screen', 'microphone'] : ['screen'],
+      picker: true,
+      listing: false,
+      asks: true,
+    };
+  }
+  if (kind === 'audio.record') {
+    const listing = Boolean(options?.devices);
+    return {
+      kind: 'microphone',
+      label: 'Recording microphone',
+      what: '',
+      whats: listing ? [] : ['microphone'],
+      picker: false,
+      listing,
+      asks: true,
+    };
+  }
+  if (kind === 'audio.transcribe' && prompt)
+    return {
+      kind: 'microphone',
+      label: 'Recording microphone',
+      what: '',
+      whats: ['microphone'],
+      picker: false,
+      listing: false,
+      asks: false,
+    };
+  return null;
+}
+
+export function who(stamp) {
+  const agent = tagsOf(stamp).find((tag) => tag?.kind === 'agent');
+  if (agent)
+    return typeof agent.agentId === 'string' ? agent.agentId.replace(/^cone:/, '') : 'the agent';
+  return typed(stamp) ? 'a terminal' : 'a program';
+}
+
+export function requesterOf(stamp) {
+  const agent = tagsOf(stamp).find((tag) => tag?.kind === 'agent');
+  if (agent && typeof agent.agentId === 'string')
+    return { kind: 'agent', name: who(stamp), agentId: agent.agentId };
+  if (agent) return { kind: 'agent', name: who(stamp) };
+  return typed(stamp)
+    ? { kind: 'user', name: 'you', where: 'a terminal' }
+    : { kind: 'user', name: 'a program' };
+}
+
+export const programOf = (stamp) =>
+  typeof stamp?.argv0 === 'string' && stamp.argv0 ? stamp.argv0 : 'a program';
+
+export function clickFor({ stamp, options }, capture) {
+  if (capture.picker) {
+    const { body } = capturePrompt({ stamp, options });
+    return {
+      title: 'Choose what to share?',
+      body,
+      action: 'Choose what to share',
+      waiting: 'choose what to share',
+      dismissed: CAPTURE_DISMISSED,
+      detail: { what: 'screen', program: programOf(stamp) },
+    };
+  }
+  return {
+    title: 'Allow the microphone?',
+    body: `${asker(stamp)} asks seven to record from your microphone${lasting(options?.seconds)}. The browser asks next whether seven may use it.`,
+    action: 'Allow microphone',
+    waiting: 'allow the microphone',
+    dismissed: 'the request to use the microphone was dismissed',
+    detail: { what: 'microphone', program: programOf(stamp) },
+  };
+}
+
+export async function permissionOf(name, permissions = globalThis.navigator?.permissions) {
+  try {
+    const status = await permissions.query({ name });
+    return status?.state ?? 'prompt';
+  } catch {
+    return 'prompt';
+  }
+}
+
+export async function labelOf(id, media = globalThis.navigator?.mediaDevices) {
+  if (typeof id !== 'string' || !id) return undefined;
+  try {
+    const found = (await media.enumerateDevices()).find((device) => device.deviceId === id);
+    return found?.label || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function deviceOf(kind, options) {
+  if (kind === 'audio.record') return options?.device;
+  const microphone = captureMicrophone(options);
+  return typeof microphone === 'string' ? microphone : undefined;
+}
+
+function watched(body, done) {
+  const reader = body.getReader();
+  return new ReadableStream(
+    {
+      async pull(controller) {
+        let read;
+        try {
+          read = await reader.read();
+        } catch (error) {
+          done();
+          controller.error(error);
+          return;
+        }
+        if (read.done) {
+          done();
+          controller.close();
+        } else controller.enqueue(read.value);
+      },
+      cancel(reason) {
+        done();
+        return reader.cancel(reason);
+      },
+    },
+    { highWaterMark: 0 }
+  );
+}
+
+export function captures({
+  agent = () => null,
+  on = () => true,
+  clicks,
+  live,
+  active = () => globalThis.navigator?.userActivation?.isActive === true,
+  permission = permissionOf,
+  label = labelOf,
+  where = () => undefined,
+}) {
+  const open = new Set();
+  const asked = async ({ kind, options, stamp, signal }) => {
+    const owner = agent();
+    if (typeof owner?.approveCapture !== 'function') return null;
+    const device = await label(deviceOf(kind, options));
+    const place = where(stamp);
+    try {
+      return await owner.approveCapture(
+        { kind, options, stamp, ...(device ? { label: device } : {}) },
+        { signal, ...(place ? { where: place } : {}) }
+      );
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason;
+      if (error?.code !== 'EAGAIN') throw refused(UNANSWERED);
+      return null;
+    }
+  };
+  const needsClick = async ({ stamp }, capture) => {
+    if (capture.listing) return false;
+    if (capture.whats.includes('microphone')) {
+      const state = await permission('microphone');
+      if (state === 'denied') throw refused(blocked('microphone'));
+      if (!capture.picker && state === 'granted') return false;
+    }
+    return !(typed(stamp) && active());
+  };
+  const switched = (capture) => {
+    for (const what of capture.whats) if (!on(what)) throw refused(switchedOff(what));
+  };
+  const consent = async (request, capture, prompt, gesture) => {
+    switched(capture);
+    await asking(request, capture, prompt, gesture);
+    switched(capture);
+  };
+  const asking = async (request, capture, prompt, gesture) => {
+    const { stamp, signal } = request;
+    const answer = capture.asks ? await asked(request) : null;
+    if (signal?.aborted) throw signal.reason;
+    if (answer === null) {
+      if (prompt) await gesture(stamp, prompt, signal);
+      return;
+    }
+    if (answer !== 'once' && answer !== 'always')
+      throw refused((typeof answer?.message === 'string' && answer.message) || CAPTURE_DENIED);
+    if (!(await needsClick(request, capture))) return;
+    await clicks.ask({
+      ...clickFor(request, capture),
+      kind: 'capture',
+      asker: requesterOf(stamp),
+      signal,
+      stamp,
+      progress: (line) => request.progress?.(line),
+    });
+  };
+  const watch = (request, capture) => {
+    const local = new AbortController();
+    let end = () => false;
+    let remove = () => {};
+    let finished = false;
+    const entry = {
+      whats: capture.whats,
+      stop: (reason) => {
+        if (!end()) local.abort(reason);
+      },
+    };
+    const done = () => {
+      if (finished) return;
+      finished = true;
+      open.delete(entry);
+      remove();
+      request.signal?.removeEventListener('abort', forward);
+    };
+    const forward = () => {
+      local.abort(request.signal.reason);
+      done();
+    };
+    if (!capture.listing) {
+      open.add(entry);
+      remove = live.add({
+        kind: capture.kind,
+        label: capture.label,
+        what: capture.what,
+        asker: who(request.stamp),
+        action: { label: 'Stop', run: () => entry.stop(refused(STOPPED)) },
+      });
+    }
+    if (request.signal?.aborted) forward();
+    else request.signal?.addEventListener('abort', forward, { once: true });
+    return {
+      signal: local.signal,
+      ends(given) {
+        if (typeof given === 'function') end = given;
+      },
+      reply: (reply) => {
+        if (reply?.getReader) return watched(reply, done);
+        done();
+        return reply;
+      },
+      done,
+    };
+  };
+  const guard = (request, prompt) => {
+    const capture = capturing(request.kind, request.options, prompt);
+    if (!capture) return null;
+    return {
+      ask: (prompt, gesture) => consent(request, capture, prompt, gesture),
+      open: () => watch(request, capture),
+    };
+  };
+  guard.off = (what) => {
+    for (const entry of [...open])
+      if (entry.whats.includes(what)) entry.stop(refused(switchedOff(what)));
+  };
+  return guard;
 }
 
 export const CAPTURE_VIDEO = ['video/webm', 'video/mp4'];
@@ -366,6 +647,7 @@ export function displayer({
   return ({ options, signal } = {}) => {
     let reason = null;
     let mic = null;
+    let sharing = null;
     const microphone = captureMicrophone(options);
     const userMedia = async (constraints) => {
       const audio = microphone === true ? true : { deviceId: { exact: microphone } };
@@ -423,9 +705,15 @@ export function displayer({
       if (!reason && (first || now)) stop(first ?? now);
       if (reason) throw reason;
       settled = true;
+      sharing = track ?? null;
       return stream;
     };
-    return { display, userMedia, failure: () => reason };
+    const end = () => {
+      if (!sharing || !CAPTURE_VIDEO.includes(options?.type)) return false;
+      sharing.dispatchEvent?.(new Event('ended'));
+      return true;
+    };
+    return { display, userMedia, end, failure: () => reason };
   };
 }
 

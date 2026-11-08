@@ -1645,6 +1645,35 @@ test('chat in seven answers through the agent worker, Bedrock and the page fetch
     };
     return walk(document);
   };
+  const clickItem = async () => {
+    await page.until(() =>
+      document
+        .querySelector('slicc-app')
+        .model.approvals.list()
+        .some((item) => item.kind === 'click')
+    );
+    return page.evaluate(() =>
+      document
+        .querySelector('slicc-app')
+        .model.approvals.list()
+        .find((item) => item.kind === 'click')
+    );
+  };
+  const cancelClick = async (id) => {
+    await page.evaluate(
+      (id) => document.querySelector('slicc-app').model.approvals.decide(id, 'deny'),
+      id
+    );
+    const since = Date.now();
+    await page.until((since) => {
+      const dialog = window.deep(document, 'slicc-approvals')?.shadowRoot?.querySelector('dialog');
+      if (dialog?.open) {
+        dialog.querySelector('[data-action="close"]')?.click();
+        return false;
+      }
+      return Date.now() - since > 1500;
+    }, since);
+  };
   const asking = agentRun(
     `printf '{"kind":"open.url","url":"%s"}\\n' https://example.test/agent | cat > /dev/embedder; echo "agent open $?"`
   );
@@ -1691,22 +1720,17 @@ test('chat in seven answers through the agent worker, Bedrock and the page fetch
   const recording = agentRun(
     `printf '%s\\n' '{"kind":"audio.record","seconds":1}' | cat > /dev/embedder; echo "agent rec $?"`
   );
-  await page.until(
-    (find) => !!new Function(`return (${find})()`)()?.shadowRoot?.querySelector('[data-cancel]'),
-    confirmOf.toString()
-  );
+  const micClick = await clickItem();
+  assert.equal(micClick.action, 'Allow microphone');
   assert.match(
-    await page.evaluate(
-      (find) => new Function(`return (${find})()`)().shadowRoot.textContent,
-      confirmOf.toString()
-    ),
-    /Use the microphone\?.*The agent \S+ asks seven to record from your microphone for up to 1 second\./s
+    micClick.body,
+    /The agent \S+ asks seven to record from your microphone for up to 1 second\./
   );
-  await page.evaluate(
-    (find) =>
-      new Function(`return (${find})()`)().shadowRoot.querySelector('[data-cancel]').click(),
-    confirmOf.toString()
+  assert.equal(
+    await page.evaluate((find) => !new Function(`return (${find})()`)(), confirmOf.toString()),
+    true
   );
+  await cancelClick(micClick.id);
   const refusedMic = await recording;
   assert.match(refusedMic.text, /the request to use the microphone was dismissed/);
   assert.match(refusedMic.text, /agent rec 1/);
@@ -1731,33 +1755,18 @@ test('chat in seven answers through the agent worker, Bedrock and the page fetch
     ],
   ]) {
     await t.test(
-      `the agent is asked before capture ${name}, and Cancel opens nothing`,
+      `the agent's capture ${name} shows the picker's click item, and Cancel opens nothing`,
       async () => {
         const capturing = agentRun(
           `sleep 12; screencapture -V 1 ${flag} /tmp/agent-${name}.webm; echo "agent ${name} $?"`
         );
-        await page.until(
-          (find) =>
-            !!new Function(`return (${find})()`)()?.shadowRoot?.querySelector('[data-cancel]'),
-          confirmOf.toString()
-        );
+        const pick = await clickItem();
         let refusedCapture;
         try {
-          assert.match(
-            await page.evaluate(
-              (find) => new Function(`return (${find})()`)().shadowRoot.textContent,
-              confirmOf.toString()
-            ),
-            expected
-          );
+          assert.equal(pick.action, 'Choose what to share');
+          assert.match(pick.body, expected);
         } finally {
-          await page.evaluate(
-            (find) =>
-              new Function(`return (${find})()`)()
-                .shadowRoot.querySelector('[data-cancel]')
-                .click(),
-            confirmOf.toString()
-          );
+          await cancelClick(pick.id);
           refusedCapture = await capturing;
         }
         assert.match(
