@@ -70,10 +70,37 @@ const faux = () => {
         constraints,
         active: navigator.userActivation.isActive,
         tracks: out.stream.getTracks(),
+        context,
       });
       return out.stream;
     },
   });
+  window.sounding = () => window.mics.at(-1)?.context.state;
+  window.inComposer = (selector) => window.deep(selector, window.composer().shadowRoot);
+  window.targets = {
+    terminal: () => {
+      const { dock } = document.querySelector('slicc-app');
+      const id = dock.api.panels.map((panel) => panel.id).find((id) => id.startsWith('terminal:'));
+      return id ? dock.content(id) : null;
+    },
+    add: () =>
+      window.inComposer('swc-prompt-field')?.shadowRoot?.querySelector('.swc-PromptField-upload'),
+    'record-audio': () =>
+      window.inComposer('swc-popover')?.open
+        ? window.inComposer('[data-action="record-audio"]')
+        : null,
+    stop: () => window.deep('[data-surface="live"] [data-action="live-act"]'),
+  };
+  window.boxes = {};
+  window.steady = (name) => {
+    const target = window.targets[name]();
+    const box = target?.getBoundingClientRect();
+    if (!box || !(box.width > 0) || target.disabled) return null;
+    const seen = JSON.stringify([box.x, box.y, box.width, box.height]);
+    const same = window.boxes[name] === seen;
+    window.boxes[name] = seen;
+    return same ? { x: box.x + box.width / 2, y: box.y + box.height / 2 } : null;
+  };
   window.micsLive = () =>
     window.mics.flatMap((mic) => mic.tracks).filter((track) => track.readyState === 'live').length;
   window.displays = [];
@@ -105,30 +132,18 @@ async function seven(t) {
   return page;
 }
 
-async function press(page, selector, inner) {
-  await page.until(
-    (selector, inner) => {
-      const host = window.deep(selector);
-      const target = inner ? window.deep(inner, host?.shadowRoot ?? document) : host;
-      const box = target?.getBoundingClientRect();
-      return !!box && box.width > 0 && !target.disabled;
-    },
-    selector,
-    inner
-  );
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  const { x, y } = await page.evaluate(
-    (selector, inner) => {
-      const host = window.deep(selector);
-      const target = inner ? window.deep(inner, host.shadowRoot ?? document) : host;
-      const box = target.getBoundingClientRect();
-      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-    },
-    selector,
-    inner
-  );
+async function press(page, name) {
+  await page.evaluate((name) => {
+    delete window.boxes[name];
+  }, name);
+  const { x, y } = await page.until((name) => window.steady(name), name);
   for (const type of ['mousePressed', 'mouseReleased'])
     await page.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
+}
+
+async function gesture(page) {
+  await press(page, 'terminal');
+  await page.until(() => navigator.userActivation.hasBeenActive);
 }
 
 test('the composer’s Record audio records inside the click with no consent and no click item, and the chip’s Stop attaches the recording', async (t) => {
@@ -136,41 +151,14 @@ test('the composer’s Record audio records inside the click with no consent and
   assert.deepEqual(await page.evaluate(() => window.capture().kinds), ['audio']);
   await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
   await page.until(() => !!window.composer()?.shadowRoot);
-  await page.evaluate(() => {
-    window.inComposer = (selector) => window.deep(selector, window.composer().shadowRoot);
-  });
   await page.until(() => !!window.inComposer('swc-prompt-field')?.shadowRoot);
-  const { x, y } = await page.evaluate(() => {
-    const box = window
-      .inComposer('swc-prompt-field')
-      .shadowRoot.querySelector('.swc-PromptField-upload')
-      .getBoundingClientRect();
-    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-  });
-  for (const type of ['mousePressed', 'mouseReleased'])
-    await page.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
-  await page.until(() => {
-    const item = window.inComposer('[data-action="record-audio"]');
-    const box = item?.getBoundingClientRect();
-    return !!box && box.width > 0;
-  });
+  await press(page, 'add');
+  await page.until(() => !!window.targets['record-audio']());
   assert.equal(
     await page.evaluate(() => !!window.inComposer('[data-action="record-video"]')),
     false
   );
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  const item = await page.evaluate(() => {
-    const box = window.inComposer('[data-action="record-audio"]').getBoundingClientRect();
-    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-  });
-  for (const type of ['mousePressed', 'mouseReleased'])
-    await page.send('Input.dispatchMouseEvent', {
-      type,
-      x: item.x,
-      y: item.y,
-      button: 'left',
-      clickCount: 1,
-    });
+  await press(page, 'record-audio');
   await page.until(() => window.chips().some((chip) => chip.startsWith('Recording microphone')));
   assert.match(
     (await page.evaluate(() => window.chips()))[0],
@@ -180,8 +168,9 @@ test('the composer’s Record audio records inside the click with no consent and
     window.mics.map(({ constraints, active }) => ({ constraints, active }))
   );
   assert.deepEqual(mic, { constraints: { audio: true }, active: true });
+  assert.equal(await page.evaluate(() => window.sounding()), 'running');
   await new Promise((resolve) => setTimeout(resolve, 1500));
-  await press(page, '[data-surface="live"] [data-action="live-act"]');
+  await press(page, 'stop');
   await page.until(() =>
     [
       ...window.composer().shadowRoot.querySelectorAll('swc-upload-attachment:not([data-error])'),
@@ -197,6 +186,7 @@ test('the composer’s Record audio records inside the click with no consent and
 
 test('record: stop() finishes a WebM take and releases the microphone, cancel discards, a second record is refused, and the Microphone switch refuses and cuts', async (t) => {
   const page = await seven(t);
+  await gesture(page);
   const take = await page.evaluate(async () => {
     const recording = await window.capture().record('audio');
     const second = await window
@@ -208,11 +198,13 @@ test('record: stop() finishes a WebM take and releases the microphone, cancel di
       );
     await new Promise((resolve) => setTimeout(resolve, 1200));
     const chips = window.chips();
+    const state = window.sounding();
     recording.stop();
     const { blob, mimeType, name, durationMs } = await recording.finished;
     return {
       second,
       chips,
+      state,
       mimeType,
       name,
       durationMs,
@@ -226,6 +218,7 @@ test('record: stop() finishes a WebM take and releases the microphone, cancel di
     message: 'seven is already recording from the composer',
   });
   assert.match(take.chips[0], /^Recording microphone · you/);
+  assert.equal(take.state, 'running');
   assert.equal(take.mimeType, 'audio/webm');
   assert.equal(take.type, 'audio/webm');
   assert.match(take.name, /^recording-\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d\.webm$/);
@@ -296,17 +289,18 @@ test('record: stop() finishes a WebM take and releases the microphone, cancel di
 
 test('still: the picker runs through the screen guards with a Taking a photo chip, seven’s own page is refused, and the Screen switch refuses before the picker', async (t) => {
   const page = await seven(t);
-  const shot = await page.evaluate(async () => {
-    let release;
+  await page.evaluate(() => {
     window.hold = new Promise((resolve) => {
-      release = resolve;
+      window.release = resolve;
     });
-    const pending = window.capture().still();
-    while (!window.chips().length) await new Promise((resolve) => setTimeout(resolve, 50));
+    window.pending = window.capture().still();
+  });
+  await page.until(() => window.chips().length > 0);
+  const shot = await page.evaluate(async () => {
     const chips = window.chips();
     window.hold = null;
-    release();
-    const { blob, mimeType, name } = await pending;
+    window.release();
+    const { blob, mimeType, name } = await window.pending;
     const [display] = window.displays;
     return {
       chips,
@@ -348,23 +342,24 @@ test('still: the picker runs through the screen guards with a Taking a photo chi
   });
   await page.until(() => window.chips().length === 0);
 
-  const cut = await page.evaluate(async () => {
-    let release;
+  await page.evaluate(() => {
     window.hold = new Promise((resolve) => {
-      release = resolve;
+      window.release = resolve;
     });
-    const pending = window
+    window.pending = window
       .capture()
       .still()
       .then(
         () => null,
         (error) => window.failed(error)
       );
-    while (!window.chips().length) await new Promise((resolve) => setTimeout(resolve, 50));
+  });
+  await page.until(() => window.chips().length > 0);
+  const cut = await page.evaluate(() => {
     window.switchTo('screen', false);
     window.hold = null;
-    release();
-    return pending;
+    window.release();
+    return window.pending;
   });
   assert.deepEqual(cut, {
     name: 'NotAllowedError',
