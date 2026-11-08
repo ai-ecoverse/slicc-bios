@@ -18,7 +18,26 @@ const faux = () => {
   globalThis.sliccKernelDebug = true;
   const ids = { usbVendorId: 0x2e8a, usbProductId: 0x0005 };
   const granted = [];
-  window.serialLog = { chooser: [], opened: [], closed: 0, set: [] };
+  window.serialLog = { chooser: [], opened: [], closed: 0, set: [], held: [] };
+  const gates = {};
+  window.hold = (what) => {
+    let release = null;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    gates[what] = { gate, release };
+  };
+  window.release = (what) => {
+    const held = gates[what];
+    delete gates[what];
+    held?.release();
+  };
+  const passed = async (what) => {
+    const held = gates[what];
+    if (!held) return;
+    window.serialLog.held.push(what);
+    await held.gate;
+  };
   class FakePort extends EventTarget {
     constructor(info) {
       super();
@@ -32,6 +51,7 @@ const faux = () => {
     }
     async open(options) {
       if (this.isOpen) throw new DOMException('The port is already open.', 'InvalidStateError');
+      await passed('open');
       this.isOpen = true;
       window.serialLog.opened.push(options);
       let controller = null;
@@ -77,6 +97,7 @@ const faux = () => {
         'Must be handling a user gesture to show a permission request.',
         'SecurityError'
       );
+    await passed('chooser');
     const port = new FakePort(ids);
     granted.push(port);
     return port;
@@ -414,5 +435,90 @@ test('a boot on an /etc/group without dialout adds it with gid 20 and puts every
     page.evaluate(() => globalThis.sliccAgentSource().groups.addMember('dialout', 'scoop-site')),
     /bios refuses the group dialout/
   );
+  assert.deepEqual(page.errors, []);
+});
+
+const serialSwitch = (page, on) =>
+  page.evaluate((on) => document.querySelector('slicc-app').model.switches.set('serial', on), on);
+
+const anyOpen = (page) =>
+  page.evaluate(async () =>
+    (await navigator.serial.getPorts()).some((port) => port.isOpen === true)
+  );
+
+test('turning Serial ports off while a serial open is still in flight closes the port again and refuses the open, and after turning it back on the port is listed closed with nothing buffered', async (t) => {
+  const page = await seven(t);
+  await page.evaluate(() => window.grant());
+  await page.evaluate(() => window.hold('open'));
+  await run(page, 'serial open serial1; echo "pending $?"');
+  await page.until(() => window.serialLog.held.includes('open'));
+  await serialSwitch(page, false);
+  await page.evaluate(() => window.release('open'));
+  await shows(page, "serial: serial ports are off in seven's settings");
+  await shows(page, 'pending 1');
+  assert.equal(await page.evaluate(() => window.serialLog.opened.length), 1);
+  assert.equal(await anyOpen(page), false);
+  assert.equal(await page.evaluate(() => window.feed('stale-bytes')), undefined);
+  assert.deepEqual(await page.evaluate(() => window.chips()), []);
+
+  await serialSwitch(page, true);
+  await run(
+    page,
+    'serial list; serial read serial1 --timeout-ms 200 --hex; echo "read $?"; serial open serial1; serial read serial1 --timeout-ms 300 --hex; echo "fresh $?"'
+  );
+  await shows(page, 'fresh 0');
+  const shown = await screen(page);
+  assert.match(shown, /serial1\s+0x2e8a:0x0005\s+serial: serial1 is not open/);
+  assert.match(shown, /read 1/);
+  assert.match(shown, /fresh 0/);
+  assert.doesNotMatch(shown, /stale|73 74 61 6c 65/);
+  assert.deepEqual(page.errors, []);
+});
+
+test('turning Serial ports off while an agent’s serial request waits on the click, or while the chooser is open, refuses the request with nothing opened or buffered, and the port the browser granted is listed closed once it is back on', async (t) => {
+  const page = await seven(t);
+  const clicked = await started(page, 'serial request; echo "click off $?"', {
+    user: 'cone',
+    tag: AGENT,
+  });
+  await page.until(() => window.clickItems().length === 1);
+  await serialSwitch(page, false);
+  await pressDeep(page, `${CLICK} [data-action="once"]`);
+  const refused = await finished(page, clicked);
+  assert.match(refused.stdout, /click off 1/);
+  assert.match(refused.stderr, /serial: serial ports are off in seven's settings/);
+  assert.deepEqual(await page.evaluate(() => window.serialLog.chooser), []);
+
+  await serialSwitch(page, true);
+  await page.evaluate(() => window.hold('chooser'));
+  const choosing = await started(page, 'serial request; echo "chooser off $?"', {
+    user: 'cone',
+    tag: AGENT,
+  });
+  await page.until(() => window.clickItems().length === 1);
+  await pressDeep(page, `${CLICK} [data-action="once"]`);
+  await page.until(() => window.serialLog.held.includes('chooser'));
+  await serialSwitch(page, false);
+  await page.evaluate(() => window.release('chooser'));
+  const late = await finished(page, choosing);
+  assert.match(late.stdout, /chooser off 1/);
+  assert.match(late.stderr, /serial: serial ports are off in seven's settings/);
+  assert.doesNotMatch(late.stdout, /serial1\s+0x2e8a/);
+  assert.deepEqual(await page.evaluate(() => window.serialLog.chooser), [
+    { active: true, filters: [] },
+  ]);
+  assert.equal(await page.evaluate(() => window.serialLog.opened.length), 0);
+
+  await serialSwitch(page, true);
+  const after = await asCone(
+    page,
+    'serial list; serial read serial1 --timeout-ms 200; echo "read $?"'
+  );
+  assert.match(after.stdout, /^serial1\s+0x2e8a:0x0005$/m);
+  assert.doesNotMatch(after.stdout, /\[open\]/);
+  assert.match(after.stdout, /read 1/);
+  assert.match(after.stderr, /serial: serial1 is not open/);
+  assert.equal(await anyOpen(page), false);
+  assert.deepEqual(await page.evaluate(() => window.chips()), []);
   assert.deepEqual(page.errors, []);
 });
