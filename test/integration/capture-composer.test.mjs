@@ -58,17 +58,24 @@ const faux = () => {
   window.capture = () => document.querySelector('slicc-app').model.capture;
   window.switchTo = (key, on) => document.querySelector('slicc-app').model.switches.set(key, on);
   window.mics = [];
+  window.micCalls = 0;
+  window.micHold = null;
+  window.silent = false;
   Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {
     configurable: true,
     value: async (constraints) => {
+      window.micCalls += 1;
+      const active = navigator.userActivation.isActive;
+      if (window.micHold) await window.micHold;
       const context = new AudioContext();
+      if (window.silent) await context.suspend();
       const tone = context.createOscillator();
       const out = context.createMediaStreamDestination();
       tone.connect(out);
       tone.start();
       window.mics.push({
         constraints,
-        active: navigator.userActivation.isActive,
+        active,
         tracks: out.stream.getTracks(),
         context,
       });
@@ -90,7 +97,45 @@ const faux = () => {
         ? window.inComposer('[data-action="record-audio"]')
         : null,
     stop: () => window.deep('[data-surface="live"] [data-action="live-act"]'),
+    probe: () => document.getElementById('probe'),
   };
+  window.probe = () => {
+    if (document.getElementById('probe')) return;
+    const button = document.createElement('button');
+    button.id = 'probe';
+    button.textContent = 'probe';
+    button.style.cssText =
+      'position:fixed;left:0;bottom:0;width:48px;height:48px;z-index:2147483647';
+    button.addEventListener('click', () => window.onProbe?.());
+    document.body.append(button);
+  };
+  window.call = (what) => {
+    window.called = null;
+    window.onProbe = () => {
+      window.onProbe = null;
+      const port = window.capture();
+      window.called = (what === 'still' ? port.still() : port.record(what)).then(
+        (value) => {
+          window.result = value;
+          return { ok: true };
+        },
+        (error) => ({ error: window.failed(error) })
+      );
+    };
+  };
+  window.held = () => {
+    window.micHold = new Promise((resolve) => {
+      window.micRelease = () => {
+        window.micHold = null;
+        resolve();
+      };
+    });
+  };
+  window.attached = () =>
+    [...window.composer().shadowRoot.querySelectorAll('swc-upload-attachment')].map((each) => ({
+      error: each.hasAttribute('data-error'),
+      text: each.textContent.replace(/\s+/g, ' ').trim(),
+    }));
   window.boxes = {};
   window.steady = (name) => {
     const target = window.targets[name]();
@@ -141,19 +186,47 @@ async function press(page, name) {
     await page.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
 }
 
-async function gesture(page) {
-  await press(page, 'terminal');
-  await page.until(() => navigator.userActivation.hasBeenActive);
+async function clicked(page, what) {
+  await page.evaluate((what) => {
+    window.probe();
+    window.call(what);
+  }, what);
+  await press(page, 'probe');
+  await page.until(() => !!window.called);
 }
+
+const outcome = (page) => page.evaluate(() => window.called);
+
+const failure = (page) =>
+  page.evaluate(() =>
+    window.result.finished.then(
+      () => null,
+      (error) => window.failed(error)
+    )
+  );
+
+async function openMenu(page) {
+  await press(page, 'add');
+  await page.until(() => !!window.targets['record-audio']());
+}
+
+async function chat(page) {
+  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
+  await page.until(() => !!window.composer()?.shadowRoot);
+  await page.until(() => !!window.inComposer('swc-prompt-field')?.shadowRoot);
+}
+
+const OFF = (what) => ({
+  name: 'NotAllowedError',
+  message: `${what} capture is off in seven's settings`,
+});
+const UNCLICKED = { name: 'NotAllowedError', message: 'the composer captures only inside a click' };
 
 test('the composer’s Record audio records inside the click with no consent and no click item, and the chip’s Stop attaches the recording', async (t) => {
   const page = await seven(t);
   assert.deepEqual(await page.evaluate(() => window.capture().kinds), ['audio']);
-  await page.evaluate(() => document.querySelector('slicc-app').show('chat'));
-  await page.until(() => !!window.composer()?.shadowRoot);
-  await page.until(() => !!window.inComposer('swc-prompt-field')?.shadowRoot);
-  await press(page, 'add');
-  await page.until(() => !!window.targets['record-audio']());
+  await chat(page);
+  await openMenu(page);
   assert.equal(
     await page.evaluate(() => !!window.inComposer('[data-action="record-video"]')),
     false
@@ -184,25 +257,38 @@ test('the composer’s Record audio records inside the click with no consent and
   assert.deepEqual(page.errors, []);
 });
 
-test('record: stop() finishes a WebM take and releases the microphone, cancel discards, a second record is refused, and the Microphone switch refuses and cuts', async (t) => {
+test('record: only inside a click; stop() finishes a WebM take and releases the microphone, cancel and an empty take discard, a second record is refused, and the Microphone switch refuses and cuts', async (t) => {
   const page = await seven(t);
-  await gesture(page);
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window
+        .capture()
+        .record('audio')
+        .then(
+          () => null,
+          (error) => window.failed(error)
+        )
+    ),
+    UNCLICKED
+  );
+  assert.equal(await page.evaluate(() => window.micCalls), 0);
+
+  await clicked(page, 'audio');
+  assert.deepEqual(await outcome(page), { ok: true });
+  await page.evaluate(() => {
+    window.first = window.result;
+  });
+  await clicked(page, 'audio');
+  assert.deepEqual(await outcome(page), {
+    error: { name: 'InvalidStateError', message: 'seven is already recording from the composer' },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 1200));
   const take = await page.evaluate(async () => {
-    const recording = await window.capture().record('audio');
-    const second = await window
-      .capture()
-      .record('audio')
-      .then(
-        () => null,
-        (error) => window.failed(error)
-      );
-    await new Promise((resolve) => setTimeout(resolve, 1200));
     const chips = window.chips();
     const state = window.sounding();
-    recording.stop();
-    const { blob, mimeType, name, durationMs } = await recording.finished;
+    window.first.stop();
+    const { blob, mimeType, name, durationMs } = await window.first.finished;
     return {
-      second,
       chips,
       state,
       mimeType,
@@ -212,10 +298,6 @@ test('record: stop() finishes a WebM take and releases the microphone, cancel di
       size: blob.size,
       head: await window.head(blob),
     };
-  });
-  assert.deepEqual(take.second, {
-    name: 'InvalidStateError',
-    message: 'seven is already recording from the composer',
   });
   assert.match(take.chips[0], /^Recording microphone · you/);
   assert.equal(take.state, 'running');
@@ -228,49 +310,43 @@ test('record: stop() finishes a WebM take and releases the microphone, cancel di
   await page.until(() => window.chips().length === 0);
   await page.until(() => window.micsLive() === 0);
 
-  const cancelled = await page.evaluate(async () => {
-    const recording = await window.capture().record('audio');
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    recording.cancel();
-    return recording.finished.then(
-      () => null,
-      (error) => window.failed(error)
-    );
+  await clicked(page, 'audio');
+  assert.deepEqual(await outcome(page), { ok: true });
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await page.evaluate(() => window.result.cancel());
+  assert.deepEqual(await failure(page), {
+    name: 'AbortError',
+    message: 'the recording was cancelled',
   });
-  assert.deepEqual(cancelled, { name: 'AbortError', message: 'the recording was cancelled' });
   await page.until(() => window.chips().length === 0);
   await page.until(() => window.micsLive() === 0);
 
-  const cut = await page.evaluate(async () => {
-    const recording = await window.capture().record('audio');
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    window.switchTo('microphone', false);
-    return recording.finished.then(
-      () => null,
-      (error) => window.failed(error)
-    );
+  await page.evaluate(() => {
+    window.silent = true;
   });
-  assert.deepEqual(cut, {
-    name: 'NotAllowedError',
-    message: "microphone capture is off in seven's settings",
+  await clicked(page, 'audio');
+  assert.deepEqual(await outcome(page), { ok: true });
+  assert.equal(await page.evaluate(() => window.sounding()), 'suspended');
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await page.evaluate(() => window.result.stop());
+  assert.deepEqual(await failure(page), { name: 'AbortError', message: 'nothing was recorded' });
+  await page.evaluate(() => {
+    window.silent = false;
   });
   await page.until(() => window.chips().length === 0);
   await page.until(() => window.micsLive() === 0);
-  const before = await page.evaluate(() => window.mics.length);
-  const refused = await page.evaluate(() =>
-    window
-      .capture()
-      .record('audio')
-      .then(
-        () => null,
-        (error) => window.failed(error)
-      )
-  );
-  assert.deepEqual(refused, {
-    name: 'NotAllowedError',
-    message: "microphone capture is off in seven's settings",
-  });
-  assert.equal(await page.evaluate(() => window.mics.length), before);
+
+  await clicked(page, 'audio');
+  assert.deepEqual(await outcome(page), { ok: true });
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await page.evaluate(() => window.switchTo('microphone', false));
+  assert.deepEqual(await failure(page), OFF('microphone'));
+  await page.until(() => window.chips().length === 0);
+  await page.until(() => window.micsLive() === 0);
+  const before = await page.evaluate(() => window.micCalls);
+  await clicked(page, 'audio');
+  assert.deepEqual(await outcome(page), { error: OFF('microphone') });
+  assert.equal(await page.evaluate(() => window.micCalls), before);
   const video = await page.evaluate(() =>
     window
       .capture()
@@ -287,32 +363,94 @@ test('record: stop() finishes a WebM take and releases the microphone, cancel di
   assert.deepEqual(page.errors, []);
 });
 
-test('still: the picker runs through the screen guards with a Taking a photo chip, seven’s own page is refused, and the Screen switch refuses before the picker', async (t) => {
+test('in the composer, Stop or Microphone off while the browser’s microphone prompt is open ends the take at once with nothing attached, the late stream is stopped, and Record audio works again', async (t) => {
   const page = await seven(t);
+  await chat(page);
+  await page.evaluate(() => window.held());
+  await openMenu(page);
+  await press(page, 'record-audio');
+  await page.until(() => window.chips().length === 1 && window.micCalls === 1);
+  await press(page, 'stop');
+  await page.until(() => window.chips().length === 0);
+  await page.until(() => window.composer().recording === null);
+  assert.equal(await page.evaluate(() => window.mics.length), 0);
+  assert.deepEqual(await page.evaluate(() => window.attached()), []);
+  await page.evaluate(() => window.micRelease());
+  await page.until(() => window.mics.length === 1 && window.micsLive() === 0);
+  assert.deepEqual(await page.evaluate(() => window.attached()), []);
+
+  await openMenu(page);
+  await press(page, 'record-audio');
+  await page.until(() => window.chips().some((chip) => chip.startsWith('Recording microphone')));
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  await press(page, 'stop');
+  await page.until(() =>
+    window
+      .attached()
+      .some(
+        (each) => !each.error && /recording-\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d\.webm/.test(each.text)
+      )
+  );
+  await page.until(() => window.chips().length === 0 && window.micsLive() === 0);
+
+  await page.evaluate(() => window.held());
+  await openMenu(page);
+  await press(page, 'record-audio');
+  await page.until(() => window.chips().length === 1 && window.micCalls === 3);
+  await page.evaluate(() => window.switchTo('microphone', false));
+  await page.until(() => window.chips().length === 0);
+  await page.until(() => window.attached().filter((each) => each.error).length === 1);
+  assert.equal(await page.evaluate(() => window.mics.length), 2);
+  await page.evaluate(() => window.micRelease());
+  await page.until(() => window.mics.length === 3 && window.micsLive() === 0);
+  assert.deepEqual(await page.evaluate(() => window.asked), []);
+  assert.deepEqual(await page.evaluate(() => window.clickItems()), []);
+  assert.deepEqual(page.errors, []);
+});
+
+test('still: only inside a click; the picker runs through the screen guards with a Taking a photo chip, seven’s own page is refused, and the Screen switch refuses and cuts', async (t) => {
+  const page = await seven(t);
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window
+        .capture()
+        .still()
+        .then(
+          () => null,
+          (error) => window.failed(error)
+        )
+    ),
+    UNCLICKED
+  );
+  assert.equal(await page.evaluate(() => window.displays.length), 0);
+
   await page.evaluate(() => {
     window.hold = new Promise((resolve) => {
       window.release = resolve;
     });
-    window.pending = window.capture().still();
   });
+  await clicked(page, 'still');
   await page.until(() => window.chips().length > 0);
-  const shot = await page.evaluate(async () => {
-    const chips = window.chips();
+  const chips = await page.evaluate(() => window.chips());
+  await page.evaluate(() => {
     window.hold = null;
     window.release();
-    const { blob, mimeType, name } = await window.pending;
+  });
+  assert.deepEqual(await outcome(page), { ok: true });
+  const shot = await page.evaluate(async () => {
+    const { blob, mimeType, name } = window.result;
     const [display] = window.displays;
     return {
-      chips,
       mimeType,
       name,
       type: blob.type,
       head: await window.head(blob),
       constraints: display.constraints,
+      active: display.active,
       ended: display.track.readyState,
     };
   });
-  assert.match(shot.chips[0], /^Taking a photo · you/);
+  assert.match(chips[0], /^Taking a photo · you/);
   assert.equal(shot.mimeType, 'image/png');
   assert.equal(shot.type, 'image/png');
   assert.match(shot.name, /^screenshot-\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d\.png$/);
@@ -321,24 +459,20 @@ test('still: the picker runs through the screen guards with a Taking a photo chi
   assert.equal(shot.constraints.surfaceSwitching, 'exclude');
   assert.equal(shot.constraints.preferCurrentTab, false);
   assert.equal(shot.constraints.audio, false);
+  assert.equal(shot.active, true);
   assert.equal(shot.ended, 'ended');
   await page.until(() => window.chips().length === 0);
 
-  const own = await page.evaluate(async () => {
+  await page.evaluate(() => {
     window.handle = { handle: 'slicc-seven', origin: location.origin };
-    const error = await window
-      .capture()
-      .still()
-      .then(
-        () => null,
-        (error) => window.failed(error)
-      );
-    window.handle = { handle: 'ordinary', origin: 'https://example.test' };
-    return { error, ended: window.displays.at(-1).track.readyState };
   });
-  assert.deepEqual(own, {
+  await clicked(page, 'still');
+  assert.deepEqual(await outcome(page), {
     error: { name: 'NotAllowedError', message: "seven doesn't capture its own pages or the vault" },
-    ended: 'ended',
+  });
+  assert.equal(await page.evaluate(() => window.displays.at(-1).track.readyState), 'ended');
+  await page.evaluate(() => {
+    window.handle = { handle: 'ordinary', origin: 'https://example.test' };
   });
   await page.until(() => window.chips().length === 0);
 
@@ -346,40 +480,20 @@ test('still: the picker runs through the screen guards with a Taking a photo chi
     window.hold = new Promise((resolve) => {
       window.release = resolve;
     });
-    window.pending = window
-      .capture()
-      .still()
-      .then(
-        () => null,
-        (error) => window.failed(error)
-      );
   });
+  await clicked(page, 'still');
   await page.until(() => window.chips().length > 0);
-  const cut = await page.evaluate(() => {
-    window.switchTo('screen', false);
+  await page.evaluate(() => window.switchTo('screen', false));
+  assert.deepEqual(await outcome(page), { error: OFF('screen') });
+  await page.until(() => window.chips().length === 0);
+  await page.evaluate(() => {
     window.hold = null;
     window.release();
-    return window.pending;
   });
-  assert.deepEqual(cut, {
-    name: 'NotAllowedError',
-    message: "screen capture is off in seven's settings",
-  });
-  await page.until(() => window.chips().length === 0);
+  await page.until(() => window.displays.at(-1).track.readyState === 'ended');
   const before = await page.evaluate(() => window.displays.length);
-  const refused = await page.evaluate(() =>
-    window
-      .capture()
-      .still()
-      .then(
-        () => null,
-        (error) => window.failed(error)
-      )
-  );
-  assert.deepEqual(refused, {
-    name: 'NotAllowedError',
-    message: "screen capture is off in seven's settings",
-  });
+  await clicked(page, 'still');
+  assert.deepEqual(await outcome(page), { error: OFF('screen') });
   assert.equal(await page.evaluate(() => window.displays.length), before);
   assert.deepEqual(await page.evaluate(() => window.asked), []);
   assert.deepEqual(await page.evaluate(() => window.clickItems()), []);

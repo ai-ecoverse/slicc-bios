@@ -209,8 +209,7 @@ export function pageRequests({
 const OPEN = { signal: null, reply: (reply) => reply, done() {} };
 
 export function running(hook, extras = () => ({})) {
-  return async (request, guarded, asker) => {
-    const open = guarded ? guarded.open(asker) : { ...OPEN, signal: request.signal };
+  return async (request, open) => {
     const {
       failure = () => null,
       end,
@@ -248,7 +247,7 @@ export function plugged(hook, prompts, extras, guard = () => null) {
           const guarded = guard(request, prompt);
           if (guarded) await guarded.ask(prompt, gesture);
           else if (prompt) await gesture(request.stamp, prompt, request.signal);
-          return run(request, guarded);
+          return run(request, guarded ? guarded.open() : { ...OPEN, signal: request.signal });
         },
       ])
   );
@@ -261,12 +260,39 @@ export function personal(hook, guard, extras) {
   return async (request) => {
     const guarded = guard(request, null);
     guarded.check();
-    try {
-      return { reply: await run(request, guarded, YOU), check: guarded.check };
-    } catch (error) {
-      guarded.check();
-      throw error;
-    }
+    const open = guarded.open(YOU);
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const fail = (error) => {
+        try {
+          guarded.check();
+        } catch (off) {
+          reject(off);
+          return;
+        }
+        reject(error);
+      };
+      const cut = () => {
+        settled = true;
+        open.done();
+        fail(new DOMException(open.signal.reason?.message ?? STOPPED, 'AbortError'));
+      };
+      open.signal.addEventListener('abort', cut, { once: true });
+      run(request, open).then(
+        (reply) => {
+          open.signal.removeEventListener('abort', cut);
+          if (settled) {
+            reply?.cancel?.();
+            return;
+          }
+          resolve({ reply, check: guarded.check });
+        },
+        (error) => {
+          open.signal.removeEventListener('abort', cut);
+          if (!settled) fail(error);
+        }
+      );
+    });
   };
 }
 
