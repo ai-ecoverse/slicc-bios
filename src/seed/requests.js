@@ -178,6 +178,8 @@ export function openUrl({
 export const KINDS = {
   'open.url': {},
   'capture.screen': {},
+  'capture.camera': {},
+  'capture.devices': {},
   'clipboard.write': {},
   'audio.play': {},
   'audio.say': {},
@@ -251,8 +253,35 @@ export const STOPPED = 'stopped in seven';
 export const CAPTURE_DENIED = 'the request to capture was denied';
 export const UNANSWERED = "the agent couldn't answer the request to capture";
 export const blocked = (what) => `${what} permission is blocked for this site`;
+export const CAMERA_REFUSED = "seven doesn't answer this camera request";
+export const CAMERA_DISMISSED = 'the request to use the camera was dismissed';
+export const CAMERA_LATE = 'nobody answered the request to use the camera within 60 s';
+const PERMISSIONS = ['camera', 'microphone'];
 
 export function capturing(kind, options, prompt = null) {
+  if (kind === 'capture.camera') {
+    cameraDevice(options);
+    const microphone = Boolean(captureMicrophone(options));
+    return {
+      kind: 'camera',
+      label: CAPTURE_VIDEO.includes(options?.type) ? 'Recording camera' : 'Taking a photo',
+      what: microphone ? 'with microphone' : '',
+      whats: microphone ? ['camera', 'microphone'] : ['camera'],
+      picker: false,
+      listing: false,
+      asks: true,
+    };
+  }
+  if (kind === 'capture.devices')
+    return {
+      kind: 'camera',
+      label: '',
+      what: '',
+      whats: [],
+      picker: false,
+      listing: true,
+      asks: false,
+    };
   if (kind === 'capture.screen') {
     const microphone = Boolean(captureMicrophone(options));
     return {
@@ -322,6 +351,18 @@ export function clickFor({ stamp, options }, capture) {
       detail: { what: 'screen', program: programOf(stamp) },
     };
   }
+  if (capture.kind === 'camera') {
+    const both = capture.whats.includes('microphone') ? 'camera and microphone' : 'camera';
+    const { body } = cameraPrompt({ stamp, options });
+    return {
+      title: `Allow the ${both}?`,
+      body: `${body} The browser asks next whether seven may use ${both === 'camera' ? 'it' : 'them'}.`,
+      action: `Allow ${both}`,
+      waiting: `allow the ${both}`,
+      dismissed: CAMERA_DISMISSED,
+      detail: { what: 'camera', program: programOf(stamp) },
+    };
+  }
   return {
     title: 'Allow the microphone?',
     body: `${asker(stamp)} asks seven to record from your microphone${lasting(options?.seconds)}. The browser asks next whether seven may use it.`,
@@ -352,7 +393,7 @@ export async function labelOf(id, media = globalThis.navigator?.mediaDevices) {
 }
 
 function deviceOf(kind, options) {
-  if (kind === 'audio.record') return options?.device;
+  if (kind === 'audio.record' || kind === 'capture.camera') return options?.device;
   const microphone = captureMicrophone(options);
   return typeof microphone === 'string' ? microphone : undefined;
 }
@@ -413,11 +454,13 @@ export function captures({
   };
   const needsClick = async ({ stamp }, capture) => {
     if (capture.listing) return false;
-    if (capture.whats.includes('microphone')) {
-      const state = await permission('microphone');
-      if (state === 'denied') throw refused(blocked('microphone'));
-      if (!capture.picker && state === 'granted') return false;
+    let granted = !capture.picker;
+    for (const what of capture.whats.filter((what) => PERMISSIONS.includes(what))) {
+      const state = await permission(what);
+      if (state === 'denied') throw refused(blocked(what));
+      if (state !== 'granted') granted = false;
     }
+    if (granted) return false;
     return !(typed(stamp) && active());
   };
   const switched = (capture) => {
@@ -503,6 +546,7 @@ export function captures({
       open: () => watch(request, capture),
     };
   };
+  guard.on = on;
   guard.off = (what) => {
     for (const entry of [...open])
       if (entry.whats.includes(what)) entry.stop(refused(switchedOff(what)));
@@ -515,14 +559,55 @@ export const CAPTURE_VIDEO = ['video/webm', 'video/mp4'];
 export const captureSound = (options) =>
   CAPTURE_VIDEO.includes(options?.type) && options?.system === true;
 
+const DEVICE_ID = /^[\w+/=.-]+$/;
+
 export function captureMicrophone(options) {
   if (!CAPTURE_VIDEO.includes(options?.type)) return false;
   const microphone = options?.microphone;
   if (microphone === undefined || microphone === false) return false;
-  if (microphone === true || (typeof microphone === 'string' && /^[\w+/=.-]+$/.test(microphone)))
+  if (microphone === true || (typeof microphone === 'string' && DEVICE_ID.test(microphone)))
     return microphone;
   throw refused("seven doesn't answer this microphone request");
 }
+
+export function cameraDevice(options) {
+  const device = options?.device;
+  if (device === undefined) return undefined;
+  if (typeof device === 'string' && DEVICE_ID.test(device)) return device;
+  throw refused(CAMERA_REFUSED);
+}
+
+export const heard = (microphone) =>
+  microphone === true ? true : { deviceId: { exact: microphone } };
+
+export function cameraPrompt({ stamp, options }) {
+  if (!CAPTURE_VIDEO.includes(options?.type))
+    return {
+      title: 'Take a photo?',
+      body: `${asker(stamp)} asks seven to take a photo with your camera.`,
+      action: 'Take photo',
+      cancel: 'Cancel',
+      variant: 'confirmation',
+      dismissed: CAMERA_DISMISSED,
+      late: CAMERA_LATE,
+    };
+  const both = captureMicrophone(options) ? 'camera and microphone' : 'camera';
+  return {
+    title: `Record the ${both}?`,
+    body: `${asker(stamp)} asks seven to record from your ${both}${lasting(options?.duration)}.`,
+    action: 'Record',
+    cancel: 'Cancel',
+    variant: 'confirmation',
+    dismissed: CAMERA_DISMISSED,
+    late: CAMERA_LATE,
+  };
+}
+
+export const capturePrompts = {
+  'capture.screen': capturePrompt,
+  'capture.camera': cameraPrompt,
+  'capture.devices': () => null,
+};
 
 export function capturePrompt({ stamp, options }) {
   const sound = captureSound(options) ? ' and its sound' : '';
@@ -650,7 +735,7 @@ export function displayer({
     let sharing = null;
     const microphone = captureMicrophone(options);
     const userMedia = async (constraints) => {
-      const audio = microphone === true ? true : { deviceId: { exact: microphone } };
+      const audio = heard(microphone);
       if (
         !microphone ||
         constraints?.video !== false ||
@@ -716,6 +801,87 @@ export function displayer({
     return { display, userMedia, end, failure: () => reason };
   };
 }
+
+const plain = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
+const positive = (value) => typeof value === 'number' && Number.isFinite(value) && value > 0;
+const SIZES = ['width', 'height', 'frameRate'];
+
+const sized = (value) =>
+  positive(value) ||
+  (plain(value) &&
+    Object.keys(value).length === 1 &&
+    (positive(value.ideal) || positive(value.exact)));
+
+export function cameraVideo(video, device) {
+  if (video === true) return device === undefined;
+  if (!plain(video)) return false;
+  const { deviceId, ...rest } = video;
+  if (!Object.entries(rest).every(([key, value]) => SIZES.includes(key) && sized(value)))
+    return false;
+  if (device === undefined) return deviceId === undefined;
+  return plain(deviceId) && Object.keys(deviceId).length === 1 && deviceId.exact === device;
+}
+
+function copied(value) {
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return null;
+  }
+}
+
+export function cameraAsked(asked, options) {
+  const device = cameraDevice(options);
+  const microphone = captureMicrophone(options);
+  const constraints = copied(asked);
+  if (
+    !plain(constraints) ||
+    Object.keys(constraints).some((key) => key !== 'audio' && key !== 'video') ||
+    !cameraVideo(constraints.video, device) ||
+    JSON.stringify(constraints.audio ?? false) !==
+      JSON.stringify(microphone ? heard(microphone) : false)
+  )
+    throw refused(CAMERA_REFUSED);
+  return { constraints, whats: microphone ? ['camera', 'microphone'] : ['camera'] };
+}
+
+export function cameraman({
+  media = () => globalThis.navigator?.mediaDevices,
+  on = () => true,
+} = {}) {
+  return ({ options, signal } = {}) => {
+    let used = false;
+    let sharing = null;
+    const userMedia = async (asked) => {
+      if (used) throw refused(CAMERA_REFUSED);
+      const { constraints, whats } = cameraAsked(asked, options);
+      used = true;
+      if (signal?.aborted) throw signal.reason;
+      for (const what of whats) if (!on(what)) throw refused(switchedOff(what));
+      const devices = media();
+      if (typeof devices?.getUserMedia !== 'function')
+        throw new DOMException(
+          'camera capture is not supported in this browser',
+          'NotSupportedError'
+        );
+      const stream = await devices.getUserMedia(constraints);
+      if (signal?.aborted) {
+        stopped(stream);
+        throw signal.reason;
+      }
+      sharing = stream?.getVideoTracks?.()[0] ?? null;
+      return stream;
+    };
+    const end = () => {
+      if (!sharing || !CAPTURE_VIDEO.includes(options?.type)) return false;
+      sharing.dispatchEvent?.(new Event('ended'));
+      return true;
+    };
+    return { userMedia, end };
+  };
+}
+
+export const byKind = (extras) => (request) => extras[request.kind]?.(request) ?? {};
 
 export function markCaptured({
   media = () => globalThis.navigator?.mediaDevices,
