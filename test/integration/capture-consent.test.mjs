@@ -464,6 +464,7 @@ test('each switch refuses its kind before the agent is asked, ends a live captur
       ['microphone', 'Microphone', false],
       ['screen', 'Screen', false],
       ['remote-browser', 'Browser control from linked devices', true],
+      ['serial', 'Serial ports', true],
     ]
   );
   await shoot(page, 'capture-switches');
