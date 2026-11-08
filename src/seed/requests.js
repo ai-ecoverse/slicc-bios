@@ -257,7 +257,7 @@ export function capturing(kind, options, prompt = null) {
     const microphone = Boolean(captureMicrophone(options));
     return {
       kind: 'screen',
-      label: 'Recording screen',
+      label: CAPTURE_VIDEO.includes(options?.type) ? 'Recording screen' : 'Taking a photo',
       what: microphone ? 'with microphone' : '',
       whats: microphone ? ['screen', 'microphone'] : ['screen'],
       picker: true,

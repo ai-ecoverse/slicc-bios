@@ -361,6 +361,7 @@ test('the indicator shows while a recording runs, Stop ends it so the program ke
     `printf '%s\\n' '{"kind":"capture.screen","type":"image/png","delay":60}' | cat > /dev/embedder; echo "still $?"`
   );
   await page.until(() => window.chips().length === 1);
+  assert.match((await page.evaluate(() => window.chips()))[0], /^Taking a photo · a terminal/);
   await page.evaluate(() => window.deep('[data-surface="live"] [data-action="live-act"]').click());
   await shows(page, 'stopped in seven');
   await shows(page, 'still 1');

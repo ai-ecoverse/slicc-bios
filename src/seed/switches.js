@@ -43,7 +43,9 @@ export function createSwitches({
         stored = { ...stored };
         if (value) delete stored[name];
         else stored[name] = false;
-        storage.setItem(key, JSON.stringify(stored));
+        try {
+          storage.setItem(key, JSON.stringify(stored));
+        } catch {}
         turned(before);
         emit();
       },
