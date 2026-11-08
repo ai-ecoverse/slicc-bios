@@ -5474,7 +5474,12 @@ class Guard {
   }
 
   async later(method, params, sessionId) {
-    if (this.tabSessions.has(sessionId) && !TAB_COMMANDS.has(method)) return TAB_ONLY;
+    if (method === 'Page.createIsolatedWorld')
+      return this.errorDocument(sessionId, method) ||
+        this.ownedBlank(sessionId) ||
+        this.blanking(sessionId)
+        ? PROTECTED
+        : null;
     if (method === 'Page.addScriptToEvaluateOnNewDocument')
       return sessionId !== undefined &&
         noCode(params.source) &&
@@ -5589,6 +5594,11 @@ class Guard {
     await this.attachDecided(targetId);
     if (this.finished.has(message) || !this.owns(message)) return;
     this.deliver({ id, ...(sessionId ? { sessionId } : {}), result: answer.result });
+  }
+
+  tabCommand(message) {
+    if (!TAB_COMMANDS.has(message.method)) return this.refuse(message, TAB_ONLY);
+    return this.pass(message);
   }
 
   notePageAutoAttach({ method, params, sessionId }) {
@@ -6217,6 +6227,7 @@ class Guard {
         `send:${message.sessionId ?? ''}`,
         async () => {
           if (this.finished.has(message) || !this.owns(message)) return;
+          if (this.tabSessions.has(message.sessionId)) return this.tabCommand(message);
           if (await this.refuseUnsafeContent(message)) return;
           if (!(await this.proveContent(message))) return this.refuse(message);
           if (!(await this.admitContent(message))) return this.refuse(message);
