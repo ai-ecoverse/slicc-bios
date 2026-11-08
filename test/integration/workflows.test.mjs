@@ -86,8 +86,9 @@ test('the shards split exactly the files npm test runs, on the Node the package 
   assert.equal(input('node-version'), `"${pkg.engines.node.replace(/^>=/, '')}"`);
   assert.equal(pkg.scripts.pretest, 'slicc-cdp install-browser');
   assert.ok(pkg.devDependencies['@ai-ecoverse/slicc-cdp']);
-  assert.equal(pkg.devDependencies.playwright, undefined);
-  assert.equal(pkg.devDependencies.puppeteer, undefined);
+  for (const field of ['dependencies', 'devDependencies', 'optionalDependencies'])
+    for (const downloader of ['playwright', 'puppeteer'])
+      assert.equal(pkg[field]?.[downloader], undefined, `${downloader} in ${field}`);
   for (const client of ['playwright-core', 'puppeteer-core'])
     assert.match(pkg.devDependencies[client] ?? '0.0.0', /^\d+\.\d+\.\d+$/, client);
 });
