@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
-import { fetchExtension } from './extension-download.mjs';
+import { fetchExtension, fetchReleaseBytes, retried } from './extension-download.mjs';
 
 const BYTES = Buffer.from('slicc-extension-zip-body');
 const SHA = createHash('sha256').update(BYTES).digest('hex');
@@ -13,6 +13,7 @@ const EXTENSION = {
 const TAG = 'https://api.github.com/repos/ai-ecoverse/slicc-extension/releases/tags/v7.12.2';
 const ASSET_API =
   'https://api.github.com/repos/ai-ecoverse/slicc-extension/releases/assets/711554509';
+const PKG = 'https://pkgs.tailscale.com/stable/tailscale_1.104.1_amd64.tgz';
 
 const ok = (body, status = 200) => ({
   ok: status >= 200 && status < 300,
@@ -26,6 +27,62 @@ const ok = (body, status = 200) => ({
 });
 
 const json = (value, status = 200) => ok(Buffer.from(JSON.stringify(value)), status);
+
+test('retried succeeds after two 503s then 200', async () => {
+  const statuses = [503, 503, 200];
+  const sleeps = [];
+  const body = await retried(
+    async () => {
+      const status = statuses.shift();
+      if (status !== 200) throw new Error(`https://example.test: HTTP ${status}`);
+      return BYTES;
+    },
+    async (ms) => {
+      sleeps.push(ms);
+    }
+  );
+  assert.deepEqual(body, BYTES);
+  assert.deepEqual(statuses, []);
+  assert.deepEqual(sleeps, [1000, 3000]);
+});
+
+test('retried does not retry a 4xx', async () => {
+  let attempts = 0;
+  const sleeps = [];
+  await assert.rejects(
+    () =>
+      retried(
+        async () => {
+          attempts += 1;
+          throw new Error('https://example.test: HTTP 404');
+        },
+        async (ms) => {
+          sleeps.push(ms);
+        }
+      ),
+    /HTTP 404/
+  );
+  assert.equal(attempts, 1);
+  assert.deepEqual(sleeps, []);
+});
+
+test('sha mismatch after a successful body is final and does not retry', async () => {
+  const calls = [];
+  await assert.rejects(
+    () =>
+      fetchExtension(EXTENSION, {
+        fetch: async (url) => {
+          calls.push(String(url));
+          return ok(Buffer.from('wrong-bytes'));
+        },
+      }),
+    (error) => {
+      assert.match(error.message, new RegExp(`${EXTENSION.url}: sha256 [a-f0-9]{64}, want ${SHA}`));
+      return true;
+    }
+  );
+  assert.deepEqual(calls, [EXTENSION.url]);
+});
 
 test('release 504 thrice then API zip with matching sha returns bytes and logs fallback', async () => {
   const calls = [];
@@ -135,4 +192,22 @@ test('release and API both 504 names both failures', async () => {
       return true;
     }
   );
+});
+
+test('non-github URL retries 5xx and never calls the GitHub API', async () => {
+  const calls = [];
+  const sleeps = [];
+  const body = await fetchReleaseBytes(PKG, {
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    },
+    fetch: async (url) => {
+      calls.push(String(url));
+      if (calls.length < 3) return ok(Buffer.from('no'), 503);
+      return ok(BYTES);
+    },
+  });
+  assert.deepEqual(body, BYTES);
+  assert.deepEqual(calls, [PKG, PKG, PKG]);
+  assert.deepEqual(sleeps, [1000, 3000]);
 });
