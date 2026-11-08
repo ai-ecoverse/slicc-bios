@@ -57,7 +57,7 @@ import {
   watchWaiting,
 } from './notices.js';
 import { createPackages, globalDir, loadCatalog, watchShadows, writeListing } from './packages.js';
-import { createPairing, takePairing } from './pair.js';
+import { createPairing, PAIRED_CONTROL, takePairing } from './pair.js';
 import { createPolicySync, seedPolicies } from './policy.js';
 import {
   biosHash,
@@ -238,11 +238,13 @@ const allowedRemotely = (link) =>
   (link.mode === 'local' && !link.paired) || Boolean(tray?.controlAllowed(link.id));
 const browserAllowed = (link) =>
   (link.mode === 'local' && !link.paired) || Boolean(tray?.browserAllowed(link.id));
+const pairedOnly = (link) => link.paired === true && !tray?.known(link.id);
 const live = createLive();
 const switches = createSwitches();
 const cdpIn = createCdpIn({
   hook: (options) => control.hook(options),
   allowed: browserAllowed,
+  pairedOnly,
   on: () => remoteBrowser.on(),
   live,
 });
@@ -251,7 +253,11 @@ const kernelPort = kernelPorts({ storage: localStorage, text, write });
 const links = createLinks({
   router: exits,
   labels: labelStore(localStorage),
-  agent: { allowed: allowedRemotely, handle: (link, meta, s) => remote.handle(link, meta, s) },
+  agent: {
+    allowed: allowedRemotely,
+    handle: (link, meta, s) => remote.handle(link, meta, s),
+    refusal: (link) => (pairedOnly(link) ? PAIRED_CONTROL : null),
+  },
   sevens: {
     hello: (link) => followers.hello(link),
     accept: (link, meta) => followers.accept(link, meta),
