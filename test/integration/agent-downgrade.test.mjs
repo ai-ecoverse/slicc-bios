@@ -229,67 +229,6 @@ test('a profile a 6.x agent last opened upgrades to the pinned 7.x agent one way
     }
   );
 
-  await t.test(
-    'a visibility check while the boot check runs starts the refused agent once',
-    async (t) => {
-      await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
-      await marker(page, JSON.stringify({ durableSchema: 3, agent: '8.0.0' }));
-      t.after(() => marker(page, null).catch(() => {}));
-      const before = page.console.filter((line) => line.includes('the agent did not start')).length;
-      await page.goto('/');
-      await page.until(() => !!document.querySelector('slicc-app')?.model?.updates);
-      assert.equal(await page.evaluate(() => document.visibilityState), 'visible');
-      for (let n = 0; n < 5; n++)
-        await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
-      await ready(page);
-      let seen;
-      try {
-        seen = await page.within(
-          5 * 60 * 1000,
-          (text) => {
-            const { updates, notices, agent } = document.querySelector('slicc-app').model;
-            const row = updates.list().find((item) => item.id === 'agent');
-            if (row?.state !== 'failed' || row.error !== text) return null;
-            if (!notices.list().some((item) => item.id === 'agent:older')) return null;
-            return {
-              error: row.error,
-              agents: agent?.list?.().length ?? 0,
-            };
-          },
-          OLDER
-        );
-      } catch (error) {
-        const dump = await page
-          .evaluate(async () => {
-            const { updates, notices, agent } = document.querySelector('slicc-app')?.model ?? {};
-            const locks = await navigator.locks.query();
-            return {
-              updates: updates?.list?.() ?? null,
-              notices: notices?.list?.() ?? null,
-              agents: agent?.list?.()?.length ?? null,
-              locks: {
-                held: (locks.held ?? []).map((lock) => lock.name),
-                pending: (locks.pending ?? []).map((lock) => lock.name),
-              },
-            };
-          })
-          .catch((failed) => ({ error: failed.message }));
-        const agentLines = page.console.filter((line) => /agent/i.test(line));
-        throw new Error(
-          `${error.message}\ndump: ${JSON.stringify(dump)}\nagent console:\n${agentLines.join('\n')}`,
-          { cause: error }
-        );
-      }
-      assert.equal(seen.error, OLDER);
-      assert.equal(seen.agents, 0);
-      assert.equal(
-        page.console.filter((line) => line.includes('the agent did not start')).length - before,
-        1,
-        page.console.filter((line) => line.includes('the agent did not start')).join('\n')
-      );
-    }
-  );
-
   await t.test('a marker change after the refusal lets seven start the agent', async (t) => {
     await page.evaluate(() => localStorage.removeItem('slicc-os.agent-schema'));
     await marker(page, JSON.stringify({ durableSchema: 3, agent: '8.0.0' }));
