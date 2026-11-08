@@ -56,6 +56,30 @@ after(() => {
 });
 
 const holds = [];
+const answers = [];
+const pending = new Map();
+let current = '';
+const watched = (id, text, outgoing) => {
+  let message;
+  try {
+    message = JSON.parse(text);
+  } catch {
+    return;
+  }
+  if (message.id === undefined) return;
+  const key = `${id}:${message.sessionId ?? ''}:${message.id}`;
+  if (outgoing) {
+    pending.set(key, { method: message.method, at: Date.now(), by: current });
+    return;
+  }
+  const asked = pending.get(key);
+  if (!asked) return;
+  pending.delete(key);
+  const took = Date.now() - asked.at;
+  if (message.error)
+    answers.push(`${asked.by} refused ${asked.method}: ${message.error.message.slice(0, 160)}`);
+  if (took > HELD_MS) answers.push(`${asked.by} held ${asked.method}: ${took} ms`);
+};
 async function step(route, client, name, work) {
   const started = Date.now();
   let timer;
@@ -137,7 +161,10 @@ async function bridge(t) {
     const socket = sockets.get(id);
     if (!socket) return;
     if (closed !== undefined) socket.close(1011, closed.slice(0, 120));
-    else if (socket.readyState === 1) socket.send(text);
+    else if (socket.readyState === 1) {
+      watched(id, text, false);
+      socket.send(text);
+    }
   });
   await seven.evaluate(() => {
     window.stockConnections = new Map();
@@ -182,6 +209,7 @@ async function bridge(t) {
       });
     socket.on('message', (data) => {
       const text = data.toString();
+      watched(id, text, true);
       chain = chain
         .then(() => seven.evaluate((id, text) => window.stockSend(id, text), id, text))
         .catch(() => {});
@@ -201,6 +229,7 @@ async function bridge(t) {
 
 async function playwright(route, endpoint) {
   const run = (name, work) => step(route, 'playwright', name, work);
+  current = `${route} playwright`;
   const connected = await run('connect', () => chromium.connectOverCDP(endpoint));
   try {
     const [context] = connected.contexts();
@@ -263,6 +292,7 @@ async function playwright(route, endpoint) {
 
 async function puppeteerFlow(route, endpoint) {
   const run = (name, work) => step(route, 'puppeteer', name, work);
+  current = `${route} puppeteer`;
   const connected = await run('connect', () =>
     puppeteer.connect({ browserWSEndpoint: endpoint, protocolTimeout: STEP_MS })
   );
@@ -323,7 +353,16 @@ for (const route of ['devtools', 'extension'])
     timeout: 10 * 60 * 1000,
   }, async (t) => {
     const endpoint = `${await bridge(t)}/${route}`;
-    t.after(() => console.log(`STOCK-HOLDS ${route} ${JSON.stringify(holds.splice(0))}`));
+    t.after(() => {
+      const unanswered = [...pending.values()].map(
+        (asked) => `${asked.by} unanswered ${asked.method}: ${Date.now() - asked.at} ms`
+      );
+      pending.clear();
+      console.log(`STOCK-HOLDS ${route} ${JSON.stringify(holds.splice(0))}`);
+      console.log(
+        `STOCK-ANSWERS ${route} ${JSON.stringify([...answers.splice(0), ...unanswered])}`
+      );
+    });
     await t.test('Playwright', () => playwright(route, endpoint));
     await t.test('Puppeteer', () => puppeteerFlow(route, endpoint));
   });
