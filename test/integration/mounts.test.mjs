@@ -163,7 +163,7 @@ test('Mount a folder and Eject in the Files panel mount and unmount a picked fol
   assert.deepEqual(await waiting(page, '/mnt/picked'), { needs: false, button: null });
   await run(
     page,
-    'grep -c " /mnt/picked fsa .*uid=1000,gid=1000" /proc/mounts | sed "s/^/owned /"'
+    'grep -c " /mnt/picked fsa .*uid=1000,gid=1000.*umask=000" /proc/mounts | sed "s/^/owned /"'
   );
   await shows(page, 'owned 1');
   await page.until(

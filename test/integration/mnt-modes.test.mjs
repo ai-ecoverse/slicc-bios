@@ -75,9 +75,10 @@ test('on a fresh profile /mnt is root’s 0755 and stays so after a cone’s sud
   );
   const used = await said(
     page,
-    "stat -c 'point %a %u %g' /mnt/picked; sudo -u cone sh -c 'echo from-cone > /mnt/picked/cone.txt && ls /mnt/picked'; echo cone=$?; sudo -u nobody sh -c 'echo x > /mnt/picked/nobody.txt'; echo nobody=$?; test -e /mnt/picked/nobody.txt || echo no-nobody-file; echo from-root > /mnt/picked/root.txt; echo root=$?",
+    "grep ' /mnt/picked ' /proc/mounts; stat -c 'point %a %u %g' /mnt/picked; sudo -u cone sh -c 'echo from-cone > /mnt/picked/cone.txt && ls /mnt/picked'; echo cone=$?; sudo -u nobody sh -c 'echo x > /mnt/picked/nobody.txt'; echo nobody=$?; test -e /mnt/picked/nobody.txt || echo no-nobody-file; echo from-root > /mnt/picked/root.txt; echo root=$?",
     'used'
   );
+  assert.match(used, /umask=000/);
   assert.match(used, /cone=0/);
   assert.match(used, /cone\.txt/);
   assert.match(used, /point 755 1000 1000/);

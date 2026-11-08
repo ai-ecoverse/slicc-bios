@@ -45,7 +45,7 @@ export function mountPoint(kernel, target, user = ROOT) {
 }
 
 export function owned(options = {}, user = ROOT) {
-  return { ...options, uid: String(user.uid), gid: String(user.gid) };
+  return { ...options, uid: String(user.uid), gid: String(user.gid), umask: '000' };
 }
 
 export async function offTheRecord(storage = navigator.storage, memory = performance.memory) {
