@@ -83,7 +83,7 @@ test('on a fresh profile /mnt is root’s 0755 and stays so after a cone’s sud
   assert.doesNotMatch(used, /umask=000/);
   assert.match(used, /cone=0/);
   assert.match(used, /cone\.txt/);
-  assert.match(used, /point 755 1000 1000/);
+  assert.match(used, /point 775 1000 1000/);
   assert.match(used, /Permission denied/);
   assert.doesNotMatch(used, /nobody=0/);
   assert.match(used, /no-nobody-file/);
