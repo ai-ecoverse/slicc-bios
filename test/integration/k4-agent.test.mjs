@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { download } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/cdn.mjs';
-import { agentUp, connectAccount, listsAccount, ready } from './bios.mjs';
+import { agentUp, connectAccount, listsAccount, ready, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { eventFrame, fakeLlm } from './fake-llm.mjs';
 
@@ -60,6 +60,12 @@ function answer(body) {
   if (result === 'rules-1') return text('Seven said no, so the secret rules are unchanged.');
   if (sent.toolConfig?.tools?.length && said.includes('Change the rules'))
     return bash('rules-1', 'echo allow = true | sudo tee /etc/fnox/config.toml');
+  if (result === 'loop-1') return text('The loop ended.');
+  if (sent.toolConfig?.tools?.length && said.includes('Loop sudo'))
+    return bash(
+      'loop-1',
+      'for i in 1 2 3 4 5 6; do sudo ls -la /root > /dev/null 2>> /tmp/stop-loop.log; echo "try-$i=$?" >> /tmp/stop-loop.log; done; echo loop-done >> /tmp/stop-loop.log'
+    );
   if (sent.toolConfig?.tools?.length && said.includes('List root'))
     return bash('sudo-1', 'whoami; sudo ls -la /root');
   return text('Done.');
@@ -254,7 +260,7 @@ test('enforce: a cone agent’s sudo asks the human through the agent’s approv
     ),
     rules.id
   );
-  assert.deepEqual(buttons.sort(), ['deny', 'once']);
+  assert.deepEqual(buttons.sort(), ['deny', 'once', 'stop']);
   await shots(page, 'agent-secret-rules');
   const forced = await page.evaluate(
     (id) =>
@@ -286,6 +292,191 @@ test('enforce: a cone agent’s sudo asks the human through the agent’s approv
     }),
     /fnox/
   );
+  assert.deepEqual(page.errors, []);
+});
+
+async function armed(page) {
+  await page.evaluate(async () => {
+    const walk = (root) => {
+      const found = root.querySelector('slicc-approvals');
+      if (found) return found;
+      for (const element of root.querySelectorAll('*')) {
+        const inner = element.shadowRoot && walk(element.shadowRoot);
+        if (inner) return inner;
+      }
+      return null;
+    };
+    const host = walk(document);
+    const root = host.shadowRoot;
+    const frames = () =>
+      new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const sig = () =>
+      JSON.stringify([
+        root.querySelector('dialog')?.dataset.approval,
+        root.querySelector('dialog')?.dataset.gone,
+        [...root.querySelectorAll('[slot=button]')].map((button) => {
+          const { left, top, width, height } = button.getBoundingClientRect();
+          return [
+            button.dataset.action,
+            button.textContent,
+            button.hasAttribute('disabled'),
+            button.hasAttribute('pending'),
+            ...[left, top, width, height].map(Math.round),
+          ];
+        }),
+      ]);
+    await frames();
+    let last = sig();
+    let changed = performance.now();
+    const deadline = performance.now() + 15000;
+    while (performance.now() < deadline) {
+      if (performance.now() - changed >= host.arming) return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      if (sig() !== last) {
+        await frames();
+        last = sig();
+        changed = performance.now();
+      }
+    }
+    throw new Error(`the approval buttons never stayed still for ${host.arming} ms: ${last}`);
+  });
+}
+
+async function press(page, action) {
+  await armed(page);
+  const point = await page.evaluate(
+    new Function(
+      'action',
+      `const button = (${find})('slicc-approvals').shadowRoot.querySelector('dialog [data-action="' + action + '"]');
+      const { left, top, width, height } = button.getBoundingClientRect();
+      return { x: left + width / 2, y: top + height / 2 };`
+    ),
+    action
+  );
+  for (const type of ['mousePressed', 'mouseReleased'])
+    await page.send('Input.dispatchMouseEvent', { type, ...point, button: 'left', clickCount: 1 });
+}
+
+const rows = (page, id) =>
+  page.evaluate(
+    new Function(
+      'id',
+      `const dialog = (${find})('slicc-approvals')?.shadowRoot?.querySelector('dialog[data-approval="' + id + '"]');
+      return Object.fromEntries([...dialog.querySelectorAll('[slot=button][data-action]')].map((b) => [b.dataset.action, Math.round(b.getBoundingClientRect().top)]));`
+    ),
+    id
+  );
+
+test('enforce: Deny and stop on a cone’s looping sudo ends the loop and the turn and closes the dialog without “answered elsewhere”, and a terminal’s sudo offers no Deny and stop', {
+  timeout: 35 * 60 * 1000,
+}, async (t) => {
+  const page = await chrome.page(t);
+  await page.goto(`/#${new URLSearchParams({ users: 'enforce' })}`);
+  await ready(page, ['slicc:/home# ']);
+  await agentUp(page);
+  await listsAccount(page, 'amazon-bedrock');
+  await connectAccount(page, 'amazon-bedrock', KEY);
+  await page.evaluate(() => {
+    const app = document.querySelector('slicc-app');
+    for (const notice of app.model.notices.list()) app.model.notices.dismiss(notice.id);
+    window.asked = [];
+    window.ended = [];
+    window.gone = [];
+    app.model.approvals.on('approvals', (list) => {
+      for (const item of list)
+        if (item.kind === 'sudo' && !window.asked.includes(item.id)) window.asked.push(item.id);
+    });
+    app.model.approvals.on('ended', (event) => window.ended.push(event));
+    app.show('chat');
+    void app.model.agent.send(app.model.agent.active(), 'Loop sudo');
+  });
+  const [looping] = await page.within(5 * 60 * 1000, () => {
+    const list = document.querySelector('slicc-app').model.approvals.list();
+    return list.length ? list : null;
+  });
+  assert.equal(looping.command, '/usr/bin/ls -la /root');
+  assert.deepEqual([looping.requester.kind, looping.requester.agentId], ['agent', 'cone']);
+  assert.equal(looping.stoppable, true);
+  await page.until(
+    new Function(
+      'id',
+      `const dialog = (${find})('slicc-approvals')?.shadowRoot?.querySelector('dialog[data-approval="' + id + '"]');
+      return !!dialog?.querySelector('[data-action="stop"]');`
+    ),
+    looping.id
+  );
+  await page.evaluate(
+    new Function(
+      `const root = (${find})('slicc-approvals').shadowRoot;
+      const seen = () => {
+        const reason = root.querySelector('dialog')?.dataset.gone;
+        if (reason) window.gone.push(reason);
+      };
+      new MutationObserver(seen).observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-gone'] });`
+    )
+  );
+  await armed(page);
+  const top = await rows(page, looping.id);
+  assert.deepEqual(Object.keys(top).sort(), ['deny', 'once', 'stop'], JSON.stringify(top));
+  assert.equal(top.deny, top.stop, JSON.stringify(top));
+  assert.ok(top.once > top.stop, JSON.stringify(top));
+  await press(page, 'stop');
+  await page
+    .within(5 * 60 * 1000, () => {
+      const app = document.querySelector('slicc-app');
+      const { agent } = app.model;
+      return (
+        !agent.busy(agent.active()) &&
+        app.model.approvals.list().length === 0 &&
+        !(function walk(root) {
+          const found = root.querySelector('slicc-approvals');
+          if (found) return found.shadowRoot?.querySelector('dialog');
+          for (const element of root.querySelectorAll('*'))
+            if (element.shadowRoot && walk(element.shadowRoot)) return true;
+          return false;
+        })(document)
+      );
+    })
+    .catch(async (error) => {
+      throw new Error(
+        `the stopped turn never went idle with the dialog closed: ${error.message}\n${JSON.stringify(await page.evaluate(() => ({ asked: window.asked, ended: window.ended, gone: window.gone, list: document.querySelector('slicc-app').model.approvals.list() })))}`
+      );
+    });
+  const after = await page.evaluate(() => ({
+    asked: window.asked,
+    ended: window.ended,
+    gone: window.gone,
+  }));
+  assert.deepEqual(after.asked, [looping.id], JSON.stringify(after));
+  assert.deepEqual(after.gone, [], JSON.stringify(after));
+  assert.equal(
+    after.ended.some((event) => event.id === looping.id && event.reason !== 'answered'),
+    false,
+    JSON.stringify(after)
+  );
+  const log = await page.evaluate(async () => {
+    const tmp = await (await navigator.storage.getDirectory()).getDirectoryHandle('tmp');
+    try {
+      return await (await (await tmp.getFileHandle('stop-loop.log')).getFile()).text();
+    } catch {
+      return '';
+    }
+  });
+  assert.doesNotMatch(log, /try-2|loop-done/, log);
+  for (const line of log.split('\n').filter((line) => line.startsWith('sudo:')))
+    assert.equal(line, 'sudo: denied, and the owner stopped this turn', log);
+
+  await run(page, 'clear; cd /tmp; sudo -u cone sudo id -un; echo terminal=$?');
+  const [terminal] = await page.within(5 * 60 * 1000, () => {
+    const list = document.querySelector('slicc-app').model.approvals.list();
+    return list.length ? list : null;
+  });
+  assert.equal(terminal.requester.kind, 'user');
+  assert.notEqual(terminal.stoppable, true);
+  await armed(page);
+  assert.deepEqual(Object.keys(await rows(page, terminal.id)).sort(), ['deny', 'once']);
+  await press(page, 'deny');
+  await shows(page, 'terminal=1');
   assert.deepEqual(page.errors, []);
 });
 
