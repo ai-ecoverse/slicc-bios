@@ -83,7 +83,9 @@ import { createNotes, createReleases } from './releases.js';
 import { createRemote } from './remote.js';
 import {
   audioPrompts,
-  capturePrompt,
+  byKind,
+  cameraman,
+  capturePrompts,
   captures,
   displayer,
   KINDS,
@@ -455,7 +457,15 @@ const requests = pageRequests({
   handlers: {
     'open.url': openUrl(),
     'clipboard.write': clipboardWrite(),
-    ...plugged(capture, { 'capture.screen': capturePrompt }, displays, guarded),
+    ...plugged(
+      capture,
+      capturePrompts,
+      byKind({
+        'capture.screen': displays,
+        'capture.camera': cameraman({ on: guarded.on }),
+      }),
+      guarded
+    ),
     ...plugged(audio, audioPrompts, undefined, guarded),
     ...serial.handlers,
   },
