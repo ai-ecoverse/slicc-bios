@@ -952,28 +952,30 @@ test('screenshots of the browser panel: a driven tab live, two driven tabs, the 
   await color('light');
   await pick('Tide tables');
   await page.within(20000, live);
-  await page.until(() => window.panel().textContent.includes('harbor is using this tab'));
+  await page.until(() =>
+    window.panel().querySelector('[data-driving="agent"]')?.textContent.includes('Watching harbor')
+  );
   await page.until(() => !!window.panel().querySelector('li[data-status="failed"]'));
   await shot('live-light');
   await page.evaluate((to) => {
-    const box = window.panel().querySelector('.scroll');
+    const box = window.panel().querySelector('.detail .actions');
     box.scrollTop = to === 'end' ? box.scrollHeight : 0;
   }, 'end');
   await shot('actions-light');
   await page.evaluate((to) => {
-    const box = window.panel().querySelector('.scroll');
+    const box = window.panel().querySelector('.detail .actions');
     box.scrollTop = to === 'end' ? box.scrollHeight : 0;
   }, 'top');
   await color('dark');
   await page.within(20000, live);
   await shot('live-dark');
   await page.evaluate((to) => {
-    const box = window.panel().querySelector('.scroll');
+    const box = window.panel().querySelector('.detail .actions');
     box.scrollTop = to === 'end' ? box.scrollHeight : 0;
   }, 'end');
   await shot('actions-dark');
   await page.evaluate((to) => {
-    const box = window.panel().querySelector('.scroll');
+    const box = window.panel().querySelector('.detail .actions');
     box.scrollTop = to === 'end' ? box.scrollHeight : 0;
   }, 'top');
   await pointer('[data-action="all-tabs"]');
