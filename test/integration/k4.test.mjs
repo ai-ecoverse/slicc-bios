@@ -180,7 +180,7 @@ test('enforce: a cone writes its home, is refused in root’s, and sudo asks bio
   assert.equal(once.cwd, '/tmp');
   assert.equal(once.always, false);
 
-  await run(page, 'clear; sudo -u cone sudo ls -la /root; echo denied=$?');
+  await run(page, 'clear; sudo -u cone sudo -k; sudo -u cone sudo ls -la /root; echo denied=$?');
   await page.until(() => document.querySelector('slicc-app').model.approvals.list().length > 0);
   await shoot(page, 'approval');
   const listed = await decide(page, 'deny');
@@ -237,10 +237,156 @@ test('enforce: a cone writes its home, is refused in root’s, and sudo asks bio
   await decide(page, 'once');
   await shows(page, 'always=0');
   await closed(page);
-  await run(page, 'clear; sudo -u cone sudo id -un; echo again=$?');
+  await run(page, 'clear; sudo -u cone sudo -k; sudo -u cone sudo id -un; echo again=$?');
   await decide(page, 'deny');
   await shows(page, 'again=1');
   assert.doesNotMatch(await read(page, 'etc/sudoers.d/cone'), /id -un/);
+  assert.deepEqual(page.errors, []);
+});
+
+const answering = (id, report) => `<!doctype html>
+<title>answering</title>
+<pre id="out">pending</pre>
+<script>
+  let posted = 'no';
+  try {
+    new BroadcastChannel('slicc-approvals').postMessage({ decide: { id: ${JSON.stringify(id)}, decision: 'once' } });
+    posted = 'yes';
+  } catch (error) {
+    posted = error.name;
+  }
+  ${report}(JSON.stringify({ origin: self.origin, posted }));
+</script>
+`;
+
+async function sudoAsks(page) {
+  await page.evaluate(() => {
+    window.sudoAsked = [];
+    document.querySelector('slicc-app').model.approvals.on('approvals', (list) => {
+      for (const item of list)
+        if (item.kind === 'sudo' && !window.sudoAsked.includes(item.id))
+          window.sudoAsked.push(item.id);
+    });
+  });
+  return () => page.evaluate(() => window.sudoAsked.length);
+}
+
+async function stillPending(page, id) {
+  return page.evaluate(
+    (id) =>
+      new Promise((resolve, reject) => {
+        const channel = new BroadcastChannel('slicc-approvals');
+        const timer = setTimeout(() => {
+          channel.close();
+          reject(new Error(`bios's approvals never answered a hello for ${id}`));
+        }, 10000);
+        channel.onmessage = ({ data }) => {
+          if (!data?.list) return;
+          clearTimeout(timer);
+          channel.close();
+          resolve(data.list.some((item) => item.id === id));
+        };
+        channel.postMessage({ hello: true });
+      }),
+    id
+  );
+}
+
+test('enforce: a person’s Once in bios’s dialog opens the terminal’s sudo timestamp, sudo -K closes it, sudo -v asks with once and deny only, and no sandboxed page or frame can answer the dialog', async (t) => {
+  const page = await chrome.page(t);
+  await bootIn(page, 'enforce');
+  const asked = await sudoAsks(page);
+
+  await run(page, 'clear; cd /tmp; sudo -u cone sudo true; echo first=$?');
+  const first = await decide(page, 'once');
+  assert.equal(first.command, '/usr/bin/true');
+  await shows(page, 'first=0');
+  await closed(page);
+  assert.equal(await asked(), 1);
+  await run(page, 'clear; sudo -u cone sudo id -un; sudo -u cone sudo -n id -u; echo second=$?');
+  await shows(page, 'second=0');
+  const second = await screen(page);
+  assert.match(second, /root\s+0\s+second=0/, second);
+  assert.equal(await asked(), 1);
+
+  await run(page, 'clear; sudo -u cone sudo -K; sudo -u cone sudo -n true; echo closed=$?');
+  await shows(page, 'closed=1');
+  assert.match(await screen(page), /a password is required/);
+  assert.equal(await asked(), 1);
+
+  await run(page, 'clear; sudo -u cone sudo -v; echo v=$?');
+  const [validate] = await page.until(() => {
+    const list = document.querySelector('slicc-app').model.approvals.list();
+    return list.length ? list : null;
+  });
+  assert.equal(validate.command, 'start a sudo timestamp for cone (no command)');
+  assert.equal(validate.always, false);
+  assert.match(
+    await page.evaluate(
+      (id) =>
+        document
+          .querySelector('slicc-app')
+          .model.approvals.decide(id, 'always')
+          .then(
+            () => 'decided',
+            (error) => error.message
+          ),
+      validate.id
+    ),
+    /Always isn't offered/
+  );
+  await decide(page, 'once');
+  await shows(page, 'v=0');
+  await closed(page);
+  await run(page, 'clear; sudo -u cone sudo -n id -un; echo validated=$?');
+  await shows(page, 'validated=0');
+  assert.match(await screen(page), /root\s+validated=0/);
+  assert.equal(await asked(), 2);
+
+  await run(page, 'clear; sudo -u cone sudo -k; sudo -u cone sudo id -un; echo sandboxed=$?');
+  const [pending] = await page.until(() => {
+    const list = document.querySelector('slicc-app').model.approvals.list();
+    return list.length ? list : null;
+  });
+  await page.evaluate(
+    async (html) => {
+      const tmp = await (await navigator.storage.getDirectory()).getDirectoryHandle('tmp');
+      const writable = await (
+        await tmp.getFileHandle('answer.html', { create: true })
+      ).createWritable();
+      await writable.write(html);
+      await writable.close();
+    },
+    answering(pending.id, "((text) => { document.getElementById('out').textContent = text; })")
+  );
+  const tab = await page.tab();
+  await tab.goto('/tmp/answer.html');
+  const opfs = await tab.until(() => {
+    const out = document.getElementById('out')?.textContent;
+    return out && out !== 'pending' && out;
+  });
+  assert.deepEqual(JSON.parse(opfs), { origin: 'null', posted: 'yes' });
+  const framed = await page.evaluate(
+    (html) =>
+      new Promise((resolve) => {
+        const frame = document.createElement('iframe');
+        frame.sandbox = 'allow-scripts allow-forms';
+        frame.srcdoc = html;
+        addEventListener('message', function heard({ source, data }) {
+          if (source !== frame.contentWindow) return;
+          removeEventListener('message', heard);
+          frame.remove();
+          resolve(data);
+        });
+        document.body.append(frame);
+      }),
+    answering(pending.id, "((text) => parent.postMessage(text, '*'))")
+  );
+  assert.deepEqual(JSON.parse(framed), { origin: 'null', posted: 'yes' });
+  assert.equal(await stillPending(page, pending.id), true);
+  assert.equal(await asked(), 3);
+  await decide(page, 'deny');
+  await shows(page, 'sandboxed=1');
   assert.deepEqual(page.errors, []);
 });
 

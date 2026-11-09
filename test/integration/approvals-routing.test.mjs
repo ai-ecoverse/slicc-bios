@@ -194,3 +194,81 @@ test('an agent that fails any other way denies the request', async () => {
   });
   assert.equal(await sudo(request(), {}), 'deny');
 });
+
+test('kernel 1.177 sudo timestamps: routeSudo hands timestamp and validate to the agent unchanged and returns its answer as it is, a person’s timestamp object and a judge’s plain once alike', async () => {
+  for (const answer of [
+    { answer: 'once', timestamp: true },
+    { answer: 'always', timestamp: true },
+    'once',
+    { answer: 'deny', message: 'sudo: denied by the approval judge: no' },
+  ]) {
+    const seen = [];
+    const sudo = routeSudo({
+      judges: () => true,
+      agent: () => ({
+        approve: async (req) => {
+          seen.push(req);
+          return answer;
+        },
+      }),
+      fallback: () => assert.fail('the fallback dialog asked while the agent was up'),
+    });
+    const req = request({ timestamp: true });
+    assert.equal(await sudo(req, {}), answer);
+    assert.equal(seen[0], req);
+    assert.equal(seen[0].timestamp, true);
+    const validate = request({
+      timestamp: true,
+      validate: true,
+      argv: [],
+      path: '',
+      always: false,
+    });
+    assert.equal(await sudo(validate, {}), answer);
+    assert.deepEqual(
+      [seen[1].validate, seen[1].timestamp, seen[1].argv, seen[1].path],
+      [true, true, [], '']
+    );
+  }
+});
+
+test('kernel 1.177 sudo timestamps: the fallback dialog, which only a person answers, answers Once with a timestamp when the kernel takes one, plain once when it doesn’t, and anything else as deny', async () => {
+  const cases = [
+    [{ timestamp: true }, 'once', { answer: 'once', timestamp: true }],
+    [{}, 'once', 'once'],
+    [{ timestamp: true }, 'deny', 'deny'],
+    [{ timestamp: true }, 'stop', 'deny'],
+  ];
+  for (const [fields, decision, answer] of cases) {
+    const approvals = createApprovals({ channel: lone() });
+    approvals.own();
+    const sudo = routeSudo({ agent: () => undefined, fallback: approvals.approve });
+    const settled = sudo(request(fields), {});
+    const [item] = await listed(approvals);
+    await approvals.port.decide(item.id, decision);
+    assert.deepEqual(await settled, answer, `${JSON.stringify(fields)} ${decision}`);
+  }
+  const approvals = createApprovals({ channel: lone() });
+  approvals.own();
+  const expired = new AbortController();
+  const settled = approvals.approve(request({ timestamp: true }), { signal: expired.signal });
+  await listed(approvals);
+  expired.abort('expired');
+  assert.equal(await settled, 'deny');
+});
+
+test('kernel 1.177 sudo -v: the fallback dialog shows it as starting a timestamp with no command, never offers Always, and a person’s Once starts the timestamp', async () => {
+  const approvals = createApprovals({ channel: lone() });
+  approvals.own();
+  const sudo = routeSudo({ agent: () => undefined, fallback: approvals.approve });
+  const settled = sudo(
+    request({ timestamp: true, validate: true, argv: [], path: '', always: false, rootOnly: {} }),
+    {}
+  );
+  const [item] = await listed(approvals);
+  assert.equal(item.command, 'start a sudo timestamp for cone (no command)');
+  assert.equal(item.always, false);
+  await assert.rejects(approvals.port.decide(item.id, 'always'), /Always isn't offered/);
+  await approvals.port.decide(item.id, 'once');
+  assert.deepEqual(await settled, { answer: 'once', timestamp: true });
+});
