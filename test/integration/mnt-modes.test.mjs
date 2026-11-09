@@ -131,6 +131,14 @@ test('a personal cone and scoop the agent adds join group cone, and deviceGroups
   );
   assert.match(ids, /c2=1/);
   assert.match(ids, /sc=1/);
+  await page.evaluate(() => globalThis.sliccAgentSource().groups.removeMember('cone', 'cone-2'));
+  await page.evaluate(() =>
+    globalThis.sliccAgentSource().groups.removeMember('cone', 'scoop-share')
+  );
+  assert.deepEqual(
+    (await members()).filter((name) => name === 'cone-2' || name === 'scoop-share'),
+    []
+  );
   await page.reload();
   await ready(page);
   assert.deepEqual(
