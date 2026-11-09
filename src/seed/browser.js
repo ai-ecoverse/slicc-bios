@@ -596,18 +596,22 @@ class Browser {
     this.changed();
   }
 
+  #page(id) {
+    return this.#infos.get(id)?.type === 'page';
+  }
+
   list() {
     if (this.#now() - this.#refreshed > FRESH) void this.refresh();
-    const known = [...this.#owned.keys()].filter((id) => this.#infos.has(id));
+    const known = [...this.#owned.keys()].filter((id) => this.#page(id));
     return [...known.map((id) => this.#tab(id)), ...this.#opening.values()];
   }
 
   active() {
-    const reported = [...this.#owned.keys()].find((id) => this.#infos.get(id)?.active);
+    const reported = [...this.#owned.keys()].find(
+      (id) => this.#page(id) && this.#infos.get(id)?.active
+    );
     if (reported) return reported;
-    return this.#owned.has(this.#activated) && this.#infos.has(this.#activated)
-      ? this.#activated
-      : null;
+    return this.#owned.has(this.#activated) && this.#page(this.#activated) ? this.#activated : null;
   }
 
   changed() {
