@@ -123,7 +123,7 @@ test('an install from before users boots fresh under enforce: the agent works as
   assert.equal(picked, '/mnt/picked');
   await run(
     page,
-    'clear; while read -r src at type opts rest; do [ "$at" = /mnt/picked ] && [[ $opts == *uid=1000,gid=1000* ]] && echo owned 1; done < /proc/mounts; sudo -u cone sh -c \'echo from-cone > /mnt/picked/cone.txt\' && cat /mnt/picked/cone.txt && echo wrote-$((40 + 2))'
+    'clear; while read -r src at type opts rest; do [ "$at" = /mnt/picked ] && [[ $opts == *uid=1000,gid=1000* ]] && [[ $opts == *umask=002* ]] && echo owned 1; done < /proc/mounts; sudo -u cone sh -c \'echo from-cone > /mnt/picked/cone.txt\' && cat /mnt/picked/cone.txt && echo wrote-$((40 + 2))'
   );
   await shows(page, 'wrote-42');
   assert.match(await screen(page), /from-cone/);

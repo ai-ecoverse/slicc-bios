@@ -3,11 +3,12 @@ import { test } from 'node:test';
 import { boot, ready, run, screen, shows, ui } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
-async function opened(t) {
+async function opened(t, { debug = false } = {}) {
   const chrome = await launch();
   t.after(() => chrome.close());
   const page = await chrome.page(t);
   await ui(page);
+  if (debug) await page.init('() => { globalThis.sliccKernelDebug = true; }');
   await page.init(() => {
     window.filesPanel = () => document.querySelector('slicc-app').dock.content('files').shadowRoot;
     window.showDirectoryPicker = async () => {
@@ -75,9 +76,11 @@ test('on a fresh profile /mnt is root’s 0755 and stays so after a cone’s sud
   );
   const used = await said(
     page,
-    "stat -c 'point %a %u %g' /mnt/picked; sudo -u cone sh -c 'echo from-cone > /mnt/picked/cone.txt && ls /mnt/picked'; echo cone=$?; sudo -u nobody sh -c 'echo x > /mnt/picked/nobody.txt'; echo nobody=$?; test -e /mnt/picked/nobody.txt || echo no-nobody-file; echo from-root > /mnt/picked/root.txt; echo root=$?",
+    "grep ' /mnt/picked ' /proc/mounts; stat -c 'point %a %u %g' /mnt/picked; sudo -u cone sh -c 'echo from-cone > /mnt/picked/cone.txt && ls /mnt/picked'; echo cone=$?; sudo -u nobody sh -c 'echo x > /mnt/picked/nobody.txt'; echo nobody=$?; test -e /mnt/picked/nobody.txt || echo no-nobody-file; echo from-root > /mnt/picked/root.txt; echo root=$?",
     'used'
   );
+  assert.match(used, /umask=002/);
+  assert.doesNotMatch(used, /umask=000/);
   assert.match(used, /cone=0/);
   assert.match(used, /cone\.txt/);
   assert.match(used, /point 755 1000 1000/);
@@ -99,6 +102,48 @@ test('on a fresh profile /mnt is root’s 0755 and stays so after a cone’s sud
   assert.match(
     await said(page, "stat -c 'ejected %a %U %G' /mnt/picked", 'ejected'),
     /ejected 755 cone cone/
+  );
+  assert.deepEqual(page.errors, []);
+});
+
+test('a personal cone and scoop the agent adds join group cone, and deviceGroups keeps them after reload', async (t) => {
+  const page = await opened(t, { debug: true });
+  await boot(page);
+  await page.evaluate(() =>
+    globalThis.sliccAgentSource().users.add({ name: 'cone-2', groups: [] })
+  );
+  await page.evaluate(() => globalThis.sliccAgentSource().users.add({ name: 'scoop-share' }));
+  const members = async () =>
+    page.evaluate(async () => {
+      const cone = (await globalThis.sliccAgentSource().groups.list()).find(
+        (group) => group.name === 'cone'
+      );
+      return [...(cone?.members ?? [])].sort();
+    });
+  assert.deepEqual(
+    (await members()).filter((name) => name === 'cone-2' || name === 'scoop-share'),
+    ['cone-2', 'scoop-share']
+  );
+  const ids = await said(
+    page,
+    "c2=$(id -nG cone-2 | tr ' ' '\\n' | grep -cx cone); sc=$(id -nG scoop-share | tr ' ' '\\n' | grep -cx cone); echo c2=$c2 sc=$sc",
+    'joined'
+  );
+  assert.match(ids, /c2=1/);
+  assert.match(ids, /sc=1/);
+  await page.evaluate(() => globalThis.sliccAgentSource().groups.removeMember('cone', 'cone-2'));
+  await page.evaluate(() =>
+    globalThis.sliccAgentSource().groups.removeMember('cone', 'scoop-share')
+  );
+  assert.deepEqual(
+    (await members()).filter((name) => name === 'cone-2' || name === 'scoop-share'),
+    []
+  );
+  await page.reload();
+  await ready(page);
+  assert.deepEqual(
+    (await members()).filter((name) => name === 'cone-2' || name === 'scoop-share'),
+    ['cone-2', 'scoop-share']
   );
   assert.deepEqual(page.errors, []);
 });
