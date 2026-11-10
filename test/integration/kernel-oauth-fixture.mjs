@@ -94,6 +94,8 @@ export async function oauthVault() {
       ...fields,
       ...(meta.op === 'sealed' ? state.envelope : {}),
     };
+    if (meta.op === 'sealed' && ['oauthGrant', 'oauthRefresh', 'oauthRemove'].includes(op))
+      state = { ...state, ...state.afterMutation };
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ reply, before: state.before?.[op] ?? [] }));
   });

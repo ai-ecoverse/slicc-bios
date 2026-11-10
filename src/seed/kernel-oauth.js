@@ -138,6 +138,22 @@ function relayFailure(error, stop, deadline) {
   return oauthError(error?.code, error?.cause);
 }
 
+async function synchronize(call, options, barrier, current, ready) {
+  try {
+    const fresh = oauthScrub(await call('placeholders', {}, options));
+    current();
+    if (fresh.error || (ready && !fresh.scrub.ready))
+      throw Object.assign(new Error(), { code: 'ENOTCONN' });
+    await barrier(fresh, { signal: options.signal });
+    current();
+  } catch (error) {
+    current();
+    throw Object.assign(new Error(), {
+      code: error?.code === 'ETIMEDOUT' ? 'ETIMEDOUT' : 'ENOTCONN',
+    });
+  }
+}
+
 export function oauthRelay({
   call,
   barrier,
@@ -158,6 +174,8 @@ export function oauthRelay({
       const support = supported(await call('status', {}, options));
       current();
       if (support !== true) return unsupported(req.op, support);
+      if (req.op === 'capabilities' || req.op === 'oauthGrant')
+        await synchronize(call, options, barrier, current, false);
       const outer = envelope(
         await call('sealed', { req, stamp: caller, kernelOAuth: 1 }, options),
         'sealed',
@@ -165,19 +183,8 @@ export function oauthRelay({
       );
       current();
       const reply = outer.error ? outer : oauthReply(req.op, outer.reply);
-      if (!reply.error && MUTATIONS.has(req.op)) {
-        const fresh = oauthScrub(await call('placeholders', {}, options));
-        current();
-        if (fresh.error || (req.op !== 'oauthRemove' && !fresh.scrub.ready))
-          return oauthError('ENOTCONN');
-        try {
-          await barrier(fresh);
-        } catch {
-          current();
-          return oauthError('ENOTCONN');
-        }
-        current();
-      }
+      if (!reply.error && MUTATIONS.has(req.op))
+        await synchronize(call, options, barrier, current, req.op !== 'oauthRemove');
       return reply;
     } catch (error) {
       return relayFailure(error, stop, deadline);

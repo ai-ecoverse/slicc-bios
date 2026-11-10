@@ -1,6 +1,7 @@
 import { vaultCause } from './causes.js';
 import { kernelOAuthOp, oauthRelay } from './kernel-oauth.js';
 import { policyDependent } from './policy.js';
+import { ScrubWorkers } from './scrub-receipts.js';
 import { askRelay } from './secrets.js';
 import { production } from './site.js';
 
@@ -782,13 +783,14 @@ async function vaultListing(call, view, state) {
   } catch {}
 }
 
-function scrubBarrier(view, pair, take, placeholders, forward) {
-  return ({ placeholders: listed, scrub: next }) => {
+function scrubBarrier(view, pair, take, placeholders, forward, workers) {
+  return ({ placeholders: listed, scrub: next }, options) => {
     if (!view.welcomed || next.version < (pair()?.version ?? 0))
       throw Object.assign(new Error(), { code: 'ENOTCONN' });
     take(next);
     placeholders(listed);
     forward();
+    return workers.wait(next, options);
   };
 }
 
@@ -811,7 +813,7 @@ export function createVault({
 }) {
   const pending = new Map();
   const asks = new Map();
-  const workers = new Set();
+  const workers = new ScrubWorkers(timers);
   const { view, timings } = vaultState(now);
   const state = snapshots({ now, timers, pending, view, timings });
   const buttons = vaultButtons({ document, origin, media, hold: listing(state, timers) });
@@ -890,6 +892,7 @@ export function createVault({
   const agent = vaultAgent({ frame, origin, pair, loads: () => timings.loads });
 
   async function hello() {
+    workers.invalidate();
     const generation = ++epoch;
     view.welcomed = false;
     view.status = null;
@@ -945,25 +948,22 @@ export function createVault({
       onRequest,
       ask,
       framed,
-      generation: () => epoch,
-      barrier: scrubBarrier(view, pair, take, placeholders, forward),
+      generation: () => workers.generation,
+      barrier: scrubBarrier(view, pair, take, placeholders, forward, workers),
     }),
     ...forwardState(view, () => epoch),
     placeholders: () => [...view.placeholders],
     scrub: pair,
     scrubText: vaultScrubber({ frame, origin, pair }),
     ...forwardingPort(call),
-    attach(worker) {
-      workers.add(worker);
-      agent(worker);
-      return () => workers.delete(worker);
-    },
+    attach: (worker) => workers.attach(worker, agent),
     reconnect: () => (timings.loads ? hello() : Promise.resolve()),
     sudoGid(gid) {
       const wanted = Number.isInteger(gid) ? gid : undefined;
       return timings.loads && wanted !== sentGid ? hello() : Promise.resolve();
     },
     close() {
+      workers.invalidate();
       epoch += 1;
       view.welcomed = false;
       view.status = null;

@@ -194,6 +194,7 @@ await step('seed', async () => {
     'releases.js',
     'remote.js',
     'requests.js',
+    'scrub-receipts.js',
     'secrets.js',
     'serial.js',
     'site.js',
