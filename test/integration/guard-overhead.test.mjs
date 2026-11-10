@@ -33,13 +33,18 @@ function fixture() {
 function recording(port) {
   const seen = { snapshot: null };
   const server = createServer(async (req, res) => {
-    const answer = await fetch(`http://127.0.0.1:${port}${req.url}`);
-    const body = (await answer.text()).replaceAll(
-      `127.0.0.1:${port}`,
-      `127.0.0.1:${server.address().port}`
-    );
-    res.writeHead(answer.status, { 'content-type': 'application/json' });
-    res.end(body);
+    try {
+      const answer = await fetch(`http://127.0.0.1:${port}${req.url}`);
+      const body = (await answer.text()).replaceAll(
+        `127.0.0.1:${port}`,
+        `127.0.0.1:${server.address().port}`
+      );
+      res.writeHead(answer.status, { 'content-type': 'application/json' });
+      res.end(body);
+    } catch {
+      res.writeHead(502, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'the benchmark browser is unavailable' }));
+    }
   });
   server.on('upgrade', (req, socket, head) => {
     const upstream = new WebSocket(`ws://127.0.0.1:${port}${req.url}`, {
@@ -69,7 +74,15 @@ function recording(port) {
   });
   return new Promise((resolve) =>
     server.listen(0, '127.0.0.1', () =>
-      resolve({ port: server.address().port, seen, close: () => server.close() })
+      resolve({
+        port: server.address().port,
+        seen,
+        close: () =>
+          new Promise((done) => {
+            server.close(done);
+            server.closeAllConnections();
+          }),
+      })
     )
   );
 }
@@ -194,19 +207,41 @@ async function kernel(page, script) {
   return out;
 }
 
+test('the benchmark recording proxy returns an explicit failure when the isolated browser stops during an HTTP poll', {
+  timeout: 10000,
+}, async (t) => {
+  const browser = createServer((_req, res) => res.end('{}'));
+  await new Promise((resolve) => browser.listen(0, '127.0.0.1', resolve));
+  const port = browser.address().port;
+  const proxy = await recording(port);
+  t.after(() => proxy.close());
+  await new Promise((resolve) => browser.close(resolve));
+  const response = await fetch(`http://127.0.0.1:${proxy.port}/json/version`, {
+    signal: AbortSignal.timeout(2000),
+  });
+  assert.equal(response.status, 502);
+  assert.deepEqual(await response.json(), { error: 'the benchmark browser is unavailable' });
+});
+
 const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
 
 test('guard overhead: snapshot and screenshot through seven, the link and the CLI take at most 10x what they take unguarded in Chrome', {
   skip: !CLI,
 }, async (t) => {
   const site = await fixture();
-  t.after(() => site.close());
-  const other = await launch({ vault: false });
-  t.after(() => other.close());
+  let other;
+  let proxy;
+  let node;
+  t.after(async () => {
+    node?.kill();
+    await proxy?.close();
+    await other?.close();
+    site.close();
+  });
+  other = await launch({ vault: false });
   const { port: debugPort } = await devtools(other);
   await debuggerUrl(debugPort);
-  const proxy = await recording(debugPort);
-  t.after(() => proxy.close());
+  proxy = await recording(debugPort);
   const direct = await raw(debugPort);
   const url = `http://127.0.0.1:${site.address().port}/`;
   const { targetId: target } = (await direct.send('Target.createTarget', { url })).result;
@@ -216,7 +251,7 @@ test('guard overhead: snapshot and screenshot through seven, the link and the CL
   const page = await chrome.page(t);
   await boot(page);
   await ready(page);
-  const node = attach(
+  node = attach(
     CLI,
     [
       '--signal',
@@ -229,7 +264,6 @@ test('guard overhead: snapshot and screenshot through seven, the link and the CL
     ],
     { stdio: ['pipe', 'pipe', 'inherit'] }
   );
-  t.after(() => node.kill());
   await page.expose('sliccLinkSend', (message) => node.stdin.write(`${JSON.stringify(message)}\n`));
   createInterface({ input: node.stdout }).on('line', (line) =>
     page.evaluate((line) => globalThis.sliccLinkReceive(line), line).catch(() => {})
