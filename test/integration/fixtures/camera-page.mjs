@@ -24,7 +24,14 @@ function sleep(ms, signal) {
   });
 }
 
+const builtIns = {
+  date: () => new Date(0),
+  map: () => new Map([['width', 640]]),
+  bytes: () => new Uint8Array([1]),
+};
+
 function constraintsOf(options) {
+  if (Object.hasOwn(builtIns, options.built)) return { video: builtIns[options.built]() };
   if (options.asks !== undefined) return options.asks;
   const track = {};
   if (options.device !== undefined) track.deviceId = { exact: options.device };
@@ -116,6 +123,7 @@ export async function handle(request) {
   if (
     request.options?.asks === undefined &&
     request.options?.keep === undefined &&
+    request.options?.built === undefined &&
     Object.hasOwn(real.kinds, request.kind)
   )
     return real.handle(request);

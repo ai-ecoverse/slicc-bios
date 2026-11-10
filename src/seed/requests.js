@@ -859,7 +859,11 @@ export function displayer({
   };
 }
 
-const plain = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
+const plain = (value) => {
+  if (typeof value !== 'object' || value === null) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+};
 const positive = (value) => typeof value === 'number' && Number.isFinite(value) && value > 0;
 const SIZES = ['width', 'height', 'frameRate'];
 

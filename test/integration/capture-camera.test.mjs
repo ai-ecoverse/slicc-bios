@@ -435,6 +435,7 @@ test('a deny with a message, a blocked camera, EAGAIN’s own prompt, and camera
       [`videovideo${index}`, { type: 'video/webm', duration: 1, asks: { video } }],
     ]),
     ['nullwidth', { type: 'image/png', asks: { video: { width: null } } }],
+    ...['date', 'map', 'bytes'].map((built) => [`built${built}`, { type: 'image/png', built }]),
   ]) {
     await run(page, shaped(header, name));
     await shows(page, `${name} 1`);
