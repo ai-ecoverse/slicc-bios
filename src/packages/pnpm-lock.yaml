@@ -21,11 +21,11 @@ importers:
         specifier: 1.0.2
         version: 1.0.2
       '@ai-ecoverse/slicc-kernel':
-        specifier: 1.176.1
-        version: 1.176.1
+        specifier: 1.177.0
+        version: 1.177.0
       '@ai-ecoverse/slicc-spectrum':
-        specifier: 2.9.1
-        version: 2.9.1
+        specifier: 2.10.0
+        version: 2.10.0
       '@ai-ecoverse/wasi-fnox':
         specifier: 1.46.0-2
         version: 1.46.0-2
@@ -65,8 +65,8 @@ packages:
     resolution: {integrity: sha512-HVF7NUEZLIopswppBGUOA20HE6cK+Gjyo+UdSXJXm1qqmo5d/2w9GHeTtco4LH25ROFG6zPerzVTrcgfub/aCQ==}
     engines: {node: '>=24', slicc-kernel: '>=1.176.0'}
 
-  '@ai-ecoverse/slicc-kernel@1.176.1':
-    resolution: {integrity: sha512-fB+O3oVv0jsRpLzMb1tPY5BgcGJNtreqCTc4yhbtAgXULkorolVVdIqzYourpMFR/oi+43+RIPsZtnJOKOmTaA==}
+  '@ai-ecoverse/slicc-kernel@1.177.0':
+    resolution: {integrity: sha512-tSUI1a9+0LsICjdp1Q6VbxvhYzVcBvebhhLN/4UxbGghKLaGPV2hPvoJuoyCaLsEnJ+6pJ8REXm1Qb0M2Iy/Gw==}
     engines: {node: '>=26'}
 
   '@ai-ecoverse/slicc-ortllama@1.28.0':
@@ -112,8 +112,8 @@ packages:
       webgpu:
         optional: true
 
-  '@ai-ecoverse/slicc-spectrum@2.9.1':
-    resolution: {integrity: sha512-2h8+diyo/vJMiKtLUqmQo0pflLgXmrZpvzqgatB++euPriwCuCuKTlIEPlpISYNWzcU2QJyusKNKAmLEchg3ng==}
+  '@ai-ecoverse/slicc-spectrum@2.10.0':
+    resolution: {integrity: sha512-LpVqWzStnZSBJdr/1pnKXhhjRtLrXInLT7UxzHo3d38k6qJ7241ABESjSMUGErbfdpNwE3XPgyz3ysXzwXwuMQ==}
     engines: {node: '>=24'}
 
   '@ai-ecoverse/wasi-fnox@1.46.0-2':
@@ -261,7 +261,7 @@ snapshots:
 
   '@ai-ecoverse/slicc-devices@1.0.2': {}
 
-  '@ai-ecoverse/slicc-kernel@1.176.1': {}
+  '@ai-ecoverse/slicc-kernel@1.177.0': {}
 
   '@ai-ecoverse/slicc-ortllama@1.28.0':
     dependencies:
@@ -279,7 +279,7 @@ snapshots:
       - utf-8-validate
     optional: true
 
-  '@ai-ecoverse/slicc-spectrum@2.9.1': {}
+  '@ai-ecoverse/slicc-spectrum@2.10.0': {}
 
   '@ai-ecoverse/wasi-fnox@1.46.0-2': {}
 

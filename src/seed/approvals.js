@@ -25,7 +25,9 @@ export function approval(req) {
     id: String(req.id),
     kind: 'sudo',
     requester: requester(req),
-    command: [req.path ?? req.argv[0], ...req.argv.slice(1)].map(quote).join(' '),
+    command: req.validate
+      ? `start a sudo timestamp for ${req.user} (no command)`
+      : [req.path ?? req.argv[0], ...req.argv.slice(1)].map(quote).join(' '),
     target: req.target,
     cwd: req.cwd,
     createdAt: req.createdAt,
@@ -130,7 +132,10 @@ export function createApprovals({ channel = new BroadcastChannel(CHANNEL) } = {}
       publish();
     },
     approve(req, { signal } = {}) {
-      return wait(approval(req), signal);
+      return wait(approval(req), signal).then((decision) => {
+        if (decision !== 'once') return 'deny';
+        return req.timestamp === true ? { answer: 'once', timestamp: true } : 'once';
+      });
     },
     async askTray(request, { timers = globalThis } = {}) {
       const item = trayApproval(request);

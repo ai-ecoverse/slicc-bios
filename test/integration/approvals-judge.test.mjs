@@ -88,7 +88,7 @@ const buttons = (page, id) =>
       'id',
       `const dialog = (${find})('slicc-approvals')?.shadowRoot?.querySelector('dialog[data-approval="' + id + '"]');
       const actions = dialog && [...dialog.querySelectorAll('[data-action]')].map((b) => b.dataset.action);
-      return actions?.includes('once') ? actions.filter((a) => ['always', 'once', 'deny'].includes(a)).sort() : null;`
+      return actions?.includes('once') ? actions.filter((a) => ['always', 'once', 'deny', 'stop'].includes(a)).sort() : null;`
     ),
     id
   );
@@ -182,6 +182,25 @@ async function asked(page, pattern, until = () => true) {
     });
 }
 
+const approver = (page, value) =>
+  page.evaluate(async (value) => {
+    const { joinSwitchboard } = await import('/os/tabs.js');
+    const { connectAgent } = await import(
+      '/opt/agent/node_modules/@ai-ecoverse/slicc-agent/dist/page.js'
+    );
+    window.policyBoard ??= await joinSwitchboard({ visible: false });
+    const { agent } = await window.policyBoard.ports(['agent']);
+    const connection = await connectAgent(agent);
+    try {
+      const { policy, error } = await connection.control.approvalPolicySet({
+        sudo: { approver: value },
+      });
+      return error ?? policy.sudo.approver;
+    } finally {
+      connection.close();
+    }
+  }, value);
+
 const judgedFor = (pattern) =>
   judged.find((input) =>
     pattern.test(String(input.state?.request?.untrusted ?? '').split('\n')[1] ?? '')
@@ -269,7 +288,7 @@ test('with the agent up, bios hands each sudo to the agent with the kernel’s f
   assert.deepEqual(await page.evaluate(() => window.offers), []);
   await run(
     page,
-    "clear; cd /; echo '{}' | sudo -u cone sudo jq .rules /etc/slicc/secrets-policy.toml; echo piped=$?"
+    "clear; cd /; sudo -u cone sudo -k; echo '{}' | sudo -u cone sudo jq .rules /etc/slicc/secrets-policy.toml; echo piped=$?"
   );
   const piped = await asked(page, JQ);
   await click(page, piped.id, 'deny');
@@ -284,7 +303,7 @@ test('with the agent up, bios hands each sudo to the agent with the kernel’s f
   await click(page, gn.id, 'once');
   await shows(page, 'gn=0');
 
-  await run(page, 'clear; cd /; sudo -u cone sudo id -Gn; echo Gn=$?');
+  await run(page, 'clear; cd /; sudo -u cone sudo -k; sudo -u cone sudo id -Gn; echo Gn=$?');
   const Gn = await asked(page, /\/id -Gn$/, (item) => item.always === true);
   assert.equal(Gn.always, true);
   assert.deepEqual(await buttons(page, Gn.id), ['always', 'deny', 'once']);
@@ -292,7 +311,10 @@ test('with the agent up, bios hands each sudo to the agent with the kernel’s f
   await shows(page, 'Gn=0');
   assert.match(await sudoers(page), /Stdin none Cmnd \S*id -Gn/);
 
-  await run(page, "clear; cd /; sudo -u cone sudo printf '%s-' $'a\\rb'; echo cr=$?");
+  await run(
+    page,
+    "clear; cd /; sudo -u cone sudo -k; sudo -u cone sudo printf '%s-' $'a\\rb'; echo cr=$?"
+  );
   const cr = await asked(page, /\/printf /, (item) => !!item.verdict);
   assert.equal(cr.always, false);
   const crFacts = judgedFor(/\/printf /);
@@ -305,7 +327,7 @@ test('with the agent up, bios hands each sudo to the agent with the kernel’s f
 
   forceForbidden(0.9);
   try {
-    await run(page, 'clear; cd /; sudo -u cone sudo id -u; echo vetoed=$?');
+    await run(page, 'clear; cd /; sudo -u cone sudo -k; sudo -u cone sudo id -u; echo vetoed=$?');
     const vetoed = await asked(page, /\/id -u$/, (item) => !!item.verdict);
     assert.equal(vetoed.always, false);
     assert.equal(vetoed.verdict?.level, 1);
@@ -338,6 +360,44 @@ test('with the agent up, bios hands each sudo to the agent with the kernel’s f
   assert.deepEqual(await buttons(page, killed.id), ['deny', 'once']);
   await click(page, killed.id, 'deny');
   await shows(page, 'kill-done=1');
+
+  await run(page, 'clear; cd /; sudo -u cone sudo -k; sudo -u cone sudo id -u; echo person=$?');
+  const person = await asked(page, /\/id -u$/, (item) => !!item.verdict);
+  assert.deepEqual(await buttons(page, person.id), ['always', 'deny', 'once']);
+  await click(page, person.id, 'once');
+  await shows(page, 'person=0');
+  await closed(page);
+  await page.evaluate(() => {
+    window.offers = [];
+  });
+  await run(
+    page,
+    'clear; cd /; sudo -u cone sudo -n id -u; sudo -u cone sudo ls -la /etc > /dev/null; echo window=$?'
+  );
+  await shows(page, 'window=0');
+  assert.match(await screen(page), /0\s+window=0/);
+  assert.deepEqual(await page.evaluate(() => window.offers), []);
+  await run(page, 'clear; cd /; sudo -u cone sudo -K; sudo -u cone sudo -n id -u; echo shut=$?');
+  await shows(page, 'shut=1');
+  assert.match(await screen(page), /a password is required/);
+
+  assert.deepEqual(await approver(page, 'agent'), 'agent');
+  try {
+    await page.evaluate(() => {
+      window.offers = [];
+    });
+    await run(
+      page,
+      'clear; cd /; sudo -u cone sudo ls -la /etc > /dev/null; echo judged=$?; sudo -u cone sudo -n ls -la /etc > /dev/null; echo unstamped=$?; echo judge-$((40 + 2))'
+    );
+    await shows(page, 'judge-42', 5 * 60 * 1000);
+    const text = await screen(page);
+    assert.match(text, /judged=0/, text);
+    assert.match(text, /a password is required\s+unstamped=1/, text);
+    assert.deepEqual(await page.evaluate(() => window.offers), []);
+  } finally {
+    assert.deepEqual(await approver(page, 'user'), 'user');
+  }
   assert.deepEqual(page.errors, []);
 });
 
