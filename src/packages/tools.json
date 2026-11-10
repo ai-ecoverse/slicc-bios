@@ -89,5 +89,9 @@
   "@ai-ecoverse/tzdata": {
     "id": "tzdata",
     "label": "tzdata (time zones)"
+  },
+  "@ai-ecoverse/gh-upskill": {
+    "id": "upskill",
+    "label": "upskill (upskill, gh-upskill)"
   }
 }
