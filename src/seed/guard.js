@@ -55,7 +55,11 @@ const TREES = new Set(['Page.getFrameTree', 'Page.getResourceTree']);
 const OBSERVED = new Set([...TREES, ...HISTORY]);
 const NAV_MS = 10000;
 const NAV_TYPES = new Set(['page', 'iframe', 'background_page', 'webview']);
-const UNWAITED = new Set(['Target.getTargetInfo', 'Target.detachFromTarget']);
+const UNWAITED = new Set([
+  'Target.getTargetInfo',
+  'Target.detachFromTarget',
+  'Runtime.runIfWaitingForDebugger',
+]);
 const POLL_MS = 100;
 const REMEMBERED = 10000;
 const HISTORY_WAIT = 5000;
@@ -3012,8 +3016,6 @@ class Guard {
     this.touch(targetId, true);
     const nav = this.navs.get(targetId);
     await nav?.ready;
-    if (this.waiting.delete(sessionId))
-      void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
     const info = await this.named(targetId);
     if (!info || nav?.taken || nav?.failed) return this.cut(sessionId, parent);
     this.targets.delete(info.targetId);
@@ -3617,7 +3619,8 @@ class Guard {
     if (method === 'Target.attachedToTarget') {
       const info = params.targetInfo ?? {};
       if (await this.skippedAttachment(message)) return true;
-      if (params.waitingForDebugger) this.waiting.add(params.sessionId);
+      if (params.waitingForDebugger)
+        void this.call('Runtime.runIfWaitingForDebugger', {}, params.sessionId);
       if (!info.url && (info.type === 'page' || info.type === 'iframe')) {
         void this.blank(message);
         return true;
