@@ -67,7 +67,7 @@ test('stranded a held empty-URL attachment cannot obtain recovery from a protect
     PROTECTED
   );
   assert.equal(
-    (await wire.send('Target.closeTarget', { targetId: 'held-recovery' })).error?.message,
+    (await wire.send('Target.activateTarget', { targetId: 'held-recovery' })).error?.message,
     PROTECTED
   );
   wire.hold(() => false);

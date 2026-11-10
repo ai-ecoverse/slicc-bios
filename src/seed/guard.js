@@ -5413,7 +5413,7 @@ class Guard {
       (target?.url?.startsWith('chrome-error:') || nav.scrub);
     if (!guarded && !error) return false;
     const proof = STRANDED.has(method) ? await this.stranded(params.targetId) : null;
-    if (!proof) return true;
+    if (!proof) return !this.closable(message);
     this.recoveries.set(message, proof);
     return false;
   }
@@ -5485,9 +5485,13 @@ class Guard {
     return { ...message, params: { ...params, uniqueContextId } };
   }
 
+  closable({ method, params }) {
+    return method === 'Target.closeTarget' && this.targets.get(params?.targetId)?.type === 'page';
+  }
+
   departing(message) {
     const proof = this.recoveries.get(message);
-    if (proof && !this.fresh(proof)) return true;
+    if (proof && !this.fresh(proof) && !this.closable(message)) return true;
     const targetId = this.sessions.get(message.sessionId)?.targetId ?? message.params?.targetId;
     if (message.method === 'Page.stopLoading')
       message.stopping = this.loadSnapshot(message.sessionId);
