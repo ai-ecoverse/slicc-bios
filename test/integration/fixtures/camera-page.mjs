@@ -64,7 +64,7 @@ function film(stream, options, signal, progress) {
     if (done) return false;
     done = true;
     clearTimeout(timer);
-    stopAll(stream);
+    if (!options.keep) stopAll(stream);
     return true;
   };
   return new ReadableStream({
@@ -113,7 +113,11 @@ async function listed() {
 }
 
 export async function handle(request) {
-  if (request.options?.asks === undefined && Object.hasOwn(real.kinds, request.kind))
+  if (
+    request.options?.asks === undefined &&
+    request.options?.keep === undefined &&
+    Object.hasOwn(real.kinds, request.kind)
+  )
     return real.handle(request);
   if (request.kind === 'capture.devices') return listed();
   const { options = {}, signal = new AbortController().signal, progress = () => {} } = request;
@@ -124,7 +128,7 @@ export async function handle(request) {
   try {
     return await still(stream, options, signal);
   } finally {
-    stopAll(stream);
+    if (!options.keep) stopAll(stream);
   }
 }
 

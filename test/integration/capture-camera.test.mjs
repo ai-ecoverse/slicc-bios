@@ -421,11 +421,52 @@ test('a deny with a message, a blocked camera, EAGAIN’s own prompt, and camera
     ['loose', { type: 'image/png', device: 'cam-1', asks: { video: { deviceId: 'cam-1' } } }],
     ['screen', { type: 'image/png', asks: { video: { displaySurface: 'monitor' } } }],
     ['extra', { type: 'image/png', asks: { video: true, peerIdentity: 'x' } }],
+    ...[null, 0, ''].flatMap((audio, index) => [
+      [`stillaudio${index}`, { type: 'image/png', asks: { video: true, audio } }],
+      [`videoaudio${index}`, { type: 'video/webm', duration: 1, asks: { video: true, audio } }],
+      [
+        `bothaudio${index}`,
+        { type: 'video/webm', duration: 1, microphone: true, asks: { video: true, audio } },
+      ],
+    ]),
+    ['bothfalse', { type: 'video/webm', duration: 1, microphone: true, asks: { video: true } }],
+    ...[null, 0, ''].flatMap((video, index) => [
+      [`stillvideo${index}`, { type: 'image/png', asks: { video } }],
+      [`videovideo${index}`, { type: 'video/webm', duration: 1, asks: { video } }],
+    ]),
+    ['nullwidth', { type: 'image/png', asks: { video: { width: null } } }],
   ]) {
     await run(page, shaped(header, name));
     await shows(page, `${name} 1`);
     await shows(page, `${name} refused`);
   }
   assert.deepEqual(await page.evaluate(() => window.opened), []);
+  assert.deepEqual(page.errors, []);
+});
+
+test('seven stops the camera it handed out when the request ends, even when the module keeps its tracks', async (t) => {
+  const page = await seven(t);
+  await run(page, ask({ type: 'image/png', warmup: 0, keep: true }, '/tmp/kept.png', 'kept'));
+  await shows(page, 'kept 0');
+  await page.until(() => window.opened.length === 1 && window.running === 0);
+  await run(
+    page,
+    ask(
+      { type: 'video/webm', duration: 1, microphone: true, keep: true },
+      '/tmp/kept.webm',
+      'kept video'
+    )
+  );
+  await shows(page, 'kept video 0', 60000);
+  await page.until(() => window.opened.length === 2 && window.running === 0);
+  await run(
+    page,
+    ask({ type: 'video/webm', duration: 60, keep: true }, '/tmp/stopped.webm', 'kept stop')
+  );
+  await page.until(() => window.chips().length === 1 && window.running === 1);
+  await recorded(page);
+  await page.evaluate((selector) => window.deep(selector).click(), STOP);
+  await shows(page, 'kept stop 0', 60000);
+  await page.until(() => window.chips().length === 0 && window.running === 0);
   assert.deepEqual(page.errors, []);
 });

@@ -215,12 +215,14 @@ export function running(hook, extras = () => ({})) {
     const {
       failure = () => null,
       end,
+      close,
       ...extra
     } = extras({
       ...request,
       signal: open.signal,
     });
     open.ends?.(end);
+    open.closes?.(close);
     let reply;
     try {
       reply = await hook.handle({ ...request, ...extra, signal: open.signal });
@@ -545,6 +547,7 @@ export function captures({
     let end = () => false;
     let remove = () => {};
     let finished = false;
+    let close = () => {};
     const entry = {
       whats: capture.whats,
       stop: (reason) => {
@@ -557,6 +560,7 @@ export function captures({
       open.delete(entry);
       remove();
       request.signal?.removeEventListener('abort', forward);
+      close();
     };
     const forward = () => {
       local.abort(request.signal.reason);
@@ -578,6 +582,9 @@ export function captures({
       signal: local.signal,
       ends(given) {
         if (typeof given === 'function') end = given;
+      },
+      closes(given) {
+        if (typeof given === 'function') close = given;
       },
       reply: (reply) => {
         if (reply?.getReader) return watched(reply, done);
@@ -609,7 +616,7 @@ export const CAPTURE_VIDEO = ['video/webm', 'video/mp4'];
 export const captureSound = (options) =>
   CAPTURE_VIDEO.includes(options?.type) && options?.system === true;
 
-const DEVICE_ID = /^[\w+/=.-]+$/;
+const DEVICE_ID = /^[\w+/=.-]{1,256}$/;
 
 export function captureMicrophone(options) {
   if (!CAPTURE_VIDEO.includes(options?.type)) return false;
@@ -874,10 +881,22 @@ export function cameraVideo(video, device) {
 
 function copied(value) {
   try {
-    return JSON.parse(JSON.stringify(value));
+    return structuredClone(value);
   } catch {
     return null;
   }
+}
+
+export function sameAudio(audio, microphone) {
+  if (!microphone) return audio === undefined || audio === false;
+  if (microphone === true) return audio === true;
+  return (
+    plain(audio) &&
+    Object.keys(audio).length === 1 &&
+    plain(audio.deviceId) &&
+    Object.keys(audio.deviceId).length === 1 &&
+    audio.deviceId.exact === microphone
+  );
 }
 
 export function cameraAsked(asked, options) {
@@ -888,8 +907,7 @@ export function cameraAsked(asked, options) {
     !plain(constraints) ||
     Object.keys(constraints).some((key) => key !== 'audio' && key !== 'video') ||
     !cameraVideo(constraints.video, device) ||
-    JSON.stringify(constraints.audio ?? false) !==
-      JSON.stringify(microphone ? heard(microphone) : false)
+    !sameAudio(constraints.audio, microphone)
   )
     throw refused(CAMERA_REFUSED);
   return { constraints, whats: microphone ? ['camera', 'microphone'] : ['camera'] };
@@ -902,6 +920,7 @@ export function cameraman({
   return ({ options, signal } = {}) => {
     let used = false;
     let sharing = null;
+    let held = null;
     const userMedia = async (asked) => {
       if (used) throw refused(CAMERA_REFUSED);
       const { constraints, whats } = cameraAsked(asked, options);
@@ -915,6 +934,7 @@ export function cameraman({
           'NotSupportedError'
         );
       const stream = await devices.getUserMedia(constraints);
+      held = stream;
       if (signal?.aborted) {
         stopped(stream);
         throw signal.reason;
@@ -927,7 +947,7 @@ export function cameraman({
       sharing.dispatchEvent?.(new Event('ended'));
       return true;
     };
-    return { userMedia, end };
+    return { userMedia, end, close: () => stopped(held) };
   };
 }
 
