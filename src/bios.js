@@ -181,6 +181,7 @@ await step('seed', async () => {
     'os.css',
     'os.js',
     'packages.js',
+    'kernel-oauth.js',
     'pair.js',
     'placeholders.js',
     'policy.js',

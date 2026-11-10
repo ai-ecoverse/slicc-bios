@@ -1,4 +1,5 @@
 import { vaultCause } from './causes.js';
+import { kernelOAuthOp, oauthRelay } from './kernel-oauth.js';
 import { policyDependent } from './policy.js';
 import { askRelay } from './secrets.js';
 import { production } from './site.js';
@@ -161,7 +162,10 @@ export function answerEgress(transport, request, port, { timers = globalThis } =
       const read = await bytesOf(response.body, controller.signal);
       reply({ status: response.status, headers: pairs(response.headers), body: read });
     } catch (error) {
-      reply({ error: `${error?.code ?? 'EIO'}: the token request failed` });
+      const code = ['EACCES', 'ETIMEDOUT', 'ENOTCONN', 'ECANCELED', 'EIO'].includes(error?.code)
+        ? error.code
+        : 'EIO';
+      reply({ error: `${code}: the token request failed` });
     }
   })();
 }
@@ -445,9 +449,13 @@ export function sealedRelay({
   away = () => false,
   ask = askRelay({ call }),
   framed = () => false,
+  barrier,
+  generation,
 }) {
+  const oauth = oauthRelay({ call, barrier, generation });
   return async (req, { signal } = {}) => {
     const { caller, ...rest } = req ?? {};
+    if (kernelOAuthOp(rest.op)) return oauth(rest, caller, signal);
     const restricted = restrictedSealed(rest, policyReady, framed);
     if (restricted) return restricted;
     if (Object.hasOwn(KERNEL_OPS, rest.op ?? '')) return kernelOp(call, rest, { signal, away });
@@ -556,7 +564,7 @@ const READS = new Set(['list', 'audit']);
 function dropSent(pending, asks) {
   for (const [id, item] of pending) {
     if (!item.sent) continue;
-    if (READS.has(item.message.op)) {
+    if (READS.has(item.message.op) && !item.raw) {
       item.sent = null;
       continue;
     }
@@ -625,7 +633,7 @@ function vaultCaller({ pending, asks, view, post, state, next, now }) {
   return (
     op,
     fields = {},
-    { value, signal, transfer = [], dropAway = false, held = false, asked } = {}
+    { value, signal, transfer = [], dropAway = false, held = false, asked, raw = false } = {}
   ) => {
     if (signal?.aborted)
       return Promise.reject(failure({ code: 'ECANCELED', message: 'cancelled' }));
@@ -643,6 +651,7 @@ function vaultCaller({ pending, asks, view, post, state, next, now }) {
         at: now(),
         dropAway,
         held,
+        raw,
       };
       pending.set(id, item);
       signal?.addEventListener?.(
@@ -706,12 +715,19 @@ function vaultAnswerer(pending, asks, forward) {
     const item = pending.get(reply.id);
     if (!item) return;
     pending.delete(reply.id);
-    if (reply.error) item.reject(failure(reply.error, item.value));
+    if (item.raw) item.resolve(reply);
+    else if (reply.error) item.reject(failure(reply.error, item.value));
     else {
       if (SCRUBBING.has(item.message.op)) forward();
       item.resolve(reply);
     }
   };
+}
+
+function rawAnswer(pending, answer, message) {
+  if (!pending.get(message?.id)?.raw) return false;
+  answer(message);
+  return true;
 }
 
 function ended(message, { asks, state, onCancelled }) {
@@ -756,6 +772,23 @@ function vaultAgent({ frame, origin, pair, loads }) {
       port2,
     ]);
     worker.postMessage({ vault: port1, scrub: pair() }, [port1]);
+  };
+}
+
+async function vaultListing(call, view, state) {
+  try {
+    view.list = (await call('list')).list;
+    state.emit('list', view.list);
+  } catch {}
+}
+
+function scrubBarrier(view, pair, take, placeholders, forward) {
+  return ({ placeholders: listed, scrub: next }) => {
+    if (!view.welcomed || next.version < (pair()?.version ?? 0))
+      throw Object.assign(new Error(), { code: 'ENOTCONN' });
+    take(next);
+    placeholders(listed);
+    forward();
   };
 }
 
@@ -809,12 +842,6 @@ export function createVault({
   };
 
   const call = vaultCaller({ pending, asks, view, post, state, next: () => ++serial, now });
-  async function relist() {
-    try {
-      view.list = (await call('list')).list;
-      state.emit('list', view.list);
-    } catch {}
-  }
 
   const answer = vaultAnswerer(pending, asks, forward);
 
@@ -830,7 +857,7 @@ export function createVault({
     } else if (message.event === 'placeholders') {
       take(message.scrub);
       placeholders(message.placeholders);
-    } else if (message.event === 'changed') void relist();
+    } else if (message.event === 'changed') void vaultListing(call, view, state);
     else if (message.event === 'egress' && ports[0] && transport)
       void answerEgress(transport, message.request, ports[0], { timers });
     else if (message.event === 'asked' || message.event === 'cancelled')
@@ -839,7 +866,9 @@ export function createVault({
   }
 
   function receive(port, message, ports, generation) {
-    if (port !== page || generation !== epoch || message?.v !== 1) return;
+    if (port !== page || generation !== epoch) return;
+    if (rawAnswer(pending, answer, message)) return state.refresh();
+    if (message?.v !== 1) return;
     if (message.op === 'welcome') {
       view.welcomed = true;
       timings.welcomedAt = now();
@@ -848,7 +877,7 @@ export function createVault({
       placeholders(message.placeholders);
       state.emit('status', view.status);
       for (const item of pending.values()) post(item);
-      void relist();
+      void vaultListing(call, view, state);
       void call('placeholders')
         .then((reply) => placeholders(reply.placeholders))
         .catch(() => {});
@@ -908,7 +937,17 @@ export function createVault({
     frame,
     port: vaultPort({ call, state, ...buttons, framed }),
     call,
-    sealed: relayOf(view, state, { call, forward, users, policyReady, onRequest, ask, framed }),
+    sealed: relayOf(view, state, {
+      call,
+      forward,
+      users,
+      policyReady,
+      onRequest,
+      ask,
+      framed,
+      generation: () => epoch,
+      barrier: scrubBarrier(view, pair, take, placeholders, forward),
+    }),
     ...forwardState(view, () => epoch),
     placeholders: () => [...view.placeholders],
     scrub: pair,
