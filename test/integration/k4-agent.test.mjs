@@ -449,6 +449,7 @@ test('enforce: Deny and stop on a cone’s looping sudo ends the loop and the tu
           .model.approvals.list()
           .map((item) => ({
             id: item.id,
+            kind: item.kind,
             requester: item.requester,
             command: item.command,
             state: item.stoppable === true ? 'stoppable' : 'terminal',
@@ -532,9 +533,9 @@ test('enforce: Deny and stop on a cone’s looping sudo ends the loop and the tu
             .find(
               (item) =>
                 !before.includes(item.id) &&
-                item.kind === 'sudo' &&
                 item.requester?.kind === 'user' &&
-                /(?:^| )id -un$/.test(item.command)
+                item.requester?.where === 'a terminal' &&
+                /id -un$/.test(item.command)
             ) ?? null
         );`
       ),
@@ -542,7 +543,7 @@ test('enforce: Deny and stop on a cone’s looping sudo ends the loop and the tu
     )
     .catch(async (error) => {
       throw new Error(
-        `the terminal's sudo never reached approvals as a new user request: ${error.message}\n${JSON.stringify(await listed())}`
+        `the terminal's sudo never reached approvals as a new user request: ${error.message}\nbefore=${JSON.stringify(before)}\n${JSON.stringify(await listed())}`
       );
     });
   assert.equal(terminal.requester.kind, 'user');
