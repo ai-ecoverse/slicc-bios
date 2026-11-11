@@ -12,8 +12,8 @@ importers:
         specifier: 1.2.0
         version: 1.2.0
       '@ai-ecoverse/slicc-browsers':
-        specifier: 1.21.1
-        version: 1.21.1
+        specifier: 1.22.0
+        version: 1.22.0
       '@ai-ecoverse/slicc-capture':
         specifier: 1.4.2
         version: 1.4.2
@@ -21,8 +21,8 @@ importers:
         specifier: 1.1.0
         version: 1.1.0
       '@ai-ecoverse/slicc-kernel':
-        specifier: 1.178.3
-        version: 1.178.3
+        specifier: 1.178.4
+        version: 1.178.4
       '@ai-ecoverse/slicc-spectrum':
         specifier: 2.11.2
         version: 2.11.2
@@ -52,8 +52,8 @@ packages:
     engines: {node: '>=24', slicc-kernel: '>=1.153.0'}
     hasBin: true
 
-  '@ai-ecoverse/slicc-browsers@1.21.1':
-    resolution: {integrity: sha512-hSDzu9DUZZeU2PIaAaMhhb7QfP0+Fr3qHkAKtzQBfCj3LwI+4uaUWE9Xv9zwlwZHl0evgfnEf0hoPfkVWSqUEg==}
+  '@ai-ecoverse/slicc-browsers@1.22.0':
+    resolution: {integrity: sha512-O06bsrX6Zt2h0T4mgoqa6giFP7qnUvS+s1c0IxwZPRfE3rkhQA8eItWXinMV9D+WlTx3FbAqwCwGThf+dQQZaA==}
     engines: {node: '>=24'}
 
   '@ai-ecoverse/slicc-capture@1.4.2':
@@ -65,8 +65,8 @@ packages:
     resolution: {integrity: sha512-wCSAiNGB2Q2pYE8GmYofIrVWFPSgQP4itQDzY990dlWASiPRrtJnagnLVbdouRSE1guLUuN3KD6eiuLauebMfQ==}
     engines: {node: '>=24', slicc-kernel: '>=1.176.0'}
 
-  '@ai-ecoverse/slicc-kernel@1.178.3':
-    resolution: {integrity: sha512-tlgDBbhhOD4kh0cZhnKJLo55i8jq+6IE4Ygk/nbFoKtc3WzkEu2FR/Uw2POQtnUB3nwnuwar3ly7JNVBZHswPw==}
+  '@ai-ecoverse/slicc-kernel@1.178.4':
+    resolution: {integrity: sha512-TysbVXuGkpy0rfxX2u76m2sdreolwEhbB5JnvoNcxgQqg+M6xqT3HIs+h4RTWZwTUNGLrgt9QVm31A0W6u0dBw==}
     engines: {node: '>=26'}
 
   '@ai-ecoverse/slicc-ortllama@1.28.0':
@@ -264,7 +264,7 @@ snapshots:
       - utf-8-validate
       - webgpu
 
-  '@ai-ecoverse/slicc-browsers@1.21.1': {}
+  '@ai-ecoverse/slicc-browsers@1.22.0': {}
 
   '@ai-ecoverse/slicc-capture@1.4.2': {}
 
@@ -272,7 +272,7 @@ snapshots:
     dependencies:
       esptool-js: 0.7.1
 
-  '@ai-ecoverse/slicc-kernel@1.178.3': {}
+  '@ai-ecoverse/slicc-kernel@1.178.4': {}
 
   '@ai-ecoverse/slicc-ortllama@1.28.0':
     dependencies:
