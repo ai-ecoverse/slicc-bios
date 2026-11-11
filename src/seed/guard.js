@@ -47,7 +47,19 @@ const HOLD_MS = 2000;
 const BLANK_MS = 10000;
 const ERROR_PAGE = 'chrome-error://chromewebdata/';
 const SEVEN_HOST = new RegExp(catalog.seven.originHostPattern);
+const INNER = new Set(catalog.protectedOrigins.innerSchemes);
 const bare = (url) => url.split('#')[0];
+const unwrap = (url) => {
+  if (typeof url !== 'string' || !URL.canParse(url)) return url;
+  let text = url;
+  for (let i = 0; i < 8; i += 1) {
+    const parsed = new URL(text);
+    if (!INNER.has(parsed.protocol.slice(0, -1))) return text;
+    text = parsed.href.slice(parsed.protocol.length);
+    if (!URL.canParse(text)) return url;
+  }
+  return text;
+};
 const SCRUB_MS = 5000;
 const CLOSE_MS = 5000;
 export const BLANKED = 'data:text/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E';
@@ -1246,6 +1258,10 @@ class Guard {
       found.was = false;
     }
     found.guarded = found.guarded || verdict;
+    if (this.pendingKept(targetId)) {
+      found.guarded = true;
+      return true;
+    }
     return found.guarded;
   }
 
@@ -5416,6 +5432,7 @@ class Guard {
     if (!guarded && !error) return false;
     const proof = STRANDED.has(method) ? await this.stranded(params.targetId) : null;
     if (!proof) return !this.closable(message);
+    if (method === 'Target.closeTarget' && !this.closable(message)) return true;
     this.recoveries.set(message, proof);
     return false;
   }
@@ -5489,23 +5506,70 @@ class Guard {
 
   closable({ method, params }) {
     const target = this.targets.get(params?.targetId);
-    return method === 'Target.closeTarget' && target?.type === 'page' && !this.kept(target.url);
+    return (
+      method === 'Target.closeTarget' &&
+      target?.type === 'page' &&
+      !this.documentKept(params.targetId)
+    );
   }
 
-  kept(url) {
-    if (!URL.canParse(url) || url.startsWith('chrome-error:')) return false;
-    const { protocol, hostname, port, pathname, origin } = new URL(url);
+  sevenHost(url) {
+    if (typeof url !== 'string' || !URL.canParse(url)) return false;
+    const { protocol, hostname, port, origin } = new URL(url);
     if (protocol !== 'http:' && protocol !== 'https:') return false;
     const label = hostname.replace(/\.$/, '').match(SEVEN_HOST)?.[1];
     if (label === 'vault' || label?.startsWith('vault-')) return true;
-    const seven =
+    return (
       this.owned.some((text) => URL.canParse(text) && new URL(text).origin === origin) ||
       (protocol === `${catalog.seven.originScheme}:` &&
         port === '' &&
         label !== undefined &&
         !catalog.seven.excludedLabels.includes(label) &&
-        !catalog.seven.excludedLabelPrefixes.some((prefix) => label.startsWith(prefix)));
-    return seven && pathname.startsWith('/os/') && pathname !== '/os/callback.html';
+        !catalog.seven.excludedLabelPrefixes.some((prefix) => label.startsWith(prefix)))
+    );
+  }
+
+  kept(url) {
+    const text = unwrap(url);
+    if (typeof text !== 'string' || !URL.canParse(text) || text.startsWith('chrome-error:'))
+      return false;
+    if (this.vaultHost(text)) return true;
+    if (!this.sevenHost(text)) return false;
+    const { pathname } = new URL(text);
+    return pathname.startsWith('/os/') && pathname !== '/os/callback.html';
+  }
+
+  vaultHost(url) {
+    if (typeof url !== 'string' || !URL.canParse(url)) return false;
+    const label = new URL(url).hostname.replace(/\.$/, '').match(SEVEN_HOST)?.[1];
+    return label === 'vault' || Boolean(label?.startsWith('vault-'));
+  }
+
+  pendingKept(targetId) {
+    if (!targetId) return false;
+    let saw = false;
+    for (const [id, open] of this.opening) {
+      if (this.scopeTarget(id) !== targetId && id !== targetId) continue;
+      saw = true;
+      if (typeof open?.url !== 'string' || this.kept(open.url)) return true;
+    }
+    return this.pendingTarget(targetId) && !saw;
+  }
+
+  documentKept(targetId) {
+    const target = this.targets.get(targetId);
+    if (!target) return true;
+    if (this.kept(target.url) || this.kept(target.reported)) return true;
+    if (this.pendingKept(targetId)) return true;
+    const blank = inherits(target.url) || target.url === '';
+    if (!blank) return false;
+    const root = this.frameRoots.get(targetId) ?? this.scopes.get(targetId)?.root ?? targetId;
+    const framed = this.frames.get(root);
+    if (typeof framed === 'string' && (this.kept(framed) || this.sevenHost(framed))) return true;
+    const opener = target.openerId ? this.targets.get(target.openerId) : undefined;
+    if (opener && (this.kept(opener.url) || this.kept(opener.reported))) return true;
+    if (typeof framed === 'string' && framed !== '' && !inherits(framed)) return false;
+    return true;
   }
 
   departing(message) {

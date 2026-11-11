@@ -156,8 +156,52 @@ for (const [what, url] of closable) {
   });
 }
 
+const wrapped = [
+  ['view-source of the vault', 'view-source:https://vault.sliccy.ai/secret?k=SECRET'],
+  ['a blob of the vault', 'blob:https://vault.sliccy.ai/11111111-1111-1111-1111-111111111111'],
+  ['filesystem of the vault', 'filesystem:https://vault.sliccy.ai/temporary/a'],
+  ['view-source of seven’s UI', 'view-source:https://seven.sliccy.ai/os/'],
+];
+for (const [what, url] of wrapped) {
+  test(`a live document of ${what} stays unclosable`, async (t) => {
+    const { wire } = locked(t, 'wrapped-tab', 'page', url);
+    const mark = wire.sent.length;
+    const answer = await wire.send('Target.closeTarget', { targetId: 'wrapped-tab' });
+    assert.equal(answer.error?.message, PROTECTED);
+    assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'wrapped-tab'), false);
+  });
+}
+
+test('seven’s UI with userinfo stays unclosable', async (t) => {
+  const { wire } = locked(t, 'userinfo-tab', 'page', 'https://user:x@seven.sliccy.ai/os/');
+  const mark = wire.sent.length;
+  const answer = await wire.send('Target.closeTarget', { targetId: 'userinfo-tab' });
+  assert.equal(answer.error?.message, PROTECTED);
+  assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'userinfo-tab'), false);
+});
+
+test('a tab navigating to the vault stays unclosable', async (t) => {
+  const wire = protocol(t);
+  wire.target('pending-tab');
+  await wire.attach('pending-tab');
+  wire.emit({
+    method: 'Page.frameStartedNavigating',
+    sessionId: 'guard-pending-tab',
+    params: {
+      frameId: 'pending-tab',
+      url: 'https://vault.sliccy.ai/app?k=SECRET',
+      loaderId: 'pending-loader',
+    },
+  });
+  await flush();
+  const mark = wire.sent.length;
+  const answer = await wire.send('Target.closeTarget', { targetId: 'pending-tab' });
+  assert.equal(answer.error?.message, PROTECTED);
+  assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'pending-tab'), false);
+});
+
 for (const [what, url] of kept) {
-  test(`an error page left by a failed load of ${what} can be closed`, async (t) => {
+  test(`an error page whose target URL is still ${what} stays unclosable`, async (t) => {
     const wire = protocol(t);
     const entry = wire.target('failed-tab');
     await wire.attach('failed-tab');
@@ -171,10 +215,55 @@ for (const [what, url] of kept) {
     wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: entry.info } });
     await flush();
     const mark = wire.sent.length;
-    assert.equal(
-      (await wire.send('Target.closeTarget', { targetId: 'failed-tab' })).error,
-      undefined
-    );
-    assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'failed-tab'), true);
+    const answer = await wire.send('Target.closeTarget', { targetId: 'failed-tab' });
+    assert.equal(answer.error?.message, PROTECTED);
+    assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'failed-tab'), false);
+  });
+}
+
+test('a scrubbed chrome-error page left by a failed protected load can be closed', async (t) => {
+  const wire = protocol(t);
+  const entry = wire.target('scrubbed-tab');
+  await wire.attach('scrubbed-tab');
+  entry.tree.frame = {
+    ...errorFrame('scrubbed-tab'),
+    unreachableUrl: 'https://vault.sliccy.ai/failed',
+  };
+  entry.info.url = 'chrome-error://chromewebdata/';
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: 'guard-scrubbed-tab',
+    params: { frame: entry.tree.frame },
+  });
+  wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: entry.info } });
+  await flush();
+  const mark = wire.sent.length;
+  assert.equal(
+    (await wire.send('Target.closeTarget', { targetId: 'scrubbed-tab' })).error,
+    undefined
+  );
+  assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'scrubbed-tab'), true);
+});
+
+for (const [what, openerUrl, origin] of [
+  ['the vault', 'https://vault.sliccy.ai/landing', 'https://vault.sliccy.ai'],
+  ['seven’s UI', 'https://seven.sliccy.ai/os/', 'https://seven.sliccy.ai'],
+]) {
+  test(`about:blank opened from ${what} stays unclosable`, async (t) => {
+    const wire = protocol(t);
+    const opener = wire.target('opener-tab', 'page', {
+      ...plainFrame('opener-tab'),
+      url: openerUrl,
+      securityOrigin: origin,
+    });
+    opener.info.url = openerUrl;
+    const blank = { id: 'blank-tab', url: 'about:blank', securityOrigin: origin };
+    const child = wire.target('blank-tab', 'page', blank);
+    child.info.url = 'about:blank';
+    child.info.openerId = 'opener-tab';
+    const mark = wire.sent.length;
+    const answer = await wire.send('Target.closeTarget', { targetId: 'blank-tab' });
+    assert.equal(answer.error?.message, PROTECTED);
+    assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'blank-tab'), false);
   });
 }
