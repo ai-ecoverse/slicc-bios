@@ -392,8 +392,15 @@ test('while a half-read download holds an update, the old worker cuts nothing, s
   await sseServer(page);
   chrome.overrides.set('/os/held.bin', Buffer.alloc(SIZE, 7));
   await hold(page);
+  await drainUpdate(page);
   bumpWorker();
-  assert.ok(await update(page));
+  {
+    const state = await updateWaiting(page);
+    if (!state)
+      assert.fail(
+        `no installing or waiting worker after update: ${JSON.stringify(await updateSight(page))}`
+      );
+  }
   await page.within(30000, () =>
     document
       .querySelector('slicc-app')
