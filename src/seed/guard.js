@@ -818,6 +818,7 @@ class Guard {
     this.initScripts = new Map();
     this.pageAutoAttach = false;
     this.decided = new Set();
+    this.backgrounded = new Set();
     this.deciding = new Map();
     this.casts = new Set();
     this.requests = new Map();
@@ -2747,9 +2748,16 @@ class Guard {
       this.call('Page.enable', {}, session),
     ]);
     nav.holds = steps[0].result?.holdsDocuments === true;
+    await this.focusCreated(nav);
     this.placing.set(nav.targetId, this.place(nav.targetId, session));
     await this.placing.get(nav.targetId);
     nav.settle(steps.some((step) => step.error));
+  }
+
+  async focusCreated(nav) {
+    if (nav.focused || !nav.session || !this.backgrounded.has(nav.targetId)) return;
+    nav.focused = true;
+    await this.call('Emulation.setFocusEmulationEnabled', { enabled: true }, nav.session);
   }
 
   navEvent({ method, params = {} }, nav) {
@@ -5573,18 +5581,21 @@ class Guard {
   async create(message) {
     if (this.finished.has(message) || !this.owns(message)) return;
     const { id, params, sessionId } = message;
+    const background = params.background ?? true;
     const answer = await this.call('Target.createTarget', {
       ...params,
-      background: params.background ?? true,
+      background,
       url: 'about:blank',
     });
     const targetId = answer.result?.targetId;
     if (this.finished.has(message) || !this.owns(message)) return;
     if (!targetId) return this.deliver({ ...answer, id, ...(sessionId ? { sessionId } : {}) });
+    if (background) kept(this.backgrounded, targetId);
     this.learn({ targetId, url: 'about:blank', type: 'page' });
     this.touch(targetId);
     const nav = this.navs.get(targetId);
     await nav.ready;
+    await this.focusCreated(nav);
     if (this.finished.has(message) || !this.owns(message)) return;
     if (!nav.failed) {
       nav.admitted = true;

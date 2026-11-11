@@ -409,7 +409,6 @@ async function puppeteerFlow(route, endpoint) {
     );
     const page = await run('newPage', () => connected.newPage());
     await run('goto', () => page.goto(`${ORDINARY}/page`));
-    await run('bringToFront', () => page.bringToFront());
     await visibility(route, 'puppeteer', page);
     await run('click', () => page.click('#go'));
     assert.equal(await page.$eval('#out', (node) => node.textContent), 'clicked');
