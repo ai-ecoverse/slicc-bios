@@ -55,7 +55,7 @@
     "@ai-ecoverse/slicc-kernel": "1.178.3",
     "@ai-ecoverse/slicc-shared-web": "2.14.2",
     "@ai-ecoverse/slicc-spectrum": "2.11.2",
-    "@ai-ecoverse/slicc-vault": "1.25.1",
+    "@ai-ecoverse/slicc-vault": "1.25.2",
     "@biomejs/biome": "2.6.4",
     "aws4fetch": "1.0.20",
     "es-module-lexer": "3.0.4",
