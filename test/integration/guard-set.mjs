@@ -263,6 +263,7 @@ export async function guardHost(t, path) {
   });
   await seven.init(() => {
     globalThis.sliccKernelDebug = true;
+    globalThis.sliccGuardWhy = [];
     const every = window.setInterval;
     window.setInterval = (callback, ms, ...rest) =>
       ms === 15 * 60 * 1000 ? 0 : every(callback, ms, ...rest);
@@ -583,6 +584,7 @@ export async function guardHost(t, path) {
         await seven.evaluate((row) => window.guards.close(row), row).catch(() => false);
       };
       const client = {
+        why: () => seven.evaluate(() => (globalThis.sliccGuardWhy ?? []).splice(0)).catch(() => []),
         close,
         transport: path,
         transportEvents,
@@ -714,11 +716,13 @@ export function shared(path, { variants, except = [], group } = {}) {
         trace('run', path, target, variant);
         let current;
         let transportEvents;
+        let lastClient;
         const evidence = new Map();
         const execution = await run(subset(target), {
           clientFactory: async (configuration) => {
             const made = await clientFactory(path)(configuration);
             transportEvents = made.client.transportEvents;
+            lastClient = made.client;
             return made;
           },
           rowTimeoutMs: ROW_MS,
@@ -742,6 +746,7 @@ export function shared(path, { variants, except = [], group } = {}) {
             ),
           onStart: (row) => {
             current = row;
+            void lastClient?.why?.();
           },
           debug: (data) => {
             if (
@@ -759,6 +764,18 @@ export function shared(path, { variants, except = [], group } = {}) {
                     String(call?.error?.message ?? '').slice(0, 160),
                   ])
                 )}\n`
+              );
+            if (
+              data.side === 'guarded' &&
+              ['C3.tab-worker-leak', 'C3.tab-iframe-leak'].includes(current?.id)
+            )
+              void lastClient?.why?.().then((lines) =>
+                process.stdout.write(
+                  `GUARD-WHY ${path} ${current.id} ${target} ${variant}\n${lines
+                    .slice(-60)
+                    .map((line) => JSON.stringify(line))
+                    .join('\n')}\n`
+                )
               );
             if (process.env.GUARD_TRACE)
               trace('debug', JSON.stringify(data).slice(0, Number(process.env.GUARD_TRACE) || 300));

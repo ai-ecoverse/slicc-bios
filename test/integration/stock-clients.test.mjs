@@ -156,6 +156,7 @@ async function bridge(t) {
   });
   await seven.init(() => {
     globalThis.sliccKernelDebug = true;
+    globalThis.sliccGuardWhy = [];
     const Native = window.WebSocket;
     window.stockWire = new Map();
     window.stockQuiet = new Set();
@@ -304,7 +305,14 @@ async function bridge(t) {
     for (const socket of wss.clients) socket.terminate();
     server.close();
   });
-  readChrome = () => seven.evaluate(() => window.stockChrome ?? []).catch(() => []);
+  readChrome = () =>
+    seven
+      .evaluate(() => [
+        ...(window.stockChrome ?? []),
+        '--- guard why ---',
+        ...(window.sliccGuardWhy ?? []).slice(-80).map((entry) => JSON.stringify(entry)),
+      ])
+      .catch(() => []);
   const wire = async () => {
     const now = Date.now();
     const devtools = await seven.evaluate(() => [...window.stockWire.values()]).catch(() => []);
