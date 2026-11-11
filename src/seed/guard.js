@@ -2349,6 +2349,7 @@ class Guard {
     this.learn(info);
     if (await this.target(targetId)) return true;
     if (!URL.canParse(info.url)) {
+      if (info.url === '' && info.type === 'tab') return false;
       if (info.url !== '' || !NAV_TYPES.has(info.type)) return true;
       this.touch(targetId);
       const nav = this.navs.get(targetId);
