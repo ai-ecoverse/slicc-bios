@@ -259,8 +259,8 @@ export function createNetwork(choice, options = {}) {
             0,
             FAILURES
           );
-          failing =
-            error.detail !== FORBIDDEN_HEADER && (!extensionUpdate || error.code !== 'EACCES');
+          if (error.detail !== FORBIDDEN_HEADER)
+            failing = !extensionUpdate || error.code !== 'EACCES';
           emit();
         }
         throw error;

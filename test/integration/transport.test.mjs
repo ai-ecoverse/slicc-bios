@@ -118,7 +118,7 @@ test('a proxy an older seven kept in IndexedDB is deleted at boot and never cont
   assert.deepEqual(page.errors, []);
 });
 
-test('the extension route turns red when slicc-extension stops answering, and lists the failure', async (t) => {
+test('the extension route turns red when slicc-extension stops answering, lists the failure, and a refused header does not turn it green again', async (t) => {
   const page = await chrome.page(t);
   await page.init(() => {
     Object.defineProperty(globalThis, 'sliccExtension', {
@@ -151,6 +151,14 @@ test('the extension route turns red when slicc-extension stops answering, and li
   );
   assert.ok(status.failures.some((failure) => failure.url === 'https://example.test/'));
   await page.screenshot(new URL('failing.png', page.dir));
+  await run(page, "curl -sS -H 'DNT: 1' https://example.test/refused");
+  await page.until(() =>
+    document
+      .querySelector('slicc-app')
+      .model.network.status()
+      .failures.some((failure) => failure.url === 'https://example.test/refused')
+  );
+  assert.equal((await network(page)).health, 'failing', 'a refused header turned the route green');
 });
 
 test('under the page fetch, the 502 curl shows points at the slicc CLI and slicc-extension', async (t) => {
