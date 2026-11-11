@@ -384,6 +384,196 @@ for (const [what, keptUrl, nextUrl, id] of [
   });
 }
 
+test('a lagging chrome-error target info does not clear a committed vault frame', async (t) => {
+  const wire = protocol(t);
+  const entry = wire.target('lag-error');
+  await wire.attach('lag-error');
+  await leave(wire, entry, 'lag-error', 'https://vault.sliccy.ai/app');
+  entry.info.url = 'chrome-error://chromewebdata/';
+  wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: entry.info } });
+  await flush();
+  await wire.send('Target.getTargets');
+  await flush();
+  const mark = wire.sent.length;
+  const answer = await wire.send('Target.closeTarget', { targetId: 'lag-error' });
+  assert.equal(answer.error?.message, PROTECTED);
+  assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'lag-error'), false);
+});
+
+test('a stale getFrameTree after a same-document /os/ commit does not clear close protection', async (t) => {
+  const wire = protocol(t);
+  const start = 'https://seven.sliccy.ai/oauth?code=1';
+  const kept = 'https://seven.sliccy.ai/os/index.html';
+  const entry = wire.target('stale-tree');
+  await wire.attach('stale-tree');
+  entry.info.url = start;
+  entry.tree.frame = {
+    id: 'stale-tree',
+    url: start,
+    securityOrigin: 'https://seven.sliccy.ai',
+  };
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: 'guard-stale-tree',
+    params: { frame: entry.tree.frame },
+  });
+  wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: entry.info } });
+  await flush();
+  const held = [];
+  wire.hold((message) => {
+    if (message.method === 'Page.getFrameTree' && message.id >= 2 ** 30) {
+      held.push(message);
+      return true;
+    }
+  });
+  entry.tree.frame = {
+    id: 'stale-tree',
+    url: kept,
+    securityOrigin: 'https://seven.sliccy.ai',
+  };
+  wire.emit({
+    method: 'Page.navigatedWithinDocument',
+    sessionId: 'guard-stale-tree',
+    params: { frameId: 'stale-tree', url: kept },
+  });
+  await flush();
+  for (const message of held.splice(0)) {
+    wire.release(message, {
+      result: {
+        frameTree: {
+          frame: {
+            id: 'stale-tree',
+            url: start,
+            securityOrigin: 'https://seven.sliccy.ai',
+          },
+        },
+      },
+    });
+  }
+  await flush();
+  const mark = wire.sent.length;
+  const answer = await wire.send('Target.closeTarget', { targetId: 'stale-tree' });
+  assert.equal(answer.error?.message, PROTECTED);
+  assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'stale-tree'), false);
+});
+
+test('a stale getFrameTree and ordinary target info do not clear a vault frame commit', async (t) => {
+  const wire = protocol(t);
+  const entry = wire.target('stale-vault-tree');
+  await wire.attach('stale-vault-tree');
+  const held = [];
+  wire.hold((message) => {
+    if (message.method === 'Page.getFrameTree' && message.id >= 2 ** 30) {
+      held.push(message);
+      return true;
+    }
+  });
+  entry.info.url = 'https://vault.sliccy.ai/app';
+  entry.tree.frame = {
+    id: 'stale-vault-tree',
+    url: 'https://vault.sliccy.ai/app',
+    securityOrigin: 'https://vault.sliccy.ai',
+  };
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: 'guard-stale-vault-tree',
+    params: { frame: entry.tree.frame },
+  });
+  await flush();
+  for (const message of held.splice(0)) {
+    wire.release(message, {
+      result: {
+        frameTree: {
+          frame: {
+            id: 'stale-vault-tree',
+            url: ordinary,
+            securityOrigin: new URL(ordinary).origin,
+          },
+        },
+      },
+    });
+  }
+  await flush();
+  entry.info.url = ordinary;
+  wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: entry.info } });
+  await flush();
+  const mark = wire.sent.length;
+  const answer = await wire.send('Target.closeTarget', { targetId: 'stale-vault-tree' });
+  assert.equal(answer.error?.message, PROTECTED);
+  assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'stale-vault-tree'), false);
+});
+
+test('an opaque blank stays unclosable while its opener frame is still the vault', async (t) => {
+  const wire = protocol(t);
+  const opener = wire.target('frame-opener', 'page', plainFrame('frame-opener'));
+  await wire.attach('frame-opener');
+  opener.info.url = 'https://vault.sliccy.ai/landing';
+  opener.tree.frame = {
+    id: 'frame-opener',
+    url: 'https://vault.sliccy.ai/landing',
+    securityOrigin: 'https://vault.sliccy.ai',
+  };
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: 'guard-frame-opener',
+    params: { frame: opener.tree.frame },
+  });
+  wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: opener.info } });
+  await flush();
+  const child = wire.target('frame-child', 'page', {
+    id: 'frame-child',
+    url: 'about:blank',
+    securityOrigin: '://',
+  });
+  child.info.url = 'about:blank';
+  child.info.openerId = 'frame-opener';
+  opener.info.url = ordinary;
+  wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: opener.info } });
+  await flush();
+  const mark = wire.sent.length;
+  const answer = await wire.send('Target.closeTarget', { targetId: 'frame-child' });
+  assert.equal(answer.error?.message, PROTECTED);
+  assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'frame-child'), false);
+});
+
+test('a targetInfoChanged oauth URL does not clear a committed /os/ frame', async (t) => {
+  const wire = protocol(t);
+  const start = 'https://seven.sliccy.ai/oauth?code=1';
+  const kept = 'https://seven.sliccy.ai/os/index.html';
+  const entry = wire.target('info-os');
+  await wire.attach('info-os');
+  entry.info.url = start;
+  entry.tree.frame = {
+    id: 'info-os',
+    url: start,
+    securityOrigin: 'https://seven.sliccy.ai',
+  };
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: 'guard-info-os',
+    params: { frame: entry.tree.frame },
+  });
+  await flush();
+  entry.tree.frame = {
+    id: 'info-os',
+    url: kept,
+    securityOrigin: 'https://seven.sliccy.ai',
+  };
+  wire.emit({
+    method: 'Page.navigatedWithinDocument',
+    sessionId: 'guard-info-os',
+    params: { frameId: 'info-os', url: kept },
+  });
+  await flush();
+  entry.info.url = start;
+  wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: entry.info } });
+  await flush();
+  const mark = wire.sent.length;
+  const answer = await wire.send('Target.closeTarget', { targetId: 'info-os' });
+  assert.equal(answer.error?.message, PROTECTED);
+  assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'info-os'), false);
+});
+
 test('an about:blank child of an opener that left the vault can be closed', async (t) => {
   const wire = protocol(t);
   const opener = wire.target('left-opener', 'page', {
