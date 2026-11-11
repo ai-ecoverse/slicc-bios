@@ -707,10 +707,7 @@ export function redacting(is) {
 }
 
 function why(...parts) {
-  if (
-    (parts[0] !== 'unsafe' || parts[1] === 'Runtime.evaluate') &&
-    (parts[0] !== 'epoch' || !parts[1])
-  )
+  if (parts[0] !== 'unsafe' || parts[1] === 'Runtime.evaluate')
     globalThis.sliccGuardWhy?.push(parts);
 }
 
@@ -2410,15 +2407,6 @@ class Guard {
   }
 
   uncertainProof(targetId, uncertain = true) {
-    why(
-      'uncertain',
-      uncertain,
-      this.chainOf(targetId),
-      String(new Error().stack)
-        .split('\n')
-        .slice(2, 5)
-        .map((line) => line.trim().slice(3, 90))
-    );
     if (!targetId || this.retiredTargets.has(targetId)) return false;
     if (uncertain) {
       this.failedProof.add(targetId);
@@ -2855,7 +2843,6 @@ class Guard {
     const epoch = this.proofEpoch.get(entry?.targetId);
     void this.call('Page.enable', {}, sessionId);
     const answer = await this.proofTree(sessionId, loading);
-    why('epoch', epoch === this.proofEpoch.get(entry?.targetId), this.chainOf(entry?.targetId));
     if (epoch !== this.proofEpoch.get(entry?.targetId)) return false;
     const tree = answer?.result?.frameTree;
     if (
@@ -3042,7 +3029,6 @@ class Guard {
     }
     if (!this.watching.has(sessionId)) {
       const proof = this.inspect(sessionId, targetId, parent, true).then((ok) => {
-        why('watch', ok, sessionId?.slice(0, 6), parent?.slice(0, 6), this.chainOf(targetId));
         if (!ok && this.watching.get(sessionId) === proof) this.watching.delete(sessionId);
         return ok;
       });
