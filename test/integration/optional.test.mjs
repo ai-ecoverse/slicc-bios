@@ -62,6 +62,10 @@ test('the optional catalog lists packages and pins none: no package.json or lock
       repo: 'ai-ecoverse/homescoop',
       workflow: ['.github/workflows/ladder-build.yml'],
     },
+    '@ai-ecoverse/gh-upskill': {
+      repo: 'ai-ecoverse/gh-upskill',
+      workflow: ['.github/workflows/ci.yml'],
+    },
   });
   const publishers = [
     ...Object.entries(catalog)
