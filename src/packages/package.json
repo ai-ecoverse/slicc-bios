@@ -5,7 +5,7 @@
   "dependencies": {
     "@ai-ecoverse/slicc-audio": "1.2.0",
     "@ai-ecoverse/slicc-browsers": "1.22.0",
-    "@ai-ecoverse/slicc-capture": "1.4.2",
+    "@ai-ecoverse/slicc-capture": "1.5.0",
     "@ai-ecoverse/slicc-devices": "1.1.0",
     "@ai-ecoverse/slicc-kernel": "1.178.4",
     "@ai-ecoverse/slicc-spectrum": "2.11.2",
