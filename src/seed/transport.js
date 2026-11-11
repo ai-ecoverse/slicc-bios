@@ -41,11 +41,67 @@ export async function stored(mode, act) {
   }
 }
 
-export function withoutUserAgent(send = globalThis.fetch.bind(globalThis)) {
-  return (url, init) => {
-    const headers = new Headers(init?.headers);
-    headers.delete('user-agent');
-    return send(url, { ...init, headers });
+export const FORBIDDEN_HEADER = 'forbidden-header';
+export const EXTENSION_HEADERS = new Set(['cookie', 'origin', 'referer', 'user-agent']);
+export const EXTENSION_HEADER_HINT = 'link a slicc CLI (npx sliccy@next), which sends every header';
+const HTTP_OWN = new Set([
+  'accept-encoding',
+  'connection',
+  'content-length',
+  'expect',
+  'host',
+  'keep-alive',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+]);
+const PROBE = 'http://forbidden-headers.invalid/';
+
+export function unsendable(headers, sends) {
+  const given = new Headers();
+  for (const [name, value] of headers ?? []) {
+    try {
+      given.append(name, value);
+    } catch {}
+  }
+  const kept = new Request(PROBE, { headers: given }).headers;
+  return [...new Set(given.keys())].filter(
+    (name) => !kept.has(name) && !sends.has(name) && !HTTP_OWN.has(name)
+  );
+}
+
+export function refusal(url, names, who, hint) {
+  const which = names.length > 1 ? 'headers' : 'header';
+  return Object.assign(
+    new Error(
+      `fetch ${url} refused: ${who} can't send the request ${which} ${names.join(', ')}, so it was not sent${hint ? `: ${hint}` : ''}`
+    ),
+    { status: 502, code: 'ENOTSUP', detail: FORBIDDEN_HEADER, headers: [...names] }
+  );
+}
+
+export function sendsOnly(transport, sends, who, hint) {
+  return {
+    ...transport,
+    async fetch(request) {
+      const names = unsendable(request.headers, sends);
+      if (names.length > 0) throw refusal(request.url, names, who, hint);
+      return transport.fetch(request);
+    },
+  };
+}
+
+export function withoutUserAgent(transport) {
+  return {
+    ...transport,
+    fetch: (request) =>
+      transport.fetch({
+        ...request,
+        headers: [...(request.headers ?? [])].filter(
+          ([name]) => String(name).toLowerCase() !== 'user-agent'
+        ),
+      }),
   };
 }
 
@@ -67,10 +123,15 @@ export async function pickTransport({ minimumRedirectVersion = EXTENSION_REDIREC
   if (extension) {
     const supported = extensionRedirects(extension.version, minimumRedirectVersion);
     const send = (input, init) => extension.fetch(input, init);
-    const transport = redirectingTransport({ fetch: send, bodyIdleMs: BODY_IDLE_MS });
-    const manual = supported
-      ? redirectingTransport({ fetch: send, bodyIdleMs: BODY_IDLE_MS, redirect: 'manual' })
-      : null;
+    const declared = (options) =>
+      sendsOnly(
+        redirectingTransport({ fetch: send, bodyIdleMs: BODY_IDLE_MS, ...options }),
+        EXTENSION_HEADERS,
+        'slicc-extension',
+        EXTENSION_HEADER_HINT
+      );
+    const transport = declared({});
+    const manual = supported ? declared({ redirect: 'manual' }) : null;
     return {
       kind: 'extension',
       transport: {
@@ -87,12 +148,17 @@ export async function pickTransport({ minimumRedirectVersion = EXTENSION_REDIREC
       credentialed: manual && { ...manual, active: () => globalThis.sliccExtension === extension },
     };
   }
-  const fetch = withoutUserAgent();
+  const page = {
+    fetch: globalThis.fetch.bind(globalThis),
+    hint: HINT,
+    bodyIdleMs: BODY_IDLE_MS,
+    forbiddenHeaders: 'refuse',
+  };
   return {
     kind: 'page',
-    transport: redirectingTransport({ fetch, hint: HINT, bodyIdleMs: BODY_IDLE_MS }),
+    transport: withoutUserAgent(redirectingTransport(page)),
     credentialed: {
-      ...redirectingTransport({ fetch, hint: HINT, bodyIdleMs: BODY_IDLE_MS, redirect: 'manual' }),
+      ...withoutUserAgent(redirectingTransport({ ...page, redirect: 'manual' })),
       active: () => true,
     },
   };

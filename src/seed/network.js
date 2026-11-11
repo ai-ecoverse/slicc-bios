@@ -1,6 +1,6 @@
 import { DIRECT } from './exits.js';
 import { mergeDevices } from './link.js';
-import { EXTENSION_UPDATE_HINT } from './transport.js';
+import { EXTENSION_UPDATE_HINT, FORBIDDEN_HEADER } from './transport.js';
 
 export const EXTENSION_URL =
   'https://chromewebstore.google.com/detail/slicc/akjjllgokmbgpbdbmafpiefnhidlmbgf';
@@ -259,7 +259,8 @@ export function createNetwork(choice, options = {}) {
             0,
             FAILURES
           );
-          failing = !extensionUpdate || error.code !== 'EACCES';
+          failing =
+            error.detail !== FORBIDDEN_HEADER && (!extensionUpdate || error.code !== 'EACCES');
           emit();
         }
         throw error;
