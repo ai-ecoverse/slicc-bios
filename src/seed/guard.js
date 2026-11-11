@@ -707,7 +707,8 @@ export function redacting(is) {
 }
 
 function why(...parts) {
-  globalThis.sliccGuardWhy?.push(parts);
+  if (parts[0] !== 'unsafe' || parts[1] === 'Runtime.evaluate')
+    globalThis.sliccGuardWhy?.push(parts);
 }
 
 const kept = (set, value) => {
@@ -4881,11 +4882,21 @@ class Guard {
     const recovering = this.pendingRecovery(message);
     const quarantined = this.quarantined.has(message.sessionId) && !RECOVERS.has(message.method);
     const sticky = recovering || quarantined;
-    return (
+    const verdict =
       this.unsafe.has(message) ||
       sticky ||
-      (contentRead(message.method) && this.errorDocument(message.sessionId, message.method))
+      (contentRead(message.method) && this.errorDocument(message.sessionId, message.method));
+    why(
+      'unsafe',
+      message.method,
+      message.sessionId?.slice(0, 6),
+      Boolean(verdict),
+      this.unsafe.has(message),
+      Boolean(recovering),
+      quarantined,
+      this.chainOf(this.sessions.get(message.sessionId)?.targetId)
     );
+    return verdict;
   }
 
   async retainedBlankSession(sessionId) {

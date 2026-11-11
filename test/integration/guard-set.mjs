@@ -746,7 +746,6 @@ export function shared(path, { variants, except = [], group } = {}) {
             ),
           onStart: (row) => {
             current = row;
-            void lastClient?.why?.();
           },
           debug: (data) => {
             if (
