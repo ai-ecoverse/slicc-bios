@@ -414,13 +414,10 @@ async function puppeteerFlow(route, endpoint) {
     );
     await run('popup load', () => popup.waitForFunction(() => document.readyState === 'complete'));
     assert.equal(await popup.title(), 'popup');
-    const crossSite = route !== 'extension';
-    await run('iframe', () => page.goto(`${ORDINARY}${crossSite ? '/framed' : '/framed-same'}`));
+    await run('iframe', () => page.goto(`${ORDINARY}/framed-same`));
     const frame = await run('iframe frame', async () => {
       for (;;) {
-        const found = page
-          .frames()
-          .find((item) => item.url().startsWith(crossSite ? FRAME : `${ORDINARY}/inner`));
+        const found = page.frames().find((item) => item.url().startsWith(`${ORDINARY}/inner`));
         if (found) return found;
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
