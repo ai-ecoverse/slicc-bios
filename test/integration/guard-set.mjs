@@ -771,7 +771,7 @@ export function shared(path, { variants, except = [], group } = {}) {
               void lastClient?.why?.().then((lines) =>
                 process.stdout.write(
                   `GUARD-WHY ${path} ${current.id} ${target} ${variant}\n${lines
-                    .slice(-60)
+                    .slice(-150)
                     .map((line) => JSON.stringify(line))
                     .join('\n')}\n`
                 )
