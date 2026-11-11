@@ -303,6 +303,7 @@ for (const [what, id] of [
 test('a same-document move onto seven’s UI stays unclosable while target info is still outside /os/', async (t) => {
   const wire = protocol(t);
   const start = 'https://seven.sliccy.ai/oauth?code=1';
+  const kept = 'https://seven.sliccy.ai/os/index.html';
   const entry = wire.target('within-tab');
   await wire.attach('within-tab');
   entry.info.url = start;
@@ -318,16 +319,109 @@ test('a same-document move onto seven’s UI stays unclosable while target info 
   });
   wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: entry.info } });
   await flush();
+  entry.tree.frame = {
+    id: 'within-tab',
+    url: kept,
+    securityOrigin: 'https://seven.sliccy.ai',
+  };
   wire.emit({
     method: 'Page.navigatedWithinDocument',
     sessionId: 'guard-within-tab',
-    params: { frameId: 'within-tab', url: 'https://seven.sliccy.ai/os/index.html' },
+    params: { frameId: 'within-tab', url: kept },
   });
   await flush();
   const mark = wire.sent.length;
   const answer = await wire.send('Target.closeTarget', { targetId: 'within-tab' });
   assert.equal(answer.error?.message, PROTECTED);
   assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'within-tab'), false);
+});
+
+const leave = async (wire, entry, id, url) => {
+  entry.info.url = url;
+  entry.tree.frame = {
+    id,
+    url,
+    securityOrigin: URL.canParse(url) && /^https?:/i.test(url) ? new URL(url).origin : '://',
+    ...(url.startsWith('chrome-error:')
+      ? { unreachableUrl: 'https://vault.sliccy.ai/failed' }
+      : {}),
+  };
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: `guard-${id}`,
+    params: { frame: entry.tree.frame },
+  });
+  wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: entry.info } });
+  await flush();
+  await wire.send('Target.getTargets');
+  await flush();
+};
+
+for (const [what, keptUrl, nextUrl, id] of [
+  ['the vault for an ordinary page', 'https://vault.sliccy.ai/app', ordinary, 'left-vault'],
+  [
+    'seven’s UI for a page outside /os/',
+    'https://seven.sliccy.ai/os/index.html',
+    'https://seven.sliccy.ai/oauth',
+    'left-os',
+  ],
+  [
+    'the vault for a scrubbed chrome-error page',
+    'https://vault.sliccy.ai/app',
+    'chrome-error://chromewebdata/',
+    'left-scrub',
+  ],
+]) {
+  test(`a tab that leaves ${what} can be closed`, async (t) => {
+    const wire = protocol(t);
+    const entry = wire.target(id);
+    await wire.attach(id);
+    await leave(wire, entry, id, keptUrl);
+    await leave(wire, entry, id, nextUrl);
+    const mark = wire.sent.length;
+    assert.equal((await wire.send('Target.closeTarget', { targetId: id })).error, undefined);
+    assert.equal(forwarded(wire, mark, 'Target.closeTarget', id), true);
+  });
+}
+
+test('an about:blank child of an opener that left the vault can be closed', async (t) => {
+  const wire = protocol(t);
+  const opener = wire.target('left-opener', 'page', {
+    ...plainFrame('left-opener'),
+    url: 'https://vault.sliccy.ai/landing',
+    securityOrigin: 'https://vault.sliccy.ai',
+  });
+  opener.info.url = 'https://vault.sliccy.ai/landing';
+  const child = wire.target('left-child', 'page', {
+    id: 'left-child',
+    url: 'about:blank',
+    securityOrigin: '://',
+  });
+  child.info.url = 'about:blank';
+  child.info.openerId = 'left-opener';
+  await wire.send('Target.getTargetInfo', { targetId: 'left-child' });
+  await flush();
+  opener.info.url = ordinary;
+  opener.tree.frame = {
+    id: 'left-opener',
+    url: ordinary,
+    securityOrigin: new URL(ordinary).origin,
+  };
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: 'guard-left-opener',
+    params: { frame: opener.tree.frame },
+  });
+  wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: opener.info } });
+  await flush();
+  await wire.send('Target.getTargets');
+  await flush();
+  const mark = wire.sent.length;
+  assert.equal(
+    (await wire.send('Target.closeTarget', { targetId: 'left-child' })).error,
+    undefined
+  );
+  assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'left-child'), true);
 });
 
 test('about:blank with a vault securityOrigin and no openerId stays unclosable', async (t) => {

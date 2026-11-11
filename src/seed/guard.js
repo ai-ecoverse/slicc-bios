@@ -1074,10 +1074,7 @@ class Guard {
       this.errored.set(info.targetId, remembered.url);
     }
     const failed = info.url !== undefined && this.errored.get(info.targetId) === bare(info.url);
-    let url = failed ? ERROR_PAGE : (info.url ?? '');
-    if (!failed && known && this.kept(known.url) && !this.kept(url)) url = known.url;
-    let reported = info.url ?? known?.reported;
-    if (known && this.kept(known.reported) && !this.kept(reported ?? '')) reported = known.reported;
+    const { url, reported } = this.learnUrls(info, known, failed);
     this.targets.set(info.targetId, {
       url,
       type: info.type ?? known?.type,
@@ -1090,6 +1087,19 @@ class Guard {
       reported,
       info,
     });
+  }
+
+  learnUrls(info, known, failed) {
+    const observed = typeof info.url === 'string' && URL.canParse(info.url);
+    let url = failed ? ERROR_PAGE : (info.url ?? '');
+    let reported = info.url ?? known?.reported;
+    if (observed && !this.kept(info.url))
+      return { url: failed ? ERROR_PAGE : info.url, reported: info.url };
+    if (!observed && known) {
+      if (this.kept(known.url) && !this.kept(url)) url = known.url;
+      if (this.kept(known.reported) && !this.kept(reported ?? '')) reported = known.reported;
+    }
+    return { url, reported };
   }
 
   async lookup(targetId) {
@@ -1632,12 +1642,7 @@ class Guard {
     scope.ready = scope.tree && !scope.failed && !scope.pending;
     if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
     for (const frame of all) {
-      const url = this.framed(frame);
-      const previous = this.frames.get(frame.id);
-      this.frames.set(
-        frame.id,
-        typeof previous === 'string' && this.kept(previous) && !this.kept(url) ? previous : url
-      );
+      this.frames.set(frame.id, this.recordFrameUrl(frame, this.frames.get(frame.id)));
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
     }
     const parentRoot = this.scopes.get(scope.parent)?.root;
@@ -4028,6 +4033,21 @@ class Guard {
     return named ?? frame.url ?? '';
   }
 
+  recordFrameUrl(frame, previous) {
+    const framed = this.framed(frame);
+    const document = typeof frame.url === 'string' && frame.url ? frame.url : '';
+    if (document && this.kept(document)) return document;
+    if (
+      document &&
+      !this.kept(document) &&
+      !inherits(document) &&
+      !document.startsWith('chrome-error:')
+    )
+      return document;
+    if (typeof previous === 'string' && this.kept(previous) && !this.kept(framed)) return previous;
+    return framed;
+  }
+
   tree({ frame, childFrames, resources, ...rest }, sessionId) {
     if (frame.id !== undefined && !this.targets.has(frame.id)) {
       this.frames.set(frame.id, this.framed(frame));
@@ -5583,10 +5603,21 @@ class Guard {
   documentKept(targetId) {
     const target = this.targets.get(targetId);
     if (!target) return true;
-    if (this.kept(target.url) || this.kept(target.reported)) return true;
-    if (this.pendingKept(targetId)) return true;
     const framed = this.frames.get(this.frameRoot(targetId));
-    const scrubbed = target.url?.startsWith('chrome-error:');
+    const scrubbed =
+      target.url?.startsWith('chrome-error:') &&
+      (typeof target.reported !== 'string' ||
+        target.reported.startsWith('chrome-error:') ||
+        !this.kept(target.reported));
+    const left =
+      typeof framed === 'string' &&
+      framed !== '' &&
+      !this.kept(framed) &&
+      !inherits(framed) &&
+      !framed.startsWith('chrome-error:');
+    if (this.kept(target.url)) return true;
+    if (this.kept(target.reported) && !scrubbed && !left) return true;
+    if (this.pendingKept(targetId)) return true;
     if (typeof framed === 'string' && this.kept(framed) && !scrubbed) return true;
     const blank = inherits(target.url) || target.url === '';
     if (!blank) return false;
