@@ -6,7 +6,7 @@
     "@ai-ecoverse/slicc-audio": "1.2.0",
     "@ai-ecoverse/slicc-browsers": "1.21.1",
     "@ai-ecoverse/slicc-capture": "1.4.2",
-    "@ai-ecoverse/slicc-devices": "1.0.2",
+    "@ai-ecoverse/slicc-devices": "1.1.0",
     "@ai-ecoverse/slicc-kernel": "1.178.3",
     "@ai-ecoverse/slicc-spectrum": "2.11.2",
     "@ai-ecoverse/wasi-fnox": "1.46.0-2",

@@ -18,8 +18,8 @@ importers:
         specifier: 1.4.2
         version: 1.4.2
       '@ai-ecoverse/slicc-devices':
-        specifier: 1.0.2
-        version: 1.0.2
+        specifier: 1.1.0
+        version: 1.1.0
       '@ai-ecoverse/slicc-kernel':
         specifier: 1.178.3
         version: 1.178.3
@@ -61,8 +61,8 @@ packages:
     engines: {node: '>=24', slicc-kernel: '>=1.153.0'}
     hasBin: true
 
-  '@ai-ecoverse/slicc-devices@1.0.2':
-    resolution: {integrity: sha512-HVF7NUEZLIopswppBGUOA20HE6cK+Gjyo+UdSXJXm1qqmo5d/2w9GHeTtco4LH25ROFG6zPerzVTrcgfub/aCQ==}
+  '@ai-ecoverse/slicc-devices@1.1.0':
+    resolution: {integrity: sha512-wCSAiNGB2Q2pYE8GmYofIrVWFPSgQP4itQDzY990dlWASiPRrtJnagnLVbdouRSE1guLUuN3KD6eiuLauebMfQ==}
     engines: {node: '>=24', slicc-kernel: '>=1.176.0'}
 
   '@ai-ecoverse/slicc-kernel@1.178.3':
@@ -178,6 +178,12 @@ packages:
   '@types/node@26.6.5':
     resolution: {integrity: sha512-uMzsv9stDdofIZBx4UGh4Z9ZgXnGC9seRDscilBcTHAeOFk67MZg/k9bWVfO+bk4qZmG+l52hRnLwUiH2LnJTg==}
 
+  atob-lite@2.0.0:
+    resolution: {integrity: sha512-LEeSAWeh2Gfa2FtlQE1shxQ8zi5F9GHarrGKz08TMdODD5T4eH6BMsvtnhbWZ+XQn+Gb6om/917ucvRu7l7ukw==}
+
+  esptool-js@0.7.1:
+    resolution: {integrity: sha512-vw1isT5ROHgpRmMG3y6B81dceeZ7O1WhF1x05qFbAlH8N0N/pOQqODzJLA+36lCbOXCw06iA4CWctyrQQ7VeSA==}
+
   fast-png@8.0.0:
     resolution: {integrity: sha512-gCysNasJ8KEMgfdYIKd/wTDo6ENK1PWT0RJO7O+0pgmuHPw2O6tA1WvdxFRJoLf9V8yFYpG0FA1YgI8X97OhJA==}
 
@@ -208,6 +214,9 @@ packages:
 
   onnxruntime-web@1.30.0:
     resolution: {integrity: sha512-q0y+JrrtukXSzsBWEMccVfqX25LRmosXHF+CaRJmg8pZClzcV7svNc4rKY3jL02Vb7QmRMDs1SigqR4CXAfKYQ==}
+
+  pako@2.2.0:
+    resolution: {integrity: sha512-zJq6RP/5q+TO2OpFV3FHzlPnFjmkb7Nc99a5SNjJE+uu/PkpChs+NIZSSzbBoD+6kjiISXjfYdwj1ZRQ81dz/w==}
 
   platform@1.3.6:
     resolution: {integrity: sha512-fnWVljUchTro6RiCFvCXBbNhJc2NijN7oIQxbwsyL0buWJPG85v81ehlHI9fXrJsMNgTofEoWIQeClKpgxFLrg==}
@@ -259,7 +268,9 @@ snapshots:
 
   '@ai-ecoverse/slicc-capture@1.4.2': {}
 
-  '@ai-ecoverse/slicc-devices@1.0.2': {}
+  '@ai-ecoverse/slicc-devices@1.1.0':
+    dependencies:
+      esptool-js: 0.7.1
 
   '@ai-ecoverse/slicc-kernel@1.178.3': {}
 
@@ -338,6 +349,13 @@ snapshots:
       undici-types: 8.9.0
     optional: true
 
+  atob-lite@2.0.0: {}
+
+  esptool-js@0.7.1:
+    dependencies:
+      atob-lite: 2.0.0
+      pako: 2.2.0
+
   fast-png@8.0.0:
     dependencies:
       fflate: 0.8.3
@@ -377,6 +395,8 @@ snapshots:
       platform: 1.3.6
       protobufjs: 7.6.6
     optional: true
+
+  pako@2.2.0: {}
 
   platform@1.3.6:
     optional: true
