@@ -134,7 +134,7 @@ const faux = () => {
       window.called = (what === 'still' ? port.still() : port.record(what)).then(
         (value) => {
           window.result = value;
-          window.ended = value.finished.then(
+          window.ended = value.finished?.then(
             () => null,
             (error) => window.failed(error)
           );
