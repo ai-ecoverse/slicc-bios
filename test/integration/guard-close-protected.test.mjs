@@ -245,25 +245,217 @@ test('a scrubbed chrome-error page left by a failed protected load can be closed
   assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'scrubbed-tab'), true);
 });
 
-for (const [what, openerUrl, origin] of [
-  ['the vault', 'https://vault.sliccy.ai/landing', 'https://vault.sliccy.ai'],
-  ['seven’s UI', 'https://seven.sliccy.ai/os/', 'https://seven.sliccy.ai'],
+for (const [what, openerUrl, origin, suffix] of [
+  ['the vault', 'https://vault.sliccy.ai/landing', 'https://vault.sliccy.ai', 'vault'],
+  ['seven’s UI', 'https://seven.sliccy.ai/os/', 'https://seven.sliccy.ai', 'seven'],
 ]) {
   test(`about:blank opened from ${what} stays unclosable`, async (t) => {
     const wire = protocol(t);
-    const opener = wire.target('opener-tab', 'page', {
-      ...plainFrame('opener-tab'),
+    const openerId = `opener-${suffix}`;
+    const blankId = `blank-${suffix}`;
+    const opener = wire.target(openerId, 'page', {
+      ...plainFrame(openerId),
       url: openerUrl,
       securityOrigin: origin,
     });
     opener.info.url = openerUrl;
-    const blank = { id: 'blank-tab', url: 'about:blank', securityOrigin: origin };
-    const child = wire.target('blank-tab', 'page', blank);
+    const blank = { id: blankId, url: 'about:blank', securityOrigin: origin };
+    const child = wire.target(blankId, 'page', blank);
     child.info.url = 'about:blank';
-    child.info.openerId = 'opener-tab';
+    child.info.openerId = openerId;
     const mark = wire.sent.length;
-    const answer = await wire.send('Target.closeTarget', { targetId: 'blank-tab' });
+    const answer = await wire.send('Target.closeTarget', { targetId: blankId });
     assert.equal(answer.error?.message, PROTECTED);
-    assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'blank-tab'), false);
+    assert.equal(forwarded(wire, mark, 'Target.closeTarget', blankId), false);
   });
 }
+
+for (const [what, id] of [
+  ['while target info is still ordinary', 'stale-tab'],
+  ['after a drained queue while target info is still ordinary', 'stale-drained'],
+]) {
+  test(`a committed vault document stays unclosable ${what}`, async (t) => {
+    const wire = protocol(t);
+    const entry = wire.target(id);
+    await wire.attach(id);
+    entry.tree.frame = {
+      id,
+      url: 'https://vault.sliccy.ai/app?k=SECRET',
+      securityOrigin: 'https://vault.sliccy.ai',
+    };
+    wire.emit({
+      method: 'Page.frameNavigated',
+      sessionId: `guard-${id}`,
+      params: { frame: entry.tree.frame },
+    });
+    await flush();
+    if (id === 'stale-drained') {
+      await wire.send('Target.getTargets');
+      await flush();
+    }
+    const mark = wire.sent.length;
+    const answer = await wire.send('Target.closeTarget', { targetId: id });
+    assert.equal(answer.error?.message, PROTECTED);
+    assert.equal(forwarded(wire, mark, 'Target.closeTarget', id), false);
+  });
+}
+
+test('a same-document move onto seven’s UI stays unclosable while target info is still outside /os/', async (t) => {
+  const wire = protocol(t);
+  const start = 'https://seven.sliccy.ai/oauth?code=1';
+  const entry = wire.target('within-tab');
+  await wire.attach('within-tab');
+  entry.info.url = start;
+  entry.tree.frame = {
+    id: 'within-tab',
+    url: start,
+    securityOrigin: 'https://seven.sliccy.ai',
+  };
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: 'guard-within-tab',
+    params: { frame: entry.tree.frame },
+  });
+  wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: entry.info } });
+  await flush();
+  wire.emit({
+    method: 'Page.navigatedWithinDocument',
+    sessionId: 'guard-within-tab',
+    params: { frameId: 'within-tab', url: 'https://seven.sliccy.ai/os/index.html' },
+  });
+  await flush();
+  const mark = wire.sent.length;
+  const answer = await wire.send('Target.closeTarget', { targetId: 'within-tab' });
+  assert.equal(answer.error?.message, PROTECTED);
+  assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'within-tab'), false);
+});
+
+test('about:blank with a vault securityOrigin and no openerId stays unclosable', async (t) => {
+  const wire = protocol(t);
+  const entry = wire.target('inherit-tab');
+  await wire.attach('inherit-tab');
+  entry.info.url = 'about:blank';
+  entry.tree.frame = {
+    id: 'inherit-tab',
+    url: 'about:blank',
+    securityOrigin: 'https://vault.sliccy.ai',
+  };
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: 'guard-inherit-tab',
+    params: { frame: entry.tree.frame },
+  });
+  await flush();
+  const mark = wire.sent.length;
+  const answer = await wire.send('Target.closeTarget', { targetId: 'inherit-tab' });
+  assert.equal(answer.error?.message, PROTECTED);
+  assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'inherit-tab'), false);
+});
+
+test('an opaque about:blank without an inherited origin can be closed', async (t) => {
+  const wire = protocol(t);
+  const entry = wire.target('opaque-tab');
+  await wire.attach('opaque-tab');
+  entry.info.url = 'about:blank';
+  entry.tree.frame = {
+    id: 'opaque-tab',
+    url: 'about:blank',
+    securityOrigin: '://',
+  };
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: 'guard-opaque-tab',
+    params: { frame: entry.tree.frame },
+  });
+  await flush();
+  const mark = wire.sent.length;
+  assert.equal(
+    (await wire.send('Target.closeTarget', { targetId: 'opaque-tab' })).error,
+    undefined
+  );
+  assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'opaque-tab'), true);
+});
+
+test('about:blank with canAccessOpener but no openerId can be closed', async (t) => {
+  const wire = protocol(t);
+  const entry = wire.target('opaque-access');
+  await wire.attach('opaque-access');
+  entry.info.url = 'about:blank';
+  entry.info.canAccessOpener = true;
+  entry.tree.frame = {
+    id: 'opaque-access',
+    url: 'about:blank',
+    securityOrigin: '://',
+  };
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: 'guard-opaque-access',
+    params: { frame: entry.tree.frame },
+  });
+  await flush();
+  const mark = wire.sent.length;
+  assert.equal(
+    (await wire.send('Target.closeTarget', { targetId: 'opaque-access' })).error,
+    undefined
+  );
+  assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'opaque-access'), true);
+});
+
+test('nine view-source wrappers of the vault stay unclosable', async (t) => {
+  const url = `${'view-source:'.repeat(9)}https://vault.sliccy.ai/secret`;
+  const { wire } = locked(t, 'deep-wrap', 'page', url);
+  const mark = wire.sent.length;
+  const answer = await wire.send('Target.closeTarget', { targetId: 'deep-wrap' });
+  assert.equal(answer.error?.message, PROTECTED);
+  assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'deep-wrap'), false);
+});
+
+test('an ordinary tab with an unknown-URL opening still admits evaluate', async (t) => {
+  const wire = protocol(t);
+  const entry = wire.target('open-ordinary');
+  const session = await wire.attach('open-ordinary');
+  wire.emit({
+    method: 'Page.frameStartedNavigating',
+    sessionId: 'guard-open-ordinary',
+    params: { frameId: 'open-ordinary', loaderId: 'L-unknown' },
+  });
+  await flush();
+  const mark = wire.sent.length;
+  const answer = await wire.send('Runtime.evaluate', { expression: '1' }, session);
+  assert.equal(answer.error, undefined);
+  assert.equal(
+    wire.clients(mark).some((message) => message.method === 'Runtime.evaluate'),
+    true
+  );
+  assert.equal(entry.info.url, ordinary);
+});
+
+for (const [what, url, id] of [
+  ['a percent-encoded /os/ path', 'https://seven.sliccy.ai/os%2Findex.html', 'encoded-slash'],
+  ['a percent-encoded /os/ prefix', 'https://seven.sliccy.ai/%6Fs/', 'encoded-prefix'],
+]) {
+  test(`${what} stays unclosable`, async (t) => {
+    const { wire } = locked(t, id, 'page', url);
+    const mark = wire.sent.length;
+    const answer = await wire.send('Target.closeTarget', { targetId: id });
+    assert.equal(answer.error?.message, PROTECTED);
+    assert.equal(forwarded(wire, mark, 'Target.closeTarget', id), false);
+  });
+}
+
+test('seven’s UI path without a trailing slash can be closed', async (t) => {
+  const { wire } = locked(t, 'os-noslash', 'page', 'https://seven.sliccy.ai/os');
+  const mark = wire.sent.length;
+  assert.equal(
+    (await wire.send('Target.closeTarget', { targetId: 'os-noslash' })).error,
+    undefined
+  );
+  assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'os-noslash'), true);
+});
+
+test('an uppercase /OS/ path can be closed because the service worker is case-sensitive', async (t) => {
+  const { wire } = locked(t, 'os-upper', 'page', 'https://seven.sliccy.ai/OS/');
+  const mark = wire.sent.length;
+  assert.equal((await wire.send('Target.closeTarget', { targetId: 'os-upper' })).error, undefined);
+  assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'os-upper'), true);
+});

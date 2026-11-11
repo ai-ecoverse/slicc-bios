@@ -50,15 +50,18 @@ const SEVEN_HOST = new RegExp(catalog.seven.originHostPattern);
 const INNER = new Set(catalog.protectedOrigins.innerSchemes);
 const bare = (url) => url.split('#')[0];
 const unwrap = (url) => {
-  if (typeof url !== 'string' || !URL.canParse(url)) return url;
+  if (typeof url !== 'string' || !URL.canParse(url)) return { text: url, sealed: false };
   let text = url;
   for (let i = 0; i < 8; i += 1) {
     const parsed = new URL(text);
-    if (!INNER.has(parsed.protocol.slice(0, -1))) return text;
+    if (!INNER.has(parsed.protocol.slice(0, -1))) return { text, sealed: false };
     text = parsed.href.slice(parsed.protocol.length);
-    if (!URL.canParse(text)) return url;
+    if (!URL.canParse(text)) return { text: url, sealed: true };
   }
-  return text;
+  return {
+    text,
+    sealed: INNER.has(new URL(text).protocol.slice(0, -1)),
+  };
 };
 const SCRUB_MS = 5000;
 const CLOSE_MS = 5000;
@@ -1071,16 +1074,20 @@ class Guard {
       this.errored.set(info.targetId, remembered.url);
     }
     const failed = info.url !== undefined && this.errored.get(info.targetId) === bare(info.url);
+    let url = failed ? ERROR_PAGE : (info.url ?? '');
+    if (!failed && known && this.kept(known.url) && !this.kept(url)) url = known.url;
+    let reported = info.url ?? known?.reported;
+    if (known && this.kept(known.reported) && !this.kept(reported ?? '')) reported = known.reported;
     this.targets.set(info.targetId, {
-      url: failed ? ERROR_PAGE : (info.url ?? ''),
+      url,
       type: info.type ?? known?.type,
-      openerId: info.openerId,
+      openerId: info.openerId ?? known?.openerId,
       parentId: info.parentId ?? known?.parentId,
       was: known?.was || known?.guarded || false,
       guarded: known?.guarded || false,
       real: known?.real || false,
       context: info.browserContextId ?? known?.context,
-      reported: info.url ?? known?.reported,
+      reported,
       info,
     });
   }
@@ -1258,10 +1265,6 @@ class Guard {
       found.was = false;
     }
     found.guarded = found.guarded || verdict;
-    if (this.pendingKept(targetId)) {
-      found.guarded = true;
-      return true;
-    }
     return found.guarded;
   }
 
@@ -1630,7 +1633,11 @@ class Guard {
     if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
     for (const frame of all) {
       const url = this.framed(frame);
-      this.frames.set(frame.id, url);
+      const previous = this.frames.get(frame.id);
+      this.frames.set(
+        frame.id,
+        typeof previous === 'string' && this.kept(previous) && !this.kept(url) ? previous : url
+      );
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
     }
     const parentRoot = this.scopes.get(scope.parent)?.root;
@@ -5414,12 +5421,19 @@ class Guard {
   async reachTarget(message) {
     const { method, params = {} } = message;
     if (params.targetId === undefined) return false;
+    if (
+      method === 'Target.closeTarget' &&
+      this.targets.has(params.targetId) &&
+      this.documentKept(params.targetId)
+    )
+      return true;
     const limit =
       method === 'Target.attachToTarget' && this.navs.get(params.targetId)?.admitted
         ? PROBE_WAIT
         : ANSWER_MS;
     const guarded = await this.current(params.targetId, limit);
     const target = this.targets.get(params.targetId);
+    if (method === 'Target.closeTarget' && this.documentKept(params.targetId)) return true;
     if (method === 'Target.attachToTarget' && !guarded) {
       this.touch(params.targetId);
       await this.navs.get(params.targetId)?.ready;
@@ -5530,13 +5544,19 @@ class Guard {
   }
 
   kept(url) {
-    const text = unwrap(url);
+    const { text, sealed } = unwrap(url);
+    if (sealed) return true;
     if (typeof text !== 'string' || !URL.canParse(text) || text.startsWith('chrome-error:'))
       return false;
     if (this.vaultHost(text)) return true;
     if (!this.sevenHost(text)) return false;
-    const { pathname } = new URL(text);
-    return pathname.startsWith('/os/') && pathname !== '/os/callback.html';
+    let path;
+    try {
+      path = decodeURIComponent(new URL(text).pathname);
+    } catch {
+      return true;
+    }
+    return path.startsWith('/os/') && path !== '/os/callback.html';
   }
 
   vaultHost(url) {
@@ -5551,9 +5571,13 @@ class Guard {
     for (const [id, open] of this.opening) {
       if (this.scopeTarget(id) !== targetId && id !== targetId) continue;
       saw = true;
-      if (typeof open?.url !== 'string' || this.kept(open.url)) return true;
+      if (typeof open?.url === 'string' && this.kept(open.url)) return true;
     }
     return this.pendingTarget(targetId) && !saw;
+  }
+
+  frameRoot(targetId) {
+    return this.frameRoots.get(targetId) ?? this.scopes.get(targetId)?.root ?? targetId;
   }
 
   documentKept(targetId) {
@@ -5561,15 +5585,20 @@ class Guard {
     if (!target) return true;
     if (this.kept(target.url) || this.kept(target.reported)) return true;
     if (this.pendingKept(targetId)) return true;
+    const framed = this.frames.get(this.frameRoot(targetId));
+    const scrubbed = target.url?.startsWith('chrome-error:');
+    if (typeof framed === 'string' && this.kept(framed) && !scrubbed) return true;
     const blank = inherits(target.url) || target.url === '';
     if (!blank) return false;
-    const root = this.frameRoots.get(targetId) ?? this.scopes.get(targetId)?.root ?? targetId;
-    const framed = this.frames.get(root);
-    if (typeof framed === 'string' && (this.kept(framed) || this.sevenHost(framed))) return true;
-    const opener = target.openerId ? this.targets.get(target.openerId) : undefined;
-    if (opener && (this.kept(opener.url) || this.kept(opener.reported))) return true;
+    if (typeof framed === 'string' && (this.vaultHost(framed) || this.sevenHost(framed)))
+      return true;
+    if (target.openerId) {
+      const opener = this.targets.get(target.openerId);
+      if (!opener) return true;
+      if (this.kept(opener.url) || this.kept(opener.reported)) return true;
+    }
     if (typeof framed === 'string' && framed !== '' && !inherits(framed)) return false;
-    return true;
+    return false;
   }
 
   departing(message) {
