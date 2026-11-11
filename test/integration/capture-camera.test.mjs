@@ -151,6 +151,9 @@ const ask = (header, file, name) =>
 const plain = (header, name) =>
   `printf '%s\\n' '${JSON.stringify({ kind: 'capture.camera', ...header })}' | cat > /dev/embedder; echo "${name} $?"`;
 
+const micShaped = (kind, header, name) =>
+  `printf '%s\\n' '${JSON.stringify({ kind, ...header })}' | cat > /dev/embedder 2> /tmp/${name}.err; echo "${name} $?"; grep -q 'answer this microphone request' /tmp/${name}.err && echo "${name} refused"`;
+
 const shaped = (header, name) =>
   `printf '%s\\n' '${JSON.stringify({ kind: 'capture.camera', ...header })}' | cat > /dev/embedder 2> /tmp/${name}.err; echo "${name} $?"; grep -q 'answer this camera request' /tmp/${name}.err && echo "${name} refused"`;
 
@@ -410,6 +413,18 @@ test('a deny with a message, a blocked camera, EAGAIN’s own prompt, and camera
   await run(page, shaped({ type: 'image/png', device: 'cam 1' }, 'device'));
   await shows(page, 'device 1');
   await shows(page, 'device refused');
+  await run(page, shaped({ type: 'image/png', device: 'a'.repeat(257) }, 'longdevice'));
+  await shows(page, 'longdevice 1');
+  await shows(page, 'longdevice refused');
+  for (const kind of ['capture.camera', 'capture.screen']) {
+    const name = `longmic${kind.slice(8)}`;
+    await run(
+      page,
+      micShaped(kind, { type: 'video/webm', duration: 1, microphone: 'm'.repeat(257) }, name)
+    );
+    await shows(page, `${name} 1`);
+    await shows(page, `${name} refused`);
+  }
   assert.equal(await page.evaluate(() => window.faux.seen.length), seen);
   for (const [name, header] of [
     ['facing', { type: 'image/png', asks: { video: { facingMode: 'user' } } }],
@@ -447,6 +462,18 @@ test('a deny with a message, a blocked camera, EAGAIN’s own prompt, and camera
 
 test('seven stops the camera it handed out when the request ends, even when the module keeps its tracks', async (t) => {
   const page = await seven(t);
+  const longest = 'a'.repeat(256);
+  await run(
+    page,
+    ask({ type: 'image/png', warmup: 0, device: longest }, '/tmp/longest.png', 'longest')
+  );
+  await shows(page, 'longest 0');
+  assert.deepEqual((await page.evaluate(() => window.opened))[0].constraints.video, {
+    deviceId: { exact: longest },
+  });
+  await page.evaluate(() => {
+    window.opened = [];
+  });
   await run(page, ask({ type: 'image/png', warmup: 0, keep: true }, '/tmp/kept.png', 'kept'));
   await shows(page, 'kept 0');
   await page.until(() => window.opened.length === 1 && window.running === 0);
