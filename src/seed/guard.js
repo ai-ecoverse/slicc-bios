@@ -799,7 +799,6 @@ class Guard {
     this.hints = new Map();
     this.shots = new Set();
     this.gone = new Set();
-    this.waiting = new Set();
     this.pages = new Set();
     this.frames = new Map();
     this.errorFrames = new Set();
@@ -2310,8 +2309,6 @@ class Guard {
     if (this.blocked.has(sessionId)) return;
     this.blocked.add(sessionId);
     this.refusePending(sessionId);
-    if (this.waiting.delete(sessionId))
-      void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
     const entry = this.sessions.get(sessionId);
     const targetId = entry?.targetId;
     this.decide(targetId);
@@ -3663,7 +3660,6 @@ class Guard {
       this.tabSessions.delete(params.sessionId);
       this.initScripts.delete(params.sessionId);
       this.sessions.delete(params.sessionId);
-      this.waiting.delete(params.sessionId);
       return !this.shown.delete(params.sessionId) || notified === true;
     }
     return false;
@@ -3674,7 +3670,8 @@ class Guard {
     const info = params.targetInfo ?? {};
     if (await this.privateAttachment(info.targetId, params.sessionId)) return true;
     if (info.type !== 'tab') return false;
-    if (params.waitingForDebugger) this.waiting.add(params.sessionId);
+    if (params.waitingForDebugger)
+      void this.call('Runtime.runIfWaitingForDebugger', {}, params.sessionId);
     return this.tabAttached(message);
   }
 
