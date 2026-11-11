@@ -38,10 +38,83 @@ const faux = () => {
     window.serialLog.held.push(what);
     await held.gate;
   };
+  class FakeRom {
+    constructor(port) {
+      this.port = port;
+      this.mode = 'rom';
+      this.packet = null;
+      this.escaped = false;
+      this.queue = Promise.resolve();
+      this.seen = [];
+      this.registers = new Map([
+        [0x40001000, 0x00f01d83],
+        [0x3ff5a004, 0xc4123456],
+        [0x3ff5a008, 0x240a],
+        [0x3ff5a00c, 1 << 15],
+        [0x3ff5a014, 1 << 20],
+        [0x3ff6607c, 0x80000000],
+        [0x3ff40014, 347],
+        [0x3ff42080, 0x164020],
+      ]);
+    }
+    signal(signals) {
+      if (signals.requestToSend === true) this.mode = 'rom';
+    }
+    receive(bytes) {
+      for (const byte of bytes) {
+        if (this.packet === null) {
+          if (byte === 0xc0) this.packet = [];
+        } else if (this.escaped) {
+          this.escaped = false;
+          this.packet.push(byte === 0xdc ? 0xc0 : 0xdb);
+        } else if (byte === 0xdb) this.escaped = true;
+        else if (byte !== 0xc0) this.packet.push(byte);
+        else if (this.packet.length) {
+          const done = Uint8Array.from(this.packet);
+          this.packet = null;
+          this.queue = this.queue.then(() => this.handle(done));
+        }
+      }
+    }
+    send(bytes) {
+      const out = [0xc0];
+      for (const byte of bytes) {
+        if (byte === 0xc0) out.push(0xdb, 0xdc);
+        else if (byte === 0xdb) out.push(0xdb, 0xdd);
+        else out.push(byte);
+      }
+      out.push(0xc0);
+      this.port.feed(Uint8Array.from(out));
+    }
+    reply(op, value = 0, status = 0) {
+      const tail = this.mode === 'rom' ? [status, status && 5, 0, 0] : [status, status && 5];
+      const le = [value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, value >>> 24];
+      this.send([1, op, tail.length, 0, ...le, ...tail]);
+    }
+    handle(packet) {
+      if (packet.length < 8 || packet[0] !== 0) return;
+      const op = packet[1];
+      this.seen.push(op);
+      const word = (at) =>
+        (packet[at] | (packet[at + 1] << 8) | (packet[at + 2] << 16) | (packet[at + 3] << 24)) >>>
+        0;
+      if (op === 0x08) {
+        for (let i = 0; i < (this.mode === 'rom' ? 8 : 1); i++)
+          this.reply(op, this.mode === 'rom' ? 0x20120707 : 0);
+      } else if (op === 0x0a) this.reply(op, this.registers.get(word(8)) ?? 0);
+      else if ([0x05, 0x07, 0x09, 0x0d, 0x0f].includes(op)) this.reply(op);
+      else if (op === 0x06) {
+        this.reply(op);
+        this.mode = 'stub';
+        this.send([...'OHAI'].map((c) => c.charCodeAt(0)));
+      } else this.reply(0, 0, 1);
+    }
+  }
   class FakePort extends EventTarget {
-    constructor(info) {
+    constructor(info, rom = false) {
       super();
       this.info = info;
+      this.rom = rom ? new FakeRom(this) : null;
       this.readable = null;
       this.writable = null;
       this.isOpen = false;
@@ -63,7 +136,8 @@ const faux = () => {
       this.feed = (bytes) => controller.enqueue(bytes);
       this.end = () => controller.close();
       this.writable = new WritableStream({
-        write: (chunk) => this.feed(new Uint8Array(chunk)),
+        write: (chunk) =>
+          this.rom ? this.rom.receive(new Uint8Array(chunk)) : this.feed(new Uint8Array(chunk)),
       });
     }
     async close() {
@@ -84,6 +158,7 @@ const faux = () => {
       };
     }
     async setSignals(signals) {
+      if (this.rom) return this.rom.signal(signals);
       window.serialLog.set.push(signals);
     }
   }
@@ -104,6 +179,16 @@ const faux = () => {
   };
   Object.defineProperty(Navigator.prototype, 'serial', { configurable: true, get: () => serial });
   window.grant = () => granted.push(new FakePort(ids));
+  window.grantEsp = () => {
+    const port = new FakePort({ usbVendorId: 0x10c4, usbProductId: 0xea60 }, true);
+    granted.push(port);
+    window.rom = port.rom;
+  };
+  window.esptoolLoads = [];
+  new PerformanceObserver((list) => {
+    for (const entry of list.getEntries())
+      if (entry.name.includes('esptool')) window.esptoolLoads.push(entry.name);
+  }).observe({ type: 'resource', buffered: true });
   window.feed = (text) => granted.find((port) => port.isOpen)?.feed(new TextEncoder().encode(text));
   window.unplug = () => {
     const port = granted.shift();
@@ -286,6 +371,55 @@ test('a cone in dialout lists, opens and reads a port, but its writes and signal
   assert.match(sudo.stdout, /2 bytes written/, sudo.stderr);
   assert.match(sudo.stdout, /hi sudo 0/, sudo.stderr);
   assert.deepEqual(await page.evaluate(() => window.serialLog.set), [{ dataTerminalReady: true }]);
+  assert.deepEqual(page.errors, []);
+});
+
+test('esptool is installed with the base set, a cone without sudo gets EACCES before the page sees it, and sudo esptool chip_id detects a fake ESP32 through esptool-js loaded lazily from the installed package', async (t) => {
+  const page = await seven(t);
+  await page.evaluate(() => window.grantEsp());
+  await run(page, 'command -v esptool; esptool --version; echo "version $?"');
+  await shows(page, '/usr/bin/esptool');
+  await shows(page, 'version 0');
+  assert.match(await screen(page), new RegExp(`\\b${PINNED.replaceAll('.', '\\.')}\\s+version 0`));
+
+  const refused = await asCone(page, 'esptool --port serial1 chip_id; echo "cone $?"');
+  assert.match(refused.stdout, /cone 1/);
+  assert.match(
+    refused.stderr,
+    /esptool: serial\.esptool is not allowed for this user \(esptool needs root: sudo esptool --port serial1 chip_id\)/
+  );
+  assert.deepEqual(await page.evaluate(() => window.rom.seen), []);
+  assert.deepEqual(await page.evaluate(() => window.esptoolLoads), []);
+
+  await run(
+    page,
+    'echo \'NOPASSWD cone Cmnd *\' > /etc/sudoers.d/cone-esptool && chmod 0440 /etc/sudoers.d/cone-esptool; echo "rule $?"'
+  );
+  await shows(page, 'rule 0');
+  const chip = await asCone(page, 'sudo -n esptool --port serial1 chip_id; echo "sudo $?"');
+  assert.match(chip.stdout, /^Chip type: ESP32$/m, chip.stderr);
+  assert.match(chip.stdout, /^MAC: 24:0a:c4:12:34:56$/m, chip.stderr);
+  assert.match(chip.stdout, /sudo 0/, chip.stderr);
+  assert.ok((await page.evaluate(() => window.rom.seen)).includes(0x08));
+
+  const origin = await page.evaluate(() => location.origin);
+  const loads = await page.evaluate(() => window.esptoolLoads);
+  const bundle = loads.find((name) => name.includes('/esptool-js/'));
+  assert.equal(
+    bundle?.split('?')[0],
+    `${origin}/node_modules/esptool-js/bundle.js`,
+    JSON.stringify(loads)
+  );
+  assert.ok(
+    loads.some((name) =>
+      name.startsWith(`${origin}/node_modules/@ai-ecoverse/slicc-devices/page/esptool.mjs`)
+    ),
+    JSON.stringify(loads)
+  );
+  assert.equal(
+    await page.evaluate((url) => fetch(url).then((r) => r.headers.get('x-served-from')), bundle),
+    'opfs'
+  );
   assert.deepEqual(page.errors, []);
 });
 
