@@ -706,10 +706,6 @@ export function redacting(is) {
   };
 }
 
-function why(...parts) {
-  globalThis.sliccGuardWhy?.push(parts);
-}
-
 const kept = (set, value) => {
   set.add(value);
   if (set.size > REMEMBERED) set.delete(set.values().next().value);
@@ -1077,16 +1073,6 @@ class Guard {
 
   refuse(command, message = PROTECTED, release = true) {
     if (this.finished.has(command)) return;
-    why(
-      'refuse',
-      command.method,
-      command.sessionId?.slice(0, 6),
-      String(message).slice(0, 25),
-      new Error().stack
-        .split('\n')
-        .slice(2, 6)
-        .map((line) => line.trim().split(' ')[1])
-    );
     this.finished.add(command);
     const key = requestKey(command);
     this.blankReads.delete(key);
@@ -2320,27 +2306,7 @@ class Guard {
     }
   }
 
-  chainOf(targetId, depth = 0) {
-    if (!targetId || depth > 3) return [];
-    const t = this.targets.get(targetId);
-    return [
-      [
-        targetId.slice(0, 6),
-        t?.type,
-        String(t?.url).slice(0, 40),
-        t?.openerId?.slice(0, 6),
-        t?.parentId?.slice(0, 6),
-        t?.guarded,
-        t?.was,
-        t?.real,
-      ],
-      ...this.chainOf(t?.parentId, depth + 1),
-      ...this.chainOf(t?.openerId, depth + 1),
-    ];
-  }
-
   cut(sessionId, parent, guardTarget = true) {
-    why('cut', sessionId?.slice(0, 6), this.chainOf(this.sessions.get(sessionId)?.targetId));
     this.quarantined.delete(sessionId);
     if (this.blocked.has(sessionId)) return;
     this.blocked.add(sessionId);
