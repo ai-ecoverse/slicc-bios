@@ -827,6 +827,7 @@ class Guard {
     this.initScripts = new Map();
     this.pageAutoAttach = false;
     this.decided = new Set();
+    this.created = new Set();
     this.deciding = new Map();
     this.casts = new Set();
     this.requests = new Map();
@@ -2863,7 +2864,10 @@ class Guard {
       WORKER_TYPES.has(this.targets.get(entry?.targetId)?.type)
     )
       return !this.errorDocument(sessionId);
-    const all = answer && !answer.error && this.proofFrames(tree, proof);
+    const all =
+      answer &&
+      !answer.error &&
+      (this.proofFrames(tree, proof) || this.createdBlank(sessionId, tree, proof));
     if (!all) return this.uncertainProof(entry?.targetId);
     const nav = this.navs.get(entry?.targetId);
     if (
@@ -3461,6 +3465,22 @@ class Guard {
         this.quarantine(id, message);
   }
 
+  createdBlank(sessionId, tree, proof) {
+    const frame = tree?.frame;
+    const targetId =
+      this.sessions.get(sessionId)?.targetId ?? this.navSessions.get(sessionId)?.targetId;
+    return !proof &&
+      this.created.has(targetId) &&
+      typeof frame?.id === 'string' &&
+      frame.id !== '' &&
+      !frame.parentId &&
+      !tree.childFrames?.length &&
+      ['about:blank', ''].includes(frame.url) &&
+      ['', '://', 'null'].includes(frame.securityOrigin)
+      ? [frame]
+      : null;
+  }
+
   proofFrames(tree, proof) {
     return this.documentFrames(tree) || (!proof && this.loadingChildren(tree));
   }
@@ -3500,7 +3520,14 @@ class Guard {
       );
       const tree = answer?.result?.frameTree;
       const loading = this.documentFrames(tree, true);
-      if (!answer || answer.error || this.documentFrames(tree) || !loading) return answer;
+      if (
+        !answer ||
+        answer.error ||
+        this.documentFrames(tree) ||
+        !loading ||
+        this.createdBlank(sessionId, tree)
+      )
+        return answer;
       const children = this.loadingChildren(tree, loading);
       if (partial && children) return answer;
       if (attempt === 0 && children) bound = 3 * ANSWER_MS;
@@ -5644,6 +5671,7 @@ class Guard {
     if (this.finished.has(message) || !this.owns(message)) return;
     if (!targetId) return this.deliver({ ...answer, id, ...(sessionId ? { sessionId } : {}) });
     this.learn({ targetId, url: 'about:blank', type: 'page' });
+    kept(this.created, targetId);
     this.touch(targetId);
     const nav = this.navs.get(targetId);
     await nav.ready;
