@@ -24,7 +24,14 @@ function sleep(ms, signal) {
   });
 }
 
+const builtIns = {
+  date: () => new Date(0),
+  map: () => new Map([['width', 640]]),
+  bytes: () => new Uint8Array([1]),
+};
+
 function constraintsOf(options) {
+  if (Object.hasOwn(builtIns, options.built)) return { video: builtIns[options.built]() };
   if (options.asks !== undefined) return options.asks;
   const track = {};
   if (options.device !== undefined) track.deviceId = { exact: options.device };
@@ -64,7 +71,7 @@ function film(stream, options, signal, progress) {
     if (done) return false;
     done = true;
     clearTimeout(timer);
-    stopAll(stream);
+    if (!options.keep) stopAll(stream);
     return true;
   };
   return new ReadableStream({
@@ -113,7 +120,12 @@ async function listed() {
 }
 
 export async function handle(request) {
-  if (request.options?.asks === undefined && Object.hasOwn(real.kinds, request.kind))
+  if (
+    request.options?.asks === undefined &&
+    request.options?.keep === undefined &&
+    request.options?.built === undefined &&
+    Object.hasOwn(real.kinds, request.kind)
+  )
     return real.handle(request);
   if (request.kind === 'capture.devices') return listed();
   const { options = {}, signal = new AbortController().signal, progress = () => {} } = request;
@@ -124,7 +136,7 @@ export async function handle(request) {
   try {
     return await still(stream, options, signal);
   } finally {
-    stopAll(stream);
+    if (!options.keep) stopAll(stream);
   }
 }
 
