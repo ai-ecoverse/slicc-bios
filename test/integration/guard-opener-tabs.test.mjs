@@ -276,6 +276,17 @@ async function closeTarget(raw, targetId) {
     mark
   );
 }
+async function guardClose(raw, guard, targetId) {
+  const mark = raw.events.length;
+  const answer = await guard.send('Target.closeTarget', { targetId });
+  assert.equal(answer.error, undefined, JSON.stringify(answer));
+  await raw.waitEvent(
+    (message) =>
+      message.method === 'Target.targetDestroyed' && message.params.targetId === targetId,
+    mark
+  );
+}
+
 function stored(t) {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
   const values = new Map();
@@ -385,14 +396,14 @@ for (const mode of ['production', 'no-coop']) {
       assert.equal(metadata.error?.message, PROTECTED);
       assert.equal(metadata.result, undefined);
       assert.equal(
-        (await guard.send('Target.closeTarget', { targetId: parent.targetId })).error?.message,
+        (await guard.send('Target.activateTarget', { targetId: parent.targetId })).error?.message,
         PROTECTED
       );
       assert.equal(
-        (await guard.send('Target.closeTarget', { targetId: openerId })).error?.message,
+        (await guard.send('Target.activateTarget', { targetId: openerId })).error?.message,
         PROTECTED
       );
-      await closeTarget(raw, openerId);
+      await guardClose(raw, guard, openerId);
       assert.equal(
         (await observe(t, raw, guard, parent.targetId, `${mode}/held-${same}: opener closed`)).error
           ?.message,
@@ -403,7 +414,7 @@ for (const mode of ['production', 'no-coop']) {
           .error?.message,
         PROTECTED
       );
-      await closeTarget(raw, parent.targetId);
+      await guardClose(raw, guard, parent.targetId);
       assert.equal(
         (await observe(t, raw, guard, child.targetId, `${mode}/held-${same}: direct opener closed`))
           .error?.message,

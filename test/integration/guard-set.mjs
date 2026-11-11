@@ -43,6 +43,7 @@ const PATHS = {
     inboundDelay: true,
     forwardAudit: true,
     clientExit: true,
+    closeProtected: true,
   },
   link: {
     autoAttach: true,
@@ -812,7 +813,13 @@ export function shared(path, { variants, except = [], group } = {}) {
       })),
   };
   test(`the shared set is complete on the ${path} path${scope}${where}: no row missing, none skipped for a missing observer`, async () => {
-    const report = summary({ set: covered, results, guard: `slicc-bios/${path}`, sha: SHA });
+    const report = summary({
+      set: covered,
+      results,
+      guard: `slicc-bios/${path}`,
+      sha: SHA,
+      capabilities: PATHS[path],
+    });
     const informed = results.filter((row) => row.ran || row.notes);
     const skips = {};
     for (const row of results) {

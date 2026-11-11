@@ -283,7 +283,7 @@ test('a fresh profile that has never signed in still treats seven’s built-in s
   assert.match(answer.error?.message ?? '', /^slicc: refused:/, JSON.stringify(answer));
 });
 
-test('a sign-in tab already open before the client connects is neither listed nor reachable through the guard', {
+test('a sign-in tab already open before the client connects is neither listed nor reachable through the guard, but can be closed', {
   timeout: 5 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -332,16 +332,17 @@ test('a sign-in tab already open before the client connects is neither listed no
     { targetId }
   );
   assert.equal(out.listed, false, JSON.stringify(out));
-  for (const name of ['info', 'attach', 'close']) {
+  for (const name of ['info', 'attach']) {
     assert.match(out[name], /^slicc: refused:/, `${name}: ${JSON.stringify(out)}`);
   }
+  assert.equal(out.close, 'closed', JSON.stringify(out));
   assert.equal(out.named, false, JSON.stringify(out));
-  assert.ok(
-    (await chrome.cdp.send('Target.getTargets')).targetInfos.some(
-      (info) => info.targetId === targetId
-    ),
-    'the sign-in tab is still open'
-  );
+  for (const end = Date.now() + 10000; ; ) {
+    const { targetInfos } = await chrome.cdp.send('Target.getTargets');
+    if (!targetInfos.some((info) => info.targetId === targetId)) break;
+    assert.ok(Date.now() < end, 'the sign-in tab is still open after the guard closed it');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
 });
 
 test('a sign-in through the extension records its client id, so that id’s authorize page is protected after a reload', {

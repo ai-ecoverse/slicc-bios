@@ -106,7 +106,8 @@ test('stranded scope keeps a protected committed document sticky through its lat
   });
   await error(state);
   assert.equal(
-    (await state.wire.send('Target.closeTarget', { targetId: 'placed-recovery' })).error?.message,
+    (await state.wire.send('Target.activateTarget', { targetId: 'placed-recovery' })).error
+      ?.message,
     PROTECTED
   );
   assert.equal((await state.wire.send('Target.getTargets')).result.targetInfos.length, 0);

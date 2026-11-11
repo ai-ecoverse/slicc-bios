@@ -248,16 +248,18 @@ test('a known extension tab cannot admit a live protected document after reconne
     loaderId: 'protected-document',
   };
   const connection = await wire.connect();
-  for (const method of [
-    'Target.getTargetInfo',
-    'Target.attachToTarget',
-    'Target.activateTarget',
-    'Target.closeTarget',
-  ]) {
+  for (const method of ['Target.getTargetInfo', 'Target.attachToTarget', 'Target.activateTarget']) {
     const answer = await connection.send(method, { targetId: 'known', flatten: true });
     assert.match(answer.error?.message ?? '', /^slicc: refused:/);
     assert.equal(answer.result, undefined);
   }
+  const closed = await connection.send('Target.closeTarget', { targetId: 'known' });
+  assert.equal(closed.error, undefined);
+  assert.ok(
+    wire.calls.some(
+      (call) => call.method === 'Target.closeTarget' && call.params.targetId === 'known'
+    )
+  );
 });
 
 test('extension recovery state is not lent to another tab', async (t) => {
