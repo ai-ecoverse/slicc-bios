@@ -57,6 +57,11 @@ const faux = () => {
       .then((buffer) => [...new Uint8Array(buffer)].map((byte) => byte.toString(16)).join(' '));
   window.capture = () => document.querySelector('slicc-app').model.capture;
   window.switchTo = (key, on) => document.querySelector('slicc-app').model.switches.set(key, on);
+  window.switchedOn = (key) =>
+    document
+      .querySelector('slicc-app')
+      .model.switches.list()
+      .find((each) => each.key === key)?.on === true;
   window.mics = [];
   window.micCalls = 0;
   window.micHold = null;
@@ -220,7 +225,16 @@ const outcome = (page) => page.evaluate(() => window.called);
 
 const failure = (page) => page.evaluate(() => window.ended);
 
-const takes = (page) => page.evaluate(() => window.recorders.length);
+async function takes(page) {
+  await page.until(() => window.switchedOn('microphone'));
+  return page.evaluate(() => window.recorders.length);
+}
+
+async function settled(page, step) {
+  await page.until(() => window.chips().length === 0);
+  await page.until(() => window.micsLive() === 0);
+  assert.deepEqual(page.errors, [], `${step} left page errors: ${JSON.stringify(page.errors)}`);
+}
 
 async function recording(page, index, chunks) {
   const ready = (index, chunks) => {
@@ -340,8 +354,7 @@ test('record: only inside a click; stop() finishes a WebM take and releases the 
   assert.ok(take.durationMs >= 1000, String(take.durationMs));
   assert.ok(take.size > 0);
   assert.equal(take.head, '1a 45 df a3');
-  await page.until(() => window.chips().length === 0);
-  await page.until(() => window.micsLive() === 0);
+  await settled(page, 'the stopped take');
 
   const cancelled = await takes(page);
   await clicked(page, 'audio');
@@ -352,8 +365,7 @@ test('record: only inside a click; stop() finishes a WebM take and releases the 
     name: 'AbortError',
     message: 'the recording was cancelled',
   });
-  await page.until(() => window.chips().length === 0);
-  await page.until(() => window.micsLive() === 0);
+  await settled(page, 'the cancelled take');
 
   await page.evaluate(() => {
     window.silent = true;
@@ -368,8 +380,7 @@ test('record: only inside a click; stop() finishes a WebM take and releases the 
   await page.evaluate(() => {
     window.silent = false;
   });
-  await page.until(() => window.chips().length === 0);
-  await page.until(() => window.micsLive() === 0);
+  await settled(page, 'the empty take');
 
   const cut = await takes(page);
   await clicked(page, 'audio');
@@ -377,8 +388,7 @@ test('record: only inside a click; stop() finishes a WebM take and releases the 
   await recording(page, cut, 1);
   await page.evaluate(() => window.switchTo('microphone', false));
   assert.deepEqual(await failure(page), OFF('microphone'));
-  await page.until(() => window.chips().length === 0);
-  await page.until(() => window.micsLive() === 0);
+  await settled(page, 'the take the switch cut');
   const before = await page.evaluate(() => window.micCalls);
   await clicked(page, 'audio');
   assert.deepEqual(await outcome(page), { error: OFF('microphone') });
@@ -393,6 +403,8 @@ test('record: only inside a click; stop() finishes a WebM take and releases the 
       )
   );
   assert.equal(video.name, 'NotSupportedError');
+  await page.evaluate(() => window.switchTo('microphone', true));
+  await page.until(() => window.switchedOn('microphone'));
   assert.deepEqual(await page.evaluate(() => window.asked), []);
   assert.deepEqual(await page.evaluate(() => window.clickItems()), []);
   assert.equal(await page.evaluate(() => window.prompted), 0);
