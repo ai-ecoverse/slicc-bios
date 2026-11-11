@@ -208,6 +208,9 @@ async function unguardedClient(browser) {
     messages,
     waitEvent,
     forwards,
+    get forwarded() {
+      return forwards;
+    },
     flags,
     armGate(sessionId) {
       forwards.length = 0;
@@ -481,6 +484,9 @@ export async function guardHost(t, path) {
         audit(probes, sessionId) {
           return auditForwards(forwards, commands, probes, sessionId);
         },
+        forwarded() {
+          return forwards.map(({ sessionId, method, params }) => ({ sessionId, method, params }));
+        },
       };
     };
     const guards = new Map();
@@ -516,6 +522,9 @@ export async function guardHost(t, path) {
       },
       audit(row, probes, sessionId) {
         return guards.get(row)?.gated.audit(probes, sessionId) ?? { complete: false, probes: [] };
+      },
+      forwarded(row) {
+        return guards.get(row)?.gated.forwarded() ?? [];
       },
       send(row, method, params, sessionId, wait) {
         const guard = guards.get(row);
@@ -582,7 +591,11 @@ export async function guardHost(t, path) {
         rows.delete(row);
         await seven.evaluate((row) => window.guards.close(row), row).catch(() => false);
       };
+      let ledger = [];
       const client = {
+        get forwarded() {
+          return ledger;
+        },
         close,
         transport: path,
         transportEvents,
@@ -627,6 +640,9 @@ export async function guardHost(t, path) {
               window.guards.send(row, method, params, sessionId ?? undefined, wait),
             [row, method, params, sessionId ?? null, COMMAND_MS]
           );
+          ledger = await seven
+            .evaluate((row) => window.guards.forwarded(row), row)
+            .catch(() => ledger);
           if (answer.error) {
             if (capture && method === 'Target.attachToTarget') {
               let timer;
