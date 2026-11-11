@@ -338,6 +338,7 @@ async function playwright(route, endpoint) {
     );
     const page = await run('newPage', () => context.newPage());
     await run('goto', () => page.goto(`${ORDINARY}/page`));
+    await visibility(route, 'playwright', page);
     await run('click', () => page.click('#go'));
     assert.equal(await page.textContent('#out'), 'clicked');
     await run('fill', () => page.fill('#name', 'stock'));
@@ -388,6 +389,13 @@ async function playwright(route, endpoint) {
   }
 }
 
+async function visibility(route, client, page) {
+  const seen = await page
+    .evaluate(() => [document.visibilityState, document.hasFocus()])
+    .catch((error) => String(error.message ?? error));
+  process.stdout.write(`STOCK-VISIBILITY ${route} ${client} ${JSON.stringify(seen)}\n`);
+}
+
 async function puppeteerFlow(route, endpoint) {
   const run = (name, work) => step(route, 'puppeteer', name, work);
   current = `${route} puppeteer`;
@@ -401,6 +409,7 @@ async function puppeteerFlow(route, endpoint) {
     );
     const page = await run('newPage', () => connected.newPage());
     await run('goto', () => page.goto(`${ORDINARY}/page`));
+    await visibility(route, 'puppeteer', page);
     await run('click', () => page.click('#go'));
     assert.equal(await page.$eval('#out', (node) => node.textContent), 'clicked');
     await run('type', () => page.type('#name', 'stock'));

@@ -871,6 +871,12 @@ export function shared(path, { variants, except = [], group } = {}) {
         (row) =>
           `GUARD-KNOWN ${known(row)} ${row.id}@${row.target}/${row.variant}: ${row.live === 'fail' ? 'not live' : row.why}`
       ),
+      ...results
+        .filter((row) => [row.control, row.guarded, row.live].includes('incomplete'))
+        .map(
+          (row) =>
+            `GUARD-INCOMPLETE ${row.id}@${row.target}/${row.variant}: ${JSON.stringify(row.incomplete ?? [])}`
+        ),
       `${path}: ${results.length} rows, ${JSON.stringify(report.counts)}`,
       ...Object.entries(skips).map(
         ([reason, rows]) => `skip ${reason} (${rows.length}): ${rows.join(' ')}`
