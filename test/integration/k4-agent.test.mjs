@@ -421,27 +421,73 @@ test('enforce: Deny and stop on a cone’s looping sudo ends the loop and the tu
   assert.equal(top.deny, top.stop, JSON.stringify(top));
   assert.ok(top.once > top.stop, JSON.stringify(top));
   await press(page, 'stop');
-  await page
-    .within(5 * 60 * 1000, () => {
-      const app = document.querySelector('slicc-app');
-      const { agent } = app.model;
-      return (
-        !agent.busy(agent.active()) &&
-        app.model.approvals.list().length === 0 &&
-        !(function walk(root) {
-          const found = root.querySelector('slicc-approvals');
-          if (found) return found.shadowRoot?.querySelector('dialog');
-          for (const element of root.querySelectorAll('*'))
-            if (element.shadowRoot && walk(element.shadowRoot)) return true;
-          return false;
-        })(document)
-      );
-    })
-    .catch(async (error) => {
-      throw new Error(
-        `the stopped turn never went idle with the dialog closed: ${error.message}\n${JSON.stringify(await page.evaluate(() => ({ asked: window.asked, ended: window.ended, gone: window.gone, list: document.querySelector('slicc-app').model.approvals.list() })))}`
-      );
+  const listed = () =>
+    page.evaluate(() => {
+      const walk = (root) => {
+        const found = root.querySelector('slicc-approvals');
+        if (found) return found;
+        for (const element of root.querySelectorAll('*')) {
+          const inner = element.shadowRoot && walk(element.shadowRoot);
+          if (inner) return inner;
+        }
+        return null;
+      };
+      const root = walk(document)?.shadowRoot;
+      const dialog = root?.querySelector('dialog');
+      return {
+        asked: window.asked,
+        ended: window.ended,
+        gone: window.gone,
+        busy: document
+          .querySelector('slicc-app')
+          .model.agent.busy(document.querySelector('slicc-app').model.agent.active()),
+        dialog: dialog
+          ? { id: dialog.dataset.approval, gone: dialog.dataset.gone || null, open: dialog.open }
+          : null,
+        list: document
+          .querySelector('slicc-app')
+          .model.approvals.list()
+          .map((item) => ({
+            id: item.id,
+            requester: item.requester,
+            command: item.command,
+            state: item.stoppable === true ? 'stoppable' : 'terminal',
+          })),
+      };
     });
+  const cleared = (id) =>
+    page
+      .within(
+        5 * 60 * 1000,
+        new Function(
+          'id',
+          `const app = document.querySelector('slicc-app');
+          const { agent } = app.model;
+          const list = app.model.approvals.list();
+          const walk = (root) => {
+            const found = root.querySelector('slicc-approvals');
+            if (found) return found;
+            for (const element of root.querySelectorAll('*')) {
+              const inner = element.shadowRoot && walk(element.shadowRoot);
+              if (inner) return inner;
+            }
+            return null;
+          };
+          const dialog = walk(document)?.shadowRoot?.querySelector('dialog[data-approval="' + id + '"]');
+          return (
+            !agent.busy(agent.active()) &&
+            !list.some((item) => item.id === id) &&
+            !dialog
+          );`
+        ),
+        id
+      )
+      .catch(async (error) => {
+        throw new Error(
+          `the stopped cone's approval never left the list with its dialog closed: ${error.message}\n${JSON.stringify(await listed())}`
+        );
+      });
+  await cleared(looping.id);
   const after = await page.evaluate(() => ({
     asked: window.asked,
     ended: window.ended,
@@ -466,11 +512,39 @@ test('enforce: Deny and stop on a cone’s looping sudo ends the loop and the tu
   for (const line of log.split('\n').filter((line) => line.startsWith('sudo:')))
     assert.equal(line, 'sudo: denied, and the owner stopped this turn', log);
 
+  await cleared(looping.id);
+  const before = await page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.approvals.list()
+      .map((item) => item.id)
+  );
   await run(page, 'clear; cd /tmp; sudo -u cone sudo id -un; echo terminal=$?');
-  const [terminal] = await page.within(5 * 60 * 1000, () => {
-    const list = document.querySelector('slicc-app').model.approvals.list();
-    return list.length ? list : null;
-  });
+  const terminal = await page
+    .within(
+      5 * 60 * 1000,
+      new Function(
+        'before',
+        `return (
+          document
+            .querySelector('slicc-app')
+            .model.approvals.list()
+            .find(
+              (item) =>
+                !before.includes(item.id) &&
+                item.kind === 'sudo' &&
+                item.requester?.kind === 'user' &&
+                /(?:^| )id -un$/.test(item.command)
+            ) ?? null
+        );`
+      ),
+      before
+    )
+    .catch(async (error) => {
+      throw new Error(
+        `the terminal's sudo never reached approvals as a new user request: ${error.message}\n${JSON.stringify(await listed())}`
+      );
+    });
   assert.equal(terminal.requester.kind, 'user');
   assert.notEqual(terminal.stoppable, true);
   await armed(page);
