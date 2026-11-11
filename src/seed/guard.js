@@ -46,6 +46,7 @@ const GUARD_IDS = 2 ** 30;
 const HOLD_MS = 2000;
 const BLANK_MS = 10000;
 const ERROR_PAGE = 'chrome-error://chromewebdata/';
+const SEVEN_HOST = new RegExp(catalog.seven.originHostPattern);
 const bare = (url) => url.split('#')[0];
 const SCRUB_MS = 5000;
 const CLOSE_MS = 5000;
@@ -732,6 +733,7 @@ class Guard {
     this.closed = false;
     this.is = protection(own);
     this.ownUrl = protectedOrigins(catalog.protectedOrigins, owned(own)).url;
+    this.owned = owned(own);
     this.redact = redacting(this.is);
     this.redirected = new Set();
     this.continued = new Set();
@@ -5486,7 +5488,24 @@ class Guard {
   }
 
   closable({ method, params }) {
-    return method === 'Target.closeTarget' && this.targets.get(params?.targetId)?.type === 'page';
+    const target = this.targets.get(params?.targetId);
+    return method === 'Target.closeTarget' && target?.type === 'page' && !this.kept(target.url);
+  }
+
+  kept(url) {
+    if (!URL.canParse(url) || url.startsWith('chrome-error:')) return false;
+    const { protocol, hostname, port, pathname, origin } = new URL(url);
+    if (protocol !== 'http:' && protocol !== 'https:') return false;
+    const label = hostname.replace(/\.$/, '').match(SEVEN_HOST)?.[1];
+    if (label === 'vault' || label?.startsWith('vault-')) return true;
+    const seven =
+      this.owned.some((text) => URL.canParse(text) && new URL(text).origin === origin) ||
+      (protocol === `${catalog.seven.originScheme}:` &&
+        port === '' &&
+        label !== undefined &&
+        !catalog.seven.excludedLabels.includes(label) &&
+        !catalog.seven.excludedLabelPrefixes.some((prefix) => label.startsWith(prefix)));
+    return seven && pathname.startsWith('/os/') && pathname !== '/os/callback.html';
   }
 
   departing(message) {

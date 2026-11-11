@@ -1249,6 +1249,29 @@ test('the guard keeps seven’s tabs and the vault out of reach, and a protected
     }
     assert.equal(await listed(targetId), true);
   }
+  const leftoverUrl = new URL('/bios.css?code=LEFTOVER-CODE', chrome.url).href;
+  const leftover = (await devtools(`/json/new?${leftoverUrl}`, { method: 'PUT' })).id;
+  t.after(() => fetch(`http://127.0.0.1:${port}/json/close/${leftover}`).catch(() => {}));
+  for (let n = 0; ; n += 1) {
+    const found = (await devtools('/json/list')).find((tab) => tab.id === leftover);
+    if (found?.url === leftoverUrl) break;
+    assert.ok(n < 100, `${leftoverUrl} did not load`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  for (const method of ['Target.attachToTarget', 'Target.activateTarget', 'Target.getTargetInfo']) {
+    const answer = await send(method, { targetId: leftover, flatten: true });
+    assert.equal(answer.error?.message, REFUSAL, `${method} on a leftover page of seven's origin`);
+  }
+  const closed = await send('Target.closeTarget', { targetId: leftover });
+  assert.equal(closed.error, undefined, JSON.stringify(closed));
+  for (let n = 0; await listed(leftover); n += 1) {
+    assert.ok(
+      n < 100,
+      'the leftover page of seven’s origin is still open after the guard closed it'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.equal(JSON.stringify(await events()).includes('LEFTOVER-CODE'), false);
 
   const errorPage = async (sessionId) => {
     let href = null;
