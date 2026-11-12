@@ -300,11 +300,6 @@ const TREED = new Set([
   'Accessibility.getChildAXNodes',
   'Accessibility.queryAXTree',
 ]);
-const DISCOVERY_EVENTS = new Set([
-  'Target.targetCreated',
-  'Target.targetInfoChanged',
-  'Target.targetDestroyed',
-]);
 const ERROR_METADATA = new Set([
   'Target.targetCreated',
   'Target.targetInfoChanged',
@@ -846,7 +841,6 @@ class Guard {
     this.paused = new Set();
     this.workerCreators = new Map();
     this.workerVerdicts = new Map();
-    this.workerStates = new Map();
     this.freshReads = new WeakSet();
     this.tabPages = new Map();
     this.initScripts = new Map();
@@ -1043,8 +1037,16 @@ class Guard {
       if (!ERROR_METADATA.has(message.method)) return this.discardEvent(message);
       message = this.metadataEvent(message, proof);
     }
-    message = this.workerGate(message);
-    if (message === null) return;
+    const worker = this.workerOf(message);
+    if (worker !== undefined && (this.blocked.has(worker) || this.workerTurnedNow(worker))) {
+      this.dropWorker(worker);
+      if (message.id === undefined) return;
+      message = {
+        id: message.id,
+        sessionId: message.sessionId,
+        error: { code: -32000, message: PROTECTED },
+      };
+    }
     if (release && message.id !== undefined) {
       const key = requestKey(message);
       const command = this.commands.get(key);
@@ -2399,91 +2401,16 @@ class Guard {
     if (this.workerCreators.has(message.sessionId)) return message.sessionId;
     const params = message.params ?? message.result ?? {};
     if (this.workerCreators.has(params.sessionId)) return params.sessionId;
-    return this.workerFor(
-      params.targetInfo?.targetId ??
-        (message.method === 'Target.targetDestroyed' ? params.targetId : undefined)
-    );
-  }
-
-  workerFor(targetId) {
+    const targetId = params.targetInfo?.targetId;
     if (targetId === undefined) return undefined;
     for (const [worker, creator] of this.workerCreators)
       if (creator.params?.targetInfo?.targetId === targetId) return worker;
     return undefined;
   }
 
-  workerOpen(worker) {
-    return (
-      !this.blocked.has(worker) &&
-      this.workerStates.get(worker) === 'safe' &&
-      !this.workerTurnedNow(worker)
-    );
-  }
-
-  closeWorker(worker) {
-    if (this.workerStates.get(worker) !== 'pending') this.dropWorker(worker);
-  }
-
-  workerGate(message) {
-    if (message.method === 'Target.detachedFromTarget') return message;
-    const next = this.listedWorkers(message);
-    const worker = this.workerOf(next);
-    if (worker !== undefined && !this.workerOpen(worker)) {
-      this.closeWorker(worker);
-      if (next.id === undefined) return null;
-      return {
-        id: next.id,
-        sessionId: next.sessionId,
-        error: { code: -32000, message: PROTECTED },
-      };
-    }
-    return this.discoveredWorker(next, worker) ? null : next;
-  }
-
-  shownWorker(targetId) {
-    const worker = this.workerFor(targetId);
-    if (worker !== undefined && this.shown.has(worker) && this.workerOpen(worker)) return true;
-    if (worker !== undefined) this.closeWorker(worker);
-    return false;
-  }
-
-  listedWorkers(message) {
-    const infos = message.result?.targetInfos;
-    if (!Array.isArray(infos) || !infos.some((info) => WORKER_TYPES.has(info?.type)))
-      return message;
-    const targetInfos = infos.filter(
-      (info) => !WORKER_TYPES.has(info?.type) || this.shownWorker(info.targetId)
-    );
-    return { ...message, result: { ...message.result, targetInfos } };
-  }
-
-  discoveredWorker(message, worker) {
-    if (!DISCOVERY_EVENTS.has(message.method)) return false;
-    const params = message.params ?? {};
-    const targetId = params.targetInfo?.targetId ?? params.targetId;
-    const type = params.targetInfo?.type ?? this.targets.get(targetId)?.type;
-    if (!WORKER_TYPES.has(type)) return false;
-    return worker === undefined || !this.shownWorker(targetId);
-  }
-
-  workerChain(creator) {
-    const info = creator?.params?.targetInfo ?? {};
-    const chain = new Set();
-    const pending = [
-      [this.sessions.get(creator?.sessionId)?.targetId, 0],
-      [info.parentId, 0],
-      [info.openerId, 0],
-    ];
-    while (pending.length) {
-      const [id, depth] = pending.pop();
-      if (id === undefined || chain.has(id)) continue;
-      if (depth > 8) return null;
-      chain.add(id);
-      const known = this.targets.get(id);
-      for (const next of [known?.openerId, known?.parentId, known?.info?.openerId])
-        pending.push([next, depth + 1]);
-    }
-    return chain;
+  creatorTargets(creator) {
+    const info = creator.params?.targetInfo ?? {};
+    return [this.sessions.get(creator.sessionId)?.targetId, info.parentId, info.openerId];
   }
 
   workerTurnedNow(worker) {
@@ -2494,44 +2421,16 @@ class Guard {
       (this.blocked.has(parent) || this.gone.has(parent) || !this.shown.has(parent))
     )
       return true;
-    const chain = this.workerChain(creator);
-    if (!chain) return true;
-    for (const id of chain) {
-      const known = this.targets.get(id);
-      if (isHeld(id) || known?.guarded === true || this.is.url(known?.url)) return true;
-    }
-    return false;
+    return this.creatorTargets(creator).some(
+      (id) => id !== undefined && (isHeld(id) || this.targets.get(id)?.guarded === true)
+    );
   }
 
   rejudgeWorkers(targetId) {
     if (targetId === undefined) return;
-    for (const [worker, creator] of this.workerCreators) {
-      const chain = this.workerChain(creator);
-      if (!chain || chain.has(targetId)) void this.judgeWorker(worker, creator);
-    }
-  }
-
-  judgeWorker(worker, creator) {
-    this.workerStates.set(worker, 'pending');
-    const verdict = this.unsafeWorker(creator).then(
-      (unsafe) => {
-        if (this.workerVerdicts.get(worker) === verdict)
-          this.workerStates.set(worker, unsafe ? 'unsafe' : 'safe');
-        return unsafe;
-      },
-      () => {
-        if (this.workerVerdicts.get(worker) === verdict) this.workerStates.set(worker, 'failed');
-        return true;
-      }
-    );
-    this.workerVerdicts.set(worker, verdict);
-    return verdict;
-  }
-
-  async settledWorker(worker) {
-    for (let n = 0; n < 8 && this.workerStates.get(worker) === 'pending'; n++)
-      await this.workerVerdicts.get(worker);
-    return this.workerStates.get(worker);
+    for (const [worker, creator] of this.workerCreators)
+      if (this.creatorTargets(creator).includes(targetId))
+        this.workerVerdicts.set(worker, this.unsafeWorker(creator));
   }
 
   async withheld(sessionId, foreign) {
@@ -2540,9 +2439,9 @@ class Guard {
 
   async creatorTurned(sessionId) {
     if (!this.workerCreators.has(sessionId)) return false;
-    if ((await this.settledWorker(sessionId)) === 'safe' && !this.workerTurnedNow(sessionId))
-      return false;
-    this.closeWorker(sessionId);
+    const unsafe = await (this.workerVerdicts.get(sessionId) ?? true);
+    if (!unsafe && !this.workerTurnedNow(sessionId)) return false;
+    this.dropWorker(sessionId);
     return true;
   }
 
@@ -4734,7 +4633,9 @@ class Guard {
     const { params = {}, sessionId } = message;
     const info = params.targetInfo ?? {};
     if (!WORKER_TYPES.has(info.type)) return false;
-    if (!(await this.judgeWorker(params.sessionId, message))) return false;
+    const verdict = this.unsafeWorker(message);
+    this.workerVerdicts.set(params.sessionId, verdict);
+    if (!(await verdict)) return false;
     this.sessions.set(params.sessionId, { targetId: info.targetId, parent: sessionId });
     if (params.waitingForDebugger) this.paused.add(params.sessionId);
     this.cut(params.sessionId, sessionId);
@@ -5342,7 +5243,6 @@ class Guard {
 
   async answer(message, was) {
     await this.finishRecovery(was);
-    await this.settledWorker(was?.sessionId);
     this.pendingContent.delete(was);
     if (this.endedAnswer(was) || !this.owns(was)) return;
     if (!(await this.admitAnswer(was))) return this.refuse(was);
@@ -5959,7 +5859,6 @@ class Guard {
     this.cutWorkersOf(sessionId, this.sessions.get(sessionId)?.targetId);
     this.workerCreators.delete(sessionId);
     this.workerVerdicts.delete(sessionId);
-    this.workerStates.delete(sessionId);
     this.tabSessions.delete(sessionId);
     this.tabPages.delete(sessionId);
     const tabId = this.sessions.get(sessionId)?.targetId;
