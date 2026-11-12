@@ -202,7 +202,8 @@ test('on the extension route, Puppeteer-shaped tab auto-attach with a held sign-
         message.method === 'Target.attachedToTarget' &&
         message.params.targetInfo.targetId === targetId
     ).length;
-  for (const targetId of ['tab-popup', 'tab-seven', 'tab-vault'])
+  assert.equal(adopted('tab-popup'), 0, 'the held sign-in popup never gets a synthetic tab');
+  for (const targetId of ['tab-seven', 'tab-vault'])
     assert.equal(adopted(targetId), 1, `${targetId} was cut once and not adopted again`);
   assert.deepEqual(
     leaked(

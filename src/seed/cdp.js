@@ -1,5 +1,6 @@
 import { EXTENSION_UPDATE, extensionAutomationSupported } from './extension.js';
 import { admits, guardProtected, NO_AUTO_ATTACH, TAB_ONLY, TAB_PREFIX } from './guard.js';
+import { isHeld, MARK } from './held.js';
 
 const RUNTIMES = ['extension', 'devtools'];
 
@@ -41,6 +42,9 @@ export function ordered(send) {
 }
 
 export const SYNC_MS = 200;
+
+const signIn = (info) =>
+  isHeld(info.targetId) || isHeld(info.openerId) || (info.url ?? '').includes(`#${MARK}`);
 
 export function syntheticAutoAttach(cdp, deliver, attached, closed, every = SYNC_MS) {
   const state = { on: false, tabs: false, count: 0 };
@@ -133,7 +137,7 @@ export function syntheticAutoAttach(cdp, deliver, attached, closed, every = SYNC
       live.add(info.targetId);
       const [, tab] = tabOf(info.targetId) ?? [];
       if (tab) tab.info = info;
-      else if (fresh(info)) await adopt(info);
+      else if (fresh(info) && !signIn(info)) await adopt(info);
     }
     forget(live);
   };
