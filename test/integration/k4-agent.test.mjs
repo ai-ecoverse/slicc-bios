@@ -362,7 +362,12 @@ const rows = (page, id) =>
     new Function(
       'id',
       `const dialog = (${find})('slicc-approvals')?.shadowRoot?.querySelector('dialog[data-approval="' + id + '"]');
-      return Object.fromEntries([...dialog.querySelectorAll('[slot=button][data-action]')].map((b) => [b.dataset.action, Math.round(b.getBoundingClientRect().top)]));`
+      return Object.fromEntries(
+        [...dialog.querySelectorAll('[slot=button][data-action]')].map((b) => {
+          const { top, left } = b.getBoundingClientRect();
+          return [b.dataset.action, { top: Math.round(top), left: Math.round(left) }];
+        })
+      );`
     ),
     id
   );
@@ -416,10 +421,28 @@ test('enforce: Deny and stop on a cone’s looping sudo ends the loop and the tu
     )
   );
   await armed(page);
-  const top = await rows(page, looping.id);
-  assert.deepEqual(Object.keys(top).sort(), ['deny', 'once', 'stop'], JSON.stringify(top));
-  assert.equal(top.deny, top.stop, JSON.stringify(top));
-  assert.ok(top.once > top.stop, JSON.stringify(top));
+  const layout = await rows(page, looping.id);
+  const keys = Object.keys(layout).sort();
+  assert.deepEqual(
+    keys.filter((k) => k !== 'always'),
+    ['deny', 'once', 'stop'],
+    JSON.stringify(layout)
+  );
+  assert.ok(
+    keys.every((k) => ['always', 'deny', 'once', 'stop'].includes(k)),
+    JSON.stringify(layout)
+  );
+  assert.equal(layout.deny.top, layout.stop.top, JSON.stringify(layout));
+  assert.ok(layout.deny.left < layout.stop.left, JSON.stringify(layout));
+  assert.ok(
+    (layout.once.top === layout.stop.top && layout.once.left > layout.stop.left) ||
+      layout.once.top > layout.stop.top,
+    JSON.stringify(layout)
+  );
+  const readingOrder = Object.entries(layout)
+    .sort((a, b) => a[1].top - b[1].top || a[1].left - b[1].left)
+    .map(([action]) => action);
+  assert.equal(readingOrder.at(-1), 'once', JSON.stringify({ layout, readingOrder }));
   await press(page, 'stop');
   const listed = () =>
     page.evaluate(() => {
