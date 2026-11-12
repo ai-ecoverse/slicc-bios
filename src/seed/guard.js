@@ -6,6 +6,7 @@ import { crossOriginPage, emptyNoAccess, hold, isHeld } from './held.js';
 
 export const PROTECTED =
   'slicc: refused: seven’s own pages and the vault are out of reach of browser automation';
+const TAINTED = Symbol('tainted');
 export const UNSEEN =
   'slicc: refused: this request wasn’t seen, so it could be seven’s or the vault’s';
 export const FETCH = 'slicc: refused: Fetch needs a tab session; it can’t pause the whole browser';
@@ -1148,6 +1149,7 @@ class Guard {
       type: info.type ?? known?.type,
       openerId: info.openerId,
       parentId: info.parentId ?? known?.parentId,
+      parentFrameId: info.parentFrameId ?? known?.parentFrameId,
       was: known?.was || known?.guarded || false,
       guarded: known?.guarded || false,
       real: known?.real || false,
@@ -1293,7 +1295,9 @@ class Guard {
       return true;
     }
     if (depth > 64) return true;
-    if (found.parentId && found.parentId !== targetId) {
+    if (found.type === 'iframe') {
+      if (await this.frameAncestry(targetId, found, depth, seen)) return true;
+    } else if (found.parentId && found.parentId !== targetId) {
       const refused = await this.target(found.parentId, depth + 1, seen);
       if (isHeld(found.parentId)) {
         hold(targetId);
@@ -1310,6 +1314,93 @@ class Guard {
       return true;
     }
     return this.classifyTarget(targetId, found, opener);
+  }
+
+  sessionTarget(sessionId) {
+    return this.sessions.get(sessionId)?.targetId ?? this.navSessions.get(sessionId)?.targetId;
+  }
+
+  frameOwner(targetId) {
+    const seen = new Set([targetId]);
+    let frame = this.targets.get(targetId)?.parentFrameId ?? this.parents.get(targetId);
+    while (frame && !seen.has(frame) && seen.size < 64) {
+      seen.add(frame);
+      if (this.is.url(this.frames.get(frame))) return TAINTED;
+      if (this.targets.has(frame)) return frame;
+      frame = this.parents.get(frame);
+    }
+    return undefined;
+  }
+
+  frameParents(targetId) {
+    const known = this.targets.get(targetId);
+    const parents = new Set();
+    const reported = known?.info?.parentId ?? known?.parentId;
+    if (reported && reported !== targetId) parents.add(reported);
+    for (const entry of this.sessions.values()) {
+      if (entry.targetId !== targetId || entry.parent === undefined) continue;
+      const owner = this.sessionTarget(entry.parent);
+      if (owner) parents.add(owner);
+    }
+    const framed = this.frameOwner(targetId);
+    if (framed) parents.add(framed);
+    return parents;
+  }
+
+  frameLineage(targetId) {
+    const lineage = [];
+    const seen = new Set([targetId]);
+    let next = [targetId];
+    while (next.length && seen.size < 64) {
+      const parents = next.flatMap((id) => [...this.frameParents(id)]);
+      next = [];
+      for (const id of parents) {
+        if (seen.has(id) || id === TAINTED) continue;
+        seen.add(id);
+        lineage.push(id);
+        if (this.targets.get(id)?.type === 'iframe') next.push(id);
+      }
+    }
+    return lineage;
+  }
+
+  async frameAncestry(targetId, found, depth, seen) {
+    const parents = this.frameParents(targetId);
+    if (parents.size !== 1) return true;
+    const [parent] = parents;
+    if (parent === TAINTED) return true;
+    if (isHeld(parent)) {
+      hold(targetId);
+      found.guarded = true;
+      return true;
+    }
+    return this.target(parent, depth + 1, seen);
+  }
+
+  frameHinted(targetId, depth = 0) {
+    const parents = this.frameParents(targetId);
+    if (parents.size !== 1 || depth > 16) return true;
+    const [parent] = parents;
+    const known = this.targets.get(parent);
+    return (
+      parent === TAINTED ||
+      this.relatedHeld(parent) ||
+      known.guarded ||
+      this.is.target(known) ||
+      (known.type === 'iframe' && this.frameHinted(parent, depth + 1))
+    );
+  }
+
+  async frameRefused(sessionId) {
+    const entry = this.sessions.get(sessionId);
+    if (this.targets.get(entry?.targetId)?.type !== 'iframe') return false;
+    if (
+      entry.parent !== undefined &&
+      (this.blocked.has(entry.parent) || this.gone.has(entry.parent))
+    )
+      return true;
+    for (const id of this.frameLineage(entry.targetId)) if (await this.current(id)) return true;
+    return this.current(entry.targetId);
   }
 
   classifyTarget(targetId, found, opener) {
@@ -2359,6 +2450,14 @@ class Guard {
     this.refusePending(sessionId);
     const entry = this.sessions.get(sessionId);
     const targetId = entry?.targetId;
+    for (const [child, owned] of this.sessions)
+      if (
+        child !== sessionId &&
+        this.targets.get(owned.targetId)?.type === 'iframe' &&
+        (owned.parent === sessionId ||
+          (targetId && this.frameLineage(owned.targetId).includes(targetId)))
+      )
+        this.cut(child, undefined, guardTarget);
     this.decide(targetId);
     if (targetId && guardTarget) {
       const known = this.targets.get(targetId) ?? { url: '' };
@@ -2653,8 +2752,8 @@ class Guard {
     if (message.method !== 'Target.attachedToTarget') return;
     const info = message.params?.targetInfo;
     if (!info?.targetId || this.privateSessions.has(message.params.sessionId)) return;
-    const parentId =
-      info.type === 'iframe' ? this.sessions.get(message.sessionId)?.targetId : undefined;
+    const owner = this.sessionTarget(message.sessionId);
+    const parentId = info.type === 'iframe' ? (info.parentId ?? owner) : undefined;
     this.learn({ ...info, ...(parentId ? { parentId } : {}) });
     if (info.url?.startsWith('chrome-error:') || this.is.target(info) || !URL.canParse(info.url))
       this.uncertainProof(info.targetId);
@@ -3436,6 +3535,7 @@ class Guard {
       isHeld(info.targetId) ||
       this.relatedHeld(info.openerId) ||
       this.relatedHeld(info.parentId ?? known?.parentId) ||
+      ((info.type ?? known?.type) === 'iframe' && this.frameHinted(info.targetId)) ||
       (info.openerId &&
         (this.targets.get(info.openerId)?.guarded ||
           this.is.target(this.targets.get(info.openerId)))) ||
@@ -5561,6 +5661,15 @@ class Guard {
         this.openerInfo(targetId)
       );
       if (info?.type !== 'page' || (await this.surfaceOpener(info))) return PROTECTED;
+    }
+    const frame = await this.reuse(
+      `frame:${message.sessionId}`,
+      this.arrivals.get(message),
+      async () => ({ refused: await this.frameRefused(message.sessionId) })
+    );
+    if (frame.refused) {
+      this.cut(message.sessionId);
+      return PROTECTED;
     }
     if (!(await this.admitContent(message)) || (await this.recover(message))) return PROTECTED;
     return this.pageCheck(message.method, message.sessionId);
