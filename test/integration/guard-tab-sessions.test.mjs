@@ -257,3 +257,43 @@ test('over the DevTools port, a raw client without discovery never learns a held
   assert.ok(Array.isArray(listed.result.targetInfos));
   assert.deepEqual(leaked(IDP_TITLE, 'idp.example', 's3cret', 'c0de', 'cl1ent'), []);
 });
+
+test('on the extension route, a tab adopted while its page had no URL is refused, without attaching the page, once the page moves to the vault', {
+  timeout: 30000,
+}, async () => {
+  const pages = { moving: { type: 'page', url: '', title: '' } };
+  const cdp = extension(pages);
+  const transport = extensionConnection(cdp, 20);
+  const { guarded, send, leaked, attachedTabs } = drive(transport, {
+    kind: 'extension',
+    version: '7.10.0',
+  });
+  await send('Target.setAutoAttach', {
+    autoAttach: true,
+    waitForDebuggerOnStart: true,
+    flatten: true,
+    filter: PUPPETEER_TABS,
+  });
+  for (let n = 0; n < 200 && !attachedTabs().length; n++) await pause(5);
+  const tab = attachedTabs()[0]?.params.sessionId;
+  assert.ok(tab, 'the blank page got a tab');
+  const lookedUp = cdp.sent.length;
+  pages.moving = { type: 'page', url: VAULT, title: VAULT_TITLE };
+  const answer = await send(
+    'Target.setAutoAttach',
+    { autoAttach: true, waitForDebuggerOnStart: true, flatten: true, filter: [{}] },
+    tab
+  );
+  assert.equal(answer.error?.message, PROTECTED);
+  assert.ok(
+    !cdp.sent
+      .slice(lookedUp)
+      .some(
+        (call) => call.method === 'Target.attachToTarget' && call.params?.targetId === 'moving'
+      ),
+    'the vault page was never attached'
+  );
+  assert.deepEqual(leaked(VAULT_TITLE, 'vault.sliccy.ai'), []);
+  guarded.close?.();
+  transport.close();
+});

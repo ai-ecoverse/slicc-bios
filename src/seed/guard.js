@@ -819,6 +819,7 @@ class Guard {
     this.autoAttachments = new Map();
     this.tabSessions = new Set();
     this.tabTargets = new Map();
+    this.paused = new Set();
     this.tabPages = new Map();
     this.initScripts = new Map();
     this.pageAutoAttach = false;
@@ -2331,6 +2332,8 @@ class Guard {
         ...(outer ? { sessionId: outer } : {}),
       });
     }
+    if (this.paused.delete(sessionId))
+      void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
     void this.call('Target.detachFromTarget', { sessionId }, outer);
     if (this.tabPages.get(outer)?.session === sessionId)
       this.cut(outer, this.sessions.get(outer)?.parent, false);
@@ -2713,11 +2716,15 @@ class Guard {
       this.tabs.get(targetId)?.admitted ||
       [...this.sessions].some(([id, entry]) => entry.targetId === targetId && this.shown.has(id));
     const nav = { targetId, session: null, done: false, failed: false, held, admitted };
+    nav.fetched = new Promise((resolve) => {
+      nav.fetch = resolve;
+    });
     nav.ready = new Promise((resolve) => {
       nav.settle = (failed) => {
         if (nav.done) return;
         nav.done = true;
         nav.failed = failed;
+        nav.fetch(false);
         clearTimeout(nav.timer);
         resolve();
       };
@@ -2744,8 +2751,10 @@ class Guard {
     if (!session) return nav.settle(true);
     nav.session = session;
     this.navSessions.set(session, nav);
+    const fetching = this.call('Fetch.enable', { patterns: ARM }, session);
+    void fetching.then((answer) => nav.fetch(!answer.error));
     const steps = await Promise.all([
-      this.call('Fetch.enable', { patterns: ARM }, session),
+      fetching,
       this.call(
         'Network.enable',
         { maxTotalBufferSize: 0, maxResourceBufferSize: 0, maxPostDataSize: 0 },
@@ -3633,8 +3642,7 @@ class Guard {
       const info = params.targetInfo ?? {};
       this.notePageUnderTab(message);
       if (await this.skippedAttachment(message)) return true;
-      if (params.waitingForDebugger)
-        void this.call('Runtime.runIfWaitingForDebugger', {}, params.sessionId);
+      if (params.waitingForDebugger) void this.resumeArmed(info, params.sessionId);
       if (!info.url && (info.type === 'page' || info.type === 'iframe')) {
         void this.blank(message);
         return true;
@@ -3686,8 +3694,7 @@ class Guard {
     const info = params.targetInfo ?? {};
     if (await this.privateAttachment(info.targetId, params.sessionId)) return true;
     if (info.type !== 'tab') return false;
-    if (params.waitingForDebugger)
-      void this.call('Runtime.runIfWaitingForDebugger', {}, params.sessionId);
+    if (params.waitingForDebugger) this.paused.add(params.sessionId);
     return this.tabAttached(message);
   }
 
@@ -4604,7 +4611,7 @@ class Guard {
   }
 
   shownTarget(message, info, source = message, proof) {
-    if (message.method === 'Target.attachedToTarget') this.decide(info?.targetId);
+    if (message.method === 'Target.attachedToTarget') this.attachmentShown(message, info);
     if (this.unsafe.has(source) || this.eventError(source)) {
       this.deliver(this.metadataEvent(message, proof), true, source, proof);
       return;
@@ -5629,11 +5636,32 @@ class Guard {
   }
 
   notePageUnderTab({ params = {}, sessionId }) {
-    if (this.tabSessions.has(sessionId) && params.targetInfo?.type === 'page')
-      this.tabPages.set(sessionId, {
-        targetId: params.targetInfo.targetId,
-        session: params.sessionId,
-      });
+    if (!this.tabSessions.has(sessionId) || params.targetInfo?.type !== 'page') return;
+    this.tabPages.set(sessionId, {
+      targetId: params.targetInfo.targetId,
+      session: params.sessionId,
+    });
+    if (this.paused.has(sessionId)) void this.resumeArmed(params.targetInfo, sessionId);
+  }
+
+  attachmentShown(message, info) {
+    this.decide(info?.targetId);
+    const session = message.params?.sessionId;
+    if (!this.tabSessions.has(session) && this.paused.delete(session))
+      void this.call('Runtime.runIfWaitingForDebugger', {}, session);
+  }
+
+  async resumeArmed(info, sessionId) {
+    this.paused.add(sessionId);
+    if (this.is.url(info.url) || this.is.target(info) || isHeld(info.targetId)) return;
+    if (NAV_TYPES.has(info.type)) {
+      this.learn(info);
+      this.touch(info.targetId, !info.url);
+      const nav = this.navs.get(info.targetId);
+      if (nav) await this.within(nav.fetched, ANSWER_MS);
+    }
+    if (!this.paused.delete(sessionId) || this.blocked.has(sessionId)) return;
+    void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
   }
 
   forgetTab(sessionId) {
@@ -5645,7 +5673,12 @@ class Guard {
 
   async heldTab(sessionId) {
     const page = this.tabPages.get(sessionId)?.targetId;
-    return page !== undefined && (isHeld(page) || (await this.target(page)));
+    if (page === undefined) return false;
+    if (INHERITING.test(this.targets.get(page)?.url ?? '')) {
+      const fresh = await this.answered(this.call('Target.getTargetInfo', { targetId: page }));
+      this.learn(fresh?.result?.targetInfo);
+    }
+    return isHeld(page) || (await this.target(page));
   }
 
   ordinaryTab(tabId) {
@@ -6354,6 +6387,7 @@ function narrowed(message) {
   if (method === 'Page.createIsolatedWorld' && params) {
     const stripped = { ...params };
     delete stripped.grantUniveralAccess;
+    delete stripped.grantUniversalAccess;
     delete stripped.contentSecurityPolicy;
     return { ...message, params: stripped };
   }
