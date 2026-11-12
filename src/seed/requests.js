@@ -221,6 +221,7 @@ export function running(hook, extras = () => ({})) {
       ...request,
       signal: open.signal,
       ended: open.ended,
+      cut: open.cut,
     });
     open.ends?.(end);
     open.closes?.(close);
@@ -290,7 +291,7 @@ export function personal(hook, guard, extras) {
             reply?.cancel?.();
             return;
           }
-          resolve({ reply, check: guarded.check, stop: open.stop });
+          resolve({ reply, check: guarded.check, stop: open.stop, cut: open.cut });
         },
         (error) => {
           open.signal.removeEventListener('abort', cut);
@@ -562,7 +563,10 @@ export function captures({
       stop: (reason) => {
         if (!end()) local.abort(reason);
       },
-      cut: () => chip?.(),
+      cut: () => {
+        open.delete(entry);
+        chip?.();
+      },
     };
     const ended = () => {
       open.delete(entry);
@@ -572,10 +576,7 @@ export function captures({
       if (finished) return;
       finished = true;
       if (whole) ended();
-      else {
-        open.delete(entry);
-        chip?.();
-      }
+      else entry.cut();
       request.signal?.removeEventListener('abort', forward);
       close();
     };
@@ -604,6 +605,7 @@ export function captures({
         if (typeof given === 'function') close = given;
       },
       ended,
+      cut: entry.cut,
       stop: () => entry.stop(refused(STOPPED)),
       reply: (reply) => {
         if (reply?.getReader) return watched(reply, done);
@@ -783,23 +785,26 @@ function stopped(stream) {
   for (const track of stream?.getTracks?.() ?? []) track.stop();
 }
 
-export function released(stream, then) {
-  const tracks = stream?.getTracks?.() ?? [];
-  let left = tracks.length;
-  for (const track of tracks) {
-    const stop = track.stop;
-    let once = false;
-    track.stop = function (...args) {
-      const result = stop.apply(this, args);
-      if (!once) {
-        once = true;
-        left -= 1;
-        if (left === 0) then();
-      }
-      return result;
-    };
-  }
-  return stream;
+export function releases(then) {
+  const tracks = [];
+  let fired = false;
+  const check = () => {
+    if (fired || !tracks.every((track) => track.readyState === 'ended')) return;
+    fired = true;
+    queueMicrotask(then);
+  };
+  return (stream) => {
+    for (const track of stream?.getTracks?.() ?? []) {
+      tracks.push(track);
+      const stop = track.stop;
+      track.stop = function (...args) {
+        const result = stop.apply(this, args);
+        check();
+        return result;
+      };
+    }
+    return stream;
+  };
 }
 
 export async function handleOf(
@@ -827,10 +832,11 @@ export function displayer({
     if (!handle && !SHARED.includes(track?.getSettings?.().displaySurface)) return UNKNOWN_TAB;
     return null;
   };
-  return ({ options, signal, ended = () => {} } = {}) => {
+  return ({ options, signal, ended = () => {}, cut = () => {} } = {}) => {
     let reason = null;
     let mic = null;
     let sharing = null;
+    const keep = releases(ended);
     const microphone = captureMicrophone(options);
     const userMedia = async (constraints) => {
       const audio = heard(microphone);
@@ -854,7 +860,7 @@ export function displayer({
         stopped(mic);
         throw reason ?? signal.reason;
       }
-      return mic;
+      return keep(mic);
     };
     const display = async (constraints) => {
       const devices = media();
@@ -874,6 +880,7 @@ export function displayer({
       let settled = false;
       const stop = (next) => {
         reason ??= refused(next);
+        cut();
         stopped(stream);
         stopped(mic);
         if (settled) track?.dispatchEvent?.(new Event('ended'));
@@ -889,7 +896,7 @@ export function displayer({
       if (reason) throw reason;
       settled = true;
       sharing = track ?? null;
-      return released(stream, ended);
+      return keep(stream);
     };
     const end = () => {
       if (!sharing || !CAPTURE_VIDEO.includes(options?.type)) return false;
@@ -985,7 +992,7 @@ export function cameraman({
         throw signal.reason;
       }
       sharing = stream?.getVideoTracks?.()[0] ?? null;
-      return released(stream, ended);
+      return releases(ended)(stream);
     };
     const end = () => {
       if (!sharing || !CAPTURE_VIDEO.includes(options?.type)) return false;

@@ -67,7 +67,10 @@ export function composerCapture({ audio, video, still, now = Date.now, active = 
         .then((blob) => {
           if (cancelled) throw new DOMException(CANCELLED, 'AbortError');
           run.check();
-          if (!blob.size) throw new DOMException(EMPTY, 'AbortError');
+          if (!blob.size) {
+            run.cut();
+            throw new DOMException(EMPTY, 'AbortError');
+          }
           return {
             blob,
             mimeType: take.mimeType,

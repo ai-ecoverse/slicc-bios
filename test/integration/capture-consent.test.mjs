@@ -95,7 +95,9 @@ const faux = () => {
         clearInterval(timer);
         stop();
       };
-      track.getCaptureHandle = () => ({ handle: 'ordinary', origin: 'https://example.test' });
+      track.getCaptureHandle = () =>
+        window.handle ?? { handle: 'ordinary', origin: 'https://example.test' };
+      window.displayTrack = track;
       return stream;
     },
   });
@@ -530,5 +532,31 @@ test('a click nobody answers times out after 5 minutes with nobody clicked withi
   await shows(page, 'late 1');
   await page.until(() => window.clickItems().length === 0);
   assert.equal(await page.evaluate(() => window.displays.length), 0);
+  assert.deepEqual(page.errors, []);
+});
+
+test('a screen recording with the microphone that the guard stops mid-take, when the shared tab turns into seven, loses its chip at once instead of ending it', async (t) => {
+  const page = await seven(t);
+  await page.evaluate(() => {
+    window.sawEnded = false;
+    document.querySelector('slicc-app').model.live.on('items', (list) => {
+      if (list.some((item) => item.endedAt !== undefined)) window.sawEnded = true;
+    });
+  });
+  await run(page, 'screencapture -V 60 -g /tmp/flip.webm; echo "fl""ip over"');
+  await page.until(() => window.chips().length === 1 && window.mics.length === 1);
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  const cut = await page.evaluate(() => {
+    window.handle = { handle: 'slicc-seven', origin: location.origin };
+    window.displayTrack.dispatchEvent(new Event('capturehandlechange'));
+    return {
+      items: document.querySelector('slicc-app').model.live.items().length,
+      track: window.displayTrack.readyState,
+    };
+  });
+  assert.deepEqual(cut, { items: 0, track: 'ended' });
+  await shows(page, 'flip over', 60000);
+  await page.until(() => window.chips().length === 0);
+  assert.equal(await page.evaluate(() => window.sawEnded), false);
   assert.deepEqual(page.errors, []);
 });
