@@ -52,6 +52,9 @@ const browser = await debuggerUrl(port);
 const SEVEN = `${new URL(chrome.url).origin}/os/`;
 const VAULT = `http://vault.sliccy.ai:${fixture.address().port}/page`;
 const protectedUrl = (url) => [SEVEN, VAULT].some((at) => url.startsWith(new URL(at).origin));
+const VAULT_COOKIE = 'stock-vault-secret';
+const vaultCookie = (cookies) =>
+  cookies.filter((cookie) => cookie.name === VAULT_COOKIE || cookie.domain.includes('sliccy.ai'));
 after(() => {
   chrome.close();
   fixture.close();
@@ -127,6 +130,41 @@ async function step(route, client, name, work) {
       chromeShots.set(`held ${client} ${name}`, await readChrome());
     }
   }
+}
+
+async function unguarded(t) {
+  const socket = new WebSocket(browser, { maxPayload: 256 * 1024 * 1024 });
+  await new Promise((resolve, reject) => {
+    socket.once('open', resolve);
+    socket.once('error', reject);
+  });
+  t.after(() => socket.close());
+  const waiting = new Map();
+  let next = 0;
+  socket.on('message', (data) => {
+    const message = JSON.parse(data.toString());
+    const done = waiting.get(message.id);
+    if (!done) return;
+    waiting.delete(message.id);
+    done(message);
+  });
+  return (method, params = {}) =>
+    new Promise((resolve, reject) => {
+      next += 1;
+      waiting.set(next, (message) =>
+        message.error ? reject(new Error(message.error.message)) : resolve(message.result)
+      );
+      socket.send(JSON.stringify({ id: next, method, params }));
+    });
+}
+
+async function vaultOpen(t) {
+  const send = await unguarded(t);
+  await send('Storage.setCookies', {
+    cookies: [{ name: VAULT_COOKIE, value: 'v', url: VAULT }],
+  });
+  const { targetId } = await send('Target.createTarget', { url: VAULT, background: true });
+  t.after(() => send('Target.closeTarget', { targetId }).catch(() => {}));
 }
 
 async function bridge(t) {
@@ -347,6 +385,9 @@ async function playwright(route, endpoint) {
     assert.ok((await run('screenshot', () => page.screenshot())).length > 100);
     const cookies = await run('cookies', () => context.cookies(ORDINARY));
     assert.ok(cookies.some((cookie) => cookie.name === 'stock'));
+    const all = await run('all cookies', () => context.cookies());
+    assert.ok(all.some((cookie) => cookie.name === 'stock'));
+    assert.deepEqual(vaultCookie(all), [], 'no vault cookie reaches the client');
     const [popup] = await run('popup', () =>
       Promise.all([page.waitForEvent('popup'), page.click('#open')])
     );
@@ -418,6 +459,9 @@ async function puppeteerFlow(route, endpoint) {
     assert.ok((await run('screenshot', () => page.screenshot())).length > 100);
     const cookies = await run('cookies', () => page.cookies());
     assert.ok(cookies.some((cookie) => cookie.name === 'stock'));
+    const all = await run('all cookies', () => connected.cookies());
+    assert.ok(all.some((cookie) => cookie.name === 'stock'));
+    assert.deepEqual(vaultCookie(all), [], 'no vault cookie reaches the client');
     const [popup] = await run('popup', () =>
       Promise.all([new Promise((resolve) => page.once('popup', resolve)), page.click('#open')])
     );
@@ -460,6 +504,7 @@ for (const route of ['devtools', 'extension'])
     timeout: 10 * 60 * 1000,
   }, async (t) => {
     const opened = await bridge(t);
+    await vaultOpen(t);
     const endpoint = `${opened.endpoint}/${route}`;
     t.after(() => {
       const unanswered = [...pending.values()].map(
