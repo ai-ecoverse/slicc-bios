@@ -758,6 +758,39 @@ test('an opaque about:blank without an inherited origin can be closed', async (t
   assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'opaque-tab'), true);
 });
 
+test('an ordinary tab stays reachable after its seven opener is destroyed', async (t) => {
+  const wire = protocol(t);
+  const openerUrl = 'https://seven.sliccy.ai/production/closed%20opener';
+  const opener = wire.target('closed-opener', 'page', {
+    ...plainFrame('closed-opener'),
+    url: openerUrl,
+    securityOrigin: 'https://seven.sliccy.ai',
+  });
+  opener.info.url = openerUrl;
+  const child = wire.target('closed-child', 'page', {
+    ...plainFrame('closed-child'),
+    url: ordinary,
+    securityOrigin: new URL(ordinary).origin,
+  });
+  child.info.url = ordinary;
+  child.info.openerId = 'closed-opener';
+  await wire.attach('closed-child');
+  wire.targets.delete('closed-opener');
+  wire.emit({ method: 'Target.targetDestroyed', params: { targetId: 'closed-opener' } });
+  const { targetId, type, url } = child.info;
+  child.info = { targetId, type, url, canAccessOpener: false };
+  wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: child.info } });
+  await flush();
+  const mark = wire.sent.length;
+  const answer = await wire.send('Target.attachToTarget', {
+    targetId: 'closed-child',
+    flatten: true,
+  });
+  assert.equal(answer.error, undefined, JSON.stringify(answer));
+  assert.ok(answer.result?.sessionId);
+  assert.equal(forwarded(wire, mark, 'Target.attachToTarget', 'closed-child'), true);
+});
+
 test('about:blank with canAccessOpener but no openerId can be closed', async (t) => {
   const wire = protocol(t);
   const entry = wire.target('opaque-access');

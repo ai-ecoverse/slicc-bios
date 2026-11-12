@@ -1086,10 +1086,11 @@ class Guard {
     }
     const failed = info.url !== undefined && this.errored.get(info.targetId) === bare(info.url);
     const { url, reported } = this.learnUrls(info, known, failed);
+    const blank = inherits(url) || url === '';
     this.targets.set(info.targetId, {
       url,
       type: info.type ?? known?.type,
-      openerId: info.openerId ?? known?.openerId,
+      openerId: info.openerId ?? (blank ? known?.openerId : undefined),
       parentId: info.parentId ?? known?.parentId,
       was: known?.was || known?.guarded || false,
       guarded: known?.guarded || false,
