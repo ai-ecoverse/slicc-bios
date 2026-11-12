@@ -214,13 +214,26 @@ const othersIn = (filter) => [
   ...filter.map((entry) => entry?.type).filter((type) => type && !WORKER_FAMILY.includes(type)),
   'slicc-any-other-type',
 ];
-const wide = (params) =>
+const wide = (params, device) =>
   Array.isArray(params?.filter) &&
   (admits(params.filter, 'tab') ||
-    (WORKER_FAMILY.some((type) => admits(params.filter, type)) &&
+    (device &&
+      WORKER_FAMILY.some((type) => admits(params.filter, type)) &&
       othersIn(params.filter).some((type) => admits(params.filter, type))));
-export const SHARED_WORKERS =
-  'slicc: refused: auto-attach for shared or service workers is out of reach of browser automation on this route; ask for dedicated workers ({type: "worker"}) or pages';
+export const NO_WORKERS =
+  'slicc: refused: workers are out of reach of browser automation through slicc; auto-attach pages or frames instead';
+const WORKERLESS_DEFAULT = [
+  ...WORKER_FAMILY.map((type) => ({ type, exclude: true })),
+  ...DEFAULT_FILTER,
+];
+const DISCOVERY_EVENTS = new Set([
+  'Target.targetCreated',
+  'Target.targetInfoChanged',
+  'Target.targetDestroyed',
+]);
+const omitted = (params) =>
+  params?.filter === undefined ||
+  JSON.stringify(params.filter) === JSON.stringify(WORKERLESS_DEFAULT);
 export const TAB_PREFIX = 'tab-';
 export const TAB_FOREIGN =
   'slicc: refused: a tab session reads only its own target; ask the browser session about other targets';
@@ -775,7 +788,8 @@ export function protection(own) {
 }
 
 class Guard {
-  constructor(connection, own, tabs, route, privateFrames) {
+  constructor(connection, own, tabs, route, privateFrames, caller) {
+    this.device = caller?.kind === 'device';
     this.privateFrames = route?.kind === 'extension' ? privateFrames : undefined;
     this.extensionFrames = route?.kind === 'extension';
     this.route = typeof route?.kind === 'string' && route.kind ? route.kind : 'devtools';
@@ -839,7 +853,6 @@ class Guard {
     this.tabSessions = new Set();
     this.tabTargets = new Map();
     this.paused = new Set();
-    this.workerCreators = new Map();
     this.freshReads = new WeakSet();
     this.tabPages = new Map();
     this.initScripts = new Map();
@@ -1036,6 +1049,8 @@ class Guard {
       if (!ERROR_METADATA.has(message.method)) return this.discardEvent(message);
       message = this.metadataEvent(message, proof);
     }
+    message = this.workerless(message);
+    if (message === null) return;
     if (release && message.id !== undefined) {
       const key = requestKey(message);
       const command = this.commands.get(key);
@@ -3719,7 +3734,7 @@ class Guard {
     const { params } = message;
     const info = params.targetInfo ?? {};
     if (await this.privateAttachment(info.targetId, params.sessionId)) return true;
-    if (await this.cutWorker(message)) return true;
+    if (this.cutWorker(message)) return true;
     if (info.type !== 'tab') return false;
     if (params.waitingForDebugger) this.pausedTab(params.sessionId);
     return this.tabAttached(message);
@@ -4540,41 +4555,44 @@ class Guard {
     if (!targetId) return undefined;
     const kind = (await this.lookup(targetId))?.type;
     if (!WORKER_TYPES.has(kind)) return undefined;
-    const creator = this.workerCreators.get(sessionId);
-    if (creator && (await this.unsafeWorker(creator))) return PROTECTED;
+    if (this.device) return NO_WORKERS;
     return (await this.target(targetId)) ? PROTECTED : null;
   }
 
-  async cutWorker(message) {
+  cutWorker(message) {
     const { params = {}, sessionId } = message;
     const info = params.targetInfo ?? {};
-    if (!WORKER_TYPES.has(info.type) || !(await this.unsafeWorker(message))) return false;
+    if (!this.device || !WORKER_TYPES.has(info.type)) return false;
     this.sessions.set(params.sessionId, { targetId: info.targetId, parent: sessionId });
+    this.learn(info);
     if (params.waitingForDebugger) this.paused.add(params.sessionId);
     this.cut(params.sessionId, sessionId);
     return true;
   }
 
-  async unsafeCreator(targetId) {
-    return Boolean(
-      targetId &&
-        (isHeld(targetId) || this.targets.get(targetId)?.guarded || (await this.target(targetId)))
-    );
-  }
-
-  async unsafeWorker(message) {
-    const { params = {}, sessionId: parent } = message;
-    const info = params.targetInfo ?? {};
-    this.workerCreators.set(params.sessionId, message);
-    if (parent !== undefined) {
-      if (!this.sessions.has(parent) || this.blocked.has(parent) || !this.shown.has(parent))
-        return true;
-      if (await this.unsafeCreator(this.sessions.get(parent).targetId)) return true;
+  workerless(message) {
+    if (!this.device) return message;
+    const params = message.params ?? {};
+    if (DISCOVERY_EVENTS.has(message.method)) {
+      const type = params.targetInfo?.type ?? this.targets.get(params.targetId)?.type;
+      if (WORKER_TYPES.has(type)) return null;
     }
-    for (const id of [info.parentId, info.openerId]) if (await this.unsafeCreator(id)) return true;
-    for (const frameId of [info.parentFrameId, info.openerFrameId])
-      if (frameId !== undefined && (await this.frame(frameId, true))) return true;
-    return false;
+    const infos = message.result?.targetInfos;
+    if (Array.isArray(infos) && infos.some((info) => WORKER_TYPES.has(info?.type)))
+      return {
+        ...message,
+        result: {
+          ...message.result,
+          targetInfos: infos.filter((info) => !WORKER_TYPES.has(info?.type)),
+        },
+      };
+    if (WORKER_TYPES.has(message.result?.targetInfo?.type))
+      return {
+        id: message.id,
+        sessionId: message.sessionId,
+        error: { code: -32000, message: NO_WORKERS },
+      };
+    return message;
   }
 
   prelude(sessionId, method) {
@@ -5207,7 +5225,7 @@ class Guard {
       method === 'Target.setAutoAttach' &&
       sessionId !== undefined &&
       message.error?.message === NO_AUTO_ATTACH &&
-      (params?.filter === undefined || wide(params))
+      (omitted(params) || wide(params, this.device))
     );
   }
 
@@ -5564,14 +5582,17 @@ class Guard {
     return null;
   }
 
-  sharedWorkers(method, params) {
+  async workersAsked(method, params) {
+    if (!this.device) return false;
+    if (method === 'Target.attachToTarget' && params.targetId !== undefined)
+      return WORKER_TYPES.has((await this.lookup(params.targetId))?.type);
     return (
       this.route !== 'extension' &&
       method === 'Target.setAutoAttach' &&
       params.autoAttach === true &&
       Array.isArray(params.filter) &&
-      !wide(params) &&
-      (admits(params.filter, 'shared_worker') || admits(params.filter, 'service_worker'))
+      !wide(params, true) &&
+      WORKER_FAMILY.some((type) => admits(params.filter, type))
     );
   }
 
@@ -5615,7 +5636,7 @@ class Guard {
     const early = await this.precheck(message);
     if (early) return early;
     if (method.startsWith('Fetch.') && sessionId === undefined) return FETCH;
-    if (this.sharedWorkers(method, params)) return SHARED_WORKERS;
+    if (await this.workersAsked(method, params)) return NO_WORKERS;
     const later = await this.later(method, params, sessionId);
     if (later) return later;
     if (method === 'Page.navigate' && inherits(params.url)) return INHERITED;
@@ -5770,7 +5791,6 @@ class Guard {
   }
 
   forgetTab(sessionId) {
-    this.workerCreators.delete(sessionId);
     this.tabSessions.delete(sessionId);
     this.tabPages.delete(sessionId);
     const tabId = this.sessions.get(sessionId)?.targetId;
@@ -5908,7 +5928,7 @@ class Guard {
   async pass(message) {
     if (this.finished.has(message) || !this.owns(message)) return;
     this.commands.set(requestKey(message), message);
-    const outgoing = narrowed(await this.withMainWorld(message));
+    const outgoing = narrowed(await this.withMainWorld(message), this.device);
     const { id, method, sessionId } = outgoing;
     this.notePageAutoAttach(outgoing);
     if (this.finished.has(message) || !this.owns(message)) return;
@@ -6490,7 +6510,7 @@ class Guard {
   }
 }
 
-function narrowed(message) {
+function narrowed(message, device) {
   const { method, params } = message;
   if (method === 'Page.createIsolatedWorld' && params) {
     const stripped = { ...params };
@@ -6499,7 +6519,14 @@ function narrowed(message) {
     delete stripped.contentSecurityPolicy;
     return { ...message, params: stripped };
   }
-  if (method === 'Target.setAutoAttach' && params?.autoAttach && wide(params)) {
+  if (
+    device &&
+    method === 'Target.setAutoAttach' &&
+    params?.autoAttach &&
+    params.filter === undefined
+  )
+    return { ...message, params: { ...params, filter: WORKERLESS_DEFAULT } };
+  if (method === 'Target.setAutoAttach' && params?.autoAttach && wide(params, device)) {
     const tabs = message.sessionId === undefined && admits(params.filter, 'tab');
     return { ...message, params: { ...params, filter: tabs ? TAB_FILTER : PAGE_FILTER } };
   }
@@ -6509,6 +6536,6 @@ function narrowed(message) {
 const framed = (tree) =>
   tree?.frame ? [tree.frame, ...(tree.childFrames ?? []).flatMap((child) => framed(child))] : [];
 
-export function guardProtected(connection, own, tabs = new Map(), route, privateFrames) {
-  return new Guard(connection, own, tabs, route, privateFrames).start();
+export function guardProtected(connection, own, tabs = new Map(), route, privateFrames, caller) {
+  return new Guard(connection, own, tabs, route, privateFrames, caller).start();
 }

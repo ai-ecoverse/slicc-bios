@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { guardProtected, SHARED_WORKERS } from '../../src/seed/guard.js';
-import { hold } from '../../src/seed/held.js';
+import { guardProtected, NO_WORKERS } from '../../src/seed/guard.js';
 
 const SEVEN = 'https://seven.invalid';
 const IDP = 'https://idp.example/authorize?state=s3cret&code_challenge=c0de&client_id=cl1ent';
@@ -50,6 +49,14 @@ function chrome(infos, { silent = new Set(), failing = new Set() } = {}) {
           case 'Target.attachToTarget':
             sessions += 1;
             return { sessionId: `${command.params.targetId}~${sessions}` };
+          case 'Target.getTargets':
+            return {
+              targetInfos: Object.entries(infos).map(([targetId, info]) => ({
+                targetId,
+                attached: false,
+                ...info,
+              })),
+            };
           case 'Page.getFrameTree':
             return {
               frameTree: {
@@ -88,9 +95,9 @@ function chrome(infos, { silent = new Set(), failing = new Set() } = {}) {
   return connection;
 }
 
-function client(infos, route, faults) {
+function client(infos, route, faults, caller) {
   const raw = chrome(infos, faults);
-  const guarded = guardProtected(raw, [SEVEN], new Map(), route);
+  const guarded = guardProtected(raw, [SEVEN], new Map(), route, undefined, caller);
   const got = [];
   guarded.onmessage = (text) => got.push(JSON.parse(text));
   let id = 0;
@@ -130,204 +137,137 @@ const attachedTo = (got, sessionId) =>
     (message) =>
       message.method === 'Target.attachedToTarget' && message.params.sessionId === sessionId
   );
-
-test('over the DevTools port, a dedicated-worker auto-attach is forwarded unchanged; a protected worker it attaches is cut and never shown, an ordinary one is shown', async () => {
-  const infos = {
-    'worker-page': { type: 'page', url: ORDINARY, title: 'Ordinary' },
-    'vault-worker': { type: 'worker', url: 'blob:https://vault.sliccy.ai/7c1d', title: '' },
-    'plain-worker': { type: 'worker', url: 'https://ordinary.invalid/worker.js', title: '' },
-  };
-  const { raw, got, send, attach, settle, leaked, detached } = client(infos, undefined, {
-    failing: new Set(['Page.getFrameTree:vault-worker', 'Page.getFrameTree:plain-worker']),
-  });
-  const page = (await send('Target.attachToTarget', { targetId: 'worker-page', flatten: true }))
-    .result?.sessionId;
-  assert.ok(page, 'an ordinary page session');
-  const har = {
-    autoAttach: true,
-    waitForDebuggerOnStart: true,
-    flatten: true,
-    filter: [{ type: 'worker', exclude: false }],
-  };
-  assert.deepEqual((await send('Target.setAutoAttach', har, page)).result, {});
-  const forwarded = raw.sent.filter(
-    (command) => command.method === 'Target.setAutoAttach' && command.sessionId === page
-  );
-  assert.deepEqual(forwarded.at(-1).params, har, 'forwarded as the client sent it');
-  attach('vault-worker-session', 'vault-worker', page, true);
-  attach('plain-worker-session', 'plain-worker', page, true);
-  await settle(
-    () => detached('vault-worker-session') && attachedTo(got, 'plain-worker-session'),
-    400
-  );
-  assert.ok(detached('vault-worker-session'), 'the protected worker was cut');
-  assert.equal(attachedTo(got, 'vault-worker-session'), undefined, 'and never shown');
-  assert.ok(attachedTo(got, 'plain-worker-session'), 'the ordinary worker was shown');
-  assert.deepEqual(leaked('vault.sliccy.ai', '7c1d'), []);
-});
-
-test('over the DevTools port, an auto-attach for shared or service workers is refused and never forwarded', async () => {
-  const infos = { 'shared-page': { type: 'page', url: ORDINARY, title: 'Ordinary' } };
-  const { raw, send } = client(infos);
-  const page = (await send('Target.attachToTarget', { targetId: 'shared-page', flatten: true }))
-    .result?.sessionId;
-  assert.ok(page);
-  for (const filter of [
-    [{ type: 'shared_worker', exclude: false }],
-    [{ type: 'service_worker', exclude: false }],
-    [{ type: 'worker' }, { type: 'shared_worker' }, { type: 'service_worker' }],
-  ]) {
-    for (const session of [page, undefined]) {
-      const answer = await send(
-        'Target.setAutoAttach',
-        { autoAttach: true, waitForDebuggerOnStart: true, flatten: true, filter },
-        session
-      );
-      assert.equal(answer.error?.message, SHARED_WORKERS, JSON.stringify(filter));
-    }
-    assert.ok(
-      !raw.sent.some(
-        (command) =>
-          command.method === 'Target.setAutoAttach' &&
-          JSON.stringify(command.params.filter) === JSON.stringify(filter)
-      ),
-      `${JSON.stringify(filter)} never reached Chrome`
-    );
-  }
-  const off = await send(
-    'Target.setAutoAttach',
-    { autoAttach: false, waitForDebuggerOnStart: false, flatten: true },
-    page
-  );
-  assert.ok(off.result, JSON.stringify(off));
-});
+const WORKERLESS = [
+  { type: 'worker', exclude: true },
+  { type: 'shared_worker', exclude: true },
+  { type: 'service_worker', exclude: true },
+  { type: 'browser', exclude: true },
+  { type: 'tab', exclude: true },
+  {},
+];
+const lastAutoAttach = (raw, session) =>
+  raw.sent
+    .filter((command) => command.method === 'Target.setAutoAttach' && command.sessionId === session)
+    .at(-1);
 
 for (const route of [undefined, { kind: 'link' }]) {
   const name = route?.kind ?? 'devtools';
 
-  test(`on the ${name} route, mixed worker filters are narrowed as before, on page and browser sessions`, async () => {
-    const infos = { 'mixed-page': { type: 'page', url: ORDINARY, title: 'Ordinary' } };
-    const { raw, send } = client(infos, route);
-    const page = (await send('Target.attachToTarget', { targetId: 'mixed-page', flatten: true }))
-      .result?.sessionId;
-    assert.ok(page);
+  const DEVICE = { kind: 'device', id: 'device-1', name: 'phone' };
+
+  async function setup(extra = {}, caller = DEVICE) {
+    const infos = {
+      'host-page': { type: 'page', url: ORDINARY, title: 'Ordinary' },
+      'page-worker': {
+        type: 'worker',
+        url: 'https://ordinary.invalid/worker.js',
+        title: 'page-worker-title',
+      },
+      'nested-worker': {
+        type: 'worker',
+        url: 'https://ordinary.invalid/nested.js',
+        title: 'nested-worker-title',
+      },
+      'browser-worker': {
+        type: 'service_worker',
+        url: 'https://ordinary.invalid/sw.js',
+        title: 'sw-title',
+      },
+      ...extra,
+    };
+    const workers = Object.keys(infos).filter((id) => infos[id].type.endsWith('worker'));
+    const harness = client(
+      infos,
+      route,
+      { failing: new Set(workers.map((id) => `Page.getFrameTree:${id}`)) },
+      caller
+    );
+    const page = (
+      await harness.send('Target.attachToTarget', { targetId: 'host-page', flatten: true })
+    ).result?.sessionId;
+    assert.ok(page, 'an ordinary page session');
+    return { ...harness, infos, page };
+  }
+
+  test(`on the ${name} route, a remote device's worker-only auto-attach is refused and never forwarded`, async () => {
+    const { raw, send, page } = await setup();
     for (const filter of [
-      [{ type: 'worker' }, { type: 'browser' }],
-      [{ type: 'worker' }, { type: 'other' }],
-    ]) {
-      for (const [session, narrowed] of [
-        [page, [{ type: 'page' }]],
-        [undefined, [{ type: 'page' }]],
-      ]) {
-        await send(
+      [{ type: 'worker', exclude: false }],
+      [{ type: 'shared_worker', exclude: false }],
+      [{ type: 'service_worker', exclude: false }],
+      [{ type: 'worker' }, { type: 'shared_worker' }, { type: 'service_worker' }],
+      [{ type: 'page', exclude: true }, { type: 'iframe', exclude: true }, { type: 'worker' }],
+    ])
+      for (const session of [page, undefined]) {
+        const answer = await send(
           'Target.setAutoAttach',
           { autoAttach: true, waitForDebuggerOnStart: true, flatten: true, filter },
           session
         );
-        const sent = raw.sent.filter(
-          (command) => command.method === 'Target.setAutoAttach' && command.sessionId === session
-        );
-        assert.deepEqual(
-          sent.at(-1).params.filter,
-          narrowed,
-          `${JSON.stringify(filter)} on ${session ?? 'browser'}`
+        assert.equal(answer.error?.message, NO_WORKERS, JSON.stringify(filter));
+        assert.ok(
+          !raw.sent.some(
+            (command) =>
+              command.method === 'Target.setAutoAttach' &&
+              JSON.stringify(command.params.filter) === JSON.stringify(filter)
+          ),
+          `${JSON.stringify(filter)} never reached Chrome`
         );
       }
-    }
-    const dedicated = [
-      { type: 'page', exclude: true },
-      { type: 'iframe', exclude: true },
-      { type: 'worker' },
-    ];
-    await send(
-      'Target.setAutoAttach',
-      { autoAttach: true, flatten: true, filter: dedicated },
-      page
-    );
-    const last = raw.sent.filter(
-      (command) => command.method === 'Target.setAutoAttach' && command.sessionId === page
-    );
-    assert.deepEqual(
-      last.at(-1).params.filter,
-      dedicated,
-      'an exclude list leaving only dedicated workers is forwarded'
-    );
   });
 
-  test(`on the ${name} route, a worker whose creator is held, protected or cut is cut, resumed and never shown`, async () => {
-    hold(`held-page-${name}`);
-    const vault = 'https://vault.sliccy.ai/unlock';
-    const infos = {
-      'host-page': { type: 'page', url: ORDINARY, title: 'Ordinary' },
-      'vault-page': { type: 'page', url: vault, title: 'Vault' },
-      [`held-page-${name}`]: { type: 'page', url: 'https://idp.example/authorize', title: 'IdP' },
-      'vault-frame': { type: 'iframe', url: vault, title: '' },
-      'held-worker': { type: 'worker', url: 'https://idp.example/worker.js', title: '' },
-      'vault-page-worker': {
-        type: 'worker',
-        url: 'https://ordinary.invalid/from-vault.js',
-        title: '',
-      },
-      'vault-data-worker': {
-        type: 'worker',
-        url: 'data:text/javascript,https://vault.sliccy.ai/secret',
-        title: 'Vault worker title',
-      },
-      'frame-worker': { type: 'worker', url: 'https://ordinary.invalid/from-iframe.js', title: '' },
-      'parented-worker': {
-        type: 'worker',
-        url: 'https://ordinary.invalid/from-iframe.js',
-        title: '',
-        parentId: 'vault-frame',
-      },
-      'blob-vault-worker': { type: 'worker', url: 'blob:https://vault.sliccy.ai/7c1d', title: '' },
-      'own-data-worker': { type: 'worker', url: 'data:text/javascript,postMessage(1)', title: '' },
-      'plain-worker': { type: 'worker', url: 'https://ordinary.invalid/worker.js', title: '' },
+  test(`on the ${name} route, a remote device's omitted filter goes out with workers excluded, mixed filters are narrowed, and the iframe holder and the disable are unchanged`, async () => {
+    const { raw, send, page } = await setup();
+    for (const session of [page, undefined]) {
+      assert.ok(
+        (await send('Target.setAutoAttach', { autoAttach: true, flatten: true }, session)).result
+      );
+      assert.deepEqual(
+        lastAutoAttach(raw, session).params.filter,
+        WORKERLESS,
+        `omitted on ${session ?? 'browser'}`
+      );
+      for (const filter of [
+        [{ type: 'worker' }, { type: 'browser' }],
+        [{ type: 'worker' }, { type: 'other' }],
+      ]) {
+        await send('Target.setAutoAttach', { autoAttach: true, flatten: true, filter }, session);
+        assert.deepEqual(lastAutoAttach(raw, session).params.filter, [{ type: 'page' }]);
+      }
+    }
+    const holder = {
+      autoAttach: true,
+      waitForDebuggerOnStart: false,
+      flatten: true,
+      filter: [{ type: 'iframe', exclude: false }],
     };
-    const workers = Object.keys(infos).filter((id) => infos[id].type === 'worker');
-    const { raw, got, send, attach, settle, leaked, detached } = client(infos, route, {
-      failing: new Set(workers.map((id) => `Page.getFrameTree:${id}`)),
-    });
-    const page = (await send('Target.attachToTarget', { targetId: 'host-page', flatten: true }))
-      .result?.sessionId;
-    assert.ok(page, 'the ordinary page is shown');
-    await send(
-      'Target.setAutoAttach',
-      {
-        autoAttach: true,
-        waitForDebuggerOnStart: true,
-        flatten: true,
-        filter: [{ type: 'worker' }],
-      },
-      page
+    assert.ok((await send('Target.setAutoAttach', holder, page)).result);
+    assert.deepEqual(
+      lastAutoAttach(raw, page).params,
+      holder,
+      'the iframe-only holder is forwarded as sent'
     );
-    attach('vault-session', 'vault-page');
-    attach('held-session', `held-page-${name}`);
-    attach('vault-frame-session', 'vault-frame', page);
-    await settle(
-      () =>
-        detached('vault-session') && detached('held-session') && detached('vault-frame-session'),
-      400
-    );
-    const unsafe = [
-      ['held-worker-session', 'held-worker', 'held-session'],
-      ['vault-page-worker-session', 'vault-page-worker', 'vault-session'],
-      ['vault-data-worker-session', 'vault-data-worker', 'vault-session'],
-      ['frame-worker-session', 'frame-worker', 'vault-frame-session'],
-      ['parented-worker-session', 'parented-worker', page],
-      ['blob-vault-worker-session', 'blob-vault-worker', page],
-    ];
-    for (const [session, worker, parent] of unsafe) attach(session, worker, parent, true);
-    attach('own-data-worker-session', 'own-data-worker', page, true);
-    attach('plain-worker-session', 'plain-worker', page, true);
-    await settle(
-      () =>
-        unsafe.every(([session]) => detached(session)) &&
-        attachedTo(got, 'plain-worker-session') &&
-        attachedTo(got, 'own-data-worker-session'),
-      600
-    );
-    for (const [session] of unsafe) {
+    const off = { autoAttach: false, waitForDebuggerOnStart: false, flatten: true };
+    assert.ok((await send('Target.setAutoAttach', off, page)).result);
+    assert.deepEqual(lastAutoAttach(raw, page).params, off, 'the disable is forwarded as sent');
+  });
+
+  test(`on the ${name} route, a worker attachment that reaches a remote device anyway is cut, resumed first, never shown, and refuses evaluate`, async () => {
+    const { raw, got, send, attach, settle, detached, leaked, page } = await setup();
+    attach('page-worker-session', 'page-worker', page, true);
+    attach('nested-worker-session', 'nested-worker', 'page-worker-session', true);
+    attach('browser-worker-session', 'browser-worker', undefined, false);
+    const sessions = ['page-worker-session', 'nested-worker-session', 'browser-worker-session'];
+    await settle(() => sessions.every((session) => detached(session)), 200);
+    for (const session of sessions) {
+      assert.ok(detached(session), `${session} was cut`);
+      assert.equal(attachedTo(got, session), undefined, `${session} was never shown`);
+      assert.ok(
+        (await send('Runtime.evaluate', { expression: '1' }, session)).error,
+        `${session} refuses evaluate`
+      );
+    }
+    for (const session of ['page-worker-session', 'nested-worker-session']) {
       const resumed = raw.sent.findIndex(
         (command) =>
           command.method === 'Runtime.runIfWaitingForDebugger' && command.sessionId === session
@@ -336,22 +276,130 @@ for (const route of [undefined, { kind: 'link' }]) {
         (command) =>
           command.method === 'Target.detachFromTarget' && command.params.sessionId === session
       );
-      assert.ok(cut >= 0, `${session} was cut`);
-      assert.ok(resumed >= 0 && resumed < cut, `${session} was resumed as it was cut`);
-      assert.equal(attachedTo(got, session), undefined, `${session} was never shown`);
-      const evaluated = await send('Runtime.evaluate', { expression: 'location.href' }, session);
-      assert.ok(evaluated.error, `${session} answers no evaluate`);
+      assert.ok(resumed >= 0 && resumed < cut, `${session} was resumed before its detach`);
     }
-    assert.ok(attachedTo(got, 'plain-worker-session'), 'an ordinary worker is shown');
-    const plain = await send('Runtime.evaluate', { expression: '1' }, 'plain-worker-session');
-    assert.equal(plain.error, undefined, `an ordinary worker answers: ${JSON.stringify(plain)}`);
-    assert.ok(
-      attachedTo(got, 'own-data-worker-session'),
-      "an ordinary page's own data: worker is shown"
+    assert.deepEqual(leaked('page-worker-title', 'nested-worker-title', 'sw-title'), []);
+  });
+
+  test(`on the ${name} route, a remote device's attachToTarget of a worker is refused, and its lists, target info and discovery carry no worker`, async () => {
+    const { raw, got, send } = await setup();
+    assert.equal(
+      (await send('Target.attachToTarget', { targetId: 'page-worker', flatten: true })).error
+        ?.message,
+      NO_WORKERS
     );
+    assert.ok(
+      !raw.sent.some(
+        (command) =>
+          command.method === 'Target.attachToTarget' && command.params.targetId === 'page-worker'
+      )
+    );
+    const listed = await send('Target.getTargets');
+    assert.ok(Array.isArray(listed.result?.targetInfos));
+    assert.ok(
+      listed.result.targetInfos.some((info) => info.targetId === 'host-page'),
+      'pages stay listed'
+    );
+    assert.ok(
+      !listed.result.targetInfos.some((info) => info.type.endsWith('worker')),
+      'no worker listed'
+    );
+    assert.ok(
+      (await send('Target.getTargetInfo', { targetId: 'page-worker' })).error,
+      'no worker target info'
+    );
+    assert.ok((await send('Target.setDiscoverTargets', { discover: true })).result);
+    for (const method of ['Target.targetCreated', 'Target.targetInfoChanged'])
+      raw.emit({
+        method,
+        params: {
+          targetInfo: {
+            targetId: 'nested-worker',
+            type: 'worker',
+            url: 'https://ordinary.invalid/nested.js',
+            title: 'nested-worker-title',
+            attached: false,
+          },
+        },
+      });
+    raw.emit({ method: 'Target.targetDestroyed', params: { targetId: 'nested-worker' } });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.ok(
+      !got.some(
+        (message) =>
+          message.params?.targetInfo?.targetId === 'nested-worker' ||
+          message.params?.targetId === 'nested-worker'
+      )
+    );
+    assert.ok(!JSON.stringify(got).includes('worker-title'));
+  });
+
+  test(`on the ${name} route, a kernel program keeps main's worker behaviour for the same calls`, async () => {
+    const { raw, got, send, attach, settle, page } = await setup({}, null);
+    const har = {
+      autoAttach: true,
+      waitForDebuggerOnStart: true,
+      flatten: true,
+      filter: [{ type: 'worker', exclude: false }],
+    };
+    assert.ok((await send('Target.setAutoAttach', har, page)).result, 'the HAR shape is answered');
+    assert.deepEqual(lastAutoAttach(raw, page).params, har, 'and forwarded unchanged');
+    for (const filter of [
+      [{ type: 'shared_worker' }],
+      [{ type: 'service_worker' }],
+      [{ type: 'worker' }, { type: 'browser' }],
+    ]) {
+      assert.ok(
+        (await send('Target.setAutoAttach', { autoAttach: true, flatten: true, filter }, page))
+          .result
+      );
+      assert.deepEqual(
+        lastAutoAttach(raw, page).params.filter,
+        filter,
+        `${JSON.stringify(filter)} is forwarded`
+      );
+    }
+    for (const session of [page, undefined]) {
+      assert.ok(
+        (await send('Target.setAutoAttach', { autoAttach: true, flatten: true }, session)).result
+      );
+      assert.equal(
+        lastAutoAttach(raw, session).params.filter,
+        undefined,
+        'an omitted filter stays omitted'
+      );
+    }
+    await send('Target.setAutoAttach', { autoAttach: true, flatten: true, filter: [{}] }, page);
     assert.deepEqual(
-      leaked('vault.sliccy.ai', 'Vault worker title', 'idp.example', 'from-vault'),
-      []
+      lastAutoAttach(raw, page).params.filter,
+      [{ type: 'page' }],
+      'a tab-admitting filter is narrowed'
+    );
+    await send('Target.setAutoAttach', {
+      autoAttach: true,
+      flatten: true,
+      filter: [{ type: 'page', exclude: true }, {}],
+    });
+    assert.deepEqual(lastAutoAttach(raw, undefined).params.filter, [{ type: 'tab' }]);
+    attach('kernel-worker-session', 'page-worker', page, true);
+    await settle(() => attachedTo(got, 'kernel-worker-session'), 400);
+    assert.ok(attachedTo(got, 'kernel-worker-session'), 'an ordinary worker is shown, as on main');
+    assert.equal(
+      (await send('Runtime.evaluate', { expression: '1' }, 'kernel-worker-session')).error,
+      undefined
+    );
+    const attached = await send('Target.attachToTarget', {
+      targetId: 'nested-worker',
+      flatten: true,
+    });
+    assert.ok(
+      attached.result?.sessionId,
+      `attachToTarget of an ordinary worker works: ${JSON.stringify(attached)}`
+    );
+    const listed = await send('Target.getTargets');
+    assert.ok(
+      listed.result.targetInfos.some((info) => info.type.endsWith('worker')),
+      'workers stay listed'
     );
   });
 }

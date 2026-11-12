@@ -486,7 +486,8 @@ export function browserHook(
         own,
         browser ? tabs.get(browser) : undefined,
         route,
-        privateFrames
+        privateFrames,
+        caller
       ),
       { caller }
     );
