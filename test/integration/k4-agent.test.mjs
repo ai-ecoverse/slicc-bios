@@ -507,25 +507,16 @@ test('enforce: Deny and stop on a cone’s looping sudo ends the loop and the tu
         );
         continue;
       }
-      const stray = state.list.find(
-        (item) =>
-          item.requester?.kind === 'agent' &&
-          item.stoppable === true &&
-          item.command === looping.command
+      assert.equal(
+        state.list.some(
+          (item) =>
+            item.requester?.kind === 'agent' &&
+            item.stoppable === true &&
+            item.command === looping.command
+        ),
+        false,
+        `Deny and stop left a cone sudo for the loop command askable: ${JSON.stringify(state)}`
       );
-      if (stray) {
-        await page.until(
-          new Function(
-            'id',
-            `const dialog = (${find})('slicc-approvals')?.shadowRoot?.querySelector('dialog[data-approval="' + id + '"]');
-            return !!dialog?.querySelector('[data-action="stop"]');`
-          ),
-          stray.id
-        );
-        await press(page, 'stop');
-        await cleared(stray.id);
-        continue;
-      }
       await page
         .within(
           250,
@@ -558,14 +549,16 @@ test('enforce: Deny and stop on a cone’s looping sudo ends the loop and the tu
     false,
     JSON.stringify(after)
   );
-  const log = await page.evaluate(async () => {
-    const tmp = await (await navigator.storage.getDirectory()).getDirectoryHandle('tmp');
-    try {
-      return await (await (await tmp.getFileHandle('stop-loop.log')).getFile()).text();
-    } catch {
-      return '';
-    }
-  });
+  const stopLog = () =>
+    page.evaluate(async () => {
+      const tmp = await (await navigator.storage.getDirectory()).getDirectoryHandle('tmp');
+      try {
+        return await (await (await tmp.getFileHandle('stop-loop.log')).getFile()).text();
+      } catch {
+        return '';
+      }
+    });
+  const log = await stopLog();
   assert.doesNotMatch(log, /try-2|loop-done/, log);
   for (const line of log.split('\n').filter((line) => line.startsWith('sudo:')))
     assert.equal(line, 'sudo: denied, and the owner stopped this turn', log);
@@ -634,6 +627,8 @@ test('enforce: Deny and stop on a cone’s looping sudo ends the loop and the tu
   assert.deepEqual(Object.keys(await rows(page, terminal.id)).sort(), ['deny', 'once']);
   await press(page, 'deny');
   await shows(page, 'terminal=1');
+  const later = await stopLog();
+  assert.doesNotMatch(later, /try-2|loop-done/, later);
   assert.deepEqual(page.errors, []);
 });
 
