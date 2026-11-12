@@ -1,0 +1,7 @@
+{
+  "manifest_version": 3,
+  "name": "another extension that frames seven",
+  "version": "1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAi3Tsl1RvI1diI28S8TKDvUMc2hTMqyTgJWelRSbc3e6dvpKgxpDB6i9VYe6LO9aSqNGiZosE05LeZnHoiyoQNMNSCtUdeiN8x6GQ5/2V+Hh8YpFKr1KIPVNfZAv4swu/tjuLWVasktBfvIdenEJwUzOwpqlklMYZi05N1z8flWeFK3O73wO1QXqn1M4jQMc+aHcaUV0T1APmTHQFUxyBVwHpSFxB2m9RTRVeCDR8n/YPJDKqZbJ++0ilsZfQRyS+FDS2o3UwdU5QsvjmLpDjjUDCCSqnsrZCv/Uvj8cAvlUKh3TYfYiltu275SxDQZmvHoLAYTjED0288HJD4om9aQIDAQAB",
+  "host_permissions": ["<all_urls>"]
+}

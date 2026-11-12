@@ -281,7 +281,7 @@ const PRODUCTION = [
   { name: 'x-frame-options', value: 'SAMEORIGIN' },
 ];
 
-test('with the production headers on the boot page the tidying script runs, no policy blocks it, and /os/ and the callback have the same policy', async (t) => {
+test('with the production headers on the boot page the tidying script runs, no policy blocks it, and /os/ adds only slicc-extension to the callback’s policy', async (t) => {
   const page = await watched(t);
   const origin = new URL(chrome.url).origin;
   await page.init(() => {
@@ -332,7 +332,11 @@ test('with the production headers on the boot page the tidying script runs, no p
           )?.[1]
       );
   assert.equal(policy('/')[0], "frame-ancestors 'self'", `the boot page: ${policy('/')}`);
-  assert.equal(policy('/os/')[0], "frame-ancestors 'self'", `/os/: ${policy('/os/')}`);
+  assert.equal(
+    policy('/os/')[0],
+    "frame-ancestors 'self' chrome-extension://akjjllgokmbgpbdbmafpiefnhidlmbgf",
+    `/os/: ${policy('/os/')}`
+  );
   const callback = await page.evaluate(async () => {
     const response = await fetch('/auth/callback?nonce=n');
     return response.headers.get('content-security-policy');

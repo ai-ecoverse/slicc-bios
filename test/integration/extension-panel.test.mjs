@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { page as harnessPage } from '../../node_modules/@ai-ecoverse/slicc-shared-web/harness/page.mjs';
@@ -6,14 +7,24 @@ import { boot, run, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
 const EXTENSION = 'chrome-extension://akjjllgokmbgpbdbmafpiefnhidlmbgf';
+const OTHER = 'chrome-extension://abcfknbmpdmhhppbnminfhpcnmfgonfg';
+const fixture = (name) => fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url));
 const chrome = await launch({
   tools: false,
-  extensions: [fileURLToPath(new URL('./fixtures/panel-extension', import.meta.url))],
+  extensions: [fixture('panel-extension'), fixture('panel-extension-other')],
 });
-after(() => chrome.close());
+const framers = createServer((_, response) =>
+  response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(framerPage)
+);
+let framerPage = '';
+await new Promise((done) => framers.listen(0, '127.0.0.1', done));
+after(async () => {
+  await new Promise((done) => framers.close(done));
+  await chrome.close();
+});
 
-async function openPanel(tab, os) {
-  const url = `${EXTENSION}/panel.html?src=${encodeURIComponent(os)}`;
+async function openPanel(tab, os, from = EXTENSION) {
+  const url = `${from}/panel.html?src=${encodeURIComponent(os)}`;
   await tab.send('Page.navigate', { url });
   await tab.until((href) => location.href === href, url);
   return tab;
@@ -39,6 +50,34 @@ async function frameOf(panel, os) {
     if (Date.now() > deadline)
       throw new Error(`no /os/ frame in ${await panel.evaluate(() => location.href)}`);
     await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+
+async function framed(tab) {
+  await tab.until(() => globalThis.loaded === true);
+  const { targetInfos } = await chrome.cdp.send('Target.getTargets');
+  const href = await tab.evaluate(() => location.href);
+  const parent = targetInfos.find((target) => target.url === href)?.targetId;
+  const child = targetInfos.find(
+    (target) => target.type === 'iframe' && target.parentId === parent
+  );
+  if (!child) return 'no frame';
+  const { sessionId } = await chrome.cdp.send('Target.attachToTarget', {
+    targetId: child.targetId,
+    flatten: true,
+  });
+  try {
+    const { result } = await chrome.cdp.send(
+      'Runtime.evaluate',
+      {
+        expression: "`${location.href} ${document.querySelector('slicc-app') ? 'seven' : 'empty'}`",
+        returnByValue: true,
+      },
+      sessionId
+    );
+    return result.value;
+  } finally {
+    await chrome.cdp.send('Target.detachFromTarget', { sessionId }).catch(() => undefined);
   }
 }
 
@@ -90,21 +129,57 @@ test('slicc-extension’s side panel frames /os/ as a follower that never takes 
 
   await owner.close();
   await panel.within(30000, () => globalThis.said.at(-1)?.role === 'connecting');
-  await new Promise((resolve) => setTimeout(resolve, 8000));
+  const locks = () =>
+    frame.evaluate(async () => {
+      const { held, pending } = await navigator.locks.query();
+      const named = (list) => list.filter((lock) => lock.name === 'slicc-agent').length;
+      return { held: named(held), pending: named(pending) };
+    });
+  try {
+    await frame.within(10000, async () => {
+      const { held } = await navigator.locks.query();
+      return !held.some((lock) => lock.name === 'slicc-agent');
+    });
+  } catch (error) {
+    throw new Error(
+      `slicc-agent is still held after the owner closed: ${JSON.stringify(await locks())}`,
+      {
+        cause: error,
+      }
+    );
+  }
+  assert.deepEqual(await locks(), { held: 0, pending: 0 }, 'the panel never asks for slicc-agent');
   assert.equal(
     (await said(panel)).some((m) => m.role === 'owner'),
     false,
     'the panel never becomes the owner'
   );
   assert.notEqual(await role(frame), 'owner');
-  const held = await frame.evaluate(async () =>
-    (await navigator.locks.query()).held.map((lock) => lock.name)
-  );
-  assert.equal(held.includes('slicc-agent'), false, `the panel holds ${held}`);
 
   const next = await panel.tab();
   await boot(next);
   await next.until(() => document.querySelector('slicc-app').model.tabs?.state().role === 'owner');
   await panel.within(60000, () => globalThis.said.at(-1)?.role === 'follower');
   assert.deepEqual(frame.errors, []);
+});
+
+test('another extension or a cross-origin page can’t frame /os/', async (t) => {
+  const owner = await chrome.page(t);
+  await boot(owner);
+  const os = new URL('/os/', await owner.evaluate(() => location.origin)).href;
+  const other = await openPanel(await owner.tab(), os, OTHER);
+  assert.match(
+    await framed(other),
+    /^chrome-error:\/\/chromewebdata\/ empty$/,
+    'another extension is refused'
+  );
+  framerPage = `<!doctype html><title>framer</title><iframe onload="globalThis.loaded = true" src="${os}"></iframe>`;
+  const page = await owner.tab();
+  await page.goto(`http://127.0.0.1:${framers.address().port}/framer.html`);
+  assert.match(
+    await framed(page),
+    /^chrome-error:\/\/chromewebdata\/ empty$/,
+    'a cross-origin page is refused'
+  );
+  assert.deepEqual(await other.evaluate(() => globalThis.said), []);
 });
