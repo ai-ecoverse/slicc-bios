@@ -11,7 +11,10 @@ const VAULT_TITLE = 'Vault: unlock';
 const ORDINARY = 'https://ordinary.invalid/page';
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 
-function chrome(infos, { silent = new Set(), failing = new Set(), slow = new Map() } = {}) {
+function chrome(
+  infos,
+  { silent = new Set(), failing = new Set(), slow = new Map(), throwing = new Set() } = {}
+) {
   const sent = [];
   const owners = new Map();
   let sessions = 0;
@@ -31,6 +34,7 @@ function chrome(infos, { silent = new Set(), failing = new Set(), slow = new Map
       sent.push(command);
       const owner = own(command.sessionId);
       const key = `${command.method}:${command.params?.targetId ?? owner}`;
+      if (throwing.has(key)) throw new Error('the fake connection broke');
       if (silent.has(key)) return;
       if (failing.has(key)) {
         queueMicrotask(() =>
@@ -50,6 +54,14 @@ function chrome(infos, { silent = new Set(), failing = new Set(), slow = new Map
           case 'Target.attachToTarget':
             sessions += 1;
             return { sessionId: `${command.params.targetId}~${sessions}` };
+          case 'Target.getTargets':
+            return {
+              targetInfos: Object.entries(infos).map(([targetId, info]) => ({
+                targetId,
+                attached: false,
+                ...info,
+              })),
+            };
           case 'Page.getFrameTree':
             return {
               frameTree: {
@@ -282,6 +294,7 @@ for (const route of [undefined, { kind: 'link' }]) {
         },
       },
     });
+    raw.emit({ method: 'Target.targetDestroyed', params: { targetId: 'unrelated-page' } });
     const listed = await harness.send('Target.getTargetInfo', { targetId: harness.pageId });
     assert.ok(listed.result?.targetInfo, 'a page target info still reaches the client');
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -304,5 +317,148 @@ for (const route of [undefined, { kind: 'link' }]) {
     await settle(() => detachesOf(raw, worker) > 0, 200);
     assert.ok(!JSON.stringify(got).includes(`SAME-TICK-${name}`));
     assert.ok(detachesOf(raw, worker) >= 1);
+  });
+
+  for (const turn of ['grand', 'mid', 'mid-to-vault']) {
+    test(`on the ${name} route, a worker is cut when an ancestor of its creator turns (${turn})`, async () => {
+      const id = Math.random().toString(36).slice(2);
+      const grand = `grand-${id}`;
+      const mid = `mid-${id}`;
+      const popup = `popup-${id}`;
+      const workerId = `${popup}-worker`;
+      const infos = {
+        [grand]: { type: 'page', url: 'https://shop.example/grand', title: 'Grand' },
+        [mid]: { type: 'page', url: 'https://shop.example/mid', title: 'Mid', openerId: grand },
+        [popup]: { type: 'page', url: 'https://shop.example/popup', title: 'Popup', openerId: mid },
+        [workerId]: { type: 'worker', url: 'https://shop.example/worker.js', title: '' },
+      };
+      const harness = client(infos, route, { failing: new Set([`Page.getFrameTree:${workerId}`]) });
+      const { raw, got, settle } = harness;
+      const { worker } = await shownWorker({ ...harness, pageId: popup, workerId });
+      said(raw, worker, `BEFORE-${turn}`);
+      await settle(() => JSON.stringify(got).includes(`BEFORE-${turn}`), 100);
+      assert.ok(JSON.stringify(got).includes(`BEFORE-${turn}`));
+      if (turn === 'grand') hold(grand);
+      if (turn === 'mid') hold(mid);
+      if (turn === 'mid-to-vault') {
+        infos[mid] = { ...infos[mid], url: 'https://vault.sliccy.ai/unlock', title: 'Vault' };
+        raw.emit({
+          method: 'Target.targetInfoChanged',
+          params: { targetInfo: { targetId: mid, attached: false, ...infos[mid] } },
+        });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      said(raw, worker, `AFTER-${name}-${turn}`);
+      await settle(() => detachesOf(raw, worker) > 0, 200);
+      assert.ok(
+        !JSON.stringify(got).includes(`AFTER-${name}-${turn}`),
+        'no worker event after the turn'
+      );
+      assert.equal(detachesOf(raw, worker), 1, 'one real detach');
+      assert.ok((await harness.send('Runtime.evaluate', { expression: '1' }, worker)).error);
+      assert.ok(!JSON.stringify(got).includes('vault.sliccy.ai'));
+    });
+  }
+
+  test(`on the ${name} route, a rejected verdict cuts the worker with no unhandled rejection`, async () => {
+    const unhandled = [];
+    const record = (reason) => unhandled.push(reason);
+    process.on('unhandledRejection', record);
+    try {
+      const harness = popupWithWorker(name, route, { throwing: new Set() });
+      const { raw, got, settle, infos, pageId, workerId } = harness;
+      const throwing = new Set(['Target.getTargetInfo:shop-opener']);
+      const { worker } = await shownWorker(harness);
+      raw.send = ((send) => (text) => {
+        const command = JSON.parse(text);
+        if (throwing.has(`${command.method}:${command.params?.targetId}`))
+          throw new Error('the fake connection broke');
+        return send(text);
+      })(raw.send);
+      infos[pageId] = { ...infos[pageId], title: 'Popup, renamed' };
+      raw.emit({
+        method: 'Target.targetInfoChanged',
+        params: { targetInfo: { targetId: pageId, attached: true, ...infos[pageId] } },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      raw.emit({
+        method: 'Target.targetInfoChanged',
+        params: {
+          targetInfo: {
+            targetId: workerId,
+            type: 'worker',
+            url: 'https://ordinary.invalid/worker.js',
+            title: 'reject-worker-title',
+            attached: true,
+          },
+        },
+      });
+      await settle(() => detachesOf(raw, worker) > 0, 200);
+      assert.ok(!JSON.stringify(got).includes('reject-worker-title'));
+      assert.equal(detachesOf(raw, worker), 1, 'one real detach');
+      const evaluated = await harness.send('Runtime.evaluate', { expression: '1' }, worker);
+      assert.equal(evaluated.error?.message, PROTECTED, JSON.stringify(evaluated));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.deepEqual(unhandled, []);
+    } finally {
+      process.off('unhandledRejection', record);
+    }
+  });
+
+  test(`on the ${name} route, Target.getTargets after a hold lists no worker of the held page`, async () => {
+    const harness = popupWithWorker(name, route);
+    const { raw, got, settle, infos, pageId, workerId } = harness;
+    const { worker } = await shownWorker(harness);
+    infos[workerId] = { ...infos[workerId], title: 'list-worker-title' };
+    hold(pageId);
+    const listed = await harness.send('Target.getTargets');
+    assert.ok(Array.isArray(listed.result?.targetInfos));
+    assert.ok(
+      !listed.result.targetInfos.some((info) => info.targetId === workerId),
+      'the worker is not listed'
+    );
+    assert.ok(!JSON.stringify(got).includes('list-worker-title'));
+    await settle(() => detachesOf(raw, worker) > 0, 200);
+    assert.equal(detachesOf(raw, worker), 1, 'one real detach');
+    assert.ok((await harness.send('Runtime.evaluate', { expression: '1' }, worker)).error);
+    raw.emit({ method: 'Target.targetDestroyed', params: { targetId: workerId } });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.ok(
+      !got.some(
+        (message) =>
+          message.method === 'Target.targetDestroyed' && message.params?.targetId === workerId
+      )
+    );
+  });
+
+  test(`on the ${name} route, discovery never names a worker of a held page the client did not attach`, async () => {
+    const id = Math.random().toString(36).slice(2);
+    const held = `held-discovery-${id}`;
+    const workerId = `${held}-worker`;
+    const infos = {
+      [held]: { type: 'page', url: 'https://idp.example/authorize', title: 'IdP' },
+      [workerId]: {
+        type: 'worker',
+        url: 'https://idp.example/discovered-worker.js',
+        title: 'discovered-worker-title',
+      },
+    };
+    hold(held);
+    const { raw, got, send } = client(infos, route);
+    assert.ok((await send('Target.setDiscoverTargets', { discover: true })).result);
+    for (const method of ['Target.targetCreated', 'Target.targetInfoChanged'])
+      raw.emit({
+        method,
+        params: { targetInfo: { targetId: workerId, attached: false, ...infos[workerId] } },
+      });
+    raw.emit({ method: 'Target.targetDestroyed', params: { targetId: workerId } });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.ok(!JSON.stringify(got).includes('discovered-worker'), 'no URL or title of the worker');
+    assert.ok(
+      !got.some(
+        (message) =>
+          message.params?.targetInfo?.targetId === workerId || message.params?.targetId === workerId
+      )
+    );
   });
 }
