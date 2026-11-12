@@ -288,7 +288,10 @@ async function bridge(t) {
     window.stockConnections = new Map();
     window.stockOpen = async (id, runtime) => {
       try {
-        const connection = await globalThis.sliccBrowserHook({ runtime });
+        const connection = await globalThis.sliccBrowserHook({
+          runtime,
+          caller: { kind: 'device', id: 'stock-clients', name: 'stock-clients' },
+        });
         connection.onmessage = (text) => window.stockOut(JSON.stringify({ id, text }));
         connection.onclose = (reason) =>
           window.stockOut(JSON.stringify({ id, closed: String(reason ?? '') }));
