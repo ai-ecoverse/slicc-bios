@@ -32,9 +32,21 @@ export const targets = {
   log: origin('log.example.test'),
 };
 const PATHS = {
+  devtools: {
+    autoAttach: true,
+    browserSession: true,
+    browserContexts: true,
+    chromeUrlsAttach: true,
+    extensionWorld: true,
+    extensionFrame: false,
+    inboundDelay: true,
+    forwardAudit: true,
+    clientExit: true,
+    stockSetup: true,
+  },
   extension: {
     autoAttach: true,
-    browserSession: false,
+    browserSession: true,
     browserContexts: true,
     chromeUrlsAttach: false,
     discovery: false,
@@ -43,6 +55,8 @@ const PATHS = {
     inboundDelay: true,
     forwardAudit: true,
     clientExit: true,
+    stockSetup: true,
+    syntheticAutoAttach: true,
   },
   link: {
     autoAttach: true,
@@ -82,6 +96,7 @@ const browserAt = () =>
     tools: false,
     extensions: [fileURLToPath(new URL('./fixtures/foreign-world', import.meta.url))],
     args: [
+      '--remote-allow-origins=*',
       '--host-resolver-rules=MAP *.sliccy.ai 127.0.0.1, MAP sliccy.ai 127.0.0.1, MAP *.example.test 127.0.0.1',
     ],
   });
@@ -193,6 +208,9 @@ async function unguardedClient(browser) {
     messages,
     waitEvent,
     forwards,
+    get forwarded() {
+      return forwards;
+    },
     flags,
     armGate(sessionId) {
       forwards.length = 0;
@@ -292,8 +310,11 @@ export async function guardHost(t, path) {
     const auditForwards = new Function(`return (${sources.audit})`)();
     const attachRecorder = new Function(`return (${sources.attach})`)();
     const { guardProtected } = await import(new URL('guard.js', location.href).href);
-    const { extensionConnection } = await import(new URL('cdp.js', location.href).href);
+    const { devtoolsConnection, extensionConnection } = await import(
+      new URL('cdp.js', location.href).href
+    );
     const hosts = {
+      devtools: () => devtoolsConnection(sources.browser),
       extension: async () => extensionConnection(globalThis.sliccExtension.cdp),
       link: async () => {
         const [linked] = globalThis.sliccLinkedBrowsers();
@@ -463,6 +484,9 @@ export async function guardHost(t, path) {
         audit(probes, sessionId) {
           return auditForwards(forwards, commands, probes, sessionId);
         },
+        forwarded() {
+          return forwards.map(({ sessionId, method, params }) => ({ sessionId, method, params }));
+        },
       };
     };
     const guards = new Map();
@@ -498,6 +522,9 @@ export async function guardHost(t, path) {
       },
       audit(row, probes, sessionId) {
         return guards.get(row)?.gated.audit(probes, sessionId) ?? { complete: false, probes: [] };
+      },
+      forwarded(row) {
+        return guards.get(row)?.gated.forwarded() ?? [];
       },
       send(row, method, params, sessionId, wait) {
         const guard = guards.get(row);
@@ -537,6 +564,7 @@ export async function guardHost(t, path) {
     await seven.evaluate(setup, {
       audit: auditForwards.toString(),
       attach: attachRecorder.toString(),
+      browser,
     });
   };
   await ensure();
@@ -563,7 +591,11 @@ export async function guardHost(t, path) {
         rows.delete(row);
         await seven.evaluate((row) => window.guards.close(row), row).catch(() => false);
       };
+      let ledger = [];
       const client = {
+        get forwarded() {
+          return ledger;
+        },
         close,
         transport: path,
         transportEvents,
@@ -608,6 +640,9 @@ export async function guardHost(t, path) {
               window.guards.send(row, method, params, sessionId ?? undefined, wait),
             [row, method, params, sessionId ?? null, COMMAND_MS]
           );
+          ledger = await seven
+            .evaluate((row) => window.guards.forwarded(row), row)
+            .catch(() => ledger);
           if (answer.error) {
             if (capture && method === 'Target.attachToTarget') {
               let timer;
@@ -725,6 +760,22 @@ export function shared(path, { variants, except = [], group } = {}) {
             current = row;
           },
           debug: (data) => {
+            if (
+              data.side === 'guarded' &&
+              data.calls &&
+              ['C3.tab-worker-leak', 'C3.tab-iframe-leak', 'E7.isolated-foreign.script'].includes(
+                current?.id
+              )
+            )
+              process.stdout.write(
+                `GUARD-CALLS ${path} ${current.id} ${target} ${variant} ${JSON.stringify(
+                  Object.entries(data.calls).map(([name, call]) => [
+                    name,
+                    call?.ok,
+                    String(call?.error?.message ?? '').slice(0, 160),
+                  ])
+                )}\n`
+              );
             if (process.env.GUARD_TRACE)
               trace('debug', JSON.stringify(data).slice(0, Number(process.env.GUARD_TRACE) || 300));
             if (
@@ -836,6 +887,12 @@ export function shared(path, { variants, except = [], group } = {}) {
         (row) =>
           `GUARD-KNOWN ${known(row)} ${row.id}@${row.target}/${row.variant}: ${row.live === 'fail' ? 'not live' : row.why}`
       ),
+      ...results
+        .filter((row) => [row.control, row.guarded, row.live].includes('incomplete'))
+        .map(
+          (row) =>
+            `GUARD-INCOMPLETE ${row.id}@${row.target}/${row.variant}: ${JSON.stringify(row.incomplete ?? [])}`
+        ),
       `${path}: ${results.length} rows, ${JSON.stringify(report.counts)}`,
       ...Object.entries(skips).map(
         ([reason, rows]) => `skip ${reason} (${rows.length}): ${rows.join(' ')}`

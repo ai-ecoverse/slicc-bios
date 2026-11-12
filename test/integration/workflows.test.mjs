@@ -78,7 +78,7 @@ test('the review prompt judges a dependency-only pull request on the suite and p
   assert.match(prompt, /Notes, and anything you can't judge, are comments, never a denial\./);
 });
 
-test('the shards split exactly the files npm test runs, on the Node the package asks for, with Chrome for Testing and no Playwright', () => {
+test('the shards split exactly the files npm test runs, on the Node the package asks for, with Chrome for Testing and no browser download from Playwright or Puppeteer', () => {
   assert.equal(input('test'), undefined);
   assert.equal(input('test-glob'), 'test/integration/*.test.mjs');
   assert.ok(pkg.scripts.test.endsWith(` '${input('test-glob')}'`), pkg.scripts.test);
@@ -86,8 +86,11 @@ test('the shards split exactly the files npm test runs, on the Node the package 
   assert.equal(input('node-version'), `"${pkg.engines.node.replace(/^>=/, '')}"`);
   assert.equal(pkg.scripts.pretest, 'slicc-cdp install-browser');
   assert.ok(pkg.devDependencies['@ai-ecoverse/slicc-cdp']);
-  assert.equal(pkg.devDependencies['playwright-core'], undefined);
-  assert.equal(pkg.devDependencies.puppeteer, undefined);
+  for (const field of ['dependencies', 'devDependencies', 'optionalDependencies'])
+    for (const downloader of ['playwright', 'puppeteer'])
+      assert.equal(pkg[field]?.[downloader], undefined, `${downloader} in ${field}`);
+  for (const client of ['playwright-core', 'puppeteer-core'])
+    assert.match(pkg.devDependencies[client] ?? '0.0.0', /^\d+\.\d+\.\d+$/, client);
 });
 
 test('seven is published only after a release, from the production environment, with the deploy token and nothing else', () => {
@@ -127,7 +130,7 @@ test('the guard-set vectors run as one file per path, target group and detach va
   const files = (await readdir(new URL('./', import.meta.url)))
     .filter((name) => name.startsWith('guard-set-'))
     .sort();
-  const want = ['extension', 'link']
+  const want = ['devtools', 'extension', 'link']
     .flatMap((path) =>
       groups.flatMap((group) => [
         `guard-set-${path}-${group}-lagging.test.mjs`,

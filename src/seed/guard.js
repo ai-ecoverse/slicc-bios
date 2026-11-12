@@ -55,7 +55,11 @@ const TREES = new Set(['Page.getFrameTree', 'Page.getResourceTree']);
 const OBSERVED = new Set([...TREES, ...HISTORY]);
 const NAV_MS = 10000;
 const NAV_TYPES = new Set(['page', 'iframe', 'background_page', 'webview']);
-const UNWAITED = new Set(['Target.getTargetInfo', 'Target.detachFromTarget']);
+const UNWAITED = new Set([
+  'Target.getTargetInfo',
+  'Target.detachFromTarget',
+  'Runtime.runIfWaitingForDebugger',
+]);
 const POLL_MS = 100;
 const REMEMBERED = 10000;
 const HISTORY_WAIT = 5000;
@@ -170,6 +174,71 @@ const STICKY = new Set([
 ]);
 const DEBUGGERS = ['Debugger.', 'DOMDebugger.', 'EventBreakpoints.'];
 const EMULATION = /^Emulation\.(set|add|update|remove)[A-Z]/;
+const DISPLAY = new Set([
+  'Emulation.setFocusEmulationEnabled',
+  'Emulation.setEmulatedMedia',
+  'Emulation.setDeviceMetricsOverride',
+  'Emulation.setTouchEmulationEnabled',
+]);
+const sticky = (method) => STICKY.has(method) || (EMULATION.test(method) && !DISPLAY.has(method));
+const NO_CODE_LINE = /^[ \t]*(?:\/\/[^\r\u2028\u2029]*)?$/;
+const noCode = (source) =>
+  typeof source === 'string' && source.split('\n').every((line) => NO_CODE_LINE.test(line));
+const TAB_COMMANDS = new Set([
+  'Target.setAutoAttach',
+  'Runtime.runIfWaitingForDebugger',
+  'Target.getTargetInfo',
+]);
+const TAB_FILTER = [{ type: 'tab' }];
+const PAGE_FILTER = [{ type: 'page' }];
+const WORKER_FAMILY = ['worker', 'shared_worker', 'service_worker'];
+const DEFAULT_FILTER = [{ type: 'browser', exclude: true }, { type: 'tab', exclude: true }, {}];
+
+export function admits(filter, type) {
+  for (const entry of Array.isArray(filter) ? filter : DEFAULT_FILTER)
+    if (entry?.type === undefined || entry.type === type) return entry?.exclude !== true;
+  return false;
+}
+
+const OTHER_TYPES = [
+  'page',
+  'iframe',
+  'browser',
+  'other',
+  'background_page',
+  'webview',
+  'browser_ui',
+];
+const othersIn = (filter) => [
+  ...OTHER_TYPES,
+  ...filter.map((entry) => entry?.type).filter((type) => type && !WORKER_FAMILY.includes(type)),
+  'slicc-any-other-type',
+];
+const wide = (params, device) =>
+  Array.isArray(params?.filter) &&
+  (admits(params.filter, 'tab') ||
+    (device &&
+      WORKER_FAMILY.some((type) => admits(params.filter, type)) &&
+      othersIn(params.filter).some((type) => admits(params.filter, type))));
+export const NO_WORKERS =
+  'slicc: refused: workers are out of reach of browser automation through slicc; auto-attach pages or frames instead';
+const WORKERLESS_DEFAULT = [
+  ...WORKER_FAMILY.map((type) => ({ type, exclude: true })),
+  ...DEFAULT_FILTER,
+];
+const DISCOVERY_EVENTS = new Set([
+  'Target.targetCreated',
+  'Target.targetInfoChanged',
+  'Target.targetDestroyed',
+]);
+const omitted = (params) =>
+  params?.filter === undefined ||
+  JSON.stringify(params.filter) === JSON.stringify(WORKERLESS_DEFAULT);
+export const TAB_PREFIX = 'tab-';
+export const TAB_FOREIGN =
+  'slicc: refused: a tab session reads only its own target; ask the browser session about other targets';
+export const TAB_ONLY =
+  'slicc: refused: a tab session only takes Target.setAutoAttach, Runtime.runIfWaitingForDebugger and Target.getTargetInfo; send the rest on the page session under it';
 const NAVIGATED = new Set([
   'Page.frameStartedNavigating',
   'Page.frameRequestedNavigation',
@@ -719,7 +788,8 @@ export function protection(own) {
 }
 
 class Guard {
-  constructor(connection, own, tabs, route, privateFrames) {
+  constructor(connection, own, tabs, route, privateFrames, caller) {
+    this.device = caller?.kind === 'device';
     this.privateFrames = route?.kind === 'extension' ? privateFrames : undefined;
     this.extensionFrames = route?.kind === 'extension';
     this.route = typeof route?.kind === 'string' && route.kind ? route.kind : 'devtools';
@@ -765,7 +835,6 @@ class Guard {
     this.hints = new Map();
     this.shots = new Set();
     this.gone = new Set();
-    this.waiting = new Set();
     this.pages = new Set();
     this.frames = new Map();
     this.errorFrames = new Set();
@@ -781,6 +850,16 @@ class Guard {
     this.placing = new Map();
     this.placementsPending = new Map();
     this.autoAttachments = new Map();
+    this.tabSessions = new Set();
+    this.tabTargets = new Map();
+    this.pausedSessions = new Set();
+    this.freshReads = new WeakSet();
+    this.tabPages = new Map();
+    this.initScripts = new Map();
+    this.pageAutoAttach = false;
+    this.decided = new Set();
+    this.backgrounded = new Set();
+    this.deciding = new Map();
     this.casts = new Set();
     this.requests = new Map();
     this.held = new Map();
@@ -847,6 +926,10 @@ class Guard {
   }
 
   eventFields(value = {}) {
+    if (value.type === 'tab') {
+      const { openerId, openerFrameId, url, title, ...bare } = value;
+      return { ...this.eventFields({ ...bare, type: 'other' }), type: 'tab', url: '', title: '' };
+    }
     const safe = {};
     for (const key of [
       'id',
@@ -897,6 +980,7 @@ class Guard {
               targetInfo: {
                 ...this.eventFields(params.targetInfo),
                 ...(method === 'Target.attachedToTarget' &&
+                params.targetInfo.type !== 'tab' &&
                 this.fresh(proof) &&
                 this.is.url(params.targetInfo.url)
                   ? {
@@ -965,6 +1049,8 @@ class Guard {
       if (!ERROR_METADATA.has(message.method)) return this.discardEvent(message);
       message = this.metadataEvent(message, proof);
     }
+    message = this.workerless(message);
+    if (message === null) return;
     if (release && message.id !== undefined) {
       const key = requestKey(message);
       const command = this.commands.get(key);
@@ -2271,10 +2357,9 @@ class Guard {
     if (this.blocked.has(sessionId)) return;
     this.blocked.add(sessionId);
     this.refusePending(sessionId);
-    if (this.waiting.delete(sessionId))
-      void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
     const entry = this.sessions.get(sessionId);
     const targetId = entry?.targetId;
+    this.decide(targetId);
     if (targetId && guardTarget) {
       const known = this.targets.get(targetId) ?? { url: '' };
       this.targets.set(targetId, { ...known, was: true, guarded: true });
@@ -2288,7 +2373,11 @@ class Guard {
         ...(outer ? { sessionId: outer } : {}),
       });
     }
+    if (this.pausedSessions.delete(sessionId))
+      void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
     void this.call('Target.detachFromTarget', { sessionId }, outer);
+    if (this.tabPages.get(outer)?.session === sessionId)
+      this.cut(outer, this.sessions.get(outer)?.parent, false);
   }
 
   async current(targetId, limit = ANSWER_MS, ...rest) {
@@ -2309,6 +2398,7 @@ class Guard {
     this.learn(info);
     if (await this.target(targetId)) return true;
     if (!URL.canParse(info.url)) {
+      if (info.url === '' && info.type === 'tab') return false;
       if (info.url !== '' || !NAV_TYPES.has(info.type)) return true;
       this.touch(targetId);
       const nav = this.navs.get(targetId);
@@ -2667,11 +2757,15 @@ class Guard {
       this.tabs.get(targetId)?.admitted ||
       [...this.sessions].some(([id, entry]) => entry.targetId === targetId && this.shown.has(id));
     const nav = { targetId, session: null, done: false, failed: false, held, admitted };
+    nav.fetched = new Promise((resolve) => {
+      nav.fetch = resolve;
+    });
     nav.ready = new Promise((resolve) => {
       nav.settle = (failed) => {
         if (nav.done) return;
         nav.done = true;
         nav.failed = failed;
+        nav.fetch(false);
         clearTimeout(nav.timer);
         resolve();
       };
@@ -2698,8 +2792,10 @@ class Guard {
     if (!session) return nav.settle(true);
     nav.session = session;
     this.navSessions.set(session, nav);
+    const fetching = this.call('Fetch.enable', { patterns: ARM }, session);
+    void fetching.then((answer) => nav.fetch(!answer.error));
     const steps = await Promise.all([
-      this.call('Fetch.enable', { patterns: ARM }, session),
+      fetching,
       this.call(
         'Network.enable',
         { maxTotalBufferSize: 0, maxResourceBufferSize: 0, maxPostDataSize: 0 },
@@ -2709,9 +2805,16 @@ class Guard {
       this.call('Page.enable', {}, session),
     ]);
     nav.holds = steps[0].result?.holdsDocuments === true;
+    await this.focusCreated(nav);
     this.placing.set(nav.targetId, this.place(nav.targetId, session));
     await this.placing.get(nav.targetId);
     nav.settle(steps.some((step) => step.error));
+  }
+
+  async focusCreated(nav) {
+    if (nav.focused || !nav.session || !this.backgrounded.has(nav.targetId)) return;
+    nav.focused = true;
+    await this.call('Emulation.setFocusEmulationEnabled', { enabled: true }, nav.session);
   }
 
   navEvent({ method, params = {} }, nav) {
@@ -2976,8 +3079,6 @@ class Guard {
     this.touch(targetId, true);
     const nav = this.navs.get(targetId);
     await nav?.ready;
-    if (this.waiting.delete(sessionId))
-      void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
     const info = await this.named(targetId);
     if (!info || nav?.taken || nav?.failed) return this.cut(sessionId, parent);
     this.targets.delete(info.targetId);
@@ -3580,8 +3681,9 @@ class Guard {
     const { method, params = {}, sessionId } = message;
     if (method === 'Target.attachedToTarget') {
       const info = params.targetInfo ?? {};
-      if (await this.privateAttachment(info.targetId, params.sessionId)) return true;
-      if (params.waitingForDebugger) this.waiting.add(params.sessionId);
+      this.notePageUnderTab(message);
+      if (await this.skippedAttachment(message)) return true;
+      if (params.waitingForDebugger) void this.resumeArmed(info, params.sessionId, sessionId);
       if (!info.url && (info.type === 'page' || info.type === 'iframe')) {
         void this.blank(message);
         return true;
@@ -3620,11 +3722,44 @@ class Guard {
         return true;
       }
       const notified = this.sessions.get(params.sessionId)?.cutNotified;
+      this.forgetTab(params.sessionId);
+      this.initScripts.delete(params.sessionId);
       this.sessions.delete(params.sessionId);
-      this.waiting.delete(params.sessionId);
       return !this.shown.delete(params.sessionId) || notified === true;
     }
     return false;
+  }
+
+  async skippedAttachment(message) {
+    const { params } = message;
+    const info = params.targetInfo ?? {};
+    if (await this.privateAttachment(info.targetId, params.sessionId)) return true;
+    if (this.cutWorker(message)) return true;
+    if (info.type !== 'tab') return false;
+    if (params.waitingForDebugger) this.pausedTab(params.sessionId);
+    return this.tabAttached(message);
+  }
+
+  async tabAttached(message) {
+    const { params, sessionId: parent } = message;
+    const info = params.targetInfo;
+    this.gone.delete(params.sessionId);
+    this.sessions.set(params.sessionId, { targetId: info.targetId, parent });
+    this.tabSessions.add(params.sessionId);
+    this.tabTargets.set(info.targetId, params.sessionId);
+    this.learn(info);
+    const page =
+      this.route === 'extension' && info.targetId.startsWith(TAB_PREFIX)
+        ? info.targetId.slice(TAB_PREFIX.length)
+        : undefined;
+    if (page) this.tabPages.set(params.sessionId, { targetId: page });
+    if (this.is.url(info.url) || this.is.target(info) || (await this.heldTab(params.sessionId))) {
+      this.cut(params.sessionId, parent, false);
+      return true;
+    }
+    this.shown.add(params.sessionId);
+    this.shownTarget(message, info);
+    return true;
   }
 
   walked({ method, params = {}, sessionId }) {
@@ -3651,7 +3786,7 @@ class Guard {
   world(sessionId) {
     let world = this.worlds.get(sessionId);
     if (!world) {
-      world = { ids: new Map(), uniques: new Map(), names: new Set() };
+      world = { ids: new Map(), uniques: new Map(), names: new Set(), isolated: new Set() };
       this.worlds.set(sessionId, world);
     }
     return world;
@@ -3681,8 +3816,12 @@ class Guard {
         (auxData?.isDefault === true || (auxData?.type === 'default' && !name));
       if (judgedMain) world.main = uniqueId;
       if (hidden) return true;
+      if (auxData?.type === 'isolated' && !this.is.url(origin)) world.isolated.add(id);
     }
+    if (method === 'Runtime.executionContextDestroyed')
+      this.worlds.get(sessionId)?.isolated.delete(params.executionContextId);
     const world = this.worlds.get(sessionId);
+    if (method === 'Runtime.bindingCalled') return !world?.isolated.has(params.executionContextId);
     if (!world || !method.startsWith('Runtime.')) return false;
     return mentioned(params).some(([kind, value]) => world[kind]?.get(value) === true);
   }
@@ -4416,7 +4555,44 @@ class Guard {
     if (!targetId) return undefined;
     const kind = (await this.lookup(targetId))?.type;
     if (!WORKER_TYPES.has(kind)) return undefined;
+    if (this.device) return NO_WORKERS;
     return (await this.target(targetId)) ? PROTECTED : null;
+  }
+
+  cutWorker(message) {
+    const { params = {}, sessionId } = message;
+    const info = params.targetInfo ?? {};
+    if (!this.device || !WORKER_TYPES.has(info.type)) return false;
+    this.sessions.set(params.sessionId, { targetId: info.targetId, parent: sessionId });
+    this.learn(info);
+    if (params.waitingForDebugger) this.pausedSessions.add(params.sessionId);
+    this.cut(params.sessionId, sessionId);
+    return true;
+  }
+
+  workerless(message) {
+    if (!this.device) return message;
+    const params = message.params ?? {};
+    if (DISCOVERY_EVENTS.has(message.method)) {
+      const type = params.targetInfo?.type ?? this.targets.get(params.targetId)?.type;
+      if (WORKER_TYPES.has(type)) return null;
+    }
+    const infos = message.result?.targetInfos;
+    if (Array.isArray(infos) && infos.some((info) => WORKER_TYPES.has(info?.type)))
+      return {
+        ...message,
+        result: {
+          ...message.result,
+          targetInfos: infos.filter((info) => !WORKER_TYPES.has(info?.type)),
+        },
+      };
+    if (WORKER_TYPES.has(message.result?.targetInfo?.type))
+      return {
+        id: message.id,
+        sessionId: message.sessionId,
+        error: { code: -32000, message: NO_WORKERS },
+      };
+    return message;
   }
 
   prelude(sessionId, method) {
@@ -4514,6 +4690,7 @@ class Guard {
   }
 
   shownTarget(message, info, source = message, proof) {
+    if (message.method === 'Target.attachedToTarget') this.attachmentShown(message, info);
     if (this.unsafe.has(source) || this.eventError(source)) {
       this.deliver(this.metadataEvent(message, proof), true, source, proof);
       return;
@@ -4536,11 +4713,18 @@ class Guard {
     );
   }
 
-  masked(info, stranded = false) {
-    return this.redact(this.masking(info, stranded)).params;
+  masked(info, stranded = false, fresh = false) {
+    return this.redact(this.masking(info, stranded, fresh)).params;
   }
 
-  masking(info, stranded = false) {
+  masking(info, stranded = false, fresh = false) {
+    if (
+      info.type === 'tab' &&
+      !(fresh && this.ordinaryTab(info.targetId) && !this.is.url(info.url) && !this.is.target(info))
+    ) {
+      const { openerId, openerFrameId, ...bare } = info;
+      return { ...bare, url: '', title: '' };
+    }
     if (stranded && this.is.url(info.url) && URL.canParse(info.url)) {
       const { origin } = new URL(info.url);
       return { ...info, url: origin, title: origin };
@@ -4872,6 +5056,10 @@ class Guard {
   }
 
   async routed(message, was) {
+    if (this.emulatedAutoAttach(message, was)) {
+      this.deliver({ id: message.id, sessionId: message.sessionId, result: {} });
+      return true;
+    }
     if (was?.method === 'Page.captureScreenshot') {
       await this.shotAnswer(message, was);
       return true;
@@ -4889,7 +5077,19 @@ class Guard {
       if (!world.ids.has(result.executionContextId) || hidden)
         world.ids.set(result.executionContextId, hidden);
       if (hidden) world.names.add(EXTENSION_WORLD);
+      else if (world.ids.get(result.executionContextId) === false)
+        world.isolated.add(result.executionContextId);
     }
+    if (
+      was?.method === 'Page.addScriptToEvaluateOnNewDocument' &&
+      typeof result?.identifier === 'string'
+    ) {
+      const scripts = this.initScripts.get(was.sessionId) ?? new Set();
+      scripts.add(result.identifier);
+      this.initScripts.set(was.sessionId, scripts);
+    }
+    if (was?.method === 'Page.removeScriptToEvaluateOnNewDocument')
+      this.initScripts.get(was.sessionId)?.delete(was.params?.identifier);
   }
 
   async settledRecoveryLoad(message) {
@@ -4963,7 +5163,13 @@ class Guard {
     if (proof && !this.fresh(proof)) return this.refuse(was);
     this.deliver({
       ...message,
-      result: { targetInfo: this.masked(message.result.targetInfo, Boolean(proof)) },
+      result: {
+        targetInfo: this.masked(
+          message.result.targetInfo,
+          Boolean(proof),
+          this.freshReads.delete(was)
+        ),
+      },
     });
   }
 
@@ -5010,6 +5216,17 @@ class Guard {
       return this.deliver({ ...message, result: { ...result, cookies } });
     }
     this.deliver(this.withVersionRoute(message, method, result));
+  }
+
+  emulatedAutoAttach(message, was) {
+    const { method, params, sessionId } = was;
+    return (
+      this.route === 'extension' &&
+      method === 'Target.setAutoAttach' &&
+      sessionId !== undefined &&
+      message.error?.message === NO_AUTO_ATTACH &&
+      (omitted(params) || wide(params, this.device))
+    );
   }
 
   withVersionRoute(message, method, result) {
@@ -5365,19 +5582,69 @@ class Guard {
     return null;
   }
 
+  async workersAsked(method, params) {
+    if (!this.device) return false;
+    if (method === 'Target.attachToTarget' && params.targetId !== undefined)
+      return WORKER_TYPES.has((await this.lookup(params.targetId))?.type);
+    return (
+      this.route !== 'extension' &&
+      method === 'Target.setAutoAttach' &&
+      params.autoAttach === true &&
+      Array.isArray(params.filter) &&
+      !wide(params, true) &&
+      WORKER_FAMILY.some((type) => admits(params.filter, type))
+    );
+  }
+
+  async scopedBinding(params, sessionId) {
+    if (sessionId === undefined) return false;
+    const name = params.executionContextName;
+    if (params.executionContextId === undefined)
+      return (
+        typeof name === 'string' &&
+        name !== '' &&
+        name !== EXTENSION_WORLD &&
+        !(await this.learned(sessionId)).names.has(name)
+      );
+    if (name !== undefined) return false;
+    return (await this.learned(sessionId)).isolated.has(params.executionContextId);
+  }
+
+  async later(method, params, sessionId) {
+    if (method === 'Page.createIsolatedWorld')
+      return this.errorDocument(sessionId, method) ||
+        this.ownedBlank(sessionId) ||
+        this.blanking(sessionId)
+        ? PROTECTED
+        : null;
+    if (method === 'Page.addScriptToEvaluateOnNewDocument')
+      return sessionId !== undefined &&
+        noCode(params.source) &&
+        params.worldName !== EXTENSION_WORLD
+        ? null
+        : SCRIPTS;
+    if (method === 'Page.removeScriptToEvaluateOnNewDocument')
+      return this.initScripts.get(sessionId)?.has(params.identifier) ? null : SCRIPTS;
+    if (method === 'Runtime.addBinding')
+      return (await this.scopedBinding(params, sessionId)) ? null : SCRIPTS;
+    return LATER.has(method) ? SCRIPTS : null;
+  }
+
   async check(message) {
     const { method, params = {}, sessionId } = message;
     if (typeof method !== 'string') return null;
     const early = await this.precheck(message);
     if (early) return early;
     if (method.startsWith('Fetch.') && sessionId === undefined) return FETCH;
-    if (LATER.has(method)) return SCRIPTS;
+    if (this.device && (await this.workersAsked(method, params))) return NO_WORKERS;
+    const later = await this.later(method, params, sessionId);
+    if (later) return later;
     if (method === 'Page.navigate' && inherits(params.url)) return INHERITED;
     if (FLAT.has(method) && params.flatten !== true) {
       const target = params.targetId !== undefined && (await this.current(params.targetId));
       return target ? PROTECTED : UNFLAT;
     }
-    if (STICKY.has(method) || EMULATION.test(method)) return HEADERS;
+    if (sticky(method)) return HEADERS;
     const debuggerRefusal = await this.debuggerCheck(message);
     if (debuggerRefusal) return debuggerRefusal;
     if (STREAMED.has(method)) return STREAMING;
@@ -5402,6 +5669,7 @@ class Guard {
         : ANSWER_MS;
     const guarded = await this.current(params.targetId, limit);
     const target = this.targets.get(params.targetId);
+    if (target?.type === 'tab' && !this.ordinaryTab(params.targetId)) return true;
     if (method === 'Target.attachToTarget' && !guarded) {
       this.touch(params.targetId);
       await this.navs.get(params.targetId)?.ready;
@@ -5443,18 +5711,21 @@ class Guard {
   async create(message) {
     if (this.finished.has(message) || !this.owns(message)) return;
     const { id, params, sessionId } = message;
+    const background = params.background ?? true;
     const answer = await this.call('Target.createTarget', {
       ...params,
-      background: params.background ?? true,
+      background,
       url: 'about:blank',
     });
     const targetId = answer.result?.targetId;
     if (this.finished.has(message) || !this.owns(message)) return;
     if (!targetId) return this.deliver({ ...answer, id, ...(sessionId ? { sessionId } : {}) });
+    if (background) kept(this.backgrounded, targetId);
     this.learn({ targetId, url: 'about:blank', type: 'page' });
     this.touch(targetId);
     const nav = this.navs.get(targetId);
     await nav.ready;
+    await this.focusCreated(nav);
     if (this.finished.has(message) || !this.owns(message)) return;
     if (!nav.failed) {
       nav.admitted = true;
@@ -5462,8 +5733,132 @@ class Guard {
     }
     if (!nav.failed && !inherits(params.url))
       await this.call('Page.navigate', { url: params.url }, nav.session);
+    await this.attachDecided(targetId);
     if (this.finished.has(message) || !this.owns(message)) return;
     this.deliver({ id, ...(sessionId ? { sessionId } : {}), result: answer.result });
+  }
+
+  notePageUnderTab({ params = {}, sessionId }) {
+    if (!this.tabSessions.has(sessionId) || params.targetInfo?.type !== 'page') return;
+    this.tabPages.set(sessionId, {
+      targetId: params.targetInfo.targetId,
+      session: params.sessionId,
+    });
+    if (this.pausedSessions.has(sessionId))
+      void this.resumeArmed(params.targetInfo, sessionId, this.sessions.get(sessionId)?.parent);
+  }
+
+  attachmentShown(message, info) {
+    this.decide(info?.targetId);
+    const session = message.params?.sessionId;
+    if (!this.tabSessions.has(session) && this.pausedSessions.delete(session))
+      void this.call('Runtime.runIfWaitingForDebugger', {}, session);
+  }
+
+  pausedTab(sessionId) {
+    this.pausedSessions.add(sessionId);
+    this.after(NAV_MS, () => {
+      if (this.tabPages.get(sessionId)?.session || !this.pausedSessions.delete(sessionId)) return;
+      if (!this.blocked.has(sessionId))
+        void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
+    });
+  }
+
+  after(ms, work) {
+    const timer = setTimeout(work, ms);
+    timer.unref?.();
+  }
+
+  async resumeArmed(info, sessionId, parent) {
+    this.pausedSessions.add(sessionId);
+    if (this.is.url(info.url) || this.is.target(info) || isHeld(info.targetId)) {
+      this.after(ANSWER_MS, () => {
+        if (this.pausedSessions.has(sessionId) && !this.blocked.has(sessionId))
+          this.cut(sessionId, parent);
+      });
+      return;
+    }
+    let armed = true;
+    if (NAV_TYPES.has(info.type)) {
+      this.learn(info);
+      this.touch(info.targetId, !info.url);
+      const nav = this.navs.get(info.targetId);
+      if (nav) armed = await this.within(nav.fetched, ANSWER_MS);
+    }
+    if (!this.pausedSessions.has(sessionId) || this.blocked.has(sessionId)) return;
+    if (armed === false) return this.cut(sessionId, parent, false);
+    this.pausedSessions.delete(sessionId);
+    void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
+  }
+
+  forgetTab(sessionId) {
+    this.tabSessions.delete(sessionId);
+    this.tabPages.delete(sessionId);
+    const tabId = this.sessions.get(sessionId)?.targetId;
+    if (this.tabTargets.get(tabId) === sessionId) this.tabTargets.delete(tabId);
+  }
+
+  async heldTab(sessionId) {
+    const page = this.tabPages.get(sessionId)?.targetId;
+    if (page === undefined) return false;
+    const fresh = (await this.answered(this.call('Target.getTargetInfo', { targetId: page })))
+      ?.result?.targetInfo;
+    if (fresh?.targetId !== page) return true;
+    this.learn(fresh);
+    return isHeld(page) || (await this.target(page));
+  }
+
+  ordinaryTab(tabId) {
+    const session = this.tabTargets.get(tabId);
+    const page = this.tabPages.get(session);
+    return Boolean(
+      page?.session &&
+        this.shown.has(page.session) &&
+        !this.blocked.has(page.session) &&
+        !this.blocked.has(session) &&
+        !isHeld(page.targetId) &&
+        !this.targets.get(page.targetId)?.guarded
+    );
+  }
+
+  async tabCommand(message) {
+    const { method, params = {}, sessionId } = message;
+    if (!TAB_COMMANDS.has(method)) return this.refuse(message, TAB_ONLY);
+    if (params.targetId !== undefined && params.targetId !== this.sessions.get(sessionId)?.targetId)
+      return this.refuse(message, TAB_FOREIGN);
+    if (await this.heldTab(sessionId)) {
+      this.cut(sessionId, this.sessions.get(sessionId)?.parent, false);
+      return this.refuse(message, PROTECTED);
+    }
+    if (method === 'Target.getTargetInfo' && this.tabPages.get(sessionId)?.session)
+      this.freshReads.add(message);
+    return this.pass(message);
+  }
+
+  notePageAutoAttach({ method, params, sessionId }) {
+    if (method !== 'Target.setAutoAttach' || sessionId !== undefined) return;
+    this.pageAutoAttach = params?.autoAttach === true && admits(params.filter, 'page');
+  }
+
+  decide(targetId) {
+    kept(this.decided, targetId);
+    for (const resolve of this.deciding.get(targetId) ?? []) resolve();
+    this.deciding.delete(targetId);
+  }
+
+  attachDecided(targetId) {
+    if (!this.pageAutoAttach || this.decided.has(targetId)) return undefined;
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, NAV_MS);
+      timer.unref?.();
+      this.deciding.set(targetId, [
+        ...(this.deciding.get(targetId) ?? []),
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+      ]);
+    });
   }
 
   async withMainWorld(message) {
@@ -5534,8 +5929,9 @@ class Guard {
   async pass(message) {
     if (this.finished.has(message) || !this.owns(message)) return;
     this.commands.set(requestKey(message), message);
-    const outgoing = await this.withMainWorld(message);
+    const outgoing = narrowed(await this.withMainWorld(message), this.device);
     const { id, method, sessionId } = outgoing;
+    this.notePageAutoAttach(outgoing);
     if (this.finished.has(message) || !this.owns(message)) return;
     if (!(await this.admitContent(message)) || this.departing(message)) return this.refuse(message);
     if (
@@ -6065,6 +6461,7 @@ class Guard {
         `send:${message.sessionId ?? ''}`,
         async () => {
           if (this.finished.has(message) || !this.owns(message)) return;
+          if (this.tabSessions.has(message.sessionId)) return this.tabCommand(message);
           if (await this.refuseUnsafeContent(message)) return;
           if (!(await this.proveContent(message))) return this.refuse(message);
           if (!(await this.admitContent(message))) return this.refuse(message);
@@ -6114,9 +6511,32 @@ class Guard {
   }
 }
 
+function narrowed(message, device) {
+  const { method, params } = message;
+  if (method === 'Page.createIsolatedWorld' && params) {
+    const stripped = { ...params };
+    delete stripped.grantUniveralAccess;
+    delete stripped.grantUniversalAccess;
+    delete stripped.contentSecurityPolicy;
+    return { ...message, params: stripped };
+  }
+  if (
+    device &&
+    method === 'Target.setAutoAttach' &&
+    params?.autoAttach &&
+    params.filter === undefined
+  )
+    return { ...message, params: { ...params, filter: WORKERLESS_DEFAULT } };
+  if (method === 'Target.setAutoAttach' && params?.autoAttach && wide(params, device)) {
+    const tabs = message.sessionId === undefined && admits(params.filter, 'tab');
+    return { ...message, params: { ...params, filter: tabs ? TAB_FILTER : PAGE_FILTER } };
+  }
+  return message;
+}
+
 const framed = (tree) =>
   tree?.frame ? [tree.frame, ...(tree.childFrames ?? []).flatMap((child) => framed(child))] : [];
 
-export function guardProtected(connection, own, tabs = new Map(), route, privateFrames) {
-  return new Guard(connection, own, tabs, route, privateFrames).start();
+export function guardProtected(connection, own, tabs = new Map(), route, privateFrames, caller) {
+  return new Guard(connection, own, tabs, route, privateFrames, caller).start();
 }
