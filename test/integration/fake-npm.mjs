@@ -170,7 +170,7 @@ export async function localRelease({ tarball, repository, workflow }) {
   return { name, version, integrity, serve };
 }
 
-export async function fakeRegistry(cdp, releases) {
+export async function fakeRegistry(cdp, releases, remotes = REMOTES) {
   const asked = [];
   cdp.on(async ({ method, params }) => {
     if (method !== 'Fetch.requestPaused') return;
@@ -181,12 +181,13 @@ export async function fakeRegistry(cdp, releases) {
     body ??= await download(request.url).catch(() => null);
     if (body === null)
       return cdp.send('Fetch.failRequest', { requestId, errorReason: 'Failed' }).catch(() => {});
-    const bytes = Buffer.from(body);
-    const json = typeof body === 'string';
+    const { status = 200, body: answer = body } = body.status ? body : {};
+    const bytes = Buffer.from(answer);
+    const json = typeof answer === 'string';
     await cdp
       .send('Fetch.fulfillRequest', {
         requestId,
-        responseCode: 200,
+        responseCode: status,
         responseHeaders: [
           { name: 'access-control-allow-origin', value: '*' },
           {
@@ -200,7 +201,7 @@ export async function fakeRegistry(cdp, releases) {
       .catch(() => {});
   });
   await cdp.send('Fetch.enable', {
-    patterns: REMOTES.map((remote) => ({ urlPattern: `${remote}*` })),
+    patterns: remotes.map((remote) => ({ urlPattern: `${remote}*` })),
   });
   return { asked };
 }

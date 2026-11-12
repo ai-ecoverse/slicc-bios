@@ -449,16 +449,29 @@ test('the base set pins exactly what UI boot and the agent install need, and eve
     '@ai-ecoverse/wasm-tls-engine',
   ]);
   const lock = JSON.parse(await read('package-lock.json'));
+  const needed = new Set();
+  const need = (name) => {
+    if (needed.has(name)) return;
+    needed.add(name);
+    for (const dep of Object.keys(lock.packages[`node_modules/${name}`]?.dependencies ?? {}))
+      need(dep);
+  };
+  for (const name of base) need(name);
+  assert.deepEqual(
+    [...needed].filter((name) => !base.includes(name)).sort(),
+    ['atob-lite', 'esptool-js', 'pako'],
+    'slicc-devices brings esptool-js for esptool, and nothing else brings a dependency'
+  );
   assert.deepEqual(
     Object.entries(lock.packages)
       .filter(([path, entry]) => path && !entry.optional)
       .map(([path]) => path)
       .map((path) => path.split('node_modules/').at(-1))
       .sort(),
-    base
+    [...needed].sort()
   );
   const tools = JSON.parse(await read('tools.json'));
-  assert.equal(Object.keys(tools).length, 21);
+  assert.equal(Object.keys(tools).length, 22);
   assert.deepEqual(
     Object.entries(tools)
       .filter(([, entry]) => entry.first)

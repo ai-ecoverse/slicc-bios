@@ -63,6 +63,70 @@ const update = (page) =>
     return (registration.installing ?? registration.waiting)?.state ?? null;
   });
 
+const drainUpdate = (page) =>
+  page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.getRegistration();
+    await registration.update();
+  });
+
+const UPDATE_WAIT = 5000;
+
+const updateWaiting = (page, ms = UPDATE_WAIT) =>
+  page.evaluate(async (ms) => {
+    const registration = await navigator.serviceWorker.getRegistration();
+    const appeared = new Promise((resolve) => {
+      const dig = () => {
+        const found = registration.installing ?? registration.waiting;
+        if (found) resolve(found);
+      };
+      registration.addEventListener('updatefound', dig);
+      dig();
+    });
+    await registration.update();
+    let worker = registration.installing ?? registration.waiting;
+    if (!worker) {
+      const end = performance.now() + ms;
+      worker = await Promise.race([
+        appeared,
+        new Promise((resolve) => {
+          const tick = () => {
+            const found = registration.installing ?? registration.waiting;
+            if (found) return resolve(found);
+            if (performance.now() >= end) return resolve(null);
+            setTimeout(tick, 50);
+          };
+          tick();
+        }),
+      ]);
+    }
+    return worker?.state ?? null;
+  }, ms);
+
+const updateSight = (page) =>
+  page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.getRegistration();
+    const notice = document
+      .querySelector('slicc-app')
+      ?.model?.notices?.list()
+      ?.find((entry) => entry.id.startsWith('sw-waiting:'));
+    return {
+      active: registration.active?.state ?? null,
+      waiting: registration.waiting?.state ?? null,
+      installing: registration.installing?.state ?? null,
+      notice: notice ? { title: notice.title, body: notice.body } : null,
+      live: window.live
+        ? {
+            opens: window.live.opens,
+            errors: window.live.errors,
+            seen: window.live.seen?.length ?? 0,
+            events: window.live.events,
+            ticks: window.live.ticks,
+          }
+        : null,
+      switched: window.switched ?? null,
+    };
+  });
+
 const waitingNotice = (page) =>
   page.evaluate(() =>
     document
@@ -286,9 +350,16 @@ test('a kernel server’s slow streams no longer hold an update: once the new wo
     () =>
       window.live.seen.length >= 2 && window.live.events?.read >= 2 && window.live.ticks?.read >= 2
   );
+  await drainUpdate(page);
   bumpWorker();
   await checked(page);
-  assert.ok(await update(page));
+  {
+    const state = await updateWaiting(page);
+    if (!state)
+      assert.fail(
+        `no installing or waiting worker after update: ${JSON.stringify(await updateSight(page))}`
+      );
+  }
   const took = await tookOver(page, 15000);
   t.diagnostic(`the new worker took over ${took} ms after the update check`);
   const first = await page.evaluate(() => window.live.seen[0].split(' ')[0]);
@@ -321,8 +392,15 @@ test('while a half-read download holds an update, the old worker cuts nothing, s
   await sseServer(page);
   chrome.overrides.set('/os/held.bin', Buffer.alloc(SIZE, 7));
   await hold(page);
+  await drainUpdate(page);
   bumpWorker();
-  assert.ok(await update(page));
+  {
+    const state = await updateWaiting(page);
+    if (!state)
+      assert.fail(
+        `no installing or waiting worker after update: ${JSON.stringify(await updateSight(page))}`
+      );
+  }
   await page.within(30000, () =>
     document
       .querySelector('slicc-app')

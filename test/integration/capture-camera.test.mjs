@@ -151,6 +151,9 @@ const ask = (header, file, name) =>
 const plain = (header, name) =>
   `printf '%s\\n' '${JSON.stringify({ kind: 'capture.camera', ...header })}' | cat > /dev/embedder; echo "${name} $?"`;
 
+const micShaped = (kind, header, name) =>
+  `printf '%s\\n' '${JSON.stringify({ kind, ...header })}' | cat > /dev/embedder 2> /tmp/${name}.err; echo "${name} $?"; grep -q 'answer this microphone request' /tmp/${name}.err && echo "${name} refused"`;
+
 const shaped = (header, name) =>
   `printf '%s\\n' '${JSON.stringify({ kind: 'capture.camera', ...header })}' | cat > /dev/embedder 2> /tmp/${name}.err; echo "${name} $?"; grep -q 'answer this camera request' /tmp/${name}.err && echo "${name} refused"`;
 
@@ -410,6 +413,18 @@ test('a deny with a message, a blocked camera, EAGAIN’s own prompt, and camera
   await run(page, shaped({ type: 'image/png', device: 'cam 1' }, 'device'));
   await shows(page, 'device 1');
   await shows(page, 'device refused');
+  await run(page, shaped({ type: 'image/png', device: 'a'.repeat(257) }, 'longdevice'));
+  await shows(page, 'longdevice 1');
+  await shows(page, 'longdevice refused');
+  for (const kind of ['capture.camera', 'capture.screen']) {
+    const name = `longmic${kind.slice(8)}`;
+    await run(
+      page,
+      micShaped(kind, { type: 'video/webm', duration: 1, microphone: 'm'.repeat(257) }, name)
+    );
+    await shows(page, `${name} 1`);
+    await shows(page, `${name} refused`);
+  }
   assert.equal(await page.evaluate(() => window.faux.seen.length), seen);
   for (const [name, header] of [
     ['facing', { type: 'image/png', asks: { video: { facingMode: 'user' } } }],
@@ -421,11 +436,65 @@ test('a deny with a message, a blocked camera, EAGAIN’s own prompt, and camera
     ['loose', { type: 'image/png', device: 'cam-1', asks: { video: { deviceId: 'cam-1' } } }],
     ['screen', { type: 'image/png', asks: { video: { displaySurface: 'monitor' } } }],
     ['extra', { type: 'image/png', asks: { video: true, peerIdentity: 'x' } }],
+    ...[null, 0, ''].flatMap((audio, index) => [
+      [`stillaudio${index}`, { type: 'image/png', asks: { video: true, audio } }],
+      [`videoaudio${index}`, { type: 'video/webm', duration: 1, asks: { video: true, audio } }],
+      [
+        `bothaudio${index}`,
+        { type: 'video/webm', duration: 1, microphone: true, asks: { video: true, audio } },
+      ],
+    ]),
+    ['bothfalse', { type: 'video/webm', duration: 1, microphone: true, asks: { video: true } }],
+    ...[null, 0, ''].flatMap((video, index) => [
+      [`stillvideo${index}`, { type: 'image/png', asks: { video } }],
+      [`videovideo${index}`, { type: 'video/webm', duration: 1, asks: { video } }],
+    ]),
+    ['nullwidth', { type: 'image/png', asks: { video: { width: null } } }],
+    ...['date', 'map', 'bytes'].map((built) => [`built${built}`, { type: 'image/png', built }]),
   ]) {
     await run(page, shaped(header, name));
     await shows(page, `${name} 1`);
     await shows(page, `${name} refused`);
   }
   assert.deepEqual(await page.evaluate(() => window.opened), []);
+  assert.deepEqual(page.errors, []);
+});
+
+test('seven stops the camera it handed out when the request ends, even when the module keeps its tracks', async (t) => {
+  const page = await seven(t);
+  const longest = 'a'.repeat(256);
+  await run(
+    page,
+    ask({ type: 'image/png', warmup: 0, device: longest }, '/tmp/longest.png', 'longest')
+  );
+  await shows(page, 'longest 0');
+  assert.deepEqual((await page.evaluate(() => window.opened))[0].constraints.video, {
+    deviceId: { exact: longest },
+  });
+  await page.evaluate(() => {
+    window.opened = [];
+  });
+  await run(page, ask({ type: 'image/png', warmup: 0, keep: true }, '/tmp/kept.png', 'kept'));
+  await shows(page, 'kept 0');
+  await page.until(() => window.opened.length === 1 && window.running === 0);
+  await run(
+    page,
+    ask(
+      { type: 'video/webm', duration: 1, microphone: true, keep: true },
+      '/tmp/kept.webm',
+      'kept video'
+    )
+  );
+  await shows(page, 'kept video 0', 60000);
+  await page.until(() => window.opened.length === 2 && window.running === 0);
+  await run(
+    page,
+    ask({ type: 'video/webm', duration: 60, keep: true }, '/tmp/stopped.webm', 'kept stop')
+  );
+  await page.until(() => window.chips().length === 1 && window.running === 1);
+  await recorded(page);
+  await page.evaluate((selector) => window.deep(selector).click(), STOP);
+  await shows(page, 'kept stop 0', 60000);
+  await page.until(() => window.chips().length === 0 && window.running === 0);
   assert.deepEqual(page.errors, []);
 });
