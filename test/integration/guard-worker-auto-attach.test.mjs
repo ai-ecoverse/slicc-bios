@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { guardProtected, NO_WORKERS } from '../../src/seed/guard.js';
+import { hold } from '../../src/seed/held.js';
 
 const SEVEN = 'https://seven.invalid';
 const IDP = 'https://idp.example/authorize?state=s3cret&code_challenge=c0de&client_id=cl1ent';
@@ -398,8 +399,204 @@ for (const route of [undefined, { kind: 'link' }]) {
     );
     const listed = await send('Target.getTargets');
     assert.ok(
-      listed.result.targetInfos.some((info) => info.type.endsWith('worker')),
-      'workers stay listed'
+      listed.result.targetInfos.some((info) => info.targetId === 'page-worker'),
+      'a shown ordinary worker stays listed'
     );
   });
+
+  test(`on the ${name} route, a kernel program's worker whose creator is held, protected or cut is cut, resumed and never shown`, async () => {
+    hold(`held-page-${name}`);
+    const vault = 'https://vault.sliccy.ai/unlock';
+    const infos = {
+      'host-page': { type: 'page', url: ORDINARY, title: 'Ordinary' },
+      'vault-page': { type: 'page', url: vault, title: 'Vault' },
+      [`held-page-${name}`]: { type: 'page', url: 'https://idp.example/authorize', title: 'IdP' },
+      'vault-frame': { type: 'iframe', url: vault, title: '' },
+      'held-worker': { type: 'worker', url: 'https://idp.example/worker.js', title: '' },
+      'vault-page-worker': {
+        type: 'worker',
+        url: 'https://ordinary.invalid/from-vault.js',
+        title: '',
+      },
+      'vault-data-worker': {
+        type: 'worker',
+        url: 'data:text/javascript,https://vault.sliccy.ai/secret',
+        title: 'Vault worker title',
+      },
+      'frame-worker': { type: 'worker', url: 'https://ordinary.invalid/from-iframe.js', title: '' },
+      'parented-worker': {
+        type: 'worker',
+        url: 'https://ordinary.invalid/from-iframe.js',
+        title: '',
+        parentId: 'vault-frame',
+      },
+      'blob-vault-worker': { type: 'worker', url: 'blob:https://vault.sliccy.ai/7c1d', title: '' },
+      'own-data-worker': { type: 'worker', url: 'data:text/javascript,postMessage(1)', title: '' },
+      'plain-worker': { type: 'worker', url: 'https://ordinary.invalid/worker.js', title: '' },
+    };
+    const workers = Object.keys(infos).filter((id) => infos[id].type === 'worker');
+    const { raw, got, send, attach, settle, leaked, detached } = client(
+      infos,
+      route,
+      { failing: new Set(workers.map((id) => `Page.getFrameTree:${id}`)) },
+      null
+    );
+    const page = (await send('Target.attachToTarget', { targetId: 'host-page', flatten: true }))
+      .result?.sessionId;
+    assert.ok(page, 'the ordinary page is shown');
+    await send(
+      'Target.setAutoAttach',
+      {
+        autoAttach: true,
+        waitForDebuggerOnStart: true,
+        flatten: true,
+        filter: [{ type: 'worker' }],
+      },
+      page
+    );
+    attach('vault-session', 'vault-page');
+    attach('held-session', `held-page-${name}`);
+    attach('vault-frame-session', 'vault-frame', page);
+    await settle(
+      () =>
+        detached('vault-session') && detached('held-session') && detached('vault-frame-session'),
+      400
+    );
+    const unsafe = [
+      ['held-worker-session', 'held-worker', 'held-session'],
+      ['vault-page-worker-session', 'vault-page-worker', 'vault-session'],
+      ['vault-data-worker-session', 'vault-data-worker', 'vault-session'],
+      ['frame-worker-session', 'frame-worker', 'vault-frame-session'],
+      ['parented-worker-session', 'parented-worker', page],
+      ['blob-vault-worker-session', 'blob-vault-worker', page],
+    ];
+    for (const [session, worker, parent] of unsafe) attach(session, worker, parent, true);
+    attach('own-data-worker-session', 'own-data-worker', page, true);
+    attach('plain-worker-session', 'plain-worker', page, true);
+    await settle(
+      () =>
+        unsafe.every(([session]) => detached(session)) &&
+        attachedTo(got, 'plain-worker-session') &&
+        attachedTo(got, 'own-data-worker-session'),
+      600
+    );
+    for (const [session] of unsafe) {
+      const resumed = raw.sent.findIndex(
+        (command) =>
+          command.method === 'Runtime.runIfWaitingForDebugger' && command.sessionId === session
+      );
+      const cut = raw.sent.findIndex(
+        (command) =>
+          command.method === 'Target.detachFromTarget' && command.params.sessionId === session
+      );
+      assert.ok(cut >= 0, `${session} was cut`);
+      assert.ok(resumed >= 0 && resumed < cut, `${session} was resumed as it was cut`);
+      assert.equal(attachedTo(got, session), undefined, `${session} was never shown`);
+      const evaluated = await send('Runtime.evaluate', { expression: 'location.href' }, session);
+      assert.ok(evaluated.error, `${session} answers no evaluate`);
+    }
+    assert.ok(attachedTo(got, 'plain-worker-session'), 'an ordinary worker is shown');
+    const plain = await send('Runtime.evaluate', { expression: '1' }, 'plain-worker-session');
+    assert.equal(plain.error, undefined, `an ordinary worker answers: ${JSON.stringify(plain)}`);
+    assert.ok(
+      attachedTo(got, 'own-data-worker-session'),
+      "an ordinary page's own data: worker is shown"
+    );
+    assert.deepEqual(
+      leaked('vault.sliccy.ai', 'Vault worker title', 'idp.example', 'from-vault'),
+      []
+    );
+  });
+
+  for (const turn of ['hold', 'navigate', 'infoChanged', 'detached']) {
+    test(`on the ${name} route, a kernel program's shown worker is cut when its creator turns (${turn})`, async () => {
+      const pageId = `turning-page-${name}-${turn}`;
+      const workerId = `turning-worker-${name}-${turn}`;
+      const infos = {
+        [pageId]: { type: 'page', url: ORDINARY, title: 'Ordinary' },
+        [workerId]: { type: 'worker', url: 'https://ordinary.invalid/worker.js', title: '' },
+      };
+      const { raw, got, send, attach, settle, detached } = client(
+        infos,
+        route,
+        { failing: new Set([`Page.getFrameTree:${workerId}`]) },
+        null
+      );
+      const page = (await send('Target.attachToTarget', { targetId: pageId, flatten: true })).result
+        ?.sessionId;
+      assert.ok(page, 'the ordinary page is shown');
+      await send(
+        'Target.setAutoAttach',
+        {
+          autoAttach: true,
+          waitForDebuggerOnStart: true,
+          flatten: true,
+          filter: [{ type: 'worker' }],
+        },
+        page
+      );
+      const worker = 'turning-worker-session';
+      attach(worker, workerId, page, true);
+      await settle(() => attachedTo(got, worker), 400);
+      assert.ok(attachedTo(got, worker), 'the ordinary worker is shown');
+      assert.ok((await send('Runtime.enable', {}, worker)).result, 'Runtime.enable on the worker');
+      const said = (text) =>
+        raw.emit({
+          method: 'Runtime.consoleAPICalled',
+          sessionId: worker,
+          params: {
+            type: 'log',
+            args: [{ type: 'string', value: text }],
+            executionContextId: 1,
+            timestamp: 1,
+          },
+        });
+      said('BEFORE-turn');
+      await settle(() => JSON.stringify(got).includes('BEFORE-turn'), 100);
+      assert.ok(
+        JSON.stringify(got).includes('BEFORE-turn'),
+        'worker events reach the client before the turn'
+      );
+      if (turn === 'hold') hold(pageId);
+      if (turn === 'navigate') {
+        infos[pageId] = { type: 'page', url: VAULT, title: 'Vault' };
+        raw.emit({
+          method: 'Page.frameNavigated',
+          sessionId: page,
+          params: {
+            frame: {
+              id: `frame-${pageId}`,
+              loaderId: 'l2',
+              url: VAULT,
+              securityOrigin: 'https://vault.sliccy.ai',
+            },
+            type: 'Navigation',
+          },
+        });
+      }
+      if (turn === 'infoChanged') {
+        infos[pageId] = { type: 'page', url: VAULT, title: 'Vault' };
+        raw.emit({
+          method: 'Target.targetInfoChanged',
+          params: { targetInfo: { targetId: pageId, attached: true, ...infos[pageId] } },
+        });
+      }
+      if (turn === 'detached')
+        raw.emit({
+          method: 'Target.detachedFromTarget',
+          params: { sessionId: page, targetId: pageId },
+        });
+      await settle(() => turn === 'hold' || detached(worker), 200);
+      said(`AFTER-${name}-${turn}`);
+      await settle(() => detached(worker), 200);
+      assert.ok(detached(worker), 'a real detach went out for the worker');
+      assert.ok(
+        !JSON.stringify(got).includes(`AFTER-${name}-${turn}`),
+        'no worker event after the turn'
+      );
+      const evaluated = await send('Runtime.evaluate', { expression: '1' }, worker);
+      assert.ok(evaluated.error, `evaluate is refused: ${JSON.stringify(evaluated)}`);
+      assert.ok(!JSON.stringify(got).includes('vault.sliccy.ai'));
+    });
+  }
 }
