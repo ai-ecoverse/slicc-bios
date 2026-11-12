@@ -99,7 +99,7 @@ test('an OPFS page outside the code paths runs in an opaque origin without stora
   assert.deepEqual(headers.os, {
     status: 200,
     type: 'text/html; charset=utf-8',
-    csp: "frame-ancestors 'self'",
+    csp: "frame-ancestors 'self' chrome-extension://akjjllgokmbgpbdbmafpiefnhidlmbgf",
     sniff: null,
     coop: 'same-origin',
     coep: 'require-corp',

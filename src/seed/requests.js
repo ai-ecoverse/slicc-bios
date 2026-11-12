@@ -1008,7 +1008,9 @@ export const byKind = (extras) => (request) => extras[request.kind]?.(request) ?
 export function markCaptured({
   media = () => globalThis.navigator?.mediaDevices,
   origin = globalThis.location?.origin,
+  top = globalThis.top === globalThis,
 } = {}) {
+  if (!top) return;
   media()?.setCaptureHandleConfig?.({
     handle: HANDLE,
     exposeOrigin: true,

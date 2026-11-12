@@ -54,6 +54,12 @@ const code = new Set([
   'xslt',
 ]);
 const live = ['/os/', '/node_modules/', '/opt/agent/'];
+const PANEL_PAGE = '/os/index.html';
+const PANEL_FRAME = {
+  'content-security-policy':
+    "frame-ancestors 'self' chrome-extension://akjjllgokmbgpbdbmafpiefnhidlmbgf",
+};
+const framing = (at) => (at === PANEL_PAGE ? PANEL_FRAME : {});
 const SCOPE = new URL(self.registration.scope).pathname;
 const BIOS = `/${new URL('./', self.location).pathname.slice(SCOPE.length)}`;
 const BIOS_URL = new URL('./', self.location).href;
@@ -457,7 +463,7 @@ async function serve(request, controller, client) {
   const type = types[extension] ?? 'application/octet-stream';
   try {
     file = await checked(at, file);
-    if (!script.test(file.name)) return respond(file, type, 'opfs');
+    if (!script.test(file.name)) return respond(file, type, 'opfs', 200, framing(at));
     const run = path.startsWith(AGENT) ? url.searchParams.get('run') : null;
     const { text, timing } = await rewrite(path, file, base, run);
     return respond(text, type, 'opfs', 200, { 'server-timing': timing });
