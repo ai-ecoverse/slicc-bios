@@ -852,7 +852,7 @@ class Guard {
     this.autoAttachments = new Map();
     this.tabSessions = new Set();
     this.tabTargets = new Map();
-    this.paused = new Set();
+    this.pausedSessions = new Set();
     this.freshReads = new WeakSet();
     this.tabPages = new Map();
     this.initScripts = new Map();
@@ -2373,7 +2373,7 @@ class Guard {
         ...(outer ? { sessionId: outer } : {}),
       });
     }
-    if (this.paused.delete(sessionId))
+    if (this.pausedSessions.delete(sessionId))
       void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
     void this.call('Target.detachFromTarget', { sessionId }, outer);
     if (this.tabPages.get(outer)?.session === sessionId)
@@ -4565,7 +4565,7 @@ class Guard {
     if (!this.device || !WORKER_TYPES.has(info.type)) return false;
     this.sessions.set(params.sessionId, { targetId: info.targetId, parent: sessionId });
     this.learn(info);
-    if (params.waitingForDebugger) this.paused.add(params.sessionId);
+    if (params.waitingForDebugger) this.pausedSessions.add(params.sessionId);
     this.cut(params.sessionId, sessionId);
     return true;
   }
@@ -5636,7 +5636,7 @@ class Guard {
     const early = await this.precheck(message);
     if (early) return early;
     if (method.startsWith('Fetch.') && sessionId === undefined) return FETCH;
-    if (await this.workersAsked(method, params)) return NO_WORKERS;
+    if (this.device && (await this.workersAsked(method, params))) return NO_WORKERS;
     const later = await this.later(method, params, sessionId);
     if (later) return later;
     if (method === 'Page.navigate' && inherits(params.url)) return INHERITED;
@@ -5744,21 +5744,21 @@ class Guard {
       targetId: params.targetInfo.targetId,
       session: params.sessionId,
     });
-    if (this.paused.has(sessionId))
+    if (this.pausedSessions.has(sessionId))
       void this.resumeArmed(params.targetInfo, sessionId, this.sessions.get(sessionId)?.parent);
   }
 
   attachmentShown(message, info) {
     this.decide(info?.targetId);
     const session = message.params?.sessionId;
-    if (!this.tabSessions.has(session) && this.paused.delete(session))
+    if (!this.tabSessions.has(session) && this.pausedSessions.delete(session))
       void this.call('Runtime.runIfWaitingForDebugger', {}, session);
   }
 
   pausedTab(sessionId) {
-    this.paused.add(sessionId);
+    this.pausedSessions.add(sessionId);
     this.after(NAV_MS, () => {
-      if (this.tabPages.get(sessionId)?.session || !this.paused.delete(sessionId)) return;
+      if (this.tabPages.get(sessionId)?.session || !this.pausedSessions.delete(sessionId)) return;
       if (!this.blocked.has(sessionId))
         void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
     });
@@ -5770,10 +5770,11 @@ class Guard {
   }
 
   async resumeArmed(info, sessionId, parent) {
-    this.paused.add(sessionId);
+    this.pausedSessions.add(sessionId);
     if (this.is.url(info.url) || this.is.target(info) || isHeld(info.targetId)) {
       this.after(ANSWER_MS, () => {
-        if (this.paused.has(sessionId) && !this.blocked.has(sessionId)) this.cut(sessionId, parent);
+        if (this.pausedSessions.has(sessionId) && !this.blocked.has(sessionId))
+          this.cut(sessionId, parent);
       });
       return;
     }
@@ -5784,9 +5785,9 @@ class Guard {
       const nav = this.navs.get(info.targetId);
       if (nav) armed = await this.within(nav.fetched, ANSWER_MS);
     }
-    if (!this.paused.has(sessionId) || this.blocked.has(sessionId)) return;
+    if (!this.pausedSessions.has(sessionId) || this.blocked.has(sessionId)) return;
     if (armed === false) return this.cut(sessionId, parent, false);
-    this.paused.delete(sessionId);
+    this.pausedSessions.delete(sessionId);
     void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
   }
 
