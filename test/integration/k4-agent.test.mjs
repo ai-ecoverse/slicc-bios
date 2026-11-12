@@ -511,7 +511,7 @@ test('enforce: Deny and stop on a cone’s looping sudo ends the loop and the tu
         state.list.some(
           (item) =>
             item.requester?.kind === 'agent' &&
-            item.stoppable === true &&
+            item.state === 'stoppable' &&
             item.command === looping.command
         ),
         false,
@@ -614,6 +614,16 @@ test('enforce: Deny and stop on a cone’s looping sudo ends the loop and the tu
         .model.approvals.list()
         .map((item) => item.id)
     );
+    await page.evaluate(() => {
+      const app = document.querySelector('slicc-app');
+      const { dock } = app;
+      const id = dock.api.panels
+        .map((panel) => panel.id)
+        .findLast((id) => id.startsWith('terminal:'));
+      dock.api.getPanel(id)?.api.setActive();
+      dock.content(id).screen.focus();
+    });
+    await page.press('u', 'ctrl');
     await run(page, 'clear; cd /tmp; sudo -u cone sudo id -un; echo terminal=$?');
     terminal = await terminalOf(before, 5 * 60 * 1000).catch(async (error) => {
       throw new Error(
