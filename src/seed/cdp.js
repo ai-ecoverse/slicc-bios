@@ -1,5 +1,5 @@
 import { EXTENSION_UPDATE, extensionAutomationSupported } from './extension.js';
-import { admits, guardProtected, NO_AUTO_ATTACH, TAB_ONLY } from './guard.js';
+import { admits, guardProtected, NO_AUTO_ATTACH, TAB_ONLY, TAB_PREFIX } from './guard.js';
 
 const RUNTIMES = ['extension', 'devtools'];
 
@@ -98,7 +98,7 @@ export function syntheticAutoAttach(cdp, deliver, attached, closed, every = SYNC
     }
     state.count += 1;
     const sessionId = `slicc-tab-${state.count}-${crypto.randomUUID()}`;
-    const tab = { tabId: `tab-${info.targetId}`, pageId: info.targetId, info };
+    const tab = { tabId: `${TAB_PREFIX}${info.targetId}`, pageId: info.targetId, info };
     tabs.set(sessionId, tab);
     deliver({
       method: 'Target.attachedToTarget',
@@ -187,6 +187,7 @@ export function syntheticAutoAttach(cdp, deliver, attached, closed, every = SYNC
     if (tab.page)
       await cdp.send('Target.detachFromTarget', { sessionId: tab.page }).catch(() => {});
     dropTab(params.sessionId, tab);
+    refused.set(tab.pageId, tab.info.url ?? '');
     return answer(envelope, {});
   };
   const ownsBrowserCommand = (method, params) =>

@@ -202,6 +202,9 @@ export function admits(filter, type) {
 
 const wide = (params) =>
   Array.isArray(params?.filter) && WIDE.some((type) => admits(params.filter, type));
+export const TAB_PREFIX = 'tab-';
+export const TAB_FOREIGN =
+  'slicc: refused: a tab session reads only its own target; ask the browser session about other targets';
 export const TAB_ONLY =
   'slicc: refused: a tab session only takes Target.setAutoAttach, Runtime.runIfWaitingForDebugger and Target.getTargetInfo; send the rest on the page session under it';
 const NAVIGATED = new Set([
@@ -815,6 +818,8 @@ class Guard {
     this.placementsPending = new Map();
     this.autoAttachments = new Map();
     this.tabSessions = new Set();
+    this.tabTargets = new Map();
+    this.tabPages = new Map();
     this.initScripts = new Map();
     this.pageAutoAttach = false;
     this.decided = new Set();
@@ -2327,6 +2332,8 @@ class Guard {
       });
     }
     void this.call('Target.detachFromTarget', { sessionId }, outer);
+    if (this.tabPages.get(outer)?.session === sessionId)
+      this.cut(outer, this.sessions.get(outer)?.parent, false);
   }
 
   async current(targetId, limit = ANSWER_MS, ...rest) {
@@ -3624,6 +3631,7 @@ class Guard {
     const { method, params = {}, sessionId } = message;
     if (method === 'Target.attachedToTarget') {
       const info = params.targetInfo ?? {};
+      this.notePageUnderTab(message);
       if (await this.skippedAttachment(message)) return true;
       if (params.waitingForDebugger)
         void this.call('Runtime.runIfWaitingForDebugger', {}, params.sessionId);
@@ -3665,7 +3673,7 @@ class Guard {
         return true;
       }
       const notified = this.sessions.get(params.sessionId)?.cutNotified;
-      this.tabSessions.delete(params.sessionId);
+      this.forgetTab(params.sessionId);
       this.initScripts.delete(params.sessionId);
       this.sessions.delete(params.sessionId);
       return !this.shown.delete(params.sessionId) || notified === true;
@@ -3683,13 +3691,20 @@ class Guard {
     return this.tabAttached(message);
   }
 
-  tabAttached(message) {
+  async tabAttached(message) {
     const { params, sessionId: parent } = message;
     const info = params.targetInfo;
     this.gone.delete(params.sessionId);
     this.sessions.set(params.sessionId, { targetId: info.targetId, parent });
     this.tabSessions.add(params.sessionId);
-    if (this.is.url(info.url) || this.is.target(info)) {
+    this.tabTargets.set(info.targetId, params.sessionId);
+    this.learn(info);
+    const page =
+      this.route === 'extension' && info.targetId.startsWith(TAB_PREFIX)
+        ? info.targetId.slice(TAB_PREFIX.length)
+        : undefined;
+    if (page) this.tabPages.set(params.sessionId, { targetId: page });
+    if (this.is.url(info.url) || this.is.target(info) || (await this.heldTab(params.sessionId))) {
       this.cut(params.sessionId, parent, false);
       return true;
     }
@@ -4617,6 +4632,10 @@ class Guard {
   }
 
   masking(info, stranded = false) {
+    if (info.type === 'tab' && !this.ordinaryTab(info.targetId)) {
+      const { openerId, openerFrameId, ...bare } = info;
+      return { ...bare, url: '', title: '' };
+    }
     if (stranded && this.is.url(info.url) && URL.canParse(info.url)) {
       const { origin } = new URL(info.url);
       return { ...info, url: origin, title: origin };
@@ -5540,6 +5559,7 @@ class Guard {
         : ANSWER_MS;
     const guarded = await this.current(params.targetId, limit);
     const target = this.targets.get(params.targetId);
+    if (target?.type === 'tab' && !this.ordinaryTab(params.targetId)) return true;
     if (method === 'Target.attachToTarget' && !guarded) {
       this.touch(params.targetId);
       await this.navs.get(params.targetId)?.ready;
@@ -5608,8 +5628,48 @@ class Guard {
     this.deliver({ id, ...(sessionId ? { sessionId } : {}), result: answer.result });
   }
 
-  tabCommand(message) {
-    if (!TAB_COMMANDS.has(message.method)) return this.refuse(message, TAB_ONLY);
+  notePageUnderTab({ params = {}, sessionId }) {
+    if (this.tabSessions.has(sessionId) && params.targetInfo?.type === 'page')
+      this.tabPages.set(sessionId, {
+        targetId: params.targetInfo.targetId,
+        session: params.sessionId,
+      });
+  }
+
+  forgetTab(sessionId) {
+    this.tabSessions.delete(sessionId);
+    this.tabPages.delete(sessionId);
+    const tabId = this.sessions.get(sessionId)?.targetId;
+    if (this.tabTargets.get(tabId) === sessionId) this.tabTargets.delete(tabId);
+  }
+
+  async heldTab(sessionId) {
+    const page = this.tabPages.get(sessionId)?.targetId;
+    return page !== undefined && (isHeld(page) || (await this.target(page)));
+  }
+
+  ordinaryTab(tabId) {
+    const session = this.tabTargets.get(tabId);
+    const page = this.tabPages.get(session);
+    return Boolean(
+      page?.session &&
+        this.shown.has(page.session) &&
+        !this.blocked.has(page.session) &&
+        !this.blocked.has(session) &&
+        !isHeld(page.targetId) &&
+        !this.targets.get(page.targetId)?.guarded
+    );
+  }
+
+  async tabCommand(message) {
+    const { method, params = {}, sessionId } = message;
+    if (!TAB_COMMANDS.has(method)) return this.refuse(message, TAB_ONLY);
+    if (params.targetId !== undefined && params.targetId !== this.sessions.get(sessionId)?.targetId)
+      return this.refuse(message, TAB_FOREIGN);
+    if (await this.heldTab(sessionId)) {
+      this.cut(sessionId, this.sessions.get(sessionId)?.parent, false);
+      return this.refuse(message, PROTECTED);
+    }
     return this.pass(message);
   }
 
