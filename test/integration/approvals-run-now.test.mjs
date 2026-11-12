@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import {
+  biosApprovalId,
   createApprovals,
   kernelGate,
+  mergeApprovalsPorts,
   RUN_REASONS,
+  routeSudo,
   runnable,
   SUDO_RUN_PROTOCOL,
   seatApprovals,
@@ -39,10 +42,10 @@ async function timedOut(approvals, req = agentReq(), at = Date.now()) {
   for (let i = 0; i < 50 && !approvals.port.list().length; i += 1) await turn();
   ended.abort('expired');
   assert.equal(await pending, 'deny');
-  const record = () =>
-    approvals.port.history().find((entry) => entry.approval.id === String(req.id));
+  const id = biosApprovalId(req.id);
+  const record = () => approvals.port.history().find((entry) => entry.approval.id === id);
   for (let i = 0; i < 50 && record()?.state !== 'unanswered'; i += 1) await turn();
-  return { id: String(req.id), record, at };
+  return { id, record, at };
 }
 
 test('runnable is true only for a timed-out agent sudo with a replay the kernel can re-check', () => {
@@ -148,7 +151,7 @@ test('history records and history events track pending, decided and timed-out su
   const pending = approvals.approve(agentReq({ id: 'sudo-hist' }), { signal: ended.signal });
   for (let i = 0; i < 50 && !approvals.port.list().length; i += 1) await turn();
   assert.equal(approvals.port.history()[0].state, 'pending');
-  await approvals.port.decide('sudo-hist', 'once');
+  await approvals.port.decide(biosApprovalId('sudo-hist'), 'once');
   assert.equal(await pending, 'once');
   assert.equal(approvals.port.history()[0].state, 'approved');
   assert.equal(approvals.port.history()[0].answer, 'once');
@@ -381,6 +384,110 @@ test('a seat without run gets history only', async () => {
   assert.equal(licks.length, 0);
 });
 
+test('bios history and run stay empty for an ask the agent held, and own one bios timeout once', async () => {
+  const bios = createApprovals({
+    channel: lone(),
+    kernel: () => ({
+      protocol: SUDO_RUN_PROTOCOL,
+      sudoRun: async () => assert.fail('agent-held asks must not reach bios sudoRun'),
+    }),
+  });
+  bios.own();
+  const agentRecords = [];
+  const sudo = routeSudo({
+    judges: () => true,
+    agent: () => ({
+      approve: async (req, { signal } = {}) => {
+        const id = `apr-${req.id}`;
+        agentRecords.push({
+          approval: {
+            id,
+            kind: 'sudo',
+            requester: { kind: 'agent', name: req.user, agentId: 'cone' },
+            command: req.path,
+            createdAt: req.createdAt,
+            expiresAt: req.expiresAt,
+            always: false,
+          },
+          state: 'unanswered',
+          reason: 'timeout',
+          decidedAt: Date.now(),
+          runnable: true,
+        });
+        await new Promise((resolve) => {
+          if (signal?.aborted) resolve();
+          else signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+        return 'deny';
+      },
+    }),
+    fallback: (...args) => bios.approve(...args),
+  });
+  const ended = new AbortController();
+  const pending = sudo(agentReq({ id: 'kernel-agent-1' }), { signal: ended.signal });
+  for (let i = 0; i < 20; i += 1) await turn();
+  ended.abort('expired');
+  assert.equal(await pending, 'deny');
+  assert.equal(bios.port.history().length, 0);
+  await assert.rejects(bios.port.run(biosApprovalId('kernel-agent-1')), /isn't here/);
+  await assert.rejects(bios.port.run('apr-kernel-agent-1'), /isn't here/);
+  assert.equal(agentRecords.length, 1);
+
+  const calls = [];
+  const host = createApprovals({
+    channel: lone(),
+    kernel: () => ({
+      protocol: SUDO_RUN_PROTOCOL,
+      sudoRun: async (replay) => {
+        calls.push(replay);
+        return { pid: 31, pgid: 31, ended: Promise.resolve({ status: 0 }) };
+      },
+      run: async () => ({ status: 0, stdout: '', stderr: '' }),
+    }),
+    lick: async () => {},
+  });
+  host.own();
+  const fallback = routeSudo({
+    judges: () => false,
+    agent: () => ({ approve: async () => assert.fail('agent without judge') }),
+    fallback: (...args) => host.approve(...args),
+  });
+  const late = new AbortController();
+  const hostPending = fallback(agentReq({ id: 'kernel-bios-1' }), { signal: late.signal });
+  for (let i = 0; i < 50 && !host.port.list().length; i += 1) await turn();
+  late.abort('expired');
+  assert.equal(await hostPending, 'deny');
+  const id = biosApprovalId('kernel-bios-1');
+  assert.equal(host.port.history().length, 1);
+  assert.equal(host.port.history()[0].approval.id, id);
+  assert.equal(host.port.history()[0].state, 'unanswered');
+  await host.port.run(id);
+  for (let i = 0; i < 50 && host.port.history()[0]?.run?.state !== 'done'; i += 1) await turn();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].id, 'kernel-bios-1');
+  await assert.rejects(host.port.run(id), /already ran/);
+
+  let agentRuns = 0;
+  const merged = mergeApprovalsPorts(host.port, {
+    history: () => agentRecords,
+    run: async () => {
+      agentRuns += 1;
+    },
+    stopRun: async () => assert.fail('merged stop must not hit the agent for a bios id'),
+  });
+  assert.equal(merged.history().length, 2);
+  assert.equal(
+    merged.history().filter((entry) => entry.approval.id === 'apr-kernel-agent-1').length,
+    1
+  );
+  assert.equal(merged.history().filter((entry) => entry.approval.id === id).length, 1);
+  await assert.rejects(merged.run(id), /already ran/);
+  assert.equal(calls.length, 1);
+  await merged.run('apr-kernel-agent-1');
+  assert.equal(agentRuns, 1);
+  assert.equal(calls.length, 1);
+});
+
 test('sudo-run lick notices fire on start and end', async () => {
   const licks = [];
   const approvals = createApprovals({
@@ -399,8 +506,10 @@ test('sudo-run lick notices fire on start and end', async () => {
   assert.equal(licks.length, 2);
   assert.equal(licks[0].channel, 'sudo-run');
   assert.equal(licks[0].approval, id);
+  assert.match(id, /^bios:/);
   assert.equal(licks[0].eventId, `${id}:start`);
   assert.equal(licks[1].eventId, `${id}:end`);
+  assert.notEqual(licks[0].eventId, 'sudo-lick:start');
   assert.match(licks[0].text, /timed-out sudo/);
 });
 
@@ -489,8 +598,8 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
     const history = () =>
       document.querySelector('slicc-app').model.approvals.history?.() ?? approvals.port.history();
     return {
-      okId: ok.id,
-      badId: bad.id,
+      okId: `bios:${ok.id}`,
+      badId: `bios:${bad.id}`,
       truePath,
       lsPath,
       history: history().map((entry) => ({

@@ -49,9 +49,16 @@ export function requester({ user, tag }) {
   return { kind: 'user', name: user };
 }
 
+export const BIOS_APPROVAL = 'bios:';
+
+export function biosApprovalId(id) {
+  const raw = String(id);
+  return raw.startsWith(BIOS_APPROVAL) ? raw : `${BIOS_APPROVAL}${raw}`;
+}
+
 export function approval(req) {
   return {
-    id: String(req.id),
+    id: biosApprovalId(req.id),
     kind: 'sudo',
     requester: requester(req),
     command: req.validate
@@ -521,4 +528,28 @@ export function routeSudo({ agent, judges = () => false, fallback, where = () =>
       return 'deny';
     }
   };
+}
+
+export function mergeApprovalsPorts(host, agent) {
+  const pick = (id) => {
+    if (host.history?.().some((entry) => entry.approval.id === id)) return host;
+    if (agent.history?.().some((entry) => entry.approval.id === id)) return agent;
+    return null;
+  };
+  const history = () => {
+    const hostRows = host.history?.() ?? [];
+    const agentRows = agent.history?.() ?? [];
+    return [...hostRows, ...agentRows].sort((a, b) => b.approval.createdAt - a.approval.createdAt);
+  };
+  const run = (id) => {
+    const port = pick(id);
+    if (!port?.run) throw new Error("This request isn't here.");
+    return port.run(id);
+  };
+  const stopRun = (id) => {
+    const port = pick(id);
+    if (!port?.stopRun) throw new Error("This request isn't running.");
+    return port.stopRun(id);
+  };
+  return { history, run, stopRun };
 }
