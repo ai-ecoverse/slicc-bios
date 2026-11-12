@@ -840,7 +840,6 @@ class Guard {
     this.tabTargets = new Map();
     this.paused = new Set();
     this.workerCreators = new Map();
-    this.workerVerdicts = new Map();
     this.freshReads = new WeakSet();
     this.tabPages = new Map();
     this.initScripts = new Map();
@@ -1036,16 +1035,6 @@ class Guard {
     if (message.id === undefined && (this.unsafe.has(source) || this.eventError(source))) {
       if (!ERROR_METADATA.has(message.method)) return this.discardEvent(message);
       message = this.metadataEvent(message, proof);
-    }
-    const worker = this.workerOf(message);
-    if (worker !== undefined && (this.blocked.has(worker) || this.workerTurnedNow(worker))) {
-      this.dropWorker(worker);
-      if (message.id === undefined) return;
-      message = {
-        id: message.id,
-        sessionId: message.sessionId,
-        error: { code: -32000, message: PROTECTED },
-      };
     }
     if (release && message.id !== undefined) {
       const key = requestKey(message);
@@ -2383,54 +2372,12 @@ class Guard {
       if (
         creator.sessionId === sessionId ||
         (targetId !== undefined && (info.parentId === targetId || info.openerId === targetId))
-      )
-        this.dropWorker(worker);
+      ) {
+        const entry = this.sessions.get(worker);
+        if (entry && this.gone.has(creator.sessionId)) entry.parent = undefined;
+        this.cut(worker, entry?.parent);
+      }
     }
-  }
-
-  dropWorker(worker) {
-    const entry = this.sessions.get(worker);
-    if (entry && this.gone.has(this.workerCreators.get(worker)?.sessionId))
-      entry.parent = undefined;
-    this.cut(worker, entry?.parent);
-  }
-
-  workerOf(message) {
-    if (this.workerCreators.size === 0 || message.method === 'Target.detachedFromTarget')
-      return undefined;
-    if (this.workerCreators.has(message.sessionId)) return message.sessionId;
-    const params = message.params ?? message.result ?? {};
-    if (this.workerCreators.has(params.sessionId)) return params.sessionId;
-    const targetId = params.targetInfo?.targetId;
-    if (targetId === undefined) return undefined;
-    for (const [worker, creator] of this.workerCreators)
-      if (creator.params?.targetInfo?.targetId === targetId) return worker;
-    return undefined;
-  }
-
-  creatorTargets(creator) {
-    const info = creator.params?.targetInfo ?? {};
-    return [this.sessions.get(creator.sessionId)?.targetId, info.parentId, info.openerId];
-  }
-
-  workerTurnedNow(worker) {
-    const creator = this.workerCreators.get(worker);
-    const parent = creator?.sessionId;
-    if (
-      parent !== undefined &&
-      (this.blocked.has(parent) || this.gone.has(parent) || !this.shown.has(parent))
-    )
-      return true;
-    return this.creatorTargets(creator).some(
-      (id) => id !== undefined && (isHeld(id) || this.targets.get(id)?.guarded === true)
-    );
-  }
-
-  rejudgeWorkers(targetId) {
-    if (targetId === undefined) return;
-    for (const [worker, creator] of this.workerCreators)
-      if (this.creatorTargets(creator).includes(targetId))
-        this.workerVerdicts.set(worker, this.unsafeWorker(creator));
   }
 
   async withheld(sessionId, foreign) {
@@ -2438,10 +2385,9 @@ class Guard {
   }
 
   async creatorTurned(sessionId) {
-    if (!this.workerCreators.has(sessionId)) return false;
-    const unsafe = await (this.workerVerdicts.get(sessionId) ?? true);
-    if (!unsafe && !this.workerTurnedNow(sessionId)) return false;
-    this.dropWorker(sessionId);
+    const creator = this.workerCreators.get(sessionId);
+    if (!creator || !(await this.unsafeWorker(creator))) return false;
+    this.cut(sessionId, creator.sessionId);
     return true;
   }
 
@@ -3744,11 +3690,6 @@ class Guard {
 
   async targetEvent(message) {
     const { method, params = {}, sessionId } = message;
-    this.rejudgeWorkers(
-      params.targetInfo?.targetId ??
-        params.targetId ??
-        this.sessions.get(params.sessionId)?.targetId
-    );
     if (method === 'Target.attachedToTarget') {
       const info = params.targetInfo ?? {};
       this.notePageUnderTab(message);
@@ -4632,10 +4573,7 @@ class Guard {
   async cutWorker(message) {
     const { params = {}, sessionId } = message;
     const info = params.targetInfo ?? {};
-    if (!WORKER_TYPES.has(info.type)) return false;
-    const verdict = this.unsafeWorker(message);
-    this.workerVerdicts.set(params.sessionId, verdict);
-    if (!(await verdict)) return false;
+    if (!WORKER_TYPES.has(info.type) || !(await this.unsafeWorker(message))) return false;
     this.sessions.set(params.sessionId, { targetId: info.targetId, parent: sessionId });
     if (params.waitingForDebugger) this.paused.add(params.sessionId);
     this.cut(params.sessionId, sessionId);
@@ -5858,7 +5796,6 @@ class Guard {
   forgetTab(sessionId) {
     this.cutWorkersOf(sessionId, this.sessions.get(sessionId)?.targetId);
     this.workerCreators.delete(sessionId);
-    this.workerVerdicts.delete(sessionId);
     this.tabSessions.delete(sessionId);
     this.tabPages.delete(sessionId);
     const tabId = this.sessions.get(sessionId)?.targetId;
