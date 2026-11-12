@@ -888,7 +888,7 @@ test('the owner invites a guest to a live cone; the guest chats through a seat l
       invite: !!window.netPanel().querySelector('[data-action=invite-guest]'),
     })),
     {
-      surfaces: ['agents', 'chat', 'terminal', 'network', 'settings'],
+      surfaces: ['agents', 'approvals', 'chat', 'terminal', 'network', 'settings'],
       network: false,
       guests: true,
       unavailable: 'Inviting guests needs the tray hub.',

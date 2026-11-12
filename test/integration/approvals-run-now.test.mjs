@@ -534,9 +534,10 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
   const late = await page.evaluate(async () => {
     const approvals = globalThis.sliccApprovals;
     const client = await globalThis.sliccKernelClient();
-    const accounts = await client.users.list();
-    const cone = accounts.find((entry) => entry.name === 'cone');
-    if (!cone) throw new Error('no cone user');
+    const idOut = await client.run(['id', '-u', 'cone']);
+    if (idOut.status !== 0) throw new Error(idOut.stderr || 'no cone user');
+    const coneUid = Number(idOut.stdout.trim());
+    if (!Number.isInteger(coneUid)) throw new Error(`bad cone uid: ${idOut.stdout}`);
     const write = await client.run(
       ['bash', '-c', "printf 'echo one\\n' > /home/cone/job.sh && chmod 755 /home/cone/job.sh"],
       { user: 'cone' }
@@ -552,7 +553,7 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
     const ok = {
       id: `sudo-ok-${Date.now()}`,
       user: 'cone',
-      uid: cone.uid,
+      uid: coneUid,
       target: 'root',
       argv: ['true'],
       path: truePath,
@@ -568,7 +569,7 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
     const bad = {
       id: `sudo-bad-${Date.now()}`,
       user: 'cone',
-      uid: cone.uid,
+      uid: coneUid,
       target: 'root',
       argv: ['/home/cone/job.sh'],
       path: '/home/cone/job.sh',
@@ -584,7 +585,12 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
     const expire = async (req) => {
       const ended = new AbortController();
       const pending = approvals.approve(req, { signal: ended.signal });
-      for (let i = 0; i < 100 && !approvals.port.list().some((item) => item.id === req.id); i += 1)
+      const approvalId = `bios:${req.id}`;
+      for (
+        let i = 0;
+        i < 100 && !approvals.port.list().some((item) => item.id === approvalId);
+        i += 1
+      )
         await new Promise((resolve) => setTimeout(resolve, 0));
       ended.abort('expired');
       await pending;
