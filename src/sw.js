@@ -75,7 +75,10 @@ const ownDirs = [
 ];
 const passed = new Set(SHARED ? ['/auth/callback', EXPORTER] : []);
 const passedDirs = SHARED ? [ASSETS] : [];
-const MANIFEST = '/os/manifest.json';
+const redirects = new Map([
+  ['/os/manifest.json', 'manifest.json'],
+  ['/os/favicon.svg', 'icons/favicon.svg'],
+]);
 
 function kind(path) {
   if (own.has(path) || ownDirs.some((dir) => path.startsWith(dir))) return 'bios';
@@ -426,7 +429,7 @@ async function serve(request, controller, client) {
   if (await toOs(asked, request)) {
     return Response.redirect(new URL('os/', self.registration.scope).href, 302);
   }
-  if (asked === MANIFEST) return Response.redirect(`${BIOS_URL}manifest.json`, 302);
+  if (redirects.has(asked)) return Response.redirect(`${BIOS_URL}${redirects.get(asked)}`, 302);
   const served = kind(path);
   if (served === 'bios') return unkeptDocument(await network(), request);
   if (path === STATUS) {
