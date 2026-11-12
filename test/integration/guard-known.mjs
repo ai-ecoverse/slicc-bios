@@ -14,7 +14,6 @@ const RECOVERY = new Set(['reload', 'blank', 'close', 'attachRedacted']);
 const unmet = (items) =>
   items.every((item) => /^[A-Za-z]+: got (?:false|undefined), want true$/.test(item));
 const ABSENT = new Set(['listRedacted', 'infoRedacted']);
-export const LINK_WAIVERS = {};
 export const LINK = {
   'slicc-cli#366 (fail-closed)': {
     ids: ERROR_RECOVERY,
@@ -60,8 +59,6 @@ const issue = (id) => Object.keys(KNOWN).find((key) => KNOWN[key].includes(id));
 
 function linked(row, listed) {
   if (listed) return null;
-  const waiver = LINK_WAIVERS[row.id];
-  if (waiver?.match(row)) return waiver.reason;
   if (row.control !== 'pass' || row.guarded !== 'fail') return null;
   const found = Object.entries(LINK).find(([, { ids, allowed, notLive }]) => {
     if (!ids.includes(row.id)) return false;
@@ -99,11 +96,6 @@ export function stale(results) {
     ...Object.entries(LINK).map(([reason, { ids }]) => [
       reason,
       ids,
-      (row) => row.transport === 'link',
-    ]),
-    ...Object.keys(LINK_WAIVERS).map((id) => [
-      LINK_WAIVERS[id].reason,
-      [id],
       (row) => row.transport === 'link',
     ]),
   ];

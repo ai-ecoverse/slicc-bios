@@ -190,17 +190,46 @@ async function unguarded(ws) {
   return { send, close: () => socket.close() };
 }
 
+async function until(name, found) {
+  const started = Date.now();
+  for (;;) {
+    const value = await found();
+    if (value) return value;
+    if (Date.now() - started > STEP_MS) throw new Error(`no ${name} in ${STEP_MS} ms`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+}
+
 async function vaultOpen(t, ws) {
   const { send, close } = await unguarded(ws);
-  let targetId;
+  const opened = [];
   t.after(async () => {
-    if (targetId) await send('Target.closeTarget', { targetId }).catch(() => {});
+    for (const targetId of opened) await send('Target.closeTarget', { targetId }).catch(() => {});
     close();
   });
   await send('Storage.setCookies', {
     cookies: [{ name: VAULT_COOKIE, value: 'v', url: VAULT }],
   });
-  ({ targetId } = await send('Target.createTarget', { url: VAULT, background: true }));
+  const { targetId: vaultId } = await send('Target.createTarget', {
+    url: VAULT,
+    background: true,
+  });
+  opened.push(vaultId);
+  await until('the vault page', () => hits.has(`vault.sliccy.ai/page`));
+  const { targetId: sevenId } = await send('Target.createTarget', {
+    url: SEVEN,
+    background: true,
+  });
+  opened.push(sevenId);
+  await until('seven in the driven browser', async () => {
+    const { targetInfos } = await send('Target.getTargets', {});
+    return targetInfos.find(
+      (info) =>
+        info.type === 'page' &&
+        info.targetId === sevenId &&
+        info.url.startsWith(new URL(SEVEN).origin)
+    );
+  });
 }
 
 async function bridge(t, route) {
@@ -411,7 +440,7 @@ async function bridge(t, route) {
         .map(line),
     };
   };
-return {
+  return {
     endpoint: `ws://127.0.0.1:${server.address().port}/?runtime=${encodeURIComponent(runtime)}`,
     driven,
     wire,
@@ -625,16 +654,6 @@ async function rawClient(t, endpoint) {
   return { send, received, leaked, mentions };
 }
 
-async function until(name, found) {
-  const started = Date.now();
-  for (;;) {
-    const value = await found();
-    if (value) return value;
-    if (Date.now() - started > STEP_MS) throw new Error(`no ${name} in ${STEP_MS} ms`);
-    await new Promise((resolve) => setTimeout(resolve, 200));
-  }
-}
-
 async function unreachableFrame(client, frame, ...secrets) {
   const listed = await client.send('Target.getTargets', {});
   assert.equal(listed.error, undefined);
@@ -659,13 +678,13 @@ async function unreachableFrame(client, frame, ...secrets) {
 test('a raw client on the devtools route gets no listing, discovery, target info or attach of an ordinary frame nested in the vault, or of a sandboxed srcdoc frame in seven', {
   timeout: 10 * 60 * 1000,
 }, async (t) => {
-  const opened = await bridge(t);
-  const client = await rawClient(t, `${opened.endpoint}/devtools`);
+  const opened = await bridge(t, 'devtools');
+  const client = await rawClient(t, opened.endpoint);
   assert.equal(
     (await client.send('Target.setDiscoverTargets', { discover: true })).error,
     undefined
   );
-  const plain = await unguarded();
+  const plain = await unguarded(opened.driven);
   t.after(() => plain.close());
   const frames = async (match) =>
     (await plain.send('Target.getTargets', {})).targetInfos.find(
