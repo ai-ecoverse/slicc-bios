@@ -13,8 +13,10 @@ const OUT_OF_REACH = /slicc: refused: seven’s own pages and the vault are out 
 const STEP_MS = 30000;
 const HELD_MS = 5000;
 
+const hits = new Set();
 const fixture = createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
+  hits.add(`${url.hostname}${url.pathname}${url.search}`);
   const html = (body, head = '') => {
     res.writeHead(200, { 'content-type': 'text/html', 'set-cookie': 'stock=1; Path=/' });
     res.end(`<!doctype html><html><head>${head}</head><body>${body}</body></html>`);
@@ -33,6 +35,8 @@ const fixture = createServer((req, res) => {
   if (url.pathname === '/framed-same')
     return html('<iframe id="frame" src="/inner"></iframe>', '<title>framed</title>');
   if (url.pathname === '/inner') return html('<p id="inner">inner</p>', '<title>inner</title>');
+  if (url.pathname === '/vault-nest')
+    return html(`<iframe src="${FRAME}/inner?n=nested-in-vault"></iframe>`);
   res.writeHead(404);
   res.end();
 });
@@ -50,7 +54,8 @@ const chrome = await launch({
 const { port } = await devtools(chrome);
 const browser = await debuggerUrl(port);
 const SEVEN = `${new URL(chrome.url).origin}/os/`;
-const VAULT = `http://vault.sliccy.ai:${fixture.address().port}/page`;
+const VAULT_ORIGIN = `http://vault.sliccy.ai:${fixture.address().port}`;
+const VAULT = `${VAULT_ORIGIN}/page`;
 const protectedUrl = (url) => [SEVEN, VAULT].some((at) => url.startsWith(new URL(at).origin));
 const VAULT_COOKIE = 'stock-vault-secret';
 const vaultCookie = (cookies) =>
@@ -374,7 +379,7 @@ async function bridge(t) {
         .map(line),
     };
   };
-  return { endpoint: `ws://127.0.0.1:${server.address().port}`, wire };
+  return { endpoint: `ws://127.0.0.1:${server.address().port}`, wire, seven };
 }
 
 async function playwright(route, endpoint) {
@@ -541,3 +546,122 @@ for (const route of ['devtools', 'extension'])
       console.log(`STOCK-TRAFFIC ${route} before ${method}\n${lines.join('\n')}`);
     snapshots.clear();
   });
+
+async function rawClient(t, endpoint) {
+  const socket = new WebSocket(endpoint, { maxPayload: 256 * 1024 * 1024 });
+  await new Promise((resolve, reject) => {
+    socket.once('open', resolve);
+    socket.once('error', reject);
+  });
+  t.after(() => socket.close());
+  const received = [];
+  const waiting = new Map();
+  let next = 0;
+  socket.on('message', (data) => {
+    const message = JSON.parse(data.toString());
+    received.push(message);
+    const done = waiting.get(message.id);
+    if (!done) return;
+    waiting.delete(message.id);
+    done(message);
+  });
+  const send = (method, params = {}, sessionId) =>
+    new Promise((resolve) => {
+      next += 1;
+      const id = next;
+      const timer = setTimeout(() => {
+        waiting.delete(id);
+        resolve({ error: { message: `${method}: no answer in ${STEP_MS} ms` } });
+      }, STEP_MS);
+      waiting.set(id, (message) => {
+        clearTimeout(timer);
+        resolve(message);
+      });
+      socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+    });
+  const leaked = (...values) => values.filter((value) => JSON.stringify(received).includes(value));
+  const mentions = (targetId) => JSON.stringify(received).includes(targetId);
+  return { send, received, leaked, mentions };
+}
+
+async function until(name, found) {
+  const started = Date.now();
+  for (;;) {
+    const value = await found();
+    if (value) return value;
+    if (Date.now() - started > STEP_MS) throw new Error(`no ${name} in ${STEP_MS} ms`);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+}
+
+async function unreachableFrame(client, frame, ...secrets) {
+  const listed = await client.send('Target.getTargets', {});
+  assert.equal(listed.error, undefined);
+  assert.ok(
+    !listed.result.targetInfos.some((info) => info.targetId === frame.targetId),
+    'the frame is not listed'
+  );
+  const info = await client.send('Target.getTargetInfo', { targetId: frame.targetId });
+  assert.ok(info.error, 'its target info is refused');
+  const attached = await client.send('Target.attachToTarget', {
+    targetId: frame.targetId,
+    flatten: true,
+  });
+  console.log(
+    `STOCK-FRAME attach ${frame.url}: ${JSON.stringify(attached.error ?? attached.result)}`
+  );
+  assert.ok(attached.error, 'attaching it by id is refused');
+  assert.ok(!client.mentions(frame.targetId), 'its target id never reaches the client');
+  assert.deepEqual(client.leaked(...secrets), []);
+}
+
+test('a raw client on the devtools route gets no listing, discovery, target info or attach of an ordinary frame nested in the vault, or of a sandboxed srcdoc frame in seven', {
+  timeout: 10 * 60 * 1000,
+}, async (t) => {
+  const opened = await bridge(t);
+  const client = await rawClient(t, `${opened.endpoint}/devtools`);
+  assert.equal(
+    (await client.send('Target.setDiscoverTargets', { discover: true })).error,
+    undefined
+  );
+  const plain = await unguarded();
+  t.after(() => plain.close());
+  const frames = async (match) =>
+    (await plain.send('Target.getTargets', {})).targetInfos.find(
+      (info) => info.type === 'iframe' && match(info)
+    );
+
+  await t.test('an ordinary cross-site frame nested in a vault page', async () => {
+    const { targetId } = await plain.send('Target.createTarget', {
+      url: `${VAULT_ORIGIN}/vault-nest`,
+      background: true,
+    });
+    t.after(() => plain.send('Target.closeTarget', { targetId }).catch(() => {}));
+    await until('the nested frame loading', () => hits.has('frame.test/inner?n=nested-in-vault'));
+    const nested = await until('the nested frame as its own target', () =>
+      frames((info) => info.url.startsWith(`${FRAME}/inner?n=nested-in-vault`))
+    );
+    console.log(
+      `STOCK-FRAME nested: ${JSON.stringify({ url: nested.url, parentId: nested.parentId, vault: targetId })}`
+    );
+    await unreachableFrame(client, nested, 'nested-in-vault', 'vault-nest', 'vault.sliccy.ai');
+  });
+
+  await t.test("a sandboxed srcdoc frame in seven's page, the shape of a sprinkle", async () => {
+    const marker = `sprinkle-secret-${Date.now()}`;
+    await opened.seven.evaluate((marker) => {
+      const frame = document.createElement('iframe');
+      frame.setAttribute('sandbox', 'allow-scripts allow-forms');
+      frame.srcdoc = `<p id="inner">${marker}</p>`;
+      document.body.appendChild(frame);
+      return true;
+    }, marker);
+    const sprinkle = await until('the sprinkle frame as its own target', () =>
+      frames((info) => info.url.startsWith('about:srcdoc'))
+    );
+    console.log(
+      `STOCK-SPRINKLE own iframe target: yes ${JSON.stringify({ url: sprinkle.url, parentId: sprinkle.parentId })}`
+    );
+    await unreachableFrame(client, sprinkle, marker);
+  });
+});
