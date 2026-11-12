@@ -65,6 +65,7 @@ function noted(item, notes) {
 
 export function createUpdates({
   ready = false,
+  opens = true,
   now = Date.now,
   developer = false,
   notes = null,
@@ -153,6 +154,7 @@ export function createUpdates({
       await packageHandler(id, action);
     },
     ready: () => ready,
+    opensAtBoot: () => opens,
     get(id) {
       const item = items.find((one) => one.id === id);
       return item && shown(item);

@@ -399,7 +399,7 @@ document.addEventListener('visibilitychange', () => board.show(visible()));
 const claimed = await claim();
 document.documentElement.dataset.tools = claimed.owner ? 'installing' : 'elsewhere';
 const notes = createNotes({ releases: createReleases() });
-const updates = createUpdates({ developer: true, notes });
+const updates = createUpdates({ developer: true, notes, opens: !(await agentStartable()) });
 const notices = createNotices();
 reportRepairs(notices);
 reportStopped(notices);
