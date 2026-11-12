@@ -297,3 +297,56 @@ test('on the extension route, a tab adopted while its page had no URL is refused
   guarded.close?.();
   transport.close();
 });
+
+test('on the extension route, a page already placed under a tab that moves to the vault gives the tab no vault URL or title, and the tab is cut', {
+  timeout: 30000,
+}, async () => {
+  const pages = { moving: { type: 'page', url: ORDINARY, title: 'Ordinary' } };
+  const cdp = extension(pages);
+  const transport = extensionConnection(cdp, 20);
+  const { guarded, got, send, leaked, attachedTabs } = drive(transport, {
+    kind: 'extension',
+    version: '7.10.0',
+  });
+  await send('Target.setAutoAttach', {
+    autoAttach: true,
+    waitForDebuggerOnStart: true,
+    flatten: true,
+    filter: PUPPETEER_TABS,
+  });
+  for (let n = 0; n < 200 && !attachedTabs().length; n++) await pause(5);
+  const tab = attachedTabs()[0]?.params.sessionId;
+  assert.ok(tab, 'the ordinary page got a tab');
+  await send(
+    'Target.setAutoAttach',
+    { autoAttach: true, waitForDebuggerOnStart: true, flatten: true, filter: [{ type: 'page' }] },
+    tab
+  );
+  const page = () =>
+    got.find(
+      (message) =>
+        message.method === 'Target.attachedToTarget' &&
+        message.sessionId === tab &&
+        message.params.targetInfo.type === 'page'
+    );
+  for (let n = 0; n < 400 && !page(); n++) await pause(5);
+  assert.ok(page(), 'the ordinary page was placed under the tab');
+  const before = await send('Target.getTargetInfo', {}, tab);
+  assert.equal(before.result?.targetInfo.url, ORDINARY, 'a fresh ordinary read shows the URL');
+  pages.moving = {
+    type: 'page',
+    url: 'https://vault.sliccy.ai/unlock?token=abc',
+    title: 'Vault: unlock',
+  };
+  const info = await send('Target.getTargetInfo', {}, tab);
+  assert.equal(info.error?.message, PROTECTED, JSON.stringify(info));
+  const again = await send(
+    'Target.setAutoAttach',
+    { autoAttach: true, flatten: true, filter: [{ type: 'page' }] },
+    tab
+  );
+  assert.ok(again.error, `the cut tab takes no more commands: ${JSON.stringify(again)}`);
+  assert.deepEqual(leaked('Vault: unlock', 'vault.sliccy.ai', 'token=abc'), []);
+  guarded.close?.();
+  transport.close();
+});

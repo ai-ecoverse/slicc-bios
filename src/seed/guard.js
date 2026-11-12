@@ -820,6 +820,7 @@ class Guard {
     this.tabSessions = new Set();
     this.tabTargets = new Map();
     this.paused = new Set();
+    this.freshReads = new WeakSet();
     this.tabPages = new Map();
     this.initScripts = new Map();
     this.pageAutoAttach = false;
@@ -3642,7 +3643,7 @@ class Guard {
       const info = params.targetInfo ?? {};
       this.notePageUnderTab(message);
       if (await this.skippedAttachment(message)) return true;
-      if (params.waitingForDebugger) void this.resumeArmed(info, params.sessionId);
+      if (params.waitingForDebugger) void this.resumeArmed(info, params.sessionId, sessionId);
       if (!info.url && (info.type === 'page' || info.type === 'iframe')) {
         void this.blank(message);
         return true;
@@ -3694,7 +3695,7 @@ class Guard {
     const info = params.targetInfo ?? {};
     if (await this.privateAttachment(info.targetId, params.sessionId)) return true;
     if (info.type !== 'tab') return false;
-    if (params.waitingForDebugger) this.paused.add(params.sessionId);
+    if (params.waitingForDebugger) this.pausedTab(params.sessionId);
     return this.tabAttached(message);
   }
 
@@ -4634,12 +4635,15 @@ class Guard {
     );
   }
 
-  masked(info, stranded = false) {
-    return this.redact(this.masking(info, stranded)).params;
+  masked(info, stranded = false, fresh = false) {
+    return this.redact(this.masking(info, stranded, fresh)).params;
   }
 
-  masking(info, stranded = false) {
-    if (info.type === 'tab' && !this.ordinaryTab(info.targetId)) {
+  masking(info, stranded = false, fresh = false) {
+    if (
+      info.type === 'tab' &&
+      !(fresh && this.ordinaryTab(info.targetId) && !this.is.url(info.url) && !this.is.target(info))
+    ) {
       const { openerId, openerFrameId, ...bare } = info;
       return { ...bare, url: '', title: '' };
     }
@@ -5081,7 +5085,13 @@ class Guard {
     if (proof && !this.fresh(proof)) return this.refuse(was);
     this.deliver({
       ...message,
-      result: { targetInfo: this.masked(message.result.targetInfo, Boolean(proof)) },
+      result: {
+        targetInfo: this.masked(
+          message.result.targetInfo,
+          Boolean(proof),
+          this.freshReads.delete(was)
+        ),
+      },
     });
   }
 
@@ -5641,7 +5651,8 @@ class Guard {
       targetId: params.targetInfo.targetId,
       session: params.sessionId,
     });
-    if (this.paused.has(sessionId)) void this.resumeArmed(params.targetInfo, sessionId);
+    if (this.paused.has(sessionId))
+      void this.resumeArmed(params.targetInfo, sessionId, this.sessions.get(sessionId)?.parent);
   }
 
   attachmentShown(message, info) {
@@ -5651,16 +5662,38 @@ class Guard {
       void this.call('Runtime.runIfWaitingForDebugger', {}, session);
   }
 
-  async resumeArmed(info, sessionId) {
+  pausedTab(sessionId) {
     this.paused.add(sessionId);
-    if (this.is.url(info.url) || this.is.target(info) || isHeld(info.targetId)) return;
+    this.after(NAV_MS, () => {
+      if (this.tabPages.get(sessionId)?.session || !this.paused.delete(sessionId)) return;
+      if (!this.blocked.has(sessionId))
+        void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
+    });
+  }
+
+  after(ms, work) {
+    const timer = setTimeout(work, ms);
+    timer.unref?.();
+  }
+
+  async resumeArmed(info, sessionId, parent) {
+    this.paused.add(sessionId);
+    if (this.is.url(info.url) || this.is.target(info) || isHeld(info.targetId)) {
+      this.after(ANSWER_MS, () => {
+        if (this.paused.has(sessionId) && !this.blocked.has(sessionId)) this.cut(sessionId, parent);
+      });
+      return;
+    }
+    let armed = true;
     if (NAV_TYPES.has(info.type)) {
       this.learn(info);
       this.touch(info.targetId, !info.url);
       const nav = this.navs.get(info.targetId);
-      if (nav) await this.within(nav.fetched, ANSWER_MS);
+      if (nav) armed = await this.within(nav.fetched, ANSWER_MS);
     }
-    if (!this.paused.delete(sessionId) || this.blocked.has(sessionId)) return;
+    if (!this.paused.has(sessionId) || this.blocked.has(sessionId)) return;
+    if (armed === false) return this.cut(sessionId, parent, false);
+    this.paused.delete(sessionId);
     void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
   }
 
@@ -5674,10 +5707,10 @@ class Guard {
   async heldTab(sessionId) {
     const page = this.tabPages.get(sessionId)?.targetId;
     if (page === undefined) return false;
-    if (INHERITING.test(this.targets.get(page)?.url ?? '')) {
-      const fresh = await this.answered(this.call('Target.getTargetInfo', { targetId: page }));
-      this.learn(fresh?.result?.targetInfo);
-    }
+    const fresh = (await this.answered(this.call('Target.getTargetInfo', { targetId: page })))
+      ?.result?.targetInfo;
+    if (fresh?.targetId !== page) return true;
+    this.learn(fresh);
     return isHeld(page) || (await this.target(page));
   }
 
@@ -5703,6 +5736,8 @@ class Guard {
       this.cut(sessionId, this.sessions.get(sessionId)?.parent, false);
       return this.refuse(message, PROTECTED);
     }
+    if (method === 'Target.getTargetInfo' && this.tabPages.get(sessionId)?.session)
+      this.freshReads.add(message);
     return this.pass(message);
   }
 
