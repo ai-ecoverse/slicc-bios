@@ -11,6 +11,7 @@ import {
   runTag,
   signalGroup,
   startNotice,
+  validPgid,
 } from './approvals-run.js';
 
 export {
@@ -23,6 +24,7 @@ export {
   runTag,
   SUDO_RUN_PROTOCOL,
   tooOld,
+  validPgid,
 } from './approvals-run.js';
 
 const CHANNEL = 'slicc-approvals';
@@ -199,6 +201,27 @@ function watchEnded({
     });
 }
 
+async function finishStop(ctx, id, record, baseRun, started) {
+  const { held, kernel, remember, runs, now } = ctx;
+  const running = { ...baseRun, state: 'running', pid: started.pid };
+  try {
+    await signalGroup(kernel(), started.pgid);
+  } catch (error) {
+    held.set(id, { ...(held.get(id) ?? {}), stop: false, pgid: started.pgid });
+    runs.set(id, { pgid: started.pgid, ended: started.ended });
+    remember(
+      { ...record, runnable: true, run: { ...running, error: messageOf(error) } },
+      { pgid: started.pgid }
+    );
+    return running;
+  }
+  held.set(id, { ...(held.get(id) ?? {}), stop: false, pgid: started.pgid });
+  const stopped = { ...baseRun, state: 'stopped', pid: started.pid, endedAt: now() };
+  remember({ ...record, runnable: true, run: stopped }, { pgid: started.pgid });
+  runs.delete(id);
+  return stopped;
+}
+
 async function runOwned(ctx, id) {
   const { listed, held, gatesOf, remember, kernel, runner, runs, tell, now } = ctx;
   const record = listed().find((entry) => entry.approval.id === id);
@@ -229,15 +252,34 @@ async function runOwned(ctx, id) {
       stderr: paths.stderr,
       tag: runTag(id),
     });
+    if (held.get(id)?.stop) {
+      const stopped = await finishStop(ctx, id, record, baseRun, started);
+      watchEnded({
+        started,
+        id,
+        record,
+        running: stopped,
+        paths,
+        replay,
+        remember,
+        listed,
+        runs,
+        tell,
+        now,
+      });
+      return;
+    }
     const running = { ...baseRun, state: 'running', pid: started.pid };
     remember({ ...record, runnable: true, run: running }, { replay, pgid: started.pgid });
     runs.set(id, { pgid: started.pgid, ended: started.ended });
     watchEnded({ started, id, record, running, paths, replay, remember, listed, runs, tell, now });
   } catch (error) {
+    held.set(id, { ...(held.get(id) ?? {}), stop: false });
     remember(
       { ...record, run: { ...baseRun, state: 'failed', endedAt: now(), error: messageOf(error) } },
       { replay }
     );
+    runs.delete(id);
     void tell(failNotice(record, error));
     throw new Error(messageOf(error));
   }
@@ -249,10 +291,21 @@ async function stopOwned(ctx, id) {
   if (!record?.run || (record.run.state !== 'running' && record.run.state !== 'starting'))
     throw new Error("This request isn't running.");
   const pgid = runs.get(id)?.pgid ?? held.get(id)?.pgid;
+  if (record.run.state === 'starting' && !validPgid(pgid)) {
+    held.set(id, { ...(held.get(id) ?? {}), stop: true });
+    return;
+  }
   try {
     await signalGroup(kernel(), pgid);
-  } catch {}
-  remember({ ...record, run: { ...record.run, state: 'stopped', endedAt: now() } });
+  } catch (error) {
+    remember(
+      { ...record, run: { ...record.run, state: 'running', error: messageOf(error) } },
+      { pgid }
+    );
+    throw new Error(messageOf(error));
+  }
+  const { error: _error, ...clean } = record.run;
+  remember({ ...record, run: { ...clean, state: 'stopped', endedAt: now() } });
   runs.delete(id);
 }
 

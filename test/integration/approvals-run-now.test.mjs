@@ -234,6 +234,131 @@ test('stopRun signals the running group', async () => {
   assert.equal(record().run.state, 'stopped');
 });
 
+test('stop during starting waits for sudoRun then signals the new pgid', async () => {
+  const killed = [];
+  let releaseRun;
+  const gate = new Promise((resolve) => {
+    releaseRun = resolve;
+  });
+  let releaseEnd;
+  const ended = new Promise((resolve) => {
+    releaseEnd = resolve;
+  });
+  const approvals = createApprovals({
+    channel: lone(),
+    kernel: () => ({
+      protocol: SUDO_RUN_PROTOCOL,
+      sudoRun: async () => {
+        await gate;
+        return {
+          pid: 21,
+          pgid: 21,
+          ended: ended.then(() => ({ status: 143, signal: 'SIGTERM' })),
+        };
+      },
+      kill: async (pid) => {
+        killed.push(pid);
+        releaseEnd();
+      },
+      run: async () => ({ status: 0, stdout: '', stderr: '' }),
+    }),
+  });
+  approvals.own();
+  const { id, record } = await timedOut(approvals, agentReq({ id: 'sudo-pending-stop' }));
+  const started = approvals.port.run(id);
+  for (let i = 0; i < 50 && record()?.run?.state !== 'starting'; i += 1) await turn();
+  assert.equal(record().run.state, 'starting');
+  await approvals.port.stopRun(id);
+  assert.equal(record().run.state, 'starting');
+  assert.deepEqual(killed, []);
+  releaseRun();
+  await started;
+  for (let i = 0; i < 50 && record()?.run?.state !== 'stopped'; i += 1) await turn();
+  assert.deepEqual(killed, [-21]);
+  assert.equal(record().run.state, 'stopped');
+  assert.equal(record().run.pid, 21);
+});
+
+test('a failed stop stays running with the error and a retry can succeed', async () => {
+  const kills = [];
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const approvals = createApprovals({
+    channel: lone(),
+    kernel: () => ({
+      protocol: SUDO_RUN_PROTOCOL,
+      sudoRun: async () => ({
+        pid: 17,
+        pgid: 17,
+        ended: gate.then(() => ({ status: 143, signal: 'SIGTERM' })),
+      }),
+      run: async (argv) => {
+        if (argv[0] === 'mkdir') return { status: 0, stdout: '', stderr: '' };
+        kills.push(argv);
+        if (kills.length === 1) return { status: 1, stderr: 'kill: (17) - No such process' };
+        release();
+        return { status: 0, stdout: '', stderr: '' };
+      },
+    }),
+  });
+  approvals.own();
+  const { id, record } = await timedOut(approvals, agentReq({ id: 'sudo-stop-retry' }));
+  const running = approvals.port.run(id);
+  for (let i = 0; i < 50 && record()?.run?.state !== 'running'; i += 1) await turn();
+  await assert.rejects(approvals.port.stopRun(id), /No such process/);
+  assert.equal(record().run.state, 'running');
+  assert.match(record().run.error, /No such process/);
+  assert.equal(record().run.pid, 17);
+  await approvals.port.stopRun(id);
+  await running.catch(() => undefined);
+  assert.equal(kills.length, 2);
+  assert.equal(record().run.state, 'stopped');
+  assert.equal(record().run.error, undefined);
+});
+
+test('a pending stop whose kill fails keeps the run running with the error', async () => {
+  const kills = [];
+  let releaseRun;
+  const gate = new Promise((resolve) => {
+    releaseRun = resolve;
+  });
+  const approvals = createApprovals({
+    channel: lone(),
+    kernel: () => ({
+      protocol: SUDO_RUN_PROTOCOL,
+      sudoRun: async () => {
+        await gate;
+        return {
+          pid: 23,
+          pgid: 23,
+          ended: new Promise(() => {}),
+        };
+      },
+      run: async (argv) => {
+        if (argv[0] === 'mkdir') return { status: 0, stdout: '', stderr: '' };
+        kills.push(argv);
+        return { status: 1, stderr: 'kill: Operation not permitted' };
+      },
+    }),
+  });
+  approvals.own();
+  const { id, record } = await timedOut(approvals, agentReq({ id: 'sudo-pending-kill-fail' }));
+  const started = approvals.port.run(id);
+  for (let i = 0; i < 50 && record()?.run?.state !== 'starting'; i += 1) await turn();
+  await approvals.port.stopRun(id);
+  releaseRun();
+  await started;
+  for (let i = 0; i < 50 && record()?.run?.state !== 'running'; i += 1) await turn();
+  assert.equal(record().run.state, 'running');
+  assert.match(record().run.error, /Operation not permitted/);
+  assert.equal(kills.length, 1);
+  await assert.rejects(approvals.port.stopRun(id), /Operation not permitted/);
+  assert.equal(record().run.state, 'running');
+  assert.equal(kills.length, 2);
+});
+
 test('a seat without run gets history only', async () => {
   const licks = [];
   const approvals = createApprovals({

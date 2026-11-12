@@ -97,10 +97,20 @@ export async function ensureDir(client, user, dir) {
   if ((await made.exited) !== 0) throw new Error(`can't create ${dir} as ${user}`);
 }
 
+export function validPgid(pgid) {
+  return Number.isInteger(pgid) && pgid > 1;
+}
+
 export async function signalGroup(client, pgid) {
-  if (pgid == null) return;
-  if (typeof client?.kill === 'function') await client.kill(-pgid);
-  else if (typeof client?.run === 'function') await client.run(['kill', '-TERM', `-${pgid}`]);
+  if (!validPgid(pgid)) throw new Error(`can't stop process group ${pgid}`);
+  if (typeof client?.kill === 'function') {
+    await client.kill(-pgid);
+    return;
+  }
+  if (typeof client?.run !== 'function')
+    throw new Error("this client can't signal a process group");
+  const { status, stderr } = await client.run(['kill', '-TERM', `-${pgid}`]);
+  if (status !== 0) throw new Error(stderr?.trim() || `kill exited ${status}`);
 }
 
 export function startNotice(record, paths) {
