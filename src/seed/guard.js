@@ -825,6 +825,7 @@ class Guard {
     this.opening = new Map();
     this.loading = new Map();
     this.revisions = new Map();
+    this.documentRevisions = new Map();
     this.recoveries = new WeakMap();
     this.next = GUARD_IDS;
     this.listedEvents = 0;
@@ -1008,6 +1009,8 @@ class Guard {
     const placementRevision = this.revisions.get(placement);
     const nav = this.navSessions.get(sessionId);
     const revision = this.revisions.get(nav?.targetId);
+    const placementDocument = this.documentRevisions.get(placement);
+    const navDocument = this.documentRevisions.get(nav?.targetId);
     const work = new Promise((resolve) => {
       const id = ++this.next;
       let timer;
@@ -1018,14 +1021,17 @@ class Guard {
           if (!nav) await this.rememberExistingNavError(message.result?.frameTree, sessionId);
         }
         const current = this.scopes.get(placement)?.sessionId;
-        const placementOk =
-          placement === undefined || this.revisions.get(placement) === placementRevision;
-        const navOk = !nav?.targetId || this.revisions.get(nav.targetId) === revision;
+        const revisionOk =
+          method === 'Page.getFrameTree'
+            ? (placement === undefined ||
+                this.documentRevisions.get(placement) === placementDocument) &&
+              (!nav?.targetId || this.documentRevisions.get(nav.targetId) === navDocument)
+            : (placement === undefined || this.revisions.get(placement) === placementRevision) &&
+              (!nav?.targetId || this.revisions.get(nav.targetId) === revision);
         const fresh = deadline === undefined || Date.now() < deadline;
         if (
           fresh &&
-          placementOk &&
-          navOk &&
+          revisionOk &&
           (placement === undefined || current === undefined || current === sessionId)
         )
           this.recordPlacement(placement, method, message.result);
@@ -5838,6 +5844,12 @@ class Guard {
         STRUCTURE.has(message.method))
     )
       this.revisions.set(targetId, {});
+    if (
+      targetId &&
+      (message.method === 'Page.frameNavigated' ||
+        message.method === 'Page.navigatedWithinDocument')
+    )
+      this.documentRevisions.set(targetId, {});
     if (targetId) this.reviseDebuggerLease(targetId, message.method, message.params);
     if (message.method !== 'Page.frameNavigated' || !message.params?.frame) return;
     const { frame } = message.params;

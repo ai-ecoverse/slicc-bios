@@ -503,6 +503,104 @@ test('a stale getFrameTree and ordinary target info do not clear a vault frame c
   assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'stale-vault-tree'), false);
 });
 
+test('a getFrameTree vault answer after targetInfoChanged still refuses close', async (t) => {
+  const wire = protocol(t);
+  const entry = wire.target('tree-vault');
+  await wire.attach('tree-vault');
+  await flush();
+  const held = [];
+  wire.hold((message) => {
+    if (message.method === 'Page.getFrameTree' && message.id >= 2 ** 30) {
+      held.push(message);
+      return true;
+    }
+  });
+  wire.emit({
+    method: 'Page.frameAttached',
+    sessionId: 'guard-tree-vault',
+    params: { frameId: 'tree-vault-child', parentFrameId: 'tree-vault' },
+  });
+  await flush();
+  entry.info.url = ordinary;
+  wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: entry.info } });
+  await flush();
+  assert.ok(held.length > 0);
+  for (const message of held.splice(0)) {
+    wire.release(message, {
+      result: {
+        frameTree: {
+          frame: {
+            id: 'tree-vault',
+            url: 'https://vault.sliccy.ai/app',
+            securityOrigin: 'https://vault.sliccy.ai',
+          },
+        },
+      },
+    });
+  }
+  await flush();
+  const mark = wire.sent.length;
+  const answer = await wire.send('Target.closeTarget', { targetId: 'tree-vault' });
+  assert.equal(answer.error?.message, PROTECTED);
+  assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'tree-vault'), false);
+});
+
+test('a getFrameTree issued before leaving the vault does not re-pin after the leave', async (t) => {
+  const wire = protocol(t);
+  const entry = wire.target('drop-vault-tree');
+  await wire.attach('drop-vault-tree');
+  await leave(wire, entry, 'drop-vault-tree', 'https://vault.sliccy.ai/app');
+  const held = [];
+  wire.hold((message) => {
+    if (message.method === 'Page.getFrameTree' && message.id >= 2 ** 30) {
+      held.push(message);
+      return true;
+    }
+  });
+  wire.emit({
+    method: 'Page.frameAttached',
+    sessionId: 'guard-drop-vault-tree',
+    params: { frameId: 'drop-vault-child', parentFrameId: 'drop-vault-tree' },
+  });
+  await flush();
+  assert.ok(held.length > 0);
+  entry.info.url = ordinary;
+  entry.tree.frame = {
+    id: 'drop-vault-tree',
+    url: ordinary,
+    securityOrigin: new URL(ordinary).origin,
+  };
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: 'guard-drop-vault-tree',
+    params: { frame: entry.tree.frame },
+  });
+  wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: entry.info } });
+  await flush();
+  const stale = held.splice(0);
+  wire.hold(() => false);
+  for (const message of stale) {
+    wire.release(message, {
+      result: {
+        frameTree: {
+          frame: {
+            id: 'drop-vault-tree',
+            url: 'https://vault.sliccy.ai/app',
+            securityOrigin: 'https://vault.sliccy.ai',
+          },
+        },
+      },
+    });
+  }
+  await flush();
+  const mark = wire.sent.length;
+  assert.equal(
+    (await wire.send('Target.closeTarget', { targetId: 'drop-vault-tree' })).error,
+    undefined
+  );
+  assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'drop-vault-tree'), true);
+});
+
 test('an opaque blank stays unclosable while its opener frame is still the vault', async (t) => {
   const wire = protocol(t);
   const opener = wire.target('frame-opener', 'page', plainFrame('frame-opener'));
