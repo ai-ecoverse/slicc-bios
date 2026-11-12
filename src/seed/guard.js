@@ -47,7 +47,22 @@ const HOLD_MS = 2000;
 const BLANK_MS = 10000;
 const ERROR_PAGE = 'chrome-error://chromewebdata/';
 const SEVEN_HOST = new RegExp(catalog.seven.originHostPattern);
+const INNER = new Set(catalog.protectedOrigins.innerSchemes);
 const bare = (url) => url.split('#')[0];
+const unwrap = (url) => {
+  if (typeof url !== 'string' || !URL.canParse(url)) return { text: url, sealed: false };
+  let text = url;
+  for (let i = 0; i < 8; i += 1) {
+    const parsed = new URL(text);
+    if (!INNER.has(parsed.protocol.slice(0, -1))) return { text, sealed: false };
+    text = parsed.href.slice(parsed.protocol.length);
+    if (!URL.canParse(text)) return { text: url, sealed: true };
+  }
+  return {
+    text,
+    sealed: INNER.has(new URL(text).protocol.slice(0, -1)),
+  };
+};
 const SCRUB_MS = 5000;
 const CLOSE_MS = 5000;
 export const BLANKED = 'data:text/html,%3Ctitle%3Eblocked%3C%2Ftitle%3E';
@@ -810,6 +825,7 @@ class Guard {
     this.opening = new Map();
     this.loading = new Map();
     this.revisions = new Map();
+    this.documentRevisions = new Map();
     this.recoveries = new WeakMap();
     this.next = GUARD_IDS;
     this.listedEvents = 0;
@@ -993,6 +1009,8 @@ class Guard {
     const placementRevision = this.revisions.get(placement);
     const nav = this.navSessions.get(sessionId);
     const revision = this.revisions.get(nav?.targetId);
+    const placementDocument = this.documentRevisions.get(placement);
+    const navDocument = this.documentRevisions.get(nav?.targetId);
     const work = new Promise((resolve) => {
       const id = ++this.next;
       let timer;
@@ -1003,9 +1021,17 @@ class Guard {
           if (!nav) await this.rememberExistingNavError(message.result?.frameTree, sessionId);
         }
         const current = this.scopes.get(placement)?.sessionId;
+        const revisionOk =
+          method === 'Page.getFrameTree'
+            ? (placement === undefined ||
+                this.documentRevisions.get(placement) === placementDocument) &&
+              (!nav?.targetId || this.documentRevisions.get(nav.targetId) === navDocument)
+            : (placement === undefined || this.revisions.get(placement) === placementRevision) &&
+              (!nav?.targetId || this.revisions.get(nav.targetId) === revision);
+        const fresh = deadline === undefined || Date.now() < deadline;
         if (
-          (deadline === undefined ||
-            (Date.now() < deadline && this.revisions.get(placement) === placementRevision)) &&
+          fresh &&
+          revisionOk &&
           (placement === undefined || current === undefined || current === sessionId)
         )
           this.recordPlacement(placement, method, message.result);
@@ -1059,18 +1085,40 @@ class Guard {
       this.errored.set(info.targetId, remembered.url);
     }
     const failed = info.url !== undefined && this.errored.get(info.targetId) === bare(info.url);
+    const { url, reported } = this.learnUrls(info, known, failed);
+    const blank = inherits(url) || url === '';
     this.targets.set(info.targetId, {
-      url: failed ? ERROR_PAGE : (info.url ?? ''),
+      url,
       type: info.type ?? known?.type,
-      openerId: info.openerId,
+      openerId: info.openerId ?? (blank ? known?.openerId : undefined),
       parentId: info.parentId ?? known?.parentId,
       was: known?.was || known?.guarded || false,
       guarded: known?.guarded || false,
       real: known?.real || false,
       context: info.browserContextId ?? known?.context,
-      reported: info.url ?? known?.reported,
+      reported,
       info,
     });
+  }
+
+  learnUrls(info, known, failed) {
+    const observed = typeof info.url === 'string' && URL.canParse(info.url);
+    const url = failed ? ERROR_PAGE : (info.url ?? '');
+    const reported = info.url ?? known?.reported;
+    const framed = this.frames.get(this.frameRoot(info.targetId));
+    if (observed && !this.kept(info.url)) {
+      if (typeof framed === 'string' && this.kept(framed) && known)
+        return this.rememberKeptUrls(known, url, reported);
+      return { url: failed ? ERROR_PAGE : info.url, reported: info.url };
+    }
+    if (!observed && known) return this.rememberKeptUrls(known, url, reported);
+    return { url, reported };
+  }
+
+  rememberKeptUrls(known, url, reported) {
+    if (this.kept(known.url) && !this.kept(url)) url = known.url;
+    if (this.kept(known.reported) && !this.kept(reported ?? '')) reported = known.reported;
+    return { url, reported };
   }
 
   async lookup(targetId) {
@@ -1613,8 +1661,7 @@ class Guard {
     scope.ready = scope.tree && !scope.failed && !scope.pending;
     if (this.targets.get(targetId)?.type === 'iframe' && !scope.parent) scope.ready = false;
     for (const frame of all) {
-      const url = this.framed(frame);
-      this.frames.set(frame.id, url);
+      this.frames.set(frame.id, this.recordFrameUrl(frame, this.frames.get(frame.id)));
       if (frame.parentId) this.parents.set(frame.id, frame.parentId);
     }
     const parentRoot = this.scopes.get(scope.parent)?.root;
@@ -1985,8 +2032,11 @@ class Guard {
 
   noteChildTargetInfo(info) {
     if (!info?.targetId) return;
-    if (this.scopes.has(info.targetId) && this.is.url(info.url))
-      this.frames.set(info.targetId, info.url);
+    if (this.scopes.has(info.targetId) && this.is.url(info.url)) {
+      const previous = this.frames.get(info.targetId);
+      if (!(typeof previous === 'string' && this.kept(previous) && !this.kept(info.url)))
+        this.frames.set(info.targetId, info.url);
+    }
     if (
       typeof info.url === 'string' &&
       info.url &&
@@ -2097,7 +2147,7 @@ class Guard {
     }
     scope.frames.add(frame.id);
     if (frame.parentId && frame.id !== scope.root) scope.remoteOwners.delete(frame.id);
-    this.frames.set(frame.id, this.framed(frame));
+    this.frames.set(frame.id, this.committedFrameUrl(frame));
     if (typeof frame.loaderId === 'string' && frame.loaderId) {
       const previous = this.frameLoaders.get(frame.id);
       this.frameLoaders.set(frame.id, frame.loaderId);
@@ -3631,7 +3681,7 @@ class Guard {
 
   walked({ method, params = {}, sessionId }) {
     if (method === 'Page.frameNavigated' && params.frame) {
-      this.frames.set(params.frame.id, this.framed(params.frame));
+      this.frames.set(params.frame.id, this.committedFrameUrl(params.frame));
       if (params.frame.parentId) this.parents.set(params.frame.id, params.frame.parentId);
       const targetId = this.sessions.get(sessionId)?.targetId;
       if (!params.frame.parentId && targetId && this.targets.has(targetId)) {
@@ -3869,7 +3919,7 @@ class Guard {
     const nav = this.navs.get(targetId);
     const root = this.frameRoots.get(targetId);
     if (committed) this.recoverError(frame, sessionId, targetId);
-    this.frames.set(frame.id, this.framed(frame));
+    this.frames.set(frame.id, this.committedFrameUrl(frame));
     if (this.protectedFrame(frame) && frame.url?.startsWith('chrome-error:')) {
       this.errorFrames.add(frame.id);
       this.errorUrls.set(frame.id, frame.unreachableUrl);
@@ -4003,6 +4053,28 @@ class Guard {
   framed(frame) {
     const named = [frame.unreachableUrl, frame.securityOrigin].find((url) => this.is.url(url));
     return named ?? frame.url ?? '';
+  }
+
+  committedFrameUrl(frame) {
+    const document = typeof frame.url === 'string' && frame.url ? frame.url : '';
+    if (document && !inherits(document)) return document;
+    return this.framed(frame);
+  }
+
+  recordFrameUrl(frame, previous) {
+    const committed = this.committedFrameUrl(frame);
+    const document = typeof frame.url === 'string' && frame.url ? frame.url : '';
+    if (document && this.kept(document)) return document;
+    if (document?.startsWith('chrome-error:')) return document;
+    if (typeof previous === 'string' && this.kept(previous)) return previous;
+    if (
+      document &&
+      !this.kept(document) &&
+      !inherits(document) &&
+      !document.startsWith('chrome-error:')
+    )
+      return document;
+    return committed;
   }
 
   tree({ frame, childFrames, resources, ...rest }, sessionId) {
@@ -5398,12 +5470,19 @@ class Guard {
   async reachTarget(message) {
     const { method, params = {} } = message;
     if (params.targetId === undefined) return false;
+    if (
+      method === 'Target.closeTarget' &&
+      this.targets.has(params.targetId) &&
+      this.documentKept(params.targetId)
+    )
+      return true;
     const limit =
       method === 'Target.attachToTarget' && this.navs.get(params.targetId)?.admitted
         ? PROBE_WAIT
         : ANSWER_MS;
     const guarded = await this.current(params.targetId, limit);
     const target = this.targets.get(params.targetId);
+    if (method === 'Target.closeTarget' && this.documentKept(params.targetId)) return true;
     if (method === 'Target.attachToTarget' && !guarded) {
       this.touch(params.targetId);
       await this.navs.get(params.targetId)?.ready;
@@ -5416,6 +5495,7 @@ class Guard {
     if (!guarded && !error) return false;
     const proof = STRANDED.has(method) ? await this.stranded(params.targetId) : null;
     if (!proof) return !this.closable(message);
+    if (method === 'Target.closeTarget' && !this.closable(message)) return true;
     this.recoveries.set(message, proof);
     return false;
   }
@@ -5489,23 +5569,114 @@ class Guard {
 
   closable({ method, params }) {
     const target = this.targets.get(params?.targetId);
-    return method === 'Target.closeTarget' && target?.type === 'page' && !this.kept(target.url);
+    return (
+      method === 'Target.closeTarget' &&
+      target?.type === 'page' &&
+      !this.documentKept(params.targetId)
+    );
   }
 
-  kept(url) {
-    if (!URL.canParse(url) || url.startsWith('chrome-error:')) return false;
-    const { protocol, hostname, port, pathname, origin } = new URL(url);
+  sevenHost(url) {
+    if (typeof url !== 'string' || !URL.canParse(url)) return false;
+    const { protocol, hostname, port, origin } = new URL(url);
     if (protocol !== 'http:' && protocol !== 'https:') return false;
     const label = hostname.replace(/\.$/, '').match(SEVEN_HOST)?.[1];
     if (label === 'vault' || label?.startsWith('vault-')) return true;
-    const seven =
+    return (
       this.owned.some((text) => URL.canParse(text) && new URL(text).origin === origin) ||
       (protocol === `${catalog.seven.originScheme}:` &&
         port === '' &&
         label !== undefined &&
         !catalog.seven.excludedLabels.includes(label) &&
-        !catalog.seven.excludedLabelPrefixes.some((prefix) => label.startsWith(prefix)));
-    return seven && pathname.startsWith('/os/') && pathname !== '/os/callback.html';
+        !catalog.seven.excludedLabelPrefixes.some((prefix) => label.startsWith(prefix)))
+    );
+  }
+
+  kept(url) {
+    const { text, sealed } = unwrap(url);
+    if (sealed) return true;
+    if (typeof text !== 'string' || !URL.canParse(text) || text.startsWith('chrome-error:'))
+      return false;
+    if (this.vaultHost(text)) return true;
+    if (!this.sevenHost(text)) return false;
+    let path;
+    try {
+      path = decodeURIComponent(new URL(text).pathname);
+    } catch {
+      return true;
+    }
+    return path.startsWith('/os/') && path !== '/os/callback.html';
+  }
+
+  vaultHost(url) {
+    if (typeof url !== 'string' || !URL.canParse(url)) return false;
+    const label = new URL(url).hostname.replace(/\.$/, '').match(SEVEN_HOST)?.[1];
+    return label === 'vault' || Boolean(label?.startsWith('vault-'));
+  }
+
+  pendingKept(targetId) {
+    if (!targetId) return false;
+    let saw = false;
+    for (const [id, open] of this.opening) {
+      if (this.scopeTarget(id) !== targetId && id !== targetId) continue;
+      saw = true;
+      if (typeof open?.url === 'string' && this.kept(open.url)) return true;
+    }
+    return this.pendingTarget(targetId) && !saw;
+  }
+
+  frameRoot(targetId) {
+    return this.frameRoots.get(targetId) ?? this.scopes.get(targetId)?.root ?? targetId;
+  }
+
+  frameCommitted(targetId) {
+    return this.frames.get(this.frameRoot(targetId));
+  }
+
+  leftKept(framed) {
+    return (
+      typeof framed === 'string' &&
+      framed !== '' &&
+      !this.kept(framed) &&
+      !inherits(framed) &&
+      !framed.startsWith('chrome-error:')
+    );
+  }
+
+  scrubbedTarget(target) {
+    return (
+      target.url?.startsWith('chrome-error:') &&
+      (typeof target.reported !== 'string' ||
+        target.reported.startsWith('chrome-error:') ||
+        !this.kept(target.reported))
+    );
+  }
+
+  openerKept(target) {
+    if (!target.openerId) return false;
+    const opener = this.targets.get(target.openerId);
+    if (!opener) return true;
+    if (this.kept(opener.url) || this.kept(opener.reported)) return true;
+    const openerFrame = this.frameCommitted(target.openerId);
+    return typeof openerFrame === 'string' && this.kept(openerFrame);
+  }
+
+  documentKept(targetId) {
+    const target = this.targets.get(targetId);
+    if (!target) return true;
+    const framed = this.frameCommitted(targetId);
+    if (this.kept(target.url)) return true;
+    if (this.kept(target.reported) && !this.scrubbedTarget(target) && !this.leftKept(framed))
+      return true;
+    if (this.pendingKept(targetId)) return true;
+    if (typeof framed === 'string' && this.kept(framed)) return true;
+    const blank = inherits(target.url) || target.url === '';
+    if (!blank) return false;
+    if (typeof framed === 'string' && (this.vaultHost(framed) || this.sevenHost(framed)))
+      return true;
+    if (this.openerKept(target)) return true;
+    if (typeof framed === 'string' && framed !== '' && !inherits(framed)) return false;
+    return false;
   }
 
   departing(message) {
@@ -5674,6 +5845,12 @@ class Guard {
         STRUCTURE.has(message.method))
     )
       this.revisions.set(targetId, {});
+    if (
+      targetId &&
+      (message.method === 'Page.frameNavigated' ||
+        message.method === 'Page.navigatedWithinDocument')
+    )
+      this.documentRevisions.set(targetId, {});
     if (targetId) this.reviseDebuggerLease(targetId, message.method, message.params);
     if (message.method !== 'Page.frameNavigated' || !message.params?.frame) return;
     const { frame } = message.params;

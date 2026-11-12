@@ -54,7 +54,17 @@ export function protocol(t, protect = guardProtected) {
     const targetId = params.targetId ?? sessions.get(sessionId);
     const target = targets.get(targetId);
     let result = {};
-    if (method === 'Target.getTargetInfo') result = { targetInfo: target.info };
+    if (method === 'Target.getTargetInfo') {
+      if (!target) {
+        emit({
+          id,
+          ...(sessionId ? { sessionId } : {}),
+          error: { code: -32602, message: 'No target with given id found' },
+        });
+        return;
+      }
+      result = { targetInfo: target.info };
+    }
     if (method === 'Target.getTargets')
       result = { targetInfos: [...targets.values()].map((entry) => entry.info) };
     if (method === 'Target.attachToTarget') {
