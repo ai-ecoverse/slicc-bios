@@ -192,3 +192,52 @@ test('on the extension route stock auto-attach is synthesized without a real bro
   const version = await send('Browser.getVersion');
   assert.equal(version.result?.slicc?.route, 'extension');
 });
+
+test('on the extension route, worker-only page-session auto-attach keeps NO_AUTO_ATTACH and reaches the extension unchanged, and the filter-less disable answers {}', {
+  timeout: 30000,
+}, async () => {
+  const { cdp, send } = connect();
+  const attached = await send('Target.attachToTarget', { targetId: 'ordinary', flatten: true });
+  const session = attached.result?.sessionId;
+  assert.ok(session, JSON.stringify(attached));
+  for (const filter of [
+    [{ type: 'worker', exclude: false }],
+    [{ type: 'shared_worker', exclude: false }],
+    [{ type: 'service_worker', exclude: false }],
+    [
+      { type: 'worker', exclude: false },
+      { type: 'shared_worker', exclude: false },
+      { type: 'service_worker', exclude: false },
+    ],
+  ]) {
+    const har = { autoAttach: true, waitForDebuggerOnStart: true, flatten: true, filter };
+    const answer = await send('Target.setAutoAttach', har, session);
+    assert.equal(answer.error?.message, NO_AUTO_ATTACH, JSON.stringify(filter));
+    assert.equal(answer.result, undefined, `${JSON.stringify(filter)} got no {}`);
+    const reached = cdp.sent.filter(
+      (call) => call.method === 'Target.setAutoAttach' && call.sessionId === session
+    );
+    assert.deepEqual(reached.at(-1).params, har, 'the extension got the filter as sent');
+  }
+  assert.deepEqual(
+    (
+      await send(
+        'Target.setAutoAttach',
+        { autoAttach: false, waitForDebuggerOnStart: false, flatten: true },
+        session
+      )
+    ).result,
+    {}
+  );
+  const holder = await send(
+    'Target.setAutoAttach',
+    {
+      autoAttach: true,
+      waitForDebuggerOnStart: false,
+      flatten: true,
+      filter: [{ type: 'iframe', exclude: false }],
+    },
+    session
+  );
+  assert.equal(holder.error?.message, NO_AUTO_ATTACH, 'the iframe-only holder stays refused');
+});

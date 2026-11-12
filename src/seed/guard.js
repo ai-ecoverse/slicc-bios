@@ -191,7 +191,7 @@ const TAB_COMMANDS = new Set([
 ]);
 const TAB_FILTER = [{ type: 'tab' }];
 const PAGE_FILTER = [{ type: 'page' }];
-const WIDE = ['tab', 'worker', 'shared_worker', 'service_worker'];
+const WORKER_FAMILY = ['worker', 'shared_worker', 'service_worker'];
 const DEFAULT_FILTER = [{ type: 'browser', exclude: true }, { type: 'tab', exclude: true }, {}];
 
 export function admits(filter, type) {
@@ -201,7 +201,12 @@ export function admits(filter, type) {
 }
 
 const wide = (params) =>
-  Array.isArray(params?.filter) && WIDE.some((type) => admits(params.filter, type));
+  Array.isArray(params?.filter) &&
+  (admits(params.filter, 'tab') ||
+    (WORKER_FAMILY.some((type) => admits(params.filter, type)) &&
+      (admits(params.filter, 'page') || admits(params.filter, 'iframe'))));
+export const SHARED_WORKERS =
+  'slicc: refused: auto-attach for shared or service workers is out of reach of browser automation on this route; ask for dedicated workers ({type: "worker"}) or pages';
 export const TAB_PREFIX = 'tab-';
 export const TAB_FOREIGN =
   'slicc: refused: a tab session reads only its own target; ask the browser session about other targets';
@@ -5509,6 +5514,17 @@ class Guard {
     return null;
   }
 
+  sharedWorkers(method, params) {
+    return (
+      this.route !== 'extension' &&
+      method === 'Target.setAutoAttach' &&
+      params.autoAttach === true &&
+      Array.isArray(params.filter) &&
+      !wide(params) &&
+      (admits(params.filter, 'shared_worker') || admits(params.filter, 'service_worker'))
+    );
+  }
+
   async scopedBinding(params, sessionId) {
     if (sessionId === undefined) return false;
     const name = params.executionContextName;
@@ -5549,6 +5565,7 @@ class Guard {
     const early = await this.precheck(message);
     if (early) return early;
     if (method.startsWith('Fetch.') && sessionId === undefined) return FETCH;
+    if (this.sharedWorkers(method, params)) return SHARED_WORKERS;
     const later = await this.later(method, params, sessionId);
     if (later) return later;
     if (method === 'Page.navigate' && inherits(params.url)) return INHERITED;

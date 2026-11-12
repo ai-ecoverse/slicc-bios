@@ -159,8 +159,10 @@ export function syntheticAutoAttach(cdp, deliver, attached, closed, every = SYNC
       }
       await sync();
     } else {
+      const refused = state.on;
       state.on = false;
       stop();
+      if (refused) return refuse(envelope, NO_AUTO_ATTACH);
     }
     answer(envelope, {});
   };
