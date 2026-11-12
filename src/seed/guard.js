@@ -200,11 +200,25 @@ export function admits(filter, type) {
   return false;
 }
 
+const OTHER_TYPES = [
+  'page',
+  'iframe',
+  'browser',
+  'other',
+  'background_page',
+  'webview',
+  'browser_ui',
+];
+const othersIn = (filter) => [
+  ...OTHER_TYPES,
+  ...filter.map((entry) => entry?.type).filter((type) => type && !WORKER_FAMILY.includes(type)),
+  'slicc-any-other-type',
+];
 const wide = (params) =>
   Array.isArray(params?.filter) &&
   (admits(params.filter, 'tab') ||
     (WORKER_FAMILY.some((type) => admits(params.filter, type)) &&
-      (admits(params.filter, 'page') || admits(params.filter, 'iframe'))));
+      othersIn(params.filter).some((type) => admits(params.filter, type))));
 export const SHARED_WORKERS =
   'slicc: refused: auto-attach for shared or service workers is out of reach of browser automation on this route; ask for dedicated workers ({type: "worker"}) or pages';
 export const TAB_PREFIX = 'tab-';
@@ -825,6 +839,7 @@ class Guard {
     this.tabSessions = new Set();
     this.tabTargets = new Map();
     this.paused = new Set();
+    this.workerCreators = new Map();
     this.freshReads = new WeakSet();
     this.tabPages = new Map();
     this.initScripts = new Map();
@@ -3704,6 +3719,7 @@ class Guard {
     const { params } = message;
     const info = params.targetInfo ?? {};
     if (await this.privateAttachment(info.targetId, params.sessionId)) return true;
+    if (await this.cutWorker(message)) return true;
     if (info.type !== 'tab') return false;
     if (params.waitingForDebugger) this.pausedTab(params.sessionId);
     return this.tabAttached(message);
@@ -4524,7 +4540,41 @@ class Guard {
     if (!targetId) return undefined;
     const kind = (await this.lookup(targetId))?.type;
     if (!WORKER_TYPES.has(kind)) return undefined;
+    const creator = this.workerCreators.get(sessionId);
+    if (creator && (await this.unsafeWorker(creator))) return PROTECTED;
     return (await this.target(targetId)) ? PROTECTED : null;
+  }
+
+  async cutWorker(message) {
+    const { params = {}, sessionId } = message;
+    const info = params.targetInfo ?? {};
+    if (!WORKER_TYPES.has(info.type) || !(await this.unsafeWorker(message))) return false;
+    this.sessions.set(params.sessionId, { targetId: info.targetId, parent: sessionId });
+    if (params.waitingForDebugger) this.paused.add(params.sessionId);
+    this.cut(params.sessionId, sessionId);
+    return true;
+  }
+
+  async unsafeCreator(targetId) {
+    return Boolean(
+      targetId &&
+        (isHeld(targetId) || this.targets.get(targetId)?.guarded || (await this.target(targetId)))
+    );
+  }
+
+  async unsafeWorker(message) {
+    const { params = {}, sessionId: parent } = message;
+    const info = params.targetInfo ?? {};
+    this.workerCreators.set(params.sessionId, message);
+    if (parent !== undefined) {
+      if (!this.sessions.has(parent) || this.blocked.has(parent) || !this.shown.has(parent))
+        return true;
+      if (await this.unsafeCreator(this.sessions.get(parent).targetId)) return true;
+    }
+    for (const id of [info.parentId, info.openerId]) if (await this.unsafeCreator(id)) return true;
+    for (const frameId of [info.parentFrameId, info.openerFrameId])
+      if (frameId !== undefined && (await this.frame(frameId, true))) return true;
+    return false;
   }
 
   prelude(sessionId, method) {
@@ -5720,6 +5770,7 @@ class Guard {
   }
 
   forgetTab(sessionId) {
+    this.workerCreators.delete(sessionId);
     this.tabSessions.delete(sessionId);
     this.tabPages.delete(sessionId);
     const tabId = this.sessions.get(sessionId)?.targetId;
