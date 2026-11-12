@@ -189,8 +189,8 @@ test('an iframe attached from the browser session refuses commands once its owni
 
 test('an iframe refuses commands, postMessage to its parent included, once its owning page is held', async (t) => {
   const { p } = await placedPage(t, 'owner');
-  frame(p, 'cross', CROSS, 'owner');
-  const attached = await p.send('Target.attachToTarget', { targetId: 'cross', flatten: true });
+  frame(p, 'held-cross', CROSS, 'owner');
+  const attached = await p.send('Target.attachToTarget', { targetId: 'held-cross', flatten: true });
   const child = attached.result.sessionId;
   assert.equal((await evaluate(p, child)).error, undefined);
   hold('owner');
@@ -337,3 +337,30 @@ test("an ordinary iframe whose parent frame is a page's root frame under another
   const attached = await p.send('Target.attachToTarget', { targetId: 'kid', flatten: true });
   assert.equal(attached.error, undefined);
 });
+
+for (const shape of ['parentId', 'recorded parent frame'])
+  test(`an iframe named by a browser-level request is refused once its owner turns protected without an event (${shape})`, async (t) => {
+    const p = setup(t);
+    const byFrame = shape !== 'parentId';
+    const owner = p.target('stale-owner', 'page', {
+      ...plainFrame(byFrame ? 'stale-owner-root' : 'stale-owner'),
+      loaderId: 'stale-loader',
+    });
+    await p.attach('stale-owner');
+    const child = frame(p, 'stale-frame', CROSS, null, byFrame ? null : 'stale-owner');
+    if (byFrame) child.info.parentFrameId = 'stale-owner-root';
+    assert.equal(
+      (await p.send('Target.getTargetInfo', { targetId: 'stale-frame' })).error,
+      undefined
+    );
+    owner.info.url = `${protectedOrigin}/os/`;
+    assert.match(
+      (await p.send('Target.getTargetInfo', { targetId: 'stale-frame' })).error?.message ?? '',
+      REFUSED
+    );
+    const attached = await p.send('Target.attachToTarget', {
+      targetId: 'stale-frame',
+      flatten: true,
+    });
+    assert.match(attached.error?.message ?? '', REFUSED);
+  });

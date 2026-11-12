@@ -1406,8 +1406,20 @@ class Guard {
       (this.blocked.has(entry.parent) || this.gone.has(entry.parent))
     )
       return true;
-    for (const id of this.frameLineage(entry.targetId)) if (await this.current(id)) return true;
     return this.current(entry.targetId);
+  }
+
+  async freshFrames(targetId, limit, seen = new Set([targetId])) {
+    for (const id of this.frameParents(targetId)) {
+      if (id === TAINTED || seen.has(id) || seen.size > 64) return true;
+      seen.add(id);
+      const answer = await this.within(this.call('Target.getTargetInfo', { targetId: id }), limit);
+      const info = answer?.result?.targetInfo;
+      if (answer?.error || info?.targetId !== id) return true;
+      this.learn(info);
+      if (info.type === 'iframe' && (await this.freshFrames(id, limit, seen))) return true;
+    }
+    return false;
   }
 
   classifyTarget(targetId, found, opener) {
@@ -2502,6 +2514,7 @@ class Guard {
     if (!answer || answer.error || info?.targetId !== targetId || typeof info.type !== 'string')
       return true;
     this.learn(info);
+    if (info.type === 'iframe' && (await this.freshFrames(targetId, limit))) return true;
     if (await this.target(targetId)) return true;
     if (!URL.canParse(info.url)) {
       if (info.url === '' && info.type === 'tab') return false;
