@@ -3217,7 +3217,10 @@ class Guard {
       { requestId: params.requestId, errorReason: 'BlockedByClient' },
       sessionId
     );
-    if (!answer.error) this.settleLoad(load);
+    if (!answer.error) {
+      this.settleLoad(load);
+      if (targetId) this.keptUrlLatch.delete(targetId);
+    }
   }
 
   failed(targetId, { frameId, request }) {
@@ -5495,12 +5498,11 @@ class Guard {
   }
 
   infoProtected(method, targetId) {
-    return (
-      STRANDED.has(method) &&
-      targetId !== undefined &&
-      this.targets.has(targetId) &&
-      this.documentKept(targetId)
-    );
+    if (targetId === undefined || !this.targets.has(targetId)) return false;
+    if (method === 'Target.closeTarget' || method === 'Target.activateTarget')
+      return this.documentKept(targetId);
+    if (method === 'Target.attachToTarget') return this.pendingKept(targetId);
+    return false;
   }
 
   async reachTarget(message) {
@@ -5609,18 +5611,17 @@ class Guard {
 
   sevenHost(url) {
     if (typeof url !== 'string' || !URL.canParse(url)) return false;
-    const { protocol, hostname, port, origin } = new URL(url);
+    const { protocol, hostname, origin } = new URL(url);
     if (protocol !== 'http:' && protocol !== 'https:') return false;
     const label = hostname.replace(/\.$/, '').match(SEVEN_HOST)?.[1];
     if (label === 'vault' || label?.startsWith('vault-')) return true;
-    return (
-      this.owned.some((text) => URL.canParse(text) && new URL(text).origin === origin) ||
-      (protocol === `${catalog.seven.originScheme}:` &&
-        port === '' &&
-        label !== undefined &&
-        !catalog.seven.excludedLabels.includes(label) &&
-        !catalog.seven.excludedLabelPrefixes.some((prefix) => label.startsWith(prefix)))
-    );
+    if (
+      label !== undefined &&
+      !catalog.seven.excludedLabels.includes(label) &&
+      !catalog.seven.excludedLabelPrefixes.some((prefix) => label.startsWith(prefix))
+    )
+      return true;
+    return this.owned.some((text) => URL.canParse(text) && new URL(text).origin === origin);
   }
 
   kept(url) {
@@ -5652,6 +5653,10 @@ class Guard {
   clearKeptUrlLatchIfFreshUnkept(targetId, infoUrl, framed) {
     if (!targetId || !this.keptUrlLatch.has(targetId)) return;
     if (this.pendingKept(targetId)) return;
+    if (typeof framed === 'string' && framed.startsWith('chrome-error:')) {
+      this.keptUrlLatch.delete(targetId);
+      return;
+    }
     if (this.kept(infoUrl) || (typeof framed === 'string' && this.kept(framed))) return;
     if (typeof framed === 'string' && inherits(framed)) return;
     this.keptUrlLatch.delete(targetId);
