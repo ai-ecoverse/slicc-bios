@@ -173,6 +173,13 @@ test('seven boots from /7/ of an origin it shares with six: the UI is /os/, ever
     icons,
     manifest.icons.map(({ src, sizes }) => `/7/${src} ${sizes}`)
   );
+  assert.deepEqual(
+    await page.evaluate(async () => {
+      const response = await fetch(document.querySelector('link[rel="icon"]').href);
+      return { ok: response.ok, path: new URL(response.url).pathname };
+    }),
+    { ok: true, path: '/7/icons/favicon.svg' }
+  );
 
   const tab = await page.tab();
   await tab.goto(`${origin}/`);
