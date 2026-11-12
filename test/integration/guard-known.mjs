@@ -14,6 +14,18 @@ const RECOVERY = new Set(['reload', 'blank', 'close', 'attachRedacted']);
 const unmet = (items) =>
   items.every((item) => /^[A-Za-z]+: got (?:false|undefined), want true$/.test(item));
 const ABSENT = new Set(['listRedacted', 'infoRedacted']);
+const SETTLE = /settle:\s*no request for .+ within \d+ms/i;
+export const LINK_WAIVERS = {
+  'C3.tab-attach': {
+    reason:
+      'guarded settle of window.open under main empty-URL hold; runner folds that into control=fail (#260); stock Playwright/Puppeteer popup through the link guard passes',
+    match(row) {
+      if (row.guarded !== 'fail') return false;
+      if (row.control !== 'fail' && row.control !== 'incomplete') return false;
+      return SETTLE.test(`${row.why ?? ''} ${(row.errors ?? []).join(' ')}`);
+    },
+  },
+};
 export const LINK = {
   'slicc-cli#366 (fail-closed)': {
     ids: ERROR_RECOVERY,
@@ -58,7 +70,10 @@ const checks = (why = '') =>
 const issue = (id) => Object.keys(KNOWN).find((key) => KNOWN[key].includes(id));
 
 function linked(row, listed) {
-  if (listed || row.control !== 'pass' || row.guarded !== 'fail') return null;
+  if (listed) return null;
+  const waiver = LINK_WAIVERS[row.id];
+  if (waiver?.match(row)) return waiver.reason;
+  if (row.control !== 'pass' || row.guarded !== 'fail') return null;
   const found = Object.entries(LINK).find(([, { ids, allowed, notLive }]) => {
     if (!ids.includes(row.id)) return false;
     if (row.live === 'fail') {
@@ -95,6 +110,11 @@ export function stale(results) {
     ...Object.entries(LINK).map(([reason, { ids }]) => [
       reason,
       ids,
+      (row) => row.transport === 'link',
+    ]),
+    ...Object.keys(LINK_WAIVERS).map((id) => [
+      LINK_WAIVERS[id].reason,
+      [id],
       (row) => row.transport === 'link',
     ]),
   ];

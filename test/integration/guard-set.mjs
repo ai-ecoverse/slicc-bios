@@ -66,6 +66,8 @@ const PATHS = {
     extensionWorld: true,
     extensionFrame: true,
     clientExit: true,
+    stockSetup: true,
+    forwardAudit: true,
   },
 };
 

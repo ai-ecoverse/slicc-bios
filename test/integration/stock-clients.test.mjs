@@ -1,17 +1,40 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { after, test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import puppeteer from 'puppeteer-core';
 import { WebSocket, WebSocketServer } from 'ws';
 import { boot } from './bios.mjs';
 import { debuggerUrl, devtools, launch } from './chrome.mjs';
+import { linkNode } from './linked-node.mjs';
 
 const SCRIPTS = /slicc: refused: scripts and bindings for later documents/;
 const SETTINGS = /slicc: refused: settings for a whole session/;
 const OUT_OF_REACH = /slicc: refused: seven’s own pages and the vault are out of reach/;
 const STEP_MS = 30000;
 const HELD_MS = 5000;
+const STOCK_CLI_MIN = '1.64.0';
+const SLICC_VERSION = JSON.parse(
+  readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8')
+).devDependencies['@ai-ecoverse/slicc'];
+const parts = (version) => version.split('.').map(Number);
+const cliAtLeast = (version, min) => {
+  const a = parts(version);
+  const b = parts(min);
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const left = a[i] ?? 0;
+    const right = b[i] ?? 0;
+    if (left > right) return true;
+    if (left < right) return false;
+  }
+  return true;
+};
+const CHROME_ARGS = [
+  '--remote-allow-origins=*',
+  '--host-resolver-rules=MAP ordinary.test 127.0.0.1, MAP frame.test 127.0.0.1, MAP vault.sliccy.ai 127.0.0.1',
+];
 
 const hits = new Set();
 const fixture = createServer((req, res) => {
@@ -46,10 +69,7 @@ const FRAME = `http://frame.test:${fixture.address().port}`;
 
 const chrome = await launch({
   tools: false,
-  args: [
-    '--remote-allow-origins=*',
-    '--host-resolver-rules=MAP ordinary.test 127.0.0.1, MAP frame.test 127.0.0.1, MAP vault.sliccy.ai 127.0.0.1',
-  ],
+  args: CHROME_ARGS,
 });
 const { port } = await devtools(chrome);
 const browser = await debuggerUrl(port);
@@ -137,8 +157,8 @@ async function step(route, client, name, work) {
   }
 }
 
-async function unguarded() {
-  const socket = new WebSocket(browser, { maxPayload: 256 * 1024 * 1024 });
+async function unguarded(ws) {
+  const socket = new WebSocket(ws, { maxPayload: 256 * 1024 * 1024 });
   await new Promise((resolve, reject) => {
     socket.once('open', resolve);
     socket.once('error', reject);
@@ -170,8 +190,8 @@ async function unguarded() {
   return { send, close: () => socket.close() };
 }
 
-async function vaultOpen(t) {
-  const { send, close } = await unguarded();
+async function vaultOpen(t, ws) {
+  const { send, close } = await unguarded(ws);
   let targetId;
   t.after(async () => {
     if (targetId) await send('Target.closeTarget', { targetId }).catch(() => {});
@@ -183,7 +203,7 @@ async function vaultOpen(t) {
   ({ targetId } = await send('Target.createTarget', { url: VAULT, background: true }));
 }
 
-async function bridge(t) {
+async function bridge(t, route) {
   const seven = await chrome.page(t);
   const extension = new WebSocket(browser, { maxPayload: 256 * 1024 * 1024 });
   await new Promise((resolve, reject) => {
@@ -290,6 +310,17 @@ async function bridge(t) {
     });
   });
   await boot(seven);
+  let runtime = route;
+  let driven = browser;
+  if (route === 'link') {
+    const other = await launch({ tools: false, args: CHROME_ARGS });
+    t.after(() => other.close());
+    const tabs = await devtools(other);
+    driven = await debuggerUrl(tabs.port);
+    const runtimes = await linkNode(t, seven, tabs.port);
+    assert.ok(runtimes[0], 'a linked browser');
+    runtime = runtimes[0];
+  }
   const sockets = new Map();
   await seven.expose('stockOut', ({ id, text, closed }) => {
     const socket = sockets.get(id);
@@ -337,10 +368,11 @@ async function bridge(t) {
   wss.on('connection', (socket, req) => {
     ids += 1;
     const id = ids;
-    const runtime = new URL(req.url, 'http://bridge').pathname.slice(1);
+    const at = new URL(req.url, 'http://bridge');
+    const asked = at.searchParams.get('runtime') || decodeURIComponent(at.pathname.slice(1));
     sockets.set(id, socket);
     let chain = seven
-      .evaluate((id, runtime) => window.stockOpen(id, runtime), id, runtime)
+      .evaluate((id, runtime) => window.stockOpen(id, runtime), id, asked)
       .then((opened) => {
         if (opened !== true) socket.close(1011, String(opened).slice(0, 120));
       });
@@ -379,7 +411,12 @@ async function bridge(t) {
         .map(line),
     };
   };
-  return { endpoint: `ws://127.0.0.1:${server.address().port}`, wire, seven };
+return {
+    endpoint: `ws://127.0.0.1:${server.address().port}/?runtime=${encodeURIComponent(runtime)}`,
+    driven,
+    wire,
+    seven,
+  };
 }
 
 async function playwright(route, endpoint) {
@@ -518,13 +555,17 @@ async function puppeteerFlow(route, endpoint) {
   }
 }
 
-for (const route of ['devtools', 'extension'])
+for (const route of ['devtools', 'extension', 'link'])
   test(`stock Playwright and Puppeteer drive an ordinary page through the guard on the ${route} route, and stay out of seven and the vault`, {
     timeout: 10 * 60 * 1000,
+    skip:
+      route === 'link' && !cliAtLeast(SLICC_VERSION, STOCK_CLI_MIN)
+        ? `the link route needs @ai-ecoverse/slicc ${STOCK_CLI_MIN} or later (pinned ${SLICC_VERSION})`
+        : false,
   }, async (t) => {
-    const opened = await bridge(t);
-    await vaultOpen(t);
-    const endpoint = `${opened.endpoint}/${route}`;
+    const opened = await bridge(t, route);
+    await vaultOpen(t, opened.driven);
+    const endpoint = opened.endpoint;
     t.after(() => {
       const unanswered = [...pending.values()].map(
         (asked) => `${asked.by} unanswered ${asked.method}: ${Date.now() - asked.at} ms`
