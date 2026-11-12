@@ -434,7 +434,8 @@ const remoteBrowser = switches.add({
 const serial = serialPorts({ create: createDevices, switches, clicks, live });
 const displays = displayer();
 const recorder = composerCapture({
-  record: personal(audio, guarded),
+  audio: personal(audio, guarded),
+  video: personal(capture, guarded, cameraman({ on: guarded.on })),
   still: personal(capture, guarded, displays),
 });
 const sudo = routeSudo({

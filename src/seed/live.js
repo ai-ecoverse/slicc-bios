@@ -1,4 +1,6 @@
 export const LIVE_CHANNEL = 'slicc-live';
+export const ENDED_MS = 3000;
+export const DISMISS = 'Dismiss';
 
 export function tabList({
   channel,
@@ -51,6 +53,8 @@ export function createLive({
   tab,
   events,
   now = Date.now,
+  timers = globalThis,
+  linger = ENDED_MS,
 } = {}) {
   const runs = new Map();
   const listeners = new Set();
@@ -83,10 +87,29 @@ export function createLive({
         ...shared.mine(),
         { id, kind, label, what, asker, since, action: { label: action.label } },
       ]);
-      return () => {
+      let timer;
+      let ended = false;
+      const remove = () => {
+        timers.clearTimeout(timer);
         if (!runs.delete(id)) return;
         shared.set(shared.mine().filter((item) => item.id !== id));
       };
+      const end = (past = label) => {
+        if (ended || !runs.has(id)) return;
+        ended = true;
+        runs.set(id, remove);
+        timer = timers.setTimeout(remove, linger);
+        shared.set(
+          shared
+            .mine()
+            .map((item) =>
+              item.id === id
+                ? { ...item, label: past, endedAt: now(), action: { label: DISMISS } }
+                : item
+            )
+        );
+      };
+      return Object.assign(remove, { end });
     },
   };
 }
