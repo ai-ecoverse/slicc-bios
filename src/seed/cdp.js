@@ -465,6 +465,11 @@ export function browserOpener(links, options = {}) {
   return () => pickBrowserOpen(links ?? panelLinks, options).open();
 }
 
+export function callerOf(caller, stamp) {
+  if (caller) return caller;
+  return stamp && typeof stamp === 'object' ? { kind: 'kernel', stamp } : undefined;
+}
+
 export function browserHook(
   observe = (connection) => connection,
   links,
@@ -496,9 +501,9 @@ export function browserHook(
       { caller }
     );
   };
-  return async ({ runtime, caller, here = false } = {}) => {
+  return async ({ runtime, caller, stamp, here = false } = {}) => {
     const picked = pickBrowserOpen(links, { runtime, here });
-    return guard(picked.open, picked.host, picked.route, picked.frames, caller);
+    return guard(picked.open, picked.host, picked.route, picked.frames, callerOf(caller, stamp));
   };
 }
 

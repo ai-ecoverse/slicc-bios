@@ -11,7 +11,7 @@ after(() => chrome.close());
 
 const stamp = { pid: 40, ppid: 1, uid: 1000, gid: 1000, groups: [], users: 'enforce' };
 
-test('the Browser panel shows a stated intent only from a kernel caller with clean tags', async (t) => {
+test('the Browser panel shows a stated intent only for a cdp hook request whose kernel stamp has clean tags', async (t) => {
   const page = await chrome.page(t);
   const extension = await fakeExtension(page);
   t.after(extension.close);
@@ -19,26 +19,28 @@ test('the Browser panel shows a stated intent only from a kernel caller with cle
     globalThis.sliccKernelDebug = true;
   });
   await boot(page);
-  const callers = {
-    today: null,
-    device: { kind: 'device', id: 'dev-1', name: 'laptop' },
-    'users off': { kind: 'kernel', stamp: { ...stamp, users: 'off' } },
-    tainted: { kind: 'kernel', stamp: { ...stamp, tag: 'slicc-taint:a1' } },
+  const requests = {
+    today: {},
+    device: { caller: { kind: 'device', id: 'dev-1', name: 'laptop' } },
+    'device with a stamp': {
+      caller: { kind: 'device', id: 'dev-2', name: 'phone' },
+      stamp,
+    },
+    'users off': { stamp: { ...stamp, users: 'off' } },
+    tainted: { stamp: { ...stamp, tag: 'slicc-taint:a1' } },
     'tainted second tag': {
-      kind: 'kernel',
       stamp: { ...stamp, tag: 'call:3', tags: ['call:3', 'slicc-taint:a1'] },
     },
-    trusted: { kind: 'kernel', stamp: { ...stamp, tag: 'call:4' } },
+    'not a list': { stamp: { ...stamp, tag: 'call:5', tags: 'call:5' } },
+    untagged: { stamp },
+    trusted: { stamp: { ...stamp, tag: 'call:4', tags: ['call:4', 'cron:7'] } },
   };
-  const rows = await page.evaluate(async (callers) => {
+  const rows = await page.evaluate(async (requests) => {
     const browser = document.querySelector('slicc-app').model.browser;
     const heard = [];
     browser.on('action', (row) => heard.push(row));
-    for (const [name, caller] of Object.entries(callers)) {
-      const connection = await globalThis.sliccBrowserHook({
-        runtime: 'extension',
-        ...(caller ? { caller } : {}),
-      });
+    for (const [name, request] of Object.entries(requests)) {
+      const connection = await globalThis.sliccBrowserHook({ runtime: 'extension', ...request });
       const action = (params) =>
         connection.send(JSON.stringify({ method: 'Slicc.action', params }));
       action({
@@ -51,20 +53,25 @@ test('the Browser panel shows a stated intent only from a kernel caller with cle
       connection.close();
     }
     return { actions: browser.actions(), heard };
-  }, callers);
+  }, requests);
   const intents = Object.fromEntries(rows.actions.map((row) => [row.agentId, row.intent ?? null]));
   assert.deepEqual(intents, {
     today: null,
     device: null,
+    'device-with-a-stamp': null,
     'users-off': null,
     tainted: null,
     'tainted-second-tag': null,
+    'not-a-list': null,
+    untagged: 'Reading the page for untagged',
     trusted: 'Reading the page for trusted',
   });
   const heard = rows.heard.filter(({ intent }) => intent);
   assert.deepEqual(
     heard.map(({ agentId, status, intent }) => [agentId, status, intent]),
     [
+      ['untagged', 'running', 'Reading the page for untagged'],
+      ['untagged', 'done', 'Reading the page for untagged'],
       ['trusted', 'running', 'Reading the page for trusted'],
       ['trusted', 'done', 'Reading the page for trusted'],
     ]
