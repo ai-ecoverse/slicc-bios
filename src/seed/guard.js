@@ -1326,9 +1326,16 @@ class Guard {
     while (frame && !seen.has(frame) && seen.size < 64) {
       seen.add(frame);
       if (this.is.url(this.frames.get(frame))) return TAINTED;
-      if (this.targets.has(frame)) return frame;
+      const owner = this.frameTarget(frame);
+      if (owner) return owner;
       frame = this.parents.get(frame);
     }
+    return undefined;
+  }
+
+  frameTarget(frame) {
+    if (this.targets.has(frame)) return frame;
+    for (const [targetId, root] of this.frameRoots) if (root === frame) return targetId;
     return undefined;
   }
 

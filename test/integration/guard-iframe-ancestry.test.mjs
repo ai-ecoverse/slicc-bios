@@ -328,3 +328,12 @@ test('an iframe session refuses commands once Chrome has detached the session it
   await settle();
   assert.match((await evaluate(p, child)).error?.message ?? '', REFUSED);
 });
+
+test("an ordinary iframe whose parent frame is a page's root frame under another id is admitted through that page", async (t) => {
+  const p = setup(t);
+  p.target('host', 'page', { ...plainFrame('host-root'), loaderId: 'host-loader' });
+  await p.attach('host');
+  frame(p, 'kid', CROSS, 'host-root', null).info.parentFrameId = 'host-root';
+  const attached = await p.send('Target.attachToTarget', { targetId: 'kid', flatten: true });
+  assert.equal(attached.error, undefined);
+});
