@@ -2,6 +2,17 @@ import { BIOS } from './site.js';
 import { SWITCHBOARD_LOCK, TAB_LOCK, VERSION } from './switchboard.js';
 
 export const OWNER_LOCK = 'slicc-agent';
+export const EXTENSION = 'chrome-extension://akjjllgokmbgpbdbmafpiefnhidlmbgf';
+export const PANEL = 'slicc-seven-panel';
+
+export function inPanel(win = globalThis) {
+  const origins = win.location?.ancestorOrigins;
+  return win.top !== win && origins?.length === 1 && origins[0] === EXTENSION;
+}
+
+export function tellPanel({ role, stalled, skew }, parent = globalThis.parent) {
+  parent.postMessage({ type: PANEL, role, stalled, skew: Boolean(skew) }, EXTENSION);
+}
 export const NOTICE = '\r\x1b[2K[the tab running SLICC closed; starting a new shell]\r\n';
 
 export function hold(locks, name) {
@@ -12,7 +23,8 @@ export function hold(locks, name) {
   });
 }
 
-export function claim(locks = navigator.locks, name = OWNER_LOCK) {
+export function claim(locks = navigator.locks, name = OWNER_LOCK, panel = inPanel()) {
+  if (panel) return Promise.resolve({ owner: false, next: new Promise(() => {}) });
   return new Promise((resolve, failed) => {
     locks
       .request(name, { ifAvailable: true }, (lock) => {
@@ -75,7 +87,10 @@ export function localBoard({ id = crypto.randomUUID(), versions = null } = {}) {
   };
 }
 
-export function createTabs({ reload = () => location.replace(BIOS) } = {}) {
+export function createTabs({
+  reload = () => location.replace(BIOS),
+  tell = inPanel() ? tellPanel : null,
+} = {}) {
   const listeners = new Set();
   let state = { role: 'connecting', stalled: false, skew: null };
   return {
@@ -90,6 +105,7 @@ export function createTabs({ reload = () => location.replace(BIOS) } = {}) {
       const next = { ...state, ...patch };
       if (Object.keys(next).every((key) => next[key] === state[key])) return;
       state = next;
+      tell?.(state);
       for (const listener of [...listeners]) listener(state);
     },
   };
