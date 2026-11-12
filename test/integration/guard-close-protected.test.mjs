@@ -119,6 +119,8 @@ const kept = [
   ['a seven UI page', `${protectedOrigin}/os/index.html?x=1`],
   ['seven’s UI on another seven origin', 'https://www.sliccy.ai/os/'],
   ['seven’s UI on seven.sliccy.ai', 'https://seven.sliccy.ai./os/terminal'],
+  ['seven’s UI on a non-default port', 'https://www.sliccy.ai:8443/os/'],
+  ['seven’s UI over http on a fixture port', 'http://seven.sliccy.ai:39313/os/index.html'],
   ['the vault', 'https://vault.sliccy.ai/landing?k=SECRET'],
   ['a vault preview', 'https://vault-x.sliccy.ai/'],
   ['the vault with a trailing dot', 'https://vault.sliccy.ai./'],
@@ -140,7 +142,6 @@ const closable = [
   ['a page on seven’s origin outside its UI', `${protectedOrigin}/oauth?code=SECRET-CODE`],
   ['a seven origin outside its UI', 'https://www.sliccy.ai/?code=SECRET-CODE'],
   ['seven’s UI path on a non-seven sliccy.ai host', 'https://get.sliccy.ai/os/'],
-  ['seven’s UI path on a non-default port', 'https://www.sliccy.ai:8443/os/'],
   ['the sliccy.ai apex', 'https://sliccy.ai/os/'],
 ];
 for (const [what, url] of closable) {
@@ -173,14 +174,19 @@ for (const [what, url] of wrapped) {
 }
 
 test('seven’s UI with userinfo stays unclosable', async (t) => {
-  const { wire } = locked(t, 'userinfo-tab', 'page', 'https://user:x@seven.sliccy.ai/os/');
-  const mark = wire.sent.length;
-  const answer = await wire.send('Target.closeTarget', { targetId: 'userinfo-tab' });
-  assert.equal(answer.error?.message, PROTECTED);
-  assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'userinfo-tab'), false);
+  for (const url of [
+    'https://user:x@seven.sliccy.ai/os/',
+    'http://user:pass@seven.sliccy.ai:39313/os/index.html?n=fixture',
+  ]) {
+    const { wire } = locked(t, 'userinfo-tab', 'page', url);
+    const mark = wire.sent.length;
+    const answer = await wire.send('Target.closeTarget', { targetId: 'userinfo-tab' });
+    assert.equal(answer.error?.message, PROTECTED, url);
+    assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'userinfo-tab'), false, url);
+  }
 });
 
-test('a tab navigating to the vault stays unclosable', async (t) => {
+test('a tab navigating to the vault stays unclosable and unreachable', async (t) => {
   const wire = protocol(t);
   wire.target('pending-tab');
   await wire.attach('pending-tab');
@@ -191,13 +197,152 @@ test('a tab navigating to the vault stays unclosable', async (t) => {
       frameId: 'pending-tab',
       url: 'https://vault.sliccy.ai/app?k=SECRET',
       loaderId: 'pending-loader',
+      navigationType: 'differentDocument',
     },
   });
   await flush();
+  for (const [method, params] of [
+    ['Target.activateTarget', { targetId: 'pending-tab' }],
+    ['Target.attachToTarget', { targetId: 'pending-tab', flatten: true }],
+    ['Target.closeTarget', { targetId: 'pending-tab' }],
+  ]) {
+    const mark = wire.sent.length;
+    const answer = await wire.send(method, params);
+    assert.equal(answer.error?.message, PROTECTED, method);
+    assert.equal(forwarded(wire, mark, method, 'pending-tab'), false, method);
+  }
+});
+
+test('a same-document frameStartedNavigating to the vault does not refuse close', async (t) => {
+  const wire = protocol(t);
+  wire.target('same-nav');
+  await wire.attach('same-nav');
+  for (const navigationType of ['sameDocument', 'historySameDocument']) {
+    wire.emit({
+      method: 'Page.frameStartedNavigating',
+      sessionId: 'guard-same-nav',
+      params: {
+        frameId: 'same-nav',
+        url: 'https://vault.sliccy.ai/app?k=SECRET',
+        loaderId: `same-${navigationType}`,
+        navigationType,
+      },
+    });
+    await flush();
+  }
   const mark = wire.sent.length;
-  const answer = await wire.send('Target.closeTarget', { targetId: 'pending-tab' });
+  assert.equal((await wire.send('Target.closeTarget', { targetId: 'same-nav' })).error, undefined);
+  assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'same-nav'), true);
+});
+
+test('a hung frame during navigation to the vault stays unclosable', async (t) => {
+  const wire = protocol(t);
+  wire.target('hung-nav');
+  await wire.attach('hung-nav');
+  wire.emit({
+    method: 'Page.frameStartedNavigating',
+    sessionId: 'guard-hung-nav',
+    params: {
+      frameId: 'hung-nav',
+      url: 'https://vault.sliccy.ai/app?k=SECRET',
+      loaderId: 'hung-loader',
+      navigationType: 'differentDocument',
+    },
+  });
+  await flush();
+  wire.hold((message) => message.method === 'Page.getFrameTree' && message.id >= 2 ** 30);
+  const mark = wire.sent.length;
+  const answer = await wire.send('Target.closeTarget', { targetId: 'hung-nav' });
   assert.equal(answer.error?.message, PROTECTED);
-  assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'pending-tab'), false);
+  assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'hung-nav'), false);
+});
+
+test('an unknown in-flight navigation destination stays unclosable and unattachable', async (t) => {
+  const wire = protocol(t);
+  wire.target('unknown-nav');
+  await wire.attach('unknown-nav');
+  wire.emit({
+    method: 'Page.frameStartedNavigating',
+    sessionId: 'guard-unknown-nav',
+    params: {
+      frameId: 'unknown-nav',
+      loaderId: 'unknown-loader',
+      navigationType: 'differentDocument',
+    },
+  });
+  await flush();
+  for (const [method, params] of [
+    ['Target.attachToTarget', { targetId: 'unknown-nav', flatten: true }],
+    ['Target.closeTarget', { targetId: 'unknown-nav' }],
+  ]) {
+    const mark = wire.sent.length;
+    const answer = await wire.send(method, params);
+    assert.equal(answer.error?.message, PROTECTED, method);
+    assert.equal(forwarded(wire, mark, method, 'unknown-nav'), false, method);
+  }
+});
+
+test('a kept targetInfoChanged is not cleared by an ordinary targetInfo while the frame is hung', async (t) => {
+  const wire = protocol(t);
+  const entry = wire.target('latch-tab');
+  await wire.attach('latch-tab');
+  entry.info.url = 'https://vault.sliccy.ai/app?k=SECRET';
+  wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: entry.info } });
+  await flush();
+  entry.info.url = ordinary;
+  wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: entry.info } });
+  await flush();
+  wire.hold((message) => message.method === 'Page.getFrameTree' && message.id >= 2 ** 30);
+  const mark = wire.sent.length;
+  const answer = await wire.send('Target.closeTarget', { targetId: 'latch-tab' });
+  assert.equal(answer.error?.message, PROTECTED);
+  assert.equal(forwarded(wire, mark, 'Target.closeTarget', 'latch-tab'), false);
+});
+
+test('attach after a blocked vault hop still reaches current, not an early latch refuse', async (t) => {
+  const wire = protocol(t);
+  const entry = wire.target('recover-tab');
+  await wire.attach('recover-tab');
+  entry.info.url = 'https://vault.sliccy.ai/app?k=SECRET';
+  wire.emit({ method: 'Target.targetInfoChanged', params: { targetInfo: entry.info } });
+  await flush();
+  wire.emit({
+    method: 'Fetch.requestPaused',
+    sessionId: 'guard-recover-tab',
+    params: {
+      requestId: 'recover-blocked',
+      networkId: 'recover-blocked',
+      frameId: 'recover-tab',
+      resourceType: 'Document',
+      request: { url: 'https://vault.sliccy.ai/app?k=SECRET' },
+    },
+  });
+  await flush();
+  entry.tree.frame = {
+    ...errorFrame('recover-tab'),
+    unreachableUrl: 'https://vault.sliccy.ai/app?k=SECRET',
+  };
+  wire.emit({
+    method: 'Page.frameNavigated',
+    sessionId: 'guard-recover-tab',
+    params: { frame: entry.tree.frame },
+  });
+  await flush();
+  assert.ok(
+    wire.sent.some((message) => message.method === 'Fetch.failRequest'),
+    'the blocked vault document is failed by the guard'
+  );
+  const mark = wire.sent.length;
+  await wire.send('Target.attachToTarget', { targetId: 'recover-tab', flatten: true });
+  assert.ok(
+    wire.sent
+      .slice(mark)
+      .some(
+        (message) =>
+          message.method === 'Target.getTargetInfo' || message.method === 'Target.attachToTarget'
+      ),
+    'attach must call through to current()/Chrome so stranded recovery can run'
+  );
 });
 
 for (const [what, url] of kept) {

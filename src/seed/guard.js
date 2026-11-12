@@ -818,6 +818,7 @@ class Guard {
     this.blockedWorkers = new Set();
     this.pendingHistory = new Set();
     this.pendingCommit = new Set();
+    this.keptUrlLatch = new Set();
     this.settled = new Map();
     this.uncommitted = new Set();
     this.moved = new Set();
@@ -1087,6 +1088,9 @@ class Guard {
     const failed = info.url !== undefined && this.errored.get(info.targetId) === bare(info.url);
     const { url, reported } = this.learnUrls(info, known, failed);
     const blank = inherits(url) || url === '';
+    this.latchKeptTargetUrl(info.targetId, info.url);
+    this.latchKeptTargetUrl(info.targetId, url);
+    this.latchKeptTargetUrl(info.targetId, reported);
     this.targets.set(info.targetId, {
       url,
       type: info.type ?? known?.type,
@@ -2062,6 +2066,7 @@ class Guard {
     if (method === 'Target.targetDestroyed') {
       this.invalidateParentPlacement(params.targetId);
       this.scopes.delete(params.targetId);
+      this.keptUrlLatch.delete(params.targetId);
       for (const [id, placed] of this.placements)
         if (placed === params.targetId) this.autoAttachments.delete(id);
     }
@@ -3212,7 +3217,10 @@ class Guard {
       { requestId: params.requestId, errorReason: 'BlockedByClient' },
       sessionId
     );
-    if (!answer.error) this.settleLoad(load);
+    if (!answer.error) {
+      this.settleLoad(load);
+      if (targetId) this.keptUrlLatch.delete(targetId);
+    }
   }
 
   failed(targetId, { frameId, request }) {
@@ -3657,6 +3665,7 @@ class Guard {
       nav?.wiped?.();
       this.navs.delete(params.targetId);
       this.errored.delete(params.targetId);
+      this.keptUrlLatch.delete(params.targetId);
       if (nav?.session) this.navSessions.delete(nav.session);
       return this.targets.get(params.targetId)?.guarded === true;
     }
@@ -4425,6 +4434,20 @@ class Guard {
     return true;
   }
 
+  noteCommittedLatch(id, method, params = {}) {
+    const targetId = this.scopeTarget(id) ?? id;
+    if (method === 'Page.frameNavigated' && !params.frame?.parentId) {
+      const framed = this.committedFrameUrl(params.frame);
+      this.latchKeptTargetUrl(targetId, framed);
+      this.clearKeptUrlLatchIfFreshUnkept(targetId, params.frame?.url, framed);
+      return;
+    }
+    if (method === 'Page.navigatedWithinDocument') {
+      this.latchKeptTargetUrl(targetId, params.url);
+      this.clearKeptUrlLatchIfFreshUnkept(targetId, params.url, params.url);
+    }
+  }
+
   noteNavigation(sessionId, method, params = {}) {
     const frameId = params.frameId ?? params.frame?.id;
     const guardian = this.navSessions.has(sessionId);
@@ -4444,6 +4467,11 @@ class Guard {
     const started = method === 'Page.frameStartedNavigating';
     const committed = method === 'Page.frameNavigated' || method === 'Page.navigatedWithinDocument';
     if (!started && !committed) return;
+    if (
+      started &&
+      (params.navigationType === 'sameDocument' || params.navigationType === 'historySameDocument')
+    )
+      return;
     const accepted = new Set();
     for (const id of this.boundSessions(sessionId)) {
       if (started)
@@ -4457,8 +4485,10 @@ class Guard {
         );
       else if (
         this.noteCommitted(id, method, frameId, params.frame?.parentId, params.frame?.loaderId)
-      )
+      ) {
         accepted.add(id);
+        this.noteCommittedLatch(id, method, params);
+      }
     }
     if (started)
       for (const command of this.callerIds.values())
@@ -5467,22 +5497,25 @@ class Guard {
     return this.reaching(method, params, sessionId, message);
   }
 
+  infoProtected(method, targetId) {
+    if (targetId === undefined || !this.targets.has(targetId)) return false;
+    if (method === 'Target.closeTarget' || method === 'Target.activateTarget')
+      return this.documentKept(targetId);
+    if (method === 'Target.attachToTarget') return this.pendingKept(targetId);
+    return false;
+  }
+
   async reachTarget(message) {
     const { method, params = {} } = message;
     if (params.targetId === undefined) return false;
-    if (
-      method === 'Target.closeTarget' &&
-      this.targets.has(params.targetId) &&
-      this.documentKept(params.targetId)
-    )
-      return true;
+    if (this.infoProtected(method, params.targetId)) return true;
     const limit =
       method === 'Target.attachToTarget' && this.navs.get(params.targetId)?.admitted
         ? PROBE_WAIT
         : ANSWER_MS;
     const guarded = await this.current(params.targetId, limit);
     const target = this.targets.get(params.targetId);
-    if (method === 'Target.closeTarget' && this.documentKept(params.targetId)) return true;
+    if (this.infoProtected(method, params.targetId)) return true;
     if (method === 'Target.attachToTarget' && !guarded) {
       this.touch(params.targetId);
       await this.navs.get(params.targetId)?.ready;
@@ -5578,18 +5611,17 @@ class Guard {
 
   sevenHost(url) {
     if (typeof url !== 'string' || !URL.canParse(url)) return false;
-    const { protocol, hostname, port, origin } = new URL(url);
+    const { protocol, hostname, origin } = new URL(url);
     if (protocol !== 'http:' && protocol !== 'https:') return false;
     const label = hostname.replace(/\.$/, '').match(SEVEN_HOST)?.[1];
     if (label === 'vault' || label?.startsWith('vault-')) return true;
-    return (
-      this.owned.some((text) => URL.canParse(text) && new URL(text).origin === origin) ||
-      (protocol === `${catalog.seven.originScheme}:` &&
-        port === '' &&
-        label !== undefined &&
-        !catalog.seven.excludedLabels.includes(label) &&
-        !catalog.seven.excludedLabelPrefixes.some((prefix) => label.startsWith(prefix)))
-    );
+    if (
+      label !== undefined &&
+      !catalog.seven.excludedLabels.includes(label) &&
+      !catalog.seven.excludedLabelPrefixes.some((prefix) => label.startsWith(prefix))
+    )
+      return true;
+    return this.owned.some((text) => URL.canParse(text) && new URL(text).origin === origin);
   }
 
   kept(url) {
@@ -5614,13 +5646,29 @@ class Guard {
     return label === 'vault' || Boolean(label?.startsWith('vault-'));
   }
 
+  latchKeptTargetUrl(targetId, url) {
+    if (targetId && this.kept(url)) this.keptUrlLatch.add(targetId);
+  }
+
+  clearKeptUrlLatchIfFreshUnkept(targetId, infoUrl, framed) {
+    if (!targetId || !this.keptUrlLatch.has(targetId)) return;
+    if (this.pendingKept(targetId)) return;
+    if (typeof framed === 'string' && framed.startsWith('chrome-error:')) {
+      this.keptUrlLatch.delete(targetId);
+      return;
+    }
+    if (this.kept(infoUrl) || (typeof framed === 'string' && this.kept(framed))) return;
+    if (typeof framed === 'string' && inherits(framed)) return;
+    this.keptUrlLatch.delete(targetId);
+  }
+
   pendingKept(targetId) {
     if (!targetId) return false;
     let saw = false;
     for (const [id, open] of this.opening) {
       if (this.scopeTarget(id) !== targetId && id !== targetId) continue;
       saw = true;
-      if (typeof open?.url === 'string' && this.kept(open.url)) return true;
+      if (typeof open?.url !== 'string' || open.url === '' || this.kept(open.url)) return true;
     }
     return this.pendingTarget(targetId) && !saw;
   }
@@ -5665,6 +5713,7 @@ class Guard {
     const target = this.targets.get(targetId);
     if (!target) return true;
     const framed = this.frameCommitted(targetId);
+    if (this.keptUrlLatch.has(targetId)) return true;
     if (this.kept(target.url)) return true;
     if (this.kept(target.reported) && !this.scrubbedTarget(target) && !this.leftKept(framed))
       return true;
