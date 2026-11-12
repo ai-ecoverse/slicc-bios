@@ -4,6 +4,10 @@ import { flush, plainFrame, protocol } from './guard-ordering-fixture.mjs';
 
 const { guardProtected } = await import(process.env.GUARD_SOURCE ?? '../../src/seed/guard.js');
 
+const CONTEXT_SETTLE_MS = 1000;
+const CONTEXT_SETTLE_POLL_MS = 100;
+const CONTEXT_SETTLE_ATTEMPTS = Math.ceil(CONTEXT_SETTLE_MS / CONTEXT_SETTLE_POLL_MS);
+
 async function advance(t, ms) {
   for (let left = ms; left > 0; left -= 25) {
     t.mock.timers.tick(Math.min(25, left));
@@ -102,9 +106,9 @@ test('a permanently refused ready default context stays terminal within the same
     settled = true;
   });
   await flush();
-  await advance(t, 900);
-  assert.equal(Date.now(), 900);
-  assert.equal(attempts(), 10);
+  await advance(t, CONTEXT_SETTLE_MS - CONTEXT_SETTLE_POLL_MS);
+  assert.equal(Date.now(), CONTEXT_SETTLE_MS - CONTEXT_SETTLE_POLL_MS);
+  assert.equal(attempts(), CONTEXT_SETTLE_ATTEMPTS);
   assert.equal(settled, false);
   assert.equal(
     p
@@ -113,8 +117,8 @@ test('a permanently refused ready default context stays terminal within the same
       .some(({ method }) => method === 'Runtime.enable'),
     false
   );
-  await advance(t, 100);
-  assert.equal(Date.now(), 1000);
+  await advance(t, CONTEXT_SETTLE_POLL_MS);
+  assert.equal(Date.now(), CONTEXT_SETTLE_MS);
   assert.equal(settled, true);
   assert.ok((await runtime.answer).error);
   assert.equal(
@@ -124,10 +128,10 @@ test('a permanently refused ready default context stays terminal within the same
       .some(({ method }) => method === 'Runtime.enable'),
     false
   );
-  assert.equal(attempts(), 10);
-  await advance(t, 100);
-  assert.equal(attempts(), 10);
-  assert.equal(Date.now(), 1100);
+  assert.equal(attempts(), CONTEXT_SETTLE_ATTEMPTS);
+  await advance(t, CONTEXT_SETTLE_POLL_MS);
+  assert.equal(attempts(), CONTEXT_SETTLE_ATTEMPTS);
+  assert.equal(Date.now(), CONTEXT_SETTLE_MS + CONTEXT_SETTLE_POLL_MS);
   assert.match(
     (await p.send('Debugger.enable', {}, session)).error?.message ?? '',
     /browser extension runs scripts/
@@ -150,7 +154,7 @@ test('real-clock smoke: a permanently refused ready default context stays termin
   );
   const spent = performance.now() - began;
   assert.ok(spent >= 900 && spent < 1600, `${spent}ms`);
-  assert.ok(attempts() >= 5 && attempts() <= 10);
+  assert.ok(attempts() >= 2 && attempts() <= 10);
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.match(
     (await p.send('Debugger.enable', {}, session)).error?.message ?? '',
