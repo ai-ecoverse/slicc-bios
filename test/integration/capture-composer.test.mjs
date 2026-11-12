@@ -38,6 +38,15 @@ const faux = () => {
     [...(window.deep('[data-surface="live"]')?.querySelectorAll('[data-id]') ?? [])].map((chip) =>
       chip.textContent.replace(/\s+/g, ' ').trim()
     );
+  window.items = () => document.querySelector('slicc-app').model.live.items();
+  window.shown = () =>
+    [...(window.deep('[data-surface="live"]')?.querySelectorAll('[data-id]') ?? [])].map(
+      (chip) => ({
+        text: chip.textContent.replace(/\s+/g, ' ').trim(),
+        ended: chip.hasAttribute('data-ended'),
+        action: chip.querySelector('[data-action="live-act"]')?.textContent.trim(),
+      })
+    );
   window.clickItems = () =>
     document
       .querySelector('slicc-app')
@@ -78,13 +87,25 @@ const faux = () => {
       const out = context.createMediaStreamDestination();
       tone.connect(out);
       tone.start();
-      window.mics.push({
-        constraints,
-        active,
-        tracks: out.stream.getTracks(),
-        context,
-      });
-      return out.stream;
+      const tracks = out.stream.getTracks();
+      if (constraints?.video) {
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 32;
+        const paint = canvas.getContext('2d');
+        const timer = setInterval(() => {
+          paint.fillStyle = `hsl(${Date.now() % 360} 60% 50%)`;
+          paint.fillRect(0, 0, 32, 32);
+        }, 50);
+        const [track] = canvas.captureStream(10).getVideoTracks();
+        const stop = track.stop.bind(track);
+        track.stop = () => {
+          clearInterval(timer);
+          stop();
+        };
+        tracks.unshift(track);
+      }
+      window.mics.push({ constraints, active, tracks, context });
+      return constraints?.video ? new MediaStream(tracks) : out.stream;
     },
   });
   window.sounding = () => window.mics.at(-1)?.context.state;
@@ -118,6 +139,10 @@ const faux = () => {
       window.inComposer('swc-popover')?.open
         ? window.inComposer('[data-action="record-audio"]')
         : null,
+    'record-video': () =>
+      window.inComposer('swc-popover')?.open
+        ? window.inComposer('[data-action="record-video"]')
+        : null,
     stop: () => window.deep('[data-surface="live"] [data-action="live-act"]'),
     probe: () => document.getElementById('probe'),
   };
@@ -130,6 +155,27 @@ const faux = () => {
       'position:fixed;left:0;bottom:0;width:48px;height:48px;z-index:2147483647';
     button.addEventListener('click', () => window.onProbe?.());
     document.body.append(button);
+  };
+  window.again = (kind) => {
+    window.called = null;
+    window.onProbe = () => {
+      window.onProbe = null;
+      const first = window.result;
+      window.called = (async () => {
+        first.stop();
+        await first.finished;
+        const ended = window.items();
+        const next = await window.capture().record(kind);
+        const both = window.items();
+        window.switchTo(kind === 'video' ? 'camera' : 'microphone', false);
+        const off = window.items();
+        const failed = await next.finished.then(
+          () => null,
+          (error) => window.failed(error)
+        );
+        return { ended, both, off, failed, now: Date.now() };
+      })();
+    };
   };
   window.call = (what) => {
     window.called = null;
@@ -270,13 +316,8 @@ const UNCLICKED = { name: 'NotAllowedError', message: 'the composer captures onl
 
 test('the composer’s Record audio records inside the click with no consent and no click item, and the chip’s Stop attaches the recording', async (t) => {
   const page = await seven(t);
-  assert.deepEqual(await page.evaluate(() => window.capture().kinds), ['audio']);
   await chat(page);
   await openMenu(page);
-  assert.equal(
-    await page.evaluate(() => !!window.inComposer('[data-action="record-video"]')),
-    false
-  );
   await press(page, 'record-audio');
   await page.until(() => window.chips().some((chip) => chip.startsWith('Recording microphone')));
   assert.match(
@@ -393,16 +434,16 @@ test('record: only inside a click; stop() finishes a WebM take and releases the 
   await clicked(page, 'audio');
   assert.deepEqual(await outcome(page), { error: OFF('microphone') });
   assert.equal(await page.evaluate(() => window.micCalls), before);
-  const video = await page.evaluate(() =>
+  const photo = await page.evaluate(() =>
     window
       .capture()
-      .record('video')
+      .record('photo')
       .then(
         () => null,
         (error) => window.failed(error)
       )
   );
-  assert.equal(video.name, 'NotSupportedError');
+  assert.equal(photo.name, 'NotSupportedError');
   await page.evaluate(() => window.switchTo('microphone', true));
   await page.until(() => window.switchedOn('microphone'));
   assert.deepEqual(await page.evaluate(() => window.asked), []);
@@ -546,5 +587,224 @@ test('still: only inside a click; the picker runs through the screen guards with
   assert.deepEqual(await page.evaluate(() => window.asked), []);
   assert.deepEqual(await page.evaluate(() => window.clickItems()), []);
   assert.equal(await page.evaluate(() => window.prompted), 0);
+  assert.deepEqual(page.errors, []);
+});
+
+const VIDEO = /video-\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d\.webm/;
+
+test('the composer’s Record video records the camera with the microphone inside the click with no consent, and Stop attaches a WebM and leaves an ended chip', async (t) => {
+  const page = await seven(t);
+  assert.deepEqual(await page.evaluate(() => window.capture().kinds), ['audio', 'video']);
+  await chat(page);
+  await openMenu(page);
+  await press(page, 'record-video');
+  await page.until(() => window.chips().some((chip) => chip.startsWith('Recording camera')));
+  assert.match(
+    (await page.evaluate(() => window.chips()))[0],
+    /^Recording camera · with microphone · you · \d+:\d\d/
+  );
+  const opened = await page.evaluate(() =>
+    window.mics.map(({ constraints, active }) => ({ constraints, active }))
+  );
+  assert.deepEqual(opened, [{ constraints: { video: true, audio: true }, active: true }]);
+  await recording(page, 0, 4);
+  await press(page, 'stop');
+  await page.until(
+    (pattern) =>
+      window.attached().some((each) => !each.error && new RegExp(pattern).test(each.text)),
+    VIDEO.source
+  );
+  await page.until(() => window.micsLive() === 0);
+  const seen = await page.until(() => {
+    const [chip] = window.shown();
+    if (!chip?.ended) return null;
+    const [item] = window.items();
+    const button = window.targets.stop();
+    button.click();
+    return { chip, item, after: window.items().length, early: Date.now() - item.endedAt };
+  });
+  assert.match(seen.chip.text, /^Recorded camera · with microphone · you · Ended/);
+  assert.doesNotMatch(seen.chip.text, /\d+:\d\d/);
+  assert.equal(seen.chip.action, 'Dismiss');
+  assert.equal(seen.item.label, 'Recorded camera');
+  assert.equal(seen.item.action.label, 'Dismiss');
+  assert.equal(seen.after, 0);
+  assert.ok(seen.early < 3000, String(seen.early));
+  await page.until(() => window.chips().length === 0);
+  assert.deepEqual(await page.evaluate(() => window.asked), []);
+  assert.deepEqual(await page.evaluate(() => window.clickItems()), []);
+  assert.equal(await page.evaluate(() => window.prompted), 0);
+  assert.deepEqual(page.errors, []);
+});
+
+test('record video: only inside a click, one take at a time, stop() finishes a WebM, cancel discards, and the Camera and Microphone switches each refuse it and cut it', async (t) => {
+  const page = await seven(t);
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window
+        .capture()
+        .record('video')
+        .then(
+          () => null,
+          (error) => window.failed(error)
+        )
+    ),
+    UNCLICKED
+  );
+  assert.equal(await page.evaluate(() => window.micCalls), 0);
+
+  const first = await takes(page);
+  await clicked(page, 'video');
+  assert.deepEqual(await outcome(page), { ok: true });
+  await page.evaluate(() => {
+    window.first = window.result;
+  });
+  for (const kind of ['video', 'audio']) {
+    await clicked(page, kind);
+    assert.deepEqual(await outcome(page), {
+      error: { name: 'InvalidStateError', message: 'seven is already recording from the composer' },
+    });
+  }
+  assert.equal(await page.evaluate(() => window.micCalls), 1);
+  await recording(page, first, 4);
+  const take = await page.evaluate(async () => {
+    window.first.stop();
+    const { blob, mimeType, name, durationMs } = await window.first.finished;
+    return {
+      mimeType,
+      name,
+      durationMs,
+      type: blob.type,
+      size: blob.size,
+      head: await window.head(blob),
+    };
+  });
+  assert.equal(take.mimeType, 'video/webm');
+  assert.equal(take.type, 'video/webm');
+  assert.match(take.name, /^video-\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d\.webm$/);
+  assert.ok(take.durationMs > 0);
+  assert.ok(take.size > 0);
+  assert.equal(take.head, '1a 45 df a3');
+  await settled(page, 'the stopped video');
+
+  const cancelled = await takes(page);
+  await clicked(page, 'video');
+  assert.deepEqual(await outcome(page), { ok: true });
+  await recording(page, cancelled, 1);
+  await page.evaluate(() => window.result.cancel());
+  assert.deepEqual(await failure(page), {
+    name: 'AbortError',
+    message: 'the recording was cancelled',
+  });
+  await page.until(() => window.items().length === 0);
+  await settled(page, 'the cancelled video');
+
+  for (const what of ['camera', 'microphone']) {
+    const index = await takes(page);
+    await page.until((what) => window.switchedOn(what), what);
+    await clicked(page, 'video');
+    assert.deepEqual(await outcome(page), { ok: true });
+    await recording(page, index, 1);
+    await page.evaluate((what) => window.switchTo(what, false), what);
+    assert.equal(await page.evaluate(() => window.items().length), 0);
+    assert.deepEqual(await failure(page), OFF(what));
+    await settled(page, `the video the ${what} switch cut`);
+    const before = await page.evaluate(() => window.micCalls);
+    await clicked(page, 'video');
+    assert.deepEqual(await outcome(page), { error: OFF(what) });
+    assert.equal(await page.evaluate(() => window.micCalls), before);
+    await page.evaluate((what) => window.switchTo(what, true), what);
+  }
+  assert.deepEqual(await page.evaluate(() => window.asked), []);
+  assert.deepEqual(await page.evaluate(() => window.clickItems()), []);
+  assert.equal(await page.evaluate(() => window.prompted), 0);
+  assert.deepEqual(page.errors, []);
+});
+
+test('in the composer, Stop or Camera off while the browser’s camera prompt is open ends the video take at once with nothing attached, the late stream is stopped, and Record video works again', async (t) => {
+  const page = await seven(t);
+  await chat(page);
+  await page.evaluate(() => window.held());
+  await openMenu(page);
+  await press(page, 'record-video');
+  await page.until(() => window.chips().length === 1 && window.micCalls === 1);
+  await press(page, 'stop');
+  await page.until(() => window.chips().length === 0);
+  await page.until(() => window.composer().recording === null);
+  assert.deepEqual(await page.evaluate(() => window.items()), []);
+  await page.evaluate(() => window.micRelease());
+  await page.until(() => window.mics.length === 1 && window.micsLive() === 0);
+  assert.deepEqual(await page.evaluate(() => window.attached()), []);
+
+  const index = await takes(page);
+  await openMenu(page);
+  await press(page, 'record-video');
+  await page.until(() => window.chips().some((chip) => chip.startsWith('Recording camera')));
+  await recording(page, index, 2);
+  await press(page, 'stop');
+  await page.until(
+    (pattern) =>
+      window.attached().some((each) => !each.error && new RegExp(pattern).test(each.text)),
+    VIDEO.source
+  );
+  await page.until(() => window.chips().length === 0 && window.micsLive() === 0);
+
+  await page.evaluate(() => window.held());
+  await openMenu(page);
+  await press(page, 'record-video');
+  await page.until(() => window.chips().length === 1 && window.micCalls === 3);
+  await page.evaluate(() => window.switchTo('camera', false));
+  await page.until(() => window.chips().length === 0);
+  await page.until(() => window.attached().filter((each) => each.error).length === 1);
+  await page.evaluate(() => window.micRelease());
+  await page.until(() => window.mics.length === 3 && window.micsLive() === 0);
+  assert.deepEqual(await page.evaluate(() => window.asked), []);
+  assert.deepEqual(await page.evaluate(() => window.clickItems()), []);
+  assert.deepEqual(page.errors, []);
+});
+
+test('a take that ends keeps its chip for 3 s as ended with Dismiss: a new take shows next to it, a switch turned off leaves it, and it goes on its own', async (t) => {
+  const page = await seven(t);
+  for (const [kind, past, live] of [
+    ['audio', 'Recorded microphone', 'Recording microphone'],
+    ['video', 'Recorded camera', 'Recording camera'],
+  ]) {
+    const index = await takes(page);
+    await page.until(() => window.switchedOn('camera'));
+    await clicked(page, kind);
+    assert.deepEqual(await outcome(page), { ok: true });
+    await recording(page, index, 2);
+    await page.evaluate((kind) => {
+      window.probe();
+      window.again(kind);
+    }, kind);
+    await press(page, 'probe');
+    await page.until(() => !!window.called);
+    const { ended, both, off, failed, now } = await outcome(page);
+    const shape = (list) =>
+      list.map(({ label, asker, endedAt, action }) => ({
+        label,
+        asker,
+        ended: typeof endedAt === 'number',
+        action: action.label,
+      }));
+    const over = { label: past, asker: 'you', ended: true, action: 'Dismiss' };
+    assert.deepEqual(shape(ended), [over]);
+    assert.deepEqual(shape(both), [
+      over,
+      { label: live, asker: 'you', ended: false, action: 'Stop' },
+    ]);
+    assert.deepEqual(shape(off), [over]);
+    assert.deepEqual(failed, OFF(kind === 'video' ? 'camera' : 'microphone'));
+    assert.ok(now - ended[0].endedAt < 3000, String(now - ended[0].endedAt));
+    await page.until(() => window.items().length === 0);
+    const gone = await page.evaluate((endedAt) => Date.now() - endedAt, ended[0].endedAt);
+    assert.ok(gone >= 2900, String(gone));
+    await page.evaluate(
+      (what) => window.switchTo(what, true),
+      kind === 'video' ? 'camera' : 'microphone'
+    );
+    await settled(page, `the ${kind} take`);
+  }
   assert.deepEqual(page.errors, []);
 });

@@ -498,3 +498,41 @@ test('seven stops the camera it handed out when the request ends, even when the 
   await page.until(() => window.chips().length === 0 && window.running === 0);
   assert.deepEqual(page.errors, []);
 });
+
+test('a duration-limited camera recording ends its chip when the recording stops, before the program reads the reply, and the ended chip goes 3 s later', async (t) => {
+  const page = await seven(t);
+  const header = { kind: 'capture.camera', type: 'video/webm', microphone: true, duration: 1 };
+  await run(
+    page,
+    `exec 3<>/dev/embedder; printf '%s\\n' '${JSON.stringify(header)}' >&3; sleep 12; cat <&3 > /tmp/late.webm; echo "late $?"; exec 3<&-; test -s /tmp/late.webm && echo "late kept"`
+  );
+  await page.evaluate(() => {
+    window.screenText = () => {
+      const { dock } = document.querySelector('slicc-app');
+      const id = dock.api.panels
+        .map((panel) => panel.id)
+        .findLast((id) => id.startsWith('terminal:'));
+      return dock.content(id).screen.textContent;
+    };
+  });
+  await page.until(() => window.chips().some((chip) => chip.startsWith('Recording camera')));
+  const seen = await page.until(() => {
+    const chip = window.deep('[data-surface="live"] [data-id]');
+    if (!chip?.hasAttribute('data-ended')) return null;
+    return {
+      text: chip.textContent.replace(/\s+/g, ' ').trim(),
+      action: chip.querySelector('[data-action="live-act"]')?.textContent.trim(),
+      read: window.screenText().includes('late 0'),
+      running: window.running,
+    };
+  });
+  assert.match(seen.text, /^Recorded camera · with microphone · a terminal · Ended/);
+  assert.equal(seen.action, 'Dismiss');
+  assert.equal(seen.read, false);
+  assert.equal(seen.running, 0);
+  await page.until(() => window.chips().length === 0);
+  assert.equal(await page.evaluate(() => window.screenText().includes('late 0')), false);
+  await shows(page, 'late 0', 60000);
+  await shows(page, 'late kept');
+  assert.deepEqual(page.errors, []);
+});

@@ -1,9 +1,21 @@
-import { STOPPED } from './requests.js';
-
 export const COMPOSER = Object.freeze({
   tag: JSON.stringify({ kind: 'user', where: 'composer' }),
 });
-export const RECORDS = Object.freeze(['audio']);
+export const RECORDS = Object.freeze(['audio', 'video']);
+const TAKES = {
+  audio: {
+    kind: 'audio.record',
+    options: { gate: false },
+    mimeType: 'audio/webm',
+    name: 'recording',
+  },
+  video: {
+    kind: 'capture.camera',
+    options: { type: 'video/webm', microphone: true },
+    mimeType: 'video/webm',
+    name: 'video',
+  },
+};
 export const ALREADY = 'seven is already recording from the composer';
 export const CANCELLED = 'the recording was cancelled';
 export const EMPTY = 'nothing was recorded';
@@ -23,7 +35,8 @@ const asked = (kind, options, signal) => ({
 
 const clicked = () => globalThis.navigator?.userActivation?.isActive === true;
 
-export function composerCapture({ record, still, now = Date.now, active = clicked }) {
+export function composerCapture({ audio, video, still, now = Date.now, active = clicked }) {
+  const records = { audio, video };
   let live = null;
   const unclicked = () => {
     if (!active()) throw new DOMException(UNCLICKED, 'NotAllowedError');
@@ -34,18 +47,19 @@ export function composerCapture({ record, still, now = Date.now, active = clicke
       if (!RECORDS.includes(kind)) throw new DOMException(unrecorded(kind), 'NotSupportedError');
       unclicked();
       if (live) throw new DOMException(ALREADY, 'InvalidStateError');
+      const take = TAKES[kind];
       const controller = new AbortController();
       live = controller;
       let run;
       try {
-        run = await record(asked('audio.record', { gate: false }, controller.signal));
+        run = await records[kind](asked(take.kind, take.options, controller.signal));
       } catch (error) {
         live = null;
         throw error;
       }
       const started = now();
       let cancelled = false;
-      const finished = new Response(run.reply, { headers: { 'content-type': 'audio/webm' } })
+      const finished = new Response(run.reply, { headers: { 'content-type': take.mimeType } })
         .blob()
         .finally(() => {
           live = null;
@@ -56,13 +70,13 @@ export function composerCapture({ record, still, now = Date.now, active = clicke
           if (!blob.size) throw new DOMException(EMPTY, 'AbortError');
           return {
             blob,
-            mimeType: 'audio/webm',
-            name: `recording-${stamped(started)}.webm`,
+            mimeType: take.mimeType,
+            name: `${take.name}-${stamped(started)}.webm`,
             durationMs: Math.max(0, now() - started),
           };
         });
       return {
-        stop: () => controller.abort(new DOMException(STOPPED, 'AbortError')),
+        stop: () => run.stop(),
         cancel: () => {
           cancelled = true;
           controller.abort(new DOMException(CANCELLED, 'AbortError'));

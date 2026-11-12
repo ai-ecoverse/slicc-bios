@@ -220,6 +220,7 @@ export function running(hook, extras = () => ({})) {
     } = extras({
       ...request,
       signal: open.signal,
+      ended: open.ended,
     });
     open.ends?.(end);
     open.closes?.(close);
@@ -289,7 +290,7 @@ export function personal(hook, guard, extras) {
             reply?.cancel?.();
             return;
           }
-          resolve({ reply, check: guarded.check });
+          resolve({ reply, check: guarded.check, stop: open.stop });
         },
         (error) => {
           open.signal.removeEventListener('abort', cut);
@@ -308,14 +309,17 @@ export const CAMERA_REFUSED = "seven doesn't answer this camera request";
 export const CAMERA_DISMISSED = 'the request to use the camera was dismissed';
 export const CAMERA_LATE = 'nobody answered the request to use the camera within 60 s';
 const PERMISSIONS = ['camera', 'microphone'];
+const TOOK = 'Took a photo';
 
 export function capturing(kind, options, prompt = null) {
   if (kind === 'capture.camera') {
     cameraDevice(options);
     const microphone = Boolean(captureMicrophone(options));
+    const video = CAPTURE_VIDEO.includes(options?.type);
     return {
       kind: 'camera',
-      label: CAPTURE_VIDEO.includes(options?.type) ? 'Recording camera' : 'Taking a photo',
+      label: video ? 'Recording camera' : 'Taking a photo',
+      past: video ? 'Recorded camera' : TOOK,
       what: microphone ? 'with microphone' : '',
       whats: microphone ? ['camera', 'microphone'] : ['camera'],
       picker: false,
@@ -327,6 +331,7 @@ export function capturing(kind, options, prompt = null) {
     return {
       kind: 'camera',
       label: '',
+      past: '',
       what: '',
       whats: [],
       picker: false,
@@ -335,9 +340,11 @@ export function capturing(kind, options, prompt = null) {
     };
   if (kind === 'capture.screen') {
     const microphone = Boolean(captureMicrophone(options));
+    const video = CAPTURE_VIDEO.includes(options?.type);
     return {
       kind: 'screen',
-      label: CAPTURE_VIDEO.includes(options?.type) ? 'Recording screen' : 'Taking a photo',
+      label: video ? 'Recording screen' : 'Taking a photo',
+      past: video ? 'Recorded screen' : TOOK,
       what: microphone ? 'with microphone' : '',
       whats: microphone ? ['screen', 'microphone'] : ['screen'],
       picker: true,
@@ -350,6 +357,7 @@ export function capturing(kind, options, prompt = null) {
     return {
       kind: 'microphone',
       label: 'Recording microphone',
+      past: 'Recorded microphone',
       what: '',
       whats: listing ? [] : ['microphone'],
       picker: false,
@@ -361,6 +369,7 @@ export function capturing(kind, options, prompt = null) {
     return {
       kind: 'microphone',
       label: 'Recording microphone',
+      past: 'Recorded microphone',
       what: '',
       whats: ['microphone'],
       picker: false,
@@ -463,7 +472,7 @@ function watched(body, done) {
           return;
         }
         if (read.done) {
-          done();
+          done(true);
           controller.close();
         } else controller.enqueue(read.value);
       },
@@ -545,7 +554,7 @@ export function captures({
   const watch = (request, capture, asker) => {
     const local = new AbortController();
     let end = () => false;
-    let remove = () => {};
+    let chip = null;
     let finished = false;
     let close = () => {};
     const entry = {
@@ -553,12 +562,20 @@ export function captures({
       stop: (reason) => {
         if (!end()) local.abort(reason);
       },
+      cut: () => chip?.(),
     };
-    const done = () => {
+    const ended = () => {
+      open.delete(entry);
+      chip?.end(capture.past);
+    };
+    const done = (whole = false) => {
       if (finished) return;
       finished = true;
-      open.delete(entry);
-      remove();
+      if (whole) ended();
+      else {
+        open.delete(entry);
+        chip?.();
+      }
       request.signal?.removeEventListener('abort', forward);
       close();
     };
@@ -568,7 +585,7 @@ export function captures({
     };
     if (!capture.listing) {
       open.add(entry);
-      remove = live.add({
+      chip = live.add({
         kind: capture.kind,
         label: capture.label,
         what: capture.what,
@@ -586,12 +603,14 @@ export function captures({
       closes(given) {
         if (typeof given === 'function') close = given;
       },
+      ended,
+      stop: () => entry.stop(refused(STOPPED)),
       reply: (reply) => {
         if (reply?.getReader) return watched(reply, done);
-        done();
+        done(true);
         return reply;
       },
-      done,
+      done: () => done(),
     };
   };
   const guard = (request, prompt) => {
@@ -606,7 +625,10 @@ export function captures({
   guard.on = on;
   guard.off = (what) => {
     for (const entry of [...open])
-      if (entry.whats.includes(what)) entry.stop(refused(switchedOff(what)));
+      if (entry.whats.includes(what)) {
+        entry.stop(refused(switchedOff(what)));
+        entry.cut();
+      }
   };
   return guard;
 }
@@ -761,6 +783,25 @@ function stopped(stream) {
   for (const track of stream?.getTracks?.() ?? []) track.stop();
 }
 
+export function released(stream, then) {
+  const tracks = stream?.getTracks?.() ?? [];
+  let left = tracks.length;
+  for (const track of tracks) {
+    const stop = track.stop;
+    let once = false;
+    track.stop = function (...args) {
+      const result = stop.apply(this, args);
+      if (!once) {
+        once = true;
+        left -= 1;
+        if (left === 0) then();
+      }
+      return result;
+    };
+  }
+  return stream;
+}
+
 export async function handleOf(
   track,
   { wait = HANDLE_MS, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}
@@ -786,7 +827,7 @@ export function displayer({
     if (!handle && !SHARED.includes(track?.getSettings?.().displaySurface)) return UNKNOWN_TAB;
     return null;
   };
-  return ({ options, signal } = {}) => {
+  return ({ options, signal, ended = () => {} } = {}) => {
     let reason = null;
     let mic = null;
     let sharing = null;
@@ -848,7 +889,7 @@ export function displayer({
       if (reason) throw reason;
       settled = true;
       sharing = track ?? null;
-      return stream;
+      return released(stream, ended);
     };
     const end = () => {
       if (!sharing || !CAPTURE_VIDEO.includes(options?.type)) return false;
@@ -921,7 +962,7 @@ export function cameraman({
   media = () => globalThis.navigator?.mediaDevices,
   on = () => true,
 } = {}) {
-  return ({ options, signal } = {}) => {
+  return ({ options, signal, ended = () => {} } = {}) => {
     let used = false;
     let sharing = null;
     let held = null;
@@ -944,7 +985,7 @@ export function cameraman({
         throw signal.reason;
       }
       sharing = stream?.getVideoTracks?.()[0] ?? null;
-      return stream;
+      return released(stream, ended);
     };
     const end = () => {
       if (!sharing || !CAPTURE_VIDEO.includes(options?.type)) return false;
