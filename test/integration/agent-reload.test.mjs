@@ -32,7 +32,7 @@ function watch() {
   look();
 }
 
-test('a reload says the agent is starting until it lists its cones, and its chat comes back in the same column', {
+test('a reload says the agent is starting until it lists its cones, asks to keep Install / Update closed, and its chat comes back in the same column', {
   timeout: 35 * 60 * 1000,
 }, async (t) => {
   const page = await chrome.page(t);
@@ -44,6 +44,9 @@ test('a reload says the agent is starting until it lists its cones, and its chat
   });
   await page.goto('/');
   await ready(page);
+  const cold = await page.evaluate(() =>
+    document.querySelector('slicc-app').model.updates.opensAtBoot()
+  );
   await agentUp(page);
   await page.evaluate(() => {
     const app = document.querySelector('slicc-app');
@@ -59,6 +62,9 @@ test('a reload says the agent is starting until it lists its cones, and its chat
   await page.init(watch);
   await page.reload();
   await ready(page, undefined, { tools: false });
+  const warm = await page.evaluate(() =>
+    document.querySelector('slicc-app').model.updates.opensAtBoot()
+  );
   await agentUp(page, { label: 'agent after the reload' });
   await page.until(() => document.querySelector('slicc-app').model.agent.list().length > 0);
   await new Promise((resolve) => setTimeout(resolve, 500));
@@ -74,5 +80,6 @@ test('a reload says the agent is starting until it lists its cones, and its chat
     'Agents never said the agent shows up once it starts'
   );
   assert.equal(await page.evaluate(column), before);
+  assert.deepEqual({ cold, warm }, { cold: true, warm: false });
   assert.deepEqual(page.errors, []);
 });
