@@ -132,13 +132,12 @@ async function step(route, client, name, work) {
   }
 }
 
-async function unguarded(t) {
+async function unguarded() {
   const socket = new WebSocket(browser, { maxPayload: 256 * 1024 * 1024 });
   await new Promise((resolve, reject) => {
     socket.once('open', resolve);
     socket.once('error', reject);
   });
-  t.after(() => socket.close());
   const waiting = new Map();
   let next = 0;
   socket.on('message', (data) => {
@@ -148,23 +147,35 @@ async function unguarded(t) {
     waiting.delete(message.id);
     done(message);
   });
-  return (method, params = {}) =>
+  const send = (method, params = {}) =>
     new Promise((resolve, reject) => {
       next += 1;
-      waiting.set(next, (message) =>
-        message.error ? reject(new Error(message.error.message)) : resolve(message.result)
-      );
-      socket.send(JSON.stringify({ id: next, method, params }));
+      const id = next;
+      const timer = setTimeout(() => {
+        waiting.delete(id);
+        reject(new Error(`${method}: no answer in 10 s`));
+      }, 10000);
+      waiting.set(id, (message) => {
+        clearTimeout(timer);
+        if (message.error) reject(new Error(message.error.message));
+        else resolve(message.result);
+      });
+      socket.send(JSON.stringify({ id, method, params }));
     });
+  return { send, close: () => socket.close() };
 }
 
 async function vaultOpen(t) {
-  const send = await unguarded(t);
+  const { send, close } = await unguarded();
+  let targetId;
+  t.after(async () => {
+    if (targetId) await send('Target.closeTarget', { targetId }).catch(() => {});
+    close();
+  });
   await send('Storage.setCookies', {
     cookies: [{ name: VAULT_COOKIE, value: 'v', url: VAULT }],
   });
-  const { targetId } = await send('Target.createTarget', { url: VAULT, background: true });
-  t.after(() => send('Target.closeTarget', { targetId }).catch(() => {}));
+  ({ targetId } = await send('Target.createTarget', { url: VAULT, background: true }));
 }
 
 async function bridge(t) {
