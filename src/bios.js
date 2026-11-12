@@ -140,6 +140,7 @@ await step('seed', async () => {
     'adobe.js',
     'agent.js',
     'approvals.js',
+    'approvals-run.js',
     'beta.js',
     'browser.js',
     'callback.html',
