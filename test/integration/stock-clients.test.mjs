@@ -14,6 +14,7 @@ const SCRIPTS = /slicc: refused: scripts and bindings for later documents/;
 const SETTINGS = /slicc: refused: settings for a whole session/;
 const OUT_OF_REACH = /slicc: refused: seven’s own pages and the vault are out of reach/;
 const STEP_MS = 30000;
+const SAME_SITE_IFRAMES_ONLY = new Set(['extension']);
 const HELD_MS = 5000;
 const STOCK_CLI_MIN = '1.64.0';
 const SLICC_VERSION = JSON.parse(
@@ -58,6 +59,7 @@ const fixture = createServer((req, res) => {
   if (url.pathname === '/framed-same')
     return html('<iframe id="frame" src="/inner"></iframe>', '<title>framed</title>');
   if (url.pathname === '/inner') return html('<p id="inner">inner</p>', '<title>inner</title>');
+  if (url.pathname === '/vault-frame') return html('<p id="inner">vault-secret</p>');
   if (url.pathname === '/vault-nest')
     return html(`<iframe src="${FRAME}/inner?n=nested-in-vault"></iframe>`);
   res.writeHead(404);
@@ -552,10 +554,13 @@ async function puppeteerFlow(route, endpoint) {
     );
     await run('popup load', () => popup.waitForFunction(() => document.readyState === 'complete'));
     assert.equal(await popup.title(), 'popup');
-    await run('iframe', () => page.goto(`${ORDINARY}/framed-same`));
+    const inner = SAME_SITE_IFRAMES_ONLY.has(route) ? `${ORDINARY}/inner` : `${FRAME}/inner`;
+    await run('iframe', () =>
+      page.goto(`${ORDINARY}/${SAME_SITE_IFRAMES_ONLY.has(route) ? 'framed-same' : 'framed'}`)
+    );
     const frame = await run('iframe frame', async () => {
       for (;;) {
-        const found = page.frames().find((item) => item.url().startsWith(`${ORDINARY}/inner`));
+        const found = page.frames().find((item) => item.url().startsWith(inner));
         if (found) return found;
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
@@ -617,7 +622,7 @@ for (const route of ['devtools', 'extension', 'link'])
     snapshots.clear();
   });
 
-async function rawClient(t, endpoint) {
+async function rawClient(t, endpoint, follow = false) {
   const socket = new WebSocket(endpoint, { maxPayload: 256 * 1024 * 1024 });
   await new Promise((resolve, reject) => {
     socket.once('open', resolve);
@@ -631,9 +636,17 @@ async function rawClient(t, endpoint) {
     const message = JSON.parse(data.toString());
     received.push(message);
     const done = waiting.get(message.id);
-    if (!done) return;
-    waiting.delete(message.id);
-    done(message);
+    if (done) {
+      waiting.delete(message.id);
+      done(message);
+    }
+    if (!follow || message.method !== 'Target.attachedToTarget') return;
+    const session = message.params.sessionId;
+    void send(
+      'Target.setAutoAttach',
+      { autoAttach: true, waitForDebuggerOnStart: true, flatten: true, filter: [{}] },
+      session
+    ).then(() => send('Runtime.runIfWaitingForDebugger', {}, session));
   });
   const send = (method, params = {}, sessionId) =>
     new Promise((resolve) => {
@@ -651,7 +664,16 @@ async function rawClient(t, endpoint) {
     });
   const leaked = (...values) => values.filter((value) => JSON.stringify(received).includes(value));
   const mentions = (targetId) => JSON.stringify(received).includes(targetId);
-  return { send, received, leaked, mentions };
+  const attachments = () =>
+    received.filter((message) => message.method === 'Target.attachedToTarget');
+  const attachedAt = (type, url) =>
+    until(`${type} attachment at ${url}`, () =>
+      attachments().find(
+        (message) =>
+          message.params.targetInfo.type === type && message.params.targetInfo.url.startsWith(url)
+      )
+    );
+  return { send, received, leaked, mentions, attachments, attachedAt };
 }
 
 async function unreachableFrame(client, frame, ...secrets) {
@@ -724,4 +746,106 @@ test('a raw client on the devtools route gets no listing, discovery, target info
     );
     await unreachableFrame(client, sprinkle, marker);
   });
+});
+
+const settled = () => new Promise((resolve) => setTimeout(resolve, 3000));
+
+test("a raw client with Puppeteer's auto-attach reads a cross-site iframe through the guard on the devtools route, and gets no session or URL of a protected iframe or of an iframe that moves into one", {
+  timeout: 10 * 60 * 1000,
+}, async (t) => {
+  const opened = await bridge(t);
+  const client = await rawClient(t, `${opened.endpoint}/devtools`, true);
+  const tabs = await client.send('Target.setAutoAttach', {
+    autoAttach: true,
+    waitForDebuggerOnStart: true,
+    flatten: true,
+    filter: [{ type: 'page', exclude: true }, {}],
+  });
+  assert.equal(tabs.error, undefined);
+  const open = async (path) => {
+    const created = await client.send('Target.createTarget', { url: `${ORDINARY}${path}` });
+    assert.equal(created.error, undefined, `createTarget ${path}`);
+    const { targetId } = created.result;
+    const page = await until(`a page attachment for ${path}`, () =>
+      client
+        .attachments()
+        .find(
+          (message) =>
+            message.params.targetInfo.type === 'page' &&
+            message.params.targetInfo.targetId === targetId
+        )
+    );
+    const session = page.params.sessionId;
+    let ready = false;
+    await until(`${path} loaded`, () => {
+      void client
+        .send(
+          'Runtime.evaluate',
+          { expression: 'document.readyState', returnByValue: true },
+          session
+        )
+        .then((answer) => {
+          ready ||= answer.result?.result?.value === 'complete';
+        });
+      return ready;
+    });
+    return session;
+  };
+  const evaluate = (expression, session) =>
+    client.send('Runtime.evaluate', { expression, returnByValue: true }, session);
+  const read = async (session) =>
+    (await evaluate("document.querySelector('#inner')?.textContent", session)).result?.result
+      ?.value;
+  const frameIn = (session, src) =>
+    evaluate(
+      `void document.body.appendChild(Object.assign(document.createElement('iframe'), { id: 'frame', src: ${JSON.stringify(src)} }))`,
+      session
+    );
+  const loaded = async (name, hit) => {
+    const started = Date.now();
+    while (!hits.has(hit) && Date.now() - started < 10000)
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    console.log(`STOCK-IFRAME ${name}: ${hits.has(hit) ? 'loaded' : 'never requested'}`);
+  };
+
+  await t.test('an ordinary cross-site iframe is attached and readable', async () => {
+    await open('/framed');
+    const frame = await client.attachedAt('iframe', `${FRAME}/inner`);
+    assert.equal(await read(frame.params.sessionId), 'inner');
+  });
+
+  await t.test('a protected cross-site iframe inside an ordinary page', async () => {
+    const page = await open('/inner?n=protected-host');
+    assert.equal((await frameIn(page, `${VAULT_ORIGIN}/vault-frame?n=direct`)).error, undefined);
+    await loaded('protected', 'vault.sliccy.ai/vault-frame?n=direct');
+    await settled();
+    assert.equal((await client.send('Target.getTargets', {})).error, undefined);
+    assert.deepEqual(client.leaked('vault-frame', 'vault.sliccy.ai', 'vault-secret'), []);
+  });
+
+  await t.test(
+    'an ordinary iframe that navigates into a protected origin after it was shown',
+    async () => {
+      const page = await open('/inner?n=mover-host');
+      assert.equal((await frameIn(page, `${FRAME}/inner?n=mover`)).error, undefined);
+      const frame = await client.attachedAt('iframe', `${FRAME}/inner?n=mover`);
+      const session = frame.params.sessionId;
+      assert.equal(await read(session), 'inner');
+      await evaluate(
+        `void (document.querySelector('#frame').src = ${JSON.stringify(`${VAULT_ORIGIN}/vault-frame?n=moved`)})`,
+        page
+      );
+      await loaded('moved', 'vault.sliccy.ai/vault-frame?n=moved');
+      await settled();
+      const after = await evaluate('location.href + document.documentElement.outerHTML', session);
+      const detached = client.received.some(
+        (message) =>
+          message.method === 'Target.detachedFromTarget' && message.params?.sessionId === session
+      );
+      console.log(
+        `STOCK-IFRAME moved: detached ${detached}, answer ${JSON.stringify(after).slice(0, 200)}`
+      );
+      assert.deepEqual(client.leaked('n=moved', 'vault.sliccy.ai', 'vault-secret'), []);
+    }
+  );
 });

@@ -192,6 +192,7 @@ const TAB_COMMANDS = new Set([
 ]);
 const TAB_FILTER = [{ type: 'tab' }];
 const PAGE_FILTER = [{ type: 'page' }];
+const FRAME_FILTER = [{ type: 'page' }, { type: 'iframe' }];
 const WORKER_FAMILY = ['worker', 'shared_worker', 'service_worker'];
 const DEFAULT_FILTER = [{ type: 'browser', exclude: true }, { type: 'tab', exclude: true }, {}];
 
@@ -6657,8 +6658,13 @@ function narrowed(message, device) {
   )
     return { ...message, params: { ...params, filter: WORKERLESS_DEFAULT } };
   if (method === 'Target.setAutoAttach' && params?.autoAttach && wide(params, device)) {
-    const tabs = message.sessionId === undefined && admits(params.filter, 'tab');
-    return { ...message, params: { ...params, filter: tabs ? TAB_FILTER : PAGE_FILTER } };
+    const browser = message.sessionId === undefined;
+    const filter = browser
+      ? admits(params.filter, 'tab')
+        ? TAB_FILTER
+        : PAGE_FILTER
+      : FRAME_FILTER;
+    return { ...message, params: { ...params, filter } };
   }
   return message;
 }
