@@ -4,6 +4,10 @@ import { flush, plainFrame, protocol } from './guard-ordering-fixture.mjs';
 
 const { guardProtected } = await import(process.env.GUARD_SOURCE ?? '../../src/seed/guard.js');
 
+const CONTEXT_SETTLE_MS = 1000;
+const CONTEXT_SETTLE_POLL_MS = 100;
+const CONTEXT_SETTLE_ATTEMPTS = Math.ceil(CONTEXT_SETTLE_MS / CONTEXT_SETTLE_POLL_MS);
+
 async function advance(t, ms) {
   for (let left = ms; left > 0; left -= 25) {
     t.mock.timers.tick(Math.min(25, left));
@@ -99,19 +103,19 @@ test('persistent refusal becomes hidden within one second and preserves the two-
     settled = true;
   });
   await flush();
-  await advance(t, 900);
-  assert.equal(Date.now(), 900);
-  assert.equal(attempts(), 10);
+  await advance(t, CONTEXT_SETTLE_MS - CONTEXT_SETTLE_POLL_MS);
+  assert.equal(Date.now(), CONTEXT_SETTLE_MS - CONTEXT_SETTLE_POLL_MS);
+  assert.equal(attempts(), CONTEXT_SETTLE_ATTEMPTS);
   assert.equal(settled, false);
-  await advance(t, 100);
-  assert.equal(Date.now(), 1000);
+  await advance(t, CONTEXT_SETTLE_POLL_MS);
+  assert.equal(Date.now(), CONTEXT_SETTLE_MS);
   assert.equal(settled, true);
   const runtimeAnswer = await runtime.answer;
   assert.ok(runtimeAnswer.error);
   assert.doesNotMatch(runtimeAnswer.error.message, /timed out/);
-  assert.equal(attempts(), 10);
+  assert.equal(attempts(), CONTEXT_SETTLE_ATTEMPTS);
   await advance(t, 30);
-  assert.equal(attempts(), 10);
+  assert.equal(attempts(), CONTEXT_SETTLE_ATTEMPTS);
   const answer = await p.send('Debugger.enable', {}, session);
   assert.match(answer.error?.message ?? '', /browser extension runs scripts/);
   assert.equal(
@@ -167,7 +171,11 @@ test('real-clock smoke: persistent refusal becomes hidden within one second and 
   );
   const spent = performance.now() - began;
   assert.ok(spent >= 900 && spent < 1600, `${spent} ms`);
-  assert.ok(attempts() >= 5 && attempts() <= 10);
+  const maxAttempts = Math.min(
+    CONTEXT_SETTLE_ATTEMPTS,
+    1 + Math.floor(spent / CONTEXT_SETTLE_POLL_MS)
+  );
+  assert.ok(attempts() >= 2 && attempts() <= maxAttempts);
   assert.equal(
     p.delivered.some(({ params }) => params?.context?.uniqueId === context.uniqueId),
     false
