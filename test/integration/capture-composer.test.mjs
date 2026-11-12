@@ -57,6 +57,11 @@ const faux = () => {
       .then((buffer) => [...new Uint8Array(buffer)].map((byte) => byte.toString(16)).join(' '));
   window.capture = () => document.querySelector('slicc-app').model.capture;
   window.switchTo = (key, on) => document.querySelector('slicc-app').model.switches.set(key, on);
+  window.switchedOn = (key) =>
+    document
+      .querySelector('slicc-app')
+      .model.switches.list()
+      .find((each) => each.key === key)?.on === true;
   window.mics = [];
   window.micCalls = 0;
   window.micHold = null;
@@ -83,6 +88,23 @@ const faux = () => {
     },
   });
   window.sounding = () => window.mics.at(-1)?.context.state;
+  window.recorders = [];
+  const Recorder = MediaRecorder;
+  window.MediaRecorder = class extends Recorder {
+    constructor(...args) {
+      super(...args);
+      const seen = { recorder: this, chunks: 0 };
+      window.recorders.push(seen);
+      this.addEventListener('dataavailable', (event) => {
+        if (event.data?.size) seen.chunks += 1;
+      });
+    }
+  };
+  window.take = (index) => ({
+    chunks: window.recorders[index]?.chunks ?? 0,
+    recorder: window.recorders[index]?.recorder.state ?? 'none',
+    context: window.sounding() ?? 'none',
+  });
   window.inComposer = (selector) => window.deep(selector, window.composer().shadowRoot);
   window.targets = {
     terminal: () => {
@@ -117,6 +139,10 @@ const faux = () => {
       window.called = (what === 'still' ? port.still() : port.record(what)).then(
         (value) => {
           window.result = value;
+          window.ended = value.finished?.then(
+            () => null,
+            (error) => window.failed(error)
+          );
           return { ok: true };
         },
         (error) => ({ error: window.failed(error) })
@@ -197,13 +223,33 @@ async function clicked(page, what) {
 
 const outcome = (page) => page.evaluate(() => window.called);
 
-const failure = (page) =>
-  page.evaluate(() =>
-    window.result.finished.then(
-      () => null,
-      (error) => window.failed(error)
-    )
-  );
+const failure = (page) => page.evaluate(() => window.ended);
+
+async function takes(page) {
+  await page.until(() => window.switchedOn('microphone'));
+  return page.evaluate(() => window.recorders.length);
+}
+
+async function settled(page, step) {
+  await page.until(() => window.chips().length === 0);
+  await page.until(() => window.micsLive() === 0);
+  assert.deepEqual(page.errors, [], `${step} left page errors: ${JSON.stringify(page.errors)}`);
+}
+
+async function recording(page, index, chunks) {
+  const ready = (index, chunks) => {
+    const { recorder, chunks: seen } = window.take(index);
+    return recorder === 'recording' && seen >= chunks;
+  };
+  try {
+    await page.within(10000, ready, index, chunks);
+  } catch {
+    const seen = await page.evaluate((index) => window.take(index), index);
+    assert.fail(
+      `take ${index} wanted ${chunks} chunks while recording and after 10 s had ${seen.chunks}, recorder ${seen.recorder}, AudioContext ${seen.context}`
+    );
+  }
+}
 
 async function openMenu(page) {
   await press(page, 'add');
@@ -273,6 +319,7 @@ test('record: only inside a click; stop() finishes a WebM take and releases the 
   );
   assert.equal(await page.evaluate(() => window.micCalls), 0);
 
+  const first = await takes(page);
   await clicked(page, 'audio');
   assert.deepEqual(await outcome(page), { ok: true });
   await page.evaluate(() => {
@@ -282,7 +329,7 @@ test('record: only inside a click; stop() finishes a WebM take and releases the 
   assert.deepEqual(await outcome(page), {
     error: { name: 'InvalidStateError', message: 'seven is already recording from the composer' },
   });
-  await new Promise((resolve) => setTimeout(resolve, 1200));
+  await recording(page, first, 6);
   const take = await page.evaluate(async () => {
     const chips = window.chips();
     const state = window.sounding();
@@ -307,42 +354,41 @@ test('record: only inside a click; stop() finishes a WebM take and releases the 
   assert.ok(take.durationMs >= 1000, String(take.durationMs));
   assert.ok(take.size > 0);
   assert.equal(take.head, '1a 45 df a3');
-  await page.until(() => window.chips().length === 0);
-  await page.until(() => window.micsLive() === 0);
+  await settled(page, 'the stopped take');
 
+  const cancelled = await takes(page);
   await clicked(page, 'audio');
   assert.deepEqual(await outcome(page), { ok: true });
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  await recording(page, cancelled, 1);
   await page.evaluate(() => window.result.cancel());
   assert.deepEqual(await failure(page), {
     name: 'AbortError',
     message: 'the recording was cancelled',
   });
-  await page.until(() => window.chips().length === 0);
-  await page.until(() => window.micsLive() === 0);
+  await settled(page, 'the cancelled take');
 
   await page.evaluate(() => {
     window.silent = true;
   });
+  const silent = await takes(page);
   await clicked(page, 'audio');
   assert.deepEqual(await outcome(page), { ok: true });
+  await recording(page, silent, 0);
   assert.equal(await page.evaluate(() => window.sounding()), 'suspended');
-  await new Promise((resolve) => setTimeout(resolve, 500));
   await page.evaluate(() => window.result.stop());
   assert.deepEqual(await failure(page), { name: 'AbortError', message: 'nothing was recorded' });
   await page.evaluate(() => {
     window.silent = false;
   });
-  await page.until(() => window.chips().length === 0);
-  await page.until(() => window.micsLive() === 0);
+  await settled(page, 'the empty take');
 
+  const cut = await takes(page);
   await clicked(page, 'audio');
   assert.deepEqual(await outcome(page), { ok: true });
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  await recording(page, cut, 1);
   await page.evaluate(() => window.switchTo('microphone', false));
   assert.deepEqual(await failure(page), OFF('microphone'));
-  await page.until(() => window.chips().length === 0);
-  await page.until(() => window.micsLive() === 0);
+  await settled(page, 'the take the switch cut');
   const before = await page.evaluate(() => window.micCalls);
   await clicked(page, 'audio');
   assert.deepEqual(await outcome(page), { error: OFF('microphone') });
@@ -357,6 +403,8 @@ test('record: only inside a click; stop() finishes a WebM take and releases the 
       )
   );
   assert.equal(video.name, 'NotSupportedError');
+  await page.evaluate(() => window.switchTo('microphone', true));
+  await page.until(() => window.switchedOn('microphone'));
   assert.deepEqual(await page.evaluate(() => window.asked), []);
   assert.deepEqual(await page.evaluate(() => window.clickItems()), []);
   assert.equal(await page.evaluate(() => window.prompted), 0);
