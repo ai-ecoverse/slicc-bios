@@ -52,6 +52,7 @@ import {
   createNotices,
   heldAgent,
   holdComposer,
+  LAUNCHING,
   mirrorHold,
   reportRepairs,
   reportStopped,
@@ -475,7 +476,7 @@ document.documentElement.dataset.users = mode;
 const keep = keepStorage({ notices, prompts });
 let model = null;
 let files = null;
-const composer = holdComposer();
+const composer = holdComposer(LAUNCHING);
 let presentation = null;
 let kernel = null;
 const requests = pageRequests({
@@ -1142,6 +1143,7 @@ async function follow() {
   const waiting = claimed.owner ? updates : createUpdates({ ready: true });
   app.model = {
     ...model,
+    agent: heldAgent(model.agent, composer),
     updates: waiting,
     notices,
     approvals: approving,

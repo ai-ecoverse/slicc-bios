@@ -79,11 +79,13 @@ export function agentInstalling(from, to) {
 export const startingLine = (from) =>
   from ? 'Seven is updating its agent.' : 'Seven is installing its agent.';
 
+export const LAUNCHING = 'Seven is starting its agent.';
+
 export const RELOAD_FIRST = 'Reload this tab to reach the new agent.';
 
-function lines() {
+function lines(initial = null) {
   const listeners = new Set();
-  let line = null;
+  let line = initial;
   return {
     held: () => line,
     on(listener) {
@@ -98,8 +100,8 @@ function lines() {
   };
 }
 
-export function holdComposer() {
-  const { take, ...source } = lines();
+export function holdComposer(initial = null) {
+  const { take, ...source } = lines(initial);
   return { ...source, hold: (line) => take(line) };
 }
 
