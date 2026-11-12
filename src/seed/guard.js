@@ -893,6 +893,10 @@ class Guard {
   }
 
   eventFields(value = {}) {
+    if (value.type === 'tab') {
+      const { openerId, openerFrameId, url, title, ...bare } = value;
+      return { ...this.eventFields({ ...bare, type: 'other' }), type: 'tab', url: '', title: '' };
+    }
     const safe = {};
     for (const key of [
       'id',
@@ -943,6 +947,7 @@ class Guard {
               targetInfo: {
                 ...this.eventFields(params.targetInfo),
                 ...(method === 'Target.attachedToTarget' &&
+                params.targetInfo.type !== 'tab' &&
                 this.fresh(proof) &&
                 this.is.url(params.targetInfo.url)
                   ? {
