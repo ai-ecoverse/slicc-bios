@@ -52,7 +52,7 @@
     "@ai-ecoverse/slicc": "1.67.0",
     "@ai-ecoverse/slicc-browsers": "1.22.1",
     "@ai-ecoverse/slicc-cdp": "1.48.7",
-    "@ai-ecoverse/slicc-kernel": "1.178.4",
+    "@ai-ecoverse/slicc-kernel": "1.179.0",
     "@ai-ecoverse/slicc-shared-web": "2.14.2",
     "@ai-ecoverse/slicc-spectrum": "2.11.2",
     "@ai-ecoverse/slicc-vault": "1.25.2",
