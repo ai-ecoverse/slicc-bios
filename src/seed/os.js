@@ -212,9 +212,9 @@ const { kind } = network;
 const browser = createBrowser(network);
 let poke = () => {};
 const control = browserControl({
-  observe: (connection) => {
+  observe: (connection, options) => {
     poke();
-    return browser.observe(connection);
+    return browser.observe(connection, options);
   },
   links: () => links,
   before: () => sweep({ hosts: () => browserHosts(), own: location.origin }),
