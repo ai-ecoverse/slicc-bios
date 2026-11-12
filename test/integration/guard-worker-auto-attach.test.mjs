@@ -355,3 +355,97 @@ for (const route of [undefined, { kind: 'link' }]) {
     );
   });
 }
+
+const VAULT_URL = 'https://vault.sliccy.ai/unlock';
+
+for (const route of [undefined, { kind: 'link' }]) {
+  const name = route?.kind ?? 'devtools';
+  for (const turn of ['hold', 'navigate', 'infoChanged', 'detached']) {
+    test(`on the ${name} route, a shown worker is cut when its creator turns (${turn})`, async () => {
+      const pageId = `turning-page-${name}-${turn}`;
+      const workerId = `turning-worker-${name}-${turn}`;
+      const infos = {
+        [pageId]: { type: 'page', url: ORDINARY, title: 'Ordinary' },
+        [workerId]: { type: 'worker', url: 'https://ordinary.invalid/worker.js', title: '' },
+      };
+      const { raw, got, send, attach, settle, detached } = client(infos, route, {
+        failing: new Set([`Page.getFrameTree:${workerId}`]),
+      });
+      const page = (await send('Target.attachToTarget', { targetId: pageId, flatten: true })).result
+        ?.sessionId;
+      assert.ok(page, 'the ordinary page is shown');
+      await send(
+        'Target.setAutoAttach',
+        {
+          autoAttach: true,
+          waitForDebuggerOnStart: true,
+          flatten: true,
+          filter: [{ type: 'worker' }],
+        },
+        page
+      );
+      const worker = 'turning-worker-session';
+      attach(worker, workerId, page, true);
+      await settle(() => attachedTo(got, worker), 400);
+      assert.ok(attachedTo(got, worker), 'the ordinary worker is shown');
+      assert.ok((await send('Runtime.enable', {}, worker)).result, 'Runtime.enable on the worker');
+      const said = (text) =>
+        raw.emit({
+          method: 'Runtime.consoleAPICalled',
+          sessionId: worker,
+          params: {
+            type: 'log',
+            args: [{ type: 'string', value: text }],
+            executionContextId: 1,
+            timestamp: 1,
+          },
+        });
+      said('BEFORE-turn');
+      await settle(() => JSON.stringify(got).includes('BEFORE-turn'), 100);
+      assert.ok(
+        JSON.stringify(got).includes('BEFORE-turn'),
+        'worker events reach the client before the turn'
+      );
+      if (turn === 'hold') hold(pageId);
+      if (turn === 'navigate') {
+        infos[pageId] = { type: 'page', url: VAULT_URL, title: 'Vault' };
+        raw.emit({
+          method: 'Page.frameNavigated',
+          sessionId: page,
+          params: {
+            frame: {
+              id: `frame-${pageId}`,
+              loaderId: 'l2',
+              url: VAULT_URL,
+              securityOrigin: 'https://vault.sliccy.ai',
+            },
+            type: 'Navigation',
+          },
+        });
+      }
+      if (turn === 'infoChanged') {
+        infos[pageId] = { type: 'page', url: VAULT_URL, title: 'Vault' };
+        raw.emit({
+          method: 'Target.targetInfoChanged',
+          params: { targetInfo: { targetId: pageId, attached: true, ...infos[pageId] } },
+        });
+      }
+      if (turn === 'detached')
+        raw.emit({
+          method: 'Target.detachedFromTarget',
+          params: { sessionId: page, targetId: pageId },
+        });
+      await settle(() => turn === 'hold' || detached(worker), 200);
+      said(`AFTER-${name}-${turn}`);
+      await settle(() => detached(worker), 200);
+      assert.ok(detached(worker), 'a real detach went out for the worker');
+      assert.ok(
+        !JSON.stringify(got).includes(`AFTER-${name}-${turn}`),
+        'no worker event after the turn'
+      );
+      const evaluated = await send('Runtime.evaluate', { expression: '1' }, worker);
+      assert.ok(evaluated.error, `evaluate is refused: ${JSON.stringify(evaluated)}`);
+      assert.ok(!JSON.stringify(got).includes('vault.sliccy.ai'));
+    });
+  }
+}

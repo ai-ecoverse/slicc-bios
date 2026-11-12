@@ -2363,6 +2363,32 @@ class Guard {
     void this.call('Target.detachFromTarget', { sessionId }, outer);
     if (this.tabPages.get(outer)?.session === sessionId)
       this.cut(outer, this.sessions.get(outer)?.parent, false);
+    this.cutWorkersOf(sessionId, targetId);
+  }
+
+  cutWorkersOf(sessionId, targetId) {
+    for (const [worker, creator] of this.workerCreators) {
+      const info = creator.params?.targetInfo ?? {};
+      if (
+        creator.sessionId === sessionId ||
+        (targetId !== undefined && (info.parentId === targetId || info.openerId === targetId))
+      ) {
+        const entry = this.sessions.get(worker);
+        if (entry && this.gone.has(creator.sessionId)) entry.parent = undefined;
+        this.cut(worker, entry?.parent);
+      }
+    }
+  }
+
+  async withheld(sessionId, foreign) {
+    return this.hidden(sessionId) || foreign || (await this.creatorTurned(sessionId));
+  }
+
+  async creatorTurned(sessionId) {
+    const creator = this.workerCreators.get(sessionId);
+    if (!creator || !(await this.unsafeWorker(creator))) return false;
+    this.cut(sessionId, creator.sessionId);
+    return true;
   }
 
   async current(targetId, limit = ANSWER_MS, ...rest) {
@@ -4540,8 +4566,7 @@ class Guard {
     if (!targetId) return undefined;
     const kind = (await this.lookup(targetId))?.type;
     if (!WORKER_TYPES.has(kind)) return undefined;
-    const creator = this.workerCreators.get(sessionId);
-    if (creator && (await this.unsafeWorker(creator))) return PROTECTED;
+    if (await this.creatorTurned(sessionId)) return PROTECTED;
     return (await this.target(targetId)) ? PROTECTED : null;
   }
 
@@ -4811,8 +4836,7 @@ class Guard {
     if (this.deferredStyle(message)) return;
     if (this.locked(sessionId) && (pageScoped(method) || method === 'Page.screencastFrame')) return;
     if (this.blocked.has(sessionId) && PAUSES.has(method)) return this.release(message);
-    if (this.hidden(sessionId)) return;
-    if (foreign) return;
+    if (await this.withheld(sessionId, foreign)) return;
     if (await this.contentEvent(message)) return;
     if (this.walked({ ...message, method })) return this.cut(sessionId);
     if (sessionId && method.startsWith('Runtime.') && !this.runtimes.has(sessionId)) return;
@@ -5770,6 +5794,7 @@ class Guard {
   }
 
   forgetTab(sessionId) {
+    this.cutWorkersOf(sessionId, this.sessions.get(sessionId)?.targetId);
     this.workerCreators.delete(sessionId);
     this.tabSessions.delete(sessionId);
     this.tabPages.delete(sessionId);
