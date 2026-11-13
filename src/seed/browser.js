@@ -208,7 +208,7 @@ export function pageClient(opener, clock) {
   };
 }
 
-export function live({ client, clock, now, session, size, dpr, visible, frame, sample }) {
+export function live({ client, clock, now, session, size, dpr, visible, frame, sample, check }) {
   const maxWidth = Math.min(1280, Math.round((size?.width ?? 960) * dpr));
   const maxHeight = Math.min(800, Math.round((size?.height ?? 600) * dpr));
   let stopped = false;
@@ -217,48 +217,68 @@ export function live({ client, clock, now, session, size, dpr, visible, frame, s
   let last = -Infinity;
   let sampler;
   let off;
-  const start = (sessionId) =>
+  let sessionId;
+  const start = (id) =>
     client
       .call(
         'Page.startScreencast',
         { format: 'jpeg', quality: QUALITIES[level], maxWidth, maxHeight, everyNthFrame: 1 },
-        sessionId
+        id
       )
       .catch(() => undefined);
   let restarting = false;
-  const restart = (sessionId) => {
+  const restart = (id) => {
     restarting = true;
     return client
-      .call('Page.stopScreencast', {}, sessionId)
+      .call('Page.stopScreencast', {}, id)
       .catch(() => undefined)
-      .then(() => !stopped && start(sessionId))
+      .then(() => !stopped && start(id))
       .finally(() => {
         restarting = false;
       });
   };
-  const adapt = (bytes, sessionId) => {
+  const adapt = (bytes, id) => {
     if (bytes > BIG) small = 0;
     if (restarting) return;
     if (bytes > BIG && level < QUALITIES.length - 1) {
       level += 1;
-      void restart(sessionId);
+      void restart(id);
     } else if (bytes <= BIG && level > 0 && ++small >= SMALL_RUN) {
       level -= 1;
       small = 0;
-      void restart(sessionId);
+      void restart(id);
     }
   };
-  const received = (sessionId) => (event) => {
-    if (stopped || event.sessionId !== sessionId || event.method !== 'Page.screencastFrame') return;
-    last = now();
-    frame(`data:image/jpeg;base64,${event.params.data}`);
-    adapt(event.params.data.length * 0.75, sessionId);
-    clock.setTimeout(() => {
+  const halt = () => {
+    if (stopped) return;
+    stopped = true;
+    off?.();
+    clock.clearTimeout(sampler);
+    if (sessionId) void client.call('Page.stopScreencast', {}, sessionId).catch(() => undefined);
+    else
+      void session.then(
+        (id) => id && client.call('Page.stopScreencast', {}, id).catch(() => undefined)
+      );
+  };
+  const received = (id) => (event) => {
+    if (stopped || event.sessionId !== id || event.method !== 'Page.screencastFrame') return;
+    const data = event.params.data;
+    const ack = event.params.sessionId;
+    void (async () => {
+      const allowed = check ? await check().catch(() => false) : true;
       if (stopped) return;
-      void client
-        .call('Page.screencastFrameAck', { sessionId: event.params.sessionId }, sessionId)
-        .catch(() => undefined);
-    }, FRAME_GAP);
+      if (!allowed) {
+        halt();
+        return;
+      }
+      last = now();
+      frame(`data:image/jpeg;base64,${data}`);
+      adapt(data.length * 0.75, id);
+      clock.setTimeout(() => {
+        if (stopped) return;
+        void client.call('Page.screencastFrameAck', { sessionId: ack }, id).catch(() => undefined);
+      }, FRAME_GAP);
+    })();
   };
   const tick = () => {
     sampler = clock.setTimeout(async () => {
@@ -267,22 +287,14 @@ export function live({ client, clock, now, session, size, dpr, visible, frame, s
       tick();
     }, SAMPLE_GAP);
   };
-  void session.then(async (sessionId) => {
-    if (!sessionId || stopped) return;
-    off = client.on(received(sessionId));
-    await start(sessionId);
+  void session.then(async (id) => {
+    if (!id || stopped) return;
+    sessionId = id;
+    off = client.on(received(id));
+    await start(id);
     tick();
   });
-  return () => {
-    if (stopped) return;
-    stopped = true;
-    off?.();
-    clock.clearTimeout(sampler);
-    void session.then(
-      (sessionId) =>
-        sessionId && client.call('Page.stopScreencast', {}, sessionId).catch(() => undefined)
-    );
-  };
+  return halt;
 }
 
 function restore(storage) {
@@ -555,6 +567,13 @@ class Browser {
     if (action.status === 'failed' && error) action.error = error;
     this.#record(action);
     if (action.tabId) this.changed();
+    if (
+      action.tabId &&
+      action.status === 'done' &&
+      (action.kind === 'open' || action.kind === 'goto' || action.kind === 'reload')
+    ) {
+      this.settled(action.tabId);
+    }
   }
 
   interrupted(link) {
@@ -727,8 +746,39 @@ class Browser {
     }
   }
 
+  async #probe(id) {
+    try {
+      const result = await this.#client.call('Target.getTargetInfo', { targetId: id });
+      return result?.targetInfo ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  #barred(info) {
+    return !info || this.#is.url(info.url);
+  }
+
+  #learn(id, info) {
+    if (!info || !this.#owned.has(id)) return;
+    const known = this.#infos.get(id);
+    this.#infos.set(id, known ? { ...known, ...info } : { ...info, targetId: id });
+  }
+
+  #forgetFrame(id) {
+    this.#frames.delete(id);
+  }
+
   #capture(id) {
     return this.#session(id, async (sessionId) => {
+      const info = await this.#probe(id);
+      if (this.#barred(info)) {
+        this.#forgetFrame(id);
+        this.#learn(id, info);
+        throw new Error(`not a tab SLICC is using: ${id}`);
+      }
+      this.#learn(id, info);
+      await this.#icon(id, sessionId).catch(() => undefined);
       const metrics = await this.#client.call('Page.getLayoutMetrics', {}, sessionId);
       const view = metrics.cssVisualViewport ?? metrics.layoutViewport ?? {};
       const width = view.clientWidth ?? SHOT_WIDTH;
@@ -746,8 +796,14 @@ class Browser {
         sessionId
       );
       const src = `data:image/jpeg;base64,${data}`;
+      const again = await this.#probe(id);
+      if (this.#barred(again)) {
+        this.#forgetFrame(id);
+        this.#learn(id, again);
+        throw new Error(`not a tab SLICC is using: ${id}`);
+      }
+      this.#learn(id, again);
       if (this.#owned.has(id)) this.#framed(id, src);
-      await this.#icon(id, sessionId).catch(() => undefined);
       return src;
     });
   }
@@ -757,7 +813,7 @@ class Browser {
     this.#capturing = true;
     try {
       while (this.#queue.size > 0) {
-        const id = [...this.#queue].at(-1);
+        const id = this.#queue.values().next().value;
         this.#queue.delete(id);
         if (!this.#owned.has(id)) continue;
         const entry = this.state(id);
@@ -772,7 +828,6 @@ class Browser {
   }
 
   settled(id) {
-    this.#queue.delete(id);
     this.#queue.add(id);
     void this.#drain();
   }
@@ -829,10 +884,25 @@ class Browser {
 
   async screenshot(id) {
     if (!this.#owned.has(id)) throw new Error(`not a tab SLICC is using: ${id}`);
-    return this.#frames.get(id)?.src ?? this.#capture(id);
+    const cached = this.#frames.get(id)?.src;
+    if (cached) {
+      const info = await this.#probe(id);
+      if (this.#barred(info)) {
+        this.#forgetFrame(id);
+        this.#learn(id, info);
+        throw new Error(`not a tab SLICC is using: ${id}`);
+      }
+      this.#learn(id, info);
+      return cached;
+    }
+    return this.#capture(id);
   }
 
   #framed(id, src) {
+    if (this.#is.url(this.#infos.get(id)?.url)) {
+      this.#frames.delete(id);
+      return;
+    }
     const frame = { tabId: id, src, at: this.#now() };
     this.#frames.set(id, frame);
     this.#emit('frame', frame);
@@ -850,6 +920,17 @@ class Browser {
       size,
       dpr: this.#dpr(),
       visible: this.#visible,
+      check: async () => {
+        const info = await this.#probe(id);
+        if (this.#barred(info)) {
+          this.#learn(id, info);
+          this.#forgetFrame(id);
+          if (info) this.#framed(id, '');
+          return false;
+        }
+        this.#learn(id, info);
+        return true;
+      },
       frame: (src) => this.#framed(id, src),
       sample: () => this.#capture(id),
     });
