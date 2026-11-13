@@ -1272,18 +1272,6 @@ class Guard {
     );
   }
 
-  createdBlank(targetId, found = this.targets.get(targetId)) {
-    const nav = this.navs.get(targetId);
-    return Boolean(
-      nav?.created &&
-        !nav.failed &&
-        !inherits(nav.created) &&
-        !this.is.url(nav.created) &&
-        found &&
-        (found.url === '' || inherits(found.url))
-    );
-  }
-
   async target(targetId, depth = 0, seen = new Set()) {
     if (seen.has(targetId)) return true;
     const found = await this.lookup(targetId);
@@ -1300,7 +1288,6 @@ class Guard {
       found.guarded = true;
       return true;
     }
-    if (this.createdBlank(targetId, found)) return this.classifyTarget(targetId, found);
     const cross = await this.crossOpener(targetId, found);
     if (cross === null || isHeld(found.openerId)) {
       hold(targetId);
