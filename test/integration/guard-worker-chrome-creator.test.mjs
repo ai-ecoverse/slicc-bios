@@ -158,7 +158,7 @@ async function workerThroughKernel(t) {
   const attached = await send('Target.attachToTarget', { targetId, flatten: true });
   assert.equal(attached.error, undefined, `attach page: ${JSON.stringify(attached)}`);
   const page = attached.result.sessionId;
-  await send(
+  const auto = await send(
     'Target.setAutoAttach',
     {
       autoAttach: true,
@@ -168,8 +168,14 @@ async function workerThroughKernel(t) {
     },
     page
   );
+  assert.equal(auto.error, undefined, `setAutoAttach: ${JSON.stringify(auto)}`);
   const before = got.length;
-  await send('Page.navigate', { url: new URL(`/guard-page-${stamp}.html`, chrome.url).href }, page);
+  const navigated = await send(
+    'Page.navigate',
+    { url: new URL(`/guard-page-${stamp}.html`, chrome.url).href },
+    page
+  );
+  assert.equal(navigated.error, undefined, `Page.navigate: ${JSON.stringify(navigated)}`);
   let worker;
   let workerTarget;
   await until(
@@ -200,12 +206,12 @@ async function attachWorkerById(client, workerTarget) {
     flatten: true,
   });
   const sessionId = answer.result?.sessionId;
-  let shown;
-  if (!answer.error) {
+  let shown = false;
+  if (!answer.error && sessionId) {
     await until(
       () => {
-        shown = shownWorker(client.got, before, workerTarget, sessionId);
-        return Boolean(shown) || Boolean(answer.error);
+        shown = Boolean(shownWorker(client.got, before, workerTarget, sessionId));
+        return shown;
       },
       5000,
       `attachedToTarget for worker ${workerTarget}`,
@@ -218,8 +224,9 @@ async function attachWorkerById(client, workerTarget) {
           error: message.error?.message,
         })),
       })
-    ).catch(() => {});
-    shown = shownWorker(client.got, before, workerTarget, sessionId);
+    );
+  } else {
+    shown = Boolean(shownWorker(client.got, before, workerTarget, sessionId));
   }
   const evaluated = sessionId
     ? await client.send(
@@ -231,11 +238,17 @@ async function attachWorkerById(client, workerTarget) {
   return {
     answer,
     sessionId,
-    shown: Boolean(shown),
+    shown,
     evaluate: evaluated.error
       ? { error: evaluated.error.message }
       : { value: evaluatedValue(evaluated) },
   };
+}
+
+async function workerListed(send, workerTarget) {
+  const listed = await send('Target.getTargets');
+  assert.equal(listed.error, undefined, `getTargets: ${JSON.stringify(listed)}`);
+  return Boolean(listed.result?.targetInfos?.some((info) => info.targetId === workerTarget));
 }
 
 test('Chrome destroys a dedicated worker session with its parent page session, keeps the worker target listed until document navigation, and allows a browser-level reattach', {
@@ -362,38 +375,34 @@ test('a kernel caller through the guard refuses a browser-level reattach only af
   timeout: 3 * 60 * 1000,
 }, async (t) => {
   const cut = await workerThroughKernel(t);
-  await cut.send('Target.detachFromTarget', { sessionId: cut.worker });
-  await until(
-    () =>
-      cut.got.some(
-        (message) =>
-          message.method === 'Target.detachedFromTarget' && message.params?.sessionId === cut.worker
-      ),
-    5000,
-    'auto-attached worker session to detach before the by-id control',
-    () => cut.got.slice(-6)
+  assert.ok(cut.worker, 'auto-attached worker session id');
+  assert.ok(cut.workerTarget, 'auto-attached worker target id');
+  const autoEvaluate = await cut.send(
+    'Runtime.evaluate',
+    { expression: 'self.location.href', returnByValue: true },
+    cut.worker
   );
-  const beforeCut = await attachWorkerById(cut, cut.workerTarget);
-  t.diagnostic(`(e) before creator detach: ${JSON.stringify(beforeCut)}`);
   assert.equal(
-    beforeCut.answer.error,
+    autoEvaluate.error,
     undefined,
-    `(e) before creator detach, attachToTarget by id answers: ${JSON.stringify(beforeCut)}`
+    `(e) auto-attached worker evaluates: ${JSON.stringify(autoEvaluate)}`
   );
   assert.equal(
-    beforeCut.shown,
-    true,
-    `(e) before creator detach, the worker is shown: ${JSON.stringify(beforeCut)}`
-  );
-  assert.equal(
-    beforeCut.evaluate.value,
+    evaluatedValue(autoEvaluate),
     cut.workerUrl,
-    `(e) before creator detach, evaluate returns the worker URL: ${JSON.stringify(beforeCut)}`
+    `(e) auto-attached worker returns its URL: ${JSON.stringify(autoEvaluate)}`
   );
-  if (beforeCut.sessionId)
-    await cut.send('Target.detachFromTarget', { sessionId: beforeCut.sessionId });
+  assert.ok(
+    await workerListed(cut.send, cut.workerTarget),
+    `(e) worker target is listed before creator detach`
+  );
 
-  await cut.send('Target.detachFromTarget', { sessionId: cut.page });
+  const pageDetach = await cut.send('Target.detachFromTarget', { sessionId: cut.page });
+  assert.equal(
+    pageDetach.error,
+    undefined,
+    `(e) detach creator page session: ${JSON.stringify(pageDetach)}`
+  );
   await until(
     () =>
       cut.got.some(
@@ -404,6 +413,16 @@ test('a kernel caller through the guard refuses a browser-level reattach only af
     'creator page session detachedFromTarget',
     () => cut.got.slice(-8)
   );
+  await until(
+    async () => {
+      const { targetInfos } = await chrome.cdp.send('Target.getTargets');
+      return targetInfos.some((info) => info.targetId === cut.workerTarget);
+    },
+    5000,
+    'Chrome still lists the worker target after creator page detach',
+    () => ({ workerTarget: cut.workerTarget })
+  );
+
   const afterCut = await attachWorkerById(cut, cut.workerTarget);
   t.diagnostic(`(e) after creator detach: ${JSON.stringify(afterCut)}`);
   assert.ok(
@@ -421,17 +440,19 @@ test('a kernel caller through the guard refuses a browser-level reattach only af
   );
 
   const control = await workerThroughKernel(t);
-  await control.send('Target.detachFromTarget', { sessionId: control.worker });
-  await until(
-    () =>
-      control.got.some(
-        (message) =>
-          message.method === 'Target.detachedFromTarget' &&
-          message.params?.sessionId === control.worker
-      ),
-    5000,
-    'control worker session to detach before by-id attach',
-    () => control.got.slice(-6)
+  const controlEvaluate = await control.send(
+    'Runtime.evaluate',
+    { expression: 'self.location.href', returnByValue: true },
+    control.worker
+  );
+  assert.equal(
+    controlEvaluate.error,
+    undefined,
+    `(e) control auto-attached worker evaluates: ${JSON.stringify(controlEvaluate)}`
+  );
+  assert.ok(
+    await workerListed(control.send, control.workerTarget),
+    `(e) control worker target is listed while its creator is fine`
   );
   const ordinary = await attachWorkerById(control, control.workerTarget);
   t.diagnostic(`(e) ordinary worker whose creator is not cut: ${JSON.stringify(ordinary)}`);
@@ -444,6 +465,11 @@ test('a kernel caller through the guard refuses a browser-level reattach only af
     ordinary.shown,
     true,
     `(e) an ordinary worker is still shown: ${JSON.stringify(ordinary)}`
+  );
+  assert.equal(
+    ordinary.evaluate.error,
+    undefined,
+    `(e) an ordinary worker evaluate answers: ${JSON.stringify(ordinary)}`
   );
   assert.equal(
     ordinary.evaluate.value,
