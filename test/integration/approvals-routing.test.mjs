@@ -112,7 +112,7 @@ test('with the agent down, the fallback dialog offers Allow once and Deny only, 
     const decision = sudo(request(), {});
     const [item] = await listed(approvals);
     assert.deepEqual(item, {
-      id: 'sudo-1',
+      id: 'bios:sudo-1',
       kind: 'sudo',
       requester: { kind: 'user', name: 'cone', where: 'a terminal' },
       command: '/usr/bin/jq .rules /etc/slicc/secrets-policy.toml',
