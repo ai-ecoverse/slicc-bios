@@ -28,7 +28,7 @@ jobs:
       test: |
         d="$RUNNER_TEMP/slicc-757"
         mkdir -p "$d/src"
-        curl -fsSL --retry 3 https://codeload.github.com/ai-ecoverse/slicc-cli/tar.gz/c5becad59759cc9f2aa83d179365226933c7ed95 | tar -xz -C "$d/src" --strip-components=1
+        curl -fsSL --retry 3 https://codeload.github.com/ai-ecoverse/slicc-cli/tar.gz/9b38a4ffc70640596c4f4907218493f23c95ea89 | tar -xz -C "$d/src" --strip-components=1
         if ! command -v go > /dev/null; then
           case "$(uname -m)" in aarch64|arm64) arch=arm64 ;; *) arch=amd64 ;; esac
           curl -fsSL --retry 3 "https://go.dev/dl/go1.26.5.linux-$arch.tar.gz" | tar -xz -C "$d"
@@ -42,7 +42,7 @@ jobs:
         status=0
         echo "STOCK-RUN released $(node_modules/.bin/slicc --version)"
         SLICC_DEBUG=1 run || status=1
-        echo "STOCK-RUN c5becad"
+        echo "STOCK-RUN 9b38a4f"
         SLICC_DEBUG=1 SLICC_CLI="$d/slicc" run || status=1
         exit $status
       test-glob: test/integration/stock-clients.test.mjs
