@@ -746,9 +746,9 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
   assert.match(refused.run?.error ?? refused.error ?? '', /changed since it was requested/);
   assert.equal(refused.run?.state, 'failed');
 
-  await page.evaluate((sel) => {
+  await page.evaluate((id) => {
     const walk = (root) => {
-      const found = root.querySelector(sel);
+      const found = root.querySelector('slicc-approvals-panel');
       if (found) return found;
       for (const element of root.querySelectorAll('*')) {
         const inner = element.shadowRoot && walk(element.shadowRoot);
@@ -756,21 +756,87 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
       }
       return null;
     };
-    walk(document)?.querySelector('[data-filter="timed-out"]')?.click();
-  }, 'slicc-approvals-panel');
-
-  const row = await page.until((id) => {
-    const walk = (root) => {
-      const found = root.querySelector(`li.row[data-id="${id}"]`);
-      if (found) return found;
-      for (const element of root.querySelectorAll('*')) {
-        const inner = element.shadowRoot && walk(element.shadowRoot);
-        if (inner) return inner;
-      }
-      return null;
-    };
-    return walk(document);
+    const panel = walk(document);
+    if (!panel) throw new Error('no slicc-approvals-panel');
+    if (typeof panel.reveal === 'function') panel.reveal(id);
+    else {
+      panel.filter = 'timed-out';
+      panel.shadowRoot?.querySelector('[data-filter="timed-out"]')?.click();
+    }
   }, late.okId);
+
+  const dumpApprovals = () =>
+    page.evaluate((want) => {
+      const walk = (root, visit) => {
+        visit(root);
+        for (const element of root.querySelectorAll?.('*') ?? []) {
+          if (element.shadowRoot) walk(element.shadowRoot, visit);
+        }
+      };
+      const rows = [];
+      let panel = null;
+      walk(document, (root) => {
+        if (!panel && root.querySelector)
+          panel = root.querySelector('slicc-approvals-panel') ?? panel;
+        for (const row of root.querySelectorAll?.('li.row') ?? []) {
+          rows.push({
+            dataId: row.getAttribute('data-id'),
+            state: row.getAttribute('data-state'),
+            kind: row.getAttribute('data-kind'),
+            text: (row.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 160),
+          });
+        }
+      });
+      const history =
+        document
+          .querySelector('slicc-app')
+          ?.model?.approvals?.history?.()
+          ?.map((entry) => ({
+            id: entry.approval?.id,
+            state: entry.state,
+            reason: entry.reason,
+            runnable: entry.runnable,
+            run: entry.run?.state,
+          })) ?? null;
+      return {
+        want,
+        filter: panel?.filter ?? null,
+        dataFilterShown: panel?.shadowRoot
+          ?.querySelector('[data-filter-shown]')
+          ?.getAttribute('data-filter-shown'),
+        filters: [...(panel?.shadowRoot?.querySelectorAll('[data-filter]') ?? [])].map((el) => ({
+          filter: el.getAttribute('data-filter'),
+          pressed: el.getAttribute('aria-pressed'),
+          selected: el.classList.contains('selected'),
+        })),
+        empty: panel?.shadowRoot?.querySelector('[data-empty]')?.textContent?.trim() ?? null,
+        rows,
+        history,
+      };
+    }, late.okId);
+
+  let row;
+  try {
+    row = await page.until((id) => {
+      const walk = (root) => {
+        const found = [...(root.querySelectorAll?.('li.row') ?? [])].find(
+          (el) => el.getAttribute('data-id') === id
+        );
+        if (found) return found;
+        for (const element of root.querySelectorAll?.('*') ?? []) {
+          const inner = element.shadowRoot && walk(element.shadowRoot);
+          if (inner) return inner;
+        }
+        return null;
+      };
+      return walk(document);
+    }, late.okId);
+  } catch (error) {
+    const dump = await dumpApprovals().catch((dumpError) => ({
+      dumpFailed: dumpError.message,
+    }));
+    throw new Error(`${error.message}\napprovals dump: ${JSON.stringify(dump, null, 2)}`);
+  }
   assert.ok(row);
 
   assert.deepEqual(page.errors, []);
