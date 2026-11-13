@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
-import { boot, ready, run, shows } from './bios.mjs';
+import { boot, ready, run, screen, shows } from './bios.mjs';
 import { launch } from './chrome.mjs';
 import { shoot } from './shots.mjs';
 
@@ -9,7 +9,7 @@ after(() => chrome.close());
 
 const faux = () => {
   globalThis.sliccKernelDebug = true;
-  window.faux = { answer: 'once', seen: [] };
+  window.faux = { answer: 'once', seen: [], held: [], aborted: [] };
   globalThis.sliccCaptureAgent = {
     approveCapture: async (request, options) => {
       window.faux.seen.push({
@@ -21,7 +21,13 @@ const faux = () => {
         label: request.label ?? null,
         signal: options?.signal instanceof AbortSignal,
       });
+      options?.signal?.addEventListener('abort', () =>
+        window.faux.aborted.push(options.signal.reason?.message ?? null)
+      );
       const { answer } = window.faux;
+      if (answer === 'hold') return new Promise((resolve) => window.faux.held.push(resolve));
+      if (answer === 'slow')
+        return new Promise((resolve) => setTimeout(() => resolve('once'), 3000));
       if (answer === 'EAGAIN')
         throw Object.assign(new Error('the agent is restarting'), { code: 'EAGAIN' });
       return answer;
@@ -532,6 +538,63 @@ test('a click nobody answers times out after 5 minutes with nobody clicked withi
   await shows(page, 'late 1');
   await page.until(() => window.clickItems().length === 0);
   assert.equal(await page.evaluate(() => window.displays.length), 0);
+  assert.deepEqual(page.errors, []);
+});
+
+const DECIDING = 'waiting for the agent to answer the request to capture';
+const UNANSWERED = "the agent couldn't answer the request to capture";
+const ANSWER_MS = 360000;
+const count = (text, part) => text.split(part).length - 1;
+
+test('an agent that never answers is refused after 6 min with the agent couldn’t answer, after one waiting line, and its late answer opens nothing', async (t) => {
+  const page = await seven(t);
+  await answer(page, 'hold');
+  const started = Date.now();
+  await run(
+    page,
+    `printf '%s\\n' '{"kind":"capture.screen","type":"image/png"}' | cat > /dev/embedder; echo "unanswered $?"`
+  );
+  await shows(page, DECIDING);
+  assert.equal(await page.evaluate(() => window.faux.held.length), 1);
+  await shows(page, UNANSWERED, ANSWER_MS + 60000);
+  await shows(page, 'unanswered 1');
+  const took = Date.now() - started;
+  assert.ok(took >= ANSWER_MS - 5000 && took < ANSWER_MS + 60000, `refused after ${took} ms`);
+  assert.equal(count(await screen(page), DECIDING), 1);
+  assert.deepEqual(await page.evaluate(() => window.faux.aborted), [UNANSWERED]);
+  assert.equal(await page.evaluate(() => window.prompted), 0);
+
+  await page.evaluate(() => {
+    for (const resolve of window.faux.held) resolve('once');
+  });
+  await answer(page, { answer: 'deny', message: 'capture: after the late answer' });
+  await run(
+    page,
+    `printf '%s\\n' '{"kind":"capture.screen","type":"image/png"}' | cat > /dev/embedder; echo "next $?"`
+  );
+  await shows(page, 'capture: after the late answer');
+  await shows(page, 'next 1');
+  assert.equal(await page.evaluate(() => window.displays.length), 0);
+  assert.deepEqual(await page.evaluate(() => window.clickItems()), []);
+  assert.deepEqual(await page.evaluate(() => window.chips()), []);
+  assert.equal(await page.evaluate(() => window.prompted), 0);
+  assert.equal(count(await screen(page), DECIDING), 1);
+  assert.deepEqual(page.errors, []);
+});
+
+test('an agent that answers once after 3 s shows one waiting line and then the click item as before', async (t) => {
+  const page = await seven(t);
+  await answer(page, 'slow');
+  await run(page, 'sleep 8; screencapture -x /tmp/slow.png; echo "slow $?"');
+  await shows(page, DECIDING);
+  await page.until(() => window.clickItems().length === 1);
+  await shows(page, "waiting for a click in seven's tab: choose what to share");
+  await pressDeep(page, `${CLICK} [data-action="once"]`);
+  await shows(page, 'slow 0');
+  assert.equal(count(await screen(page), DECIDING), 1);
+  assert.deepEqual(await page.evaluate(() => window.displays), [{ active: true }]);
+  assert.deepEqual(await page.evaluate(() => window.clickItems()), []);
+  assert.equal(await page.evaluate(() => window.prompted), 0);
   assert.deepEqual(page.errors, []);
 });
 
