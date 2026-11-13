@@ -37,6 +37,8 @@ test('vault drift compares vault-preview to the root pin on main and on a schedu
   assert.match(drift, /vault-preview\.sliccy\.ai\/config\.json/);
   assert.match(drift, /devDependencies\['@ai-ecoverse\/slicc-vault'\]/);
   assert.match(drift, /vault drift: live/);
+  assert.match(drift, /node test\/integration\/vault-drift-check\.mjs/);
+  assert.match(drift, /actions\/setup-node@820762786026740c76f36085b0efc47a31fe5020/);
   assert.match(
     drift,
     /\n {10}if ! \[\[ "\$LIVE" =~ \^\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\$ \]\]; then\n {12}echo "::error::vault-preview reported a non-semver version"\n {12}exit 1\n {10}fi\n/
@@ -50,6 +52,12 @@ test('vault drift compares vault-preview to the root pin on main and on a schedu
     const used = line.match(/^\s+- uses:\s+(\S+)\s*$/);
     if (used) assert.match(used[1], /^[^@]+@[0-9a-f]{40}$/);
   }
+  const check = await read('test/integration/vault-drift-check.mjs');
+  assert.match(check, /\/fonts\/AdobeClean-Regular\.woff2/);
+  assert.match(check, /\.wasm/);
+  assert.match(check, /stripFrameAncestors|frame-ancestors <dynamic>/);
+  assert.match(check, /Object\.entries\(expected\)/);
+  assert.match(check, /vault drift: headers differ/);
 });
 
 test('CI runs on pull requests, merge groups and pushes to main, and cancels a superseded run only on a pull request', () => {

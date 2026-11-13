@@ -16,20 +16,8 @@ import {
 const require = createRequire(import.meta.url);
 const pin = require('../../package.json').devDependencies['@ai-ecoverse/slicc-vault'];
 const ORIGIN = 'https://seven.example.test';
-const HEADER_NAMES = [
-  'content-security-policy',
-  'cross-origin-embedder-policy',
-  'cross-origin-resource-policy',
-  'cross-origin-opener-policy',
-  'origin-agent-cluster',
-  'x-content-type-options',
-  'referrer-policy',
-  'cache-control',
-  'content-type',
-];
-
-function picked(response) {
-  return Object.fromEntries(HEADER_NAMES.map((name) => [name, response.headers.get(name)]));
+function picked(response, names) {
+  return Object.fromEntries(names.map((name) => [name, response.headers.get(name)]));
 }
 
 function fromHeadersJson(headers, origin) {
@@ -107,7 +95,8 @@ test('real vault serves the package site with headers.json classes and the embed
     const response = await fetch(new URL(path, vault.origin));
     const body = Buffer.from(await response.arrayBuffer());
     assert.equal(response.status, 200, path);
-    assert.deepEqual(picked(response), headersForClass(vault.headers.classes[name], ORIGIN), path);
+    const expected = headersForClass(vault.headers.classes[name], ORIGIN);
+    assert.deepEqual(picked(response, Object.keys(expected)), expected, path);
     if (path === '/config.json' || path === '/embedders.json') {
       assert.deepEqual(JSON.parse(body.toString('utf8')), {
         ...JSON.parse(readFileSync(join(vault.site, 'config.json'), 'utf8')),
@@ -126,11 +115,8 @@ test('real vault serves the package site with headers.json classes and the embed
   ]) {
     const response = await fetch(new URL(path, vault.origin));
     await response.arrayBuffer();
-    assert.deepEqual(
-      picked(response),
-      fromHeadersJson(packaged.classes[name].headers, ORIGIN),
-      path
-    );
+    const expected = fromHeadersJson(packaged.classes[name].headers, ORIGIN);
+    assert.deepEqual(picked(response, Object.keys(expected)), expected, path);
   }
 });
 
@@ -168,21 +154,20 @@ test('real vault serves CORP cross-origin for every class and keeps every other 
     ['/embedders.json', 'embedders.json'],
   ];
   for (const [path, name] of cases) {
-    assert.equal(packaged.classes[name].headers['cross-origin-resource-policy'], 'same-site', name);
+    const packagedHeaders = packaged.classes[name].headers;
+    assert.equal(packagedHeaders['cross-origin-resource-policy'], 'same-site', name);
     const response = await fetch(new URL(path, vault.origin));
     await response.arrayBuffer();
     assert.equal(response.status, 200, path);
     assert.equal(response.headers.get('cross-origin-resource-policy'), CORP_OVERRIDE, path);
-    const expected = fromHeadersJson(packaged.classes[name].headers, ORIGIN);
-    assert.deepEqual(picked(response), expected, path);
-    for (const header of HEADER_NAMES) {
+    const expected = fromHeadersJson(packagedHeaders, ORIGIN);
+    const names = Object.keys(expected);
+    assert.deepEqual(names.sort(), Object.keys(packagedHeaders).sort(), path);
+    assert.deepEqual(picked(response, names), expected, path);
+    for (const header of names) {
       if (header === 'cross-origin-resource-policy' || header === 'content-security-policy')
         continue;
-      assert.equal(
-        response.headers.get(header),
-        packaged.classes[name].headers[header],
-        `${path} ${header}`
-      );
+      assert.equal(response.headers.get(header), packagedHeaders[header], `${path} ${header}`);
     }
   }
 });
