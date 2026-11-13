@@ -50,6 +50,10 @@ export function classForPath(pathname, classes) {
   return null;
 }
 
+export const CORP_OVERRIDE = 'cross-origin';
+export const CORP_OVERRIDE_WHY =
+  "In CI seven and the vault are both http://127.0.0.1:<port>. Localhost origins are origin-keyed, and CORP same-site does not allow a cross-port iframe under seven's COEP require-corp. Production's same-site works because seven.sliccy.ai and vault-preview.sliccy.ai are the same site. The old proxy sent cross-origin too.";
+
 export function headersForClass(spec, origin) {
   const headers = { ...spec.headers };
   if (headers['content-security-policy']) {
@@ -58,6 +62,7 @@ export function headersForClass(spec, origin) {
       `frame-ancestors ${origin}`
     );
   }
+  headers['cross-origin-resource-policy'] = CORP_OVERRIDE;
   return headers;
 }
 
