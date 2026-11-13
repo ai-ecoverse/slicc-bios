@@ -548,26 +548,30 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
     const sha256 = [...new Uint8Array(digest)]
       .map((byte) => byte.toString(16).padStart(2, '0'))
       .join('');
-    const truePath = '/usr/bin/true';
-    const harden = await client.run([
+    const okPath = '/usr/local/bin/slicc-run-now-ok';
+    const install = await client.run([
       'bash',
       '-c',
       [
-        `test -x ${truePath}`,
-        `chown 0:0 /usr /usr/bin ${truePath}`,
-        `chmod 0755 /usr /usr/bin ${truePath}`,
-        `stat -c '%u %a' /usr /usr/bin ${truePath}`,
+        'mkdir -p /usr/local/bin',
+        `printf '#!/bin/sh\\nexit 0\\n' > ${okPath}`,
+        'chown 0:0 /usr /usr/local /usr/local/bin',
+        `chown 0:0 ${okPath}`,
+        'chmod 0755 /usr /usr/local /usr/local/bin',
+        `chmod 0755 ${okPath}`,
+        `test -x ${okPath}`,
+        `stat -c '%u %a' /usr /usr/local /usr/local/bin ${okPath}`,
       ].join(' && '),
     ]);
-    if (harden.status !== 0)
-      throw new Error(harden.stderr || harden.stdout || `could not harden ${truePath}`);
+    if (install.status !== 0)
+      throw new Error(install.stderr || install.stdout || `could not install ${okPath}`);
     const ok = {
       id: `sudo-ok-${Date.now()}`,
       user: 'cone',
       uid: coneUid,
       target: 'root',
-      argv: ['true'],
-      path: truePath,
+      argv: [okPath],
+      path: okPath,
       cwd: '/',
       stdin: 'none',
       rootOnly: { '/': true },
@@ -617,7 +621,7 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
     return {
       okId: `bios:${ok.id}`,
       badId: `bios:${bad.id}`,
-      truePath,
+      okPath,
       history: history().map((entry) => ({
         id: entry.approval.id,
         state: entry.state,
