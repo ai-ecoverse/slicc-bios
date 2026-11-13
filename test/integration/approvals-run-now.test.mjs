@@ -3,14 +3,21 @@ import { after, test } from 'node:test';
 import {
   biosApprovalId,
   createApprovals,
+  endNotice,
+  hostApprovals,
   kernelGate,
   mergeApprovalsPorts,
   RUN_REASONS,
   routeSudo,
   runnable,
   SUDO_RUN_PROTOCOL,
-  seatApprovals,
+  startNotice,
 } from '../../src/seed/approvals.js';
+import {
+  startNotice as buildStart,
+  NOTICE_COMMAND_MAX,
+  NOTICE_PATH_MAX,
+} from '../../src/seed/approvals-run.js';
 import { ready } from './bios.mjs';
 import { launch } from './chrome.mjs';
 
@@ -237,6 +244,143 @@ test('stopRun signals the running group', async () => {
   assert.equal(record().run.state, 'stopped');
 });
 
+test('a hanging start notice does not delay stopRun kill', async () => {
+  const killed = [];
+  let releaseEnd;
+  const ended = new Promise((resolve) => {
+    releaseEnd = resolve;
+  });
+  const notices = [];
+  const approvals = createApprovals({
+    channel: lone(),
+    kernel: () => ({
+      protocol: SUDO_RUN_PROTOCOL,
+      sudoRun: async () => ({
+        pid: 70,
+        pgid: 70,
+        ended: ended.then(() => ({ status: 143, signal: 'SIGTERM' })),
+      }),
+      kill: async (pid) => {
+        killed.push(pid);
+        releaseEnd();
+      },
+      run: async () => ({ status: 0, stdout: '', stderr: '' }),
+    }),
+    lick: async (notice) => {
+      notices.push(notice);
+      if (notice.phase === 'start') await new Promise(() => {});
+    },
+  });
+  approvals.own();
+  const { id, record } = await timedOut(approvals, agentReq({ id: 'sudo-hang-start' }));
+  const running = approvals.port.run(id);
+  for (let i = 0; i < 50 && record()?.run?.state !== 'running'; i += 1) await turn();
+  assert.equal(record().run.state, 'running');
+  assert.equal(record().run.pid, 70);
+  await approvals.port.stopRun(id);
+  assert.deepEqual(killed, [-70]);
+  assert.equal(record().run.state, 'stopped');
+  assert.equal(notices.filter((notice) => notice.phase === 'start').length, 1);
+  assert.equal(notices.filter((notice) => notice.phase === 'end').length, 1);
+  await running.catch(() => undefined);
+});
+
+test('an exit during stopRun yields one end notice only', async () => {
+  const notices = [];
+  let releaseKill;
+  const killGate = new Promise((resolve) => {
+    releaseKill = resolve;
+  });
+  let resolveEnded;
+  const ended = new Promise((resolve) => {
+    resolveEnded = resolve;
+  });
+  const approvals = createApprovals({
+    channel: lone(),
+    kernel: () => ({
+      protocol: SUDO_RUN_PROTOCOL,
+      sudoRun: async () => ({ pid: 71, pgid: 71, ended }),
+      kill: async () => {
+        resolveEnded({ status: 0 });
+        await killGate;
+      },
+      run: async () => ({ status: 0, stdout: '', stderr: '' }),
+    }),
+    lick: async (notice) => notices.push(notice),
+  });
+  approvals.own();
+  const { id, record } = await timedOut(approvals, agentReq({ id: 'sudo-double-end' }));
+  const running = approvals.port.run(id);
+  for (let i = 0; i < 50 && record()?.run?.state !== 'running'; i += 1) await turn();
+  const stopping = approvals.port.stopRun(id);
+  for (let i = 0; i < 50 && notices.filter((n) => n.phase === 'end').length < 1; i += 1)
+    await turn();
+  releaseKill();
+  await stopping;
+  await running.catch(() => undefined);
+  for (let i = 0; i < 20; i += 1) await turn();
+  assert.equal(notices.filter((notice) => notice.phase === 'end').length, 1);
+});
+
+test('notice fields stay within agent checkNotice limits', () => {
+  const longCommand = 'x'.repeat(5000);
+  const longPath = `/${'y'.repeat(3000)}`;
+  const notice = buildStart(
+    {
+      approval: {
+        id: 'bios:sudo-cap',
+        command: longCommand,
+        createdAt: 1,
+        requester: { agentId: 'cone' },
+      },
+      run: { at: 2 },
+    },
+    { stdout: longPath, stderr: '/home/cone/.slicc/sudo-runs/ok.err' },
+    { pid: 1, at: 2 }
+  );
+  assert.equal(notice.command.length, NOTICE_COMMAND_MAX);
+  assert.equal(notice.command.endsWith('...'), true);
+  assert.equal(notice.stdout, undefined);
+  assert.equal(notice.stderr, '/home/cone/.slicc/sudo-runs/ok.err');
+  assert.ok(notice.stderr.length <= NOTICE_PATH_MAX);
+  assert.ok(notice.id.length <= 128);
+  assert.ok(notice.agentId.length <= 256);
+});
+
+test('a failed kill after the process exits still sends one end notice', async () => {
+  const notices = [];
+  let resolveEnded;
+  const ended = new Promise((resolve) => {
+    resolveEnded = resolve;
+  });
+  const approvals = createApprovals({
+    channel: lone(),
+    kernel: () => ({
+      protocol: SUDO_RUN_PROTOCOL,
+      sudoRun: async () => ({ pid: 72, pgid: 72, ended }),
+      kill: async () => {
+        resolveEnded({ status: 0 });
+        await turn();
+        throw Object.assign(new Error('Operation not permitted'), { code: 'EPERM' });
+      },
+      run: async () => ({ status: 0, stdout: '', stderr: '' }),
+    }),
+    lick: async (notice) => notices.push(notice),
+  });
+  approvals.own();
+  const { id, record } = await timedOut(approvals, agentReq({ id: 'sudo-kill-fail-exit' }));
+  const running = approvals.port.run(id);
+  for (let i = 0; i < 50 && record()?.run?.state !== 'running'; i += 1) await turn();
+  await assert.rejects(approvals.port.stopRun(id), /Operation not permitted/);
+  for (let i = 0; i < 50 && notices.filter((n) => n.phase === 'end').length < 1; i += 1)
+    await turn();
+  assert.equal(notices.filter((notice) => notice.phase === 'start').length, 1);
+  assert.equal(notices.filter((notice) => notice.phase === 'end').length, 1);
+  assert.equal(notices.find((notice) => notice.phase === 'end')?.status, 0);
+  assert.equal(record()?.run?.state, 'done');
+  await running.catch(() => undefined);
+});
+
 test('stop during starting waits for sudoRun then signals the new pgid', async () => {
   const killed = [];
   let releaseRun;
@@ -362,28 +506,6 @@ test('a pending stop whose kill fails keeps the run running with the error', asy
   assert.equal(kills.length, 2);
 });
 
-test('a seat without run gets history only', async () => {
-  const licks = [];
-  const approvals = createApprovals({
-    channel: lone(),
-    kernel: () => ({
-      protocol: SUDO_RUN_PROTOCOL,
-      sudoRun: async () => assert.fail('a seat without run must not call sudoRun'),
-    }),
-    lick: async (event) => licks.push(event),
-  });
-  approvals.own();
-  await timedOut(approvals, agentReq({ id: 'sudo-seat' }));
-  const seat = seatApprovals(approvals.port, { decide: false, run: false });
-  assert.equal(typeof seat.history, 'function');
-  assert.equal(seat.decide, undefined);
-  assert.equal(seat.run, undefined);
-  assert.equal(seat.stopRun, undefined);
-  assert.equal(seat.history()[0].state, 'unanswered');
-  assert.equal(seat.history()[0].runnable, true);
-  assert.equal(licks.length, 0);
-});
-
 test('bios history and run stay empty for an ask the agent held, and own one bios timeout once', async () => {
   const bios = createApprovals({
     channel: lone(),
@@ -488,8 +610,8 @@ test('bios history and run stay empty for an ask the agent held, and own one bio
   assert.equal(calls.length, 1);
 });
 
-test('sudo-run lick notices fire on start and end', async () => {
-  const licks = [];
+test('approvalRunNotice facts fire on start and end with the exact shape', async () => {
+  const notices = [];
   const approvals = createApprovals({
     channel: lone(),
     kernel: () => ({
@@ -497,20 +619,165 @@ test('sudo-run lick notices fire on start and end', async () => {
       sudoRun: async () => ({ pid: 3, pgid: 3, ended: Promise.resolve({ status: 0 }) }),
       run: async () => ({ status: 0, stdout: '', stderr: '' }),
     }),
-    lick: async (event) => licks.push(event),
+    lick: async (notice) => notices.push(notice),
   });
   approvals.own();
   const { id, record } = await timedOut(approvals, agentReq({ id: 'sudo-lick' }));
   await approvals.port.run(id);
   for (let i = 0; i < 50 && record()?.run?.state !== 'done'; i += 1) await turn();
-  assert.equal(licks.length, 2);
-  assert.equal(licks[0].channel, 'sudo-run');
-  assert.equal(licks[0].approval, id);
+  assert.equal(notices.length, 2);
   assert.match(id, /^bios:/);
-  assert.equal(licks[0].eventId, `${id}:start`);
-  assert.equal(licks[1].eventId, `${id}:end`);
-  assert.notEqual(licks[0].eventId, 'sudo-lick:start');
-  assert.match(licks[0].text, /timed-out sudo/);
+  assert.equal(notices[0].phase, 'start');
+  assert.equal(notices[0].id, id);
+  assert.equal(notices[0].agentId, 'cone');
+  assert.equal(typeof notices[0].command, 'string');
+  assert.equal(typeof notices[0].requestedAt, 'number');
+  assert.equal(typeof notices[0].at, 'number');
+  assert.equal(notices[0].pid, 3);
+  assert.equal(notices[0].channel, undefined);
+  assert.equal(notices[0].eventId, undefined);
+  assert.equal(notices[0].text, undefined);
+  assert.equal(notices[1].phase, 'end');
+  assert.equal(notices[1].id, id);
+  assert.equal(notices[1].status, 0);
+  assert.equal(typeof notices[1].endedAt, 'number');
+  assert.equal(typeof notices[1].stdout, 'string');
+  assert.equal(typeof notices[1].stderr, 'string');
+  assert.ok(Array.isArray(notices[0].tags));
+  assert.ok(Array.isArray(notices[1].tags));
+  assert.deepEqual(Object.keys(notices[0]).sort(), [
+    'agentId',
+    'at',
+    'command',
+    'id',
+    'phase',
+    'pid',
+    'requestedAt',
+    'stderr',
+    'stdout',
+    'tags',
+  ]);
+  assert.equal(
+    startNotice(
+      record(),
+      { stdout: notices[0].stdout, stderr: notices[0].stderr },
+      {
+        pid: 3,
+        at: notices[0].at,
+      }
+    ).id,
+    id
+  );
+  assert.equal(
+    endNotice(
+      record(),
+      { stdout: notices[1].stdout, stderr: notices[1].stderr },
+      { status: 0, endedAt: notices[1].endedAt }
+    ).phase,
+    'end'
+  );
+});
+
+test('a kernel-refused run sends no approvalRunNotice', async () => {
+  const notices = [];
+  const approvals = createApprovals({
+    channel: lone(),
+    kernel: () => ({
+      protocol: SUDO_RUN_PROTOCOL,
+      sudoRun: async () => {
+        throw Object.assign(new Error("sudo: that isn't a sudo request this kernel can run"), {
+          code: 'EINVAL',
+        });
+      },
+      run: async () => ({ status: 0, stdout: '', stderr: '' }),
+    }),
+    lick: async (notice) => notices.push(notice),
+  });
+  approvals.own();
+  const { id, record } = await timedOut(approvals, agentReq({ id: 'sudo-refuse' }));
+  await assert.rejects(
+    approvals.port.run(id),
+    /isn't a sudo request|refused|EINVAL|changed|root-only|may no longer/i
+  );
+  for (let i = 0; i < 50 && record()?.run?.state !== 'failed'; i += 1) await turn();
+  assert.equal(record()?.run?.state, 'failed');
+  assert.equal(notices.length, 0);
+});
+
+test('hostApprovals delivers through approvalRunNotice and warns once when missing or undelivered', async () => {
+  const seen = [];
+  const warnings = [];
+  const debug = { sliccKernelDebug: true };
+  const withMethod = hostApprovals({
+    channel: lone(),
+    kernel: () => ({
+      protocol: SUDO_RUN_PROTOCOL,
+      sudoRun: async () => ({ pid: 9, pgid: 9, ended: Promise.resolve({ status: 0 }) }),
+      run: async () => ({ status: 0, stdout: '', stderr: '' }),
+    }),
+    deliver: async (notice) => {
+      seen.push(notice);
+      return { delivered: true };
+    },
+    debug,
+    warn: (...args) => warnings.push(args.join(' ')),
+  });
+  withMethod.own();
+  const ok = await timedOut(withMethod, agentReq({ id: 'sudo-deliver' }));
+  await withMethod.port.run(ok.id);
+  for (let i = 0; i < 50 && ok.record()?.run?.state !== 'done'; i += 1) await turn();
+  assert.equal(seen.length, 2);
+  assert.equal(seen[0].phase, 'start');
+  assert.equal(seen[1].phase, 'end');
+  assert.equal(debug.sliccApprovalRunNotices?.length, 2);
+  assert.equal(warnings.length, 0);
+
+  const undelivered = [];
+  const falseDeliver = hostApprovals({
+    channel: lone(),
+    kernel: () => ({
+      protocol: SUDO_RUN_PROTOCOL,
+      sudoRun: async () => ({ pid: 10, pgid: 10, ended: Promise.resolve({ status: 0 }) }),
+      run: async () => ({ status: 0, stdout: '', stderr: '' }),
+    }),
+    deliver: async (notice) => {
+      undelivered.push(notice);
+      return { delivered: false, reason: 'target gone' };
+    },
+    debug: { sliccKernelDebug: true },
+    warn: (...args) => warnings.push(args.join(' ')),
+  });
+  falseDeliver.own();
+  const late = await timedOut(falseDeliver, agentReq({ id: 'sudo-undelivered' }));
+  await falseDeliver.port.run(late.id);
+  for (let i = 0; i < 50 && late.record()?.run?.state !== 'done'; i += 1) await turn();
+  assert.equal(undelivered.length, 2);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /target gone/);
+
+  const missingWarn = [];
+  const missing = [];
+  const noMethod = hostApprovals({
+    channel: lone(),
+    kernel: () => ({
+      protocol: SUDO_RUN_PROTOCOL,
+      sudoRun: async () => ({ pid: 11, pgid: 11, ended: Promise.resolve({ status: 0 }) }),
+      run: async () => ({ status: 0, stdout: '', stderr: '' }),
+    }),
+    deliver: async (notice) => {
+      missing.push(notice);
+      return { delivered: false, reason: 'this slicc-agent has no approvalRunNotice' };
+    },
+    debug: { sliccKernelDebug: true },
+    warn: (...args) => missingWarn.push(args.join(' ')),
+  });
+  noMethod.own();
+  const old = await timedOut(noMethod, agentReq({ id: 'sudo-old-agent' }));
+  await noMethod.port.run(old.id);
+  for (let i = 0; i < 50 && old.record()?.run?.state !== 'done'; i += 1) await turn();
+  assert.equal(missing.length, 2);
+  assert.equal(missingWarn.length, 1);
+  assert.match(missingWarn[0], /no approvalRunNotice/);
 });
 
 const ci = Boolean(process.env.CI);
@@ -527,7 +794,14 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
     await chrome.close();
   });
   const page = await chrome.page(t);
-  await page.init('() => { globalThis.sliccKernelDebug = true; }');
+  await page.init(`() => {
+    globalThis.sliccKernelDebug = true;
+    globalThis.sliccApprovalRunNoticesSpy = [];
+    globalThis.sliccApprovalRunNotice = async (notice) => {
+      globalThis.sliccApprovalRunNoticesSpy.push(notice);
+      return { delivered: true };
+    };
+  }`);
   await page.goto('/');
   await ready(page, undefined, { tools: false });
 
@@ -691,7 +965,7 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
   }, 'slicc-approvals-panel');
 
   const ran = await page.evaluate(async (okId) => {
-    const before = globalThis.sliccSudoRunLicks?.length ?? 0;
+    const before = globalThis.sliccApprovalRunNoticesSpy?.length ?? 0;
     await document.querySelector('slicc-app').model.approvals.run(okId);
     const history = () => document.querySelector('slicc-app').model.approvals.history();
     for (
@@ -701,27 +975,32 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
     )
       await new Promise((resolve) => setTimeout(resolve, 20));
     const record = history().find((entry) => entry.approval.id === okId);
+    const notices = (globalThis.sliccApprovalRunNoticesSpy ?? []).slice(before);
     return {
       run: record?.run,
-      licks: (globalThis.sliccSudoRunLicks ?? []).slice(before).map((event) => ({
-        channel: event.channel,
-        approval: event.approval,
-        eventId: event.eventId,
-        text: event.text,
+      notices: notices.map((notice) => ({
+        id: notice.id,
+        phase: notice.phase,
+        agentId: notice.agentId,
+        pid: notice.pid,
+        status: notice.status,
+        command: notice.command,
       })),
     };
   }, late.okId);
 
   assert.equal(ran.run?.state, 'done');
   assert.equal(ran.run?.status, 0);
-  assert.equal(ran.licks.length, 2);
-  assert.equal(ran.licks[0].channel, 'sudo-run');
-  assert.equal(ran.licks[0].approval, late.okId);
-  assert.match(ran.licks[0].text, /timed-out sudo/);
-  assert.match(ran.licks[1].text, /ended/);
+  assert.equal(ran.notices.length, 2);
+  assert.equal(ran.notices[0].phase, 'start');
+  assert.equal(ran.notices[0].id, late.okId);
+  assert.equal(ran.notices[0].agentId, 'cone');
+  assert.equal(typeof ran.notices[0].pid, 'number');
+  assert.equal(ran.notices[1].phase, 'end');
+  assert.equal(ran.notices[1].status, 0);
 
   const refused = await page.evaluate(async (badId) => {
-    const before = globalThis.sliccSudoRunLicks?.length ?? 0;
+    const before = globalThis.sliccApprovalRunNoticesSpy?.length ?? 0;
     const error = await document
       .querySelector('slicc-app')
       .model.approvals.run(badId)
@@ -739,12 +1018,13 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
     return {
       error,
       run: record?.run ?? null,
-      licks: (globalThis.sliccSudoRunLicks ?? []).length - before,
+      notices: (globalThis.sliccApprovalRunNoticesSpy ?? []).length - before,
     };
   }, late.badId);
 
   assert.match(refused.run?.error ?? refused.error ?? '', /changed since it was requested/);
   assert.equal(refused.run?.state, 'failed');
+  assert.equal(refused.notices, 0);
 
   await page.evaluate((id) => {
     const walk = (root) => {

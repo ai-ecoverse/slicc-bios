@@ -118,43 +118,129 @@ export async function signalGroup(client, pgid) {
   if (status !== 0) throw new Error(stderr?.trim() || `kill exited ${status}`);
 }
 
-export function startNotice(record, paths) {
-  const id = record.approval.id;
+export const NOTICE_ID_MAX = 128;
+export const NOTICE_AGENT_ID_MAX = 256;
+export const NOTICE_COMMAND_MAX = 1024;
+export const NOTICE_PATH_MAX = 1024;
+export const NOTICE_TAGS_MAX = 16;
+export const NOTICE_TAG_LEN = 256;
+export const NOTICE_SURVIVORS_MAX = 64;
+
+function noticeText(value, max) {
+  const text = typeof value === 'string' ? value : String(value ?? '');
+  if (!text) return '';
+  if (text.length <= max) return text;
+  if (max <= 3) return text.slice(0, max);
+  return `${text.slice(0, max - 3)}...`;
+}
+
+function noticeCommand(command) {
+  return noticeText(command, NOTICE_COMMAND_MAX);
+}
+
+function noticeId(id) {
+  const text = typeof id === 'string' ? id : String(id ?? '');
+  return text.length <= NOTICE_ID_MAX ? text : text.slice(0, NOTICE_ID_MAX);
+}
+
+function withoutLineSeps(text) {
+  return text.replaceAll('\u2028', '').replaceAll('\u2029', '');
+}
+
+function noticeAgentId(agentId) {
+  const text = withoutLineSeps(typeof agentId === 'string' ? agentId : String(agentId ?? ''));
+  return text.length <= NOTICE_AGENT_ID_MAX ? text : text.slice(0, NOTICE_AGENT_ID_MAX);
+}
+
+function noticeTags(replay) {
+  const tags = [];
+  const push = (tag) => {
+    if (tags.length >= NOTICE_TAGS_MAX) return;
+    if (typeof tag !== 'string' || !tag) return;
+    const clean = withoutLineSeps(tag);
+    if (!clean) return;
+    tags.push(clean.length <= NOTICE_TAG_LEN ? clean : clean.slice(0, NOTICE_TAG_LEN));
+  };
+  if (typeof replay?.tag === 'string') push(replay.tag);
+  if (Array.isArray(replay?.tags)) for (const tag of replay.tags) push(tag);
+  return { tags };
+}
+
+function noticeSurvivors(survivors) {
+  if (!Array.isArray(survivors) || !survivors.length) return {};
+  const pids = [];
+  for (const item of survivors) {
+    if (pids.length >= NOTICE_SURVIVORS_MAX) break;
+    const pid = typeof item === 'number' ? item : item?.pid;
+    if (Number.isSafeInteger(pid) && pid >= 1) pids.push(pid);
+  }
+  return pids.length ? { survivors: pids } : {};
+}
+
+function noticePath(value) {
+  if (typeof value !== 'string' || !value.startsWith('/') || value.length > NOTICE_PATH_MAX)
+    return undefined;
+  if (value.includes('\u2028') || value.includes('\u2029')) return undefined;
+  return value;
+}
+
+function noticePaths(paths) {
+  if (!paths) return {};
+  const stdout = noticePath(paths.stdout);
+  const stderr = noticePath(paths.stderr);
   return {
-    channel: 'sudo-run',
-    approval: id,
-    eventId: `${id}:start`,
-    agentId: record.approval.requester.agentId,
-    title: `sudo runs now: ${record.approval.command}`,
-    text: '[the owner ran your timed-out sudo request]',
-    body: `The owner ran your timed-out sudo with Run now. Output: ${paths.stdout}`,
+    ...(stdout ? { stdout } : {}),
+    ...(stderr ? { stderr } : {}),
   };
 }
 
-export function endNotice(record, paths, exit) {
-  const id = record.approval.id;
-  const status = exit?.status;
+export function startNotice(record, paths, { pid, at, replay } = {}) {
   return {
-    channel: 'sudo-run',
-    approval: id,
-    eventId: `${id}:end`,
-    agentId: record.approval.requester.agentId,
-    title: `sudo run ended: ${record.approval.command}`,
-    text: `[your late sudo run ended: exit ${status ?? 'unknown'}]`,
-    body: `Full output: ${paths.stdout} and ${paths.stderr}`,
-    ...(status !== undefined && status !== 0 ? { severity: 'warn' } : {}),
+    id: noticeId(record.approval.id),
+    phase: 'start',
+    agentId: noticeAgentId(record.approval.requester.agentId),
+    command: noticeCommand(record.approval.command),
+    requestedAt: record.approval.createdAt,
+    at: at ?? record.run?.at ?? Date.now(),
+    ...(pid !== undefined ? { pid } : {}),
+    ...noticePaths(paths),
+    ...noticeTags(replay),
   };
 }
 
-export function failNotice(record, error) {
-  const id = record.approval.id;
+export function endNotice(record, paths, exit = {}, { replay, stopped } = {}) {
+  const run = record.run ?? {};
+  const status = exit?.status !== undefined ? exit.status : run.status;
+  const signal = exit?.signal ?? run.signal;
+  const survivors = exit?.survivors ?? run.survivors;
+  const capped = exit?.capped ?? run.capped;
+  const endedAt = exit?.endedAt ?? run.endedAt ?? Date.now();
+  const wasStopped = stopped === true || run.state === 'stopped' || exit?.stopped === true;
   return {
-    channel: 'sudo-run',
-    approval: id,
-    eventId: `${id}:end`,
-    agentId: record.approval.requester.agentId,
-    title: `sudo run ended: ${record.approval.command}`,
-    text: `[your late sudo run ended: ${messageOf(error)}]`,
-    severity: 'warn',
+    id: noticeId(record.approval.id),
+    phase: 'end',
+    agentId: noticeAgentId(record.approval.requester.agentId),
+    command: noticeCommand(record.approval.command),
+    requestedAt: record.approval.createdAt,
+    at: run.at ?? endedAt,
+    ...(run.pid !== undefined ? { pid: run.pid } : {}),
+    endedAt,
+    ...(status !== undefined ? { status } : {}),
+    ...(typeof signal === 'string' && signal ? { signal } : {}),
+    ...noticeSurvivors(survivors),
+    ...(wasStopped ? { stopped: true } : {}),
+    ...(typeof capped === 'number' ? { capped } : {}),
+    ...noticePaths(paths ?? { stdout: run.stdout, stderr: run.stderr }),
+    ...noticeTags(replay),
   };
+}
+
+export function quietUndelivered(reason) {
+  if (typeof reason !== 'string' || !reason) return false;
+  return (
+    reason === 'This notice was already delivered.' ||
+    /already (delivered|ended)/i.test(reason) ||
+    /start .* after .*end/i.test(reason) ||
+    /end was already/i.test(reason)
+  );
 }

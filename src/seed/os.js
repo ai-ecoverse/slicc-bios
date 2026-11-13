@@ -12,6 +12,7 @@ import {
   startable as agentStartable,
   version as agentVersion,
   bridgeAgent,
+  deliverApprovalRunNotice,
   deliverWebhook,
   installAgent,
   loadChat,
@@ -405,7 +406,10 @@ reportRepairs(notices);
 reportStopped(notices);
 const registration = await navigator.serviceWorker?.getRegistration();
 if (registration) watchWaiting({ registration, board, notices, reload: () => location.reload() });
-const approvals = hostApprovals({ kernel: () => kernel });
+const approvals = hostApprovals({
+  kernel: () => kernel,
+  deliver: (notice) => deliverApprovalRunNotice(owner, notice),
+});
 const asking = withSecrets(approvals.port, vault.port);
 const clicks = createClicks();
 const approving = withClicks(asking.port, clicks.port);

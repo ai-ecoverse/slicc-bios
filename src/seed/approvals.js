@@ -2,9 +2,9 @@ import {
   DEFAULT_MAX_AGE,
   endNotice,
   ensureDir,
-  failNotice,
   kernelGate,
   messageOf,
+  quietUndelivered,
   RUN_REASONS,
   runnable,
   runPaths,
@@ -16,13 +16,16 @@ import {
 
 export {
   DEFAULT_MAX_AGE,
+  endNotice,
   kernelGate,
+  quietUndelivered,
   RUN_REASONS,
   runnable,
   runPaths,
   runsHome,
   runTag,
   SUDO_RUN_PROTOCOL,
+  startNotice,
   tooOld,
   validPgid,
 } from './approvals-run.js';
@@ -138,19 +141,6 @@ function emitter() {
   };
 }
 
-export function seatApprovals(port, { decide = false, run = false } = {}) {
-  const next = {
-    on: (type, listener) => port.on(type, listener),
-    list: () => port.list(),
-  };
-  if (typeof port.history === 'function') next.history = () => port.history();
-  if (decide && typeof port.decide === 'function')
-    next.decide = (id, decision, ...rest) => port.decide(id, decision, ...rest);
-  if (run && typeof port.run === 'function') next.run = (id) => port.run(id);
-  if (run && typeof port.stopRun === 'function') next.stopRun = (id) => port.stopRun(id);
-  return next;
-}
-
 function settledRecord(item, decision, reason, at) {
   if (reason === 'expired')
     return { approval: item, state: 'unanswered', reason: 'timeout', decidedAt: at };
@@ -167,6 +157,13 @@ function settledRecord(item, decision, reason, at) {
   return { approval: item, state: 'rejected', decidedAt: at, decidedBy: 'you' };
 }
 
+function takeEndTell(held, id) {
+  const prior = held.get(id) ?? {};
+  if (prior.endTold) return false;
+  held.set(id, { ...prior, endTold: true });
+  return true;
+}
+
 function watchEnded({
   started,
   id,
@@ -176,6 +173,7 @@ function watchEnded({
   replay,
   remember,
   listed,
+  held,
   runs,
   tell,
   now,
@@ -184,16 +182,19 @@ function watchEnded({
     .then((exit) => {
       const current = listed().find((item) => item.approval.id === id);
       if (current?.run?.state === 'stopped') return;
+      if (!takeEndTell(held, id)) return;
       const prior = current?.run ?? running;
       const base = current ?? record;
       const status = exit?.status === undefined ? {} : { status: exit.status };
       const signal = exit?.signal ? { signal: exit.signal } : {};
-      remember(
-        { ...base, run: { ...prior, state: 'done', endedAt: now(), ...status, ...signal } },
-        { replay, pgid: started.pgid }
-      );
+      const endedAt = now();
+      const next = {
+        ...base,
+        run: { ...prior, state: 'done', endedAt, ...status, ...signal },
+      };
+      remember(next, { replay, pgid: started.pgid });
       runs.delete(id);
-      void tell(endNotice(record, paths, exit));
+      void tell(endNotice(next, paths, { ...exit, endedAt }, { replay }));
     })
     .catch((error) => {
       const current = listed().find((item) => item.approval.id === id);
@@ -208,13 +209,15 @@ function watchEnded({
     });
 }
 
-async function finishStop(ctx, id, record, baseRun, started) {
-  const { held, kernel, remember, runs, now } = ctx;
+async function finishStop(ctx, id, record, baseRun, started, paths, replay) {
+  const { held, kernel, remember, runs, tell, now } = ctx;
   const running = { ...baseRun, state: 'running', pid: started.pid };
+  const mine = takeEndTell(held, id);
+  runs.delete(id);
   try {
     await signalGroup(kernel(), started.pgid);
   } catch (error) {
-    held.set(id, { ...(held.get(id) ?? {}), stop: false, pgid: started.pgid });
+    held.set(id, { ...(held.get(id) ?? {}), stop: false, pgid: started.pgid, endTold: false });
     runs.set(id, { pgid: started.pgid, ended: started.ended });
     remember(
       { ...record, runnable: true, run: { ...running, error: messageOf(error) } },
@@ -223,9 +226,12 @@ async function finishStop(ctx, id, record, baseRun, started) {
     return running;
   }
   held.set(id, { ...(held.get(id) ?? {}), stop: false, pgid: started.pgid });
-  const stopped = { ...baseRun, state: 'stopped', pid: started.pid, endedAt: now() };
-  remember({ ...record, runnable: true, run: stopped }, { pgid: started.pgid });
-  runs.delete(id);
+  const endedAt = now();
+  const stopped = { ...baseRun, state: 'stopped', pid: started.pid, endedAt };
+  const next = { ...record, runnable: true, run: stopped };
+  remember(next, { pgid: started.pgid });
+  if (mine)
+    void tell(endNotice(next, paths, { endedAt, stopped: true }, { replay, stopped: true }));
   return stopped;
 }
 
@@ -251,7 +257,6 @@ async function runOwned(ctx, id) {
     stderr: paths.stderr,
   };
   remember({ ...record, runnable: true, run: { ...baseRun, state: 'starting' } }, { replay });
-  await tell(startNotice(record, paths));
   try {
     await ensureDir(client, replay.user, paths.dir);
     const started = await client.sudoRun(replay, {
@@ -259,8 +264,12 @@ async function runOwned(ctx, id) {
       stderr: paths.stderr,
       tag: runTag(id),
     });
+    const running = { ...baseRun, state: 'running', pid: started.pid };
+    remember({ ...record, runnable: true, run: running }, { replay, pgid: started.pgid });
+    runs.set(id, { pgid: started.pgid, ended: started.ended });
+    void tell(startNotice({ ...record, run: running }, paths, { pid: started.pid, at, replay }));
     if (held.get(id)?.stop) {
-      const stopped = await finishStop(ctx, id, record, baseRun, started);
+      const stopped = await finishStop(ctx, id, record, baseRun, started, paths, replay);
       watchEnded({
         started,
         id,
@@ -270,16 +279,27 @@ async function runOwned(ctx, id) {
         replay,
         remember,
         listed,
+        held,
         runs,
         tell,
         now,
       });
       return;
     }
-    const running = { ...baseRun, state: 'running', pid: started.pid };
-    remember({ ...record, runnable: true, run: running }, { replay, pgid: started.pgid });
-    runs.set(id, { pgid: started.pgid, ended: started.ended });
-    watchEnded({ started, id, record, running, paths, replay, remember, listed, runs, tell, now });
+    watchEnded({
+      started,
+      id,
+      record,
+      running,
+      paths,
+      replay,
+      remember,
+      listed,
+      held,
+      runs,
+      tell,
+      now,
+    });
   } catch (error) {
     held.set(id, { ...(held.get(id) ?? {}), stop: false });
     remember(
@@ -287,33 +307,88 @@ async function runOwned(ctx, id) {
       { replay }
     );
     runs.delete(id);
-    void tell(failNotice(record, error));
     throw new Error(messageOf(error));
   }
 }
 
+async function peekEnded(ended) {
+  if (!ended || typeof ended.then !== 'function') return undefined;
+  let settled;
+  void Promise.resolve(ended).then(
+    (exit) => {
+      settled = { exit };
+    },
+    () => {
+      settled = { exit: null };
+    }
+  );
+  await Promise.resolve();
+  return settled;
+}
+
 async function stopOwned(ctx, id) {
-  const { listed, held, runs, kernel, remember, now } = ctx;
+  const { listed, held, runs, kernel, remember, tell, now } = ctx;
   const record = listed().find((entry) => entry.approval.id === id);
   if (!record?.run || (record.run.state !== 'running' && record.run.state !== 'starting'))
     throw new Error("This request isn't running.");
-  const pgid = runs.get(id)?.pgid ?? held.get(id)?.pgid;
+  const tracked = runs.get(id);
+  const pgid = tracked?.pgid ?? held.get(id)?.pgid;
   if (record.run.state === 'starting' && !validPgid(pgid)) {
     held.set(id, { ...(held.get(id) ?? {}), stop: true });
     return;
   }
+  const mine = takeEndTell(held, id);
+  runs.delete(id);
   try {
     await signalGroup(kernel(), pgid);
   } catch (error) {
+    held.set(id, { ...(held.get(id) ?? {}), endTold: false, pgid });
+    runs.set(id, tracked ?? { pgid });
     remember(
       { ...record, run: { ...record.run, state: 'running', error: messageOf(error) } },
       { pgid }
     );
+    const already = await peekEnded(tracked?.ended);
+    if (already?.exit && takeEndTell(held, id)) {
+      const endedAt = now();
+      const status = already.exit.status === undefined ? {} : { status: already.exit.status };
+      const signal = already.exit.signal ? { signal: already.exit.signal } : {};
+      const next = {
+        ...record,
+        run: {
+          ...record.run,
+          state: 'done',
+          endedAt,
+          ...status,
+          ...signal,
+          error: messageOf(error),
+        },
+      };
+      remember(next, { pgid });
+      runs.delete(id);
+      const replay = held.get(id)?.replay;
+      void tell(
+        endNotice(
+          next,
+          { stdout: next.run.stdout, stderr: next.run.stderr },
+          { ...already.exit, endedAt },
+          { replay }
+        )
+      );
+    }
     throw new Error(messageOf(error));
   }
   const { error: _error, ...clean } = record.run;
-  remember({ ...record, run: { ...clean, state: 'stopped', endedAt: now() } });
-  runs.delete(id);
+  const endedAt = now();
+  const next = { ...record, run: { ...clean, state: 'stopped', endedAt } };
+  remember(next);
+  const replay = held.get(id)?.replay;
+  const paths = {
+    stdout: next.run.stdout,
+    stderr: next.run.stderr,
+  };
+  if (mine)
+    void tell(endNotice(next, paths, { endedAt, stopped: true }, { replay, stopped: true }));
 }
 
 export const APPROVALS_LAYOUT = { side: 'right', open: [] };
@@ -321,17 +396,44 @@ export const APPROVALS_LAYOUT = { side: 'right', open: [] };
 export function hostApprovals({
   kernel,
   runner = () => ({ by: 'you' }),
+  deliver = null,
   debug = globalThis,
+  warn = (...args) => console.warn(...args),
   ...rest
 } = {}) {
-  const licks = [];
-  const lick = async (event) => {
-    licks.push(event);
+  const notices = [];
+  let missingWarned = false;
+  let undeliveredWarned = false;
+  const lick = async (notice) => {
+    notices.push(notice);
+    if (debug.sliccKernelDebug === true) debug.sliccApprovalRunNotices = notices;
+    if (typeof deliver !== 'function') {
+      if (!missingWarned) {
+        missingWarned = true;
+        warn('approval run notice: no deliver callback (agent approvalRunNotice unavailable)');
+      }
+      return;
+    }
+    let result;
+    try {
+      result = await deliver(notice);
+    } catch (error) {
+      if (!undeliveredWarned) {
+        undeliveredWarned = true;
+        warn(`approval run notice: ${error?.message ?? error}`);
+      }
+      return;
+    }
+    if (result?.delivered === false && !undeliveredWarned) {
+      if (quietUndelivered(result.reason)) return;
+      undeliveredWarned = true;
+      warn(`approval run notice: ${result.reason ?? 'not delivered'}`);
+    }
   };
   const approvals = createApprovals({ kernel, lick, runner, ...rest });
   if (debug.sliccKernelDebug === true) {
     debug.sliccApprovals = approvals;
-    debug.sliccSudoRunLicks = licks;
+    debug.sliccApprovalRunNotices = notices;
   }
   return approvals;
 }
