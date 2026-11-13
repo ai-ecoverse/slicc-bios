@@ -39,8 +39,15 @@ test('vault drift compares vault-preview to the root pin on main and on a schedu
   assert.match(drift, /vault-preview\.sliccy\.ai\/config\.json/);
   assert.match(drift, /devDependencies\['@ai-ecoverse\/slicc-vault'\]/);
   assert.match(drift, /vault drift: live/);
-  for (const line of drift.split('\n'))
+  assert.match(
+    drift,
+    /\n {6}- uses: actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n {8}with:\n {10}persist-credentials: false\n/
+  );
+  for (const line of drift.split('\n')) {
     if (/^\s*#/.test(line)) assert.match(line, /^\s*# renovate:/);
+    const used = line.match(/^\s+- uses:\s+(\S+)\s*$/);
+    if (used) assert.match(used[1], /^[^@]+@[0-9a-f]{40}$/);
+  }
 });
 
 test('CI runs on pull requests, merge groups and pushes to main, and cancels a superseded run only on a pull request', () => {
