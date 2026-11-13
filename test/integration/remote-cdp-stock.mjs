@@ -35,6 +35,7 @@ export const SCRIPTS =
 export const SETTINGS =
   'slicc: refused: settings for a whole session (headers, user agent, locale, time zone, cache, network conditions, blocked URLs, emulation) could reach seven’s pages or the vault, so the guard doesn’t allow them; change a request through Fetch instead';
 const RELAY = 'https://www.sliccy.ai/auth/callback';
+const SEVEN_CLIENT = 'experience-catalyst-prod';
 const STEP_MS = 60000;
 const HELD_MS = 5000;
 const PIN = JSON.parse(
@@ -47,10 +48,11 @@ const CHROME_ARGS = [
 ];
 
 function fixtureServer() {
-  const hits = new Set();
+  const hits = new Map();
   const server = createServer((req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    hits.add(`${url.hostname}${url.pathname}`);
+    const hit = `${url.hostname}${url.pathname}`;
+    hits.set(hit, (hits.get(hit) ?? 0) + 1);
     const port = server.address().port;
     const html = (body, head = '') => {
       res.writeHead(200, { 'content-type': 'text/html', 'set-cookie': 'stock=1; Path=/' });
@@ -170,7 +172,8 @@ export function stockChain(route, { chain = 'tray' } = {}) {
       sevenOrigin: seven,
       vault: `${vaultOrigin}/page`,
       vaultOrigin,
-      signIn: `http://idp.test:${port}/ims/authorize/v2?client_id=any&redirect_uri=${encodeURIComponent(RELAY)}&response_type=token`,
+      signIn: `http://idp.test:${port}/ims/authorize/v2?client_id=${SEVEN_CLIENT}&redirect_uri=${encodeURIComponent(RELAY)}&response_type=code`,
+      callbackOnly: `http://idp.test:${port}/ims/authorize/v2?client_id=any&redirect_uri=${encodeURIComponent(RELAY)}&response_type=token`,
       idpOrigin: `http://idp.test:${port}`,
       fakeExtension: extensionOver(browserUrl),
     };
@@ -186,6 +189,13 @@ export function stockChain(route, { chain = 'tray' } = {}) {
   const VAULT_COOKIE = 'stock-vault-secret';
   const vaultCookie = (cookies) =>
     cookies.filter((cookie) => cookie.name === VAULT_COOKIE || cookie.domain.includes('sliccy.ai'));
+
+  const reachless = () => ({
+    seven: rig.seven,
+    vault: rig.vault,
+    'seven’s sign-in': rig.signIn,
+    'a sign-in to seven’s callback': rig.callbackOnly,
+  });
 
   async function step(client, name, work) {
     const started = Date.now();
@@ -254,12 +264,11 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     await plain.send('Storage.setCookies', {
       cookies: [{ name: VAULT_COOKIE, value: 'v', url: rig.vault }],
     });
-    for (const url of [rig.vault, rig.signIn, `${rig.ordinary}/page`]) {
+    for (const url of [rig.vault, `${rig.ordinary}/page`]) {
       const { targetId } = await plain.send('Target.createTarget', { url, background: true });
       opened.push(targetId);
     }
     await until('the vault page', () => hits.has('vault.sliccy.ai/page'));
-    await until('the sign-in page', () => hits.has('idp.test/ims/authorize/v2'));
     await until('the default page', () => hits.has('ordinary.test/page'));
     const marker = `stock${Math.random().toString(36).slice(2)}`;
     const held = await page.evaluate(async (marker) => {
@@ -349,11 +358,11 @@ export function stockChain(route, { chain = 'tray' } = {}) {
       await run('newContext goto', () => second.goto(`${rig.ordinary}/page`));
       assert.equal(await second.title(), 'page');
       await other.close();
-      for (const url of [rig.seven, rig.vault, rig.signIn])
+      for (const [name, url] of Object.entries(reachless()))
         await assert.rejects(
-          run(`goto ${new URL(url).host}`, () => page.goto(url)),
+          run(`goto ${name}`, () => page.goto(url)),
           escaped(OUT_OF_REACH),
-          `Playwright reaches ${url}`
+          `Playwright reaches ${name}`
         );
       assert.ok(
         !protectedUrl(page.url()),
@@ -363,7 +372,8 @@ export function stockChain(route, { chain = 'tray' } = {}) {
       assert.ok(!after.some(protectedUrl), `no protected page listed: ${JSON.stringify(after)}`);
       if (heldUrl)
         assert.ok(!after.includes(heldUrl), `the held sign-in is listed: ${JSON.stringify(after)}`);
-      const late = await run('newPage for group 2', () => context.newPage());
+      const grouped = await run('newContext for group 2', () => connected.newContext());
+      const late = await run('newPage for group 2', () => grouped.newPage());
       await assert.rejects(late.addInitScript('window.stockInit = 1'), escaped(SCRIPTS));
       await assert.rejects(
         late.exposeFunction('stockExposed', () => 1),
@@ -378,7 +388,8 @@ export function stockChain(route, { chain = 'tray' } = {}) {
       await run('click after group 2', () => again.click('#go'));
       assert.equal(await again.textContent('#out'), 'clicked');
       assert.equal(await run('evaluate after group 2', () => page.evaluate(() => 6 * 7)), 42);
-      for (const open of [page, popup, late, again]) await open.close().catch(() => {});
+      for (const open of [page, popup, again]) await open.close().catch(() => {});
+      await grouped.close().catch(() => {});
     } finally {
       await connected.close();
     }
@@ -439,11 +450,11 @@ export function stockChain(route, { chain = 'tray' } = {}) {
         await run('iframe read', () => frame.$eval('#inner', (node) => node.textContent)),
         'inner'
       );
-      for (const url of [rig.seven, rig.vault, rig.signIn])
+      for (const [name, url] of Object.entries(reachless()))
         await assert.rejects(
-          run(`goto ${new URL(url).host}`, () => page.goto(url)),
+          run(`goto ${name}`, () => page.goto(url)),
           escaped(OUT_OF_REACH),
-          `Puppeteer reaches ${url}`
+          `Puppeteer reaches ${name}`
         );
       assert.ok(
         !protectedUrl(page.url()),
@@ -472,6 +483,59 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     } finally {
       await connected.disconnect();
     }
+  }
+
+  async function signInListed(t, base, url) {
+    const plain = await unguarded(rig.browserUrl);
+    const asked = hits.get('idp.test/ims/authorize/v2') ?? 0;
+    const { targetId } = await plain.send('Target.createTarget', { url, background: true });
+    t.after(async () => {
+      await plain.send('Target.closeTarget', { targetId }).catch(() => {});
+      plain.close();
+    });
+    await until('the sign-in page', () => (hits.get('idp.test/ims/authorize/v2') ?? 0) > asked);
+    const playwright = await step('playwright', 'connect with a sign-in tab', () =>
+      chromium.connectOverCDP(base)
+    );
+    try {
+      const [context] = playwright.contexts();
+      const first = await until('the default page in the default context', () =>
+        context.pages().find((page) => page.url() === `${rig.ordinary}/page`)
+      );
+      assert.equal(await first.title(), 'page');
+      const listed = context.pages().map((page) => page.url());
+      assert.ok(
+        !listed.some((at) => at.startsWith(rig.idpOrigin)),
+        `Playwright lists the sign-in tab: ${JSON.stringify(listed)}`
+      );
+    } finally {
+      await playwright.close();
+    }
+    const driven = await step('puppeteer', 'connect with a sign-in tab', () =>
+      puppeteer.connect({ browserURL: base, protocolTimeout: STEP_MS })
+    );
+    try {
+      const listed = (
+        await step('puppeteer', 'pages with a sign-in tab', () => driven.pages())
+      ).map((page) => page.url());
+      assert.ok(listed.includes(`${rig.ordinary}/page`), JSON.stringify(listed));
+      const targets = driven.targets().map((target) => target.url());
+      assert.ok(
+        !targets.some((at) => at.startsWith(rig.idpOrigin)),
+        `Puppeteer sees the sign-in tab: ${JSON.stringify(targets)}`
+      );
+    } finally {
+      await driven.disconnect();
+    }
+  }
+
+  async function signIns(t, base) {
+    await t.test('seven’s own sign-in tab (its client id and callback) stays out of reach', (t) =>
+      signInListed(t, base, rig.signIn)
+    );
+    await t.test('a sign-in tab that names only seven’s callback stays out of reach', (t) =>
+      signInListed(t, base, rig.callbackOnly)
+    );
   }
 
   async function routeHint(base) {
@@ -584,6 +648,7 @@ export function stockChain(route, { chain = 'tray' } = {}) {
 
     await t.test('Playwright', () => playwrightFlow(base, seeded));
     await t.test('Puppeteer', () => puppeteerFlow(base, seeded));
+    await signIns(t, base);
 
     await t.test('the switch closes live Playwright and Puppeteer sessions', async () => {
       const sessions = await live(base);
@@ -638,6 +703,7 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     await routeHint(base);
     await t.test('Playwright', () => playwrightFlow(base, seeded));
     await t.test('Puppeteer', () => puppeteerFlow(base, seeded));
+    await signIns(t, base);
     await t.test('the chip shows while a live session is connected', async () => {
       const sessions = await live(base);
       await chip(page);
