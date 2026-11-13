@@ -190,14 +190,17 @@ async function unguarded(ws) {
   return { send, close: () => socket.close() };
 }
 
-async function until(name, found) {
+async function until(name, found, onTimeout) {
   const started = Date.now();
   for (;;) {
     try {
       const value = await found();
       if (value) return value;
     } catch {}
-    if (Date.now() - started > STEP_MS) throw new Error(`no ${name} in ${STEP_MS} ms`);
+    if (Date.now() - started > STEP_MS) {
+      if (onTimeout) await onTimeout();
+      throw new Error(`no ${name} in ${STEP_MS} ms`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
 }
@@ -226,36 +229,90 @@ async function vaultOpen(t, ws, route) {
   });
   opened.push(sevenId);
   const sevenOrigin = new URL(SEVEN).origin;
-  const loaded = await until('seven loaded', async () => {
-    const { targetInfo } = await send('Target.getTargetInfo', { targetId: sevenId });
-    const url = targetInfo?.url ?? '';
-    if (!url.startsWith(sevenOrigin)) return null;
-    const { sessionId } = await send('Target.attachToTarget', {
-      targetId: sevenId,
-      flatten: true,
-    });
-    try {
-      await send('Runtime.enable', {}, sessionId);
-      const { result } = await send(
-        'Runtime.evaluate',
-        {
-          expression:
-            '({ readyState: document.readyState, origin: location.origin, href: location.href, app: Boolean(document.querySelector("slicc-app")) })',
-          returnByValue: true,
-        },
-        sessionId
+  const last = {
+    route,
+    sevenId,
+    sevenOrigin,
+    SEVEN,
+    targets: [],
+    url: null,
+    readyState: null,
+    origin: null,
+    href: null,
+    app: null,
+    probeError: null,
+  };
+  const loaded = await until(
+    'seven loaded',
+    async () => {
+      const { targetInfos } = await send('Target.getTargets', {});
+      last.targets = targetInfos.map((info) => ({
+        type: info.type,
+        url: info.url,
+        attached: info.attached,
+        targetId: info.targetId,
+      }));
+      const info = targetInfos.find(
+        (item) =>
+          item.type === 'page' && item.targetId === sevenId && item.url.startsWith(sevenOrigin)
       );
-      const value = result?.value;
-      if (!value || value.origin !== sevenOrigin) return null;
-      if (value.app || value.readyState === 'interactive' || value.readyState === 'complete')
-        return { ...value, url };
-      return null;
-    } finally {
-      await send('Target.detachFromTarget', { sessionId }).catch(() => {});
+      if (!info) {
+        last.url = null;
+        last.readyState = null;
+        last.origin = null;
+        last.href = null;
+        last.app = null;
+        last.probeError = null;
+        return null;
+      }
+      last.url = info.url;
+      try {
+        const { sessionId } = await send('Target.attachToTarget', {
+          targetId: sevenId,
+          flatten: true,
+        });
+        try {
+          await send('Runtime.enable', {}, sessionId);
+          const { result } = await send(
+            'Runtime.evaluate',
+            {
+              expression:
+                '({ readyState: document.readyState, origin: location.origin, href: location.href, app: Boolean(document.querySelector("slicc-app")) })',
+              returnByValue: true,
+            },
+            sessionId
+          );
+          const value = result?.value;
+          last.readyState = value?.readyState ?? null;
+          last.origin = value?.origin ?? null;
+          last.href = value?.href ?? null;
+          last.app = value?.app ?? null;
+          last.probeError = null;
+        } finally {
+          await send('Target.detachFromTarget', { sessionId }).catch(() => {});
+        }
+      } catch (error) {
+        last.probeError = error?.message ?? String(error);
+        last.readyState = null;
+        last.origin = null;
+        last.href = null;
+        last.app = null;
+      }
+      return info;
+    },
+    () => {
+      console.log(`STOCK-SEVEN-TIMEOUT ${JSON.stringify(last)}`);
     }
-  });
+  );
   console.log(
-    `STOCK-SEVEN ${JSON.stringify({ route, targetId: sevenId, url: loaded.url, readyState: loaded.readyState, origin: loaded.origin, app: loaded.app })}`
+    `STOCK-SEVEN ${JSON.stringify({
+      route,
+      targetId: sevenId,
+      url: loaded.url,
+      readyState: last.readyState,
+      origin: last.origin,
+      app: last.app,
+    })}`
   );
 }
 
