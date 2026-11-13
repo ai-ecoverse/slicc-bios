@@ -753,13 +753,17 @@ const ORDINARY = /^(?:https?|data):/i;
 export const ARM = [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }];
 
 const CALLBACK_NAMED = RELAY.replace(/^https?:\/\//, '').toLowerCase();
+const CALLBACK_CUT = new RegExp(
+  `(?:^|[^a-z0-9.-])${new URL(RELAY).host.toLowerCase().replaceAll('.', '\\.')}(?::443)?/?(?:[?&#;\\s]|$)`
+);
 
-export function signsIn(url) {
+export function signsIn(url, { cut = false } = {}) {
   if (typeof url !== 'string' || !/^https?:/i.test(url)) return false;
   let text = url;
   for (let i = 0; i < 5; i += 1) {
     const lower = text.toLowerCase();
     if (lower.includes(CALLBACK_NAMED)) return true;
+    if (cut && CALLBACK_CUT.test(lower)) return true;
     for (const [, id] of lower.matchAll(/[?&#]client_id=([^&#\s]*)/g)) {
       if ([...SIGN_IN_CLIENTS].some((client) => client.toLowerCase() === id)) return true;
     }
@@ -778,13 +782,13 @@ export function signsIn(url) {
   return true;
 }
 
-export function protection(own) {
+export function protection(own, { cut = false } = {}) {
   const matcher = protectedOrigins(catalog.protectedOrigins, owned(own));
   const web = (url, options) =>
     typeof url === 'string' &&
-    (matcher.url(url.replace(/^ws(s?):/i, 'http$1:'), options) || signsIn(url));
+    (matcher.url(url.replace(/^ws(s?):/i, 'http$1:'), options) || signsIn(url, { cut }));
   const target = (info) =>
-    matcher.target(info) || (!info.type?.endsWith('worker') && signsIn(info.url));
+    matcher.target(info) || (!info.type?.endsWith('worker') && signsIn(info.url, { cut }));
   return { ...matcher, url: web, target };
 }
 
@@ -801,7 +805,7 @@ class Guard {
     this.recalled = new Set();
     this.closing = false;
     this.closed = false;
-    this.is = protection(own);
+    this.is = protection(own, { cut: this.route === 'link' });
     this.ownUrl = protectedOrigins(catalog.protectedOrigins, owned(own)).url;
     this.redact = redacting(this.is);
     this.redirected = new Set();
@@ -2478,6 +2482,8 @@ class Guard {
         params: { sessionId },
         ...(outer ? { sessionId: outer } : {}),
       });
+      if (this.tabSessions.has(sessionId) && targetId && !outer)
+        this.deliver({ method: 'Target.targetDestroyed', params: { targetId } });
     }
     if (this.pausedSessions.delete(sessionId))
       void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);

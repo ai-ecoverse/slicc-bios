@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { browserHook, browserHosts } from '../../src/seed/cdp.js';
+import { guardProtected } from '../../src/seed/guard.js';
 import { watchSignIns } from '../../src/seed/held.js';
 
 const SEVEN = 'https://seven.invalid';
@@ -243,5 +244,80 @@ test('with only a linked seven browser, seven’s sign-in popup, shown by slicc-
     }
   } finally {
     stop();
+  }
+});
+
+test('on a linked seven browser, an ordinary page’s about:blank popup is not taken for seven’s sign-in popup, and stays drivable', {
+  timeout: 30000,
+}, async () => {
+  const infos = {
+    plain: { type: 'page', url: 'https://ordinary.invalid/opener', title: 'Opener' },
+    blank: { type: 'page', url: 'about:blank', title: 'about:blank', openerId: 'plain' },
+  };
+  const open = browser(infos);
+  const links = linked(open);
+  const sent = [];
+  let channel;
+  let now = 0;
+  const stop = watchSignIns({
+    hosts: () => browserHosts(undefined, undefined, links),
+    own: SEVEN,
+    storage: undefined,
+    now: () => now,
+    sleep: () => {
+      now += 10000;
+      return Promise.resolve();
+    },
+    listen: () => {
+      channel = { postMessage: (data) => sent.push(data), close() {}, onmessage: null };
+      return channel;
+    },
+  });
+  try {
+    channel.onmessage({ data: { type: 'hold', marker: 'not-ours' } });
+    for (let n = 0; n < 1200 && !sent.length; n++) await pause(5);
+    assert.deepEqual(sent, [{ type: 'unheld', marker: 'not-ours' }]);
+    infos.blank = { ...infos.blank, url: 'https://ordinary.invalid/popup', title: 'Popup' };
+    const agent = await client(browserHook((connection) => connection, links, [SEVEN]));
+    try {
+      const seen = await reach(agent, 'blank');
+      assert.equal(seen.listed, true, JSON.stringify(seen));
+      assert.equal(seen.attach, 'attached', JSON.stringify(seen));
+    } finally {
+      agent.close();
+    }
+  } finally {
+    stop();
+  }
+});
+
+const REFERS = 'https://ordinary.invalid/page?from=https://www.sliccy.ai';
+const DEEPER = 'https://ordinary.invalid/page?from=https://www.sliccy.ai/blog/post';
+
+test('an ordinary page naming https://www.sliccy.ai alone in its query is hidden on the link route only, and one naming a deeper sliccy.ai page is not', {
+  timeout: 30000,
+}, async () => {
+  const infos = {
+    refers: { type: 'page', url: REFERS, title: 'Refers' },
+    deeper: { type: 'page', url: DEEPER, title: 'Deeper' },
+  };
+  const link = await client(
+    browserHook((connection) => connection, linked(browser(infos)), [SEVEN])
+  );
+  const open = browser(infos);
+  const devtools = await client(async () =>
+    guardProtected(await open(), [SEVEN], new Map(), undefined)
+  );
+  try {
+    const onLink = await reach(link, 'refers');
+    assert.equal(onLink.listed, false, JSON.stringify(onLink));
+    assert.match(onLink.attach, /^slicc: refused:/, JSON.stringify(onLink));
+    const deeper = await reach(link, 'deeper');
+    assert.equal(deeper.attach, 'attached', JSON.stringify(deeper));
+    const elsewhere = await reach(devtools, 'refers');
+    assert.equal(elsewhere.attach, 'attached', JSON.stringify(elsewhere));
+  } finally {
+    link.close();
+    devtools.close();
   }
 });

@@ -11,14 +11,18 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const origin = (url) => (URL.canParse(url) ? new URL(url).origin : '://');
 
 function chrome(tabs) {
+  const shape = (type, tab) => ({
+    type,
+    url: tab.url,
+    title: tab.title ?? tab.url,
+    ...(tab.opener ? { openerId: tab.opener, canAccessOpener: true } : {}),
+  });
   const pages = Object.fromEntries(
-    Object.values(tabs).map((tab) => [tab.page, { type: 'page', url: tab.url, title: tab.url }])
+    Object.values(tabs).map((tab) => [tab.page, shape('page', tab)])
   );
   const infos = {
     ...pages,
-    ...Object.fromEntries(
-      Object.entries(tabs).map(([id, tab]) => [id, { type: 'tab', url: tab.url, title: tab.url }])
-    ),
+    ...Object.fromEntries(Object.entries(tabs).map(([id, tab]) => [id, shape('tab', tab)])),
   };
   const owners = new Map();
   let sessions = 0;
@@ -102,70 +106,134 @@ function chrome(tabs) {
   return connection;
 }
 
-for (const route of [undefined, { kind: 'link', version: '1.67.4' }])
-  test(`on the ${route?.kind ?? 'devtools'} route, a Puppeteer-shaped client that saw a held sign-in tab attach learns the tab is gone, so its connect can finish`, {
-    timeout: 30000,
-  }, async () => {
-    hold(`held-page-${route?.kind ?? 'devtools'}`);
-    const raw = chrome({
-      'tab-held': { page: `held-page-${route?.kind ?? 'devtools'}`, url: HELD_URL },
-      'tab-plain': { page: 'plain-page', url: ORDINARY },
-    });
-    const guarded = guardProtected(raw, [SEVEN], new Map(), route);
-    const got = [];
-    guarded.onmessage = (text) => got.push(JSON.parse(text));
-    let id = 0;
-    const send = async (method, params = {}, sessionId) => {
-      id += 1;
-      const mine = id;
-      guarded.send(
-        JSON.stringify({ id: mine, method, params, ...(sessionId ? { sessionId } : {}) })
-      );
-      for (let n = 0; n < 1200 && !got.some((message) => message.id === mine); n++) await pause(5);
-      return got.find((message) => message.id === mine);
-    };
-    await send('Target.setDiscoverTargets', { discover: true, filter: [{}] });
-    await send('Target.setAutoAttach', {
-      autoAttach: true,
-      waitForDebuggerOnStart: true,
-      flatten: true,
-      filter: PUPPETEER_TABS,
-    });
-    const tabs = got.filter(
+const HELD_TITLE = 'HELD-TAB-TITLE';
+const OPENER = 'opener-of-held';
+const AUTO = { autoAttach: true, waitForDebuggerOnStart: true, flatten: true, filter: [{}] };
+
+function client(route, tabs) {
+  const guarded = guardProtected(chrome(tabs), [SEVEN], new Map(), route);
+  const got = [];
+  guarded.onmessage = (text) => got.push(JSON.parse(text));
+  let id = 0;
+  const send = async (method, params = {}, sessionId) => {
+    id += 1;
+    const mine = id;
+    guarded.send(JSON.stringify({ id: mine, method, params, ...(sessionId ? { sessionId } : {}) }));
+    for (let n = 0; n < 1200 && !got.some((message) => message.id === mine); n++) await pause(5);
+    return got.find((message) => message.id === mine);
+  };
+  const tab = (targetId) =>
+    got.find(
       (message) =>
         message.method === 'Target.attachedToTarget' &&
         message.sessionId === undefined &&
-        message.params.targetInfo.type === 'tab'
+        message.params.targetInfo.targetId === targetId
     );
-    const waiting = new Set(tabs.map((message) => message.params.targetInfo.targetId));
-    for (const message of tabs)
-      void send(
-        'Target.setAutoAttach',
-        { autoAttach: true, waitForDebuggerOnStart: true, flatten: true, filter: [{}] },
-        message.params.sessionId
+  const destroyed = (targetId) =>
+    got.filter(
+      (message) =>
+        message.method === 'Target.targetDestroyed' && message.params.targetId === targetId
+    ).length;
+  const pageUnder = (session) =>
+    got.find(
+      (message) => message.method === 'Target.attachedToTarget' && message.sessionId === session
+    );
+  const until = async (check) => {
+    for (let n = 0; n < 1000 && !check(); n++) await pause(10);
+    return check();
+  };
+  return { send, got, tab, destroyed, pageUnder, until };
+}
+
+const ROUTES = [
+  ['devtools', undefined],
+  ['link', { kind: 'link', version: '1.67.4' }],
+];
+const PATHS = {
+  'a refused Target.setAutoAttach': async (c, session) => {
+    await c.send('Target.setAutoAttach', AUTO, session);
+  },
+  'Runtime.runIfWaitingForDebugger first, then Target.setAutoAttach': async (c, session) => {
+    await c.send('Runtime.runIfWaitingForDebugger', {}, session);
+    await c.send('Target.setAutoAttach', AUTO, session);
+  },
+  'both at once, as Puppeteer sends them': async (c, session) => {
+    await Promise.all([
+      c.send('Target.setAutoAttach', AUTO, session),
+      c.send('Runtime.runIfWaitingForDebugger', {}, session),
+    ]);
+  },
+};
+
+for (const [name, route] of ROUTES)
+  for (const [path, drive] of Object.entries(PATHS))
+    test(`on the ${name} route, a held sign-in tab cut on ${path} shows the client only its id, and goes away once, while the ordinary tab gets its page`, {
+      timeout: 30000,
+    }, async () => {
+      const page = `held-${name}-${Object.keys(PATHS).indexOf(path)}`;
+      hold(page);
+      const c = client(route, {
+        'tab-held': { page, url: HELD_URL, title: HELD_TITLE, opener: OPENER },
+        'tab-plain': { page: 'plain-page', url: ORDINARY },
+      });
+      await c.send('Target.setDiscoverTargets', { discover: true, filter: [{}] });
+      await c.send('Target.setAutoAttach', { ...AUTO, filter: PUPPETEER_TABS });
+      const held = c.tab('tab-held');
+      const plain = c.tab('tab-plain');
+      assert.ok(held && plain, JSON.stringify(c.got));
+      assert.deepEqual(
+        { url: held.params.targetInfo.url, title: held.params.targetInfo.title },
+        { url: '', title: '' }
       );
-    const settle = () => {
-      for (const message of got) {
-        if (message.method === 'Target.targetDestroyed') waiting.delete(message.params.targetId);
-        if (message.method !== 'Target.attachedToTarget' || message.sessionId === undefined)
-          continue;
-        const parent = tabs.find((tab) => tab.params.sessionId === message.sessionId);
-        if (parent) waiting.delete(parent.params.targetInfo.targetId);
-      }
-      return waiting.size === 0;
-    };
-    for (let n = 0; n < 1000 && !settle(); n++) await pause(10);
-    assert.deepEqual(
-      [...waiting],
-      [],
-      'every tab the client saw attach either got a page or went away'
-    );
-    const pagesShown = got
-      .filter(
-        (message) =>
-          message.method === 'Target.attachedToTarget' && message.params.targetInfo.type === 'page'
+      assert.equal(held.params.targetInfo.openerId, undefined);
+      await drive(c, held.params.sessionId);
+      await c.send('Target.setAutoAttach', AUTO, plain.params.sessionId);
+      assert.ok(await c.until(() => c.destroyed('tab-held') > 0), JSON.stringify(c.got));
+      assert.ok(
+        await c.until(() => c.pageUnder(plain.params.sessionId)),
+        'the ordinary tab got its page'
+      );
+      await pause(100);
+      assert.equal(c.destroyed('tab-held'), 1, 'the held tab went away once');
+      assert.equal(c.destroyed('tab-plain'), 0, 'the ordinary tab was destroyed');
+      assert.equal(
+        c.pageUnder(held.params.sessionId),
+        undefined,
+        'a page under the held tab was shown'
+      );
+      const text = JSON.stringify(c.got);
+      for (const secret of [page, OPENER, HELD_TITLE, '/held'])
+        assert.ok(!text.includes(secret), `${secret} reached the client: ${text}`);
+    });
+
+for (const [name, route] of ROUTES)
+  test(`on the ${name} route, an ordinary tab whose page is held later goes away once on its next command, and an ordinary tab never does`, {
+    timeout: 30000,
+  }, async () => {
+    const page = `later-${name}`;
+    const c = client(route, {
+      'tab-later': { page, url: HELD_URL, title: HELD_TITLE },
+      'tab-plain': { page: 'plain-page', url: ORDINARY },
+    });
+    await c.send('Target.setAutoAttach', { ...AUTO, filter: PUPPETEER_TABS });
+    const later = c.tab('tab-later');
+    const plain = c.tab('tab-plain');
+    for (const one of [later, plain])
+      await c.send('Target.setAutoAttach', AUTO, one.params.sessionId);
+    assert.ok(
+      await c.until(
+        () => c.pageUnder(later.params.sessionId) && c.pageUnder(plain.params.sessionId)
       )
-      .map((message) => message.params.targetInfo.targetId);
-    assert.deepEqual(pagesShown, ['plain-page']);
-    assert.ok(!JSON.stringify(got).includes('/held'), 'the held page’s URL reached the client');
+    );
+    assert.equal(c.destroyed('tab-later'), 0);
+    hold(page);
+    const refused = await c.send('Runtime.runIfWaitingForDebugger', {}, later.params.sessionId);
+    assert.match(refused.error?.message ?? '', /^slicc: refused:/, JSON.stringify(refused));
+    assert.ok(await c.until(() => c.destroyed('tab-later') > 0), JSON.stringify(c.got));
+    const again = await c.send('Target.getTargetInfo', {}, later.params.sessionId);
+    assert.ok(again.error, JSON.stringify(again));
+    assert.ok((await c.send('Target.getTargetInfo', {}, plain.params.sessionId)).result);
+    await pause(100);
+    assert.equal(c.destroyed('tab-later'), 1);
+    assert.equal(c.destroyed('tab-plain'), 0);
   });
