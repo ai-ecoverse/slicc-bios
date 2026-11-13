@@ -174,7 +174,7 @@ async function unguarded(ws) {
     waiting.delete(message.id);
     done(message);
   });
-  const send = (method, params = {}) =>
+  const send = (method, params = {}, sessionId) =>
     new Promise((resolve, reject) => {
       next += 1;
       const id = next;
@@ -187,22 +187,27 @@ async function unguarded(ws) {
         if (message.error) reject(new Error(message.error.message));
         else resolve(message.result);
       });
-      socket.send(JSON.stringify({ id, method, params }));
+      socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
     });
   return { send, close: () => socket.close() };
 }
 
-async function until(name, found) {
+async function until(name, found, onTimeout) {
   const started = Date.now();
   for (;;) {
-    const value = await found();
-    if (value) return value;
-    if (Date.now() - started > STEP_MS) throw new Error(`no ${name} in ${STEP_MS} ms`);
+    try {
+      const value = await found();
+      if (value) return value;
+    } catch {}
+    if (Date.now() - started > STEP_MS) {
+      if (onTimeout) await onTimeout();
+      throw new Error(`no ${name} in ${STEP_MS} ms`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
 }
 
-async function vaultOpen(t, ws) {
+async function vaultOpen(t, ws, route) {
   const { send, close } = await unguarded(ws);
   const opened = [];
   t.after(async () => {
@@ -212,26 +217,103 @@ async function vaultOpen(t, ws) {
   await send('Storage.setCookies', {
     cookies: [{ name: VAULT_COOKIE, value: 'v', url: VAULT }],
   });
+  const vaultUrl = `${VAULT_ORIGIN}/page?route=${encodeURIComponent(route)}`;
+  const vaultHit = `vault.sliccy.ai/page?route=${route}`;
   const { targetId: vaultId } = await send('Target.createTarget', {
-    url: VAULT,
+    url: vaultUrl,
     background: true,
   });
   opened.push(vaultId);
-  await until('the vault page', () => hits.has(`vault.sliccy.ai/page`));
+  await until('the vault page', () => hits.has(vaultHit));
   const { targetId: sevenId } = await send('Target.createTarget', {
     url: SEVEN,
     background: true,
   });
   opened.push(sevenId);
-  await until('seven in the driven browser', async () => {
-    const { targetInfos } = await send('Target.getTargets', {});
-    return targetInfos.find(
-      (info) =>
-        info.type === 'page' &&
-        info.targetId === sevenId &&
-        info.url.startsWith(new URL(SEVEN).origin)
-    );
-  });
+  const sevenOrigin = new URL(SEVEN).origin;
+  const last = {
+    route,
+    sevenId,
+    sevenOrigin,
+    SEVEN,
+    targets: [],
+    url: null,
+    readyState: null,
+    origin: null,
+    href: null,
+    app: null,
+    probeError: null,
+  };
+  const loaded = await until(
+    'seven loaded',
+    async () => {
+      const { targetInfos } = await send('Target.getTargets', {});
+      last.targets = targetInfos.map((info) => ({
+        type: info.type,
+        url: info.url,
+        attached: info.attached,
+        targetId: info.targetId,
+      }));
+      const info = targetInfos.find(
+        (item) =>
+          item.type === 'page' && item.targetId === sevenId && item.url.startsWith(sevenOrigin)
+      );
+      if (!info) {
+        last.url = null;
+        last.readyState = null;
+        last.origin = null;
+        last.href = null;
+        last.app = null;
+        last.probeError = null;
+        return null;
+      }
+      last.url = info.url;
+      try {
+        const { sessionId } = await send('Target.attachToTarget', {
+          targetId: sevenId,
+          flatten: true,
+        });
+        try {
+          await send('Runtime.enable', {}, sessionId);
+          const { result } = await send(
+            'Runtime.evaluate',
+            {
+              expression:
+                '({ readyState: document.readyState, origin: location.origin, href: location.href, app: Boolean(document.querySelector("slicc-app")) })',
+              returnByValue: true,
+            },
+            sessionId
+          );
+          const value = result?.value;
+          last.readyState = value?.readyState ?? null;
+          last.origin = value?.origin ?? null;
+          last.href = value?.href ?? null;
+          last.app = value?.app ?? null;
+          last.probeError = null;
+        } finally {
+          await send('Target.detachFromTarget', { sessionId }).catch(() => {});
+        }
+      } catch (error) {
+        last.probeError = error?.message ?? String(error);
+        last.readyState = null;
+        last.origin = null;
+        last.href = null;
+        last.app = null;
+      }
+      return info;
+    },
+    () => {
+      console.log(`STOCK-SEVEN-TIMEOUT ${JSON.stringify(last)}`);
+    }
+  );
+  console.log(
+    `STOCK-SEVEN ${JSON.stringify({
+      route,
+      targetId: sevenId,
+      url: loaded.url,
+      targets: last.targets,
+    })}`
+  );
 }
 
 async function bridge(t, route) {
@@ -598,7 +680,7 @@ for (const route of ['devtools', 'extension', 'link'])
         : false,
   }, async (t) => {
     const opened = await bridge(t, route);
-    await vaultOpen(t, opened.driven);
+    await vaultOpen(t, opened.driven, route);
     const endpoint = opened.endpoint;
     t.after(() => {
       const unanswered = [...pending.values()].map(
