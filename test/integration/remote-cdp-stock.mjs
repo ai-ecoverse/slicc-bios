@@ -139,15 +139,50 @@ async function recordedTransport(url) {
     send: (message) => socket.send(message),
     close: () => socket.close(),
   };
-  socket.on('message', (data) => transport.onmessage?.(data.toString()));
+  const trace = [];
+  const note = (way, text) => {
+    let message;
+    try {
+      message = JSON.parse(text);
+    } catch {
+      return;
+    }
+    const info = message.params?.targetInfo;
+    trace.push(
+      [
+        way,
+        message.method ?? `#${message.id}`,
+        info ? `${info.type} ${info.url}` : '',
+        message.params?.waitingForDebugger ? 'paused' : '',
+        message.error ? message.error.message.slice(0, 80) : '',
+      ]
+        .filter(Boolean)
+        .join(' ')
+    );
+    if (trace.length > 60) trace.shift();
+  };
+  transport.send = (message) => {
+    note('>', message);
+    socket.send(message);
+  };
+  socket.on('message', (data) => {
+    note('<', data.toString());
+    transport.onmessage?.(data.toString());
+  });
   const closed = new Promise((resolve) =>
     socket.on('close', (code, reason) => {
       resolve({ code, reason: reason.toString() });
       transport.onclose?.();
     })
   );
-  return { transport, closed };
+  return { transport, closed, trace };
 }
+
+const bounded = (promise, ms, what) =>
+  Promise.race([
+    promise,
+    new Promise((resolve) => setTimeout(() => resolve(`no answer to ${what} in ${ms} ms`), ms)),
+  ]);
 
 export function stockChain(route, { chain = 'tray' } = {}) {
   const label = `${chain} ${route}`;
@@ -500,41 +535,58 @@ export function stockChain(route, { chain = 'tray' } = {}) {
 
   async function clientsSee(base, origin, mark) {
     const out = {};
-    const playwright = await step('playwright', `connect beside ${mark}`, () =>
-      chromium.connectOverCDP(base)
-    );
     try {
-      const [context] = playwright.contexts();
-      await until('the default page in the default context', () =>
-        context.pages().find((page) => page.url() === `${rig.ordinary}/page`)
+      const playwright = await step('playwright', `connect beside ${mark}`, () =>
+        chromium.connectOverCDP(base)
       );
-      const pages = context.pages();
-      out.playwright = pages.map((page) => page.url()).filter((url) => url.startsWith(origin));
-      out.playwrightTitles = [];
-      for (const page of pages.filter((one) => one.url().startsWith(origin)))
-        out.playwrightTitles.push(
-          await page.title().then(
-            (title) => title,
-            (error) => `error: ${error.message.slice(0, 200)}`
-          )
+      try {
+        const [context] = playwright.contexts();
+        await until('the default page in the default context', () =>
+          context.pages().find((page) => page.url() === `${rig.ordinary}/page`)
         );
-    } finally {
-      await playwright.close();
+        const pages = context.pages().filter((page) => page.url().startsWith(origin));
+        out.playwright = pages.map((page) => page.url());
+        out.playwrightTitles = [];
+        for (const page of pages)
+          out.playwrightTitles.push(
+            await bounded(
+              page.title().catch((error) => `error: ${error.message.slice(0, 200)}`),
+              5000,
+              'page.title()'
+            )
+          );
+      } finally {
+        await bounded(playwright.close(), 5000, 'close');
+      }
+    } catch (error) {
+      out.playwright = `error: ${error.message.slice(0, 200)}`;
     }
-    const driven = await step('puppeteer', `connect beside ${mark}`, () =>
-      puppeteer.connect({ browserURL: base, protocolTimeout: STEP_MS })
-    );
+    const { body } = await httpJson(`${base}/json/version`);
+    const recorded = await recordedTransport(body.webSocketDebuggerUrl);
     try {
-      out.puppeteerTargets = driven
-        .targets()
-        .map((target) => target.url())
-        .filter((url) => url.startsWith(origin));
-      out.puppeteerPages = await driven.pages().then(
-        (pages) => pages.map((page) => page.url()).filter((url) => url.startsWith(origin)),
-        (error) => `error: ${error.message.slice(0, 200)}`
+      const driven = await step('puppeteer', `connect beside ${mark}`, () =>
+        puppeteer.connect({ transport: recorded.transport, protocolTimeout: STEP_MS })
       );
-    } finally {
-      await driven.disconnect();
+      try {
+        out.puppeteerTargets = driven
+          .targets()
+          .map((target) => target.url())
+          .filter((url) => url.startsWith(origin));
+        out.puppeteerPages = await bounded(
+          driven.pages().then(
+            (pages) => pages.map((page) => page.url()).filter((url) => url.startsWith(origin)),
+            (error) => `error: ${error.message.slice(0, 200)}`
+          ),
+          STEP_MS,
+          'pages()'
+        );
+      } finally {
+        await bounded(driven.disconnect(), 5000, 'disconnect');
+      }
+    } catch (error) {
+      out.puppeteerTargets = `error: ${error.message.slice(0, 200)}`;
+      out.puppeteerTrace = recorded.trace.slice(-40);
+      recorded.transport.close();
     }
     return out;
   }
@@ -565,9 +617,10 @@ export function stockChain(route, { chain = 'tray' } = {}) {
       chrome: targetInfos.find((info) => info.targetId === targetId)?.url,
       sliccLinkGuard: await sliccLayer(page, targetId),
       ...(await reach(base, targetId, SIGN_IN_MARK)),
-      clients: await clientsSee(base, rig.idpOrigin, SIGN_IN_MARK),
     };
     process.stdout.write(`STOCK-SIGNIN ${label} ${JSON.stringify(seen)}\n`);
+    seen.clients = await clientsSee(base, rig.idpOrigin, SIGN_IN_MARK);
+    process.stdout.write(`STOCK-SIGNIN-CLIENTS ${label} ${JSON.stringify(seen.clients)}\n`);
     unreachable(seen, 'the sign-in tab');
   }
 
@@ -580,7 +633,6 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     );
     await t.test('a held sign-in tab moved to an ordinary page stays out of reach', async (t) => {
       const plain = await unguarded(rig.browserUrl);
-      t.after(() => plain.close());
       const marker = `stock${Math.random().toString(36).slice(2)}`;
       const held = await page.evaluate(async (marker) => {
         window.stockHeld = window.open(
@@ -601,7 +653,12 @@ export function stockChain(route, { chain = 'tray' } = {}) {
         channel.close();
         return answer;
       }, marker);
-      t.after(() => page.evaluate(() => window.stockHeld?.close()).catch(() => {}));
+      let heldId = null;
+      t.after(async () => {
+        await page.evaluate(() => window.stockHeld?.close()).catch(() => {});
+        if (heldId) await plain.send('Target.closeTarget', { targetId: heldId }).catch(() => {});
+        plain.close();
+      });
       const heldUrl = `${rig.ordinary}/held`;
       await page.evaluate((url) => {
         window.stockHeld.location.href = url;
@@ -610,13 +667,15 @@ export function stockChain(route, { chain = 'tray' } = {}) {
         const { targetInfos } = await plain.send('Target.getTargets');
         return targetInfos.find((one) => one.type === 'page' && one.url === heldUrl);
       });
+      heldId = info.targetId;
       const seen = {
         hold: held,
         sliccLinkGuard: await sliccLayer(page, info.targetId),
         ...(await reach(base, info.targetId, HELD_MARK)),
-        clients: await clientsSee(base, heldUrl, HELD_MARK),
       };
       process.stdout.write(`STOCK-HELD ${label} ${JSON.stringify(seen)}\n`);
+      seen.clients = await clientsSee(base, heldUrl, HELD_MARK);
+      process.stdout.write(`STOCK-HELD-CLIENTS ${label} ${JSON.stringify(seen.clients)}\n`);
       unreachable(seen, 'the held sign-in tab');
       assert.equal(held, 'held', `seven held its sign-in popup: ${JSON.stringify(seen)}`);
     });
@@ -641,14 +700,15 @@ export function stockChain(route, { chain = 'tray' } = {}) {
   }
 
   async function live(base) {
-    const playwright = await chromium.connectOverCDP(base);
+    const playwright = await step('playwright', 'live connect', () =>
+      chromium.connectOverCDP(base)
+    );
     const playwrightGone = new Promise((resolve) => playwright.once('disconnected', resolve));
     const { body } = await httpJson(`${base}/json/version`);
     const recorded = await recordedTransport(body.webSocketDebuggerUrl);
-    const driven = await puppeteer.connect({
-      transport: recorded.transport,
-      protocolTimeout: STEP_MS,
-    });
+    const driven = await step('puppeteer', 'live connect', () =>
+      puppeteer.connect({ transport: recorded.transport, protocolTimeout: STEP_MS })
+    );
     const puppeteerGone = new Promise((resolve) => driven.once('disconnected', resolve));
     assert.ok((await playwright.version()).length > 0);
     assert.ok((await driven.version()).length > 0);
