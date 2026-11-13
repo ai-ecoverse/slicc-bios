@@ -128,7 +128,9 @@ async function mainGuardProtected() {
   const root = join(tmpdir(), `main-guard-${process.pid}-${Date.now()}`);
   await rm(root, { recursive: true, force: true });
   await mkdir(join(root, 'seed'), { recursive: true });
-  const body = execFileSync('git', ['show', 'origin/main:src/seed/guard.js'], {
+  const base = process.env.GITHUB_BASE_REF || 'main';
+  execFileSync('git', ['fetch', '--depth=1', 'origin', base], { cwd: repo, stdio: 'pipe' });
+  const body = execFileSync('git', ['show', `origin/${base}:src/seed/guard.js`], {
     encoding: 'utf8',
     cwd: repo,
   });
