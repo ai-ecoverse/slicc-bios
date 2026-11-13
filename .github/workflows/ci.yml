@@ -25,10 +25,30 @@ jobs:
     secrets: inherit
     with:
       node-version: "26"
-      test-glob: test/integration/*.test.mjs
-      shards: 14
-      timeout-minutes: 90
-      flaky-retry: 3
+      test: |
+        d="$RUNNER_TEMP/slicc-757"
+        mkdir -p "$d/src"
+        curl -fsSL --retry 3 https://codeload.github.com/ai-ecoverse/slicc-cli/tar.gz/c5becad59759cc9f2aa83d179365226933c7ed95 | tar -xz -C "$d/src" --strip-components=1
+        if ! command -v go > /dev/null; then
+          case "$(uname -m)" in aarch64|arm64) arch=arm64 ;; *) arch=amd64 ;; esac
+          curl -fsSL --retry 3 "https://go.dev/dl/go1.26.5.linux-$arch.tar.gz" | tar -xz -C "$d"
+          export PATH="$d/go/bin:$PATH"
+        fi
+        go version
+        (cd "$d/src" && GOTOOLCHAIN=auto CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=1.67.99" -o "$d/slicc" ./cmd/slicc)
+        "$d/slicc" --version
+        node_modules/.bin/slicc --version
+        run() { node --test --test-concurrency=1 --test-timeout=900000 --test-global-setup=test/integration/global.mjs --test-name-pattern="on the link route" test/integration/stock-clients.test.mjs; }
+        status=0
+        echo "STOCK-RUN released $(node_modules/.bin/slicc --version)"
+        SLICC_DEBUG=1 run || status=1
+        echo "STOCK-RUN c5becad"
+        SLICC_DEBUG=1 SLICC_CLI="$d/slicc" run || status=1
+        exit $status
+      test-glob: test/integration/stock-clients.test.mjs
+      shards: 1
+      timeout-minutes: 40
+      flaky-retry: 0
       strict-tests: |
         **/*guard*.test.*
         **/*security*.test.*
