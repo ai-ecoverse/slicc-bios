@@ -27,6 +27,7 @@ function chrome(tabs) {
   const owners = new Map();
   let sessions = 0;
   const connection = {
+    infos,
     onmessage: null,
     onclose: null,
     close() {},
@@ -59,6 +60,14 @@ function chrome(tabs) {
         });
       };
       switch (command.method) {
+        case 'Target.setDiscoverTargets':
+          if (command.params?.discover)
+            for (const [targetId, info] of Object.entries(infos))
+              connection.emit({
+                method: 'Target.targetCreated',
+                params: { targetInfo: { targetId, attached: false, ...info } },
+              });
+          return reply({});
         case 'Target.setAutoAttach':
           if (command.sessionId === undefined) {
             if (command.params?.filter?.some?.((entry) => entry.type === 'tab' && !entry.exclude))
@@ -111,7 +120,8 @@ const OPENER = 'opener-of-held';
 const AUTO = { autoAttach: true, waitForDebuggerOnStart: true, flatten: true, filter: [{}] };
 
 function client(route, tabs) {
-  const guarded = guardProtected(chrome(tabs), [SEVEN], new Map(), route);
+  const raw = chrome(tabs);
+  const guarded = guardProtected(raw, [SEVEN], new Map(), route);
   const got = [];
   guarded.onmessage = (text) => got.push(JSON.parse(text));
   let id = 0;
@@ -142,7 +152,7 @@ function client(route, tabs) {
     for (let n = 0; n < 1000 && !check(); n++) await pause(10);
     return check();
   };
-  return { send, got, tab, destroyed, pageUnder, until };
+  return { send, got, tab, destroyed, pageUnder, until, infos: raw.infos };
 }
 
 const ROUTES = [
@@ -236,4 +246,87 @@ for (const [name, route] of ROUTES)
     await pause(100);
     assert.equal(c.destroyed('tab-later'), 1);
     assert.equal(c.destroyed('tab-plain'), 0);
+  });
+
+const EVENTS = new Set([
+  'Target.targetCreated',
+  'Target.attachedToTarget',
+  'Target.detachedFromTarget',
+  'Target.targetDestroyed',
+]);
+
+for (const [name, route] of ROUTES)
+  test(`on the ${name} route, a held popup's tab goes the way the #1570 Puppeteer trace shows, then is destroyed: discovered, attached, both tab commands refused, detached, destroyed`, {
+    timeout: 30000,
+  }, async () => {
+    const page = `trace-${name}`;
+    hold(page);
+    const c = client(route, {
+      'tab-trace': { page, url: HELD_URL, title: HELD_TITLE, opener: OPENER },
+    });
+    await c.send('Target.setDiscoverTargets', { discover: true, filter: [{}] });
+    await c.send('Target.setAutoAttach', { ...AUTO, filter: PUPPETEER_TABS });
+    const tab = c.tab('tab-trace');
+    assert.ok(tab, JSON.stringify(c.got));
+    const session = tab.params.sessionId;
+    const answers = await Promise.all([
+      c.send('Target.setAutoAttach', AUTO, session),
+      c.send('Runtime.runIfWaitingForDebugger', {}, session),
+    ]);
+    for (const answer of answers)
+      assert.match(answer.error?.message ?? '', /^slicc: refused:/, JSON.stringify(answer));
+    assert.ok(await c.until(() => c.destroyed('tab-trace') > 0), JSON.stringify(c.got));
+    const order = c.got
+      .filter(
+        (message) =>
+          EVENTS.has(message.method) &&
+          (message.params.targetInfo?.targetId ??
+            message.params.targetId ??
+            message.params.sessionId) ===
+            (message.method === 'Target.detachedFromTarget' ? session : 'tab-trace')
+      )
+      .map((message) => message.method);
+    assert.deepEqual(order, [
+      'Target.targetCreated',
+      'Target.attachedToTarget',
+      'Target.detachedFromTarget',
+      'Target.targetDestroyed',
+    ]);
+    const text = JSON.stringify(c.got);
+    for (const secret of [page, OPENER, HELD_TITLE, '/held'])
+      assert.ok(!text.includes(secret), `${secret} reached the client: ${text}`);
+  });
+
+for (const [name, route] of ROUTES)
+  test(`on the ${name} route, a tab the client only discovered, which moved to the vault before its attach, is cut before it is shown and destroyed`, {
+    timeout: 30000,
+  }, async () => {
+    const c = client(route, {
+      'tab-moving': { page: `moving-page-${name}`, url: ORDINARY, title: 'Ordinary' },
+      'tab-plain': { page: 'plain-page', url: ORDINARY },
+    });
+    await c.send('Target.setDiscoverTargets', { discover: true, filter: [{}] });
+    assert.ok(
+      await c.until(() =>
+        c.got.some(
+          (message) =>
+            message.method === 'Target.targetCreated' &&
+            message.params.targetInfo.targetId === 'tab-moving'
+        )
+      ),
+      `the client discovered the tab: ${JSON.stringify(c.got)}`
+    );
+    const vault = { url: 'https://vault.sliccy.ai/unlock', title: 'Vault: unlock' };
+    Object.assign(c.infos['tab-moving'], vault);
+    Object.assign(c.infos[`moving-page-${name}`], vault);
+    await c.send('Target.setAutoAttach', { ...AUTO, filter: PUPPETEER_TABS });
+    assert.ok(await c.until(() => c.destroyed('tab-moving') > 0), JSON.stringify(c.got));
+    assert.equal(c.tab('tab-moving'), undefined, 'the cut tab was shown attached');
+    assert.ok(c.tab('tab-plain'), 'the ordinary tab was shown');
+    await pause(100);
+    assert.equal(c.destroyed('tab-moving'), 1);
+    assert.equal(c.destroyed('tab-plain'), 0);
+    const text = JSON.stringify(c.got);
+    for (const secret of ['vault.sliccy.ai', 'Vault: unlock'])
+      assert.ok(!text.includes(secret), `${secret} reached the client: ${text}`);
   });

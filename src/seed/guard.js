@@ -2482,9 +2482,9 @@ class Guard {
         params: { sessionId },
         ...(outer ? { sessionId: outer } : {}),
       });
-      if (this.tabSessions.has(sessionId) && targetId && !outer)
-        this.deliver({ method: 'Target.targetDestroyed', params: { targetId } });
     }
+    if (entry && this.tabSessions.has(sessionId) && targetId && !outer)
+      this.deliver({ method: 'Target.targetDestroyed', params: { targetId } });
     if (this.pausedSessions.delete(sessionId))
       void this.call('Runtime.runIfWaitingForDebugger', {}, sessionId);
     void this.call('Target.detachFromTarget', { sessionId }, outer);
