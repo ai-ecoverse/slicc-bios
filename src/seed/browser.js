@@ -212,6 +212,7 @@ export function live({ client, clock, now, session, size, dpr, visible, frame, s
   const maxWidth = Math.min(1280, Math.round((size?.width ?? 960) * dpr));
   const maxHeight = Math.min(800, Math.round((size?.height ?? 600) * dpr));
   let stopped = false;
+  let paused = false;
   let level = 0;
   let small = 0;
   let last = -Infinity;
@@ -232,7 +233,7 @@ export function live({ client, clock, now, session, size, dpr, visible, frame, s
     return client
       .call('Page.stopScreencast', {}, id)
       .catch(() => undefined)
-      .then(() => !stopped && start(id))
+      .then(() => !stopped && !paused && start(id))
       .finally(() => {
         restarting = false;
       });
@@ -249,9 +250,15 @@ export function live({ client, clock, now, session, size, dpr, visible, frame, s
       void restart(id);
     }
   };
+  const pause = (id) => {
+    if (paused || stopped) return;
+    paused = true;
+    void client.call('Page.stopScreencast', {}, id).catch(() => undefined);
+  };
   const halt = () => {
     if (stopped) return;
     stopped = true;
+    paused = false;
     off?.();
     clock.clearTimeout(sampler);
     if (sessionId) void client.call('Page.stopScreencast', {}, sessionId).catch(() => undefined);
@@ -261,21 +268,23 @@ export function live({ client, clock, now, session, size, dpr, visible, frame, s
       );
   };
   const received = (id) => (event) => {
-    if (stopped || event.sessionId !== id || event.method !== 'Page.screencastFrame') return;
+    if (stopped || paused || event.sessionId !== id || event.method !== 'Page.screencastFrame')
+      return;
     const data = event.params.data;
     const ack = event.params.sessionId;
     void (async () => {
       const allowed = check ? await check().catch(() => false) : true;
       if (stopped) return;
       if (!allowed) {
-        halt();
+        pause(id);
         return;
       }
+      if (paused) return;
       last = now();
       frame(`data:image/jpeg;base64,${data}`);
       adapt(data.length * 0.75, id);
       clock.setTimeout(() => {
-        if (stopped) return;
+        if (stopped || paused) return;
         void client.call('Page.screencastFrameAck', { sessionId: ack }, id).catch(() => undefined);
       }, FRAME_GAP);
     })();
@@ -283,7 +292,15 @@ export function live({ client, clock, now, session, size, dpr, visible, frame, s
   const tick = () => {
     sampler = clock.setTimeout(async () => {
       if (stopped) return;
-      if (visible() && now() - last >= SAMPLE_GAP) await sample().catch(() => undefined);
+      if (visible() && now() - last >= SAMPLE_GAP) {
+        const ok = await sample()
+          .then(() => true)
+          .catch(() => false);
+        if (ok && !stopped && paused && sessionId) {
+          paused = false;
+          await start(sessionId);
+        }
+      }
       tick();
     }, SAMPLE_GAP);
   };

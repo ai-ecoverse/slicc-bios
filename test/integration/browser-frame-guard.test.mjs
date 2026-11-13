@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { SHOT_GAP } from '../../src/seed/browser.js';
+import { SAMPLE_GAP, SHOT_GAP } from '../../src/seed/browser.js';
 import { iconSnapshot, sharedIconBrowser } from './fixtures/shared-dom-icon.mjs';
 
 const icon = 'data:image/svg+xml,%3Csvg/%3E';
@@ -173,7 +173,7 @@ test('screenshot does not return a cached frame after the tab turns protected', 
 });
 
 for (const url of PROTECTED) {
-  test(`a flowing screencast stops without ack when the live URL turns ${url}`, async (t) => {
+  test(`a flowing screencast pauses without ack when the live URL turns ${url}`, async (t) => {
     const { browser, calls, client, setURL, emit } = sharedIconBrowser(t);
     const frames = framesOf(browser);
     await client().call('Target.attachToTarget', { targetId: 'tab', flatten: true });
@@ -215,7 +215,56 @@ for (const url of PROTECTED) {
   });
 }
 
-test('a probe failure during a screencast stops it without acking the frame', async (t) => {
+test('a flowing screencast resumes after a protected URL returns to ordinary', async (t) => {
+  const { browser, calls, client, setURL, emit } = sharedIconBrowser(t);
+  const frames = framesOf(browser);
+  await client().call('Target.attachToTarget', { targetId: 'tab', flatten: true });
+  browser.port.watch('tab', { width: 100, height: 100 });
+  await flush(t, 0);
+  const cast = calls.find((call) => call.method === 'Page.startScreencast');
+  emit({
+    method: 'Page.screencastFrame',
+    sessionId: cast.session,
+    params: { data: 'ordinary-frame', sessionId: 1 },
+  });
+  await flush(t, 0);
+  await flush(t, 500);
+  assert.equal(frames.length, 1);
+  setURL('https://protected.invalid/secret', 'VAULT-MARK');
+  emit({
+    method: 'Page.screencastFrame',
+    sessionId: cast.session,
+    params: { data: 'protected-frame', sessionId: 2 },
+  });
+  await flush(t, 0);
+  await flush(t, 500);
+  assert.equal(frames.length, 1);
+  assert.ok(
+    !calls.some((call) => call.method === 'Page.screencastFrameAck' && call.params?.sessionId === 2)
+  );
+  setURL('https://ordinary.invalid/page', 'ordinary');
+  const startsBefore = calls.filter((call) => call.method === 'Page.startScreencast').length;
+  await flush(t, SAMPLE_GAP);
+  await flush(t, 0);
+  assert.ok(
+    calls.filter((call) => call.method === 'Page.startScreencast').length > startsBefore,
+    'a passing sample must restart the screencast'
+  );
+  const resumed = [...calls].reverse().find((call) => call.method === 'Page.startScreencast');
+  emit({
+    method: 'Page.screencastFrame',
+    sessionId: resumed.session,
+    params: { data: 'resumed-frame', sessionId: 3 },
+  });
+  await flush(t, 0);
+  await flush(t, 500);
+  assert.ok(frames.some((frame) => frame.src.includes('resumed-frame')));
+  assert.ok(
+    calls.some((call) => call.method === 'Page.screencastFrameAck' && call.params?.sessionId === 3)
+  );
+});
+
+test('a probe failure during a screencast pauses it without acking the frame', async (t) => {
   let probes = 0;
   const { browser, calls, client, emit } = sharedIconBrowser(t, iconSnapshot(), {
     getTargetInfo: ({ params, url, title }) => {
@@ -251,6 +300,57 @@ test('a probe failure during a screencast stops it without acking the frame', as
   assert.ok(calls.filter((call) => call.method === 'Page.stopScreencast').length > stopsBefore);
   assert.ok(
     !calls.some((call) => call.method === 'Page.screencastFrameAck' && call.params?.sessionId === 2)
+  );
+});
+
+test('a screencast resumes after a failing-first probe then a passing sample', async (t) => {
+  let failOnce = true;
+  const { browser, calls, client, emit } = sharedIconBrowser(t, iconSnapshot(), {
+    getTargetInfo: ({ params, url, title }) => {
+      if (failOnce) {
+        failOnce = false;
+        throw new Error('Target.getTargetInfo failed');
+      }
+      return {
+        targetInfo: { targetId: params.targetId ?? 'tab', type: 'page', title, url },
+      };
+    },
+  });
+  const frames = framesOf(browser);
+  await client().call('Target.attachToTarget', { targetId: 'tab', flatten: true });
+  browser.port.watch('tab', { width: 100, height: 100 });
+  await flush(t, 0);
+  const cast = calls.find((call) => call.method === 'Page.startScreencast');
+  emit({
+    method: 'Page.screencastFrame',
+    sessionId: cast.session,
+    params: { data: 'failed-first-frame', sessionId: 1 },
+  });
+  await flush(t, 0);
+  await flush(t, 500);
+  assert.equal(frames.length, 0);
+  assert.ok(
+    !calls.some((call) => call.method === 'Page.screencastFrameAck' && call.params?.sessionId === 1)
+  );
+  assert.ok(calls.some((call) => call.method === 'Page.stopScreencast'));
+  const startsBefore = calls.filter((call) => call.method === 'Page.startScreencast').length;
+  await flush(t, SAMPLE_GAP);
+  await flush(t, 0);
+  assert.ok(
+    calls.filter((call) => call.method === 'Page.startScreencast').length > startsBefore,
+    'a passing sample must restart the screencast'
+  );
+  const resumed = [...calls].reverse().find((call) => call.method === 'Page.startScreencast');
+  emit({
+    method: 'Page.screencastFrame',
+    sessionId: resumed.session,
+    params: { data: 'after-resume-frame', sessionId: 2 },
+  });
+  await flush(t, 0);
+  await flush(t, 500);
+  assert.ok(frames.some((frame) => frame.src.includes('after-resume-frame')));
+  assert.ok(
+    calls.some((call) => call.method === 'Page.screencastFrameAck' && call.params?.sessionId === 2)
   );
 });
 
