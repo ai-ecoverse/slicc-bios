@@ -77,6 +77,7 @@ const chrome = await launch({
     `--host-resolver-rules=MAP idp.test 127.0.0.1, MAP ordinary.test 127.0.0.1, MAP ims-na1.adobelogin.com:443 127.0.0.1:${ims.address().port}`,
     '--ignore-certificate-errors',
     '--disable-popup-blocking',
+    '--remote-allow-origins=*',
   ],
 });
 const { port: debugging } = await devtools(chrome);
@@ -204,6 +205,73 @@ async function onRoute(agent, route) {
   assert.equal(version.result?.slicc?.route, route, JSON.stringify(version));
 }
 
+async function diagnose(page, agent) {
+  const { targetInfos } = await chrome.cdp.send('Target.getTargets').catch((error) => ({
+    targetInfos: [{ error: error.message }],
+  }));
+  const seven = await page
+    .evaluate(async () => {
+      const read = (key) => localStorage.getItem(key);
+      const devtools = globalThis.crestDevTools?.webSocketDebuggerUrl;
+      const socket = devtools
+        ? await new Promise((resolve) => {
+            const ws = new WebSocket(devtools);
+            const timer = setTimeout(() => resolve('no answer in 5 s'), 5000);
+            ws.onopen = () => {
+              clearTimeout(timer);
+              ws.close();
+              resolve('opens');
+            };
+            ws.onerror = () => {
+              clearTimeout(timer);
+              resolve('refused');
+            };
+          })
+        : 'no DevTools port offered';
+      return {
+        held: JSON.parse(read('slicc-os.held-targets') ?? '[]'),
+        inFlight: read('slicc-os.sign-in-flight'),
+        extension: Boolean(globalThis.sliccExtension),
+        devtools: socket,
+        linked: (globalThis.sliccLinkedBrowsers?.() ?? []).map(({ runtime, seven, local }) => ({
+          runtime,
+          seven,
+          local,
+        })),
+      };
+    })
+    .catch((error) => ({ error: error.message }));
+  const guard = agent
+    ? await agent
+        .send('Target.getTargets')
+        .then((answer) =>
+          answer.error
+            ? answer.error.message
+            : answer.result.targetInfos.map(({ targetId, type, url, attached }) => ({
+                targetId,
+                type,
+                url,
+                attached,
+              }))
+        )
+        .catch((error) => error.message)
+    : 'no guarded client yet';
+  return JSON.stringify({
+    chrome: targetInfos.map(({ targetId, type, url, attached, openerId, error }) => ({
+      targetId,
+      type,
+      url: url?.split('#')[0],
+      attached,
+      openerId,
+      held: seven.held?.includes(targetId),
+      error,
+    })),
+    seven,
+    guard,
+    idpHits: hits.get('idp.test/ims/authorize/v2') ?? 0,
+  });
+}
+
 async function rawTab(t, url) {
   const { targetId } = await chrome.cdp.send('Target.createTarget', { url, background: true });
   t.after(() => chrome.cdp.send('Target.closeTarget', { targetId }).catch(() => {}));
@@ -219,32 +287,38 @@ test('through a linked seven browser, a sign-in tab that names only seven’s ca
   const page = await sevenOverLink(t);
   const asked = hits.get('idp.test/ims/authorize/v2') ?? 0;
   const signIn = await rawTab(t, CALLBACK_ONLY);
-  assert.ok((hits.get('idp.test/ims/authorize/v2') ?? 0) > asked, 'the sign-in page loaded');
+  await waitFor('the sign-in page’s request at the fixture', () =>
+    (hits.get('idp.test/ims/authorize/v2') ?? 0) > asked ? true : null
+  ).catch(async (error) => {
+    throw new Error(`${error.message}: ${await diagnose(page)}`);
+  });
   const plain = await rawTab(t, ORDINARY);
   const agent = await guarded(page, 'callback-only');
   t.after(() => agent.close().catch(() => {}));
   await onRoute(agent, 'link');
   const seen = await reach(agent, signIn);
-  assert.equal(seen.listed, false, `the sign-in tab is listed: ${JSON.stringify(seen)}`);
-  assert.match(seen.info, /^slicc: refused:/, JSON.stringify(seen));
-  assert.match(seen.attach, /^slicc: refused:/, JSON.stringify(seen));
-  assert.ok(
-    !(await agent.seen()).includes(MARK),
-    `the sign-in page reached the client: ${JSON.stringify(seen)}`
-  );
+  const shown = `${JSON.stringify(seen)} ${await diagnose(page, agent)}`;
+  assert.equal(seen.listed, false, `the sign-in tab is listed: ${shown}`);
+  assert.match(seen.info, /^slicc: refused:/, shown);
+  assert.match(seen.attach, /^slicc: refused:/, shown);
+  assert.ok(!(await agent.seen()).includes(MARK), `the sign-in page reached the client: ${shown}`);
   const ordinary = await reach(agent, plain);
   assert.equal(ordinary.listed, true, JSON.stringify(ordinary));
   assert.equal(ordinary.read, 'plain /page plain', JSON.stringify(ordinary));
 });
 
-async function unreachable(agent, ids) {
+async function unreachable(agent, ids, page) {
   for (const [name, targetId] of Object.entries(ids)) {
     const seen = await reach(agent, targetId);
-    assert.equal(seen.listed, false, `${name} is listed: ${JSON.stringify(seen)}`);
-    assert.match(seen.info, /^slicc: refused:/, `${name}: ${JSON.stringify(seen)}`);
-    assert.match(seen.attach, /^slicc: refused:/, `${name}: ${JSON.stringify(seen)}`);
+    const kept =
+      seen.listed === false &&
+      /^slicc: refused:/.test(seen.info) &&
+      /^slicc: refused:/.test(seen.attach);
+    if (!kept)
+      assert.fail(`${name} is reachable: ${JSON.stringify(seen)} ${await diagnose(page, agent)}`);
   }
-  assert.ok(!(await agent.seen()).includes(HELD_MARK), 'a held page reached the client');
+  if ((await agent.seen()).includes(HELD_MARK))
+    assert.fail(`a held page reached the client: ${await diagnose(page, agent)}`);
 }
 
 async function tabWhere(page, name, match) {
@@ -305,16 +379,20 @@ test('through only a linked seven browser, seven’s sign-in window and the IdP�
   const agent = await guarded(page, 'held-link');
   t.after(() => agent.close().catch(() => {}));
   await onRoute(agent, 'link');
-  await unreachable(agent, { 'the sign-in window': popup, 'the IdP’s popup': child });
+  await unreachable(agent, { 'the sign-in window': popup, 'the IdP’s popup': child }, page);
   await navigate(popup, `${ORDINARY_ORIGIN}/held-elsewhere#access_token=${HELD_MARK}-elsewhere`);
   await navigate(child, `${ORDINARY_ORIGIN}/held-child#access_token=${HELD_MARK}-child-elsewhere`);
   const late = await guarded(page, 'held-link-late');
   t.after(() => late.close().catch(() => {}));
   for (const each of [agent, late])
-    await unreachable(each, {
-      'the sign-in window on an ordinary page': popup,
-      'the IdP’s popup on an ordinary page': child,
-    });
+    await unreachable(
+      each,
+      {
+        'the sign-in window on an ordinary page': popup,
+        'the IdP’s popup on an ordinary page': child,
+      },
+      page
+    );
   const ordinary = await reach(late, plain);
   assert.equal(ordinary.read, 'plain /page plain', JSON.stringify(ordinary));
   assert.notEqual(await page.evaluate(() => window.signInAnswer), UNHELD);
@@ -342,7 +420,7 @@ async function heldTab(t, page) {
     channel.close();
     return answer;
   }, marker);
-  assert.equal(held, 'held');
+  if (held !== 'held') assert.fail(`the hold answered ${held}, not held: ${await diagnose(page)}`);
   const url = `${ORDINARY_ORIGIN}/held-${marker}`;
   await page.evaluate((url) => {
     window.heldTab.location.href = url;
@@ -446,7 +524,7 @@ for (const [route, open] of [
     const agent = await guarded(page, `held-${route}`);
     t.after(() => agent.close().catch(() => {}));
     await onRoute(agent, route);
-    await unreachable(agent, { 'the held tab on an ordinary page': held.targetId });
+    await unreachable(agent, { 'the held tab on an ordinary page': held.targetId }, page);
     const endpoint = await bridge(t, page);
     const driven = await bounded(
       puppeteer.connect({ browserWSEndpoint: endpoint, protocolTimeout: 30000 }),
