@@ -354,6 +354,194 @@ test('a screencast resumes after a failing-first probe then a passing sample', a
   );
 });
 
+for (const url of PROTECTED) {
+  test(`resume drops an in-flight check that started before pause for ${url}`, async (t) => {
+    let probes = 0;
+    let gate;
+    const { browser, calls, client, setURL, emit } = sharedIconBrowser(t, iconSnapshot(), {
+      getTargetInfo: ({ params, url: live, title }) => {
+        probes += 1;
+        if (probes === 2) {
+          gate = Promise.withResolvers();
+          return gate.promise.then(() => ({
+            targetInfo: {
+              targetId: params.targetId ?? 'tab',
+              type: 'page',
+              title: 'ordinary',
+              url: 'https://ordinary.invalid/page',
+            },
+          }));
+        }
+        return {
+          targetInfo: { targetId: params.targetId ?? 'tab', type: 'page', title, url: live },
+        };
+      },
+    });
+    const frames = framesOf(browser);
+    await client().call('Target.attachToTarget', { targetId: 'tab', flatten: true });
+    browser.port.watch('tab', { width: 100, height: 100 });
+    await flush(t, 0);
+    const cast = calls.find((call) => call.method === 'Page.startScreencast');
+    emit({
+      method: 'Page.screencastFrame',
+      sessionId: cast.session,
+      params: { data: 'ordinary-frame', sessionId: 1 },
+    });
+    await flush(t, 0);
+    await flush(t, 500);
+    assert.equal(frames.length, 1);
+    emit({
+      method: 'Page.screencastFrame',
+      sessionId: cast.session,
+      params: { data: 'IN-FLIGHT-PIXELS', sessionId: 7 },
+    });
+    await flush(t, 0);
+    assert.ok(gate);
+    setURL(url, 'VAULT-MARK');
+    emit({
+      method: 'Page.screencastFrame',
+      sessionId: cast.session,
+      params: { data: 'protected-frame', sessionId: 8 },
+    });
+    await flush(t, 0);
+    await flush(t, 500);
+    assert.ok(!frames.some((frame) => frame.src.includes('IN-FLIGHT-PIXELS')));
+    setURL('https://ordinary.invalid/page', 'ordinary');
+    const startsBefore = calls.filter((call) => call.method === 'Page.startScreencast').length;
+    await flush(t, SAMPLE_GAP);
+    await flush(t, 0);
+    assert.ok(calls.filter((call) => call.method === 'Page.startScreencast').length > startsBefore);
+    gate.resolve();
+    await flush(t, 0);
+    await flush(t, 500);
+    assert.ok(!frames.some((frame) => frame.src.includes('IN-FLIGHT-PIXELS')));
+    assert.ok(
+      !calls.some(
+        (call) => call.method === 'Page.screencastFrameAck' && call.params?.sessionId === 7
+      )
+    );
+    const shot = await browser.port.screenshot('tab');
+    assert.ok(!String(shot).includes('IN-FLIGHT-PIXELS'));
+  });
+
+  test(`resume drops an old-cast frame delivered during startScreencast after ${url}`, async (t) => {
+    let starts = 0;
+    const { browser, calls, client, setURL, emit } = sharedIconBrowser(t, iconSnapshot(), {
+      onStartScreencast: ({ session, emit: castEmit }) => {
+        starts += 1;
+        if (starts < 2) return;
+        castEmit({
+          method: 'Page.screencastFrame',
+          sessionId: session,
+          params: { data: 'OLD-CAST-PIXELS', sessionId: 77 },
+        });
+      },
+    });
+    const frames = framesOf(browser);
+    await client().call('Target.attachToTarget', { targetId: 'tab', flatten: true });
+    browser.port.watch('tab', { width: 100, height: 100 });
+    await flush(t, 0);
+    const cast = calls.find((call) => call.method === 'Page.startScreencast');
+    emit({
+      method: 'Page.screencastFrame',
+      sessionId: cast.session,
+      params: { data: 'ordinary-frame', sessionId: 1 },
+    });
+    await flush(t, 0);
+    await flush(t, 500);
+    setURL(url, 'VAULT-MARK');
+    emit({
+      method: 'Page.screencastFrame',
+      sessionId: cast.session,
+      params: { data: 'protected-frame', sessionId: 2 },
+    });
+    await flush(t, 0);
+    await flush(t, 500);
+    setURL('https://ordinary.invalid/page', 'ordinary');
+    await flush(t, SAMPLE_GAP);
+    await flush(t, 0);
+    await flush(t, 500);
+    assert.ok(starts >= 2);
+    assert.ok(!frames.some((frame) => frame.src.includes('OLD-CAST-PIXELS')));
+    assert.ok(
+      !calls.some(
+        (call) => call.method === 'Page.screencastFrameAck' && call.params?.sessionId === 77
+      )
+    );
+    const shot = await browser.port.screenshot('tab');
+    assert.ok(!String(shot).includes('OLD-CAST-PIXELS'));
+  });
+}
+
+test('an old-cast frame after a later pause stop resolves is dropped', async (t) => {
+  const stops = [];
+  const { browser, calls, client, setURL, emit } = sharedIconBrowser(t, iconSnapshot(), {
+    onStopScreencast: () => {
+      const gate = Promise.withResolvers();
+      stops.push(gate);
+      return gate.promise;
+    },
+  });
+  const frames = framesOf(browser);
+  await client().call('Target.attachToTarget', { targetId: 'tab', flatten: true });
+  browser.port.watch('tab', { width: 100, height: 100 });
+  await flush(t, 0);
+  const cast = calls.find((call) => call.method === 'Page.startScreencast');
+  emit({
+    method: 'Page.screencastFrame',
+    sessionId: cast.session,
+    params: { data: 'ordinary-frame', sessionId: 1 },
+  });
+  await flush(t, 0);
+  await flush(t, 500);
+  setURL('https://protected.invalid/secret', 'VAULT-MARK');
+  emit({
+    method: 'Page.screencastFrame',
+    sessionId: cast.session,
+    params: { data: 'protected-frame', sessionId: 2 },
+  });
+  await flush(t, 0);
+  assert.equal(stops.length, 1);
+  stops[0].resolve({});
+  await flush(t, 0);
+  setURL('https://ordinary.invalid/page', 'ordinary');
+  await flush(t, SAMPLE_GAP);
+  await flush(t, 0);
+  const resumed = [...calls].reverse().find((call) => call.method === 'Page.startScreencast');
+  assert.ok(resumed);
+  emit({
+    method: 'Page.screencastFrame',
+    sessionId: resumed.session,
+    params: { data: 'resumed-frame', sessionId: 3 },
+  });
+  await flush(t, 0);
+  await flush(t, 500);
+  assert.ok(frames.some((frame) => frame.src.includes('resumed-frame')));
+  setURL('https://protected.invalid/secret', 'VAULT-MARK');
+  emit({
+    method: 'Page.screencastFrame',
+    sessionId: resumed.session,
+    params: { data: 'later-protected', sessionId: 4 },
+  });
+  await flush(t, 0);
+  assert.ok(stops.length >= 2);
+  stops.at(-1).resolve({});
+  await flush(t, 0);
+  emit({
+    method: 'Page.screencastFrame',
+    sessionId: resumed.session,
+    params: { data: 'OLD-CAST-AFTER-STOP', sessionId: 88 },
+  });
+  await flush(t, 0);
+  await flush(t, 500);
+  assert.ok(!frames.some((frame) => frame.src.includes('OLD-CAST-AFTER-STOP')));
+  assert.ok(
+    !calls.some(
+      (call) => call.method === 'Page.screencastFrameAck' && call.params?.sessionId === 88
+    )
+  );
+});
+
 test('an ordinary screencast probes once per emitted frame and acks after the check', async (t) => {
   const { browser, calls, client, emit } = sharedIconBrowser(t);
   const frames = framesOf(browser);
