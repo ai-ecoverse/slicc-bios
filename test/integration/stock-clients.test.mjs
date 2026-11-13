@@ -753,8 +753,8 @@ const settled = () => new Promise((resolve) => setTimeout(resolve, 3000));
 test("a raw client with Puppeteer's auto-attach reads a cross-site iframe through the guard on the devtools route, and gets no session or URL of a protected iframe or of an iframe that moves into one", {
   timeout: 10 * 60 * 1000,
 }, async (t) => {
-  const opened = await bridge(t);
-  const client = await rawClient(t, `${opened.endpoint}/devtools`, true);
+  const opened = await bridge(t, 'devtools');
+  const client = await rawClient(t, opened.endpoint, true);
   const tabs = await client.send('Target.setAutoAttach', {
     autoAttach: true,
     waitForDebuggerOnStart: true,
