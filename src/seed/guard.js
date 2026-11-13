@@ -854,6 +854,10 @@ class Guard {
     this.tabSessions = new Set();
     this.tabTargets = new Map();
     this.pausedSessions = new Set();
+    this.workerCreators = new Map();
+    this.workerVerdicts = new Map();
+    this.workerStates = new Map();
+    this.workerTargetsCut = new Set();
     this.freshReads = new WeakSet();
     this.tabPages = new Map();
     this.initScripts = new Map();
@@ -1052,6 +1056,10 @@ class Guard {
     }
     message = this.workerless(message);
     if (message === null) return;
+    if (!this.device) {
+      message = this.workerGate(message);
+      if (message === null) return;
+    }
     if (release && message.id !== undefined) {
       const key = requestKey(message);
       const command = this.commands.get(key);
@@ -2484,6 +2492,246 @@ class Guard {
     void this.call('Target.detachFromTarget', { sessionId }, outer);
     if (this.tabPages.get(outer)?.session === sessionId)
       this.cut(outer, this.sessions.get(outer)?.parent, false);
+    this.cutWorkersOf(sessionId, targetId);
+  }
+
+  cutWorkersOf(sessionId, targetId) {
+    if (this.device) return;
+    const cut = [];
+    for (const [worker, creator] of this.workerCreators) {
+      const info = creator.params?.targetInfo ?? {};
+      if (
+        creator.sessionId === sessionId ||
+        (targetId !== undefined && (info.parentId === targetId || info.openerId === targetId))
+      )
+        cut.push(worker);
+    }
+    for (const worker of cut) this.dropWorker(worker);
+  }
+
+  markWorkerTarget(targetId) {
+    if (targetId !== undefined) kept(this.workerTargetsCut, targetId);
+  }
+
+  clearWorkerTarget(targetId) {
+    if (targetId !== undefined) this.workerTargetsCut.delete(targetId);
+  }
+
+  workerCutHonored(info, parent) {
+    if (!this.workerTargetsCut.has(info.targetId)) return false;
+    if (this.creatorSessionAlive(info, parent)) {
+      this.clearWorkerTarget(info.targetId);
+      return false;
+    }
+    return true;
+  }
+
+  creatorSessionAlive(info, parent) {
+    if (
+      parent !== undefined &&
+      this.sessions.has(parent) &&
+      this.shown.has(parent) &&
+      !this.blocked.has(parent)
+    )
+      return true;
+    for (const id of [info.parentId, info.openerId]) {
+      if (!id) continue;
+      for (const [session, entry] of this.sessions) {
+        if (entry.targetId === id && this.shown.has(session) && !this.blocked.has(session))
+          return true;
+      }
+    }
+    return false;
+  }
+
+  workerCutPermanent(worker) {
+    return (
+      this.workerStates.get(worker) === 'unsafe' ||
+      this.workerStates.get(worker) === 'failed' ||
+      this.workerTurnedNow(worker)
+    );
+  }
+
+  dropWorker(worker) {
+    const entry = this.sessions.get(worker);
+    const creator = this.workerCreators.get(worker);
+    const targetId = entry?.targetId ?? creator?.params?.targetInfo?.targetId;
+    if (this.workerCutPermanent(worker)) this.markWorkerTarget(targetId);
+    if (entry && this.gone.has(creator?.sessionId)) entry.parent = undefined;
+    this.cut(worker, entry?.parent);
+  }
+
+  workerOf(message) {
+    if (this.workerCreators.size === 0 || message.method === 'Target.detachedFromTarget')
+      return undefined;
+    if (this.workerCreators.has(message.sessionId)) return message.sessionId;
+    const params = message.params ?? message.result ?? {};
+    if (this.workerCreators.has(params.sessionId)) return params.sessionId;
+    return this.workerFor(
+      params.targetInfo?.targetId ??
+        (message.method === 'Target.targetDestroyed' ? params.targetId : undefined)
+    );
+  }
+
+  workerFor(targetId) {
+    if (targetId === undefined) return undefined;
+    for (const [worker, creator] of this.workerCreators)
+      if (creator.params?.targetInfo?.targetId === targetId) return worker;
+    return undefined;
+  }
+
+  workerOpen(worker) {
+    return (
+      !this.blocked.has(worker) &&
+      this.workerStates.get(worker) === 'safe' &&
+      !this.workerTurnedNow(worker)
+    );
+  }
+
+  closeWorker(worker) {
+    if (this.workerStates.get(worker) !== 'pending') this.dropWorker(worker);
+  }
+
+  workerGate(message) {
+    if (message.method === 'Target.detachedFromTarget') return message;
+    const next = this.listedWorkers(message);
+    const worker = this.workerOf(next);
+    if (worker !== undefined && !this.workerOpen(worker)) {
+      if (this.workerCutPermanent(worker)) this.closeWorker(worker);
+      if (next.id === undefined) return null;
+      return {
+        id: next.id,
+        sessionId: next.sessionId,
+        error: { code: -32000, message: PROTECTED },
+      };
+    }
+    return this.discoveredWorker(next, worker) ? null : next;
+  }
+
+  shownWorker(targetId) {
+    const worker = this.workerFor(targetId);
+    if (worker === undefined) return false;
+    if (this.shown.has(worker) && this.workerOpen(worker)) return true;
+    if (this.workerCutPermanent(worker)) this.closeWorker(worker);
+    return false;
+  }
+
+  listedWorkers(message) {
+    const infos = message.result?.targetInfos;
+    if (!Array.isArray(infos) || !infos.some((info) => WORKER_TYPES.has(info?.type)))
+      return message;
+    const targetInfos = infos.filter(
+      (info) => !WORKER_TYPES.has(info?.type) || this.shownWorker(info.targetId)
+    );
+    return { ...message, result: { ...message.result, targetInfos } };
+  }
+
+  discoveredWorker(message, worker) {
+    if (!DISCOVERY_EVENTS.has(message.method)) return false;
+    const params = message.params ?? {};
+    const targetId = params.targetInfo?.targetId ?? params.targetId;
+    const type = params.targetInfo?.type ?? this.targets.get(targetId)?.type;
+    if (!WORKER_TYPES.has(type)) return false;
+    return worker === undefined || !this.shownWorker(targetId);
+  }
+
+  workerChain(creator) {
+    const info = creator?.params?.targetInfo ?? {};
+    const chain = new Set();
+    const pending = [
+      [this.sessions.get(creator?.sessionId)?.targetId, 0],
+      [info.parentId, 0],
+      [info.openerId, 0],
+    ];
+    while (pending.length) {
+      const [id, depth] = pending.pop();
+      if (id === undefined || chain.has(id)) continue;
+      if (depth > 8) return null;
+      chain.add(id);
+      const known = this.targets.get(id);
+      for (const next of [known?.openerId, known?.parentId, known?.info?.openerId])
+        pending.push([next, depth + 1]);
+      for (const [, ancestry] of this.workerCreators) {
+        if (ancestry.params?.targetInfo?.targetId !== id) continue;
+        const parent = ancestry.sessionId;
+        pending.push([this.sessions.get(parent)?.targetId, depth + 1]);
+        const parentInfo = ancestry.params?.targetInfo ?? {};
+        pending.push([parentInfo.parentId, depth + 1]);
+        pending.push([parentInfo.openerId, depth + 1]);
+        if (this.workerCreators.has(parent))
+          pending.push([this.workerCreators.get(parent)?.params?.targetInfo?.targetId, depth + 1]);
+      }
+    }
+    return chain;
+  }
+
+  workerTurnedNow(worker) {
+    const seen = new Set();
+    let current = worker;
+    while (current !== undefined && !seen.has(current)) {
+      seen.add(current);
+      const creator = this.workerCreators.get(current);
+      if (!creator) break;
+      const parent = creator.sessionId;
+      if (
+        parent !== undefined &&
+        (this.blocked.has(parent) || this.gone.has(parent) || !this.shown.has(parent))
+      )
+        return true;
+      current = this.workerCreators.has(parent) ? parent : undefined;
+    }
+    const chain = this.workerChain(this.workerCreators.get(worker));
+    if (!chain) return true;
+    for (const id of chain) {
+      const known = this.targets.get(id);
+      if (isHeld(id) || known?.guarded === true || this.is.url(known?.url)) return true;
+    }
+    return false;
+  }
+
+  rejudgeWorkers(targetId) {
+    if (targetId === undefined || this.device) return;
+    for (const [worker, creator] of this.workerCreators) {
+      const chain = this.workerChain(creator);
+      if (!chain || chain.has(targetId)) void this.judgeWorker(worker, creator);
+    }
+  }
+
+  judgeWorker(worker, creator) {
+    this.workerStates.set(worker, 'pending');
+    const verdict = this.unsafeWorker(creator).then(
+      (unsafe) => {
+        if (this.workerVerdicts.get(worker) === verdict) {
+          this.workerStates.set(worker, unsafe ? 'unsafe' : 'safe');
+          if (!unsafe) this.clearWorkerTarget(creator.params?.targetInfo?.targetId);
+        }
+        return unsafe;
+      },
+      () => {
+        if (this.workerVerdicts.get(worker) === verdict) this.workerStates.set(worker, 'failed');
+        return true;
+      }
+    );
+    this.workerVerdicts.set(worker, verdict);
+    return verdict;
+  }
+
+  async settledWorker(worker) {
+    for (let n = 0; n < 8 && this.workerStates.get(worker) === 'pending'; n++)
+      await this.workerVerdicts.get(worker);
+    return this.workerStates.get(worker);
+  }
+
+  async withheld(sessionId, foreign) {
+    return this.hidden(sessionId) || foreign || (await this.creatorTurned(sessionId));
+  }
+
+  async creatorTurned(sessionId) {
+    if (!this.workerCreators.has(sessionId)) return false;
+    if ((await this.settledWorker(sessionId)) === 'safe' && !this.workerTurnedNow(sessionId))
+      return false;
+    this.closeWorker(sessionId);
+    return true;
   }
 
   createdUnset(info) {
@@ -3834,6 +4082,11 @@ class Guard {
 
   async targetEvent(message) {
     const { method, params = {}, sessionId } = message;
+    const rejudge =
+      params.targetInfo?.targetId ||
+      params.targetId ||
+      this.sessions.get(params.sessionId)?.targetId;
+    this.rejudgeWorkers(rejudge);
     if (method === 'Target.attachedToTarget') {
       const info = params.targetInfo ?? {};
       this.notePageUnderTab(message);
@@ -3863,6 +4116,7 @@ class Guard {
       this.navs.delete(params.targetId);
       this.errored.delete(params.targetId);
       if (nav?.session) this.navSessions.delete(nav.session);
+      this.clearWorkerTarget(params.targetId);
       return this.targets.get(params.targetId)?.guarded === true;
     }
     if (method === 'Target.detachedFromTarget') {
@@ -3889,7 +4143,7 @@ class Guard {
     const { params } = message;
     const info = params.targetInfo ?? {};
     if (await this.privateAttachment(info.targetId, params.sessionId)) return true;
-    if (this.cutWorker(message)) return true;
+    if (await this.cutWorker(message)) return true;
     if (info.type !== 'tab') return false;
     if (params.waitingForDebugger) this.pausedTab(params.sessionId);
     return this.tabAttached(message);
@@ -4711,18 +4965,70 @@ class Guard {
     const kind = (await this.lookup(targetId))?.type;
     if (!WORKER_TYPES.has(kind)) return undefined;
     if (this.device) return NO_WORKERS;
+    if (await this.creatorTurned(sessionId)) return PROTECTED;
     return (await this.target(targetId)) ? PROTECTED : null;
   }
 
-  cutWorker(message) {
+  async cutWorker(message) {
     const { params = {}, sessionId } = message;
     const info = params.targetInfo ?? {};
-    if (!this.device || !WORKER_TYPES.has(info.type)) return false;
+    if (!WORKER_TYPES.has(info.type)) return false;
+    if (this.device) {
+      this.sessions.set(params.sessionId, { targetId: info.targetId, parent: sessionId });
+      this.learn(info);
+      if (params.waitingForDebugger) this.pausedSessions.add(params.sessionId);
+      this.cut(params.sessionId, sessionId);
+      return true;
+    }
+    if (!(await this.judgeWorker(params.sessionId, message))) return false;
     this.sessions.set(params.sessionId, { targetId: info.targetId, parent: sessionId });
-    this.learn(info);
+    this.markWorkerTarget(info.targetId);
     if (params.waitingForDebugger) this.pausedSessions.add(params.sessionId);
     this.cut(params.sessionId, sessionId);
     return true;
+  }
+
+  async unsafeCreator(targetId) {
+    return Boolean(
+      targetId &&
+        (isHeld(targetId) || this.targets.get(targetId)?.guarded || (await this.target(targetId)))
+    );
+  }
+
+  priorWorkerPoisoned(sessionId, targetId) {
+    for (const [worker, creator] of this.workerCreators) {
+      if (worker === sessionId) continue;
+      if (creator.params?.targetInfo?.targetId !== targetId) continue;
+      if (this.workerCutPermanent(worker)) return true;
+    }
+    return false;
+  }
+
+  async unsafeWorkerParent(parent) {
+    if (parent === undefined) return false;
+    if (!this.sessions.has(parent) || this.blocked.has(parent) || !this.shown.has(parent))
+      return true;
+    if (await this.unsafeCreator(this.sessions.get(parent).targetId)) return true;
+    return (
+      this.workerCreators.has(parent) && (await this.unsafeWorker(this.workerCreators.get(parent)))
+    );
+  }
+
+  async unsafeWorker(message) {
+    const { params = {}, sessionId: parent } = message;
+    const info = params.targetInfo ?? {};
+    this.workerCreators.set(params.sessionId, message);
+    if (this.workerCutHonored(info, parent)) return true;
+    if (
+      !this.creatorSessionAlive(info, parent) &&
+      this.priorWorkerPoisoned(params.sessionId, info.targetId)
+    )
+      return true;
+    if (await this.unsafeWorkerParent(parent)) return true;
+    for (const id of [info.parentId, info.openerId]) if (await this.unsafeCreator(id)) return true;
+    for (const frameId of [info.parentFrameId, info.openerFrameId])
+      if (frameId !== undefined && (await this.frame(frameId, true))) return true;
+    return false;
   }
 
   workerless(message) {
@@ -4984,8 +5290,7 @@ class Guard {
     if (this.deferredStyle(message)) return;
     if (this.locked(sessionId) && (pageScoped(method) || method === 'Page.screencastFrame')) return;
     if (this.blocked.has(sessionId) && PAUSES.has(method)) return this.release(message);
-    if (this.hidden(sessionId)) return;
-    if (foreign) return;
+    if (await this.withheld(sessionId, foreign)) return;
     if (await this.contentEvent(message)) return;
     if (this.walked({ ...message, method })) return this.cut(sessionId);
     if (sessionId && method.startsWith('Runtime.') && !this.runtimes.has(sessionId)) return;
@@ -5330,6 +5635,7 @@ class Guard {
 
   async answer(message, was) {
     await this.finishRecovery(was);
+    await this.settledWorker(was?.sessionId);
     this.pendingContent.delete(was);
     if (this.endedAnswer(was) || !this.owns(was)) return;
     if (!(await this.admitAnswer(was))) return this.refuse(was);
@@ -5959,6 +6265,10 @@ class Guard {
   }
 
   forgetTab(sessionId) {
+    this.cutWorkersOf(sessionId, this.sessions.get(sessionId)?.targetId);
+    this.workerCreators.delete(sessionId);
+    this.workerVerdicts.delete(sessionId);
+    this.workerStates.delete(sessionId);
     this.tabSessions.delete(sessionId);
     this.tabPages.delete(sessionId);
     const tabId = this.sessions.get(sessionId)?.targetId;
