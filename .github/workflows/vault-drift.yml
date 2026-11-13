@@ -35,7 +35,6 @@ jobs:
             echo "::error::vault-preview reported a non-semver version"
             exit 1
           fi
-          npm install --ignore-scripts --no-audit --no-fund "@ai-ecoverse/slicc-vault@${PIN}"
           if [ "$LIVE" != "$PIN" ]; then
             TITLE="vault drift: live $LIVE, pinned $PIN"
             echo "::error::$TITLE"
@@ -50,4 +49,5 @@ jobs:
             exit 1
           fi
           echo "vault-preview $LIVE matches pin $PIN"
+          npm install --ignore-scripts --no-audit --no-fund "@ai-ecoverse/slicc-vault@${PIN}"
           node test/integration/vault-drift-check.mjs
