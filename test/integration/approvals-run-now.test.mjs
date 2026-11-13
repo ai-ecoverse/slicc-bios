@@ -538,12 +538,23 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
     if (idOut.status !== 0) throw new Error(idOut.stderr || 'no cone user');
     const coneUid = Number(idOut.stdout.trim());
     if (!Number.isInteger(coneUid)) throw new Error(`bad cone uid: ${idOut.stdout}`);
+    const jobPath = '/home/cone/job.sh';
     const write = await client.run(
-      ['bash', '-c', "printf 'echo one\\n' > /home/cone/job.sh && chmod 755 /home/cone/job.sh"],
+      [
+        'bash',
+        '-c',
+        [
+          `printf '#!/bin/sh\\necho one\\n' > ${jobPath}`,
+          `chmod 755 ${jobPath}`,
+          `test -x ${jobPath}`,
+          `stat -c '%u %a' ${jobPath}`,
+        ].join(' && '),
+      ],
       { user: 'cone' }
     );
-    if (write.status !== 0) throw new Error(write.stderr || 'could not write job.sh');
-    const bytes = await client.fs.readFile('/home/cone/job.sh');
+    if (write.status !== 0)
+      throw new Error(write.stderr || write.stdout || 'could not write job.sh');
+    const bytes = await client.fs.readFile(jobPath);
     const digest = await crypto.subtle.digest('SHA-256', bytes);
     const sha256 = [...new Uint8Array(digest)]
       .map((byte) => byte.toString(16).padStart(2, '0'))
@@ -586,12 +597,12 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
       user: 'cone',
       uid: coneUid,
       target: 'root',
-      argv: ['/home/cone/job.sh'],
-      path: '/home/cone/job.sh',
+      argv: [jobPath],
+      path: jobPath,
       cwd: '/',
       stdin: 'none',
       rootOnly: { '/': true },
-      userWritable: [{ path: '/home/cone/job.sh', sha256 }],
+      userWritable: [{ path: jobPath, sha256 }],
       tag: JSON.stringify({ kind: 'agent', agentId: 'cone' }),
       createdAt: Date.now(),
       expiresAt: Date.now() + 60_000,
@@ -612,16 +623,35 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
     };
     await expire(ok);
     await expire(bad);
-    await client.run(
-      ['bash', '-c', "printf 'echo two\\n' > /home/cone/job.sh && chmod 755 /home/cone/job.sh"],
+    const rewrite = await client.run(
+      [
+        'bash',
+        '-c',
+        [
+          `printf '#!/bin/sh\\necho two\\n' > ${jobPath}`,
+          `chmod 755 ${jobPath}`,
+          `test -x ${jobPath}`,
+        ].join(' && '),
+      ],
       { user: 'cone' }
     );
+    if (rewrite.status !== 0)
+      throw new Error(rewrite.stderr || rewrite.stdout || 'could not rewrite job.sh');
+    const after = await client.fs.readFile(jobPath);
+    const afterDigest = await crypto.subtle.digest('SHA-256', after);
+    const afterSha = [...new Uint8Array(afterDigest)]
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('');
+    if (afterSha === sha256) throw new Error('job.sh hash did not change after rewrite');
     const history = () =>
       document.querySelector('slicc-app').model.approvals.history?.() ?? approvals.port.history();
     return {
       okId: `bios:${ok.id}`,
       badId: `bios:${bad.id}`,
       okPath,
+      jobPath,
+      sha256,
+      afterSha,
       history: history().map((entry) => ({
         id: entry.approval.id,
         state: entry.state,
