@@ -208,7 +208,7 @@ export function pageClient(opener, clock) {
   };
 }
 
-export function live({ client, clock, now, session, size, dpr, visible, frame, sample }) {
+export function live({ client, clock, now, session, size, dpr, visible, frame, sample, check }) {
   const maxWidth = Math.min(1280, Math.round((size?.width ?? 960) * dpr));
   const maxHeight = Math.min(800, Math.round((size?.height ?? 600) * dpr));
   let stopped = false;
@@ -217,48 +217,68 @@ export function live({ client, clock, now, session, size, dpr, visible, frame, s
   let last = -Infinity;
   let sampler;
   let off;
-  const start = (sessionId) =>
+  let sessionId;
+  const start = (id) =>
     client
       .call(
         'Page.startScreencast',
         { format: 'jpeg', quality: QUALITIES[level], maxWidth, maxHeight, everyNthFrame: 1 },
-        sessionId
+        id
       )
       .catch(() => undefined);
   let restarting = false;
-  const restart = (sessionId) => {
+  const restart = (id) => {
     restarting = true;
     return client
-      .call('Page.stopScreencast', {}, sessionId)
+      .call('Page.stopScreencast', {}, id)
       .catch(() => undefined)
-      .then(() => !stopped && start(sessionId))
+      .then(() => !stopped && start(id))
       .finally(() => {
         restarting = false;
       });
   };
-  const adapt = (bytes, sessionId) => {
+  const adapt = (bytes, id) => {
     if (bytes > BIG) small = 0;
     if (restarting) return;
     if (bytes > BIG && level < QUALITIES.length - 1) {
       level += 1;
-      void restart(sessionId);
+      void restart(id);
     } else if (bytes <= BIG && level > 0 && ++small >= SMALL_RUN) {
       level -= 1;
       small = 0;
-      void restart(sessionId);
+      void restart(id);
     }
   };
-  const received = (sessionId) => (event) => {
-    if (stopped || event.sessionId !== sessionId || event.method !== 'Page.screencastFrame') return;
-    last = now();
-    frame(`data:image/jpeg;base64,${event.params.data}`);
-    adapt(event.params.data.length * 0.75, sessionId);
-    clock.setTimeout(() => {
+  const halt = () => {
+    if (stopped) return;
+    stopped = true;
+    off?.();
+    clock.clearTimeout(sampler);
+    if (sessionId) void client.call('Page.stopScreencast', {}, sessionId).catch(() => undefined);
+    else
+      void session.then(
+        (id) => id && client.call('Page.stopScreencast', {}, id).catch(() => undefined)
+      );
+  };
+  const received = (id) => (event) => {
+    if (stopped || event.sessionId !== id || event.method !== 'Page.screencastFrame') return;
+    const data = event.params.data;
+    const ack = event.params.sessionId;
+    void (async () => {
+      const allowed = check ? await check().catch(() => false) : true;
       if (stopped) return;
-      void client
-        .call('Page.screencastFrameAck', { sessionId: event.params.sessionId }, sessionId)
-        .catch(() => undefined);
-    }, FRAME_GAP);
+      if (!allowed) {
+        halt();
+        return;
+      }
+      last = now();
+      frame(`data:image/jpeg;base64,${data}`);
+      adapt(data.length * 0.75, id);
+      clock.setTimeout(() => {
+        if (stopped) return;
+        void client.call('Page.screencastFrameAck', { sessionId: ack }, id).catch(() => undefined);
+      }, FRAME_GAP);
+    })();
   };
   const tick = () => {
     sampler = clock.setTimeout(async () => {
@@ -267,22 +287,14 @@ export function live({ client, clock, now, session, size, dpr, visible, frame, s
       tick();
     }, SAMPLE_GAP);
   };
-  void session.then(async (sessionId) => {
-    if (!sessionId || stopped) return;
-    off = client.on(received(sessionId));
-    await start(sessionId);
+  void session.then(async (id) => {
+    if (!id || stopped) return;
+    sessionId = id;
+    off = client.on(received(id));
+    await start(id);
     tick();
   });
-  return () => {
-    if (stopped) return;
-    stopped = true;
-    off?.();
-    clock.clearTimeout(sampler);
-    void session.then(
-      (sessionId) =>
-        sessionId && client.call('Page.stopScreencast', {}, sessionId).catch(() => undefined)
-    );
-  };
+  return halt;
 }
 
 function restore(storage) {
@@ -908,6 +920,17 @@ class Browser {
       size,
       dpr: this.#dpr(),
       visible: this.#visible,
+      check: async () => {
+        const info = await this.#probe(id);
+        if (this.#barred(info)) {
+          this.#learn(id, info);
+          this.#forgetFrame(id);
+          if (info) this.#framed(id, '');
+          return false;
+        }
+        this.#learn(id, info);
+        return true;
+      },
       frame: (src) => this.#framed(id, src),
       sample: () => this.#capture(id),
     });

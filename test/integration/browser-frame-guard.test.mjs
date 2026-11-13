@@ -172,28 +172,146 @@ test('screenshot does not return a cached frame after the tab turns protected', 
   await assert.rejects(() => browser.port.screenshot('tab'), /not a tab SLICC is using/);
 });
 
-test('a screencast frame for a tab whose known URL is protected is neither stored nor emitted', async (t) => {
-  const protectedURL = 'https://protected.invalid/secret';
-  const { browser, calls, client, setURL, emit } = sharedIconBrowser(t);
+for (const url of PROTECTED) {
+  test(`a flowing screencast stops without ack when the live URL turns ${url}`, async (t) => {
+    const { browser, calls, client, setURL, emit } = sharedIconBrowser(t);
+    const frames = framesOf(browser);
+    await client().call('Target.attachToTarget', { targetId: 'tab', flatten: true });
+    browser.port.watch('tab', { width: 100, height: 100 });
+    await flush(t, 0);
+    const cast = calls.find((call) => call.method === 'Page.startScreencast');
+    assert.ok(cast, 'watch must start a screencast on the held session');
+    const acksBefore = calls.filter((call) => call.method === 'Page.screencastFrameAck').length;
+    emit({
+      method: 'Page.screencastFrame',
+      sessionId: cast.session,
+      params: { data: 'ordinary-frame', sessionId: 1 },
+    });
+    await flush(t, 0);
+    await flush(t, 500);
+    assert.equal(frames.length, 1);
+    assert.ok(
+      calls.filter((call) => call.method === 'Page.screencastFrameAck').length > acksBefore
+    );
+    const stopsBefore = calls.filter((call) => call.method === 'Page.stopScreencast').length;
+    const infosBefore = counts(calls).info;
+    setURL(url, 'VAULT-MARK');
+    emit({
+      method: 'Page.screencastFrame',
+      sessionId: cast.session,
+      params: { data: 'protected-frame', sessionId: 2 },
+    });
+    await flush(t, 0);
+    await flush(t, 500);
+    assert.equal(frames.length, 1);
+    assert.ok(counts(calls).info > infosBefore);
+    assert.ok(calls.filter((call) => call.method === 'Page.stopScreencast').length > stopsBefore);
+    const acksAfter = calls.filter((call) => call.method === 'Page.screencastFrameAck');
+    assert.ok(
+      !acksAfter.some((call) => call.params?.sessionId === 2),
+      'the protected frame must not be acked'
+    );
+    await assert.rejects(() => browser.port.screenshot('tab'), /not a tab SLICC is using/);
+  });
+}
+
+test('a probe failure during a screencast stops it without acking the frame', async (t) => {
+  let probes = 0;
+  const { browser, calls, client, emit } = sharedIconBrowser(t, iconSnapshot(), {
+    getTargetInfo: ({ params, url, title }) => {
+      probes += 1;
+      if (probes > 1) throw new Error('Target.getTargetInfo failed');
+      return {
+        targetInfo: { targetId: params.targetId ?? 'tab', type: 'page', title, url },
+      };
+    },
+  });
   const frames = framesOf(browser);
   await client().call('Target.attachToTarget', { targetId: 'tab', flatten: true });
-  await browser.port.screenshot('tab');
-  assert.equal(frames.length, 1);
   browser.port.watch('tab', { width: 100, height: 100 });
   await flush(t, 0);
   const cast = calls.find((call) => call.method === 'Page.startScreencast');
-  assert.ok(cast, 'watch must start a screencast on the held session');
-  setURL(protectedURL);
-  await assert.rejects(() => browser.port.screenshot('tab'), /not a tab SLICC is using/);
-  const before = frames.length;
   emit({
     method: 'Page.screencastFrame',
     sessionId: cast.session,
-    params: { data: 'screencast-bytes', sessionId: 1 },
+    params: { data: 'ordinary-frame', sessionId: 1 },
   });
   await flush(t, 0);
-  assert.equal(frames.length, before);
-  await assert.rejects(() => browser.port.screenshot('tab'), /not a tab SLICC is using/);
+  await flush(t, 500);
+  assert.equal(frames.length, 1);
+  const stopsBefore = calls.filter((call) => call.method === 'Page.stopScreencast').length;
+  emit({
+    method: 'Page.screencastFrame',
+    sessionId: cast.session,
+    params: { data: 'failed-probe-frame', sessionId: 2 },
+  });
+  await flush(t, 0);
+  await flush(t, 500);
+  assert.equal(frames.length, 1);
+  assert.ok(calls.filter((call) => call.method === 'Page.stopScreencast').length > stopsBefore);
+  assert.ok(
+    !calls.some((call) => call.method === 'Page.screencastFrameAck' && call.params?.sessionId === 2)
+  );
+});
+
+test('an ordinary screencast probes once per emitted frame and acks after the check', async (t) => {
+  const { browser, calls, client, emit } = sharedIconBrowser(t);
+  const frames = framesOf(browser);
+  await client().call('Target.attachToTarget', { targetId: 'tab', flatten: true });
+  browser.port.watch('tab', { width: 100, height: 100 });
+  await flush(t, 0);
+  const cast = calls.find((call) => call.method === 'Page.startScreencast');
+  const start = calls.length;
+  for (const id of [1, 2, 3]) {
+    emit({
+      method: 'Page.screencastFrame',
+      sessionId: cast.session,
+      params: { data: `frame-${id}`, sessionId: id },
+    });
+    await flush(t, 0);
+    await flush(t, 500);
+  }
+  assert.equal(frames.length, 3);
+  const slice = calls.slice(start);
+  const infos = slice.filter((call) => call.method === 'Target.getTargetInfo');
+  const acks = slice.filter((call) => call.method === 'Page.screencastFrameAck');
+  assert.equal(infos.length, 3);
+  assert.equal(acks.length, 3);
+  for (let i = 0; i < 3; i += 1) {
+    const infoAt = slice.findIndex(
+      (call, index) =>
+        call.method === 'Target.getTargetInfo' &&
+        slice.slice(0, index).filter((row) => row.method === 'Target.getTargetInfo').length === i
+    );
+    const ackAt = slice.findIndex(
+      (call) => call.method === 'Page.screencastFrameAck' && call.params?.sessionId === i + 1
+    );
+    assert.ok(infoAt >= 0 && ackAt > infoAt);
+  }
+});
+
+test('the #framed backstop drops a frame when #infos is already a protected URL', async (t) => {
+  const protectedURL = 'https://protected.invalid/secret';
+  const { browser, calls, client, setURL, emit } = sharedIconBrowser(t, iconSnapshot(), {
+    tabURL: protectedURL,
+  });
+  const frames = framesOf(browser);
+  await client().call('Target.attachToTarget', { targetId: 'tab', flatten: true });
+  setURL(protectedURL, 'VAULT-MARK');
+  browser.port.watch('tab', { width: 100, height: 100 });
+  await flush(t, 0);
+  const cast = calls.find((call) => call.method === 'Page.startScreencast');
+  assert.ok(cast);
+  emit({
+    method: 'Page.screencastFrame',
+    sessionId: cast.session,
+    params: { data: 'protected-infos-frame', sessionId: 1 },
+  });
+  await flush(t, 0);
+  await flush(t, 500);
+  assert.equal(frames.length, 0);
+  assert.ok(calls.some((call) => call.method === 'Page.stopScreencast'));
+  assert.equal(calls.filter((call) => call.method === 'Page.screencastFrameAck').length, 0);
 });
 
 test('a Target.getTargetInfo failure refuses the capture and drops any cached frame', async (t) => {
