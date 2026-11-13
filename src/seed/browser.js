@@ -734,8 +734,38 @@ class Browser {
     }
   }
 
+  async #probe(id) {
+    try {
+      const result = await this.#client.call('Target.getTargetInfo', { targetId: id });
+      return result?.targetInfo ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  #barred(info) {
+    return !info || this.#is.url(info.url);
+  }
+
+  #learn(id, info) {
+    if (!info || !this.#owned.has(id)) return;
+    const known = this.#infos.get(id);
+    this.#infos.set(id, known ? { ...known, ...info } : { ...info, targetId: id });
+  }
+
+  #forgetFrame(id) {
+    this.#frames.delete(id);
+  }
+
   #capture(id) {
     return this.#session(id, async (sessionId) => {
+      const info = await this.#probe(id);
+      if (this.#barred(info)) {
+        this.#forgetFrame(id);
+        this.#learn(id, info);
+        throw new Error(`not a tab SLICC is using: ${id}`);
+      }
+      this.#learn(id, info);
       await this.#icon(id, sessionId).catch(() => undefined);
       const metrics = await this.#client.call('Page.getLayoutMetrics', {}, sessionId);
       const view = metrics.cssVisualViewport ?? metrics.layoutViewport ?? {};
@@ -754,6 +784,13 @@ class Browser {
         sessionId
       );
       const src = `data:image/jpeg;base64,${data}`;
+      const again = await this.#probe(id);
+      if (this.#barred(again)) {
+        this.#forgetFrame(id);
+        this.#learn(id, again);
+        throw new Error(`not a tab SLICC is using: ${id}`);
+      }
+      this.#learn(id, again);
       if (this.#owned.has(id)) this.#framed(id, src);
       return src;
     });
@@ -835,10 +872,25 @@ class Browser {
 
   async screenshot(id) {
     if (!this.#owned.has(id)) throw new Error(`not a tab SLICC is using: ${id}`);
-    return this.#frames.get(id)?.src ?? this.#capture(id);
+    const cached = this.#frames.get(id)?.src;
+    if (cached) {
+      const info = await this.#probe(id);
+      if (this.#barred(info)) {
+        this.#forgetFrame(id);
+        this.#learn(id, info);
+        throw new Error(`not a tab SLICC is using: ${id}`);
+      }
+      this.#learn(id, info);
+      return cached;
+    }
+    return this.#capture(id);
   }
 
   #framed(id, src) {
+    if (this.#is.url(this.#infos.get(id)?.url)) {
+      this.#frames.delete(id);
+      return;
+    }
     const frame = { tabId: id, src, at: this.#now() };
     this.#frames.set(id, frame);
     this.#emit('frame', frame);

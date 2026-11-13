@@ -53,23 +53,40 @@ export function iconSnapshot({
 export function sharedIconBrowser(
   t,
   snapshot = iconSnapshot(),
-  { tabURL, captureScreenshot } = {}
+  { tabURL, captureScreenshot, getTargetInfo } = {}
 ) {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 5000 });
   const calls = [];
   const nodes = new Map();
+  const listeners = new Set();
   let nextNode = 0,
     nextSession = 0;
+  let liveURL = tabURL ?? 'https://ordinary.invalid/page';
+  let liveTitle = 'ordinary';
   const privateRead = Promise.withResolvers();
-  const url = tabURL ?? 'https://ordinary.invalid/page';
   const api = {
-    on() {
-      return () => {};
+    on(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
     },
     async send(method, params = {}, session) {
       calls.push({ method, params, session });
       if (method === 'Target.getTargets')
-        return { targetInfos: [{ targetId: 'tab', type: 'page', title: 'ordinary', url }] };
+        return {
+          targetInfos: [{ targetId: 'tab', type: 'page', title: liveTitle, url: liveURL }],
+        };
+      if (method === 'Target.getTargetInfo') {
+        if (typeof getTargetInfo === 'function')
+          return getTargetInfo({ params, session, url: liveURL, title: liveTitle, calls });
+        return {
+          targetInfo: {
+            targetId: params.targetId ?? 'tab',
+            type: 'page',
+            title: liveTitle,
+            url: liveURL,
+          },
+        };
+      }
       if (method === 'Target.attachToTarget') return { sessionId: `virtual-${++nextSession}` };
       if (method === 'Page.getLayoutMetrics')
         return { cssVisualViewport: { clientWidth: 100, clientHeight: 100 } };
@@ -77,12 +94,16 @@ export function sharedIconBrowser(
         if (typeof captureScreenshot === 'function') return captureScreenshot({ params, session });
         return { data: 'fake-not-decoded' };
       }
+      if (method === 'Page.navigate') {
+        if (typeof params.url === 'string') liveURL = params.url;
+        return { frameId: 'frame' };
+      }
       if (method === 'DOM.getDocument') {
         nodes.clear();
         const nodeId = ++nextNode;
         nodes.set(nodeId, 'document');
         if (params.depth === 0) privateRead.resolve({ method, session });
-        return { root: { nodeId, documentURL: url } };
+        return { root: { nodeId, documentURL: liveURL } };
       }
       if (method === 'DOMSnapshot.captureSnapshot') {
         privateRead.resolve({ method, session });
@@ -117,5 +138,17 @@ export function sharedIconBrowser(
   t.after(() => {
     for (const connection of clients) connection.close();
   });
-  return { browser, calls, client, privateRead: privateRead.promise };
+  return {
+    browser,
+    calls,
+    client,
+    privateRead: privateRead.promise,
+    setURL: (url, title = liveTitle) => {
+      liveURL = url;
+      liveTitle = title;
+    },
+    emit: (event) => {
+      for (const listener of [...listeners]) listener(event);
+    },
+  };
 }

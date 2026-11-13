@@ -86,9 +86,13 @@ for (const url of [
     const snapshot = iconSnapshot({ url, links: [{ attributes: { rel: 'icon', href: icon } }] });
     const { browser, calls, client } = sharedIconBrowser(t, snapshot, { tabURL: url });
     await client().call('Target.attachToTarget', { targetId: 'tab', flatten: true });
-    await browser.port.screenshot('tab');
+    await assert.rejects(() => browser.port.screenshot('tab'), /not a tab SLICC is using/);
     assert.equal(
       calls.some((call) => call.method === 'DOMSnapshot.captureSnapshot'),
+      false
+    );
+    assert.equal(
+      calls.some((call) => call.method === 'Page.captureScreenshot'),
       false
     );
     assert.equal((await browser.port.list())[0].favicon, undefined);
