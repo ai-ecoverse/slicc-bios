@@ -8,7 +8,13 @@ import { attach, cliEnv } from './cli.mjs';
 export const CLI =
   process.env.SLICC_CLI ?? fileURLToPath(new URL('../../node_modules/.bin/slicc', import.meta.url));
 
-export async function linkNode(t, page, cdpPort, name = 'guard-fixture') {
+export async function linkNode(
+  t,
+  page,
+  cdpPort,
+  name = 'guard-fixture',
+  { seven = false, origins = [] } = {}
+) {
   const home = await mkdtemp(join(tmpdir(), 'linked-node-home-'));
   t.after(() => rm(home, { recursive: true, force: true }));
   const env = {
@@ -26,8 +32,9 @@ export async function linkNode(t, page, cdpPort, name = 'guard-fixture') {
       '--name',
       name,
       '--no-kernel',
-      '--cdp-extra',
+      seven ? '--cdp' : '--cdp-extra',
       `http://127.0.0.1:${cdpPort}`,
+      ...origins.flatMap((origin) => ['--origin', origin]),
     ],
     { stdio: ['pipe', 'pipe', 'inherit'], env }
   );
