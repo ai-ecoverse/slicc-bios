@@ -309,9 +309,7 @@ async function vaultOpen(t, ws, route) {
       route,
       targetId: sevenId,
       url: loaded.url,
-      readyState: last.readyState,
-      origin: last.origin,
-      app: last.app,
+      targets: last.targets,
     })}`
   );
 }
