@@ -16,6 +16,15 @@ function evaluatedValue(answer) {
   return answer?.result?.result?.value ?? answer?.result?.value;
 }
 
+async function until(done, ms, label, saw) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (await done()) return;
+    await wait(50);
+  }
+  throw new Error(`timed out waiting for ${label}; saw: ${JSON.stringify(saw?.() ?? null)}`);
+}
+
 async function pageWithWorker(t, cdp = chrome.cdp) {
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const workerUrl = new URL(`/creator-worker-${stamp}.js`, chrome.url).href;
@@ -65,11 +74,11 @@ async function pageWithWorker(t, cdp = chrome.cdp) {
     { url: new URL(`/creator-page-${stamp}.html`, chrome.url).href },
     page
   );
-  const deadline = Date.now() + 15000;
-  while (!worker && Date.now() < deadline) await wait(50);
-  assert.ok(
-    worker,
-    `Chrome never auto-attached the dedicated worker: ${JSON.stringify(
+  await until(
+    () => worker,
+    15000,
+    'Chrome auto-attach of the dedicated worker',
+    () =>
       seen
         .filter((message) => message.method?.startsWith('Target.'))
         .map((message) => ({
@@ -79,7 +88,6 @@ async function pageWithWorker(t, cdp = chrome.cdp) {
           targetId: message.params?.targetInfo?.targetId ?? message.params?.targetId,
         }))
         .slice(-8)
-    )}`
   );
   return { targetId, page, worker, workerTarget, workerUrl, seen, stamp };
 }
@@ -117,9 +125,21 @@ function kernelClient(t) {
   return { got, send };
 }
 
+function shownWorker(got, from, workerTarget, sessionId) {
+  return got
+    .slice(from)
+    .find(
+      (message) =>
+        message.method === 'Target.attachedToTarget' &&
+        message.params?.targetInfo?.targetId === workerTarget &&
+        (sessionId === undefined || message.params?.sessionId === sessionId)
+    );
+}
+
 async function workerThroughKernel(t) {
   const { got, send } = kernelClient(t);
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const workerUrl = new URL(`/guard-worker-${stamp}.js`, chrome.url).href;
   chrome.overrides.set(
     `/guard-worker-${stamp}.js`,
     'self.onmessage = (e) => self.postMessage(e.data); self.postMessage("ready");'
@@ -150,26 +170,72 @@ async function workerThroughKernel(t) {
   );
   const before = got.length;
   await send('Page.navigate', { url: new URL(`/guard-page-${stamp}.html`, chrome.url).href }, page);
-  const deadline = Date.now() + 15000;
   let worker;
   let workerTarget;
-  while (Date.now() < deadline) {
-    const event = got
-      .slice(before)
-      .find(
-        (message) =>
-          message.method === 'Target.attachedToTarget' &&
-          message.params?.targetInfo?.type === 'worker'
-      );
-    if (event) {
+  await until(
+    () => {
+      const event = got
+        .slice(before)
+        .find(
+          (message) =>
+            message.method === 'Target.attachedToTarget' &&
+            message.params?.targetInfo?.type === 'worker'
+        );
+      if (!event) return false;
       worker = event.params.sessionId;
       workerTarget = event.params.targetInfo.targetId;
-      break;
-    }
-    await wait(50);
+      return true;
+    },
+    15000,
+    'kernel auto-attach of the dedicated worker',
+    () => got.slice(-8)
+  );
+  return { got, send, page, worker, workerTarget, workerUrl, targetId };
+}
+
+async function attachWorkerById(client, workerTarget) {
+  const before = client.got.length;
+  const answer = await client.send('Target.attachToTarget', {
+    targetId: workerTarget,
+    flatten: true,
+  });
+  const sessionId = answer.result?.sessionId;
+  let shown;
+  if (!answer.error) {
+    await until(
+      () => {
+        shown = shownWorker(client.got, before, workerTarget, sessionId);
+        return Boolean(shown) || Boolean(answer.error);
+      },
+      5000,
+      `attachedToTarget for worker ${workerTarget}`,
+      () => ({
+        answer,
+        recent: client.got.slice(before).map((message) => ({
+          method: message.method,
+          sessionId: message.params?.sessionId,
+          targetId: message.params?.targetInfo?.targetId,
+          error: message.error?.message,
+        })),
+      })
+    ).catch(() => {});
+    shown = shownWorker(client.got, before, workerTarget, sessionId);
   }
-  assert.ok(worker, `kernel client never saw the worker: ${JSON.stringify(got.slice(-8))}`);
-  return { got, send, page, worker, workerTarget };
+  const evaluated = sessionId
+    ? await client.send(
+        'Runtime.evaluate',
+        { expression: 'self.location.href', returnByValue: true },
+        sessionId
+      )
+    : { error: { message: answer.error?.message ?? 'no session' } };
+  return {
+    answer,
+    sessionId,
+    shown: Boolean(shown),
+    evaluate: evaluated.error
+      ? { error: evaluated.error.message }
+      : { value: evaluatedValue(evaluated) },
+  };
 }
 
 test('Chrome destroys a dedicated worker session with its parent page session, keeps the worker target listed until document navigation, and allows a browser-level reattach', {
@@ -178,18 +244,21 @@ test('Chrome destroys a dedicated worker session with its parent page session, k
   const { page, worker, workerTarget, workerUrl, seen } = await pageWithWorker(t);
   const beforeDetach = seen.length;
   await chrome.cdp.send('Target.detachFromTarget', { sessionId: page });
-  const sessionGone = Date.now() + 5000;
   let afterDetachEvaluate = await evaluateOn(worker);
-  while (!afterDetachEvaluate.error && Date.now() < sessionGone) {
-    await wait(50);
-    afterDetachEvaluate = await evaluateOn(worker);
-  }
+  await until(
+    async () => {
+      afterDetachEvaluate = await evaluateOn(worker);
+      return Boolean(afterDetachEvaluate.error);
+    },
+    5000,
+    'old worker session to stop answering after parent detach',
+    () => afterDetachEvaluate
+  ).catch(() => {});
   const afterParent = seen.slice(beforeDetach);
   const workerDetachEvents = afterParent.filter(
     (message) =>
       message.method === 'Target.detachedFromTarget' && message.params?.sessionId === worker
   );
-  const evaluateAfterParentDetach = afterDetachEvaluate;
   const workerStillListed = (await chrome.cdp.send('Target.getTargets')).targetInfos.some(
     (info) => info.targetId === workerTarget
   );
@@ -212,9 +281,9 @@ test('Chrome destroys a dedicated worker session with its parent page session, k
       sessionId: message.sessionId,
       params: message.params,
     })),
-    b_evaluateAfterParentDetach: evaluateAfterParentDetach.error
-      ? { error: evaluateAfterParentDetach.error.message }
-      : { value: evaluatedValue(evaluateAfterParentDetach) },
+    b_evaluateAfterParentDetach: afterDetachEvaluate.error
+      ? { error: afterDetachEvaluate.error.message }
+      : { value: evaluatedValue(afterDetachEvaluate) },
     b_workerStillListedAfterParentDetach: workerStillListed,
     d_reattachAfterParentDetach: reattach.error
       ? { error: reattach.error.message }
@@ -231,7 +300,7 @@ test('Chrome destroys a dedicated worker session with its parent page session, k
     `(a) no Target.detachedFromTarget for the worker: ${JSON.stringify(facts)}`
   );
   assert.match(
-    evaluateAfterParentDetach.error?.message ?? '',
+    afterDetachEvaluate.error?.message ?? '',
     /Session with given id not found/i,
     `(b) the old worker session is gone: ${JSON.stringify(facts)}`
   );
@@ -251,22 +320,29 @@ test('Chrome destroys a dedicated worker session with its parent page session, k
     { url: new URL(`/creator-page-${again.stamp}.html?after=1`, chrome.url).href },
     again.page
   );
-  const navDeadline = Date.now() + 10000;
   let workerGone = false;
   let workerDetachOnNav = false;
-  while (Date.now() < navDeadline) {
-    workerDetachOnNav = again.seen
-      .slice(beforeNav)
-      .some(
-        (message) =>
-          message.method === 'Target.detachedFromTarget' &&
-          message.params?.sessionId === again.worker
-      );
-    const { targetInfos } = await chrome.cdp.send('Target.getTargets');
-    workerGone = !targetInfos.some((info) => info.targetId === again.workerTarget);
-    if (workerGone || workerDetachOnNav) break;
-    await wait(50);
-  }
+  await until(
+    async () => {
+      workerDetachOnNav = again.seen
+        .slice(beforeNav)
+        .some(
+          (message) =>
+            message.method === 'Target.detachedFromTarget' &&
+            message.params?.sessionId === again.worker
+        );
+      const { targetInfos } = await chrome.cdp.send('Target.getTargets');
+      workerGone = !targetInfos.some((info) => info.targetId === again.workerTarget);
+      return workerGone || workerDetachOnNav;
+    },
+    10000,
+    'worker to die with its document on navigation',
+    () => ({
+      workerGone,
+      workerDetachOnNav,
+      workerTarget: again.workerTarget,
+    })
+  ).catch(() => {});
   const evaluateAfterNavigate = await evaluateOn(again.worker);
   const navFacts = {
     c_workerGoneFromGetTargets: workerGone,
@@ -282,66 +358,96 @@ test('Chrome destroys a dedicated worker session with its parent page session, k
   );
 });
 
-test('a kernel caller through the guard refuses a browser-level reattach of a worker whose creator session was detached', {
+test('a kernel caller through the guard refuses a browser-level reattach only after its creator session is detached', {
   timeout: 3 * 60 * 1000,
 }, async (t) => {
-  const branch = await workerThroughKernel(t);
-  await branch.send('Target.detachFromTarget', { sessionId: branch.page });
-  const detached = Date.now() + 5000;
-  while (
-    Date.now() < detached &&
-    !branch.got.some(
-      (message) =>
-        message.method === 'Target.detachedFromTarget' && message.params?.sessionId === branch.page
-    )
-  )
-    await wait(50);
-  const beforeReattach = branch.got.length;
-  const reattach = await branch.send('Target.attachToTarget', {
-    targetId: branch.workerTarget,
-    flatten: true,
-  });
-  const fresh = reattach.result?.sessionId;
-  const shownDeadline = Date.now() + 2000;
-  let shown = false;
-  while (Date.now() < shownDeadline) {
-    shown = branch.got
-      .slice(beforeReattach)
-      .some(
+  const cut = await workerThroughKernel(t);
+  await cut.send('Target.detachFromTarget', { sessionId: cut.worker });
+  await until(
+    () =>
+      cut.got.some(
         (message) =>
-          message.method === 'Target.attachedToTarget' &&
-          ((fresh && message.params?.sessionId === fresh) ||
-            message.params?.targetInfo?.targetId === branch.workerTarget)
-      );
-    if (shown || reattach.error) break;
-    await wait(50);
-  }
-  const evaluated = fresh
-    ? await branch.send(
-        'Runtime.evaluate',
-        { expression: 'self.location.href', returnByValue: true },
-        fresh
-      )
-    : { error: { message: reattach.error?.message ?? 'no session' } };
-  const eBranch = {
-    reattach: reattach.error ? { error: reattach.error.message } : { sessionId: fresh },
-    shown,
-    evaluate: evaluated.error
-      ? { error: evaluated.error.message }
-      : { value: evaluatedValue(evaluated) },
-  };
-  t.diagnostic(`(e) kernel after creator detach: ${JSON.stringify(eBranch)}`);
-  assert.ok(
-    reattach.error,
-    `(e) Target.attachToTarget of the listed worker is refused: ${JSON.stringify(eBranch)}`
+          message.method === 'Target.detachedFromTarget' && message.params?.sessionId === cut.worker
+      ),
+    5000,
+    'auto-attached worker session to detach before the by-id control',
+    () => cut.got.slice(-6)
+  );
+  const beforeCut = await attachWorkerById(cut, cut.workerTarget);
+  t.diagnostic(`(e) before creator detach: ${JSON.stringify(beforeCut)}`);
+  assert.equal(
+    beforeCut.answer.error,
+    undefined,
+    `(e) before creator detach, attachToTarget by id answers: ${JSON.stringify(beforeCut)}`
   );
   assert.equal(
-    shown,
+    beforeCut.shown,
+    true,
+    `(e) before creator detach, the worker is shown: ${JSON.stringify(beforeCut)}`
+  );
+  assert.equal(
+    beforeCut.evaluate.value,
+    cut.workerUrl,
+    `(e) before creator detach, evaluate returns the worker URL: ${JSON.stringify(beforeCut)}`
+  );
+  if (beforeCut.sessionId)
+    await cut.send('Target.detachFromTarget', { sessionId: beforeCut.sessionId });
+
+  await cut.send('Target.detachFromTarget', { sessionId: cut.page });
+  await until(
+    () =>
+      cut.got.some(
+        (message) =>
+          message.method === 'Target.detachedFromTarget' && message.params?.sessionId === cut.page
+      ),
+    5000,
+    'creator page session detachedFromTarget',
+    () => cut.got.slice(-8)
+  );
+  const afterCut = await attachWorkerById(cut, cut.workerTarget);
+  t.diagnostic(`(e) after creator detach: ${JSON.stringify(afterCut)}`);
+  assert.ok(
+    afterCut.answer.error,
+    `(e) after creator detach, attachToTarget by id is refused: ${JSON.stringify(afterCut)}`
+  );
+  assert.equal(
+    afterCut.shown,
     false,
-    `(e) the reattached worker is never shown: ${JSON.stringify(eBranch)}`
+    `(e) after creator detach, the worker is never shown: ${JSON.stringify(afterCut)}`
   );
   assert.ok(
-    evaluated.error,
-    `(e) Runtime.evaluate on any reattach session is refused: ${JSON.stringify(eBranch)}`
+    afterCut.evaluate.error,
+    `(e) after creator detach, evaluate is refused: ${JSON.stringify(afterCut)}`
+  );
+
+  const control = await workerThroughKernel(t);
+  await control.send('Target.detachFromTarget', { sessionId: control.worker });
+  await until(
+    () =>
+      control.got.some(
+        (message) =>
+          message.method === 'Target.detachedFromTarget' &&
+          message.params?.sessionId === control.worker
+      ),
+    5000,
+    'control worker session to detach before by-id attach',
+    () => control.got.slice(-6)
+  );
+  const ordinary = await attachWorkerById(control, control.workerTarget);
+  t.diagnostic(`(e) ordinary worker whose creator is not cut: ${JSON.stringify(ordinary)}`);
+  assert.equal(
+    ordinary.answer.error,
+    undefined,
+    `(e) an ordinary worker still attaches by id: ${JSON.stringify(ordinary)}`
+  );
+  assert.equal(
+    ordinary.shown,
+    true,
+    `(e) an ordinary worker is still shown: ${JSON.stringify(ordinary)}`
+  );
+  assert.equal(
+    ordinary.evaluate.value,
+    control.workerUrl,
+    `(e) an ordinary worker still evaluates: ${JSON.stringify(ordinary)}`
   );
 });
