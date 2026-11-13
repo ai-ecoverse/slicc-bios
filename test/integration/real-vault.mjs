@@ -1,60 +1,64 @@
 import { createHash } from 'node:crypto';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { dirname, extname, join, normalize, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const SOURCE = 'https://vault-preview.sliccy.ai/';
-const WARM = 60000;
-const FETCH = 30000;
+const PACKAGE = '@ai-ecoverse/slicc-vault';
 
-const timedOut = (error) => error?.name === 'TimeoutError' || error?.name === 'AbortError';
-const transient = (error) =>
-  timedOut(error) ||
-  error?.name === 'TypeError' ||
-  ['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT'].includes(
-    error?.cause?.code ?? error?.code
-  );
-
-async function once(path, timeout) {
-  return fetch(new URL(path, SOURCE), { signal: AbortSignal.timeout(timeout) });
+export function vaultPackageRoot() {
+  let dir = fileURLToPath(new URL('.', import.meta.url));
+  for (;;) {
+    const manifest = join(dir, 'node_modules', PACKAGE, 'package.json');
+    if (existsSync(manifest)) {
+      const pkg = JSON.parse(readFileSync(manifest, 'utf8'));
+      if (pkg.name === PACKAGE) return dirname(manifest);
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  throw new Error('the vault package is unavailable');
 }
 
-async function loadConfig() {
-  try {
-    await once('config.json', WARM);
-  } catch {}
-  let last;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const response = await once('config.json', FETCH);
-      if (!response.ok) throw new Error('the vault deployment is unavailable');
-      return await response.json();
-    } catch (error) {
-      last = error;
-      if (error.message === 'the vault deployment is unavailable') throw error;
-      if (!transient(error) || attempt === 1) throw error;
-    }
+export function classForPath(pathname, classes) {
+  for (const [name, spec] of Object.entries(classes)) {
+    if (spec.paths?.includes(pathname)) return { name, ...spec };
   }
-  throw last;
+  const extension = extname(pathname);
+  if (!extension) return null;
+  for (const [name, spec] of Object.entries(classes)) {
+    if (spec.extensions?.includes(extension)) return { name, ...spec };
+  }
+  return null;
 }
 
-async function pull(path) {
-  let last;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      return await once(path, FETCH);
-    } catch (error) {
-      last = error;
-      if (!timedOut(error) || attempt === 1) throw error;
-    }
+export function headersForClass(spec, origin) {
+  const headers = { ...spec.headers };
+  if (headers['content-security-policy']) {
+    headers['content-security-policy'] = headers['content-security-policy'].replace(
+      /frame-ancestors[^;]*/,
+      `frame-ancestors ${origin}`
+    );
   }
-  throw last;
+  return headers;
+}
+
+function locate(root, pathname) {
+  const rel = pathname.endsWith('/') ? `${pathname}index.html` : pathname;
+  const file = join(root, normalize(rel));
+  return file.startsWith(`${root}${sep}`) ? file : null;
 }
 
 export async function realVault(origin, { version } = {}) {
-  const cached = new Map();
-  const requests = [];
-  const config = await loadConfig();
+  const root = vaultPackageRoot();
+  const site = join(root, 'dist/site');
+  const headersDoc = JSON.parse(readFileSync(join(root, 'dist/headers.json'), 'utf8'));
+  const config = JSON.parse(readFileSync(join(site, 'config.json'), 'utf8'));
   if (config.version !== version)
     throw new Error(`the vault deployment version is ${config.version}, expected ${version}`);
+  const cached = new Map();
+  const requests = [];
   const server = createServer((request, response) => {
     void (async () => {
       const path = new URL(request.url, 'http://fixture').pathname;
@@ -64,39 +68,31 @@ export async function realVault(origin, { version } = {}) {
         entry.aborted = Boolean(entry.aborted) || !response.writableFinished;
       });
       try {
+        const klass = classForPath(path, headersDoc.classes);
+        if (!klass) throw new Error('the vault deployment asset is unavailable');
+        const headers = headersForClass(klass, origin);
         let body;
-        let type;
         if (path === '/config.json' || path === '/embedders.json') {
           body = Buffer.from(JSON.stringify({ ...config, embedders: [origin] }));
-          type = 'application/json';
         } else {
           let asset = cached.get(path);
           entry.cached = Boolean(asset);
           if (!asset) {
-            const upstream = await pull(path);
-            entry.upstreamStatus = upstream.status;
-            if (!upstream.ok) throw new Error('the vault deployment asset is unavailable');
-            asset = {
-              body: Buffer.from(await upstream.arrayBuffer()),
-              type: upstream.headers.get('content-type') ?? 'application/octet-stream',
-            };
+            const file = locate(site, path);
+            const info = file && existsSync(file) ? statSync(file) : null;
+            entry.upstreamStatus = info?.isFile() ? 200 : 404;
+            if (!info?.isFile()) throw new Error('the vault deployment asset is unavailable');
+            asset = { body: readFileSync(file) };
             cached.set(path, asset);
           }
-          ({ body, type } = asset);
+          ({ body } = asset);
         }
-        response.writeHead(200, {
-          'content-type': type,
-          'content-security-policy': `frame-ancestors ${origin}`,
-          'cross-origin-embedder-policy': 'require-corp',
-          'cross-origin-resource-policy': 'cross-origin',
-          'cache-control': 'no-store',
-        });
+        response.writeHead(200, headers);
         entry.status = 200;
         response.end(body);
       } catch (error) {
         entry.error = error?.name ?? 'Error';
-        entry.status = timedOut(error) ? 504 : 502;
-        if (timedOut(error)) entry.aborted = true;
+        entry.status = entry.upstreamStatus === 404 ? 404 : 502;
         try {
           if (!response.headersSent) {
             response.writeHead(entry.status);
@@ -116,9 +112,11 @@ export async function realVault(origin, { version } = {}) {
   return {
     origin: `http://127.0.0.1:${server.address().port}`,
     version: config.version,
+    site,
+    headers: headersDoc,
     evidence: () => ({
       version: config.version,
-      source: SOURCE,
+      source: site,
       requests: requests.map((request) => ({ ...request })),
       assets: [...cached].map(([path, asset]) => ({
         path,
