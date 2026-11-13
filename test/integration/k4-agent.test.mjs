@@ -457,6 +457,10 @@ test('enforce: Deny and stop on a cone’s looping sudo ends the loop and the tu
       };
       const root = walk(document)?.shadowRoot;
       const dialog = root?.querySelector('dialog');
+      const { dock } = document.querySelector('slicc-app');
+      const terminalId = dock.api.panels
+        .map((panel) => panel.id)
+        .findLast((id) => id.startsWith('terminal:'));
       return {
         asked: window.asked,
         ended: window.ended,
@@ -477,6 +481,7 @@ test('enforce: Deny and stop on a cone’s looping sudo ends the loop and the tu
             command: item.command,
             state: item.stoppable === true ? 'stoppable' : 'terminal',
           })),
+        terminal: terminalId ? dock.content(terminalId).screen.textContent.slice(-500) : null,
       };
     });
   const cleared = (id) =>
@@ -511,6 +516,49 @@ test('enforce: Deny and stop on a cone’s looping sudo ends the loop and the tu
           `the stopped cone's approval never left the list with its dialog closed: ${error.message}\n${JSON.stringify(await listed())}`
         );
       });
+  const quiet = async () => {
+    const deadline = Date.now() + 5 * 60 * 1000;
+    while (Date.now() < deadline) {
+      const state = await listed();
+      if (!state.busy && state.list.length === 0 && !state.dialog) return;
+      if (state.dialog?.gone) {
+        await page.evaluate(
+          new Function(
+            `const dialog = (${find})('slicc-approvals')?.shadowRoot?.querySelector('dialog');
+            dialog?.querySelector('[data-action="close"]')?.click();`
+          )
+        );
+        continue;
+      }
+      assert.equal(
+        state.list.some(
+          (item) =>
+            item.requester?.kind === 'agent' &&
+            item.state === 'stoppable' &&
+            item.command === looping.command
+        ),
+        false,
+        `Deny and stop left a cone sudo for the loop command askable: ${JSON.stringify(state)}`
+      );
+      await page
+        .within(
+          250,
+          () =>
+            document.querySelector('slicc-app').model.approvals.list().length === 0 &&
+            !(function walk(root) {
+              const found = root.querySelector('slicc-approvals');
+              if (found) return found.shadowRoot?.querySelector('dialog');
+              for (const element of root.querySelectorAll('*'))
+                if (element.shadowRoot && walk(element.shadowRoot)) return true;
+              return false;
+            })(document)
+        )
+        .catch(() => {});
+    }
+    throw new Error(
+      `approvals never went quiet after Deny and stop\n${JSON.stringify(await listed())}`
+    );
+  };
   await cleared(looping.id);
   const after = await page.evaluate(() => ({
     asked: window.asked,
@@ -524,32 +572,40 @@ test('enforce: Deny and stop on a cone’s looping sudo ends the loop and the tu
     false,
     JSON.stringify(after)
   );
-  const log = await page.evaluate(async () => {
-    const tmp = await (await navigator.storage.getDirectory()).getDirectoryHandle('tmp');
-    try {
-      return await (await (await tmp.getFileHandle('stop-loop.log')).getFile()).text();
-    } catch {
-      return '';
-    }
-  });
+  const stopLog = () =>
+    page.evaluate(async () => {
+      const tmp = await (await navigator.storage.getDirectory()).getDirectoryHandle('tmp');
+      try {
+        return await (await (await tmp.getFileHandle('stop-loop.log')).getFile()).text();
+      } catch {
+        return '';
+      }
+    });
+  const log = await stopLog();
   assert.doesNotMatch(log, /try-2|loop-done/, log);
   for (const line of log.split('\n').filter((line) => line.startsWith('sudo:')))
     assert.equal(line, 'sudo: denied, and the owner stopped this turn', log);
 
-  await cleared(looping.id);
-  const before = await page.evaluate(() =>
-    document
-      .querySelector('slicc-app')
-      .model.approvals.list()
-      .map((item) => item.id)
-  );
-  await run(page, 'clear; cd /tmp; sudo -u cone sudo id -un; echo terminal=$?');
-  const terminal = await page
-    .within(
-      5 * 60 * 1000,
+  const terminalOf = (before, ms) =>
+    page.within(
+      ms,
       new Function(
         'before',
-        `return (
+        `const walk = (root) => {
+          const found = root.querySelector('slicc-approvals');
+          if (found) return found;
+          for (const element of root.querySelectorAll('*')) {
+            const inner = element.shadowRoot && walk(element.shadowRoot);
+            if (inner) return inner;
+          }
+          return null;
+        };
+        const dialog = walk(document)?.shadowRoot?.querySelector('dialog');
+        if (dialog?.dataset.gone) {
+          dialog.querySelector('[data-action="close"]')?.click();
+          return null;
+        }
+        return (
           document
             .querySelector('slicc-app')
             .model.approvals.list()
@@ -563,18 +619,49 @@ test('enforce: Deny and stop on a cone’s looping sudo ends the loop and the tu
         );`
       ),
       before
-    )
-    .catch(async (error) => {
+    );
+  await quiet();
+  let before = await page.evaluate(() =>
+    document
+      .querySelector('slicc-app')
+      .model.approvals.list()
+      .map((item) => item.id)
+  );
+  await run(page, 'clear; cd /tmp; sudo -u cone sudo id -un; echo terminal=$?');
+  let terminal = await terminalOf(before, 30 * 1000).catch(() => null);
+  if (!terminal) {
+    await quiet();
+    before = await page.evaluate(() =>
+      document
+        .querySelector('slicc-app')
+        .model.approvals.list()
+        .map((item) => item.id)
+    );
+    await page.evaluate(() => {
+      const app = document.querySelector('slicc-app');
+      const { dock } = app;
+      const id = dock.api.panels
+        .map((panel) => panel.id)
+        .findLast((id) => id.startsWith('terminal:'));
+      dock.api.getPanel(id)?.api.setActive();
+      dock.content(id).screen.focus();
+    });
+    await page.press('u', 'ctrl');
+    await run(page, 'clear; cd /tmp; sudo -u cone sudo id -un; echo terminal=$?');
+    terminal = await terminalOf(before, 5 * 60 * 1000).catch(async (error) => {
       throw new Error(
         `the terminal's sudo never reached approvals as a new user request: ${error.message}\nbefore=${JSON.stringify(before)}\n${JSON.stringify(await listed())}`
       );
     });
+  }
   assert.equal(terminal.requester.kind, 'user');
   assert.notEqual(terminal.stoppable, true);
   await armed(page);
   assert.deepEqual(Object.keys(await rows(page, terminal.id)).sort(), ['deny', 'once']);
   await press(page, 'deny');
   await shows(page, 'terminal=1');
+  const later = await stopLog();
+  assert.doesNotMatch(later, /try-2|loop-done/, later);
   assert.deepEqual(page.errors, []);
 });
 

@@ -6,7 +6,7 @@ import { seedFiles as installed } from './seed.mjs';
 
 const src = new URL('../../src/', import.meta.url);
 const seed = new URL('seed/', src);
-const aliased = new Set(['manifest.json']);
+const aliased = new Set(['manifest.json', 'favicon.svg']);
 
 function local(specifier, from) {
   if (specifier.startsWith('/os/')) return specifier.slice('/os/'.length);

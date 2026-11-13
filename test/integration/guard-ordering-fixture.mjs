@@ -96,7 +96,19 @@ export function protocol(t, protect = guardProtected) {
     return { id, answer };
   }
   const send = (method, params, sessionId) => request(method, params, sessionId).answer;
-  function target(id, type = 'page', frame = plainFrame(id), parentId) {
+  function parentOf(id, type, frame) {
+    if (type !== 'iframe') return undefined;
+    for (const [targetId, entry] of targets)
+      if (frame.parentId && entry.tree.frame.id === frame.parentId) return targetId;
+    const host = `${id}-host`;
+    targets.set(host, {
+      info: { targetId: host, type: 'page', url: ordinary },
+      tree: { frame: plainFrame(host) },
+    });
+    return host;
+  }
+  function target(id, type = 'page', frame = plainFrame(id), reported) {
+    const parentId = reported === undefined ? parentOf(id, type, frame) : reported;
     const entry = {
       info: { targetId: id, type, url: frame.url, ...(parentId ? { parentId } : {}) },
       tree: { frame },

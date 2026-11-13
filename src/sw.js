@@ -54,6 +54,12 @@ const code = new Set([
   'xslt',
 ]);
 const live = ['/os/', '/node_modules/', '/opt/agent/'];
+const PANEL_PAGE = '/os/index.html';
+const PANEL_FRAME = {
+  'content-security-policy':
+    "frame-ancestors 'self' chrome-extension://akjjllgokmbgpbdbmafpiefnhidlmbgf",
+};
+const framing = (at) => (at === PANEL_PAGE ? PANEL_FRAME : {});
 const SCOPE = new URL(self.registration.scope).pathname;
 const BIOS = `/${new URL('./', self.location).pathname.slice(SCOPE.length)}`;
 const BIOS_URL = new URL('./', self.location).href;
@@ -69,7 +75,10 @@ const ownDirs = [
 ];
 const passed = new Set(SHARED ? ['/auth/callback', EXPORTER] : []);
 const passedDirs = SHARED ? [ASSETS] : [];
-const MANIFEST = '/os/manifest.json';
+const redirects = new Map([
+  ['/os/manifest.json', 'manifest.json'],
+  ['/os/favicon.svg', 'icons/favicon.svg'],
+]);
 
 function kind(path) {
   if (own.has(path) || ownDirs.some((dir) => path.startsWith(dir))) return 'bios';
@@ -420,7 +429,7 @@ async function serve(request, controller, client) {
   if (await toOs(asked, request)) {
     return Response.redirect(new URL('os/', self.registration.scope).href, 302);
   }
-  if (asked === MANIFEST) return Response.redirect(`${BIOS_URL}manifest.json`, 302);
+  if (redirects.has(asked)) return Response.redirect(`${BIOS_URL}${redirects.get(asked)}`, 302);
   const served = kind(path);
   if (served === 'bios') return unkeptDocument(await network(), request);
   if (path === STATUS) {
@@ -457,7 +466,7 @@ async function serve(request, controller, client) {
   const type = types[extension] ?? 'application/octet-stream';
   try {
     file = await checked(at, file);
-    if (!script.test(file.name)) return respond(file, type, 'opfs');
+    if (!script.test(file.name)) return respond(file, type, 'opfs', 200, framing(at));
     const run = path.startsWith(AGENT) ? url.searchParams.get('run') : null;
     const { text, timing } = await rewrite(path, file, base, run);
     return respond(text, type, 'opfs', 200, { 'server-timing': timing });
