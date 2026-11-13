@@ -79,6 +79,23 @@ const faux = () => {
       this.onend?.();
     }
   };
+  window.recorders = [];
+  const Recorder = MediaRecorder;
+  window.MediaRecorder = class extends Recorder {
+    constructor(...args) {
+      super(...args);
+      const seen = { recorder: this, chunks: 0 };
+      window.recorders.push(seen);
+      this.addEventListener('dataavailable', (event) => {
+        if (event.data?.size) seen.chunks += 1;
+      });
+    }
+  };
+  window.take = () => ({
+    recorders: window.recorders.length,
+    chunks: window.recorders.at(-1)?.chunks ?? 0,
+    recorder: window.recorders.at(-1)?.recorder.state ?? 'none',
+  });
   window.displays = [];
   window.mics = [];
   Object.defineProperty(navigator.mediaDevices, 'getDisplayMedia', {
@@ -134,11 +151,61 @@ const answer = (page, value) =>
   }, value);
 
 async function pressDeep(page, selector) {
-  await page.until((selector) => {
-    const box = window.deep(selector)?.getBoundingClientRect();
-    return !!box && box.width > 0;
-  }, selector);
-  await new Promise((resolve) => setTimeout(resolve, 800));
+  const ready = (selector) => {
+    const button = window.deep(selector);
+    const box = button?.getBoundingClientRect();
+    let owner = button;
+    while (owner && typeof owner.arming !== 'number')
+      owner = owner.parentElement ?? owner.getRootNode()?.host;
+    const arming = owner?.arming ?? 500;
+    const x = box ? box.x + box.width / 2 : 0;
+    const y = box ? box.y + box.height / 2 : 0;
+    let hit = box?.width > 0 ? document.elementFromPoint(x, y) : null;
+    while (hit?.shadowRoot) {
+      const inner = hit.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === hit) break;
+      hit = inner;
+    }
+    const within = (outer, node) => {
+      for (let at = node; at; at = at.parentNode ?? at.host) if (at === outer) return true;
+      return false;
+    };
+    const on = !!hit && (within(button, hit) || within(hit, button));
+    const key = [
+      selector,
+      button?.disabled,
+      button?.textContent,
+      box?.x,
+      box?.y,
+      box?.width,
+      box?.height,
+    ].join();
+    const now = performance.now();
+    if (window.settled?.key !== key) window.settled = { key, since: now };
+    const stable = now - window.settled.since;
+    window.pressing = {
+      found: !!button,
+      box: box && [box.x, box.y, box.width, box.height].map(Math.round),
+      hit: hit
+        ? `${hit.localName}${hit.dataset?.action ? `[data-action=${hit.dataset.action}]` : ''}`
+        : null,
+      on,
+      stable: Math.round(stable),
+      arming,
+    };
+    return box?.width > 0 && on && stable >= arming + 100;
+  };
+  await page.evaluate(() => {
+    window.settled = null;
+  });
+  try {
+    await page.until(ready, selector);
+  } catch (error) {
+    const seen = await page.evaluate(() => window.pressing);
+    assert.fail(
+      `waited for ${selector} to be the hit target at its centre with its rect unchanged for the arming time, and saw ${JSON.stringify(seen)}: ${error.message}`
+    );
+  }
   const { x, y } = await page.evaluate((selector) => {
     const box = window.deep(selector).getBoundingClientRect();
     return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
@@ -148,6 +215,20 @@ async function pressDeep(page, selector) {
 }
 
 const CLICK = 'dialog[data-kind="click"]';
+
+async function recording(page) {
+  try {
+    await page.within(10000, () => {
+      const { recorder, chunks } = window.take();
+      return recorder === 'recording' && chunks >= 1;
+    });
+  } catch {
+    const seen = await page.evaluate(() => window.take());
+    assert.fail(
+      `waited 10 s for the screen recorder's first chunk while recording, and saw ${seen.recorders} recorders, the last ${seen.recorder} with ${seen.chunks} chunks`
+    );
+  }
+}
 
 async function pressConfirm(page, which) {
   await page.until((which) => {
@@ -396,7 +477,7 @@ test('each switch refuses its kind before the agent is asked, ends a live captur
   );
   await run(page, 'screencapture -V 60 /tmp/cut.webm; echo "cut $?"');
   await page.until(() => window.chips().length === 1 && window.displays.length === 1);
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await recording(page);
   await page.evaluate(() =>
     document.querySelector('slicc-app').model.switches.set('screen', false)
   );
@@ -608,7 +689,7 @@ test('a screen recording with the microphone that the guard stops mid-take, when
   });
   await run(page, 'screencapture -V 60 -g /tmp/flip.webm; echo "fl""ip over"');
   await page.until(() => window.chips().length === 1 && window.mics.length === 1);
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await recording(page);
   const cut = await page.evaluate(() => {
     window.handle = { handle: 'slicc-seven', origin: location.origin };
     window.displayTrack.dispatchEvent(new Event('capturehandlechange'));
