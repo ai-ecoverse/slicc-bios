@@ -58,7 +58,8 @@ const checks = (why = '') =>
 const issue = (id) => Object.keys(KNOWN).find((key) => KNOWN[key].includes(id));
 
 function linked(row, listed) {
-  if (listed || row.control !== 'pass' || row.guarded !== 'fail') return null;
+  if (listed) return null;
+  if (row.control !== 'pass' || row.guarded !== 'fail') return null;
   const found = Object.entries(LINK).find(([, { ids, allowed, notLive }]) => {
     if (!ids.includes(row.id)) return false;
     if (row.live === 'fail') {
