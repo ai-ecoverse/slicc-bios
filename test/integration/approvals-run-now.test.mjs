@@ -549,8 +549,18 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
       .map((byte) => byte.toString(16).padStart(2, '0'))
       .join('');
     const truePath = '/usr/bin/true';
-    const probe = await client.run(['test', '-x', truePath]);
-    if (probe.status !== 0) throw new Error(`missing executable ${truePath}`);
+    const harden = await client.run([
+      'bash',
+      '-c',
+      [
+        `test -x ${truePath}`,
+        `chown 0:0 /usr /usr/bin ${truePath}`,
+        `chmod 0755 /usr /usr/bin ${truePath}`,
+        `stat -c '%u %a' /usr /usr/bin ${truePath}`,
+      ].join(' && '),
+    ]);
+    if (harden.status !== 0)
+      throw new Error(harden.stderr || harden.stdout || `could not harden ${truePath}`);
     const ok = {
       id: `sudo-ok-${Date.now()}`,
       user: 'cone',
@@ -558,9 +568,9 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
       target: 'root',
       argv: ['true'],
       path: truePath,
-      cwd: '/home/cone',
+      cwd: '/',
       stdin: 'none',
-      rootOnly: { [truePath]: true, '/home/cone': true },
+      rootOnly: { '/': true },
       userWritable: [],
       tag: JSON.stringify({ kind: 'agent', agentId: 'cone' }),
       createdAt: Date.now(),
@@ -574,9 +584,9 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
       target: 'root',
       argv: ['/home/cone/job.sh'],
       path: '/home/cone/job.sh',
-      cwd: '/home/cone',
+      cwd: '/',
       stdin: 'none',
-      rootOnly: { '/home/cone': true, '/home/cone/job.sh': false },
+      rootOnly: { '/': true },
       userWritable: [{ path: '/home/cone/job.sh', sha256 }],
       tag: JSON.stringify({ kind: 'agent', agentId: 'cone' }),
       createdAt: Date.now(),
