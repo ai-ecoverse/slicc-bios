@@ -548,8 +548,9 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
     const sha256 = [...new Uint8Array(digest)]
       .map((byte) => byte.toString(16).padStart(2, '0'))
       .join('');
-    const which = await client.run(['bash', '-c', 'command -v true; command -v ls']);
-    const [truePath, lsPath] = which.stdout.trim().split('\n');
+    const truePath = '/usr/bin/true';
+    const probe = await client.run(['test', '-x', truePath]);
+    if (probe.status !== 0) throw new Error(`missing executable ${truePath}`);
     const ok = {
       id: `sudo-ok-${Date.now()}`,
       user: 'cone',
@@ -607,7 +608,6 @@ test('browser: timed-out agent sudo Run now goes through sudoRun, with notices a
       okId: `bios:${ok.id}`,
       badId: `bios:${bad.id}`,
       truePath,
-      lsPath,
       history: history().map((entry) => ({
         id: entry.approval.id,
         state: entry.state,

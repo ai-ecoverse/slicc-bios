@@ -70,6 +70,10 @@ export function runTag(id) {
   return `${RUN_TAG}${id}`;
 }
 
+export function runFileId(id) {
+  return String(id).replaceAll(/[^A-Za-z0-9._-]+/g, '-');
+}
+
 export function runsHome(user) {
   return user === 'root' ? '/root' : `/home/${user}`;
 }
@@ -77,7 +81,8 @@ export function runsHome(user) {
 export function runPaths(user, id) {
   const home = runsHome(user);
   const dir = `${home === '/' ? '' : home}/${RUNS_DIR}`;
-  return { dir, stdout: `${dir}/${id}.out`, stderr: `${dir}/${id}.err` };
+  const file = runFileId(id);
+  return { dir, stdout: `${dir}/${file}.out`, stderr: `${dir}/${file}.err` };
 }
 
 export function messageOf(error) {
