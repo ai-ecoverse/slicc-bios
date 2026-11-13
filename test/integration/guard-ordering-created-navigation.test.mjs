@@ -214,14 +214,20 @@ const routes = [
   { name: 'extension', kind: { kind: 'extension' }, connection: 'extension' },
 ];
 
-function laggingCreated(t, route, { commit, openerId, lag = 400, settle = true }) {
+const openerUrls = {
+  seven: `${protectedOrigin}/seven`,
+  ordinary: `${new URL(ordinary).origin}/opener`,
+};
+
+function laggingCreated(t, route, { commit, openerId, lag = 400, settle = true, from = 'seven' }) {
   const id = `created-lag-${route.name}-${commit ?? 'pending'}-${Math.random().toString(36).slice(2, 8)}`;
-  const openerTarget = openerId ?? `seven-opener-${id}`;
+  const openerTarget = openerId ?? `${from}-opener-${id}`;
   const opener = {
     targetId: openerTarget,
     type: 'page',
-    url: `${protectedOrigin}/seven`,
+    url: openerUrls[from],
   };
+  const related = from === 'none' ? {} : { openerId: openerTarget, canAccessOpener: true };
   const listeners = new Set();
   const waiting = new Map();
   const delivered = [];
@@ -239,8 +245,7 @@ function laggingCreated(t, route, { commit, openerId, lag = 400, settle = true }
       targetId: id,
       type: 'page',
       url: 'about:blank',
-      openerId: openerTarget,
-      canAccessOpener: true,
+      ...related,
     };
     frame = {
       id,
@@ -272,8 +277,7 @@ function laggingCreated(t, route, { commit, openerId, lag = 400, settle = true }
                 targetId: id,
                 type: 'page',
                 url: commit,
-                openerId: openerTarget,
-                canAccessOpener: true,
+                ...related,
               };
               frame = {
                 id,
@@ -297,7 +301,8 @@ function laggingCreated(t, route, { commit, openerId, lag = 400, settle = true }
           const open =
             info.canAccessOpener === true &&
             (info.url === '' || info.url === 'about:blank' || info.url.startsWith('about:'));
-          return { result: { value: open ? sevenSecret : null } };
+          const secret = from === 'seven' ? sevenSecret : opener.url;
+          return { result: { value: open ? secret : null } };
         }
         return {
           result: {
@@ -494,4 +499,95 @@ for (const route of routes) {
     );
     assert.notEqual(evaluated.result?.result?.value, sevenSecret);
   });
+}
+
+for (const route of routes) {
+  test(`a createTarget without an opener that never commits is admitted as on main over ${route.name}`, {
+    timeout: 10000,
+  }, async (t) => {
+    const wire = laggingCreated(t, route, { from: 'none' });
+    const created = await wire.send('Target.createTarget', { url: `${ordinary}/no-content` });
+    assert.equal(created.error, undefined);
+    const attached = await wire.send('Target.attachToTarget', {
+      targetId: created.result.targetId,
+      flatten: true,
+    });
+    assert.equal(attached.error, undefined, JSON.stringify(attached));
+    assert.ok(attached.result.sessionId);
+  });
+
+  for (const from of ['seven', 'ordinary']) {
+    test(`a createTarget with a${from === 'ordinary' ? 'n ordinary' : ' seven'} opener that never commits stays refused for the whole wait over ${route.name}`, {
+      timeout: 20000,
+    }, async (t) => {
+      const wire = laggingCreated(t, route, { from });
+      const before = wire.delivered.length;
+      const started = Date.now();
+      const creating = wire.send('Target.createTarget', { url: `${ordinary}/no-content` });
+      const early = await wire.send('Target.attachToTarget', { targetId: wire.id, flatten: true });
+      const created = await creating;
+      assert.equal(created.error, undefined);
+      assert.ok(Date.now() - started >= 1500, 'createTarget waits for the first commit');
+      assert.equal(
+        wire.delivered.slice(before).some((message) => message.method),
+        false,
+        'no events or auto-attach delivered while the created tab stays blank'
+      );
+      const answers = [early];
+      for (let n = 0; n < 2; n++)
+        answers.push(
+          await wire.send('Target.attachToTarget', {
+            targetId: created.result.targetId,
+            flatten: true,
+          })
+        );
+      for (const attached of answers) {
+        assert.match(
+          attached.error?.message ?? '',
+          /^slicc: refused: seven.s own pages and the vault are out of reach of browser automation$/,
+          JSON.stringify(attached)
+        );
+        assert.equal(attached.result, undefined);
+      }
+      assert.equal(
+        wire.delivered.some((message) => JSON.stringify(message).includes('session-secret')),
+        false
+      );
+    });
+  }
+
+  test(`a createTarget with an ordinary opener that commits attaches as before over ${route.name}`, {
+    timeout: 5000,
+  }, async (t) => {
+    const { wire, sessionId } = await admittedCreated(t, route, { from: 'ordinary' });
+    const content = await wire.send(
+      'Runtime.evaluate',
+      { expression: 'document.title' },
+      sessionId
+    );
+    assert.equal(content.error, undefined, JSON.stringify(content));
+  });
+
+  for (const [from, admitted] of [
+    ['ordinary', true],
+    ['seven', false],
+  ]) {
+    test(`after its first commit a created tab with a${from === 'ordinary' ? 'n ordinary' : ' seven'} opener that re-blanks is judged by its opener over ${route.name}`, {
+      timeout: 5000,
+    }, async (t) => {
+      const { wire } = await admittedCreated(t, route, { from });
+      wire.reblank();
+      const again = await wire.send('Target.attachToTarget', { targetId: wire.id, flatten: true });
+      if (admitted) {
+        assert.equal(again.error, undefined, JSON.stringify(again));
+        assert.ok(again.result.sessionId);
+      } else {
+        assert.match(
+          again.error?.message ?? '',
+          /^slicc: refused: seven.s own pages and the vault are out of reach of browser automation$/
+        );
+        assert.equal(again.result, undefined);
+      }
+    });
+  }
 }
