@@ -193,8 +193,10 @@ async function unguarded(ws) {
 async function until(name, found) {
   const started = Date.now();
   for (;;) {
-    const value = await found();
-    if (value) return value;
+    try {
+      const value = await found();
+      if (value) return value;
+    } catch {}
     if (Date.now() - started > STEP_MS) throw new Error(`no ${name} in ${STEP_MS} ms`);
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
@@ -228,21 +230,24 @@ async function vaultOpen(t, ws, route) {
     flatten: true,
   });
   const sevenOrigin = new URL(SEVEN).origin;
-  const loaded = await until('seven document complete', async () => {
+  const loaded = await until('seven loaded', async () => {
     const { result } = await send(
       'Runtime.evaluate',
       {
-        expression: '({ readyState: document.readyState, origin: location.origin })',
+        expression:
+          '({ readyState: document.readyState, origin: location.origin, app: Boolean(document.querySelector("slicc-app")) })',
         returnByValue: true,
       },
       sessionId
     );
     const value = result?.value;
-    if (value?.readyState === 'complete' && value?.origin === sevenOrigin) return value;
+    if (value?.origin !== sevenOrigin) return null;
+    if (value.app || value.readyState === 'interactive' || value.readyState === 'complete')
+      return value;
     return null;
   });
   console.log(
-    `STOCK-SEVEN ${JSON.stringify({ route, targetId: sevenId, readyState: loaded.readyState, origin: loaded.origin })}`
+    `STOCK-SEVEN ${JSON.stringify({ route, targetId: sevenId, readyState: loaded.readyState, origin: loaded.origin, app: loaded.app })}`
   );
   await send('Target.detachFromTarget', { sessionId }).catch(() => {});
 }
