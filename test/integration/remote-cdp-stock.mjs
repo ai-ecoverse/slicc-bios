@@ -148,18 +148,24 @@ async function recordedTransport(url) {
       return;
     }
     const info = message.params?.targetInfo;
+    const short = (value) => (typeof value === 'string' ? value.slice(0, 8) : '');
     trace.push(
       [
         way,
-        message.method ?? `#${message.id}`,
-        info ? `${info.type} ${info.url}` : '',
+        message.method
+          ? `${message.method}${message.id ? ` #${message.id}` : ''}`
+          : `#${message.id}`,
+        message.sessionId ? `on ${short(message.sessionId)}` : '',
+        message.params?.sessionId ? `session ${short(message.params.sessionId)}` : '',
+        info ? `${info.type} ${short(info.targetId)} ${info.url}` : '',
+        message.params?.targetId ? `target ${short(message.params.targetId)}` : '',
         message.params?.waitingForDebugger ? 'paused' : '',
         message.error ? message.error.message.slice(0, 80) : '',
       ]
         .filter(Boolean)
         .join(' ')
     );
-    if (trace.length > 60) trace.shift();
+    if (trace.length > 200) trace.shift();
   };
   transport.send = (message) => {
     note('>', message);
@@ -585,7 +591,7 @@ export function stockChain(route, { chain = 'tray' } = {}) {
       }
     } catch (error) {
       out.puppeteerTargets = `error: ${error.message.slice(0, 200)}`;
-      out.puppeteerTrace = recorded.trace.slice(-40);
+      out.puppeteerTrace = recorded.trace.slice(-120);
       recorded.transport.close();
     }
     return out;
