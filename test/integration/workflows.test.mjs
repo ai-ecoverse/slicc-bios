@@ -10,8 +10,11 @@ const pkg = JSON.parse(await read('package.json'));
 const input = (name) => ci.match(new RegExp(`\\n {6}${name}: (.+)\\n`))?.[1];
 const block = (name) => ci.match(new RegExp(`\\n {6}${name}: \\|\\n((?: {8}.*\\n)+)`))?.[1];
 
-test('CI is one caller of slicc-shared-web pipeline.yml, at the release of the harness the tests use; and the only workflow', async () => {
-  assert.deepEqual(await readdir(new URL('../../.github/workflows/', import.meta.url)), ['ci.yml']);
+test('CI is one caller of slicc-shared-web pipeline.yml, at the release of the harness the tests use; vault drift is the only other workflow', async () => {
+  assert.deepEqual(await readdir(new URL('../../.github/workflows/', import.meta.url)), [
+    'ci.yml',
+    'vault-drift.yml',
+  ]);
   assert.deepEqual(await readdir(new URL('../../.github/', import.meta.url)), ['workflows']);
   const version = pkg.devDependencies['@ai-ecoverse/slicc-shared-web'];
   assert.match(version, /^2\.\d+\.\d+$/);
@@ -22,6 +25,22 @@ test('CI is one caller of slicc-shared-web pipeline.yml, at the release of the h
     )
   );
   assert.deepEqual(ci.split('\njobs:\n')[1].match(/^ {2}[a-z-]+:$/gm), ['  ci:']);
+});
+
+test('vault drift compares vault-preview to the root pin on main and on a schedule, never on a pull request or merge group', async () => {
+  const drift = await read('.github/workflows/vault-drift.yml');
+  assert.match(drift, /^name: vault drift\n/);
+  assert.match(
+    drift,
+    /\non:\n {2}push:\n {4}branches: \[main\]\n {2}schedule:\n {4}- cron: "0 \*\/6 \* \* \*"\n/
+  );
+  assert.doesNotMatch(drift, /pull_request|merge_group|workflow_dispatch/);
+  assert.match(drift, /\njobs:\n {2}vault-drift:\n/);
+  assert.match(drift, /vault-preview\.sliccy\.ai\/config\.json/);
+  assert.match(drift, /devDependencies\['@ai-ecoverse\/slicc-vault'\]/);
+  assert.match(drift, /vault drift: live/);
+  for (const line of drift.split('\n'))
+    if (/^\s*#/.test(line)) assert.match(line, /^\s*# renovate:/);
 });
 
 test('CI runs on pull requests, merge groups and pushes to main, and cancels a superseded run only on a pull request', () => {
