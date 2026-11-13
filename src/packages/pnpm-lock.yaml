@@ -18,8 +18,8 @@ importers:
         specifier: 1.5.0
         version: 1.5.0
       '@ai-ecoverse/slicc-devices':
-        specifier: 1.1.0
-        version: 1.1.0
+        specifier: 1.2.1
+        version: 1.2.1
       '@ai-ecoverse/slicc-kernel':
         specifier: 1.184.2
         version: 1.184.2
@@ -61,9 +61,9 @@ packages:
     engines: {node: '>=24', slicc-kernel: '>=1.153.0'}
     hasBin: true
 
-  '@ai-ecoverse/slicc-devices@1.1.0':
-    resolution: {integrity: sha512-wCSAiNGB2Q2pYE8GmYofIrVWFPSgQP4itQDzY990dlWASiPRrtJnagnLVbdouRSE1guLUuN3KD6eiuLauebMfQ==}
-    engines: {node: '>=24', slicc-kernel: '>=1.176.0'}
+  '@ai-ecoverse/slicc-devices@1.2.1':
+    resolution: {integrity: sha512-7Ihkpq8b5ruq0gtB6HUJJbwZKFVgqRZjSxd4nsYk2VyszdUCLf2lEvsmb9MIqHOEPEI94ZOZHEOj7ExLU7A1LA==}
+    engines: {node: '>=24', slicc-kernel: '>=1.183.0'}
 
   '@ai-ecoverse/slicc-kernel@1.184.2':
     resolution: {integrity: sha512-VuCRfTqViruWN78JDFAepGUPGBokF1EvEdF5TbqxObVIC1Ke49DW9mkQ2E8DMm1FOQV3cIRTpFwfqg4WYmOFFw==}
@@ -268,7 +268,7 @@ snapshots:
 
   '@ai-ecoverse/slicc-capture@1.5.0': {}
 
-  '@ai-ecoverse/slicc-devices@1.1.0':
+  '@ai-ecoverse/slicc-devices@1.2.1':
     dependencies:
       esptool-js: 0.7.1
 
