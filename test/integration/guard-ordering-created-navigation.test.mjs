@@ -206,3 +206,187 @@ for (const transport of ['direct', 'extension']) {
     );
   });
 }
+
+function laggingCreated(t, transport, { commit, openerId, lag = 400, settle = true }) {
+  const id = `created-lag-${transport}-${commit ?? 'pending'}-${Math.random().toString(36).slice(2, 8)}`;
+  const openerTarget = openerId ?? `seven-opener-${id}`;
+  const opener = {
+    targetId: openerTarget,
+    type: 'page',
+    url: `${protectedOrigin}/seven`,
+  };
+  const listeners = new Set();
+  const waiting = new Map();
+  let nextSession = 0;
+  let next = 0;
+  let timer;
+  let info = {
+    targetId: id,
+    type: 'page',
+    url: 'about:blank',
+  };
+  let frame = { id, url: 'about:blank', securityOrigin: '://', loaderId: 'blank-document' };
+  const cdp = {
+    on(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    async send(method, params = {}, sessionId) {
+      if (method === 'Target.createTarget') return { targetId: id };
+      if (method === 'Target.getTargetInfo') {
+        if (params.targetId === openerTarget) return { targetInfo: opener };
+        return { targetInfo: { ...info } };
+      }
+      if (method === 'Target.attachToTarget') return { sessionId: `session-${++nextSession}` };
+      if (method === 'Page.navigate') {
+        return new Promise((resolve) => {
+          timer = setTimeout(() => {
+            info = {
+              targetId: id,
+              type: 'page',
+              url: 'about:blank',
+              openerId: openerTarget,
+              canAccessOpener: true,
+            };
+            resolve({ frameId: id, loaderId: 'navigating' });
+            if (!settle || !commit) return;
+            setTimeout(() => {
+              info = {
+                targetId: id,
+                type: 'page',
+                url: commit,
+                openerId: openerTarget,
+                canAccessOpener: true,
+              };
+              frame = {
+                id,
+                url: commit,
+                securityOrigin: new URL(commit).origin,
+                loaderId: 'committed-document',
+              };
+              for (const listener of listeners)
+                listener({ method: 'Page.frameNavigated', sessionId, params: { frame } });
+            }, lag);
+          }, 20);
+        });
+      }
+      if (method === 'Page.getFrameTree') return { frameTree: { frame } };
+      if (method === 'Page.getNavigationHistory')
+        return { currentIndex: 0, entries: [{ id: 1, url: info.url, title: 'lag' }] };
+      if (method === 'DOM.getDocument')
+        return { root: { nodeId: 1, nodeName: '#document', children: [] } };
+      if (method === 'Runtime.evaluate')
+        return {
+          result: {
+            value: params.expression === 'location.href' ? info.url : 'synthetic-content',
+          },
+        };
+      return {};
+    },
+  };
+  const raw = {
+    send(text) {
+      const { id, method, params, sessionId } = JSON.parse(text);
+      const deliver = (answer) =>
+        raw.onmessage(JSON.stringify({ id, ...(sessionId ? { sessionId } : {}), ...answer }));
+      void cdp.send(method, params, sessionId).then(
+        (result) => deliver({ result }),
+        (error) => deliver({ error: { code: -32000, message: error.message } })
+      );
+    },
+    close() {},
+  };
+  const off = cdp.on((message) => raw.onmessage?.(JSON.stringify(message)));
+  const guard = guardProtected(
+    transport === 'extension' ? extensionConnection(cdp) : raw,
+    protectedOrigin
+  );
+  guard.onmessage = (text) => {
+    const message = JSON.parse(text);
+    waiting.get(message.id)?.(message);
+    waiting.delete(message.id);
+  };
+  t.after(() => {
+    clearTimeout(timer);
+    guard.close();
+    off();
+  });
+  return {
+    send(method, params = {}, sessionId) {
+      const id = ++next;
+      const answer = new Promise((resolve) => waiting.set(id, resolve));
+      guard.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+      return answer;
+    },
+  };
+}
+
+for (const transport of ['direct', 'extension']) {
+  test(`an ordinary createTarget waits out a lagging blank getTargetInfo before attach over ${transport}`, {
+    timeout: 5000,
+  }, async (t) => {
+    const wire = laggingCreated(t, transport, { commit: ordinary });
+    const created = await wire.send('Target.createTarget', { url: ordinary });
+    assert.equal(created.error, undefined);
+    const attached = await wire.send('Target.attachToTarget', {
+      targetId: created.result.targetId,
+      flatten: true,
+    });
+    assert.equal(
+      attached.error,
+      undefined,
+      'attach is admitted once the created tab leaves its protected opener blank'
+    );
+    const content = await wire.send(
+      'Runtime.evaluate',
+      { expression: 'document.title' },
+      attached.result.sessionId
+    );
+    assert.equal(content.error, undefined);
+  });
+
+  test(`a createTarget still loading after navigate stays refused over ${transport}`, {
+    timeout: 8000,
+  }, async (t) => {
+    const wire = laggingCreated(t, transport, { commit: ordinary, settle: false });
+    const created = await wire.send('Target.createTarget', { url: ordinary });
+    assert.equal(created.error, undefined);
+    const attached = await wire.send('Target.attachToTarget', {
+      targetId: created.result.targetId,
+      flatten: true,
+    });
+    assert.match(attached.error?.message ?? '', /^slicc: refused:/);
+    assert.equal(attached.result, undefined);
+  });
+
+  test(`a createTarget that ends on a protected URL stays refused over ${transport}`, {
+    timeout: 5000,
+  }, async (t) => {
+    const protectedPage = `${protectedOrigin}/final`;
+    const wire = laggingCreated(t, transport, {
+      commit: protectedPage,
+      lag: 50,
+    });
+    const created = await wire.send('Target.createTarget', { url: ordinary });
+    assert.equal(created.error, undefined);
+    const attached = await wire.send('Target.attachToTarget', {
+      targetId: created.result.targetId,
+      flatten: true,
+    });
+    assert.match(attached.error?.message ?? '', /^slicc: refused:/);
+    assert.equal(attached.result, undefined);
+  });
+
+  test(`a createTarget that commits after the create answer still attaches over ${transport}`, {
+    timeout: 8000,
+  }, async (t) => {
+    const wire = laggingCreated(t, transport, { commit: ordinary, lag: 2500 });
+    const created = await wire.send('Target.createTarget', { url: ordinary });
+    assert.equal(created.error, undefined);
+    const attached = await wire.send('Target.attachToTarget', {
+      targetId: created.result.targetId,
+      flatten: true,
+    });
+    assert.equal(attached.error, undefined);
+  });
+}
