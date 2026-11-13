@@ -15,12 +15,17 @@ after(() => chrome.close());
 await debuggerUrl(debugging);
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const own = [new URL(chrome.url).origin];
+const own = ['https://seven.invalid'];
 const seed = fileURLToPath(new URL('../../src/seed/', import.meta.url));
 const repo = fileURLToPath(new URL('../..', import.meta.url));
 
+function evaluatedValue(answer) {
+  return answer?.result?.result?.value ?? answer?.result?.value;
+}
+
 async function pageWithWorker(t, cdp = chrome.cdp) {
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const workerUrl = new URL(`/creator-worker-${stamp}.js`, chrome.url).href;
   chrome.overrides.set(
     `/creator-worker-${stamp}.js`,
     'self.onmessage = (e) => self.postMessage(e.data); self.postMessage("ready");'
@@ -83,7 +88,7 @@ async function pageWithWorker(t, cdp = chrome.cdp) {
         .slice(-8)
     )}`
   );
-  return { targetId, page, worker, workerTarget, seen, stamp };
+  return { targetId, page, worker, workerTarget, workerUrl, seen, stamp };
 }
 
 async function evaluateOn(sessionId, expression = 'self.location.href', cdp = chrome.cdp) {
@@ -193,7 +198,7 @@ async function workerThroughKernel(t, guardFn) {
 test('Chrome destroys a dedicated worker session with its parent page session, keeps the worker target listed until document navigation, and allows a browser-level reattach', {
   timeout: 3 * 60 * 1000,
 }, async (t) => {
-  const { page, worker, workerTarget, seen } = await pageWithWorker(t);
+  const { page, worker, workerTarget, workerUrl, seen } = await pageWithWorker(t);
   const beforeDetach = seen.length;
   await chrome.cdp.send('Target.detachFromTarget', { sessionId: page });
   const deadline = Date.now() + 3000;
@@ -215,10 +220,11 @@ test('Chrome destroys a dedicated worker session with its parent page session, k
     );
   const fresh = reattach.sessionId;
   const evaluateAfterReattach = fresh
-    ? await evaluateOn(fresh)
+    ? await evaluateOn(fresh, 'self.location.href')
     : { error: { message: reattach.error?.message ?? 'no session' } };
   if (fresh)
     t.after(() => chrome.cdp.send('Target.detachFromTarget', { sessionId: fresh }).catch(() => {}));
+  const reattachHref = evaluatedValue(evaluateAfterReattach);
   const facts = {
     a_workerDetachEventAfterParentDetach: workerDetachEvents.length > 0,
     a_detachEvents: workerDetachEvents.map((message) => ({
@@ -227,14 +233,15 @@ test('Chrome destroys a dedicated worker session with its parent page session, k
     })),
     b_evaluateAfterParentDetach: evaluateAfterParentDetach.error
       ? { error: evaluateAfterParentDetach.error.message }
-      : { value: evaluateAfterParentDetach.result?.result?.value },
+      : { value: evaluatedValue(evaluateAfterParentDetach) },
     b_workerStillListedAfterParentDetach: workerStillListed,
     d_reattachAfterParentDetach: reattach.error
       ? { error: reattach.error.message }
       : { sessionId: fresh },
     d_evaluateAfterReattach: evaluateAfterReattach.error
       ? { error: evaluateAfterReattach.error.message }
-      : { value: evaluateAfterReattach.result?.result?.value },
+      : { value: reattachHref },
+    d_workerUrl: workerUrl,
   };
   t.diagnostic(`after parent page session detach: ${JSON.stringify(facts)}`);
   assert.equal(
@@ -258,6 +265,11 @@ test('Chrome destroys a dedicated worker session with its parent page session, k
     evaluateAfterReattach.error,
     undefined,
     `(d) Runtime.evaluate on the new session answers: ${JSON.stringify(facts)}`
+  );
+  assert.equal(
+    reattachHref,
+    workerUrl,
+    `(d) evaluate returns the worker URL: ${JSON.stringify(facts)}`
   );
 
   const again = await pageWithWorker(t);
@@ -331,7 +343,7 @@ test('a kernel caller through #1536 cuts a browser-level reattach of a worker wh
     shown,
     evaluate: evaluated.error
       ? { error: evaluated.error.message }
-      : { value: evaluated.result?.result?.value },
+      : { value: evaluatedValue(evaluated) },
   };
   t.diagnostic(`(e) #1536 kernel after creator detach: ${JSON.stringify(eBranch)}`);
   assert.ok(
@@ -375,7 +387,7 @@ test('a kernel caller through #1536 cuts a browser-level reattach of a worker wh
     shown: mainShown,
     evaluate: mainEvaluated.error
       ? { error: mainEvaluated.error.message }
-      : { value: mainEvaluated.result?.result?.value },
+      : { value: evaluatedValue(mainEvaluated) },
   };
   t.diagnostic(`(e) main kernel after creator detach: ${JSON.stringify(eMain)}`);
   assert.equal(
