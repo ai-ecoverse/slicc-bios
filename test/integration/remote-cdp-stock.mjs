@@ -36,6 +36,8 @@ export const SETTINGS =
   'slicc: refused: settings for a whole session (headers, user agent, locale, time zone, cache, network conditions, blocked URLs, emulation) could reach seven’s pages or the vault, so the guard doesn’t allow them; change a request through Fetch instead';
 const RELAY = 'https://www.sliccy.ai/auth/callback';
 const SEVEN_CLIENT = 'experience-catalyst-prod';
+const SIGN_IN_MARK = 'STOCK-SIGN-IN-BODY';
+const HELD_MARK = 'STOCK-HELD-BODY';
 const STEP_MS = 60000;
 const HELD_MS = 5000;
 const PIN = JSON.parse(
@@ -72,9 +74,10 @@ function fixtureServer() {
     if (url.pathname === '/framed-same')
       return html('<iframe id="frame" src="/inner"></iframe>', '<title>framed</title>');
     if (url.pathname === '/inner') return html('<p id="inner">inner</p>', '<title>inner</title>');
-    if (url.pathname === '/held') return html('<p>held</p>', '<title>held</title>');
+    if (url.pathname === '/held')
+      return html(`<p>${HELD_MARK}</p>`, `<title>${HELD_MARK}-title</title>`);
     if (url.pathname === '/ims/authorize/v2')
-      return html('<h1>Sign in</h1>', '<title>sign in</title>');
+      return html(`<h1>${SIGN_IN_MARK}</h1>`, `<title>${SIGN_IN_MARK}-title</title>`);
     res.writeHead(404);
     res.end();
   });
@@ -253,7 +256,7 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     );
   }
 
-  async function seed(t, page) {
+  async function seed(t) {
     const plain = await unguarded(rig.browserUrl);
     const opened = [];
     t.after(async () => {
@@ -270,42 +273,9 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     }
     await until('the vault page', () => hits.has('vault.sliccy.ai/page'));
     await until('the default page', () => hits.has('ordinary.test/page'));
-    const marker = `stock${Math.random().toString(36).slice(2)}`;
-    const held = await page.evaluate(async (marker) => {
-      window.stockHeld = window.open(
-        `about:blank#slicc-sign-in-${marker}`,
-        'slicc-mcp-oauth',
-        'popup,width=520,height=720'
-      );
-      const channel = new BroadcastChannel('slicc-held');
-      const answer = await new Promise((resolve) => {
-        const timer = setTimeout(() => resolve('timeout'), 8000);
-        channel.onmessage = ({ data }) => {
-          if (data?.marker !== marker || data.type === 'hold') return;
-          clearTimeout(timer);
-          resolve(data.type);
-        };
-        channel.postMessage({ type: 'hold', marker });
-      });
-      channel.close();
-      return answer;
-    }, marker);
-    process.stdout.write(`STOCK-HELD ${label} hold answered ${held}\n`);
-    const heldUrl = held === 'held' ? `${rig.ordinary}/held` : null;
-    if (heldUrl) {
-      await page.evaluate((url) => {
-        window.stockHeld.location.href = url;
-      }, heldUrl);
-      await until('the held sign-in tab on an ordinary page', async () => {
-        const { targetInfos } = await plain.send('Target.getTargets');
-        return targetInfos.find((info) => info.type === 'page' && info.url === heldUrl);
-      });
-    }
-    t.after(() => page.evaluate(() => window.stockHeld?.close()).catch(() => {}));
-    return { held, heldUrl };
   }
 
-  async function playwrightFlow(base, { heldUrl }) {
+  async function playwrightFlow(base) {
     const run = (name, work) => step('playwright', name, work);
     const connected = await run('connect', () => chromium.connectOverCDP(base));
     try {
@@ -319,11 +289,6 @@ export function stockChain(route, { chain = 'tray' } = {}) {
       assert.equal(await first.title(), 'page');
       const listed = context.pages().map((page) => page.url());
       assert.ok(!listed.some(protectedUrl), `no protected page listed: ${JSON.stringify(listed)}`);
-      if (heldUrl)
-        assert.ok(
-          !listed.includes(heldUrl),
-          `the held sign-in is listed: ${JSON.stringify(listed)}`
-        );
       const page = await run('newPage', () => context.newPage());
       await run('goto', () => page.goto(`${rig.ordinary}/page`));
       assert.equal(await page.title(), 'page');
@@ -370,8 +335,6 @@ export function stockChain(route, { chain = 'tray' } = {}) {
       );
       const after = context.pages().map((open) => open.url());
       assert.ok(!after.some(protectedUrl), `no protected page listed: ${JSON.stringify(after)}`);
-      if (heldUrl)
-        assert.ok(!after.includes(heldUrl), `the held sign-in is listed: ${JSON.stringify(after)}`);
       const grouped = await run('newContext for group 2', () => connected.newContext());
       const late = await run('newPage for group 2', () => grouped.newPage());
       await assert.rejects(late.addInitScript('window.stockInit = 1'), escaped(SCRIPTS));
@@ -395,7 +358,7 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     }
   }
 
-  async function puppeteerFlow(base, { heldUrl }) {
+  async function puppeteerFlow(base) {
     const run = (name, work) => step('puppeteer', name, work);
     const connected = await run('connect', () =>
       puppeteer.connect({ browserURL: base, protocolTimeout: STEP_MS })
@@ -409,11 +372,6 @@ export function stockChain(route, { chain = 'tray' } = {}) {
       assert.equal(await first.title(), 'page');
       const listed = (await connected.pages()).map((page) => page.url());
       assert.ok(!listed.some(protectedUrl), `no protected page listed: ${JSON.stringify(listed)}`);
-      if (heldUrl)
-        assert.ok(
-          !listed.includes(heldUrl),
-          `the held sign-in is listed: ${JSON.stringify(listed)}`
-        );
       const page = await run('newPage', () => connected.newPage());
       await run('goto', () => page.goto(`${rig.ordinary}/page`));
       assert.equal(await page.title(), 'page');
@@ -462,11 +420,6 @@ export function stockChain(route, { chain = 'tray' } = {}) {
       );
       const targets = connected.targets().map((target) => target.url());
       assert.ok(!targets.some(protectedUrl), `no protected target: ${JSON.stringify(targets)}`);
-      if (heldUrl)
-        assert.ok(
-          !targets.includes(heldUrl),
-          `the held sign-in is a target: ${JSON.stringify(targets)}`
-        );
       const late = await run('newPage for group 2', () => connected.newPage());
       await assert.rejects(late.evaluateOnNewDocument('window.stockInit = 1'), escaped(SCRIPTS));
       await assert.rejects(
@@ -485,7 +438,120 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     }
   }
 
-  async function signInListed(t, base, url) {
+  async function sliccLayer(page, targetId) {
+    if (route !== 'link') return 'no link layer on this route';
+    return page.evaluate(async (targetId) => {
+      const [browser] = globalThis
+        .sliccLinkedBrowsers()
+        .filter((linked) => linked.seven && linked.local);
+      const connection = await browser.open();
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          connection.close();
+          resolve('no answer in 10 s');
+        }, 10000);
+        connection.onmessage = (text) => {
+          const message = JSON.parse(text);
+          if (message.id !== 1) return;
+          clearTimeout(timer);
+          connection.close();
+          const info = message.result?.targetInfos?.find((one) => one.targetId === targetId);
+          resolve(
+            message.error?.message ?? (info ? { url: info.url, title: info.title } : 'not listed')
+          );
+        };
+        connection.send(JSON.stringify({ id: 1, method: 'Target.getTargets', params: {} }));
+      });
+    }, targetId);
+  }
+
+  async function reach(base, targetId, mark) {
+    const version = await httpJson(`${base}/json/version`);
+    const list = await httpJson(`${base}/json/list`);
+    const entry = Array.isArray(list.body) ? list.body.find((one) => one.id === targetId) : null;
+    const socket = dial(version.body.webSocketDebuggerUrl);
+    await socket.opened;
+    try {
+      const listed = await socket.call('Target.getTargets');
+      const info = listed.result?.targetInfos?.find((one) => one.targetId === targetId);
+      const attached = await socket.call('Target.attachToTarget', { targetId, flatten: true });
+      const seen = {
+        json: entry ? { url: entry.url, title: entry.title } : 'not listed',
+        getTargets: info ? { url: info.url, title: info.title } : 'not listed',
+        attach: attached.error?.message ?? 'attached',
+      };
+      const sessionId = attached.result?.sessionId;
+      if (sessionId) {
+        const enable = await socket.call('Runtime.enable', {}, sessionId);
+        seen.enable = enable.error?.message ?? 'enabled';
+        const read = await socket.call(
+          'Runtime.evaluate',
+          { expression: 'document.title + " " + document.body.innerText', returnByValue: true },
+          sessionId
+        );
+        seen.read = read.error?.message ?? read.result?.result?.value;
+      }
+      seen.markReached = JSON.stringify(socket.messages()).includes(mark);
+      return seen;
+    } finally {
+      socket.ws.close();
+    }
+  }
+
+  async function clientsSee(base, origin, mark) {
+    const out = {};
+    const playwright = await step('playwright', `connect beside ${mark}`, () =>
+      chromium.connectOverCDP(base)
+    );
+    try {
+      const [context] = playwright.contexts();
+      await until('the default page in the default context', () =>
+        context.pages().find((page) => page.url() === `${rig.ordinary}/page`)
+      );
+      const pages = context.pages();
+      out.playwright = pages.map((page) => page.url()).filter((url) => url.startsWith(origin));
+      out.playwrightTitles = [];
+      for (const page of pages.filter((one) => one.url().startsWith(origin)))
+        out.playwrightTitles.push(
+          await page.title().then(
+            (title) => title,
+            (error) => `error: ${error.message.slice(0, 200)}`
+          )
+        );
+    } finally {
+      await playwright.close();
+    }
+    const driven = await step('puppeteer', `connect beside ${mark}`, () =>
+      puppeteer.connect({ browserURL: base, protocolTimeout: STEP_MS })
+    );
+    try {
+      out.puppeteerTargets = driven
+        .targets()
+        .map((target) => target.url())
+        .filter((url) => url.startsWith(origin));
+      out.puppeteerPages = await driven.pages().then(
+        (pages) => pages.map((page) => page.url()).filter((url) => url.startsWith(origin)),
+        (error) => `error: ${error.message.slice(0, 200)}`
+      );
+    } finally {
+      await driven.disconnect();
+    }
+    return out;
+  }
+
+  const unreachable = (seen, what) => {
+    const shown = JSON.stringify(seen);
+    assert.equal(seen.json, 'not listed', `${what} in /json/list: ${shown}`);
+    assert.equal(seen.getTargets, 'not listed', `${what} in Target.getTargets: ${shown}`);
+    assert.notEqual(seen.attach, 'attached', `${what} attachable: ${shown}`);
+    assert.equal(seen.markReached, false, `${what}'s content reached the client: ${shown}`);
+    assert.deepEqual(seen.clients.playwright, [], `Playwright lists ${what}: ${shown}`);
+    assert.deepEqual(seen.clients.puppeteerTargets, [], `Puppeteer targets ${what}: ${shown}`);
+    assert.ok(Array.isArray(seen.clients.puppeteerPages), `Puppeteer pages() failed: ${shown}`);
+    assert.deepEqual(seen.clients.puppeteerPages, [], `Puppeteer pages() has ${what}: ${shown}`);
+  };
+
+  async function signInTab(t, base, page, url) {
     const plain = await unguarded(rig.browserUrl);
     const asked = hits.get('idp.test/ims/authorize/v2') ?? 0;
     const { targetId } = await plain.send('Target.createTarget', { url, background: true });
@@ -494,48 +560,66 @@ export function stockChain(route, { chain = 'tray' } = {}) {
       plain.close();
     });
     await until('the sign-in page', () => (hits.get('idp.test/ims/authorize/v2') ?? 0) > asked);
-    const playwright = await step('playwright', 'connect with a sign-in tab', () =>
-      chromium.connectOverCDP(base)
-    );
-    try {
-      const [context] = playwright.contexts();
-      const first = await until('the default page in the default context', () =>
-        context.pages().find((page) => page.url() === `${rig.ordinary}/page`)
-      );
-      assert.equal(await first.title(), 'page');
-      const listed = context.pages().map((page) => page.url());
-      assert.ok(
-        !listed.some((at) => at.startsWith(rig.idpOrigin)),
-        `Playwright lists the sign-in tab: ${JSON.stringify(listed)}`
-      );
-    } finally {
-      await playwright.close();
-    }
-    const driven = await step('puppeteer', 'connect with a sign-in tab', () =>
-      puppeteer.connect({ browserURL: base, protocolTimeout: STEP_MS })
-    );
-    try {
-      const listed = (
-        await step('puppeteer', 'pages with a sign-in tab', () => driven.pages())
-      ).map((page) => page.url());
-      assert.ok(listed.includes(`${rig.ordinary}/page`), JSON.stringify(listed));
-      const targets = driven.targets().map((target) => target.url());
-      assert.ok(
-        !targets.some((at) => at.startsWith(rig.idpOrigin)),
-        `Puppeteer sees the sign-in tab: ${JSON.stringify(targets)}`
-      );
-    } finally {
-      await driven.disconnect();
-    }
+    const { targetInfos } = await plain.send('Target.getTargets');
+    const seen = {
+      chrome: targetInfos.find((info) => info.targetId === targetId)?.url,
+      sliccLinkGuard: await sliccLayer(page, targetId),
+      ...(await reach(base, targetId, SIGN_IN_MARK)),
+      clients: await clientsSee(base, rig.idpOrigin, SIGN_IN_MARK),
+    };
+    process.stdout.write(`STOCK-SIGNIN ${label} ${JSON.stringify(seen)}\n`);
+    unreachable(seen, 'the sign-in tab');
   }
 
-  async function signIns(t, base) {
+  async function signIns(t, base, page) {
     await t.test('seven’s own sign-in tab (its client id and callback) stays out of reach', (t) =>
-      signInListed(t, base, rig.signIn)
+      signInTab(t, base, page, rig.signIn)
     );
     await t.test('a sign-in tab that names only seven’s callback stays out of reach', (t) =>
-      signInListed(t, base, rig.callbackOnly)
+      signInTab(t, base, page, rig.callbackOnly)
     );
+    await t.test('a held sign-in tab moved to an ordinary page stays out of reach', async (t) => {
+      const plain = await unguarded(rig.browserUrl);
+      t.after(() => plain.close());
+      const marker = `stock${Math.random().toString(36).slice(2)}`;
+      const held = await page.evaluate(async (marker) => {
+        window.stockHeld = window.open(
+          `about:blank#slicc-sign-in-${marker}`,
+          'slicc-mcp-oauth',
+          'popup,width=520,height=720'
+        );
+        const channel = new BroadcastChannel('slicc-held');
+        const answer = await new Promise((resolve) => {
+          const timer = setTimeout(() => resolve('timeout'), 8000);
+          channel.onmessage = ({ data }) => {
+            if (data?.marker !== marker || data.type === 'hold') return;
+            clearTimeout(timer);
+            resolve(data.type);
+          };
+          channel.postMessage({ type: 'hold', marker });
+        });
+        channel.close();
+        return answer;
+      }, marker);
+      t.after(() => page.evaluate(() => window.stockHeld?.close()).catch(() => {}));
+      const heldUrl = `${rig.ordinary}/held`;
+      await page.evaluate((url) => {
+        window.stockHeld.location.href = url;
+      }, heldUrl);
+      const info = await until('the held sign-in tab on an ordinary page', async () => {
+        const { targetInfos } = await plain.send('Target.getTargets');
+        return targetInfos.find((one) => one.type === 'page' && one.url === heldUrl);
+      });
+      const seen = {
+        hold: held,
+        sliccLinkGuard: await sliccLayer(page, info.targetId),
+        ...(await reach(base, info.targetId, HELD_MARK)),
+        clients: await clientsSee(base, heldUrl, HELD_MARK),
+      };
+      process.stdout.write(`STOCK-HELD ${label} ${JSON.stringify(seen)}\n`);
+      unreachable(seen, 'the held sign-in tab');
+      assert.equal(held, 'held', `seven held its sign-in popup: ${JSON.stringify(seen)}`);
+    });
   }
 
   async function routeHint(base) {
@@ -611,8 +695,7 @@ export function stockChain(route, { chain = 'tray' } = {}) {
       () => document.querySelector('slicc-app').model.network.status().links?.joinUrl
     );
     assert.equal(joinUrl, `${hub.url}/join/j1`);
-    const seeded = await seed(t, page);
-    if (route !== 'link') assert.equal(seeded.held, 'held');
+    await seed(t);
     const env = await scratch(t, 'remote-cdp-stock-');
 
     const denied = startCdp(t, [joinUrl, 'cdp', '--port', '0', '--json'], { env });
@@ -646,9 +729,9 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     assert.match(base, /^http:\/\/127\.0\.0\.1:\d+$/);
     await routeHint(base);
 
-    await t.test('Playwright', () => playwrightFlow(base, seeded));
-    await t.test('Puppeteer', () => puppeteerFlow(base, seeded));
-    await signIns(t, base);
+    await t.test('Playwright', () => playwrightFlow(base));
+    await t.test('Puppeteer', () => puppeteerFlow(base));
+    await signIns(t, base, page);
 
     await t.test('the switch closes live Playwright and Puppeteer sessions', async () => {
       const sessions = await live(base);
@@ -686,8 +769,7 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     report(t);
     const page = await seven(t);
     await boot(page, undefined, { tools: false });
-    const seeded = await seed(t, page);
-    assert.equal(seeded.held, 'held');
+    await seed(t);
     let current = null;
     await page.expose('sliccLinkSend', (message) =>
       current?.node.stdin.write(`${JSON.stringify(message)}\n`)
@@ -701,9 +783,9 @@ export function stockChain(route, { chain = 'tray' } = {}) {
     const base = await waitListening(run);
     assert.match(base, /^http:\/\/127\.0\.0\.1:\d+$/);
     await routeHint(base);
-    await t.test('Playwright', () => playwrightFlow(base, seeded));
-    await t.test('Puppeteer', () => puppeteerFlow(base, seeded));
-    await signIns(t, base);
+    await t.test('Playwright', () => playwrightFlow(base));
+    await t.test('Puppeteer', () => puppeteerFlow(base));
+    await signIns(t, base, page);
     await t.test('the chip shows while a live session is connected', async () => {
       const sessions = await live(base);
       await chip(page);
