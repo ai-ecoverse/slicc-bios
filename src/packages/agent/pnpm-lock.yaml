@@ -15,10 +15,10 @@ importers:
     dependencies:
       '@ai-ecoverse/slicc-agent':
         specifier: 7.31.0
-        version: 7.31.0(@ai-ecoverse/slicc-kernel@1.181.0)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)
+        version: 7.31.0(@ai-ecoverse/slicc-kernel@1.184.2)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)
       '@ai-ecoverse/slicc-kernel':
-        specifier: 1.181.0
-        version: 1.181.0
+        specifier: 1.184.2
+        version: 1.184.2
 
 packages:
 
@@ -35,8 +35,8 @@ packages:
       '@ai-ecoverse/slicc-spectrum':
         optional: true
 
-  '@ai-ecoverse/slicc-kernel@1.181.0':
-    resolution: {integrity: sha512-Dtx1ZKKjcCDbITS/knbLisnFXjWPWPhZjk08mzasXbjhtLZpxu/GpL6549b25CbwPwyQn9OX9z6Zxy6B10EuYw==}
+  '@ai-ecoverse/slicc-kernel@1.184.2':
+    resolution: {integrity: sha512-VuCRfTqViruWN78JDFAepGUPGBokF1EvEdF5TbqxObVIC1Ke49DW9mkQ2E8DMm1FOQV3cIRTpFwfqg4WYmOFFw==}
     engines: {node: '>=26'}
 
   '@ai-ecoverse/slicc-scrub@1.1.0':
@@ -192,9 +192,7 @@ packages:
   '@smithy/core@3.35.1':
     resolution: {integrity: sha512-i4YPS4B6ts7bjn7UwLnGjiZdprOvHvgGobFZsYK3GIY3E5hIqtj0rReU69BcTpGp+fvtraSNXeG1l+jtJvF55w==}
     engines: {node: '>=18.0.0'}
-    deprecated: |-
-      Deprecated due to a bug in custom logger data redaction. Upgrade to the latest version. If you used a custom logger with this
-        version, review your logs and rotate any credentials or other secrets. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
+    deprecated: Deprecated due to a bug in custom logger data redaction. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
 
   '@smithy/credential-provider-imds@4.5.2':
     resolution: {integrity: sha512-A9uSdn72ozbRUSit0eib0TW7nXuNPlaeM0zcGkJ+nE6tFcSDbnmtwoxbTCFBukVQcszDAyvsd7+rTduPTXpygg==}
@@ -353,9 +351,9 @@ snapshots:
 
   '@ai-ecoverse/jerk-oauth@1.9.1': {}
 
-  '@ai-ecoverse/slicc-agent@7.31.0(@ai-ecoverse/slicc-kernel@1.181.0)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)':
+  '@ai-ecoverse/slicc-agent@7.31.0(@ai-ecoverse/slicc-kernel@1.184.2)(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)':
     dependencies:
-      '@ai-ecoverse/slicc-kernel': 1.181.0
+      '@ai-ecoverse/slicc-kernel': 1.184.2
       '@ai-ecoverse/slicc-vault': 1.25.3
       '@aws-sdk/middleware-websocket': 3.972.54
       '@earendil-works/chord': 1.5.0
@@ -379,7 +377,7 @@ snapshots:
       - ws
       - zod
 
-  '@ai-ecoverse/slicc-kernel@1.181.0': {}
+  '@ai-ecoverse/slicc-kernel@1.184.2': {}
 
   '@ai-ecoverse/slicc-scrub@1.1.0': {}
 
