@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdir, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -18,6 +17,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const own = ['https://seven.invalid'];
 const seed = fileURLToPath(new URL('../../src/seed/', import.meta.url));
 const repo = fileURLToPath(new URL('../..', import.meta.url));
+const cache = join(repo, 'node_modules', '.cache');
 
 function evaluatedValue(answer) {
   return answer?.result?.result?.value ?? answer?.result?.value;
@@ -124,10 +124,11 @@ function kernelClient(t, guardFn) {
   return { got, send };
 }
 
-async function mainGuardProtected() {
-  const root = join(tmpdir(), `main-guard-${process.pid}-${Date.now()}`);
+async function mainGuardProtected(t) {
+  const root = join(cache, `main-guard-${process.pid}-${Date.now()}`);
   await rm(root, { recursive: true, force: true });
   await mkdir(join(root, 'seed'), { recursive: true });
+  t.after(() => rm(root, { recursive: true, force: true }));
   const base = process.env.GITHUB_BASE_REF || 'main';
   execFileSync('git', ['fetch', '--depth=1', 'origin', base], { cwd: repo, stdio: 'pipe' });
   const body = execFileSync('git', ['show', `origin/${base}:src/seed/guard.js`], {
@@ -358,7 +359,7 @@ test('a kernel caller through #1536 cuts a browser-level reattach of a worker wh
     `(e) the reattached worker is never shown: ${JSON.stringify(eBranch)}`
   );
 
-  const mainGuard = await mainGuardProtected();
+  const mainGuard = await mainGuardProtected(t);
   const main = await workerThroughKernel(t, mainGuard);
   await main.send('Target.detachFromTarget', { sessionId: main.page });
   await wait(200);
