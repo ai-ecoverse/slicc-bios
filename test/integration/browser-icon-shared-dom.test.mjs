@@ -120,3 +120,59 @@ test('a page that changes to a protected snapshot document URL remains undisplay
   await browser.port.screenshot('tab');
   assert.equal((await browser.port.list())[0].favicon, undefined);
 });
+
+test('a failed screenshot still samples the data: favicon from the DOM snapshot', async (t) => {
+  const snapshot = iconSnapshot({
+    links: [{ attributes: { rel: 'icon', href: icon } }],
+  });
+  const { browser, calls, client } = sharedIconBrowser(t, snapshot, {
+    captureScreenshot: () => {
+      throw new Error('Page.captureScreenshot timed out');
+    },
+  });
+  await client().call('Target.attachToTarget', { targetId: 'tab', flatten: true });
+  await assert.rejects(() => browser.port.screenshot('tab'), /timed out/);
+  assert.equal(
+    calls.some((call) => call.method === 'DOMSnapshot.captureSnapshot'),
+    true
+  );
+  assert.equal((await browser.port.list())[0].favicon, icon);
+});
+
+test('a finished open action settles the tab so its favicon is sampled without a detach', async (t) => {
+  const snapshot = iconSnapshot({
+    links: [{ attributes: { rel: 'icon', href: icon } }],
+  });
+  const { browser, calls, client } = sharedIconBrowser(t, snapshot);
+  const { connection, call } = client();
+  await call('Target.attachToTarget', { targetId: 'tab', flatten: true });
+  const before = calls.filter((row) => row.method === 'DOMSnapshot.captureSnapshot').length;
+  connection.send(
+    JSON.stringify({
+      method: 'Slicc.action',
+      params: {
+        phase: 'start',
+        kind: 'open',
+        url: 'https://ordinary.invalid/page',
+        tab: 'tab',
+        agent: 'cone:agent-1',
+      },
+    })
+  );
+  connection.send(
+    JSON.stringify({
+      method: 'Slicc.action',
+      params: {
+        phase: 'end',
+        ok: true,
+        tab: 'tab',
+      },
+    })
+  );
+  t.mock.timers.tick(0);
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(1000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(calls.filter((row) => row.method === 'DOMSnapshot.captureSnapshot').length > before);
+  assert.equal((await browser.port.list())[0].favicon, icon);
+});

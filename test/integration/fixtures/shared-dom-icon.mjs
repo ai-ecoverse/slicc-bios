@@ -50,7 +50,11 @@ export function iconSnapshot({
   return { strings, documents: [root, child] };
 }
 
-export function sharedIconBrowser(t, snapshot = iconSnapshot(), { tabURL } = {}) {
+export function sharedIconBrowser(
+  t,
+  snapshot = iconSnapshot(),
+  { tabURL, captureScreenshot } = {}
+) {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 5000 });
   const calls = [];
   const nodes = new Map();
@@ -69,7 +73,10 @@ export function sharedIconBrowser(t, snapshot = iconSnapshot(), { tabURL } = {})
       if (method === 'Target.attachToTarget') return { sessionId: `virtual-${++nextSession}` };
       if (method === 'Page.getLayoutMetrics')
         return { cssVisualViewport: { clientWidth: 100, clientHeight: 100 } };
-      if (method === 'Page.captureScreenshot') return { data: 'fake-not-decoded' };
+      if (method === 'Page.captureScreenshot') {
+        if (typeof captureScreenshot === 'function') return captureScreenshot({ params, session });
+        return { data: 'fake-not-decoded' };
+      }
       if (method === 'DOM.getDocument') {
         nodes.clear();
         const nodeId = ++nextNode;

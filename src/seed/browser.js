@@ -555,6 +555,13 @@ class Browser {
     if (action.status === 'failed' && error) action.error = error;
     this.#record(action);
     if (action.tabId) this.changed();
+    if (
+      action.tabId &&
+      action.status === 'done' &&
+      (action.kind === 'open' || action.kind === 'goto' || action.kind === 'reload')
+    ) {
+      this.settled(action.tabId);
+    }
   }
 
   interrupted(link) {
@@ -729,6 +736,7 @@ class Browser {
 
   #capture(id) {
     return this.#session(id, async (sessionId) => {
+      await this.#icon(id, sessionId).catch(() => undefined);
       const metrics = await this.#client.call('Page.getLayoutMetrics', {}, sessionId);
       const view = metrics.cssVisualViewport ?? metrics.layoutViewport ?? {};
       const width = view.clientWidth ?? SHOT_WIDTH;
@@ -747,7 +755,6 @@ class Browser {
       );
       const src = `data:image/jpeg;base64,${data}`;
       if (this.#owned.has(id)) this.#framed(id, src);
-      await this.#icon(id, sessionId).catch(() => undefined);
       return src;
     });
   }
@@ -757,7 +764,7 @@ class Browser {
     this.#capturing = true;
     try {
       while (this.#queue.size > 0) {
-        const id = [...this.#queue].at(-1);
+        const id = this.#queue.values().next().value;
         this.#queue.delete(id);
         if (!this.#owned.has(id)) continue;
         const entry = this.state(id);
@@ -772,7 +779,6 @@ class Browser {
   }
 
   settled(id) {
-    this.#queue.delete(id);
     this.#queue.add(id);
     void this.#drain();
   }
