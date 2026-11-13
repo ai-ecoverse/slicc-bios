@@ -106,7 +106,7 @@ async function main() {
       'vault-preview headers match headers.json classes for',
       probes.map(([path]) => path).join(', ')
     );
-    return;
+    process.exit(0);
   }
   console.error('::error::vault drift: headers differ');
   for (const line of diffs) console.error(line);
@@ -121,7 +121,7 @@ async function main() {
       '',
     ].join('\n')
   );
-  process.exitCode = 1;
+  process.exit(1);
 }
 
 const entry = process.argv[1] ? pathToFileURL(process.argv[1]).href : '';
