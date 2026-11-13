@@ -2486,6 +2486,38 @@ class Guard {
       this.cut(outer, this.sessions.get(outer)?.parent, false);
   }
 
+  createdUnset(info) {
+    const url = info?.url;
+    return typeof url !== 'string' || url === '' || inherits(url) || !URL.canParse(url);
+  }
+
+  createdPending(info, targetId = info?.targetId) {
+    const nav = this.navs.get(targetId);
+    if (!nav?.created || nav.failed || inherits(nav.created) || this.is.url(nav.created))
+      return false;
+    return this.createdUnset(info);
+  }
+
+  async createdReady(targetId, limit = PROBE_WAIT) {
+    const nav = this.navs.get(targetId);
+    if (!nav?.created || nav.failed || inherits(nav.created) || this.is.url(nav.created)) return;
+    const deadline = Date.now() + limit;
+    while (Date.now() < deadline) {
+      const left = deadline - Date.now();
+      if (left <= 0) return;
+      const answer = await this.within(
+        this.call('Target.getTargetInfo', { targetId }),
+        Math.min(ANSWER_MS, left)
+      );
+      const info = answer?.result?.targetInfo;
+      if (!answer || answer.error || info?.targetId !== targetId || typeof info.type !== 'string')
+        return;
+      this.learn(info);
+      if (!this.createdPending(info, targetId)) return;
+      await pause(POLL_MS);
+    }
+  }
+
   async current(targetId, limit = ANSWER_MS, ...rest) {
     const prefetched = rest.length > 0;
     const early = rest[0];
@@ -2498,10 +2530,15 @@ class Guard {
     const answer = useEarly
       ? early.answer
       : await this.within(this.call('Target.getTargetInfo', { targetId }), limit);
-    const info = answer?.result?.targetInfo;
+    let info = answer?.result?.targetInfo;
     if (!answer || answer.error || info?.targetId !== targetId || typeof info.type !== 'string')
       return true;
     this.learn(info);
+    if (this.createdPending(info, targetId)) {
+      ({ raw: info } = await this.createdTargetInfo(targetId));
+      if (!info || info.targetId !== targetId || this.createdUnset(info)) return true;
+      this.learn(info);
+    }
     if (await this.target(targetId)) return true;
     if (!URL.canParse(info.url)) {
       if (info.url === '' && info.type === 'tab') return false;
@@ -3099,10 +3136,20 @@ class Guard {
       : null;
   }
 
+  async createdTargetInfo(targetId) {
+    let answer = await this.answered(this.call('Target.getTargetInfo', { targetId }));
+    let raw = answer?.result?.targetInfo;
+    if (raw?.targetId === targetId && this.createdPending(raw, targetId)) {
+      await this.createdReady(targetId, PROBE_WAIT);
+      answer = await this.answered(this.call('Target.getTargetInfo', { targetId }));
+      raw = answer?.result?.targetInfo;
+    }
+    return { answer, raw };
+  }
+
   async inspect(sessionId, targetId, parent, recoverable = false) {
     if (this.privateSessions.has(sessionId) || this.retiredTargets.has(targetId)) return false;
-    const answer = await this.answered(this.call('Target.getTargetInfo', { targetId }));
-    const raw = answer?.result?.targetInfo;
+    const { answer, raw } = await this.createdTargetInfo(targetId);
     const info =
       raw?.url === '' && NAV_TYPES.has(raw.type)
         ? { ...raw, url: this.frames.get(this.frameRoots.get(targetId)) ?? '' }
@@ -3112,7 +3159,8 @@ class Guard {
       answer.error ||
       info?.targetId !== targetId ||
       typeof info.type !== 'string' ||
-      !URL.canParse(info.url)
+      !URL.canParse(info.url) ||
+      this.createdPending(info, targetId)
     )
       return this.uncertainProof(targetId);
     this.learn(info);
@@ -5840,6 +5888,7 @@ class Guard {
     this.learn({ targetId, url: 'about:blank', type: 'page' });
     this.touch(targetId);
     const nav = this.navs.get(targetId);
+    if (nav) nav.created = params.url;
     await nav.ready;
     await this.focusCreated(nav);
     if (this.finished.has(message) || !this.owns(message)) return;
@@ -5847,8 +5896,10 @@ class Guard {
       nav.admitted = true;
       this.rememberTab(targetId);
     }
-    if (!nav.failed && !inherits(params.url))
-      await this.call('Page.navigate', { url: params.url }, nav.session);
+    if (!nav.failed && !inherits(params.url)) {
+      const navigated = await this.call('Page.navigate', { url: params.url }, nav.session);
+      if (!navigated?.error) await this.createdReady(targetId);
+    }
     await this.attachDecided(targetId);
     if (this.finished.has(message) || !this.owns(message)) return;
     this.deliver({ id, ...(sessionId ? { sessionId } : {}), result: answer.result });
