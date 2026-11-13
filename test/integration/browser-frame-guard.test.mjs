@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { SAMPLE_GAP, SHOT_GAP } from '../../src/seed/browser.js';
+import { BIG, SAMPLE_GAP, SHOT_GAP } from '../../src/seed/browser.js';
 import { iconSnapshot, sharedIconBrowser } from './fixtures/shared-dom-icon.mjs';
 
 const icon = 'data:image/svg+xml,%3Csvg/%3E';
@@ -472,6 +472,71 @@ for (const url of PROTECTED) {
     assert.ok(!String(shot).includes('OLD-CAST-PIXELS'));
   });
 }
+
+test('a quality restart drops an in-flight check that started before adapt', async (t) => {
+  let probes = 0;
+  let gate;
+  const { browser, calls, client, emit } = sharedIconBrowser(t, iconSnapshot(), {
+    getTargetInfo: ({ params, url: live, title }) => {
+      probes += 1;
+      if (probes === 2) {
+        gate = Promise.withResolvers();
+        return gate.promise.then(() => ({
+          targetInfo: {
+            targetId: params.targetId ?? 'tab',
+            type: 'page',
+            title: 'ordinary',
+            url: 'https://ordinary.invalid/page',
+          },
+        }));
+      }
+      return {
+        targetInfo: { targetId: params.targetId ?? 'tab', type: 'page', title, url: live },
+      };
+    },
+  });
+  const frames = framesOf(browser);
+  await client().call('Target.attachToTarget', { targetId: 'tab', flatten: true });
+  browser.port.watch('tab', { width: 100, height: 100 });
+  await flush(t, 0);
+  const cast = calls.find((call) => call.method === 'Page.startScreencast');
+  emit({
+    method: 'Page.screencastFrame',
+    sessionId: cast.session,
+    params: { data: 'ordinary-frame', sessionId: 1 },
+  });
+  await flush(t, 0);
+  await flush(t, 500);
+  assert.equal(frames.length, 1);
+  emit({
+    method: 'Page.screencastFrame',
+    sessionId: cast.session,
+    params: { data: 'RESTART-STALE-PIXELS', sessionId: 41 },
+  });
+  await flush(t, 0);
+  assert.ok(gate);
+  const big = 'x'.repeat(Math.ceil((BIG + 1) / 0.75) + 8);
+  const startsBefore = calls.filter((call) => call.method === 'Page.startScreencast').length;
+  emit({
+    method: 'Page.screencastFrame',
+    sessionId: cast.session,
+    params: { data: big, sessionId: 42 },
+  });
+  await flush(t, 0);
+  await flush(t, 500);
+  assert.ok(calls.filter((call) => call.method === 'Page.startScreencast').length > startsBefore);
+  gate.resolve();
+  await flush(t, 0);
+  await flush(t, 500);
+  assert.ok(!frames.some((frame) => frame.src.includes('RESTART-STALE-PIXELS')));
+  assert.ok(
+    !calls.some(
+      (call) => call.method === 'Page.screencastFrameAck' && call.params?.sessionId === 41
+    )
+  );
+  const shot = await browser.port.screenshot('tab');
+  assert.ok(!String(shot).includes('RESTART-STALE-PIXELS'));
+});
 
 test('an old-cast frame after a later pause stop resolves is dropped', async (t) => {
   const stops = [];

@@ -222,8 +222,12 @@ export function live({ client, clock, now, session, size, dpr, visible, frame, s
   let sampler;
   let off;
   let sessionId;
-  const start = async (id) => {
+  const invalidate = () => {
+    epoch += 1;
     accepting = false;
+  };
+  const start = async (id) => {
+    invalidate();
     await client
       .call(
         'Page.startScreencast',
@@ -236,7 +240,7 @@ export function live({ client, clock, now, session, size, dpr, visible, frame, s
   let restarting = false;
   const restart = (id) => {
     restarting = true;
-    accepting = false;
+    invalidate();
     return client
       .call('Page.stopScreencast', {}, id)
       .catch(() => undefined)
@@ -260,8 +264,7 @@ export function live({ client, clock, now, session, size, dpr, visible, frame, s
   const pause = (id) => {
     if (paused || stopped) return stopping;
     paused = true;
-    accepting = false;
-    epoch += 1;
+    invalidate();
     stopping = client.call('Page.stopScreencast', {}, id).catch(() => undefined);
     return stopping;
   };
@@ -269,7 +272,7 @@ export function live({ client, clock, now, session, size, dpr, visible, frame, s
     if (stopped) return;
     stopped = true;
     paused = false;
-    accepting = false;
+    invalidate();
     off?.();
     clock.clearTimeout(sampler);
     if (sessionId) void client.call('Page.stopScreencast', {}, sessionId).catch(() => undefined);
@@ -311,7 +314,6 @@ export function live({ client, clock, now, session, size, dpr, visible, frame, s
     if (stopped || !paused || !sessionId) return;
     await stopping;
     if (stopped) return;
-    epoch += 1;
     paused = false;
     await start(sessionId);
   };
