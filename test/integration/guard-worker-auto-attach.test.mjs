@@ -43,13 +43,24 @@ function chrome(infos, { silent = new Set(), failing = new Set() } = {}) {
         return;
       }
       const info = (targetId) => ({ targetId, attached: true, ...infos[targetId] });
+      let attached;
       const answer = (() => {
         switch (command.method) {
           case 'Target.getTargetInfo':
             return { targetInfo: info(command.params?.targetId ?? owner) };
-          case 'Target.attachToTarget':
+          case 'Target.attachToTarget': {
             sessions += 1;
-            return { sessionId: `${command.params.targetId}~${sessions}` };
+            const sessionId = `${command.params.targetId}~${sessions}`;
+            const targetInfo = info(command.params.targetId);
+            if (typeof targetInfo.type === 'string' && targetInfo.type.endsWith('worker')) {
+              owners.set(sessionId, command.params.targetId);
+              attached = {
+                method: 'Target.attachedToTarget',
+                params: { sessionId, targetInfo, waitingForDebugger: false },
+              };
+            }
+            return { sessionId };
+          }
           case 'Target.getTargets':
             return {
               targetInfos: Object.entries(infos).map(([targetId, info]) => ({
@@ -84,13 +95,14 @@ function chrome(infos, { silent = new Set(), failing = new Set() } = {}) {
             return {};
         }
       })();
-      queueMicrotask(() =>
+      queueMicrotask(() => {
+        if (attached) connection.emit(attached);
         connection.emit({
           id: command.id,
           ...(command.sessionId ? { sessionId: command.sessionId } : {}),
           result: answer,
-        })
-      );
+        });
+      });
     },
   };
   return connection;
@@ -505,6 +517,405 @@ for (const route of [undefined, { kind: 'link' }]) {
     assert.deepEqual(
       leaked('vault.sliccy.ai', 'Vault worker title', 'idp.example', 'from-vault'),
       []
+    );
+  });
+
+  async function chromeShapedWorker(label) {
+    const pageId = `chrome-shape-page-${name}-${label}`;
+    const workerId = `chrome-shape-worker-${name}-${label}`;
+    const workerUrl = `http://127.0.0.1:9222/${label}-${name}.js`;
+    const infos = {
+      [pageId]: { type: 'page', url: ORDINARY, title: 'Ordinary' },
+      [workerId]: {
+        type: 'worker',
+        url: workerUrl,
+        title: workerUrl,
+        parentId: pageId,
+        parentFrameId: pageId,
+      },
+    };
+    const harness = client(
+      infos,
+      route,
+      { failing: new Set([`Page.getFrameTree:${workerId}`]) },
+      null
+    );
+    const page = (await harness.send('Target.attachToTarget', { targetId: pageId, flatten: true }))
+      .result?.sessionId;
+    assert.ok(page, 'the ordinary creator page is shown');
+    await harness.send(
+      'Target.setAutoAttach',
+      {
+        autoAttach: true,
+        waitForDebuggerOnStart: true,
+        flatten: true,
+        filter: [{ type: 'worker' }],
+      },
+      page
+    );
+    const workerInfo = { targetId: workerId, attached: true, ...infos[workerId] };
+    assert.equal(workerInfo.openerId, undefined, 'Chrome shape: no openerId');
+    assert.equal(workerInfo.parentId, pageId, 'Chrome shape: parentId is the creator page');
+    assert.equal(
+      workerInfo.parentFrameId,
+      pageId,
+      'Chrome shape: parentFrameId is the creator page'
+    );
+    harness.raw.emit({
+      method: 'Target.targetCreated',
+      params: { targetInfo: workerInfo },
+    });
+    harness.raw.emit({
+      method: 'Target.targetInfoChanged',
+      params: { targetInfo: workerInfo },
+    });
+    await tick();
+    const worker = `${workerId}-auto`;
+    harness.attach(worker, workerId, page, true);
+    await harness.settle(() => attachedTo(harness.got, worker), 400);
+    assert.ok(
+      attachedTo(harness.got, worker),
+      'discovery-before-show still lets the ordinary worker be shown'
+    );
+    return { ...harness, page, pageId, worker, workerId, workerUrl, infos };
+  }
+
+  test(`on the ${name} route, discovery before show does not block a browser-level attachToTarget by id of an ordinary Chrome-shaped worker`, async () => {
+    const { got, send, settle, workerId, workerUrl, infos } = await chromeShapedWorker('race');
+    const before = got.length;
+    const attached = await send('Target.attachToTarget', { targetId: workerId, flatten: true });
+    assert.equal(attached.error, undefined, `by-id attach answers: ${JSON.stringify(attached)}`);
+    const sessionId = attached.result?.sessionId;
+    assert.ok(sessionId, `by-id attach returns a session: ${JSON.stringify(attached)}`);
+    await settle(
+      () =>
+        got
+          .slice(before)
+          .some(
+            (message) =>
+              message.method === 'Target.attachedToTarget' &&
+              message.params?.sessionId === sessionId &&
+              message.params?.targetInfo?.targetId === workerId
+          ),
+      400
+    );
+    assert.ok(
+      got
+        .slice(before)
+        .some(
+          (message) =>
+            message.method === 'Target.attachedToTarget' && message.params?.sessionId === sessionId
+        ),
+      'the by-id worker session is shown'
+    );
+    assert.equal(
+      infos[workerId].parentId,
+      infos[workerId].parentFrameId,
+      'parentId and parentFrameId stay the creator page id'
+    );
+    const evaluated = await send(
+      'Runtime.evaluate',
+      { expression: 'self.location.href', returnByValue: true },
+      sessionId
+    );
+    assert.equal(evaluated.error, undefined, `evaluate answers: ${JSON.stringify(evaluated)}`);
+    assert.equal(
+      evaluated.result?.result?.value ?? evaluated.result?.value,
+      workerUrl,
+      `evaluate returns the ordinary worker URL: ${JSON.stringify(evaluated)}`
+    );
+  });
+
+  test(`on the ${name} route, closing an ordinary auto-attached worker session leaves browser-level by-id attach working while the creator is fine`, async () => {
+    const { raw, got, send, settle, detached, worker, workerId, workerUrl } =
+      await chromeShapedWorker('closed');
+    await send('Target.detachFromTarget', { sessionId: worker });
+    raw.emit({
+      method: 'Target.detachedFromTarget',
+      params: { sessionId: worker, targetId: workerId },
+    });
+    await settle(() => detached(worker) || !attachedTo(got, worker), 200);
+    const before = got.length;
+    const attached = await send('Target.attachToTarget', { targetId: workerId, flatten: true });
+    assert.equal(
+      attached.error,
+      undefined,
+      `by-id after ordinary close answers: ${JSON.stringify(attached)}`
+    );
+    const sessionId = attached.result?.sessionId;
+    assert.ok(
+      sessionId,
+      `by-id after ordinary close returns a session: ${JSON.stringify(attached)}`
+    );
+    await settle(
+      () =>
+        got
+          .slice(before)
+          .some(
+            (message) =>
+              message.method === 'Target.attachedToTarget' &&
+              message.params?.sessionId === sessionId
+          ),
+      400
+    );
+    assert.ok(
+      got
+        .slice(before)
+        .some(
+          (message) =>
+            message.method === 'Target.attachedToTarget' && message.params?.sessionId === sessionId
+        ),
+      'by-id after ordinary close is shown'
+    );
+    const evaluated = await send(
+      'Runtime.evaluate',
+      { expression: 'self.location.href', returnByValue: true },
+      sessionId
+    );
+    assert.equal(
+      evaluated.error,
+      undefined,
+      `evaluate after ordinary close: ${JSON.stringify(evaluated)}`
+    );
+    assert.equal(evaluated.result?.result?.value ?? evaluated.result?.value, workerUrl);
+  });
+
+  test(`on the ${name} route, browser-level by-id attach of a Chrome-shaped worker is refused when its creator is held, protected or cut`, async () => {
+    const hostId = `chrome-shape-host-${name}`;
+    const heldId = `chrome-shape-held-${name}`;
+    const vaultId = `chrome-shape-vault-${name}`;
+    const heldWorker = `chrome-shape-held-worker-${name}`;
+    const vaultWorker = `chrome-shape-vault-worker-${name}`;
+    const cutWorker = `chrome-shape-cut-worker-${name}`;
+    hold(heldId);
+    const infos = {
+      [hostId]: { type: 'page', url: ORDINARY, title: 'Ordinary' },
+      [heldId]: { type: 'page', url: 'https://idp.example/authorize', title: IDP_TITLE },
+      [vaultId]: { type: 'page', url: VAULT, title: VAULT_TITLE },
+      [heldWorker]: {
+        type: 'worker',
+        url: `http://127.0.0.1:9222/held-${name}.js`,
+        title: '',
+        parentId: heldId,
+        parentFrameId: heldId,
+      },
+      [vaultWorker]: {
+        type: 'worker',
+        url: `http://127.0.0.1:9222/vault-${name}.js`,
+        title: '',
+        parentId: vaultId,
+        parentFrameId: vaultId,
+      },
+      [cutWorker]: {
+        type: 'worker',
+        url: `http://127.0.0.1:9222/cut-${name}.js`,
+        title: '',
+        parentId: hostId,
+        parentFrameId: hostId,
+      },
+    };
+    const workers = [heldWorker, vaultWorker, cutWorker];
+    const { raw, got, send, settle, attach, detached } = client(
+      infos,
+      route,
+      { failing: new Set(workers.map((id) => `Page.getFrameTree:${id}`)) },
+      null
+    );
+    const page = (await send('Target.attachToTarget', { targetId: hostId, flatten: true })).result
+      ?.sessionId;
+    assert.ok(page, 'ordinary host page is shown');
+    for (const targetId of [heldId, vaultId]) {
+      raw.emit({
+        method: 'Target.targetCreated',
+        params: { targetInfo: { targetId, attached: false, ...infos[targetId] } },
+      });
+    }
+    await send(
+      'Target.setAutoAttach',
+      {
+        autoAttach: true,
+        waitForDebuggerOnStart: true,
+        flatten: true,
+        filter: [{ type: 'worker' }],
+      },
+      page
+    );
+    const cutSession = `${cutWorker}-auto`;
+    raw.emit({
+      method: 'Target.targetCreated',
+      params: { targetInfo: { targetId: cutWorker, attached: true, ...infos[cutWorker] } },
+    });
+    attach(cutSession, cutWorker, page, true);
+    await settle(() => attachedTo(got, cutSession), 400);
+    assert.ok(attachedTo(got, cutSession), 'cut case: worker shown before creator detach');
+    await send('Target.detachFromTarget', { sessionId: page });
+    raw.emit({
+      method: 'Target.detachedFromTarget',
+      params: { sessionId: page, targetId: hostId },
+    });
+    await settle(() => detached(page) && detached(cutSession), 400);
+
+    for (const [kind, workerId] of [
+      ['held', heldWorker],
+      ['protected', vaultWorker],
+      ['cut', cutWorker],
+    ]) {
+      const before = got.length;
+      raw.emit({
+        method: 'Target.targetCreated',
+        params: { targetInfo: { targetId: workerId, attached: true, ...infos[workerId] } },
+      });
+      const denied = await send('Target.attachToTarget', { targetId: workerId, flatten: true });
+      assert.ok(denied.error, `${kind}: by-id refused: ${JSON.stringify(denied)}`);
+      assert.ok(
+        !got
+          .slice(before)
+          .some(
+            (message) =>
+              message.method === 'Target.attachedToTarget' &&
+              message.params?.targetInfo?.targetId === workerId &&
+              !message.error
+          ),
+        `${kind}: worker never shown on by-id`
+      );
+    }
+
+    const vaultSession = `${vaultWorker}-prior`;
+    attach('vault-session-prior', vaultId);
+    await settle(() => detached('vault-session-prior'), 400);
+    attach(vaultSession, vaultWorker, 'vault-session-prior', true);
+    await settle(() => detached(vaultSession), 400);
+    assert.ok(detached(vaultSession), 'a protected-creator worker is cut');
+    raw.emit({ method: 'Target.targetDestroyed', params: { targetId: vaultWorker } });
+    await tick();
+    const afterDestroy = got.length;
+    const stillDenied = await send('Target.attachToTarget', {
+      targetId: vaultWorker,
+      flatten: true,
+    });
+    assert.ok(
+      stillDenied.error,
+      `prior unsafe session still refuses by-id after targetDestroyed cleared the cut set: ${JSON.stringify(stillDenied)}`
+    );
+    assert.ok(
+      !got
+        .slice(afterDestroy)
+        .some(
+          (message) =>
+            message.method === 'Target.attachedToTarget' &&
+            message.params?.targetInfo?.targetId === vaultWorker &&
+            !message.error
+        ),
+      'prior unsafe session: worker never shown'
+    );
+  });
+
+  test(`on the ${name} route, a stale workerTargetsCut clears when the creator session is alive again`, async () => {
+    const pageId = `stale-cut-page-${name}`;
+    const workerId = `stale-cut-worker-${name}`;
+    const workerUrl = `http://127.0.0.1:9222/stale-${name}.js`;
+    const infos = {
+      [pageId]: { type: 'page', url: ORDINARY, title: 'Ordinary' },
+      [workerId]: {
+        type: 'worker',
+        url: workerUrl,
+        title: workerUrl,
+        parentId: pageId,
+        parentFrameId: pageId,
+      },
+    };
+    const { raw, got, send, settle, attach, detached } = client(
+      infos,
+      route,
+      { failing: new Set([`Page.getFrameTree:${workerId}`]) },
+      null
+    );
+    const page = (await send('Target.attachToTarget', { targetId: pageId, flatten: true })).result
+      ?.sessionId;
+    assert.ok(page, 'creator page is shown');
+    await send(
+      'Target.setAutoAttach',
+      {
+        autoAttach: true,
+        waitForDebuggerOnStart: true,
+        flatten: true,
+        filter: [{ type: 'worker' }],
+      },
+      page
+    );
+    const worker = `${workerId}-auto`;
+    attach(worker, workerId, page, true);
+    await settle(() => attachedTo(got, worker), 400);
+    assert.ok(attachedTo(got, worker), 'worker shown before creator cut');
+    await send('Target.detachFromTarget', { sessionId: page });
+    raw.emit({
+      method: 'Target.detachedFromTarget',
+      params: { sessionId: page, targetId: pageId },
+    });
+    await settle(() => detached(page) && detached(worker), 400);
+    assert.ok(
+      (await send('Target.attachToTarget', { targetId: workerId, flatten: true })).error,
+      'by-id refused while the creator stays cut'
+    );
+    const pageAgain = (await send('Target.attachToTarget', { targetId: pageId, flatten: true }))
+      .result?.sessionId;
+    assert.ok(pageAgain, 'creator page is shown again');
+    await send(
+      'Target.setAutoAttach',
+      {
+        autoAttach: true,
+        waitForDebuggerOnStart: true,
+        flatten: true,
+        filter: [{ type: 'worker' }],
+      },
+      pageAgain
+    );
+    const underCreator = `${workerId}-under-creator`;
+    attach(underCreator, workerId, pageAgain, true);
+    await settle(() => attachedTo(got, underCreator) || detached(underCreator), 400);
+    assert.ok(
+      attachedTo(got, underCreator),
+      `stale cut clears for attach under the restored creator: ${JSON.stringify(
+        got.filter((message) => message.params?.targetInfo?.targetId === workerId).slice(-3)
+      )}`
+    );
+    assert.equal(
+      (await send('Runtime.evaluate', { expression: '1' }, underCreator)).error,
+      undefined
+    );
+    await send('Target.detachFromTarget', { sessionId: underCreator });
+    raw.emit({
+      method: 'Target.detachedFromTarget',
+      params: { sessionId: underCreator, targetId: workerId },
+    });
+    const before = got.length;
+    const byId = await send('Target.attachToTarget', { targetId: workerId, flatten: true });
+    assert.equal(byId.error, undefined, `by-id after creator restore: ${JSON.stringify(byId)}`);
+    const sessionId = byId.result?.sessionId;
+    assert.ok(sessionId);
+    await settle(
+      () =>
+        got
+          .slice(before)
+          .some(
+            (message) =>
+              message.method === 'Target.attachedToTarget' &&
+              message.params?.sessionId === sessionId
+          ),
+      400
+    );
+    assert.ok(
+      got
+        .slice(before)
+        .some(
+          (message) =>
+            message.method === 'Target.attachedToTarget' && message.params?.sessionId === sessionId
+        ),
+      'browser-level by-id is shown after the creator returns'
+    );
+    assert.equal(
+      (await send('Runtime.evaluate', { expression: 'self.location.href' }, sessionId)).error,
+      undefined
     );
   });
 
