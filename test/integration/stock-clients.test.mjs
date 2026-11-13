@@ -493,7 +493,7 @@ async function bridge(t, route) {
   let runtime = route;
   let driven = browser;
   if (route === 'link') {
-    const other = await launch({ tools: false, args: CHROME_ARGS });
+    const other = await launch({ tools: false, extension: false, args: CHROME_ARGS });
     t.after(() => other.close());
     const tabs = await devtools(other);
     driven = await debuggerUrl(tabs.port);
